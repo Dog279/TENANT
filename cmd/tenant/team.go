@@ -148,8 +148,26 @@ func (r *TeamRuntime) routerForProfile(role string) (*model.Router, *agentProfil
 	r.routerMu.Lock()
 	ap := r.cfg.AgentProfiles[role]
 	if ap == nil {
+		// Case-insensitive fallback: the orchestrator is a model and may emit
+		// "programmer" for the "Programmer" persona — still fire it (TEN-132).
+		for name, p := range r.cfg.AgentProfiles {
+			if strings.EqualFold(name, role) {
+				ap = p
+				break
+			}
+		}
+	}
+	if ap == nil {
 		r.routerMu.Unlock()
 		return r.cfg.Router, nil
+	}
+	// A profile with no pinned provider (the built-in specialists) inherits the
+	// orchestrator's primary router — its value is the soul, not a model swap.
+	// Return before the cache/build path so we never hit buildProfileRouter's
+	// "unknown provider" error or cache the shared router under the role.
+	if ap.Provider == "" {
+		r.routerMu.Unlock()
+		return r.cfg.Router, ap
 	}
 	if cached := r.profileRouters[role]; cached != nil {
 		r.routerMu.Unlock()

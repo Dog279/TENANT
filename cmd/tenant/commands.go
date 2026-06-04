@@ -1413,9 +1413,13 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	}
 
 	_, embProf, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
+	// Built-in specialists (TEN-132) merged under the operator's profiles, so a
+	// fresh user gets spawnable experts with zero config; config wins by name.
 	var orcAgents map[string]*agentProfile
 	if lcInit, err := loadLaunchConfig(c.cfgDir); err == nil {
-		orcAgents = lcInit.Agents
+		orcAgents = effectiveAgents(lcInit)
+	} else {
+		orcAgents = effectiveAgents(nil)
 	}
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
@@ -1733,7 +1737,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// first spawn picks them up (no need to wait for a `/agents add` mid-session).
 	var initialAgentProfiles map[string]*agentProfile
 	if lcInit, err := loadLaunchConfig(c.cfgDir); err == nil {
-		initialAgentProfiles = lcInit.Agents
+		initialAgentProfiles = effectiveAgents(lcInit) // built-ins + config (TEN-132)
+	} else {
+		initialAgentProfiles = effectiveAgents(nil)
 	}
 	// Local mux persistence callback — same settings file as the
 	// shared mux so /enable web_search etc. survives restart regardless

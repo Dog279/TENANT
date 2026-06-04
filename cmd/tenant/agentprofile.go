@@ -141,11 +141,17 @@ func renderAgentsForOrchestrator(agents map[string]*agentProfile) string {
 	var b strings.Builder
 	b.WriteString("\n\n--- Available specialized sub-agents ---\n")
 	b.WriteString("You have these named team members available via spawn_agent(role=<name>, task=<...>).\n")
-	b.WriteString("Each runs on its own model with a specialized identity:\n")
-	for name, ap := range agents {
-		fmt.Fprintf(&b, "  • %s — model: %s", name, ap.Provider)
-		if ap.Model != "" {
-			fmt.Fprintf(&b, "/%s", ap.Model)
+	b.WriteString("Each carries a specialized identity:\n")
+	// Sorted for a stable system prompt across launches (the map order isn't).
+	for _, name := range sortedAgentNames(agents) {
+		ap := agents[name]
+		if ap.Provider == "" {
+			fmt.Fprintf(&b, "  • %s — your model (inherited)", name)
+		} else {
+			fmt.Fprintf(&b, "  • %s — model: %s", name, ap.Provider)
+			if ap.Model != "" {
+				fmt.Fprintf(&b, "/%s", ap.Model)
+			}
 		}
 		if d := strings.TrimSpace(ap.Description); d != "" {
 			fmt.Fprintf(&b, " — %s", d)

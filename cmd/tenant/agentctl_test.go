@@ -6,7 +6,20 @@ import (
 	"testing"
 
 	"tenant/internal/model"
+	"tenant/internal/tui"
 )
+
+// userAgentRows filters out the built-in specialists (TEN-132) so CRUD
+// assertions about the operator's OWN profiles stay stable.
+func userAgentRows(rows []tui.AgentInfo) []tui.AgentInfo {
+	var out []tui.AgentInfo
+	for _, r := range rows {
+		if !r.Builtin {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 // agentControl wraps launchConfig.Agents — round-trip + validation rules.
 
@@ -43,19 +56,20 @@ func TestAgentControl_AddListShowRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("want 2 rows, got %d", len(rows))
+	user := userAgentRows(rows)
+	if len(user) != 2 {
+		t.Fatalf("want 2 user rows, got %d", len(user))
 	}
 	// Sorted order: researcher, synthesizer.
-	if rows[0].Name != "researcher" || rows[1].Name != "synthesizer" {
-		t.Errorf("sort wrong: %v", rows)
+	if user[0].Name != "researcher" || user[1].Name != "synthesizer" {
+		t.Errorf("sort wrong: %v", user)
 	}
-	if !rows[0].Valid || !rows[1].Valid {
-		t.Errorf("rows not valid: %+v", rows)
+	if !user[0].Valid || !user[1].Valid {
+		t.Errorf("rows not valid: %+v", user)
 	}
 	// synthesizer's effective model came from the provider (no profile override).
-	if rows[1].Model != "aeon-ultimate" {
-		t.Errorf("synth model not resolved from provider: %q", rows[1].Model)
+	if user[1].Model != "aeon-ultimate" {
+		t.Errorf("synth model not resolved from provider: %q", user[1].Model)
 	}
 
 	// Show — full detail incl. soul (empty here).
@@ -72,8 +86,9 @@ func TestAgentControl_AddListShowRemove(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	rows, _ = ac.List()
-	if len(rows) != 1 || rows[0].Name != "synthesizer" {
-		t.Errorf("remove wrong: %+v", rows)
+	user = userAgentRows(rows)
+	if len(user) != 1 || user[0].Name != "synthesizer" {
+		t.Errorf("remove wrong: %+v", user)
 	}
 	// Remove-missing errors useful.
 	if _, err := ac.Remove("ghost"); err == nil {
@@ -199,11 +214,9 @@ func TestAgentControl_Rename(t *testing.T) {
 	}
 
 	rows, _ := ac.List()
-	if len(rows) != 1 {
-		t.Fatalf("want 1 row after rename, got %d", len(rows))
-	}
-	if rows[0].Name != "deep-researcher" {
-		t.Errorf("rename didn't apply: %q", rows[0].Name)
+	user := userAgentRows(rows)
+	if len(user) != 1 || user[0].Name != "deep-researcher" {
+		t.Fatalf("want [deep-researcher] user row after rename, got %v", user)
 	}
 	d, _ := ac.Show("deep-researcher")
 	if d.Description != "deep web" || d.Soul != "be thorough" {

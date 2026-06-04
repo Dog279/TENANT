@@ -237,6 +237,15 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 		r.BudgetReport.SystemTokens += n // persistent goal header rides the system reserve
 	}
 
+	// The system block (prompt + user profile + goal header + a grafted agent
+	// soul) isn't auto-truncated, and WritableBudget subtracts the STATIC reserve
+	// — so an oversized system prompt silently eats working-set/retrieval budget.
+	// Surface it loudly rather than letting context quietly fall out (TEN-132).
+	if rs := req.Profile.ReserveSystemPrompt; rs > 0 && r.BudgetReport.SystemTokens > rs {
+		r.BudgetReport.Truncations = append(r.BudgetReport.Truncations,
+			fmt.Sprintf("system prompt exceeds reserve (%d > %d) — not auto-truncated; trim the system prompt or the agent soul", r.BudgetReport.SystemTokens, rs))
+	}
+
 	var toolsText string
 	if len(req.Tools) > 0 {
 		toolsText = renderTools(req.Tools)

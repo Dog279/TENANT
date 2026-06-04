@@ -296,6 +296,26 @@ func TestAssemble_CompactionRecommendedAt60Percent(t *testing.T) {
 	}
 }
 
+// TEN-132: an oversized system prompt (e.g. a fat grafted agent soul) overruns
+// ReserveSystemPrompt silently — surface it as a loud warning instead.
+func TestAssemble_SystemPromptOverReserveWarns(t *testing.T) {
+	a := assemble.New(fakeCounter()) // 4 chars/token
+	big := strings.Repeat("x", mkProfile().ReserveSystemPrompt*4+800)
+	r, err := a.Assemble(context.Background(), assemble.Request{Profile: mkProfile(), SystemPrompt: big})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range r.BudgetReport.Truncations {
+		if strings.Contains(w, "system prompt exceeds reserve") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a system-prompt-over-reserve warning, got %v", r.BudgetReport.Truncations)
+	}
+}
+
 // TEN-102 (a): the goal header is rendered into the system block and counted
 // into the system reserve.
 func TestAssemble_GoalHeaderRenderedAndCounted(t *testing.T) {

@@ -617,6 +617,7 @@ type AgentInfo struct {
 	Model       string // resolved model — profile override > provider default
 	Description string
 	HasSoul     bool // whether the profile has a custom soul markdown
+	Builtin     bool // shipped in the binary (read-only; inherits the primary model)
 	Valid       bool // false = misconfigured (missing provider / model)
 }
 

@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 
@@ -34,23 +33,24 @@ func (ac *agentControl) List() ([]tui.AgentInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(lc.Agents))
-	for name := range lc.Agents {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	out := make([]tui.AgentInfo, 0, len(names))
-	for _, name := range names {
-		ap := lc.Agents[name]
+	// Built-in specialists (TEN-132) listed alongside the operator's profiles.
+	agents := effectiveAgents(lc)
+	out := make([]tui.AgentInfo, 0, len(agents))
+	for _, name := range sortedAgentNames(agents) {
+		ap := agents[name]
 		pc := lc.Providers[ap.Provider]
 		modelLabel := ap.Model
-		if modelLabel == "" && pc != nil {
+		switch { // nil-safe: a built-in has an empty provider, so pc is nil
+		case modelLabel != "":
+		case pc != nil && pc.Model != "":
 			modelLabel = pc.Model
-		}
-		if modelLabel == "" {
-			if pk, ok := providerKinds[firstNonEmpty(pc.Kind, ap.Provider)]; ok {
+		case pc != nil:
+			if pk, ok := providerKinds[pc.Kind]; ok {
 				modelLabel = pk.DefaultModel
 			}
+		}
+		if ap.Builtin {
+			modelLabel = "(your model)"
 		}
 		out = append(out, tui.AgentInfo{
 			Name:        name,
@@ -58,8 +58,10 @@ func (ac *agentControl) List() ([]tui.AgentInfo, error) {
 			Model:       modelLabel,
 			Description: ap.Description,
 			HasSoul:     strings.TrimSpace(ap.Soul) != "",
-			// Validity check: provider exists, has a model resolvable.
-			Valid: pc != nil && modelLabel != "",
+			Builtin:     ap.Builtin,
+			// Built-ins are always valid (they inherit the primary); else the
+			// provider must exist and a model must resolve.
+			Valid: ap.Builtin || (pc != nil && modelLabel != ""),
 		})
 	}
 	return out, nil
@@ -257,6 +259,9 @@ func (ac *agentControl) Remove(name string) (string, error) {
 		return "", err
 	}
 	if lc.Agents[name] == nil {
+		if builtinAgentProfiles()[name] != nil {
+			return "", fmt.Errorf("%q is a built-in specialist (read-only); add a profile of the same name to override it", name)
+		}
 		return "", fmt.Errorf("no agent named %q", name)
 	}
 	delete(lc.Agents, name)
@@ -280,6 +285,9 @@ func (ac *agentControl) Show(name string) (tui.AgentDetail, error) {
 	}
 	ap := lc.Agents[name]
 	if ap == nil {
+		ap = effectiveAgents(lc)[name] // built-in specialists are shown read-only
+	}
+	if ap == nil {
 		return tui.AgentDetail{}, fmt.Errorf("no agent named %q", name)
 	}
 	pc := lc.Providers[ap.Provider]
@@ -291,6 +299,9 @@ func (ac *agentControl) Show(name string) (tui.AgentDetail, error) {
 		if pk, ok := providerKinds[pc.Kind]; ok {
 			mdl = pk.DefaultModel
 		}
+	}
+	if ap.Provider == "" { // built-in inherits the primary
+		mdl = "(your model)"
 	}
 	return tui.AgentDetail{
 		Name: name, Provider: ap.Provider, Model: mdl,
@@ -305,7 +316,9 @@ func (ac *agentControl) publishRuntime(agents map[string]*agentProfile) {
 	if ac.rt == nil {
 		return
 	}
-	ac.rt.SetAgentProfiles(agents)
+	// Re-merge the built-in specialists so a live /agents edit can't drop them
+	// from the running registry (TEN-132).
+	ac.rt.SetAgentProfiles(effectiveAgents(&launchConfig{Agents: agents}))
 }
 
 // safeAgentName rejects names that would break filename / id semantics

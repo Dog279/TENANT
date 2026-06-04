@@ -92,6 +92,9 @@ type agentProfile struct {
 	Model       string `json:"model,omitempty"`       // override the provider's default model
 	Soul        string `json:"soul,omitempty"`        // markdown identity/persona
 	Description string `json:"description,omitempty"` // shown in /agents list
+	// Builtin marks a persona shipped in the binary (TEN-132): read-only, and it
+	// inherits the orchestrator's primary model (empty Provider). Never persisted.
+	Builtin bool `json:"-"`
 }
 
 // authCfg describes how to obtain a provider's API key. Either reference an

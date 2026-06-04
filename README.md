@@ -30,6 +30,11 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
   OS (shell + files), web (browse / search / read), SQL (SQLite + Postgres),
   Google Workspace (Gmail + Calendar), X / Twitter, iMessage (via BlueBubbles),
   Discord, and a plain-markdown wiki with a transparent indexer.
+- **Built-in expert sub-agents.** Five specialists — **Programmer, Researcher,
+  Writer, QA, Strategist** — ship in the binary with a workflow-tuned persona
+  (plan → debate → implement → test → show evidence). They inherit your primary
+  model, so the orchestrator can spawn them with **zero extra config**: point
+  tenant at a model and you have a team.
 - **Multi-agent orchestration + deep research.** An orchestrator spawns
   concurrent sub-agents that coordinate over a live bus; a research mode plans →
   fans out web researchers → returns a cited report.
@@ -79,6 +84,32 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
   (gitignored). Nothing personal is ever committed.
 - **This repository contains no API keys, no learned memory, and no wiki
   content** — it is a clean template. Everything you generate stays on your machine.
+
+## Built-in expert sub-agents
+
+Five specialists ship in the binary and are spawnable out of the box — the
+orchestrator delegates to them by name, and each runs on **your** configured
+model (no per-agent setup):
+
+| Role | What it does |
+|---|---|
+| **Programmer** | implements features and fixes: smallest diff, root-cause only, regression test, clean build before done |
+| **Researcher** | deep multi-source research: pulls the primary source, adversarially verifies every claim, cites everything |
+| **Writer** | docs, PR/commit prose, summaries: direct voice, accuracy over polish, never overclaims |
+| **QA** | adversarial verifier: tries to break the work, verifies against reality with file:line evidence |
+| **Strategist** | founder-mode scoping + neutral judge: challenges the premise, finds the narrowest high-value wedge |
+
+```sh
+./tenant orchestrate "add rate limiting to the API and prove it works"
+```
+
+The orchestrator picks the right specialist per sub-task. To inspect, override,
+or add your own, use `/agents` in the TUI (or `tenant agents`); a profile you add
+with the same name overrides the built-in (e.g. to pin a specialist to a bigger
+model). The matching identity/soul/rules files live under
+`cmd/tenant/builtinsouls/agents/` if you want to edit the personas, and a 6th —
+**Main**, the conductor persona — ships there too for use as your primary agent's
+soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 
 ## Commands
 

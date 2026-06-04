@@ -1328,7 +1328,9 @@ func cmdResearch(ctx context.Context, args []string) error {
 
 	var researchAgents map[string]*agentProfile
 	if lcInit, err := loadLaunchConfig(c.cfgDir); err == nil {
-		researchAgents = lcInit.Agents
+		researchAgents = effectiveAgents(lcInit) // built-ins + config (TEN-132)
+	} else {
+		researchAgents = effectiveAgents(nil)
 	}
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
