@@ -1,0 +1,22 @@
+id: fitness-005-os-list-dir
+category: fitness/single-tool/os
+subset: fitness
+description: |
+  Agent lists files in a non-trivial directory and surfaces specific
+  entries. Confirms the OS plugin happy path + the agent's ability to
+  pick relevant entries from a long list rather than dumping raw output.
+prompt: "What Go source files are in tenant's internal/eval directory?"
+mode: live
+expected:
+  must_call:
+    - tool: os_list_dir
+      args_contain: ["eval"]
+  must_not_call:
+    - os_exec
+  rubric:
+    criterion: "Response lists at least three specific .go filenames from the directory, not a generic description."
+    anchors:
+      1: "No filenames, just a description"
+      3: "One or two filenames mentioned, hand-wavy"
+      5: "Lists three or more specific files (eval.go, task.go, scorer.go, etc.) with brief purpose"
+  rubric_min_score: 3

@@ -1,0 +1,24 @@
+id: fitness-022-calendar-list-upcoming
+category: fitness/single-tool/gsuite
+subset: full
+description: |
+  Agent lists upcoming calendar events over a multi-day window and
+  surfaces specific events with their times. Confirms the calendar read
+  happy path and that the agent reports concrete entries rather than a
+  generic "you have some meetings" answer.
+prompt: "What's on my calendar for the next two weeks? List the events with their dates and times."
+mode: live
+expected:
+  must_call:
+    - tool: calendar_list
+      args_contain: ["days"]
+  must_not_call:
+    - gmail_send
+    - calendar_create
+  rubric:
+    criterion: "Response lists specific events with titles and dates/times (or clearly states the window is empty), not a generic description of the calendar."
+    anchors:
+      1: "No concrete events; generic talk or a refusal to look"
+      3: "Mentions an event or two without dates/times, hand-wavy"
+      5: "Lists multiple events with titles and their dates/times, or correctly reports an empty window"
+  rubric_min_score: 3

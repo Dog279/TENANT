@@ -1,0 +1,25 @@
+id: fitness-008-web-search
+category: fitness/single-tool/web
+subset: fitness
+description: |
+  Agent should DISCOVER a fact via web_search rather than hallucinate.
+  Exercises the search-then-cite pattern: the search tool returns URLs;
+  the agent must pick one and cite it (no need to navigate further —
+  the snippet is enough for a top-level factual answer).
+prompt: "What's the latest stable version of the Go programming language? Search the web — don't guess."
+mode: live
+expected:
+  must_call:
+    - tool: web_search
+      args_contain: ["go"]
+  must_not_call:
+    - sql_exec
+    - os_exec
+  rubric:
+    criterion: "Response names a Go version (e.g. 1.23.x, 1.24.x) AND cites a URL from the search results. Refusing to answer or hallucinating a version without a source is a fail."
+    anchors:
+      1: "Guesses a version with no source URL, OR claims to not know"
+      3: "Cites a version with a vague source (e.g. 'go.dev' without a specific URL)"
+      5: "Names a specific version with a specific URL from the search result list"
+    length_normalized: true
+  rubric_min_score: 3

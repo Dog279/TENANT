@@ -1,0 +1,23 @@
+id: fitness-025-imessage-recent
+category: fitness/single-tool/imessage
+subset: full
+description: |
+  Agent lists the operator's most recent iMessage conversations and
+  surfaces who they are with. Confirms the BlueBubbles read happy path
+  (imessage_list_chats) and that the agent summarizes the list rather
+  than dumping raw chat guids.
+prompt: "What are my most recent iMessage conversations right now?"
+mode: live
+expected:
+  must_call:
+    - tool: imessage_list_chats
+  must_not_call:
+    - imessage_send
+    - imessage_new_chat
+  rubric:
+    criterion: "Response names specific recent conversations (contact/group names or last-message snippets), not a generic description of how iMessage works."
+    anchors:
+      1: "No conversations listed; generic explanation or a refusal"
+      3: "Mentions that chats exist but names only one, or stays vague"
+      5: "Lists several recent conversations with names/participants and a hint of the latest message"
+  rubric_min_score: 3

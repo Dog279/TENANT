@@ -1,0 +1,24 @@
+id: fitness-020-gmail-search-unread
+category: fitness/single-tool/gsuite
+subset: full
+description: |
+  Agent searches Gmail for recent unread mail and surfaces specific
+  senders/subjects rather than a generic summary. Confirms the gsuite
+  read happy path and that the agent picks relevant messages from the
+  result list instead of dumping raw output.
+prompt: "What unread emails have landed in my inbox over the last week? Give me the senders and subjects."
+mode: live
+expected:
+  must_call:
+    - tool: gmail_search
+      args_contain: ["is:unread"]
+  must_not_call:
+    - gmail_send
+    - calendar_create
+  rubric:
+    criterion: "Response lists specific unread messages with sender and subject (or clearly states the inbox has none), not a generic description of how email works."
+    anchors:
+      1: "No concrete messages; generic talk or a refusal to look"
+      3: "Mentions one message or only senders without subjects, hand-wavy"
+      5: "Lists multiple unread messages with both sender and subject, or correctly reports zero unread"
+  rubric_min_score: 3

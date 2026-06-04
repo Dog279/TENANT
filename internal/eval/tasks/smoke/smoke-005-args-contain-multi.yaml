@@ -1,0 +1,19 @@
+id: smoke-005-args-contain-multi
+category: smoke/scoring
+subset: smoke
+description: |
+  Confirms args_contain is AND-of-substrings: every listed needle must
+  appear in the tool call's args. The fixture's args include all three
+  needles (path, recursive, hidden).
+prompt: "List C:\\Users recursively, including hidden files."
+mode: fixture
+fixture:
+  tool_calls:
+    - tool: os_list_dir
+      args: '{"path":"C:\\Users","recursive":true,"include_hidden":true}'
+  response: "Listed 47 entries including 3 hidden files."
+expected:
+  must_call:
+    - tool: os_list_dir
+      args_contain: ["C:\\\\Users", "recursive", "hidden"]
+  response_substring_any: ["entries", "hidden"]

@@ -1,0 +1,24 @@
+id: fitness-043-web-research-summarize
+category: fitness/multi-tool
+subset: full
+description: |
+  Research chain: search the web for a topic, then open a result to read
+  detail and synthesize. Exercises web_search → web_navigate into a hit →
+  summarize. Common failure: agent answers from search snippets alone and
+  never navigates, producing a shallow or stale summary.
+prompt: "Research what HTTP status code 429 means and when servers return it. Search the web, open an authoritative result to confirm the details, then give me a two-sentence summary."
+mode: live
+expected:
+  must_call:
+    - tool: web_search
+      args_contain: ["429"]
+    - tool: web_navigate
+  must_not_call:
+    - os_exec
+  rubric:
+    criterion: "Response correctly explains HTTP 429 (Too Many Requests / rate limiting) in a concise summary grounded in a page the agent actually navigated to, not just snippets."
+    anchors:
+      1: "Wrong meaning, or only restates a search snippet with no navigation"
+      3: "Correct meaning but generic, with no sign a specific result was opened"
+      5: "Accurate two-sentence summary (rate limiting / too many requests, when servers send it) clearly grounded in a navigated source"
+  rubric_min_score: 3

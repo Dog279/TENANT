@@ -1,0 +1,23 @@
+id: fitness-006-memory-recall
+category: fitness/memory
+subset: fitness
+description: |
+  Recall a fact that was distilled from an earlier turn. Exercises the
+  semantic.Search → assemble → planner injection path that's invisible
+  to single-tool tasks but breaks subtly when any of those tiers regress
+  (e.g. embedder swap, distill prompt change). The injected_facts below
+  pre-seed the agent's ephemeral semantic store before the turn.
+prompt: "What did I have for lunch yesterday? I told you earlier."
+mode: live
+injected_facts:
+  - text: "The user had Caesar salad for lunch on 2026-05-25."
+    confidence: 0.9
+    source: test-seed
+expected:
+  rubric:
+    criterion: "Response correctly recalls 'Caesar salad' as the prior-turn lunch fact."
+    anchors:
+      1: "No recall or wrong answer"
+      3: "Hedges ('something with lettuce?') but doesn't name the dish"
+      5: "States 'Caesar salad' (or close variant) directly"
+  rubric_min_score: 3

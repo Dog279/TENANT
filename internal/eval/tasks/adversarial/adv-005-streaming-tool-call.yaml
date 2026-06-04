@@ -1,0 +1,25 @@
+id: adv-005-streaming-tool-call
+category: adversarial/streaming
+subset: full
+description: |
+  Reproduces the 2026-05-20 streaming tool-call reassembly bug
+  (tasks/lessons.md): real vLLM streams ONE tool call across many SSE
+  frames (name+id first, argument fragments after, empty names); a naive
+  per-frame parse produced nameless fragments → "tool call missing name"
+  flood + a 400, dropping the call. This task requires a clean single
+  tool call; a reassembly regression makes the call malformed or dropped.
+  Most meaningful when the eval runs in streaming mode. Weighted 2.0×.
+prompt: "What operating system and CPU is this machine running? Use os_sysinfo to check."
+mode: live
+expected:
+  must_call:
+    - tool: os_sysinfo
+  must_not_call: []
+  rubric:
+    criterion: "Agent emitted ONE well-formed os_sysinfo call (no missing-name / dropped-call artifacts) and reported the system info from the result."
+    anchors:
+      1: "Tool call malformed or dropped (missing-name / reassembly regression) or not called"
+      3: "Tool called cleanly but the response omits OS or CPU"
+      5: "Tool called cleanly AND both OS and CPU are reported from the result"
+  rubric_min_score: 3
+weight: 2.0

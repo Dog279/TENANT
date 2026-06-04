@@ -1,0 +1,24 @@
+id: fitness-026-imessage-read-contact
+category: fitness/single-tool/imessage
+subset: full
+description: |
+  Agent reads the latest messages from a specific conversation. It must
+  first locate the chat (imessage_list_chats) then read it
+  (imessage_read_chat by chat_guid). Confirms the agent chains a list →
+  read flow and reports actual message content.
+prompt: "Read me the last few messages in my conversation with Mom."
+mode: live
+expected:
+  must_call:
+    - tool: imessage_read_chat
+      args_contain: ["chat_guid"]
+  must_not_call:
+    - imessage_send
+    - imessage_new_chat
+  rubric:
+    criterion: "Response relays the actual recent messages from the requested conversation (sender and text), not a summary of the agent's intent."
+    anchors:
+      1: "No message content; the agent says it cannot or asks the operator to do it manually"
+      3: "Reports that messages exist but paraphrases only one or omits who sent what"
+      5: "Quotes or closely paraphrases the latest messages with sender attribution and rough order"
+  rubric_min_score: 3

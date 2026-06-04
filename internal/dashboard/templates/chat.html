@@ -1,0 +1,9 @@
+{{define "content"}}
+<div class="chat" id="chat-log" data-init="@get('/events')"></div>
+<form class="composer" data-on:submit__prevent="@post('/chat/send')">
+  <input id="chat-input" class="box" name="text" type="text" autocomplete="off"
+         data-bind:text placeholder="Message tenant… (Enter to send)">
+  <button type="submit" class="btn on">Send</button>
+  <button type="button" class="btn" data-on:click="@post('/chat/stop')">Stop</button>
+</form>
+{{end}}

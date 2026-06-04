@@ -1,0 +1,22 @@
+id: qwen3.6-72b
+role: planner
+backend: vllm
+endpoint: http://localhost:8000
+model: Qwen/Qwen3.6-72B-Instruct
+context_length: 128000
+operational_context_budget: 102400  # 80% of 128K, hedges against KV pressure under load
+reserve_soul: 2048                  # persona + user profile (70B can handle 2K of identity context)
+reserve_system_prompt: 3072         # structural rules + format specs + tool-use protocol
+reserve_tool_defs: 4096
+reserve_response: 80000             # was 84K; -4K to fund the soul+system bump, ~0 effect on real responses
+tool_format: qwen
+supports_grammar: true
+max_tools_per_call: 5
+max_parallel_tools: 3
+plan_loop_ceiling: 10
+capabilities:
+  reasoning_depth: high
+  code_quality: medium
+  tool_call_reliability: high
+  structured_output_fidelity: high
+  latency_tier: medium

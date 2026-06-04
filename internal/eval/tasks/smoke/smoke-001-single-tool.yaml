@@ -1,0 +1,18 @@
+id: smoke-001-single-tool
+category: smoke/single-tool
+subset: smoke
+description: |
+  Sanity: one tool call, one response substring. Proves the scorer's
+  must_call + response_substring_any paths work end to end.
+prompt: "What's on https://example.com?"
+mode: fixture
+fixture:
+  tool_calls:
+    - tool: web_navigate
+      args: '{"url":"https://example.com"}'
+  response: "Example Domain — a placeholder page used in documentation."
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["example.com"]
+  response_substring_any: ["example domain"]

@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="cards">
+  <div class="card stat"><div class="stat-label">Status</div><div class="stat-value">ok</div></div>
+  <div class="card stat"><div class="stat-label">Tools enabled</div><div class="stat-value">{{.ToolsEnabled}} <span class="dim">/ {{.ToolsTotal}}</span></div></div>
+  <div class="card stat"><div class="stat-label">Plugins</div><div class="stat-value">{{len .Plugins}}</div></div>
+  {{if .HasMemory}}<div class="card stat"><div class="stat-label">Working memory</div><div class="stat-value">{{.WorkingCount}}</div></div>{{end}}
+  <div class="card stat"><div class="stat-label">Posture</div><div class="stat-value">{{if .AllowSend}}Allow-send{{else}}Read-only{{end}}</div></div>
+</div>
+<div class="card">
+  <div class="card-head">Plugins</div>
+  {{if .Plugins}}<div class="chips">{{range .Plugins}}<span class="chip">{{.}}</span>{{end}}</div>
+  {{else}}<div class="dim">No plugins configured.</div>{{end}}
+</div>
+{{end}}

@@ -1,0 +1,22 @@
+id: fitness-035-discord-list-guilds
+category: fitness/single-tool/discord
+subset: full
+description: |
+  Operator asks which Discord servers the bot belongs to. Exercises the
+  Discord read happy path (discord_list_guilds takes no args) and the
+  agent's ability to report the guild names rather than dumping raw ids.
+prompt: "Which Discord servers is the bot currently a member of?"
+mode: live
+expected:
+  must_call:
+    - tool: discord_list_guilds
+  must_not_call:
+    - discord_send_message
+    - discord_react
+  rubric:
+    criterion: "Response names the guilds the bot belongs to (by name), drawn from the tool result, rather than a generic statement."
+    anchors:
+      1: "No guilds named; vague or fabricated answer"
+      3: "Reports a count or one guild but is hand-wavy about the rest"
+      5: "Lists the specific guild name(s) returned by the tool, cleanly summarized"
+  rubric_min_score: 3

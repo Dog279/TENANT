@@ -1,0 +1,24 @@
+id: fitness-024-calendar-freebusy
+category: fitness/single-tool/gsuite
+subset: full
+description: |
+  Agent queries busy blocks to find open time before scheduling.
+  Exercises the freebusy read path and the agent's ability to translate
+  busy windows into a concrete availability answer WITHOUT creating any
+  event (must_not_call guards the gated calendar_create).
+prompt: "When am I free for a one-hour call this week? Just tell me the open slots — don't book anything."
+mode: live
+expected:
+  must_call:
+    - tool: calendar_freebusy
+      args_contain: ["days"]
+  must_not_call:
+    - gmail_send
+    - calendar_create
+  rubric:
+    criterion: "Response offers specific open time slots derived from the user's busy blocks (or states the week is fully booked), without creating an event."
+    anchors:
+      1: "No concrete availability; generic talk, a guess, or an attempt to book"
+      3: "Vague availability (e.g. 'mornings look open') with no specific slots"
+      5: "Names specific free windows (day + time range) grounded in the busy data, and books nothing"
+  rubric_min_score: 3

@@ -1,0 +1,977 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"hash/fnv"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"sync"
+
+	"tenant/internal/agent"
+	"tenant/internal/model"
+	"tenant/internal/plugins/discord"
+	"tenant/internal/plugins/gsuite"
+	"tenant/internal/plugins/imessage"
+	"tenant/internal/plugins/osys"
+	sqlp "tenant/internal/plugins/sql"
+	"tenant/internal/plugins/web"
+	"tenant/internal/plugins/wiki"
+	xp "tenant/internal/plugins/x"
+	"tenant/internal/tui"
+)
+
+// plugin is a dispatcher that also advertises its tool specs — every
+// Tenant plugin satisfies this.
+type plugin interface {
+	agent.ToolDispatcher
+	Tools() []model.ToolSpec
+}
+
+// toolEntry is one tool in the mux: its spec, the plugin that owns it,
+// a plugin label for group toggling, and whether it's currently active.
+type toolEntry struct {
+	spec    model.ToolSpec
+	owner   agent.ToolDispatcher
+	plugin  string
+	enabled bool
+}
+
+// toolMux merges several plugins and is BOTH the agent's ToolRegistry
+// and its ToolDispatcher. Tools can be enabled/disabled at runtime
+// (via slash commands in the TUI): a disabled tool drops out of Search
+// (so it leaves the prompt entirely — no context or compute) and Get
+// (so it's uncallable). Thread-safe: the TUI toggles while the agent
+// turn goroutine reads. Routing is by tool name (distinct per-plugin
+// prefixes ⇒ no collision; first registrant wins on dup).
+type toolMux struct {
+	mu     sync.RWMutex
+	order  []string // tool names, registration order (deterministic Search)
+	byName map[string]*toolEntry
+	// activators turn a stubbed, config-free plugin into the real thing on
+	// first /enable — e.g. web spawns Chrome at runtime instead of needing
+	// --web at launch. Keyed by plugin label; runs once (see activated).
+	activators map[string]func() (plugin, func(), error)
+	activated  map[string]bool
+	cleanups   []func() // teardown for everything built (launch + lazy)
+	// onChange fires after any enable/disable, with a full name→enabled
+	// snapshot, so the caller can persist the curation. Set AFTER restore
+	// (restore must not re-trigger a save of what it just loaded).
+	onChange func(map[string]bool)
+
+	// --- Embedding-ranked tool selection (lazy, opt-in via SetEmbedder) ---
+	// When the registered catalog reaches rankActivateThreshold AND an
+	// embedder has been installed, Search switches from "return every
+	// enabled tool" to "return the top max(rankMinKeepFloor, 3/4) by
+	// cosine similarity to the query embedding." Best-effort: any failure
+	// (nil embedder, embed error, dim mismatch) silently falls back to the
+	// unranked path. See docs at the Search() method.
+	embedder            model.Embedder       // nil = ranking off
+	embedderFingerprint string               // invalidated on `/model use` swap
+	toolEmbeddings      map[string][]float32 // tool name → description embedding
+}
+
+// rankActivateThreshold — minimum number of REGISTERED tools to enable
+// ranking. Below this, Search returns the full enabled set (today's
+// behavior). 20 chosen because today's 7-plugin catalog (~25 tools)
+// already trips it, surfacing the behavior change while still small;
+// it scales naturally as plugins are added (Obsidian/Discord/Telegram/
+// Notion/Microsoft tooling will push catalog past 50). See the scar at
+// toolmux.go Search() comment for why earlier "cap by registration order"
+// was wrong — cosine ranking targets relevance, not registration race.
+const rankActivateThreshold = 20
+
+// rankMinKeepFloor — hard minimum kept after ranking. Below this, we
+// don't trim at all (a small catalog above threshold still returns
+// everything). Chosen so the model always has comfortable breathing room
+// across the GStack-typical tool calls (search / read / write / list).
+const rankMinKeepFloor = 12
+
+// rankDropFraction — fraction of the catalog to drop when ranking is
+// active. 4 means "drop the bottom 25%, keep top 75%." Conservative on
+// purpose — the failure mode (model needed a tool we hid) is worse than
+// the cost it mitigates (prompt-token bloat).
+const rankDropFraction = 4
+
+// setOnChange installs the persistence hook. Call it after restore.
+func (m *toolMux) setOnChange(fn func(map[string]bool)) {
+	m.mu.Lock()
+	m.onChange = fn
+	m.mu.Unlock()
+}
+
+// enabledSnapshot captures every tool's current enabled state by name.
+func (m *toolMux) enabledSnapshot() map[string]bool {
+	out := make(map[string]bool, len(m.order))
+	for _, n := range m.order {
+		out[n] = m.byName[n].enabled
+	}
+	return out
+}
+
+// errNotConfigured marks a lazy plugin that can't activate simply because
+// the operator hasn't set it up yet — as opposed to a genuine failure (bad
+// creds, a missing binary, an unsupported auth). restore() swallows it: an
+// unconfigured optional plugin (e.g. gsuite before /configure) shouldn't
+// print a "could not restore" line at every launch. Activators wrap it with
+// %w so the interactive /enable path still shows a clean, actionable message
+// while restore can detect it via errors.Is. Real failures still surface.
+var errNotConfigured = errors.New("not configured")
+
+// restore applies a persisted name→enabled snapshot over the flag-derived
+// defaults, so /enable + /disable survive restarts. Only tools that still
+// exist are touched (stale names from removed plugins are ignored). An
+// enabled activator-backed tool (e.g. web) is activated here — best
+// effort: a failure (Chrome missing) is reported, not fatal. Returns
+// human-readable notes for the launch feed.
+func (m *toolMux) restore(saved map[string]bool) []string {
+	if len(saved) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(saved))
+	for n := range saved {
+		names = append(names, n)
+	}
+	sort.Strings(names) // deterministic order (activation side effects)
+	var notes []string
+	applied := 0
+	// Activation failures are per-PLUGIN, not per-tool: one shared activator
+	// backs every tool a plugin owns (e.g. gsuite's 8 tools), so a failure
+	// (unsupported/unconfigured auth) hits identically for each. maybeActivate
+	// only memoizes success, so without this we'd re-run the failing activator
+	// and emit the same note once per enabled tool — the nine-line "unknown
+	// auth" wall at launch. Attempt once, report once, skip the rest.
+	failedPlugins := map[string]bool{}
+	for _, n := range names {
+		m.mu.RLock()
+		e, ok := m.byName[n]
+		m.mu.RUnlock()
+		if !ok {
+			continue // tool no longer registered
+		}
+		// plugin label is immutable after registration — safe to read here.
+		if saved[n] && e.plugin != "" && failedPlugins[e.plugin] {
+			continue // this plugin already failed to activate this restore
+		}
+		if _, _, err := m.SetEnabled(n, saved[n]); err != nil {
+			if e.plugin != "" {
+				failedPlugins[e.plugin] = true // dedupe regardless of error kind
+			}
+			// A plugin the operator simply hasn't configured yet is an
+			// expected state, not a restore error — swallow it (no launch
+			// nag). Genuine failures still report, deduped per plugin.
+			if errors.Is(err, errNotConfigured) {
+				continue
+			}
+			if e.plugin != "" {
+				notes = append(notes, fmt.Sprintf("could not restore %s tools: %v", e.plugin, err))
+			} else {
+				notes = append(notes, fmt.Sprintf("could not restore %s: %v", n, err))
+			}
+			continue
+		}
+		applied++
+	}
+	if applied > 0 {
+		notes = append([]string{fmt.Sprintf("restored %d tool state(s)", applied)}, notes...)
+	}
+	return notes
+}
+
+func newToolMux() *toolMux {
+	return &toolMux{
+		byName:     map[string]*toolEntry{},
+		activators: map[string]func() (plugin, func(), error){},
+		activated:  map[string]bool{},
+	}
+}
+
+// addCleanup registers a teardown func (closes a browser/db handle), run
+// in reverse order by Close.
+func (m *toolMux) addCleanup(fn func()) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	m.cleanups = append(m.cleanups, fn)
+	m.mu.Unlock()
+}
+
+// Close tears down every plugin the mux built (launch-time and lazily
+// activated), in reverse order. Safe to call once at shutdown.
+func (m *toolMux) Close() {
+	m.mu.Lock()
+	cs := m.cleanups
+	m.cleanups = nil
+	m.mu.Unlock()
+	for i := len(cs) - 1; i >= 0; i-- {
+		cs[i]()
+	}
+}
+
+// registerActivator records how to build a config-free plugin on demand.
+// Only registered for stubbed plugins that need no operator input (web).
+func (m *toolMux) registerActivator(label string, fn func() (plugin, func(), error)) {
+	m.mu.Lock()
+	m.activators[label] = fn
+	m.mu.Unlock()
+}
+
+// add registers a plugin's tools under a label (used for group toggling
+// like `/disable os`). Tools start enabled. Invalidates the precomputed
+// tool embeddings (if any) so the next Search re-precomputes — necessary
+// because activators install plugins LATE (e.g. `/enable web` builds
+// Chrome long after construction), and a stale embedding cache would
+// silently rank the new tool at sim=0.
+func (m *toolMux) add(label string, p plugin) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	added := false
+	for _, sp := range p.Tools() {
+		if _, dup := m.byName[sp.Name]; dup {
+			continue
+		}
+		m.byName[sp.Name] = &toolEntry{spec: sp, owner: p, plugin: label, enabled: true}
+		m.order = append(m.order, sp.Name)
+		added = true
+	}
+	if added {
+		// Cache stale — next Search re-precomputes (best-effort).
+		m.toolEmbeddings = nil
+	}
+}
+
+// --- agent.ToolRegistry (enabled tools only) ---
+
+func (m *toolMux) Get(name string) (model.ToolSpec, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	e, ok := m.byName[name]
+	if !ok || !e.enabled {
+		return model.ToolSpec{}, false
+	}
+	return e.spec, true
+}
+
+// Search returns the set of enabled tools to surface in the prompt for
+// this turn. Two modes, chosen by catalog size + embedder availability:
+//
+//  1. UNRANKED (today's historical behavior, preserved as the floor).
+//     Returns every enabled tool. Used when:
+//     • registered tool count < rankActivateThreshold, OR
+//     • no embedder has been installed via SetEmbedder, OR
+//     • the query embedding is nil (caller had no embedder), OR
+//     • precomputing tool-description embeddings failed
+//     This branch carries the historical contract: the enabled set IS
+//     the curation (via /enable + /disable); we never silently drop a
+//     tool the operator opted into. The earlier "blind top-k by
+//     registration order" bug (which made `/enable web` silently fail
+//     when sql+wiki+os filled the cap first) lives in the test
+//     TestToolMux_SearchReturnsAllEnabledIgnoringCap as a drift guard.
+//
+//  2. RANKED (lazy, opt-in, scale path). When the catalog crosses
+//     rankActivateThreshold AND an embedder is installed, embed every
+//     tool description once (cached), then per-turn return the top
+//     max(rankMinKeepFloor, catalog × (1 - 1/rankDropFraction)) by
+//     cosine similarity to the query embedding. The signal here is
+//     RELEVANCE, not registration order — fixing the original bug at
+//     the level the fix actually wants.
+//
+// Best-effort throughout: any failure in mode 2 falls back to mode 1
+// silently. Callers cannot tell the difference (they always get a
+// non-error result with the enabled set as the floor).
+func (m *toolMux) Search(ctx context.Context, queryEmb []float32, _ int) ([]model.ToolSpec, error) {
+	m.mu.RLock()
+	catalogSize := len(m.order)
+	haveEmbedder := m.embedder != nil
+	haveCache := len(m.toolEmbeddings) > 0
+	m.mu.RUnlock()
+
+	// Fast path: ranking inactive → today's full enabled set.
+	if catalogSize < rankActivateThreshold || queryEmb == nil || !haveEmbedder {
+		return m.searchAll(), nil
+	}
+	if !haveCache {
+		// Slow path: precompute once for this embedder. Best-effort —
+		// failure leaves cache empty, we fall back to unranked below.
+		m.precomputeEmbeddings(ctx)
+		m.mu.RLock()
+		haveCache = len(m.toolEmbeddings) > 0
+		m.mu.RUnlock()
+		if !haveCache {
+			return m.searchAll(), nil
+		}
+	}
+	return m.searchRanked(queryEmb), nil
+}
+
+// searchAll is the unranked path — every enabled tool, deterministic
+// registration order. Lifted out so Search can return it cleanly from
+// any fallback branch.
+func (m *toolMux) searchAll() []model.ToolSpec {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.ToolSpec, 0, len(m.order))
+	for _, n := range m.order {
+		if e := m.byName[n]; e.enabled {
+			out = append(out, e.spec)
+		}
+	}
+	return out
+}
+
+// searchRanked is the cosine-ranked path. Sorts enabled tools by
+// similarity to queryEmb, then keeps the top max(rankMinKeepFloor,
+// catalog × 3/4). Stable tie-break (alphabetical by tool name) so two
+// adjacent queries with identical sims produce identical orderings —
+// transcripts stay reproducible.
+//
+// A tool with no precomputed embedding (rare — only if add() raced
+// precompute) is treated as sim=0.5 so it neither leads nor lags by
+// default. Next Search will re-precompute via the cache-invalidation in
+// add().
+func (m *toolMux) searchRanked(queryEmb []float32) []model.ToolSpec {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	type scored struct {
+		spec model.ToolSpec
+		sim  float64
+	}
+	rows := make([]scored, 0, len(m.order))
+	for _, n := range m.order {
+		e := m.byName[n]
+		if !e.enabled {
+			continue
+		}
+		emb := m.toolEmbeddings[n]
+		sim := 0.5 // neutral default for race-installed tools
+		if emb != nil {
+			sim = cosineSimF32(queryEmb, emb)
+		}
+		rows = append(rows, scored{spec: e.spec, sim: sim})
+	}
+	sort.SliceStable(rows, func(a, b int) bool {
+		if rows[a].sim != rows[b].sim {
+			return rows[a].sim > rows[b].sim
+		}
+		return rows[a].spec.Name < rows[b].spec.Name
+	})
+	keep := rankMinKeepFloor
+	if drop := len(rows) / rankDropFraction; len(rows)-drop > keep {
+		keep = len(rows) - drop
+	}
+	if keep > len(rows) {
+		keep = len(rows)
+	}
+	out := make([]model.ToolSpec, keep)
+	for i := 0; i < keep; i++ {
+		out[i] = rows[i].spec
+	}
+	return out
+}
+
+// SetEmbedder installs (or replaces) the embedder used for tool-catalog
+// ranking. Call once after construction. Re-call with a different
+// fingerprint (e.g. after `/model use ...` swaps the embedder) to
+// invalidate the precomputed embedding cache — required because two
+// different embedders may produce vectors with different dimensions, and
+// a cached vector from the OLD embedder would silently produce wrong
+// cosines (zero or garbage) against the new query embedding.
+//
+// The fingerprint convention is the embedder profile ID. Two embedders
+// with the same ID are assumed equivalent (Tenant's model.Profile.ID is
+// a stable string per provider+model pair).
+//
+// Passing a nil embedder disables ranking (Search returns to the full
+// enabled set).
+func (m *toolMux) SetEmbedder(fingerprint string, e model.Embedder) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fingerprint != m.embedderFingerprint || e == nil {
+		m.toolEmbeddings = nil
+	}
+	m.embedderFingerprint = fingerprint
+	m.embedder = e
+}
+
+// precomputeEmbeddings batch-embeds every enabled tool's description.
+// Lazy: called from the Search slow path the first time ranking is
+// active for a given embedder. Best-effort: an error or a partial result
+// leaves m.toolEmbeddings empty so Search degrades to the unranked path.
+// Lock discipline: snapshot the inputs under RLock, do the network call
+// without any lock held, then write the cache under Lock.
+func (m *toolMux) precomputeEmbeddings(ctx context.Context) {
+	m.mu.RLock()
+	emb := m.embedder
+	if emb == nil || len(m.order) == 0 {
+		m.mu.RUnlock()
+		return
+	}
+	names := make([]string, 0, len(m.order))
+	descs := make([]string, 0, len(m.order))
+	for _, n := range m.order {
+		e := m.byName[n]
+		// Embed description for ALL registered tools (enabled or not);
+		// /enable could flip them on later and we'd avoid a re-embed.
+		names = append(names, n)
+		descs = append(descs, e.spec.Description)
+	}
+	m.mu.RUnlock()
+
+	vecs, err := emb.Embed(ctx, descs)
+	if err != nil || len(vecs) != len(names) {
+		return // best-effort — empty cache → Search falls back to unranked
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Re-check: another goroutine may have precomputed or invalidated
+	// concurrently. We only install if the cache is still empty.
+	if m.toolEmbeddings != nil {
+		return
+	}
+	m.toolEmbeddings = make(map[string][]float32, len(names))
+	for i, n := range names {
+		m.toolEmbeddings[n] = vecs[i]
+	}
+}
+
+func (m *toolMux) All() []model.ToolSpec {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]model.ToolSpec, 0, len(m.order))
+	for _, n := range m.order {
+		if e := m.byName[n]; e.enabled {
+			out = append(out, e.spec)
+		}
+	}
+	return out
+}
+
+// --- agent.ToolDispatcher ---
+
+func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	m.mu.RLock()
+	e, ok := m.byName[call.Name]
+	m.mu.RUnlock()
+	if !ok {
+		return "unknown tool: " + call.Name, true, nil
+	}
+	if !e.enabled {
+		return "tool " + call.Name + " is disabled (/enable " + call.Name + ")", true, nil
+	}
+	return e.owner.Dispatch(ctx, call)
+}
+
+// --- tui.ToolControl (runtime enable/disable from slash commands) ---
+
+func (m *toolMux) ToolList() []tui.ToolInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]tui.ToolInfo, 0, len(m.order))
+	for _, n := range m.order {
+		e := m.byName[n]
+		out = append(out, tui.ToolInfo{Name: n, Plugin: e.plugin, Enabled: e.enabled, Gated: e.spec.Gated})
+	}
+	return out
+}
+
+func (m *toolMux) hasPlugin(label string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, e := range m.byName {
+		if e.plugin == label {
+			return true
+		}
+	}
+	return false
+}
+
+// stubPlugin advertises a plugin's real tool specs but isn't configured
+// — calling any of its tools returns a "needs setup" status (like a 401)
+// instead of failing to load. This is what makes the framework run even
+// when a plugin is unauthenticated, and lets every plugin appear in
+// /tools so you know it exists.
+type stubPlugin struct {
+	specs []model.ToolSpec
+	hint  string
+}
+
+func (s stubPlugin) Tools() []model.ToolSpec { return s.specs }
+func (s stubPlugin) Dispatch(context.Context, model.ToolCall) (string, bool, error) {
+	return "this plugin is not configured — " + s.hint, true, nil
+}
+
+// SetPluginEnabled is the explicit categorical toggle: forces a plugin-
+// label sweep and never matches a single tool name. Used by the TUI's
+// `/enable skill <label>` form to give the user a clean "no skill named
+// X" error when they typo, instead of falling through to the smart-
+// match path. Same activation + notify-onChange contract as SetEnabled.
+func (m *toolMux) SetPluginEnabled(label string, on bool) (int, string, error) {
+	if on {
+		if err := m.maybeActivate(label); err != nil {
+			return 0, "", err
+		}
+	}
+	m.mu.Lock()
+	n := 0
+	for _, e := range m.byName {
+		if e.plugin == label {
+			e.enabled = on
+			n++
+		}
+	}
+	var snap map[string]bool
+	if n > 0 && m.onChange != nil {
+		snap = m.enabledSnapshot()
+	}
+	m.mu.Unlock()
+	if snap != nil {
+		m.onChange(snap)
+	}
+	scope := ""
+	if n > 0 {
+		scope = "plugin"
+	}
+	return n, scope, nil
+}
+
+// Plugins returns the sorted unique set of plugin labels currently
+// registered on the mux (sql, wiki, web, gsuite, …). Powers the TUI's
+// "did you mean" hint when `/enable skill <typo>` finds no match.
+func (m *toolMux) Plugins() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	seen := map[string]bool{}
+	out := make([]string, 0, 8)
+	for _, e := range m.byName {
+		if e.plugin == "" || seen[e.plugin] {
+			continue
+		}
+		seen[e.plugin] = true
+		out = append(out, e.plugin)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SetEnabled toggles a single tool (exact name) or a whole plugin (by
+// label). Returns how many tools changed and the scope ("tool" or
+// "plugin"); (0, "", nil) if nothing matched. Enabling a plugin that's
+// only a stub lazily activates it (e.g. launches Chrome for web) — a
+// build failure is returned as the error and nothing is toggled.
+func (m *toolMux) SetEnabled(target string, on bool) (int, string, error) {
+	if on {
+		if err := m.maybeActivate(target); err != nil {
+			return 0, "", err
+		}
+	}
+	m.mu.Lock()
+	n, scope := 0, ""
+	if e, ok := m.byName[target]; ok {
+		e.enabled = on
+		n, scope = 1, "tool"
+	} else {
+		for _, e := range m.byName {
+			if e.plugin == target {
+				e.enabled = on
+				n++
+			}
+		}
+		if n > 0 {
+			scope = "plugin"
+		}
+	}
+	// Snapshot under the lock; notify after releasing it (the hook does
+	// file I/O — must not run while holding the mux lock).
+	var snap map[string]bool
+	if n > 0 && m.onChange != nil {
+		snap = m.enabledSnapshot()
+	}
+	m.mu.Unlock()
+	if snap != nil {
+		m.onChange(snap)
+	}
+	return n, scope, nil
+}
+
+// maybeActivate builds a stubbed plugin for real the first time it's
+// enabled, swapping the stub owner for the live dispatcher. target may be
+// a plugin label or one of its tool names. No-op if there's no activator
+// or it already ran. The build runs OUTSIDE the lock (spawning Chrome is
+// slow) — a concurrent winner is detected after and our build discarded.
+func (m *toolMux) maybeActivate(target string) error {
+	m.mu.Lock()
+	label := target
+	if e, ok := m.byName[target]; ok {
+		label = e.plugin
+	}
+	fn, ok := m.activators[label]
+	if !ok || m.activated[label] {
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	p, cleanup, err := fn()
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activated[label] { // someone else won the race; drop ours
+		if cleanup != nil {
+			go cleanup()
+		}
+		return nil
+	}
+	for _, n := range m.order {
+		if e := m.byName[n]; e.plugin == label {
+			e.owner = p
+		}
+	}
+	if cleanup != nil {
+		m.cleanups = append(m.cleanups, cleanup)
+	}
+	m.activated[label] = true
+	return nil
+}
+
+// pluginFlags collects the enable/config flags for every plugin. All
+// default OFF (memory-only chat). Dangerous actions (write/send/post)
+// default OFF even when a plugin is enabled — the operator opts in.
+type pluginFlags struct {
+	wikiDir string
+
+	sqlDB         string
+	sqlAllowWrite bool
+
+	web              bool
+	webShow          bool
+	webAllowInteract bool
+
+	gsuite          bool
+	gsuiteAuth      string
+	gsuiteSAJSON    string
+	gsuiteSubject   string
+	gsuiteAllowSend bool
+
+	x          bool
+	xBearer    string
+	xAllowPost bool
+
+	imsg          bool
+	imsgURL       string
+	imsgPass      string
+	imsgPrivate   bool
+	imsgAllowSend bool
+
+	discord          bool
+	discordToken     string
+	discordAllowSend bool
+
+	osEnable     bool
+	osAllowExec  bool
+	osAllowWrite bool
+}
+
+func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
+	p := &pluginFlags{}
+	fs.StringVar(&p.wikiDir, "wiki-dir", "", "enable the wiki plugin over this markdown dir")
+	fs.StringVar(&p.sqlDB, "sql-db", "", "enable the sql plugin over this SQLite file")
+	fs.BoolVar(&p.sqlAllowWrite, "sql-allow-write", false, "permit SQL INSERT/UPDATE/DELETE")
+	fs.BoolVar(&p.web, "web", false, "enable the web plugin (drives Chrome)")
+	fs.BoolVar(&p.webShow, "web-show", false, "run a visible Chrome window")
+	fs.BoolVar(&p.webAllowInteract, "web-allow-interact", false, "permit web click/fill/select")
+	fs.BoolVar(&p.gsuite, "gsuite", false, "enable Gmail + Calendar")
+	fs.StringVar(&p.gsuiteAuth, "gsuite-auth", "gcloud", "gsuite auth: gcloud|sa")
+	fs.StringVar(&p.gsuiteSAJSON, "gsuite-sa-json", "", "gsuite service-account JSON (auth=sa)")
+	fs.StringVar(&p.gsuiteSubject, "gsuite-subject", "", "gsuite impersonated user (auth=sa)")
+	fs.BoolVar(&p.gsuiteAllowSend, "gsuite-allow-send", false, "permit gmail_send/calendar_create")
+	fs.BoolVar(&p.x, "x", false, "enable X/Twitter")
+	fs.StringVar(&p.xBearer, "x-bearer", "", "X app bearer token (or $X_BEARER_TOKEN)")
+	fs.BoolVar(&p.xAllowPost, "x-allow-post", false, "permit x_post/x_delete")
+	fs.BoolVar(&p.imsg, "imessage", false, "enable iMessage via BlueBubbles")
+	fs.StringVar(&p.imsgURL, "bb-url", "", "BlueBubbles URL (or $BLUEBUBBLES_URL)")
+	fs.StringVar(&p.imsgPass, "bb-password", "", "BlueBubbles password (or $BLUEBUBBLES_PASSWORD)")
+	fs.BoolVar(&p.imsgPrivate, "bb-private-api", false, "use BlueBubbles private-api send method")
+	fs.BoolVar(&p.imsgAllowSend, "imessage-allow-send", false, "permit imessage_send/new_chat")
+	fs.BoolVar(&p.discord, "discord", false, "enable the Discord plugin (REST: read/send/react)")
+	fs.StringVar(&p.discordToken, "discord-bot-token", "", "Discord bot token (or $DISCORD_BOT_TOKEN)")
+	fs.BoolVar(&p.discordAllowSend, "discord-allow-send", false, "permit discord_send_message/discord_react (posts publicly as the bot)")
+	fs.BoolVar(&p.osEnable, "os", false, "enable the OS plugin (sysinfo, file read, dir list, processes, gated shell exec)")
+	fs.BoolVar(&p.osAllowExec, "os-allow-exec", false, "permit os_exec (run shell commands) — destructive ones still need confirm")
+	fs.BoolVar(&p.osAllowWrite, "os-allow-write", false, "permit os_write/os_edit/os_append/os_make_dir (file writes)")
+	return p
+}
+
+// buildToolMux constructs every enabled plugin and returns the merged
+// dispatcher + a cleanup func (closes browser/db handles). An enabled
+// plugin that fails to construct returns an error — better to tell the
+// operator their flag is wrong than to silently drop the tool.
+func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf *pluginFlags, confirm func(context.Context, string, string) bool, log *slog.Logger) (*toolMux, *wiki.Index, func(), error) {
+	mux := newToolMux()
+	// wikiIx is captured here so callers (cmdTUI / research auto-deposit)
+	// can force a reindex after writeWikiReport without having to chase
+	// the dispatcher's unexported `ix` field. nil when --wiki-dir is
+	// unset. TEN-44.
+	var wikiIx *wiki.Index
+	fail := func(err error) (*toolMux, *wiki.Index, func(), error) {
+		mux.Close()
+		return nil, nil, nil, err
+	}
+	// When an approval broker is wired (TUI), it is the single decision
+	// point: per-action gate flags drop to false so every dangerous action
+	// flows through Confirm, and the broker's category modes decide. The
+	// auth/scope-level flags (gsuite/x Config) are untouched — they pick
+	// OAuth scopes, a separate concern from per-action approval.
+	gateAllow := func(flag bool) bool {
+		if confirm != nil {
+			return false
+		}
+		return flag
+	}
+
+	if pf.sqlDB != "" {
+		db, err := sqlp.Open(sqlp.Config{Driver: "sqlite", DSN: pf.sqlDB})
+		if err != nil {
+			return fail(fmt.Errorf("sql plugin: %w", err))
+		}
+		mux.addCleanup(func() { _ = db.Close() })
+		mux.add("sql", sqlp.NewDispatcher(db, sqlp.Policy{AllowWrite: pf.sqlAllowWrite, Confirm: confirm}))
+	}
+
+	if pf.wikiDir != "" {
+		ix, err := buildWikiIndex(ctx, c, router, pf.wikiDir, log)
+		if err != nil {
+			return fail(err)
+		}
+		mux.add("wiki", wiki.NewDispatcher(ix))
+		wikiIx = ix // exported via the return tuple for TEN-44 auto-reindex
+	}
+
+	if pf.web {
+		sess, err := web.NewSession(webConfig(c.cfgDir, pf))
+		if err != nil {
+			return fail(fmt.Errorf("web plugin: %w (is Chrome installed?)", err))
+		}
+		mux.addCleanup(func() { _ = sess.Close() })
+		mux.add("web", web.NewDispatcher(sess, web.Policy{AllowInteract: gateAllow(pf.webAllowInteract), Confirm: confirm},
+			filepath.Join(c.dataDir, "screenshots")))
+	}
+
+	if pf.gsuite {
+		gcfg := gsuite.Config{Auth: pf.gsuiteAuth, Subject: pf.gsuiteSubject, AllowSend: pf.gsuiteAllowSend}
+		if pf.gsuiteAuth == "sa" {
+			if pf.gsuiteSAJSON == "" {
+				return fail(fmt.Errorf("gsuite plugin: --gsuite-auth sa needs --gsuite-sa-json"))
+			}
+			b, err := os.ReadFile(pf.gsuiteSAJSON)
+			if err != nil {
+				return fail(fmt.Errorf("gsuite plugin: read sa json: %w", err))
+			}
+			gcfg.SAJSON = b
+		}
+		svc, err := gsuite.Open(gcfg)
+		if err != nil {
+			return fail(fmt.Errorf("gsuite plugin: %w", err))
+		}
+		mux.add("gsuite", gsuite.NewDispatcher(svc, gsuite.Policy{AllowSend: gateAllow(pf.gsuiteAllowSend), Confirm: confirm}))
+	}
+
+	if pf.x {
+		bearer := pf.xBearer
+		if bearer == "" {
+			bearer = os.Getenv("X_BEARER_TOKEN")
+		}
+		svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: filepath.Join(c.dataDir, "x-token.json"), AllowPost: pf.xAllowPost})
+		if err != nil {
+			return fail(fmt.Errorf("x plugin: %w", err))
+		}
+		mux.add("x", xp.NewDispatcher(svc, xp.Policy{AllowPost: gateAllow(pf.xAllowPost), Confirm: confirm}))
+	}
+
+	if pf.imsg {
+		url, pass := pf.imsgURL, pf.imsgPass
+		if url == "" {
+			url = os.Getenv("BLUEBUBBLES_URL")
+		}
+		if pass == "" {
+			pass = os.Getenv("BLUEBUBBLES_PASSWORD")
+		}
+		svc, err := imessage.Open(imessage.Config{URL: url, Password: pass, PrivateAPI: pf.imsgPrivate})
+		if err != nil {
+			return fail(fmt.Errorf("imessage plugin: %w", err))
+		}
+		mux.add("imessage", imessage.NewDispatcher(svc, imessage.Policy{AllowSend: gateAllow(pf.imsgAllowSend), Confirm: confirm}))
+	}
+
+	if pf.discord {
+		token := pf.discordToken
+		if token == "" {
+			token = os.Getenv("DISCORD_BOT_TOKEN")
+		}
+		svc, err := discord.Open(discord.Config{Token: token})
+		if err != nil {
+			return fail(fmt.Errorf("discord plugin: %w", err))
+		}
+		mux.add("discord", discord.NewDispatcher(svc, discord.Policy{AllowSend: gateAllow(pf.discordAllowSend), Confirm: confirm}))
+	}
+
+	// OS needs no config, so always register it — it's visible in
+	// /tools and `/enable os` activates it instantly at runtime. Starts
+	// enabled only if --os was passed (else registered-but-disabled, so
+	// it costs nothing until you turn it on).
+	if svc, err := osys.Open(osys.Config{}); err == nil {
+		mux.add("os", osys.NewDispatcher(svc, osys.Policy{AllowExec: gateAllow(pf.osAllowExec), AllowWrite: gateAllow(pf.osAllowWrite), Confirm: confirm}))
+		if !pf.osEnable {
+			mux.SetEnabled("os", false)
+		}
+	}
+
+	// Register stubs for every plugin that wasn't configured, so the
+	// whole catalog shows in /tools. A stub advertises the real tool
+	// specs (Tools() is static — safe with a nil service) but returns a
+	// "needs setup" status if called. Registered disabled: visible,
+	// zero context until /enable.
+	catalog := []struct {
+		label string
+		specs []model.ToolSpec
+		hint  string
+		// activate, if set, builds the real plugin the first time it's
+		// enabled (config-free plugins only). Otherwise the stub just tells
+		// the operator to relaunch with the configuring flag.
+		activate func() (plugin, func(), error)
+	}{
+		{label: "sql", specs: sqlp.NewDispatcher(nil, sqlp.Policy{}).Tools(), hint: "relaunch with --sql-db <file>"},
+		{label: "wiki", specs: wiki.NewDispatcher(nil).Tools(), hint: "relaunch with --wiki-dir <dir>"},
+		// Web is intentionally OMITTED from the shared catalog: it's
+		// registered per-agent in team.go via addWebTool because each
+		// agent gets its own Chrome session (concurrent navigation can't
+		// share a tab). Leaving a stub here registered web tools TWICE
+		// in the composite view — once via local (the real one) and once
+		// via shared — which showed up as duplicate entries in /tools AND
+		// broke /enable persistence (composite.SetEnabled hits local
+		// first which had no setOnChange callback). Fix: don't register
+		// web here at all; persistence is wired on the local mux below.
+		{
+			label: "gsuite",
+			specs: gsuite.NewDispatcher(nil, gsuite.Policy{}).Tools(),
+			hint:  "run `/configure gsuite` and pick a sign-in method (or relaunch with --gsuite gcloud/SA flags)",
+			activate: func() (plugin, func(), error) {
+				// Runtime activator: when the operator has configured
+				// gsuite via /configure (saved in
+				// launchConfig.Skills["gsuite"]), build the real
+				// dispatcher on-demand. Supports all three auth modes:
+				// sa (the business primary), gcloud (dev), and oauth
+				// (advanced personal).
+				lc, err := loadLaunchConfig(c.cfgDir)
+				if err != nil {
+					return nil, nil, fmt.Errorf("gsuite plugin: load config: %w", err)
+				}
+				sk, ok := lc.Skills["gsuite"]
+				if !ok || sk.Settings == nil || sk.Settings["auth"] == "" {
+					return nil, nil, fmt.Errorf("gsuite plugin: %w yet — run `/configure gsuite`", errNotConfigured)
+				}
+				auth := sk.Settings["auth"]
+				gcfg := gsuite.Config{Auth: auth, AllowSend: pf.gsuiteAllowSend}
+				switch auth {
+				case "sa":
+					saPath := sk.Settings["sa_json"]
+					subject := sk.Settings["subject"]
+					if saPath == "" || subject == "" {
+						return nil, nil, fmt.Errorf("gsuite plugin: auth=sa needs sa_json + subject — re-run `/configure gsuite`")
+					}
+					b, err := os.ReadFile(saPath)
+					if err != nil {
+						return nil, nil, fmt.Errorf("gsuite plugin: read sa json: %w", err)
+					}
+					gcfg.SAJSON = b
+					gcfg.Subject = subject
+				case "gcloud":
+					// nothing extra — Open() shells out to gcloud.
+				case "oauth":
+					credsPath := sk.Settings["oauth_creds_json"]
+					if credsPath == "" {
+						return nil, nil, fmt.Errorf("gsuite plugin: auth=oauth needs oauth_creds_json — re-run `/configure gsuite`")
+					}
+					oauthCredsBytes, err := os.ReadFile(credsPath)
+					if err != nil {
+						return nil, nil, fmt.Errorf("gsuite plugin: read oauth creds: %w", err)
+					}
+					gcfg.OAuthCreds = oauthCredsBytes
+				default:
+					// Reached when config.json carries an auth this build
+					// doesn't implement (e.g. a stale "composio"). Make it
+					// actionable rather than just "unknown".
+					return nil, nil, fmt.Errorf("gsuite plugin: auth %q isn't supported in this build — run `/configure gsuite` and pick sa, gcloud, or oauth", auth)
+				}
+				svc, err := gsuite.Open(gcfg)
+				if err != nil {
+					return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
+				}
+				return gsuite.NewDispatcher(svc, gsuite.Policy{
+					AllowSend: gateAllow(pf.gsuiteAllowSend),
+					Confirm:   confirm,
+				}), nil, nil
+			},
+		},
+		{label: "x", specs: xp.NewDispatcher(nil, xp.Policy{}).Tools(), hint: "relaunch with --x (bearer / OAuth login)"},
+		{label: "imessage", specs: imessage.NewDispatcher(nil, imessage.Policy{}).Tools(), hint: "relaunch with --imessage (BlueBubbles URL+password)"},
+		{label: "discord", specs: discord.NewDispatcher(nil, discord.Policy{}).Tools(), hint: "relaunch with --discord --discord-bot-token=<token>"},
+	}
+	for _, e := range catalog {
+		if mux.hasPlugin(e.label) {
+			continue
+		}
+		mux.add(e.label, stubPlugin{specs: e.specs, hint: e.hint})
+		mux.SetEnabled(e.label, false)
+		if e.activate != nil {
+			mux.registerActivator(e.label, e.activate)
+		}
+	}
+
+	return mux, wikiIx, mux.Close, nil
+}
+
+// buildWikiIndex constructs the wiki index for the TUI. Unlike the
+// `tenant wiki` command (where a dead embedder is fatal — wiki is the
+// whole point there), here it must NOT crash the TUI: `wiki.New` is
+// offline-safe (validates the dir + loads the sidecar, no network), the
+// embedder fingerprint falls back to the profile's declared dim if the
+// probe fails, and the initial reindex is best-effort (wiki.Search
+// auto-reindexes lazily on first use, so it self-heals when the
+// embedder comes back). A search while the embedder is down surfaces a
+// clean tool error in the feed instead of a startup crash.
+func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string, log *slog.Logger) (*wiki.Index, error) {
+	emb, embProfile, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
+	if err != nil {
+		return nil, fmt.Errorf("wiki plugin: resolve embedder: %w", err)
+	}
+	dim := embProfile.EmbedDim // declared; preferred = actual (probed) when reachable
+	if probe, perr := emb.Embed(ctx, []string{"wiki embedder fingerprint probe"}); perr == nil && len(probe) == 1 && len(probe[0]) > 0 {
+		dim = len(probe[0])
+	} else {
+		log.Warn("wiki: embedder probe failed; using declared dim, reindex deferred to first search",
+			"declared_dim", dim, "err", perr)
+	}
+	embedID := embProfile.Model + "/" + strconv.Itoa(dim)
+	absVault, _ := filepath.Abs(dir)
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(absVault))
+	sidecar := filepath.Join(c.dataDir, "wiki", fmt.Sprintf("%x.json", h.Sum64()))
+	ix, err := wiki.New(dir, sidecar, embedID, emb)
+	if err != nil {
+		return nil, fmt.Errorf("wiki plugin: %w", err)
+	}
+	if _, _, rerr := ix.Reindex(ctx); rerr != nil {
+		// Embedder down at launch — don't crash; lazy reindex on first search.
+		log.Warn("wiki: initial reindex failed; will reindex on first search", "err", rerr)
+	}
+	return ix, nil
+}

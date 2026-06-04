@@ -1,0 +1,23 @@
+id: fitness-037-discord-read-channel
+category: fitness/single-tool/discord
+subset: full
+description: |
+  Operator asks for the latest messages in a Discord channel. Exercises
+  discord_read_channel with a channel id and checks the agent relays the
+  actual recent messages (author + content) rather than a placeholder.
+prompt: "Show me the most recent messages in Discord channel 123456789012345678."
+mode: live
+expected:
+  must_call:
+    - tool: discord_read_channel
+      args_contain: ["123456789012345678"]
+  must_not_call:
+    - discord_send_message
+    - discord_react
+  rubric:
+    criterion: "Response relays the actual recent messages (authors and/or content) from the channel, not a generic placeholder."
+    anchors:
+      1: "No real messages surfaced; vague or fabricated content"
+      3: "Mentions that messages exist but quotes little specific content"
+      5: "Reports specific recent messages with authors/content drawn from the tool result"
+  rubric_min_score: 3

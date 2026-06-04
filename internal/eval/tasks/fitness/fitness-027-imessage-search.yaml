@@ -1,0 +1,24 @@
+id: fitness-027-imessage-search
+category: fitness/single-tool/imessage
+subset: full
+description: |
+  Agent searches the operator's iMessage history for a keyword and
+  surfaces matching messages. Confirms imessage_search (text substring
+  match) and that the agent reports the hits with context rather than a
+  bare count.
+prompt: "Search my texts for anything mentioning the dentist appointment."
+mode: live
+expected:
+  must_call:
+    - tool: imessage_search
+      args_contain: ["dentist"]
+  must_not_call:
+    - imessage_send
+    - imessage_new_chat
+  rubric:
+    criterion: "Response surfaces specific messages matching the keyword (text plus sender or date), not just a yes/no or a count."
+    anchors:
+      1: "No matches shown; generic reply or a claim it cannot search"
+      3: "Confirms matches exist but quotes none or gives only a raw count"
+      5: "Lists matching messages with their text and sender/date so the operator can act on them"
+  rubric_min_score: 3

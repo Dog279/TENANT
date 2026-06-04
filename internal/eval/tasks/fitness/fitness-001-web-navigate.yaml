@@ -1,0 +1,24 @@
+id: fitness-001-web-navigate
+category: fitness/single-tool/web
+subset: fitness
+description: |
+  Agent should hit the live web (not hallucinate) when asked about a
+  current value. Single tool call, single response. The smallest
+  meaningful live-mode task — proves agent + judge wiring.
+prompt: "What's on the homepage at https://example.com?"
+mode: live
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["example.com"]
+  must_not_call:
+    - sql_exec
+    - os_exec
+  rubric:
+    criterion: "Response describes content from example.com (an actual placeholder page used in IETF examples)."
+    anchors:
+      1: "Hallucinated content unrelated to example.com"
+      3: "Mentions example.com but no actual content from the page"
+      5: "Quotes or summarizes actual page text (e.g. 'Example Domain', 'illustrative examples in documents')"
+    length_normalized: true
+  rubric_min_score: 3

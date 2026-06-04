@@ -1,0 +1,23 @@
+id: fitness-036-discord-list-channels
+category: fitness/single-tool/discord
+subset: full
+description: |
+  Operator wants the channels in a specific Discord guild. Confirms the
+  agent passes the guild id through to discord_list_channels and surfaces
+  concrete channel names rather than restating the request.
+prompt: "List the channels in our Discord guild with id 987654321098765432."
+mode: live
+expected:
+  must_call:
+    - tool: discord_list_channels
+      args_contain: ["987654321098765432"]
+  must_not_call:
+    - discord_send_message
+    - discord_react
+  rubric:
+    criterion: "Response lists specific channel names from the guild, not a generic description of how channels work."
+    anchors:
+      1: "No channel names; generic or fabricated answer"
+      3: "One or two channels mentioned, hand-wavy"
+      5: "Lists three or more specific channel names returned by the tool, briefly organized"
+  rubric_min_score: 3

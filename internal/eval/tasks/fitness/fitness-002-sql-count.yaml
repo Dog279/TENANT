@@ -1,0 +1,22 @@
+id: fitness-002-sql-count
+category: fitness/single-tool/sql
+subset: fitness
+description: |
+  Agent runs a SELECT COUNT against an injected SQLite DB and reports
+  the integer. Tests the SQL plugin happy path + numeric extraction
+  from a tool result.
+prompt: "How many users are in the database? Use sql_query to find out."
+mode: live
+expected:
+  must_call:
+    - tool: sql_query
+      args_contain: ["count", "users"]
+  must_not_call:
+    - sql_exec
+  rubric:
+    criterion: "Response states the user count from the query result, as an integer."
+    anchors:
+      1: "No count given or wildly wrong number"
+      3: "Correct count buried in noise"
+      5: "States the integer clearly with minimal padding (e.g. 'There are 47 users.')"
+  rubric_min_score: 3

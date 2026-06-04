@@ -1,0 +1,24 @@
+id: fitness-028-imessage-summarize-thread
+category: fitness/single-tool/imessage
+subset: full
+description: |
+  Agent reads a conversation and produces a concise summary of what was
+  discussed. Exercises imessage_read_chat (after locating the chat) and
+  the agent's ability to condense a thread into the key points rather
+  than echoing every line.
+prompt: "Catch me up on my group chat with the roommates — what have they been talking about lately?"
+mode: live
+expected:
+  must_call:
+    - tool: imessage_read_chat
+      args_contain: ["chat_guid"]
+  must_not_call:
+    - imessage_send
+    - imessage_new_chat
+  rubric:
+    criterion: "Response summarizes the actual topics and decisions in the thread, grounded in real messages, rather than a generic or empty answer."
+    anchors:
+      1: "No grounded summary; refuses, asks the operator to read it themselves, or invents content"
+      3: "Loose summary that captures one topic but misses others or stays vague on who said what"
+      5: "Concise, accurate recap of the main topics and any decisions, attributing key points to participants"
+  rubric_min_score: 3

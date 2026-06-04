@@ -1,0 +1,23 @@
+id: fitness-045-memory-recall-episode
+category: fitness/memory
+subset: full
+description: |
+  Recall a concrete detail from a prior conversational turn (not a
+  distilled fact). Exercises episodic retrieval surfacing a past
+  prompt+response as recent context. The injected_episodes below pre-seed
+  the ephemeral episodic store before the live run.
+prompt: "What port did we decide the staging server should run on? We settled it earlier."
+mode: live
+injected_episodes:
+  - prompt: "What port should the staging server listen on?"
+    response: "Let's run the staging server on port 8081 to avoid clashing with the local dev server on 8080."
+    tags: ["staging", "config", "ports"]
+    outcome: decided
+expected:
+  rubric:
+    criterion: "Response correctly recalls that the staging server was set to port 8081 from the earlier turn."
+    anchors:
+      1: "No recall, or states the wrong port (e.g. 8080)"
+      3: "Recalls that a port was chosen but is unsure of the exact number"
+      5: "States port 8081 directly as the agreed staging port"
+  rubric_min_score: 3

@@ -1,0 +1,24 @@
+id: fitness-023-calendar-today-schedule
+category: fitness/single-tool/gsuite
+subset: full
+description: |
+  Agent checks today's schedule and reports the next thing on it.
+  Exercises a narrow look-ahead read against the primary calendar and
+  the agent's ability to single out the next event rather than dumping
+  the whole list.
+prompt: "What's my next meeting today, and when does it start?"
+mode: live
+expected:
+  must_call:
+    - tool: calendar_list
+      args_contain: ["days"]
+  must_not_call:
+    - gmail_send
+    - calendar_create
+  rubric:
+    criterion: "Response names the next event today with its start time (or clearly states nothing is left on today's schedule), not a generic description."
+    anchors:
+      1: "No specific event or time; generic talk or a refusal to look"
+      3: "Names an event but omits the start time, or lists everything without picking the next one"
+      5: "Identifies the next event with its start time, or correctly reports the day is clear"
+  rubric_min_score: 3

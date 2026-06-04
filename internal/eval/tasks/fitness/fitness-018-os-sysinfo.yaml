@@ -1,0 +1,32 @@
+id: fitness-018-os-sysinfo
+category: fitness/single-tool/os
+subset: fitness
+description: |
+  Agent reports machine info in human prose, not raw key:value output.
+  Tests the "tool returned a struct, now synthesize" pattern: os_sysinfo
+  hands back OS/arch/hostname/CPU/user/home/cwd as a structured blob —
+  the agent's job is to surface the relevant fields conversationally.
+
+  Common failure: dumps the raw output back at the user, OR vaguely
+  says "I got the system info" without naming any of it. The user
+  asked four specific things; report four specific things.
+
+  Operator-portable: os_sysinfo works identically across Linux/macOS/
+  Windows. The four requested fields are guaranteed-present per the
+  tool spec.
+prompt: "What machine am I on? Give me the OS, architecture, CPU count, and current working directory in plain English."
+mode: live
+expected:
+  must_call:
+    - tool: os_sysinfo
+  must_not_call:
+    - os_exec
+    - os_write_file
+  rubric:
+    criterion: "Response names all four requested fields (OS, architecture, CPU count, cwd) in conversational prose a non-technical user could parse. Raw key:value dumps fail. Partial coverage of the four fields scores 3."
+    anchors:
+      1: "Dumped raw os_sysinfo output, OR only mentioned one of the four fields, OR said vaguely 'I got the info' without specifics"
+      3: "Named 2-3 of the four fields but in raw/key:value format"
+      5: "Names all four (OS, arch, CPU count, cwd) in conversational prose; a non-technical user would understand without parsing"
+    length_normalized: true
+  rubric_min_score: 3

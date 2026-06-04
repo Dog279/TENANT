@@ -1,0 +1,10 @@
+{{define "memnav"}}
+<nav class="memtabs">
+  <a href="/memory" class="{{if eq .Sub "overview"}}on{{end}}">Overview</a>
+  <a href="/memory/soul" class="{{if eq .Sub "soul"}}on{{end}}">Soul</a>
+  <a href="/memory/facts" class="{{if eq .Sub "facts"}}on{{end}}">Facts</a>
+  <a href="/memory/facts/removed" class="{{if eq .Sub "removed"}}on{{end}}">Recently removed</a>
+  <a href="/memory/facts/temporal" class="{{if eq .Sub "temporal"}}on{{end}}">Knowledge time</a>
+  <a href="/memory/provenance" class="{{if eq .Sub "provenance"}}on{{end}}">Compaction</a>
+</nav>
+{{end}}

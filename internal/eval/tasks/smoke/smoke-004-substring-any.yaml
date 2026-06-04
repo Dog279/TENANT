@@ -1,0 +1,19 @@
+id: smoke-004-substring-any
+category: smoke/scoring
+subset: smoke
+description: |
+  Confirms response_substring_any is OR-of-substrings: the response only
+  contains "tokyo" so the assertion ["paris", "tokyo", "london"] passes
+  via the second alternative.
+prompt: "What city has the most people?"
+mode: fixture
+fixture:
+  tool_calls:
+    - tool: web_navigate
+      args: '{"url":"https://en.wikipedia.org/wiki/List_of_largest_cities"}'
+  response: "Tokyo is the largest metropolitan area in the world."
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["wikipedia.org"]
+  response_substring_any: ["paris", "tokyo", "london"]

@@ -1,0 +1,21 @@
+id: smoke-002-multi-call
+category: smoke/multi-tool
+subset: smoke
+description: |
+  Two tool calls in sequence. Confirms the scorer matches each must_call
+  against ANY real call (not positional) — order-independent.
+prompt: "Navigate to example.com and read the body."
+mode: fixture
+fixture:
+  tool_calls:
+    - tool: web_navigate
+      args: '{"url":"https://example.com"}'
+    - tool: web_read
+      args: '{}'
+  response: "The page says: Example Domain."
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["https://example.com"]
+    - tool: web_read
+  response_substring_any: ["domain"]

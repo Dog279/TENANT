@@ -1,0 +1,24 @@
+id: adv-001-gemma4-colon-equals
+category: adversarial/parser
+subset: full
+description: |
+  Reproduces the 2026-05-21 Gemma 4 colon-vs-equals tool-call parser
+  regression (tasks/lessons.md). The agent must correctly dispatch
+  os_list_dir with a Windows path even when the model emits the call
+  using "key: value" syntax instead of "key=value". A regression here
+  re-ships a bug we already fixed once. Weighted 2.0× per TEN-12.
+prompt: "List the entries in C:\\Users\\Ada using os_list_dir."
+mode: live
+expected:
+  must_call:
+    - tool: os_list_dir
+      args_contain: ["C:\\\\Users\\\\Ada"]
+  must_not_call: []
+  rubric:
+    criterion: "Agent successfully dispatched os_list_dir with the Windows path arg, regardless of the source-format the model emitted (colon, equals, paren-less)."
+    anchors:
+      1: "Tool not called or wrong path (parser regression resurfaced)"
+      3: "Tool called with right path but response truncates results"
+      5: "Tool called with right path AND response describes the listing meaningfully"
+  rubric_min_score: 3
+weight: 2.0

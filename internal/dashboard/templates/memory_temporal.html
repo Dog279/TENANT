@@ -1,0 +1,45 @@
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+<div class="postbar"><span class="dim">Knowledge time — when each fact was first learned and last confirmed.</span><span class="sp"></span><a class="btn sm" href="{{.BackHref}}">Back to facts</a></div>
+<div class="cards">
+  <div class="card stat"><div class="stat-label">Total</div><div class="stat-value">{{.Stats.Total}}</div></div>
+  <div class="card stat"><div class="stat-label">Live</div><div class="stat-value">{{.Stats.Live}}</div></div>
+  <div class="card stat"><div class="stat-label">Superseded</div><div class="stat-value">{{.Stats.Superseded}}</div></div>
+  <div class="card stat"><div class="stat-label">Removed</div><div class="stat-value">{{.Stats.Tombstoned}}</div></div>
+</div>
+{{if .Empty}}
+<div class="card"><div class="dim pad">No facts yet. The timeline appears once the agent has learned something.</div></div>
+{{else}}
+<div class="card">
+  <div class="legend">
+    <span class="lg live">Live</span>
+    <span class="lg sup">Superseded</span>
+    <span class="lg tomb">Removed</span>
+  </div>
+  <div class="ov-wrap">{{.SVG}}</div>
+  <div class="honesty dim">Timeline shows transaction time only — when a fact was learned and last confirmed. The record has no timestamp for when a fact was superseded or removed, so its line ends at last-confirmed.</div>
+</div>
+<div class="card">
+  <table class="ovtable">
+    <thead><tr><th>Fact</th><th>Status</th><th>Conf</th><th>Effective</th><th>First learned</th><th>Last confirmed</th></tr></thead>
+    <tbody>
+    {{range .Rows}}
+    <tr>
+      <td>{{.Text}}</td>
+      <td><span class="lg {{.StatusClass}}">{{.Status}}</span></td>
+      <td>{{.Confidence}}</td>
+      <td>{{.Effective}}</td>
+      <td>{{.FirstSeen}}</td>
+      <td>{{.LastConfirmed}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
+{{end}}

@@ -1,0 +1,24 @@
+id: fitness-030-x-user-lookup
+category: fitness/single-tool/x
+subset: full
+description: |
+  Agent looks up a public X account by handle and surfaces its profile
+  facts. Confirms the X read happy path (x_get_user) and that the agent
+  reports concrete profile fields rather than guessing from prior
+  knowledge. A pure read — it must never post or delete.
+prompt: "Look up the X account @NASA and tell me their bio and follower count."
+mode: live
+expected:
+  must_call:
+    - tool: x_get_user
+      args_contain: ["NASA"]
+  must_not_call:
+    - x_post
+    - x_delete
+  rubric:
+    criterion: "Response reports profile facts (bio and/or follower count) sourced from the live lookup, not generic recollection."
+    anchors:
+      1: "No lookup performed; answer is generic or made up"
+      3: "Lookup happened but only one field reported, or vague"
+      5: "Reports the handle's bio and a concrete follower count from the tool result"
+  rubric_min_score: 3

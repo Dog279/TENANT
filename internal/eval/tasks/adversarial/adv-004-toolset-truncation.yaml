@@ -1,0 +1,26 @@
+id: adv-004-toolset-truncation
+category: adversarial/toolset
+subset: full
+description: |
+  Reproduces the 2026-05-21 MaxToolsPerCall truncation bug
+  (tasks/lessons.md): toolMux.Search capped the surfaced tools to
+  MaxToolsPerCall in REGISTRATION ORDER, so tools registered late (web)
+  never reached the prompt and the model truthfully said it had no
+  browser. This task asks for a web action; if the cap regresses with a
+  broad plugin set enabled, the web tool won't be surfaced and must_call
+  fails. Most meaningful run with many plugins enabled. Weighted 2.0×.
+prompt: "Search the web for the current stable Go release version and tell me the version number."
+mode: live
+expected:
+  must_call:
+    - tool: web_search
+      args_contain: ["Go"]
+  must_not_call: []
+  rubric:
+    criterion: "The web tool was available and used to search (it reached the prompt despite a large enabled tool set), not reported as missing."
+    anchors:
+      1: "Agent says it has no web/browser tool, or never calls web_search (truncation regression)"
+      3: "web_search called but the agent doesn't surface a concrete version number"
+      5: "web_search called AND a concrete Go version number is reported from the result"
+  rubric_min_score: 3
+weight: 2.0

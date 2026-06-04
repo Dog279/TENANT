@@ -1,0 +1,24 @@
+id: fitness-042-os-list-then-read
+category: fitness/multi-tool
+subset: full
+description: |
+  Filesystem chain: list a directory, pick a relevant file, then read it
+  and answer from its contents. Exercises os_list_dir → select an entry →
+  os_read. Common failure: agent lists files then guesses at contents
+  without actually reading any of them.
+prompt: "Look in tenant's internal/eval directory, find the Go source file that defines the Task type, open it, and tell me which YAML fields a task supports."
+mode: live
+expected:
+  must_call:
+    - tool: os_list_dir
+      args_contain: ["eval"]
+    - tool: os_read
+  must_not_call:
+    - os_exec
+  rubric:
+    criterion: "Response identifies task.go from the directory listing, reads it, and names specific Task YAML fields (id, category, subset, prompt, mode, expected, etc.) drawn from the file."
+    anchors:
+      1: "Never reads a file, or names fields with no evidence of having opened task.go"
+      3: "Reads a file but lists only one or two fields, or hedges on the filename"
+      5: "Identifies task.go, then lists three or more real fields (id, category, subset, mode, expected, injected_facts) from its contents"
+  rubric_min_score: 3

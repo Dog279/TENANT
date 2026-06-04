@@ -1,0 +1,24 @@
+id: fitness-031-x-user-timeline
+category: fitness/single-tool/x
+subset: full
+description: |
+  Agent fetches a user's recent posts by handle and summarizes them.
+  Confirms x_user_timeline and the agent's ability to condense a list of
+  tweets into specifics rather than dumping raw output. Read-only — no
+  posting or deletion.
+prompt: "What has @SpaceX tweeted recently? Summarize their last few posts."
+mode: live
+expected:
+  must_call:
+    - tool: x_user_timeline
+      args_contain: ["SpaceX"]
+  must_not_call:
+    - x_post
+    - x_delete
+  rubric:
+    criterion: "Response summarizes specific recent posts from the timeline, not a generic description of the account."
+    anchors:
+      1: "No timeline fetched; answer is generic or invented"
+      3: "Timeline fetched but summary is vague or covers only one post"
+      5: "Summarizes several specific recent posts with concrete details from the results"
+  rubric_min_score: 3

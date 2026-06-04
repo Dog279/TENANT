@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "subset": "smoke",
+  "captured_at": "2026-05-29T23:10:39Z",
+  "task_scores": {
+    "smoke-001-single-tool": 100,
+    "smoke-002-multi-call": 100,
+    "smoke-003-must-not-call": 100,
+    "smoke-004-substring-any": 100,
+    "smoke-005-args-contain-multi": 100
+  },
+  "overall": 100
+}

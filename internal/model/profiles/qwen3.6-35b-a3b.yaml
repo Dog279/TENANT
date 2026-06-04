@@ -1,0 +1,22 @@
+id: qwen3.6-35b-a3b
+role: executor
+backend: vllm
+endpoint: http://localhost:8001
+model: Qwen/Qwen3.6-35B-A3B-Instruct
+context_length: 128000
+operational_context_budget: 102400
+reserve_soul: 1536                  # tighter than 70B — 30B class attention dilutes past ~3K of identity+system
+reserve_system_prompt: 2048
+reserve_tool_defs: 4096
+reserve_response: 16000             # executor role does short turns, doesn't need 80K response headroom
+tool_format: qwen
+supports_grammar: true
+max_tools_per_call: 3
+max_parallel_tools: 1
+plan_loop_ceiling: 5
+capabilities:
+  reasoning_depth: medium
+  code_quality: medium
+  tool_call_reliability: high
+  structured_output_fidelity: high
+  latency_tier: fast

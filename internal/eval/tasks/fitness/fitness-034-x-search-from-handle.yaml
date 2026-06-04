@@ -1,0 +1,24 @@
+id: fitness-034-x-search-from-handle
+category: fitness/single-tool/x
+subset: full
+description: |
+  Agent uses X search query syntax to find recent posts from a specific
+  account, excluding retweets. Confirms x_search with a `from:` operator
+  and that the agent answers from the returned posts. Pure read — must
+  not post or delete.
+prompt: "Find recent original posts (no retweets) from @nasa on X about science missions."
+mode: live
+expected:
+  must_call:
+    - tool: x_search
+      args_contain: ["from:"]
+  must_not_call:
+    - x_post
+    - x_delete
+  rubric:
+    criterion: "Response is grounded in recent posts from the account returned by the search, citing specific content."
+    anchors:
+      1: "No search performed; answer is generic or fabricated"
+      3: "Search performed but answer is vague or cites a single post"
+      5: "Summarizes several specific recent posts from the account with concrete details"
+  rubric_min_score: 3

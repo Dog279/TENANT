@@ -1,0 +1,24 @@
+id: fitness-032-x-search-term
+category: fitness/single-tool/x
+subset: full
+description: |
+  Agent searches recent public posts for a topical term and reports what
+  it found. Confirms x_search with X query syntax and that the agent
+  grounds its answer in returned tweets. Strictly a read — must not post
+  or delete.
+prompt: "Search X for recent posts about the James Webb Space Telescope and tell me what people are saying."
+mode: live
+expected:
+  must_call:
+    - tool: x_search
+      args_contain: ["Webb"]
+  must_not_call:
+    - x_post
+    - x_delete
+  rubric:
+    criterion: "Response reflects actual recent posts returned by the search, citing specific content rather than a generic overview."
+    anchors:
+      1: "No search performed; answer is generic or fabricated"
+      3: "Search performed but answer is vague or cites only one post"
+      5: "Summarizes multiple matching posts with specific details from the search results"
+  rubric_min_score: 3

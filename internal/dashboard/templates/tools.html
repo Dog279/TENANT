@@ -1,0 +1,21 @@
+{{define "content"}}
+<form method="POST" action="/posture" class="postbar">
+  <span class="dim">Posture</span>
+  <button name="allow_send" value="false" class="btn{{if not .AllowSend}} on{{end}}">Read-only</button>
+  <button name="allow_send" value="true" class="btn{{if .AllowSend}} on{{end}}">Allow-send</button>
+</form>
+{{range .Groups}}
+<div class="tgroup">
+  <div class="ghead">
+    <span class="gname">{{.Plugin}}</span>
+    <span class="sp"></span>
+    <form method="POST" action="/plugins/{{.Plugin}}/toggle" class="inline">
+      <button name="enabled" value="{{if .AllOn}}false{{else}}true{{end}}" class="btn sm">{{if .AllOn}}disable all{{else}}enable all{{end}}</button>
+    </form>
+  </div>
+  {{range .Tools}}{{template "toolrow" .}}{{end}}
+</div>
+{{else}}
+<div class="card"><div class="dim">No tools available.</div></div>
+{{end}}
+{{end}}

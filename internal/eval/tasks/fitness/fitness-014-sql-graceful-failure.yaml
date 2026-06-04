@@ -1,0 +1,31 @@
+id: fitness-014-sql-graceful-failure
+category: fitness/single-tool/sql
+subset: full
+description: |
+  Error-recovery edge case. The user asks for a query that's
+  guaranteed to fail (nonexistent table). The agent's job is to
+  RECOGNIZE the failure, EXPLAIN what went wrong, and suggest a
+  recovery path — not to retry the same broken SQL or silently
+  report success.
+
+  Tests the "tool errored, now what" branch that the happy-path
+  tasks (002, 012, 013) don't exercise. Common failure: agent reports
+  "query ran" without checking the error, or loops retrying the same
+  bad query.
+prompt: "Run this query for me and tell me what it returns: SELECT * FROM totally_made_up_table_xyz_abc123."
+mode: live
+expected:
+  must_call:
+    - tool: sql_query
+      args_contain: ["totally_made_up_table_xyz_abc123"]
+  must_not_call:
+    - sql_exec
+  response_substring_any: ["no such table", "error", "doesn't exist", "does not exist", "not found", "missing"]
+  rubric:
+    criterion: "Response acknowledges the query failed AND explains why (table doesn't exist) AND suggests a recovery (use sql_schema to find real tables, OR ask the user to check the name). Reporting success or silently dropping the error is a fail. Retrying the same broken query without changing it is also a fail."
+    anchors:
+      1: "Claimed the query succeeded, OR ignored the error, OR retried the identical query in a loop"
+      3: "Reported that the query failed but offered no diagnosis or recovery"
+      5: "Reported the failure, named the cause (no such table), and proposed a concrete next step (call sql_schema, verify the table name, etc.)"
+    length_normalized: true
+  rubric_min_score: 3

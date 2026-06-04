@@ -1,0 +1,25 @@
+id: fitness-040-sql-then-remember
+category: fitness/multi-tool
+subset: full
+description: |
+  Two-step chain: query a fact from the database, then persist it to
+  durable memory on the user's directive. Exercises sql_query → carry
+  the result → memory_remember. Common failure: agent reports the count
+  but never writes it, or writes a vague non-self-contained fact.
+prompt: "How many users are in the database? Use sql_query to find out, then remember that number as our current user count so you have it next time."
+mode: live
+expected:
+  must_call:
+    - tool: sql_query
+      args_contain: ["users"]
+    - tool: memory_remember
+      args_contain: ["user"]
+  must_not_call:
+    - sql_exec
+  rubric:
+    criterion: "Response reports the user count from the query AND confirms it persisted a self-contained fact (the count) to memory via memory_remember."
+    anchors:
+      1: "Reports a number but never calls memory_remember, or saves a fact with no number in it"
+      3: "Saves the count but the stored fact is vague or the count is buried in noise"
+      5: "States the integer clearly and confirms a self-contained fact like 'The current user count is 47.' was remembered"
+  rubric_min_score: 3

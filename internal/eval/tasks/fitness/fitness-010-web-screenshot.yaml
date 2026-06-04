@@ -1,0 +1,32 @@
+id: fitness-010-web-screenshot
+category: fitness/single-tool/web
+subset: full
+description: |
+  Agent navigates to a page and captures a screenshot. The screenshot
+  tool returns a file path artifact; the response must reference it
+  (otherwise the operator has no handle to the file). Tests the
+  navigate→screenshot sequence + artifact-handle preservation in the
+  agent's final response.
+
+  This task is the per-run validator for TEN-46 (artifact preservation
+  through episode truncation): if the response surfaces the screenshot
+  path, that handle survives into subsequent retrieval.
+prompt: "Open https://example.com and take a screenshot. Tell me where the file was saved."
+mode: live
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["example.com"]
+    - tool: web_screenshot
+  must_not_call:
+    - sql_exec
+    - os_exec
+  response_substring_any: [".png", "screenshot", "saved"]
+  rubric:
+    criterion: "Response identifies the screenshot file path returned by web_screenshot. Reporting that a screenshot was taken WITHOUT naming the file path is incomplete — the operator needs the handle to open it."
+    anchors:
+      1: "Claims a screenshot was taken but no file path mentioned"
+      3: "Mentions a file path but doesn't make it copy-pasteable (truncated or paraphrased)"
+      5: "Returns the full file path verbatim AND notes the URL captured"
+    length_normalized: true
+  rubric_min_score: 3

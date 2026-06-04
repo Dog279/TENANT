@@ -1,0 +1,31 @@
+id: fitness-009-web-click
+category: fitness/single-tool/web
+subset: full
+description: |
+  Two-step interactive flow: navigate to a page, then click a specific
+  element, then describe what changed. Exercises the agent's ability to
+  sequence navigate→click→read AND to recognize when an interaction
+  produced new content rather than just stopping after the click call.
+
+  example.com is intentionally chosen as a stable target — its
+  "More information..." link points to iana.org/help/example-domains.
+prompt: "Go to https://example.com and click the 'More information' link. Tell me what page that took us to."
+mode: live
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["example.com"]
+    - tool: web_click
+      args_contain: ["more information"]
+  must_not_call:
+    - sql_exec
+    - os_exec
+  response_substring_any: ["iana", "example domains", "reserved"]
+  rubric:
+    criterion: "Response describes the page that came AFTER the click — should mention IANA (the destination is iana.org/help/example-domains) and the reserved-domains policy. Stopping after the click without reporting the destination is a fail."
+    anchors:
+      1: "Reports the click happened but doesn't describe the resulting page"
+      3: "Mentions IANA or the destination URL but no content from the page"
+      5: "Names IANA AND summarizes the reserved-domains content from the resulting page"
+    length_normalized: true
+  rubric_min_score: 3

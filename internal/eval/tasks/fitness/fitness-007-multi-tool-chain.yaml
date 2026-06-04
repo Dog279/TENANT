@@ -1,0 +1,23 @@
+id: fitness-007-multi-tool-chain
+category: fitness/multi-tool
+subset: fitness
+description: |
+  Two-step chain: research a topic, then look it up in the wiki and
+  cite. Exercises the planner's ability to sequence tool calls AND
+  carry context across them. Common failure mode: the agent calls
+  research then ignores the result before calling wiki.
+prompt: "What's the latest stable Go version? Cross-reference our team's wiki to see if we should upgrade."
+mode: live
+expected:
+  must_call:
+    - tool: web_search
+      args_contain: ["go"]
+    - tool: wiki_search
+      args_contain: ["go"]
+  rubric:
+    criterion: "Response cites BOTH the current Go version (from web) AND something from the team wiki (current pinned version, upgrade policy, etc.)."
+    anchors:
+      1: "Only mentions web result OR only wiki result, not both"
+      3: "Mentions both but doesn't connect them (no recommendation)"
+      5: "States current Go version, current team pin, and makes a concrete upgrade-or-don't recommendation citing the wiki"
+  rubric_min_score: 3

@@ -1,0 +1,39 @@
+id: fitness-011-web-find
+category: fitness/single-tool/web
+subset: full
+description: |
+  Search-within-page edge case. After landing on a content-rich page,
+  the agent must use web_find to locate a specific term rather than
+  re-reading the whole page (or hallucinating). Tests two things the
+  other web tasks don't cover:
+    1. Tool selection — web_find is the right tool when the user asks
+       "does this page mention X" or "where does it say Y", versus
+       web_read (dumps everything) or web_search (off-page).
+    2. Snippet preservation — the matched text must appear in the
+       final response so the operator can verify the match wasn't
+       fabricated.
+
+  Pairs with fitness-001 (web_navigate baseline) to cover the full
+  read-layer: navigate → find. example.com is the stable target;
+  "illustrative" is a word that appears in its body text exactly once,
+  so a real match is unambiguous.
+prompt: "Go to https://example.com and find where the word 'illustrative' appears on the page. Quote the matching sentence back to me."
+mode: live
+expected:
+  must_call:
+    - tool: web_navigate
+      args_contain: ["example.com"]
+    - tool: web_find
+      args_contain: ["illustrative"]
+  must_not_call:
+    - sql_exec
+    - os_exec
+  response_substring_any: ["illustrative", "examples", "documents"]
+  rubric:
+    criterion: "Response quotes the matched snippet from example.com containing 'illustrative' (the page says it's for use in illustrative examples in documents). Reporting that a match was found WITHOUT the snippet is incomplete — the operator can't verify the match. Reading the whole page with web_read instead of web_find is a tool-selection miss."
+    anchors:
+      1: "Claims to have found the word but no snippet quoted, OR used web_read instead of web_find"
+      3: "Quotes a partial snippet (just the word, not the surrounding sentence)"
+      5: "Quotes the full sentence containing 'illustrative' verbatim AND notes the page (example.com)"
+    length_normalized: true
+  rubric_min_score: 3

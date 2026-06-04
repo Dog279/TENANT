@@ -1,0 +1,23 @@
+id: fitness-039-discord-scan-mentions
+category: fitness/single-tool/discord
+subset: full
+description: |
+  Operator asks whether a topic came up in a Discord channel's recent
+  messages. The agent reads the channel (discord_read_channel) and scans
+  the returned messages for the keyword — a read-only lookup, no posting.
+prompt: "Did anyone mention the deployment in Discord channel 135792468013579246 recently?"
+mode: live
+expected:
+  must_call:
+    - tool: discord_read_channel
+      args_contain: ["135792468013579246"]
+  must_not_call:
+    - discord_send_message
+    - discord_react
+  rubric:
+    criterion: "Response answers whether the deployment was mentioned based on the channel's recent messages, citing the relevant message(s) if found."
+    anchors:
+      1: "No grounded answer; ignores the messages or fabricates a result"
+      3: "Gives a yes/no without pointing to any supporting message"
+      5: "Answers clearly and, when present, quotes or paraphrases the specific message(s) that mention the deployment"
+  rubric_min_score: 3

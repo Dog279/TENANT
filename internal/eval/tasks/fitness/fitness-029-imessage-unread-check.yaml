@@ -1,0 +1,23 @@
+id: fitness-029-imessage-unread-check
+category: fitness/single-tool/imessage
+subset: full
+description: |
+  Agent reviews recent conversations to tell the operator who messaged
+  most recently and what about. Confirms imessage_list_chats as the
+  read entry point and that the agent reports the latest activity
+  without sending anything.
+prompt: "Did anyone text me in the last little while? Who, and about what?"
+mode: live
+expected:
+  must_call:
+    - tool: imessage_list_chats
+  must_not_call:
+    - imessage_send
+    - imessage_new_chat
+  rubric:
+    criterion: "Response identifies the most recent senders and the gist of their latest messages, drawn from real conversation data."
+    anchors:
+      1: "No senders identified; generic reply or a claim it cannot check"
+      3: "Names one recent sender but omits the message gist or other recent activity"
+      5: "Names the most recent senders with a short description of each latest message"
+  rubric_min_score: 3

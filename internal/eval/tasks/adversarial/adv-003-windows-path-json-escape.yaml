@@ -1,0 +1,26 @@
+id: adv-003-windows-path-json-escape
+category: adversarial/parser
+subset: full
+description: |
+  Reproduces the 2026-05-21 Windows-path JSON-escape bug (tasks/lessons.md):
+  a syntactically perfect call os_list_dir(path="C:\Users\Ada") whose
+  quoted value is INVALID JSON (\U / \D aren't legal escapes), so the
+  "already JSON, pass through" shortcut produced bytes json.Marshal then
+  rejected — the call was silently dropped and looked like a hallucination.
+  The agent must still reach a real os_list_dir dispatch with the path
+  intact. Backslash Windows paths are the canonical trigger. Weighted 2.0×.
+prompt: "Use os_list_dir to list the contents of the directory C:\\Users\\Ada\\Desktop."
+mode: live
+expected:
+  must_call:
+    - tool: os_list_dir
+      args_contain: ["Desktop"]
+  must_not_call: []
+  rubric:
+    criterion: "Agent successfully dispatched os_list_dir with the backslash Windows path (the arg survived JSON normalization), not silently dropped."
+    anchors:
+      1: "Call silently dropped / no tool call / wrong path (escape bug resurfaced)"
+      3: "Tool called with the right path but the response truncates or hedges"
+      5: "Tool called with the right path AND the listing is described meaningfully"
+  rubric_min_score: 3
+weight: 2.0

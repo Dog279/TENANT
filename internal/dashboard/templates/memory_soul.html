@@ -1,0 +1,71 @@
+{{define "soulsection"}}
+<div class="card">
+  <div class="ghead2"><span class="gname2">{{.Title}}</span><span class="sp"></span>
+    {{if not .Adding}}<a class="btn sm" href="{{.AddHref}}">Add</a>{{end}}
+  </div>
+  {{if .Adding}}
+  <form class="soul-edit" method="POST" action="{{.EditAction}}">
+    <input type="hidden" name="section" value="{{.Section}}">
+    <input type="hidden" name="action" value="add">
+    <textarea name="text" class="box" rows="2" placeholder="{{.AddPlaceholder}}"></textarea>
+    <div class="soul-edit-actions">
+      <button type="submit" class="btn on sm">Save</button>
+      <a class="btn sm" href="{{.CancelAddHref}}">Cancel</a>
+    </div>
+  </form>
+  {{end}}
+  {{range .Items}}
+    {{if .Editing}}
+    <form class="soul-edit" method="POST" action="{{$.EditAction}}">
+      <input type="hidden" name="section" value="{{$.Section}}">
+      <input type="hidden" name="action" value="edit">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <textarea name="text" class="box" rows="2">{{.Text}}</textarea>
+      <div class="soul-edit-actions">
+        <button type="submit" class="btn on sm">Save</button>
+        <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
+      </div>
+    </form>
+    {{else if .Removing}}
+    <div class="soul-row confirm">
+      <div class="soul-text">{{.Text}}</div>
+      <div class="confirm-msg dim">Remove this item? The agent will no longer use it. This can't be undone here.</div>
+      <div class="soul-edit-actions">
+        <form class="inline" method="POST" action="{{$.EditAction}}">
+          <input type="hidden" name="section" value="{{$.Section}}">
+          <input type="hidden" name="action" value="remove">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit" class="btn danger sm">Remove</button>
+        </form>
+        <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
+      </div>
+    </div>
+    {{else}}
+    <div class="soul-row">
+      <div class="soul-text">{{.Text}}</div>
+      <span class="sp"></span>
+      <a class="linkbtn" href="{{.EditHref}}">Edit</a>
+      <a class="linkbtn" href="{{.RemoveHref}}">Remove</a>
+    </div>
+    {{end}}
+  {{else}}
+  <div class="dim pad">{{.EmptyMsg}}</div>
+  {{end}}
+</div>
+{{end}}
+
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+<div class="card">
+  <div class="card-head">Persona</div>
+  {{if .HasPersona}}<div class="soul-persona">{{.Persona}}</div>{{else}}<div class="dim">No persona set.</div>{{end}}
+  <div class="dim mem-sub">The persona is read-only here — it's shaped by the soul file, not edited per-line.</div>
+</div>
+{{template "soulsection" .UserFacts}}
+{{template "soulsection" .Instructions}}
+{{end}}
+{{end}}

@@ -1,0 +1,24 @@
+id: fitness-041-web-then-wiki
+category: fitness/multi-tool
+subset: full
+description: |
+  Cross-source chain: research a topic on the web, then cross-reference
+  the team wiki and reconcile the two. Exercises web_search → carry
+  context → wiki_read. Common failure: agent answers from the web hit
+  and never opens the wiki, or reads the wiki but ignores the web result.
+prompt: "What is the current recommended Python version for new projects? Look it up on the web, then read our team's wiki to see which version we've standardized on, and tell me whether they match."
+mode: live
+expected:
+  must_call:
+    - tool: web_search
+      args_contain: ["python"]
+    - tool: wiki_read
+  must_not_call:
+    - os_exec
+  rubric:
+    criterion: "Response cites BOTH a current Python version from the web AND the team's standardized version from a wiki note, then states whether they match."
+    anchors:
+      1: "Only the web result OR only the wiki note, not both"
+      3: "Both sources cited but no comparison or match/mismatch verdict"
+      5: "States the current web-recommended version, the team's wiki-pinned version, and a clear match-or-mismatch conclusion citing the note"
+  rubric_min_score: 3

@@ -1,0 +1,31 @@
+id: fitness-013-sql-complex-query
+category: fitness/single-tool/sql
+subset: full
+description: |
+  Multi-step SQL planning: discover the schema, then query against it,
+  then aggregate the results into a single answer. Tests the agent's
+  ability to sequence sql_schema → sql_query (×N) → synthesis without
+  losing the thread.
+
+  Schema-agnostic: the task is "find the biggest table" rather than
+  "join X and Y" — works against any DB while still exercising the
+  same plan-and-aggregate skill. Common failure: agent calls
+  sql_schema, lists tables, then stops without counting any of them.
+prompt: "Which table in this database has the most rows? Use sql_schema to find the tables, then count the rows in each, and tell me which one wins along with its row count."
+mode: live
+expected:
+  must_call:
+    - tool: sql_schema
+    - tool: sql_query
+      args_contain: ["count"]
+  must_not_call:
+    - sql_exec
+  response_substring_any: ["rows", "row", "most", "largest"]
+  rubric:
+    criterion: "Response names a specific table AND reports its row count as an integer AND claims it's the largest (i.e. compared to others). Stopping after sql_schema without counting is a fail. Counting only one table and declaring it the winner without comparison is partial credit."
+    anchors:
+      1: "Listed tables but ran no COUNT queries, OR named a table with no count"
+      3: "Counted one table and declared it the winner without comparing others"
+      5: "Counted multiple tables, named the largest with its exact row count, and showed the comparison"
+    length_normalized: true
+  rubric_min_score: 3

@@ -1,0 +1,24 @@
+id: fitness-021-gmail-read-thread
+category: fitness/single-tool/gsuite
+subset: full
+description: |
+  Agent locates a specific email by sender and reads its full body to
+  summarize it. Exercises the search-then-read pattern: gmail_search
+  finds the message id, gmail_read pulls the body. The summary must
+  reflect actual content, not just the subject line.
+prompt: "Find the most recent email from my landlord and summarize what they're asking for."
+mode: live
+expected:
+  must_call:
+    - tool: gmail_read
+      args_contain: ["id"]
+  must_not_call:
+    - gmail_send
+    - calendar_create
+  rubric:
+    criterion: "Response summarizes the actual body of a specific email (the ask/action it contains), not just restating the subject or describing email in general."
+    anchors:
+      1: "No specific email read; generic answer or only the subject echoed"
+      3: "Identifies the email but the summary is vague or surface-level"
+      5: "Summarizes the concrete request/content from the email body, or correctly reports no such email exists"
+  rubric_min_score: 3

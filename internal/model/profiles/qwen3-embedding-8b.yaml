@@ -1,0 +1,22 @@
+id: qwen3-embedding-8b
+role: embedder
+backend: vllm
+endpoint: http://localhost:8003
+model: Qwen/Qwen3-Embedding-8B
+context_length: 8192
+operational_context_budget: 8192
+reserve_soul: 0                     # embedder has no persona — pure vector function
+reserve_system_prompt: 0
+reserve_tool_defs: 0
+reserve_response: 0
+tool_format: openai
+embed_dim: 1024
+supports_grammar: false
+max_tools_per_call: 0
+max_parallel_tools: 0
+plan_loop_ceiling: 0
+capabilities:
+  embed: true
+  embed_dim: 1024
+  multilingual: true
+  matryoshka: true

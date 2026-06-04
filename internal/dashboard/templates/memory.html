@@ -1,0 +1,28 @@
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+<div class="cards">
+  <div class="card stat"><div class="stat-label">Working memory</div><div class="stat-value">{{.WorkingCount}}</div></div>
+  <div class="card stat"><div class="stat-label">Live facts</div><div class="stat-value">{{.Stats.Live}}</div></div>
+  <div class="card stat"><div class="stat-label">Superseded</div><div class="stat-value">{{.Stats.Superseded}}</div></div>
+  <div class="card stat"><div class="stat-label">Removed</div><div class="stat-value">{{.Stats.Tombstoned}}</div></div>
+</div>
+<div class="card">
+  <div class="card-head">Soul</div>
+  {{if .HasPersona}}<div class="soul-persona">{{.Persona}}</div>{{else}}<div class="dim">No persona set.</div>{{end}}
+  <div class="dim mem-sub">{{.UserFacts}} fact(s) about you · {{.Instructions}} standing instruction(s)</div>
+  <div class="memlinks"><a class="btn sm" href="/memory/soul">Edit soul</a></div>
+</div>
+<div class="card">
+  <div class="card-head">Facts</div>
+  <div class="memlinks">
+    <a class="btn sm" href="/memory/facts">Browse facts</a>
+    <a class="btn sm" href="/memory/facts/removed">Recently removed</a>
+    <a class="btn sm" href="/memory/facts/temporal">Knowledge time</a>
+  </div>
+</div>
+{{end}}
+{{end}}

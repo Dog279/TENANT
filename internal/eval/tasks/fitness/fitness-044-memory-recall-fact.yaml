@@ -1,0 +1,22 @@
+id: fitness-044-memory-recall-fact
+category: fitness/memory
+subset: full
+description: |
+  Recall a durable preference distilled from an earlier turn. Exercises
+  the semantic.Search → assemble → planner injection path that single-tool
+  tasks never touch and that regresses subtly on embedder or distill-prompt
+  changes. The injected_facts below pre-seed the ephemeral semantic store.
+prompt: "What's my preferred programming language for backend work? I mentioned it to you before."
+mode: live
+injected_facts:
+  - text: "The user prefers Go for all backend work."
+    confidence: 0.9
+    source: test-seed
+expected:
+  rubric:
+    criterion: "Response correctly recalls 'Go' (Golang) as the user's preferred backend language."
+    anchors:
+      1: "No recall or names a different language"
+      3: "Hedges ('maybe something compiled?') without naming Go"
+      5: "States 'Go' (or 'Golang') directly as the preferred backend language"
+  rubric_min_score: 3

@@ -1,0 +1,33 @@
+id: fitness-017-wiki-list
+category: fitness/single-tool/wiki
+subset: full
+description: |
+  Tool-selection + synthesis test. The user asks for an overview of their
+  wiki — wiki_list is the right tool (full enumeration), not wiki_search
+  (which is the agent's default reach). Then the agent must SYNTHESIZE
+  the file list into topical groupings, not dump raw paths.
+
+  Common failures: (a) reaches for wiki_search with a vague query because
+  it's the default, (b) calls wiki_list correctly but pastes the raw path
+  list at the user with no synthesis. Pairs with fitness-004 (search) to
+  cover the list-vs-search tool-selection axis.
+
+  Prompt is operator-portable: "what's in my wiki overall" works
+  regardless of what notes the operator has indexed — synthesis quality
+  is judged against the actual note titles returned.
+prompt: "Give me a sense of what's in my wiki overall. What kinds of things am I keeping notes on?"
+mode: live
+expected:
+  must_call:
+    - tool: wiki_list
+  must_not_call:
+    - web_search
+    - sql_exec
+  rubric:
+    criterion: "Response synthesizes the wiki_list output into topical buckets the user can navigate (2-7 named categories drawn from the actual note titles, with rough counts or representative examples per bucket). Dumping raw paths with no synthesis is a fail. Using wiki_search with a vague query instead of wiki_list is a tool-selection miss and caught by the gate, but if the agent supplements with wiki_search after wiki_list that's fine."
+    anchors:
+      1: "Dumped raw paths/filenames with no synthesis, OR used wiki_search with a vague/empty query instead of wiki_list, OR refused to characterize"
+      3: "Listed notes with light commentary but no real grouping — feels like a bulleted file dump with sentence headers"
+      5: "Produced 2-7 topical buckets named in the user's vocabulary (drawn from note titles), with rough counts or examples per bucket, so the user learns the SHAPE of their wiki"
+    length_normalized: true
+  rubric_min_score: 3

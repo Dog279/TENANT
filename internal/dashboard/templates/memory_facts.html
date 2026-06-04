@@ -1,0 +1,119 @@
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+
+{{if .ShowUndo}}
+<div class="banner undo">
+  <span>Fact removed.</span>
+  <form class="inline" method="POST" action="{{.UndoAction}}">
+    <input type="hidden" name="back" value="/memory/facts">
+    <button type="submit" class="linkbtn">Undo</button>
+  </form>
+  <span class="sp"></span>
+  <a class="linkbtn" href="{{.RemovedHref}}">Recently removed</a>
+</div>
+{{end}}
+
+<form class="searchbar" method="GET" action="/memory/facts">
+  <input class="box" type="text" name="q" value="{{.Query}}" placeholder="Search facts…" autocomplete="off">
+  <button type="submit" class="btn sm">Search</button>
+  {{if .ClearHref}}<a class="btn sm" href="{{.ClearHref}}">Clear</a>{{end}}
+  <span class="sp"></span>
+  <a class="btn sm" href="/memory/facts/removed">Recently removed</a>
+</form>
+
+{{if .Resolving}}
+<div class="banner resolve-hint">
+  <span>{{.ResolveHint}}</span>
+  <span class="sp"></span>
+  <a class="linkbtn" href="{{.CancelResolveHref}}">Cancel</a>
+</div>
+{{end}}
+
+{{if .ResolveCard}}
+<div class="resolve-card">
+  <div class="card-head">Keep which fact?</div>
+  <div class="resolve-pair">
+    <div class="resolve-opt">
+      <div class="fact-text">{{.KeepA.Text}}</div>
+      <div class="fact-conf dim">{{.KeepA.Conf}}</div>
+      <form method="POST" action="{{.ResolveAction}}">
+        <input type="hidden" name="keep_id" value="{{.KeepA.ID}}">
+        <input type="hidden" name="discard_id" value="{{.KeepB.ID}}">
+        <input type="hidden" name="q" value="{{.Query}}">
+        <button type="submit" class="btn on sm">Keep this one, remove the other</button>
+      </form>
+    </div>
+    <div class="resolve-opt">
+      <div class="fact-text">{{.KeepB.Text}}</div>
+      <div class="fact-conf dim">{{.KeepB.Conf}}</div>
+      <form method="POST" action="{{.ResolveAction}}">
+        <input type="hidden" name="keep_id" value="{{.KeepB.ID}}">
+        <input type="hidden" name="discard_id" value="{{.KeepA.ID}}">
+        <input type="hidden" name="q" value="{{.Query}}">
+        <button type="submit" class="btn on sm">Keep this one, remove the other</button>
+      </form>
+    </div>
+  </div>
+  <a class="linkbtn" href="{{.CancelResolveHref}}">Cancel</a>
+</div>
+{{end}}
+
+{{if .Empty}}
+<div class="card"><div class="dim pad">{{.EmptyMsg}}</div></div>
+{{else}}
+<div class="factlist">
+{{range .Facts}}
+<div class="fact{{if .Pinned}} pinned{{end}}">
+  <div class="fact-top">
+    <div class="fact-text">{{.Text}}</div>
+    <span class="fact-conf dim">{{.Conf}}</span>
+  </div>
+  <div class="fact-actions">
+    <a class="linkbtn" href="{{.ProvHref}}">{{if .Expanded}}Hide{{else}}Why does the agent know this?{{end}}</a>
+    {{if $.Resolving}}
+      {{if .Pinned}}<span class="tag">Selected</span>{{else if .ShowSelect}}<a class="linkbtn" href="{{.SelectHref}}">This conflicts with it</a>{{end}}
+    {{else}}
+      <a class="linkbtn" href="{{.SelectHref}}">Resolve a conflict</a>
+      <a class="linkbtn danger" href="{{.ConfirmHref}}">Remove</a>
+    {{end}}
+  </div>
+  {{if .Confirming}}
+  <div class="confirm">
+    <div class="confirm-msg dim">This removes it from what the agent knows. You can restore it from Recently removed.</div>
+    <div class="soul-edit-actions">
+      <form class="inline" method="POST" action="{{.DeleteAction}}">
+        <input type="hidden" name="q" value="{{$.Query}}">
+        <button type="submit" class="btn danger sm">Remove</button>
+      </form>
+      <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
+    </div>
+  </div>
+  {{end}}
+  {{if .Expanded}}
+  <div class="prov">
+    {{if .ProvErr}}<div class="dim">{{.ProvErr}}</div>
+    {{else if .Episodes}}
+      {{range .Episodes}}
+      <div class="ep">
+        {{if .Missing}}<div class="dim">Source unavailable — this turn has been forgotten.</div>
+        {{else}}
+        {{if .When}}<div class="ep-when dim">{{.When}}</div>{{end}}
+        {{if .Prompt}}<div class="ep-line"><span class="dim">you:</span> {{.Prompt}}</div>{{end}}
+        {{if .Response}}<div class="ep-line"><span class="dim">tenant:</span> {{.Response}}</div>{{end}}
+        {{end}}
+      </div>
+      {{end}}
+    {{else}}<div class="dim">No source turns recorded for this fact.</div>{{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+</div>
+{{if .MoreHref}}<div class="morewrap"><a class="btn sm" href="{{.MoreHref}}">Load more</a></div>{{end}}
+{{end}}
+{{end}}
+{{end}}

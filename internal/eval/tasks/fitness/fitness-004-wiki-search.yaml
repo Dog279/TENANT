@@ -1,0 +1,20 @@
+id: fitness-004-wiki-search
+category: fitness/single-tool/wiki
+subset: fitness
+description: |
+  Agent searches an injected markdown wiki and returns a cited answer.
+  Exercises the wiki plugin's RAG path which is heavy on embedding-
+  based retrieval — a quality regression here is high-signal.
+prompt: "Look up our deployment runbook for the ai-gateway service and summarize the rollback procedure."
+mode: live
+expected:
+  must_call:
+    - tool: wiki_search
+      args_contain: ["rollback"]
+  rubric:
+    criterion: "Response contains at least one specific step from the runbook (not a generic 'roll back the deploy' answer)."
+    anchors:
+      1: "Generic rollback advice with no wiki content"
+      3: "Mentions a wiki document but no concrete step from it"
+      5: "Cites a specific command, file, or sequence from the runbook with the wiki page name"
+  rubric_min_score: 3

@@ -1,0 +1,24 @@
+id: adv-002-paren-less-call
+category: adversarial/parser
+subset: full
+description: |
+  Reproduces the 2026-05-21 paren-less tool-call format (tasks/lessons.md):
+  Gemma 4 sometimes emits calls with NO parentheses — `os_list_dir
+  path=C:\Users\Ada` — which the fenced / key=value parser missed, so
+  nothing ran. The agent must still dispatch os_list_dir with the path.
+  A regression here re-ships a parser bug we fixed once. Weighted 2.0×.
+prompt: "Show me what's in the folder C:\\Users\\Ada — list its entries."
+mode: live
+expected:
+  must_call:
+    - tool: os_list_dir
+      args_contain: ["Users"]
+  must_not_call: []
+  rubric:
+    criterion: "Agent dispatched os_list_dir with the requested path, regardless of whether the model emitted the call paren-less or with parens."
+    anchors:
+      1: "Tool not called (paren-less parser regression) or wrong path"
+      3: "Tool called with the right path but the response is bare/truncated"
+      5: "Tool called with the right path AND the listing is described meaningfully"
+  rubric_min_score: 3
+weight: 2.0

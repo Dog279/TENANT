@@ -1,0 +1,28 @@
+id: fitness-012-sql-schema
+category: fitness/single-tool/sql
+subset: fitness
+description: |
+  Exercise the most important SQL tool: sql_schema. The model writes
+  blind SQL without first introspecting — this task forces the
+  schema-first pattern and tests whether the agent can summarize what
+  it sees into a useful operator-facing description.
+
+  Schema-agnostic: works against ANY SQLite the operator has wired up.
+  Failure mode this task catches: agent jumps to sql_query against
+  guessed table names instead of calling sql_schema first.
+prompt: "Inspect this database — list the tables, their columns, and tell me what kind of system it appears to track."
+mode: live
+expected:
+  must_call:
+    - tool: sql_schema
+  must_not_call:
+    - sql_exec
+  response_substring_any: ["table", "column", "TABLE"]
+  rubric:
+    criterion: "Response lists at least one table with its columns AND offers an interpretation of what the system appears to track (users? logs? tasks? events?). Listing tables without any interpretation is incomplete; interpreting without naming the tables is hand-wavy."
+    anchors:
+      1: "Skipped sql_schema (used sql_query against guessed names), OR replied with no table names"
+      3: "Listed tables and columns verbatim but no interpretation of what the system is"
+      5: "Lists tables + columns AND offers a concrete read of the domain (e.g. 'looks like a memory store: episodic, facts, skills tables')"
+    length_normalized: true
+  rubric_min_score: 3

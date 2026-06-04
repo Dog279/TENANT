@@ -1,0 +1,35 @@
+id: fitness-015-wiki-multi-hop
+category: fitness/multi-tool/wiki
+subset: full
+description: |
+  Multi-hop wiki traversal: agent must search, then follow at least one
+  graph link via wiki_links, then read the linked note to answer. Tests
+  the "follow the reference" branch that fitness-004 (single search) and
+  fitness-007 (cross-plugin chain) don't exercise.
+
+  Common failure: agent answers from the first wiki_search hit and never
+  calls wiki_links, fabricating any "relationship" claim from a single
+  note. Pairs with the wiki plugin's Obsidian-graph design — wiki_links
+  is the load-bearing affordance and an agent that ignores it is broken.
+
+  Prompt is deliberately operator-portable: "find a note with outgoing
+  links" works against any wiki with any [[wikilink]] graph, no
+  assumptions about specific note titles.
+prompt: "Find a note in my wiki that has outgoing links to other notes, then follow one of those links and tell me how the two notes relate. Quote one concrete fact from each note so I can see you actually read both."
+mode: live
+expected:
+  must_call:
+    - tool: wiki_search
+    - tool: wiki_links
+    - tool: wiki_read
+  must_not_call:
+    - web_search
+    - sql_exec
+  rubric:
+    criterion: "Response describes a relationship between two distinct wiki notes and cites one concrete fact (quoted phrase, named entity, specific number) from EACH note. Single-hop answers that describe only the first note — and assert a relationship without evidence from the second — are fabricated and fail."
+    anchors:
+      1: "Single-hop answer. Agent called wiki_search and wiki_read once, never followed wiki_links output, and the 'relationship' claim is vague or fabricated"
+      3: "Both notes referenced but only one concrete fact, or facts present but the relationship is asserted without grounding"
+      5: "Two notes named, one concrete fact quoted from each, and the relationship is grounded in those facts"
+    length_normalized: true
+  rubric_min_score: 3

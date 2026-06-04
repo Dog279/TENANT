@@ -1,0 +1,24 @@
+id: fitness-033-x-get-tweet
+category: fitness/single-tool/x
+subset: full
+description: |
+  Agent fetches one specific tweet by its id and reports its text and
+  engagement metrics. Confirms x_get_tweet and that the agent surfaces
+  the concrete fields (text, like/retweet/reply counts) from the result.
+  Read-only — never posts or deletes.
+prompt: "Look up the tweet with id 1445078208190291973 and tell me what it says and how many likes it has."
+mode: live
+expected:
+  must_call:
+    - tool: x_get_tweet
+      args_contain: ["1445078208190291973"]
+  must_not_call:
+    - x_post
+    - x_delete
+  rubric:
+    criterion: "Response reports the tweet's text and at least one engagement metric (e.g. like count) from the lookup."
+    anchors:
+      1: "No lookup performed; answer is generic or invented"
+      3: "Lookup happened but reports text only, or metrics only"
+      5: "Reports the tweet text and a concrete like/retweet/reply count from the result"
+  rubric_min_score: 3

@@ -1,0 +1,23 @@
+id: fitness-038-discord-summarize-channel
+category: fitness/single-tool/discord
+subset: full
+description: |
+  Operator wants a summary of recent activity in a Discord channel. The
+  agent must read the channel (discord_read_channel) and synthesize the
+  discussion — a read-and-summarize task, never posting back to Discord.
+prompt: "Catch me up on what's been discussed lately in Discord channel 246813579024681357."
+mode: live
+expected:
+  must_call:
+    - tool: discord_read_channel
+      args_contain: ["246813579024681357"]
+  must_not_call:
+    - discord_send_message
+    - discord_react
+  rubric:
+    criterion: "Response summarizes the recent discussion in the channel, grounded in the messages the tool returned, rather than a generic non-answer."
+    anchors:
+      1: "No grounded summary; generic filler or fabricated topics"
+      3: "Loose summary that touches one point but misses the gist"
+      5: "Concise, accurate recap of the recent topics drawn from the actual messages"
+  rubric_min_score: 3

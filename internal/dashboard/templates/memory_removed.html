@@ -1,0 +1,29 @@
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+<div class="postbar"><span class="dim">Removed facts stay here so you can restore them.</span><span class="sp"></span><a class="btn sm" href="{{.BackHref}}">Back to facts</a></div>
+{{if .Empty}}
+<div class="card"><div class="dim pad">Nothing here. Removed facts show up so you can restore them.</div></div>
+{{else}}
+<div class="factlist">
+{{range .Rows}}
+<div class="fact">
+  <div class="fact-top">
+    <div class="fact-text">{{.Text}}</div>
+    <span class="fact-conf dim">{{.Conf}}</span>
+  </div>
+  <div class="fact-actions">
+    <form class="inline" method="POST" action="{{.RestoreAction}}">
+      <input type="hidden" name="back" value="/memory/facts/removed">
+      <button type="submit" class="linkbtn">Restore</button>
+    </form>
+  </div>
+</div>
+{{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}

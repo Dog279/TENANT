@@ -1,0 +1,35 @@
+id: fitness-019-os-processes
+category: fitness/single-tool/os
+subset: full
+description: |
+  Filter, don't dump. The os_processes tool returns the full process
+  table — usually 100+ entries on any real machine. The agent's job is
+  to FILTER to a relevant subset and present that, not paste the whole
+  list at the user.
+
+  Common failures: (a) dumps the entire process list verbatim, (b)
+  refuses because "I see a lot of processes," (c) reports only a count
+  ("there are 173 processes running"). Right behavior: pick the ones
+  that match the user's question and ignore the noise.
+
+  Operator-portable prompt — "development tools" is broad enough that
+  on ANY machine running tenant, at least one matches (the tenant
+  binary itself, or go on a dev box, or the parent shell, or an
+  editor). The judge grades the FILTERING SKILL, not the specific
+  processes found.
+prompt: "List the running processes and tell me what development tools you can see running (language runtimes, editors, build tools, terminals — whatever stands out)."
+mode: live
+expected:
+  must_call:
+    - tool: os_processes
+  must_not_call:
+    - os_exec
+    - os_write_file
+  rubric:
+    criterion: "Response names specific dev-related processes (not 'I see N processes') AND ignores the noise (doesn't paste the full table). 2-5 specific names with brief context is the target. A minimal-CI-box answer with only 1-2 matches is acceptable at anchor 3."
+    anchors:
+      1: "Dumped the full process list verbatim, OR refused, OR reported only a count without naming any specific process"
+      3: "Named 1-2 processes by name but with no categorization or interpretation, OR named many without filtering"
+      5: "Named 2-5 specific dev-related processes with brief context (e.g. 'go (compiler), code (editor), bash (shell)') and ignored the noise"
+    length_normalized: true
+  rubric_min_score: 3

@@ -1,0 +1,35 @@
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+{{if not .HasSummary}}
+<div class="card"><div class="dim pad">Nothing has been compacted yet. When the working set is summarized, the original turns it replaced become auditable here — &ldquo;paged out, not lost.&rdquo;</div></div>
+{{else}}
+<div class="postbar"><span class="dim">Latest compaction · {{.MsgCount}} turns · {{.Range}} · source: {{.Origin}}</span></div>
+<div class="card">
+  <div class="pad"><strong>Summary</strong> <span class="dim">— what the model sees now in place of the turns below</span>
+    <pre style="white-space:pre-wrap;margin:.5rem 0 0">{{.Summary}}</pre>
+  </div>
+</div>
+<div class="card">
+  <div class="pad"><strong>Original turns</strong> <span class="dim">— rehydrated read-only from the archive</span></div>
+  {{if not .Rows}}
+  <div class="dim pad">No archived turns found for this span.</div>
+  {{else}}
+  <div class="factlist">
+  {{range .Rows}}
+  <div class="fact">
+    <div class="fact-top">
+      <div class="fact-text"><span class="dim">[{{.Role}}]</span> {{.Content}}</div>
+      <span class="fact-conf dim">{{.When}}</span>
+    </div>
+  </div>
+  {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}
