@@ -1,5 +1,5 @@
 {{define "content"}}
-<div class="chat" id="chat-log" data-init="@get('/events')"></div>
+<div class="chat" id="chat-log" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"></div>
 <form class="composer" data-on:submit__prevent="@post('/chat/send')">
   <input id="chat-input" class="box" name="text" type="text" autocomplete="off"
          data-bind:text placeholder="Message tenant… (Enter to send)">

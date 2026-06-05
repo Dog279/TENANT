@@ -185,7 +185,7 @@ func TestSSR_DatastarColonSyntax(t *testing.T) {
 	cases := []struct {
 		path, want, reject string
 	}{
-		{"/activity", `data-init="@get('/events')"`, "data-on-load"},
+		{"/activity", `data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"`, "data-on-load"},
 		{"/chat", `data-on:submit__prevent="@post('/chat/send')"`, "data-on-submit"},
 		{"/chat", `data-bind:text`, "data-bind-text"},
 		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},
