@@ -58,8 +58,8 @@ type fileFingerprint struct {
 // indexFormat is bumped whenever the embedded-text recipe or sidecar
 // schema changes (link/tag enrichment changed vectors). A mismatch
 // forces a clean rebuild — the same discard-stale discipline used for
-// an embedder change.
-const indexFormat = 2
+// an embedder change. v3 added noteMeta.Virtual (auto-derived edges).
+const indexFormat = 3
 
 // indexFile is the entire on-disk index — one JSON file you can read.
 type indexFile struct {
@@ -83,6 +83,13 @@ type Index struct {
 	// can't drift): resolved forward links + inverted backlinks.
 	links     map[string][]string // note → resolved target notes
 	backlinks map[string][]string // note → notes that link TO it
+
+	// Virtual (semantic) graph — same shape, derived from idx.Notes[*].Virtual.
+	// Kept SEPARATE from manual links so expansion can weight author intent
+	// above statistical similarity, and so the manual-link maps + every existing
+	// consumer (Links, dispatch, tests) stay untouched.
+	vlinks     map[string][]string
+	vbacklinks map[string][]string
 }
 
 // chunking parameters — kept obvious, not tunable-via-config (Karpathy:
@@ -140,6 +147,8 @@ func (ix *Index) rebuildGraph() {
 	r := newResolver(ix.idx.Notes)
 	ix.links = map[string][]string{}
 	ix.backlinks = map[string][]string{}
+	ix.vlinks = map[string][]string{}
+	ix.vbacklinks = map[string][]string{}
 	for rel, m := range ix.idx.Notes {
 		seen := map[string]bool{}
 		for _, t := range m.Targets {
@@ -154,12 +163,103 @@ func (ix *Index) rebuildGraph() {
 			ix.links[rel] = append(ix.links[rel], tgt)
 			ix.backlinks[tgt] = append(ix.backlinks[tgt], rel)
 		}
+		// Virtual (semantic) edges: targets are already resolved note paths.
+		// Skip any that vanished or that duplicate a manual forward link —
+		// manual is the stronger signal, no weaker virtual twin.
+		for _, vl := range m.Virtual {
+			tgt := vl.Target
+			if tgt == "" || tgt == rel || seen[tgt] {
+				continue
+			}
+			if _, ok := ix.idx.Notes[tgt]; !ok {
+				continue
+			}
+			ix.vlinks[rel] = append(ix.vlinks[rel], tgt)
+			ix.vbacklinks[tgt] = append(ix.vbacklinks[tgt], rel)
+		}
 	}
 	for k := range ix.links {
 		sort.Strings(ix.links[k])
 	}
 	for k := range ix.backlinks {
 		sort.Strings(ix.backlinks[k])
+	}
+	for k := range ix.vlinks {
+		sort.Strings(ix.vlinks[k])
+	}
+	for k := range ix.vbacklinks {
+		sort.Strings(ix.vbacklinks[k])
+	}
+}
+
+// virtual-link knobs — readable defaults (Karpathy: no config until real data
+// demands it). Tuned conservative: catch genuine relationships, miss the noise.
+const (
+	virtualThreshold  = 0.72 // min best-chunk cosine for an auto edge; below this is noise
+	virtualMaxPerNote = 8    // cap auto edges per note so a dense hub can't flood expansion
+)
+
+// computeVirtualLinks derives note-level semantic edges from chunk cosine
+// similarity and stores them in idx.Notes[*].Virtual. Runs at the end of a
+// Reindex on the vectors already in hand — NO embedding calls. O(C²) on
+// pre-computed vectors (sub-second at personal scale). Deterministic ordering
+// so the sidecar doesn't churn between identical runs. This is what gives graph
+// expansion something to traverse on notes an author never [[linked]].
+func (ix *Index) computeVirtualLinks() {
+	// Chunk indices grouped by note, notes in stable order.
+	byNote := map[string][]int{}
+	var notes []string
+	for i := range ix.idx.Chunks {
+		f := ix.idx.Chunks[i].File
+		if _, ok := byNote[f]; !ok {
+			notes = append(notes, f)
+		}
+		byNote[f] = append(byNote[f], i)
+	}
+	sort.Strings(notes)
+
+	type cand struct {
+		target string
+		score  float64
+	}
+	acc := map[string][]cand{}
+	for a := 0; a < len(notes); a++ {
+		for b := a + 1; b < len(notes); b++ {
+			na, nb := notes[a], notes[b]
+			best := 0.0
+			for _, i := range byNote[na] {
+				for _, j := range byNote[nb] {
+					if s := cosine(ix.idx.Chunks[i].Vec, ix.idx.Chunks[j].Vec); s > best {
+						best = s
+					}
+				}
+			}
+			if best >= virtualThreshold {
+				acc[na] = append(acc[na], cand{nb, best})
+				acc[nb] = append(acc[nb], cand{na, best})
+			}
+		}
+	}
+
+	// Persist onto every note: highest score first, capped, deterministic.
+	// noteMeta is a VALUE in the map, so reassign rather than mutate in place.
+	for rel, m := range ix.idx.Notes {
+		cs := acc[rel]
+		sort.Slice(cs, func(i, j int) bool {
+			if cs[i].score != cs[j].score {
+				return cs[i].score > cs[j].score
+			}
+			return cs[i].target < cs[j].target
+		})
+		if len(cs) > virtualMaxPerNote {
+			cs = cs[:virtualMaxPerNote]
+		}
+		var vls []VirtualLink
+		for _, c := range cs {
+			vls = append(vls, VirtualLink{Target: c.target, Score: c.score})
+		}
+		m.Virtual = vls // nil clears stale edges (e.g. a neighbour was deleted)
+		ix.idx.Notes[rel] = m
 	}
 }
 
@@ -278,7 +378,8 @@ func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
 			delete(ix.idx.Notes, rel)
 		}
 	}
-	ix.rebuildGraph() // graph now matches the on-disk note set
+	ix.computeVirtualLinks() // derive semantic edges from the fresh vectors…
+	ix.rebuildGraph()        // …then fold them + manual links into the graph
 	if err := ix.save(); err != nil {
 		return len(onDisk), embedded, fmt.Errorf("wiki: save index: %w", err)
 	}
@@ -312,9 +413,10 @@ func linkTagEnrich(m noteMeta) string {
 
 // graph-expansion knobs — readable defaults, not config (Karpathy).
 const (
-	anchorK         = 3   // max top hits whose neighbours we pull in
-	anchorFloorFrac = 0.5 // an anchor must score ≥ this × the top score
-	graphWeight     = 0.4 // neighbour bonus = graphWeight × anchor score
+	anchorK            = 3    // max top hits whose neighbours we pull in
+	anchorFloorFrac    = 0.5  // an anchor must score ≥ this × the top score
+	graphWeight        = 0.4  // manual-link neighbour bonus = graphWeight × anchor score
+	virtualGraphWeight = 0.25 // auto-derived (virtual) edges: weaker than an author's [[link]]
 )
 
 // Hit is one search result. Via is set when the note was pulled in by
@@ -401,6 +503,20 @@ func (ix *Index) Search(ctx context.Context, query string, k int) ([]Hit, error)
 			}
 		}
 	}
+	// Virtual (semantic) neighbours ride along too, at a lower weight than an
+	// author's explicit link. max-bonus dedup means a note that is BOTH a manual
+	// and a virtual neighbour keeps the stronger manual bonus.
+	for anchor, as := range anchorScore {
+		for _, nb := range neighborsOf(ix.vlinks[anchor], ix.vbacklinks[anchor]) {
+			if _, isAnchor := anchorScore[nb]; isAnchor {
+				continue
+			}
+			if b := virtualGraphWeight * as; b > bonus[nb] {
+				bonus[nb] = b
+				bonusVia[nb] = anchor
+			}
+		}
+	}
 	if len(bonus) > 0 {
 		for i := range all {
 			if b, ok := bonus[all[i].c.File]; ok {
@@ -438,6 +554,14 @@ func (ix *Index) Links(rel string) (forward, back, tags []string, raw []linkTarg
 		return nil, nil, nil, nil, fmt.Errorf("wiki: %q is not an indexed note (use wiki_list)", rel)
 	}
 	return ix.links[rel], ix.backlinks[rel], m.Tags, m.Targets, nil
+}
+
+// VirtualLinks returns a note's auto-derived semantic edges (sidecar-only,
+// never written to the markdown), highest score first. Empty for an unindexed
+// note. Powers wiki_suggest_links + the virtual section of wiki_links.
+func (ix *Index) VirtualLinks(rel string) []VirtualLink {
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	return ix.idx.Notes[rel].Virtual
 }
 
 // ReadFile returns a note's full contents. The path is model-supplied,

@@ -19,9 +19,20 @@ import (
 // paths: resolution depends on the whole vault, so a renamed/added
 // note must be able to re-link everything without re-embedding.
 type noteMeta struct {
-	Aliases []string     `json:"aliases,omitempty"`
-	Tags    []string     `json:"tags,omitempty"`
-	Targets []linkTarget `json:"targets,omitempty"`
+	Aliases []string      `json:"aliases,omitempty"`
+	Tags    []string      `json:"tags,omitempty"`
+	Targets []linkTarget  `json:"targets,omitempty"`
+	Virtual []VirtualLink `json:"virtual,omitempty"` // auto-derived semantic edges (sidecar-only)
+}
+
+// VirtualLink is an embedding-derived (semantic) relationship between two notes,
+// discovered at reindex from chunk cosine similarity and stored ONLY in the
+// sidecar — never written back to the markdown (canonical files stay read-only,
+// the Karpathy ethos). It gives graph expansion edges to traverse on notes the
+// author never manually linked.
+type VirtualLink struct {
+	Target string  `json:"target"` // resolved note path (same key space as manual targets)
+	Score  float64 `json:"score"`  // cosine of the best chunk pair, [0,1]
 }
 
 // linkTarget is one [[wikilink]] as written.

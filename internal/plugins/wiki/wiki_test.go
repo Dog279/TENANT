@@ -272,7 +272,7 @@ func TestTools(t *testing.T) {
 			t.Errorf("%s invalid params", sp.Name)
 		}
 	}
-	for _, w := range []string{"wiki_search", "wiki_read", "wiki_links", "wiki_list", "wiki_reindex"} {
+	for _, w := range []string{"wiki_search", "wiki_read", "wiki_links", "wiki_list", "wiki_reindex", "wiki_suggest_links"} {
 		if !names[w] {
 			t.Errorf("missing tool %s", w)
 		}
@@ -342,6 +342,99 @@ func TestDispatch_WikiLinks(t *testing.T) {
 	out, isErr, _ = d.Dispatch(context.Background(), call("wiki_links", map[string]any{"file": "nope.md"}))
 	if !isErr {
 		t.Errorf("unknown note must be refused, got: %q", out)
+	}
+}
+
+// Virtual links (TEN-135): two notes with near-identical CONTENT but NO manual
+// [[links]] must auto-derive a semantic edge; an unrelated note must not. This
+// is what keeps the graph alive on a vault the author never hand-linked.
+func TestVirtualLinks_DiscoversSemanticNeighbours(t *testing.T) {
+	ix, root, _ := mkIndex(t)
+	writeNote(t, root, "mem-a.md", "# Memory\nvector embedding similarity cosine retrieval paging fusion")
+	writeNote(t, root, "mem-b.md", "# Recall\nvector embedding similarity cosine retrieval paging fusion")
+	writeNote(t, root, "off.md", "# Offtopic\nbanana helicopter trombone xylophone walrus")
+	if _, _, err := ix.Reindex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d := wiki.NewDispatcher(ix)
+
+	// suggest_links surfaces the unlinked semantic neighbour, not the stranger.
+	out, isErr, _ := d.Dispatch(context.Background(), call("wiki_suggest_links", map[string]any{"file": "mem-a.md"}))
+	if isErr {
+		t.Fatalf("suggest_links errored: %q", out)
+	}
+	if !strings.Contains(out, "mem-b.md") {
+		t.Errorf("expected mem-b.md as a semantic neighbour:\n%s", out)
+	}
+	if strings.Contains(out, "off.md") {
+		t.Errorf("unrelated off.md must NOT be suggested:\n%s", out)
+	}
+
+	// wiki_links exposes the virtual edge with a score.
+	out, _, _ = d.Dispatch(context.Background(), call("wiki_links", map[string]any{"file": "mem-a.md"}))
+	if !strings.Contains(out, "virtual:") || !strings.Contains(out, "mem-b.md") {
+		t.Errorf("wiki_links should show a virtual edge to mem-b.md:\n%s", out)
+	}
+
+	// The unrelated note is genuinely isolated.
+	if vls := ix.VirtualLinks("off.md"); len(vls) != 0 {
+		t.Errorf("off.md should have no virtual links, got %+v", vls)
+	}
+}
+
+// Graph expansion must traverse a VIRTUAL edge, not just manual links: a note
+// whose own query score is below the anchor floor still rides along on a
+// semantic edge to a strong anchor, with Via set for provenance.
+func TestSearch_VirtualExpansionPullsNeighbour(t *testing.T) {
+	ix, root, _ := mkIndex(t)
+	// Shared body ⇒ a virtual edge. The query word lives ONLY in anchor's
+	// heading, so neighbour matches the query weakly and is not an anchor.
+	writeNote(t, root, "anchor.md", "# Quantumxyz\nshared body alpha beta gamma")
+	writeNote(t, root, "neighbour.md", "# Mundane\nshared body alpha beta gamma")
+	if _, _, err := ix.Reindex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := ix.Search(context.Background(), "Quantumxyz", 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].File != "anchor.md" {
+		t.Fatalf("anchor.md should be the top direct hit, got %+v", hits)
+	}
+	var nb *wiki.Hit
+	for i := range hits {
+		if hits[i].File == "neighbour.md" {
+			nb = &hits[i]
+		}
+	}
+	if nb == nil {
+		t.Fatalf("neighbour.md (virtually linked, weak direct match) was not pulled in: %+v", hits)
+	}
+	if nb.Via != "anchor.md" {
+		t.Errorf("neighbour.md should carry Via=anchor.md (virtual graph provenance), got %q", nb.Via)
+	}
+}
+
+// suggest_links surfaces only the connections NOT already made: a semantically
+// similar note already [[linked]] is excluded; a similar unlinked one is shown.
+func TestDispatch_SuggestLinks_ExcludesManual(t *testing.T) {
+	ix, root, _ := mkIndex(t)
+	writeNote(t, root, "hub.md", "# Hub\nalpha beta gamma delta epsilon zeta eta theta\nSee [[spoke1]].")
+	writeNote(t, root, "spoke1.md", "# Spoke1\nalpha beta gamma delta epsilon zeta eta theta")
+	writeNote(t, root, "spoke2.md", "# Spoke2\nalpha beta gamma delta epsilon zeta eta theta")
+	if _, _, err := ix.Reindex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d := wiki.NewDispatcher(ix)
+	out, isErr, _ := d.Dispatch(context.Background(), call("wiki_suggest_links", map[string]any{"file": "hub.md"}))
+	if isErr {
+		t.Fatalf("suggest_links errored: %q", out)
+	}
+	if !strings.Contains(out, "spoke2.md") {
+		t.Errorf("spoke2.md (similar, unlinked) should be suggested:\n%s", out)
+	}
+	if strings.Contains(out, "spoke1.md") {
+		t.Errorf("spoke1.md is already manually linked; must be excluded:\n%s", out)
 	}
 }
 

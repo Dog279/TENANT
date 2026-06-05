@@ -40,6 +40,8 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(``)},
 		{Name: "wiki_reindex", Description: "Rebuild the index after the user edited their notes. Usually unnecessary (search auto-indexes when empty).",
 			Parameters: obj(``)},
+		{Name: "wiki_suggest_links", Description: "Suggest notes a given note should link to, by semantic similarity — the auto-discovered connections it isn't manually [[linked]] to yet. Read-only: suggests, never edits files.",
+			Parameters: obj(`"file":{"type":"string","description":"note path (as returned by wiki_search/wiki_list)"},"threshold":{"type":"number","description":"min similarity 0-1 (default 0.6)"}`, "file")},
 	}
 }
 
@@ -55,6 +57,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 		return d.list()
 	case "wiki_reindex":
 		return d.reindex(ctx)
+	case "wiki_suggest_links":
+		return d.suggestLinks(call.Arguments)
 	default:
 		return "unknown wiki tool: " + call.Name, true, nil
 	}
@@ -132,10 +136,18 @@ func (d *Dispatcher) links(args json.RawMessage) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	virtual := d.ix.VirtualLinks(a.File)
 	var b strings.Builder
 	fmt.Fprintf(&b, "graph for %s\n", a.File)
 	if len(fwd) > 0 {
 		fmt.Fprintf(&b, "links to: %s\n", strings.Join(fwd, ", "))
+	}
+	if len(virtual) > 0 {
+		parts := make([]string, 0, len(virtual))
+		for _, vl := range virtual {
+			parts = append(parts, fmt.Sprintf("%s (%.2f)", vl.Target, vl.Score))
+		}
+		fmt.Fprintf(&b, "virtual: %s\n", strings.Join(parts, ", "))
 	}
 	if len(back) > 0 {
 		fmt.Fprintf(&b, "linked from: %s\n", strings.Join(back, ", "))
@@ -143,8 +155,51 @@ func (d *Dispatcher) links(args json.RawMessage) (string, bool, error) {
 	if len(tags) > 0 {
 		fmt.Fprintf(&b, "tags: #%s\n", strings.Join(tags, " #"))
 	}
-	if len(fwd) == 0 && len(back) == 0 && len(tags) == 0 {
+	if len(fwd) == 0 && len(back) == 0 && len(tags) == 0 && len(virtual) == 0 {
 		b.WriteString("(no links or tags — a leaf note)\n")
+	}
+	return strings.TrimRight(b.String(), "\n"), false, nil
+}
+
+// suggestLinks surfaces a note's semantic neighbours that the author hasn't
+// manually [[linked]] yet — read-only intelligence, the user decides whether to
+// act. The virtual edges were already computed at reindex; this just filters.
+func (d *Dispatcher) suggestLinks(args json.RawMessage) (string, bool, error) {
+	var a struct {
+		File      string  `json:"file"`
+		Threshold float64 `json:"threshold"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "invalid arguments: " + err.Error(), true, nil
+	}
+	if strings.TrimSpace(a.File) == "" {
+		return "file is required", true, nil
+	}
+	if a.Threshold <= 0 {
+		a.Threshold = 0.6
+	}
+	// Links() validates the note exists and gives the manual forward links to
+	// exclude — we only surface connections NOT already made.
+	fwd, _, _, _, err := d.ix.Links(a.File)
+	if err != nil {
+		return err.Error(), true, nil
+	}
+	manual := map[string]bool{}
+	for _, f := range fwd {
+		manual[f] = true
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "link suggestions for %s (semantic neighbours not yet linked):\n", a.File)
+	n := 0
+	for _, vl := range d.ix.VirtualLinks(a.File) {
+		if vl.Score < a.Threshold || manual[vl.Target] {
+			continue
+		}
+		fmt.Fprintf(&b, "  → %s (similarity %.3f)\n", vl.Target, vl.Score)
+		n++
+	}
+	if n == 0 {
+		return fmt.Sprintf("no unlinked semantic neighbours for %s above %.2f", a.File, a.Threshold), false, nil
 	}
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }
