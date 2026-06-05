@@ -50,6 +50,8 @@ func main() {
 		err = cmdChat(ctx, os.Args[2:])
 	case "distill":
 		err = cmdDistill(ctx, os.Args[2:])
+	case "consolidate":
+		err = cmdConsolidate(ctx, os.Args[2:])
 	case "memory":
 		err = cmdMemory(ctx, os.Args[2:])
 	case "mcp-memory":

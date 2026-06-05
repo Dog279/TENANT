@@ -42,8 +42,15 @@ import (
 // Defaults — exposed as exported vars so an operator can tune at
 // startup without forking the package.
 var (
-	DefaultBatchSize           = 15
-	DefaultSimilarityThreshold = 0.92
+	DefaultBatchSize = 15
+	// DefaultSimilarityThreshold: cosine >= this auto-reaffirms (treats the
+	// new extraction as the same fact). Lowered from 0.92 so closer
+	// paraphrases dedup instead of inserting near-duplicates.
+	DefaultSimilarityThreshold = 0.88
+	// DefaultBorderlineThreshold: cosine in [borderline, similarity) is
+	// ambiguous — the summarizer adjudicates restate-vs-distinct instead of
+	// blindly inserting a possible paraphrase.
+	DefaultBorderlineThreshold = 0.80
 	DefaultSummarizerRole      = model.RoleSummarizer
 	DefaultEmbedderRole        = model.RoleEmbedder
 )
@@ -51,15 +58,15 @@ var (
 // Distiller is the entry point. Construct once, call Run as often as
 // your cadence policy dictates.
 type Distiller struct {
-	Router               *model.Router
-	Episodic             *episodic.Store
-	Semantic             *semantic.Store
-	AgentID              string
-	BatchSize            int
-	SimilarityThreshold  float64
-	SummarizerRole       model.Role
-	EmbedderRole         model.Role
-	Logger               *slog.Logger
+	Router              *model.Router
+	Episodic            *episodic.Store
+	Semantic            *semantic.Store
+	AgentID             string
+	BatchSize           int
+	SimilarityThreshold float64
+	SummarizerRole      model.Role
+	EmbedderRole        model.Role
+	Logger              *slog.Logger
 }
 
 // RunResult summarizes what one Distill.Run did. The caller persists
@@ -152,7 +159,7 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 		result.FactsExtracted += len(extracted)
 
 		// 4. Embed all extracted facts in one call (cheaper than per-fact).
-		ins, reaff, err := d.persistFacts(ctx, embedder, string(embProfile.ID), extracted, threshold)
+		ins, reaff, err := d.persistFacts(ctx, summarizer, embedder, string(embProfile.ID), extracted, threshold)
 		if err != nil {
 			log.Warn("distill: persist failed", "agent", d.AgentID, "batch_start", start, "err", err)
 			result.BatchErrors = append(result.BatchErrors, fmt.Errorf("persist for batch starting at episode %d: %w", batch[0].ID, err))
@@ -265,9 +272,11 @@ func (d *Distiller) extractBatch(ctx context.Context, llm model.LLM, batch []*ep
 	return clean, nil
 }
 
-// persistFacts embeds + searches + inserts/reaffirms in one pass.
-// Returns (inserted, reaffirmed, error).
-func (d *Distiller) persistFacts(ctx context.Context, embedder model.Embedder, embedderID string, facts []extractedFact, threshold float64) (int, int, error) {
+// persistFacts embeds each extracted fact, finds its closest existing fact,
+// and either reaffirms (clear match), reaffirms after summarizer adjudication
+// (borderline match), or inserts (distinct). Returns (inserted, reaffirmed,
+// error).
+func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embedder model.Embedder, embedderID string, facts []extractedFact, threshold float64) (int, int, error) {
 	if len(facts) == 0 {
 		return 0, 0, nil
 	}
@@ -293,12 +302,31 @@ func (d *Distiller) persistFacts(ctx context.Context, embedder model.Embedder, e
 		if err != nil {
 			return inserted, reaffirmed, err
 		}
+		// Clear match → reaffirm the existing fact.
 		if existing != nil && existing.Score >= threshold {
 			if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
 				return inserted, reaffirmed, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
 			}
 			reaffirmed++
 			continue
+		}
+		// Borderline match → let the summarizer decide restate vs. distinct,
+		// so a reworded duplicate reaffirms instead of inserting a near-dup.
+		if existing != nil && existing.Score >= DefaultBorderlineThreshold && summarizer != nil {
+			same, aerr := d.isRestatement(ctx, summarizer, f.Fact, existing.Fact.Fact)
+			if aerr != nil {
+				log := d.Logger
+				if log == nil {
+					log = slog.Default()
+				}
+				log.Warn("distill: borderline adjudication failed; inserting", "err", aerr)
+			} else if same {
+				if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
+					return inserted, reaffirmed, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
+				}
+				reaffirmed++
+				continue
+			}
 		}
 		_, err = d.Semantic.Insert(ctx, &semantic.Fact{
 			AgentID:        d.AgentID,
@@ -315,6 +343,39 @@ func (d *Distiller) persistFacts(ctx context.Context, embedder model.Embedder, e
 		inserted++
 	}
 	return inserted, reaffirmed, nil
+}
+
+const restatementSystemPrompt = `You decide whether two memory facts express the SAME underlying claim about a user/project (one may be a reworded, or less/more specific, version of the other) or are DISTINCT claims.
+
+Respond with JSON only: {"same": true} if they are the same underlying fact, {"same": false} if distinct.`
+
+const restatementJSONSchema = `{"type":"object","properties":{"same":{"type":"boolean"}},"required":["same"]}`
+
+// isRestatement asks the summarizer whether `candidate` restates `existing`
+// (same underlying claim) vs. a distinct fact. Used only for borderline-
+// similar pairs to avoid inserting paraphrase duplicates.
+func (d *Distiller) isRestatement(ctx context.Context, llm model.LLM, candidate, existing string) (bool, error) {
+	resp, err := llm.Generate(ctx, model.GenerateRequest{
+		Messages: []model.Message{
+			{Role: "system", Content: restatementSystemPrompt},
+			{Role: "user", Content: fmt.Sprintf("EXISTING: %s\nNEW: %s\n\nIs NEW the same underlying fact as EXISTING?", existing, candidate)},
+		},
+		JSONSchema:  []byte(restatementJSONSchema),
+		Temperature: 0,
+	})
+	if err != nil {
+		return false, fmt.Errorf("summarizer: %w", err)
+	}
+	if resp.Text == "" {
+		return false, errors.New("summarizer returned empty")
+	}
+	var out struct {
+		Same bool `json:"same"`
+	}
+	if err := json.Unmarshal([]byte(extractJSONObject(resp.Text)), &out); err != nil {
+		return false, fmt.Errorf("parse adjudication: %w (%q)", err, snippet(resp.Text, 120))
+	}
+	return out.Same, nil
 }
 
 // closestHit wraps a semantic.Hit with the raw cosine score reported

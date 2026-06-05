@@ -193,6 +193,52 @@ func cmdDistill(ctx context.Context, args []string) error {
 	return nil
 }
 
+// cmdConsolidate runs one fact-consolidation pass: cluster overlapping facts
+// and merge each cluster into a single canonical fact. --dry-run previews the
+// merges without writing.
+func cmdConsolidate(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("consolidate", flag.ContinueOnError)
+	c := bindCommon(fs)
+	dryRun := fs.Bool("dry-run", false, "preview proposed merges without writing")
+	threshold := fs.Float64("threshold", improve.DefaultClusterThreshold, "cosine cutoff for clustering candidate duplicates")
+	holistic := fs.Bool("holistic", false, "group facts by meaning via one LLM pass (catches paraphrases that embed far apart) instead of cosine clustering")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := c.resolve(); err != nil {
+		return err
+	}
+	log := newLogger()
+	router, err := buildRouter(c, log)
+	if err != nil {
+		return err
+	}
+	st, closeStores, err := openStores(c)
+	if err != nil {
+		return err
+	}
+	defer closeStores()
+
+	before, _ := st.semantic.Count(ctx, false, false)
+	job := &improve.ConsolidationJob{
+		Semantic: st.semantic, Router: router, AgentID: c.agent,
+		ClusterThreshold: *threshold, Holistic: *holistic, DryRun: *dryRun, Logger: log,
+	}
+	res, err := job.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("consolidate: %w", err)
+	}
+	fmt.Printf("consolidate: %s\n", res.Summary)
+	if prevs, ok := res.Details["previews"].([]string); ok {
+		for _, p := range prevs {
+			fmt.Printf("  • %s\n", p)
+		}
+	}
+	after, _ := st.semantic.Count(ctx, false, false)
+	fmt.Printf("live facts: %d → %d\n", before, after)
+	return nil
+}
+
 // cmdMemory handles `memory search <query>`.
 func cmdMemory(ctx context.Context, args []string) error {
 	if len(args) < 1 || args[0] != "search" {
@@ -1284,6 +1330,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	sched := improve.NewScheduler(log, 0)
 	sched.Register(improve.NewDistillJob(d, meta, c.agent), *distillEvery)
+	sched.Register(&improve.ConsolidationJob{
+		Semantic: st.semantic, Router: router, AgentID: c.agent, Holistic: true, Logger: log,
+	}, improve.DefaultConsolidateInterval)
 
 	// Graceful shutdown on Ctrl-C / SIGTERM.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -1694,6 +1743,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// The SAME working set the agent's turn loop appends to, so the memory
 	// curator can read the live T1 count.
 	mainWorking := working.New()
+	// Session resume: seed the cold working set with a recap of the operator's
+	// last session so they can pick up where they left off. Best-effort, and
+	// gated to THIS call site only (the single mainWorking instance) — sub-agents,
+	// the Discord relay, eval, and one-shot CLI turns never resume.
+	if n := seedResumeBridge(ctx, mainWorking, st.episodic, c.agent, time.Now().UTC()); n > 0 {
+		log.Info("session resume: seeded last-session recap", "agent", c.agent, "episodes", n)
+	}
 	memCtl := memControl{
 		episodic: st.episodic, semantic: st.semantic, skills: skillStore,
 		embedder: skEmb, distill: distillJob, cfgDir: c.cfgDir, agentID: c.agent,
@@ -2014,6 +2070,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 		sched.Register(&improve.SkillInductionJob{
 			Episodic: st.episodic, Skills: skillStore, Embedder: skEmb, AgentID: c.agent,
 		}, *distillEvery)
+		// Fact consolidation merges overlapping/duplicate facts the distiller's
+		// write-path dedup misses (paraphrases, subsumed granular facts). Heavier
+		// (an LLM call per cluster) and not time-critical, so a long cadence.
+		sched.Register(&improve.ConsolidationJob{
+			Semantic: st.semantic, Router: router, AgentID: c.agent, Holistic: true, Logger: log,
+		}, improve.DefaultConsolidateInterval)
 		// Profile re-synthesis runs on its OWN cadence (--profile-every,
 		// default 15m). Distillation is cheap and benefits from being
 		// snappy; profile re-synthesis is an LLM call per run, so its

@@ -14,8 +14,9 @@ import (
 // interval keeps T3 facts fresh without burning summarizer calls; the
 // tick is how often the loop checks whether any job is due.
 const (
-	DefaultDistillInterval = 30 * time.Minute
-	DefaultSchedulerTick   = 1 * time.Minute
+	DefaultDistillInterval     = 30 * time.Minute
+	DefaultConsolidateInterval = 6 * time.Hour
+	DefaultSchedulerTick       = 1 * time.Minute
 )
 
 // Job is one self-improvement task. v1 ships DistillJob. Future jobs

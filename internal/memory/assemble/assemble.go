@@ -20,6 +20,7 @@ package assemble
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -407,7 +408,52 @@ func (a *Assembler) retrieveFacts(ctx context.Context, req Request) ([]*semantic
 	for _, h := range hits {
 		out = append(out, h.Fact)
 	}
-	return out, nil
+	// Surface-time dedup: drop facts that are near-duplicates of an
+	// already-kept (higher-ranked) fact, so the prompt never shows three
+	// rewordings of one claim. Rows stay in the store; the consolidation
+	// job merges them durably.
+	return dedupeFacts(out, factDedupeThreshold), nil
+}
+
+// factDedupeThreshold: a fact at least this cosine-similar to an
+// already-kept fact is dropped from the surfaced set.
+const factDedupeThreshold = 0.90
+
+// dedupeFacts greedily keeps the first (highest-ranked) occurrence and drops
+// later near-duplicates. O(n*kept); n is the small top-K fact set.
+func dedupeFacts(facts []*semantic.Fact, threshold float64) []*semantic.Fact {
+	kept := make([]*semantic.Fact, 0, len(facts))
+	for _, f := range facts {
+		dup := false
+		for _, k := range kept {
+			if len(f.Embedding) > 0 && len(k.Embedding) == len(f.Embedding) &&
+				cosineSimF32(f.Embedding, k.Embedding) >= threshold {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+func cosineSimF32(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		fa, fb := float64(a[i]), float64(b[i])
+		dot += fa * fb
+		na += fa * fa
+		nb += fb * fb
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func (a *Assembler) retrieveEpisodes(ctx context.Context, req Request) ([]*episodic.Episode, error) {
