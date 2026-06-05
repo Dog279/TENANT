@@ -93,6 +93,22 @@ func TestSoul_RenderProducesStructuredMarkdown(t *testing.T) {
 	}
 }
 
+// NewDefault ships a clean, team-aware main soul: it names the built-in
+// specialists by their spawnable names so a fresh install delegates by
+// default, and carries NO personal data — the empty user block means nothing
+// renders under "About the User".
+func TestNewDefault_NamesSpecialistsNoPersonalData(t *testing.T) {
+	rendered := soul.NewDefault("main").Render()
+	for _, name := range []string{"Programmer", "Researcher", "Writer", "QA", "Strategist"} {
+		if !strings.Contains(rendered, name) {
+			t.Errorf("default soul should name the built-in specialist %q:\n%s", name, rendered)
+		}
+	}
+	if strings.Contains(rendered, "# About the User") {
+		t.Errorf("shipped default must not render an About-the-User section (no personal data):\n%s", rendered)
+	}
+}
+
 func TestSoul_RenderSkipsEmptyBlocks(t *testing.T) {
 	s := &soul.Soul{}
 	s.Agent.Name = "TestBot"

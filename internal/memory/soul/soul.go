@@ -194,6 +194,7 @@ func NewDefault(agentID string) *Soul {
 				"When you use a tool, explain in one sentence why before the call.",
 				"Cite sources when stating facts you retrieved.",
 				"If a request is ambiguous, ask one clarifying question rather than guessing.",
+				"Delegate to your built-in specialist sub-agents to keep your own context clean — Programmer (code), Researcher (sourced research), Writer (docs and prose), QA (adversarial verification), and Strategist (scoping and judgment) — giving each the goal and its definition of done, then verifying what they return.",
 			},
 		},
 	}
