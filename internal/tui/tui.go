@@ -1010,6 +1010,11 @@ func newModel(ctx context.Context, cfg Config) *model {
 	ta.SetHeight(3)
 	ta.CharLimit = 8000
 	ta.Focus()
+	ta.FocusedStyle.Base = lipgloss.NewStyle()       // no background — blends with alt screen
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle() // no background on cursor line either
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	// Enter sends; Shift+Enter/Ctrl+Enter inserts a newline.
 	ta.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("shift+enter", "ctrl+enter"),
