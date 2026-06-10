@@ -211,7 +211,8 @@ type mcpRuntimeDeps struct {
 	trustAnnotations bool
 	allowWrite       bool
 	confirm          func(context.Context, string, string) bool
-	cacheDir         string // 0600 OAuth token cache dir (persistence across restarts)
+	cacheDir         string       // 0600 OAuth token cache dir (persistence across restarts)
+	log              *slog.Logger // connect/refresh failure logging (TEN-166)
 }
 
 // mcpServerStatus is one remote MCP connector's runtime state (for /mcp list).
@@ -241,6 +242,7 @@ func (m *toolMux) registerMCPRemote(url string) string {
 			OpenBrowser:  d.openBrowser,
 			CacheDir:     d.cacheDir,
 			Interactive:  true, // /enable or /mcp add may sign in via browser (cached token ⇒ silent)
+			Logger:       d.log,
 		}, d.trustAnnotations, mcpremote.Policy{
 			AllowWrite: d.allowWrite,
 			Confirm:    d.confirm,
@@ -271,12 +273,23 @@ func (m *toolMux) reconnectMCPSilently(url string) {
 		CallbackAddr: d.callback,
 		CacheDir:     d.cacheDir,
 		Interactive:  false, // launch: never pop a browser
+		Logger:       d.log,
 	}, d.trustAnnotations, mcpremote.Policy{
 		AllowWrite: d.allowWrite,
 		Confirm:    d.confirm,
 	})
 	if err != nil {
-		return // no usable cached session — stays a disabled stub
+		// Previously swallowed — that's why "check the logs" showed nothing for a
+		// broken MCP server (TEN-166). errNoCachedSession (no token yet) is the
+		// normal first-run case → debug; anything else is a real failure → warn.
+		if d.log != nil {
+			if strings.Contains(err.Error(), "no usable cached session") {
+				d.log.Debug("mcp: silent reconnect skipped (no cached session)", "server", url)
+			} else {
+				d.log.Warn("mcp: silent reconnect failed", "server", url, "err", err.Error())
+			}
+		}
+		return // stays a disabled stub; interactive activator can sign in later
 	}
 	m.adoptLiveMCP(label, disp, cleanup)
 }
@@ -1228,6 +1241,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		allowWrite:       gateAllow(pf.mcpAllowWrite),
 		confirm:          confirm,
 		cacheDir:         filepath.Join(c.cfgDir, "mcp"),
+		log:              log,
 	}
 	mcpURLs := append([]string{}, pf.mcpRemotes...)
 	if c.lc != nil {

@@ -4,14 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
+
+// proactiveRefreshWindow refreshes the OAuth token this long BEFORE it actually
+// expires (TEN-166). A long-lived MCP session would otherwise carry the token
+// right up to expiry and die mid-use (the "connected with N tools but every call
+// fails" symptom); refreshing early keeps the session continuously valid.
+const proactiveRefreshWindow = 5 * time.Minute
 
 // errNoCachedSession is returned by a non-interactive handler whose cached token
 // is missing/unusable — so a launch-time silent reconnect fails cleanly instead
@@ -33,15 +42,22 @@ type persistentHandler struct {
 	fetcher     auth.AuthorizationCodeFetcher // nil ⇒ non-interactive (no browser)
 	httpClient  *http.Client
 
+	logger *slog.Logger
+
 	mu     sync.Mutex
 	cache  *tokenCache
 	loaded bool
+	src    *refreshingSource // memoized: ONE source per server (rotation-safe)
 }
 
-func newPersistentHandler(serverURL, redirect, clientName, cachePath string, interactive bool, fetcher auth.AuthorizationCodeFetcher, httpClient *http.Client) *persistentHandler {
+func newPersistentHandler(serverURL, redirect, clientName, cachePath string, interactive bool, fetcher auth.AuthorizationCodeFetcher, httpClient *http.Client, logger *slog.Logger) *persistentHandler {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &persistentHandler{
 		serverURL: serverURL, redirect: redirect, clientName: clientName,
 		cachePath: cachePath, interactive: interactive, fetcher: fetcher, httpClient: httpClient,
+		logger: logger,
 	}
 }
 
@@ -67,7 +83,9 @@ func (h *persistentHandler) oauth2Config(c *tokenCache) *oauth2.Config {
 
 // TokenSource returns a refreshing source built from the cached token (no
 // browser); nil when nothing usable is cached (→ the transport calls Authorize
-// on the next 401).
+// on the next 401). The source is MEMOIZED per handler: every caller shares one
+// mutex-guarded source so two callers can't both refresh the single-use rotating
+// refresh token and strand each other (TEN-166 — the "remove + re-add" cause).
 func (h *persistentHandler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -75,9 +93,75 @@ func (h *persistentHandler) TokenSource(ctx context.Context) (oauth2.TokenSource
 	if h.cache == nil || h.cache.Token == nil || h.cache.TokenURL == "" || h.cache.ClientID == "" {
 		return nil, nil
 	}
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, h.httpClient)
-	base := h.oauth2Config(h.cache).TokenSource(ctx, h.cache.Token)
-	return &persistingSource{base: base, h: h, last: h.cache.Token.AccessToken}, nil
+	if h.src == nil {
+		h.src = &refreshingSource{
+			// Long-lived source → its own background ctx (not a per-call ctx that
+			// may be cancelled), carrying the issuer-reconciling HTTP client.
+			ctx: context.WithValue(context.Background(), oauth2.HTTPClient, h.httpClient),
+			cfg: h.oauth2Config(h.cache),
+			h:   h,
+			cur: h.cache.Token,
+		}
+	}
+	return h.src, nil
+}
+
+// refreshingSource serves the cached token, refreshing it PROACTIVELY (before
+// expiry) and ATOMICALLY (persist the rotated token before returning). It is the
+// single source of truth for the token — guarded by its own mutex so concurrent
+// callers serialize, and Atlassian's single-use refresh token is never spent
+// twice. Fails safe: if a proactive refresh fails while the current token is
+// still valid, it logs and returns the current token rather than breaking.
+type refreshingSource struct {
+	mu  sync.Mutex
+	ctx context.Context
+	cfg *oauth2.Config
+	h   *persistentHandler
+	cur *oauth2.Token
+}
+
+func (s *refreshingSource) Token() (*oauth2.Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Reuse a non-expiring token, or one comfortably before expiry.
+	if s.cur != nil && s.cur.AccessToken != "" &&
+		(s.cur.Expiry.IsZero() || time.Until(s.cur.Expiry) >= proactiveRefreshWindow) {
+		return s.cur, nil
+	}
+	if s.cur == nil || s.cur.RefreshToken == "" {
+		return nil, errors.New("mcpremote: no refresh token cached")
+	}
+	// Force a refresh via the rotating refresh token (Expiry in the past makes the
+	// oauth2 reuse source perform the refresh_token grant immediately).
+	refreshed, err := s.cfg.TokenSource(s.ctx, &oauth2.Token{
+		RefreshToken: s.cur.RefreshToken,
+		Expiry:       time.Unix(1, 0),
+	}).Token()
+	if err != nil {
+		// Fail safe: a still-valid current token beats a hard failure.
+		if s.cur.Valid() {
+			s.h.logger.Warn("mcp: proactive token refresh failed; using still-valid token",
+				"server", s.h.serverURL, "err", err.Error())
+			return s.cur, nil
+		}
+		s.h.logger.Warn("mcp: token refresh failed (re-auth needed)",
+			"server", s.h.serverURL, "err", err.Error())
+		return nil, err
+	}
+	s.cur = refreshed
+	// Persist the rotated token IMMEDIATELY so the new single-use refresh token
+	// survives a crash/restart — non-atomic persistence is the documented way
+	// Atlassian clients strand themselves.
+	s.h.mu.Lock()
+	if s.h.cache != nil {
+		s.h.cache.Token = refreshed
+		if err := saveTokenCache(s.h.cachePath, s.h.cache); err != nil {
+			s.h.logger.Warn("mcp: failed to persist refreshed token",
+				"server", s.h.serverURL, "err", err.Error())
+		}
+	}
+	s.h.mu.Unlock()
+	return refreshed, nil
 }
 
 // Authorize discovers + dynamically-registers a client (once), runs the browser
@@ -175,34 +259,11 @@ func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, re
 		return err
 	}
 	h.cache.Token = tok
+	h.src = nil // drop the memoized source so it rebuilds with the fresh token
 	if err := saveTokenCache(h.cachePath, h.cache); err != nil {
 		return fmt.Errorf("persist token: %w", err)
 	}
 	return nil
-}
-
-// persistingSource writes the token back to disk whenever it rotates (refresh).
-type persistingSource struct {
-	base oauth2.TokenSource
-	h    *persistentHandler
-	last string
-}
-
-func (s *persistingSource) Token() (*oauth2.Token, error) {
-	t, err := s.base.Token()
-	if err != nil {
-		return nil, err
-	}
-	if t.AccessToken != s.last {
-		s.last = t.AccessToken
-		s.h.mu.Lock()
-		if s.h.cache != nil {
-			s.h.cache.Token = t
-			_ = saveTokenCache(s.h.cachePath, s.h.cache)
-		}
-		s.h.mu.Unlock()
-	}
-	return t, nil
 }
 
 func originOf(rawURL string) string {

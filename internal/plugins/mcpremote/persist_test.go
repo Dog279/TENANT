@@ -35,7 +35,7 @@ func TestPersistentHandler_ServesCachedToken(t *testing.T) {
 		t.Errorf("token cache perms = %v, want 0600", fi.Mode().Perm())
 	}
 
-	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", path, false, nil, http.DefaultClient)
+	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", path, false, nil, http.DefaultClient, nil)
 	ts, err := h.TokenSource(context.Background())
 	if err != nil || ts == nil {
 		t.Fatalf("expected a token source from cache: ts=%v err=%v", ts, err)
@@ -51,7 +51,7 @@ func TestPersistentHandler_ServesCachedToken(t *testing.T) {
 func TestPersistentHandler_NonInteractiveFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	const server = "https://srv.example/v1/mcp"
-	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", tokenCachePath(dir, server), false, nil, http.DefaultClient)
+	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", tokenCachePath(dir, server), false, nil, http.DefaultClient, nil)
 
 	ts, err := h.TokenSource(context.Background())
 	if err != nil {

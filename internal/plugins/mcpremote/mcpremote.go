@@ -9,6 +9,7 @@ package mcpremote
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,6 +29,8 @@ type Config struct {
 	// silent reconnect), a missing/expired cached token fails cleanly instead
 	// of popping a browser.
 	Interactive bool
+	// Logger receives connect/refresh failures (TEN-166). Nil = discard.
+	Logger *slog.Logger
 }
 
 func (c Config) callbackAddr() string {
@@ -73,7 +76,7 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, func(), error
 	handler := newPersistentHandler(
 		cfg.ServerURL, redirect, cfg.clientName(),
 		tokenCachePath(cfg.CacheDir, cfg.ServerURL),
-		cfg.Interactive, fetcher, httpClient,
+		cfg.Interactive, fetcher, httpClient, cfg.Logger,
 	)
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:     cfg.ServerURL,
