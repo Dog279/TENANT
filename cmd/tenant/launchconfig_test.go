@@ -122,6 +122,15 @@ func TestCredentials_RoundTripAndResolve(t *testing.T) {
 	if got := resolveSecret(dir, "openai", authCfg{KeyEnv: "MY_KEY", Stored: true}); got != "env-secret" {
 		t.Fatalf("env ref = %q, want env-secret", got)
 	}
+	// Env var set but empty falls through to stored secret.
+	t.Setenv("EMPTY_KEY", "")
+	if got := resolveSecret(dir, "openai", authCfg{KeyEnv: "EMPTY_KEY", Stored: true}); got != "sk-secret" {
+		t.Fatalf("empty env fallthrough = %q, want sk-secret", got)
+	}
+	// Env var set to nonexistent var falls through to stored secret.
+	if got := resolveSecret(dir, "openai", authCfg{KeyEnv: "MISSING_KEY", Stored: true}); got != "sk-secret" {
+		t.Fatalf("missing env fallthrough = %q, want sk-secret", got)
+	}
 	// No auth → empty.
 	if got := resolveSecret(dir, "openai", authCfg{}); got != "" {
 		t.Fatalf("no-auth secret = %q, want empty", got)

@@ -529,7 +529,9 @@ func (c *credentials) set(id, secret string) {
 // provider needs no key or none is configured.
 func resolveSecret(cfgDir, providerID string, auth authCfg) string {
 	if auth.KeyEnv != "" {
-		return os.Getenv(auth.KeyEnv)
+		if v := os.Getenv(auth.KeyEnv); v != "" {
+			return v
+		}
 	}
 	if auth.Stored {
 		if creds, err := loadCredentials(cfgDir); err == nil {
