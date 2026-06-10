@@ -33,3 +33,4 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+docs/github-coding-plan.md
