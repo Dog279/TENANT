@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"tenant/internal/agent"
@@ -248,6 +250,103 @@ type evalJudgeOpts struct {
 	keyEnv   string // env var holding the override judge's API key
 }
 
+// autoEnableEvalPlugins turns on plugin flags for zero-config plugins (web, os)
+// and detects available stateful plugins (sql, wiki) by probing their configured
+// paths. Plugins that need interactive auth (gsuite, atlassian, x, imessage,
+// discord) are never auto-enabled — eval is non-interactive, so a browser OAuth
+// flow would hang. Only flags the operator did NOT set explicitly are touched, so
+// `tenant eval --no-web` still works as an explicit override.
+//
+// Without this, every plugin flag defaults to false/off, and the agent enters
+// eval with zero tools — every task that expects a tool call (web_navigate,
+// sql_query, os_list_dir, wiki_search, etc.) fails at the must_call gate.
+func autoEnableEvalPlugins(pf *pluginFlags, c *commonFlags, explicitFlags map[string]bool) []string {
+	var enabled []string
+
+	// web: always available if Chrome is installed. No config needed.
+	if !explicitFlags["web"] && !pf.web {
+		pf.web = true
+		enabled = append(enabled, "web")
+	}
+
+	// os: always available (pure Go, no external deps).
+	if !explicitFlags["os"] && !pf.osEnable {
+		pf.osEnable = true
+		pf.osAllowExec = true  // eval needs real tool execution
+		pf.osAllowWrite = true // file-write tasks need this
+		enabled = append(enabled, "os")
+	}
+
+	// sql: auto-detect the operator's real DB if they have one.
+	if !explicitFlags["sql-db"] && pf.sqlDB == "" {
+		candidate := ""
+		if c.dataDir != "" {
+			candidate = findFirstExisting(
+				filepath.Join(c.dataDir, "tenant.db"),
+				filepath.Join(c.dataDir, "eval.db"),
+			)
+		}
+		if candidate != "" {
+			pf.sqlDB = candidate
+			pf.sqlAllowWrite = true
+			enabled = append(enabled, "sql")
+		}
+	}
+
+	// wiki: use the same wiki dir the operator configured in launchConfig.
+	if !explicitFlags["wiki-dir"] && pf.wikiDir == "" {
+		if lc, err := loadLaunchConfig(c.cfgDir); err == nil && lc != nil {
+			if sk, ok := lc.Skills["wiki"]; ok && sk.Enabled {
+				if dir := sk.Settings["dir"]; dir != "" {
+					if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+						pf.wikiDir = dir
+						enabled = append(enabled, "wiki")
+					}
+				}
+			}
+		}
+	}
+
+	// atlassian: auto-enable if /configure already set it up (has a site + auth).
+	// The activator in buildToolMux handles the token-based or OAuth path from
+	// saved config; no browser popup needed for token auth.
+	if !explicitFlags["atlassian"] && !pf.atlassian {
+		if lc, err := loadLaunchConfig(c.cfgDir); err == nil && lc != nil {
+			if sk, ok := lc.Skills["atlassian"]; ok && sk.Enabled && sk.Settings != nil {
+				if sk.Settings["site"] != "" {
+					pf.atlassian = true
+					pf.atlassianSite = sk.Settings["site"]
+					pf.atlassianProject = sk.Settings["project"]
+					pf.atlassianAllowWrite = true
+					// Token auth: load email + api_token from config/credentials.
+					if sk.Settings["auth"] == "token" {
+						pf.atlassianEmail = sk.Settings["email"]
+						if creds, cerr := loadCredentials(c.cfgDir); cerr == nil {
+							pf.atlassianClientID = creds.get(skillSecretID("atlassian", "client_id"))
+						}
+					} else {
+						// OAuth path: needs client_id from config.
+						pf.atlassianClientID = sk.Settings["client_id"]
+					}
+					enabled = append(enabled, "atlassian")
+				}
+			}
+		}
+	}
+
+	return enabled
+}
+
+// findFirstExisting returns the first path that exists as a file, or "".
+func findFirstExisting(candidates ...string) string {
+	for _, p := range candidates {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
 // wireLiveHarness configures h for live-mode execution. It builds the model
 // router and the real tool mux ONCE (shared across tasks — they're read-mostly
 // w.r.t. a per-task agent and execute against the real world), installs an
@@ -263,6 +362,14 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	router, err := buildRouter(c, log)
 	if err != nil {
 		return nil, fmt.Errorf("eval: build router: %w", err)
+	}
+	// Auto-enable plugins the operator has available but didn't flag. Without
+	// this, every plugin defaults to off and the agent has no tools — scoring
+	// 0 on every task that expects a tool call. Only touches flags the operator
+	// did NOT set explicitly (so --no-web is respected).
+	autoEnabled := autoEnableEvalPlugins(pf, c, c.flagSet())
+	if len(autoEnabled) > 0 {
+		fmt.Fprintf(os.Stderr, "eval: auto-enabled plugins: %s\n", strings.Join(autoEnabled, ", "))
 	}
 	// confirm=nil: eval is non-interactive, so gated destructive tools stay
 	// off unless the operator passed their explicit allow flags (--os-allow-*,
