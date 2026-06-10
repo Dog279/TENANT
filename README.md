@@ -163,5 +163,8 @@ go vet ./...
 
 ## License
 
-Not yet licensed. **Add a `LICENSE` file** (e.g. Apache-2.0 or MIT) before relying
-on this in your own project — until then, all rights are reserved by default.
+[MIT](LICENSE) © 2026 Dylan.
+
+## Security
+
+Found a vulnerability? See [SECURITY.md](SECURITY.md) for reporting instructions.
