@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"tenant/internal/agent"
-	"tenant/internal/model"
 	"tenant/internal/memory/working"
+	"tenant/internal/model"
 )
 
 func newEchoAg(t *testing.T) *agent.Agent {

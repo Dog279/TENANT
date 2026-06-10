@@ -64,9 +64,9 @@ type skillProbe func(ctx context.Context, creds *credentials, settings map[strin
 type skillKindField struct {
 	Key      string // namespaced "skill:<id>:<key>" in credentials.json when Secret
 	Prompt   string
-	Secret   bool                 // → credentials.json (0600); else lc.Skills[id].Settings
-	Required bool                 // clearing a required field on an enabled skill auto-disables it
-	Validate func(string) error   // nil ⇒ no validation
+	Secret   bool               // → credentials.json (0600); else lc.Skills[id].Settings
+	Required bool               // clearing a required field on an enabled skill auto-disables it
+	Validate func(string) error // nil ⇒ no validation
 	Default  string
 	// Options, if non-empty, enumerates the legal values. Drives the
 	// TUI picker for `/configure` (enum field → modal picker; free-text
@@ -126,9 +126,13 @@ type skillCfgControl struct {
 // newSkillControl wires a skill control over the operator's config
 // dir, a catalog (production: skillKinds; tests: a fixture), and an
 // auto-enable bridge.
-func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnabled func(string, bool) (int, string, error)) *skillCfgControl {
+func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnabled func(string, bool) (int, string, error), mcpConnect ...atlassianMCPConnector) *skillCfgControl {
 	if kinds == nil {
 		kinds = map[string]skillKind{}
+	}
+	var connect atlassianMCPConnector
+	if len(mcpConnect) > 0 {
+		connect = mcpConnect[0]
 	}
 	// Some catalog entries adapt to the operator's runtime environment
 	// (e.g. gsuite hides oauth_creds_json when maintainer-owned embedded
@@ -137,6 +141,9 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 	// resolved catalog.
 	if k, ok := kinds["gsuite"]; ok {
 		kinds["gsuite"] = adaptGSuiteForCfgDir(k, cfgDir)
+	}
+	if k, ok := kinds["atlassian"]; ok { // TEN-160/164: cfgDir for native OAuth cache + the MCP connector
+		kinds["atlassian"] = adaptAtlassianForCfgDir(k, cfgDir, connect)
 	}
 	return &skillCfgControl{cfgDir: cfgDir, kinds: kinds, setPluginEnabled: setPluginEnabled}
 }
@@ -234,12 +241,12 @@ func (sc *skillCfgControl) SkillShow(id string) (string, error) {
 }
 
 // SkillConfigure runs the four-phase pipeline (audit P0):
-//   1. parse + validate ALL fields (return composite error on any failure)
-//   2. mutate in-memory creds + lc.Skills
-//   3. write credentials.json (FIRST — strand a secret > strand an
-//      enabled-no-key skill)
-//   4. write config.json
-//   5. probe + auto-enable (probe failure WARN, doesn't roll back writes)
+//  1. parse + validate ALL fields (return composite error on any failure)
+//  2. mutate in-memory creds + lc.Skills
+//  3. write credentials.json (FIRST — strand a secret > strand an
+//     enabled-no-key skill)
+//  4. write config.json
+//  5. probe + auto-enable (probe failure WARN, doesn't roll back writes)
 //
 // `args` is the raw arg list after "/skill configure <id>". Supports:
 //   - 1 positional value (only when the kind has exactly 1 field)
@@ -382,7 +389,12 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 	}
 	fmt.Fprintf(&out, "  ✓ probe OK — %s\n", identity)
 
-	if !noEnable {
+	// atlassian "mcp" mode is SELF-ENABLING: the probe connected via the remote
+	// MCP connector, which already brought its tools live under the mcp:<host>
+	// label. The generic auto-enable targets the NATIVE "atlassian" plugin (no
+	// site in mcp mode), so it would spuriously report "not configured" — skip it.
+	mcpSelfEnabled := id == "atlassian" && sk.Settings["auth"] == "mcp"
+	if !noEnable && !mcpSelfEnabled {
 		if msg, err := sc.tryAutoEnable(id); err != nil {
 			fmt.Fprintf(&out, "  ! %s\n", err.Error())
 		} else if msg != "" {

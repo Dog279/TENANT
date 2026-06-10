@@ -79,7 +79,18 @@ type Scheduler struct {
 	// recorded). Used by the TUI to surface self-improvement in the
 	// live feed. Called outside the scheduler lock; must be cheap.
 	OnRun func(JobRunRecord)
+
+	// Paused, if set and returning true, suspends ALL job execution (RunDue +
+	// RunAll skip without running or advancing any job's clock). Used to freeze
+	// self-improvement while the model is degraded to the echo fallback —
+	// otherwise consolidation/profile jobs would write echo-derived garbage to
+	// durable stores and the distill cursor would advance past unprocessed
+	// episodes. Must be cheap; called on every tick.
+	Paused func() bool
 }
+
+// paused reports whether execution is currently suspended.
+func (s *Scheduler) paused() bool { return s.Paused != nil && s.Paused() }
 
 // NewScheduler returns an empty scheduler. historyCap bounds the
 // in-memory run-history ring (<=0 → default 64).
@@ -106,6 +117,9 @@ func (s *Scheduler) Register(job Job, interval time.Duration) {
 // run. Jobs with interval <= 0 are skipped. Returns the records for
 // the jobs that ran this call. Safe to call from any goroutine.
 func (s *Scheduler) RunDue(ctx context.Context) []JobRunRecord {
+	if s.paused() {
+		return nil // model degraded: defer all jobs (don't run or advance clocks)
+	}
 	now := time.Now()
 	s.mu.Lock()
 	due := make([]*scheduledJob, 0, len(s.jobs))
@@ -137,6 +151,9 @@ func (s *Scheduler) RunDue(ctx context.Context) []JobRunRecord {
 // Resets each job's interval clock. Used for manual "improve now"
 // triggers and tests.
 func (s *Scheduler) RunAll(ctx context.Context) []JobRunRecord {
+	if s.paused() {
+		return nil // model degraded: even a manual "improve now" must not run on echo
+	}
 	s.mu.Lock()
 	jobs := make([]*scheduledJob, len(s.jobs))
 	copy(jobs, s.jobs)

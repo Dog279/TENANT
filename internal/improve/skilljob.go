@@ -23,6 +23,48 @@ type SkillInductionJob struct {
 	AgentID  string
 	MinOccur int // min recurrences to propose (default 3)
 	Scan     int // how many recent episodes to scan (default 300)
+
+	// AutoAccept, if set, returns the live auto-accept mode for induced skills
+	// (TEN-152): "off" (default — queue for /skills accept), "on" (auto-accept
+	// every new skill), or "trusted" (auto-accept ONLY while the operator's
+	// recent feedback is healthy — see TrustMinAcks). nil/"" ⇒ off. Read each
+	// run so a live toggle takes effect on the next induction.
+	AutoAccept func() string
+	// TrustMinAcks is the min acks (with zero undos) in the recent feedback
+	// window required for "trusted" auto-accept. <=0 ⇒ default 5.
+	TrustMinAcks int
+	// TrustWindow is how many recent fed-back episodes the gate inspects.
+	// <=0 ⇒ default 20.
+	TrustWindow int
+}
+
+// autoAcceptOK resolves the current auto-accept decision for this run. Returns
+// (accept, mode) — accept is whether induced skills should go straight to
+// live+enabled; mode is the configured string for logging.
+func (j *SkillInductionJob) autoAcceptOK(ctx context.Context) (bool, string) {
+	mode := "off"
+	if j.AutoAccept != nil {
+		mode = strings.ToLower(strings.TrimSpace(j.AutoAccept()))
+	}
+	switch mode {
+	case "on":
+		return true, mode
+	case "trusted":
+		minAcks := j.TrustMinAcks
+		if minAcks <= 0 {
+			minAcks = 5
+		}
+		win := j.TrustWindow
+		if win <= 0 {
+			win = 20
+		}
+		acks, undos, err := j.Episodic.FeedbackStats(ctx, j.AgentID, win)
+		// Healthy = enough acks AND no recent undos. A single undo suspends
+		// auto-accept back to manual review until trust is re-earned.
+		return err == nil && undos == 0 && acks >= minAcks, mode
+	default:
+		return false, "off"
+	}
 }
 
 func (j *SkillInductionJob) Name() string { return "skill-induction" }
@@ -75,7 +117,15 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 		}
 	}
 
-	proposed := 0
+	// Feedback-gated auto-accept (TEN-152): when on/trusted, induced skills go
+	// straight to live+enabled instead of waiting for /skills accept.
+	autoAccept, mode := j.autoAcceptOK(ctx)
+	status, enabled, source := skills.StatusProposed, false, "induction"
+	if autoAccept {
+		status, enabled, source = skills.StatusLive, true, "auto-accept"
+	}
+
+	proposed, accepted := 0, 0
 	for sig, g := range sigs {
 		if g.count < min {
 			continue
@@ -92,17 +142,27 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 				embed = v[0]
 			}
 		}
-		if _, err := j.Skills.Upsert(ctx, &skills.Skill{
+		if _, err := j.Skills.UpsertWithSource(ctx, &skills.Skill{
 			AgentID: j.AgentID, Name: name, Description: desc, Recipe: recipe,
-			Status: skills.StatusProposed, Enabled: false, Embedding: embed,
-		}); err == nil {
-			proposed++
+			Status: status, Enabled: enabled, Embedding: embed,
+		}, source); err == nil {
+			if autoAccept {
+				accepted++
+			} else {
+				proposed++
+			}
 		}
 	}
+	var summary string
+	if autoAccept {
+		summary = fmt.Sprintf("scanned %d episode(s), AUTO-ACCEPTED %d new skill(s) (mode=%s) — live now", len(eps), accepted, mode)
+	} else {
+		summary = fmt.Sprintf("scanned %d episode(s), proposed %d new skill(s) for review", len(eps), proposed)
+	}
 	return JobResult{
-		Summary: fmt.Sprintf("scanned %d episode(s), proposed %d new skill(s) for review", len(eps), proposed),
-		Changed: proposed > 0,
-		Details: map[string]any{"scanned": len(eps), "proposed": proposed},
+		Summary: summary,
+		Changed: proposed+accepted > 0,
+		Details: map[string]any{"scanned": len(eps), "proposed": proposed, "auto_accepted": accepted, "auto_accept_mode": mode},
 	}, nil
 }
 

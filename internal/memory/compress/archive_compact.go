@@ -47,32 +47,30 @@ func (c *Compressor) CompactWithArchive(ctx context.Context, msgs []working.Mess
 	}
 	tailBudget := c.TailTokens
 	if tailBudget <= 0 {
-		tailBudget = 1500
+		tailBudget = defaultTailTokens
 	}
 
 	llm, _, err := c.Router.LLMForRole(ctx, c.role())
 	if err != nil {
 		return msgs, false, fmt.Errorf("compress: resolve summarizer: %w", err)
 	}
-
-	// Protect the recent tail by token budget (walk backward).
-	keep, total := 0, 0
-	for i := len(msgs) - 1; i >= 0; i-- {
-		n, cerr := llm.TokenCount(ctx, msgs[i].Content)
-		if cerr != nil {
-			n = len(msgs[i].Content) / 4
+	tok := func(s string) int {
+		if n, cerr := llm.TokenCount(ctx, s); cerr == nil {
+			return n
 		}
-		if total+n > tailBudget && keep > 0 {
-			break
-		}
-		total += n
-		keep++
+		return len(s) / 4
 	}
-	head := msgs[:len(msgs)-keep]
+
+	// Protect the recent tail as WHOLE exchanges (turn boundaries), never
+	// splitting a tool_use from its result, and never collapsing below a floor
+	// of recent complete exchanges (TEN-169: stops the "45 → 2 messages" and
+	// keeps the live task in-context). The token budget is an upper clamp only.
+	tailStartIdx := chooseTailStart(msgs, tok, tailBudget, floorExchanges)
+	head := msgs[:tailStartIdx]
 	if len(head) < 2 {
 		return msgs, false, nil
 	}
-	tail := msgs[len(msgs)-keep:]
+	tail := msgs[tailStartIdx:]
 
 	// Resolve the summarization source. allowText is the FULL source (untruncated)
 	// for verbatim extraction; summaryText is the (possibly bounded) prose view
@@ -126,6 +124,11 @@ func (c *Compressor) CompactWithArchive(ctx context.Context, msgs []working.Mess
 	}
 
 	content := SummaryPrefix + "\n\n" + summary
+	// Re-emit the most-recent user requests from the summarized head verbatim, so
+	// "what the user asked" survives even if the LLM paraphrased it away (TEN-169).
+	if ub := userRequestsBlock(head, verbatimUserTurns); ub != "" {
+		content += "\n\n" + ub
+	}
 	if vb := verbatimBlock(extractAllowlist(allowText)); vb != "" {
 		content += "\n\n" + vb
 	}
@@ -146,6 +149,104 @@ func (c *Compressor) CompactWithArchive(ctx context.Context, msgs []working.Mess
 	out = append(out, summaryMsg)
 	out = append(out, tail...)
 	return out, true, nil
+}
+
+// Tail-selection tuning (TEN-169).
+const (
+	// floorExchanges is the minimum number of recent COMPLETE exchanges kept
+	// verbatim — the live task must never be summarized out from under the agent.
+	floorExchanges = 3
+	// defaultTailTokens is the upper clamp on the verbatim tail when TailTokens
+	// is unset. Raised from the old flat 1500 so tool-heavy turns don't collapse
+	// the tail to a single message.
+	defaultTailTokens = 6000
+	// verbatimUserTurns is how many recent user requests from the summarized head
+	// are re-emitted verbatim in the summary.
+	verbatimUserTurns = 4
+)
+
+// exchangeStartIndices returns the msg indices that begin a new exchange — user
+// turns. A tail that begins at one of these never starts mid-tool-pair.
+func exchangeStartIndices(msgs []working.Message) []int {
+	var idx []int
+	for i, m := range msgs {
+		// A real user turn — NOT a prior compaction summary (also Role:"user"),
+		// which belongs in the head to be re-digested, never treated as a tail
+		// boundary (keeps the userRequestsBlock Kind filter consistent).
+		if m.Role == "user" && m.Kind == "" {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// chooseTailStart returns the index where the protected verbatim tail begins:
+// always the last `floor` complete exchanges, plus older whole exchanges while
+// they fit `budget`. With no clean turn boundary it keeps just the newest
+// message (sanitizePairs at the assembler backstops validity).
+func chooseTailStart(msgs []working.Message, tok func(string) int, budget, floor int) int {
+	starts := exchangeStartIndices(msgs)
+	if len(starts) == 0 {
+		return len(msgs) - 1
+	}
+	// Keep at least `floor` recent exchanges, but never the whole set — at least
+	// one exchange must remain in the head or there is nothing to summarize.
+	minKeep := floor
+	if minKeep > len(starts)-1 {
+		minKeep = len(starts) - 1
+	}
+	if minKeep < 1 {
+		minKeep = 1
+	}
+	chosen := starts[len(starts)-1]
+	total := 0
+	// b >= 1 guarantees starts[0]'s exchange stays in the head.
+	for b := len(starts) - 1; b >= 1; b-- {
+		start := starts[b]
+		end := len(msgs)
+		if b+1 < len(starts) {
+			end = starts[b+1]
+		}
+		exTokens := 0
+		for j := start; j < end; j++ {
+			exTokens += tok(msgs[j].Content)
+		}
+		included := len(starts) - b
+		if included > minKeep && total+exTokens > budget {
+			break // past the floor and over the ceiling — stop extending the tail
+		}
+		total += exTokens
+		chosen = start
+	}
+	return chosen
+}
+
+// userRequestsBlock re-emits the most-recent user turns from the summarized head
+// verbatim (skipping prior compaction-summary messages), so the user's actual
+// asks survive compaction.
+func userRequestsBlock(head []working.Message, k int) string {
+	var users []string
+	for _, m := range head {
+		if m.Role == "user" && m.Kind == "" {
+			if s := strings.TrimSpace(m.Content); s != "" {
+				users = append(users, s)
+			}
+		}
+	}
+	if len(users) == 0 {
+		return ""
+	}
+	if len(users) > k {
+		users = users[len(users)-k:]
+	}
+	var b strings.Builder
+	b.WriteString("## User Requests (verbatim)\n")
+	for _, u := range users {
+		b.WriteString("- ")
+		b.WriteString(truncate(u, 800))
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // earliestStamp returns the smallest non-zero timestamp among msgs, or zero.

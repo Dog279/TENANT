@@ -49,6 +49,8 @@ type ssrTemplates struct {
 	memRemoved    *template.Template
 	memTemporal   *template.Template
 	memProvenance *template.Template
+	cron          *template.Template // recurring-job admin section
+	keys          *template.Template // write-only API-key settings (TEN-145)
 }
 
 func parseSSR() *ssrTemplates {
@@ -67,6 +69,8 @@ func parseSSR() *ssrTemplates {
 		memRemoved:    must("templates/layout.html", "templates/memnav.html", "templates/memory_removed.html"),
 		memTemporal:   must("templates/layout.html", "templates/memnav.html", "templates/memory_temporal.html"),
 		memProvenance: must("templates/layout.html", "templates/memnav.html", "templates/memory_provenance.html"),
+		cron:          must("templates/layout.html", "templates/cron.html"),
+		keys:          must("templates/layout.html", "templates/keys.html"),
 	}
 }
 

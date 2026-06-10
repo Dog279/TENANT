@@ -137,11 +137,12 @@ func (gc *goalControl) Clear() string {
 
 // Judge runs one judge call against the active condition and the agent's
 // last response. Returns:
-//   met=true   → goal achieved; the TUI posts "✦ goal met" + clears.
-//   met=false  → keep going; reason is the judge's one-line "still needed"
-//                explanation; caller increments turns and decides whether
-//                to continue based on atCap.
-//   atCap=true → turn budget exhausted; the TUI posts "⚠ hit cap" + clears.
+//
+//	met=true   → goal achieved; the TUI posts "✦ goal met" + clears.
+//	met=false  → keep going; reason is the judge's one-line "still needed"
+//	             explanation; caller increments turns and decides whether
+//	             to continue based on atCap.
+//	atCap=true → turn budget exhausted; the TUI posts "⚠ hit cap" + clears.
 //
 // Always returns met=true with no error when no goal is active — so the TUI
 // can call Judge unconditionally after turnDoneMsg and only act when it

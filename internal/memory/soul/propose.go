@@ -22,11 +22,11 @@ import (
 // drift in directions users didn't intend. The propose-edit flow keeps
 // improvement loud and reversible.
 type Proposal struct {
-	ID         string    `toml:"-"`           // derived from filename, not stored in TOML
+	ID         string    `toml:"-"` // derived from filename, not stored in TOML
 	AgentID    string    `toml:"agent_id"`
 	ProposedAt time.Time `toml:"proposed_at"`
-	Reason     string    `toml:"reason"`      // why the agent proposed this edit
-	Soul       Soul      `toml:"soul"`        // full replacement soul; we don't do partial diffs in v1
+	Reason     string    `toml:"reason"` // why the agent proposed this edit
+	Soul       Soul      `toml:"soul"`   // full replacement soul; we don't do partial diffs in v1
 }
 
 // ProposeEdit writes a new candidate Soul to the proposed/ directory.
@@ -44,7 +44,9 @@ func ProposeEdit(baseDir, agentID, reason string, soul *Soul) (string, error) {
 		return "", fmt.Errorf("soul: mkdir %s: %w", dir, err)
 	}
 	ts := time.Now().UTC()
-	id := fmt.Sprintf("%s-%s-%s", agentID, ts.Format("20060102T150405Z"), slugify(reason))
+	// Nanosecond precision so two proposals for the same agent+reason within the
+	// same second don't collide (and silently overwrite) on the filename.
+	id := fmt.Sprintf("%s-%s-%s", agentID, ts.Format("20060102T150405.000000000Z"), slugify(reason))
 	path := filepath.Join(dir, id+".toml")
 
 	p := Proposal{

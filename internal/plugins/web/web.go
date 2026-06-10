@@ -247,6 +247,40 @@ type Config struct {
 	// ReaderDisabled turns OFF the Jina reader fallback entirely (operator
 	// opt-out: no URL is ever sent to r.jina.ai). Default false = enabled.
 	ReaderDisabled bool
+
+	// Live key resolvers (optional). When set, these are re-read on EVERY
+	// search/read so a key rotated in the environment or credentials.json is
+	// picked up without restarting — see the *key() accessors below. They take
+	// precedence over the static *Key strings above. cmd/tenant wires these to
+	// credKey() so the web plugin resolves keys lazily, the same way the agent
+	// re-resolves model keys on rotation.
+	BraveKeyFunc  func() string `yaml:"-"`
+	TavilyKeyFunc func() string `yaml:"-"`
+	JinaKeyFunc   func() string `yaml:"-"`
+}
+
+// braveKey/tavilyKey/jinaKey return the live key: the resolver (re-read each
+// call) when set, else the static field. Centralizing here keeps every read
+// site live without each one knowing about resolvers.
+func (c Config) braveKey() string {
+	if c.BraveKeyFunc != nil {
+		return c.BraveKeyFunc()
+	}
+	return c.BraveKey
+}
+
+func (c Config) tavilyKey() string {
+	if c.TavilyKeyFunc != nil {
+		return c.TavilyKeyFunc()
+	}
+	return c.TavilyKey
+}
+
+func (c Config) jinaKey() string {
+	if c.JinaKeyFunc != nil {
+		return c.JinaKeyFunc()
+	}
+	return c.JinaKey
 }
 
 // Session owns a Chrome process + a single tab. One Session per agent

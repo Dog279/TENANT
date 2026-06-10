@@ -30,9 +30,9 @@ import (
 )
 
 const (
-	resumeEpisodes = 4               // last N turns to recap
-	resumeMaxChars = 1500            // hard cap on the rendered bridge (budget hygiene)
-	resumeMaxAge   = 48 * time.Hour  // don't auto-resume a session older than this
+	resumeEpisodes = 4              // last N turns to recap
+	resumeMaxChars = 1500           // hard cap on the rendered bridge (budget hygiene)
+	resumeMaxAge   = 48 * time.Hour // don't auto-resume a session older than this
 )
 
 // seedResumeBridge appends a one-message session recap to w iff w is empty (cold

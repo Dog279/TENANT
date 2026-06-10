@@ -1,0 +1,45 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">API-key management isn't configured in this session.</div></div>
+{{else}}
+
+<div class="card">
+  <div class="dim">Add or remove the API keys Tenant uses. Keys are <strong>write-only</strong> — once stored they can never be viewed or copied here, only replaced or removed. Stored in <code>credentials.json</code> (0600). Changes apply after the agent restarts.</div>
+</div>
+
+{{range .Groups}}
+<div class="card">
+  <div class="ghead"><span class="gname">{{.Category}}</span></div>
+  {{range .Rows}}
+  <div class="keyrow" id="key-{{.CredID}}">
+    <div class="khead">
+      <span class="nm">{{.Name}}</span>
+      {{if .Set}}<span class="on-tag">stored</span>
+      {{else if .Required}}<span class="risk">required</span>
+      {{else}}<span class="dim">not set</span>{{end}}
+      {{if .EnvDetected}}<span class="dim">· env {{.EnvVar}} detected</span>{{end}}
+    </div>
+    <div class="kactions">
+      <form method="POST" action="/settings/keys/{{.CredID}}/set" autocomplete="off" class="inline">
+        <input type="password" name="value" autocomplete="new-password"
+               placeholder="{{if .Set}}replace key{{else}}paste key{{end}}" class="cinput">
+        <button type="submit" class="btn sm">{{if .Set}}Replace{{else}}Add{{end}}</button>
+      </form>
+      {{if .Set}}
+      <form method="POST" action="/settings/keys/{{.CredID}}/remove" class="inline">
+        <button type="submit" class="btn sm danger">Remove</button>
+      </form>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+</div>
+{{else}}
+<div class="card"><div class="dim">No services in the catalog.</div></div>
+{{end}}
+
+{{end}}
+{{end}}

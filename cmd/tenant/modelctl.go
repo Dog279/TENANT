@@ -27,6 +27,9 @@ type modelControl struct {
 	agentID string
 	ag      *agent.Agent
 	log     *slog.Logger
+	// degraded is the shared echo-fallback gate (nil when the launch was healthy).
+	// Set at launch by buildRouterResilient; cleared here on a reachable swap.
+	degraded *degradedState
 }
 
 func (mc *modelControl) ModelList() []tui.ModelInfo {
@@ -36,21 +39,27 @@ func (mc *modelControl) ModelList() []tui.ModelInfo {
 	if err != nil {
 		return nil
 	}
-	return modelInfos(lc)
+	return modelInfos(lc, mc.degraded)
 }
 
-func modelInfos(lc *launchConfig) []tui.ModelInfo {
+func modelInfos(lc *launchConfig, degraded *degradedState) []tui.ModelInfo {
 	names := make([]string, 0, len(lc.Providers))
 	for name := range lc.Providers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	deg := degraded.Degraded()
 	out := make([]tui.ModelInfo, 0, len(names))
 	for _, name := range names {
 		p := lc.Providers[name]
+		active := name == lc.Provider
 		out = append(out, tui.ModelInfo{
 			Name: name, Kind: p.Kind, Endpoint: safeDisplayEndpoint(p.Endpoint), Model: p.Model,
-			Active: name == lc.Provider,
+			Active: active,
+			// The active provider is the one we tried (and failed) to build, so
+			// it's the one actually running on echo. Source of truth is the gate,
+			// not config (config still names the real provider — we never persist echo).
+			Degraded: deg && active,
 		})
 	}
 	return out
@@ -106,7 +115,36 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 	}
 	// Probe the new backend NOW so the operator sees connect success/fail in
 	// the feed immediately, instead of discovering a 404 on the next message.
-	return probeSwap(name, active, c2), active, nil
+	status := probeSwap(name, active, c2)
+	// If we launched degraded (echo fallback) and this swap reached a real,
+	// REACHABLE model (status leads with ✓), clear the gate so the suppressed
+	// background actors (self-improve, cron, relay) resume. A swap to a still-
+	// down endpoint returns ⚠ and leaves the gate set — destructive jobs stay
+	// suppressed until a real model is actually reachable.
+	if mc.degraded.Degraded() && strings.HasPrefix(status, "✓") {
+		mc.degraded.clear()
+		status += "  (self-improvement / cron resumed)"
+	}
+	return status, active, nil
+}
+
+// ReloadKeys re-resolves the ACTIVE provider's API key (env → credentials.json)
+// and hot-swaps it into the live router, so a key rotated at runtime takes effect
+// on the next turn WITHOUT a restart. No-op when no provider is active. It is a
+// re-`use` of the current provider — same resolve → SetProfiles → probe path,
+// shared by every actor (main agent, cron, relay, dashboard) holding the router,
+// and it clears the degraded gate on a reachable result.
+func (mc *modelControl) ReloadKeys() (string, error) {
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		return "", err
+	}
+	active := strings.TrimSpace(lc.Provider)
+	if active == "" {
+		return "", nil
+	}
+	status, _, err := mc.UseModel(active, "")
+	return status, err
 }
 
 // probeSwap verifies the just-swapped backend is reachable and serving the
@@ -602,7 +640,7 @@ func cmdModel(_ context.Context, args []string) error {
 }
 
 func printModelList(lc *launchConfig) {
-	infos := modelInfos(lc)
+	infos := modelInfos(lc, nil) // headless CLI: never degraded
 	if len(infos) == 0 {
 		fmt.Println("no model backends configured — `tenant model add <name> --endpoint URL` or run `tenant setup`")
 		return

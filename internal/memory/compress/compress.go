@@ -35,7 +35,7 @@ const systemPrompt = `You compress an AI assistant's conversation transcript int
 
 Output EXACTLY these markdown sections (omit a section only if it would be empty):
 ## Active Task
-one or two sentences naming the current goal
+one or two sentences naming the current goal AND the very next action to take, so work resumes without re-reading history
 ## Resolved
 - what is done or decided
 ## Pending

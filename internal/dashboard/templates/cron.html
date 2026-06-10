@@ -1,0 +1,64 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">Cron scheduling isn't configured in this session.</div></div>
+{{else}}
+
+<div class="card">
+  <form method="POST" action="/cron/add" class="cronadd">
+    <div class="crow">
+      <input type="text" name="name" placeholder="name (optional)" class="cinput">
+      <input type="text" name="spec" placeholder="schedule — e.g. 0 9 * * 1-5  or  @every 30m" class="cinput" required>
+      <input type="text" name="tz" placeholder="timezone (optional, e.g. America/New_York)" class="cinput">
+    </div>
+    <div class="crow">
+      <input type="text" name="prompt" placeholder="prompt (or shell command, for kind=shell)" class="cinput wide" required>
+      <button type="submit" class="btn">Schedule</button>
+    </div>
+    <div class="crow">
+      <label class="dim">kind
+        <select name="kind">
+          <option value="prompt">prompt (safe agent turn)</option>
+          <option value="shell">shell command (DANGEROUS)</option>
+        </select>
+      </label>
+      <label class="dim"><input type="checkbox" name="exec" value="true"> exec — give a prompt job dangerous tools (DANGEROUS)</label>
+    </div>
+    <div class="dim">Default jobs run unattended and read/comms-safe (read/research/report only). shell jobs and exec opt-in run dangerous actions unattended and require cron-exec to be enabled globally.</div>
+  </form>
+</div>
+
+{{range .Jobs}}
+<div class="card cronjob" id="cron-{{.ID}}">
+  <div class="ghead">
+    <span class="nm">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</span>
+    {{if .Enabled}}<span class="on-tag">enabled</span>{{else}}<span class="dim">disabled</span>{{end}}
+    <span class="sp"></span>
+    <code class="spec">{{.Spec}}</code>
+    {{if eq .Kind "shell"}}<span class="risk">shell</span>{{end}}
+    {{if .Exec}}<span class="risk">exec</span>{{end}}
+    {{if .TZ}}<span class="dim">{{.TZ}}</span>{{end}}
+  </div>
+  <div class="dim">id {{.ID}} · next {{if .NextRun}}{{.NextRun}}{{else}}—{{end}}{{if .LastStatus}} · last {{.LastStatus}}{{if .LastRun}} @ {{.LastRun}}{{end}}{{end}}</div>
+  <div class="prompt">{{.Prompt}}</div>
+  <div class="cronactions">
+    <form method="POST" action="/cron/{{.ID}}/run" class="inline">
+      <button type="submit" class="btn sm">Run now</button>
+    </form>
+    <form method="POST" action="/cron/{{.ID}}/enable" class="inline">
+      <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
+      <button type="submit" class="btn sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+    </form>
+    <form method="POST" action="/cron/{{.ID}}/delete" class="inline">
+      <button type="submit" class="btn sm danger">Delete</button>
+    </form>
+  </div>
+</div>
+{{else}}
+<div class="card"><div class="dim">No scheduled jobs yet. Add one above.</div></div>
+{{end}}
+
+{{end}}
+{{end}}

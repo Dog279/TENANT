@@ -216,6 +216,21 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 		// Conflict-update path — look up the id.
 		_ = tx.QueryRowContext(ctx, `SELECT id FROM skills WHERE agent_id=? AND name=?`, sk.AgentID, sk.Name).Scan(&id)
 	}
+	// Genesis audit row for a brand-new AUTO-ACCEPTED skill (TEN-152): a net-new
+	// insert normally skips history ("the live row IS v1"), but an auto-accepted
+	// skill went live WITHOUT manual review — record its machine origin durably so
+	// `/skills history` attributes it after the fact, not just a one-off feed line.
+	// Scoped to "auto-accept" only, so operator/seed/induction inserts keep the
+	// existing no-history-until-edited convention.
+	if priorID == 0 && changeSource == "auto-accept" {
+		if _, herr := tx.ExecContext(ctx, `
+            INSERT INTO skill_history
+                (skill_id, agent_id, name, version, prior_description, prior_recipe, prior_status, change_source, changed_at)
+            VALUES (?,?,?,?,?,?,?,?,?)`,
+			id, sk.AgentID, sk.Name, 1, sk.Description, sk.Recipe, sk.Status, changeSource, time.Now().UTC().Unix()); herr != nil {
+			return 0, fmt.Errorf("skills: genesis history: %w", herr)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("skills: commit: %w", err)
 	}

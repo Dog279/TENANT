@@ -32,6 +32,14 @@ func expandPath(p string) string {
 	return p
 }
 
+// defaultSQLDBPath is the SQLite file the sql plugin falls back to when no
+// path is given: ~/Desktop/tenant.db. Kept on the Desktop so it's easy to
+// find and inspect during the single-operator workstation stage. The file
+// (and ~/Desktop if somehow absent) is created on first open by sql.Open.
+func defaultSQLDBPath() string {
+	return expandPath(filepath.Join("~", "Desktop", "tenant.db"))
+}
+
 // ensureSetup is the idempotent first-run installer: it detects what
 // exists and creates only what's missing — data/config dirs, an
 // editable default soul (identity) file, the wiki vault (+ a starter

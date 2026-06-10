@@ -24,7 +24,9 @@ type dashboardManager struct {
 	cfg     dashboard.Config
 	runner  dashboard.AgentRunner
 	tools   dashboard.ToolControl
-	mem     dashboard.MemoryControl // TEN-88: memory curator surface (nil-safe)
+	mem     dashboard.MemoryControl  // TEN-88: memory curator surface (nil-safe)
+	cron    dashboard.CronControl    // recurring-job admin surface (nil-safe)
+	secrets dashboard.SecretsControl // write-only API-key admin surface (nil-safe)
 	broker  *agent.Broker
 	log     *slog.Logger
 	notify  func(string)             // feed sink (pushSys) for async status
@@ -45,6 +47,12 @@ func (m *dashboardManager) Enable() (string, error) {
 		return m.cfg.Addr, nil
 	}
 	srv := dashboard.New(m.cfg, m.runner, m.tools, m.mem, m.broker, m.log)
+	if m.cron != nil {
+		srv.SetCron(m.cron)
+	}
+	if m.secrets != nil {
+		srv.SetSecrets(m.secrets)
+	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {
 		if err := srv.Run(dctx); err != nil {

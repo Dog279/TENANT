@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,18 +12,67 @@ import (
 	"tenant/internal/model"
 )
 
-// cmdSkills dispatches `tenant skills [seed|list]`. Today seed is the only
-// useful sub-command from the CLI; list is a convenience pass-through.
+// cmdSkills dispatches `tenant skills [seed|auto]`.
 func cmdSkills(ctx context.Context, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: tenant skills seed <bundle>   (known bundles: gstack)")
+		return fmt.Errorf("usage: tenant skills <seed <bundle> | auto [off|on|trusted]>")
 	}
 	switch strings.ToLower(args[0]) {
 	case "seed":
 		return cmdSkillsSeed(ctx, args[1:])
+	case "auto":
+		return cmdSkillsAuto(ctx, args[1:])
 	default:
-		return fmt.Errorf("usage: tenant skills seed <bundle>")
+		return fmt.Errorf("usage: tenant skills <seed <bundle> | auto [off|on|trusted]>")
 	}
+}
+
+// cmdSkillsAuto views or sets the induced-skill auto-accept policy (TEN-152) —
+// the same `improve.auto_accept` config the TUI `/skills auto` toggles. With no
+// mode it prints the current value; otherwise it persists off|on|trusted.
+func cmdSkillsAuto(ctx context.Context, args []string) error {
+	var mode string
+	rest := args
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		mode = strings.ToLower(rest[0])
+		rest = rest[1:]
+	}
+	fs := flag.NewFlagSet("skills auto", flag.ContinueOnError)
+	c := bindCommon(fs)
+	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	lc, err := loadLaunchConfig(c.cfgDir)
+	if err != nil {
+		return err
+	}
+	if mode == "" {
+		cur := lc.Improve.AutoAccept
+		if cur == "" {
+			cur = "off"
+		}
+		fmt.Fprintf(os.Stderr, "skills auto-accept: %s\n", cur)
+		return nil
+	}
+	if !validAutoAccept(mode) {
+		return fmt.Errorf("usage: tenant skills auto <off|on|trusted>")
+	}
+	if mode == "off" {
+		mode = "" // store empty = default-off
+	}
+	lc.Improve.AutoAccept = mode
+	if err := lc.save(c.cfgDir); err != nil {
+		return err
+	}
+	shown := mode
+	if shown == "" {
+		shown = "off"
+	}
+	fmt.Fprintf(os.Stderr, "skills auto-accept set to %q (applies on the next induction run)\n", shown)
+	return nil
 }
 
 // cmdSkillsSeed routes `tenant skills seed <bundle>` through the same

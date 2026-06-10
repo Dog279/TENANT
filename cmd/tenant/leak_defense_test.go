@@ -135,7 +135,7 @@ func TestModelInfos_UsesSafeEndpoint(t *testing.T) {
 			"good":   {Kind: "vllm", Endpoint: "http://localhost:8000"},
 		},
 	}
-	infos := modelInfos(lc)
+	infos := modelInfos(lc, nil)
 	for _, mi := range infos {
 		if strings.Contains(mi.Endpoint, "sk-veryverysecret") {
 			t.Errorf("modelInfos leaked secret in endpoint for %q: %q", mi.Name, mi.Endpoint)
@@ -164,7 +164,7 @@ func TestEndToEnd_NoSecretLeaksThroughDisplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	infos := modelInfos(loaded)
+	infos := modelInfos(loaded, nil)
 	for _, mi := range infos {
 		if strings.Contains(mi.Endpoint, secret) {
 			t.Errorf("END-TO-END LEAK: secret survived loadLaunchConfig + modelInfos in field Endpoint=%q", mi.Endpoint)

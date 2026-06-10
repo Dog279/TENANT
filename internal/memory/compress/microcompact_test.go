@@ -23,7 +23,7 @@ func TestMicrocompact_ElidesOldLargeKeepsRecentAndSmall(t *testing.T) {
 	msgs := []working.Message{
 		{Role: "user", Content: "do stuff"},
 		asstCall("c1", "web_read"),
-		toolResult("c1", big, base),                    // old + large -> elide
+		toolResult("c1", big, base), // old + large -> elide
 		asstCall("c2", "sql_query"),
 		toolResult("c2", small, base.Add(time.Minute)), // old + small -> keep
 		asstCall("c3", "web_read"),

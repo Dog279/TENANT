@@ -91,6 +91,30 @@ func recv(ch chan string, d time.Duration) (string, bool) {
 
 const op = "op123"
 
+// While the model is degraded to the echo fallback, the relay must REFUSE
+// rather than drive a turn — the remote operator must never get an echo stub.
+func TestRelay_RefusesWhileDegraded(t *testing.T) {
+	fr := &fakeRunner{turns: make(chan string, 1)}
+	fs := &fakeSender{}
+	r := newRelay(fr, fs, op, nil)
+	r.degraded = func() bool { return true }
+	r.Start(context.Background())
+
+	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "hello there"})
+
+	if !waitSends(fs, 1, 2*time.Second) {
+		t.Fatalf("expected a refusal reply, got %v", fs.all())
+	}
+	if !strings.Contains(strings.ToLower(strings.Join(fs.all(), "\n")), "unavailable") {
+		t.Errorf("refusal should mention the model is unavailable: %v", fs.all())
+	}
+	select {
+	case q := <-fr.turns:
+		t.Errorf("degraded relay must NOT drive a turn, got %q", q)
+	default:
+	}
+}
+
 func TestRelay_OperatorDMDrivesTurn(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}

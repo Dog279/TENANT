@@ -40,13 +40,20 @@ func (p Policy) gate(ctx context.Context, c actionClass, detail string) error {
 		"— enable the send flag or confirm. This is a blast-radius boundary, not a bug")
 }
 
-// Dispatcher implements agent.ToolDispatcher for iMessage.
+// Dispatcher implements agent.ToolDispatcher for iMessage. It holds a
+// transport (the BlueBubbles *Service or the native macOS transport) —
+// not a concrete type — so the tools and the Policy gate are identical
+// across backends. The field is kept named svc to minimize the diff;
+// widening *Service → transport is additive (both satisfy the interface).
 type Dispatcher struct {
-	svc    *Service
+	svc    transport
 	policy Policy
 }
 
-func NewDispatcher(svc *Service, policy Policy) *Dispatcher {
+// NewDispatcher takes any transport. Passing a *Service (BlueBubbles), a
+// native transport, or nil (for Tools()-only use) all compile and behave
+// as before.
+func NewDispatcher(svc transport, policy Policy) *Dispatcher {
 	return &Dispatcher{svc: svc, policy: policy}
 }
 
@@ -190,6 +197,10 @@ func (d *Dispatcher) send(ctx context.Context, args json.RawMessage) (string, bo
 	if err != nil {
 		return "imessage send failed: " + err.Error(), true, nil
 	}
+	if guid == "" {
+		// The native (AppleScript) transport returns no message guid.
+		return "message sent", false, nil
+	}
 	return "sent message " + guid, false, nil
 }
 
@@ -208,6 +219,10 @@ func (d *Dispatcher) newChat(ctx context.Context, args json.RawMessage) (string,
 	guid, err := d.svc.NewChat(ctx, a.Address, a.Text)
 	if err != nil {
 		return "imessage new_chat failed: " + err.Error(), true, nil
+	}
+	if guid == "" {
+		// The native (AppleScript) transport returns no message guid.
+		return fmt.Sprintf("started chat with %s", a.Address), false, nil
 	}
 	return fmt.Sprintf("started chat with %s (message %s)", a.Address, guid), false, nil
 }

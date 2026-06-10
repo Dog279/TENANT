@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/cron"
 	"tenant/internal/dashboard"
 	"tenant/internal/improve"
 	"tenant/internal/mcp"
@@ -32,10 +33,12 @@ import (
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/soul"
+	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/orchestra"
+	cronplugin "tenant/internal/plugins/cron"
 	"tenant/internal/plugins/discord"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
@@ -239,10 +242,13 @@ func cmdConsolidate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdMemory handles `memory search <query>`.
+// cmdMemory handles `memory search <query>` and `memory reembed`.
 func cmdMemory(ctx context.Context, args []string) error {
+	if len(args) >= 1 && args[0] == "reembed" {
+		return cmdMemoryReembed(ctx, args[1:])
+	}
 	if len(args) < 1 || args[0] != "search" {
-		return fmt.Errorf("usage: tenant memory search <query> [flags]")
+		return fmt.Errorf("usage: tenant memory search <query> [flags]  |  tenant memory reembed")
 	}
 	// Go's flag package stops at the first non-flag arg, so a natural
 	// `memory search the query here --data X` would never parse --data.
@@ -774,17 +780,19 @@ func cmdSQL(ctx context.Context, args []string) error {
 	}
 	task := strings.TrimSpace(strings.Join(rest[:split], " "))
 	if task == "" {
-		return fmt.Errorf("usage: tenant sql \"<question>\" --db <file.sqlite> [--allow-write]")
+		return fmt.Errorf("usage: tenant sql \"<question>\" [--db <file.sqlite>] [--allow-write]")
 	}
 	fs := flag.NewFlagSet("sql", flag.ContinueOnError)
 	c := bindCommon(fs)
-	dbPath := fs.String("db", "", "path to a SQLite database file (required)")
+	dbPath := fs.String("db", "", "path to a SQLite database file (default ~/Desktop/tenant.db, auto-created)")
 	allowWrite := fs.Bool("allow-write", false, "permit INSERT/UPDATE/DELETE")
 	if err := fs.Parse(rest[split:]); err != nil {
 		return err
 	}
-	if *dbPath == "" {
-		return fmt.Errorf("--db <file.sqlite> is required")
+	if strings.TrimSpace(*dbPath) == "" {
+		*dbPath = defaultSQLDBPath()
+	} else {
+		*dbPath = expandPath(*dbPath)
 	}
 	if err := c.resolve(); err != nil {
 		return err
@@ -1195,10 +1203,11 @@ func cmdX(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdIMessage runs an agent turn with the iMessage plugin, talking to
-// a BlueBubbles server (server URL + password; no OAuth). Read-only by
-// default; --allow-send enables imessage_send/imessage_new_chat.
-// Sending uses BlueBubbles' apple-script method unless --private-api.
+// cmdIMessage runs an agent turn with the iMessage plugin. By default it
+// uses the native macOS transport (reads ~/Library/Messages/chat.db and
+// sends via AppleScript — no server). Passing --bb-url (or
+// $BLUEBUBBLES_URL) switches to the BlueBubbles server bridge instead.
+// Read-only by default; --allow-send enables imessage_send/new_chat.
 func cmdIMessage(ctx context.Context, args []string) error {
 	rest := args
 	split := len(rest)
@@ -1210,7 +1219,9 @@ func cmdIMessage(ctx context.Context, args []string) error {
 	}
 	task := strings.TrimSpace(strings.Join(rest[:split], " "))
 	if task == "" {
-		return fmt.Errorf("usage: tenant imessage \"<task>\" [--bb-url URL] [--bb-password PW] [--private-api] [--allow-send]")
+		return fmt.Errorf("usage: tenant imessage \"<task>\" [--allow-send] [--bb-url URL --bb-password PW [--private-api]]\n" +
+			"  default: native macOS transport (chat.db + AppleScript; needs Full Disk Access)\n" +
+			"  --bb-url: use a BlueBubbles server instead")
 	}
 	fs := flag.NewFlagSet("imessage", flag.ContinueOnError)
 	c := bindCommon(fs)
@@ -1231,9 +1242,28 @@ func cmdIMessage(ctx context.Context, args []string) error {
 	if pw == "" {
 		pw = os.Getenv("BLUEBUBBLES_PASSWORD")
 	}
-	svc, err := imessage.Open(imessage.Config{URL: urlv, Password: pw, PrivateAPI: *privateAPI})
-	if err != nil {
-		return err
+	// Transport selection (TEN-68): a BlueBubbles URL (flag/env) opts into
+	// the server bridge; otherwise the default is the native macOS
+	// transport (chat.db read + AppleScript send, no server). OpenNative
+	// returns a "macOS only" error off darwin. Confirm is nil → without
+	// --allow-send, send/new_chat are hard-denied (safe by default).
+	pol := imessage.Policy{AllowSend: *allowSend, Confirm: nil}
+	var wd *imessage.Dispatcher
+	backendDesc := "native (chat.db + AppleScript)"
+	if urlv != "" {
+		svc, err := imessage.Open(imessage.Config{URL: urlv, Password: pw, PrivateAPI: *privateAPI})
+		if err != nil {
+			return err
+		}
+		wd = imessage.NewDispatcher(svc, pol)
+		backendDesc = "BlueBubbles " + urlv
+	} else {
+		nat, err := imessage.OpenNative(imessage.NativeConfig{})
+		if err != nil {
+			return err
+		}
+		defer nat.Close()
+		wd = imessage.NewDispatcher(nat, pol)
 	}
 
 	log := newLogger()
@@ -1247,9 +1277,6 @@ func cmdIMessage(ctx context.Context, args []string) error {
 	}
 	defer closeStores()
 
-	// Confirm intentionally nil → without --allow-send, send/new_chat
-	// are hard-denied (safe by default; the operator opts in).
-	wd := imessage.NewDispatcher(svc, imessage.Policy{AllowSend: *allowSend, Confirm: nil})
 	reg := agent.NewStaticRegistry()
 	for _, sp := range wd.Tools() {
 		reg.Register(sp)
@@ -1266,7 +1293,7 @@ func cmdIMessage(ctx context.Context, args []string) error {
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
-		SystemPrompt: "You operate the user's iMessage via BlueBubbles. Use imessage_list_chats/" +
+		SystemPrompt: "You operate the user's iMessage. Use imessage_list_chats/" +
 			"imessage_read_chat/imessage_search to read conversations. imessage_send and " +
 			"imessage_new_chat are gated — only attempt them if the user explicitly asked, and " +
 			"report plainly if blocked by policy. Cite chat guids.",
@@ -1275,8 +1302,7 @@ func cmdIMessage(ctx context.Context, args []string) error {
 		return err
 	}
 
-	fmt.Printf("tenant imessage — server=%s send=%s allow-send=%v\n", urlv,
-		map[bool]string{true: "private-api", false: "apple-script"}[*privateAPI], *allowSend)
+	fmt.Printf("tenant imessage — backend=%s allow-send=%v\n", backendDesc, *allowSend)
 	fmt.Printf("task: %q\n\n", task)
 	res, err := ag.Turn(ctx, agent.TurnRequest{UserQuery: task})
 	if err != nil {
@@ -1604,15 +1630,39 @@ func cmdTUI(ctx context.Context, args []string) error {
 		pushSys(ln)
 	}
 
-	router, err := buildRouter(c, log)
+	// Resilient launch: degrade to echo (instead of aborting) when the
+	// configured model can't be built, so the TUI still opens and the operator
+	// can recover live with /model. Headless commands keep calling buildRouter
+	// directly and stay fail-fast. `degraded` is the shared gate that suppresses
+	// autonomous background work (self-improve, cron, relay) while on echo.
+	router, degraded, degradedBanner, err := buildRouterResilient(c, log)
 	if err != nil {
 		return err
+	}
+	if degraded.Degraded() {
+		pushSys(degradedBanner)
+		// In-memory ONLY so the status bar honestly shows "echo". MUST NOT
+		// persist — no lc.save runs here, so config.json keeps the real provider
+		// (which /model use and reconnect target). Do not add a save on this path.
+		c.backend = "echo"
+		pushSys("echo: responses are deterministic stubs — not a real model.")
 	}
 	st, closeStores, err := openStores(c)
 	if err != nil {
 		return err
 	}
 	defer closeStores()
+
+	// Long-term token-usage ledger (TEN-167): one row per MAIN-agent LLM
+	// call, for cost audit. Non-fatal — if it can't open, the TUI still
+	// runs; we just don't persist usage (the live footer counter is
+	// independent and keeps working).
+	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
+	if uerr != nil {
+		log.Warn("usage ledger unavailable", "err", uerr)
+	} else {
+		defer func() { _ = usageStore.Close() }()
+	}
 
 	// Approval broker: the single decision point for dangerous actions
 	// (the /approve flow + /permissions). Seeded from the --allow-* flags,
@@ -1952,6 +2002,101 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// copied into dashMemory + the TUI below, so this must precede those copies.
 	memCtl.expand = ag.ExpandLatestCompaction
 
+	// Cron (recurring jobs): DEDICATED runner agents (a read/comms-safe one and,
+	// for explicitly-opted-in jobs, an exec one) execute each job on its schedule;
+	// definitions persist to config.json, run history to <dataDir>/cron-history.json.
+	// The cron_* management tools are registered into the MAIN agent's local
+	// surface (so the agent can schedule jobs) but are CUT from the cron runners
+	// so a scheduled job cannot schedule more jobs. An add-on: a build failure
+	// degrades to "cron unavailable" rather than killing the session.
+	var (
+		cronEngine  *cron.Engine
+		tuiCronCtl  tui.CronControl
+		dashCronCtl dashboard.CronControl
+	)
+	var cronCatchup bool
+	cronLoc := time.Local
+	cronExecGate := &execGate{} // LIVE global exec kill-switch, toggled via /cron exec on|off
+	if c.lc != nil {
+		cronExecGate.set(c.lc.Cron.AllowExec)
+		cronCatchup = c.lc.Cron.Catchup
+		if tz := strings.TrimSpace(c.lc.Cron.Timezone); tz != "" {
+			if loc, lerr := time.LoadLocation(tz); lerr != nil {
+				pushSys("cron: bad timezone " + tz + " — using server local time")
+			} else {
+				cronLoc = loc
+			}
+		}
+	}
+	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
+		router:      router,
+		soulLive:    soulLive,
+		skills:      skillRetriever{st: skillStore, agentID: c.agent},
+		compactor:   compressor,
+		userProfile: prof,
+		fullTools:   mainTools.All(),
+		fullDisp:    mainTools,
+		sysPrompt:   sysPrompt,
+		log:         log,
+		cfgDir:      c.cfgDir,
+		dataDir:     c.dataDir,
+		allowExec:   cronExecGate,
+	}); cerr != nil {
+		pushSys("cron: disabled (" + cerr.Error() + ")")
+	} else {
+		var cronDefs []cron.JobDef
+		if c.lc != nil {
+			for _, j := range c.lc.Cron.Jobs {
+				cronDefs = append(cronDefs, cron.JobDef{
+					ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
+					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ,
+				})
+			}
+		}
+		cronEngine = cron.NewEngine(cronDefs, cronRunner, func(defs []cron.JobDef) error {
+			if c.lc == nil {
+				return nil
+			}
+			jobs := make([]cronJobConfig, len(defs))
+			for i, d := range defs {
+				jobs[i] = cronJobConfig{
+					ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
+					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
+				}
+			}
+			c.lc.Cron.Jobs = jobs
+			return c.lc.save(c.cfgDir)
+		}, log)
+		// While degraded (echo), defer ALL cron runs and force catch-up off — a
+		// scheduled agent turn would act on a fake plan, and an exec/shell job
+		// could run real side effects. Set BEFORE Prime so catch-up honors it.
+		cronEngine.SetPaused(degraded.Degraded)
+		// Apply timezone, catch-up, and persisted history in one pass, then start.
+		cronEngine.Prime(cron.PrimeOptions{
+			Location: cronLoc,
+			Catchup:  cronCatchup,
+			History:  loadCronHistory(c.dataDir),
+			HistoryPersist: func(h []cron.RunRecord) error {
+				return saveCronHistory(c.dataDir, h)
+			},
+		})
+		cronEngine.SetNotify(pushSys)
+		cronMgr := newCronManager(ctx, cronEngine, cronExecGate, func(on bool) error {
+			if c.lc == nil {
+				return nil
+			}
+			c.lc.Cron.AllowExec = on
+			return c.lc.save(c.cfgDir)
+		})
+		// cron_* tools for the MAIN agent (cut from the cron runners above).
+		mainLocal.add("cron", cronplugin.NewDispatcher(cronMgr))
+		tuiCronCtl = tuiCron{cronMgr}
+		dashCronCtl = dashCron{cronMgr}
+		if serr := cronEngine.Start(ctx); serr != nil {
+			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
+		}
+	}
+
 	// Web control panel (TEN-86): auto-launches with the TUI by default; the
 	// operator toggles it live via /dashboard, and the choice persists. The
 	// live agent + tool mux + event broker are shared with the TUI. An
@@ -1968,15 +2113,24 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	})
 	dcfg, dashOn := resolveDashboardConfig(c.lc, dashFlagSet, *dashboardOn, *dashboardAddr)
+	// modelControl powers /model AND backs the dashboard's write-only key page
+	// (TEN-145) for LLM-provider keys via AddCloudModel. Built once and shared.
+	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log, degraded: degraded}
+	// Live key rotation (no restart): watch credentials.json for external edits
+	// and hot-swap the active provider's key. (Web-search keys resolve lazily;
+	// settings-page writes trigger their own reload.)
+	go watchCredentials(ctx, c.cfgDir, modelCtl, degraded, pushSys)
 	dashMgr := &dashboardManager{
-		base:   ctx,
-		cfg:    dcfg,
-		runner: ag,
-		tools:  dashTools{mainTools},
-		mem:    dashMemory{memCtl},
-		broker: evBroker,
-		log:    log,
-		notify: pushSys,
+		base:    ctx,
+		cfg:     dcfg,
+		runner:  ag,
+		tools:   dashTools{mainTools},
+		mem:     dashMemory{memCtl},
+		cron:    dashCronCtl,
+		secrets: dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		broker:  evBroker,
+		log:     log,
+		notify:  pushSys,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
 				return nil
@@ -2024,6 +2178,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
 		sender: relaySender, gate: relayGate, token: discordToken, log: log, notify: pushSys,
+		degraded: degraded.Degraded, // refuse remote turns while on the echo fallback
 		persist: func(enabled bool, opID string, allowExec bool) error {
 			if c.lc == nil {
 				return nil
@@ -2049,6 +2204,22 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	}
 
+	// iMessage drive-allowlist (TEN-68 follow-up): the deny-by-default set of
+	// handles permitted to drive the agent over iMessage, edited live via
+	// /imessage. Always wired so the command works regardless of transport; the
+	// list is the policy the inbound responder (Layer 2) gates on.
+	var imsgAllow0 []string
+	if c.lc != nil {
+		imsgAllow0 = c.lc.IMessage.AllowFrom
+	}
+	imsgAllowMgr := newIMessageAllowManager(imsgAllow0, func(handles []string) error {
+		if c.lc == nil {
+			return nil
+		}
+		c.lc.IMessage.AllowFrom = handles
+		return c.lc.save(c.cfgDir)
+	})
+
 	// Background self-improvement: distillation runs on a cadence and
 	// its job results stream into the TUI feed (sysCh). Shares the same
 	// episodic/semantic stores the live agent uses (SQLite WAL → safe
@@ -2056,6 +2227,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	var sched *improve.Scheduler
 	if *selfImprove {
 		sched = improve.NewScheduler(log, 0)
+		// While the model is degraded to echo, suspend ALL self-improvement:
+		// consolidation/profile jobs would persist echo-derived garbage and the
+		// distill cursor would skip episodes never really processed.
+		sched.Paused = degraded.Degraded
 		sched.OnRun = func(rec improve.JobRunRecord) {
 			line, ok := formatSelfImproveFeedLine(rec)
 			if !ok {
@@ -2067,8 +2242,24 @@ func cmdTUI(ctx context.Context, args []string) error {
 			}
 		}
 		sched.Register(distillJob, *distillEvery)
+		improveCfg := improveConfig{}
+		if x, err := loadLaunchConfig(c.cfgDir); err == nil {
+			improveCfg = x.Improve
+		}
 		sched.Register(&improve.SkillInductionJob{
 			Episodic: st.episodic, Skills: skillStore, Embedder: skEmb, AgentID: c.agent,
+			// Auto-accept MODE is re-read from config each run (TEN-152) so a live
+			// toggle from any surface (/skills auto, tenant skills auto, or a manual
+			// config edit) takes effect on the next induction. The trust threshold
+			// is read once at launch (a rarely-changed tuning knob).
+			AutoAccept: func() string {
+				if x, err := loadLaunchConfig(c.cfgDir); err == nil {
+					return x.Improve.AutoAccept
+				}
+				return ""
+			},
+			TrustMinAcks: improveCfg.TrustMinAcks,
+			TrustWindow:  improveCfg.TrustWindow,
 		}, *distillEvery)
 		// Fact consolidation merges overlapping/duplicate facts the distiller's
 		// write-path dedup misses (paraphrases, subsumed granular facts). Heavier
@@ -2082,17 +2273,46 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// default is intentionally slower to keep token spend modest
 		// while still folding new directives in "soon enough."
 		sched.Register(profileJob{refresh: refreshProfile}, *profileEvery)
-		// Nightly eval (opt-in via --eval-every): the appliance's no-cron
-		// regression gate. Heavy (full live suite, own router+mux), so it
-		// defaults off and should run on a long cadence.
-		if *evalEvery > 0 {
-			sched.Register(newEvalNightlyJob(c, pf, log), *evalEvery)
+		// Nightly eval (opt-in): the appliance's no-cron regression gate. Heavy
+		// (full live suite, own router+mux), so it defaults off and runs on a long
+		// cadence. Cadence resolves flag-if-explicitly-set else config
+		// (improve.eval_every); a malformed config value fails CLOSED to off so a
+		// typo can't brick launch (TEN-157).
+		evalEverySet := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "eval-every" {
+				evalEverySet = true
+			}
+		})
+		evalCadence := resolveEvalCadence(evalEverySet, *evalEvery, improveCfg.EvalEvery, log)
+		if evalCadence > 0 {
+			sched.Register(newEvalNightlyJob(c, pf, log), evalCadence)
+		}
+		// SoulNudge (TEN-16): config-gated, OFF by default. Proposes refined soul
+		// instructions, eval-A/B-gates each against baselines/fitness.json, and
+		// queues survivors for HUMAN review (never auto-applied). Heavy + model-
+		// gated; suppressed while degraded (sched.Paused) and fails closed without
+		// a fitness baseline.
+		soulCadence := resolveEvalCadence(false, 0, improveCfg.SoulNudgeEvery, log)
+		if soulCadence > 0 {
+			sched.Register(&improve.SoulNudgeJob{
+				Episodic: st.episodic, AgentID: c.agent, BaseDir: c.cfgDir,
+				Proposer: improve.NewLLMSoulProposer(router),
+				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: log},
+				Logger:   log,
+			}, soulCadence)
 		}
 		// Loop tick is the min of all per-job cadences (capped at 1m so
 		// we don't busy-wait when both cadences are large).
 		tick := *distillEvery
 		if *profileEvery < tick {
 			tick = *profileEvery
+		}
+		if evalCadence > 0 && evalCadence < tick {
+			tick = evalCadence
+		}
+		if soulCadence > 0 && soulCadence < tick {
+			tick = soulCadence
 		}
 		if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
 			return err
@@ -2120,10 +2340,28 @@ func cmdTUI(ctx context.Context, args []string) error {
 		log.Warn("research store unavailable; /research history disabled", "err", rerr)
 		rstore = nil
 	}
+	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log}
+	// If we launched degraded because the endpoint was UNREACHABLE, start polling
+	// now so the operator sees it recover without first having to send a failing
+	// turn. Credential/config degrades won't recover by polling — don't poll them.
+	if degraded.Degraded() && degraded.class == degradeReachability {
+		reconnectMon.OnGenerationDown()
+	}
+	// Remote MCP control, shared by `/mcp` and by `/configure atlassian` (its
+	// "mcp" mode connects the official endpoint through this same path). (TEN-164)
+	mcpCtl := newMCPControl(mux, c.cfgDir, c.lc)
+	atlassianMCP := func(_ context.Context, url string) (string, error) {
+		info, err := mcpCtl.Add(url)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("connected to %s — %d tools live (gated)", info.Label, info.ToolCount), nil
+	}
 	err = tui.Run(ctx, tui.Config{
 		Agent: ag, Events: evCh, AgentID: c.agent, Backend: c.backend, Model: modelName, System: sysCh,
 		SavePath: filepath.Join(c.dataDir, "transcript.txt"), Tools: mainTools,
-		Skills: skillControl{st: skillStore, emb: skEmb, agentID: c.agent},
+		Skills:   skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir},
+		Feedback: feedbackControl{es: st.episodic, agentID: c.agent},
 		// SkillSeeds installs starter bundles (`/skills seed gstack`). Routes
 		// each seed through the same skillControl.AddSkill path so embedding
 		// + persistence stays consistent with manually-added skills.
@@ -2135,12 +2373,17 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Perms:     broker,
 		Dash:      dashMgr,
 		Relay:     relayMgr,
-		Models:    &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log},
+		IMessage:  imsgAllowMgr,
+		Cron:      tuiCronCtl,
+		MCP:       mcpCtl,
+		Secrets:   tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
+		Setup:     setupControl{cfgDir: c.cfgDir, mc: modelCtl},
+		Models:    modelCtl,
 		// TEN-64: `/skill` (singular) integration-config surface. Bridges
 		// auto-enable to the tool mux's SetPluginEnabled (TEN-58
 		// categorical toggle). Production catalog is empty until
 		// TEN-65+ populates it.
-		SkillConfig: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled),
+		SkillConfig: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled, atlassianMCP),
 		Research: &researchControl{
 			ag: ag, rt: rt, say: researchSay, wikiDir: pf.wikiDir, wikiIndex: wikiIx,
 			opts: defaultResearchOpts(), store: rstore,
@@ -2157,12 +2400,23 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Agents:           &agentControl{cfgDir: c.cfgDir, rt: rt},
 		Goals:            newGoalControl(ag),
 		Review:           newReviewControl(ag, rt),
-		Reconnect:        &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log},
+		Reconnect:        reconnectMon,
 		TeamEvents:       teamCh,
 		ResearchTimeline: timelineCh,
+		// TEN-167: persist each MAIN-agent LLM call's token usage for
+		// long-term cost audit. Non-fatal — closure swallows errors so a
+		// ledger issue never blocks the UI.
+		RecordUsage: func(in, out int) {
+			if usageStore != nil {
+				_ = usageStore.Record(ctx, c.agent, modelName, in, out)
+			}
+		},
 	})
 	if sched != nil {
 		sched.Stop() // drain before stores close (deferred)
+	}
+	if cronEngine != nil {
+		cronEngine.Stop() // cancel any in-flight cron run + drain the loop
 	}
 	return err
 }

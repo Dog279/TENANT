@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/memory/archive"
@@ -364,6 +365,105 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 
 	default:
 		return nil, fmt.Errorf("unknown backend %q (use echo or vllm)", c.backend)
+	}
+}
+
+// --- resilient launch (interactive only) --------------------------------
+//
+// buildRouter aborts the process when the configured model can't be built (down
+// server, missing key, corrupt config). That's correct for headless commands
+// (eval/serve/research/doctor) but wrong for the interactive TUI, where the
+// operator has /model to fix it live. buildRouterResilient degrades to the
+// pure-Go echo backend so the TUI still opens. NEVER call it from a headless
+// command — buildRouter stays fail-fast there.
+
+// degradeClass describes why generation degraded: it drives banner wording and
+// whether reconnect polling can ever recover (a missing key won't).
+type degradeClass int
+
+const (
+	degradeNone         degradeClass = iota
+	degradeReachability              // server down / auto-detect failed → poll to recover
+	degradeCredential                // missing API key → operator must add a key; do NOT poll
+	degradeConfig                    // unknown backend / missing model → fix config; do NOT poll
+)
+
+// degradedState is the SINGLE source of truth for "running on the echo fallback
+// because the real model couldn't be built." One instance is shared by the TUI
+// model display, the self-improve scheduler, the cron engine, and the relay —
+// so autonomous actors suppress destructive work while it's set. Cleared only on
+// a reachable /model use.
+type degradedState struct {
+	on    atomic.Bool
+	class degradeClass // written once at boot, read-only thereafter
+	cause string       // original buildRouter error, for the banner
+}
+
+// Degraded reports whether we're on the echo fallback. Nil-safe so a normal
+// (non-degraded) launch can pass a nil *degradedState everywhere.
+func (d *degradedState) Degraded() bool { return d != nil && d.on.Load() }
+
+func (d *degradedState) clear() {
+	if d != nil {
+		d.on.Store(false)
+	}
+}
+
+// buildRouterResilient wraps buildRouter for INTERACTIVE launch only. On a
+// model-related failure it degrades to an echo router so the TUI still opens,
+// returning a shared *degradedState (nil when healthy) and a banner. It returns
+// an error ONLY for a non-model failure the echo branch can't paper over (e.g.
+// embedder registry I/O) — those still abort.
+func buildRouterResilient(c *commonFlags, log *slog.Logger) (*model.Router, *degradedState, string, error) {
+	r, err := buildRouter(c, log)
+	if err == nil {
+		return r, nil, "", nil
+	}
+	cause := err.Error()
+
+	// Degrade to echo (pure-Go, no network). Copy c so we don't mutate the
+	// caller's backend here — the call site sets c.backend="echo" deliberately
+	// for the status bar, but the real provider must stay in config.json.
+	ec := *c
+	ec.backend = "echo"
+	er, eerr := buildRouter(&ec, log)
+	if eerr != nil {
+		return nil, nil, "", fmt.Errorf("model unavailable and echo fallback failed: %w (cause: %s)", eerr, cause)
+	}
+
+	ds := &degradedState{class: classifyDegrade(cause), cause: cause}
+	ds.on.Store(true)
+	return er, ds, degradeBanner(c.genKind, ds.class, cause), nil
+}
+
+// classifyDegrade buckets a buildRouter error (by its stable, operator-facing
+// message) so the banner + reconnect policy match the fault. An unrecognized
+// cause defaults to reachability (degrade + poll) — safe, since polling is
+// read-only.
+func classifyDegrade(cause string) degradeClass {
+	switch {
+	case strings.Contains(cause, "needs an API key"):
+		return degradeCredential
+	case strings.Contains(cause, "unknown backend"), strings.Contains(cause, "needs a model"):
+		return degradeConfig
+	case strings.Contains(cause, "is the server up"), strings.Contains(cause, "could not determine"):
+		return degradeReachability
+	default:
+		return degradeReachability
+	}
+}
+
+// degradeBanner is the un-missable startup notice. It is explicit that this is
+// echo (no real LLM, no tool execution) and gives the class-specific fix.
+func degradeBanner(genKind string, class degradeClass, cause string) string {
+	const head = "⚠ model %q unavailable — running on ECHO (no real LLM, no tool execution). "
+	switch class {
+	case degradeCredential:
+		return fmt.Sprintf(head+"Credential missing: add a key with `/model add` or re-run `tenant setup`, then `/model use`. Reason: %s", genKind, cause)
+	case degradeConfig:
+		return fmt.Sprintf(head+"Config error: fix config.json or re-run `tenant setup`, then `/model use`. Reason: %s", genKind, cause)
+	default:
+		return fmt.Sprintf(head+"Endpoint unreachable: start the server, then `/model use <provider>` (auto-reconnect is polling). Reason: %s", genKind, cause)
 	}
 }
 

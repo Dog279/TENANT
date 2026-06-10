@@ -416,7 +416,7 @@ func TestRenderTemporalSVG(t *testing.T) {
 	// Full-width responsiveness (TEN-112): the svg element fills its container
 	// (width=100% + viewBox, height derived via CSS) and must NOT pin a fixed
 	// pixel height, which would letterbox it to a tiny centered box.
-	open := out[strings.Index(out, "<svg"):strings.Index(out, ">")+1]
+	open := out[strings.Index(out, "<svg") : strings.Index(out, ">")+1]
 	if !strings.Contains(open, `width="100%"`) || !strings.Contains(open, "viewBox=") {
 		t.Errorf("svg should be responsive (width=100%% + viewBox): %q", open)
 	}

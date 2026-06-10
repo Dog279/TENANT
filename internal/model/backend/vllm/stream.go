@@ -203,8 +203,15 @@ func (b *Backend) pumpSSE(ctx context.Context, resp *http.Response, out chan<- m
 		}
 	}
 	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
+		// A cancel/deadline that fires while the scanner is blocked in a body
+		// read surfaces here as a wrapped context error rather than via the
+		// top-of-loop ctx.Err() check, so map it to ErrCancelled.
+		streamErr := fmt.Errorf("%w: stream read: %v", model.ErrInternal, err)
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			streamErr = fmt.Errorf("%w: %v", model.ErrCancelled, err)
+		}
 		select {
-		case out <- model.StreamChunk{Error: fmt.Errorf("%w: stream read: %v", model.ErrInternal, err)}:
+		case out <- model.StreamChunk{Error: streamErr}:
 		default:
 		}
 		return

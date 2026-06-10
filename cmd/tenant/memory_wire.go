@@ -176,10 +176,10 @@ func (c memControl) Recent(n int) string {
 		return "no episodes yet"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "recent episodes (%d):\n", len(eps))
+	fmt.Fprintf(&b, "recent episodes (%d)  [✓ acked · ✗ undone]:\n", len(eps))
 	for i := len(eps) - 1; i >= 0; i-- { // newest first
 		e := eps[i]
-		fmt.Fprintf(&b, "  [ep:%d %s] %s -> %s\n", e.ID, e.Timestamp.Format("01-02 15:04"), clip(e.Prompt, 50), clip(e.Response, 60))
+		fmt.Fprintf(&b, "  %s [ep:%d %s] %s -> %s\n", feedbackMark(e.UserFeedback), e.ID, e.Timestamp.Format("01-02 15:04"), clip(e.Prompt, 50), clip(e.Response, 60))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

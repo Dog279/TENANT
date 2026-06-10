@@ -115,11 +115,11 @@ func TestGoalControl_FirstPromptPushesForAction(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 	for _, want := range []string{
-		"DO ONE THING",      // explicit action verb
-		"ARTIFACT",          // demands output, not plan
-		"Forbidden",         // names the failure mode explicitly
-		"meta-commentary",   // names the anti-pattern
-		"tools",             // tells the agent HOW (use tools)
+		"DO ONE THING",    // explicit action verb
+		"ARTIFACT",        // demands output, not plan
+		"Forbidden",       // names the failure mode explicitly
+		"meta-commentary", // names the anti-pattern
+		"tools",           // tells the agent HOW (use tools)
 	} {
 		if !strings.Contains(first, want) {
 			t.Errorf("first prompt missing anti-narration cue %q:\n%s", want, first)
@@ -136,7 +136,7 @@ func TestExtractNotMetReason(t *testing.T) {
 		{"NOT MET: missing assertion", "missing assertion"},
 		{"Notmet: still pending", "still pending"},
 		{"Let me think... NOT_MET: the agent didn't create the file", "the agent didn't create the file"},
-		{"MET", ""},  // not a not-met line
+		{"MET", ""}, // not a not-met line
 		{"completely unparseable", ""},
 		{"NOT_MET", ""}, // no reason on the line
 	}

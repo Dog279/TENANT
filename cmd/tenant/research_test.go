@@ -118,10 +118,10 @@ func TestHeuristicVague(t *testing.T) {
 		"compare alpha bravo", // 3 words, no caps/digits — vague
 	}
 	specific := []string{
-		"What is the latest closing price of NVDA on the NASDAQ?", // long
-		"compare Graphiti vs OpenClaw MCP architectures",          // 2 proper nouns
-		"NVDA Q3 2026 earnings call summary",                      // proper noun + digit
-		`research "Hermes 4" on DGX Spark`,                         // quoted phrase
+		"What is the latest closing price of NVDA on the NASDAQ?",      // long
+		"compare Graphiti vs OpenClaw MCP architectures",               // 2 proper nouns
+		"NVDA Q3 2026 earnings call summary",                           // proper noun + digit
+		`research "Hermes 4" on DGX Spark`,                             // quoted phrase
 		"summarize golang.org/x/sync/errgroup error semantics in 2026", // has digit
 	}
 	for _, q := range vague {

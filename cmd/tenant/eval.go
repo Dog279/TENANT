@@ -38,13 +38,15 @@ func cmdEval(ctx context.Context, args []string) error {
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs)
 	var (
-		subset        string
-		jsonOut       bool
-		quiet         bool
+		subset         string
+		jsonOut        bool
+		quiet          bool
 		listOnly       bool
 		compactionMode bool
 		baselineWrite  string
 		baselineCheck  string
+		trend          bool
+		trendN         int
 		jOpts          evalJudgeOpts
 	)
 	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full")
@@ -58,6 +60,8 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.StringVar(&jOpts.keyEnv, "judge-key-env", "ANTHROPIC_API_KEY", "env var holding the override judge's API key (never stored or printed)")
 	fs.StringVar(&baselineWrite, "baseline-write", "", "after the run, write a baseline snapshot (per-task scores) to this path")
 	fs.StringVar(&baselineCheck, "baseline-check", "", "after the run, compare to the baseline at this path (paired-bootstrap 95% CI; non-zero exit on regression)")
+	fs.BoolVar(&trend, "trend", false, "print the nightly-eval trend log (offline; no run) and exit")
+	fs.IntVar(&trendN, "trend-n", 20, "with --trend: how many recent entries to show")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "tenant eval — run the eval harness against the current build")
 		fmt.Fprintln(fs.Output())
@@ -76,6 +80,10 @@ func cmdEval(ctx context.Context, args []string) error {
 
 	if compactionMode {
 		return runCompactionEval(ctx, c, jsonOut)
+	}
+
+	if trend { // offline trend reader (TEN-158) — no run, no model
+		return runEvalTrend(c, trendN)
 	}
 
 	sub := eval.Subset(subset)
@@ -209,12 +217,20 @@ func runCompactionEval(ctx context.Context, c *commonFlags, jsonOut bool) error 
 // (cmdEval) and the nightly Job so both run the eval identically; the live
 // runtime (router + tool mux) is built and torn down within this call.
 func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts) (*eval.Report, error) {
+	return runEvalToReportWithSoul(ctx, c, pf, sub, jOpts, nil)
+}
+
+// runEvalToReportWithSoul is runEvalToReport with an optional soul override:
+// when soulOverride is non-nil the live agents use it instead of the on-disk
+// soul. SoulNudgeJob (TEN-16) uses this to A/B-score a candidate soul against
+// the committed fitness baseline. nil ⇒ identical to runEvalToReport.
+func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul) (*eval.Report, error) {
 	h, err := eval.LoadHarness(eval.EmbeddedTasks, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load harness: %w", err)
 	}
 	if sub == eval.SubsetFitness || sub == eval.SubsetFull {
-		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts)
+		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride)
 		if err != nil {
 			return nil, err
 		}
@@ -239,7 +255,7 @@ type evalJudgeOpts struct {
 // gateOnly — installs the LLM judge (the planner / main-agent model by
 // default; --judge-model overrides with a separate, e.g. cloud, model).
 // Returns a cleanup func (closes the tool mux's browser/db handles + archive).
-func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts) (func(), error) {
+func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul) (func(), error) {
 	if err := c.resolve(); err != nil {
 		return nil, err
 	}
@@ -256,9 +272,14 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		return nil, fmt.Errorf("eval: build tools: %w", err)
 	}
 	// Soul loaded once, shared read-only (Turn renders but never mutates it).
-	sl, lerr := soul.Load(c.cfgDir, c.agent)
-	if lerr != nil {
-		sl = soul.NewDefault(c.agent)
+	// A non-nil soulOverride (SoulNudgeJob candidate, TEN-16) wins over disk.
+	sl := soulOverride
+	if sl == nil {
+		s, lerr := soul.Load(c.cfgDir, c.agent)
+		if lerr != nil {
+			s = soul.NewDefault(c.agent)
+		}
+		sl = s
 	}
 	// One throwaway archive dir for the whole run — eval turns must not
 	// pollute the operator's real event log under <data>.

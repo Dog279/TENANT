@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"tenant/internal/eval"
@@ -39,12 +40,26 @@ func TestEvalNightlyJob_SmokeArtifact(t *testing.T) {
 		t.Error("regressed = true, want false (no baseline present)")
 	}
 
-	// Exactly one timestamped artifact must have been written.
+	// Exactly one timestamped report artifact must have been written (the
+	// nightly also appends trend.jsonl in the same dir — TEN-158 — which is not
+	// a report artifact and is excluded here).
 	entries, err := os.ReadDir(j.artifactDir)
 	if err != nil {
 		t.Fatalf("read artifact dir: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("want exactly 1 artifact in %s, got %d", j.artifactDir, len(entries))
+	reports, sawTrend := 0, false
+	for _, e := range entries {
+		switch {
+		case strings.HasPrefix(e.Name(), "eval-") && strings.HasSuffix(e.Name(), ".json"):
+			reports++
+		case e.Name() == "trend.jsonl":
+			sawTrend = true
+		}
+	}
+	if reports != 1 {
+		t.Fatalf("want exactly 1 report artifact in %s, got %d (entries: %v)", j.artifactDir, reports, entries)
+	}
+	if !sawTrend {
+		t.Error("nightly run should have appended trend.jsonl (TEN-158)")
 	}
 }

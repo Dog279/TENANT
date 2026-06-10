@@ -52,6 +52,7 @@ type relay struct {
 	log        *slog.Logger
 	rl         *rateLimiter
 	approver   *discordApprover // optional; set by the manager (TEN-117/119)
+	degraded   func() bool      // optional; when true the model is on the echo fallback
 
 	mu     sync.Mutex
 	base   context.Context // lifetime of the relay; background turns derive from it
@@ -113,6 +114,14 @@ func (r *relay) handleInbound(in discord.Inbound) {
 		} else {
 			r.reply(in.ChannelID, "nothing is running.")
 		}
+		return
+	}
+
+	// While the local model is degraded to the echo fallback, refuse rather than
+	// drive a turn — the remote operator never sees the terminal banner and must
+	// not be handed an echo stub presented as a real answer.
+	if r.degraded != nil && r.degraded() {
+		r.reply(in.ChannelID, "⚠ the model is unavailable on the host right now (running on a local fallback). I'm not answering with a stub — try again once it's back, or fix it at the console with /model.")
 		return
 	}
 

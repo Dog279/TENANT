@@ -26,6 +26,7 @@ import (
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
 	"tenant/internal/plugins/gsuite"
+	"tenant/internal/plugins/imessage"
 	"tenant/internal/plugins/web"
 	"tenant/internal/research"
 
@@ -176,6 +177,11 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		{"gsuite (if enabled)", checkGSuite},
 		// NEW: Discord bot token resolvable + reachable when discord enabled.
 		{"discord (if enabled)", checkDiscord},
+		// TEN-68: iMessage transport readiness. Native (default on macOS)
+		// reads chat.db — probe Full Disk Access by opening it read-only so
+		// the FDA requirement surfaces before a live read/send. A configured
+		// BlueBubbles URL is noted instead (server bridge).
+		{"imessage (if configured)", checkIMessage},
 		// TEN-81: dashboard reachability + bind-policy config lint when the
 		// web control panel is configured.
 		{"dashboard (if configured)", checkDashboard},
@@ -366,7 +372,7 @@ func checkEmbedDim(ctx context.Context, e *doctorEnv) checkResult {
 		return checkResult{Status: statusFail,
 			Detail: fmt.Sprintf("embedder now produces %dd but %s — cosine returns 0 on length mismatch; retrieval is SILENTLY broken",
 				liveDim, strings.Join(mismatches, ", ")),
-			Fix: "use a fresh --data dir, or re-embed (switching embed models invalidates stored vectors)"}
+			Fix: "run `tenant memory reembed` to re-embed stored vectors with the current embedder (recovers retrieval, keeps your data), or use a fresh --data dir to start clean"}
 	}
 	return checkResult{Status: statusOK, Detail: fmt.Sprintf("stored vectors match live embedder (%dd)", liveDim)}
 }
@@ -1176,6 +1182,60 @@ func checkDiscord(ctx context.Context, e *doctorEnv) checkResult {
 			Fix:    "check the Developer Portal for the bot's status"}
 	}
 	return checkResult{Status: statusOK, Detail: "bot token valid; discord.com reachable"}
+}
+
+// checkIMessage verifies the iMessage transport is usable (TEN-68). The
+// native macOS transport reads ~/Library/Messages/chat.db (requires Full
+// Disk Access) and sends via osascript (Automation access, prompted on
+// first send). Tiers:
+//
+//	skip — imessage not configured; or native on a non-macOS host; nothing
+//	       to probe locally without a BlueBubbles URL
+//	OK   — BlueBubbles URL configured (server bridge), OR native chat.db is
+//	       readable (FDA granted)
+//	WARN — native selected but chat.db can't be read yet (FDA not granted)
+//	       or osascript is missing — both come with an actionable fix
+//
+// The FDA probe opens chat.db read-only, which forces a real read, so a
+// macOS TCC denial surfaces here rather than at first use. It's a WARN
+// (not FAIL) because a present-but-unconfigured skill shouldn't flip the
+// doctor exit code; the fix text is explicit.
+func checkIMessage(_ context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil || e.lc.Skills == nil {
+		return checkResult{Status: statusSkip, Detail: "imessage not configured"}
+	}
+	icfg := e.lc.Skills["imessage"]
+	if icfg == nil {
+		return checkResult{Status: statusSkip, Detail: "imessage not configured"}
+	}
+	// Backend selection mirrors toolmux/cmdIMessage: a BlueBubbles URL
+	// (env wins over settings) opts into the server bridge; else native.
+	url := os.Getenv("BLUEBUBBLES_URL")
+	if url == "" && icfg.Settings != nil {
+		url = strings.TrimSpace(icfg.Settings["url"])
+	}
+	if url != "" {
+		return checkResult{Status: statusOK, Detail: "BlueBubbles transport configured (url=" + url + ")"}
+	}
+	// Native transport is macOS-only.
+	if runtime.GOOS != "darwin" {
+		return checkResult{Status: statusSkip,
+			Detail: "native iMessage is macOS-only; set a BlueBubbles --bb-url to use iMessage on this host"}
+	}
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return checkResult{Status: statusWarn,
+			Detail: "osascript not found — iMessage sends will fail",
+			Fix:    "osascript ships with macOS at /usr/bin/osascript; verify your PATH / system integrity"}
+	}
+	nat, err := imessage.OpenNative(imessage.NativeConfig{})
+	if err != nil {
+		return checkResult{Status: statusWarn,
+			Detail: "native transport selected but Messages chat.db is unreadable: " + err.Error(),
+			Fix:    "grant Full Disk Access to your terminal (or the tenant binary) in System Settings → Privacy & Security → Full Disk Access, then rerun"}
+	}
+	_ = nat.Close()
+	return checkResult{Status: statusOK,
+		Detail: "native chat.db readable (Full Disk Access granted); Automation is prompted on first send"}
 }
 
 // checkDashboard verifies the web control panel (TEN-76/79) when it's

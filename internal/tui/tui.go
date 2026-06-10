@@ -64,6 +64,26 @@ type Config struct {
 	Dash DashboardControl
 	// Relay, if set, powers /relay: start/stop the offsite Discord relay live.
 	Relay RelayControl
+	// IMessage, if set, powers /imessage: manage the deny-by-default allowlist
+	// of phone numbers / emails permitted to drive the agent over iMessage.
+	IMessage IMessageControl
+	// Cron, if set, powers /cron: manage recurring agent-prompt jobs.
+	Cron CronControl
+	// MCP, if set, powers /mcp: connect/list/remove remote MCP connector
+	// servers at runtime (OAuth browser sign-in), tools gated deny-by-default.
+	MCP MCPControl
+	// Secrets, if set, powers `/configure` (no-arg): an arrow-key picker over
+	// every keyed service (LLM providers, web-search engines, Discord, …) →
+	// paste the key → stored + applied live. Write-only: List exposes presence,
+	// never values.
+	Secrets SecretsControl
+	// Setup, if set, powers `/setup`: an arrow-key menu mirroring the external
+	// `tenant setup` wizard (provider / model / endpoint / key / tool-format /
+	// embeddings / gateway), edited in-TUI and applied live where possible.
+	Setup SetupControl
+	// Feedback, if set, powers `/ack` and `/undo`: mark the last turn as good
+	// (ack) or bad (undo) — the real-world signal for the self-improvement loop.
+	Feedback FeedbackControl
 	// Models, if set, powers /model: list configured model backends, switch
 	// the primary on the fly, and add a new backend mid-session.
 	Models ModelControl
@@ -91,6 +111,12 @@ type Config struct {
 	// TeamEvents, if set, carries spawned sub-agents' events (tagged with
 	// their id) — shown in the feed and summed into the team token counter.
 	TeamEvents <-chan TeamEvent
+
+	// RecordUsage, if set, persists each MAIN-agent LLM call's token usage
+	// (input, output) to the long-term cost-audit ledger. The cmd layer
+	// binds this to the usage store with agentID + model closed over, and
+	// swallows persistence errors so the UI never blocks (TEN-167).
+	RecordUsage func(in, out int)
 
 	// ResearchTimeline, if set, carries structured updates from /research
 	// (plan ready, wave dispatched, agent status, reflection done, synth
@@ -152,6 +178,20 @@ type SkillControl interface {
 	// The current state is snapshotted into history before being overwritten
 	// so reverts are themselves reversible.
 	SkillRevert(name string, version int) error
+
+	// AutoAcceptMode returns the induced-skill auto-accept policy
+	// ("off"|"on"|"trusted"). SetAutoAccept persists a new mode (TEN-152).
+	// Lets the operator graduate from manual /skills accept to automatic once
+	// they trust the loop — "trusted" auto-accepts only while feedback is healthy.
+	AutoAcceptMode() string
+	SetAutoAccept(mode string) error
+}
+
+// FeedbackControl records the operator's ack/undo on the last turn (TEN-151) —
+// the real-world success signal that feeds skill induction + the eval.
+type FeedbackControl interface {
+	Ack() (status string, err error)
+	Undo() (status string, err error)
 }
 
 // SkillHistoryEntry is one prior snapshot of a skill. Surfaced by /skills
@@ -321,6 +361,110 @@ type RelayControl interface {
 	SetExec(on bool) error
 }
 
+// IMessageControl powers /imessage: manage the DENY-BY-DEFAULT allowlist of
+// phone numbers / emails permitted to DRIVE the agent over iMessage (i.e. let
+// an inbound texter invoke the agent's tools). Edits persist. An EMPTY list
+// permits NOBODY — the safe default for "no unrestricted access." The list is
+// the policy the inbound responder (Layer 2) gates on; storing it here is
+// necessary but the enforcement check lives at the drive point.
+//
+// Allow/Deny return the NORMALIZED handle so the UI echoes the exact canonical
+// form stored (emails lowercased; phones reduced to '+' and digits), plus a
+// flag for whether the list actually changed (false = already present / absent).
+type IMessageControl interface {
+	AllowList() []string
+	Allow(handle string) (normalized string, added bool, err error)
+	Deny(handle string) (normalized string, removed bool, err error)
+	Clear() (n int, err error)
+}
+
+// CronControl powers /cron: manage recurring jobs. Each job runs an agent prompt
+// on a crontab/@every schedule, UNATTENDED and read/comms-safe (the cron runner
+// cannot exec/write/send or schedule more jobs). Add/SetEnabled return the
+// resulting job view; RunNow triggers an immediate run whose result arrives
+// asynchronously in the feed.
+type CronControl interface {
+	Jobs() []CronJobView
+	Add(spec CronAddSpec) (CronJobView, error)
+	Remove(id string) (removed bool, err error)
+	SetEnabled(id string, on bool) (view CronJobView, changed bool, err error)
+	RunNow(id string) error
+	// ExecEnabled reports the global cron-exec kill-switch; SetExec flips it.
+	// When off, shell jobs and exec-opted-in prompt jobs are created but won't run.
+	ExecEnabled() bool
+	SetExec(on bool) error
+}
+
+// MCPControl powers /mcp: connect/list/remove remote MCP connector servers at
+// runtime. Add connects via OAuth 2.1 + Dynamic Client Registration (opens a
+// browser, no pre-created app) and surfaces the server's tools gated
+// deny-by-default; the URL is persisted so the server re-registers next launch.
+// Add MAY BLOCK on the browser callback — callers MUST run it off the UI
+// goroutine (a tea.Cmd closure), never inline.
+type MCPControl interface {
+	List() []MCPServerInfo
+	// Add connects + activates the server at url, then persists it. Blocks
+	// until the OAuth browser flow completes. Returns the connected server view.
+	Add(url string) (MCPServerInfo, error)
+	// Remove disconnects + forgets a server (by URL or label); removed=false if
+	// nothing matched.
+	Remove(target string) (removed bool, err error)
+}
+
+// MCPServerInfo is one remote MCP connector's view for /mcp.
+type MCPServerInfo struct {
+	Label     string // e.g. "mcp:mcp.atlassian.com"
+	URL       string
+	Enabled   bool
+	ToolCount int
+}
+
+// CronAddSpec is the input to CronControl.Add. Kind is "" (prompt), "prompt", or
+// "shell"; Exec opts a prompt job into the dangerous tool surface; TZ is an
+// optional IANA timezone.
+type CronAddSpec struct {
+	Name   string
+	Spec   string
+	Prompt string
+	Kind   string
+	Exec   bool
+	TZ     string
+}
+
+// CronJobView is the TUI's render-ready view of one cron job. Time fields are
+// pre-formatted strings ("" when unset).
+type CronJobView struct {
+	ID         string
+	Name       string
+	Spec       string
+	Prompt     string
+	Enabled    bool
+	Kind       string
+	Exec       bool
+	TZ         string
+	NextRun    string
+	LastRun    string
+	LastStatus string
+}
+
+// SecretsControl powers the no-arg `/configure` picker (TEN-149): list every
+// keyed service (presence only — never a value), and set/remove a key. The
+// cmd/tenant adapter reuses the same credentials path as the dashboard Keys page
+// (TEN-145), so a key set here is applied live (TEN-147) — no restart.
+type SecretsControl interface {
+	List() []SecretItem
+	Set(credID, value string) error
+	Remove(credID string) error
+}
+
+// SecretItem is one configurable key's render-ready state: presence only, no value.
+type SecretItem struct {
+	CredID   string
+	Name     string
+	Category string // "LLM provider" | "Web search" | "Integration"
+	Set      bool
+}
+
 // renderExpansion formats a rehydrated compaction span for the chat pane: a
 // provenance header + the original turns (clipped + capped). (TEN-104)
 func renderExpansion(exp *agent.CompactionExpansion) string {
@@ -377,6 +521,7 @@ type ModelInfo struct {
 	Endpoint string
 	Model    string // served model id ("" = auto-detect at launch)
 	Active   bool   // currently the primary
+	Degraded bool   // active provider is running on the echo fallback (couldn't build)
 }
 
 // ModelControl powers /model: list configured backends, switch the active
@@ -404,6 +549,10 @@ type ModelControl interface {
 	// so the user doesn't have to drop to the CLI setup wizard.
 	AddCloudModel(kind, apiKey string) (string, error)
 	RemoveModel(name string) (string, error)
+	// ReloadKeys re-resolves the ACTIVE provider's API key (env → credentials.json)
+	// and hot-swaps it into the live router, so a key rotated at runtime takes
+	// effect without a restart. Returns a status line (✓/⚠). Used by /model reload.
+	ReloadKeys() (status string, err error)
 	// LoopCeiling reports the current planner↔tool iteration cap; SetLoopCeiling
 	// retunes it live (and persists) — /ceiling.
 	LoopCeiling() int
@@ -747,8 +896,13 @@ type model struct {
 	streaming  bool // an assistant reply is currently streaming
 	busy       bool // a turn is in flight
 	budgetPct  int  // last context-budget utilization (% of writable budget)
-	sessionTok int  // cumulative tokens (in+out) for the MAIN agent this session
-	teamTok    int  // cumulative tokens (in+out) for spawned sub-agents
+	budgetUsed int  // absolute tokens in the assembled context
+	budgetCap  int  // writable-budget cap (tokens)
+	sessionTok    int       // cumulative tokens (in+out) for the MAIN agent this session
+	sessionTokIn  int       // cumulative INPUT tokens for the MAIN agent this session
+	sessionTokOut int       // cumulative OUTPUT tokens for the MAIN agent this session
+	teamTok       int       // cumulative tokens (in+out) for spawned sub-agents
+	reqStart      time.Time // wall-clock start of the in-flight turn (display-only live timer)
 	lastTool   string
 	width      int
 	height     int
@@ -780,6 +934,16 @@ type model struct {
 	// agent. Cleared on success, `/cancel`, or error. Mirrors the
 	// pendingClarify pattern but for skill setup.
 	configureSession *configureSessionState
+	// secretEntry, if non-nil, means the operator just picked a service in the
+	// no-arg `/configure` picker and the NEXT plain input is consumed as that
+	// service's key/token (the input is masked while active). Cleared on save,
+	// `/cancel`, or Esc. Mirrors configureSession but for a single secret.
+	secretEntry *secretEntryState
+	// setupEntry, if non-nil, captures the NEXT plain input as a value for the
+	// in-flight `/setup` step (masked for the API-key step). Mirrors secretEntry
+	// but carries an apply closure so each step routes to the right setter and
+	// reopens the menu. Cleared on apply, `/cancel`, Esc, or a slash command.
+	setupEntry *setupEntryState
 	// picker, if non-nil, intercepts ALL key events for arrow-key list
 	// selection (currently used after /model add-cloud to let the operator
 	// pick a model variant from the provider's live catalog). Cleared on
@@ -970,6 +1134,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			// Esc during a masked /configure key entry cancels it (and unmasks) —
+			// the natural "bail out" key, matching every picker. Must run before
+			// the busy/idle branches so the operator is never stranded masked.
+			if m.secretEntry != nil {
+				m.clearSecretEntry()
+				m.sysChat("configuration cancelled")
+				break
+			}
+			if m.setupEntry != nil {
+				m.clearSetupEntry()
+				m.sysChat("setup cancelled")
+				break
+			}
 			// Neither key quits — only /exit (or /quit) closes the app, so a
 			// stray Ctrl-C never loses your session. While a turn is running
 			// they interrupt it (the runaway-loop escape hatch); when idle they
@@ -1223,6 +1400,34 @@ func (m *model) submit() tea.Cmd {
 	// and the operator was locked out of the session (they couldn't
 	// take the default or skip optional fields). The session intercept
 	// MUST run before the empty short-circuit.
+	// Secret entry from the /configure picker: consume the next plain input as
+	// the chosen service's key. Do NOT echo it to chat (it's a secret).
+	if m.secretEntry != nil && !strings.HasPrefix(q, "/") {
+		m.input.Reset()
+		m.chatFollow = true
+		return m.saveSecretEntry(q)
+	}
+	// A slash command (other than /cancel, which has its own handler) while a key
+	// entry is armed aborts it + unmasks, so the operator never types a command
+	// into a hidden, still-armed field.
+	if m.secretEntry != nil && strings.HasPrefix(q, "/") && q != "/cancel" {
+		m.clearSecretEntry()
+		m.sysChat("configure: key entry cancelled")
+	}
+	// /setup step entry: capture the next plain input as the step's value.
+	if m.setupEntry != nil && !strings.HasPrefix(q, "/") {
+		se := m.setupEntry
+		m.clearSetupEntry()
+		m.chatFollow = true
+		if se.apply != nil {
+			return se.apply(strings.TrimSpace(q))
+		}
+		return nil
+	}
+	if m.setupEntry != nil && strings.HasPrefix(q, "/") && q != "/cancel" {
+		m.clearSetupEntry()
+		m.sysChat("setup: cancelled")
+	}
 	if m.configureSession != nil && !strings.HasPrefix(q, "/") {
 		m.input.Reset()
 		m.chatFollow = true
@@ -1246,6 +1451,7 @@ func (m *model) submit() tea.Cmd {
 		m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
 		enriched := strings.TrimSpace(pc.Original) + "\n\nAdditional context from user: " + q
 		m.busy = true
+		m.reqStart = time.Now()
 		m.interrupted = false
 		m.chatFollow = true
 		m.appendFeed(cSys.Render("🔎 resuming research with your clarification"))
@@ -1260,6 +1466,7 @@ func (m *model) submit() tea.Cmd {
 	}
 	m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
 	m.busy = true
+	m.reqStart = time.Now()
 	m.interrupted = false
 	m.err = ""
 	// Run the turn off the UI goroutine; the agent's Observer streams
@@ -1290,6 +1497,81 @@ func (m *model) finalizeAssistant(response string) {
 		return
 	}
 	m.msgs = append(m.msgs, chatMsg{role: "assistant", content: response})
+}
+
+// handleMCP powers /mcp: connect/list/remove remote MCP connector servers
+// (TEN-164). `add` runs the OAuth browser flow as a tea.Cmd closure (off the UI
+// goroutine, mirroring the /configure async pattern); its result returns via
+// sysChatMsg. list/remove are synchronous.
+func (m *model) handleMCP(arg string) tea.Cmd {
+	if m.cfg.MCP == nil {
+		m.sysChat("remote MCP connectors not available in this session")
+		return nil
+	}
+	fields := strings.Fields(arg)
+	sub, rest := "", ""
+	if len(fields) > 0 {
+		sub = strings.ToLower(fields[0])
+		rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(arg), fields[0]))
+	}
+	switch sub {
+	case "", "list":
+		servers := m.cfg.MCP.List()
+		if len(servers) == 0 {
+			m.sysChat("no remote MCP servers connected. Add one:  /mcp add https://mcp.atlassian.com/v1/mcp")
+			return nil
+		}
+		var b strings.Builder
+		b.WriteString("Remote MCP connectors:\n")
+		for _, s := range servers {
+			var state string
+			switch {
+			case s.Enabled:
+				state = fmt.Sprintf("on, %d tools", s.ToolCount)
+			case s.ToolCount > 0:
+				state = fmt.Sprintf("connected, %d tools (disabled)", s.ToolCount)
+			default:
+				state = "registered — /enable " + s.Label + " to connect"
+			}
+			b.WriteString(fmt.Sprintf("  • %-26s %s  [%s]\n", s.Label, s.URL, state))
+		}
+		m.sysChat(strings.TrimRight(b.String(), "\n"))
+		return nil
+	case "add":
+		url := strings.TrimSpace(rest)
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			m.sysChat("usage: /mcp add <https://server/mcp>   (e.g. https://mcp.atlassian.com/v1/mcp)")
+			return nil
+		}
+		m.sysChat("🌐 connecting to " + url + " — a browser will open to authorize. If the server shows two screens (approve, then pick a site), click through once each; don't re-click.")
+		ctl := m.cfg.MCP
+		return func() tea.Msg {
+			info, err := ctl.Add(url) // BLOCKS: DCR + browser + callback
+			if err != nil {
+				return sysChatMsg{text: "✗ MCP connect failed: " + err.Error()}
+			}
+			return sysChatMsg{text: fmt.Sprintf("✓ connected %s — %d tools live (gated; /tools to review, /disable %s to turn off)", info.Label, info.ToolCount, info.Label)}
+		}
+	case "remove", "rm", "forget":
+		target := strings.TrimSpace(rest)
+		if target == "" {
+			m.sysChat("usage: /mcp remove <url|label>")
+			return nil
+		}
+		removed, err := m.cfg.MCP.Remove(target)
+		switch {
+		case err != nil:
+			m.sysChat("✗ " + err.Error())
+		case !removed:
+			m.sysChat("no remote MCP server matched " + target)
+		default:
+			m.sysChat("✓ removed " + target)
+		}
+		return nil
+	default:
+		m.sysChat("usage: /mcp [list] | /mcp add <url> | /mcp remove <url|label>")
+		return nil
+	}
 }
 
 // interject hands a mid-turn message to the running agent (the Hermes-style
@@ -1353,11 +1635,15 @@ var helpSections = []helpSection{
 		tagline: "switch the primary LLM backend (vLLM / Z.ai / OpenAI / Anthropic …)",
 		rows: [][2]string{
 			{"/model", "list configured model backends + the active one"},
+			{"/model pick", "arrow-key picker: pick a provider → its live cloud models → swap (or bare /model use)"},
 			{"/model use <name> [<model>]", "switch primary; optional model variant (e.g. /model use zai glm-5.1)"},
 			{"/model models [<name>]", "list model variants served by the provider's endpoint (live)"},
 			{"/model add-cloud <kind> <key>", "register a keyed cloud provider (zai/openai/grok/anthropic)"},
 			{"/model add <name> <endpoint> [fmt]", "register a self-hosted vLLM backend mid-session"},
 			{"/model remove <name>", "delete a configured backend (not the active one)"},
+			{"/model reload", "re-resolve the active provider's key live (after a rotation)"},
+			{"/setup", "arrow-key setup menu — provider, model, endpoint, key, embeddings, gateway"},
+			{"/configure", "arrow-key key picker — set an API key for any service (providers, web search, Discord)"},
 			{"/ceiling [n]", "view / live-tune the loop ceiling (max tool calls per turn)"},
 		},
 	},
@@ -1425,6 +1711,15 @@ var helpSections = []helpSection{
 		},
 	},
 	{
+		id: "mcp", title: "MCP connectors",
+		tagline: "connect remote MCP servers (browser OAuth, no app setup) and bring their tools live",
+		rows: [][2]string{
+			{"/mcp", "list connected remote MCP servers + state"},
+			{"/mcp add <url>", "connect a remote MCP server (opens a browser to authorize) — surfaces its tools, gated"},
+			{"/mcp remove <url>", "disconnect a remote MCP server and forget it"},
+		},
+	},
+	{
 		id: "skills", title: "Skills (T4)",
 		tagline: "reusable recipes the agent retrieves into its prompt",
 		rows: [][2]string{
@@ -1434,7 +1729,10 @@ var helpSections = []helpSection{
 			{"/skills history <name>", "audit log of prior versions (Option A: skill changelog)"},
 			{"/skills diff <name> [vN]", "diff current vs a prior version (default: most recent prior)"},
 			{"/skills revert <name> vN", "restore a prior version (current state saved as new history entry)"},
+			{"/skills auto [off|on|trusted]", "auto-accept induced skills (trusted = only while feedback is healthy)"},
 			{"/skills seed gstack", "install Garry Tan's CEO/founder-mode skill bundle (5 skills)"},
+			{"/ack", "mark the last turn as good — the self-improvement success signal"},
+			{"/undo", "mark the last turn as bad (suspends trusted auto-accept)"},
 		},
 	},
 	{
@@ -1445,6 +1743,21 @@ var helpSections = []helpSection{
 			{"/permissions set <cat> <mode>", "e.g. /permissions set exec allow"},
 			{"/approve [session|always]", "approve a paused dangerous action"},
 			{"/deny", "reject a paused dangerous action"},
+			{"/imessage [list]", "view the iMessage drive-allowlist (deny-by-default)"},
+			{"/imessage allow <handle>", "permit a phone/email to drive the agent over iMessage"},
+			{"/imessage deny <handle> | clear", "remove one handle, or empty the allowlist"},
+		},
+	},
+	{
+		id: "automation", title: "Automation (cron)",
+		tagline: "recurring agent-prompt jobs on a crontab/@every schedule (read/comms-safe)",
+		rows: [][2]string{
+			{"/cron [list]", "view scheduled recurring jobs"},
+			{"/cron add <sched> | <prompt>", "schedule a job, e.g. 0 9 * * 1-5 | run the tests"},
+			{"/cron enable <id> | disable <id>", "pause or resume a job"},
+			{"/cron run <id>", "run a job once now (result appears in the feed)"},
+			{"/cron rm <id>", "delete a job"},
+			{"/cron exec on|off", "global kill-switch for dangerous shell/exec jobs (default off)"},
 		},
 	},
 	{
@@ -1532,6 +1845,11 @@ func renderHelpIndex() (plain, styled string) {
 		p.WriteString("  " + key + sp + sec.title + "  —  " + sec.tagline + "\n")
 		s.WriteString("  " + cKey.Render(key) + sp + cName.Render(sec.title) + cDim.Render("  —  "+sec.tagline) + "\n")
 	}
+	// Surface a high-value direct knob people hunt for but wouldn't guess the
+	// category of (/ceiling lives under Models but is a turn control). Keeps the
+	// index a section TOC while making the most-asked tunable one glance away.
+	p.WriteString("\nHandy: /ceiling <n> — cap tool calls per turn before forced synthesis")
+	s.WriteString("\n" + cDim.Render("Handy: ") + cKey.Render("/ceiling <n>") + cDim.Render(" — cap tool calls per turn before forced synthesis"))
 	p.WriteString("\nFull dump: /help all")
 	s.WriteString("\n" + cDim.Render("Full dump: ") + cKey.Render("/help all"))
 	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
@@ -1582,6 +1900,150 @@ func renderHelp() (plain, styled string) {
 		}
 	}
 	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
+}
+
+// renderIMessageAllow formats the iMessage drive-allowlist as (plain, styled).
+// An empty list is rendered as an explicit deny-by-default notice so the
+// operator is never misled into thinking "empty == open."
+func (m *model) renderIMessageAllow() (string, string) {
+	handles := m.cfg.IMessage.AllowList()
+	var p, s strings.Builder
+	const title = "iMessage drive-allowlist"
+	p.WriteString(title + "\n")
+	s.WriteString(cHeading.Render(title) + "\n")
+	if len(handles) == 0 {
+		const empty = "(empty) — deny-by-default: nobody can drive the agent over iMessage."
+		const hint = "Add one with /imessage allow <phone-or-email>."
+		p.WriteString("  " + empty + "\n  " + hint)
+		s.WriteString("  " + cOffMark.Render(empty) + "\n  " + cDim.Render(hint))
+		return p.String(), s.String()
+	}
+	for _, h := range handles {
+		p.WriteString("  • " + h + "\n")
+		s.WriteString("  " + cOnMark.Render("●") + " " + cName.Render(h) + "\n")
+	}
+	hint := fmt.Sprintf("%d handle(s) allowed — only these may drive the agent once inbound iMessage is live.", len(handles))
+	p.WriteString("  " + hint)
+	s.WriteString("  " + cDim.Render(hint))
+	return p.String(), s.String()
+}
+
+// renderCronList formats the recurring-job list as (plain, styled).
+func (m *model) renderCronList() (string, string) {
+	jobs := m.cfg.Cron.Jobs()
+	var p, s strings.Builder
+	const title = "Cron jobs"
+	execState := "exec: off (dangerous jobs inert)"
+	execStyle := cDim
+	if m.cfg.Cron.ExecEnabled() {
+		execState = "exec: ON (shell/exec jobs run unattended)"
+		execStyle = cErr
+	}
+	p.WriteString(title + "  [" + execState + "]\n")
+	s.WriteString(cHeading.Render(title) + "  " + execStyle.Render("["+execState+"]") + "\n")
+	if len(jobs) == 0 {
+		const empty = "(no jobs) — recurring agent-prompt jobs run unattended, read/comms-safe."
+		const hint = "Add one with /cron add <schedule> | <prompt>  (e.g. 0 9 * * 1-5 | run the tests)."
+		p.WriteString("  " + empty + "\n  " + hint)
+		s.WriteString("  " + cOffMark.Render(empty) + "\n  " + cDim.Render(hint))
+		return p.String(), s.String()
+	}
+	for _, j := range jobs {
+		name := j.Name
+		if name == "" {
+			name = j.ID
+		}
+		mark, markStyled := "○", cOffMark.Render("○")
+		if j.Enabled {
+			mark, markStyled = "●", cOnMark.Render("●")
+		}
+		mode := j.Kind
+		if mode == "" {
+			mode = "prompt"
+		}
+		if j.Exec {
+			mode += "+exec"
+		}
+		if j.TZ != "" {
+			mode += " " + j.TZ
+		}
+		head := fmt.Sprintf("%s %s  %s  [%s]  id:%s  next:%s", mark, name, j.Spec, mode, j.ID, cronDash(j.NextRun))
+		p.WriteString("  " + head + "\n")
+		modeStyle := cDim
+		if j.Exec || j.Kind == "shell" {
+			modeStyle = cErr // flag the dangerous surfaces
+		}
+		s.WriteString("  " + markStyled + " " + cName.Render(name) + "  " +
+			cKey.Render(j.Spec) + "  " + modeStyle.Render("["+mode+"]") + " " +
+			cDim.Render("id:"+j.ID+" next:"+cronDash(j.NextRun)) + "\n")
+
+		prompt := "    " + cronClip(j.Prompt, 88)
+		p.WriteString(prompt + "\n")
+		s.WriteString("    " + cDim.Render(cronClip(j.Prompt, 88)) + "\n")
+
+		if j.LastStatus != "" {
+			st := "    last: " + j.LastStatus + " @ " + cronDash(j.LastRun)
+			p.WriteString(st + "\n")
+			style := cDim
+			switch j.LastStatus {
+			case "ok":
+				style = cOK
+			case "error":
+				style = cErr
+			}
+			s.WriteString("    " + style.Render("last: "+j.LastStatus+" @ "+cronDash(j.LastRun)) + "\n")
+		}
+	}
+	hint := fmt.Sprintf("%d job(s) — /cron run <id> to run now, /cron disable <id> to pause.", len(jobs))
+	p.WriteString("  " + hint)
+	s.WriteString("  " + cDim.Render(hint))
+	return p.String(), s.String()
+}
+
+// parseCronAdd parses the part before the "|": optional leading flags
+// (shell|exec|tz=<zone>) followed by the schedule. The schedule is whatever
+// remains after the recognized leading flags.
+func parseCronAdd(specPart string) (CronAddSpec, error) {
+	var s CronAddSpec
+	toks := strings.Fields(specPart)
+	i := 0
+	for ; i < len(toks); i++ {
+		t := toks[i]
+		switch {
+		case strings.EqualFold(t, "shell"):
+			s.Kind = "shell"
+		case strings.EqualFold(t, "exec"):
+			s.Exec = true
+		case strings.HasPrefix(strings.ToLower(t), "tz="):
+			s.TZ = t[len("tz="):]
+		default:
+			// First non-flag token starts the schedule.
+			s.Spec = strings.TrimSpace(strings.Join(toks[i:], " "))
+			return s, nil
+		}
+	}
+	// No schedule found (only flags).
+	return s, nil
+}
+
+// cronDash renders an empty schedule field as "-".
+func cronDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// cronClip truncates s to n runes with an ellipsis, for compact job rows.
+func cronClip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	if n < 1 {
+		return ""
+	}
+	return string(r[:n-1]) + "…"
 }
 
 // handleSlash runs a /command and returns an optional tea.Cmd (e.g. quit).
@@ -1779,6 +2241,173 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		default:
 			m.sysChat("usage: /relay [status|allow <id>|on|off|exec on|off]")
 		}
+	case "/imessage", "/imsg":
+		// Manage the deny-by-default allowlist of handles permitted to drive
+		// the agent over iMessage. Edits persist. Empty list = nobody.
+		if m.cfg.IMessage == nil {
+			m.sysChat("imessage allowlist not available in this session")
+			break
+		}
+		fields := strings.Fields(arg)
+		sub, rest := "", ""
+		if len(fields) > 0 {
+			sub = strings.ToLower(fields[0])
+			rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(arg), fields[0]))
+		}
+		switch sub {
+		case "", "list", "status":
+			m.sysChatStyled(m.renderIMessageAllow())
+		case "allow", "add":
+			if rest == "" {
+				m.sysChat("usage: /imessage allow <phone-or-email>")
+				break
+			}
+			norm, added, err := m.cfg.IMessage.Allow(rest)
+			switch {
+			case err != nil:
+				m.sysChat("imessage: " + err.Error())
+			case !added:
+				m.sysChat("imessage: " + norm + " is already on the allowlist")
+			default:
+				m.sysChat("imessage: allowed " + norm + " — may drive the agent over iMessage once inbound is live")
+			}
+		case "deny", "remove", "rm", "del":
+			if rest == "" {
+				m.sysChat("usage: /imessage deny <phone-or-email>")
+				break
+			}
+			norm, removed, err := m.cfg.IMessage.Deny(rest)
+			switch {
+			case err != nil:
+				m.sysChat("imessage: " + err.Error())
+			case !removed:
+				m.sysChat("imessage: " + norm + " was not on the allowlist")
+			default:
+				m.sysChat("imessage: removed " + norm + " from the allowlist")
+			}
+		case "clear":
+			n, err := m.cfg.IMessage.Clear()
+			if err != nil {
+				m.sysChat("imessage: " + err.Error())
+			} else {
+				m.sysChat(fmt.Sprintf("imessage: cleared %d handle(s) — allowlist is now empty (deny-by-default: nobody can drive the agent)", n))
+			}
+		default:
+			m.sysChat("usage: /imessage [list | allow <handle> | deny <handle> | clear]")
+		}
+	case "/mcp":
+		// Connect/manage remote MCP connector servers (TEN-164). `/mcp add
+		// <url>` runs the OAuth browser flow off the UI goroutine (a tea.Cmd
+		// closure) so the TUI stays responsive; tools come up gated.
+		return m.handleMCP(arg)
+	case "/cron", "/cronjob":
+		// Manage recurring agent-prompt jobs. Each job runs UNATTENDED and
+		// read/comms-safe on its schedule; definitions persist to config.json.
+		if m.cfg.Cron == nil {
+			m.sysChat("cron scheduling not available in this session")
+			break
+		}
+		fields := strings.Fields(arg)
+		sub, rest := "", ""
+		if len(fields) > 0 {
+			sub = strings.ToLower(fields[0])
+			rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(arg), fields[0]))
+		}
+		switch sub {
+		case "", "list", "status":
+			m.sysChatStyled(m.renderCronList())
+		case "add", "new":
+			// Form: /cron add [shell|exec] [tz=<zone>] <schedule> | <payload>
+			// Leading flags precede the schedule; "|" separates the (space-
+			// containing) schedule from the prompt/command.
+			specPart, prompt, ok := strings.Cut(rest, "|")
+			addSpec, perr := parseCronAdd(specPart)
+			prompt = strings.TrimSpace(prompt)
+			if perr != nil || !ok || addSpec.Spec == "" || prompt == "" {
+				m.sysChat("usage: /cron add [shell|exec] [tz=<zone>] <schedule> | <payload>\n" +
+					"  e.g. /cron add 0 9 * * 1-5 | run the test suite and summarize failures\n" +
+					"  e.g. /cron add @every 30m | check the build status\n" +
+					"  e.g. /cron add shell @daily | go test ./...        (DANGEROUS, needs cron-exec)\n" +
+					"  e.g. /cron add exec tz=America/New_York 0 8 * * * | clean up temp files")
+				break
+			}
+			addSpec.Prompt = prompt
+			j, err := m.cfg.Cron.Add(addSpec)
+			if err != nil {
+				m.sysChat("cron: " + err.Error())
+			} else {
+				mode := j.Kind
+				if j.Exec {
+					mode += "+exec"
+				}
+				m.sysChat(fmt.Sprintf("cron: scheduled %s [%s] (%s) — next run %s", j.ID, mode, j.Spec, cronDash(j.NextRun)))
+			}
+		case "rm", "remove", "del", "delete":
+			if rest == "" {
+				m.sysChat("usage: /cron rm <id>")
+				break
+			}
+			removed, err := m.cfg.Cron.Remove(rest)
+			switch {
+			case err != nil:
+				m.sysChat("cron: " + err.Error())
+			case !removed:
+				m.sysChat("cron: no job with id " + rest)
+			default:
+				m.sysChat("cron: removed " + rest)
+			}
+		case "enable", "disable":
+			if rest == "" {
+				m.sysChat("usage: /cron " + sub + " <id>")
+				break
+			}
+			on := sub == "enable"
+			j, changed, err := m.cfg.Cron.SetEnabled(rest, on)
+			switch {
+			case err != nil:
+				m.sysChat("cron: " + err.Error())
+			case !changed:
+				m.sysChat("cron: no change for " + rest + " (not found or already " + sub + "d)")
+			case on:
+				m.sysChat(fmt.Sprintf("cron: enabled %s — next run %s", j.ID, cronDash(j.NextRun)))
+			default:
+				m.sysChat("cron: disabled " + j.ID)
+			}
+		case "run":
+			if rest == "" {
+				m.sysChat("usage: /cron run <id>")
+				break
+			}
+			if err := m.cfg.Cron.RunNow(rest); err != nil {
+				m.sysChat("cron: " + err.Error())
+			} else {
+				m.sysChat("cron: running " + rest + " now — result will appear in the feed")
+			}
+		case "exec":
+			// Global kill-switch for dangerous (shell / exec-opted-in) jobs.
+			arg := strings.ToLower(strings.TrimSpace(rest))
+			switch arg {
+			case "", "status":
+				if m.cfg.Cron.ExecEnabled() {
+					m.sysChat("cron exec: ON — shell jobs and exec-opted-in jobs WILL run unattended")
+				} else {
+					m.sysChat("cron exec: OFF — shell/exec jobs are created but won't run (deny-by-default). Enable with /cron exec on")
+				}
+			case "on", "off":
+				on := arg == "on"
+				if err := m.cfg.Cron.SetExec(on); err != nil {
+					m.sysChat("cron: " + err.Error())
+				} else if on {
+					m.sysChat("cron exec: ENABLED — shell + exec-opted-in jobs may now run UNATTENDED with dangerous tools (irreversible actions + config writes are still blocked). Disable with /cron exec off")
+				} else {
+					m.sysChat("cron exec: disabled — dangerous jobs are now inert (deny-by-default)")
+				}
+			default:
+				m.sysChat("usage: /cron exec [on | off | status]")
+			}
+		default:
+			m.sysChat("usage: /cron [list | add <schedule> | <prompt> | enable <id> | disable <id> | run <id> | rm <id> | exec on|off]")
+		}
 	case "/research", "/deep", "/research!", "/deep!":
 		if m.cfg.Research == nil {
 			m.sysChat("deep research is not available in this session")
@@ -1962,7 +2591,7 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		//   /configure <id>         → start interactive walkthrough
 		//   /configure <id> <args>  → one-shot (same as /skill configure)
 		//   /configure --no-enable <id> [<args>]  → skip auto-enable
-		if m.cfg.SkillConfig == nil {
+		if m.cfg.SkillConfig == nil && m.cfg.Secrets == nil {
 			m.sysChat("/configure is not available in this session")
 			break
 		}
@@ -1979,9 +2608,20 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			remaining = append(remaining, f)
 		}
 		if len(remaining) == 0 {
-			// No skill named — show the menu.
-			m.sysChat(renderSkillList(m.cfg.SkillConfig.SkillList()))
-			m.sysChat("type `/configure <id>` to start an interactive walkthrough — e.g. `/configure gsuite`")
+			// No arg → openclaw-style arrow-key picker over every keyed service
+			// (providers, web search, Discord, …). Pick one → paste its key.
+			if m.cfg.Secrets != nil {
+				return m.startConfigurePicker()
+			}
+			// Fallback (no Secrets control wired): legacy skill menu.
+			if m.cfg.SkillConfig != nil {
+				m.sysChat(renderSkillList(m.cfg.SkillConfig.SkillList()))
+				m.sysChat("type `/configure <id>` to start an interactive walkthrough — e.g. `/configure gsuite`")
+			}
+			break
+		}
+		if m.cfg.SkillConfig == nil {
+			m.sysChat("/configure <id> needs the skill-config surface, which isn't available in this session")
 			break
 		}
 		id := remaining[0]
@@ -2001,9 +2641,50 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		if cmd := m.startConfigure(id, noEnable); cmd != nil {
 			return cmd
 		}
+	case "/setup":
+		// TEN-150: the external `tenant setup` wizard, in-TUI. Arrow-key menu of
+		// settings (provider/model/endpoint/key/tool-format/embeddings/gateway);
+		// pick one → edit it (masked for the key) → applied live; back to menu.
+		if m.cfg.Setup == nil {
+			m.sysChat("/setup is not available in this session")
+			break
+		}
+		return m.startSetupMenu()
+	case "/ack":
+		// TEN-151: mark the last turn as good (the real-world success signal).
+		if m.cfg.Feedback == nil {
+			m.sysChat("feedback isn't available in this session")
+			break
+		}
+		if st, err := m.cfg.Feedback.Ack(); err != nil {
+			m.sysChat("✗ " + err.Error())
+		} else {
+			m.sysChat("✓ " + st)
+		}
+	case "/undo":
+		// TEN-151: mark the last turn as bad (suspends "trusted" auto-accept).
+		if m.cfg.Feedback == nil {
+			m.sysChat("feedback isn't available in this session")
+			break
+		}
+		if st, err := m.cfg.Feedback.Undo(); err != nil {
+			m.sysChat("✗ " + err.Error())
+		} else {
+			m.sysChat("✓ " + st)
+		}
 	case "/cancel":
 		// TEN-65 follow-up: aborts an in-flight /configure session.
 		// Harmless if no session is active.
+		if m.secretEntry != nil {
+			m.clearSecretEntry()
+			m.sysChat("configuration cancelled")
+			break
+		}
+		if m.setupEntry != nil {
+			m.clearSetupEntry()
+			m.sysChat("setup cancelled")
+			break
+		}
 		if m.configureSession != nil {
 			m.configureSession = nil
 			m.sysChat("configuration cancelled")
@@ -2156,9 +2837,24 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 		return
 	}
 	switch strings.ToLower(f[0]) {
+	case "reload", "refresh":
+		// Re-resolve the active provider's key (env/credentials.json) + hot-swap
+		// it live — for picking up a rotated key without a restart.
+		m.appendFeed(cDim.Render("⟳ reloading active provider key…"))
+		status, err := m.cfg.Models.ReloadKeys()
+		if err != nil {
+			m.sysChat("model: reload failed: " + err.Error())
+		} else if status == "" {
+			m.sysChat("model: no active provider to reload")
+		} else {
+			m.sysChat(status)
+		}
+		return
 	case "use", "switch":
 		if len(f) < 2 {
-			m.sysChat("usage: /model use <name> [<model>]   (model optional — pins a specific variant, e.g. /model use zai glm-5.1)")
+			// No provider named → open the arrow-key picker: pick a provider →
+			// fetch its live cloud models → pick → swap. (TEN-173)
+			cmd = m.startModelPicker()
 			return
 		}
 		// Optional third arg: a model variant to pin on this provider.
@@ -2309,8 +3005,12 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 		}
 		b.WriteString("\nswitch + pin a variant with: /model use " + name + " <model>")
 		m.sysChat(strings.TrimRight(b.String(), "\n"))
+	case "pick", "picker", "choose":
+		// Arrow-key picker: pick provider → live cloud models → swap. (TEN-173)
+		cmd = m.startModelPicker()
+		return
 	default:
-		m.sysChat("usage: /model   |   /model use <name> [<model>]   |   /model models [<name>]   |   /model add <name> <endpoint> [fmt]   |   /model add-cloud <kind> <api-key>   |   /model remove <name>")
+		m.sysChat("usage: /model   |   /model pick   |   /model use <name> [<model>]   |   /model models [<name>]   |   /model add <name> <endpoint> [fmt]   |   /model add-cloud <kind> <api-key>   |   /model remove <name>")
 	}
 	return cmd
 }
@@ -2668,11 +3368,15 @@ func (m *model) renderModelList() (string, string) {
 		if model == "" {
 			model = "(auto)"
 		}
-		line := fmt.Sprintf("  %s %-14s %-10s %s  %s", mark, mi.Name, mi.Kind, model, mi.Endpoint)
+		degr := ""
+		if mi.Degraded {
+			degr = "  (degraded — echo fallback; /model use to recover)"
+		}
+		line := fmt.Sprintf("  %s %-14s %-10s %s  %s%s", mark, mi.Name, mi.Kind, model, mi.Endpoint, degr)
 		p.WriteString(line + "\n")
-		styled := fmt.Sprintf("  %s %s %s %s  %s", marker,
+		styled := fmt.Sprintf("  %s %s %s %s  %s%s", marker,
 			cUser.Render(fmt.Sprintf("%-14s", mi.Name)), fmt.Sprintf("%-10s", mi.Kind),
-			model, cDim.Render(mi.Endpoint))
+			model, cDim.Render(mi.Endpoint), cErr.Render(degr))
 		s.WriteString(styled + "\n")
 	}
 	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
@@ -2727,6 +3431,24 @@ func (m *model) handleSkills(arg string) (string, string) {
 			return "add failed: " + err.Error(), ""
 		}
 		return "saved skill " + name, ""
+	case "auto":
+		// TEN-152: graduate induced skills from manual review to auto-accept.
+		mode := strings.ToLower(strings.TrimSpace(rest))
+		if mode == "" {
+			cur := m.cfg.Skills.AutoAcceptMode()
+			if cur == "" {
+				cur = "off"
+			}
+			return "skills auto-accept: " + cur +
+				"\n  off     = every induced skill waits for /skills accept" +
+				"\n  on      = accept every new induced skill immediately" +
+				"\n  trusted = accept only while your recent feedback is healthy (acks, no undos)" +
+				"\n  set with: /skills auto <off|on|trusted>", ""
+		}
+		if err := m.cfg.Skills.SetAutoAccept(mode); err != nil {
+			return "error: " + err.Error(), ""
+		}
+		return "skills auto-accept set to " + mode + " (applies on the next induction run)", ""
 	case "enable", "disable":
 		on := sub == "enable"
 		if rest == "" {
@@ -3125,11 +3847,23 @@ func (m *model) applyEvent(e agent.Event) {
 		m.appendFeed(cDim.Render(time.Now().Format("15:04:05") + " turn start"))
 	case agent.EventUsage:
 		// Actual tokens (input + output) reported by the backend for this
-		// LLM call — summed for the session total.
+		// LLM call — summed for the session total, and split in/out so the
+		// footer can show a directional counter.
 		m.sessionTok += e.PromptTokens + e.CompletionTokens
+		m.sessionTokIn += e.PromptTokens
+		m.sessionTokOut += e.CompletionTokens
+		// Persist this call's usage for long-term cost audit. MAIN agent
+		// only (team usage flows through applyTeamEvent, intentionally not
+		// recorded here — see TEN-167). Non-fatal: a recorder error must
+		// never block the UI, so it's swallowed by the closure in wiring.
+		if m.cfg.RecordUsage != nil {
+			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens)
+		}
 	case agent.EventMemory:
 		if e.Budget != nil && e.Budget.WritableBudget > 0 {
 			m.budgetPct = int(float64(e.Budget.Total) / float64(e.Budget.WritableBudget) * 100)
+			m.budgetUsed = e.Budget.Total
+			m.budgetCap = e.Budget.WritableBudget
 			note := ""
 			if e.Budget.CompactionRecommended {
 				note = " " + cErr.Render("(compaction soon)")
@@ -3648,11 +4382,40 @@ func (m *model) statusBar() string {
 // session's cumulative token count — à la Claude Code.
 func (m *model) contextIndicator() string {
 	bar := ctxBar(m.budgetPct, 12)
-	s := fmt.Sprintf("ctx %s %d%% · session %s", bar, m.budgetPct, humanTokens(m.sessionTok))
+	s := fmt.Sprintf("ctx %s %d%% %s/%s · session %s", bar, m.budgetPct, humanTokens(m.budgetUsed), humanTokens(m.budgetCap), humanTokens(m.sessionTok))
 	if m.teamTok > 0 {
 		s += cDim.Render(" · team " + humanTokens(m.teamTok))
 	}
 	return s + " tok"
+}
+
+// tokenCounter renders the session's directional token counter — input
+// (↑) and output (↓) — for the MAIN agent, dimmed, with a trailing space
+// so it reads as a distinct chip just left of the ctx gauge. Returns an
+// empty string before any usage is recorded so the footer stays clean.
+func (m *model) tokenCounter() string {
+	if m.sessionTokIn == 0 && m.sessionTokOut == 0 {
+		return ""
+	}
+	return cDim.Render(fmt.Sprintf("↑%s ↓%s", humanTokens(m.sessionTokIn), humanTokens(m.sessionTokOut))) + " "
+}
+
+// reqTimer renders the live elapsed time of the in-flight turn, e.g.
+// "⏱ 3.4s" (<60s, one decimal) or "⏱ 1:09" (>=60s, m:ss). Display-only,
+// never persisted. Empty when no turn is in flight; the existing spinner
+// tick drives the sub-second repaint, so no extra ticker is needed.
+func (m *model) reqTimer() string {
+	if !m.busy || m.reqStart.IsZero() {
+		return ""
+	}
+	d := time.Since(m.reqStart)
+	var s string
+	if d < time.Minute {
+		s = fmt.Sprintf("%.1fs", d.Seconds())
+	} else {
+		s = fmt.Sprintf("%d:%02d", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return cDim.Render("⏱ " + s)
 }
 
 // ctxBar draws a [████░░] gauge, colored by how full the context is.
@@ -3696,11 +4459,18 @@ func (m *model) View() string {
 	// sharing the chat's left gutter.
 	help := strings.Repeat(" ", chatGutter) + "Enter send · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit"
 	ctx := m.contextIndicator()
-	gap := m.width - lipgloss.Width(help) - lipgloss.Width(ctx) - 1
+	// Right cluster, read left→right: live request timer (only while busy),
+	// directional in/out token counter, then the ctx gauge. Each piece is
+	// independently sized so the gap math never lets the cluster overflow.
+	right := m.tokenCounter() + ctx
+	if t := m.reqTimer(); t != "" {
+		right = t + " " + right
+	}
+	gap := m.width - lipgloss.Width(help) - lipgloss.Width(right) - 1
 	if gap < 1 {
 		gap = 1
 	}
-	footer := cDim.Render(help) + strings.Repeat(" ", gap) + ctx + " "
+	footer := cDim.Render(help) + strings.Repeat(" ", gap) + right + " "
 	// Picker mode replaces the input area with the picker view. Keeps
 	// the chat + feed visible above so the operator has full context
 	// while choosing.
@@ -3882,6 +4652,118 @@ func (m *model) renderPicker() string {
 	return b.String()
 }
 
+// startModelPicker drives the arrow-key model swap (TEN-173): pick a configured
+// provider → fetch its live models from the cloud → pick a model → swap live.
+// Mirrors the /model add-cloud picker chain (provider pick is the extra first
+// stage). Reuses listPicker + the pickerStartMsg async pattern; no backend
+// changes — composes ModelList + ListProviderModels + UseModel.
+func (m *model) startModelPicker() tea.Cmd {
+	infos := m.cfg.Models.ModelList()
+	if len(infos) == 0 {
+		m.sysChat("no model providers configured — add one with `/model add-cloud <kind> <api-key>` (zai/openai/grok/anthropic) or `/setup`")
+		return nil
+	}
+	ctl := m.cfg.Models
+
+	// fetchAndPick (STATE 2→3): fetch one provider's live models off the UI
+	// goroutine, then open the model picker. Empty list → switch to the saved
+	// default; fetch error → fail closed with guidance (no swap).
+	fetchAndPick := func(providerName, currentModel string) tea.Cmd {
+		m.appendFeed(cDim.Render("⟳ fetching models from " + providerName + "…"))
+		return func() tea.Msg {
+			models, err := ctl.ListProviderModels(providerName)
+			if err != nil {
+				return sysChatMsg{text: "could not fetch models from " + providerName + ": " + safeErr(err) +
+					"\n(try `/model use " + providerName + "` to switch without picking, or `/configure " + providerName + "` to set the key)"}
+			}
+			if len(models) == 0 {
+				s, _, uerr := ctl.UseModel(providerName, "")
+				if uerr != nil {
+					return sysChatMsg{text: providerName + " reported no models, and switching failed: " + uerr.Error()}
+				}
+				return sysChatMsg{text: providerName + " reported no models — switched to its saved default:\n" + s}
+			}
+			return pickerStartMsg{picker: &listPicker{
+				title:       "Pick a model for " + providerName + " (" + fmt.Sprintf("%d available", len(models)) + ")",
+				hint:        "↑/↓ select · enter swap live · esc cancel",
+				items:       models,
+				currentMark: currentModel,
+				selected:    pickerIndexOf(models, currentModel),
+				onSelect: func(choice string) tea.Cmd {
+					return func() tea.Msg {
+						s, _, perr := ctl.UseModel(providerName, choice)
+						if perr != nil {
+							return sysChatMsg{text: "✗ switch to " + choice + " failed: " + perr.Error()}
+						}
+						return sysChatMsg{text: s}
+					}
+				},
+				onCancel: func() tea.Cmd {
+					return func() tea.Msg { return sysChatMsg{text: "kept current model for " + providerName} }
+				},
+			}}
+		}
+	}
+
+	// STATE 0: a single provider needs no provider pick.
+	if len(infos) == 1 {
+		return fetchAndPick(infos[0].Name, infos[0].Model)
+	}
+
+	// STATE 1: provider picker.
+	labels := make([]string, 0, len(infos))
+	byLabel := make(map[string]ModelInfo, len(infos))
+	activeLabel := ""
+	for _, info := range infos {
+		label := info.Name
+		if info.Model != "" {
+			label += "  ·  " + info.Model
+		}
+		// Guarantee label uniqueness so the label→info round-trip can't mis-route
+		// (mirrors the /configure picker). Provider names are unique config keys,
+		// so this only fires on pathological input — but it's a one-line backstop.
+		base := label
+		for n := 2; ; n++ {
+			if _, dup := byLabel[label]; !dup {
+				break
+			}
+			label = fmt.Sprintf("%s (%d)", base, n)
+		}
+		labels = append(labels, label)
+		byLabel[label] = info
+		if info.Active {
+			activeLabel = label
+		}
+	}
+	return startPickerCmd(&listPicker{
+		title:       "Switch model — pick a provider",
+		hint:        "↑/↓ select · enter fetch models · esc cancel",
+		items:       labels,
+		currentMark: activeLabel,
+		selected:    pickerIndexOf(labels, activeLabel),
+		onSelect: func(choice string) tea.Cmd {
+			info := byLabel[choice]
+			return fetchAndPick(info.Name, info.Model)
+		},
+		onCancel: func() tea.Cmd {
+			return func() tea.Msg { return sysChatMsg{text: "model switch cancelled"} }
+		},
+	})
+}
+
+// pickerIndexOf returns the index of target in items, or 0 if absent/empty.
+func pickerIndexOf(items []string, target string) int {
+	if target == "" {
+		return 0
+	}
+	for i, it := range items {
+		if it == target {
+			return i
+		}
+	}
+	return 0
+}
+
 // --- /configure interactive flow — TEN-65 follow-up ---
 //
 // Mirrors the OpenClaw/Claude Code `/configure` UX: type the command,
@@ -3889,6 +4771,91 @@ func (m *model) renderPicker() string {
 // (those with Options) get the existing listPicker modal; free-text
 // fields use the chat input area with `m.configureSession` set
 // (similar to `m.pendingClarify`).
+
+// secretEntryState is the no-arg `/configure` key-entry: the operator picked a
+// service and the next plain input is its key (masked while active).
+type secretEntryState struct {
+	credID string
+	name   string
+}
+
+// startConfigurePicker opens the arrow-key picker over every keyed service. On
+// select it arms secretEntry + masks the input so the next line is captured as
+// that service's key. Reuses the existing listPicker modal.
+func (m *model) startConfigurePicker() tea.Cmd {
+	items := m.cfg.Secrets.List()
+	if len(items) == 0 {
+		m.sysChat("configure: no configurable services available")
+		return nil
+	}
+	labels := make([]string, len(items))
+	byLabel := make(map[string]secretEntryState, len(items))
+	for i, it := range items {
+		status := "○ not set"
+		if it.Set {
+			status = "● set"
+		}
+		label := fmt.Sprintf("%-26s %-13s %s", it.Name, it.Category, status)
+		// Guarantee a unique map key even if two services share Name+Category+
+		// status (latent today; future-proofs the label→credID round-trip).
+		if _, dup := byLabel[label]; dup {
+			label = label + "  " + it.CredID
+		}
+		labels[i] = label
+		byLabel[label] = secretEntryState{credID: it.CredID, name: it.Name}
+	}
+	m.picker = &listPicker{
+		title: "Configure — pick a service to set its API key",
+		hint:  "↑/↓ select · enter set key · esc cancel",
+		items: labels,
+		onSelect: func(choice string) tea.Cmd {
+			se := byLabel[choice]
+			m.secretEntry = &se
+			m.input.EchoMode = textinput.EchoPassword
+			m.sysChat("paste the key/token for " + se.name + ", then Enter (input hidden · /cancel to abort)")
+			return nil
+		},
+		onCancel: func() tea.Cmd {
+			m.sysChat("configure cancelled")
+			return nil
+		},
+	}
+	return nil
+}
+
+// clearSecretEntry disarms a pending /configure key entry and restores the
+// input to normal (unmasked, empty). Safe to call when nothing is armed.
+func (m *model) clearSecretEntry() {
+	m.secretEntry = nil
+	m.input.EchoMode = textinput.EchoNormal
+	m.input.Reset()
+}
+
+// saveSecretEntry persists the just-entered key via the Secrets control (which
+// applies it live — TEN-147) and clears the masked-entry state. The value is
+// never echoed to chat.
+func (m *model) saveSecretEntry(value string) tea.Cmd {
+	se := m.secretEntry
+	m.clearSecretEntry()
+	if se == nil {
+		return nil
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		m.sysChat("configure: no key entered for " + se.name + " — cancelled")
+		return nil
+	}
+	if m.cfg.Secrets == nil {
+		m.sysChat("configure: not available in this session")
+		return nil
+	}
+	if err := m.cfg.Secrets.Set(se.credID, value); err != nil {
+		m.sysChat("configure: couldn't save " + se.name + " — " + err.Error())
+		return nil
+	}
+	m.sysChat("✓ " + se.name + " key saved to credentials.json (0600) — applied live, no restart.")
+	return nil
+}
 
 // configureSessionState tracks an in-flight `/configure <skill>` flow.
 // Each user input is consumed as the next field's value until all

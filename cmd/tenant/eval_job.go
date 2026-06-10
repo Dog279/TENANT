@@ -6,11 +6,34 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"tenant/internal/eval"
 	"tenant/internal/improve"
 )
+
+// resolveEvalCadence picks the nightly-eval interval (TEN-157): an explicitly-set
+// --eval-every flag wins; else the persisted improve.eval_every (a duration
+// string like "24h"); an empty or MALFORMED config value fails CLOSED to 0 (off)
+// so a config typo can't brick launch or silently mis-arm the gate. log may be nil.
+func resolveEvalCadence(flagSet bool, flagVal time.Duration, cfgVal string, log *slog.Logger) time.Duration {
+	if flagSet {
+		return flagVal
+	}
+	s := strings.TrimSpace(cfgVal)
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		if log != nil {
+			log.Warn("ignoring malformed improve.eval_every; nightly eval stays off", "value", s, "err", err)
+		}
+		return 0
+	}
+	return d
+}
 
 // evalNightlyJob runs the eval suite on a cadence — the air-gapped appliance's
 // "nightly CI", with no external cron. It writes a timestamped JSON report
@@ -76,11 +99,12 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 
 	summary := fmt.Sprintf("eval-nightly %s: overall %.1f, passed %d/%d",
 		rep.Subset, rep.Aggregates.Overall, rep.Aggregates.PassCount, total)
-	regressed := false
+	regressed, haveBaseline := false, false
+	var delta, ciHigh float64
 	if data, rerr := os.ReadFile(j.baselinePath); rerr == nil {
 		if base, berr := eval.ReadBaseline(data); berr == nil {
 			rr := eval.CompareToBaseline(base, rep, eval.CompareOptions{})
-			regressed = rr.Regressed
+			regressed, haveBaseline, delta, ciHigh = rr.Regressed, true, rr.Delta, rr.CIHigh
 			if regressed {
 				summary += fmt.Sprintf(" — REGRESSION (Δ %.1f, CI hi %.1f)", rr.Delta, rr.CIHigh)
 			} else {
@@ -90,6 +114,16 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 			j.log.Warn("eval-nightly: baseline parse failed; skipping check", "err", berr)
 		}
 	}
+
+	// Append a compact trend line (TEN-158): the durable record of THIS run's
+	// regression verdict (delta/ci_high), which the heavy per-run artifacts don't
+	// keep. Non-fatal — mirrors the artifact write.
+	appendEvalTrend(j.artifactDir, evalTrendEntry{
+		TS: time.Now().UTC().Format(time.RFC3339), Subset: string(rep.Subset),
+		Overall: rep.Aggregates.Overall, Passed: rep.Aggregates.PassCount, Total: total,
+		HasBaseline: haveBaseline, Regressed: regressed, Delta: delta, CIHigh: ciHigh,
+		Artifact: filepath.Base(artifact),
+	}, j.log)
 
 	return improve.JobResult{
 		Summary: summary,

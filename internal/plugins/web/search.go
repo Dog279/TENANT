@@ -40,10 +40,10 @@ type Searcher interface {
 // NewSearcher picks the best configured backend: Tavily (LLM-ready, free
 // tier) > Brave (now metered) > DuckDuckGo (keyless default).
 func NewSearcher(cfg Config) Searcher {
-	if k := strings.TrimSpace(cfg.TavilyKey); k != "" {
+	if k := strings.TrimSpace(cfg.tavilyKey()); k != "" {
 		return &tavilySearcher{key: k, http: searchHTTPClient}
 	}
-	if k := strings.TrimSpace(cfg.BraveKey); k != "" {
+	if k := strings.TrimSpace(cfg.braveKey()); k != "" {
 		return &braveSearcher{key: k, http: searchHTTPClient}
 	}
 	return &ddgSearcher{http: searchHTTPClient}

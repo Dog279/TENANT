@@ -42,8 +42,8 @@ func gsuiteSkillKind() skillKind {
 			"  • oauth  — operator-supplied Desktop App OAuth client (advanced; for personal @gmail accounts where the operator owns a Cloud project).",
 		Fields: []skillKindField{
 			{
-				Key:    "auth",
-				Prompt: "How does this install authenticate to Google Workspace?",
+				Key:      "auth",
+				Prompt:   "How does this install authenticate to Google Workspace?",
 				Required: true,
 				Default:  "sa", // business primary
 				Options:  []string{"sa", "gcloud", "oauth"},
@@ -52,26 +52,26 @@ func gsuiteSkillKind() skillKind {
 					"gcloud CLI Application Default Credentials (dev machine only)",
 					"OAuth Desktop App client (advanced — personal @gmail)",
 				},
-				Validate: validateOneOf("sa", "gcloud", "oauth"),
+				Validate:  validateOneOf("sa", "gcloud", "oauth"),
 				NoteAfter: gsuiteAuthNote,
 			},
 			{
-				Key:    "sa_json",
-				Prompt: "Path to the service-account JSON key (download from console.cloud.google.com)",
+				Key:      "sa_json",
+				Prompt:   "Path to the service-account JSON key (download from console.cloud.google.com)",
 				Required: true,
 				Validate: validateSAJSON,
 				ShowIf:   func(v map[string]string) bool { return v["auth"] == "sa" },
 			},
 			{
-				Key:    "subject",
-				Prompt: "Email of the user the service account will impersonate (Domain-Wide Delegation)",
+				Key:      "subject",
+				Prompt:   "Email of the user the service account will impersonate (Domain-Wide Delegation)",
 				Required: true,
 				Validate: validateEmailRFC5322,
 				ShowIf:   func(v map[string]string) bool { return v["auth"] == "sa" },
 			},
 			{
-				Key:    "oauth_creds_json",
-				Prompt: "Path to OAuth client JSON (console.cloud.google.com → APIs & Services → Credentials → Desktop App)",
+				Key:      "oauth_creds_json",
+				Prompt:   "Path to OAuth client JSON (console.cloud.google.com → APIs & Services → Credentials → Desktop App)",
 				Required: true,
 				Validate: validateOAuthCredsJSON,
 				ShowIf:   func(v map[string]string) bool { return v["auth"] == "oauth" },
@@ -403,12 +403,12 @@ func probeGSuiteWith(ctx context.Context, creds *credentials, settings map[strin
 // entirely when they exist.
 //
 // Each branch:
-//   1. Surfaces clear guidance on what to do next (handhold UX).
-//   2. Pre-checks blocking prerequisites and ABORTS if not met (so we
-//      don't pretend to configure a broken setup).
-//   3. For oauth: if embedded creds exist, just confirms "signing
-//      you in." If not, opens Cloud Console + walks through OAuth
-//      client creation.
+//  1. Surfaces clear guidance on what to do next (handhold UX).
+//  2. Pre-checks blocking prerequisites and ABORTS if not met (so we
+//     don't pretend to configure a broken setup).
+//  3. For oauth: if embedded creds exist, just confirms "signing
+//     you in." If not, opens Cloud Console + walks through OAuth
+//     client creation.
 func makeGsuiteAuthNote(cfgDir string) func(string) (string, bool) {
 	return func(value string) (string, bool) {
 		return gsuiteAuthNoteFor(value, cfgDir)
@@ -591,4 +591,5 @@ func isProductionGSuiteProbe(p skillProbe) bool {
 // (grep for `skillKinds["<id>"]` finds every platform).
 func init() {
 	skillKinds["gsuite"] = gsuiteSkillKind()
+	skillKinds["atlassian"] = atlassianSkillKind() // TEN-160
 }

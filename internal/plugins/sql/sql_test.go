@@ -3,6 +3,7 @@ package sql_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -233,6 +234,20 @@ func TestOpen_RejectsNonSQLite(t *testing.T) {
 	}
 	if _, err := sqlp.Open(sqlp.Config{Driver: "sqlite"}); err == nil {
 		t.Fatal("missing DSN should error")
+	}
+}
+
+func TestOpen_CreatesMissingParentDirs(t *testing.T) {
+	// Pointing --db at a path whose parent dirs don't exist used to fail with
+	// "unable to open database file"; Open now creates the tree first.
+	dbPath := filepath.Join(t.TempDir(), "nested", "deep", "fresh.db")
+	st, err := sqlp.Open(sqlp.Config{Driver: "sqlite", DSN: dbPath})
+	if err != nil {
+		t.Fatalf("Open with missing parent dirs: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("db file not created: %v", err)
 	}
 }
 

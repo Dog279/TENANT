@@ -70,13 +70,17 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	fmt.Fprintln(os.Stderr, "\n== tenant setup ==")
 	fmt.Fprintf(os.Stderr, "config:      %s\ncredentials: %s\n\n", launchConfigPath(c.cfgDir), credentialsPath(c.cfgDir))
 
-	// Existing-config: Keep / Modify / Reset (OpenClaw pattern).
+	// Existing-config: Keep / Modify / Reset (OpenClaw pattern, arrow-key).
 	if lc.active() != nil && interactive {
-		switch strings.ToLower(ask(in, "Existing config found. [k]eep, [m]odify, [r]eset", "modify")) {
-		case "k", "keep":
+		switch selectOne("Existing config found — what now?", []pickOption{
+			{Label: "Modify", Value: "modify", Desc: "update the current configuration"},
+			{Label: "Keep", Value: "keep", Desc: "use it as-is and exit"},
+			{Label: "Reset", Value: "reset", Desc: "start fresh, discard existing"},
+		}, "modify") {
+		case "keep":
 			printSetupSummary(c.cfgDir, lc)
 			return nil
-		case "r", "reset":
+		case "reset":
 			lc = &launchConfig{}
 			creds = &credentials{Secrets: map[string]string{}}
 		}
@@ -89,7 +93,7 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	// --- 1. provider + auth ---
 	kindID := firstNonEmpty(valIf(set["provider"], *provider), lc.Provider, "vllm")
 	if interactive {
-		kindID = askProvider(in, kindID)
+		kindID = selectOne("Model provider", providerOpts(), kindID)
 	}
 	pk, ok := providerKinds[kindID]
 	if !ok {
@@ -146,7 +150,7 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 		if pk.Backend == "vllm" {
 			tf := firstNonEmpty(valIf(set["vllm-tool-format"], c.vllmToolFmt), pc.ToolFmt, pk.DefaultToolFmt, defaultVLLMToolFmt)
 			if interactive {
-				tf = ask(in, "Tool format (qwen|gemma|llama|mistral|openai)", tf)
+				tf = selectOne("Tool format", toolFormatOpts(), tf)
 			}
 			pc.ToolFmt = strings.TrimSpace(tf)
 		}
@@ -247,7 +251,10 @@ func configureAuth(in *bufio.Reader, interactive bool, providerID string, pk pro
 	if cur.Stored {
 		def = "paste"
 	}
-	switch strings.ToLower(ask(in, fmt.Sprintf("%s auth: [env] reference an env var, or [paste] store the key", pk.Label), def)) {
+	switch selectOne(pk.Label+" — API key source", []pickOption{
+		{Label: "Paste & store the key", Value: "paste", Desc: "saved to credentials.json (0600)"},
+		{Label: "Reference an env var", Value: "env", Desc: "read $" + firstNonEmpty(cur.KeyEnv, pk.KeyEnv) + " at launch"},
+	}, def) {
 	case "paste", "p", "key":
 		k := ask(in, "Paste API key (stored in credentials.json, 0600)", "")
 		if strings.TrimSpace(k) != "" {
@@ -280,7 +287,11 @@ func configureGateway(in *bufio.Reader, interactive bool, cur gatewayConfig, set
 	if def == "" {
 		def = "local"
 	}
-	mode := strings.ToLower(ask(in, "mcp-memory transport: [local] stdio, [sse] HTTP, or [both]", def))
+	mode := selectOne("mcp-memory transport", []pickOption{
+		{Label: "local", Value: "local", Desc: "stdio only"},
+		{Label: "sse", Value: "sse", Desc: "HTTP + SSE"},
+		{Label: "both", Value: "both", Desc: "stdio + HTTP/SSE"},
+	}, def)
 	switch mode {
 	case "sse", "both":
 		addr := ask(in, "SSE bind address", firstNonEmpty(cur.SSEAddr, "127.0.0.1:8765"))
@@ -301,24 +312,24 @@ func probeModels(ctx context.Context, endpoint, apiKey string) []string {
 	return ids
 }
 
-// askProvider prints the provider menu and returns the chosen kind id.
-func askProvider(in *bufio.Reader, cur string) string {
-	fmt.Fprintln(os.Stderr, "\nModel providers:")
-	for i, id := range providerOrder {
-		marker := "  "
-		if id == cur {
-			marker = "* "
-		}
-		fmt.Fprintf(os.Stderr, "  %s%d) %-26s %s\n", marker, i+1, id, providerKinds[id].Label)
+// providerOpts builds the arrow-key provider menu from the catalog order.
+func providerOpts() []pickOption {
+	opts := make([]pickOption, 0, len(providerOrder))
+	for _, id := range providerOrder {
+		opts = append(opts, pickOption{Label: id, Value: id, Desc: providerKinds[id].Label})
 	}
-	ans := strings.TrimSpace(ask(in, "Choose a provider (number or id)", cur))
-	// numeric?
-	for i, id := range providerOrder {
-		if ans == fmt.Sprint(i+1) || strings.EqualFold(ans, id) {
-			return id
-		}
+	return opts
+}
+
+// toolFormatOpts is the fixed set of supported OpenAI-compatible tool formats.
+func toolFormatOpts() []pickOption {
+	return []pickOption{
+		{Label: "qwen", Value: "qwen"},
+		{Label: "gemma", Value: "gemma"},
+		{Label: "llama", Value: "llama"},
+		{Label: "mistral", Value: "mistral"},
+		{Label: "openai", Value: "openai"},
 	}
-	return ans
 }
 
 // ask prints a prompt with the current value in brackets and returns the

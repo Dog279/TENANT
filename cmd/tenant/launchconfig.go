@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,20 @@ type launchConfig struct {
 	Dashboard dashboardConfig `json:"dashboard,omitempty"`
 	// Relay configures the offsite Discord relay (TEN-114).
 	Relay relayConfig `json:"relay,omitempty"`
+	// IMessage holds the iMessage drive-allowlist (TEN-68 follow-up): the
+	// handles permitted to drive the agent over iMessage. Deny-by-default.
+	IMessage imessageConfig `json:"imessage,omitempty"`
+	// Cron holds the recurring-job definitions managed via /cron, the cron_*
+	// tools, and the dashboard's Cron section. Only definitions persist here;
+	// run state (next/last run) is in-memory and recomputed on load.
+	Cron cronConfig `json:"cron,omitempty"`
+	// MCPRemotes holds remote MCP connector server URLs added via `/mcp add`,
+	// so they re-register (as disabled stubs) at next launch. Non-secret; OAuth
+	// tokens live in the mcpremote token cache, never here. (TEN-164)
+	MCPRemotes []string `json:"mcp_remotes,omitempty"`
+	// Improve holds self-improvement settings (TEN-152): the auto-accept policy
+	// for machine-induced skills. Deny-by-default (empty = off).
+	Improve improveConfig `json:"improve,omitempty"`
 	// Skills holds per-integration settings (non-secret). Secrets go to the
 	// credentials file under "skill:<name>:<field>".
 	Skills map[string]*skillConfig `json:"skills,omitempty"`
@@ -144,6 +159,80 @@ type relayConfig struct {
 // (unset) defaults to ON, otherwise the stored bool wins.
 func (dc dashboardConfig) dashboardEnabled() bool {
 	return dc.Enabled == nil || *dc.Enabled
+}
+
+// imessageConfig holds the iMessage drive-allowlist: the normalized handles
+// (phone numbers / emails) permitted to DRIVE the agent over iMessage once the
+// inbound responder (Layer 2) is live. DENY-BY-DEFAULT — an empty/missing list
+// permits NOBODY (the safe default for "no unrestricted access"). Edited live
+// via the /imessage TUI command; the inbound responder must gate every message
+// on imessage.AllowList.Allows before invoking any tool. Stored here (not in
+// the runtime Meta KV) because it is operator policy configured once, like the
+// Discord relay's OperatorID — not hot per-poll state.
+type imessageConfig struct {
+	AllowFrom []string `json:"allow_from,omitempty"`
+}
+
+// cronConfig persists the recurring-job DEFINITIONS plus a few engine-wide
+// settings. Run state (next/last run, history) is NOT here — history lives in
+// <dataDir>/cron-history.json so config.json isn't rewritten on every run.
+// improveConfig governs the self-improvement loop's auto-acceptance of induced
+// skills (TEN-152). AutoAccept: "" / "off" (default — every induced skill waits
+// for manual /skills accept), "on" (accept all new skills), or "trusted" (accept
+// only while recent operator feedback is healthy — ≥ TrustMinAcks acks and zero
+// undos). TrustMinAcks: threshold for "trusted" (0 ⇒ default 5).
+type improveConfig struct {
+	AutoAccept   string `json:"auto_accept,omitempty"`
+	TrustMinAcks int    `json:"trust_min_acks,omitempty"`
+	// TrustWindow is how many recent fed-back episodes the "trusted" gate
+	// inspects (0 ⇒ default 20).
+	TrustWindow int `json:"trust_window,omitempty"`
+	// EvalEvery persists the nightly-eval cadence (TEN-34/157) as a duration
+	// string, e.g. "24h", so a 24/7 appliance keeps its regression gate across
+	// restarts. Empty/0/malformed ⇒ off (deny-by-default). An explicit
+	// --eval-every flag overrides this.
+	EvalEvery string `json:"eval_every,omitempty"`
+	// SoulNudgeEvery persists the SoulNudgeJob cadence (TEN-16) as a duration
+	// string. Off (empty/0/malformed) by default — it runs the fitness suite to
+	// gate each candidate, so it's heavy + model-gated. Candidates are queued for
+	// HUMAN review (never auto-applied).
+	SoulNudgeEvery string `json:"soul_nudge_every,omitempty"`
+}
+
+// validAutoAccept reports whether m is an accepted auto-accept mode.
+func validAutoAccept(m string) bool {
+	switch m {
+	case "", "off", "on", "trusted":
+		return true
+	}
+	return false
+}
+
+type cronConfig struct {
+	Jobs []cronJobConfig `json:"jobs,omitempty"`
+	// Timezone is the default IANA zone for jobs without their own TZ. Empty =
+	// server local time.
+	Timezone string `json:"timezone,omitempty"`
+	// AllowExec is the GLOBAL kill-switch for dangerous cron jobs: shell jobs and
+	// exec-opted-in prompt jobs only RUN when this is true. Deny-by-default.
+	AllowExec bool `json:"allow_exec,omitempty"`
+	// Catchup, when true, fires a SAFE job once on startup if it missed a cycle
+	// while the process was down (instead of waiting for the next occurrence).
+	Catchup bool `json:"catchup,omitempty"`
+}
+
+// cronJobConfig is one persisted cron job definition. Kind/Exec/TZ are omitempty
+// so configs written before they existed load with zero values (prompt / safe /
+// engine-default timezone).
+type cronJobConfig struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Spec    string `json:"spec"`
+	Prompt  string `json:"prompt"`
+	Enabled bool   `json:"enabled"`
+	Kind    string `json:"kind,omitempty"`
+	Exec    bool   `json:"exec,omitempty"`
+	TZ      string `json:"tz,omitempty"`
 }
 
 // skillConfig is one integration's non-secret settings + on/off state.
@@ -450,10 +539,29 @@ func resolveSecret(cfgDir, providerID string, auth authCfg) string {
 	return ""
 }
 
-// atomicWrite writes via temp + rename so a crash can't truncate the file.
+// atomicWrite writes via temp + rename so a crash can't truncate the file. The
+// temp file is created with a UNIQUE name (os.CreateTemp) in the destination
+// directory so concurrent writers — now possible since keys can be rotated live
+// from the settings page, the credentials watcher, and /model at once — never
+// share one ".tmp" path and clobber each other mid-write. The rename is atomic,
+// so a concurrent reader always sees either the whole old or whole new file.
 func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	f, err := os.CreateTemp(dir, base+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	// Best-effort cleanup if we bail before the rename.
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -517,14 +625,45 @@ func isHTTP404(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "HTTP 404")
 }
 
+// anthropicModelsAPIVersion mirrors internal/model/backend/anthropic's
+// anthropicVersion — the value Anthropic requires in the anthropic-version
+// header. Kept here (not imported) to avoid a cmd→backend dependency.
+const anthropicModelsAPIVersion = "2023-06-01"
+
+// setProviderAuth applies the correct auth scheme for a model-list request.
+// Anthropic REJECTS Bearer auth ("Invalid bearer token", HTTP 401) and requires
+// `x-api-key` + `anthropic-version` — the same headers the anthropic generate
+// backend already uses. OpenAI-compatible providers (vLLM, OpenAI, Grok, Z.ai)
+// use Bearer. Without this, `/model add-cloud anthropic` 401'd while listing
+// models for the picker even though the stored key was valid (TEN-171).
+func setProviderAuth(req *http.Request, rawURL, apiKey string) {
+	if apiKey == "" {
+		return
+	}
+	if isAnthropicEndpoint(rawURL) {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", anthropicModelsAPIVersion)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+}
+
+// isAnthropicEndpoint reports whether rawURL targets Anthropic's API host.
+func isAnthropicEndpoint(rawURL string) bool {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	return h == "api.anthropic.com" || strings.HasSuffix(h, ".anthropic.com")
+}
+
 func fetchModelsAt(ctx context.Context, url, apiKey string) ([]servedModel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	setProviderAuth(req, url, apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err

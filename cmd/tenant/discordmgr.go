@@ -104,6 +104,7 @@ type discordRelayManager struct {
 	token    string
 	log      *slog.Logger
 	notify   func(string)
+	degraded func() bool // when true, the model is on the echo fallback; relay refuses turns
 	persist  func(enabled bool, operatorID string, allowExec bool) error
 
 	// start is the test seam (real = realStart: wire+run gateway/relay).
@@ -121,6 +122,7 @@ type discordRelayManager struct {
 func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) error {
 	rl := newRelay(m.runner, m.sender, operatorID, m.log)
 	rl.approver = m.approver
+	rl.degraded = m.degraded
 	rl.Start(ctx)
 	gw := &discord.Gateway{
 		Token:         m.token,

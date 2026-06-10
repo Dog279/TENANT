@@ -313,7 +313,10 @@ result and keep using it.
 | `imessage`| `internal/plugins/imessage/`          | Yes (BlueBubbles WS) | Yes |
 | `discord` | `internal/plugins/discord/`           | No (REST-only Surface A) | No (immediate when --discord) |
 | `x`       | `internal/plugins/x/`                 | Yes (login) | Yes |
+| `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | Yes |
+| `mcpremote`| `internal/plugins/mcpremote/`        | Yes (remote OAuth2.1 + DCR, browser) | Yes (tools mirror a remote MCP server's gating) |
 | `osys`    | `internal/plugins/osys/`              | No (sandboxed exec) | No (immediate, always on) |
+| `cron`    | `internal/plugins/cron/`              | No     | No (wired live in the TUI, not the stub catalog) |
 
 `osys` is the "always-on" outlier — it's zero-config and registers
 immediately every launch. Use it as the template for any future

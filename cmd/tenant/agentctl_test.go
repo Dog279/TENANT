@@ -403,9 +403,9 @@ func TestProfileSystemPrompt(t *testing.T) {
 func TestBuildProfileRouter_RejectsMisconfig(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx-good":     {Kind: "vllm", Endpoint: "http://x", Model: "m"},
-		"zai-no-key":   {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6", Auth: authCfg{Mode: "apikey", Stored: true}},
-		"vllm-no-mdl":  {Kind: "vllm", Endpoint: "http://x"},
+		"dgx-good":    {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"zai-no-key":  {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6", Auth: authCfg{Mode: "apikey", Stored: true}},
+		"vllm-no-mdl": {Kind: "vllm", Endpoint: "http://x"},
 	}}
 	_ = lc.save(dir)
 

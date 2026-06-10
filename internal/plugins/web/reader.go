@@ -43,7 +43,7 @@ func fetchViaReader(ctx context.Context, cfg Config, targetURL string) (string, 
 	req.Header.Set("Accept", "text/plain, text/markdown, */*")
 	// Ask Jina for markdown explicitly.
 	req.Header.Set("X-Return-Format", "markdown")
-	if k := strings.TrimSpace(cfg.JinaKey); k != "" {
+	if k := strings.TrimSpace(cfg.jinaKey()); k != "" {
 		req.Header.Set("Authorization", "Bearer "+k)
 	}
 	resp, err := readerHTTPClient.Do(req)

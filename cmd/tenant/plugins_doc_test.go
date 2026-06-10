@@ -72,8 +72,9 @@ func TestPluginsDoc_ReferencesStillExist(t *testing.T) {
 // registers an activator (a heavy plugin that needs `/enable`) must
 // also appear in the stub catalog at toolmux.go:~534, or operators
 // won't see it in /tools when unconfigured. We check by:
-//   1. Reading docs/PLUGINS.md's "every plugin in the repo" table
-//   2. Cross-checking each plugin's directory exists
+//  1. Reading docs/PLUGINS.md's "every plugin in the repo" table
+//  2. Cross-checking each plugin's directory exists
+//
 // Catches the case where someone adds a plugin to the repo but
 // forgets to document it OR forgets to register a stub.
 func TestPluginsDoc_PluginTableMatchesRepo(t *testing.T) {

@@ -16,9 +16,9 @@ import (
 //   - SHOW runs that actually changed something — the actual improvement
 func TestFormatSelfImproveFeedLine(t *testing.T) {
 	cases := []struct {
-		name       string
-		rec        improve.JobRunRecord
-		wantShow   bool
+		name        string
+		rec         improve.JobRunRecord
+		wantShow    bool
 		mustContain string
 	}{
 		{

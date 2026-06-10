@@ -85,6 +85,39 @@ type skillControl struct {
 	st      *skills.Store
 	emb     model.Embedder
 	agentID string
+	cfgDir  string // for the auto-accept policy (TEN-152); "" disables the toggle
+}
+
+// AutoAcceptMode returns the induced-skill auto-accept policy (TEN-152).
+func (c skillControl) AutoAcceptMode() string {
+	if c.cfgDir == "" {
+		return "off"
+	}
+	lc, err := loadLaunchConfig(c.cfgDir)
+	if err != nil || lc.Improve.AutoAccept == "" {
+		return "off"
+	}
+	return lc.Improve.AutoAccept
+}
+
+// SetAutoAccept persists a new auto-accept policy (off|on|trusted).
+func (c skillControl) SetAutoAccept(mode string) error {
+	if c.cfgDir == "" {
+		return fmt.Errorf("auto-accept isn't configurable in this session")
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if !validAutoAccept(mode) {
+		return fmt.Errorf("mode must be off, on, or trusted")
+	}
+	lc, err := loadLaunchConfig(c.cfgDir)
+	if err != nil {
+		return err
+	}
+	if mode == "off" {
+		mode = "" // store empty = default-off
+	}
+	lc.Improve.AutoAccept = mode
+	return lc.save(c.cfgDir)
 }
 
 func (c skillControl) SkillList() []tui.SkillInfo {

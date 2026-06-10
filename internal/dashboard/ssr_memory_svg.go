@@ -25,11 +25,11 @@ import (
 const (
 	svgW       = 1400 // viewBox width (wide; the SVG scales to 100% of its container)
 	svgML      = 230  // left gutter for fact labels
-	svgMR      = 28  // right margin
-	svgMT      = 26  // top margin (tick labels)
-	svgRow     = 22  // px per fact lifeline
-	svgBottom  = 30  // bottom margin (axis ticks)
-	svgMaxText = 34  // label truncation
+	svgMR      = 28   // right margin
+	svgMT      = 26   // top margin (tick labels)
+	svgRow     = 22   // px per fact lifeline
+	svgBottom  = 30   // bottom margin (axis ticks)
+	svgMaxText = 34   // label truncation
 )
 
 // statusStroke maps a lifecycle status to its line/marker color. These mirror
@@ -135,8 +135,8 @@ func renderTemporalSVG(facts []TemporalFactView) template.HTML {
 		if x2 < x1 {
 			x2 = x1
 		}
-		b.WriteString(line(x1, y, x2, y, stroke, 2, op))    // lifeline
-		b.WriteString(dot(x1, y, 2.6, stroke, op))          // first-seen
+		b.WriteString(line(x1, y, x2, y, stroke, 2, op))      // lifeline
+		b.WriteString(dot(x1, y, 2.6, stroke, op))            // first-seen
 		b.WriteString(endMarker(x2, y, f.Status, stroke, op)) // last-confirmed, shaped by status
 	}
 

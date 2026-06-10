@@ -88,6 +88,14 @@ func main() {
 		err = cmdReview(ctx, os.Args[2:])
 	case "skills":
 		err = cmdSkills(ctx, os.Args[2:])
+	case "atlassian":
+		err = cmdAtlassian(ctx, os.Args[2:])
+	case "mcp":
+		err = cmdMCP(ctx, os.Args[2:])
+	case "ack":
+		err = cmdFeedback(ctx, os.Args[2:], "ack")
+	case "undo":
+		err = cmdFeedback(ctx, os.Args[2:], "undo")
 	case "doctor":
 		err = cmdDoctor(ctx, os.Args[2:])
 	case "eval":
@@ -129,6 +137,7 @@ COMMANDS
   x "<task>" | x --login   agent uses X/Twitter (read; --allow-post to act)
   imessage "<task>"        agent uses iMessage via BlueBubbles (read; --allow-send to act)
   os "<task>"              agent inspects the machine + runs shell cmds (read; --allow-exec to run)
+  mcp connect <url>        connect to a remote MCP server (OAuth2.1+DCR browser sign-in) + list its tools
   serve                    run background self-improvement (distillation) on a cadence
   tui                      full-screen terminal UI: streaming chat + live activity feed
   orchestrate "<task>"     multi-agent team: orchestrator spawns concurrent sub-agents that

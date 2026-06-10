@@ -13,6 +13,45 @@ import (
 	"tenant/internal/memory/soul"
 )
 
+func TestMemControl_RecentShowsFeedbackMarkers(t *testing.T) {
+	es, err := episodic.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ins := func(p string) int64 {
+		id, err := es.Insert(ctx, &episodic.Episode{
+			AgentID: "main", Prompt: p, Response: "r:" + p, EmbedderID: "x", Embedding: []float32{1, 0},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	acked := ins("good turn")
+	undone := ins("bad turn")
+	ins("neutral turn")
+	if err := es.SetUserFeedback(ctx, acked, episodic.FeedbackAck); err != nil {
+		t.Fatal(err)
+	}
+	if err := es.SetUserFeedback(ctx, undone, episodic.FeedbackUndo); err != nil {
+		t.Fatal(err)
+	}
+
+	out := memControl{episodic: es, agentID: "main"}.Recent(10)
+	if !strings.Contains(out, "✓") || !strings.Contains(out, "✗") {
+		t.Fatalf("expected ✓/✗ markers in output:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "ep:"+strconv.FormatInt(acked, 10)+" ") && !strings.Contains(line, "✓") {
+			t.Errorf("acked episode line missing ✓: %q", line)
+		}
+		if strings.Contains(line, "ep:"+strconv.FormatInt(undone, 10)+" ") && !strings.Contains(line, "✗") {
+			t.Errorf("undone episode line missing ✗: %q", line)
+		}
+	}
+}
+
 func TestMemControl_SoulImportFromMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	mdPath := filepath.Join(dir, "persona.md")

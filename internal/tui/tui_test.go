@@ -1597,8 +1597,12 @@ func (f *fakeModelCtl) ListProviderModels(name string) ([]string, error) {
 	return []string{"glm-4.6", "glm-5.1"}, nil
 }
 func (f *fakeModelCtl) RemoveModel(name string) (string, error) { return "", nil }
-func (f *fakeModelCtl) LoopCeiling() int                        { return 16 }
-func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error)    { return "", nil }
+func (f *fakeModelCtl) ReloadKeys() (string, error) {
+	f.calls = append(f.calls, "ReloadKeys")
+	return "✓ reloaded", nil
+}
+func (f *fakeModelCtl) LoopCeiling() int                     { return 16 }
+func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) { return "", nil }
 func (f *fakeModelCtl) AddModel(name, endpoint, format string) (string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Add:%s,%s,%s", name, endpoint, format))
 	if f.addFn != nil {
@@ -1612,6 +1616,27 @@ func (f *fakeModelCtl) AddCloudModel(kind, apiKey string) (string, error) {
 		return f.addCloudFn(kind, apiKey)
 	}
 	return "added cloud " + kind, nil
+}
+
+// /model reload re-resolves the active provider's key live (no restart).
+func TestModel_Reload_Dispatches(t *testing.T) {
+	mc := &fakeModelCtl{}
+	m := newModel(context.Background(), Config{Models: mc})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/model reload")
+	found := false
+	for _, c := range mc.calls {
+		if c == "ReloadKeys" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("/model reload should call ReloadKeys: %v", mc.calls)
+	}
+	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "reloaded") {
+		t.Errorf("status missing: %q", last)
+	}
 }
 
 // /model add-cloud <kind> <key> routes to AddCloudModel and shows confirmation.
@@ -2971,5 +2996,126 @@ func TestRenderPicker_HighlightsSelected(t *testing.T) {
 	}
 	if !strings.Contains(out, "Pick model") {
 		t.Errorf("picker should render its title; got:\n%s", out)
+	}
+}
+
+// --- /imessage drive-allowlist ------------------------------------------
+
+// fakeIMessage is a stub IMessageControl that records calls + lets a test seed
+// the list and force errors.
+type fakeIMessage struct {
+	list       []string
+	allowCalls []string
+	denyCalls  []string
+	clearCalls int
+	allowErr   error
+}
+
+func (f *fakeIMessage) AllowList() []string { return f.list }
+func (f *fakeIMessage) Allow(h string) (string, bool, error) {
+	f.allowCalls = append(f.allowCalls, h)
+	if f.allowErr != nil {
+		return "", false, f.allowErr
+	}
+	norm := strings.ToLower(strings.TrimSpace(h))
+	f.list = append(f.list, norm)
+	return norm, true, nil
+}
+func (f *fakeIMessage) Deny(h string) (string, bool, error) {
+	f.denyCalls = append(f.denyCalls, h)
+	return strings.ToLower(strings.TrimSpace(h)), true, nil
+}
+func (f *fakeIMessage) Clear() (int, error) {
+	f.clearCalls++
+	n := len(f.list)
+	f.list = nil
+	return n, nil
+}
+
+// Bare /imessage (and /imessage list) renders the allowlist; an EMPTY list must
+// show the deny-by-default notice so the operator is never misled.
+func TestSlash_IMessageListEmptyShowsDenyByDefault(t *testing.T) {
+	fi := &fakeIMessage{}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(strings.ToLower(last), "deny-by-default") || !strings.Contains(last, "empty") {
+		t.Errorf("empty allowlist must render a deny-by-default notice; got:\n%s", last)
+	}
+}
+
+// A populated list renders the handles.
+func TestSlash_IMessageListShowsHandles(t *testing.T) {
+	fi := &fakeIMessage{list: []string{"+15551234567", "boss@work.com"}}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage list")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(last, "+15551234567") || !strings.Contains(last, "boss@work.com") {
+		t.Errorf("list output should include both handles; got:\n%s", last)
+	}
+}
+
+// allow / deny / clear route to the control with the raw handle argument.
+func TestSlash_IMessageAllowDenyClear(t *testing.T) {
+	fi := &fakeIMessage{}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage allow boss@work.com")
+	if len(fi.allowCalls) != 1 || fi.allowCalls[0] != "boss@work.com" {
+		t.Fatalf("allow not routed; calls=%v", fi.allowCalls)
+	}
+	m.handleSlash("/imsg deny boss@work.com") // alias + remove synonym path
+	if len(fi.denyCalls) != 1 || fi.denyCalls[0] != "boss@work.com" {
+		t.Fatalf("deny not routed; calls=%v", fi.denyCalls)
+	}
+	m.handleSlash("/imessage clear")
+	if fi.clearCalls != 1 {
+		t.Fatalf("clear not routed; got %d", fi.clearCalls)
+	}
+}
+
+// allow with no argument shows usage and does NOT call the control.
+func TestSlash_IMessageAllowRequiresArg(t *testing.T) {
+	fi := &fakeIMessage{}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage allow")
+	if len(fi.allowCalls) != 0 {
+		t.Errorf("bare allow must not call the control; calls=%v", fi.allowCalls)
+	}
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(last, "usage") {
+		t.Errorf("expected usage hint; got:\n%s", last)
+	}
+}
+
+// A surfaced control error is shown rather than swallowed.
+func TestSlash_IMessageAllowError(t *testing.T) {
+	fi := &fakeIMessage{allowErr: errors.New("not a usable handle")}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage allow garbage")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(last, "not a usable handle") {
+		t.Errorf("control error should surface; got:\n%s", last)
+	}
+}
+
+// Without an IMessageControl wired, the command degrades gracefully.
+func TestSlash_IMessageUnavailable(t *testing.T) {
+	m := newModel(context.Background(), Config{}) // no IMessage
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage list")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(last, "not available") {
+		t.Errorf("expected unavailable notice; got:\n%s", last)
 	}
 }

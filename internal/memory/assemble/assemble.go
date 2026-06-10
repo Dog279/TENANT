@@ -753,7 +753,64 @@ func buildMessages(args buildArgs) []model.Message {
 		}
 	}
 
-	return msgs
+	// TEN-169: guarantee a structurally valid tool-call sequence before the
+	// request leaves the assembler. Working-set truncation and compaction both
+	// trim oldest-first, which can orphan a tool result (its tool_use dropped) —
+	// an orphan reaches the backend as `model: invalid request: 400` and kills
+	// the turn mid-task. This single choke point (buildMessages runs on EVERY
+	// assemble, i.e. every plan-loop iteration) makes the request valid by
+	// construction, regardless of which trimmer ran upstream.
+	return sanitizePairs(msgs)
+}
+
+// sanitizePairs drops messages that would make the tool-call sequence invalid:
+// a `tool` result whose `tool_use` is not present earlier, and an assistant
+// `tool_use` with no matching result later. Pure; operates on a copy of any
+// mutated ToolCalls slice so it never aliases caller state.
+func sanitizePairs(msgs []model.Message) []model.Message {
+	// Pass 1 — drop tool results whose requesting tool_use wasn't seen earlier.
+	issued := map[string]bool{}
+	kept := make([]model.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			if m.ToolCallID == "" || !issued[m.ToolCallID] {
+				continue // orphaned tool result — the backend would 400 on it
+			}
+			kept = append(kept, m)
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				issued[tc.ID] = true
+			}
+		}
+		kept = append(kept, m)
+	}
+	// Pass 2 — strip assistant tool_use entries whose result is now gone, and
+	// drop an assistant turn left with neither content nor calls.
+	resulted := map[string]bool{}
+	for _, m := range kept {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			resulted[m.ToolCallID] = true
+		}
+	}
+	out := make([]model.Message, 0, len(kept))
+	for _, m := range kept {
+		if len(m.ToolCalls) > 0 {
+			filtered := make([]model.ToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				if resulted[tc.ID] {
+					filtered = append(filtered, tc)
+				}
+			}
+			m.ToolCalls = filtered
+			if len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) == "" {
+				continue // empty assistant turn after stripping childless calls
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func buildSystemBlock(soulText, systemPrompt, userProfile, toolsText, goalHeader string) string {

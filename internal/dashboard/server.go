@@ -66,13 +66,15 @@ type Config struct {
 // event stream, agent for Turn/Interject, tools for REST, mux for route
 // mounting, cfg for TLS/auth.
 type Server struct {
-	cfg    Config
-	agent  AgentRunner
-	tools  ToolControl
-	mem    MemoryControl // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
-	broker *agent.Broker
-	mux    *http.ServeMux
-	log    *slog.Logger
+	cfg     Config
+	agent   AgentRunner
+	tools   ToolControl
+	mem     MemoryControl  // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
+	cron    CronControl    // recurring-job admin; nil = section renders "not configured"
+	secrets SecretsControl // write-only API-key admin; nil = section renders "not configured"
+	broker  *agent.Broker
+	mux     *http.ServeMux
+	log     *slog.Logger
 	// coord serializes Turn execution across ALL /ws connections (TEN-80):
 	// the agent is a single shared instance, so only one turn may run at a
 	// time server-wide. See session.go.
@@ -170,6 +172,14 @@ func (s *Server) routes() {
 	// cutover removed the old embedded JS SPA (assets/) and its GET / file
 	// server: the SSR dashboard owns GET / via mountSSR's GET /{$}.
 	s.mountSSR(s.mux)
+
+	// Cron admin (recurring jobs). Mounted unconditionally + nil-guarded, like
+	// the memory pages — SetCron wires the control after construction.
+	s.mountCronSSR(s.mux)
+
+	// Write-only API-key settings (TEN-145). Same nil-safe pattern; SetSecrets
+	// wires the control after construction.
+	s.mountSecretsSSR(s.mux)
 }
 
 // handleHealthz reports liveness as 200 JSON {"status":"ok"}.

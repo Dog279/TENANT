@@ -11,13 +11,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/model"
+	"tenant/internal/plugins/atlassian"
 	"tenant/internal/plugins/discord"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
+	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/plugins/osys"
 	sqlp "tenant/internal/plugins/sql"
 	"tenant/internal/plugins/web"
@@ -59,6 +63,11 @@ type toolMux struct {
 	activators map[string]func() (plugin, func(), error)
 	activated  map[string]bool
 	cleanups   []func() // teardown for everything built (launch + lazy)
+	// Remote MCP connectors (TEN-162/164): deps for building gated connectors
+	// (set once in buildToolMux), and label→URL for every registered server so
+	// /mcp add|list|remove can manage them at runtime.
+	mcpDeps    mcpRuntimeDeps
+	mcpServers map[string]string
 	// onChange fires after any enable/disable, with a full name→enabled
 	// snapshot, so the caller can persist the curation. Set AFTER restore
 	// (restore must not re-trigger a save of what it just loaded).
@@ -188,7 +197,171 @@ func newToolMux() *toolMux {
 		byName:     map[string]*toolEntry{},
 		activators: map[string]func() (plugin, func(), error){},
 		activated:  map[string]bool{},
+		mcpServers: map[string]string{},
 	}
+}
+
+// mcpRuntimeDeps captures everything a remote-MCP activator needs, so the
+// launch loop and runtime `/mcp add` build IDENTICAL (gated) connectors.
+// Set once in buildToolMux (immutable after) — safe to read lock-free.
+type mcpRuntimeDeps struct {
+	ctx              context.Context
+	callback         string
+	openBrowser      func(string) error
+	trustAnnotations bool
+	allowWrite       bool
+	confirm          func(context.Context, string, string) bool
+	cacheDir         string // 0600 OAuth token cache dir (persistence across restarts)
+}
+
+// mcpServerStatus is one remote MCP connector's runtime state (for /mcp list).
+type mcpServerStatus struct {
+	Label     string
+	URL       string
+	Enabled   bool
+	ToolCount int
+}
+
+// registerMCPRemote registers a disabled stub + activator for a remote MCP
+// server using the mux's stored deps (idempotent). Activation — the browser
+// OAuth flow — happens later on SetEnabled. Returns the derived label.
+func (m *toolMux) registerMCPRemote(url string) string {
+	label := mcpLabel(url)
+	if m.hasPlugin(label) {
+		return label
+	}
+	d := m.mcpDeps
+	m.add(label, stubPlugin{hint: "`/enable " + label + "` connects to " + url + " and opens a browser to authorize"})
+	m.SetEnabled(label, false)
+	m.registerActivator(label, func() (plugin, func(), error) {
+		return mcpremote.Open(d.ctx, mcpremote.Config{
+			ServerURL:    url,
+			Label:        label,
+			CallbackAddr: d.callback,
+			OpenBrowser:  d.openBrowser,
+			CacheDir:     d.cacheDir,
+			Interactive:  true, // /enable or /mcp add may sign in via browser (cached token ⇒ silent)
+		}, d.trustAnnotations, mcpremote.Policy{
+			AllowWrite: d.allowWrite,
+			Confirm:    d.confirm,
+		})
+	})
+	m.mu.Lock()
+	m.mcpServers[label] = url
+	m.mu.Unlock()
+	return label
+}
+
+// reconnectMCPSilently attempts a NON-interactive reconnect (cached token, no
+// browser) at launch and, on success, brings the server's tools live + enabled.
+// A missing/expired token fails cleanly and leaves the disabled stub in place
+// (the interactive activator can sign in later). Safe to run in a goroutine.
+func (m *toolMux) reconnectMCPSilently(url string) {
+	label := mcpLabel(url)
+	d := m.mcpDeps
+	// Bound the launch dial so a hung/slow server can't park this goroutine for
+	// the whole session. The SDK runs the session on its own background context
+	// (not this one), so the timeout caps only the initialize handshake — a
+	// connected session survives after Open returns.
+	dialCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+	disp, cleanup, err := mcpremote.Open(dialCtx, mcpremote.Config{
+		ServerURL:    url,
+		Label:        label,
+		CallbackAddr: d.callback,
+		CacheDir:     d.cacheDir,
+		Interactive:  false, // launch: never pop a browser
+	}, d.trustAnnotations, mcpremote.Policy{
+		AllowWrite: d.allowWrite,
+		Confirm:    d.confirm,
+	})
+	if err != nil {
+		return // no usable cached session — stays a disabled stub
+	}
+	m.adoptLiveMCP(label, disp, cleanup)
+}
+
+// adoptLiveMCP merges an already-connected remote plugin's tools into the mux
+// ENABLED (first-registrant-wins, so it can't shadow a local tool) and marks the
+// label activated so the interactive activator won't double-run.
+func (m *toolMux) adoptLiveMCP(label string, p plugin, cleanup func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activated[label] {
+		if cleanup != nil {
+			go cleanup() // someone already brought it live; drop this connection
+		}
+		return
+	}
+	for _, spec := range p.Tools() {
+		if _, exists := m.byName[spec.Name]; exists {
+			continue
+		}
+		m.order = append(m.order, spec.Name)
+		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: true}
+	}
+	m.activated[label] = true
+	if cleanup != nil {
+		m.cleanups = append(m.cleanups, cleanup)
+	}
+}
+
+// AddRemoteMCP registers AND activates a remote MCP connector at runtime (the
+// `/mcp add` path). Activation opens the browser and blocks on the OAuth
+// callback. Returns the label + how many tools came live. On failure it cleans
+// up a freshly-registered stub so a retry works.
+func (m *toolMux) AddRemoteMCP(url string) (label string, toolCount int, err error) {
+	label = mcpLabel(url)
+	already := m.hasPlugin(label)
+	m.registerMCPRemote(url)
+	n, _, aerr := m.SetEnabled(label, true) // triggers maybeActivate → browser
+	if aerr != nil {
+		if !already {
+			m.forgetPlugin(label)
+		}
+		return label, 0, aerr
+	}
+	return label, n, nil
+}
+
+// forgetPlugin removes a plugin's tools + activator from the mux entirely (the
+// inverse of add). Used by `/mcp remove` and failed-add cleanup.
+func (m *toolMux) forgetPlugin(label string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.order[:0]
+	for _, n := range m.order {
+		if e := m.byName[n]; e != nil && e.plugin == label {
+			delete(m.byName, n)
+			continue
+		}
+		kept = append(kept, n)
+	}
+	m.order = kept
+	delete(m.activators, label)
+	delete(m.activated, label)
+	delete(m.mcpServers, label)
+}
+
+// RemoteMCPList reports every registered remote MCP connector + its state.
+func (m *toolMux) RemoteMCPList() []mcpServerStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]mcpServerStatus, 0, len(m.mcpServers))
+	for label, url := range m.mcpServers {
+		st := mcpServerStatus{Label: label, URL: url}
+		for _, n := range m.order {
+			if e := m.byName[n]; e != nil && e.plugin == label {
+				st.ToolCount++
+				if e.enabled {
+					st.Enabled = true
+				}
+			}
+		}
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
+	return out
 }
 
 // addCleanup registers a teardown func (closes a browser/db handle), run
@@ -635,6 +808,21 @@ func (m *toolMux) maybeActivate(target string) error {
 			e.owner = p
 		}
 	}
+	// Zero-spec stubs (e.g. a remote MCP connector) only learn their tool
+	// list AFTER connecting, so the stub registered no specs to swap above.
+	// Merge whatever the live plugin now advertises. First-registrant-wins:
+	// a name already owned by ANY plugin is left untouched, so a remote
+	// server can't shadow a trusted local tool (e.g. gmail_send). Added
+	// disabled — the SetEnabled caller flips this plugin's tools on; that
+	// also means they don't silently auto-activate at restore (which would
+	// pop a browser at startup).
+	for _, spec := range p.Tools() {
+		if _, exists := m.byName[spec.Name]; exists {
+			continue
+		}
+		m.order = append(m.order, spec.Name)
+		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: false}
+	}
 	if cleanup != nil {
 		m.cleanups = append(m.cleanups, cleanup)
 	}
@@ -660,6 +848,19 @@ type pluginFlags struct {
 	gsuiteSAJSON    string
 	gsuiteSubject   string
 	gsuiteAllowSend bool
+
+	atlassian           bool
+	atlassianSite       string
+	atlassianEmail      string
+	atlassianProject    string
+	atlassianAllowWrite bool
+	atlassianClientID   string
+	atlassianCallback   string
+
+	mcpRemotes          []string // --mcp-remote (repeatable): remote MCP server URLs
+	mcpTrustAnnotations bool
+	mcpAllowWrite       bool
+	mcpCallback         string
 
 	x          bool
 	xBearer    string
@@ -693,10 +894,24 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.StringVar(&p.gsuiteSAJSON, "gsuite-sa-json", "", "gsuite service-account JSON (auth=sa)")
 	fs.StringVar(&p.gsuiteSubject, "gsuite-subject", "", "gsuite impersonated user (auth=sa)")
 	fs.BoolVar(&p.gsuiteAllowSend, "gsuite-allow-send", false, "permit gmail_send/calendar_create")
+	fs.BoolVar(&p.atlassian, "atlassian", false, "enable Jira tools (Atlassian)")
+	fs.StringVar(&p.atlassianSite, "atlassian-site", "", "Atlassian site URL, e.g. https://you.atlassian.net (Path A)")
+	fs.StringVar(&p.atlassianEmail, "atlassian-email", "", "Atlassian account email (Path A; token via $ATLASSIAN_TOKEN)")
+	fs.StringVar(&p.atlassianProject, "atlassian-project", "", "default Jira project key (e.g. TEN)")
+	fs.BoolVar(&p.atlassianAllowWrite, "atlassian-allow-write", false, "permit jira_create/comment/transition (writes to the board)")
+	fs.StringVar(&p.atlassianClientID, "atlassian-client-id", "", "Atlassian OAuth app client id (Path B; secret via $ATLASSIAN_CLIENT_SECRET, login via `tenant atlassian login`)")
+	fs.StringVar(&p.atlassianCallback, "atlassian-oauth-callback", "", "OAuth callback bind addr (default 127.0.0.1:8765)")
+	fs.Func("mcp-remote", "remote MCP server URL to connect as a client (repeatable; OAuth2.1+DCR browser sign-in via `/enable`)", func(s string) error {
+		p.mcpRemotes = append(p.mcpRemotes, s)
+		return nil
+	})
+	fs.BoolVar(&p.mcpTrustAnnotations, "mcp-trust-annotations", false, "trust remote servers' read-only tool annotations (relax the deny-by-default gate)")
+	fs.BoolVar(&p.mcpAllowWrite, "mcp-allow-write", false, "permit remote MCP write tools without per-action confirm")
+	fs.StringVar(&p.mcpCallback, "mcp-callback", "", "localhost OAuth callback for --mcp-remote (default 127.0.0.1:8765)")
 	fs.BoolVar(&p.x, "x", false, "enable X/Twitter")
 	fs.StringVar(&p.xBearer, "x-bearer", "", "X app bearer token (or $X_BEARER_TOKEN)")
 	fs.BoolVar(&p.xAllowPost, "x-allow-post", false, "permit x_post/x_delete")
-	fs.BoolVar(&p.imsg, "imessage", false, "enable iMessage via BlueBubbles")
+	fs.BoolVar(&p.imsg, "imessage", false, "enable iMessage (native chat.db on macOS; --bb-url switches to BlueBubbles)")
 	fs.StringVar(&p.imsgURL, "bb-url", "", "BlueBubbles URL (or $BLUEBUBBLES_URL)")
 	fs.StringVar(&p.imsgPass, "bb-password", "", "BlueBubbles password (or $BLUEBUBBLES_PASSWORD)")
 	fs.BoolVar(&p.imsgPrivate, "bb-private-api", false, "use BlueBubbles private-api send method")
@@ -784,6 +999,21 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		mux.add("gsuite", gsuite.NewDispatcher(svc, gsuite.Policy{AllowSend: gateAllow(pf.gsuiteAllowSend), Confirm: confirm}))
 	}
 
+	if pf.atlassian {
+		svc, err := atlassian.Open(ctx, atlassian.Config{
+			SiteURL:       pf.atlassianSite,
+			Email:         pf.atlassianEmail,
+			Project:       pf.atlassianProject,
+			ClientID:      pf.atlassianClientID,
+			TokenPath:     atlassianTokenPath(c.cfgDir),
+			OAuthCallback: pf.atlassianCallback,
+		})
+		if err != nil {
+			return fail(fmt.Errorf("atlassian plugin: %w", err))
+		}
+		mux.add("atlassian", atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: gateAllow(pf.atlassianAllowWrite), Confirm: confirm}))
+	}
+
 	if pf.x {
 		bearer := pf.xBearer
 		if bearer == "" {
@@ -804,11 +1034,25 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		if pass == "" {
 			pass = os.Getenv("BLUEBUBBLES_PASSWORD")
 		}
-		svc, err := imessage.Open(imessage.Config{URL: url, Password: pass, PrivateAPI: pf.imsgPrivate})
-		if err != nil {
-			return fail(fmt.Errorf("imessage plugin: %w", err))
+		pol := imessage.Policy{AllowSend: gateAllow(pf.imsgAllowSend), Confirm: confirm}
+		// Transport selection: a BlueBubbles URL (flag or env) is an
+		// explicit opt-in to the server bridge; otherwise the default is the
+		// native macOS transport (chat.db read + AppleScript send, no
+		// server). OpenNative returns a "macOS only" error off darwin.
+		if url != "" {
+			svc, err := imessage.Open(imessage.Config{URL: url, Password: pass, PrivateAPI: pf.imsgPrivate})
+			if err != nil {
+				return fail(fmt.Errorf("imessage plugin: %w", err))
+			}
+			mux.add("imessage", imessage.NewDispatcher(svc, pol))
+		} else {
+			nat, err := imessage.OpenNative(imessage.NativeConfig{})
+			if err != nil {
+				return fail(fmt.Errorf("imessage plugin: %w", err))
+			}
+			mux.addCleanup(func() { _ = nat.Close() })
+			mux.add("imessage", imessage.NewDispatcher(nat, pol))
 		}
-		mux.add("imessage", imessage.NewDispatcher(svc, imessage.Policy{AllowSend: gateAllow(pf.imsgAllowSend), Confirm: confirm}))
 	}
 
 	if pf.discord {
@@ -922,8 +1166,43 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 			},
 		},
 		{label: "x", specs: xp.NewDispatcher(nil, xp.Policy{}).Tools(), hint: "relaunch with --x (bearer / OAuth login)"},
-		{label: "imessage", specs: imessage.NewDispatcher(nil, imessage.Policy{}).Tools(), hint: "relaunch with --imessage (BlueBubbles URL+password)"},
+		{label: "imessage", specs: imessage.NewDispatcher(nil, imessage.Policy{}).Tools(), hint: "relaunch with --imessage (native chat.db on macOS; or --bb-url for BlueBubbles)"},
 		{label: "discord", specs: discord.NewDispatcher(nil, discord.Policy{}).Tools(), hint: "relaunch with --discord --discord-bot-token=<token>"},
+		{
+			label: "atlassian",
+			specs: atlassian.NewDispatcher(nil, atlassian.Policy{}).Tools(),
+			hint:  "run `/configure atlassian` (OAuth sign-in or API token), then `/enable atlassian`",
+			activate: func() (plugin, func(), error) {
+				// TEN-160: build the real Jira plugin from /configure-saved settings.
+				lc, err := loadLaunchConfig(c.cfgDir)
+				if err != nil {
+					return nil, nil, fmt.Errorf("atlassian plugin: load config: %w", err)
+				}
+				sk, ok := lc.Skills["atlassian"]
+				if !ok || sk.Settings == nil || sk.Settings["site"] == "" {
+					return nil, nil, fmt.Errorf("atlassian plugin: %w yet — run `/configure atlassian`", errNotConfigured)
+				}
+				creds, _ := loadCredentials(c.cfgDir)
+				acfg := atlassian.Config{
+					SiteURL:   sk.Settings["site"],
+					Project:   sk.Settings["project"],
+					TokenPath: atlassianTokenPath(c.cfgDir),
+				}
+				switch sk.Settings["auth"] {
+				case "token":
+					acfg.Email = sk.Settings["email"]
+					acfg.APIToken = creds.get(skillSecretID("atlassian", "api_token"))
+				default: // oauth
+					acfg.ClientID = sk.Settings["client_id"]
+					acfg.ClientSecret = creds.get(skillSecretID("atlassian", "client_secret"))
+				}
+				svc, err := atlassian.Open(ctx, acfg)
+				if err != nil {
+					return nil, nil, fmt.Errorf("atlassian plugin: %w", err)
+				}
+				return atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: gateAllow(pf.atlassianAllowWrite), Confirm: confirm}), func() {}, nil
+			},
+		},
 	}
 	for _, e := range catalog {
 		if mux.hasPlugin(e.label) {
@@ -936,7 +1215,51 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		}
 	}
 
+	// Remote MCP connectors (TEN-162/164): stash the deps so runtime `/mcp add`
+	// builds connectors identical (gated, deny-by-default) to launch-time ones,
+	// then register one disabled stub + activator per server — from both
+	// --mcp-remote flags AND the persisted launchConfig list. The activator
+	// connects (OAuth2.1 + DCR + browser) on `/enable` / `/mcp add`.
+	mux.mcpDeps = mcpRuntimeDeps{
+		ctx:              ctx,
+		callback:         pf.mcpCallback,
+		openBrowser:      openBrowser,
+		trustAnnotations: pf.mcpTrustAnnotations,
+		allowWrite:       gateAllow(pf.mcpAllowWrite),
+		confirm:          confirm,
+		cacheDir:         filepath.Join(c.cfgDir, "mcp"),
+	}
+	mcpURLs := append([]string{}, pf.mcpRemotes...)
+	if c.lc != nil {
+		mcpURLs = append(mcpURLs, c.lc.MCPRemotes...)
+	}
+	seenMCP := map[string]bool{}
+	for _, url := range mcpURLs {
+		if url == "" || seenMCP[mcpLabel(url)] {
+			continue
+		}
+		seenMCP[mcpLabel(url)] = true
+		mux.registerMCPRemote(url)
+		// Auto-reconnect from a cached token (async — no browser, no launch
+		// stall). With a valid/refreshable token the tools come live shortly
+		// after launch; otherwise the disabled stub remains for /configure.
+		go mux.reconnectMCPSilently(url)
+	}
+
 	return mux, wikiIx, mux.Close, nil
+}
+
+// mcpLabel derives a stable tool-group label from a remote MCP server URL,
+// e.g. https://mcp.atlassian.com/v1/mcp → "mcp:atlassian.com".
+func mcpLabel(rawURL string) string {
+	s := strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
+	if i := strings.IndexAny(s, "/:"); i >= 0 {
+		s = s[:i]
+	}
+	if s == "" {
+		s = rawURL
+	}
+	return "mcp:" + s
 }
 
 // buildWikiIndex constructs the wiki index for the TUI. Unlike the

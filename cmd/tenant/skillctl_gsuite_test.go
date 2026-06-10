@@ -138,8 +138,8 @@ func TestValidateSAJSON_ValidServiceAccount(t *testing.T) {
 
 func TestValidateEmailRFC5322(t *testing.T) {
 	cases := []struct {
-		in   string
-		ok   bool
+		in string
+		ok bool
 	}{
 		{"", true}, // optional
 		{"user@example.com", true},
@@ -220,11 +220,13 @@ func TestProbeGSuite_GcloudSuccess(t *testing.T) {
 	srv := fakeGmailServer(t)
 	defer srv.Close()
 	deps := gsuiteProbeDeps{
-		HTTP:        gsuiteDoerTo(t, srv),
-		Run:         func(ctx context.Context, name string, args ...string) ([]byte, error) { return []byte("fake-token"), nil },
+		HTTP: gsuiteDoerTo(t, srv),
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return []byte("fake-token"), nil
+		},
 		GcloudCheck: func() error { return nil }, // pretend gcloud is on PATH
 	}
-	identity, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}},		map[string]string{"auth": "gcloud"}, func() error { return nil }, deps)
+	identity, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}}, map[string]string{"auth": "gcloud"}, func() error { return nil }, deps)
 	if err != nil {
 		t.Fatalf("probe should succeed; got %v", err)
 	}
@@ -235,9 +237,11 @@ func TestProbeGSuite_GcloudSuccess(t *testing.T) {
 
 func TestProbeGSuite_GcloudNotOnPath(t *testing.T) {
 	deps := gsuiteProbeDeps{
-		GcloudCheck: func() error { return errors.New("gcloud not found on PATH — install Cloud SDK, OR switch to auth=sa") },
+		GcloudCheck: func() error {
+			return errors.New("gcloud not found on PATH — install Cloud SDK, OR switch to auth=sa")
+		},
 	}
-	_, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}},		map[string]string{"auth": "gcloud"}, func() error { return nil }, deps)
+	_, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}}, map[string]string{"auth": "gcloud"}, func() error { return nil }, deps)
 	if err == nil || !strings.Contains(err.Error(), "gcloud not found") {
 		t.Errorf("missing gcloud should fail clean; got %v", err)
 	}
@@ -253,11 +257,13 @@ func TestProbeGSuite_GcloudGmailFails(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	deps := gsuiteProbeDeps{
-		HTTP:        gsuiteDoerTo(t, srv),
-		Run:         func(ctx context.Context, name string, args ...string) ([]byte, error) { return []byte("bad-token"), nil },
+		HTTP: gsuiteDoerTo(t, srv),
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return []byte("bad-token"), nil
+		},
 		GcloudCheck: func() error { return nil },
 	}
-	_, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}},		map[string]string{"auth": "gcloud"}, func() error { return nil }, deps)
+	_, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}}, map[string]string{"auth": "gcloud"}, func() error { return nil }, deps)
 	if err == nil || !strings.Contains(err.Error(), "Gmail probe failed") {
 		t.Errorf("401 should surface as Gmail probe failed; got %v", err)
 	}
@@ -283,11 +289,11 @@ func TestProbeGSuite_SASuccess(t *testing.T) {
 	saPath, _ := writeFakeSAJSON(t, srv.URL+"/token")
 
 	deps := gsuiteProbeDeps{HTTP: gsuiteDoerTo(t, srv)}
-	identity, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}},		map[string]string{
-			"auth":    "sa",
-			"sa_json": saPath,
-			"subject": "alice@example.com",
-		}, func() error { return nil }, deps)
+	identity, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}}, map[string]string{
+		"auth":    "sa",
+		"sa_json": saPath,
+		"subject": "alice@example.com",
+	}, func() error { return nil }, deps)
 	if err != nil {
 		t.Fatalf("SA probe should succeed; got %v", err)
 	}
@@ -354,7 +360,7 @@ func TestProbeGSuite_SAMissingSAJSON(t *testing.T) {
 }
 
 func TestProbeGSuite_UnknownAuth(t *testing.T) {
-	_, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}},		map[string]string{"auth": "nope"}, func() error { return nil }, gsuiteProbeDeps{})
+	_, err := probeGSuiteWith(context.Background(), &credentials{Secrets: map[string]string{}}, map[string]string{"auth": "nope"}, func() error { return nil }, gsuiteProbeDeps{})
 	if err == nil || !strings.Contains(err.Error(), "unknown auth") {
 		t.Errorf("unknown auth should fail; got %v", err)
 	}
