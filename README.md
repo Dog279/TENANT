@@ -47,6 +47,10 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
 
 ## Quickstart
 
+New here? **[docs/QUICKSTART.md](docs/QUICKSTART.md)** is a step-by-step first-time
+setup (Ollama models, the memory DB, model + loop-ceiling tuning, and the soul).
+The short version:
+
 Requires **Go 1.26+** and an LLM you can reach (a local Ollama, or a cloud API key).
 
 ```sh
