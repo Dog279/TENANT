@@ -16,7 +16,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -888,26 +890,27 @@ type model struct {
 
 	chat  viewport.Model
 	feed  viewport.Model
-	input textinput.Model
+	ta    textarea.Model  // multiline chat input
+	input textinput.Model // single-line for secrets/passwords (configure, setup)
 	spin  spinner.Model
 
-	msgs       []chatMsg
-	feedLines  []string
-	streaming  bool // an assistant reply is currently streaming
-	busy       bool // a turn is in flight
-	budgetPct  int  // last context-budget utilization (% of writable budget)
-	budgetUsed int  // absolute tokens in the assembled context
-	budgetCap  int  // writable-budget cap (tokens)
+	msgs          []chatMsg
+	feedLines     []string
+	streaming     bool      // an assistant reply is currently streaming
+	busy          bool      // a turn is in flight
+	budgetPct     int       // last context-budget utilization (% of writable budget)
+	budgetUsed    int       // absolute tokens in the assembled context
+	budgetCap     int       // writable-budget cap (tokens)
 	sessionTok    int       // cumulative tokens (in+out) for the MAIN agent this session
 	sessionTokIn  int       // cumulative INPUT tokens for the MAIN agent this session
 	sessionTokOut int       // cumulative OUTPUT tokens for the MAIN agent this session
 	teamTok       int       // cumulative tokens (in+out) for spawned sub-agents
 	reqStart      time.Time // wall-clock start of the in-flight turn (display-only live timer)
-	lastTool   string
-	width      int
-	height     int
-	ready      bool
-	err        string
+	lastTool      string
+	width         int
+	height        int
+	ready         bool
+	err           string
 	// follow flags: when true the pane sticks to the bottom as new content
 	// arrives; scrolling up turns it off so the view stays put (so a long
 	// /tools list doesn't get yanked away). Paging/wheeling back to the
@@ -1000,16 +1003,27 @@ type researchTimelineState struct {
 }
 
 func newModel(ctx context.Context, cfg Config) *model {
+	ta := textarea.New()
+	ta.Placeholder = "Message the agent…"
+	ta.Prompt = "┃ "
+	ta.ShowLineNumbers = false
+	ta.SetHeight(3)
+	ta.CharLimit = 8000
+	ta.Focus()
+	// Enter sends; Shift+Enter/Ctrl+Enter inserts a newline.
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter", "ctrl+enter"),
+		key.WithHelp("shift+enter", "newline"),
+	)
 	ti := textinput.New()
-	ti.Placeholder = "Message the agent…  (Enter to send · Esc/Ctrl-C to interrupt · /exit to quit)"
-	ti.Focus()
 	ti.CharLimit = 8000
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	return &model{
 		ctx:        ctx,
 		cfg:        cfg,
-		input:      ti,
+		ta:         ta,
+		input:      ti, // reserved for secret/password entry (configure, setup)
 		spin:       sp,
 		chatFollow: true,
 		feedFollow: true,
@@ -1159,7 +1173,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+y":
 			m.copyTranscript()
 		case "enter":
-			q := strings.TrimSpace(m.input.Value())
+			var q string
+			if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
+				q = strings.TrimSpace(m.input.Value())
+			} else {
+				q = strings.TrimSpace(m.ta.Value())
+			}
 			switch {
 			case m.busy && q != "" && !strings.HasPrefix(q, "/"):
 				// A plain message typed mid-turn is a soft interrupt: fold it
@@ -1372,7 +1391,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			prompt := gc.Continue(msg.reason)
-			m.input.SetValue(prompt)
+			m.ta.SetValue(prompt)
 			m.goalAutoActive = true
 			if subCmd := m.submit(); subCmd != nil {
 				cmds = append(cmds, subCmd)
@@ -1386,14 +1405,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// (sysChatMsg is caught earlier in Update at the picker/async layer.)
 
 	var icmd tea.Cmd
-	m.input, icmd = m.input.Update(msg)
+	m.ta, icmd = m.ta.Update(msg)
 	cmds = append(cmds, icmd)
 	m.refresh()
 	return m, tea.Batch(cmds...)
 }
 
 func (m *model) submit() tea.Cmd {
-	q := strings.TrimSpace(m.input.Value())
+	var q string
+	if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
+		q = strings.TrimSpace(m.input.Value())
+	} else {
+		q = strings.TrimSpace(m.ta.Value())
+	}
+	m.streaming = false // defensive reset: new turn gets a fresh assistant message
 	// TEN-65 follow-up fix: empty input in configure-session mode is
 	// meaningful — it means "use the Default / skip if optional".
 	// Before this, the early-return at the top swallowed empty Enter
@@ -1429,7 +1454,7 @@ func (m *model) submit() tea.Cmd {
 		m.sysChat("setup: cancelled")
 	}
 	if m.configureSession != nil && !strings.HasPrefix(q, "/") {
-		m.input.Reset()
+		m.ta.Reset()
 		m.chatFollow = true
 		m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
 		m.handleConfigureAnswer(q)
@@ -1438,7 +1463,7 @@ func (m *model) submit() tea.Cmd {
 	if q == "" {
 		return nil
 	}
-	m.input.Reset()
+	m.ta.Reset()
 	m.chatFollow = true // sending re-engages follow so you see the reply/output
 	if strings.HasPrefix(q, "/") {
 		return m.handleSlash(q)
@@ -1579,7 +1604,7 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 // addresses it, and resumes unless it overrides the task. Esc remains the
 // hard stop.
 func (m *model) interject(q string) {
-	m.input.Reset()
+	m.ta.Reset()
 	m.chatFollow = true
 	m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
 	m.appendFeed(cSys.Render("⏎ interjected — agent will address it, then resume"))
@@ -2507,7 +2532,7 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		m.sysChat(status)
 		// Kick off the first turn with the goal prompt — same path as if the
 		// user had typed it themselves.
-		m.input.SetValue(firstPrompt)
+		m.ta.SetValue(firstPrompt)
 		m.goalAutoActive = true
 		return m.submit()
 	case "/review":
@@ -4139,7 +4164,7 @@ func (m *model) appendFeed(line string) {
 
 func (m *model) resize(w, h int) {
 	m.width, m.height = w, h
-	bodyH := h - 4 // status bar (1) + input (1) + help (1) + padding
+	bodyH := h - 6 // status bar (1) + textarea (~3) + help (1) + padding
 	if bodyH < 3 {
 		bodyH = 3
 	}
@@ -4158,7 +4183,9 @@ func (m *model) resize(w, h int) {
 		m.chat.Width, m.chat.Height = chatW, bodyH
 		m.feed.Width, m.feed.Height = feedW, bodyH
 	}
-	m.input.Width = w - 2 - chatGutter
+	m.ta.SetWidth(chatW)
+	m.ta.SetHeight(3)
+	m.input.Width = chatW
 }
 
 func (m *model) refresh() {
@@ -4401,21 +4428,33 @@ func (m *model) tokenCounter() string {
 }
 
 // reqTimer renders the live elapsed time of the in-flight turn, e.g.
-// "⏱ 3.4s" (<60s, one decimal) or "⏱ 1:09" (>=60s, m:ss). Display-only,
-// never persisted. Empty when no turn is in flight; the existing spinner
-// tick drives the sub-second repaint, so no extra ticker is needed.
+// "⏱ 3.4s" (<60s), "⏱ 1:09" (m:ss, <1h), or "⏱ 1:40:05" (h:mm:ss, >=1h).
+// Display-only, never persisted. Empty when no turn is in flight; the existing
+// spinner tick drives the sub-second repaint, so no extra ticker is needed.
 func (m *model) reqTimer() string {
 	if !m.busy || m.reqStart.IsZero() {
 		return ""
 	}
-	d := time.Since(m.reqStart)
-	var s string
-	if d < time.Minute {
-		s = fmt.Sprintf("%.1fs", d.Seconds())
-	} else {
-		s = fmt.Sprintf("%d:%02d", int(d.Minutes()), int(d.Seconds())%60)
+	return cDim.Render("⏱ " + formatElapsed(time.Since(m.reqStart)))
+}
+
+// formatElapsed renders a duration as a counter that rolls minutes into an HOUR
+// field past 60 min, so long-running turns keep counting (1:40:05, 25:00:00)
+// instead of an unbounded minute field that looks like it resets. Under a
+// minute: one-decimal seconds; under an hour: m:ss; otherwise h:mm:ss.
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
 	}
-	return cDim.Render("⏱ " + s)
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	total := int(d.Seconds())
+	h, m, s := total/3600, (total%3600)/60, total%60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
 }
 
 // ctxBar draws a [████░░] gauge, colored by how full the context is.
@@ -4474,7 +4513,12 @@ func (m *model) View() string {
 	// Picker mode replaces the input area with the picker view. Keeps
 	// the chat + feed visible above so the operator has full context
 	// while choosing.
-	inputArea := m.input.View()
+	var inputArea string
+	if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
+		inputArea = m.input.View()
+	} else {
+		inputArea = m.ta.View()
+	}
 	if m.picker != nil {
 		inputArea = m.renderPicker()
 	}

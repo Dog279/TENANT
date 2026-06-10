@@ -248,7 +248,7 @@ func TestScroll_PgUpStopsFollow_SubmitReengages(t *testing.T) {
 	}
 
 	// Typing a message and sending re-engages follow.
-	m.input.SetValue("hello")
+	m.ta.SetValue("hello")
 	m.submit()
 	m.refresh()
 	if !m.chatFollow {
@@ -2586,7 +2586,7 @@ func TestResearch_ClarifyAnswerResumesResearch(t *testing.T) {
 	}
 
 	// Pass 2: user types the answer (plain message, no slash).
-	m.input.SetValue("latest closing price and Q3 earnings")
+	m.ta.SetValue("latest closing price and Q3 earnings")
 	cmd2 := m.submit()
 	if cmd2 == nil {
 		t.Fatal("answer submit should return a tea.Cmd")
