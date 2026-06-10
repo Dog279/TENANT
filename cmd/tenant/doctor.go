@@ -98,6 +98,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	deep := fs.Bool("deep", false, "include live network probes (tokenize, tool-calling, MCP self-loop)")
 	fix := fs.Bool("fix", false, "apply safe, reversible repairs")
 	asJSON := fs.Bool("json", false, "machine-readable output (for CI)")
+	contextDebug := fs.String("context-debug", "", "trace what facts/episodes a query would retrieve, then exit (e.g. --context-debug \"what do I prefer\")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -125,6 +126,12 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	if sk, err := skills.Open(filepath.Join(c.dataDir, "skills.db")); err == nil {
 		env.skills = sk
 		defer sk.Close()
+	}
+
+	// TEN-49: retrieval trace — show what the memory tiers return for a query
+	// instead of running the health checks.
+	if strings.TrimSpace(*contextDebug) != "" {
+		return runContextDebug(ctx, env, *contextDebug)
 	}
 
 	checks := []struct {

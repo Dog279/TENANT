@@ -599,6 +599,12 @@ func cmdModel(_ context.Context, args []string) error {
 		if endpoint == "" {
 			return fmt.Errorf("--endpoint is required for kind %q", kind)
 		}
+		// Don't silently default the tool format to gemma (TEN-138): when it
+		// wasn't passed, prompt on a TTY. selectOne returns the supplied default
+		// on a non-TTY, so non-interactive use keeps working.
+		if pk.Backend == "vllm" && toolFmt == "" {
+			toolFmt = selectOne("Tool format for "+name, toolFormatOpts(), firstNonEmpty(pk.DefaultToolFmt, defaultVLLMToolFmt))
+		}
 		pc := &providerConfig{Kind: kind, Endpoint: strings.TrimRight(endpoint, "/"), Model: mdl, ToolFmt: toolFmt}
 		if c.genAPIKey != "" {
 			creds, _ := loadCredentials(c.cfgDir)

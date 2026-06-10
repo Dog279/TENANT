@@ -2929,18 +2929,42 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 			m.sysChat("usage: /model add <name> <endpoint> [tool-format]   e.g. /model add dgx http://localhost:8000 qwen")
 			return
 		}
-		toolFmt := ""
-		if len(f) >= 4 {
-			toolFmt = f[3]
+		name, endpoint := f[1], f[2]
+		doAdd := func(toolFmt string) {
+			status, err := m.cfg.Models.AddModel(name, endpoint, toolFmt)
+			if err != nil {
+				m.appendFeed(cErr.Render("✗ add backend failed: " + clip(err.Error(), 70)))
+				m.sysChat("could not add backend: " + err.Error())
+				return
+			}
+			m.appendFeed(cOK.Render("＋ backend added: " + name + " (" + toolFmt + ")"))
+			m.sysChat(status)
 		}
-		status, err := m.cfg.Models.AddModel(f[1], f[2], toolFmt)
-		if err != nil {
-			m.appendFeed(cErr.Render("✗ add backend failed: " + clip(err.Error(), 70)))
-			m.sysChat("could not add backend: " + err.Error())
+		if len(f) >= 4 {
+			doAdd(f[3]) // explicit format
 			return
 		}
-		m.appendFeed(cOK.Render("＋ backend added: " + f[1]))
-		m.sysChat(status)
+		// No tool format given → arrow-key picker instead of silently defaulting
+		// to gemma (a wrong format makes the model emit tool calls Tenant can't
+		// parse). TEN-138. doAdd runs in the Update goroutine via onSelect.
+		cmd = startPickerCmd(&listPicker{
+			title:    "Tool format for " + name + " — how the model emits tool calls",
+			hint:     "↑/↓ select · enter add · esc cancel  (match your model family; qwen for Qwen, etc.)",
+			items:    modelToolFormats,
+			selected: pickerIndexOf(modelToolFormats, defaultToolFormat),
+			onSelect: func(choice string) tea.Cmd {
+				return func() tea.Msg {
+					doAdd(choice)
+					return nil
+				}
+			},
+			onCancel: func() tea.Cmd {
+				return func() tea.Msg {
+					return sysChatMsg{text: "model add cancelled — pick a tool format, or pass it explicitly: /model add " + name + " " + endpoint + " <qwen|gemma|llama|mistral|openai>"}
+				}
+			},
+		})
+		return
 	case "add-cloud", "addcloud":
 		// /model add-cloud <kind> <api-key>
 		// One-shot setup for keyed cloud providers (zai, openai, grok, anthropic)
@@ -4799,6 +4823,15 @@ func (m *model) startModelPicker() tea.Cmd {
 		},
 	})
 }
+
+// modelToolFormats are the supported OpenAI-compatible tool-call formats,
+// mirrored from cmd/tenant setup.go's toolFormatOpts. Surfaced by the /model add
+// picker (TEN-138) so a self-hosted backend never silently defaults to gemma.
+var modelToolFormats = []string{"qwen", "gemma", "llama", "mistral", "openai"}
+
+// defaultToolFormat is the picker's initial highlight — the historical fallback,
+// shown first so the operator sees what they'd have gotten and can change it.
+const defaultToolFormat = "gemma"
 
 // pickerIndexOf returns the index of target in items, or 0 if absent/empty.
 func pickerIndexOf(items []string, target string) int {

@@ -15,6 +15,7 @@ type fakeModels struct {
 	listErr  map[string]error
 	useErr   error
 	useCalls []string // "name|model"
+	addCalls []string // "name|endpoint|toolfmt"
 }
 
 func (f *fakeModels) ModelList() []ModelInfo { return f.infos }
@@ -33,12 +34,15 @@ func (f *fakeModels) ListProviderModels(name string) ([]string, error) {
 	}
 	return f.models[name], nil
 }
-func (f *fakeModels) AddModel(string, string, string) (string, error) { return "", nil }
-func (f *fakeModels) AddCloudModel(string, string) (string, error)    { return "", nil }
-func (f *fakeModels) RemoveModel(string) (string, error)              { return "", nil }
-func (f *fakeModels) ReloadKeys() (string, error)                     { return "", nil }
-func (f *fakeModels) LoopCeiling() int                                { return 0 }
-func (f *fakeModels) SetLoopCeiling(int) (string, error)              { return "", nil }
+func (f *fakeModels) AddModel(name, endpoint, toolFmt string) (string, error) {
+	f.addCalls = append(f.addCalls, name+"|"+endpoint+"|"+toolFmt)
+	return "added " + name, nil
+}
+func (f *fakeModels) AddCloudModel(string, string) (string, error) { return "", nil }
+func (f *fakeModels) RemoveModel(string) (string, error)           { return "", nil }
+func (f *fakeModels) ReloadKeys() (string, error)                  { return "", nil }
+func (f *fakeModels) LoopCeiling() int                             { return 0 }
+func (f *fakeModels) SetLoopCeiling(int) (string, error)           { return "", nil }
 
 func newModelPickerModel(f *fakeModels) *model {
 	m := newModel(context.Background(), Config{Models: f})

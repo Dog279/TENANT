@@ -126,10 +126,16 @@ func TestRecall_CapHelpers(t *testing.T) {
 
 func TestRecall_GateAndName(t *testing.T) {
 	specs := (&recallTool{}).Tools()
-	if len(specs) != 1 || specs[0].Name != "memory_recall" {
-		t.Fatalf("unexpected tool spec: %+v", specs)
+	var mr *model.ToolSpec
+	for i := range specs {
+		if specs[i].Name == "memory_recall" {
+			mr = &specs[i]
+		}
 	}
-	if specs[0].Gate != "recall" {
-		t.Errorf("recall tool must carry Gate=recall, got %q", specs[0].Gate)
+	if mr == nil {
+		t.Fatalf("memory_recall not exposed: %+v", specs)
+	}
+	if mr.Gate != "recall" {
+		t.Errorf("memory_recall must carry Gate=recall, got %q", mr.Gate)
 	}
 }
