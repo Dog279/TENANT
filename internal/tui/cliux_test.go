@@ -54,6 +54,9 @@ func TestHistory_DedupConsecutive(t *testing.T) {
 
 func TestMouseToggle(t *testing.T) {
 	m := newBareModel()
+	if !m.mouseOn {
+		t.Fatal("mouse capture should default ON (wheel scrolls the TUI; ⌥/Shift-drag selects)")
+	}
 	if cmd := m.handleSlash("/mouse on"); cmd == nil || !m.mouseOn {
 		t.Fatalf("/mouse on: mouseOn=%v cmd=%v", m.mouseOn, cmd)
 	}

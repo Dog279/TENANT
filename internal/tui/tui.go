@@ -790,13 +790,15 @@ type ReconnectControl interface {
 
 // Run starts the full-screen TUI and blocks until the user quits.
 //
-// Mouse capture is OFF by default so the terminal's native click-drag SELECTION
-// (copy/paste) works like any normal CLI (TEN-181). Scrolling still works via
-// PgUp/PgDn and Shift+↑/↓. `/mouse on` re-enables wheel scrolling at the cost of
-// native selection (the two are mutually exclusive — capturing the mouse hides
-// drag events from the terminal).
+// Mouse capture is ON by default: the wheel scrolls the TUI panes and you stay
+// locked in the alt screen (capture OFF would send wheel events to the
+// terminal's scrollback, scrolling you "out of" the TUI). To SELECT text for
+// copy/paste, use the standard terminal convention: hold the bypass modifier
+// while dragging — ⌥ Option on macOS (iTerm2/Terminal.app), Shift on most Linux
+// terminals — which selects natively even while the app captures the mouse.
+// `/mouse off` drops capture entirely for plain-drag selection (TEN-181).
 func Run(ctx context.Context, cfg Config) error {
-	p := tea.NewProgram(newModel(ctx, cfg), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(ctx, cfg), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -905,7 +907,7 @@ type model struct {
 	history   []string
 	histIdx   int
 	histDraft string
-	mouseOn   bool // wheel-capture on? (off by default → native terminal selection)
+	mouseOn   bool // wheel-capture on? (default true — wheel scrolls the TUI; ⌥/Shift-drag selects)
 
 	msgs          []chatMsg
 	feedLines     []string
@@ -1045,6 +1047,7 @@ func newModel(ctx context.Context, cfg Config) *model {
 		spin:       sp,
 		chatFollow: true,
 		feedFollow: true,
+		mouseOn:    true, // matches Run's WithMouseCellMotion default
 		msgs:       []chatMsg{intro(cfg)},
 	}
 }
@@ -1901,7 +1904,7 @@ var helpSections = []helpSection{
 			{"/exit, /quit", "close the app (the ONLY way out — Ctrl-C/Esc don't quit)"},
 			{"/clear", "wipe the agent's context (fresh conversation) + screen; keeps facts/episodes/archive"},
 			{"/cls", "clear just the screen/scrollback (context untouched)"},
-			{"/mouse on|off", "on = wheel scroll; off (default) = native drag-to-select copy/paste"},
+			{"/mouse on|off", "on (default) = wheel scrolls the TUI; copy text by ⌥ Option-drag (macOS) / Shift-drag (Linux)"},
 			{"↑ / ↓", "recall previous prompts/commands (cursor on first/last input line)"},
 			{"(type mid-turn)", "send a message while busy to steer the agent — it addresses it, then resumes"},
 			{"Esc / Ctrl-C", "hard-stop the running turn (a stuck/looping agent); never closes the app"},
@@ -2254,28 +2257,30 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		m.clearFeed()
 		m.sysChat("screen cleared (context kept — use /clear to also reset the agent's context)")
 	case "/mouse":
-		// Toggle mouse wheel-capture. OFF (default) lets the terminal do native
-		// click-drag selection for copy/paste; ON enables in-app wheel scroll but
-		// disables native selection (mutually exclusive). (TEN-181)
+		// Toggle mouse wheel-capture. ON (default): wheel scrolls the TUI panes
+		// and you stay in the alt screen — to SELECT text, hold the terminal's
+		// bypass modifier while dragging (⌥ Option on macOS, Shift on most Linux
+		// terminals). OFF: plain drag selects, but the wheel scrolls the
+		// terminal's scrollback instead of the TUI. (TEN-181)
 		switch strings.ToLower(strings.TrimSpace(arg)) {
 		case "on":
 			m.mouseOn = true
-			m.sysChat("🖱 mouse wheel scrolling ON — terminal text selection is disabled. `/mouse off` to select/copy.")
+			m.sysChat("🖱 wheel scrolling ON (default). To copy text: hold ⌥ Option (macOS) or Shift (Linux) while dragging to select.")
 			return tea.EnableMouseCellMotion
 		case "off":
 			m.mouseOn = false
-			m.sysChat("🖱 mouse capture OFF — drag to select/copy like a normal terminal. Scroll with PgUp/PgDn or Shift+↑/↓.")
+			m.sysChat("🖱 mouse capture OFF — plain drag selects/copies. Note: the wheel now scrolls the TERMINAL, not the TUI (PgUp/PgDn / Shift+↑/↓ still scroll the panes). `/mouse on` to restore.")
 			return tea.DisableMouse
 		case "", "toggle":
 			m.mouseOn = !m.mouseOn
 			if m.mouseOn {
-				m.sysChat("🖱 mouse wheel scrolling ON — text selection disabled. `/mouse off` to select/copy.")
+				m.sysChat("🖱 wheel scrolling ON. Copy text with ⌥ Option-drag (macOS) / Shift-drag (Linux).")
 				return tea.EnableMouseCellMotion
 			}
-			m.sysChat("🖱 mouse capture OFF — drag to select/copy. Scroll with PgUp/PgDn or Shift+↑/↓.")
+			m.sysChat("🖱 mouse capture OFF — plain drag selects. Wheel scrolls the terminal; use PgUp/PgDn for the panes. `/mouse on` to restore.")
 			return tea.DisableMouse
 		default:
-			m.sysChat("usage: /mouse on|off   (on = wheel scroll; off = native copy/paste selection)")
+			m.sysChat("usage: /mouse on|off   (on = wheel scrolls the TUI, ⌥/Shift-drag to select; off = plain-drag selection)")
 		}
 	case "/approve", "/approve!":
 		m.resolveApproval(arg)
