@@ -117,16 +117,3 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
 - Denial-of-service against locally-running services.
 - Theoretical prompt injection that does not demonstrate a concrete security
   impact beyond what the permission model already guards against.
-
-## Pre-launch checklist
-
-Before opening the repository to the public, ensure:
-
-- [ ] Replace the placeholder contact email above with a real address.
-- [ ] Consider enabling GitHub Private Vulnerability Reporting on the repo.
-- [ ] Add a `SECURITY.md` link to `README.md`.
-- [ ] Verify `.gitignore` covers `credentials.json`, `*.db`, and all data
-      directories.
-- [ ] Run `go vet ./...` and address any findings.
-- [ ] Confirm no secrets or personal data exist in git history
-      (`git log --all -p | grep -i 'key\|token\|secret\|password'`).
