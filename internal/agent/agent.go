@@ -703,6 +703,20 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 	return before, len(msgs), nil
 }
 
+// ClearContext wipes the working set — a fresh conversation for THIS session,
+// like a terminal `clear` for the agent's short-term memory. Durable layers
+// (episodic memory, distilled facts, the archive, the soul) are untouched, so
+// recall and learned facts survive. Returns the number of messages cleared.
+// Call only between turns (the TUI guards on !busy). (TEN-181)
+func (a *Agent) ClearContext() int {
+	n := a.cfg.Working.Len()
+	a.cfg.Working.Reset()
+	if a.compaction != nil {
+		a.compaction.armed = false // disarm; the next turn re-evaluates from ~empty
+	}
+	return n
+}
+
 // embedQuery wraps the embedder call. Returns an empty embedding on
 // failure (caller treats nil/empty as "no retrieval").
 func (a *Agent) embedQuery(ctx context.Context, e model.Embedder, q string) ([]float32, error) {

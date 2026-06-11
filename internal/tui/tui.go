@@ -789,9 +789,14 @@ type ReconnectControl interface {
 }
 
 // Run starts the full-screen TUI and blocks until the user quits.
-// WithMouseCellMotion enables wheel scrolling of the chat/feed panes.
+//
+// Mouse capture is OFF by default so the terminal's native click-drag SELECTION
+// (copy/paste) works like any normal CLI (TEN-181). Scrolling still works via
+// PgUp/PgDn and Shift+↑/↓. `/mouse on` re-enables wheel scrolling at the cost of
+// native selection (the two are mutually exclusive — capturing the mouse hides
+// drag events from the terminal).
 func Run(ctx context.Context, cfg Config) error {
-	p := tea.NewProgram(newModel(ctx, cfg), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newModel(ctx, cfg), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -893,6 +898,14 @@ type model struct {
 	ta    textarea.Model  // multiline chat input
 	input textinput.Model // single-line for secrets/passwords (configure, setup)
 	spin  spinner.Model
+
+	// Input history (↑/↓ recall past prompts/commands, readline-style). histIdx
+	// is the cursor into history; == len(history) means "the live draft" (held in
+	// histDraft so it's restored when you press ↓ back past the newest entry).
+	history   []string
+	histIdx   int
+	histDraft string
+	mouseOn   bool // wheel-capture on? (off by default → native terminal selection)
 
 	msgs          []chatMsg
 	feedLines     []string
@@ -1196,6 +1209,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 				}
 			}
+		case "up":
+			// Readline-style history: recall the previous prompt/command when the
+			// cursor is on the FIRST line of the input; otherwise let the textarea
+			// move the cursor up within a multiline draft (TEN-181).
+			if m.inChatInput() && m.ta.Line() == 0 && m.historyPrev() {
+				m.refresh()
+				return m, tea.Batch(cmds...)
+			}
+		case "down":
+			// Mirror: recall the next entry only from the LAST line of the input.
+			if m.inChatInput() && m.ta.Line() == m.ta.LineCount()-1 && m.historyNext() {
+				m.refresh()
+				return m, tea.Batch(cmds...)
+			}
 		case "pgup":
 			m.scrollChat(-m.pageStep())
 		case "pgdown":
@@ -1416,12 +1443,66 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// inChatInput reports whether the multiline chat textarea (not a masked secret /
+// setup / configure single-line prompt) currently owns input — i.e. whether
+// ↑/↓ history recall applies.
+func (m *model) inChatInput() bool {
+	return m.secretEntry == nil && m.setupEntry == nil && m.configureSession == nil
+}
+
+// pushHistory records a submitted prompt/command for ↑/↓ recall (dedupes a
+// consecutive repeat) and resets the cursor to the live draft. (TEN-181)
+func (m *model) pushHistory(s string) {
+	s = strings.TrimSpace(s)
+	if s != "" {
+		if n := len(m.history); n == 0 || m.history[n-1] != s {
+			m.history = append(m.history, s)
+		}
+	}
+	m.histIdx = len(m.history)
+	m.histDraft = ""
+}
+
+// historyPrev recalls an older entry; returns true if it changed the input
+// (so the caller consumes the key instead of moving the textarea cursor).
+func (m *model) historyPrev() bool {
+	if len(m.history) == 0 || m.histIdx == 0 {
+		return false
+	}
+	if m.histIdx >= len(m.history) {
+		m.histDraft = m.ta.Value() // entering history from the live draft — save it
+	}
+	m.histIdx--
+	m.setInputValue(m.history[m.histIdx])
+	return true
+}
+
+// historyNext recalls a newer entry, restoring the live draft past the newest.
+func (m *model) historyNext() bool {
+	if m.histIdx >= len(m.history) {
+		return false
+	}
+	m.histIdx++
+	if m.histIdx == len(m.history) {
+		m.setInputValue(m.histDraft)
+	} else {
+		m.setInputValue(m.history[m.histIdx])
+	}
+	return true
+}
+
+func (m *model) setInputValue(s string) {
+	m.ta.SetValue(s)
+	m.ta.CursorEnd()
+}
+
 func (m *model) submit() tea.Cmd {
 	var q string
 	if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
 		q = strings.TrimSpace(m.input.Value())
 	} else {
 		q = strings.TrimSpace(m.ta.Value())
+		m.pushHistory(q) // record prompts + commands for ↑/↓ recall (TEN-181)
 	}
 	m.streaming = false // defensive reset: new turn gets a fresh assistant message
 	// TEN-65 follow-up fix: empty input in configure-session mode is
@@ -1818,9 +1899,14 @@ var helpSections = []helpSection{
 			{"/help <category>", "show commands in one category (e.g. /help agents)"},
 			{"/help all", "dump every command in every category (legacy view)"},
 			{"/exit, /quit", "close the app (the ONLY way out — Ctrl-C/Esc don't quit)"},
+			{"/clear", "wipe the agent's context (fresh conversation) + screen; keeps facts/episodes/archive"},
+			{"/cls", "clear just the screen/scrollback (context untouched)"},
+			{"/mouse on|off", "on = wheel scroll; off (default) = native drag-to-select copy/paste"},
+			{"↑ / ↓", "recall previous prompts/commands (cursor on first/last input line)"},
 			{"(type mid-turn)", "send a message while busy to steer the agent — it addresses it, then resumes"},
 			{"Esc / Ctrl-C", "hard-stop the running turn (a stuck/looping agent); never closes the app"},
 			{"Ctrl-Y", "copy the transcript to clipboard + file"},
+			{"PgUp/PgDn, Shift+↑/↓", "scroll the chat pane (works with or without mouse capture)"},
 		},
 	},
 }
@@ -2148,6 +2234,48 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		return func() tea.Msg {
 			exp, err := ag.ExpandLatestCompaction(ctx)
 			return expandDoneMsg{exp: exp, err: err}
+		}
+	case "/clear":
+		// Wipe the agent's working context (fresh conversation) AND the screen.
+		// Durable memory is preserved. (TEN-181)
+		if m.busy {
+			m.sysChat("can't clear context mid-turn — let it finish or /cancel first")
+			break
+		}
+		if m.cfg.Agent == nil {
+			m.sysChat("context clearing is not available in this session")
+			break
+		}
+		n := m.cfg.Agent.ClearContext()
+		m.clearFeed()
+		m.sysChat(fmt.Sprintf("context cleared (%d message(s)) — fresh start. Facts, episodes, and the archive are preserved; recall still works.", n))
+	case "/cls":
+		// Clear just the screen/scrollback; the agent's context is untouched. (TEN-181)
+		m.clearFeed()
+		m.sysChat("screen cleared (context kept — use /clear to also reset the agent's context)")
+	case "/mouse":
+		// Toggle mouse wheel-capture. OFF (default) lets the terminal do native
+		// click-drag selection for copy/paste; ON enables in-app wheel scroll but
+		// disables native selection (mutually exclusive). (TEN-181)
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "on":
+			m.mouseOn = true
+			m.sysChat("🖱 mouse wheel scrolling ON — terminal text selection is disabled. `/mouse off` to select/copy.")
+			return tea.EnableMouseCellMotion
+		case "off":
+			m.mouseOn = false
+			m.sysChat("🖱 mouse capture OFF — drag to select/copy like a normal terminal. Scroll with PgUp/PgDn or Shift+↑/↓.")
+			return tea.DisableMouse
+		case "", "toggle":
+			m.mouseOn = !m.mouseOn
+			if m.mouseOn {
+				m.sysChat("🖱 mouse wheel scrolling ON — text selection disabled. `/mouse off` to select/copy.")
+				return tea.EnableMouseCellMotion
+			}
+			m.sysChat("🖱 mouse capture OFF — drag to select/copy. Scroll with PgUp/PgDn or Shift+↑/↓.")
+			return tea.DisableMouse
+		default:
+			m.sysChat("usage: /mouse on|off   (on = wheel scroll; off = native copy/paste selection)")
 		}
 	case "/approve", "/approve!":
 		m.resolveApproval(arg)
@@ -4215,6 +4343,16 @@ func (m *model) resize(w, h int) {
 	m.ta.SetWidth(chatW)
 	m.ta.SetHeight(3)
 	m.input.Width = chatW
+}
+
+// clearFeed wipes the visible chat + activity panes (display only; the agent's
+// context is untouched). Backs /cls and the visual half of /clear. (TEN-181)
+func (m *model) clearFeed() {
+	m.msgs = nil
+	m.feedLines = nil
+	m.chatFollow = true
+	m.feedFollow = true
+	m.refresh()
 }
 
 func (m *model) refresh() {
