@@ -908,6 +908,10 @@ type model struct {
 	histIdx   int
 	histDraft string
 	mouseOn   bool // wheel-capture on? (default true — wheel scrolls the TUI; ⌥/Shift-drag selects)
+	// selectMode (Ctrl+S) temporarily drops mouse capture so a PLAIN drag
+	// highlights text for copy in ANY terminal (no modifier-key quirks).
+	// Esc/Ctrl+S restores capture. (TEN-181)
+	selectMode bool
 
 	msgs          []chatMsg
 	feedLines     []string
@@ -1168,6 +1172,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		switch msg.String() {
+		case "ctrl+s":
+			// Toggle SELECT MODE: drop mouse capture so a plain click-drag
+			// highlights text for copy in any terminal; Ctrl+S/Esc restores.
+			// (TEN-181 — modifier-bypass keys vary per terminal, this doesn't.)
+			if m.selectMode {
+				m.selectMode = false
+				m.sysChat("✂ select mode OFF — mouse back to the TUI (wheel scrolls panes)")
+				if m.mouseOn {
+					cmds = append(cmds, tea.Cmd(tea.EnableMouseCellMotion))
+				}
+			} else {
+				m.selectMode = true
+				m.sysChat("✂ SELECT MODE — drag to highlight, ⌘C to copy. Ctrl+S or Esc to return. (wheel scrolls the terminal while active)")
+				cmds = append(cmds, tea.Cmd(tea.DisableMouse))
+			}
+			return m, tea.Batch(cmds...)
 		case "ctrl+c", "esc":
 			// Esc during a masked /configure key entry cancels it (and unmasks) —
 			// the natural "bail out" key, matching every picker. Must run before
@@ -1180,6 +1200,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.setupEntry != nil {
 				m.clearSetupEntry()
 				m.sysChat("setup cancelled")
+				break
+			}
+			if m.selectMode {
+				m.selectMode = false
+				m.sysChat("✂ select mode OFF — mouse back to the TUI")
+				if m.mouseOn {
+					cmds = append(cmds, tea.Cmd(tea.EnableMouseCellMotion))
+				}
 				break
 			}
 			// Neither key quits — only /exit (or /quit) closes the app, so a
@@ -1904,7 +1932,8 @@ var helpSections = []helpSection{
 			{"/exit, /quit", "close the app (the ONLY way out — Ctrl-C/Esc don't quit)"},
 			{"/clear", "wipe the agent's context (fresh conversation) + screen; keeps facts/episodes/archive"},
 			{"/cls", "clear just the screen/scrollback (context untouched)"},
-			{"/mouse on|off", "on (default) = wheel scrolls the TUI; copy text by ⌥ Option-drag (macOS) / Shift-drag (Linux)"},
+			{"Ctrl+S", "select mode: plain drag highlights text for copy (any terminal); Ctrl+S/Esc returns"},
+			{"/mouse on|off", "on (default) = wheel scrolls the TUI; off = plain-drag selection (wheel scrolls terminal)"},
 			{"↑ / ↓", "recall previous prompts/commands (cursor on first/last input line)"},
 			{"(type mid-turn)", "send a message while busy to steer the agent — it addresses it, then resumes"},
 			{"Esc / Ctrl-C", "hard-stop the running turn (a stuck/looping agent); never closes the app"},
@@ -2264,23 +2293,24 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		// terminal's scrollback instead of the TUI. (TEN-181)
 		switch strings.ToLower(strings.TrimSpace(arg)) {
 		case "on":
-			m.mouseOn = true
-			m.sysChat("🖱 wheel scrolling ON (default). To copy text: hold ⌥ Option (macOS) or Shift (Linux) while dragging to select.")
+			m.mouseOn, m.selectMode = true, false
+			m.sysChat("🖱 wheel scrolling ON (default). To copy: press Ctrl+S (select mode — plain drag works in any terminal), or your terminal's bypass drag (iTerm2 ⌥-drag, Apple Terminal Fn-drag, Linux Shift-drag).")
 			return tea.EnableMouseCellMotion
 		case "off":
-			m.mouseOn = false
+			m.mouseOn, m.selectMode = false, false
 			m.sysChat("🖱 mouse capture OFF — plain drag selects/copies. Note: the wheel now scrolls the TERMINAL, not the TUI (PgUp/PgDn / Shift+↑/↓ still scroll the panes). `/mouse on` to restore.")
 			return tea.DisableMouse
 		case "", "toggle":
 			m.mouseOn = !m.mouseOn
+			m.selectMode = false
 			if m.mouseOn {
-				m.sysChat("🖱 wheel scrolling ON. Copy text with ⌥ Option-drag (macOS) / Shift-drag (Linux).")
+				m.sysChat("🖱 wheel scrolling ON. Copy text with Ctrl+S select mode (or iTerm2 ⌥-drag / Apple Terminal Fn-drag).")
 				return tea.EnableMouseCellMotion
 			}
 			m.sysChat("🖱 mouse capture OFF — plain drag selects. Wheel scrolls the terminal; use PgUp/PgDn for the panes. `/mouse on` to restore.")
 			return tea.DisableMouse
 		default:
-			m.sysChat("usage: /mouse on|off   (on = wheel scrolls the TUI, ⌥/Shift-drag to select; off = plain-drag selection)")
+			m.sysChat("usage: /mouse on|off   (on = wheel scrolls the TUI, Ctrl+S to select text; off = plain-drag selection)")
 		}
 	case "/approve", "/approve!":
 		m.resolveApproval(arg)
@@ -4676,6 +4706,9 @@ func (m *model) View() string {
 	right := m.tokenCounter() + ctx
 	if t := m.reqTimer(); t != "" {
 		right = t + " " + right
+	}
+	if m.selectMode {
+		right = cOK.Render("✂ SELECT — drag to copy · Ctrl+S/Esc to exit") + " " + right
 	}
 	gap := m.width - lipgloss.Width(help) - lipgloss.Width(right) - 1
 	if gap < 1 {

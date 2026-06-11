@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func newBareModel() *model { return newModel(context.Background(), Config{}) }
@@ -76,6 +78,35 @@ func TestCls_ClearsScreenNotContext(t *testing.T) {
 		if strings.Contains(msg.content, "UNIQUE-SEED-LINE") {
 			t.Fatal("/cls did not clear the prior screen content")
 		}
+	}
+}
+
+// TestSelectMode_CtrlS: Ctrl+S enters select mode (capture dropped → plain drag
+// highlights in any terminal), Ctrl+S or Esc exits and restores capture.
+func TestSelectMode_CtrlS(t *testing.T) {
+	m := newBareModel()
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); cmd == nil || !m.selectMode {
+		t.Fatalf("Ctrl+S should enter select mode with a DisableMouse cmd; selectMode=%v", m.selectMode)
+	}
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); cmd == nil || m.selectMode {
+		t.Fatalf("second Ctrl+S should exit select mode; selectMode=%v", m.selectMode)
+	}
+	// Esc also exits.
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if !m.selectMode {
+		t.Fatal("re-enter select mode failed")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.selectMode {
+		t.Fatal("Esc should exit select mode")
+	}
+	// /mouse commands clear select mode too.
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m.handleSlash("/mouse on")
+	if m.selectMode {
+		t.Fatal("/mouse on should clear select mode")
 	}
 }
 
