@@ -79,9 +79,19 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, func(), error
 		cfg.Interactive, fetcher, httpClient, cfg.Logger,
 	)
 	transport := &mcp.StreamableClientTransport{
-		Endpoint:     cfg.ServerURL,
-		HTTPClient:   httpClient,
-		OAuthHandler: handler,
+		Endpoint:   cfg.ServerURL,
+		HTTPClient: httpClient,
+		// Disable the standalone SSE stream (the persistent server→client hanging
+		// GET). Tenant is a request/response tool client — it calls tools/list +
+		// tools/call and never consumes server-initiated push (notifications,
+		// sampling). That stream is pure liability: it dies on laptop sleep / long
+		// idle, the SDK burns MaxRetries (5) reconnecting it, then `c.fail()`s the
+		// ENTIRE session ("standalone SSE stream: exceeded 5 retries without
+		// progress") — so every tool call fails until a full re-connect. Disabling
+		// it makes each tool call an independent POST that re-auths via the OAuth
+		// handler per request, so the connection survives sleep. (TEN-180)
+		DisableStandaloneSSE: true,
+		OAuthHandler:         handler,
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "tenant", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
