@@ -13,8 +13,6 @@ guaranteed response windows until the first stable release.
 ## Reporting a Vulnerability
 
 **Email:** dtaylor@findtime.net  
-*(Replace with a real address before launch. A dedicated security@ alias or
-GitHub Security Advisories is recommended.)*
 
 **Do not** file a public GitHub issue for a security vulnerability.
 
