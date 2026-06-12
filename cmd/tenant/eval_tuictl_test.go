@@ -114,12 +114,20 @@ func TestEvalTUIControl_PersistOnlySession(t *testing.T) {
 	}
 }
 
-// RunNow queues exactly one forced fire on the live holder.
+// RunNow queues exactly one forced fire on the live holder; the queued state
+// is visible in Status, a second RunNow says "already queued", and the
+// one-shot is consumed by exactly one tick.
 func TestEvalTUIControl_RunNow(t *testing.T) {
 	sched := newEvalSchedule(nil, "off")
 	ctl := evalTUIControl{sched: sched, cfgDir: t.TempDir(), dataDir: t.TempDir()}
 	if _, err := ctl.RunNow(); err != nil {
 		t.Fatalf("RunNow: %v", err)
+	}
+	if !strings.Contains(ctl.Status(), "one-shot queued") {
+		t.Errorf("Status should show the queued one-shot, got:\n%s", ctl.Status())
+	}
+	if msg, err := ctl.RunNow(); err != nil || !strings.Contains(msg, "already queued") {
+		t.Errorf("second RunNow = (%q, %v), want already-queued notice", msg, err)
 	}
 	due := sched.DueFunc()
 	now := time.Now()
@@ -128,6 +136,9 @@ func TestEvalTUIControl_RunNow(t *testing.T) {
 	}
 	if due(now, now) {
 		t.Error("the one-shot must not fire twice")
+	}
+	if strings.Contains(ctl.Status(), "one-shot queued") {
+		t.Error("Status must drop the queued notice once the one-shot is consumed")
 	}
 }
 

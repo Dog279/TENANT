@@ -2245,6 +2245,19 @@ func cmdTUI(ctx context.Context, args []string) error {
 			default: // never block a job on a slow UI
 			}
 		}
+		// Start lines ONLY for the eval: it runs for minutes, so without an
+		// announcement /eval now is a black box between "queued" and the
+		// result. The frequent cheap jobs (distill every 30m) would spam the
+		// feed with start lines for runs that finish in seconds.
+		sched.OnStart = func(name string) {
+			if name != "eval-nightly" {
+				return
+			}
+			select {
+			case sysCh <- "improve: eval-nightly started — full live suite on its own router+tools; takes minutes, the result lands here and in trend.jsonl":
+			default: // never block a job on a slow UI
+			}
+		}
 		sched.Register(distillJob, *distillEvery)
 		improveCfg := improveConfig{}
 		if x, err := loadLaunchConfig(c.cfgDir); err == nil {

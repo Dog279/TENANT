@@ -72,6 +72,21 @@ func TestRegisterDue_RunAllForcesRun(t *testing.T) {
 	}
 }
 
+// OnStart announces a job BEFORE it runs (the nightly eval takes minutes;
+// without this, a forced run is invisible between "queued" and the result).
+func TestOnStart_FiresBeforeRun(t *testing.T) {
+	var n int32
+	var order []string
+	s := NewScheduler(nil, 0)
+	s.OnStart = func(name string) { order = append(order, "start:"+name) }
+	s.OnRun = func(rec JobRunRecord) { order = append(order, "done:"+rec.JobName) }
+	s.Register(countJob{&n}, time.Hour)
+	s.RunDue(context.Background())
+	if len(order) != 2 || order[0] != "start:count" || order[1] != "done:count" {
+		t.Fatalf("hook order = %v, want [start:count done:count]", order)
+	}
+}
+
 // Interval-registered jobs are untouched by the DueFunc addition: zero
 // lastRun still means due at first check (existing semantics preserved).
 func TestRegister_IntervalSemanticsUnchanged(t *testing.T) {

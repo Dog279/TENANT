@@ -63,6 +63,14 @@ func (s *evalSchedule) ForceOnce() {
 	s.forceOnce = true
 }
 
+// Pending reports whether a queued one-shot fire (/eval now) has not yet been
+// consumed by a tick — surfaced by /eval status so a queued run is visible.
+func (s *evalSchedule) Pending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.forceOnce
+}
+
 // DueFunc returns the dynamic predicate registered with the scheduler.
 func (s *evalSchedule) DueFunc() improve.DueFunc {
 	return func(lastRun, now time.Time) bool {
