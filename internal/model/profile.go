@@ -56,6 +56,21 @@ type Profile struct {
 	Capabilities     map[string]any `yaml:"capabilities,omitempty"`
 }
 
+// OperationalBudget is the token budget the runtime actually plans against
+// under concurrent multi-endpoint load — OperationalContextBudget when set,
+// else an 80% fallback of ContextLength for profiles that predate the field.
+// 0 only when neither is known. Both WritableBudget (fixed reserves) and the
+// assembler's measured-static sizing (TEN-214) build on this single number.
+func (p Profile) OperationalBudget() int {
+	if p.OperationalContextBudget > 0 {
+		return p.OperationalContextBudget
+	}
+	if p.ContextLength > 0 {
+		return (p.ContextLength * 8) / 10
+	}
+	return 0
+}
+
 // WritableBudget reports the tokens available for the working set +
 // retrieved memory after soul, system prompt, tool defs, and response
 // reserves are deducted from the operational budget. The memory
@@ -67,13 +82,14 @@ type Profile struct {
 // is structural rules and format specs (varies per task and model).
 // The TODO for empirical tuning of these per-profile values is in
 // TODOS.md — current numbers are calibrated guesses.
+//
+// This uses the FIXED per-class reserves. They're calibrated guesses, and a
+// full tool mux's real schema cost can be ~10x ReserveToolDefs (TEN-214), so
+// the assembler sizes its variable tiers off MEASURED static instead. This
+// value is retained as a back-compat field and as the recall-gating heuristic
+// proxy (AllowsTool), where a static capability estimate is the right input.
 func (p Profile) WritableBudget() int {
-	b := p.OperationalContextBudget
-	if b == 0 {
-		// fallback if a profile predates the operational-budget concept
-		b = (p.ContextLength * 8) / 10
-	}
-	w := b - p.ReserveSoul - p.ReserveSystemPrompt - p.ReserveToolDefs - p.ReserveResponse
+	w := p.OperationalBudget() - p.ReserveSoul - p.ReserveSystemPrompt - p.ReserveToolDefs - p.ReserveResponse
 	if w < 0 {
 		return 0
 	}

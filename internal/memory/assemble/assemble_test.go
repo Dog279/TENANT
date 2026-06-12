@@ -40,6 +40,16 @@ func mkProfile() model.Profile {
 	}
 }
 
+// effWritable mirrors the assembler's measured-static budget for mkProfile
+// (TEN-214): OperationalContextBudget − static (soul+system+tools) −
+// ReserveResponse. The variable-tier slots are sized against THIS, not the
+// fixed-reserve WritableBudget(). Tests below pass ~0 static, so effWritable(0)
+// is the slot basis.
+func effWritable(staticToks int) int {
+	p := mkProfile()
+	return p.OperationalContextBudget - staticToks - p.ReserveResponse
+}
+
 func mkEpisodicStore(t *testing.T) *episodic.Store {
 	t.Helper()
 	s, err := episodic.Open(filepath.Join(t.TempDir(), "ep.db"))
@@ -275,8 +285,10 @@ func TestAssemble_TruncatesOverflowingWorkingSet(t *testing.T) {
 	if len(r.BudgetReport.Truncations) == 0 {
 		t.Error("expected truncation entry in BudgetReport")
 	}
-	// Final tokens must be at or below the working slot.
-	workingSlot := int(0.65 * float64(mkProfile().WritableBudget()))
+	// Final tokens must be at or below the working slot (sized off the
+	// measured-static effective budget — no soul/system/tools here, so
+	// effWritable(0); TEN-214).
+	workingSlot := int(0.65 * float64(effWritable(0)))
 	if r.BudgetReport.WorkingTokens > workingSlot {
 		t.Errorf("WorkingTokens %d exceeds slot %d after truncation", r.BudgetReport.WorkingTokens, workingSlot)
 	}
@@ -286,7 +298,7 @@ func TestAssemble_CompactionRecommendedAt60Percent(t *testing.T) {
 	a := assemble.New(fakeCounter())
 	// Fill working to roughly 70% of writable budget.
 	w := working.New()
-	budget := mkProfile().WritableBudget()
+	budget := effWritable(0)
 	// Each 400-char message = 100 tokens. Aim for ~70% of budget.
 	target := int(0.70 * float64(budget))
 	for total := 0; total < target; total += 100 {
@@ -352,7 +364,7 @@ func TestAssemble_GoalHeaderRenderedAndCounted(t *testing.T) {
 func TestAssemble_WorkingUsageFracIgnoresRetrieval(t *testing.T) {
 	a := assemble.New(fakeCounter())
 	ctx := context.Background()
-	workingSlot := int(0.65 * float64(mkProfile().WritableBudget()))
+	workingSlot := int(0.65 * float64(effWritable(0)))
 
 	mkWorking := func() *working.Set {
 		w := working.New()
@@ -562,5 +574,130 @@ func TestAssemble_DefaultsAppliedWhenZeroShares(t *testing.T) {
 	// truncation tests above.
 	if r.BudgetReport.WritableBudget == 0 {
 		t.Fatal("WritableBudget = 0")
+	}
+}
+
+// TEN-214: the assembler must count the FULL on-wire tool cost (name +
+// description + the JSON-schema Parameters the backend serializes into its
+// native tools array), not just the compact `name: description` list — and it
+// must size the variable tiers against the budget that's left AFTER that real
+// static cost. Otherwise a fat tool mux (~10x ReserveToolDefs) lets total
+// context overrun the operational budget while the tiers look "unfilled" and
+// the compaction trigger never arms.
+func TestAssemble_ToolSchemaCostShrinksWritableBudget(t *testing.T) {
+	a := assemble.New(fakeCounter()) // 4 chars/token
+
+	// One tool carrying a heavy schema — stands in for a full mux / MCP
+	// connector whose Parameters dominate the on-wire cost.
+	bigSchema := `{"type":"object","properties":{"q":{"type":"string","description":"` +
+		strings.Repeat("x", 40000) + `"}}}`
+	heavy := []model.ToolSpec{{
+		Name:        "heavy_tool",
+		Description: "a tool with a large parameter schema",
+		Parameters:  []byte(bigSchema),
+	}}
+
+	r, err := a.Assemble(context.Background(), assemble.Request{
+		Profile:   mkProfile(),
+		Tools:     heavy,
+		UserQuery: "go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// ToolTokens must reflect the schema, not just name+description. The schema
+	// alone is ~40k chars ≈ ~10k tok; the compact list is a few tokens.
+	schemaToks := (len(bigSchema) + 3) / 4
+	if r.BudgetReport.ToolTokens < schemaToks {
+		t.Errorf("ToolTokens %d does not include the full schema (~%d tok) — only the compact list was counted",
+			r.BudgetReport.ToolTokens, schemaToks)
+	}
+	if r.BudgetReport.ToolTokens <= mkProfile().ReserveToolDefs {
+		t.Fatalf("test setup: heavy tool (%d tok) should exceed ReserveToolDefs (%d)",
+			r.BudgetReport.ToolTokens, mkProfile().ReserveToolDefs)
+	}
+
+	// EffectiveWritable must be the operational budget minus the REAL measured
+	// static (here: just the tools) and the response reserve — strictly less
+	// than the no-tools budget by the tool cost.
+	wantEff := mkProfile().OperationalContextBudget - r.BudgetReport.SoulTokens -
+		r.BudgetReport.SystemTokens - r.BudgetReport.ToolTokens - mkProfile().ReserveResponse
+	if r.BudgetReport.EffectiveWritable != wantEff {
+		t.Errorf("EffectiveWritable = %d, want %d (op − static − response)",
+			r.BudgetReport.EffectiveWritable, wantEff)
+	}
+	if r.BudgetReport.EffectiveWritable >= effWritable(0) {
+		t.Errorf("EffectiveWritable %d did not shrink below the no-tools budget %d — the schema cost was ignored",
+			r.BudgetReport.EffectiveWritable, effWritable(0))
+	}
+
+	// The over-reserve cost must be surfaced loudly.
+	found := false
+	for _, w := range r.BudgetReport.Truncations {
+		if strings.Contains(w, "tool definitions cost") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a tool-definitions-over-reserve warning, got %v", r.BudgetReport.Truncations)
+	}
+}
+
+// TEN-214: a working set that fits comfortably under the FIXED-reserve
+// WritableBudget must still be truncated once a heavy tool mux eats the real
+// budget — proving the working slot (and thus the compaction signal derived
+// from it) tracks the measured static, not the 4k guess.
+func TestAssemble_HeavyToolsTriggerWorkingTruncation(t *testing.T) {
+	a := assemble.New(fakeCounter())
+
+	bigSchema := `{"x":"` + strings.Repeat("y", 60000) + `"}` // ~15k tok schema
+	heavy := []model.ToolSpec{{Name: "t", Description: "d", Parameters: []byte(bigSchema)}}
+
+	// Working set sized to ~55% of the FIXED WritableBudget — would NOT truncate
+	// under the old basis, but exceeds the working slot once the tool cost is
+	// subtracted from the real budget.
+	w := working.New()
+	target := int(0.55 * float64(mkProfile().WritableBudget()))
+	for total := 0; total < target; total += 100 {
+		w.Append(working.Message{Role: "user", Content: strings.Repeat("w", 400)})
+	}
+
+	r, err := a.Assemble(context.Background(), assemble.Request{
+		Profile: mkProfile(), Tools: heavy, Working: w,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workingSlot := int(0.65 * float64(r.BudgetReport.EffectiveWritable))
+	if r.BudgetReport.WorkingTokens > workingSlot {
+		t.Errorf("WorkingTokens %d exceeds the measured-static working slot %d", r.BudgetReport.WorkingTokens, workingSlot)
+	}
+	truncated := false
+	for _, tr := range r.BudgetReport.Truncations {
+		if strings.Contains(tr, "working: dropped") {
+			truncated = true
+		}
+	}
+	if !truncated {
+		t.Errorf("expected working-set truncation once heavy tools shrank the budget; truncations=%v", r.BudgetReport.Truncations)
+	}
+}
+
+// TEN-214: OperationalBudget() resolves the operational figure, falling back to
+// 80% of ContextLength only when the explicit budget is unset.
+func TestProfile_OperationalBudget(t *testing.T) {
+	explicit := model.Profile{ContextLength: 128000, OperationalContextBudget: 102400}
+	if got := explicit.OperationalBudget(); got != 102400 {
+		t.Errorf("explicit OperationalBudget = %d, want 102400", got)
+	}
+	fallback := model.Profile{ContextLength: 100000} // no explicit budget
+	if got := fallback.OperationalBudget(); got != 80000 {
+		t.Errorf("fallback OperationalBudget = %d, want 80000 (80%% of ctx)", got)
+	}
+	none := model.Profile{}
+	if got := none.OperationalBudget(); got != 0 {
+		t.Errorf("unknown OperationalBudget = %d, want 0", got)
 	}
 }

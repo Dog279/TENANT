@@ -4182,6 +4182,17 @@ func (m *model) applyEvent(e agent.Event) {
 					note = " " + cErr.Render("(compaction soon)")
 				}
 				m.appendFeed(cDim.Render(fmt.Sprintf("ctx assembled: %d tok (%d%% of context window)", e.Budget.Total, m.budgetPct)) + note)
+				// Static breakdown (TEN-214): the tool-definition cost dominates a
+				// full mux and is the thing that silently eats the window. Surface
+				// soul/system/tools each turn, plus the writable budget the
+				// variable tiers were actually sized against (measured static, not
+				// the fixed reserves) so "where did my context go?" is answerable.
+				stat := e.Budget.SoulTokens + e.Budget.SystemTokens + e.Budget.ToolTokens
+				m.appendFeed(cDim.Render(fmt.Sprintf(
+					"  static %s (soul %s · sys %s · tools %s) · working %s · writable %s",
+					humanTokens(stat), humanTokens(e.Budget.SoulTokens), humanTokens(e.Budget.SystemTokens),
+					humanTokens(e.Budget.ToolTokens), humanTokens(e.Budget.WorkingTokens),
+					humanTokens(e.Budget.EffectiveWritable))))
 			}
 		}
 	case agent.EventToken:
