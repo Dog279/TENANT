@@ -131,6 +131,12 @@ func (e evalTUIControl) Trend(n int) string {
 	return renderEvalTrend(entries, n)
 }
 
+// Diff renders the per-task movers analysis between the newest artifact
+// and its baseline (TEN-198).
+func (e evalTUIControl) Diff() (string, error) {
+	return renderBaselineDiff("", filepath.Join(e.dataDir, "eval-artifacts"))
+}
+
 // persist mutates improveConfig in launchConfig and saves it — the same
 // load-mutate-save idiom as skillControl.SetAutoAccept.
 func (e evalTUIControl) persist(mut func(*improveConfig)) error {

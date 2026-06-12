@@ -219,6 +219,10 @@ type EvalControl interface {
 	RunNow() (string, error)
 	// Trend renders the last n trend entries (scores + regression verdicts).
 	Trend(n int) string
+	// Diff renders the per-task movers analysis between the newest eval
+	// artifact and its baseline — improved/declined tables with failure
+	// autopsy (TEN-198).
+	Diff() (string, error)
 }
 
 // SkillHistoryEntry is one prior snapshot of a skill. Surfaced by /skills
@@ -1806,8 +1810,10 @@ func (m *model) handleEval(arg string) {
 			}
 		}
 		m.sysChat(m.cfg.Eval.Trend(n))
+	case f[0] == "diff" && len(f) == 1:
+		say(m.cfg.Eval.Diff())
 	default:
-		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n]")
+		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n] | /eval diff")
 	}
 }
 
@@ -1951,6 +1957,7 @@ var helpSections = []helpSection{
 			{"/eval every <dur> | at <HH:MM> | off", "re-tune the schedule live (persists; one run per period, relaunch-proof)"},
 			{"/eval now", "queue one eval run on the improve scheduler (fires within a minute)"},
 			{"/eval trend [n]", "recent eval scores + regression verdicts (trend.jsonl)"},
+			{"/eval diff", "per-task movers vs the baseline — what improved, what declined and why"},
 		},
 	},
 	{

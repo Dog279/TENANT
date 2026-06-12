@@ -40,6 +40,17 @@ type Harness struct {
 	// judge tokens). RunWith overrides this per-call.
 	Judge Judge
 
+	// AvailableTools, when non-nil, is the set of tool names live in this
+	// run's agent toolset (TEN-198). A LIVE task whose must_call names a
+	// tool absent from the set is SKIPPED — recorded with a reason but
+	// excluded from pass/fail aggregates and baselines, because a task
+	// the environment cannot run measures the environment, not the
+	// agent (~20 of 57 catalog tasks need plugins that eval never
+	// auto-enables: interactive auth would hang a non-interactive run).
+	// nil ⇒ no skipping: fixture-only runs, tests, and older callers
+	// behave exactly as before.
+	AvailableTools map[string]struct{}
+
 	// runMu serializes Run / RunWith. The per-task work is sequential
 	// anyway (rollouts share the agent + judge state); the mutex
 	// prevents two concurrent callers from mutating Tasks-affecting
@@ -71,6 +82,10 @@ type Aggregates struct {
 	// (TEN-197) — surfaced so a run with grader trouble is visibly
 	// different from a clean one.
 	UngradedCount int `json:"ungraded_count,omitempty"`
+	// SkippedCount is how many tasks were excluded because the run's
+	// environment lacks a tool they require (TEN-198) — the denominator
+	// only counts tasks this machine can actually attempt.
+	SkippedCount int `json:"skipped_count,omitempty"`
 }
 
 // LoadHarness loads every embedded task. Caller provides the FS so
@@ -176,6 +191,19 @@ func (h *Harness) runOne(ctx context.Context, t *Task) TaskResult {
 	case ModeFixture:
 		res = ScoreFixture(t)
 	case ModeLive:
+		if missing := h.missingTool(t); missing != "" {
+			// SKIPPED (TEN-198): the environment lacks a tool this task
+			// requires, so the agent cannot pass by construction. Recorded
+			// (never silently dropped) but excluded from aggregates and
+			// baselines — same discipline as Ungraded.
+			res = TaskResult{
+				TaskID:     t.ID,
+				Category:   t.Category,
+				Skipped:    true,
+				SkipReason: "tool unavailable: " + missing,
+			}
+			break
+		}
 		res = h.runLive(ctx, t)
 	default:
 		res = TaskResult{
@@ -187,6 +215,21 @@ func (h *Harness) runOne(ctx context.Context, t *Task) TaskResult {
 	}
 	res.ElapsedMS = time.Since(start).Milliseconds()
 	return res
+}
+
+// missingTool returns the first must_call tool name absent from the
+// run's AvailableTools set, or "" when the task is runnable. A nil set
+// disables skipping entirely (TEN-198).
+func (h *Harness) missingTool(t *Task) string {
+	if h.AvailableTools == nil {
+		return ""
+	}
+	for _, want := range t.Expected.MustCall {
+		if _, ok := h.AvailableTools[want.Tool]; !ok {
+			return want.Tool
+		}
+	}
+	return ""
 }
 
 // aggregate reduces a Results slice into Aggregates. Weights are
@@ -209,6 +252,12 @@ func aggregate(results []TaskResult, totalElapsedMS int64) Aggregates {
 
 	var totalSum, totalN float64
 	for _, r := range results {
+		if r.Skipped {
+			// Environment gap, not agent failure (TEN-198): counted apart,
+			// never in pass/fail or any score average.
+			ag.SkippedCount++
+			continue
+		}
 		if r.Ungraded {
 			// Grader failure, not agent failure (TEN-197): counted apart,
 			// never in pass/fail or any score average.

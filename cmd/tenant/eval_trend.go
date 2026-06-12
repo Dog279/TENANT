@@ -34,6 +34,10 @@ type evalTrendEntry struct {
 	// (TEN-197) — a run with grader trouble must look different in the
 	// trend, not just smaller.
 	Ungraded int `json:"ungraded,omitempty"`
+	// Skipped counts tool-unavailable tasks excluded from the score
+	// (TEN-198) — so a score jump from "plugins newly enabled" is
+	// explainable from the trend line alone.
+	Skipped int `json:"skipped,omitempty"`
 }
 
 func evalTrendPath(artifactDir string) string {
@@ -142,6 +146,9 @@ func renderEvalTrend(entries []evalTrendEntry, n int) string {
 		}
 		if e.Ungraded > 0 {
 			status += fmt.Sprintf(" (%d ungraded)", e.Ungraded)
+		}
+		if e.Skipped > 0 {
+			status += fmt.Sprintf(" (%d skipped)", e.Skipped)
 		}
 		delta := "—"
 		if e.HasBaseline {

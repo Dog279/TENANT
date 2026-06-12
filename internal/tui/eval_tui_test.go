@@ -42,6 +42,10 @@ func (f *fakeEval) Trend(n int) string {
 	f.calls = append(f.calls, "trend")
 	return "trend table"
 }
+func (f *fakeEval) Diff() (string, error) {
+	f.calls = append(f.calls, "diff")
+	return "diff table", nil
+}
 
 func newEvalModel(c EvalControl) *model {
 	m := newModel(context.Background(), Config{Eval: c})
@@ -59,8 +63,9 @@ func TestSlash_EvalDispatch(t *testing.T) {
 	m.handleSlash("/eval off")
 	m.handleSlash("/eval now")
 	m.handleSlash("/eval trend 5")
+	m.handleSlash("/eval diff")
 
-	want := []string{"status", "every|24h", "at|03:15", "off", "now", "trend"}
+	want := []string{"status", "every|24h", "at|03:15", "off", "now", "trend", "diff"}
 	if len(f.calls) != len(want) {
 		t.Fatalf("calls = %v, want %v", f.calls, want)
 	}
@@ -69,8 +74,8 @@ func TestSlash_EvalDispatch(t *testing.T) {
 			t.Errorf("call %d = %q, want %q", i, f.calls[i], want[i])
 		}
 	}
-	if got := m.msgs[len(m.msgs)-1].content; got != "trend table" {
-		t.Errorf("trend output = %q", got)
+	if got := m.msgs[len(m.msgs)-1].content; got != "diff table" {
+		t.Errorf("diff output = %q", got)
 	}
 }
 

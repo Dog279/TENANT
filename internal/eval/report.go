@@ -48,6 +48,9 @@ func WriteTerminal(w io.Writer, rep *Report) {
 	if n := rep.Aggregates.UngradedCount; n > 0 {
 		fmt.Fprintf(w, "   Ungraded: %d (judge unusable — excluded)", n)
 	}
+	if n := rep.Aggregates.SkippedCount; n > 0 {
+		fmt.Fprintf(w, "   Skipped: %d (tools unavailable — excluded)", n)
+	}
 	fmt.Fprintln(w)
 }
 
@@ -76,11 +79,12 @@ func AllPassed(rep *Report) bool {
 }
 
 // FailedTaskIDs returns the IDs of failed tasks, useful for CI summary
-// lines. Ungraded tasks are not failures (TEN-197) — they're excluded.
+// lines. Ungraded (TEN-197) and skipped (TEN-198) tasks are not
+// failures — they're excluded.
 func FailedTaskIDs(rep *Report) []string {
 	var out []string
 	for _, r := range rep.Results {
-		if !r.Passed && !r.Ungraded {
+		if !r.Passed && !r.Ungraded && !r.Skipped {
 			out = append(out, r.TaskID)
 		}
 	}

@@ -23,6 +23,11 @@ type TaskResult struct {
 	// baselines, and baseline pairing — grader infrastructure must never
 	// move the score or the trend.
 	Ungraded bool `json:"ungraded,omitempty"`
+	// Skipped marks a task this run's environment cannot attempt: a
+	// must_call tool is absent from the live toolset (TEN-198). Same
+	// exclusion discipline as Ungraded; SkipReason names the tool.
+	Skipped    bool   `json:"skipped,omitempty"`
+	SkipReason string `json:"skip_reason,omitempty"`
 }
 
 // ScoreFixture runs the deterministic gate against a fixture and
