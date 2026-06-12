@@ -2128,9 +2128,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 		mem:     dashMemory{memCtl},
 		cron:    dashCronCtl,
 		secrets: dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
-		broker:  evBroker,
-		log:     log,
-		notify:  pushSys,
+		// Skills page (TEN-202) reuses the same skill store as the TUI /skills.
+		// Eval page (TEN-201) is wired below, after evalSched is built.
+		skills: dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
+		broker: evBroker,
+		log:    log,
+		notify: pushSys,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
 				return nil
@@ -2139,13 +2142,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return c.lc.save(c.cfgDir)
 		},
 	}
-	if dashOn {
-		if addr, derr := dashMgr.Enable(); derr != nil {
-			pushSys("dashboard: " + derr.Error())
-		} else {
-			pushSys("dashboard: serving on http://" + addr)
-		}
-	}
+	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
+	// below, so the eval/quality surface (which needs evalSched) is wired
+	// before the dashboard starts serving (TEN-201).
 
 	// Offsite Discord relay (TEN-114): DM the bot to drive a DEDICATED agent
 	// (shared long-term memory, own working set, read/research/comms-only tools,
@@ -2344,6 +2343,20 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
 			return err
+		}
+	}
+
+	// Wire the dashboard's eval/quality surface (TEN-201) now that evalSched
+	// exists (it's built inside the self-improve block above; nil when
+	// --self-improve=false, which evalTUIControl handles as persist-only), then
+	// start the dashboard. Deferred to here so the Quality page can drive live
+	// run-now and schedule changes.
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}}
+	if dashOn {
+		if addr, derr := dashMgr.Enable(); derr != nil {
+			pushSys("dashboard: " + derr.Error())
+		} else {
+			pushSys("dashboard: serving on http://" + addr)
 		}
 	}
 

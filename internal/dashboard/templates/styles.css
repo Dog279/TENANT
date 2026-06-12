@@ -123,3 +123,34 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .ovtable th,.ovtable td{text-align:left;padding:7px 9px;border-bottom:1px solid #121d33;vertical-align:top}
 .ovtable th{color:#5e6f90;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;font-weight:700}
 .ovtable td:first-child{overflow-wrap:anywhere}
+
+/* TEN-200/201/202: grouped nav, status-board link cards, trend chart, eval/skills forms */
+.nav-group{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:#4a5878;font-weight:700;padding:12px 12px 4px}
+.linkcard{display:block;text-decoration:none;color:inherit;transition:border-color .12s}
+.linkcard:hover{border-color:var(--line2)}
+.trend-up{color:var(--green);font-weight:700}
+.trend-down{color:var(--red);font-weight:700}
+.trend-svg{display:block;width:100%;height:auto}
+.trend-svg .grid{stroke:#1a2740;stroke-width:1}
+.trend-svg .axis{fill:#5e6f90;font-size:9px;font-family:ui-monospace,monospace}
+.trend-svg .trend-line{fill:none;stroke:var(--cyan);stroke-width:2}
+.trend-svg .dot{fill:var(--cyan)}
+.trend-svg .dot.reg{fill:var(--red)}
+.evalsched{display:flex;flex-direction:column;gap:9px}
+.evalsched label{display:flex;align-items:center;gap:7px;color:var(--fg)}
+.evalsched .btn{align-self:flex-start;margin-top:4px}
+.diff{background:#0c1729;border:1px solid var(--line);border-radius:9px;padding:12px;overflow-x:auto;font-family:ui-monospace,monospace;font-size:11.5px;line-height:1.5;color:#cfe9f4;white-space:pre}
+.soul-row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #121d33}
+.soul-row:last-child{border-bottom:none}
+.soul-row .nm{font-weight:600}
+
+/* mobile: collapse the sidebar to a top strip, reflow cards (TEN-211 lays the
+   full system; this keeps every P1 page usable at 390px now) */
+@media (max-width:640px){
+  .app{grid-template-columns:1fr}
+  .side{flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid var(--line);align-items:center}
+  .nav{flex-direction:row;flex-wrap:wrap;gap:4px}
+  .nav-group{display:none}
+  .nav a.logout{margin-top:0}
+  .cards{grid-template-columns:1fr 1fr}
+}

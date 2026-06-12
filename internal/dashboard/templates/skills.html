@@ -1,0 +1,67 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">The skill library isn't configured in this session.</div></div>
+{{else}}
+
+{{if .Proposed}}
+<div class="card">
+  <div class="card-head">Waiting for your OK ({{len .Proposed}})</div>
+  <div class="dim" style="margin-bottom:12px">Your agent figured these out on its own. Accept the ones you trust — they'll start helping with future answers.</div>
+  {{range .Proposed}}
+  <div class="soul-row" id="skill-{{.Name}}">
+    <div>
+      <div class="nm">{{.Name}}</div>
+      <div class="dim">{{.Description}}</div>
+    </div>
+    <div class="cronactions">
+      <form method="POST" action="/skills/{{.Name}}/accept" class="inline">
+        <button type="submit" class="btn on sm">Accept</button>
+      </form>
+      <form method="POST" action="/skills/{{.Name}}/forget" class="inline">
+        <button type="submit" class="btn sm danger">Dismiss</button>
+      </form>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+<div class="card">
+  <div class="card-head">What my agent has learned ({{len .Live}})</div>
+  {{range .Live}}
+  <div class="soul-row" id="skill-{{.Name}}">
+    <div>
+      <div class="nm">{{.Name}} {{if not .Enabled}}<span class="dim">(off)</span>{{end}}</div>
+      <div class="dim">{{.Description}}</div>
+    </div>
+    <div class="cronactions">
+      <form method="POST" action="/skills/{{.Name}}/enable" class="inline">
+        <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
+        <button type="submit" class="btn sm">{{if .Enabled}}Turn off{{else}}Turn on{{end}}</button>
+      </form>
+      <form method="POST" action="/skills/{{.Name}}/forget" class="inline">
+        <button type="submit" class="btn sm danger">Remove</button>
+      </form>
+    </div>
+  </div>
+  {{else}}
+  <div class="dim">No learned skills yet. As your agent works, it proposes skills here for you to accept.</div>
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Accepting new skills automatically</div>
+  <form method="POST" action="/skills/auto" class="evalsched">
+    <label><input type="radio" name="mode" value="off" {{if eq .AutoMode "off"}}checked{{end}}> Off — I'll accept each new skill myself (safest)</label>
+    <label><input type="radio" name="mode" value="trusted" {{if eq .AutoMode "trusted"}}checked{{end}}> Trusted — accept automatically, but only while your recent feedback says the agent is doing well</label>
+    <label><input type="radio" name="mode" value="on" {{if eq .AutoMode "on"}}checked{{end}}> On — always accept new skills automatically</label>
+    <button type="submit" class="btn">Save</button>
+  </form>
+  <div class="dim" style="margin-top:9px">Currently: <strong>{{.AutoMode}}</strong>. Skills are just instructions your agent follows, so accepting one shapes how it behaves.</div>
+</div>
+
+{{end}}
+{{end}}

@@ -51,6 +51,8 @@ type ssrTemplates struct {
 	memProvenance *template.Template
 	cron          *template.Template // recurring-job admin section
 	keys          *template.Template // write-only API-key settings (TEN-145)
+	eval          *template.Template // eval & quality page (TEN-201)
+	skills        *template.Template // skill library page (TEN-202)
 }
 
 func parseSSR() *ssrTemplates {
@@ -71,6 +73,8 @@ func parseSSR() *ssrTemplates {
 		memProvenance: must("templates/layout.html", "templates/memnav.html", "templates/memory_provenance.html"),
 		cron:          must("templates/layout.html", "templates/cron.html"),
 		keys:          must("templates/layout.html", "templates/keys.html"),
+		eval:          must("templates/layout.html", "templates/eval.html"),
+		skills:        must("templates/layout.html", "templates/skills.html"),
 	}
 }
 
@@ -178,6 +182,15 @@ type dashboardData struct {
 	WorkingCount int
 	HasMemory    bool
 	AllowSend    bool
+	// Quality (TEN-200): plain status-board summary of the eval gate. HasQuality
+	// is false when no EvalControl is wired or no check has run yet.
+	HasQuality   bool
+	QualityScore float64
+	QualityTrend string // "up" | "steady" | "down"
+	// Skills learned (live count) — 0/absent when no SkillControl is wired.
+	HasSkills     bool
+	SkillsLive    int
+	SkillsWaiting int
 }
 
 func (s *Server) handleDashboardPage(w http.ResponseWriter, _ *http.Request) {
@@ -193,7 +206,7 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, _ *http.Request) {
 		plugins = s.tools.Plugins()
 	}
 	d := dashboardData{
-		layoutData:   layoutData{Title: "Dashboard", Page: "dashboard"},
+		layoutData:   layoutData{Title: "Overview", Page: "dashboard"},
 		Plugins:      plugins,
 		ToolsEnabled: enabled,
 		ToolsTotal:   len(tools),
@@ -202,6 +215,25 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, _ *http.Request) {
 	if s.mem != nil {
 		d.HasMemory = true
 		d.WorkingCount = s.mem.WorkingCount()
+	}
+	if s.eval != nil {
+		if sch := s.eval.Schedule(); sch.HasRun {
+			d.HasQuality = true
+			d.QualityScore = sch.LastScore
+			d.QualityTrend = sch.Trend
+		}
+	}
+	if s.skills != nil {
+		d.HasSkills = true
+		for _, sk := range s.skills.Skills() {
+			switch sk.Status {
+			case "proposed":
+				d.SkillsWaiting++
+			case "tombstoned":
+			default:
+				d.SkillsLive++
+			}
+		}
 	}
 	s.render(w, s.tmpl.dashboard, d)
 }

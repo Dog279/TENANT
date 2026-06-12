@@ -27,6 +27,8 @@ type dashboardManager struct {
 	mem     dashboard.MemoryControl  // TEN-88: memory curator surface (nil-safe)
 	cron    dashboard.CronControl    // recurring-job admin surface (nil-safe)
 	secrets dashboard.SecretsControl // write-only API-key admin surface (nil-safe)
+	eval    dashboard.EvalControl    // TEN-201: eval/quality surface (nil-safe)
+	skills  dashboard.SkillControl   // TEN-202: skill library surface (nil-safe)
 	broker  *agent.Broker
 	log     *slog.Logger
 	notify  func(string)             // feed sink (pushSys) for async status
@@ -52,6 +54,12 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.secrets != nil {
 		srv.SetSecrets(m.secrets)
+	}
+	if m.eval != nil {
+		srv.SetEval(m.eval)
+	}
+	if m.skills != nil {
+		srv.SetSkills(m.skills)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {
