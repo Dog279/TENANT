@@ -185,7 +185,7 @@ func handleBaseline(rep *eval.Report, writePath, checkPath, judgeProfile string)
 			return fmt.Errorf("eval: write baseline: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "eval: wrote baseline (%d tasks, overall %.1f) → %s\n",
-			len(rep.Results), rep.Aggregates.Overall, writePath)
+			len(b.TaskScores), rep.Aggregates.Overall, writePath)
 	}
 	if checkPath != "" {
 		data, err := os.ReadFile(checkPath)
