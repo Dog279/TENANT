@@ -2129,8 +2129,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 		cron:    dashCronCtl,
 		secrets: dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
 		// Skills page (TEN-202) reuses the same skill store as the TUI /skills.
-		// Eval page (TEN-201) is wired below, after evalSched is built.
+		// Models page (TEN-204) reuses modelCtl. Eval (TEN-201) wired below,
+		// after evalSched is built.
 		skills: dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
+		models: dashModel{mc: modelCtl},
 		broker: evBroker,
 		log:    log,
 		notify: pushSys,

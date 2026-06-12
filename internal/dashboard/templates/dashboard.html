@@ -4,6 +4,12 @@
     <div class="stat-label">Agent</div>
     <div class="stat-value"><span class="trend-up">●</span> healthy</div>
   </div>
+  {{if .ActiveModel}}
+  <a href="/models" class="card stat linkcard">
+    <div class="stat-label">Model</div>
+    <div class="stat-value" style="font-size:16px">{{.ActiveModel}}{{if .ModelDegraded}} <span class="risk">offline</span>{{end}}</div>
+  </a>
+  {{end}}
   {{if .HasQuality}}
   <a href="/eval" class="card stat linkcard">
     <div class="stat-label">Quality</div>

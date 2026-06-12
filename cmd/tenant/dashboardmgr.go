@@ -29,6 +29,7 @@ type dashboardManager struct {
 	secrets dashboard.SecretsControl // write-only API-key admin surface (nil-safe)
 	eval    dashboard.EvalControl    // TEN-201: eval/quality surface (nil-safe)
 	skills  dashboard.SkillControl   // TEN-202: skill library surface (nil-safe)
+	models  dashboard.ModelControl   // TEN-204: model backends surface (nil-safe)
 	broker  *agent.Broker
 	log     *slog.Logger
 	notify  func(string)             // feed sink (pushSys) for async status
@@ -60,6 +61,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.skills != nil {
 		srv.SetSkills(m.skills)
+	}
+	if m.models != nil {
+		srv.SetModels(m.models)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {

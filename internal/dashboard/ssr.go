@@ -53,6 +53,7 @@ type ssrTemplates struct {
 	keys          *template.Template // write-only API-key settings (TEN-145)
 	eval          *template.Template // eval & quality page (TEN-201)
 	skills        *template.Template // skill library page (TEN-202)
+	models        *template.Template // model backends page (TEN-204)
 }
 
 func parseSSR() *ssrTemplates {
@@ -75,6 +76,7 @@ func parseSSR() *ssrTemplates {
 		keys:          must("templates/layout.html", "templates/keys.html"),
 		eval:          must("templates/layout.html", "templates/eval.html"),
 		skills:        must("templates/layout.html", "templates/skills.html"),
+		models:        must("templates/layout.html", "templates/models.html"),
 	}
 }
 
@@ -191,6 +193,9 @@ type dashboardData struct {
 	HasSkills     bool
 	SkillsLive    int
 	SkillsWaiting int
+	// Active model (TEN-204) — "" when no ModelControl is wired.
+	ActiveModel   string
+	ModelDegraded bool
 }
 
 func (s *Server) handleDashboardPage(w http.ResponseWriter, _ *http.Request) {
@@ -232,6 +237,18 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, _ *http.Request) {
 			case "tombstoned":
 			default:
 				d.SkillsLive++
+			}
+		}
+	}
+	if s.models != nil {
+		for _, m := range s.models.Models() {
+			if m.Active {
+				d.ActiveModel = m.Name
+				if m.Model != "" {
+					d.ActiveModel = m.Name + " · " + m.Model
+				}
+				d.ModelDegraded = m.Degraded
+				break
 			}
 		}
 	}
