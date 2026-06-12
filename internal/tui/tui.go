@@ -1019,11 +1019,6 @@ type model struct {
 	// spawned sub-agents. Non-nil only while a research run is in flight;
 	// cleared on researchDoneMsg so the timeline pane disappears when done.
 	researchTimeline *researchTimelineState
-	// goalAutoActive marks that the next turn was kicked off automatically
-	// by the /goal loop (via Goals.Continue or the initial Set). Used to
-	// avoid an infinite cancel-recovery loop on Esc — when the user
-	// interrupts, we clear the goal so we don't immediately re-spawn.
-	goalAutoActive bool
 }
 
 // pendingClarifyState holds the in-flight clarification a /research call
@@ -1502,7 +1497,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			prompt := gc.Continue(msg.reason)
 			m.ta.SetValue(prompt)
-			m.goalAutoActive = true
 			if subCmd := m.submit(); subCmd != nil {
 				cmds = append(cmds, subCmd)
 			}
@@ -2810,7 +2804,6 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		// Kick off the first turn with the goal prompt — same path as if the
 		// user had typed it themselves.
 		m.ta.SetValue(firstPrompt)
-		m.goalAutoActive = true
 		return m.submit()
 	case "/review":
 		// GStack Layer 3 cascading review. Usage:
