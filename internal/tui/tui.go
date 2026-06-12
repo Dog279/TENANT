@@ -949,23 +949,29 @@ type model struct {
 	// Esc/Ctrl+S restores capture. (TEN-181)
 	selectMode bool
 
-	msgs          []chatMsg
-	feedLines     []string
-	streaming     bool      // an assistant reply is currently streaming
-	busy          bool      // a turn is in flight
-	budgetPct     int       // last context-budget utilization (% of writable budget)
-	budgetUsed    int       // absolute tokens in the assembled context
-	budgetCap     int       // writable-budget cap (tokens)
-	sessionTok    int       // cumulative tokens (in+out) for the MAIN agent this session
-	sessionTokIn  int       // cumulative INPUT tokens for the MAIN agent this session
-	sessionTokOut int       // cumulative OUTPUT tokens for the MAIN agent this session
-	teamTok       int       // cumulative tokens (in+out) for spawned sub-agents
-	reqStart      time.Time // wall-clock start of the in-flight turn (display-only live timer)
-	lastTool      string
-	width         int
-	height        int
-	ready         bool
-	err           string
+	msgs      []chatMsg
+	feedLines []string
+	streaming bool // an assistant reply is currently streaming
+	// assistantSealed is set once turnDoneMsg has finalized the turn's answer
+	// and cleared at the next submit(). While sealed, the live EventToken/
+	// EventAssistant handlers no-op — they'd otherwise append the SAME text a
+	// second time when a trailing event is drained AFTER turnDoneMsg already
+	// reconciled the bubble (the /goal inline double-post race, TEN-217).
+	assistantSealed bool
+	busy            bool      // a turn is in flight
+	budgetPct       int       // last context-budget utilization (% of writable budget)
+	budgetUsed      int       // absolute tokens in the assembled context
+	budgetCap       int       // writable-budget cap (tokens)
+	sessionTok      int       // cumulative tokens (in+out) for the MAIN agent this session
+	sessionTokIn    int       // cumulative INPUT tokens for the MAIN agent this session
+	sessionTokOut   int       // cumulative OUTPUT tokens for the MAIN agent this session
+	teamTok         int       // cumulative tokens (in+out) for spawned sub-agents
+	reqStart        time.Time // wall-clock start of the in-flight turn (display-only live timer)
+	lastTool        string
+	width           int
+	height          int
+	ready           bool
+	err             string
 	// follow flags: when true the pane sticks to the bottom as new content
 	// arrives; scrolling up turns it off so the view stays put (so a long
 	// /tools list doesn't get yanked away). Paging/wheeling back to the
@@ -1359,6 +1365,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnDoneMsg:
 		m.busy = false
 		m.streaming = false
+		// Seal the turn: finalizeAssistant (below) is now the authoritative
+		// source for this answer, so any trailing EventAssistant/EventToken
+		// still queued from the just-finished turn must be ignored rather than
+		// re-appended (TEN-217). Cleared at the next submit().
+		m.assistantSealed = true
 		if m.turnCancel != nil {
 			m.turnCancel()
 			m.turnCancel = nil
@@ -1571,7 +1582,8 @@ func (m *model) submit() tea.Cmd {
 		q = strings.TrimSpace(m.ta.Value())
 		m.pushHistory(q) // record prompts + commands for ↑/↓ recall (TEN-181)
 	}
-	m.streaming = false // defensive reset: new turn gets a fresh assistant message
+	m.streaming = false       // defensive reset: new turn gets a fresh assistant message
+	m.assistantSealed = false // unseal: this turn's live events may build a bubble (TEN-217)
 	// TEN-65 follow-up fix: empty input in configure-session mode is
 	// meaningful — it means "use the Default / skip if optional".
 	// Before this, the early-return at the top swallowed empty Enter
@@ -4216,6 +4228,9 @@ func (m *model) applyEvent(e agent.Event) {
 			}
 		}
 	case agent.EventToken:
+		if m.assistantSealed {
+			break // stale trailing token from an already-finalized turn (TEN-217)
+		}
 		if !m.streaming {
 			m.msgs = append(m.msgs, chatMsg{role: "assistant"})
 			m.streaming = true
@@ -4223,6 +4238,9 @@ func (m *model) applyEvent(e agent.Event) {
 		m.msgs[len(m.msgs)-1].content += e.Text
 	case agent.EventAssistant:
 		// Non-stream fallback: whole assistant text at once.
+		if m.assistantSealed {
+			break // turnDoneMsg already reconciled this turn — don't double-post (TEN-217)
+		}
 		if !m.streaming {
 			m.msgs = append(m.msgs, chatMsg{role: "assistant", content: e.Text})
 		}

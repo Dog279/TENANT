@@ -3122,3 +3122,63 @@ func TestSlash_IMessageUnavailable(t *testing.T) {
 		t.Errorf("expected unavailable notice; got:\n%s", last)
 	}
 }
+
+// TEN-217: when turnDoneMsg finalizes the answer BEFORE a trailing EventAssistant
+// from the same turn is drained, the trailing event must not append a second
+// copy. Reproduces the /goal inline double-post race.
+func TestModel_NoDoublePostOnTrailingAssistantEvent(t *testing.T) {
+	m := newModel(context.Background(), Config{})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	// Authoritative finish lands first (finalizes the bubble + seals)...
+	m.Update(turnDoneMsg{res: &agent.TurnResult{Response: "the answer"}})
+	// ...then the trailing live event for the SAME turn is drained.
+	m.Update(eventMsg(agent.Event{Kind: agent.EventAssistant, Text: "the answer"}))
+
+	got := countAssistantBubbles(m.msgs)
+	if got != 1 {
+		t.Errorf("expected exactly 1 assistant bubble, got %d: %+v", got, m.msgs)
+	}
+}
+
+// TEN-217: a normal streamed turn still renders — events that arrive BEFORE
+// turnDoneMsg (unsealed) build the bubble; only the post-finalize trailing event
+// is ignored. Guards against the seal over-suppressing live streaming.
+func TestModel_StreamingRendersThenSealsNoDouble(t *testing.T) {
+	m := newModel(context.Background(), Config{})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	// Live tokens arrive while unsealed → build the streamed bubble.
+	m.Update(eventMsg(agent.Event{Kind: agent.EventToken, Text: "hel"}))
+	m.Update(eventMsg(agent.Event{Kind: agent.EventToken, Text: "lo"}))
+	// turnDone reconciles to the authoritative text and seals.
+	m.Update(turnDoneMsg{res: &agent.TurnResult{Response: "hello"}})
+	// A trailing buffered EventAssistant for the same turn must be ignored.
+	m.Update(eventMsg(agent.Event{Kind: agent.EventAssistant, Text: "hello"}))
+
+	if got := countAssistantBubbles(m.msgs); got != 1 {
+		t.Fatalf("expected exactly 1 assistant bubble, got %d: %+v", got, m.msgs)
+	}
+	last := m.msgs[len(m.msgs)-1]
+	if last.role != "assistant" || last.content != "hello" {
+		t.Errorf("final bubble = %q (role %q), want %q", last.content, last.role, "hello")
+	}
+
+	// A fresh submit unseals so the NEXT turn's live events render again.
+	m.assistantSealed = true // simulate still-sealed from the prior turn
+	m.ta.SetValue("next question")
+	_ = m.submit()
+	if m.assistantSealed {
+		t.Error("submit() must clear the seal so the next turn can stream")
+	}
+}
+
+func countAssistantBubbles(msgs []chatMsg) int {
+	n := 0
+	for _, msg := range msgs {
+		if msg.role == "assistant" {
+			n++
+		}
+	}
+	return n
+}
