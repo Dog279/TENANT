@@ -33,4 +33,7 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
-docs/github-coding-plan.md
+
+# Internal dev/planning docs — generated during dev, not framework documentation
+docs/dev/
+/TODOS.md
