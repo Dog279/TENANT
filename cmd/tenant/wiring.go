@@ -334,6 +334,7 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 			apiKey:       c.genAPIKey,
 			chatPath:     pk.ChatPath,
 			estimateOnly: pk.EstimateTokens,
+			forceHTTP1:   pk.ForceHTTP1,
 			contextLen:   c.contextLen,
 			planCeiling:  c.planCeiling,
 		}
@@ -625,6 +626,7 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 		gen := vllmGenProfiles(genProfileOpts{
 			endpoint: c.vllmEndpoint, model: c.vllmModel, toolFmt: c.vllmToolFmt,
 			apiKey: c.genAPIKey, chatPath: pk.ChatPath, estimateOnly: pk.EstimateTokens,
+			forceHTTP1: pk.ForceHTTP1,
 			contextLen: c.contextLen, planCeiling: c.planCeiling,
 		})
 		return gen, map[string]model.BackendFactory{"vllm": vllm.New}, nil
@@ -647,8 +649,9 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 type genProfileOpts struct {
 	endpoint, model, toolFmt, apiKey, chatPath string
 	estimateOnly                               bool
-	contextLen                                 int // 0 = default (131072)
-	planCeiling                                int // 0 = defaultPlanCeiling
+	forceHTTP1                                 bool // disable HTTP/2 (GOAWAY-prone hosted LBs, TEN-218)
+	contextLen                                 int  // 0 = default (131072)
+	planCeiling                                int  // 0 = defaultPlanCeiling
 }
 
 // vllmGenProfiles builds planner/executor/summarizer profiles pointing
@@ -684,6 +687,7 @@ func vllmGenProfiles(o genProfileOpts) []model.Profile {
 			APIKey:                   o.apiKey,
 			ChatPath:                 o.chatPath,
 			EstimateTokensOnly:       o.estimateOnly,
+			ForceHTTP11:              o.forceHTTP1,
 			ContextLength:            ctxLen,
 			OperationalContextBudget: opBudget,
 			ReserveSoul:              2048,

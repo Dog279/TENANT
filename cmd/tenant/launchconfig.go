@@ -295,6 +295,7 @@ type providerKind struct {
 	EstimateTokens  bool   // no /tokenize endpoint
 	Wired           bool   // false = config captured but backend not implemented yet
 	Local           bool   // runs on localhost (no key, reachable probe meaningful)
+	ForceHTTP1      bool   // disable HTTP/2 — the LB recycles long-lived h2 conns with a mid-stream GOAWAY (TEN-218)
 }
 
 // providerKinds is the catalog the wizard offers. OpenAI-compatible providers
@@ -339,7 +340,7 @@ var providerKinds = map[string]providerKind{
 		ID: "zai", Label: "Z.ai (GLM — coding plan, global) [DEFAULT]", Backend: "vllm",
 		DefaultEndpoint: "https://api.z.ai/api/coding/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"zai-coding": {
 		// Explicit alias for `zai` — same as the default. Kept so
@@ -348,13 +349,13 @@ var providerKinds = map[string]providerKind{
 		ID: "zai-coding", Label: "Z.ai (GLM — coding plan, global)", Backend: "vllm",
 		DefaultEndpoint: "https://api.z.ai/api/coding/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"zai-coding-cn": {
 		ID: "zai-coding-cn", Label: "Z.ai (GLM — coding plan, China / bigmodel.cn)", Backend: "vllm",
 		DefaultEndpoint: "https://open.bigmodel.cn/api/coding/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"zai-metered": {
 		// The PER-TOKEN metered API. Operators on the standard
@@ -364,7 +365,7 @@ var providerKinds = map[string]providerKind{
 		ID: "zai-metered", Label: "Z.ai (GLM — metered API, per-token billing)", Backend: "vllm",
 		DefaultEndpoint: "https://api.z.ai/api/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"anthropic": {
 		ID: "anthropic", Label: "Anthropic (Claude)", Backend: "anthropic",

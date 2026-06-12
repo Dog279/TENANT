@@ -46,6 +46,14 @@ type Profile struct {
 	// (every hosted OpenAI-compatible API, Ollama, llama.cpp).
 	EstimateTokensOnly bool `yaml:"estimate_tokens_only,omitempty"`
 
+	// ForceHTTP11 disables HTTP/2 on the backend's HTTP client so each request
+	// uses its own HTTP/1.1 connection. Set for hosted providers whose load
+	// balancer recycles long-lived multiplexed HTTP/2 connections with a GOAWAY
+	// mid-stream (Z.ai/GLM) — on HTTP/1.1 that recycling lands harmlessly
+	// between requests instead. Pairs with the planner's transient retry
+	// (TEN-218 / TEN-215). Only the vLLM (OpenAI-compatible) backend reads it.
+	ForceHTTP11 bool `yaml:"force_http1,omitempty"`
+
 	// ChatPath overrides the chat-completions URL suffix appended to
 	// Endpoint. Default "/v1/chat/completions". Z.ai's base already carries
 	// the version (…/paas/v4) so it needs "/chat/completions".
