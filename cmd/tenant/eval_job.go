@@ -88,6 +88,9 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 
 	summary := fmt.Sprintf("eval-nightly %s: overall %.1f, passed %d/%d",
 		rep.Subset, rep.Aggregates.Overall, rep.Aggregates.PassCount, total)
+	if e.Ungraded > 0 {
+		summary += fmt.Sprintf(", %d ungraded", e.Ungraded)
+	}
 	if e.HasBaseline {
 		if e.Regressed {
 			summary += fmt.Sprintf(" — REGRESSION (Δ %.1f, CI hi %.1f)", e.Delta, e.CIHigh)
@@ -149,11 +152,12 @@ func trendEntryFor(rep *eval.Report, baselinePath, artifact string, log *slog.Lo
 		log = slog.Default()
 	}
 	e := evalTrendEntry{
-		TS:      time.Now().UTC().Format(time.RFC3339),
-		Subset:  string(rep.Subset),
-		Overall: rep.Aggregates.Overall,
-		Passed:  rep.Aggregates.PassCount,
-		Total:   rep.Aggregates.PassCount + rep.Aggregates.FailCount,
+		TS:       time.Now().UTC().Format(time.RFC3339),
+		Subset:   string(rep.Subset),
+		Overall:  rep.Aggregates.Overall,
+		Passed:   rep.Aggregates.PassCount,
+		Total:    rep.Aggregates.PassCount + rep.Aggregates.FailCount,
+		Ungraded: rep.Aggregates.UngradedCount,
 	}
 	if artifact != "" { // filepath.Base("") is "." — keep the field empty instead
 		e.Artifact = filepath.Base(artifact)

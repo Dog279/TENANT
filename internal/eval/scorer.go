@@ -18,6 +18,11 @@ type TaskResult struct {
 	ElapsedMS      int64    `json:"elapsed_ms"`
 	JudgeScore     int      `json:"judge_score,omitempty"`     // 1-5 anchored, 0 if no judge ran
 	JudgeReasoning string   `json:"judge_reasoning,omitempty"` // judge's one-sentence rationale
+	// Ungraded marks a task whose gate passed but whose judge was unusable
+	// even after a retry (TEN-197). Excluded from pass/fail aggregates,
+	// baselines, and baseline pairing — grader infrastructure must never
+	// move the score or the trend.
+	Ungraded bool `json:"ungraded,omitempty"`
 }
 
 // ScoreFixture runs the deterministic gate against a fixture and
@@ -134,4 +139,3 @@ func argsContainAll(args string, needles []string) bool {
 	}
 	return true
 }
-

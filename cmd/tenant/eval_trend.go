@@ -30,6 +30,10 @@ type evalTrendEntry struct {
 	Delta       float64 `json:"delta"`
 	CIHigh      float64 `json:"ci_high"`
 	Artifact    string  `json:"artifact,omitempty"`
+	// Ungraded counts judge-unusable tasks excluded from the score
+	// (TEN-197) — a run with grader trouble must look different in the
+	// trend, not just smaller.
+	Ungraded int `json:"ungraded,omitempty"`
 }
 
 func evalTrendPath(artifactDir string) string {
@@ -135,6 +139,9 @@ func renderEvalTrend(entries []evalTrendEntry, n int) string {
 			} else {
 				status = "ok"
 			}
+		}
+		if e.Ungraded > 0 {
+			status += fmt.Sprintf(" (%d ungraded)", e.Ungraded)
 		}
 		delta := "—"
 		if e.HasBaseline {

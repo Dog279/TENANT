@@ -80,10 +80,16 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 	if t.Expected.Rubric != nil && h.Judge != nil {
 		jr, err := h.Judge.Grade(ctx, t, response, calls)
 		if err != nil {
+			// UNGRADED (TEN-197): the gate passed but the judge was unusable
+			// even after its retry. Scoring the agent here (the old 50) moved
+			// the trend for the GRADER's failure — first live run had 20/49
+			// failures of this class. The task is excluded from pass/fail
+			// aggregates and baselines, surfaced via Aggregates.UngradedCount.
+			res.Ungraded = true
 			res.Passed = false
-			res.Score = 50 // gate passed but judge errored — partial credit
-			res.Failures = []string{fmt.Sprintf("judge error: %v", err)}
+			res.Score = 0 // never aggregated; value is moot by construction
 			res.JudgeScore = 0
+			res.Failures = []string{fmt.Sprintf("UNGRADED — judge unusable after retry: %v (gate passed)", err)}
 			return res
 		}
 		res.JudgeScore = jr.Score

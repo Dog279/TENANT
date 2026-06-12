@@ -66,6 +66,11 @@ type Aggregates struct {
 	PassCount    int                `json:"pass_count"`
 	FailCount    int                `json:"fail_count"`
 	TotalElapsed int64              `json:"total_elapsed_ms"`
+	// UngradedCount is how many tasks were excluded from the counts and
+	// scores above because the judge was unusable after its retry
+	// (TEN-197) — surfaced so a run with grader trouble is visibly
+	// different from a clean one.
+	UngradedCount int `json:"ungraded_count,omitempty"`
 }
 
 // LoadHarness loads every embedded task. Caller provides the FS so
@@ -204,6 +209,12 @@ func aggregate(results []TaskResult, totalElapsedMS int64) Aggregates {
 
 	var totalSum, totalN float64
 	for _, r := range results {
+		if r.Ungraded {
+			// Grader failure, not agent failure (TEN-197): counted apart,
+			// never in pass/fail or any score average.
+			ag.UngradedCount++
+			continue
+		}
 		if r.Passed {
 			ag.PassCount++
 		} else {
