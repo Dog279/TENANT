@@ -146,6 +146,13 @@ type BudgetReport struct {
 	UserQueryToks  int
 	Total          int
 	WritableBudget int
+	// ContextWindow is the model's full context length (model.Profile.
+	// ContextLength) — the honest denominator for a "how full is my context"
+	// gauge. Total/WritableBudget overshoots 100% because Total includes the
+	// static reserve (soul+system+tools) that WritableBudget subtracts out;
+	// Total/ContextWindow is a true 0-100% reading against the model in use
+	// (TEN status-bar fix). 0 ⇒ unknown (caller falls back).
+	ContextWindow int
 	// Truncations records human-readable lines for anything that
 	// didn't fit (e.g. "working: dropped 4 oldest turns to fit budget").
 	Truncations []string
@@ -195,6 +202,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 	r := &Result{
 		BudgetReport: BudgetReport{
 			WritableBudget: req.Profile.WritableBudget(),
+			ContextWindow:  req.Profile.ContextLength,
 		},
 	}
 

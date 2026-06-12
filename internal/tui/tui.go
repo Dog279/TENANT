@@ -4162,15 +4162,27 @@ func (m *model) applyEvent(e agent.Event) {
 			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens)
 		}
 	case agent.EventMemory:
-		if e.Budget != nil && e.Budget.WritableBudget > 0 {
-			m.budgetPct = int(float64(e.Budget.Total) / float64(e.Budget.WritableBudget) * 100)
-			m.budgetUsed = e.Budget.Total
-			m.budgetCap = e.Budget.WritableBudget
-			note := ""
-			if e.Budget.CompactionRecommended {
-				note = " " + cErr.Render("(compaction soon)")
+		if e.Budget != nil {
+			// Gauge fullness against the model's REAL context window, not the
+			// writable budget. Total includes the static reserve (soul+system+
+			// tools) that WritableBudget subtracts out, so Total/WritableBudget
+			// overshoots 100% (the old "173% of 62.9k" bug). Total/ContextWindow
+			// is a true 0-100% reading for the model in use; fall back to the
+			// writable budget only when the window is unknown.
+			window := e.Budget.ContextWindow
+			if window <= 0 {
+				window = e.Budget.WritableBudget
 			}
-			m.appendFeed(cDim.Render(fmt.Sprintf("ctx assembled: %d tok (%d%% of writable)", e.Budget.Total, m.budgetPct)) + note)
+			if window > 0 {
+				m.budgetPct = int(float64(e.Budget.Total) / float64(window) * 100)
+				m.budgetUsed = e.Budget.Total
+				m.budgetCap = window
+				note := ""
+				if e.Budget.CompactionRecommended {
+					note = " " + cErr.Render("(compaction soon)")
+				}
+				m.appendFeed(cDim.Render(fmt.Sprintf("ctx assembled: %d tok (%d%% of context window)", e.Budget.Total, m.budgetPct)) + note)
+			}
 		}
 	case agent.EventToken:
 		if !m.streaming {

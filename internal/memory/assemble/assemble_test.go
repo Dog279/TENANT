@@ -238,6 +238,16 @@ func TestAssemble_BudgetReportAccounting(t *testing.T) {
 	if r.BudgetReport.WritableBudget != mkProfile().WritableBudget() {
 		t.Errorf("WritableBudget = %d, want %d", r.BudgetReport.WritableBudget, mkProfile().WritableBudget())
 	}
+	// ContextWindow carries the model's real window so the TUI gauge reads
+	// Total/ContextWindow (a true 0-100%), not Total/WritableBudget (which
+	// overshoots because Total includes the static reserve WritableBudget omits).
+	if r.BudgetReport.ContextWindow != mkProfile().ContextLength {
+		t.Errorf("ContextWindow = %d, want ContextLength %d", r.BudgetReport.ContextWindow, mkProfile().ContextLength)
+	}
+	if r.BudgetReport.ContextWindow <= r.BudgetReport.WritableBudget {
+		t.Errorf("ContextWindow (%d) must exceed WritableBudget (%d) — else the gauge can't read <100%%",
+			r.BudgetReport.ContextWindow, r.BudgetReport.WritableBudget)
+	}
 	wantTotal := r.BudgetReport.SoulTokens + r.BudgetReport.SystemTokens +
 		r.BudgetReport.ToolTokens + r.BudgetReport.WorkingTokens +
 		r.BudgetReport.FactTokens + r.BudgetReport.EpisodeTokens +
