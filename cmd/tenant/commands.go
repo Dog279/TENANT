@@ -2451,7 +2451,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			},
 		},
 		Agents:           &agentControl{cfgDir: c.cfgDir, rt: rt},
-		Goals:            newGoalControl(ag),
+		Goals:            newGoalControl(ag, goalLoopCeilingFromConfig(c.lc)),
 		Review:           newReviewControl(ag, rt),
 		Reconnect:        reconnectMon,
 		TeamEvents:       teamCh,

@@ -237,6 +237,12 @@ func New(cfg Config) (*Agent, error) {
 // TurnRequest is one user-facing call into the agent.
 type TurnRequest struct {
 	UserQuery string
+	// LoopCeiling overrides the profile's PlanLoopCeiling for THIS turn only.
+	// 0 = inherit the profile default (normal turns; back-compat). >0 = cap
+	// planner↔tool iterations at this value. <0 = unlimited (omit the per-turn
+	// cap). Used by /goal runs so a long autonomous loop can iterate freely
+	// without raising the global ceiling every normal turn shares (TEN-216).
+	LoopCeiling int
 }
 
 // TurnResult summarizes what happened during the turn.
@@ -367,8 +373,16 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	if ceiling <= 0 {
 		ceiling = 5 // safe default if profile didn't set it
 	}
+	// A per-turn override (e.g. an active /goal run) decouples THIS turn's
+	// iteration budget from the global PlanLoopCeiling every normal turn shares:
+	// >0 sets it, <0 = unlimited (omit the cap). 0 leaves the profile default in
+	// place (TEN-216).
+	if req.LoopCeiling != 0 {
+		ceiling = req.LoopCeiling
+	}
+	unlimitedLoop := ceiling < 0
 
-	for iter := 1; iter <= ceiling; iter++ {
+	for iter := 1; unlimitedLoop || iter <= ceiling; iter++ {
 		if err := ctx.Err(); err != nil {
 			// Don't return empty — the agent has been gathering tool data
 			// (web_read, wiki_search, etc.) and that working memory IS the

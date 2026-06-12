@@ -2271,14 +2271,17 @@ func TestAgents_NoControl(t *testing.T) {
 // --- /goal — autonomous loop ---
 
 type fakeGoalCtl struct {
-	active   bool
-	setFn    func(condition string) (firstPrompt, status string, err error)
-	judgeFn  func(lastResponse string) (met bool, reason string, atCap bool, err error)
-	continFn func(reason string) string
-	showFn   func() GoalStatus
-	clearFn  func() string
-	calls    []string
+	active      bool
+	loopCeiling int
+	setFn       func(condition string) (firstPrompt, status string, err error)
+	judgeFn     func(lastResponse string) (met bool, reason string, atCap bool, err error)
+	continFn    func(reason string) string
+	showFn      func() GoalStatus
+	clearFn     func() string
+	calls       []string
 }
+
+func (f *fakeGoalCtl) LoopCeiling() int { return f.loopCeiling }
 
 func (f *fakeGoalCtl) Set(_ context.Context, c string) (string, string, error) {
 	f.calls = append(f.calls, "Set:"+c)

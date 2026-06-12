@@ -804,3 +804,46 @@ func TestAgent_StopsRetryOnCancel(t *testing.T) {
 		t.Errorf("a cancelled context must not be retried; got %d planner calls", got)
 	}
 }
+
+// TEN-216: TurnRequest.LoopCeiling overrides the profile's PlanLoopCeiling for a
+// single turn — what /goal uses to iterate freely without touching the global
+// ceiling. A fake that tool-calls forever lets us count loop iterations
+// (one EventToolCall per iteration) and confirm the override sets them exactly.
+func TestAgent_LoopCeilingOverride(t *testing.T) {
+	tool := model.ToolSpec{Name: "noop", Description: "no-op", Parameters: json.RawMessage(`{"type":"object"}`)}
+	disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "ok", false, nil })
+
+	run := func(ceiling int) int32 {
+		fake := testllm.New()
+		fake.GenerateStreamFn = func(_ context.Context, req model.GenerateRequest) (<-chan model.StreamChunk, error) {
+			ch := make(chan model.StreamChunk, 1)
+			if len(req.Tools) > 0 {
+				// In the plan loop (tools present) keep calling a tool — never finish.
+				ch <- model.StreamChunk{ToolCallDelta: &model.ToolCall{ID: "1", Name: "noop", Arguments: json.RawMessage("{}")}, FinishReason: "tool_calls"}
+			} else {
+				// Forced synthesis runs tools-off — let it terminate cleanly.
+				ch <- model.StreamChunk{Delta: "final", FinishReason: "stop"}
+			}
+			close(ch)
+			return ch, nil
+		}
+		var toolCalls atomic.Int32
+		obs := func(e agent.Event) {
+			if e.Kind == agent.EventToolCall {
+				toolCalls.Add(1)
+			}
+		}
+		a := buildStreamingAgent(t, fake, obs, []model.ToolSpec{tool}, disp)
+		// A ceiling hit forces synthesis; it may surface as a truncated result
+		// rather than an error. Either is fine — we assert on iteration count.
+		_, _ = a.Turn(context.Background(), agent.TurnRequest{UserQuery: "go", LoopCeiling: ceiling})
+		return toolCalls.Load()
+	}
+
+	if got := run(2); got != 2 {
+		t.Errorf("LoopCeiling=2 ran %d tool-call iterations, want 2", got)
+	}
+	if got := run(5); got != 5 {
+		t.Errorf("LoopCeiling=5 ran %d tool-call iterations, want 5", got)
+	}
+}

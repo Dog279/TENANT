@@ -67,6 +67,9 @@ type launchConfig struct {
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
 	PlanLoopCeiling int `json:"plan_loop_ceiling,omitempty"`
+	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
+	// inline command sets it.
+	Goal goalConfig `json:"goal,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`
@@ -77,6 +80,17 @@ type launchConfig struct {
 	EmbedModel    string `json:"embed_model,omitempty"`
 	EmbedDim      int    `json:"embed_dim,omitempty"`
 	SSEAddr       string `json:"sse_addr,omitempty"`
+}
+
+// goalConfig holds persisted /goal autonomous-loop settings (TEN-216).
+type goalConfig struct {
+	// LoopCeiling is the per-turn planner↔tool iteration budget used WHILE a
+	// goal loop is active, overriding the global PlanLoopCeiling for goal turns
+	// only. >0 = that many iterations per goal turn; <0 = unlimited (omit the
+	// per-turn cap so a long /goal run can iterate freely — bounded only by the
+	// goal turn cap, errors, and Esc); 0/unset = inherit the global ceiling (no
+	// goal-specific override). Normal, non-goal turns always use PlanLoopCeiling.
+	LoopCeiling int `json:"loop_ceiling,omitempty"`
 }
 
 // providerConfig is one model provider's connection + auth settings.

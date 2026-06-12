@@ -746,6 +746,10 @@ type GoalControl interface {
 	Show() GoalStatus
 	Active() bool
 	Clear() string
+	// LoopCeiling is the per-turn loop ceiling to apply to turns run WHILE this
+	// goal is active, decoupled from the global PlanLoopCeiling (TEN-216): >0
+	// override, <0 unlimited, 0 inherit the global ceiling.
+	LoopCeiling() int
 }
 
 // ReviewControl runs the GStack Layer 3 cascading review (`/review
@@ -769,6 +773,9 @@ type GoalStatus struct {
 	Started    time.Time
 	ElapsedFmt string // human-formatted elapsed time, set by impl
 	Met        bool   // true once the judge said yes
+	// GoalLoopCeiling is the per-turn loop ceiling applied while the goal runs
+	// (TEN-216): >0 override, <0 unlimited, 0 = inherit the global ceiling.
+	GoalLoopCeiling int
 }
 
 // AgentControl powers /agents: list named sub-agents, add/edit/remove them
@@ -1646,8 +1653,15 @@ func (m *model) submit() tea.Cmd {
 	ag := m.cfg.Agent
 	turnCtx, cancel := context.WithCancel(m.ctx)
 	m.turnCancel = cancel
+	req := agent.TurnRequest{UserQuery: q}
+	// While a /goal loop is active, decouple this turn's iteration budget from
+	// the global loop ceiling so a long autonomous run can iterate freely
+	// without raising the ceiling every normal turn shares (TEN-216).
+	if m.cfg.Goals != nil && m.cfg.Goals.Active() {
+		req.LoopCeiling = m.cfg.Goals.LoopCeiling()
+	}
 	return func() tea.Msg {
-		res, err := ag.Turn(turnCtx, agent.TurnRequest{UserQuery: q})
+		res, err := ag.Turn(turnCtx, req)
 		cancel() // release ctx resources once the turn returns
 		return turnDoneMsg{res: res, err: err}
 	}
@@ -3364,6 +3378,12 @@ func renderGoalStatus(st GoalStatus) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🎯 goal: %s\n", st.Condition)
 	fmt.Fprintf(&b, "   turns: %d / %d", st.Turns, st.MaxTurns)
+	switch {
+	case st.GoalLoopCeiling > 0:
+		fmt.Fprintf(&b, "   loop ceiling: %d/turn", st.GoalLoopCeiling)
+	case st.GoalLoopCeiling < 0:
+		b.WriteString("   loop ceiling: unlimited")
+	}
 	if st.ElapsedFmt != "" {
 		fmt.Fprintf(&b, "   elapsed: %s", st.ElapsedFmt)
 	}
