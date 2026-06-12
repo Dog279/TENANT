@@ -11,13 +11,27 @@
     <aside class="side">
       <div class="brand"><span class="logo">t</span> tenant <span class="dim">control</span></div>
       <nav class="nav">
-        <a href="/" class="{{if eq .Page "dashboard"}}on{{end}}">Dashboard</a>
+        <a href="/" class="{{if eq .Page "dashboard"}}on{{end}}">Overview</a>
+
+        <div class="nav-group">Activity</div>
         <a href="/chat" class="{{if eq .Page "chat"}}on{{end}}">Chat</a>
-        <a href="/tools" class="{{if eq .Page "tools"}}on{{end}}">Tools</a>
-        <a href="/activity" class="{{if eq .Page "activity"}}on{{end}}">Activity</a>
-        <a href="/cron" class="{{if eq .Page "cron"}}on{{end}}">Cron</a>
-        <a href="/settings/keys" class="{{if eq .Page "keys"}}on{{end}}">Keys</a>
+        <a href="/activity" class="{{if eq .Page "activity"}}on{{end}}">Activity feed</a>
+
+        <div class="nav-group">Knowledge</div>
         <a href="/memory" class="{{if eq .Page "memory"}}on{{end}}">Memory</a>
+        <a href="/skills" class="{{if eq .Page "skills"}}on{{end}}">Skills</a>
+        <a href="/eval" class="{{if eq .Page "eval"}}on{{end}}">Quality</a>
+
+        <div class="nav-group">Capabilities</div>
+        <a href="/tools" class="{{if eq .Page "tools"}}on{{end}}">Tools</a>
+        <a href="/mcp" class="{{if eq .Page "mcp"}}on{{end}}">Remote services</a>
+        <a href="/cron" class="{{if eq .Page "cron"}}on{{end}}">Scheduled jobs</a>
+
+        <div class="nav-group">Settings</div>
+        <a href="/models" class="{{if eq .Page "models"}}on{{end}}">Model</a>
+        <a href="/integrations" class="{{if eq .Page "integrations"}}on{{end}}">Integrations</a>
+        <a href="/settings/keys" class="{{if eq .Page "keys"}}on{{end}}">Provider keys</a>
+
         <a href="/auth/logout" class="logout">Log out</a>
       </nav>
     </aside>

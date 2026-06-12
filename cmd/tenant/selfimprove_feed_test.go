@@ -58,6 +58,21 @@ func TestFormatSelfImproveFeedLine(t *testing.T) {
 			mustContain: "self-improve: distill — processed 5 episodes",
 		},
 		{
+			// The eval reports Changed=false BY CONTRACT (it observes, never
+			// mutates) — but its score is the regression gate, so the quiet-
+			// feed filter must NOT eat it (TEN-196: /eval now was a black box).
+			name: "eval result surfaces despite Changed=false",
+			rec: improve.JobRunRecord{
+				JobName: "eval-nightly",
+				Result: improve.JobResult{
+					Summary: "eval-nightly full: overall 87.5, passed 11/12 — no regression (Δ +0.4)",
+					Changed: false,
+				},
+			},
+			wantShow:    true,
+			mustContain: "self-improve: eval-nightly full: overall 87.5",
+		},
+		{
 			name: "profile refreshed",
 			rec: improve.JobRunRecord{
 				JobName: "user-profile",

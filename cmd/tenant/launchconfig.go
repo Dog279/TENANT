@@ -67,6 +67,9 @@ type launchConfig struct {
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
 	PlanLoopCeiling int `json:"plan_loop_ceiling,omitempty"`
+	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
+	// inline command sets it.
+	Goal goalConfig `json:"goal,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`
@@ -77,6 +80,17 @@ type launchConfig struct {
 	EmbedModel    string `json:"embed_model,omitempty"`
 	EmbedDim      int    `json:"embed_dim,omitempty"`
 	SSEAddr       string `json:"sse_addr,omitempty"`
+}
+
+// goalConfig holds persisted /goal autonomous-loop settings (TEN-216).
+type goalConfig struct {
+	// LoopCeiling is the per-turn planner↔tool iteration budget used WHILE a
+	// goal loop is active, overriding the global PlanLoopCeiling for goal turns
+	// only. >0 = that many iterations per goal turn; <0 = unlimited (omit the
+	// per-turn cap so a long /goal run can iterate freely — bounded only by the
+	// goal turn cap, errors, and Esc); 0/unset = inherit the global ceiling (no
+	// goal-specific override). Normal, non-goal turns always use PlanLoopCeiling.
+	LoopCeiling int `json:"loop_ceiling,omitempty"`
 }
 
 // providerConfig is one model provider's connection + auth settings.
@@ -281,6 +295,7 @@ type providerKind struct {
 	EstimateTokens  bool   // no /tokenize endpoint
 	Wired           bool   // false = config captured but backend not implemented yet
 	Local           bool   // runs on localhost (no key, reachable probe meaningful)
+	ForceHTTP1      bool   // disable HTTP/2 — the LB recycles long-lived h2 conns with a mid-stream GOAWAY (TEN-218)
 }
 
 // providerKinds is the catalog the wizard offers. OpenAI-compatible providers
@@ -325,7 +340,7 @@ var providerKinds = map[string]providerKind{
 		ID: "zai", Label: "Z.ai (GLM — coding plan, global) [DEFAULT]", Backend: "vllm",
 		DefaultEndpoint: "https://api.z.ai/api/coding/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"zai-coding": {
 		// Explicit alias for `zai` — same as the default. Kept so
@@ -334,13 +349,13 @@ var providerKinds = map[string]providerKind{
 		ID: "zai-coding", Label: "Z.ai (GLM — coding plan, global)", Backend: "vllm",
 		DefaultEndpoint: "https://api.z.ai/api/coding/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"zai-coding-cn": {
 		ID: "zai-coding-cn", Label: "Z.ai (GLM — coding plan, China / bigmodel.cn)", Backend: "vllm",
 		DefaultEndpoint: "https://open.bigmodel.cn/api/coding/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"zai-metered": {
 		// The PER-TOKEN metered API. Operators on the standard
@@ -350,7 +365,7 @@ var providerKinds = map[string]providerKind{
 		ID: "zai-metered", Label: "Z.ai (GLM — metered API, per-token billing)", Backend: "vllm",
 		DefaultEndpoint: "https://api.z.ai/api/paas/v4", ChatPath: "/chat/completions",
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
-		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true,
+		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
 	"anthropic": {
 		ID: "anthropic", Label: "Anthropic (Claude)", Backend: "anthropic",

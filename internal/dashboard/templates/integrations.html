@@ -1,0 +1,53 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">Integrations aren't configured in this session.</div></div>
+{{else}}
+
+<div class="dim" style="margin-bottom:14px">Connect your agent to outside tools. Setting up something that needs a sign-in (Google, Atlassian) opens a window <strong>on the computer running Tenant</strong> — do that step there.</div>
+
+{{range .Cards}}
+<div class="card" id="int-{{.ID}}">
+  <div class="ghead">
+    <span class="nm">{{.Label}}</span>
+    {{if .Configured}}<span class="on-tag">connected</span>{{else}}<span class="dim">not connected</span>{{end}}
+    {{if and .Configured (not .Enabled)}}<span class="dim">· off</span>{{end}}
+  </div>
+  {{if .SetupHint}}<div class="dim" style="margin:4px 0 10px">{{.SetupHint}}</div>{{end}}
+  <form method="POST" action="/integrations/{{.ID}}/save" class="evalsched">
+    {{range .Fields}}
+    <label>{{.Prompt}}
+      {{if .Options}}
+      <select name="{{.Key}}">
+        {{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}
+      </select>
+      {{else if .Secret}}
+      <input type="password" name="{{.Key}}" class="cinput" autocomplete="off" placeholder="{{if .Required}}required{{else}}optional{{end}}">
+      {{else}}
+      <input type="text" name="{{.Key}}" class="cinput" value="{{.Default}}" placeholder="{{if .Required}}required{{else}}optional{{end}}">
+      {{end}}
+    </label>
+    {{end}}
+    <div class="cronactions">
+      <button type="submit" class="btn">Save</button>
+    </div>
+  </form>
+  <div class="cronactions" style="margin-top:10px">
+    <form method="POST" action="/integrations/{{.ID}}/test" class="inline">
+      <button type="submit" class="btn sm">Test connection</button>
+    </form>
+    {{if .Configured}}
+    <form method="POST" action="/integrations/{{.ID}}/disconnect" class="inline">
+      <button type="submit" class="btn sm danger">Disconnect</button>
+    </form>
+    {{end}}
+  </div>
+</div>
+{{else}}
+<div class="card"><div class="dim">No integrations available in this build.</div></div>
+{{end}}
+
+{{end}}
+{{end}}

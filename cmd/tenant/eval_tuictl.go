@@ -34,6 +34,9 @@ func (e evalTUIControl) Status() string {
 	desc, note := "off", ""
 	if e.sched != nil {
 		desc = e.sched.Desc()
+		if e.sched.Pending() {
+			note = " · one-shot queued (fires at the next scheduler tick, ≤1m)"
+		}
 	} else if lc, err := loadLaunchConfig(e.cfgDir); err == nil {
 		_, _, desc = resolveEvalDue(false, 0, lc.Improve.EvalEvery, lc.Improve.EvalAt, nil)
 		note = " — self-improve loop off this session; schedule applies next launch"
@@ -112,8 +115,11 @@ func (e evalTUIControl) RunNow() (string, error) {
 	if e.sched == nil {
 		return "", fmt.Errorf("the improve scheduler is off this session (--self-improve)")
 	}
+	if e.sched.Pending() {
+		return "eval already queued — it fires at the next scheduler tick (a start line will appear in the feed)", nil
+	}
 	e.sched.ForceOnce()
-	return "eval queued — fires on the improve scheduler within the next minute; the result lands in the feed and trend.jsonl", nil
+	return "eval queued — a start line appears in the feed within the next minute; the run takes minutes and the result lands in the feed and trend.jsonl", nil
 }
 
 // Trend renders the last n trend entries (newest first).
@@ -123,6 +129,12 @@ func (e evalTUIControl) Trend(n int) string {
 		return "eval trend: " + err.Error()
 	}
 	return renderEvalTrend(entries, n)
+}
+
+// Diff renders the per-task movers analysis between the newest artifact
+// and its baseline (TEN-198).
+func (e evalTUIControl) Diff() (string, error) {
+	return renderBaselineDiff("", filepath.Join(e.dataDir, "eval-artifacts"))
 }
 
 // persist mutates improveConfig in launchConfig and saves it — the same

@@ -40,11 +40,18 @@ func WriteTerminal(w io.Writer, rep *Report) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Overall: %.1f   Passed: %d/%d   Wall: %dms\n",
+	fmt.Fprintf(w, "Overall: %.1f   Passed: %d/%d   Wall: %dms",
 		rep.Aggregates.Overall,
 		rep.Aggregates.PassCount,
 		rep.Aggregates.PassCount+rep.Aggregates.FailCount,
 		rep.Aggregates.TotalElapsed)
+	if n := rep.Aggregates.UngradedCount; n > 0 {
+		fmt.Fprintf(w, "   Ungraded: %d (judge unusable — excluded)", n)
+	}
+	if n := rep.Aggregates.SkippedCount; n > 0 {
+		fmt.Fprintf(w, "   Skipped: %d (tools unavailable — excluded)", n)
+	}
+	fmt.Fprintln(w)
 }
 
 // WriteJSON emits the report as schema-versioned JSON. External
@@ -71,14 +78,15 @@ func AllPassed(rep *Report) bool {
 	return rep.Aggregates.FailCount == 0
 }
 
-// FailedTaskIDs returns the IDs of failed tasks, useful for CI summary lines.
+// FailedTaskIDs returns the IDs of failed tasks, useful for CI summary
+// lines. Ungraded (TEN-197) and skipped (TEN-198) tasks are not
+// failures — they're excluded.
 func FailedTaskIDs(rep *Report) []string {
 	var out []string
 	for _, r := range rep.Results {
-		if !r.Passed {
+		if !r.Passed && !r.Ungraded && !r.Skipped {
 			out = append(out, r.TaskID)
 		}
 	}
 	return out
 }
-

@@ -46,6 +46,14 @@ type Profile struct {
 	// (every hosted OpenAI-compatible API, Ollama, llama.cpp).
 	EstimateTokensOnly bool `yaml:"estimate_tokens_only,omitempty"`
 
+	// ForceHTTP11 disables HTTP/2 on the backend's HTTP client so each request
+	// uses its own HTTP/1.1 connection. Set for hosted providers whose load
+	// balancer recycles long-lived multiplexed HTTP/2 connections with a GOAWAY
+	// mid-stream (Z.ai/GLM) — on HTTP/1.1 that recycling lands harmlessly
+	// between requests instead. Pairs with the planner's transient retry
+	// (TEN-218 / TEN-215). Only the vLLM (OpenAI-compatible) backend reads it.
+	ForceHTTP11 bool `yaml:"force_http1,omitempty"`
+
 	// ChatPath overrides the chat-completions URL suffix appended to
 	// Endpoint. Default "/v1/chat/completions". Z.ai's base already carries
 	// the version (…/paas/v4) so it needs "/chat/completions".
@@ -54,6 +62,21 @@ type Profile struct {
 	MaxParallelTools int            `yaml:"max_parallel_tools"`
 	PlanLoopCeiling  int            `yaml:"plan_loop_ceiling"`
 	Capabilities     map[string]any `yaml:"capabilities,omitempty"`
+}
+
+// OperationalBudget is the token budget the runtime actually plans against
+// under concurrent multi-endpoint load — OperationalContextBudget when set,
+// else an 80% fallback of ContextLength for profiles that predate the field.
+// 0 only when neither is known. Both WritableBudget (fixed reserves) and the
+// assembler's measured-static sizing (TEN-214) build on this single number.
+func (p Profile) OperationalBudget() int {
+	if p.OperationalContextBudget > 0 {
+		return p.OperationalContextBudget
+	}
+	if p.ContextLength > 0 {
+		return (p.ContextLength * 8) / 10
+	}
+	return 0
 }
 
 // WritableBudget reports the tokens available for the working set +
@@ -67,13 +90,14 @@ type Profile struct {
 // is structural rules and format specs (varies per task and model).
 // The TODO for empirical tuning of these per-profile values is in
 // TODOS.md — current numbers are calibrated guesses.
+//
+// This uses the FIXED per-class reserves. They're calibrated guesses, and a
+// full tool mux's real schema cost can be ~10x ReserveToolDefs (TEN-214), so
+// the assembler sizes its variable tiers off MEASURED static instead. This
+// value is retained as a back-compat field and as the recall-gating heuristic
+// proxy (AllowsTool), where a static capability estimate is the right input.
 func (p Profile) WritableBudget() int {
-	b := p.OperationalContextBudget
-	if b == 0 {
-		// fallback if a profile predates the operational-budget concept
-		b = (p.ContextLength * 8) / 10
-	}
-	w := b - p.ReserveSoul - p.ReserveSystemPrompt - p.ReserveToolDefs - p.ReserveResponse
+	w := p.OperationalBudget() - p.ReserveSoul - p.ReserveSystemPrompt - p.ReserveToolDefs - p.ReserveResponse
 	if w < 0 {
 		return 0
 	}

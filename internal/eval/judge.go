@@ -76,24 +76,45 @@ type LLMJudge struct {
 	Profile model.Profile // for diagnostics; logged on grading errors
 }
 
-// Grade renders the prompt + calls the LLM + parses the JSON. On any
-// parse failure, returns score 0 with reasoning explaining the failure
-// — never panics, never silently returns "5".
+// Grade renders the prompt + calls the LLM + parses the JSON, retrying
+// ONCE on a failed call or unusable output before giving up (TEN-197).
+// Thinking models can burn the whole completion budget on internal
+// reasoning and emit nothing — observed live: z.ai GLM returned "" on
+// 18/57 graded tasks — so the budget is generous and a fresh retry
+// covers the transient cases. An error return means the judge was
+// unusable even after the retry; the harness records the task UNGRADED
+// rather than scoring the agent zero for the grader's failure.
 func (j *LLMJudge) Grade(ctx context.Context, t *Task, response string, calls []FixtureToolCall) (JudgeResult, error) {
 	if j.LLM == nil {
 		return JudgeResult{}, fmt.Errorf("judge: nil LLM")
 	}
 	prompt := renderJudgePrompt(t, response, calls)
 	req := model.GenerateRequest{
-		Messages:    []model.Message{{Role: "user", Content: prompt}},
-		MaxTokens:   200, // judges are concise by construction
+		Messages: []model.Message{{Role: "user", Content: prompt}},
+		// Generous on purpose: thinking models spend invisible reasoning
+		// tokens BEFORE the JSON; 200 was observed truncating verdicts
+		// mid-string and returning empty text entirely (TEN-197).
+		MaxTokens:   1000,
 		Temperature: 0,
 	}
-	resp, err := j.LLM.Generate(ctx, req)
-	if err != nil {
-		return JudgeResult{}, fmt.Errorf("judge: LLM call: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 && ctx.Err() != nil {
+			break // don't burn a retry on a dead context
+		}
+		resp, err := j.LLM.Generate(ctx, req)
+		if err != nil {
+			lastErr = fmt.Errorf("judge: LLM call: %w", err)
+			continue
+		}
+		jr, perr := parseJudgeOutput(resp.Text)
+		if perr != nil {
+			lastErr = perr
+			continue
+		}
+		return jr, nil
 	}
-	return parseJudgeOutput(resp.Text)
+	return JudgeResult{}, lastErr
 }
 
 // FixtureJudge returns a pre-set score regardless of input. Used by
@@ -157,32 +178,37 @@ func renderAnchors(anchors map[int]string) string {
 // instruction; this strips that noise before json.Unmarshal.
 var jsonObjectRe = regexp.MustCompile(`(?s)\{.*?\}`)
 
+// parseJudgeOutput extracts the verdict from the judge's raw text. An
+// error return means the text is UNUSABLE (empty, or no score found
+// anywhere) — the caller retries once, then marks the task ungraded.
+// This used to return (score 0, nil) for unusable text, which the
+// scorer read as a legitimate grade of zero: the agent was punished for
+// the grader's failure (TEN-197). Salvage order: direct JSON → first
+// {...} block → score scrape. The scrape is also the only path that
+// rescues TRUNCATED JSON — a verdict cut off mid-reasoning never closes
+// its brace, so jsonObjectRe can't see it (one live truncation carried
+// "score": 5, a PASS that was thrown away as a 0).
 func parseJudgeOutput(raw string) (JudgeResult, error) {
 	cleaned := strings.TrimSpace(raw)
+	if cleaned == "" {
+		return JudgeResult{}, fmt.Errorf("judge: empty output (thinking models can burn the whole token budget before emitting text)")
+	}
 	// Try direct parse first.
 	var jr JudgeResult
 	if err := json.Unmarshal([]byte(cleaned), &jr); err == nil {
 		return clampScore(jr), nil
 	}
-	// Fall back to extracting the first JSON object.
-	m := jsonObjectRe.FindString(cleaned)
-	if m == "" {
-		return JudgeResult{
-			Score:     0,
-			Reasoning: fmt.Sprintf("judge output unparseable: %q", trunc(raw, 100)),
-		}, nil
-	}
-	if err := json.Unmarshal([]byte(m), &jr); err != nil {
-		// Last resort: scrape an integer score.
-		if n, ok := scrapeScore(cleaned); ok {
-			return JudgeResult{Score: n, Reasoning: trunc(cleaned, 200)}, nil
+	// Fall back to extracting the first complete JSON object.
+	if m := jsonObjectRe.FindString(cleaned); m != "" {
+		if err := json.Unmarshal([]byte(m), &jr); err == nil {
+			return clampScore(jr), nil
 		}
-		return JudgeResult{
-			Score:     0,
-			Reasoning: fmt.Sprintf("judge output unparseable: %q", trunc(raw, 100)),
-		}, nil
 	}
-	return clampScore(jr), nil
+	// Last resort: scrape an integer score (rescues truncated JSON too).
+	if n, ok := scrapeScore(cleaned); ok {
+		return clampScore(JudgeResult{Score: n, Reasoning: trunc(cleaned, 200)}), nil
+	}
+	return JudgeResult{}, fmt.Errorf("judge: output unparseable: %q", trunc(raw, 100))
 }
 
 func clampScore(jr JudgeResult) JudgeResult {

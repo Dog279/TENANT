@@ -20,17 +20,22 @@ import (
 // returned synchronously (ListenAndServe blocks), so it surfaces to the feed
 // via notify and flips running back to false.
 type dashboardManager struct {
-	base    context.Context
-	cfg     dashboard.Config
-	runner  dashboard.AgentRunner
-	tools   dashboard.ToolControl
-	mem     dashboard.MemoryControl  // TEN-88: memory curator surface (nil-safe)
-	cron    dashboard.CronControl    // recurring-job admin surface (nil-safe)
-	secrets dashboard.SecretsControl // write-only API-key admin surface (nil-safe)
-	broker  *agent.Broker
-	log     *slog.Logger
-	notify  func(string)             // feed sink (pushSys) for async status
-	persist func(enabled bool) error // record the on/off choice to config
+	base         context.Context
+	cfg          dashboard.Config
+	runner       dashboard.AgentRunner
+	tools        dashboard.ToolControl
+	mem          dashboard.MemoryControl       // TEN-88: memory curator surface (nil-safe)
+	cron         dashboard.CronControl         // recurring-job admin surface (nil-safe)
+	secrets      dashboard.SecretsControl      // write-only API-key admin surface (nil-safe)
+	eval         dashboard.EvalControl         // TEN-201: eval/quality surface (nil-safe)
+	skills       dashboard.SkillControl        // TEN-202: skill library surface (nil-safe)
+	models       dashboard.ModelControl        // TEN-204: model backends surface (nil-safe)
+	mcp          dashboard.MCPControl          // TEN-205: remote MCP connectors surface (nil-safe)
+	integrations dashboard.IntegrationsControl // TEN-206: integration-config surface (nil-safe)
+	broker       *agent.Broker
+	log          *slog.Logger
+	notify       func(string)             // feed sink (pushSys) for async status
+	persist      func(enabled bool) error // record the on/off choice to config
 
 	mu      sync.Mutex
 	running bool
@@ -52,6 +57,21 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.secrets != nil {
 		srv.SetSecrets(m.secrets)
+	}
+	if m.eval != nil {
+		srv.SetEval(m.eval)
+	}
+	if m.skills != nil {
+		srv.SetSkills(m.skills)
+	}
+	if m.models != nil {
+		srv.SetModels(m.models)
+	}
+	if m.mcp != nil {
+		srv.SetMCP(m.mcp)
+	}
+	if m.integrations != nil {
+		srv.SetIntegrations(m.integrations)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {

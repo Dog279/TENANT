@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -715,5 +716,134 @@ func TestStaticRegistry_SearchReturnsK(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("Search(2) len = %d, want 2", len(got))
+	}
+}
+
+// TEN-215: a transient stream drop — a hosted provider's load balancer
+// recycling the pooled HTTP/2 connection with a GOAWAY, caught mid-stream — must
+// be retried on a fresh connection, not kill the turn. The planner call is
+// idempotent and nothing is committed until plan() returns, so re-issuing is safe.
+func TestAgent_RetriesTransientStreamDrop(t *testing.T) {
+	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	fake := testllm.New()
+
+	var calls atomic.Int32
+	fake.GenerateStreamFn = func(_ context.Context, _ model.GenerateRequest) (<-chan model.StreamChunk, error) {
+		n := calls.Add(1)
+		ch := make(chan model.StreamChunk, 2)
+		if n == 1 {
+			// First attempt dies mid-stream with a GOAWAY-shaped read error.
+			ch <- model.StreamChunk{Error: fmt.Errorf("%w: stream read: http2: server sent GOAWAY and no streams", model.ErrInternal)}
+			close(ch)
+			return ch, nil
+		}
+		ch <- model.StreamChunk{Delta: "recovered answer", FinishReason: "stop"}
+		close(ch)
+		return ch, nil
+	}
+	a := buildStreamingAgent(t, fake, func(agent.Event) {}, nil, noop)
+
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "hi"})
+	if err != nil {
+		t.Fatalf("Turn errored despite a retryable stream drop: %v", err)
+	}
+	if got := calls.Load(); got < 2 {
+		t.Errorf("expected a retry (>=2 planner calls), got %d", got)
+	}
+	if !strings.Contains(res.Response, "recovered answer") {
+		t.Errorf("expected the retried response, got %q", res.Response)
+	}
+}
+
+// TEN-215: a NON-transient error (e.g. an invalid request) must NOT be retried —
+// re-issuing can't help and would just burn the budget.
+func TestAgent_DoesNotRetryNonTransientError(t *testing.T) {
+	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	fake := testllm.New()
+
+	var calls atomic.Int32
+	fake.GenerateStreamFn = func(_ context.Context, _ model.GenerateRequest) (<-chan model.StreamChunk, error) {
+		calls.Add(1)
+		ch := make(chan model.StreamChunk, 1)
+		ch <- model.StreamChunk{Error: fmt.Errorf("%w: bad tool schema", model.ErrInvalidRequest)}
+		close(ch)
+		return ch, nil
+	}
+	a := buildStreamingAgent(t, fake, func(agent.Event) {}, nil, noop)
+
+	if _, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "hi"}); err == nil {
+		t.Fatal("expected the turn to fail on a non-transient error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("non-transient error must not be retried; got %d planner calls", got)
+	}
+}
+
+// TEN-215: a cancelled context stops the retry loop immediately rather than
+// sleeping through the backoff and re-issuing.
+func TestAgent_StopsRetryOnCancel(t *testing.T) {
+	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	fake := testllm.New()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	fake.GenerateStreamFn = func(_ context.Context, _ model.GenerateRequest) (<-chan model.StreamChunk, error) {
+		calls.Add(1)
+		cancel() // user interrupts mid-turn
+		ch := make(chan model.StreamChunk, 1)
+		ch <- model.StreamChunk{Error: fmt.Errorf("%w: stream read: http2: server sent GOAWAY", model.ErrInternal)}
+		close(ch)
+		return ch, nil
+	}
+	a := buildStreamingAgent(t, fake, func(agent.Event) {}, nil, noop)
+
+	if _, err := a.Turn(ctx, agent.TurnRequest{UserQuery: "hi"}); err != nil {
+		_ = err // a cancelled turn may surface as a clean stop or an error; either is acceptable
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("a cancelled context must not be retried; got %d planner calls", got)
+	}
+}
+
+// TEN-216: TurnRequest.LoopCeiling overrides the profile's PlanLoopCeiling for a
+// single turn — what /goal uses to iterate freely without touching the global
+// ceiling. A fake that tool-calls forever lets us count loop iterations
+// (one EventToolCall per iteration) and confirm the override sets them exactly.
+func TestAgent_LoopCeilingOverride(t *testing.T) {
+	tool := model.ToolSpec{Name: "noop", Description: "no-op", Parameters: json.RawMessage(`{"type":"object"}`)}
+	disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "ok", false, nil })
+
+	run := func(ceiling int) int32 {
+		fake := testllm.New()
+		fake.GenerateStreamFn = func(_ context.Context, req model.GenerateRequest) (<-chan model.StreamChunk, error) {
+			ch := make(chan model.StreamChunk, 1)
+			if len(req.Tools) > 0 {
+				// In the plan loop (tools present) keep calling a tool — never finish.
+				ch <- model.StreamChunk{ToolCallDelta: &model.ToolCall{ID: "1", Name: "noop", Arguments: json.RawMessage("{}")}, FinishReason: "tool_calls"}
+			} else {
+				// Forced synthesis runs tools-off — let it terminate cleanly.
+				ch <- model.StreamChunk{Delta: "final", FinishReason: "stop"}
+			}
+			close(ch)
+			return ch, nil
+		}
+		var toolCalls atomic.Int32
+		obs := func(e agent.Event) {
+			if e.Kind == agent.EventToolCall {
+				toolCalls.Add(1)
+			}
+		}
+		a := buildStreamingAgent(t, fake, obs, []model.ToolSpec{tool}, disp)
+		// A ceiling hit forces synthesis; it may surface as a truncated result
+		// rather than an error. Either is fine — we assert on iteration count.
+		_, _ = a.Turn(context.Background(), agent.TurnRequest{UserQuery: "go", LoopCeiling: ceiling})
+		return toolCalls.Load()
+	}
+
+	if got := run(2); got != 2 {
+		t.Errorf("LoopCeiling=2 ran %d tool-call iterations, want 2", got)
+	}
+	if got := run(5); got != 5 {
+		t.Errorf("LoopCeiling=5 ran %d tool-call iterations, want 5", got)
 	}
 }

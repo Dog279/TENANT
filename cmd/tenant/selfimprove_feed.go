@@ -26,6 +26,14 @@ func formatSelfImproveFeedLine(rec improve.JobRunRecord) (string, bool) {
 	if rec.Err != nil {
 		return fmt.Sprintf("self-improve: %s FAILED — %v", rec.JobName, rec.Err), true
 	}
+	// The nightly eval never mutates state (Changed=false BY CONTRACT — it
+	// observes), but its result is the whole point: the score is the
+	// appliance's regression gate. The quiet-feed filter below was eating
+	// the one job whose no-op IS the news, leaving /eval now a black box
+	// between "queued" and nothing (TEN-196).
+	if rec.JobName == "eval-nightly" {
+		return "self-improve: " + rec.Result.Summary, true
+	}
 	if !rec.Result.Changed {
 		return "", false // silent no-op; suppress
 	}

@@ -50,6 +50,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		trend          bool
 		trendN         int
 		appendTrend    bool
+		baselineDiff   bool
 		jOpts          evalJudgeOpts
 	)
 	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full")
@@ -66,6 +67,7 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.BoolVar(&trend, "trend", false, "print the nightly-eval trend log (offline; no run) and exit")
 	fs.IntVar(&trendN, "trend-n", 20, "with --trend: how many recent entries to show")
 	fs.BoolVar(&appendTrend, "append-trend", false, "after the run, write a report artifact under <data>/eval-artifacts and append a trend line (same shape as the nightly job; baseline = --baseline-check path, else baselines/<subset>.json). Also advances the nightly schedule's clock — a manual morning run stands the auto-fire down (TEN-196)")
+	fs.BoolVar(&baselineDiff, "baseline-diff", false, "print the per-task movers diff between the newest artifact and its baseline (offline; no run) and exit — improved/declined tables with failure autopsy (TEN-198). Baseline = --baseline-check path, else baselines/<artifact-subset>.json")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "tenant eval — run the eval harness against the current build")
 		fmt.Fprintln(fs.Output())
@@ -88,6 +90,18 @@ func cmdEval(ctx context.Context, args []string) error {
 
 	if trend { // offline trend reader (TEN-158) — no run, no model
 		return runEvalTrend(c, trendN)
+	}
+
+	if baselineDiff { // offline movers diff (TEN-198) — no run, no model
+		if derr := c.resolveDirs(); derr != nil {
+			return derr
+		}
+		out, derr := renderBaselineDiff(baselineCheck, filepath.Join(c.dataDir, "eval-artifacts"))
+		if derr != nil {
+			return derr
+		}
+		fmt.Fprintln(os.Stdout, out)
+		return nil
 	}
 
 	sub := eval.Subset(subset)
@@ -171,7 +185,7 @@ func handleBaseline(rep *eval.Report, writePath, checkPath, judgeProfile string)
 			return fmt.Errorf("eval: write baseline: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "eval: wrote baseline (%d tasks, overall %.1f) → %s\n",
-			len(rep.Results), rep.Aggregates.Overall, writePath)
+			len(b.TaskScores), rep.Aggregates.Overall, writePath)
 	}
 	if checkPath != "" {
 		data, err := os.ReadFile(checkPath)
@@ -398,6 +412,15 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	if err != nil {
 		return nil, fmt.Errorf("eval: build tools: %w", err)
 	}
+	// Environment-aware denominator (TEN-198): tell the harness which
+	// tools actually exist in this run, so tasks requiring unavailable
+	// plugins (interactive-auth ones are never auto-enabled) are SKIPPED
+	// instead of scored zero — they measure the environment, not the agent.
+	avail := make(map[string]struct{})
+	for _, spec := range mux.All() {
+		avail[spec.Name] = struct{}{}
+	}
+	h.AvailableTools = avail
 	// Soul loaded once, shared read-only (Turn renders but never mutates it).
 	// A non-nil soulOverride (SoulNudgeJob candidate, TEN-16) wins over disk.
 	sl := soulOverride

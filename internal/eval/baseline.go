@@ -36,10 +36,16 @@ type Baseline struct {
 }
 
 // NewBaseline snapshots a Report into a Baseline. Idempotent — taking
-// the same Report twice produces equal Baselines.
+// the same Report twice produces equal Baselines. Ungraded tasks
+// (judge unusable, TEN-197) and skipped tasks (tool unavailable,
+// TEN-198) are excluded: both are environment artifacts and would seed
+// meaningless reference points.
 func NewBaseline(rep *Report, capturedAt, judgeProfile, tenantVersion string) *Baseline {
 	scores := make(map[string]float64, len(rep.Results))
 	for _, r := range rep.Results {
+		if r.Ungraded || r.Skipped {
+			continue
+		}
 		scores[r.TaskID] = r.Score
 	}
 	return &Baseline{
@@ -109,6 +115,13 @@ func CompareToBaseline(base *Baseline, current *Report, opts CompareOptions) *Re
 
 	currentByID := make(map[string]float64, len(current.Results))
 	for _, r := range current.Results {
+		if r.Ungraded || r.Skipped {
+			// Judge-unusable (TEN-197) and tool-unavailable (TEN-198) tasks
+			// must not pair: their scores are environment artifacts, and
+			// pairing one against a real baseline score would manufacture a
+			// fake regression.
+			continue
+		}
 		currentByID[r.TaskID] = r.Score
 	}
 

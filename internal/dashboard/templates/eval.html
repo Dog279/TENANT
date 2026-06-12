@@ -1,0 +1,68 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">Quality checks aren't configured in this session.</div></div>
+{{else}}
+
+<div class="cards">
+  <div class="card stat">
+    <div class="stat-label">Quality score</div>
+    <div class="stat-value">
+      {{if .Sched.HasRun}}{{printf "%.0f" .Sched.LastScore}}<span class="dim"> / 100</span>
+        {{if eq .Sched.Trend "up"}}<span class="trend-up">↑</span>{{else if eq .Sched.Trend "down"}}<span class="trend-down">↓</span>{{else}}<span class="dim">→</span>{{end}}
+      {{else}}<span class="dim">—</span>{{end}}
+    </div>
+  </div>
+  <div class="card stat">
+    <div class="stat-label">Last check</div>
+    <div class="stat-value">{{if .Sched.HasRun}}{{.Sched.LastPass}}<span class="dim"> / {{.Sched.LastTotal}} passed</span>{{else}}<span class="dim">never run</span>{{end}}</div>
+  </div>
+  <div class="card stat">
+    <div class="stat-label">Schedule</div>
+    <div class="stat-value" style="font-size:16px">{{.Sched.Desc}}</div>
+  </div>
+</div>
+
+{{if .Sched.HasRun}}
+<div class="dim" style="margin:-6px 0 14px">Last checked {{.Sched.LastWhen}}{{if .Sched.Skipped}} · {{.Sched.Skipped}} skipped (tools your agent doesn't have){{end}}{{if .Sched.Ungraded}} · {{.Sched.Ungraded}} couldn't be graded{{end}}</div>
+{{end}}
+
+<div class="card">
+  <div class="card-head">How is my agent doing over time?</div>
+  {{if .Chart}}{{.Chart}}<div class="dim" style="margin-top:8px">Each dot is one quality check. Red dots are checks that scored worse than the saved baseline.</div>
+  {{else}}<div class="dim">Not enough checks yet to draw a trend. Run a couple and they'll plot here.</div>{{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Run a check</div>
+  <form method="POST" action="/eval/run" class="inline">
+    <button type="submit" class="btn on">Run a quality check now</button>
+  </form>
+  <div class="dim" style="margin-top:9px">Takes a few minutes — your agent answers a set of test questions and grades itself against the baseline. The result appears here and in the activity feed.</div>
+</div>
+
+<div class="card">
+  <div class="card-head">Automatic checks</div>
+  <div class="dim" style="margin-bottom:10px">Currently: <strong>{{.Sched.Desc}}</strong>{{if not .Sched.Live}} <span class="dim">(applies next launch)</span>{{end}}</div>
+  <form method="POST" action="/eval/schedule" class="evalsched">
+    <label><input type="radio" name="mode" value="every" checked> Every
+      <input type="text" name="spec" value="24h" class="cinput" style="width:90px" placeholder="24h"> (e.g. 24h, 12h)</label>
+    <label><input type="radio" name="mode" value="at"> Daily at
+      <input type="text" name="spec" class="cinput" style="width:90px" placeholder="03:15"> (24-hour clock)</label>
+    <label><input type="radio" name="mode" value="off"> Off — only run checks by hand</label>
+    <button type="submit" class="btn">Save schedule</button>
+  </form>
+  <div class="dim" style="margin-top:9px">A check runs at most once per period no matter how often you restart, so a busy day won't pile up checks.</div>
+</div>
+
+{{if .Diff}}
+<div class="card">
+  <div class="card-head">What changed since the baseline</div>
+  <pre class="diff">{{.Diff}}</pre>
+</div>
+{{end}}
+
+{{end}}
+{{end}}

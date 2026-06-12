@@ -219,6 +219,10 @@ type EvalControl interface {
 	RunNow() (string, error)
 	// Trend renders the last n trend entries (scores + regression verdicts).
 	Trend(n int) string
+	// Diff renders the per-task movers analysis between the newest eval
+	// artifact and its baseline — improved/declined tables with failure
+	// autopsy (TEN-198).
+	Diff() (string, error)
 }
 
 // SkillHistoryEntry is one prior snapshot of a skill. Surfaced by /skills
@@ -742,6 +746,10 @@ type GoalControl interface {
 	Show() GoalStatus
 	Active() bool
 	Clear() string
+	// LoopCeiling is the per-turn loop ceiling to apply to turns run WHILE this
+	// goal is active, decoupled from the global PlanLoopCeiling (TEN-216): >0
+	// override, <0 unlimited, 0 inherit the global ceiling.
+	LoopCeiling() int
 }
 
 // ReviewControl runs the GStack Layer 3 cascading review (`/review
@@ -765,6 +773,9 @@ type GoalStatus struct {
 	Started    time.Time
 	ElapsedFmt string // human-formatted elapsed time, set by impl
 	Met        bool   // true once the judge said yes
+	// GoalLoopCeiling is the per-turn loop ceiling applied while the goal runs
+	// (TEN-216): >0 override, <0 unlimited, 0 = inherit the global ceiling.
+	GoalLoopCeiling int
 }
 
 // AgentControl powers /agents: list named sub-agents, add/edit/remove them
@@ -938,23 +949,29 @@ type model struct {
 	// Esc/Ctrl+S restores capture. (TEN-181)
 	selectMode bool
 
-	msgs          []chatMsg
-	feedLines     []string
-	streaming     bool      // an assistant reply is currently streaming
-	busy          bool      // a turn is in flight
-	budgetPct     int       // last context-budget utilization (% of writable budget)
-	budgetUsed    int       // absolute tokens in the assembled context
-	budgetCap     int       // writable-budget cap (tokens)
-	sessionTok    int       // cumulative tokens (in+out) for the MAIN agent this session
-	sessionTokIn  int       // cumulative INPUT tokens for the MAIN agent this session
-	sessionTokOut int       // cumulative OUTPUT tokens for the MAIN agent this session
-	teamTok       int       // cumulative tokens (in+out) for spawned sub-agents
-	reqStart      time.Time // wall-clock start of the in-flight turn (display-only live timer)
-	lastTool      string
-	width         int
-	height        int
-	ready         bool
-	err           string
+	msgs      []chatMsg
+	feedLines []string
+	streaming bool // an assistant reply is currently streaming
+	// assistantSealed is set once turnDoneMsg has finalized the turn's answer
+	// and cleared at the next submit(). While sealed, the live EventToken/
+	// EventAssistant handlers no-op — they'd otherwise append the SAME text a
+	// second time when a trailing event is drained AFTER turnDoneMsg already
+	// reconciled the bubble (the /goal inline double-post race, TEN-217).
+	assistantSealed bool
+	busy            bool      // a turn is in flight
+	budgetPct       int       // last context-budget utilization (% of writable budget)
+	budgetUsed      int       // absolute tokens in the assembled context
+	budgetCap       int       // writable-budget cap (tokens)
+	sessionTok      int       // cumulative tokens (in+out) for the MAIN agent this session
+	sessionTokIn    int       // cumulative INPUT tokens for the MAIN agent this session
+	sessionTokOut   int       // cumulative OUTPUT tokens for the MAIN agent this session
+	teamTok         int       // cumulative tokens (in+out) for spawned sub-agents
+	reqStart        time.Time // wall-clock start of the in-flight turn (display-only live timer)
+	lastTool        string
+	width           int
+	height          int
+	ready           bool
+	err             string
 	// follow flags: when true the pane sticks to the bottom as new content
 	// arrives; scrolling up turns it off so the view stays put (so a long
 	// /tools list doesn't get yanked away). Paging/wheeling back to the
@@ -1002,11 +1019,6 @@ type model struct {
 	// spawned sub-agents. Non-nil only while a research run is in flight;
 	// cleared on researchDoneMsg so the timeline pane disappears when done.
 	researchTimeline *researchTimelineState
-	// goalAutoActive marks that the next turn was kicked off automatically
-	// by the /goal loop (via Goals.Continue or the initial Set). Used to
-	// avoid an infinite cancel-recovery loop on Esc — when the user
-	// interrupts, we clear the goal so we don't immediately re-spawn.
-	goalAutoActive bool
 }
 
 // pendingClarifyState holds the in-flight clarification a /research call
@@ -1348,6 +1360,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnDoneMsg:
 		m.busy = false
 		m.streaming = false
+		// Seal the turn: finalizeAssistant (below) is now the authoritative
+		// source for this answer, so any trailing EventAssistant/EventToken
+		// still queued from the just-finished turn must be ignored rather than
+		// re-appended (TEN-217). Cleared at the next submit().
+		m.assistantSealed = true
 		if m.turnCancel != nil {
 			m.turnCancel()
 			m.turnCancel = nil
@@ -1480,7 +1497,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			prompt := gc.Continue(msg.reason)
 			m.ta.SetValue(prompt)
-			m.goalAutoActive = true
 			if subCmd := m.submit(); subCmd != nil {
 				cmds = append(cmds, subCmd)
 			}
@@ -1560,7 +1576,8 @@ func (m *model) submit() tea.Cmd {
 		q = strings.TrimSpace(m.ta.Value())
 		m.pushHistory(q) // record prompts + commands for ↑/↓ recall (TEN-181)
 	}
-	m.streaming = false // defensive reset: new turn gets a fresh assistant message
+	m.streaming = false       // defensive reset: new turn gets a fresh assistant message
+	m.assistantSealed = false // unseal: this turn's live events may build a bubble (TEN-217)
 	// TEN-65 follow-up fix: empty input in configure-session mode is
 	// meaningful — it means "use the Default / skip if optional".
 	// Before this, the early-return at the top swallowed empty Enter
@@ -1642,8 +1659,15 @@ func (m *model) submit() tea.Cmd {
 	ag := m.cfg.Agent
 	turnCtx, cancel := context.WithCancel(m.ctx)
 	m.turnCancel = cancel
+	req := agent.TurnRequest{UserQuery: q}
+	// While a /goal loop is active, decouple this turn's iteration budget from
+	// the global loop ceiling so a long autonomous run can iterate freely
+	// without raising the ceiling every normal turn shares (TEN-216).
+	if m.cfg.Goals != nil && m.cfg.Goals.Active() {
+		req.LoopCeiling = m.cfg.Goals.LoopCeiling()
+	}
 	return func() tea.Msg {
-		res, err := ag.Turn(turnCtx, agent.TurnRequest{UserQuery: q})
+		res, err := ag.Turn(turnCtx, req)
 		cancel() // release ctx resources once the turn returns
 		return turnDoneMsg{res: res, err: err}
 	}
@@ -1806,8 +1830,10 @@ func (m *model) handleEval(arg string) {
 			}
 		}
 		m.sysChat(m.cfg.Eval.Trend(n))
+	case f[0] == "diff" && len(f) == 1:
+		say(m.cfg.Eval.Diff())
 	default:
-		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n]")
+		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n] | /eval diff")
 	}
 }
 
@@ -1951,6 +1977,7 @@ var helpSections = []helpSection{
 			{"/eval every <dur> | at <HH:MM> | off", "re-tune the schedule live (persists; one run per period, relaunch-proof)"},
 			{"/eval now", "queue one eval run on the improve scheduler (fires within a minute)"},
 			{"/eval trend [n]", "recent eval scores + regression verdicts (trend.jsonl)"},
+			{"/eval diff", "per-task movers vs the baseline — what improved, what declined and why"},
 		},
 	},
 	{
@@ -2777,7 +2804,6 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		// Kick off the first turn with the goal prompt — same path as if the
 		// user had typed it themselves.
 		m.ta.SetValue(firstPrompt)
-		m.goalAutoActive = true
 		return m.submit()
 	case "/review":
 		// GStack Layer 3 cascading review. Usage:
@@ -3357,6 +3383,12 @@ func renderGoalStatus(st GoalStatus) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🎯 goal: %s\n", st.Condition)
 	fmt.Fprintf(&b, "   turns: %d / %d", st.Turns, st.MaxTurns)
+	switch {
+	case st.GoalLoopCeiling > 0:
+		fmt.Fprintf(&b, "   loop ceiling: %d/turn", st.GoalLoopCeiling)
+	case st.GoalLoopCeiling < 0:
+		b.WriteString("   loop ceiling: unlimited")
+	}
 	if st.ElapsedFmt != "" {
 		fmt.Fprintf(&b, "   elapsed: %s", st.ElapsedFmt)
 	}
@@ -4155,17 +4187,43 @@ func (m *model) applyEvent(e agent.Event) {
 			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens)
 		}
 	case agent.EventMemory:
-		if e.Budget != nil && e.Budget.WritableBudget > 0 {
-			m.budgetPct = int(float64(e.Budget.Total) / float64(e.Budget.WritableBudget) * 100)
-			m.budgetUsed = e.Budget.Total
-			m.budgetCap = e.Budget.WritableBudget
-			note := ""
-			if e.Budget.CompactionRecommended {
-				note = " " + cErr.Render("(compaction soon)")
+		if e.Budget != nil {
+			// Gauge fullness against the model's REAL context window, not the
+			// writable budget. Total includes the static reserve (soul+system+
+			// tools) that WritableBudget subtracts out, so Total/WritableBudget
+			// overshoots 100% (the old "173% of 62.9k" bug). Total/ContextWindow
+			// is a true 0-100% reading for the model in use; fall back to the
+			// writable budget only when the window is unknown.
+			window := e.Budget.ContextWindow
+			if window <= 0 {
+				window = e.Budget.WritableBudget
 			}
-			m.appendFeed(cDim.Render(fmt.Sprintf("ctx assembled: %d tok (%d%% of writable)", e.Budget.Total, m.budgetPct)) + note)
+			if window > 0 {
+				m.budgetPct = int(float64(e.Budget.Total) / float64(window) * 100)
+				m.budgetUsed = e.Budget.Total
+				m.budgetCap = window
+				note := ""
+				if e.Budget.CompactionRecommended {
+					note = " " + cErr.Render("(compaction soon)")
+				}
+				m.appendFeed(cDim.Render(fmt.Sprintf("ctx assembled: %d tok (%d%% of context window)", e.Budget.Total, m.budgetPct)) + note)
+				// Static breakdown (TEN-214): the tool-definition cost dominates a
+				// full mux and is the thing that silently eats the window. Surface
+				// soul/system/tools each turn, plus the writable budget the
+				// variable tiers were actually sized against (measured static, not
+				// the fixed reserves) so "where did my context go?" is answerable.
+				stat := e.Budget.SoulTokens + e.Budget.SystemTokens + e.Budget.ToolTokens
+				m.appendFeed(cDim.Render(fmt.Sprintf(
+					"  static %s (soul %s · sys %s · tools %s) · working %s · writable %s",
+					humanTokens(stat), humanTokens(e.Budget.SoulTokens), humanTokens(e.Budget.SystemTokens),
+					humanTokens(e.Budget.ToolTokens), humanTokens(e.Budget.WorkingTokens),
+					humanTokens(e.Budget.EffectiveWritable))))
+			}
 		}
 	case agent.EventToken:
+		if m.assistantSealed {
+			break // stale trailing token from an already-finalized turn (TEN-217)
+		}
 		if !m.streaming {
 			m.msgs = append(m.msgs, chatMsg{role: "assistant"})
 			m.streaming = true
@@ -4173,6 +4231,9 @@ func (m *model) applyEvent(e agent.Event) {
 		m.msgs[len(m.msgs)-1].content += e.Text
 	case agent.EventAssistant:
 		// Non-stream fallback: whole assistant text at once.
+		if m.assistantSealed {
+			break // turnDoneMsg already reconciled this turn — don't double-post (TEN-217)
+		}
 		if !m.streaming {
 			m.msgs = append(m.msgs, chatMsg{role: "assistant", content: e.Text})
 		}

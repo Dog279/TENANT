@@ -15,6 +15,7 @@ package vllm
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,16 +45,26 @@ func New(_ context.Context, p model.Profile, log *slog.Logger) (any, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	tr := &http.Transport{
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  false,
+	}
+	if p.ForceHTTP11 {
+		// Disable HTTP/2: a non-nil, empty TLSNextProto stops the transport from
+		// negotiating h2 over ALPN, so each request uses its own HTTP/1.1
+		// connection. Hosted load balancers (Z.ai) recycle long-lived
+		// multiplexed h2 connections with a mid-stream GOAWAY that Go can't
+		// auto-retry; on HTTP/1.1 that recycling lands harmlessly between
+		// requests instead (TEN-218, pairs with the planner retry in TEN-215).
+		tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+	}
 	return &Backend{
 		profile: p,
 		log:     log,
 		client: &http.Client{
-			Timeout: 0, // per-call via context; response time is unbounded for streaming
-			Transport: &http.Transport{
-				MaxIdleConnsPerHost: 4,
-				IdleConnTimeout:     90 * time.Second,
-				DisableCompression:  false,
-			},
+			Timeout:   0, // per-call via context; response time is unbounded for streaming
+			Transport: tr,
 		},
 	}, nil
 }

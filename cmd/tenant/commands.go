@@ -2128,9 +2128,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 		mem:     dashMemory{memCtl},
 		cron:    dashCronCtl,
 		secrets: dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
-		broker:  evBroker,
-		log:     log,
-		notify:  pushSys,
+		// Skills page (TEN-202) reuses the same skill store as the TUI /skills.
+		// Models page (TEN-204) reuses modelCtl. Eval (TEN-201) wired below,
+		// after evalSched is built.
+		skills: dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
+		models: dashModel{mc: modelCtl},
+		broker: evBroker,
+		log:    log,
+		notify: pushSys,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
 				return nil
@@ -2139,13 +2144,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return c.lc.save(c.cfgDir)
 		},
 	}
-	if dashOn {
-		if addr, derr := dashMgr.Enable(); derr != nil {
-			pushSys("dashboard: " + derr.Error())
-		} else {
-			pushSys("dashboard: serving on http://" + addr)
-		}
-	}
+	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
+	// below, so the eval/quality surface (which needs evalSched) is wired
+	// before the dashboard starts serving (TEN-201).
 
 	// Offsite Discord relay (TEN-114): DM the bot to drive a DEDICATED agent
 	// (shared long-term memory, own working set, read/research/comms-only tools,
@@ -2245,6 +2246,19 @@ func cmdTUI(ctx context.Context, args []string) error {
 			default: // never block a job on a slow UI
 			}
 		}
+		// Start lines ONLY for the eval: it runs for minutes, so without an
+		// announcement /eval now is a black box between "queued" and the
+		// result. The frequent cheap jobs (distill every 30m) would spam the
+		// feed with start lines for runs that finish in seconds.
+		sched.OnStart = func(name string) {
+			if name != "eval-nightly" {
+				return
+			}
+			select {
+			case sysCh <- "improve: eval-nightly started — full live suite on its own router+tools; takes minutes, the result lands here and in trend.jsonl":
+			default: // never block a job on a slow UI
+			}
+		}
 		sched.Register(distillJob, *distillEvery)
 		improveCfg := improveConfig{}
 		if x, err := loadLaunchConfig(c.cfgDir); err == nil {
@@ -2334,6 +2348,29 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Wire the dashboard's eval/quality surface (TEN-201) now that evalSched
+	// exists (it's built inside the self-improve block above; nil when
+	// --self-improve=false, which evalTUIControl handles as persist-only), then
+	// start the dashboard. Deferred to here so the Quality page can drive live
+	// run-now and schedule changes.
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}}
+	// Remote-services page (TEN-205): a lightweight MCP control over the shared
+	// tool mux. Connect pops a host-side browser (hybrid model — connect local,
+	// manage remote); the dashboard handler runs it async.
+	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}
+	// Integrations page (TEN-206): a dashboard-facing skill-config control over
+	// the real catalog. Built WITHOUT the Atlassian-MCP connector — OAuth-server
+	// connects go through the MCP page (TEN-205) — so this covers key-based
+	// integrations + probe + clear. Shares cfgDir creds with the TUI's control.
+	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
+	if dashOn {
+		if addr, derr := dashMgr.Enable(); derr != nil {
+			pushSys("dashboard: " + derr.Error())
+		} else {
+			pushSys("dashboard: serving on http://" + addr)
+		}
+	}
+
 	modelName := c.vllmModel
 	if c.backend == "echo" || modelName == "" {
 		modelName = c.backend
@@ -2414,7 +2451,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			},
 		},
 		Agents:           &agentControl{cfgDir: c.cfgDir, rt: rt},
-		Goals:            newGoalControl(ag),
+		Goals:            newGoalControl(ag, goalLoopCeilingFromConfig(c.lc)),
 		Review:           newReviewControl(ag, rt),
 		Reconnect:        reconnectMon,
 		TeamEvents:       teamCh,

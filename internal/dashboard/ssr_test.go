@@ -57,7 +57,8 @@ func TestSSR_DashboardPage(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Dashboard", "Tools enabled", "web", "Read-only"} {
+	// Home was renamed Dashboard→Overview and turned into a status board (TEN-200).
+	for _, want := range []string{"Overview", "Tools enabled", "web", "Read-only"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard page missing %q", want)
 		}

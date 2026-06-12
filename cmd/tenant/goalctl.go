@@ -53,10 +53,31 @@ type goalControl struct {
 	lastJudge string
 	lastEval  time.Time
 	met       bool
+
+	// loopCeiling is the per-turn planner↔tool iteration budget applied WHILE
+	// this goal loop is active, decoupled from the global PlanLoopCeiling
+	// (TEN-216). Set once from config at construction; read-only thereafter.
+	// >0 override, <0 unlimited, 0 inherit the global ceiling.
+	loopCeiling int
 }
 
-func newGoalControl(ag *agent.Agent) *goalControl {
-	return &goalControl{ag: ag, maxTurns: defaultGoalMaxTurns}
+func newGoalControl(ag *agent.Agent, loopCeiling int) *goalControl {
+	return &goalControl{ag: ag, maxTurns: defaultGoalMaxTurns, loopCeiling: loopCeiling}
+}
+
+// LoopCeiling reports the per-turn loop ceiling the TUI should apply to turns
+// run WHILE this goal is active (TEN-216): >0 overrides the global
+// PlanLoopCeiling for goal turns, <0 = unlimited, 0 = inherit. Read-only after
+// construction, so no lock is needed.
+func (gc *goalControl) LoopCeiling() int { return gc.loopCeiling }
+
+// goalLoopCeilingFromConfig nil-safely reads the persisted goal.loop_ceiling so
+// callers can wire newGoalControl without guarding a possibly-nil launchConfig.
+func goalLoopCeilingFromConfig(lc *launchConfig) int {
+	if lc == nil {
+		return 0
+	}
+	return lc.Goal.LoopCeiling
 }
 
 // Set replaces the active goal and returns the prompt the TUI should submit
@@ -105,14 +126,15 @@ func (gc *goalControl) Show() tui.GoalStatus {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 	st := tui.GoalStatus{
-		Active:    gc.condition != "",
-		Condition: gc.condition,
-		Turns:     gc.turns,
-		MaxTurns:  gc.maxTurns,
-		LastJudge: gc.lastJudge,
-		LastEval:  gc.lastEval,
-		Started:   gc.startedAt,
-		Met:       gc.met,
+		Active:          gc.condition != "",
+		Condition:       gc.condition,
+		Turns:           gc.turns,
+		MaxTurns:        gc.maxTurns,
+		LastJudge:       gc.lastJudge,
+		LastEval:        gc.lastEval,
+		Started:         gc.startedAt,
+		Met:             gc.met,
+		GoalLoopCeiling: gc.loopCeiling,
 	}
 	if !st.Started.IsZero() {
 		st.ElapsedFmt = time.Since(st.Started).Round(time.Second).String()
@@ -484,7 +506,7 @@ func cmdGoal(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	gc := newGoalControl(ag)
+	gc := newGoalControl(ag, goalLoopCeilingFromConfig(c.lc)) // honor goal.loop_ceiling (TEN-216)
 	gc.maxTurns = *maxTurns
 
 	firstPrompt, status, err := gc.Set(ctx, condition)
@@ -495,7 +517,7 @@ func cmdGoal(ctx context.Context, args []string) error {
 	prompt := firstPrompt
 
 	for {
-		res, terr := ag.Turn(ctx, agent.TurnRequest{UserQuery: prompt})
+		res, terr := ag.Turn(ctx, agent.TurnRequest{UserQuery: prompt, LoopCeiling: gc.LoopCeiling()})
 		if terr != nil {
 			return fmt.Errorf("turn %d: %w", gc.Show().Turns+1, terr)
 		}

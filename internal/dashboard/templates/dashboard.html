@@ -1,14 +1,52 @@
 {{define "content"}}
 <div class="cards">
-  <div class="card stat"><div class="stat-label">Status</div><div class="stat-value">ok</div></div>
-  <div class="card stat"><div class="stat-label">Tools enabled</div><div class="stat-value">{{.ToolsEnabled}} <span class="dim">/ {{.ToolsTotal}}</span></div></div>
-  <div class="card stat"><div class="stat-label">Plugins</div><div class="stat-value">{{len .Plugins}}</div></div>
-  {{if .HasMemory}}<div class="card stat"><div class="stat-label">Working memory</div><div class="stat-value">{{.WorkingCount}}</div></div>{{end}}
-  <div class="card stat"><div class="stat-label">Posture</div><div class="stat-value">{{if .AllowSend}}Allow-send{{else}}Read-only{{end}}</div></div>
+  <div class="card stat">
+    <div class="stat-label">Agent</div>
+    <div class="stat-value"><span class="trend-up">●</span> healthy</div>
+  </div>
+  {{if .ActiveModel}}
+  <a href="/models" class="card stat linkcard">
+    <div class="stat-label">Model</div>
+    <div class="stat-value" style="font-size:16px">{{.ActiveModel}}{{if .ModelDegraded}} <span class="risk">offline</span>{{end}}</div>
+  </a>
+  {{end}}
+  {{if .HasQuality}}
+  <a href="/eval" class="card stat linkcard">
+    <div class="stat-label">Quality</div>
+    <div class="stat-value">{{printf "%.0f" .QualityScore}}<span class="dim"> / 100</span>
+      {{if eq .QualityTrend "up"}}<span class="trend-up">↑</span>{{else if eq .QualityTrend "down"}}<span class="trend-down">↓</span>{{else}}<span class="dim">→</span>{{end}}
+    </div>
+  </a>
+  {{end}}
+  {{if .HasSkills}}
+  <a href="/skills" class="card stat linkcard">
+    <div class="stat-label">Skills learned</div>
+    <div class="stat-value">{{.SkillsLive}}{{if .SkillsWaiting}} <span class="trend-up">+{{.SkillsWaiting}} waiting</span>{{end}}</div>
+  </a>
+  {{end}}
+  <a href="/tools" class="card stat linkcard">
+    <div class="stat-label">Tools enabled</div>
+    <div class="stat-value">{{.ToolsEnabled}} <span class="dim">/ {{.ToolsTotal}}</span></div>
+  </a>
+  {{if .HasMemory}}
+  <a href="/memory" class="card stat linkcard">
+    <div class="stat-label">Working memory</div>
+    <div class="stat-value">{{.WorkingCount}}</div>
+  </a>
+  {{end}}
+  <a href="/tools" class="card stat linkcard">
+    <div class="stat-label">Safety</div>
+    <div class="stat-value">{{if .AllowSend}}Can send{{else}}Read-only{{end}}</div>
+  </a>
 </div>
+
+{{if .SkillsWaiting}}
+<a href="/skills" class="card ok" style="display:block;text-decoration:none">{{.SkillsWaiting}} new skill{{if ne .SkillsWaiting 1}}s{{end}} your agent learned {{if eq .SkillsWaiting 1}}is{{else}}are{{end}} waiting for your OK →</a>
+{{end}}
+
 <div class="card">
-  <div class="card-head">Plugins</div>
+  <div class="card-head">Connected services</div>
   {{if .Plugins}}<div class="chips">{{range .Plugins}}<span class="chip">{{.}}</span>{{end}}</div>
-  {{else}}<div class="dim">No plugins configured.</div>{{end}}
+  {{else}}<div class="dim">No services connected yet. Add one under Connections &amp; keys.</div>{{end}}
 </div>
 {{end}}

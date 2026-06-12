@@ -237,6 +237,12 @@ func New(cfg Config) (*Agent, error) {
 // TurnRequest is one user-facing call into the agent.
 type TurnRequest struct {
 	UserQuery string
+	// LoopCeiling overrides the profile's PlanLoopCeiling for THIS turn only.
+	// 0 = inherit the profile default (normal turns; back-compat). >0 = cap
+	// planner↔tool iterations at this value. <0 = unlimited (omit the per-turn
+	// cap). Used by /goal runs so a long autonomous loop can iterate freely
+	// without raising the global ceiling every normal turn shares (TEN-216).
+	LoopCeiling int
 }
 
 // TurnResult summarizes what happened during the turn.
@@ -367,8 +373,16 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	if ceiling <= 0 {
 		ceiling = 5 // safe default if profile didn't set it
 	}
+	// A per-turn override (e.g. an active /goal run) decouples THIS turn's
+	// iteration budget from the global PlanLoopCeiling every normal turn shares:
+	// >0 sets it, <0 = unlimited (omit the cap). 0 leaves the profile default in
+	// place (TEN-216).
+	if req.LoopCeiling != 0 {
+		ceiling = req.LoopCeiling
+	}
+	unlimitedLoop := ceiling < 0
 
-	for iter := 1; iter <= ceiling; iter++ {
+	for iter := 1; unlimitedLoop || iter <= ceiling; iter++ {
 		if err := ctx.Err(); err != nil {
 			// Don't return empty — the agent has been gathering tool data
 			// (web_read, wiki_search, etc.) and that working memory IS the
@@ -867,7 +881,46 @@ func renderSkills(cards []SkillCard) string {
 // (the silent-failure guard), then assemble the same {Text, ToolCalls}
 // the buffered path returns (the backend reassembles tool calls in
 // both paths, incl. the Gemma text-block safety net).
+// planMaxAttempts bounds how many times a single planner call is re-issued
+// after a TRANSIENT stream failure. A hosted provider's load balancer recycles
+// the pooled HTTP/2 connection with a GOAWAY as a matter of course; caught
+// mid-stream that surfaces as a read error Go can't auto-retry, and with no
+// retry here a single one killed whole /goal loops (TEN-215). The planner call
+// is idempotent and nothing is committed to the working set until plan()
+// returns, so re-issuing on a fresh connection is safe.
+const planMaxAttempts = 3
+
+// plan runs one planner call, retrying ONLY on transient connection drops
+// (GOAWAY / mid-stream reset). Everything else — including a user interrupt —
+// returns immediately. The streamed-token re-render on a retry is cosmetic;
+// finalizeAssistant reconciles the bubble to the authoritative final text.
 func (a *Agent) plan(ctx context.Context, planner model.LLM, format string, iter int, req model.GenerateRequest) (*model.GenerateResponse, error) {
+	for attempt := 1; ; attempt++ {
+		resp, err := a.planOnce(ctx, planner, format, iter, req)
+		if err == nil {
+			return resp, nil
+		}
+		if ctx.Err() != nil || attempt >= planMaxAttempts || !isRetryableStreamErr(err) {
+			return nil, err
+		}
+		a.log.Warn("agent: planner stream dropped — retrying on a fresh connection",
+			"iter", iter, "attempt", attempt, "err", err)
+		// Brief, cancellable backoff so we don't hammer an endpoint that's
+		// mid-recycle. The dropped connection is already marked dead by the
+		// transport, so the next attempt dials fresh.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 300 * time.Millisecond):
+		}
+	}
+}
+
+// planOnce performs exactly ONE planner call (streaming or buffered) and
+// returns the fully-consumed response. A partial stream is never returned as
+// success — a mid-stream error propagates so plan() can decide whether to
+// re-issue.
+func (a *Agent) planOnce(ctx context.Context, planner model.LLM, format string, iter int, req model.GenerateRequest) (*model.GenerateResponse, error) {
 	if !a.cfg.Stream {
 		return planner.Generate(ctx, req)
 	}
@@ -901,6 +954,45 @@ func (a *Agent) plan(ctx context.Context, planner model.LLM, format string, iter
 	// cleaning here only affects display.
 	resp.Text = toolfmt.AdapterFor(format).CleanText(sb.String())
 	return resp, nil
+}
+
+// isRetryableStreamErr reports whether a planner error is a TRANSIENT
+// connection drop worth re-issuing — a hosted provider's load balancer
+// recycling the pooled HTTP/2 connection (GOAWAY) or a mid-stream reset/EOF.
+// It deliberately excludes semantic failures (context overflow, invalid
+// request, rate limit, billing) and cancellation, where a retry can't help or
+// is outright wrong: a context overflow retries into the same overflow, and a
+// cancellation is the user's interrupt. Detection is by error-kind first, then
+// a narrow substring set on the wrapped transport text (the stream error is
+// formatted as "model: internal error: stream read: <net err>").
+func isRetryableStreamErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, model.ErrContextOverflow),
+		errors.Is(err, model.ErrInvalidRequest),
+		errors.Is(err, model.ErrRateLimited),
+		errors.Is(err, model.ErrInsufficientBalance),
+		errors.Is(err, model.ErrCancelled),
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded):
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"goaway",
+		"http2:",
+		"connection reset",
+		"unexpected eof",
+		"broken pipe",
+		"use of closed network connection",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // feedValidationError appends a tool-result message representing the

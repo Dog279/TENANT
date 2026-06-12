@@ -1,0 +1,75 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">Model settings aren't configured in this session.</div></div>
+{{else}}
+
+<div class="card">
+  <div class="card-head">Which brain your agent is using</div>
+  <div class="dim" style="margin-bottom:12px">The active model answers every message. Switching takes effect immediately.</div>
+  {{range .Models}}
+  <div class="soul-row" id="model-{{.Name}}">
+    <div>
+      <div class="nm">{{.Name}}
+        {{if .Active}}<span class="on-tag">active</span>{{end}}
+        {{if .Degraded}}<span class="risk">offline — using fallback</span>{{end}}
+      </div>
+      <div class="dim">{{.Kind}}{{if .Model}} · {{.Model}}{{end}}</div>
+    </div>
+    <div class="cronactions">
+      {{if not .Active}}
+      <form method="POST" action="/models/use" class="inline">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <input type="hidden" name="confirm" value="yes">
+        <button type="submit" class="btn sm">Use this model</button>
+      </form>
+      <form method="POST" action="/models/remove" class="inline">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <button type="submit" class="btn sm danger">Remove</button>
+      </form>
+      {{else}}<span class="dim">in use</span>{{end}}
+    </div>
+  </div>
+  {{else}}
+  <div class="dim">No models configured.</div>
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Add a cloud model</div>
+  <form method="POST" action="/models/add" class="evalsched">
+    <label>Provider
+      <select name="kind">
+        <option value="zai">Z.ai (GLM)</option>
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai">OpenAI (GPT)</option>
+        <option value="grok">Grok (xAI)</option>
+      </select>
+    </label>
+    <label>API key
+      <input type="password" name="key" class="cinput" autocomplete="off" placeholder="paste the provider's API key">
+    </label>
+    <button type="submit" class="btn">Add model</button>
+  </form>
+  <div class="dim" style="margin-top:9px">Your key is stored securely and never shown again. It's used only to reach that provider.</div>
+</div>
+
+<div class="card">
+  <div class="card-head">Advanced</div>
+  <form method="POST" action="/models/ceiling" class="inline" style="margin-bottom:10px">
+    <label class="dim">Max steps per answer
+      <input type="text" name="ceiling" value="{{.Ceiling}}" class="cinput" style="width:70px">
+    </label>
+    <button type="submit" class="btn sm">Save</button>
+  </form>
+  <div class="dim" style="margin-bottom:10px">How many tool steps the agent may take before it must answer. Higher = more thorough, slower.</div>
+  <form method="POST" action="/models/reload" class="inline">
+    <button type="submit" class="btn sm">Reload API keys</button>
+  </form>
+  <div class="dim" style="margin-top:6px">Re-read keys after you've rotated one, without restarting.</div>
+</div>
+
+{{end}}
+{{end}}

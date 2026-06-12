@@ -146,6 +146,22 @@ type BudgetReport struct {
 	UserQueryToks  int
 	Total          int
 	WritableBudget int
+	// EffectiveWritable is the budget the variable tiers (working + facts +
+	// episodes) are ACTUALLY allocated against: OperationalBudget − measured
+	// static (soul + system + tools) − ReserveResponse. Unlike WritableBudget
+	// (which subtracts the FIXED per-class reserves), this reflects the real
+	// soul/system/tool cost of THIS turn — so when a full tool mux's schemas
+	// dwarf ReserveToolDefs, the slots shrink to fit the room that's left
+	// instead of overcommitting the window (TEN-214). Falls back to
+	// WritableBudget when the operational budget is unknown.
+	EffectiveWritable int
+	// ContextWindow is the model's full context length (model.Profile.
+	// ContextLength) — the honest denominator for a "how full is my context"
+	// gauge. Total/WritableBudget overshoots 100% because Total includes the
+	// static reserve (soul+system+tools) that WritableBudget subtracts out;
+	// Total/ContextWindow is a true 0-100% reading against the model in use
+	// (TEN status-bar fix). 0 ⇒ unknown (caller falls back).
+	ContextWindow int
 	// Truncations records human-readable lines for anything that
 	// didn't fit (e.g. "working: dropped 4 oldest turns to fit budget").
 	Truncations []string
@@ -195,6 +211,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 	r := &Result{
 		BudgetReport: BudgetReport{
 			WritableBudget: req.Profile.WritableBudget(),
+			ContextWindow:  req.Profile.ContextLength,
 		},
 	}
 
@@ -249,12 +266,33 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 
 	var toolsText string
 	if len(req.Tools) > 0 {
+		// The compact `name: description` list rendered into the system block.
 		toolsText = renderTools(req.Tools)
-		n, err := a.counter.Count(ctx, toolsText)
+		nList, err := a.counter.Count(ctx, toolsText)
 		if err != nil {
 			return nil, fmt.Errorf("assemble: count tools: %w", err)
 		}
-		r.BudgetReport.ToolTokens = n
+		// The model ALSO receives the FULL tool schemas on the wire: the vLLM
+		// backend serializes ToolSpec.Parameters into the native `tools` array
+		// (backend/vllm/vllm.go) and Anthropic into `input_schema` — a cost the
+		// compact list never reflected and that DOMINATES a full tool mux
+		// (~10x ReserveToolDefs once MCP connectors are attached). Count it so
+		// ToolTokens is the honest on-wire tool cost and the budget below sizes
+		// the variable tiers against reality, not a 4k guess (TEN-214).
+		nDefs, err := a.counter.Count(ctx, renderToolDefsForBudget(req.Tools))
+		if err != nil {
+			return nil, fmt.Errorf("assemble: count tool schemas: %w", err)
+		}
+		r.BudgetReport.ToolTokens = nList + nDefs
+		// Loud surfacing (mirrors the system-prompt-over-reserve warning): when
+		// the real tool cost blows past ReserveToolDefs, the fixed-reserve
+		// WritableBudget is fiction — say so. The assembler compensates via the
+		// measured-static budget below; this is the operator-facing signal.
+		if rt := req.Profile.ReserveToolDefs; rt > 0 && r.BudgetReport.ToolTokens > rt {
+			r.BudgetReport.Truncations = append(r.BudgetReport.Truncations,
+				fmt.Sprintf("tool definitions cost %d tokens (~%.1fx the %d reserved) — variable budget sized off the real cost",
+					r.BudgetReport.ToolTokens, float64(r.BudgetReport.ToolTokens)/float64(rt), rt))
+		}
 	}
 
 	// --- 2. Run retrieval. ---
@@ -288,10 +326,18 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 		return nil, err
 	}
 
-	// --- 4. Allocate WritableBudget across the variable tiers. ---
+	// --- 4. Allocate the variable tiers against the budget left AFTER the real
+	// measured static cost (soul + system + tools), not the Profile's FIXED
+	// reserve estimates. A full tool mux's schema cost is ~10x ReserveToolDefs,
+	// so sizing slots off the fixed-reserve WritableBudget overcommits the
+	// window and lets total context blow past the operational budget while the
+	// tiers still look "unfilled" — which also keeps the compaction trigger
+	// (workingTokens/workingSlot) from ever arming (TEN-214). ---
 
 	shares := normalizeShares(req.Shares)
-	budget := req.Profile.WritableBudget()
+	measuredStatic := r.BudgetReport.SoulTokens + r.BudgetReport.SystemTokens + r.BudgetReport.ToolTokens
+	budget := effectiveWritableBudget(req.Profile, measuredStatic)
+	r.BudgetReport.EffectiveWritable = budget
 	workingSlot := int(float64(budget) * shares.Working)
 	factsSlot := int(float64(budget) * shares.Facts)
 	episodesSlot := int(float64(budget) * shares.Episodes)
@@ -348,12 +394,20 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 	r.BudgetReport.Total = r.BudgetReport.SoulTokens + r.BudgetReport.SystemTokens +
 		r.BudgetReport.ToolTokens + workingTokens + factTokens + episodeTokens + queryTokens
 
-	// Coarse display hint: total variable usage over the writable budget.
+	// Coarse display hint. Fires on EITHER the variable tiers filling their
+	// (now measured-static-sized) budget, OR the REAL total — static included —
+	// approaching the operational budget. The second clause is what makes the
+	// hint honest when a fat tool mux means total context is already near the
+	// ceiling even though the variable tiers look modest (TEN-214).
 	if budget > 0 {
 		variableUsage := workingTokens + factTokens + episodeTokens
 		if float64(variableUsage)/float64(budget) > compactionTriggerFrac {
 			r.BudgetReport.CompactionRecommended = true
 		}
+	}
+	if op := req.Profile.OperationalBudget(); op > 0 &&
+		float64(r.BudgetReport.Total)/float64(op) > compactionTriggerFrac {
+		r.BudgetReport.CompactionRecommended = true
 	}
 	// Precise compaction signal (TEN-102): the working tier's fill as a fraction
 	// of its OWN slot. The agent's hysteresis watches this — compaction shrinks
@@ -617,6 +671,53 @@ func renderTools(tools []model.ToolSpec) string {
 		fmt.Fprintf(&b, "- %s: %s\n", t.Name, t.Description)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderToolDefsForBudget approximates the FULL tool serialization the backend
+// sends on the wire — name + description + the JSON-schema Parameters — so the
+// budget reflects the real cost of the native `tools` array (vLLM) / tool
+// `input_schema` blocks (Anthropic), not just the compact prose list. The
+// per-tool `{...}` structural framing is small and roughly constant; the
+// dominant bytes are the Parameters schema, which this counts verbatim. Used
+// only for token accounting, never placed in the message list (TEN-214).
+func renderToolDefsForBudget(tools []model.ToolSpec) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, t := range tools {
+		b.WriteString(t.Name)
+		b.WriteByte('\n')
+		b.WriteString(t.Description)
+		b.WriteByte('\n')
+		if len(t.Parameters) > 0 {
+			b.Write(t.Parameters)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// effectiveWritableBudget is the token budget for the variable tiers (working +
+// facts + episodes) given the ACTUAL measured static cost (soul + system +
+// tools) rather than the Profile's fixed per-class reserves:
+//
+//	OperationalBudget − measuredStatic − ReserveResponse   (floored at 0)
+//
+// This keeps the working/facts/episodes slots — and the compaction trigger
+// derived from them — honest when real tool schemas dwarf ReserveToolDefs.
+// Falls back to the fixed-reserve WritableBudget when the operational budget is
+// unknown (0), so minimal/legacy profiles keep their prior sizing (TEN-214).
+func effectiveWritableBudget(p model.Profile, measuredStatic int) int {
+	op := p.OperationalBudget()
+	if op <= 0 {
+		return p.WritableBudget()
+	}
+	w := op - measuredStatic - p.ReserveResponse
+	if w < 0 {
+		return 0
+	}
+	return w
 }
 
 func renderFacts(facts []*semantic.Fact) string {

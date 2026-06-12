@@ -88,6 +88,13 @@ type Scheduler struct {
 	// live feed. Called outside the scheduler lock; must be cheap.
 	OnRun func(JobRunRecord)
 
+	// OnStart, if set, is called just before a job begins running. Exists so
+	// long jobs (the nightly eval takes minutes) can announce themselves in
+	// the TUI feed instead of running as a black box between queue and
+	// result (TEN-196 /eval now). Called outside the scheduler lock; must be
+	// cheap.
+	OnStart func(jobName string)
+
 	// Paused, if set and returning true, suspends ALL job execution (RunDue +
 	// RunAll skip without running or advancing any job's clock). Used to freeze
 	// self-improvement while the model is degraded to the echo fallback —
@@ -260,6 +267,9 @@ func (s *Scheduler) History() []JobRunRecord {
 }
 
 func (s *Scheduler) runOne(ctx context.Context, job Job) JobRunRecord {
+	if s.OnStart != nil {
+		s.OnStart(job.Name())
+	}
 	start := time.Now()
 	res, err := job.Run(ctx)
 	rec := JobRunRecord{
