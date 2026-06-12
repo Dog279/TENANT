@@ -190,8 +190,16 @@ type improveConfig struct {
 	// EvalEvery persists the nightly-eval cadence (TEN-34/157) as a duration
 	// string, e.g. "24h", so a 24/7 appliance keeps its regression gate across
 	// restarts. Empty/0/malformed ⇒ off (deny-by-default). An explicit
-	// --eval-every flag overrides this.
+	// --eval-every flag overrides this. The clock survives restarts: it is
+	// seeded from trend.jsonl (TEN-196), so a relaunch never re-fires a run
+	// that already happened within the interval.
 	EvalEvery string `json:"eval_every,omitempty"`
+	// EvalAt schedules the nightly eval at a daily wall-clock time ("HH:MM",
+	// 24-hour, local) instead of an uptime interval — for 24/7 boxes that want
+	// the heavy run at, say, "03:15". Wins over EvalEvery when both are set; a
+	// malformed value warns and falls back to EvalEvery (TEN-196). A box asleep
+	// at the anchor catches up on next wake (trend-seeded clock).
+	EvalAt string `json:"eval_at,omitempty"`
 	// SoulNudgeEvery persists the SoulNudgeJob cadence (TEN-16) as a duration
 	// string. Off (empty/0/malformed) by default — it runs the fitness suite to
 	// gate each candidate, so it's heavy + model-gated. Candidates are queued for

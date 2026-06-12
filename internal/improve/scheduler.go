@@ -58,7 +58,15 @@ type scheduledJob struct {
 	job      Job
 	interval time.Duration
 	lastRun  time.Time
+	due      DueFunc // non-nil ⇒ custom due-ness (RegisterDue); interval ignored
 }
+
+// DueFunc decides whether a job is due. lastRun is the job's last completed
+// run in this process — or the seed passed to RegisterDue, which lets a
+// caller restore the clock from durable state across restarts. now is the
+// tick time. Implementations must be cheap and side-effect free; the
+// scheduler consults them on every tick.
+type DueFunc func(lastRun, now time.Time) bool
 
 // Scheduler runs registered jobs on cadences. It does NOT own a
 // goroutine until Start is called — RunDue / RunAll are usable
@@ -113,6 +121,19 @@ func (s *Scheduler) Register(job Job, interval time.Duration) {
 	s.jobs = append(s.jobs, &scheduledJob{job: job, interval: interval})
 }
 
+// RegisterDue adds a job whose due-ness is decided by a custom predicate
+// instead of a fixed uptime interval — e.g. "once per wall-clock day at
+// 03:15", or an interval whose clock survives restarts. seed pre-loads
+// lastRun (zero ⇒ never run), so callers can restore the clock from a
+// durable record: the nightly eval seeds from trend.jsonl (TEN-196) so a
+// relaunch doesn't re-fire a run that already happened today. RunAll still
+// force-runs these jobs like any other.
+func (s *Scheduler) RegisterDue(job Job, due DueFunc, seed time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobs = append(s.jobs, &scheduledJob{job: job, due: due, lastRun: seed})
+}
+
 // RunDue runs every job whose interval has elapsed since its last
 // run. Jobs with interval <= 0 are skipped. Returns the records for
 // the jobs that ran this call. Safe to call from any goroutine.
@@ -124,6 +145,12 @@ func (s *Scheduler) RunDue(ctx context.Context) []JobRunRecord {
 	s.mu.Lock()
 	due := make([]*scheduledJob, 0, len(s.jobs))
 	for _, sj := range s.jobs {
+		if sj.due != nil { // custom predicate (RegisterDue) replaces interval logic
+			if sj.due(sj.lastRun, now) {
+				due = append(due, sj)
+			}
+			continue
+		}
 		if sj.interval <= 0 {
 			continue
 		}

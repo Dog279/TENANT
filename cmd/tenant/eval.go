@@ -49,6 +49,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		baselineCheck  string
 		trend          bool
 		trendN         int
+		appendTrend    bool
 		jOpts          evalJudgeOpts
 	)
 	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full")
@@ -64,6 +65,7 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.StringVar(&baselineCheck, "baseline-check", "", "after the run, compare to the baseline at this path (paired-bootstrap 95% CI; non-zero exit on regression)")
 	fs.BoolVar(&trend, "trend", false, "print the nightly-eval trend log (offline; no run) and exit")
 	fs.IntVar(&trendN, "trend-n", 20, "with --trend: how many recent entries to show")
+	fs.BoolVar(&appendTrend, "append-trend", false, "after the run, write a report artifact under <data>/eval-artifacts and append a trend line (same shape as the nightly job; baseline = --baseline-check path, else baselines/<subset>.json). Also advances the nightly schedule's clock — a manual morning run stands the auto-fire down (TEN-196)")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "tenant eval — run the eval harness against the current build")
 		fmt.Fprintln(fs.Output())
@@ -118,6 +120,24 @@ func cmdEval(ctx context.Context, args []string) error {
 			rep.Aggregates.TotalElapsed)
 	default:
 		eval.WriteTerminal(os.Stdout, rep)
+	}
+
+	// Manual trend append (TEN-196): land this run in the same durable series
+	// the nightly job writes, so a workday operator can produce the daily data
+	// point by hand — and, because latestTrendTime seeds the nightly clock,
+	// stand the auto-fire down for the rest of the day.
+	if appendTrend {
+		if derr := c.resolveDirs(); derr != nil {
+			return derr
+		}
+		artifactDir := filepath.Join(c.dataDir, "eval-artifacts")
+		bp := baselineCheck
+		if bp == "" {
+			bp = filepath.Join("baselines", string(sub)+".json")
+		}
+		artifact := writeEvalArtifact(artifactDir, rep, nil)
+		appendEvalTrend(artifactDir, trendEntryFor(rep, bp, artifact, nil), nil)
+		fmt.Fprintf(os.Stderr, "eval: trend line appended → %s\n", evalTrendPath(artifactDir))
 	}
 
 	// Baseline snapshot / regression check (after the report is printed so the

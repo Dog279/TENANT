@@ -83,47 +83,25 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 	}
 	total := rep.Aggregates.PassCount + rep.Aggregates.FailCount
 
-	// Timestamped JSON artifact. A write failure is logged, not fatal — the
-	// run's value is the score, not the file.
-	artifact := ""
-	if mkerr := os.MkdirAll(j.artifactDir, 0o755); mkerr == nil {
-		path := filepath.Join(j.artifactDir, "eval-"+time.Now().UTC().Format("20060102-150405")+".json")
-		if f, ferr := os.Create(path); ferr == nil {
-			_ = eval.WriteJSON(f, rep)
-			_ = f.Close()
-			artifact = path
-		} else {
-			j.log.Warn("eval-nightly: artifact write failed", "err", ferr)
-		}
-	}
+	artifact := writeEvalArtifact(j.artifactDir, rep, j.log)
+	e := trendEntryFor(rep, j.baselinePath, artifact, j.log)
 
 	summary := fmt.Sprintf("eval-nightly %s: overall %.1f, passed %d/%d",
 		rep.Subset, rep.Aggregates.Overall, rep.Aggregates.PassCount, total)
-	regressed, haveBaseline := false, false
-	var delta, ciHigh float64
-	if data, rerr := os.ReadFile(j.baselinePath); rerr == nil {
-		if base, berr := eval.ReadBaseline(data); berr == nil {
-			rr := eval.CompareToBaseline(base, rep, eval.CompareOptions{})
-			regressed, haveBaseline, delta, ciHigh = rr.Regressed, true, rr.Delta, rr.CIHigh
-			if regressed {
-				summary += fmt.Sprintf(" — REGRESSION (Δ %.1f, CI hi %.1f)", rr.Delta, rr.CIHigh)
-			} else {
-				summary += fmt.Sprintf(" — no regression (Δ %.1f)", rr.Delta)
-			}
+	if e.HasBaseline {
+		if e.Regressed {
+			summary += fmt.Sprintf(" — REGRESSION (Δ %.1f, CI hi %.1f)", e.Delta, e.CIHigh)
 		} else {
-			j.log.Warn("eval-nightly: baseline parse failed; skipping check", "err", berr)
+			summary += fmt.Sprintf(" — no regression (Δ %.1f)", e.Delta)
 		}
 	}
 
-	// Append a compact trend line (TEN-158): the durable record of THIS run's
-	// regression verdict (delta/ci_high), which the heavy per-run artifacts don't
-	// keep. Non-fatal — mirrors the artifact write.
-	appendEvalTrend(j.artifactDir, evalTrendEntry{
-		TS: time.Now().UTC().Format(time.RFC3339), Subset: string(rep.Subset),
-		Overall: rep.Aggregates.Overall, Passed: rep.Aggregates.PassCount, Total: total,
-		HasBaseline: haveBaseline, Regressed: regressed, Delta: delta, CIHigh: ciHigh,
-		Artifact: filepath.Base(artifact),
-	}, j.log)
+	// Append the compact trend line (TEN-158): the durable record of THIS
+	// run's regression verdict (delta/ci_high), which the heavy per-run
+	// artifacts don't keep. Non-fatal — mirrors the artifact write. It also
+	// doubles as the cadence clock (TEN-196): latestTrendTime seeds the
+	// scheduler so relaunches don't re-fire today's run.
+	appendEvalTrend(j.artifactDir, e, j.log)
 
 	return improve.JobResult{
 		Summary: summary,
@@ -133,7 +111,60 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 			"passed":    rep.Aggregates.PassCount,
 			"total":     total,
 			"artifact":  artifact,
-			"regressed": regressed,
+			"regressed": e.Regressed,
 		},
 	}, nil
+}
+
+// writeEvalArtifact writes the timestamped JSON report under dir and returns
+// its path — "" on failure, which is logged and never fatal: the run's value
+// is the score, not the file. Shared by the nightly job and
+// `tenant eval --append-trend` (TEN-196). log may be nil.
+func writeEvalArtifact(dir string, rep *eval.Report, log *slog.Logger) string {
+	if log == nil {
+		log = slog.Default()
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Warn("eval: artifact mkdir failed", "err", err)
+		return ""
+	}
+	path := filepath.Join(dir, "eval-"+time.Now().UTC().Format("20060102-150405")+".json")
+	f, err := os.Create(path)
+	if err != nil {
+		log.Warn("eval: artifact write failed", "err", err)
+		return ""
+	}
+	defer f.Close()
+	_ = eval.WriteJSON(f, rep)
+	return path
+}
+
+// trendEntryFor builds the compact trend line for one finished run, including
+// the regression verdict against the baseline at baselinePath. A missing or
+// unreadable baseline is not an error — HasBaseline stays false. Shared by
+// the nightly job and `tenant eval --append-trend` so both produce
+// shape-identical lines (TEN-196). log may be nil.
+func trendEntryFor(rep *eval.Report, baselinePath, artifact string, log *slog.Logger) evalTrendEntry {
+	if log == nil {
+		log = slog.Default()
+	}
+	e := evalTrendEntry{
+		TS:      time.Now().UTC().Format(time.RFC3339),
+		Subset:  string(rep.Subset),
+		Overall: rep.Aggregates.Overall,
+		Passed:  rep.Aggregates.PassCount,
+		Total:   rep.Aggregates.PassCount + rep.Aggregates.FailCount,
+	}
+	if artifact != "" { // filepath.Base("") is "." — keep the field empty instead
+		e.Artifact = filepath.Base(artifact)
+	}
+	if data, rerr := os.ReadFile(baselinePath); rerr == nil {
+		if base, berr := eval.ReadBaseline(data); berr == nil {
+			rr := eval.CompareToBaseline(base, rep, eval.CompareOptions{})
+			e.HasBaseline, e.Regressed, e.Delta, e.CIHigh = true, rr.Regressed, rr.Delta, rr.CIHigh
+		} else {
+			log.Warn("eval: baseline parse failed; trend line carries no verdict", "err", berr)
+		}
+	}
+	return e
 }

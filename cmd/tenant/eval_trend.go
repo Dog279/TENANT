@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // evalTrendEntry is one line in trend.jsonl.
@@ -61,6 +62,27 @@ func appendEvalTrend(artifactDir string, e evalTrendEntry, log *slog.Logger) {
 	if _, err := f.Write(append(line, '\n')); err != nil { // one syscall, one line
 		log.Warn("eval-trend: write", "err", err)
 	}
+}
+
+// latestTrendTime returns the newest entry timestamp in trend.jsonl, or the
+// zero time when the log is missing/empty/unparseable. This is the durable
+// "when did an eval last run" record (TEN-196): the scheduler seeds the eval
+// job's clock from it so a relaunch doesn't re-fire a run that already
+// happened — no separate state file needed, because every run (nightly or
+// --append-trend) already lands here. Takes the max over all entries rather
+// than the last line, since manual and nightly appends can interleave.
+func latestTrendTime(artifactDir string) time.Time {
+	entries, err := readEvalTrend(artifactDir)
+	if err != nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, e := range entries {
+		if ts, perr := time.Parse(time.RFC3339, e.TS); perr == nil && ts.After(latest) {
+			latest = ts
+		}
+	}
+	return latest
 }
 
 // readEvalTrend returns the trend entries oldest-first (skipping unparseable

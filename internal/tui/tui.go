@@ -86,6 +86,10 @@ type Config struct {
 	// Feedback, if set, powers `/ack` and `/undo`: mark the last turn as good
 	// (ack) or bad (undo) — the real-world signal for the self-improvement loop.
 	Feedback FeedbackControl
+	// Eval, if set, powers /eval: view + live-tune the nightly eval schedule
+	// (every <dur> / at HH:MM / off), queue a one-shot run, and read the
+	// score trend (TEN-196).
+	Eval EvalControl
 	// Models, if set, powers /model: list configured model backends, switch
 	// the primary on the fly, and add a new backend mid-session.
 	Models ModelControl
@@ -194,6 +198,27 @@ type SkillControl interface {
 type FeedbackControl interface {
 	Ack() (status string, err error)
 	Undo() (status string, err error)
+}
+
+// EvalControl powers /eval: view and live-tune the nightly-eval schedule
+// (TEN-196) — the self-improvement loop's regression gate. Schedule changes
+// persist to launchConfig AND re-arm the running scheduler in place, so no
+// restart is needed; the anacron-style clock (seeded from trend.jsonl) keeps
+// it to one run per period no matter how often the process relaunches.
+type EvalControl interface {
+	// Status describes the current schedule and the last recorded run.
+	Status() string
+	// SetEvery arms interval mode (Go duration, e.g. "24h").
+	SetEvery(spec string) (string, error)
+	// SetAt arms a daily wall-clock anchor (24h "HH:MM", e.g. "03:15").
+	SetAt(spec string) (string, error)
+	// Off disarms the schedule.
+	Off() (string, error)
+	// RunNow queues a single immediate run on the improve scheduler (fires
+	// within one tick; the result lands in the feed + trend log).
+	RunNow() (string, error)
+	// Trend renders the last n trend entries (scores + regression verdicts).
+	Trend(n int) string
 }
 
 // SkillHistoryEntry is one prior snapshot of a skill. Surfaced by /skills
@@ -1745,6 +1770,47 @@ func (m *model) interrupt() {
 	m.appendFeed(cSys.Render("⏹ interrupting…"))
 }
 
+// handleEval powers /eval: view + live-tune the nightly eval schedule
+// (TEN-196). Mutations persist via the control and re-arm the scheduler in
+// place; "now" rides the improve scheduler's own goroutine, so the run lands
+// in the feed and trend log exactly like a scheduled one.
+func (m *model) handleEval(arg string) {
+	if m.cfg.Eval == nil {
+		m.sysChat("eval schedule not available in this session")
+		return
+	}
+	say := func(msg string, err error) {
+		if err != nil {
+			m.sysChat("eval: " + err.Error())
+			return
+		}
+		m.sysChat(msg)
+	}
+	f := strings.Fields(arg)
+	switch {
+	case len(f) == 0:
+		m.sysChat(m.cfg.Eval.Status())
+	case f[0] == "every" && len(f) == 2:
+		say(m.cfg.Eval.SetEvery(f[1]))
+	case f[0] == "at" && len(f) == 2:
+		say(m.cfg.Eval.SetAt(f[1]))
+	case f[0] == "off" && len(f) == 1:
+		say(m.cfg.Eval.Off())
+	case f[0] == "now" && len(f) == 1:
+		say(m.cfg.Eval.RunNow())
+	case f[0] == "trend":
+		n := 10
+		if len(f) == 2 {
+			if v, err := strconv.Atoi(f[1]); err == nil && v > 0 {
+				n = v
+			}
+		}
+		m.sysChat(m.cfg.Eval.Trend(n))
+	default:
+		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n]")
+	}
+}
+
 // sysChat appends a plain system message (shown in the terminal's default
 // foreground — readable, not dim — and copyable as-is).
 func (m *model) sysChat(s string) {
@@ -1875,6 +1941,16 @@ var helpSections = []helpSection{
 			{"/skills seed gstack", "install Garry Tan's CEO/founder-mode skill bundle (5 skills)"},
 			{"/ack", "mark the last turn as good — the self-improvement success signal"},
 			{"/undo", "mark the last turn as bad (suspends trusted auto-accept)"},
+		},
+	},
+	{
+		id: "eval", title: "Eval & quality",
+		tagline: "the nightly regression gate: schedule it, fire it, read the trend",
+		rows: [][2]string{
+			{"/eval", "show the nightly-eval schedule + last recorded run"},
+			{"/eval every <dur> | at <HH:MM> | off", "re-tune the schedule live (persists; one run per period, relaunch-proof)"},
+			{"/eval now", "queue one eval run on the improve scheduler (fires within a minute)"},
+			{"/eval trend [n]", "recent eval scores + regression verdicts (trend.jsonl)"},
 		},
 	},
 	{
@@ -2756,6 +2832,8 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		if cmd := m.handleModel(arg); cmd != nil {
 			return cmd
 		}
+	case "/eval":
+		m.handleEval(arg)
 	case "/ceiling", "/loops", "/loop-ceiling":
 		if m.cfg.Models == nil {
 			m.sysChat("loop-ceiling tuning is not available in this session")

@@ -2225,6 +2225,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// episodic/semantic stores the live agent uses (SQLite WAL → safe
 	// concurrent access).
 	var sched *improve.Scheduler
+	// evalSched is the live nightly-eval schedule (/eval, TEN-196). Stays nil
+	// when self-improve is off — the TUI control then persists schedule
+	// changes for the next launch instead of re-arming a running scheduler.
+	var evalSched *evalSchedule
 	if *selfImprove {
 		sched = improve.NewScheduler(log, 0)
 		// While the model is degraded to echo, suspend ALL self-improvement:
@@ -2274,19 +2278,30 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// while still folding new directives in "soon enough."
 		sched.Register(profileJob{refresh: refreshProfile}, *profileEvery)
 		// Nightly eval (opt-in): the appliance's no-cron regression gate. Heavy
-		// (full live suite, own router+mux), so it defaults off and runs on a long
-		// cadence. Cadence resolves flag-if-explicitly-set else config
-		// (improve.eval_every); a malformed config value fails CLOSED to off so a
-		// typo can't brick launch (TEN-157).
+		// (full live suite, own router+mux), so it defaults off. Schedule
+		// resolves flag-if-explicitly-set, else improve.eval_at (daily anchor),
+		// else improve.eval_every (interval); malformed values fail CLOSED
+		// (TEN-157/196). The clock is seeded from trend.jsonl so a relaunch
+		// doesn't re-fire a run that already happened — one eval per day on a
+		// rebuild-heavy dev box, not one per launch.
 		evalEverySet := false
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "eval-every" {
 				evalEverySet = true
 			}
 		})
-		evalCadence := resolveEvalCadence(evalEverySet, *evalEvery, improveCfg.EvalEvery, log)
-		if evalCadence > 0 {
-			sched.Register(newEvalNightlyJob(c, pf, log), evalCadence)
+		evalDue, evalTick, evalDesc := resolveEvalDue(evalEverySet, *evalEvery, improveCfg.EvalEvery, improveCfg.EvalAt, log)
+		evalCadence := evalTick // feeds the loop-tick minimum below (0 for anchor mode)
+		// The job is ALWAYS registered, behind a dynamic predicate reading
+		// evalSched — so /eval can arm, re-tune, or disarm the schedule live
+		// (an "off" schedule is just a predicate that never fires). RunAll is
+		// not wired to any operator surface, so permanent registration can't
+		// force-fire an off eval.
+		evalSched = newEvalSchedule(evalDue, evalDesc)
+		seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
+		sched.RegisterDue(newEvalNightlyJob(c, pf, log), evalSched.DueFunc(), seed)
+		if evalDue != nil {
+			log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 		}
 		// SoulNudge (TEN-16): config-gated, OFF by default. Proposes refined soul
 		// instructions, eval-A/B-gates each against baselines/fitness.json, and
@@ -2362,6 +2377,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		SavePath: filepath.Join(c.dataDir, "transcript.txt"), Tools: mainTools,
 		Skills:   skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir},
 		Feedback: feedbackControl{es: st.episodic, agentID: c.agent},
+		Eval:     evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir},
 		// SkillSeeds installs starter bundles (`/skills seed gstack`). Routes
 		// each seed through the same skillControl.AddSkill path so embedding
 		// + persistence stays consistent with manually-added skills.
