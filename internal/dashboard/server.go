@@ -75,6 +75,7 @@ type Server struct {
 	eval    EvalControl    // TEN-201: eval/quality page; nil = "not configured"
 	skills  SkillControl   // TEN-202: skill library page; nil = "not configured"
 	models  ModelControl   // TEN-204: model backends page; nil = "not configured"
+	mcp     MCPControl     // TEN-205: remote MCP connectors page; nil = "not configured"
 	broker  *agent.Broker
 	mux     *http.ServeMux
 	log     *slog.Logger
@@ -189,6 +190,7 @@ func (s *Server) routes() {
 	s.mountEvalSSR(s.mux)
 	s.mountSkillsSSR(s.mux)
 	s.mountModelsSSR(s.mux)
+	s.mountMCPSSR(s.mux)
 }
 
 // handleHealthz reports liveness as 200 JSON {"status":"ok"}.

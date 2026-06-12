@@ -1,0 +1,39 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">Remote services aren't configured in this session.</div></div>
+{{else}}
+
+<div class="card">
+  <div class="card-head">Services your agent can reach</div>
+  {{range .Servers}}
+  <div class="soul-row" id="mcp-{{.Label}}">
+    <div>
+      <div class="nm">{{.Label}} {{if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
+      <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}}</div>
+    </div>
+    <div class="cronactions">
+      <form method="POST" action="/mcp/remove" class="inline">
+        <input type="hidden" name="target" value="{{.Label}}">
+        <button type="submit" class="btn sm danger">Disconnect</button>
+      </form>
+    </div>
+  </div>
+  {{else}}
+  <div class="dim">No remote services connected yet.</div>
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Connect a service</div>
+  <form method="POST" action="/mcp/connect" class="inline">
+    <input type="text" name="url" class="cinput wide" placeholder="https://mcp.example.com/v1/mcp" required>
+    <button type="submit" class="btn">Connect</button>
+  </form>
+  <div class="dim" style="margin-top:9px">Connecting opens a sign-in window <strong>on the computer running Tenant</strong> — do this step at that machine. Once approved, the service's tools come in switched off until you allow them on the Tools page (your agent can't use a new service without your OK).</div>
+</div>
+
+{{end}}
+{{end}}

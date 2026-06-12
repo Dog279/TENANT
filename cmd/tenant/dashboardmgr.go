@@ -30,6 +30,7 @@ type dashboardManager struct {
 	eval    dashboard.EvalControl    // TEN-201: eval/quality surface (nil-safe)
 	skills  dashboard.SkillControl   // TEN-202: skill library surface (nil-safe)
 	models  dashboard.ModelControl   // TEN-204: model backends surface (nil-safe)
+	mcp     dashboard.MCPControl     // TEN-205: remote MCP connectors surface (nil-safe)
 	broker  *agent.Broker
 	log     *slog.Logger
 	notify  func(string)             // feed sink (pushSys) for async status
@@ -64,6 +65,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.models != nil {
 		srv.SetModels(m.models)
+	}
+	if m.mcp != nil {
+		srv.SetMCP(m.mcp)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {

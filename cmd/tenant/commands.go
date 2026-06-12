@@ -2354,6 +2354,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// start the dashboard. Deferred to here so the Quality page can drive live
 	// run-now and schedule changes.
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}}
+	// Remote-services page (TEN-205): a lightweight MCP control over the shared
+	// tool mux. Connect pops a host-side browser (hybrid model — connect local,
+	// manage remote); the dashboard handler runs it async.
+	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}
 	if dashOn {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())

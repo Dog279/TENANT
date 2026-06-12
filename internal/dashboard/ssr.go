@@ -54,6 +54,7 @@ type ssrTemplates struct {
 	eval          *template.Template // eval & quality page (TEN-201)
 	skills        *template.Template // skill library page (TEN-202)
 	models        *template.Template // model backends page (TEN-204)
+	mcp           *template.Template // remote MCP connectors page (TEN-205)
 }
 
 func parseSSR() *ssrTemplates {
@@ -77,6 +78,7 @@ func parseSSR() *ssrTemplates {
 		eval:          must("templates/layout.html", "templates/eval.html"),
 		skills:        must("templates/layout.html", "templates/skills.html"),
 		models:        must("templates/layout.html", "templates/models.html"),
+		mcp:           must("templates/layout.html", "templates/mcp.html"),
 	}
 }
 
