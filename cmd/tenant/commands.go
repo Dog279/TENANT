@@ -2358,6 +2358,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// tool mux. Connect pops a host-side browser (hybrid model — connect local,
 	// manage remote); the dashboard handler runs it async.
 	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}
+	// Integrations page (TEN-206): a dashboard-facing skill-config control over
+	// the real catalog. Built WITHOUT the Atlassian-MCP connector — OAuth-server
+	// connects go through the MCP page (TEN-205) — so this covers key-based
+	// integrations + probe + clear. Shares cfgDir creds with the TUI's control.
+	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
 	if dashOn {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())

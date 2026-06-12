@@ -66,19 +66,20 @@ type Config struct {
 // event stream, agent for Turn/Interject, tools for REST, mux for route
 // mounting, cfg for TLS/auth.
 type Server struct {
-	cfg     Config
-	agent   AgentRunner
-	tools   ToolControl
-	mem     MemoryControl  // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
-	cron    CronControl    // recurring-job admin; nil = section renders "not configured"
-	secrets SecretsControl // write-only API-key admin; nil = section renders "not configured"
-	eval    EvalControl    // TEN-201: eval/quality page; nil = "not configured"
-	skills  SkillControl   // TEN-202: skill library page; nil = "not configured"
-	models  ModelControl   // TEN-204: model backends page; nil = "not configured"
-	mcp     MCPControl     // TEN-205: remote MCP connectors page; nil = "not configured"
-	broker  *agent.Broker
-	mux     *http.ServeMux
-	log     *slog.Logger
+	cfg          Config
+	agent        AgentRunner
+	tools        ToolControl
+	mem          MemoryControl       // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
+	cron         CronControl         // recurring-job admin; nil = section renders "not configured"
+	secrets      SecretsControl      // write-only API-key admin; nil = section renders "not configured"
+	eval         EvalControl         // TEN-201: eval/quality page; nil = "not configured"
+	skills       SkillControl        // TEN-202: skill library page; nil = "not configured"
+	models       ModelControl        // TEN-204: model backends page; nil = "not configured"
+	mcp          MCPControl          // TEN-205: remote MCP connectors page; nil = "not configured"
+	integrations IntegrationsControl // TEN-206: integration-config page; nil = "not configured"
+	broker       *agent.Broker
+	mux          *http.ServeMux
+	log          *slog.Logger
 	// coord serializes Turn execution across ALL /ws connections (TEN-80):
 	// the agent is a single shared instance, so only one turn may run at a
 	// time server-wide. See session.go.
@@ -191,6 +192,7 @@ func (s *Server) routes() {
 	s.mountSkillsSSR(s.mux)
 	s.mountModelsSSR(s.mux)
 	s.mountMCPSSR(s.mux)
+	s.mountIntegrationsSSR(s.mux)
 }
 
 // handleHealthz reports liveness as 200 JSON {"status":"ok"}.
