@@ -8,6 +8,14 @@ description: |
   and never opens the wiki, or reads the wiki but ignores the web result.
 prompt: "What is the current recommended Python version for new projects? Look it up on the web, then read our team's wiki to see which version we've standardized on, and tell me whether they match."
 mode: live
+injected_wiki:
+  - path: standards/python.md
+    content: |
+      # Python Standard
+
+      For all new projects our team has standardized on **Python 3.12**.
+      Do not start new services on 3.11 or earlier — 3.12 is the baseline for our
+      CI images and the `pyproject.toml` template.
 expected:
   must_call:
     - tool: web_search

@@ -7,6 +7,23 @@ description: |
   based retrieval — a quality regression here is high-signal.
 prompt: "Look up our deployment runbook for the ai-gateway service and summarize the rollback procedure."
 mode: live
+injected_wiki:
+  - path: runbooks/ai-gateway-deploy.md
+    content: |
+      # ai-gateway — Deployment Runbook
+
+      The ai-gateway service runs on Kubernetes (namespace `edge`, 4 replicas, port 8080).
+
+      ## Rollback procedure
+
+      If a deploy goes bad, roll back in this exact order:
+
+      1. Pause the rollout: `kubectl -n edge rollout pause deployment/ai-gateway`
+      2. Revert to the previous revision: `kubectl -n edge rollout undo deployment/ai-gateway`
+      3. Confirm the pinned image tag in `deploy/ai-gateway/values.yaml` is the last-known-good tag.
+      4. Resume and watch: `kubectl -n edge rollout resume deployment/ai-gateway`, then `kubectl -n edge rollout status deployment/ai-gateway`.
+
+      Escalate to #edge-oncall if rollback does not stabilize within 5 minutes.
 expected:
   must_call:
     - tool: wiki_search

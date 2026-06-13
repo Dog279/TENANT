@@ -889,3 +889,89 @@ func TestJudge_EmptyBothAttemptsErrors(t *testing.T) {
 		t.Fatal("want UNGRADED error when the judge is empty on both attempts, got nil")
 	}
 }
+
+// TEN-220: injected_wiki parses into the Task and is validated, so
+// content-dependent wiki tasks can ship a self-contained corpus (the live
+// factory writes it to a per-task temp wiki + indexes it).
+func TestLoadTask_InjectedWiki(t *testing.T) {
+	yaml := []byte(`
+id: wiki-seeded
+category: test
+subset: fitness
+mode: live
+prompt: "what's the rollback?"
+injected_wiki:
+  - path: runbooks/ai-gateway.md
+    content: |
+      # ai-gateway
+      Rollback: kubectl rollout undo deployment/ai-gateway
+  - path: notes/related.md
+    content: "see [[ai-gateway]]"
+expected:
+  rubric:
+    criterion: "c"
+    anchors: {1: "a", 3: "b", 5: "c"}
+  rubric_min_score: 3
+`)
+	tk, err := LoadTask(yaml, "wiki-seeded.yaml")
+	if err != nil {
+		t.Fatalf("want load OK, got %v", err)
+	}
+	if got := len(tk.InjectedWiki); got != 2 {
+		t.Fatalf("injected_wiki: want 2 docs, got %d", got)
+	}
+	if tk.InjectedWiki[0].Path != "runbooks/ai-gateway.md" {
+		t.Errorf("doc[0].Path = %q", tk.InjectedWiki[0].Path)
+	}
+	if !strings.Contains(tk.InjectedWiki[0].Content, "rollout undo") {
+		t.Errorf("doc[0].Content not parsed: %q", tk.InjectedWiki[0].Content)
+	}
+}
+
+// TEN-220: a wiki doc with no content is malformed — validate() rejects it.
+func TestLoadTask_InjectedWiki_RejectsEmptyContent(t *testing.T) {
+	yaml := []byte(`
+id: wiki-bad
+category: test
+subset: fitness
+mode: live
+prompt: "x"
+injected_wiki:
+  - path: a.md
+expected:
+  rubric:
+    criterion: "c"
+    anchors: {1: "a", 3: "b", 5: "c"}
+  rubric_min_score: 3
+`)
+	if _, err := LoadTask(yaml, "wiki-bad.yaml"); err == nil {
+		t.Fatal("want error for injected_wiki with empty content, got nil")
+	} else if !strings.Contains(err.Error(), "injected_wiki") {
+		t.Errorf("error should name injected_wiki, got: %v", err)
+	}
+}
+
+// TEN-220: a path-traversal injected_wiki path must be rejected so a task YAML
+// can't write outside its temp corpus dir.
+func TestLoadTask_InjectedWiki_RejectsPathTraversal(t *testing.T) {
+	yaml := []byte(`
+id: wiki-escape
+category: test
+subset: fitness
+mode: live
+prompt: "x"
+injected_wiki:
+  - path: ../../etc/evil.md
+    content: "nope"
+expected:
+  rubric:
+    criterion: "c"
+    anchors: {1: "a", 3: "b", 5: "c"}
+  rubric_min_score: 3
+`)
+	if _, err := LoadTask(yaml, "wiki-escape.yaml"); err == nil {
+		t.Fatal("want error for path-traversal injected_wiki path, got nil")
+	} else if !strings.Contains(err.Error(), "injected_wiki") {
+		t.Errorf("error should name injected_wiki, got: %v", err)
+	}
+}

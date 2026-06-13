@@ -17,6 +17,23 @@ description: |
   assumptions about specific note titles.
 prompt: "Find a note in my wiki that has outgoing links to other notes, then follow one of those links and tell me how the two notes relate. Quote one concrete fact from each note so I can see you actually read both."
 mode: live
+injected_wiki:
+  - path: services/ai-gateway.md
+    content: |
+      # ai-gateway
+
+      ai-gateway is our edge request router. It runs 4 replicas on port 8080 and
+      depends on the primary Postgres cluster for session state.
+
+      When the database fails over, ai-gateway must reconnect — follow
+      [[postgres-failover]] for the procedure.
+  - path: runbooks/postgres-failover.md
+    content: |
+      # postgres-failover
+
+      The failover target is the replica `db-replica-2`. To promote it, run
+      `pg_ctl promote -D /var/lib/postgresql/data` on that host, then rotate the
+      `DATABASE_URL` secret so dependent services (including ai-gateway) reconnect.
 expected:
   must_call:
     - tool: wiki_search

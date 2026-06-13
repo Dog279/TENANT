@@ -68,6 +68,11 @@ type Task struct {
 	// The live factory embeds + writes these to the per-task stores. Optional.
 	InjectedFacts    []InjectedFact    `yaml:"injected_facts,omitempty"`
 	InjectedEpisodes []InjectedEpisode `yaml:"injected_episodes,omitempty"`
+	// InjectedWiki pre-writes a per-task markdown wiki corpus before a live
+	// run so content-dependent wiki tasks (runbook lookups, cross-linked notes)
+	// are self-contained instead of depending on the operator's real wiki. The
+	// live factory writes these to an isolated temp dir + indexes it (TEN-220).
+	InjectedWiki []InjectedWikiDoc `yaml:"injected_wiki,omitempty"`
 
 	// FilePath is populated by the loader for diagnostics.
 	FilePath string `yaml:"-"`
@@ -126,6 +131,15 @@ type InjectedEpisode struct {
 	Response string   `yaml:"response"`
 	Tags     []string `yaml:"tags,omitempty"`
 	Outcome  string   `yaml:"outcome,omitempty"`
+}
+
+// InjectedWikiDoc is one markdown file seeded into a task's ephemeral wiki
+// before a live run. Path is the file's location relative to the temp wiki
+// root (forward slashes, no ".." and no leading "/" — enforced in validate);
+// Content is the raw markdown the wiki indexer embeds for retrieval (TEN-220).
+type InjectedWikiDoc struct {
+	Path    string `yaml:"path"`
+	Content string `yaml:"content"`
 }
 
 // LoadTask parses one YAML blob into a Task and validates it. filePath
@@ -221,6 +235,14 @@ func (t *Task) validate() error {
 	for i, ep := range t.InjectedEpisodes {
 		if ep.Prompt == "" || ep.Response == "" {
 			return fmt.Errorf("task: injected_episodes[%d] requires prompt and response", i)
+		}
+	}
+	for i, w := range t.InjectedWiki {
+		if w.Path == "" || w.Content == "" {
+			return fmt.Errorf("task: injected_wiki[%d] requires path and content", i)
+		}
+		if strings.Contains(w.Path, "..") || strings.HasPrefix(w.Path, "/") {
+			return fmt.Errorf("task: injected_wiki[%d] path %q must be relative with no '..'", i, w.Path)
 		}
 	}
 	if t.Rollouts == 0 {

@@ -20,6 +20,7 @@ import (
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
+	"tenant/internal/plugins/wiki"
 )
 
 // cmdEval is the `tenant eval` subcommand.
@@ -388,6 +389,101 @@ func findFirstExisting(candidates ...string) string {
 // gateOnly — installs the LLM judge (the planner / main-agent model by
 // default; --judge-model overrides with a separate, e.g. cloud, model).
 // Returns a cleanup func (closes the tool mux's browser/db handles + archive).
+// evalWikiOverlay gives ONE eval task its own wiki corpus without mutating the
+// shared tool mux: wiki_* calls route to a per-task wiki.Dispatcher over an
+// injected temp corpus; every other tool falls through to the shared mux. Each
+// task builds its own overlay + temp index, so this is safe under concurrent
+// task execution (TEN-220). Satisfies agent.ToolRegistry + agent.ToolDispatcher.
+type evalWikiOverlay struct {
+	base     *toolMux
+	wiki     *wiki.Dispatcher
+	wikiName map[string]model.ToolSpec // wiki tool specs, by name
+}
+
+func newEvalWikiOverlay(base *toolMux, wd *wiki.Dispatcher) *evalWikiOverlay {
+	m := make(map[string]model.ToolSpec)
+	for _, s := range wd.Tools() {
+		m[s.Name] = s
+	}
+	return &evalWikiOverlay{base: base, wiki: wd, wikiName: m}
+}
+
+func (o *evalWikiOverlay) Get(name string) (model.ToolSpec, bool) {
+	if s, ok := o.wikiName[name]; ok {
+		return s, true
+	}
+	return o.base.Get(name)
+}
+
+func (o *evalWikiOverlay) All() []model.ToolSpec { return o.merge(o.base.All()) }
+
+func (o *evalWikiOverlay) Search(ctx context.Context, emb []float32, k int) ([]model.ToolSpec, error) {
+	specs, err := o.base.Search(ctx, emb, k)
+	if err != nil {
+		return nil, err
+	}
+	return o.merge(specs), nil
+}
+
+// merge drops any base wiki specs and appends the per-task ones, so the
+// injected corpus's wiki tools shadow whatever the shared mux exposed.
+func (o *evalWikiOverlay) merge(specs []model.ToolSpec) []model.ToolSpec {
+	out := make([]model.ToolSpec, 0, len(specs)+len(o.wikiName))
+	for _, s := range specs {
+		if _, isWiki := o.wikiName[s.Name]; !isWiki {
+			out = append(out, s)
+		}
+	}
+	return append(out, o.wiki.Tools()...)
+}
+
+func (o *evalWikiOverlay) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	if _, isWiki := o.wikiName[call.Name]; isWiki {
+		return o.wiki.Dispatch(ctx, call)
+	}
+	return o.base.Dispatch(ctx, call)
+}
+
+// buildInjectedWiki writes a task's injected_wiki corpus to a fresh temp dir,
+// indexes it with the eval embedder, and returns a wiki dispatcher + cleanup.
+// Fully per-task isolated (own parent dir holding both the corpus and the
+// index sidecar), so it's concurrency-safe (TEN-220).
+func buildInjectedWiki(ctx context.Context, docs []eval.InjectedWikiDoc, emb model.Embedder, embedderID string) (*wiki.Dispatcher, func(), error) {
+	parent, err := os.MkdirTemp("", "tenant-eval-wiki-*")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(parent) }
+	wikiDir := filepath.Join(parent, "wiki")
+	if err := os.MkdirAll(wikiDir, 0o755); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	for _, d := range docs {
+		p := filepath.Join(wikiDir, filepath.FromSlash(d.Path))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		if err := os.WriteFile(p, []byte(d.Content), 0o644); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+	}
+	// Sidecar lives in the parent (outside the indexed corpus); embedderID is
+	// just the cache fingerprint — a fresh dir always reindexes clean.
+	ix, err := wiki.New(wikiDir, filepath.Join(parent, "index.json"), embedderID, emb)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	if _, _, rerr := ix.Reindex(ctx); rerr != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("reindex injected wiki: %w", rerr)
+	}
+	return wiki.NewDispatcher(ix), cleanup, nil
+}
+
 func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul) (func(), error) {
 	if err := c.resolve(); err != nil {
 		return nil, err
@@ -480,6 +576,23 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 				return nil, nil, fmt.Errorf("eval task %s: seed memory: %w", taskID, serr)
 			}
 		}
+		// Tools default to the shared mux. A task with injected_wiki gets a
+		// per-task wiki overlay so its corpus is isolated (and concurrency-safe
+		// for a future parallel runner) — TEN-220.
+		var tools agent.ToolRegistry = mux
+		var disp agent.ToolDispatcher = mux
+		var wikiCleanup func()
+		if t := tasksByID[taskID]; t != nil && len(t.InjectedWiki) > 0 {
+			wd, cu, werr := buildInjectedWiki(fctx, t.InjectedWiki, emb, embedderID)
+			if werr != nil {
+				_ = es.Close()
+				_ = ss.Close()
+				return nil, nil, fmt.Errorf("eval task %s: inject wiki: %w", taskID, werr)
+			}
+			wikiCleanup = cu
+			ov := newEvalWikiOverlay(mux, wd)
+			tools, disp = ov, ov
+		}
 		ag, aerr := agent.New(agent.Config{
 			AgentID:    agentID,
 			Router:     router,
@@ -488,18 +601,24 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			Archive:    arc,
 			Episodic:   es,
 			Semantic:   ss,
-			Tools:      mux,
-			Dispatcher: mux,
+			Tools:      tools,
+			Dispatcher: disp,
 			Logger:     log,
 		})
 		if aerr != nil {
 			_ = es.Close()
 			_ = ss.Close()
+			if wikiCleanup != nil {
+				wikiCleanup()
+			}
 			return nil, nil, fmt.Errorf("eval task %s: build agent: %w", taskID, aerr)
 		}
 		taskCleanup := func() error {
 			_ = es.Close()
 			_ = ss.Close()
+			if wikiCleanup != nil {
+				wikiCleanup()
+			}
 			return nil
 		}
 		return &evalAgentRunner{ag: ag}, taskCleanup, nil
