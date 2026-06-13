@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/agent"
@@ -55,6 +57,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		jOpts          evalJudgeOpts
 	)
 	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full")
+	fs.IntVar(&jOpts.concurrency, "concurrency", 1, "live mode: run up to N tasks at once (>1 parallelizes; web/Chrome tasks auto-serialize). 1 = sequential (TEN-221)")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON report to stdout instead of the terminal table")
 	fs.BoolVar(&quiet, "quiet", false, "print only the one-line summary")
 	fs.BoolVar(&listOnly, "list", false, "list tasks in the subset and exit (no run)")
@@ -266,6 +269,7 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 	if err != nil {
 		return nil, fmt.Errorf("load harness: %w", err)
 	}
+	h.Concurrency = jOpts.concurrency // <=1 = sequential (TEN-221)
 	if sub == eval.SubsetFitness || sub == eval.SubsetFull {
 		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride)
 		if err != nil {
@@ -279,10 +283,11 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 // evalJudgeOpts configures the live-mode LLM judge. The API key is read from
 // keyEnv at run time — never a flag, never persisted, never printed.
 type evalJudgeOpts struct {
-	gateOnly bool   // skip the judge entirely (deterministic gate only)
-	model    string // override judge model id ("" → use the planner / main-agent model)
-	endpoint string // override judge API endpoint ("" → provider default)
-	keyEnv   string // env var holding the override judge's API key
+	gateOnly    bool   // skip the judge entirely (deterministic gate only)
+	model       string // override judge model id ("" → use the planner / main-agent model)
+	endpoint    string // override judge API endpoint ("" → provider default)
+	keyEnv      string // env var holding the override judge's API key
+	concurrency int    // tasks to run at once (<=1 = sequential; TEN-221)
 }
 
 // autoEnableEvalPlugins turns on plugin flags for zero-config plugins (web, os)
@@ -484,6 +489,39 @@ func buildInjectedWiki(ctx context.Context, docs []eval.InjectedWikiDoc, emb mod
 	return wiki.NewDispatcher(ix), cleanup, nil
 }
 
+// browserGate serializes the single shared Chrome tab across concurrently
+// running eval tasks (TEN-221). A task lazily acquires the shared browser lock
+// on its FIRST web_* dispatch and holds it until cleanup, so no two tasks ever
+// drive the browser at once; tasks that never touch web never block. Harmless
+// at --concurrency 1 (the lock is always uncontended). Dispatch-only — the
+// per-task tool registry is unchanged.
+type browserGate struct {
+	base agent.ToolDispatcher
+	mu   *sync.Mutex
+	once sync.Once
+	held atomic.Bool
+}
+
+func (g *browserGate) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	if strings.HasPrefix(call.Name, "web_") {
+		g.once.Do(func() {
+			g.mu.Lock()
+			g.held.Store(true)
+		})
+	}
+	return g.base.Dispatch(ctx, call)
+}
+
+// release drops the browser lock if this task acquired it. Called from the
+// task's cleanup, after the agent's Turn has fully returned (no in-flight
+// dispatch can race it).
+func (g *browserGate) release() {
+	if g.held.Load() {
+		g.mu.Unlock()
+		g.held.Store(false)
+	}
+}
+
 func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul) (func(), error) {
 	if err := c.resolve(); err != nil {
 		return nil, err
@@ -554,6 +592,11 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		tasksByID[t.ID] = t
 	}
 
+	// Shared across all tasks: serializes the single Chrome tab when tasks run
+	// concurrently (TEN-221). Each task wraps its dispatcher in a browserGate
+	// that grabs this lock lazily on first web use.
+	var browserMu sync.Mutex
+
 	h.AgentFactory = func(fctx context.Context, taskID string) (eval.AgentRunner, func() error, error) {
 		// Ephemeral per-task memory: fresh in-memory SQLite so retrieval
 		// can't leak one task's turns into another, and the operator's real
@@ -593,6 +636,17 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			ov := newEvalWikiOverlay(mux, wd)
 			tools, disp = ov, ov
 		}
+		// Serialize the shared Chrome tab across concurrent tasks (TEN-221);
+		// uncontended no-op at --concurrency 1.
+		gate := &browserGate{base: disp, mu: &browserMu}
+		cleanupTask := func() {
+			gate.release()
+			_ = es.Close()
+			_ = ss.Close()
+			if wikiCleanup != nil {
+				wikiCleanup()
+			}
+		}
 		ag, aerr := agent.New(agent.Config{
 			AgentID:    agentID,
 			Router:     router,
@@ -602,23 +656,15 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			Episodic:   es,
 			Semantic:   ss,
 			Tools:      tools,
-			Dispatcher: disp,
+			Dispatcher: gate,
 			Logger:     log,
 		})
 		if aerr != nil {
-			_ = es.Close()
-			_ = ss.Close()
-			if wikiCleanup != nil {
-				wikiCleanup()
-			}
+			cleanupTask()
 			return nil, nil, fmt.Errorf("eval task %s: build agent: %w", taskID, aerr)
 		}
 		taskCleanup := func() error {
-			_ = es.Close()
-			_ = ss.Close()
-			if wikiCleanup != nil {
-				wikiCleanup()
-			}
+			cleanupTask()
 			return nil
 		}
 		return &evalAgentRunner{ag: ag}, taskCleanup, nil

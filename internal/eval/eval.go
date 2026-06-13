@@ -51,10 +51,18 @@ type Harness struct {
 	// behave exactly as before.
 	AvailableTools map[string]struct{}
 
-	// runMu serializes Run / RunWith. The per-task work is sequential
-	// anyway (rollouts share the agent + judge state); the mutex
-	// prevents two concurrent callers from mutating Tasks-affecting
-	// state mid-run. v1 plan §Architecture finding 1E.
+	// Concurrency bounds how many tasks execute at once. <=1 (the default) is
+	// the original strictly-sequential loop. >1 runs a bounded worker pool,
+	// cutting wall-time on large subsets (TEN-221). Safe because per-task state
+	// is isolated — fresh :memory: stores per task, per-task injected wiki — and
+	// the live factory serializes the one shared non-concurrency-safe resource
+	// (the single Chrome tab) itself. Report ordering stays deterministic
+	// regardless of completion order.
+	Concurrency int
+
+	// runMu serializes whole Run / RunWith CALLS so two concurrent callers can't
+	// mutate Tasks-affecting state mid-run. (Within a run, tasks may execute
+	// concurrently per Concurrency.) v1 plan §Architecture finding 1E.
 	runMu sync.Mutex
 }
 
@@ -171,12 +179,43 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 		},
 	}
 
-	for _, t := range tasks {
-		if ctx.Err() != nil {
-			break
+	if h.Concurrency > 1 {
+		// Bounded worker pool. Results are stored by task index and appended in
+		// task order afterward, so the report is byte-identical to a sequential
+		// run regardless of which task finishes first (TEN-221).
+		results := make([]TaskResult, len(tasks))
+		done := make([]bool, len(tasks))
+		sem := make(chan struct{}, h.Concurrency)
+		var wg sync.WaitGroup
+		for i, t := range tasks {
+			if ctx.Err() != nil {
+				break // stop launching; mirrors the sequential break-on-cancel
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, t *Task) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if ctx.Err() != nil {
+					return
+				}
+				results[i] = h.runOne(ctx, t)
+				done[i] = true
+			}(i, t)
 		}
-		res := h.runOne(ctx, t)
-		rep.Results = append(rep.Results, res)
+		wg.Wait()
+		for i := range tasks {
+			if done[i] {
+				rep.Results = append(rep.Results, results[i])
+			}
+		}
+	} else {
+		for _, t := range tasks {
+			if ctx.Err() != nil {
+				break
+			}
+			rep.Results = append(rep.Results, h.runOne(ctx, t))
+		}
 	}
 
 	rep.Aggregates = aggregate(rep.Results, time.Since(start).Milliseconds())

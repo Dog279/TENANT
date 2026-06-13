@@ -975,3 +975,48 @@ expected:
 		t.Errorf("error should name injected_wiki, got: %v", err)
 	}
 }
+
+// TEN-221: the bounded worker pool produces a report identical to the
+// sequential run — same task order, same scores — regardless of completion
+// order. Run under -race to confirm the pool has no data race on the shared
+// result slices.
+func TestRun_ConcurrencyDeterministic(t *testing.T) {
+	files := fstest.MapFS{}
+	for i := 0; i < 8; i++ {
+		id := "c-" + string(rune('a'+i))
+		files["tasks/smoke/"+id+".yaml"] = &fstest.MapFile{Data: []byte(
+			"id: " + id + "\ncategory: test\nsubset: smoke\nmode: fixture\nprompt: x\n" +
+				"fixture:\n  tool_calls: []\n  response: ok\nexpected: {response_substring_any: [ok]}\n")}
+	}
+	run := func(conc int) *Report {
+		h, err := LoadHarness(files, nil)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		h.Concurrency = conc
+		rep, err := h.Run(context.Background(), SubsetSmoke)
+		if err != nil {
+			t.Fatalf("run (conc=%d): %v", conc, err)
+		}
+		return rep
+	}
+
+	seq := run(1)
+	par := run(4)
+
+	if len(seq.Results) != 8 || len(par.Results) != 8 {
+		t.Fatalf("result counts: seq=%d par=%d want 8", len(seq.Results), len(par.Results))
+	}
+	for i := range seq.Results {
+		if par.Results[i].TaskID != seq.Results[i].TaskID {
+			t.Errorf("order mismatch at %d: seq=%s par=%s (parallel run must preserve task order)",
+				i, seq.Results[i].TaskID, par.Results[i].TaskID)
+		}
+		if par.Results[i].Score != seq.Results[i].Score || par.Results[i].Passed != seq.Results[i].Passed {
+			t.Errorf("result mismatch for %s: seq=%+v par=%+v", seq.Results[i].TaskID, seq.Results[i], par.Results[i])
+		}
+	}
+	if par.Aggregates.PassCount != 8 {
+		t.Errorf("parallel PassCount=%d, want 8", par.Aggregates.PassCount)
+	}
+}
