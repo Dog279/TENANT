@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"tenant/internal/model"
+	"tenant/internal/model/testllm"
 )
 
 // TestLoadHarness_EmbeddedSmokeTasks: the shipped smoke tasks must load
@@ -819,5 +822,70 @@ expected:
 		t.Fatal("want error for injected_episode missing response, got nil")
 	} else if !strings.Contains(err.Error(), "injected_episodes") {
 		t.Errorf("error should name injected_episodes, got: %v", err)
+	}
+}
+
+// TEN-219: the judge must request a generous completion budget so a thinking
+// model (the default self-judge is GLM-4.6) can finish its hidden reasoning
+// before emitting the verdict — 1000 went empty on the multi-tool chain.
+func TestJudge_GenerousTokenBudget(t *testing.T) {
+	var gotMaxTokens int
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		gotMaxTokens = req.MaxTokens
+		return &model.GenerateResponse{Text: `{"score": 4, "reasoning": "ok"}`}, nil
+	}
+	j := &LLMJudge{LLM: fake}
+	task := &Task{Expected: Expected{Rubric: &Rubric{Criterion: "c"}}}
+	if _, err := j.Grade(context.Background(), task, "resp", nil); err != nil {
+		t.Fatalf("Grade: %v", err)
+	}
+	if gotMaxTokens < 2000 {
+		t.Errorf("judge MaxTokens = %d, want a generous budget (>=2000) for thinking models (TEN-219)", gotMaxTokens)
+	}
+}
+
+// TEN-219: when the first attempt returns empty (budget exhausted mid-reasoning),
+// the retry must ESCALATE the budget — re-sending the same one would just fail
+// again — and recover the verdict.
+func TestJudge_RetryEscalatesBudgetAndRecovers(t *testing.T) {
+	var budgets []int
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		budgets = append(budgets, req.MaxTokens)
+		if len(budgets) == 1 {
+			return &model.GenerateResponse{Text: ""}, nil // thinking model burned the budget
+		}
+		return &model.GenerateResponse{Text: `{"score": 5, "reasoning": "great"}`}, nil
+	}
+	j := &LLMJudge{LLM: fake}
+	task := &Task{Expected: Expected{Rubric: &Rubric{Criterion: "c"}}}
+	jr, err := j.Grade(context.Background(), task, "resp", nil)
+	if err != nil {
+		t.Fatalf("Grade: %v", err)
+	}
+	if jr.Score != 5 {
+		t.Errorf("score = %d, want 5 (recovered on retry)", jr.Score)
+	}
+	if len(budgets) != 2 {
+		t.Fatalf("want 2 attempts, got %d", len(budgets))
+	}
+	if budgets[1] <= budgets[0] {
+		t.Errorf("retry budget %d did not escalate past the first %d (TEN-219)", budgets[1], budgets[0])
+	}
+}
+
+// TEN-219: empty output on BOTH attempts is genuinely unusable — Grade returns
+// an error so the harness records the task UNGRADED (never scores the agent 0
+// for the judge's failure, TEN-197).
+func TestJudge_EmptyBothAttemptsErrors(t *testing.T) {
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		return &model.GenerateResponse{Text: ""}, nil
+	}
+	j := &LLMJudge{LLM: fake}
+	task := &Task{Expected: Expected{Rubric: &Rubric{Criterion: "c"}}}
+	if _, err := j.Grade(context.Background(), task, "resp", nil); err == nil {
+		t.Fatal("want UNGRADED error when the judge is empty on both attempts, got nil")
 	}
 }

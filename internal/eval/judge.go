@@ -76,31 +76,43 @@ type LLMJudge struct {
 	Profile model.Profile // for diagnostics; logged on grading errors
 }
 
+// judgeMaxTokens is the completion budget for one judge call. The verdict is
+// a tiny JSON, but thinking models (z.ai/GLM-4.6 is the default self-judge)
+// spend invisible reasoning tokens BEFORE it — 200 truncated verdicts, and
+// even 1000 went empty on harder gradings (the multi-tool chain came back
+// UNGRADED, TEN-219). At temperature 0 the model stops right after the verdict,
+// so a high cap only costs tokens when it genuinely thinks long.
+const judgeMaxTokens = 4096
+
 // Grade renders the prompt + calls the LLM + parses the JSON, retrying
 // ONCE on a failed call or unusable output before giving up (TEN-197).
 // Thinking models can burn the whole completion budget on internal
 // reasoning and emit nothing — observed live: z.ai GLM returned "" on
-// 18/57 graded tasks — so the budget is generous and a fresh retry
-// covers the transient cases. An error return means the judge was
-// unusable even after the retry; the harness records the task UNGRADED
-// rather than scoring the agent zero for the grader's failure.
+// 18/57 graded tasks — so the budget is generous AND the retry escalates it
+// (TEN-219): re-sending the same budget would just exhaust it again. An error
+// return means the judge was unusable even after the retry; the harness records
+// the task UNGRADED rather than scoring the agent zero for the grader's failure.
 func (j *LLMJudge) Grade(ctx context.Context, t *Task, response string, calls []FixtureToolCall) (JudgeResult, error) {
 	if j.LLM == nil {
 		return JudgeResult{}, fmt.Errorf("judge: nil LLM")
 	}
 	prompt := renderJudgePrompt(t, response, calls)
 	req := model.GenerateRequest{
-		Messages: []model.Message{{Role: "user", Content: prompt}},
-		// Generous on purpose: thinking models spend invisible reasoning
-		// tokens BEFORE the JSON; 200 was observed truncating verdicts
-		// mid-string and returning empty text entirely (TEN-197).
-		MaxTokens:   1000,
+		Messages:    []model.Message{{Role: "user", Content: prompt}},
+		MaxTokens:   judgeMaxTokens,
 		Temperature: 0,
 	}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		if attempt > 0 && ctx.Err() != nil {
-			break // don't burn a retry on a dead context
+		if attempt > 0 {
+			if ctx.Err() != nil {
+				break // don't burn a retry on a dead context
+			}
+			// The dominant unusable-output cause is a thinking model exhausting
+			// the budget mid-reasoning. Retrying with the SAME budget would just
+			// fail identically — escalate it so the retry has real extra room
+			// (TEN-219).
+			req.MaxTokens = judgeMaxTokens * 2
 		}
 		resp, err := j.LLM.Generate(ctx, req)
 		if err != nil {
