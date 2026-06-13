@@ -705,3 +705,119 @@ func TestWriteJSON_SchemaVersion(t *testing.T) {
 		t.Errorf("schema_version missing from JSON output:\n%s", buf.String())
 	}
 }
+
+// TEN-31: the memory-recall seed schema (injected_facts / injected_episodes on
+// Task — the "fixture_setup" the ticket specified) must parse from YAML and be
+// validated. This is the dedicated parse test the ticket's acceptance called
+// for; previously the schema was only exercised indirectly via LoadHarness.
+func TestLoadTask_FixtureSetup(t *testing.T) {
+	yaml := []byte(`
+id: mem-recall-seeded
+category: test
+subset: fitness
+mode: live
+prompt: "what's my deploy command?"
+injected_facts:
+  - text: "The deploy command is 'make ship'."
+    confidence: 0.95
+    source: test-seed
+  - text: "The staging URL is https://staging.example.com."
+injected_episodes:
+  - prompt: "how do I deploy?"
+    response: "Run 'make ship' from the repo root."
+    tags: [deploy, ops]
+    outcome: success
+expected:
+  rubric:
+    criterion: "Recalls the seeded deploy command."
+    anchors:
+      1: "Doesn't recall it"
+      3: "Partial / hedged"
+      5: "States 'make ship' plainly"
+  rubric_min_score: 3
+`)
+	tk, err := LoadTask(yaml, "mem-seeded.yaml")
+	if err != nil {
+		t.Fatalf("want load OK, got %v", err)
+	}
+
+	if got := len(tk.InjectedFacts); got != 2 {
+		t.Fatalf("injected_facts: want 2, got %d", got)
+	}
+	f0 := tk.InjectedFacts[0]
+	if f0.Text != "The deploy command is 'make ship'." {
+		t.Errorf("fact[0].Text = %q", f0.Text)
+	}
+	if f0.Confidence != 0.95 {
+		t.Errorf("fact[0].Confidence = %v, want 0.95", f0.Confidence)
+	}
+	if f0.Source != "test-seed" {
+		t.Errorf("fact[0].Source = %q, want test-seed", f0.Source)
+	}
+	// Optional fields are allowed to be absent on the second fact.
+	if f1 := tk.InjectedFacts[1]; f1.Confidence != 0 || f1.Source != "" {
+		t.Errorf("fact[1] optional fields should default to zero, got conf=%v src=%q", f1.Confidence, f1.Source)
+	}
+
+	if got := len(tk.InjectedEpisodes); got != 1 {
+		t.Fatalf("injected_episodes: want 1, got %d", got)
+	}
+	ep := tk.InjectedEpisodes[0]
+	if ep.Prompt != "how do I deploy?" || ep.Response != "Run 'make ship' from the repo root." {
+		t.Errorf("episode prompt/response not parsed: %+v", ep)
+	}
+	if len(ep.Tags) != 2 || ep.Tags[0] != "deploy" || ep.Tags[1] != "ops" {
+		t.Errorf("episode tags = %v, want [deploy ops]", ep.Tags)
+	}
+	if ep.Outcome != "success" {
+		t.Errorf("episode outcome = %q, want success", ep.Outcome)
+	}
+}
+
+// TEN-31: an injected_fact with no text is a malformed seed — validate() must
+// reject it rather than silently seeding an empty fact.
+func TestLoadTask_FixtureSetup_RejectsEmptyFactText(t *testing.T) {
+	yaml := []byte(`
+id: mem-bad-fact
+category: test
+subset: fitness
+mode: live
+prompt: "x"
+injected_facts:
+  - confidence: 0.5
+expected:
+  rubric:
+    criterion: "c"
+    anchors: {1: "a", 3: "b", 5: "c"}
+  rubric_min_score: 3
+`)
+	if _, err := LoadTask(yaml, "bad-fact.yaml"); err == nil {
+		t.Fatal("want error for injected_fact with empty text, got nil")
+	} else if !strings.Contains(err.Error(), "injected_facts") {
+		t.Errorf("error should name injected_facts, got: %v", err)
+	}
+}
+
+// TEN-31: an injected_episode missing its response is malformed — validate()
+// must reject it (an episode needs both prompt and response to be replayable).
+func TestLoadTask_FixtureSetup_RejectsEpisodeMissingResponse(t *testing.T) {
+	yaml := []byte(`
+id: mem-bad-episode
+category: test
+subset: fitness
+mode: live
+prompt: "x"
+injected_episodes:
+  - prompt: "no response here"
+expected:
+  rubric:
+    criterion: "c"
+    anchors: {1: "a", 3: "b", 5: "c"}
+  rubric_min_score: 3
+`)
+	if _, err := LoadTask(yaml, "bad-episode.yaml"); err == nil {
+		t.Fatal("want error for injected_episode missing response, got nil")
+	} else if !strings.Contains(err.Error(), "injected_episodes") {
+		t.Errorf("error should name injected_episodes, got: %v", err)
+	}
+}
