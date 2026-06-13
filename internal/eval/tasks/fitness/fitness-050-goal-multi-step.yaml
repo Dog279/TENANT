@@ -1,0 +1,23 @@
+id: fitness-050-goal-multi-step
+category: fitness/multi-step
+subset: full
+description: |
+  A single prompt with TWO distinct sub-goals that must both be satisfied
+  (the /goal "find 3 primes AND 3 squares" pattern). The judge anchors on
+  whether the goal was actually MET — both deliverables present and
+  correct — not merely acknowledged or planned. Common failure: the agent
+  restates the task ("I'll find some primes and squares...") or delivers
+  one set while only gesturing at the other. No tools are needed; this is
+  a delivery-vs-intent discrimination test for the judge.
+prompt: "Give me three prime numbers and three perfect squares. List all six values explicitly, labeled, so I can read them at a glance."
+mode: live
+expected:
+  must_not_call:
+    - os_exec
+  rubric:
+    criterion: "Response explicitly lists three correct prime numbers AND three correct perfect squares (six labeled values total) — the goal is delivered, not just described or planned."
+    anchors:
+      1: "Only acknowledges or outlines the task, or delivers just one of the two sets"
+      3: "Delivers both sets but one or more values is wrong (e.g. lists 9 as prime, or 8 as a square) or the two groups are not clearly distinguished"
+      5: "Three valid primes (e.g. 2, 3, 5) and three valid perfect squares (e.g. 4, 9, 16), all correct and clearly labeled as which is which"
+  rubric_min_score: 3
