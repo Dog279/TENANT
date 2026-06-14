@@ -58,7 +58,13 @@ var (
 // Distiller is the entry point. Construct once, call Run as often as
 // your cadence policy dictates.
 type Distiller struct {
-	Router              *model.Router
+	Router *model.Router
+	// SummarizerRouter, when non-nil, resolves the SUMMARIZER LLM instead of
+	// Router — used to pin extraction/restatement reasoning to a stronger model
+	// (TEN-195). The EMBEDDER is always resolved off Router (the main router) so
+	// the embedding space stays consistent regardless of which model summarizes.
+	// nil ⇒ Router (today's behavior).
+	SummarizerRouter    *model.Router
 	Episodic            *episodic.Store
 	Semantic            *semantic.Store
 	AgentID             string
@@ -122,9 +128,10 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 		return result, nil
 	}
 
-	// 2. Resolve the two LLMs we need: summarizer (text generation)
-	//    and embedder (for similarity-driven Reaffirm vs Insert).
-	summarizer, _, err := d.Router.LLMForRole(ctx, d.summarizerRole())
+	// 2. Resolve the two LLMs we need: summarizer (text generation) — off the
+	//    pinned proposer router when set (TEN-195) — and embedder, which ALWAYS
+	//    comes off the main Router so the embedding space stays consistent.
+	summarizer, _, err := d.summarizerRouter().LLMForRole(ctx, d.summarizerRole())
 	if err != nil {
 		return nil, fmt.Errorf("distill: resolve summarizer: %w", err)
 	}
@@ -194,6 +201,16 @@ func (d *Distiller) summarizerRole() model.Role {
 		return d.SummarizerRole
 	}
 	return DefaultSummarizerRole
+}
+
+// summarizerRouter is the router for the SUMMARIZER LLM: the pinned proposer
+// router when set (TEN-195), else the main Router. The embedder is resolved off
+// Router directly and is unaffected.
+func (d *Distiller) summarizerRouter() *model.Router {
+	if d.SummarizerRouter != nil {
+		return d.SummarizerRouter
+	}
+	return d.Router
 }
 
 func (d *Distiller) embedderRole() model.Role {

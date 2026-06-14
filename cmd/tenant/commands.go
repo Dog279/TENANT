@@ -1350,14 +1350,28 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	defer meta.Close()
 
+	// Pinned proposer router (TEN-195): reflection/summarizer calls use a
+	// stronger model when improve.profile is set; the embedder always stays on
+	// the main router. Empty/unbuildable ⇒ main router (loud WARN inside).
+	proposerRouter := router
+	if lc, lerr := loadLaunchConfig(c.cfgDir); lerr == nil {
+		embProf, _ := router.ForRole(model.RoleEmbedder)
+		var pinModel string
+		proposerRouter, pinModel = improveProposerRouter(lc.Improve.Profile, router, effectiveAgents(lc), lc, c.cfgDir, embProf, log)
+		if proposerRouter != router {
+			log.Info("improve: reflection jobs pinned to profile", "profile", lc.Improve.Profile, "model", pinModel)
+		}
+	}
+
 	d := &distill.Distiller{
-		Router: router, Episodic: st.episodic, Semantic: st.semantic,
+		Router: router, SummarizerRouter: proposerRouter, Episodic: st.episodic, Semantic: st.semantic,
 		AgentID: c.agent, Logger: log,
 	}
 	sched := improve.NewScheduler(log, 0)
 	sched.Register(improve.NewDistillJob(d, meta, c.agent), *distillEvery)
 	sched.Register(&improve.ConsolidationJob{
-		Semantic: st.semantic, Router: router, AgentID: c.agent, Holistic: true, Logger: log,
+		Semantic: st.semantic, Router: router, SummarizerRouter: proposerRouter,
+		AgentID: c.agent, Holistic: true, Logger: log,
 	}, improve.DefaultConsolidateInterval)
 
 	// Graceful shutdown on Ctrl-C / SIGTERM.
@@ -2261,9 +2275,23 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		sched.Register(distillJob, *distillEvery)
 		improveCfg := improveConfig{}
+		// Pinned proposer router (TEN-195): reflection/summarizer/proposer calls
+		// use a stronger model when improve.profile is set; the embedder and the
+		// SoulNudge fitness scorer always stay on the main router. Empty or
+		// unbuildable ⇒ main router (loud WARN inside the resolver).
+		proposerRouter := router
 		if x, err := loadLaunchConfig(c.cfgDir); err == nil {
 			improveCfg = x.Improve
+			embProf, _ := router.ForRole(model.RoleEmbedder)
+			var pinModel string
+			proposerRouter, pinModel = improveProposerRouter(improveCfg.Profile, router, effectiveAgents(x), x, c.cfgDir, embProf, log)
+			if proposerRouter != router {
+				log.Info("improve: reflection jobs pinned to profile", "profile", improveCfg.Profile, "model", pinModel)
+			}
 		}
+		// distiller is constructed earlier but not yet started — pin its
+		// summarizer LLM here (the embedder stays on its main Router).
+		distiller.SummarizerRouter = proposerRouter
 		sched.Register(&improve.SkillInductionJob{
 			Episodic: st.episodic, Skills: skillStore, Embedder: skEmb, AgentID: c.agent,
 			// Auto-accept MODE is re-read from config each run (TEN-152) so a live
@@ -2283,7 +2311,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// write-path dedup misses (paraphrases, subsumed granular facts). Heavier
 		// (an LLM call per cluster) and not time-critical, so a long cadence.
 		sched.Register(&improve.ConsolidationJob{
-			Semantic: st.semantic, Router: router, AgentID: c.agent, Holistic: true, Logger: log,
+			Semantic: st.semantic, Router: router, SummarizerRouter: proposerRouter,
+			AgentID: c.agent, Holistic: true, Logger: log,
 		}, improve.DefaultConsolidateInterval)
 		// Profile re-synthesis runs on its OWN cadence (--profile-every,
 		// default 15m). Distillation is cheap and benefits from being
@@ -2326,7 +2355,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if soulCadence > 0 {
 			sched.Register(&improve.SoulNudgeJob{
 				Episodic: st.episodic, AgentID: c.agent, BaseDir: c.cfgDir,
-				Proposer: improve.NewLLMSoulProposer(router),
+				// Proposer uses the pinned reasoning model (TEN-195); the Scorer
+				// runs the fitness suite on the DAILY model via evalSoulScorer —
+				// the hard invariant: never grade a candidate on a different
+				// model than the one it will actually run under.
+				Proposer: improve.NewLLMSoulProposer(proposerRouter),
 				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: log},
 				Logger:   log,
 			}, soulCadence)

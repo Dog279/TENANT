@@ -177,7 +177,7 @@ func (p llmSoulProposer) Propose(ctx context.Context, current *soul.Soul, sig So
 	if role == "" {
 		role = model.RoleSummarizer
 	}
-	llm, _, err := p.Router.LLMForRole(ctx, role)
+	llm, prof, err := p.Router.LLMForRole(ctx, role)
 	if err != nil {
 		return false, "", nil, fmt.Errorf("soul-nudge: resolve model: %w", err)
 	}
@@ -252,6 +252,12 @@ func (p llmSoulProposer) Propose(ctx context.Context, current *soul.Soul, sig So
 	reason := strings.TrimSpace(out.Reason)
 	if reason == "" {
 		reason = "refined operating instructions from recent feedback"
+	}
+	// Provenance: record which model proposed this edit so the operator sees it
+	// at /memory soul review (the proposer may be a pinned reasoning model —
+	// TEN-195). soul.ProposeEdit persists this reason with the candidate.
+	if prof.Model != "" {
+		reason = fmt.Sprintf("%s [proposed by %s]", reason, prof.Model)
 	}
 	return true, reason, clean, nil
 }

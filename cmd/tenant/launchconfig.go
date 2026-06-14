@@ -214,6 +214,19 @@ type improveConfig struct {
 	// malformed value warns and falls back to EvalEvery (TEN-196). A box asleep
 	// at the anchor catches up on next wake (trend-seeded clock).
 	EvalAt string `json:"eval_at,omitempty"`
+	// Profile pins the self-improvement PROPOSER/reflection LLM calls — the
+	// soul-nudge proposer, the fact-consolidation summarizer, and the
+	// distillation summarizer — to a named entry in the Agents profile map,
+	// typically a stronger reasoning model than the daily driver (TEN-195).
+	// Empty ⇒ today's behavior (those calls use the main router's
+	// RoleSummarizer). It NEVER touches the embedder (always the main router,
+	// so the embedding space stays consistent) and NEVER the SoulNudge A/B
+	// fitness scorer / model-under-test (the hard invariant — the candidate is
+	// always graded on the daily model). An unknown or unbuildable profile is
+	// NOT fatal: a loud WARN is logged and the jobs fall back to the main
+	// router. Note distillation runs frequently, so pinning it to a heavy model
+	// raises token cost + latency — opt in deliberately.
+	Profile string `json:"profile,omitempty"`
 	// SoulNudgeEvery persists the SoulNudgeJob cadence (TEN-16) as a duration
 	// string. Off (empty/0/malformed) by default — it runs the fitness suite to
 	// gate each candidate, so it's heavy + model-gated. Candidates are queued for

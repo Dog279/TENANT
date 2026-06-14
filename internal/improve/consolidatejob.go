@@ -29,11 +29,17 @@ import (
 // Either way it inserts the canonical merged fact and Supersedes the originals
 // (kept for audit, filtered from Search).
 type ConsolidationJob struct {
-	Semantic       *semantic.Store
-	Router         *model.Router
-	AgentID        string
-	SummarizerRole model.Role
-	EmbedderRole   model.Role
+	Semantic *semantic.Store
+	Router   *model.Router
+	// SummarizerRouter, when non-nil, resolves the merge SUMMARIZER LLM instead
+	// of Router — used to pin reflection work to a stronger reasoning model
+	// (TEN-195). The EMBEDDER is always resolved off Router (the main router) so
+	// the embedding space stays consistent regardless of which model summarizes.
+	// nil ⇒ Router (today's behavior).
+	SummarizerRouter *model.Router
+	AgentID          string
+	SummarizerRole   model.Role
+	EmbedderRole     model.Role
 	// ClusterThreshold is the cosine cutoff for the cosine strategy. 0 →
 	// DefaultClusterThreshold. Ignored when Holistic is set.
 	ClusterThreshold float64
@@ -89,9 +95,13 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 		return JobResult{Summary: fmt.Sprintf("consolidate: %d fact(s), nothing to merge", len(facts))}, nil
 	}
 
-	summarizer, _, err := j.Router.LLMForRole(ctx, j.summarizerRole())
+	summarizer, sumProf, err := j.summarizerRouter().LLMForRole(ctx, j.summarizerRole())
 	if err != nil {
 		return JobResult{}, fmt.Errorf("consolidate: resolve summarizer: %w", err)
+	}
+	if j.SummarizerRouter != nil && j.SummarizerRouter != j.Router && j.Logger != nil {
+		// Provenance: which model is doing the merge reasoning (TEN-195).
+		j.Logger.Info("consolidate: summarizing on pinned proposer model", "model", sumProf.Model)
 	}
 	embedder, embProfile, err := j.Router.EmbedderForRole(ctx, j.embedderRole())
 	if err != nil {
@@ -202,6 +212,16 @@ func (j *ConsolidationJob) summarizerRole() model.Role {
 		return j.SummarizerRole
 	}
 	return model.RoleSummarizer
+}
+
+// summarizerRouter is the router for the merge SUMMARIZER LLM: the pinned
+// proposer router when set (TEN-195), else the main Router. The embedder is
+// resolved off Router directly and is unaffected.
+func (j *ConsolidationJob) summarizerRouter() *model.Router {
+	if j.SummarizerRouter != nil {
+		return j.SummarizerRouter
+	}
+	return j.Router
 }
 
 func (j *ConsolidationJob) embedderRole() model.Role {
