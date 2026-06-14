@@ -1584,10 +1584,11 @@ func TestSplitFirstWord(t *testing.T) {
 type fakeModelCtl struct {
 	addCloudFn func(kind, key string) (string, error)
 	addFn      func(name, endpoint, fmt string) (string, error)
+	infos      []ModelInfo // canned ModelList() result (nil = none configured)
 	calls      []string
 }
 
-func (f *fakeModelCtl) ModelList() []ModelInfo { return nil }
+func (f *fakeModelCtl) ModelList() []ModelInfo { return f.infos }
 func (f *fakeModelCtl) UseModel(name, modelOverride string) (string, string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Use:%s/%s", name, modelOverride))
 	return "✓ now using " + name, name, nil
@@ -2222,6 +2223,47 @@ func TestAgents_SetModel_BasicAndOverride(t *testing.T) {
 	last := m.msgs[len(m.msgs)-1].content
 	if !strings.Contains(last, "usage:") {
 		t.Errorf("usage hint missing: %q", last)
+	}
+}
+
+// `/agents model` (bare) and `/agents model <name>` open the provider→model
+// picker; `/agents model <name> <provider>` stays the direct path (TEN-139
+// follow-up). The picker only engages when BOTH controls exist.
+func TestAgents_ModelPicker_Routing(t *testing.T) {
+	ac := &fakeAgentCtl{rows: []AgentInfo{{Name: "Programmer", Provider: "", Model: ""}}}
+	mc := &fakeModelCtl{infos: []ModelInfo{{Name: "zai", Model: "glm-4.6"}, {Name: "dgx", Model: "qwen"}}}
+	m := newModel(context.Background(), Config{Agents: ac, Models: mc})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	// `/agents model <name>` → picker (non-nil cmd), NOT a direct SetModel.
+	cmd := m.handleSlash("/agents model Programmer")
+	if cmd == nil {
+		t.Fatal("`/agents model <name>` should launch a picker (non-nil cmd)")
+	}
+	if len(ac.calls) != 0 {
+		t.Errorf("picker form must not call SetModel directly: %v", ac.calls)
+	}
+
+	// bare `/agents model` → agent picker (non-nil cmd).
+	ac.calls = nil
+	if cmd := m.handleSlash("/agents model"); cmd == nil {
+		t.Fatal("bare `/agents model` should launch an agent picker (non-nil cmd)")
+	}
+
+	// `/agents model <name> <provider>` → direct path, real SetModel call.
+	ac.calls = nil
+	m.handleSlash("/agents model Programmer zai")
+	if len(ac.calls) != 1 || ac.calls[0] != "SetModel:Programmer/zai/" {
+		t.Errorf("direct form should call SetModel once: %v", ac.calls)
+	}
+
+	// With no Models control, the picker is unavailable → falls through to the
+	// text handler's usage hint (no panic, no picker).
+	ac2 := &fakeAgentCtl{}
+	m2 := newModel(context.Background(), Config{Agents: ac2})
+	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	if cmd := m2.handleSlash("/agents model Programmer"); cmd != nil {
+		t.Error("no Models control → no picker cmd")
 	}
 }
 

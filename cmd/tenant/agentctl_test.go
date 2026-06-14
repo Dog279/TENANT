@@ -301,6 +301,68 @@ func TestAgentControl_SetModel(t *testing.T) {
 	}
 }
 
+// A built-in specialist (Programmer, QA, …) can be pinned to a model even
+// though it isn't in the persisted Agents map — SetModel materializes an
+// operator-owned override that PRESERVES the built-in's soul + description.
+// Case-insensitive ("programmer" resolves "Programmer"). This is the headline
+// TEN-139 use case (pin the Programmer to a local/DGX model).
+func TestAgentControl_SetModel_MaterializesBuiltin(t *testing.T) {
+	dir := t.TempDir()
+	lc := &launchConfig{Providers: map[string]*providerConfig{
+		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "qwen-coder"},
+	}}
+	_ = lc.save(dir)
+	ac := &agentControl{cfgDir: dir}
+
+	// Lowercase input must resolve the canonically-cased built-in.
+	status, err := ac.SetModel("programmer", "dgx", "")
+	if err != nil {
+		t.Fatalf("SetModel on built-in should succeed, got: %v", err)
+	}
+	if !strings.Contains(status, "dgx/qwen-coder") {
+		t.Errorf("status missing dgx/qwen-coder: %q", status)
+	}
+
+	// It now exists as a persisted override under the canonical name, with the
+	// built-in soul/description intact.
+	d, err := ac.Show("Programmer")
+	if err != nil {
+		t.Fatalf("Show(Programmer): %v", err)
+	}
+	if d.Provider != "dgx" {
+		t.Errorf("provider not pinned: %q", d.Provider)
+	}
+	if strings.TrimSpace(d.Soul) == "" {
+		t.Error("built-in soul was lost on materialize")
+	}
+	if !strings.Contains(d.Description, "implements features") {
+		t.Errorf("built-in description not preserved: %q", d.Description)
+	}
+
+	reloaded, _ := loadLaunchConfig(dir)
+	if reloaded.Agents["Programmer"] == nil {
+		t.Error("override not persisted under canonical name")
+	}
+	if reloaded.Agents["Programmer"] != nil && reloaded.Agents["Programmer"].Builtin {
+		t.Error("materialized override must not be marked Builtin")
+	}
+}
+
+// SetSoul also materializes a built-in (same path), so identity edits to a
+// shipped specialist work without a prior /agents add.
+func TestAgentControl_SetSoul_MaterializesBuiltin(t *testing.T) {
+	dir := t.TempDir()
+	_ = (&launchConfig{}).save(dir)
+	ac := &agentControl{cfgDir: dir}
+	if _, err := ac.SetSoul("QA", "be ruthless"); err != nil {
+		t.Fatalf("SetSoul on built-in should succeed: %v", err)
+	}
+	d, _ := ac.Show("QA")
+	if d.Soul != "be ruthless" {
+		t.Errorf("soul not applied: %q", d.Soul)
+	}
+}
+
 // SetModel rejects bad inputs.
 func TestAgentControl_SetModel_Rejects(t *testing.T) {
 	dir := t.TempDir()

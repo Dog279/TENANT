@@ -169,11 +169,50 @@ func (ac *agentControl) Rename(oldName, newName string) (string, error) {
 	return fmt.Sprintf("renamed %q → %q (identity + model + soul preserved)", oldName, newName), nil
 }
 
+// resolveAgentForEdit returns a MUTABLE persisted profile for an edit (model or
+// soul), plus its canonical name. Lookup is case-insensitive against both the
+// persisted agents and the built-in specialists (Programmer, QA, Researcher, …).
+//
+// A built-in isn't in lc.Agents until it's overridden, so editing one used to
+// fail with "no agent named" — which blocked the headline use case of pinning
+// the Programmer to a local/DGX model (TEN-139). Here we MATERIALIZE the built-in
+// into lc.Agents on first edit, copying its soul + description so the persona is
+// preserved, and clearing Builtin since it's now operator-owned. The caller is
+// responsible for saving lc. The returned name is the built-in's canonical
+// casing so the saved key matches what the orchestrator spawns.
+func resolveAgentForEdit(lc *launchConfig, name string) (*agentProfile, string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, "", fmt.Errorf("agent name is required")
+	}
+	if ap := lc.Agents[name]; ap != nil { // exact persisted hit (hot path)
+		return ap, name, nil
+	}
+	for n, ap := range lc.Agents { // case-insensitive persisted hit
+		if strings.EqualFold(n, name) {
+			return ap, n, nil
+		}
+	}
+	for n, bi := range builtinAgentProfiles() { // materialize a built-in override
+		if strings.EqualFold(n, name) {
+			cp := *bi
+			cp.Builtin = false // now operator-owned
+			if lc.Agents == nil {
+				lc.Agents = map[string]*agentProfile{}
+			}
+			lc.Agents[n] = &cp
+			return lc.Agents[n], n, nil
+		}
+	}
+	return nil, "", fmt.Errorf("no agent named %q (see /agents)", name)
+}
+
 // SetModel updates just the provider+model pinning for an existing profile,
 // preserving soul and description. The orchestrator's NEXT spawn of this
 // name picks up the new model (the runtime's per-profile router cache is
 // invalidated). Pass an empty modelID to fall through to the provider's
-// configured/catalog default.
+// configured/catalog default. A built-in specialist is materialized into an
+// operator-owned override on first pin (resolveAgentForEdit).
 func (ac *agentControl) SetModel(name, provider, modelID string) (string, error) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
@@ -186,9 +225,9 @@ func (ac *agentControl) SetModel(name, provider, modelID string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	ap := lc.Agents[name]
-	if ap == nil {
-		return "", fmt.Errorf("no agent named %q (see /agents)", name)
+	ap, name, err := resolveAgentForEdit(lc, name)
+	if err != nil {
+		return "", err
 	}
 	pc := lc.Providers[provider]
 	if pc == nil {
@@ -230,9 +269,9 @@ func (ac *agentControl) SetSoul(name, soulText string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ap := lc.Agents[name]
-	if ap == nil {
-		return "", fmt.Errorf("no agent named %q (see /agents)", name)
+	ap, name, err := resolveAgentForEdit(lc, name)
+	if err != nil {
+		return "", err
 	}
 	ap.Soul = strings.TrimSpace(soulText)
 	if err := lc.save(ac.cfgDir); err != nil {
