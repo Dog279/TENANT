@@ -59,17 +59,32 @@ The same guardrails from pattern 1 apply: independent work only, and never poll
 
 When a team member's **description** marks them a coding/implementation
 specialist (the built-in `Programmer`, or any custom agent whose description
-says so), the orchestrator delegates coding, implementation, and debugging work
-to that member with `spawn_agent` **by default** — rather than writing the code
-itself. This is data-driven off the rendered agent descriptions, so a user's
-custom coding agent works the same way; there is no hardcoded agent name.
+says so), the orchestrator routes **substantial** coding to that member with
+`spawn_agent` **by default** — rather than writing the code itself. This is
+data-driven off the rendered agent descriptions, so a user's custom coding agent
+works the same way; there is no hardcoded agent name.
 
-This is most valuable when the coding specialist is pinned to a different model
-than the orchestrator (e.g. orchestrator on a fast cloud model, `Programmer`
-pinned to a local Qwen/DGX endpoint): the orchestrator stays responsive while
-implementation runs on the model best suited for it. When the specialist simply
-inherits the orchestrator's model, delegation still buys the specialist's
-persona and rules.
+The split is a deliberate **trivial/substantial threshold** (efficiency vs.
+reliable delegation):
+
+- **Substantial → delegate.** A new file or script, a new function, a multi-line
+  change, debugging, or a refactor. This is where the specialist genuinely helps
+  — disciplined diffs, root-cause fixes, a regression test, a clean build.
+- **Trivial → handle directly.** A typo, a rename, a one-line tweak, where
+  spawning a worker would only add round-trip latency for no real benefit.
+
+Delegation is worthwhile **regardless of the specialist's model**: the
+disciplined coding persona is the value even on the same model. It is *extra*
+valuable when the specialist is pinned to a different model than the
+orchestrator (e.g. orchestrator on a fast cloud model, `Programmer` pinned to a
+local Qwen/DGX endpoint via `/agents model Programmer …`): the orchestrator
+stays responsive while implementation runs on the model best suited for it. By
+default a specialist with no pinned provider simply inherits the orchestrator's
+model.
 
 The steering only appears when named agents are configured; with no team it has
 no effect.
+
+> Note: this steering is *advisory* — the orchestrator still decides. A sharp
+> threshold makes substantial delegation far more reliable, but it is not a hard
+> runtime guarantee.

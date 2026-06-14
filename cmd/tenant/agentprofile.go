@@ -160,19 +160,24 @@ func renderAgentsForOrchestrator(agents map[string]*agentProfile) string {
 	}
 	b.WriteString("Spawn one of THESE by name to get specialized work. Spawning any other role\n")
 	b.WriteString("name falls back to a generic team member on your own model.\n")
-	// TEN-139: steer coding/implementation work to the specialist BY DEFAULT
-	// (data-driven off the rendered descriptions, so a user's custom coding
-	// agent works too — no hardcoded name), framed as the case where spawning
-	// "genuinely helps" so it doesn't fight the base prompt's answer-directly
-	// gate. TEN-140: the concurrent delegate-and-keep-working pattern, carrying
-	// the MUST-await-before-a-dependent-final-answer boundary so it can't be
-	// read as license to under-await. Both only emit when agents exist, so the
+	// TEN-139: steer SUBSTANTIAL coding to the specialist by default (data-driven
+	// off the rendered descriptions, so a user's custom coding agent works too —
+	// no hardcoded name). The trivial/substantial THRESHOLD is deliberate (live-
+	// test tuning): a sharp, mechanical rule the model rarely overrides, while
+	// keeping one-liners on the orchestrator so a hand-off doesn't add latency
+	// for no benefit. Framed as the case where a specialist "genuinely helps" so
+	// it carves a coding exception out of the base prompt's answer-directly gate.
+	// TEN-140: the concurrent delegate-and-keep-working pattern, carrying the
+	// MUST-await-before-a-dependent-final-answer boundary so it can't be read as
+	// license to under-await. Both only emit when agents exist, so the
 	// len(agents)==0 short-circuit above keeps the no-team prompt unchanged.
-	b.WriteString("\nCoding, implementation, and debugging are where spawning genuinely helps: when a " +
-		"team member's description marks them the coding/implementation specialist, delegate that work " +
-		"to them with spawn_agent BY DEFAULT rather than doing it yourself. After spawning you don't have " +
-		"to block — keep doing your own independent work (or spawn more independent workers), and call " +
-		"team_await only when you need their results, and always before any final answer that depends on " +
-		"a worker.")
+	b.WriteString("\nWhen a team member's description marks them the coding/implementation specialist, " +
+		"route SUBSTANTIAL coding to them by default — a new file or script, a new function, a multi-line " +
+		"change, debugging, or a refactor: spawn that specialist with spawn_agent instead of writing it " +
+		"yourself (that's exactly where a specialist genuinely helps — disciplined diffs, root-cause fixes, " +
+		"a clean build). Handle only TRIVIAL edits yourself — a typo, a rename, a one-line tweak — where a " +
+		"hand-off would just add latency. After spawning you don't have to block: keep doing your own " +
+		"independent work (or spawn more independent workers), and call team_await only when you need their " +
+		"results, and always before any final answer that depends on a worker.")
 	return b.String()
 }

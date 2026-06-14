@@ -427,8 +427,9 @@ func TestRenderAgentsForOrchestrator(t *testing.T) {
 		"researcher", "zai/glm-4.6", "web research",
 		"writer", "dgx", "synthesis",
 		"spawn_agent(role=<name>",
-		// TEN-139: coding-delegation steering present when agents exist.
-		"coding/implementation specialist", "spawn_agent BY DEFAULT",
+		// TEN-139: coding-delegation steering with the trivial/substantial
+		// threshold present when agents exist.
+		"coding/implementation specialist", "route SUBSTANTIAL coding", "TRIVIAL edits yourself",
 		// TEN-140: delegate-and-keep-working steering + the must-await boundary.
 		"keep doing your own independent work", "team_await only when you need their results",
 		"always before any final answer that depends on",
