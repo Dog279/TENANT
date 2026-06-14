@@ -311,12 +311,23 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	// Capability gate (TEN-103): only offer tools the active model may use, so a
 	// small local planner never sees an augmentation tool like memory_recall.
 	availableTools = filterGatedTools(availableTools, profile)
-	// Observability for embedding-ranked tool selection: when Search
-	// returned fewer specs than the full enabled set, surface that to
-	// the operator via EventToolCatalog so they can see when ranking is
-	// trimming and which tools didn't make the cut (operator can compare
-	// to /tools). Silent when ranking is inactive (no trim happened).
-	if all := a.cfg.Tools.All(); len(availableTools) < len(all) {
+	// Observability for embedding-ranked tool selection (TEN-225). Emit a
+	// per-turn line whether ranking TRIMMED or fell back to the full catalog —
+	// the silent-fallback case is exactly what hides a fat tool dump in the
+	// prompt every message, so it must be VISIBLE, not silent. Prefer the
+	// registry's precise reason (RankingReporter); fall back to the count
+	// heuristic for registries that don't report it.
+	if rr, ok := a.cfg.Tools.(RankingReporter); ok {
+		if ranked, surfaced, catalog, reason, have := rr.RankingStatus(); have {
+			if ranked {
+				a.emit(Event{Kind: EventToolCatalog,
+					Text: fmt.Sprintf("tool ranking ON — %d of %d enabled tools surfaced this turn", surfaced, catalog)})
+			} else {
+				a.emit(Event{Kind: EventToolCatalog,
+					Text: fmt.Sprintf("tool ranking OFF — full catalog of %d tools surfaced (%s)", catalog, reason)})
+			}
+		}
+	} else if all := a.cfg.Tools.All(); len(availableTools) < len(all) {
 		a.emit(Event{
 			Kind: EventToolCatalog,
 			Text: fmt.Sprintf("ranked: %d of %d tools surfaced this turn", len(availableTools), len(all)),

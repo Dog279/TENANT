@@ -37,6 +37,16 @@ type ToolRegistry interface {
 	All() []model.ToolSpec
 }
 
+// RankingReporter is an OPTIONAL capability of a ToolRegistry: it reports what
+// the most recent Search did — whether cosine ranking trimmed the catalog or it
+// fell back to the full enabled set, and why (TEN-225). The agent loop type-
+// asserts to this so it can surface a per-turn diagnostic; registries that
+// don't implement it fall back to a count heuristic. ok is false before the
+// first Search of the session.
+type RankingReporter interface {
+	RankingStatus() (ranked bool, surfaced, catalog int, reason string, ok bool)
+}
+
 // StaticRegistry is the simple map-backed implementation. Thread-safe
 // for concurrent reads; Register is for setup time, not hot path.
 type StaticRegistry struct {

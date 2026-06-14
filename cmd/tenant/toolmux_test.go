@@ -345,3 +345,52 @@ func TestToolMux_RestoreSilentWhenNotConfigured(t *testing.T) {
 		}
 	}
 }
+
+// TEN-225: RankingStatus surfaces WHY a Search surfaced what it did, so a silent
+// fallback to the full enabled catalog (the cause of a fat tool dump every turn)
+// is visible instead of hidden. Zero selection-behavior change.
+func TestToolMux_RankingStatus_Diagnostic(t *testing.T) {
+	ctx := context.Background()
+
+	// Below the ranking threshold → inactive, with a clear reason.
+	small := newToolMux()
+	for i := 0; i < 5; i++ {
+		small.add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
+	}
+	if _, err := small.Search(ctx, []float32{1, 0}, 12); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	ranked, _, catalog, reason, ok := small.RankingStatus()
+	if !ok {
+		t.Fatal("RankingStatus must be set after a Search")
+	}
+	if ranked {
+		t.Error("a sub-threshold catalog must not rank")
+	}
+	if catalog != 5 {
+		t.Errorf("catalog=%d, want 5", catalog)
+	}
+	if !strings.Contains(reason, "threshold") {
+		t.Errorf("reason should cite the threshold, got %q", reason)
+	}
+
+	// Above threshold but NO embedder installed → full catalog surfaced, and the
+	// reason names the root cause (the operator's most likely case).
+	big := newToolMux()
+	for i := 0; i < 25; i++ {
+		big.add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
+	}
+	if _, err := big.Search(ctx, []float32{1, 0}, 12); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	ranked, surfaced, catalog, reason, ok := big.RankingStatus()
+	if !ok || ranked {
+		t.Errorf("no embedder → ranking OFF; got ranked=%v ok=%v", ranked, ok)
+	}
+	if surfaced != 25 || catalog != 25 {
+		t.Errorf("full catalog expected: surfaced=%d catalog=%d, want 25/25", surfaced, catalog)
+	}
+	if !strings.Contains(reason, "embedder") {
+		t.Errorf("reason should cite the missing embedder, got %q", reason)
+	}
+}

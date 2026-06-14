@@ -83,6 +83,23 @@ type toolMux struct {
 	embedder            model.Embedder       // nil = ranking off
 	embedderFingerprint string               // invalidated on `/model use` swap
 	toolEmbeddings      map[string][]float32 // tool name → description embedding
+
+	// lastRank records what the most recent Search did + WHY (TEN-225 diag):
+	// whether cosine ranking actually trimmed the catalog, or it fell back to
+	// the full enabled set and the reason. Surfaced per-turn via RankingStatus
+	// so the operator can SEE when ranking is silently off (the common cause of
+	// a full tool catalog hitting the prompt every message). Best-effort /
+	// last-writer-wins under a shared mux (concurrent sub-agent Searches) — it's
+	// a diagnostic, not selection state.
+	lastRank rankStatus
+}
+
+// rankStatus is the diagnostic snapshot of one Search (TEN-225).
+type rankStatus struct {
+	ranked   bool   // true = cosine ranking trimmed; false = full enabled set
+	surfaced int    // tools returned this Search
+	catalog  int    // enabled tools available (the denominator)
+	reason   string // why ranking was inactive (empty when ranked)
 }
 
 // rankActivateThreshold — minimum number of REGISTERED tools to enable
@@ -478,9 +495,23 @@ func (m *toolMux) Search(ctx context.Context, queryEmb []float32, _ int) ([]mode
 	haveCache := len(m.toolEmbeddings) > 0
 	m.mu.RUnlock()
 
+	// fallback returns the full enabled set and records WHY ranking didn't run
+	// (TEN-225) so the operator can see when the whole catalog is hitting the
+	// prompt every turn — the reasons map 1:1 to the known root causes.
+	fallback := func(reason string) ([]model.ToolSpec, error) {
+		out := m.searchAll()
+		m.recordRank(false, len(out), len(out), reason)
+		return out, nil
+	}
+
 	// Fast path: ranking inactive → today's full enabled set.
-	if catalogSize < rankActivateThreshold || queryEmb == nil || !haveEmbedder {
-		return m.searchAll(), nil
+	switch {
+	case catalogSize < rankActivateThreshold:
+		return fallback(fmt.Sprintf("catalog below ranking threshold (%d<%d tools)", catalogSize, rankActivateThreshold))
+	case queryEmb == nil:
+		return fallback("no query embedding this turn (retrieval degraded — check the embedder)")
+	case !haveEmbedder:
+		return fallback("no embedder installed for tool ranking on this agent")
 	}
 	if !haveCache {
 		// Slow path: precompute once for this embedder. Best-effort —
@@ -490,10 +521,42 @@ func (m *toolMux) Search(ctx context.Context, queryEmb []float32, _ int) ([]mode
 		haveCache = len(m.toolEmbeddings) > 0
 		m.mu.RUnlock()
 		if !haveCache {
-			return m.searchAll(), nil
+			return fallback("tool-embedding precompute failed (embedder error or dim mismatch)")
 		}
 	}
-	return m.searchRanked(queryEmb), nil
+	out := m.searchRanked(queryEmb)
+	m.recordRank(true, len(out), m.enabledCount(), "")
+	return out, nil
+}
+
+// recordRank stores the most recent Search's ranking diagnostic (TEN-225).
+func (m *toolMux) recordRank(ranked bool, surfaced, catalog int, reason string) {
+	m.mu.Lock()
+	m.lastRank = rankStatus{ranked: ranked, surfaced: surfaced, catalog: catalog, reason: reason}
+	m.mu.Unlock()
+}
+
+// RankingStatus reports what the most recent Search did and why (TEN-225) —
+// read by the agent loop to emit a per-turn tool-catalog diagnostic. ok is
+// false until the first Search of the session.
+func (m *toolMux) RankingStatus() (ranked bool, surfaced, catalog int, reason string, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s := m.lastRank
+	return s.ranked, s.surfaced, s.catalog, s.reason, s.catalog > 0 || s.reason != ""
+}
+
+// enabledCount is the number of currently-enabled tools (the ranking denominator).
+func (m *toolMux) enabledCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, name := range m.order {
+		if e := m.byName[name]; e != nil && e.enabled {
+			n++
+		}
+	}
+	return n
 }
 
 // searchAll is the unranked path — every enabled tool, deterministic
