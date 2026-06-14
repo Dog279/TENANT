@@ -49,6 +49,7 @@ type relay struct {
 	runner     relayRunner
 	sender     messageSender
 	operatorID string
+	botID      string // the bot's own Discord user ID; set from READY via OnReady
 	log        *slog.Logger
 	rl         *rateLimiter
 	approver   *discordApprover // optional; set by the manager (TEN-117/119)
@@ -77,19 +78,45 @@ func (r *relay) Start(ctx context.Context) {
 	r.mu.Unlock()
 }
 
+// setBotID records the bot's own Discord user ID (from the READY event via
+// the gateway's OnReady callback). Required for guild mention detection + stripping.
+func (r *relay) setBotID(id string) {
+	r.mu.Lock()
+	r.botID = id
+	r.mu.Unlock()
+}
+
 // handleInbound is the gateway callback. It enforces the H1 inbound boundary
-// (drop bots, non-operator, non-DM; rate-limit; cap length) then routes the
-// message to a new turn, an interjection, or a stop.
+// (drop bots; rate-limit; cap length) then routes the message to a new turn,
+// an interjection, or a stop.
+//
+// DMs: operator-only (single-operator allowlist).
+// Guild messages: any server member may @mention the bot; the mention is
+// stripped before the text is passed to the agent.
 func (r *relay) handleInbound(in discord.Inbound) {
 	if in.AuthorBot {
 		return // never react to bots (loop guard)
 	}
-	if r.operatorID == "" || in.AuthorID != r.operatorID {
-		return // single-operator allowlist, deny-by-default
-	}
+
 	if in.GuildID != "" {
-		return // DM-only in v1 (no guild surface)
+		// Guild message: only respond when the bot is explicitly mentioned.
+		r.mu.Lock()
+		bid := r.botID
+		r.mu.Unlock()
+		if bid == "" {
+			return // bot ID not yet known (no READY); can't detect mentions
+		}
+		if !isMentioned(in.Content, bid) {
+			return // not mentioned, ignore
+		}
+		in.Content = stripMention(in.Content, bid)
+	} else {
+		// DM: operator-only allowlist, deny-by-default.
+		if r.operatorID == "" || in.AuthorID != r.operatorID {
+			return
+		}
 	}
+
 	// An approval reply (exact nonce / "deny") is consumed by the approver, not
 	// routed as a new turn or counted against the rate limit.
 	if r.approver != nil && r.approver.tryConsume(in) {
@@ -318,6 +345,25 @@ func maxIntPos(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// isMentioned checks whether content contains a mention of the bot's user ID.
+// Discord mentions appear as <@ID> or <@!ID>.
+func isMentioned(content, botID string) bool {
+	return strings.Contains(content, "<@"+botID+">") ||
+		strings.Contains(content, "<@!"+botID+">")
+}
+
+// stripMention removes a leading <@!ID> or <@ID> mention prefix from content,
+// returning the trimmed remainder. If the mention isn't at position zero, the
+// content is returned as-is (the mention is mid-message and we leave it).
+func stripMention(content, botID string) string {
+	for _, prefix := range []string{"<@!" + botID + ">", "<@" + botID + ">"} {
+		if strings.HasPrefix(content, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(content, prefix))
+		}
+	}
+	return strings.TrimSpace(content)
 }
 
 // discordSender adapts *discord.Service to messageSender (the relay's replies)

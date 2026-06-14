@@ -26,6 +26,13 @@ func discordSkillKind() skillKind {
 				Required: true,
 				Validate: validateDiscordToken,
 			},
+			{
+				Key:      "operator_id",
+				Prompt:   "Your Discord user ID (right-click your name in Discord → Copy User ID; enable Developer Mode in Settings → Advanced)",
+				Secret:   false, // not a secret — stored in lc.Skills["discord"].Settings
+				Required: true,
+				Validate: validateDiscordUserID,
+			},
 		},
 		Probe: probeDiscord,
 	}
@@ -41,6 +48,22 @@ func validateDiscordToken(s string) error {
 	}
 	if strings.HasPrefix(s, `"`) || strings.HasPrefix(s, `'`) {
 		return fmt.Errorf("starts with a quote — paste the raw token, no surrounding quotes")
+	}
+	return nil
+}
+
+func validateDiscordUserID(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("Discord user ID is required")
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("Discord user ID must be numeric (a snowflake ID like 1470226458332106895), not a username — got %q", s)
+		}
+	}
+	if len(s) < 17 || len(s) > 20 {
+		return fmt.Errorf("Discord user ID should be 17-20 digits (got %d chars)", len(s))
 	}
 	return nil
 }

@@ -44,10 +44,9 @@ const (
 	opHeartbeatACK   = 11 // recv: ack of our heartbeat
 )
 
-// intentsDMGuilds = GUILDS(1<<0) | DIRECT_MESSAGES(1<<12) = 4097. Enough to
-// receive MESSAGE_CREATE in a DM; deliberately NOT MESSAGE_CONTENT (1<<15,
-// privileged) — DM content arrives in full without it.
-const intentsDMGuilds = (1 << 0) | (1 << 12)
+// intentsDMGuilds = GUILDS(1<<0) | DIRECT_MESSAGES(1<<12) | MESSAGE_CONTENT(1<<15) = 32773.
+// Enough to receive MESSAGE_CREATE content in both DM and guilds.
+const intentsDMGuilds = (1 << 0) | (1 << 12) | (1 << 15)
 
 // gwPayload is the {op,d,s,t} gateway envelope. S is nullable (only Dispatch
 // frames carry a sequence); D is delayed-decoded per opcode/event.
@@ -190,8 +189,11 @@ type Gateway struct {
 	GetURL        func(ctx context.Context) (string, error)
 	OnMessage     func(Inbound)
 	OnInteraction func(Interaction) // v2: button clicks (INTERACTION_CREATE)
+	OnReady       func(userID string) // called once with the bot's user ID from READY
 	OnFatal       func(error)
 	Log           *slog.Logger
+
+	BotUserID string // set from READY; used for mention stripping
 
 	dial dialer // nil → gobwasDial (test seam)
 	seen *seenSet
@@ -360,10 +362,19 @@ func (g *Gateway) session(ctx context.Context, conn gwConn, st *sessionState, re
 				var rd struct {
 					SessionID        string `json:"session_id"`
 					ResumeGatewayURL string `json:"resume_gateway_url"`
+					User             struct {
+						ID string `json:"id"`
+					} `json:"user"`
 				}
 				_ = json.Unmarshal(p.D, &rd)
 				st.sessionID = rd.SessionID
 				st.resumeURL = rd.ResumeGatewayURL
+				if rd.User.ID != "" {
+					g.BotUserID = rd.User.ID
+					if g.OnReady != nil {
+						g.OnReady(rd.User.ID)
+					}
+				}
 				gotReady = true
 			case "RESUMED":
 				gotReady = true
@@ -503,6 +514,11 @@ func identifyPayload(token string) gwPayload {
 		"intents": intentsDMGuilds,
 		"properties": map[string]string{
 			"os": "linux", "browser": "tenant", "device": "tenant",
+		},
+		"presence": map[string]any{
+			"status":     "online",
+			"afk":        false,
+			"activities": []any{},
 		},
 	})
 	return gwPayload{Op: opIdentify, D: d}

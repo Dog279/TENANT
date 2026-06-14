@@ -50,6 +50,7 @@ var skillSpecs = []skillSpec{
 	}},
 	{ID: "discord", Label: "Discord (bot integration — REST: read/send/react)", Fields: []skillField{
 		{Key: "token", Prompt: "Discord bot token", Secret: true},
+		{Key: "operator_id", Prompt: "Your Discord user ID (enable Developer Mode, right-click your name → Copy User ID)"},
 	}, Note: "Create the bot at https://discord.com/developers/applications, then invite to a server with the `bot` scope. " +
 		"Surface A (REST tools) only — inbound DMs/channel messages → agent are NOT supported in this build."},
 	{ID: "web", Label: "Web browsing (drives Chrome)", Fields: nil},

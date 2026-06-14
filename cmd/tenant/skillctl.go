@@ -121,6 +121,12 @@ type skillCfgControl struct {
 	// success can auto-enable the plugin. nil-safe for unit tests that
 	// don't care about the tool-mux side effect.
 	setPluginEnabled func(label string, on bool) (int, string, error)
+
+	// onDiscordConfigured is called after a successful Discord configure+probe
+	// so the relay manager can hot-rebuild its agent+gateway with the new token
+	// AND auto-start the relay bound to the operator's Discord user ID.
+	// Nil-safe; only relevant for the "discord" skill.
+	onDiscordConfigured func(token, operatorID string) error
 }
 
 // newSkillControl wires a skill control over the operator's config
@@ -399,6 +405,30 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 			fmt.Fprintf(&out, "  ! %s\n", err.Error())
 		} else if msg != "" {
 			fmt.Fprintf(&out, "  ✓ %s\n", msg)
+		}
+	}
+	// Hot-rebuild the Discord relay with the new token AND auto-start it
+	// bound to the operator's user ID. Only fires when the probe passed
+	// (token verified) and the callback is wired. Also persists
+	// Relay.Enabled=true + Relay.OperatorID so the relay auto-boots on
+	// every future launch. A failure is a warning, not a roll-back — the
+	// token + operator_id are already stored on disk and will be used on
+	// next launch.
+	if id == "discord" && sc.onDiscordConfigured != nil {
+		newToken := creds.get(skillSecretID("discord", "token"))
+		operatorID := ""
+		if lc.Skills["discord"] != nil {
+			operatorID = lc.Skills["discord"].Settings["operator_id"]
+		}
+		if operatorID != "" {
+			lc.Relay.OperatorID = operatorID
+			lc.Relay.Enabled = true
+			if err := lc.save(sc.cfgDir); err != nil {
+				fmt.Fprintf(&out, "  ! could not persist relay config: %v\n", err)
+			}
+		}
+		if err := sc.onDiscordConfigured(newToken, operatorID); err != nil {
+			fmt.Fprintf(&out, "  ! relay: %v\n", err)
 		}
 	}
 	return strings.TrimRight(out.String(), "\n"), nil

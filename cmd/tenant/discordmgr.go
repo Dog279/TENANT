@@ -107,6 +107,11 @@ type discordRelayManager struct {
 	degraded func() bool // when true, the model is on the echo fallback; relay refuses turns
 	persist  func(enabled bool, operatorID string, allowExec bool) error
 
+	// buildFn rebuilds the Discord agent + gateway internals with a fresh token.
+	// Set at the serve wiring point so Reconfigure can hot-swap after a live
+	// /skill configure discord without restarting the process.
+	buildFn func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error)
+
 	// start is the test seam (real = realStart: wire+run gateway/relay).
 	start func(ctx context.Context, operatorID string) error
 
@@ -129,6 +134,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		GetURL:        m.svc.GatewayURL,
 		OnMessage:     rl.handleInbound,
 		OnInteraction: rl.handleInteraction,
+		OnReady:       rl.setBotID,
 		Log:           m.log,
 		OnFatal: func(e error) {
 			if m.notify != nil {
@@ -213,6 +219,102 @@ func (m *discordRelayManager) SetExec(on bool) error {
 	m.mu.Unlock()
 	if m.persist != nil {
 		return m.persist(running, opID, on)
+	}
+	return nil
+}
+
+// ReconfigureAndStart rebuilds with a new token, sets the operator, and starts
+// the relay. Called after /configure discord completes (token + operator_id
+// both provided). If operatorID is empty, falls back to Reconfigure-only
+// (preserves the old behavior for token-only updates).
+func (m *discordRelayManager) ReconfigureAndStart(token, operatorID string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("discord: token required")
+	}
+	if strings.TrimSpace(operatorID) != "" {
+		if err := m.SetOperator(operatorID); err != nil {
+			return fmt.Errorf("discord: set operator: %w", err)
+		}
+	}
+	if err := m.Reconfigure(token); err != nil {
+		return fmt.Errorf("discord: rebuild: %w", err)
+	}
+	// Auto-enable if operator is set and relay isn't already running.
+	running, _, _ := m.Status()
+	if !running && strings.TrimSpace(m.operatorID) != "" {
+		if err := m.Enable(); err != nil {
+			return fmt.Errorf("discord: auto-enable: %w", err)
+		}
+	}
+	return nil
+}
+
+// Reconfigure rebuilds the Discord agent + gateway with a new token, hot-
+// swapping the old one if the relay was running. Called after a successful
+// /skill configure discord. If the relay was off, it just swaps the internals
+// (so the next /relay on uses the new token). If it was on, it stops the old
+// gateway, rebuilds, and restarts.
+func (m *discordRelayManager) Reconfigure(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("discord: token required")
+	}
+	if m.buildFn == nil {
+		return fmt.Errorf("discord: reconfigure not wired (no buildFn)")
+	}
+
+	// Stop the old gateway if running (cancel its context).
+	m.mu.Lock()
+	wasRunning := m.running
+	if wasRunning && m.cancel != nil {
+		m.cancel()
+	}
+	m.running = false
+	m.cancel = nil
+	m.mu.Unlock()
+
+	// Rebuild outside the lock — buildFn calls discord.Open (network).
+	runner, svc, appr, snd, gate, err := m.buildFn(token)
+	if err != nil {
+		if m.notify != nil {
+			m.notify("discord relay: reconfigure FAILED — " + err.Error())
+		}
+		return fmt.Errorf("discord: rebuild agent: %w", err)
+	}
+
+	m.mu.Lock()
+	m.runner = runner
+	m.svc = svc
+	m.approver = appr
+	m.sender = snd
+	m.gate = gate
+	m.token = token
+	// Restore exec-mode preference on the new gate.
+	if gate != nil && m.allowExec {
+		gate.set(true)
+	}
+	m.mu.Unlock()
+
+	if wasRunning {
+		// Restart with the new token.
+		start := m.start
+		if start == nil {
+			start = m.realStart
+		}
+		m.mu.Lock()
+		dctx, cancel := context.WithCancel(m.base)
+		if err := start(dctx, m.operatorID); err != nil {
+			cancel()
+			m.mu.Unlock()
+			return fmt.Errorf("discord: restart relay: %w", err)
+		}
+		m.running = true
+		m.cancel = cancel
+		m.mu.Unlock()
+		if m.notify != nil {
+			m.notify("discord relay: reconnected with new token")
+		}
 	}
 	return nil
 }

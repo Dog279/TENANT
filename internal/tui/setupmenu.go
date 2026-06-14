@@ -64,6 +64,8 @@ func (m *model) clearSetupEntry() {
 	m.setupEntry = nil
 	m.input.EchoMode = textinput.EchoNormal
 	m.input.Reset()
+	m.input.Blur()
+	m.ta.Focus()
 }
 
 func setupOrNone(s string) string {

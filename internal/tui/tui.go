@@ -1247,6 +1247,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sysChat("setup cancelled")
 				break
 			}
+			if m.configureSession != nil {
+				m.configureSession = nil
+				m.input.Blur()
+				m.input.Reset()
+				m.ta.Focus()
+				m.sysChat("configuration cancelled")
+				break
+			}
 			if m.selectMode {
 				m.selectMode = false
 				m.sysChat("✂ select mode OFF — mouse back to the TUI")
@@ -1517,7 +1525,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// (sysChatMsg is caught earlier in Update at the picker/async layer.)
 
 	var icmd tea.Cmd
-	m.ta, icmd = m.ta.Update(msg)
+	if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
+		m.input, icmd = m.input.Update(msg)
+	} else {
+		m.ta, icmd = m.ta.Update(msg)
+	}
 	cmds = append(cmds, icmd)
 	m.refresh()
 	return m, tea.Batch(cmds...)
@@ -5405,7 +5417,10 @@ func (m *model) startConfigurePicker() tea.Cmd {
 		onSelect: func(choice string) tea.Cmd {
 			se := byLabel[choice]
 			m.secretEntry = &se
+			m.ta.Blur()
 			m.input.EchoMode = textinput.EchoPassword
+			m.input.Reset()
+			m.input.Focus()
 			m.sysChat("paste the key/token for " + se.name + ", then Enter (input hidden · /cancel to abort)")
 			return nil
 		},
@@ -5423,6 +5438,8 @@ func (m *model) clearSecretEntry() {
 	m.secretEntry = nil
 	m.input.EchoMode = textinput.EchoNormal
 	m.input.Reset()
+	m.input.Blur()
+	m.ta.Focus()
 }
 
 // saveSecretEntry persists the just-entered key via the Secrets control (which
@@ -5657,6 +5674,8 @@ func (m *model) advanceConfigureSession() tea.Cmd {
 	}
 	// Free-text field: print the prompt; the next user input will be
 	// caught by submit() and routed to handleConfigureAnswer.
+	m.input.Reset()
+	m.input.Focus()
 	m.sysChat(cs.renderPrompt())
 	return nil
 }
@@ -5704,6 +5723,9 @@ func (m *model) handleConfigureAnswer(value string) {
 		if abort {
 			m.sysChat("configuration cancelled — prerequisite missing")
 			m.configureSession = nil
+			m.input.Blur()
+			m.input.Reset()
+			m.ta.Focus()
 			return
 		}
 	}
@@ -5725,6 +5747,9 @@ func (m *model) finalizeConfigureSession() tea.Cmd {
 	}
 	noEnable := cs.noEnable
 	m.configureSession = nil
+	m.input.Blur()
+	m.input.Reset()
+	m.ta.Focus()
 
 	m.sysChat("⟳ probing…")
 	// SkillConfigure may hit the network (probe); run it on a tea.Cmd

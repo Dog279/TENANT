@@ -233,20 +233,110 @@ func TestDiscordRegisteredInSkillKinds(t *testing.T) {
 	if !k.Wired {
 		t.Error("discord should be Wired")
 	}
-	if len(k.Fields) != 1 {
-		t.Errorf("expected 1 field, got %d", len(k.Fields))
+	if len(k.Fields) != 2 {
+		t.Errorf("expected 2 fields (token + operator_id), got %d", len(k.Fields))
 	}
-	f := k.Fields[0]
-	if f.Key != "token" {
-		t.Errorf("field key = %q, want %q", f.Key, "token")
+	// Field 0: token (secret)
+	tok := k.Fields[0]
+	if tok.Key != "token" {
+		t.Errorf("field 0 key = %q, want %q", tok.Key, "token")
 	}
-	if !f.Secret {
+	if !tok.Secret {
 		t.Error("token field must be Secret")
 	}
-	if !f.Required {
+	if !tok.Required {
 		t.Error("token field must be Required")
 	}
-	if f.Validate == nil {
+	if tok.Validate == nil {
 		t.Error("token field must have a Validate function")
+	}
+	// Field 1: operator_id (non-secret)
+	op := k.Fields[1]
+	if op.Key != "operator_id" {
+		t.Errorf("field 1 key = %q, want %q", op.Key, "operator_id")
+	}
+	if op.Secret {
+		t.Error("operator_id field must NOT be Secret (stored in settings)")
+	}
+	if !op.Required {
+		t.Error("operator_id field must be Required")
+	}
+	if op.Validate == nil {
+		t.Error("operator_id field must have a Validate function")
+	}
+}
+
+// --- validateDiscordUserID ---
+
+func TestValidateDiscordUserID_Valid(t *testing.T) {
+	err := validateDiscordUserID("1470226458332106895")
+	if err != nil {
+		t.Fatalf("valid snowflake rejected: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_ValidShort(t *testing.T) {
+	// 17-digit snowflake — minimum length
+	err := validateDiscordUserID("10000000000000000")
+	if err != nil {
+		t.Fatalf("17-digit snowflake rejected: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_ValidLong(t *testing.T) {
+	// 20-digit snowflake — maximum length
+	err := validateDiscordUserID("99999999999999999999")
+	if err != nil {
+		t.Fatalf("20-digit snowflake rejected: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_Empty(t *testing.T) {
+	err := validateDiscordUserID("")
+	if err == nil {
+		t.Fatal("expected error for empty user ID")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("want 'required' in error, got: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_Whitespace(t *testing.T) {
+	err := validateDiscordUserID("   ")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only user ID")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("want 'required' in error, got: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_NonNumeric(t *testing.T) {
+	err := validateDiscordUserID("dylan#1234")
+	if err == nil {
+		t.Fatal("expected error for non-numeric user ID")
+	}
+	if !strings.Contains(err.Error(), "numeric") {
+		t.Errorf("want 'numeric' in error, got: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_TooShort(t *testing.T) {
+	err := validateDiscordUserID("12345")
+	if err == nil {
+		t.Fatal("expected error for too-short user ID")
+	}
+	if !strings.Contains(err.Error(), "17-20 digits") {
+		t.Errorf("want length guidance in error, got: %v", err)
+	}
+}
+
+func TestValidateDiscordUserID_TooLong(t *testing.T) {
+	err := validateDiscordUserID("123456789012345678901")
+	if err == nil {
+		t.Fatal("expected error for too-long user ID")
+	}
+	if !strings.Contains(err.Error(), "17-20 digits") {
+		t.Errorf("want length guidance in error, got: %v", err)
 	}
 }

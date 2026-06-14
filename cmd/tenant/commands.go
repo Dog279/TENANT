@@ -2203,6 +2203,18 @@ func cmdTUI(ctx context.Context, args []string) error {
 			c.lc.Relay.AllowExec = allowExec
 			return c.lc.save(c.cfgDir)
 		},
+		// buildFn lets Reconfigure (triggered by /skill configure discord)
+		// rebuild the agent+gateway with a new token without restarting.
+		buildFn: func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error) {
+			return buildDiscordAgent(token, discordAgentDeps{
+				router: router, soulLive: soulLive, archive: st.archive,
+				episodic: st.episodic, semantic: st.semantic,
+				skills:    skillRetriever{st: skillStore, agentID: c.agent},
+				compactor: compressor, userProfile: prof,
+				fullTools: mainTools.All(), fullDisp: mainTools,
+				sysPrompt: sysPrompt, log: log,
+			})
+		},
 	}
 	if c.lc != nil {
 		relayMgr.operatorID = c.lc.Relay.OperatorID
@@ -2468,8 +2480,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// TEN-64: `/skill` (singular) integration-config surface. Bridges
 		// auto-enable to the tool mux's SetPluginEnabled (TEN-58
 		// categorical toggle). Production catalog is empty until
-		// TEN-65+ populates it.
-		SkillConfig: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled, atlassianMCP),
+		// TEN-65+ populates it. The onDiscordConfigured callback lets
+		// /skill configure discord hot-rebuild the relay manager AND
+		// auto-start it with the operator's Discord user ID.
+		SkillConfig: func() *skillCfgControl {
+			sc := newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled, atlassianMCP)
+			sc.onDiscordConfigured = relayMgr.ReconfigureAndStart
+			return sc
+		}(),
 		Research: &researchControl{
 			ag: ag, rt: rt, say: researchSay, wikiDir: pf.wikiDir, wikiIndex: wikiIx,
 			opts: defaultResearchOpts(), store: rstore,
