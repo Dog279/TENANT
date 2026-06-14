@@ -240,6 +240,11 @@ type composite struct {
 	local  *toolMux
 }
 
+// Compile-time guard: the composite MUST satisfy agent.RankingReporter, else the
+// per-turn ranking diagnostic silently falls through for the TUI/orchestrate
+// paths (which hand the agent a composite, not a bare mux) — TEN-225.
+var _ agent.RankingReporter = composite{}
+
 func (c composite) Get(name string) (model.ToolSpec, bool) {
 	if s, ok := c.local.Get(name); ok {
 		return s, true
@@ -354,6 +359,19 @@ func (c composite) Plugins() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// RankingStatus delegates to the SHARED mux — that's where the large plugin/MCP
+// catalog lives and where cosine ranking actually runs (composite.Search ranks
+// only the shared layer; local tools are always fully included). This makes the
+// composite satisfy agent.RankingReporter so the per-turn diagnostic + /tools
+// status see the real ranking decision (TEN-225). ok=false until the shared mux
+// has run at least one Search.
+func (c composite) RankingStatus() (ranked bool, surfaced, catalog int, reason string, ok bool) {
+	if c.shared == nil {
+		return false, 0, 0, "", false
+	}
+	return c.shared.RankingStatus()
 }
 
 // Spawn creates a sub-agent for (role, task), starts it running in its own

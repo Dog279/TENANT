@@ -333,6 +333,14 @@ type ToolControl interface {
 	Plugins() []string
 }
 
+// toolRankingReporter is an OPTIONAL capability of the Tools control: it reports
+// the last turn's tool-ranking decision (TEN-225) — whether cosine ranking
+// trimmed the catalog or the full enabled set was surfaced, and why — so /tools
+// can show it on demand (the per-turn activity-feed line scrolls away).
+type toolRankingReporter interface {
+	RankingStatus() (ranked bool, surfaced, catalog int, reason string, ok bool)
+}
+
 // ApprovalDecision is the user's answer to a dangerous-action prompt,
 // modeled on the three-tier approve flow (once / session / always) plus
 // an explicit deny.
@@ -4144,6 +4152,23 @@ func (m *model) renderToolList() (string, string) {
 	var p, s strings.Builder
 	p.WriteString("Tools  ● on  ○ off   ·   /enable|/disable <tool>   |   /enable skill <plugin>\n")
 	s.WriteString(cHeading.Render("Tools") + cDim.Render("  ● on  ○ off   ·   /enable|/disable <tool>   |   /enable skill <plugin>") + "\n")
+
+	// Tool-ranking status (TEN-225): the per-turn "tool ranking ON/OFF" line
+	// also scrolls off the activity feed, so surface the last turn's decision
+	// here on demand — this is the persistent place to check whether the full
+	// tool catalog is hitting the prompt and why.
+	if rr, ok := m.cfg.Tools.(toolRankingReporter); ok {
+		var line string
+		if ranked, surfaced, catalog, reason, have := rr.RankingStatus(); !have {
+			line = "Tool ranking: not yet measured — send a message first"
+		} else if ranked {
+			line = fmt.Sprintf("Tool ranking: ON — %d of %d tools surfaced last turn", surfaced, catalog)
+		} else {
+			line = fmt.Sprintf("Tool ranking: OFF — full catalog of %d tools surfaced (%s)", catalog, reason)
+		}
+		p.WriteString(line + "\n")
+		s.WriteString(cDim.Render(line) + "\n")
+	}
 
 	seen := map[string]bool{}
 	for _, t := range list {

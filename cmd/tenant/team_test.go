@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -270,5 +271,35 @@ func TestOrchestratorPrompt_KeepWorkingAndDefaults(t *testing.T) {
 		if !strings.Contains(orchestratorPrompt, w) {
 			t.Errorf("orchestratorPrompt lost default/guardrail text %q", w)
 		}
+	}
+}
+
+// TEN-225: the composite (what the TUI/orchestrate agent actually holds) must
+// delegate RankingStatus to the SHARED mux, where ranking runs — otherwise the
+// per-turn diagnostic + /tools status silently fall through.
+func TestComposite_RankingStatus_DelegatesToShared(t *testing.T) {
+	shared := newToolMux()
+	for i := 0; i < 25; i++ { // above rankActivateThreshold, no embedder → fallback
+		shared.add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
+	}
+	c := composite{shared: shared, local: newToolMux()}
+
+	// Before any Search → not measured.
+	if _, _, _, _, ok := c.RankingStatus(); ok {
+		t.Error("RankingStatus should be unmeasured before the shared mux runs a Search")
+	}
+
+	if _, err := c.Search(context.Background(), []float32{1, 0}, 12); err != nil {
+		t.Fatalf("composite Search: %v", err)
+	}
+	ranked, _, catalog, reason, ok := c.RankingStatus()
+	if !ok {
+		t.Fatal("RankingStatus should be set after a Search through the composite")
+	}
+	if ranked {
+		t.Error("no embedder → ranking OFF")
+	}
+	if catalog != 25 || !strings.Contains(reason, "embedder") {
+		t.Errorf("expected shared-mux status (catalog=25, embedder reason); got catalog=%d reason=%q", catalog, reason)
 	}
 }
