@@ -58,6 +58,7 @@ func cmdEval(ctx context.Context, args []string) error {
 	)
 	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full")
 	fs.IntVar(&jOpts.concurrency, "concurrency", 1, "live mode: run up to N tasks at once (>1 parallelizes; web/Chrome tasks auto-serialize). 1 = sequential (TEN-221)")
+	fs.DurationVar(&jOpts.taskTimeout, "task-timeout", 10*time.Minute, "live mode: max wall-time per task before it's failed (0 = unlimited). Bounds a runaway on a flaky endpoint (TEN-222)")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON report to stdout instead of the terminal table")
 	fs.BoolVar(&quiet, "quiet", false, "print only the one-line summary")
 	fs.BoolVar(&listOnly, "list", false, "list tasks in the subset and exit (no run)")
@@ -270,6 +271,7 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 		return nil, fmt.Errorf("load harness: %w", err)
 	}
 	h.Concurrency = jOpts.concurrency // <=1 = sequential (TEN-221)
+	h.TaskTimeout = jOpts.taskTimeout // 0 = unlimited (TEN-222)
 	if sub == eval.SubsetFitness || sub == eval.SubsetFull {
 		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride)
 		if err != nil {
@@ -283,11 +285,12 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 // evalJudgeOpts configures the live-mode LLM judge. The API key is read from
 // keyEnv at run time — never a flag, never persisted, never printed.
 type evalJudgeOpts struct {
-	gateOnly    bool   // skip the judge entirely (deterministic gate only)
-	model       string // override judge model id ("" → use the planner / main-agent model)
-	endpoint    string // override judge API endpoint ("" → provider default)
-	keyEnv      string // env var holding the override judge's API key
-	concurrency int    // tasks to run at once (<=1 = sequential; TEN-221)
+	gateOnly    bool          // skip the judge entirely (deterministic gate only)
+	model       string        // override judge model id ("" → use the planner / main-agent model)
+	endpoint    string        // override judge API endpoint ("" → provider default)
+	keyEnv      string        // env var holding the override judge's API key
+	concurrency int           // tasks to run at once (<=1 = sequential; TEN-221)
+	taskTimeout time.Duration // per-task wall-clock cap (0 = unlimited; TEN-222)
 }
 
 // autoEnableEvalPlugins turns on plugin flags for zero-config plugins (web, os)

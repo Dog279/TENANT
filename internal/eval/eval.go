@@ -60,6 +60,12 @@ type Harness struct {
 	// regardless of completion order.
 	Concurrency int
 
+	// TaskTimeout caps a single task's wall-clock time. 0 = unlimited. A flaky
+	// endpoint plus the planner's transient retry made one live task run ~43
+	// min; this bounds it — on the deadline the agent bails (it honors ctx
+	// cancellation) and the task is recorded as a timeout failure (TEN-222).
+	TaskTimeout time.Duration
+
 	// runMu serializes whole Run / RunWith CALLS so two concurrent callers can't
 	// mutate Tasks-affecting state mid-run. (Within a run, tasks may execute
 	// concurrently per Concurrency.) v1 plan §Architecture finding 1E.
@@ -243,7 +249,23 @@ func (h *Harness) runOne(ctx context.Context, t *Task) TaskResult {
 			}
 			break
 		}
-		res = h.runLive(ctx, t)
+		// Per-task wall-clock cap (TEN-222): a degraded endpoint must not let a
+		// task run unbounded. 0 = no cap. The agent honors ctx cancellation, so
+		// it bails at the deadline; we then record a bounded timeout failure
+		// rather than whatever partial state runLive returned.
+		lctx := ctx
+		if h.TaskTimeout > 0 {
+			var cancel context.CancelFunc
+			lctx, cancel = context.WithTimeout(ctx, h.TaskTimeout)
+			defer cancel()
+		}
+		res = h.runLive(lctx, t)
+		if h.TaskTimeout > 0 && lctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			res.Passed = false
+			res.Ungraded = false
+			res.Skipped = false
+			res.Failures = append(res.Failures, fmt.Sprintf("task timed out after %s", h.TaskTimeout))
+		}
 	default:
 		res = TaskResult{
 			TaskID:   t.ID,

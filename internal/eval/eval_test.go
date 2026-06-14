@@ -3,9 +3,11 @@ package eval
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
@@ -1018,5 +1020,102 @@ func TestRun_ConcurrencyDeterministic(t *testing.T) {
 	}
 	if par.Aggregates.PassCount != 8 {
 		t.Errorf("parallel PassCount=%d, want 8", par.Aggregates.PassCount)
+	}
+}
+
+// blockingRunner hangs until the context is cancelled — stands in for an agent
+// stuck on a dead endpoint (TEN-222).
+type blockingRunner struct{}
+
+func (blockingRunner) Run(ctx context.Context, _ string) (string, []FixtureToolCall, error) {
+	<-ctx.Done()
+	return "", nil, ctx.Err()
+}
+
+// TEN-222: a per-task TaskTimeout bounds a task that would otherwise run
+// unbounded on a flaky endpoint — it's recorded as a timeout failure and the
+// run proceeds, rather than hanging (a live task once ran ~43 min).
+func TestRun_TaskTimeout(t *testing.T) {
+	task := &Task{
+		ID: "slow", Category: "c", Subset: SubsetFitness, Mode: ModeLive,
+		Prompt: "hang",
+		Expected: Expected{
+			Rubric:         &Rubric{Criterion: "x", Anchors: map[int]string{1: "a", 3: "b", 5: "c"}},
+			RubricMinScore: 3,
+		},
+	}
+	h := &Harness{
+		Tasks: []*Task{task},
+		AgentFactory: func(_ context.Context, _ string) (AgentRunner, func() error, error) {
+			return blockingRunner{}, nil, nil
+		},
+		Judge:       &FixtureJudge{Score: 5},
+		TaskTimeout: 50 * time.Millisecond,
+	}
+	start := time.Now()
+	rep, err := h.Run(context.Background(), SubsetFitness)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("run took %s — the timeout did not bound the blocking task", elapsed)
+	}
+	r := rep.Results[0]
+	if r.Passed {
+		t.Error("a timed-out task must not pass")
+	}
+	found := false
+	for _, f := range r.Failures {
+		if strings.Contains(f, "timed out") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'timed out' failure, got %v", r.Failures)
+	}
+}
+
+// TEN-223: a transient endpoint error during grading is retried (it once
+// UNGRADED a passing answer), so the verdict still lands.
+func TestJudge_RetriesTransientThenSucceeds(t *testing.T) {
+	var calls int
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("%w: read tcp ...: connection reset by peer", model.ErrEndpointDown)
+		}
+		return &model.GenerateResponse{Text: `{"score": 4, "reasoning": "ok"}`}, nil
+	}
+	j := &LLMJudge{LLM: fake}
+	task := &Task{Expected: Expected{Rubric: &Rubric{Criterion: "c"}}}
+	jr, err := j.Grade(context.Background(), task, "resp", nil)
+	if err != nil {
+		t.Fatalf("Grade errored on a retryable transient error: %v", err)
+	}
+	if jr.Score != 4 {
+		t.Errorf("score = %d, want 4 (recovered after the transient retry)", jr.Score)
+	}
+	if calls < 2 {
+		t.Errorf("expected a retry after the transient error, calls=%d", calls)
+	}
+}
+
+// TEN-223: a SUSTAINED outage still terminates (bounded attempts) → the task is
+// UNGRADED, never an infinite retry / minutes-long judge stall.
+func TestJudge_TransientExhaustedErrors(t *testing.T) {
+	var calls int
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		calls++
+		return nil, fmt.Errorf("%w: connection reset by peer", model.ErrEndpointDown)
+	}
+	j := &LLMJudge{LLM: fake}
+	task := &Task{Expected: Expected{Rubric: &Rubric{Criterion: "c"}}}
+	if _, err := j.Grade(context.Background(), task, "resp", nil); err == nil {
+		t.Fatal("want an error when the endpoint is down for every attempt (→ UNGRADED), got nil")
+	}
+	if calls < 2 || calls > 8 {
+		t.Errorf("attempts=%d, want a small bounded number (no runaway, but did retry)", calls)
 	}
 }

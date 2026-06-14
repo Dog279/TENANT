@@ -3,10 +3,12 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"tenant/internal/model"
 )
@@ -102,31 +104,75 @@ func (j *LLMJudge) Grade(ctx context.Context, t *Task, response string, calls []
 		MaxTokens:   judgeMaxTokens,
 		Temperature: 0,
 	}
+	// Two independent, bounded retry budgets:
+	//   • a TRANSIENT endpoint blip during grading gets a few backed-off retries
+	//     so it doesn't UNGRADE a passing answer (TEN-223);
+	//   • a non-transient call error OR unusable/empty output gets a SINGLE retry
+	//     — with the budget escalated for the empty-output case so a thinking
+	//     model has room to finish (TEN-219), and no spinning otherwise.
+	// A sustained outage, or a model that just can't produce a verdict, still
+	// terminates → the caller records the task UNGRADED (TEN-197).
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		if attempt > 0 {
-			if ctx.Err() != nil {
-				break // don't burn a retry on a dead context
-			}
-			// The dominant unusable-output cause is a thinking model exhausting
-			// the budget mid-reasoning. Retrying with the SAME budget would just
-			// fail identically — escalate it so the retry has real extra room
-			// (TEN-219).
-			req.MaxTokens = judgeMaxTokens * 2
-		}
+	transientUsed, genericRetried := 0, false
+	for {
 		resp, err := j.LLM.Generate(ctx, req)
 		if err != nil {
 			lastErr = fmt.Errorf("judge: LLM call: %w", err)
+			if isTransientJudgeErr(err) {
+				if transientUsed >= judgeTransientRetries || ctx.Err() != nil {
+					return JudgeResult{}, lastErr
+				}
+				transientUsed++
+				select {
+				case <-ctx.Done():
+					return JudgeResult{}, ctx.Err()
+				case <-time.After(judgeRetryBackoff(transientUsed)):
+				}
+				continue
+			}
+			if genericRetried || ctx.Err() != nil {
+				return JudgeResult{}, lastErr
+			}
+			genericRetried = true
 			continue
 		}
 		jr, perr := parseJudgeOutput(resp.Text)
 		if perr != nil {
 			lastErr = perr
+			if genericRetried || ctx.Err() != nil {
+				return JudgeResult{}, lastErr
+			}
+			genericRetried = true
+			req.MaxTokens = judgeMaxTokens * 2 // escalate for the empty-output retry (TEN-219)
 			continue
 		}
 		return jr, nil
 	}
-	return JudgeResult{}, lastErr
+}
+
+// judgeTransientRetries bounds backed-off retries on a transient endpoint blip
+// during grading (TEN-223) — enough to ride out a few-second outage, not a
+// sustained one. Non-transient errors and unusable output get a single retry.
+const judgeTransientRetries = 3
+
+// isTransientJudgeErr reports whether a judge LLM-call error is a transient
+// network/endpoint condition worth retrying — distinct from a semantic failure.
+// The backend already classifies connection resets etc. as ErrEndpointDown, so
+// the sentinels cover the common case; the substring fallback catches anything
+// that slipped through unwrapped (TEN-223).
+func isTransientJudgeErr(err error) bool {
+	if errors.Is(err, model.ErrEndpointDown) || errors.Is(err, model.ErrRateLimited) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "connection reset") || strings.Contains(s, "goaway") ||
+		strings.Contains(s, "broken pipe") || strings.Contains(s, "unexpected eof")
+}
+
+// judgeRetryBackoff is a short, growing pause between transient-error retries:
+// ~0.5s, 1s, 1.5s — total under a few seconds, enough for a blip, not a stall.
+func judgeRetryBackoff(attempt int) time.Duration {
+	return time.Duration(attempt) * 500 * time.Millisecond
 }
 
 // FixtureJudge returns a pre-set score regardless of input. Used by
