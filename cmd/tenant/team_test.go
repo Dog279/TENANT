@@ -240,3 +240,35 @@ func TestSpawnTool_RequiresRoleAndTask(t *testing.T) {
 		t.Fatal("spawn with empty task must error")
 	}
 }
+
+// TEN-140: the orchestrator prompt gains the delegate-and-keep-working pattern
+// WITHOUT regressing the fan-out → await → synthesize default or its guardrails.
+func TestOrchestratorPrompt_KeepWorkingAndDefaults(t *testing.T) {
+	// Keep-working steering is present (TEN-140), with the must-await boundary
+	// front-loaded so it can't be read as license to under-await.
+	keepWorking := []string{
+		"don't have to await the instant you spawn",
+		"more independent workers",
+		"team_await once you need the workers' results",
+		"MUST await before writing any final answer",
+	}
+	for _, w := range keepWorking {
+		if !strings.Contains(orchestratorPrompt, w) {
+			t.Errorf("orchestratorPrompt missing keep-working steering %q", w)
+		}
+	}
+	// Fan-out → await-once → synthesize default + guardrails are PRESERVED.
+	defaults := []string{
+		"spawn_agent(role, task)",
+		"CONCURRENTLY",
+		"call team_await ONCE",
+		"Do NOT poll team_check",
+		"synthesize ONE final",
+		"INDEPENDENT, parallel work",
+	}
+	for _, w := range defaults {
+		if !strings.Contains(orchestratorPrompt, w) {
+			t.Errorf("orchestratorPrompt lost default/guardrail text %q", w)
+		}
+	}
+}

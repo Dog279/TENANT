@@ -365,9 +365,26 @@ func TestRenderAgentsForOrchestrator(t *testing.T) {
 		"researcher", "zai/glm-4.6", "web research",
 		"writer", "dgx", "synthesis",
 		"spawn_agent(role=<name>",
+		// TEN-139: coding-delegation steering present when agents exist.
+		"coding/implementation specialist", "spawn_agent BY DEFAULT",
+		// TEN-140: delegate-and-keep-working steering + the must-await boundary.
+		"keep doing your own independent work", "team_await only when you need their results",
+		"always before any final answer that depends on",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered prompt missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TEN-139/140: the delegation + keep-working steering must NOT leak into the
+// no-team prompt — the len(agents)==0 short-circuit keeps it empty so operators
+// who never define agents see an unchanged orchestrator prompt.
+func TestRenderAgentsForOrchestrator_NoSteeringWithoutAgents(t *testing.T) {
+	for _, agents := range []map[string]*agentProfile{nil, {}} {
+		got := renderAgentsForOrchestrator(agents)
+		if got != "" {
+			t.Errorf("no agents must yield empty prompt, got %q", got)
 		}
 	}
 }

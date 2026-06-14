@@ -159,6 +159,20 @@ func renderAgentsForOrchestrator(agents map[string]*agentProfile) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("Spawn one of THESE by name to get specialized work. Spawning any other role\n")
-	b.WriteString("name falls back to a generic team member on your own model.")
+	b.WriteString("name falls back to a generic team member on your own model.\n")
+	// TEN-139: steer coding/implementation work to the specialist BY DEFAULT
+	// (data-driven off the rendered descriptions, so a user's custom coding
+	// agent works too — no hardcoded name), framed as the case where spawning
+	// "genuinely helps" so it doesn't fight the base prompt's answer-directly
+	// gate. TEN-140: the concurrent delegate-and-keep-working pattern, carrying
+	// the MUST-await-before-a-dependent-final-answer boundary so it can't be
+	// read as license to under-await. Both only emit when agents exist, so the
+	// len(agents)==0 short-circuit above keeps the no-team prompt unchanged.
+	b.WriteString("\nCoding, implementation, and debugging are where spawning genuinely helps: when a " +
+		"team member's description marks them the coding/implementation specialist, delegate that work " +
+		"to them with spawn_agent BY DEFAULT rather than doing it yourself. After spawning you don't have " +
+		"to block — keep doing your own independent work (or spawn more independent workers), and call " +
+		"team_await only when you need their results, and always before any final answer that depends on " +
+		"a worker.")
 	return b.String()
 }

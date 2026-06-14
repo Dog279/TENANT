@@ -654,11 +654,15 @@ const orchestratorPrompt = "You are the ORCHESTRATOR of a team of AI agents. Bre
 	"Spawn agents ONLY for INDEPENDENT, parallel work. Do NOT spawn an agent whose job is to wait for or " +
 	"combine other agents' outputs — sub-agents run at the same time and can't reliably receive each " +
 	"other's results; YOU are the synthesis layer, so do any comparison/combination yourself. After " +
-	"spawning every agent the task needs, call team_await ONCE — it BLOCKS until the whole team finishes " +
-	"and returns their results. Do NOT poll team_check in a loop to wait; it returns immediately and you " +
-	"will run out of steps before they finish. Only once team_await returns, synthesize ONE final answer " +
-	"from the collected results — and if a sub-agent reports it couldn't find something, reflect that " +
-	"honestly rather than inventing details."
+	"spawning the agents the task needs, call team_await ONCE — it BLOCKS until the whole team finishes " +
+	"and returns their results, and you MUST await before writing any final answer that depends on a " +
+	"worker's output. You don't have to await the instant you spawn, though: if you have your own " +
+	"INDEPENDENT part to do (or more independent workers to spawn), do that first, then team_await once " +
+	"you need the workers' results. (Example: spawn a coder to implement X, keep researching Y yourself, " +
+	"then team_await once and combine.) Do NOT poll team_check in a loop to wait; it returns immediately " +
+	"and you will run out of steps before they finish. Only once team_await returns, synthesize ONE final " +
+	"answer from the collected results — and if a sub-agent reports it couldn't find something, reflect " +
+	"that honestly rather than inventing details."
 
 // spawnTool gives the orchestrator the spawn_agent + team_await verbs.
 type spawnTool struct {
@@ -686,7 +690,7 @@ func (t spawnTool) Tools() []model.ToolSpec {
 		},
 		{
 			Name:        "team_await",
-			Description: "BLOCK until ALL spawned sub-agents finish, then return each one's result. Call this exactly ONCE after spawning the team, before writing your final answer. This is how you WAIT for the team — do NOT poll team_check in a loop to wait (team_check returns immediately and you'll run out of steps before they finish).",
+			Description: "BLOCK until ALL spawned sub-agents finish, then return each one's result. Call this ONCE when you need the team's results — at the latest, before writing any final answer that depends on them. You may do your own independent work or spawn more independent workers first; you do not have to await immediately. This is how you WAIT for the team — do NOT poll team_check in a loop to wait (team_check returns immediately and you'll run out of steps before they finish).",
 			Parameters:  t.obj(``),
 		},
 	}
@@ -706,10 +710,10 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 		if err != nil {
 			return "spawn failed: " + err.Error(), true, nil
 		}
-		return "spawned " + id + " (running concurrently). Once you've spawned all the " +
-			"sub-agents you need, call team_await ONCE to block until they finish and return " +
-			"their results. Do NOT poll team_check repeatedly — it returns immediately and you " +
-			"will run out of steps before the team is done.", false, nil
+		return "spawned " + id + " (running concurrently). Keep doing your own independent work or " +
+			"spawn more independent workers; call team_await ONCE when you need the results — at the " +
+			"latest before any final answer that depends on them. Don't poll team_check in a loop to " +
+			"wait (it returns immediately and wastes your steps).", false, nil
 	case "team_await":
 		to := t.timeout
 		if to <= 0 {
