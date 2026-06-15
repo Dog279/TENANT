@@ -194,6 +194,11 @@ type imessageConfig struct {
 	// Phase-2 text-confirm flow — distinct from AllowFrom so an allowlisted
 	// contact can chat but not approve dangerous actions. Unused until Phase 2.
 	Operator string `json:"operator,omitempty"`
+	// Permissions is the per-category ask|allow|deny policy for the responder's
+	// gated tools (TEN-230) — same categories/modes as the global /permissions,
+	// set via /imessage permissions. Empty ⇒ deny-by-default (offsite). Category
+	// keys: exec | write | destructive | web | send.
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // cronConfig persists the recurring-job DEFINITIONS plus a few engine-wide

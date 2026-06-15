@@ -2247,14 +2247,32 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return c.lc.save(c.cfgDir)
 	})
 
+	// iMessage gated-tool permissions (TEN-230): a SECOND approval broker, scoped
+	// to the responder, with its own per-category modes (default DENY — offsite
+	// deny-by-default) but SHARING the global broker's request channel so an
+	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
+	// by /imessage permissions; persisted to config.
+	imsgBroker := newOffsiteApprovalBroker(log, broker.requests)
+	imsgBroker.persist = func(snap map[string]string) {
+		if c.lc == nil {
+			return
+		}
+		c.lc.IMessage.Permissions = snap
+		_ = c.lc.save(c.cfgDir)
+	}
+	if c.lc != nil {
+		imsgBroker.loadModes(c.lc.IMessage.Permissions)
+	}
+	imsgAllowMgr.setPerms(imsgBroker)
+
 	// iMessage autonomous responder (TEN-230): a live-toggle manager driven by
 	// `/imessage on|off`, over the native transport (macOS only). buildFn opens
 	// chat.db + the openclaw anti-loop Watcher + a dedicated agent LAZILY on
 	// Start (so chat.db is untouched until turned on); AllowFrom is read fresh
-	// each Start (live /imessage edits apply on the next `on`); gated tools fail
-	// closed (deny-all confirm) until the Phase-2 text-confirm flow. enabled is
-	// persisted so it auto-starts next launch. Best-effort: a setup failure is a
-	// feed note, never fatal.
+	// each Start (live /imessage edits apply on the next `on`); gated tools are
+	// gated by the iMessage broker's per-category modes (deny-by-default; ask
+	// prompts the operator at this TUI). enabled is persisted so it auto-starts
+	// next launch. Best-effort: a setup failure is a feed note, never fatal.
 	imsgResp := &imessageResponderManager{
 		base: ctx, log: log,
 		allowFrom: imsgAllowMgr.AllowList,
@@ -2291,7 +2309,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 			}
 			resp := &imessageResponder{
 				poller: watcher, sender: nat, runner: ag,
-				confirm: denyAllConfirm, log: log, degraded: degraded.Degraded,
+				// Gated tools route to the iMessage broker (per-category modes);
+				// the [iMessage] tag tells the operator the prompt is offsite.
+				confirm: func(cctx context.Context, action, detail string) bool {
+					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
+				},
+				log: log, degraded: degraded.Degraded,
 			}
 			return resp, func() { _ = nat.Close() }, nil
 		},

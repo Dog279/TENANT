@@ -110,6 +110,25 @@ func newApprovalBroker(log *slog.Logger) *approvalBroker {
 // Requests is the channel the TUI drains for approval prompts.
 func (b *approvalBroker) Requests() <-chan tui.ApprovalRequest { return b.requests }
 
+// newOffsiteApprovalBroker builds a SECOND broker for an offsite channel (the
+// iMessage responder, TEN-230): its own per-category modes — default DENY
+// (offsite deny-by-default; the operator opens categories explicitly) — but it
+// SHARES the on-host TUI's approval request channel, so an "ask" prompts the
+// operator at the Mac console exactly like the global /permissions. It satisfies
+// tui.PermissionControl, so /imessage permissions drives it with the same syntax.
+func newOffsiteApprovalBroker(log *slog.Logger, requests chan tui.ApprovalRequest) *approvalBroker {
+	b := &approvalBroker{
+		modes:    map[string]permMode{},
+		session:  map[string]bool{},
+		requests: requests,
+		log:      log,
+	}
+	for _, c := range catOrder {
+		b.modes[c] = modeDeny
+	}
+	return b
+}
+
 // seedFromFlags lifts the launch --allow-* flags into category modes, so
 // existing flags still work: they pre-approve a whole category. Destructive
 // always stays "ask" — no flag blanket-approves irreversible actions.

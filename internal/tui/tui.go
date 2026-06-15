@@ -419,6 +419,10 @@ type IMessageControl interface {
 	// SetResponder turns it on/off live without a relaunch (TEN-230 Phase 1c).
 	ResponderOn() bool
 	SetResponder(on bool) (status string, err error)
+	// Perms exposes the responder's per-category permission control (TEN-230) so
+	// /imessage permissions uses the SAME ask|allow|deny model as /permissions.
+	// nil when the responder is unavailable.
+	Perms() PermissionControl
 }
 
 // CronControl powers /cron: manage recurring jobs. Each job runs an agent prompt
@@ -2014,6 +2018,7 @@ var helpSections = []helpSection{
 			{"/deny", "reject a paused dangerous action"},
 			{"/imessage [list]", "view the iMessage allowlist + responder state"},
 			{"/imessage on | off", "start/stop the autonomous responder (reply to texts) live"},
+			{"/imessage permissions", "per-category ask|allow|deny for the responder's tools (like /permissions)"},
 			{"/imessage allow <handle>", "permit a phone/email to drive the agent over iMessage"},
 			{"/imessage deny <handle> | clear", "remove one handle, or empty the allowlist"},
 		},
@@ -2633,8 +2638,36 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			} else {
 				m.sysChat("📴 " + status)
 			}
+		case "permissions", "perms", "permission":
+			// Same model + syntax as the global /permissions, scoped to the
+			// iMessage responder's gated tools (TEN-230): per-category ask|allow|
+			// deny. "ask" prompts the operator at this TUI.
+			pc := m.cfg.IMessage.Perms()
+			if pc == nil {
+				m.sysChat("imessage permissions unavailable here (responder is macOS-only)")
+				break
+			}
+			pf := strings.Fields(rest)
+			switch {
+			case len(pf) == 0:
+				plain, styled := renderPermissionsFor(pc, "iMessage permissions", "/imessage permissions")
+				m.sysChatStyled(plain, styled)
+			case strings.ToLower(pf[0]) == "set" && len(pf) >= 3:
+				cat, mode := strings.ToLower(pf[1]), strings.ToLower(pf[2])
+				ok, err := pc.SetPermission(cat, mode)
+				switch {
+				case err != nil:
+					m.sysChat("imessage: " + err.Error())
+				case !ok:
+					m.sysChat("no such category " + pf[1] + " (see /imessage permissions)")
+				default:
+					m.sysChat("🔐 imessage " + cat + " → " + mode)
+				}
+			default:
+				m.sysChat("usage: /imessage permissions   |   /imessage permissions set <category> <ask|allow|deny>")
+			}
 		default:
-			m.sysChat("usage: /imessage [list | on | off | allow <handle> | deny <handle> | clear]")
+			m.sysChat("usage: /imessage [list | on | off | permissions [set <cat> <mode>] | allow <handle> | deny <handle> | clear]")
 		}
 	case "/mcp":
 		// Connect/manage remote MCP connector servers (TEN-164). `/mcp add
@@ -4159,10 +4192,17 @@ func (m *model) sendDecision(d ApprovalDecision) {
 
 // renderPermissions builds the /permissions view as (plain, styled).
 func (m *model) renderPermissions() (string, string) {
-	infos := m.cfg.Perms.Permissions()
+	return renderPermissionsFor(m.cfg.Perms, "Permissions", "/permissions")
+}
+
+// renderPermissionsFor renders any PermissionControl's per-category modes — used
+// by both /permissions (global) and /imessage permissions (offsite), so they
+// look identical (TEN-230).
+func renderPermissionsFor(pc PermissionControl, header, cmd string) (string, string) {
+	infos := pc.Permissions()
 	var p, s strings.Builder
-	p.WriteString("Permissions  (ask / allow / deny)   ·   /permissions set <category> <mode>\n")
-	s.WriteString(cHeading.Render("Permissions") + cDim.Render("  ask / allow / deny   ·   /permissions set <category> <mode>") + "\n")
+	p.WriteString(header + "  (ask / allow / deny)   ·   " + cmd + " set <category> <mode>\n")
+	s.WriteString(cHeading.Render(header) + cDim.Render("  ask / allow / deny   ·   "+cmd+" set <category> <mode>") + "\n")
 	for _, in := range infos {
 		p.WriteString(fmt.Sprintf("  %-12s %-5s  %s\n", in.Category, in.Mode, in.Desc))
 		ms := cSys // ask = yellow

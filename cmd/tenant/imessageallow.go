@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"tenant/internal/plugins/imessage"
+	"tenant/internal/tui"
 )
 
 // imessageAllowManager implements tui.IMessageControl: it owns the persisted
@@ -28,6 +29,9 @@ type imessageAllowManager struct {
 	// construction via setResponder. nil ⇒ responder unavailable (e.g. not
 	// macOS), and /imessage on|off reports that cleanly.
 	resp *imessageResponderManager
+	// perms is the responder's per-category permission broker (TEN-230), exposed
+	// to /imessage permissions. nil ⇒ unavailable.
+	perms tui.PermissionControl
 }
 
 // newIMessageAllowManager builds a manager seeded from the persisted handles.
@@ -38,6 +42,13 @@ func newIMessageAllowManager(initial []string, persist func([]string) error) *im
 // setResponder wires the live responder manager so /imessage on|off can drive
 // it. Call once after both managers are constructed.
 func (m *imessageAllowManager) setResponder(r *imessageResponderManager) { m.resp = r }
+
+// setPerms wires the responder's permission broker (for /imessage permissions).
+func (m *imessageAllowManager) setPerms(p tui.PermissionControl) { m.perms = p }
+
+// Perms exposes the responder's per-category permission control (TEN-230);
+// nil when the responder is unavailable.
+func (m *imessageAllowManager) Perms() tui.PermissionControl { return m.perms }
 
 // ResponderOn reports whether the autonomous responder is running.
 func (m *imessageAllowManager) ResponderOn() bool { return m.resp != nil && m.resp.On() }

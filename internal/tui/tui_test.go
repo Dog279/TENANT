@@ -3056,6 +3056,7 @@ type fakeIMessage struct {
 	allowErr    error
 	responderOn bool
 	setCalls    []bool // SetResponder(on) calls recorded
+	perms       *fakePerms
 }
 
 func (f *fakeIMessage) ResponderOn() bool { return f.responderOn }
@@ -3066,6 +3067,33 @@ func (f *fakeIMessage) SetResponder(on bool) (string, error) {
 		return "imessage responder ON", nil
 	}
 	return "imessage responder OFF", nil
+}
+func (f *fakeIMessage) Perms() PermissionControl {
+	if f.perms == nil {
+		return nil
+	}
+	return f.perms
+}
+
+// fakePerms is a minimal PermissionControl for the /imessage permissions tests.
+type fakePerms struct {
+	modes    map[string]string
+	setCalls []string // "cat=mode"
+}
+
+func (p *fakePerms) Permissions() []PermissionInfo {
+	return []PermissionInfo{{Category: "exec", Mode: p.modes["exec"], Desc: "run commands"}}
+}
+func (p *fakePerms) SetPermission(cat, mode string) (bool, error) {
+	if cat != "exec" && cat != "write" && cat != "destructive" && cat != "web" && cat != "send" {
+		return false, nil
+	}
+	if p.modes == nil {
+		p.modes = map[string]string{}
+	}
+	p.modes[cat] = mode
+	p.setCalls = append(p.setCalls, cat+"="+mode)
+	return true, nil
 }
 
 func (f *fakeIMessage) AllowList() []string { return f.list }
@@ -3123,6 +3151,32 @@ func TestSlash_IMessageResponderToggle(t *testing.T) {
 	last := m.msgs[len(m.msgs)-1].content
 	if !strings.Contains(strings.ToLower(last), "responder: on") {
 		t.Errorf("list should show responder ON state; got:\n%s", last)
+	}
+}
+
+// TEN-230: /imessage permissions mirrors the global /permissions (per-category
+// ask|allow|deny), scoped to the responder.
+func TestSlash_IMessagePermissions(t *testing.T) {
+	fi := &fakeIMessage{perms: &fakePerms{modes: map[string]string{"exec": "deny"}}}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage permissions set exec allow")
+	if len(fi.perms.setCalls) != 1 || fi.perms.setCalls[0] != "exec=allow" {
+		t.Fatalf("set should route to SetPermission: %v", fi.perms.setCalls)
+	}
+	m.handleSlash("/imessage permissions")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(last, "iMessage permissions") {
+		t.Errorf("bare /imessage permissions should render the table; got:\n%s", last)
+	}
+
+	// Unavailable (nil perms) → graceful message, no panic.
+	m2 := newModel(context.Background(), Config{IMessage: &fakeIMessage{}})
+	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m2.handleSlash("/imessage permissions")
+	if last := m2.msgs[len(m2.msgs)-1].content; !strings.Contains(last, "unavailable") {
+		t.Errorf("nil perms should report unavailable, got %q", last)
 	}
 }
 
