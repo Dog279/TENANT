@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -228,7 +229,7 @@ func (r *relay) stopActive() bool {
 
 // deliver posts a finished turn's answer to its DM channel. A cancelled turn
 // (operator "stop") posts nothing here — the stop path already confirmed. v1
-// posts ONE chunked final answer + a terminal "(done)"; no live progress.
+// posts ONE chunked final answer; no live progress.
 func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnResult, err error) {
 	if ctx.Err() != nil {
 		return // stopped/cancelled
@@ -239,7 +240,7 @@ func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnRe
 	}
 	text := ""
 	if res != nil {
-		text = strings.TrimSpace(res.Response)
+		text = strings.TrimSpace(stripStatusToken(res.Response))
 	}
 	if text == "" {
 		text = "(no answer)"
@@ -247,7 +248,6 @@ func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnRe
 	for _, c := range chunkMessage(text, discordMsgLimit) {
 		r.reply(channelID, c)
 	}
-	r.reply(channelID, "(done)")
 }
 
 // reply sends a bot message, logging (not surfacing) a transport failure.
@@ -260,6 +260,17 @@ func (r *relay) reply(channelID, content string) {
 	if err := r.sender.Send(ctx, channelID, content); err != nil && r.log != nil {
 		r.log.Warn("discord relay: send failed", "channel", channelID, "err", err)
 	}
+}
+
+// stripStatusToken removes trailing status-escalation tokens that the agent
+// appends to satisfy the status-escalation skill (e.g. "(done)", "DONE",
+// "STATUS: DONE"). These are internal conventions — never meant for Discord.
+func stripStatusToken(s string) string {
+	// Strip trailing "STATUS: <TOKEN>" lines first (the multi-line escalation format).
+	s = regexp.MustCompile(`(?im)^\s*STATUS:\s*(DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)\b.*$`).ReplaceAllString(s, "")
+	// Strip a trailing standalone token on its own line: "(done)", "DONE", etc.
+	s = regexp.MustCompile(`(?im)\n+\s*\(?(DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT)\)?\s*$`).ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
 }
 
 // chunkMessage splits s into pieces no longer than limit runes, preferring to
