@@ -1,11 +1,13 @@
 package discord
 
 // gateway.go is TEN-115: the inbound Discord Gateway client — the "Surface B"
-// socket the package header (discord.go) deferred. Hand-rolled on
+// socket described in the package header (discord.go). Hand-rolled on
 // github.com/gobwas/ws (already a direct dep via internal/dashboard/ws.go), zero
-// new modules, matching the no-SDK ethos. Operator-DM scope: intents =
-// DIRECT_MESSAGES|GUILDS (4097), so NO MESSAGE_CONTENT privileged intent and no
-// portal verification are required (DM content is intent-exempt).
+// new modules, matching the no-SDK ethos. Intents = GUILDS | GUILD_MESSAGES |
+// DIRECT_MESSAGES | MESSAGE_CONTENT (37377, see intentsDMGuilds): GUILD_MESSAGES
+// delivers MESSAGE_CREATE in servers, and MESSAGE_CONTENT — a privileged intent
+// that must be enabled in the Developer Portal — carries the message text in
+// both DMs and guild channels.
 //
 // Design: the protocol FSM (Hello/IDENTIFY/RESUME/heartbeat/dispatch + the
 // reconnect/resume/give-up decision) runs over a gwConn TRANSPORT SEAM so it is

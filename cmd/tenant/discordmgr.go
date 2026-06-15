@@ -64,10 +64,10 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 	sender := discordSender{svc: svc}
 	approver := newDiscordApprover(sender, d.log)
 
-	// discord_* tools route to the approver (not the shared TUI broker). The
-	// rest go through the restricted surface — which, in exec mode, lets gated
-	// dangerous tools through to d.fullDisp, where originConfirm (wired at the
-	// mux) routes their approval to THIS approver via the offsite-stamped ctx.
+	// discord_* tools route to the approver (not the shared TUI broker). Every
+	// other tool delegates to d.fullDisp (the live mux); a gated/dangerous call
+	// there hits originConfirm (wired at the mux), which routes its approval to
+	// THIS approver via the offsite-stamped ctx — so it pops the Discord button.
 	ddisc := discord.NewDispatcher(svc, discord.Policy{Confirm: approver.Confirm})
 	reg, restDisp, gate := restrictForDiscord(d.fullTools, d.fullDisp)
 	disp := &discordRoutingDispatcher{discord: ddisc, rest: restDisp}
@@ -203,10 +203,11 @@ func (m *discordRelayManager) Status() (running bool, operatorSet bool, execOn b
 	return m.running, strings.TrimSpace(m.operatorID) != "", m.allowExec
 }
 
-// SetExec flips offsite exec mode live (the dedicated agent's dynamic registry +
-// dispatcher honor the shared gate immediately) and persists the choice. Exec
-// mode unlocks the gated dangerous tools offsite — each still requires a
-// per-action button approval — but never team/orchestra.
+// SetExec persists the operator's offsite exec-mode preference and mirrors it
+// onto the shared gate (which the cron runner still consults). NOTE: since
+// TEN-229 the Discord agent sees the full live tool surface regardless of this
+// flag — every dangerous call is gated per-action by the button approver — so
+// for Discord this is a persisted preference, not a tool-visibility switch.
 func (m *discordRelayManager) SetExec(on bool) error {
 	if m.runner == nil {
 		return fmt.Errorf("discord not configured — run `/skill configure discord <bot-token>` first")

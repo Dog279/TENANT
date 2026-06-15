@@ -1,14 +1,11 @@
 // Package discord is Tenant's Discord connector — a CGO-free pure-Go
 // REST client against the official Discord API (https://discord.com/api/v10)
-// authenticated as a bot. Surface A from the 4+1 debate verdict: the
-// agent can SEND, READ, REACT, and LIST channels/guilds. Surface B
-// (Discord users → agent.Turn via Gateway WebSocket) is explicitly
-// DEFERRED per the judge's ruling — requires a per-Discord-user-ID
-// rate limiter, allowlist gate for first-N posts per guild, and a
-// Gateway lifecycle implementation (opcodes 7/9, resume_gateway_url,
-// identify backoff) that doesn't exist today. See tasks/todo.md
-// "Discord plan 4+1 debate" entry for the deferred-scope hardening
-// list.
+// authenticated as a bot. Surface A: the agent can SEND, READ, REACT, and
+// LIST channels/guilds. Surface B (Discord users → agent.Turn via the Gateway
+// WebSocket) is implemented in gateway.go (TEN-115): the Gateway lifecycle
+// (opcodes 7/9, resume_gateway_url, identify backoff) drives a dedicated agent
+// turn from an @mention/DM, gated by the relay's operator allowlist and the
+// per-action button approver.
 //
 // Implementation notes:
 //   - No SDK. Direct net/http calls; the RetryDecorator already shipped
@@ -97,9 +94,9 @@ type api struct {
 // returns {"code": N, "message": "..."} on most failures; some 4xx
 // responses also include {"errors": {...}} with per-field validation.
 type apiError struct {
-	Status     int    // HTTP status
-	DiscordErr int    // Discord's numeric error code (50001 = missing access, etc.)
-	Message    string // human-readable message
+	Status     int           // HTTP status
+	DiscordErr int           // Discord's numeric error code (50001 = missing access, etc.)
+	Message    string        // human-readable message
 	RetryAfter time.Duration // populated on 429
 }
 
