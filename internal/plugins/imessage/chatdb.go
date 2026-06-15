@@ -407,12 +407,13 @@ func normalizeHandle(h string) string {
 	if strings.Contains(h, "@") {
 		return strings.ToLower(h)
 	}
+	// Phone: digits only — drop spaces, punctuation, AND a leading "+" so the
+	// chat.db E.164 form (+15551230000) matches an allowlist entry typed without
+	// the plus (15551230000). Keeping the "+" made those compare unequal and
+	// silently dropped inbound texts from allowlisted senders (TEN-230).
 	var b strings.Builder
-	for i, ch := range h {
-		switch {
-		case ch >= '0' && ch <= '9':
-			b.WriteRune(ch)
-		case ch == '+' && i == 0:
+	for _, ch := range h {
+		if ch >= '0' && ch <= '9' {
 			b.WriteRune(ch)
 		}
 	}

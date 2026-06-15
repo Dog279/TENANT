@@ -30,7 +30,7 @@ func TestNewAllowListNormalizesDedupesSorts(t *testing.T) {
 		"bob@b.io",
 	})
 	got := a.Handles()
-	want := []string{"+15551234567", "bob@b.io", "foo@example.com"}
+	want := []string{"15551234567", "bob@b.io", "foo@example.com"} // phone normalized digits-only (no +)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Handles()=%v, want %v", got, want)
 	}

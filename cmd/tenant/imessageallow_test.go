@@ -99,7 +99,7 @@ func TestIMessageAllowManager_Deny(t *testing.T) {
 	if err != nil || !removed || norm != "a@x.io" {
 		t.Fatalf("Deny = (%q, %v, %v), want (a@x.io, true, nil)", norm, removed, err)
 	}
-	if got, want := m.AllowList(), []string{"+15551234567"}; !eqStrings(got, want) {
+	if got, want := m.AllowList(), []string{"15551234567"}; !eqStrings(got, want) { // digits-only (no +)
 		t.Fatalf("AllowList after Deny=%v, want %v", got, want)
 	}
 
