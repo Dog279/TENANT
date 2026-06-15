@@ -124,6 +124,88 @@ func TestIMessageResponder_DegradedRefuses(t *testing.T) {
 	}
 }
 
+type fakeRunnable struct{ started chan struct{} }
+
+func (f *fakeRunnable) Run(ctx context.Context) {
+	if f.started != nil {
+		close(f.started)
+	}
+	<-ctx.Done() // run until the manager cancels
+}
+
+// TEN-230 Phase 1c: the responder manager starts/stops live, reads the allowlist
+// fresh at each Start, persists the enabled intent, and cleans up on Stop.
+func TestIMessageResponderManager_StartStopLifecycle(t *testing.T) {
+	var persisted []bool
+	var lastAllow []string
+	builds, cleanups := 0, 0
+	started := make(chan struct{})
+	mgr := &imessageResponderManager{
+		base:      context.Background(),
+		allowFrom: func() []string { return []string{"+15551234567", "a@b.com"} },
+		persist:   func(on bool) error { persisted = append(persisted, on); return nil },
+		buildFn: func(allow []string) (responderRunnable, func(), error) {
+			builds++
+			lastAllow = allow
+			return &fakeRunnable{started: started}, func() { cleanups++ }, nil
+		},
+	}
+
+	if mgr.On() {
+		t.Fatal("manager should start OFF")
+	}
+	status, err := mgr.Start()
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !mgr.On() || !strings.Contains(status, "ON") {
+		t.Fatalf("should be ON after Start (status=%q)", status)
+	}
+	<-started // the runnable goroutine actually launched
+	if builds != 1 || len(lastAllow) != 2 {
+		t.Fatalf("buildFn should run once with the fresh allowlist: builds=%d allow=%v", builds, lastAllow)
+	}
+
+	// Idempotent: a second Start doesn't rebuild.
+	if s, _ := mgr.Start(); !strings.Contains(s, "already on") || builds != 1 {
+		t.Fatalf("second Start should be a no-op: status=%q builds=%d", s, builds)
+	}
+
+	if _, err := mgr.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if mgr.On() {
+		t.Fatal("should be OFF after Stop")
+	}
+	if cleanups != 1 {
+		t.Errorf("cleanup should run exactly once on Stop, got %d", cleanups)
+	}
+	// Idempotent Stop.
+	if s, _ := mgr.Stop(); !strings.Contains(s, "already off") {
+		t.Errorf("second Stop should be a no-op: %q", s)
+	}
+	if len(persisted) != 2 || persisted[0] != true || persisted[1] != false {
+		t.Errorf("enabled intent should persist true then false, got %v", persisted)
+	}
+}
+
+func TestIMessageResponderManager_StartBuildErrorStaysOff(t *testing.T) {
+	mgr := &imessageResponderManager{
+		base:      context.Background(),
+		allowFrom: func() []string { return nil },
+		persist:   func(bool) error { t.Fatal("persist must not be called on a failed Start"); return nil },
+		buildFn: func([]string) (responderRunnable, func(), error) {
+			return nil, nil, fmt.Errorf("no Full Disk Access")
+		},
+	}
+	if _, err := mgr.Start(); err == nil {
+		t.Fatal("Start should surface the build error")
+	}
+	if mgr.On() {
+		t.Fatal("a failed Start must leave the responder OFF")
+	}
+}
+
 func TestIMessageResponder_TurnErrorReplies(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "boom")}}
 	s := &fakeIMsgSender{}

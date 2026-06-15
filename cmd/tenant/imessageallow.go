@@ -24,11 +24,33 @@ type imessageAllowManager struct {
 	mu      sync.Mutex
 	list    *imessage.AllowList
 	persist func(handles []string) error // write-through to launchConfig (nil = no persist)
+	// resp is the live responder lifecycle (TEN-230 Phase 1c), set after
+	// construction via setResponder. nil ⇒ responder unavailable (e.g. not
+	// macOS), and /imessage on|off reports that cleanly.
+	resp *imessageResponderManager
 }
 
 // newIMessageAllowManager builds a manager seeded from the persisted handles.
 func newIMessageAllowManager(initial []string, persist func([]string) error) *imessageAllowManager {
 	return &imessageAllowManager{list: imessage.NewAllowList(initial), persist: persist}
+}
+
+// setResponder wires the live responder manager so /imessage on|off can drive
+// it. Call once after both managers are constructed.
+func (m *imessageAllowManager) setResponder(r *imessageResponderManager) { m.resp = r }
+
+// ResponderOn reports whether the autonomous responder is running.
+func (m *imessageAllowManager) ResponderOn() bool { return m.resp != nil && m.resp.On() }
+
+// SetResponder turns the autonomous responder on/off live (TEN-230 Phase 1c).
+func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
+	if m.resp == nil {
+		return "", fmt.Errorf("imessage responder unavailable here (native transport is macOS-only)")
+	}
+	if on {
+		return m.resp.Start()
+	}
+	return m.resp.Stop()
 }
 
 // AllowList returns the current handles in sorted, normalized form.

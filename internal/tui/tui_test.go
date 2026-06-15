@@ -3049,11 +3049,23 @@ func TestRenderPicker_HighlightsSelected(t *testing.T) {
 // fakeIMessage is a stub IMessageControl that records calls + lets a test seed
 // the list and force errors.
 type fakeIMessage struct {
-	list       []string
-	allowCalls []string
-	denyCalls  []string
-	clearCalls int
-	allowErr   error
+	list        []string
+	allowCalls  []string
+	denyCalls   []string
+	clearCalls  int
+	allowErr    error
+	responderOn bool
+	setCalls    []bool // SetResponder(on) calls recorded
+}
+
+func (f *fakeIMessage) ResponderOn() bool { return f.responderOn }
+func (f *fakeIMessage) SetResponder(on bool) (string, error) {
+	f.setCalls = append(f.setCalls, on)
+	f.responderOn = on
+	if on {
+		return "imessage responder ON", nil
+	}
+	return "imessage responder OFF", nil
 }
 
 func (f *fakeIMessage) AllowList() []string { return f.list }
@@ -3088,6 +3100,29 @@ func TestSlash_IMessageListEmptyShowsDenyByDefault(t *testing.T) {
 	last := m.msgs[len(m.msgs)-1].content
 	if !strings.Contains(strings.ToLower(last), "deny-by-default") || !strings.Contains(last, "empty") {
 		t.Errorf("empty allowlist must render a deny-by-default notice; got:\n%s", last)
+	}
+}
+
+// TEN-230 Phase 1c: /imessage on|off drives the live responder toggle.
+func TestSlash_IMessageResponderToggle(t *testing.T) {
+	fi := &fakeIMessage{}
+	m := newModel(context.Background(), Config{IMessage: fi})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/imessage on")
+	if len(fi.setCalls) != 1 || fi.setCalls[0] != true || !fi.responderOn {
+		t.Fatalf("/imessage on should turn the responder on: calls=%v on=%v", fi.setCalls, fi.responderOn)
+	}
+	m.handleSlash("/imessage off")
+	if len(fi.setCalls) != 2 || fi.setCalls[1] != false || fi.responderOn {
+		t.Fatalf("/imessage off should turn it off: calls=%v on=%v", fi.setCalls, fi.responderOn)
+	}
+	// The list view reflects responder state.
+	fi.responderOn = true
+	m.handleSlash("/imessage list")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(strings.ToLower(last), "responder: on") {
+		t.Errorf("list should show responder ON state; got:\n%s", last)
 	}
 }
 

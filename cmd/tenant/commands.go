@@ -2247,37 +2247,61 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return c.lc.save(c.cfgDir)
 	})
 
-	// iMessage autonomous responder (TEN-230 Phase 1b): opt-in via
-	// imessage.enabled, native transport only. Polls chat.db via the openclaw
-	// anti-loop Watcher, drives a dedicated agent turn per inbound text from an
-	// allowed handle, and replies — gated tools fail closed (deny-all confirm)
-	// until the Phase-2 text-confirm flow. Best-effort: any setup failure is a
-	// feed note, never fatal (the TUI keeps running). The allowlist is read at
-	// start; editing it live via /imessage takes effect on the next launch.
-	if c.lc != nil && c.lc.IMessage.Enabled {
-		if nat, nerr := imessage.OpenNative(imessage.NativeConfig{}); nerr != nil {
-			pushSys("imessage responder: " + nerr.Error())
-		} else if watcher, werr := imessage.NewWatcher(imessage.WatchConfig{
-			Source: nat, Store: meta, Account: c.agent, AllowFrom: c.lc.IMessage.AllowFrom,
-		}); werr != nil {
-			pushSys("imessage responder: watcher: " + werr.Error())
-		} else if imsgAgent, aerr := buildIMessageAgent(imessageAgentDeps{
-			router: router, soulLive: soulLive, archive: st.archive,
-			episodic: st.episodic, semantic: st.semantic,
-			skills:    skillRetriever{st: skillStore, agentID: c.agent},
-			compactor: compressor, userProfile: prof,
-			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
-			sysPrompt: sysPrompt, log: log,
-		}); aerr != nil {
-			pushSys("imessage responder: agent: " + aerr.Error())
-		} else {
+	// iMessage autonomous responder (TEN-230): a live-toggle manager driven by
+	// `/imessage on|off`, over the native transport (macOS only). buildFn opens
+	// chat.db + the openclaw anti-loop Watcher + a dedicated agent LAZILY on
+	// Start (so chat.db is untouched until turned on); AllowFrom is read fresh
+	// each Start (live /imessage edits apply on the next `on`); gated tools fail
+	// closed (deny-all confirm) until the Phase-2 text-confirm flow. enabled is
+	// persisted so it auto-starts next launch. Best-effort: a setup failure is a
+	// feed note, never fatal.
+	imsgResp := &imessageResponderManager{
+		base: ctx, log: log,
+		allowFrom: imsgAllowMgr.AllowList,
+		persist: func(enabled bool) error {
+			if c.lc == nil {
+				return nil
+			}
+			c.lc.IMessage.Enabled = enabled
+			return c.lc.save(c.cfgDir)
+		},
+		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
+			nat, err := imessage.OpenNative(imessage.NativeConfig{})
+			if err != nil {
+				return nil, nil, err
+			}
+			watcher, err := imessage.NewWatcher(imessage.WatchConfig{
+				Source: nat, Store: meta, Account: c.agent, AllowFrom: allowFrom,
+			})
+			if err != nil {
+				_ = nat.Close()
+				return nil, nil, fmt.Errorf("watcher: %w", err)
+			}
+			ag, err := buildIMessageAgent(imessageAgentDeps{
+				router: router, soulLive: soulLive, archive: st.archive,
+				episodic: st.episodic, semantic: st.semantic,
+				skills:    skillRetriever{st: skillStore, agentID: c.agent},
+				compactor: compressor, userProfile: prof,
+				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
+				sysPrompt: sysPrompt, log: log,
+			})
+			if err != nil {
+				_ = nat.Close()
+				return nil, nil, fmt.Errorf("agent: %w", err)
+			}
 			resp := &imessageResponder{
-				poller: watcher, sender: nat, runner: imsgAgent,
+				poller: watcher, sender: nat, runner: ag,
 				confirm: denyAllConfirm, log: log, degraded: degraded.Degraded,
 			}
-			go resp.Run(ctx)
-			n := len(c.lc.IMessage.AllowFrom)
-			pushSys(fmt.Sprintf("imessage responder: live (native; %d allowed handle(s); gated tools require approval — Phase 2)", n))
+			return resp, func() { _ = nat.Close() }, nil
+		},
+	}
+	imsgAllowMgr.setResponder(imsgResp)
+	if c.lc != nil && c.lc.IMessage.Enabled { // auto-start if left enabled
+		if status, err := imsgResp.Start(); err != nil {
+			pushSys("imessage responder: " + err.Error())
+		} else {
+			pushSys(status)
 		}
 	}
 

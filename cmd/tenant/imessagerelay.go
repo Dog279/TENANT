@@ -17,8 +17,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"tenant/internal/agent"
@@ -175,6 +177,90 @@ const imessageSysSuffix = "\n\nYou are answering over iMessage (SMS-style). Keep
 	"use your read/research tools freely. Dangerous or gated actions (running commands, writing files, " +
 	"texting a different person) require the operator's approval; if one isn't available, say so plainly " +
 	"rather than pretending it's done."
+
+// responderRunnable is the long-poll loop the manager starts/stops.
+// *imessageResponder satisfies it.
+type responderRunnable interface {
+	Run(ctx context.Context)
+}
+
+// imessageResponderManager starts/stops the responder live (TEN-230 Phase 1c)
+// so `/imessage on|off` works without a relaunch. buildFn opens the native
+// transport + Watcher + agent LAZILY on Start — chat.db isn't touched until the
+// operator turns it on — and returns a cleanup run on Stop. allowFrom is read at
+// each Start so live `/imessage allow` edits take effect on the next on. persist
+// records the intent (imessage.enabled) so it survives restart.
+type imessageResponderManager struct {
+	base      context.Context
+	buildFn   func(allowFrom []string) (responderRunnable, func(), error)
+	allowFrom func() []string
+	persist   func(enabled bool) error
+	log       *slog.Logger
+
+	mu      sync.Mutex
+	running bool
+	cancel  context.CancelFunc
+	cleanup func()
+}
+
+// On reports whether the responder loop is currently running.
+func (m *imessageResponderManager) On() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.running
+}
+
+// Start builds + launches the responder (idempotent). Persists enabled=true.
+func (m *imessageResponderManager) Start() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running {
+		return "imessage responder is already on", nil
+	}
+	var allow []string
+	if m.allowFrom != nil {
+		allow = m.allowFrom()
+	}
+	r, cleanup, err := m.buildFn(allow)
+	if err != nil {
+		return "", err
+	}
+	base := m.base
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	m.cancel, m.cleanup, m.running = cancel, cleanup, true
+	go r.Run(ctx)
+	if m.persist != nil {
+		if perr := m.persist(true); perr != nil && m.log != nil {
+			m.log.Warn("imessage responder: persist enabled failed", "err", perr)
+		}
+	}
+	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools require approval (Phase 2)", len(allow)), nil
+}
+
+// Stop cancels the loop + releases the transport (idempotent). Persists enabled=false.
+func (m *imessageResponderManager) Stop() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.running {
+		return "imessage responder is already off", nil
+	}
+	if m.cancel != nil {
+		m.cancel()
+	}
+	if m.cleanup != nil {
+		m.cleanup()
+	}
+	m.cancel, m.cleanup, m.running = nil, nil, false
+	if m.persist != nil {
+		if perr := m.persist(false); perr != nil && m.log != nil {
+			m.log.Warn("imessage responder: persist disabled failed", "err", perr)
+		}
+	}
+	return "imessage responder OFF", nil
+}
 
 // buildIMessageAgent constructs the dedicated iMessage agent over the live tool
 // surface (gating enforced per-turn via the responder's offsite-confirm).

@@ -415,6 +415,10 @@ type IMessageControl interface {
 	Allow(handle string) (normalized string, added bool, err error)
 	Deny(handle string) (normalized string, removed bool, err error)
 	Clear() (n int, err error)
+	// ResponderOn reports whether the autonomous responder loop is running;
+	// SetResponder turns it on/off live without a relaunch (TEN-230 Phase 1c).
+	ResponderOn() bool
+	SetResponder(on bool) (status string, err error)
 }
 
 // CronControl powers /cron: manage recurring jobs. Each job runs an agent prompt
@@ -2008,7 +2012,8 @@ var helpSections = []helpSection{
 			{"/permissions set <cat> <mode>", "e.g. /permissions set exec allow"},
 			{"/approve [session|always]", "approve a paused dangerous action"},
 			{"/deny", "reject a paused dangerous action"},
-			{"/imessage [list]", "view the iMessage drive-allowlist (deny-by-default)"},
+			{"/imessage [list]", "view the iMessage allowlist + responder state"},
+			{"/imessage on | off", "start/stop the autonomous responder (reply to texts) live"},
 			{"/imessage allow <handle>", "permit a phone/email to drive the agent over iMessage"},
 			{"/imessage deny <handle> | clear", "remove one handle, or empty the allowlist"},
 		},
@@ -2180,8 +2185,12 @@ func (m *model) renderIMessageAllow() (string, string) {
 	handles := m.cfg.IMessage.AllowList()
 	var p, s strings.Builder
 	const title = "iMessage drive-allowlist"
-	p.WriteString(title + "\n")
-	s.WriteString(cHeading.Render(title) + "\n")
+	state := "responder: OFF  (turn on with /imessage on)"
+	if m.cfg.IMessage.ResponderOn() {
+		state = "responder: ON  (replying to allowed handles; /imessage off to stop)"
+	}
+	p.WriteString(title + "\n  " + state + "\n")
+	s.WriteString(cHeading.Render(title) + "\n  " + cDim.Render(state) + "\n")
 	if len(handles) == 0 {
 		const empty = "(empty) — deny-by-default: nobody can drive the agent over iMessage."
 		const hint = "Add one with /imessage allow <phone-or-email>."
@@ -2608,8 +2617,24 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			} else {
 				m.sysChat(fmt.Sprintf("imessage: cleared %d handle(s) — allowlist is now empty (deny-by-default: nobody can drive the agent)", n))
 			}
+		case "on", "enable", "start":
+			// Start the autonomous responder live (TEN-230): poll chat.db, reply
+			// to allowed handles. Persists so it auto-starts next launch.
+			status, err := m.cfg.IMessage.SetResponder(true)
+			if err != nil {
+				m.sysChat("imessage: " + err.Error())
+			} else {
+				m.sysChat("📲 " + status)
+			}
+		case "off", "disable", "stop":
+			status, err := m.cfg.IMessage.SetResponder(false)
+			if err != nil {
+				m.sysChat("imessage: " + err.Error())
+			} else {
+				m.sysChat("📴 " + status)
+			}
 		default:
-			m.sysChat("usage: /imessage [list | allow <handle> | deny <handle> | clear]")
+			m.sysChat("usage: /imessage [list | on | off | allow <handle> | deny <handle> | clear]")
 		}
 	case "/mcp":
 		// Connect/manage remote MCP connector servers (TEN-164). `/mcp add
