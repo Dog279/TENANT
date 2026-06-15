@@ -73,7 +73,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "x_post", Description: "Post a tweet (≤280 chars), optionally as a reply. GATED: requires operator approval (it is public + as the user).",
 			Parameters: obj(`"text":{"type":"string"},"reply_to":{"type":"string","description":"tweet id to reply to (optional)"}`, "text"), Gated: true},
 		{Name: "x_delete", Description: "Delete one of the user's own tweets by id. GATED: requires operator approval (irreversible).",
-			Parameters: obj(`"id":{"type":"string"}`, "id"), Gated: true},
+			Parameters: obj(`"id":{"type":"string"}`, "id"), Gated: true, Risk: model.RiskDestructive},
 	}
 }
 

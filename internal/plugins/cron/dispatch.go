@@ -94,7 +94,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Gated: true},
 		{Name: "cron_remove",
 			Description: "Delete a scheduled job by id.",
-			Parameters:  obj(`"id":{"type":"string","description":"the job id from cron_list"}`, "id"), Gated: true},
+			Parameters:  obj(`"id":{"type":"string","description":"the job id from cron_list"}`, "id"), Gated: true, Risk: model.RiskDestructive},
 		{Name: "cron_set_enabled",
 			Description: "Enable or disable a scheduled job by id.",
 			Parameters: obj(`"id":{"type":"string","description":"the job id"},`+

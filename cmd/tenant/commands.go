@@ -2255,8 +2255,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// closed (deny-all confirm) until the Phase-2 text-confirm flow. enabled is
 	// persisted so it auto-starts next launch. Best-effort: a setup failure is a
 	// feed note, never fatal.
+	imsgCap := imessageCapFromConfig(c) // read | write | exec | destructive (default read)
 	imsgResp := &imessageResponderManager{
-		base: ctx, log: log,
+		base: ctx, log: log, cap: imsgCap,
 		allowFrom: imsgAllowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -2265,7 +2266,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 			c.lc.IMessage.Enabled = enabled
 			return c.lc.save(c.cfgDir)
 		},
-		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
+		capPersist: func(cap model.RiskTier) error {
+			if c.lc == nil {
+				return nil
+			}
+			c.lc.IMessage.Cap = cap.String()
+			return c.lc.save(c.cfgDir)
+		},
+		buildFn: func(allowFrom []string, cap model.RiskTier) (responderRunnable, func(), error) {
 			nat, err := imessage.OpenNative(imessage.NativeConfig{})
 			if err != nil {
 				return nil, nil, err
@@ -2277,12 +2285,16 @@ func cmdTUI(ctx context.Context, args []string) error {
 				_ = nat.Close()
 				return nil, nil, fmt.Errorf("watcher: %w", err)
 			}
+			// Cap the surface to RiskLevel ≤ cap: the texted agent can never see
+			// or dispatch a tool above the operator's tier (TEN-230). The live
+			// mux (TEN-229) is the unfiltered base; offsite can only narrow it.
 			ag, err := buildIMessageAgent(imessageAgentDeps{
 				router: router, soulLive: soulLive, archive: st.archive,
 				episodic: st.episodic, semantic: st.semantic,
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
-				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
+				fullTools: riskCapRegistry{inner: mainTools, cap: cap},
+				fullDisp:  riskCapDispatcher{inner: mainTools, reg: mainTools, cap: cap},
 				sysPrompt: sysPrompt, log: log,
 			})
 			if err != nil {
@@ -2291,7 +2303,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 			}
 			resp := &imessageResponder{
 				poller: watcher, sender: nat, runner: ag,
-				confirm: denyAllConfirm, log: log, degraded: degraded.Degraded,
+				// Surface is pre-capped, so within-cap gated tools are permitted;
+				// anything above the cap is filtered out + dispatch-blocked.
+				confirm: allowAllConfirm, log: log, degraded: degraded.Degraded,
 			}
 			return resp, func() { _ = nat.Close() }, nil
 		},

@@ -105,7 +105,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "calendar_update", Description: "Patch an existing event by id on the primary calendar. GATED (may notify attendees). Only provided fields change. Times are RFC3339, e.g. 2026-05-20T15:00:00Z.",
 			Parameters: obj(`"id":{"type":"string"},"summary":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"attendees":{"type":"array","items":{"type":"string"}},"description":{"type":"string"},"location":{"type":"string"}`, "id"), Gated: true},
 		{Name: "calendar_delete", Description: "Delete an event by id from the primary calendar. GATED (cancels the event / notifies attendees).",
-			Parameters: obj(`"id":{"type":"string"}`, "id"), Gated: true},
+			Parameters: obj(`"id":{"type":"string"}`, "id"), Gated: true, Risk: model.RiskDestructive},
 		{Name: "calendar_calendars", Description: "List the calendars the user can access (id, summary, access role). Use a returned id with calendar_freebusy.",
 			Parameters: obj(``)},
 		{Name: "calendar_freebusy", Description: "Query busy time blocks over a look-ahead window. Use to find when the user is free before scheduling.",
