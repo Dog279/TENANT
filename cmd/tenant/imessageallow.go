@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 
-	"tenant/internal/model"
 	"tenant/internal/plugins/imessage"
 )
 
@@ -53,26 +51,6 @@ func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
 		return m.resp.Start()
 	}
 	return m.resp.Stop()
-}
-
-// Cap reports the responder's tool-risk ceiling (read|write|exec|destructive).
-func (m *imessageAllowManager) Cap() string {
-	if m.resp == nil {
-		return model.RiskRead.String()
-	}
-	return m.resp.Cap().String()
-}
-
-// SetCap changes the responder's tool-risk ceiling (TEN-230).
-func (m *imessageAllowManager) SetCap(tier string) (string, error) {
-	if m.resp == nil {
-		return "", fmt.Errorf("imessage responder unavailable here (native transport is macOS-only)")
-	}
-	t, ok := model.ParseRiskTier(strings.ToLower(strings.TrimSpace(tier)))
-	if !ok {
-		return "", fmt.Errorf("unknown cap %q — use read|write|exec|destructive", tier)
-	}
-	return m.resp.SetCap(t)
 }
 
 // AllowList returns the current handles in sorted, normalized form.

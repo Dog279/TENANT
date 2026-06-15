@@ -110,67 +110,6 @@ type ToolSpec struct {
 	// memory_recall) to capable models. Internal only — `json:"-"` keeps it
 	// out of the model-facing tool JSON (TEN-103).
 	Gate string `json:"-"`
-	// Risk is the tool's capability tier (TEN-230). Zero value (RiskRead) plus
-	// Gated is the common case — see RiskLevel(), which derives read for ungated
-	// tools and write for gated ones. Set it EXPLICITLY only to raise a gated
-	// tool above write: RiskExec (runs commands/code) or RiskDestructive
-	// (irreversible: deletes, dangerous exec). Offsite channels (e.g. the
-	// iMessage responder) cap the surface to a max tier; internal only.
-	Risk RiskTier `json:"-"`
-}
-
-// RiskTier is a tool's capability tier — a coarse, ordered ladder that offsite
-// channels cap against (read < write < exec < destructive). TEN-230.
-type RiskTier uint8
-
-const (
-	RiskRead        RiskTier = iota // query/list/search/get — no side effects
-	RiskWrite                       // create/update/send/post — reversible-ish mutation
-	RiskExec                        // run a shell command or code
-	RiskDestructive                 // irreversible: delete/overwrite/force, dangerous exec
-)
-
-// RiskLevel returns the tool's effective tier: an explicitly-set Risk wins;
-// otherwise it derives from Gated (read tools are never gated, gated tools are
-// at least write). So only exec/destructive tools need an explicit Risk tag.
-func (s ToolSpec) RiskLevel() RiskTier {
-	if s.Risk != RiskRead {
-		return s.Risk
-	}
-	if s.Gated {
-		return RiskWrite
-	}
-	return RiskRead
-}
-
-// String renders the tier as a lowercase keyword (config + /imessage cap).
-func (r RiskTier) String() string {
-	switch r {
-	case RiskWrite:
-		return "write"
-	case RiskExec:
-		return "exec"
-	case RiskDestructive:
-		return "destructive"
-	default:
-		return "read"
-	}
-}
-
-// ParseRiskTier parses a tier keyword; ok=false on an unknown value.
-func ParseRiskTier(s string) (RiskTier, bool) {
-	switch s {
-	case "read":
-		return RiskRead, true
-	case "write":
-		return RiskWrite, true
-	case "exec":
-		return RiskExec, true
-	case "destructive":
-		return RiskDestructive, true
-	default:
-		return RiskRead, false
-	}
 }
 
 // ToolChoice selects whether and how the model is forced to call a tool.

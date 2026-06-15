@@ -3055,9 +3055,7 @@ type fakeIMessage struct {
 	clearCalls  int
 	allowErr    error
 	responderOn bool
-	setCalls    []bool   // SetResponder(on) calls recorded
-	cap         string   // current cap
-	capCalls    []string // SetCap(tier) calls recorded
+	setCalls    []bool // SetResponder(on) calls recorded
 }
 
 func (f *fakeIMessage) ResponderOn() bool { return f.responderOn }
@@ -3068,17 +3066,6 @@ func (f *fakeIMessage) SetResponder(on bool) (string, error) {
 		return "imessage responder ON", nil
 	}
 	return "imessage responder OFF", nil
-}
-func (f *fakeIMessage) Cap() string {
-	if f.cap == "" {
-		return "read"
-	}
-	return f.cap
-}
-func (f *fakeIMessage) SetCap(tier string) (string, error) {
-	f.capCalls = append(f.capCalls, tier)
-	f.cap = tier
-	return "cap → " + tier, nil
 }
 
 func (f *fakeIMessage) AllowList() []string { return f.list }
@@ -3136,23 +3123,6 @@ func TestSlash_IMessageResponderToggle(t *testing.T) {
 	last := m.msgs[len(m.msgs)-1].content
 	if !strings.Contains(strings.ToLower(last), "responder: on") {
 		t.Errorf("list should show responder ON state; got:\n%s", last)
-	}
-}
-
-// TEN-230: /imessage cap <tier> sets the tool-risk ceiling; bare shows current.
-func TestSlash_IMessageCap(t *testing.T) {
-	fi := &fakeIMessage{}
-	m := newModel(context.Background(), Config{IMessage: fi})
-	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-
-	m.handleSlash("/imessage cap exec")
-	if len(fi.capCalls) != 1 || fi.capCalls[0] != "exec" {
-		t.Fatalf("/imessage cap exec should call SetCap(exec): %v", fi.capCalls)
-	}
-	m.handleSlash("/imessage cap")
-	last := m.msgs[len(m.msgs)-1].content
-	if !strings.Contains(last, "tool cap") {
-		t.Errorf("bare /imessage cap should show the current cap; got:\n%s", last)
 	}
 }
 

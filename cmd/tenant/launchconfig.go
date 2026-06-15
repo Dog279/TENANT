@@ -194,10 +194,6 @@ type imessageConfig struct {
 	// Phase-2 text-confirm flow — distinct from AllowFrom so an allowlisted
 	// contact can chat but not approve dangerous actions. Unused until Phase 2.
 	Operator string `json:"operator,omitempty"`
-	// Cap is the tool-risk ceiling for the responder (TEN-230): read | write |
-	// exec | destructive. Empty/unknown ⇒ read (the safe default). The agent's
-	// tool surface is filtered to tools at or below this tier.
-	Cap string `json:"cap,omitempty"`
 }
 
 // cronConfig persists the recurring-job DEFINITIONS plus a few engine-wide

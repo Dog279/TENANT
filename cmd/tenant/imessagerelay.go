@@ -191,50 +191,16 @@ type responderRunnable interface {
 // each Start so live `/imessage allow` edits take effect on the next on. persist
 // records the intent (imessage.enabled) so it survives restart.
 type imessageResponderManager struct {
-	base       context.Context
-	buildFn    func(allowFrom []string, cap model.RiskTier) (responderRunnable, func(), error)
-	allowFrom  func() []string
-	persist    func(enabled bool) error
-	capPersist func(cap model.RiskTier) error // persists the risk-tier cap
-	log        *slog.Logger
+	base      context.Context
+	buildFn   func(allowFrom []string) (responderRunnable, func(), error)
+	allowFrom func() []string
+	persist   func(enabled bool) error
+	log       *slog.Logger
 
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
 	cleanup func()
-	cap     model.RiskTier // max tool risk the responder may use (TEN-230)
-}
-
-// Cap reports the current tool-risk ceiling.
-func (m *imessageResponderManager) Cap() model.RiskTier {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.cap
-}
-
-// SetCap changes the tool-risk ceiling, persists it, and rebuilds a running
-// responder so the new cap takes effect immediately (the cap is baked into the
-// filtered registry/dispatcher at build time).
-func (m *imessageResponderManager) SetCap(cap model.RiskTier) (string, error) {
-	m.mu.Lock()
-	m.cap = cap
-	wasRunning := m.running
-	m.mu.Unlock()
-	if m.capPersist != nil {
-		if err := m.capPersist(cap); err != nil && m.log != nil {
-			m.log.Warn("imessage responder: persist cap failed", "err", err)
-		}
-	}
-	if wasRunning {
-		if _, err := m.Stop(); err != nil {
-			return "", err
-		}
-		if _, err := m.Start(); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("imessage tool cap → %s (responder restarted)", cap), nil
-	}
-	return fmt.Sprintf("imessage tool cap → %s (applies when the responder is on)", cap), nil
 }
 
 // On reports whether the responder loop is currently running.
@@ -255,7 +221,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 	if m.allowFrom != nil {
 		allow = m.allowFrom()
 	}
-	r, cleanup, err := m.buildFn(allow, m.cap)
+	r, cleanup, err := m.buildFn(allow)
 	if err != nil {
 		return "", err
 	}
@@ -271,7 +237,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 			m.log.Warn("imessage responder: persist enabled failed", "err", perr)
 		}
 	}
-	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); tool cap: %s", len(allow), m.cap), nil
+	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools require approval (Phase 2)", len(allow)), nil
 }
 
 // Stop cancels the loop + releases the transport (idempotent). Persists enabled=false.
@@ -294,76 +260,6 @@ func (m *imessageResponderManager) Stop() (string, error) {
 		}
 	}
 	return "imessage responder OFF", nil
-}
-
-// imessageCapFromConfig reads the persisted iMessage tool-risk cap, defaulting
-// to read (the safe floor) when unset or unknown (TEN-230).
-func imessageCapFromConfig(c *commonFlags) model.RiskTier {
-	if c == nil || c.lc == nil {
-		return model.RiskRead
-	}
-	if t, ok := model.ParseRiskTier(c.lc.IMessage.Cap); ok {
-		return t
-	}
-	return model.RiskRead
-}
-
-// allowAllConfirm permits any gated tool that reaches dispatch. Safe for the
-// iMessage responder because the surface is already capped by risk tier
-// (riskCapRegistry) — only tools at/below the operator's cap are ever offered,
-// and riskCapDispatcher blocks anything above it (TEN-230).
-func allowAllConfirm(context.Context, string, string) bool { return true }
-
-// riskCapRegistry exposes only tools at or below a max risk tier — so an offsite
-// iMessage texter can never even SEE tools above the operator-set cap, let alone
-// call them (TEN-230). It can only ever be more restrictive than the underlying
-// (global) surface.
-type riskCapRegistry struct {
-	inner agent.ToolRegistry
-	cap   model.RiskTier
-}
-
-func (r riskCapRegistry) Get(name string) (model.ToolSpec, bool) {
-	s, ok := r.inner.Get(name)
-	if !ok || s.RiskLevel() > r.cap {
-		return model.ToolSpec{}, false
-	}
-	return s, true
-}
-func (r riskCapRegistry) Search(ctx context.Context, emb []float32, k int) ([]model.ToolSpec, error) {
-	specs, err := r.inner.Search(ctx, emb, k)
-	if err != nil {
-		return nil, err
-	}
-	return capFilter(specs, r.cap), nil
-}
-func (r riskCapRegistry) All() []model.ToolSpec { return capFilter(r.inner.All(), r.cap) }
-
-func capFilter(in []model.ToolSpec, cap model.RiskTier) []model.ToolSpec {
-	out := make([]model.ToolSpec, 0, len(in))
-	for _, s := range in {
-		if s.RiskLevel() <= cap {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// riskCapDispatcher blocks dispatch of any tool above the cap — defense in depth
-// behind the filtered registry. reg is the UNFILTERED registry so it can resolve
-// a call's true tier (a capped registry would just report "unknown").
-type riskCapDispatcher struct {
-	inner agent.ToolDispatcher
-	reg   agent.ToolRegistry
-	cap   model.RiskTier
-}
-
-func (d riskCapDispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
-	if s, ok := d.reg.Get(call.Name); ok && s.RiskLevel() > d.cap {
-		return fmt.Sprintf("tool %q (%s) is above the iMessage permission cap (%s) — blocked; the operator can raise it with `/imessage cap %s`",
-			call.Name, s.RiskLevel(), d.cap, s.RiskLevel()), true, nil
-	}
-	return d.inner.Dispatch(ctx, call)
 }
 
 // buildIMessageAgent constructs the dedicated iMessage agent over the live tool

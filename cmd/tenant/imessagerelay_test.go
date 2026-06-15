@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"tenant/internal/agent"
-	"tenant/internal/model"
 	"tenant/internal/plugins/imessage"
 )
 
@@ -125,47 +124,6 @@ func TestIMessageResponder_DegradedRefuses(t *testing.T) {
 	}
 }
 
-// TEN-230: the iMessage cap filters the tool surface by risk tier, and the
-// dispatcher blocks anything above the cap (defense in depth).
-func TestRiskCap_FiltersAndBlocksAboveCap(t *testing.T) {
-	reg := agent.NewStaticRegistry()
-	reg.Register(model.ToolSpec{Name: "web_search"})                                         // read
-	reg.Register(model.ToolSpec{Name: "gmail_send", Gated: true})                            // write (derived)
-	reg.Register(model.ToolSpec{Name: "os_exec", Gated: true, Risk: model.RiskExec})         // exec
-	reg.Register(model.ToolSpec{Name: "x_delete", Gated: true, Risk: model.RiskDestructive}) // destructive
-
-	capped := riskCapRegistry{inner: reg, cap: model.RiskWrite}
-	names := map[string]bool{}
-	for _, s := range capped.All() {
-		names[s.Name] = true
-	}
-	if !names["web_search"] || !names["gmail_send"] {
-		t.Errorf("read+write must be surfaced at cap=write: %v", names)
-	}
-	if names["os_exec"] || names["x_delete"] {
-		t.Errorf("exec/destructive must be HIDDEN at cap=write: %v", names)
-	}
-	if _, ok := capped.Get("os_exec"); ok {
-		t.Error("Get(os_exec) must be false above the cap")
-	}
-	if _, ok := capped.Get("gmail_send"); !ok {
-		t.Error("Get(gmail_send) must be true at cap=write")
-	}
-
-	inner := &recordDispatcher{}
-	d := riskCapDispatcher{inner: inner, reg: reg, cap: model.RiskWrite}
-	if _, isErr, _ := d.Dispatch(context.Background(), model.ToolCall{Name: "gmail_send"}); isErr {
-		t.Error("gmail_send (write) must dispatch at cap=write")
-	}
-	out, isErr, _ := d.Dispatch(context.Background(), model.ToolCall{Name: "os_exec"})
-	if !isErr || !strings.Contains(out, "above the iMessage permission cap") {
-		t.Errorf("os_exec (exec) must be blocked at cap=write: out=%q isErr=%v", out, isErr)
-	}
-	if len(inner.called) != 1 || inner.called[0] != "gmail_send" {
-		t.Errorf("only the within-cap call should reach inner: %v", inner.called)
-	}
-}
-
 type fakeRunnable struct{ started chan struct{} }
 
 func (f *fakeRunnable) Run(ctx context.Context) {
@@ -186,7 +144,7 @@ func TestIMessageResponderManager_StartStopLifecycle(t *testing.T) {
 		base:      context.Background(),
 		allowFrom: func() []string { return []string{"+15551234567", "a@b.com"} },
 		persist:   func(on bool) error { persisted = append(persisted, on); return nil },
-		buildFn: func(allow []string, _ model.RiskTier) (responderRunnable, func(), error) {
+		buildFn: func(allow []string) (responderRunnable, func(), error) {
 			builds++
 			lastAllow = allow
 			return &fakeRunnable{started: started}, func() { cleanups++ }, nil
@@ -236,7 +194,7 @@ func TestIMessageResponderManager_StartBuildErrorStaysOff(t *testing.T) {
 		base:      context.Background(),
 		allowFrom: func() []string { return nil },
 		persist:   func(bool) error { t.Fatal("persist must not be called on a failed Start"); return nil },
-		buildFn: func([]string, model.RiskTier) (responderRunnable, func(), error) {
+		buildFn: func([]string) (responderRunnable, func(), error) {
 			return nil, nil, fmt.Errorf("no Full Disk Access")
 		},
 	}

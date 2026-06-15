@@ -419,10 +419,6 @@ type IMessageControl interface {
 	// SetResponder turns it on/off live without a relaunch (TEN-230 Phase 1c).
 	ResponderOn() bool
 	SetResponder(on bool) (status string, err error)
-	// Cap reports the responder's tool-risk ceiling; SetCap changes it
-	// (read|write|exec|destructive) — TEN-230.
-	Cap() string
-	SetCap(tier string) (status string, err error)
 }
 
 // CronControl powers /cron: manage recurring jobs. Each job runs an agent prompt
@@ -2018,7 +2014,6 @@ var helpSections = []helpSection{
 			{"/deny", "reject a paused dangerous action"},
 			{"/imessage [list]", "view the iMessage allowlist + responder state"},
 			{"/imessage on | off", "start/stop the autonomous responder (reply to texts) live"},
-			{"/imessage cap <tier>", "tool-risk ceiling: read | write | exec | destructive"},
 			{"/imessage allow <handle>", "permit a phone/email to drive the agent over iMessage"},
 			{"/imessage deny <handle> | clear", "remove one handle, or empty the allowlist"},
 		},
@@ -2194,9 +2189,8 @@ func (m *model) renderIMessageAllow() (string, string) {
 	if m.cfg.IMessage.ResponderOn() {
 		state = "responder: ON  (replying to allowed handles; /imessage off to stop)"
 	}
-	cap := "tool cap: " + m.cfg.IMessage.Cap() + "  (/imessage cap <read|write|exec|destructive>)"
-	p.WriteString(title + "\n  " + state + "\n  " + cap + "\n")
-	s.WriteString(cHeading.Render(title) + "\n  " + cDim.Render(state) + "\n  " + cDim.Render(cap) + "\n")
+	p.WriteString(title + "\n  " + state + "\n")
+	s.WriteString(cHeading.Render(title) + "\n  " + cDim.Render(state) + "\n")
 	if len(handles) == 0 {
 		const empty = "(empty) — deny-by-default: nobody can drive the agent over iMessage."
 		const hint = "Add one with /imessage allow <phone-or-email>."
@@ -2639,22 +2633,8 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			} else {
 				m.sysChat("📴 " + status)
 			}
-		case "cap", "permissions", "perms":
-			// /imessage cap [read|write|exec|destructive] — the tool-risk ceiling
-			// the responder may use; bare shows the current cap.
-			if rest == "" {
-				m.sysChat("imessage tool cap: " + m.cfg.IMessage.Cap() +
-					"  (read < write < exec < destructive)\nset with: /imessage cap <read|write|exec|destructive>")
-				break
-			}
-			status, err := m.cfg.IMessage.SetCap(rest)
-			if err != nil {
-				m.sysChat("imessage: " + err.Error())
-			} else {
-				m.sysChat("🔐 " + status)
-			}
 		default:
-			m.sysChat("usage: /imessage [list | on | off | cap <tier> | allow <handle> | deny <handle> | clear]")
+			m.sysChat("usage: /imessage [list | on | off | allow <handle> | deny <handle> | clear]")
 		}
 	case "/mcp":
 		// Connect/manage remote MCP connector servers (TEN-164). `/mcp add
