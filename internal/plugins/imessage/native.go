@@ -1,6 +1,9 @@
 package imessage
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // This file holds the platform-neutral surface of the native transport:
 // its config, its public interface, and the "macOS only" sentinel. The
@@ -22,9 +25,14 @@ type NativeConfig struct {
 	DBPath string
 }
 
-// Native is an opened native transport: the five iMessage operations
-// plus Close to release the chat.db handle.
+// Native is an opened native transport: the five iMessage operations,
+// the inbound poll the Watcher consumes (MessagesSince), plus Close to
+// release the chat.db handle.
 type Native interface {
 	transport
+	// MessagesSince yields inbound rows with ROWID > afterRowID (newest-bounded
+	// by limit) — the read primitive the autonomous responder's Watcher polls
+	// (TEN-230). The darwin *nativeService implements it over chat.db.
+	MessagesSince(ctx context.Context, afterRowID int64, limit int) ([]InboundMessage, error)
 	Close() error
 }

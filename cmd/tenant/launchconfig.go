@@ -185,6 +185,15 @@ func (dc dashboardConfig) dashboardEnabled() bool {
 // Discord relay's OperatorID — not hot per-poll state.
 type imessageConfig struct {
 	AllowFrom []string `json:"allow_from,omitempty"`
+	// Enabled starts the autonomous responder at launch (TEN-230): poll chat.db,
+	// drive an agent turn per inbound text from an allowed handle, reply. Native
+	// transport only (macOS); off by default (deny-by-default). AllowFrom gates
+	// who may drive it.
+	Enabled bool `json:"enabled,omitempty"`
+	// Operator is the handle (phone/email) whose YES approves gated tools in the
+	// Phase-2 text-confirm flow — distinct from AllowFrom so an allowlisted
+	// contact can chat but not approve dangerous actions. Unused until Phase 2.
+	Operator string `json:"operator,omitempty"`
 }
 
 // cronConfig persists the recurring-job DEFINITIONS plus a few engine-wide

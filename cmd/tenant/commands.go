@@ -2247,6 +2247,40 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return c.lc.save(c.cfgDir)
 	})
 
+	// iMessage autonomous responder (TEN-230 Phase 1b): opt-in via
+	// imessage.enabled, native transport only. Polls chat.db via the openclaw
+	// anti-loop Watcher, drives a dedicated agent turn per inbound text from an
+	// allowed handle, and replies — gated tools fail closed (deny-all confirm)
+	// until the Phase-2 text-confirm flow. Best-effort: any setup failure is a
+	// feed note, never fatal (the TUI keeps running). The allowlist is read at
+	// start; editing it live via /imessage takes effect on the next launch.
+	if c.lc != nil && c.lc.IMessage.Enabled {
+		if nat, nerr := imessage.OpenNative(imessage.NativeConfig{}); nerr != nil {
+			pushSys("imessage responder: " + nerr.Error())
+		} else if watcher, werr := imessage.NewWatcher(imessage.WatchConfig{
+			Source: nat, Store: meta, Account: c.agent, AllowFrom: c.lc.IMessage.AllowFrom,
+		}); werr != nil {
+			pushSys("imessage responder: watcher: " + werr.Error())
+		} else if imsgAgent, aerr := buildIMessageAgent(imessageAgentDeps{
+			router: router, soulLive: soulLive, archive: st.archive,
+			episodic: st.episodic, semantic: st.semantic,
+			skills:    skillRetriever{st: skillStore, agentID: c.agent},
+			compactor: compressor, userProfile: prof,
+			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
+			sysPrompt: sysPrompt, log: log,
+		}); aerr != nil {
+			pushSys("imessage responder: agent: " + aerr.Error())
+		} else {
+			resp := &imessageResponder{
+				poller: watcher, sender: nat, runner: imsgAgent,
+				confirm: denyAllConfirm, log: log, degraded: degraded.Degraded,
+			}
+			go resp.Run(ctx)
+			n := len(c.lc.IMessage.AllowFrom)
+			pushSys(fmt.Sprintf("imessage responder: live (native; %d allowed handle(s); gated tools require approval — Phase 2)", n))
+		}
+	}
+
 	// Background self-improvement: distillation runs on a cadence and
 	// its job results stream into the TUI feed (sysCh). Shares the same
 	// episodic/semantic stores the live agent uses (SQLite WAL → safe
