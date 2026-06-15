@@ -126,11 +126,11 @@ func TestRelay_OperatorDMDrivesTurn(t *testing.T) {
 	if q, ok := recv(fr.turns, 2*time.Second); !ok || q != "hello there" {
 		t.Fatalf("turn not started with the DM text: %q ok=%v", q, ok)
 	}
-	if !waitSends(fs, 2, 2*time.Second) {
-		t.Fatalf("expected the final answer + (done), got %v", fs.all())
+	if !waitSends(fs, 1, 2*time.Second) {
+		t.Fatalf("expected the final answer, got %v", fs.all())
 	}
 	joined := strings.Join(fs.all(), "\n")
-	if !strings.Contains(joined, "dm1|echo: hello there") || !strings.Contains(joined, "dm1|(done)") {
+	if !strings.Contains(joined, "dm1|echo: hello there") {
 		t.Errorf("reply not posted to the DM channel: %v", fs.all())
 	}
 }

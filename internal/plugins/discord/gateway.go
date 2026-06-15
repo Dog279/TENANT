@@ -44,9 +44,10 @@ const (
 	opHeartbeatACK   = 11 // recv: ack of our heartbeat
 )
 
-// intentsDMGuilds = GUILDS(1<<0) | DIRECT_MESSAGES(1<<12) | MESSAGE_CONTENT(1<<15) = 32773.
-// Enough to receive MESSAGE_CREATE content in both DM and guilds.
-const intentsDMGuilds = (1 << 0) | (1 << 12) | (1 << 15)
+// intentsDMGuilds = GUILDS(1<<0) | GUILD_MESSAGES(1<<9) | DIRECT_MESSAGES(1<<12) | MESSAGE_CONTENT(1<<15) = 37377.
+// GUILD_MESSAGES is required to receive MESSAGE_CREATE events in servers;
+// without it the gateway connects but never delivers guild messages.
+const intentsDMGuilds = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15)
 
 // gwPayload is the {op,d,s,t} gateway envelope. S is nullable (only Dispatch
 // frames carry a sequence); D is delayed-decoded per opcode/event.
@@ -188,7 +189,7 @@ type Gateway struct {
 	Token         string
 	GetURL        func(ctx context.Context) (string, error)
 	OnMessage     func(Inbound)
-	OnInteraction func(Interaction) // v2: button clicks (INTERACTION_CREATE)
+	OnInteraction func(Interaction)   // v2: button clicks (INTERACTION_CREATE)
 	OnReady       func(userID string) // called once with the bot's user ID from READY
 	OnFatal       func(error)
 	Log           *slog.Logger

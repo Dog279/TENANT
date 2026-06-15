@@ -2182,7 +2182,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			episodic: st.episodic, semantic: st.semantic,
 			skills:    skillRetriever{st: skillStore, agentID: c.agent},
 			compactor: compressor, userProfile: prof,
-			fullTools: mainTools.All(), fullDisp: mainTools,
+			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 			sysPrompt: sysPrompt, log: log,
 		}); derr != nil {
 			pushSys("discord relay: " + derr.Error())
@@ -2211,7 +2211,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				episodic: st.episodic, semantic: st.semantic,
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
-				fullTools: mainTools.All(), fullDisp: mainTools,
+				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 				sysPrompt: sysPrompt, log: log,
 			})
 		},

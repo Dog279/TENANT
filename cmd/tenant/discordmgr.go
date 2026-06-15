@@ -39,18 +39,19 @@ type discordAgentDeps struct {
 	skills      agent.SkillRetriever
 	compactor   agent.Compactor
 	userProfile *userprofile.Profile
-	fullTools   []model.ToolSpec
-	fullDisp    agent.ToolDispatcher
-	sysPrompt   string
-	log         *slog.Logger
+	// fullTools is the LIVE tool registry (the running mux), not a snapshot —
+	// so MCP/Jira tools that come online after the relay starts are visible to
+	// the Discord agent (TEN-229).
+	fullTools agent.ToolRegistry
+	fullDisp  agent.ToolDispatcher
+	sysPrompt string
+	log       *slog.Logger
 }
 
 const discordSysSuffix = " You are reachable over Discord while the operator is away from the machine. " +
-	"This is an OFFSITE session: the tools you are OFFERED each turn are the only actions available — if " +
-	"something isn't offered (e.g. exec / write / destructive when exec mode is off, or team / orchestra " +
-	"ever), say so plainly rather than pretending to do it. Any dangerous action requires the operator's " +
-	"per-action approval on their phone (a button tap that can also time out and deny), so prefer the " +
-	"smallest action that answers the ask. Keep answers concise for a phone screen."
+	"You have the same tools as the local TUI — use them freely. Any dangerous action requires the " +
+	"operator's per-action approval (a button tap that can also time out and deny). Keep answers concise " +
+	"for a phone screen."
 
 // buildDiscordAgent constructs the dedicated Discord agent + Discord service +
 // nonce approver + reply sender. Shares the long-term memory stores (continuity)
