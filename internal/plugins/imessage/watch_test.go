@@ -6,8 +6,14 @@ import (
 	"time"
 )
 
-// fakeSource serves canned rows with ROWID > after, ascending.
-type fakeSource struct{ rows []InboundMessage }
+// fakeSource serves canned rows with ROWID > after, ascending. latest is the
+// reported current max ROWID (the seed-to-now baseline); 0 ⇒ "empty mailbox at
+// start", so the existing filter tests behave exactly as before (seed to 0 ⇒
+// every row is "new").
+type fakeSource struct {
+	rows   []InboundMessage
+	latest int64
+}
 
 func (f *fakeSource) MessagesSince(_ context.Context, after int64, limit int) ([]InboundMessage, error) {
 	var out []InboundMessage
@@ -21,6 +27,8 @@ func (f *fakeSource) MessagesSince(_ context.Context, after int64, limit int) ([
 	}
 	return out, nil
 }
+
+func (f *fakeSource) LatestRowID(context.Context) (int64, error) { return f.latest, nil }
 
 // memStore is an in-memory cursorStore.
 type memStore struct{ m map[string]int64 }
@@ -87,6 +95,49 @@ func TestWatcher_PersistedCursorResumes(t *testing.T) {
 	got, _ := w.Poll(context.Background(), 100)
 	if len(got) != 1 || got[0].RowID != 3 {
 		t.Fatalf("should resume after persisted cursor: %+v", got)
+	}
+}
+
+// TEN-230 regression: on a fresh start over an EXISTING chat.db, the watcher
+// must seed to the current max ROWID and respond only to NEW messages — never
+// replay history oldest-first (the bug that stranded the cursor ~112k rows
+// behind the latest text and produced no response).
+func TestWatcher_SeedsToNowOnExistingDB(t *testing.T) {
+	src := &fakeSource{
+		latest: 115900, // a big existing history
+		rows: []InboundMessage{
+			inbound(50, "c1", "+15551112222", "ancient", false),  // old → must NOT replay
+			inbound(60, "c1", "+15551112222", "also old", false), // old → must NOT replay
+			inbound(115901, "c1", "+15551112222", "new!", false), // arrived after start
+		},
+	}
+	store := newMemStore()
+	w, _ := NewWatcher(WatchConfig{Source: src, Store: store, Account: "acct"})
+
+	// Seeds to max (115900): ancient 50/60 are skipped (history not replayed),
+	// only the post-seed 115901 surfaces. This is the whole fix.
+	got, _ := w.Poll(context.Background(), 20)
+	if len(got) != 1 || got[0].RowID != 115901 {
+		t.Fatalf("must skip history and surface only new messages, got %+v", got)
+	}
+	if w.Cursor() != 115901 {
+		t.Fatalf("cursor should advance to 115901, got %d", w.Cursor())
+	}
+}
+
+// A persisted cursor that's fallen far behind the current max (e.g. the old
+// crawl-from-0 bug left it at 3229 of 115902) is treated as stale and jumps to
+// now instead of resuming the crawl.
+func TestWatcher_StaleCursorJumpsToNow(t *testing.T) {
+	src := &fakeSource{latest: 115902, rows: nil}
+	store := newMemStore()
+	store.m["imessage_cursor:acct"] = 3229 // poisoned by the old bug
+	w, _ := NewWatcher(WatchConfig{Source: src, Store: store, Account: "acct"})
+	if _, err := w.Poll(context.Background(), 20); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if w.Cursor() != 115902 {
+		t.Fatalf("a stale cursor must jump to now (115902), got %d", w.Cursor())
 	}
 }
 

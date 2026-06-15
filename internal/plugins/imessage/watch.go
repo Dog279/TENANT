@@ -29,9 +29,11 @@ import (
 // follow-up.
 
 // messageSource is the read primitive the Watcher polls. *chatReader and
-// the darwin *nativeService both satisfy it.
+// the darwin *nativeService both satisfy it. LatestRowID lets the Watcher seed
+// its cursor to "now" on a fresh/stale start (TEN-230).
 type messageSource interface {
 	MessagesSince(ctx context.Context, afterRowID int64, limit int) ([]InboundMessage, error)
+	LatestRowID(ctx context.Context) (int64, error)
 }
 
 // cursorStore persists the monotonic ROWID cursor across restarts.
@@ -113,7 +115,7 @@ func (w *Watcher) Poll(ctx context.Context, limit int) ([]InboundMessage, error)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := w.ensureCursorLocked(ctx); err != nil {
+	if err := w.ensureCursorLocked(ctx, limit); err != nil {
 		return nil, err
 	}
 	rows, err := w.src.MessagesSince(ctx, w.cursor, limit)
@@ -151,17 +153,36 @@ func (w *Watcher) Poll(ctx context.Context, limit int) ([]InboundMessage, error)
 }
 
 // ensureCursorLocked lazily loads the persisted cursor on first use.
-func (w *Watcher) ensureCursorLocked(ctx context.Context) error {
+func (w *Watcher) ensureCursorLocked(ctx context.Context, limit int) error {
 	if w.loaded {
 		return nil
 	}
+	have := false
 	if w.store != nil {
 		v, ok, err := w.store.GetInt64(ctx, w.cursorKey)
 		if err != nil {
 			return fmt.Errorf("imessage: load cursor: %w", err)
 		}
 		if ok {
-			w.cursor = v
+			w.cursor, have = v, true
+		}
+	}
+	// Watch from NOW (TEN-230): with no saved cursor (first run) — or one that's
+	// fallen more than a batch behind (stale: first run on an existing chat.db,
+	// or the responder was off for a while) — seed to the current max ROWID. This
+	// avoids the catastrophic default of replaying the ENTIRE chat.db oldest-first
+	// (ORDER BY ROWID ASC), which on a real message store strands the cursor tens
+	// of thousands of rows behind the latest text and never catches up. A
+	// caught-up responder (cursor within one batch of max) resumes incrementally.
+	// Best-effort: if the max can't be read, keep whatever cursor we have.
+	if max, err := w.src.LatestRowID(ctx); err == nil {
+		if !have || w.cursor < max-int64(limit) {
+			w.cursor = max
+			if w.store != nil {
+				if serr := w.store.SetInt64(ctx, w.cursorKey, w.cursor); serr != nil {
+					return fmt.Errorf("imessage: seed cursor: %w", serr)
+				}
+			}
 		}
 	}
 	w.loaded = true

@@ -116,6 +116,11 @@ func (n *nativeService) MessagesSince(ctx context.Context, afterRowID int64, lim
 	return n.r.MessagesSince(ctx, afterRowID, limit)
 }
 
+// LatestRowID exposes the current max ROWID for the watcher's seed-to-now.
+func (n *nativeService) LatestRowID(ctx context.Context) (int64, error) {
+	return n.r.LatestRowID(ctx)
+}
+
 // Close releases the chat.db handle.
 func (n *nativeService) Close() error {
 	if n.db == nil {

@@ -348,6 +348,18 @@ SELECT m.ROWID, c.guid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, 
 	return out, rows.Err()
 }
 
+// LatestRowID returns the current maximum message ROWID (0 when the table is
+// empty). The Watcher seeds its cursor here so a fresh or fallen-behind
+// responder watches NEW messages instead of replaying the whole chat.db history
+// oldest-first (TEN-230). Cheap: an indexed MAX over the primary key.
+func (r *chatReader) LatestRowID(ctx context.Context) (int64, error) {
+	var max sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, `SELECT MAX(ROWID) FROM message`).Scan(&max); err != nil {
+		return 0, fmt.Errorf("imessage: latest rowid: %w", err)
+	}
+	return max.Int64, nil // NULL (empty table) → 0
+}
+
 // scanMessages reads rows shaped (guid, text, attributedBody, is_from_me,
 // date, handle.id) into normalized Messages.
 func scanMessages(rows *sql.Rows) ([]Message, error) {

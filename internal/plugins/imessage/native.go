@@ -34,5 +34,8 @@ type Native interface {
 	// by limit) — the read primitive the autonomous responder's Watcher polls
 	// (TEN-230). The darwin *nativeService implements it over chat.db.
 	MessagesSince(ctx context.Context, afterRowID int64, limit int) ([]InboundMessage, error)
+	// LatestRowID is the current max message ROWID — the Watcher seeds its
+	// cursor here to watch from "now" rather than replaying history (TEN-230).
+	LatestRowID(ctx context.Context) (int64, error)
 	Close() error
 }
