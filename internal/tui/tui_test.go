@@ -3096,6 +3096,64 @@ func (p *fakePerms) SetPermission(cat, mode string) (bool, error) {
 	return true, nil
 }
 
+// fakeTailscale implements TailscaleControl for the /tailscale command tests (TEN-233).
+type fakeTailscale struct {
+	st         TailscaleStatus
+	serveErr   error
+	serveURL   string
+	serveCalls int
+	unCalls    int
+}
+
+func (f *fakeTailscale) Status() (TailscaleStatus, error) { return f.st, nil }
+func (f *fakeTailscale) Serve() (string, error) {
+	f.serveCalls++
+	if f.serveErr != nil {
+		return "", f.serveErr
+	}
+	return f.serveURL, nil
+}
+func (f *fakeTailscale) Unserve() error { f.unCalls++; return nil }
+
+// TEN-233: /tailscale serve publishes the dashboard via tailscale serve; status
+// guides the operator when the CLI is missing or disconnected.
+func TestSlash_Tailscale(t *testing.T) {
+	// serve → calls Serve, echoes the tailnet URL.
+	ft := &fakeTailscale{st: TailscaleStatus{Installed: true, LoggedIn: true, DNSName: "host.ts.net", URL: "https://host.ts.net/"}, serveURL: "https://host.ts.net/"}
+	m := newModel(context.Background(), Config{Tailscale: ft})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.handleSlash("/tailscale serve")
+	if ft.serveCalls != 1 {
+		t.Fatalf("/tailscale serve should call Serve once: %d", ft.serveCalls)
+	}
+	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "https://host.ts.net/") {
+		t.Errorf("serve should echo the tailnet URL; got:\n%s", last)
+	}
+
+	// serve off → Unserve.
+	m.handleSlash("/tailscale serve off")
+	if ft.unCalls != 1 {
+		t.Fatalf("/tailscale serve off should call Unserve once: %d", ft.unCalls)
+	}
+
+	// status when not connected → guidance, no Serve call.
+	ft2 := &fakeTailscale{st: TailscaleStatus{Installed: true, LoggedIn: false, State: "Stopped"}}
+	m2 := newModel(context.Background(), Config{Tailscale: ft2})
+	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m2.handleSlash("/tailscale status")
+	if last := m2.msgs[len(m2.msgs)-1].content; !strings.Contains(last, "not connected") {
+		t.Errorf("status should guide when disconnected; got:\n%s", last)
+	}
+
+	// Unavailable (nil control) → graceful message.
+	m3 := newModel(context.Background(), Config{})
+	m3.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m3.handleSlash("/tailscale serve")
+	if last := m3.msgs[len(m3.msgs)-1].content; !strings.Contains(last, "not available") {
+		t.Errorf("nil tailscale control should report unavailable; got:\n%s", last)
+	}
+}
+
 // fakeRelay implements RelayControl for the /relay command tests (TEN-231).
 type fakeRelay struct {
 	perms       *fakePerms

@@ -64,6 +64,9 @@ type Config struct {
 	Perms PermissionControl
 	// Dash, if set, powers /dashboard: start/stop the web control panel live.
 	Dash DashboardControl
+	// Tailscale, if set, powers /tailscale: publish the loopback dashboard onto
+	// the operator's tailnet via `tailscale serve` (TEN-233).
+	Tailscale TailscaleControl
 	// Relay, if set, powers /relay: start/stop the offsite Discord relay live.
 	Relay RelayControl
 	// IMessage, if set, powers /imessage: manage the deny-by-default allowlist
@@ -385,6 +388,33 @@ type DashboardControl interface {
 	Enable() (addr string, err error)
 	Disable() error
 	Status() (running bool, addr string)
+}
+
+// TailscaleControl powers /tailscale: publish the loopback dashboard onto the
+// operator's tailnet via `tailscale serve` (TEN-233) — a reverse proxy, so the
+// dashboard stays bound to 127.0.0.1 (no 0.0.0.0, no cert/token to manage) and
+// only the operator's tailnet devices can reach it over HTTPS. Serve/Unserve
+// fail closed with operator-actionable errors (CLI missing / not logged in).
+type TailscaleControl interface {
+	// Status reports install/connection/serve state for the status view. The
+	// error return is reserved; a reachable-but-unhappy CLI is reported in-struct.
+	Status() (TailscaleStatus, error)
+	// Serve publishes the dashboard's loopback port to the tailnet; returns the
+	// reachable https URL.
+	Serve() (url string, err error)
+	// Unserve removes the tailnet serve config.
+	Unserve() error
+}
+
+// TailscaleStatus is the render-ready snapshot of the local tailscale state.
+type TailscaleStatus struct {
+	Installed bool   // the tailscale CLI was found
+	LoggedIn  bool   // backend is connected (BackendState == "Running")
+	State     string // raw BackendState (e.g. "Running", "Stopped", "NeedsLogin")
+	DNSName   string // this node's MagicDNS name (no trailing dot)
+	Serving   bool   // a tailscale serve config is active
+	URL       string // https tailnet URL when connected
+	Detail    string // human note when something's off (e.g. parse/CLI error)
 }
 
 // RelayControl powers /relay: start/stop the offsite Discord relay at runtime,
@@ -2063,6 +2093,7 @@ var helpSections = []helpSection{
 		rows: [][2]string{
 			{"/whoami", "show the agent ID + active backend + active model (runtime truth — trust over the model's self-answer)"},
 			{"/dashboard [on|off|status]", "start/stop the web control panel (auto-launches by default; choice persists)"},
+			{"/tailscale [serve|serve off|status]", "publish the dashboard to your tailnet over HTTPS via tailscale serve (reach it from other devices)"},
 			{"/help", "show top-level categories"},
 			{"/help <category>", "show commands in one category (e.g. /help agents)"},
 			{"/help all", "dump every command in every category (legacy view)"},
@@ -2489,7 +2520,11 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		switch strings.ToLower(strings.TrimSpace(arg)) {
 		case "", "status":
 			if running, addr := m.cfg.Dash.Status(); running {
-				m.sysChat("dashboard: running at http://" + addr)
+				hint := ""
+				if m.cfg.Tailscale != nil {
+					hint = "   ·   /tailscale serve to reach it from your other devices"
+				}
+				m.sysChat("dashboard: running at http://" + addr + hint)
 			} else {
 				m.sysChat("dashboard: stopped")
 			}
@@ -2508,6 +2543,59 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			}
 		default:
 			m.sysChat("usage: /dashboard [status|on|off]")
+		}
+	case "/tailscale", "/ts":
+		// Publish the loopback dashboard onto the tailnet via `tailscale serve`
+		// (TEN-233). Reverse proxy — the dashboard bind stays 127.0.0.1.
+		if m.cfg.Tailscale == nil {
+			m.sysChat("tailscale control not available in this session")
+			break
+		}
+		fields := strings.Fields(arg)
+		sub := ""
+		if len(fields) > 0 {
+			sub = strings.ToLower(fields[0])
+		}
+		serveOff := sub == "serve" && len(fields) > 1 && strings.ToLower(fields[1]) == "off"
+		switch {
+		case sub == "" || sub == "status":
+			st, _ := m.cfg.Tailscale.Status()
+			switch {
+			case !st.Installed:
+				m.sysChat("tailscale: CLI not found on this machine — install Tailscale, then /tailscale serve")
+			case !st.LoggedIn:
+				state := st.State
+				if strings.TrimSpace(state) == "" {
+					state = "unknown"
+				}
+				m.sysChat("tailscale: installed but not connected (state: " + state + ") — run `tailscale up` or log in via the app, then /tailscale serve")
+			case st.Serving:
+				m.sysChat("tailscale: connected as " + st.DNSName + " · dashboard published at " + st.URL + "  (/tailscale serve off to stop)")
+			default:
+				m.sysChat("tailscale: connected as " + st.DNSName + " · not publishing — run /tailscale serve to reach the dashboard from your tailnet")
+			}
+		case serveOff || sub == "off" || sub == "stop" || sub == "reset":
+			if err := m.cfg.Tailscale.Unserve(); err != nil {
+				m.sysChat("tailscale: " + err.Error())
+			} else {
+				m.sysChat("tailscale: serve stopped — the dashboard is no longer published to your tailnet")
+			}
+		case sub == "serve" || sub == "on" || sub == "start":
+			url, err := m.cfg.Tailscale.Serve()
+			if err != nil {
+				m.sysChat("tailscale: " + err.Error())
+				break
+			}
+			msg := "🔗 dashboard published to your tailnet: " + url +
+				"\n   reachable by your tailnet devices with no extra login (set dashboard.auth for a bearer token if the tailnet is shared). /tailscale serve off to stop."
+			if m.cfg.Dash != nil {
+				if running, _ := m.cfg.Dash.Status(); !running {
+					msg += "\n⚠ the dashboard itself is currently stopped — run /dashboard on, or this URL will 502."
+				}
+			}
+			m.sysChat(msg)
+		default:
+			m.sysChat("usage: /tailscale [status | serve | serve off]")
 		}
 	case "/relay":
 		// Start/stop the offsite Discord relay live; the choice persists.

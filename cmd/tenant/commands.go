@@ -2158,6 +2158,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return c.lc.save(c.cfgDir)
 		},
 	}
+	// tailscaleManager (TEN-233) powers /tailscale: publish the loopback
+	// dashboard onto the operator's tailnet via `tailscale serve`. It reads the
+	// dashboard's port + running state from dashMgr.Status.
+	tsMgr := newTailscaleManager(ctx, dashMgr.Status, log)
+
 	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
 	// below, so the eval/quality surface (which needs evalSched) is wired
 	// before the dashboard starts serving (TEN-201).
@@ -2591,6 +2596,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Approvals: broker.Requests(),
 		Perms:     broker,
 		Dash:      dashMgr,
+		Tailscale: tsMgr,
 		Relay:     relayMgr,
 		IMessage:  imsgAllowMgr,
 		Cron:      tuiCronCtl,
