@@ -2,6 +2,7 @@ package peering
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -66,9 +67,10 @@ type ToolRegistrar func(s *mcp.Server, pc PeerContext)
 // passthrough — only the enumerated peer tools).
 type Listener struct {
 	store       *Store
-	selfID      string // our instance_id (returned in peer_hello)
-	selfVersion string // our binary/library version (returned in peer_hello)
-	overlay     bool   // peer.transport == "overlay": plain HTTP allowed on the overlay iface
+	selfID      string           // our instance_id (returned in peer_hello)
+	selfVersion string           // our binary/library version (returned in peer_hello)
+	overlay     bool             // peer.transport == "overlay": plain HTTP allowed on the overlay iface
+	tlsCert     *tls.Certificate // when set, the listener serves HTTPS (TEN-185 pinned-cert)
 	registrar   ToolRegistrar
 	log         func(format string, args ...any)
 
@@ -80,8 +82,9 @@ type ListenerConfig struct {
 	Store       *Store
 	SelfID      string
 	SelfVersion string
-	Overlay     bool          // declared overlay network (Tailscale/WireGuard) — TEN-185 adds TLS for the non-overlay case
-	Registrar   ToolRegistrar // nil ⇒ peer_hello only
+	Overlay     bool             // declared overlay network (Tailscale/WireGuard): plain HTTP permitted
+	TLSCert     *tls.Certificate // self-signed cert (TEN-185); when set, serve HTTPS + a non-loopback bind is allowed
+	Registrar   ToolRegistrar    // nil ⇒ peer_hello only
 	Logger      func(string, ...any)
 }
 
@@ -103,6 +106,7 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 		selfID:      cfg.SelfID,
 		selfVersion: ver,
 		overlay:     cfg.Overlay,
+		tlsCert:     cfg.TLSCert,
 		registrar:   cfg.Registrar,
 		log:         log,
 	}, nil
@@ -234,15 +238,15 @@ func grantedCapabilities(sp SharePolicy) []string {
 }
 
 // CheckBindPolicy enforces the secure-by-default bind rule: a non-loopback
-// address requires declared overlay mode (TEN-185 adds the TLS path for the
-// non-overlay case). Loopback is always allowed (testing/local).
+// address requires TLS or declared overlay mode. Loopback is always allowed
+// (testing/local).
 //
 // An EMPTY host (":9100" or "") means ALL interfaces in Go's net semantics —
-// the same exposure as 0.0.0.0 — so it is refused without overlay, NOT treated
-// as loopback. (This is the idiomatic "listen on port N" form, so the refusal
-// names the safe alternative explicitly.)
-func CheckBindPolicy(addr string, overlay bool) error {
-	if overlay {
+// the same exposure as 0.0.0.0 — so it is refused without TLS/overlay, NOT
+// treated as loopback. (This is the idiomatic "listen on port N" form, so the
+// refusal names the safe alternatives explicitly.)
+func CheckBindPolicy(addr string, overlay, hasTLS bool) error {
+	if overlay || hasTLS {
 		return nil
 	}
 	host := addr
@@ -253,11 +257,11 @@ func CheckBindPolicy(addr string, overlay bool) error {
 		return nil
 	}
 	if host == "" {
-		return fmt.Errorf("refusing to bind ALL interfaces %q without overlay mode — "+
-			"use 127.0.0.1:PORT for local-only, or set peer.transport: overlay (Tailscale/WireGuard)", addr)
+		return fmt.Errorf("refusing to bind ALL interfaces %q without TLS or overlay — "+
+			"use 127.0.0.1:PORT for local-only, enable a peer cert (TLS), or set peer.transport: overlay (Tailscale/WireGuard)", addr)
 	}
-	return fmt.Errorf("refusing to bind non-loopback address %q without overlay mode — "+
-		"set peer.transport: overlay (Tailscale/WireGuard) or wait for TLS (TEN-185)", addr)
+	return fmt.Errorf("refusing to bind non-loopback address %q without TLS or overlay — "+
+		"enable a peer cert (TLS) or set peer.transport: overlay (Tailscale/WireGuard)", addr)
 }
 
 func isLoopbackHost(host string) bool {
@@ -282,16 +286,25 @@ func (l *Listener) ListenAndServe(ctx context.Context, addr string) error {
 
 // Bind enforces the bind policy and returns a bound net.Listener (or an error)
 // — letting the caller report the real address before serving in a goroutine.
+// When a TLS cert is configured the listener is wrapped for HTTPS, so peers
+// dial https:// and pin the cert fingerprint (TEN-185).
 func (l *Listener) Bind(addr string) (net.Listener, error) {
-	if err := CheckBindPolicy(addr, l.overlay); err != nil {
+	if err := CheckBindPolicy(addr, l.overlay, l.tlsCert != nil); err != nil {
 		return nil, err
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("peering: bind %q: %w", addr, err)
 	}
+	if l.tlsCert != nil {
+		ln = tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{*l.tlsCert}})
+	}
 	return ln, nil
 }
+
+// Secure reports whether the listener serves over TLS (true) or plain HTTP
+// (overlay / loopback). Used to choose the http vs https scheme in invites.
+func (l *Listener) Secure() bool { return l.tlsCert != nil }
 
 // Serve serves on an existing listener until ctx is cancelled, then shuts down
 // gracefully.

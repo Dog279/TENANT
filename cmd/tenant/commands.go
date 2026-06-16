@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -325,12 +326,35 @@ func cmdMemory(ctx context.Context, args []string) error {
 
 // cmdMCPMemory runs the MCP memory server over stdio. NOTHING may be
 // written to stdout here except JSON-RPC frames — logs go to stderr.
+// checkSSEBindPolicy guards the legacy, UNAUTHENTICATED --sse-addr gateway
+// (TEN-185 scope ext 2A+5A): a non-loopback (or all-interfaces) bind is refused
+// unless the operator explicitly opts in with --insecure-lan, since that
+// transport ships no bearer auth. Loopback is always allowed — REGRESSION
+// invariant: behavior for 127.0.0.1/localhost is unchanged.
+func checkSSEBindPolicy(addr string, insecureLAN bool) error {
+	if addr == "" || insecureLAN {
+		return nil
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	if isLoopbackAddr(host) {
+		return nil
+	}
+	if host == "" {
+		return fmt.Errorf("--sse-addr %q binds ALL interfaces but the legacy SSE gateway has NO auth — use 127.0.0.1:PORT, or pass --insecure-lan to override", addr)
+	}
+	return fmt.Errorf("--sse-addr %q binds a non-loopback address but the legacy SSE gateway has NO auth — use 127.0.0.1:PORT, or pass --insecure-lan to override", addr)
+}
+
 func cmdMCPMemory(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("mcp-memory", flag.ContinueOnError)
 	c := bindCommon(fs)
 	writable := fs.Bool("allow-writes", false, "allow memory_fact_add")
 	exposeTools := fs.Bool("tools", false, "also expose the full plugin toolset (wiki/sql/os/…) over MCP, not just memory")
 	sseAddr := fs.String("sse-addr", "", "serve over HTTP+SSE on this address (e.g. 127.0.0.1:8765) instead of stdio")
+	insecureLAN := fs.Bool("insecure-lan", false, "allow --sse-addr to bind a non-loopback address despite the legacy SSE gateway having NO auth (TEN-185 secure-by-default opt-out)")
 	pf := bindPluginFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -347,6 +371,11 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		if m := c.lc.Gateway.Mode; m == "sse" || m == "both" {
 			*sseAddr = c.lc.Gateway.SSEAddr
 		}
+	}
+	// TEN-185 (scope ext 2A+5A): the legacy SSE gateway has NO auth, so a
+	// non-loopback bind is refused unless the operator explicitly opts in.
+	if err := checkSSEBindPolicy(*sseAddr, *insecureLAN); err != nil {
+		return err
 	}
 	// Honor skills configured via `tenant setup`.
 	applyPluginConfig(c, pf)

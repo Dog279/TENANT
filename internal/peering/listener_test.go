@@ -173,25 +173,28 @@ func TestCheckBindPolicy(t *testing.T) {
 	cases := []struct {
 		addr    string
 		overlay bool
+		tls     bool
 		ok      bool
 	}{
-		{"127.0.0.1:9100", false, true},    // loopback always ok
-		{"localhost:9100", false, true},    // loopback name ok
-		{"[::1]:9100", false, true},        // ipv6 loopback ok
-		{"0.0.0.0:9100", false, false},     // explicit all-interfaces w/o overlay → refused
-		{":9100", false, false},            // EMPTY host = all interfaces → refused (idiomatic form)
-		{"", false, false},                 // empty addr = all interfaces → refused
-		{":9100", true, true},              // ...but allowed under declared overlay
-		{"192.168.1.5:9100", false, false}, // LAN w/o overlay → refused
-		{"192.168.1.5:9100", true, true},   // overlay declared → allowed
+		{"127.0.0.1:9100", false, false, true},    // loopback always ok
+		{"localhost:9100", false, false, true},    // loopback name ok
+		{"[::1]:9100", false, false, true},        // ipv6 loopback ok
+		{"0.0.0.0:9100", false, false, false},     // all-interfaces, no tls/overlay → refused
+		{":9100", false, false, false},            // EMPTY host = all interfaces → refused
+		{"", false, false, false},                 // empty addr = all interfaces → refused
+		{":9100", true, false, true},              // ...allowed under declared overlay
+		{"0.0.0.0:9100", false, true, true},       // ...allowed under TLS (TEN-185)
+		{"192.168.1.5:9100", false, false, false}, // LAN, no tls/overlay → refused
+		{"192.168.1.5:9100", false, true, true},   // LAN + TLS → allowed
+		{"192.168.1.5:9100", true, false, true},   // LAN + overlay → allowed
 	}
 	for _, tc := range cases {
-		err := CheckBindPolicy(tc.addr, tc.overlay)
+		err := CheckBindPolicy(tc.addr, tc.overlay, tc.tls)
 		if tc.ok && err != nil {
-			t.Errorf("checkBindPolicy(%q, overlay=%v) = %v, want ok", tc.addr, tc.overlay, err)
+			t.Errorf("CheckBindPolicy(%q, overlay=%v, tls=%v) = %v, want ok", tc.addr, tc.overlay, tc.tls, err)
 		}
 		if !tc.ok && err == nil {
-			t.Errorf("checkBindPolicy(%q, overlay=%v) = nil, want refusal", tc.addr, tc.overlay)
+			t.Errorf("CheckBindPolicy(%q, overlay=%v, tls=%v) = nil, want refusal", tc.addr, tc.overlay, tc.tls)
 		}
 	}
 }

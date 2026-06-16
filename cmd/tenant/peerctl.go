@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,26 @@ import (
 	"tenant/internal/mcp"
 	"tenant/internal/peering"
 )
+
+// peerTLS loads/mints this instance's self-signed peer cert (TEN-185) unless
+// overlay mode is declared (Tailscale/WireGuard → plain HTTP, the overlay is the
+// security). Returns (nil, "") in overlay mode. LoadOrMintCert is idempotent, so
+// the fingerprint an invite advertises always matches what the listener serves.
+func peerTLS(cfgDir string, overlay bool) (*tls.Certificate, string, error) {
+	if overlay {
+		return nil, "", nil
+	}
+	cert, fp, err := peering.LoadOrMintCert(cfgDir)
+	if err != nil {
+		return nil, "", err
+	}
+	return &cert, fp, nil
+}
+
+// peerOverlay reports whether the operator declared overlay transport.
+func peerOverlay(c *commonFlags) bool {
+	return c.lc != nil && c.lc.Peer.Transport == "overlay"
+}
 
 func cmdPeer(ctx context.Context, args []string) error {
 	if len(args) < 1 {
@@ -63,9 +84,9 @@ func peerUsage() error {
   rotate <name>           stage a new token (staged-pull; old stays valid until adopted)
   share <name> wiki=on|off memory=on|off [skills=…] [exec=…] [llm=…]
                           edit a peer's share policy (all-deny by default)
-  serve [--listen addr] [--overlay]
-                          run the peer listener headless (the interactive TUI
-                          starts it automatically when peer.listen is set)`)
+  serve [--listen addr]   run the peer listener headless (the interactive TUI
+                          starts it automatically when peer.listen is set;
+                          set peer.transport: overlay in config for Tailscale)`)
 }
 
 // peerServe runs the federation listener headless until interrupted — a focused
@@ -75,7 +96,6 @@ func peerUsage() error {
 func peerServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("peer serve", flag.ContinueOnError)
 	listen := fs.String("listen", "", "address to bind (default: config peer.listen, else 127.0.0.1:9100)")
-	overlay := fs.Bool("overlay", false, "allow plain HTTP on a non-loopback overlay address (Tailscale/WireGuard)")
 	c, store, _, err := peerStore(fs, args)
 	if err != nil {
 		return err
@@ -87,8 +107,15 @@ func peerServe(ctx context.Context, args []string) error {
 	if addr == "" {
 		addr = "127.0.0.1:9100"
 	}
-	ov := *overlay || (c.lc != nil && c.lc.Peer.Transport == "overlay")
+	// Overlay is single-sourced from config (peer.transport: overlay) so the
+	// invite's advertised scheme always matches what the listener serves — a
+	// transient serve-only flag could desync the two surfaces.
+	ov := peerOverlay(c)
 	id, err := ensureInstanceID(c)
+	if err != nil {
+		return err
+	}
+	cert, fp, err := peerTLS(c.cfgDir, ov)
 	if err != nil {
 		return err
 	}
@@ -97,6 +124,7 @@ func peerServe(ctx context.Context, args []string) error {
 		SelfID:      id,
 		SelfVersion: mcp.LibraryVersion,
 		Overlay:     ov,
+		TLSCert:     cert,
 		Logger:      func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
 	if err != nil {
@@ -106,7 +134,15 @@ func peerServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "peer listener on %s (instance %s) — Ctrl-C to stop\n", netLn.Addr(), id)
+	scheme := "https"
+	if cert == nil {
+		scheme = "http"
+	}
+	fmt.Fprintf(os.Stderr, "peer listener on %s://%s (instance %s)", scheme, netLn.Addr(), id)
+	if fp != "" {
+		fmt.Fprintf(os.Stderr, " — cert fp %s…", fp[:16])
+	}
+	fmt.Fprintln(os.Stderr, " — Ctrl-C to stop")
 	return ln.Serve(ctx, netLn)
 }
 
@@ -174,16 +210,25 @@ func peerInvite(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Fingerprint is empty at TEN-183 (TLS pinning lands in TEN-185); overlay
-	// (Tailscale) needs none anyway.
-	code, err := store.CreateInvite(selfName, id, *url, "", *ttl, peerName)
+	// TEN-185: carry the self-signed cert fingerprint so the joiner pins it
+	// (TOFU-by-invite). Empty under overlay transport (plain HTTP over the
+	// tailnet). LoadOrMintCert is idempotent with what the listener serves.
+	_, fp, err := peerTLS(c.cfgDir, peerOverlay(c))
+	if err != nil {
+		return err
+	}
+	code, err := store.CreateInvite(selfName, id, *url, fp, *ttl, peerName)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("%s\n", code)
-	fmt.Fprintf(os.Stderr, "\n↑ Give this code to %q. It expires in %s and is single-use.\n"+
+	scheme := "TLS (cert pinned via this code)"
+	if fp == "" {
+		scheme = "plain HTTP over your overlay network"
+	}
+	fmt.Fprintf(os.Stderr, "\n↑ Give this code to %q. It expires in %s, is single-use, and uses %s.\n"+
 		"They run:  tenant peer join <code>\n"+
-		"Then set what they may read:  tenant peer share %s wiki=on\n", peerName, ttl.String(), peerName)
+		"Then set what they may read:  tenant peer share %s wiki=on\n", peerName, ttl.String(), scheme, peerName)
 	return nil
 }
 
@@ -412,11 +457,17 @@ func startPeerListener(ctx context.Context, c *commonFlags, pushSys func(string)
 		return
 	}
 	overlay := c.lc.Peer.Transport == "overlay"
+	cert, _, err := peerTLS(c.cfgDir, overlay)
+	if err != nil {
+		pushSys("peer: listener not started — " + err.Error())
+		return
+	}
 	ln, err := peering.NewListener(peering.ListenerConfig{
 		Store:       store,
 		SelfID:      id,
 		SelfVersion: mcp.LibraryVersion,
 		Overlay:     overlay,
+		TLSCert:     cert,
 		Registrar:   nil, // TEN-186 injects the share-gated knowledge tools
 		Logger: func(f string, a ...any) {
 			if log != nil {
@@ -433,9 +484,9 @@ func startPeerListener(ctx context.Context, c *commonFlags, pushSys func(string)
 		pushSys("peer: listener not started — " + err.Error())
 		return
 	}
-	transport := "loopback/TLS"
+	transport := "TLS"
 	if overlay {
-		transport = "overlay"
+		transport = "overlay (plain HTTP)"
 	}
 	pushSys(fmt.Sprintf("peer: federation listener on %s (%s)", netLn.Addr().String(), transport))
 	go func() {
