@@ -126,6 +126,46 @@ func TestTailscale_Unserve(t *testing.T) {
 	}
 }
 
+// TEN-233 persistence: a successful serve records the choice; a FAILED serve
+// (e.g. tailscale not connected) must NOT flip the persisted intent; unserve
+// records off.
+func TestTailscale_PersistsChoice(t *testing.T) {
+	f := &fakeTSCLI{resp: map[string]string{
+		"status --json":   tsRunningJSON,
+		"serve status":    "No serve config",
+		"serve --bg 8770": "",
+		"serve reset":     "",
+	}}
+	m := newTSMgr(f, "tailscale")
+	var saved []bool
+	m.persist = func(serve bool) { saved = append(saved, serve) }
+
+	if _, err := m.Serve(); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 1 || saved[0] != true {
+		t.Fatalf("serve must persist true once: %v", saved)
+	}
+	if err := m.Unserve(); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 2 || saved[1] != false {
+		t.Fatalf("unserve must persist false: %v", saved)
+	}
+
+	// A serve that fails preconditions must NOT persist (intent unchanged).
+	fDown := &fakeTSCLI{resp: map[string]string{"status --json": `{"BackendState":"Stopped","Self":{}}`}}
+	mDown := newTSMgr(fDown, "tailscale")
+	var savedDown []bool
+	mDown.persist = func(serve bool) { savedDown = append(savedDown, serve) }
+	if _, err := mDown.Serve(); err == nil {
+		t.Fatal("serve while Stopped should error")
+	}
+	if len(savedDown) != 0 {
+		t.Fatalf("a failed serve must not persist: %v", savedDown)
+	}
+}
+
 func TestPortOf(t *testing.T) {
 	if got := portOf("127.0.0.1:8770"); got != "8770" {
 		t.Errorf("portOf loopback: %q", got)

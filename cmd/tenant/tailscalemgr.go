@@ -46,7 +46,11 @@ type tailscaleManager struct {
 	// run is the exec seam (overridden in tests). It runs `bin args...` and
 	// returns combined output. nil ⇒ execTailscale.
 	run func(ctx context.Context, bin string, args ...string) (string, error)
-	log *slog.Logger
+	// persist records the serve on/off choice to config so it survives a relaunch
+	// (TEN-233). Only called on a SUCCESSFUL serve/unserve, so a transient failure
+	// (e.g. tailscale not up yet at launch) never flips the operator's intent.
+	persist func(serve bool)
+	log     *slog.Logger
 }
 
 func newTailscaleManager(base context.Context, dashInfo func() (bool, string), log *slog.Logger) *tailscaleManager {
@@ -137,6 +141,9 @@ func (m *tailscaleManager) Serve() (string, error) {
 	if out, err := m.run(m.base, m.bin, "serve", "--bg", port); err != nil {
 		return "", fmt.Errorf("`tailscale serve --bg %s` failed: %s", port, firstLine(out, err))
 	}
+	if m.persist != nil {
+		m.persist(true)
+	}
 	url := st.URL
 	if url == "" {
 		url = "https://" + st.DNSName + "/"
@@ -152,7 +159,18 @@ func (m *tailscaleManager) Unserve() error {
 	if out, err := m.run(m.base, m.bin, "serve", "reset"); err != nil {
 		return fmt.Errorf("`tailscale serve reset` failed: %s", firstLine(out, err))
 	}
+	if m.persist != nil {
+		m.persist(false)
+	}
 	return nil
+}
+
+// reassertOnLaunch re-applies a persisted serve choice at startup (best-effort).
+// Idempotent — `tailscale serve` re-asserts the same config harmlessly when it's
+// already active. A failure (e.g. tailscale not connected yet) is returned for a
+// feed note and does NOT clear the persisted intent. Caller guards on the flag.
+func (m *tailscaleManager) reassertOnLaunch() (string, error) {
+	return m.Serve()
 }
 
 // --- small helpers ---

@@ -2160,8 +2160,16 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	// tailscaleManager (TEN-233) powers /tailscale: publish the loopback
 	// dashboard onto the operator's tailnet via `tailscale serve`. It reads the
-	// dashboard's port + running state from dashMgr.Status.
+	// dashboard's port + running state from dashMgr.Status, and persists the serve
+	// choice so it is re-asserted at next launch (below, after dashMgr.Enable).
 	tsMgr := newTailscaleManager(ctx, dashMgr.Status, log)
+	tsMgr.persist = func(serve bool) {
+		if c.lc == nil {
+			return
+		}
+		c.lc.Tailscale.Serve = serve
+		_ = c.lc.save(c.cfgDir)
+	}
 
 	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
 	// below, so the eval/quality surface (which needs evalSched) is wired
@@ -2539,6 +2547,17 @@ func cmdTUI(ctx context.Context, args []string) error {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			pushSys("dashboard: serving on http://" + addr)
+		}
+	}
+
+	// Re-assert a persisted `/tailscale serve` choice now that the dashboard is
+	// up (TEN-233). Best-effort: a failure (e.g. tailscale not connected yet) is
+	// a feed note and leaves the persisted intent intact for the next launch.
+	if c.lc != nil && c.lc.Tailscale.Serve {
+		if url, terr := tsMgr.reassertOnLaunch(); terr != nil {
+			pushSys("tailscale: serve not restored — " + terr.Error())
+		} else {
+			pushSys("tailscale: dashboard republished to your tailnet at " + url)
 		}
 	}
 

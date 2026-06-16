@@ -35,6 +35,11 @@ type launchConfig struct {
 	Gateway gatewayConfig `json:"gateway,omitempty"`
 	// Dashboard configures the web control panel (TEN-76).
 	Dashboard dashboardConfig `json:"dashboard,omitempty"`
+	// Tailscale persists the operator's `/tailscale serve` choice (TEN-233) so it
+	// is re-asserted at next launch — matching the dashboard/relay/imessage
+	// toggles. Tailscale's own daemon also persists the serve config; this flag
+	// makes Tenant restore it even if the tailnet config was cleared elsewhere.
+	Tailscale tailscaleConfig `json:"tailscale,omitempty"`
 	// Relay configures the offsite Discord relay (TEN-114).
 	Relay relayConfig `json:"relay,omitempty"`
 	// IMessage holds the iMessage drive-allowlist (TEN-68 follow-up): the
@@ -160,6 +165,12 @@ type dashboardConfig struct {
 // relayConfig is the offsite Discord relay's persisted state (TEN-114): whether
 // it auto-starts and the single operator's Discord user id. Default OFF — the
 // relay is an explicit opt-in (exposes the agent over a third-party network).
+// tailscaleConfig persists the `/tailscale serve` choice (TEN-233). Serve=true
+// ⇒ re-assert `tailscale serve` for the dashboard port at launch (best-effort).
+type tailscaleConfig struct {
+	Serve bool `json:"serve,omitempty"`
+}
+
 type relayConfig struct {
 	Enabled    bool   `json:"enabled,omitempty"`     // default false = opt-in
 	OperatorID string `json:"operator_id,omitempty"` // the single allowed Discord user id
