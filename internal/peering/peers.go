@@ -54,9 +54,12 @@ type Peer struct {
 // <cfgDir>/peers.json (0600), mirroring the mcpremote token-cache file pattern.
 // All mutators are mutex-guarded; Save writes atomically (temp + rename).
 type Store struct {
-	mu    sync.Mutex
-	path  string
-	peers map[string]*Peer
+	mu      sync.Mutex
+	path    string
+	peers   map[string]*Peer
+	modTime time.Time // peers.json mtime at last load/save; drives ReloadIfChanged
+	modSize int64     // peers.json size at last load/save; paired with mtime so a
+	// same-mtime-tick rewrite (coarse-granularity filesystems) is still detected
 }
 
 // PeersPath returns the canonical peers.json location under cfgDir.
@@ -72,16 +75,63 @@ func LoadStore(cfgDir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("peering: read peers.json: %w", err)
 	}
-	var list []*Peer
-	if err := json.Unmarshal(b, &list); err != nil {
-		return nil, fmt.Errorf("peering: parse peers.json: %w", err)
+	if err := s.unmarshal(b); err != nil {
+		return nil, err
 	}
-	for _, p := range list {
-		if p != nil && p.Name != "" {
-			s.peers[p.Name] = p
-		}
+	if fi, err := os.Stat(s.path); err == nil {
+		s.modTime, s.modSize = fi.ModTime(), fi.Size()
 	}
 	return s, nil
+}
+
+// unmarshal replaces the in-memory peer map from raw JSON. Caller holds s.mu
+// (or is the single-threaded loader).
+func (s *Store) unmarshal(b []byte) error {
+	var list []*Peer
+	if err := json.Unmarshal(b, &list); err != nil {
+		return fmt.Errorf("peering: parse peers.json: %w", err)
+	}
+	m := make(map[string]*Peer, len(list))
+	for _, p := range list {
+		if p != nil && p.Name != "" {
+			m[p.Name] = p
+		}
+	}
+	s.peers = m
+	return nil
+}
+
+// ReloadIfChanged re-reads peers.json IFF its mtime advanced since the last
+// load/save — so a peers.json mutated by another process (e.g. the `tenant peer
+// revoke` CLI) lands on the listener's NEXT request rather than the next
+// restart. Cheap (a stat) on the common no-change path. A missing file is
+// treated as "no peers" (a full revoke-by-delete still lands).
+func (s *Store) ReloadIfChanged() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fi, err := os.Stat(s.path)
+	if os.IsNotExist(err) {
+		if len(s.peers) != 0 {
+			s.peers = map[string]*Peer{}
+			s.modTime = time.Time{}
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.ModTime().Equal(s.modTime) && fi.Size() == s.modSize {
+		return nil // unchanged (mtime AND size — catches same-tick rewrites)
+	}
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		return err
+	}
+	if err := s.unmarshal(b); err != nil {
+		return err
+	}
+	s.modTime, s.modSize = fi.ModTime(), fi.Size()
+	return nil
 }
 
 // save persists the store atomically at 0600. Caller holds s.mu.
@@ -98,7 +148,13 @@ func (s *Store) save() error {
 	if err != nil {
 		return fmt.Errorf("peering: marshal peers.json: %w", err)
 	}
-	return atomicWriteFile(s.path, b, 0o600)
+	if err := atomicWriteFile(s.path, b, 0o600); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(s.path); err == nil {
+		s.modTime, s.modSize = fi.ModTime(), fi.Size() // keep our own writes from looking "changed"
+	}
+	return nil
 }
 
 // Save flushes the store to disk (0600, atomic).

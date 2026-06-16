@@ -11,10 +11,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	"tenant/internal/mcp"
 	"tenant/internal/peering"
 )
 
@@ -40,6 +42,8 @@ func cmdPeer(ctx context.Context, args []string) error {
 		return peerRotate(rest)
 	case "share":
 		return peerShare(rest)
+	case "serve":
+		return peerServe(ctx, rest)
 	default:
 		return peerUsage()
 	}
@@ -58,7 +62,52 @@ func peerUsage() error {
   revoke <name>           invalidate a peer's token (keep the record)
   rotate <name>           stage a new token (staged-pull; old stays valid until adopted)
   share <name> wiki=on|off memory=on|off [skills=…] [exec=…] [llm=…]
-                          edit a peer's share policy (all-deny by default)`)
+                          edit a peer's share policy (all-deny by default)
+  serve [--listen addr] [--overlay]
+                          run the peer listener headless (the interactive TUI
+                          starts it automatically when peer.listen is set)`)
+}
+
+// peerServe runs the federation listener headless until interrupted — a focused
+// subset of `tenant serve` (TEN-194) that exposes only the peer listener (no
+// agent loop / dashboard). Useful for the two-machine trial and for testing the
+// exact path the interactive TUI wires via startPeerListener.
+func peerServe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("peer serve", flag.ContinueOnError)
+	listen := fs.String("listen", "", "address to bind (default: config peer.listen, else 127.0.0.1:9100)")
+	overlay := fs.Bool("overlay", false, "allow plain HTTP on a non-loopback overlay address (Tailscale/WireGuard)")
+	c, store, _, err := peerStore(fs, args)
+	if err != nil {
+		return err
+	}
+	addr := strings.TrimSpace(*listen)
+	if addr == "" && c.lc != nil {
+		addr = c.lc.Peer.Listen
+	}
+	if addr == "" {
+		addr = "127.0.0.1:9100"
+	}
+	ov := *overlay || (c.lc != nil && c.lc.Peer.Transport == "overlay")
+	id, err := ensureInstanceID(c)
+	if err != nil {
+		return err
+	}
+	ln, err := peering.NewListener(peering.ListenerConfig{
+		Store:       store,
+		SelfID:      id,
+		SelfVersion: mcp.LibraryVersion,
+		Overlay:     ov,
+		Logger:      func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+	})
+	if err != nil {
+		return err
+	}
+	netLn, err := ln.Bind(addr)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "peer listener on %s (instance %s) — Ctrl-C to stop\n", netLn.Addr(), id)
+	return ln.Serve(ctx, netLn)
 }
 
 // peerStore resolves cfgDir and opens peers.json. It also separates positional
@@ -343,6 +392,57 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// startPeerListener stands up the federation peer listener (TEN-184) in the
+// interactive run path (the host process holding the live stores/broker/bus).
+// Best-effort: a bind-policy refusal or port conflict is a feed note, never
+// fatal. The knowledge-tool registrar is injected in TEN-186; today it serves
+// the peer_hello handshake. Binds synchronously so the bound address (and any
+// refusal) is reported before serving in a goroutine.
+func startPeerListener(ctx context.Context, c *commonFlags, pushSys func(string), log *slog.Logger) {
+	store, err := peering.LoadStore(c.cfgDir)
+	if err != nil {
+		pushSys("peer: listener not started — " + err.Error())
+		return
+	}
+	id, err := ensureInstanceID(c)
+	if err != nil {
+		pushSys("peer: listener not started — " + err.Error())
+		return
+	}
+	overlay := c.lc.Peer.Transport == "overlay"
+	ln, err := peering.NewListener(peering.ListenerConfig{
+		Store:       store,
+		SelfID:      id,
+		SelfVersion: mcp.LibraryVersion,
+		Overlay:     overlay,
+		Registrar:   nil, // TEN-186 injects the share-gated knowledge tools
+		Logger: func(f string, a ...any) {
+			if log != nil {
+				log.Info(fmt.Sprintf(f, a...))
+			}
+		},
+	})
+	if err != nil {
+		pushSys("peer: listener not started — " + err.Error())
+		return
+	}
+	netLn, err := ln.Bind(c.lc.Peer.Listen)
+	if err != nil {
+		pushSys("peer: listener not started — " + err.Error())
+		return
+	}
+	transport := "loopback/TLS"
+	if overlay {
+		transport = "overlay"
+	}
+	pushSys(fmt.Sprintf("peer: federation listener on %s (%s)", netLn.Addr().String(), transport))
+	go func() {
+		if serr := ln.Serve(ctx, netLn); serr != nil {
+			pushSys("peer: listener stopped — " + serr.Error())
+		}
+	}()
 }
 
 // ensureInstanceID returns this installation's stable instance_id, minting and

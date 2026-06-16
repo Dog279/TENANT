@@ -28,6 +28,9 @@ type launchConfig struct {
 	// and reused as the federation bus Origin (TEN-189). Never secret.
 	InstanceID string `json:"instance_id,omitempty"`
 
+	// Peer holds the Tenant-to-Tenant federation listener config (TEN-184).
+	Peer peerConfig `json:"peer,omitempty"`
+
 	// Provider is the active generation provider — a key into Providers.
 	Provider string `json:"provider,omitempty"`
 	// Providers holds each configured provider's settings, so switching is a
@@ -174,6 +177,15 @@ type dashboardConfig struct {
 // ⇒ re-assert `tailscale serve` for the dashboard port at launch (best-effort).
 type tailscaleConfig struct {
 	Serve bool `json:"serve,omitempty"`
+}
+
+// peerConfig holds Tenant-to-Tenant federation listener settings (TEN-184).
+// Empty Listen ⇒ federation off (no listener bound). Transport "overlay" means
+// the operator runs an overlay network (Tailscale/WireGuard) and plain HTTP is
+// permitted on it; otherwise a non-loopback bind is refused until TLS (TEN-185).
+type peerConfig struct {
+	Listen    string `json:"listen,omitempty"`
+	Transport string `json:"transport,omitempty"` // "" | "overlay"
 }
 
 type relayConfig struct {

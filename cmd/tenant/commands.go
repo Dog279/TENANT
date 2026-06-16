@@ -2604,6 +2604,16 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Federation peer listener (TEN-184): if peer.listen is configured, stand up
+	// the in-process go-sdk streamable-HTTP server so paired peers (TEN-183) can
+	// reach this instance. The interactive run path is the host process — it
+	// holds the live stores/broker/bus. Knowledge tools are injected in TEN-186;
+	// for now it serves the peer_hello handshake. Best-effort: a bind failure is
+	// a feed note, never fatal.
+	if c.lc != nil && c.lc.Peer.Listen != "" {
+		startPeerListener(ctx, c, pushSys, log)
+	}
+
 	modelName := c.vllmModel
 	if c.backend == "echo" || modelName == "" {
 		modelName = c.backend
