@@ -398,6 +398,10 @@ type RelayControl interface {
 	// SetExec toggles offsite exec mode (the gated dangerous tools, each still
 	// per-action button-approved over Discord). Off = read/research/comms only.
 	SetExec(on bool) error
+	// Perms exposes the Discord agent's per-category permission control (TEN-231)
+	// so /relay permissions uses the SAME ask|allow|deny model as /permissions —
+	// "ask" prompts a button in Discord. nil when Discord is unconfigured.
+	Perms() PermissionControl
 }
 
 // IMessageControl powers /imessage: manage the DENY-BY-DEFAULT allowlist of
@@ -2532,7 +2536,32 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			if execOn {
 				mode = "EXEC ON (dangerous tools, button-approved)"
 			}
-			m.sysChat("discord relay: " + state + " (" + who + "; " + mode + ")")
+			m.sysChat("discord relay: " + state + " (" + who + "; " + mode + ")  ·  /relay permissions for per-category gating")
+		case "permissions", "perms", "permission":
+			pc := m.cfg.Relay.Perms()
+			if pc == nil {
+				m.sysChat("relay permissions unavailable (discord not configured — /skill configure discord)")
+				break
+			}
+			pf := strings.Fields(rest)
+			switch {
+			case len(pf) == 0:
+				plain, styled := renderPermissionsFor(pc, "Discord relay permissions", "/relay permissions")
+				m.sysChatStyled(plain, styled)
+			case strings.ToLower(pf[0]) == "set" && len(pf) >= 3:
+				cat, mode := strings.ToLower(pf[1]), strings.ToLower(pf[2])
+				ok, err := pc.SetPermission(cat, mode)
+				switch {
+				case err != nil:
+					m.sysChat("relay: " + err.Error())
+				case !ok:
+					m.sysChat("no such category " + pf[1] + " (see /relay permissions)")
+				default:
+					m.sysChat("🔐 relay " + cat + " → " + mode)
+				}
+			default:
+				m.sysChat("usage: /relay permissions   |   /relay permissions set <category> <ask|allow|deny>   (ask = button-approve in Discord)")
+			}
 		case "allow":
 			if rest == "" {
 				m.sysChat("usage: /relay allow <your-discord-user-id>")
@@ -2569,7 +2598,7 @@ func (m *model) handleSlash(line string) tea.Cmd {
 				m.sysChat("relay: exec mode off — offsite session is read/research/comms only again")
 			}
 		default:
-			m.sysChat("usage: /relay [status|allow <id>|on|off|exec on|off]")
+			m.sysChat("usage: /relay [status|allow <id>|on|off|exec on|off|permissions [set <cat> <mode>]]")
 		}
 	case "/imessage", "/imsg":
 		// Manage the deny-by-default allowlist of handles permitted to drive

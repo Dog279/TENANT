@@ -92,6 +92,14 @@ type approvalBroker struct {
 	requests chan tui.ApprovalRequest
 	persist  func(map[string]string) // save modes to settings (nil = no persist)
 	log      *slog.Logger
+
+	// ask, when non-nil, REPLACES the on-host TUI prompt as the backend for an
+	// "ask"-mode action: it raises the request through a channel-specific
+	// mechanism (e.g. the Discord button approver, TEN-231) and returns the
+	// operator's decision. nil ⇒ the default backend posts to requests and
+	// blocks on the TUI. This is what lets one broker model (per-category
+	// ask|allow|deny) front every channel — only the "ask" plumbing differs.
+	ask func(ctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision
 }
 
 func newApprovalBroker(log *slog.Logger) *approvalBroker {
@@ -125,6 +133,26 @@ func newOffsiteApprovalBroker(log *slog.Logger, requests chan tui.ApprovalReques
 	}
 	for _, c := range catOrder {
 		b.modes[c] = modeDeny
+	}
+	return b
+}
+
+// newDiscordApprovalBroker builds the per-category broker for the Discord relay
+// (TEN-231). Like the iMessage broker it satisfies tui.PermissionControl so
+// /relay permissions uses the SAME ask|allow|deny syntax as /permissions, but
+// its "ask" backend is the Discord BUTTON approver (the operator is reachable in
+// the channel), not the Mac TUI — so the default mode is ASK (every dangerous
+// action prompts a button, the faithful pre-TEN-231 behavior) rather than the
+// iMessage deny-by-default (where the operator is typically away from the host).
+// The caller sets b.ask to the live button backend after the relay manager exists.
+func newDiscordApprovalBroker(log *slog.Logger) *approvalBroker {
+	b := &approvalBroker{
+		modes:   map[string]permMode{},
+		session: map[string]bool{},
+		log:     log,
+	}
+	for _, c := range catOrder {
+		b.modes[c] = modeAsk
 	}
 	return b
 }
@@ -191,31 +219,47 @@ func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) boo
 		return true
 	}
 
+	switch b.askDecision(ctx, cat, action, detail) {
+	case tui.ApproveAlways:
+		b.setMode(cat, modeAllow)
+		return true
+	case tui.ApproveSession:
+		b.mu.Lock()
+		b.session[cat] = true
+		b.mu.Unlock()
+		return true
+	case tui.ApproveOnce:
+		return true
+	default:
+		return false
+	}
+}
+
+// askDecision raises an "ask"-mode prompt and returns the operator's decision.
+// The custom backend (b.ask, e.g. Discord buttons) takes precedence; otherwise
+// the default backend posts to the on-host TUI request channel and blocks. With
+// NEITHER wired it fails closed (DenyOnce) — a broker with no way to reach the
+// operator must never silently allow.
+func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail string) tui.ApprovalDecision {
+	req := tui.ApprovalRequest{Category: cat, Action: action, Detail: detail}
+	if b.ask != nil {
+		return b.ask(ctx, req)
+	}
+	if b.requests == nil {
+		return tui.DenyOnce
+	}
 	reply := make(chan tui.ApprovalDecision, 1)
-	req := tui.ApprovalRequest{Category: cat, Action: action, Detail: detail, Reply: reply}
+	req.Reply = reply
 	select {
 	case b.requests <- req:
 	case <-ctx.Done():
-		return false
+		return tui.DenyOnce
 	}
 	select {
 	case d := <-reply:
-		switch d {
-		case tui.ApproveAlways:
-			b.setMode(cat, modeAllow)
-			return true
-		case tui.ApproveSession:
-			b.mu.Lock()
-			b.session[cat] = true
-			b.mu.Unlock()
-			return true
-		case tui.ApproveOnce:
-			return true
-		default:
-			return false
-		}
+		return d
 	case <-ctx.Done():
-		return false
+		return tui.DenyOnce
 	}
 }
 

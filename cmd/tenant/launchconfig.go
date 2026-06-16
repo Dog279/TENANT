@@ -167,6 +167,12 @@ type relayConfig struct {
 	// (exec/write/destructive/outbound-send) — each still per-action button-
 	// approved. Default false: read/research/comms only. (TEN-123)
 	AllowExec bool `json:"allow_exec,omitempty"`
+	// Permissions is the per-category ask|allow|deny map for the Discord agent's
+	// gated tools (TEN-231), driven by /relay permissions with the SAME model as
+	// the global /permissions and /imessage permissions. Empty ⇒ default ASK
+	// (every dangerous action prompts a button). Categories: exec/write/
+	// destructive/web/send.
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // dashboardEnabled resolves the tri-state Enabled to a concrete on/off: nil

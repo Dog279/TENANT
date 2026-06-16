@@ -53,7 +53,8 @@ type relay struct {
 	botID      string // the bot's own Discord user ID; set from READY via OnReady
 	log        *slog.Logger
 	rl         *rateLimiter
-	approver   *discordApprover // optional; set by the manager (TEN-117/119)
+	approver   *discordApprover // optional; set by the manager (TEN-117/119) — drives the button prompts
+	confirm    offsiteConfirm   // optional; the per-category permission broker (TEN-231) the turn's gated tools route through; nil ⇒ fall back to approver.Confirm
 	degraded   func() bool      // optional; when true the model is on the echo fallback
 
 	mu     sync.Mutex
@@ -195,7 +196,15 @@ func (r *relay) start(channelID, text string) bool {
 	// carry the stamp harmlessly: nothing dangerous is reachable to trigger it.
 	turnCtx := ctx
 	if r.approver != nil {
-		r.approver.setChannel(channelID)
+		r.approver.setChannel(channelID) // the button prompts post to THIS turn's channel
+	}
+	// Route gated tools through the per-category broker (TEN-231) when wired —
+	// allow/deny resolve without a prompt, "ask" delegates to the button approver.
+	// Fall back to the raw button approver for older wiring / tests.
+	switch {
+	case r.confirm != nil:
+		turnCtx = withOffsiteConfirm(ctx, r.confirm)
+	case r.approver != nil:
 		turnCtx = withOffsiteConfirm(ctx, r.approver.Confirm)
 	}
 

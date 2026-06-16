@@ -25,6 +25,7 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
+	"tenant/internal/tui"
 )
 
 // discordAgentDeps are the shared ingredients for the dedicated Discord agent —
@@ -46,6 +47,11 @@ type discordAgentDeps struct {
 	fullDisp  agent.ToolDispatcher
 	sysPrompt string
 	log       *slog.Logger
+	// gateConfirm is the per-category permission broker's Confirm (TEN-231): the
+	// discord_* tools route through it (allow → run, deny → block, ask → button)
+	// exactly like every other gated tool, instead of always prompting a button.
+	// nil ⇒ fall back to the raw button approver (tests / unwired).
+	gateConfirm offsiteConfirm
 }
 
 const discordSysSuffix = " You are reachable over Discord while the operator is away from the machine. " +
@@ -64,11 +70,16 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 	sender := discordSender{svc: svc}
 	approver := newDiscordApprover(sender, d.log)
 
-	// discord_* tools route to the approver (not the shared TUI broker). Every
-	// other tool delegates to d.fullDisp (the live mux); a gated/dangerous call
-	// there hits originConfirm (wired at the mux), which routes its approval to
-	// THIS approver via the offsite-stamped ctx — so it pops the Discord button.
-	ddisc := discord.NewDispatcher(svc, discord.Policy{Confirm: approver.Confirm})
+	// discord_* tools route through the per-category broker (TEN-231): allow runs
+	// silently, deny blocks, ask pops the Discord button. Every other tool
+	// delegates to d.fullDisp (the live mux); a gated call there hits originConfirm
+	// (wired at the mux), which routes its approval to the SAME broker via the
+	// offsite-stamped ctx. Unwired (tests) ⇒ fall back to the raw button approver.
+	gateConfirm := d.gateConfirm
+	if gateConfirm == nil {
+		gateConfirm = approver.Confirm
+	}
+	ddisc := discord.NewDispatcher(svc, discord.Policy{Confirm: gateConfirm})
 	reg, restDisp, gate := restrictForDiscord(d.fullTools, d.fullDisp)
 	disp := &discordRoutingDispatcher{discord: ddisc, rest: restDisp}
 
@@ -102,6 +113,11 @@ type discordRelayManager struct {
 	approver *discordApprover
 	sender   messageSender
 	gate     *execGate // offsite exec-mode switch (nil if discord unconfigured)
+	// broker is the per-category permission broker (TEN-231) that fronts every
+	// gated tool the Discord agent reaches. Its "ask" backend is askOperator (the
+	// button approver). Stable across Reconfigure (only the approver swaps), so
+	// /relay permissions modes survive a token hot-swap. nil ⇒ pre-TEN-231 path.
+	broker   *approvalBroker
 	token    string
 	log      *slog.Logger
 	notify   func(string)
@@ -128,6 +144,9 @@ type discordRelayManager struct {
 func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) error {
 	rl := newRelay(m.runner, m.sender, operatorID, m.log)
 	rl.approver = m.approver
+	if m.broker != nil {
+		rl.confirm = m.broker.Confirm // gated tools route through the per-category broker (TEN-231)
+	}
 	rl.degraded = m.degraded
 	rl.Start(ctx)
 	gw := &discord.Gateway{
@@ -319,6 +338,30 @@ func (m *discordRelayManager) Reconfigure(token string) error {
 		}
 	}
 	return nil
+}
+
+// Perms exposes the per-category permission broker (TEN-231) so /relay
+// permissions drives it with the SAME ask|allow|deny syntax as /permissions.
+// nil when Discord is unconfigured (no broker wired).
+func (m *discordRelayManager) Perms() tui.PermissionControl {
+	if m.broker == nil {
+		return nil
+	}
+	return m.broker
+}
+
+// askOperator is the broker's "ask"-mode backend: it raises a per-action button
+// approval to the operator in Discord via the LIVE approver (re-read under the
+// lock so a Reconfigure token swap is picked up). Returns false (deny) when the
+// relay isn't built or the operator can't be reached — fail closed.
+func (m *discordRelayManager) askOperator(ctx context.Context, action, detail string) bool {
+	m.mu.Lock()
+	appr := m.approver
+	m.mu.Unlock()
+	if appr == nil {
+		return false
+	}
+	return appr.Confirm(ctx, action, detail)
 }
 
 // SetOperator records the single operator's Discord user id (and persists it).

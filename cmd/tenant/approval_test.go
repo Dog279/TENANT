@@ -119,6 +119,66 @@ func TestBroker_DenyDecisionBlocks(t *testing.T) {
 	}
 }
 
+// TestDiscordBroker_AskBackend covers the TEN-231 pluggable "ask" backend: the
+// Discord broker defaults every category to ASK and routes an ask-mode action to
+// a custom backend (the button approver) instead of the TUI request channel —
+// allow/deny still short-circuit; the backend's verdict drives the ask path.
+func TestDiscordBroker_AskBackend(t *testing.T) {
+	b := newDiscordApprovalBroker(testLog())
+	// Default is ASK for every category (faithful to the pre-TEN-231 behavior).
+	for _, c := range catOrder {
+		if b.modes[c] != modeAsk {
+			t.Fatalf("discord broker default for %s = %v, want ask", c, b.modes[c])
+		}
+	}
+
+	var asked []string
+	verdict := true
+	b.ask = func(_ context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+		asked = append(asked, req.Action)
+		if verdict {
+			return tui.ApproveOnce
+		}
+		return tui.DenyOnce
+	}
+
+	// ask-mode + backend approves → action runs, backend was consulted.
+	if !b.Confirm(context.Background(), "os_exec", "ls") {
+		t.Fatal("ask backend approved but Confirm denied")
+	}
+	// ask-mode + backend denies → blocked.
+	verdict = false
+	if b.Confirm(context.Background(), "os_exec", "rm") {
+		t.Fatal("ask backend denied but Confirm approved")
+	}
+	if len(asked) != 2 {
+		t.Fatalf("backend consulted %d times, want 2: %v", len(asked), asked)
+	}
+
+	// allow/deny modes must NOT consult the backend (short-circuit).
+	before := len(asked)
+	b.SetPermission(catWrite, "allow")
+	b.SetPermission(catSend, "deny")
+	if !b.Confirm(context.Background(), "os_write", "f") {
+		t.Fatal("allow must approve without the backend")
+	}
+	if b.Confirm(context.Background(), "gsuite_send", "mail") {
+		t.Fatal("deny must block without the backend")
+	}
+	if len(asked) != before {
+		t.Fatal("allow/deny must not consult the ask backend")
+	}
+}
+
+// TestDiscordBroker_FailsClosed: an ask-mode action with NO backend and NO
+// request channel must deny (never silently allow when the operator is unreachable).
+func TestDiscordBroker_FailsClosed(t *testing.T) {
+	b := newDiscordApprovalBroker(testLog()) // ask=nil, requests=nil
+	if b.Confirm(context.Background(), "os_exec", "ls") {
+		t.Fatal("ask mode with no backend must fail closed (deny)")
+	}
+}
+
 func TestBroker_ContextCancelDenies(t *testing.T) {
 	b := newApprovalBroker(testLog())
 	ctx, cancel := context.WithCancel(context.Background())

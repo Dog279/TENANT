@@ -3096,6 +3096,50 @@ func (p *fakePerms) SetPermission(cat, mode string) (bool, error) {
 	return true, nil
 }
 
+// fakeRelay implements RelayControl for the /relay command tests (TEN-231).
+type fakeRelay struct {
+	perms       *fakePerms
+	operatorSet bool
+}
+
+func (f *fakeRelay) Enable() error              { return nil }
+func (f *fakeRelay) Disable() error             { return nil }
+func (f *fakeRelay) Status() (bool, bool, bool) { return false, f.operatorSet, false }
+func (f *fakeRelay) SetOperator(string) error   { f.operatorSet = true; return nil }
+func (f *fakeRelay) SetExec(bool) error         { return nil }
+func (f *fakeRelay) Perms() PermissionControl {
+	if f.perms == nil {
+		return nil
+	}
+	return f.perms
+}
+
+// TEN-231: /relay permissions mirrors the global /permissions (per-category
+// ask|allow|deny) for the Discord agent's tools; "ask" prompts a Discord button.
+func TestSlash_RelayPermissions(t *testing.T) {
+	fr := &fakeRelay{perms: &fakePerms{modes: map[string]string{"exec": "ask"}}}
+	m := newModel(context.Background(), Config{Relay: fr})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/relay permissions set exec allow")
+	if len(fr.perms.setCalls) != 1 || fr.perms.setCalls[0] != "exec=allow" {
+		t.Fatalf("set should route to SetPermission: %v", fr.perms.setCalls)
+	}
+	m.handleSlash("/relay permissions")
+	last := m.msgs[len(m.msgs)-1].content
+	if !strings.Contains(last, "Discord relay permissions") {
+		t.Errorf("bare /relay permissions should render the table; got:\n%s", last)
+	}
+
+	// Unconfigured (nil perms) → graceful "unavailable", no panic.
+	m2 := newModel(context.Background(), Config{Relay: &fakeRelay{}})
+	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m2.handleSlash("/relay permissions")
+	if last := m2.msgs[len(m2.msgs)-1].content; !strings.Contains(last, "unavailable") {
+		t.Errorf("nil perms should report unavailable, got %q", last)
+	}
+}
+
 func (f *fakeIMessage) AllowList() []string { return f.list }
 func (f *fakeIMessage) Allow(h string) (string, bool, error) {
 	f.allowCalls = append(f.allowCalls, h)

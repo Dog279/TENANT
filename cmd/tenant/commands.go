@@ -2175,6 +2175,22 @@ func cmdTUI(ctx context.Context, args []string) error {
 		relaySender   messageSender
 		relayGate     *execGate
 	)
+	// discordBroker is the per-category permission broker for the Discord agent
+	// (TEN-231): same ask|allow|deny model as the global /permissions, driven by
+	// /relay permissions. Constructed once (stable across token Reconfigure);
+	// modes persist to relay.permissions. Its "ask" backend (the live button
+	// approver) is wired below, once the relay manager exists.
+	discordBroker := newDiscordApprovalBroker(log)
+	discordBroker.persist = func(snap map[string]string) {
+		if c.lc == nil {
+			return
+		}
+		c.lc.Relay.Permissions = snap
+		_ = c.lc.save(c.cfgDir)
+	}
+	if c.lc != nil {
+		discordBroker.loadModes(c.lc.Relay.Permissions)
+	}
 	discordToken := resolveSecret(c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
 	if strings.TrimSpace(discordToken) != "" {
 		if r, svc, appr, snd, gate, derr := buildDiscordAgent(discordToken, discordAgentDeps{
@@ -2183,7 +2199,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			skills:    skillRetriever{st: skillStore, agentID: c.agent},
 			compactor: compressor, userProfile: prof,
 			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
-			sysPrompt: sysPrompt, log: log,
+			sysPrompt: sysPrompt, log: log, gateConfirm: discordBroker.Confirm,
 		}); derr != nil {
 			pushSys("discord relay: " + derr.Error())
 		} else {
@@ -2192,7 +2208,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
-		sender: relaySender, gate: relayGate, token: discordToken, log: log, notify: pushSys,
+		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken, log: log, notify: pushSys,
 		degraded: degraded.Degraded, // refuse remote turns while on the echo fallback
 		persist: func(enabled bool, opID string, allowExec bool) error {
 			if c.lc == nil {
@@ -2212,9 +2228,19 @@ func cmdTUI(ctx context.Context, args []string) error {
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
-				sysPrompt: sysPrompt, log: log,
+				sysPrompt: sysPrompt, log: log, gateConfirm: discordBroker.Confirm,
 			})
 		},
+	}
+	// Wire the broker's "ask" backend now that the manager exists: an ask-tier
+	// category raises the Discord button approval via the live approver. A button
+	// tap is per-action ("once"); to stop being prompted the operator sets the
+	// category to allow with /relay permissions.
+	discordBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
+			return tui.ApproveOnce
+		}
+		return tui.DenyOnce
 	}
 	if c.lc != nil {
 		relayMgr.operatorID = c.lc.Relay.OperatorID

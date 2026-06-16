@@ -7,6 +7,34 @@ import (
 	"testing"
 )
 
+// TestRelayManager_PermsAndAskOperator covers the TEN-231 wiring: Perms()
+// exposes the broker for /relay permissions, and askOperator (the broker's "ask"
+// backend) fails closed when no approver is built (operator unreachable → deny).
+func TestRelayManager_PermsAndAskOperator(t *testing.T) {
+	// Unconfigured manager: no broker → Perms() is nil (the TUI reports unavailable).
+	bare := &discordRelayManager{base: context.Background()}
+	if bare.Perms() != nil {
+		t.Fatal("Perms() must be nil with no broker (discord unconfigured)")
+	}
+	if bare.askOperator(context.Background(), "os_exec", "ls") {
+		t.Fatal("askOperator must deny when no approver is built (fail closed)")
+	}
+
+	// Configured broker but still no live approver (relay not built) → ask denies,
+	// but Perms() drives the per-category modes regardless.
+	br := newDiscordApprovalBroker(testLog())
+	m := &discordRelayManager{base: context.Background(), broker: br}
+	if m.Perms() == nil {
+		t.Fatal("Perms() must expose the broker once wired")
+	}
+	if ok, err := m.Perms().SetPermission(catExec, "deny"); err != nil || !ok {
+		t.Fatalf("SetPermission via Perms() failed: ok=%v err=%v", ok, err)
+	}
+	if m.askOperator(context.Background(), "os_exec", "ls") {
+		t.Fatal("askOperator must deny with a nil approver")
+	}
+}
+
 func TestRelayManager_Lifecycle(t *testing.T) {
 	started := 0
 	var persisted []string
