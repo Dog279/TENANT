@@ -65,6 +65,7 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.BoolVar(&compactionMode, "compaction", false, "score the context-compaction compressor's fidelity (needle/continuation/drift) vs the configured model — TEN-99 baseline; ignores --subset")
 	fs.BoolVar(&jOpts.gateOnly, "gate-only", false, "live mode: skip the LLM judge, score on the deterministic gate only (answer QUALITY is not judged)")
 	fs.StringVar(&jOpts.model, "judge-model", "", "override judge model (default: the planner / main-agent model). A cloud model here needs the key env var below.")
+	fs.StringVar(&jOpts.kind, "judge-kind", "", "override judge provider kind: anthropic|openai|zai|grok|… (default anthropic). Selects the backend + default endpoint/key-env. (TEN-91)")
 	fs.StringVar(&jOpts.endpoint, "judge-endpoint", "", "override judge API endpoint (default: the provider's, e.g. https://api.anthropic.com)")
 	fs.StringVar(&jOpts.keyEnv, "judge-key-env", "ANTHROPIC_API_KEY", "env var holding the override judge's API key (never stored or printed)")
 	fs.StringVar(&baselineWrite, "baseline-write", "", "after the run, write a baseline snapshot (per-task scores) to this path")
@@ -273,6 +274,12 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 	h.Concurrency = jOpts.concurrency // <=1 = sequential (TEN-221)
 	h.TaskTimeout = jOpts.taskTimeout // 0 = unlimited (TEN-222)
 	if sub == eval.SubsetFitness || sub == eval.SubsetFull {
+		// Fall back to the persisted judge override (TEN-91) when no --judge-model
+		// flag was given, so a /judge choice applies to `tenant eval`, the nightly
+		// job, AND the SoulNudge scorer identically. The flag always wins.
+		if lc, lerr := loadLaunchConfig(c.cfgDir); lerr == nil {
+			jOpts = applyJudgeConfig(jOpts, lc)
+		}
 		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride)
 		if err != nil {
 			return nil, err
@@ -287,10 +294,59 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 type evalJudgeOpts struct {
 	gateOnly    bool          // skip the judge entirely (deterministic gate only)
 	model       string        // override judge model id ("" → use the planner / main-agent model)
+	kind        string        // override judge provider kind (anthropic|openai|zai|… ; "" → anthropic) (TEN-91)
 	endpoint    string        // override judge API endpoint ("" → provider default)
 	keyEnv      string        // env var holding the override judge's API key
 	concurrency int           // tasks to run at once (<=1 = sequential; TEN-221)
 	taskTimeout time.Duration // per-task wall-clock cap (0 = unlimited; TEN-222)
+}
+
+// applyJudgeConfig fills the judge fields from the persisted override
+// (improve.judge*, TEN-91) when no --judge-model flag was given. The flag ALWAYS
+// wins (jOpts.model already set ⇒ untouched). Empty persisted Judge ⇒ unchanged
+// (planner-default judge). gateOnly/concurrency/taskTimeout are flag-only and
+// never sourced from config.
+func applyJudgeConfig(jOpts evalJudgeOpts, lc *launchConfig) evalJudgeOpts {
+	if jOpts.model != "" || lc == nil || lc.Improve.Judge == "" {
+		return jOpts
+	}
+	ic := lc.Improve
+	jOpts.model = ic.Judge
+	jOpts.kind = ic.JudgeKind
+	jOpts.endpoint = ic.JudgeEndpoint
+	if ic.JudgeKeyEnv != "" {
+		jOpts.keyEnv = ic.JudgeKeyEnv
+	}
+	return jOpts
+}
+
+// resolveJudgeKey resolves the override judge's API key for a provider kind
+// (TEN-91). KEYLESS kinds (no catalog KeyEnv — a local ollama/llama.cpp/vllm
+// judge) need no key and return ("", nil). A keyed kind requires its env var to
+// be set (error otherwise). An explicit non-default --judge-key-env overrides
+// the catalog default. The key is read from the env, never stored.
+func resolveJudgeKey(kind, flagKeyEnv string) (string, error) {
+	pk, ok := providerKinds[kind]
+	if !ok {
+		return "", fmt.Errorf("unknown judge provider kind %q (known: %s)", kind, strings.Join(providerOrder, ", "))
+	}
+	keyEnv := pk.KeyEnv // catalog default ("" ⇒ keyless local kind)
+	// The flag default is ANTHROPIC_API_KEY; treat a non-default value as an
+	// explicit operator override of the env var to read.
+	if flagKeyEnv != "" && flagKeyEnv != "ANTHROPIC_API_KEY" {
+		keyEnv = flagKeyEnv
+	}
+	if keyEnv == "" {
+		return "", nil // keyless local judge — no key needed
+	}
+	key := os.Getenv(keyEnv)
+	if key == "" {
+		return "", fmt.Errorf("judge %q (%s) needs an API key in $%s.\n"+
+			"  set it (bash): export %s=\"<your key>\"   (PowerShell: $env:%s=\"<your key>\")\n"+
+			"  or drop --judge-model to use the planner / main-agent model as the judge",
+			kind, pk.Label, keyEnv, keyEnv, keyEnv)
+	}
+	return key, nil
 }
 
 // autoEnableEvalPlugins turns on plugin flags for zero-config plugins (web, os)
@@ -694,16 +750,21 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		return cleanup, nil
 	}
 
-	// Override judge (e.g. a cloud Claude). Key from an env var — never a flag,
-	// never stored, never printed.
-	key := os.Getenv(jOpts.keyEnv)
-	if key == "" {
-		cleanup()
-		return nil, fmt.Errorf("override judge %q needs an API key in $%s.\n"+
-			"  set it (PowerShell):  $env:%s=\"<your key>\"   (bash: export %s=...)\n"+
-			"  or drop --judge-model to use the planner / main-agent model as the judge", jOpts.model, jOpts.keyEnv, jOpts.keyEnv, jOpts.keyEnv)
+	// Override judge — any wired provider kind (TEN-91): anthropic (default), a
+	// vLLM/OpenAI-compatible one (z.ai/GLM, OpenAI, Grok), OR a KEYLESS local one
+	// (ollama/llama.cpp/vllm — a free local judge). resolveJudgeKey requires a key
+	// only when the kind actually uses one; the key is read from the env at run
+	// time — never a flag, never stored, never printed.
+	kind := strings.TrimSpace(jOpts.kind)
+	if kind == "" {
+		kind = "anthropic"
 	}
-	if err := attachAnthropicJudge(router, jOpts.endpoint, jOpts.model, key); err != nil {
+	key, kerr := resolveJudgeKey(kind, jOpts.keyEnv)
+	if kerr != nil {
+		cleanup()
+		return nil, kerr
+	}
+	if err := attachJudge(router, kind, jOpts.endpoint, jOpts.model, key); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("eval: configure override judge: %w", err)
 	}

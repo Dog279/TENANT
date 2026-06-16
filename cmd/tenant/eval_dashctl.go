@@ -13,9 +13,21 @@ import (
 	"tenant/internal/dashboard"
 )
 
-type dashEval struct{ ev evalTUIControl }
+type dashEval struct {
+	ev    evalTUIControl
+	judge judgeCtl // TEN-91: eval LLM-judge surface (same machinery as the TUI /judge command)
+}
 
 func (d dashEval) artifactDir() string { return filepath.Join(d.ev.dataDir, "eval-artifacts") }
+
+// Judge surface (TEN-91) — delegates to the shared judgeCtl so the web Quality
+// page, the TUI /judge command, `tenant eval`, and the nightly gate all read/
+// write one persisted setting.
+func (d dashEval) JudgeStatus() string { return d.judge.Current() }
+func (d dashEval) SetJudge(kind, model, endpoint string) (string, error) {
+	return d.judge.Set(kind, model, endpoint)
+}
+func (d dashEval) ClearJudge() error { return d.judge.Clear() }
 
 // Schedule builds the structured schedule + last-run summary the home board
 // and the Quality page render. Mirrors evalTUIControl.Status()'s logic but as

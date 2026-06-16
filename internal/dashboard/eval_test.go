@@ -16,6 +16,9 @@ type fakeEvalCtl struct {
 	offCalls  int
 	runCalls  int
 	setErr    error
+	judge     string   // JudgeStatus()
+	judgeSet  []string // "kind|model|endpoint"
+	judgeClr  int
 }
 
 func (f *fakeEvalCtl) Schedule() EvalScheduleView { return f.sched }
@@ -31,6 +34,41 @@ func (f *fakeEvalCtl) SetAt(s string) (string, error) {
 }
 func (f *fakeEvalCtl) Off() (string, error)    { f.offCalls++; return "off", nil }
 func (f *fakeEvalCtl) RunNow() (string, error) { f.runCalls++; return "queued", nil }
+func (f *fakeEvalCtl) JudgeStatus() string     { return f.judge }
+func (f *fakeEvalCtl) SetJudge(kind, model, endpoint string) (string, error) {
+	f.judgeSet = append(f.judgeSet, kind+"|"+model+"|"+endpoint)
+	return "judge set", f.setErr
+}
+func (f *fakeEvalCtl) ClearJudge() error { f.judgeClr++; return nil }
+
+// TEN-91: the Quality page renders the judge status + routes the set/clear forms.
+func TestEval_JudgeControl(t *testing.T) {
+	fc := &fakeEvalCtl{judge: "judge: default — planner self-judging"}
+	s := evalServer(fc)
+
+	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "self-judging") || !strings.Contains(body, "Set judge") {
+		t.Errorf("Quality page should render the judge status + form; got:\n%s", body)
+	}
+
+	rec := submitForm(t, s, "/eval/judge", "kind=zai&model=glm-4.6&endpoint=https://api.z.ai/x")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("set judge should 303, got %d", rec.Code)
+	}
+	if len(fc.judgeSet) != 1 || fc.judgeSet[0] != "zai|glm-4.6|https://api.z.ai/x" {
+		t.Fatalf("judge set didn't route: %v", fc.judgeSet)
+	}
+
+	// Missing model → validation, no SetJudge call.
+	submitForm(t, s, "/eval/judge", "kind=anthropic")
+	if len(fc.judgeSet) != 1 {
+		t.Errorf("incomplete judge form must not call SetJudge: %v", fc.judgeSet)
+	}
+
+	submitForm(t, s, "/eval/judge/clear", "")
+	if fc.judgeClr != 1 {
+		t.Fatalf("clear judge should call ClearJudge once: %d", fc.judgeClr)
+	}
+}
 
 func evalServer(fc EvalControl) *Server {
 	s := New(Config{}, nil, nil, nil, nil, nil)

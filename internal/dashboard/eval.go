@@ -32,6 +32,11 @@ type EvalControl interface {
 	SetAt(spec string) (string, error)
 	Off() (string, error)
 	RunNow() (string, error)
+	// Judge surface (TEN-91): the eval LLM-judge model, persisted + shared with
+	// `tenant eval`, the TUI /judge command, and the nightly gate.
+	JudgeStatus() string                                   // render-ready current judge
+	SetJudge(kind, model, endpoint string) (string, error) // pin a judge override
+	ClearJudge() error                                     // revert to the planner default
 }
 
 // EvalScheduleView is the render-ready schedule state. Trend is "up" /
@@ -65,6 +70,8 @@ func (s *Server) mountEvalSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /eval", s.handleEvalPage)
 	mux.HandleFunc("POST /eval/schedule", s.handleEvalScheduleForm)
 	mux.HandleFunc("POST /eval/run", s.handleEvalRunForm)
+	mux.HandleFunc("POST /eval/judge", s.handleEvalJudgeForm)            // TEN-91
+	mux.HandleFunc("POST /eval/judge/clear", s.handleEvalJudgeClearForm) // TEN-91
 }
 
 type evalPageData struct {
@@ -74,6 +81,7 @@ type evalPageData struct {
 	Points     []EvalTrendPoint
 	Chart      template.HTML // server-built inline SVG; numbers only, safe to not escape
 	Diff       string
+	Judge      string // TEN-91: render-ready current eval judge
 	Err        string
 	Msg        string
 }
@@ -87,6 +95,7 @@ func (s *Server) handleEvalPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Configured = true
+	d.Judge = s.eval.JudgeStatus()
 	d.Sched = s.eval.Schedule()
 	d.Points = s.eval.Trend()
 	d.Chart = template.HTML(renderTrendSVG(d.Points)) //nolint:gosec // server-built SVG, numbers only
@@ -134,6 +143,43 @@ func (s *Server) handleEvalRunForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectEval(w, r, status, "")
+}
+
+// handleEvalJudgeForm pins the eval LLM-judge model (TEN-91). The API key is
+// never entered here — it's read from the kind's env var at eval time.
+func (s *Server) handleEvalJudgeForm(w http.ResponseWriter, r *http.Request) {
+	if s.eval == nil {
+		http.Redirect(w, r, "/eval", http.StatusSeeOther)
+		return
+	}
+	kind := strings.TrimSpace(r.FormValue("kind"))
+	mdl := strings.TrimSpace(r.FormValue("model"))
+	endpoint := strings.TrimSpace(r.FormValue("endpoint"))
+	if kind == "" || mdl == "" {
+		redirectEval(w, r, "", "Pick a provider kind and a model id for the judge.")
+		return
+	}
+	status, err := s.eval.SetJudge(kind, mdl, endpoint)
+	if err != nil {
+		s.log.Warn("dashboard: set judge", "kind", kind, "err", err)
+		redirectEval(w, r, "", "Couldn't set the judge: "+err.Error())
+		return
+	}
+	redirectEval(w, r, status, "")
+}
+
+// handleEvalJudgeClearForm reverts to the planner-default judge (TEN-91).
+func (s *Server) handleEvalJudgeClearForm(w http.ResponseWriter, r *http.Request) {
+	if s.eval == nil {
+		http.Redirect(w, r, "/eval", http.StatusSeeOther)
+		return
+	}
+	if err := s.eval.ClearJudge(); err != nil {
+		s.log.Warn("dashboard: clear judge", "err", err)
+		redirectEval(w, r, "", "Couldn't clear the judge: "+err.Error())
+		return
+	}
+	redirectEval(w, r, "Judge reverted to the planner model (self-judging).", "")
 }
 
 func redirectEval(w http.ResponseWriter, r *http.Request, msg, errMsg string) {

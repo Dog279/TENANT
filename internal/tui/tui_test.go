@@ -3134,6 +3134,66 @@ func (f *fakeTailscale) Serve() (string, error) {
 }
 func (f *fakeTailscale) Unserve() error { f.unCalls++; return nil }
 
+// fakeJudge implements JudgeControl for the /judge command tests (TEN-91).
+type fakeJudge struct {
+	cur      string
+	setCalls []string // "kind|model|endpoint"
+	clears   int
+	setErr   error
+}
+
+func (f *fakeJudge) Current() string { return f.cur }
+func (f *fakeJudge) Set(kind, model, endpoint string) (string, error) {
+	f.setCalls = append(f.setCalls, kind+"|"+model+"|"+endpoint)
+	if f.setErr != nil {
+		return "", f.setErr
+	}
+	return "judge set → " + kind + " " + model, nil
+}
+func (f *fakeJudge) Clear() error { f.clears++; return nil }
+
+// TEN-91: /judge chooses the eval judge model (status / set / clear / unavailable).
+func TestSlash_Judge(t *testing.T) {
+	fj := &fakeJudge{cur: "judge: default — planner self-judging"}
+	m := newModel(context.Background(), Config{Judge: fj})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/judge")
+	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "self-judging") {
+		t.Errorf("bare /judge should show Current(); got:\n%s", last)
+	}
+
+	m.handleSlash("/judge set anthropic claude-opus-4-8")
+	if len(fj.setCalls) != 1 || fj.setCalls[0] != "anthropic|claude-opus-4-8|" {
+		t.Fatalf("/judge set should route kind+model: %v", fj.setCalls)
+	}
+
+	m.handleSlash("/judge set zai glm-4.6 https://api.z.ai/x")
+	if fj.setCalls[len(fj.setCalls)-1] != "zai|glm-4.6|https://api.z.ai/x" {
+		t.Fatalf("/judge set should pass the optional endpoint: %v", fj.setCalls)
+	}
+
+	m.handleSlash("/judge clear")
+	if fj.clears != 1 {
+		t.Fatalf("/judge clear should call Clear once: %d", fj.clears)
+	}
+
+	// set with too few args → usage, no Set call.
+	before := len(fj.setCalls)
+	m.handleSlash("/judge set anthropic")
+	if len(fj.setCalls) != before {
+		t.Error("/judge set with a missing model must not call Set")
+	}
+
+	// Unavailable (nil control) → graceful.
+	m2 := newModel(context.Background(), Config{})
+	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m2.handleSlash("/judge")
+	if last := m2.msgs[len(m2.msgs)-1].content; !strings.Contains(last, "not available") {
+		t.Errorf("nil judge control should report unavailable, got %q", last)
+	}
+}
+
 // TEN-233: /tailscale serve publishes the dashboard via tailscale serve; status
 // guides the operator when the CLI is missing or disconnected.
 func TestSlash_Tailscale(t *testing.T) {

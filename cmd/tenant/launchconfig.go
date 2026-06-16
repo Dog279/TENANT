@@ -263,6 +263,17 @@ type improveConfig struct {
 	// gate each candidate, so it's heavy + model-gated. Candidates are queued for
 	// HUMAN review (never auto-applied).
 	SoulNudgeEvery string `json:"soul_nudge_every,omitempty"`
+	// Judge persists the eval LLM-judge override (TEN-91). Empty ⇒ the default
+	// (planner / main-agent model, self-judging). Set ⇒ a separate model grades
+	// answers in BOTH `tenant eval` and the nightly eval job. JudgeKind selects
+	// the backend (any wired providerKinds id — anthropic | openai | zai | …);
+	// JudgeEndpoint optionally overrides the catalog default; the API key is read
+	// at runtime from $JudgeKeyEnv and is NEVER stored here. A --judge-model flag
+	// still overrides this per-invocation.
+	Judge         string `json:"judge,omitempty"`          // judge model id ("" = planner default)
+	JudgeKind     string `json:"judge_kind,omitempty"`     // provider kind (default "anthropic")
+	JudgeEndpoint string `json:"judge_endpoint,omitempty"` // "" = provider default
+	JudgeKeyEnv   string `json:"judge_key_env,omitempty"`  // env var holding the key (default per kind)
 }
 
 // validAutoAccept reports whether m is an accepted auto-accept mode.

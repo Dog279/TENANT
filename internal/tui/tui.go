@@ -67,6 +67,9 @@ type Config struct {
 	// Tailscale, if set, powers /tailscale: publish the loopback dashboard onto
 	// the operator's tailnet via `tailscale serve` (TEN-233).
 	Tailscale TailscaleControl
+	// Judge, if set, powers /judge: choose the eval LLM-judge model, persisted
+	// and applied to `tenant eval` + the nightly gate (TEN-91).
+	Judge JudgeControl
 	// Relay, if set, powers /relay: start/stop the offsite Discord relay live.
 	Relay RelayControl
 	// IMessage, if set, powers /imessage: manage the deny-by-default allowlist
@@ -404,6 +407,21 @@ type TailscaleControl interface {
 	Serve() (url string, err error)
 	// Unserve removes the tailnet serve config.
 	Unserve() error
+}
+
+// JudgeControl powers /judge: choose which model grades eval answers (TEN-91).
+// Default is the planner / main-agent model (self-judging, zero setup); the
+// operator can pin a separate model (any wired provider kind), persisted so it
+// applies to both `tenant eval` and the nightly eval/improvement gate. The API
+// key is read from an env var at eval time — never entered or stored here.
+type JudgeControl interface {
+	// Current is a render-ready description of the active judge.
+	Current() string
+	// Set persists a judge override: provider kind + model id (+ optional
+	// endpoint). Returns a confirmation message (may include a key-env warning).
+	Set(kind, model, endpoint string) (msg string, err error)
+	// Clear reverts to the planner-default judge.
+	Clear() error
 }
 
 // TailscaleStatus is the render-ready snapshot of the local tailscale state.
@@ -2094,6 +2112,7 @@ var helpSections = []helpSection{
 			{"/whoami", "show the agent ID + active backend + active model (runtime truth — trust over the model's self-answer)"},
 			{"/dashboard [on|off|status]", "start/stop the web control panel (auto-launches by default; choice persists)"},
 			{"/tailscale [serve|serve off|status]", "publish the dashboard to your tailnet over HTTPS via tailscale serve (reach it from other devices)"},
+			{"/judge [set <kind> <model>|clear|status]", "choose the eval LLM-judge model (default: planner/self-judge); persists to tenant eval + the nightly gate"},
 			{"/help", "show top-level categories"},
 			{"/help <category>", "show commands in one category (e.g. /help agents)"},
 			{"/help all", "dump every command in every category (legacy view)"},
@@ -2596,6 +2615,46 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			m.sysChat(msg)
 		default:
 			m.sysChat("usage: /tailscale [status | serve | serve off]")
+		}
+	case "/judge":
+		// Choose the eval LLM-judge model (TEN-91): default = planner (self-judge),
+		// or pin a separate model for `tenant eval` + the nightly gate.
+		if m.cfg.Judge == nil {
+			m.sysChat("judge control not available in this session")
+			break
+		}
+		jf := strings.Fields(arg)
+		sub := ""
+		if len(jf) > 0 {
+			sub = strings.ToLower(jf[0])
+		}
+		switch {
+		case sub == "" || sub == "status":
+			m.sysChat(m.cfg.Judge.Current())
+		case sub == "clear" || sub == "default" || sub == "reset":
+			if err := m.cfg.Judge.Clear(); err != nil {
+				m.sysChat("judge: " + err.Error())
+			} else {
+				m.sysChat("judge: reverted to the planner model (self-judging).")
+			}
+		case sub == "set":
+			// /judge set <kind> <model> [endpoint]
+			if len(jf) < 3 {
+				m.sysChat("usage: /judge set <kind> <model> [endpoint]   (e.g. /judge set anthropic claude-opus-4-8)")
+				break
+			}
+			endpoint := ""
+			if len(jf) >= 4 {
+				endpoint = jf[3]
+			}
+			msg, err := m.cfg.Judge.Set(jf[1], jf[2], endpoint)
+			if err != nil {
+				m.sysChat("judge: " + err.Error())
+			} else {
+				m.sysChat("🔬 " + msg)
+			}
+		default:
+			m.sysChat("usage: /judge [status | set <kind> <model> [endpoint] | clear]")
 		}
 	case "/relay":
 		// Start/stop the offsite Discord relay live; the choice persists.

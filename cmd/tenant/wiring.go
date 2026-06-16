@@ -603,6 +603,57 @@ func attachAnthropicJudge(r *model.Router, endpoint, modelID, apiKey string) err
 	return r.SetProfiles([]model.Profile{anthropicJudgeProfile(endpoint, modelID, apiKey)})
 }
 
+// attachJudge generalizes attachAnthropicJudge to ANY configured provider kind
+// (TEN-91): anthropic (Claude) or a vLLM/OpenAI-compatible one (z.ai/GLM, OpenAI,
+// Grok, …). It reuses genProfiles so the judge inherits every per-provider quirk
+// (ChatPath, ForceHTTP1, tokenizer mode) instead of re-deriving them, then
+// re-roles the planner-shaped profile to RoleJudge and binds it on the EXISTING
+// router. endpoint "" ⇒ the catalog default for that kind.
+func attachJudge(r *model.Router, kind, endpoint, modelID, apiKey string) error {
+	kind = strings.TrimSpace(kind)
+	pk, ok := providerKinds[kind]
+	if !ok {
+		return fmt.Errorf("unknown judge provider kind %q (known: %s)", kind, strings.Join(providerOrder, ", "))
+	}
+	if !pk.Wired {
+		return fmt.Errorf("%s judge backend is in the catalog but not implemented", pk.Label)
+	}
+	if endpoint == "" {
+		endpoint = pk.DefaultEndpoint
+	}
+	c := &commonFlags{
+		backend:      pk.Backend,
+		genKind:      kind,
+		vllmEndpoint: endpoint,
+		vllmModel:    modelID,
+		vllmToolFmt:  pk.DefaultToolFmt,
+		genAPIKey:    apiKey,
+	}
+	gen, factories, err := genProfiles(c)
+	if err != nil {
+		return fmt.Errorf("judge %q: %w", kind, err)
+	}
+	if len(gen) == 0 {
+		return fmt.Errorf("judge %q: no profile built", kind)
+	}
+	// Re-role the planner-shaped profile (same backend/endpoint/model/key/quirks)
+	// to RoleJudge — the judge makes short grading calls, so the gen budgets are
+	// harmless.
+	jp := gen[0]
+	for _, p := range gen {
+		if p.Role == model.RolePlanner {
+			jp = p
+			break
+		}
+	}
+	jp.Role = model.RoleJudge
+	jp.ID = "judge-" + kind
+	for name, f := range factories {
+		r.RegisterBackend(name, f)
+	}
+	return r.SetProfiles([]model.Profile{jp})
+}
+
 // genProfiles builds JUST the generation-role profiles (planner/executor/
 // summarizer) + the backend factories for c's active provider — the pieces a
 // live model swap replaces in the shared router. Embeddings are deliberately

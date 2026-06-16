@@ -64,5 +64,20 @@
 </div>
 {{end}}
 
+<div class="card">
+  <div class="card-head">Judge</div>
+  <div class="dim">{{.Judge}}</div>
+  <form method="POST" action="/eval/judge" class="evalsched" style="margin-top:9px">
+    <input type="text" name="kind" placeholder="kind — anthropic, zai, openai…" class="cinput" style="width:220px" required>
+    <input type="text" name="model" placeholder="model id" class="cinput" style="width:200px" required>
+    <input type="text" name="endpoint" placeholder="endpoint (optional)" class="cinput" style="width:240px">
+    <button type="submit" class="btn">Set judge</button>
+  </form>
+  <form method="POST" action="/eval/judge/clear" style="margin-top:6px">
+    <button type="submit" class="btn">Use planner default</button>
+  </form>
+  <div class="dim" style="margin-top:9px">The judge grades answer quality. Default = the planner model (self-judging). The API key is read from the provider's env var at eval time — never entered or stored here.</div>
+</div>
+
 {{end}}
 {{end}}
