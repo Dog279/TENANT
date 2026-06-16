@@ -154,3 +154,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
   .nav a.logout{margin-top:0}
   .cards{grid-template-columns:1fr 1fr}
 }
+
+/* Activity feed cards (TEN-238) — themed to match the Memory .ep episode list */
+.act-row{margin-bottom:0}
+.act-rowerr{border-color:rgba(251,113,133,.45);background:rgba(251,113,133,.07)}
+.act-errtag{font-size:10px;font-weight:700;color:var(--red);background:rgba(251,113,133,.12);border:1px solid rgba(251,113,133,.35);border-radius:11px;padding:2px 8px}

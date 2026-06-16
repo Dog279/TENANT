@@ -1,4 +1,11 @@
 {{define "content"}}
-<div class="act-head"><span class="dim">Activity · live tail (SSE)</span></div>
-<div class="act" id="activity-feed" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"></div>
+<div class="card-head">Activity <span class="dim">· full history + live tail</span></div>
+{{if not .Configured}}<div class="card"><div class="dim">Activity log unavailable in this session.</div></div>{{else}}
+<nav class="memtabs">
+  {{range .Tabs}}<a href="/activity{{if .Key}}?kind={{.Key}}{{end}}" class="{{if .On}}on{{end}}">{{.Label}}</a>{{end}}
+</nav>
+<div class="act" id="activity-feed"
+     data-init="@get('/activity/events?cursor={{.Cursor}}&kind={{.Filter}}', {retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})">{{.Backlog}}</div>
+{{if .Empty}}<div class="card"><div class="dim">No activity yet for this filter — actions, tool calls, cross-agent messages and errors will appear here as they happen.</div></div>{{end}}
+{{end}}
 {{end}}

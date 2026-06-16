@@ -99,6 +99,7 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 
 	// Real-time event stream (chat transcript + activity feed) — TEN-109.
 	mux.HandleFunc("GET /events", s.handleEventsSSE)
+	mux.HandleFunc("GET /activity/events", s.handleActivitySSE) // TEN-238: evlog-driven backfill+replay stream
 
 	// Memory curator pages (TEN-111). Mounted unconditionally and nil-guarded:
 	// a server without a MemoryControl renders an "isn't configured" state
@@ -303,6 +304,4 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleActivityPage(w http.ResponseWriter, _ *http.Request) {
-	s.render(w, s.tmpl.activity, layoutData{Title: "Activity", Page: "activity"})
-}
+// handleActivityPage + the activity SSE live in ssr_activity.go (TEN-238).

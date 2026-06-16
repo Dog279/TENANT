@@ -34,6 +34,7 @@ type dashboardManager struct {
 	integrations dashboard.IntegrationsControl // TEN-206: integration-config surface (nil-safe)
 	access       dashboard.AccessControl       // TEN-208: iMessage + Discord access surface (nil-safe)
 	broker       *agent.Broker
+	evlog        *agent.EventLog // TEN-238: retained activity-feed event log (nil-safe)
 	log          *slog.Logger
 	notify       func(string)             // feed sink (pushSys) for async status
 	persist      func(enabled bool) error // record the on/off choice to config
@@ -76,6 +77,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.access != nil {
 		srv.SetAccess(m.access)
+	}
+	if m.evlog != nil {
+		srv.SetEventLog(m.evlog)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {

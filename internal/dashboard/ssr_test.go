@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"tenant/internal/agent"
 )
 
 // fakeTools is a minimal ToolControl for the SSR page tests.
@@ -183,10 +185,12 @@ func TestSSR_PluginToggleForm(t *testing.T) {
 // tests can check, uses the colon syntax and none of the dead hyphen forms.
 func TestSSR_DatastarColonSyntax(t *testing.T) {
 	s := mustServer()
+	s.SetEventLog(agent.NewEventLog(10)) // TEN-238: activity feed renders only when an event log is wired
 	cases := []struct {
 		path, want, reject string
 	}{
-		{"/activity", `data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"`, "data-on-load"},
+		{"/activity", `@get('/activity/events`, "data-on-load"},
+		{"/activity", `{retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})`, "data-on-load"},
 		{"/chat", `data-on:submit__prevent="@post('/chat/send')"`, "data-on-submit"},
 		{"/chat", `data-bind:text`, "data-bind-text"},
 		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},

@@ -1990,7 +1990,17 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// final answer is replayed from TurnResult on turn done. The TUI takes
 	// one subscription here; the dashboard takes its own below.
 	evBroker := agent.NewBroker(0)
-	emit := evBroker.Publish
+	// evlog is the RETAINED, replayable event log for the dashboard activity feed
+	// (TEN-238): a bounded ring (10k events) recording from agent start regardless
+	// of whether the dashboard is open, so the feed backfills the full backlog on
+	// load + resumes gap-free after a reconnect. emit fans every event to BOTH the
+	// live broker (TUI feed + chat) AND the log — so the log captures the full
+	// activity stream (main agent + sub-agents + bus + ingest), same as the broker.
+	evlog := agent.NewEventLog(10000)
+	emit := func(ev agent.Event) {
+		evBroker.Publish(ev)
+		evlog.Append(ev) // denylists token/usage/assistant/memory noise at write time
+	}
 	evCh, _ := evBroker.Subscribe()
 	// Now that the broker exists, point the cross-agent mirror at it (TEN-234):
 	// sub-agent activity (set in subObserve) + bus traffic (the existing bus
@@ -2176,6 +2186,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		skills: dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models: dashModel{mc: modelCtl},
 		broker: evBroker,
+		evlog:  evlog, // TEN-238: retained activity-feed event log (backfill + replay)
 		log:    log,
 		notify: pushSys,
 		persist: func(enabled bool) error {
