@@ -3096,6 +3096,25 @@ func (p *fakePerms) SetPermission(cat, mode string) (bool, error) {
 	return true, nil
 }
 
+// TEN-234: the TUI skips cross-agent / bus events on its shared channel (they're
+// mirrored there only for the dashboard); sub-agents render via TeamEvents.
+func TestApplyEvent_SkipsCrossAgentAndBus(t *testing.T) {
+	m := newModel(context.Background(), Config{})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	base := len(m.feedLines)
+	m.applyEvent(agent.Event{Kind: agent.EventToolCall, Agent: "writer", Tool: "os_write"}) // sub-agent
+	m.applyEvent(agent.Event{Kind: agent.EventBus, Agent: "researcher", Text: "→ writer: hi"})
+	if len(m.feedLines) != base {
+		t.Fatalf("cross-agent/bus events must not append to the TUI feed: +%d", len(m.feedLines)-base)
+	}
+	// A primary-agent event still renders.
+	m.applyEvent(agent.Event{Kind: agent.EventTurnStart})
+	if len(m.feedLines) != base+1 {
+		t.Fatalf("a primary-agent event should append one feed line, got +%d", len(m.feedLines)-base)
+	}
+}
+
 // fakeTailscale implements TailscaleControl for the /tailscale command tests (TEN-233).
 type fakeTailscale struct {
 	st         TailscaleStatus

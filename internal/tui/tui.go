@@ -4397,6 +4397,12 @@ func (m *model) renderToolList() (string, string) {
 }
 
 func (m *model) applyEvent(e agent.Event) {
+	// Cross-agent events (sub-agent activity, bus traffic) are mirrored onto the
+	// shared broker for the DASHBOARD (TEN-234); the TUI renders sub-agents via
+	// the separate TeamEvents channel, so skip them here to avoid double-render.
+	if e.Agent != "" || e.Kind == agent.EventBus {
+		return
+	}
 	switch e.Kind {
 	case agent.EventTurnStart:
 		m.appendFeed(cDim.Render(time.Now().Format("15:04:05") + " turn start"))

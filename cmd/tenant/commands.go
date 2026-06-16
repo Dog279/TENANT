@@ -1840,12 +1840,27 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// orchestrator. Producer drops on full (non-blocking send); the TUI
 	// renders from the running snapshot, so a missed mid-update is fine.
 	timelineCh := make(chan tui.ResearchTimelineUpdate, 64)
+	// dashFeed mirrors cross-agent ACTIVITY into the shared event broker so the
+	// DASHBOARD activity feed shows it (TEN-234). Set to evBroker.Publish once the
+	// broker exists (below); nil-guarded since sub-agents only run post-construction.
+	var dashFeed func(agent.Event)
 	subObserve := func(id string, e agent.Event) {
 		switch e.Kind {
 		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventUsage:
 			select {
 			case teamCh <- tui.TeamEvent{AgentID: id, Event: e}:
 			default: // feed behind; drop display (counter may undercount under flood — acceptable)
+			}
+		}
+		// Mirror sub-agent tool activity + lifecycle (NOT usage/token noise) to
+		// the dashboard feed, attributed by agent id. The TUI skips Agent != "" on
+		// the shared channel (it renders sub-agents via teamCh), so no double-render.
+		switch e.Kind {
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+			if dashFeed != nil {
+				ev := e
+				ev.Agent = id
+				dashFeed(ev)
 			}
 		}
 	}
@@ -1924,6 +1939,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 						to = "team"
 					}
 					pushSys(fmt.Sprintf("«bus» %s → %s: %s", m.From, to, clip(m.Content, 80)))
+					// Mirror to the dashboard activity feed (TEN-234). dashFeed is
+					// set once the broker exists; nil until then (no bus traffic
+					// can precede agent construction). The TUI skips EventBus on
+					// the shared channel, so this never double-shows in the TUI.
+					if dashFeed != nil {
+						dashFeed(agent.Event{Kind: agent.EventBus, Agent: m.From, Text: "→ " + to + ": " + m.Content})
+					}
 				}
 			case <-ctx.Done():
 				return
@@ -1970,6 +1992,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 	evBroker := agent.NewBroker(0)
 	emit := evBroker.Publish
 	evCh, _ := evBroker.Subscribe()
+	// Now that the broker exists, point the cross-agent mirror at it (TEN-234):
+	// sub-agent activity (set in subObserve) + bus traffic (the existing bus
+	// observer above) flow to the dashboard feed. Bus → dashboard is emitted from
+	// that single observer loop (not a second Notify consumer, which would steal
+	// its coalescing wake-ups).
+	dashFeed = emit
 	ag, err := agent.New(agent.Config{
 		AgentID: c.agent,
 		Router:  router,

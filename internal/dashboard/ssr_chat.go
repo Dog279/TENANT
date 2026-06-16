@@ -40,8 +40,13 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if _, err := w.Write(patchElements("#activity-feed", "append", activityRow(ev))); err != nil {
-				return
+			// Activity feed = meaningful activity only (tool calls, lifecycle,
+			// cross-agent + bus). Token deltas and other per-token noise are
+			// filtered out so the feed isn't a token-by-token flood (TEN-234).
+			if activityRelevant(ev) {
+				if _, err := w.Write(patchElements("#activity-feed", "append", activityRow(ev))); err != nil {
+					return
+				}
 			}
 			if bubble := chatBubble(ev); bubble != "" {
 				if _, err := w.Write(patchElements("#chat-log", "append", bubble)); err != nil {
@@ -100,25 +105,51 @@ func (s *Server) handleChatStop(w http.ResponseWriter, _ *http.Request) {
 
 // --- fragment renderers (every dynamic value is html-escaped) ---
 
+// activityRelevant decides what reaches the dashboard's activity feed. It's a
+// DENYLIST of per-token / accounting noise — token deltas (the flood), usage
+// counts, per-iteration assistant prose, and the memory-budget report — so any
+// meaningful or future event kind shows by default (tool calls, lifecycle,
+// cross-agent activity, bus messages). (TEN-234)
+func activityRelevant(ev agent.Event) bool {
+	switch ev.Kind {
+	case agent.EventToken, agent.EventUsage, agent.EventAssistant, agent.EventMemory:
+		return false
+	}
+	return true
+}
+
 func activityRow(ev agent.Event) string {
 	detail := ev.Text
 	if ev.Tool != "" {
 		detail = strings.TrimSpace(ev.Tool + " " + ev.Result)
 	}
-	// Offsite ingest (Discord/iMessage) gets a distinct inbox tag; the channel
-	// prefix ("Discord: " / "iMessage: ") is already in ev.Text (TEN-232).
+	// Distinct tags for the offsite/cross-agent kinds; the channel/peer detail
+	// already rides in ev.Text (TEN-232/234).
 	tag := string(ev.Kind)
-	if ev.Kind == agent.EventIngest {
+	switch ev.Kind {
+	case agent.EventIngest:
 		tag = "📥 inbox"
+	case agent.EventBus:
+		tag = "🔀 bus"
+	}
+	// Attribute a cross-agent event to its source sub-agent / bus sender.
+	prefix := ""
+	if ev.Agent != "" {
+		prefix = "[" + ev.Agent + "] "
 	}
 	return fmt.Sprintf(`<div class="ev"><span class="tg">%s</span> <span class="detail">%s</span></div>`,
-		html.EscapeString(tag), html.EscapeString(snippetStr(detail, 200)))
+		html.EscapeString(tag), html.EscapeString(prefix+snippetStr(detail, 200)))
 }
 
 // chatBubble renders conversation-relevant events; "" for kinds that don't
 // belong in the transcript. To avoid duplicates we render the authoritative
 // final response, tool calls, and tool results (not per-token deltas).
 func chatBubble(ev agent.Event) string {
+	// Cross-agent activity + bus traffic belong in the activity feed, not the
+	// operator's conversation transcript (TEN-234).
+	if ev.Agent != "" || ev.Kind == agent.EventBus {
+		return ""
+	}
 	switch string(ev.Kind) {
 	case "final", "truncated":
 		if strings.TrimSpace(ev.Text) == "" {

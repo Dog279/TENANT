@@ -117,3 +117,39 @@ func TestEventFragments(t *testing.T) {
 		t.Error("ingest events should not render a chat bubble")
 	}
 }
+
+// TEN-234: the activity feed shows meaningful activity, NOT token-by-token noise;
+// cross-agent + bus events are attributed and never enter the chat transcript.
+func TestActivityFeed_FiltersNoiseAndAttributesAgents(t *testing.T) {
+	// Token / usage / assistant / memory are filtered OUT of the activity feed.
+	for _, k := range []agent.EventKind{agent.EventToken, agent.EventUsage, agent.EventAssistant, agent.EventMemory} {
+		if activityRelevant(agent.Event{Kind: k}) {
+			t.Errorf("%s must be filtered out of the activity feed", k)
+		}
+	}
+	// Activity-worthy kinds stay (denylist → meaningful + future kinds show).
+	for _, k := range []agent.EventKind{agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventBus, agent.EventIngest, agent.EventTurnStart} {
+		if !activityRelevant(agent.Event{Kind: k}) {
+			t.Errorf("%s must stay in the activity feed", k)
+		}
+	}
+
+	// A bus message renders with the bus tag, the sender attribution, and the routing text.
+	row := activityRow(agent.Event{Kind: agent.EventBus, Agent: "researcher", Text: "→ writer: draft ready"})
+	if !strings.Contains(row, "bus") || !strings.Contains(row, "[researcher]") || !strings.Contains(row, "→ writer: draft ready") {
+		t.Errorf("bus row missing tag/agent/detail: %q", row)
+	}
+
+	// A sub-agent tool call is attributed by agent id in the activity feed...
+	subRow := activityRow(agent.Event{Kind: agent.EventToolCall, Agent: "writer", Tool: "os_write"})
+	if !strings.Contains(subRow, "[writer]") || !strings.Contains(subRow, "os_write") {
+		t.Errorf("sub-agent row should be attributed: %q", subRow)
+	}
+	// ...but cross-agent + bus events never enter the operator's chat transcript.
+	if chatBubble(agent.Event{Kind: agent.EventToolCall, Agent: "writer", Tool: "os_write"}) != "" {
+		t.Error("sub-agent events must not render a chat bubble")
+	}
+	if chatBubble(agent.Event{Kind: agent.EventBus, Agent: "researcher", Text: "→ writer: hi"}) != "" {
+		t.Error("bus events must not render a chat bubble")
+	}
+}

@@ -27,12 +27,19 @@ const (
 	EventRetry       EventKind = "retry"        // transient tool failure was retried by RetryDecorator (Tool, Text="attempt N/M: <err>", IsErr=true)
 	EventToolCatalog EventKind = "tool_catalog" // ranked tool surface trimmed for this turn (Text="ranked: N of M tools surfaced")
 	EventIngest      EventKind = "ingest"       // an inbound message arrived from an offsite channel and drove a turn; Text = "Discord: <preview>" / "iMessage: <preview>" (TEN-232)
+	EventBus         EventKind = "bus"          // an inter-agent message crossed the orchestra bus; Agent = sender, Text = "→ <to>: <content>" (TEN-234)
 )
 
 // Event is one live update during a turn. Only the fields relevant to
 // Kind are set.
 type Event struct {
-	Kind   EventKind
+	Kind EventKind
+	// Agent attributes a CROSS-AGENT event to its source sub-agent / bus sender
+	// ("" = the primary agent). Set when a sub-agent's activity or an inter-agent
+	// bus message is mirrored into the shared feed so the dashboard can label it;
+	// the TUI skips Agent != "" on its main channel (it renders sub-agents via the
+	// separate TeamEvents channel). (TEN-234)
+	Agent  string
 	Iter   int    // planner-loop iteration (1-based), 0 for turn-level events
 	Text   string // user query / token delta / assistant text / final / error
 	Tool   string // tool name (ToolCall/ToolResult/Validation)
