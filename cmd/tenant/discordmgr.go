@@ -346,6 +346,8 @@ func (m *discordRelayManager) Reconfigure(token string) error {
 // permissions drives it with the SAME ask|allow|deny syntax as /permissions.
 // nil when Discord is unconfigured (no broker wired).
 func (m *discordRelayManager) Perms() tui.PermissionControl {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.broker == nil {
 		return nil
 	}
@@ -364,6 +366,23 @@ func (m *discordRelayManager) askOperator(ctx context.Context, action, detail st
 		return false
 	}
 	return appr.Confirm(ctx, action, detail)
+}
+
+// Configured reports whether a relay agent is built (a bot token is set) — the
+// relay can actually run. Used by the dashboard Access page (TEN-208) to gate
+// the relay controls (vs. the broker, which exists even without a token).
+func (m *discordRelayManager) Configured() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.runner != nil
+}
+
+// OperatorID returns the configured operator id under the lock (for display on
+// the dashboard Access page, TEN-208).
+func (m *discordRelayManager) OperatorID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.operatorID
 }
 
 // SetOperator records the single operator's Discord user id (and persists it).

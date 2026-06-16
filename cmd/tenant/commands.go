@@ -2570,6 +2570,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// connects go through the MCP page (TEN-205) — so this covers key-based
 	// integrations + probe + clear. Shares cfgDir creds with the TUI's control.
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
+	// Access page (TEN-208): iMessage drive-allowlist + responder + perms, and
+	// the Discord relay (operator/on-off/exec/perms) — wraps the same live
+	// managers the TUI's /imessage + /relay drive; degrades per channel.
+	dashMgr.access = dashAccess{im: imsgAllowMgr, relay: relayMgr}
 	if dashOn {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())

@@ -32,6 +32,7 @@ type dashboardManager struct {
 	models       dashboard.ModelControl        // TEN-204: model backends surface (nil-safe)
 	mcp          dashboard.MCPControl          // TEN-205: remote MCP connectors surface (nil-safe)
 	integrations dashboard.IntegrationsControl // TEN-206: integration-config surface (nil-safe)
+	access       dashboard.AccessControl       // TEN-208: iMessage + Discord access surface (nil-safe)
 	broker       *agent.Broker
 	log          *slog.Logger
 	notify       func(string)             // feed sink (pushSys) for async status
@@ -72,6 +73,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.integrations != nil {
 		srv.SetIntegrations(m.integrations)
+	}
+	if m.access != nil {
+		srv.SetAccess(m.access)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {

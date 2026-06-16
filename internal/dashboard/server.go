@@ -77,6 +77,7 @@ type Server struct {
 	models       ModelControl        // TEN-204: model backends page; nil = "not configured"
 	mcp          MCPControl          // TEN-205: remote MCP connectors page; nil = "not configured"
 	integrations IntegrationsControl // TEN-206: integration-config page; nil = "not configured"
+	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
 	broker       *agent.Broker
 	mux          *http.ServeMux
 	log          *slog.Logger
@@ -193,6 +194,7 @@ func (s *Server) routes() {
 	s.mountModelsSSR(s.mux)
 	s.mountMCPSSR(s.mux)
 	s.mountIntegrationsSSR(s.mux)
+	s.mountAccessSSR(s.mux)
 }
 
 // handleHealthz reports liveness as 200 JSON {"status":"ok"}.

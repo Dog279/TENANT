@@ -56,6 +56,7 @@ type ssrTemplates struct {
 	models        *template.Template // model backends page (TEN-204)
 	mcp           *template.Template // remote MCP connectors page (TEN-205)
 	integrations  *template.Template // integration-config page (TEN-206)
+	access        *template.Template // iMessage + Discord access page (TEN-208)
 }
 
 func parseSSR() *ssrTemplates {
@@ -81,6 +82,7 @@ func parseSSR() *ssrTemplates {
 		models:        must("templates/layout.html", "templates/models.html"),
 		mcp:           must("templates/layout.html", "templates/mcp.html"),
 		integrations:  must("templates/layout.html", "templates/integrations.html"),
+		access:        must("templates/layout.html", "templates/access.html"),
 	}
 }
 

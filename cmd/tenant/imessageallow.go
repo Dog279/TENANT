@@ -40,28 +40,52 @@ func newIMessageAllowManager(initial []string, persist func([]string) error) *im
 }
 
 // setResponder wires the live responder manager so /imessage on|off can drive
-// it. Call once after both managers are constructed.
-func (m *imessageAllowManager) setResponder(r *imessageResponderManager) { m.resp = r }
+// it. Call once after both managers are constructed. Locked: resp/perms are now
+// also read from the dashboard's HTTP goroutine (TEN-208), not just the TUI's.
+func (m *imessageAllowManager) setResponder(r *imessageResponderManager) {
+	m.mu.Lock()
+	m.resp = r
+	m.mu.Unlock()
+}
 
 // setPerms wires the responder's permission broker (for /imessage permissions).
-func (m *imessageAllowManager) setPerms(p tui.PermissionControl) { m.perms = p }
+func (m *imessageAllowManager) setPerms(p tui.PermissionControl) {
+	m.mu.Lock()
+	m.perms = p
+	m.mu.Unlock()
+}
 
 // Perms exposes the responder's per-category permission control (TEN-230);
 // nil when the responder is unavailable.
-func (m *imessageAllowManager) Perms() tui.PermissionControl { return m.perms }
+func (m *imessageAllowManager) Perms() tui.PermissionControl {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.perms
+}
 
 // ResponderOn reports whether the autonomous responder is running.
-func (m *imessageAllowManager) ResponderOn() bool { return m.resp != nil && m.resp.On() }
+func (m *imessageAllowManager) ResponderOn() bool {
+	m.mu.Lock()
+	r := m.resp
+	m.mu.Unlock()
+	return r != nil && r.On()
+}
 
 // SetResponder turns the autonomous responder on/off live (TEN-230 Phase 1c).
+// The lock guards only the m.resp read — Start/Stop run UNLOCKED because Start
+// reads the allowlist via AllowList(), which re-locks m.mu (a held lock would
+// deadlock; Go mutexes aren't reentrant).
 func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
-	if m.resp == nil {
+	m.mu.Lock()
+	r := m.resp
+	m.mu.Unlock()
+	if r == nil {
 		return "", fmt.Errorf("imessage responder unavailable here (native transport is macOS-only)")
 	}
 	if on {
-		return m.resp.Start()
+		return r.Start()
 	}
-	return m.resp.Stop()
+	return r.Stop()
 }
 
 // AllowList returns the current handles in sorted, normalized form.

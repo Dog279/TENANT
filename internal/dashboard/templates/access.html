@@ -1,0 +1,126 @@
+{{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+
+{{if not .Configured}}
+<div class="card"><div class="dim">Access control isn't configured in this session.</div></div>
+{{else}}
+
+<h2>iMessage</h2>
+{{if not .View.IMessageAvailable}}
+<div class="card"><div class="dim">iMessage access isn't wired in this session.</div></div>
+{{else}}
+
+<div class="card">
+  {{if .View.ResponderAvailable}}
+  <form method="POST" action="/access/imessage/responder">
+    <input type="hidden" name="on" value="{{if .View.ResponderOn}}false{{else}}true{{end}}">
+    <span class="nm">Responder</span>
+    {{if .View.ResponderOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
+    <span class="sp"></span>
+    <button type="submit" class="btn">{{if .View.ResponderOn}}Turn off{{else}}Turn on{{end}}</button>
+  </form>
+  {{else}}
+  <div class="dim">The autonomous responder is macOS-only (native iMessage transport). The allowlist + permissions below still apply when Tenant runs on a Mac.</div>
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="nm">Drive-allowlist <span class="dim">— handles permitted to drive the agent over iMessage (deny-by-default)</span></div>
+  <form method="POST" action="/access/imessage/allow">
+    <input type="text" name="handle" placeholder="phone or email" class="cinput" required>
+    <button type="submit" class="btn">Allow</button>
+  </form>
+  {{range .View.Handles}}
+  <div class="ghead">
+    <span class="nm">{{.}}</span>
+    <span class="sp"></span>
+    <form method="POST" action="/access/imessage/deny">
+      <input type="hidden" name="handle" value="{{.}}">
+      <button type="submit" class="btn">Deny</button>
+    </form>
+  </div>
+  {{else}}
+  <div class="dim">No handles allowed — deny-by-default, nobody can drive the agent over iMessage.</div>
+  {{end}}
+  {{if .View.Handles}}
+  <form method="POST" action="/access/imessage/clear">
+    <button type="submit" class="btn">Clear all</button>
+  </form>
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="nm">Permissions <span class="dim">— per-category gating for the responder's tools (ask prompts at the Mac console)</span></div>
+  {{range .View.IMessagePerms}}
+  <div class="ghead">
+    <span class="nm">{{.Category}}</span> <span class="dim">{{.Desc}}</span>
+    <span class="sp"></span>
+    <form method="POST" action="/access/imessage/permission">
+      <input type="hidden" name="category" value="{{.Category}}">
+      <select name="mode">
+        <option value="ask"{{if eq .Mode "ask"}} selected{{end}}>ask</option>
+        <option value="allow"{{if eq .Mode "allow"}} selected{{end}}>allow</option>
+        <option value="deny"{{if eq .Mode "deny"}} selected{{end}}>deny</option>
+      </select>
+      <button type="submit" class="btn">Set</button>
+    </form>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+<h2>Discord relay</h2>
+{{if not .View.DiscordAvailable}}
+<div class="card"><div class="dim">Discord access isn't wired in this session.</div></div>
+{{else if not .View.RelayConfigured}}
+<div class="card"><div class="dim">Discord isn't configured — add a bot token on the <a href="/integrations">Integrations</a> page first.</div></div>
+{{else}}
+<div class="card">
+  <form method="POST" action="/access/discord/enable">
+    <input type="hidden" name="on" value="{{if .View.RelayRunning}}false{{else}}true{{end}}">
+    <span class="nm">Relay</span>
+    {{if .View.RelayRunning}}<span class="on-tag">running</span>{{else}}<span class="dim">stopped</span>{{end}}
+    <span class="sp"></span>
+    <button type="submit" class="btn">{{if .View.RelayRunning}}Stop{{else}}Start{{end}}</button>
+  </form>
+  <form method="POST" action="/access/discord/exec">
+    <input type="hidden" name="on" value="{{if .View.ExecOn}}false{{else}}true{{end}}">
+    <span class="dim">exec mode</span>
+    {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
+    <span class="sp"></span>
+    <button type="submit" class="btn">{{if .View.ExecOn}}Disable{{else}}Enable{{end}}</button>
+  </form>
+</div>
+
+<div class="card">
+  <form method="POST" action="/access/discord/operator">
+    <span class="nm">Operator id</span>
+    <input type="text" name="operator" value="{{.View.OperatorID}}" placeholder="numeric Discord user id" class="cinput">
+    <button type="submit" class="btn">Save</button>
+  </form>
+  {{if not .View.OperatorSet}}<div class="dim risk">No operator set — the relay won't start until you set one.</div>{{end}}
+</div>
+
+<div class="card">
+  <div class="nm">Permissions <span class="dim">— per-category gating; "ask" prompts a button in Discord</span></div>
+  {{range .View.DiscordPerms}}
+  <div class="ghead">
+    <span class="nm">{{.Category}}</span> <span class="dim">{{.Desc}}</span>
+    <span class="sp"></span>
+    <form method="POST" action="/access/discord/permission">
+      <input type="hidden" name="category" value="{{.Category}}">
+      <select name="mode">
+        <option value="ask"{{if eq .Mode "ask"}} selected{{end}}>ask</option>
+        <option value="allow"{{if eq .Mode "allow"}} selected{{end}}>allow</option>
+        <option value="deny"{{if eq .Mode "deny"}} selected{{end}}>deny</option>
+      </select>
+      <button type="submit" class="btn">Set</button>
+    </form>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{end}}
+{{end}}
