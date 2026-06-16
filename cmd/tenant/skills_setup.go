@@ -53,7 +53,9 @@ var skillSpecs = []skillSpec{
 		{Key: "operator_id", Prompt: "Your Discord user ID (enable Developer Mode, right-click your name → Copy User ID)"},
 	}, Note: "Create the bot at https://discord.com/developers/applications, then invite to a server with the `bot` scope. " +
 		"Surface A (REST tools) only — inbound DMs/channel messages → agent are NOT supported in this build."},
-	{ID: "web", Label: "Web browsing (drives Chrome)", Fields: nil},
+	{ID: "web", Label: "Web browsing (drives Chrome + optional Brave Search)", Fields: []skillField{
+		{Key: "brave_key", Prompt: "Brave Search API key (optional — without it, web_search uses DuckDuckGo)", Secret: true},
+	}},
 	{ID: "os", Label: "OS access (sysinfo, files, gated shell)", Fields: nil},
 }
 

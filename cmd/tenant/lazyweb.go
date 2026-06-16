@@ -31,7 +31,15 @@ func webConfig(cfgDir string, pf *pluginFlags) web.Config {
 }
 
 func braveKey(cfgDir string) string {
-	return credKey(cfgDir, "brave_search", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY")
+	if k := credKey(cfgDir, "brave_search", "BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"); k != "" {
+		return k
+	}
+	// Also honor a key set via `/skill configure web brave_key=…` (TEN-69), which
+	// stores under the skill namespace rather than the brave_search credential.
+	if creds, err := loadCredentials(cfgDir); err == nil {
+		return strings.TrimSpace(creds.get(skillSecretID("web", "brave_key")))
+	}
+	return ""
 }
 
 // credKey resolves an API key: each environment variable in order, then
