@@ -92,6 +92,8 @@ func main() {
 		err = cmdAtlassian(ctx, os.Args[2:])
 	case "mcp":
 		err = cmdMCP(ctx, os.Args[2:])
+	case "peer":
+		err = cmdPeer(ctx, os.Args[2:])
 	case "ack":
 		err = cmdFeedback(ctx, os.Args[2:], "ack")
 	case "undo":
@@ -138,6 +140,7 @@ COMMANDS
   imessage "<task>"        agent uses iMessage via BlueBubbles (read; --allow-send to act)
   os "<task>"              agent inspects the machine + runs shell cmds (read; --allow-exec to run)
   mcp connect <url>        connect to a remote MCP server (OAuth2.1+DCR browser sign-in) + list its tools
+  peer <invite|join|...>   federate Tenant instances: mutual-consent invite pairing + share policy
   serve                    run background self-improvement (distillation) on a cadence
   tui                      full-screen terminal UI: streaming chat + live activity feed
   orchestrate "<task>"     multi-agent team: orchestrator spawns concurrent sub-agents that

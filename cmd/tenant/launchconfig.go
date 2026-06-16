@@ -23,6 +23,11 @@ import (
 type launchConfig struct {
 	SchemaVersion int `json:"schema_version,omitempty"`
 
+	// InstanceID is this installation's stable identity (a UUID minted once at
+	// first launch via ensureInstanceID). Exchanged at peer pairing (TEN-183)
+	// and reused as the federation bus Origin (TEN-189). Never secret.
+	InstanceID string `json:"instance_id,omitempty"`
+
 	// Provider is the active generation provider — a key into Providers.
 	Provider string `json:"provider,omitempty"`
 	// Providers holds each configured provider's settings, so switching is a
