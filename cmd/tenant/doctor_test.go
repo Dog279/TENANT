@@ -490,6 +490,40 @@ func TestDoctor_CheckDiscord(t *testing.T) {
 	})
 }
 
+// checkX (TEN-67): not configured → SKIP; disabled → SKIP; enabled + no
+// bearer → FAIL with an actionable fix. The live-probe paths (OK/WARN/401)
+// depend on api.x.com reachability + a real bearer, so they're verified
+// manually — the skip/fail tiers are what guarantee operator-visible errors.
+func TestDoctor_CheckX(t *testing.T) {
+	t.Run("not configured", func(t *testing.T) {
+		e := &doctorEnv{c: &commonFlags{}, lc: &launchConfig{}}
+		if r := checkX(context.Background(), e); r.Status != statusSkip {
+			t.Errorf("unconfigured → SKIP, got %v: %q", r.Status, r.Detail)
+		}
+	})
+	t.Run("configured but disabled", func(t *testing.T) {
+		e := &doctorEnv{c: &commonFlags{}, lc: &launchConfig{
+			Skills: map[string]*skillConfig{"x": {Enabled: false}},
+		}}
+		if r := checkX(context.Background(), e); r.Status != statusSkip {
+			t.Errorf("disabled → SKIP, got %v", r.Status)
+		}
+	})
+	t.Run("enabled but no bearer", func(t *testing.T) {
+		t.Setenv("X_BEARER_TOKEN", "")
+		e := &doctorEnv{c: &commonFlags{cfgDir: t.TempDir()}, lc: &launchConfig{
+			Skills: map[string]*skillConfig{"x": {Enabled: true}},
+		}}
+		r := checkX(context.Background(), e)
+		if r.Status != statusFail {
+			t.Errorf("enabled w/o bearer → FAIL, got %v: %q", r.Status, r.Detail)
+		}
+		if !strings.Contains(r.Fix, "X_BEARER_TOKEN") {
+			t.Errorf("fix should reference X_BEARER_TOKEN env var; got %q", r.Fix)
+		}
+	})
+}
+
 // checkDashboard (TEN-81): not configured → SKIP; reachable + 200 → OK;
 // reachable + 401 → FAIL; non-loopback bind without TLS+auth → FAIL
 // (config lint, even with the server down). The OK/FAIL-401 paths use an

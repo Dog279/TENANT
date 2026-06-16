@@ -594,4 +594,5 @@ func init() {
 	skillKinds["atlassian"] = atlassianSkillKind() // TEN-160
 	skillKinds["discord"] = discordSkillKind()     // TEN-66
 	skillKinds["web"] = webSkillKind()             // TEN-69
+	skillKinds["x"] = xSkillKind()                 // TEN-67
 }

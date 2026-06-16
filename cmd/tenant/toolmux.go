@@ -1091,10 +1091,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	}
 
 	if pf.x {
-		bearer := pf.xBearer
-		if bearer == "" {
-			bearer = os.Getenv("X_BEARER_TOKEN")
-		}
+		bearer := resolveXBearer(c.cfgDir, pf.xBearer)
 		svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: filepath.Join(c.dataDir, "x-token.json"), AllowPost: pf.xAllowPost})
 		if err != nil {
 			return fail(fmt.Errorf("x plugin: %w", err))
@@ -1241,7 +1238,25 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 				}), nil, nil
 			},
 		},
-		{label: "x", specs: xp.NewDispatcher(nil, xp.Policy{}).Tools(), hint: "relaunch with --x (bearer / OAuth login)"},
+		{
+			label: "x",
+			specs: xp.NewDispatcher(nil, xp.Policy{}).Tools(),
+			hint:  "run `/configure x <bearer>`, then `/enable x` (or relaunch with --x)",
+			activate: func() (plugin, func(), error) {
+				// TEN-67: build the X plugin from the /configure-saved bearer
+				// (or the launch flag / env). Same resolution as the launch
+				// path via resolveXBearer so both pick the same token.
+				bearer := resolveXBearer(c.cfgDir, pf.xBearer)
+				if bearer == "" {
+					return nil, nil, fmt.Errorf("x plugin: %w yet — run `/configure x <bearer>`", errNotConfigured)
+				}
+				svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: filepath.Join(c.dataDir, "x-token.json"), AllowPost: pf.xAllowPost})
+				if err != nil {
+					return nil, nil, fmt.Errorf("x plugin: %w", err)
+				}
+				return xp.NewDispatcher(svc, xp.Policy{AllowPost: gateAllow(pf.xAllowPost), Confirm: confirm}), func() {}, nil
+			},
+		},
 		{label: "imessage", specs: imessage.NewDispatcher(nil, imessage.Policy{}).Tools(), hint: "relaunch with --imessage (native chat.db on macOS; or --bb-url for BlueBubbles)"},
 		{label: "discord", specs: discord.NewDispatcher(nil, discord.Policy{}).Tools(), hint: "relaunch with --discord --discord-bot-token=<token>"},
 		{
