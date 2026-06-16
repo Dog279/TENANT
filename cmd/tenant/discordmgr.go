@@ -121,7 +121,8 @@ type discordRelayManager struct {
 	token    string
 	log      *slog.Logger
 	notify   func(string)
-	degraded func() bool // when true, the model is on the echo fallback; relay refuses turns
+	ingest   func(text string) // surface inbound DMs in the shared activity feed (TUI + dashboard), TEN-232
+	degraded func() bool       // when true, the model is on the echo fallback; relay refuses turns
 	persist  func(enabled bool, operatorID string, allowExec bool) error
 
 	// buildFn rebuilds the Discord agent + gateway internals with a fresh token.
@@ -147,6 +148,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 	if m.broker != nil {
 		rl.confirm = m.broker.Confirm // gated tools route through the per-category broker (TEN-231)
 	}
+	rl.ingest = m.ingest // surface inbound DMs in the shared activity feed (TEN-232)
 	rl.degraded = m.degraded
 	rl.Start(ctx)
 	gw := &discord.Gateway{

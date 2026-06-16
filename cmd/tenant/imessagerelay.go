@@ -63,7 +63,8 @@ type imessageResponder struct {
 	interval time.Duration  // poll cadence (0 ⇒ 3s)
 	pollN    int            // max messages per poll (0 ⇒ 20)
 	log      *slog.Logger
-	degraded func() bool // optional: true ⇒ model on echo fallback, refuse turns
+	degraded func() bool       // optional: true ⇒ model on echo fallback, refuse turns
+	ingest   func(text string) // optional: surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
 }
 
 // denyAllConfirm is the Phase-1 gate: every gated tool is refused offsite until
@@ -118,6 +119,11 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if r.degraded != nil && r.degraded() {
 		r.send(ctx, m.ChatGUID, "⚠ the model is unavailable on the host right now (running on a local fallback). Try again once it's back.")
 		return
+	}
+	// Surface the inbound in the shared activity feed (TUI + dashboard) before
+	// driving the turn, so the operator sees offsite traffic live (TEN-232).
+	if r.ingest != nil {
+		r.ingest(text)
 	}
 	// Phase 1: deny-all offsite-confirm ⇒ gated/dangerous tools are refused.
 	turnCtx := withOffsiteConfirm(ctx, r.confirm)

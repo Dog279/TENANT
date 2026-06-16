@@ -88,6 +88,40 @@ func TestIMessageResponder_DrivesTurnAndReplies(t *testing.T) {
 	}
 }
 
+// TEN-232: an inbound that drives a turn is surfaced in the shared activity feed
+// via the ingest hook, BEFORE the turn runs.
+func TestIMessageResponder_IngestSurfacesInbound(t *testing.T) {
+	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "what's the weather?")}}
+	s := &fakeIMsgSender{}
+	r := &fakeIMsgRunner{reply: "It's sunny."}
+	var ingested []string
+	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm,
+		ingest: func(t string) { ingested = append(ingested, t) }}
+
+	resp.drain(context.Background())
+
+	if len(ingested) != 1 || ingested[0] != "what's the weather?" {
+		t.Fatalf("ingest hook should fire once with the inbound text: %v", ingested)
+	}
+}
+
+// A message refused while degraded must NOT be surfaced as ingest (no turn ran).
+func TestIMessageResponder_NoIngestWhenDegraded(t *testing.T) {
+	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "do a thing")}}
+	s := &fakeIMsgSender{}
+	r := &fakeIMsgRunner{}
+	var ingested []string
+	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm,
+		degraded: func() bool { return true },
+		ingest:   func(t string) { ingested = append(ingested, t) }}
+
+	resp.drain(context.Background())
+
+	if len(ingested) != 0 {
+		t.Fatalf("degraded refusal must not surface ingest: %v", ingested)
+	}
+}
+
 func TestIMessageResponder_SkipsEmptyOrChatless(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{
 		inbound("guid1", "   "), // whitespace only

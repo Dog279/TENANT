@@ -53,9 +53,10 @@ type relay struct {
 	botID      string // the bot's own Discord user ID; set from READY via OnReady
 	log        *slog.Logger
 	rl         *rateLimiter
-	approver   *discordApprover // optional; set by the manager (TEN-117/119) — drives the button prompts
-	confirm    offsiteConfirm   // optional; the per-category permission broker (TEN-231) the turn's gated tools route through; nil ⇒ fall back to approver.Confirm
-	degraded   func() bool      // optional; when true the model is on the echo fallback
+	approver   *discordApprover  // optional; set by the manager (TEN-117/119) — drives the button prompts
+	confirm    offsiteConfirm    // optional; the per-category permission broker (TEN-231) the turn's gated tools route through; nil ⇒ fall back to approver.Confirm
+	degraded   func() bool       // optional; when true the model is on the echo fallback
+	ingest     func(text string) // optional; surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
 
 	mu     sync.Mutex
 	base   context.Context // lifetime of the relay; background turns derive from it
@@ -154,6 +155,11 @@ func (r *relay) handleInbound(in discord.Inbound) {
 		return
 	}
 
+	// Surface the inbound in the shared activity feed (TUI + dashboard) — it's
+	// about to drive a turn or be folded into the running one (TEN-232).
+	if r.ingest != nil {
+		r.ingest(text)
+	}
 	if r.start(in.ChannelID, text) {
 		return // new turn launched; its goroutine posts the answer
 	}

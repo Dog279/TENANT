@@ -2175,6 +2175,18 @@ func cmdTUI(ctx context.Context, args []string) error {
 		relaySender   messageSender
 		relayGate     *execGate
 	)
+	// ingestEvent surfaces an inbound offsite message (Discord/iMessage) in the
+	// SHARED activity feed: emit publishes to evBroker, which fans out to BOTH the
+	// TUI feed AND the dashboard SSE stream. Prefixed with the channel so the
+	// operator can tell where traffic is coming from at a glance (TEN-232).
+	ingestEvent := func(channel, text string) {
+		preview := strings.TrimSpace(text)
+		if r := []rune(preview); len(r) > 100 {
+			preview = string(r[:100]) + "…"
+		}
+		emit(agent.Event{Kind: agent.EventIngest, Text: channel + ": " + preview})
+	}
+
 	// discordBroker is the per-category permission broker for the Discord agent
 	// (TEN-231): same ask|allow|deny model as the global /permissions, driven by
 	// /relay permissions. Constructed once (stable across token Reconfigure);
@@ -2209,7 +2221,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
 		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken, log: log, notify: pushSys,
-		degraded: degraded.Degraded, // refuse remote turns while on the echo fallback
+		ingest:   func(t string) { ingestEvent("Discord", t) }, // TEN-232: show inbound DMs in the activity feed
+		degraded: degraded.Degraded,                            // refuse remote turns while on the echo fallback
 		persist: func(enabled bool, opID string, allowExec bool) error {
 			if c.lc == nil {
 				return nil
@@ -2341,6 +2354,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: log, degraded: degraded.Degraded,
+				ingest: func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
 			}
 			return resp, func() { _ = nat.Close() }, nil
 		},

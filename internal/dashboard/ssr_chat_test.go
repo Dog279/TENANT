@@ -108,4 +108,12 @@ func TestEventFragments(t *testing.T) {
 	if row := activityRow(agent.Event{Kind: agent.EventError, Text: "boom <x>"}); !strings.Contains(row, "error") || !strings.Contains(row, "boom &lt;x&gt;") {
 		t.Errorf("activity row wrong: %q", row)
 	}
+	// TEN-232: offsite ingest gets the inbox tag; the channel prefix rides in Text
+	// and an ingest event renders no chat bubble (activity-feed only).
+	if row := activityRow(agent.Event{Kind: agent.EventIngest, Text: "Discord: hey there"}); !strings.Contains(row, "inbox") || !strings.Contains(row, "Discord: hey there") {
+		t.Errorf("ingest activity row wrong: %q", row)
+	}
+	if chatBubble(agent.Event{Kind: agent.EventIngest, Text: "Discord: hey"}) != "" {
+		t.Error("ingest events should not render a chat bubble")
+	}
 }

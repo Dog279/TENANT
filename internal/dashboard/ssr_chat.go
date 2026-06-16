@@ -105,8 +105,14 @@ func activityRow(ev agent.Event) string {
 	if ev.Tool != "" {
 		detail = strings.TrimSpace(ev.Tool + " " + ev.Result)
 	}
+	// Offsite ingest (Discord/iMessage) gets a distinct inbox tag; the channel
+	// prefix ("Discord: " / "iMessage: ") is already in ev.Text (TEN-232).
+	tag := string(ev.Kind)
+	if ev.Kind == agent.EventIngest {
+		tag = "📥 inbox"
+	}
 	return fmt.Sprintf(`<div class="ev"><span class="tg">%s</span> <span class="detail">%s</span></div>`,
-		html.EscapeString(string(ev.Kind)), html.EscapeString(snippetStr(detail, 200)))
+		html.EscapeString(tag), html.EscapeString(snippetStr(detail, 200)))
 }
 
 // chatBubble renders conversation-relevant events; "" for kinds that don't

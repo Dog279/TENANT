@@ -4394,6 +4394,10 @@ func (m *model) applyEvent(e agent.Event) {
 		m.appendFeed(cSys.Render("⊟ context compacted: " + e.Text))
 	case agent.EventInterject:
 		m.appendFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
+	case agent.EventIngest:
+		// An offsite channel (Discord/iMessage) received a message and drove a
+		// turn. e.Text is already prefixed "Discord: " / "iMessage: " (TEN-232).
+		m.appendFeed(cSys.Render("📥 " + clip(e.Text, 80)))
 	case agent.EventFinal:
 		m.streaming = false
 		m.appendFeed(cDim.Render("answer ready"))

@@ -135,6 +135,29 @@ func TestRelay_OperatorDMDrivesTurn(t *testing.T) {
 	}
 }
 
+// TEN-232: an inbound DM that drives a turn is surfaced in the shared activity
+// feed via the ingest hook; gated/non-operator messages are not.
+func TestRelay_IngestSurfacesInbound(t *testing.T) {
+	fr := &fakeRunner{turns: make(chan string, 1)}
+	fs := &fakeSender{}
+	r := newRelay(fr, fs, op, nil)
+	r.Start(context.Background())
+	var ingested []string
+	r.ingest = func(t string) { ingested = append(ingested, t) }
+
+	// A non-operator message must not surface (gated before ingest).
+	r.handleInbound(discord.Inbound{AuthorID: "intruder", ChannelID: "dm1", Content: "psst"})
+	// The operator's DM surfaces.
+	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "hello there"})
+
+	if _, ok := recv(fr.turns, 2*time.Second); !ok {
+		t.Fatal("operator DM did not start a turn")
+	}
+	if len(ingested) != 1 || ingested[0] != "hello there" {
+		t.Fatalf("ingest should fire once for the operator DM only: %v", ingested)
+	}
+}
+
 func TestRelay_GateDrops(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 4)}
 	fs := &fakeSender{}
