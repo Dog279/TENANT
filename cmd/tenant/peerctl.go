@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -18,7 +19,9 @@ import (
 	"time"
 
 	"tenant/internal/mcp"
+	"tenant/internal/model"
 	"tenant/internal/peering"
+	"tenant/internal/plugins/mcpremote"
 )
 
 // peerTLS loads/mints this instance's self-signed peer cert (TEN-185) unless
@@ -65,6 +68,8 @@ func cmdPeer(ctx context.Context, args []string) error {
 		return peerShare(rest)
 	case "serve":
 		return peerServe(ctx, rest)
+	case "query":
+		return peerQuery(ctx, rest)
 	default:
 		return peerUsage()
 	}
@@ -84,9 +89,12 @@ func peerUsage() error {
   rotate <name>           stage a new token (staged-pull; old stays valid until adopted)
   share <name> wiki=on|off memory=on|off [skills=…] [exec=…] [llm=…]
                           edit a peer's share policy (all-deny by default)
-  serve [--listen addr]   run the peer listener headless (the interactive TUI
+  serve [--listen addr] [--wiki-dir dir]
+                          run the peer listener headless (the interactive TUI
                           starts it automatically when peer.listen is set;
-                          set peer.transport: overlay in config for Tailscale)`)
+                          set peer.transport: overlay in config for Tailscale)
+  query <name> <wiki|memory> "<query>"
+                          query a paired peer's shared knowledge with provenance`)
 }
 
 // peerServe runs the federation listener headless until interrupted — a focused
@@ -96,6 +104,7 @@ func peerUsage() error {
 func peerServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("peer serve", flag.ContinueOnError)
 	listen := fs.String("listen", "", "address to bind (default: config peer.listen, else 127.0.0.1:9100)")
+	wikiDir := fs.String("wiki-dir", "", "expose this markdown wiki to peers via peer_wiki_search")
 	c, store, _, err := peerStore(fs, args)
 	if err != nil {
 		return err
@@ -119,12 +128,18 @@ func peerServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	deps, closeDeps, err := buildPeerToolDeps(ctx, c, strings.TrimSpace(*wikiDir))
+	if err != nil {
+		return err
+	}
+	defer closeDeps()
 	ln, err := peering.NewListener(peering.ListenerConfig{
 		Store:       store,
 		SelfID:      id,
 		SelfVersion: mcp.LibraryVersion,
 		Overlay:     ov,
 		TLSCert:     cert,
+		Registrar:   peerKnowledgeRegistrar(deps),
 		Logger:      func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
 	if err != nil {
@@ -445,7 +460,7 @@ func dash(s string) string {
 // fatal. The knowledge-tool registrar is injected in TEN-186; today it serves
 // the peer_hello handshake. Binds synchronously so the bound address (and any
 // refusal) is reported before serving in a goroutine.
-func startPeerListener(ctx context.Context, c *commonFlags, pushSys func(string), log *slog.Logger) {
+func startPeerListener(ctx context.Context, c *commonFlags, deps peerToolDeps, pushSys func(string), log *slog.Logger) {
 	store, err := peering.LoadStore(c.cfgDir)
 	if err != nil {
 		pushSys("peer: listener not started — " + err.Error())
@@ -468,7 +483,7 @@ func startPeerListener(ctx context.Context, c *commonFlags, pushSys func(string)
 		SelfVersion: mcp.LibraryVersion,
 		Overlay:     overlay,
 		TLSCert:     cert,
-		Registrar:   nil, // TEN-186 injects the share-gated knowledge tools
+		Registrar:   peerKnowledgeRegistrar(deps), // TEN-186 share-gated knowledge tools
 		Logger: func(f string, a ...any) {
 			if log != nil {
 				log.Info(fmt.Sprintf(f, a...))
@@ -494,6 +509,59 @@ func startPeerListener(ctx context.Context, c *commonFlags, pushSys func(string)
 			pushSys("peer: listener stopped — " + serr.Error())
 		}
 	}()
+}
+
+// peerQuery dials a paired peer and runs one knowledge query against it
+// (TEN-186 client path): `tenant peer query <name> <wiki|memory> "<query>"`.
+// Uses the static pairing token + the pinned cert fingerprint (TOFU) the peer
+// advertised at invite. This is the scriptable cross-query — the agent gets the
+// same tools live via the launch-time peer reconnect.
+func peerQuery(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("peer query", flag.ContinueOnError)
+	k := fs.Int("k", 8, "max results")
+	_, store, pos, err := peerStore(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) < 3 {
+		return fmt.Errorf(`usage: tenant peer query <name> <wiki|memory> "<query>"`)
+	}
+	name, kind, query := pos[0], strings.ToLower(pos[1]), strings.Join(pos[2:], " ")
+	var tool string
+	switch kind {
+	case "wiki":
+		tool = "peer_wiki_search"
+	case "memory", "mem":
+		tool = "peer_memory_search"
+	default:
+		return fmt.Errorf("kind must be wiki or memory, got %q", kind)
+	}
+	p, ok := store.Get(name)
+	if !ok {
+		return fmt.Errorf("no peer named %q (tenant peer list)", name)
+	}
+	if !p.Dial || p.URL == "" || p.Token == "" {
+		return fmt.Errorf("peer %q is not a dialable peer (it dials us, or has no token) — join its invite first", name)
+	}
+
+	d, cleanup, err := mcpremote.OpenStatic(ctx, mcpremote.StaticConfig{
+		ServerURL: p.URL,
+		Token:     p.Token,
+		Label:     "peer:" + name,
+		TLS:       peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
+	}, mcpremote.Policy{})
+	if err != nil {
+		return fmt.Errorf("connect peer %q: %w", name, err)
+	}
+	defer cleanup()
+
+	argsJSON, _ := json.Marshal(map[string]any{"query": query, "k": *k})
+	out, _, err := d.Dispatch(ctx, model.ToolCall{Name: tool, Arguments: argsJSON})
+	if err != nil {
+		return fmt.Errorf("%s on %q: %w", tool, name, err)
+	}
+	fmt.Println(out)
+	return nil
 }
 
 // ensureInstanceID returns this installation's stable instance_id, minting and

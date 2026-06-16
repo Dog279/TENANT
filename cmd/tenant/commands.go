@@ -2640,7 +2640,18 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// for now it serves the peer_hello handshake. Best-effort: a bind failure is
 	// a feed note, never fatal.
 	if c.lc != nil && c.lc.Peer.Listen != "" {
-		startPeerListener(ctx, c, pushSys, log)
+		hostName, _ := os.Hostname()
+		if hostName == "" {
+			hostName = "this tenant"
+		}
+		peerEmb, _, _ := router.EmbedderForRole(ctx, model.RoleEmbedder) // optional; nil → keyword-only
+		startPeerListener(ctx, c, peerToolDeps{
+			selfName: hostName,
+			semantic: st.semantic,
+			episodic: st.episodic,
+			embedder: peerEmb,
+			wiki:     wikiIx,
+		}, pushSys, log)
 	}
 
 	modelName := c.vllmModel

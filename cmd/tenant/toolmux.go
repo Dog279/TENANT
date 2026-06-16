@@ -17,6 +17,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/model"
+	"tenant/internal/peering"
 	"tenant/internal/plugins/atlassian"
 	"tenant/internal/plugins/discord"
 	"tenant/internal/plugins/gsuite"
@@ -333,6 +334,48 @@ func (m *toolMux) adoptLiveMCP(label string, p plugin, cleanup func()) {
 	m.activated[label] = true
 	if cleanup != nil {
 		m.cleanups = append(m.cleanups, cleanup)
+	}
+}
+
+// reconnectPeersSilently dials every paired peer we hold a token for (TEN-186)
+// and brings its shared knowledge tools (peer_wiki_search / peer_memory_search)
+// live for the agent — namespaced "peer:<name>". Same non-blocking, no-prompt
+// pattern as reconnectMCPSilently: a peer that's offline or whose token was
+// revoked just stays absent (logged), never stalling launch. Single-peer is the
+// trial target; with multiple peers the un-prefixed tool names collide and
+// first-registrant-wins (adoptLiveMCP), so a 2nd peer's identically-named tools
+// are shadowed — acceptable for the trial, namespaced fully in a follow-up.
+func (m *toolMux) reconnectPeersSilently(cfgDir string) {
+	store, err := peering.LoadStore(cfgDir)
+	if err != nil {
+		return
+	}
+	for _, peer := range store.List() {
+		if !peer.Dial || peer.URL == "" || peer.Token == "" {
+			continue // we don't dial this peer, or it's revoked
+		}
+		go func(p *peering.Peer) {
+			label := "peer:" + p.Name
+			if m.hasPlugin(label) {
+				return
+			}
+			d := m.mcpDeps
+			dialCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+			defer cancel()
+			disp, cleanup, derr := mcpremote.OpenStatic(dialCtx, mcpremote.StaticConfig{
+				ServerURL: p.URL,
+				Token:     p.Token,
+				Label:     label,
+				TLS:       peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
+			}, mcpremote.Policy{Confirm: d.confirm})
+			if derr != nil {
+				if d.log != nil {
+					d.log.Warn("peer: silent reconnect failed", "peer", p.Name, "err", derr.Error())
+				}
+				return
+			}
+			m.adoptLiveMCP(label, disp, cleanup)
+		}(peer)
 	}
 }
 
@@ -1337,6 +1380,9 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		// after launch; otherwise the disabled stub remains for /configure.
 		go mux.reconnectMCPSilently(url)
 	}
+	// TEN-186: bring paired peers' shared knowledge tools live for the agent,
+	// same silent/non-blocking pattern.
+	mux.reconnectPeersSilently(c.cfgDir)
 
 	return mux, wikiIx, mux.Close, nil
 }
