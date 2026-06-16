@@ -35,7 +35,7 @@
   <div class="ghead">
     <span class="nm">{{.}}</span>
     <span class="sp"></span>
-    <form method="POST" action="/access/imessage/deny">
+    <form method="POST" action="/access/imessage/deny"{{if $.View.SingleHandle}} onsubmit="return confirm('Remove the last allowed handle? Nobody will be able to drive the agent over iMessage until you add one again.')"{{end}}>
       <input type="hidden" name="handle" value="{{.}}">
       <button type="submit" class="btn">Deny</button>
     </form>
@@ -44,7 +44,7 @@
   <div class="dim">No handles allowed — deny-by-default, nobody can drive the agent over iMessage.</div>
   {{end}}
   {{if .View.Handles}}
-  <form method="POST" action="/access/imessage/clear">
+  <form method="POST" action="/access/imessage/clear" onsubmit="return confirm('Clear the allowlist? Nobody will be able to drive the agent over iMessage until you add a handle again.')">
     <button type="submit" class="btn">Clear all</button>
   </form>
   {{end}}
@@ -84,7 +84,7 @@
     <span class="sp"></span>
     <button type="submit" class="btn">{{if .View.RelayRunning}}Stop{{else}}Start{{end}}</button>
   </form>
-  <form method="POST" action="/access/discord/exec">
+  <form method="POST" action="/access/discord/exec"{{if not .View.ExecOn}} onsubmit="return confirm('Enable exec mode? Dangerous tools (exec/write/destructive) become reachable over Discord — each still requires your per-action approval.')"{{end}}>
     <input type="hidden" name="on" value="{{if .View.ExecOn}}false{{else}}true{{end}}">
     <span class="dim">exec mode</span>
     {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}

@@ -61,6 +61,7 @@ type AccessView struct {
 	ResponderAvailable bool // the native responder is reachable here (macOS only)
 	ResponderOn        bool
 	Handles            []string // sorted, normalized drive-allowlist
+	SingleHandle       bool     // exactly one handle ⇒ deny confirms ("removing the last entry")
 	IMessagePerms      []PermissionRow
 
 	// Discord

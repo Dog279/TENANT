@@ -50,6 +50,7 @@ func (a dashAccess) View() dashboard.AccessView {
 		v.ResponderAvailable = runtime.GOOS == "darwin"
 		v.ResponderOn = a.im.ResponderOn()
 		v.Handles = a.im.AllowList()
+		v.SingleHandle = len(v.Handles) == 1 // last-entry removal confirms in the UI
 		v.IMessagePerms = toPermRows(a.im.Perms())
 	}
 	if a.relay != nil {

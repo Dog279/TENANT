@@ -121,6 +121,35 @@ func TestAccess_RenderShowsState(t *testing.T) {
 	}
 }
 
+// TEN-208 acceptance: destructive actions carry a confirm + consequence line —
+// clear-all always; deny only when it's the last handle; exec only when enabling.
+func TestAccess_DestructiveConfirms(t *testing.T) {
+	// One handle, exec off → deny confirm + clear confirm + exec-enable confirm present.
+	fa := &fakeAccess{view: AccessView{
+		IMessageAvailable: true, Handles: []string{"+15551230000"}, SingleHandle: true,
+		DiscordAvailable: true, RelayConfigured: true, ExecOn: false,
+	}}
+	body := accessGet(t, accessServer(fa), "/access").Body.String()
+	for _, want := range []string{"Remove the last allowed handle?", "Clear the allowlist?", "Enable exec mode?"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing destructive confirm %q", want)
+		}
+	}
+
+	// Two handles → no last-handle confirm on the deny buttons; exec ON → no enable confirm.
+	fa2 := &fakeAccess{view: AccessView{
+		IMessageAvailable: true, Handles: []string{"a@x.com", "b@x.com"}, SingleHandle: false,
+		DiscordAvailable: true, RelayConfigured: true, ExecOn: true,
+	}}
+	body2 := accessGet(t, accessServer(fa2), "/access").Body.String()
+	if strings.Contains(body2, "Remove the last allowed handle?") {
+		t.Error("multi-handle list must not show the last-handle confirm")
+	}
+	if strings.Contains(body2, "Enable exec mode?") {
+		t.Error("exec already on must not show the enable confirm")
+	}
+}
+
 func TestAccess_PerChannelDegradation(t *testing.T) {
 	// iMessage available but responder off-platform; Discord present but no token.
 	fa := &fakeAccess{view: AccessView{IMessageAvailable: true, ResponderAvailable: false, DiscordAvailable: true, RelayConfigured: false}}
