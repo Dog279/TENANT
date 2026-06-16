@@ -185,12 +185,12 @@ func TestParseConfigureArgs_UnknownField(t *testing.T) {
 // --- SkillList -----------------------------------------------------
 
 func TestSkillList_EmptyCatalog_FallsBackToLegacy(t *testing.T) {
-	// Empty new catalog → list should still surface legacy skillSpecs
+	// Empty new catalog → list should still surface the wizard-only skills
 	// (audit P1: unactionable empty list otherwise).
 	sc := newSkillCfgControl(t.TempDir(), nil, nil)
 	infos := sc.SkillList()
 	if len(infos) == 0 {
-		t.Fatal("empty new catalog should fall back to legacy skillSpecs; got 0 entries")
+		t.Fatal("empty new catalog should fall back to wizard-only skills; got 0 entries")
 	}
 	legacyCount := 0
 	for _, i := range infos {
@@ -517,49 +517,20 @@ func TestSkillClear_UnknownField(t *testing.T) {
 	}
 }
 
-// --- production catalog (TEN-65 onward: drift guard, not emptiness) -
+// --- single-catalog invariant (TEN-70) ----------------------------
 
-// TestSkillKindsLegacyDriftGuard enforces the audit P1 contract: every
-// skill in BOTH the new skillKinds catalog AND legacy skillSpecs must
-// declare identical field schemas (Secret flag matters; key names
-// must match). Prevents the framework + setup wizard from writing
-// different namespaces under the same skill id during the TEN-65 →
-// TEN-70 migration window.
-func TestSkillKindsLegacyDriftGuard(t *testing.T) {
-	legacy := map[string]skillSpec{}
-	for _, sp := range skillSpecs {
-		legacy[sp.ID] = sp
-	}
-	for id, k := range skillKinds {
-		lp, both := legacy[id]
-		if !both {
-			continue // new-only entries are fine; drift assertion only when both exist
-		}
-		legacyKeys := map[string]bool{}
-		legacySecret := map[string]bool{}
-		for _, f := range lp.Fields {
-			legacyKeys[f.Key] = true
-			legacySecret[f.Key] = f.Secret
-		}
-		newKeys := map[string]bool{}
-		newSecret := map[string]bool{}
-		for _, f := range k.Fields {
-			newKeys[f.Key] = true
-			newSecret[f.Key] = f.Secret
-		}
-		for key := range legacyKeys {
-			if !newKeys[key] {
-				t.Errorf("skill %q: legacy has field %q but new catalog does not", id, key)
-			} else if legacySecret[key] != newSecret[key] {
-				t.Errorf("skill %q field %q: legacy Secret=%v vs new Secret=%v — namespaces will diverge",
-					id, key, legacySecret[key], newSecret[key])
-			}
-		}
-		for key := range newKeys {
-			if !legacyKeys[key] {
-				t.Errorf("skill %q: new catalog has field %q but legacy does not — `tenant setup` won't prompt for it",
-					id, key)
-			}
+// TestNoWizardLocalShadowsFramework guards the one remaining catalog
+// invariant after TEN-70 retired the old skillSpecs drift guard: the
+// wizard-only skills and the /configure-framework skills must stay
+// DISJOINT. If an id ever lived in both, the wizard could write a
+// different field namespace than the framework reads — the exact drift
+// the unification removed. (Per-skill field/Secret parity is no longer a
+// concern: framework skills are defined exactly once, in skillKinds.)
+func TestNoWizardLocalShadowsFramework(t *testing.T) {
+	for id := range wizardLocalKinds {
+		if _, clash := skillKinds[id]; clash {
+			t.Errorf("skill %q is in BOTH wizardLocalKinds and skillKinds — "+
+				"a wizard-only skill must not shadow a framework skill", id)
 		}
 	}
 }

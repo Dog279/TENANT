@@ -16,7 +16,7 @@ func (d dashIntegrations) Integrations() []dashboard.IntegrationView {
 	out := make([]dashboard.IntegrationView, 0, len(in))
 	for _, s := range in {
 		if s.Legacy {
-			continue // hide the old skillSpecs entries; show the real catalog
+			continue // hide wizard-only skills; show the /configure framework catalog
 		}
 		out = append(out, dashboard.IntegrationView{
 			ID:         s.ID,

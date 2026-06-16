@@ -154,20 +154,22 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 	return &skillCfgControl{cfgDir: cfgDir, kinds: kinds, setPluginEnabled: setPluginEnabled}
 }
 
-// SkillList returns every skill known to this control. The framework
-// SHOULD surface BOTH the new-style skillKinds catalog AND the legacy
-// skillSpecs (skills_setup.go) so a fresh install where the new
-// catalog is empty still gives operators a discoverable list rather
-// than the unactionable "(no skills configured)" surface (audit P1).
+// SkillList returns every skill known to this control. It surfaces BOTH the
+// /configure-framework catalog (skillKinds) AND the wizard-only skills
+// (wizardLocalKinds, skills_setup.go) so a fresh install where the new catalog
+// is empty still gives operators a discoverable list rather than the
+// unactionable "(no skills configured)" surface (audit P1).
 //
-// Legacy entries are marked `Legacy: true` and the TUI renders them
-// with a "[legacy: use tenant setup]" suffix to redirect operators
-// while TEN-65+ migrates platforms into the new catalog.
+// Wizard-only entries are marked `Legacy: true` and the TUI renders them with
+// a "[legacy: use tenant setup]" suffix — they're path/flag-driven (wiki, sql,
+// imessage, os) and configured via `tenant setup`, not `/configure`.
 func (sc *skillCfgControl) SkillList() []tui.SkillConfigInfo {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	out := make([]tui.SkillConfigInfo, 0, len(sc.kinds)+len(skillSpecs))
-	// Legacy skills not yet in the new catalog — surface for discovery.
+	out := make([]tui.SkillConfigInfo, 0, len(sc.kinds)+len(wizardLocalKinds))
+	// Wizard-only skills (wiki/sql/imessage/os) aren't part of the /configure
+	// framework — surface them as Legacy so operators can still discover them
+	// and get redirected to `tenant setup`.
 	seenIDs := map[string]bool{}
 	for id, k := range sc.kinds {
 		out = append(out, tui.SkillConfigInfo{
@@ -180,13 +182,13 @@ func (sc *skillCfgControl) SkillList() []tui.SkillConfigInfo {
 		})
 		seenIDs[id] = true
 	}
-	for _, sp := range skillSpecs {
-		if seenIDs[sp.ID] {
+	for id, k := range wizardLocalKinds {
+		if seenIDs[id] {
 			continue
 		}
 		out = append(out, tui.SkillConfigInfo{
-			ID:     sp.ID,
-			Label:  sp.Label,
+			ID:     id,
+			Label:  k.Label,
 			Legacy: true,
 		})
 	}
@@ -202,11 +204,9 @@ func (sc *skillCfgControl) SkillShow(id string) (string, error) {
 	defer sc.mu.Unlock()
 	k, ok := sc.kinds[id]
 	if !ok {
-		// Fall back to legacy spec for discoverability.
-		for _, sp := range skillSpecs {
-			if sp.ID == id {
-				return fmt.Sprintf("%s — %s\n  (legacy — configure via `tenant setup`; not yet in the new catalog)", id, sp.Label), nil
-			}
+		// Wizard-only skill — discoverable but configured via `tenant setup`.
+		if wk, isLocal := wizardLocalKinds[id]; isLocal {
+			return fmt.Sprintf("%s — %s\n  (wizard-only — configure via `tenant setup`)", id, wk.Label), nil
 		}
 		return "", fmt.Errorf("no skill named %q (use /skill list to see available skills)", id)
 	}
@@ -272,10 +272,8 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 
 	k, ok := sc.kinds[id]
 	if !ok {
-		for _, sp := range skillSpecs {
-			if sp.ID == id {
-				return "", fmt.Errorf("%q is a legacy skill — configure via `tenant setup`. The new catalog will gain %s in a later ticket", id, id)
-			}
+		if _, isLocal := wizardLocalKinds[id]; isLocal {
+			return "", fmt.Errorf("%q is a wizard-only skill — configure it via `tenant setup`", id)
 		}
 		return "", fmt.Errorf("no skill named %q (use /skill list to see available skills)", id)
 	}

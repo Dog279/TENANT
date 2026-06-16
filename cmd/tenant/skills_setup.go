@@ -7,72 +7,82 @@ import (
 	"strings"
 )
 
-// skillField is one prompt in a skill's setup. Secret fields are stored in
-// credentials.json (0600); the rest are non-secret settings in config.json.
-type skillField struct {
-	Key    string
-	Prompt string
-	Secret bool
-}
-
-// skillSpec describes a configurable integration the wizard can set up. These
-// map onto the plugin flags in bindPluginFlags; applyPluginConfig wires the
-// saved values back into pluginFlags at launch.
-type skillSpec struct {
-	ID     string
-	Label  string
-	Fields []skillField
-	Note   string // shown after enabling — e.g. OAuth instructions
-}
-
-// skillSpecs is the catalog the wizard offers, in display order.
-var skillSpecs = []skillSpec{
-	{ID: "wiki", Label: "Wiki (markdown knowledge base)", Fields: []skillField{
+// TEN-70: the setup wizard and the TUI `/skill configure` walkthrough now read
+// from ONE catalog. The framework skills (gsuite/atlassian/discord/web/x) live
+// in `skillKinds` (skillctl.go) — their fields, validators, notes, and probes
+// are defined exactly once there, so there is no second copy to drift from (the
+// old `skillSpecs`/`skillField` drift-guard is gone). The skills below are the
+// few the wizard configures that are NOT part of the /configure framework
+// (path/flag-driven, no API-key probe); they're kept in a SEPARATE map so they
+// stay wizard-only and don't leak into the TUI `/configure` picker or the web
+// Integrations page (both of which enumerate `skillKinds`).
+var wizardLocalKinds = map[string]skillKind{
+	"wiki": {ID: "wiki", Label: "Wiki (markdown knowledge base)", Wired: true, Fields: []skillKindField{
 		{Key: "dir", Prompt: "Wiki markdown directory"},
 	}},
-	{ID: "sql", Label: "SQL (SQLite database)", Fields: []skillField{
+	"sql": {ID: "sql", Label: "SQL (SQLite database)", Wired: true, Fields: []skillKindField{
 		{Key: "db", Prompt: "SQLite database file path"},
 	}},
-	{ID: "gsuite", Label: "Google Workspace (Gmail + Calendar + Drive) — business via SA + DWD", Fields: []skillField{
-		{Key: "auth", Prompt: "Auth mode (sa|gcloud|oauth)"},
-		{Key: "sa_json", Prompt: "Service-account JSON path (sa only — IT admin creates in console.cloud.google.com)"},
-		{Key: "subject", Prompt: "Impersonated user email (sa only — the Workspace user to act as)"},
-		{Key: "oauth_creds_json", Prompt: "OAuth client JSON path (oauth only — Desktop App from console.cloud.google.com)"},
-	}, Note: "BUSINESS deployments: use auth=sa with Domain-Wide Delegation authorized in admin.google.com. " +
-		"DEV machine: auth=gcloud reuses your `gcloud auth application-default login` session. " +
-		"ADVANCED (personal @gmail): auth=oauth with your own Desktop App OAuth client."},
-	{ID: "x", Label: "X / Twitter", Fields: []skillField{
-		{Key: "bearer", Prompt: "X app bearer token", Secret: true},
-	}, Note: "No bearer token? Run `tenant x --login` for cookie-based auth instead."},
-	{ID: "imessage", Label: "iMessage (via BlueBubbles)", Fields: []skillField{
+	"imessage": {ID: "imessage", Label: "iMessage (via BlueBubbles)", Wired: true, Fields: []skillKindField{
 		{Key: "url", Prompt: "BlueBubbles server URL"},
 		{Key: "password", Prompt: "BlueBubbles password", Secret: true},
 	}},
-	{ID: "discord", Label: "Discord (bot integration — REST: read/send/react)", Fields: []skillField{
-		{Key: "token", Prompt: "Discord bot token", Secret: true},
-		{Key: "operator_id", Prompt: "Your Discord user ID (enable Developer Mode, right-click your name → Copy User ID)"},
-	}, Note: "Create the bot at https://discord.com/developers/applications, then invite to a server with the `bot` scope. " +
-		"Surface A (REST tools) only — inbound DMs/channel messages → agent are NOT supported in this build."},
-	{ID: "web", Label: "Web browsing (drives Chrome + optional Brave Search)", Fields: []skillField{
-		{Key: "brave_key", Prompt: "Brave Search API key (optional — without it, web_search uses DuckDuckGo)", Secret: true},
-	}},
-	{ID: "os", Label: "OS access (sysinfo, files, gated shell)", Fields: nil},
+	"os": {ID: "os", Label: "OS access (sysinfo, files, gated shell)", Wired: true},
 }
 
+// wizardOrder is the display order of the setup wizard, preserved from the
+// original skillSpecs list. Each id resolves to a skillKinds entry (framework)
+// or a wizardLocalKinds entry — wizardCatalog merges them in this order.
+var wizardOrder = []string{"wiki", "sql", "gsuite", "x", "imessage", "discord", "web", "os"}
+
+// wizardCatalog returns the wizard's skills as a single ordered []skillKind,
+// sourcing each id from skillKinds (framework) or wizardLocalKinds (local).
+// Unknown ids (e.g. a skillKinds entry not yet wired) are skipped.
+//
+// gsuite is adapted for cfgDir exactly as newSkillCfgControl adapts the TUI
+// copy (adaptGSuiteForCfgDir) — the global skillKinds["gsuite"] is the raw,
+// cfgDir-less entry, so without this the wizard's oauth branch would always
+// take the slow-path abort and the opt-in probe would lack the embedded-creds
+// reader. Applying it here keeps the wizard and /configure behaviourally
+// identical, which is the whole point of TEN-70.
+func wizardCatalog(cfgDir string) []skillKind {
+	out := make([]skillKind, 0, len(wizardOrder))
+	for _, id := range wizardOrder {
+		if k, ok := skillKinds[id]; ok {
+			if id == "gsuite" {
+				k = adaptGSuiteForCfgDir(k, cfgDir)
+			}
+			out = append(out, k)
+			continue
+		}
+		if k, ok := wizardLocalKinds[id]; ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// maxWizardFieldAttempts caps validation re-asks so a non-interactive /
+// EOF-terminated input stream can't spin forever (ask returns the default on
+// EOF, which would otherwise loop on a Required+invalid field).
+const maxWizardFieldAttempts = 3
+
 // configureSkills runs the interactive skills step: for each integration, ask
-// whether to enable it and capture its settings/secrets.
+// whether to enable it and capture its settings/secrets. It iterates the shared
+// catalog (wizardCatalog) so validators, ShowIf gating, NoteAfter hooks, and
+// SetupHints all come from the same definitions the TUI uses.
 func configureSkills(in *bufio.Reader, cur map[string]*skillConfig, creds *credentials, cfgDir string) map[string]*skillConfig {
 	if cur == nil {
 		cur = map[string]*skillConfig{}
 	}
 	fmt.Fprintln(os.Stderr, "\nSkills / integrations (Enter to skip each):")
-	for _, sp := range skillSpecs {
-		existing := cur[sp.ID]
+	for _, k := range wizardCatalog(cfgDir) {
+		existing := cur[k.ID]
 		def := "n"
 		if existing != nil && existing.Enabled {
 			def = "y"
 		}
-		if !yes(ask(in, fmt.Sprintf("Enable %s? [y/n]", sp.Label), def)) {
+		if !yes(ask(in, fmt.Sprintf("Enable %s? [y/n]", k.Label), def)) {
 			if existing != nil {
 				existing.Enabled = false
 			}
@@ -85,27 +95,142 @@ func configureSkills(in *bufio.Reader, cur map[string]*skillConfig, creds *crede
 		if sc.Settings == nil {
 			sc.Settings = map[string]string{}
 		}
-		sc.Enabled = true
-		for _, f := range sp.Fields {
-			if f.Secret {
-				curVal := ""
-				if creds.get(skillSecretID(sp.ID, f.Key)) != "" {
-					curVal = "(keep saved)"
+
+		// Collect field values into a running map so ShowIf can branch on
+		// earlier answers (e.g. gsuite's sa_json/subject are asked only when
+		// auth=sa). Seed it with the already-saved non-secret settings.
+		// Newly-entered secrets are buffered in pendingSecrets and flushed to
+		// creds ONLY after the whole skill collects without aborting — so a
+		// hard-blocking NoteAfter can never strand a secret in credentials.json
+		// (secret-safe by construction, not by field ordering).
+		values := map[string]string{}
+		for key, v := range sc.Settings {
+			values[key] = v
+		}
+		pendingSecrets := map[string]string{}
+		aborted := false
+		for _, f := range k.Fields {
+			if f.ShowIf != nil && !f.ShowIf(values) {
+				continue
+			}
+			v := askSkillField(in, k.ID, f, creds, sc.Settings, pendingSecrets)
+			if v != "" {
+				values[f.Key] = v
+			}
+			if f.NoteAfter != nil {
+				msg, abort := f.NoteAfter(v)
+				if msg != "" {
+					fmt.Fprintf(os.Stderr, "    → %s\n", msg)
 				}
-				v := ask(in, "  "+f.Prompt, curVal)
-				if v != "" && v != "(keep saved)" {
-					creds.set(skillSecretID(sp.ID, f.Key), v)
+				if abort {
+					aborted = true
+					break
 				}
-			} else {
-				sc.Settings[f.Key] = strings.TrimSpace(ask(in, "  "+f.Prompt, sc.Settings[f.Key]))
 			}
 		}
-		if sp.Note != "" {
-			fmt.Fprintf(os.Stderr, "    → %s\n", sp.Note)
+		if aborted {
+			// Matches the TUI: a hard-blocking NoteAfter stops this skill;
+			// don't enable it and discard everything collected (pendingSecrets
+			// are never written; non-secret Settings aren't persisted).
+			if existing != nil {
+				existing.Enabled = false
+			}
+			continue
 		}
-		cur[sp.ID] = sc
+
+		// No abort — commit. Secrets first (audit P0 ordering), then non-secret
+		// Settings. Skip ShowIf-hidden fields. ShowIf-hidden settings from a
+		// previously-configured branch are intentionally RETAINED (not deleted),
+		// matching SkillConfigure (skillctl.go) so the wizard and /configure
+		// stay aligned; the plugins read only the fields valid for the active
+		// auth mode, so a stale sibling-branch path is inert.
+		sc.Enabled = true
+		for secretID, v := range pendingSecrets {
+			creds.set(secretID, v)
+		}
+		for _, f := range k.Fields {
+			if f.Secret {
+				continue
+			}
+			if f.ShowIf != nil && !f.ShowIf(values) {
+				continue
+			}
+			if v, ok := values[f.Key]; ok {
+				sc.Settings[f.Key] = strings.TrimSpace(v)
+			}
+		}
+		if k.SetupHint != "" {
+			fmt.Fprintf(os.Stderr, "    → %s\n", k.SetupHint)
+		}
+		// Optional liveness check — opt-in (default no) so `tenant setup` works
+		// offline and never opens an OAuth browser unprompted. WARN, never block.
+		if k.Probe != nil && yes(ask(in, fmt.Sprintf("  Verify %s now? [y/N]", k.ID), "n")) {
+			if identity, err := runProbe(k, creds, sc.Settings); err != nil {
+				fmt.Fprintf(os.Stderr, "    ! probe FAILED — config stored but unverified: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "    ✓ probe OK — %s\n", identity)
+			}
+		}
+		cur[k.ID] = sc
 	}
 	return cur
+}
+
+// askSkillField prompts for one catalog field, honoring secrets (with a
+// "(keep saved)" affordance), defaults, an Options hint, and re-asking on a
+// Validate failure with the SAME wording the TUI surfaces. It returns the
+// resolved value: for a kept secret, the existing stored value; for a skipped
+// optional field, "". A newly-entered secret is buffered in pendingSecrets
+// (NOT written to creds here) so the caller can discard it if the skill later
+// aborts — kept secrets are already on disk and untouched.
+func askSkillField(in *bufio.Reader, id string, f skillKindField, creds *credentials, settings, pendingSecrets map[string]string) string {
+	prompt := "  " + f.Prompt
+	if len(f.Options) > 0 {
+		prompt += " (" + strings.Join(f.Options, "|") + ")"
+	}
+	for attempt := 0; attempt < maxWizardFieldAttempts; attempt++ {
+		if f.Secret {
+			existing := creds.get(skillSecretID(id, f.Key))
+			curDef := ""
+			if existing != "" {
+				curDef = "(keep saved)"
+			}
+			raw := ask(in, prompt, curDef)
+			if raw == "" || raw == "(keep saved)" {
+				return existing // keep what's on disk
+			}
+			if f.Validate != nil {
+				if err := f.Validate(raw); err != nil {
+					fmt.Fprintf(os.Stderr, "    ✗ %v\n", err)
+					continue
+				}
+			}
+			pendingSecrets[skillSecretID(id, f.Key)] = raw // flushed by caller iff no abort
+			return raw
+		}
+		// Non-secret: default to the saved value, else the catalog Default.
+		def := settings[f.Key]
+		if def == "" {
+			def = f.Default
+		}
+		raw := strings.TrimSpace(ask(in, prompt, def))
+		if raw == "" {
+			if f.Required && def == "" {
+				fmt.Fprintf(os.Stderr, "    ✗ %s is required\n", f.Key)
+				continue
+			}
+			return def
+		}
+		if f.Validate != nil {
+			if err := f.Validate(raw); err != nil {
+				fmt.Fprintf(os.Stderr, "    ✗ %v\n", err)
+				continue
+			}
+		}
+		return raw
+	}
+	fmt.Fprintf(os.Stderr, "    ! skipping %s after %d invalid attempts\n", f.Key, maxWizardFieldAttempts)
+	return ""
 }
 
 func skillSecretID(skill, field string) string { return "skill:" + skill + ":" + field }

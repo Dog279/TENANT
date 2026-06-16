@@ -272,7 +272,7 @@ type SkillConfigInfo struct {
 	Label      string
 	Configured bool
 	Enabled    bool
-	Legacy     bool   // true ⇒ shown only because it's in the old skillSpecs catalog
+	Legacy     bool   // true ⇒ wizard-only skill (wiki/sql/imessage/os), configure via tenant setup
 	SetupHint  string // optional human-readable orientation shown at the top of /configure
 }
 
@@ -6033,8 +6033,8 @@ func firstField(s string) (word, rest string) {
 }
 
 // renderSkillList formats the /skill list output. Legacy entries
-// (still living in skillSpecs, not yet migrated to skillKinds) get a
-// trailing "[legacy]" marker so operators know to use `tenant setup`.
+// (wizard-only skills — path/flag-driven, not in the /configure framework)
+// get a trailing "[legacy]" marker so operators know to use `tenant setup`.
 // Audit P1: this surface keeps /skill list actionable even when the
 // new catalog is empty.
 func renderSkillList(infos []SkillConfigInfo) string {
