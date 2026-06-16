@@ -524,28 +524,26 @@ func dash(s string) string {
 	return s
 }
 
-// startPeerListener stands up the federation peer listener (TEN-184) in the
-// interactive run path (the host process holding the live stores/broker/bus).
-// Best-effort: a bind-policy refusal or port conflict is a feed note, never
-// fatal. The knowledge-tool registrar is injected in TEN-186; today it serves
-// the peer_hello handshake. Binds synchronously so the bound address (and any
-// refusal) is reported before serving in a goroutine.
-func startPeerListener(ctx context.Context, c *commonFlags, deps peerToolDeps, pairApprove func(context.Context, string) bool, pushSys func(string), log *slog.Logger) {
+// startPeerListenerAt stands up the federation peer listener (TEN-184) bound to
+// addr, in the interactive run path (the host process holding the live
+// stores/broker/bus). It binds SYNCHRONOUSLY (so a bind-policy refusal / port
+// conflict surfaces immediately), serves in a goroutine, and returns the bound
+// address + a stop func that shuts it down — so the TUI's `/peer serve` can
+// (re)start it live. PairApprover routes inbound invites to the operator
+// (broker prompt in the TUI; TEN-239).
+func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps, pairApprove func(context.Context, string) bool, addr string, log *slog.Logger) (string, func(), error) {
 	store, err := peering.LoadStore(c.cfgDir)
 	if err != nil {
-		pushSys("peer: listener not started — " + err.Error())
-		return
+		return "", nil, err
 	}
 	id, err := ensureInstanceID(c)
 	if err != nil {
-		pushSys("peer: listener not started — " + err.Error())
-		return
+		return "", nil, err
 	}
-	overlay := c.lc.Peer.Transport == "overlay"
+	overlay := c.lc != nil && c.lc.Peer.Transport == "overlay"
 	cert, fp, err := peerTLS(c.cfgDir, overlay)
 	if err != nil {
-		pushSys("peer: listener not started — " + err.Error())
-		return
+		return "", nil, err
 	}
 	hostName, _ := os.Hostname()
 	ln, err := peering.NewListener(peering.ListenerConfig{
@@ -565,24 +563,19 @@ func startPeerListener(ctx context.Context, c *commonFlags, deps peerToolDeps, p
 		},
 	})
 	if err != nil {
-		pushSys("peer: listener not started — " + err.Error())
-		return
+		return "", nil, err
 	}
-	netLn, err := ln.Bind(c.lc.Peer.Listen)
+	netLn, err := ln.Bind(addr)
 	if err != nil {
-		pushSys("peer: listener not started — " + err.Error())
-		return
+		return "", nil, err
 	}
-	transport := "TLS"
-	if overlay {
-		transport = "overlay (plain HTTP)"
-	}
-	pushSys(fmt.Sprintf("peer: federation listener on %s (%s)", netLn.Addr().String(), transport))
+	cctx, cancel := context.WithCancel(ctx)
 	go func() {
-		if serr := ln.Serve(ctx, netLn); serr != nil {
-			pushSys("peer: listener stopped — " + serr.Error())
+		if serr := ln.Serve(cctx, netLn); serr != nil && log != nil {
+			log.Warn("peer listener stopped", "err", serr.Error())
 		}
 	}()
+	return netLn.Addr().String(), cancel, nil
 }
 
 // peerQuery dials a paired peer and runs one knowledge query against it

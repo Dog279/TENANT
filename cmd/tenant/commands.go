@@ -2633,25 +2633,54 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	}
 
-	// Federation peer listener (TEN-184): if peer.listen is configured, stand up
-	// the in-process go-sdk streamable-HTTP server so paired peers (TEN-183) can
-	// reach this instance. The interactive run path is the host process — it
-	// holds the live stores/broker/bus. Knowledge tools are injected in TEN-186;
-	// for now it serves the peer_hello handshake. Best-effort: a bind failure is
-	// a feed note, never fatal.
-	if c.lc != nil && c.lc.Peer.Listen != "" {
-		hostName, _ := os.Hostname()
-		if hostName == "" {
-			hostName = "this tenant"
+	// Federation peer listener (TEN-184): the in-process go-sdk streamable-HTTP
+	// server so paired peers (TEN-183) can reach this instance over the live
+	// stores/broker/bus. peerServeFn (re)starts it bound to an address — used both
+	// at launch (if peer.listen is configured) and live by `/peer serve <addr>`.
+	// Inbound invites route through broker.AskPairing → the standard TUI approval
+	// prompt, so they're visible/acceptable in-session (TEN-239 follow-up).
+	peerHostName, _ := os.Hostname()
+	if peerHostName == "" {
+		peerHostName = "this tenant"
+	}
+	peerEmb, _, _ := router.EmbedderForRole(ctx, model.RoleEmbedder) // optional; nil → keyword-only
+	peerDeps := peerToolDeps{
+		selfName: peerHostName,
+		semantic: st.semantic,
+		episodic: st.episodic,
+		embedder: peerEmb,
+		wiki:     wikiIx,
+	}
+	var peerSrvMu sync.Mutex
+	var peerSrvStop func()
+	peerServeFn := func(addr string) (string, error) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			addr = "0.0.0.0:9100" // reachable default (TLS) — beats the loopback default
 		}
-		peerEmb, _, _ := router.EmbedderForRole(ctx, model.RoleEmbedder) // optional; nil → keyword-only
-		startPeerListener(ctx, c, peerToolDeps{
-			selfName: hostName,
-			semantic: st.semantic,
-			episodic: st.episodic,
-			embedder: peerEmb,
-			wiki:     wikiIx,
-		}, broker.AskPairing, pushSys, log)
+		peerSrvMu.Lock()
+		defer peerSrvMu.Unlock()
+		if peerSrvStop != nil { // replace any running listener (re-bind to the new addr)
+			peerSrvStop()
+			peerSrvStop = nil
+		}
+		bound, stop, err := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, addr, log)
+		if err != nil {
+			return "", err
+		}
+		peerSrvStop = stop
+		if c.lc != nil { // persist so it restarts on the next launch
+			c.lc.Peer.Listen = addr
+			_ = c.lc.save(c.cfgDir)
+		}
+		return bound, nil
+	}
+	if c.lc != nil && c.lc.Peer.Listen != "" {
+		if bound, perr := peerServeFn(c.lc.Peer.Listen); perr != nil {
+			pushSys("peer: listener not started — " + perr.Error())
+		} else {
+			pushSys("peer: federation listener on " + bound + " — incoming invites prompt here")
+		}
 	}
 
 	modelName := c.vllmModel
@@ -2714,7 +2743,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		IMessage:  imsgAllowMgr,
 		Cron:      tuiCronCtl,
 		MCP:       mcpCtl,
-		Peer:      newPeerTUIControl(c.cfgDir),
+		Peer:      peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn},
 		Secrets:   tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
 		Setup:     setupControl{cfgDir: c.cfgDir, mc: modelCtl},
 		Models:    modelCtl,

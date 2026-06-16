@@ -11,6 +11,7 @@ import (
 type fakePeerControl struct {
 	peers   map[string]*PeerInfo
 	removed []string
+	served  string
 }
 
 func newFakePeerControl(names ...string) *fakePeerControl {
@@ -42,6 +43,13 @@ func (f *fakePeerControl) Remove(name string) (bool, error) {
 	delete(f.peers, name)
 	f.removed = append(f.removed, name)
 	return true, nil
+}
+func (f *fakePeerControl) Serve(addr string) (string, error) {
+	if addr == "" {
+		addr = "0.0.0.0:9100"
+	}
+	f.served = addr
+	return addr, nil
 }
 func (f *fakePeerControl) Invite(label, url string) (string, func(context.Context) (string, error), error) {
 	run := func(context.Context) (string, error) {
@@ -150,6 +158,25 @@ func TestHandlePeer_ListShowRemove(t *testing.T) {
 	m.handlePeer("invite onlyname")
 	if !strings.Contains(lastSys(m), "usage") {
 		t.Errorf("invite without url should show usage: %q", lastSys(m))
+	}
+}
+
+func TestHandlePeer_Serve(t *testing.T) {
+	f := newFakePeerControl()
+	m := newModel(context.Background(), Config{Peer: f})
+
+	// Default address.
+	m.handlePeer("serve")
+	if f.served != "0.0.0.0:9100" {
+		t.Errorf("serve with no addr should use the reachable default, got %q", f.served)
+	}
+	if !strings.Contains(lastSys(m), "peer listener on") || !strings.Contains(lastSys(m), "prompt here") {
+		t.Errorf("serve should confirm the listener + that invites prompt here: %q", lastSys(m))
+	}
+	// Explicit address.
+	m.handlePeer("serve 100.76.238.69:9100")
+	if f.served != "100.76.238.69:9100" {
+		t.Errorf("serve should bind the given addr, got %q", f.served)
 	}
 }
 

@@ -535,6 +535,10 @@ type PeerControl interface {
 	// to BOTH operators and a run() that performs the blocking, operator-approved
 	// request (call it off the UI goroutine). nil run ⇒ err explains why.
 	Invite(label, url string) (pin string, run func(context.Context) (string, error), err error)
+	// Serve (re)starts the in-process peer listener bound to addr (empty ⇒ a
+	// reachable default) so peers can reach this instance AND inbound invites
+	// prompt in this TUI. Returns the bound address.
+	Serve(addr string) (boundAddr string, err error)
 }
 
 // PeerShareCaps is the canonical ordered list of sharable capabilities, shown
@@ -1939,6 +1943,16 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 		}
 		m.sysChat("✓ removed peer " + name)
 		return nil
+	case "serve":
+		// Start/restart the peer listener so others can reach us AND inbound
+		// invites prompt right here in the TUI (TEN-239 follow-up).
+		bound, err := m.cfg.Peer.Serve(strings.TrimSpace(rest))
+		if err != nil {
+			m.sysChat("peer serve failed: " + err.Error())
+			return nil
+		}
+		m.sysChat("✓ peer listener on " + bound + "\n  peers can now `/peer invite <name> https://<this-host>:<port>`; their request will prompt here to Approve/Deny.")
+		return nil
 	case "invite":
 		// TEN-239 push-invite: `/peer invite <name> <ip|url>`. Mint+show the PIN
 		// synchronously, then run the (blocking) Approve/Deny request off the UI
@@ -1963,7 +1977,7 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			return sysChatMsg{text: "✓ " + msg + " — set sharing with /configure peer " + label}
 		}
 	default:
-		m.sysChat("usage: /peer [list] | /peer show <name> | /peer remove <name> | /peer invite <name> <ip|url>   (sharing: /configure peer <name>)")
+		m.sysChat("usage: /peer serve [addr] | /peer invite <name> <ip|url> | /peer [list] | /peer show <name> | /peer remove <name>   (sharing: /configure peer <name>)")
 		return nil
 	}
 }
@@ -2251,6 +2265,7 @@ var helpSections = []helpSection{
 			{"/mcp", "list connected remote MCP servers + state"},
 			{"/mcp add <url>", "connect a remote MCP server (opens a browser to authorize) — surfaces its tools, gated"},
 			{"/mcp remove <url>", "disconnect a remote MCP server and forget it"},
+			{"/peer serve [addr]", "start the peer listener (default 0.0.0.0:9100, TLS) so peers can reach you + invites prompt here"},
 			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
 			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
 			{"/configure peer <name>", "edit a peer's share policy — wiki/memory/skills/exec/llm Allow or Deny"},

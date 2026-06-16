@@ -17,9 +17,22 @@ import (
 	"tenant/internal/tui"
 )
 
-type peerTUIControl struct{ cfgDir string }
+type peerTUIControl struct {
+	cfgDir string
+	// serve (re)starts the in-process peer listener bound to an address and
+	// returns the bound address. Injected by cmdTUI (it captures the live
+	// stores/broker). nil ⇒ /peer serve is unavailable in this session.
+	serve func(addr string) (string, error)
+}
 
-func newPeerTUIControl(cfgDir string) peerTUIControl { return peerTUIControl{cfgDir: cfgDir} }
+// Serve (re)starts the peer listener bound to addr (TEN-239 follow-up: in-TUI
+// `/peer serve`). Empty addr ⇒ a reachable default. Returns the bound address.
+func (p peerTUIControl) Serve(addr string) (string, error) {
+	if p.serve == nil {
+		return "", fmt.Errorf("peer serve isn't available in this session")
+	}
+	return p.serve(addr)
+}
 
 func (p peerTUIControl) List() []tui.PeerInfo {
 	s, err := peering.LoadStore(p.cfgDir)
