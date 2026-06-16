@@ -66,13 +66,17 @@ type ToolRegistrar func(s *mcp.Server, pc PeerContext)
 // peers.json; each request gets a per-peer SCOPED mcp.Server (no live toolMux
 // passthrough — only the enumerated peer tools).
 type Listener struct {
-	store       *Store
-	selfID      string           // our instance_id (returned in peer_hello)
-	selfVersion string           // our binary/library version (returned in peer_hello)
-	overlay     bool             // peer.transport == "overlay": plain HTTP allowed on the overlay iface
-	tlsCert     *tls.Certificate // when set, the listener serves HTTPS (TEN-185 pinned-cert)
-	registrar   ToolRegistrar
-	log         func(format string, args ...any)
+	store        *Store
+	selfID       string           // our instance_id (returned in peer_hello / pairing)
+	selfName     string           // our self-name (returned in pairing; TEN-239)
+	selfVersion  string           // our binary/library version (returned in peer_hello)
+	selfFinger   string           // our cert fingerprint (returned in pairing so the dialer pins it)
+	overlay      bool             // peer.transport == "overlay": plain HTTP allowed on the overlay iface
+	tlsCert      *tls.Certificate // when set, the listener serves HTTPS (TEN-185 pinned-cert)
+	registrar    ToolRegistrar
+	pairApprover func(ctx context.Context, prompt string) bool // TEN-239: nil ⇒ /pair disabled
+	pairLimiter  *pairLimiter
+	log          func(format string, args ...any)
 
 	srv *http.Server
 }
@@ -81,11 +85,17 @@ type Listener struct {
 type ListenerConfig struct {
 	Store       *Store
 	SelfID      string
+	SelfName    string // self-name returned to a pairing inviter (TEN-239)
 	SelfVersion string
+	SelfFinger  string           // our cert fingerprint (TEN-239 pairing response); empty under overlay
 	Overlay     bool             // declared overlay network (Tailscale/WireGuard): plain HTTP permitted
 	TLSCert     *tls.Certificate // self-signed cert (TEN-185); when set, serve HTTPS + a non-loopback bind is allowed
 	Registrar   ToolRegistrar    // nil ⇒ peer_hello only
-	Logger      func(string, ...any)
+	// PairApprover gates inbound push-invite pairing (TEN-239): it raises an
+	// Approve/Deny prompt (carrying the PIN in `prompt`) and returns true to
+	// approve. nil ⇒ the /pair endpoint is disabled (503).
+	PairApprover func(ctx context.Context, prompt string) bool
+	Logger       func(string, ...any)
 }
 
 // NewListener builds a Listener. It does not bind until Serve.
@@ -102,13 +112,17 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 		ver = "dev"
 	}
 	return &Listener{
-		store:       cfg.Store,
-		selfID:      cfg.SelfID,
-		selfVersion: ver,
-		overlay:     cfg.Overlay,
-		tlsCert:     cfg.TLSCert,
-		registrar:   cfg.Registrar,
-		log:         log,
+		store:        cfg.Store,
+		selfID:       cfg.SelfID,
+		selfName:     cfg.SelfName,
+		selfVersion:  ver,
+		selfFinger:   cfg.SelfFinger,
+		overlay:      cfg.Overlay,
+		tlsCert:      cfg.TLSCert,
+		registrar:    cfg.Registrar,
+		pairApprover: cfg.PairApprover,
+		pairLimiter:  &pairLimiter{max: 3},
+		log:          log,
 	}, nil
 }
 
@@ -116,7 +130,14 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 // from Serve so tests can mount it on an httptest server.
 func (l *Listener) Handler() http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(l.getServer, nil)
-	return auth.RequireBearerToken(l.verify, nil)(mcpHandler)
+	authed := auth.RequireBearerToken(l.verify, nil)(mcpHandler)
+	mux := http.NewServeMux()
+	// /pair is UNAUTHENTICATED by necessity (no shared secret yet) but only ever
+	// creates a pending operator approval (TEN-239); everything else is the
+	// bearer-gated MCP surface.
+	mux.HandleFunc(pairPath, l.handlePair)
+	mux.Handle("/", authed)
+	return mux
 }
 
 // verify is the go-sdk TokenVerifier over peers.json. It re-reads the store if

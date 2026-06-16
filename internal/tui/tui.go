@@ -531,6 +531,10 @@ type PeerControl interface {
 	// SetShare flips one capability (wiki|memory|skills|exec|llm) for a peer and
 	// returns the updated view.
 	SetShare(name, capability string, allow bool) (PeerInfo, error)
+	// Invite begins push-pairing (TEN-239): it returns a 6-digit PIN to display
+	// to BOTH operators and a run() that performs the blocking, operator-approved
+	// request (call it off the UI goroutine). nil run ⇒ err explains why.
+	Invite(label, url string) (pin string, run func(context.Context) (string, error), err error)
 }
 
 // PeerShareCaps is the canonical ordered list of sharable capabilities, shown
@@ -1877,10 +1881,10 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 // handlePeer drives `/peer` (federation pairing, TEN-183/188): list/show/remove.
 // Share editing is `/configure peer <name>`; pairing-by-address is the `invite`
 // subcommand (push + Approve/Deny — designed, building next).
-func (m *model) handlePeer(arg string) {
+func (m *model) handlePeer(arg string) tea.Cmd {
 	if m.cfg.Peer == nil {
 		m.sysChat("peers not available in this session")
-		return
+		return nil
 	}
 	fields := strings.Fields(arg)
 	sub, rest := "", ""
@@ -1892,8 +1896,8 @@ func (m *model) handlePeer(arg string) {
 	case "", "list":
 		peers := m.cfg.Peer.List()
 		if len(peers) == 0 {
-			m.sysChat("no peers paired yet. Pair from the CLI: `tenant peer invite <name> --url <addr>` then the other side `tenant peer join <code>`.")
-			return
+			m.sysChat("no peers paired yet. Pair with `/peer invite <name> <ip|url>` (they Approve/Deny), or the `tenant peer` CLI.")
+			return nil
 		}
 		var b strings.Builder
 		b.WriteString("Federation peers:\n")
@@ -1907,12 +1911,13 @@ func (m *model) handlePeer(arg string) {
 		}
 		b.WriteString("\nEdit sharing:  /configure peer <name>")
 		m.sysChat(strings.TrimRight(b.String(), "\n"))
+		return nil
 	case "show":
 		name := strings.TrimSpace(rest)
 		p, ok := m.cfg.Peer.Show(name)
 		if !ok {
 			m.sysChat("no peer named " + name + " (/peer to list)")
-			return
+			return nil
 		}
 		role := "accept (they dial us)"
 		if p.Dial {
@@ -1920,25 +1925,46 @@ func (m *model) handlePeer(arg string) {
 		}
 		m.sysChat(fmt.Sprintf("peer %s\n  instance: %s\n  role: %s\n  url: %s\n  token: %s\n  share: %s",
 			p.Name, dashOr(p.InstanceID), role, dashOr(p.URL), p.TokenState, renderShareInline(p.Share)))
+		return nil
 	case "remove", "rm":
 		name := strings.TrimSpace(rest)
 		ok, err := m.cfg.Peer.Remove(name)
 		if err != nil {
 			m.sysChat("remove failed: " + err.Error())
-			return
+			return nil
 		}
 		if !ok {
 			m.sysChat("no peer named " + name)
-			return
+			return nil
 		}
 		m.sysChat("✓ removed peer " + name)
+		return nil
 	case "invite":
-		// Part 1 (push-invite by address + remote Approve/Deny) is the designed
-		// next build. Until then, point at the working code-exchange flow.
-		m.sysChat("`/peer invite <name> <ip|url>` (push + remote Approve/Deny) is the next build.\n" +
-			"For now pair via the CLI: on this machine `tenant peer invite <name> --url <addr>`, then on the peer `tenant peer join <code>`.")
+		// TEN-239 push-invite: `/peer invite <name> <ip|url>`. Mint+show the PIN
+		// synchronously, then run the (blocking) Approve/Deny request off the UI
+		// goroutine so the TUI stays responsive.
+		f := strings.Fields(rest)
+		if len(f) < 2 {
+			m.sysChat("usage: /peer invite <name> <ip|url>   (the peer's operator Approves/Denies + matches the PIN)")
+			return nil
+		}
+		label, url := f[0], f[1]
+		pin, run, err := m.cfg.Peer.Invite(label, url)
+		if err != nil {
+			m.sysChat("invite failed: " + err.Error())
+			return nil
+		}
+		m.sysChat(fmt.Sprintf("📡 inviting %q at %s\n→ Tell their operator this PIN to approve:  %s\n(waiting for Approve — up to 3 min)", label, url, pin))
+		return func() tea.Msg {
+			msg, rerr := run(m.ctx)
+			if rerr != nil {
+				return sysChatMsg{text: "✗ pairing failed: " + rerr.Error()}
+			}
+			return sysChatMsg{text: "✓ " + msg + " — set sharing with /configure peer " + label}
+		}
 	default:
-		m.sysChat("usage: /peer [list] | /peer show <name> | /peer remove <name>   (edit sharing: /configure peer <name>)")
+		m.sysChat("usage: /peer [list] | /peer show <name> | /peer remove <name> | /peer invite <name> <ip|url>   (sharing: /configure peer <name>)")
+		return nil
 	}
 }
 
@@ -2225,7 +2251,8 @@ var helpSections = []helpSection{
 			{"/mcp", "list connected remote MCP servers + state"},
 			{"/mcp add <url>", "connect a remote MCP server (opens a browser to authorize) — surfaces its tools, gated"},
 			{"/mcp remove <url>", "disconnect a remote MCP server and forget it"},
-			{"/peer", "list federation peers + their share policy (pair via `tenant peer` CLI)"},
+			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
+			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
 			{"/configure peer <name>", "edit a peer's share policy — wiki/memory/skills/exec/llm Allow or Deny"},
 		},
 	},
@@ -3047,10 +3074,9 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		// closure) so the TUI stays responsive; tools come up gated.
 		return m.handleMCP(arg)
 	case "/peer":
-		// Federation peers (TEN-183/188): list/show/remove. Share editing is
-		// `/configure peer <name>`.
-		m.handlePeer(arg)
-		return nil
+		// Federation peers (TEN-183/188): list/show/remove + invite. Share
+		// editing is `/configure peer <name>`.
+		return m.handlePeer(arg)
 	case "/cron", "/cronjob":
 		// Manage recurring agent-prompt jobs. Each job runs UNATTENDED and
 		// read/comms-safe on its schedule; definitions persist to config.json.

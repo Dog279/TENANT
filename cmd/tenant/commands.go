@@ -2651,7 +2651,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			episodic: st.episodic,
 			embedder: peerEmb,
 			wiki:     wikiIx,
-		}, pushSys, log)
+		}, broker.AskPairing, pushSys, log)
 	}
 
 	modelName := c.vllmModel

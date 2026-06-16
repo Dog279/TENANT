@@ -235,6 +235,20 @@ func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) boo
 	}
 }
 
+// AskPairing raises an Approve/Deny prompt for an inbound peer pairing request
+// (TEN-239). Unlike Confirm it NEVER short-circuits on a category mode — pairing
+// is far too sensitive to auto-allow — and never persists an auto-allow: it asks
+// every time and fails closed (deny) when there's no operator channel. detail
+// carries the inviter name/addr + the PIN the operator must match.
+func (b *approvalBroker) AskPairing(ctx context.Context, detail string) bool {
+	switch b.askDecision(ctx, "pairing", "peer pairing", detail) {
+	case tui.ApproveAlways, tui.ApproveSession, tui.ApproveOnce:
+		return true
+	default:
+		return false
+	}
+}
+
 // askDecision raises an "ask"-mode prompt and returns the operator's decision.
 // The custom backend (b.ask, e.g. Discord buttons) takes precedence; otherwise
 // the default backend posts to the on-host TUI request channel and blocks. With

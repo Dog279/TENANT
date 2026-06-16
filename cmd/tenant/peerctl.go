@@ -8,6 +8,7 @@ package main
 // operator surface over internal/peering.
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -51,7 +52,7 @@ func cmdPeer(ctx context.Context, args []string) error {
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "invite":
-		return peerInvite(rest)
+		return peerInvite(ctx, rest)
 	case "join":
 		return peerJoin(rest)
 	case "list", "ls":
@@ -105,6 +106,7 @@ func peerServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("peer serve", flag.ContinueOnError)
 	listen := fs.String("listen", "", "address to bind (default: config peer.listen, else 127.0.0.1:9100)")
 	wikiDir := fs.String("wiki-dir", "", "expose this markdown wiki to peers via peer_wiki_search")
+	yesPair := fs.Bool("yes-pair", false, "AUTO-APPROVE every inbound /peer invite request — TESTING ONLY, no human Approve/Deny")
 	c, store, _, err := peerStore(fs, args)
 	if err != nil {
 		return err
@@ -133,14 +135,23 @@ func peerServe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeDeps()
+	hostName, _ := os.Hostname()
+	approver := stdinPairApprover
+	if *yesPair {
+		fmt.Fprintln(os.Stderr, "⚠ --yes-pair: AUTO-APPROVING all pairing requests (testing only)")
+		approver = func(context.Context, string) bool { return true }
+	}
 	ln, err := peering.NewListener(peering.ListenerConfig{
-		Store:       store,
-		SelfID:      id,
-		SelfVersion: mcp.LibraryVersion,
-		Overlay:     ov,
-		TLSCert:     cert,
-		Registrar:   peerKnowledgeRegistrar(deps),
-		Logger:      func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		Store:        store,
+		SelfID:       id,
+		SelfName:     hostName,
+		SelfVersion:  mcp.LibraryVersion,
+		SelfFinger:   fp,
+		Overlay:      ov,
+		TLSCert:      cert,
+		Registrar:    peerKnowledgeRegistrar(deps),
+		PairApprover: approver,
+		Logger:       func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
 	if err != nil {
 		return err
@@ -197,9 +208,10 @@ func splitPositional(args []string) (positional, flags []string) {
 	return args, nil
 }
 
-func peerInvite(args []string) error {
+func peerInvite(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("peer invite", flag.ContinueOnError)
 	url := fs.String("url", "", "the address a joiner will dial to reach THIS instance (e.g. http://my-host:9100/ or your Tailscale name)")
+	to := fs.String("to", "", "PUSH-invite: pair with the peer at this URL (they Approve/Deny + match the PIN) instead of minting a code")
 	as := fs.String("as", "", "how this instance identifies itself to the peer (default: hostname)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the invite code stays valid")
 	c, store, pos, err := peerStore(fs, args)
@@ -207,11 +219,15 @@ func peerInvite(args []string) error {
 		return err
 	}
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: tenant peer invite <name> --url <addr> [--as <self>] [--ttl 1h]")
+		return fmt.Errorf("usage: tenant peer invite <name> (--url <addr> | --to <peer-url>) [--as <self>]")
 	}
 	peerName := pos[0]
+	// TEN-239 push-invite: POST a pairing request to the peer; they Approve/Deny.
+	if strings.TrimSpace(*to) != "" {
+		return peerPushInvite(ctx, c, store, peerName, strings.TrimSpace(*to))
+	}
 	if strings.TrimSpace(*url) == "" {
-		return fmt.Errorf("--url is required: the address the peer will dial to reach you")
+		return fmt.Errorf("--url is required (or use --to <peer-url> to push-invite)")
 	}
 	selfName := *as
 	if selfName == "" {
@@ -246,6 +262,60 @@ func peerInvite(args []string) error {
 		"Then set what they may read:  tenant peer share %s wiki=on\n", peerName, ttl.String(), scheme, peerName)
 	return nil
 }
+
+// peerPushInvite is the TEN-239 inviter side: mint a PIN, display it, POST a
+// pairing request to the peer at toURL, and on approval store the peer (dial
+// side, cert TOFU-pinned). The PIN must be read to the peer's operator out of
+// band so they can match it before approving.
+func peerPushInvite(ctx context.Context, c *commonFlags, store *peering.Store, label, toURL string) error {
+	pin, err := peering.GeneratePIN()
+	if err != nil {
+		return err
+	}
+	id, err := ensureInstanceID(c)
+	if err != nil {
+		return err
+	}
+	selfName, _ := os.Hostname()
+	if selfName == "" {
+		selfName = "tenant"
+	}
+	fmt.Fprintf(os.Stderr, "Pairing with %q at %s.\n→ Tell their operator this PIN to approve:  %s\n(waiting for them to Approve — up to 3 min)\n",
+		label, toURL, peering.FormatPIN(pin))
+
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	pr, err := peering.RequestPair(reqCtx, toURL, peering.PairRequest{Name: selfName, InstanceID: id, PIN: pin}, peerOverlay(c))
+	if err != nil {
+		return err
+	}
+	if err := store.Put(&peering.Peer{
+		Name:        label,
+		InstanceID:  pr.InstanceID,
+		URL:         toURL,
+		Dial:        true,
+		Token:       pr.Token,
+		Fingerprint: pr.Fingerprint,
+		CreatedAt:   nowStamp(),
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "✓ paired with %q (%s). Set what they may read:  /configure peer %s\n", label, pr.Name, label)
+	return nil
+}
+
+// stdinPairApprover prompts on stderr and reads a y/n from stdin — the headless
+// `tenant peer serve` approver. Non-interactive stdin (EOF) denies (fail-closed).
+func stdinPairApprover(_ context.Context, prompt string) bool {
+	fmt.Fprintf(os.Stderr, "\n=== PAIRING REQUEST ===\n%s\nApprove? [y/N]: ", prompt)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false // fail closed on ANY read error (EOF/partial) — a security approver never approves on a faulty read
+	}
+	return yes(line)
+}
+
+func nowStamp() string { return time.Now().UTC().Format(time.RFC3339) }
 
 func peerJoin(args []string) error {
 	fs := flag.NewFlagSet("peer join", flag.ContinueOnError)
@@ -460,7 +530,7 @@ func dash(s string) string {
 // fatal. The knowledge-tool registrar is injected in TEN-186; today it serves
 // the peer_hello handshake. Binds synchronously so the bound address (and any
 // refusal) is reported before serving in a goroutine.
-func startPeerListener(ctx context.Context, c *commonFlags, deps peerToolDeps, pushSys func(string), log *slog.Logger) {
+func startPeerListener(ctx context.Context, c *commonFlags, deps peerToolDeps, pairApprove func(context.Context, string) bool, pushSys func(string), log *slog.Logger) {
 	store, err := peering.LoadStore(c.cfgDir)
 	if err != nil {
 		pushSys("peer: listener not started — " + err.Error())
@@ -472,18 +542,22 @@ func startPeerListener(ctx context.Context, c *commonFlags, deps peerToolDeps, p
 		return
 	}
 	overlay := c.lc.Peer.Transport == "overlay"
-	cert, _, err := peerTLS(c.cfgDir, overlay)
+	cert, fp, err := peerTLS(c.cfgDir, overlay)
 	if err != nil {
 		pushSys("peer: listener not started — " + err.Error())
 		return
 	}
+	hostName, _ := os.Hostname()
 	ln, err := peering.NewListener(peering.ListenerConfig{
-		Store:       store,
-		SelfID:      id,
-		SelfVersion: mcp.LibraryVersion,
-		Overlay:     overlay,
-		TLSCert:     cert,
-		Registrar:   peerKnowledgeRegistrar(deps), // TEN-186 share-gated knowledge tools
+		Store:        store,
+		SelfID:       id,
+		SelfName:     hostName,
+		SelfVersion:  mcp.LibraryVersion,
+		SelfFinger:   fp,
+		Overlay:      overlay,
+		TLSCert:      cert,
+		Registrar:    peerKnowledgeRegistrar(deps), // TEN-186 share-gated knowledge tools
+		PairApprover: pairApprove,                  // TEN-239 push-invite Approve/Deny
 		Logger: func(f string, a ...any) {
 			if log != nil {
 				log.Info(fmt.Sprintf(f, a...))

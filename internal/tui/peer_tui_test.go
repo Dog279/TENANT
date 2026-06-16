@@ -43,6 +43,13 @@ func (f *fakePeerControl) Remove(name string) (bool, error) {
 	f.removed = append(f.removed, name)
 	return true, nil
 }
+func (f *fakePeerControl) Invite(label, url string) (string, func(context.Context) (string, error), error) {
+	run := func(context.Context) (string, error) {
+		f.peers[label] = &PeerInfo{Name: label, URL: url, Dial: true, TokenState: "set", Share: map[string]bool{}}
+		return "paired with " + label, nil
+	}
+	return "123 456", run, nil
+}
 func (f *fakePeerControl) SetShare(name, capability string, allow bool) (PeerInfo, error) {
 	p, ok := f.peers[name]
 	if !ok {
@@ -124,10 +131,25 @@ func TestHandlePeer_ListShowRemove(t *testing.T) {
 		t.Errorf("Remove(edge) not called: %+v", f.removed)
 	}
 
-	// invite points at the working flow (part 1 push-pairing is the next build).
-	m.handlePeer("invite box 1.2.3.4")
-	if !strings.Contains(lastSys(m), "tenant peer") {
-		t.Errorf("invite should point at the pairing flow: %q", lastSys(m))
+	// invite: shows the PIN synchronously, returns an async cmd that pairs.
+	cmd := m.handlePeer("invite box https://1.2.3.4:9100")
+	if !strings.Contains(lastSys(m), "123 456") {
+		t.Errorf("invite should display the PIN: %q", lastSys(m))
+	}
+	if cmd == nil {
+		t.Fatal("invite should return an async pairing cmd")
+	}
+	if msg, ok := cmd().(sysChatMsg); !ok || !strings.Contains(msg.text, "paired with box") {
+		t.Errorf("running the invite cmd should report success; got %+v", cmd())
+	}
+	if _, ok := f.peers["box"]; !ok {
+		t.Error("invite cmd should have stored the new peer")
+	}
+
+	// invite usage when underspecified.
+	m.handlePeer("invite onlyname")
+	if !strings.Contains(lastSys(m), "usage") {
+		t.Errorf("invite without url should show usage: %q", lastSys(m))
 	}
 }
 
