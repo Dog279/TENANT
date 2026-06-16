@@ -36,6 +36,21 @@ else
   bad "cross-compile"
 fi
 
+step "responder/relay loop safety (offsite channel invariants — TEN-237)"
+# The autonomous fitness/improvement gate can't see these — they're transport-
+# level Go tests, not LLM-fitness tasks — so name them as an EXPLICIT must-pass
+# gate here: anti-loop (cursor/echo/is_from_me), allowlist deny-by-default, the
+# per-category permission broker + offsite-confirm denial, rate-limit, ingest.
+# (The full `go test` above also runs them; this step attributes a break to the
+# loop instead of burying it.) Paired with the agent-decidable slice in fitness:
+# tasks/fitness/fitness-052/053 (offsite exec-exfil + injection resistance).
+if go test ./cmd/tenant/ ./internal/plugins/imessage/ \
+  -run 'Relay|IMessageResponder|Broker|RateLimiter|Watcher|EchoCache|AllowList|Allows|NormalizeHandle|Gate_Send'; then
+  ok "loop safety"
+else
+  bad "responder/relay loop safety regressed"
+fi
+
 step "smoke eval + baseline check (offline regression gate)"
 if go run ./cmd/tenant eval --subset smoke --backend echo --baseline-check baselines/smoke.json; then
   ok "smoke gate"
