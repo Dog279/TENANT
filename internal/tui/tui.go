@@ -1961,7 +1961,7 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			m.sysChat("no dialable peers to reconnect (you pair by inviting one with /peer invite).")
 			return nil
 		}
-		m.sysChat(fmt.Sprintf("🔌 reconnecting to %d peer(s) — their shared tools come live shortly. Run /tools to see peer_memory_search / peer_wiki_search.", n))
+		m.sysChat(fmt.Sprintf("🔌 reconnecting to %d peer(s) — their shared knowledge folds into your own search shortly. wiki_search now also covers connected peers (peer hits flagged trust-but-verify).", n))
 		return nil
 	case "rename", "alias":
 		f := strings.Fields(rest)
@@ -2358,7 +2358,7 @@ var helpSections = []helpSection{
 			{"/peer serve [addr]", "start the peer listener (default 0.0.0.0:9100, TLS) so peers can reach you + invites prompt here"},
 			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
 			{"/peer rename <old> <new>", "relabel a peer (long hostname → readable)"},
-			{"/peer reconnect", "bring paired peers' shared tools live now (after pairing mid-session)"},
+			{"/peer reconnect", "fold paired peers' shared knowledge into your search now (after pairing mid-session)"},
 			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
 			{"/configure peer <name>", "share editor — like /permissions: each item allow or deny (set <item> <mode>)"},
 		},

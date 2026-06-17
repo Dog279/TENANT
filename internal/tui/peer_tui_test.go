@@ -243,8 +243,8 @@ func TestHandlePeer_Reconnect(t *testing.T) {
 	if f.reconnected != 1 {
 		t.Errorf("reconnect should trigger the control once, got %d", f.reconnected)
 	}
-	if !strings.Contains(lastSys(m), "reconnecting") || !strings.Contains(lastSys(m), "/tools") {
-		t.Errorf("reconnect should report + point at /tools: %q", lastSys(m))
+	if !strings.Contains(lastSys(m), "reconnecting") || !strings.Contains(lastSys(m), "wiki_search") {
+		t.Errorf("reconnect should report + point at the federated search: %q", lastSys(m))
 	}
 	// No dialable peers → guidance.
 	empty := newFakePeerControl()

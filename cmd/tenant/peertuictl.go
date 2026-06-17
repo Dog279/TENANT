@@ -160,12 +160,13 @@ func (p peerTUIControl) Invite(label, url string) (string, func(context.Context)
 		}); err != nil {
 			return "", err
 		}
-		// Bring the new peer's shared tools live in the running agent immediately
-		// (no relaunch needed) — dials it + adopts peer_wiki_search/peer_memory_search.
+		// Fold the new peer's shared knowledge into the running agent immediately
+		// (no relaunch needed) — dials it + adopts its dispatcher so wiki_search
+		// fans out to it. (TEN-243)
 		if p.reconnect != nil {
 			p.reconnect()
 		}
-		return fmt.Sprintf("paired with %s (%s) — connecting to its shared tools (run /tools shortly to see peer_*)", label, pr.Name), nil
+		return fmt.Sprintf("paired with %s (%s) — folding its shared knowledge into your search (wiki_search now also covers it; peer hits flagged trust-but-verify)", label, pr.Name), nil
 	}
 	return peering.FormatPIN(pin), run, nil
 }

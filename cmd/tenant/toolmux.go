@@ -69,6 +69,14 @@ type toolMux struct {
 	// /mcp add|list|remove can manage them at runtime.
 	mcpDeps    mcpRuntimeDeps
 	mcpServers map[string]string
+	// Federated knowledge search (TEN-243): paired peers' dispatchers are kept
+	// here (name→dispatcher) instead of exposing their peer_*_search tools to the
+	// agent. When the agent calls a local search (e.g. wiki_search) it fans out to
+	// these and appends the results (trust-but-verify). baseDesc remembers each
+	// federated tool's original description so the peer-awareness suffix can be
+	// rebuilt as peers connect/disconnect.
+	peerDisp map[string]plugin
+	baseDesc map[string]string
 	// onChange fires after any enable/disable, with a full name→enabled
 	// snapshot, so the caller can persist the curation. Set AFTER restore
 	// (restore must not re-trigger a save of what it just loaded).
@@ -213,6 +221,8 @@ func (m *toolMux) restore(saved map[string]bool) []string {
 func newToolMux() *toolMux {
 	return &toolMux{
 		byName:     map[string]*toolEntry{},
+		peerDisp:   map[string]plugin{},
+		baseDesc:   map[string]string{},
 		activators: map[string]func() (plugin, func(), error){},
 		activated:  map[string]bool{},
 		mcpServers: map[string]string{},
@@ -355,10 +365,10 @@ func (m *toolMux) reconnectPeersSilently(cfgDir string) {
 			continue // we don't dial this peer, or it's revoked
 		}
 		go func(p *peering.Peer) {
-			label := "peer:" + p.Name
-			if m.hasPlugin(label) {
-				return
+			if m.hasPeer(p.Name) {
+				return // already adopted for federated search
 			}
+			label := "peer:" + p.Name
 			d := m.mcpDeps
 			dialCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 			defer cancel()
@@ -374,7 +384,9 @@ func (m *toolMux) reconnectPeersSilently(cfgDir string) {
 				}
 				return
 			}
-			m.adoptLiveMCP(label, disp, cleanup)
+			// Fold the peer in for federated search instead of exposing its
+			// peer_*_search tools to the agent. (TEN-243)
+			m.adoptPeer(p.Name, disp, cleanup)
 		}(peer)
 	}
 }
@@ -749,6 +761,10 @@ func (m *toolMux) All() []model.ToolSpec {
 func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
 	m.mu.RLock()
 	e, ok := m.byName[call.Name]
+	// Snapshot the federation peers for this call (nil unless the tool is
+	// federatable AND peers are connected) while we hold the lock; the fan-out
+	// itself runs lock-free since it does network I/O. (TEN-243)
+	counterpart, peers := m.peersForFederation(call.Name)
 	m.mu.RUnlock()
 	if !ok {
 		return "unknown tool: " + call.Name, true, nil
@@ -756,7 +772,13 @@ func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bo
 	if !e.enabled {
 		return "tool " + call.Name + " is disabled (/enable " + call.Name + ")", true, nil
 	}
-	return e.owner.Dispatch(ctx, call)
+	out, isErr, err := e.owner.Dispatch(ctx, call)
+	// Local-first, peer-appended: only federate a clean local result so the
+	// agent isn't handed peer data stapled to a local error. (TEN-243)
+	if err == nil && !isErr && len(peers) > 0 {
+		out = m.federate(ctx, out, counterpart, call.Arguments, peers)
+	}
+	return out, isErr, err
 }
 
 // --- tui.ToolControl (runtime enable/disable from slash commands) ---
