@@ -531,6 +531,9 @@ type PeerControl interface {
 	// SetShare flips one capability (wiki|memory|skills|exec|llm) for a peer and
 	// returns the updated view.
 	SetShare(name, capability string, allow bool) (PeerInfo, error)
+	// Rename relabels a peer (long hostname → readable). Cosmetic; preserves the
+	// token/share/url. Errors if old is unknown or new is taken.
+	Rename(old, newName string) error
 	// Invite begins push-pairing (TEN-239): it returns a 6-digit PIN to display
 	// to BOTH operators and a run() that performs the blocking, operator-approved
 	// request (call it off the UI goroutine). nil run ⇒ err explains why.
@@ -1943,6 +1946,18 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 		}
 		m.sysChat("✓ removed peer " + name)
 		return nil
+	case "rename", "alias":
+		f := strings.Fields(rest)
+		if len(f) != 2 {
+			m.sysChat("usage: /peer rename <current-name> <new-name>")
+			return nil
+		}
+		if err := m.cfg.Peer.Rename(f[0], f[1]); err != nil {
+			m.sysChat("rename failed: " + err.Error())
+			return nil
+		}
+		m.sysChat("✓ renamed peer " + f[0] + " → " + f[1])
+		return nil
 	case "serve":
 		// Start/restart the peer listener so others can reach us AND inbound
 		// invites prompt right here in the TUI (TEN-239 follow-up).
@@ -1977,15 +1992,26 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			return sysChatMsg{text: "✓ " + msg + " — set sharing with /configure peer " + label}
 		}
 	default:
-		m.sysChat("usage: /peer serve [addr] | /peer invite <name> <ip|url> | /peer [list] | /peer show <name> | /peer remove <name>   (sharing: /configure peer <name>)")
+		m.sysChat("usage: /peer serve [addr] | /peer invite <name> <ip|url> | /peer rename <old> <new> | /peer [list] | /peer show <name> | /peer remove <name>   (sharing: /configure peer <name>)")
 		return nil
 	}
 }
 
-// handleConfigurePeer drives `/configure peer <name> [cap=on|off …]` — the
-// per-peer share-policy editor, mirroring the global-permissions model: every
-// sharable capability is Allow or Deny (deny-by-default). With no toggles it
-// shows the current policy; with cap=on|off pairs it applies them and reshows.
+// peerShareDesc describes each sharable capability, shown in the /configure peer
+// editor (mirrors the per-category descriptions in the global /permissions view).
+var peerShareDesc = map[string]string{
+	"wiki":   "your shared wiki / knowledge base (read)",
+	"memory": "your shared + public memory — facts & episodes (read)",
+	"skills": "propose your skills to this peer (Phase 4)",
+	"exec":   "run commands on your machine (Phase 2 — still operator-gated)",
+	"llm":    "use your model for a turn (Phase 2 — still operator-gated)",
+}
+
+// handleConfigurePeer drives `/configure peer <name>` — the per-peer share
+// editor, presented like the global /permissions view: each sharable item is
+// allow or deny (deny-by-default). No args shows the table; edits mirror
+// /permissions syntax: `set <item> <allow|deny>` (also tolerates `<item>
+// <allow|deny>` and the legacy `<item>=<on|off>`).
 func (m *model) handleConfigurePeer(args []string) {
 	if m.cfg.Peer == nil {
 		m.sysChat("peers not available in this session")
@@ -2001,7 +2027,8 @@ func (m *model) handleConfigurePeer(args []string) {
 		for _, p := range peers {
 			names = append(names, p.Name)
 		}
-		m.sysChat("usage: /configure peer <name> [wiki|memory|skills|exec|llm=on|off …]\npeers: " + strings.Join(names, ", "))
+		m.sysChat("usage: /configure peer <name>                      (show sharing)\n" +
+			"       /configure peer <name> set <item> <allow|deny>\npeers: " + strings.Join(names, ", "))
 		return
 	}
 	name := args[0]
@@ -2010,42 +2037,88 @@ func (m *model) handleConfigurePeer(args []string) {
 		m.sysChat("no peer named " + name + " (/peer to list)")
 		return
 	}
-	// Apply any cap=on|off toggles.
+	rest := args[1:]
 	applied := 0
-	for _, kv := range args[1:] {
-		key, val, found := strings.Cut(kv, "=")
-		if !found {
-			m.sysChat("expected cap=on|off, got " + kv)
+	switch {
+	case len(rest) == 0:
+		// show only
+	case strings.ToLower(rest[0]) == "set":
+		if len(rest) < 3 {
+			m.sysChat("usage: /configure peer " + name + " set <item> <allow|deny>")
 			return
 		}
-		allow, perr := parseAllow(val)
-		if perr != nil {
-			m.sysChat(key + ": " + perr.Error())
+		if !m.applyPeerShare(name, rest[1], rest[2]) {
 			return
 		}
-		updated, serr := m.cfg.Peer.SetShare(name, key, allow)
-		if serr != nil {
-			m.sysChat("set " + key + ": " + serr.Error())
-			return
-		}
-		p = updated
 		applied++
-	}
-	// Render the Allow/Deny table for all sharable capabilities.
-	var b strings.Builder
-	if applied > 0 {
-		fmt.Fprintf(&b, "✓ updated %s sharing:\n", name)
-	} else {
-		fmt.Fprintf(&b, "%s sharing (deny-by-default — toggle: /configure peer %s <cap>=on|off):\n", name, name)
-	}
-	for _, capb := range PeerShareCaps {
-		state := "DENY"
-		if p.Share[capb] {
-			state = "ALLOW"
+	case len(rest) == 2 && !strings.Contains(rest[0], "="):
+		if !m.applyPeerShare(name, rest[0], rest[1]) {
+			return
 		}
-		fmt.Fprintf(&b, "  %-8s %s\n", capb, state)
+		applied++
+	default: // legacy lenient: item=mode pairs
+		for _, kv := range rest {
+			key, val, found := strings.Cut(kv, "=")
+			if !found {
+				m.sysChat("usage: /configure peer " + name + " set <item> <allow|deny>")
+				return
+			}
+			if !m.applyPeerShare(name, key, val) {
+				return
+			}
+			applied++
+		}
 	}
-	m.sysChat(strings.TrimRight(b.String(), "\n"))
+	if applied > 0 {
+		if up, ok := m.cfg.Peer.Show(name); ok {
+			p = up
+		}
+	}
+	plain, styled := renderPeerShare(name, p.Share, applied)
+	m.sysChatStyled(plain, styled)
+}
+
+// applyPeerShare sets one share item to allow/deny; on error it posts a message
+// and returns false.
+func (m *model) applyPeerShare(name, item, mode string) bool {
+	allow, perr := parseAllow(mode)
+	if perr != nil {
+		m.sysChat(item + ": " + perr.Error())
+		return false
+	}
+	if _, serr := m.cfg.Peer.SetShare(name, strings.ToLower(strings.TrimSpace(item)), allow); serr != nil {
+		m.sysChat("set " + item + ": " + serr.Error())
+		return false
+	}
+	return true
+}
+
+// renderPeerShare renders a peer's share policy in the same style as the global
+// /permissions view (colored mode + description), as (plain, styled).
+func renderPeerShare(name string, share map[string]bool, applied int) (string, string) {
+	var p, s strings.Builder
+	head := name + " sharing"
+	if applied > 0 {
+		head = "✓ updated " + name + " sharing"
+	}
+	hint := "  (allow / deny)   ·   /configure peer " + name + " set <item> <mode>"
+	p.WriteString(head + hint + "\n")
+	s.WriteString(cHeading.Render(head) + cDim.Render(hint) + "\n")
+	for _, item := range PeerShareCaps {
+		mode := "deny"
+		if share[item] {
+			mode = "allow"
+		}
+		desc := peerShareDesc[item]
+		p.WriteString(fmt.Sprintf("  %-8s %-5s  %s\n", item, mode, desc))
+		ms := cErr // deny = red
+		if mode == "allow" {
+			ms = cOnMark
+		}
+		s.WriteString("  " + cKey.Render(fmt.Sprintf("%-8s", item)) + " " +
+			ms.Render(fmt.Sprintf("%-5s", mode)) + "  " + cDim.Render(desc) + "\n")
+	}
+	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
 }
 
 // renderShareInline lists the allowed capabilities, or "(none)".
@@ -2267,8 +2340,9 @@ var helpSections = []helpSection{
 			{"/mcp remove <url>", "disconnect a remote MCP server and forget it"},
 			{"/peer serve [addr]", "start the peer listener (default 0.0.0.0:9100, TLS) so peers can reach you + invites prompt here"},
 			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
+			{"/peer rename <old> <new>", "relabel a peer (long hostname → readable)"},
 			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
-			{"/configure peer <name>", "edit a peer's share policy — wiki/memory/skills/exec/llm Allow or Deny"},
+			{"/configure peer <name>", "share editor — like /permissions: each item allow or deny (set <item> <mode>)"},
 		},
 	},
 	{

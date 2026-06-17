@@ -277,6 +277,36 @@ func TestSetShareDefaultsDeny(t *testing.T) {
 	}
 }
 
+func TestRename(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := LoadStore(dir)
+	s.Put(&Peer{Name: "long-hostname.local", InstanceID: "id1", Token: "tok", Dial: true, Share: SharePolicy{Wiki: true}})
+
+	if err := s.Rename("long-hostname.local", "mac"); err != nil {
+		t.Fatal(err)
+	}
+	// Moved, preserving token + share.
+	if _, ok := s.Get("long-hostname.local"); ok {
+		t.Error("old name should be gone")
+	}
+	p, ok := s.Get("mac")
+	if !ok || p.Token != "tok" || !p.Share.Wiki || p.InstanceID != "id1" || p.Name != "mac" {
+		t.Fatalf("rename should preserve everything under the new name: %+v ok=%v", p, ok)
+	}
+	// Survives reload.
+	if r, _ := LoadStore(dir); func() bool { _, ok := r.Get("mac"); return ok }() == false {
+		t.Error("rename should persist")
+	}
+	// Errors: unknown old, collision on new.
+	if err := s.Rename("nope", "x"); err == nil {
+		t.Error("renaming an unknown peer should error")
+	}
+	s.Put(&Peer{Name: "other", InstanceID: "id2"})
+	if err := s.Rename("mac", "other"); err == nil {
+		t.Error("renaming onto an existing name should error")
+	}
+}
+
 func mustToken(t *testing.T, s *Store, name string) string {
 	t.Helper()
 	p, ok := s.Get(name)

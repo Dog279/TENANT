@@ -173,6 +173,32 @@ func (s *Store) AdoptRotatedToken(name, secret string) error {
 	return s.save()
 }
 
+// Rename changes a peer's local LABEL (the store key + Peer.Name) — a cosmetic
+// relabel for readability; the token, share policy, url, instance_id, etc. are
+// preserved. Errors if old doesn't exist or the new name is already taken.
+func (s *Store) Rename(old, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("peering: new name is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.peers[old]
+	if !ok {
+		return fmt.Errorf("peering: no peer named %q", old)
+	}
+	if old == newName {
+		return nil
+	}
+	if _, exists := s.peers[newName]; exists {
+		return fmt.Errorf("peering: a peer named %q already exists", newName)
+	}
+	delete(s.peers, old)
+	p.Name = newName
+	s.peers[newName] = p
+	return s.save()
+}
+
 // SetShare flips one capability flag in a peer's share policy. key ∈
 // {wiki,memory,skills,exec,llm}. Unknown key or peer → error.
 func (s *Store) SetShare(name, key string, on bool) error {

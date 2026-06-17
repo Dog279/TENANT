@@ -67,6 +67,8 @@ func cmdPeer(ctx context.Context, args []string) error {
 		return peerRotate(rest)
 	case "share":
 		return peerShare(rest)
+	case "rename", "alias":
+		return peerRename(rest)
 	case "serve":
 		return peerServe(ctx, rest)
 	case "query":
@@ -85,6 +87,7 @@ func peerUsage() error {
                           accept an invite code and store the peer you'll dial
   list                    list paired peers + share policy
   show <name>             show one peer (token masked)
+  rename <old> <new>      relabel a peer (long hostname → readable)
   remove <name>           delete a peer entirely
   revoke <name>           invalidate a peer's token (keep the record)
   rotate <name>           stage a new token (staged-pull; old stays valid until adopted)
@@ -260,6 +263,22 @@ func peerInvite(ctx context.Context, args []string) error {
 	fmt.Fprintf(os.Stderr, "\n↑ Give this code to %q. It expires in %s, is single-use, and uses %s.\n"+
 		"They run:  tenant peer join <code>\n"+
 		"Then set what they may read:  tenant peer share %s wiki=on\n", peerName, ttl.String(), scheme, peerName)
+	return nil
+}
+
+func peerRename(args []string) error {
+	fs := flag.NewFlagSet("peer rename", flag.ContinueOnError)
+	_, store, pos, err := peerStore(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("usage: tenant peer rename <current-name> <new-name>")
+	}
+	if err := store.Rename(pos[0], pos[1]); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "✓ renamed peer %q → %q\n", pos[0], pos[1])
 	return nil
 }
 
@@ -481,12 +500,12 @@ func peerShare(args []string) error {
 
 func parseOnOff(s string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "on", "true", "yes", "1":
+	case "on", "allow", "true", "yes", "1":
 		return true, nil
-	case "off", "false", "no", "0":
+	case "off", "deny", "false", "no", "0":
 		return false, nil
 	}
-	return false, fmt.Errorf("want on|off, got %q", s)
+	return false, fmt.Errorf("want allow|deny (on|off), got %q", s)
 }
 
 func shareSummary(p peering.SharePolicy) string {

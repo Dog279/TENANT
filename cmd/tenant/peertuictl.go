@@ -69,6 +69,14 @@ func (p peerTUIControl) Remove(name string) (bool, error) {
 	return true, s.Remove(name)
 }
 
+func (p peerTUIControl) Rename(old, newName string) error {
+	s, err := peering.LoadStore(p.cfgDir)
+	if err != nil {
+		return err
+	}
+	return s.Rename(old, newName)
+}
+
 func (p peerTUIControl) SetShare(name, capability string, allow bool) (tui.PeerInfo, error) {
 	s, err := peering.LoadStore(p.cfgDir)
 	if err != nil {

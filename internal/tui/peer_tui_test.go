@@ -44,6 +44,19 @@ func (f *fakePeerControl) Remove(name string) (bool, error) {
 	f.removed = append(f.removed, name)
 	return true, nil
 }
+func (f *fakePeerControl) Rename(old, newName string) error {
+	p, ok := f.peers[old]
+	if !ok {
+		return fmt.Errorf("no peer named %q", old)
+	}
+	if _, exists := f.peers[newName]; exists {
+		return fmt.Errorf("peer %q already exists", newName)
+	}
+	delete(f.peers, old)
+	p.Name = newName
+	f.peers[newName] = p
+	return nil
+}
 func (f *fakePeerControl) Serve(addr string) (string, error) {
 	if addr == "" {
 		addr = "0.0.0.0:9100"
@@ -78,42 +91,74 @@ func lastSys(m *model) string {
 	return m.msgs[len(m.msgs)-1].content
 }
 
-func TestHandleConfigurePeer_ShowAndToggle(t *testing.T) {
+func TestHandleConfigurePeer_PermissionsStyle(t *testing.T) {
 	f := newFakePeerControl("laptop")
 	m := newModel(context.Background(), Config{Peer: f})
 
-	// Show: all five sharable caps, all DENY by default.
+	// Show: all five items, all deny by default, permissions-style (lowercase).
 	m.handleConfigurePeer([]string{"laptop"})
 	out := lastSys(m)
 	for _, cap := range PeerShareCaps {
 		if !strings.Contains(out, cap) {
-			t.Errorf("share view missing capability %q: %q", cap, out)
+			t.Errorf("share view missing item %q: %q", cap, out)
 		}
 	}
-	if !strings.Contains(out, "DENY") || strings.Contains(out, "ALLOW") {
-		t.Errorf("all caps should default DENY: %q", out)
+	if !strings.Contains(out, "wiki     deny") || !strings.Contains(out, "memory   deny") {
+		t.Errorf("items should default deny in permissions-style rows: %q", out)
+	}
+	if !strings.Contains(out, "set <item> <mode>") {
+		t.Errorf("should show the /permissions-style set hint: %q", out)
 	}
 
-	// Toggle memory on → reflected, and the control was actually called.
-	m.handleConfigurePeer([]string{"laptop", "memory=on"})
-	out = lastSys(m)
-	if !strings.Contains(out, "ALLOW") {
-		t.Errorf("memory=on should show ALLOW: %q", out)
-	}
-	if !f.peers["laptop"].Share["memory"] {
-		t.Error("SetShare(memory,true) was not applied to the store")
+	// `set <item> <allow|deny>` — the global-permissions syntax.
+	m.handleConfigurePeer([]string{"laptop", "set", "memory", "allow"})
+	if !strings.Contains(lastSys(m), "allow") || !f.peers["laptop"].Share["memory"] {
+		t.Errorf("set memory allow should apply + show: %q", lastSys(m))
 	}
 
-	// Bad toggle value → clear error, no change.
-	m.handleConfigurePeer([]string{"laptop", "memory=maybe"})
-	if !strings.Contains(lastSys(m), "on|off") {
-		t.Errorf("bad toggle should explain on|off: %q", lastSys(m))
+	// Shorthand `<item> <mode>`.
+	m.handleConfigurePeer([]string{"laptop", "wiki", "allow"})
+	if !f.peers["laptop"].Share["wiki"] {
+		t.Error("`wiki allow` shorthand not applied")
+	}
+
+	// Legacy `item=mode` still tolerated.
+	m.handleConfigurePeer([]string{"laptop", "memory=off"})
+	if f.peers["laptop"].Share["memory"] {
+		t.Error("legacy `memory=off` should still work")
+	}
+
+	// Bad mode → clear error.
+	m.handleConfigurePeer([]string{"laptop", "set", "memory", "maybe"})
+	if !strings.Contains(lastSys(m), "allow|deny") {
+		t.Errorf("bad mode should explain allow|deny: %q", lastSys(m))
 	}
 
 	// Unknown peer.
 	m.handleConfigurePeer([]string{"ghost"})
 	if !strings.Contains(lastSys(m), "no peer named") {
 		t.Errorf("unknown peer should error: %q", lastSys(m))
+	}
+}
+
+func TestHandlePeer_Rename(t *testing.T) {
+	f := newFakePeerControl("Dylans-MacBook-Pro-2.local")
+	m := newModel(context.Background(), Config{Peer: f})
+
+	m.handlePeer("rename Dylans-MacBook-Pro-2.local mac")
+	if !strings.Contains(lastSys(m), "renamed") {
+		t.Errorf("rename should confirm: %q", lastSys(m))
+	}
+	if _, ok := f.peers["mac"]; !ok {
+		t.Error("peer should now be under 'mac'")
+	}
+	if _, ok := f.peers["Dylans-MacBook-Pro-2.local"]; ok {
+		t.Error("old name should be gone")
+	}
+	// alias is the same command.
+	m.handlePeer("alias onlyone")
+	if !strings.Contains(lastSys(m), "usage") {
+		t.Errorf("underspecified rename should show usage: %q", lastSys(m))
 	}
 }
 
