@@ -311,6 +311,143 @@ func TestFederationStats_RecordsOutcomes(t *testing.T) {
 	}
 }
 
+func dispatchRead(t *testing.T, m *toolMux, file string) (string, bool, error) {
+	t.Helper()
+	args, _ := json.Marshal(map[string]any{"file": file})
+	return m.Dispatch(context.Background(), model.ToolCall{Name: "wiki_read", Arguments: args})
+}
+
+func TestWikiRead_PeerFallbackOnLocalMiss(t *testing.T) {
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "milk.md" not found`, isErr: true}) // local MISS
+	peer := &fakeMultiDisp{
+		tools:   []string{"peer_wiki_search", "peer_wiki_read", "peer_memory_search"},
+		results: map[string]string{"peer_wiki_read": "# Milk\nFull article body about milk types."},
+	}
+	m.adoptPeer("mac", peer, nil)
+
+	// peer_wiki_read is folded → hidden from the agent.
+	if _, ok := m.byName["peer_wiki_read"]; ok {
+		t.Error("peer_wiki_read should be hidden (folded into wiki_read)")
+	}
+	out, isErr, err := dispatchRead(t, m, "milk.md")
+	if err != nil || isErr {
+		t.Fatalf("a peer that has the note should yield a clean result: isErr=%v err=%v", isErr, err)
+	}
+	if !strings.Contains(out, "Full article body") {
+		t.Errorf("peer note body should be returned: %q", out)
+	}
+	if !strings.Contains(out, `From peer "mac"`) || !strings.Contains(out, "trust but verify") {
+		t.Errorf("peer read should be flagged trust-but-verify: %q", out)
+	}
+	if peer.calls["peer_wiki_read"] != 1 {
+		t.Errorf("peer_wiki_read should be called once, got %d", peer.calls["peer_wiki_read"])
+	}
+}
+
+func TestWikiRead_LocalHitSkipsPeers(t *testing.T) {
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_read", result: "local note body"}) // local HIT (no isErr)
+	peer := &fakeMultiDisp{
+		tools:   []string{"peer_wiki_read"},
+		results: map[string]string{"peer_wiki_read": "peer body"},
+	}
+	m.adoptPeer("mac", peer, nil)
+
+	out, isErr, err := dispatchRead(t, m, "local.md")
+	if err != nil || isErr {
+		t.Fatalf("local hit should be clean: isErr=%v err=%v", isErr, err)
+	}
+	if out != "local note body" {
+		t.Errorf("local hit must be returned untouched (no peer fetch): %q", out)
+	}
+	if peer.calls["peer_wiki_read"] != 0 {
+		t.Errorf("peers must not be consulted on a local hit, got %d calls", peer.calls["peer_wiki_read"])
+	}
+}
+
+func TestWikiRead_MissWithNoPeerHavingItKeepsLocalError(t *testing.T) {
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "ghost.md" not found`, isErr: true})
+	// Peer is connected but doesn't have the note (empty result → skipped).
+	peer := &fakeMultiDisp{
+		tools:   []string{"peer_wiki_read"},
+		results: map[string]string{"peer_wiki_read": "(no results)"},
+	}
+	m.adoptPeer("mac", peer, nil)
+
+	out, isErr, _ := dispatchRead(t, m, "ghost.md")
+	if !isErr {
+		t.Error("when no peer has the note, the local miss should remain an error")
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("the local miss message should be preserved: %q", out)
+	}
+}
+
+func TestWikiRead_NoPeersPassthrough(t *testing.T) {
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "x.md" not found`, isErr: true})
+	out, isErr, _ := dispatchRead(t, m, "x.md")
+	if !isErr || out != `wiki: "x.md" not found` {
+		t.Errorf("with no peers a local miss is unchanged: isErr=%v out=%q", isErr, out)
+	}
+}
+
+func TestWikiRead_AwarenessDescription(t *testing.T) {
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_read", result: "x"})
+	base := m.byName["wiki_read"].spec.Description
+	m.adoptPeer("mac", &fakeMultiDisp{tools: []string{"peer_wiki_read"}}, nil)
+	desc := m.byName["wiki_read"].spec.Description
+	if !strings.Contains(desc, "mac") || !strings.Contains(desc, "automatically") {
+		t.Errorf("wiki_read desc should note peer auto-fetch: %q", desc)
+	}
+	// Idempotent base capture.
+	if m.baseDesc["wiki_read"] != base {
+		t.Errorf("baseDesc should remember the original wiki_read description")
+	}
+}
+
+func TestPeerReadHasContent(t *testing.T) {
+	cases := []struct {
+		res  string
+		want bool
+	}{
+		{"", false},
+		{"(no results)", false},
+		{"(note not available in the shared wiki)", false},
+		{"# Outline\n## Section A\n## Section B", true}, // all-headers note is REAL content
+		{"# Milk\nfull body", true},
+		{"(draft)", false}, // single parenthetical line = diagnostic
+	}
+	for _, tc := range cases {
+		if got := peerReadHasContent(tc.res); got != tc.want {
+			t.Errorf("peerReadHasContent(%q) = %v, want %v", tc.res, got, tc.want)
+		}
+	}
+}
+
+func TestWikiRead_AllHeadersNoteIsReturned(t *testing.T) {
+	// Regression for the read-emptiness fix: a peer note whose body is entirely
+	// markdown headings must NOT be classified empty (the search heuristic would).
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "outline.md" not found`, isErr: true})
+	peer := &fakeMultiDisp{
+		tools:   []string{"peer_wiki_read"},
+		results: map[string]string{"peer_wiki_read": "# Outline\n## A\n## B\n## C"},
+	}
+	m.adoptPeer("mac", peer, nil)
+
+	out, isErr, err := dispatchRead(t, m, "outline.md")
+	if err != nil || isErr {
+		t.Fatalf("an all-headers peer note should be returned: isErr=%v err=%v", isErr, err)
+	}
+	if !strings.Contains(out, "## A") || !strings.Contains(out, `From peer "mac"`) {
+		t.Errorf("all-headers note body should be delivered: %q", out)
+	}
+}
+
 func TestAdoptPeer_IdempotentDropsDuplicate(t *testing.T) {
 	m := newToolMux()
 	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "x"})

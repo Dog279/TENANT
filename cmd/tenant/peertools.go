@@ -87,8 +87,51 @@ const maxPeerResultBytes = 32 * 1024
 func peerKnowledgeRegistrar(deps peerToolDeps) peering.ToolRegistrar {
 	return func(s *mcp.Server, pc peering.PeerContext) {
 		registerPeerWikiSearch(s, pc, deps)
+		registerPeerWikiRead(s, pc, deps)
 		registerPeerMemorySearch(s, pc, deps)
 	}
+}
+
+// peerReadArgs is the input for peer_wiki_read.
+type peerReadArgs struct {
+	File string `json:"file"`
+}
+
+// registerPeerWikiRead serves the FULL text of one shared-wiki note by path, so
+// a dialer that found a note via peer_wiki_search can pull its complete content
+// in one call (TEN-243 follow-up — closes the "found it but can't read it" gap).
+// Gated at call time on the live Wiki share; path-traversal is refused by
+// Index.ReadFile (Clean + Rel double-guard) so a peer can NEVER read outside the
+// wiki root.
+func registerPeerWikiRead(s *mcp.Server, pc peering.PeerContext, deps peerToolDeps) {
+	mcp.AddTool(s,
+		&mcp.Tool{
+			Name:        "peer_wiki_read",
+			Description: "Read the FULL text of one note from the peer's shared wiki by path (as returned by peer_wiki_search). Read-only; confined to the shared wiki root.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		},
+		func(ctx context.Context, _ *mcp.CallToolRequest, a peerReadArgs) (*mcp.CallToolResult, any, error) {
+			if !pc.CurrentShare().Wiki {
+				return peerDenied("wiki"), nil, nil
+			}
+			if deps.wiki == nil {
+				return peerText("(this peer has no wiki configured)"), nil, nil
+			}
+			f := strings.TrimSpace(a.File)
+			if f == "" {
+				return peerText("(file is required)"), nil, nil
+			}
+			// ReadSharedNote is the egress-safe variant: indexed-note-only +
+			// symlink containment. On ANY failure we return ONE opaque message so
+			// a peer can't distinguish not-found / not-indexed / traversal-refused
+			// and can't probe the serving filesystem or learn its absolute paths.
+			content, err := deps.wiki.ReadSharedNote(f)
+			if err != nil {
+				return peerText("(note not available in the shared wiki)"), nil, nil
+			}
+			return peerText(content), nil, nil // peerText enforces the aggregate byte ceiling
+		},
+	)
 }
 
 func registerPeerWikiSearch(s *mcp.Server, pc peering.PeerContext, deps peerToolDeps) {

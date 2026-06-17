@@ -769,6 +769,7 @@ func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bo
 	// federatable AND peers are connected) while we hold the lock; the fan-out
 	// itself runs lock-free since it does network I/O. (TEN-243)
 	counterpart, peers := m.peersForFederation(call.Name)
+	readCounterpart, readPeers := m.peersForReadFallback(call.Name)
 	m.mu.RUnlock()
 	if !ok {
 		return "unknown tool: " + call.Name, true, nil
@@ -781,6 +782,14 @@ func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bo
 	// agent isn't handed peer data stapled to a local error. (TEN-243)
 	if err == nil && !isErr && len(peers) > 0 {
 		out = m.federate(ctx, out, counterpart, call.Arguments, peers)
+	}
+	// Read-on-miss fallback: a local "read one item" tool that missed (isErr)
+	// transparently falls back to the first connected peer that has it, so the
+	// agent reads a note by filename whether it's local or on a peer. (TEN-243)
+	if err == nil && isErr && len(readPeers) > 0 {
+		if peerOut, found := m.peerReadFallback(ctx, readCounterpart, call.Arguments, readPeers); found {
+			return peerOut, false, nil
+		}
 	}
 	return out, isErr, err
 }

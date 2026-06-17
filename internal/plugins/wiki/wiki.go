@@ -44,7 +44,7 @@ import (
 type Chunk struct {
 	File    string    `json:"file"`    // path relative to the wiki root
 	Heading string    `json:"heading"` // nearest markdown heading ("" if none)
-	Ord     int        `json:"ord"`    // chunk index within the file
+	Ord     int       `json:"ord"`     // chunk index within the file
 	Text    string    `json:"text"`
 	Vec     []float32 `json:"vec"`
 }
@@ -289,6 +289,13 @@ func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
 	onDisk := map[string]fileFingerprint{}
 	var changed []string
 
+	// Resolve the root once so symlink containment below compares like-for-like
+	// even when the root path itself goes through a symlink.
+	rootEval, evErr := filepath.EvalSymlinks(ix.root)
+	if evErr != nil {
+		rootEval = ix.root
+	}
+
 	err := filepath.WalkDir(ix.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -302,6 +309,20 @@ func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
 		}
 		if !isNote(d.Name()) {
 			return nil
+		}
+		// A symlinked note that resolves OUTSIDE the wiki root is NOT indexed, so
+		// its target can never leak via peer_wiki_search snippets (or any read).
+		// In-root symlinks stay indexed — local symlinked-notes workflows are
+		// unaffected. (TEN-243 hardening: stop egress at the indexer, the root
+		// cause; ReadSharedNote's containment is then defense-in-depth.)
+		if d.Type()&fs.ModeSymlink != 0 {
+			real, rerr := filepath.EvalSymlinks(path)
+			if rerr != nil {
+				return nil // unresolvable symlink → skip
+			}
+			if r, rerr := filepath.Rel(rootEval, real); rerr != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+				return nil // escapes the wiki root → don't index its target
+			}
 		}
 		rel, _ := filepath.Rel(ix.root, path)
 		rel = filepath.ToSlash(rel)
@@ -579,6 +600,45 @@ func (ix *Index) ReadFile(rel string) (string, error) {
 	b, err := os.ReadFile(full)
 	if err != nil {
 		return "", fmt.Errorf("wiki: read %s: %w", rel, err)
+	}
+	return string(b), nil
+}
+
+// ReadSharedNote reads a note for SHARING ACROSS A TRUST BOUNDARY (peer_wiki_read)
+// and is deliberately stricter than ReadFile: an arbitrary remote peer supplies
+// the path, so on top of the lexical traversal guard it (a) requires the path to
+// be a KNOWN indexed note — a peer can't read non-note files (.env, secrets.txt)
+// that merely sit in the wiki dir — and (b) resolves symlinks and re-checks
+// containment, so an in-root symlink can't point OUT to /etc/... and leak its
+// target. Errors are intentionally terse (no absolute paths) — the peer-facing
+// handler maps every failure to one opaque message so a peer can't probe the
+// serving filesystem. The local wiki_read keeps the lenient ReadFile.
+func (ix *Index) ReadSharedNote(rel string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	if clean == "." || strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
+		return "", fmt.Errorf("wiki: outside the wiki")
+	}
+	if _, known := ix.idx.Files[filepath.ToSlash(clean)]; !known {
+		return "", fmt.Errorf("wiki: not an indexed note")
+	}
+	full := filepath.Join(ix.root, clean)
+	// Symlink containment: the RESOLVED real path must stay under the resolved
+	// root. EvalSymlinks follows every link component, so an in-root symlink
+	// pointing outside is caught here (the lexical guard above can't see it).
+	rootEval, err := filepath.EvalSymlinks(ix.root)
+	if err != nil {
+		return "", fmt.Errorf("wiki: root unresolved")
+	}
+	fullEval, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", fmt.Errorf("wiki: unreadable")
+	}
+	if r, rerr := filepath.Rel(rootEval, fullEval); rerr != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("wiki: escapes the wiki root")
+	}
+	b, err := os.ReadFile(fullEval)
+	if err != nil {
+		return "", fmt.Errorf("wiki: unreadable")
 	}
 	return string(b), nil
 }

@@ -17,11 +17,21 @@ import (
 	"tenant/internal/model"
 )
 
-// federatableTools maps a LOCAL search tool to the PEER tool it fans out to.
-// Only these tools federate; everything else dispatches normally.
+// federatableTools maps a LOCAL search tool to the PEER tool it fans out to (ALL
+// connected peers, results appended). Only these tools federate; everything else
+// dispatches normally.
 var federatableTools = map[string]string{
 	"wiki_search":   "peer_wiki_search",
 	"memory_search": "peer_memory_search", // Phase B (local memory_search host tool)
+}
+
+// peerReadByMiss maps a LOCAL "read one item" tool to the PEER tool it falls back
+// to WHEN THE LOCAL LOOKUP MISSES. Unlike federatableTools (fan-out + append),
+// this is a fallback that returns the FIRST connected peer that has the item — so
+// the agent reads a note by the same filename whether it's local or on a peer,
+// with no extra ceremony. (Closes the "found via search, can't read" gap.)
+var peerReadByMiss = map[string]string{
+	"wiki_read": "peer_wiki_read",
 }
 
 // namedDisp pairs a peer's local label with its dispatcher (for fan-out).
@@ -31,9 +41,14 @@ type namedDisp struct {
 }
 
 // isFederatedCounterpart reports whether a PEER tool name is folded into a local
-// tool (and so hidden from the agent — the local tool fans out to it).
+// tool (and so hidden from the agent — the local tool fans out / falls back to it).
 func isFederatedCounterpart(name string) bool {
 	for _, v := range federatableTools {
+		if v == name {
+			return true
+		}
+	}
+	for _, v := range peerReadByMiss {
 		if v == name {
 			return true
 		}
@@ -134,6 +149,25 @@ func (m *toolMux) refreshFederationDescLocked() {
 		e.spec.Description = base + " This ALSO searches connected peers (" +
 			strings.Join(names, ", ") + "); peer results are EXTERNAL — weigh them but VERIFY before relying."
 	}
+	// Read-fallback tools (wiki_read): tell the LLM a note that isn't local is
+	// fetched from a connected peer automatically — so it reads a filename the
+	// same way whether it's local or on a peer.
+	for local := range peerReadByMiss {
+		e, ok := m.byName[local]
+		if !ok {
+			continue
+		}
+		if m.baseDesc[local] == "" {
+			m.baseDesc[local] = e.spec.Description
+		}
+		base := m.baseDesc[local]
+		if len(names) == 0 {
+			e.spec.Description = base
+			continue
+		}
+		e.spec.Description = base + " If the note isn't local but a connected peer (" +
+			strings.Join(names, ", ") + ") has it, it's fetched from there automatically and flagged EXTERNAL — VERIFY before relying."
+	}
 }
 
 // federate appends each connected peer's results for the counterpart tool to the
@@ -182,6 +216,22 @@ func peerResultHasContent(res string) bool {
 		}
 	}
 	return false
+}
+
+// peerReadHasContent is the emptiness test for a peer READ result (a full note
+// body), distinct from peerResultHasContent (which is for SEARCH listings). A
+// note body is real content even if it's all markdown headings — only an empty
+// string or a single opaque diagnostic line ("(note not available…)") counts as
+// "the peer doesn't have it".
+func peerReadHasContent(res string) bool {
+	t := strings.TrimSpace(res)
+	if t == "" || t == "(no results)" {
+		return false
+	}
+	if !strings.Contains(t, "\n") && strings.HasPrefix(t, "(") && strings.HasSuffix(t, ")") {
+		return false // a single wholly-parenthetical line is a diagnostic, not a note
+	}
+	return true
 }
 
 // --- drift tracking (TEN-243) ------------------------------------------------
@@ -276,4 +326,41 @@ func (m *toolMux) peersForFederation(toolName string) (counterpart string, peers
 	}
 	sort.Slice(peers, func(i, j int) bool { return peers[i].name < peers[j].name })
 	return counterpart, peers
+}
+
+// peersForReadFallback snapshots peers (name-sorted) for a read-on-miss tool.
+// Returns nil for non-read-fallback tools or when no peers are connected.
+func (m *toolMux) peersForReadFallback(toolName string) (counterpart string, peers []namedDisp) {
+	counterpart = peerReadByMiss[toolName]
+	if counterpart == "" || len(m.peerDisp) == 0 {
+		return "", nil
+	}
+	for name, d := range m.peerDisp {
+		peers = append(peers, namedDisp{name: name, disp: d})
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].name < peers[j].name })
+	return counterpart, peers
+}
+
+// peerReadFallback asks each connected peer (in order) for the item the local
+// lookup missed, returning the FIRST that has it — flagged trust-but-verify.
+// Denials / offline / empty peers are skipped and recorded for drift tracking.
+// Returns ok=false when no peer has it (caller keeps the local miss result).
+func (m *toolMux) peerReadFallback(ctx context.Context, counterpart string, args json.RawMessage, peers []namedDisp) (string, bool) {
+	for _, p := range peers {
+		res, isErr, err := p.disp.Dispatch(ctx, model.ToolCall{Name: counterpart, Arguments: args})
+		switch {
+		case err != nil:
+			m.recordFed(p.name, fedError, 0)
+		case isErr:
+			m.recordFed(p.name, fedDenied, 0) // share gate refused, or peer lacks the tool
+		case !peerReadHasContent(res):
+			m.recordFed(p.name, fedEmpty, 0) // peer doesn't have this note
+		default:
+			res = strings.TrimSpace(res)
+			m.recordFed(p.name, fedHit, len(res))
+			return fmt.Sprintf("📄 From peer %q — trust but verify:\n\n%s", p.name, res), true
+		}
+	}
+	return "", false
 }
