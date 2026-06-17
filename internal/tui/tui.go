@@ -545,6 +545,21 @@ type PeerControl interface {
 	// Reconnect re-dials paired peers so their shared tools come live in the
 	// running agent without a relaunch. Returns how many peers it's dialing.
 	Reconnect() (int, error)
+	// Stats returns per-peer federated-search counters for this session (drift
+	// tracking): how often each peer was queried and what came back. Empty until
+	// the agent runs a federated search against a connected peer.
+	Stats() []PeerFedStat
+}
+
+// PeerFedStat is one peer's federated-search tally for the /peer stats view.
+type PeerFedStat struct {
+	Peer    string
+	Queries int // fan-out attempts
+	Hits    int // returned usable content
+	Denied  int // peer's share gate refused
+	Errors  int // peer offline / transport failure
+	Empty   int // allowed but nothing matched
+	Bytes   int64
 }
 
 // PeerShareCaps is the canonical ordered list of sharable capabilities, shown
@@ -1963,6 +1978,11 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 		}
 		m.sysChat(fmt.Sprintf("🔌 reconnecting to %d peer(s) — their shared knowledge folds into your own search shortly. wiki_search now also covers connected peers (peer hits flagged trust-but-verify).", n))
 		return nil
+	case "stats":
+		// Drift tracking: how each peer's federated search has behaved this
+		// session — a peer drifting toward all-denied/all-errored is visible here.
+		m.sysChat(renderPeerStats(m.cfg.Peer.Stats()))
+		return nil
 	case "rename", "alias":
 		f := strings.Fields(rest)
 		if len(f) != 2 {
@@ -2157,6 +2177,22 @@ func dashOr(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// renderPeerStats formats the federated-search drift tally (/peer stats).
+func renderPeerStats(stats []PeerFedStat) string {
+	if len(stats) == 0 {
+		return "No federated searches yet this session. Once a connected peer is queried via wiki_search/memory_search, per-peer hit/deny/error counts show here (drift tracking)."
+	}
+	var b strings.Builder
+	b.WriteString("Federation drift (this session):\n")
+	b.WriteString(fmt.Sprintf("  %-16s %7s %5s %6s %6s %5s  %s\n", "peer", "queries", "hits", "denied", "errors", "empty", "bytes"))
+	for _, s := range stats {
+		b.WriteString(fmt.Sprintf("  %-16s %7d %5d %6d %6d %5d  %d\n",
+			s.Peer, s.Queries, s.Hits, s.Denied, s.Errors, s.Empty, s.Bytes))
+	}
+	b.WriteString("\ndenied = peer's share gate refused · errors = offline/transport · empty = allowed but no match")
+	return b.String()
 }
 
 func parseAllow(s string) (bool, error) {
@@ -2359,6 +2395,7 @@ var helpSections = []helpSection{
 			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
 			{"/peer rename <old> <new>", "relabel a peer (long hostname → readable)"},
 			{"/peer reconnect", "fold paired peers' shared knowledge into your search now (after pairing mid-session)"},
+			{"/peer stats", "per-peer federated-search tally (drift tracking: queries/hits/denied/errors)"},
 			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
 			{"/configure peer <name>", "share editor — like /permissions: each item allow or deny (set <item> <mode>)"},
 		},

@@ -195,31 +195,119 @@ func TestFederate_AwarenessDescription(t *testing.T) {
 func TestAdoptPeer_ExposesNonFederatedHidesFederated(t *testing.T) {
 	m := newToolMux()
 	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "local notes"})
+	m.add("memory", &fakeDisp{tool: "memory_search", result: "## Memory from me\n### Facts (1)\n- local mem"})
+	m.SetEnabled("memory_search", false) // ships disabled until a peer appears
 	peer := &fakeMultiDisp{
-		tools: []string{"peer_wiki_search", "peer_memory_search"},
+		tools: []string{"peer_wiki_search", "peer_memory_search", "peer_hello"},
 		results: map[string]string{
-			"peer_wiki_search":   "## Wiki results from mac (1)\n- w",
-			"peer_memory_search": "## Memory from mac (1)\n- mem",
+			"peer_wiki_search":   "## Wiki results from mac (1)\n1. [a]\n   w",
+			"peer_memory_search": "## Shared memory from mac\n### Facts (1)\n- peer mem",
+			"peer_hello":         "hi",
 		},
 	}
 	m.adoptPeer("mac", peer, nil)
 
-	// The federated counterpart is folded → not directly callable.
+	// Both federated counterparts are folded → not directly callable.
 	if _, ok := m.byName["peer_wiki_search"]; ok {
-		t.Error("federated counterpart peer_wiki_search should be hidden from the agent")
+		t.Error("peer_wiki_search should be hidden (folded into wiki_search)")
 	}
-	// A non-federated peer tool stays reachable (memory until Phase B).
-	if _, ok := m.byName["peer_memory_search"]; !ok {
-		t.Fatal("non-federated peer_memory_search should be exposed so capability isn't lost")
+	if _, ok := m.byName["peer_memory_search"]; ok {
+		t.Error("peer_memory_search should be hidden (folded into memory_search)")
 	}
-	out, isErr, err := dispatchTool(t, m, "peer_memory_search")
-	if err != nil || isErr || !strings.Contains(out, "mem") {
-		t.Errorf("peer_memory_search should route to the peer: %q isErr=%v err=%v", out, isErr, err)
+	// A genuinely non-federated peer tool stays reachable (no capability loss).
+	if _, ok := m.byName["peer_hello"]; !ok {
+		t.Fatal("non-federated peer_hello should be exposed")
 	}
-	// wiki_search still folds the hidden peer_wiki_search in.
-	out, _, _ = dispatchTool(t, m, "wiki_search")
+	// Adopting a memory-sharing peer brings the local memory_search live.
+	if !m.byName["memory_search"].enabled {
+		t.Error("memory_search should be enabled once a memory-capable peer is adopted")
+	}
+	// Both searches now fold the hidden peer counterparts in.
+	out, _, _ := dispatchTool(t, m, "wiki_search")
 	if !strings.Contains(out, "local notes") || !strings.Contains(out, `From peer "mac"`) {
 		t.Errorf("wiki_search should fold the peer in: %q", out)
+	}
+	out, _, _ = dispatchTool(t, m, "memory_search")
+	if !strings.Contains(out, "local mem") || !strings.Contains(out, "peer mem") {
+		t.Errorf("memory_search should fold local + peer memory: %q", out)
+	}
+}
+
+func TestFederate_MemorySearchTwoCountFormat(t *testing.T) {
+	// The memory format has TWO counts ("### Facts (2)\n### Episodes (0)"); a
+	// naive "(0)" check would wrongly drop a peer that has facts but no episodes.
+	m := newToolMux()
+	local := &fakeDisp{tool: "memory_search", result: "## Memory from me\n### Facts (1)\n- local fact"}
+	m.add("memory", local)
+	m.SetEnabled("memory_search", false) // ships disabled
+	peer := &fakeMultiDisp{
+		tools: []string{"peer_wiki_search", "peer_memory_search"},
+		results: map[string]string{
+			"peer_memory_search": "## Shared memory from mac\n### Facts (2)\n- f1\n- f2\n### Episodes (0)",
+		},
+	}
+	m.adoptPeer("mac", peer, nil)
+
+	// Adopting a memory-sharing peer enables memory_search.
+	if !m.byName["memory_search"].enabled {
+		t.Fatal("memory_search should be enabled once a peer is adopted")
+	}
+	out, _, _ := dispatchTool(t, m, "memory_search")
+	if !strings.Contains(out, "local fact") {
+		t.Errorf("local memory should be present: %q", out)
+	}
+	if !strings.Contains(out, `From peer "mac"`) || !strings.Contains(out, "f1") || !strings.Contains(out, "f2") {
+		t.Errorf("peer facts (with 0 episodes) must NOT be dropped as empty: %q", out)
+	}
+}
+
+func TestPeerResultHasContent(t *testing.T) {
+	cases := []struct {
+		res  string
+		want bool
+	}{
+		{"", false},
+		{"(no results)", false},
+		{"(this peer has no wiki configured)", false},
+		{"## Wiki results from mac (0)\n", false},
+		{"## Memory from mac\n### Facts (0)\n### Episodes (0)", false},
+		{"## Wiki results from mac (2)\n1. [a]\n   snip", true},
+		{"## Memory from mac\n### Facts (2)\n- a\n### Episodes (0)", true},
+	}
+	for _, tc := range cases {
+		if got := peerResultHasContent(tc.res); got != tc.want {
+			t.Errorf("peerResultHasContent(%q) = %v, want %v", tc.res, got, tc.want)
+		}
+	}
+}
+
+func TestFederationStats_RecordsOutcomes(t *testing.T) {
+	m := newToolMux()
+	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "local"})
+	// hitter returns content; denier errors; quiet returns empty.
+	m.adoptPeer("hitter", &fakeDisp{tool: "peer_wiki_search", result: "## Wiki results from hitter (1)\n1. [a]\n   x"}, nil)
+	m.adoptPeer("denier", &fakeDisp{tool: "peer_wiki_search", result: "denied", isErr: true}, nil)
+	m.adoptPeer("quiet", &fakeDisp{tool: "peer_wiki_search", result: "## Wiki results from quiet (0)\n"}, nil)
+
+	dispatchTool(t, m, "wiki_search")
+	stats := m.FederationStats()
+	byName := map[string]PeerFedStat{}
+	for _, s := range stats {
+		byName[s.Peer] = s
+	}
+	if byName["hitter"].Hits != 1 || byName["hitter"].Bytes == 0 {
+		t.Errorf("hitter should record a hit with bytes: %+v", byName["hitter"])
+	}
+	if byName["denier"].Denied != 1 {
+		t.Errorf("denier should record a denial: %+v", byName["denier"])
+	}
+	if byName["quiet"].Empty != 1 {
+		t.Errorf("quiet should record an empty: %+v", byName["quiet"])
+	}
+	for _, s := range stats {
+		if s.Queries != 1 {
+			t.Errorf("%s should have 1 query, got %d", s.Peer, s.Queries)
+		}
 	}
 }
 

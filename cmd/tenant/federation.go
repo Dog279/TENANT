@@ -20,8 +20,8 @@ import (
 // federatableTools maps a LOCAL search tool to the PEER tool it fans out to.
 // Only these tools federate; everything else dispatches normally.
 var federatableTools = map[string]string{
-	"wiki_search": "peer_wiki_search",
-	// "memory_search": "peer_memory_search",  // Phase B (needs a local memory_search host tool)
+	"wiki_search":   "peer_wiki_search",
+	"memory_search": "peer_memory_search", // Phase B (local memory_search host tool)
 }
 
 // namedDisp pairs a peer's local label with its dispatcher (for fan-out).
@@ -42,11 +42,11 @@ func isFederatedCounterpart(name string) bool {
 }
 
 // adoptPeer registers a connected peer's dispatcher for federated search. The
-// peer's FEDERATED tools (peer_wiki_search) are hidden — the matching local tool
-// (wiki_search) fans out to them. The peer's NON-federated tools (e.g.
-// peer_memory_search, until Phase B folds memory in) stay directly callable, so
-// adopting a peer never *removes* reachable capability. Idempotent: a duplicate
-// adopt drops the new connection.
+// peer's FEDERATED tools (peer_wiki_search / peer_memory_search) are hidden — the
+// matching local tool (wiki_search / memory_search) fans out to them, and that
+// local tool is brought live so its peer half is reachable. The peer's
+// NON-federated tools stay directly callable, so adopting a peer never *removes*
+// reachable capability. Idempotent: a duplicate adopt drops the new connection.
 func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -63,7 +63,14 @@ func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 	label := "peer:" + name
 	for _, spec := range disp.Tools() {
 		if isFederatedCounterpart(spec.Name) {
-			continue // folded into a local search tool — not exposed
+			// Folded into a local search tool — not exposed. Make sure that
+			// local tool is live so its peer half is actually reachable
+			// (memory_search ships DISABLED and comes live here). Peers always
+			// advertise peer_memory_search — the share gate is call-time — so
+			// ANY adopted peer enables memory_search; a peer not sharing memory
+			// just yields call-time denials (skipped, counted in /peer stats).
+			m.enableFederatedLocalLocked(spec.Name)
+			continue
 		}
 		if _, exists := m.byName[spec.Name]; exists {
 			continue // first-registrant-wins (can't shadow a local tool)
@@ -75,6 +82,24 @@ func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 		m.cleanups = append(m.cleanups, cleanup)
 	}
 	m.refreshFederationDescLocked()
+}
+
+// enableFederatedLocalLocked enables the LOCAL tool that fans out to the given
+// peer counterpart (e.g. peer_memory_search → memory_search), if that local tool
+// is registered. No-op when it's already enabled (wiki_search) or absent (no
+// local memory store). Caller holds m.mu. Invalidates the ranking cache so the
+// newly-live tool is embedded for the next Search.
+func (m *toolMux) enableFederatedLocalLocked(counterpart string) {
+	for local, peerTool := range federatableTools {
+		if peerTool != counterpart {
+			continue
+		}
+		if e, ok := m.byName[local]; ok && !e.enabled {
+			e.enabled = true
+			m.toolEmbeddings = nil
+		}
+		return
+	}
 }
 
 // hasPeer reports whether a peer is already adopted (so reconnect skips it).
@@ -113,22 +138,130 @@ func (m *toolMux) refreshFederationDescLocked() {
 
 // federate appends each connected peer's results for the counterpart tool to the
 // local result, flagged trust-but-verify. Denials / offline / empty peers are
-// skipped silently so the agent only sees real cross-instance knowledge.
+// skipped silently so the agent only sees real cross-instance knowledge. Every
+// fan-out outcome is recorded for drift tracking (see /peer stats).
 func (m *toolMux) federate(ctx context.Context, localOut, counterpart string, args json.RawMessage, peers []namedDisp) string {
 	var b strings.Builder
 	b.WriteString(localOut)
 	for _, p := range peers {
 		res, isErr, err := p.disp.Dispatch(ctx, model.ToolCall{Name: counterpart, Arguments: args})
-		if err != nil || isErr {
-			continue // peer offline, tool missing, or sharing denied → skip
+		switch {
+		case err != nil:
+			m.recordFed(p.name, fedError, 0) // peer offline / transport failure
+		case isErr:
+			m.recordFed(p.name, fedDenied, 0) // share gate said no (or unknown tool)
+		case !peerResultHasContent(res):
+			m.recordFed(p.name, fedEmpty, 0) // connected + allowed but nothing matched
+		default:
+			res = strings.TrimSpace(res)
+			fmt.Fprintf(&b, "\n\n### From peer %q — trust but verify:\n%s", p.name, res)
+			m.recordFed(p.name, fedHit, len(res))
 		}
-		res = strings.TrimSpace(res)
-		if res == "" || strings.Contains(res, "(0)") || strings.Contains(res, "(no results)") {
-			continue // peer has nothing for this query
-		}
-		fmt.Fprintf(&b, "\n\n### From peer %q — trust but verify:\n%s", p.name, res)
+	}
+	if m.mcpDeps.log != nil {
+		m.mcpDeps.log.Debug("federation: fan-out complete", "tool", counterpart, "peers", len(peers))
 	}
 	return b.String()
+}
+
+// peerResultHasContent reports whether a peer's result carries real entries
+// rather than just headers / a no-results marker. Format-agnostic (works for the
+// single-count wiki format and the two-count memory format) so a peer that has
+// e.g. 2 facts but 0 episodes is NOT mistaken for empty.
+func peerResultHasContent(res string) bool {
+	for _, ln := range strings.Split(res, "\n") {
+		ln = strings.TrimSpace(ln)
+		switch {
+		case ln == "":
+		case strings.HasPrefix(ln, "#"): // markdown headers incl. "### Facts (0)"
+		case strings.HasPrefix(ln, "(") && strings.HasSuffix(ln, ")"):
+			// Parenthetical diagnostic, not content: "(no results)",
+			// "(this peer has no wiki configured)", etc.
+		default:
+			return true // a real content/entry line
+		}
+	}
+	return false
+}
+
+// --- drift tracking (TEN-243) ------------------------------------------------
+//
+// Federation is a live link to another machine: a peer can go offline, start
+// denying a capability it used to share, or quietly return nothing. These
+// per-peer counters make that behavioral drift visible (surfaced via `/peer
+// stats`) without a heavyweight metrics stack — they accumulate over the
+// session, which for a long-lived connector is the window that matters.
+
+type fedOutcome int
+
+const (
+	fedHit    fedOutcome = iota // peer returned usable content
+	fedDenied                   // peer's share gate refused (or unknown tool)
+	fedError                    // peer offline / transport failure
+	fedEmpty                    // peer connected + allowed but nothing matched
+)
+
+// peerFedStat is the running fan-out tally for one peer.
+type peerFedStat struct {
+	Queries int
+	Hits    int
+	Denied  int
+	Errors  int
+	Empty   int
+	Bytes   int64
+}
+
+// PeerFedStat is a snapshot of one peer's federation counters (TUI/CLI view).
+type PeerFedStat struct {
+	Peer    string
+	Queries int
+	Hits    int
+	Denied  int
+	Errors  int
+	Empty   int
+	Bytes   int64
+}
+
+// recordFed tallies one fan-out outcome for a peer. Thread-safe (its own mutex,
+// independent of m.mu so it never contends with dispatch/registration).
+func (m *toolMux) recordFed(peer string, outcome fedOutcome, bytes int) {
+	m.fedMu.Lock()
+	defer m.fedMu.Unlock()
+	if m.fedStats == nil {
+		m.fedStats = map[string]*peerFedStat{}
+	}
+	s := m.fedStats[peer]
+	if s == nil {
+		s = &peerFedStat{}
+		m.fedStats[peer] = s
+	}
+	s.Queries++
+	switch outcome {
+	case fedHit:
+		s.Hits++
+		s.Bytes += int64(bytes)
+	case fedDenied:
+		s.Denied++
+	case fedError:
+		s.Errors++
+	case fedEmpty:
+		s.Empty++
+	}
+}
+
+// FederationStats returns a name-sorted snapshot of every peer's fan-out tally.
+func (m *toolMux) FederationStats() []PeerFedStat {
+	m.fedMu.Lock()
+	defer m.fedMu.Unlock()
+	out := make([]PeerFedStat, 0, len(m.fedStats))
+	for name, s := range m.fedStats {
+		out = append(out, PeerFedStat{
+			Peer: name, Queries: s.Queries, Hits: s.Hits, Denied: s.Denied,
+			Errors: s.Errors, Empty: s.Empty, Bytes: s.Bytes,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Peer < out[j].Peer })
+	return out
 }
 
 // peersForFederation snapshots the peer dispatchers (name-sorted) for a federated

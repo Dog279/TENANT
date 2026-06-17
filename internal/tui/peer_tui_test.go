@@ -82,6 +82,13 @@ func (f *fakePeerControl) Invite(label, url string) (string, func(context.Contex
 	}
 	return "123 456", run, nil
 }
+func (f *fakePeerControl) Stats() []PeerFedStat {
+	out := []PeerFedStat{}
+	for _, p := range f.peers {
+		out = append(out, PeerFedStat{Peer: p.Name, Queries: 1, Hits: 1})
+	}
+	return out
+}
 func (f *fakePeerControl) SetShare(name, capability string, allow bool) (PeerInfo, error) {
 	p, ok := f.peers[name]
 	if !ok {

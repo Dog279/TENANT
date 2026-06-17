@@ -77,6 +77,10 @@ type toolMux struct {
 	// rebuilt as peers connect/disconnect.
 	peerDisp map[string]plugin
 	baseDesc map[string]string
+	// Federation drift metrics (TEN-243): per-peer fan-out outcome counters,
+	// guarded by their own mutex so recording never contends with m.mu.
+	fedMu    sync.Mutex
+	fedStats map[string]*peerFedStat
 	// onChange fires after any enable/disable, with a full name→enabled
 	// snapshot, so the caller can persist the curation. Set AFTER restore
 	// (restore must not re-trigger a save of what it just loaded).
@@ -1109,6 +1113,29 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		}
 		mux.add("wiki", wiki.NewDispatcher(ix))
 		wikiIx = ix // exported via the return tuple for TEN-44 auto-reindex
+	}
+
+	// Local memory recall tool (TEN-243 Phase B). Registered DISABLED: it only
+	// enters the catalog when a memory-sharing peer is adopted (federated recall)
+	// or via a manual `/enable memory_search` — so with no peers, memory stays
+	// auto-assembled exactly as before (strictly additive). Opens its own
+	// read-only store handle (SQLite WAL ⇒ safe alongside the TUI's handle); a
+	// failure to open just means no memory_search (best-effort, never fatal).
+	if mst, mclose, merr := openStores(c); merr == nil {
+		mux.addCleanup(mclose)
+		hostName, _ := os.Hostname()
+		var memEmb model.Embedder
+		if router != nil { // nil in some headless/test paths; embedder is optional
+			if e, _, eerr := router.EmbedderForRole(ctx, model.RoleEmbedder); eerr == nil {
+				memEmb = e
+			}
+		}
+		mux.add("memory", newMemorySearchDispatcher(hostName, mst.semantic, mst.episodic, memEmb))
+		if _, _, serr := mux.SetEnabled("memory_search", false); serr != nil && log != nil {
+			log.Debug("memory_search: disable-at-launch failed", "err", serr.Error())
+		}
+	} else if log != nil {
+		log.Debug("memory_search: store open failed; tool unavailable", "err", merr.Error())
 	}
 
 	if pf.web {

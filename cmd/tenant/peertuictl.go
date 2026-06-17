@@ -27,6 +27,32 @@ type peerTUIControl struct {
 	// for the running agent (the same path used at launch). Injected by cmdTUI
 	// (it captures the live tool mux). nil ⇒ unavailable.
 	reconnect func()
+	// stats returns the live per-peer federated-search counters (drift tracking).
+	// Injected by cmdTUI (captures the tool mux). nil ⇒ no stats.
+	stats func() []tui.PeerFedStat
+}
+
+// Stats exposes the federation fan-out tally for `/peer stats`.
+func (p peerTUIControl) Stats() []tui.PeerFedStat {
+	if p.stats == nil {
+		return nil
+	}
+	return p.stats()
+}
+
+// peerFedStatsView adapts the mux's federation counters to the TUI view type.
+func peerFedStatsView(mux *toolMux) func() []tui.PeerFedStat {
+	return func() []tui.PeerFedStat {
+		src := mux.FederationStats()
+		out := make([]tui.PeerFedStat, len(src))
+		for i, s := range src {
+			out[i] = tui.PeerFedStat{
+				Peer: s.Peer, Queries: s.Queries, Hits: s.Hits,
+				Denied: s.Denied, Errors: s.Errors, Empty: s.Empty, Bytes: s.Bytes,
+			}
+		}
+		return out
+	}
 }
 
 // Serve (re)starts the peer listener bound to addr (TEN-239 follow-up: in-TUI
