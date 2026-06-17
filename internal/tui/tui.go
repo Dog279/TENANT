@@ -714,6 +714,12 @@ type ModelControl interface {
 	// retunes it live (and persists) — /ceiling.
 	LoopCeiling() int
 	SetLoopCeiling(n int) (string, error)
+	// Fallback returns the configured auto-fallback provider chain (TEN-246),
+	// in order. Empty = no fallback.
+	Fallback() []string
+	// SetFallback persists + live-installs the ordered fallback provider chain
+	// (each name must be a configured provider). Empty clears it.
+	SetFallback(names []string) (status string, err error)
 }
 
 // ResearchControl powers /research: a long-running deep-research pass. The
@@ -2309,6 +2315,7 @@ var helpSections = []helpSection{
 		tagline: "switch the primary LLM backend (vLLM / Z.ai / OpenAI / Anthropic …)",
 		rows: [][2]string{
 			{"/model", "list configured model backends + the active one"},
+			{"/model fallback <name...>", "auto-route to these providers when the active one 429s/out-of-credits/unreachable (off to clear)"},
 			{"/model pick", "arrow-key picker: pick a provider → its live cloud models → swap (or bare /model use)"},
 			{"/model use <name> [<model>]", "switch primary; optional model variant (e.g. /model use zai glm-5.1)"},
 			{"/model models [<name>]", "list model variants served by the provider's endpoint (live)"},
@@ -3783,6 +3790,29 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 			m.sysChat("model: no active provider to reload")
 		} else {
 			m.sysChat(status)
+		}
+		return
+	case "fallback":
+		// `/model fallback` shows the chain; `/model fallback <name...>` sets it;
+		// `/model fallback off` clears it. (TEN-246)
+		if len(f) == 1 {
+			chain := m.cfg.Models.Fallback()
+			if len(chain) == 0 {
+				m.sysChat("no model fallback configured. Set one with `/model fallback <provider...>` so a rate-limited/unavailable model auto-routes to the next.")
+			} else {
+				m.sysChat("model fallback: " + strings.Join(chain, " → ") + "  (tried after the active model on 429 / out-of-credits / unreachable)")
+			}
+			return
+		}
+		names := f[1:]
+		if len(names) == 1 && strings.EqualFold(names[0], "off") {
+			names = nil
+		}
+		status, err := m.cfg.Models.SetFallback(names)
+		if err != nil {
+			m.sysChat("model: fallback failed: " + err.Error())
+		} else {
+			m.sysChat("✓ " + status)
 		}
 		return
 	case "use", "switch":

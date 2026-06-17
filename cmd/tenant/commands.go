@@ -1811,6 +1811,21 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// when a swap-observer hook lands; until then, restart picks it up).
 	mux.SetEmbedder(embedderID, skEmb)
 
+	// Auto-fallback (TEN-246): wire the configured fallback chain onto the
+	// SHARED router + surface each failover to the feed. Off unless config.json
+	// `fallbacks` is set. The observer can fire from any goroutine (a background
+	// cron/relay turn), so it pushes through the thread-safe non-blocking feed.
+	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
+	router.SetFailoverObserver(func(ev model.FailoverEvent) {
+		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
+		to := fallbackLabelToProvider(ev.To, c.lc.Provider)
+		msg := fmt.Sprintf("⚠ model fallback: %s %s → using %s", from, ev.Reason, to)
+		if errors.Is(ev.Err, model.ErrInsufficientBalance) {
+			msg += " (recharge to restore)"
+		}
+		pushSys(msg)
+	})
+
 	// Restore the operator's tool curation over the flag defaults, THEN
 	// install the save hook (restore must not re-save what it just loaded).
 	for _, note := range mux.restore(stg.Tools) {

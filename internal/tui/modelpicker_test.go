@@ -43,6 +43,8 @@ func (f *fakeModels) RemoveModel(string) (string, error)           { return "", 
 func (f *fakeModels) ReloadKeys() (string, error)                  { return "", nil }
 func (f *fakeModels) LoopCeiling() int                             { return 0 }
 func (f *fakeModels) SetLoopCeiling(int) (string, error)           { return "", nil }
+func (f *fakeModels) Fallback() []string                           { return nil }
+func (f *fakeModels) SetFallback([]string) (string, error)         { return "", nil }
 
 func newModelPickerModel(f *fakeModels) *model {
 	m := newModel(context.Background(), Config{Models: f})

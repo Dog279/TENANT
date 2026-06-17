@@ -1604,6 +1604,8 @@ func (f *fakeModelCtl) ReloadKeys() (string, error) {
 }
 func (f *fakeModelCtl) LoopCeiling() int                     { return 16 }
 func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) { return "", nil }
+func (f *fakeModelCtl) Fallback() []string                   { return nil }
+func (f *fakeModelCtl) SetFallback([]string) (string, error) { return "", nil }
 func (f *fakeModelCtl) AddModel(name, endpoint, format string) (string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Add:%s,%s,%s", name, endpoint, format))
 	if f.addFn != nil {

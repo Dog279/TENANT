@@ -27,6 +27,15 @@ type Router struct {
 	embsByID map[string]Embedder
 
 	rolePref map[Role]string // first-pick profile ID per role
+
+	// Auto-fallback (TEN-246): ordered fallback profile IDs per role (tried
+	// after the role's primary), and a per-role cached *FallbackLLM wrapper so
+	// its in-memory cooldown state persists across turns. failoverObserver gets
+	// a FailoverEvent each time a link fails over (operator feed line). All
+	// nil/empty by default ⇒ today's single-provider behavior.
+	fallbackChains   map[Role][]string
+	fallbackLLMs     map[Role]LLM
+	failoverObserver func(FailoverEvent)
 }
 
 // NewRouter builds a Router on top of a Registry. Backend factories must
@@ -42,6 +51,9 @@ func NewRouter(reg *Registry, log *slog.Logger) *Router {
 		llmsByID:  make(map[string]LLM),
 		embsByID:  make(map[string]Embedder),
 		rolePref:  make(map[Role]string),
+
+		fallbackChains: make(map[Role][]string),
+		fallbackLLMs:   make(map[Role]LLM),
 	}
 	// Default role preferences: first profile registered for each role.
 	for _, id := range reg.IDs() {
@@ -91,7 +103,46 @@ func (r *Router) SetProfiles(profiles []Profile) error {
 		delete(r.embsByID, p.ID)
 		r.rolePref[p.Role] = p.ID
 	}
+	// A primary changed → drop the cached fallback wrappers so they rebuild
+	// against the fresh per-link LLMs (TEN-246).
+	r.fallbackLLMs = make(map[Role]LLM)
 	return nil
+}
+
+// SetFailoverObserver installs the callback fired when a fallback link fails
+// over to the next (operator feed line). nil clears it.
+func (r *Router) SetFailoverObserver(fn func(FailoverEvent)) {
+	r.mu.Lock()
+	r.failoverObserver = fn
+	r.mu.Unlock()
+}
+
+// AddFallbackProfiles upserts profiles into the registry WITHOUT changing any
+// role's primary binding (unlike SetProfiles, which re-roles). Used to register
+// the namespaced per-provider fallback profiles (TEN-246).
+func (r *Router) AddFallbackProfiles(profiles ...Profile) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range profiles {
+		if err := r.reg.Upsert(p); err != nil {
+			return err
+		}
+		delete(r.llmsByID, p.ID)
+	}
+	return nil
+}
+
+// SetFallbackChain sets the ordered fallback profile IDs tried after role's
+// primary. Empty clears it. Invalidates the cached wrapper for that role.
+func (r *Router) SetFallbackChain(role Role, profileIDs []string) {
+	r.mu.Lock()
+	if len(profileIDs) == 0 {
+		delete(r.fallbackChains, role)
+	} else {
+		r.fallbackChains[role] = append([]string(nil), profileIDs...)
+	}
+	delete(r.fallbackLLMs, role)
+	r.mu.Unlock()
 }
 
 // SetPlanLoopCeiling updates PlanLoopCeiling in place on the active
@@ -144,7 +195,45 @@ func (r *Router) LLMForRole(ctx context.Context, role Role) (LLM, Profile, error
 	if err != nil {
 		return nil, Profile{}, err
 	}
-	return llm, p, nil
+	// No fallback configured for this role → today's behavior. The returned
+	// Profile is always the PRIMARY's (used for tool format + context budget);
+	// fallback is a transparent routing detail. (TEN-246)
+	r.mu.RLock()
+	chain := r.fallbackChains[role]
+	cached := r.fallbackLLMs[role]
+	obs := r.failoverObserver
+	r.mu.RUnlock()
+	if len(chain) == 0 {
+		return llm, p, nil
+	}
+	if cached != nil {
+		return cached, p, nil
+	}
+	// Build the wrapper once (cached so its cooldown state persists). Drop any
+	// fallback link that can't be built (missing key/unknown backend) — a broken
+	// fallback must never block the primary.
+	links := []fbLink{{llm: llm, label: p.ID}}
+	for _, id := range chain {
+		fp, ok := r.reg.ByID(id)
+		if !ok {
+			r.log.Warn("router: fallback profile not registered; skipping", "id", id, "role", string(role))
+			continue
+		}
+		flm, ferr := r.llmFor(ctx, fp)
+		if ferr != nil {
+			r.log.Warn("router: fallback link unbuildable; skipping", "id", id, "err", ferr.Error())
+			continue
+		}
+		links = append(links, fbLink{llm: flm, label: id})
+	}
+	if len(links) < 2 {
+		return llm, p, nil // no usable fallback → just the primary
+	}
+	fb := NewFallbackLLM(links, obs)
+	r.mu.Lock()
+	r.fallbackLLMs[role] = fb
+	r.mu.Unlock()
+	return fb, p, nil
 }
 
 // EmbedderForRole returns the Embedder instance bound to role. Typically

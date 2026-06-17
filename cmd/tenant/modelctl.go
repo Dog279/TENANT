@@ -143,6 +143,52 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 	return status, active, nil
 }
 
+// Fallback returns the configured auto-fallback provider chain (TEN-246).
+func (mc *modelControl) Fallback() []string {
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		return nil
+	}
+	return lc.Fallbacks
+}
+
+// SetFallback validates + persists the ordered fallback provider chain and
+// re-installs it on the live router (TEN-246) — so it takes effect this session
+// with no restart. Each name must be a configured provider; empty clears it.
+func (mc *modelControl) SetFallback(names []string) (string, error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		return "", err
+	}
+	valid := make([]string, 0, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if lc.Providers[n] == nil {
+			return "", fmt.Errorf("no provider %q (see /model)", n)
+		}
+		if n == lc.Provider {
+			return "", fmt.Errorf("%q is the active model — a fallback must be a DIFFERENT provider", n)
+		}
+		valid = append(valid, n)
+	}
+	lc.Fallbacks = valid
+	if err := lc.save(mc.cfgDir); err != nil {
+		return "", err
+	}
+	if r := mc.ag.Router(); r != nil {
+		installFallbackChain(r, mc.cfgDir, lc, lc.PlanLoopCeiling, mc.log)
+	}
+	if len(valid) == 0 {
+		return "model fallback cleared", nil
+	}
+	return "model fallback: " + lc.Provider + " → " + strings.Join(valid, " → "), nil
+}
+
 // ReloadKeys re-resolves the ACTIVE provider's API key (env → credentials.json)
 // and hot-swaps it into the live router, so a key rotated at runtime takes effect
 // on the next turn WITHOUT a restart. No-op when no provider is active. It is a

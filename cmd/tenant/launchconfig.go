@@ -80,6 +80,13 @@ type launchConfig struct {
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
 	PlanLoopCeiling int `json:"plan_loop_ceiling,omitempty"`
+	// Fallbacks is the ordered list of provider names (keys into Providers) to
+	// try when the active provider rate-limits / runs out of credits / is
+	// unreachable (TEN-246). Empty (default) = no auto-fallback. e.g. with
+	// provider "zai" + `"fallbacks": ["qwen-dgx"]`, a glm 429 transparently routes
+	// to the DGX Qwen for that call; the preferred provider is retried first once
+	// its cooldown lapses.
+	Fallbacks []string `json:"fallbacks,omitempty"`
 	// LazyTools enables on-demand tool loading (TEN-228): the per-turn tool array
 	// carries only the ranked working set + a load_tool meta-tool, with a cheap
 	// name+description catalog of the rest in the system prompt. Off by default
