@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
+	"tenant/internal/plugins/imessage"
 	"tenant/internal/tui"
 )
 
@@ -137,6 +139,127 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		}
 	}
 	return relayMgr
+}
+
+// serveIMessageDeps bundles what the native iMessage responder needs. Mirrors
+// cmdTUI's iMessage block (commands.go ~2311-2407) so `tenant serve` answers
+// inbound texts exactly like the TUI does.
+type serveIMessageDeps struct {
+	c          *commonFlags
+	router     *model.Router
+	soulLive   *soul.Live
+	stores     *stores
+	skills     *skills.Store
+	compressor *compress.Compressor
+	profile    *userprofile.Profile
+	tools      composite
+	sysPrompt  string
+	meta       *improve.Meta
+	broker     *approvalBroker
+	degraded   *degradedState
+	emit       func(agent.Event)
+	notify     func(string)
+	log        *slog.Logger
+}
+
+// buildServeIMessage wires the iMessage drive-allowlist + per-category broker +
+// native responder and auto-starts it when the operator left it enabled. Returns
+// the allow manager for the dashboard access surface. Native iMessage reads
+// chat.db, so under a daemon the serve process needs Full Disk Access — a
+// failure here is a logged note, never fatal (the agent + every other channel
+// keep running). Returns nil only if there is no config to read.
+func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllowManager {
+	c := d.c
+	var allow0 []string
+	if c.lc != nil {
+		allow0 = c.lc.IMessage.AllowFrom
+	}
+	allowMgr := newIMessageAllowManager(allow0, func(handles []string) error {
+		if c.lc == nil {
+			return nil
+		}
+		c.lc.IMessage.AllowFrom = handles
+		return c.lc.save(c.cfgDir)
+	})
+
+	// Offsite broker: own per-category modes (default DENY) but SHARES the global
+	// broker's request channel, so an "ask" lands in the same queue the headless
+	// drain surfaces on the dashboard.
+	imsgBroker := newOffsiteApprovalBroker(d.log, d.broker.requests)
+	imsgBroker.persist = func(snap map[string]string) {
+		if c.lc == nil {
+			return
+		}
+		c.lc.IMessage.Permissions = snap
+		_ = c.lc.save(c.cfgDir)
+	}
+	if c.lc != nil {
+		imsgBroker.loadModes(c.lc.IMessage.Permissions)
+	}
+	allowMgr.setPerms(imsgBroker)
+
+	ingest := func(t string) {
+		preview := strings.TrimSpace(t)
+		if r := []rune(preview); len(r) > 100 {
+			preview = string(r[:100]) + "…"
+		}
+		d.emit(agent.Event{Kind: agent.EventIngest, Text: "iMessage: " + preview})
+	}
+
+	resp := &imessageResponderManager{
+		base: ctx, log: d.log,
+		allowFrom: allowMgr.AllowList,
+		persist: func(enabled bool) error {
+			if c.lc == nil {
+				return nil
+			}
+			c.lc.IMessage.Enabled = enabled
+			return c.lc.save(c.cfgDir)
+		},
+		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
+			nat, err := imessage.OpenNative(imessage.NativeConfig{})
+			if err != nil {
+				return nil, nil, err
+			}
+			watcher, err := imessage.NewWatcher(imessage.WatchConfig{
+				Source: nat, Store: d.meta, Account: c.agent, AllowFrom: allowFrom,
+			})
+			if err != nil {
+				_ = nat.Close()
+				return nil, nil, fmt.Errorf("watcher: %w", err)
+			}
+			ag, err := buildIMessageAgent(imessageAgentDeps{
+				router: d.router, soulLive: d.soulLive, archive: d.stores.archive,
+				episodic: d.stores.episodic, semantic: d.stores.semantic,
+				skills:    skillRetriever{st: d.skills, agentID: c.agent},
+				compactor: d.compressor, userProfile: d.profile,
+				fullTools: d.tools, fullDisp: d.tools,
+				sysPrompt: d.sysPrompt, log: d.log,
+			})
+			if err != nil {
+				_ = nat.Close()
+				return nil, nil, fmt.Errorf("agent: %w", err)
+			}
+			responder := &imessageResponder{
+				poller: watcher, sender: nat, runner: ag,
+				confirm: func(cctx context.Context, action, detail string) bool {
+					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
+				},
+				log: d.log, degraded: d.degraded.Degraded,
+				ingest: ingest,
+			}
+			return responder, func() { _ = nat.Close() }, nil
+		},
+	}
+	allowMgr.setResponder(resp)
+	if c.lc != nil && c.lc.IMessage.Enabled {
+		if status, err := resp.Start(); err != nil {
+			d.notify("imessage responder: " + err.Error())
+		} else {
+			d.notify(status)
+		}
+	}
+	return allowMgr
 }
 
 // serveImproveDeps bundles the self-improvement scheduler inputs. Mirrors

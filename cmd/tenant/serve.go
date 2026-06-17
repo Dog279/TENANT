@@ -82,10 +82,16 @@ func cmdServe(ctx context.Context, args []string) error {
 		default:
 		}
 	}
+	// Status feed → stdout (the supervisor's log). A daemon's setup/health/
+	// dashboard/peer/iMessage/fallback/cron lines are the operator's only window
+	// into "is it working", so route them at always-visible level rather than the
+	// WARN-filtered slog (newLogger defaults to WARN). Also mirror to the debug
+	// log for structured capture when TENANT_LOG=info|debug.
 	go func() {
 		for {
 			select {
 			case s := <-sysCh:
+				fmt.Println("• " + s)
 				log.Info("serve", "evt", s)
 			case <-ctx.Done():
 				return
@@ -502,7 +508,16 @@ func cmdServe(ctx context.Context, args []string) error {
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
 		emit: emit, notify: pushSys, degraded: degraded, log: log,
 	})
-	dashMgr.access = dashAccess{relay: relayMgr}
+
+	// Native iMessage responder (TEN-230): the away-from-desk drive surface a Mac
+	// hub answers texts on. Auto-starts when left enabled; needs Full Disk Access
+	// for chat.db under a daemon (a failure is a logged note, never fatal).
+	imsgAllowMgr := buildServeIMessage(ctx, serveIMessageDeps{
+		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
+		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
+		meta: meta, broker: broker, degraded: degraded, emit: emit, notify: pushSys, log: log,
+	})
+	dashMgr.access = dashAccess{im: imsgAllowMgr, relay: relayMgr}
 
 	// Self-improvement scheduler (preserves the old serve's distill+consolidate
 	// and adds the full job set). Suspended while degraded.
@@ -523,6 +538,18 @@ func cmdServe(ctx context.Context, args []string) error {
 		} else {
 			dashAddr = addr
 			pushSys("dashboard: serving on http://" + addr)
+		}
+	}
+
+	// Re-assert a persisted `/tailscale serve` choice (TEN-233) now the dashboard
+	// is up — publishes the loopback dashboard onto the tailnet so the operator
+	// can reach the hub off-LAN, matching the TUI. Best-effort.
+	if c.lc != nil && c.lc.Tailscale.Serve {
+		tsMgr := newTailscaleManager(ctx, dashMgr.Status, log)
+		if url, terr := tsMgr.reassertOnLaunch(); terr != nil {
+			pushSys("tailscale: serve not restored — " + terr.Error())
+		} else {
+			pushSys("tailscale: dashboard republished to your tailnet at " + url)
 		}
 	}
 
