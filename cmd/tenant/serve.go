@@ -609,6 +609,7 @@ func serveSystemPrompt(agents map[string]*agentProfile, hasTools bool) string {
 	p += renderAgentsForOrchestrator(agents)
 	if hasTools {
 		p += " You have tools available — use them when they help, and report plainly if an action is blocked by policy."
+		p += searchPolicyPrompt() // knowledge-first search-order policy (TEN-249)
 	}
 	return p
 }

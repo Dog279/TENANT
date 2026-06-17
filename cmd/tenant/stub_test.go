@@ -26,6 +26,15 @@ func TestBuildToolMux_StubsUnconfiguredPlugins(t *testing.T) {
 	seen := map[string]bool{}
 	for _, ti := range mux.ToolList() {
 		seen[ti.Plugin] = true
+		// memory_search is enabled by default as of TEN-249 (active recall of the
+		// agent's own long-term memory + the federated path always exists) — it is
+		// NOT an unconfigured stub, so it's exempt from the disabled-by-default rule.
+		if ti.Name == "memory_search" {
+			if !ti.Enabled {
+				t.Errorf("memory_search should be enabled by default (TEN-249)")
+			}
+			continue
+		}
 		if ti.Enabled {
 			t.Errorf("unconfigured tool %s should start disabled", ti.Name)
 		}

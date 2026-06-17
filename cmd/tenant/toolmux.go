@@ -137,6 +137,15 @@ const rankMinKeepFloor = 12
 // the cost it mitigates (prompt-token bloat).
 const rankDropFraction = 4
 
+// peerKnowledgeBoost (TEN-249) lifts the federated knowledge tools
+// (wiki_search/memory_search) up the ranked list WHEN A PEER IS CONNECTED, so
+// the agent's own peer-extended knowledge is salient rather than buried under
+// web_search. It is a SALIENCE nudge, not a hard route: the system prompt
+// decides WHEN to prefer the knowledge tier (internal vs open-world), and the
+// boost is bounded so a genuinely web-relevant query keeps web_search surfaced.
+// Sized to clear a typical tool-description cosine gap without dominating.
+const peerKnowledgeBoost = 0.25
+
 // coreToolNames are surfaced EVERY ranked turn regardless of cosine score (when
 // enabled) — the agent's "hands" (local file ops + shell) and its memory recall,
 // which a turn may need for its NEXT step even when the CURRENT query doesn't
@@ -153,6 +162,10 @@ var coreToolNames = map[string]bool{
 	"os_exec":       true,
 	"memory_search": true,
 	"memory_recall": true,
+	// The agent's own knowledge tier (TEN-249): wiki_search joins memory_search
+	// as always-surfaced so the model can never be steered to web_search simply
+	// because its own (peer-extended) wiki got ranked out of a large catalog.
+	"wiki_search": true,
 }
 
 // setOnChange installs the persistence hook. Call it after restore.
@@ -697,6 +710,10 @@ func (m *toolMux) searchRanked(queryEmb []float32, maxTools int) []model.ToolSpe
 		spec model.ToolSpec
 		sim  float64
 	}
+	// Peer-connected salience boost (TEN-249): when at least one peer is
+	// connected, the federated knowledge tools get lifted up the ranking so the
+	// agent's own (peer-extended) wiki/memory isn't buried under web_search.
+	peersConnected := len(m.peerDisp) > 0
 	rows := make([]scored, 0, len(m.order))
 	for _, n := range m.order {
 		e := m.byName[n]
@@ -707,6 +724,9 @@ func (m *toolMux) searchRanked(queryEmb []float32, maxTools int) []model.ToolSpe
 		sim := 0.5 // neutral default for race-installed tools
 		if emb != nil {
 			sim = cosineSimF32(queryEmb, emb)
+		}
+		if peersConnected && federatableTools[n] != "" {
+			sim += peerKnowledgeBoost
 		}
 		rows = append(rows, scored{spec: e.spec, sim: sim})
 	}
@@ -1214,12 +1234,15 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		wikiIx = ix // exported via the return tuple for TEN-44 auto-reindex
 	}
 
-	// Local memory recall tool (TEN-243 Phase B). Registered DISABLED: it only
-	// enters the catalog when a memory-sharing peer is adopted (federated recall)
-	// or via a manual `/enable memory_search` — so with no peers, memory stays
-	// auto-assembled exactly as before (strictly additive). Opens its own
-	// read-only store handle (SQLite WAL ⇒ safe alongside the TUI's handle); a
-	// failure to open just means no memory_search (best-effort, never fatal).
+	// Local memory recall tool (TEN-243 Phase B). Enabled by default as of
+	// TEN-249: it gives the agent ACTIVE recall of its own long-term memory and,
+	// when a memory-sharing peer is connected, federates to that peer — so the
+	// knowledge tier is always available and the model isn't pushed to web_search
+	// for "what do we know / did we decide" questions. (Relevant memory is still
+	// auto-assembled each turn too; this just adds the on-demand search.) The
+	// operator can still `/disable memory_search`; a persisted choice wins via
+	// restore. Opens its own read-only store handle (SQLite WAL ⇒ safe alongside
+	// the live handle); a failure to open just means no memory_search.
 	if mst, mclose, merr := openStores(c); merr == nil {
 		mux.addCleanup(mclose)
 		hostName, _ := os.Hostname()
@@ -1230,9 +1253,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 			}
 		}
 		mux.add("memory", newMemorySearchDispatcher(hostName, mst.semantic, mst.episodic, memEmb))
-		if _, _, serr := mux.SetEnabled("memory_search", false); serr != nil && log != nil {
-			log.Debug("memory_search: disable-at-launch failed", "err", serr.Error())
-		}
+		// add() registers enabled by default; no disable-at-launch (TEN-249).
 	} else if log != nil {
 		log.Debug("memory_search: store open failed; tool unavailable", "err", merr.Error())
 	}

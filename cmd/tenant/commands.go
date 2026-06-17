@@ -1947,6 +1947,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if len(mainTools.All()) > 0 {
 		sysPrompt += " You have tools available — use them when they help, and report plainly " +
 			"if an action is blocked by policy."
+		// Knowledge-first search-order policy (TEN-249): prefer the agent's own
+		// (peer-extended) memory/wiki over web_search for internal questions.
+		sysPrompt += searchPolicyPrompt()
 	}
 
 	// The agent's Observer fans out through a Broker so the TUI feed AND

@@ -652,10 +652,15 @@ func roleSoul(base *soul.Soul, id, role string) *soul.Soul {
 }
 
 func memberPrompt(id, role, orchID string) string {
+	// The knowledge-first search-order policy (TEN-249) is shared verbatim with
+	// the main agent via searchPolicyPrompt() — so the trust-but-verify nuance
+	// and the "use only the tools you have" hedge stay in one place (DRY) and
+	// sub-agents get the identical policy. It already covers "knowledge first,
+	// web for open-world", so the research line below only adds the HOW (browse).
 	return fmt.Sprintf("You are %q, the %s on a collaborating team led by %q. Do your assigned task using "+
 		"your full toolset — use tools to do REAL work, not guesses. If you are researching something, "+
 		"gather actual information: use web_navigate + web_read to read live sources on the internet when "+
-		"web tools are available (don't rely only on local files or prior knowledge). "+
+		"web tools are available (don't rely only on prior knowledge).%s "+
 		"CRITICAL — never fabricate: ground every claim in what you ACTUALLY read or ran. If a tool fails, "+
 		"a page won't load (e.g. a 404), or you can't find the information, SAY SO plainly — do not invent "+
 		"facts, specs, numbers, or sources to fill the gap. \"I couldn't find X\" is a correct, required "+
@@ -664,7 +669,7 @@ func memberPrompt(id, role, orchID string) string {
 		"you learn, and team_send/team_broadcast/team_check/team_history/team_roster to coordinate. Resolve "+
 		"disagreements yourself using your identity and rules — don't ask the user. Be concise. Your final "+
 		"response IS your deliverable: make it the actual content (your findings/argument), not a status "+
-		"update.", id, role, orchID)
+		"update.", id, role, orchID, searchPolicyPrompt())
 }
 
 const orchestratorPrompt = "You are the ORCHESTRATOR of a team of AI agents. Break the user's request into " +

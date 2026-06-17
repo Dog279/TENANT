@@ -79,11 +79,13 @@ func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 	for _, spec := range disp.Tools() {
 		if isFederatedCounterpart(spec.Name) {
 			// Folded into a local search tool — not exposed. Make sure that
-			// local tool is live so its peer half is actually reachable
-			// (memory_search ships DISABLED and comes live here). Peers always
-			// advertise peer_memory_search — the share gate is call-time — so
-			// ANY adopted peer enables memory_search; a peer not sharing memory
-			// just yields call-time denials (skipped, counted in /peer stats).
+			// local tool is live so its peer half is actually reachable. As of
+			// TEN-249 memory_search is enabled by default, so this is normally a
+			// no-op for it (idempotent — see enableFederatedLocalLocked); it still
+			// matters for any federated tool the operator has disabled. Peers
+			// always advertise peer_memory_search — the share gate is call-time —
+			// so ANY adopted peer (re)enables memory_search; a peer not sharing
+			// memory just yields call-time denials (skipped, counted in /peer stats).
 			m.enableFederatedLocalLocked(spec.Name)
 			continue
 		}

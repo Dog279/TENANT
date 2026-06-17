@@ -14,8 +14,10 @@ import (
 // the chosen decision.
 func TestHeadlessApprovals_DrainDecide(t *testing.T) {
 	reqs := make(chan tui.ApprovalRequest, 4)
-	var events []agent.Event
-	h := newHeadlessApprovals(reqs, func(e agent.Event) { events = append(events, e) })
+	// Capture emitted events over a channel — emit fires on the drain goroutine,
+	// so a shared slice would race; a buffered channel is the deterministic seam.
+	events := make(chan agent.Event, 8)
+	h := newHeadlessApprovals(reqs, func(e agent.Event) { events <- e })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -25,23 +27,22 @@ func TestHeadlessApprovals_DrainDecide(t *testing.T) {
 	reply := make(chan tui.ApprovalDecision, 1)
 	reqs <- tui.ApprovalRequest{Category: "exec", Action: "os_exec", Detail: "rm -rf /tmp/x", Reply: reply}
 
-	// Wait for it to register as pending.
-	var id string
-	waitFor(t, func() bool {
-		p := h.Pending()
-		if len(p) == 1 {
-			id = p[0].ID
-			return true
+	// The feed event is the synchronization point: once it arrives, the request
+	// is registered as pending (add() stores pending before emitting).
+	select {
+	case e := <-events:
+		if e.Kind != agent.EventApproval {
+			t.Fatalf("expected EventApproval, got %v", e.Kind)
 		}
-		return false
-	})
+	case <-time.After(time.Second):
+		t.Fatal("no EventApproval emitted for the pending request")
+	}
 
-	if got := h.Pending()[0]; got.Action != "os_exec" || got.Category != "exec" {
-		t.Fatalf("pending = %+v", got)
+	p := h.Pending()
+	if len(p) != 1 || p[0].Action != "os_exec" || p[0].Category != "exec" {
+		t.Fatalf("pending = %+v", p)
 	}
-	if len(events) != 1 || events[0].Kind != agent.EventApproval {
-		t.Fatalf("expected one EventApproval, got %+v", events)
-	}
+	id := p[0].ID
 
 	if err := h.Decide(id, "approve"); err != nil {
 		t.Fatalf("Decide: %v", err)
