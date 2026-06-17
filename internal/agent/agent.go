@@ -311,6 +311,13 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	// Capability gate (TEN-103): only offer tools the active model may use, so a
 	// small local planner never sees an augmentation tool like memory_recall.
 	availableTools = filterGatedTools(availableTools, profile)
+	// Minify the SURVIVORS' JSON schemas before they hit the wire (TEN-227):
+	// drop pure-doc keywords + compact whitespace + trim paragraph-length
+	// property prose, preserving types/enums/required. Applied here (post rank +
+	// gate) so it's uniform across backends AND the budget accounting below
+	// counts the same minified specs the backend will send. Canonical registry
+	// specs are untouched (operates on copies).
+	availableTools = model.MinifyToolSchemas(availableTools)
 	// Observability for embedding-ranked tool selection (TEN-225). Emit a
 	// per-turn line whether ranking TRIMMED or fell back to the full catalog —
 	// the silent-fallback case is exactly what hides a fat tool dump in the
