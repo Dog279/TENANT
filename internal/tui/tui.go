@@ -542,6 +542,9 @@ type PeerControl interface {
 	// reachable default) so peers can reach this instance AND inbound invites
 	// prompt in this TUI. Returns the bound address.
 	Serve(addr string) (boundAddr string, err error)
+	// Reconnect re-dials paired peers so their shared tools come live in the
+	// running agent without a relaunch. Returns how many peers it's dialing.
+	Reconnect() (int, error)
 }
 
 // PeerShareCaps is the canonical ordered list of sharable capabilities, shown
@@ -1946,6 +1949,20 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 		}
 		m.sysChat("✓ removed peer " + name)
 		return nil
+	case "reconnect":
+		// Bring paired peers' shared tools live in the running agent (e.g. after
+		// pairing mid-session or if a peer's listener came up late).
+		n, err := m.cfg.Peer.Reconnect()
+		if err != nil {
+			m.sysChat("peer reconnect failed: " + err.Error())
+			return nil
+		}
+		if n == 0 {
+			m.sysChat("no dialable peers to reconnect (you pair by inviting one with /peer invite).")
+			return nil
+		}
+		m.sysChat(fmt.Sprintf("🔌 reconnecting to %d peer(s) — their shared tools come live shortly. Run /tools to see peer_memory_search / peer_wiki_search.", n))
+		return nil
 	case "rename", "alias":
 		f := strings.Fields(rest)
 		if len(f) != 2 {
@@ -1992,7 +2009,7 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			return sysChatMsg{text: "✓ " + msg + " — set sharing with /configure peer " + label}
 		}
 	default:
-		m.sysChat("usage: /peer serve [addr] | /peer invite <name> <ip|url> | /peer rename <old> <new> | /peer [list] | /peer show <name> | /peer remove <name>   (sharing: /configure peer <name>)")
+		m.sysChat("usage: /peer serve [addr] | /peer invite <name> <ip|url> | /peer reconnect | /peer rename <old> <new> | /peer [list] | /peer show <name> | /peer remove <name>   (sharing: /configure peer <name>)")
 		return nil
 	}
 }
@@ -2341,6 +2358,7 @@ var helpSections = []helpSection{
 			{"/peer serve [addr]", "start the peer listener (default 0.0.0.0:9100, TLS) so peers can reach you + invites prompt here"},
 			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
 			{"/peer rename <old> <new>", "relabel a peer (long hostname → readable)"},
+			{"/peer reconnect", "bring paired peers' shared tools live now (after pairing mid-session)"},
 			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
 			{"/configure peer <name>", "share editor — like /permissions: each item allow or deny (set <item> <mode>)"},
 		},

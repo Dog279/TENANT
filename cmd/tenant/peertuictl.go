@@ -23,6 +23,10 @@ type peerTUIControl struct {
 	// returns the bound address. Injected by cmdTUI (it captures the live
 	// stores/broker). nil ⇒ /peer serve is unavailable in this session.
 	serve func(addr string) (string, error)
+	// reconnect (re)dials every paired peer and brings their shared tools live
+	// for the running agent (the same path used at launch). Injected by cmdTUI
+	// (it captures the live tool mux). nil ⇒ unavailable.
+	reconnect func()
 }
 
 // Serve (re)starts the peer listener bound to addr (TEN-239 follow-up: in-TUI
@@ -32,6 +36,26 @@ func (p peerTUIControl) Serve(addr string) (string, error) {
 		return "", fmt.Errorf("peer serve isn't available in this session")
 	}
 	return p.serve(addr)
+}
+
+// Reconnect re-dials paired peers so their shared tools come live in the running
+// agent (without a relaunch). Returns how many dialable peers it's connecting.
+func (p peerTUIControl) Reconnect() (int, error) {
+	if p.reconnect == nil {
+		return 0, fmt.Errorf("peer reconnect isn't available in this session")
+	}
+	s, err := peering.LoadStore(p.cfgDir)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, pr := range s.List() {
+		if pr.Dial && pr.URL != "" && pr.Token != "" {
+			n++
+		}
+	}
+	p.reconnect()
+	return n, nil
 }
 
 func (p peerTUIControl) List() []tui.PeerInfo {
@@ -136,7 +160,12 @@ func (p peerTUIControl) Invite(label, url string) (string, func(context.Context)
 		}); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("paired with %s (%s)", label, pr.Name), nil
+		// Bring the new peer's shared tools live in the running agent immediately
+		// (no relaunch needed) — dials it + adopts peer_wiki_search/peer_memory_search.
+		if p.reconnect != nil {
+			p.reconnect()
+		}
+		return fmt.Sprintf("paired with %s (%s) — connecting to its shared tools (run /tools shortly to see peer_*)", label, pr.Name), nil
 	}
 	return peering.FormatPIN(pin), run, nil
 }

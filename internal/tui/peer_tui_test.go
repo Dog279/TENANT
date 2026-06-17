@@ -9,9 +9,10 @@ import (
 
 // fakePeerControl is an in-memory PeerControl for handler tests.
 type fakePeerControl struct {
-	peers   map[string]*PeerInfo
-	removed []string
-	served  string
+	peers       map[string]*PeerInfo
+	removed     []string
+	served      string
+	reconnected int
 }
 
 func newFakePeerControl(names ...string) *fakePeerControl {
@@ -63,6 +64,16 @@ func (f *fakePeerControl) Serve(addr string) (string, error) {
 	}
 	f.served = addr
 	return addr, nil
+}
+func (f *fakePeerControl) Reconnect() (int, error) {
+	f.reconnected++
+	n := 0
+	for _, p := range f.peers {
+		if p.Dial {
+			n++
+		}
+	}
+	return n, nil
 }
 func (f *fakePeerControl) Invite(label, url string) (string, func(context.Context) (string, error), error) {
 	run := func(context.Context) (string, error) {
@@ -222,6 +233,25 @@ func TestHandlePeer_Serve(t *testing.T) {
 	m.handlePeer("serve 100.76.238.69:9100")
 	if f.served != "100.76.238.69:9100" {
 		t.Errorf("serve should bind the given addr, got %q", f.served)
+	}
+}
+
+func TestHandlePeer_Reconnect(t *testing.T) {
+	f := newFakePeerControl("mac") // mac is Dial:true (newFakePeerControl sets Dial)
+	m := newModel(context.Background(), Config{Peer: f})
+	m.handlePeer("reconnect")
+	if f.reconnected != 1 {
+		t.Errorf("reconnect should trigger the control once, got %d", f.reconnected)
+	}
+	if !strings.Contains(lastSys(m), "reconnecting") || !strings.Contains(lastSys(m), "/tools") {
+		t.Errorf("reconnect should report + point at /tools: %q", lastSys(m))
+	}
+	// No dialable peers → guidance.
+	empty := newFakePeerControl()
+	m2 := newModel(context.Background(), Config{Peer: empty})
+	m2.handlePeer("reconnect")
+	if !strings.Contains(lastSys(m2), "no dialable peers") {
+		t.Errorf("empty reconnect should guide: %q", lastSys(m2))
 	}
 }
 

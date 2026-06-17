@@ -2743,7 +2743,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		IMessage:  imsgAllowMgr,
 		Cron:      tuiCronCtl,
 		MCP:       mcpCtl,
-		Peer:      peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn},
+		Peer:      peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }},
 		Secrets:   tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
 		Setup:     setupControl{cfgDir: c.cfgDir, mc: modelCtl},
 		Models:    modelCtl,
