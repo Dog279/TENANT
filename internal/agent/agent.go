@@ -89,6 +89,15 @@ type Config struct {
 	// their work via the assembler's agent-glob filter (TEN-45). Empty
 	// (default) → falls through to `VisibilityPrivate`.
 	EpisodeVisibility string
+
+	// LazyToolLoad enables on-demand tool loading (TEN-228): the per-turn tool
+	// array carries only the ranked working set + a `load_tool` meta-tool, while
+	// a cheap name+one-line-description CATALOG of every other enabled tool goes
+	// in the system prompt. The model calls load_tool(name) to pull a catalog
+	// tool's full (minified) schema into the next loop iteration. Keeps tool
+	// tokens flat as the catalog grows AND preserves access to unranked tools
+	// (closes ranking's "needed a hidden tool" risk). Off by default — additive.
+	LazyToolLoad bool
 }
 
 // Compactor compresses a working-set message slice — summarizing old
@@ -362,6 +371,20 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		}
 	}
 
+	// 5d. Lazy tool loading (TEN-228): inject the cheap catalog of every OTHER
+	// enabled tool into the system prompt and seed the per-turn loaded set. The
+	// per-iteration tool array carries the working set + load_tool + whatever the
+	// model loads; the catalog tells it what else it can pull on demand. Off by
+	// default — when off, `loaded` stays empty and nothing below changes.
+	loaded := map[string]bool{}
+	if a.cfg.LazyToolLoad {
+		active := make(map[string]bool, len(availableTools))
+		for _, t := range availableTools {
+			active[t.Name] = true
+		}
+		sysPrompt += renderToolCatalog(a.cfg.Tools.All(), active)
+	}
+
 	// 5c. Derive the persistent goal header (TEN-102) from the latest compaction
 	// summary in the DURABLE working set (not the assembler's truncated view, so
 	// it survives even after the summary message itself is truncated from the
@@ -443,13 +466,22 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 
 		result.Iterations = iter
 
+		// Per-iteration tool array. With lazy loading (TEN-228) it's the working
+		// set + load_tool + whatever the model has loaded so far, rebuilt each
+		// iteration so a just-loaded tool's schema appears on the next step.
+		// Otherwise it's the static surfaced set.
+		iterTools := availableTools
+		if a.cfg.LazyToolLoad {
+			iterTools = a.buildLazyTools(availableTools, loaded)
+		}
+
 		assembled, err := asm.Assemble(ctx, assemble.Request{
 			Profile:       profile,
 			Soul:          a.soul(),
 			SystemPrompt:  sysPrompt,
 			UserProfile:   a.cfg.UserProfile.Render(),
 			GoalHeader:    goalHeader,
-			Tools:         availableTools,
+			Tools:         iterTools,
 			Working:       a.cfg.Working,
 			EpisodicStore: a.cfg.Episodic,
 			SemanticStore: a.cfg.Semantic,
@@ -473,7 +505,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		a.setIterCancel(iterCancel)
 		resp, err := a.plan(iterCtx, planner, profile.ToolFormat, iter, model.GenerateRequest{
 			Messages: assembled.Messages,
-			Tools:    availableTools,
+			Tools:    iterTools,
 		})
 		a.setIterCancel(nil)
 		iterCancel()
@@ -546,6 +578,27 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			a.emit(Event{Kind: EventFinal, Iter: iter, Text: resp.Text})
 			a.persistEpisode(ctx, req.UserQuery, resp.Text, result.ToolTrace, queryEmbedding, embedder)
 			return result, nil
+		}
+
+		// Lazy tool loading (TEN-228): intercept load_tool calls in-agent — it
+		// isn't a mux tool (so it would fail validation), and the agent owns the
+		// per-turn loaded set. Handle them here, then drop them from the batch.
+		// If load_tool was the ONLY call this iteration, re-plan so the next
+		// iteration's tool array carries the freshly-loaded schema.
+		if a.cfg.LazyToolLoad {
+			if loads, rest := splitLoadToolCalls(resp.ToolCalls); len(loads) > 0 {
+				for _, call := range loads {
+					a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Args: string(call.Arguments)})
+					a.handleLoadTool(ctx, call, loaded)
+				}
+				// rest is a FRESH slice — does NOT alias the assistant message's
+				// ToolCalls already recorded in the working set (see
+				// splitLoadToolCalls).
+				resp.ToolCalls = rest
+				if len(resp.ToolCalls) == 0 {
+					continue // only load_tool this iteration — re-plan with it loaded
+				}
+			}
 		}
 
 		// Validate every tool call. If ANY fail, feed errors back as

@@ -2067,9 +2067,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:       log,
-		Stream:       true,
-		Observer:     emit,
+		Logger:   log,
+		Stream:   true,
+		Observer: emit,
+		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
+		// Off unless `lazy_tools` is set in config.json — additive.
+		LazyToolLoad: c.lc.LazyTools,
 		Skills:       skillRetriever{st: skillStore, agentID: c.agent},
 		SystemPrompt: sysPrompt,
 		// Context compaction: when the budget fills, summarize old turns

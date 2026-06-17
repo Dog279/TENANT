@@ -80,6 +80,11 @@ type launchConfig struct {
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
 	PlanLoopCeiling int `json:"plan_loop_ceiling,omitempty"`
+	// LazyTools enables on-demand tool loading (TEN-228): the per-turn tool array
+	// carries only the ranked working set + a load_tool meta-tool, with a cheap
+	// name+description catalog of the rest in the system prompt. Off by default
+	// (additive). Set `"lazy_tools": true` in config.json to try it.
+	LazyTools bool `json:"lazy_tools,omitempty"`
 	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
 	// inline command sets it.
 	Goal goalConfig `json:"goal,omitempty"`
