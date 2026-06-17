@@ -33,6 +33,7 @@ type dashboardManager struct {
 	mcp          dashboard.MCPControl          // TEN-205: remote MCP connectors surface (nil-safe)
 	integrations dashboard.IntegrationsControl // TEN-206: integration-config surface (nil-safe)
 	access       dashboard.AccessControl       // TEN-208: iMessage + Discord access surface (nil-safe)
+	approvals    dashboard.ApprovalControl     // TEN-194: headless approval queue surface (serve mode; nil-safe)
 	broker       *agent.Broker
 	evlog        *agent.EventLog // TEN-238: retained activity-feed event log (nil-safe)
 	log          *slog.Logger
@@ -77,6 +78,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.access != nil {
 		srv.SetAccess(m.access)
+	}
+	if m.approvals != nil {
+		srv.SetApprovals(m.approvals)
 	}
 	if m.evlog != nil {
 		srv.SetEventLog(m.evlog)

@@ -194,6 +194,10 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// TEN-81: dashboard reachability + bind-policy config lint when the
 		// web control panel is configured.
 		{"dashboard (if configured)", checkDashboard},
+		// TEN-194: serve-mode liveness — when a daemon (or TUI+dashboard) is up,
+		// probe /api/status for a stuck turn or a wedged approval queue. SKIP
+		// when nothing is reachable (a daemon simply not running is not a fault).
+		{"serve liveness (if running)", checkServe},
 		{"distill cursor", checkDistillCursor},
 		{"tool-calling (deep)", checkToolCalling},
 		{"mcp surface (deep)", checkMCPSurface},
@@ -1380,6 +1384,75 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 			Detail: fmt.Sprintf("dashboard /healthz returned HTTP %d", resp.StatusCode)}
 	}
 	return checkResult{Status: statusOK, Detail: "dashboard healthy at " + addr}
+}
+
+// serveStuckTurnSecs is how long an in-flight turn may run before checkServe
+// flags it as possibly stuck — well past a normal turn (seconds to ~1 min).
+const serveStuckTurnSecs = 300
+
+// checkServe probes a running hub's /api/status (TEN-194) for the headless
+// wedge symptoms a daemon operator can't see from a terminal: a turn stuck
+// active for too long, or dangerous-action approvals waiting in the queue. It
+// SKIPs when nothing answers — a daemon that simply isn't running is not a
+// fault (and a *configured but down* dashboard is already WARNed by
+// checkDashboard, so this never double-reports).
+func checkServe(ctx context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil {
+		return checkResult{Status: statusSkip, Detail: "no launch config"}
+	}
+	dc := e.lc.Dashboard
+	if !dc.dashboardEnabled() && dc.Addr == "" {
+		return checkResult{Status: statusSkip, Detail: "dashboard disabled — no hub to probe"}
+	}
+	addr := dc.Addr
+	if addr == "" {
+		addr = "127.0.0.1:8770"
+	}
+	scheme := "http"
+	if dc.TLSCert != "" {
+		scheme = "https"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s://%s/api/status", scheme, addr), nil)
+	if dc.Auth != "" {
+		req.Header.Set("Authorization", "Bearer "+dc.Auth)
+	}
+	httpc := e.httpc
+	if httpc == nil {
+		httpc = http.DefaultClient
+	}
+	resp, err := httpc.Do(req)
+	if err != nil {
+		return checkResult{Status: statusSkip, Detail: "no hub reachable at " + addr + " (not running)"}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return checkResult{Status: statusSkip, Detail: fmt.Sprintf("/api/status returned HTTP %d", resp.StatusCode)}
+	}
+	var st struct {
+		TurnActive       bool `json:"turn_active"`
+		TurnAgeSecs      int  `json:"turn_age_secs"`
+		PendingApprovals int  `json:"pending_approvals"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return checkResult{Status: statusWarn, Detail: "hub up but /api/status was unparseable: " + err.Error()}
+	}
+	if st.PendingApprovals > 0 {
+		return checkResult{Status: statusWarn,
+			Detail: fmt.Sprintf("%d dangerous-action approval(s) waiting at %s", st.PendingApprovals, addr),
+			Fix:    fmt.Sprintf("resolve them: GET %s://%s/api/approvals then POST the decision", scheme, addr)}
+	}
+	if st.TurnActive && st.TurnAgeSecs >= serveStuckTurnSecs {
+		return checkResult{Status: statusWarn,
+			Detail: fmt.Sprintf("a turn has been active %ds — possibly stuck", st.TurnAgeSecs),
+			Fix:    "check the activity feed; cancel from the dashboard if it's hung"}
+	}
+	state := "idle"
+	if st.TurnActive {
+		state = fmt.Sprintf("turn active %ds", st.TurnAgeSecs)
+	}
+	return checkResult{Status: statusOK, Detail: fmt.Sprintf("hub healthy at %s (%s, 0 pending approvals)", addr, state)}
 }
 
 // isLoopbackAddr reports whether host names the local machine. Mirrors

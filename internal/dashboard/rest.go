@@ -8,6 +8,8 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -24,11 +26,27 @@ type restToolView struct {
 // restStatus is the GET /api/status payload. Kept deliberately small and
 // extensible: the agent runner exposes no model/goal/version, so we report
 // only what's truthfully available rather than fabricating fields.
+//
+// The TEN-194 serve-liveness fields (turn_active/turn_age_secs/pending_approvals)
+// are zero-valued in the interactive TUI (no turnGate, no headless approval
+// drain) and only meaningful for a `tenant serve` daemon, where the doctor
+// serve-mode check reads them to flag a stuck turn or a wedged approval.
 type restStatus struct {
 	Plugins      []string `json:"plugins"`
 	ToolsEnabled int      `json:"tools_enabled"`
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
+
+	TurnActive       bool `json:"turn_active"`
+	TurnAgeSecs      int  `json:"turn_age_secs,omitempty"`
+	PendingApprovals int  `json:"pending_approvals"`
+}
+
+// liveness is the optional turn-state reporter a serve-mode runner (the
+// turnGate) implements. The dashboard reads it via duck-typing so the minimal
+// AgentRunner interface (Turn/Interject) stays unchanged.
+type liveness interface {
+	ActiveTurn() (active bool, age time.Duration)
 }
 
 // restToggleRequest is the body of the POST toggle endpoints.
@@ -68,6 +86,10 @@ func (s *Server) mountREST(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/plugins/{label}", s.handleSetPlugin)
 	mux.HandleFunc("GET /api/posture", s.handleGetPosture)
 	mux.HandleFunc("POST /api/posture", s.handleSetPosture)
+	// TEN-194: headless approval queue + structured activity projection.
+	mux.HandleFunc("GET /api/approvals", s.handleApprovals)
+	mux.HandleFunc("POST /api/approvals/{id}", s.handleApprovalDecide)
+	mux.HandleFunc("GET /api/activity", s.handleActivity)
 }
 
 // handleStatus reports plugins and tool counts. Best-effort and extensible.
@@ -79,12 +101,76 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			enabled++
 		}
 	}
-	writeJSON(w, http.StatusOK, restStatus{
+	st := restStatus{
 		Plugins:      s.tools.Plugins(),
 		ToolsEnabled: enabled,
 		ToolsTotal:   len(tools),
 		Status:       "ok",
-	})
+	}
+	// Serve-mode liveness (TEN-194): present only when a turnGate runner +
+	// headless approval drain are wired; zero-valued otherwise.
+	if lr, ok := s.agent.(liveness); ok && lr != nil {
+		if active, age := lr.ActiveTurn(); active {
+			st.TurnActive = true
+			st.TurnAgeSecs = int(age.Seconds())
+		}
+	}
+	if s.approvals != nil {
+		st.PendingApprovals = len(s.approvals.Pending())
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// restActivityEvent is one retained event as the JSON activity projection
+// renders it (TEN-194): structured fields a programmatic attach client and the
+// doctor liveness probe can read directly — NOT the Datastar HTML the SSR
+// /activity feed streams. Mirrors the EventLog's lossless cursor.
+type restActivityEvent struct {
+	Seq   uint64 `json:"seq"`
+	At    string `json:"at"` // RFC3339
+	Kind  string `json:"kind"`
+	Agent string `json:"agent,omitempty"`
+	Iter  int    `json:"iter,omitempty"`
+	Tool  string `json:"tool,omitempty"`
+	IsErr bool   `json:"is_err,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
+type restActivityResponse struct {
+	Events []restActivityEvent `json:"events"`
+	Cursor uint64              `json:"cursor"` // pass back as ?since= for a gap-free tail
+}
+
+// handleActivity — GET /api/activity?since=<seq>: the structured replay of the
+// retained activity log. Returns events with Seq > since plus the new head
+// cursor. Empty (not an error) when no event log is wired.
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	resp := restActivityResponse{Events: []restActivityEvent{}}
+	if s.evlog == nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	var since uint64
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			since = n
+		}
+	}
+	events, cursor := s.evlog.Since(since)
+	resp.Cursor = cursor
+	for _, se := range events {
+		resp.Events = append(resp.Events, restActivityEvent{
+			Seq:   se.Seq,
+			At:    se.At.UTC().Format(time.RFC3339),
+			Kind:  string(se.Ev.Kind),
+			Agent: se.Ev.Agent,
+			Iter:  se.Ev.Iter,
+			Tool:  se.Ev.Tool,
+			IsErr: se.Ev.IsErr,
+			Text:  se.Ev.Text,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleTools returns every tool with its authoritative `destructive`

@@ -28,6 +28,7 @@ const (
 	EventToolCatalog EventKind = "tool_catalog" // ranked tool surface trimmed for this turn (Text="ranked: N of M tools surfaced")
 	EventIngest      EventKind = "ingest"       // an inbound message arrived from an offsite channel and drove a turn; Text = "Discord: <preview>" / "iMessage: <preview>" (TEN-232)
 	EventBus         EventKind = "bus"          // an inter-agent message crossed the orchestra bus; Agent = sender, Text = "→ <to>: <content>" (TEN-234)
+	EventApproval    EventKind = "approval"     // a dangerous action is awaiting an operator decision; Text = "<action>: <detail>" — surfaced in serve mode where there is no TUI prompt (TEN-194)
 )
 
 // Event is one live update during a turn. Only the fields relevant to

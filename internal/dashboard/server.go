@@ -78,6 +78,7 @@ type Server struct {
 	mcp          MCPControl          // TEN-205: remote MCP connectors page; nil = "not configured"
 	integrations IntegrationsControl // TEN-206: integration-config page; nil = "not configured"
 	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
+	approvals    ApprovalControl     // TEN-194: headless approval surface (serve mode); nil = TUI drains its own prompts
 	evlog        *agent.EventLog     // TEN-238: retained activity-feed log (backfill + replay); nil = live-only
 	broker       *agent.Broker
 	mux          *http.ServeMux

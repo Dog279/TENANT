@@ -26,7 +26,9 @@ type SeqEvent struct {
 // It mirrors orchestra.Bus's lossless Since(cursor) pattern, but as a BOUNDED
 // ring keyed by a monotonic uint64 Seq (eviction never invalidates a cursor —
 // a slice index would). Per-token/accounting noise is denylisted at write time
-// so the ring holds real activity, not a token flood. Safe for concurrent use.
+// so the ring holds real activity, not a token flood (this denylist is the
+// EventLog's alone — the Broker has none and fans out every event). Safe for
+// concurrent use.
 type EventLog struct {
 	mu     sync.Mutex
 	ring   []SeqEvent

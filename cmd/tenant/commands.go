@@ -12,12 +12,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"tenant/internal/agent"
@@ -1346,89 +1344,10 @@ func cmdIMessage(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdServe is the long-running home for background self-improvement.
-// It registers the distillation job on the scheduler and ticks it on a
-// cadence, so "the agent learns over time" happens without anyone
-// remembering to run `tenant distill`. Scoped to the improve scheduler
-// for now — a full always-on agent server is future work. Ctrl-C
-// (SIGINT/SIGTERM) shuts it down cleanly, draining any in-flight job.
-func cmdServe(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	c := bindCommon(fs)
-	distillEvery := fs.Duration("distill-every", improve.DefaultDistillInterval, "how often to run distillation")
-	tick := fs.Duration("tick", improve.DefaultSchedulerTick, "how often the scheduler checks for due jobs")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if err := c.resolve(); err != nil {
-		return err
-	}
-	log := newLogger()
-	router, err := buildRouter(c, log)
-	if err != nil {
-		return err
-	}
-	st, closeStores, err := openStores(c)
-	if err != nil {
-		return err
-	}
-	defer closeStores()
-	meta, err := improve.OpenMeta(filepath.Join(c.dataDir, "tenant_meta.db"))
-	if err != nil {
-		return err
-	}
-	defer meta.Close()
-
-	// Pinned proposer router (TEN-195): reflection/summarizer calls use a
-	// stronger model when improve.profile is set; the embedder always stays on
-	// the main router. Empty/unbuildable ⇒ main router (loud WARN inside).
-	proposerRouter := router
-	if lc, lerr := loadLaunchConfig(c.cfgDir); lerr == nil {
-		embProf, _ := router.ForRole(model.RoleEmbedder)
-		var pinModel string
-		proposerRouter, pinModel = improveProposerRouter(lc.Improve.Profile, router, effectiveAgents(lc), lc, c.cfgDir, embProf, log)
-		if proposerRouter != router {
-			log.Info("improve: reflection jobs pinned to profile", "profile", lc.Improve.Profile, "model", pinModel)
-		}
-	}
-
-	d := &distill.Distiller{
-		Router: router, SummarizerRouter: proposerRouter, Episodic: st.episodic, Semantic: st.semantic,
-		AgentID: c.agent, Logger: log,
-	}
-	sched := improve.NewScheduler(log, 0)
-	sched.Register(improve.NewDistillJob(d, meta, c.agent), *distillEvery)
-	sched.Register(&improve.ConsolidationJob{
-		Semantic: st.semantic, Router: router, SummarizerRouter: proposerRouter,
-		AgentID: c.agent, Holistic: true, Logger: log,
-	}, improve.DefaultConsolidateInterval)
-
-	// Graceful shutdown on Ctrl-C / SIGTERM.
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if err := sched.Start(ctx, *tick); err != nil {
-		return err
-	}
-	fmt.Printf("tenant serve — agent=%s backend=%s; distill every %s (tick %s)\n",
-		c.agent, c.backend, *distillEvery, *tick)
-	fmt.Println("running background self-improvement; Ctrl-C to stop")
-
-	<-ctx.Done()
-	fmt.Println("\nshutting down…")
-	sched.Stop() // drains any in-flight job
-
-	hist := sched.History()
-	fmt.Printf("ran %d job(s) this session:\n", len(hist))
-	for _, r := range hist {
-		mark := "ok"
-		if r.Err != nil {
-			mark = "ERR"
-		}
-		fmt.Printf("  [%s] %s (%s): %s\n", mark, r.JobName, r.Duration.Round(time.Millisecond), r.Result.Summary)
-	}
-	return nil
-}
+// cmdServe runs Tenant as a headless 24/7 hub. Its implementation lives in
+// serve.go (TEN-194): the full long-term brain — tools, memory, self-improve,
+// cron, federation peer listener, comms relays — controlled through the web
+// dashboard instead of a terminal UI.
 
 // cmdTUI launches the full-screen terminal experience: a streaming chat
 // pane + a live activity feed (memory assembly, token streaming, tool
