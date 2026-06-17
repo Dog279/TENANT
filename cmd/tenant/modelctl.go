@@ -30,6 +30,14 @@ type modelControl struct {
 	// degraded is the shared echo-fallback gate (nil when the launch was healthy).
 	// Set at launch by buildRouterResilient; cleared here on a reachable swap.
 	degraded *degradedState
+	// reinstallEmbedder, when set, re-resolves the tool-ranking embedder for the
+	// now-active provider and reinstalls it on the tool mux after a model swap
+	// (TEN-226 step 4). Without it, ranking keeps using the OLD embedder's
+	// fingerprint/cache across a /model use — a dim change then makes every cosine
+	// 0 (caught by Search's dim guard, which falls back to the full catalog).
+	// Set by cmdTUI; nil elsewhere. Run async by the caller so a slow embedder
+	// resolve never blocks the swap.
+	reinstallEmbedder func(context.Context)
 }
 
 func (mc *modelControl) ModelList() []tui.ModelInfo {
@@ -108,6 +116,13 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 	}
 	if err := r.SetProfiles(gen); err != nil {
 		return "", "", err
+	}
+	// Re-point tool-ranking at the new provider's embedder (TEN-226 step 4).
+	// Async: re-resolving + the lazy precompute mustn't block the swap, and it
+	// touches the mux's own lock (never mc.mu), so no nesting. Until it lands, the
+	// dim guard keeps a stale-embedder turn correct (falls back to full catalog).
+	if mc.reinstallEmbedder != nil {
+		go mc.reinstallEmbedder(context.Background())
 	}
 	active := c2.vllmModel
 	if active == "" {

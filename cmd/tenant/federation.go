@@ -93,6 +93,11 @@ func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 		m.order = append(m.order, spec.Name)
 		m.byName[spec.Name] = &toolEntry{spec: spec, owner: disp, plugin: label, enabled: true}
 	}
+	// Invalidate the ranking cache so any newly-exposed peer tool gets a real
+	// description embedding on the next Search instead of the neutral sim=0.5.
+	// (TEN-226 step 6 — explicit; enableFederatedLocalLocked also nils it, but a
+	// peer exposing only non-federated tools wouldn't trigger that path.)
+	m.toolEmbeddings = nil
 	if cleanup != nil {
 		m.cleanups = append(m.cleanups, cleanup)
 	}

@@ -1494,6 +1494,11 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	defer skillStore.Close()
 	skEmb, embProfile, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	embedderID := string(embProfile.ID)
+	// Install the embedder for tool-catalog ranking on the shared mux too — not
+	// just the TUI (TEN-226 step 2). Without this, the orchestrator/team agents
+	// hit Search's no-embedder fallback and ship the FULL enabled catalog every
+	// turn. Lazy precompute on first ranked Search; nil embedder ⇒ unranked floor.
+	shared.SetEmbedder(embedderID, skEmb)
 	compressor := &compress.Compressor{Router: router, Logger: log}
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 
@@ -2197,6 +2202,18 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// modelControl powers /model AND backs the dashboard's write-only key page
 	// (TEN-145) for LLM-provider keys via AddCloudModel. Built once and shared.
 	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log, degraded: degraded}
+	// After a /model swap, re-point tool-ranking at the new provider's embedder
+	// and warm the cache (TEN-226 step 4). Called async from UseModel; SetEmbedder
+	// invalidates the cache only on a fingerprint change, so a same-embedder swap
+	// is a cheap no-op.
+	modelCtl.reinstallEmbedder = func(ctx context.Context) {
+		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
+		if err != nil {
+			return
+		}
+		mux.SetEmbedder(string(prof.ID), emb)
+		mux.precomputeEmbeddings(ctx) // warm now so the first post-swap turn isn't blocked
+	}
 	// Live key rotation (no restart): watch credentials.json for external edits
 	// and hot-swap the active provider's key. (Web-search keys resolve lazily;
 	// settings-page writes trigger their own reload.)

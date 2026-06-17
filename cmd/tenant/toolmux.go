@@ -137,6 +137,24 @@ const rankMinKeepFloor = 12
 // the cost it mitigates (prompt-token bloat).
 const rankDropFraction = 4
 
+// coreToolNames are surfaced EVERY ranked turn regardless of cosine score (when
+// enabled) — the agent's "hands" (local file ops + shell) and its memory recall,
+// which a turn may need for its NEXT step even when the CURRENT query doesn't
+// mention them. Relevance ranking + MaxToolsPerCall trim the long tail, but never
+// these. Cardinal rule (TEN-225/226): hiding a tool the model needed costs more
+// than its schema tokens. Membership is by exact tool name; only enabled+
+// registered names are force-included, so listing a name that isn't present is a
+// harmless no-op.
+var coreToolNames = map[string]bool{
+	"os_read_file":  true,
+	"os_write_file": true,
+	"os_edit_file":  true,
+	"os_list_dir":   true,
+	"os_exec":       true,
+	"memory_search": true,
+	"memory_recall": true,
+}
+
 // setOnChange installs the persistence hook. Call it after restore.
 func (m *toolMux) setOnChange(fn func(map[string]bool)) {
 	m.mu.Lock()
@@ -338,12 +356,21 @@ func (m *toolMux) adoptLiveMCP(label string, p plugin, cleanup func()) {
 		}
 		return
 	}
+	added := false
 	for _, spec := range p.Tools() {
 		if _, exists := m.byName[spec.Name]; exists {
 			continue
 		}
 		m.order = append(m.order, spec.Name)
 		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: true}
+		added = true
+	}
+	if added {
+		// Invalidate the ranking cache so the newly-adopted tools (e.g. a 31-tool
+		// remote MCP) get real description embeddings on the next Search instead of
+		// sitting at the neutral sim=0.5 — which would let them crowd out genuinely
+		// relevant tools. (TEN-226 step 6; mirrors add().)
+		m.toolEmbeddings = nil
 	}
 	m.activated[label] = true
 	if cleanup != nil {
@@ -547,7 +574,7 @@ func (m *toolMux) Get(name string) (model.ToolSpec, bool) {
 // Best-effort throughout: any failure in mode 2 falls back to mode 1
 // silently. Callers cannot tell the difference (they always get a
 // non-error result with the enabled set as the floor).
-func (m *toolMux) Search(ctx context.Context, queryEmb []float32, _ int) ([]model.ToolSpec, error) {
+func (m *toolMux) Search(ctx context.Context, queryEmb []float32, maxTools int) ([]model.ToolSpec, error) {
 	m.mu.RLock()
 	catalogSize := len(m.order)
 	haveEmbedder := m.embedder != nil
@@ -583,9 +610,29 @@ func (m *toolMux) Search(ctx context.Context, queryEmb []float32, _ int) ([]mode
 			return fallback("tool-embedding precompute failed (embedder error or dim mismatch)")
 		}
 	}
-	out := m.searchRanked(queryEmb)
+	// Dim guard (TEN-226 step 3): if the query embedding's dimension doesn't
+	// match the cached tool embeddings (e.g. cache built by a 128-d echo embedder,
+	// query now 768-d after a /model swap), cosineSimF32 returns 0 for EVERY tool
+	// → the rank collapses to alphabetical and silently keeps the wrong tools.
+	// Fall back to the full enabled set (with a visible reason) instead of ranking
+	// on garbage; `/model reload` or `tenant memory reembed` rebuilds the cache.
+	if d := m.cachedEmbDim(); d > 0 && d != len(queryEmb) {
+		return fallback(fmt.Sprintf("embedding dim mismatch (query %d-d vs tool cache %d-d) — run /model reload", len(queryEmb), d))
+	}
+	out := m.searchRanked(queryEmb, maxTools)
 	m.recordRank(true, len(out), m.enabledCount(), "")
 	return out, nil
+}
+
+// cachedEmbDim returns the dimension of any cached tool embedding (0 if the
+// cache is empty). Used by the Search dim guard.
+func (m *toolMux) cachedEmbDim() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, v := range m.toolEmbeddings {
+		return len(v)
+	}
+	return 0
 }
 
 // recordRank stores the most recent Search's ranking diagnostic (TEN-225).
@@ -643,7 +690,7 @@ func (m *toolMux) searchAll() []model.ToolSpec {
 // precompute) is treated as sim=0.5 so it neither leads nor lags by
 // default. Next Search will re-precompute via the cache-invalidation in
 // add().
-func (m *toolMux) searchRanked(queryEmb []float32) []model.ToolSpec {
+func (m *toolMux) searchRanked(queryEmb []float32, maxTools int) []model.ToolSpec {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	type scored struct {
@@ -669,16 +716,46 @@ func (m *toolMux) searchRanked(queryEmb []float32) []model.ToolSpec {
 		}
 		return rows[a].spec.Name < rows[b].spec.Name
 	})
+
+	// keep starts at the historical "drop the bottom 1/rankDropFraction, never
+	// below the floor" target.
 	keep := rankMinKeepFloor
 	if drop := len(rows) / rankDropFraction; len(rows)-drop > keep {
 		keep = len(rows) - drop
 	}
+	// Honor the profile's MaxToolsPerCall as a CEILING — the real token cut
+	// (TEN-226 step 5). The FLOOR WINS: a tiny cap (e.g. the small profile's 3)
+	// is raised to rankMinKeepFloor so it can never starve the agent. maxTools<=0
+	// means "no cap configured" → keep the historical target.
+	if maxTools > 0 {
+		ceiling := maxTools
+		if ceiling < rankMinKeepFloor {
+			ceiling = rankMinKeepFloor
+		}
+		if ceiling < keep {
+			keep = ceiling
+		}
+	}
 	if keep > len(rows) {
 		keep = len(rows)
 	}
-	out := make([]model.ToolSpec, keep)
+
+	// Take the top-`keep` by relevance, then UNION the always-on core set so a
+	// core capability (the agent's hands + memory) is never ranked/capped out —
+	// the cardinal rule. Core tools that didn't make the cut are appended in rank
+	// order, so the surfaced count is keep + (enabled core not already kept).
+	out := make([]model.ToolSpec, 0, keep+len(coreToolNames))
+	chosen := make(map[string]bool, keep+len(coreToolNames))
 	for i := 0; i < keep; i++ {
-		out[i] = rows[i].spec
+		out = append(out, rows[i].spec)
+		chosen[rows[i].spec.Name] = true
+	}
+	for _, r := range rows {
+		if chosen[r.spec.Name] || !coreToolNames[r.spec.Name] {
+			continue
+		}
+		out = append(out, r.spec)
+		chosen[r.spec.Name] = true
 	}
 	return out
 }
@@ -970,12 +1047,22 @@ func (m *toolMux) maybeActivate(target string) error {
 	// disabled — the SetEnabled caller flips this plugin's tools on; that
 	// also means they don't silently auto-activate at restore (which would
 	// pop a browser at startup).
+	merged := false
 	for _, spec := range p.Tools() {
 		if _, exists := m.byName[spec.Name]; exists {
 			continue
 		}
 		m.order = append(m.order, spec.Name)
 		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: false}
+		merged = true
+	}
+	if merged {
+		// New specs learned at activation time (a connected stub plugin) → drop
+		// the ranking cache so they get real description embeddings on the next
+		// Search, not the neutral sim=0.5. They're added disabled, but precompute
+		// embeds ALL registered tools, so they're ready when SetEnabled flips them
+		// on. (TEN-226 step 6 — mirrors add()/adoptLiveMCP.)
+		m.toolEmbeddings = nil
 	}
 	if cleanup != nil {
 		m.cleanups = append(m.cleanups, cleanup)
