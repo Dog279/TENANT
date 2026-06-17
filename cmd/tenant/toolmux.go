@@ -1121,6 +1121,9 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 			return fail(err)
 		}
 		mux.add("wiki", wiki.NewDispatcher(ix))
+		// Gated local-write counterpart so a fetched peer note (or research) can
+		// be ingested into the wiki on the user's direction. (TEN-244)
+		mux.add("wiki", newWikiSaveDispatcher(pf.wikiDir, ix, confirm))
 		wikiIx = ix // exported via the return tuple for TEN-44 auto-reindex
 	}
 
