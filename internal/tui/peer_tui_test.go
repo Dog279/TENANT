@@ -13,6 +13,7 @@ type fakePeerControl struct {
 	removed     []string
 	served      string
 	reconnected int
+	health      []PeerHealth
 }
 
 func newFakePeerControl(names ...string) *fakePeerControl {
@@ -89,6 +90,7 @@ func (f *fakePeerControl) Stats() []PeerFedStat {
 	}
 	return out
 }
+func (f *fakePeerControl) Health() []PeerHealth { return f.health }
 func (f *fakePeerControl) SetShare(name, capability string, allow bool) (PeerInfo, error) {
 	p, ok := f.peers[name]
 	if !ok {
@@ -177,6 +179,25 @@ func TestHandlePeer_Rename(t *testing.T) {
 	m.handlePeer("alias onlyone")
 	if !strings.Contains(lastSys(m), "usage") {
 		t.Errorf("underspecified rename should show usage: %q", lastSys(m))
+	}
+}
+
+// TestHandlePeer_ListStatusDots: /peer renders a colored liveness dot + detail
+// per peer (TEN-250) — green ● for alive, red ● for dead.
+func TestHandlePeer_ListStatusDots(t *testing.T) {
+	f := newFakePeerControl("hub", "edge")
+	f.health = []PeerHealth{
+		{Name: "hub", State: "alive", Detail: "seen 2s ago (9ms)"},
+		{Name: "edge", State: "dead", Detail: "unreachable: connection refused"},
+	}
+	m := newModel(context.Background(), Config{Peer: f})
+	m.handlePeer("")
+	out := lastSys(m)
+	if !strings.Contains(out, "●") || !strings.Contains(out, "○") {
+		t.Errorf("status dots should render (● alive/dead, ○ legend unknown): %q", out)
+	}
+	if !strings.Contains(out, "seen 2s ago") || !strings.Contains(out, "unreachable: connection refused") {
+		t.Errorf("per-peer health detail should render: %q", out)
 	}
 }
 

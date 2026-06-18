@@ -40,6 +40,11 @@ func OpenStatic(ctx context.Context, cfg StaticConfig, policy Policy) (*Dispatch
 	client := mcp.NewClient(&mcp.Implementation{Name: "tenant", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		// Release the transport's idle TCP/TLS connections — Connect created none
+		// that a session would own, so without this an unreachable endpoint leaks
+		// a connection per call (TEN-250: the heartbeat probes a dead peer every
+		// 30s, which made this recurring rather than one-off).
+		httpClient.CloseIdleConnections()
 		return nil, nil, fmt.Errorf("mcpremote: connect peer %s: %w", cfg.ServerURL, err)
 	}
 	label := cfg.Label
@@ -49,6 +54,7 @@ func OpenStatic(ctx context.Context, cfg StaticConfig, policy Policy) (*Dispatch
 	d, err := newDispatcher(ctx, label, session, true, policy)
 	if err != nil {
 		_ = session.Close()
+		httpClient.CloseIdleConnections()
 		return nil, nil, fmt.Errorf("mcpremote: list peer tools: %w", err)
 	}
 	return d, func() { _ = session.Close() }, nil
@@ -77,6 +83,15 @@ func newStaticClient(token string, tlsCfg *tls.Config) *http.Client {
 type staticBearer struct {
 	token string
 	base  http.RoundTripper
+}
+
+// CloseIdleConnections forwards to the base transport so http.Client's
+// CloseIdleConnections() reaches the real connection pool (a custom
+// RoundTripper otherwise hides it). Used to release conns when a dial fails.
+func (s staticBearer) CloseIdleConnections() {
+	if c, ok := s.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
 }
 
 func (s staticBearer) RoundTrip(req *http.Request) (*http.Response, error) {

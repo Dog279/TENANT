@@ -75,6 +75,7 @@ type Listener struct {
 	tlsCert      *tls.Certificate // when set, the listener serves HTTPS (TEN-185 pinned-cert)
 	registrar    ToolRegistrar
 	pairApprover func(ctx context.Context, prompt string) bool // TEN-239: nil ⇒ /pair disabled
+	onAuth       func(peerName string)                         // TEN-250: inbound liveness; nil ⇒ no-op
 	pairLimiter  *pairLimiter
 	log          func(format string, args ...any)
 
@@ -95,7 +96,11 @@ type ListenerConfig struct {
 	// Approve/Deny prompt (carrying the PIN in `prompt`) and returns true to
 	// approve. nil ⇒ the /pair endpoint is disabled (503).
 	PairApprover func(ctx context.Context, prompt string) bool
-	Logger       func(string, ...any)
+	// OnAuth fires after a peer successfully authenticates a request (TEN-250
+	// liveness): the peer's name, for the inbound last-seen signal in /peer. Runs
+	// on the request goroutine, so it must be cheap + non-blocking. nil ⇒ no-op.
+	OnAuth func(peerName string)
+	Logger func(string, ...any)
 }
 
 // NewListener builds a Listener. It does not bind until Serve.
@@ -121,6 +126,7 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 		tlsCert:      cfg.TLSCert,
 		registrar:    cfg.Registrar,
 		pairApprover: cfg.PairApprover,
+		onAuth:       cfg.OnAuth,
 		pairLimiter:  &pairLimiter{max: 3},
 		log:          log,
 	}, nil
@@ -162,6 +168,9 @@ func (l *Listener) verify(ctx context.Context, token string, _ *http.Request) (*
 	_ = l.store.MarkAuthenticated(p.Name)
 	if matchedPending {
 		_ = l.store.ConfirmRotation(p.Name)
+	}
+	if l.onAuth != nil {
+		l.onAuth(p.Name) // TEN-250: inbound last-seen (cheap, non-blocking)
 	}
 	return &auth.TokenInfo{
 		UserID:     p.Name,

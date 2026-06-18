@@ -30,6 +30,9 @@ type peerTUIControl struct {
 	// stats returns the live per-peer federated-search counters (drift tracking).
 	// Injected by cmdTUI (captures the tool mux). nil ⇒ no stats.
 	stats func() []tui.PeerFedStat
+	// health returns live per-peer liveness from the heartbeat (TEN-250).
+	// Injected by cmdTUI/serve (captures the health registry). nil ⇒ no status.
+	health func() []tui.PeerHealth
 }
 
 // Stats exposes the federation fan-out tally for `/peer stats`.
@@ -38,6 +41,14 @@ func (p peerTUIControl) Stats() []tui.PeerFedStat {
 		return nil
 	}
 	return p.stats()
+}
+
+// Health exposes the live peer-liveness snapshot for `/peer` (TEN-250).
+func (p peerTUIControl) Health() []tui.PeerHealth {
+	if p.health == nil {
+		return nil
+	}
+	return p.health()
 }
 
 // peerFedStatsView adapts the mux's federation counters to the TUI view type.

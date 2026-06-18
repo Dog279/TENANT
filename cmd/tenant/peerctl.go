@@ -154,7 +154,10 @@ func peerServe(ctx context.Context, args []string) error {
 		TLSCert:      cert,
 		Registrar:    peerKnowledgeRegistrar(deps),
 		PairApprover: approver,
-		Logger:       func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		// No OnAuth here (TEN-250): the standalone `tenant peer serve` CLI has no
+		// /peer reader in-process, so there's nothing to surface liveness to. The
+		// full hub (`tenant serve`) and the TUI wire it.
+		Logger: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
 	if err != nil {
 		return err
@@ -575,6 +578,7 @@ func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps,
 		TLSCert:      cert,
 		Registrar:    peerKnowledgeRegistrar(deps), // TEN-186 share-gated knowledge tools
 		PairApprover: pairApprove,                  // TEN-239 push-invite Approve/Deny
+		OnAuth:       deps.onAuth,                  // TEN-250 inbound liveness
 		Logger: func(f string, a ...any) {
 			if log != nil {
 				log.Info(fmt.Sprintf(f, a...))

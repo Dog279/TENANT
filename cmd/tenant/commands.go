@@ -2601,12 +2601,17 @@ func cmdTUI(ctx context.Context, args []string) error {
 		peerHostName = "this tenant"
 	}
 	peerEmb, _, _ := router.EmbedderForRole(ctx, model.RoleEmbedder) // optional; nil → keyword-only
+	// Peer liveness heartbeat (TEN-250): the registry is fed by the listener's
+	// inbound OnAuth hook + a background outbound prober, and read by /peer.
+	peerHealth := newPeerHealthRegistry()
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
 		episodic: st.episodic,
 		embedder: peerEmb,
 		wiki:     wikiIx,
+		onAuth:   peerHealth.markInbound,
 	}
 	var peerSrvMu sync.Mutex
 	var peerSrvStop func()
@@ -2700,7 +2705,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		IMessage:  imsgAllowMgr,
 		Cron:      tuiCronCtl,
 		MCP:       mcpCtl,
-		Peer:      peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux)},
+		Peer:      peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
 		Secrets:   tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
 		Setup:     setupControl{cfgDir: c.cfgDir, mc: modelCtl},
 		Models:    modelCtl,

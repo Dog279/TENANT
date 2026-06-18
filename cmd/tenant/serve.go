@@ -561,12 +561,17 @@ func cmdServe(ctx context.Context, args []string) error {
 		peerHostName = "this tenant"
 	}
 	peerEmb, _, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
+	// Peer liveness heartbeat (TEN-250): inbound OnAuth + background outbound
+	// prober. Tracked headless too (the dashboard peer surface can read it later).
+	peerHealth := newPeerHealthRegistry()
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
 		episodic: st.episodic,
 		embedder: peerEmb,
 		wiki:     wikiIx,
+		onAuth:   peerHealth.markInbound,
 	}
 	var peerSrvStop func()
 	if c.lc != nil && c.lc.Peer.Listen != "" {

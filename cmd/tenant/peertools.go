@@ -63,6 +63,9 @@ type peerToolDeps struct {
 	episodic *episodic.Store
 	embedder model.Embedder
 	wiki     *wiki.Index
+	// onAuth records inbound liveness (TEN-250): fired with a peer's name each
+	// time it authenticates a request against our listener. nil ⇒ no-op.
+	onAuth func(peerName string)
 }
 
 // peerSearchArgs is the shared input for both knowledge tools.

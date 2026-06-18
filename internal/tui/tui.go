@@ -549,6 +549,18 @@ type PeerControl interface {
 	// tracking): how often each peer was queried and what came back. Empty until
 	// the agent runs a federated search against a connected peer.
 	Stats() []PeerFedStat
+	// Health returns live per-peer liveness (TEN-250): a background heartbeat
+	// probes dialable peers and records inbound auths, so /peer shows green/red.
+	// Missing entries render as "unknown".
+	Health() []PeerHealth
+}
+
+// PeerHealth is one peer's live liveness for the /peer status column.
+type PeerHealth struct {
+	Name         string
+	State        string // "alive" | "dead" | "unknown"
+	Detail       string // "seen 3s ago (12ms)" / "unreachable: …" / "inbound 5s ago"
+	LastSeenUnix int64  // 0 = never
 }
 
 // PeerFedStat is one peer's federated-search tally for the /peer stats view.
@@ -1930,6 +1942,7 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			m.sysChat("no peers paired yet. Pair with `/peer invite <name> <ip|url>` (they Approve/Deny), or the `tenant peer` CLI.")
 			return nil
 		}
+		health := peerHealthByName(m.cfg.Peer.Health()) // TEN-250: live status
 		var b strings.Builder
 		b.WriteString("Federation peers:\n")
 		for _, p := range peers {
@@ -1937,9 +1950,14 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			if p.Dial {
 				role = "dial"
 			}
-			b.WriteString(fmt.Sprintf("  • %-16s %-6s %-26s [token %s] share: %s\n",
-				p.Name, role, dashOr(p.URL), p.TokenState, renderShareInline(p.Share)))
+			h := health[p.Name]
+			b.WriteString(fmt.Sprintf("  %s %-16s %-6s %-26s [token %s] share: %s\n",
+				peerStatusDot(h.State), p.Name, role, dashOr(p.URL), p.TokenState, renderShareInline(p.Share)))
+			if d := strings.TrimSpace(h.Detail); d != "" {
+				b.WriteString("      " + cDim.Render(d) + "\n")
+			}
 		}
+		b.WriteString("\n" + cDim.Render(peerStatusDot("alive")+" alive  "+peerStatusDot("dead")+" unreachable  "+peerStatusDot("unknown")+" unknown"))
 		b.WriteString("\nEdit sharing:  /configure peer <name>")
 		m.sysChat(strings.TrimRight(b.String(), "\n"))
 		return nil
@@ -2183,6 +2201,29 @@ func dashOr(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// peerStatusDot renders the colored liveness indicator for /peer (TEN-250):
+// green ● alive, red ● unreachable, dim ○ unknown.
+func peerStatusDot(state string) string {
+	switch state {
+	case "alive":
+		return cOK.Render("●")
+	case "dead":
+		return cErr.Render("●")
+	default:
+		return cDim.Render("○")
+	}
+}
+
+// peerHealthByName indexes a Health() snapshot by peer name for the list render;
+// a peer with no entry resolves to the zero value (State "" → unknown dot).
+func peerHealthByName(hs []PeerHealth) map[string]PeerHealth {
+	m := make(map[string]PeerHealth, len(hs))
+	for _, h := range hs {
+		m[h.Name] = h
+	}
+	return m
 }
 
 // renderPeerStats formats the federated-search drift tally (/peer stats).
