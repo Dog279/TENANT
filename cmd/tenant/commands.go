@@ -2522,6 +2522,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 			Semantic: st.semantic, Router: router, SummarizerRouter: proposerRouter,
 			AgentID: c.agent, Holistic: true, Logger: log,
 		}, improve.DefaultConsolidateInterval)
+		// Feedback-driven protection (TEN-255 Phase 4): promote facts distilled
+		// from ACKed turns to merge-protected — learned load-bearing-ness from
+		// real use. Promote-only (never auto-unprotects), no LLM, cheap; runs on
+		// the distill cadence right after new facts land.
+		sched.Register(&improve.FeedbackProtectionJob{
+			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent, Logger: log,
+		}, *distillEvery)
 		// Profile re-synthesis runs on its OWN cadence (--profile-every,
 		// default 15m). Distillation is cheap and benefits from being
 		// snappy; profile re-synthesis is an LLM call per run, so its

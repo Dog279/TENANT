@@ -344,6 +344,11 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		Semantic: d.stores.semantic, Router: d.router, SummarizerRouter: proposerRouter,
 		AgentID: c.agent, Holistic: true, Logger: d.log,
 	}, improve.DefaultConsolidateInterval)
+	// Feedback-driven protection (TEN-255 Phase 4): ACKed turns → protected
+	// facts. Promote-only, no LLM; mirrors the TUI path.
+	sched.Register(&improve.FeedbackProtectionJob{
+		Semantic: d.stores.semantic, Episodic: d.stores.episodic, AgentID: c.agent, Logger: d.log,
+	}, d.distillEvery)
 	sched.Register(profileJob{refresh: d.refreshProfile}, d.profileEvery)
 
 	evalDue, evalTick, evalDesc := resolveEvalDue(d.evalEverySet, d.evalEvery, improveCfg.EvalEvery, improveCfg.EvalAt, d.log)

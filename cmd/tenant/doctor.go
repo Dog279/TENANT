@@ -23,6 +23,7 @@ import (
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
+	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
 	"tenant/internal/plugins/gsuite"
@@ -199,6 +200,10 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// when nothing is reachable (a daemon simply not running is not a fault).
 		{"serve liveness (if running)", checkServe},
 		{"distill cursor", checkDistillCursor},
+		// TEN-255 Phase 4: per-project SME doc health — present/stale when
+		// reflection is on, and a guard on the merge-protected fraction (a
+		// majority-protected store means consolidation is being starved).
+		{"project SME (memory)", checkProjectSME},
 		{"tool-calling (deep)", checkToolCalling},
 		{"mcp surface (deep)", checkMCPSurface},
 	}
@@ -417,6 +422,84 @@ func checkSoul(_ context.Context, e *doctorEnv) checkResult {
 	return checkResult{Status: statusFail,
 		Detail: "soul TOML present but unparseable: " + err.Error(),
 		Fix:    "fix the TOML at " + soul.Path(e.c.cfgDir, e.c.agent) + " (or delete it to regenerate)"}
+}
+
+// checkProjectSME reports per-project SME health (TEN-255 Phase 4): whether the
+// doc exists/stale when reflection is on, plus a guard on the merge-protected
+// fraction (a majority-protected store starves consolidation — design §7).
+func checkProjectSME(ctx context.Context, e *doctorEnv) checkResult {
+	if e.semantic == nil {
+		return checkResult{Status: statusSkip, Detail: "semantic store unavailable"}
+	}
+	reflectEvery := ""
+	if e.lc != nil {
+		reflectEvery = strings.TrimSpace(e.lc.Improve.ReflectEvery)
+	}
+
+	// Protected-fraction guard (independent of reflection being on).
+	var protNote string
+	if prot, live, err := e.semantic.MergeProtectedStats(ctx, e.c.agent); err == nil && live > 0 {
+		frac := float64(prot) / float64(live)
+		protNote = fmt.Sprintf("%d/%d facts merge-protected (%.0f%%)", prot, live, frac*100)
+		if frac >= 0.7 {
+			return checkResult{Status: statusWarn,
+				Detail: protNote + " — consolidation may be starved",
+				Fix:    "raise improve protectImportance, review pins, or /memory to inspect protected facts"}
+		}
+	}
+
+	st, err := sme.New(e.semantic.DB())
+	if err != nil {
+		return checkResult{Status: statusWarn, Detail: "sme store init failed: " + err.Error()}
+	}
+	secs, err := st.ActiveSections(ctx, "", e.c.agent)
+	if err != nil {
+		return checkResult{Status: statusWarn, Detail: "sme query failed: " + err.Error()}
+	}
+	detail := protNote
+	if reflectEvery == "" {
+		if len(secs) == 0 {
+			return checkResult{Status: statusOK,
+				Detail: join(detail, "reflection off — no per-project SME maintained"),
+				Fix:    "set improve.reflect_every (e.g. \"6h\") in config.json to synthesize a per-project SME"}
+		}
+		return checkResult{Status: statusOK, Detail: join(detail, fmt.Sprintf("SME present (%d sections); reflection currently off", len(secs)))}
+	}
+	// Reflection is on.
+	if len(secs) == 0 {
+		return checkResult{Status: statusWarn,
+			Detail: join(detail, "reflect_every set but no SME doc yet"),
+			Fix:    "give it a cycle — the ReflectionJob synthesizes the doc on its next run"}
+	}
+	// Staleness: stale if older than 5× the cadence (fallback 7d on parse fail).
+	stale := 7 * 24 * time.Hour
+	if d, perr := time.ParseDuration(reflectEvery); perr == nil && d > 0 {
+		stale = 5 * d
+	}
+	var newest time.Time
+	for _, s := range secs {
+		if s.UpdatedAt.After(newest) {
+			newest = s.UpdatedAt
+		}
+	}
+	age := time.Since(newest)
+	if age > stale {
+		return checkResult{Status: statusWarn,
+			Detail: join(detail, fmt.Sprintf("SME doc is stale (%d sections, last updated %s ago)", len(secs), age.Round(time.Hour))),
+			Fix:    "check the ReflectionJob is running (self-improve on, model reachable)"}
+	}
+	return checkResult{Status: statusOK, Detail: join(detail, fmt.Sprintf("SME fresh (%d sections, updated %s ago)", len(secs), age.Round(time.Hour)))}
+}
+
+// join concatenates two non-empty detail fragments with "; ".
+func join(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return a + "; " + b
 }
 
 func checkDistillCursor(ctx context.Context, e *doctorEnv) checkResult {

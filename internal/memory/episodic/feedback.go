@@ -57,6 +57,35 @@ func (s *Store) LatestID(ctx context.Context, agentID string) (int64, error) {
 	return id, nil
 }
 
+// AckedEpisodeIDs returns the ids of live episodes the operator ACKed. Used by
+// the feedback-driven protection job (TEN-255 Phase 4) to promote facts
+// distilled from turns the operator validated. agentID "" = all agents.
+func (s *Store) AckedEpisodeIDs(ctx context.Context, agentID string) ([]int64, error) {
+	q := `SELECT id FROM episodes WHERE tombstoned=0 AND user_feedback=?`
+	args := []any{FeedbackAck}
+	if agentID != "" {
+		q += ` AND agent_id=?`
+		args = append(args, agentID)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("episodic: acked ids: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("episodic: acked ids scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("episodic: acked ids iter: %w", err)
+	}
+	return out, nil
+}
+
 // FeedbackStats tallies ack/undo over the most-recent n episodes that carry
 // feedback for EXACTLY agentID. It powers the "trusted" auto-accept gate
 // (TEN-152): auto-accept proceeds only while the operator's recent feedback is
