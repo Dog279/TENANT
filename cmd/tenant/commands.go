@@ -353,6 +353,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	exposeTools := fs.Bool("tools", false, "also expose the full plugin toolset (wiki/sql/os/…) over MCP, not just memory")
 	sseAddr := fs.String("sse-addr", "", "serve over HTTP+SSE on this address (e.g. 127.0.0.1:8765) instead of stdio")
 	insecureLAN := fs.Bool("insecure-lan", false, "allow --sse-addr to bind a non-loopback address despite the legacy SSE gateway having NO auth (TEN-185 secure-by-default opt-out)")
+	allowNoMemory := fs.Bool("allow-no-memory", false, "serve even when semantic memory (embeddings) is down — amnesiac (no real vector recall)")
 	pf := bindPluginFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -377,6 +378,12 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	}
 	// Honor skills configured via `tenant setup`.
 	applyPluginConfig(c, pf)
+	// This server's whole job is serving semantic memory, so amnesiac mode is
+	// pointless: refuse to start when the embedder is down (TEN-254) unless the
+	// operator opts out (--allow-no-memory, or --backend echo for offline dev).
+	if !*allowNoMemory && c.backend != "echo" && !semanticMemoryReady(ctx, c) {
+		return memoryDownError(c)
+	}
 	log := newLogger()
 	router, err := buildRouter(c, log)
 	if err != nil {
