@@ -417,10 +417,11 @@ func (m *toolMux) reconnectPeersSilently(cfgDir string) {
 			dialCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 			defer cancel()
 			disp, cleanup, derr := mcpremote.OpenStatic(dialCtx, mcpremote.StaticConfig{
-				ServerURL: p.URL,
-				Token:     p.Token,
-				Label:     label,
-				TLS:       peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
+				ServerURL:   p.URL,
+				Token:       p.Token,
+				Label:       label,
+				TLS:         peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
+				UngateTools: peerFederationTools,                          // TEN-252: only the known federation tools ungate
 			}, mcpremote.Policy{Confirm: d.confirm})
 			if derr != nil {
 				if d.log != nil {

@@ -636,10 +636,11 @@ func peerQuery(ctx context.Context, args []string) error {
 	}
 
 	d, cleanup, err := mcpremote.OpenStatic(ctx, mcpremote.StaticConfig{
-		ServerURL: p.URL,
-		Token:     p.Token,
-		Label:     "peer:" + name,
-		TLS:       peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
+		ServerURL:   p.URL,
+		Token:       p.Token,
+		Label:       "peer:" + name,
+		TLS:         peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
+		UngateTools: peerFederationTools,                          // TEN-252: only the known federation tools ungate
 	}, mcpremote.Policy{})
 	if err != nil {
 		return fmt.Errorf("connect peer %q: %w", name, err)

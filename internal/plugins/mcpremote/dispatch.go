@@ -32,7 +32,14 @@ type Dispatcher struct {
 // MCP spec says unannotated tools default to write+destructive, and that clients
 // must not trust a server's annotations unless the server is trusted — both of
 // which this honors.
-func newDispatcher(ctx context.Context, label string, session *mcp.ClientSession, trustAnnotations bool, policy Policy) (*Dispatcher, error) {
+//
+// ungate is an explicit allowlist of tool NAMES that bypass gating regardless of
+// the annotation rule (TEN-252): a tool is ungated iff it's in `ungate` OR the
+// annotation rule ungates it. Peers pass trustAnnotations=false + the fixed
+// federation toolset, so a compromised peer that advertises a NOVEL read-only
+// tool can't get it auto-called — only the known federation tools ungate. nil
+// ungate ⇒ pure annotation rule (the remote-MCP / Atlassian path, unchanged).
+func newDispatcher(ctx context.Context, label string, session *mcp.ClientSession, trustAnnotations bool, ungate map[string]bool, policy Policy) (*Dispatcher, error) {
 	res, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -40,7 +47,7 @@ func newDispatcher(ctx context.Context, label string, session *mcp.ClientSession
 	d := &Dispatcher{label: label, session: session, policy: policy, gated: map[string]bool{}}
 	for _, t := range res.Tools {
 		readOnly := t.Annotations != nil && t.Annotations.ReadOnlyHint
-		gated := gatedTool(readOnly, trustAnnotations)
+		gated := gatedTool(readOnly, trustAnnotations) && !ungate[t.Name]
 		d.gated[t.Name] = gated
 		schema, _ := json.Marshal(t.InputSchema)
 		if len(schema) == 0 || string(schema) == "null" {

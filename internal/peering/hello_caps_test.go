@@ -33,6 +33,7 @@ func TestPeerHello_StructuredCapsRoundTrip(t *testing.T) {
 	defer cancel()
 	d, cleanup, err := mcpremote.OpenStatic(ctx, mcpremote.StaticConfig{
 		ServerURL: srv.URL, Token: token, Label: "probe", TLS: nil, // httptest = plain HTTP
+		UngateTools: map[string]bool{"peer_hello": true}, // TEN-252
 	}, mcpremote.Policy{})
 	if err != nil {
 		t.Fatalf("OpenStatic: %v", err)
@@ -86,6 +87,7 @@ func TestPeerHello_GrantAnnounce(t *testing.T) {
 	defer cancel()
 	d, cleanup, err := mcpremote.OpenStatic(ctx, mcpremote.StaticConfig{
 		ServerURL: srv.URL, Token: p.Token, Label: "probe", TLS: nil,
+		UngateTools: map[string]bool{"peer_hello": true},
 	}, mcpremote.Policy{})
 	if err != nil {
 		t.Fatalf("OpenStatic: %v", err)

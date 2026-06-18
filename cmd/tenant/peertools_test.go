@@ -47,6 +47,7 @@ func TestPeerKnowledge_EndToEnd(t *testing.T) {
 	// --- dialing side: connect with the static pairing token ---
 	d, cleanup, err := mcpremote.OpenStatic(ctx, mcpremote.StaticConfig{
 		ServerURL: srv.URL, Token: p.Token, Label: "peer:hub",
+		UngateTools: peerFederationTools, // TEN-252: known federation tools must stay ungated
 	}, mcpremote.Policy{})
 	if err != nil {
 		t.Fatalf("OpenStatic: %v", err)

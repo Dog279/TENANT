@@ -260,10 +260,11 @@ func probePeerHello(ctx context.Context, p *peering.Peer) (time.Duration, []stri
 	defer cancel()
 	start := time.Now()
 	d, cleanup, err := mcpremote.OpenStatic(pctx, mcpremote.StaticConfig{
-		ServerURL: p.URL,
-		Token:     p.Token,
-		Label:     "probe:" + p.Name,
-		TLS:       peering.PinnedTLSClientConfig(p.Fingerprint),
+		ServerURL:   p.URL,
+		Token:       p.Token,
+		Label:       "probe:" + p.Name,
+		TLS:         peering.PinnedTLSClientConfig(p.Fingerprint),
+		UngateTools: peerFederationTools, // TEN-252: only the known federation tools ungate
 	}, mcpremote.Policy{})
 	if err != nil {
 		return time.Since(start), nil, err

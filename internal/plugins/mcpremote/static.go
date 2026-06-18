@@ -20,6 +20,12 @@ type StaticConfig struct {
 	Token     string
 	Label     string      // tool namespace, e.g. "peer:laptop"
 	TLS       *tls.Config // nil ⇒ plain HTTP (overlay); else the pinned-cert config
+	// UngateTools is the allowlist of tool names that bypass approval (TEN-252).
+	// OpenStatic dials with trustAnnotations=false, so ONLY tools named here are
+	// ungated — a peer cannot get a novel read-only-marked tool auto-called. The
+	// caller passes the known federation toolset; an empty/nil set gates every
+	// tool the peer advertises.
+	UngateTools map[string]bool
 }
 
 // OpenStatic connects with a static bearer and returns a gated Dispatcher over
@@ -51,7 +57,10 @@ func OpenStatic(ctx context.Context, cfg StaticConfig, policy Policy) (*Dispatch
 	if label == "" {
 		label = "peer"
 	}
-	d, err := newDispatcher(ctx, label, session, true, policy)
+	// TEN-252: peers do NOT trust the server's annotations wholesale — only the
+	// explicit UngateTools allowlist bypasses approval. A novel read-only tool a
+	// (compromised) peer advertises stays gated.
+	d, err := newDispatcher(ctx, label, session, false, cfg.UngateTools, policy)
 	if err != nil {
 		_ = session.Close()
 		httpClient.CloseIdleConnections()

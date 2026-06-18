@@ -34,6 +34,21 @@ var peerReadByMiss = map[string]string{
 	"wiki_read": "peer_wiki_read",
 }
 
+// peerFederationTools is the SINGLE SOURCE OF TRUTH for which peer tools bypass
+// approval on the dialing side (TEN-252). We dial peers with trustAnnotations OFF,
+// so ONLY these names are ungated — a compromised peer advertising a novel
+// read-only tool can't get it auto-called by our agent; it routes through the
+// confirm broker like any other gated action. MUST stay in sync with what our
+// listener actually serves: the values of federatableTools + peerReadByMiss
+// (peer_wiki_search / peer_memory_search / peer_wiki_read) plus the built-in
+// peer_hello handshake. A NEW federation tool MUST be added here to be ungated.
+var peerFederationTools = map[string]bool{
+	"peer_wiki_search":   true,
+	"peer_memory_search": true,
+	"peer_wiki_read":     true,
+	"peer_hello":         true,
+}
+
 // namedDisp pairs a peer's local label with its dispatcher (for fan-out).
 type namedDisp struct {
 	name string
@@ -62,6 +77,13 @@ func isFederatedCounterpart(name string) bool {
 // local tool is brought live so its peer half is reachable. The peer's
 // NON-federated tools stay directly callable, so adopting a peer never *removes*
 // reachable capability. Idempotent: a duplicate adopt drops the new connection.
+//
+// TRUST MODEL (TEN-252): a peer in peers.json is trusted to the extent that ONLY
+// the fixed peerFederationTools are auto-callable (ungated) — the dispatcher was
+// dialed with trustAnnotations OFF, so any OTHER tool a (compromised) peer
+// advertises is gated and routes through the confirm broker. If a peer is
+// compromised, an operator removes it with `/peer remove <name>`; there is no
+// silent re-trust beyond the federation allowlist.
 func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

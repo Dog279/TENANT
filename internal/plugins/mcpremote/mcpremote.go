@@ -114,7 +114,9 @@ func Open(ctx context.Context, cfg Config, trustAnnotations bool, policy Policy)
 	if err != nil {
 		return nil, nil, err
 	}
-	d, err := newDispatcher(ctx, cfg.Label, session, trustAnnotations, policy)
+	// nil ungate ⇒ pure annotation rule (TEN-252): the remote-MCP/Atlassian path
+	// keeps honoring --mcp-trust-annotations exactly as before.
+	d, err := newDispatcher(ctx, cfg.Label, session, trustAnnotations, nil, policy)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("mcpremote: list tools: %w", err)
