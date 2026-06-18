@@ -94,23 +94,43 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 		ids[id] = true
 	}
 
+	// Load per-fact signals for the candidate set in one query. Missing
+	// rows come back as the neutral default (importance=0.5, no heat), so
+	// candidates with no signals row score EXACTLY as before this table
+	// existed — the additive guarantee.
+	idList := make([]int64, 0, len(ids))
+	for id := range ids {
+		idList = append(idList, id)
+	}
+	sigs, err := s.SignalsBatch(ctx, idList)
+	if err != nil {
+		return nil, err
+	}
+
 	hits := make([]Hit, 0, len(ids))
 	for id := range ids {
 		fact, err := s.Get(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("semantic: hydrate %d: %w", id, err)
 		}
-		ec := fact.EffectiveConfidence(now)
+		sig, ok := sigs[id]
+		if !ok {
+			sig = defaultSignals(id)
+		}
+		// Importance stretches the decay horizon (load-bearing facts last
+		// years); pinned never decays. Default importance ⇒ the old 365d curve.
+		ec := fact.EffectiveConfidenceWithSignals(now, sig)
 		// Decayed-to-zero facts drop out entirely (not a 0-score slot).
 		if ec <= 0 {
 			continue
 		}
 		relevance := fuseRelevance(vecSim[id], vecRank[id] > 0, ftsRank[id])
-		// Confidence MODULATES relevance into [0.6, 1.0]× — it can
-		// break ties and gently favor trusted facts, but it can NEVER
-		// reorder a clearly-more-relevant fact below a less-relevant
-		// one. (Hard rrf*ec did exactly that; real embeddings caught it.)
-		score := relevance * (0.6 + 0.4*ec)
+		// Quality MODULATES relevance within a bounded band — it can break
+		// ties and gently favor trusted/important/hot facts, but can NEVER
+		// reorder a clearly-more-relevant fact below a less-relevant one.
+		// (Hard rrf*ec did exactly that; real embeddings caught it.)
+		// Anchored so default signals reproduce the old 0.6+0.4*ec exactly.
+		score := relevance * qualityModulator(ec, sig, now)
 		hits = append(hits, Hit{
 			Fact:    fact,
 			Score:   score,
@@ -129,6 +149,34 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 		hits = hits[:q.K]
 	}
 	return hits, nil
+}
+
+// Quality-modulator weights. Importance and heat shift an effective
+// "quality" term that is then clamped to [0,1] and fed through the SAME
+// 0.6+0.4*q envelope the v1 code used for ec alone. Folding inside the
+// envelope (rather than adding outside it) keeps the multiplier band at
+// exactly [0.6, 1.0] — so the documented MODULATE-never-reorder invariant
+// holds identically to before: importance/heat can lift a decayed-but-
+// important fact up to (never past) the relevance-dominant ceiling.
+const (
+	importanceWeight = 0.4 // ±0.2 on the quality term across the importance range
+	heatWeight       = 0.2 // up to +0.2 for a hot fact
+)
+
+// qualityModulator is the multiplier applied to relevance, in [0.6, 1.0].
+// At the neutral default (importance=0.5, zero heat) it equals the legacy
+// 0.6+0.4*ec exactly — the additive guarantee.
+func qualityModulator(ec float64, sig Signals, now time.Time) float64 {
+	q := ec
+	q += importanceWeight * (sig.Importance - DefaultImportance)
+	q += heatWeight * heatScore(sig, now)
+	if q < 0 {
+		q = 0
+	}
+	if q > 1 {
+		q = 1
+	}
+	return 0.6 + 0.4*q
 }
 
 // vecHit is one vector-search result carrying the cosine similarity

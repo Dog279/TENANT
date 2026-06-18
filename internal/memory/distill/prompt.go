@@ -19,9 +19,10 @@ Rules:
 - Be specific: prefer "user prefers Go for backend" over "user likes programming".
 - Each fact lists the source_episode_ids that supported it (from the bracketed numbers below).
 - Confidence: 0.5-0.7 if mentioned once with no follow-up; 0.7-0.9 if explicit; 0.9-1.0 if user stated as a strong preference.
+- Importance (1-10): how load-bearing the fact is for long-term work. 1 = transient/mundane (a passing mention, small talk). 5 = ordinary preference or detail. 8-10 = load-bearing project architecture, a hard constraint, a key decision and its rationale, an identity fact, or a deadline. When unsure, use 5.
 
 Respond with JSON only matching this schema:
-{"facts":[{"fact":"...","confidence":0.0-1.0,"source_episode_ids":[id,...]}]}
+{"facts":[{"fact":"...","confidence":0.0-1.0,"importance":1-10,"source_episode_ids":[id,...]}]}
 
 If nothing fact-worthy is present, respond with {"facts":[]}.`
 
@@ -37,6 +38,7 @@ const factsJSONSchema = `{
         "properties": {
           "fact": {"type": "string", "minLength": 1},
           "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "importance": {"type": "integer", "minimum": 1, "maximum": 10},
           "source_episode_ids": {"type": "array", "items": {"type": "integer"}}
         },
         "required": ["fact", "confidence", "source_episode_ids"]

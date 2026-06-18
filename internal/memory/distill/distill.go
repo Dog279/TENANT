@@ -220,13 +220,46 @@ func (d *Distiller) embedderRole() model.Role {
 	return DefaultEmbedderRole
 }
 
+func (d *Distiller) logger() *slog.Logger {
+	if d.Logger != nil {
+		return d.Logger
+	}
+	return slog.Default()
+}
+
+// reinforceImportance folds a fresh poignancy score into an existing
+// fact's standing importance as a running average (agreement-averaging,
+// review finding 4). A missing/out-of-range score is NOT averaged in —
+// that would erode a load-bearing fact's importance every time the model
+// happened to omit a score. Best-effort: never fails the distill run.
+func (d *Distiller) reinforceImportance(ctx context.Context, id int64, imp int) {
+	if imp < 1 || imp > 10 {
+		return
+	}
+	if err := d.Semantic.ReinforceImportance(ctx, id, float64(imp)/10.0); err != nil {
+		d.logger().Warn("distill: reinforce importance failed", "fact", id, "err", err)
+	}
+}
+
 // --- batch extraction ---
 
 // extractedFact is the wire shape we expect back from the summarizer.
 type extractedFact struct {
 	Fact             string  `json:"fact"`
 	Confidence       float64 `json:"confidence"`
+	Importance       int     `json:"importance"` // 1-10 poignancy; 0/absent ⇒ neutral
 	SourceEpisodeIDs []int64 `json:"source_episode_ids"`
+}
+
+// importanceScore maps the summarizer's 1-10 poignancy onto the store's
+// 0..1 importance. An absent/zero or out-of-range score falls back to the
+// neutral default — which keeps echo-backend and older models additive
+// (no skew vs. pre-importance behavior).
+func importanceScore(imp int) float64 {
+	if imp < 1 || imp > 10 {
+		return semantic.DefaultImportance
+	}
+	return float64(imp) / 10.0
 }
 
 type extractedBatch struct {
@@ -324,6 +357,7 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 			if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
 				return inserted, reaffirmed, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
 			}
+			d.reinforceImportance(ctx, existing.Fact.ID, f.Importance)
 			reaffirmed++
 			continue
 		}
@@ -341,11 +375,12 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 				if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
 					return inserted, reaffirmed, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
 				}
+				d.reinforceImportance(ctx, existing.Fact.ID, f.Importance)
 				reaffirmed++
 				continue
 			}
 		}
-		_, err = d.Semantic.Insert(ctx, &semantic.Fact{
+		newID, err := d.Semantic.Insert(ctx, &semantic.Fact{
 			AgentID:        d.AgentID,
 			Visibility:     semantic.VisibilityPrivate,
 			Fact:           f.Fact,
@@ -356,6 +391,16 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 		})
 		if err != nil {
 			return inserted, reaffirmed, fmt.Errorf("insert fact: %w", err)
+		}
+		// Seed the fact's importance signal (confirm_count=1). Best-effort:
+		// a signals write must never fail the distill run — a fact with no
+		// signals row simply reads as neutral.
+		if serr := d.Semantic.UpsertSignals(ctx, semantic.Signals{
+			FactID:       newID,
+			Importance:   importanceScore(f.Importance),
+			ConfirmCount: 1,
+		}); serr != nil {
+			d.logger().Warn("distill: seed importance failed", "fact", newID, "err", serr)
 		}
 		inserted++
 	}

@@ -466,7 +466,22 @@ func (a *Assembler) retrieveFacts(ctx context.Context, req Request) ([]*semantic
 	// already-kept (higher-ranked) fact, so the prompt never shows three
 	// rewordings of one claim. Rows stay in the store; the consolidation
 	// job merges them durably.
-	return dedupeFacts(out, factDedupeThreshold), nil
+	surfaced := dedupeFacts(out, factDedupeThreshold)
+	// Record the "revealed heat" of the facts actually surfaced this turn
+	// (MemoryOS N_visit). This is the live producer of the access_count that
+	// feeds search.qualityModulator's heat term. Best-effort: a bump must
+	// never fail assembly. Done here — the real prompt-retrieval site — NOT
+	// inside Store.Search, so the distiller's findClosest probe (which calls
+	// Search directly) can't inflate heat. Synchronous to avoid racing the
+	// store's lifecycle; the write is a single small upsert tx at top-K scale.
+	if len(surfaced) > 0 {
+		ids := make([]int64, len(surfaced))
+		for i, f := range surfaced {
+			ids[i] = f.ID
+		}
+		_ = req.SemanticStore.BumpAccess(ctx, ids)
+	}
+	return surfaced, nil
 }
 
 // factDedupeThreshold: a fact at least this cosine-similar to an

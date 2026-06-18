@@ -91,8 +91,15 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 	if err != nil {
 		return JobResult{}, fmt.Errorf("consolidate: list facts: %w", err)
 	}
+	// Exclude merge-protected facts (pinned / explicitly protected / high-
+	// importance AND actually-used) from merge candidacy, so the holistic
+	// pass can no longer eat load-bearing nuance (design §7). Strictly
+	// safer: it only REMOVES facts from candidacy. Fails open (no filter)
+	// on a signals-load error so consolidation never silently stops.
+	totalFacts := len(facts)
+	facts, protectedExcluded := j.filterMergeProtected(ctx, facts, log)
 	if len(facts) < 2 {
-		return JobResult{Summary: fmt.Sprintf("consolidate: %d fact(s), nothing to merge", len(facts))}, nil
+		return JobResult{Summary: fmt.Sprintf("consolidate: %d fact(s) after %d protected excluded, nothing to merge", len(facts), protectedExcluded)}, nil
 	}
 
 	summarizer, sumProf, err := j.summarizerRouter().LLMForRole(ctx, j.summarizerRole())
@@ -187,9 +194,19 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 		mergedGroups++
 	}
 
+	// Heat-reset: halve the hottest facts' access_count so a few popular
+	// facts can't permanently dominate ranking (MemoryOS promotion-reset).
+	// Runs in this always-on cadence so the guard is live in Phase 1, not
+	// gated behind the optional reflection job (review finding 4). Best-effort.
+	if !j.DryRun {
+		if derr := j.Semantic.DampenHeat(ctx, j.AgentID, heatDampenTopN); derr != nil {
+			log.Warn("consolidate: dampen heat failed", "agent", j.AgentID, "err", derr)
+		}
+	}
+
 	live, _ := j.Semantic.Count(ctx, false, false)
-	summary := fmt.Sprintf("merged %d group(s), superseded %d fact(s); %d live facts remain",
-		mergedGroups, factsSuperseded, live)
+	summary := fmt.Sprintf("merged %d group(s), superseded %d fact(s); %d live facts remain (%d merge-protected, excluded)",
+		mergedGroups, factsSuperseded, live, protectedExcluded)
 	if j.DryRun {
 		summary = "[dry-run] " + summary
 	}
@@ -197,14 +214,50 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 		Summary: summary,
 		Changed: !j.DryRun && mergedGroups > 0,
 		Details: map[string]any{
-			"merged_groups":    mergedGroups,
-			"facts_superseded": factsSuperseded,
-			"live_facts":       live,
-			"holistic":         j.Holistic,
-			"dry_run":          j.DryRun,
-			"previews":         previews,
+			"merged_groups":      mergedGroups,
+			"facts_superseded":   factsSuperseded,
+			"live_facts":         live,
+			"holistic":           j.Holistic,
+			"dry_run":            j.DryRun,
+			"previews":           previews,
+			"protected_excluded": protectedExcluded,
+			"candidate_facts":    totalFacts,
 		},
 	}, nil
+}
+
+// heatDampenTopN bounds how many of the hottest facts get their
+// access_count halved per consolidation run.
+const heatDampenTopN = 20
+
+// filterMergeProtected drops facts that semantic.MergeProtected reports
+// (pinned / protected / high-importance-and-used) from the merge-candidate
+// list, returning the survivors and the count excluded. Fails open: on a
+// signals-load error it logs and returns the input unchanged (today's
+// behavior) rather than silently halting consolidation.
+func (j *ConsolidationJob) filterMergeProtected(ctx context.Context, facts []*semantic.Fact, log *slog.Logger) ([]*semantic.Fact, int) {
+	if len(facts) == 0 {
+		return facts, 0
+	}
+	ids := make([]int64, len(facts))
+	for i, f := range facts {
+		ids[i] = f.ID
+	}
+	sigs, err := j.Semantic.SignalsBatch(ctx, ids)
+	if err != nil {
+		log.Warn("consolidate: signals load failed; not filtering protected", "agent", j.AgentID, "err", err)
+		return facts, 0
+	}
+	kept := make([]*semantic.Fact, 0, len(facts))
+	excluded := 0
+	for _, f := range facts {
+		if semantic.MergeProtected(sigs[f.ID]) {
+			excluded++
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept, excluded
 }
 
 func (j *ConsolidationJob) summarizerRole() model.Role {
