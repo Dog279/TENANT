@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -83,6 +84,7 @@ type RunResult struct {
 	FactsExtracted    int
 	FactsInserted     int
 	FactsReaffirmed   int
+	FactsSuperseded   int // Phase 2: borderline contradictions recorded as transitions
 	LastEpisodeID     int64
 	// BatchErrors holds non-fatal errors from individual batches
 	// (e.g. LLM returned malformed JSON for batch 3). The run
@@ -166,13 +168,14 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 		result.FactsExtracted += len(extracted)
 
 		// 4. Embed all extracted facts in one call (cheaper than per-fact).
-		ins, reaff, err := d.persistFacts(ctx, summarizer, embedder, string(embProfile.ID), extracted, threshold)
+		ins, reaff, sup, err := d.persistFacts(ctx, summarizer, embedder, string(embProfile.ID), extracted, threshold)
 		if err != nil {
 			log.Warn("distill: persist failed", "agent", d.AgentID, "batch_start", start, "err", err)
 			result.BatchErrors = append(result.BatchErrors, fmt.Errorf("persist for batch starting at episode %d: %w", batch[0].ID, err))
 		}
 		result.FactsInserted += ins
 		result.FactsReaffirmed += reaff
+		result.FactsSuperseded += sup
 		result.EpisodesProcessed += len(batch)
 		result.LastEpisodeID = batch[len(batch)-1].ID
 	}
@@ -323,12 +326,12 @@ func (d *Distiller) extractBatch(ctx context.Context, llm model.LLM, batch []*ep
 }
 
 // persistFacts embeds each extracted fact, finds its closest existing fact,
-// and either reaffirms (clear match), reaffirms after summarizer adjudication
-// (borderline match), or inserts (distinct). Returns (inserted, reaffirmed,
-// error).
-func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embedder model.Embedder, embedderID string, facts []extractedFact, threshold float64) (int, int, error) {
+// and either reaffirms (clear/borderline-same match), supersedes-as-transition
+// (borderline contradiction), or inserts (distinct). Returns (inserted,
+// reaffirmed, superseded, error).
+func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embedder model.Embedder, embedderID string, facts []extractedFact, threshold float64) (int, int, int, error) {
 	if len(facts) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	texts := make([]string, len(facts))
 	for i, f := range facts {
@@ -336,50 +339,57 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 	}
 	vectors, err := embedder.Embed(ctx, texts)
 	if err != nil {
-		return 0, 0, fmt.Errorf("embed facts: %w", err)
+		return 0, 0, 0, fmt.Errorf("embed facts: %w", err)
 	}
 	if len(vectors) != len(facts) {
-		return 0, 0, fmt.Errorf("embedder returned %d vectors for %d facts", len(vectors), len(facts))
+		return 0, 0, 0, fmt.Errorf("embedder returned %d vectors for %d facts", len(vectors), len(facts))
 	}
 
-	var inserted, reaffirmed int
+	var inserted, reaffirmed, superseded int
 	for i, f := range facts {
 		if err := ctx.Err(); err != nil {
-			return inserted, reaffirmed, err
+			return inserted, reaffirmed, superseded, err
 		}
 		// Look up the closest existing fact for this agent.
 		existing, err := d.findClosest(ctx, vectors[i])
 		if err != nil {
-			return inserted, reaffirmed, err
+			return inserted, reaffirmed, superseded, err
 		}
 		// Clear match → reaffirm the existing fact.
 		if existing != nil && existing.Score >= threshold {
 			if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
-				return inserted, reaffirmed, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
+				return inserted, reaffirmed, superseded, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
 			}
 			d.reinforceImportance(ctx, existing.Fact.ID, f.Importance)
 			reaffirmed++
 			continue
 		}
-		// Borderline match → let the summarizer decide restate vs. distinct,
-		// so a reworded duplicate reaffirms instead of inserting a near-dup.
+		// Borderline match → let the summarizer decide same / supersedes /
+		// distinct. "same" reaffirms (a reworded duplicate doesn't insert a
+		// near-dup); "supersedes" inserts the new fact AND records a transition
+		// off the old one (Phase 2); "distinct" inserts.
+		var supersedeOldID int64
 		if existing != nil && existing.Score >= DefaultBorderlineThreshold && summarizer != nil {
-			same, aerr := d.isRestatement(ctx, summarizer, f.Fact, existing.Fact.Fact)
+			verdict, aerr := d.classifyBorderline(ctx, summarizer, f.Fact, existing.Fact.Fact)
 			if aerr != nil {
-				log := d.Logger
-				if log == nil {
-					log = slog.Default()
+				d.logger().Warn("distill: borderline adjudication failed; inserting", "err", aerr)
+			} else {
+				switch verdict {
+				case verdictSame:
+					if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
+						return inserted, reaffirmed, superseded, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
+					}
+					d.reinforceImportance(ctx, existing.Fact.ID, f.Importance)
+					reaffirmed++
+					continue
+				case verdictSupersedes:
+					supersedeOldID = existing.Fact.ID // link after the new fact is inserted
+				case verdictDistinct:
+					// fall through to a plain insert
 				}
-				log.Warn("distill: borderline adjudication failed; inserting", "err", aerr)
-			} else if same {
-				if err := d.Semantic.Reaffirm(ctx, existing.Fact.ID); err != nil {
-					return inserted, reaffirmed, fmt.Errorf("reaffirm fact %d: %w", existing.Fact.ID, err)
-				}
-				d.reinforceImportance(ctx, existing.Fact.ID, f.Importance)
-				reaffirmed++
-				continue
 			}
 		}
+		now := time.Now().UTC()
 		newID, err := d.Semantic.Insert(ctx, &semantic.Fact{
 			AgentID:        d.AgentID,
 			Visibility:     semantic.VisibilityPrivate,
@@ -390,54 +400,94 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 			Embedding:      vectors[i],
 		})
 		if err != nil {
-			return inserted, reaffirmed, fmt.Errorf("insert fact: %w", err)
+			return inserted, reaffirmed, superseded, fmt.Errorf("insert fact: %w", err)
 		}
 		// Seed the fact's importance signal (confirm_count=1). Best-effort:
 		// a signals write must never fail the distill run — a fact with no
-		// signals row simply reads as neutral.
-		if serr := d.Semantic.UpsertSignals(ctx, semantic.Signals{
-			FactID:       newID,
-			Importance:   importanceScore(f.Importance),
-			ConfirmCount: 1,
-		}); serr != nil {
+		// signals row simply reads as neutral. On a supersession, stamp the
+		// new fact's event-time start so an as-of query knows when it began.
+		newSig := semantic.Signals{FactID: newID, Importance: importanceScore(f.Importance), ConfirmCount: 1}
+		if supersedeOldID != 0 {
+			newSig.ValidFrom = now
+		}
+		if serr := d.Semantic.UpsertSignals(ctx, newSig); serr != nil {
 			d.logger().Warn("distill: seed importance failed", "fact", newID, "err", serr)
+		}
+		// Supersession-as-transition: close the old fact's event-time validity
+		// (it stopped being true now) and soft-supersede it. Both best-effort
+		// and reversible; the old fact stays for audit / as-of recall.
+		if supersedeOldID != 0 {
+			if serr := d.Semantic.SetValidTo(ctx, supersedeOldID, now); serr != nil {
+				d.logger().Warn("distill: set valid_to failed", "fact", supersedeOldID, "err", serr)
+			}
+			if serr := d.Semantic.Supersede(ctx, supersedeOldID, newID); serr != nil {
+				d.logger().Warn("distill: supersede failed", "old", supersedeOldID, "new", newID, "err", serr)
+			} else {
+				superseded++
+			}
 		}
 		inserted++
 	}
-	return inserted, reaffirmed, nil
+	return inserted, reaffirmed, superseded, nil
 }
 
-const restatementSystemPrompt = `You decide whether two memory facts express the SAME underlying claim about a user/project (one may be a reworded, or less/more specific, version of the other) or are DISTINCT claims.
+// borderlineVerdict is the 3-valued judgement for a borderline-similar pair
+// (Phase 2). "supersedes" upgrades the old binary same/distinct so a NEW fact
+// that CONTRADICTS an older one at a later time records a transition (close the
+// old fact's event-time validity + soft-supersede) instead of accumulating an
+// orphan. Honest scope: this only fires in the 0.80–0.88 cosine band, so it
+// catches near-paraphrase contradictions ("endpoint is X" → "endpoint is now
+// Y"), NOT semantically-distant ones (those still both Insert, as today).
+type borderlineVerdict int
 
-Respond with JSON only: {"same": true} if they are the same underlying fact, {"same": false} if distinct.`
+const (
+	verdictDistinct borderlineVerdict = iota
+	verdictSame
+	verdictSupersedes
+)
 
-const restatementJSONSchema = `{"type":"object","properties":{"same":{"type":"boolean"}},"required":["same"]}`
+const restatementSystemPrompt = `You compare a NEW memory fact to an EXISTING one about a user/project and choose exactly one verdict:
+- "same": they express the SAME underlying claim (one may be reworded, or more/less specific).
+- "supersedes": NEW CONTRADICTS EXISTING about the same subject and is the newer truth — the world changed (e.g. employer changed, a deadline moved, an endpoint/value/version switched). NEW replaces EXISTING.
+- "distinct": they are different claims that merely share vocabulary.
 
-// isRestatement asks the summarizer whether `candidate` restates `existing`
-// (same underlying claim) vs. a distinct fact. Used only for borderline-
-// similar pairs to avoid inserting paraphrase duplicates.
-func (d *Distiller) isRestatement(ctx context.Context, llm model.LLM, candidate, existing string) (bool, error) {
+Respond with JSON only: {"verdict": "same" | "supersedes" | "distinct"}.`
+
+const restatementJSONSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["same","supersedes","distinct"]}},"required":["verdict"]}`
+
+// classifyBorderline asks the summarizer whether `candidate` is the same as,
+// supersedes, or is distinct from `existing`. Used only for borderline-similar
+// pairs. A parse failure or unknown verdict degrades to distinct (insert) —
+// the safe, today's-behavior default.
+func (d *Distiller) classifyBorderline(ctx context.Context, llm model.LLM, candidate, existing string) (borderlineVerdict, error) {
 	resp, err := llm.Generate(ctx, model.GenerateRequest{
 		Messages: []model.Message{
 			{Role: "system", Content: restatementSystemPrompt},
-			{Role: "user", Content: fmt.Sprintf("EXISTING: %s\nNEW: %s\n\nIs NEW the same underlying fact as EXISTING?", existing, candidate)},
+			{Role: "user", Content: fmt.Sprintf("EXISTING: %s\nNEW: %s\n\nVerdict for NEW relative to EXISTING?", existing, candidate)},
 		},
 		JSONSchema:  []byte(restatementJSONSchema),
 		Temperature: 0,
 	})
 	if err != nil {
-		return false, fmt.Errorf("summarizer: %w", err)
+		return verdictDistinct, fmt.Errorf("summarizer: %w", err)
 	}
 	if resp.Text == "" {
-		return false, errors.New("summarizer returned empty")
+		return verdictDistinct, errors.New("summarizer returned empty")
 	}
 	var out struct {
-		Same bool `json:"same"`
+		Verdict string `json:"verdict"`
 	}
 	if err := json.Unmarshal([]byte(extractJSONObject(resp.Text)), &out); err != nil {
-		return false, fmt.Errorf("parse adjudication: %w (%q)", err, snippet(resp.Text, 120))
+		return verdictDistinct, fmt.Errorf("parse adjudication: %w (%q)", err, snippet(resp.Text, 120))
 	}
-	return out.Same, nil
+	switch out.Verdict {
+	case "same":
+		return verdictSame, nil
+	case "supersedes":
+		return verdictSupersedes, nil
+	default:
+		return verdictDistinct, nil
+	}
 }
 
 // closestHit wraps a semantic.Hit with the raw cosine score reported

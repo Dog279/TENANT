@@ -229,6 +229,63 @@ func (s *Store) SetProtected(ctx context.Context, id int64, protected bool) erro
 	return s.UpsertSignals(ctx, cur)
 }
 
+// SetValidTo records a fact's event-time end (when the claim stopped being
+// true in the world). Used by supersession-as-transition (Phase 2). Zero t
+// clears it (currently true again).
+func (s *Store) SetValidTo(ctx context.Context, id int64, t time.Time) error {
+	cur, err := s.GetSignals(ctx, id)
+	if err != nil {
+		return err
+	}
+	cur.ValidTo = t
+	return s.UpsertSignals(ctx, cur)
+}
+
+// FactsAsOf returns up to limit facts that were valid at time t, by their
+// event-time window (valid_from/valid_to in fact_signals) — the "as of date X"
+// / historical-recall path (Phase 2). Unlike Search/List it INCLUDES superseded
+// facts (the whole point is to recover what was true then); tombstoned facts
+// are excluded. A fact with no signals row (or no temporal bounds) is treated
+// as currently-true and always included. agentID == "" searches all agents
+// (matching memory_search's full-memory behavior). Ordered by last_confirmed
+// DESC. limit<=0 → 50.
+func (s *Store) FactsAsOf(ctx context.Context, agentID string, t time.Time, limit int) ([]*Fact, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	ts := t.UTC().Unix()
+	clauses := "f.tombstoned = 0 AND (sg.valid_from IS NULL OR sg.valid_from <= ?) AND (sg.valid_to IS NULL OR sg.valid_to > ?)"
+	args := []any{ts, ts}
+	if agentID != "" {
+		clauses = "f.agent_id = ? AND " + clauses
+		args = append([]any{agentID}, args...)
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT f.id, f.agent_id, f.visibility, f.fact, f.source_episodes, f.confidence,
+               f.first_seen, f.last_confirmed, f.superseded_by, f.embedder_id, f.embedding, f.tombstoned
+        FROM facts f LEFT JOIN fact_signals sg ON sg.fact_id = f.id
+        WHERE `+clauses+`
+        ORDER BY f.last_confirmed DESC
+        LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("semantic: facts as-of: %w", err)
+	}
+	defer rows.Close()
+	var out []*Fact
+	for rows.Next() {
+		f, serr := scanFact(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("semantic: facts as-of iter: %w", err)
+	}
+	return out, nil
+}
+
 // PinnedFacts returns up to limit live pinned facts for agentID, highest
 // importance first. The always-include sub-tier (design §9). limit<=0 → 5.
 func (s *Store) PinnedFacts(ctx context.Context, agentID string, limit int) ([]*Fact, error) {

@@ -1255,6 +1255,10 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		}
 		mux.add("memory", newMemorySearchDispatcher(hostName, mst.semantic, mst.episodic, memEmb))
 		// add() registers enabled by default; no disable-at-launch (TEN-249).
+		// memory_history (TEN-255 Phase 2): "as of date X" recall over the
+		// bi-temporal validity. Same store handle, enabled by default; additive
+		// (no temporal data ⇒ it just returns the current set as-of the date).
+		mux.add("memory", newMemoryHistoryDispatcher(hostName, mst.semantic))
 	} else if log != nil {
 		log.Debug("memory_search: store open failed; tool unavailable", "err", merr.Error())
 	}
