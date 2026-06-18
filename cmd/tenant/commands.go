@@ -2612,6 +2612,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		embedder: peerEmb,
 		wiki:     wikiIx,
 		onAuth:   peerHealth.markInbound,
+		onGrant:  peerHealth.markInboundGrant,
 	}
 	var peerSrvMu sync.Mutex
 	var peerSrvStop func()

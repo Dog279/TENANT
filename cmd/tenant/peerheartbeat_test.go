@@ -111,6 +111,33 @@ func TestRecordProbe_KeepsLastCapsOnFailure(t *testing.T) {
 	}
 }
 
+// TestMarkInboundGrant: an announced grant (TEN-253) populates the acceptor-side
+// "them → we" even with no outbound probe; oversized announces are refused.
+func TestMarkInboundGrant(t *testing.T) {
+	r := newPeerHealthRegistry()
+	r.markInboundGrant("desktop", []string{"wiki", "memory", "skills"})
+	var h tui.PeerHealth
+	for _, x := range r.tuiHealth() {
+		if x.Name == "desktop" {
+			h = x
+		}
+	}
+	if !h.TheirShareKnown || strings.Join(h.TheirShare, ",") != "wiki,memory,skills" {
+		t.Fatalf("their-share = %v (known=%v), want wiki,memory,skills", h.TheirShare, h.TheirShareKnown)
+	}
+	if h.State != "alive" { // an announce is also an inbound liveness signal
+		t.Errorf("state = %q, want alive (announce implies inbound)", h.State)
+	}
+	// Oversized announce is refused (no update / no panic).
+	big := make([]string, 40)
+	r.markInboundGrant("evil", big)
+	for _, x := range r.tuiHealth() {
+		if x.Name == "evil" && x.TheirShareKnown {
+			t.Error("oversized announce should be refused")
+		}
+	}
+}
+
 func TestParseHelloCaps(t *testing.T) {
 	got := parseHelloCaps(`{"instance_id":"x","capabilities":["wiki","memory","skills"],"you":"me"}`)
 	if strings.Join(got, ",") != "wiki,memory,skills" {

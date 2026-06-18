@@ -76,6 +76,24 @@ func (r *peerHealthRegistry) markInbound(name string) {
 	r.mu.Unlock()
 }
 
+// markInboundGrant records a grant a dialing peer announced to us via peer_hello
+// (TEN-253) — the acceptor-side source for the "them → we" column, since we
+// never dial that peer to learn it from the response. Display-only.
+func (r *peerHealthRegistry) markInboundGrant(name string, grant []string) {
+	if name == "" || grant == nil {
+		return
+	}
+	if len(grant) > 16 { // bound a malicious announce (same as parseHelloCaps)
+		return
+	}
+	r.mu.Lock()
+	s := r.entryLocked(name)
+	s.theirCaps = grant
+	s.capsKnown = true
+	s.inLastSeen = time.Now() // an announce is also an inbound liveness signal
+	r.mu.Unlock()
+}
+
 // recordProbe records an outbound probe result. caps is the peer's grant to us
 // from peer_hello (nil when the probe failed); the last-known grant is retained
 // across a transient failure rather than blanked.
@@ -251,16 +269,25 @@ func probePeerHello(ctx context.Context, p *peering.Peer) (time.Duration, []stri
 		return time.Since(start), nil, err
 	}
 	defer cleanup()
+	// Announce OUR grant to this peer (TEN-253) so it can show "them → we" even
+	// though it never dials us back. Best-effort — an old peer ignores it.
+	arg, _ := json.Marshal(helloProbeArgs{Grant: p.Share.Capabilities()})
 	// peer_hello's result (incl. "capabilities" — the grant THEY give US) lives in
 	// the typed StructuredContent, not a text block, so use the structured call,
 	// not Dispatch (which renders human text). Best-effort: an unparseable stamp
 	// just leaves their grant unknown.
-	raw, derr := d.CallRawJSON(pctx, model.ToolCall{Name: "peer_hello", Arguments: []byte("{}")})
+	raw, derr := d.CallRawJSON(pctx, model.ToolCall{Name: "peer_hello", Arguments: arg})
 	lat := time.Since(start)
 	if derr != nil {
 		return lat, nil, derr
 	}
 	return lat, parseHelloCaps(string(raw)), nil
+}
+
+// helloProbeArgs is the peer_hello input we send (TEN-253): our grant to this
+// peer, mirroring peering.helloArgs. Optional — old peers ignore it.
+type helloProbeArgs struct {
+	Grant []string `json:"grant,omitempty"`
 }
 
 // parseHelloCaps extracts the capability list from a peer_hello JSON stamp.

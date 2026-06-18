@@ -66,6 +66,10 @@ type peerToolDeps struct {
 	// onAuth records inbound liveness (TEN-250): fired with a peer's name each
 	// time it authenticates a request against our listener. nil ⇒ no-op.
 	onAuth func(peerName string)
+	// onGrant records a caller-announced grant (TEN-253): the grant a dialing
+	// peer gives us, learned from its peer_hello, for the acceptor-side
+	// "them → we" column. nil ⇒ no-op.
+	onGrant func(peerName string, grant []string)
 }
 
 // peerSearchArgs is the shared input for both knowledge tools.

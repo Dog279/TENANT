@@ -3,6 +3,7 @@ package peering
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -55,5 +56,47 @@ func TestPeerHello_StructuredCapsRoundTrip(t *testing.T) {
 	got := strings.Join(h.Capabilities, ",")
 	if !strings.Contains(got, "wiki") || !strings.Contains(got, "memory") {
 		t.Fatalf("capabilities = %q, want wiki+memory (the grant to the caller)", got)
+	}
+}
+
+// TestPeerHello_GrantAnnounce proves the TEN-253 symmetric exchange end-to-end:
+// a dialer announces its OWN grant in the peer_hello input, and the listener's
+// OnGrant hook receives it (the acceptor-side source for "them → we").
+func TestPeerHello_GrantAnnounce(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := LoadStore(dir)
+	if _, err := store.CreateInvite("hub", "hub-id", "https://hub", "", time.Hour, "spoke"); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := store.Get("spoke")
+
+	var gotName string
+	var gotGrant []string
+	l, err := NewListener(ListenerConfig{
+		Store: store, SelfID: "hub-id", SelfVersion: "1.0",
+		OnGrant: func(name string, grant []string) { gotName = name; gotGrant = grant },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(l.Handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	d, cleanup, err := mcpremote.OpenStatic(ctx, mcpremote.StaticConfig{
+		ServerURL: srv.URL, Token: p.Token, Label: "probe", TLS: nil,
+	}, mcpremote.Policy{})
+	if err != nil {
+		t.Fatalf("OpenStatic: %v", err)
+	}
+	defer cleanup()
+
+	arg, _ := json.Marshal(map[string][]string{"grant": {"wiki", "memory"}})
+	if _, err := d.CallRawJSON(ctx, model.ToolCall{Name: "peer_hello", Arguments: arg}); err != nil {
+		t.Fatalf("CallRawJSON(peer_hello+grant): %v", err)
+	}
+	if gotName != "spoke" || strings.Join(gotGrant, ",") != "wiki,memory" {
+		t.Fatalf("OnGrant got (%q, %v), want (spoke, [wiki memory])", gotName, gotGrant)
 	}
 }

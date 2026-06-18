@@ -572,6 +572,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		embedder: peerEmb,
 		wiki:     wikiIx,
 		onAuth:   peerHealth.markInbound,
+		onGrant:  peerHealth.markInboundGrant,
 	}
 	var peerSrvStop func()
 	if c.lc != nil && c.lc.Peer.Listen != "" {

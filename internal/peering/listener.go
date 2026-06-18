@@ -76,6 +76,7 @@ type Listener struct {
 	registrar    ToolRegistrar
 	pairApprover func(ctx context.Context, prompt string) bool // TEN-239: nil ⇒ /pair disabled
 	onAuth       func(peerName string)                         // TEN-250: inbound liveness; nil ⇒ no-op
+	onGrant      func(peerName string, grant []string)         // TEN-253: caller-announced grant; nil ⇒ no-op
 	pairLimiter  *pairLimiter
 	log          func(format string, args ...any)
 
@@ -100,7 +101,11 @@ type ListenerConfig struct {
 	// liveness): the peer's name, for the inbound last-seen signal in /peer. Runs
 	// on the request goroutine, so it must be cheap + non-blocking. nil ⇒ no-op.
 	OnAuth func(peerName string)
-	Logger func(string, ...any)
+	// OnGrant fires when a caller announces its grant to us in peer_hello
+	// (TEN-253), so an acceptor can display "this peer grants us X". Cheap +
+	// non-blocking; nil ⇒ no-op.
+	OnGrant func(peerName string, grant []string)
+	Logger  func(string, ...any)
 }
 
 // NewListener builds a Listener. It does not bind until Serve.
@@ -127,22 +132,34 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 		registrar:    cfg.Registrar,
 		pairApprover: cfg.PairApprover,
 		onAuth:       cfg.OnAuth,
+		onGrant:      cfg.OnGrant,
 		pairLimiter:  &pairLimiter{max: 3},
 		log:          log,
 	}, nil
 }
+
+// maxPeerRequestBytes bounds a peer's MCP request body before the go-sdk decodes
+// it — a DoS guard so a (compromised) authenticated peer can't OOM the listener
+// with a multi-MB JSON blob (e.g. a pathological peer_hello grant array) before
+// any application-level length check runs (TEN-253). 1 MiB is generous: peer_hello
+// is tiny and knowledge-tool calls are small query strings.
+const maxPeerRequestBytes = 1 << 20
 
 // Handler builds the authenticated streamable-HTTP handler. Exposed separately
 // from Serve so tests can mount it on an httptest server.
 func (l *Listener) Handler() http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(l.getServer, nil)
 	authed := auth.RequireBearerToken(l.verify, nil)(mcpHandler)
+	limited := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxPeerRequestBytes)
+		authed.ServeHTTP(w, r)
+	})
 	mux := http.NewServeMux()
 	// /pair is UNAUTHENTICATED by necessity (no shared secret yet) but only ever
 	// creates a pending operator approval (TEN-239); everything else is the
-	// bearer-gated MCP surface.
+	// bearer-gated MCP surface (body-size-limited above).
 	mux.HandleFunc(pairPath, l.handlePair)
-	mux.Handle("/", authed)
+	mux.Handle("/", limited)
 	return mux
 }
 
@@ -224,6 +241,14 @@ func peerContextFrom(ctx context.Context) (PeerContext, bool) {
 	return pc, true
 }
 
+// helloArgs is the OPTIONAL input a caller sends with peer_hello (TEN-253): its
+// OWN grant to this server, so an ACCEPTOR (which never dials the caller back)
+// can still display "what this peer grants us". Display-only — it never changes
+// gating, which each side enforces from its own CurrentShare at call time.
+type helloArgs struct {
+	Grant []string `json:"grant,omitempty"`
+}
+
 // helloResult is the capability stamp a peer fetches at connect.
 type helloResult struct {
 	InstanceID      string   `json:"instance_id"`
@@ -246,7 +271,14 @@ func (l *Listener) registerHello(s *mcp.Server, pc PeerContext) {
 			// treat it as ungated (TEN-251) — it's a liveness/handshake probe.
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		},
-		func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, helloResult, error) {
+		func(_ context.Context, _ *mcp.CallToolRequest, args helloArgs) (*mcp.CallToolResult, helloResult, error) {
+			// The caller may announce ITS grant to us (TEN-253) so we can show
+			// "this peer grants us X" even though we never dial it back. A non-nil
+			// (even empty) grant is a real announce — "shares nothing" → "(none)",
+			// distinct from nil (an old peer that announced nothing → "unknown").
+			if l.onGrant != nil && args.Grant != nil {
+				l.onGrant(pc.Name, args.Grant)
+			}
 			out := helloResult{
 				InstanceID:      l.selfID,
 				Version:         l.selfVersion,
@@ -258,6 +290,10 @@ func (l *Listener) registerHello(s *mcp.Server, pc PeerContext) {
 		},
 	)
 }
+
+// Capabilities is the exported form of grantedCapabilities — the list of share
+// flags this policy currently enables (for the TEN-253 grant announce).
+func (sp SharePolicy) Capabilities() []string { return grantedCapabilities(sp) }
 
 // grantedCapabilities lists the share flags currently enabled for a peer.
 func grantedCapabilities(sp SharePolicy) []string {

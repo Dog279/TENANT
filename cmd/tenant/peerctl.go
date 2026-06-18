@@ -579,6 +579,7 @@ func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps,
 		Registrar:    peerKnowledgeRegistrar(deps), // TEN-186 share-gated knowledge tools
 		PairApprover: pairApprove,                  // TEN-239 push-invite Approve/Deny
 		OnAuth:       deps.onAuth,                  // TEN-250 inbound liveness
+		OnGrant:      deps.onGrant,                 // TEN-253 caller-announced grant
 		Logger: func(f string, a ...any) {
 			if log != nil {
 				log.Info(fmt.Sprintf(f, a...))
