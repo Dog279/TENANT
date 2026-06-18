@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -40,6 +41,8 @@ type peerHealthState struct {
 	outErr      string        // last probe error (when !outAlive)
 	outLastSeen time.Time     // last SUCCESSFUL outbound probe
 	inLastSeen  time.Time     // last inbound auth from this peer
+	theirCaps   []string      // capabilities THEY grant US (peer_hello), last-known
+	capsKnown   bool          // we've learned their grant at least once
 }
 
 // peerHealthRegistry is the in-memory liveness store, written by the prober
@@ -73,8 +76,10 @@ func (r *peerHealthRegistry) markInbound(name string) {
 	r.mu.Unlock()
 }
 
-// recordProbe records an outbound probe result.
-func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.Duration, err error) {
+// recordProbe records an outbound probe result. caps is the peer's grant to us
+// from peer_hello (nil when the probe failed); the last-known grant is retained
+// across a transient failure rather than blanked.
+func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.Duration, caps []string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.entryLocked(name)
@@ -88,6 +93,10 @@ func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.D
 	}
 	if alive {
 		s.outLastSeen = time.Now()
+		if caps != nil {
+			s.theirCaps = caps
+			s.capsKnown = true
+		}
 	}
 }
 
@@ -121,7 +130,7 @@ func (r *peerHealthRegistry) tuiHealth() []tui.PeerHealth {
 // inbound auth means alive; a stale/absent signal is unknown (we can't probe a
 // peer that only dials us, so it's never reported "dead").
 func derivePeerHealth(name string, s *peerHealthState, now time.Time) tui.PeerHealth {
-	h := tui.PeerHealth{Name: name}
+	h := tui.PeerHealth{Name: name, TheirShare: s.theirCaps, TheirShareKnown: s.capsKnown}
 	switch {
 	case s.outProbed && s.outAlive:
 		h.State = "alive"
@@ -217,8 +226,8 @@ func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			lat, perr := probePeerHello(ctx, p)
-			m.reg.recordProbe(p.Name, perr == nil, lat, perr)
+			lat, caps, perr := probePeerHello(ctx, p)
+			m.reg.recordProbe(p.Name, perr == nil, lat, caps, perr)
 		}()
 	}
 	wg.Wait()
@@ -228,7 +237,7 @@ func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 // latency and any error. A bounded timeout keeps a dead peer from stalling the
 // round. The dial authenticates against the peer's listener, so it also drives
 // the peer's OWN inbound-seen signal (mutual liveness).
-func probePeerHello(ctx context.Context, p *peering.Peer) (time.Duration, error) {
+func probePeerHello(ctx context.Context, p *peering.Peer) (time.Duration, []string, error) {
 	pctx, cancel := context.WithTimeout(ctx, peerProbeTimeout)
 	defer cancel()
 	start := time.Now()
@@ -239,16 +248,37 @@ func probePeerHello(ctx context.Context, p *peering.Peer) (time.Duration, error)
 		TLS:       peering.PinnedTLSClientConfig(p.Fingerprint),
 	}, mcpremote.Policy{})
 	if err != nil {
-		return time.Since(start), err
+		return time.Since(start), nil, err
 	}
 	defer cleanup()
-	_, isErr, derr := d.Dispatch(pctx, model.ToolCall{Name: "peer_hello", Arguments: []byte("{}")})
+	// peer_hello's result (incl. "capabilities" — the grant THEY give US) lives in
+	// the typed StructuredContent, not a text block, so use the structured call,
+	// not Dispatch (which renders human text). Best-effort: an unparseable stamp
+	// just leaves their grant unknown.
+	raw, derr := d.CallRawJSON(pctx, model.ToolCall{Name: "peer_hello", Arguments: []byte("{}")})
 	lat := time.Since(start)
 	if derr != nil {
-		return lat, derr
+		return lat, nil, derr
 	}
-	if isErr {
-		return lat, fmt.Errorf("peer_hello returned an error")
+	return lat, parseHelloCaps(string(raw)), nil
+}
+
+// parseHelloCaps extracts the capability list from a peer_hello JSON stamp.
+// A real stamp is tiny (≤5 flags); bound both the raw size and the array length
+// so a malicious peer can't OOM the prober with a pathological blob — an
+// over-limit response is treated as unparseable (grant left unknown / last-known).
+func parseHelloCaps(s string) []string {
+	if len(s) > 8192 {
+		return nil
 	}
-	return lat, nil
+	var h struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.Unmarshal([]byte(s), &h); err != nil {
+		return nil
+	}
+	if len(h.Capabilities) > 16 {
+		return nil
+	}
+	return h.Capabilities
 }

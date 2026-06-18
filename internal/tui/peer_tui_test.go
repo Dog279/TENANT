@@ -201,6 +201,28 @@ func TestHandlePeer_ListStatusDots(t *testing.T) {
 	}
 }
 
+// TestHandlePeer_Status: /peer status shows liveness + BOTH share directions.
+func TestHandlePeer_Status(t *testing.T) {
+	f := newFakePeerControl("work", "edge")
+	f.peers["work"].Share = map[string]bool{"wiki": true, "memory": true}
+	f.health = []PeerHealth{
+		{Name: "work", State: "alive", Detail: "seen 2s ago (9ms)", TheirShare: []string{"wiki", "memory", "skills"}, TheirShareKnown: true},
+		{Name: "edge", State: "unknown", Detail: "no contact yet", TheirShareKnown: false},
+	}
+	m := newModel(context.Background(), Config{Peer: f})
+	m.handlePeer("status")
+	out := lastSys(m)
+	if !strings.Contains(out, "we  → them:") || !strings.Contains(out, "them → we:") {
+		t.Fatalf("status should show both share directions: %q", out)
+	}
+	if !strings.Contains(out, "wiki,memory,skills") {
+		t.Errorf("their-grant (from peer_hello) should render: %q", out)
+	}
+	if !strings.Contains(out, "unknown — we don't dial this peer") {
+		t.Errorf("inbound-only peer should show their-share as unknown: %q", out)
+	}
+}
+
 func TestHandlePeer_ListShowRemove(t *testing.T) {
 	f := newFakePeerControl("hub", "edge")
 	m := newModel(context.Background(), Config{Peer: f})

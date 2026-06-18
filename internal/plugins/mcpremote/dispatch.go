@@ -86,6 +86,39 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	return text, res.IsError, nil
 }
 
+// CallRawJSON calls a remote tool and returns its result as JSON bytes — the
+// StructuredContent (typed result) when present, else the flattened text
+// content. Unlike Dispatch (which renders human text for the agent), this is for
+// callers that need the machine-readable result, e.g. the peer_hello capability
+// stamp whose fields live in StructuredContent, not a text block. It applies the
+// SAME deny-by-default gate as Dispatch — a structured call must not be a way to
+// invoke a gated/write tool without approval.
+func (d *Dispatcher) CallRawJSON(ctx context.Context, call model.ToolCall) ([]byte, error) {
+	// Same deny-by-default gate as Dispatch — exporting a structured call must not
+	// become a way to invoke a gated/write tool without approval. (peer_hello is
+	// marked read-only by a trusting server, so it's ungated and this is a no-op.)
+	if d.gated[call.Name] {
+		if err := d.gate(ctx, call.Name); err != nil {
+			return nil, err
+		}
+	}
+	var args any
+	if len(call.Arguments) > 0 {
+		args = json.RawMessage(call.Arguments)
+	}
+	res, err := d.session.CallTool(ctx, &mcp.CallToolParams{Name: call.Name, Arguments: args})
+	if err != nil {
+		return nil, err
+	}
+	if res.IsError {
+		return nil, fmt.Errorf("remote tool reported an error")
+	}
+	if res.StructuredContent != nil {
+		return json.Marshal(res.StructuredContent)
+	}
+	return []byte(renderContent(res.Content)), nil
+}
+
 func (d *Dispatcher) gate(ctx context.Context, name string) error {
 	if d.policy.AllowWrite {
 		return nil

@@ -239,7 +239,13 @@ type helloResult struct {
 // loudly on mismatch (TEN-186).
 func (l *Listener) registerHello(s *mcp.Server, pc PeerContext) {
 	mcp.AddTool(s,
-		&mcp.Tool{Name: "peer_hello", Description: "federation handshake: version + capability stamp"},
+		&mcp.Tool{
+			Name:        "peer_hello",
+			Description: "federation handshake: version + capability stamp",
+			// Read-only: returns a stamp, no side effects. Lets a trusting dialer
+			// treat it as ungated (TEN-251) — it's a liveness/handshake probe.
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		},
 		func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, helloResult, error) {
 			out := helloResult{
 				InstanceID:      l.selfID,

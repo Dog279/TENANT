@@ -561,6 +561,11 @@ type PeerHealth struct {
 	State        string // "alive" | "dead" | "unknown"
 	Detail       string // "seen 3s ago (12ms)" / "unreachable: …" / "inbound 5s ago"
 	LastSeenUnix int64  // 0 = never
+	// TheirShare is what the peer grants US (from peer_hello), for the /peer
+	// status "them → us" column. TheirShareKnown is false until we've learned it
+	// (we only learn it by dialing them, so an inbound-only peer stays unknown).
+	TheirShare      []string
+	TheirShareKnown bool
 }
 
 // PeerFedStat is one peer's federated-search tally for the /peer stats view.
@@ -1958,8 +1963,16 @@ func (m *model) handlePeer(arg string) tea.Cmd {
 			}
 		}
 		b.WriteString("\n" + cDim.Render(peerStatusDot("alive")+" alive  "+peerStatusDot("dead")+" unreachable  "+peerStatusDot("unknown")+" unknown"))
-		b.WriteString("\nEdit sharing:  /configure peer <name>")
+		b.WriteString("\nDetailed status:  /peer status   ·   Edit sharing:  /configure peer <name>")
 		m.sysChat(strings.TrimRight(b.String(), "\n"))
+		return nil
+	case "status":
+		peers := m.cfg.Peer.List()
+		if len(peers) == 0 {
+			m.sysChat("no peers paired yet. Pair with `/peer invite <name> <ip|url>` (they Approve/Deny).")
+			return nil
+		}
+		m.sysChat(renderPeerStatus(peers, peerHealthByName(m.cfg.Peer.Health())))
 		return nil
 	case "show":
 		name := strings.TrimSpace(rest)
@@ -2224,6 +2237,50 @@ func peerHealthByName(hs []PeerHealth) map[string]PeerHealth {
 		m[h.Name] = h
 	}
 	return m
+}
+
+// renderPeerStatus is the /peer status view (TEN-251): per peer, a colored
+// liveness dot + both directions of sharing, so a glance shows whether each
+// peer is talking AND how it can talk.
+//
+//	● work          alive — seen 3s ago (12ms)
+//	    we  → them:  wiki, memory
+//	    them → we:   wiki, memory, skills
+func renderPeerStatus(peers []PeerInfo, health map[string]PeerHealth) string {
+	stateWord := map[string]string{"alive": "alive", "dead": "unreachable", "unknown": "unknown"}
+	var b strings.Builder
+	b.WriteString("Peer status:\n")
+	for _, p := range peers {
+		h := health[p.Name]
+		word := stateWord[h.State]
+		if word == "" {
+			word = "unknown"
+		}
+		line := fmt.Sprintf("  %s %-16s %s", peerStatusDot(h.State), p.Name, word)
+		if d := strings.TrimSpace(h.Detail); d != "" {
+			line += cDim.Render(" — " + d)
+		}
+		b.WriteString(line + "\n")
+		// Outbound: what WE grant THEM (our local share policy).
+		b.WriteString("      " + cDim.Render("we  → them: ") + renderShareInline(p.Share) + "\n")
+		// Inbound: what THEY grant US (learned from their peer_hello).
+		them := "(unknown — we don't dial this peer)"
+		if h.TheirShareKnown {
+			them = renderShareList(h.TheirShare)
+		}
+		b.WriteString("      " + cDim.Render("them → we:  ") + them + "\n")
+	}
+	b.WriteString("\n" + cDim.Render(peerStatusDot("alive")+" alive  "+peerStatusDot("dead")+" unreachable  "+peerStatusDot("unknown")+" unknown"))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderShareList formats a capability list (the peer's grant to us) like
+// renderShareInline does for our own policy. Empty ⇒ "(none)".
+func renderShareList(caps []string) string {
+	if len(caps) == 0 {
+		return "(none)"
+	}
+	return strings.Join(caps, ",")
 }
 
 // renderPeerStats formats the federated-search drift tally (/peer stats).

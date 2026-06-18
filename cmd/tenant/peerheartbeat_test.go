@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tenant/internal/tui"
 )
 
 func TestDerivePeerHealth_States(t *testing.T) {
@@ -63,21 +65,71 @@ func TestDerivePeerHealth_States(t *testing.T) {
 func TestPeerHealthRegistry_RecordAndDerive(t *testing.T) {
 	r := newPeerHealthRegistry()
 	r.markInbound("work")
-	r.recordProbe("desktop", true, 8*time.Millisecond, nil)
-	r.recordProbe("offsite", false, 0, errors.New("connection refused"))
+	r.recordProbe("desktop", true, 8*time.Millisecond, []string{"wiki", "memory"}, nil)
+	r.recordProbe("offsite", false, 0, nil, errors.New("connection refused"))
 
-	byName := map[string]string{}
+	byName := map[string]tui.PeerHealth{}
 	for _, h := range r.tuiHealth() {
-		byName[h.Name] = h.State
+		byName[h.Name] = h
 	}
-	if byName["work"] != "alive" { // fresh inbound
-		t.Errorf("work = %q, want alive", byName["work"])
+	if byName["work"].State != "alive" { // fresh inbound
+		t.Errorf("work = %q, want alive", byName["work"].State)
 	}
-	if byName["desktop"] != "alive" { // successful probe
-		t.Errorf("desktop = %q, want alive", byName["desktop"])
+	if byName["desktop"].State != "alive" { // successful probe
+		t.Errorf("desktop = %q, want alive", byName["desktop"].State)
 	}
-	if byName["offsite"] != "dead" { // failed probe, no inbound
-		t.Errorf("offsite = %q, want dead", byName["offsite"])
+	if byName["offsite"].State != "dead" { // failed probe, no inbound
+		t.Errorf("offsite = %q, want dead", byName["offsite"].State)
+	}
+	// "their share to us" captured from the probe (TEN-251).
+	if d := byName["desktop"]; !d.TheirShareKnown || strings.Join(d.TheirShare, ",") != "wiki,memory" {
+		t.Errorf("desktop their-share = %v (known=%v), want wiki,memory", d.TheirShare, d.TheirShareKnown)
+	}
+	// Inbound-only peer: their grant to us is unknown (we never dialed it).
+	if byName["work"].TheirShareKnown {
+		t.Errorf("work their-share should be unknown (inbound-only)")
+	}
+}
+
+// TestRecordProbe_KeepsLastCapsOnFailure: a transient probe failure must not
+// blank the last-known grant.
+func TestRecordProbe_KeepsLastCapsOnFailure(t *testing.T) {
+	r := newPeerHealthRegistry()
+	r.recordProbe("p", true, time.Millisecond, []string{"wiki"}, nil)
+	r.recordProbe("p", false, 0, nil, errors.New("timeout")) // transient
+	var h tui.PeerHealth
+	for _, x := range r.tuiHealth() {
+		if x.Name == "p" {
+			h = x
+		}
+	}
+	if !h.TheirShareKnown || strings.Join(h.TheirShare, ",") != "wiki" {
+		t.Fatalf("last-known grant lost on failure: %v (known=%v)", h.TheirShare, h.TheirShareKnown)
+	}
+	if h.State != "dead" {
+		t.Fatalf("state = %q, want dead", h.State)
+	}
+}
+
+func TestParseHelloCaps(t *testing.T) {
+	got := parseHelloCaps(`{"instance_id":"x","capabilities":["wiki","memory","skills"],"you":"me"}`)
+	if strings.Join(got, ",") != "wiki,memory,skills" {
+		t.Fatalf("caps = %v", got)
+	}
+	if parseHelloCaps("not json") != nil {
+		t.Fatal("garbage should parse to nil (unknown), not panic")
+	}
+	// DoS guards: oversized raw blob and oversized array are refused (→ nil).
+	huge := `{"capabilities":["` + strings.Repeat("x", 9000) + `"]}`
+	if parseHelloCaps(huge) != nil {
+		t.Fatal("oversized raw stamp should be refused")
+	}
+	manyEntries := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		manyEntries = append(manyEntries, `"a"`)
+	}
+	if parseHelloCaps(`{"capabilities":[`+strings.Join(manyEntries, ",")+`]}`) != nil {
+		t.Fatal("over-count capabilities array should be refused")
 	}
 }
 
@@ -89,7 +141,7 @@ func TestPeerHealthRegistry_Concurrent(t *testing.T) {
 	go func() {
 		for i := 0; i < 1000; i++ {
 			r.markInbound("a")
-			r.recordProbe("b", i%2 == 0, time.Millisecond, nil)
+			r.recordProbe("b", i%2 == 0, time.Millisecond, []string{"wiki"}, nil)
 		}
 		close(done)
 	}()
