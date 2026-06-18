@@ -55,6 +55,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	evalEvery := fs.Duration("eval-every", 0, "nightly eval cadence (0=off; e.g. 24h); needs --self-improve")
 	dashboardOn := fs.Bool("dashboard", true, "serve the web control panel (the hub's control + chat + approval surface)")
 	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:8770)")
+	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -65,6 +66,12 @@ func cmdServe(ctx context.Context, args []string) error {
 	pf.wikiDir = expandPath(pf.wikiDir)
 	pf.sqlDB = expandPath(pf.sqlDB)
 	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	// Semantic memory is a core pillar (TEN-254): a 24/7 hub running amnesiac is
+	// worse than not running. Refuse to start when the embedder is down unless the
+	// operator opts out (--allow-no-memory, or --backend echo for offline dev).
+	if !*allowNoMemory && c.backend != "echo" && !semanticMemoryReady(ctx, c) {
+		return memoryDownError(c)
+	}
 
 	// Daemon logging goes to stderr (the supervisor — launchd/systemd —
 	// captures it); there is no alt-screen to protect. A serve-mode feed sink

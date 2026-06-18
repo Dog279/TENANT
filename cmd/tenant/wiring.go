@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -523,6 +524,38 @@ func attachEmbedder(reg *model.Registry, c *commonFlags) (usesEcho bool, err err
 		}
 	}
 	return true, nil
+}
+
+// semanticMemoryReady reports whether the REAL vector embedder is configured AND
+// reachable — i.e. NOT the hash stand-in (TEN-254). The long-running memory-backed
+// sessions (TUI + serve) refuse to start when this is false unless the operator
+// passes --allow-no-memory. Mirrors attachEmbedder's reachability probe exactly so
+// the guard and the actual embedder selection agree.
+func semanticMemoryReady(ctx context.Context, c *commonFlags) bool {
+	if c.embedEndpoint == "" || c.embedModel == "" {
+		return false
+	}
+	pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return reachable(pctx, c.embedEndpoint+"/v1/models")
+}
+
+// memoryDownError is the refuse-to-start error when semantic memory is down and
+// the operator hasn't forced it (TEN-254). It reuses the stern embedSetupHint so
+// the fix is identical to the warning, then adds the override.
+func memoryDownError(c *commonFlags) error {
+	var b strings.Builder
+	if c.embedEndpoint != "" {
+		fmt.Fprintf(&b, embedSetupHint+"\n\n", c.embedEndpoint, c.embedModel)
+	} else {
+		b.WriteString("EMBEDDINGS DOWN — SEMANTIC MEMORY IS DISABLED\n\n" +
+			"No embedding endpoint is configured, so memory falls back to a hash stand-in " +
+			"(no real vector recall). Point at one with --embed-endpoint http://HOST:PORT " +
+			"--embed-model NAME.\n\n")
+	}
+	b.WriteString("Refusing to start: semantic memory is a core pillar, not optional. " +
+		"To start anyway and run amnesiac, pass --allow-no-memory. For offline dev, use --backend echo.")
+	return errors.New(b.String())
 }
 
 // anthropicGenProfiles builds planner/executor/summarizer profiles for the

@@ -1566,6 +1566,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	evalEvery := fs.Duration("eval-every", 0, "nightly eval cadence (0=off; e.g. 24h): runs the full live eval + checks baselines/full.json; needs --self-improve")
 	dashboardOn := fs.Bool("dashboard", false, "serve the web control panel alongside the TUI")
 	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:8770)")
+	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1579,6 +1580,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 	pf.wikiDir = expandPath(pf.wikiDir)
 	pf.sqlDB = expandPath(pf.sqlDB)
 	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	// Semantic memory is a core pillar (TEN-254): refuse to start the TUI when the
+	// embedder is down, so the operator never silently runs amnesiac. --backend
+	// echo (offline dev) and --allow-no-memory are the explicit opt-outs.
+	if !*allowNoMemory && c.backend != "echo" && !semanticMemoryReady(ctx, c) {
+		return memoryDownError(c)
+	}
 	log, closeLog := newFileLogger(filepath.Join(c.dataDir, "tui.log"))
 	defer closeLog()
 
