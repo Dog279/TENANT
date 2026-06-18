@@ -76,6 +76,15 @@ type Request struct {
 	// adjacent, rendered into the system block). Optional; empty ⇒ skipped.
 	UserProfile string
 
+	// ProjectSME is the synthesized per-project subject-matter-expert doc
+	// (Phase 3 of docs/memory-sme-plan.md) — the durable nuance carrier,
+	// rendered into the system reserve every turn next to UserProfile. It
+	// rides the system reserve (counted into SystemTokens, so it's subtracted
+	// from the writable budget and the over-reserve warning covers it); its
+	// growth is capped at synthesis time, NOT by per-turn truncation here.
+	// Optional; empty ⇒ skipped.
+	ProjectSME string
+
 	// Tools are the already-retrieved top-K tool defs. Optional.
 	Tools []model.ToolSpec
 
@@ -245,6 +254,14 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 			return nil, fmt.Errorf("assemble: count user profile: %w", err)
 		}
 		r.BudgetReport.SystemTokens += n // rides the system reserve
+	}
+
+	if req.ProjectSME != "" {
+		n, err := a.counter.Count(ctx, req.ProjectSME)
+		if err != nil {
+			return nil, fmt.Errorf("assemble: count project SME: %w", err)
+		}
+		r.BudgetReport.SystemTokens += n // rides the system reserve (capped at synthesis)
 	}
 
 	if req.GoalHeader != "" {
@@ -423,6 +440,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 		SoulText:     soulText,
 		SystemPrompt: req.SystemPrompt,
 		UserProfile:  req.UserProfile,
+		ProjectSME:   req.ProjectSME,
 		GoalHeader:   req.GoalHeader,
 		ToolsText:    toolsText,
 		Working:      workingMsgs,
@@ -834,6 +852,7 @@ type buildArgs struct {
 	SoulText     string
 	SystemPrompt string
 	UserProfile  string
+	ProjectSME   string
 	GoalHeader   string
 	ToolsText    string
 	Working      []working.Message
@@ -846,7 +865,7 @@ func buildMessages(args buildArgs) []model.Message {
 	var msgs []model.Message
 
 	// 1. Combined system block at the start (sandwich top).
-	systemContent := buildSystemBlock(args.SoulText, args.SystemPrompt, args.UserProfile, args.ToolsText, args.GoalHeader)
+	systemContent := buildSystemBlock(args.SoulText, args.SystemPrompt, args.UserProfile, args.ProjectSME, args.ToolsText, args.GoalHeader)
 	if systemContent != "" {
 		msgs = append(msgs, model.Message{Role: "system", Content: systemContent})
 	}
@@ -929,13 +948,19 @@ func sanitizePairs(msgs []model.Message) []model.Message {
 	return out
 }
 
-func buildSystemBlock(soulText, systemPrompt, userProfile, toolsText, goalHeader string) string {
+func buildSystemBlock(soulText, systemPrompt, userProfile, projectSME, toolsText, goalHeader string) string {
 	var parts []string
 	if soulText != "" {
 		parts = append(parts, soulText)
 	}
 	if userProfile != "" {
 		parts = append(parts, userProfile)
+	}
+	if projectSME != "" {
+		// The per-project SME rides next to the user profile — always-present
+		// project knowledge (Phase 3). Already self-labelled as background
+		// reference (not instructions) by the sme renderer.
+		parts = append(parts, projectSME)
 	}
 	if systemPrompt != "" {
 		parts = append(parts, "## Operating Rules\n"+systemPrompt)

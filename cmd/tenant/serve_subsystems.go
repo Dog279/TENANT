@@ -14,6 +14,7 @@ import (
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/distill"
 	"tenant/internal/memory/skills"
+	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/model"
@@ -274,6 +275,8 @@ type serveImproveDeps struct {
 	skills         *skills.Store
 	embedder       model.Embedder
 	stores         *stores
+	sme            *sme.Store // Phase 3: SME doc store (nil ⇒ reflection off)
+	smeLive        *sme.Live  // Phase 3: live cache the ReflectionJob refreshes
 	refreshProfile func(context.Context) (bool, error)
 	degraded       *degradedState
 	feed           chan string
@@ -362,6 +365,17 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		}, soulCadence)
 	}
 
+	// Reflection / SME synthesis (TEN-255 Phase 3): OFF by default; refreshes the
+	// live SME cache the serve agent injects each turn. Proposer-routed, Paused-
+	// gated, fails closed (mirrors the TUI path).
+	reflectCadence := resolveEvalCadence(false, 0, improveCfg.ReflectEvery, d.log)
+	if reflectCadence > 0 && d.sme != nil {
+		sched.Register(&improve.ReflectionJob{
+			Semantic: d.stores.semantic, Episodic: d.stores.episodic, SME: d.sme, Live: d.smeLive,
+			Router: d.router, SummarizerRouter: proposerRouter, AgentID: c.agent, Logger: d.log,
+		}, reflectCadence)
+	}
+
 	tick := d.distillEvery
 	if d.profileEvery < tick {
 		tick = d.profileEvery
@@ -371,6 +385,9 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	}
 	if soulCadence > 0 && soulCadence < tick {
 		tick = soulCadence
+	}
+	if reflectCadence > 0 && reflectCadence < tick {
+		tick = reflectCadence
 	}
 	if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
 		d.log.Warn("self-improve scheduler did not start", "err", err)

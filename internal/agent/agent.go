@@ -82,6 +82,13 @@ type Config struct {
 	// update the SAME pointer in place and the next turn reflects it.
 	UserProfile *userprofile.Profile
 
+	// RenderProjectSME, if set, returns the current per-project SME doc
+	// (Phase 3 of docs/memory-sme-plan.md) to inject into the system reserve
+	// every turn, alongside the user profile. Called fresh each turn and
+	// backed by an in-memory cache the background ReflectionJob refreshes, so
+	// it's cheap (no per-turn DB read). nil ⇒ no SME injected (additive).
+	RenderProjectSME func() string
+
 	// EpisodeVisibility overrides the default `private` visibility used
 	// when this agent's turns are persisted to the episodic store.
 	// Sub-agents spawned by an orchestrator (see cmd/tenant/team.go) set
@@ -163,6 +170,15 @@ func (a *Agent) soul() *soul.Soul {
 		return a.cfg.SoulLive.Load()
 	}
 	return a.cfg.Soul
+}
+
+// projectSME renders the current per-project SME doc for system-reserve
+// injection, or "" if none is configured (Phase 3). nil-safe.
+func (a *Agent) projectSME() string {
+	if a.cfg.RenderProjectSME == nil {
+		return ""
+	}
+	return a.cfg.RenderProjectSME()
 }
 
 // Interject queues a user message to be folded into the currently running
@@ -480,6 +496,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			Soul:          a.soul(),
 			SystemPrompt:  sysPrompt,
 			UserProfile:   a.cfg.UserProfile.Render(),
+			ProjectSME:    a.projectSME(),
 			GoalHeader:    goalHeader,
 			Tools:         iterTools,
 			Working:       a.cfg.Working,
@@ -836,6 +853,7 @@ func (a *Agent) synthesizeFinal(ctx context.Context, planner model.LLM, profile 
 			"  - `tool_name(args)` function-call prose\n" +
 			"Any tool-call markup will be discarded as garbage. Write prose only.",
 		UserProfile:   a.cfg.UserProfile.Render(),
+		ProjectSME:    a.projectSME(),
 		Tools:         nil, // explicitly no tools
 		Working:       a.cfg.Working,
 		EpisodicStore: a.cfg.Episodic,

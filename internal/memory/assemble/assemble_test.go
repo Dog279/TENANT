@@ -184,6 +184,40 @@ func TestAssemble_SandwichPlacement_FactsInActiveTurn(t *testing.T) {
 	}
 }
 
+func TestAssemble_ProjectSMERidesSystemReserve(t *testing.T) {
+	a := assemble.New(fakeCounter())
+	ctx := context.Background()
+	smeDoc := "## Project knowledge (SME)\n### Architecture\nTenant is a Go MCP framework over SQLite."
+
+	r, err := a.Assemble(ctx, assemble.Request{
+		Profile:      mkProfile(),
+		SystemPrompt: "be concise",
+		ProjectSME:   smeDoc,
+		UserQuery:    "hi",
+	})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(r.Messages) == 0 || r.Messages[0].Role != "system" {
+		t.Fatalf("expected a system message first, got %+v", r.Messages)
+	}
+	// SME injected into the system block (not the active/facts block).
+	if !strings.Contains(r.Messages[0].Content, "Project knowledge (SME)") {
+		t.Errorf("SME not injected into system block: %q", r.Messages[0].Content)
+	}
+	// Counted into SystemTokens — rides the system reserve, so it's subtracted
+	// from the writable budget (fakeCounter = 1 token / 4 bytes).
+	if r.BudgetReport.SystemTokens < len(smeDoc)/4 {
+		t.Errorf("SME not counted into SystemTokens: %d < %d", r.BudgetReport.SystemTokens, len(smeDoc)/4)
+	}
+
+	// Empty ProjectSME ⇒ no SME text, unchanged behavior.
+	r2, _ := a.Assemble(ctx, assemble.Request{Profile: mkProfile(), SystemPrompt: "be concise", UserQuery: "hi"})
+	if strings.Contains(r2.Messages[0].Content, "Project knowledge (SME)") {
+		t.Error("empty ProjectSME should inject nothing")
+	}
+}
+
 func TestAssemble_EpisodicAndSemanticBothRender(t *testing.T) {
 	a := assemble.New(fakeCounter())
 	ctx := context.Background()

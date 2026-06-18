@@ -31,6 +31,7 @@ import (
 	"tenant/internal/memory/ftsutil"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
+	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/memory/userprofile"
@@ -1993,6 +1994,25 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// that single observer loop (not a second Notify consumer, which would steal
 	// its coalescing wake-ups).
 	dashFeed = emit
+
+	// Phase 3 SME (TEN-255): per-project subject-matter-expert doc, stored as a
+	// sibling table over the shared facts DB and injected into the system reserve
+	// every turn via RenderProjectSME below. The live cache is rendered once now
+	// (so an existing doc is present before the first ReflectionJob run) and the
+	// job refreshes it thereafter. Additive: nil cache ⇒ String() returns "".
+	var smeStore *sme.Store
+	smeLive := sme.NewLive()
+	if st.semantic != nil {
+		if s, serr := sme.New(st.semantic.DB()); serr == nil {
+			smeStore = s
+			if rendered, rerr := s.RenderActive(ctx, "", c.agent); rerr == nil && rendered != "" {
+				smeLive.Set(rendered)
+			}
+		} else {
+			log.Warn("sme: init failed; project SME disabled", "err", serr.Error())
+		}
+	}
+
 	ag, err := agent.New(agent.Config{
 		AgentID: c.agent,
 		Router:  router,
@@ -2032,6 +2052,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// Synthesized user model, injected every turn (same pointer the
 		// background job updates).
 		UserProfile: prof,
+		// Per-project SME doc, injected every turn from the live cache the
+		// ReflectionJob refreshes (Phase 3). nil-safe: empty cache ⇒ "".
+		RenderProjectSME: smeLive.String,
 	})
 	if err != nil {
 		return err
@@ -2549,6 +2572,18 @@ func cmdTUI(ctx context.Context, args []string) error {
 				Logger:   log,
 			}, soulCadence)
 		}
+		// Reflection / SME synthesis (TEN-255 Phase 3): config-gated, OFF by
+		// default. Synthesizes the per-project SME doc on the pinned proposer
+		// model and refreshes the live cache the agent injects each turn.
+		// Suppressed while degraded (sched.Paused); consolidation-by-addition
+		// (never supersedes facts); fails closed on a bad proposer response.
+		reflectCadence := resolveEvalCadence(false, 0, improveCfg.ReflectEvery, log)
+		if reflectCadence > 0 && smeStore != nil {
+			sched.Register(&improve.ReflectionJob{
+				Semantic: st.semantic, Episodic: st.episodic, SME: smeStore, Live: smeLive,
+				Router: router, SummarizerRouter: proposerRouter, AgentID: c.agent, Logger: log,
+			}, reflectCadence)
+		}
 		// Loop tick is the min of all per-job cadences (capped at 1m so
 		// we don't busy-wait when both cadences are large).
 		tick := *distillEvery
@@ -2560,6 +2595,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		if soulCadence > 0 && soulCadence < tick {
 			tick = soulCadence
+		}
+		if reflectCadence > 0 && reflectCadence < tick {
+			tick = reflectCadence
 		}
 		if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
 			return err

@@ -292,6 +292,11 @@ type improveConfig struct {
 	// gate each candidate, so it's heavy + model-gated. Candidates are queued for
 	// HUMAN review (never auto-applied).
 	SoulNudgeEvery string `json:"soul_nudge_every,omitempty"`
+	// ReflectEvery persists the ReflectionJob cadence (TEN-255 Phase 3) as a
+	// duration string. Off (empty/0/malformed) by default — it synthesizes the
+	// per-project SME doc on the proposer model. The doc is loud + reversible
+	// (versioned, dashboard-inspectable); turn it on for dogfooding.
+	ReflectEvery string `json:"reflect_every,omitempty"`
 	// Judge persists the eval LLM-judge override (TEN-91). Empty ⇒ the default
 	// (planner / main-agent model, self-judging). Set ⇒ a separate model grades
 	// answers in BOTH `tenant eval` and the nightly eval job. JudgeKind selects

@@ -20,6 +20,7 @@ import (
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/distill"
 	"tenant/internal/memory/skills"
+	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/memory/userprofile"
@@ -345,6 +346,22 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	sysPrompt := serveSystemPrompt(initialAgentProfiles, len(mainTools.All()) > 0)
 
+	// Phase 3 SME (TEN-255): per-project doc store + live cache, injected into
+	// the system reserve each turn (mirrors the TUI path). Rendered once now;
+	// the ReflectionJob (registered in buildServeImprove) refreshes it.
+	var smeStore *sme.Store
+	smeLive := sme.NewLive()
+	if st.semantic != nil {
+		if s, serr := sme.New(st.semantic.DB()); serr == nil {
+			smeStore = s
+			if rendered, rerr := s.RenderActive(ctx, "", c.agent); rerr == nil && rendered != "" {
+				smeLive.Set(rendered)
+			}
+		} else {
+			log.Warn("sme: init failed; project SME disabled", "err", serr.Error())
+		}
+	}
+
 	ag, err := agent.New(agent.Config{
 		AgentID:  c.agent,
 		Router:   router,
@@ -369,6 +386,8 @@ func cmdServe(ctx context.Context, args []string) error {
 		SystemPrompt: sysPrompt,
 		Compactor:    compressor,
 		UserProfile:  prof,
+		// Per-project SME doc from the live cache (Phase 3). nil-safe.
+		RenderProjectSME: smeLive.String,
 	})
 	if err != nil {
 		return err
@@ -530,7 +549,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// and adds the full job set). Suspended while degraded.
 	sched, evalSched := buildServeImprove(ctx, serveImproveDeps{
 		c: c, pf: pf, on: *selfImprove, router: router, distiller: distiller, distillJob: distillJob,
-		skills: skillStore, embedder: skEmb, stores: st, refreshProfile: refreshProfile,
+		skills: skillStore, embedder: skEmb, stores: st, sme: smeStore, smeLive: smeLive, refreshProfile: refreshProfile,
 		degraded: degraded, feed: sysCh, distillEvery: *distillEvery, profileEvery: *profileEvery,
 		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log,
 	})
