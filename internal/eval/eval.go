@@ -205,7 +205,7 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 				if ctx.Err() != nil {
 					return
 				}
-				results[i] = h.runOne(ctx, t)
+				results[i] = h.runTask(ctx, t)
 				done[i] = true
 			}(i, t)
 		}
@@ -220,7 +220,7 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 			if ctx.Err() != nil {
 				break
 			}
-			rep.Results = append(rep.Results, h.runOne(ctx, t))
+			rep.Results = append(rep.Results, h.runTask(ctx, t))
 		}
 	}
 
@@ -276,6 +276,67 @@ func (h *Harness) runOne(ctx context.Context, t *Task) TaskResult {
 	}
 	res.ElapsedMS = time.Since(start).Milliseconds()
 	return res
+}
+
+// runTask runs a task t.Rollouts times (default 1) and returns a single
+// TaskResult. For the default single rollout it is exactly runOne. For k>1 it
+// aggregates the graded rollouts into a pass^k result (TEN-286): the headline
+// Passed is strict (every graded rollout passed) and Rollouts/RolloutsPassed
+// carry the fraction. This is the τ-Bench reliability signal — a flaky task
+// that passes 4/5 is meaningfully different from a clean 5/5.
+func (h *Harness) runTask(ctx context.Context, t *Task) TaskResult {
+	k := t.Rollouts
+	if k <= 1 {
+		return h.runOne(ctx, t) // default path: byte-identical to before TEN-286
+	}
+	rollouts := make([]TaskResult, 0, k)
+	for i := 0; i < k; i++ {
+		if ctx.Err() != nil {
+			break // honor cancellation mid-rollout; aggregate what ran
+		}
+		rollouts = append(rollouts, h.runOne(ctx, t))
+	}
+	return aggregateRollouts(t, rollouts)
+}
+
+// aggregateRollouts folds k rollouts of one task into a single pass^k result.
+// Skipped/Ungraded rollouts are excluded from the denominator (same discipline
+// as aggregate()); if EVERY rollout was excluded, the task's own Skipped/
+// Ungraded verdict is surfaced rather than a fabricated pass/fail.
+func aggregateRollouts(t *Task, rollouts []TaskResult) TaskResult {
+	if len(rollouts) == 0 {
+		// Cancelled before any rollout ran: record, don't grade.
+		return TaskResult{TaskID: t.ID, Category: t.Category, Skipped: true, SkipReason: "no rollouts executed"}
+	}
+	var graded []TaskResult
+	var elapsed int64
+	for _, r := range rollouts {
+		elapsed += r.ElapsedMS
+		if r.Skipped || r.Ungraded {
+			continue
+		}
+		graded = append(graded, r)
+	}
+	if len(graded) == 0 {
+		// Tool gap / judge failure on every rollout: surface that verdict.
+		rep := rollouts[0]
+		rep.ElapsedMS = elapsed
+		return rep
+	}
+	passed, total := passK(graded)
+	var scoreSum float64
+	for _, r := range graded {
+		scoreSum += r.Score
+	}
+	rep := graded[0]             // representative metadata (TaskID, Category, Judge*)
+	rep.Passed = passed == total // a flaky task is not a clean pass
+	rep.Score = scoreSum / float64(total)
+	rep.Rollouts = total
+	rep.RolloutsPassed = passed
+	rep.ElapsedMS = elapsed
+	rep.Skipped = false
+	rep.Ungraded = false
+	return rep
 }
 
 // missingTool returns the first must_call tool name absent from the
