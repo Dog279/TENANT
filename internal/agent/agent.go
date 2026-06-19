@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,17 @@ var ErrLoopCeilingReached = errors.New("agent: plan loop ceiling reached")
 // validation passes failed. The runtime stops the loop rather than
 // trying to coax a small model into emitting valid JSON forever.
 var ErrTooManyValidationFailures = errors.New("agent: too many consecutive tool-call validation failures")
+
+// ErrOscillationDetected is set when the model emits a byte-identical tool-call
+// set for oscillationLimit+1 consecutive iterations — a weak model locked in a
+// loop. The runtime stops iterating and forces a synthesis from results already
+// gathered, rather than burning the whole loop ceiling. (TEN-261)
+var ErrOscillationDetected = errors.New("agent: oscillation detected — identical tool call repeated")
+
+// oscillationLimit is the number of consecutive identical tool-call iterations
+// (after the first) that trips the oscillation guard. 2 → three identical
+// iterations in a row before we stop and synthesize.
+const oscillationLimit = 2
 
 // Config wires the agent. All fields except SystemPrompt are required
 // for a useful turn — passing nil where required returns an error
@@ -426,6 +438,12 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		}
 	}()
 	consecutiveValidationFailures := 0
+	// Oscillation guard (TEN-261): track the dispatched tool-call signature across
+	// iterations so a weak model that locks onto the same call breaks out instead
+	// of burning the whole ceiling. The operator's PlanLoopCeiling stays in force.
+	var lastToolSig string
+	repeatRuns := 0
+	var stuckErr error
 	ceiling := profile.PlanLoopCeiling
 	if ceiling <= 0 {
 		ceiling = 5 // safe default if profile didn't set it
@@ -668,18 +686,41 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: br.Result, IsErr: br.IsError})
 			a.feedToolResult(ctx, br, profile.MaxToolResultTokens)
 		}
+
+		// Oscillation guard (TEN-261): if the dispatched call-set is byte-identical
+		// to the previous iteration's for oscillationLimit consecutive rounds, the
+		// model is stuck — stop and synthesize from what we have instead of looping
+		// to the ceiling. Frontier-safe: a healthy model never repeats an identical
+		// call-set this many times in a row. Operator PlanLoopCeiling is untouched.
+		if sig := toolCallSignature(validCalls); sig != "" && sig == lastToolSig {
+			if repeatRuns++; repeatRuns >= oscillationLimit {
+				a.log.Warn("agent: oscillation — identical tool call repeated; forcing synthesis", "iter", iter, "identical_runs", repeatRuns+1)
+				a.emit(Event{Kind: EventError, Iter: iter, Text: "stuck repeating the same tool call — synthesizing from gathered results"})
+				stuckErr = ErrOscillationDetected
+				break
+			}
+		} else {
+			repeatRuns = 0
+			lastToolSig = sig
+		}
 	}
 
-	// 7. Ceiling reached without a final response. Force synthesis.
+	// 7. Loop ended without a final response — ceiling hit, or the oscillation
+	// guard broke us out (stuckErr). Either way, force a synthesis from gathered
+	// results; the reported error distinguishes the two causes.
+	loopErr := ErrLoopCeilingReached
+	if stuckErr != nil {
+		loopErr = stuckErr
+	}
 	final, err := a.synthesizeFinal(ctx, planner, profile, asm, queryEmbedding, goalHeader)
 	if err != nil {
-		result.Error = fmt.Errorf("%w; forced synthesis also failed: %v", ErrLoopCeilingReached, err)
+		result.Error = fmt.Errorf("%w; forced synthesis also failed: %v", loopErr, err)
 		a.emit(Event{Kind: EventError, Text: result.Error.Error()})
 		return result, nil
 	}
 	result.Response = final
 	result.Truncated = true
-	result.Error = ErrLoopCeilingReached
+	result.Error = loopErr
 	a.emit(Event{Kind: EventTruncated, Text: final})
 	a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, nil)
 	return result, nil
@@ -1151,6 +1192,22 @@ func capToolResultForContext(content string, maxTokens int) string {
 	head := strings.ToValidUTF8(content[:maxChars], "")
 	return fmt.Sprintf("%s\n…[truncated: tool result exceeded the %d-token context cap (%d of %d bytes shown). Refine the query or request a specific section to see the rest.]",
 		head, maxTokens, len(head), len(content))
+}
+
+// toolCallSignature builds a stable, order-independent signature of a dispatched
+// tool-call set — each call's name + raw arguments, sorted and joined. The
+// oscillation guard compares it across iterations to detect a model repeating
+// the identical call-set. Empty string for no calls.
+func toolCallSignature(calls []model.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	parts := make([]string, len(calls))
+	for i, c := range calls {
+		parts[i] = c.Name + ":" + string(c.Arguments)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
 
 func (a *Agent) archiveAssistant(ctx context.Context, resp *model.GenerateResponse) {

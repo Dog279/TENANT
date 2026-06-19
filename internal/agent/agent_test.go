@@ -443,11 +443,15 @@ func TestAgent_Turn_LoopCeilingForcesSynthesis(t *testing.T) {
 	}
 	a, fake, _, _ := buildAgent(t, model.Profile{}, tools, dispatchOK("noop"))
 
-	// Always emit tool calls — never finish naturally.
+	// Always emit tool calls — never finish naturally. Vary the args each
+	// iteration so this exercises the CEILING path, not the oscillation guard
+	// (TEN-261), which would otherwise trip on an identical repeated call.
 	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
 		return &model.GenerateResponse{
 			ToolCalls: []model.ToolCall{{
-				ID: "call", Name: "search", Arguments: json.RawMessage(`{}`),
+				ID:        "call",
+				Name:      "search",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"n":%d}`, len(fake.Generated))),
 			}},
 			FinishReason: "tool_calls",
 		}, nil
@@ -815,11 +819,15 @@ func TestAgent_LoopCeilingOverride(t *testing.T) {
 
 	run := func(ceiling int) int32 {
 		fake := testllm.New()
+		var planN atomic.Int32
 		fake.GenerateStreamFn = func(_ context.Context, req model.GenerateRequest) (<-chan model.StreamChunk, error) {
 			ch := make(chan model.StreamChunk, 1)
 			if len(req.Tools) > 0 {
 				// In the plan loop (tools present) keep calling a tool — never finish.
-				ch <- model.StreamChunk{ToolCallDelta: &model.ToolCall{ID: "1", Name: "noop", Arguments: json.RawMessage("{}")}, FinishReason: "tool_calls"}
+				// Vary the args each iteration so this exercises the CEILING, not the
+				// oscillation guard (TEN-261), which trips on an identical repeat.
+				n := planN.Add(1)
+				ch <- model.StreamChunk{ToolCallDelta: &model.ToolCall{ID: "1", Name: "noop", Arguments: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))}, FinishReason: "tool_calls"}
 			} else {
 				// Forced synthesis runs tools-off — let it terminate cleanly.
 				ch <- model.StreamChunk{Delta: "final", FinishReason: "stop"}
