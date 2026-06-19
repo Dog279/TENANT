@@ -1988,6 +1988,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 		evlog.Append(ev) // denylists token/usage/assistant/memory noise at write time
 	}
 	evCh, _ := evBroker.Subscribe()
+	// Approval fan-out (TEN-203): route the broker's pending/resolved events onto
+	// the live stream so the TUI prunes resolved cards live AND the dashboard
+	// (when open alongside the TUI) shows the same queue.
+	broker.reg.emit = emit
 	// Now that the broker exists, point the cross-agent mirror at it (TEN-234):
 	// sub-agent activity (set in subObserve) + bus traffic (the existing bus
 	// observer above) flow to the dashboard feed. Bus → dashboard is emitted from
@@ -2208,10 +2212,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// after evalSched is built.
 		skills: dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models: dashModel{mc: modelCtl},
-		broker: evBroker,
-		evlog:  evlog, // TEN-238: retained activity-feed event log (backfill + replay)
-		log:    log,
-		notify: pushSys,
+		// The broker IS the ApprovalControl (TEN-203): a dashboard open alongside
+		// the TUI now shows + resolves the SAME pending queue, no channel-stealing.
+		approvals: broker,
+		broker:    evBroker,
+		evlog:     evlog, // TEN-238: retained activity-feed event log (backfill + replay)
+		log:       log,
+		notify:    pushSys,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
 				return nil
@@ -2268,6 +2275,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// modes persist to relay.permissions. Its "ask" backend (the live button
 	// approver) is wired below, once the relay manager exists.
 	discordBroker := newDiscordApprovalBroker(log)
+	discordBroker.reg.emit = emit // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
 	discordBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return
@@ -2366,7 +2374,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// deny-by-default) but SHARING the global broker's request channel so an
 	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
 	// by /imessage permissions; persisted to config.
-	imsgBroker := newOffsiteApprovalBroker(log, broker.requests)
+	imsgBroker := newOffsiteApprovalBroker(log, broker)
 	imsgBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return
@@ -2757,18 +2765,22 @@ func cmdTUI(ctx context.Context, args []string) error {
 		},
 		Memory:    memCtl,
 		Approvals: broker.Requests(),
-		Perms:     broker,
-		Dash:      dashMgr,
-		Tailscale: tsMgr,
-		Judge:     judgeCtl{cfgDir: c.cfgDir, planner: modelName},
-		Relay:     relayMgr,
-		IMessage:  imsgAllowMgr,
-		Cron:      tuiCronCtl,
-		MCP:       mcpCtl,
-		Peer:      peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
-		Secrets:   tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
-		Setup:     setupControl{cfgDir: c.cfgDir, mc: modelCtl},
-		Models:    modelCtl,
+		// Resolve by id through the broker registry (TEN-203): /approve//deny no
+		// longer write the request's Reply directly — they resolve by id, so a
+		// dashboard resolving the same request first is a clean no-op for the TUI.
+		ResolveApproval: broker.Resolve,
+		Perms:           broker,
+		Dash:            dashMgr,
+		Tailscale:       tsMgr,
+		Judge:           judgeCtl{cfgDir: c.cfgDir, planner: modelName},
+		Relay:           relayMgr,
+		IMessage:        imsgAllowMgr,
+		Cron:            tuiCronCtl,
+		MCP:             mcpCtl,
+		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
+		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
+		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},
+		Models:          modelCtl,
 		// TEN-64: `/skill` (singular) integration-config surface. Bridges
 		// auto-enable to the tool mux's SetPluginEnabled (TEN-58
 		// categorical toggle). Production catalog is empty until

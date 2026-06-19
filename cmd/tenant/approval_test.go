@@ -225,3 +225,142 @@ func TestBroker_PermissionsControl(t *testing.T) {
 		}
 	}
 }
+
+// --- TEN-203: id-keyed fan-out (Pending/Resolve, multi-observer) ---
+
+// confirmAsync runs Confirm on a goroutine and waits for it to register a
+// pending request, returning the assigned id + a channel carrying the decision.
+func confirmAsync(t *testing.T, b *approvalBroker, ctx context.Context, action string) (string, <-chan bool) {
+	t.Helper()
+	done := make(chan bool, 1)
+	go func() { done <- b.Confirm(ctx, action, "do "+action) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := b.Pending(); len(p) == 1 {
+			return p[0].ID, done
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("Confirm never registered a pending request for %q", action)
+	return "", nil
+}
+
+func TestBroker_ResolveUnblocksOnce(t *testing.T) {
+	b := newApprovalBroker(testLog())
+	id, done := confirmAsync(t, b, context.Background(), "os_exec")
+	if !b.Resolve(id, tui.ApproveOnce) {
+		t.Fatal("first Resolve should win (true)")
+	}
+	if b.Resolve(id, tui.ApproveOnce) {
+		t.Error("second Resolve of the same id should be a no-op (false)")
+	}
+	select {
+	case got := <-done:
+		if !got {
+			t.Error("Confirm should return true after ApproveOnce")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Confirm did not unblock after Resolve")
+	}
+	if p := b.Pending(); len(p) != 0 {
+		t.Errorf("pending should be empty after resolve, got %d", len(p))
+	}
+}
+
+func TestBroker_FirstResolverWinsRace(t *testing.T) {
+	b := newApprovalBroker(testLog())
+	id, done := confirmAsync(t, b, context.Background(), "os_exec")
+	const n = 8
+	start := make(chan struct{})
+	results := make(chan bool, n)
+	for i := 0; i < n; i++ {
+		go func() { <-start; results <- b.Resolve(id, tui.ApproveOnce) }()
+	}
+	close(start)
+	wins := 0
+	for i := 0; i < n; i++ {
+		if <-results {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Errorf("exactly one resolver should win, got %d", wins)
+	}
+	if got := <-done; !got {
+		t.Error("agent should unblock approved exactly once")
+	}
+}
+
+func TestBroker_ResolveUnknownIsNoop(t *testing.T) {
+	b := newApprovalBroker(testLog())
+	if b.Resolve("ap-does-not-exist", tui.ApproveOnce) {
+		t.Error("resolving an unknown id should return false")
+	}
+	if err := b.Decide("nope", "approve"); err == nil {
+		t.Error("Decide on an unknown id should error")
+	}
+}
+
+func TestBroker_CtxCancelDeniesAndCleansUp(t *testing.T) {
+	b := newApprovalBroker(testLog())
+	ctx, cancel := context.WithCancel(context.Background())
+	id, done := confirmAsync(t, b, ctx, "os_exec")
+	cancel()
+	select {
+	case got := <-done:
+		if got {
+			t.Error("ctx cancel must DENY (return false)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Confirm did not unblock on ctx cancel")
+	}
+	if p := b.Pending(); len(p) != 0 {
+		t.Errorf("cancelled request should be dropped from pending, got %d", len(p))
+	}
+	if b.Resolve(id, tui.ApproveOnce) {
+		t.Error("late Resolve of a cancelled id should be false")
+	}
+}
+
+func TestBroker_DecideResolves(t *testing.T) {
+	b := newApprovalBroker(testLog())
+	id, done := confirmAsync(t, b, context.Background(), "os_exec")
+	if err := b.Decide(id, "deny"); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := <-done; got {
+		t.Error("Decide(deny) should deny the action")
+	}
+}
+
+func TestBroker_DenyAllDenies(t *testing.T) {
+	b := newApprovalBroker(testLog())
+	_, done := confirmAsync(t, b, context.Background(), "os_exec")
+	b.DenyAll()
+	if got := <-done; got {
+		t.Error("DenyAll should deny the pending action")
+	}
+	if p := b.Pending(); len(p) != 0 {
+		t.Errorf("DenyAll should clear pending, got %d", len(p))
+	}
+}
+
+// The iMessage offsite broker SHARES the host registry: an offsite-raised
+// approval is visible in + resolvable through the host (TEN-203 critical fix).
+func TestBroker_OffsiteSharesRegistry(t *testing.T) {
+	host := newApprovalBroker(testLog())
+	off := newOffsiteApprovalBroker(testLog(), host)
+	if ok, err := off.SetPermission("exec", "ask"); !ok || err != nil { // offsite defaults to deny
+		t.Fatalf("set offsite exec ask: ok=%v err=%v", ok, err)
+	}
+	id, done := confirmAsync(t, off, context.Background(), "os_exec")
+	if p := host.Pending(); len(p) != 1 || p[0].ID != id {
+		t.Fatalf("host should see the offsite pending request, got %+v", p)
+	}
+	if !host.Resolve(id, tui.ApproveOnce) {
+		t.Fatal("host.Resolve should resolve the shared offsite request")
+	}
+	if got := <-done; !got {
+		t.Error("offsite Confirm should unblock approved via host.Resolve")
+	}
+}

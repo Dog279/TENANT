@@ -70,6 +70,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	}
 
 	discordBroker := newDiscordApprovalBroker(d.log)
+	discordBroker.reg.emit = d.emit // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
 	discordBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return
@@ -186,7 +187,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// Offsite broker: own per-category modes (default DENY) but SHARES the global
 	// broker's request channel, so an "ask" lands in the same queue the headless
 	// drain surfaces on the dashboard.
-	imsgBroker := newOffsiteApprovalBroker(d.log, d.broker.requests)
+	imsgBroker := newOffsiteApprovalBroker(d.log, d.broker)
 	imsgBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return

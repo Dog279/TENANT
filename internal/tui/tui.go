@@ -60,6 +60,12 @@ type Config struct {
 	// Approvals, if set, delivers dangerous-action requests for the user
 	// to decide via /approve, /approve session, /approve always, /deny.
 	Approvals <-chan ApprovalRequest
+	// ResolveApproval, if set, resolves a pending request BY ID through the
+	// broker registry (TEN-203) — first-resolver-wins, so if another observer
+	// (the dashboard) resolved it first this returns false and the TUI treats it
+	// as a clean no-op. When nil, the TUI falls back to writing Reply directly
+	// (legacy single-observer behavior; keeps tests + non-broker callers working).
+	ResolveApproval func(id string, d ApprovalDecision) bool
 	// Perms, if set, powers /permissions (per-category safety modes).
 	Perms PermissionControl
 	// Dash, if set, powers /dashboard: start/stop the web control panel live.
@@ -366,6 +372,7 @@ const (
 // broker that raised it blocks on Reply until the TUI sends a decision
 // (or the turn's context is cancelled).
 type ApprovalRequest struct {
+	ID       string // broker-assigned id (TEN-203) — the key passed to ResolveApproval
 	Category string // safety category (exec, destructive, web, send)
 	Action   string // specific action id (os_exec, web_transact, …)
 	Detail   string // human-readable description of exactly what will run
@@ -1492,9 +1499,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.listenResearchTimeline())
 	case approvalMsg:
 		r := ApprovalRequest(msg)
-		m.pending = append(m.pending, r)
-		m.showApproval(r)
-		m.appendFeed(cErr.Render("⚠ approval needed: " + r.Category))
+		if !m.hasPending(r.ID) { // de-dupe vs the EventApprovalPending backstop (TEN-203)
+			m.pending = append(m.pending, r)
+			m.showApproval(r)
+			m.appendFeed(cErr.Render("⚠ approval needed: " + r.Category))
+		}
 		cmds = append(cmds, m.listenApprovals())
 	case compactDoneMsg:
 		switch {
@@ -4834,6 +4843,33 @@ func (m *model) showApproval(r ApprovalRequest) {
 }
 
 // resolveApproval maps the /approve argument to a decision.
+// hasPending reports whether an approval with this id is already shown (TEN-203
+// de-dupe: the channel fast-path and the event backstop must not double-add).
+func (m *model) hasPending(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, p := range m.pending {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// dropPending removes the approval with this id from the queue (TEN-203: a
+// resolved-elsewhere event prunes the card live).
+func (m *model) dropPending(id string) {
+	out := make([]ApprovalRequest, 0, len(m.pending))
+	for _, p := range m.pending {
+		if p.ID == id {
+			continue
+		}
+		out = append(out, p)
+	}
+	m.pending = out
+}
+
 func (m *model) resolveApproval(arg string) {
 	var d ApprovalDecision
 	switch strings.ToLower(strings.TrimSpace(arg)) {
@@ -4858,16 +4894,28 @@ func (m *model) sendDecision(d ApprovalDecision) {
 	}
 	r := m.pending[0]
 	m.pending = m.pending[1:]
-	select {
-	case r.Reply <- d:
-	default: // requester gone (e.g. turn cancelled); nothing to do
-	}
 	verb := map[ApprovalDecision]string{
 		DenyOnce:       "denied",
 		ApproveOnce:    "approved (once)",
 		ApproveSession: "approved for this session",
 		ApproveAlways:  "approved always (saved)",
 	}[d]
+	// Resolve by id through the broker registry (TEN-203): first-resolver-wins.
+	// If the dashboard (or another surface) resolved this one first, ResolveApproval
+	// returns false → the agent already unblocked, so this is a clean no-op here.
+	if m.cfg.ResolveApproval != nil {
+		if !m.cfg.ResolveApproval(r.ID, d) {
+			m.sysChat("already resolved elsewhere — " + r.Category)
+			return
+		}
+		m.sysChat(verb + " — " + r.Category)
+		return
+	}
+	// Legacy fallback (no broker wired, e.g. tests): write Reply directly.
+	select {
+	case r.Reply <- d:
+	default: // requester gone (e.g. turn cancelled); nothing to do
+	}
 	m.sysChat(verb + " — " + r.Category)
 }
 
@@ -4968,6 +5016,22 @@ func (m *model) applyEvent(e agent.Event) {
 		return
 	}
 	switch e.Kind {
+	case agent.EventApprovalResolved:
+		// Another observer (the dashboard) resolved a pending action, OR this TUI's
+		// own resolve fired — prune the matching card so it vanishes live (TEN-203).
+		if e.Approval != nil {
+			m.dropPending(e.Approval.ID)
+		}
+	case agent.EventApprovalPending:
+		// Backstop for a dropped non-blocking channel notify: if the fast-path
+		// approvalMsg didn't deliver this id, surface it from the event (TEN-203).
+		// De-duped by ID so the channel + event never double-add.
+		if e.Approval != nil && !m.hasPending(e.Approval.ID) {
+			r := ApprovalRequest{ID: e.Approval.ID, Category: e.Approval.Category, Action: e.Approval.Action, Detail: e.Approval.Detail}
+			m.pending = append(m.pending, r)
+			m.showApproval(r)
+			m.appendFeed(cErr.Render("⚠ approval needed: " + r.Category))
+		}
 	case agent.EventTurnStart:
 		m.appendFeed(cDim.Render(time.Now().Format("15:04:05") + " turn start"))
 	case agent.EventUsage:

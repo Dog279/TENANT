@@ -495,11 +495,13 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	go watchCredentials(ctx, c.cfgDir, modelCtl, degraded, pushSys)
 
-	// Headless approval drain (TEN-194): consume the broker's request channel so
-	// a gated "ask" action surfaces on the dashboard instead of wedging the
-	// single-flight brain forever. Denies everything still pending on shutdown.
-	approvals := newHeadlessApprovals(broker.Requests(), emit)
-	go approvals.run(ctx)
+	// Approval fan-out (TEN-203): the broker itself owns the id-keyed pending
+	// registry and IS the dashboard.ApprovalControl. Point its event emitter at
+	// the live stream so pending/resolved fan out to the dashboard (and any
+	// attach client); no drain goroutine is needed now that the requests channel
+	// is a non-blocking notifier. Still-pending requests are denied on shutdown
+	// (DenyAll below) so no gated turn stays blocked.
+	broker.reg.emit = emit
 
 	dcfg, _ := resolveDashboardConfig(c.lc, true, *dashboardOn, *dashboardAddr)
 	dashMgr := &dashboardManager{
@@ -512,7 +514,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		secrets:   dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
 		skills:    dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models:    dashModel{mc: modelCtl},
-		approvals: approvals,
+		approvals: broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
 		broker:    evBroker,
 		evlog:     evlog,
 		log:       log,
@@ -629,6 +631,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	// nothing starts a turn or a job mid-teardown, drain in-flight work, then
 	// close stores LAST (no goroutine may write to a closed store).
 	fmt.Println("\nshutting down…")
+	// Deny every still-pending approval so no gated turn goroutine stays blocked
+	// on its reply during teardown (TEN-203, replaces the old drain's deny-all).
+	broker.DenyAll()
 	if peerSrvStop != nil {
 		peerSrvStop() // stop inbound peer turns
 	}

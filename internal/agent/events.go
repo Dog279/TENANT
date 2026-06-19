@@ -29,7 +29,23 @@ const (
 	EventIngest      EventKind = "ingest"       // an inbound message arrived from an offsite channel and drove a turn; Text = "Discord: <preview>" / "iMessage: <preview>" (TEN-232)
 	EventBus         EventKind = "bus"          // an inter-agent message crossed the orchestra bus; Agent = sender, Text = "→ <to>: <content>" (TEN-234)
 	EventApproval    EventKind = "approval"     // a dangerous action is awaiting an operator decision; Text = "<action>: <detail>" — surfaced in serve mode where there is no TUI prompt (TEN-194)
+	// Approval fan-out (TEN-203): every dangerous-action approval enters/leaves an
+	// id-keyed queue the broker owns. Both observers (TUI + dashboard) refresh live
+	// off these — Pending appends a card, Resolved prunes it. Payload in .Approval.
+	EventApprovalPending  EventKind = "approval_pending"
+	EventApprovalResolved EventKind = "approval_resolved"
 )
+
+// ApprovalEvent is the payload for EventApprovalPending / EventApprovalResolved
+// (TEN-203). Self-documenting so observers read fields instead of parsing Text.
+type ApprovalEvent struct {
+	ID       string // broker-assigned id ("ap-N") — the key for Resolve
+	Category string // safety category (exec|write|destructive|web|send|pairing)
+	Action   string // the gated action id
+	Detail   string // human-readable detail
+	Origin   string // "local" | "imessage" | "discord" — which surface raised it
+	Outcome  string // "" while pending; approved|approved_session|approved_always|denied|expired when resolved
+}
 
 // Event is one live update during a turn. Only the fields relevant to
 // Kind are set.
@@ -48,7 +64,8 @@ type Event struct {
 	Result string // tool result text (ToolResult)
 	IsErr  bool   // tool result was an error (ToolResult)
 
-	Budget *assemble.BudgetReport // EventMemory
+	Budget   *assemble.BudgetReport // EventMemory
+	Approval *ApprovalEvent         // EventApprovalPending / EventApprovalResolved (TEN-203)
 
 	// EventUsage: actual tokens for one LLM call, as reported by the
 	// backend (input + output). Summed by the UI for session totals.
