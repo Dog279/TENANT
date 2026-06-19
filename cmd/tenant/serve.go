@@ -635,7 +635,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	if relayMgr != nil {
 		_ = relayMgr.Disable() // stop Discord ingest
 	}
-	if err := dashMgr.Disable(); err != nil {
+	// Shutdown (not Disable): stop the server WITHOUT persisting an "off" choice,
+	// so the operator's enabled=true survives a restart (a SIGTERM is not a
+	// /dashboard off). Disable persisting on every serve teardown was the bug.
+	if err := dashMgr.Shutdown(); err != nil {
 		log.Warn("dashboard shutdown", "err", err)
 	}
 	if cronEngine != nil {

@@ -107,18 +107,36 @@ func (m *dashboardManager) Enable() (string, error) {
 }
 
 // Disable stops a running dashboard (graceful shutdown via ctx cancel) and
-// persists the "off" choice. A no-op when already stopped.
+// persists the "off" choice — this is the operator deciding to turn it off
+// (/dashboard off). A no-op when already stopped.
 func (m *dashboardManager) Disable() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.running {
-		m.cancel()
-		m.running = false
-	}
+	m.stopLocked()
 	if m.persist != nil {
 		return m.persist(false)
 	}
 	return nil
+}
+
+// Shutdown stops the dashboard for PROCESS teardown (serve SIGTERM/Ctrl-C, exit)
+// WITHOUT persisting an "off" choice. A restart is not the operator disabling
+// the dashboard, so the saved enabled=true must survive — otherwise every
+// `tenant serve` shutdown silently wrote dashboard.enabled=false and the panel
+// came back off (and corrupted the choice the TUI reads). A no-op when stopped.
+func (m *dashboardManager) Shutdown() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopLocked()
+	return nil
+}
+
+// stopLocked halts a running server. Caller must hold m.mu.
+func (m *dashboardManager) stopLocked() {
+	if m.running {
+		m.cancel()
+		m.running = false
+	}
 }
 
 // Status reports whether the dashboard is running and its bind address.

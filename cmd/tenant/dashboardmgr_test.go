@@ -72,6 +72,32 @@ func healthzDown(addr string, within time.Duration) bool {
 	return false
 }
 
+// TestDashboardManager_ShutdownDoesNotPersist: process teardown (serve SIGTERM
+// / exit) must NOT persist an "off" choice, while Disable (operator /dashboard
+// off) must. Regression for the bug where every serve shutdown wrote
+// dashboard.enabled=false, so the panel came back off on the next launch (and
+// corrupted the choice the TUI reads).
+func TestDashboardManager_ShutdownDoesNotPersist(t *testing.T) {
+	rp := &recordingPersist{}
+	mgr := &dashboardManager{base: context.Background(), persist: rp.persist}
+
+	// Operator turning it off persists exactly one false.
+	if err := mgr.Disable(); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	if got := rp.snapshot(); len(got) != 1 || got[0] {
+		t.Fatalf("Disable should persist one false, got %v", got)
+	}
+
+	// Process teardown persists nothing.
+	if err := mgr.Shutdown(); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := rp.snapshot(); len(got) != 1 {
+		t.Errorf("Shutdown must not persist; calls now %v", got)
+	}
+}
+
 // TestDashboardManager_Lifecycle drives the full Enable → Disable → re-Enable
 // cycle on a fixed loopback port, asserting the server actually serves, that
 // Disable stops it, that a fresh server starts on re-Enable, and that the
