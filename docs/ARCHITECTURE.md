@@ -6,8 +6,8 @@ context compaction or when picking the project back up. For design *intent*
 see DESIGN.md / MEMORY-DESIGN.md / LOCAL-MODEL-ADAPTATION.md; this doc
 describes what is *actually built*.
 
-Last verified: 2026-05-18 — 30 packages, ~17,300 LOC source, ~8,600 LOC tests,
-333 tests passing on Go 1.26.3 (pure Go, no CGO; Chrome external like
+Last verified: 2026-06-19 — 46 packages, ~75,400 LOC source, ~49,900 LOC tests
+(249 test files, ~1,750 test funcs) on Go 1.26.3 (pure Go, no CGO; Chrome external like
 vLLM/Ollama). **Web, SQL AND Wiki plugins verified live** with real
 Gemma 4: web → go.dev cited answer + click mutated DOM + "Buy Now"
 blocked; SQL → real SQLite, schema→query→correct answer, "DROP table"
@@ -50,13 +50,14 @@ arg normalization → validate → dispatch → result → replay → synthesis)
 
 ## 1. What Tenant is
 
-A Go-native MCP agent framework, single binary, local-LLM-only (no cloud).
+A Go-native MCP agent framework, single binary, that runs against a local OR
+cloud LLM (config-driven, with rate-limit/outage auto-fallback — TEN-246).
 Runs on a vLLM-first multi-endpoint fleet with role-based model routing
 (planner / executor / coder / summarizer / embedder). Six-tier memory with
 distillation and a self-improvement scheduler.
 
 **Build:** `go build -o tenant ./cmd/tenant` (pure Go, no CGO, single binary)
-**Test:** `go test ./...` (all 196 pass; `-race` needs `CGO_ENABLED=1`)
+**Test:** `go test ./...` (~1,750 test funcs across 249 files; `-race` needs `CGO_ENABLED=1`)
 **Module:** `tenant` (local, no remote) — Go 1.26, toolchain go1.26.3
 
 ---
@@ -321,7 +322,8 @@ time-decayed confidence.
 **Storage:** SQLite `facts.db` — table `facts` (+ `superseded_by` FK,
 `confidence`, `first_seen`, `last_confirmed`) + `facts_fts` + triggers.
 **Invariants:** Search filters tombstoned AND superseded; supersede keeps
-the chain for audit; Supersede-on-contradiction is v1.1 (LLM judge — TODO).
+the chain for audit; Supersede-on-contradiction ships as Phase-2
+supersede-as-transition (the summarizer adjudicates borderline matches).
 **21 tests.**
 
 ### 5.7 `internal/memory/archive` — T5 Archive
@@ -1121,7 +1123,7 @@ auto-tested (no TTY in CI) — honest.
 |---|---|---|
 | T4 deeper: macro skills, success-weighted retrieval, LLM-named induction | memory/skills + improve | v1.1 (T4 recipes + heuristic induction shipped) |
 | Soul-nudge job | improve (`SoulNudgeJob`) | v1.1 |
-| Supersede-on-contradiction + semantic dedup | distill (LLM judge) | v1.1 |
+| Supersede-on-contradiction (semantic dedup still v1.1) | distill (summarizer judge) | supersede-as-transition SHIPPED (Phase 2) |
 | Ollama / llama.cpp / OpenAI-compat backends | model/backend | post-v1 |
 | Working-set hierarchical compaction | memory/working | v1.1 |
 | Persistent embedding cache | model | v1.1 |
