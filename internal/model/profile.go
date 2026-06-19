@@ -83,6 +83,34 @@ func (p Profile) OperationalBudget() int {
 	return 0
 }
 
+// defaultVLLMToolResultTokens caps tool results fed into a LOCAL vLLM model's
+// context when a profile doesn't set MaxToolResultTokens explicitly. Local
+// (often weak/30B) models drown in a 20K web_read or a wide SQL dump; hosted
+// frontier backends (Backend != "vllm") stay uncapped unless they opt in. (TEN-259)
+const defaultVLLMToolResultTokens = 4096
+
+// ToolResultCap is the effective per-tool-result token cap the agent applies
+// before feeding a result back into the model's context. An explicit
+// MaxToolResultTokens wins (a negative value force-disables the cap); otherwise
+// local vLLM profiles get a sane default and other backends are uncapped. This
+// keeps the cap live for config-provider runtimes (which don't carry the field)
+// without threading it through every profile builder. (TEN-259)
+func (p Profile) ToolResultCap() int {
+	if p.MaxToolResultTokens != 0 {
+		return p.MaxToolResultTokens
+	}
+	// Self-hosted vLLM is the only OpenAI-compatible backend that exposes
+	// guided_json / a /tokenize endpoint (SupportsGrammar). Hosted providers on
+	// the same "vllm" backend — Z.ai/GLM, OpenAI, Grok — and Ollama/llama.cpp set
+	// EstimateTokens and leave SupportsGrammar false. We use that as the proxy
+	// for "local inference that benefits from a context cap", so frontier
+	// providers stay uncapped by default.
+	if p.Backend == "vllm" && p.SupportsGrammar {
+		return defaultVLLMToolResultTokens
+	}
+	return 0
+}
+
 // WritableBudget reports the tokens available for the working set +
 // retrieved memory after soul, system prompt, tool defs, and response
 // reserves are deducted from the operational budget. The memory

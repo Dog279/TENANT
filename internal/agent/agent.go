@@ -656,7 +656,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 					Call:    call,
 					Result:  fmt.Sprintf("%q is not available for the current model.", call.Name),
 					IsError: true,
-				}, profile.MaxToolResultTokens)
+				}, profile.ToolResultCap())
 				continue
 			}
 			allInvalid = false
@@ -684,7 +684,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		for _, br := range batchResults {
 			result.ToolTrace = append(result.ToolTrace, br)
 			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: br.Result, IsErr: br.IsError})
-			a.feedToolResult(ctx, br, profile.MaxToolResultTokens)
+			a.feedToolResult(ctx, br, profile.ToolResultCap())
 		}
 
 		// Oscillation guard (TEN-261): if the dispatched call-set is byte-identical
