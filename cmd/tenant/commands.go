@@ -32,8 +32,6 @@ import (
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/sme"
-	"tenant/internal/memory/soul"
-	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
@@ -1612,181 +1610,29 @@ func cmdTUI(ctx context.Context, args []string) error {
 		pushSys(ln)
 	}
 
-	// Resilient launch: degrade to echo (instead of aborting) when the
-	// configured model can't be built, so the TUI still opens and the operator
-	// can recover live with /model. Headless commands keep calling buildRouter
-	// directly and stay fail-fast. `degraded` is the shared gate that suppresses
-	// autonomous background work (self-improve, cron, relay) while on echo.
-	router, degraded, degradedBanner, err := buildRouterResilient(c, log)
+	// Substrate shared with cmdServe (TEN-247): router/degraded, stores, usage
+	// ledger, approval broker (+persisted modes), shared tool mux, skills, user
+	// profile, embedder, the fallback chain, distillation, and the live soul.
+	h, hubCleanup, err := buildHub(ctx, c, pf, pushSys, log)
 	if err != nil {
 		return err
 	}
-	if degraded.Degraded() {
-		pushSys(degradedBanner)
-		// In-memory ONLY so the status bar honestly shows "echo". MUST NOT
-		// persist — no lc.save runs here, so config.json keeps the real provider
-		// (which /model use and reconnect target). Do not add a save on this path.
-		c.backend = "echo"
-		pushSys("echo: responses are deterministic stubs — not a real model.")
-	}
-	st, closeStores, err := openStores(c)
-	if err != nil {
-		return err
-	}
-	defer closeStores()
-
-	// Long-term token-usage ledger (TEN-167): one row per MAIN-agent LLM
-	// call, for cost audit. Non-fatal — if it can't open, the TUI still
-	// runs; we just don't persist usage (the live footer counter is
-	// independent and keeps working).
-	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
-	if uerr != nil {
-		log.Warn("usage ledger unavailable", "err", uerr)
-	} else {
-		defer func() { _ = usageStore.Close() }()
-	}
-
-	// Approval broker: the single decision point for dangerous actions
-	// (the /approve flow + /permissions). Seeded from the --allow-* flags,
-	// then overridden by persisted per-category modes; wired into every
-	// plugin gate via buildToolMux's confirm hook.
-	broker := newApprovalBroker(log)
-	broker.seedFromFlags(pf)
-
-	// Persisted settings hold BOTH the tool curation and the permission
-	// modes. Saves are serialized: the broker persists "approve always"
-	// from the agent goroutine while /enable persists from the UI goroutine.
-	stg, serr := loadSettings(c.cfgDir, c.agent)
-	if serr != nil {
-		pushSys("settings: " + serr.Error() + " — using defaults")
-	}
-	broker.loadModes(stg.Permissions)
-	var stgMu sync.Mutex
-	saveSettings := func() {
-		stgMu.Lock()
-		defer stgMu.Unlock()
-		if err := stg.save(c.cfgDir, c.agent); err != nil {
-			log.Warn("settings save failed", "err", err)
-		}
-	}
-	broker.persist = func(modes map[string]string) {
-		stgMu.Lock()
-		stg.Permissions = modes
-		stgMu.Unlock()
-		saveSettings()
-	}
-
-	// Web is PER-AGENT (each agent gets its own browser so concurrent
-	// navigation can't clobber a shared tab), so keep it OUT of the shared
-	// plugin mux and hand it to each agent's local tools instead.
-	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
-	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
-	pf.web = false
-
-	// Build the SHARED plugin tool set (wiki/sql/os/…). The broker gates
-	// every dangerous action through Confirm. Agent-id-bound tools (memory,
-	// skills, comms) and orchestration (spawn) live in each agent's LOCAL
-	// layer, not here — so sub-agents get the plugins but their OWN memory.
-	// originConfirm makes the broker origin-aware: a turn STAMPED offsite (a
-	// Discord-driven turn) routes its dangerous-action approval to the
-	// origin-scoped button approver on the ctx, never the local broker — so a
-	// local "exec = allow" can't leak offsite. Local TUI turns are unchanged.
-	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, originConfirm(broker.Confirm), log)
-	if err != nil {
-		return err
-	}
-	defer cleanupMux()
-
-	// T4 skills: library + agent retrieval + author tool + /skills control.
-	skillStore, serr := skills.Open(filepath.Join(c.dataDir, "skills.db"))
-	if serr != nil {
-		return serr
-	}
-	defer skillStore.Close()
-
-	// User profile: a synthesized always-on model of the user, distinct
-	// from the hand-curated soul. Loaded once; a background job + the
-	// shared closures re-synthesize / note into it and update the SAME
-	// pointer the agent renders, so changes apply next turn.
-	prof, _ := userprofile.Load(c.dataDir, c.agent)
-	profSynth := &userprofile.Synthesizer{Router: router, Semantic: st.semantic, AgentID: c.agent}
-	var profMu sync.Mutex
-	refreshProfile := func(ctx context.Context) (bool, error) {
-		profMu.Lock()
-		defer profMu.Unlock()
-		md, changed, err := profSynth.Run(ctx, prof)
-		if err != nil || !changed {
-			return changed, err
-		}
-		prof.Update(md)
-		return true, prof.Save(c.dataDir)
-	}
-	// noteProfile records an explicitly-remembered fact in the profile
-	// immediately (deterministic, no LLM) so directives take effect next
-	// turn. Shares profMu with refreshProfile so the two never race on Save.
-	noteProfile := func(fact string) {
-		profMu.Lock()
-		defer profMu.Unlock()
-		prof.AppendRemembered(fact)
-		if err := prof.Save(c.dataDir); err != nil {
-			log.Warn("profile note save failed", "err", err)
-		}
-	}
-
-	skEmb, embProfile, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
-	embedderID := string(embProfile.ID)
-
-	// Install the embedder for tool-catalog ranking. Lazy: the mux will
-	// precompute tool-description embeddings only the first time the
-	// catalog crosses rankActivateThreshold AND a Search needs ranking.
-	// On `/model use ...` swap, this should be re-called with the new
-	// fingerprint to invalidate the cache (TODO: wire from modelControl
-	// when a swap-observer hook lands; until then, restart picks it up).
-	mux.SetEmbedder(embedderID, skEmb)
-
-	// Auto-fallback (TEN-246): wire the configured fallback chain onto the
-	// SHARED router + surface each failover to the feed. Off unless config.json
-	// `fallbacks` is set. The observer can fire from any goroutine (a background
-	// cron/relay turn), so it pushes through the thread-safe non-blocking feed.
-	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
-	router.SetFailoverObserver(func(ev model.FailoverEvent) {
-		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
-		to := fallbackLabelToProvider(ev.To, c.lc.Provider)
-		msg := fmt.Sprintf("⚠ model fallback: %s %s → using %s", from, ev.Reason, to)
-		if errors.Is(ev.Err, model.ErrInsufficientBalance) {
-			msg += " (recharge to restore)"
-		}
-		pushSys(msg)
-	})
-
-	// Restore the operator's tool curation over the flag defaults, THEN
-	// install the save hook (restore must not re-save what it just loaded).
-	for _, note := range mux.restore(stg.Tools) {
-		pushSys("settings: " + note)
-	}
-	pushSys("settings: " + settingsPath(c.cfgDir, c.agent))
-	mux.setOnChange(func(snap map[string]bool) {
-		stgMu.Lock()
-		stg.Tools = snap
-		stgMu.Unlock()
-		saveSettings()
-	})
-
-	// Distillation job + /memory control (built once; the job is shared
-	// by `/memory distill` and the background scheduler).
-	meta, merr := improve.OpenMeta(filepath.Join(c.dataDir, "tenant_meta.db"))
-	if merr != nil {
-		return merr
-	}
-	defer meta.Close()
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log}
-	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
-
-	// One live-soul holder shared by the agent (reads it each turn) and the
-	// memory editor (swaps it on a soul edit) — see soul.Live. This is the
-	// fix for the old unsynchronized `*soulPtr = *sl` torn read.
-	soulLive := soul.NewLive(st.soul)
+	defer hubCleanup()
+	// Re-bind the substrate locals the TUI wiring below refers to by name.
+	router, degraded := h.router, h.degraded
+	st := h.stores
+	usageStore := h.usageStore
+	broker := h.broker
+	stg, stgMu, saveSettings := h.stg, h.stgMu, h.saveSettings
+	mux, wikiIx := h.mux, h.wikiIx
+	skillStore := h.skillStore
+	prof := h.prof
+	refreshProfile, noteProfile := h.refreshProfile, h.noteProfile
+	skEmb, embedderID := h.skEmb, h.embedderID
+	distiller, distillJob := h.distiller, h.distillJob
+	meta := h.meta
+	soulLive := h.soulLive
+	teamWeb, webCfg, webPolicy := h.teamWeb, h.webCfg, h.webPolicy
 	// The SAME working set the agent's turn loop appends to, so the memory
 	// curator can read the live T1 count.
 	mainWorking := working.New()
