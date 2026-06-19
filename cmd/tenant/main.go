@@ -76,6 +76,8 @@ func main() {
 		err = cmdOS(ctx, os.Args[2:])
 	case "serve":
 		err = cmdServe(ctx, os.Args[2:])
+	case "attach":
+		err = cmdAttach(ctx, os.Args[2:])
 	case "tui":
 		err = cmdTUI(ctx, os.Args[2:])
 	case "orchestrate", "team":
