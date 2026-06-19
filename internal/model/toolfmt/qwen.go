@@ -201,7 +201,13 @@ func (Qwen) ParseToolCalls(content string) ([]model.ToolCall, error) {
 	for i, m := range matches {
 		var p qwenCallPayload
 		if err := json.Unmarshal([]byte(m[1]), &p); err != nil {
-			return nil, fmt.Errorf("qwen: parse tool_call %d: %w", i, err)
+			// Weak models truncate or trail-comma their tool JSON; try a
+			// best-effort repair before dropping the whole call (TEN-260).
+			repaired := RepairJSON(m[1])
+			p = qwenCallPayload{}
+			if repaired == m[1] || json.Unmarshal([]byte(repaired), &p) != nil {
+				return nil, fmt.Errorf("qwen: parse tool_call %d: %w", i, err)
+			}
 		}
 		if p.Name == "" {
 			return nil, fmt.Errorf("qwen: tool_call %d missing name", i)
