@@ -57,11 +57,15 @@ type Profile struct {
 	// ChatPath overrides the chat-completions URL suffix appended to
 	// Endpoint. Default "/v1/chat/completions". Z.ai's base already carries
 	// the version (…/paas/v4) so it needs "/chat/completions".
-	ChatPath         string         `yaml:"chat_path,omitempty"`
-	MaxToolsPerCall  int            `yaml:"max_tools_per_call"`
-	MaxParallelTools int            `yaml:"max_parallel_tools"`
-	PlanLoopCeiling  int            `yaml:"plan_loop_ceiling"`
-	Capabilities     map[string]any `yaml:"capabilities,omitempty"`
+	ChatPath         string `yaml:"chat_path,omitempty"`
+	MaxToolsPerCall  int    `yaml:"max_tools_per_call"`
+	MaxParallelTools int    `yaml:"max_parallel_tools"`
+	PlanLoopCeiling  int    `yaml:"plan_loop_ceiling"`
+	// MaxToolResultTokens caps each tool result fed into the model's CONTEXT
+	// (working set). 0 = no cap (frontier path unchanged). The full result is
+	// always kept in the archive; only the in-context copy is truncated.
+	MaxToolResultTokens int            `yaml:"max_tool_result_tokens"`
+	Capabilities        map[string]any `yaml:"capabilities,omitempty"`
 }
 
 // OperationalBudget is the token budget the runtime actually plans against

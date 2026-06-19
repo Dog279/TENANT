@@ -638,7 +638,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 					Call:    call,
 					Result:  fmt.Sprintf("%q is not available for the current model.", call.Name),
 					IsError: true,
-				})
+				}, profile.MaxToolResultTokens)
 				continue
 			}
 			allInvalid = false
@@ -666,7 +666,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		for _, br := range batchResults {
 			result.ToolTrace = append(result.ToolTrace, br)
 			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: br.Result, IsErr: br.IsError})
-			a.feedToolResult(ctx, br)
+			a.feedToolResult(ctx, br, profile.MaxToolResultTokens)
 		}
 	}
 
@@ -1103,16 +1103,21 @@ func (a *Agent) feedValidationError(ctx context.Context, call model.ToolCall, va
 	})
 }
 
-func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult) {
+func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultTokens int) {
 	content := r.Result
 	if r.Err != nil {
 		content = fmt.Sprintf("tool dispatch error: %s", r.Err.Error())
 	}
 	now := time.Now().UTC()
+	// Cap the copy that re-enters the model's CONTEXT (working set) so a large
+	// tool result — a 20K web_read, a wide SQL dump — doesn't dilute a small
+	// model's attention or blow the working budget. The archive below always
+	// keeps the FULL body, so nothing durable is lost (microcompaction and
+	// recall read the archive, not this capped copy).
 	a.cfg.Working.Append(working.Message{
 		Role:       "tool",
 		ToolCallID: r.Call.ID,
-		Content:    content,
+		Content:    capToolResultForContext(content, maxResultTokens),
 		Timestamp:  now,
 	})
 	a.archiveEvent(ctx, archive.Event{
@@ -1120,10 +1125,32 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult) {
 		Role: "tool",
 		ToolResult: &archive.ToolResult{
 			CallID:  r.Call.ID,
-			Content: content,
+			Content: content, // full, untruncated — durable history
 			IsError: r.IsError || r.Err != nil,
 		},
 	})
+}
+
+// capToolResultForContext truncates a tool result to roughly maxTokens before it
+// re-enters the model's context (working set). maxTokens <= 0 disables the cap
+// (frontier path: content returned unchanged). The cut is scrubbed to a valid
+// UTF-8 boundary and carries an explicit marker, so the model knows the result
+// was truncated and can refine the query or request a specific section. The full
+// result is preserved in the archive by the caller.
+func capToolResultForContext(content string, maxTokens int) string {
+	if maxTokens <= 0 {
+		return content
+	}
+	const charsPerToken = 4 // coarse heuristic — a safety cap, not a tokenizer
+	maxChars := maxTokens * charsPerToken
+	if len(content) <= maxChars {
+		return content
+	}
+	// Slicing can split a multi-byte rune; ToValidUTF8 drops the partial tail so
+	// we never emit invalid UTF-8 into the prompt.
+	head := strings.ToValidUTF8(content[:maxChars], "")
+	return fmt.Sprintf("%s\n…[truncated: tool result exceeded the %d-token context cap (%d of %d bytes shown). Refine the query or request a specific section to see the rest.]",
+		head, maxTokens, len(head), len(content))
 }
 
 func (a *Agent) archiveAssistant(ctx context.Context, resp *model.GenerateResponse) {

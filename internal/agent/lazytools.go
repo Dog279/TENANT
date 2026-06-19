@@ -165,5 +165,5 @@ func (a *Agent) handleLoadTool(ctx context.Context, call model.ToolCall, loaded 
 		}
 	}
 	a.emit(Event{Kind: EventToolResult, Tool: loadToolName, Result: res.Result, IsErr: res.IsError})
-	a.feedToolResult(ctx, res)
+	a.feedToolResult(ctx, res, 0) // short fixed control message — never needs a context cap
 }

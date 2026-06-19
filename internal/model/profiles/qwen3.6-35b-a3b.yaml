@@ -14,6 +14,7 @@ supports_grammar: true
 max_tools_per_call: 3
 max_parallel_tools: 1
 plan_loop_ceiling: 5
+max_tool_result_tokens: 2048        # cap each tool result fed into context (~8K chars); full result stays in the archive
 capabilities:
   reasoning_depth: medium
   code_quality: medium
