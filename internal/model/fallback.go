@@ -41,6 +41,30 @@ type fbLink struct {
 	label string
 }
 
+// HealthConfig (TEN-282) tunes the proactive latency health-gating layer that
+// demotes a link which keeps returning 200 OK but SLOWLY. It is ADDITIVE on top
+// of TEN-246's reactive (error-driven) failover and shares the same per-link
+// cooldown mechanism. Zero value ⇒ OFF: with SlowThreshold==0 no latency-based
+// demotion ever happens, so existing callers keep today's behavior exactly.
+type HealthConfig struct {
+	// SlowThreshold is the per-link EWMA latency above which a link is treated
+	// as "slow" and proactively cooled down. 0 disables health-gating entirely
+	// (the default — non-disruptive).
+	SlowThreshold time.Duration
+	// MinSamples is how many successful calls a link must have served before its
+	// EWMA can trip a demotion. Guards against cold-start / single-outlier trips.
+	// Clamped to >=1 when health-gating is enabled.
+	MinSamples int
+	// Alpha is the EWMA smoothing factor in (0,1]: higher = more weight on the
+	// latest sample (reacts faster, noisier); lower = smoother. Defaults to 0.3
+	// when health-gating is enabled and Alpha is out of range.
+	Alpha float64
+	// Cooldown is how long a slow link is skipped before it is re-probed (still
+	// preferred again once the cooldown lapses — never a permanent demotion).
+	// Defaults to 30s when health-gating is enabled and Cooldown<=0.
+	Cooldown time.Duration
+}
+
 // FallbackLLM implements model.LLM over an ordered chain (primary first).
 type FallbackLLM struct {
 	links    []fbLink
@@ -48,19 +72,48 @@ type FallbackLLM struct {
 	now      func() time.Time // injectable clock (tests)
 
 	mu            sync.Mutex
-	cooldownUntil map[string]time.Time // link label → skip-until
+	cooldownUntil map[string]time.Time     // link label → skip-until
+	health        HealthConfig             // TEN-282: latency-gating tunables (zero ⇒ off)
+	latEWMA       map[string]time.Duration // link label → EWMA of successful-call latency
+	latSamples    map[string]int           // link label → number of successful-call samples
 }
 
 // NewFallbackLLM builds a chain decorator. links[0] is the primary. With fewer
 // than 2 links it's a transparent passthrough (callers should just use the
-// single LLM, but this stays correct either way).
+// single LLM, but this stays correct either way). Health-gating is OFF until
+// SetHealthGating is called (default behavior unchanged for all existing callers).
 func NewFallbackLLM(links []fbLink, observer func(FailoverEvent)) *FallbackLLM {
 	return &FallbackLLM{
 		links:         links,
 		observer:      observer,
 		now:           time.Now,
 		cooldownUntil: make(map[string]time.Time),
+		latEWMA:       make(map[string]time.Duration),
+		latSamples:    make(map[string]int),
 	}
+}
+
+// SetHealthGating enables (or reconfigures) proactive latency-based demotion.
+// ADDITIVE + optional: existing call sites that never call it get zero-value
+// HealthConfig ⇒ no latency tracking trips a demotion. Out-of-range Alpha /
+// non-positive Cooldown / MinSamples<1 are normalized to safe conservative
+// defaults so a partial config can't silently disable the guard or trip it on a
+// single sample. Concurrency-safe (guarded by the existing cooldown mutex).
+func (f *FallbackLLM) SetHealthGating(cfg HealthConfig) {
+	if cfg.SlowThreshold > 0 { // only normalize when the feature is actually on
+		if cfg.MinSamples < 1 {
+			cfg.MinSamples = 5
+		}
+		if cfg.Alpha <= 0 || cfg.Alpha > 1 {
+			cfg.Alpha = 0.3
+		}
+		if cfg.Cooldown <= 0 {
+			cfg.Cooldown = 30 * time.Second
+		}
+	}
+	f.mu.Lock()
+	f.health = cfg
+	f.mu.Unlock()
 }
 
 // FailoverAction reports whether err should trigger failover to the next
@@ -133,6 +186,68 @@ func (f *FallbackLLM) markCooldown(label string, err error) {
 	f.mu.Unlock()
 }
 
+// recordLatency feeds a SUCCESSFUL call's wall-clock latency into the link's
+// EWMA and, when health-gating is enabled, proactively cools down a link whose
+// smoothed latency has crossed SlowThreshold. Returns the prior link label and
+// EWMA when a demotion fired (for an operator feed line via the observer), else
+// "" and 0. All state mutation happens under the existing cooldown mutex — no
+// second lock guards the latency/cooldown maps, so there is no race between
+// attemptOrder (reads cooldownUntil) and this writer.
+//
+// Why this never demotes a healthy fast chain:
+//   - SlowThreshold==0 (the default) short-circuits before any EWMA is touched.
+//   - A demotion needs MinSamples successful calls AND a smoothed (not single
+//     outlier) latency above the threshold, so transient blips don't trip it.
+//   - It only ever sets a SHORT cooldown via the same mechanism the chain
+//     re-probes after — a recovered (fast-again) link is restored, never
+//     permanently demoted.
+func (f *FallbackLLM) recordLatency(label string, d time.Duration) (demotedFrom string, ewma time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cfg := f.health
+	if cfg.SlowThreshold <= 0 {
+		return "", 0 // health-gating off ⇒ do not even track (default, non-disruptive)
+	}
+	// EWMA update: first sample seeds the average; later samples blend in.
+	prev, seen := f.latEWMA[label]
+	if !seen {
+		f.latEWMA[label] = d
+	} else {
+		a := cfg.Alpha
+		f.latEWMA[label] = time.Duration(a*float64(d) + (1-a)*float64(prev))
+	}
+	f.latSamples[label]++
+	cur := f.latEWMA[label]
+	// Only demote with enough evidence, when slow, and when not already cooling
+	// (so we don't keep re-stamping / re-firing while the cooldown is in effect).
+	if f.latSamples[label] < cfg.MinSamples || cur <= cfg.SlowThreshold {
+		return "", 0
+	}
+	now := f.now()
+	if until, ok := f.cooldownUntil[label]; ok && now.Before(until) {
+		return "", 0 // already cooling — leave the existing window in place
+	}
+	f.cooldownUntil[label] = now.Add(cfg.Cooldown)
+	return label, cur
+}
+
+// noteLatency records a successful call's latency and, if a proactive demotion
+// fired, emits a synthetic FailoverEvent so operators see WHY the chain moved
+// off a link that returned 200 OK. Kept out of the locked section so the
+// observer callback never runs while holding f.mu.
+func (f *FallbackLLM) noteLatency(label string, d time.Duration) {
+	from, ewma := f.recordLatency(label, d)
+	if from == "" || f.observer == nil {
+		return
+	}
+	f.observer(FailoverEvent{
+		From:   from,
+		To:     "",  // demotion, not an in-flight switch; next call prefers the next ready link
+		Err:    nil, // succeeded — it was just slow
+		Reason: "slow (" + ewma.Round(time.Millisecond).String() + " avg)",
+	})
+}
+
 func (f *FallbackLLM) fire(from, to string, err error) {
 	if f.observer != nil {
 		f.observer(FailoverEvent{From: from, To: to, Err: err, Reason: failoverReason(err)})
@@ -146,8 +261,11 @@ func (f *FallbackLLM) Generate(ctx context.Context, req GenerateRequest) (*Gener
 	attempts := f.attemptOrder()
 	var lastErr error
 	for i, lk := range attempts {
+		start := f.now()
 		resp, err := lk.llm.Generate(ctx, req)
 		if err == nil {
+			// Succeeded — feed latency into the health gate (no-op unless enabled).
+			f.noteLatency(lk.label, f.now().Sub(start))
 			return resp, nil
 		}
 		lastErr = err
@@ -172,6 +290,7 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 		defer close(out)
 		var lastErr error
 		for i, lk := range attempts {
+			start := f.now()
 			ch, err := lk.llm.GenerateStream(ctx, req)
 			if err != nil {
 				// Stream never opened → no tokens emitted → safe to fail over.
@@ -186,6 +305,7 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 			}
 			emitted := false
 			failedPreToken := false
+			postTokenErr := false
 			for chunk := range ch {
 				if chunk.Error != nil && !emitted {
 					// Pre-token failure → maybe fail over to the next link.
@@ -199,13 +319,24 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 					out <- chunk
 					return
 				}
+				if chunk.Error != nil {
+					postTokenErr = true // committed error → not a clean latency sample
+				}
 				if chunk.Delta != "" || chunk.ToolCallDelta != nil {
 					emitted = true // committed — never fail over past this point
 				}
 				out <- chunk
 			}
 			if !failedPreToken {
-				return // stream completed (success, or post-token error already forwarded)
+				// Stream completed. Only a stream that produced tokens AND finished
+				// without a (post-token) error is a valid latency sample — a
+				// 0-token completion or a faulted stream isn't a useful timing
+				// signal and must not arm/fire the health gate. No-op unless
+				// health-gating is enabled.
+				if emitted && !postTokenErr {
+					f.noteLatency(lk.label, f.now().Sub(start))
+				}
+				return
 			}
 			// pre-token failover: try the next link
 		}

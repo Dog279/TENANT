@@ -14,9 +14,18 @@ import (
 type BackendFactory func(ctx context.Context, p Profile, log *slog.Logger) (any, error)
 
 // Router resolves Role → Profile → backend instance. With one model per
-// endpoint, routing is a direct lookup — no load balancing, no health
-// gating in v1. Health and failover are TODOs for when we have data on
-// real failure modes.
+// endpoint, routing is a direct lookup — no load balancing.
+//
+// Failover + health (TEN-246 / TEN-282): handled in the FallbackLLM decorator
+// (internal/model/fallback.go), composed here per role. It covers BOTH
+// reactive failover (advance to the next link on a hard error — rate limit /
+// out-of-credits / unreachable / 5xx, fail-closed otherwise) AND proactive
+// latency health-gating (a link that returns 200 OK but is persistently SLOW
+// gets a short cooldown via the same per-link mechanism, so the chain prefers
+// the next link and re-probes after the cooldown — never a permanent demotion).
+// Health-gating is OFF unless configured via FallbackLLM.SetHealthGating.
+// STILL FUTURE: cross-endpoint load balancing / weighted routing, and feeding
+// real production latency/error data into the thresholds.
 type Router struct {
 	reg       *Registry
 	factories map[string]BackendFactory
