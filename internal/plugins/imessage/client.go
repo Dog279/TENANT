@@ -102,6 +102,10 @@ func (s *Service) SendText(ctx context.Context, chatGUID, text string) (string, 
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("imessage: message text is empty")
 	}
+	text = sanitizeOutbound(text) // dedup layer 3: strip edge BOM/zero-width
+	if text == "" {
+		return "", fmt.Errorf("imessage: message text is empty")
+	}
 	body := map[string]any{
 		"chatGuid": chatGUID,
 		"tempGuid": tempGUID(),
@@ -122,6 +126,10 @@ func (s *Service) NewChat(ctx context.Context, address, text string) (string, er
 		return "", fmt.Errorf("imessage: recipient address (phone/email) required")
 	}
 	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("imessage: message text is empty")
+	}
+	text = sanitizeOutbound(text) // dedup layer 3: strip edge BOM/zero-width
+	if text == "" {
 		return "", fmt.Errorf("imessage: message text is empty")
 	}
 	body := map[string]any{
