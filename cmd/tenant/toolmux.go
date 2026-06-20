@@ -19,6 +19,7 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/peering"
 	"tenant/internal/plugins/atlassian"
+	"tenant/internal/plugins/crm"
 	"tenant/internal/plugins/discord"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
@@ -1141,6 +1142,9 @@ type pluginFlags struct {
 	osEnable     bool
 	osAllowExec  bool
 	osAllowWrite bool
+
+	crmToolPath    string
+	crmAllowMutate bool
 }
 
 func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
@@ -1184,6 +1188,8 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.BoolVar(&p.osEnable, "os", false, "enable the OS plugin (sysinfo, file read, dir list, processes, gated shell exec)")
 	fs.BoolVar(&p.osAllowExec, "os-allow-exec", false, "permit os_exec (run shell commands) — destructive ones still need confirm")
 	fs.BoolVar(&p.osAllowWrite, "os-allow-write", false, "permit os_write/os_edit/os_append/os_make_dir (file writes)")
+	fs.StringVar(&p.crmToolPath, "crm-tool-path", "", "path to the external crm-tool binary (or $CRM_TOOL_PATH) — enables the gated crm_* tools")
+	fs.BoolVar(&p.crmAllowMutate, "crm-allow-mutate", false, "permit the gated crm subcommands (ask/align/commitments-list) without per-action confirm")
 	return p
 }
 
@@ -1368,6 +1374,19 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		}
 	}
 
+	// CRM wraps the operator's external crm-tool binary (TEN-269). It needs
+	// a configured path (flag or $CRM_TOOL_PATH) — without one we register
+	// nothing here and the stub catalog below advertises the tools + how to
+	// enable them. Read subcommands are ungated; the heavier set
+	// (ask/align/commitments-list) is gated through the confirm broker.
+	if crmPath := strings.TrimSpace(firstNonEmpty(pf.crmToolPath, os.Getenv("CRM_TOOL_PATH"))); crmPath != "" {
+		svc, err := crm.Open(crm.Config{Path: crmPath})
+		if err != nil {
+			return fail(fmt.Errorf("crm plugin: %w", err))
+		}
+		mux.add("crm", crm.NewDispatcher(svc, crm.Policy{AllowMutate: gateAllow(pf.crmAllowMutate), Confirm: confirm}))
+	}
+
 	// Register stubs for every plugin that wasn't configured, so the
 	// whole catalog shows in /tools. A stub advertises the real tool
 	// specs (Tools() is static — safe with a nil service) but returns a
@@ -1475,6 +1494,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 			},
 		},
 		{label: "imessage", specs: imessage.NewDispatcher(nil, imessage.Policy{}).Tools(), hint: "relaunch with --imessage (native chat.db on macOS; or --bb-url for BlueBubbles)"},
+		{label: "crm", specs: crm.NewDispatcher(nil, crm.Policy{}).Tools(), hint: "relaunch with --crm-tool-path <path> (or set $CRM_TOOL_PATH) to wrap the external crm-tool binary"},
 		{label: "discord", specs: discord.NewDispatcher(nil, discord.Policy{}).Tools(), hint: "relaunch with --discord --discord-bot-token=<token>"},
 		{
 			label: "atlassian",
