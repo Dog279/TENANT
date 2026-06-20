@@ -2387,6 +2387,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
 
+	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
+	// approves a gated action over iMessage. Empty ⇒ Phase-1 (the offsite broker's
+	// "ask" prompts at THIS TUI / stays deny-all; no out-of-band text approval).
+	var imsgOperator string
+	if c.lc != nil {
+		imsgOperator = c.lc.IMessage.Operator
+	}
+
 	// iMessage autonomous responder (TEN-230): a live-toggle manager driven by
 	// `/imessage on|off`, over the native transport (macOS only). buildFn opens
 	// chat.db + the openclaw anti-loop Watcher + a dedicated agent LAZILY on
@@ -2429,6 +2437,19 @@ func cmdTUI(ctx context.Context, args []string) error {
 				_ = nat.Close()
 				return nil, nil, fmt.Errorf("agent: %w", err)
 			}
+			// Phase-2 (TEN-267): with an operator handle configured, the text-confirm
+			// approver over THIS native send path becomes the broker's "ask" backend,
+			// so an "ask"-mode category texts the operator a nonce handshake. No
+			// operator ⇒ nil ⇒ Phase-1 (ask prompts at this TUI / deny-all offsite).
+			approver := newIMessageApprover(nat, imsgOperator, log)
+			if approver != nil {
+				imsgBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+					if approver.Confirm(cctx, req.Action, req.Detail) {
+						return tui.ApproveOnce
+					}
+					return tui.DenyOnce
+				}
+			}
 			resp := &imessageResponder{
 				poller: watcher, sender: nat, runner: ag,
 				// Gated tools route to the iMessage broker (per-category modes);
@@ -2437,7 +2458,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: log, degraded: degraded.Degraded,
-				ingest: func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				ingest:   func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				approver: approver,
 			}
 			return resp, func() { _ = nat.Close() }, nil
 		},
