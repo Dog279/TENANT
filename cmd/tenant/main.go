@@ -4,6 +4,7 @@
 //	tenant chat                    interactive agent loop (stdin → stdout)
 //	tenant distill                 run one distillation pass
 //	tenant memory search <query>   search episodes + facts
+//	tenant memory import <file.md> import operator markdown notes as T3 facts
 //	tenant mcp-memory              run the MCP memory server over stdio
 //	tenant mcp-selftest            spawn mcp-memory as a subprocess and
 //	                               drive the MCP protocol against it
@@ -131,6 +132,7 @@ COMMANDS
   chat                     interactive agent loop (one stdin line = one turn)
   distill                  run one T2->T3 distillation pass
   memory search <query>    search episodes + facts from the CLI
+  memory import <file.md>  import operator markdown notes into T3 facts (--protected, --importance, --dry-run)
   mcp-memory               run the MCP memory server over stdio
   mcp-selftest             spawn mcp-memory as a subprocess and exercise it
   tool-test                run a tool-calling agent turn (hardening harness)
