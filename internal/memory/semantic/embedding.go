@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+
+	"tenant/internal/memory/cosine"
 )
 
 // Same little-endian float32 BLOB scheme as the episodic tier. Kept
@@ -30,19 +32,8 @@ func decodeEmbedding(b []byte) ([]float32, error) {
 	return out, nil
 }
 
+// cosineSimilarity is a thin alias over the shared internal/memory/cosine
+// package (the single source of truth); kept named so search.go reads unchanged.
 func cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		fa, fb := float64(a[i]), float64(b[i])
-		dot += fa * fb
-		na += fa * fa
-		nb += fb * fb
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	return cosine.Similarity(a, b)
 }

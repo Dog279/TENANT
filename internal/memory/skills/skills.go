@@ -19,9 +19,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 	"time"
+
+	"tenant/internal/memory/cosine"
 
 	_ "modernc.org/sqlite"
 )
@@ -308,7 +309,7 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 	kw := strings.ToLower(strings.Join(q.Keywords, " "))
 	hits := make([]Hit, 0, len(all))
 	for _, sk := range all {
-		score := cosine(q.Embedding, sk.Embedding)
+		score := cosine.Similarity(q.Embedding, sk.Embedding)
 		if kw != "" && (strings.Contains(strings.ToLower(sk.Name), kw) || strings.Contains(strings.ToLower(sk.Description), kw)) {
 			score += 0.05
 		}
@@ -398,23 +399,6 @@ func scan(row rowScanner) (*Skill, error) {
 		_ = json.Unmarshal([]byte(embJSON.String), &sk.Embedding)
 	}
 	return &sk, nil
-}
-
-func cosine(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		x, y := float64(a[i]), float64(b[i])
-		dot += x * y
-		na += x * x
-		nb += y * y
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func boolToInt(b bool) int {
