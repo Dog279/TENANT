@@ -5,9 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"tenant/internal/mcp/transport"
 )
+
+// DefaultInitializeTimeout bounds the handshake when the caller's ctx
+// carries no deadline. A peer that accepts the connection but never
+// replies would otherwise hang Initialize (and its underlying
+// request round-trip) forever, since the read pump never sees a frame
+// to close the session. Tunable for tests; respected only when the
+// incoming ctx has no deadline of its own.
+var DefaultInitializeTimeout = 30 * time.Second
 
 // ClientState tracks the lifecycle of a Client. Transitions:
 //
@@ -99,6 +108,18 @@ func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 		}
 	}
 
+	// Guard against a peer that accepts the connection but never
+	// responds: if the caller didn't bound the handshake with a
+	// deadline, impose a default one so Initialize fails fast instead
+	// of hanging. An existing deadline is respected — never shortened.
+	timedOut := false
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultInitializeTimeout)
+		defer cancel()
+		timedOut = true
+	}
+
 	params := InitializeParams{
 		ProtocolVersion: ProtocolVersion,
 		Capabilities:    c.caps,
@@ -107,6 +128,11 @@ func (c *Client) Initialize(ctx context.Context) (*InitializeResult, error) {
 	result, err := CallTyped[InitializeResult](ctx, c.session, MethodInitialize, params)
 	if err != nil {
 		c.state.Store(int32(StateCreated)) // allow retry
+		// Surface our self-imposed timeout with a clear, actionable
+		// message rather than a bare context.DeadlineExceeded.
+		if timedOut && errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("mcp: initialize timed out after %s (peer unresponsive)", DefaultInitializeTimeout)
+		}
 		return nil, err
 	}
 
