@@ -332,8 +332,117 @@ func TestProviderKinds_ZaiCodingPlanEndpointShape(t *testing.T) {
 	}
 }
 
+// TestSetReasoningEffort verifies the live reasoning-effort control: it persists
+// per-provider, normalizes the "max" alias to "xhigh" and "off" to empty, rejects
+// unknown levels, and refuses providers whose kind doesn't support reasoning.
+func TestSetReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	lc := &launchConfig{
+		Provider: "sakana",
+		Providers: map[string]*providerConfig{
+			"sakana": {Kind: "sakana", Endpoint: "https://api.sakana.ai", Model: "fugu-ultra", ToolFmt: "openai"},
+			"openai": {Kind: "openai", Endpoint: "https://api.openai.com", Model: "gpt-4o", ToolFmt: "openai"},
+		},
+	}
+	if err := lc.save(dir); err != nil {
+		t.Fatal(err)
+	}
+	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: newEchoAg(t),
+		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	// Set a valid level — persists on the active provider.
+	if _, err := mc.SetReasoningEffort("high"); err != nil {
+		t.Fatalf("SetReasoningEffort(high): %v", err)
+	}
+	if got, _ := loadLaunchConfig(dir); got.Providers["sakana"].Reasoning != "high" {
+		t.Errorf("reasoning not persisted: %q", got.Providers["sakana"].Reasoning)
+	}
+	// "max" is Fugu's alias for "xhigh".
+	if _, err := mc.SetReasoningEffort("max"); err != nil {
+		t.Fatalf("SetReasoningEffort(max): %v", err)
+	}
+	if got, _ := loadLaunchConfig(dir); got.Providers["sakana"].Reasoning != "xhigh" {
+		t.Errorf("max should normalize to xhigh; got %q", got.Providers["sakana"].Reasoning)
+	}
+	// "off" clears it.
+	if _, err := mc.SetReasoningEffort("off"); err != nil {
+		t.Fatalf("SetReasoningEffort(off): %v", err)
+	}
+	if got, _ := loadLaunchConfig(dir); got.Providers["sakana"].Reasoning != "" {
+		t.Errorf("off should clear; got %q", got.Providers["sakana"].Reasoning)
+	}
+	// Unknown level rejected.
+	if _, err := mc.SetReasoningEffort("ludicrous"); err == nil {
+		t.Error("expected error for unknown reasoning level")
+	}
+
+	// A provider whose kind doesn't support reasoning is refused (would 400).
+	lc.Provider = "openai"
+	if err := lc.save(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mc.SetReasoningEffort("high"); err == nil {
+		t.Error("expected error setting reasoning on a non-reasoning provider")
+	}
+	if mc.ReasoningSupported() {
+		t.Error("ReasoningSupported should be false when openai is the active provider")
+	}
+}
+
+// TestProviderKinds_SakanaShape — drift guard for the Sakana AI (Fugu)
+// integration. The Fugu API is OpenAI-compatible, so it rides the vllm
+// backend with the "openai" tool format (native tool_calls). The
+// load-bearing detail: the documented base is https://api.sakana.ai/v1,
+// but we register it WITHOUT the trailing /v1 and leave ChatPath empty so
+// the default ChatPath (/v1/chat/completions) resolves to exactly one /v1
+// (not /v1/v1/...) and the standard /v1/models listing works on the first
+// try — mirroring the "openai" kind. If a refactor appends /v1 to the
+// endpoint or sets a ChatPath, the chat URL doubles up and this breaks.
+func TestProviderKinds_SakanaShape(t *testing.T) {
+	pk, ok := providerKinds["sakana"]
+	if !ok {
+		t.Fatal("sakana missing from providerKinds")
+	}
+	if pk.Backend != "vllm" {
+		t.Errorf("sakana Backend=%q want vllm (Fugu is OpenAI-compatible)", pk.Backend)
+	}
+	if pk.DefaultEndpoint != "https://api.sakana.ai" {
+		t.Errorf("sakana DefaultEndpoint=%q want https://api.sakana.ai (no /v1 — default ChatPath adds it)", pk.DefaultEndpoint)
+	}
+	if strings.HasSuffix(pk.DefaultEndpoint, "/v1") {
+		t.Errorf("sakana DefaultEndpoint must NOT carry /v1 (got %q) — would double to /v1/v1/chat/completions", pk.DefaultEndpoint)
+	}
+	if pk.ChatPath != "" {
+		t.Errorf("sakana ChatPath=%q want empty (endpoint has no version segment, so the default /v1/chat/completions applies)", pk.ChatPath)
+	}
+	if pk.DefaultToolFmt != "openai" {
+		t.Errorf("sakana DefaultToolFmt=%q want openai (native OpenAI tool_calls)", pk.DefaultToolFmt)
+	}
+	if pk.DefaultModel != "fugu-ultra" {
+		t.Errorf("sakana DefaultModel=%q want fugu-ultra", pk.DefaultModel)
+	}
+	if pk.KeyEnv != "SAKANA_API_KEY" {
+		t.Errorf("sakana KeyEnv=%q want SAKANA_API_KEY", pk.KeyEnv)
+	}
+	found := false
+	for _, o := range providerOrder {
+		if o == "sakana" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("sakana missing from providerOrder — won't appear in the setup wizard menu")
+	}
+	// The settings page / `/configure` can only store a key for a CredID in
+	// the catalog, keyed by the same id the runtime reads (== the kind id).
+	if s, ok := lookupKeySpec("sakana"); !ok || s.Kind != keyProvider {
+		t.Errorf("sakana missing from keyCatalog as keyProvider (got %+v ok=%v)", s, ok)
+	}
+}
+
 func TestProviderKinds_KeyedHaveDefaults(t *testing.T) {
-	for _, id := range []string{"zai", "zai-coding", "zai-coding-cn", "openai", "grok", "anthropic"} {
+	for _, id := range []string{"zai", "zai-coding", "zai-coding-cn", "openai", "grok", "sakana", "anthropic"} {
 		pk, ok := providerKinds[id]
 		if !ok {
 			t.Errorf("%s missing from providerKinds", id)

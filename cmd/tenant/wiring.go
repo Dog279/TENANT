@@ -49,6 +49,7 @@ type commonFlags struct {
 
 	// Resolved at config-merge time (not raw flags):
 	genKind     string // active provider kind (vllm|openai|ollama|…); "" = raw --backend
+	reasoning   string // active provider's reasoning-effort hint ("" = off); reasoning kinds only
 	genAPIKey   string // resolved generation API key (env ref or stored secret or --api-key)
 	embedAPIKey string // resolved embeddings API key (usually empty — local)
 	contextLen  int    // served model's max_model_len (auto-detected); 0 = use default
@@ -166,6 +167,12 @@ func (c *commonFlags) applyLaunchConfig() {
 		}
 		if !set["vllm-tool-format"] {
 			c.vllmToolFmt = firstNonEmpty(p.ToolFmt, pk.DefaultToolFmt)
+		}
+		// Reasoning effort is config/command-driven (no flag): honored only for
+		// kinds that advertise support, so a stale value on a non-reasoning
+		// provider never reaches the wire.
+		if pk.SupportsReasoning {
+			c.reasoning = p.Reasoning
 		}
 		if !set["api-key"] {
 			c.genAPIKey = resolveSecret(c.cfgDir, lc.Provider, p.Auth)
@@ -334,6 +341,7 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 			toolFmt:      c.vllmToolFmt,
 			apiKey:       c.genAPIKey,
 			chatPath:     pk.ChatPath,
+			reasoning:    c.reasoning,
 			estimateOnly: pk.EstimateTokens,
 			forceHTTP1:   pk.ForceHTTP1,
 			contextLen:   c.contextLen,
@@ -709,9 +717,10 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 		pk := providerKinds[c.genKind]
 		gen := vllmGenProfiles(genProfileOpts{
 			endpoint: c.vllmEndpoint, model: c.vllmModel, toolFmt: c.vllmToolFmt,
-			apiKey: c.genAPIKey, chatPath: pk.ChatPath, estimateOnly: pk.EstimateTokens,
-			forceHTTP1: pk.ForceHTTP1,
-			contextLen: c.contextLen, planCeiling: c.planCeiling,
+			apiKey: c.genAPIKey, chatPath: pk.ChatPath, reasoning: c.reasoning,
+			estimateOnly: pk.EstimateTokens,
+			forceHTTP1:   pk.ForceHTTP1,
+			contextLen:   c.contextLen, planCeiling: c.planCeiling,
 		})
 		return gen, map[string]model.BackendFactory{"vllm": vllm.New}, nil
 	case "anthropic":
@@ -732,6 +741,7 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 // positional arg count once hosted providers added api keys + path overrides.
 type genProfileOpts struct {
 	endpoint, model, toolFmt, apiKey, chatPath string
+	reasoning                                  string // reasoning.effort hint ("" = off; reasoning kinds only)
 	estimateOnly                               bool
 	forceHTTP1                                 bool // disable HTTP/2 (GOAWAY-prone hosted LBs, TEN-218)
 	contextLen                                 int  // 0 = default (131072)
@@ -770,6 +780,7 @@ func vllmGenProfiles(o genProfileOpts) []model.Profile {
 			Model:                    o.model,
 			APIKey:                   o.apiKey,
 			ChatPath:                 o.chatPath,
+			ReasoningEffort:          o.reasoning,
 			EstimateTokensOnly:       o.estimateOnly,
 			ForceHTTP11:              o.forceHTTP1,
 			ContextLength:            ctxLen,

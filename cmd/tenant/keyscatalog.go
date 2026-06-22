@@ -52,6 +52,7 @@ var keyCatalog = []keySpec{
 	{CredID: "zai", Name: "Z.ai (GLM)", Category: "LLM provider", EnvVars: []string{"ZAI_API_KEY"}, Kind: keyProvider},
 	{CredID: "zai-coding-cn", Name: "Z.ai (GLM — China)", Category: "LLM provider", EnvVars: []string{"ZAI_API_KEY"}, Kind: keyProvider},
 	{CredID: "zai-metered", Name: "Z.ai (GLM — metered)", Category: "LLM provider", EnvVars: []string{"ZAI_API_KEY"}, Kind: keyProvider},
+	{CredID: "sakana", Name: "Sakana AI (Fugu)", Category: "LLM provider", EnvVars: []string{"SAKANA_API_KEY"}, Kind: keyProvider},
 
 	// Web search backends (optional; key just upgrades the backend). env wins at
 	// runtime, so EnvVars here genuinely reflect resolution order.

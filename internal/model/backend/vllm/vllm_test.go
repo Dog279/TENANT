@@ -522,3 +522,58 @@ func TestVLLM_ReplayMalformedToolArgsSanitized(t *testing.T) {
 		t.Errorf("malformed JSON leaked to the wire (would 400): %s", gotBody)
 	}
 }
+
+// TestVLLM_ReasoningEffort verifies the reasoning-effort hint (Sakana Fugu) is
+// emitted as {"reasoning":{"effort":...}} when the profile sets it, and is
+// ENTIRELY ABSENT from the wire otherwise — so a provider that doesn't
+// understand the field never receives it. Covers both Generate and the streaming
+// path, which build the request body independently.
+func TestVLLM_ReasoningEffort(t *testing.T) {
+	capture := func(t *testing.T, effort string, stream bool) string {
+		t.Helper()
+		var gotBody string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.Header().Set("Content-Type", "application/json")
+			if stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				return
+			}
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{}}`)
+		}))
+		defer ts.Close()
+		any, err := vllm.New(context.Background(), model.Profile{
+			ID: "test", Backend: "vllm", Endpoint: ts.URL, Model: "fugu-ultra",
+			ToolFormat: "openai", ReasoningEffort: effort,
+		}, nil)
+		if err != nil {
+			t.Fatalf("vllm.New: %v", err)
+		}
+		llm := any.(model.LLM)
+		req := model.GenerateRequest{Messages: []model.Message{{Role: "user", Content: "hi"}}}
+		if stream {
+			ch, serr := llm.GenerateStream(context.Background(), req)
+			if serr != nil {
+				t.Fatalf("GenerateStream: %v", serr)
+			}
+			for range ch { // drain
+			}
+		} else if _, gerr := llm.Generate(context.Background(), req); gerr != nil {
+			t.Fatalf("Generate: %v", gerr)
+		}
+		return gotBody
+	}
+
+	for _, stream := range []bool{false, true} {
+		// Set: the nested effort object is on the wire.
+		if body := capture(t, "high", stream); !strings.Contains(body, `"reasoning":{"effort":"high"}`) {
+			t.Errorf("stream=%v: reasoning effort not on the wire; body: %s", stream, body)
+		}
+		// Unset: NO reasoning key at all (omitempty + nil pointer).
+		if body := capture(t, "", stream); strings.Contains(body, `"reasoning"`) {
+			t.Errorf("stream=%v: reasoning field leaked when effort unset; body: %s", stream, body)
+		}
+	}
+}

@@ -126,6 +126,10 @@ type providerConfig struct {
 	ToolFmt  string  `json:"tool_format,omitempty"` // qwen|gemma|llama|mistral|openai
 	EmbedDim int     `json:"embed_dim,omitempty"`   // embeddings only
 	Auth     authCfg `json:"auth,omitempty"`
+	// Reasoning is the per-provider reasoning-effort hint for reasoning-capable
+	// kinds (Sakana Fugu): "" (off, default) | "high" | "xhigh". Tuned live via
+	// /reasoning and only honored when the kind's SupportsReasoning is set.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // agentProfile is a named sub-agent recipe the orchestrator can spawn. The
@@ -385,6 +389,10 @@ type providerKind struct {
 	Wired           bool   // false = config captured but backend not implemented yet
 	Local           bool   // runs on localhost (no key, reachable probe meaningful)
 	ForceHTTP1      bool   // disable HTTP/2 — the LB recycles long-lived h2 conns with a mid-stream GOAWAY (TEN-218)
+	// SupportsReasoning marks a kind whose API accepts a reasoning.effort hint
+	// (Sakana Fugu). Gates /reasoning so the operator can't set an effort on a
+	// provider that would 400 on the unknown field.
+	SupportsReasoning bool
 }
 
 // providerKinds is the catalog the wizard offers. OpenAI-compatible providers
@@ -456,6 +464,20 @@ var providerKinds = map[string]providerKind{
 		DefaultToolFmt: "openai", DefaultModel: "glm-4.6", NeedsKey: true,
 		KeyEnv: "ZAI_API_KEY", EstimateTokens: true, Wired: true, ForceHTTP1: true,
 	},
+	// Sakana AI's Fugu API is OpenAI-compatible (base https://api.sakana.ai/v1,
+	// Authorization: Bearer, /v1/chat/completions, native tool_calls + parallel
+	// tool calls), so it rides the same vllm backend as OpenAI/Grok/Z.ai. The
+	// base is given WITHOUT the /v1 segment so the default ChatPath
+	// (/v1/chat/completions) and the standard /v1/models listing both resolve —
+	// exactly like the "openai" kind. Default model is fugu-ultra (the advanced
+	// variant); `fugu` is also offered live via /model pick. Per
+	// https://console.sakana.ai/get-started.
+	"sakana": {
+		ID: "sakana", Label: "Sakana AI (Fugu)", Backend: "vllm",
+		DefaultEndpoint: "https://api.sakana.ai", DefaultToolFmt: "openai",
+		DefaultModel: "fugu-ultra", NeedsKey: true, KeyEnv: "SAKANA_API_KEY",
+		EstimateTokens: true, Wired: true, SupportsReasoning: true,
+	},
 	"anthropic": {
 		ID: "anthropic", Label: "Anthropic (Claude)", Backend: "anthropic",
 		DefaultEndpoint: "https://api.anthropic.com", DefaultModel: "claude-sonnet-4-20250514",
@@ -468,7 +490,7 @@ var providerKinds = map[string]providerKind{
 }
 
 // providerOrder is the stable display order for the wizard menu.
-var providerOrder = []string{"vllm", "ollama", "llamacpp", "openai", "grok", "zai", "zai-coding", "zai-coding-cn", "zai-metered", "anthropic", "echo"}
+var providerOrder = []string{"vllm", "ollama", "llamacpp", "openai", "grok", "zai", "zai-coding", "zai-coding-cn", "zai-metered", "sakana", "anthropic", "echo"}
 
 // --- persistence ----------------------------------------------------------
 

@@ -74,6 +74,7 @@ func (b *Backend) generateStream(ctx context.Context, req model.GenerateRequest)
 		}
 		body.ToolChoice = toolChoiceWire(req.ToolChoice)
 	}
+	b.applyReasoning(&body)
 
 	buf, err := json.Marshal(body)
 	if err != nil {

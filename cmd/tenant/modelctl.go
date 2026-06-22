@@ -326,6 +326,105 @@ func (mc *modelControl) SetLoopCeiling(n int) (string, error) {
 	return fmt.Sprintf("loop ceiling → %d (updated %d role(s); applies next turn, incl. newly spawned sub-agents)", n, updated), nil
 }
 
+// reasoningLevels is the set of reasoning-effort values a reasoning-capable
+// provider accepts, per Sakana Fugu's API (high + xhigh, alias max). "" clears
+// it (off, the default). The /reasoning picker offers exactly these.
+var reasoningLevels = []string{"high", "xhigh"}
+
+// ReasoningSupported reports whether the ACTIVE provider's kind accepts a
+// reasoning-effort hint (today: Sakana Fugu). The /reasoning command refuses to
+// set an effort on a provider that would 400 on the unknown field.
+func (mc *modelControl) ReasoningSupported() bool {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil || lc.Providers[lc.Provider] == nil {
+		return false
+	}
+	return providerKinds[lc.Providers[lc.Provider].Kind].SupportsReasoning
+}
+
+// ReasoningEffort returns the active provider's persisted reasoning-effort hint
+// ("" = off / default).
+func (mc *modelControl) ReasoningEffort() string {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil || lc.Providers[lc.Provider] == nil {
+		return ""
+	}
+	return lc.Providers[lc.Provider].Reasoning
+}
+
+// SetReasoningEffort retunes the active provider's reasoning effort live on the
+// shared router (so the main agent + sub-agents follow next turn) and persists it
+// per-provider so it survives a restart. Mirrors UseModel's rebuild path, minus
+// the probe/embedder work (endpoint + model are unchanged). effort "" / "off"
+// clears it; "max" is accepted as Fugu's alias for "xhigh".
+func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "off" || effort == "none" || effort == "default" {
+		effort = ""
+	}
+	if effort == "max" { // Fugu alias
+		effort = "xhigh"
+	}
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		return "", err
+	}
+	pc := lc.Providers[lc.Provider]
+	if pc == nil {
+		return "", fmt.Errorf("no active provider (see /model)")
+	}
+	if !providerKinds[pc.Kind].SupportsReasoning {
+		return "", fmt.Errorf("provider %q (%s) doesn't support reasoning effort — only reasoning models like Sakana Fugu do", lc.Provider, pc.Kind)
+	}
+	if effort != "" {
+		valid := false
+		for _, v := range reasoningLevels {
+			if v == effort {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return "", fmt.Errorf("unknown reasoning effort %q (one of: %s, or 'off' to clear)", effort, strings.Join(reasoningLevels, ", "))
+		}
+	}
+	pc.Reasoning = effort
+	if err := lc.save(mc.cfgDir); err != nil {
+		return "", err
+	}
+	// Rebuild the generation profiles for the (unchanged) active provider and
+	// swap them onto the shared router — the same in-place mutation UseModel uses,
+	// so every agent re-routes with the new effort on its next turn.
+	c2 := &commonFlags{cfgDir: mc.cfgDir, dataDir: mc.dataDir, agent: mc.agentID, embedDim: defaultEmbedDim}
+	if err := c2.resolve(); err != nil {
+		return "", err
+	}
+	gen, factories, err := genProfiles(c2)
+	if err != nil {
+		return "", err
+	}
+	r := mc.ag.Router()
+	if r == nil {
+		return "", fmt.Errorf("no active router")
+	}
+	for kind, f := range factories {
+		r.RegisterBackend(kind, f)
+	}
+	if err := r.SetProfiles(gen); err != nil {
+		return "", err
+	}
+	if effort == "" {
+		return fmt.Sprintf("reasoning effort cleared for %s (applies next turn)", lc.Provider), nil
+	}
+	return fmt.Sprintf("reasoning effort → %s for %s (applies next turn, incl. sub-agents)", effort, lc.Provider), nil
+}
+
 // looksLikeURL is a lenient gate for "this string is plausibly an HTTP
 // URL the operator typed." Doesn't validate the full URL — just enough
 // to catch "I pasted my API key as the endpoint" mistakes. False

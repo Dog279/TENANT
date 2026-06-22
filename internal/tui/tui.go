@@ -738,6 +738,12 @@ type ModelControl interface {
 	// retunes it live (and persists) — /ceiling.
 	LoopCeiling() int
 	SetLoopCeiling(n int) (string, error)
+	// ReasoningSupported reports whether the ACTIVE provider accepts a reasoning
+	// -effort hint (Sakana Fugu); ReasoningEffort reports the current value
+	// (""=off); SetReasoningEffort retunes it live + persists — /reasoning.
+	ReasoningSupported() bool
+	ReasoningEffort() string
+	SetReasoningEffort(effort string) (status string, err error)
 	// Fallback returns the configured auto-fallback provider chain (TEN-246),
 	// in order. Empty = no fallback.
 	Fallback() []string
@@ -2433,6 +2439,7 @@ var helpSections = []helpSection{
 			{"/setup", "arrow-key setup menu — provider, model, endpoint, key, embeddings, gateway"},
 			{"/configure", "arrow-key key picker — set an API key for any service (providers, web search, Discord)"},
 			{"/ceiling [n]", "view / live-tune the loop ceiling (max tool calls per turn)"},
+			{"/reasoning [level]", "arrow-key picker / live-tune reasoning effort for reasoning models (Fugu: high/xhigh)"},
 		},
 	},
 	{
@@ -3627,6 +3634,14 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		}
 		m.appendFeed(cOK.Render("⟳ " + status))
 		m.sysChat(status)
+	case "/reasoning", "/effort":
+		if m.cfg.Models == nil {
+			m.sysChat("reasoning-effort tuning is not available in this session")
+			break
+		}
+		if cmd := m.handleReasoning(strings.TrimSpace(arg)); cmd != nil {
+			return cmd
+		}
 	case "/configure", "/config":
 		// TEN-65 follow-up: OpenClaw-style interactive configure.
 		// Usage:
@@ -5904,6 +5919,75 @@ func (m *model) renderPicker() string {
 		b.WriteString("\n" + cDim.Render("↑/↓ select · enter pick · esc cancel"))
 	}
 	return b.String()
+}
+
+// handleReasoning powers /reasoning (alias /effort): tune the active provider's
+// reasoning-effort hint live. Bare → arrow-key picker (off/high/xhigh), mirroring
+// /model pick; `/reasoning <level|off>` sets it directly. Gated to providers that
+// support it (Sakana Fugu) so the operator can't set an effort that would 400.
+func (m *model) handleReasoning(arg string) tea.Cmd {
+	ctl := m.cfg.Models
+	if !ctl.ReasoningSupported() {
+		m.sysChat("the active provider doesn't support reasoning effort — only reasoning models like Sakana Fugu (fugu / fugu-ultra) do.\nswitch with /model pick, then /reasoning.")
+		return nil
+	}
+	// Direct set: /reasoning <level|off>.
+	if arg != "" {
+		status, err := ctl.SetReasoningEffort(arg)
+		if err != nil {
+			m.sysChat("error: " + err.Error())
+			return nil
+		}
+		m.appendFeed(cOK.Render("⟳ " + status))
+		m.sysChat(status)
+		return nil
+	}
+	// Bare /reasoning → arrow-key picker.
+	items := []string{"off (default)", "high", "xhigh (max)"}
+	valueOf := func(label string) string {
+		switch label {
+		case "high":
+			return "high"
+		case "xhigh (max)":
+			return "xhigh"
+		default:
+			return "off"
+		}
+	}
+	mark := "off (default)"
+	switch ctl.ReasoningEffort() {
+	case "high":
+		mark = "high"
+	case "xhigh", "max":
+		mark = "xhigh (max)"
+	}
+	return startPickerCmd(&listPicker{
+		title:       "Reasoning effort — current: " + reasoningLabel(ctl.ReasoningEffort()),
+		hint:        "↑/↓ select · enter apply live · esc cancel",
+		items:       items,
+		currentMark: mark,
+		selected:    pickerIndexOf(items, mark),
+		onSelect: func(choice string) tea.Cmd {
+			return func() tea.Msg {
+				status, err := ctl.SetReasoningEffort(valueOf(choice))
+				if err != nil {
+					return sysChatMsg{text: "✗ " + err.Error()}
+				}
+				return sysChatMsg{text: status}
+			}
+		},
+		onCancel: func() tea.Cmd {
+			return func() tea.Msg { return sysChatMsg{text: "reasoning effort unchanged"} }
+		},
+	})
+}
+
+// reasoningLabel renders a reasoning-effort value for display ("" → "off").
+func reasoningLabel(effort string) string {
+	if strings.TrimSpace(effort) == "" {
+		return "off"
+	}
+	return effort
 }
 
 // startModelPicker drives the arrow-key model swap (TEN-173): pick a configured

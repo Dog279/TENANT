@@ -57,7 +57,16 @@ type Profile struct {
 	// ChatPath overrides the chat-completions URL suffix appended to
 	// Endpoint. Default "/v1/chat/completions". Z.ai's base already carries
 	// the version (…/paas/v4) so it needs "/chat/completions".
-	ChatPath         string `yaml:"chat_path,omitempty"`
+	ChatPath string `yaml:"chat_path,omitempty"`
+
+	// ReasoningEffort, when non-empty, is sent to reasoning-capable
+	// OpenAI-compatible providers as {"reasoning":{"effort":<value>}} on each
+	// chat request (Sakana Fugu: "high" | "xhigh"). Empty — the default for
+	// every other provider/model — omits the field entirely, so a strict
+	// OpenAI-compatible server never sees an unrecognized key. Only the vLLM
+	// (OpenAI-compatible) backend reads it; the value is operator-tuned live
+	// via /reasoning and persisted per-provider in config.json.
+	ReasoningEffort  string `yaml:"reasoning_effort,omitempty"`
 	MaxToolsPerCall  int    `yaml:"max_tools_per_call"`
 	MaxParallelTools int    `yaml:"max_parallel_tools"`
 	PlanLoopCeiling  int    `yaml:"plan_loop_ceiling"`

@@ -81,6 +81,27 @@ type chatRequest struct {
 	Stop        []string        `json:"stop,omitempty"`
 	Stream      bool            `json:"stream"`
 	GuidedJSON  json.RawMessage `json:"guided_json,omitempty"` // vLLM guided decoding
+	// Reasoning carries the reasoning-effort hint for providers that accept it
+	// (Sakana Fugu: {"reasoning":{"effort":"high"|"xhigh"}}). omitempty + a nil
+	// pointer keep it off the wire for every provider whose profile leaves
+	// ReasoningEffort empty, so a strict OpenAI-compatible server never sees an
+	// unrecognized field.
+	Reasoning *reasoningSpec `json:"reasoning,omitempty"`
+}
+
+// reasoningSpec is the nested {"effort":<level>} object Fugu's chat-completions
+// API reads (per console.sakana.ai/get-started). Built only by applyReasoning.
+type reasoningSpec struct {
+	Effort string `json:"effort"`
+}
+
+// applyReasoning attaches the profile's reasoning-effort hint to a request when
+// one is set. No-op (no wire field) when ReasoningEffort is empty — which is
+// every non-reasoning provider — so the field is sent only where it's understood.
+func (b *Backend) applyReasoning(body *chatRequest) {
+	if e := strings.TrimSpace(b.profile.ReasoningEffort); e != "" {
+		body.Reasoning = &reasoningSpec{Effort: e}
+	}
 }
 
 // wireMsg is the OpenAI chat-message wire shape. Our internal
@@ -203,6 +224,7 @@ func (b *Backend) Generate(ctx context.Context, req model.GenerateRequest) (*mod
 		}
 		body.ToolChoice = toolChoiceWire(req.ToolChoice)
 	}
+	b.applyReasoning(&body)
 
 	var resp chatResponse
 	if err := b.postJSON(ctx, b.chatPath(), body, &resp); err != nil {
