@@ -28,6 +28,13 @@ type TaskResult struct {
 	// exclusion discipline as Ungraded; SkipReason names the tool.
 	Skipped    bool   `json:"skipped,omitempty"`
 	SkipReason string `json:"skip_reason,omitempty"`
+	// Rollouts/RolloutsPassed carry pass^k when a task ran k>1 GRADED rollouts
+	// (TEN-286): pass^k = RolloutsPassed/Rollouts. Both are omitted for the
+	// default single-rollout case so existing baselines stay byte-identical.
+	// Skipped/Ungraded rollouts are excluded from the denominator, mirroring
+	// aggregate()'s pass/fail discipline.
+	Rollouts       int `json:"rollouts,omitempty"`
+	RolloutsPassed int `json:"rollouts_passed,omitempty"`
 }
 
 // ScoreFixture runs the deterministic gate against a fixture and
