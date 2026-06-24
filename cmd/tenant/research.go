@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +18,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/memory/compress"
+	"tenant/internal/memory/cosine"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/model"
@@ -1611,22 +1611,9 @@ func rerankAndDedupFindings(
 	return out
 }
 
-// cosineSimF32 — local copy of the formula used in distill/cosine.go,
-// inlined here to keep cmd/tenant from importing a memory-tier package
-// for one 13-line function. Returns 0 on length mismatch or zero norm.
+// cosineSimF32 is a thin alias over the shared internal/memory/cosine package
+// (the single source of truth); kept named so research.go + toolmux.go read
+// unchanged. Returns 0 on length mismatch or zero norm.
 func cosineSimF32(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		fa, fb := float64(a[i]), float64(b[i])
-		dot += fa * fb
-		na += fa * fa
-		nb += fb * fb
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	return cosine.Similarity(a, b)
 }
