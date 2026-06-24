@@ -200,6 +200,14 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	}
 	allowMgr.setPerms(imsgBroker)
 
+	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
+	// approves a gated action over iMessage. Read fresh here; empty ⇒ Phase-1
+	// (the broker's "ask" stays deny-all offsite — no out-of-band approval path).
+	var imsgOperator string
+	if c.lc != nil {
+		imsgOperator = c.lc.IMessage.Operator
+	}
+
 	ingest := func(t string) {
 		preview := strings.TrimSpace(t)
 		if r := []rune(preview); len(r) > 100 {
@@ -242,13 +250,28 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 				_ = nat.Close()
 				return nil, nil, fmt.Errorf("agent: %w", err)
 			}
+			// Phase-2 (TEN-267): when an operator handle is configured, build the
+			// text-confirm approver over THIS native send path and make it the
+			// broker's "ask" backend — an "ask"-mode category now texts the operator
+			// a nonce handshake instead of failing closed offsite. No operator ⇒
+			// approver is nil ⇒ Phase-1 deny-all is unchanged.
+			approver := newIMessageApprover(nat, imsgOperator, d.log)
+			if approver != nil {
+				imsgBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+					if approver.Confirm(cctx, req.Action, req.Detail) {
+						return tui.ApproveOnce
+					}
+					return tui.DenyOnce
+				}
+			}
 			responder := &imessageResponder{
 				poller: watcher, sender: nat, runner: ag,
 				confirm: func(cctx context.Context, action, detail string) bool {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: d.log, degraded: d.degraded.Degraded,
-				ingest: ingest,
+				ingest:   ingest,
+				approver: approver,
 			}
 			return responder, func() { _ = nat.Close() }, nil
 		},

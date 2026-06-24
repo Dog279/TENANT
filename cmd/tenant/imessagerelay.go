@@ -65,6 +65,11 @@ type imessageResponder struct {
 	log      *slog.Logger
 	degraded func() bool       // optional: true ⇒ model on echo fallback, refuse turns
 	ingest   func(text string) // optional: surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
+	// approver is the Phase-2 text-confirm handshake (TEN-267). nil ⇒ Phase-1
+	// (gated tools stay deny-all via confirm). When set, an inbound approval reply
+	// ("Y <nonce>" from the operator) is consumed here and NEVER drives a turn, and
+	// each turn's prompt-chat is pinned so a gated tool texts the right chat.
+	approver *imessageApprover
 }
 
 // denyAllConfirm is the Phase-1 gate: every gated tool is refused offsite until
@@ -114,6 +119,14 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if text == "" || strings.TrimSpace(m.ChatGUID) == "" {
 		return // nothing actionable (attachment-only, empty, or unknown chat)
 	}
+	// Phase-2 (TEN-267): an approval reply ("Y <nonce>" from the OPERATOR handle)
+	// resolves a pending gated action and is CONSUMED here — it must never drive a
+	// new agent turn. OnReply enforces the operator-handle gate itself; it echoes
+	// the outcome to the operator, so we just stop. A non-operator reply, or a
+	// non-approval message, returns false and falls through to the normal path.
+	if r.approver != nil && r.approver.OnReply(text, m.From) {
+		return
+	}
 	// Refuse rather than answer with a stub while the model is degraded — the
 	// remote texter never sees the console banner (mirrors the Discord relay).
 	if r.degraded != nil && r.degraded() {
@@ -125,7 +138,14 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if r.ingest != nil {
 		r.ingest(text)
 	}
-	// Phase 1: deny-all offsite-confirm ⇒ gated/dangerous tools are refused.
+	// Phase-2 (TEN-267): pin THIS turn's chat as the approval-prompt target, so a
+	// gated tool fired during the turn texts the prompt to the chat that drove it.
+	// (Phase-1: approver is nil and gated tools stay deny-all via confirm.)
+	if r.approver != nil {
+		r.approver.setChat(m.ChatGUID)
+	}
+	// The turn ctx carries the offsite-confirm: Phase-1 deny-all, or (Phase-2) the
+	// per-category broker whose "ask" texts the operator the nonce handshake.
 	turnCtx := withOffsiteConfirm(ctx, r.confirm)
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{UserQuery: text})
 	if err != nil {
