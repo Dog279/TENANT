@@ -242,13 +242,17 @@ func cmdConsolidate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdMemory handles `memory search <query>` and `memory reembed`.
+// cmdMemory handles `memory search <query>`, `memory reembed`, and
+// `memory import <file.md>`.
 func cmdMemory(ctx context.Context, args []string) error {
 	if len(args) >= 1 && args[0] == "reembed" {
 		return cmdMemoryReembed(ctx, args[1:])
 	}
+	if len(args) >= 1 && args[0] == "import" {
+		return cmdMemoryImport(ctx, args[1:])
+	}
 	if len(args) < 1 || args[0] != "search" {
-		return fmt.Errorf("usage: tenant memory search <query> [flags]  |  tenant memory reembed")
+		return fmt.Errorf("usage: tenant memory search <query> [flags]  |  tenant memory reembed  |  tenant memory import <file.md> [--protected] [--importance N] [--dry-run]")
 	}
 	// Go's flag package stops at the first non-flag arg, so a natural
 	// `memory search the query here --data X` would never parse --data.
