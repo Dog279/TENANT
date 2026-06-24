@@ -190,16 +190,32 @@ func (d *Dispatcher) send(ctx context.Context, args json.RawMessage) (string, bo
 		return m, true, nil
 	}
 	detail := fmt.Sprintf("message to chat %s: %q (%d chars)", a.ChatGUID, a.Text, len([]rune(a.Text)))
+	// Gate ONCE for the whole message, before any chunking — the operator
+	// approves the full text they see, not per-bubble fragments.
 	if err := d.policy.gate(ctx, classSend, detail); err != nil {
 		return err.Error(), true, nil
 	}
-	guid, err := d.svc.SendText(ctx, a.ChatGUID, a.Text)
-	if err != nil {
-		return "imessage send failed: " + err.Error(), true, nil
+	// Long replies degrade on iMessage; split on paragraph boundaries and
+	// send each bubble in order. Short messages chunk to a single bubble,
+	// so behavior is unchanged in the common case.
+	chunks := chunkParagraphs(a.Text, maxBubbleSize)
+	var guid string
+	for _, ch := range chunks {
+		g, err := d.svc.SendText(ctx, a.ChatGUID, ch)
+		if err != nil {
+			return "imessage send failed: " + err.Error(), true, nil
+		}
+		guid = g
 	}
 	if guid == "" {
 		// The native (AppleScript) transport returns no message guid.
+		if len(chunks) > 1 {
+			return fmt.Sprintf("message sent in %d parts", len(chunks)), false, nil
+		}
 		return "message sent", false, nil
+	}
+	if len(chunks) > 1 {
+		return fmt.Sprintf("sent message %s (%d parts)", guid, len(chunks)), false, nil
 	}
 	return "sent message " + guid, false, nil
 }
@@ -213,16 +229,31 @@ func (d *Dispatcher) newChat(ctx context.Context, args json.RawMessage) (string,
 		return m, true, nil
 	}
 	detail := fmt.Sprintf("new chat to %s: %q (%d chars)", a.Address, a.Text, len([]rune(a.Text)))
+	// Gate ONCE for the whole message, before any chunking.
 	if err := d.policy.gate(ctx, classSend, detail); err != nil {
 		return err.Error(), true, nil
 	}
-	guid, err := d.svc.NewChat(ctx, a.Address, a.Text)
+	// CONSTRAINT: NewChat opens a conversation, but the transport returns
+	// a *message* guid (BlueBubbles) or nothing (native AppleScript) — not
+	// an addressable *chat* guid. SendText needs a chat guid, so follow-up
+	// chunks cannot be routed to the just-created conversation. We
+	// therefore send the FIRST chunk to open the chat and surface that the
+	// remainder was not delivered (rather than misdeliver to a message
+	// guid or silently drop). The model can follow up with imessage_send
+	// once the chat is listable via imessage_list_chats.
+	chunks := chunkParagraphs(a.Text, maxBubbleSize)
+	guid, err := d.svc.NewChat(ctx, a.Address, chunks[0])
 	if err != nil {
 		return "imessage new_chat failed: " + err.Error(), true, nil
 	}
+	extra := ""
+	if len(chunks) > 1 {
+		extra = fmt.Sprintf(" — note: only the first of %d parts was sent; "+
+			"use imessage_send to the new chat for the rest", len(chunks))
+	}
 	if guid == "" {
 		// The native (AppleScript) transport returns no message guid.
-		return fmt.Sprintf("started chat with %s", a.Address), false, nil
+		return fmt.Sprintf("started chat with %s%s", a.Address, extra), false, nil
 	}
-	return fmt.Sprintf("started chat with %s (message %s)", a.Address, guid), false, nil
+	return fmt.Sprintf("started chat with %s (message %s)%s", a.Address, guid, extra), false, nil
 }
