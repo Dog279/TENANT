@@ -2,33 +2,24 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/cron"
 	"tenant/internal/dashboard"
-	"tenant/internal/improve"
 	"tenant/internal/memory/compress"
-	"tenant/internal/memory/distill"
-	"tenant/internal/memory/skills"
 	"tenant/internal/memory/sme"
-	"tenant/internal/memory/soul"
-	usagestore "tenant/internal/memory/usage"
-	"tenant/internal/memory/userprofile"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/orchestra"
 	cronplugin "tenant/internal/plugins/cron"
-	"tenant/internal/plugins/web"
 )
 
 // cmdServe runs Tenant as a headless 24/7 hub (TEN-194): the SAME long-term
@@ -38,14 +29,13 @@ import (
 // is the live control + chat + approval surface; an interactive terminal attach
 // is a follow-up (TEN-194b).
 //
-// This assembly intentionally MIRRORS cmdTUI's substrate wiring
-// (commands.go) minus the bubbletea seam and the terminal-only adapters. The
-// pure DRY extraction of a shared buildHub() both paths call is TEN-194a; until
-// then keep the agent.Config, the degraded-suppression decisions, and the
-// improve-scheduler registration here in sync with cmdTUI. iMessage responder
-// and the tailscale re-assert are TUI-resident today and are picked up by the
-// TEN-194a extraction; the Discord relay (opt-in) covers the away-from-desk
-// drive case in v1.
+// The substrate (router/degraded, stores, broker, mux, skills, profile,
+// embedder, fallback chain, distillation, live soul) is now shared with cmdTUI
+// via buildHub (hub.go, TEN-247) — the two paths can no longer drift. cmdServe
+// diverges only below buildHub: no session-resume seed, the event broker +
+// dashboard control surface, and the headless approval drain. iMessage
+// responder and the tailscale re-assert remain TUI-resident; the Discord relay
+// (opt-in) covers the away-from-desk drive case in v1.
 func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	c := bindCommon(fs)
@@ -114,133 +104,26 @@ func cmdServe(ctx context.Context, args []string) error {
 		pushSys(ln)
 	}
 
-	// Resilient launch: degrade to echo rather than abort if the model can't be
-	// built, so the hub still comes up and the operator can recover via the
-	// dashboard's model page. `degraded` suppresses autonomous work on echo.
-	router, degraded, degradedBanner, err := buildRouterResilient(c, log)
+	// Substrate shared with cmdTUI (TEN-247): see buildHub. The daemon diverges
+	// only below — no session-resume seed, plus the event broker + dashboard.
+	h, hubCleanup, err := buildHub(ctx, c, pf, pushSys, log)
 	if err != nil {
 		return err
 	}
-	if degraded.Degraded() {
-		pushSys(degradedBanner)
-		c.backend = "echo"
-		pushSys("echo: responses are deterministic stubs — not a real model.")
-	}
-
-	st, closeStores, err := openStores(c)
-	if err != nil {
-		return err
-	}
-	defer closeStores()
-
-	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
-	if uerr != nil {
-		log.Warn("usage ledger unavailable", "err", uerr)
-	} else {
-		defer func() { _ = usageStore.Close() }()
-	}
-
-	// Approval broker: the single decision point for dangerous actions. Seeded
-	// from --allow-* flags, overridden by persisted per-category modes. In serve
-	// there is no TUI to prompt, so a headless drain (below) routes "ask"-mode
-	// requests to the dashboard.
-	broker := newApprovalBroker(log)
-	broker.seedFromFlags(pf)
-	stg, serr := loadSettings(c.cfgDir, c.agent)
-	if serr != nil {
-		pushSys("settings: " + serr.Error() + " — using defaults")
-	}
-	broker.loadModes(stg.Permissions)
-	var stgMu sync.Mutex
-	saveSettings := func() {
-		stgMu.Lock()
-		defer stgMu.Unlock()
-		if err := stg.save(c.cfgDir, c.agent); err != nil {
-			log.Warn("settings save failed", "err", err)
-		}
-	}
-	broker.persist = func(modes map[string]string) {
-		stgMu.Lock()
-		stg.Permissions = modes
-		stgMu.Unlock()
-		saveSettings()
-	}
-
-	// Web is per-agent (own browser each), kept out of the shared mux.
-	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
-	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
-	pf.web = false
-
-	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, originConfirm(broker.Confirm), log)
-	if err != nil {
-		return err
-	}
-	defer cleanupMux()
-
-	skillStore, serr := skills.Open(filepath.Join(c.dataDir, "skills.db"))
-	if serr != nil {
-		return serr
-	}
-	defer skillStore.Close()
-
-	prof, _ := userprofile.Load(c.dataDir, c.agent)
-	profSynth := &userprofile.Synthesizer{Router: router, Semantic: st.semantic, AgentID: c.agent}
-	var profMu sync.Mutex
-	refreshProfile := func(ctx context.Context) (bool, error) {
-		profMu.Lock()
-		defer profMu.Unlock()
-		md, changed, err := profSynth.Run(ctx, prof)
-		if err != nil || !changed {
-			return changed, err
-		}
-		prof.Update(md)
-		return true, prof.Save(c.dataDir)
-	}
-	noteProfile := func(fact string) {
-		profMu.Lock()
-		defer profMu.Unlock()
-		prof.AppendRemembered(fact)
-		if err := prof.Save(c.dataDir); err != nil {
-			log.Warn("profile note save failed", "err", err)
-		}
-	}
-
-	skEmb, embProfile, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
-	embedderID := string(embProfile.ID)
-	mux.SetEmbedder(embedderID, skEmb)
-
-	// Auto-fallback (TEN-246): wire the configured chain + surface failovers.
-	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
-	router.SetFailoverObserver(func(ev model.FailoverEvent) {
-		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
-		to := fallbackLabelToProvider(ev.To, c.lc.Provider)
-		msg := fmt.Sprintf("⚠ model fallback: %s %s → using %s", from, ev.Reason, to)
-		if errors.Is(ev.Err, model.ErrInsufficientBalance) {
-			msg += " (recharge to restore)"
-		}
-		pushSys(msg)
-	})
-
-	for _, note := range mux.restore(stg.Tools) {
-		pushSys("settings: " + note)
-	}
-	mux.setOnChange(func(snap map[string]bool) {
-		stgMu.Lock()
-		stg.Tools = snap
-		stgMu.Unlock()
-		saveSettings()
-	})
-
-	meta, merr := improve.OpenMeta(filepath.Join(c.dataDir, "tenant_meta.db"))
-	if merr != nil {
-		return merr
-	}
-	defer meta.Close()
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log}
-	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
-
-	soulLive := soul.NewLive(st.soul)
+	defer hubCleanup()
+	router, degraded := h.router, h.degraded
+	st := h.stores
+	broker := h.broker
+	stg, stgMu, saveSettings := h.stg, h.stgMu, h.saveSettings
+	mux, wikiIx := h.mux, h.wikiIx
+	skillStore := h.skillStore
+	prof := h.prof
+	refreshProfile, noteProfile := h.refreshProfile, h.noteProfile
+	skEmb, embedderID := h.skEmb, h.embedderID
+	distiller, distillJob := h.distiller, h.distillJob
+	meta := h.meta
+	soulLive := h.soulLive
+	teamWeb, webCfg, webPolicy := h.teamWeb, h.webCfg, h.webPolicy
 	mainWorking := working.New() // no session-resume seed: a daemon has no "last session"
 	memCtl := memControl{
 		episodic: st.episodic, semantic: st.semantic, skills: skillStore,
