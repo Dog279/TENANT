@@ -79,23 +79,37 @@ func cmdChat(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := installRouteBigRole(router, c.cfgDir, c.lc, c.planCeiling, log); err != nil {
+		return err
+	}
+	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
 	st, closeStores, err := openStores(c)
 	if err != nil {
 		return err
 	}
 	defer closeStores()
+	routeRT, err := newRouteRuntime(c.lc, c.cfgDir, c.dataDir, router, log)
+	if err != nil {
+		return err
+	}
+	if err := routeRT.BindConfiguredForce(); err != nil {
+		return err
+	}
 
 	ag, err := agent.New(agent.Config{
-		AgentID:    c.agent,
-		Router:     router,
-		Soul:       st.soul,
-		Working:    working.New(),
-		Archive:    st.archive,
-		Episodic:   st.episodic,
-		Semantic:   st.semantic,
-		Tools:      agent.NewStaticRegistry(),
-		Dispatcher: noopDispatcher{},
-		Logger:     log,
+		AgentID:     c.agent,
+		Router:      router,
+		Soul:        st.soul,
+		Working:     working.New(),
+		Archive:     st.archive,
+		Episodic:    st.episodic,
+		Semantic:    st.semantic,
+		Tools:       agent.NewStaticRegistry(),
+		Dispatcher:  noopDispatcher{},
+		Logger:      log,
+		RouteHook:   routeRT.Hook(),
+		RouteActive: routeRT.Active,
+		RouteSticky: routeRT.Sticky,
 	})
 	if err != nil {
 		return err
@@ -740,7 +754,6 @@ func cmdWeb(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStores()
-
 	sess, err := web.NewSession(web.Config{Headless: !*show, BraveKey: braveKey(c.cfgDir)})
 	if err != nil {
 		return fmt.Errorf("start browser: %w (is Chrome installed?)", err)
@@ -1634,6 +1647,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStores()
+	routeRT, err := newRouteRuntime(c.lc, c.cfgDir, c.dataDir, router, log)
+	if err != nil {
+		return err
+	}
 
 	// Long-term token-usage ledger (TEN-167): one row per MAIN-agent LLM
 	// call, for cost audit. Non-fatal — if it can't open, the TUI still
@@ -1749,7 +1766,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// SHARED router + surface each failover to the feed. Off unless config.json
 	// `fallbacks` is set. The observer can fire from any goroutine (a background
 	// cron/relay turn), so it pushes through the thread-safe non-blocking feed.
+	if err := installRouteBigRole(router, c.cfgDir, c.lc, c.planCeiling, log); err != nil {
+		return err
+	}
 	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
+	if err := routeRT.BindConfiguredForce(); err != nil {
+		return err
+	}
 	router.SetFailoverObserver(func(ev model.FailoverEvent) {
 		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
 		to := fallbackLabelToProvider(ev.To, c.lc.Provider)
@@ -1881,6 +1904,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
+		SpawnRole:     routeRT.SpawnRole, // TEN-292: rule-routed unpinned spawns
 		CfgDir:        c.cfgDir,
 		EmbedProfile:  embProf,
 		LocalRestore:  stg.Tools, // same map the shared mux restored from
@@ -2042,9 +2066,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:   log,
-		Stream:   true,
-		Observer: emit,
+		Logger:      log,
+		Stream:      true,
+		Observer:    emit,
+		RouteHook:   routeRT.Hook(),
+		RouteActive: routeRT.Active,
+		RouteSticky: routeRT.Sticky,
 		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
 		// Off unless `lazy_tools` is set in config.json — additive.
 		LazyToolLoad: c.lc.LazyTools,
@@ -2105,6 +2132,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 		fullDisp:    mainTools,
 		sysPrompt:   sysPrompt,
 		log:         log,
+		routeHook:   routeRT.Hook(),
+		routeActive: routeRT.Active,
+		routeSticky: routeRT.Sticky,
 		cfgDir:      c.cfgDir,
 		dataDir:     c.dataDir,
 		allowExec:   cronExecGate,
@@ -2295,6 +2325,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 			compactor: compressor, userProfile: prof,
 			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 			sysPrompt: sysPrompt, log: log, gateConfirm: discordBroker.Confirm,
+			routeHook:   routeRT.Hook(),
+			routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 		}); derr != nil {
 			pushSys("discord relay: " + derr.Error())
 		} else {
@@ -2325,6 +2357,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 				sysPrompt: sysPrompt, log: log, gateConfirm: discordBroker.Confirm,
+				routeHook:   routeRT.Hook(),
+				routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 			})
 		},
 	}
@@ -2423,7 +2457,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
-				sysPrompt: sysPrompt, log: log,
+				sysPrompt: sysPrompt, log: log, routeHook: routeRT.Hook(),
+				routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -2757,6 +2792,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Skills:   skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir},
 		Feedback: feedbackControl{es: st.episodic, agentID: c.agent},
 		Eval:     evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir},
+		Route:    routeRT,
 		// SkillSeeds installs starter bundles (`/skills seed gstack`). Routes
 		// each seed through the same skillControl.AddSkill path so embedding
 		// + persistence stays consistent with manually-added skills.

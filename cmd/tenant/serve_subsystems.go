@@ -38,19 +38,22 @@ func fsVisited(fs *flag.FlagSet, name string) bool {
 // serveRelayDeps bundles what the Discord relay needs. Mirrors cmdTUI's relay
 // wiring (commands.go); kept here so the serve assembly stays readable.
 type serveRelayDeps struct {
-	c          *commonFlags
-	router     *model.Router
-	soulLive   *soul.Live
-	stores     *stores
-	skills     *skills.Store
-	compressor *compress.Compressor
-	profile    *userprofile.Profile
-	tools      composite
-	sysPrompt  string
-	emit       func(agent.Event)
-	notify     func(string)
-	degraded   *degradedState
-	log        *slog.Logger
+	c           *commonFlags
+	router      *model.Router
+	soulLive    *soul.Live
+	stores      *stores
+	skills      *skills.Store
+	compressor  *compress.Compressor
+	profile     *userprofile.Profile
+	tools       composite
+	sysPrompt   string
+	emit        func(agent.Event)
+	notify      func(string)
+	degraded    *degradedState
+	log         *slog.Logger
+	routeHook   agent.RouteHook
+	routeActive agent.RouteActive
+	routeSticky agent.RouteSticky
 }
 
 // buildServeRelay constructs the Discord relay manager (always non-nil so the
@@ -88,6 +91,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		skills: ret, compactor: d.compressor, userProfile: d.profile,
 		fullTools: d.tools, fullDisp: d.tools,
 		sysPrompt: d.sysPrompt, log: d.log, gateConfirm: discordBroker.Confirm,
+		routeHook: d.routeHook, routeActive: d.routeActive, routeSticky: d.routeSticky,
 	}
 
 	var (
@@ -147,21 +151,24 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 // cmdTUI's iMessage block (commands.go ~2311-2407) so `tenant serve` answers
 // inbound texts exactly like the TUI does.
 type serveIMessageDeps struct {
-	c          *commonFlags
-	router     *model.Router
-	soulLive   *soul.Live
-	stores     *stores
-	skills     *skills.Store
-	compressor *compress.Compressor
-	profile    *userprofile.Profile
-	tools      composite
-	sysPrompt  string
-	meta       *improve.Meta
-	broker     *approvalBroker
-	degraded   *degradedState
-	emit       func(agent.Event)
-	notify     func(string)
-	log        *slog.Logger
+	c           *commonFlags
+	router      *model.Router
+	soulLive    *soul.Live
+	stores      *stores
+	skills      *skills.Store
+	compressor  *compress.Compressor
+	profile     *userprofile.Profile
+	tools       composite
+	sysPrompt   string
+	meta        *improve.Meta
+	broker      *approvalBroker
+	degraded    *degradedState
+	emit        func(agent.Event)
+	notify      func(string)
+	log         *slog.Logger
+	routeHook   agent.RouteHook
+	routeActive agent.RouteActive
+	routeSticky agent.RouteSticky
 }
 
 // buildServeIMessage wires the iMessage drive-allowlist + per-category broker +
@@ -236,7 +243,8 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 				skills:    skillRetriever{st: d.skills, agentID: c.agent},
 				compactor: d.compressor, userProfile: d.profile,
 				fullTools: d.tools, fullDisp: d.tools,
-				sysPrompt: d.sysPrompt, log: d.log,
+				sysPrompt: d.sysPrompt, log: d.log, routeHook: d.routeHook,
+				routeActive: d.routeActive, routeSticky: d.routeSticky,
 			})
 			if err != nil {
 				_ = nat.Close()

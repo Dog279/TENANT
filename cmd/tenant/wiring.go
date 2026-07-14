@@ -120,7 +120,9 @@ func (c *commonFlags) resolve() error {
 	// Merge persisted config (explicit flags win), then apply smart
 	// defaults, then auto-detect the vLLM model if still unset. This is
 	// what lets everyday launch be `tenant tui` with no flags.
-	c.applyLaunchConfig()
+	if err := c.applyLaunchConfig(); err != nil {
+		return err
+	}
 	c.applyDefaults()
 	if c.backend == "vllm" && c.vllmEndpoint != "" && c.vllmModel == "" {
 		c.autodetectModel()
@@ -142,9 +144,13 @@ func (c *commonFlags) flagSet() map[string]bool {
 // applyLaunchConfig loads config.json (v2 providers model) and fills any flag
 // the operator did not set explicitly from the active provider + embeddings
 // provider. Precedence: explicit flag > config.json > default.
-func (c *commonFlags) applyLaunchConfig() {
+func (c *commonFlags) applyLaunchConfig() error {
 	lc, err := loadLaunchConfig(c.cfgDir)
 	if err != nil {
+		var routeErr *routeConfigError
+		if errors.As(err, &routeErr) {
+			return err
+		}
 		// Corrupt file: warn on stderr, keep flag defaults rather than
 		// silently honoring a broken config.
 		fmt.Fprintf(os.Stderr, "warning: %v (ignoring config.json)\n", err)
@@ -196,6 +202,7 @@ func (c *commonFlags) applyLaunchConfig() {
 	if !set["plan-loop-ceiling"] && lc.PlanLoopCeiling != 0 {
 		c.planCeiling = lc.PlanLoopCeiling
 	}
+	return nil
 }
 
 // applyDefaults fills the zero-config defaults that make a model backend
@@ -339,6 +346,7 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 			endpoint:     c.vllmEndpoint,
 			model:        c.vllmModel,
 			toolFmt:      c.vllmToolFmt,
+			providerKind: c.genKind,
 			apiKey:       c.genAPIKey,
 			chatPath:     pk.ChatPath,
 			reasoning:    c.reasoning,
@@ -364,7 +372,7 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 			return nil, fmt.Errorf("Anthropic provider needs a model — run `tenant setup` (e.g. claude-sonnet-4-20250514)")
 		}
 		reg := model.NewEmptyRegistry()
-		for _, p := range anthropicGenProfiles(c.vllmEndpoint, c.vllmModel, c.genAPIKey, c.planCeiling) {
+		for _, p := range anthropicGenProfiles(c.vllmEndpoint, c.vllmModel, c.genAPIKey, c.genKind, c.planCeiling) {
 			if err := reg.Add(p); err != nil {
 				return nil, fmt.Errorf("register anthropic profile %s: %w", p.ID, err)
 			}
@@ -519,7 +527,11 @@ func attachEmbedder(reg *model.Registry, c *commonFlags) (usesEcho bool, err err
 		cancel()
 	}
 	if embedReachable {
-		if err := reg.Add(vllmEmbedderProfile(c.embedEndpoint, c.embedModel, c.embedDim, c.embedAPIKey)); err != nil {
+		embedKind := "vllm"
+		if c.lc != nil && c.lc.Embed != nil && c.lc.Embed.Kind != "" {
+			embedKind = c.lc.Embed.Kind
+		}
+		if err := reg.Add(vllmEmbedderProfile(c.embedEndpoint, c.embedModel, c.embedDim, c.embedAPIKey, embedKind)); err != nil {
 			return false, fmt.Errorf("register vllm embedder: %w", err)
 		}
 		return false, nil
@@ -570,9 +582,12 @@ func memoryDownError(c *commonFlags) error {
 // Anthropic Messages API. Claude models carry a 200K context window; the
 // operational budget is ~80% of that. ToolFormat is irrelevant (Anthropic
 // returns structured tool_use blocks, not text the toolfmt layer parses).
-func anthropicGenProfiles(endpoint, modelID, apiKey string, planCeiling int) []model.Profile {
+func anthropicGenProfiles(endpoint, modelID, apiKey, providerKind string, planCeiling int) []model.Profile {
 	if endpoint == "" {
 		endpoint = "https://api.anthropic.com"
+	}
+	if providerKind == "" {
+		providerKind = "anthropic"
 	}
 	ceiling := planCeiling
 	if ceiling <= 0 {
@@ -583,6 +598,7 @@ func anthropicGenProfiles(endpoint, modelID, apiKey string, planCeiling int) []m
 			ID:                       id,
 			Role:                     role,
 			Backend:                  "anthropic",
+			ProviderKind:             providerKind,
 			Endpoint:                 endpoint,
 			Model:                    modelID,
 			APIKey:                   apiKey,
@@ -621,6 +637,7 @@ func anthropicJudgeProfile(endpoint, modelID, apiKey string) model.Profile {
 		ID:                       "anthropic-judge",
 		Role:                     model.RoleJudge,
 		Backend:                  "anthropic",
+		ProviderKind:             "anthropic",
 		Endpoint:                 endpoint,
 		Model:                    modelID,
 		APIKey:                   apiKey,
@@ -717,7 +734,8 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 		pk := providerKinds[c.genKind]
 		gen := vllmGenProfiles(genProfileOpts{
 			endpoint: c.vllmEndpoint, model: c.vllmModel, toolFmt: c.vllmToolFmt,
-			apiKey: c.genAPIKey, chatPath: pk.ChatPath, reasoning: c.reasoning,
+			providerKind: c.genKind,
+			apiKey:       c.genAPIKey, chatPath: pk.ChatPath, reasoning: c.reasoning,
 			estimateOnly: pk.EstimateTokens,
 			forceHTTP1:   pk.ForceHTTP1,
 			contextLen:   c.contextLen, planCeiling: c.planCeiling,
@@ -730,7 +748,7 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 		if c.vllmModel == "" {
 			return nil, nil, fmt.Errorf("Anthropic provider needs a model")
 		}
-		return anthropicGenProfiles(c.vllmEndpoint, c.vllmModel, c.genAPIKey, c.planCeiling),
+		return anthropicGenProfiles(c.vllmEndpoint, c.vllmModel, c.genAPIKey, c.genKind, c.planCeiling),
 			map[string]model.BackendFactory{"anthropic": anthropic.New}, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown backend %q", c.backend)
@@ -741,6 +759,7 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 // positional arg count once hosted providers added api keys + path overrides.
 type genProfileOpts struct {
 	endpoint, model, toolFmt, apiKey, chatPath string
+	providerKind                               string // providerKinds key; distinguishes hosted APIs from self-hosted vLLM
 	reasoning                                  string // reasoning.effort hint ("" = off; reasoning kinds only)
 	estimateOnly                               bool
 	forceHTTP1                                 bool // disable HTTP/2 (GOAWAY-prone hosted LBs, TEN-218)
@@ -754,6 +773,9 @@ type genProfileOpts struct {
 func vllmGenProfiles(o genProfileOpts) []model.Profile {
 	if o.toolFmt == "" {
 		o.toolFmt = "gemma"
+	}
+	if o.providerKind == "" {
+		o.providerKind = "vllm"
 	}
 	// Context window: the server-reported max_model_len when known, else the
 	// 128K default. Operational budget is ~80% of it.
@@ -776,6 +798,7 @@ func vllmGenProfiles(o genProfileOpts) []model.Profile {
 			ID:                       id,
 			Role:                     role,
 			Backend:                  "vllm",
+			ProviderKind:             o.providerKind,
 			Endpoint:                 o.endpoint,
 			Model:                    o.model,
 			APIKey:                   o.apiKey,
@@ -815,14 +838,18 @@ func vllmGenProfiles(o genProfileOpts) []model.Profile {
 // /v1/embeddings endpoint (real vLLM embed server OR Ollama — identical
 // wire shape). The vllm backend's Embed() is all that's exercised for
 // this role; /tokenize is never called on an embedder.
-func vllmEmbedderProfile(endpoint, modelID string, dim int, apiKey string) model.Profile {
+func vllmEmbedderProfile(endpoint, modelID string, dim int, apiKey, providerKind string) model.Profile {
 	if dim <= 0 {
 		dim = 768
+	}
+	if providerKind == "" {
+		providerKind = "vllm"
 	}
 	return model.Profile{
 		ID:                       "vllm-embedder",
 		Role:                     model.RoleEmbedder,
 		Backend:                  "vllm",
+		ProviderKind:             providerKind,
 		Endpoint:                 endpoint,
 		Model:                    modelID,
 		APIKey:                   apiKey,
@@ -842,6 +869,7 @@ func echoProfiles() []model.Profile {
 			ID:                       id,
 			Role:                     role,
 			Backend:                  "echo",
+			ProviderKind:             "echo",
 			Endpoint:                 "echo://local",
 			Model:                    "echo",
 			ContextLength:            32000,

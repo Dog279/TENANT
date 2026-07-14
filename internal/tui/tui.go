@@ -108,6 +108,9 @@ type Config struct {
 	// Models, if set, powers /model: list configured model backends, switch
 	// the primary on the fly, and add a new backend mid-session.
 	Models ModelControl
+	// Route, if set, powers /route: probe the shadow classifier and explain
+	// recent routing decisions. Status probes run off the UI goroutine.
+	Route RouteControl
 	// Research, if set, powers /research: run a deep-research pass (plan →
 	// parallel researchers → cited report). Progress streams to the feed; the
 	// report lands in the chat pane.
@@ -750,6 +753,16 @@ type ModelControl interface {
 	// SetFallback persists + live-installs the ordered fallback provider chain
 	// (each name must be a configured provider). Empty clears it.
 	SetFallback(names []string) (status string, err error)
+}
+
+// RouteControl powers /route. Status and Stats may perform local I/O; the TUI
+// always calls them from a tea.Cmd, never the UI goroutine.
+type RouteControl interface {
+	Status(ctx context.Context) string
+	Why(n int) string
+	Stats() string
+	SetMode(mode string) (string, error)
+	Force(profileID string) (string, error)
 }
 
 // ResearchControl powers /research: a long-running deep-research pass. The
@@ -1824,6 +1837,11 @@ func (m *model) submit() tea.Cmd {
 			return researchDoneMsg{report: report, err: err}
 		}
 	}
+	q, routeOverride := agent.ParseRoutePrefix(q)
+	if strings.TrimSpace(q) == "" {
+		m.sysChat("!big and !local must be followed by a message")
+		return nil
+	}
 	m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
 	m.busy = true
 	m.reqStart = time.Now()
@@ -1835,7 +1853,9 @@ func (m *model) submit() tea.Cmd {
 	ag := m.cfg.Agent
 	turnCtx, cancel := context.WithCancel(m.ctx)
 	m.turnCancel = cancel
-	req := agent.TurnRequest{UserQuery: q}
+	req := agent.TurnRequest{
+		UserQuery: q, RouteSurface: agent.RouteSurfaceTUI, RouteOverride: routeOverride,
+	}
 	// While a /goal loop is active, decouple this turn's iteration budget from
 	// the global loop ceiling so a long autonomous run can iterate freely
 	// without raising the ceiling every normal turn shares (TEN-216).
@@ -2396,6 +2416,61 @@ func (m *model) handleEval(arg string) {
 	}
 }
 
+// handleRoute powers /route. Probe/stat reads run off the UI goroutine; config
+// mutations are short atomic writes and apply to the next turn.
+func (m *model) handleRoute(arg string) tea.Cmd {
+	if m.cfg.Route == nil {
+		m.sysChat("prompt routing not available in this session")
+		return nil
+	}
+	f := strings.Fields(arg)
+	sub := ""
+	if len(f) > 0 {
+		sub = strings.ToLower(f[0])
+	}
+	switch {
+	case len(f) == 0 || (sub == "status" && len(f) == 1):
+		ctl, ctx := m.cfg.Route, m.ctx
+		return func() tea.Msg {
+			return sysChatMsg{text: ctl.Status(ctx)}
+		}
+	case sub == "stats" && len(f) == 1:
+		ctl := m.cfg.Route
+		return func() tea.Msg { return sysChatMsg{text: ctl.Stats()} }
+	case (sub == "on" || sub == "off" || sub == "shadow" || sub == "assisted" || sub == "everywhere") && len(f) == 1:
+		status, err := m.cfg.Route.SetMode(sub)
+		if err != nil {
+			m.sysChat("route: " + err.Error())
+		} else {
+			m.sysChat(status)
+		}
+		return nil
+	case sub == "force" && len(f) == 2:
+		status, err := m.cfg.Route.Force(f[1])
+		if err != nil {
+			m.sysChat("route: " + err.Error())
+		} else {
+			m.sysChat(status)
+		}
+		return nil
+	case sub == "why" && len(f) <= 2:
+		n := 1
+		if len(f) == 2 {
+			v, err := strconv.Atoi(f[1])
+			if err != nil || v <= 0 {
+				m.sysChat("usage: /route <status|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
+				return nil
+			}
+			n = v
+		}
+		m.sysChat(m.cfg.Route.Why(n))
+		return nil
+	default:
+		m.sysChat("usage: /route <status|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
+		return nil
+	}
+}
+
 // sysChat appends a plain system message (shown in the terminal's default
 // foreground — readable, not dim — and copyable as-is).
 func (m *model) sysChat(s string) {
@@ -2440,6 +2515,11 @@ var helpSections = []helpSection{
 			{"/configure", "arrow-key key picker — set an API key for any service (providers, web search, Discord)"},
 			{"/ceiling [n]", "view / live-tune the loop ceiling (max tool calls per turn)"},
 			{"/reasoning [level]", "arrow-key picker / live-tune reasoning effort for reasoning models (Fugu: high/xhigh)"},
+			{"/route", "show prompt-router status + run a parseable classifier health probe"},
+			{"/route on|off|shadow|assisted|everywhere", "persist one explicit rollout stage"},
+			{"/route force <profileID>", "force an explicitly named profile (privacy override; logged)"},
+			{"/route stats", "show big/disagreement/failure rates, latency, and breaker trips"},
+			{"/route why [n]", "explain the nth most recent routing decision (default: latest)"},
 		},
 	},
 	{
@@ -3613,6 +3693,8 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		}
 	case "/eval":
 		m.handleEval(arg)
+	case "/route":
+		return m.handleRoute(arg)
 	case "/ceiling", "/loops", "/loop-ceiling":
 		if m.cfg.Models == nil {
 			m.sysChat("loop-ceiling tuning is not available in this session")
@@ -5049,6 +5131,8 @@ func (m *model) applyEvent(e agent.Event) {
 		}
 	case agent.EventTurnStart:
 		m.appendFeed(cDim.Render(time.Now().Format("15:04:05") + " turn start"))
+	case agent.EventRoute:
+		m.appendFeed(cDim.Render("route: " + clip(oneLine(e.Text), 80)))
 	case agent.EventUsage:
 		// Actual tokens (input + output) reported by the backend for this
 		// LLM call — summed for the session total, and split in/out so the

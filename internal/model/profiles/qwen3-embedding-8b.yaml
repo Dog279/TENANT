@@ -1,6 +1,7 @@
 id: qwen3-embedding-8b
 role: embedder
 backend: vllm
+provider_kind: vllm
 endpoint: http://localhost:8003
 model: Qwen/Qwen3-Embedding-8B
 context_length: 8192

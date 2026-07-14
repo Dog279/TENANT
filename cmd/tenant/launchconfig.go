@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"tenant/internal/model"
+	"tenant/internal/route"
 )
 
 // launchConfig is the persisted, machine-wide launch configuration written by
@@ -39,6 +44,9 @@ type launchConfig struct {
 	// Embed is the embeddings provider (usually a local Ollama, separate from
 	// the generation provider).
 	Embed *providerConfig `json:"embed,omitempty"`
+	// Route configures the local prompt classifier and its code-owned model-tier
+	// policy. The rollout stage controls which calling surfaces may apply it.
+	Route *routeConfig `json:"route,omitempty"`
 	// Gateway selects how `mcp-memory` is exposed.
 	Gateway gatewayConfig `json:"gateway,omitempty"`
 	// Dashboard configures the web control panel (TEN-76).
@@ -130,6 +138,122 @@ type providerConfig struct {
 	// kinds (Sakana Fugu): "" (off, default) | "high" | "xhigh". Tuned live via
 	// /reasoning and only honored when the kind's SupportsReasoning is set.
 	Reasoning string `json:"reasoning,omitempty"`
+}
+
+// routeConfig is the persisted prompt-router configuration. Provider is
+// intentionally narrower than providerConfig: the classifier is local-only,
+// has no authentication surface, and speaks Ollama's native API. Pointer
+// booleans distinguish an omitted deny-by-default setting from an explicit
+// operator opt-out.
+type routeConfig struct {
+	Enabled             bool                        `json:"enabled,omitempty"`
+	Mode                string                      `json:"mode,omitempty"`
+	Assist              bool                        `json:"assist,omitempty"`
+	Provider            *routeProviderConfig        `json:"provider,omitempty"`
+	TimeoutMS           int                         `json:"timeout_ms,omitempty"`
+	NeverCloud          *bool                       `json:"never_cloud,omitempty"`
+	MinComplexityForBig int                         `json:"min_complexity_for_big,omitempty"`
+	StickySession       *bool                       `json:"sticky_session,omitempty"`
+	BigRole             string                      `json:"big_role,omitempty"`
+	ForceProfile        string                      `json:"force_profile,omitempty"`
+	Agents              map[string]routeAgentConfig `json:"agents,omitempty"`
+	// Rules is the ordered N-way rule list (TEN-292): first match selects a
+	// role; no match keeps the 2-way small/big behavior.
+	Rules []routeRuleConfig `json:"rules,omitempty"`
+	// LogRetentionDays bounds the decision JSONL. 0 = default (90); negative
+	// disables pruning explicitly.
+	LogRetentionDays int `json:"log_retention_days,omitempty"`
+}
+
+type routeProviderConfig struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// routeRuleConfig is one persisted N-way rule. Both levels decode strictly:
+// the predicate vocabulary is FROZEN at exactly four fields (domain,
+// complexity_gte, math, code) as an anti-scope-creep commitment, so an
+// unknown key — including a predicate misplaced at the rule level instead of
+// inside "when" — is a config error, not a silently widened rule.
+type routeRuleConfig struct {
+	When routeRuleWhen `json:"when"`
+	Role string        `json:"role"`
+}
+
+func (r *routeRuleConfig) UnmarshalJSON(data []byte) error {
+	type plain routeRuleConfig
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var p plain
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("route rule (allowed keys: when, role): %w", err)
+	}
+	*r = routeRuleConfig(p)
+	return nil
+}
+
+type routeRuleWhen struct {
+	Domain        string `json:"domain,omitempty"`
+	ComplexityGTE int    `json:"complexity_gte,omitempty"`
+	Math          *bool  `json:"math,omitempty"`
+	Code          *bool  `json:"code,omitempty"`
+}
+
+// UnmarshalJSON rejects unknown predicate keys. A plain struct decode would
+// ignore them, which reads as "rule works" while the predicate silently
+// widened — exactly the failure the 4-field freeze exists to prevent.
+func (w *routeRuleWhen) UnmarshalJSON(data []byte) error {
+	type plain routeRuleWhen
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var p plain
+	if err := dec.Decode(&p); err != nil {
+		return fmt.Errorf("route rule predicate (allowed: domain, complexity_gte, math, code): %w", err)
+	}
+	*w = routeRuleWhen(p)
+	return nil
+}
+
+// routeAgentConfig is an optional per-agent policy override keyed by AgentID
+// under route.agents. NeverCloud remains tri-state here so surface-specific
+// defaults (notably deny-by-default relays) can be applied by runtime wiring.
+type routeAgentConfig struct {
+	Mode       string `json:"mode,omitempty"`
+	NeverCloud *bool  `json:"never_cloud,omitempty"`
+}
+
+// resolvedRouteConfig is the launch-ready route configuration consumed by
+// runtime wiring. Keeping resolution here gives every surface the same
+// defaults and, critically, the same local-only endpoint policy.
+type resolvedRouteConfig struct {
+	Enabled             bool
+	Mode                string
+	Assist              bool
+	Endpoint            string
+	Model               string
+	TimeoutMS           int
+	NeverCloud          bool
+	MinComplexityForBig int
+	StickySession       bool
+	BigRole             string
+	ForceProfile        string
+	Agents              map[string]routeAgentConfig
+	Rules               route.Rules
+	LogRetentionDays    int
+}
+
+// routeConfigError distinguishes a router policy rejection from a corrupt
+// config file. Startup propagates this error (the unsafe router must not be
+// enabled) while retaining the existing warn-and-fallback behavior for JSON
+// corruption and unrelated config read failures.
+type routeConfigError struct {
+	reason string
+}
+
+func (e *routeConfigError) Error() string { return "route: " + e.reason }
+
+func routeConfigErrorf(format string, args ...any) error {
+	return &routeConfigError{reason: fmt.Sprintf(format, args...)}
 }
 
 // agentProfile is a named sub-agent recipe the orchestrator can spawn. The
@@ -359,11 +483,17 @@ type skillConfig struct {
 // Built-in defaults. Embeddings default to a local Ollama — the lowest-
 // friction way to get real vectors on a workstation.
 const (
-	defaultEmbedEndpoint = "http://localhost:11434"
-	defaultEmbedModel    = "nomic-embed-text"
-	defaultEmbedDim      = 768
-	defaultVLLMToolFmt   = "gemma"
-	currentSchemaVersion = 2
+	defaultEmbedEndpoint            = "http://localhost:11434"
+	defaultEmbedModel               = "nomic-embed-text"
+	defaultEmbedDim                 = 768
+	defaultRouteMode                = "shadow"
+	defaultRouteTimeoutMS           = 250
+	defaultRouteModel               = route.DefaultModel
+	defaultRouteNeverCloud          = route.DefaultNeverCloud
+	defaultRouteMinComplexityForBig = route.DefaultMinComplexityForBig
+	defaultRouteStickySession       = route.DefaultStickySession
+	defaultVLLMToolFmt              = "gemma"
+	currentSchemaVersion            = 2
 	// defaultPlanCeiling is the per-agent planner↔tool iteration cap when not
 	// overridden. Raised from the original 8 — modern agentic tasks (research,
 	// multi-tool synthesis) routinely need more steps, and each sub-agent has
@@ -512,6 +642,9 @@ func loadLaunchConfig(cfgDir string) (*launchConfig, error) {
 	}
 	lc.migrate()
 	lc.sanitizeEndpoints()
+	if _, err := resolveRouteConfig(lc); err != nil {
+		return &launchConfig{}, err
+	}
 	return lc, nil
 }
 
@@ -587,6 +720,9 @@ func (lc *launchConfig) migrate() {
 
 // save writes config.json atomically (temp + rename).
 func (lc *launchConfig) save(cfgDir string) error {
+	if _, err := resolveRouteConfig(lc); err != nil {
+		return err
+	}
 	lc.SchemaVersion = currentSchemaVersion
 	b, err := json.MarshalIndent(lc, "", "  ")
 	if err != nil {
@@ -604,6 +740,204 @@ func (lc *launchConfig) active() *providerConfig {
 		return nil
 	}
 	return lc.Providers[lc.Provider]
+}
+
+// resolveRouteConfig applies prompt-router defaults and validates both active
+// role selection and the classifier's local-only transport. A nil/missing
+// block resolves to disabled with the deny-by-default policy intact.
+func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
+	out := resolvedRouteConfig{
+		Mode:                defaultRouteMode,
+		Model:               defaultRouteModel,
+		TimeoutMS:           defaultRouteTimeoutMS,
+		NeverCloud:          defaultRouteNeverCloud,
+		MinComplexityForBig: defaultRouteMinComplexityForBig,
+		StickySession:       defaultRouteStickySession,
+		LogRetentionDays:    route.DefaultLogRetentionDays,
+	}
+	if lc == nil || lc.Route == nil {
+		return out, nil
+	}
+
+	rc := lc.Route
+	out.Enabled = rc.Enabled
+	out.Assist = rc.Assist
+	if rc.Mode != "" {
+		out.Mode = strings.TrimSpace(rc.Mode)
+	}
+	if !validRouteMode(out.Mode) {
+		return resolvedRouteConfig{}, routeConfigErrorf("mode %q must be %q, %q, or %q", out.Mode, route.ModeShadow, route.ModeActive, route.ModeEverywhere)
+	}
+	if out.Assist && (!out.Enabled || out.Mode != route.ModeShadow) {
+		return resolvedRouteConfig{}, routeConfigErrorf("assist is only valid when routing is enabled in shadow mode")
+	}
+	if rc.TimeoutMS < 0 {
+		return resolvedRouteConfig{}, routeConfigErrorf("timeout_ms must be non-negative")
+	}
+	if rc.TimeoutMS > 0 {
+		out.TimeoutMS = rc.TimeoutMS
+	}
+	if rc.NeverCloud != nil {
+		out.NeverCloud = *rc.NeverCloud
+	}
+	if rc.MinComplexityForBig < 0 || rc.MinComplexityForBig > 5 {
+		return resolvedRouteConfig{}, routeConfigErrorf("min_complexity_for_big must be between 1 and 5")
+	}
+	if rc.MinComplexityForBig > 0 {
+		out.MinComplexityForBig = rc.MinComplexityForBig
+	}
+	if rc.StickySession != nil {
+		out.StickySession = *rc.StickySession
+	}
+	out.BigRole = strings.TrimSpace(rc.BigRole)
+	out.ForceProfile = strings.TrimSpace(rc.ForceProfile)
+
+	// Retention (TEN-292): 0 = default (set above), negative = explicit off.
+	// The upper bound keeps a typo'd value from meaning "practically never
+	// prune" while staying far above any plausible observation window.
+	if rc.LogRetentionDays != 0 {
+		if rc.LogRetentionDays > 3650 {
+			return resolvedRouteConfig{}, routeConfigErrorf("log_retention_days %d must be 3650 or less (or negative to disable pruning)", rc.LogRetentionDays)
+		}
+		out.LogRetentionDays = rc.LogRetentionDays
+	}
+
+	// N-way rules (TEN-292). Key-level freezing already happened at JSON
+	// decode (routeRuleWhen rejects unknown predicate keys); this validates
+	// values and converts to the route package's evaluated form.
+	if len(rc.Rules) > 0 {
+		rules := make(route.Rules, 0, len(rc.Rules))
+		for _, rr := range rc.Rules {
+			rules = append(rules, route.Rule{
+				When: route.RulePredicate{
+					Domain:        strings.TrimSpace(rr.When.Domain),
+					ComplexityGTE: rr.When.ComplexityGTE,
+					Math:          rr.When.Math,
+					Code:          rr.When.Code,
+				},
+				Role: model.Role(strings.TrimSpace(rr.Role)),
+			})
+		}
+		if err := rules.Validate(); err != nil {
+			return resolvedRouteConfig{}, routeConfigErrorf("rules: %v", err)
+		}
+		out.Rules = rules
+	}
+
+	active := out.Mode == route.ModeActive || out.Mode == route.ModeEverywhere
+	if len(rc.Agents) > 0 {
+		out.Agents = make(map[string]routeAgentConfig, len(rc.Agents))
+		for rawID, agentCfg := range rc.Agents {
+			agentID := strings.TrimSpace(rawID)
+			if agentID == "" {
+				return resolvedRouteConfig{}, routeConfigErrorf("agents contains an empty agent id")
+			}
+			if _, exists := out.Agents[agentID]; exists {
+				return resolvedRouteConfig{}, routeConfigErrorf("agents contains duplicate agent id %q after trimming", agentID)
+			}
+			agentCfg.Mode = strings.TrimSpace(agentCfg.Mode)
+			if agentCfg.Mode != "" && agentCfg.Mode != route.ModeShadow && agentCfg.Mode != route.ModeActive {
+				return resolvedRouteConfig{}, routeConfigErrorf(
+					"agents[%q].mode %q must be %q or %q", agentID, agentCfg.Mode, "shadow", "active",
+				)
+			}
+			if agentCfg.Mode == route.ModeActive && out.Assist {
+				return resolvedRouteConfig{}, routeConfigErrorf(
+					"agents[%q].mode cannot be active while assist is enabled; advance the global stage to active first", agentID,
+				)
+			}
+			if agentCfg.Mode == "active" {
+				active = true
+			}
+			if agentCfg.NeverCloud != nil {
+				neverCloud := *agentCfg.NeverCloud
+				agentCfg.NeverCloud = &neverCloud
+			}
+			out.Agents[agentID] = agentCfg
+		}
+	}
+
+	if active && out.BigRole == "" {
+		return resolvedRouteConfig{}, routeConfigErrorf(
+			"active mode requires route.big_role to name a configured provider; add one with /model add-cloud <kind> <key>, then bind its provider name",
+		)
+	}
+	if out.BigRole != "" {
+		provider := (*providerConfig)(nil)
+		if lc != nil && lc.Providers != nil {
+			provider = lc.Providers[out.BigRole]
+		}
+		if provider == nil {
+			return resolvedRouteConfig{}, routeConfigErrorf(
+				"big_role %q is not a configured provider; add it with /model add-cloud <kind> <key> or choose a name from /model",
+				out.BigRole,
+			)
+		}
+		kind, known := providerKinds[provider.Kind]
+		if !known || !kind.Wired {
+			return resolvedRouteConfig{}, routeConfigErrorf(
+				"big_role provider %q uses unavailable kind %q; choose a wired provider from /model",
+				out.BigRole, provider.Kind,
+			)
+		}
+	}
+
+	localKind := false
+	if rc.Provider != nil {
+		out.Endpoint = strings.TrimSpace(rc.Provider.Endpoint)
+		if model := strings.TrimSpace(rc.Provider.Model); model != "" {
+			out.Model = model
+		}
+	} else {
+		// Only the endpoint is inherited. The embeddings model cannot serve the
+		// completion-style Supra classifier; route wiring supplies/checks the
+		// classifier model independently.
+		if lc.Embed != nil {
+			pk, known := providerKinds[lc.Embed.Kind]
+			localKind = known && pk.Local
+			out.Endpoint = firstNonEmpty(
+				strings.TrimSpace(lc.Embed.Endpoint),
+				pk.DefaultEndpoint,
+				defaultEmbedEndpoint,
+			)
+		} else {
+			out.Endpoint = defaultEmbedEndpoint
+		}
+	}
+
+	if !out.Enabled {
+		return out, nil
+	}
+	if out.Endpoint == "" {
+		return resolvedRouteConfig{}, routeConfigErrorf("classifier endpoint is required when enabled")
+	}
+	if !localKind && !routeEndpointIsLoopback(out.Endpoint) {
+		return resolvedRouteConfig{}, routeConfigErrorf(
+			"classifier endpoint %s is not local; use a provider kind marked local or a localhost/loopback URL",
+			safeDisplayEndpoint(out.Endpoint),
+		)
+	}
+	return out, nil
+}
+
+func validRouteMode(mode string) bool {
+	return mode == route.ModeShadow || mode == route.ModeActive || mode == route.ModeEverywhere
+}
+
+// routeEndpointIsLoopback accepts only an HTTP(S) URL whose hostname is the
+// loopback name or address. In particular, wildcard and private-LAN addresses
+// are not treated as localhost merely because they are non-public.
+func routeEndpointIsLoopback(endpoint string) bool {
+	u, err := neturl.Parse(strings.TrimSpace(endpoint))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // --- credentials (separate 0600 file) ------------------------------------

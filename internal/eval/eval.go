@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"tenant/internal/route"
 )
 
 // SchemaVersion is the current report schema. Bumped on breaking changes
@@ -39,6 +41,12 @@ type Harness struct {
 	// useful for operators who want a quick live check without burning
 	// judge tokens). RunWith overrides this per-call.
 	Judge Judge
+
+	// RouteClassifier is the live auxiliary classifier used only by
+	// route_classifier tasks. Keeping it separate from AgentFactory ensures the
+	// agreement gate measures Supra directly, not a planner turn influenced by
+	// routing policy or an LLM judge.
+	RouteClassifier route.Classifier
 
 	// AvailableTools, when non-nil, is the set of tool names live in this
 	// run's agent toolset (TEN-198). A LIVE task whose must_call names a
@@ -264,6 +272,19 @@ func (h *Harness) runOne(ctx context.Context, t *Task) TaskResult {
 			res.Passed = false
 			res.Ungraded = false
 			res.Skipped = false
+			res.Failures = append(res.Failures, fmt.Sprintf("task timed out after %s", h.TaskTimeout))
+		}
+	case ModeRouteClassifier:
+		lctx := ctx
+		if h.TaskTimeout > 0 {
+			var cancel context.CancelFunc
+			lctx, cancel = context.WithTimeout(ctx, h.TaskTimeout)
+			defer cancel()
+		}
+		res = h.runRouteClassifier(lctx, t)
+		if h.TaskTimeout > 0 && lctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			res.Passed = false
+			res.Score = 0
 			res.Failures = append(res.Failures, fmt.Sprintf("task timed out after %s", h.TaskTimeout))
 		}
 	default:

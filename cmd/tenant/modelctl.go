@@ -117,6 +117,14 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 	if err := r.SetProfiles(gen); err != nil {
 		return "", "", err
 	}
+	// Re-assert the fixed route roles and provider fallback chains. The
+	// planner-big preference normally survives SetProfiles by construction;
+	// rebuilding here also picks up a model/key change on its named provider
+	// and recomputes chains when the active provider changed.
+	if err := installRouteBigRole(r, mc.cfgDir, lc, c2.planCeiling, mc.log); err != nil {
+		return "", "", err
+	}
+	installFallbackChain(r, mc.cfgDir, lc, c2.planCeiling, mc.log)
 	// Re-point tool-ranking at the new provider's embedder (TEN-226 step 4).
 	// Async: re-resolving + the lazy precompute mustn't block the swap, and it
 	// touches the mux's own lock (never mc.mu), so no nesting. Until it lands, the
@@ -181,6 +189,9 @@ func (mc *modelControl) SetFallback(names []string) (string, error) {
 		return "", err
 	}
 	if r := mc.ag.Router(); r != nil {
+		if err := installRouteBigRole(r, mc.cfgDir, lc, lc.PlanLoopCeiling, mc.log); err != nil {
+			return "", err
+		}
 		installFallbackChain(r, mc.cfgDir, lc, lc.PlanLoopCeiling, mc.log)
 	}
 	if len(valid) == 0 {
@@ -419,6 +430,10 @@ func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
 	if err := r.SetProfiles(gen); err != nil {
 		return "", err
 	}
+	if err := installRouteBigRole(r, mc.cfgDir, lc, c2.planCeiling, mc.log); err != nil {
+		return "", err
+	}
+	installFallbackChain(r, mc.cfgDir, lc, c2.planCeiling, mc.log)
 	if effort == "" {
 		return fmt.Sprintf("reasoning effort cleared for %s (applies next turn)", lc.Provider), nil
 	}
@@ -509,7 +524,8 @@ func (mc *modelControl) AddModel(name, endpoint, toolFormat string) (string, err
 	if err := lc.save(mc.cfgDir); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("added vLLM backend %q → %s — switch with `/model use %s`", name, endpoint, name), nil
+	return fmt.Sprintf("added vLLM backend %q → %s — switch with `/model use %s`. "+
+		"Router bind hint: set `route.big_role` to %q, then use `/route on`.", name, endpoint, name, name), nil
 }
 
 // AddCloudModel registers a KEYED cloud provider (zai/openai/grok/anthropic)
@@ -573,8 +589,9 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 	if err := creds.save(mc.cfgDir); err != nil {
 		return "", fmt.Errorf("save credentials: %w", err)
 	}
-	return fmt.Sprintf("added %s backend %q → %s (key stored, 0600). Switch with `/model use %s`.",
-		pk.Label, kindID, pk.DefaultEndpoint, kindID), nil
+	return fmt.Sprintf("added %s backend %q → %s (key stored, 0600). Switch with `/model use %s`. "+
+		"Router bind hint: set `route.big_role` to %q, then use `/route on`.",
+		pk.Label, kindID, pk.DefaultEndpoint, kindID, kindID), nil
 }
 
 // RemoveModel deletes a configured backend (and its stored credential).
@@ -781,7 +798,9 @@ func cmdModel(_ context.Context, args []string) error {
 		if err := lc.save(c.cfgDir); err != nil {
 			return err
 		}
-		fmt.Printf("added backend %q (kind=%s endpoint=%s) — `tenant model use %s` to make it primary\n", name, kind, safeDisplayEndpoint(pc.Endpoint), name)
+		fmt.Printf("added backend %q (kind=%s endpoint=%s) — `tenant model use %s` to make it primary; "+
+			"set route.big_role to %q to use it as the prompt-router big target\n",
+			name, kind, safeDisplayEndpoint(pc.Endpoint), name, name)
 		return nil
 	case "remove", "rm", "delete":
 		if name == "" {

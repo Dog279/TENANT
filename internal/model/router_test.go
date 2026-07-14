@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
@@ -25,6 +26,90 @@ func TestRouter_ForRoleFound(t *testing.T) {
 	}
 }
 
+func TestRouterFilteredRoleExcludesDisallowedFallbacks(t *testing.T) {
+	reg := model.NewEmptyRegistry()
+	for _, p := range []model.Profile{
+		{ID: "local", Role: model.RolePlanner, Backend: "fake", ProviderKind: "vllm", Endpoint: "http://local", ContextLength: 1000},
+		{ID: "cloud", Role: model.RolePlanner, Backend: "fake", ProviderKind: "openai", Endpoint: "https://cloud", ContextLength: 1000},
+	} {
+		if err := reg.Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := model.NewRouter(reg, slog.Default())
+	if err := r.PinRole(model.RolePlanner, "local"); err != nil {
+		t.Fatal(err)
+	}
+	r.RegisterBackend("fake", func(context.Context, model.Profile, *slog.Logger) (any, error) { return testllm.New(), nil })
+	r.SetFallbackChain(model.RolePlanner, []string{"cloud"})
+	llm, p, err := r.LLMForRoleFiltered(context.Background(), model.RolePlanner, func(p model.Profile) bool {
+		return p.ProviderKind == "vllm"
+	})
+	if err != nil || p.ID != "local" {
+		t.Fatalf("filtered resolve = %T / %+v / %v", llm, p, err)
+	}
+	if _, ok := llm.(*model.FallbackLLM); ok {
+		t.Fatal("local-only resolution retained a cloud fallback wrapper")
+	}
+	if _, _, err := r.LLMForRoleFiltered(context.Background(), model.RolePlanner, func(model.Profile) bool { return false }); err == nil {
+		t.Fatal("rejected primary resolved without an error")
+	}
+}
+
+func TestRouterLiveSwapCannotRepopulateStaleLLM(t *testing.T) {
+	reg := model.NewEmptyRegistry()
+	if err := reg.Add(model.Profile{ID: "planner", Role: model.RolePlanner, Backend: "fake", Endpoint: "old", ContextLength: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	r := model.NewRouter(reg, slog.Default())
+	oldBuildStarted := make(chan struct{})
+	releaseOldBuild := make(chan struct{})
+	r.RegisterBackend("fake", func(_ context.Context, p model.Profile, _ *slog.Logger) (any, error) {
+		if p.Endpoint == "old" {
+			close(oldBuildStarted)
+			<-releaseOldBuild
+		}
+		fake := testllm.New()
+		fake.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+			return &model.GenerateResponse{Text: p.Endpoint}, nil
+		}
+		return fake, nil
+	})
+	resolved := make(chan error, 1)
+	go func() {
+		_, _, err := r.LLMForRole(context.Background(), model.RolePlanner)
+		resolved <- err
+	}()
+	<-oldBuildStarted
+	swapped := make(chan error, 1)
+	go func() {
+		swapped <- r.SetProfiles([]model.Profile{{ID: "planner", Role: model.RolePlanner, Backend: "fake", Endpoint: "new", ContextLength: 1000}})
+	}()
+	select {
+	case err := <-swapped:
+		t.Fatalf("SetProfiles raced through an in-flight coherent resolve: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(releaseOldBuild)
+	if err := <-resolved; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-swapped; err != nil {
+		t.Fatal(err)
+	}
+	llm, p, err := r.LLMForRole(context.Background(), model.RolePlanner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := llm.Generate(context.Background(), model.GenerateRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Endpoint != "new" || resp.Text != "new" {
+		t.Fatalf("profile/backend pairing = %q/%q, want new/new", p.Endpoint, resp.Text)
+	}
+}
+
 func TestRouter_ForRoleNotRegistered(t *testing.T) {
 	reg, err := model.NewRegistry("")
 	if err != nil {
@@ -34,6 +119,34 @@ func TestRouter_ForRoleNotRegistered(t *testing.T) {
 	_, err = r.ForRole(model.Role("nonexistent-role"))
 	if !errors.Is(err, model.ErrRoleNotRegistered) {
 		t.Fatalf("err = %v, want ErrRoleNotRegistered", err)
+	}
+}
+
+func TestRouter_ProfileByIDTracksLiveUpsert(t *testing.T) {
+	reg := model.NewEmptyRegistry()
+	if err := reg.Add(model.Profile{
+		ID: "planner", Role: model.RolePlanner, Backend: "fake",
+		ProviderKind: "vllm", Endpoint: "http://local", ContextLength: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := model.NewRouter(reg, slog.Default())
+
+	p, ok := r.ProfileByID("planner")
+	if !ok || p.ProviderKind != "vllm" {
+		t.Fatalf("ProfileByID before upsert = %+v, %t", p, ok)
+	}
+	if err := r.SetProfiles([]model.Profile{
+		{ID: "planner", Role: model.RolePlanner, Backend: "fake", ProviderKind: "openai", Endpoint: "https://api.openai.com", ContextLength: 2000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p, ok = r.ProfileByID("planner")
+	if !ok || p.ProviderKind != "openai" || p.Endpoint != "https://api.openai.com" {
+		t.Fatalf("ProfileByID after upsert = %+v, %t", p, ok)
+	}
+	if _, ok := r.ProfileByID("missing"); ok {
+		t.Fatal("ProfileByID(missing) reported a profile")
 	}
 }
 

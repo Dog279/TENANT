@@ -65,8 +65,15 @@ type Config struct {
 	Dispatcher ToolDispatcher
 	Assembler  *assemble.Assembler // optional; if nil, agent builds one from Router
 
-	Logger       *slog.Logger
-	PlannerRole  model.Role // default "planner"
+	Logger      *slog.Logger
+	PlannerRole model.Role // default "planner"
+	// RouteHook, when set, observes the typed prompt out-of-band. Turn launches
+	// it asynchronously immediately after EventTurnStart. In active mode the
+	// hook may return a role for this turn; RouteActive gates the bounded join
+	// so shadow callers retain phase one's fully asynchronous path.
+	RouteHook    RouteHook
+	RouteActive  RouteActive
+	RouteSticky  RouteSticky
 	EmbedderRole model.Role // default "embedder"
 	SystemPrompt string     // task-level structural rules
 
@@ -119,6 +126,102 @@ type Config struct {
 	LazyToolLoad bool
 }
 
+// RouteRequest is the agent-owned metadata passed to the optional route hook.
+// It deliberately contains no classifier types, keeping agent independent of
+// the route package.
+type RouteRequest struct {
+	AgentID       string
+	SessionID     string
+	UserQuery     string
+	Surface       RouteSurface
+	Override      RouteOverride
+	Active        bool
+	PlannerRole   model.Role
+	PreviousRole  model.Role
+	StickyRole    model.Role
+	ContextTokens int
+	ContextKnown  bool
+}
+
+// RouteObservation is the generic result of an out-of-band route hook. Text is
+// suitable for a one-line operator event; Tags are persisted on the episode.
+// Applied is set only when Role is an active, policy-approved selection.
+type RouteObservation struct {
+	Text          string
+	Tags          []string
+	Role          model.Role
+	Applied       bool
+	StickySession bool
+	// ConstrainProfiles makes AllowedProfiles an exact ID->provider-kind
+	// allowlist for the selected primary and its fallback chain. An empty map
+	// then denies every routed profile.
+	ConstrainProfiles    bool
+	AllowedProfiles      map[string]string
+	ExpectedProfileID    string
+	ExpectedProviderKind string
+	// EffortHint asks for a per-request ReasoningEffort variant of the routed
+	// profile (TEN-292). Best-effort: an unbuildable variant silently keeps
+	// the routed base profile.
+	EffortHint string
+}
+
+// RouteHook observes one prompt. Agent invokes it in a goroutine and recovers
+// hook panics, so routing remains an optional optimization.
+type RouteHook func(context.Context, RouteRequest) RouteObservation
+
+// RouteActive reports whether a request is eligible for active routing. It is
+// intentionally separate from RouteHook so shadow mode never waits for a
+// classifier. The cmd layer owns the rollout-stage and surface policy.
+type RouteActive func(RouteRequest) bool
+
+// RouteSticky snapshots the live sticky-session policy independently of a
+// classifier result, so a timeout/failure can still pin the planner tier if
+// that planner emits tool-call syntax.
+type RouteSticky func(RouteRequest) bool
+
+// RouteSurface identifies the caller driving a turn. Rollout policy decides
+// which surfaces may actively route; Interactive is also used for prefixes.
+type RouteSurface string
+
+const (
+	RouteSurfaceTUI       RouteSurface = "tui"
+	RouteSurfaceDashboard RouteSurface = "dashboard"
+	RouteSurfaceRelay     RouteSurface = "relay"
+	RouteSurfaceCron      RouteSurface = "cron"
+)
+
+func (s RouteSurface) Interactive() bool {
+	return s == RouteSurfaceTUI || s == RouteSurfaceDashboard
+}
+
+// RouteOverride is a one-turn operator clamp parsed from !big / !local.
+type RouteOverride string
+
+const (
+	RouteOverrideBig   RouteOverride = "big"
+	RouteOverrideLocal RouteOverride = "local"
+)
+
+// ParseRoutePrefix strips one supported one-shot prefix. A bare prefix leaves
+// an empty query, which Turn rejects like any other empty user message.
+func ParseRoutePrefix(query string) (string, RouteOverride) {
+	trimmed := strings.TrimSpace(query)
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return query, ""
+	}
+	var override RouteOverride
+	switch fields[0] {
+	case "!big":
+		override = RouteOverrideBig
+	case "!local":
+		override = RouteOverrideLocal
+	default:
+		return query, ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, fields[0])), override
+}
+
 // Compactor compresses a working-set message slice — summarizing old
 // turns into a handoff and keeping the recent tail. Returns the new slice
 // and whether anything changed. Implemented by internal/memory/compress.
@@ -161,6 +264,16 @@ type Agent struct {
 	// (TEN-102). Mutated only from Turn's post-turn defer (turns are serialized
 	// per agent).
 	compaction *hysteresis
+
+	// Active-route continuity is per Agent/SessionID. routeMu keeps diagnostic
+	// tests and any accidentally concurrent callers race-free; production turns
+	// are serialized by their owning surface.
+	routeMu            sync.Mutex
+	previousRoute      model.Role
+	stickyRoute        model.Role
+	routeContextTokens int
+	routeContextBytes  int
+	routeContextKnown  bool
 }
 
 // Router returns the active router. SetRouter swaps it (e.g. when the operator
@@ -274,6 +387,10 @@ func New(cfg Config) (*Agent, error) {
 // TurnRequest is one user-facing call into the agent.
 type TurnRequest struct {
 	UserQuery string
+	// RouteSurface is empty for background/headless callers, which is always
+	// shadow-only. TUI and dashboard set their explicit interactive surface.
+	RouteSurface  RouteSurface
+	RouteOverride RouteOverride
 	// LoopCeiling overrides the profile's PlanLoopCeiling for THIS turn only.
 	// 0 = inherit the profile default (normal turns; back-compat). >0 = cap
 	// planner↔tool iterations at this value. <0 = unlimited (omit the per-turn
@@ -305,10 +422,51 @@ type TurnResult struct {
 // Cancellation: ctx is checked at every loop boundary. A cancelled
 // ctx stops the loop and surfaces ctx.Err() in TurnResult.Error.
 func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) {
+	if req.RouteSurface.Interactive() {
+		query, prefixOverride := ParseRoutePrefix(req.UserQuery)
+		req.UserQuery = query
+		if req.RouteOverride == "" {
+			req.RouteOverride = prefixOverride
+		}
+	}
 	if req.UserQuery == "" {
 		return nil, errors.New("agent: TurnRequest.UserQuery required")
 	}
 	a.emit(Event{Kind: EventTurnStart, Text: req.UserQuery})
+	activeRouteDeadline := time.Now().Add(250 * time.Millisecond)
+	var routeState *turnRouteState
+	var routeDeadline time.Time
+	var routeReq RouteRequest
+	joinRoute := false
+	routeStickySession := false
+	if a.cfg.RouteHook != nil {
+		previous, sticky, contextTokens, contextKnown := a.routeSnapshot(
+			a.cfg.Working.Messages(), req.UserQuery,
+		)
+		routeReq = RouteRequest{
+			AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID, UserQuery: req.UserQuery,
+			Surface: req.RouteSurface, Override: req.RouteOverride,
+			PlannerRole:  a.plannerRole,
+			PreviousRole: previous, StickyRole: sticky,
+			ContextTokens: contextTokens, ContextKnown: contextKnown,
+		}
+		joinRoute = a.routeActive(routeReq)
+		routeReq.Active = joinRoute
+		if joinRoute {
+			routeDeadline = activeRouteDeadline
+			routeStickySession = a.routeSticky(routeReq)
+		}
+		routeState = &turnRouteState{store: a.cfg.Episodic, log: a.log, ready: make(chan routeReady, 1)}
+		routeCtx := context.WithoutCancel(ctx)
+		cancelRoute := func() {}
+		if joinRoute {
+			routeCtx, cancelRoute = context.WithDeadline(routeCtx, routeDeadline)
+		}
+		go func() {
+			defer cancelRoute()
+			a.runRouteHook(routeCtx, routeReq, routeState)
+		}()
+	}
 
 	// 1. Resolve planner LLM + embedder. Capture the router ONCE so a
 	// mid-turn /model swap can't change models under this turn's feet.
@@ -339,6 +497,29 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		a.log.Warn("agent: embed query failed; continuing without retrieval",
 			"agent", a.cfg.AgentID, "err", err)
 	}
+
+	// Active selection joins only after embedding, and only until the deadline
+	// measured from EventTurnStart. Any timeout, hook failure, or routed-role
+	// resolution error keeps the already-resolved planner path exactly intact.
+	selectedRole := a.plannerRole
+	if joinRoute && routeState != nil {
+		if obs, ok := routeState.await(routeDeadline); ok {
+			routeStickySession = routeStickySession || obs.StickySession
+			if obs.Applied && obs.Role != "" {
+				if routed, routedProfile, routeErr := resolveRoutedRole(ctx, router, obs, routeDeadline); routeErr != nil {
+					a.log.Warn("agent: routed role unavailable; using planner",
+						"agent", a.cfg.AgentID, "role", obs.Role, "err", routeErr)
+					routeState.appendTags("route:routing_error=true")
+				} else {
+					planner, profile = routed, routedProfile
+					selectedRole = obs.Role
+				}
+			}
+		}
+	}
+	// Track the role actually used, including planner fallbacks caused by a
+	// deadline, classifier/policy failure, or routed-role resolution error.
+	a.noteRouteSelection(selectedRole)
 
 	// 4. Resolve which tools to surface this turn (top-K per profile).
 	availableTools, err := a.cfg.Tools.Search(ctx, queryEmbedding, profile.MaxToolsPerCall)
@@ -532,6 +713,8 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		result.Tokens = assembled.BudgetReport.Total
 		result.Reports = append(result.Reports, assembled.BudgetReport)
 		br := assembled.BudgetReport
+		contextUpper := estimateAssembledContextUpper(assembled.Messages, iterTools)
+		a.noteRouteContext(max(br.Total, contextUpper), estimateRouteContextBytes(a.cfg.Working.Messages()))
 		a.emit(Event{Kind: EventMemory, Iter: iter, Budget: &br})
 
 		// Run the planner under a per-iteration cancel so an Interject can
@@ -583,6 +766,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		}
 		a.cfg.Working.Append(asstMsg)
 		a.archiveAssistant(ctx, resp)
+		if joinRoute && routeStickySession && len(resp.ToolCalls) > 0 {
+			a.pinRoute(selectedRole)
+		}
 
 		if len(resp.ToolCalls) == 0 {
 			// Empty-final guard. Merged "thinking" models (aeon-ultimate /
@@ -602,7 +788,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 				if ferr == nil && strings.TrimSpace(final) != "" {
 					result.Response = final
 					a.emit(Event{Kind: EventFinal, Iter: iter, Text: final})
-					a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, embedder)
+					a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, embedder, routeState)
 					return result, nil
 				}
 				// Synthesis also empty — fall through to the original
@@ -611,7 +797,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			// Final response. Persist episode and return.
 			result.Response = resp.Text
 			a.emit(Event{Kind: EventFinal, Iter: iter, Text: resp.Text})
-			a.persistEpisode(ctx, req.UserQuery, resp.Text, result.ToolTrace, queryEmbedding, embedder)
+			a.persistEpisode(ctx, req.UserQuery, resp.Text, result.ToolTrace, queryEmbedding, embedder, routeState)
 			return result, nil
 		}
 
@@ -722,7 +908,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	result.Truncated = true
 	result.Error = loopErr
 	a.emit(Event{Kind: EventTruncated, Text: final})
-	a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, nil)
+	a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, nil, routeState)
 	return result, nil
 }
 
@@ -1240,7 +1426,7 @@ func (a *Agent) archiveEvent(_ context.Context, e archive.Event) {
 // persistEpisode writes the completed turn-pair to the T2 episodic
 // store. Embedder is allowed to be nil for the synthesis path (we
 // pass through the precomputed queryEmbedding).
-func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, trace []ToolCallResult, queryEmbedding []float32, embedder model.Embedder) {
+func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, trace []ToolCallResult, queryEmbedding []float32, embedder model.Embedder, routeState *turnRouteState) {
 	if a.cfg.Episodic == nil {
 		return
 	}
@@ -1268,7 +1454,12 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 	if visibility == "" {
 		visibility = episodic.VisibilityPrivate
 	}
-	_, err := a.cfg.Episodic.Insert(ctx, &episodic.Episode{
+	var routeTags []string
+	var routeVersion uint64
+	if routeState != nil {
+		routeTags, routeVersion = routeState.snapshot()
+	}
+	id, err := a.cfg.Episodic.Insert(ctx, &episodic.Episode{
 		AgentID:    a.cfg.AgentID,
 		Visibility: visibility,
 		SessionID:  a.cfg.SessionID,
@@ -1276,13 +1467,332 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 		Response:   response,
 		ToolCalls:  toolCalls,
 		Outcome:    outcome,
+		Tags:       routeTags,
 		EmbedderID: string(embedderID),
 		Embedding:  queryEmbedding,
 	})
 	if err != nil {
 		a.log.Warn("agent: episode insert failed", "err", err)
+	} else if routeState != nil {
+		routeState.episodeInserted(id, routeVersion)
 	}
 	_ = embedder // reserved for future per-content embedding (response embedding)
+}
+
+// turnRouteState joins a fire-and-forget observation to an episode without
+// waiting in Turn. If the observation wins the race, its tags go into Insert;
+// if the episode wins, the hook appends them afterward on a background path.
+type turnRouteState struct {
+	mu        sync.Mutex
+	tags      []string
+	version   uint64
+	episodeID int64
+	store     *episodic.Store
+	log       *slog.Logger
+	ready     chan routeReady
+}
+
+type routeReady struct {
+	obs RouteObservation
+	at  time.Time
+}
+
+func (a *Agent) routeSnapshot(msgs []working.Message, query string) (model.Role, model.Role, int, bool) {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	previous := a.previousRoute
+	if previous == "" {
+		previous = a.plannerRole
+	}
+	if !a.routeContextKnown {
+		return previous, a.stickyRoute, estimateRouteContext(msgs, query), false
+	}
+	currentBytes := estimateRouteContextBytes(msgs) + len(query)
+	tokens := a.routeContextTokens
+	if delta := currentBytes - a.routeContextBytes; delta > 0 {
+		// A byte is a conservative upper bound for one tokenizer token. Add
+		// every byte introduced since the last real assembler budget report.
+		tokens += delta
+	}
+	return previous, a.stickyRoute, tokens, true
+}
+
+func (a *Agent) noteRouteSelection(role model.Role) {
+	if role == "" {
+		return
+	}
+	a.routeMu.Lock()
+	a.previousRoute = role
+	a.routeMu.Unlock()
+}
+
+func (a *Agent) pinRoute(role model.Role) {
+	if role == "" {
+		return
+	}
+	a.routeMu.Lock()
+	if a.stickyRoute == "" {
+		a.stickyRoute = role
+	}
+	a.routeMu.Unlock()
+}
+
+func (a *Agent) noteRouteContext(tokens, workingBytes int) {
+	if tokens <= 0 {
+		return
+	}
+	a.routeMu.Lock()
+	a.routeContextTokens = tokens
+	a.routeContextBytes = workingBytes
+	a.routeContextKnown = true
+	a.routeMu.Unlock()
+}
+
+func (a *Agent) routeActive(req RouteRequest) (active bool) {
+	if a.cfg.RouteActive == nil {
+		return false
+	}
+	defer func() {
+		if v := recover(); v != nil {
+			a.log.Warn("agent: route active gate panicked; using shadow", "agent", a.cfg.AgentID, "panic", v)
+			active = false
+		}
+	}()
+	return a.cfg.RouteActive(req)
+}
+
+func (a *Agent) routeSticky(req RouteRequest) (sticky bool) {
+	if a.cfg.RouteSticky == nil {
+		return false
+	}
+	defer func() {
+		if v := recover(); v != nil {
+			a.log.Warn("agent: route sticky gate panicked; not pinning", "agent", a.cfg.AgentID, "panic", v)
+			sticky = false
+		}
+	}()
+	return a.cfg.RouteSticky(req)
+}
+
+func estimateRouteContext(msgs []working.Message, query string) int {
+	n := estimateRouteContextBytes(msgs) + len(query)
+	if n == 0 {
+		return 0
+	}
+	return (n + 3) / 4
+}
+
+func estimateRouteContextBytes(msgs []working.Message) int {
+	n := 0
+	for _, msg := range msgs {
+		n += len(msg.Role) + len(msg.Content)
+		for _, call := range msg.ToolCalls {
+			n += len(call.Name) + len(call.Arguments)
+		}
+	}
+	return n
+}
+
+// estimateAssembledContextUpper is a conservative token upper bound for the
+// exact prompt that just ran. Modern tokenizers cannot emit more tokens than
+// the UTF-8 bytes they encode; the fixed per-item allowance covers chat/JSON
+// framing that is not present in the field strings themselves. Retaining this
+// measured bound lets a later big->small transition prove the smaller
+// OperationalContextBudget fits instead of trusting chars/4.
+func estimateAssembledContextUpper(messages []model.Message, tools []model.ToolSpec) int {
+	const framingBytes = 64
+	n := framingBytes
+	for _, msg := range messages {
+		n += framingBytes + len(msg.Role) + len(msg.Content) + len(msg.ToolCallID) + len(msg.Name)
+		for _, call := range msg.ToolCalls {
+			n += framingBytes + len(call.ID) + len(call.Name) + len(call.Arguments)
+		}
+	}
+	for _, tool := range tools {
+		n += framingBytes + len(tool.Name) + len(tool.Description) + len(tool.Parameters)
+	}
+	return n
+}
+
+type routedRoleResult struct {
+	llm     model.LLM
+	profile model.Profile
+	err     error
+	at      time.Time
+}
+
+func resolveRoutedRole(parent context.Context, router *model.Router, obs RouteObservation, deadline time.Time) (model.LLM, model.Profile, error) {
+	if router == nil {
+		return nil, model.Profile{}, errors.New("model router unavailable")
+	}
+	if !time.Now().Before(deadline) {
+		return nil, model.Profile{}, context.DeadlineExceeded
+	}
+	resolveCtx, cancel := context.WithDeadline(parent, deadline)
+	defer cancel()
+	result := make(chan routedRoleResult, 1)
+	go func() {
+		got := routedRoleResult{}
+		defer func() {
+			if v := recover(); v != nil {
+				got.err = fmt.Errorf("routed role resolution panic: %v", v)
+			}
+			got.at = time.Now()
+			result <- got
+		}()
+		var allow model.ProfileFilter
+		if obs.ConstrainProfiles {
+			allow = func(p model.Profile) bool {
+				kind, ok := obs.AllowedProfiles[p.ID]
+				return ok && kind == p.ProviderKind
+			}
+		}
+		llm, profile, err := router.LLMForRoleFiltered(resolveCtx, obs.Role, allow)
+		if err == nil && obs.ExpectedProfileID != "" && profile.ID != obs.ExpectedProfileID {
+			err = fmt.Errorf("routed profile changed from %q to %q", obs.ExpectedProfileID, profile.ID)
+		}
+		if err == nil && obs.ExpectedProviderKind != "" && profile.ProviderKind != obs.ExpectedProviderKind {
+			err = fmt.Errorf("routed provider changed from %q to %q", obs.ExpectedProviderKind, profile.ProviderKind)
+		}
+		// EffortHint (TEN-292): applied only after the identity checks pass, so
+		// the variant can never mask a changed binding. Best-effort — a variant
+		// that fails to build keeps the validated base LLM, and the returned
+		// wrapper falls back to that same base LLM (with its TEN-246 chain) at
+		// generation time.
+		if err == nil && obs.EffortHint != "" {
+			if vllm, ok := router.LLMWithEffort(resolveCtx, profile, llm, obs.EffortHint); ok {
+				llm = vllm
+				profile.ReasoningEffort = obs.EffortHint
+			}
+		}
+		got.llm, got.profile, got.err = llm, profile, err
+	}()
+	select {
+	case got := <-result:
+		if got.at.After(deadline) {
+			return nil, model.Profile{}, context.DeadlineExceeded
+		}
+		return got.llm, got.profile, got.err
+	case <-resolveCtx.Done():
+		return nil, model.Profile{}, resolveCtx.Err()
+	}
+}
+
+func (a *Agent) runRouteHook(ctx context.Context, req RouteRequest, state *turnRouteState) {
+	var obs RouteObservation
+	defer func() {
+		if v := recover(); v != nil {
+			a.log.Warn("agent: route hook panicked; ignored", "agent", a.cfg.AgentID, "panic", v)
+		}
+		state.publish(obs)
+		if strings.TrimSpace(obs.Text) != "" {
+			a.emit(Event{Kind: EventRoute, Text: obs.Text})
+		}
+	}()
+	obs = a.cfg.RouteHook(ctx, req)
+}
+
+func (s *turnRouteState) publish(obs RouteObservation) {
+	tags := compactTags(obs.Tags)
+	s.mu.Lock()
+	s.tags = tags
+	s.version++
+	id := s.episodeID
+	s.mu.Unlock()
+	if s.ready != nil {
+		select {
+		case s.ready <- routeReady{obs: obs, at: time.Now()}:
+		default:
+		}
+	}
+	if id != 0 && len(tags) > 0 {
+		s.addTagsAsync(id, tags)
+	}
+}
+
+func (s *turnRouteState) appendTags(tags ...string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.tags = compactTags(append(s.tags, tags...))
+	s.version++
+	id := s.episodeID
+	all := append([]string(nil), s.tags...)
+	s.mu.Unlock()
+	if id != 0 {
+		s.addTagsAsync(id, all)
+	}
+}
+
+func (s *turnRouteState) await(deadline time.Time) (RouteObservation, bool) {
+	if s == nil || s.ready == nil {
+		return RouteObservation{}, false
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		select {
+		case ready := <-s.ready:
+			return ready.obs, !ready.at.After(deadline)
+		default:
+			return RouteObservation{}, false
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case ready := <-s.ready:
+		return ready.obs, !ready.at.After(deadline)
+	case <-timer.C:
+		return RouteObservation{}, false
+	}
+}
+
+func (s *turnRouteState) snapshot() ([]string, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.tags...), s.version
+}
+
+func (s *turnRouteState) episodeInserted(id int64, includedVersion uint64) {
+	s.mu.Lock()
+	s.episodeID = id
+	tags := append([]string(nil), s.tags...)
+	late := s.version > includedVersion
+	s.mu.Unlock()
+	if late && len(tags) > 0 {
+		s.addTagsAsync(id, tags)
+	}
+}
+
+func (s *turnRouteState) addTagsAsync(id int64, tags []string) {
+	if s.store == nil || id == 0 || len(tags) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := s.store.AddTags(ctx, id, tags); err != nil && s.log != nil {
+			s.log.Warn("agent: append route episode tags failed", "episode", id, "err", err)
+		}
+	}()
+}
+
+func compactTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
 }
 
 // newSessionID generates an unguessable-ish session ID. Not for

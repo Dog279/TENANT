@@ -44,6 +44,8 @@ func main() {
 		err = cmdOAuthSetup(ctx, os.Args[2:])
 	case "model", "models":
 		err = cmdModel(ctx, os.Args[2:])
+	case "route":
+		err = cmdRoute(ctx, os.Args[2:])
 	case "agents", "agent":
 		err = cmdAgents(ctx, os.Args[2:])
 	case "chat":
@@ -128,6 +130,8 @@ COMMANDS
   version                  print version
   setup                    one-time config wizard (endpoints, model, gateway) → config.json
   model <list|use|add|...> manage model backends + set the primary (also /model in the TUI)
+  route <status|on|off|shadow|assisted|everywhere|stats|force>
+                           inspect or configure prompt routing (also /route in the TUI)
   chat                     interactive agent loop (one stdin line = one turn)
   distill                  run one T2->T3 distillation pass
   memory search <query>    search episodes + facts from the CLI

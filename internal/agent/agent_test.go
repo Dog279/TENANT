@@ -350,6 +350,130 @@ func TestAgent_TurnRequiresUserQuery(t *testing.T) {
 	}
 }
 
+func TestAgent_RouteHookIsAsyncAndLateTagsReachEpisode(t *testing.T) {
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		return &model.GenerateResponse{Text: "unchanged answer", FinishReason: "stop"}, nil
+	}
+	reg, err := model.NewRegistry("")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	router := model.NewRouter(reg, slog.Default())
+	router.RegisterBackend("vllm", func(_ context.Context, _ model.Profile, _ *slog.Logger) (any, error) {
+		return fake, nil
+	})
+	estore, err := episodic.Open(filepath.Join(t.TempDir(), "ep.db"))
+	if err != nil {
+		t.Fatalf("episodic.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = estore.Close() })
+
+	started := make(chan agent.RouteRequest, 1)
+	release := make(chan struct{})
+	events := make(chan agent.Event, 8)
+	disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) {
+		return "", false, nil
+	})
+	a, err := agent.New(agent.Config{
+		AgentID: "route-agent", SessionID: "route-session", Router: router,
+		Working: working.New(), Episodic: estore, Tools: agent.NewStaticRegistry(), Dispatcher: disp,
+		Observer: func(e agent.Event) { events <- e },
+		RouteHook: func(_ context.Context, req agent.RouteRequest) agent.RouteObservation {
+			started <- req
+			<-release
+			return agent.RouteObservation{
+				Text: "shadow · big · complexity 4",
+				Tags: []string{"route:label=big", "route:complexity=4", "route:mode=shadow"},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	type turnResult struct {
+		res *agent.TurnResult
+		err error
+	}
+	done := make(chan turnResult, 1)
+	go func() {
+		res, turnErr := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "typed prompt"})
+		done <- turnResult{res: res, err: turnErr}
+	}()
+
+	var hookReq agent.RouteRequest
+	select {
+	case hookReq = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("route hook was not launched")
+	}
+	if hookReq.AgentID != "route-agent" || hookReq.SessionID != "route-session" || hookReq.UserQuery != "typed prompt" {
+		t.Fatalf("route request = %+v", hookReq)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.res == nil || got.res.Response != "unchanged answer" {
+			t.Fatalf("Turn while hook blocked: res=%+v err=%v", got.res, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Turn waited for the route hook")
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		eps, recentErr := estore.Recent(context.Background(), "route-agent", 1)
+		if recentErr != nil {
+			t.Fatalf("Recent: %v", recentErr)
+		}
+		if len(eps) == 1 && strings.Join(eps[0].Tags, ",") == "route:label=big,route:complexity=4,route:mode=shadow" {
+			break
+		}
+		if time.Now().After(deadline) {
+			if len(eps) == 1 {
+				t.Fatalf("late route tags = %v", eps[0].Tags)
+			}
+			t.Fatal("episode was not persisted")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	foundRoute := false
+	for !foundRoute {
+		select {
+		case e := <-events:
+			if e.Kind == agent.EventRoute {
+				foundRoute = e.Text == "shadow · big · complexity 4"
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("EventRoute was not emitted")
+		}
+	}
+}
+
+func TestAgent_RouteHookPanicNeverFailsTurn(t *testing.T) {
+	fake := testllm.New()
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		return &model.GenerateResponse{Text: "ok", FinishReason: "stop"}, nil
+	}
+	reg, _ := model.NewRegistry("")
+	router := model.NewRouter(reg, slog.Default())
+	router.RegisterBackend("vllm", func(_ context.Context, _ model.Profile, _ *slog.Logger) (any, error) { return fake, nil })
+	disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	a, err := agent.New(agent.Config{
+		AgentID: "a", Router: router, Working: working.New(), Tools: agent.NewStaticRegistry(), Dispatcher: disp,
+		RouteHook: func(context.Context, agent.RouteRequest) agent.RouteObservation { panic("boom") },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "hello"})
+	if err != nil || res.Response != "ok" {
+		t.Fatalf("route panic changed turn: res=%+v err=%v", res, err)
+	}
+}
+
 func TestAgent_Turn_SingleIterationNoTools(t *testing.T) {
 	a, fake, ws, _ := buildAgent(t, model.Profile{}, nil, dispatchOK("unused"))
 	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {

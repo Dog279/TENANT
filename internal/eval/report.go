@@ -26,6 +26,11 @@ func WriteTerminal(w io.Writer, rep *Report) {
 		for _, f := range r.Failures {
 			fmt.Fprintf(w, "    └─ %s\n", f)
 		}
+		if m := r.RouteMetrics; m != nil {
+			fmt.Fprintf(w, "    route: parse %.1f%% (%d/%d) | agreement %.1f%% (%d/%d) | p95 %.1fms\n",
+				100*m.ParseSuccessRate, m.ParseSuccesses, m.Samples,
+				100*m.LabelAgreementRate, m.LabelAgreements, m.Samples, m.P95LatencyMS)
+		}
 	}
 
 	fmt.Fprintln(w)

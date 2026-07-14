@@ -12,6 +12,7 @@ func TestLoadProfileYAML_Valid(t *testing.T) {
 id: test-profile
 role: planner
 backend: vllm
+provider_kind: openai
 endpoint: http://localhost:8000
 model: Qwen/Qwen3.6-72B-Instruct
 context_length: 128000
@@ -36,6 +37,9 @@ capabilities:
 	}
 	if p.Role != model.RolePlanner {
 		t.Fatalf("Role = %q, want %q", p.Role, model.RolePlanner)
+	}
+	if p.ProviderKind != "openai" {
+		t.Fatalf("ProviderKind = %q, want openai", p.ProviderKind)
 	}
 	if p.WritableBudget() != 102400-2048-4096-84000 {
 		t.Fatalf("WritableBudget = %d, want %d", p.WritableBudget(), 102400-2048-4096-84000)

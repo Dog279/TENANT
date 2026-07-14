@@ -1,6 +1,7 @@
 id: gemma4-70b
 role: planner
 backend: vllm
+provider_kind: vllm
 endpoint: http://localhost:8002
 model: google/gemma-4-70b-it
 context_length: 128000

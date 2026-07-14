@@ -140,8 +140,12 @@ func TestModelControl_ListUseAdd(t *testing.T) {
 	}
 
 	// Add a new vLLM backend → persisted, switchable.
-	if _, err := mc.AddModel("dgx", "http://localhost:8000/", "qwen"); err != nil {
+	addStatus, err := mc.AddModel("dgx", "http://localhost:8000/", "qwen")
+	if err != nil {
 		t.Fatalf("AddModel: %v", err)
+	}
+	if !strings.Contains(addStatus, "route.big_role") || !strings.Contains(addStatus, `"dgx"`) {
+		t.Errorf("AddModel status missing planner-big bind hint: %q", addStatus)
 	}
 	got, _ = loadLaunchConfig(dir)
 	p := got.Providers["dgx"]
@@ -194,6 +198,9 @@ func TestModelControl_AddCloudModel(t *testing.T) {
 	}
 	if !strings.Contains(status, "/model use zai") {
 		t.Errorf("status missing switch hint: %q", status)
+	}
+	if !strings.Contains(status, "route.big_role") || !strings.Contains(status, `"zai"`) {
+		t.Errorf("status missing planner-big bind hint: %q", status)
 	}
 
 	got, _ := loadLaunchConfig(dir)

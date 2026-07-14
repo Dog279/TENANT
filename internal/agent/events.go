@@ -11,6 +11,7 @@ type EventKind string
 
 const (
 	EventTurnStart   EventKind = "turn_start"   // a turn began (Text = user query)
+	EventRoute       EventKind = "route"        // shadow route observation ready (Text = prompt-free summary)
 	EventMemory      EventKind = "memory"       // context assembled (Budget set)
 	EventSkills      EventKind = "skills"       // T4 skills retrieved (Text = names)
 	EventToken       EventKind = "token"        // streaming text delta (Text)

@@ -127,7 +127,9 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	}
 	// Phase 1: deny-all offsite-confirm ⇒ gated/dangerous tools are refused.
 	turnCtx := withOffsiteConfirm(ctx, r.confirm)
-	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{UserQuery: text})
+	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
+		UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
+	})
 	if err != nil {
 		r.logger().Warn("imessage responder: turn failed", "chat", m.ChatGUID, "err", err)
 		r.send(ctx, m.ChatGUID, "sorry — I hit an error handling that. Try again.")
@@ -174,6 +176,9 @@ type imessageAgentDeps struct {
 	fullDisp    agent.ToolDispatcher
 	sysPrompt   string
 	log         *slog.Logger
+	routeHook   agent.RouteHook
+	routeActive agent.RouteActive
+	routeSticky agent.RouteSticky
 }
 
 // imessageSysSuffix tells the dedicated agent it is answering over iMessage:
@@ -286,5 +291,8 @@ func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 		Compactor:    d.compactor,
 		UserProfile:  d.userProfile,
 		SystemPrompt: d.sysPrompt + imessageSysSuffix,
+		RouteHook:    d.routeHook,
+		RouteActive:  d.routeActive,
+		RouteSticky:  d.routeSticky,
 	})
 }

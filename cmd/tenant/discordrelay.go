@@ -216,7 +216,9 @@ func (r *relay) start(channelID, text string) bool {
 
 	go func() {
 		defer r.finish(cancel)
-		res, err := r.runner.Turn(turnCtx, agent.TurnRequest{UserQuery: text})
+		res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
+			UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
+		})
 		r.deliver(ctx, channelID, res, err)
 	}()
 	return true

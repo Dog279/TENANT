@@ -43,10 +43,13 @@ type discordAgentDeps struct {
 	// fullTools is the LIVE tool registry (the running mux), not a snapshot —
 	// so MCP/Jira tools that come online after the relay starts are visible to
 	// the Discord agent (TEN-229).
-	fullTools agent.ToolRegistry
-	fullDisp  agent.ToolDispatcher
-	sysPrompt string
-	log       *slog.Logger
+	fullTools   agent.ToolRegistry
+	fullDisp    agent.ToolDispatcher
+	sysPrompt   string
+	log         *slog.Logger
+	routeHook   agent.RouteHook
+	routeActive agent.RouteActive
+	routeSticky agent.RouteSticky
 	// gateConfirm is the per-category permission broker's Confirm (TEN-231): the
 	// discord_* tools route through it (allow → run, deny → block, ask → button)
 	// exactly like every other gated tool, instead of always prompting a button.
@@ -98,6 +101,9 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		Compactor:    d.compactor,
 		UserProfile:  d.userProfile,
 		SystemPrompt: d.sysPrompt + discordSysSuffix,
+		RouteHook:    d.routeHook,
+		RouteActive:  d.routeActive,
+		RouteSticky:  d.routeSticky,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, nil, err

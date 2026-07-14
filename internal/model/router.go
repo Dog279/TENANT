@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -84,6 +85,7 @@ func (r *Router) PinRole(role Role, profileID string) error {
 		return fmt.Errorf("PinRole: %w: %s", ErrInvalidProfile, profileID)
 	}
 	r.rolePref[role] = profileID
+	delete(r.fallbackLLMs, role)
 	return nil
 }
 
@@ -129,6 +131,7 @@ func (r *Router) AddFallbackProfiles(profiles ...Profile) error {
 		}
 		delete(r.llmsByID, p.ID)
 	}
+	r.fallbackLLMs = make(map[Role]LLM)
 	return nil
 }
 
@@ -184,29 +187,80 @@ func (r *Router) ForRole(role Role) (Profile, error) {
 	return p, nil
 }
 
+// ProfileByID returns a registered profile by its stable ID. Registry access
+// must go through the Router because live SetProfiles/AddFallbackProfiles
+// mutate the otherwise non-concurrent Registry under this same lock.
+func (r *Router) ProfileByID(profileID string) (Profile, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.reg.ByID(profileID)
+}
+
+// ProfilesForRole returns a coherent snapshot of a role's primary followed by
+// its configured fallback profiles. Missing fallback IDs are omitted.
+func (r *Router) ProfilesForRole(role Role) ([]Profile, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	id, ok := r.rolePref[role]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRoleNotRegistered, role)
+	}
+	primary, ok := r.reg.ByID(id)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidProfile, id)
+	}
+	out := []Profile{primary}
+	for _, fallbackID := range r.fallbackChains[role] {
+		if p, found := r.reg.ByID(fallbackID); found {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// ProfileFilter is a per-resolution safety predicate. It is evaluated against
+// one coherent profile snapshot for both the primary and every fallback.
+type ProfileFilter func(Profile) bool
+
 // LLMForRole returns a backend instance ready to call Generate /
 // GenerateStream / TokenCount on behalf of the named role.
 func (r *Router) LLMForRole(ctx context.Context, role Role) (LLM, Profile, error) {
-	p, err := r.ForRole(role)
-	if err != nil {
-		return nil, Profile{}, err
+	return r.LLMForRoleFiltered(ctx, role, nil)
+}
+
+// LLMForRoleFiltered resolves a role while excluding any primary or fallback
+// profile rejected by allow. A rejected primary is an error; rejected fallback
+// links are simply absent. Filtered wrappers are not shared with unfiltered
+// callers, preventing a privacy-constrained turn from reusing a cloud-capable
+// fallback chain.
+func (r *Router) LLMForRoleFiltered(ctx context.Context, role Role, allow ProfileFilter) (LLM, Profile, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.rolePref[role]
+	if !ok {
+		return nil, Profile{}, fmt.Errorf("%w: %s", ErrRoleNotRegistered, role)
 	}
-	llm, err := r.llmFor(ctx, p)
+	p, ok := r.reg.ByID(id)
+	if !ok {
+		return nil, Profile{}, fmt.Errorf("%w: %s", ErrInvalidProfile, id)
+	}
+	if allow != nil && !allow(p) {
+		return nil, Profile{}, fmt.Errorf("profile %q rejected by role policy", p.ID)
+	}
+	llm, err := r.llmForLocked(ctx, p)
 	if err != nil {
 		return nil, Profile{}, err
 	}
 	// No fallback configured for this role → today's behavior. The returned
 	// Profile is always the PRIMARY's (used for tool format + context budget);
 	// fallback is a transparent routing detail. (TEN-246)
-	r.mu.RLock()
-	chain := r.fallbackChains[role]
+	chain := append([]string(nil), r.fallbackChains[role]...)
 	cached := r.fallbackLLMs[role]
 	obs := r.failoverObserver
-	r.mu.RUnlock()
 	if len(chain) == 0 {
 		return llm, p, nil
 	}
-	if cached != nil {
+	if allow == nil && cached != nil {
 		return cached, p, nil
 	}
 	// Build the wrapper once (cached so its cooldown state persists). Drop any
@@ -219,7 +273,10 @@ func (r *Router) LLMForRole(ctx context.Context, role Role) (LLM, Profile, error
 			r.log.Warn("router: fallback profile not registered; skipping", "id", id, "role", string(role))
 			continue
 		}
-		flm, ferr := r.llmFor(ctx, fp)
+		if allow != nil && !allow(fp) {
+			continue
+		}
+		flm, ferr := r.llmForLocked(ctx, fp)
 		if ferr != nil {
 			r.log.Warn("router: fallback link unbuildable; skipping", "id", id, "err", ferr.Error())
 			continue
@@ -230,30 +287,79 @@ func (r *Router) LLMForRole(ctx context.Context, role Role) (LLM, Profile, error
 		return llm, p, nil // no usable fallback → just the primary
 	}
 	fb := NewFallbackLLM(links, obs)
-	r.mu.Lock()
-	r.fallbackLLMs[role] = fb
-	r.mu.Unlock()
+	if allow == nil {
+		r.fallbackLLMs[role] = fb
+	}
 	return fb, p, nil
+}
+
+// LLMWithEffort returns a per-request reasoning-effort variant of an
+// already-resolved profile (TEN-292 EffortHint). The variant is the SAME
+// profile with only ReasoningEffort replaced, built through the normal
+// backend factory. Failure doctrine, twice over: any build problem returns
+// (nil, false) so the caller keeps its already-resolved LLM, and the returned
+// LLM wraps [variant -> baseLLM] as a fallback pair so a variant that fails
+// AT GENERATION TIME degrades to the base LLM — including whatever TEN-246
+// fallback chain the base resolution already carries.
+//
+// The variant is deliberately NOT cached: llmsByID invalidation on
+// SetProfiles/AddFallbackProfiles knows nothing about synthetic effort IDs,
+// so a cached variant would survive live model/key swaps and serve a stale
+// endpoint. Construction is pure struct building (no I/O); per-resolution
+// cost is negligible against a complexity-5 generation.
+func (r *Router) LLMWithEffort(ctx context.Context, base Profile, baseLLM LLM, effort string) (LLM, bool) {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" || baseLLM == nil || strings.EqualFold(base.ReasoningEffort, effort) {
+		return nil, false
+	}
+	variant := base
+	variant.ID = base.ID + "#effort=" + effort
+	variant.ReasoningEffort = effort
+	r.mu.Lock()
+	f, ok := r.factories[variant.Backend]
+	obs := r.failoverObserver
+	r.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	inst, err := f(ctx, variant, r.log)
+	if err != nil {
+		r.log.Warn("router: effort variant unbuildable; keeping base profile",
+			"profile", base.ID, "effort", effort, "err", err.Error())
+		return nil, false
+	}
+	llm, isLLM := inst.(LLM)
+	if !isLLM {
+		return nil, false
+	}
+	return NewFallbackLLM([]fbLink{
+		{llm: llm, label: variant.ID},
+		{llm: baseLLM, label: base.ID + " (effort fallback)"},
+	}, obs), true
 }
 
 // EmbedderForRole returns the Embedder instance bound to role. Typically
 // called with RoleEmbedder; can serve any role whose profile points at
 // an embedding model.
 func (r *Router) EmbedderForRole(ctx context.Context, role Role) (Embedder, Profile, error) {
-	p, err := r.ForRole(role)
-	if err != nil {
-		return nil, Profile{}, err
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id, ok := r.rolePref[role]
+	if !ok {
+		return nil, Profile{}, fmt.Errorf("%w: %s", ErrRoleNotRegistered, role)
 	}
-	emb, err := r.embedderFor(ctx, p)
+	p, ok := r.reg.ByID(id)
+	if !ok {
+		return nil, Profile{}, fmt.Errorf("%w: %s", ErrInvalidProfile, id)
+	}
+	emb, err := r.embedderForLocked(ctx, p)
 	if err != nil {
 		return nil, Profile{}, err
 	}
 	return emb, p, nil
 }
 
-func (r *Router) llmFor(ctx context.Context, p Profile) (LLM, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Router) llmForLocked(ctx context.Context, p Profile) (LLM, error) {
 	if llm, ok := r.llmsByID[p.ID]; ok {
 		return llm, nil
 	}
@@ -274,9 +380,7 @@ func (r *Router) llmFor(ctx context.Context, p Profile) (LLM, error) {
 	return llm, nil
 }
 
-func (r *Router) embedderFor(ctx context.Context, p Profile) (Embedder, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Router) embedderForLocked(ctx context.Context, p Profile) (Embedder, error) {
 	if e, ok := r.embsByID[p.ID]; ok {
 		return e, nil
 	}

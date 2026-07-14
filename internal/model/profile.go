@@ -20,9 +20,14 @@ import (
 // Capabilities is advisory metadata. v1 routing uses Role directly;
 // v1.1 may add capability-based resolution without a schema change.
 type Profile struct {
-	ID                       string `yaml:"id"`
-	Role                     Role   `yaml:"role"`
-	Backend                  string `yaml:"backend"`  // "vllm" in v1
+	ID      string `yaml:"id"`
+	Role    Role   `yaml:"role"`
+	Backend string `yaml:"backend"` // "vllm" in v1
+	// ProviderKind records the cmd-layer provider catalog kind that produced
+	// this profile (vllm, openai, anthropic, ...). It is non-secret provenance
+	// used by routing policy to distinguish a self-hosted vLLM profile from a
+	// hosted OpenAI-compatible profile even though both share Backend "vllm".
+	ProviderKind             string `yaml:"provider_kind,omitempty"`
 	Endpoint                 string `yaml:"endpoint"` // e.g. http://your-llm-host:8000
 	Model                    string `yaml:"model"`    // model name to send in API requests
 	ContextLength            int    `yaml:"context_length"`

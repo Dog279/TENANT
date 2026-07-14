@@ -12,6 +12,14 @@ import (
 // per-role fallback chain. The FallbackLLM engine lives in internal/model;
 // this just builds + registers the namespaced per-provider profiles.
 
+// Prompt-router roles are deliberately open strings. They are pinned once at
+// wiring/control time; turns only resolve them through LLMForRole and never
+// mutate the shared Router.
+const (
+	plannerBigRole model.Role = "planner-big"
+	routeForceRole model.Role = "route-force"
+)
+
 // fallbackGenRoles are the generation roles that get a fallback chain (the ones
 // genProfiles produces). Judge/embedder are intentionally excluded.
 var fallbackGenRoles = []model.Role{model.RolePlanner, model.RoleExecutor, model.RoleSummarizer}
@@ -40,6 +48,12 @@ func providerGenProfiles(cfgDir string, lc *launchConfig, name string, planCeili
 		genAPIKey:    resolveSecret(cfgDir, name, pc.Auth),
 		planCeiling:  planCeiling,
 	}
+	// Carry the provider's persisted reasoning effort exactly like the active
+	// provider path (wiring.go) does — without this, planner-big / forced /
+	// fallback bindings silently run at default effort.
+	if pk.SupportsReasoning {
+		c.reasoning = pc.Reasoning
+	}
 	gen, factories, err := genProfiles(c)
 	if err != nil {
 		return nil, nil, err
@@ -48,6 +62,64 @@ func providerGenProfiles(cfgDir string, lc *launchConfig, name string, planCeili
 		gen[i].ID = name + "/" + gen[i].ID
 	}
 	return gen, factories, nil
+}
+
+// installRouteBigRole binds the configured route.big_role provider to the
+// stable planner-big role. The provider's planner profile stays declared as a
+// planner and keeps its provider-namespaced ID; AddFallbackProfiles registers
+// it without changing the live planner preference, and PinRole adds only the
+// new open-string role. Consequently `/model use` can keep replacing planner
+// while this binding survives like the independently pinned embedder.
+func installRouteBigRole(r *model.Router, cfgDir string, lc *launchConfig, planCeiling int, log *slog.Logger) error {
+	if r == nil {
+		return fmt.Errorf("route: bind planner-big: model router is unavailable")
+	}
+	rc, err := resolveRouteConfig(lc)
+	if err != nil {
+		return err
+	}
+	providerName := strings.TrimSpace(rc.BigRole)
+	if providerName == "" {
+		return nil
+	}
+	gen, factories, err := providerGenProfiles(cfgDir, lc, providerName, planCeiling)
+	if err != nil {
+		err = fmt.Errorf("route: build planner-big provider %q: %w", providerName, err)
+		// Routing disabled means routing must not be a dependency: a stale,
+		// unbuildable big_role left behind by `/route off` degrades to a
+		// warning instead of breaking startup or /model swaps. With routing
+		// enabled the bind stays load-bearing and the error propagates.
+		if !rc.Enabled {
+			if log != nil {
+				log.Warn("route: planner-big unavailable while routing is off; continuing", "err", err.Error())
+			}
+			return nil
+		}
+		return err
+	}
+	var planner model.Profile
+	for _, p := range gen {
+		if p.Role == model.RolePlanner {
+			planner = p
+			break
+		}
+	}
+	if planner.ID == "" {
+		return fmt.Errorf("route: provider %q did not produce a planner profile", providerName)
+	}
+	for kind, factory := range factories {
+		r.RegisterBackend(kind, factory)
+	}
+	if err := r.AddFallbackProfiles(planner); err != nil {
+		return fmt.Errorf("route: register planner-big profile %q: %w", planner.ID, err)
+	}
+	if err := r.PinRole(plannerBigRole, planner.ID); err != nil {
+		return fmt.Errorf("route: pin planner-big profile %q: %w", planner.ID, err)
+	}
+	if log != nil {
+		log.Info("route: bound planner-big role", "provider", providerName, "profile", planner.ID)
+	}
+	return nil
 }
 
 // installFallbackChain (re)asserts lc.Fallbacks onto the router. For each
@@ -61,6 +133,7 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 	for _, role := range fallbackGenRoles {
 		r.SetFallbackChain(role, nil)
 	}
+	r.SetFallbackChain(plannerBigRole, nil)
 	if len(lc.Fallbacks) == 0 {
 		return
 	}
@@ -95,6 +168,19 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 	}
 	for role, ids := range roleChains {
 		r.SetFallbackChain(role, ids)
+	}
+	// The big leg inherits the planner's provider chain, minus its own primary
+	// when that provider is also listed as a fallback. Fallback profile Role
+	// values need not equal the lookup role; LLMForRole follows profile IDs.
+	if primary, err := r.ForRole(plannerBigRole); err == nil {
+		ids := roleChains[model.RolePlanner]
+		bigChain := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if id != primary.ID {
+				bigChain = append(bigChain, id)
+			}
+		}
+		r.SetFallbackChain(plannerBigRole, bigChain)
 	}
 }
 

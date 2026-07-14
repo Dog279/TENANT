@@ -69,6 +69,11 @@ type TeamConfig struct {
 	// nil/empty = no profiles (legacy behavior: every spawn shares the
 	// orchestrator's router).
 	AgentProfiles map[string]*agentProfile
+	// SpawnRole, when set, classifies a spawn task (TEN-292 N-way rules) and
+	// suggests a planner role for UNPINNED spawns only — spawns matching a
+	// pinned AgentProfile always bypass routing. Best-effort: (_, false)
+	// keeps today's exact spawn behavior.
+	SpawnRole func(task string) (model.Role, bool)
 	// CfgDir is needed when (lazily) building a per-profile router so we can
 	// resolve provider config + secrets. Required if AgentProfiles is set.
 	CfgDir string
@@ -200,6 +205,17 @@ func (r *TeamRuntime) routerForProfile(role string) (*model.Router, *agentProfil
 	r.profileRouters[role] = pr
 	r.routerMu.Unlock()
 	return pr, ap
+}
+
+// spawnRoleSafely guards the spawn classifier with the same panic isolation
+// the turn hook gets: a broken classifier must never kill a spawn.
+func spawnRoleSafely(fn func(string) (model.Role, bool), task string) (role model.Role, ok bool) {
+	defer func() {
+		if v := recover(); v != nil {
+			role, ok = "", false
+		}
+	}()
+	return fn(task)
 }
 
 // addCleanup registers a teardown (e.g. a per-agent browser session) to run
@@ -413,8 +429,28 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	}
 	tools := r.agentTools(id) // full plugin set + this agent's own tools
 
+	// Spawn-time N-way routing (TEN-292): UNPINNED spawns only — a spawn that
+	// matched a pinned AgentProfile (profile with a provider) keeps its pinned
+	// router untouched. The suggested role must already resolve on the router
+	// this spawn will use; anything else keeps today's planner role exactly.
+	plannerRole := model.Role("")
+	if r.cfg.SpawnRole != nil && (profile == nil || profile.Provider == "") {
+		if suggested, ok := spawnRoleSafely(r.cfg.SpawnRole, task); ok && suggested != "" {
+			if _, err := router.ForRole(suggested); err == nil {
+				plannerRole = suggested
+				if r.cfg.Log != nil {
+					r.cfg.Log.Info("team: spawn routed by rule", "agent", id, "role", string(suggested))
+				}
+			} else if r.cfg.Log != nil {
+				r.cfg.Log.Warn("team: spawn rule role unbound on spawn router; using planner",
+					"agent", id, "role", string(suggested))
+			}
+		}
+	}
+
 	ag, err := agent.New(agent.Config{
 		AgentID:      id,
+		PlannerRole:  plannerRole,
 		Router:       router,
 		Soul:         sl,
 		Working:      working.New(),

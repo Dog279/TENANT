@@ -10,14 +10,15 @@ import (
 // pass^k aggregation and bootstrap CI. The shape stays additive across
 // phases — old consumers ignore new fields.
 type TaskResult struct {
-	TaskID         string   `json:"task_id"`
-	Category       string   `json:"category"`
-	Passed         bool     `json:"passed"`
-	Score          float64  `json:"score"` // 0-100
-	Failures       []string `json:"failures,omitempty"`
-	ElapsedMS      int64    `json:"elapsed_ms"`
-	JudgeScore     int      `json:"judge_score,omitempty"`     // 1-5 anchored, 0 if no judge ran
-	JudgeReasoning string   `json:"judge_reasoning,omitempty"` // judge's one-sentence rationale
+	TaskID         string                  `json:"task_id"`
+	Category       string                  `json:"category"`
+	Passed         bool                    `json:"passed"`
+	Score          float64                 `json:"score"` // 0-100
+	Failures       []string                `json:"failures,omitempty"`
+	ElapsedMS      int64                   `json:"elapsed_ms"`
+	JudgeScore     int                     `json:"judge_score,omitempty"`     // 1-5 anchored, 0 if no judge ran
+	JudgeReasoning string                  `json:"judge_reasoning,omitempty"` // judge's one-sentence rationale
+	RouteMetrics   *RouteClassifierMetrics `json:"route_metrics,omitempty"`
 	// Ungraded marks a task whose gate passed but whose judge was unusable
 	// even after a retry (TEN-197). Excluded from pass/fail aggregates,
 	// baselines, and baseline pairing — grader infrastructure must never
@@ -28,6 +29,19 @@ type TaskResult struct {
 	// exclusion discipline as Ungraded; SkipReason names the tool.
 	Skipped    bool   `json:"skipped,omitempty"`
 	SkipReason string `json:"skip_reason,omitempty"`
+}
+
+// RouteClassifierMetrics are the measured values behind a route_classifier
+// task's numeric verdict. Rates use the complete hand-labeled suite as their
+// denominator, so parse failures cannot make agreement look better.
+type RouteClassifierMetrics struct {
+	Samples            int     `json:"samples"`
+	Attempts           int     `json:"attempts"`
+	ParseSuccesses     int     `json:"parse_successes"`
+	LabelAgreements    int     `json:"label_agreements"`
+	ParseSuccessRate   float64 `json:"parse_success_rate"`
+	LabelAgreementRate float64 `json:"label_agreement_rate"`
+	P95LatencyMS       float64 `json:"p95_latency_ms"`
 }
 
 // ScoreFixture runs the deterministic gate against a fixture and

@@ -22,8 +22,9 @@ import (
 type Mode string
 
 const (
-	ModeFixture Mode = "fixture" // pre-canned tool calls + response; scored deterministically
-	ModeLive    Mode = "live"    // real agent run; scored by deterministic gate + LLM judge
+	ModeFixture         Mode = "fixture"          // pre-canned tool calls + response; scored deterministically
+	ModeLive            Mode = "live"             // real agent run; scored by deterministic gate + LLM judge
+	ModeRouteClassifier Mode = "route_classifier" // live prompt classifier; scored by numeric deterministic gates
 )
 
 // Subset names the curated task groupings. smoke is for CI fast-path
@@ -52,16 +53,17 @@ func (s Subset) IsValid() bool {
 // at load time are an error (catches typos that would silently drop
 // data otherwise).
 type Task struct {
-	ID          string   `yaml:"id"`
-	Category    string   `yaml:"category"`
-	Subset      Subset   `yaml:"subset"`
-	Description string   `yaml:"description"`
-	Prompt      string   `yaml:"prompt"`
-	Mode        Mode     `yaml:"mode"`
-	Fixture     *Fixture `yaml:"fixture,omitempty"`
-	Expected    Expected `yaml:"expected"`
-	Rollouts    int      `yaml:"rollouts,omitempty"` // default 1 in Phase 1
-	Weight      float64  `yaml:"weight,omitempty"`   // default 1.0
+	ID          string      `yaml:"id"`
+	Category    string      `yaml:"category"`
+	Subset      Subset      `yaml:"subset"`
+	Description string      `yaml:"description"`
+	Prompt      string      `yaml:"prompt"`
+	Mode        Mode        `yaml:"mode"`
+	Fixture     *Fixture    `yaml:"fixture,omitempty"`
+	Expected    Expected    `yaml:"expected"`
+	RouteCases  []RouteCase `yaml:"route_cases,omitempty"`
+	Rollouts    int         `yaml:"rollouts,omitempty"` // default 1 in Phase 1
+	Weight      float64     `yaml:"weight,omitempty"`   // default 1.0
 
 	// InjectedFacts / InjectedEpisodes pre-seed the agent's ephemeral memory
 	// before a live run, so memory-recall tasks have something to retrieve.
@@ -92,8 +94,17 @@ type FixtureToolCall struct {
 	Args string `yaml:"args"` // JSON-encoded
 }
 
-// Expected captures the deterministic assertions a task makes against
-// either a fixture (smoke) or a live agent run (later phases). The
+// RouteCase is one hand-labeled prompt in a route_classifier task. Name is
+// optional diagnostic context; Label is deliberately limited to the only two
+// actions the prompt router can select.
+type RouteCase struct {
+	Name   string `yaml:"name,omitempty"`
+	Prompt string `yaml:"prompt"`
+	Label  string `yaml:"label"`
+}
+
+// Expected captures the deterministic assertions a task makes against a
+// fixture, live agent run, or route-classifier sample set. The
 // Rubric is consulted only after every deterministic check passes —
 // failed gate ⇒ skip judge, save tokens.
 type Expected struct {
@@ -102,6 +113,12 @@ type Expected struct {
 	ResponseSubstrAny []string           `yaml:"response_substring_any,omitempty"`
 	Rubric            *Rubric            `yaml:"rubric,omitempty"`
 	RubricMinScore    int                `yaml:"rubric_min_score,omitempty"`
+
+	// Deterministic route-classifier graduation thresholds. Latency is a
+	// strict upper bound; rate minima are inclusive.
+	ParseSuccessRateMin     float64 `yaml:"parse_success_rate_min,omitempty"`
+	LabelAgreementRateMin   float64 `yaml:"label_agreement_rate_min,omitempty"`
+	P95ClassifyLatencyMSMax int64   `yaml:"p95_classify_latency_ms_max,omitempty"`
 }
 
 // ExpectedToolCall asserts a tool ran with arguments containing every
@@ -221,10 +238,31 @@ func (t *Task) validate() error {
 		if t.Expected.RubricMinScore < 1 || t.Expected.RubricMinScore > 5 {
 			return fmt.Errorf("task: rubric_min_score must be 1-5, got %d", t.Expected.RubricMinScore)
 		}
+	case ModeRouteClassifier:
+		if len(t.RouteCases) == 0 {
+			return errors.New("task: route_classifier mode requires route_cases")
+		}
+		for i, c := range t.RouteCases {
+			if strings.TrimSpace(c.Prompt) == "" {
+				return fmt.Errorf("task: route_cases[%d] requires prompt", i)
+			}
+			if c.Label != "small" && c.Label != "big" {
+				return fmt.Errorf("task: route_cases[%d] label %q must be small or big", i, c.Label)
+			}
+		}
+		if min := t.Expected.ParseSuccessRateMin; min <= 0 || min > 1 {
+			return fmt.Errorf("task: parse_success_rate_min must be in (0,1], got %g", min)
+		}
+		if min := t.Expected.LabelAgreementRateMin; min <= 0 || min > 1 {
+			return fmt.Errorf("task: label_agreement_rate_min must be in (0,1], got %g", min)
+		}
+		if max := t.Expected.P95ClassifyLatencyMSMax; max <= 0 {
+			return fmt.Errorf("task: p95_classify_latency_ms_max must be positive, got %d", max)
+		}
 	default:
 		return fmt.Errorf("task: invalid mode %q", t.Mode)
 	}
-	if t.Prompt == "" {
+	if t.Mode != ModeRouteClassifier && t.Prompt == "" {
 		return errors.New("task: prompt required")
 	}
 	for i, f := range t.InjectedFacts {

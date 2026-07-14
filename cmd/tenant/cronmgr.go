@@ -64,6 +64,9 @@ type cronAgentDeps struct {
 	fullDisp    agent.ToolDispatcher
 	sysPrompt   string
 	log         *slog.Logger
+	routeHook   agent.RouteHook
+	routeActive agent.RouteActive
+	routeSticky agent.RouteSticky
 
 	cfgDir    string    // protected from exec-job writes
 	dataDir   string    // protected from exec-job writes; holds the shell sandbox
@@ -81,6 +84,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		AgentID: "tenant-cron", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills,
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronSysSuffix,
+		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
 	if err != nil {
 		return nil, err
@@ -91,6 +95,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		AgentID: "tenant-cron-exec", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills,
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
+		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
 	if err != nil {
 		return nil, err
@@ -117,7 +122,9 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 			ag = execAg
 			runCtx = withOffsiteConfirm(ctx, approver)
 		}
-		res, err := ag.Turn(runCtx, agent.TurnRequest{UserQuery: job.Prompt})
+		res, err := ag.Turn(runCtx, agent.TurnRequest{
+			UserQuery: job.Prompt, RouteSurface: agent.RouteSurfaceCron,
+		})
 		if err != nil {
 			return "", err
 		}

@@ -71,7 +71,9 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 		// Turn streams its own events through the broker (the server's
 		// Observer is broker.Publish), so every client's writer pump relays
 		// them. We only drive the call and drop its buffered result.
-		_, _ = co.runner.Turn(turnCtx, agent.TurnRequest{UserQuery: query})
+		_, _ = co.runner.Turn(turnCtx, agent.TurnRequest{
+			UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
+		})
 	}()
 }
 
@@ -144,7 +146,9 @@ func (co *wsCoordinator) startBackground(query string) bool {
 
 	go func() {
 		defer co.finish(turnID, cancel)
-		_, _ = co.runner.Turn(turnCtx, agent.TurnRequest{UserQuery: query})
+		_, _ = co.runner.Turn(turnCtx, agent.TurnRequest{
+			UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
+		})
 	}()
 	return true
 }

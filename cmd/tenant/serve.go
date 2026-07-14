@@ -211,6 +211,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	mux.SetEmbedder(embedderID, skEmb)
 
 	// Auto-fallback (TEN-246): wire the configured chain + surface failovers.
+	if err := installRouteBigRole(router, c.cfgDir, c.lc, c.planCeiling, log); err != nil {
+		return err
+	}
 	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
 	router.SetFailoverObserver(func(ev model.FailoverEvent) {
 		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
@@ -297,6 +300,10 @@ func cmdServe(ctx context.Context, args []string) error {
 		stgMu.Unlock()
 		saveSettings()
 	}
+	// routeRT is built later in startup (it needs the fully-wired router); the
+	// team only spawns once serve is running, so the late bind is safe. A nil
+	// runtime degrades to today's exact spawn behavior.
+	var routeRT *routeRuntime
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
@@ -304,6 +311,12 @@ func cmdServe(ctx context.Context, args []string) error {
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
+		SpawnRole: func(task string) (model.Role, bool) { // TEN-292
+			if routeRT == nil {
+				return "", false
+			}
+			return routeRT.SpawnRole(task)
+		},
 		CfgDir:        c.cfgDir,
 		EmbedProfile:  embProf,
 		LocalRestore:  stg.Tools,
@@ -362,6 +375,13 @@ func cmdServe(ctx context.Context, args []string) error {
 		}
 	}
 
+	routeRT, err = newRouteRuntime(c.lc, c.cfgDir, c.dataDir, router, log)
+	if err != nil {
+		return err
+	}
+	if err := routeRT.BindConfiguredForce(); err != nil {
+		return err
+	}
 	ag, err := agent.New(agent.Config{
 		AgentID:  c.agent,
 		Router:   router,
@@ -381,6 +401,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		Logger:       log,
 		Stream:       true,
 		Observer:     emit,
+		RouteHook:    routeRT.Hook(),
+		RouteActive:  routeRT.Active,
+		RouteSticky:  routeRT.Sticky,
 		LazyToolLoad: c.lc.LazyTools,
 		Skills:       skillRetriever{st: skillStore, agentID: c.agent},
 		SystemPrompt: sysPrompt,
@@ -429,6 +452,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		fullDisp:    mainTools,
 		sysPrompt:   sysPrompt,
 		log:         log,
+		routeHook:   routeRT.Hook(),
+		routeActive: routeRT.Active,
+		routeSticky: routeRT.Sticky,
 		cfgDir:      c.cfgDir,
 		dataDir:     c.dataDir,
 		allowExec:   cronExecGate,
@@ -534,7 +560,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	relayMgr := buildServeRelay(ctx, serveRelayDeps{
 		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
-		emit: emit, notify: pushSys, degraded: degraded, log: log,
+		emit: emit, notify: pushSys, degraded: degraded, log: log, routeHook: routeRT.Hook(),
+		routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 	})
 
 	// Native iMessage responder (TEN-230): the away-from-desk drive surface a Mac
@@ -544,6 +571,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
 		meta: meta, broker: broker, degraded: degraded, emit: emit, notify: pushSys, log: log,
+		routeHook: routeRT.Hook(), routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 	})
 	dashMgr.access = dashAccess{im: imsgAllowMgr, relay: relayMgr}
 
