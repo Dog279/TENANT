@@ -3,12 +3,32 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
+	reflectpkg "reflect"
 	"strings"
 	"testing"
 
 	"tenant/internal/model"
 	"tenant/internal/plugins/web"
 )
+
+func TestWebPrivateNetworkFlagWiresExactAllowlist(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	pf := bindPluginFlags(fs)
+	if err := fs.Parse([]string{
+		"--web-private-network", "grafana.internal",
+		"--web-private-network", "buildbox.internal",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"grafana.internal", "buildbox.internal"}
+	if cfg := webConfig("", pf); !reflectpkg.DeepEqual(cfg.PrivateNetwork, want) {
+		t.Fatalf("private network allowlist = %v, want %v", cfg.PrivateNetwork, want)
+	}
+	if got := webConfig("", &pluginFlags{}).PrivateNetwork; len(got) != 0 {
+		t.Fatalf("default private network allowlist must be empty, got %v", got)
+	}
+}
 
 func TestLazyWeb_AdvertisesSpecsWithoutSession(t *testing.T) {
 	lw := newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil)

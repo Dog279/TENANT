@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"runtime"
@@ -249,6 +250,10 @@ type Config struct {
 	// ReaderDisabled turns OFF the Jina reader fallback entirely (operator
 	// opt-out: no URL is ever sent to r.jina.ai). Default false = enabled.
 	ReaderDisabled bool
+	// PrivateNetwork is an explicit, exact hostname allowlist for intentional
+	// access to local/private services. It is empty by default. Numeric IP
+	// literals are never accepted here; operators must name the endpoint.
+	PrivateNetwork []string
 
 	// Live key resolvers (optional). When set, these are re-read on EVERY
 	// search/read so a key rotated in the environment or credentials.json is
@@ -259,6 +264,11 @@ type Config struct {
 	BraveKeyFunc  func() string `yaml:"-"`
 	TavilyKeyFunc func() string `yaml:"-"`
 	JinaKeyFunc   func() string `yaml:"-"`
+
+	// Test seams for deterministic DNS/rebinding and pinned-dial coverage.
+	resolver    ipResolver
+	dialContext func(context.Context, string, string) (net.Conn, error)
+	guard       *egressGuard
 }
 
 // braveKey/tavilyKey/jinaKey return the live key: the resolver (re-read each
@@ -290,6 +300,7 @@ func (c Config) jinaKey() string {
 // current page. Close tears Chrome down.
 type Session struct {
 	cfg      Config
+	proxy    *egressProxy
 	allocCtx context.Context
 	cancelA  context.CancelFunc
 	tabCtx   context.Context
@@ -350,6 +361,12 @@ func NewSession(cfg Config) (*Session, error) {
 	if cfg.NavTimeout == 0 {
 		cfg.NavTimeout = 60 * time.Second
 	}
+	guard := newEgressGuard(cfg)
+	cfg.guard = guard
+	proxy, err := startEgressProxy(guard)
+	if err != nil {
+		return nil, err
+	}
 	// Headless is the caller's choice (TUI passes !--web-show). The old
 	// code forced it true unconditionally, so --web-show never opened a
 	// window.
@@ -360,6 +377,12 @@ func NewSession(cfg Config) (*Session, error) {
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
+		// Force all browser egress, including redirects and subresources,
+		// through the guarded Go proxy. QUIC cannot use an HTTP proxy.
+		chromedp.ProxyServer("http://"+proxy.Address()),
+		chromedp.Flag("proxy-bypass-list", "<-loopback>"),
+		chromedp.Flag("disable-quic", true),
+		chromedp.Flag("force-webrtc-ip-handling-policy", "disable_non_proxied_udp"),
 		// Hide the automation tells bot-detectors check FIRST: the
 		// AutomationControlled blink feature and the enable-automation
 		// switch ("Chrome is being controlled by automated software").
@@ -401,10 +424,11 @@ func NewSession(cfg Config) (*Session, error) {
 	); err != nil {
 		cancelT()
 		cancelA()
+		_ = proxy.Close()
 		return nil, fmt.Errorf("web: start chrome: %w", err)
 	}
 	return &Session{
-		cfg: cfg, allocCtx: allocCtx, cancelA: cancelA,
+		cfg: cfg, proxy: proxy, allocCtx: allocCtx, cancelA: cancelA,
 		tabCtx: tabCtx, cancelT: cancelT,
 	}, nil
 }
@@ -418,6 +442,10 @@ func (s *Session) Close() error {
 	if s.cancelA != nil {
 		s.cancelA()
 		s.cancelA = nil
+	}
+	if s.proxy != nil {
+		_ = s.proxy.Close()
+		s.proxy = nil
 	}
 	return nil
 }

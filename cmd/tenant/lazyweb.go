@@ -27,6 +27,7 @@ func webConfig(cfgDir string, pf *pluginFlags) web.Config {
 		TavilyKeyFunc:  func() string { return credKey(cfgDir, "tavily", "TAVILY_API_KEY", "TAVILY_KEY") },
 		JinaKeyFunc:    func() string { return credKey(cfgDir, "jina", "JINA_API_KEY", "JINA_KEY") },
 		ReaderDisabled: readerDisabled(),
+		PrivateNetwork: append([]string(nil), pf.webPrivateNetwork...),
 	}
 }
 

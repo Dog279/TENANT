@@ -40,13 +40,18 @@ type Searcher interface {
 // NewSearcher picks the best configured backend: Tavily (LLM-ready, free
 // tier) > Brave (now metered) > DuckDuckGo (keyless default).
 func NewSearcher(cfg Config) Searcher {
+	guard := cfg.guard
+	if guard == nil {
+		guard = newEgressGuard(cfg)
+	}
+	httpClient := guardedHTTPClient(guard, 15*time.Second)
 	if k := strings.TrimSpace(cfg.tavilyKey()); k != "" {
-		return &tavilySearcher{key: k, http: searchHTTPClient}
+		return &tavilySearcher{key: k, http: httpClient}
 	}
 	if k := strings.TrimSpace(cfg.braveKey()); k != "" {
-		return &braveSearcher{key: k, http: searchHTTPClient}
+		return &braveSearcher{key: k, http: httpClient}
 	}
-	return &ddgSearcher{http: searchHTTPClient}
+	return &ddgSearcher{http: httpClient}
 }
 
 // braveEndpoint is the public Brave API base URL. Overridable for tests.
@@ -95,10 +100,6 @@ func FormatSearchResults(engine, query string, results []SearchResult) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
-
-// --- shared HTTP client ---
-
-var searchHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // --- DuckDuckGo (HTML, keyless) ---
 

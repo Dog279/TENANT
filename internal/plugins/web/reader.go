@@ -29,12 +29,17 @@ var readerBase = "https://r.jina.ai/"
 const readerUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 	"(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-var readerHTTPClient = &http.Client{Timeout: 30 * time.Second}
-
 // fetchViaReader retrieves targetURL through Jina Reader and returns the page as
 // markdown. Returns an error on a non-2xx or transport failure so the caller can
 // decide whether to surface the original browser error instead.
 func fetchViaReader(ctx context.Context, cfg Config, targetURL string) (string, error) {
+	guard := cfg.guard
+	if guard == nil {
+		guard = newEgressGuard(cfg)
+	}
+	if _, err := guard.ValidateURL(ctx, targetURL); err != nil {
+		return "", fmt.Errorf("reader target: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, readerBase+targetURL, nil)
 	if err != nil {
 		return "", err
@@ -46,7 +51,7 @@ func fetchViaReader(ctx context.Context, cfg Config, targetURL string) (string, 
 	if k := strings.TrimSpace(cfg.jinaKey()); k != "" {
 		req.Header.Set("Authorization", "Bearer "+k)
 	}
-	resp, err := readerHTTPClient.Do(req)
+	resp, err := guardedHTTPClient(guard, 30*time.Second).Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -738,6 +738,15 @@ func cmdWeb(ctx context.Context, args []string) error {
 	c := bindCommon(fs)
 	show := fs.Bool("show", false, "run a VISIBLE Chrome window (watch the agent)")
 	allowInteract := fs.Bool("allow-interact", false, "permit click/fill/select (next-turn tools)")
+	var privateNetwork []string
+	fs.Func("web-private-network", "allow an exact named private endpoint (repeatable; explicit SSRF-policy opt-in)", func(s string) error {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return fmt.Errorf("web-private-network hostname cannot be empty")
+		}
+		privateNetwork = append(privateNetwork, s)
+		return nil
+	})
 	if err := fs.Parse(rest[split:]); err != nil {
 		return err
 	}
@@ -754,7 +763,11 @@ func cmdWeb(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStores()
-	sess, err := web.NewSession(web.Config{Headless: !*show, BraveKey: braveKey(c.cfgDir)})
+	sess, err := web.NewSession(web.Config{
+		Headless:       !*show,
+		BraveKey:       braveKey(c.cfgDir),
+		PrivateNetwork: privateNetwork,
+	})
 	if err != nil {
 		return fmt.Errorf("start browser: %w (is Chrome installed?)", err)
 	}

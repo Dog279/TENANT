@@ -3,9 +3,9 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -71,6 +71,7 @@ func (p Policy) gate(ctx context.Context, class ActionClass, action, detail stri
 // holds the browser session; tools operate on the current page.
 type Dispatcher struct {
 	br      browser
+	guard   *egressGuard
 	policy  Policy
 	shotDir string // where web_screenshot writes PNGs
 	cfg     Config // carries search keys + reader-fallback config
@@ -94,7 +95,7 @@ func NewDispatcher(s *Session, policy Policy, shotDir string) *Dispatcher {
 		br = s.browser()
 		cfg = s.Config()
 	}
-	return &Dispatcher{br: br, policy: policy, shotDir: shotDir, cfg: cfg}
+	return &Dispatcher{br: br, guard: cfg.guard, policy: policy, shotDir: shotDir, cfg: cfg}
 }
 
 // newDispatcherWithBrowser is the test seam (inject a fake browser).
@@ -284,6 +285,12 @@ func (d *Dispatcher) navigate(ctx context.Context, args json.RawMessage) (string
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	if d.guard != nil {
+		u, err = d.guard.ValidateURL(ctx, u)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+	}
 	if err := d.policy.gate(ctx, ClassRead, "navigate", u); err != nil {
 		return err.Error(), true, nil
 	}
@@ -416,25 +423,4 @@ func (d *Dispatcher) screenshot(ctx context.Context) (string, bool, error) {
 		return "screenshot failed: " + err.Error(), true, nil
 	}
 	return fmt.Sprintf("screenshot of %s saved to %s", cur, path), false, nil
-}
-
-// validateURL enforces http/https + an absolute URL. Blocks file://,
-// javascript:, data:, and bare hosts — the model navigating to a
-// local file:// or a javascript: URL is an injection/exfil risk.
-func validateURL(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", errors.New("url is required")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("invalid url: %v", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("blocked: only http/https URLs allowed (got %q)", u.Scheme)
-	}
-	if u.Host == "" {
-		return "", errors.New("blocked: url must include a host")
-	}
-	return u.String(), nil
 }
