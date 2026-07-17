@@ -763,6 +763,19 @@ type RouteControl interface {
 	Stats() string
 	SetMode(mode string) (string, error)
 	Force(profileID string) (string, error)
+	// ConfigureInfo inventories configured providers (cloud = big-leg
+	// candidates, local = small-leg candidates) plus the current policy for
+	// the /route configure wizard. Reads config.json — call from a tea.Cmd,
+	// never the UI goroutine.
+	ConfigureInfo() (RouteConfigureInfo, error)
+	// SetBig persists route.big_role = provider (and, when model is
+	// non-empty, the provider's model) and live-binds planner-big. Disk +
+	// backend I/O — tea.Cmd only.
+	SetBig(provider, model string) (string, error)
+	// SetPolicy persists one policy knob: never_cloud |
+	// min_complexity_for_big | sticky_session. Mode changes go through
+	// SetMode (rollout ladder). Disk I/O — tea.Cmd only.
+	SetPolicy(field, value string) (string, error)
 }
 
 // ResearchControl powers /research: a long-running deep-research pass. The
@@ -1360,6 +1373,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// already routes to it.
 	if start, ok := msg.(pickerStartMsg); ok {
 		m.picker = start.picker
+		return m, nil
+	}
+	// Route-configure wizard chaining: post the applied step's status and
+	// open the next picker in the same Update pass, so nothing can interleave
+	// between them.
+	if w, ok := msg.(routeWizardMsg); ok {
+		if w.text != "" {
+			m.sysChat(w.text)
+		}
+		if w.next != nil {
+			// A wizard step arrives asynchronously (after a fetch/apply); if
+			// the operator opened another picker during that gap, dropping the
+			// step beats silently replacing what they're looking at.
+			if m.picker != nil {
+				m.sysChat("route configure: another picker opened meanwhile — wizard stopped (settings already applied are kept); re-run /route configure to continue")
+			} else {
+				m.picker = w.next
+			}
+		}
 		return m, nil
 	}
 	// Async post to system chat (from picker callbacks, list fetchers,
@@ -2437,6 +2469,8 @@ func (m *model) handleRoute(arg string) tea.Cmd {
 	case sub == "stats" && len(f) == 1:
 		ctl := m.cfg.Route
 		return func() tea.Msg { return sysChatMsg{text: ctl.Stats()} }
+	case sub == "configure" && len(f) == 1:
+		return m.startRouteConfigure()
 	case (sub == "on" || sub == "off" || sub == "shadow" || sub == "assisted" || sub == "everywhere") && len(f) == 1:
 		status, err := m.cfg.Route.SetMode(sub)
 		if err != nil {
@@ -2458,7 +2492,7 @@ func (m *model) handleRoute(arg string) tea.Cmd {
 		if len(f) == 2 {
 			v, err := strconv.Atoi(f[1])
 			if err != nil || v <= 0 {
-				m.sysChat("usage: /route <status|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
+				m.sysChat("usage: /route <status|configure|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
 				return nil
 			}
 			n = v
@@ -2466,7 +2500,7 @@ func (m *model) handleRoute(arg string) tea.Cmd {
 		m.sysChat(m.cfg.Route.Why(n))
 		return nil
 	default:
-		m.sysChat("usage: /route <status|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
+		m.sysChat("usage: /route <status|configure|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
 		return nil
 	}
 }
@@ -2516,6 +2550,7 @@ var helpSections = []helpSection{
 			{"/ceiling [n]", "view / live-tune the loop ceiling (max tool calls per turn)"},
 			{"/reasoning [level]", "arrow-key picker / live-tune reasoning effort for reasoning models (Fugu: high/xhigh)"},
 			{"/route", "show prompt-router status + run a parseable classifier health probe"},
+			{"/route configure", "arrow-key wizard: big cloud model → small local model → policy"},
 			{"/route on|off|shadow|assisted|everywhere", "persist one explicit rollout stage"},
 			{"/route force <profileID>", "force an explicitly named profile (privacy override; logged)"},
 			{"/route stats", "show big/disagreement/failure rates, latency, and breaker trips"},

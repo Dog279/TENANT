@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/agent"
@@ -23,6 +24,13 @@ import (
 type routeRuntime struct {
 	mu                 sync.RWMutex
 	cfg                resolvedRouteConfig
+	// cfgMu serializes route-config read-modify-write cycles (SetMode, Force,
+	// SetBig, SetPolicy) so two route mutations can't interleave their
+	// load→mutate→save windows and silently drop each other's writes. It does
+	// not cover non-route config writers (/model, credentials watcher) — those
+	// serialize on modelControl.mu and can still race any route save, a
+	// pre-existing property of the whole-file load→save pattern.
+	cfgMu              sync.Mutex
 	pendingSuggestions map[string]string
 	engine             *route.Engine
 	cfgDir             string
@@ -32,6 +40,41 @@ type routeRuntime struct {
 	plannerCloudNotice bool
 	configuredSmall    route.Target
 	configuredBig      route.Target
+	classifier         *swappableClassifier
+}
+
+// swappableClassifier is the Engine's classifier indirection. Engine and
+// Supra are deliberately immutable after construction, so a live route-config
+// change (enabling routing mid-session, a provider edit picked up on the next
+// reload) swaps a freshly built Supra in here instead — atomically, without
+// blocking an in-flight classify or touching the Engine's locking.
+type swappableClassifier struct {
+	p atomic.Pointer[route.Supra]
+}
+
+func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
+	s.p.Store(route.NewSupra(cfg.Endpoint, cfg.Model, time.Duration(cfg.TimeoutMS)*time.Millisecond))
+}
+
+func (s *swappableClassifier) Classify(ctx context.Context, query string) (route.Signal, error) {
+	// A nil load is handled by Supra.Classify's own nil-receiver guard.
+	return s.p.Load().Classify(ctx, query)
+}
+
+// refreshClassifier rebuilds the classifier after a persisted config change
+// altered its connection parameters. Called by every Set* after the cfg swap;
+// a no-op when endpoint/model/timeout are unchanged.
+func (r *routeRuntime) refreshClassifier(prev, cur resolvedRouteConfig) {
+	if r.classifier == nil {
+		return
+	}
+	if prev.Endpoint == cur.Endpoint && prev.Model == cur.Model && prev.TimeoutMS == cur.TimeoutMS {
+		return
+	}
+	r.classifier.store(cur)
+	if r.log != nil {
+		r.log.Info("route: classifier rebuilt", "endpoint", safeDisplayEndpoint(cur.Endpoint), "model", cur.Model)
+	}
 }
 
 func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Router, log *slog.Logger) (*routeRuntime, error) {
@@ -42,14 +85,12 @@ func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Rou
 	if log == nil {
 		log = slog.Default()
 	}
-	classifier := route.NewSupra(
-		cfg.Endpoint,
-		cfg.Model,
-		time.Duration(cfg.TimeoutMS)*time.Millisecond,
-	)
+	classifier := &swappableClassifier{}
+	classifier.store(cfg)
 	rt := &routeRuntime{
 		cfg: cfg, cfgDir: cfgDir, dataDir: dataDir, router: router, log: log,
-		engine: route.NewEngine(classifier, dataDir, 0), pendingSuggestions: make(map[string]string),
+		classifier: classifier,
+		engine:     route.NewEngine(classifier, dataDir, 0), pendingSuggestions: make(map[string]string),
 	}
 	if lc != nil {
 		rt.configuredSmall, rt.configuredBig = configuredRouteTargets(lc, cfg)
@@ -811,6 +852,8 @@ func (r *routeRuntime) SetMode(mode string) (string, error) {
 	if r == nil || r.cfgDir == "" {
 		return "", fmt.Errorf("config persistence unavailable")
 	}
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
 	lc, err := loadLaunchConfig(r.cfgDir)
 	if err != nil {
 		return "", err
@@ -864,8 +907,10 @@ func (r *routeRuntime) SetMode(mode string) (string, error) {
 		return "", err
 	}
 	r.mu.Lock()
+	prev := r.cfg
 	r.cfg = cfg
 	r.mu.Unlock()
+	r.refreshClassifier(prev, cfg)
 	if !cfg.Enabled {
 		return "prompt routing off (persisted; next turns use the planner)", nil
 	}
@@ -887,6 +932,8 @@ func (r *routeRuntime) Force(profileID string) (string, error) {
 	if profileID == "" {
 		return "", fmt.Errorf("profile id is required")
 	}
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
 	lc, err := loadLaunchConfig(r.cfgDir)
 	if err != nil {
 		return "", err
@@ -922,8 +969,10 @@ func (r *routeRuntime) Force(profileID string) (string, error) {
 		return "", err
 	}
 	r.mu.Lock()
+	prev := r.cfg
 	r.cfg = cfg
 	r.mu.Unlock()
+	r.refreshClassifier(prev, cfg)
 	return fmt.Sprintf("WARNING: route forced to profile %q; this explicitly pierces never_cloud and is audit-logged", canonical), nil
 }
 

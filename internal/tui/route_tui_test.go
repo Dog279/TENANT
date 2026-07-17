@@ -19,6 +19,12 @@ type fakeRouteControl struct {
 	statsCalls  int
 	modes       []string
 	forces      []string
+	cfgInfo     RouteConfigureInfo
+	cfgErr      error
+	cfgCalls    int
+	bigs        [][2]string // {provider, model}
+	bigErr      error
+	policies    [][2]string // {field, value}
 }
 
 func (f *fakeRouteControl) Status(context.Context) string {
@@ -44,6 +50,24 @@ func (f *fakeRouteControl) SetMode(mode string) (string, error) {
 func (f *fakeRouteControl) Force(profileID string) (string, error) {
 	f.forces = append(f.forces, profileID)
 	return "route force " + profileID, nil
+}
+
+func (f *fakeRouteControl) ConfigureInfo() (RouteConfigureInfo, error) {
+	f.cfgCalls++
+	return f.cfgInfo, f.cfgErr
+}
+
+func (f *fakeRouteControl) SetBig(provider, model string) (string, error) {
+	if f.bigErr != nil {
+		return "", f.bigErr
+	}
+	f.bigs = append(f.bigs, [2]string{provider, model})
+	return "route big " + provider + "/" + model, nil
+}
+
+func (f *fakeRouteControl) SetPolicy(field, value string) (string, error) {
+	f.policies = append(f.policies, [2]string{field, value})
+	return "route policy " + field + "=" + value, nil
 }
 
 func newRouteModel(c RouteControl) *model {
@@ -137,6 +161,7 @@ func TestSlash_RouteRejectsBadArguments(t *testing.T) {
 		"/route force",
 		"/route force one two",
 		"/route stats extra",
+		"/route configure extra",
 		"/route frobnicate",
 	} {
 		t.Run(command, func(t *testing.T) {
@@ -185,7 +210,7 @@ func TestHelp_ModelIncludesRouteCommands(t *testing.T) {
 		t.Fatal("model help section missing")
 	}
 	plain, _ := renderHelpSection(sec)
-	for _, want := range []string{"/route", "/route on|off|shadow|assisted|everywhere", "/route force", "/route stats", "/route why [n]"} {
+	for _, want := range []string{"/route", "/route configure", "/route on|off|shadow|assisted|everywhere", "/route force", "/route stats", "/route why [n]"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("model help missing %q", want)
 		}

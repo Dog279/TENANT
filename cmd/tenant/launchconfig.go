@@ -794,6 +794,12 @@ func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
 		LogRetentionDays:    route.DefaultLogRetentionDays,
 	}
 	if lc == nil || lc.Route == nil {
+		// Resolve the classifier endpoint even for an absent route block: the
+		// dormant runtime is constructed from this resolution, and a later
+		// live enable (SetMode / the configure wizard) must not inherit an
+		// empty endpoint from launch — the classifier would stay dead until
+		// restart.
+		out.Endpoint, _ = inheritedRouteEndpoint(lc)
 		return out, nil
 	}
 
@@ -930,17 +936,7 @@ func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
 		// Only the endpoint is inherited. The embeddings model cannot serve the
 		// completion-style Supra classifier; route wiring supplies/checks the
 		// classifier model independently.
-		if lc.Embed != nil {
-			pk, known := providerKinds[lc.Embed.Kind]
-			localKind = known && pk.Local
-			out.Endpoint = firstNonEmpty(
-				strings.TrimSpace(lc.Embed.Endpoint),
-				pk.DefaultEndpoint,
-				defaultEmbedEndpoint,
-			)
-		} else {
-			out.Endpoint = defaultEmbedEndpoint
-		}
+		out.Endpoint, localKind = inheritedRouteEndpoint(lc)
 	}
 
 	if !out.Enabled {
@@ -960,6 +956,31 @@ func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
 
 func validRouteMode(mode string) bool {
 	return mode == route.ModeShadow || mode == route.ModeActive || mode == route.ModeEverywhere
+}
+
+// routeBlockPresent reports whether the operator has a route section in
+// config.json at all — the discriminator between "routing unconfigured"
+// (resolveRouteConfig still fills an inherited classifier endpoint so a live
+// enable works) and "routing configured but disabled".
+func routeBlockPresent(lc *launchConfig) bool {
+	return lc != nil && lc.Route != nil
+}
+
+// inheritedRouteEndpoint resolves the classifier endpoint when route.provider
+// is absent: the embed provider's endpoint, then its kind's default, then the
+// packaged default — never empty. The bool reports whether the source kind is
+// local, which exempts the endpoint from the loopback requirement (mirrors
+// the embed provider's own trust level).
+func inheritedRouteEndpoint(lc *launchConfig) (string, bool) {
+	if lc == nil || lc.Embed == nil {
+		return defaultEmbedEndpoint, false
+	}
+	pk, known := providerKinds[lc.Embed.Kind]
+	return firstNonEmpty(
+		strings.TrimSpace(lc.Embed.Endpoint),
+		pk.DefaultEndpoint,
+		defaultEmbedEndpoint,
+	), known && pk.Local
 }
 
 // routeEndpointIsLoopback accepts only an HTTP(S) URL whose hostname is the
