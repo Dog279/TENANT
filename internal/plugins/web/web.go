@@ -26,9 +26,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -221,6 +223,13 @@ type browser interface {
 type Config struct {
 	// ChromePath overrides Chrome auto-detection.
 	ChromePath string
+	// NoSandbox disables Chrome's process sandbox. This is an insecure,
+	// container-only escape hatch: NewSession rejects it unless Tenant detects
+	// a container or user namespace around the process. The default is false.
+	NoSandbox bool
+	// Warn receives security warnings such as activation of NoSandbox. When
+	// nil, warnings are emitted through slog.Default().
+	Warn func(string)
 	// Headless runs Chrome without a window (default true). Set false
 	// to watch the agent drive a visible browser (useful for trust /
 	// debugging interact+transact later).
@@ -339,24 +348,83 @@ func detectChrome(explicit string) (string, error) {
 	return "", errors.New("web: no Chrome/Chromium/Edge found (set Config.ChromePath)")
 }
 
-// NewSession starts Chrome and opens one tab.
-func NewSession(cfg Config) (*Session, error) {
-	chromePath, err := detectChrome(cfg.ChromePath)
-	if err != nil {
-		return nil, err
+// OuterSandbox reports the container or user namespace that can contain the
+// extra risk of running Chrome without its own process sandbox. An explicit
+// NoSandbox request is rejected when this returns ok=false.
+func OuterSandbox() (kind string, ok bool) {
+	exists := func(path string) bool {
+		_, err := os.Stat(path)
+		return err == nil
 	}
-	if cfg.NavTimeout == 0 {
-		cfg.NavTimeout = 60 * time.Second
-	}
-	// Headless is the caller's choice (TUI passes !--web-show). The old
-	// code forced it true unconditionally, so --web-show never opened a
-	// window.
-	headless := cfg.Headless
+	return detectOuterSandbox(runtime.GOOS, exists, os.ReadFile)
+}
 
+func detectOuterSandbox(goos string, exists func(string) bool, readFile func(string) ([]byte, error)) (string, bool) {
+	if goos != "linux" {
+		return "", false
+	}
+	for _, marker := range []struct {
+		path string
+		kind string
+	}{
+		{path: "/.dockerenv", kind: "Docker container"},
+		{path: "/run/.containerenv", kind: "container"},
+	} {
+		if exists(marker.path) {
+			return marker.kind, true
+		}
+	}
+	if b, err := readFile("/proc/1/cgroup"); err == nil {
+		cgroup := strings.ToLower(string(b))
+		for _, token := range []string{"docker", "kubepods", "containerd", "libpod", "lxc"} {
+			if strings.Contains(cgroup, token) {
+				return token + " container", true
+			}
+		}
+	}
+	if b, err := readFile("/proc/self/uid_map"); err == nil {
+		fields := strings.Fields(string(b))
+		if len(fields) >= 3 {
+			inside, errInside := strconv.ParseUint(fields[0], 10, 64)
+			outside, errOutside := strconv.ParseUint(fields[1], 10, 64)
+			length, errLength := strconv.ParseUint(fields[2], 10, 64)
+			// The initial host namespace normally exposes the full 32-bit map
+			// 0 -> 0. A shifted or restricted map is an outer user namespace.
+			if errInside == nil && errOutside == nil && errLength == nil &&
+				(inside != 0 || outside != 0 || length < uint64(^uint32(0))) {
+				return "user namespace", true
+			}
+		}
+	}
+	return "", false
+}
+
+func validateNoSandboxMode(requested bool, outerDetected bool) error {
+	if requested && !outerDetected {
+		return errors.New("web: browser_no_sandbox requires a detected Linux container or user namespace")
+	}
+	return nil
+}
+
+const noSandboxWarning = "SECURITY WARNING: Chrome process sandbox disabled by browser_no_sandbox; use only inside the detected outer sandbox"
+
+func emitNoSandboxWarning(cfg Config, outerKind string) {
+	message := noSandboxWarning + " (" + outerKind + ")"
+	if cfg.Warn != nil {
+		cfg.Warn(message)
+		return
+	}
+	slog.Default().Warn(message)
+}
+
+// execAllocatorOptions is the single source of truth for Chrome's effective
+// process flags. Flag("no-sandbox", false) is intentional: chromedp otherwise
+// adds --no-sandbox itself when Tenant runs as root, bypassing our opt-in gate.
+func execAllocatorOptions(chromePath string, cfg Config) []chromedp.ExecAllocatorOption {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(chromePath),
 		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("no-sandbox", cfg.NoSandbox),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		// Hide the automation tells bot-detectors check FIRST: the
 		// AutomationControlled blink feature and the enable-automation
@@ -370,17 +438,35 @@ func NewSession(cfg Config) (*Session, error) {
 		// applyStealth instead.
 		chromedp.Flag("accept-lang", "en-US,en"),
 	)
+	if cfg.Headless {
+		return append(opts, chromedp.Flag("headless", "new"))
+	}
+	return append(opts, chromedp.Flag("headless", false))
+}
+
+// NewSession starts Chrome and opens one tab.
+func NewSession(cfg Config) (*Session, error) {
+	outerKind, outerDetected := OuterSandbox()
+	if err := validateNoSandboxMode(cfg.NoSandbox, outerDetected); err != nil {
+		return nil, err
+	}
+	chromePath, err := detectChrome(cfg.ChromePath)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.NoSandbox {
+		emitNoSandboxWarning(cfg, outerKind)
+	}
+	if cfg.NavTimeout == 0 {
+		cfg.NavTimeout = 60 * time.Second
+	}
+	opts := execAllocatorOptions(chromePath, cfg)
 	// UA is set via CDP after launch (applyStealth) so the UA string and
 	// the sec-ch-ua client hints are derived from the SAME real version —
 	// no static-UA-vs-client-hint mismatch.
 	// DefaultExecAllocatorOptions sets --headless=true; override it. "new"
 	// headless renders like full Chrome and is far harder to fingerprint
 	// than the legacy headless shell.
-	if headless {
-		opts = append(opts, chromedp.Flag("headless", "new"))
-	} else {
-		opts = append(opts, chromedp.Flag("headless", false))
-	}
 	allocCtx, cancelA := chromedp.NewExecAllocator(context.Background(), opts...)
 	// Filter chromedp's noisy "unhandled node event *dom.EventXxx" stream —
 	// newer Chrome versions emit DOM events (EventAdRelatedStateUpdated,

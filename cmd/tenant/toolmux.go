@@ -1264,7 +1264,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	}
 
 	if pf.web {
-		sess, err := web.NewSession(webConfig(c.cfgDir, pf))
+		sess, err := web.NewSession(webConfig(c.cfgDir, pf, c.lc))
 		if err != nil {
 			return fail(fmt.Errorf("web plugin: %w (is Chrome installed?)", err))
 		}

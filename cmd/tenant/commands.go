@@ -754,7 +754,12 @@ func cmdWeb(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStores()
-	sess, err := web.NewSession(web.Config{Headless: !*show, BraveKey: braveKey(c.cfgDir)})
+	webCfg := web.Config{
+		Headless:  !*show,
+		BraveKey:  braveKey(c.cfgDir),
+		NoSandbox: c.lc != nil && c.lc.BrowserNoSandbox,
+	}
+	sess, err := web.NewSession(webCfg)
 	if err != nil {
 		return fmt.Errorf("start browser: %w (is Chrome installed?)", err)
 	}
@@ -1413,7 +1418,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// clobber a shared tab) — so keep it OUT of the shared mux and hand it
 	// to each agent's local tools instead.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false // suppress the shared session
 
@@ -1697,7 +1702,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// navigation can't clobber a shared tab), so keep it OUT of the shared
 	// plugin mux and hand it to each agent's local tools instead.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 

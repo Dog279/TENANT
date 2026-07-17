@@ -27,6 +27,16 @@ func TestLazyWeb_AdvertisesSpecsWithoutSession(t *testing.T) {
 	}
 }
 
+func TestWebConfigCarriesBrowserNoSandboxOptIn(t *testing.T) {
+	got := webConfig(t.TempDir(), &pluginFlags{}, &launchConfig{BrowserNoSandbox: true})
+	if !got.NoSandbox {
+		t.Fatal("browser_no_sandbox config was not passed to the web plugin")
+	}
+	if webConfig(t.TempDir(), &pluginFlags{}, nil).NoSandbox {
+		t.Fatal("missing launch config must keep Chrome sandboxed")
+	}
+}
+
 // With Chrome forced to a bad path, the first browse fails CLEANLY (tool
 // error, not a crash), the failure is cached (no repeated spawn attempts),
 // and no cleanup is registered for a session that never opened.

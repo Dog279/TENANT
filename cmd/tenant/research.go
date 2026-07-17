@@ -1278,7 +1278,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	// Web research needs a browser per researcher (concurrent navigation can't
 	// share one tab). Force it on; keep it OUT of the shared mux.
 	teamWeb := true
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 

@@ -81,6 +81,17 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
 - No inbound listening ports in normal operation (the web dashboard renders
   server-side and does not open a public port).
 
+### Chrome process sandbox
+
+Tenant launches Chrome with its process sandbox enabled by default and does
+not pass `--no-sandbox`. If Chrome runs inside a separately isolated Linux
+container or user namespace that cannot support its own sandbox, an operator
+may set `"browser_no_sandbox": true` in `config.json`. Tenant rejects that
+escape hatch unless it detects the outer isolation and emits a security warning
+whenever the insecure mode is activated. Do not use it on a normal desktop or
+as a workaround for Chrome installation or permission problems. Run
+`tenant security audit` to report the effective state.
+
 ## Known Security Considerations
 
 | Area | Status |

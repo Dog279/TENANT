@@ -168,7 +168,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 

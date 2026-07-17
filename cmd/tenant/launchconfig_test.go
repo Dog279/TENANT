@@ -31,7 +31,8 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 
 	// Save then reload → provider/embed/gateway survive.
 	want := &launchConfig{
-		Provider: "vllm",
+		Provider:         "vllm",
+		BrowserNoSandbox: true,
 		Providers: map[string]*providerConfig{
 			"vllm": {Kind: "vllm", Endpoint: "http://h:8000", Model: "gemma-4-26b", ToolFmt: "gemma"},
 		},
@@ -76,6 +77,9 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 	}
 	if got.Gateway.Mode != "sse" || got.Gateway.SSEAddr != "127.0.0.1:8765" {
 		t.Fatalf("gateway round-trip wrong: %+v", got.Gateway)
+	}
+	if !got.BrowserNoSandbox {
+		t.Fatal("browser_no_sandbox did not survive config round-trip")
 	}
 	if got.SchemaVersion != currentSchemaVersion {
 		t.Fatalf("schema version not stamped: %d", got.SchemaVersion)
