@@ -124,10 +124,35 @@ func newTeamRuntime(cfg TeamConfig) *TeamRuntime {
 		agents:         map[string]*member{},
 		profileRouters: map[string]*model.Router{},
 	}
+	// Budget observer, DAMPENED: the governor notifies on every acquire
+	// (including each tool call), which flooded the activity feed with one
+	// "team budget" line per tool call. Forward a status only when something an
+	// operator acts on changed — agent/browser counts, a termination reason —
+	// or every 10s as a heartbeat while a run is active. Dashboards needing
+	// exact live numbers read BudgetStatus() directly.
+	var (
+		obsMu      sync.Mutex
+		lastEmit   time.Time
+		lastAgents int
+		lastBrowse int
+		lastTerm   string
+	)
 	r.budget = orchestra.NewGovernor(cfg.Budgets, func(st orchestra.BudgetStatus) {
-		if r.cfg.Observe != nil {
-			r.cfg.Observe(r.cfg.OrchID, agent.Event{Kind: agent.EventTeamBudget, Text: st.String(), TeamBudget: &st})
+		if r.cfg.Observe == nil {
+			return
 		}
+		obsMu.Lock()
+		significant := st.TerminationReason != lastTerm ||
+			st.ActiveSubagents != lastAgents || st.BrowserInstances != lastBrowse ||
+			time.Since(lastEmit) >= 10*time.Second
+		if significant {
+			lastEmit, lastAgents, lastBrowse, lastTerm = time.Now(), st.ActiveSubagents, st.BrowserInstances, st.TerminationReason
+		}
+		obsMu.Unlock()
+		if !significant {
+			return
+		}
+		r.cfg.Observe(r.cfg.OrchID, agent.Event{Kind: agent.EventTeamBudget, Text: st.String(), TeamBudget: &st})
 	})
 	return r
 }
@@ -869,9 +894,15 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 			to = 3 * time.Minute
 		}
 		out := t.rt.Await(ctx, to)
-		if active := t.rt.BudgetStatus().ActiveSubagents; active > 0 {
-			t.rt.EndRun(fmt.Sprintf("team await ended with %d subagent(s) still active", active))
-		} else {
+		// An await TIMEOUT with workers still active is a normal beat of long
+		// autonomous work: report current state and let them keep working (the
+		// orchestrator can await again). Ending the run here cancelled the run
+		// context and executed every still-active sub-agent mid-task
+		// ("terminated: team await ended with N subagent(s) still active").
+		// The accounting window closes only when all children have joined;
+		// stragglers stay bounded by the run's wall-time/token budgets and the
+		// TeamRuntime Shutdown teardown.
+		if t.rt.BudgetStatus().ActiveSubagents == 0 {
 			t.rt.EndRun()
 		}
 		return out, false, nil
