@@ -259,6 +259,13 @@ type Config struct {
 	JinaKeyFunc   func() string `yaml:"-"`
 }
 
+// BrowserNoSandbox reports the effective Chrome process-sandbox policy used by
+// NewSession. Keeping the audit seam beside the launch option prevents the
+// security report from drifting from the browser process we actually start.
+// SEC-003 will remove this insecure default; until then the audit must make it
+// visible whenever the web plugin is enabled.
+const BrowserNoSandbox = true
+
 // braveKey/tavilyKey/jinaKey return the live key: the resolver (re-read each
 // call) when set, else the static field. Centralizing here keeps every read
 // site live without each one knowing about resolvers.
@@ -356,7 +363,7 @@ func NewSession(cfg Config) (*Session, error) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(chromePath),
 		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("no-sandbox", BrowserNoSandbox),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		// Hide the automation tells bot-detectors check FIRST: the
 		// AutomationControlled blink feature and the enable-automation
