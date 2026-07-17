@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -40,7 +42,7 @@ func ProposeEdit(baseDir, agentID, reason string, soul *Soul) (string, error) {
 		return "", errors.New("soul: ProposeEdit requires non-nil soul")
 	}
 	dir := proposedDir(baseDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(dir); err != nil {
 		return "", fmt.Errorf("soul: mkdir %s: %w", dir, err)
 	}
 	ts := time.Now().UTC()
@@ -59,7 +61,7 @@ func ProposeEdit(baseDir, agentID, reason string, soul *Soul) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("soul: marshal proposal: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsperm.WriteFile(path, data); err != nil {
 		return "", fmt.Errorf("soul: write proposal: %w", err)
 	}
 	return id, nil

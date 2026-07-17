@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,13 +11,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 
-	"database/sql"
-
+	"tenant/internal/fsperm"
 	"tenant/internal/improve"
 	"tenant/internal/mcp"
 	"tenant/internal/mcpserver"
@@ -32,9 +34,6 @@ import (
 	"tenant/internal/plugins/web"
 	"tenant/internal/research"
 	"tenant/internal/secrets"
-
-	"os/exec"
-	"runtime"
 )
 
 // `tenant doctor` — diagnose (and with --fix, repair) the MCP/agent
@@ -142,6 +141,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		fn   func(context.Context, *doctorEnv) checkResult
 	}{
 		{"directories", checkDirs},
+		{"private data permissions", checkPrivatePermissions},
 		// NEW: validates config.json + active provider exists. Runs early
 		// because other checks read e.lc.
 		{"launch config", checkLaunchConfig},
@@ -273,7 +273,7 @@ func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 		info, err := os.Stat(d)
 		if err != nil || !info.IsDir() {
 			if e.fix {
-				if mkErr := os.MkdirAll(d, 0o755); mkErr == nil {
+				if mkErr := fsperm.MkdirAll(d); mkErr == nil {
 					r.Status, r.Fixed, r.Fix = statusWarn, true, "created "+d
 					continue
 				}
@@ -285,7 +285,7 @@ func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 		}
 		// writability probe
 		probe := filepath.Join(d, ".doctor-write-probe")
-		if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+		if err := fsperm.WriteFile(probe, []byte("ok")); err != nil {
 			r.Status, r.Detail = statusFail, d+" is not writable: "+err.Error()
 			r.Fix = "check permissions / disk space on " + d
 			return r
@@ -293,6 +293,142 @@ func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 		_ = os.Remove(probe)
 	}
 	return r
+}
+
+func checkPrivatePermissions(_ context.Context, e *doctorEnv) checkResult {
+	if !fsperm.Supported() {
+		return checkResult{
+			Status: statusSkip,
+			Detail: "POSIX modes do not represent Windows DACLs; DACL hardening is tracked by TEN-325",
+		}
+	}
+
+	targets, err := privatePermissionTargets(e.c.dataDir, e.c.cfgDir)
+	if err != nil {
+		return checkResult{Status: statusFail, Detail: "permission target discovery failed: " + err.Error()}
+	}
+
+	issueCount := 0
+	for _, target := range targets {
+		var issues []fsperm.Issue
+		if target.recursive {
+			issues, err = fsperm.AuditTree(target.path)
+		} else if issue, auditErr := fsperm.Audit(target.path); auditErr != nil {
+			err = auditErr
+		} else if issue != nil {
+			issues = []fsperm.Issue{*issue}
+		}
+		if err != nil {
+			return checkResult{
+				Status: statusFail,
+				Detail: "permission audit failed for " + target.path + ": " + err.Error(),
+				Fix:    "check ownership and access to " + target.path,
+			}
+		}
+		issueCount += len(issues)
+	}
+	if issueCount == 0 {
+		return checkResult{Status: statusOK, Detail: "config/data directories and artifacts are owner-only"}
+	}
+	if !e.fix {
+		return checkResult{
+			Status: statusWarn,
+			Detail: fmt.Sprintf("%d config/data path(s) exceed owner-only permissions", issueCount),
+			Fix:    "run `tenant doctor --fix` to apply owner-only permissions",
+		}
+	}
+
+	fixed := 0
+	for _, target := range targets {
+		n := 0
+		if target.recursive {
+			n, err = fsperm.RepairTree(target.path)
+		} else if changed, repairErr := fsperm.Repair(target.path); repairErr != nil {
+			err = repairErr
+		} else if changed {
+			n = 1
+		}
+		fixed += n
+		if err != nil {
+			return checkResult{
+				Status: statusFail,
+				Detail: fmt.Sprintf("repaired %d path(s), then failed at %s: %v", fixed, target.path, err),
+				Fix:    "check ownership and retry `tenant doctor --fix`",
+			}
+		}
+	}
+	return checkResult{
+		Status: statusWarn,
+		Detail: fmt.Sprintf("tightened %d config/data path(s) to owner-only permissions", fixed),
+		Fix:    "private permission migration applied",
+		Fixed:  true,
+	}
+}
+
+type permissionTarget struct {
+	path      string
+	recursive bool
+}
+
+func privatePermissionTargets(dataDir, cfgDir string) ([]permissionTarget, error) {
+	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(cfgDir) == "" {
+		return nil, errors.New("config and data roots must be resolved")
+	}
+	targets := []permissionTarget{{path: dataDir}, {path: cfgDir}}
+	for _, name := range []string{"archive", "research", "wiki", "screenshots", "eval-artifacts"} {
+		targets = append(targets, permissionTarget{path: filepath.Join(dataDir, name), recursive: true})
+	}
+	for _, name := range []string{"soul", "mcp"} {
+		targets = append(targets, permissionTarget{path: filepath.Join(cfgDir, name), recursive: true})
+	}
+
+	dataEntries, err := os.ReadDir(dataDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range dataEntries {
+		name := entry.Name()
+		if !entry.IsDir() && privateDataRootFile(name) {
+			targets = append(targets, permissionTarget{path: filepath.Join(dataDir, name)})
+		}
+	}
+
+	cfgEntries, err := os.ReadDir(cfgDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range cfgEntries {
+		name := entry.Name()
+		if !entry.IsDir() && privateConfigRootFile(name) {
+			targets = append(targets, permissionTarget{path: filepath.Join(cfgDir, name)})
+		}
+	}
+	return targets, nil
+}
+
+func privateDataRootFile(name string) bool {
+	if strings.Contains(name, ".db") || strings.HasPrefix(name, "profile.") {
+		return true
+	}
+	switch name {
+	case "x-token.json", "cron-history.json", "route-decisions.jsonl", "tui.log", "transcript.txt":
+		return true
+	default:
+		return false
+	}
+}
+
+func privateConfigRootFile(name string) bool {
+	if strings.HasPrefix(name, "settings.") && strings.HasSuffix(name, ".json") {
+		return true
+	}
+	switch name {
+	case "config.json", "credentials.json", "oauth_client.json", "atlassian-token.json",
+		"peers.json", "peer-cert.pem", "peer-key.pem":
+		return true
+	default:
+		return false
+	}
 }
 
 func checkRouter(_ context.Context, e *doctorEnv) checkResult {

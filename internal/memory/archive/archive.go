@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 // Event is one archived occurrence. Schema is intentionally stable —
@@ -155,10 +157,10 @@ func (w *Writer) Append(e Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("archive: mkdir %s: %w", filepath.Dir(path), err)
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := fsperm.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		return fmt.Errorf("archive: open %s: %w", path, err)
 	}

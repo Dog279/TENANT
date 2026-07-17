@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	"tenant/internal/memory/semantic"
 	"tenant/internal/model"
 )
@@ -118,12 +120,12 @@ func (p *Profile) Save(dataDir string) error {
 	if p.AgentID == "" {
 		return fmt.Errorf("userprofile: AgentID required")
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(dataDir); err != nil {
 		return err
 	}
 	final := Path(dataDir, p.AgentID)
 	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strings.TrimSpace(p.Body())+"\n"), 0o644); err != nil {
+	if err := fsperm.WriteFile(tmp, []byte(strings.TrimSpace(p.Body())+"\n")); err != nil {
 		return err
 	}
 	if runtime.GOOS == "windows" {

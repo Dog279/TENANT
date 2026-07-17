@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"tenant/internal/agent"
+	"tenant/internal/fsperm"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/userprofile"
@@ -733,7 +734,7 @@ func writeWikiReport(wikiDir, question, report string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(wikiDir, researchFilename(question))
-	if err := os.WriteFile(path, []byte(researchDoc(question, report)), 0o644); err != nil {
+	if err := fsperm.WriteFile(path, []byte(researchDoc(question, report))); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -1386,7 +1387,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	// Output precedence: --out explicit path > --stdout > wiki dir > stdout.
 	switch {
 	case *out != "":
-		if werr := os.WriteFile(*out, []byte(researchDoc(question, report)), 0o644); werr != nil {
+		if werr := fsperm.WriteFile(*out, []byte(researchDoc(question, report))); werr != nil {
 			return fmt.Errorf("write report: %w", werr)
 		}
 		say("report written to %s", *out)

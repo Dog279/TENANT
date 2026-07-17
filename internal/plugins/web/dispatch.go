@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/model"
 )
 
@@ -408,7 +408,7 @@ func (d *Dispatcher) screenshot(ctx context.Context) (string, bool, error) {
 		return err.Error(), true, nil
 	}
 	cur, _ := d.br.CurrentURL(ctx)
-	if err := os.MkdirAll(d.shotDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(d.shotDir); err != nil {
 		return "screenshot dir error: " + err.Error(), true, nil
 	}
 	path := filepath.Join(d.shotDir, fmt.Sprintf("web-%d.png", time.Now().UnixNano()))

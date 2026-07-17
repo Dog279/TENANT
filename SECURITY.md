@@ -64,6 +64,14 @@ configures them.
 
 - **SQLite** databases store memory, episodes, the wiki index, and transcripts.
   They live in the OS data directory, not in the repo.
+- Tenant creates its config/data roots with owner-only directory permissions and
+  writes archives, databases, research artifacts, proposals, OAuth caches, and
+  peer/identity state as owner-only files on POSIX systems. `tenant doctor
+  --fix` removes legacy group/world permission bits without following symlinks.
+- **Tenant does not encrypt local data at rest.** File modes are access control,
+  not encryption; database, transcript, report, and credential contents remain
+  plaintext to the owning account and to any process or administrator that can
+  read that account. Use OS full-disk encryption for at-rest protection.
 - No data leaves the machine unless a plugin explicitly sends it (e.g., posting
   to Discord, calling an LLM API).
 

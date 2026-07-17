@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -105,7 +106,7 @@ func (c *commonFlags) resolveDirs() error {
 		}
 		c.cfgDir = d
 	}
-	if err := os.MkdirAll(c.dataDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(c.dataDir); err != nil {
 		return fmt.Errorf("mkdir data dir: %w", err)
 	}
 	return nil
@@ -287,7 +288,7 @@ func logLevel() slog.Level {
 // the TUI, whose alt-screen would be corrupted by stderr writes. Falls
 // back to discarding logs if the file can't be opened.
 func newFileLogger(path string) (*slog.Logger, func()) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := fsperm.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
 	if err != nil {
 		return slog.New(slog.NewTextHandler(io.Discard, nil)), func() {}
 	}

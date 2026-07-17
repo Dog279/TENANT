@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -81,6 +83,9 @@ type Store struct {
 func Open(path string) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
+		if err := fsperm.PrepareFile(path); err != nil {
+			return nil, fmt.Errorf("episodic: prepare private database: %w", err)
+		}
 		// WAL + relaxed sync for write throughput on personal hardware.
 		// busy_timeout handles transient lock contention without errors.
 		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)", path)

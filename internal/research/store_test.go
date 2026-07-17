@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,39 @@ func TestNew_CreatesDir(t *testing.T) {
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("research dir not created: %v", err)
+	}
+}
+
+func TestRunArtifactsArePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not represent Windows DACLs; TEN-325")
+	}
+	r := newRun(t, "private research")
+	if err := r.AppendFinding(Finding{AgentID: "a1", Result: "sensitive finding"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AppendEvent(Event{Kind: "tool_result", Result: "sensitive result"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finalize("sensitive report", nil, StatusDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{r.Dir(), filepath.Join(r.Dir(), "findings")} {
+		assertModeAtMost(t, dir, 0o700)
+	}
+	for _, name := range []string{"run.json", "events.jsonl", "report.md", filepath.Join("findings", "a1.md")} {
+		assertModeAtMost(t, filepath.Join(r.Dir(), name), 0o600)
+	}
+}
+
+func assertModeAtMost(t *testing.T, path string, maximum os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extra := info.Mode().Perm() &^ maximum; extra != 0 {
+		t.Errorf("%s mode = %v, exceeds %v", path, info.Mode().Perm(), maximum)
 	}
 }
 

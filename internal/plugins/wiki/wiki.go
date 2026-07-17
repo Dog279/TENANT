@@ -36,6 +36,7 @@ import (
 	"sort"
 	"strings"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/model"
 )
 
@@ -264,7 +265,7 @@ func (ix *Index) computeVirtualLinks() {
 }
 
 func (ix *Index) save() error {
-	if err := os.MkdirAll(filepath.Dir(ix.sidecar), 0o755); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(ix.sidecar)); err != nil {
 		return err
 	}
 	ix.idx.Embedder = ix.embedID
@@ -273,7 +274,7 @@ func (ix *Index) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ix.sidecar, b, 0o644)
+	return fsperm.WriteFile(ix.sidecar, b)
 }
 
 // Reindex brings the index in sync with the files on disk. Only

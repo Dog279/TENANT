@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,75 @@ func TestDoctor_CheckSecretProtection(t *testing.T) {
 			t.Fatalf("unexpected result: %+v", r)
 		}
 	})
+}
+
+func TestDoctor_CheckPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not represent Windows DACLs; TEN-325")
+	}
+	dataDir := filepath.Join(t.TempDir(), "data")
+	cfgDir := filepath.Join(t.TempDir(), "config")
+	for _, dir := range []string{dataDir, cfgDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		name := "episodes.db"
+		if dir == cfgDir {
+			name = "config.json"
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("sensitive"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := &doctorEnv{c: &commonFlags{dataDir: dataDir, cfgDir: cfgDir}}
+	if r := checkPrivatePermissions(context.Background(), e); r.Status != statusWarn || r.Fixed {
+		t.Fatalf("audit result = %+v, want unfixed WARN", r)
+	}
+	e.fix = true
+	if r := checkPrivatePermissions(context.Background(), e); r.Status != statusWarn || !r.Fixed {
+		t.Fatalf("fix result = %+v, want fixed WARN", r)
+	}
+	for _, path := range []string{
+		dataDir, cfgDir,
+		filepath.Join(dataDir, "episodes.db"), filepath.Join(cfgDir, "config.json"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		maximum := os.FileMode(0o600)
+		if info.IsDir() {
+			maximum = 0o700
+		}
+		if extra := info.Mode().Perm() &^ maximum; extra != 0 {
+			t.Errorf("%s mode = %v, exceeds %v", path, info.Mode().Perm(), maximum)
+		}
+	}
+	unrelated := filepath.Join(dataDir, "unrelated.txt")
+	if err := os.WriteFile(unrelated, []byte("operator-owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unrelated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := checkPrivatePermissions(context.Background(), e); r.Status != statusOK {
+		t.Fatalf("unrelated file should not enter the migration: %+v", r)
+	}
+	info, err := os.Stat(unrelated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o044 == 0 {
+		t.Fatalf("unrelated file was unexpectedly tightened: %v", info.Mode().Perm())
+	}
 }
 
 // checkCredentials: corrupt creds → FAIL; keyed provider without secret →
