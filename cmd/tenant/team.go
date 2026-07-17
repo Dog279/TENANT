@@ -240,11 +240,19 @@ func (r *TeamRuntime) Close() {
 
 // addWebTool gives a local tool set its own lazy browser, if the team is
 // web-enabled. Shared between sub-agents (agentTools) and the orchestrator.
-func (r *TeamRuntime) addWebTool(local *toolMux) {
+func (r *TeamRuntime) addWebTool(local *toolMux, agentID string) {
 	if !r.cfg.Web {
 		return
 	}
-	local.add("web", newLazyWeb(r.cfg.WebConfig, r.cfg.WebPolicy, r.cfg.Shots, r.addCleanup, r.cfg.Log))
+	cfg := r.cfg.WebConfig
+	upstream := cfg.ReaderObserver
+	cfg.ReaderObserver = func(a web.ReaderActivity) {
+		if upstream != nil {
+			upstream(a)
+		}
+		r.emit(agentID, readerActivityEvent(a))
+	}
+	local.add("web", newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, r.addCleanup, r.cfg.Log))
 }
 
 // composite merges a shared tool set (plugins) with an agent's local tools
@@ -512,7 +520,7 @@ func (r *TeamRuntime) agentTools(id string) composite {
 	if r.cfg.Skills != nil {
 		local.add("skills", skillTool{st: r.cfg.Skills, emb: r.cfg.Embedder, agentID: id})
 	}
-	r.addWebTool(local) // this agent's OWN lazy browser session
+	r.addWebTool(local, id) // this agent's OWN lazy browser session
 	// Orchestrator only: restore persisted local enable/disable state
 	// AND wire the save hook so /enable web_search etc. survives a
 	// restart. Sub-agents are ephemeral; their local state isn't

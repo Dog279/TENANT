@@ -107,9 +107,9 @@ func (d *wikiSaveDispatcher) Dispatch(ctx context.Context, call model.ToolCall) 
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return "save failed: could not create the target directory", true, nil
 	}
-	// Symlink defense: after MkdirAll the parent dir is real; re-verify the
-	// RESOLVED parent is still inside the resolved root, so a pre-existing
-	// symlinked subdir can't redirect the write outside the wiki.
+	// Symlink defense: after MkdirAll the parent dir is real; re-verify no
+	// component between the root and the parent is a link, so a pre-existing
+	// symlinked/junctioned subdir can't redirect the write outside the wiki.
 	if err := d.parentContained(full); err != nil {
 		return err.Error(), true, nil
 	}
@@ -143,19 +143,33 @@ func (d *wikiSaveDispatcher) safePath(rel string) (string, error) {
 	return full, nil
 }
 
-// parentContained ensures the resolved parent dir is genuinely inside the
-// resolved root (catches a pre-existing in-root symlinked dir pointing out).
+// parentContained ensures no directory between the wiki root and the note's
+// parent is a symlink/junction (a pre-existing in-root link could redirect the
+// write outside the wiki). It walks the components BELOW the root with Lstat
+// instead of EvalSymlinks-ing the absolute path: links above the root are the
+// operator's chosen location, not an escape — and on Windows EvalSymlinks
+// errors out for any path that merely traverses a directory junction (e.g. a
+// sandboxed %TMP%), which made every save fail as "unresolved".
 func (d *wikiSaveDispatcher) parentContained(full string) error {
-	rootEval, err := filepath.EvalSymlinks(d.root)
-	if err != nil {
-		rootEval = d.root
-	}
-	parentEval, err := filepath.EvalSymlinks(filepath.Dir(full))
-	if err != nil {
-		return fmt.Errorf("wiki_save: target directory unresolved")
-	}
-	if r, rerr := filepath.Rel(rootEval, parentEval); rerr != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+	rel, err := filepath.Rel(d.root, filepath.Dir(full))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("wiki_save: target escapes the wiki root")
+	}
+	at := d.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		at = filepath.Join(at, part)
+		fi, lerr := os.Lstat(at)
+		if lerr != nil {
+			return fmt.Errorf("wiki_save: target directory unresolved")
+		}
+		// ModeIrregular: some Go/Windows versions report junctions and other
+		// reparse points as irregular rather than symlinks — refuse both.
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !fi.IsDir() {
+			return fmt.Errorf("wiki_save: target escapes the wiki root")
+		}
 	}
 	return nil
 }

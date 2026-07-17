@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -128,6 +129,62 @@ func TestWikiSave_RefusesFinalComponentSymlink(t *testing.T) {
 	}
 	if _, e := os.Stat(target); e == nil {
 		t.Error("write escaped the wiki root through a final-component symlink")
+	}
+}
+
+// mkJunction creates a Windows directory junction (mklink /J needs no admin
+// rights, unlike symlinks). Skips the test if junction creation is unavailable.
+func mkJunction(t *testing.T, link, target string) {
+	t.Helper()
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("cannot create junction: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+}
+
+// Regression: a wiki ROOT reached through a directory junction (sandboxed
+// %TMP%, MSIX overlay, mapped workspace) must still accept saves. The old
+// EvalSymlinks-based containment check errored out for any path traversing a
+// junction, so every save failed as "target directory unresolved". Links
+// ABOVE the root are the operator's chosen location, not an escape.
+func TestWikiSave_RootBehindJunctionStillWrites(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("directory junctions are Windows-specific")
+	}
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "wiki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkJunction(t, filepath.Join(base, "j"), real)
+	root := filepath.Join(base, "j", "wiki") // traverses the junction
+
+	d := newWikiSaveDispatcher(root, nil, nil)
+	out, isErr, err := saveCall(t, d, "sub/note.md", "body", false)
+	if err != nil || isErr {
+		t.Fatalf("save under a junction-reached root must succeed: %q isErr=%v err=%v", out, isErr, err)
+	}
+	if _, e := os.Stat(filepath.Join(real, "wiki", "sub", "note.md")); e != nil {
+		t.Errorf("note not written through the junction-reached root: %v", e)
+	}
+}
+
+// A junction INSIDE the root pointing outside is the Windows analogue of the
+// POSIX symlinked-subdir escape — it must be refused and nothing written.
+func TestWikiSave_RefusesJunctionSubdirEscape(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("directory junctions are Windows-specific")
+	}
+	ix, root := newTestWiki(t)
+	outside := t.TempDir()
+	mkJunction(t, filepath.Join(root, "evil"), outside)
+
+	d := newWikiSaveDispatcher(root, ix, nil)
+	out, isErr, _ := saveCall(t, d, "evil/pwn.md", "owned", true)
+	if !isErr || !strings.Contains(out, "wiki root") {
+		t.Errorf("write through an in-root junction must be refused: %q", out)
+	}
+	if _, e := os.Stat(filepath.Join(outside, "pwn.md")); e == nil {
+		t.Error("write escaped the wiki root through an in-root junction")
 	}
 }
 

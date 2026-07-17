@@ -9,10 +9,36 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/agent"
 	"tenant/internal/memory/soul"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
 )
+
+func TestTeamRuntime_WebReaderActivityUsesAgentEventing(t *testing.T) {
+	var gotID string
+	var gotEvent agent.Event
+	rt := newTeamRuntime(TeamConfig{
+		Web: true,
+		Observe: func(id string, ev agent.Event) {
+			gotID, gotEvent = id, ev
+		},
+	})
+	local := newToolMux()
+	rt.addWebTool(local, "researcher-1")
+	entry := local.byName["web_read"]
+	if entry == nil {
+		t.Fatal("per-agent web tool was not registered")
+	}
+	lw, ok := entry.owner.(*lazyWeb)
+	if !ok || lw.cfg.ReaderObserver == nil {
+		t.Fatalf("web owner lacks reader activity wiring: %#v", entry.owner)
+	}
+	lw.cfg.ReaderObserver(web.ReaderActivity{Provider: "r.jina.ai", TargetHost: "example.com"})
+	if gotID != "researcher-1" || gotEvent.Tool != "web_reader_remote" || !strings.Contains(gotEvent.Args, "example.com") {
+		t.Fatalf("reader activity was not attributed through agent eventing: id=%q event=%+v", gotID, gotEvent)
+	}
+}
 
 func TestSlug(t *testing.T) {
 	cases := map[string]string{

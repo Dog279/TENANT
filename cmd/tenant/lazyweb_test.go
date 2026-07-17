@@ -6,9 +6,46 @@ import (
 	"strings"
 	"testing"
 
+	"tenant/internal/agent"
 	"tenant/internal/model"
 	"tenant/internal/plugins/web"
 )
+
+func TestReaderEnabled_DefaultOffAndExplicitOptIn(t *testing.T) {
+	t.Setenv("TENANT_WEB_READER", "")
+	if readerEnabled(nil) {
+		t.Fatal("new/unset config must keep remote reader off")
+	}
+	lc := &launchConfig{Skills: map[string]*skillConfig{
+		"web": {Enabled: true, Settings: map[string]string{"jina_reader": "on"}},
+	}}
+	if !readerEnabled(lc) {
+		t.Fatal("persisted jina_reader=on must explicitly enable the reader")
+	}
+	t.Setenv("TENANT_WEB_READER", "false")
+	if readerEnabled(lc) {
+		t.Fatal("explicit environment off must override persisted opt-in")
+	}
+	t.Setenv("TENANT_WEB_READER", "true")
+	if !readerEnabled(nil) {
+		t.Fatal("explicit environment opt-in must enable the reader")
+	}
+}
+
+func TestReaderActivityEvent_HostVisibleWithoutTargetURL(t *testing.T) {
+	ev := readerActivityEvent(web.ReaderActivity{Provider: "r.jina.ai", TargetHost: "example.com"})
+	if ev.Kind != agent.EventToolCall || ev.Tool != "web_reader_remote" {
+		t.Fatalf("unexpected audit event: %+v", ev)
+	}
+	for _, field := range []string{ev.Args, ev.Result} {
+		if !strings.Contains(field, "r.jina.ai") || !strings.Contains(field, "example.com") {
+			t.Fatalf("audit field must show provider and target host: %q", field)
+		}
+		if strings.Contains(field, "/private") || strings.Contains(field, "token") {
+			t.Fatalf("audit field must not contain target path/query: %q", field)
+		}
+	}
+}
 
 func TestLazyWeb_AdvertisesSpecsWithoutSession(t *testing.T) {
 	lw := newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil)

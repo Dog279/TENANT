@@ -295,7 +295,7 @@ func (d *Dispatcher) navigate(ctx context.Context, args json.RawMessage) (string
 	// Browser failed (timeout / blocked / network): fall back to the reader,
 	// which renders server-side and returns markdown. web_read then serves the
 	// cached reader text for this page.
-	if !d.cfg.ReaderDisabled {
+	if d.cfg.ReaderEnabled {
 		if txt, rerr := fetchViaReader(ctx, d.cfg, u); rerr == nil && strings.TrimSpace(txt) != "" {
 			d.lastText = txt
 			return fmt.Sprintf("loaded %q via reader fallback (the browser was blocked or timed out) — call web_read to read it.", u), false, nil
@@ -319,7 +319,7 @@ func (d *Dispatcher) read(ctx context.Context) (string, bool, error) {
 	}
 	// Empty text, a bot-wall interstitial, or a browser error: try the reader
 	// fallback on the current page.
-	if !d.cfg.ReaderDisabled {
+	if d.cfg.ReaderEnabled {
 		target := d.lastURL
 		if target == "" {
 			target, _ = d.br.CurrentURL(ctx)

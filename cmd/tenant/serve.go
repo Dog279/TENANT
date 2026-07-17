@@ -168,7 +168,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 
@@ -330,7 +330,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	mainLocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
 	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
-	rt.addWebTool(mainLocal)
+	rt.addWebTool(mainLocal, c.agent)
 	mainTools := composite{shared: mux, local: mainLocal}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).

@@ -1413,7 +1413,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// clobber a shared tab) — so keep it OUT of the shared mux and hand it
 	// to each agent's local tools instead.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false // suppress the shared session
 
@@ -1504,7 +1504,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	olocal.add("team", orchestra.CommsTool{Bus: bus, Self: orchID})
 	olocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: orchID})
 	olocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: orchID})
-	rt.addWebTool(olocal)
+	rt.addWebTool(olocal, orchID)
 	otools := composite{shared: shared, local: olocal}
 
 	orch, err := agent.New(agent.Config{
@@ -1697,7 +1697,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// navigation can't clobber a shared tab), so keep it OUT of the shared
 	// plugin mux and hand it to each agent's local tools instead.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 
@@ -1926,7 +1926,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// ephemeral/task-scoped, so an unbounded recall there widens blast radius for
 	// little benefit.
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
-	rt.addWebTool(mainLocal)
+	rt.addWebTool(mainLocal, c.agent)
 	mainTools := composite{shared: mux, local: mainLocal}
 
 	// Live bus view → feed (lossless cursor over the retained log).

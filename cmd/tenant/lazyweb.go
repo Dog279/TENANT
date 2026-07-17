@@ -2,14 +2,30 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strings"
 	"sync"
 
+	"tenant/internal/agent"
 	"tenant/internal/model"
 	"tenant/internal/plugins/web"
 )
+
+func readerActivityEvent(a web.ReaderActivity) agent.Event {
+	type auditArgs struct {
+		Provider   string `json:"provider"`
+		TargetHost string `json:"target_host"`
+	}
+	b, _ := json.Marshal(auditArgs{Provider: a.Provider, TargetHost: a.TargetHost})
+	return agent.Event{
+		Kind:   agent.EventToolCall,
+		Tool:   "web_reader_remote",
+		Args:   string(b),
+		Result: a.Provider + " -> " + a.TargetHost,
+	}
+}
 
 // webConfig builds the web plugin's Config, resolving optional search/reader
 // keys from env or credentials.json. Returned value is safe to share across the
@@ -17,16 +33,16 @@ import (
 //
 // Search backend precedence: Tavily > Brave > DuckDuckGo (keyless default).
 // Key precedence per provider: $PRIMARY_ENV > $ALT_ENV > credentials.json > "".
-func webConfig(cfgDir string, pf *pluginFlags) web.Config {
+func webConfig(cfgDir string, pf *pluginFlags, lc *launchConfig) web.Config {
 	// Resolve keys LAZILY (re-read env→credentials.json on every search/read) so
 	// a key added or rotated at runtime — via the settings page or an external
 	// edit — is picked up without restarting. credKey is read-only + cheap.
 	return web.Config{
-		Headless:       !pf.webShow,
-		BraveKeyFunc:   func() string { return braveKey(cfgDir) },
-		TavilyKeyFunc:  func() string { return credKey(cfgDir, "tavily", "TAVILY_API_KEY", "TAVILY_KEY") },
-		JinaKeyFunc:    func() string { return credKey(cfgDir, "jina", "JINA_API_KEY", "JINA_KEY") },
-		ReaderDisabled: readerDisabled(),
+		Headless:      !pf.webShow,
+		ReaderEnabled: readerEnabled(lc),
+		BraveKeyFunc:  func() string { return braveKey(cfgDir) },
+		TavilyKeyFunc: func() string { return credKey(cfgDir, "tavily", "TAVILY_API_KEY", "TAVILY_KEY") },
+		JinaKeyFunc:   func() string { return credKey(cfgDir, "jina", "JINA_API_KEY", "JINA_KEY") },
 	}
 }
 
@@ -61,12 +77,25 @@ func credKey(cfgDir, credName string, envVars ...string) string {
 	return ""
 }
 
-// readerDisabled lets an operator turn OFF the r.jina.ai reader fallback (so no
-// URL is ever sent to a third party) via TENANT_WEB_NO_READER=1.
-func readerDisabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("TENANT_WEB_NO_READER"))) {
-	case "1", "true", "yes":
-		return true
+// readerEnabled is deliberately false for new/unset config. The setup and
+// /configure surfaces persist the opt-in under skills.web.settings.jina_reader;
+// TENANT_WEB_READER is an explicit headless/deployment override.
+func readerEnabled(lc *launchConfig) bool {
+	if raw, ok := os.LookupEnv("TENANT_WEB_READER"); ok && strings.TrimSpace(raw) != "" {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true", "yes", "on":
+			return true
+		default:
+			return false
+		}
+	}
+	if lc != nil && lc.Skills != nil {
+		if skill := lc.Skills["web"]; skill != nil && skill.Settings != nil {
+			switch strings.ToLower(strings.TrimSpace(skill.Settings["jina_reader"])) {
+			case "1", "true", "yes", "on", "enabled":
+				return true
+			}
+		}
 	}
 	return false
 }
