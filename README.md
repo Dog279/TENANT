@@ -89,6 +89,11 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
   (gitignored). Nothing personal is ever committed.
 - **This repository contains no API keys, no learned memory, and no wiki
   content** — it is a clean template. Everything you generate stays on your machine.
+- Chrome's process sandbox is enabled by default. The
+  `"browser_no_sandbox": true` config escape hatch is accepted only when Tenant
+  detects a Linux container or user namespace; it is for separately isolated
+  containers that cannot run Chrome's sandbox, never normal desktop use. Check
+  the effective state with `tenant security audit`.
 
 ## Built-in expert sub-agents
 
@@ -126,6 +131,7 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `chat` | headless agent loop (one stdin line = one turn) |
 | `serve` | background self-improvement (distillation) on a cadence |
 | `doctor [--fix]` | diagnose (and repair) the setup |
+| `security audit` | report Chrome process-sandbox state and other security-sensitive configuration |
 | `web` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `os` | one-shot agent turn scoped to one plugin (read-by-default; `--allow-*` to act) |
 | `orchestrate "<task>"` | multi-agent team over a live bus |
 | `research "<question>"` | deep research → cited report (`--out FILE`) |

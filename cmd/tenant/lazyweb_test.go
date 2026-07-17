@@ -22,10 +22,10 @@ func TestWebPrivateNetworkFlagWiresExactAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"grafana.internal", "buildbox.internal"}
-	if cfg := webConfig("", pf); !reflectpkg.DeepEqual(cfg.PrivateNetwork, want) {
+	if cfg := webConfig("", pf, nil); !reflectpkg.DeepEqual(cfg.PrivateNetwork, want) {
 		t.Fatalf("private network allowlist = %v, want %v", cfg.PrivateNetwork, want)
 	}
-	if got := webConfig("", &pluginFlags{}).PrivateNetwork; len(got) != 0 {
+	if got := webConfig("", &pluginFlags{}, nil).PrivateNetwork; len(got) != 0 {
 		t.Fatalf("default private network allowlist must be empty, got %v", got)
 	}
 }
@@ -44,6 +44,16 @@ func TestLazyWeb_AdvertisesSpecsWithoutSession(t *testing.T) {
 	}
 	if !sawNavigate {
 		t.Fatal("web_navigate spec missing")
+	}
+}
+
+func TestWebConfigCarriesBrowserNoSandboxOptIn(t *testing.T) {
+	got := webConfig(t.TempDir(), &pluginFlags{}, &launchConfig{BrowserNoSandbox: true})
+	if !got.NoSandbox {
+		t.Fatal("browser_no_sandbox config was not passed to the web plugin")
+	}
+	if webConfig(t.TempDir(), &pluginFlags{}, nil).NoSandbox {
+		t.Fatal("missing launch config must keep Chrome sandboxed")
 	}
 }
 

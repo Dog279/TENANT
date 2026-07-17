@@ -102,6 +102,10 @@ type launchConfig struct {
 	// name+description catalog of the rest in the system prompt. Off by default
 	// (additive). Set `"lazy_tools": true` in config.json to try it.
 	LazyTools bool `json:"lazy_tools,omitempty"`
+	// BrowserNoSandbox is an insecure, container-only escape hatch for Chrome
+	// environments that cannot use its process sandbox. The web plugin rejects
+	// this setting unless it detects a Linux container or user namespace.
+	BrowserNoSandbox bool `json:"browser_no_sandbox,omitempty"`
 	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
 	// inline command sets it.
 	Goal goalConfig `json:"goal,omitempty"`

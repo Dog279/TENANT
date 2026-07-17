@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
