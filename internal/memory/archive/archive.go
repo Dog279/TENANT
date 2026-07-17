@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"iter"
 	"os"
@@ -111,20 +112,50 @@ func PathFor(baseDir string, ts time.Time, sessionID string) string {
 	return filepath.Join(ArchiveDir(baseDir), month, safe+".jsonl")
 }
 
-// Writer is the append-only archive writer. Safe for concurrent
-// Append calls from multiple sessions; each Append opens, appends,
-// and closes the target file. Per-session file caching is a v1.1
-// optimization that wasn't worth the lock complexity for v1.
+// WriterOptions controls archive durability.
+type WriterOptions struct {
+	// SyncInterval is the number of successful writes to a given archive file
+	// between fsyncs. Zero and one both select the default per-event sync, so a
+	// successful Append acknowledges a durable event. Values greater than one
+	// opt into batching for higher throughput and can lose up to
+	// SyncInterval-1 acknowledged events per file on power loss; callers should
+	// call Flush during graceful shutdown.
+	SyncInterval int
+}
+
+// Writer is the append-only archive writer. Safe for concurrent Append calls
+// and Flush calls. Each Append opens, appends, optionally syncs, and closes the
+// target file. Per-session file caching is deliberately avoided so file
+// descriptors are not retained indefinitely.
 type Writer struct {
-	baseDir string
-	mu      sync.Mutex
+	baseDir      string
+	syncInterval int
+	mu           sync.Mutex
+	pending      map[string]int
+	checkedTail  map[string]bool
 }
 
 // NewWriter returns an archive Writer rooted at baseDir. baseDir is
 // the Tenant data root (e.g. ~/.local/share/tenant); the writer
 // attaches /archive under it.
 func NewWriter(baseDir string) *Writer {
-	return &Writer{baseDir: baseDir}
+	return NewWriterWithOptions(baseDir, WriterOptions{})
+}
+
+// NewWriterWithOptions returns an archive Writer with an explicit durability
+// policy. NewWriter should be preferred unless measured fsync cost justifies a
+// batched SyncInterval and the caller can Flush during graceful shutdown.
+func NewWriterWithOptions(baseDir string, opts WriterOptions) *Writer {
+	interval := opts.SyncInterval
+	if interval < 2 {
+		interval = 1
+	}
+	return &Writer{
+		baseDir:      baseDir,
+		syncInterval: interval,
+		pending:      make(map[string]int),
+		checkedTail:  make(map[string]bool),
+	}
 }
 
 // Reader returns a Reader over the same base directory, so a component holding
@@ -162,15 +193,88 @@ func (w *Writer) Append(e Event) error {
 	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("archive: mkdir %s: %w", filepath.Dir(path), err)
 	}
-	f, err := fsperm.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
+	if !w.checkedTail[path] {
+		if err := repairTruncatedTail(path); err != nil {
+			return err
+		}
+		w.checkedTail[path] = true
+	}
+	f, err := openArchiveFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		return fmt.Errorf("archive: open %s: %w", path, err)
 	}
-	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("archive: write %s: %w", path, err)
+	record := append(line, '\n')
+	pending := w.pending[path] + 1
+	syncNow := pending >= w.syncInterval
+
+	n, writeErr := f.Write(record)
+	if writeErr == nil && n != len(record) {
+		writeErr = io.ErrShortWrite
 	}
-	return nil
+	var syncErr error
+	if writeErr == nil && syncNow {
+		syncErr = f.Sync()
+	}
+	closeErr := f.Close()
+
+	if writeErr == nil {
+		if syncNow && syncErr == nil {
+			delete(w.pending, path)
+		} else {
+			w.pending[path] = pending
+		}
+	} else {
+		// A failed or short write may have left an unterminated final record.
+		// Recheck and repair the tail before the next append from this writer.
+		w.checkedTail[path] = false
+	}
+
+	var errs []error
+	if writeErr != nil {
+		errs = append(errs, fmt.Errorf("archive: write %s: %w", path, writeErr))
+	}
+	if syncErr != nil {
+		errs = append(errs, fmt.Errorf("archive: sync %s: %w", path, syncErr))
+	}
+	if closeErr != nil {
+		errs = append(errs, fmt.Errorf("archive: close %s: %w", path, closeErr))
+	}
+	return errors.Join(errs...)
+}
+
+// Flush syncs every archive file with pending writes from a batched writer.
+// It is safe to call for the default per-event policy, where it is normally a
+// no-op. A path remains pending when opening or syncing it fails, allowing a
+// later Flush to retry.
+func (w *Writer) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	paths := make([]string, 0, len(w.pending))
+	for path := range w.pending {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var errs []error
+	for _, path := range paths {
+		f, err := openArchiveFile(path, os.O_RDWR)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("archive: open for flush %s: %w", path, err))
+			continue
+		}
+		syncErr := f.Sync()
+		closeErr := f.Close()
+		if syncErr == nil {
+			delete(w.pending, path)
+		} else {
+			errs = append(errs, fmt.Errorf("archive: sync %s: %w", path, syncErr))
+		}
+		if closeErr != nil {
+			errs = append(errs, fmt.Errorf("archive: close %s: %w", path, closeErr))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Filter narrows a Reader.Stream iteration. Zero-value Filter matches
@@ -264,6 +368,7 @@ func streamFile(path string, filter Filter, yield func(Event, error) bool) bool 
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	sc.Split(splitCompleteJSONLines)
 	for sc.Scan() {
 		var e Event
 		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
@@ -285,6 +390,20 @@ func streamFile(path string, filter Filter, yield func(Event, error) bool) bool 
 		return yield(Event{}, fmt.Errorf("archive: scan %s: %w", path, err))
 	}
 	return true
+}
+
+// splitCompleteJSONLines accepts only newline-terminated records. Append always
+// writes a trailing newline, so an unterminated final token is deterministically
+// treated as a torn write and skipped while all preceding records remain
+// replayable. Complete malformed records still surface parse errors.
+func splitCompleteJSONLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) != 0 {
+		return len(data), nil, nil
+	}
+	return 0, nil, nil
 }
 
 func (f Filter) matches(e Event) bool {
@@ -324,4 +443,113 @@ func sanitizeSession(id string) string {
 		}
 	}
 	return b.String()
+}
+
+// repairTruncatedTail removes an unterminated final JSONL record before a
+// reopened writer appends. The truncation itself is synced so a subsequent
+// append cannot turn the torn bytes into a permanent malformed record.
+func repairTruncatedTail(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("archive: open for recovery %s: %w", path, err)
+	}
+
+	info, statErr := f.Stat()
+	if statErr != nil {
+		closeErr := f.Close()
+		return errors.Join(
+			fmt.Errorf("archive: stat for recovery %s: %w", path, statErr),
+			wrapCloseError(path, closeErr),
+		)
+	}
+	if info.Size() == 0 {
+		return wrapCloseError(path, f.Close())
+	}
+
+	last := []byte{0}
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		closeErr := f.Close()
+		return errors.Join(
+			fmt.Errorf("archive: read for recovery %s: %w", path, err),
+			wrapCloseError(path, closeErr),
+		)
+	}
+	if last[0] == '\n' {
+		return wrapCloseError(path, f.Close())
+	}
+
+	const blockSize = 64 * 1024
+	buf := make([]byte, blockSize)
+	truncateAt := int64(0)
+	for end := info.Size(); end > 0; {
+		start := end - int64(len(buf))
+		if start < 0 {
+			start = 0
+		}
+		n, readErr := f.ReadAt(buf[:end-start], start)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			closeErr := f.Close()
+			return errors.Join(
+				fmt.Errorf("archive: read for recovery %s: %w", path, readErr),
+				wrapCloseError(path, closeErr),
+			)
+		}
+		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			truncateAt = start + int64(i) + 1
+			break
+		}
+		end = start
+	}
+
+	truncateErr := f.Truncate(truncateAt)
+	var syncErr error
+	if truncateErr == nil {
+		syncErr = f.Sync()
+	}
+	closeErr := f.Close()
+	var errs []error
+	if truncateErr != nil {
+		errs = append(errs, fmt.Errorf("archive: truncate torn tail %s: %w", path, truncateErr))
+	}
+	if syncErr != nil {
+		errs = append(errs, fmt.Errorf("archive: sync recovered file %s: %w", path, syncErr))
+	}
+	if err := wrapCloseError(path, closeErr); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func wrapCloseError(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("archive: close %s: %w", path, err)
+}
+
+// --- Test support ---
+
+type archiveFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+// testFileFactory overrides the private-file open for tests. Nil restores the
+// default.
+var testFileFactory func(path string, flag int) (archiveFile, error)
+
+// openArchiveFile opens through fsperm so archives stay owner-only (TEN-328).
+func openArchiveFile(path string, flag int) (archiveFile, error) {
+	if testFileFactory != nil {
+		return testFileFactory(path, flag)
+	}
+	f, err := fsperm.OpenFile(path, flag)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
 }
