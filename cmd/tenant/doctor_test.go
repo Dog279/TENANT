@@ -627,7 +627,7 @@ func TestDoctor_CheckX(t *testing.T) {
 }
 
 // checkDashboard (TEN-81): not configured → SKIP; reachable + 200 → OK;
-// reachable + 401 → FAIL; non-loopback bind without TLS+auth → FAIL
+// reachable + 401 → FAIL; non-loopback bind without TLS → FAIL
 // (config lint, even with the server down). The OK/FAIL-401 paths use an
 // httptest server addressed via the injectable e.httpc seam.
 func TestDoctor_CheckDashboard(t *testing.T) {
@@ -693,20 +693,20 @@ func TestDoctor_CheckDashboard(t *testing.T) {
 		}
 	})
 
-	// Config lint: a non-loopback bind without BOTH TLS and auth must FAIL
+	// Config lint: a non-loopback bind without TLS must FAIL
 	// even though no server is running (mirrors checkBindPolicy's rule).
 	// Enabled is an explicit &true here — the tri-state default-on would
 	// reach the same lint, but pinning it keeps the test's intent clear.
-	t.Run("non-loopback without TLS+auth → FAIL (config lint)", func(t *testing.T) {
+	t.Run("non-loopback without TLS → FAIL (config lint)", func(t *testing.T) {
 		e := &doctorEnv{
 			c:  &commonFlags{},
 			lc: &launchConfig{Dashboard: dashboardConfig{Enabled: boolPtr(true), Addr: "0.0.0.0:8770"}},
 		}
 		r := checkDashboard(context.Background(), e)
 		if r.Status != statusFail {
-			t.Errorf("non-loopback w/o TLS+auth → FAIL, got %v: %q", r.Status, r.Detail)
+			t.Errorf("non-loopback w/o TLS → FAIL, got %v: %q", r.Status, r.Detail)
 		}
-		if !strings.Contains(r.Detail, "non-loopback") || !strings.Contains(r.Detail, "TLS+auth") {
+		if !strings.Contains(r.Detail, "non-loopback") || !strings.Contains(r.Detail, "TLS") {
 			t.Errorf("config-lint detail should explain the fail-closed reason: %q", r.Detail)
 		}
 		if r.Fix == "" {

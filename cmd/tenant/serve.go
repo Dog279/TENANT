@@ -533,6 +533,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	broker.reg.emit = emit
 
 	dcfg, _ := resolveDashboardConfig(c.lc, true, *dashboardOn, *dashboardAddr)
+	dcfg.Auth, err = resolveDashboardAuth(c.cfgDir, dcfg.Auth)
+	if err != nil {
+		return err
+	}
 	dashMgr := &dashboardManager{
 		base:      ctx,
 		cfg:       dcfg,
@@ -596,7 +600,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			dashAddr = addr
-			pushSys("dashboard: serving on http://" + addr)
+			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
 		}
 	}
 
@@ -653,6 +657,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	fmt.Printf("tenant serve — agent=%s backend=%s; headless hub\n", c.agent, c.backend)
 	if dashAddr != "" {
 		fmt.Printf("dashboard (control + chat + approvals): http://%s\n", dashAddr)
+		fmt.Printf("dashboard auth token: %s\n", dcfg.Auth)
 	}
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 

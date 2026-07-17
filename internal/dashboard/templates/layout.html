@@ -33,7 +33,9 @@
         <a href="/access" class="{{if eq .Page "access"}}on{{end}}">Access</a>
         <a href="/settings/keys" class="{{if eq .Page "keys"}}on{{end}}">Provider keys</a>
 
-        <a href="/auth/logout" class="logout">Log out</a>
+        <form method="POST" action="/auth/logout" class="logout-form">
+          <button type="submit" class="logout">Log out</button>
+        </form>
       </nav>
     </aside>
     <main class="main">

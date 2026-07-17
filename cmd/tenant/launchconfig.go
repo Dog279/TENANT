@@ -300,20 +300,21 @@ type gatewayConfig struct {
 	SSEAddr string `json:"sse_addr,omitempty"` // when mode includes sse
 }
 
-// dashboardConfig configures the web control panel (TEN-76). TLSCert/
-// TLSKey/Auth are present but unused until Wave 2 (TEN-79) — defined now so
-// the persisted shape is stable.
+// dashboardConfig configures the web control panel (TEN-76). Auth is an
+// optional explicit override; otherwise launch uses the owner-only generated
+// token under the config directory.
 //
 // Enabled is tri-state (TEN-86): nil ⇒ default ON (dashboard auto-launches
 // with the TUI), &true ⇒ on, &false ⇒ off. The pointer lets a fresh config
 // (no dashboard block) default to serving, while a `/dashboard off` choice
 // persists as an explicit &false that survives the next launch.
 type dashboardConfig struct {
-	Enabled *bool  `json:"enabled,omitempty"` // nil = default on; &false = explicitly off
-	Addr    string `json:"addr,omitempty"`    // listen address (default 127.0.0.1:8770)
-	TLSCert string `json:"tls_cert,omitempty"`
-	TLSKey  string `json:"tls_key,omitempty"`
-	Auth    string `json:"auth,omitempty"`
+	Enabled      *bool    `json:"enabled,omitempty"` // nil = default on; &false = explicitly off
+	Addr         string   `json:"addr,omitempty"`    // listen address (default 127.0.0.1:8770)
+	TLSCert      string   `json:"tls_cert,omitempty"`
+	TLSKey       string   `json:"tls_key,omitempty"`
+	Auth         string   `json:"auth,omitempty"`          // explicit override; empty uses dashboard-auth-token
+	AllowedHosts []string `json:"allowed_hosts,omitempty"` // trusted reverse-proxy Host values
 }
 
 // relayConfig is the offsite Discord relay's persisted state (TEN-114): whether

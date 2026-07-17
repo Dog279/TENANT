@@ -12,7 +12,7 @@ import (
 
 // TestHealthz: GET /healthz returns 200 JSON {"status":"ok"}.
 func TestHealthz(t *testing.T) {
-	s := New(Config{Addr: "127.0.0.1:0"}, nil, nil, nil, nil, nil)
+	s := New(Config{Addr: "127.0.0.1:0", Auth: "test-token"}, nil, nil, nil, nil, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	s.Handler().ServeHTTP(rec, req)
@@ -29,6 +29,9 @@ func TestHealthz(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("body = %v", body)
+	}
+	if len(body) != 1 {
+		t.Fatalf("health response leaked extra fields: %v", body)
 	}
 }
 
@@ -59,7 +62,7 @@ func TestRootServesDashboard(t *testing.T) {
 // TestRunGracefulShutdown: Run returns nil when ctx is canceled (clean
 // shutdown), binding an ephemeral port so the test never collides.
 func TestRunGracefulShutdown(t *testing.T) {
-	s := New(Config{Addr: "127.0.0.1:0"}, nil, nil, nil, nil, nil)
+	s := New(Config{Addr: "127.0.0.1:0", Auth: "test-token"}, nil, nil, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() { errc <- s.Run(ctx) }()

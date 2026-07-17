@@ -168,3 +168,8 @@ func (m *dashboardManager) Status() (bool, string) {
 	}
 	return m.running, addr
 }
+
+// AuthToken lets launch/status UX show the credential next to the local URL.
+// It is intentionally optional so alternate DashboardControl implementations
+// and test fakes remain source-compatible.
+func (m *dashboardManager) AuthToken() string { return m.cfg.Auth }

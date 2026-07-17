@@ -2227,6 +2227,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	})
 	dcfg, dashOn := resolveDashboardConfig(c.lc, dashFlagSet, *dashboardOn, *dashboardAddr)
+	dcfg.Auth, err = resolveDashboardAuth(c.cfgDir, dcfg.Auth)
+	if err != nil {
+		return err
+	}
 	// modelControl powers /model AND backs the dashboard's write-only key page
 	// (TEN-145) for LLM-provider keys via AddCloudModel. Built once and shared.
 	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log, degraded: degraded}
@@ -2694,7 +2698,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())
 		} else {
-			pushSys("dashboard: serving on http://" + addr)
+			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
 		}
 	}
 
@@ -2927,10 +2931,11 @@ func resolveDashboardConfig(lc *launchConfig, flagSet, flagVal bool, flagAddr st
 		addr = defaultDashboardAddr
 	}
 	return dashboard.Config{
-		Addr:    addr,
-		TLSCert: saved.TLSCert,
-		TLSKey:  saved.TLSKey,
-		Auth:    saved.Auth,
+		Addr:         addr,
+		TLSCert:      saved.TLSCert,
+		TLSKey:       saved.TLSKey,
+		Auth:         saved.Auth,
+		AllowedHosts: append([]string(nil), saved.AllowedHosts...),
 	}, on
 }
 

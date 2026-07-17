@@ -1235,6 +1235,7 @@ func TestSlash_EnableBareNameUsesSmartMatch(t *testing.T) {
 // status query after a toggle reflects the change.
 type fakeDash struct {
 	addr        string
+	authToken   string
 	running     bool
 	enableErr   error
 	disableErr  error
@@ -1242,6 +1243,8 @@ type fakeDash struct {
 	disableC    int
 	statusCalls int
 }
+
+func (f *fakeDash) AuthToken() string { return f.authToken }
 
 func (f *fakeDash) Enable() (string, error) {
 	f.enableCalls++
@@ -1265,7 +1268,7 @@ func (f *fakeDash) Status() (bool, string) {
 // `/dashboard on` enables + reports the URL; `/dashboard off` disables +
 // reports stopped; bare/`status` reflect the running state.
 func TestSlash_Dashboard(t *testing.T) {
-	fd := &fakeDash{addr: "127.0.0.1:8770"}
+	fd := &fakeDash{addr: "127.0.0.1:8770", authToken: "local-test-token"}
 	m := newModel(context.Background(), Config{Dash: fd})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 
@@ -1276,6 +1279,9 @@ func TestSlash_Dashboard(t *testing.T) {
 	}
 	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "http://127.0.0.1:8770") {
 		t.Errorf("`/dashboard on` should report the URL: %q", last)
+	}
+	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "local-test-token") {
+		t.Errorf("`/dashboard on` should report the auth token: %q", last)
 	}
 
 	// status → running.

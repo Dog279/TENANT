@@ -52,14 +52,13 @@ type ToolInfo struct {
 	Gated   bool
 }
 
-// Config is the dashboard's static configuration, loaded from the
-// `dashboard` block of launchConfig. TLSCert/TLSKey/Auth are wired in
-// Wave 2 (TEN-79); they're carried here now so the config shape is stable.
+// Config is the dashboard's static security and listener configuration.
 type Config struct {
-	Addr    string // listen address, e.g. 127.0.0.1:8770
-	TLSCert string // PEM cert path; empty = plaintext (Wave 2)
-	TLSKey  string // PEM key path (Wave 2)
-	Auth    string // auth mode/token seam (Wave 2)
+	Addr         string   // listen address, e.g. 127.0.0.1:8770
+	TLSCert      string   // PEM cert path; empty = plaintext (Wave 2)
+	TLSKey       string   // PEM key path (Wave 2)
+	Auth         string   // bearer/cookie authentication secret; required by Run
+	AllowedHosts []string // additional trusted HTTP Host authorities (host or host:port)
 }
 
 // Server is the dashboard HTTP server. Its exported/internal fields are the
@@ -175,7 +174,7 @@ func (s *Server) routes() {
 	// a Bearer header. checkAuth exempts these three paths.
 	s.mux.HandleFunc("GET /settings", s.handleSettingsPage)
 	s.mux.HandleFunc("POST /auth/login", s.handleLogin)
-	s.mux.HandleFunc("GET /auth/logout", s.handleLogout)
+	s.mux.HandleFunc("POST /auth/logout", s.handleLogout)
 
 	// Server-rendered pages (TEN-107), now mounted at the root. The TEN-110
 	// cutover removed the old embedded JS SPA (assets/) and its GET / file

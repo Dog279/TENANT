@@ -1578,7 +1578,7 @@ func checkIMessage(_ context.Context, e *doctorEnv) checkResult {
 // configured. Tiers mirror checkDiscord:
 //
 //	skip   — dashboard not configured (Enabled=false AND no Addr)
-//	FAIL   — non-loopback Addr without TLS+Auth in config (the same
+//	FAIL   — non-loopback Addr without TLS in config (the same
 //	         fail-closed rule Server.checkBindPolicy enforces at Run);
 //	         this is a config lint surfaced even if the server is down
 //	FAIL   — reachable but returns 401 (auth token mismatch)
@@ -1605,18 +1605,17 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 	}
 
 	// Config lint (independent of whether the server is up): a non-loopback
-	// bind without BOTH TLS and an auth token is fail-closed — mirrors
-	// dashboard.Server.checkBindPolicy. Surface it as FAIL so `doctor`
-	// catches the misconfig before launch refuses to bind.
+	// bind without TLS is fail-closed. Authentication no longer needs to be
+	// present in config.json because launch creates the default token file.
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr // no port → treat whole value as host (best-effort)
 	}
 	if !isLoopbackAddr(host) {
-		if dc.TLSCert == "" || dc.TLSKey == "" || dc.Auth == "" {
+		if dc.TLSCert == "" || dc.TLSKey == "" {
 			return checkResult{Status: statusFail,
-				Detail: fmt.Sprintf("dashboard binds non-loopback %q without TLS+auth — launch will refuse to start", addr),
-				Fix:    "set dashboard.tls_cert/tls_key and dashboard.auth, or bind 127.0.0.1"}
+				Detail: fmt.Sprintf("dashboard binds non-loopback %q without TLS — launch will refuse to start", addr),
+				Fix:    "set dashboard.tls_cert/tls_key, or bind 127.0.0.1"}
 		}
 	}
 
