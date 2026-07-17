@@ -219,6 +219,72 @@ func buildAgentFull(t *testing.T, profile model.Profile, tools []model.ToolSpec,
 	return a, fake, working, estore
 }
 
+// noopCompactor is a Compactor that changes nothing. It exists only to make the
+// post-turn compaction defer RUN (the defer short-circuits when Compactor is nil),
+// so a regression test can exercise the defer on an error turn.
+type noopCompactor struct{}
+
+func (noopCompactor) Compact(_ context.Context, msgs []working.Message) ([]working.Message, bool, error) {
+	return msgs, false, nil
+}
+
+// TestAgent_TurnErrorWithCompactorDoesNotPanic locks in the fix for a crash:
+// Turn's `result` is a NAMED return (TEN-300 named it so the run-trace finish
+// defer can read the outcome). The planner/assemble error paths do `return nil,
+// err`, which nils the named result before defers run — and the post-turn
+// compaction defer dereferenced result.Reports. A spawned sub-agent (always given
+// a Compactor) whose planner generate errored panicked the whole process. It must
+// now return (nil, err) cleanly with the compaction defer active.
+func TestAgent_TurnErrorWithCompactorDoesNotPanic(t *testing.T) {
+	genErr := errors.New("simulated planner generate failure")
+	fake := testllm.New()
+	fake.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+		return nil, genErr
+	}
+	fake.GenerateStreamFn = func(context.Context, model.GenerateRequest) (<-chan model.StreamChunk, error) {
+		return nil, genErr
+	}
+
+	reg, err := model.NewRegistry("")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	router := model.NewRouter(reg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+	router.RegisterBackend("vllm", func(context.Context, model.Profile, *slog.Logger) (any, error) {
+		return fake, nil
+	})
+
+	estore, err := episodic.Open(filepath.Join(t.TempDir(), "ep.db"))
+	if err != nil {
+		t.Fatalf("episodic.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = estore.Close() })
+
+	a, err := agent.New(agent.Config{
+		AgentID:    "test-agent",
+		SessionID:  "test-sess",
+		Router:     router,
+		Working:    working.New(),
+		Archive:    archive.NewWriter(t.TempDir()),
+		Episodic:   estore,
+		Tools:      agent.NewStaticRegistry(),
+		Dispatcher: dispatchOK(""),
+		Compactor:  noopCompactor{}, // MUST be non-nil for the compaction defer to run
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	// Before the fix this panicked with a nil dereference in the compaction defer.
+	res, turnErr := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "do one thing"})
+	if turnErr == nil {
+		t.Fatal("expected the planner-generate error to surface as the turn error")
+	}
+	if res != nil {
+		t.Fatalf("an error turn must return a nil result, got %+v", res)
+	}
+}
+
 // buildStreamingAgent mirrors buildAgent but enables Stream + an
 // Observer (for the TUI live-feed path).
 func buildStreamingAgent(t *testing.T, fake *testllm.Fake, obs func(agent.Event), tools []model.ToolSpec, dispatcher agent.ToolDispatcher) *agent.Agent {

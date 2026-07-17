@@ -692,7 +692,12 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// (vs a single line) stops compaction re-firing every turn near the
 	// threshold; the agent owns the state because the assembler is per-turn.
 	defer func() {
-		if a.cfg.Compactor == nil || ctx.Err() != nil || len(result.Reports) == 0 {
+		// result is a NAMED return (TEN-300 named it so the run-trace finish
+		// defer can inspect the outcome). The error paths below do `return nil,
+		// err`, which sets result to nil before defers run — so this compaction
+		// pass MUST nil-check result first or it dereferences nil (a spawned
+		// sub-agent whose planner/assemble errors would otherwise crash the app).
+		if result == nil || a.cfg.Compactor == nil || ctx.Err() != nil || len(result.Reports) == 0 {
 			return
 		}
 		last := result.Reports[len(result.Reports)-1]
