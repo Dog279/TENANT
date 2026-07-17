@@ -58,6 +58,7 @@ type TeamConfig struct {
 	// ConfirmSensitiveEgress is the existing origin-aware approval callback.
 	// nil makes sensitive outbound flows fail closed.
 	ConfirmSensitiveEgress func(context.Context, string, string) bool
+	Budgets                orchestra.Budgets // zero fields use safe defaults
 
 	// Web, when true, gives each agent its OWN lazy browser session
 	// (isolated, so concurrent navigation can't clobber a shared tab).
@@ -99,7 +100,8 @@ type TeamConfig struct {
 // over the orchestra Bus. The orchestrator decides what to spawn at runtime
 // (the spawn_agent tool).
 type TeamRuntime struct {
-	cfg TeamConfig
+	cfg    TeamConfig
+	budget *orchestra.Governor
 
 	mu     sync.Mutex
 	order  []string
@@ -117,11 +119,17 @@ type TeamRuntime struct {
 }
 
 func newTeamRuntime(cfg TeamConfig) *TeamRuntime {
-	return &TeamRuntime{
+	r := &TeamRuntime{
 		cfg:            cfg,
 		agents:         map[string]*member{},
 		profileRouters: map[string]*model.Router{},
 	}
+	r.budget = orchestra.NewGovernor(cfg.Budgets, func(st orchestra.BudgetStatus) {
+		if r.cfg.Observe != nil {
+			r.cfg.Observe(r.cfg.OrchID, agent.Event{Kind: agent.EventTeamBudget, Text: st.String(), TeamBudget: &st})
+		}
+	})
+	return r
 }
 
 // SetAgentProfiles replaces the registry of named sub-agent profiles and
@@ -232,6 +240,7 @@ func (r *TeamRuntime) addCleanup(fn func()) {
 // Close tears down everything the team created (per-agent browser
 // sessions), in reverse order. Call once at the end of a run.
 func (r *TeamRuntime) Close() {
+	r.budget.End()
 	r.cleanMu.Lock()
 	cs := r.cleanups
 	r.cleanups = nil
@@ -255,7 +264,7 @@ func (r *TeamRuntime) addWebTool(local *toolMux, agentID string) {
 		}
 		r.emit(agentID, readerActivityEvent(a))
 	}
-	local.add("web", newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, r.addCleanup, r.cfg.Log))
+	local.add("web", newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, r.addCleanup, r.budget.AcquireBrowser, r.cfg.Log))
 }
 
 // composite merges a shared tool set (plugins) with an agent's local tools
@@ -263,8 +272,10 @@ func (r *TeamRuntime) addWebTool(local *toolMux, agentID string) {
 // tools are always surfaced; anything not local falls through to shared.
 // Implements both agent.ToolRegistry and agent.ToolDispatcher.
 type composite struct {
-	shared *toolMux
-	local  *toolMux
+	shared  *toolMux
+	local   *toolMux
+	budget  *orchestra.Governor
+	agentID string
 }
 
 // Compile-time guard: the composite MUST satisfy agent.RankingReporter, else the
@@ -312,6 +323,14 @@ func (c composite) All() []model.ToolSpec {
 }
 
 func (c composite) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	if c.budget != nil {
+		if call.Name == "spawn_agent" {
+			c.budget.Ensure(ctx)
+		}
+		if err := c.budget.AcquireToolCall(c.agentID); err != nil {
+			return err.Error(), true, nil
+		}
+	}
 	if _, ok := c.local.Get(call.Name); ok {
 		return c.local.Dispatch(ctx, call)
 	}
@@ -411,6 +430,11 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	if role == "" || task == "" {
 		return "", fmt.Errorf("spawn needs both a role and a task")
 	}
+	r.budget.Ensure(ctx)
+	runCtx, releaseAgent, err := r.budget.AcquireAgent()
+	if err != nil {
+		return "", err
+	}
 
 	r.mu.Lock()
 	r.seq++
@@ -418,7 +442,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	// Per-agent cancellable ctx so the orchestrator can preempt a specific
 	// stuck agent (wave-timeout salvage path) without cancelling the entire
 	// research run.
-	agCtx, cancel := context.WithCancel(ctx)
+	agCtx, cancel := context.WithCancel(runCtx)
 	m := &member{id: id, role: role, task: task, status: "running",
 		done: make(chan struct{}), cancel: cancel}
 	r.agents[id] = m
@@ -438,7 +462,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	if profile != nil {
 		systemPrompt = profileSystemPrompt(id, role, r.cfg.OrchID, profile.Soul)
 	}
-	tools := r.agentTools(id) // full plugin set + this agent's own tools
+	tools, closeTools := r.agentTools(id) // full plugin set + this agent's own tools
 
 	// Spawn-time N-way routing (TEN-292): UNPINNED spawns only — a spawn that
 	// matched a pinned AgentProfile (profile with a provider) keeps its pinned
@@ -486,14 +510,20 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		EpisodeVisibility: episodic.VisibilityShared,
 	})
 	if err != nil {
+		closeTools()
+		releaseAgent()
 		r.finish(m, "error", "failed to start: "+err.Error())
 		return "", err
 	}
 
 	go func() {
 		defer cancel() // release the ctx when this agent finishes naturally
+		defer releaseAgent()
+		defer closeTools()
 		res, terr := ag.Turn(agCtx, agent.TurnRequest{UserQuery: task})
 		switch {
+		case context.Cause(agCtx) != nil && r.budget.Status().TerminationReason != "":
+			r.finish(m, "terminated", "terminated: "+r.budget.Status().TerminationReason)
 		case terr != nil:
 			r.finish(m, "error", "error: "+terr.Error())
 		case res != nil && strings.TrimSpace(res.Response) != "":
@@ -518,14 +548,30 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 // tools (memory_remember writes the agent's own facts; skill_save saves
 // under its id) live in the local layer; the shared external-resource
 // plugins (wiki/sql/web/os/…) are shared.
-func (r *TeamRuntime) agentTools(id string) composite {
+func (r *TeamRuntime) agentTools(id string) (composite, func()) {
 	local := newToolMux()
 	local.add("team", orchestra.CommsTool{Bus: r.cfg.Bus, Self: id})
 	local.add("memory", memoryTool{sem: r.cfg.Stores.semantic, emb: r.cfg.Embedder, embedderID: r.cfg.EmbedderID, agentID: id})
 	if r.cfg.Skills != nil {
 		local.add("skills", skillTool{st: r.cfg.Skills, emb: r.cfg.Embedder, agentID: id})
 	}
-	r.addWebTool(local, id) // this agent's OWN lazy browser session
+	// This agent's OWN lazy browser session, with the per-agent reader-audit
+	// observer (TEN-319) and the browser-instance budget (TEN-326). Cleanup is
+	// captured explicitly for the sub-agent lifecycle rather than via addCleanup.
+	closeTools := func() {}
+	if r.cfg.Web {
+		cfg := r.cfg.WebConfig
+		upstream := cfg.ReaderObserver
+		cfg.ReaderObserver = func(a web.ReaderActivity) {
+			if upstream != nil {
+				upstream(a)
+			}
+			r.emit(id, readerActivityEvent(a))
+		}
+		lw := newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, nil, r.budget.AcquireBrowser, r.cfg.Log)
+		local.add("web", lw)
+		closeTools = lw.Close
+	}
 	// Orchestrator only: restore persisted local enable/disable state
 	// AND wire the save hook so /enable web_search etc. survives a
 	// restart. Sub-agents are ephemeral; their local state isn't
@@ -538,7 +584,7 @@ func (r *TeamRuntime) agentTools(id string) composite {
 			local.setOnChange(r.cfg.LocalOnChange)
 		}
 	}
-	return composite{shared: r.cfg.Shared, local: local}
+	return composite{shared: r.cfg.Shared, local: local, budget: r.budget, agentID: id}, closeTools
 }
 
 func (r *TeamRuntime) skillRetriever(id string) agent.SkillRetriever {
@@ -557,8 +603,39 @@ func (r *TeamRuntime) finish(m *member, status, result string) {
 }
 
 func (r *TeamRuntime) emit(id string, e agent.Event) {
+	if e.Kind == agent.EventUsage {
+		_ = r.budget.RecordUsage(e.PromptTokens, e.CompletionTokens)
+	}
 	if r.cfg.Observe != nil {
 		r.cfg.Observe(id, e)
+	}
+}
+
+// BeginRun opens an explicit team accounting window. Deep-research callers use
+// this because they spawn directly rather than through the spawn_agent tool.
+func (r *TeamRuntime) BeginRun(ctx context.Context) { r.budget.Begin(ctx) }
+
+// EndRun closes the current accounting window after all children are joined.
+func (r *TeamRuntime) EndRun(reason ...string) {
+	if len(reason) > 0 && reason[0] != "" {
+		r.budget.EndWithReason(reason[0])
+		return
+	}
+	r.budget.End()
+}
+
+// BudgetStatus exposes active usage and the last termination reason to status
+// surfaces without parsing human-readable event text.
+func (r *TeamRuntime) BudgetStatus() orchestra.BudgetStatus { return r.budget.Status() }
+
+// ObserveMain accounts the orchestrator's model usage while a team run is
+// active, then forwards the event to the existing observer.
+func (r *TeamRuntime) ObserveMain(e agent.Event, next func(agent.Event)) {
+	if e.Kind == agent.EventUsage {
+		_ = r.budget.RecordUsage(e.PromptTokens, e.CompletionTokens)
+	}
+	if next != nil {
+		next(e)
 	}
 }
 
@@ -791,7 +868,13 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 		if to <= 0 {
 			to = 3 * time.Minute
 		}
-		return t.rt.Await(ctx, to), false, nil
+		out := t.rt.Await(ctx, to)
+		if active := t.rt.BudgetStatus().ActiveSubagents; active > 0 {
+			t.rt.EndRun(fmt.Sprintf("team await ended with %d subagent(s) still active", active))
+		} else {
+			t.rt.EndRun()
+		}
+		return out, false, nil
 	default:
 		return "unknown orchestrator tool: " + call.Name, true, nil
 	}

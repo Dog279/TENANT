@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tenant/internal/agent"
+	"tenant/internal/orchestra"
 )
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
@@ -3123,6 +3124,17 @@ func TestApplyEvent_SkipsCrossAgentAndBus(t *testing.T) {
 	m.applyEvent(agent.Event{Kind: agent.EventTurnStart})
 	if len(m.feedLines) != base+1 {
 		t.Fatalf("a primary-agent event should append one feed line, got +%d", len(m.feedLines)-base)
+	}
+}
+
+func TestApplyTeamEvent_ShowsBudgetTermination(t *testing.T) {
+	m := newModel(context.Background(), Config{})
+	st := orchestra.BudgetStatus{RunID: 2, TerminationReason: "wall time limit exceeded"}
+	m.applyTeamEvent(TeamEvent{AgentID: "main", Event: agent.Event{
+		Kind: agent.EventTeamBudget, Text: st.String(), TeamBudget: &st,
+	}})
+	if len(m.feedLines) == 0 || !strings.Contains(stripANSI(m.feedLines[len(m.feedLines)-1]), "wall time limit exceeded") {
+		t.Fatalf("budget termination was not shown in TUI feed: %v", m.feedLines)
 	}
 }
 

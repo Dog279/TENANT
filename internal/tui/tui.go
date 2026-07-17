@@ -5151,6 +5151,12 @@ func (m *model) applyEvent(e agent.Event) {
 		if m.cfg.RecordUsage != nil {
 			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens)
 		}
+	case agent.EventTeamBudget:
+		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {
+			m.appendFeed(cErr.Render("team " + e.Text))
+		} else {
+			m.appendFeed(cDim.Render(e.Text))
+		}
 	case agent.EventMemory:
 		if e.Budget != nil {
 			// Gauge fullness against the model's REAL context window, not the
@@ -5249,6 +5255,12 @@ func (m *model) applyTeamEvent(te TeamEvent) {
 	switch e.Kind {
 	case agent.EventUsage:
 		m.teamTok += e.PromptTokens + e.CompletionTokens
+	case agent.EventTeamBudget:
+		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {
+			m.appendFeed(cErr.Render(tag + " " + e.Text))
+		} else {
+			m.appendFeed(cDim.Render(tag + " " + e.Text))
+		}
 	case agent.EventToolCall:
 		m.appendFeed(cTool.Render(tag+" → "+e.Tool) + " " + cDim.Render(clip(e.Args, 50)))
 	case agent.EventToolResult:

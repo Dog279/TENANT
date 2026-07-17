@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/model"
+	"tenant/internal/orchestra"
 	"tenant/internal/route"
 	"tenant/internal/secrets"
 )
@@ -89,6 +90,9 @@ type launchConfig struct {
 	// soul. Lets you mix models per role: researcher → glm-4.6 on Z.ai,
 	// synthesizer → aeon-ultimate on DGX, etc.
 	Agents map[string]*agentProfile `json:"agents,omitempty"`
+	// Budgets is the structural resource envelope for each agent-team run.
+	// Omitted/zero fields receive orchestra.DefaultBudgets at runtime.
+	Budgets orchestra.Budgets `json:"budgets,omitempty"`
 	// PlanLoopCeiling caps planner↔tool iterations per turn (per agent). 0 =
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
@@ -130,6 +134,13 @@ type runTraceConfig struct {
 	MaxAgeDays       int  `json:"max_age_days,omitempty"` // 0=90 default; negative disables age pruning
 	MaxCount         int  `json:"max_count,omitempty"`    // 0=10000 default; negative disables count pruning
 	RedactToolBodies bool `json:"redact_tool_bodies,omitempty"`
+}
+
+func configuredBudgets(lc *launchConfig) orchestra.Budgets {
+	if lc == nil {
+		return orchestra.DefaultBudgets()
+	}
+	return lc.Budgets.WithDefaults()
 }
 
 // goalConfig holds persisted /goal autonomous-loop settings (TEN-216).

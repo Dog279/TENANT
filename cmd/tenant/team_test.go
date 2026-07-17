@@ -147,7 +147,7 @@ func TestComposite_PerAgentWebNotDuplicated(t *testing.T) {
 	defer cleanup()
 
 	local := newToolMux()
-	local.add("web", newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil))
+	local.add("web", newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil, nil))
 	comp := composite{shared: shared, local: local}
 
 	count := 0
@@ -265,6 +265,34 @@ func TestSpawnTool_RequiresRoleAndTask(t *testing.T) {
 	}
 	if _, err := rt.Spawn(context.Background(), "role", ""); err == nil {
 		t.Fatal("spawn with empty task must error")
+	}
+}
+
+func TestTeamRuntime_SpawnRefusedAtAgentsPerRunCap(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	router, err := buildRouter(c, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, closeStores, err := openStores(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStores()
+	bus := orchestra.NewBus()
+	bus.Register("main")
+	rt := newTeamRuntime(TeamConfig{
+		Bus: bus, Router: router, Stores: st, Shared: newToolMux(), OrchID: "main", Log: log,
+		Budgets: orchestra.Budgets{MaxAgentsPerRun: 1},
+	})
+	defer rt.Close()
+	if _, err := rt.Spawn(context.Background(), "first", "work"); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	rt.Await(context.Background(), time.Second)
+	if _, err := rt.Spawn(context.Background(), "second", "work"); err == nil || !strings.Contains(err.Error(), "agents per run") {
+		t.Fatalf("second spawn should be structurally refused with cap context, got %v", err)
 	}
 }
 

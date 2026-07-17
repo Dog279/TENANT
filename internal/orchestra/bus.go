@@ -6,12 +6,10 @@
 // orchestra adds the COMMUNICATION between them.
 //
 // The Bus is the core primitive: async per-agent mailboxes (drain-on-read,
-// so reading clears an agent's context) PLUS a retained append-only log of
-// every message. The log is the lossless record: agents recall the full
-// thread across context compactions via team_history, and the orchestrator
-// observes all traffic completely via a cursor (Since) — nothing is ever
-// dropped. Async by design — a sender never blocks on a recipient — so
-// agents running in parallel negotiate without deadlocking on each other.
+// so reading clears an agent's context) PLUS a bounded retained log. Agents
+// recall the retained tail across context compactions via team_history, and
+// the orchestrator observes it via an absolute cursor (Since). Async by design:
+// a sender never blocks on a recipient, so parallel agents do not deadlock.
 package orchestra
 
 import (
@@ -35,17 +33,29 @@ func (m Message) Broadcast() bool { return m.To == "" }
 // Bus is the async message fabric. Safe for concurrent use by many agent
 // goroutines plus the orchestrator.
 type Bus struct {
-	mu        sync.Mutex
-	order     []string             // registration order (deterministic membership)
-	mailboxes map[string][]Message // agentID -> undrained messages (delivery)
-	log       []Message            // retained, append-only — the lossless record
-	notify    chan struct{}        // coalescing wake-up for observers (buffered 1)
-	closed    bool
+	mu         sync.Mutex
+	order      []string             // registration order (deterministic membership)
+	mailboxes  map[string][]Message // agentID -> undrained messages (delivery)
+	log        []Message            // bounded retained history
+	logBase    int                  // absolute cursor of log[0]
+	historyCap int                  // maximum retained log/mailbox entries
+	notify     chan struct{}        // coalescing wake-up for observers (buffered 1)
+	closed     bool
 }
 
 // NewBus returns an empty bus.
 func NewBus() *Bus {
-	return &Bus{mailboxes: map[string][]Message{}, notify: make(chan struct{}, 1)}
+	return NewBusWithHistoryCap(DefaultBudgets().BusHistoryCap)
+}
+
+// NewBusWithHistoryCap returns an empty bus whose retained history and each
+// undrained mailbox are bounded. Absolute cursors remain monotonic when old
+// history is evicted; a lagged reader resumes at the oldest retained message.
+func NewBusWithHistoryCap(cap int) *Bus {
+	if cap <= 0 {
+		cap = DefaultBudgets().BusHistoryCap
+	}
+	return &Bus{mailboxes: map[string][]Message{}, notify: make(chan struct{}, 1), historyCap: cap}
 }
 
 // Register creates a mailbox for an agent. Idempotent — re-registering an
@@ -87,15 +97,20 @@ func (b *Bus) Send(m Message) error {
 			if id == m.From {
 				continue // don't echo a broadcast back to its sender
 			}
-			b.mailboxes[id] = append(b.mailboxes[id], m)
+			b.mailboxes[id] = appendBounded(b.mailboxes[id], m, b.historyCap)
 		}
 	} else {
 		if _, ok := b.mailboxes[m.To]; !ok {
 			return fmt.Errorf("orchestra: no such agent %q", m.To)
 		}
-		b.mailboxes[m.To] = append(b.mailboxes[m.To], m)
+		b.mailboxes[m.To] = appendBounded(b.mailboxes[m.To], m, b.historyCap)
 	}
 	b.log = append(b.log, m)
+	if drop := len(b.log) - b.historyCap; drop > 0 {
+		copy(b.log, b.log[drop:])
+		b.log = b.log[:len(b.log)-drop]
+		b.logBase += drop
+	}
 	// Coalescing wake: at most one pending signal. The observer reads ALL
 	// new messages via Since, so a coalesced signal never loses data.
 	select {
@@ -124,27 +139,29 @@ func (b *Bus) Pending(agentID string) int {
 }
 
 // Since returns every message logged at or after cursor, plus the new
-// cursor to pass next time. This is the orchestrator's LOSSLESS view: the
-// log retains everything, so even if many sends coalesce into one Notify
-// wake-up, one Since call returns them all. Nothing is dropped.
+// cursor to pass next time. It is lossless within the configured retained
+// window. A lagged cursor is clamped to the oldest retained message while the
+// absolute cursor remains monotonic.
 func (b *Bus) Since(cursor int) ([]Message, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if cursor < 0 {
-		cursor = 0
+	if cursor < b.logBase {
+		cursor = b.logBase
 	}
-	if cursor >= len(b.log) {
-		return nil, len(b.log)
+	head := b.logBase + len(b.log)
+	if cursor >= head {
+		return nil, head
 	}
-	out := make([]Message, len(b.log)-cursor)
-	copy(out, b.log[cursor:])
-	return out, len(b.log)
+	start := cursor - b.logBase
+	out := make([]Message, len(b.log)-start)
+	copy(out, b.log[start:])
+	return out, head
 }
 
 // Notify is a coalescing wake-up: a receive means "new messages exist —
 // call Since to read them." Closed by Close. Pair it with Since so the
 // orchestrator reacts live without busy-polling, while Since guarantees
-// completeness.
+// completeness within the configured history window.
 func (b *Bus) Notify() <-chan struct{} { return b.notify }
 
 // History returns the retained messages relevant to an agent — everything
@@ -172,4 +189,13 @@ func (b *Bus) Close() {
 	}
 	b.closed = true
 	close(b.notify)
+}
+
+func appendBounded(dst []Message, m Message, cap int) []Message {
+	if len(dst) < cap {
+		return append(dst, m)
+	}
+	copy(dst, dst[1:])
+	dst[len(dst)-1] = m
+	return dst
 }

@@ -10,6 +10,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/model"
+	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
 )
 
@@ -68,7 +69,7 @@ func TestReaderActivityEvent_HostVisibleWithoutTargetURL(t *testing.T) {
 }
 
 func TestLazyWeb_AdvertisesSpecsWithoutSession(t *testing.T) {
-	lw := newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil)
+	lw := newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil, nil)
 	specs := lw.Tools()
 	if len(specs) == 0 {
 		t.Fatal("lazyWeb must advertise the web tool specs before any session exists")
@@ -95,6 +96,7 @@ func TestLazyWeb_FailsCleanlyAndCachesNoLeak(t *testing.T) {
 		"",
 		func(func()) { cleanups++ },
 		nil,
+		nil,
 	)
 	args, _ := json.Marshal(map[string]string{"url": "https://example.com"})
 
@@ -115,5 +117,17 @@ func TestLazyWeb_FailsCleanlyAndCachesNoLeak(t *testing.T) {
 	// A session that never opened registers no cleanup.
 	if cleanups != 0 {
 		t.Fatalf("no cleanup should be registered when no session opened, got %d", cleanups)
+	}
+}
+
+func TestLazyWeb_RefusesBeforeLaunchWhenBrowserBudgetExhausted(t *testing.T) {
+	called := 0
+	lw := newLazyWeb(web.Config{}, web.Policy{}, "", nil, func() (func(), error) {
+		called++
+		return nil, &orchestra.LimitError{Resource: "browser instances", Used: "1", Limit: "1"}
+	}, nil)
+	out, isErr, err := lw.Dispatch(context.Background(), model.ToolCall{Name: "web_navigate", Arguments: json.RawMessage(`{"url":"https://example.com"}`)})
+	if err != nil || !isErr || called != 1 || !strings.Contains(out, "browser instances") {
+		t.Fatalf("budget refusal should be a clean pre-launch tool error: out=%q isErr=%v err=%v called=%d", out, isErr, err, called)
 	}
 }

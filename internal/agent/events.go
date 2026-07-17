@@ -2,6 +2,7 @@ package agent
 
 import (
 	"tenant/internal/memory/assemble"
+	"tenant/internal/orchestra"
 )
 
 // EventKind classifies a live turn event emitted to a Config.Observer.
@@ -29,6 +30,7 @@ const (
 	EventToolCatalog EventKind = "tool_catalog" // ranked tool surface trimmed for this turn (Text="ranked: N of M tools surfaced")
 	EventIngest      EventKind = "ingest"       // an inbound message arrived from an offsite channel and drove a turn; Text = "Discord: <preview>" / "iMessage: <preview>" (TEN-232)
 	EventBus         EventKind = "bus"          // an inter-agent message crossed the orchestra bus; Agent = sender, Text = "→ <to>: <content>" (TEN-234)
+	EventTeamBudget  EventKind = "team_budget"  // active team-run usage or a structural termination; TeamBudget + Text
 	EventApproval    EventKind = "approval"     // a dangerous action is awaiting an operator decision; Text = "<action>: <detail>" — surfaced in serve mode where there is no TUI prompt (TEN-194)
 	// Approval fan-out (TEN-203): every dangerous-action approval enters/leaves an
 	// id-keyed queue the broker owns. Both observers (TUI + dashboard) refresh live
@@ -67,8 +69,9 @@ type Event struct {
 	Result string // tool result text (ToolResult)
 	IsErr  bool   // tool result was an error (ToolResult)
 
-	Budget   *assemble.BudgetReport // EventMemory
-	Approval *ApprovalEvent         // EventApprovalPending / EventApprovalResolved (TEN-203)
+	Budget     *assemble.BudgetReport  // EventMemory
+	TeamBudget *orchestra.BudgetStatus // EventTeamBudget
+	Approval   *ApprovalEvent          // EventApprovalPending / EventApprovalResolved (TEN-203)
 
 	// EventUsage: actual tokens for one LLM call, as reported by the
 	// backend (input + output). Summed by the UI for session totals.
