@@ -114,6 +114,9 @@ func TestSilentReconnect_FromCachedToken(t *testing.T) {
 	for _, ts := range disp.Tools() {
 		if ts.Name == "ping" {
 			found = true
+			if !ts.Outbound || len(ts.ResultLabels) != 1 || ts.ResultLabels[0].Provenance != model.ProvenanceRemoteMCP {
+				t.Errorf("ping info-flow metadata = outbound:%v labels:%+v", ts.Outbound, ts.ResultLabels)
+			}
 		}
 	}
 	if !found {

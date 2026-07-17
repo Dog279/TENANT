@@ -55,6 +55,9 @@ type TeamConfig struct {
 	OrchID     string
 	Log        *slog.Logger
 	Observe    func(agentID string, e agent.Event) // live view hook (may be nil)
+	// ConfirmSensitiveEgress is the existing origin-aware approval callback.
+	// nil makes sensitive outbound flows fail closed.
+	ConfirmSensitiveEgress func(context.Context, string, string) bool
 
 	// Web, when true, gives each agent its OWN lazy browser session
 	// (isolated, so concurrent navigation can't clobber a shared tab).
@@ -457,22 +460,23 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	}
 
 	ag, err := agent.New(agent.Config{
-		AgentID:      id,
-		PlannerRole:  plannerRole,
-		Router:       router,
-		Soul:         sl,
-		Working:      working.New(),
-		Archive:      r.cfg.Stores.archive,
-		Episodic:     r.cfg.Stores.episodic,
-		Semantic:     r.cfg.Stores.semantic,
-		Tools:        tools,
-		Dispatcher:   tools,
-		Logger:       r.cfg.Log,
-		SystemPrompt: systemPrompt,
-		Observer:     func(e agent.Event) { r.emit(id, e) },
-		Skills:       r.skillRetriever(id),
-		Compactor:    r.cfg.Compressor,
-		UserProfile:  r.cfg.Profile,
+		AgentID:                id,
+		PlannerRole:            plannerRole,
+		Router:                 router,
+		Soul:                   sl,
+		Working:                working.New(),
+		Archive:                r.cfg.Stores.archive,
+		Episodic:               r.cfg.Stores.episodic,
+		Semantic:               r.cfg.Stores.semantic,
+		Tools:                  tools,
+		Dispatcher:             tools,
+		ConfirmSensitiveEgress: r.cfg.ConfirmSensitiveEgress,
+		Logger:                 r.cfg.Log,
+		SystemPrompt:           systemPrompt,
+		Observer:               func(e agent.Event) { r.emit(id, e) },
+		Skills:                 r.skillRetriever(id),
+		Compactor:              r.cfg.Compressor,
+		UserProfile:            r.cfg.Profile,
 		// Sub-agents persist episodes as `shared` so the parent orchestrator's
 		// retrieval can surface their work via the assembler's agent-glob filter
 		// (TEN-45). Without this, the orchestrator's normal episodic retrieval

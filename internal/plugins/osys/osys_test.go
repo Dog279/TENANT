@@ -279,8 +279,15 @@ func TestReads(t *testing.T) {
 func TestTools(t *testing.T) {
 	d := NewDispatcher(nil, Policy{})
 	names := map[string]bool{}
+	var read, exec model.ToolSpec
 	for _, sp := range d.Tools() {
 		names[sp.Name] = true
+		if sp.Name == "os_read_file" {
+			read = sp
+		}
+		if sp.Name == "os_exec" {
+			exec = sp
+		}
 		if !json.Valid(sp.Parameters) {
 			t.Errorf("%s invalid params", sp.Name)
 		}
@@ -289,5 +296,11 @@ func TestTools(t *testing.T) {
 		if !names[w] {
 			t.Errorf("missing tool %s", w)
 		}
+	}
+	if len(read.ResultLabels) != 1 || read.ResultLabels[0].Provenance != model.ProvenanceLocalFile {
+		t.Fatalf("os_read_file labels = %+v", read.ResultLabels)
+	}
+	if !exec.Outbound {
+		t.Fatal("os_exec must be marked outbound-capable")
 	}
 }

@@ -68,7 +68,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "imessage_list_chats", Description: "List recent iMessage conversations (most recent first): chat guid, name/participants, last message.",
 			Parameters: obj(`"limit":{"type":"integer","description":"max chats (default 25)"}`)},
 		{Name: "imessage_read_chat", Description: "Read recent messages in a conversation by its chat guid (from imessage_list_chats).",
@@ -80,6 +80,11 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "imessage_new_chat", Description: "Start a new conversation with a phone number or email and send the first message. GATED: requires operator approval.",
 			Parameters: obj(`"address":{"type":"string","description":"phone number or email"},"text":{"type":"string"}`, "address", "text"), Gated: true},
 	}
+	for i := range tools {
+		tools[i].Outbound = true
+		tools[i].ResultLabels = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalService}}
+	}
+	return tools
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {

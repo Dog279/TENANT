@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tenant/internal/memory/archive"
+	"tenant/internal/model"
 )
 
 // A tool call with empty Arguments is valid (no-arg tool) but an empty
@@ -355,7 +356,7 @@ func TestArchive_ToolCallAndResultRoundtrip(t *testing.T) {
 	}
 	if err := w.Append(archive.Event{
 		Timestamp: ts.Add(time.Second), AgentID: "main", SessionID: "s", Role: "tool",
-		ToolResult: &archive.ToolResult{CallID: "call_1", Content: "result text"},
+		ToolResult: &archive.ToolResult{CallID: "call_1", Content: "result text", Labels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceMemory}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +376,9 @@ func TestArchive_ToolCallAndResultRoundtrip(t *testing.T) {
 	}
 	if events[1].ToolResult == nil || events[1].ToolResult.CallID != "call_1" {
 		t.Errorf("ToolResult did not roundtrip: %+v", events[1].ToolResult)
+	}
+	if labels := events[1].ToolResult.Labels; len(labels) != 1 || labels[0].Provenance != model.ProvenanceMemory {
+		t.Errorf("ToolResult labels did not roundtrip: %+v", labels)
 	}
 }
 

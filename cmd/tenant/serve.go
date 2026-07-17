@@ -172,7 +172,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 
-	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, originConfirm(broker.Confirm), log)
+	egressConfirm := originConfirm(broker.Confirm)
+	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, egressConfirm, log)
 	if err != nil {
 		return err
 	}
@@ -308,7 +309,8 @@ func cmdServe(ctx context.Context, args []string) error {
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
 		OrchID: c.agent, Log: log, Observe: subObserve,
-		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
+		ConfirmSensitiveEgress: egressConfirm,
+		Web:                    teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
 		SpawnRole: func(task string) (model.Role, bool) { // TEN-292
@@ -398,17 +400,18 @@ func cmdServe(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:       log,
-		Stream:       true,
-		Observer:     emit,
-		RouteHook:    routeRT.Hook(),
-		RouteActive:  routeRT.Active,
-		RouteSticky:  routeRT.Sticky,
-		LazyToolLoad: c.lc.LazyTools,
-		Skills:       skillRetriever{st: skillStore, agentID: c.agent},
-		SystemPrompt: sysPrompt,
-		Compactor:    compressor,
-		UserProfile:  prof,
+		ConfirmSensitiveEgress: egressConfirm,
+		Logger:                 log,
+		Stream:                 true,
+		Observer:               emit,
+		RouteHook:              routeRT.Hook(),
+		RouteActive:            routeRT.Active,
+		RouteSticky:            routeRT.Sticky,
+		LazyToolLoad:           c.lc.LazyTools,
+		Skills:                 skillRetriever{st: skillStore, agentID: c.agent},
+		SystemPrompt:           sysPrompt,
+		Compactor:              compressor,
+		UserProfile:            prof,
 		// Per-project SME doc from the live cache (Phase 3). nil-safe.
 		RenderProjectSME: smeLive.String,
 	})
