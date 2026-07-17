@@ -1,5 +1,8 @@
 # Tenant
 
+[![CI](https://github.com/Dog279/TENANT/actions/workflows/ci.yml/badge.svg)](https://github.com/Dog279/TENANT/actions/workflows/ci.yml)
+[![Security](https://github.com/Dog279/TENANT/actions/workflows/security.yml/badge.svg)](https://github.com/Dog279/TENANT/actions/workflows/security.yml)
+
 A **Go-native, single-binary agent framework** built on the Model Context
 Protocol (MCP). A planner↔tool loop with parallel fan-out, a layered memory
 system that learns from interaction traces, a modular plugin model, and both a
