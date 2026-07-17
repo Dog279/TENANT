@@ -2,7 +2,7 @@ package main
 
 // atlassianctl.go is `tenant atlassian login` — the one-time OAuth 3LO browser
 // flow (TEN-59). It prints the consent URL, captures the localhost callback, and
-// caches the refresh token (0600) so the agent's jira_* tools authenticate via
+// caches the refresh token with owner-only protection so jira_* tools authenticate via
 // Path B on subsequent runs without re-login. Path A (API token) needs no login.
 
 import (

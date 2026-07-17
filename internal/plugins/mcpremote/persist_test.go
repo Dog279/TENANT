@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 	"tenant/internal/model"
+	"tenant/internal/secrets"
 )
 
 // TestPersistentHandler_ServesCachedToken proves the "survives restart" core:
@@ -29,7 +30,9 @@ func TestPersistentHandler_ServesCachedToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertSecretFileSecurity(t, path)
+	if report := secrets.Probe(path); !report.Protected {
+		t.Errorf("token cache is not protected: %+v", report)
+	}
 
 	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", path, false, nil, http.DefaultClient, nil)
 	ts, err := h.TokenSource(context.Background())

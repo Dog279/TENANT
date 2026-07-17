@@ -12,6 +12,7 @@ import (
 
 	"tenant/internal/model"
 	"tenant/internal/route"
+	"tenant/internal/secrets"
 )
 
 func TestLaunchConfig_RoundTrip(t *testing.T) {
@@ -499,11 +500,8 @@ func TestCredentials_RoundTripAndResolve(t *testing.T) {
 	if err := c.save(dir); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	// 0600 perms on POSIX (skip the check on Windows where it's advisory).
-	if fi, err := os.Stat(credentialsPath(dir)); err == nil && os.PathSeparator == '/' {
-		if fi.Mode().Perm() != 0o600 {
-			t.Fatalf("credentials perms = %o, want 600", fi.Mode().Perm())
-		}
+	if report := secrets.Probe(credentialsPath(dir)); !report.Protected {
+		t.Fatalf("credentials are not protected: %+v", report)
 	}
 
 	// Stored secret resolves.

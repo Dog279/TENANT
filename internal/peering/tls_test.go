@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"tenant/internal/secrets"
 )
 
-func TestLoadOrMintCert_StableAndFileSecurity(t *testing.T) {
+func TestLoadOrMintCert_StableAndProtection(t *testing.T) {
 	dir := t.TempDir()
 	cert1, fp1, err := LoadOrMintCert(dir)
 	if err != nil {
@@ -20,8 +21,10 @@ func TestLoadOrMintCert_StableAndFileSecurity(t *testing.T) {
 	if fp1 == "" || len(cert1.Certificate) == 0 {
 		t.Fatal("minted cert/fingerprint empty")
 	}
-	for _, f := range []string{peerCertFile, peerKeyFile} {
-		assertSecretFileSecurity(t, filepath.Join(dir, f))
+	for _, path := range []string{filepath.Join(dir, peerCertFile), filepath.Join(dir, peerKeyFile)} {
+		if report := secrets.Probe(path); !report.Protected {
+			t.Errorf("%s is not protected: %+v", filepath.Base(path), report)
+		}
 	}
 	// Reload is idempotent: same fingerprint across "restarts".
 	_, fp2, err := LoadOrMintCert(dir)

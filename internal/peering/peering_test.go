@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tenant/internal/secrets"
 )
 
 func TestNewInstanceID(t *testing.T) {
@@ -58,13 +60,15 @@ func TestInviteCodec(t *testing.T) {
 	}
 }
 
-func TestStore_PersistAndFileSecurity(t *testing.T) {
+func TestStore_PersistAndProtection(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := LoadStore(dir)
 	if err := s.Put(&Peer{Name: "edge", InstanceID: "i-edge", Token: "tok", Dial: true, URL: "https://edge:9100"}); err != nil {
 		t.Fatal(err)
 	}
-	assertSecretFileSecurity(t, PeersPath(dir))
+	if report := secrets.Probe(PeersPath(dir)); !report.Protected {
+		t.Errorf("peers.json is not protected: %+v", report)
+	}
 	// Reload sees it.
 	s2, _ := LoadStore(dir)
 	p, ok := s2.Get("edge")

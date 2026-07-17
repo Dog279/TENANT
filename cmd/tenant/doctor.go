@@ -26,10 +26,12 @@ import (
 	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
+	"tenant/internal/peering"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
 	"tenant/internal/plugins/web"
 	"tenant/internal/research"
+	"tenant/internal/secrets"
 
 	"os/exec"
 	"runtime"
@@ -143,8 +145,9 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// NEW: validates config.json + active provider exists. Runs early
 		// because other checks read e.lc.
 		{"launch config", checkLaunchConfig},
-		// NEW: credentials.json schema + 0600 perms + every keyed provider
-		// has a resolvable secret (env-var present OR stored in creds).
+		{"secret storage protection", checkSecretProtection},
+		// credentials.json schema + every keyed provider has a resolvable
+		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},
 		{"profiles/router", checkRouter},
 		{"generation endpoint", checkGenEndpoint},
@@ -693,25 +696,74 @@ func checkLaunchConfig(_ context.Context, e *doctorEnv) checkResult {
 		Detail: fmt.Sprintf("active=%s/%s (%s)", lc.Provider, pc.Kind, firstNonEmpty(pc.Model, "auto-detect"))}
 }
 
-// checkCredentials validates credentials.json — parses cleanly, has the
-// right perms (0600 on Unix), and every KEYED provider in the active
-// config has a resolvable secret (env-var ref OR stored). On Windows
-// the perm check is informational only (POSIX bits don't apply).
+// checkSecretProtection audits the effective platform protection for every
+// at-rest secret file Tenant knows about. POSIX reports verified 0600/0700
+// modes; Windows reports the protected current-user-only DACL.
+func checkSecretProtection(_ context.Context, e *doctorEnv) checkResult {
+	type candidate struct {
+		label string
+		path  string
+	}
+	paths := []candidate{
+		{"credentials.json", credentialsPath(e.c.cfgDir)},
+		{"atlassian-token.json", atlassianTokenPath(e.c.cfgDir)},
+	}
+	for _, path := range peering.AtRestPaths(e.c.cfgDir) {
+		paths = append(paths, candidate{filepath.Base(path), path})
+	}
+	mcpPaths, err := filepath.Glob(filepath.Join(e.c.cfgDir, "mcp", "mcp-*.json"))
+	if err != nil {
+		return checkResult{Status: statusFail, Detail: "enumerate MCP OAuth caches: " + err.Error()}
+	}
+	for _, path := range mcpPaths {
+		paths = append(paths, candidate{filepath.Join("mcp", filepath.Base(path)), path})
+	}
+
+	protected := 0
+	mechanisms := map[string]bool{}
+	var bad []string
+	for _, item := range paths {
+		report := secrets.Probe(item.path)
+		if !report.Exists {
+			if report.Detail != "not present" {
+				bad = append(bad, item.label+": "+report.Detail)
+			}
+			continue
+		}
+		if !report.Protected {
+			bad = append(bad, item.label+": "+report.Detail)
+			continue
+		}
+		protected++
+		mechanisms[report.Mechanism] = true
+	}
+	if len(bad) > 0 {
+		return checkResult{
+			Status: statusFail,
+			Detail: "secret files without verified owner-only protection: " + strings.Join(bad, "; "),
+			Fix:    "re-save the affected credential/token with Tenant, then rerun `tenant doctor`",
+		}
+	}
+	if protected == 0 {
+		return checkResult{Status: statusOK, Detail: "no at-rest secret files present"}
+	}
+	mechanismNames := make([]string, 0, len(mechanisms))
+	for mechanism := range mechanisms {
+		mechanismNames = append(mechanismNames, mechanism)
+	}
+	slices.Sort(mechanismNames)
+	return checkResult{Status: statusOK, Detail: fmt.Sprintf("%d secret file(s) protected via %s", protected, strings.Join(mechanismNames, ", "))}
+}
+
+// checkCredentials validates credentials.json — parses cleanly and every
+// keyed provider in the active config has a resolvable secret (environment
+// reference or stored credential). Effective file protection is checked above.
 func checkCredentials(_ context.Context, e *doctorEnv) checkResult {
 	creds, err := loadCredentials(e.c.cfgDir)
 	if err != nil {
 		return checkResult{Status: statusFail,
 			Detail: "credentials.json present but unparseable: " + err.Error(),
 			Fix:    "rm " + credentialsPath(e.c.cfgDir) + " then re-run `tenant setup` for any keyed provider"}
-	}
-	// Perm check (Unix only — Windows ACLs don't map cleanly).
-	if info, err := os.Stat(credentialsPath(e.c.cfgDir)); err == nil {
-		mode := info.Mode().Perm()
-		if mode&0o077 != 0 && !isWindowsRuntime() {
-			return checkResult{Status: statusWarn,
-				Detail: fmt.Sprintf("credentials.json has world/group-readable perms %#o (should be 0600)", mode),
-				Fix:    "chmod 0600 " + credentialsPath(e.c.cfgDir)}
-		}
 	}
 	// Per-provider secret resolution.
 	if e.lc == nil {
@@ -1549,10 +1601,4 @@ func isLoopbackAddr(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
-}
-
-// isWindowsRuntime returns true when the build target is windows. Used to
-// suppress POSIX perm warnings on Windows where they don't apply.
-func isWindowsRuntime() bool {
-	return os.PathSeparator == '\\'
 }

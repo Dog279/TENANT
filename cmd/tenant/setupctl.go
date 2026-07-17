@@ -110,7 +110,7 @@ func (s setupControl) SetToolFormat(format string) (string, error) {
 	return "tool format set to " + pc.ToolFmt + " — " + s.reload(), nil
 }
 
-// SetKey stores the active provider's API key (0600) and makes it the active
+// SetKey stores the active provider's API key with owner-only protection and makes it the active
 // auth source (clears any env reference so the pasted key wins), then reloads.
 func (s setupControl) SetKey(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -133,7 +133,7 @@ func (s setupControl) SetKey(value string) (string, error) {
 	if err := lc.save(s.cfgDir); err != nil {
 		return "", err
 	}
-	return "API key stored (0600) — " + s.reload(), nil
+	return "API key stored with owner-only protection — " + s.reload(), nil
 }
 
 func (s setupControl) SetEmbeddings(endpoint, model string) (string, error) {

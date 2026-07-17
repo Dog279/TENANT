@@ -11,6 +11,7 @@ import (
 
 	common "github.com/ctreminiom/go-atlassian/v2/service/common"
 	"tenant/internal/model"
+	"tenant/internal/secrets"
 )
 
 func TestOpen_PathSelection(t *testing.T) {
@@ -153,7 +154,7 @@ func TestGate_ConfirmApproves(t *testing.T) {
 	}
 }
 
-func TestFileTokenStore_RoundTripAndFileSecurity(t *testing.T) {
+func TestFileTokenStore_RoundTripAndProtection(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sub", "atlassian-token.json")
 	s := fileTokenStore{path: path}
@@ -172,5 +173,7 @@ func TestFileTokenStore_RoundTripAndFileSecurity(t *testing.T) {
 	if rt, _ := s.GetRefreshToken(ctx); rt != "ref" {
 		t.Errorf("GetRefreshToken = %q", rt)
 	}
-	assertSecretFileSecurity(t, path)
+	if report := secrets.Probe(path); !report.Protected {
+		t.Errorf("token cache is not protected: %+v", report)
+	}
 }

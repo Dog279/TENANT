@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/model"
 	"tenant/internal/route"
+	"tenant/internal/secrets"
 )
 
 // launchConfig is the persisted, machine-wide launch configuration written by
@@ -940,7 +941,7 @@ func routeEndpointIsLoopback(endpoint string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// --- credentials (separate 0600 file) ------------------------------------
+// --- credentials (separate owner-only file) -------------------------------
 
 // credentials stores secrets the operator chose to keep on disk, away from
 // the (often shared / committed) config.json. Keyed by an opaque id —
@@ -953,7 +954,7 @@ func credentialsPath(cfgDir string) string { return filepath.Join(cfgDir, "crede
 
 func loadCredentials(cfgDir string) (*credentials, error) {
 	c := &credentials{Secrets: map[string]string{}}
-	b, err := os.ReadFile(credentialsPath(cfgDir))
+	b, err := secrets.ReadFile(credentialsPath(cfgDir))
 	if os.IsNotExist(err) {
 		return c, nil
 	}
@@ -969,7 +970,7 @@ func loadCredentials(cfgDir string) (*credentials, error) {
 	return c, nil
 }
 
-// save writes credentials.json with 0600 perms (owner read/write only).
+// save writes credentials.json through the platform secret-storage boundary.
 func (c *credentials) save(cfgDir string) error {
 	if c.Secrets == nil {
 		c.Secrets = map[string]string{}
@@ -978,10 +979,7 @@ func (c *credentials) save(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		return err
-	}
-	return atomicWrite(credentialsPath(cfgDir), b, 0o600)
+	return secrets.WriteFile(credentialsPath(cfgDir), b)
 }
 
 func (c *credentials) get(id string) string { return c.Secrets[id] }

@@ -80,8 +80,9 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
 ## Configuration & your data
 
 - `tenant setup` writes **`config.json`** to your OS config dir and secrets to
-  **`credentials.json`** (perms `0600`) — both in your **home directory**, never
-  in the repo.
+  **`credentials.json`** — both in your **home directory**, never in the repo.
+  Secret files use verified `0600` files/`0700` parent directories on Unix and
+  an explicit protected current-user-only DACL on Windows.
 - Add or switch providers any time: `tenant model add ...` / `tenant model use ...`
   (or `/model` inside the TUI).
 - Memory, the archive, transcripts, and the wiki live in your OS **data dir**
