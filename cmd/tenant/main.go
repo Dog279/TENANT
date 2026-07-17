@@ -106,6 +106,8 @@ func main() {
 		err = cmdDoctor(ctx, os.Args[2:])
 	case "security":
 		err = cmdSecurity(ctx, os.Args[2:])
+	case "permissions":
+		err = cmdPermissions(ctx, os.Args[2:])
 	case "eval":
 		err = cmdEval(ctx, os.Args[2:])
 	case "help", "-h", "--help":
@@ -156,7 +158,9 @@ COMMANDS
   research "<question>"    deep research: plan → parallel web-researchers → cited report (--out FILE)
   review <plan.md>         cascading CEO/Eng/Designer review appended to a plan file
   doctor                   diagnose (and --fix) the setup when things break
-  security audit           report security-sensitive runtime configuration
+  security audit           inspect effective security posture (human or --json)
+  permissions effective    show composed authority by agent and surface
+  permissions preset       apply safe, balanced, or full category permissions
   eval                     run the eval harness (Phase 1: --subset smoke only)
 
 COMMON FLAGS
