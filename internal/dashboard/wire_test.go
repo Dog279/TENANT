@@ -63,7 +63,7 @@ func (wireFakeRunner) Interject(string) {}
 // does: secure() wraps the routed Handler(). The caller fronts it with an
 // httptest.Server.
 func wireServer(f *wireFakeTools) http.Handler {
-	s := New(Config{Auth: "secret"}, wireFakeRunner{}, f, nil, agent.NewBroker(0), nil)
+	s := New(Config{Addr: "127.0.0.1", Auth: "secret"}, wireFakeRunner{}, f, nil, agent.NewBroker(0), nil)
 	return s.secure(s.Handler())
 }
 
@@ -144,6 +144,9 @@ func TestWireContract(t *testing.T) {
 		}
 		if m["status"] != "ok" {
 			t.Fatalf("healthz body = %v, want status=ok", m)
+		}
+		if len(m) != 1 {
+			t.Fatalf("healthz must expose no additional data: %v", m)
 		}
 	})
 

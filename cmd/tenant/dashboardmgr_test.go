@@ -107,7 +107,7 @@ func TestDashboardManager_Lifecycle(t *testing.T) {
 	rp := &recordingPersist{}
 	mgr := &dashboardManager{
 		base:    context.Background(),
-		cfg:     dashboard.Config{Addr: addr},
+		cfg:     dashboard.Config{Addr: addr, Auth: "test-token"},
 		runner:  nil, // health-only server; no agent needed
 		tools:   fakeDashTools{},
 		broker:  agent.NewBroker(0),
