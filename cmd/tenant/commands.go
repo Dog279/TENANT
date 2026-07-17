@@ -1442,7 +1442,8 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	compressor := &compress.Compressor{Router: router, Logger: log}
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	orchID := c.agent
 	bus.Register(orchID)
 
@@ -1487,7 +1488,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
-		OrchID: orchID, Log: log, Observe: observe,
+		OrchID: orchID, Log: log, Observe: observe, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: orcAgents,
@@ -1505,7 +1506,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	olocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: orchID})
 	olocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: orchID})
 	rt.addWebTool(olocal)
-	otools := composite{shared: shared, local: olocal}
+	otools := composite{shared: shared, local: olocal, budget: rt.budget, agentID: orchID}
 
 	orch, err := agent.New(agent.Config{
 		AgentID:    orchID,
@@ -1521,7 +1522,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 		// Orchestrator's system prompt = base + (when configured) a catalog
 		// of named sub-agents it can spawn by role with specialized models.
 		SystemPrompt: orchestratorPrompt + renderAgentsForOrchestrator(orcAgents),
-		Observer:     func(e agent.Event) { observe(orchID, e) },
+		Observer:     func(e agent.Event) { rt.ObserveMain(e, func(ev agent.Event) { observe(orchID, ev) }) },
 		Skills:       skillRetriever{st: skillStore, agentID: orchID},
 		Compactor:    compressor,
 		UserProfile:  prof,
@@ -1831,7 +1832,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 
 	// --- Multi-agent orchestration: the main agent IS an orchestrator and
 	// can spin up sub-agents on demand, live (no restart). ---
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	defer bus.Close()
 	bus.Register(c.agent)
 	compressor := &compress.Compressor{Router: router, Logger: log}
@@ -1852,7 +1854,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	var dashFeed func(agent.Event)
 	subObserve := func(id string, e agent.Event) {
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventUsage:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventUsage, agent.EventTeamBudget:
 			select {
 			case teamCh <- tui.TeamEvent{AgentID: id, Event: e}:
 			default: // feed behind; drop display (counter may undercount under flood — acceptable)
@@ -1862,7 +1864,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// the dashboard feed, attributed by agent id. The TUI skips Agent != "" on
 		// the shared channel (it renders sub-agents via teamCh), so no double-render.
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventTeamBudget:
 			if dashFeed != nil {
 				ev := e
 				ev.Agent = id
@@ -1900,7 +1902,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
-		OrchID: c.agent, Log: log, Observe: subObserve,
+		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
@@ -1927,7 +1929,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// little benefit.
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
 	rt.addWebTool(mainLocal)
-	mainTools := composite{shared: mux, local: mainLocal}
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Live bus view → feed (lossless cursor over the retained log).
 	go func() {
@@ -2068,7 +2070,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		},
 		Logger:      log,
 		Stream:      true,
-		Observer:    emit,
+		Observer:    func(e agent.Event) { rt.ObserveMain(e, emit) },
 		RouteHook:   routeRT.Hook(),
 		RouteActive: routeRT.Active,
 		RouteSticky: routeRT.Sticky,

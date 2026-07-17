@@ -254,7 +254,8 @@ func cmdServe(ctx context.Context, args []string) error {
 		working:        mainWorking,
 	}
 
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	defer bus.Close()
 	bus.Register(c.agent)
 	compressor := &compress.Compressor{Router: router, Logger: log}
@@ -275,7 +276,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// to feed, only the dashboard activity stream.
 	subObserve := func(id string, e agent.Event) {
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventTeamBudget:
 			ev := e
 			ev.Agent = id
 			emit(ev)
@@ -307,7 +308,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
-		OrchID: c.agent, Log: log, Observe: subObserve,
+		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
@@ -331,7 +332,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
 	rt.addWebTool(mainLocal)
-	mainTools := composite{shared: mux, local: mainLocal}
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).
 	go func() {
@@ -400,7 +401,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		},
 		Logger:       log,
 		Stream:       true,
-		Observer:     emit,
+		Observer:     func(e agent.Event) { rt.ObserveMain(e, emit) },
 		RouteHook:    routeRT.Hook(),
 		RouteActive:  routeRT.Active,
 		RouteSticky:  routeRT.Sticky,

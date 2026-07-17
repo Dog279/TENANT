@@ -81,17 +81,19 @@ type lazyWeb struct {
 	cfg     web.Config
 	policy  web.Policy
 	shotDir string
-	onNew   func(func()) // register a cleanup for the spawned session
+	onNew   func(func())           // register a cleanup for the spawned session
+	acquire func() (func(), error) // reserve/release a governed browser slot
 	log     *slog.Logger
 
-	mu     sync.Mutex
-	disp   *web.Dispatcher
-	failed bool // a hard launch failure (e.g. no Chrome) — don't retry every call
-	err    error
+	mu      sync.Mutex
+	disp    *web.Dispatcher
+	failed  bool // a hard launch failure (e.g. no Chrome) — don't retry every call
+	err     error
+	cleanup func()
 }
 
-func newLazyWeb(cfg web.Config, policy web.Policy, shotDir string, onNew func(func()), log *slog.Logger) *lazyWeb {
-	return &lazyWeb{cfg: cfg, policy: policy, shotDir: shotDir, onNew: onNew, log: log}
+func newLazyWeb(cfg web.Config, policy web.Policy, shotDir string, onNew func(func()), acquire func() (func(), error), log *slog.Logger) *lazyWeb {
+	return &lazyWeb{cfg: cfg, policy: policy, shotDir: shotDir, onNew: onNew, acquire: acquire, log: log}
 }
 
 // Tools advertises the web specs without a session (NewDispatcher is
@@ -125,17 +127,41 @@ func (l *lazyWeb) ensure() (*web.Dispatcher, error) {
 	if l.failed {
 		return nil, l.err
 	}
+	release := func() {}
+	if l.acquire != nil {
+		var err error
+		release, err = l.acquire()
+		if err != nil {
+			return nil, err
+		}
+	}
 	sess, err := web.NewSession(l.cfg)
 	if err != nil {
+		release()
 		l.failed, l.err = true, err
 		return nil, err
 	}
 	l.disp = web.NewDispatcher(sess, l.policy, l.shotDir)
+	var once sync.Once
+	l.cleanup = func() { once.Do(func() { _ = sess.Close(); release() }) }
 	if l.onNew != nil {
-		l.onNew(func() { _ = sess.Close() })
+		l.onNew(l.Close)
 	}
 	if l.log != nil {
 		l.log.Info("orchestra: per-agent browser session started")
 	}
 	return l.disp, nil
+}
+
+// Close releases this agent's browser process and its governed slot. It is
+// idempotent because sub-agent completion and runtime shutdown may both call it.
+func (l *lazyWeb) Close() {
+	l.mu.Lock()
+	cleanup := l.cleanup
+	l.cleanup = nil
+	l.disp = nil
+	l.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"tenant/internal/agent"
+	"tenant/internal/orchestra"
 )
 
 // restSetCall records one SetEnabled / SetPluginEnabled invocation so a test
@@ -248,6 +249,9 @@ func TestRESTStatus(t *testing.T) {
 		plugins: []string{"gmail", "fs"},
 	}
 	s := newRESTServer(f)
+	s.evlog = agent.NewEventLog(10)
+	budget := orchestra.BudgetStatus{RunID: 3, Active: true, AgentsStarted: 2}
+	s.evlog.Append(agent.Event{Kind: agent.EventTeamBudget, Text: budget.String(), TeamBudget: &budget})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
@@ -268,6 +272,9 @@ func TestRESTStatus(t *testing.T) {
 	}
 	if strings.Join(st.Plugins, ",") != "gmail,fs" {
 		t.Errorf("plugins = %v, want [gmail fs]", st.Plugins)
+	}
+	if st.TeamBudget == nil || st.TeamBudget.RunID != 3 || st.TeamBudget.AgentsStarted != 2 {
+		t.Errorf("team budget missing from status: %+v", st.TeamBudget)
 	}
 }
 

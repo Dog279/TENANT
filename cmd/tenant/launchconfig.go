@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"tenant/internal/model"
+	"tenant/internal/orchestra"
 	"tenant/internal/route"
 )
 
@@ -84,6 +85,9 @@ type launchConfig struct {
 	// soul. Lets you mix models per role: researcher → glm-4.6 on Z.ai,
 	// synthesizer → aeon-ultimate on DGX, etc.
 	Agents map[string]*agentProfile `json:"agents,omitempty"`
+	// Budgets is the structural resource envelope for each agent-team run.
+	// Omitted/zero fields receive orchestra.DefaultBudgets at runtime.
+	Budgets orchestra.Budgets `json:"budgets,omitempty"`
 	// PlanLoopCeiling caps planner↔tool iterations per turn (per agent). 0 =
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
@@ -113,6 +117,13 @@ type launchConfig struct {
 	EmbedModel    string `json:"embed_model,omitempty"`
 	EmbedDim      int    `json:"embed_dim,omitempty"`
 	SSEAddr       string `json:"sse_addr,omitempty"`
+}
+
+func configuredBudgets(lc *launchConfig) orchestra.Budgets {
+	if lc == nil {
+		return orchestra.DefaultBudgets()
+	}
+	return lc.Budgets.WithDefaults()
 }
 
 // goalConfig holds persisted /goal autonomous-loop settings (TEN-216).

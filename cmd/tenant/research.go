@@ -265,6 +265,8 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	if question == "" {
 		return "", fmt.Errorf("research: empty question")
 	}
+	rt.BeginRun(ctx)
+	defer rt.EndRun()
 
 	// 0. C2 — Optional clarification step. When the question is vague,
 	// surface a typed ClarifyNeededError so the caller (CLI stdin / TUI
@@ -1295,7 +1297,8 @@ func cmdResearch(ctx context.Context, args []string) error {
 	defer skillStore.Close()
 	skEmb, embProfile, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	bus.Register(c.agent)
 
 	var outMu sync.Mutex
@@ -1335,7 +1338,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: string(embProfile.ID), Compressor: &compress.Compressor{Router: router, Logger: log},
-		Profile: prof, OrchID: c.agent, Log: log, Observe: observe,
+		Profile: prof, OrchID: c.agent, Log: log, Observe: observe, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: researchAgents,

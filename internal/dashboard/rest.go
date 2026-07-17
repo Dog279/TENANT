@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"tenant/internal/orchestra"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -37,9 +39,10 @@ type restStatus struct {
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
 
-	TurnActive       bool `json:"turn_active"`
-	TurnAgeSecs      int  `json:"turn_age_secs,omitempty"`
-	PendingApprovals int  `json:"pending_approvals"`
+	TurnActive       bool                    `json:"turn_active"`
+	TurnAgeSecs      int                     `json:"turn_age_secs,omitempty"`
+	PendingApprovals int                     `json:"pending_approvals"`
+	TeamBudget       *orchestra.BudgetStatus `json:"team_budget,omitempty"`
 }
 
 // liveness is the optional turn-state reporter a serve-mode runner (the
@@ -118,6 +121,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	if s.approvals != nil {
 		st.PendingApprovals = len(s.approvals.Pending())
 	}
+	if s.evlog != nil {
+		events, _ := s.evlog.Since(0)
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Ev.TeamBudget != nil {
+				st.TeamBudget = events[i].Ev.TeamBudget
+				break
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, st)
 }
 
@@ -126,14 +138,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 // doctor liveness probe can read directly — NOT the Datastar HTML the SSR
 // /activity feed streams. Mirrors the EventLog's lossless cursor.
 type restActivityEvent struct {
-	Seq   uint64 `json:"seq"`
-	At    string `json:"at"` // RFC3339
-	Kind  string `json:"kind"`
-	Agent string `json:"agent,omitempty"`
-	Iter  int    `json:"iter,omitempty"`
-	Tool  string `json:"tool,omitempty"`
-	IsErr bool   `json:"is_err,omitempty"`
-	Text  string `json:"text,omitempty"`
+	Seq        uint64                  `json:"seq"`
+	At         string                  `json:"at"` // RFC3339
+	Kind       string                  `json:"kind"`
+	Agent      string                  `json:"agent,omitempty"`
+	Iter       int                     `json:"iter,omitempty"`
+	Tool       string                  `json:"tool,omitempty"`
+	IsErr      bool                    `json:"is_err,omitempty"`
+	Text       string                  `json:"text,omitempty"`
+	TeamBudget *orchestra.BudgetStatus `json:"team_budget,omitempty"`
 }
 
 type restActivityResponse struct {
@@ -160,14 +173,15 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	resp.Cursor = cursor
 	for _, se := range events {
 		resp.Events = append(resp.Events, restActivityEvent{
-			Seq:   se.Seq,
-			At:    se.At.UTC().Format(time.RFC3339),
-			Kind:  string(se.Ev.Kind),
-			Agent: se.Ev.Agent,
-			Iter:  se.Ev.Iter,
-			Tool:  se.Ev.Tool,
-			IsErr: se.Ev.IsErr,
-			Text:  se.Ev.Text,
+			Seq:        se.Seq,
+			At:         se.At.UTC().Format(time.RFC3339),
+			Kind:       string(se.Ev.Kind),
+			Agent:      se.Ev.Agent,
+			Iter:       se.Ev.Iter,
+			Tool:       se.Ev.Tool,
+			IsErr:      se.Ev.IsErr,
+			Text:       se.Ev.Text,
+			TeamBudget: se.Ev.TeamBudget,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
