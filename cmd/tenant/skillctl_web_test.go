@@ -26,6 +26,29 @@ func TestValidateBraveKey(t *testing.T) {
 	}
 }
 
+func TestWebSkillKind_JinaReaderOptInIsPrivacyVisible(t *testing.T) {
+	k := webSkillKind()
+	if !strings.Contains(strings.ToLower(k.SetupHint), "third-party") || !strings.Contains(k.SetupHint, "r.jina.ai") {
+		t.Fatalf("setup hint must disclose the Jina privacy boundary: %q", k.SetupHint)
+	}
+	for _, f := range k.Fields {
+		if f.Key != "jina_reader" {
+			continue
+		}
+		if f.Default != "off" || len(f.Options) != 2 || f.Options[0] != "off" || f.Options[1] != "on" {
+			t.Fatalf("jina_reader must be an explicit off-by-default opt-in: %+v", f)
+		}
+		if !strings.Contains(strings.ToLower(f.Prompt), "third party") || !strings.Contains(f.Prompt, "r.jina.ai") {
+			t.Fatalf("setup prompt must explain target URL disclosure: %q", f.Prompt)
+		}
+		if f.Validate == nil || f.Validate("on") != nil || f.Validate("off") != nil || f.Validate("yes") == nil {
+			t.Fatal("jina_reader validator must accept only on/off")
+		}
+		return
+	}
+	t.Fatal("web skill is missing the persisted jina_reader opt-in field")
+}
+
 func TestProbeWebBrave(t *testing.T) {
 	ctx := context.Background()
 

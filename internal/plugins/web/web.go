@@ -253,16 +253,21 @@ type Config struct {
 	// (title+url+content) with a real free tier. Search backend precedence:
 	// Tavily > Brave > DuckDuckGo (keyless default).
 	TavilyKey string
-	// JinaKey authenticates the r.jina.ai reader fallback for a higher rate
-	// limit. Empty = keyless (still works, lower limit).
+	// ReaderEnabled explicitly opts in to the Jina Reader fallback. The zero
+	// value is false: local browser extraction remains the default and no target
+	// URL is sent to Jina unless an operator enables it.
+	ReaderEnabled bool
+	// JinaKey authenticates the opt-in r.jina.ai reader fallback for a higher
+	// rate limit. A key does not enable the fallback by itself.
 	JinaKey string
-	// ReaderDisabled turns OFF the Jina reader fallback entirely (operator
-	// opt-out: no URL is ever sent to r.jina.ai). Default false = enabled.
-	ReaderDisabled bool
 	// PrivateNetwork is an explicit, exact hostname allowlist for intentional
 	// access to local/private services. It is empty by default. Numeric IP
 	// literals are never accepted here; operators must name the endpoint.
 	PrivateNetwork []string
+	// ReaderObserver receives one privacy-safe activity record immediately
+	// before each remote reader request. It is required when ReaderEnabled is
+	// true; TargetHost excludes path and query.
+	ReaderObserver func(ReaderActivity) `yaml:"-"`
 
 	// Live key resolvers (optional). When set, these are re-read on EVERY
 	// search/read so a key rotated in the environment or credentials.json is

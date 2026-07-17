@@ -3,37 +3,20 @@ package web
 import (
 	"context"
 	"errors"
-	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
-	"net/url"
 	"strings"
 	"testing"
 )
 
-type staticResolver map[string][]netip.Addr
-
-func (r staticResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
-	addrs, ok := r[host]
-	if !ok {
-		return nil, fmt.Errorf("unexpected DNS lookup for %s", host)
-	}
-	return addrs, nil
-}
-
-func readerTestConfig(t *testing.T, srv *httptest.Server, targets ...string) Config {
+func usePublicReaderDNS(t *testing.T) {
 	t.Helper()
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
+	old := readerLookupIP
+	readerLookupIP = func(context.Context, string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
 	}
-	readerBase = "http://reader.test:" + u.Port() + "/"
-	resolver := staticResolver{"reader.test": {netip.MustParseAddr("127.0.0.1")}}
-	for _, target := range targets {
-		resolver[target] = []netip.Addr{netip.MustParseAddr("93.184.216.34")}
-	}
-	return Config{PrivateNetwork: []string{"reader.test"}, resolver: resolver}
+	t.Cleanup(func() { readerLookupIP = old })
 }
 
 func TestLooksBlocked(t *testing.T) {
@@ -52,18 +35,24 @@ func TestLooksBlocked(t *testing.T) {
 // fetchViaReader prepends the target URL to the reader base, sends a realistic
 // UA + the Bearer key when present, and returns the body.
 func TestFetchViaReader(t *testing.T) {
+	usePublicReaderDNS(t)
 	var gotPath, gotAuth, gotUA string
+	var activities []ReaderActivity
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotAuth, gotUA = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("User-Agent")
 		_, _ = w.Write([]byte("# Title\n\nClean markdown body."))
 	}))
 	defer srv.Close()
 	old := readerBase
-	cfg := readerTestConfig(t, srv, "example.com")
+	readerBase = srv.URL + "/"
 	defer func() { readerBase = old }()
 
-	cfg.JinaKey = "jk"
-	txt, err := fetchViaReader(context.Background(), cfg, "https://example.com/page")
+	cfg := Config{
+		ReaderEnabled:  true,
+		JinaKey:        "jk",
+		ReaderObserver: func(a ReaderActivity) { activities = append(activities, a) },
+	}
+	txt, err := fetchViaReader(context.Background(), cfg, "https://example.com/page#local-fragment")
 	if err != nil {
 		t.Fatalf("fetchViaReader: %v", err)
 	}
@@ -79,54 +68,44 @@ func TestFetchViaReader(t *testing.T) {
 	if !strings.Contains(gotUA, "Mozilla") {
 		t.Errorf("UA not realistic: %q", gotUA)
 	}
+	if strings.Contains(gotPath, "local-fragment") {
+		t.Errorf("URL fragment must be stripped before relay: %q", gotPath)
+	}
+	if len(activities) != 1 || activities[0].Provider != "r.jina.ai" || activities[0].TargetHost != "example.com" {
+		t.Fatalf("activity = %+v, want one host-only Jina event", activities)
+	}
 }
 
 func TestFetchViaReader_Non200(t *testing.T) {
+	usePublicReaderDNS(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 	old := readerBase
-	cfg := readerTestConfig(t, srv, "x")
+	readerBase = srv.URL + "/"
 	defer func() { readerBase = old }()
-	if _, err := fetchViaReader(context.Background(), cfg, "https://x"); err == nil {
+	if _, err := fetchViaReader(context.Background(), Config{ReaderEnabled: true, ReaderObserver: func(ReaderActivity) {}}, "https://example.com/"); err == nil {
 		t.Fatal("non-2xx should error so the caller can keep the original browser error")
-	}
-}
-
-func TestFetchViaReader_RejectsPrivateTargetBeforeRelay(t *testing.T) {
-	var requests int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests++
-		_, _ = w.Write([]byte("must not be reached"))
-	}))
-	defer srv.Close()
-	old := readerBase
-	cfg := readerTestConfig(t, srv)
-	cfg.resolver.(staticResolver)["private.test"] = []netip.Addr{netip.MustParseAddr("10.0.0.8")}
-	defer func() { readerBase = old }()
-	if _, err := fetchViaReader(context.Background(), cfg, "http://private.test/secret"); err == nil {
-		t.Fatal("reader must reject a private target before relaying it")
-	}
-	if requests != 0 {
-		t.Fatalf("reader relay received %d request(s), want zero", requests)
 	}
 }
 
 // navigate falls back to the reader when the browser fails (timeout/blocked);
 // read then serves the cached reader-sourced text.
 func TestNavigate_ReaderFallback(t *testing.T) {
+	usePublicReaderDNS(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("Reader markdown for the blocked page."))
 	}))
 	defer srv.Close()
 	old := readerBase
-	cfg := readerTestConfig(t, srv, "hard.example")
+	readerBase = srv.URL + "/"
 	defer func() { readerBase = old }()
 
 	fb := &fakeBrowser{navErr: errors.New("context deadline exceeded")}
 	d := disp(fb, Policy{})
-	d.cfg = cfg
+	d.cfg.ReaderEnabled = true
+	d.cfg.ReaderObserver = func(ReaderActivity) {}
 	out, isErr, _ := d.Dispatch(context.Background(), call("web_navigate", map[string]any{"url": "https://hard.example/"}))
 	if isErr || !strings.Contains(out, "reader fallback") {
 		t.Fatalf("navigate should fall back to reader: isErr=%v out=%q", isErr, out)
@@ -139,17 +118,19 @@ func TestNavigate_ReaderFallback(t *testing.T) {
 
 // read falls back to the reader when the browser "loaded" a bot-wall.
 func TestRead_ReaderFallbackOnBlock(t *testing.T) {
+	usePublicReaderDNS(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("Real article content via reader."))
 	}))
 	defer srv.Close()
 	old := readerBase
-	cfg := readerTestConfig(t, srv, "walled.example")
+	readerBase = srv.URL + "/"
 	defer func() { readerBase = old }()
 
 	fb := &fakeBrowser{navTitle: "Just a moment", text: "Just a moment… verifying you are human"}
 	d := disp(fb, Policy{})
-	d.cfg = cfg
+	d.cfg.ReaderEnabled = true
+	d.cfg.ReaderObserver = func(ReaderActivity) {}
 	d.Dispatch(context.Background(), call("web_navigate", map[string]any{"url": "https://walled.example/"}))
 	out, isErr, _ := d.Dispatch(context.Background(), call("web_read", nil))
 	if isErr || !strings.Contains(out, "Real article content") {
@@ -157,15 +138,97 @@ func TestRead_ReaderFallbackOnBlock(t *testing.T) {
 	}
 }
 
-// ReaderDisabled turns the fallback off entirely — an empty page just reports
-// no text, no third-party request.
-func TestRead_ReaderDisabled(t *testing.T) {
+// The zero-value config keeps the remote fallback off — an empty page just
+// reports no text and no third-party request.
+func TestRead_ReaderDefaultOff(t *testing.T) {
 	fb := &fakeBrowser{text: ""}
 	d := newDispatcherWithBrowser(fb, Policy{}, ".")
-	d.cfg.ReaderDisabled = true
 	d.lastURL = "https://x/"
 	out, isErr, _ := d.Dispatch(context.Background(), call("web_read", nil))
 	if isErr || !strings.Contains(out, "no visible text") {
-		t.Fatalf("reader disabled + empty page → no-text msg: isErr=%v out=%q", isErr, out)
+		t.Fatalf("reader default-off + empty page → no-text msg: isErr=%v out=%q", isErr, out)
+	}
+}
+
+func TestFetchViaReader_RequiresExplicitOptIn(t *testing.T) {
+	requests, activities := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer srv.Close()
+	oldBase := readerBase
+	readerBase = srv.URL + "/"
+	defer func() { readerBase = oldBase }()
+
+	_, err := fetchViaReader(context.Background(), Config{ReaderObserver: func(ReaderActivity) { activities++ }}, "https://example.com/")
+	if err == nil || !strings.Contains(err.Error(), "explicit opt-in") {
+		t.Fatalf("default config error = %v, want explicit opt-in refusal", err)
+	}
+	if requests != 0 || activities != 0 {
+		t.Fatalf("default-off reader leaked activity/request: activities=%d requests=%d", activities, requests)
+	}
+	_, err = fetchViaReader(context.Background(), Config{ReaderEnabled: true}, "https://example.com/")
+	if err == nil || !strings.Contains(err.Error(), "activity observer") {
+		t.Fatalf("enabled reader without audit sink error = %v, want refusal", err)
+	}
+	if requests != 0 {
+		t.Fatalf("reader without audit sink made %d request(s)", requests)
+	}
+}
+
+func TestFetchViaReader_BlocksPrivateAndSensitiveTargets(t *testing.T) {
+	requests, activities := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer srv.Close()
+	oldBase := readerBase
+	readerBase = srv.URL + "/"
+	defer func() { readerBase = oldBase }()
+	oldLookup := readerLookupIP
+	readerLookupIP = func(_ context.Context, host string) ([]net.IP, error) {
+		if host == "private.example" {
+			return []net.IP{net.ParseIP("10.2.3.4")}, nil
+		}
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	}
+	defer func() { readerLookupIP = oldLookup }()
+
+	cfg := Config{ReaderEnabled: true, ReaderObserver: func(ReaderActivity) { activities++ }}
+	targets := []string{
+		"http://127.0.0.1/admin",
+		"http://[::1]/admin",
+		"http://10.0.0.8/admin",
+		"http://100.64.0.1/metadata",
+		"http://localhost/admin",
+		"http://printer.internal/status",
+		"http://intranet/status",
+		"https://private.example/status",
+		"https://user:password@public.example/private",
+		"https://public.example/file?sig=abc",
+		"https://public.example/file?access_token=abc",
+		"https://public.example/file?api_key=abc",
+		"https://public.example/file?X-Amz-Signature=abc",
+		"https://public.example/file?X-Goog-Credential=abc",
+	}
+	for _, target := range targets {
+		if _, err := fetchViaReader(context.Background(), cfg, target); err == nil || !strings.Contains(err.Error(), "reader blocked") {
+			t.Errorf("target %q error = %v, want privacy refusal", target, err)
+		}
+	}
+	if requests != 0 || activities != 0 {
+		t.Fatalf("blocked targets leaked activity/request: activities=%d requests=%d", activities, requests)
+	}
+}
+
+func TestFetchViaReader_AllowsOrdinaryQuery(t *testing.T) {
+	usePublicReaderDNS(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	old := readerBase
+	readerBase = srv.URL + "/"
+	defer func() { readerBase = old }()
+
+	got, err := fetchViaReader(context.Background(), Config{ReaderEnabled: true, ReaderObserver: func(ReaderActivity) {}}, "https://example.com/article?page=2&utm_source=test&monkey=banana")
+	if err != nil || got != "ok" {
+		t.Fatalf("ordinary query rejected: got=%q err=%v", got, err)
 	}
 }

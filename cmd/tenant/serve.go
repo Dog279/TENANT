@@ -330,7 +330,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	mainLocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
 	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
-	rt.addWebTool(mainLocal)
+	rt.addWebTool(mainLocal, c.agent)
 	mainTools := composite{shared: mux, local: mainLocal}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).

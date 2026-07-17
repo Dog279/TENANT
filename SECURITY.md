@@ -39,7 +39,8 @@ What to expect:
 Tenant is a **single-user desktop application**. It runs with local user
 privileges, stores data on the local machine, and connects to external APIs
 (Anthropic Claude, Atlassian, Google Workspace, X, Discord) only when the user
-configures them.
+configures them. The optional Jina Reader fallback is also configuration-gated
+and is off by default because using it crosses a separate privacy boundary.
 
 ### Secrets and credentials
 
@@ -89,8 +90,13 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
 
 ### Network
 
-- Outbound connections: LLM API endpoints, Atlassian APIs, Google APIs, X API,
-  Discord API, BlueBubbles (iMessage bridge). No others.
+- Outbound connections: configured LLM API endpoints, Atlassian APIs, Google
+  APIs, X API, Discord API, BlueBubbles (iMessage bridge), and configured web
+  search providers. Jina Reader (`r.jina.ai`) is an explicit opt-in fallback:
+  after local Chrome extraction fails, Tenant may send the eligible target URL
+  to Jina for remote extraction. Tenant blocks loopback/private targets and
+  URLs with credentials, signatures, or token-bearing query parameters before
+  relay, and records every request with the target host in the activity feed.
 - **No telemetry, no analytics, no phone-home.** Tenant never calls a server
   the user did not configure.
 - No inbound listening ports in normal operation (the web dashboard renders
@@ -134,8 +140,8 @@ as a workaround for Chrome installation or permission problems. Run
 ### Out of scope
 
 - Vulnerabilities in third-party services Tenant connects to (Anthropic,
-  Atlassian, Google, X, Discord, BlueBubbles). Report those to the respective
-  vendor.
+  Atlassian, Google, X, Discord, BlueBubbles, Jina). Report those to the
+  respective vendor.
 - Vulnerabilities in the user's Go toolchain, operating system, or network.
 - Issues that require physical access to the machine *and* an already-compromised
   user account (the single-user model assumes the local account is trusted).

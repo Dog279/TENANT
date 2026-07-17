@@ -19,11 +19,20 @@ import (
 func webSkillKind() skillKind {
 	return skillKind{
 		ID:    "web",
-		Label: "Web browsing (Chrome + optional Brave Search)",
+		Label: "Web browsing (Chrome + optional search/reader services)",
 		Wired: true,
-		SetupHint: "Brave key is OPTIONAL — without it, web_search uses DuckDuckGo. " +
-			"Get a free-tier key at https://api.search.brave.com.",
+		SetupHint: "Local Chrome extraction remains available. Jina Reader is OFF unless explicitly enabled; " +
+			"when enabled, failed-page target URLs are sent to the third-party service r.jina.ai. " +
+			"A Brave key is optional; without it, web_search uses DuckDuckGo.",
 		Fields: []skillKindField{
+			{
+				Key:          "jina_reader",
+				Prompt:       "Jina Reader fallback (sends failed-page target URLs to r.jina.ai, a third party)",
+				Default:      "off",
+				Options:      []string{"off", "on"},
+				OptionLabels: []string{"Off — local Chrome extraction only", "On — send eligible failed-page URLs to Jina Reader"},
+				Validate:     validateJinaReader,
+			},
 			{
 				Key:      "brave_key",
 				Prompt:   "Brave Search API key (optional)",
@@ -33,6 +42,15 @@ func webSkillKind() skillKind {
 			},
 		},
 		Probe: probeWebBrave,
+	}
+}
+
+func validateJinaReader(s string) error {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "off", "on":
+		return nil
+	default:
+		return errors.New("must be off or on")
 	}
 }
 

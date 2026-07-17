@@ -13,6 +13,21 @@ import (
 	"testing"
 )
 
+// staticResolver is a deterministic DNS stub for the egress-guard tests: it maps
+// hostnames to fixed addresses and refuses any lookup it was not primed for, so a
+// test can prove the guard checks resolved IPs without real DNS. (Originally
+// defined in reader_test.go on the TEN-307 branch; relocated here during the
+// audit integration merge since TEN-319's reader_test.go replaced that file.)
+type staticResolver map[string][]netip.Addr
+
+func (r staticResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	addrs, ok := r[host]
+	if !ok {
+		return nil, errors.New("unexpected DNS lookup for " + host)
+	}
+	return addrs, nil
+}
+
 func TestValidateURLBlocksDirectTargets(t *testing.T) {
 	tests := []struct {
 		name string
@@ -79,7 +94,7 @@ func TestNavigateRejectsPrivateDNSBeforeBrowser(t *testing.T) {
 	d.guard = newEgressGuard(Config{resolver: staticResolver{
 		"private.test": {netip.MustParseAddr("192.168.20.5")},
 	}})
-	d.cfg.ReaderDisabled = true
+	d.cfg.ReaderEnabled = false // no reader fallback: the private-target block must surface directly
 	out, isErr, err := d.Dispatch(context.Background(), call("web_navigate", map[string]any{"url": "http://private.test/"}))
 	if err != nil || !isErr || !strings.Contains(out, "private or non-public") {
 		t.Fatalf("private navigation result: out=%q isErr=%v err=%v", out, isErr, err)
