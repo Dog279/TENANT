@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -129,7 +131,7 @@ func (s *Soul) Save(baseDir string) error {
 	s.Meta.Version++
 
 	dir := SoulDir(baseDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(dir); err != nil {
 		return fmt.Errorf("soul: mkdir %s: %w", dir, err)
 	}
 	final := Path(baseDir, s.Agent.ID)
@@ -153,6 +155,10 @@ func (s *Soul) Save(baseDir string) error {
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("soul: close tmp: %w", err)
+	}
+	if err := fsperm.RestrictFile(tmpName); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("soul: restrict tmp: %w", err)
 	}
 	// Windows os.Rename can't overwrite — remove the existing target
 	// first. POSIX rename is atomic and replaces in place; the explicit

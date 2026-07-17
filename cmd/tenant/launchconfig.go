@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/model"
 	"tenant/internal/route"
 )
@@ -728,10 +729,10 @@ func (lc *launchConfig) save(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return err
 	}
-	return atomicWrite(launchConfigPath(cfgDir), b, 0o644)
+	return atomicWrite(launchConfigPath(cfgDir), b)
 }
 
 // active returns the selected generation provider's config (or nil).
@@ -978,10 +979,10 @@ func (c *credentials) save(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return err
 	}
-	return atomicWrite(credentialsPath(cfgDir), b, 0o600)
+	return atomicWrite(credentialsPath(cfgDir), b)
 }
 
 func (c *credentials) get(id string) string { return c.Secrets[id] }
@@ -1015,7 +1016,7 @@ func resolveSecret(cfgDir, providerID string, auth authCfg) string {
 // from the settings page, the credentials watcher, and /model at once — never
 // share one ".tmp" path and clobber each other mid-write. The rename is atomic,
 // so a concurrent reader always sees either the whole old or whole new file.
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
+func atomicWrite(path string, data []byte) error {
 	dir, base := filepath.Dir(path), filepath.Base(path)
 	f, err := os.CreateTemp(dir, base+".*.tmp")
 	if err != nil {
@@ -1031,7 +1032,7 @@ func atomicWrite(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, perm); err != nil {
+	if err := fsperm.RestrictFile(tmp); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

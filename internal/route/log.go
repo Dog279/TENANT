@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 const (
@@ -797,14 +799,14 @@ func appendDecision(path string, d Decision) error {
 	if path == "" {
 		return errors.New("route: decision log data dir required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("route: create decision log dir: %w", err)
 	}
 	b, err := json.Marshal(d)
 	if err != nil {
 		return fmt.Errorf("route: marshal decision: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := fsperm.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
 	if err != nil {
 		return fmt.Errorf("route: open decision log: %w", err)
 	}

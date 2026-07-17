@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 // SharePolicy is the per-peer capability ACL. ALL fields default false
@@ -136,7 +138,7 @@ func (s *Store) ReloadIfChanged() error {
 
 // save persists the store atomically at 0600. Caller holds s.mu.
 func (s *Store) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(s.path)); err != nil {
 		return fmt.Errorf("peering: mkdir: %w", err)
 	}
 	list := make([]*Peer, 0, len(s.peers))
@@ -148,7 +150,7 @@ func (s *Store) save() error {
 	if err != nil {
 		return fmt.Errorf("peering: marshal peers.json: %w", err)
 	}
-	if err := atomicWriteFile(s.path, b, 0o600); err != nil {
+	if err := atomicWriteFile(s.path, b); err != nil {
 		return err
 	}
 	if fi, err := os.Stat(s.path); err == nil {
@@ -241,10 +243,10 @@ func (s *Store) VerifyToken(token string) (peer *Peer, matchedPending bool, ok b
 	return nil, false, false
 }
 
-// atomicWriteFile writes data to path via a temp file + rename, chmod'd to perm
-// (mirrors cmd/tenant's atomicWrite; duplicated to keep peering importable
-// without a cmd/tenant dependency).
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+// atomicWriteFile writes private data via a temp file + rename (mirrors
+// cmd/tenant's atomicWrite; duplicated to keep peering importable without a
+// cmd/tenant dependency).
+func atomicWriteFile(path string, data []byte) error {
 	dir, base := filepath.Dir(path), filepath.Base(path)
 	f, err := os.CreateTemp(dir, base+".*.tmp")
 	if err != nil {
@@ -259,7 +261,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, perm); err != nil {
+	if err := fsperm.RestrictFile(tmp); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

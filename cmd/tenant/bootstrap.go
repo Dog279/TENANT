@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
 )
 
@@ -61,9 +62,24 @@ func ensureSetup(c *commonFlags, pf *pluginFlags) []string {
 		}
 		lines = append(lines, "created "+label+": "+path)
 	}
+	ensurePrivateDir := func(label, path string) {
+		if path == "" {
+			return
+		}
+		_, statErr := os.Stat(path)
+		if err := fsperm.MkdirAll(path); err != nil {
+			lines = append(lines, "FAILED "+label+": "+err.Error())
+			return
+		}
+		if statErr == nil {
+			lines = append(lines, "found "+label+": "+path)
+		} else {
+			lines = append(lines, "created "+label+": "+path)
+		}
+	}
 
-	ensureDir("data dir", c.dataDir)
-	ensureDir("config dir", c.cfgDir)
+	ensurePrivateDir("data dir", c.dataDir)
+	ensurePrivateDir("config dir", c.cfgDir)
 
 	// Default soul/identity — first run seeds an editable TOML file so
 	// the operator can shape the agent's persona later.

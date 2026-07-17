@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 const (
@@ -87,7 +89,7 @@ func loadStore(path string) (*tokenStore, error) {
 
 func (s *tokenStore) save(path string) error {
 	b, _ := json.MarshalIndent(s, "", " ")
-	return os.WriteFile(path, b, 0o600)
+	return fsperm.WriteFile(path, b)
 }
 
 type pkceSource struct {

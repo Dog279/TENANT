@@ -3,12 +3,41 @@ package episodic_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"tenant/internal/memory/episodic"
 )
+
+func TestOpenCreatesPrivateDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not represent Windows DACLs; TEN-325")
+	}
+	path := filepath.Join(t.TempDir(), "private", "episodes.db")
+	s, err := episodic.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, item := range []struct {
+		path string
+		max  os.FileMode
+	}{
+		{filepath.Dir(path), 0o700},
+		{path, 0o600},
+	} {
+		info, err := os.Stat(item.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if extra := info.Mode().Perm() &^ item.max; extra != 0 {
+			t.Errorf("%s mode = %v, exceeds %v", item.path, info.Mode().Perm(), item.max)
+		}
+	}
+}
 
 func mkStore(t *testing.T) *episodic.Store {
 	t.Helper()
@@ -461,7 +490,6 @@ func TestEmbedding_RoundtripPreservesValues(t *testing.T) {
 		}
 	}
 }
-
 
 // TestSearch_AgentGlob — TEN-45.
 // An agent-id ending in `*` matches all episodes whose agent_id starts

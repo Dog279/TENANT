@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,33 @@ func TestArchive_AppendCreatesMonthlyDir(t *testing.T) {
 	want := filepath.Join(dir, "archive", "2026-05", "sess1.jsonl")
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("expected file at %s: %v", want, err)
+	}
+}
+
+func TestArchive_AppendCreatesPrivatePaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not represent Windows DACLs; TEN-325")
+	}
+	dir := t.TempDir()
+	w := archive.NewWriter(dir)
+	ts := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	if err := w.Append(archive.Event{
+		Timestamp: ts, AgentID: "main", SessionID: "private", Role: "user", Content: "secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertModeAtMost(t, filepath.Join(dir, "archive", "2026-05"), 0o700)
+	assertModeAtMost(t, filepath.Join(dir, "archive", "2026-05", "private.jsonl"), 0o600)
+}
+
+func assertModeAtMost(t *testing.T, path string, maximum os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extra := info.Mode().Perm() &^ maximum; extra != 0 {
+		t.Errorf("%s mode = %v, exceeds %v", path, info.Mode().Perm(), maximum)
 	}
 }
 

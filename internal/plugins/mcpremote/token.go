@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/oauth2"
+
+	"tenant/internal/fsperm"
 )
 
 // tokenCache is the persisted per-server OAuth state (0600). It holds the DCR
@@ -53,12 +55,12 @@ func saveTokenCache(path string, c *tokenCache) error {
 	if path == "" {
 		return nil // persistence disabled (no cache dir) — silently skip
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	return fsperm.WriteFile(path, b)
 }

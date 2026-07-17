@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 // TEN-185: peer-link transport security. The peer listener serves TLS with a
@@ -60,13 +62,13 @@ func LoadOrMintCert(cfgDir string) (tls.Certificate, string, error) {
 	if err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return tls.Certificate{}, "", fmt.Errorf("peering: mkdir: %w", err)
 	}
-	if err := atomicWriteFile(certPath, certPEM, 0o600); err != nil {
+	if err := atomicWriteFile(certPath, certPEM); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := atomicWriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := atomicWriteFile(keyPath, keyPEM); err != nil {
 		return tls.Certificate{}, "", err
 	}
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)

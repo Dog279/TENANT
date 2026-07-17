@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	v2 "github.com/ctreminiom/go-atlassian/v2/jira/v2"
 	"github.com/ctreminiom/go-atlassian/v2/pkg/infra/oauth2"
 	"github.com/ctreminiom/go-atlassian/v2/service/common"
@@ -86,14 +88,14 @@ func (s fileTokenStore) GetToken(_ context.Context) (*common.OAuth2Token, error)
 }
 
 func (s fileTokenStore) SetToken(_ context.Context, t *common.OAuth2Token) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(s.path)); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	return fsperm.WriteFile(s.path, data)
 }
 
 func (s fileTokenStore) GetRefreshToken(ctx context.Context) (string, error) {

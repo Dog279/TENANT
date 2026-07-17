@@ -501,8 +501,8 @@ func TestCredentials_RoundTripAndResolve(t *testing.T) {
 	}
 	// 0600 perms on POSIX (skip the check on Windows where it's advisory).
 	if fi, err := os.Stat(credentialsPath(dir)); err == nil && os.PathSeparator == '/' {
-		if fi.Mode().Perm() != 0o600 {
-			t.Fatalf("credentials perms = %o, want 600", fi.Mode().Perm())
+		if extra := fi.Mode().Perm() &^ os.FileMode(0o600); extra != 0 {
+			t.Fatalf("credentials perms = %o, exceeds 600", fi.Mode().Perm())
 		}
 	}
 

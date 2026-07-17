@@ -3,6 +3,7 @@ package soul_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -23,8 +24,12 @@ func TestProposeEdit_WritesToProposedDir(t *testing.T) {
 	}
 	// File must exist under proposed/.
 	want := filepath.Join(dir, "soul", "proposed", id+".toml")
-	if _, err := os.Stat(want); err != nil {
+	info, err := os.Stat(want)
+	if err != nil {
 		t.Fatalf("proposal file missing at %s: %v", want, err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&^os.FileMode(0o600) != 0 {
+		t.Errorf("proposal mode = %v, exceeds 0600", info.Mode().Perm())
 	}
 }
 

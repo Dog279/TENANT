@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tenant/internal/agent"
+	"tenant/internal/fsperm"
 	modelpkg "tenant/internal/model"
 )
 
@@ -5433,7 +5433,7 @@ func (m *model) copyTranscript() {
 	clipErr := clipboard.WriteAll(txt)
 	saved := ""
 	if m.cfg.SavePath != "" {
-		if err := os.WriteFile(m.cfg.SavePath, []byte(txt), 0o644); err == nil {
+		if err := fsperm.WriteFile(m.cfg.SavePath, []byte(txt)); err == nil {
 			saved = m.cfg.SavePath
 		}
 	}

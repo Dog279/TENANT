@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/agent"
 	croneng "tenant/internal/cron"
 	"tenant/internal/dashboard"
@@ -210,7 +211,7 @@ func scrubbedEnv() []string {
 // they don't run in Tenant's cwd. Falls back to dataDir on failure.
 func cronSandboxDir(dataDir string) string {
 	dir := filepath.Join(dataDir, "cron-work")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fsperm.MkdirAll(dir); err != nil {
 		return dataDir
 	}
 	return dir
@@ -240,7 +241,7 @@ func saveCronHistory(dataDir string, h []croneng.RunRecord) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(cronHistoryPath(dataDir), b, 0o600)
+	return atomicWrite(cronHistoryPath(dataDir), b)
 }
 
 // cronManager wraps the cron engine. tuiCron / dashCron adapt it to the TUI and

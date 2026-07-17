@@ -32,6 +32,8 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
@@ -558,7 +560,7 @@ func (b *cdpBrowser) Screenshot(ctx context.Context, path string) error {
 	if err := chromedp.Run(rctx, chromedp.FullScreenshot(&buf, 80)); err != nil {
 		return fmt.Errorf("web: screenshot: %w", err)
 	}
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
+	if err := fsperm.WriteFile(path, buf); err != nil {
 		return fmt.Errorf("web: write screenshot %s: %w", path, err)
 	}
 	return nil

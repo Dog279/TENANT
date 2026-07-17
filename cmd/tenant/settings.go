@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"tenant/internal/fsperm"
 )
 
 // settings is the persisted, per-agent runtime configuration — the state
@@ -62,11 +64,11 @@ func (s *settings) save(cfgDir, agentID string) error {
 		return err
 	}
 	p := settingsPath(cfgDir, agentID)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := fsperm.MkdirAll(filepath.Dir(p)); err != nil {
 		return err
 	}
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := fsperm.WriteFile(tmp, b); err != nil {
 		return err
 	}
 	return os.Rename(tmp, p)
