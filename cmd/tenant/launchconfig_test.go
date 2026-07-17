@@ -47,7 +47,8 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 				"tenant-discord": {Mode: "shadow", NeverCloud: &relayNeverCloud},
 			},
 		},
-		Gateway: gatewayConfig{Mode: "sse", SSEAddr: "127.0.0.1:8765"},
+		Gateway:       gatewayConfig{Mode: "sse", SSEAddr: "127.0.0.1:8765"},
+		TurnScheduler: turnSchedulerConfig{QueueDepth: 24, SourceQuotas: map[string]int{"dashboard": 12, "cron": 3}},
 	}
 	if err := want.save(dir); err != nil {
 		t.Fatalf("save: %v", err)
@@ -81,6 +82,9 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 	}
 	if !got.BrowserNoSandbox {
 		t.Fatal("browser_no_sandbox did not survive config round-trip")
+	}
+	if got.TurnScheduler.QueueDepth != 24 || got.TurnScheduler.SourceQuotas["dashboard"] != 12 || got.TurnScheduler.SourceQuotas["cron"] != 3 {
+		t.Fatalf("turn scheduler round-trip wrong: %+v", got.TurnScheduler)
 	}
 	if got.SchemaVersion != currentSchemaVersion {
 		t.Fatalf("schema version not stamped: %d", got.SchemaVersion)
