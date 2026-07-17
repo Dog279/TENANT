@@ -18,9 +18,13 @@ package main
 // have a profile override the team-level safety boundaries.
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
+	"time"
 
 	"tenant/internal/model"
 )
@@ -67,6 +71,16 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	}
 	if mdl == "" {
 		return nil, fmt.Errorf("agent %q: provider %q has no Model configured and the profile didn't override one", profileName, ap.Provider)
+	}
+	// Pre-flight (same philosophy as the key check above): reconcile the
+	// configured model name against what the endpoint actually serves. vLLM's
+	// model lookup is case-sensitive, so a casing typo in a profile ("...-nvfp4"
+	// vs the served "...-NVFP4") 404s every generate call of every spawn. A
+	// case-insensitive match adopts the server's casing; a total miss logs the
+	// served list; an unreachable endpoint changes nothing (offline spawns must
+	// not be blocked by a health check).
+	if pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
+		mdl = reconcileServedModel(pc.Endpoint, apiKey, mdl, profileName, log)
 	}
 
 	// Build a commonFlags view that genProfiles can consume — same shape as
@@ -180,4 +194,68 @@ func renderAgentsForOrchestrator(agents map[string]*agentProfile) string {
 		"independent work (or spawn more independent workers), and call team_await only when you need their " +
 		"results, and always before any final answer that depends on a worker.")
 	return b.String()
+}
+
+// servedModelHTTPClient is a seam for tests; the reconcile call is bounded by
+// its own context timeout regardless.
+var servedModelHTTPClient = &http.Client{}
+
+// reconcileServedModel checks a configured model name against the endpoint's
+// OpenAI-compatible model list (GET {endpoint}/v1/models). vLLM's model lookup
+// is case-sensitive, so a mere casing typo in a stored profile 404s every
+// generate call of every spawn that uses it — mid-research, with an opaque
+// error. Resolution:
+//
+//	exact match            -> configured name (no change)
+//	case-insensitive match -> the SERVED casing (self-heal + warn)
+//	no match               -> configured name + a warning listing served models
+//	endpoint unreachable   -> configured name (never block offline spawns)
+func reconcileServedModel(endpoint, apiKey, mdl, profileName string, log *slog.Logger) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	url := strings.TrimRight(strings.TrimSpace(endpoint), "/") + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return mdl
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := servedModelHTTPClient.Do(req)
+	if err != nil {
+		return mdl // endpoint down/unreachable: generate will surface it
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return mdl
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.Data) == 0 {
+		return mdl
+	}
+	served := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		served = append(served, m.ID)
+		if m.ID == mdl {
+			return mdl // exact match — all good
+		}
+	}
+	for _, id := range served {
+		if strings.EqualFold(id, mdl) {
+			if log != nil {
+				log.Warn("agent profile: model name casing corrected to the endpoint's served name",
+					"profile", profileName, "configured", mdl, "served", id)
+			}
+			return id
+		}
+	}
+	if log != nil {
+		log.Warn("agent profile: configured model is not in the endpoint's served list; generate calls may 404",
+			"profile", profileName, "configured", mdl, "served", strings.Join(served, ", "))
+	}
+	return mdl
 }
