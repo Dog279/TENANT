@@ -135,6 +135,17 @@ func TestSSE_AfterClose(t *testing.T) {
 	}
 }
 
+func TestSSE_OversizedMessageRejected(t *testing.T) {
+	const max = 32
+	sse := transport.NewSSE(transport.SSEConfig{MaxFrameSize: max})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/message", strings.NewReader(strings.Repeat("x", max+1)))
+	sse.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
 type sseEvent struct{ event, data string }
 
 // readEvent parses one SSE event (event:/data: lines, blank-line terminated).

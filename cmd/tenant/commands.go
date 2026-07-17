@@ -21,6 +21,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/cron"
 	"tenant/internal/dashboard"
+	"tenant/internal/httplimits"
 	"tenant/internal/improve"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
@@ -58,6 +59,15 @@ type noopDispatcher struct{}
 
 func (noopDispatcher) Dispatch(_ context.Context, _ model.ToolCall) (string, bool, error) {
 	return "", false, nil
+}
+
+func newSSEHTTPServer(addr string, handler http.Handler) *http.Server {
+	protected := httplimits.Protect(handler, transport.DefaultMaxFrameSize, httplimits.ResponseWriteTimeout, func(r *http.Request) bool {
+		return r.Method == http.MethodGet && r.URL.Path == "/sse"
+	})
+	srv := &http.Server{Addr: addr, Handler: protected}
+	httplimits.Configure(srv)
+	return srv
 }
 
 // cmdChat: one stdin line = one agent turn. Conversation goes to
@@ -452,7 +462,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	// stdio subprocess. The transport's life is one client session.
 	if *sseAddr != "" {
 		sse := transport.NewSSE(transport.SSEConfig{})
-		httpSrv := &http.Server{Addr: *sseAddr, Handler: sse}
+		httpSrv := newSSEHTTPServer(*sseAddr, sse)
 		go func() {
 			<-ctx.Done()
 			_ = httpSrv.Shutdown(context.Background())

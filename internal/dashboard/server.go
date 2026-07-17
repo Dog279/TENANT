@@ -9,6 +9,7 @@ package dashboard
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,7 +17,10 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/httplimits"
 )
+
+const maxDashboardRequestBodyBytes = 1 << 20
 
 // AgentRunner is the minimal slice of *agent.Agent the dashboard drives: a
 // turn plus a mid-turn interjection. Per-turn cancellation is the caller's
@@ -117,10 +121,34 @@ func New(cfg Config, runner AgentRunner, tools ToolControl, mem MemoryControl, b
 	return s
 }
 
-// Handler exposes the server's mux for tests (httptest) and for any caller
-// that wants to wrap it (e.g. the Wave-2 secure() middleware in the start
-// path). Equivalent to the routed *http.ServeMux.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler exposes the routed mux with request-body and finite-response limits
+// applied. It is used by tests and wrapped by secure() in the production start
+// path.
+func (s *Server) Handler() http.Handler {
+	return s.handlerWithWriteTimeout(httplimits.ResponseWriteTimeout)
+}
+
+func (s *Server) handlerWithWriteTimeout(writeTimeout time.Duration) http.Handler {
+	return httplimits.Protect(s.mux, maxDashboardRequestBodyBytes, writeTimeout, isDashboardStream)
+}
+
+func isDashboardStream(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.URL.Path {
+	case "/events", "/activity/events", "/ws":
+		return true
+	default:
+		return false
+	}
+}
+
+func newDashboardHTTPServer(addr string, handler http.Handler, tlsCfg *tls.Config) *http.Server {
+	srv := &http.Server{Addr: addr, Handler: handler, TLSConfig: tlsCfg}
+	httplimits.Configure(srv)
+	return srv
+}
 
 // routes mounts the Wave-1 surface: health + the embedded SPA. Everything
 // else is Wave 2.
@@ -218,7 +246,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	// secure() wraps the routed mux with bearer auth + same-origin CORS.
-	srv := &http.Server{Addr: s.cfg.Addr, Handler: s.secure(s.mux), TLSConfig: tlsCfg}
+	srv := newDashboardHTTPServer(s.cfg.Addr, s.secure(s.Handler()), tlsCfg)
 
 	shutdownDone := make(chan struct{})
 	go func() {
