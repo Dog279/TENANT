@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"tenant/internal/agent"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -37,9 +39,21 @@ type restStatus struct {
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
 
-	TurnActive       bool `json:"turn_active"`
-	TurnAgeSecs      int  `json:"turn_age_secs,omitempty"`
-	PendingApprovals int  `json:"pending_approvals"`
+	TurnActive       bool                 `json:"turn_active"`
+	TurnAgeSecs      int                  `json:"turn_age_secs,omitempty"`
+	TurnQueueDepth   int                  `json:"turn_queue_depth"`
+	TurnQueueAgeSecs int                  `json:"turn_queue_age_secs"`
+	TurnQueue        []restTurnQueueEntry `json:"turn_queue,omitempty"`
+	PendingApprovals int                  `json:"pending_approvals"`
+}
+
+// restTurnQueueEntry is the content-free queue projection. Position reflects
+// scheduler dispatch order, not raw arrival order across priority classes.
+type restTurnQueueEntry struct {
+	Position int    `json:"position"`
+	Source   string `json:"source"`
+	AgeSecs  int    `json:"age_secs"`
+	ETASecs  int    `json:"eta_secs"`
 }
 
 // liveness is the optional turn-state reporter a serve-mode runner (the
@@ -47,6 +61,10 @@ type restStatus struct {
 // AgentRunner interface (Turn/Interject) stays unchanged.
 type liveness interface {
 	ActiveTurn() (active bool, age time.Duration)
+}
+
+type queueLiveness interface {
+	TurnQueueStatus() agent.TurnQueueStatus
 }
 
 // restToggleRequest is the body of the POST toggle endpoints.
@@ -113,6 +131,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		if active, age := lr.ActiveTurn(); active {
 			st.TurnActive = true
 			st.TurnAgeSecs = int(age.Seconds())
+		}
+	}
+	if qr, ok := s.agent.(queueLiveness); ok && qr != nil {
+		queue := qr.TurnQueueStatus()
+		st.TurnQueueDepth = queue.Depth
+		st.TurnQueueAgeSecs = int(queue.OldestAge.Seconds())
+		for _, entry := range queue.Entries {
+			st.TurnQueue = append(st.TurnQueue, restTurnQueueEntry{
+				Position: entry.Position,
+				Source:   string(entry.Source),
+				AgeSecs:  int(entry.Age.Seconds()),
+				ETASecs:  int(entry.ETA.Seconds()),
+			})
 		}
 	}
 	if s.approvals != nil {

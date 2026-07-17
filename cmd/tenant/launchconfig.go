@@ -51,6 +51,9 @@ type launchConfig struct {
 	Gateway gatewayConfig `json:"gateway,omitempty"`
 	// Dashboard configures the web control panel (TEN-76).
 	Dashboard dashboardConfig `json:"dashboard,omitempty"`
+	// TurnScheduler bounds and apportions ingress to the single shared agent
+	// used by serve-mode interactive and delegated turn sources (TEN-329).
+	TurnScheduler turnSchedulerConfig `json:"turn_scheduler,omitempty"`
 	// Tailscale persists the operator's `/tailscale serve` choice (TEN-233) so it
 	// is re-asserted at next launch — matching the dashboard/relay/imessage
 	// toggles. Tailscale's own daemon also persists the serve config; this flag
@@ -124,6 +127,15 @@ type goalConfig struct {
 	// goal turn cap, errors, and Esc); 0/unset = inherit the global ceiling (no
 	// goal-specific override). Normal, non-goal turns always use PlanLoopCeiling.
 	LoopCeiling int `json:"loop_ceiling,omitempty"`
+}
+
+// turnSchedulerConfig controls serve-mode admission to the shared agent.
+// QueueDepth bounds unique waiting requests (the active turn is separate).
+// SourceQuotas bounds queued requests per RouteSurface; omitted entries use
+// the built-in quota for that source. Values <= 0 use the built-in default.
+type turnSchedulerConfig struct {
+	QueueDepth   int            `json:"queue_depth,omitempty"`
+	SourceQuotas map[string]int `json:"source_quotas,omitempty"`
 }
 
 // providerConfig is one model provider's connection + auth settings.

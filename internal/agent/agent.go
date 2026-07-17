@@ -188,6 +188,8 @@ const (
 	RouteSurfaceDashboard RouteSurface = "dashboard"
 	RouteSurfaceRelay     RouteSurface = "relay"
 	RouteSurfaceCron      RouteSurface = "cron"
+	RouteSurfacePeer      RouteSurface = "peer"
+	RouteSurfaceResearch  RouteSurface = "research"
 )
 
 func (s RouteSurface) Interactive() bool {
@@ -397,6 +399,26 @@ type TurnRequest struct {
 	// cap). Used by /goal runs so a long autonomous loop can iterate freely
 	// without raising the global ceiling every normal turn shares (TEN-216).
 	LoopCeiling int
+}
+
+// TurnQueueEntry is the observable, content-free view of one request waiting
+// for a shared agent. Position is one-based in the order requests will be
+// admitted; ETA is the scheduler's best estimate based on recent turn times.
+// UserQuery is deliberately not exposed because dashboard status is an
+// operational surface, not a transcript surface.
+type TurnQueueEntry struct {
+	Position int
+	Source   RouteSurface
+	Age      time.Duration
+	ETA      time.Duration
+}
+
+// TurnQueueStatus is a point-in-time snapshot of shared-turn ingress. Depth
+// excludes the currently active turn. OldestAge is zero for an empty queue.
+type TurnQueueStatus struct {
+	Depth     int
+	OldestAge time.Duration
+	Entries   []TurnQueueEntry
 }
 
 // TurnResult summarizes what happened during the turn.

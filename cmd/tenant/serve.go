@@ -420,7 +420,11 @@ func cmdServe(ctx context.Context, args []string) error {
 	// ONE turn gate over the shared brain (TEN-194): every driver (dashboard
 	// now, peer-delegated run later) serializes here so concurrent sources can't
 	// race the single working set. It also reports turn liveness to /api/status.
-	gated := newTurnGate(ag)
+	turnSchedCfg := turnSchedulerConfig{}
+	if c.lc != nil {
+		turnSchedCfg = c.lc.TurnScheduler
+	}
+	gated := newTurnGateConfigured(ag, turnSchedCfg)
 
 	// Cron (recurring jobs): dedicated read/comms-safe runner agents on a
 	// schedule; cron_* management tools go to the MAIN agent.
