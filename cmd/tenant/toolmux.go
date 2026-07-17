@@ -1101,9 +1101,10 @@ type pluginFlags struct {
 	sqlDB         string
 	sqlAllowWrite bool
 
-	web              bool
-	webShow          bool
-	webAllowInteract bool
+	web               bool
+	webShow           bool
+	webAllowInteract  bool
+	webPrivateNetwork []string
 
 	gsuite          bool
 	gsuiteAuth      string
@@ -1151,6 +1152,14 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.BoolVar(&p.web, "web", false, "enable the web plugin (drives Chrome)")
 	fs.BoolVar(&p.webShow, "web-show", false, "run a visible Chrome window")
 	fs.BoolVar(&p.webAllowInteract, "web-allow-interact", false, "permit web click/fill/select")
+	fs.Func("web-private-network", "allow an exact named private endpoint (repeatable; explicit SSRF-policy opt-in)", func(s string) error {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return fmt.Errorf("web-private-network hostname cannot be empty")
+		}
+		p.webPrivateNetwork = append(p.webPrivateNetwork, s)
+		return nil
+	})
 	fs.BoolVar(&p.gsuite, "gsuite", false, "enable Gmail + Calendar")
 	fs.StringVar(&p.gsuiteAuth, "gsuite-auth", "gcloud", "gsuite auth: gcloud|sa")
 	fs.StringVar(&p.gsuiteSAJSON, "gsuite-sa-json", "", "gsuite service-account JSON (auth=sa)")
