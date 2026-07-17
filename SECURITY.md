@@ -46,12 +46,19 @@ configures them.
 - **API keys and tokens** are stored in
   `~/Library/Application Support/tenant/credentials.json` (macOS; equivalent
   OS config directories on Linux and Windows).
-- The credentials file is written with **0600 permissions** (owner read/write
-  only).
+- Tenant centralizes credentials, Atlassian/MCP OAuth caches, peering tokens,
+  and peer private keys behind one secret-storage boundary. On Unix, files are
+  verified as **0600** and their direct parent directories as **0700**. On
+  Windows, inherited access is disabled and an explicit DACL grants full
+  control only to the current user.
 - **No secrets are committed to the repository.** The repo is a clean template;
   `credentials.json` is in `.gitignore`.
 - MCP remote connectors use **OAuth 2.1 with Dynamic Client Registration
-  (DCR)**. OAuth tokens are persisted locally with 0600 permissions.
+  (DCR)**. OAuth tokens receive the same platform-specific owner-only
+  protection. Run `tenant doctor` to audit the effective protection of every
+  managed secret file.
+- Managed secret files are currently plaintext inside that OS access-control
+  boundary. Use full-disk encryption for defense against offline disk access.
 
 ### Local storage
 
@@ -86,7 +93,7 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
 | Area | Status |
 | ---- | ------ |
 | **Single-user model** | Tenant assumes one operator. It does not authenticate users or separate sessions. Anyone with access to the running process can issue commands as the operator. |
-| **Local secrets** | Credentials are on disk, protected by file permissions. On a shared or compromised machine, this is insufficient. Use a dedicated user account and full-disk encryption. |
+| **Local secrets** | Credentials are on disk, protected by verified owner-only POSIX modes or a protected current-user-only Windows DACL. On a compromised account, this is insufficient. Use a dedicated user account and full-disk encryption. |
 | **LLM output** | The agent processes and acts on LLM-generated text. Prompt injection is a recognized risk. The read-by-default permission model limits blast radius, but a sufficiently crafted input could trick the agent into requesting a destructive action. The user still must approve it. |
 | **Supply chain** | Go dependencies are pinned in `go.sum`. Run `go vet ./...` and review `go.mod` before building from source. |
 | **Eval harness** | Tenant ships an evaluation harness with adversarial test fixtures. These are designed to probe the agent's safety boundaries. They do not contain real exploits. |

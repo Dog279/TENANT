@@ -32,7 +32,7 @@ type Config struct {
 	// Path B (OAuth 3LO)
 	ClientID      string
 	ClientSecret  string // or env ATLASSIAN_CLIENT_SECRET
-	TokenPath     string // refresh-token cache (default <data>/atlassian-token.json, 0600)
+	TokenPath     string // refresh-token cache (default <data>/atlassian-token.json, owner-only)
 	OAuthCallback string // callback bind addr (default 127.0.0.1:8765)
 	Scopes        []string
 	// OAuthOpenBrowser, if set, is called with the consent URL during Authorize

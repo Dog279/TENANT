@@ -2,7 +2,8 @@ package atlassian
 
 // oauth.go is Path B: OAuth 2.0 3LO (TEN-59), mirroring the Atlassian connector
 // login. Authorize() runs the one-time browser + localhost-callback flow and
-// caches the token (0600). openOAuthClient() (used by Open) loads the cached
+// caches the token with platform-specific owner-only protection.
+// openOAuthClient() (used by Open) loads the cached
 // token, proactively refreshes it, resolves the cloudId, and builds a client
 // routed at api.atlassian.com/ex/jira/{cloudId} with auto-renewal — so a
 // restart never needs re-login until the refresh token itself is revoked.
@@ -24,6 +25,7 @@ import (
 	v2 "github.com/ctreminiom/go-atlassian/v2/jira/v2"
 	"github.com/ctreminiom/go-atlassian/v2/pkg/infra/oauth2"
 	"github.com/ctreminiom/go-atlassian/v2/service/common"
+	"tenant/internal/secrets"
 )
 
 // defaultScopes — read+write Jira plus offline_access (REQUIRED for a refresh
@@ -66,15 +68,15 @@ func oauthConfig(cfg Config) *common.OAuth2Config {
 	}
 }
 
-// fileTokenStore persists the OAuth token as 0600 JSON (matches credentials.json
-// discipline). Implements oauth2.TokenStore so go-atlassian's auto-renewal
+// fileTokenStore persists the OAuth token using the central secret-storage
+// boundary. Implements oauth2.TokenStore so go-atlassian's auto-renewal
 // writes refreshed tokens straight back to disk.
 type fileTokenStore struct{ path string }
 
 var _ oauth2.TokenStore = fileTokenStore{}
 
 func (s fileTokenStore) GetToken(_ context.Context) (*common.OAuth2Token, error) {
-	data, err := os.ReadFile(s.path)
+	data, err := secrets.ReadFile(s.path)
 	if err != nil {
 		return nil, err
 	}
@@ -86,14 +88,11 @@ func (s fileTokenStore) GetToken(_ context.Context) (*common.OAuth2Token, error)
 }
 
 func (s fileTokenStore) SetToken(_ context.Context, t *common.OAuth2Token) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	return secrets.WriteFile(s.path, data)
 }
 
 func (s fileTokenStore) GetRefreshToken(ctx context.Context) (string, error) {

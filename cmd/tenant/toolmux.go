@@ -274,7 +274,7 @@ type mcpRuntimeDeps struct {
 	trustAnnotations bool
 	allowWrite       bool
 	confirm          func(context.Context, string, string) bool
-	cacheDir         string       // 0600 OAuth token cache dir (persistence across restarts)
+	cacheDir         string       // owner-only OAuth token cache dir (persistence across restarts)
 	log              *slog.Logger // connect/refresh failure logging (TEN-166)
 }
 

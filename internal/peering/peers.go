@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"tenant/internal/secrets"
 )
 
 // SharePolicy is the per-peer capability ACL. ALL fields default false
@@ -51,7 +53,7 @@ type Peer struct {
 }
 
 // Store is the single authoritative per-peer state, persisted to
-// <cfgDir>/peers.json (0600), mirroring the mcpremote token-cache file pattern.
+// <cfgDir>/peers.json with platform-specific owner-only protection.
 // All mutators are mutex-guarded; Save writes atomically (temp + rename).
 type Store struct {
 	mu      sync.Mutex
@@ -68,7 +70,7 @@ func PeersPath(cfgDir string) string { return filepath.Join(cfgDir, "peers.json"
 // LoadStore reads peers.json (creating an empty in-memory store if absent).
 func LoadStore(cfgDir string) (*Store, error) {
 	s := &Store{path: PeersPath(cfgDir), peers: map[string]*Peer{}}
-	b, err := os.ReadFile(s.path)
+	b, err := secrets.ReadFile(s.path)
 	if os.IsNotExist(err) {
 		return s, nil
 	}
@@ -123,7 +125,7 @@ func (s *Store) ReloadIfChanged() error {
 	if fi.ModTime().Equal(s.modTime) && fi.Size() == s.modSize {
 		return nil // unchanged (mtime AND size — catches same-tick rewrites)
 	}
-	b, err := os.ReadFile(s.path)
+	b, err := secrets.ReadFile(s.path)
 	if err != nil {
 		return err
 	}
@@ -134,11 +136,8 @@ func (s *Store) ReloadIfChanged() error {
 	return nil
 }
 
-// save persists the store atomically at 0600. Caller holds s.mu.
+// save persists the store atomically with owner-only protection. Caller holds s.mu.
 func (s *Store) save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return fmt.Errorf("peering: mkdir: %w", err)
-	}
 	list := make([]*Peer, 0, len(s.peers))
 	for _, p := range s.peers {
 		list = append(list, p)
@@ -148,7 +147,7 @@ func (s *Store) save() error {
 	if err != nil {
 		return fmt.Errorf("peering: marshal peers.json: %w", err)
 	}
-	if err := atomicWriteFile(s.path, b, 0o600); err != nil {
+	if err := secrets.WriteFile(s.path, b); err != nil {
 		return err
 	}
 	if fi, err := os.Stat(s.path); err == nil {
@@ -157,7 +156,7 @@ func (s *Store) save() error {
 	return nil
 }
 
-// Save flushes the store to disk (0600, atomic).
+// Save flushes the store to disk atomically with owner-only protection.
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -239,28 +238,4 @@ func (s *Store) VerifyToken(token string) (peer *Peer, matchedPending bool, ok b
 		}
 	}
 	return nil, false, false
-}
-
-// atomicWriteFile writes data to path via a temp file + rename, chmod'd to perm
-// (mirrors cmd/tenant's atomicWrite; duplicated to keep peering importable
-// without a cmd/tenant dependency).
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	dir, base := filepath.Dir(path), filepath.Base(path)
-	f, err := os.CreateTemp(dir, base+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }

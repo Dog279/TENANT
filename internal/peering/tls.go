@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"tenant/internal/secrets"
 )
 
 // TEN-185: peer-link transport security. The peer listener serves TLS with a
@@ -25,11 +27,22 @@ import (
 // it (TOFU-by-invite — no CA, no hostname dependency). The overlay alternative
 // (Tailscale/WireGuard, plain HTTP) is handled by the bind policy in listener.go.
 
-// certFileNames under cfgDir. 0600 like every other peering secret.
+// certFileNames under cfgDir. Both use the peering secret-storage boundary.
 const (
 	peerCertFile = "peer-cert.pem"
 	peerKeyFile  = "peer-key.pem"
 )
+
+// AtRestPaths returns the peering files whose effective protection is audited
+// by tenant doctor. The certificate is public material, but is kept beside and
+// protected consistently with the peer store and private key.
+func AtRestPaths(cfgDir string) []string {
+	return []string{
+		PeersPath(cfgDir),
+		filepath.Join(cfgDir, peerCertFile),
+		filepath.Join(cfgDir, peerKeyFile),
+	}
+}
 
 // CertFingerprint is the lowercase hex SHA-256 of a DER-encoded certificate —
 // the value carried in an invite and pinned by the dialing peer.
@@ -39,14 +52,16 @@ func CertFingerprint(der []byte) string {
 }
 
 // LoadOrMintCert returns this instance's stable self-signed TLS cert and its
-// fingerprint, minting + persisting one (0600) under cfgDir on first use. The
+// fingerprint, minting and persisting one with owner-only protection under cfgDir on first use. The
 // fingerprint is stable across restarts because the cert is reused.
 func LoadOrMintCert(cfgDir string) (tls.Certificate, string, error) {
 	certPath := filepath.Join(cfgDir, peerCertFile)
 	keyPath := filepath.Join(cfgDir, peerKeyFile)
 
-	if fileExists(certPath) && fileExists(keyPath) {
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	certPEM, certErr := secrets.ReadFile(certPath)
+	keyPEM, keyErr := secrets.ReadFile(keyPath)
+	if certErr == nil && keyErr == nil {
+		cert, err := tls.X509KeyPair(certPEM, keyPEM)
 		if err != nil {
 			return tls.Certificate{}, "", fmt.Errorf("peering: load peer cert: %w", err)
 		}
@@ -55,18 +70,21 @@ func LoadOrMintCert(cfgDir string) (tls.Certificate, string, error) {
 		}
 		return cert, CertFingerprint(cert.Certificate[0]), nil
 	}
+	if certErr != nil && !os.IsNotExist(certErr) {
+		return tls.Certificate{}, "", fmt.Errorf("peering: read peer cert: %w", certErr)
+	}
+	if keyErr != nil && !os.IsNotExist(keyErr) {
+		return tls.Certificate{}, "", fmt.Errorf("peering: read peer key: %w", keyErr)
+	}
 
 	certPEM, keyPEM, err := mintSelfSigned()
 	if err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
-		return tls.Certificate{}, "", fmt.Errorf("peering: mkdir: %w", err)
-	}
-	if err := atomicWriteFile(certPath, certPEM, 0o600); err != nil {
+	if err := secrets.WriteFile(certPath, certPEM); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := atomicWriteFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := secrets.WriteFile(keyPath, keyPEM); err != nil {
 		return tls.Certificate{}, "", err
 	}
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
@@ -137,9 +155,4 @@ func PinnedTLSClientConfig(fingerprint string) *tls.Config {
 			return nil
 		},
 	}
-}
-
-func fileExists(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && !fi.IsDir()
 }

@@ -252,11 +252,11 @@ func configureAuth(in *bufio.Reader, interactive bool, providerID string, pk pro
 		def = "paste"
 	}
 	switch selectOne(pk.Label+" — API key source", []pickOption{
-		{Label: "Paste & store the key", Value: "paste", Desc: "saved to credentials.json (0600)"},
+		{Label: "Paste & store the key", Value: "paste", Desc: "saved to owner-only credentials.json"},
 		{Label: "Reference an env var", Value: "env", Desc: "read $" + firstNonEmpty(cur.KeyEnv, pk.KeyEnv) + " at launch"},
 	}, def) {
 	case "paste", "p", "key":
-		k := ask(in, "Paste API key (stored in credentials.json, 0600)", "")
+		k := ask(in, "Paste API key (stored in owner-only credentials.json)", "")
 		if strings.TrimSpace(k) != "" {
 			creds.set(providerID, strings.TrimSpace(k))
 			return authCfg{Mode: "apikey", Stored: true}

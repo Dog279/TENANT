@@ -16,6 +16,7 @@ import (
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
+	"tenant/internal/secrets"
 )
 
 // Each new check is exercised against a synthetic environment — no live
@@ -95,6 +96,37 @@ func TestDoctor_CheckLaunchConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDoctor_CheckSecretProtection(t *testing.T) {
+	t.Run("no secret files", func(t *testing.T) {
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: t.TempDir()}})
+		if r.Status != statusOK || !strings.Contains(r.Detail, "no at-rest secret files") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+
+	t.Run("protected credential", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := secrets.WriteFile(credentialsPath(dir), []byte(`{"secrets":{}}`)); err != nil {
+			t.Fatal(err)
+		}
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: dir}})
+		if r.Status != statusOK || !strings.Contains(r.Detail, "1 secret file") || !strings.Contains(r.Detail, "protected") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+
+	t.Run("invalid secret path", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(credentialsPath(dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: dir}})
+		if r.Status != statusFail || !strings.Contains(r.Detail, "not a regular file") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
 }
 
 // checkCredentials: corrupt creds → FAIL; keyed provider without secret →
@@ -646,15 +678,6 @@ func hostPort(t *testing.T, rawURL string) string {
 		t.Fatalf("parse %q: %v", rawURL, err)
 	}
 	return u.Host
-}
-
-// isWindowsRuntime — basic shape check; tracks the OS path separator.
-func TestIsWindowsRuntime(t *testing.T) {
-	got := isWindowsRuntime()
-	want := (os.PathSeparator == '\\')
-	if got != want {
-		t.Errorf("isWindowsRuntime = %v, want %v", got, want)
-	}
 }
 
 // checkWikiFreshness: TEN-48 minimal diagnostic.

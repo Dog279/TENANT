@@ -92,7 +92,9 @@ store on first run under your OS data dir:
 
 Stores created automatically: `episodes.db` (conversation history), the fact
 store, `skills.db`, `usage.db`, `tenant_meta.db`. Secrets live separately in the
-**config** dir (`credentials.json`, `0600`) — never in the data dir, never in git.
+**config** dir (`credentials.json`) — never in the data dir, never in git. Tenant
+verifies `0600` files/`0700` parent directories on Unix and a protected
+current-user-only DACL on Windows.
 
 Verify everything is wired (this is the important step):
 ```bash
@@ -140,8 +142,8 @@ agent stops before finishing long tasks.
 
 ## 6. Cloud providers (optional)
 
-Prefer a hosted model? Add a keyed provider in one shot (the key is stored
-`0600` in the config dir, never printed, never committed):
+Prefer a hosted model? Add a keyed provider in one shot (the key is stored with
+platform-specific owner-only protection, never printed, never committed):
 
 ```bash
 # in the TUI:
