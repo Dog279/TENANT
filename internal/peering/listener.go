@@ -11,6 +11,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"tenant/internal/httplimits"
 )
 
 // PeerProtocolVersion is the federation capability/envelope version exchanged
@@ -158,7 +160,7 @@ func (l *Listener) Handler() http.Handler {
 	// /pair is UNAUTHENTICATED by necessity (no shared secret yet) but only ever
 	// creates a pending operator approval (TEN-239); everything else is the
 	// bearer-gated MCP surface (body-size-limited above).
-	mux.HandleFunc(pairPath, l.handlePair)
+	mux.Handle(pairPath, httplimits.Protect(http.HandlerFunc(l.handlePair), maxPairBody, httplimits.ResponseWriteTimeout, nil))
 	mux.Handle("/", limited)
 	return mux
 }
@@ -381,7 +383,7 @@ func (l *Listener) Secure() bool { return l.tlsCert != nil }
 // Serve serves on an existing listener until ctx is cancelled, then shuts down
 // gracefully.
 func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
-	l.srv = &http.Server{Handler: l.Handler()}
+	l.srv = newPeerHTTPServer(l.Handler())
 	l.log("peer listener: serving on %s", ln.Addr())
 	srvDone := make(chan struct{})
 	go func() {
@@ -401,6 +403,12 @@ func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+func newPeerHTTPServer(handler http.Handler) *http.Server {
+	srv := &http.Server{Handler: handler}
+	httplimits.Configure(srv)
+	return srv
 }
 
 func isClosed(err error) bool {
