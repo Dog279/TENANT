@@ -23,6 +23,7 @@ import (
 	"os/signal"
 
 	"tenant/internal/mcp"
+	"tenant/internal/version"
 )
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "version", "-v", "--version":
-		fmt.Printf("tenant %s — speaks MCP %s (Go)\n", mcp.LibraryVersion, mcp.ProtocolVersion)
+		fmt.Printf("tenant %s — speaks MCP %s (Go)\n", version.String(), mcp.ProtocolVersion)
 		return
 	case "setup":
 		err = cmdSetup(ctx, os.Args[2:])

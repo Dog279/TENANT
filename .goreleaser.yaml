@@ -1,0 +1,101 @@
+version: 2
+
+project_name: tenant
+
+builds:
+  - id: tenant
+    main: ./cmd/tenant
+    binary: tenant
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X tenant/internal/version.Version={{ .Version }}
+        -X tenant/internal/version.Commit={{ .FullCommit }}
+        -X tenant/internal/version.BuildTime={{ .CommitDate }}
+        -X tenant/internal/version.Target={{ .Target }}
+        -X tenant/internal/version.Dirty={{ .IsGitDirty }}
+
+archives:
+  - id: tenant
+    ids:
+      - tenant
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.spdx.json"
+    cmd: syft
+    args:
+      - "${artifact}"
+      - "--output"
+      - "spdx-json=${document}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Tagged CI releases sign checksums keylessly through GitHub OIDC. For local
+# snapshots, use: goreleaser release --snapshot --clean --skip=sign
+signs:
+  - id: checksums
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+
+changelog:
+  use: git
+  sort: asc
+  abbrev: -1
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]-]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]-]+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\([[:word:]-]+\))??!?:.+$'
+      order: 2
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - '^.*?(chore|ci|docs|test|tests)(\([[:word:]-]+\))??!?:.+$'
+
+release:
+  prerelease: auto
+  name_template: "Tenant v{{ .Version }}"
