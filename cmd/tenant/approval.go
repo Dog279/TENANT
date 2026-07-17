@@ -11,6 +11,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
+	"tenant/internal/runtrace"
 	"tenant/internal/tui"
 )
 
@@ -36,6 +37,7 @@ type pendingReq struct {
 	origin string
 	at     time.Time
 	reply  chan tui.ApprovalDecision
+	span   *runtrace.Span
 }
 
 func newApprovalRegistry() *approvalRegistry {
@@ -44,16 +46,17 @@ func newApprovalRegistry() *approvalRegistry {
 
 // register inserts a new pending request and emits EventApprovalPending. Returns
 // the assigned id + the buffered reply chan the caller blocks on.
-func (r *approvalRegistry) register(req tui.ApprovalRequest, origin string) (string, chan tui.ApprovalDecision) {
+func (r *approvalRegistry) register(ctx context.Context, req tui.ApprovalRequest, origin string) (string, chan tui.ApprovalDecision) {
 	id := fmt.Sprintf("ap-%d", r.seq.Add(1)) // atomic — no lock needed for the id
 	reply := make(chan tui.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
-	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply}
+	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply, span: runtrace.SpanFromContext(ctx)}
 	r.mu.Lock()
 	r.pending[id] = p
 	r.mu.Unlock()
 	r.emitEvent(agent.EventApprovalPending, p, "")
+	p.recordApproval("pending")
 	return id, reply
 }
 
@@ -72,6 +75,7 @@ func (r *approvalRegistry) Resolve(id string, d tui.ApprovalDecision) bool {
 	}
 	p.reply <- d // cap-1 buffer ⇒ never blocks, fires exactly once (delete-under-lock gated)
 	r.emitEvent(agent.EventApprovalResolved, p, outcomeOf(d))
+	p.recordApproval(outcomeOf(d))
 	return true
 }
 
@@ -87,6 +91,7 @@ func (r *approvalRegistry) removeIfPending(id string) {
 	r.mu.Unlock()
 	if p != nil {
 		r.emitEvent(agent.EventApprovalResolved, p, "expired")
+		p.recordApproval("expired")
 	}
 }
 
@@ -103,7 +108,18 @@ func (r *approvalRegistry) DenyAll() {
 		default:
 		}
 		r.emitEvent(agent.EventApprovalResolved, p, "denied")
+		p.recordApproval("denied")
 	}
+}
+
+func (p *pendingReq) recordApproval(outcome string) {
+	if p == nil || p.span == nil {
+		return
+	}
+	p.span.AddApproval(runtrace.Approval{
+		ID: p.id, Category: p.req.Category, Action: p.req.Action,
+		Detail: p.req.Detail, Origin: p.origin, Outcome: outcome,
+	})
 }
 
 // Pending is the snapshot the dashboard / TUI read. Never nil (stable REST shape).
@@ -424,11 +440,14 @@ func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) boo
 
 	switch mode {
 	case modeAllow:
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "approved_always")
 		return true
 	case modeDeny:
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_policy")
 		return false
 	}
 	if sess {
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "approved_session")
 		return true
 	}
 
@@ -480,8 +499,10 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// only — not resolvable from those surfaces).
 	if b.ask != nil {
 		b.reg.emitBeside(agent.EventApprovalPending, req, "discord", "")
+		recordPolicyApproval(ctx, cat, action, detail, "discord", "pending")
 		d := b.ask(ctx, req)
 		b.reg.emitBeside(agent.EventApprovalResolved, req, "discord", outcomeOf(d))
+		recordPolicyApproval(ctx, cat, action, detail, "discord", outcomeOf(d))
 		return d
 	}
 
@@ -490,13 +511,14 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// than block forever on a request nobody can see. (The registry alone is just
 	// storage; it is not an observer.)
 	if b.requests == nil {
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_no_surface")
 		return tui.DenyOnce
 	}
 
 	// Register in the shared id-keyed registry (the source of truth) + emit the
 	// pending event. Both observers (TUI + dashboard) now see it and can resolve
 	// by id; the agent goroutine blocks ONLY on its own per-id reply chan.
-	id, reply := b.reg.register(req, b.origin)
+	id, reply := b.reg.register(ctx, req, b.origin)
 	req.ID = id
 	req.Reply = reply
 
@@ -518,6 +540,15 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 		// drop the stale entry so Pending() is honest + a late Resolve is a no-op.
 		b.reg.removeIfPending(id)
 		return tui.DenyOnce
+	}
+}
+
+func recordPolicyApproval(ctx context.Context, category, action, detail, origin, outcome string) {
+	if span := runtrace.SpanFromContext(ctx); span != nil {
+		span.AddApproval(runtrace.Approval{
+			ID: "policy:" + category + ":" + action, Category: category,
+			Action: action, Detail: detail, Origin: origin, Outcome: outcome,
+		})
 	}
 }
 

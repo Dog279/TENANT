@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     agent_id        TEXT NOT NULL,
     visibility      TEXT NOT NULL DEFAULT 'private',  -- private | shared | public
     session_id      TEXT,
+    source_run_id   TEXT,                              -- durable run/trace lineage
     ts              INTEGER NOT NULL,                  -- unix epoch
     prompt          TEXT NOT NULL,
     response        TEXT NOT NULL,

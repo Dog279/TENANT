@@ -9,12 +9,12 @@ import (
 // ListFilter narrows a chronological List call. Zero-value matches
 // everything (capped by Limit). All fields combine with AND.
 type ListFilter struct {
-	AgentIDs         []string // empty = all
-	Visibility       []string // empty = all
-	SinceID          int64    // id > SinceID (0 = no lower bound)
-	BeforeID         int64    // id < BeforeID (0 = no upper bound)
-	Limit            int      // 0 = unlimited (use with care on large stores)
-	IncludeTombstoned bool    // default false: skip tombstoned rows
+	AgentIDs          []string // empty = all
+	Visibility        []string // empty = all
+	SinceID           int64    // id > SinceID (0 = no lower bound)
+	BeforeID          int64    // id < BeforeID (0 = no upper bound)
+	Limit             int      // 0 = unlimited (use with care on large stores)
+	IncludeTombstoned bool     // default false: skip tombstoned rows
 }
 
 // List returns episodes matching filter in id-ascending (i.e.
@@ -49,7 +49,7 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]*Episode, error) {
 		args = append(args, f.BeforeID)
 	}
 
-	q := `SELECT id, agent_id, visibility, session_id, ts, prompt, response,
+	q := `SELECT id, agent_id, visibility, session_id, source_run_id, ts, prompt, response,
               tool_calls, outcome, user_feedback, tags, embedder_id, embedding, tombstoned
           FROM episodes WHERE ` + strings.Join(clauses, " AND ") + ` ORDER BY id ASC`
 	if f.Limit > 0 {

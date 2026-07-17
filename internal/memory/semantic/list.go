@@ -43,7 +43,7 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]*Fact, error) {
 		}
 	}
 
-	q := `SELECT id, agent_id, visibility, fact, source_episodes, confidence,
+	q := `SELECT id, agent_id, visibility, fact, source_episodes, source_run_ids, confidence,
               first_seen, last_confirmed, superseded_by, embedder_id, embedding, tombstoned
           FROM facts WHERE ` + strings.Join(clauses, " AND ") + ` ORDER BY last_confirmed DESC`
 	if f.Limit > 0 {
@@ -86,7 +86,7 @@ func (s *Store) ListPage(ctx context.Context, agentID string, afterID int64, lim
 		clauses = append(clauses, "id < ?")
 		args = append(args, afterID)
 	}
-	q := `SELECT id, agent_id, visibility, fact, source_episodes, confidence,
+	q := `SELECT id, agent_id, visibility, fact, source_episodes, source_run_ids, confidence,
 	             first_seen, last_confirmed, superseded_by, embedder_id, embedding, tombstoned
 	         FROM facts WHERE ` + strings.Join(clauses, " AND ") +
 		fmt.Sprintf(" ORDER BY id DESC LIMIT %d", limit)

@@ -2,6 +2,7 @@ package improve_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -25,7 +26,8 @@ func TestSkillInductionJob_ProposesRepeatedSequence(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		if _, err := es.Insert(ctx, &episodic.Episode{
 			AgentID: "a", SessionID: "s", Timestamp: time.Now().UTC(),
-			Prompt: "build and run the report", Response: "done",
+			SourceRunID: fmt.Sprintf("trace-%d", i),
+			Prompt:      "build and run the report", Response: "done",
 			ToolCalls: seq, Outcome: episodic.OutcomeSuccess, EmbedderID: "test/2", Embedding: []float32{1, 0},
 		}); err != nil {
 			t.Fatalf("insert: %v", err)
@@ -58,6 +60,9 @@ func TestSkillInductionJob_ProposesRepeatedSequence(t *testing.T) {
 	// Proposed skills are disabled (not live-retrievable) until accepted.
 	if proposed[0].Enabled {
 		t.Error("proposed skill should start disabled")
+	}
+	if got := proposed[0].SourceRunIDs; len(got) != 3 || got[0] != "trace-0" || got[2] != "trace-2" {
+		t.Fatalf("proposal source runs = %v", got)
 	}
 	// Idempotent: a second run doesn't re-propose the same sequence.
 	if res2, _ := job.Run(ctx); res2.Changed {

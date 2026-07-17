@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"tenant/internal/model"
+	"tenant/internal/runtrace"
 )
 
 // EligibilityFunc decides whether to retry a tool call given its
@@ -96,6 +97,9 @@ func (r *RetryDecorator) Dispatch(ctx context.Context, call model.ToolCall) (str
 				Text:  fmt.Sprintf("attempt %d/%d: %s", attempt+1, r.MaxRetries, reason),
 				IsErr: true,
 			})
+		}
+		if span := runtrace.SpanFromContext(ctx); span != nil {
+			span.AddRetry()
 		}
 		// Backoff with ctx-cancel guard. Doubling is bounded by MaxRetries.
 		select {

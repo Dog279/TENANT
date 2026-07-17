@@ -45,6 +45,7 @@ type Episode struct {
 	AgentID      string
 	Visibility   string
 	SessionID    string
+	SourceRunID  string
 	Timestamp    time.Time
 	Prompt       string
 	Response     string
@@ -97,7 +98,42 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("episodic: init schema: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS does not add columns to existing databases.
+	// Keep the additive run-lineage migration local and idempotent.
+	if err := ensureColumn(db, "episodes", "source_run_id", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("episodic: migrate source_run_id: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_episodes_source_run ON episodes(source_run_id)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("episodic: index source_run_id: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 // Close closes the underlying database. Safe to call multiple times.

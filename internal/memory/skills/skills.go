@@ -45,6 +45,7 @@ type Skill struct {
 	SuccessCount int
 	EmbedderID   string
 	Embedding    []float32
+	SourceRunIDs []string // provenance for induced proposals
 	CreatedAt    time.Time
 }
 
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS skills (
     success_count INTEGER NOT NULL DEFAULT 0,
     embedder_id   TEXT,
     embedding     TEXT,
+    source_run_ids TEXT,
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_skills_agent ON skills(agent_id, status);
@@ -113,7 +115,36 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("skills: schema: %w", err)
 	}
+	if err := ensureSkillColumn(db, "source_run_ids", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("skills: migrate source_run_ids: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+func ensureSkillColumn(db *sql.DB, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(skills)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE skills ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 // DB exposes the underlying *sql.DB. Use sparingly — most callers should
@@ -200,14 +231,16 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 	}
 
 	emb, _ := json.Marshal(sk.Embedding)
+	sourceRuns, _ := json.Marshal(sk.SourceRunIDs)
 	res, err := tx.ExecContext(ctx, `
-        INSERT INTO skills (agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO skills (agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,source_run_ids,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(agent_id,name) DO UPDATE SET
             description=excluded.description, recipe=excluded.recipe, status=excluded.status,
-            embedder_id=excluded.embedder_id, embedding=excluded.embedding`,
+            embedder_id=excluded.embedder_id, embedding=excluded.embedding,
+            source_run_ids=CASE WHEN excluded.source_run_ids='null' THEN skills.source_run_ids ELSE excluded.source_run_ids END`,
 		sk.AgentID, sk.Name, sk.Description, sk.Recipe, sk.Status, boolToInt(sk.Enabled || sk.Status == StatusLive),
-		sk.SuccessCount, sk.EmbedderID, string(emb), sk.CreatedAt.Unix())
+		sk.SuccessCount, sk.EmbedderID, string(emb), string(sourceRuns), sk.CreatedAt.Unix())
 	if err != nil {
 		return 0, fmt.Errorf("skills: upsert: %w", err)
 	}
@@ -374,7 +407,7 @@ func (s *Store) Count(ctx context.Context, agentID string) (int, error) {
 
 // --- internals ---
 
-const selectCols = `SELECT id,agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,created_at FROM skills`
+const selectCols = `SELECT id,agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,source_run_ids,created_at FROM skills`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -383,9 +416,9 @@ type rowScanner interface {
 func scan(row rowScanner) (*Skill, error) {
 	var sk Skill
 	var enabled, created int64
-	var embJSON, embID sql.NullString
+	var embJSON, embID, sourceRuns sql.NullString
 	if err := row.Scan(&sk.ID, &sk.AgentID, &sk.Name, &sk.Description, &sk.Recipe, &sk.Status,
-		&enabled, &sk.SuccessCount, &embID, &embJSON, &created); err != nil {
+		&enabled, &sk.SuccessCount, &embID, &embJSON, &sourceRuns, &created); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("skills: not found")
 		}
@@ -396,6 +429,9 @@ func scan(row rowScanner) (*Skill, error) {
 	sk.CreatedAt = time.Unix(created, 0).UTC()
 	if embJSON.Valid && embJSON.String != "" {
 		_ = json.Unmarshal([]byte(embJSON.String), &sk.Embedding)
+	}
+	if sourceRuns.Valid && sourceRuns.String != "" {
+		_ = json.Unmarshal([]byte(sourceRuns.String), &sk.SourceRunIDs)
 	}
 	return &sk, nil
 }

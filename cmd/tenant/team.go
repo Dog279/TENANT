@@ -457,6 +457,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		Archive:      r.cfg.Stores.archive,
 		Episodic:     r.cfg.Stores.episodic,
 		Semantic:     r.cfg.Stores.semantic,
+		Runs:         r.cfg.Stores.runs,
 		Tools:        tools,
 		Dispatcher:   tools,
 		Logger:       r.cfg.Log,

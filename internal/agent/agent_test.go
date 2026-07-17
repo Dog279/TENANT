@@ -19,7 +19,45 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
+	"tenant/internal/runtrace"
 )
+
+func TestAgent_TurnPersistsRunAndEpisodeLineage(t *testing.T) {
+	runs, err := runtrace.Open(":memory:", runtrace.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runs.Close()
+	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	a, fake, _, episodes := buildAgentWithRuns(t, model.Profile{}, nil, noop, runs)
+	fake.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+		return &model.GenerateResponse{Text: "done", Usage: model.Usage{PromptTokens: 9, CompletionTokens: 3}}, nil
+	}
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "trace this", RouteSurface: agent.RouteSurfaceTUI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TraceID == "" {
+		t.Fatal("turn result missing trace id")
+	}
+	run, err := runs.Get(context.Background(), res.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Outcome != "success" || run.Source != "tui" || run.PromptTokens != 9 || run.CompletionTokens != 3 {
+		t.Fatalf("run = %+v", run)
+	}
+	if run.Model == "" || run.Provider == "" || run.CompletedAt == nil {
+		t.Fatalf("run missing model/provider/completion: %+v", run)
+	}
+	eps, err := episodes.List(context.Background(), episodic.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eps) != 1 || eps[0].SourceRunID != res.TraceID {
+		t.Fatalf("episode lineage = %+v, want run %s", eps, res.TraceID)
+	}
+}
 
 // A mid-turn Interject must cancel the in-flight planner call, fold the
 // message into the working set, and let the loop re-plan and finish — without
@@ -99,6 +137,10 @@ func TestAgent_Interject_FoldedAndResumes(t *testing.T) {
 // buildAgent wires a fresh agent against a fake LLM + embedder. The
 // fake is returned so tests can script Generate behavior per iteration.
 func buildAgent(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
+	return buildAgentWithRuns(t, profile, tools, dispatcher, nil)
+}
+
+func buildAgentWithRuns(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, runs *runtrace.Store) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
 	t.Helper()
 	fake := testllm.New()
 
@@ -158,6 +200,7 @@ func buildAgent(t *testing.T, profile model.Profile, tools []model.ToolSpec, dis
 		Working:    working,
 		Archive:    arch,
 		Episodic:   estore,
+		Runs:       runs,
 		Tools:      registry,
 		Dispatcher: dispatcher,
 	})

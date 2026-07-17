@@ -3,6 +3,7 @@ package improve
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"tenant/internal/memory/episodic"
@@ -90,6 +91,7 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 		count   int
 		tools   []string
 		example string
+		runIDs  map[string]struct{}
 	}
 	sigs := map[string]*group{}
 	for _, e := range eps {
@@ -103,10 +105,13 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 		sig := strings.Join(names, " → ")
 		g := sigs[sig]
 		if g == nil {
-			g = &group{tools: names, example: e.Prompt}
+			g = &group{tools: names, example: e.Prompt, runIDs: map[string]struct{}{}}
 			sigs[sig] = g
 		}
 		g.count++
+		if e.SourceRunID != "" {
+			g.runIDs[e.SourceRunID] = struct{}{}
+		}
 	}
 
 	// Names already taken (live or proposed) — don't clobber.
@@ -137,6 +142,11 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 		desc := fmt.Sprintf("Recurring approach (seen %d×) for tasks like: %q", g.count, clipStr(g.example, 80))
 		recipe := "Follow these tools in order: " + strings.Join(g.tools, " → ")
 		var embed []float32
+		sourceRunIDs := make([]string, 0, len(g.runIDs))
+		for id := range g.runIDs {
+			sourceRunIDs = append(sourceRunIDs, id)
+		}
+		sort.Strings(sourceRunIDs)
 		if j.Embedder != nil {
 			if v, err := j.Embedder.Embed(ctx, []string{name + ": " + desc}); err == nil && len(v) == 1 {
 				embed = v[0]
@@ -144,7 +154,7 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 		}
 		if _, err := j.Skills.UpsertWithSource(ctx, &skills.Skill{
 			AgentID: j.AgentID, Name: name, Description: desc, Recipe: recipe,
-			Status: status, Enabled: enabled, Embedding: embed,
+			Status: status, Enabled: enabled, Embedding: embed, SourceRunIDs: sourceRunIDs,
 		}, source); err == nil {
 			if autoAccept {
 				accepted++

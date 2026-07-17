@@ -390,6 +390,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		Archive:  st.archive,
 		Episodic: st.episodic,
 		Semantic: st.semantic,
+		Runs:     st.runs,
 		Tools:    mainTools,
 		Dispatcher: &agent.RetryDecorator{
 			Inner:      mainTools,
@@ -445,6 +446,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
 		router:      router,
 		soulLive:    soulLive,
+		runs:        st.runs,
 		skills:      skillRetriever{st: skillStore, agentID: c.agent},
 		compactor:   compressor,
 		userProfile: prof,

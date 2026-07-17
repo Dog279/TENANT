@@ -47,6 +47,10 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	sourceRunsJSON, err := json.Marshal(f.SourceRunIDs)
+	if err != nil {
+		return 0, fmt.Errorf("semantic: marshal source_run_ids: %w", err)
+	}
 	var supersededBy any
 	if f.SupersededBy != 0 {
 		supersededBy = f.SupersededBy
@@ -54,12 +58,12 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 
 	res, err := s.db.ExecContext(ctx, `
         INSERT INTO facts
-            (agent_id, visibility, fact, source_episodes, confidence,
+            (agent_id, visibility, fact, source_episodes, source_run_ids, confidence,
              first_seen, last_confirmed, superseded_by, embedder_id, embedding, tombstoned)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-		f.AgentID, f.Visibility, f.Fact, nullString(sourcesJSON), f.Confidence,
+		f.AgentID, f.Visibility, f.Fact, nullString(sourcesJSON), nullString(string(sourceRunsJSON)), f.Confidence,
 		f.FirstSeen.UTC().Unix(), f.LastConfirmed.UTC().Unix(),
 		supersededBy, f.EmbedderID, encodeEmbedding(f.Embedding),
 		boolToInt(f.Tombstoned),
@@ -80,7 +84,7 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 // filters them out.
 func (s *Store) Get(ctx context.Context, id int64) (*Fact, error) {
 	row := s.db.QueryRowContext(ctx, `
-        SELECT id, agent_id, visibility, fact, source_episodes, confidence,
+        SELECT id, agent_id, visibility, fact, source_episodes, source_run_ids, confidence,
                first_seen, last_confirmed, superseded_by, embedder_id, embedding, tombstoned
         FROM facts WHERE id = ?
     `, id)
@@ -200,6 +204,7 @@ func scanFact(row rowScanner) (*Fact, error) {
 	var (
 		f               Fact
 		sourcesJSON     sql.NullString
+		sourceRunsJSON  sql.NullString
 		supersededBy    sql.NullInt64
 		embeddingBytes  []byte
 		firstSeenUnix   int64
@@ -207,7 +212,7 @@ func scanFact(row rowScanner) (*Fact, error) {
 		tombstonedInt   int
 	)
 	err := row.Scan(
-		&f.ID, &f.AgentID, &f.Visibility, &f.Fact, &sourcesJSON, &f.Confidence,
+		&f.ID, &f.AgentID, &f.Visibility, &f.Fact, &sourcesJSON, &sourceRunsJSON, &f.Confidence,
 		&firstSeenUnix, &lastConfirmUnix, &supersededBy,
 		&f.EmbedderID, &embeddingBytes, &tombstonedInt,
 	)
@@ -227,6 +232,11 @@ func scanFact(row rowScanner) (*Fact, error) {
 	if sourcesJSON.Valid && sourcesJSON.String != "" {
 		if err := json.Unmarshal([]byte(sourcesJSON.String), &f.SourceEpisodes); err != nil {
 			return nil, fmt.Errorf("semantic: parse source_episodes: %w", err)
+		}
+	}
+	if sourceRunsJSON.Valid && sourceRunsJSON.String != "" {
+		if err := json.Unmarshal([]byte(sourceRunsJSON.String), &f.SourceRunIDs); err != nil {
+			return nil, fmt.Errorf("semantic: parse source_run_ids: %w", err)
 		}
 	}
 	if len(embeddingBytes) > 0 {
