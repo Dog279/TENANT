@@ -137,8 +137,11 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 // checkHost rejects Host values that were not derived from the configured
 // listener or explicitly listed in AllowedHosts. This check is independent of
 // Origin so an attacker cannot make both reflected values agree during DNS
-// rebinding. An allowlist entry without a port permits that host on any port;
-// entries with ports require an exact authority match.
+// rebinding. An allowlist entry without a port — or a port of 0, i.e. an
+// ephemeral ":0" listener that binds an OS-assigned port — permits that host on
+// any port; entries with a concrete port require an exact authority match. The
+// host part is always matched exactly, so port-wildcarding does not weaken
+// rebinding protection (rebinding attacks the host, never the port).
 func (s *Server) checkHost(requestHost string) bool {
 	for _, allowed := range append([]string{s.cfg.Addr}, s.cfg.AllowedHosts...) {
 		if authorityAllowed(requestHost, allowed) {
@@ -154,7 +157,7 @@ func authorityAllowed(requestHost, allowed string) bool {
 	if !rok || !aok || !strings.EqualFold(rh, ah) {
 		return false
 	}
-	return ap == "" || strings.EqualFold(rp, ap)
+	return ap == "" || ap == "0" || strings.EqualFold(rp, ap)
 }
 
 func sameAuthority(a, b string) bool {
