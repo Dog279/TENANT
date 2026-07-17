@@ -74,7 +74,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "discord_list_guilds", Description: "List the Discord servers (guilds) this bot is a member of. Returns id+name for each.",
 			Parameters: obj(``)},
 		{Name: "discord_list_channels", Description: "List channels in a Discord guild by guild id (from discord_list_guilds). Includes channel id, name, type, topic.",
@@ -86,6 +86,11 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "discord_react", Description: "Add an emoji reaction to a Discord message as the bot user. emoji is a unicode glyph (e.g. \"👍\") or a custom-emoji \"name:id\". GATED: requires operator approval.",
 			Parameters: obj(`"channel_id":{"type":"string"},"message_id":{"type":"string"},"emoji":{"type":"string"}`, "channel_id", "message_id", "emoji"), Gated: true},
 	}
+	for i := range tools {
+		tools[i].Outbound = true
+		tools[i].ResultLabels = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceService}}
+	}
+	return tools
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {

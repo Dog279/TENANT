@@ -60,7 +60,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "jira_search", Description: "Search Jira issues with JQL (e.g. `project = TEN AND statusCategory != Done ORDER BY created DESC`). Returns key/summary/status/type/assignee.",
 			Parameters: obj(`"jql":{"type":"string"},"max":{"type":"integer","description":"max results (default 25, cap 50)"}`, "jql")},
 		{Name: "jira_get", Description: "Get one Jira issue by key or id (e.g. TEN-16). Returns its fields incl. description.",
@@ -74,6 +74,11 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "jira_transition", Description: "Apply a workflow transition (by transition id from jira_transitions) to an issue. GATED (changes issue status).",
 			Parameters: obj(`"key":{"type":"string"},"transition_id":{"type":"string"}`, "key", "transition_id"), Gated: true},
 	}
+	for i := range tools {
+		tools[i].Outbound = true
+		tools[i].ResultLabels = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceService}}
+	}
+	return tools
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {

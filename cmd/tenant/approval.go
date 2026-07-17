@@ -177,9 +177,10 @@ const (
 	catDestructive = "destructive" // irreversible: rm -rf, format, DROP, web purchase/delete
 	catWeb         = "web"         // act on the web unprompted: click/fill/select
 	catSend        = "send"        // outbound comms: email / iMessage / X
+	catEgress      = "egress"      // sensitive data crossing a trust boundary
 )
 
-var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend}
+var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend, catEgress}
 
 var catDesc = map[string]string{
 	catExec:        "run shell / python / code (os_exec)",
@@ -187,6 +188,7 @@ var catDesc = map[string]string{
 	catDestructive: "irreversible: rm -rf, format, DROP/ALTER, web purchase/delete",
 	catWeb:         "act on the web unprompted: click, fill, select",
 	catSend:        "send outbound comms: email, iMessage, X posts",
+	catEgress:      "send sensitive tool results across a trust boundary",
 }
 
 // categorize maps a plugin action id to a safety category. Unknown
@@ -201,6 +203,8 @@ func categorize(action string) string {
 		return catDestructive
 	case "gsuite_send", "imessage_send", "x_post":
 		return catSend
+	case "sensitive_egress":
+		return catEgress
 	}
 	if strings.HasPrefix(action, "web_") {
 		return catWeb

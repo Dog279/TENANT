@@ -266,8 +266,15 @@ func TestDispatch_BadArgs(t *testing.T) {
 func TestTools(t *testing.T) {
 	ix, _, _ := mkIndex(t)
 	names := map[string]bool{}
+	var search model.ToolSpec
 	for _, sp := range wiki.NewDispatcher(ix).Tools() {
 		names[sp.Name] = true
+		if sp.Name == "wiki_search" {
+			search = sp
+		}
+		if len(sp.ResultLabels) != 1 || sp.ResultLabels[0].Provenance != model.ProvenanceWiki {
+			t.Errorf("%s labels = %+v", sp.Name, sp.ResultLabels)
+		}
 		if !json.Valid(sp.Parameters) {
 			t.Errorf("%s invalid params", sp.Name)
 		}
@@ -276,6 +283,9 @@ func TestTools(t *testing.T) {
 		if !names[w] {
 			t.Errorf("missing tool %s", w)
 		}
+	}
+	if !search.Outbound {
+		t.Fatal("wiki_search must be outbound-capable because federation can send its query to peers")
 	}
 }
 

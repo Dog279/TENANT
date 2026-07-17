@@ -82,3 +82,13 @@ func TestMemorySearch_EmptyAndBadArgs(t *testing.T) {
 		t.Errorf("foreign tool name should be rejected: isErr=%v out=%q", isErr, out)
 	}
 }
+
+func TestMemorySearch_InfoFlowMetadata(t *testing.T) {
+	spec := newMemorySearchDispatcher("me", nil, nil, nil).Tools()[0]
+	if !spec.Outbound {
+		t.Fatal("memory_search must be outbound-capable because federation can send its query to peers")
+	}
+	if len(spec.ResultLabels) != 1 || spec.ResultLabels[0].Sensitivity != model.SensitivitySensitive || spec.ResultLabels[0].Provenance != model.ProvenanceMemory {
+		t.Fatalf("memory_search labels = %+v", spec.ResultLabels)
+	}
+}

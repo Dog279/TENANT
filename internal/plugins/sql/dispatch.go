@@ -72,9 +72,9 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 	}
 	return []model.ToolSpec{
 		{Name: "sql_schema", Description: "List the database tables and their columns. Call this FIRST so you know what to query.",
-			Parameters: obj(``)},
+			Parameters: obj(``), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalService}}},
 		{Name: "sql_query", Description: "Run a read-only SELECT (or WITH…SELECT / EXPLAIN). Returns rows (capped). Reject for any non-read statement.",
-			Parameters: obj(`"sql":{"type":"string","description":"a single SELECT statement"}`, "sql")},
+			Parameters: obj(`"sql":{"type":"string","description":"a single SELECT statement"}`, "sql"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalService}}},
 		{Name: "sql_exec", Description: "Run a write (INSERT/UPDATE/DELETE). Gated: writes require approval; DROP/ALTER/etc. require explicit confirmation.",
 			Parameters: obj(`"sql":{"type":"string","description":"a single write statement"}`, "sql"), Gated: true},
 	}

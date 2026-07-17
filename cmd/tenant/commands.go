@@ -1709,7 +1709,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Discord-driven turn) routes its dangerous-action approval to the
 	// origin-scoped button approver on the ctx, never the local broker — so a
 	// local "exec = allow" can't leak offsite. Local TUI turns are unchanged.
-	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, originConfirm(broker.Confirm), log)
+	egressConfirm := originConfirm(broker.Confirm)
+	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, egressConfirm, log)
 	if err != nil {
 		return err
 	}
@@ -1901,7 +1902,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
 		OrchID: c.agent, Log: log, Observe: subObserve,
-		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
+		ConfirmSensitiveEgress: egressConfirm,
+		Web:                    teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
 		SpawnRole:     routeRT.SpawnRole, // TEN-292: rule-routed unpinned spawns
@@ -2066,12 +2068,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:      log,
-		Stream:      true,
-		Observer:    emit,
-		RouteHook:   routeRT.Hook(),
-		RouteActive: routeRT.Active,
-		RouteSticky: routeRT.Sticky,
+		ConfirmSensitiveEgress: egressConfirm,
+		Logger:                 log,
+		Stream:                 true,
+		Observer:               emit,
+		RouteHook:              routeRT.Hook(),
+		RouteActive:            routeRT.Active,
+		RouteSticky:            routeRT.Sticky,
 		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
 		// Off unless `lazy_tools` is set in config.json — additive.
 		LazyToolLoad: c.lc.LazyTools,

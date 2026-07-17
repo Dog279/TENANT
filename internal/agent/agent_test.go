@@ -99,6 +99,10 @@ func TestAgent_Interject_FoldedAndResumes(t *testing.T) {
 // buildAgent wires a fresh agent against a fake LLM + embedder. The
 // fake is returned so tests can script Generate behavior per iteration.
 func buildAgent(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
+	return buildAgentWithEgress(t, profile, tools, dispatcher, nil)
+}
+
+func buildAgentWithEgress(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, confirm func(context.Context, string, string) bool) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
 	t.Helper()
 	fake := testllm.New()
 
@@ -152,14 +156,15 @@ func buildAgent(t *testing.T, profile model.Profile, tools []model.ToolSpec, dis
 	}
 
 	a, err := agent.New(agent.Config{
-		AgentID:    "test-agent",
-		SessionID:  "test-sess",
-		Router:     router,
-		Working:    working,
-		Archive:    arch,
-		Episodic:   estore,
-		Tools:      registry,
-		Dispatcher: dispatcher,
+		AgentID:                "test-agent",
+		SessionID:              "test-sess",
+		Router:                 router,
+		Working:                working,
+		Archive:                arch,
+		Episodic:               estore,
+		Tools:                  registry,
+		Dispatcher:             dispatcher,
+		ConfirmSensitiveEgress: confirm,
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)

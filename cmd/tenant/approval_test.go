@@ -23,6 +23,7 @@ func TestCategorize(t *testing.T) {
 		"gsuite_send":       catSend,
 		"imessage_send":     catSend,
 		"x_post":            catSend,
+		"sensitive_egress":  catEgress,
 		"something_unknown": catDestructive, // safest default
 	}
 	for action, want := range cases {

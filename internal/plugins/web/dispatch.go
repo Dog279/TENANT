@@ -116,7 +116,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "web_search", Description: "Search the live web for a query. Returns the top K results as a numbered list of {title, url, snippet}. Use this to DISCOVER URLs to read — then web_navigate into the most promising ones and web_read their content. Backed by DuckDuckGo by default; Tavily or Brave when an API key is configured.",
 			Parameters: obj(`"query":{"type":"string"},"k":{"type":"integer","description":"number of results (default 8, max 25)"}`, "query")},
 		{Name: "web_navigate", Description: "Load a URL in the browser and return the page title. Use before reading.",
@@ -136,6 +136,13 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "web_select", Description: "Choose an option in a <select> dropdown by its visible label or value.",
 			Parameters: obj(`"locator":{"type":"string"},"option":{"type":"string"}`, "locator", "option"), Gated: true},
 	}
+	for i := range tools {
+		switch tools[i].Name {
+		case "web_search", "web_navigate", "web_click", "web_fill", "web_select":
+			tools[i].Outbound = true
+		}
+	}
+	return tools
 }
 
 // dangerWords flag a click whose target text implies an irreversible /

@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/model"
 )
 
 // Event is one archived occurrence. Schema is intentionally stable —
@@ -57,9 +59,10 @@ type ToolCall struct {
 
 // ToolResult is the response from a tool back to the agent.
 type ToolResult struct {
-	CallID  string `json:"call_id"`
-	Content string `json:"content,omitempty"`
-	IsError bool   `json:"is_error,omitempty"`
+	CallID  string                `json:"call_id"`
+	Content string                `json:"content,omitempty"`
+	IsError bool                  `json:"is_error,omitempty"`
+	Labels  []model.InfoFlowLabel `json:"labels,omitempty"`
 }
 
 // DefaultDir returns the OS-appropriate base data directory.

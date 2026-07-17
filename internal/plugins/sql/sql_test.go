@@ -256,6 +256,10 @@ func TestTools(t *testing.T) {
 	names := map[string]bool{}
 	for _, sp := range d.Tools() {
 		names[sp.Name] = true
+		if (sp.Name == "sql_schema" || sp.Name == "sql_query") &&
+			(len(sp.ResultLabels) != 1 || sp.ResultLabels[0].Provenance != model.ProvenanceLocalService) {
+			t.Errorf("%s labels = %+v", sp.Name, sp.ResultLabels)
+		}
 		if !json.Valid(sp.Parameters) {
 			t.Errorf("%s invalid params schema", sp.Name)
 		}

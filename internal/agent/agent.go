@@ -63,7 +63,10 @@ type Config struct {
 	Semantic   *semantic.Store
 	Tools      ToolRegistry
 	Dispatcher ToolDispatcher
-	Assembler  *assemble.Assembler // optional; if nil, agent builds one from Router
+	// ConfirmSensitiveEgress reuses the host capability/approval broker for a
+	// detected sensitive-result flow into an outbound tool. nil fails closed.
+	ConfirmSensitiveEgress func(ctx context.Context, action, detail string) bool
+	Assembler              *assemble.Assembler // optional; if nil, agent builds one from Router
 
 	Logger      *slog.Logger
 	PlannerRole model.Role // default "planner"
@@ -264,6 +267,7 @@ type Agent struct {
 	// (TEN-102). Mutated only from Turn's post-turn defer (turns are serialized
 	// per agent).
 	compaction *hysteresis
+	infoFlow   *infoFlowTracker
 
 	// Active-route continuity is per Agent/SessionID. routeMu keeps diagnostic
 	// tests and any accidentally concurrent callers race-free; production turns
@@ -379,7 +383,10 @@ func New(cfg Config) (*Agent, error) {
 	if er == "" {
 		er = model.RoleEmbedder
 	}
-	a := &Agent{cfg: cfg, log: log, plannerRole: pr, embedderRole: er, compaction: newCompactionHysteresis()}
+	a := &Agent{
+		cfg: cfg, log: log, plannerRole: pr, embedderRole: er,
+		compaction: newCompactionHysteresis(), infoFlow: newInfoFlowTracker(),
+	}
 	a.router.Store(cfg.Router)
 	return a, nil
 }
@@ -845,6 +852,20 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 				}, profile.ToolResultCap())
 				continue
 			}
+			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Outbound {
+				if label, matched := a.infoFlow.match(call.Arguments); matched {
+					detail := fmt.Sprintf("%s arguments contain sensitive data from %s; allow this outbound flow?", call.Name, label.Provenance)
+					approved := a.cfg.ConfirmSensitiveEgress != nil &&
+						a.cfg.ConfirmSensitiveEgress(ctx, "sensitive_egress", detail)
+					if !approved {
+						a.feedToolResult(ctx, ToolCallResult{
+							Call: call, IsError: true,
+							Result: fmt.Sprintf("blocked: %s arguments contain sensitive data from %s and outbound egress was not approved", call.Name, label.Provenance),
+						}, profile.ToolResultCap())
+						continue
+					}
+				}
+			}
 			allInvalid = false
 			validCalls = append(validCalls, call)
 		}
@@ -868,6 +889,10 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		}
 		batchResults := dispatchBatch(ctx, validCalls, parallel, a.cfg.Dispatcher)
 		for _, br := range batchResults {
+			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
+				br.Labels = append([]model.InfoFlowLabel(nil), spec.ResultLabels...)
+				a.infoFlow.record(br.Labels, br.Result)
+			}
 			result.ToolTrace = append(result.ToolTrace, br)
 			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: br.Result, IsErr: br.IsError})
 			a.feedToolResult(ctx, br, profile.ToolResultCap())
@@ -1346,6 +1371,7 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 		ToolCallID: r.Call.ID,
 		Content:    capToolResultForContext(content, maxResultTokens),
 		Timestamp:  now,
+		Meta:       infoFlowMeta(r.Labels),
 	})
 	a.archiveEvent(ctx, archive.Event{
 		Timestamp: now, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
@@ -1354,8 +1380,16 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 			CallID:  r.Call.ID,
 			Content: content, // full, untruncated — durable history
 			IsError: r.IsError || r.Err != nil,
+			Labels:  append([]model.InfoFlowLabel(nil), r.Labels...),
 		},
 	})
+}
+
+func infoFlowMeta(labels []model.InfoFlowLabel) map[string]any {
+	if len(labels) == 0 {
+		return nil
+	}
+	return map[string]any{"infoflow_labels": append([]model.InfoFlowLabel(nil), labels...)}
 }
 
 // capToolResultForContext truncates a tool result to roughly maxTokens before it

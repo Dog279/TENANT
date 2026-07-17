@@ -58,6 +58,11 @@ func newDispatcher(ctx context.Context, label string, session *mcp.ClientSession
 			Description: t.Description,
 			Parameters:  schema,
 			Gated:       gated,
+			Outbound:    true,
+			ResultLabels: []model.InfoFlowLabel{{
+				Sensitivity: model.SensitivitySensitive,
+				Provenance:  model.ProvenanceRemoteMCP,
+			}},
 		})
 	}
 	return d, nil
