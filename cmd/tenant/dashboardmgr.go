@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"sync"
 
 	"tenant/internal/agent"
@@ -16,9 +17,8 @@ import (
 // Each Enable builds a FRESH dashboard.Server: an http.Server can't be
 // reused after Shutdown, so a stop/start cycle constructs a new one. The
 // server runs under a child of the base context; Disable cancels that child
-// to trigger the server's graceful shutdown. A startup/bind error can't be
-// returned synchronously (ListenAndServe blocks), so it surfaces to the feed
-// via notify and flips running back to false.
+// and waits for its graceful shutdown to finish. The listener is reserved
+// synchronously, so bind errors are returned by Enable.
 type dashboardManager struct {
 	base         context.Context
 	cfg          dashboard.Config
@@ -43,6 +43,8 @@ type dashboardManager struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+	done    chan struct{}
+	addr    string
 }
 
 // Enable starts the dashboard if it isn't already running and persists the
@@ -52,7 +54,11 @@ func (m *dashboardManager) Enable() (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.running {
-		return m.cfg.Addr, nil
+		return m.addr, nil
+	}
+	ln, err := net.Listen("tcp", m.cfg.Addr)
+	if err != nil {
+		return m.cfg.Addr, err
 	}
 	srv := dashboard.New(m.cfg, m.runner, m.tools, m.mem, m.broker, m.log)
 	if m.cron != nil {
@@ -86,24 +92,34 @@ func (m *dashboardManager) Enable() (string, error) {
 		srv.SetEventLog(m.evlog)
 	}
 	dctx, cancel := context.WithCancel(m.base)
+	done := make(chan struct{})
 	go func() {
-		if err := srv.Run(dctx); err != nil {
+		err := srv.Serve(dctx, ln)
+		close(done)
+		if err != nil {
 			m.mu.Lock()
-			m.running = false
+			current := m.done == done
+			if current {
+				m.running = false
+				m.cancel = nil
+				m.done = nil
+			}
 			m.mu.Unlock()
-			if m.notify != nil {
+			if current && m.notify != nil {
 				m.notify("dashboard: stopped: " + err.Error())
 			}
 		}
 	}()
 	m.running = true
 	m.cancel = cancel
+	m.done = done
+	m.addr = ln.Addr().String()
 	if m.persist != nil {
 		if err := m.persist(true); err != nil {
-			return m.cfg.Addr, err
+			return m.addr, err
 		}
 	}
-	return m.cfg.Addr, nil
+	return m.addr, nil
 }
 
 // Disable stops a running dashboard (graceful shutdown via ctx cancel) and
@@ -135,7 +151,10 @@ func (m *dashboardManager) Shutdown() error {
 func (m *dashboardManager) stopLocked() {
 	if m.running {
 		m.cancel()
+		<-m.done
 		m.running = false
+		m.cancel = nil
+		m.done = nil
 	}
 }
 
@@ -143,5 +162,9 @@ func (m *dashboardManager) stopLocked() {
 func (m *dashboardManager) Status() (bool, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.running, m.cfg.Addr
+	addr := m.addr
+	if addr == "" {
+		addr = m.cfg.Addr
+	}
+	return m.running, addr
 }

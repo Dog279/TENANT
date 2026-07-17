@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -209,6 +210,21 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // gateway's HTTP start pattern in cmd/tenant (goroutine ListenAndServe +
 // ctx-driven Shutdown). Returns nil on a clean ctx-cancel shutdown.
 func (s *Server) Run(ctx context.Context) error {
+	if err := s.checkBindPolicy(); err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", s.cfg.Addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve serves on an already-bound listener until ctx is canceled. Accepting
+// the listener separately lets lifecycle owners reserve an ephemeral port
+// synchronously and makes shutdown completion observable without bind races.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	defer ln.Close()
 	// Fail-closed: refuse a non-loopback bind without TLS+auth (TEN-79).
 	if err := s.checkBindPolicy(); err != nil {
 		return err
@@ -218,7 +234,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	// secure() wraps the routed mux with bearer auth + same-origin CORS.
-	srv := &http.Server{Addr: s.cfg.Addr, Handler: s.secure(s.mux), TLSConfig: tlsCfg}
+	srv := &http.Server{Handler: s.secure(s.mux), TLSConfig: tlsCfg}
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -230,11 +246,11 @@ func (s *Server) Run(ctx context.Context) error {
 		close(shutdownDone)
 	}()
 
-	s.log.Info("dashboard serving", "addr", s.cfg.Addr, "tls", tlsCfg != nil)
+	s.log.Info("dashboard serving", "addr", ln.Addr().String(), "tls", tlsCfg != nil)
 	if tlsCfg != nil {
-		err = srv.ListenAndServeTLS("", "") // cert+key already in TLSConfig
+		err = srv.ServeTLS(ln, "", "") // cert+key already in TLSConfig
 	} else {
-		err = srv.ListenAndServe()
+		err = srv.Serve(ln)
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone // let Shutdown finish before returning

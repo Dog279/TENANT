@@ -1,7 +1,6 @@
 package peering
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -59,20 +58,13 @@ func TestInviteCodec(t *testing.T) {
 	}
 }
 
-func TestStore_PersistAndPerms(t *testing.T) {
+func TestStore_PersistAndFileSecurity(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := LoadStore(dir)
 	if err := s.Put(&Peer{Name: "edge", InstanceID: "i-edge", Token: "tok", Dial: true, URL: "https://edge:9100"}); err != nil {
 		t.Fatal(err)
 	}
-	// 0600 perms on peers.json.
-	info, err := os.Stat(PeersPath(dir))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("peers.json perms = %o, want 600", info.Mode().Perm())
-	}
+	assertSecretFileSecurity(t, PeersPath(dir))
 	// Reload sees it.
 	s2, _ := LoadStore(dir)
 	p, ok := s2.Get("edge")

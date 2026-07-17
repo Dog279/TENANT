@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -30,10 +29,7 @@ func TestPersistentHandler_ServesCachedToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// 0600 perms on the cache file.
-	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0o600 {
-		t.Errorf("token cache perms = %v, want 0600", fi.Mode().Perm())
-	}
+	assertSecretFileSecurity(t, path)
 
 	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", path, false, nil, http.DefaultClient, nil)
 	ts, err := h.TokenSource(context.Background())

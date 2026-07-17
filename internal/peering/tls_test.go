@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestLoadOrMintCert_StableAndPerms(t *testing.T) {
+func TestLoadOrMintCert_StableAndFileSecurity(t *testing.T) {
 	dir := t.TempDir()
 	cert1, fp1, err := LoadOrMintCert(dir)
 	if err != nil {
@@ -21,15 +20,8 @@ func TestLoadOrMintCert_StableAndPerms(t *testing.T) {
 	if fp1 == "" || len(cert1.Certificate) == 0 {
 		t.Fatal("minted cert/fingerprint empty")
 	}
-	// 0600 perms on both files.
 	for _, f := range []string{peerCertFile, peerKeyFile} {
-		info, err := os.Stat(filepath.Join(dir, f))
-		if err != nil {
-			t.Fatalf("stat %s: %v", f, err)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Errorf("%s perms = %o, want 600", f, info.Mode().Perm())
-		}
+		assertSecretFileSecurity(t, filepath.Join(dir, f))
 	}
 	// Reload is idempotent: same fingerprint across "restarts".
 	_, fp2, err := LoadOrMintCert(dir)
