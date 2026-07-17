@@ -27,8 +27,8 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
   compaction is **archive-sourced** (summaries are reversible and auditable, not
   lossy folds) with a persistent goal header to resist drift.
 - **Tools / plugins** (read-by-default; mutating actions are gated):
-  OS (shell + files), web (browse / search / read), SQL (SQLite + Postgres),
-  Google Workspace (Gmail + Calendar), X / Twitter, iMessage (via BlueBubbles),
+  OS (shell + files), web (browse / search / read), SQL (SQLite; PostgreSQL is
+  not shipped), Google Workspace (Gmail + Calendar), X / Twitter, iMessage (via BlueBubbles),
   Discord, and a plain-markdown wiki with a transparent indexer.
 - **Built-in expert sub-agents.** Five specialists — **Programmer, Researcher,
   Writer, QA, Strategist** — ship in the binary with a workflow-tuned persona
