@@ -45,36 +45,41 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
   stdio, and an **offsite Discord relay** — text your agent from your phone and
   approve each privileged action with a tap.
 
+## Install
+
+Download the archive for your operating system and CPU from the
+[latest release](https://github.com/Dog279/TENANT/releases/latest), extract it,
+and place `tenant` (`tenant.exe` on Windows) somewhere on your `PATH`. Release
+archives include SHA-256 checksums and SBOMs; installing Tenant does not require
+Go.
+
 ## Quickstart
 
 New here? **[docs/QUICKSTART.md](docs/QUICKSTART.md)** is a step-by-step first-time
 setup (Ollama models, the memory DB, model + loop-ceiling tuning, and the soul).
 The short version:
 
-Requires **Go 1.26+** and an LLM you can reach (a local Ollama, or a cloud API key).
+Requires an LLM you can reach (a local Ollama, or a cloud API key). Install the
+Tenant binary as described above, then run:
 
 ```sh
-git clone https://github.com/<you>/tenant.git
-cd tenant
-go build -o tenant ./cmd/tenant          # produces ./tenant (tenant.exe on Windows)
-
-./tenant setup                            # interactive wizard: pick a provider, paste a key
-./tenant doctor                           # verify config, endpoints, and keys
-./tenant tui                              # full-screen chat + activity feed
+tenant setup                            # interactive wizard: pick a provider, paste a key
+tenant doctor                           # verify config, endpoints, and keys
+tenant tui                              # full-screen chat + activity feed
 ```
 
 Kick the tires with **no model and no keys** (deterministic offline backend):
 
 ```sh
-./tenant --backend echo tui
+tenant --backend echo tui
 ```
 
 A couple of one-shot examples:
 
 ```sh
-./tenant web "summarize the top story on Hacker News"
-./tenant os "what's using the most disk in my home dir?"      # read-only; --allow-exec to act
-printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
+tenant web "summarize the top story on Hacker News"
+tenant os "what's using the most disk in my home dir?"      # read-only; --allow-exec to act
+printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
 ```
 
 ## Configuration & your data

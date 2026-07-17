@@ -4,12 +4,11 @@ First-time setup for Tenant: a single-binary, Go-native AI agent with persistent
 memory, tools, and a terminal UI. This guide takes you from nothing to a working
 agent on a **local Ollama model**. Hand it to Claude or follow it yourself.
 
-> TL;DR: install Ollama + pull two models → `go build` → `tenant setup` → `tenant tui`.
+> TL;DR: install Ollama + pull two models → download Tenant → `tenant setup` → `tenant tui`.
 
 ---
 
 ## 0. Prerequisites
-- **Go 1.26+** (`go version`)
 - **Ollama** for local inference + embeddings — https://ollama.com/download
 - ~6–10 GB disk for a small model
 
@@ -45,14 +44,12 @@ curl -s http://localhost:11434/v1/models | head -c 200
 
 ---
 
-## 2. Build Tenant
+## 2. Install Tenant
 
-```bash
-git clone https://github.com/Dog279/TENANT.git
-cd TENANT
-go build -o tenant ./cmd/tenant
-./tenant --help
-```
+Download the archive for your OS and CPU from the
+[latest release](https://github.com/Dog279/TENANT/releases/latest), extract it,
+and move `tenant` (`tenant.exe` on Windows) to a directory on your `PATH`. No Go
+toolchain is required. Confirm the install with `tenant --version`.
 
 ---
 
@@ -62,7 +59,7 @@ Run the interactive wizard — it writes a machine-wide config so you configure
 endpoints/models **once** instead of passing flags every launch:
 
 ```bash
-./tenant setup
+tenant setup
 ```
 
 It walks you through (arrow keys ↑/↓ + Enter):
@@ -73,7 +70,7 @@ It walks you through (arrow keys ↑/↓ + Enter):
 
 Non-interactive equivalent:
 ```bash
-./tenant setup --backend vllm --vllm-endpoint http://localhost:11434 \
+tenant setup --backend vllm --vllm-endpoint http://localhost:11434 \
   --embed-endpoint http://localhost:11434 --embed-model nomic-embed-text
 ```
 
@@ -96,8 +93,8 @@ store, `skills.db`, `usage.db`, `tenant_meta.db`. Secrets live separately in the
 
 Verify everything is wired (this is the important step):
 ```bash
-./tenant doctor          # diagnoses provider, embeddings, DB, dimension consistency
-./tenant doctor --fix    # applies safe fixes where it can
+tenant doctor          # diagnoses provider, embeddings, DB, dimension consistency
+tenant doctor --fix    # applies safe fixes where it can
 ```
 
 Two things `doctor` commonly flags:
@@ -105,7 +102,7 @@ Two things `doctor` commonly flags:
 - **Embedding dimension mismatch** → you switched embedders after storing data.
   Re-embed existing memory with the current model:
   ```bash
-  ./tenant memory reembed
+  tenant memory reembed
   ```
 
 ---
@@ -113,7 +110,7 @@ Two things `doctor` commonly flags:
 ## 5. Launch + basic tuning
 
 ```bash
-./tenant tui
+tenant tui
 ```
 
 Inside the TUI, type `/help` for the full command tree. The essentials for an
