@@ -55,6 +55,46 @@ type Supra struct {
 	client    *http.Client
 }
 
+// Warm loads the classifier model into the backend so the FIRST real Classify —
+// which is bounded by the tight per-turn timeout — does not pay the cold
+// model-load cost and time out ("context deadline exceeded"). Unlike Classify,
+// Warm honors the caller's context deadline instead of the per-turn timeout, so
+// callers should pass a generous one (cold GGUF load can take tens of seconds).
+// keep_alive then holds the model resident. Errors are advisory: a failed warmup
+// only means the first real classify may still be slow.
+func (s *Supra) Warm(ctx context.Context) error {
+	if s == nil || s.endpoint == "" {
+		return errors.New("route: supra: endpoint required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	body, err := json.Marshal(generateRequest{
+		Model: s.model, Prompt: supraPrompt("ping"), Raw: true,
+		Stream: false, KeepAlive: s.keepAlive,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		s.endpoint+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("route: supra: warm: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes+1))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("route: supra: warm returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // NewSupra builds a classifier. Empty model and non-positive timeout values
 // select the phase-one defaults.
 func NewSupra(endpoint, model string, timeout time.Duration) *Supra {
