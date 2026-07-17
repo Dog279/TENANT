@@ -52,6 +52,8 @@ type ApprovalEvent struct {
 // Kind are set.
 type Event struct {
 	Kind EventKind
+	// TraceID correlates turn-scoped events with the durable run record.
+	TraceID string
 	// Agent attributes a CROSS-AGENT event to its source sub-agent / bus sender
 	// ("" = the primary agent). Set when a sub-agent's activity or an inter-agent
 	// bus message is mirrored into the shared feed so the dashboard can label it;

@@ -22,6 +22,7 @@ import (
 	"tenant/internal/model/backend/anthropic"
 	"tenant/internal/model/backend/echo"
 	"tenant/internal/model/backend/vllm"
+	"tenant/internal/runtrace"
 )
 
 // commonFlags holds the flags every subcommand shares.
@@ -899,6 +900,7 @@ func echoProfiles() []model.Profile {
 type stores struct {
 	episodic *episodic.Store
 	semantic *semantic.Store
+	runs     *runtrace.Store
 	archive  *archive.Writer
 	soul     *soul.Soul
 }
@@ -913,11 +915,39 @@ func openStores(c *commonFlags) (*stores, func(), error) {
 		_ = es.Close()
 		return nil, nil, fmt.Errorf("open semantic: %w", err)
 	}
+	rs, err := runtrace.Open(filepath.Join(c.dataDir, "runs.db"), effectiveRunTraceConfig(c.lc))
+	if err != nil {
+		_ = es.Close()
+		_ = ss.Close()
+		return nil, nil, fmt.Errorf("open run traces: %w", err)
+	}
 	sl, lerr := soul.Load(c.cfgDir, c.agent)
 	if lerr != nil {
 		sl = soul.NewDefault(c.agent)
 	}
-	st := &stores{episodic: es, semantic: ss, archive: archive.NewWriter(c.dataDir), soul: sl}
-	closer := func() { _ = es.Close(); _ = ss.Close() }
+	st := &stores{episodic: es, semantic: ss, runs: rs, archive: archive.NewWriter(c.dataDir), soul: sl}
+	closer := func() { _ = es.Close(); _ = ss.Close(); _ = rs.Close() }
 	return st, closer, nil
+}
+
+func effectiveRunTraceConfig(lc *launchConfig) runtrace.Config {
+	maxAgeDays, maxCount := 90, 10000
+	redact := false
+	if lc != nil {
+		if lc.Runs.MaxAgeDays != 0 {
+			maxAgeDays = lc.Runs.MaxAgeDays
+		}
+		if lc.Runs.MaxCount != 0 {
+			maxCount = lc.Runs.MaxCount
+		}
+		redact = lc.Runs.RedactToolBodies
+	}
+	cfg := runtrace.Config{RedactBodies: redact}
+	if maxAgeDays > 0 {
+		cfg.MaxAge = time.Duration(maxAgeDays) * 24 * time.Hour
+	}
+	if maxCount > 0 {
+		cfg.MaxCount = maxCount
+	}
+	return cfg
 }

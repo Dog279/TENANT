@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"tenant/internal/model"
+	"tenant/internal/runtrace"
 )
 
 const loadToolName = "load_tool"
@@ -163,6 +164,13 @@ func (a *Agent) handleLoadTool(ctx context.Context, call model.ToolCall, loaded 
 		} else {
 			res.Result, res.IsError = fmt.Sprintf("no enabled tool named %q in the catalog — use a name exactly as listed in the Tool catalog.", name), true
 		}
+	}
+	toolOutcome := "success"
+	if res.IsError {
+		toolOutcome = "error"
+	}
+	if span := runtrace.SpanFromContext(ctx); span != nil {
+		span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Result: res.Result, Outcome: toolOutcome})
 	}
 	a.emit(Event{Kind: EventToolResult, Tool: loadToolName, Result: res.Result, IsErr: res.IsError})
 	a.feedToolResult(ctx, res, 0) // short fixed control message — never needs a context cap

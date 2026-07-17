@@ -52,9 +52,10 @@ type Fact struct {
 	ID             int64
 	AgentID        string
 	Visibility     string
-	Fact           string  // one-sentence atomic claim
-	SourceEpisodes []int64 // provenance: which episodes produced this fact
-	Confidence     float64 // 0..1 base confidence
+	Fact           string   // one-sentence atomic claim
+	SourceEpisodes []int64  // provenance: which episodes produced this fact
+	SourceRunIDs   []string // direct durable run provenance
+	Confidence     float64  // 0..1 base confidence
 	FirstSeen      time.Time
 	LastConfirmed  time.Time
 	SupersededBy   int64 // 0 = current, non-zero = superseded by this fact ID
@@ -175,6 +176,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("semantic: init schema: %w", err)
 	}
+	if err := ensureFactColumn(db, "source_run_ids", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("semantic: migrate source_run_ids: %w", err)
+	}
 	// Phase 1 SME: the fact_signals side table. Separate IF-NOT-EXISTS
 	// script so it lands additively on existing databases (and so the
 	// hot facts schema above is never edited). Idempotent.
@@ -183,6 +188,31 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("semantic: init signals schema: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+func ensureFactColumn(db *sql.DB, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(facts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE facts ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 // Close closes the underlying database. Idempotent.

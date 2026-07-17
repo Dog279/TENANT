@@ -42,6 +42,7 @@ func TestStore_InsertAndGet(t *testing.T) {
 	ctx := context.Background()
 	f := mkFact("user prefers Go over Python", vecA())
 	f.SourceEpisodes = []int64{1, 2, 3}
+	f.SourceRunIDs = []string{"trace-1", "trace-2"}
 	id, err := s.Insert(ctx, f)
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
@@ -55,6 +56,9 @@ func TestStore_InsertAndGet(t *testing.T) {
 	}
 	if len(got.SourceEpisodes) != 3 {
 		t.Errorf("SourceEpisodes roundtrip: %v", got.SourceEpisodes)
+	}
+	if len(got.SourceRunIDs) != 2 || got.SourceRunIDs[1] != "trace-2" {
+		t.Errorf("SourceRunIDs roundtrip: %v", got.SourceRunIDs)
 	}
 	if got.Confidence != 1.0 {
 		t.Errorf("Confidence default: %v", got.Confidence)

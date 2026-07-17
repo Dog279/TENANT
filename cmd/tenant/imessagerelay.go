@@ -32,6 +32,7 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/plugins/imessage"
+	"tenant/internal/runtrace"
 )
 
 // imsgPoller yields actionable inbound messages and records our own sends so
@@ -169,6 +170,7 @@ type imessageAgentDeps struct {
 	archive     *archive.Writer
 	episodic    *episodic.Store
 	semantic    *semantic.Store
+	runs        *runtrace.Store
 	skills      agent.SkillRetriever
 	compactor   agent.Compactor
 	userProfile *userprofile.Profile
@@ -284,6 +286,7 @@ func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 		Archive:      d.archive,
 		Episodic:     d.episodic,
 		Semantic:     d.semantic,
+		Runs:         d.runs,
 		Tools:        d.fullTools,
 		Dispatcher:   d.fullDisp,
 		Logger:       d.log,

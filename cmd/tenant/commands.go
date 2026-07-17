@@ -114,6 +114,7 @@ func cmdChat(ctx context.Context, args []string) error {
 		Archive:     st.archive,
 		Episodic:    st.episodic,
 		Semantic:    st.semantic,
+		Runs:        st.runs,
 		Tools:       agent.NewStaticRegistry(),
 		Dispatcher:  noopDispatcher{},
 		Logger:      log,
@@ -686,6 +687,7 @@ func cmdToolTest(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: disp,
 		Logger:     log,
@@ -802,6 +804,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -901,6 +904,7 @@ func cmdSQL(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1036,6 +1040,7 @@ func cmdWiki(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1138,6 +1143,7 @@ func cmdGSuite(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1248,6 +1254,7 @@ func cmdX(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1362,6 +1369,7 @@ func cmdIMessage(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1539,6 +1547,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      otools,
 		Dispatcher: otools,
 		Logger:     log,
@@ -2077,6 +2086,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Archive:  st.archive,
 		Episodic: st.episodic,
 		Semantic: st.semantic,
+		Runs:     st.runs,
 		Tools:    mainTools,
 		// Wrap the mux in a retry decorator so transient infra failures
 		// (web/embedder timeouts, SQLite BUSY, network blips) get ONE
@@ -2152,6 +2162,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
 		router:      router,
 		soulLive:    soulLive,
+		runs:        st.runs,
 		skills:      skillRetriever{st: skillStore, agentID: c.agent},
 		compactor:   compressor,
 		userProfile: prof,
@@ -2352,6 +2363,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if r, svc, appr, snd, gate, derr := buildDiscordAgent(discordToken, discordAgentDeps{
 			router: router, soulLive: soulLive, archive: st.archive,
 			episodic: st.episodic, semantic: st.semantic,
+			runs:      st.runs,
 			skills:    skillRetriever{st: skillStore, agentID: c.agent},
 			compactor: compressor, userProfile: prof,
 			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
@@ -2384,6 +2396,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return buildDiscordAgent(token, discordAgentDeps{
 				router: router, soulLive: soulLive, archive: st.archive,
 				episodic: st.episodic, semantic: st.semantic,
+				runs:      st.runs,
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
@@ -2485,6 +2498,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			ag, err := buildIMessageAgent(imessageAgentDeps{
 				router: router, soulLive: soulLive, archive: st.archive,
 				episodic: st.episodic, semantic: st.semantic,
+				runs:      st.runs,
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
@@ -3010,7 +3024,7 @@ func cmdOS(ctx context.Context, args []string) error {
 
 	ag, err := agent.New(agent.Config{
 		AgentID: c.agent, Router: router, Soul: st.soul, Working: working.New(),
-		Archive: st.archive, Episodic: st.episodic, Semantic: st.semantic,
+		Archive: st.archive, Episodic: st.episodic, Semantic: st.semantic, Runs: st.runs,
 		Tools: reg, Dispatcher: wd, Logger: log,
 		SystemPrompt: "You can inspect this machine (os_sysinfo/os_read_file/os_list_dir/" +
 			"os_processes) and run shell commands (os_exec). Prefer the read tools; only run " +

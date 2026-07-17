@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -395,6 +396,7 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 			Visibility:     semantic.VisibilityPrivate,
 			Fact:           f.Fact,
 			SourceEpisodes: f.SourceEpisodeIDs,
+			SourceRunIDs:   d.sourceRunIDs(ctx, f.SourceEpisodeIDs),
 			Confidence:     f.Confidence,
 			EmbedderID:     embedderID,
 			Embedding:      vectors[i],
@@ -429,6 +431,25 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 		inserted++
 	}
 	return inserted, reaffirmed, superseded, nil
+}
+
+func (d *Distiller) sourceRunIDs(ctx context.Context, episodeIDs []int64) []string {
+	if d.Episodic == nil || len(episodeIDs) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(episodeIDs))
+	for _, id := range episodeIDs {
+		ep, err := d.Episodic.Get(ctx, id)
+		if err == nil && ep.SourceRunID != "" {
+			set[ep.SourceRunID] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // borderlineVerdict is the 3-valued judgement for a borderline-similar pair

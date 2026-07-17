@@ -46,6 +46,8 @@ func main() {
 		err = cmdModel(ctx, os.Args[2:])
 	case "route":
 		err = cmdRoute(ctx, os.Args[2:])
+	case "runs":
+		err = cmdRuns(ctx, os.Args[2:])
 	case "agents", "agent":
 		err = cmdAgents(ctx, os.Args[2:])
 	case "chat":
@@ -136,6 +138,7 @@ COMMANDS
   model <list|use|add|...> manage model backends + set the primary (also /model in the TUI)
   route <status|on|off|shadow|assisted|everywhere|stats|force>
                            inspect or configure prompt routing (also /route in the TUI)
+  runs export              export durable run records as JSONL
   chat                     interactive agent loop (one stdin line = one turn)
   distill                  run one T2->T3 distillation pass
   memory search <query>    search episodes + facts from the CLI

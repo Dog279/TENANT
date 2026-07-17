@@ -20,12 +20,12 @@ import (
 // --- test scaffolding ---
 
 type scaffold struct {
-	t         *testing.T
-	estore    *episodic.Store
-	sstore    *semantic.Store
-	router    *model.Router
-	fakeLLM   *testllm.Fake
-	fakeEmb   *testllm.Fake
+	t       *testing.T
+	estore  *episodic.Store
+	sstore  *semantic.Store
+	router  *model.Router
+	fakeLLM *testllm.Fake
+	fakeEmb *testllm.Fake
 }
 
 func newScaffold(t *testing.T) *scaffold {
@@ -68,13 +68,14 @@ func newScaffold(t *testing.T) *scaffold {
 func (s *scaffold) insertEpisode(prompt, response string, embedding []float32) int64 {
 	s.t.Helper()
 	id, err := s.estore.Insert(context.Background(), &episodic.Episode{
-		AgentID:    "test-agent",
-		Visibility: episodic.VisibilityPrivate,
-		Prompt:     prompt,
-		Response:   response,
-		EmbedderID: "test-embedder",
-		Embedding:  embedding,
-		Outcome:    episodic.OutcomeSuccess,
+		AgentID:     "test-agent",
+		Visibility:  episodic.VisibilityPrivate,
+		SourceRunID: "run:" + prompt,
+		Prompt:      prompt,
+		Response:    response,
+		EmbedderID:  "test-embedder",
+		Embedding:   embedding,
+		Outcome:     episodic.OutcomeSuccess,
 	})
 	if err != nil {
 		s.t.Fatalf("insertEpisode: %v", err)
@@ -173,6 +174,13 @@ func TestRun_ExtractsFactsFromEpisodes(t *testing.T) {
 	n, _ := s.sstore.Count(context.Background(), false, false)
 	if n != 2 {
 		t.Errorf("semantic store has %d facts, want 2", n)
+	}
+	facts, err := s.sstore.List(context.Background(), semantic.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 || len(facts[0].SourceRunIDs) != 1 || len(facts[1].SourceRunIDs) != 1 {
+		t.Fatalf("fact source-run lineage missing: %+v", facts)
 	}
 }
 

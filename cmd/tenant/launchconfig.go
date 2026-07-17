@@ -112,6 +112,8 @@ type launchConfig struct {
 	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
 	// inline command sets it.
 	Goal goalConfig `json:"goal,omitempty"`
+	// Runs configures durable operational turn records.
+	Runs runTraceConfig `json:"runs,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`
@@ -122,6 +124,12 @@ type launchConfig struct {
 	EmbedModel    string `json:"embed_model,omitempty"`
 	EmbedDim      int    `json:"embed_dim,omitempty"`
 	SSEAddr       string `json:"sse_addr,omitempty"`
+}
+
+type runTraceConfig struct {
+	MaxAgeDays       int  `json:"max_age_days,omitempty"` // 0=90 default; negative disables age pruning
+	MaxCount         int  `json:"max_count,omitempty"`    // 0=10000 default; negative disables count pruning
+	RedactToolBodies bool `json:"redact_tool_bodies,omitempty"`
 }
 
 // goalConfig holds persisted /goal autonomous-loop settings (TEN-216).
