@@ -19,6 +19,7 @@ import (
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
 	"tenant/internal/model/backend/anthropic"
+	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/model/backend/echo"
 	"tenant/internal/model/backend/vllm"
 )
@@ -380,6 +381,18 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 		// Generation is Anthropic; embeddings still come from the local
 		// OpenAI-compatible server (vLLM/Ollama), so register both factories.
 		return finishModelRouter(reg, c, log, map[string]model.BackendFactory{"anthropic": anthropic.New})
+
+	case "claudecode":
+		// Subscription path — no API key gate; auth is the logged-in Claude
+		// Code CLI, and a missing/logged-out binary surfaces as a classified
+		// per-call error (so the resilient TUI launch still opens).
+		reg := model.NewEmptyRegistry()
+		for _, p := range claudecodeGenProfiles(c.vllmEndpoint, c.vllmModel, c.genKind, c.reasoning, c.planCeiling) {
+			if err := reg.Add(p); err != nil {
+				return nil, fmt.Errorf("register claudecode profile %s: %w", p.ID, err)
+			}
+		}
+		return finishModelRouter(reg, c, log, map[string]model.BackendFactory{"claudecode": claudecode.New})
 
 	default:
 		return nil, fmt.Errorf("unknown backend %q (use echo or vllm)", c.backend)
@@ -750,8 +763,68 @@ func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFacto
 		}
 		return anthropicGenProfiles(c.vllmEndpoint, c.vllmModel, c.genAPIKey, c.genKind, c.planCeiling),
 			map[string]model.BackendFactory{"anthropic": anthropic.New}, nil
+	case "claudecode":
+		return claudecodeGenProfiles(c.vllmEndpoint, c.vllmModel, c.genKind, c.reasoning, c.planCeiling),
+			map[string]model.BackendFactory{"claudecode": claudecode.New}, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown backend %q", c.backend)
+	}
+}
+
+// claudecodeGenProfiles builds planner/executor/summarizer profiles for the
+// Claude Code CLI subprocess backend (subscription-billed `claude -p`).
+// Endpoint is the binary-discovery sentinel unless the operator configured an
+// explicit path; Model is a Claude Code alias (opus | sonnet | haiku | fable)
+// or a full model ID, defaulting to opus — the escalation workhorse at half
+// Fable's burn rate. reasoning ("" = CLI default) becomes the profile's
+// ReasoningEffort, which the backend forwards as `--effort <level>` (full
+// Claude ladder low→max; operator-tuned live via /reasoning, persisted
+// per-provider like Fugu's). ToolFormat "qwen" is LOAD-BEARING: the CLI has
+// no native tool_calls wire field in -p mode, so tenant tools ride the
+// toolfmt text path (rendered into the system prompt, parsed back out of
+// the result). Claude models carry a 200K window; budgets mirror the
+// anthropic profiles.
+func claudecodeGenProfiles(endpoint, modelID, providerKind, reasoning string, planCeiling int) []model.Profile {
+	if endpoint == "" {
+		endpoint = claudecode.AutoEndpoint
+	}
+	if modelID == "" {
+		modelID = "opus"
+	}
+	if providerKind == "" {
+		providerKind = "claudecode"
+	}
+	ceiling := planCeiling
+	if ceiling <= 0 {
+		ceiling = defaultPlanCeiling
+	}
+	base := func(id string, role model.Role, respReserve int) model.Profile {
+		return model.Profile{
+			ID:                       id,
+			Role:                     role,
+			Backend:                  "claudecode",
+			ProviderKind:             providerKind,
+			Endpoint:                 endpoint,
+			Model:                    modelID,
+			ReasoningEffort:          reasoning,
+			EstimateTokensOnly:       true,
+			ContextLength:            200000,
+			OperationalContextBudget: 160000,
+			ReserveSoul:              2048,
+			ReserveSystemPrompt:      3072,
+			ReserveToolDefs:          4096,
+			ReserveResponse:          respReserve,
+			ToolFormat:               "qwen",
+			SupportsGrammar:          false,
+			MaxToolsPerCall:          12,
+			MaxParallelTools:         3,
+			PlanLoopCeiling:          ceiling,
+		}
+	}
+	return []model.Profile{
+		base("claudecode-planner", model.RolePlanner, 8192),
+		base("claudecode-executor", model.RoleExecutor, 8192),
+		base("claudecode-summarizer", model.RoleSummarizer, 4096),
 	}
 }
 

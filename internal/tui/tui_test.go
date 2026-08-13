@@ -1605,6 +1605,7 @@ func (f *fakeModelCtl) ReloadKeys() (string, error) {
 func (f *fakeModelCtl) LoopCeiling() int                          { return 16 }
 func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error)      { return "", nil }
 func (f *fakeModelCtl) ReasoningSupported() bool                  { return false }
+func (f *fakeModelCtl) ReasoningLevels() []string                 { return nil }
 func (f *fakeModelCtl) ReasoningEffort() string                   { return "" }
 func (f *fakeModelCtl) SetReasoningEffort(string) (string, error) { return "", nil }
 func (f *fakeModelCtl) Fallback() []string                        { return nil }

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"tenant/internal/model"
+	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/route"
 )
 
@@ -613,6 +614,23 @@ var providerKinds = map[string]providerKind{
 		DefaultEndpoint: "https://api.anthropic.com", DefaultModel: "claude-sonnet-4-20250514",
 		NeedsKey: true, KeyEnv: "ANTHROPIC_API_KEY", EstimateTokens: true, Wired: true,
 	},
+	// Claude Code CLI (`claude -p`): frontier models billed against the
+	// operator's SUBSCRIPTION (Max/Pro weekly allowance), not an API key —
+	// which is why NeedsKey is false; auth is the logged-in CLI install. The
+	// endpoint is a discovery sentinel, not a URL (explicit binary paths go
+	// via TENANT_CLAUDE_BIN — sanitizeEndpoints would clobber a bare file
+	// path here). Local is FALSE deliberately: routing policy must treat
+	// this as a scarce cloud resource, never as free local capacity. Model
+	// accepts Claude Code aliases (opus | sonnet | haiku | fable) or full
+	// IDs. Backed by internal/model/backend/claudecode.
+	"claudecode": {
+		ID: "claudecode", Label: "Claude Code CLI (subscription — claude -p)", Backend: "claudecode",
+		DefaultEndpoint: claudecode.AutoEndpoint, DefaultModel: "opus", DefaultToolFmt: "qwen",
+		EstimateTokens: true, Wired: true,
+		// The claude CLI has a native --effort flag (full Claude ladder,
+		// low→max) — /reasoning tunes it like Fugu's reasoning.effort.
+		SupportsReasoning: true,
+	},
 	"echo": {
 		ID: "echo", Label: "Echo (offline dev, deterministic)", Backend: "echo",
 		Wired: true, Local: true,
@@ -620,7 +638,7 @@ var providerKinds = map[string]providerKind{
 }
 
 // providerOrder is the stable display order for the wizard menu.
-var providerOrder = []string{"vllm", "ollama", "llamacpp", "openai", "grok", "zai", "zai-coding", "zai-coding-cn", "zai-metered", "sakana", "anthropic", "echo"}
+var providerOrder = []string{"vllm", "ollama", "llamacpp", "openai", "grok", "zai", "zai-coding", "zai-coding-cn", "zai-metered", "sakana", "anthropic", "claudecode", "echo"}
 
 // --- persistence ----------------------------------------------------------
 
@@ -756,6 +774,12 @@ func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
 		LogRetentionDays:    route.DefaultLogRetentionDays,
 	}
 	if lc == nil || lc.Route == nil {
+		// Resolve the classifier endpoint even for an absent route block: the
+		// dormant runtime is constructed from this resolution, and a later
+		// live enable (SetMode / the configure wizard) must not inherit an
+		// empty endpoint from launch — the classifier would stay dead until
+		// restart.
+		out.Endpoint, _ = inheritedRouteEndpoint(lc)
 		return out, nil
 	}
 
@@ -892,17 +916,7 @@ func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
 		// Only the endpoint is inherited. The embeddings model cannot serve the
 		// completion-style Supra classifier; route wiring supplies/checks the
 		// classifier model independently.
-		if lc.Embed != nil {
-			pk, known := providerKinds[lc.Embed.Kind]
-			localKind = known && pk.Local
-			out.Endpoint = firstNonEmpty(
-				strings.TrimSpace(lc.Embed.Endpoint),
-				pk.DefaultEndpoint,
-				defaultEmbedEndpoint,
-			)
-		} else {
-			out.Endpoint = defaultEmbedEndpoint
-		}
+		out.Endpoint, localKind = inheritedRouteEndpoint(lc)
 	}
 
 	if !out.Enabled {
@@ -922,6 +936,31 @@ func resolveRouteConfig(lc *launchConfig) (resolvedRouteConfig, error) {
 
 func validRouteMode(mode string) bool {
 	return mode == route.ModeShadow || mode == route.ModeActive || mode == route.ModeEverywhere
+}
+
+// routeBlockPresent reports whether the operator has a route section in
+// config.json at all — the discriminator between "routing unconfigured"
+// (resolveRouteConfig still fills an inherited classifier endpoint so a live
+// enable works) and "routing configured but disabled".
+func routeBlockPresent(lc *launchConfig) bool {
+	return lc != nil && lc.Route != nil
+}
+
+// inheritedRouteEndpoint resolves the classifier endpoint when route.provider
+// is absent: the embed provider's endpoint, then its kind's default, then the
+// packaged default — never empty. The bool reports whether the source kind is
+// local, which exempts the endpoint from the loopback requirement (mirrors
+// the embed provider's own trust level).
+func inheritedRouteEndpoint(lc *launchConfig) (string, bool) {
+	if lc == nil || lc.Embed == nil {
+		return defaultEmbedEndpoint, false
+	}
+	pk, known := providerKinds[lc.Embed.Kind]
+	return firstNonEmpty(
+		strings.TrimSpace(lc.Embed.Endpoint),
+		pk.DefaultEndpoint,
+		defaultEmbedEndpoint,
+	), known && pk.Local
 }
 
 // routeEndpointIsLoopback accepts only an HTTP(S) URL whose hostname is the
@@ -1007,6 +1046,32 @@ func resolveSecret(cfgDir, providerID string, auth authCfg) string {
 		}
 	}
 	return ""
+}
+
+// persistLaunchConfig is the ONLY safe write path for LONG-LIVED components
+// (relay/dashboard/cron/tailscale/imessage/peer managers) that hold the
+// boot-time *launchConfig. It applies fn to a FRESH copy loaded from disk and
+// saves that, then applies fn to mem so live readers stay coherent. Saving
+// the boot-time pointer directly is the lost-update bug that ate skill
+// config: `/skill configure gsuite` saved fresh state to disk, then a
+// stale-copy persist (a relay toggle, a dashboard flip) wrote the boot-time
+// Skills map back over it — the skill silently vanished on the next launch.
+// A corrupt/unreadable config falls back to saving mem (never save the empty
+// struct loadLaunchConfig returns alongside an error — that would wipe the
+// operator's config wholesale).
+func persistLaunchConfig(cfgDir string, mem *launchConfig, fn func(*launchConfig)) error {
+	if mem != nil {
+		fn(mem)
+	}
+	fresh, err := loadLaunchConfig(cfgDir)
+	if err != nil {
+		if mem != nil {
+			return mem.save(cfgDir)
+		}
+		return err
+	}
+	fn(fresh)
+	return fresh.save(cfgDir)
 }
 
 // atomicWrite writes via temp + rename so a crash can't truncate the file. The

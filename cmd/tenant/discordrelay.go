@@ -57,6 +57,7 @@ type relay struct {
 	confirm    offsiteConfirm    // optional; the per-category permission broker (TEN-231) the turn's gated tools route through; nil ⇒ fall back to approver.Confirm
 	degraded   func() bool       // optional; when true the model is on the echo fallback
 	ingest     func(text string) // optional; surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
+	files      *attachmentIngestor // optional; downloads operator attachments into the relay inbox — nil ⇒ attachments ignored
 
 	mu     sync.Mutex
 	base   context.Context // lifetime of the relay; background turns derive from it
@@ -125,8 +126,14 @@ func (r *relay) handleInbound(in discord.Inbound) {
 	if r.approver != nil && r.approver.tryConsume(in) {
 		return
 	}
+	// Attachments are OPERATOR-ONLY on every surface: guild members may drive
+	// text turns via @mention, but only the operator writes files to the host.
+	atts := in.Attachments
+	if r.files == nil || r.operatorID == "" || in.AuthorID != r.operatorID {
+		atts = nil
+	}
 	text := strings.TrimSpace(in.Content)
-	if text == "" {
+	if text == "" && len(atts) == 0 {
 		return
 	}
 	if len(text) > maxInboundLen {
@@ -155,17 +162,62 @@ func (r *relay) handleInbound(in discord.Inbound) {
 		return
 	}
 
-	// Surface the inbound in the shared activity feed (TUI + dashboard) — it's
-	// about to drive a turn or be folded into the running one (TEN-232).
+	if len(atts) > 0 {
+		// Download OFF the gateway goroutine — a 100 MB fetch here would
+		// stall the socket's read loop (missed heartbeats → reconnect).
+		go r.ingestAndRoute(in.ChannelID, text, atts)
+		return
+	}
+	r.routeTurn(in.ChannelID, text)
+}
+
+// ingestAndRoute downloads the message's attachments, appends the saved-file
+// manifest to the operator's text, and routes the combined turn. Runs on its
+// own goroutine (see handleInbound); per-batch deadline so a dead CDN can't
+// wedge the pipeline.
+func (r *relay) ingestAndRoute(channelID, text string, atts []discord.Attachment) {
+	r.mu.Lock()
+	base := r.base
+	r.mu.Unlock()
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, attachmentIngestTimeout)
+	defer cancel()
+
+	saved, rejected := r.files.Ingest(ctx, atts)
+	if len(saved) == 0 && text == "" {
+		// Attachment-only message, nothing usable — answer directly instead
+		// of driving a turn about files that don't exist.
+		msg := "no attachments accepted (allowed: png, jpg, heic, pdf, csv, txt, mp4; max 100 MB)."
+		if len(rejected) > 0 {
+			msg = "no attachments accepted: " + strings.Join(rejected, "; ")
+		}
+		r.reply(channelID, msg)
+		return
+	}
+	full := text
+	if manifest := attachmentManifest(saved, rejected); manifest != "" {
+		if full != "" {
+			full += "\n\n"
+		}
+		full += manifest
+	}
+	r.routeTurn(channelID, full)
+}
+
+// routeTurn surfaces text in the shared activity feed, then starts a turn or
+// folds into the running one — the shared tail of every inbound path.
+func (r *relay) routeTurn(channelID, text string) {
 	if r.ingest != nil {
 		r.ingest(text)
 	}
-	if r.start(in.ChannelID, text) {
+	if r.start(channelID, text) {
 		return // new turn launched; its goroutine posts the answer
 	}
 	// A turn is already running. Single operator ⇒ it's theirs ⇒ fold this in.
 	r.runner.Interject(text)
-	r.reply(in.ChannelID, "added to the running turn.")
+	r.reply(channelID, "added to the running turn.")
 }
 
 // handleInteraction routes a button click to the approver — but ONLY the

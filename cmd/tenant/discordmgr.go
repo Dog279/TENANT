@@ -125,6 +125,7 @@ type discordRelayManager struct {
 	// /relay permissions modes survive a token hot-swap. nil ⇒ pre-TEN-231 path.
 	broker   *approvalBroker
 	token    string
+	dataDir  string // enables attachment ingest into <dataDir>/relay-inbox when set
 	log      *slog.Logger
 	notify   func(string)
 	ingest   func(text string) // surface inbound DMs in the shared activity feed (TUI + dashboard), TEN-232
@@ -156,6 +157,11 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 	}
 	rl.ingest = m.ingest // surface inbound DMs in the shared activity feed (TEN-232)
 	rl.degraded = m.degraded
+	if m.dataDir != "" {
+		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
+		// and the turn text carries the saved-path manifest.
+		rl.files = newAttachmentIngestor(m.dataDir, m.log)
+	}
 	rl.Start(ctx)
 	gw := &discord.Gateway{
 		Token:         m.token,

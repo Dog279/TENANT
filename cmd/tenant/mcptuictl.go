@@ -71,21 +71,25 @@ func (a mcpTUIControl) persist(url string, add bool) {
 	if a.lc == nil {
 		return
 	}
-	if add {
-		for _, u := range a.lc.MCPRemotes {
-			if u == url {
-				return // already persisted
+	// Fresh-load + reapply (persistLaunchConfig) — a.lc is the boot-time
+	// object, and saving it directly clobbers every field other writers
+	// persisted since boot (the skill-config lost-update bug).
+	_ = persistLaunchConfig(a.cfgDir, a.lc, func(lc *launchConfig) {
+		if add {
+			for _, u := range lc.MCPRemotes {
+				if u == url {
+					return // already persisted
+				}
 			}
+			lc.MCPRemotes = append(lc.MCPRemotes, url)
+			return
 		}
-		a.lc.MCPRemotes = append(a.lc.MCPRemotes, url)
-	} else {
-		kept := a.lc.MCPRemotes[:0]
-		for _, u := range a.lc.MCPRemotes {
+		kept := lc.MCPRemotes[:0]
+		for _, u := range lc.MCPRemotes {
 			if u != url {
 				kept = append(kept, u)
 			}
 		}
-		a.lc.MCPRemotes = kept
-	}
-	_ = a.lc.save(a.cfgDir)
+		lc.MCPRemotes = kept
+	})
 }

@@ -588,9 +588,13 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	}
 	if cfg, err := resolveRouteConfig(c.lc); err != nil {
 		return nil, fmt.Errorf("eval: resolve route classifier: %w", err)
-	} else if cfg.Enabled || routeEndpointIsLoopback(cfg.Endpoint) {
+	} else if routeBlockPresent(c.lc) && (cfg.Enabled || routeEndpointIsLoopback(cfg.Endpoint)) {
 		// The full-suite route task measures the auxiliary classifier directly.
 		// A disabled explicit remote endpoint stays inert, matching launch policy.
+		// No route block at all also stays inert: a nil route now resolves an
+		// inherited endpoint (so a live enable never builds a dead classifier),
+		// but an operator who never configured routing shouldn't have eval
+		// probing their embed endpoint.
 		h.RouteClassifier = route.NewSupra(cfg.Endpoint, cfg.Model, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	}
 	log := newLogger()

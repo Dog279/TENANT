@@ -481,8 +481,7 @@ func cmdServe(ctx context.Context, args []string) error {
 					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
 				}
 			}
-			c.lc.Cron.Jobs = jobs
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
 		}, log)
 		cronEngine.SetPaused(degraded.Degraded)
 		cronEngine.Prime(cron.PrimeOptions{
@@ -498,8 +497,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.Cron.AllowExec = on
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.AllowExec = on })
 		})
 		mainLocal.add("cron", cronplugin.NewDispatcher(cronMgr))
 		dashCronCtl = dashCron{cronMgr}
@@ -549,8 +547,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.Dashboard.Enabled = &enabled
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Dashboard.Enabled = &enabled })
 		},
 	}
 

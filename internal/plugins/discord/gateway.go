@@ -61,14 +61,29 @@ type gwPayload struct {
 }
 
 // Inbound is one received Discord message, normalized for the relay. v1 cares
-// about DMs from the operator; GuildID=="" marks a DM.
+// about DMs from the operator; GuildID=="" marks a DM. Attachments carry the
+// CDN metadata only — downloading (and deciding whether to) is the relay's
+// call, not the gateway's; CDN URLs are signed and expire within ~24h, so
+// ingestion must happen promptly.
 type Inbound struct {
-	MessageID string
-	ChannelID string
-	GuildID   string
-	AuthorID  string
-	AuthorBot bool
-	Content   string
+	MessageID   string
+	ChannelID   string
+	GuildID     string
+	AuthorID    string
+	AuthorBot   bool
+	Content     string
+	Attachments []Attachment
+}
+
+// Attachment is one file attached to an inbound message, as reported by the
+// MESSAGE_CREATE payload. Size and ContentType are Discord-supplied hints —
+// the downloader re-enforces its own caps rather than trusting them.
+type Attachment struct {
+	ID          string
+	Filename    string
+	Size        int64
+	ContentType string
+	URL         string
 }
 
 // Interaction is a button/component click (INTERACTION_CREATE, type 3) — the v2
@@ -402,6 +417,13 @@ func (g *Gateway) dispatchMessage(d json.RawMessage) {
 			ID  string `json:"id"`
 			Bot bool   `json:"bot"`
 		} `json:"author"`
+		Attachments []struct {
+			ID          string `json:"id"`
+			Filename    string `json:"filename"`
+			Size        int64  `json:"size"`
+			ContentType string `json:"content_type"`
+			URL         string `json:"url"`
+		} `json:"attachments"`
 	}
 	if err := json.Unmarshal(d, &m); err != nil || m.ID == "" {
 		return
@@ -410,10 +432,17 @@ func (g *Gateway) dispatchMessage(d json.RawMessage) {
 		return // already processed this message id (replay) — drop
 	}
 	if g.OnMessage != nil {
-		g.OnMessage(Inbound{
+		in := Inbound{
 			MessageID: m.ID, ChannelID: m.ChannelID, GuildID: m.GuildID,
 			AuthorID: m.Author.ID, AuthorBot: m.Author.Bot, Content: m.Content,
-		})
+		}
+		for _, a := range m.Attachments {
+			in.Attachments = append(in.Attachments, Attachment{
+				ID: a.ID, Filename: a.Filename, Size: a.Size,
+				ContentType: a.ContentType, URL: a.URL,
+			})
+		}
+		g.OnMessage(in)
 	}
 }
 

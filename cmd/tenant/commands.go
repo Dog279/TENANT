@@ -2161,8 +2161,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
 				}
 			}
-			c.lc.Cron.Jobs = jobs
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
 		}, log)
 		// While degraded (echo), defer ALL cron runs and force catch-up off — a
 		// scheduled agent turn would act on a fake plan, and an exec/shell job
@@ -2182,8 +2181,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.Cron.AllowExec = on
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.AllowExec = on })
 		})
 		// cron_* tools for the MAIN agent (cut from the cron runners above).
 		mainLocal.add("cron", cronplugin.NewDispatcher(cronMgr))
@@ -2253,8 +2251,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.Dashboard.Enabled = &enabled
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Dashboard.Enabled = &enabled })
 		},
 	}
 	// tailscaleManager (TEN-233) powers /tailscale: publish the loopback
@@ -2266,8 +2263,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if c.lc == nil {
 			return
 		}
-		c.lc.Tailscale.Serve = serve
-		_ = c.lc.save(c.cfgDir)
+		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Tailscale.Serve = serve })
 	}
 
 	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
@@ -2310,8 +2306,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if c.lc == nil {
 			return
 		}
-		c.lc.Relay.Permissions = snap
-		_ = c.lc.save(c.cfgDir)
+		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
 	}
 	if c.lc != nil {
 		discordBroker.loadModes(c.lc.Relay.Permissions)
@@ -2335,17 +2330,19 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
-		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken, log: log, notify: pushSys,
+		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken,
+		dataDir: c.dataDir, log: log, notify: pushSys,
 		ingest:   func(t string) { ingestEvent("Discord", t) }, // TEN-232: show inbound DMs in the activity feed
 		degraded: degraded.Degraded,                            // refuse remote turns while on the echo fallback
 		persist: func(enabled bool, opID string, allowExec bool) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.Relay.Enabled = enabled
-			c.lc.Relay.OperatorID = opID
-			c.lc.Relay.AllowExec = allowExec
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) {
+				lc.Relay.Enabled = enabled
+				lc.Relay.OperatorID = opID
+				lc.Relay.AllowExec = allowExec
+			})
 		},
 		// buildFn lets Reconfigure (triggered by /skill configure discord)
 		// rebuild the agent+gateway with a new token without restarting.
@@ -2399,8 +2396,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if c.lc == nil {
 			return nil
 		}
-		c.lc.IMessage.AllowFrom = handles
-		return c.lc.save(c.cfgDir)
+		return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.AllowFrom = handles })
 	})
 
 	// iMessage gated-tool permissions (TEN-230): a SECOND approval broker, scoped
@@ -2413,8 +2409,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if c.lc == nil {
 			return
 		}
-		c.lc.IMessage.Permissions = snap
-		_ = c.lc.save(c.cfgDir)
+		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
 	}
 	if c.lc != nil {
 		imsgBroker.loadModes(c.lc.IMessage.Permissions)
@@ -2436,8 +2431,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.IMessage.Enabled = enabled
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
 		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
 			nat, err := imessage.OpenNative(imessage.NativeConfig{})
@@ -2735,8 +2729,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		peerSrvStop = stop
 		if c.lc != nil { // persist so it restarts on the next launch
-			c.lc.Peer.Listen = addr
-			_ = c.lc.save(c.cfgDir)
+			_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Peer.Listen = addr })
 		}
 		return bound, nil
 	}

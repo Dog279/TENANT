@@ -44,6 +44,7 @@ func (f *fakeModels) ReloadKeys() (string, error)                  { return "", 
 func (f *fakeModels) LoopCeiling() int                             { return 0 }
 func (f *fakeModels) SetLoopCeiling(int) (string, error)           { return "", nil }
 func (f *fakeModels) ReasoningSupported() bool                     { return false }
+func (f *fakeModels) ReasoningLevels() []string                    { return nil }
 func (f *fakeModels) ReasoningEffort() string                      { return "" }
 func (f *fakeModels) SetReasoningEffort(string) (string, error)    { return "", nil }
 func (f *fakeModels) Fallback() []string                           { return nil }

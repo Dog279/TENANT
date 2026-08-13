@@ -78,8 +78,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		if c.lc == nil {
 			return
 		}
-		c.lc.Relay.Permissions = snap
-		_ = c.lc.save(c.cfgDir)
+		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
 	}
 	if c.lc != nil {
 		discordBroker.loadModes(c.lc.Relay.Permissions)
@@ -112,15 +111,17 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
 		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken,
-		log: d.log, notify: d.notify, ingest: ingest, degraded: d.degraded.Degraded,
+		dataDir: c.dataDir,
+		log:     d.log, notify: d.notify, ingest: ingest, degraded: d.degraded.Degraded,
 		persist: func(enabled bool, opID string, allowExec bool) error {
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.Relay.Enabled = enabled
-			c.lc.Relay.OperatorID = opID
-			c.lc.Relay.AllowExec = allowExec
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) {
+				lc.Relay.Enabled = enabled
+				lc.Relay.OperatorID = opID
+				lc.Relay.AllowExec = allowExec
+			})
 		},
 		buildFn: func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error) {
 			return buildDiscordAgent(token, deps)
@@ -187,8 +188,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 		if c.lc == nil {
 			return nil
 		}
-		c.lc.IMessage.AllowFrom = handles
-		return c.lc.save(c.cfgDir)
+		return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.AllowFrom = handles })
 	})
 
 	// Offsite broker: own per-category modes (default DENY) but SHARES the global
@@ -199,8 +199,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 		if c.lc == nil {
 			return
 		}
-		c.lc.IMessage.Permissions = snap
-		_ = c.lc.save(c.cfgDir)
+		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
 	}
 	if c.lc != nil {
 		imsgBroker.loadModes(c.lc.IMessage.Permissions)
@@ -222,8 +221,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			if c.lc == nil {
 				return nil
 			}
-			c.lc.IMessage.Enabled = enabled
-			return c.lc.save(c.cfgDir)
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
 		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
 			nat, err := imessage.OpenNative(imessage.NativeConfig{})

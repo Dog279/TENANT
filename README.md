@@ -43,7 +43,9 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
 - **Surfaces.** Full-screen TUI (streaming chat + live activity), a
   server-rendered web dashboard (no JS build step), an MCP memory server over
   stdio, and an **offsite Discord relay** — text your agent from your phone and
-  approve each privileged action with a tap.
+  approve each privileged action with a tap. DM it files too (png/jpg/heic,
+  pdf/csv/txt, mp4): operator attachments download into a local relay inbox
+  and the agent gets the saved paths, so file tools can work on what you send.
 
 ## Quickstart
 

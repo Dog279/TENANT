@@ -742,10 +742,13 @@ type ModelControl interface {
 	LoopCeiling() int
 	SetLoopCeiling(n int) (string, error)
 	// ReasoningSupported reports whether the ACTIVE provider accepts a reasoning
-	// -effort hint (Sakana Fugu); ReasoningEffort reports the current value
-	// (""=off); SetReasoningEffort retunes it live + persists — /reasoning.
+	// -effort hint (Sakana Fugu, claudecode); ReasoningEffort reports the current
+	// value (""=off); ReasoningLevels lists the values the active kind accepts
+	// (drives the /reasoning picker: Fugu high/xhigh, claudecode low→max);
+	// SetReasoningEffort retunes it live + persists — /reasoning.
 	ReasoningSupported() bool
 	ReasoningEffort() string
+	ReasoningLevels() []string
 	SetReasoningEffort(effort string) (status string, err error)
 	// Fallback returns the configured auto-fallback provider chain (TEN-246),
 	// in order. Empty = no fallback.
@@ -763,6 +766,19 @@ type RouteControl interface {
 	Stats() string
 	SetMode(mode string) (string, error)
 	Force(profileID string) (string, error)
+	// ConfigureInfo inventories configured providers (cloud = big-leg
+	// candidates, local = small-leg candidates) plus the current policy for
+	// the /route configure wizard. Reads config.json — call from a tea.Cmd,
+	// never the UI goroutine.
+	ConfigureInfo() (RouteConfigureInfo, error)
+	// SetBig persists route.big_role = provider (and, when model is
+	// non-empty, the provider's model) and live-binds planner-big. Disk +
+	// backend I/O — tea.Cmd only.
+	SetBig(provider, model string) (string, error)
+	// SetPolicy persists one policy knob: never_cloud |
+	// min_complexity_for_big | sticky_session. Mode changes go through
+	// SetMode (rollout ladder). Disk I/O — tea.Cmd only.
+	SetPolicy(field, value string) (string, error)
 }
 
 // ResearchControl powers /research: a long-running deep-research pass. The
@@ -1360,6 +1376,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// already routes to it.
 	if start, ok := msg.(pickerStartMsg); ok {
 		m.picker = start.picker
+		return m, nil
+	}
+	// Route-configure wizard chaining: post the applied step's status and
+	// open the next picker in the same Update pass, so nothing can interleave
+	// between them.
+	if w, ok := msg.(routeWizardMsg); ok {
+		if w.text != "" {
+			m.sysChat(w.text)
+		}
+		if w.next != nil {
+			// A wizard step arrives asynchronously (after a fetch/apply); if
+			// the operator opened another picker during that gap, dropping the
+			// step beats silently replacing what they're looking at.
+			if m.picker != nil {
+				m.sysChat("route configure: another picker opened meanwhile — wizard stopped (settings already applied are kept); re-run /route configure to continue")
+			} else {
+				m.picker = w.next
+			}
+		}
 		return m, nil
 	}
 	// Async post to system chat (from picker callbacks, list fetchers,
@@ -2437,6 +2472,8 @@ func (m *model) handleRoute(arg string) tea.Cmd {
 	case sub == "stats" && len(f) == 1:
 		ctl := m.cfg.Route
 		return func() tea.Msg { return sysChatMsg{text: ctl.Stats()} }
+	case sub == "configure" && len(f) == 1:
+		return m.startRouteConfigure()
 	case (sub == "on" || sub == "off" || sub == "shadow" || sub == "assisted" || sub == "everywhere") && len(f) == 1:
 		status, err := m.cfg.Route.SetMode(sub)
 		if err != nil {
@@ -2458,7 +2495,7 @@ func (m *model) handleRoute(arg string) tea.Cmd {
 		if len(f) == 2 {
 			v, err := strconv.Atoi(f[1])
 			if err != nil || v <= 0 {
-				m.sysChat("usage: /route <status|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
+				m.sysChat("usage: /route <status|configure|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
 				return nil
 			}
 			n = v
@@ -2466,7 +2503,7 @@ func (m *model) handleRoute(arg string) tea.Cmd {
 		m.sysChat(m.cfg.Route.Why(n))
 		return nil
 	default:
-		m.sysChat("usage: /route <status|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
+		m.sysChat("usage: /route <status|configure|on|off|shadow|assisted|everywhere|stats|force <profileID>|why [n]>")
 		return nil
 	}
 }
@@ -2508,14 +2545,16 @@ var helpSections = []helpSection{
 			{"/model use <name> [<model>]", "switch primary; optional model variant (e.g. /model use zai glm-5.1)"},
 			{"/model models [<name>]", "list model variants served by the provider's endpoint (live)"},
 			{"/model add-cloud <kind> <key>", "register a keyed cloud provider (zai/openai/grok/anthropic)"},
+			{"/model add claudecode", "register the Claude Code subscription backend (claude -p; no key)"},
 			{"/model add <name> <endpoint> [fmt]", "register a self-hosted vLLM backend mid-session"},
 			{"/model remove <name>", "delete a configured backend (not the active one)"},
 			{"/model reload", "re-resolve the active provider's key live (after a rotation)"},
 			{"/setup", "arrow-key setup menu — provider, model, endpoint, key, embeddings, gateway"},
 			{"/configure", "arrow-key key picker — set an API key for any service (providers, web search, Discord)"},
 			{"/ceiling [n]", "view / live-tune the loop ceiling (max tool calls per turn)"},
-			{"/reasoning [level]", "arrow-key picker / live-tune reasoning effort for reasoning models (Fugu: high/xhigh)"},
+			{"/reasoning [level]", "arrow-key picker / live-tune reasoning effort (Fugu: high/xhigh · claudecode: low→max)"},
 			{"/route", "show prompt-router status + run a parseable classifier health probe"},
+			{"/route configure", "arrow-key wizard: big cloud model → small local model → policy"},
 			{"/route on|off|shadow|assisted|everywhere", "persist one explicit rollout stage"},
 			{"/route force <profileID>", "force an explicitly named profile (privacy override; logged)"},
 			{"/route stats", "show big/disagreement/failure rates, latency, and breaker trips"},
@@ -4064,8 +4103,22 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 		}
 	case "add":
 		// /model add <name> <endpoint> [tool-format]
+		// Keyless catalog kinds need neither an endpoint nor an API key:
+		// `/model add claudecode` registers the Claude Code subscription
+		// backend (claude -p) straight from the provider catalog.
+		if len(f) == 2 {
+			status, err := m.cfg.Models.AddModel(f[1], "", "")
+			if err != nil {
+				m.appendFeed(cErr.Render("✗ add backend failed: " + clip(err.Error(), 70)))
+				m.sysChat("could not add backend: " + err.Error())
+				return
+			}
+			m.appendFeed(cOK.Render("＋ backend added: " + f[1]))
+			m.sysChat(status)
+			return
+		}
 		if len(f) < 3 {
-			m.sysChat("usage: /model add <name> <endpoint> [tool-format]   e.g. /model add dgx http://localhost:8000 qwen")
+			m.sysChat("usage: /model add <name> <endpoint> [tool-format]   e.g. /model add dgx http://localhost:8000 qwen   |   keyless kinds: /model add claudecode")
 			return
 		}
 		name, endpoint := f[1], f[2]
@@ -6012,7 +6065,7 @@ func (m *model) renderPicker() string {
 func (m *model) handleReasoning(arg string) tea.Cmd {
 	ctl := m.cfg.Models
 	if !ctl.ReasoningSupported() {
-		m.sysChat("the active provider doesn't support reasoning effort — only reasoning models like Sakana Fugu (fugu / fugu-ultra) do.\nswitch with /model pick, then /reasoning.")
+		m.sysChat("the active provider doesn't support reasoning effort — reasoning models (Sakana Fugu) and claudecode do.\nswitch with /model pick, then /reasoning.")
 		return nil
 	}
 	// Direct set: /reasoning <level|off>.
@@ -6026,24 +6079,24 @@ func (m *model) handleReasoning(arg string) tea.Cmd {
 		m.sysChat(status)
 		return nil
 	}
-	// Bare /reasoning → arrow-key picker.
-	items := []string{"off (default)", "high", "xhigh (max)"}
+	// Bare /reasoning → arrow-key picker over the ACTIVE kind's level set
+	// (Fugu: high/xhigh; claudecode: the Claude CLI's low→max ladder).
+	items := []string{"off (default)"}
+	items = append(items, ctl.ReasoningLevels()...)
 	valueOf := func(label string) string {
-		switch label {
-		case "high":
-			return "high"
-		case "xhigh (max)":
-			return "xhigh"
-		default:
+		if label == "off (default)" {
 			return "off"
 		}
+		return label
 	}
 	mark := "off (default)"
-	switch ctl.ReasoningEffort() {
-	case "high":
-		mark = "high"
-	case "xhigh", "max":
-		mark = "xhigh (max)"
+	if cur := ctl.ReasoningEffort(); cur != "" {
+		for _, it := range items {
+			if it == cur {
+				mark = it
+				break
+			}
+		}
 	}
 	return startPickerCmd(&listPicker{
 		title:       "Reasoning effort — current: " + reasoningLabel(ctl.ReasoningEffort()),

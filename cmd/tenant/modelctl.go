@@ -13,6 +13,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/model"
+	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/tui"
 )
 
@@ -279,6 +280,13 @@ func (mc *modelControl) ListProviderModels(name string) ([]string, error) {
 	if pc == nil {
 		return nil, fmt.Errorf("no backend named %q (see /model)", target)
 	}
+	// claudecode has no HTTP catalog to query — its endpoint is a binary-
+	// discovery sentinel. Offer the Claude CLI's stable aliases so every
+	// picker flow (/model pick, /model models, route wizard big-leg) works;
+	// full model IDs are also accepted via `/model use claudecode <id>`.
+	if pc.Kind == "claudecode" {
+		return []string{"fable", "haiku", "opus", "sonnet"}, nil
+	}
 	endpoint := strings.TrimSpace(pc.Endpoint)
 	if endpoint == "" {
 		// Fall back to catalog default when the provider's saved config
@@ -337,10 +345,24 @@ func (mc *modelControl) SetLoopCeiling(n int) (string, error) {
 	return fmt.Sprintf("loop ceiling → %d (updated %d role(s); applies next turn, incl. newly spawned sub-agents)", n, updated), nil
 }
 
-// reasoningLevels is the set of reasoning-effort values a reasoning-capable
-// provider accepts, per Sakana Fugu's API (high + xhigh, alias max). "" clears
-// it (off, the default). The /reasoning picker offers exactly these.
-var reasoningLevels = []string{"high", "xhigh"}
+// Reasoning-effort level sets are PER KIND: Sakana Fugu's API takes high +
+// xhigh (with max accepted as an alias for xhigh), while claudecode passes
+// --effort straight through to the Claude CLI, whose ladder is the full
+// low → max range — and there max is a REAL level, not an alias. "" clears
+// either (off, the provider default). The /reasoning picker offers exactly
+// the active kind's set via ReasoningLevels().
+var (
+	fuguReasoningLevels   = []string{"high", "xhigh"}
+	claudeReasoningLevels = []string{"low", "medium", "high", "xhigh", "max"}
+)
+
+// reasoningLevelsForKind maps a provider kind to its accepted effort values.
+func reasoningLevelsForKind(kind string) []string {
+	if kind == "claudecode" {
+		return claudeReasoningLevels
+	}
+	return fuguReasoningLevels
+}
 
 // ReasoningSupported reports whether the ACTIVE provider's kind accepts a
 // reasoning-effort hint (today: Sakana Fugu). The /reasoning command refuses to
@@ -367,6 +389,19 @@ func (mc *modelControl) ReasoningEffort() string {
 	return lc.Providers[lc.Provider].Reasoning
 }
 
+// ReasoningLevels returns the effort values the ACTIVE provider accepts —
+// drives the /reasoning picker, so Fugu offers high/xhigh while claudecode
+// offers the Claude CLI's full low→max ladder.
+func (mc *modelControl) ReasoningLevels() []string {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil || lc.Providers[lc.Provider] == nil {
+		return fuguReasoningLevels
+	}
+	return reasoningLevelsForKind(lc.Providers[lc.Provider].Kind)
+}
+
 // SetReasoningEffort retunes the active provider's reasoning effort live on the
 // shared router (so the main agent + sub-agents follow next turn) and persists it
 // per-provider so it survives a restart. Mirrors UseModel's rebuild path, minus
@@ -379,9 +414,6 @@ func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
 	if effort == "off" || effort == "none" || effort == "default" {
 		effort = ""
 	}
-	if effort == "max" { // Fugu alias
-		effort = "xhigh"
-	}
 	lc, err := loadLaunchConfig(mc.cfgDir)
 	if err != nil {
 		return "", err
@@ -391,18 +423,24 @@ func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
 		return "", fmt.Errorf("no active provider (see /model)")
 	}
 	if !providerKinds[pc.Kind].SupportsReasoning {
-		return "", fmt.Errorf("provider %q (%s) doesn't support reasoning effort — only reasoning models like Sakana Fugu do", lc.Provider, pc.Kind)
+		return "", fmt.Errorf("provider %q (%s) doesn't support reasoning effort — reasoning models (Sakana Fugu) and claudecode do", lc.Provider, pc.Kind)
+	}
+	levels := reasoningLevelsForKind(pc.Kind)
+	// Fugu alias only: its API has no distinct max level. For claudecode,
+	// max is a real Claude effort level and passes through untouched.
+	if effort == "max" && pc.Kind != "claudecode" {
+		effort = "xhigh"
 	}
 	if effort != "" {
 		valid := false
-		for _, v := range reasoningLevels {
+		for _, v := range levels {
 			if v == effort {
 				valid = true
 				break
 			}
 		}
 		if !valid {
-			return "", fmt.Errorf("unknown reasoning effort %q (one of: %s, or 'off' to clear)", effort, strings.Join(reasoningLevels, ", "))
+			return "", fmt.Errorf("unknown reasoning effort %q (one of: %s, or 'off' to clear)", effort, strings.Join(levels, ", "))
 		}
 	}
 	pc.Reasoning = effort
@@ -470,6 +508,11 @@ func safeDisplayEndpoint(s string) string {
 	if looksLikeURL(s) {
 		return s
 	}
+	// The claudecode discovery sentinel is a known non-secret non-URL —
+	// redacting it would just confuse the /model list.
+	if s == claudecode.AutoEndpoint {
+		return s
+	}
 	return "[redacted — non-URL endpoint, see `tenant doctor`]"
 }
 
@@ -491,8 +534,16 @@ func (mc *modelControl) AddModel(name, endpoint, toolFormat string) (string, err
 	defer mc.mu.Unlock()
 	name = strings.TrimSpace(name)
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	if name == "" || endpoint == "" {
+	if name == "" {
 		return "", fmt.Errorf("name and endpoint are required")
+	}
+	if endpoint == "" {
+		// Keyless catalog kinds (claudecode today) register straight from the
+		// catalog with no endpoint or key: `/model add claudecode`.
+		if pk, ok := providerKinds[name]; ok && !pk.NeedsKey && pk.Wired && pk.DefaultEndpoint != "" {
+			return mc.addKeylessCatalogProvider(name)
+		}
+		return "", fmt.Errorf("name and endpoint are required (only keyless catalog kinds like `claudecode` may omit the endpoint)")
 	}
 	// Reject non-URL endpoints. This catches the very-easy-to-make mistake
 	// of typing `/model add zai <api-key>` (which would save the key as the
@@ -544,7 +595,15 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 		return "", fmt.Errorf("unknown provider kind %q (known: %s)", kindID, strings.Join(providerOrder, ", "))
 	}
 	if !pk.NeedsKey {
-		return "", fmt.Errorf("%s does not use an API key — use `/model add %s <endpoint>` for self-hosted backends", pk.Label, kindID)
+		// Keyless kind typed into add-cloud (easy mistake — the operator
+		// doesn't care which command family a kind belongs to): do the
+		// keyless add instead of scolding. A mistakenly-pasted key is NOT
+		// stored anywhere.
+		status, err := mc.addKeylessCatalogProvider(kindID)
+		if err == nil && apiKey != "" {
+			status += " (note: this provider takes no API key — the value you passed was not stored)"
+		}
+		return status, err
 	}
 	if !pk.Wired {
 		return "", fmt.Errorf("%s is in the catalog but its backend is not yet implemented", pk.Label)
@@ -592,6 +651,66 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 	return fmt.Sprintf("added %s backend %q → %s (key stored, 0600). Switch with `/model use %s`. "+
 		"Router bind hint: set `route.big_role` to %q, then use `/route on`.",
 		pk.Label, kindID, pk.DefaultEndpoint, kindID, kindID), nil
+}
+
+// addKeylessCatalogProvider registers a catalog kind that authenticates
+// WITHOUT an API key — today that's claudecode (Claude Code subscription
+// login). Endpoint, default model, and tool format all come from the
+// catalog. Caller must hold mc.mu. For claudecode the binary is probed at
+// add time so a missing/uninstalled CLI is reported here, with an
+// actionable hint, instead of surfacing as a failure on the first
+// escalated turn.
+func (mc *modelControl) addKeylessCatalogProvider(kindID string) (string, error) {
+	pk, ok := providerKinds[kindID]
+	if !ok {
+		return "", fmt.Errorf("unknown provider kind %q (known: %s)", kindID, strings.Join(providerOrder, ", "))
+	}
+	if pk.NeedsKey {
+		return "", fmt.Errorf("%s requires an API key — use `/model add-cloud %s <api-key>`", pk.Label, kindID)
+	}
+	if !pk.Wired {
+		return "", fmt.Errorf("%s is in the catalog but its backend is not yet implemented", pk.Label)
+	}
+	if pk.DefaultEndpoint == "" {
+		// vllm/echo land here: keyless but endpoint-less in the catalog, so
+		// they can't be one-shot added. Keep the original operator-facing
+		// wording (tests + muscle memory rely on it).
+		return "", fmt.Errorf("%s does not use an API key — use `/model add %s <endpoint>` for self-hosted backends", pk.Label, kindID)
+	}
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		return "", err
+	}
+	if lc.Providers == nil {
+		lc.Providers = map[string]*providerConfig{}
+	}
+	// Preserve a pre-existing model override, same as AddCloudModel.
+	existing := lc.Providers[kindID]
+	model := pk.DefaultModel
+	if existing != nil && existing.Model != "" {
+		model = existing.Model
+	}
+	lc.Providers[kindID] = &providerConfig{
+		Kind: kindID, Endpoint: pk.DefaultEndpoint, Model: model,
+		ToolFmt: pk.DefaultToolFmt,
+	}
+	if lc.Embed == nil {
+		lc.Embed = &providerConfig{Kind: "ollama", Endpoint: defaultEmbedEndpoint, Model: defaultEmbedModel, EmbedDim: defaultEmbedDim}
+	}
+	if err := lc.save(mc.cfgDir); err != nil {
+		return "", err
+	}
+	note := ""
+	if pk.Backend == "claudecode" {
+		if bin, derr := claudecode.DiscoverBinary(pk.DefaultEndpoint); derr == nil {
+			note = fmt.Sprintf(" Claude CLI: %s (billing: your subscription).", bin)
+		} else {
+			note = " ⚠ Claude CLI not found — install it, run `claude` → /login once, or set TENANT_CLAUDE_BIN to the binary."
+		}
+	}
+	return fmt.Sprintf("added %s as %q (model %s, no API key).%s Switch with `/model use %s`. "+
+		"Router bind hint: set the big leg to %q via /route configure.",
+		pk.Label, kindID, model, note, kindID, kindID), nil
 }
 
 // RemoveModel deletes a configured backend (and its stored credential).
@@ -731,6 +850,15 @@ func cmdModel(_ context.Context, args []string) error {
 		if pc == nil {
 			return fmt.Errorf("no backend named %q (see `tenant model list`)", target)
 		}
+		if pc.Kind == "claudecode" {
+			// No HTTP catalog behind the sentinel endpoint — print the CLI's
+			// stable aliases (full model IDs also work with `model use`).
+			fmt.Printf("4 model alias(es) for %q (claude -p; full Claude model IDs also accepted):\n", target)
+			for _, id := range []string{"fable", "haiku", "opus", "sonnet"} {
+				fmt.Printf("  · %s\n", id)
+			}
+			return nil
+		}
 		endpoint := strings.TrimSpace(pc.Endpoint)
 		if endpoint == "" {
 			if pk, ok := providerKinds[pc.Kind]; ok {
@@ -764,7 +892,15 @@ func cmdModel(_ context.Context, args []string) error {
 		return nil
 	case "add":
 		if name == "" {
-			return fmt.Errorf("usage: tenant model add <name> --endpoint URL [--kind ...] [--tool-format ...]")
+			return fmt.Errorf("usage: tenant model add <name> --endpoint URL [--kind ...] [--tool-format ...]   (keyless: tenant model add claudecode)")
+		}
+		// Bare `tenant model add claudecode`: when the name IS a keyless,
+		// non-OpenAI-compat catalog kind and --kind was left at its vllm
+		// default, infer the kind from the name so no flags are needed.
+		if kind == "vllm" && name != "vllm" {
+			if nk, isKind := providerKinds[name]; isKind && !nk.NeedsKey && nk.Backend != "vllm" && nk.DefaultEndpoint != "" {
+				kind = name
+			}
 		}
 		pk, ok := providerKinds[kind]
 		if !ok {
