@@ -228,6 +228,20 @@ func (m *discordRelayManager) Disable() error {
 	return nil
 }
 
+// Shutdown stops a running relay for PROCESS teardown (serve SIGTERM/Ctrl-C,
+// exit) WITHOUT persisting an "off" choice. A restart is not the operator
+// disabling the relay, so the saved enabled=true must survive — otherwise
+// every graceful serve stop silently wrote relay.enabled=false and the bot
+// came back offline. Mirrors dashboardManager.Shutdown (same bug, same fix).
+func (m *discordRelayManager) Shutdown() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running {
+		m.cancel()
+		m.running = false
+	}
+}
+
 // Status reports whether the relay is running, whether an operator id is set,
 // and whether offsite exec mode is on.
 func (m *discordRelayManager) Status() (running bool, operatorSet bool, execOn bool) {

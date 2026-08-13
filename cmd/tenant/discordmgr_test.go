@@ -93,6 +93,47 @@ func TestRelayManager_Lifecycle(t *testing.T) {
 	}
 }
 
+// TestRelayManager_ShutdownDoesNotPersistOff is the relay copy of the
+// dashboard regression (found live 2026-08-12 on the server): serve teardown
+// used Disable(), which persisted enabled=false — so every graceful stop
+// durably switched the bot off and it never came back on the next boot. Only
+// the operator's explicit Disable (/relay off) may persist "off"; process
+// teardown must go through Shutdown, which persists nothing.
+func TestRelayManager_ShutdownDoesNotPersistOff(t *testing.T) {
+	var persisted []bool
+	m := &discordRelayManager{
+		base:       context.Background(),
+		runner:     &fakeRunner{},
+		operatorID: "op123",
+		start:      func(_ context.Context, _ string) error { return nil },
+		persist: func(enabled bool, op string, allowExec bool) error {
+			persisted = append(persisted, enabled)
+			return nil
+		},
+	}
+	if err := m.Enable(); err != nil {
+		t.Fatal(err)
+	}
+
+	m.Shutdown()
+	if running, _, _ := m.Status(); running {
+		t.Error("should be stopped after Shutdown")
+	}
+	for _, on := range persisted {
+		if !on {
+			t.Fatalf("Shutdown persisted enabled=false (persist log %v); teardown must not write an off choice", persisted)
+		}
+	}
+
+	// The operator's explicit Disable still persists "off".
+	if err := m.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) == 0 || persisted[len(persisted)-1] {
+		t.Fatalf("Disable must persist enabled=false, persist log %v", persisted)
+	}
+}
+
 // SetExec flips the live gate + reports through Status, and persists alongside
 // the running/operator state.
 func TestRelayManager_ExecToggle(t *testing.T) {

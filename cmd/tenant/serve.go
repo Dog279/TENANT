@@ -662,12 +662,13 @@ func cmdServe(ctx context.Context, args []string) error {
 	if peerSrvStop != nil {
 		peerSrvStop() // stop inbound peer turns
 	}
+	// Shutdown (not Disable) for BOTH managers: stop WITHOUT persisting an
+	// "off" choice, so the operator's enabled=true survives a restart (a
+	// SIGTERM is not a /relay off or /dashboard off). Disable persisting on
+	// every serve teardown was the bug — twice.
 	if relayMgr != nil {
-		_ = relayMgr.Disable() // stop Discord ingest
+		relayMgr.Shutdown() // stop Discord ingest
 	}
-	// Shutdown (not Disable): stop the server WITHOUT persisting an "off" choice,
-	// so the operator's enabled=true survives a restart (a SIGTERM is not a
-	// /dashboard off). Disable persisting on every serve teardown was the bug.
 	if err := dashMgr.Shutdown(); err != nil {
 		log.Warn("dashboard shutdown", "err", err)
 	}
