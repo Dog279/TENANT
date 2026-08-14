@@ -23,6 +23,10 @@ func WriteTerminal(w io.Writer, rep *Report) {
 		}
 		fmt.Fprintf(w, "%s %-40s %-26s %5.1f  %4dms\n",
 			mark, truncate(r.TaskID, 40), truncate(r.Category, 26), r.Score, r.ElapsedMS)
+		if r.Rollouts > 1 { // pass^k reliability (TEN-286)
+			fmt.Fprintf(w, "    └─ pass^%d = %.2f (%d/%d rollouts passed)\n",
+				r.Rollouts, PassFraction(r.RolloutsPassed, r.Rollouts), r.RolloutsPassed, r.Rollouts)
+		}
 		for _, f := range r.Failures {
 			fmt.Fprintf(w, "    └─ %s\n", f)
 		}
