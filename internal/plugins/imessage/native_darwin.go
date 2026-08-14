@@ -143,6 +143,10 @@ func (n *nativeService) SendText(ctx context.Context, chatGUID, text string) (st
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("imessage: message text is empty")
 	}
+	text = sanitizeOutbound(text) // dedup layer 3: strip edge BOM/zero-width
+	if text == "" {
+		return "", fmt.Errorf("imessage: message text is empty")
+	}
 	script, argv := sendToChatScript(chatGUID, text)
 	return "", runOsascript(ctx, script, argv)
 }
@@ -154,6 +158,10 @@ func (n *nativeService) NewChat(ctx context.Context, address, text string) (stri
 		return "", fmt.Errorf("imessage: recipient address (phone/email) required")
 	}
 	if strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("imessage: message text is empty")
+	}
+	text = sanitizeOutbound(text) // dedup layer 3: strip edge BOM/zero-width
+	if text == "" {
 		return "", fmt.Errorf("imessage: message text is empty")
 	}
 	script, argv := sendToBuddyScript(address, text)
