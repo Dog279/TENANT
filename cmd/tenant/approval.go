@@ -502,11 +502,17 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// activity feed still SEE that a Discord approval is outstanding (visibility
 	// only — not resolvable from those surfaces).
 	if b.ask != nil {
-		b.reg.emitBeside(agent.EventApprovalPending, req, "discord", "")
-		recordPolicyApproval(ctx, cat, action, detail, "discord", "pending")
+		// Tag the beside-event with THIS broker's origin (discord|imessage) so the
+		// dashboard/activity feed shows where the out-of-band approval is pending.
+		origin := b.origin
+		if origin == "" {
+			origin = "discord"
+		}
+		b.reg.emitBeside(agent.EventApprovalPending, req, origin, "")
+		recordPolicyApproval(ctx, cat, action, detail, origin, "pending")
 		d := b.ask(ctx, req)
-		b.reg.emitBeside(agent.EventApprovalResolved, req, "discord", outcomeOf(d))
-		recordPolicyApproval(ctx, cat, action, detail, "discord", outcomeOf(d))
+		b.reg.emitBeside(agent.EventApprovalResolved, req, origin, outcomeOf(d))
+		recordPolicyApproval(ctx, cat, action, detail, origin, outcomeOf(d))
 		return d
 	}
 
