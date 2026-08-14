@@ -53,7 +53,14 @@ type swappableClassifier struct {
 }
 
 func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
-	s.p.Store(route.NewSupra(cfg.Endpoint, cfg.Model, time.Duration(cfg.TimeoutMS)*time.Millisecond))
+	budget := time.Duration(cfg.TimeoutMS) * time.Millisecond
+	s.p.Store(route.NewSupra(cfg.Endpoint, cfg.Model, budget))
+	// Keep the agent's active-routing join budget equal to the classifier's own
+	// timeout. Before this, the join was hardcoded at 250ms while timeout_ms fed
+	// only the Supra HTTP client — so raising timeout_ms looked like it granted
+	// more time and granted none, and any classifier slower than 250ms produced
+	// "routed role unavailable; using planner" with zero time left to resolve.
+	agent.SetActiveRouteBudget(budget)
 }
 
 func (s *swappableClassifier) Classify(ctx context.Context, query string) (route.Signal, error) {

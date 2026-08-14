@@ -23,6 +23,41 @@ import (
 	"tenant/internal/model/toolfmt"
 )
 
+// DefaultActiveRouteBudget bounds the ACTIVE-routing join when the operator has
+// not configured `route.timeout_ms`. It is ONE deadline measured from
+// EventTurnStart covering BOTH the classifier hook and routed-role resolution —
+// so a classifier that eats the whole budget leaves resolveRoutedRole none, and
+// it returns DeadlineExceeded without making a single call ("routed role
+// unavailable; using planner"). Sized for a warm local classifier (Supra 51M
+// measures ~115ms warm, ~2.7s cold from an unloaded Ollama).
+const DefaultActiveRouteBudget = 250 * time.Millisecond
+
+// activeRouteBudgetNS holds the operator's configured budget in nanoseconds.
+// Package-level and atomic rather than a Config field because EVERY agent in
+// the process (main, tenant-discord, tenant-cron, imessage, peers) must share
+// the single `route.timeout_ms`, and because `/route` can change it at runtime —
+// per-Config copies taken at construction would silently go stale. Set from the
+// same choke point that builds the classifier, so the two can never disagree.
+var activeRouteBudgetNS atomic.Int64
+
+// SetActiveRouteBudget applies the operator's configured active-routing budget.
+// A non-positive duration restores DefaultActiveRouteBudget.
+func SetActiveRouteBudget(d time.Duration) {
+	if d <= 0 {
+		activeRouteBudgetNS.Store(0)
+		return
+	}
+	activeRouteBudgetNS.Store(int64(d))
+}
+
+// ActiveRouteBudget reports the budget Turn will apply.
+func ActiveRouteBudget() time.Duration {
+	if v := activeRouteBudgetNS.Load(); v > 0 {
+		return time.Duration(v)
+	}
+	return DefaultActiveRouteBudget
+}
+
 // ErrLoopCeilingReached is set in TurnResult.Error when the agent
 // hit Profile.PlanLoopCeiling without the model emitting a final
 // response. The runtime forces a final synthesis call (no tools) and
@@ -433,7 +468,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		return nil, errors.New("agent: TurnRequest.UserQuery required")
 	}
 	a.emit(Event{Kind: EventTurnStart, Text: req.UserQuery})
-	activeRouteDeadline := time.Now().Add(250 * time.Millisecond)
+	activeRouteDeadline := time.Now().Add(ActiveRouteBudget())
 	var routeState *turnRouteState
 	var routeDeadline time.Time
 	var routeReq RouteRequest
