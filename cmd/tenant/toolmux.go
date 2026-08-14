@@ -87,6 +87,15 @@ type toolMux struct {
 	// (restore must not re-trigger a save of what it just loaded).
 	onChange func(map[string]bool)
 
+	// savedStates is the operator's persisted enable/disable curation, captured
+	// by restore(). Consulted by add() so tools that register LATE still land on
+	// the operator's choice rather than the registration default: remote-MCP
+	// plugins publish their tools from an activator that runs AFTER restore, so
+	// restore skips them ("tool no longer registered") and, without this, every
+	// bounce silently re-enabled tools the operator had turned off. Kept in sync
+	// by SetEnabled so a newer toggle is never reverted by a later registration.
+	savedStates map[string]bool
+
 	// --- Embedding-ranked tool selection (lazy, opt-in via SetEmbedder) ---
 	// When the registered catalog reaches rankActivateThreshold AND an
 	// embedder has been installed, Search switches from "return every
@@ -167,6 +176,17 @@ var coreToolNames = map[string]bool{
 	// as always-surfaced so the model can never be steered to web_search simply
 	// because its own (peer-extended) wiki got ranked out of a large catalog.
 	"wiki_search": true,
+	// The Gmail READ path: gmail_read is the only way to see a message BODY —
+	// gmail_search returns headers + snippet only. Brief/digest-shaped prompts
+	// ("send me a daily brief covering my email") embed close to gmail_send and
+	// gmail_draft, so on a 75-tool catalog with a 12-slot MaxToolsPerCall ceiling
+	// the cosine rank surfaced the WRITE half of Gmail and trimmed the read half
+	// — the agent then truthfully reported "I cannot read your Gmail (I only have
+	// draft and send)" and answered from subject lines. Same scar as wiki_search,
+	// same remedy: reading the user's own mail is a capability the operator opted
+	// into, never something a per-turn relevance score should be able to hide.
+	"gmail_search": true,
+	"gmail_read":   true,
 }
 
 // setOnChange installs the persistence hook. Call it after restore.
@@ -178,7 +198,14 @@ func (m *toolMux) setOnChange(fn func(map[string]bool)) {
 
 // enabledSnapshot captures every tool's current enabled state by name.
 func (m *toolMux) enabledSnapshot() map[string]bool {
-	out := make(map[string]bool, len(m.order))
+	out := make(map[string]bool, len(m.order)+len(m.savedStates))
+	// Seed from the persisted curation so a toggle that happens BEFORE a
+	// late-registering plugin loads (remote MCP) doesn't drop that plugin's
+	// tools out of the settings file entirely — losing the operator's choice
+	// for them permanently. Live registry state overrides it below.
+	for n, v := range m.savedStates {
+		out[n] = v
+	}
 	for _, n := range m.order {
 		out[n] = m.byName[n].enabled
 	}
@@ -204,6 +231,15 @@ func (m *toolMux) restore(saved map[string]bool) []string {
 	if len(saved) == 0 {
 		return nil
 	}
+	// Remember the curation BEFORE applying it: the loop below can only touch
+	// tools that are already registered, and remote-MCP tools are not yet. add()
+	// replays this map for them when their activator finally registers them.
+	m.mu.Lock()
+	m.savedStates = make(map[string]bool, len(saved))
+	for n, v := range saved {
+		m.savedStates[n] = v
+	}
+	m.mu.Unlock()
 	names := make([]string, 0, len(saved))
 	for n := range saved {
 		names = append(names, n)
@@ -376,7 +412,16 @@ func (m *toolMux) adoptLiveMCP(label string, p plugin, cleanup func()) {
 			continue
 		}
 		m.order = append(m.order, spec.Name)
-		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: true}
+		// Adopt ENABLED by default, but never over the operator's restored
+		// curation: a remote tool they disabled last session must stay off. This
+		// has to happen here because restore() runs before the reconnect
+		// goroutine registers these names, so restore can only skip them — which
+		// silently re-enabled every disabled remote-MCP tool on each bounce.
+		enabled := true
+		if v, ok := m.savedStates[spec.Name]; ok {
+			enabled = v
+		}
+		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: enabled}
 		added = true
 	}
 	if added {
@@ -540,7 +585,13 @@ func (m *toolMux) add(label string, p plugin) {
 		if _, dup := m.byName[sp.Name]; dup {
 			continue
 		}
-		m.byName[sp.Name] = &toolEntry{spec: sp, owner: p, plugin: label, enabled: true}
+		// Tools start enabled UNLESS the operator's restored curation says
+		// otherwise — the late-registration path (remote MCP) depends on this.
+		enabled := true
+		if v, ok := m.savedStates[sp.Name]; ok {
+			enabled = v
+		}
+		m.byName[sp.Name] = &toolEntry{spec: sp, owner: p, plugin: label, enabled: enabled}
 		m.order = append(m.order, sp.Name)
 		added = true
 	}
@@ -998,13 +1049,18 @@ func (m *toolMux) SetEnabled(target string, on bool) (int, string, error) {
 	}
 	m.mu.Lock()
 	n, scope := 0, ""
+	if m.savedStates == nil {
+		m.savedStates = map[string]bool{}
+	}
 	if e, ok := m.byName[target]; ok {
 		e.enabled = on
+		m.savedStates[target] = on
 		n, scope = 1, "tool"
 	} else {
-		for _, e := range m.byName {
+		for name, e := range m.byName {
 			if e.plugin == target {
 				e.enabled = on
+				m.savedStates[name] = on
 				n++
 			}
 		}

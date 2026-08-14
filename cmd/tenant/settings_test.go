@@ -123,3 +123,69 @@ func TestToolMux_RestoreIsSilentAndIgnoresUnknown(t *testing.T) {
 		t.Fatalf("only the known tool should toggle: saves=%d notes=%v", saveCount, notes)
 	}
 }
+
+// Remote-MCP plugins publish their tools from an activator that runs AFTER
+// restore, so restore can only skip them. If add() ignored the restored
+// curation, every bounce silently re-enabled tools the operator had turned off
+// — observed in production as 29 Atlassian MCP tools coming back on after a
+// restart while settings.main.json still read false.
+func TestToolMux_RestoreSurvivesLateRegistration(t *testing.T) {
+	var hit string
+	m := newToolMux()
+
+	// Operator disabled it last session; this session it isn't registered yet.
+	notes := m.restore(map[string]bool{"remote_do": false})
+	if _, ok := m.Get("remote_do"); ok {
+		t.Fatalf("remote_do should not be registered yet; notes=%v", notes)
+	}
+
+	// The activator finally registers it, long after restore ran.
+	m.add("mcp:remote", fakePlugin{name: "remote", lastHit: &hit})
+
+	if _, ok := m.Get("remote_do"); ok {
+		t.Fatal("late-registered tool must honor the restored disable, not add()'s enabled default")
+	}
+}
+
+// The path an already-connected remote MCP actually takes at boot: the reconnect
+// goroutine calls adoptLiveMCP, which merges tools ENABLED, and it runs AFTER
+// restore. Without honoring the restored curation there, a disabled remote tool
+// came back on every single bounce even though settings.json still read false.
+func TestToolMux_AdoptLiveMCPHonorsRestoredCuration(t *testing.T) {
+	var hit string
+	m := newToolMux()
+
+	m.restore(map[string]bool{"remote_do": false})
+
+	// Reconnect goroutine adopts the live server well after restore ran.
+	m.adoptLiveMCP("mcp:remote", fakePlugin{name: "remote", lastHit: &hit}, nil)
+
+	if _, ok := m.Get("remote_do"); ok {
+		t.Fatal("adoptLiveMCP must not re-enable a tool the operator disabled")
+	}
+}
+
+// A toggle that lands BEFORE a late-registering plugin loads must not drop that
+// plugin's tools from the persisted snapshot — otherwise the operator's choice
+// for them is erased from settings and cannot come back.
+func TestToolMux_SnapshotKeepsUnregisteredCuration(t *testing.T) {
+	var hit string
+	m := newToolMux()
+	m.add("os", fakePlugin{name: "os", lastHit: &hit})
+	m.restore(map[string]bool{"os_do": true, "remote_do": false})
+
+	var saved map[string]bool
+	m.setOnChange(func(snap map[string]bool) { saved = snap })
+	if _, _, err := m.SetEnabled("os_do", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if saved == nil {
+		t.Fatal("expected a snapshot")
+	}
+	if v, ok := saved["remote_do"]; !ok || v {
+		t.Fatalf("unregistered remote_do curation must survive the snapshot: %+v", saved)
+	}
+	if saved["os_do"] {
+		t.Fatalf("live state must override the seeded curation: %+v", saved)
+	}
+}
