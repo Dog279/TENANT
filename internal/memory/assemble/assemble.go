@@ -20,12 +20,12 @@ package assemble
 import (
 	"context"
 	"fmt"
-	"math"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"tenant/internal/memory/cosine"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/soul"
@@ -526,21 +526,10 @@ func dedupeFacts(facts []*semantic.Fact, threshold float64) []*semantic.Fact {
 	return kept
 }
 
+// cosineSimF32 is a thin alias over the shared internal/memory/cosine package
+// (the single source of truth); kept named so dedupeFacts reads unchanged.
 func cosineSimF32(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		fa, fb := float64(a[i]), float64(b[i])
-		dot += fa * fb
-		na += fa * fa
-		nb += fb * fb
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	return cosine.Similarity(a, b)
 }
 
 func (a *Assembler) retrieveEpisodes(ctx context.Context, req Request) ([]*episodic.Episode, error) {

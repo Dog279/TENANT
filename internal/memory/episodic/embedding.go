@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+
+	"tenant/internal/memory/cosine"
 )
 
 // Embeddings are stored as little-endian float32 BLOBs. Length is
@@ -37,20 +39,8 @@ func decodeEmbedding(b []byte) ([]float32, error) {
 // Range: [-1, 1]; identical direction → 1, orthogonal → 0, opposite → -1.
 // Returns 0 if either vector is zero-magnitude or lengths differ
 // (treating mismatched dims as "no signal" rather than crashing the
-// search path).
+// search path). Thin alias over the shared internal/memory/cosine package
+// (the single source of truth); kept named so search.go reads unchanged.
 func cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		fa, fb := float64(a[i]), float64(b[i])
-		dot += fa * fb
-		na += fa * fa
-		nb += fb * fb
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	return cosine.Similarity(a, b)
 }

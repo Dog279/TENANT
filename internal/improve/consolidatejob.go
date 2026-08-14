@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 
+	"tenant/internal/memory/cosine"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/model"
 )
@@ -374,7 +374,7 @@ func clusterFacts(facts []*semantic.Fact, threshold float64, maxSize int) [][]*s
 			if len(clusters[ci]) >= maxSize || len(seed.Embedding) != len(f.Embedding) {
 				continue
 			}
-			if cosine(f.Embedding, seed.Embedding) >= threshold {
+			if cosine.Similarity(f.Embedding, seed.Embedding) >= threshold {
 				clusters[ci] = append(clusters[ci], f)
 				placed = true
 				break
@@ -462,23 +462,6 @@ func maxConfidence(cluster []*semantic.Fact) float64 {
 		m = 0.7
 	}
 	return m
-}
-
-func cosine(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		fa, fb := float64(a[i]), float64(b[i])
-		dot += fa * fb
-		na += fa * fa
-		nb += fb * fb
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 // firstJSONObject extracts the first balanced top-level JSON object from noisy

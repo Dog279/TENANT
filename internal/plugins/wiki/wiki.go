@@ -30,13 +30,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"tenant/internal/fsperm"
+	"tenant/internal/memory/cosine"
 	"tenant/internal/model"
 )
 
@@ -230,7 +230,7 @@ func (ix *Index) computeVirtualLinks() {
 			best := 0.0
 			for _, i := range byNote[na] {
 				for _, j := range byNote[nb] {
-					if s := cosine(ix.idx.Chunks[i].Vec, ix.idx.Chunks[j].Vec); s > best {
+					if s := cosine.Similarity(ix.idx.Chunks[i].Vec, ix.idx.Chunks[j].Vec); s > best {
 						best = s
 					}
 				}
@@ -484,7 +484,7 @@ func (ix *Index) Search(ctx context.Context, query string, k int) ([]Hit, error)
 	all := make([]scored, 0, len(ix.idx.Chunks))
 	for i := range ix.idx.Chunks {
 		c := &ix.idx.Chunks[i]
-		s := cosine(q, c.Vec)
+		s := cosine.Similarity(q, c.Vec)
 		// Heading is the strongest single relevance signal a note
 		// carries — scan it too, not just the body.
 		if longest != "" && strings.Contains(strings.ToLower(c.Heading+" "+c.Text), longest) {
@@ -757,25 +757,6 @@ func snippet(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
-}
-
-// cosine — copied in-package (≈10 lines, no shared "magic"); same
-// choice made for episodic/semantic. Readable here is the point.
-func cosine(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		x, y := float64(a[i]), float64(b[i])
-		dot += x * y
-		na += x * x
-		nb += y * y
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func contains(ss []string, s string) bool {
