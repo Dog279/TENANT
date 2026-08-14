@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TEN-263 — Production launchd unit for `tenant serve` (the headless 24/7 hub).
+
+  This is a TEMPLATE. Before loading it:
+    1. Rename the file + Label to your convention (the migration uses com.tyclaw.tenant).
+    2. Replace the {{PLACEHOLDERS}} below with absolute paths.
+    3. CRITICAL (TCC): every path the unit touches — the binary, --config, --data,
+       and the logs — MUST live OUTSIDE ~/Desktop, ~/Documents, and ~/Downloads,
+       or macOS TCC will silently deny file access to a launchd-spawned process.
+       Good homes: ~/Library/Application Support/tenant (data),
+       ~/.config/tenant (config), ~/Library/Logs/tenant (logs).
+    4. Pin explicit --config / --data so the daemon does NOT collide with ~/.hermes
+       or with an interactive `tenant tui` you run by hand.
+
+  Install (per-user LaunchAgent):
+    cp deploy/launchd/com.tenant.serve.plist ~/Library/LaunchAgents/com.tyclaw.tenant.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tyclaw.tenant.plist
+    launchctl kickstart -k gui/$(id -u)/com.tyclaw.tenant   # start now
+  Status / logs:
+    launchctl print gui/$(id -u)/com.tyclaw.tenant | grep -E 'state|pid'
+    tail -f {{LOG_DIR}}/tenant.serve.log
+  Stop / uninstall:
+    launchctl bootout gui/$(id -u)/com.tyclaw.tenant
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tyclaw.tenant</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{TENANT_BIN}}</string>            <!-- e.g. /Users/tyclaw/bin/tenant -->
+    <string>serve</string>
+    <string>--config</string>
+    <string>{{CONFIG_DIR}}</string>            <!-- e.g. /Users/tyclaw/.config/tenant -->
+    <string>--data</string>
+    <string>{{DATA_DIR}}</string>              <!-- e.g. /Users/tyclaw/Library/Application Support/tenant -->
+    <!-- dashboard is on by default at 127.0.0.1:8770; uncomment to pin a token-protected addr -->
+    <!-- <string>- -dashboard-addr</string><string>127.0.0.1:8770</string> -->
+  </array>
+
+  <!-- Restart on crash + at login. This is supervision, not the in-app restart
+       policy: the daemon's own "never restart mid-turn / idle 5+ min" discipline
+       still governs deliberate restarts; KeepAlive only covers crashes. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>WorkingDirectory</key>
+  <string>{{DATA_DIR}}</string>
+
+  <!-- Logs go to a non-TCC path; the daemon routes every status line (setup,
+       health, fallback, cron, relay) to stdout, so this is the operator's
+       window into "is it working" (mirror of what the TUI feed would show). -->
+  <key>StandardOutPath</key>
+  <string>{{LOG_DIR}}/tenant.serve.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{LOG_DIR}}/tenant.serve.err.log</string>
+
+  <!-- Provider API keys: prefer credentials.json under {{CONFIG_DIR}} (managed by
+       `tenant setup` / the settings page). If a provider reads a key from the
+       environment (e.g. ZAI_API_KEY), set it here instead of in your shell rc,
+       since a LaunchAgent does NOT inherit your interactive shell environment. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>{{HOME_DIR}}</string>             <!-- e.g. /Users/tyclaw -->
+    <!-- <key>ZAI_API_KEY</key><string>...</string> -->
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
