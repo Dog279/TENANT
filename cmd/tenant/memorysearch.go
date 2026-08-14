@@ -40,9 +40,11 @@ func newMemorySearchDispatcher(name string, sem *semantic.Store, epi *episodic.S
 
 func (d *memorySearchDispatcher) Tools() []model.ToolSpec {
 	return []model.ToolSpec{{
-		Name:        "memory_search",
-		Description: "Recall from your own long-term memory — stored facts + past episodes — by semantic + keyword search. Covers your FULL memory (private included). Use when asked what you know/remember or about earlier conversations.",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","description":"max results per store (default 8)"}},"required":["query"]}`),
+		Name:         "memory_search",
+		Description:  "Recall from your own long-term memory — stored facts + past episodes — by semantic + keyword search. Covers your FULL memory (private included). Use when asked what you know/remember or about earlier conversations.",
+		Parameters:   json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"k":{"type":"integer","description":"max results per store (default 8)"}},"required":["query"]}`),
+		ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceMemory}},
+		Outbound:     true, // connected peers receive this query through federation
 	}}
 }
 

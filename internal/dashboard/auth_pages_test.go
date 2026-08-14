@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-func authedServer() *Server { return New(Config{Auth: "s3cret"}, nil, nil, nil, nil, nil) }
+func authedServer() *Server {
+	return New(Config{Addr: "example.com", Auth: "s3cret"}, nil, nil, nil, nil, nil)
+}
 
 func TestCheckAuth_CookieAndExemptions(t *testing.T) {
 	s := authedServer()
@@ -39,10 +41,10 @@ func TestCheckAuth_CookieAndExemptions(t *testing.T) {
 	}
 }
 
-func TestCheckAuth_OpenWhenNoToken(t *testing.T) {
+func TestCheckAuth_ClosedWhenNoToken(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil) // Auth=""
-	if r := httptest.NewRequest("GET", "/tools", nil); !s.checkAuth(r) {
-		t.Error("no configured token = open (loopback-only enforced elsewhere)")
+	if r := httptest.NewRequest("GET", "/tools", nil); s.checkAuth(r) {
+		t.Error("no configured token must fail closed")
 	}
 }
 
@@ -112,7 +114,7 @@ func TestSettings_RendersFormWhenUnauthed(t *testing.T) {
 func TestLogout_ClearsCookie(t *testing.T) {
 	s := authedServer()
 	rec := httptest.NewRecorder()
-	s.handleLogout(rec, httptest.NewRequest("GET", "/auth/logout", nil))
+	s.handleLogout(rec, httptest.NewRequest("POST", "/auth/logout", nil))
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings" {
 		t.Fatalf("logout should 303 to /settings, got %d %q", rec.Code, rec.Header().Get("Location"))
 	}

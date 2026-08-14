@@ -12,6 +12,7 @@ import (
 
 	"tenant/internal/model"
 	"tenant/internal/route"
+	"tenant/internal/secrets"
 )
 
 func TestLaunchConfig_RoundTrip(t *testing.T) {
@@ -31,7 +32,8 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 
 	// Save then reload → provider/embed/gateway survive.
 	want := &launchConfig{
-		Provider: "vllm",
+		Provider:         "vllm",
+		BrowserNoSandbox: true,
 		Providers: map[string]*providerConfig{
 			"vllm": {Kind: "vllm", Endpoint: "http://h:8000", Model: "gemma-4-26b", ToolFmt: "gemma"},
 		},
@@ -45,7 +47,8 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 				"tenant-discord": {Mode: "shadow", NeverCloud: &relayNeverCloud},
 			},
 		},
-		Gateway: gatewayConfig{Mode: "sse", SSEAddr: "127.0.0.1:8765"},
+		Gateway:       gatewayConfig{Mode: "sse", SSEAddr: "127.0.0.1:8765"},
+		TurnScheduler: turnSchedulerConfig{QueueDepth: 24, SourceQuotas: map[string]int{"dashboard": 12, "cron": 3}},
 	}
 	if err := want.save(dir); err != nil {
 		t.Fatalf("save: %v", err)
@@ -76,6 +79,12 @@ func TestLaunchConfig_RoundTrip(t *testing.T) {
 	}
 	if got.Gateway.Mode != "sse" || got.Gateway.SSEAddr != "127.0.0.1:8765" {
 		t.Fatalf("gateway round-trip wrong: %+v", got.Gateway)
+	}
+	if !got.BrowserNoSandbox {
+		t.Fatal("browser_no_sandbox did not survive config round-trip")
+	}
+	if got.TurnScheduler.QueueDepth != 24 || got.TurnScheduler.SourceQuotas["dashboard"] != 12 || got.TurnScheduler.SourceQuotas["cron"] != 3 {
+		t.Fatalf("turn scheduler round-trip wrong: %+v", got.TurnScheduler)
 	}
 	if got.SchemaVersion != currentSchemaVersion {
 		t.Fatalf("schema version not stamped: %d", got.SchemaVersion)
@@ -499,11 +508,8 @@ func TestCredentials_RoundTripAndResolve(t *testing.T) {
 	if err := c.save(dir); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	// 0600 perms on POSIX (skip the check on Windows where it's advisory).
-	if fi, err := os.Stat(credentialsPath(dir)); err == nil && os.PathSeparator == '/' {
-		if fi.Mode().Perm() != 0o600 {
-			t.Fatalf("credentials perms = %o, want 600", fi.Mode().Perm())
-		}
+	if report := secrets.Probe(credentialsPath(dir)); !report.Protected {
+		t.Fatalf("credentials are not protected: %+v", report)
 	}
 
 	// Stored secret resolves.

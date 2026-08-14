@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,15 @@ func TestWriteWikiReport_RoundTrip(t *testing.T) {
 		t.Fatalf("path not in wiki dir: %s", path)
 	}
 	b, _ := os.ReadFile(path)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if extra := info.Mode().Perm() &^ os.FileMode(0o600); extra != 0 {
+			t.Errorf("research report mode = %v, exceeds 0600", info.Mode().Perm())
+		}
+	}
 	got := string(b)
 	if !strings.HasPrefix(got, "# Research: Test question?") {
 		t.Fatalf("missing title header: %q", got[:80])

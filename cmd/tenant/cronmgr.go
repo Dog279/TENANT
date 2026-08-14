@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/agent"
 	croneng "tenant/internal/cron"
 	"tenant/internal/dashboard"
@@ -35,6 +36,7 @@ import (
 	"tenant/internal/model"
 	cronp "tenant/internal/plugins/cron"
 	"tenant/internal/plugins/osys"
+	"tenant/internal/runtrace"
 	"tenant/internal/tui"
 )
 
@@ -60,6 +62,7 @@ type cronAgentDeps struct {
 	skills      agent.SkillRetriever
 	compactor   agent.Compactor
 	userProfile *userprofile.Profile
+	runs        *runtrace.Store
 	fullTools   []model.ToolSpec
 	fullDisp    agent.ToolDispatcher
 	sysPrompt   string
@@ -82,7 +85,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	safeReg, safeDisp := restrictReadComms(d.fullTools, d.fullDisp, "scheduled cron jobs", notCron)
 	safeAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
-		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills,
+		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills, Runs: d.runs,
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
@@ -93,7 +96,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	execReg, execDisp := restrictExec(d.fullTools, d.fullDisp, "scheduled cron jobs (exec)", notCron)
 	execAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron-exec", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
-		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills,
+		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills, Runs: d.runs,
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
@@ -210,7 +213,7 @@ func scrubbedEnv() []string {
 // they don't run in Tenant's cwd. Falls back to dataDir on failure.
 func cronSandboxDir(dataDir string) string {
 	dir := filepath.Join(dataDir, "cron-work")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fsperm.MkdirAll(dir); err != nil {
 		return dataDir
 	}
 	return dir
@@ -240,7 +243,7 @@ func saveCronHistory(dataDir string, h []croneng.RunRecord) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(cronHistoryPath(dataDir), b, 0o600)
+	return atomicWrite(cronHistoryPath(dataDir), b)
 }
 
 // cronManager wraps the cron engine. tuiCron / dashCron adapt it to the TUI and

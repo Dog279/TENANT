@@ -63,7 +63,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "gmail_search", Description: "Search the user's Gmail (Gmail query syntax, e.g. `from:alice is:unread newer_than:7d`). Returns id/from/subject/date/snippet. Use gmail_read for the body.",
 			Parameters: obj(`"query":{"type":"string"},"max":{"type":"integer","description":"max results (default 10, cap 25)"}`, "query")},
 		{Name: "gmail_read", Description: "Read one email's full plain-text body + headers by message id (from gmail_search).",
@@ -121,6 +121,11 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "drive_trash", Description: "Move a Drive file to Trash by id (reversible). GATED. Permanent delete is not exposed.",
 			Parameters: obj(`"id":{"type":"string"}`, "id"), Gated: true},
 	}
+	for i := range tools {
+		tools[i].Outbound = true
+		tools[i].ResultLabels = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceService}}
+	}
+	return tools
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {

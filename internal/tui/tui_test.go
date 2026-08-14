@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tenant/internal/agent"
+	"tenant/internal/orchestra"
 )
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
@@ -1235,6 +1236,7 @@ func TestSlash_EnableBareNameUsesSmartMatch(t *testing.T) {
 // status query after a toggle reflects the change.
 type fakeDash struct {
 	addr        string
+	authToken   string
 	running     bool
 	enableErr   error
 	disableErr  error
@@ -1242,6 +1244,8 @@ type fakeDash struct {
 	disableC    int
 	statusCalls int
 }
+
+func (f *fakeDash) AuthToken() string { return f.authToken }
 
 func (f *fakeDash) Enable() (string, error) {
 	f.enableCalls++
@@ -1265,7 +1269,7 @@ func (f *fakeDash) Status() (bool, string) {
 // `/dashboard on` enables + reports the URL; `/dashboard off` disables +
 // reports stopped; bare/`status` reflect the running state.
 func TestSlash_Dashboard(t *testing.T) {
-	fd := &fakeDash{addr: "127.0.0.1:8770"}
+	fd := &fakeDash{addr: "127.0.0.1:8770", authToken: "local-test-token"}
 	m := newModel(context.Background(), Config{Dash: fd})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 
@@ -1276,6 +1280,9 @@ func TestSlash_Dashboard(t *testing.T) {
 	}
 	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "http://127.0.0.1:8770") {
 		t.Errorf("`/dashboard on` should report the URL: %q", last)
+	}
+	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "local-test-token") {
+		t.Errorf("`/dashboard on` should report the auth token: %q", last)
 	}
 
 	// status → running.
@@ -3118,6 +3125,17 @@ func TestApplyEvent_SkipsCrossAgentAndBus(t *testing.T) {
 	m.applyEvent(agent.Event{Kind: agent.EventTurnStart})
 	if len(m.feedLines) != base+1 {
 		t.Fatalf("a primary-agent event should append one feed line, got +%d", len(m.feedLines)-base)
+	}
+}
+
+func TestApplyTeamEvent_ShowsBudgetTermination(t *testing.T) {
+	m := newModel(context.Background(), Config{})
+	st := orchestra.BudgetStatus{RunID: 2, TerminationReason: "wall time limit exceeded"}
+	m.applyTeamEvent(TeamEvent{AgentID: "main", Event: agent.Event{
+		Kind: agent.EventTeamBudget, Text: st.String(), TeamBudget: &st,
+	}})
+	if len(m.feedLines) == 0 || !strings.Contains(stripANSI(m.feedLines[len(m.feedLines)-1]), "wall time limit exceeded") {
+		t.Fatalf("budget termination was not shown in TUI feed: %v", m.feedLines)
 	}
 }
 

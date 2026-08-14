@@ -132,6 +132,9 @@ type ToolCallResult struct {
 	Result  string
 	IsError bool
 	Err     error
+	// Labels carry sensitivity/provenance on the tool-result envelope. They are
+	// populated from the registered ToolSpec only for successful results.
+	Labels []model.InfoFlowLabel
 }
 
 // dispatchBatch runs up to maxParallel tool calls concurrently. Order

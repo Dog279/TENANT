@@ -10,6 +10,9 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"tenant/internal/agent"
+	"tenant/internal/orchestra"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -37,9 +40,22 @@ type restStatus struct {
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
 
-	TurnActive       bool `json:"turn_active"`
-	TurnAgeSecs      int  `json:"turn_age_secs,omitempty"`
-	PendingApprovals int  `json:"pending_approvals"`
+	TurnActive       bool                    `json:"turn_active"`
+	TurnAgeSecs      int                     `json:"turn_age_secs,omitempty"`
+	TurnQueueDepth   int                     `json:"turn_queue_depth"`
+	TurnQueueAgeSecs int                     `json:"turn_queue_age_secs"`
+	TurnQueue        []restTurnQueueEntry    `json:"turn_queue,omitempty"`
+	PendingApprovals int                     `json:"pending_approvals"`
+	TeamBudget       *orchestra.BudgetStatus `json:"team_budget,omitempty"`
+}
+
+// restTurnQueueEntry is the content-free queue projection. Position reflects
+// scheduler dispatch order, not raw arrival order across priority classes.
+type restTurnQueueEntry struct {
+	Position int    `json:"position"`
+	Source   string `json:"source"`
+	AgeSecs  int    `json:"age_secs"`
+	ETASecs  int    `json:"eta_secs"`
 }
 
 // liveness is the optional turn-state reporter a serve-mode runner (the
@@ -47,6 +63,10 @@ type restStatus struct {
 // AgentRunner interface (Turn/Interject) stays unchanged.
 type liveness interface {
 	ActiveTurn() (active bool, age time.Duration)
+}
+
+type queueLiveness interface {
+	TurnQueueStatus() agent.TurnQueueStatus
 }
 
 // restToggleRequest is the body of the POST toggle endpoints.
@@ -115,8 +135,30 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			st.TurnAgeSecs = int(age.Seconds())
 		}
 	}
+	if qr, ok := s.agent.(queueLiveness); ok && qr != nil {
+		queue := qr.TurnQueueStatus()
+		st.TurnQueueDepth = queue.Depth
+		st.TurnQueueAgeSecs = int(queue.OldestAge.Seconds())
+		for _, entry := range queue.Entries {
+			st.TurnQueue = append(st.TurnQueue, restTurnQueueEntry{
+				Position: entry.Position,
+				Source:   string(entry.Source),
+				AgeSecs:  int(entry.Age.Seconds()),
+				ETASecs:  int(entry.ETA.Seconds()),
+			})
+		}
+	}
 	if s.approvals != nil {
 		st.PendingApprovals = len(s.approvals.Pending())
+	}
+	if s.evlog != nil {
+		events, _ := s.evlog.Since(0)
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Ev.TeamBudget != nil {
+				st.TeamBudget = events[i].Ev.TeamBudget
+				break
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, st)
 }
@@ -126,14 +168,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 // doctor liveness probe can read directly — NOT the Datastar HTML the SSR
 // /activity feed streams. Mirrors the EventLog's lossless cursor.
 type restActivityEvent struct {
-	Seq   uint64 `json:"seq"`
-	At    string `json:"at"` // RFC3339
-	Kind  string `json:"kind"`
-	Agent string `json:"agent,omitempty"`
-	Iter  int    `json:"iter,omitempty"`
-	Tool  string `json:"tool,omitempty"`
-	IsErr bool   `json:"is_err,omitempty"`
-	Text  string `json:"text,omitempty"`
+	Seq        uint64                  `json:"seq"`
+	At         string                  `json:"at"` // RFC3339
+	Kind       string                  `json:"kind"`
+	Agent      string                  `json:"agent,omitempty"`
+	Iter       int                     `json:"iter,omitempty"`
+	Tool       string                  `json:"tool,omitempty"`
+	IsErr      bool                    `json:"is_err,omitempty"`
+	Text       string                  `json:"text,omitempty"`
+	TeamBudget *orchestra.BudgetStatus `json:"team_budget,omitempty"`
 }
 
 type restActivityResponse struct {
@@ -160,14 +203,15 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	resp.Cursor = cursor
 	for _, se := range events {
 		resp.Events = append(resp.Events, restActivityEvent{
-			Seq:   se.Seq,
-			At:    se.At.UTC().Format(time.RFC3339),
-			Kind:  string(se.Ev.Kind),
-			Agent: se.Ev.Agent,
-			Iter:  se.Ev.Iter,
-			Tool:  se.Ev.Tool,
-			IsErr: se.Ev.IsErr,
-			Text:  se.Ev.Text,
+			Seq:        se.Seq,
+			At:         se.At.UTC().Format(time.RFC3339),
+			Kind:       string(se.Ev.Kind),
+			Agent:      se.Ev.Agent,
+			Iter:       se.Ev.Iter,
+			Tool:       se.Ev.Tool,
+			IsErr:      se.Ev.IsErr,
+			Text:       se.Ev.Text,
+			TeamBudget: se.Ev.TeamBudget,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)

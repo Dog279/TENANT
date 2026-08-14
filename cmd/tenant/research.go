@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"tenant/internal/agent"
+	"tenant/internal/fsperm"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/userprofile"
@@ -265,6 +266,8 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	if question == "" {
 		return "", fmt.Errorf("research: empty question")
 	}
+	rt.BeginRun(ctx)
+	defer rt.EndRun()
 
 	// 0. C2 — Optional clarification step. When the question is vague,
 	// surface a typed ClarifyNeededError so the caller (CLI stdin / TUI
@@ -733,7 +736,7 @@ func writeWikiReport(wikiDir, question, report string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(wikiDir, researchFilename(question))
-	if err := os.WriteFile(path, []byte(researchDoc(question, report)), 0o644); err != nil {
+	if err := fsperm.WriteFile(path, []byte(researchDoc(question, report))); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -1278,7 +1281,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	// Web research needs a browser per researcher (concurrent navigation can't
 	// share one tab). Force it on; keep it OUT of the shared mux.
 	teamWeb := true
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 
@@ -1295,7 +1298,8 @@ func cmdResearch(ctx context.Context, args []string) error {
 	defer skillStore.Close()
 	skEmb, embProfile, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	bus.Register(c.agent)
 
 	var outMu sync.Mutex
@@ -1335,7 +1339,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: string(embProfile.ID), Compressor: &compress.Compressor{Router: router, Logger: log},
-		Profile: prof, OrchID: c.agent, Log: log, Observe: observe,
+		Profile: prof, OrchID: c.agent, Log: log, Observe: observe, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: researchAgents,
@@ -1386,7 +1390,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	// Output precedence: --out explicit path > --stdout > wiki dir > stdout.
 	switch {
 	case *out != "":
-		if werr := os.WriteFile(*out, []byte(researchDoc(question, report)), 0o644); werr != nil {
+		if werr := fsperm.WriteFile(*out, []byte(researchDoc(question, report))); werr != nil {
 			return fmt.Errorf("write report: %w", werr)
 		}
 		say("report written to %s", *out)

@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS facts (
     visibility      TEXT NOT NULL DEFAULT 'private',  -- private | shared | public
     fact            TEXT NOT NULL,                     -- one-sentence atomic claim
     source_episodes TEXT,                              -- JSON array of episode IDs
+    source_run_ids  TEXT,                              -- JSON array of durable run IDs
     confidence      REAL NOT NULL DEFAULT 1.0,         -- 0..1 base confidence
     first_seen      INTEGER NOT NULL,                  -- unix epoch
     last_confirmed  INTEGER NOT NULL,                  -- unix epoch

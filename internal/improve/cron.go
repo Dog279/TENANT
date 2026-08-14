@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"time"
 
+	"tenant/internal/fsperm"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -59,6 +61,9 @@ type CronStore struct {
 func OpenCronStore(path string) (*CronStore, error) {
 	dsn := path
 	if path != ":memory:" {
+		if err := fsperm.PrepareFile(path); err != nil {
+			return nil, fmt.Errorf("improve: prepare private cron database: %w", err)
+		}
 		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", path)
 	}
 	db, err := sql.Open("sqlite", dsn)

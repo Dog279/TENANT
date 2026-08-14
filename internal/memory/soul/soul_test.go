@@ -2,6 +2,8 @@ package soul_test
 
 import (
 	"errors"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -17,6 +19,15 @@ func TestSoul_SaveLoadRoundtrip(t *testing.T) {
 
 	if err := original.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(soul.Path(dir, "main"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if extra := info.Mode().Perm() &^ os.FileMode(0o600); extra != 0 {
+			t.Errorf("soul mode = %v, exceeds 0600", info.Mode().Perm())
+		}
 	}
 
 	loaded, err := soul.Load(dir, "main")

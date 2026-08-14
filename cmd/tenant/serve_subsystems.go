@@ -87,6 +87,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	deps := discordAgentDeps{
 		router: d.router, soulLive: d.soulLive, archive: d.stores.archive,
 		episodic: d.stores.episodic, semantic: d.stores.semantic,
+		runs:   d.stores.runs,
 		skills: ret, compactor: d.compressor, userProfile: d.profile,
 		fullTools: d.tools, fullDisp: d.tools,
 		sysPrompt: d.sysPrompt, log: d.log, gateConfirm: discordBroker.Confirm,
@@ -238,6 +239,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			ag, err := buildIMessageAgent(imessageAgentDeps{
 				router: d.router, soulLive: d.soulLive, archive: d.stores.archive,
 				episodic: d.stores.episodic, semantic: d.stores.semantic,
+				runs:      d.stores.runs,
 				skills:    skillRetriever{st: d.skills, agentID: c.agent},
 				compactor: d.compressor, userProfile: d.profile,
 				fullTools: d.tools, fullDisp: d.tools,

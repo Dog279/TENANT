@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"tenant/internal/runtrace"
 )
 
 // fallback.go (TEN-246): an LLM decorator that, when the active provider
@@ -157,6 +159,9 @@ func (f *FallbackLLM) Generate(ctx context.Context, req GenerateRequest) (*Gener
 		f.markCooldown(lk.label, err)
 		if i < len(attempts)-1 {
 			f.fire(lk.label, attempts[i+1].label, err)
+			if span := runtrace.SpanFromContext(ctx); span != nil {
+				span.AddFallback(lk.label, attempts[i+1].label, failoverReason(err))
+			}
 		}
 	}
 	return nil, lastErr
@@ -179,6 +184,9 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 				if FailoverAction(err) && i < len(attempts)-1 {
 					f.markCooldown(lk.label, err)
 					f.fire(lk.label, attempts[i+1].label, err)
+					if span := runtrace.SpanFromContext(ctx); span != nil {
+						span.AddFallback(lk.label, attempts[i+1].label, failoverReason(err))
+					}
 					continue
 				}
 				out <- StreamChunk{Error: err}
@@ -193,6 +201,9 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 					if FailoverAction(chunk.Error) && i < len(attempts)-1 {
 						f.markCooldown(lk.label, chunk.Error)
 						f.fire(lk.label, attempts[i+1].label, chunk.Error)
+						if span := runtrace.SpanFromContext(ctx); span != nil {
+							span.AddFallback(lk.label, attempts[i+1].label, failoverReason(chunk.Error))
+						}
 						failedPreToken = true
 						break
 					}

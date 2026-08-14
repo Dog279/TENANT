@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,13 +11,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 
-	"database/sql"
-
+	"tenant/internal/fsperm"
 	"tenant/internal/improve"
 	"tenant/internal/mcp"
 	"tenant/internal/mcpserver"
@@ -26,13 +28,12 @@ import (
 	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
+	"tenant/internal/peering"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
 	"tenant/internal/plugins/web"
 	"tenant/internal/research"
-
-	"os/exec"
-	"runtime"
+	"tenant/internal/secrets"
 )
 
 // `tenant doctor` — diagnose (and with --fix, repair) the MCP/agent
@@ -140,11 +141,13 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		fn   func(context.Context, *doctorEnv) checkResult
 	}{
 		{"directories", checkDirs},
+		{"private data permissions", checkPrivatePermissions},
 		// NEW: validates config.json + active provider exists. Runs early
 		// because other checks read e.lc.
 		{"launch config", checkLaunchConfig},
-		// NEW: credentials.json schema + 0600 perms + every keyed provider
-		// has a resolvable secret (env-var present OR stored in creds).
+		{"secret storage protection", checkSecretProtection},
+		// credentials.json schema + every keyed provider has a resolvable
+		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},
 		{"profiles/router", checkRouter},
 		{"generation endpoint", checkGenEndpoint},
@@ -270,7 +273,7 @@ func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 		info, err := os.Stat(d)
 		if err != nil || !info.IsDir() {
 			if e.fix {
-				if mkErr := os.MkdirAll(d, 0o755); mkErr == nil {
+				if mkErr := fsperm.MkdirAll(d); mkErr == nil {
 					r.Status, r.Fixed, r.Fix = statusWarn, true, "created "+d
 					continue
 				}
@@ -282,7 +285,7 @@ func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 		}
 		// writability probe
 		probe := filepath.Join(d, ".doctor-write-probe")
-		if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+		if err := fsperm.WriteFile(probe, []byte("ok")); err != nil {
 			r.Status, r.Detail = statusFail, d+" is not writable: "+err.Error()
 			r.Fix = "check permissions / disk space on " + d
 			return r
@@ -290,6 +293,142 @@ func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 		_ = os.Remove(probe)
 	}
 	return r
+}
+
+func checkPrivatePermissions(_ context.Context, e *doctorEnv) checkResult {
+	if !fsperm.Supported() {
+		return checkResult{
+			Status: statusSkip,
+			Detail: "POSIX modes do not represent Windows DACLs; DACL hardening is tracked by TEN-325",
+		}
+	}
+
+	targets, err := privatePermissionTargets(e.c.dataDir, e.c.cfgDir)
+	if err != nil {
+		return checkResult{Status: statusFail, Detail: "permission target discovery failed: " + err.Error()}
+	}
+
+	issueCount := 0
+	for _, target := range targets {
+		var issues []fsperm.Issue
+		if target.recursive {
+			issues, err = fsperm.AuditTree(target.path)
+		} else if issue, auditErr := fsperm.Audit(target.path); auditErr != nil {
+			err = auditErr
+		} else if issue != nil {
+			issues = []fsperm.Issue{*issue}
+		}
+		if err != nil {
+			return checkResult{
+				Status: statusFail,
+				Detail: "permission audit failed for " + target.path + ": " + err.Error(),
+				Fix:    "check ownership and access to " + target.path,
+			}
+		}
+		issueCount += len(issues)
+	}
+	if issueCount == 0 {
+		return checkResult{Status: statusOK, Detail: "config/data directories and artifacts are owner-only"}
+	}
+	if !e.fix {
+		return checkResult{
+			Status: statusWarn,
+			Detail: fmt.Sprintf("%d config/data path(s) exceed owner-only permissions", issueCount),
+			Fix:    "run `tenant doctor --fix` to apply owner-only permissions",
+		}
+	}
+
+	fixed := 0
+	for _, target := range targets {
+		n := 0
+		if target.recursive {
+			n, err = fsperm.RepairTree(target.path)
+		} else if changed, repairErr := fsperm.Repair(target.path); repairErr != nil {
+			err = repairErr
+		} else if changed {
+			n = 1
+		}
+		fixed += n
+		if err != nil {
+			return checkResult{
+				Status: statusFail,
+				Detail: fmt.Sprintf("repaired %d path(s), then failed at %s: %v", fixed, target.path, err),
+				Fix:    "check ownership and retry `tenant doctor --fix`",
+			}
+		}
+	}
+	return checkResult{
+		Status: statusWarn,
+		Detail: fmt.Sprintf("tightened %d config/data path(s) to owner-only permissions", fixed),
+		Fix:    "private permission migration applied",
+		Fixed:  true,
+	}
+}
+
+type permissionTarget struct {
+	path      string
+	recursive bool
+}
+
+func privatePermissionTargets(dataDir, cfgDir string) ([]permissionTarget, error) {
+	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(cfgDir) == "" {
+		return nil, errors.New("config and data roots must be resolved")
+	}
+	targets := []permissionTarget{{path: dataDir}, {path: cfgDir}}
+	for _, name := range []string{"archive", "research", "wiki", "screenshots", "eval-artifacts"} {
+		targets = append(targets, permissionTarget{path: filepath.Join(dataDir, name), recursive: true})
+	}
+	for _, name := range []string{"soul", "mcp"} {
+		targets = append(targets, permissionTarget{path: filepath.Join(cfgDir, name), recursive: true})
+	}
+
+	dataEntries, err := os.ReadDir(dataDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range dataEntries {
+		name := entry.Name()
+		if !entry.IsDir() && privateDataRootFile(name) {
+			targets = append(targets, permissionTarget{path: filepath.Join(dataDir, name)})
+		}
+	}
+
+	cfgEntries, err := os.ReadDir(cfgDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range cfgEntries {
+		name := entry.Name()
+		if !entry.IsDir() && privateConfigRootFile(name) {
+			targets = append(targets, permissionTarget{path: filepath.Join(cfgDir, name)})
+		}
+	}
+	return targets, nil
+}
+
+func privateDataRootFile(name string) bool {
+	if strings.Contains(name, ".db") || strings.HasPrefix(name, "profile.") {
+		return true
+	}
+	switch name {
+	case "x-token.json", "cron-history.json", "route-decisions.jsonl", "tui.log", "transcript.txt":
+		return true
+	default:
+		return false
+	}
+}
+
+func privateConfigRootFile(name string) bool {
+	if strings.HasPrefix(name, "settings.") && strings.HasSuffix(name, ".json") {
+		return true
+	}
+	switch name {
+	case "config.json", "credentials.json", "oauth_client.json", "atlassian-token.json",
+		"peers.json", "peer-cert.pem", "peer-key.pem":
+		return true
+	default:
+		return false
+	}
 }
 
 func checkRouter(_ context.Context, e *doctorEnv) checkResult {
@@ -693,25 +832,74 @@ func checkLaunchConfig(_ context.Context, e *doctorEnv) checkResult {
 		Detail: fmt.Sprintf("active=%s/%s (%s)", lc.Provider, pc.Kind, firstNonEmpty(pc.Model, "auto-detect"))}
 }
 
-// checkCredentials validates credentials.json — parses cleanly, has the
-// right perms (0600 on Unix), and every KEYED provider in the active
-// config has a resolvable secret (env-var ref OR stored). On Windows
-// the perm check is informational only (POSIX bits don't apply).
+// checkSecretProtection audits the effective platform protection for every
+// at-rest secret file Tenant knows about. POSIX reports verified 0600/0700
+// modes; Windows reports the protected current-user-only DACL.
+func checkSecretProtection(_ context.Context, e *doctorEnv) checkResult {
+	type candidate struct {
+		label string
+		path  string
+	}
+	paths := []candidate{
+		{"credentials.json", credentialsPath(e.c.cfgDir)},
+		{"atlassian-token.json", atlassianTokenPath(e.c.cfgDir)},
+	}
+	for _, path := range peering.AtRestPaths(e.c.cfgDir) {
+		paths = append(paths, candidate{filepath.Base(path), path})
+	}
+	mcpPaths, err := filepath.Glob(filepath.Join(e.c.cfgDir, "mcp", "mcp-*.json"))
+	if err != nil {
+		return checkResult{Status: statusFail, Detail: "enumerate MCP OAuth caches: " + err.Error()}
+	}
+	for _, path := range mcpPaths {
+		paths = append(paths, candidate{filepath.Join("mcp", filepath.Base(path)), path})
+	}
+
+	protected := 0
+	mechanisms := map[string]bool{}
+	var bad []string
+	for _, item := range paths {
+		report := secrets.Probe(item.path)
+		if !report.Exists {
+			if report.Detail != "not present" {
+				bad = append(bad, item.label+": "+report.Detail)
+			}
+			continue
+		}
+		if !report.Protected {
+			bad = append(bad, item.label+": "+report.Detail)
+			continue
+		}
+		protected++
+		mechanisms[report.Mechanism] = true
+	}
+	if len(bad) > 0 {
+		return checkResult{
+			Status: statusFail,
+			Detail: "secret files without verified owner-only protection: " + strings.Join(bad, "; "),
+			Fix:    "re-save the affected credential/token with Tenant, then rerun `tenant doctor`",
+		}
+	}
+	if protected == 0 {
+		return checkResult{Status: statusOK, Detail: "no at-rest secret files present"}
+	}
+	mechanismNames := make([]string, 0, len(mechanisms))
+	for mechanism := range mechanisms {
+		mechanismNames = append(mechanismNames, mechanism)
+	}
+	slices.Sort(mechanismNames)
+	return checkResult{Status: statusOK, Detail: fmt.Sprintf("%d secret file(s) protected via %s", protected, strings.Join(mechanismNames, ", "))}
+}
+
+// checkCredentials validates credentials.json — parses cleanly and every
+// keyed provider in the active config has a resolvable secret (environment
+// reference or stored credential). Effective file protection is checked above.
 func checkCredentials(_ context.Context, e *doctorEnv) checkResult {
 	creds, err := loadCredentials(e.c.cfgDir)
 	if err != nil {
 		return checkResult{Status: statusFail,
 			Detail: "credentials.json present but unparseable: " + err.Error(),
 			Fix:    "rm " + credentialsPath(e.c.cfgDir) + " then re-run `tenant setup` for any keyed provider"}
-	}
-	// Perm check (Unix only — Windows ACLs don't map cleanly).
-	if info, err := os.Stat(credentialsPath(e.c.cfgDir)); err == nil {
-		mode := info.Mode().Perm()
-		if mode&0o077 != 0 && !isWindowsRuntime() {
-			return checkResult{Status: statusWarn,
-				Detail: fmt.Sprintf("credentials.json has world/group-readable perms %#o (should be 0600)", mode),
-				Fix:    "chmod 0600 " + credentialsPath(e.c.cfgDir)}
-		}
 	}
 	// Per-provider secret resolution.
 	if e.lc == nil {
@@ -1390,7 +1578,7 @@ func checkIMessage(_ context.Context, e *doctorEnv) checkResult {
 // configured. Tiers mirror checkDiscord:
 //
 //	skip   — dashboard not configured (Enabled=false AND no Addr)
-//	FAIL   — non-loopback Addr without TLS+Auth in config (the same
+//	FAIL   — non-loopback Addr without TLS in config (the same
 //	         fail-closed rule Server.checkBindPolicy enforces at Run);
 //	         this is a config lint surfaced even if the server is down
 //	FAIL   — reachable but returns 401 (auth token mismatch)
@@ -1417,18 +1605,17 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 	}
 
 	// Config lint (independent of whether the server is up): a non-loopback
-	// bind without BOTH TLS and an auth token is fail-closed — mirrors
-	// dashboard.Server.checkBindPolicy. Surface it as FAIL so `doctor`
-	// catches the misconfig before launch refuses to bind.
+	// bind without TLS is fail-closed. Authentication no longer needs to be
+	// present in config.json because launch creates the default token file.
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr // no port → treat whole value as host (best-effort)
 	}
 	if !isLoopbackAddr(host) {
-		if dc.TLSCert == "" || dc.TLSKey == "" || dc.Auth == "" {
+		if dc.TLSCert == "" || dc.TLSKey == "" {
 			return checkResult{Status: statusFail,
-				Detail: fmt.Sprintf("dashboard binds non-loopback %q without TLS+auth — launch will refuse to start", addr),
-				Fix:    "set dashboard.tls_cert/tls_key and dashboard.auth, or bind 127.0.0.1"}
+				Detail: fmt.Sprintf("dashboard binds non-loopback %q without TLS — launch will refuse to start", addr),
+				Fix:    "set dashboard.tls_cert/tls_key, or bind 127.0.0.1"}
 		}
 	}
 
@@ -1549,10 +1736,4 @@ func isLoopbackAddr(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
-}
-
-// isWindowsRuntime returns true when the build target is windows. Used to
-// suppress POSIX perm warnings on Windows where they don't apply.
-func isWindowsRuntime() bool {
-	return os.PathSeparator == '\\'
 }

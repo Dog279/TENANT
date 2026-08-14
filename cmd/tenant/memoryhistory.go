@@ -39,9 +39,10 @@ func newMemoryHistoryDispatcher(name string, sem *semantic.Store) *memoryHistory
 
 func (d *memoryHistoryDispatcher) Tools() []model.ToolSpec {
 	return []model.ToolSpec{{
-		Name:        "memory_history",
-		Description: "Recall what you knew AS OF a past date — the historical state of your long-term facts, including ones later superseded/changed. Use for 'what did we believe/decide back in <month>', 'what was the plan before X changed', or to see how knowledge evolved. Provide as_of as a date.",
-		Parameters:  json.RawMessage(`{"type":"object","properties":{"as_of":{"type":"string","description":"the point in time, e.g. \"2026-01-15\" or an RFC3339 timestamp"},"query":{"type":"string","description":"optional keyword to filter the recalled facts"},"k":{"type":"integer","description":"max facts (default 20)"}},"required":["as_of"]}`),
+		Name:         "memory_history",
+		Description:  "Recall what you knew AS OF a past date — the historical state of your long-term facts, including ones later superseded/changed. Use for 'what did we believe/decide back in <month>', 'what was the plan before X changed', or to see how knowledge evolved. Provide as_of as a date.",
+		Parameters:   json.RawMessage(`{"type":"object","properties":{"as_of":{"type":"string","description":"the point in time, e.g. \"2026-01-15\" or an RFC3339 timestamp"},"query":{"type":"string","description":"optional keyword to filter the recalled facts"},"k":{"type":"integer","description":"max facts (default 20)"}},"required":["as_of"]}`),
+		ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceMemory}},
 	}}
 }
 

@@ -3,12 +3,41 @@ package episodic_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"tenant/internal/memory/episodic"
 )
+
+func TestOpenCreatesPrivateDatabase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not represent Windows DACLs; TEN-325")
+	}
+	path := filepath.Join(t.TempDir(), "private", "episodes.db")
+	s, err := episodic.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, item := range []struct {
+		path string
+		max  os.FileMode
+	}{
+		{filepath.Dir(path), 0o700},
+		{path, 0o600},
+	} {
+		info, err := os.Stat(item.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if extra := info.Mode().Perm() &^ item.max; extra != 0 {
+			t.Errorf("%s mode = %v, exceeds %v", item.path, info.Mode().Perm(), item.max)
+		}
+	}
+}
 
 func mkStore(t *testing.T) *episodic.Store {
 	t.Helper()
@@ -24,15 +53,16 @@ func mkStore(t *testing.T) *episodic.Store {
 
 func mkEpisode(content string, embedding []float32) *episodic.Episode {
 	return &episodic.Episode{
-		AgentID:    "main",
-		Visibility: episodic.VisibilityPrivate,
-		SessionID:  "sess1",
-		Prompt:     "user: " + content,
-		Response:   "assistant: response about " + content,
-		Outcome:    episodic.OutcomeSuccess,
-		Tags:       []string{"chat"},
-		EmbedderID: "test-embedder",
-		Embedding:  embedding,
+		AgentID:     "main",
+		Visibility:  episodic.VisibilityPrivate,
+		SessionID:   "sess1",
+		SourceRunID: "trace-test",
+		Prompt:      "user: " + content,
+		Response:    "assistant: response about " + content,
+		Outcome:     episodic.OutcomeSuccess,
+		Tags:        []string{"chat"},
+		EmbedderID:  "test-embedder",
+		Embedding:   embedding,
 	}
 }
 
@@ -62,6 +92,9 @@ func TestStore_InsertAndGet(t *testing.T) {
 	}
 	if got.Prompt != ep.Prompt {
 		t.Errorf("Prompt roundtrip failed: %q != %q", got.Prompt, ep.Prompt)
+	}
+	if got.SourceRunID != ep.SourceRunID {
+		t.Errorf("SourceRunID roundtrip failed: %q != %q", got.SourceRunID, ep.SourceRunID)
 	}
 	if len(got.Embedding) != len(ep.Embedding) || got.Embedding[0] != 1 {
 		t.Errorf("Embedding roundtrip failed: got %v want %v", got.Embedding, ep.Embedding)
@@ -461,7 +494,6 @@ func TestEmbedding_RoundtripPreservesValues(t *testing.T) {
 		}
 	}
 }
-
 
 // TestSearch_AgentGlob — TEN-45.
 // An agent-id ending in `*` matches all episodes whose agent_id starts

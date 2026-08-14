@@ -3,14 +3,12 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/model"
 )
 
@@ -71,6 +69,7 @@ func (p Policy) gate(ctx context.Context, class ActionClass, action, detail stri
 // holds the browser session; tools operate on the current page.
 type Dispatcher struct {
 	br      browser
+	guard   *egressGuard
 	policy  Policy
 	shotDir string // where web_screenshot writes PNGs
 	cfg     Config // carries search keys + reader-fallback config
@@ -94,7 +93,7 @@ func NewDispatcher(s *Session, policy Policy, shotDir string) *Dispatcher {
 		br = s.browser()
 		cfg = s.Config()
 	}
-	return &Dispatcher{br: br, policy: policy, shotDir: shotDir, cfg: cfg}
+	return &Dispatcher{br: br, guard: cfg.guard, policy: policy, shotDir: shotDir, cfg: cfg}
 }
 
 // newDispatcherWithBrowser is the test seam (inject a fake browser).
@@ -116,7 +115,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "web_search", Description: "Search the live web for a query. Returns the top K results as a numbered list of {title, url, snippet}. Use this to DISCOVER URLs to read — then web_navigate into the most promising ones and web_read their content. Backed by DuckDuckGo by default; Tavily or Brave when an API key is configured.",
 			Parameters: obj(`"query":{"type":"string"},"k":{"type":"integer","description":"number of results (default 8, max 25)"}`, "query")},
 		{Name: "web_navigate", Description: "Load a URL in the browser and return the page title. Use before reading.",
@@ -136,6 +135,13 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "web_select", Description: "Choose an option in a <select> dropdown by its visible label or value.",
 			Parameters: obj(`"locator":{"type":"string"},"option":{"type":"string"}`, "locator", "option"), Gated: true},
 	}
+	for i := range tools {
+		switch tools[i].Name {
+		case "web_search", "web_navigate", "web_click", "web_fill", "web_select":
+			tools[i].Outbound = true
+		}
+	}
+	return tools
 }
 
 // dangerWords flag a click whose target text implies an irreversible /
@@ -284,6 +290,12 @@ func (d *Dispatcher) navigate(ctx context.Context, args json.RawMessage) (string
 	if err != nil {
 		return err.Error(), true, nil
 	}
+	if d.guard != nil {
+		u, err = d.guard.ValidateURL(ctx, u)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+	}
 	if err := d.policy.gate(ctx, ClassRead, "navigate", u); err != nil {
 		return err.Error(), true, nil
 	}
@@ -295,7 +307,7 @@ func (d *Dispatcher) navigate(ctx context.Context, args json.RawMessage) (string
 	// Browser failed (timeout / blocked / network): fall back to the reader,
 	// which renders server-side and returns markdown. web_read then serves the
 	// cached reader text for this page.
-	if !d.cfg.ReaderDisabled {
+	if d.cfg.ReaderEnabled {
 		if txt, rerr := fetchViaReader(ctx, d.cfg, u); rerr == nil && strings.TrimSpace(txt) != "" {
 			d.lastText = txt
 			return fmt.Sprintf("loaded %q via reader fallback (the browser was blocked or timed out) — call web_read to read it.", u), false, nil
@@ -319,7 +331,7 @@ func (d *Dispatcher) read(ctx context.Context) (string, bool, error) {
 	}
 	// Empty text, a bot-wall interstitial, or a browser error: try the reader
 	// fallback on the current page.
-	if !d.cfg.ReaderDisabled {
+	if d.cfg.ReaderEnabled {
 		target := d.lastURL
 		if target == "" {
 			target, _ = d.br.CurrentURL(ctx)
@@ -408,7 +420,7 @@ func (d *Dispatcher) screenshot(ctx context.Context) (string, bool, error) {
 		return err.Error(), true, nil
 	}
 	cur, _ := d.br.CurrentURL(ctx)
-	if err := os.MkdirAll(d.shotDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(d.shotDir); err != nil {
 		return "screenshot dir error: " + err.Error(), true, nil
 	}
 	path := filepath.Join(d.shotDir, fmt.Sprintf("web-%d.png", time.Now().UnixNano()))
@@ -416,25 +428,4 @@ func (d *Dispatcher) screenshot(ctx context.Context) (string, bool, error) {
 		return "screenshot failed: " + err.Error(), true, nil
 	}
 	return fmt.Sprintf("screenshot of %s saved to %s", cur, path), false, nil
-}
-
-// validateURL enforces http/https + an absolute URL. Blocks file://,
-// javascript:, data:, and bare hosts — the model navigating to a
-// local file:// or a javascript: URL is an injection/exfil risk.
-func validateURL(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", errors.New("url is required")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("invalid url: %v", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("blocked: only http/https URLs allowed (got %q)", u.Scheme)
-	}
-	if u.Host == "" {
-		return "", errors.New("blocked: url must include a host")
-	}
-	return u.String(), nil
 }

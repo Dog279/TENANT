@@ -29,7 +29,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "wiki_search", Description: "Semantic + link-graph search over the user's notes. Returns snippets with file › heading; results tagged '(via X)' were pulled in because note X links to them. Use this first.",
 			Parameters: obj(`"query":{"type":"string"},"k":{"type":"integer","description":"max results (default 6)"}`, "query")},
 		{Name: "wiki_read", Description: "Read a full note by its file path (as returned by wiki_search). Use after search to get complete context.",
@@ -43,6 +43,13 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "wiki_suggest_links", Description: "Suggest notes a given note should link to, by semantic similarity — the auto-discovered connections it isn't manually [[linked]] to yet. Read-only: suggests, never edits files.",
 			Parameters: obj(`"file":{"type":"string","description":"note path (as returned by wiki_search/wiki_list)"},"threshold":{"type":"number","description":"min similarity 0-1 (default 0.6)"}`, "file")},
 	}
+	for i := range tools {
+		tools[i].ResultLabels = []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceWiki}}
+		if tools[i].Name == "wiki_search" || tools[i].Name == "wiki_read" {
+			tools[i].Outbound = true // these may federate to a connected peer
+		}
+	}
+	return tools
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {

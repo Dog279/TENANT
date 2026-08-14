@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"tenant/internal/fsperm"
 
 	_ "modernc.org/sqlite"
 )
@@ -48,10 +48,8 @@ func Open(cfg Config) (*Store, error) {
 		// SQLite creates a missing file on open, but errors ("unable to open
 		// database file") if a parent directory is missing — so create the dir
 		// first. This makes pointing --db at a fresh path just work.
-		if dir := filepath.Dir(cfg.DSN); dir != "" && dir != "." {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, fmt.Errorf("sql: create db dir: %w", err)
-			}
+		if err := fsperm.PrepareFile(cfg.DSN); err != nil {
+			return nil, fmt.Errorf("sql: prepare private database: %w", err)
 		}
 		dsn = fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)", cfg.DSN)
 	}

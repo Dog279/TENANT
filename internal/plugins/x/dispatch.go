@@ -61,7 +61,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
-	return []model.ToolSpec{
+	tools := []model.ToolSpec{
 		{Name: "x_search", Description: "Search recent (last ~7d) public tweets. X query syntax, e.g. `from:nasa -is:retweet`. Returns id/text/author/metrics.",
 			Parameters: obj(`"query":{"type":"string"},"max":{"type":"integer","description":"10-100 (default 10)"}`, "query")},
 		{Name: "x_get_tweet", Description: "Get one tweet by id (text, author handle, like/retweet/reply counts).",
@@ -75,6 +75,10 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "x_delete", Description: "Delete one of the user's own tweets by id. GATED: requires operator approval (irreversible).",
 			Parameters: obj(`"id":{"type":"string"}`, "id"), Gated: true},
 	}
+	for i := range tools {
+		tools[i].Outbound = true
+	}
+	return tools
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {

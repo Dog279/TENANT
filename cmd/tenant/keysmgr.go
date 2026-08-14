@@ -84,7 +84,7 @@ func (k dashKeys) SetSecret(credID, value string) error {
 	switch spec.Kind {
 	case keyProvider:
 		// AddCloudModel registers the provider (Auth.Stored=true) + stores the
-		// key in credentials.json (0600). Idempotent: re-set overwrites the key.
+		// key in protected credentials.json. Idempotent: re-set overwrites the key.
 		if _, err := k.mc.AddCloudModel(spec.CredID, value); err != nil {
 			return err
 		}
@@ -96,7 +96,7 @@ func (k dashKeys) SetSecret(credID, value string) error {
 			return err
 		}
 		creds.set(spec.CredID, value)
-		return creds.save(k.cfgDir) // 0600 atomicWrite
+		return creds.save(k.cfgDir)
 	}
 }
 

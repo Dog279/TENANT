@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	common "github.com/ctreminiom/go-atlassian/v2/service/common"
 	"tenant/internal/model"
+	"tenant/internal/secrets"
 )
 
 func TestOpen_PathSelection(t *testing.T) {
@@ -154,7 +154,7 @@ func TestGate_ConfirmApproves(t *testing.T) {
 	}
 }
 
-func TestFileTokenStore_RoundTripAnd0600(t *testing.T) {
+func TestFileTokenStore_RoundTripAndProtection(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "sub", "atlassian-token.json")
 	s := fileTokenStore{path: path}
@@ -173,11 +173,7 @@ func TestFileTokenStore_RoundTripAnd0600(t *testing.T) {
 	if rt, _ := s.GetRefreshToken(ctx); rt != "ref" {
 		t.Errorf("GetRefreshToken = %q", rt)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("token cache perms = %o, want 600 (matches credentials.json discipline)", perm)
+	if report := secrets.Probe(path); !report.Protected {
+		t.Errorf("token cache is not protected: %+v", report)
 	}
 }

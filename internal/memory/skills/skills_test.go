@@ -18,7 +18,7 @@ func mk(t *testing.T) *Store {
 func TestUpsertGetListCount(t *testing.T) {
 	s := mk(t)
 	ctx := context.Background()
-	id, err := s.Upsert(ctx, &Skill{AgentID: "a", Name: "deploy", Description: "ship the binary", Recipe: "go build then scp", Embedding: []float32{1, 0, 0}})
+	id, err := s.Upsert(ctx, &Skill{AgentID: "a", Name: "deploy", Description: "ship the binary", Recipe: "go build then scp", Embedding: []float32{1, 0, 0}, SourceRunIDs: []string{"trace-1"}})
 	if err != nil || id == 0 {
 		t.Fatalf("upsert: id=%d err=%v", id, err)
 	}
@@ -32,6 +32,9 @@ func TestUpsertGetListCount(t *testing.T) {
 	got, err := s.Get(ctx, id)
 	if err != nil || got.Description != "ship it v2" {
 		t.Fatalf("get: %+v err=%v", got, err)
+	}
+	if len(got.SourceRunIDs) != 1 || got.SourceRunIDs[0] != "trace-1" {
+		t.Fatalf("source run lineage = %v", got.SourceRunIDs)
 	}
 	list, _ := s.List(ctx, ListFilter{AgentID: "a"})
 	if len(list) != 1 {

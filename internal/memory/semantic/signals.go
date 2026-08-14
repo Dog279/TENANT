@@ -262,7 +262,7 @@ func (s *Store) FactsAsOf(ctx context.Context, agentID string, t time.Time, limi
 	}
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT f.id, f.agent_id, f.visibility, f.fact, f.source_episodes, f.confidence,
+        SELECT f.id, f.agent_id, f.visibility, f.fact, f.source_episodes, f.source_run_ids, f.confidence,
                f.first_seen, f.last_confirmed, f.superseded_by, f.embedder_id, f.embedding, f.tombstoned
         FROM facts f LEFT JOIN fact_signals sg ON sg.fact_id = f.id
         WHERE `+clauses+`
@@ -293,7 +293,7 @@ func (s *Store) PinnedFacts(ctx context.Context, agentID string, limit int) ([]*
 		limit = 5
 	}
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT f.id, f.agent_id, f.visibility, f.fact, f.source_episodes, f.confidence,
+        SELECT f.id, f.agent_id, f.visibility, f.fact, f.source_episodes, f.source_run_ids, f.confidence,
                f.first_seen, f.last_confirmed, f.superseded_by, f.embedder_id, f.embedding, f.tombstoned
         FROM facts f JOIN fact_signals sg ON sg.fact_id = f.id
         WHERE sg.pinned = 1 AND f.tombstoned = 0 AND f.superseded_by IS NULL AND f.agent_id = ?

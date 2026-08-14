@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 	"tenant/internal/model"
+	"tenant/internal/secrets"
 )
 
 // TestPersistentHandler_ServesCachedToken proves the "survives restart" core:
@@ -30,9 +30,8 @@ func TestPersistentHandler_ServesCachedToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// 0600 perms on the cache file.
-	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0o600 {
-		t.Errorf("token cache perms = %v, want 0600", fi.Mode().Perm())
+	if report := secrets.Probe(path); !report.Protected {
+		t.Errorf("token cache is not protected: %+v", report)
 	}
 
 	h := newPersistentHandler(server, "http://127.0.0.1:8765/callback", "Tenant", path, false, nil, http.DefaultClient, nil)
@@ -115,6 +114,9 @@ func TestSilentReconnect_FromCachedToken(t *testing.T) {
 	for _, ts := range disp.Tools() {
 		if ts.Name == "ping" {
 			found = true
+			if !ts.Outbound || len(ts.ResultLabels) != 1 || ts.ResultLabels[0].Provenance != model.ProvenanceRemoteMCP {
+				t.Errorf("ping info-flow metadata = outbound:%v labels:%+v", ts.Outbound, ts.ResultLabels)
+			}
 		}
 	}
 	if !found {

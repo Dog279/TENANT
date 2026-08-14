@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -26,7 +27,7 @@ func PruneDecisionLog(path string, cutoff time.Time) (kept, dropped int, err err
 	if path == "" {
 		return 0, 0, nil
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := readDecisionLogForPrune(path)
 	if os.IsNotExist(err) {
 		return 0, 0, nil
 	}
@@ -55,6 +56,25 @@ func PruneDecisionLog(path string, cutoff time.Time) (kept, dropped int, err err
 		return kept, dropped, fmt.Errorf("route: prune: rewrite decision log: %w", err)
 	}
 	return kept, dropped, nil
+}
+
+// readDecisionLogForPrune closes the source handle before the caller attempts
+// the atomic replacement. That ordering is required on Windows, where an open
+// handle can prevent the old log from being replaced or deleted.
+func readDecisionLogForPrune(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	raw, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return raw, nil
 }
 
 // SetRetention arms daily time-gated pruning on the append path. days <= 0

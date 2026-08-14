@@ -124,6 +124,31 @@ func TestBus_HistoryRetainsAcrossDrain(t *testing.T) {
 	}
 }
 
+func TestBus_HistoryAndMailboxesAreBounded(t *testing.T) {
+	b := NewBusWithHistoryCap(3)
+	b.Register("alice")
+	b.Register("bob")
+	for _, content := range []string{"one", "two", "three", "four", "five"} {
+		if err := b.Send(Message{From: "alice", To: "bob", Content: content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := b.Pending("bob"); got != 3 {
+		t.Fatalf("mailbox retained %d messages, want cap 3", got)
+	}
+	hist := b.History("bob")
+	if len(hist) != 3 || hist[0].Content != "three" || hist[2].Content != "five" {
+		t.Fatalf("bounded history wrong: %+v", hist)
+	}
+	msgs, cursor := b.Since(0) // lagged cursor clamps to oldest retained
+	if len(msgs) != 3 || cursor != 5 || msgs[0].Content != "three" {
+		t.Fatalf("bounded cursor wrong: len=%d cursor=%d msgs=%+v", len(msgs), cursor, msgs)
+	}
+	if more, next := b.Since(cursor); len(more) != 0 || next != cursor {
+		t.Fatalf("caught-up cursor repeated messages: len=%d next=%d", len(more), next)
+	}
+}
+
 func TestBus_ConcurrentSendsAreSafe(t *testing.T) {
 	b := NewBus()
 	b.Register("hub")

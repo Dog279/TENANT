@@ -20,7 +20,7 @@ func (s *Store) Recent(ctx context.Context, agentID string, n int) ([]*Episode, 
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT id, agent_id, visibility, session_id, ts, prompt, response,
+        SELECT id, agent_id, visibility, session_id, source_run_id, ts, prompt, response,
                tool_calls, outcome, user_feedback, tags, embedder_id, embedding, tombstoned
           FROM episodes
          WHERE tombstoned = 0 AND agent_id = ?

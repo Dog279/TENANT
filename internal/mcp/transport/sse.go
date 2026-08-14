@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -142,13 +143,15 @@ func (s *SSE) handleMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "transport closed", http.StatusGone)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, int64(s.maxSize)+1))
+	r.Body = http.MaxBytesReader(w, r.Body, int64(s.maxSize))
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, ErrFrameTooLarge.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "read error", http.StatusBadRequest)
-		return
-	}
-	if len(body) > s.maxSize {
-		http.Error(w, ErrFrameTooLarge.Error(), http.StatusRequestEntityTooLarge)
 		return
 	}
 	select {

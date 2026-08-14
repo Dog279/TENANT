@@ -12,9 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/model"
 	"tenant/internal/model/backend/claudecode"
+	"tenant/internal/orchestra"
 	"tenant/internal/route"
+	"tenant/internal/secrets"
 )
 
 // launchConfig is the persisted, machine-wide launch configuration written by
@@ -52,6 +55,9 @@ type launchConfig struct {
 	Gateway gatewayConfig `json:"gateway,omitempty"`
 	// Dashboard configures the web control panel (TEN-76).
 	Dashboard dashboardConfig `json:"dashboard,omitempty"`
+	// TurnScheduler bounds and apportions ingress to the single shared agent
+	// used by serve-mode interactive and delegated turn sources (TEN-329).
+	TurnScheduler turnSchedulerConfig `json:"turn_scheduler,omitempty"`
 	// Tailscale persists the operator's `/tailscale serve` choice (TEN-233) so it
 	// is re-asserted at next launch — matching the dashboard/relay/imessage
 	// toggles. Tailscale's own daemon also persists the serve config; this flag
@@ -85,6 +91,9 @@ type launchConfig struct {
 	// soul. Lets you mix models per role: researcher → glm-4.6 on Z.ai,
 	// synthesizer → aeon-ultimate on DGX, etc.
 	Agents map[string]*agentProfile `json:"agents,omitempty"`
+	// Budgets is the structural resource envelope for each agent-team run.
+	// Omitted/zero fields receive orchestra.DefaultBudgets at runtime.
+	Budgets orchestra.Budgets `json:"budgets,omitempty"`
 	// PlanLoopCeiling caps planner↔tool iterations per turn (per agent). 0 =
 	// built-in default (defaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
@@ -101,9 +110,15 @@ type launchConfig struct {
 	// name+description catalog of the rest in the system prompt. Off by default
 	// (additive). Set `"lazy_tools": true` in config.json to try it.
 	LazyTools bool `json:"lazy_tools,omitempty"`
+	// BrowserNoSandbox is an insecure, container-only escape hatch for Chrome
+	// environments that cannot use its process sandbox. The web plugin rejects
+	// this setting unless it detects a Linux container or user namespace.
+	BrowserNoSandbox bool `json:"browser_no_sandbox,omitempty"`
 	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
 	// inline command sets it.
 	Goal goalConfig `json:"goal,omitempty"`
+	// Runs configures durable operational turn records.
+	Runs runTraceConfig `json:"runs,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`
@@ -116,6 +131,19 @@ type launchConfig struct {
 	SSEAddr       string `json:"sse_addr,omitempty"`
 }
 
+type runTraceConfig struct {
+	MaxAgeDays       int  `json:"max_age_days,omitempty"` // 0=90 default; negative disables age pruning
+	MaxCount         int  `json:"max_count,omitempty"`    // 0=10000 default; negative disables count pruning
+	RedactToolBodies bool `json:"redact_tool_bodies,omitempty"`
+}
+
+func configuredBudgets(lc *launchConfig) orchestra.Budgets {
+	if lc == nil {
+		return orchestra.DefaultBudgets()
+	}
+	return lc.Budgets.WithDefaults()
+}
+
 // goalConfig holds persisted /goal autonomous-loop settings (TEN-216).
 type goalConfig struct {
 	// LoopCeiling is the per-turn planner↔tool iteration budget used WHILE a
@@ -125,6 +153,15 @@ type goalConfig struct {
 	// goal turn cap, errors, and Esc); 0/unset = inherit the global ceiling (no
 	// goal-specific override). Normal, non-goal turns always use PlanLoopCeiling.
 	LoopCeiling int `json:"loop_ceiling,omitempty"`
+}
+
+// turnSchedulerConfig controls serve-mode admission to the shared agent.
+// QueueDepth bounds unique waiting requests (the active turn is separate).
+// SourceQuotas bounds queued requests per RouteSurface; omitted entries use
+// the built-in quota for that source. Values <= 0 use the built-in default.
+type turnSchedulerConfig struct {
+	QueueDepth   int            `json:"queue_depth,omitempty"`
+	SourceQuotas map[string]int `json:"source_quotas,omitempty"`
 }
 
 // providerConfig is one model provider's connection + auth settings.
@@ -295,20 +332,21 @@ type gatewayConfig struct {
 	SSEAddr string `json:"sse_addr,omitempty"` // when mode includes sse
 }
 
-// dashboardConfig configures the web control panel (TEN-76). TLSCert/
-// TLSKey/Auth are present but unused until Wave 2 (TEN-79) — defined now so
-// the persisted shape is stable.
+// dashboardConfig configures the web control panel (TEN-76). Auth is an
+// optional explicit override; otherwise launch uses the owner-only generated
+// token under the config directory.
 //
 // Enabled is tri-state (TEN-86): nil ⇒ default ON (dashboard auto-launches
 // with the TUI), &true ⇒ on, &false ⇒ off. The pointer lets a fresh config
 // (no dashboard block) default to serving, while a `/dashboard off` choice
 // persists as an explicit &false that survives the next launch.
 type dashboardConfig struct {
-	Enabled *bool  `json:"enabled,omitempty"` // nil = default on; &false = explicitly off
-	Addr    string `json:"addr,omitempty"`    // listen address (default 127.0.0.1:8770)
-	TLSCert string `json:"tls_cert,omitempty"`
-	TLSKey  string `json:"tls_key,omitempty"`
-	Auth    string `json:"auth,omitempty"`
+	Enabled      *bool    `json:"enabled,omitempty"` // nil = default on; &false = explicitly off
+	Addr         string   `json:"addr,omitempty"`    // listen address (default 127.0.0.1:8770)
+	TLSCert      string   `json:"tls_cert,omitempty"`
+	TLSKey       string   `json:"tls_key,omitempty"`
+	Auth         string   `json:"auth,omitempty"`          // explicit override; empty uses dashboard-auth-token
+	AllowedHosts []string `json:"allowed_hosts,omitempty"` // trusted reverse-proxy Host values
 }
 
 // relayConfig is the offsite Discord relay's persisted state (TEN-114): whether
@@ -746,10 +784,10 @@ func (lc *launchConfig) save(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return err
 	}
-	return atomicWrite(launchConfigPath(cfgDir), b, 0o644)
+	return atomicWrite(launchConfigPath(cfgDir), b)
 }
 
 // active returns the selected generation provider's config (or nil).
@@ -979,7 +1017,7 @@ func routeEndpointIsLoopback(endpoint string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// --- credentials (separate 0600 file) ------------------------------------
+// --- credentials (separate owner-only file) -------------------------------
 
 // credentials stores secrets the operator chose to keep on disk, away from
 // the (often shared / committed) config.json. Keyed by an opaque id —
@@ -992,7 +1030,7 @@ func credentialsPath(cfgDir string) string { return filepath.Join(cfgDir, "crede
 
 func loadCredentials(cfgDir string) (*credentials, error) {
 	c := &credentials{Secrets: map[string]string{}}
-	b, err := os.ReadFile(credentialsPath(cfgDir))
+	b, err := secrets.ReadFile(credentialsPath(cfgDir))
 	if os.IsNotExist(err) {
 		return c, nil
 	}
@@ -1008,7 +1046,7 @@ func loadCredentials(cfgDir string) (*credentials, error) {
 	return c, nil
 }
 
-// save writes credentials.json with 0600 perms (owner read/write only).
+// save writes credentials.json through the platform secret-storage boundary.
 func (c *credentials) save(cfgDir string) error {
 	if c.Secrets == nil {
 		c.Secrets = map[string]string{}
@@ -1017,10 +1055,7 @@ func (c *credentials) save(cfgDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		return err
-	}
-	return atomicWrite(credentialsPath(cfgDir), b, 0o600)
+	return secrets.WriteFile(credentialsPath(cfgDir), b)
 }
 
 func (c *credentials) get(id string) string { return c.Secrets[id] }
@@ -1080,7 +1115,7 @@ func persistLaunchConfig(cfgDir string, mem *launchConfig, fn func(*launchConfig
 // from the settings page, the credentials watcher, and /model at once — never
 // share one ".tmp" path and clobber each other mid-write. The rename is atomic,
 // so a concurrent reader always sees either the whole old or whole new file.
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
+func atomicWrite(path string, data []byte) error {
 	dir, base := filepath.Dir(path), filepath.Base(path)
 	f, err := os.CreateTemp(dir, base+".*.tmp")
 	if err != nil {
@@ -1096,7 +1131,7 @@ func atomicWrite(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, perm); err != nil {
+	if err := fsperm.RestrictFile(tmp); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

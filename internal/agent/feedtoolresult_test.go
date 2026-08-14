@@ -87,6 +87,20 @@ func TestFeedToolResult_CapsContextCopy(t *testing.T) {
 	}
 }
 
+func TestFeedToolResult_PreservesInfoFlowLabelsInWorkingEnvelope(t *testing.T) {
+	ws := working.New()
+	a := &Agent{cfg: Config{Working: ws}}
+	labels := []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceMemory}}
+	a.feedToolResult(context.Background(), ToolCallResult{
+		Call: model.ToolCall{ID: "sensitive"}, Result: "secret", Labels: labels,
+	}, 0)
+	meta := lastMsg(t, ws).Meta
+	got, ok := meta["infoflow_labels"].([]model.InfoFlowLabel)
+	if !ok || len(got) != 1 || got[0] != labels[0] {
+		t.Fatalf("working result labels = %#v", meta["infoflow_labels"])
+	}
+}
+
 func lastMsg(t *testing.T, ws *working.Set) working.Message {
 	t.Helper()
 	msgs := ws.Messages()

@@ -19,7 +19,45 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
+	"tenant/internal/runtrace"
 )
+
+func TestAgent_TurnPersistsRunAndEpisodeLineage(t *testing.T) {
+	runs, err := runtrace.Open(":memory:", runtrace.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runs.Close()
+	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	a, fake, _, episodes := buildAgentWithRuns(t, model.Profile{}, nil, noop, runs)
+	fake.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+		return &model.GenerateResponse{Text: "done", Usage: model.Usage{PromptTokens: 9, CompletionTokens: 3}}, nil
+	}
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "trace this", RouteSurface: agent.RouteSurfaceTUI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TraceID == "" {
+		t.Fatal("turn result missing trace id")
+	}
+	run, err := runs.Get(context.Background(), res.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Outcome != "success" || run.Source != "tui" || run.PromptTokens != 9 || run.CompletionTokens != 3 {
+		t.Fatalf("run = %+v", run)
+	}
+	if run.Model == "" || run.Provider == "" || run.CompletedAt == nil {
+		t.Fatalf("run missing model/provider/completion: %+v", run)
+	}
+	eps, err := episodes.List(context.Background(), episodic.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eps) != 1 || eps[0].SourceRunID != res.TraceID {
+		t.Fatalf("episode lineage = %+v, want run %s", eps, res.TraceID)
+	}
+}
 
 // A mid-turn Interject must cancel the in-flight planner call, fold the
 // message into the working set, and let the loop re-plan and finish — without
@@ -99,6 +137,18 @@ func TestAgent_Interject_FoldedAndResumes(t *testing.T) {
 // buildAgent wires a fresh agent against a fake LLM + embedder. The
 // fake is returned so tests can script Generate behavior per iteration.
 func buildAgent(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
+	return buildAgentFull(t, profile, tools, dispatcher, nil, nil)
+}
+
+func buildAgentWithEgress(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, confirm func(context.Context, string, string) bool) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
+	return buildAgentFull(t, profile, tools, dispatcher, confirm, nil)
+}
+
+func buildAgentWithRuns(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, runs *runtrace.Store) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
+	return buildAgentFull(t, profile, tools, dispatcher, nil, runs)
+}
+
+func buildAgentFull(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, confirm func(context.Context, string, string) bool, runs *runtrace.Store) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
 	t.Helper()
 	fake := testllm.New()
 
@@ -152,19 +202,87 @@ func buildAgent(t *testing.T, profile model.Profile, tools []model.ToolSpec, dis
 	}
 
 	a, err := agent.New(agent.Config{
-		AgentID:    "test-agent",
-		SessionID:  "test-sess",
-		Router:     router,
-		Working:    working,
-		Archive:    arch,
-		Episodic:   estore,
-		Tools:      registry,
-		Dispatcher: dispatcher,
+		AgentID:                "test-agent",
+		SessionID:              "test-sess",
+		Router:                 router,
+		Working:                working,
+		Archive:                arch,
+		Episodic:               estore,
+		Runs:                   runs,
+		Tools:                  registry,
+		Dispatcher:             dispatcher,
+		ConfirmSensitiveEgress: confirm,
 	})
 	if err != nil {
 		t.Fatalf("agent.New: %v", err)
 	}
 	return a, fake, working, estore
+}
+
+// noopCompactor is a Compactor that changes nothing. It exists only to make the
+// post-turn compaction defer RUN (the defer short-circuits when Compactor is nil),
+// so a regression test can exercise the defer on an error turn.
+type noopCompactor struct{}
+
+func (noopCompactor) Compact(_ context.Context, msgs []working.Message) ([]working.Message, bool, error) {
+	return msgs, false, nil
+}
+
+// TestAgent_TurnErrorWithCompactorDoesNotPanic locks in the fix for a crash:
+// Turn's `result` is a NAMED return (TEN-300 named it so the run-trace finish
+// defer can read the outcome). The planner/assemble error paths do `return nil,
+// err`, which nils the named result before defers run — and the post-turn
+// compaction defer dereferenced result.Reports. A spawned sub-agent (always given
+// a Compactor) whose planner generate errored panicked the whole process. It must
+// now return (nil, err) cleanly with the compaction defer active.
+func TestAgent_TurnErrorWithCompactorDoesNotPanic(t *testing.T) {
+	genErr := errors.New("simulated planner generate failure")
+	fake := testllm.New()
+	fake.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+		return nil, genErr
+	}
+	fake.GenerateStreamFn = func(context.Context, model.GenerateRequest) (<-chan model.StreamChunk, error) {
+		return nil, genErr
+	}
+
+	reg, err := model.NewRegistry("")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	router := model.NewRouter(reg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+	router.RegisterBackend("vllm", func(context.Context, model.Profile, *slog.Logger) (any, error) {
+		return fake, nil
+	})
+
+	estore, err := episodic.Open(filepath.Join(t.TempDir(), "ep.db"))
+	if err != nil {
+		t.Fatalf("episodic.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = estore.Close() })
+
+	a, err := agent.New(agent.Config{
+		AgentID:    "test-agent",
+		SessionID:  "test-sess",
+		Router:     router,
+		Working:    working.New(),
+		Archive:    archive.NewWriter(t.TempDir()),
+		Episodic:   estore,
+		Tools:      agent.NewStaticRegistry(),
+		Dispatcher: dispatchOK(""),
+		Compactor:  noopCompactor{}, // MUST be non-nil for the compaction defer to run
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	// Before the fix this panicked with a nil dereference in the compaction defer.
+	res, turnErr := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "do one thing"})
+	if turnErr == nil {
+		t.Fatal("expected the planner-generate error to surface as the turn error")
+	}
+	if res != nil {
+		t.Fatalf("an error turn must return a nil result, got %+v", res)
+	}
 }
 
 // buildStreamingAgent mirrors buildAgent but enables Stream + an
