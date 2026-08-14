@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -245,7 +246,14 @@ func TestTimeoutSurfaced(t *testing.T) {
 	// search 2` would error on "search"; instead call with a numeric "name"
 	// so /bin/sleep gets a valid duration and actually sleeps past the
 	// deadline. We bypass Exec's allowlist deliberately to test the timeout.
-	_, err := s.realRunner(context.Background(), "2", nil)
+	name, args := "2", []string(nil)
+	if runtime.GOOS == "windows" {
+		// No /bin/sleep on Windows — `cmd /c ping -n 3 127.0.0.1` blocks ~2s,
+		// far past the 50ms deadline, exercising the same timeout path.
+		s.path = "cmd"
+		name, args = "/c", []string{"ping", "-n", "3", "127.0.0.1"}
+	}
+	_, err := s.realRunner(context.Background(), name, args)
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
