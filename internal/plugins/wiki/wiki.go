@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"tenant/internal/model"
 )
@@ -76,6 +77,13 @@ type Index struct {
 	sidecar  string // where the JSON index lives (data dir, not the vault)
 	embedder model.Embedder
 	embedID  string // embedder fingerprint, e.g. "nomic-embed-text/768"
+
+	// mu guards idx and the derived graphs below. Search refreshes the index
+	// on every call (see Search), so on a 24/7 serve the mutating path is hot
+	// — and one Index is shared by every agent (main, tenant-discord, cron)
+	// through the memoized toolmux activator, with MaxParallelTools=3 letting
+	// tool calls run concurrently within a single turn.
+	mu sync.Mutex
 
 	idx indexFile
 
@@ -280,6 +288,14 @@ func (ix *Index) save() error {
 // changed/new files are re-embedded; deleted files are dropped.
 // Returns (filesIndexed, chunksEmbedded).
 func (ix *Index) Reindex(ctx context.Context) (int, int, error) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.reindexLocked(ctx)
+}
+
+// reindexLocked is Reindex's body; callers must already hold ix.mu. Split out
+// so Search can refresh without re-entering the (non-reentrant) mutex.
+func (ix *Index) reindexLocked(ctx context.Context) (int, int, error) {
 	if ix.idx.Files == nil {
 		ix.idx.Files = map[string]fileFingerprint{}
 	}
@@ -460,8 +476,19 @@ func (ix *Index) Search(ctx context.Context, query string, k int) ([]Hit, error)
 	if k <= 0 {
 		k = 6
 	}
-	if len(ix.idx.Chunks) == 0 {
-		if _, _, err := ix.Reindex(ctx); err != nil {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	// Refresh before every search. The index is loaded once at process start,
+	// so on a 24/7 serve a note added or edited afterwards stayed invisible
+	// until someone ran wiki_reindex by hand or the process restarted — which
+	// makes the wiki useless as a live knowledge surface for exactly the agent
+	// that is supposed to be writing to it. reindexLocked is incremental: it
+	// walks the tree and re-embeds ONLY files whose (mtime,size) fingerprint
+	// moved, so the steady-state cost is one directory walk and zero embedder
+	// calls. A refresh error is non-fatal when we still hold a usable index —
+	// searching slightly stale notes beats failing the turn outright.
+	if _, _, err := ix.reindexLocked(ctx); err != nil {
+		if len(ix.idx.Chunks) == 0 {
 			return nil, err
 		}
 	}
@@ -570,6 +597,8 @@ func neighborsOf(fwd, back []string) []string {
 // the data behind the wiki_links tool. rel must be an indexed note.
 func (ix *Index) Links(rel string) (forward, back, tags []string, raw []linkTarget, err error) {
 	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	m, ok := ix.idx.Notes[rel]
 	if !ok {
 		return nil, nil, nil, nil, fmt.Errorf("wiki: %q is not an indexed note (use wiki_list)", rel)
@@ -582,6 +611,8 @@ func (ix *Index) Links(rel string) (forward, back, tags []string, raw []linkTarg
 // note. Powers wiki_suggest_links + the virtual section of wiki_links.
 func (ix *Index) VirtualLinks(rel string) []VirtualLink {
 	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	return ix.idx.Notes[rel].Virtual
 }
 
@@ -618,7 +649,12 @@ func (ix *Index) ReadSharedNote(rel string) (string, error) {
 	if clean == "." || strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
 		return "", fmt.Errorf("wiki: outside the wiki")
 	}
-	if _, known := ix.idx.Files[filepath.ToSlash(clean)]; !known {
+	// Scoped tight on purpose: hold the lock only for the index-membership
+	// check, never across the file read below (Search wants the same mutex).
+	ix.mu.Lock()
+	_, known := ix.idx.Files[filepath.ToSlash(clean)]
+	ix.mu.Unlock()
+	if !known {
 		return "", fmt.Errorf("wiki: not an indexed note")
 	}
 	full := filepath.Join(ix.root, clean)
@@ -645,6 +681,8 @@ func (ix *Index) ReadSharedNote(rel string) (string, error) {
 
 // List returns the indexed note paths (sorted).
 func (ix *Index) List() []string {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
 	out := make([]string, 0, len(ix.idx.Files))
 	for f := range ix.idx.Files {
 		out = append(out, f)
