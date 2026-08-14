@@ -316,6 +316,7 @@ result and keep using it.
 | `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | Yes |
 | `mcpremote`| `internal/plugins/mcpremote/`        | Yes (remote OAuth2.1 + DCR, browser) | Yes (tools mirror a remote MCP server's gating) |
 | `osys`    | `internal/plugins/osys/`              | No (sandboxed exec) | No (immediate, always on) |
+| `simplefin`| `internal/plugins/simplefin/`        | No (one HTTPS GET; read-only by protocol) | Yes |
 | `cron`    | `internal/plugins/cron/`              | No     | No (wired live in the TUI, not the stub catalog) |
 
 `osys` is the "always-on" outlier — it's zero-config and registers

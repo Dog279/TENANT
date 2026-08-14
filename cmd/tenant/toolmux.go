@@ -24,6 +24,7 @@ import (
 	"tenant/internal/plugins/imessage"
 	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/plugins/osys"
+	"tenant/internal/plugins/simplefin"
 	sqlp "tenant/internal/plugins/sql"
 	"tenant/internal/plugins/web"
 	"tenant/internal/plugins/wiki"
@@ -1509,6 +1510,30 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 					return nil, nil, fmt.Errorf("atlassian plugin: %w", err)
 				}
 				return atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: gateAllow(pf.atlassianAllowWrite), Confirm: confirm}), func() {}, nil
+			},
+		},
+		{
+			label: "simplefin",
+			specs: simplefin.NewDispatcher(nil, nil).Tools(),
+			hint:  "run `/configure simplefin <setup-token>` (token from bridge.simplefin.org), then `/enable simplefin`",
+			activate: func() (plugin, func(), error) {
+				// Read-only finance connector: the only credential is the
+				// access URL (claim-on-first-use handles a raw setup token
+				// pasted via the dashboard keys page). Ledger lives under
+				// <dataDir>/simplefin as an append-only JSONL.
+				access, err := resolveSimpleFINAccessURL(ctx, c.cfgDir)
+				if err != nil {
+					return nil, nil, err
+				}
+				svc, err := simplefin.Open(simplefin.Config{AccessURL: access})
+				if err != nil {
+					return nil, nil, fmt.Errorf("simplefin plugin: %w", err)
+				}
+				led, err := simplefin.OpenLedger(filepath.Join(c.dataDir, "simplefin"))
+				if err != nil {
+					return nil, nil, fmt.Errorf("simplefin plugin: %w", err)
+				}
+				return simplefin.NewDispatcher(svc, led), nil, nil
 			},
 		},
 	}

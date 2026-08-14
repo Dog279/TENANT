@@ -70,6 +70,8 @@ func main() {
 		err = cmdWiki(ctx, os.Args[2:])
 	case "gsuite":
 		err = cmdGSuite(ctx, os.Args[2:])
+	case "simplefin":
+		err = cmdSimpleFIN(ctx, os.Args[2:])
 	case "x":
 		err = cmdX(ctx, os.Args[2:])
 	case "imessage":
@@ -142,6 +144,7 @@ COMMANDS
   sql "<q>" --db FILE      agent queries a SQLite DB (read; --allow-write)
   wiki "<q>" --dir DIR     agent answers from a markdown knowledge base (read-only)
   gsuite "<task>"          agent uses Gmail + Calendar (read; --allow-send to act)
+  simplefin                print linked bank balances + recent transactions (read-only; SimpleFIN)
   x "<task>" | x --login   agent uses X/Twitter (read; --allow-post to act)
   imessage "<task>"        agent uses iMessage via BlueBubbles (read; --allow-send to act)
   os "<task>"              agent inspects the machine + runs shell cmds (read; --allow-exec to run)

@@ -66,6 +66,10 @@ var keyCatalog = []keySpec{
 	// OAuth flow (skillctl_gsuite.go), not a paste-able API key — a paste field
 	// would be a misleading no-op. Manage it via the OAuth flow, not this page.
 	{CredID: "skill:discord:token", Name: "Discord bot token", Category: "Integration", Required: true, Kind: keyDirect},
+	// SimpleFIN accepts either the one-time setup token or the claimed access
+	// URL — a pasted setup token is claimed (and the credential rewritten to
+	// the access URL) on first use by resolveSimpleFINAccessURL.
+	{CredID: "skill:simplefin:access_url", Name: "SimpleFIN setup token / access URL", Category: "Integration", Kind: keyDirect},
 }
 
 // lookupKeySpec is the single mutation chokepoint: only a catalog CredID is

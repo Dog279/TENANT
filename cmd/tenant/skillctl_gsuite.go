@@ -595,4 +595,5 @@ func init() {
 	skillKinds["discord"] = discordSkillKind()     // TEN-66
 	skillKinds["web"] = webSkillKind()             // TEN-69
 	skillKinds["x"] = xSkillKind()                 // TEN-67
+	skillKinds["simplefin"] = simplefinSkillKind() // read-only finance
 }
