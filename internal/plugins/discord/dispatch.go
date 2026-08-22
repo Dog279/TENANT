@@ -26,6 +26,14 @@ type Policy struct {
 	Confirm   func(ctx context.Context, action, detail string) bool
 }
 
+// Action ids handed to Policy.Confirm. Exported so approval policies
+// elsewhere (the cron exec approver) can reference them by identity
+// instead of retyping prose that would silently drift.
+const (
+	ActionSendMessage = "posts a Discord message"
+	ActionReact       = "adds a Discord reaction"
+)
+
 type actionClass int
 
 const (
@@ -197,7 +205,7 @@ func (d *Dispatcher) sendMessage(ctx context.Context, args json.RawMessage) (str
 		return m, true, nil
 	}
 	detail := fmt.Sprintf("message to channel %s: %q (%d chars)", a.ChannelID, clip(a.Content, 80), len([]rune(a.Content)))
-	if err := d.policy.gate(ctx, classMutate, "posts a Discord message", detail); err != nil {
+	if err := d.policy.gate(ctx, classMutate, ActionSendMessage, detail); err != nil {
 		return err.Error(), true, nil
 	}
 	msg, err := d.svc.SendMessage(ctx, a.ChannelID, a.Content)
@@ -217,7 +225,7 @@ func (d *Dispatcher) react(ctx context.Context, args json.RawMessage) (string, b
 		return m, true, nil
 	}
 	detail := fmt.Sprintf("reaction %q to message %s in channel %s", a.Emoji, a.MessageID, a.ChannelID)
-	if err := d.policy.gate(ctx, classMutate, "adds a Discord reaction", detail); err != nil {
+	if err := d.policy.gate(ctx, classMutate, ActionReact, detail); err != nil {
 		return err.Error(), true, nil
 	}
 	if err := d.svc.AddReaction(ctx, a.ChannelID, a.MessageID, a.Emoji); err != nil {

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"tenant/internal/plugins/osys"
+
+	"tenant/internal/plugins/discord"
 )
 
 // The exec auto-approver must hard-deny irreversible actions and writes into the
@@ -81,5 +83,54 @@ func TestRunCronShellRefusesCatastrophic(t *testing.T) {
 	_, err := runCronShell(context.Background(), probe, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "refused") {
 		t.Errorf("a classifier-flagged command must be refused, got err=%v", err)
+	}
+}
+
+// The exec approver's deny-by-default swallowed two delivery-critical families
+// because categorize maps unknown action ids to destructive: remote-MCP READS
+// ("label:tool" ids the table has never heard of) and Discord delivery (prose
+// ids). The 2026-08-22 trial brief lost its Jira section and had to deliver
+// over the webhook fallback. The override approves exactly those; everything
+// genuinely destructive stays denied.
+func TestCronExecApprover_DestructiveOverrides(t *testing.T) {
+	approve := cronExecApprover(t.TempDir(), t.TempDir())
+	ctx := context.Background()
+
+	allowed := []string{
+		"atlassian:searchJiraIssuesUsingJql",
+		"atlassian:getConfluencePage",
+		"atlassian:lookupJiraAccountId",
+		"somemcp:listThings",
+		discord.ActionSendMessage,
+		discord.ActionReact,
+	}
+	for _, a := range allowed {
+		if !approve(ctx, a, "detail") {
+			t.Errorf("exec approver denied %q — the brief needs this unattended", a)
+		}
+	}
+
+	denied := []string{
+		"atlassian:createJiraIssue",
+		"atlassian:editJiraIssue",
+		"atlassian:transitionJiraIssue",
+		"atlassian:deleteEverything",
+		"os_exec_dangerous",
+		"sql_ddl",
+		"web_transact",
+		"totally-unknown-action",
+		":getNoLabel", // malformed id must not sneak through as a read
+	}
+	for _, a := range denied {
+		if approve(ctx, a, "detail") {
+			t.Errorf("exec approver allowed %q — destructive must stay denied unattended", a)
+		}
+	}
+
+	// The write protection is untouched: config/data writes still refused.
+	cfg := t.TempDir()
+	approve2 := cronExecApprover(cfg, t.TempDir())
+	if approve2(ctx, "os_write", "writing "+cfg+"/config.json") {
+		t.Error("exec approver allowed a write into the config dir")
 	}
 }

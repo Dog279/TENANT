@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	cronp "tenant/internal/plugins/cron"
+	"tenant/internal/plugins/discord"
 	"tenant/internal/plugins/osys"
 	"tenant/internal/tui"
 )
@@ -157,7 +159,15 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 	return func(_ context.Context, action, detail string) bool {
 		switch categorize(action) {
 		case catDestructive:
-			return false
+			// categorize maps every UNKNOWN action id to destructive - right
+			// for interactive surfaces (always ask), but on the exec surface
+			// there is nobody to ask, so "unknown" silently became "denied".
+			// That blocked the daily brief's two delivery-critical families:
+			// remote-MCP READS (Jira search arrives as "label:tool", unknown
+			// to the table) and Discord delivery (prose action ids). Approve
+			// exactly those; genuinely destructive ids (os_exec_dangerous,
+			// sql_ddl, web_transact) match neither shape and stay denied.
+			return cronExecDestructiveOverride(action)
 		case catWrite:
 			if mentionsDir(detail, cfgDir) || mentionsDir(detail, dataDir) {
 				return false
@@ -445,4 +455,24 @@ func cronPerRun(lc *launchConfig) time.Duration {
 		return time.Duration(lc.Cron.PerRunMinutes) * time.Minute
 	}
 	return 15 * time.Minute
+}
+
+// mcpReadVerb matches remote-MCP tool names that carry an unambiguous read
+// verb (searchJiraIssuesUsingJql, getConfluencePage, lookupJiraAccountId).
+// Anything else - create/edit/transition/add/update - stays denied. Name
+// heuristics are weak in general, but the exposure here is bounded: only
+// jobs the operator explicitly opted into exec reach this approver at all.
+var mcpReadVerb = regexp.MustCompile(`^(get|list|search|fetch|read|lookup|find|query)`)
+
+func cronExecDestructiveOverride(action string) bool {
+	// Discord delivery: an exec job's whole purpose is often to deliver.
+	if action == discord.ActionSendMessage || action == discord.ActionReact {
+		return true
+	}
+	// Remote-MCP reads: mcpremote gates as "label:tool" because the server
+	// did not annotate the tool read-only. Approve only clear read verbs.
+	if label, tool, ok := strings.Cut(action, ":"); ok && label != "" && tool != "" {
+		return mcpReadVerb.MatchString(tool)
+	}
+	return false
 }
