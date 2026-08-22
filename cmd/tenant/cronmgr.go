@@ -434,3 +434,15 @@ func (a dashCron) SetEnabled(id string, on bool) error {
 	return err
 }
 func (a dashCron) RunNow(id string) error { return a.m.runAsync(id) }
+
+// cronPerRun resolves the per-run wall-clock ceiling: operator config wins,
+// else 15 minutes — matching the claudecode backend's own per-call timeout so
+// the cron ceiling never fires before the model backend's does. (The engine's
+// internal 5m default predates multi-tool exec jobs; the daily brief's trial
+// run died at exactly 300000ms.)
+func cronPerRun(lc *launchConfig) time.Duration {
+	if lc != nil && lc.Cron.PerRunMinutes > 0 {
+		return time.Duration(lc.Cron.PerRunMinutes) * time.Minute
+	}
+	return 15 * time.Minute
+}

@@ -105,6 +105,12 @@ type PrimeOptions struct {
 	Catchup        bool
 	History        []RunRecord
 	HistoryPersist func([]RunRecord) error
+	// PerRun overrides the wall-clock ceiling on one job run. Zero keeps the
+	// default. The ceiling exists to stop HUNG runs, not to race real work:
+	// a multi-tool brief through a local 27B (or a claudecode escalation,
+	// whose own per-call timeout is 15m) legitimately runs past 5 minutes —
+	// the 2026-08-22 trial died at exactly 300000ms mid-delivery.
+	PerRun time.Duration
 }
 
 // Engine schedules and runs cron jobs. It mirrors improve.Scheduler's lifecycle
@@ -192,6 +198,9 @@ func (e *Engine) Prime(o PrimeOptions) {
 	// — before the operator has even seen the banner — against a fake model.
 	e.catchup = o.Catchup && !(e.paused != nil && e.paused())
 	e.historyPersist = o.HistoryPersist
+	if o.PerRun > 0 {
+		e.perRun = o.PerRun
+	}
 	if len(o.History) > 0 {
 		h := o.History
 		if len(h) > e.histCap {

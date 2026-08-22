@@ -384,3 +384,49 @@ func TestEngineTimezone(t *testing.T) {
 		t.Errorf("NextRun in NY = %v, want 09:00", got)
 	}
 }
+
+// The per-run ceiling exists to stop HUNG runs, not to race real work: the
+// daily brief's 2026-08-22 trial died at exactly 300000ms (the old fixed 5m)
+// mid-delivery. Prime must honor an operator override, and the running job
+// must actually see the longer deadline.
+func TestEnginePerRunOverride(t *testing.T) {
+	got := make(chan time.Duration, 1)
+	runner := func(ctx context.Context, j Job) (string, error) {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			got <- 0
+		} else {
+			got <- time.Until(dl)
+		}
+		return "ok", nil
+	}
+	e := NewEngine(nil, runner, func([]JobDef) error { return nil }, nil)
+	e.Prime(PrimeOptions{PerRun: 15 * time.Minute})
+	j, err := e.Add(AddSpec{Name: "t", Spec: "0 0 1 1 *", Prompt: "p", Enabled: true})
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	id := j.ID
+	if _, err := e.RunNow(context.Background(), id); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	select {
+	case d := <-got:
+		// Anywhere over the old 5m fixed ceiling proves the override reached
+		// the run context; ~15m proves it exactly.
+		if d < 10*time.Minute {
+			t.Fatalf("run context deadline is %v away, want ~15m — the override never reached the run", d)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runner never fired")
+	}
+}
+
+// Zero PerRun keeps the built-in default rather than disabling the ceiling.
+func TestEnginePerRunZeroKeepsDefault(t *testing.T) {
+	e := NewEngine(nil, func(context.Context, Job) (string, error) { return "", nil }, nil, nil)
+	e.Prime(PrimeOptions{})
+	if e.perRun != defaultPerRun {
+		t.Fatalf("perRun = %v, want default %v", e.perRun, defaultPerRun)
+	}
+}

@@ -459,6 +459,9 @@ type cronConfig struct {
 	// Catchup, when true, fires a SAFE job once on startup if it missed a cycle
 	// while the process was down (instead of waiting for the next occurrence).
 	Catchup bool `json:"catchup,omitempty"`
+	// PerRunMinutes caps one job run's wall clock. 0 = the built-in default
+	// (15m; see cronPerRun).
+	PerRunMinutes int `json:"per_run_minutes,omitempty"`
 }
 
 // cronJobConfig is one persisted cron job definition. Kind/Exec/TZ are omitempty

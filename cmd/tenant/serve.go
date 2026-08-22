@@ -487,6 +487,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		cronEngine.Prime(cron.PrimeOptions{
 			Location: cronLoc,
 			Catchup:  cronCatchup,
+			PerRun:   cronPerRun(c.lc),
 			History:  loadCronHistory(c.dataDir),
 			HistoryPersist: func(h []cron.RunRecord) error {
 				return saveCronHistory(c.dataDir, h)
