@@ -98,6 +98,9 @@ func TestCronExecApprover_DestructiveOverrides(t *testing.T) {
 
 	allowed := []string{
 		"atlassian:searchJiraIssuesUsingJql",
+		// the REAL id: the label itself contains a colon
+		"mcp:mcp.atlassian.com:searchJiraIssuesUsingJql",
+		"mcp:mcp.atlassian.com:getJiraIssue",
 		"atlassian:getConfluencePage",
 		"atlassian:lookupJiraAccountId",
 		"somemcp:listThings",
@@ -112,6 +115,8 @@ func TestCronExecApprover_DestructiveOverrides(t *testing.T) {
 
 	denied := []string{
 		"atlassian:createJiraIssue",
+		"mcp:mcp.atlassian.com:editJiraIssue",
+		"mcp:mcp.atlassian.com:createConfluencePage",
 		"atlassian:editJiraIssue",
 		"atlassian:transitionJiraIssue",
 		"atlassian:deleteEverything",

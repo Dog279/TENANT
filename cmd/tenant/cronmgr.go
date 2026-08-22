@@ -471,8 +471,12 @@ func cronExecDestructiveOverride(action string) bool {
 	}
 	// Remote-MCP reads: mcpremote gates as "label:tool" because the server
 	// did not annotate the tool read-only. Approve only clear read verbs.
-	if label, tool, ok := strings.Cut(action, ":"); ok && label != "" && tool != "" {
-		return mcpReadVerb.MatchString(tool)
+	// The label itself can contain colons ("mcp:mcp.atlassian.com"), so the
+	// tool name is everything after the LAST colon - cutting at the first
+	// one made the verb check run against the label's tail and deny every
+	// read (caught live by the JIRAPROBE diagnostic, not by review).
+	if idx := strings.LastIndex(action, ":"); idx > 0 && idx < len(action)-1 {
+		return mcpReadVerb.MatchString(action[idx+1:])
 	}
 	return false
 }
