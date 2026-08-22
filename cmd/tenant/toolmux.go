@@ -20,6 +20,7 @@ import (
 	"tenant/internal/peering"
 	"tenant/internal/plugins/atlassian"
 	"tenant/internal/plugins/discord"
+	githubp "tenant/internal/plugins/github"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
 	"tenant/internal/plugins/mcpremote"
@@ -1176,6 +1177,11 @@ type pluginFlags struct {
 	atlassianClientID   string
 	atlassianCallback   string
 
+	github           bool
+	githubRepo       string
+	githubAllowWrite bool
+	githubAPIBase    string
+
 	mcpRemotes          []string // --mcp-remote (repeatable): remote MCP server URLs
 	mcpTrustAnnotations bool
 	mcpAllowWrite       bool
@@ -1198,6 +1204,8 @@ type pluginFlags struct {
 	osEnable     bool
 	osAllowExec  bool
 	osAllowWrite bool
+	osWriteRoots string
+	osDenyRoots  string
 }
 
 func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
@@ -1220,6 +1228,14 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.BoolVar(&p.atlassianAllowWrite, "atlassian-allow-write", false, "permit jira_create/comment/transition (writes to the board)")
 	fs.StringVar(&p.atlassianClientID, "atlassian-client-id", "", "Atlassian OAuth app client id (Path B; secret via $ATLASSIAN_CLIENT_SECRET, login via `tenant atlassian login`)")
 	fs.StringVar(&p.atlassianCallback, "atlassian-oauth-callback", "", "OAuth callback bind addr (default 127.0.0.1:8765)")
+
+	fs.BoolVar(&p.github, "github", false, "enable GitHub tools (control plane: branches/PRs/issues/CI)")
+	fs.StringVar(&p.githubRepo, "github-repo", "", "GitHub repo this agent may touch, owner/name (single-repo by design)")
+	fs.BoolVar(&p.githubAllowWrite, "github-allow-write", false, "permit github_create_branch/issue/comment/pr (writes to the repo)")
+	fs.StringVar(&p.githubAPIBase, "github-api-base", "", "GitHub Enterprise API base, e.g. https://ghe.example.com/api/v3/")
+	// Deliberately NO --github-token flag: a token passed as a flag lands in
+	// shell history, ps output, and the scheduled-task XML. The token comes from
+	// $GITHUB_TOKEN, /configure github, or the dashboard keys page.
 	fs.Func("mcp-remote", "remote MCP server URL to connect as a client (repeatable; OAuth2.1+DCR browser sign-in via `/enable`)", func(s string) error {
 		p.mcpRemotes = append(p.mcpRemotes, s)
 		return nil
@@ -1241,6 +1257,8 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.BoolVar(&p.osEnable, "os", false, "enable the OS plugin (sysinfo, file read, dir list, processes, gated shell exec)")
 	fs.BoolVar(&p.osAllowExec, "os-allow-exec", false, "permit os_exec (run shell commands) — destructive ones still need confirm")
 	fs.BoolVar(&p.osAllowWrite, "os-allow-write", false, "permit os_write/os_edit/os_append/os_make_dir (file writes)")
+	fs.StringVar(&p.osWriteRoots, "os-write-roots", "", "comma-separated directories the file tools may WRITE to (default: the Tenant tree + the operator's Desktop/Documents/Downloads). Empty entry disables the restriction.")
+	fs.StringVar(&p.osDenyRoots, "os-deny-roots", "", "comma-separated directories the file tools may never touch, read OR write (default: Windows/Program Files/ProgramData)")
 	return p
 }
 
@@ -1364,6 +1382,22 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		mux.add("atlassian", atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: gateAllow(pf.atlassianAllowWrite), Confirm: confirm}))
 	}
 
+	if pf.github {
+		repos, rerr := githubp.ParseRepos(pf.githubRepo)
+		if rerr != nil {
+			return fail(fmt.Errorf("github plugin: %w", rerr))
+		}
+		svc, err := githubp.Open(githubp.Config{
+			Repos:   repos,
+			Token:   githubp.ResolveToken("", c.cfgDir),
+			APIBase: pf.githubAPIBase,
+		})
+		if err != nil {
+			return fail(fmt.Errorf("github plugin: %w", err))
+		}
+		mux.add("github", githubp.NewDispatcher(svc, githubp.Policy{AllowWrite: gateAllow(pf.githubAllowWrite), Confirm: confirm}))
+	}
+
 	if pf.x {
 		bearer := resolveXBearer(c.cfgDir, pf.xBearer)
 		svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: filepath.Join(c.dataDir, "x-token.json"), AllowPost: pf.xAllowPost})
@@ -1419,7 +1453,12 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	// enabled only if --os was passed (else registered-but-disabled, so
 	// it costs nothing until you turn it on).
 	if svc, err := osys.Open(osys.Config{}); err == nil {
-		mux.add("os", osys.NewDispatcher(svc, osys.Policy{AllowExec: gateAllow(pf.osAllowExec), AllowWrite: gateAllow(pf.osAllowWrite), Confirm: confirm}))
+		mux.add("os", osys.NewDispatcher(svc, osys.Policy{
+			AllowExec:  gateAllow(pf.osAllowExec),
+			AllowWrite: gateAllow(pf.osAllowWrite),
+			Confirm:    confirm,
+			Roots:      resolveOSRoots(pf, c.cfgDir, c.dataDir),
+		}))
 		if !pf.osEnable {
 			mux.SetEnabled("os", false)
 		}
@@ -1569,6 +1608,49 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 			},
 		},
 		{
+			label: "github",
+			specs: githubp.NewDispatcher(nil, githubp.Policy{}).Tools(),
+			hint:  "run `/configure github` (fine-grained PAT), then `/enable github`",
+			activate: func() (plugin, func(), error) {
+				// TEN-176: build the real GitHub plugin from /configure-saved settings,
+				// so enabling it mid-session needs no relaunch.
+				lc, err := loadLaunchConfig(c.cfgDir)
+				if err != nil {
+					return nil, nil, fmt.Errorf("github plugin: load config: %w", err)
+				}
+				sk, ok := lc.Skills["github"]
+				if !ok || sk.Settings == nil || sk.Settings["repo"] == "" {
+					return nil, nil, fmt.Errorf("github plugin: %w yet - run `/configure github`", errNotConfigured)
+				}
+				creds, _ := loadCredentials(c.cfgDir)
+				tok := githubp.ResolveToken(creds.get(skillSecretID("github", "token")), c.cfgDir)
+				if tok == "" {
+					return nil, nil, fmt.Errorf("github plugin: %w yet - no token; run `/configure github`", errNotConfigured)
+				}
+				// "repo" holds the watch list: comma-separated owner/name, each
+				// optionally suffixed :write. Repos without the suffix are
+				// reported on but never written to (the operator's per-repo
+				// choice, enforced in the plugin, not by prompt).
+				repos, rerr := githubp.ParseRepos(sk.Settings["repo"])
+				if rerr != nil {
+					return nil, nil, fmt.Errorf("github plugin: %w", rerr)
+				}
+				svc, err := githubp.Open(githubp.Config{
+					Repos:   repos,
+					Token:   tok,
+					APIBase: sk.Settings["api_base"],
+				})
+				if err != nil {
+					return nil, nil, fmt.Errorf("github plugin: %w", err)
+				}
+				// Write permission comes from the SAVED setting as well as the launch
+				// flag: an operator who opted into writes via /configure should not
+				// have to relaunch with a flag to keep them.
+				allowWrite := pf.githubAllowWrite || sk.Settings["allow_write"] == "true"
+				return githubp.NewDispatcher(svc, githubp.Policy{AllowWrite: gateAllow(allowWrite), Confirm: confirm}), func() {}, nil
+			},
+		},
+		{
 			label: "simplefin",
 			specs: simplefin.NewDispatcher(nil, nil).Tools(),
 			hint:  "run `/configure simplefin <setup-token>` (token from bridge.simplefin.org), then `/enable simplefin`",
@@ -1690,4 +1772,57 @@ func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, d
 		log.Warn("wiki: initial reindex failed; will reindex on first search", "err", rerr)
 	}
 	return ix, nil
+}
+
+// resolveOSRoots builds the file-tool boundary. Defaults are deliberately
+// generous where the agent legitimately works (its own tree, the operator's
+// Desktop/Documents/Downloads) and absolute where a hallucination would be
+// unrecoverable (Windows, Program Files, ProgramData).
+//
+// Deny always includes the platform defaults even when the operator supplies
+// their own list: an allowlist typo should not silently expose System32.
+//
+// This bounds the FILE tools only. os_exec takes an opaque command string and
+// is bounded by the OS account Tenant runs as, not by this list.
+func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string) osys.Roots {
+	split := func(v string) []string {
+		var out []string
+		for _, part := range strings.Split(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+
+	deny := append(osys.DefaultDeny(), split(pf.osDenyRoots)...)
+
+	write := split(pf.osWriteRoots)
+	if len(write) == 0 {
+		// The Tenant tree (config, data, wiki, logs) plus the operator's usual
+		// working directories. cfgDir/dataDir are included via their parent so
+		// the whole install is writable, which is what "cron + wiki + memory
+		// edits" needs.
+		seen := map[string]bool{}
+		add := func(p string) {
+			if p == "" || seen[strings.ToLower(p)] {
+				return
+			}
+			seen[strings.ToLower(p)] = true
+			write = append(write, p)
+		}
+		add(filepath.Dir(cfgDir))
+		add(filepath.Dir(dataDir))
+		add(cfgDir)
+		add(dataDir)
+		if home, err := os.UserHomeDir(); err == nil {
+			for _, sub := range []string{"Desktop", "Documents", "Downloads"} {
+				add(filepath.Join(home, sub))
+			}
+		}
+		if tmp := os.TempDir(); tmp != "" {
+			add(tmp)
+		}
+	}
+	return osys.Roots{Deny: deny, Write: write}
 }

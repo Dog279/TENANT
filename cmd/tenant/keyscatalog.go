@@ -70,6 +70,9 @@ var keyCatalog = []keySpec{
 	// URL — a pasted setup token is claimed (and the credential rewritten to
 	// the access URL) on first use by resolveSimpleFINAccessURL.
 	{CredID: "skill:simplefin:access_url", Name: "SimpleFIN setup token / access URL", Category: "Integration", Kind: keyDirect},
+	// GitHub is a paste-a-token service like Discord. The repo it is scoped to
+	// lives in config (skills.github.settings.repo); only the PAT is a secret.
+	{CredID: "skill:github:token", Name: "GitHub fine-grained PAT", Category: "Integration", Kind: keyDirect},
 }
 
 // lookupKeySpec is the single mutation chokepoint: only a catalog CredID is

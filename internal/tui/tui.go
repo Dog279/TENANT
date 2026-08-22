@@ -89,6 +89,9 @@ type Config struct {
 	// Peer, if set, powers /peer (list/show/remove) + /configure peer (the
 	// per-peer share-policy editor). Federation pairing (TEN-183/188).
 	Peer PeerControl
+
+	// GitHub is the watched-repository list behind /github (nil = unavailable).
+	GitHub GitHubControl
 	// Secrets, if set, powers `/configure` (no-arg): an arrow-key picker over
 	// every keyed service (LLM providers, web-search engines, Discord, …) →
 	// paste the key → stored + applied live. Write-only: List exposes presence,
@@ -534,6 +537,23 @@ type MCPServerInfo struct {
 // PeerControl drives the TUI's `/peer` and `/configure peer` surfaces over the
 // federation peer store (TEN-183/188). Share editing mirrors the global
 // permissions model: every sharable capability is Allow or Deny, deny-by-default.
+// GitHubRepoInfo is one watched repository as the operator sees it.
+type GitHubRepoInfo struct {
+	Slug    string // owner/name
+	Write   bool   // the agent may modify this repo (still gated per action)
+	Primary bool   // the default target when a tool omits its repo argument
+}
+
+// GitHubControl is the watch-list surface behind /github. Write access is a
+// PER-REPO decision: everything watched is reported on, only :write repos can
+// be modified, and the plugin refuses writes to the others in code.
+type GitHubControl interface {
+	Repos() ([]GitHubRepoInfo, error)
+	SetWrite(repo string, write bool) (GitHubRepoInfo, error)
+	Add(repo string, write bool) (GitHubRepoInfo, error)
+	Remove(repo string) (bool, error)
+}
+
 type PeerControl interface {
 	List() []PeerInfo
 	Show(name string) (PeerInfo, bool)
@@ -1999,6 +2019,107 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 // handlePeer drives `/peer` (federation pairing, TEN-183/188): list/show/remove.
 // Share editing is `/configure peer <name>`; pairing-by-address is the `invite`
 // subcommand (push + Approve/Deny — designed, building next).
+// handleGitHub drives the watch list. Read access is not adjustable here: a
+// watched repo is always reportable, which is the point of watching it. The
+// only lever is write, per repo.
+func (m *model) handleGitHub(arg string) tea.Cmd {
+	if m.cfg.GitHub == nil {
+		m.sysChat("github is not available in this session - run `/configure github` first")
+		return nil
+	}
+	fields := strings.Fields(arg)
+	sub, rest := "", ""
+	if len(fields) > 0 {
+		sub = strings.ToLower(fields[0])
+		rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(arg), fields[0]))
+	}
+	switch sub {
+	case "", "list", "status":
+		repos, err := m.cfg.GitHub.Repos()
+		if err != nil {
+			m.sysChat("github: " + err.Error())
+			return nil
+		}
+		if len(repos) == 0 {
+			m.sysChat("no repositories watched yet - add one with `/github add owner/name`")
+			return nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "watched repositories (%d):\n", len(repos))
+		for _, r := range repos {
+			mode := "watch-only"
+			if r.Write {
+				mode = "WRITABLE"
+			}
+			tag := ""
+			if r.Primary {
+				tag = "  (primary - the default when a tool omits its repo)"
+			}
+			fmt.Fprintf(&b, "  %-40s %s%s\n", r.Slug, mode, tag)
+		}
+		b.WriteString("\nevery watched repo is reported on; only WRITABLE ones can be modified,\n")
+		b.WriteString("and writes there are still gated per action.")
+		m.sysChat(strings.TrimRight(b.String(), "\n"))
+	case "write", "rw":
+		if rest == "" {
+			m.sysChat("usage: /github write <owner/name>")
+			return nil
+		}
+		info, err := m.cfg.GitHub.SetWrite(rest, true)
+		if err != nil {
+			m.sysChat("github: " + err.Error())
+			return nil
+		}
+		m.sysChat(info.Slug + ": WRITABLE - the agent may modify it; each write is still gated. Run `/enable github` to apply to the running session.")
+	case "readonly", "read", "ro":
+		if rest == "" {
+			m.sysChat("usage: /github readonly <owner/name>")
+			return nil
+		}
+		info, err := m.cfg.GitHub.SetWrite(rest, false)
+		if err != nil {
+			m.sysChat("github: " + err.Error())
+			return nil
+		}
+		m.sysChat(info.Slug + ": watch-only - still reported on, writes now refused in code. Run `/enable github` to apply to the running session.")
+	case "add":
+		f := strings.Fields(rest)
+		if len(f) == 0 {
+			m.sysChat("usage: /github add <owner/name> [write]")
+			return nil
+		}
+		write := len(f) > 1 && strings.EqualFold(f[1], "write")
+		info, err := m.cfg.GitHub.Add(f[0], write)
+		if err != nil {
+			m.sysChat("github: " + err.Error())
+			return nil
+		}
+		mode := "watch-only"
+		if info.Write {
+			mode = "WRITABLE"
+		}
+		m.sysChat("watching " + info.Slug + " (" + mode + "). Make sure the PAT covers it, then `/enable github`.")
+	case "remove", "rm", "forget":
+		if rest == "" {
+			m.sysChat("usage: /github remove <owner/name>")
+			return nil
+		}
+		ok, err := m.cfg.GitHub.Remove(rest)
+		if err != nil {
+			m.sysChat("github: " + err.Error())
+			return nil
+		}
+		if !ok {
+			m.sysChat("github: " + rest + " was not watched")
+			return nil
+		}
+		m.sysChat("stopped watching " + rest)
+	default:
+		m.sysChat("usage: /github [list] | write <owner/name> | readonly <owner/name> | add <owner/name> [write] | remove <owner/name>")
+	}
+	return nil
+}
+
 func (m *model) handlePeer(arg string) tea.Cmd {
 	if m.cfg.Peer == nil {
 		m.sysChat("peers not available in this session")
@@ -2637,6 +2758,9 @@ var helpSections = []helpSection{
 			{"/peer reconnect", "fold paired peers' shared knowledge into your search now (after pairing mid-session)"},
 			{"/peer stats", "per-peer federated-search tally (drift tracking: queries/hits/denied/errors)"},
 			{"/peer", "list federation peers + their share policy (also: /peer show|remove)"},
+			{"/github", "list watched repos + which are writable (also: /github add|remove)"},
+			{"/github write <owner/name>", "let the agent modify this repo (writes still gated per action)"},
+			{"/github readonly <owner/name>", "watch + report only - writes refused in code"},
 			{"/configure peer <name>", "share editor — like /permissions: each item allow or deny (set <item> <mode>)"},
 		},
 	},
@@ -3457,6 +3581,10 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		// <url>` runs the OAuth browser flow off the UI goroutine (a tea.Cmd
 		// closure) so the TUI stays responsive; tools come up gated.
 		return m.handleMCP(arg)
+	case "/github", "/gh":
+		// Watched repositories + per-repo write authorization. The token and the
+		// repo set come from /configure github; this is the day-to-day switch.
+		return m.handleGitHub(arg)
 	case "/peer":
 		// Federation peers (TEN-183/188): list/show/remove + invite. Share
 		// editing is `/configure peer <name>`.

@@ -71,6 +71,7 @@ type Server struct {
 	tools        ToolControl
 	mem          MemoryControl       // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
 	cron         CronControl         // recurring-job admin; nil = section renders "not configured"
+	githubRepos  GitHubReposControl  // watched GitHub repos + per-repo write; nil = section hidden
 	secrets      SecretsControl      // write-only API-key admin; nil = section renders "not configured"
 	eval         EvalControl         // TEN-201: eval/quality page; nil = "not configured"
 	skills       SkillControl        // TEN-202: skill library page; nil = "not configured"

@@ -33,7 +33,7 @@ var wizardLocalKinds = map[string]skillKind{
 // wizardOrder is the display order of the setup wizard, preserved from the
 // original skillSpecs list. Each id resolves to a skillKinds entry (framework)
 // or a wizardLocalKinds entry — wizardCatalog merges them in this order.
-var wizardOrder = []string{"wiki", "sql", "gsuite", "x", "imessage", "discord", "web", "os"}
+var wizardOrder = []string{"wiki", "sql", "gsuite", "x", "imessage", "discord", "github", "web", "os"}
 
 // wizardCatalog returns the wizard's skills as a single ordered []skillKind,
 // sourcing each id from skillKinds (framework) or wizardLocalKinds (local).
@@ -311,6 +311,20 @@ func applyPluginConfig(c *commonFlags, pf *pluginFlags) {
 		}
 		if !set["discord-bot-token"] {
 			pf.discordToken = firstNonEmpty(pf.discordToken, secret("discord", "token"))
+		}
+	}
+	if enabled("github") {
+		if !set["github"] {
+			pf.github = true
+		}
+		if !set["github-repo"] {
+			pf.githubRepo = firstNonEmpty(pf.githubRepo, get("github", "repo"))
+		}
+		if !set["github-api-base"] {
+			pf.githubAPIBase = firstNonEmpty(pf.githubAPIBase, get("github", "api_base"))
+		}
+		if !set["github-allow-write"] && get("github", "allow_write") == "true" {
+			pf.githubAllowWrite = true
 		}
 	}
 	if enabled("web") && !set["web"] {

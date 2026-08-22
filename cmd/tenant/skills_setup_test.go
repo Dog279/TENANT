@@ -21,10 +21,10 @@ func TestConfigureSkills_EndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	creds, _ := loadCredentials(dir)
 
-	// Wizard order is wiki, sql, gsuite, x, imessage, discord, web, os.
+	// Wizard order is wiki, sql, gsuite, x, imessage, discord, github, web, os.
 	// Enable wiki (local, no probe), skip sql/gsuite, enable x (framework:
 	// invalid bearer → re-ask → valid; decline the probe), enable imessage
-	// (local secret), skip discord/web, enable os (no fields).
+	// (local secret), skip discord/github/web, enable os (no fields).
 	validBearer := strings.Repeat("A", 90)
 	in := feed(
 		"y", "/tmp/wiki", // wiki: enable + dir
@@ -33,6 +33,7 @@ func TestConfigureSkills_EndToEnd(t *testing.T) {
 		"y", "bad", validBearer, "n", // x: enable, invalid bearer, valid bearer, decline verify
 		"y", "http://localhost:1234", "imsg-pass", // imessage: enable + url + password
 		"n", // discord: skip
+		"n", // github: skip
 		"n", // web: skip
 		"y", // os: enable (no fields)
 	)
@@ -136,9 +137,9 @@ func TestConfigureSkills_AbortDoesNotLeakSecret(t *testing.T) {
 
 	dir := t.TempDir()
 	creds, _ := loadCredentials(dir)
-	// Skip every real skill (8 "n"), then enable leaktest, enter the secret,
-	// then hit the aborting trigger field (empty value).
-	lines := []string{"n", "n", "n", "n", "n", "n", "n", "n", "y", "super-secret-token", ""}
+	// Skip every real skill (one "n" per wizardOrder entry), then enable
+	// leaktest, enter the secret, then hit the aborting trigger (empty value).
+	lines := append(skipAll(), "y", "super-secret-token", "")
 	out := configureSkills(feed(lines...), nil, creds, dir)
 
 	if out[id] != nil && out[id].Enabled {
@@ -156,9 +157,20 @@ func TestConfigureSkills_DisableTogglesOff(t *testing.T) {
 		"os": {Enabled: true, Settings: map[string]string{}},
 	}
 	// Answer "n" to every prompt — an already-enabled skill should flip off.
-	in := feed("n", "n", "n", "n", "n", "n", "n", "n")
+	in := feed(skipAll()...)
 	out := configureSkills(in, cur, creds, dir)
 	if out["os"].Enabled {
 		t.Error("answering n to an already-enabled skill should disable it")
 	}
+}
+
+// skipAll answers "n" once per wizard entry. Derived from wizardOrder so that
+// adding a skill (e.g. github, TEN-177) does not silently truncate these feeds
+// and leave the last skill unanswered.
+func skipAll() []string {
+	out := make([]string, 0, len(wizardOrder))
+	for range wizardOrder {
+		out = append(out, "n")
+	}
+	return out
 }

@@ -49,5 +49,55 @@
 <div class="card"><div class="dim">No integrations available in this build.</div></div>
 {{end}}
 
+
+
+{{end}}
+
+{{if .GitHubConfigured}}
+<div class="card" id="github-repos">
+  <div class="ghead"><span class="nm">GitHub — watched repositories</span></div>
+  <div class="dim" style="margin:4px 0 10px">
+    Every watched repo is <strong>reported on</strong> (daily brief, overnight changes).
+    Only repos set to <strong>write</strong> can be modified, and those writes are still
+    gated per action. A read-only repo refuses writes in code, so approving one action
+    can't spill into a repo you only wanted to watch.
+    The token itself is set on the Provider keys page.
+  </div>
+
+  {{if .GitHubRepos}}
+  {{range .GitHubRepos}}
+  <div class="crow" style="align-items:center">
+    <span class="nm" style="min-width:260px">{{.Slug}}</span>
+    {{if .Primary}}<span class="dim">primary</span>{{end}}
+    <form method="POST" action="/integrations/github/repos/mode" class="inline">
+      <input type="hidden" name="repo" value="{{.Slug}}">
+      <select name="mode">
+        <option value="read"{{if not .Write}} selected{{end}}>read — watch &amp; report only</option>
+        <option value="write"{{if .Write}} selected{{end}}>write — agent may modify (gated)</option>
+      </select>
+      <button type="submit" class="btn sm">Update</button>
+    </form>
+    <form method="POST" action="/integrations/github/repos/remove" class="inline">
+      <input type="hidden" name="repo" value="{{.Slug}}">
+      <button type="submit" class="btn sm danger">Stop watching</button>
+    </form>
+  </div>
+  {{end}}
+  {{else}}
+  <div class="dim">No repositories watched yet.</div>
+  {{end}}
+
+  <form method="POST" action="/integrations/github/repos/add" class="cronadd" style="margin-top:12px">
+    <div class="crow">
+      <input type="text" name="repo" placeholder="owner/name" class="cinput" required>
+      <select name="mode">
+        <option value="read" selected>read — watch &amp; report only</option>
+        <option value="write">write — agent may modify (gated)</option>
+      </select>
+      <button type="submit" class="btn">Watch repo</button>
+    </div>
+    <div class="dim">The access token must cover every repo listed here — add it on Provider keys, then run <code>/enable github</code> to apply changes to the running session.</div>
+  </form>
+</div>
 {{end}}
 {{end}}

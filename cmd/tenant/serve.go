@@ -529,20 +529,24 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	dcfg, _ := resolveDashboardConfig(c.lc, true, *dashboardOn, *dashboardAddr)
 	dashMgr := &dashboardManager{
-		base:      ctx,
-		cfg:       dcfg,
-		runner:    gated,
-		tools:     dashTools{mainTools},
-		mem:       dashMemory{memCtl},
-		cron:      dashCronCtl,
-		secrets:   dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
-		skills:    dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
-		models:    dashModel{mc: modelCtl},
-		approvals: broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
-		broker:    evBroker,
-		evlog:     evlog,
-		log:       log,
-		notify:    pushSys,
+		base:   ctx,
+		cfg:    dcfg,
+		runner: gated,
+		tools:  dashTools{mainTools},
+		mem:    dashMemory{memCtl},
+		cron:   dashCronCtl,
+		// Watched-repo list for the Integrations page. serve builds its OWN
+		// dashboardManager, so anything wired only in cmdTUI is silently absent
+		// here — which is exactly how this section came up empty the first time.
+		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
+		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		skills:      dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
+		models:      dashModel{mc: modelCtl},
+		approvals:   broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
+		broker:      evBroker,
+		evlog:       evlog,
+		log:         log,
+		notify:      pushSys,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
 				return nil

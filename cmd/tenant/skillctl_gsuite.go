@@ -592,6 +592,7 @@ func isProductionGSuiteProbe(p skillProbe) bool {
 func init() {
 	skillKinds["gsuite"] = gsuiteSkillKind()
 	skillKinds["atlassian"] = atlassianSkillKind() // TEN-160
+	skillKinds["github"] = githubSkillKind()       // TEN-177
 	skillKinds["discord"] = discordSkillKind()     // TEN-66
 	skillKinds["web"] = webSkillKind()             // TEN-69
 	skillKinds["x"] = xSkillKind()                 // TEN-67
