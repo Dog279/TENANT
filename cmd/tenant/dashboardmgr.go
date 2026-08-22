@@ -26,6 +26,7 @@ type dashboardManager struct {
 	tools        dashboard.ToolControl
 	mem          dashboard.MemoryControl       // TEN-88: memory curator surface (nil-safe)
 	cron         dashboard.CronControl         // recurring-job admin surface (nil-safe)
+	githubRepos  dashboard.GitHubReposControl  // watched GitHub repos + per-repo write (nil-safe)
 	secrets      dashboard.SecretsControl      // write-only API-key admin surface (nil-safe)
 	eval         dashboard.EvalControl         // TEN-201: eval/quality surface (nil-safe)
 	skills       dashboard.SkillControl        // TEN-202: skill library surface (nil-safe)
@@ -75,6 +76,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.integrations != nil {
 		srv.SetIntegrations(m.integrations)
+	}
+	if m.githubRepos != nil {
+		srv.SetGitHubRepos(m.githubRepos)
 	}
 	if m.access != nil {
 		srv.SetAccess(m.access)

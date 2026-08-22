@@ -602,6 +602,17 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	if err != nil {
 		return nil, fmt.Errorf("eval: build router: %w", err)
 	}
+	// Give the eval agent the SAME failover chain the live agent has. Without
+	// it the harness measures the primary endpoint's uptime rather than the
+	// agent's quality: five consecutive nightly runs scored an identical
+	// 10.4/100 with 42 of 48 tasks failing on "model: endpoint down" because
+	// the DGX was unreachable, while the live agent sailed through the same
+	// window on zai/claudecode. A flapping endpoint should degrade a run, not
+	// zero it — and a scored-zero run also trips the regression gate for a
+	// purely infrastructural reason.
+	if c.lc != nil {
+		installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
+	}
 	// Auto-enable plugins the operator has available but didn't flag. Without
 	// this, every plugin defaults to off and the agent has no tools — scoring
 	// 0 on every task that expects a tool call. Only touches flags the operator

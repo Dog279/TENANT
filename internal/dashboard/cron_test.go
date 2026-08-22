@@ -20,6 +20,9 @@ type fakeCronCtl struct {
 	removeCalls []string
 	enableCalls []string // "id:true"/"id:false"
 	runCalls    []string
+	execOn      bool
+	execCalls   []bool
+	execErr     error
 }
 
 func (f *fakeCronCtl) Jobs() []CronJobView { return f.jobs }
@@ -38,6 +41,15 @@ func (f *fakeCronCtl) SetEnabled(id string, on bool) error {
 	return nil
 }
 func (f *fakeCronCtl) RunNow(id string) error { f.runCalls = append(f.runCalls, id); return nil }
+func (f *fakeCronCtl) ExecEnabled() bool      { return f.execOn }
+func (f *fakeCronCtl) SetExec(on bool) error {
+	if f.execErr != nil {
+		return f.execErr
+	}
+	f.execCalls = append(f.execCalls, on)
+	f.execOn = on
+	return nil
+}
 
 func cronServer(fc CronControl) *Server {
 	s := New(Config{}, nil, nil, nil, nil, nil)
@@ -172,5 +184,38 @@ func TestCron_FormsNilSafe(t *testing.T) {
 	s := cronServer(nil)
 	if rec := cronPostForm(t, s, "/cron/add", "spec=@daily&prompt=x"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil cron add: want 303, got %d", rec.Code)
+	}
+}
+
+// The global cron-exec kill-switch used to be reachable ONLY from the TUI, so an
+// operator managing the box remotely could not turn it on — and with it off, an
+// exec-opted-in job silently loses its gated tools (the daily brief could not
+// call discord_send_message). Drive it from the dashboard instead.
+func TestCron_ExecToggleFromDashboard(t *testing.T) {
+	f := &fakeCronCtl{}
+	s := cronServer(f)
+
+	if rec := cronPostForm(t, s, "/cron/exec", "enabled=true"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("enable: status = %d, want 303", rec.Code)
+	}
+	if !f.execOn || len(f.execCalls) != 1 || f.execCalls[0] != true {
+		t.Fatalf("enable did not reach the control: on=%v calls=%v", f.execOn, f.execCalls)
+	}
+
+	if rec := cronPostForm(t, s, "/cron/exec", "enabled=false"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("disable: status = %d, want 303", rec.Code)
+	}
+	if f.execOn {
+		t.Fatalf("disable did not reach the control: on=%v calls=%v", f.execOn, f.execCalls)
+	}
+
+	// The page must show the live state, or the operator cannot tell whether the
+	// switch is on without reading config.
+	f.execOn = true
+	req := httptest.NewRequest("GET", "/cron", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), "Global cron-exec") {
+		t.Fatal("cron page does not render the cron-exec state")
 	}
 }

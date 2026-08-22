@@ -27,6 +27,12 @@ type CronControl interface {
 	Remove(id string) error
 	SetEnabled(id string, on bool) error
 	RunNow(id string) error
+	// ExecEnabled reports the GLOBAL cron-exec kill-switch. Distinct from a job's
+	// own Exec opt-in: a job marked exec still runs read/comms-safe while this is
+	// off, which silently strips gated tools (e.g. discord_send_message) from it.
+	ExecEnabled() bool
+	// SetExec flips that kill-switch and persists it. Takes effect live.
+	SetExec(on bool) error
 }
 
 // CronAddSpec is the input to Add. Kind is "" (prompt) / "prompt" / "shell";
@@ -69,11 +75,13 @@ func (s *Server) mountCronSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /cron/{id}/enable", s.handleCronEnableForm)
 	mux.HandleFunc("POST /cron/{id}/delete", s.handleCronDeleteForm)
 	mux.HandleFunc("POST /cron/{id}/run", s.handleCronRunForm)
+	mux.HandleFunc("POST /cron/exec", s.handleCronExecForm)
 }
 
 type cronPageData struct {
 	layoutData
 	Configured bool
+	ExecOn     bool
 	Jobs       []CronJobView
 	Err        string
 	Msg        string
@@ -89,6 +97,7 @@ func (s *Server) handleCronPage(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Configured = true
 	d.Jobs = s.cron.Jobs()
+	d.ExecOn = s.cron.ExecEnabled()
 	s.render(w, s.tmpl.cron, d)
 }
 
@@ -113,6 +122,26 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectCron(w, r, "Job scheduled.", "")
+}
+
+// handleCronExecForm flips the GLOBAL cron-exec kill-switch. Previously this was
+// reachable only from the TUI (/cron exec on|off), which forced an operator onto
+// the console for a setting that gates every unattended job.
+func (s *Server) handleCronExecForm(w http.ResponseWriter, r *http.Request) {
+	if s.cron == nil {
+		http.Redirect(w, r, "/cron", http.StatusSeeOther)
+		return
+	}
+	on := r.FormValue("enabled") == "true"
+	if err := s.cron.SetExec(on); err != nil {
+		redirectCron(w, r, "", "Couldn't change cron-exec: "+err.Error())
+		return
+	}
+	if on {
+		redirectCron(w, r, "cron-exec ENABLED - shell and exec-opted-in jobs may now use dangerous tools unattended.", "")
+		return
+	}
+	redirectCron(w, r, "cron-exec disabled - dangerous jobs are inert again.", "")
 }
 
 func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {

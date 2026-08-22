@@ -46,13 +46,13 @@ func TestAttachmentAcceptable(t *testing.T) {
 
 func TestSanitizeAttachmentName(t *testing.T) {
 	cases := map[string]string{
-		"report.pdf":              "report.pdf",
-		"../../etc/passwd":        "passwd",
-		"..\\..\\win\\boot.txt":   "boot.txt",
-		"we ird  näme!!.csv":      "we_ird__n_me__.csv",
-		"...":                     "attachment",
-		"":                        "attachment",
-		"IMG_0042 (edited).jpeg":  "IMG_0042__edited_.jpeg",
+		"report.pdf":             "report.pdf",
+		"../../etc/passwd":       "passwd",
+		"..\\..\\win\\boot.txt":  "boot.txt",
+		"we ird  näme!!.csv":     "we_ird__n_me__.csv",
+		"...":                    "attachment",
+		"":                       "attachment",
+		"IMG_0042 (edited).jpeg": "IMG_0042__edited_.jpeg",
 	}
 	for in, want := range cases {
 		if got := sanitizeAttachmentName(in); got != want {

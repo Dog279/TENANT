@@ -122,8 +122,21 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 			ag = execAg
 			runCtx = withOffsiteConfirm(ctx, approver)
 		}
+		// Honor a !big / !local prefix on a cron prompt. agent.Turn only parses
+		// it for INTERACTIVE surfaces (TUI/dashboard), so without this the
+		// prefix would be passed to the model as literal text.
+		//
+		// Unattended jobs need this more than interactive ones do: a scheduled
+		// turn inherits a sticky session, which pins it to the small tier with
+		// complexity 0 (the classifier is never consulted), so a multi-tool job
+		// like the daily brief silently lands on the local 35B and dies with
+		// "too many consecutive tool-call validation failures" - the runtime
+		// refusing to coax valid JSON out of a model that cannot emit it. There
+		// is no per-agent "force big" in route config, so the prompt prefix is
+		// the operator's lever.
+		prompt, override := agent.ParseRoutePrefix(job.Prompt)
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
-			UserQuery: job.Prompt, RouteSurface: agent.RouteSurfaceCron,
+			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
 		})
 		if err != nil {
 			return "", err
@@ -410,6 +423,12 @@ func (a dashCron) Add(s dashboard.CronAddSpec) error {
 	return err
 }
 func (a dashCron) Remove(id string) error { _, err := a.m.engine.Remove(id); return err }
+
+// ExecEnabled / SetExec expose the GLOBAL cron-exec kill-switch to the
+// dashboard so it no longer requires the TUI (/cron exec on|off) — the console
+// was the only way to change a setting that gates every unattended job.
+func (a dashCron) ExecEnabled() bool     { return a.m.ExecEnabled() }
+func (a dashCron) SetExec(on bool) error { return a.m.SetExec(on) }
 func (a dashCron) SetEnabled(id string, on bool) error {
 	_, _, err := a.m.engine.SetEnabled(id, on)
 	return err

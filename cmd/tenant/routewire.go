@@ -22,8 +22,8 @@ import (
 // control. It owns the local classifier and decision history; agent only sees
 // generic tags and a prompt-free event summary.
 type routeRuntime struct {
-	mu                 sync.RWMutex
-	cfg                resolvedRouteConfig
+	mu  sync.RWMutex
+	cfg resolvedRouteConfig
 	// cfgMu serializes route-config read-modify-write cycles (SetMode, Force,
 	// SetBig, SetPolicy) so two route mutations can't interleave their
 	// load→mutate→save windows and silently drop each other's writes. It does

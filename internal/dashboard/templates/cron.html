@@ -30,6 +30,17 @@
   </form>
 </div>
 
+<div class="card">
+  <div><strong>Global cron-exec:</strong> {{if .ExecOn}}ON{{else}}OFF{{end}}</div>
+  <div class="dim">Shell jobs and exec-opted-in prompt jobs only get their dangerous tools when this is ON. While it is OFF an exec job still runs, but read/comms-safe &mdash; gated tools such as discord_send_message are silently unavailable to it, so delivery steps fail without an obvious error.</div>
+  <div class="cronactions">
+    <form method="POST" action="/cron/exec" class="inline">
+      <input type="hidden" name="enabled" value="{{if .ExecOn}}false{{else}}true{{end}}">
+      <button type="submit" class="btn">{{if .ExecOn}}Disable cron-exec{{else}}Enable cron-exec{{end}}</button>
+    </form>
+  </div>
+</div>
+
 {{range .Jobs}}
 <div class="card cronjob" id="cron-{{.ID}}">
   <div class="ghead">
