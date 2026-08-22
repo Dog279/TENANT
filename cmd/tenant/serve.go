@@ -448,7 +448,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		skills:      skillRetriever{st: skillStore, agentID: c.agent},
 		compactor:   compressor,
 		userProfile: prof,
-		fullTools:   mainTools.All(),
+		fullReg:     mainTools,
 		fullDisp:    mainTools,
 		sysPrompt:   sysPrompt,
 		log:         log,

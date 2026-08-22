@@ -60,7 +60,7 @@ type cronAgentDeps struct {
 	skills      agent.SkillRetriever
 	compactor   agent.Compactor
 	userProfile *userprofile.Profile
-	fullTools   []model.ToolSpec
+	fullReg     agent.ToolRegistry // LIVE registry, not a snapshot (see restricttools.go)
 	fullDisp    agent.ToolDispatcher
 	sysPrompt   string
 	log         *slog.Logger
@@ -79,7 +79,7 @@ func notCron(name string) bool { return strings.HasPrefix(name, "cron_") }
 // buildCronRunner constructs the safe + exec runner agents and returns a Runner
 // that dispatches each job to the right path.
 func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
-	safeReg, safeDisp := restrictReadComms(d.fullTools, d.fullDisp, "scheduled cron jobs", notCron)
+	safeReg, safeDisp := restrictReadComms(d.fullReg, d.fullDisp, "scheduled cron jobs", notCron)
 	safeAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills,
@@ -90,7 +90,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		return nil, err
 	}
 
-	execReg, execDisp := restrictExec(d.fullTools, d.fullDisp, "scheduled cron jobs (exec)", notCron)
+	execReg, execDisp := restrictExec(d.fullReg, d.fullDisp, "scheduled cron jobs (exec)", notCron)
 	execAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron-exec", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills,
