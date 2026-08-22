@@ -303,3 +303,120 @@ func TestComposite_RankingStatus_DelegatesToShared(t *testing.T) {
 		t.Errorf("expected shared-mux status (catalog=25, embedder reason); got catalog=%d reason=%q", catalog, reason)
 	}
 }
+
+// Unlimited spawning is what let one question become ~30 contradictory
+// sub-agents that never converged (and leaked a browser session each). The cap
+// must refuse in code rather than rely on the orchestrator's restraint, and it
+// must say what to do instead so the model awaits rather than retrying.
+func TestTeamRuntime_SpawnCapRefusesRunaway(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	router, err := buildRouter(c, log)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	st, closeStores, err := openStores(c)
+	if err != nil {
+		t.Fatalf("stores: %v", err)
+	}
+	defer closeStores()
+
+	bus := orchestra.NewBus()
+	bus.Register("main")
+	rt := newTeamRuntime(TeamConfig{
+		Bus: bus, Router: router, Stores: st, Shared: newToolMux(),
+		OrchID: "main", Log: log, MaxConcurrent: 2,
+	})
+
+	if got := rt.maxConcurrent(); got != 2 {
+		t.Fatalf("configured cap = %d, want 2", got)
+	}
+
+	// Hold two slots open so the third spawn hits the bound deterministically,
+	// without depending on how fast the echo backend finishes.
+	rt.mu.Lock()
+	for _, id := range []string{"held-1", "held-2"} {
+		rt.agents[id] = &member{id: id, role: "held", task: "t", status: "running", done: make(chan struct{})}
+		rt.order = append(rt.order, id)
+	}
+	rt.mu.Unlock()
+
+	_, err = rt.Spawn(context.Background(), "researcher", "one too many")
+	if err == nil {
+		t.Fatal("spawning past the cap must be refused")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Errorf("refusal should name the cause: %v", err)
+	}
+	if !strings.Contains(err.Error(), "await") {
+		t.Errorf("refusal should tell the orchestrator to await rather than retry: %v", err)
+	}
+
+	// Freeing a slot lets work proceed - the cap bounds concurrency, it does
+	// not permanently disable spawning.
+	rt.mu.Lock()
+	rt.agents["held-1"].status = "done"
+	rt.mu.Unlock()
+	if _, err := rt.Spawn(context.Background(), "researcher", "now there is room"); err != nil {
+		t.Fatalf("spawn after a slot freed should succeed: %v", err)
+	}
+}
+
+// An unset cap must fall back to the documented default rather than 0, which
+// would refuse every spawn.
+func TestTeamRuntime_DefaultCap(t *testing.T) {
+	rt := newTeamRuntime(TeamConfig{})
+	if got := rt.maxConcurrent(); got != defaultMaxConcurrentAgents {
+		t.Fatalf("default cap = %d, want %d", got, defaultMaxConcurrentAgents)
+	}
+	rt2 := newTeamRuntime(TeamConfig{MaxConcurrent: -1})
+	if got := rt2.maxConcurrent(); got != defaultMaxConcurrentAgents {
+		t.Fatalf("negative cap = %d, want the default %d", got, defaultMaxConcurrentAgents)
+	}
+}
+
+// Over the MCP bridge the caller's context is a single JSON-RPC request that
+// ends as soon as spawn_agent returns. Inheriting it killed every sub-agent
+// mid-thought — the spawn "succeeded", the roster listed it, and the await
+// reported "(no result)", which reads as a model problem rather than a
+// lifetime problem.
+func TestTeamRuntime_BaseCtxOutlivesTheCallingRequest(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	router, err := buildRouter(c, log)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	st, closeStores, err := openStores(c)
+	if err != nil {
+		t.Fatalf("stores: %v", err)
+	}
+	defer closeStores()
+
+	bus := orchestra.NewBus()
+	bus.Register("main")
+	rt := newTeamRuntime(TeamConfig{
+		Bus: bus, Router: router, Stores: st, Shared: newToolMux(),
+		OrchID: "main", Log: log, BaseCtx: context.Background(),
+	})
+
+	// Exactly the bridge's shape: the request context dies the instant the
+	// tool call returns.
+	reqCtx, endRequest := context.WithCancel(context.Background())
+	id, err := rt.Spawn(reqCtx, "researcher", "find the answer")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	endRequest()
+
+	summary := rt.Await(context.Background(), 30*time.Second)
+	if !strings.Contains(summary, id) {
+		t.Fatalf("await lost the agent:\n%s", summary)
+	}
+	if !strings.Contains(summary, "[done]") {
+		t.Errorf("agent did not finish after its caller went away:\n%s", summary)
+	}
+	if strings.Contains(summary, "(no result)") {
+		t.Errorf("agent produced no result — it was cancelled with its caller:\n%s", summary)
+	}
+}

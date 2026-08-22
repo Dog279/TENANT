@@ -404,12 +404,32 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Sub-agents spawned over this bridge need the SAME failover the live agent
+	// has. A bare router has no chain, so a primary-endpoint flap makes every
+	// spawn fail outright with "endpoint down" — and staying useful when the
+	// primary is unreachable is most of why the bridge exists.
+	//
+	// claudecode is dropped from the chain on purpose: the client driving this
+	// bridge IS a `claude -p` process, so falling back to it would have Claude
+	// spawn Claude through Tenant and back again.
+	if c.lc != nil {
+		chain := make([]string, 0, len(c.lc.Fallbacks))
+		for _, name := range c.lc.Fallbacks {
+			if strings.EqualFold(strings.TrimSpace(name), "claudecode") {
+				continue
+			}
+			chain = append(chain, name)
+		}
+		lc := *c.lc
+		lc.Fallbacks = chain
+		installFallbackChain(router, c.cfgDir, &lc, c.planCeiling, log)
+	}
 	st, closeStores, err := openStores(c)
 	if err != nil {
 		return err
 	}
 	defer closeStores()
-	emb, _, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
+	emb, embProfile, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	if err != nil {
 		return fmt.Errorf("resolve embedder: %w", err)
 	}
@@ -436,6 +456,48 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 			return err
 		}
 		defer cleanupMux()
+
+		// Sub-agent spawning over the bridge. Without this the MCP surface is
+		// plugin tools only: a claudecode fallback can read everything and
+		// delegate nothing, so heavy work has nowhere to go but the caller's
+		// own context. serve/TUI register these on a per-agent LOCAL mux over a
+		// team runtime; mcp-memory never built one, which is why team_spawn and
+		// orchestrator were absent no matter which allow flags were passed.
+		//
+		// Registered on the SHARED mux here on purpose: that is the mux handed
+		// to mcpserver, so it is what a remote client actually sees.
+		bus := orchestra.NewBus()
+		rt := newTeamRuntime(TeamConfig{
+			Bus: bus, Router: router, Stores: st, Shared: mux,
+			// A tool call is one request; a sub-agent has to outlive it.
+			BaseCtx:  ctx,
+			Embedder: emb, EmbedderID: string(embProfile.ID),
+			OrchID: c.agent, Log: log,
+			CfgDir: c.cfgDir, EmbedProfile: embProfile,
+			// Built-ins + any operator-defined profiles, so a spawn can be pinned
+			// to a specific model (e.g. a local Qwen worker) rather than
+			// inheriting the caller's.
+			AgentProfiles: effectiveAgents(c.lc),
+		})
+		defer rt.Close()
+		mux.add("orchestrator", spawnTool{rt: rt})
+		mux.add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
+
+		// Apply the operator's saved tool curation, the same snapshot serve and the
+		// TUI restore at boot. Without it the bridge shows a DIFFERENT toolset than
+		// the agent it is bridging for: lazily-activated plugins the operator turned
+		// on (simplefin's money_* tools) stay invisible stubs, while plugins they
+		// deliberately turned OFF (the Confluence writers) stay exposed. Read-only —
+		// no setOnChange persistence here, because curation belongs to the
+		// interactive surfaces, not to a bridge process reacting to a remote client.
+		if stg, serr := loadSettings(c.cfgDir, c.agent); serr != nil {
+			log.Warn("mcp-memory: could not load saved tool states", "err", serr)
+		} else {
+			for _, note := range mux.restore(stg.Tools) {
+				log.Info("mcp-memory settings", "note", note)
+			}
+		}
+
 		cfg.Tools = mux
 	}
 
@@ -451,8 +513,57 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	// network (Cursor, Zed remote, browsers) rather than spawning us as a
 	// stdio subprocess. The transport's life is one client session.
 	if *sseAddr != "" {
-		sse := transport.NewSSE(transport.SSEConfig{})
-		httpSrv := &http.Server{Addr: *sseAddr, Handler: sse}
+		// The SSE transport is single-session by contract: when a client GET
+		// stream drops, Recv reports EOF and the session ends. That is right for
+		// stdio, where the client IS the process's reason to live, but wrong for
+		// a long-lived bridge. Every `claude -p` spawn is a NEW client, so the
+		// first one to exit took the whole bridge down and every later spawn got
+		// connection-refused — which read as "the bridge never started" rather
+		// than "the bridge already served someone". Keep one listener bound and
+		// give each arriving client its own transport.
+		//
+		// A spent transport can never serve again (sessEnd latches closed, so
+		// Recv returns EOF forever), so the handler retires it the instant its
+		// stream drops rather than after ServeTransport notices. Swapping later
+		// leaves a window where the next client attaches to the dead transport
+		// and sees its stream die mid-handshake.
+		var (
+			sessMu  sync.Mutex
+			current *transport.SSE // nil between sessions; guarded by sessMu
+		)
+		ready := make(chan *transport.SSE, 1)
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			isStream := r.Method == http.MethodGet && r.URL.Path == "/sse"
+			sessMu.Lock()
+			if current == nil {
+				if !isStream {
+					// A POST with no stream open has nowhere to go.
+					sessMu.Unlock()
+					http.Error(w, "no MCP session open; connect GET /sse first", http.StatusServiceUnavailable)
+					return
+				}
+				current = transport.NewSSE(transport.SSEConfig{})
+				select {
+				case ready <- current:
+				default: // the serve loop has not drained the last one yet
+				}
+			}
+			t := current
+			sessMu.Unlock()
+
+			t.ServeHTTP(w, r) // for GET /sse this blocks for the stream's life
+
+			if isStream {
+				// This stream is spent. Retire it now so the next client starts
+				// clean instead of attaching to a transport that can only EOF.
+				sessMu.Lock()
+				if current == t {
+					current = nil
+				}
+				sessMu.Unlock()
+			}
+		})
+		httpSrv := &http.Server{Addr: *sseAddr, Handler: handler}
 		go func() {
 			<-ctx.Done()
 			_ = httpSrv.Shutdown(context.Background())
@@ -465,12 +576,31 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 				errc <- err
 			}
 		}()
-		serveErr := srv.ServeTransport(ctx, sse)
-		select {
-		case lerr := <-errc:
-			return lerr
-		default:
-			return serveErr
+		// One session at a time, one transport each, for as long as the process
+		// lives. Parks on `ready` between clients rather than spinning.
+		for {
+			var sse *transport.SSE
+			select {
+			case sse = <-ready:
+			case lerr := <-errc:
+				return lerr
+			case <-ctx.Done():
+				return nil
+			}
+			serveErr := srv.ServeTransport(ctx, sse)
+			_ = sse.Close()
+			select {
+			case lerr := <-errc:
+				return lerr
+			default:
+			}
+			if serveErr != nil {
+				return serveErr
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			log.Info("mcp-memory: client disconnected, ready for the next session")
 		}
 	}
 
@@ -2228,13 +2358,16 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// settings-page writes trigger their own reload.)
 	go watchCredentials(ctx, c.cfgDir, modelCtl, degraded, pushSys)
 	dashMgr := &dashboardManager{
-		base:    ctx,
-		cfg:     dcfg,
-		runner:  ag,
-		tools:   dashTools{mainTools},
-		mem:     dashMemory{memCtl},
-		cron:    dashCronCtl,
-		secrets: dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		base:   ctx,
+		cfg:    dcfg,
+		runner: ag,
+		tools:  dashTools{mainTools},
+		mem:    dashMemory{memCtl},
+		cron:   dashCronCtl,
+		// Watched-repo list for the Integrations page; shares storage and
+		// semantics with the TUI /github command via githubTUIControl.
+		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
+		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
 		// Skills page (TEN-202) reuses the same skill store as the TUI /skills.
 		// Models page (TEN-204) reuses modelCtl. Eval (TEN-201) wired below,
 		// after evalSched is built.
@@ -2806,6 +2939,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		IMessage:        imsgAllowMgr,
 		Cron:            tuiCronCtl,
 		MCP:             mcpCtl,
+		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
 		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
 		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
 		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},

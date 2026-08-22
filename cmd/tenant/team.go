@@ -43,7 +43,14 @@ type member struct {
 // agent keeps its OWN identity (role soul) + private memory scope, while
 // sharing the plugin tools, the shared-visibility memory tier, and the bus.
 type TeamConfig struct {
-	Bus        *orchestra.Bus
+	Bus *orchestra.Bus
+	// BaseCtx, if set, is the lifetime a spawned sub-agent inherits instead of
+	// the caller's context. Under serve/TUI the caller is a turn that stays
+	// open until the orchestrator awaits, so inheriting it is right. Over the
+	// MCP bridge the caller is a single JSON-RPC request that ends the moment
+	// spawn_agent returns — sub-agents were dying mid-thought ("embed query
+	// failed: context canceled") and every await reported "(no result)".
+	BaseCtx    context.Context
 	Router     *model.Router
 	Stores     *stores
 	Shared     *toolMux             // shared plugin tools (agent-id-independent)
@@ -54,7 +61,12 @@ type TeamConfig struct {
 	Profile    *userprofile.Profile // shared user model, injected each turn (may be nil)
 	OrchID     string
 	Log        *slog.Logger
-	Observe    func(agentID string, e agent.Event) // live view hook (may be nil)
+	// MaxConcurrent bounds simultaneously-running sub-agents. <=0 uses
+	// defaultMaxConcurrentAgents. This is a safety bound, not a tuning knob:
+	// unlimited spawning is how a single question turned into ~30 contradictory
+	// workers and a wedged turn.
+	MaxConcurrent int
+	Observe       func(agentID string, e agent.Event) // live view hook (may be nil)
 
 	// Web, when true, gives each agent its OWN lazy browser session
 	// (isolated, so concurrent navigation can't clobber a shared tab).
@@ -394,6 +406,19 @@ func (c composite) RankingStatus() (ranked bool, surfaced, catalog int, reason s
 // goroutine, and returns its id immediately (non-blocking — the team works
 // concurrently). The sub-agent reports its result back to the orchestrator
 // over the bus when it finishes.
+// defaultMaxConcurrentAgents bounds simultaneous sub-agents when the operator
+// has not chosen a limit. Sized to keep genuine fan-out useful (a handful of
+// parallel workers) while making a runaway loop fail fast and visibly.
+const defaultMaxConcurrentAgents = 4
+
+// maxConcurrent is the live cap; MaxConcurrent <= 0 means "use the default".
+func (r *TeamRuntime) maxConcurrent() int {
+	if r.cfg.MaxConcurrent > 0 {
+		return r.cfg.MaxConcurrent
+	}
+	return defaultMaxConcurrentAgents
+}
+
 func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, error) {
 	role = strings.TrimSpace(role)
 	task = strings.TrimSpace(task)
@@ -402,12 +427,33 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	}
 
 	r.mu.Lock()
+	// Bound concurrent sub-agents. Spawning was previously unlimited, and an
+	// over-eager orchestrator used that to fan out ~30 workers onto one
+	// question: each answered independently, they contradicted each other, and
+	// the parent turn never converged (it also leaked a browser session per
+	// agent). Refusing here — rather than trusting the prompt — keeps a runaway
+	// fan-out from taking the agent down, and the error tells the orchestrator
+	// to await what it already started.
+	live := 0
+	for _, m := range r.agents {
+		if m.status == "running" {
+			live++
+		}
+	}
+	if max := r.maxConcurrent(); live >= max {
+		r.mu.Unlock()
+		return "", fmt.Errorf("refused: %d sub-agents are already running (limit %d) — await or collect the running ones before spawning more", live, max)
+	}
 	r.seq++
 	id := fmt.Sprintf("%s-%s-%d", r.cfg.OrchID, slug(role), r.seq)
 	// Per-agent cancellable ctx so the orchestrator can preempt a specific
 	// stuck agent (wave-timeout salvage path) without cancelling the entire
 	// research run.
-	agCtx, cancel := context.WithCancel(ctx)
+	base := ctx
+	if r.cfg.BaseCtx != nil {
+		base = r.cfg.BaseCtx
+	}
+	agCtx, cancel := context.WithCancel(base)
 	m := &member{id: id, role: role, task: task, status: "running",
 		done: make(chan struct{}), cancel: cancel}
 	r.agents[id] = m
