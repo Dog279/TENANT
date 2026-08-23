@@ -546,22 +546,25 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		defer releaseAgent()
 		defer closeTools()
 		res, terr := ag.Turn(agCtx, agent.TurnRequest{UserQuery: task})
+		var status, result string
 		switch {
 		case context.Cause(agCtx) != nil && r.budget.Status().TerminationReason != "":
-			r.finish(m, "terminated", "terminated: "+r.budget.Status().TerminationReason)
+			status, result = "terminated", "terminated: "+r.budget.Status().TerminationReason
 		case terr != nil:
-			r.finish(m, "error", "error: "+terr.Error())
+			status, result = "error", "error: "+terr.Error()
 		case res != nil && strings.TrimSpace(res.Response) != "":
-			r.finish(m, "done", res.Response)
+			status, result = "done", res.Response
 		default:
-			r.finish(m, "done", "(no result)")
+			status, result = "done", "(no result)"
 		}
 		// Broadcast completion to the WHOLE team (not just the orchestrator)
 		// so a peer that's still working can see this result via team_check/
-		// team_history. (The orchestrator also collects results via
-		// team_await from the runtime, independent of the bus.)
+		// team_history. Send BEFORE finish: finish closes m.done, which is
+		// what Await unblocks on — a send after it races the orchestrator's
+		// post-await inbox read (the missed-DONE flake under -race).
 		_ = r.cfg.Bus.Send(orchestra.Message{From: id,
-			Content: "DONE — " + clip(m.result, 600)})
+			Content: "DONE — " + clip(result, 600)})
+		r.finish(m, status, result)
 	}()
 
 	return id, nil
