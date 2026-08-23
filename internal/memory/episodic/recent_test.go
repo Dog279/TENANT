@@ -33,12 +33,12 @@ func TestRecent_OrderScopeTombstone(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
-	recInsert(t, s, "main", "first", base, false)                         // id1
-	recInsert(t, s, "main", "second", base.Add(1*time.Minute), false)     // id2
-	recInsert(t, s, "main", "deleted", base.Add(2*time.Minute), true)     // id3 tombstoned
-	recInsert(t, s, "main", "third", base.Add(3*time.Minute), false)      // id4
+	recInsert(t, s, "main", "first", base, false)                               // id1
+	recInsert(t, s, "main", "second", base.Add(1*time.Minute), false)           // id2
+	recInsert(t, s, "main", "deleted", base.Add(2*time.Minute), true)           // id3 tombstoned
+	recInsert(t, s, "main", "third", base.Add(3*time.Minute), false)            // id4
 	recInsert(t, s, "main-researcher-1", "sub", base.Add(4*time.Minute), false) // id5 — must NOT leak
-	recInsert(t, s, "other", "stranger", base.Add(5*time.Minute), false)  // id6 — must NOT leak
+	recInsert(t, s, "other", "stranger", base.Add(5*time.Minute), false)        // id6 — must NOT leak
 
 	got, err := s.Recent(context.Background(), "main", 2)
 	if err != nil {

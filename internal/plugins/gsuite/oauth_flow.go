@@ -89,11 +89,11 @@ func ParseOAuthClientFile(b []byte, scopes []string) (*oauth2.Config, error) {
 // OAuthFlowConfig is the per-invocation configuration of runLoopbackFlow.
 // Test seams (openBrowser, listenAddr) default to the real things.
 type OAuthFlowConfig struct {
-	Config        *oauth2.Config
-	OpenBrowser   func(url string) error // nil ⇒ openBrowserDefault
-	ListenAddr    string                 // nil/"" ⇒ "127.0.0.1:0"
-	WaitTimeout   time.Duration          // 0 ⇒ 5 min
-	SuccessHTML   string                 // override the "close this tab" page (nil ⇒ default)
+	Config      *oauth2.Config
+	OpenBrowser func(url string) error // nil ⇒ openBrowserDefault
+	ListenAddr  string                 // nil/"" ⇒ "127.0.0.1:0"
+	WaitTimeout time.Duration          // 0 ⇒ 5 min
+	SuccessHTML string                 // override the "close this tab" page (nil ⇒ default)
 }
 
 // runLoopbackFlow runs the full OAuth code-grant dance:
@@ -146,8 +146,8 @@ func runLoopbackFlow(ctx context.Context, c OAuthFlowConfig) (*oauth2.Token, err
 	state := base64.RawURLEncoding.EncodeToString(stateBytes)
 
 	authURL := cfg.AuthCodeURL(state,
-		oauth2.AccessTypeOffline,    // ⇒ we get a refresh_token
-		oauth2.ApprovalForce,        // ⇒ Google re-prompts (don't silently use prior consent — needed if scope set changed)
+		oauth2.AccessTypeOffline, // ⇒ we get a refresh_token
+		oauth2.ApprovalForce,     // ⇒ Google re-prompts (don't silently use prior consent — needed if scope set changed)
 		oauth2.S256ChallengeOption(verifier),
 	)
 
