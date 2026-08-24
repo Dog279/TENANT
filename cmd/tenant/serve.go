@@ -331,6 +331,14 @@ func cmdServe(ctx context.Context, args []string) error {
 	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
 	rt.addWebTool(mainLocal)
+	// Quality v2 Phase 1: count every dispatch. One shared stats set across
+	// the shared mux and the main agent's local mux; cron's restricted views
+	// and sub-agent shared-tool calls funnel through these same instances.
+	stats := newToolStats(c.dataDir, "serve")
+	mux.enableStats(stats)
+	mainLocal.enableStats(stats)
+	stopStats := stats.startPersist(time.Minute)
+	defer stopStats()
 	mainTools := composite{shared: mux, local: mainLocal}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).

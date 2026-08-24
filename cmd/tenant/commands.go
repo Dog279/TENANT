@@ -483,6 +483,12 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		mux.add("orchestrator", spawnTool{rt: rt})
 		mux.add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
 
+		// Count bridge dispatches under their own role file - the bridge is a
+		// separate process; readers merge toolstats-*.json.
+		bridgeStats := newToolStats(c.dataDir, "bridge")
+		mux.enableStats(bridgeStats)
+		defer bridgeStats.startPersist(time.Minute)()
+
 		// Apply the operator's saved tool curation, the same snapshot serve and the
 		// TUI restore at boot. Without it the bridge shows a DIFFERENT toolset than
 		// the agent it is bridging for: lazily-activated plugins the operator turned
@@ -2057,6 +2063,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// little benefit.
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
 	rt.addWebTool(mainLocal)
+	// Same dispatch counting as serve - the TUI is the operator's daily
+	// surface and its usage is exactly the signal the utilization report needs.
+	tstats := newToolStats(c.dataDir, "tui")
+	mux.enableStats(tstats)
+	mainLocal.enableStats(tstats)
+	defer tstats.startPersist(time.Minute)()
 	mainTools := composite{shared: mux, local: mainLocal}
 
 	// Live bus view → feed (lossless cursor over the retained log).

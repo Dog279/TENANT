@@ -88,6 +88,11 @@ type toolMux struct {
 	// (restore must not re-trigger a save of what it just loaded).
 	onChange func(map[string]bool)
 
+	// stats, when set (enableStats), counts every dispatch outcome per tool.
+	// nil = off (the eval harness stays uninstrumented on purpose - synthetic
+	// task traffic must not drown the real usage signal).
+	stats *toolStats
+
 	// savedStates is the operator's persisted enable/disable curation, captured
 	// by restore(). Consulted by add() so tools that register LATE still land on
 	// the operator's choice rather than the registration default: remote-MCP
@@ -920,12 +925,14 @@ func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bo
 	// federatable AND peers are connected) while we hold the lock; the fan-out
 	// itself runs lock-free since it does network I/O. (TEN-243)
 	counterpart, peers := m.peersForFederation(call.Name)
+	st := m.stats // snapshot under the RLock; enableStats writes under Lock
 	readCounterpart, readPeers := m.peersForReadFallback(call.Name)
 	m.mu.RUnlock()
 	if !ok {
 		return "unknown tool: " + call.Name, true, nil
 	}
 	if !e.enabled {
+		st.record(call.Name, statDisabled)
 		return "tool " + call.Name + " is disabled (/enable " + call.Name + ")", true, nil
 	}
 	out, isErr, err := e.owner.Dispatch(ctx, call)
@@ -939,10 +946,33 @@ func (m *toolMux) Dispatch(ctx context.Context, call model.ToolCall) (string, bo
 	// agent reads a note by filename whether it's local or on a peer. (TEN-243)
 	if err == nil && isErr && len(readPeers) > 0 {
 		if peerOut, found := m.peerReadFallback(ctx, readCounterpart, call.Arguments, readPeers); found {
+			// A peer satisfied the read: still a successful call of this tool
+			// from the agent's point of view - count it, or federated tools
+			// look dead in the usage stats.
+			st.record(call.Name, statOK)
 			return peerOut, false, nil
 		}
 	}
+	outcome := classifyDispatch(out, isErr, err)
+	st.record(call.Name, outcome)
+	if outcome != statOK {
+		msg := out
+		if err != nil {
+			msg = err.Error()
+		}
+		st.noteError(call.Name, msg)
+	}
 	return out, isErr, err
+}
+
+// enableStats turns on per-tool dispatch counting for this mux. Muxes may
+// SHARE one *toolStats (serve attaches the same set to the shared and the
+// main-agent local mux) so one role file carries every tool the process
+// dispatches.
+func (m *toolMux) enableStats(s *toolStats) {
+	m.mu.Lock()
+	m.stats = s
+	m.mu.Unlock()
 }
 
 // --- tui.ToolControl (runtime enable/disable from slash commands) ---
