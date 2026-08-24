@@ -40,7 +40,7 @@ func (s evalSoulScorer) Score(ctx context.Context, candidate *soul.Soul) (bool, 
 	if err != nil {
 		return false, 0, fmt.Errorf("parse fitness baseline: %w", err)
 	}
-	rep, err := runEvalToReportWithSoul(ctx, s.c, s.pf, eval.SubsetFitness, s.jOpts, candidate, nil)
+	rep, err := runEvalToReportWithSoul(ctx, s.c, s.pf, eval.SubsetFitness, s.jOpts, candidate, nil, nil)
 	if err != nil {
 		return false, 0, fmt.Errorf("run fitness with candidate soul: %w", err)
 	}

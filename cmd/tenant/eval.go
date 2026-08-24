@@ -135,7 +135,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	rep, err := runEvalToReport(ctx, c, pf, sub, jOpts, nil)
+	rep, err := runEvalToReport(ctx, c, pf, sub, jOpts, nil, nil)
 	if err != nil {
 		return fmt.Errorf("eval run: %w", err)
 	}
@@ -271,15 +271,15 @@ func runCompactionEval(ctx context.Context, c *commonFlags, jsonOut bool) error 
 // factory + judge for fitness/full (smoke is fixture-only). Shared by the CLI
 // (cmdEval) and the nightly Job so both run the eval identically; the live
 // runtime (router + tool mux) is built and torn down within this call.
-func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, events func(agent.Event)) (*eval.Report, error) {
-	return runEvalToReportWithSoul(ctx, c, pf, sub, jOpts, nil, events)
+func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, events func(agent.Event), progress *evalProgress) (*eval.Report, error) {
+	return runEvalToReportWithSoul(ctx, c, pf, sub, jOpts, nil, events, progress)
 }
 
 // runEvalToReportWithSoul is runEvalToReport with an optional soul override:
 // when soulOverride is non-nil the live agents use it instead of the on-disk
 // soul. SoulNudgeJob (TEN-16) uses this to A/B-score a candidate soul against
 // the committed fitness baseline. nil ⇒ identical to runEvalToReport.
-func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul, events func(agent.Event)) (*eval.Report, error) {
+func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul, events func(agent.Event), progress *evalProgress) (*eval.Report, error) {
 	h, err := eval.LoadHarness(eval.EmbeddedTasks, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load harness: %w", err)
@@ -292,6 +292,11 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 		// job, AND the SoulNudge scorer identically. The flag always wins.
 		if lc, lerr := loadLaunchConfig(c.cfgDir); lerr == nil {
 			jOpts = applyJudgeConfig(jOpts, lc)
+		}
+		if progress != nil {
+			progress.begin()
+			defer progress.finish()
+			h.Progress = progress.step
 		}
 		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride, events)
 		if err != nil {

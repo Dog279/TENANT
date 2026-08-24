@@ -588,14 +588,15 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// Self-improvement scheduler (preserves the old serve's distill+consolidate
 	// and adds the full job set). Suspended while degraded.
+	evalProg := &evalProgress{}
 	sched, evalSched := buildServeImprove(ctx, serveImproveDeps{
 		c: c, pf: pf, on: *selfImprove, router: router, distiller: distiller, distillJob: distillJob,
 		skills: skillStore, embedder: skEmb, stores: st, sme: smeStore, smeLive: smeLive, refreshProfile: refreshProfile,
 		degraded: degraded, feed: sysCh, distillEvery: *distillEvery, profileEvery: *profileEvery,
 		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log,
-		events: emit,
+		events: emit, evalProg: evalProg,
 	})
-	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}}
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
 

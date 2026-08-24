@@ -25,6 +25,17 @@
   </div>
 </div>
 
+{{if .Sched.Running}}
+<div class="card">
+  <div class="card-head">Check in progress</div>
+  <div style="background:var(--line,#333);border-radius:6px;height:14px;overflow:hidden;margin:6px 0">
+    <div style="height:100%;width:{{.Sched.RunPercent}}%;min-width:2px;background:var(--ok,#3aa78f);transition:width .5s"></div>
+  </div>
+  <div class="dim">{{.Sched.RunDone}} of {{.Sched.RunTotal}} tasks · {{.Sched.RunMins}}m elapsed{{if .Sched.RunTask}} · last finished: {{.Sched.RunTask}}{{end}}{{if not .Sched.RunTotal}} · warming up (building tools + router){{end}}</div>
+  <script>setTimeout(function(){location.reload()},20000)</script>
+</div>
+{{end}}
+
 {{if .Sched.HasRun}}
 <div class="dim" style="margin:-6px 0 14px">Last checked {{.Sched.LastWhen}}{{if .Sched.Skipped}} · {{.Sched.Skipped}} skipped (tools your agent doesn't have){{end}}{{if .Sched.Ungraded}} · {{.Sched.Ungraded}} couldn't be graded{{end}}</div>
 {{end}}

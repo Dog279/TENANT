@@ -53,6 +53,13 @@ type EvalScheduleView struct {
 	Skipped   int
 	Ungraded  int
 	Trend     string // "up" | "steady" | "down" | ""
+	// Live progress of a check running RIGHT NOW (zero values = idle).
+	Running    bool
+	RunDone    int
+	RunTotal   int
+	RunTask    string // last task to finish
+	RunMins    int    // minutes since the run started
+	RunPercent int    // 0-100, precomputed for the bar width
 }
 
 // EvalTrendPoint is one run on the chart. Score is 0-100.

@@ -15,7 +15,8 @@ import (
 
 type dashEval struct {
 	ev    evalTUIControl
-	judge judgeCtl // TEN-91: eval LLM-judge surface (same machinery as the TUI /judge command)
+	prog  *evalProgress // live done/total while a check runs (nil in TUI mode)
+	judge judgeCtl      // TEN-91: eval LLM-judge surface (same machinery as the TUI /judge command)
 }
 
 func (d dashEval) artifactDir() string { return filepath.Join(d.ev.dataDir, "eval-artifacts") }
@@ -34,6 +35,12 @@ func (d dashEval) ClearJudge() error { return d.judge.Clear() }
 // data, not a string.
 func (d dashEval) Schedule() dashboard.EvalScheduleView {
 	var v dashboard.EvalScheduleView
+	if running, done, total, task, mins := d.prog.view(); running {
+		v.Running, v.RunDone, v.RunTotal, v.RunTask, v.RunMins = true, done, total, task, mins
+		if total > 0 {
+			v.RunPercent = done * 100 / total
+		}
+	}
 	if d.ev.sched != nil {
 		v.Desc = d.ev.sched.Desc()
 		v.Live = true

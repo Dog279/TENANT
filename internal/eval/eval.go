@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/route"
@@ -78,6 +79,12 @@ type Harness struct {
 	// mutate Tasks-affecting state mid-run. (Within a run, tasks may execute
 	// concurrently per Concurrency.) v1 plan §Architecture finding 1E.
 	runMu sync.Mutex
+	// Progress, when set, is called after each task completes with the count
+	// of finished tasks, the run's total, and the finished task's id — the
+	// hook behind the Quality page's progress bar. Nil-safe; called from
+	// worker goroutines under Concurrency > 1, so implementations must be
+	// safe for concurrent use.
+	Progress func(done, total int, taskID string)
 }
 
 // Report is the full output of one eval run. Schema-versioned for
@@ -201,6 +208,7 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 		// Bounded worker pool. Results are stored by task index and appended in
 		// task order afterward, so the report is byte-identical to a sequential
 		// run regardless of which task finishes first (TEN-221).
+		var finished atomic.Int64
 		results := make([]TaskResult, len(tasks))
 		done := make([]bool, len(tasks))
 		sem := make(chan struct{}, h.Concurrency)
@@ -219,6 +227,9 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 				}
 				results[i] = h.runOne(ctx, t)
 				done[i] = true
+				if h.Progress != nil {
+					h.Progress(int(finished.Add(1)), len(tasks), t.ID)
+				}
 			}(i, t)
 		}
 		wg.Wait()
@@ -233,6 +244,9 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 				break
 			}
 			rep.Results = append(rep.Results, h.runOne(ctx, t))
+			if h.Progress != nil {
+				h.Progress(len(rep.Results), len(tasks), t.ID)
+			}
 		}
 	}
 

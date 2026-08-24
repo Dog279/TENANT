@@ -56,13 +56,16 @@ type evalNightlyJob struct {
 	// dashboard feed as agent "eval-<taskID>" - a 3-hour quality run was
 	// otherwise a black box between "started" and the score line.
 	events func(agent.Event)
-	log    *slog.Logger
+	// progress, when set, is the live done/total state the Quality page
+	// renders as a bar while a check is running.
+	progress *evalProgress
+	log      *slog.Logger
 }
 
 // newEvalNightlyJob builds the nightly job from the live command's config:
 // full subset, planner-default judge, artifacts under <data>/eval-artifacts,
 // baseline at baselines/full.json (checked only if present).
-func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger, events func(agent.Event)) *evalNightlyJob {
+func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger, events func(agent.Event), progress *evalProgress) *evalNightlyJob {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -71,6 +74,7 @@ func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger, events
 		pf:           pf,
 		subset:       eval.SubsetFull,
 		events:       events,
+		progress:     progress,
 		artifactDir:  filepath.Join(c.dataDir, "eval-artifacts"),
 		baselinePath: resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), "full"),
 		log:          log,
@@ -83,7 +87,7 @@ func (j *evalNightlyJob) Name() string { return "eval-nightly" }
 // Per the Job contract, an error here is recorded but does not stop the
 // scheduler. eval never mutates durable state, so Changed is always false.
 func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
-	rep, err := runEvalToReport(ctx, j.c, j.pf, j.subset, j.jOpts, j.events)
+	rep, err := runEvalToReport(ctx, j.c, j.pf, j.subset, j.jOpts, j.events, j.progress)
 	if err != nil {
 		return improve.JobResult{Summary: "eval-nightly: run failed: " + err.Error()}, err
 	}
