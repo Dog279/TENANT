@@ -135,7 +135,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	rep, err := runEvalToReport(ctx, c, pf, sub, jOpts)
+	rep, err := runEvalToReport(ctx, c, pf, sub, jOpts, nil)
 	if err != nil {
 		return fmt.Errorf("eval run: %w", err)
 	}
@@ -271,15 +271,15 @@ func runCompactionEval(ctx context.Context, c *commonFlags, jsonOut bool) error 
 // factory + judge for fitness/full (smoke is fixture-only). Shared by the CLI
 // (cmdEval) and the nightly Job so both run the eval identically; the live
 // runtime (router + tool mux) is built and torn down within this call.
-func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts) (*eval.Report, error) {
-	return runEvalToReportWithSoul(ctx, c, pf, sub, jOpts, nil)
+func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, events func(agent.Event)) (*eval.Report, error) {
+	return runEvalToReportWithSoul(ctx, c, pf, sub, jOpts, nil, events)
 }
 
 // runEvalToReportWithSoul is runEvalToReport with an optional soul override:
 // when soulOverride is non-nil the live agents use it instead of the on-disk
 // soul. SoulNudgeJob (TEN-16) uses this to A/B-score a candidate soul against
 // the committed fitness baseline. nil ⇒ identical to runEvalToReport.
-func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul) (*eval.Report, error) {
+func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul, events func(agent.Event)) (*eval.Report, error) {
 	h, err := eval.LoadHarness(eval.EmbeddedTasks, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load harness: %w", err)
@@ -293,7 +293,7 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 		if lc, lerr := loadLaunchConfig(c.cfgDir); lerr == nil {
 			jOpts = applyJudgeConfig(jOpts, lc)
 		}
-		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride)
+		cleanup, err := wireLiveHarness(ctx, h, c, pf, sub, jOpts, soulOverride, events)
 		if err != nil {
 			return nil, err
 		}
@@ -608,7 +608,7 @@ func (g *browserGate) release() {
 	}
 }
 
-func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul) (func(), error) {
+func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul, events func(agent.Event)) (func(), error) {
 	if err := c.resolve(); err != nil {
 		return nil, err
 	}
@@ -765,6 +765,20 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 				wikiCleanup()
 			}
 		}
+		// Mirror this task agent's actions to the dashboard feed (serve's
+		// nightly/manual runs; nil for CLI runs). Same kind filter as the
+		// sub-agent mirror: actions and outcomes only.
+		var obs func(agent.Event)
+		if events != nil {
+			id := agentID
+			obs = func(e agent.Event) {
+				switch e.Kind {
+				case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+					e.Agent = id
+					events(e)
+				}
+			}
+		}
 		ag, aerr := agent.New(agent.Config{
 			AgentID:    agentID,
 			Router:     router,
@@ -776,6 +790,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			Tools:      tools,
 			Dispatcher: gate,
 			Logger:     log,
+			Observer:   obs,
 		})
 		if aerr != nil {
 			cleanupTask()

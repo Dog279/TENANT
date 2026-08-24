@@ -287,6 +287,7 @@ type serveImproveDeps struct {
 	refreshProfile func(context.Context) (bool, error)
 	degraded       *degradedState
 	feed           chan string
+	events         func(agent.Event) // dashboard feed sink for eval task agents
 	distillEvery   time.Duration
 	profileEvery   time.Duration
 	evalEvery      time.Duration
@@ -362,7 +363,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	evalCadence := evalTick
 	evalSched := newEvalSchedule(evalDue, evalDesc)
 	seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
-	sched.RegisterDue(newEvalNightlyJob(c, d.pf, d.log), evalSched.DueFunc(), seed)
+	sched.RegisterDue(newEvalNightlyJob(c, d.pf, d.log, d.events), evalSched.DueFunc(), seed)
 	if evalDue != nil {
 		d.log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 	}

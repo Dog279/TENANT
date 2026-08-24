@@ -70,6 +70,13 @@ type cronAgentDeps struct {
 	routeActive agent.RouteActive
 	routeSticky agent.RouteSticky
 
+	// events, when set, receives each cron agent's tool calls/results/final
+	// for the dashboard activity feed, attributed by agent id. Cron runs were
+	// otherwise SILENT between the start line and the result summary - the
+	// operator could not see which tools a scheduled job actually called
+	// without grepping. Display only; the memory isolation above is intact.
+	events func(agent.Event)
+
 	cfgDir    string    // protected from exec-job writes
 	dataDir   string    // protected from exec-job writes; holds the shell sandbox
 	allowExec *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
@@ -81,10 +88,25 @@ func notCron(name string) bool { return strings.HasPrefix(name, "cron_") }
 // buildCronRunner constructs the safe + exec runner agents and returns a Runner
 // that dispatches each job to the right path.
 func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
+	// Same kind filter as serve's sub-agent mirror: the feed wants actions
+	// and outcomes, not every internal event.
+	observe := func(id string) func(agent.Event) {
+		if d.events == nil {
+			return nil
+		}
+		return func(e agent.Event) {
+			switch e.Kind {
+			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+				e.Agent = id
+				d.events(e)
+			}
+		}
+	}
 	safeReg, safeDisp := restrictReadComms(d.fullReg, d.fullDisp, "scheduled cron jobs", notCron)
 	safeAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills,
+		Observer:  observe("tenant-cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
@@ -96,6 +118,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	execAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron-exec", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills,
+		Observer:  observe("tenant-cron-exec"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})

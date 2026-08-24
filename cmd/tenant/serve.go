@@ -463,6 +463,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		routeHook:   routeRT.Hook(),
 		routeActive: routeRT.Active,
 		routeSticky: routeRT.Sticky,
+		events:      emit,
 		cfgDir:      c.cfgDir,
 		dataDir:     c.dataDir,
 		allowExec:   cronExecGate,
@@ -592,6 +593,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		skills: skillStore, embedder: skEmb, stores: st, sme: smeStore, smeLive: smeLive, refreshProfile: refreshProfile,
 		degraded: degraded, feed: sysCh, distillEvery: *distillEvery, profileEvery: *profileEvery,
 		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log,
+		events: emit,
 	})
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}}
 	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}

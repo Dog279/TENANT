@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/agent"
 	"tenant/internal/eval"
 	"tenant/internal/improve"
 )
@@ -51,13 +52,17 @@ type evalNightlyJob struct {
 	jOpts        evalJudgeOpts
 	artifactDir  string
 	baselinePath string // "" or missing → no regression check
-	log          *slog.Logger
+	// events, when set, mirrors each eval task agent's tool activity to the
+	// dashboard feed as agent "eval-<taskID>" - a 3-hour quality run was
+	// otherwise a black box between "started" and the score line.
+	events func(agent.Event)
+	log    *slog.Logger
 }
 
 // newEvalNightlyJob builds the nightly job from the live command's config:
 // full subset, planner-default judge, artifacts under <data>/eval-artifacts,
 // baseline at baselines/full.json (checked only if present).
-func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger) *evalNightlyJob {
+func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger, events func(agent.Event)) *evalNightlyJob {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -65,6 +70,7 @@ func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger) *evalN
 		c:            c,
 		pf:           pf,
 		subset:       eval.SubsetFull,
+		events:       events,
 		artifactDir:  filepath.Join(c.dataDir, "eval-artifacts"),
 		baselinePath: resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), "full"),
 		log:          log,
@@ -77,7 +83,7 @@ func (j *evalNightlyJob) Name() string { return "eval-nightly" }
 // Per the Job contract, an error here is recorded but does not stop the
 // scheduler. eval never mutates durable state, so Changed is always false.
 func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
-	rep, err := runEvalToReport(ctx, j.c, j.pf, j.subset, j.jOpts)
+	rep, err := runEvalToReport(ctx, j.c, j.pf, j.subset, j.jOpts, j.events)
 	if err != nil {
 		return improve.JobResult{Summary: "eval-nightly: run failed: " + err.Error()}, err
 	}

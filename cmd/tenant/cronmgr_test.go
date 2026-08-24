@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"tenant/internal/plugins/osys"
 
+	"tenant/internal/agent"
+	croneng "tenant/internal/cron"
+	"tenant/internal/memory/soul"
 	"tenant/internal/plugins/discord"
 )
 
@@ -137,5 +143,65 @@ func TestCronExecApprover_DestructiveOverrides(t *testing.T) {
 	approve2 := cronExecApprover(cfg, t.TempDir())
 	if approve2(ctx, "os_write", "writing "+cfg+"/config.json") {
 		t.Error("exec approver allowed a write into the config dir")
+	}
+}
+
+// A scheduled run must be visible in the activity feed - tool calls, results,
+// and the final - attributed to the cron agent. Cron runs were previously
+// silent between the start line and the result summary: the operator could
+// not see WHICH tools a job called without grepping, which is how "ok: true
+// briefs that never delivered" stayed invisible for a week.
+func TestCronRunner_EmitsActivityEvents(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	router, err := buildRouter(c, log)
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	sl := soul.NewDefault("main")
+	live := &soul.Live{}
+	live.Store(sl)
+
+	var mu sync.Mutex
+	var events []agent.Event
+	mux := newToolMux()
+	deps := cronAgentDeps{
+		router:   router,
+		soulLive: live,
+		fullReg:  mux,
+		fullDisp: mux,
+		log:      log,
+		events: func(e agent.Event) {
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		},
+		cfgDir:  c.cfgDir,
+		dataDir: c.dataDir,
+	}
+	runner, err := buildCronRunner(deps)
+	if err != nil {
+		t.Fatalf("build runner: %v", err)
+	}
+	if _, err := runner(context.Background(), croneng.Job{JobDef: croneng.JobDef{ID: "j1", Name: "test", Prompt: "say hi"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) == 0 {
+		t.Fatal("cron run emitted no activity events - the feed stays blind")
+	}
+	sawFinal := false
+	for _, e := range events {
+		if e.Agent != "tenant-cron" {
+			t.Errorf("event %v attributed to %q, want tenant-cron", e.Kind, e.Agent)
+		}
+		if e.Kind == agent.EventFinal {
+			sawFinal = true
+		}
+	}
+	if !sawFinal {
+		t.Error("no EventFinal - the feed never learns the run finished")
 	}
 }
