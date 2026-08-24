@@ -459,13 +459,27 @@ func findFirstExisting(candidates ...string) string {
 // injected temp corpus; every other tool falls through to the shared mux. Each
 // task builds its own overlay + temp index, so this is safe under concurrent
 // task execution (TEN-220). Satisfies agent.ToolRegistry + agent.ToolDispatcher.
+// evalToolSurface is what the overlay and the task agents sit on: a tool
+// registry and dispatcher as ONE object. Concretely it is the read/comms-
+// safe restriction of the live mux, never the mux itself.
+type evalToolSurface interface {
+	agent.ToolRegistry
+	agent.ToolDispatcher
+}
+
+// evalSurface pairs the restricted registry with its refusing dispatcher.
+type evalSurface struct {
+	*restrictedView
+	*readCommsDispatcher
+}
+
 type evalWikiOverlay struct {
-	base     *toolMux
+	base     evalToolSurface
 	wiki     *wiki.Dispatcher
 	wikiName map[string]model.ToolSpec // wiki tool specs, by name
 }
 
-func newEvalWikiOverlay(base *toolMux, wd *wiki.Dispatcher) *evalWikiOverlay {
+func newEvalWikiOverlay(base evalToolSurface, wd *wiki.Dispatcher) *evalWikiOverlay {
 	m := make(map[string]model.ToolSpec)
 	for _, s := range wd.Tools() {
 		m[s.Name] = s
@@ -632,8 +646,18 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	// tools actually exist in this run, so tasks requiring unavailable
 	// plugins (interactive-auth ones are never auto-enabled) are SKIPPED
 	// instead of scored zero — they measure the environment, not the agent.
+	// Evals MEASURE the agent; they must never ACT on the world. buildToolMux
+	// honors the operator's allow flags, and the nightly eval runs inside
+	// serve — whose --os-allow-write/--os-allow-exec are meant for the LIVE
+	// agent, not for 48 unattended eval turns. That inheritance is how a
+	// failing restraint task (fitness-051: propose an edit WITHOUT writing)
+	// actually patched internal/model/profile.go in the production source
+	// tree. Same surface as safe cron: gated/destructive and fan-out cut;
+	// the refusing dispatcher tells the model to report instead of act.
+	evalView, evalDisp := restrictReadComms(mux, mux, "quality evals", nil)
+	surface := &evalSurface{evalView, evalDisp}
 	avail := make(map[string]struct{})
-	for _, spec := range mux.All() {
+	for _, spec := range surface.All() {
 		avail[spec.Name] = struct{}{}
 	}
 	h.AvailableTools = avail
@@ -704,8 +728,8 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		// Tools default to the shared mux. A task with injected_wiki gets a
 		// per-task wiki overlay so its corpus is isolated (and concurrency-safe
 		// for a future parallel runner) — TEN-220.
-		var tools agent.ToolRegistry = mux
-		var disp agent.ToolDispatcher = mux
+		var tools agent.ToolRegistry = surface
+		var disp agent.ToolDispatcher = surface
 		var wikiCleanup func()
 		if t := tasksByID[taskID]; t != nil && len(t.InjectedWiki) > 0 {
 			wd, cu, werr := buildInjectedWiki(fctx, t.InjectedWiki, emb, embedderID)
@@ -715,7 +739,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 				return nil, nil, fmt.Errorf("eval task %s: inject wiki: %w", taskID, werr)
 			}
 			wikiCleanup = cu
-			ov := newEvalWikiOverlay(mux, wd)
+			ov := newEvalWikiOverlay(surface, wd)
 			tools, disp = ov, ov
 		}
 		// Serialize the shared Chrome tab across concurrent tasks (TEN-221);

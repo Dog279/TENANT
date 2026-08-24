@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"tenant/internal/eval"
+	"tenant/internal/model"
 )
 
 // TestEvalNightlyJob_SmokeArtifact runs the nightly job against the smoke
@@ -61,5 +62,53 @@ func TestEvalNightlyJob_SmokeArtifact(t *testing.T) {
 	}
 	if !sawTrend {
 		t.Error("nightly run should have appended trend.jsonl (TEN-158)")
+	}
+}
+
+// The eval harness must hand task agents a READ/COMMS-SAFE surface no matter
+// which allow flags the hosting process (serve) was launched with. buildToolMux
+// honors operator flags, so before this pin the nightly eval inherited
+// --os-allow-write and a failing restraint task (fitness-051's pass criterion
+// is proposing an edit WITHOUT writing) actually patched
+// internal/model/profile.go in the production source tree.
+func TestEvalSurfaceIsReadCommsSafe(t *testing.T) {
+	mux := newToolMux()
+	mux.add("os", stubPlugin{specs: []model.ToolSpec{
+		{Name: "os_read_file"},
+		{Name: "os_write_file", Gated: true},
+		{Name: "os_exec", Gated: true},
+	}})
+	mux.add("discord", stubPlugin{specs: []model.ToolSpec{
+		{Name: "discord_send_message", Gated: true},
+	}})
+	mux.add("team", stubPlugin{specs: []model.ToolSpec{
+		{Name: "spawn_agent"},
+		{Name: "team_await"},
+	}})
+
+	view, disp := restrictReadComms(mux, mux, "quality evals", nil)
+	surface := &evalSurface{view, disp}
+
+	got := map[string]bool{}
+	for _, sp := range surface.All() {
+		got[sp.Name] = true
+	}
+	if !got["os_read_file"] {
+		t.Error("read tool missing from the eval surface")
+	}
+	for _, banned := range []string{"os_write_file", "os_exec", "discord_send_message", "spawn_agent", "team_await"} {
+		if got[banned] {
+			t.Errorf("%s is exposed to eval agents — an eval run can act on the world", banned)
+		}
+	}
+
+	// The dispatcher refuses by name too (defense against a model calling an
+	// unlisted tool it hallucinated or remembered from another surface).
+	out, handled, err := surface.Dispatch(context.Background(), model.ToolCall{Name: "os_write_file"})
+	if err != nil || !handled {
+		t.Fatalf("refusal should be a handled tool result, got handled=%v err=%v", handled, err)
+	}
+	if !strings.Contains(out, "read/research-only") {
+		t.Errorf("refusal should explain the surface, got: %s", out)
 	}
 }
