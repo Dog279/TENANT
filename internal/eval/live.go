@@ -128,6 +128,12 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 			// failures of this class. The task is excluded from pass/fail
 			// aggregates and baselines, surfaced via Aggregates.UngradedCount.
 			res.Ungraded = true
+			// Name WHY the judge was unusable when the cause is infra: the 08-24
+			// run reported 39 x "judge" when the truth was "judge out of quota" -
+			// which the operator can fix, unlike a mystery grader failure.
+			if c := classifyRunError(err); c != "" {
+				res.ErrorClass = "judge-" + c
+			}
 			res.Passed = false
 			res.Score = 0 // never aggregated; value is moot by construction
 			res.JudgeScore = 0

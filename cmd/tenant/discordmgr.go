@@ -50,6 +50,11 @@ type discordAgentDeps struct {
 	routeHook   agent.RouteHook
 	routeActive agent.RouteActive
 	routeSticky agent.RouteSticky
+	// events, when set, mirrors relay-turn tool calls/results/finals to the
+	// dashboard activity feed as agent "tenant-discord" - the third silent
+	// surface after cron and eval: a Discord-driven turn showed only its
+	// ingest line, never what it actually did.
+	events func(agent.Event)
 	// gateConfirm is the per-category permission broker's Confirm (TEN-231): the
 	// discord_* tools route through it (allow → run, deny → block, ask → button)
 	// exactly like every other gated tool, instead of always prompting a button.
@@ -86,6 +91,16 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 	reg, restDisp, gate := restrictForDiscord(d.fullTools, d.fullDisp)
 	disp := &discordRoutingDispatcher{discord: ddisc, rest: restDisp}
 
+	var obs func(agent.Event)
+	if d.events != nil {
+		obs = func(e agent.Event) {
+			switch e.Kind {
+			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+				e.Agent = "tenant-discord"
+				d.events(e)
+			}
+		}
+	}
 	ag, err := agent.New(agent.Config{
 		AgentID:      "tenant-discord",
 		Router:       d.router,
@@ -101,6 +116,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		Compactor:    d.compactor,
 		UserProfile:  d.userProfile,
 		SystemPrompt: d.sysPrompt + discordSysSuffix,
+		Observer:     obs,
 		RouteHook:    d.routeHook,
 		RouteActive:  d.routeActive,
 		RouteSticky:  d.routeSticky,

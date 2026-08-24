@@ -90,6 +90,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		skills: ret, compactor: d.compressor, userProfile: d.profile,
 		fullTools: d.tools, fullDisp: d.tools,
 		sysPrompt: d.sysPrompt, log: d.log, gateConfirm: discordBroker.Confirm,
+		events:    d.emit,
 		routeHook: d.routeHook, routeActive: d.routeActive, routeSticky: d.routeSticky,
 	}
 
