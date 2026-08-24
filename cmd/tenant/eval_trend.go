@@ -38,6 +38,11 @@ type evalTrendEntry struct {
 	// (TEN-198) — so a score jump from "plugins newly enabled" is
 	// explainable from the trend line alone.
 	Skipped int `json:"skipped,omitempty"`
+	// InfraUngraded splits Ungraded by error class (quota/endpoint/
+	// ratelimit/harness/judge) - the annotation that turns "score fell 23
+	// points" into "quota ran out for 12 tasks". Additive; old readers
+	// ignore it.
+	InfraUngraded map[string]int `json:"infra_ungraded,omitempty"`
 }
 
 func evalTrendPath(artifactDir string) string {

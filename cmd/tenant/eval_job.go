@@ -66,7 +66,7 @@ func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger) *evalN
 		pf:           pf,
 		subset:       eval.SubsetFull,
 		artifactDir:  filepath.Join(c.dataDir, "eval-artifacts"),
-		baselinePath: filepath.Join("baselines", "full.json"),
+		baselinePath: resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), "full"),
 		log:          log,
 	}
 }
@@ -88,6 +88,11 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 
 	summary := fmt.Sprintf("eval-nightly %s: overall %.1f, passed %d/%d",
 		rep.Subset, rep.Aggregates.Overall, rep.Aggregates.PassCount, total)
+	for class, n := range e.InfraUngraded {
+		if class != "judge" {
+			summary += fmt.Sprintf(", %d ungraded:%s", n, class)
+		}
+	}
 	if e.Ungraded > 0 {
 		summary += fmt.Sprintf(", %d ungraded", e.Ungraded)
 	}
@@ -155,18 +160,27 @@ func trendEntryFor(rep *eval.Report, baselinePath, artifact string, log *slog.Lo
 		log = slog.Default()
 	}
 	e := evalTrendEntry{
-		TS:       time.Now().UTC().Format(time.RFC3339),
-		Subset:   string(rep.Subset),
-		Overall:  rep.Aggregates.Overall,
-		Passed:   rep.Aggregates.PassCount,
-		Total:    rep.Aggregates.PassCount + rep.Aggregates.FailCount,
-		Ungraded: rep.Aggregates.UngradedCount,
-		Skipped:  rep.Aggregates.SkippedCount,
+		TS:            time.Now().UTC().Format(time.RFC3339),
+		Subset:        string(rep.Subset),
+		Overall:       rep.Aggregates.Overall,
+		Passed:        rep.Aggregates.PassCount,
+		Total:         rep.Aggregates.PassCount + rep.Aggregates.FailCount,
+		Ungraded:      rep.Aggregates.UngradedCount,
+		InfraUngraded: rep.Aggregates.UngradedByClass,
+		Skipped:       rep.Aggregates.SkippedCount,
 	}
 	if artifact != "" { // filepath.Base("") is "." — keep the field empty instead
 		e.Artifact = filepath.Base(artifact)
 	}
-	if data, rerr := os.ReadFile(baselinePath); rerr == nil {
+	data, rerr := os.ReadFile(baselinePath)
+	if rerr != nil {
+		// The regression gate is DEAD without a baseline - say so every run,
+		// because this exact silence hid an 84.9 -> 10.4 collapse behind a
+		// "steady" arrow for five nights.
+		log.Warn("eval: regression gate INACTIVE - no baseline; capture one with `tenant eval --baseline-from <artifact.json>`",
+			"path", baselinePath)
+	}
+	if rerr == nil {
 		if base, berr := eval.ReadBaseline(data); berr == nil {
 			rr := eval.CompareToBaseline(base, rep, eval.CompareOptions{})
 			e.HasBaseline, e.Regressed, e.Delta, e.CIHigh = true, rr.Regressed, rr.Delta, rr.CIHigh
@@ -175,4 +189,26 @@ func trendEntryFor(rep *eval.Report, baselinePath, artifact string, log *slog.Lo
 		}
 	}
 	return e
+}
+
+// resolveBaselinePath finds the regression baseline for a subset. The
+// canonical home is <data>/eval-artifacts/baseline.<subset>.json (written by
+// `tenant eval --baseline-from <artifact>`); the legacy repo-relative
+// baselines/<subset>.json is honored when it resolves from the process cwd.
+// History: the nightly job shipped with ONLY the relative path, which never
+// resolves under the scheduled task (serve.cmd sets no cwd) - so the gate
+// was silently dead from 2026-08-19 on, and the dashboard said "steady"
+// through an 84.9 -> 10.4 collapse. A missing baseline must be LOUD.
+func resolveBaselinePath(artifactDir, subset string) string {
+	canonical := filepath.Join(artifactDir, "baseline."+subset+".json")
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	legacy := filepath.Join("baselines", subset+".json")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	// Neither exists yet: return the canonical path (the read will fail and
+	// the caller reports the dead gate) so a later capture lands here.
+	return canonical
 }

@@ -2,7 +2,10 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"tenant/internal/model"
 )
 
 // AgentRunner is the seam between eval and the agent runtime. The eval
@@ -31,6 +34,29 @@ type AgentFactory func(ctx context.Context, taskID string) (AgentRunner, func() 
 // against deterministic gate, then score against rubric (if both gate
 // and judge are configured). The path mirrors fixture mode's gate so
 // the scorer logic stays single-source.
+// classifyRunError maps a run-level error to an infrastructure class, or ""
+// when the failure is (as far as we can tell) the agent's own. Typed model
+// errors survive the wrap chain (fmt.Errorf %w all the way up through
+// "agent: planner generate iter=N"), so this is errors.Is, not string
+// scraping. Context timeouts stay agent failures on purpose: the per-task
+// deadline firing usually means the agent looped or hung, which IS quality.
+func classifyRunError(err error) string {
+	switch {
+	case errors.Is(err, model.ErrInsufficientBalance):
+		return "quota"
+	case errors.Is(err, model.ErrEndpointDown):
+		return "endpoint"
+	case errors.Is(err, model.ErrRateLimited):
+		return "ratelimit"
+	case errors.Is(err, model.ErrInternal):
+		// Every provider in the failover chain returned 5xx. The fallback
+		// engine already treats this as an availability class worth failing
+		// over; the score treats it the same way.
+		return "provider"
+	}
+	return ""
+}
+
 func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 	res := TaskResult{
 		TaskID:   t.ID,
@@ -46,9 +72,13 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 	}
 	runner, cleanup, err := h.AgentFactory(ctx, t.ID)
 	if err != nil {
+		// The harness could not even build the agent - nothing about the
+		// agent was measured. Same exclusion discipline as TEN-197.
+		res.Ungraded = true
+		res.ErrorClass = "harness"
 		res.Passed = false
 		res.Score = 0
-		res.Failures = []string{fmt.Sprintf("agent factory error: %v", err)}
+		res.Failures = []string{fmt.Sprintf("UNGRADED (harness) - agent factory error: %v", err)}
 		return res
 	}
 	if cleanup != nil {
@@ -57,6 +87,18 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 
 	response, calls, err := runner.Run(ctx, t.Prompt)
 	if err != nil {
+		if class := classifyRunError(err); class != "" {
+			// Provider outage, not agent failure: quota exhaustion, endpoint
+			// down, rate limiting. Excluded from the mean and the baselines,
+			// surfaced per class so the trend says "12 ungraded: quota"
+			// instead of dropping 23 points.
+			res.Ungraded = true
+			res.ErrorClass = class
+			res.Passed = false
+			res.Score = 0
+			res.Failures = []string{fmt.Sprintf("UNGRADED (%s) - %v", class, err)}
+			return res
+		}
 		res.Passed = false
 		res.Score = 0
 		res.Failures = []string{fmt.Sprintf("agent run error: %v", err)}

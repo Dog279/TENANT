@@ -104,6 +104,10 @@ type Aggregates struct {
 	// (TEN-197) — surfaced so a run with grader trouble is visibly
 	// different from a clean one.
 	UngradedCount int `json:"ungraded_count,omitempty"`
+	// UngradedByClass splits UngradedCount by TaskResult.ErrorClass
+	// ("judge" for TEN-197 grader failures) so one glance separates "the
+	// judge broke" from "the provider quota ran out mid-run".
+	UngradedByClass map[string]int `json:"ungraded_by_class,omitempty"`
 	// SkippedCount is how many tasks were excluded because the run's
 	// environment lacks a tool they require (TEN-198) — the denominator
 	// only counts tasks this machine can actually attempt.
@@ -341,9 +345,18 @@ func aggregate(results []TaskResult, totalElapsedMS int64) Aggregates {
 			continue
 		}
 		if r.Ungraded {
-			// Grader failure, not agent failure (TEN-197): counted apart,
-			// never in pass/fail or any score average.
+			// Grader or infrastructure failure, not agent failure (TEN-197 +
+			// error classes): counted apart, never in pass/fail or any score
+			// average.
 			ag.UngradedCount++
+			class := r.ErrorClass
+			if class == "" {
+				class = "judge"
+			}
+			if ag.UngradedByClass == nil {
+				ag.UngradedByClass = map[string]int{}
+			}
+			ag.UngradedByClass[class]++
 			continue
 		}
 		if r.Passed {

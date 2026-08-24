@@ -24,6 +24,15 @@ type TaskResult struct {
 	// baselines, and baseline pairing — grader infrastructure must never
 	// move the score or the trend.
 	Ungraded bool `json:"ungraded,omitempty"`
+	// ErrorClass names WHY a run-level failure happened, so infrastructure
+	// outages stop scoring as agent failures: "quota" (provider balance /
+	// weekly token budget), "endpoint" (backend unreachable), "ratelimit",
+	// "harness" (agent factory broke before the task started). Set together
+	// with Ungraded for those classes; empty for genuine agent failures.
+	// Motivation: 12 of 28 failures on 2026-08-24 were "claudecode weekly
+	// token budget exhausted" scored as 12 zeros - Overall fell 64.8 to 41.4
+	// overnight with no agent change.
+	ErrorClass string `json:"error_class,omitempty"`
 	// Skipped marks a task this run's environment cannot attempt: a
 	// must_call tool is absent from the live toolset (TEN-198). Same
 	// exclusion discipline as Ungraded; SkipReason names the tool.

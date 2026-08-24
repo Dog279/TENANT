@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -51,6 +52,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		compactionMode bool
 		baselineWrite  string
 		baselineCheck  string
+		baselineFrom   string
 		trend          bool
 		trendN         int
 		appendTrend    bool
@@ -70,6 +72,7 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.StringVar(&jOpts.endpoint, "judge-endpoint", "", "override judge API endpoint (default: the provider's, e.g. https://api.anthropic.com)")
 	fs.StringVar(&jOpts.keyEnv, "judge-key-env", "ANTHROPIC_API_KEY", "env var holding the override judge's API key (never stored or printed)")
 	fs.StringVar(&baselineWrite, "baseline-write", "", "after the run, write a baseline snapshot (per-task scores) to this path")
+	fs.StringVar(&baselineFrom, "baseline-from", "", "build the regression baseline from an EXISTING run artifact (eval-*.json) - no run needed; writes <data>/eval-artifacts/baseline.<subset>.json and arms the nightly gate without a fresh 3h eval")
 	fs.StringVar(&baselineCheck, "baseline-check", "", "after the run, compare to the baseline at this path (paired-bootstrap 95% CI; non-zero exit on regression)")
 	fs.BoolVar(&trend, "trend", false, "print the nightly-eval trend log (offline; no run) and exit")
 	fs.IntVar(&trendN, "trend-n", 20, "with --trend: how many recent entries to show")
@@ -97,6 +100,13 @@ func cmdEval(ctx context.Context, args []string) error {
 
 	if trend { // offline trend reader (TEN-158) — no run, no model
 		return runEvalTrend(c, trendN)
+	}
+
+	if baselineFrom != "" { // offline: arm the gate from a past artifact
+		if derr := c.resolveDirs(); derr != nil {
+			return derr
+		}
+		return baselineFromArtifact(baselineFrom, filepath.Join(c.dataDir, "eval-artifacts"), os.Stdout)
 	}
 
 	if baselineDiff { // offline movers diff (TEN-198) — no run, no model
@@ -154,7 +164,9 @@ func cmdEval(ctx context.Context, args []string) error {
 		artifactDir := filepath.Join(c.dataDir, "eval-artifacts")
 		bp := baselineCheck
 		if bp == "" {
-			bp = filepath.Join("baselines", string(sub)+".json")
+			// Same resolution as the nightly job - the legacy relative path
+			// never resolves under a service cwd (the dead-gate scar).
+			bp = resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), string(sub))
 		}
 		artifact := writeEvalArtifact(artifactDir, rep, nil)
 		appendEvalTrend(artifactDir, trendEntryFor(rep, bp, artifact, nil), nil)
@@ -908,4 +920,59 @@ func listTasks(w io.Writer, h *eval.Harness, sub eval.Subset) {
 	for _, t := range tasks {
 		fmt.Fprintf(w, "  %-40s %s\n", t.ID, t.Category)
 	}
+}
+
+// baselineFromArtifact builds the regression baseline from a past run's
+// artifact instead of a fresh 3-hour eval. Guardrail: refuse an artifact
+// whose graded population was gutted by infra (over a third ungraded) -
+// a baseline captured from a quota-wiped night would bless the wreckage.
+func baselineFromArtifact(artifactPath, artifactDir string, w io.Writer) error {
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		return fmt.Errorf("read artifact: %w", err)
+	}
+	var rep eval.Report
+	if err := json.Unmarshal(data, &rep); err != nil {
+		return fmt.Errorf("parse artifact: %w", err)
+	}
+	graded := rep.Aggregates.PassCount + rep.Aggregates.FailCount
+	if graded == 0 {
+		return fmt.Errorf("artifact has no graded tasks - not baseline material")
+	}
+	// Artifacts written BEFORE the error-class change scored infra failures
+	// as graded zeros with Ungraded=false, so UngradedCount alone cannot
+	// see the damage - the five 10.4-overall DGX-down nights would pass a
+	// naive check and arm a baseline that masks every future regression.
+	// Count both signals.
+	infra := rep.Aggregates.UngradedCount
+	for _, tr := range rep.Results {
+		if tr.Ungraded || tr.Skipped {
+			continue
+		}
+		for _, f := range tr.Failures {
+			if strings.Contains(f, "model: endpoint down") || strings.Contains(f, "insufficient balance") ||
+				strings.Contains(f, "quota exhausted") || strings.Contains(f, "model: rate limited") {
+				infra++
+				break
+			}
+		}
+	}
+	if infra*3 > graded {
+		return fmt.Errorf("artifact looks infra-damaged (%d of %d graded tasks failed on infrastructure) - pick a cleaner run", infra, graded)
+	}
+	base := eval.NewBaseline(&rep, time.Now().UTC().Format(time.RFC3339), "", "")
+	out, err := json.MarshalIndent(base, "", "  ")
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(artifactDir, "baseline."+string(rep.Subset)+".json")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, out, 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "baseline written: %s (from %s: overall %.1f, %d graded tasks)\n",
+		dst, filepath.Base(artifactPath), rep.Aggregates.Overall, graded)
+	return nil
 }
