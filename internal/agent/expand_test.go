@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,11 +18,11 @@ import (
 func TestFilterGatedTools(t *testing.T) {
 	specs := []model.ToolSpec{{Name: "web_search"}, {Name: "memory_recall", Gate: "recall"}}
 	weak := model.Profile{OperationalContextBudget: 8000} // WritableBudget < 32768
-	if got := filterGatedTools(specs, weak); len(got) != 1 || got[0].Name != "web_search" {
+	if got, _ := filterGatedTools(specs, weak); len(got) != 1 || got[0].Name != "web_search" {
 		t.Errorf("a gated tool must be filtered for a weak profile: %+v", got)
 	}
 	strong := model.Profile{OperationalContextBudget: 100000}
-	if got := filterGatedTools(specs, strong); len(got) != 2 {
+	if got, _ := filterGatedTools(specs, strong); len(got) != 2 {
 		t.Errorf("a capable profile must keep the gated tool: %+v", got)
 	}
 }
@@ -102,4 +105,46 @@ func expHas(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A tool dropped for an UNRECOGNIZED gate must be reported - once - while a
+// gate the profile knows and denies stays quiet (that denial is deliberate).
+// Silent drops read as "not available" to the model and "the code registers
+// it, it should be there" to the operator: the exact shape that cost days on
+// the cron-surface starvation.
+func TestWarnUnknownGateDrops(t *testing.T) {
+	var logBuf bytes.Buffer
+	var events []Event
+	a := &Agent{
+		log: slog.New(slog.NewTextHandler(&logBuf, nil)),
+		cfg: Config{Observer: func(e Event) { events = append(events, e) }},
+	}
+	profile := model.Profile{ID: "test-prof"}
+
+	specs := []model.ToolSpec{
+		{Name: "mystery_tool", Gate: "novel-gate"},
+		{Name: "memory_recall", Gate: "recall"}, // known gate, heuristic denies on a zero profile
+	}
+	kept, dropped := filterGatedTools(specs, profile)
+	if len(kept) != 0 || len(dropped) != 2 {
+		t.Fatalf("kept=%d dropped=%d, want 0/2", len(kept), len(dropped))
+	}
+
+	a.warnUnknownGateDrops(dropped, profile)
+	if !strings.Contains(logBuf.String(), "novel-gate") || !strings.Contains(logBuf.String(), "mystery_tool") {
+		t.Errorf("unknown gate drop not logged:\n%s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), `gate=recall`) {
+		t.Errorf("known-gate denial must stay quiet:\n%s", logBuf.String())
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want exactly 1 (the unknown gate)", len(events))
+	}
+
+	// Second turn with the same drop: deduped, no new warning or event.
+	logBuf.Reset()
+	a.warnUnknownGateDrops(dropped, profile)
+	if logBuf.Len() != 0 || len(events) != 1 {
+		t.Errorf("repeat drop must be deduped: log=%q events=%d", logBuf.String(), len(events))
+	}
 }

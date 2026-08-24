@@ -295,6 +295,11 @@ type Agent struct {
 	// once at the top, so a swap applies to the NEXT turn — no mid-turn races.
 	router atomic.Pointer[model.Router]
 
+	// warnedGates dedupes the unrecognized-capability-gate warning (one per
+	// gate per agent lifetime). Mutated only from Turn (turns are serialized
+	// per agent), like the compaction state below.
+	warnedGates map[string]bool
+
 	// compaction is the post-turn compaction trigger's hysteresis state
 	// (TEN-102). Mutated only from Turn's post-turn defer (turns are serialized
 	// per agent).
@@ -563,7 +568,8 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	}
 	// Capability gate (TEN-103): only offer tools the active model may use, so a
 	// small local planner never sees an augmentation tool like memory_recall.
-	availableTools = filterGatedTools(availableTools, profile)
+	availableTools, droppedGated := filterGatedTools(availableTools, profile)
+	a.warnUnknownGateDrops(droppedGated, profile)
 	// Minify the SURVIVORS' JSON schemas before they hit the wire (TEN-227):
 	// drop pure-doc keywords + compact whitespace + trim paragraph-length
 	// property prose, preserving types/enums/required. Applied here (post rank +
@@ -1017,15 +1023,40 @@ func (a *Agent) compactWorking(ctx context.Context) {
 // filterGatedTools drops specs whose capability gate the active profile
 // disallows (Profile.AllowsTool), so the model is only offered tools it may
 // actually use. Ungated specs (Gate=="") always pass. (TEN-103)
-func filterGatedTools(specs []model.ToolSpec, profile model.Profile) []model.ToolSpec {
-	out := make([]model.ToolSpec, 0, len(specs))
+func filterGatedTools(specs []model.ToolSpec, profile model.Profile) (kept, dropped []model.ToolSpec) {
+	kept = make([]model.ToolSpec, 0, len(specs))
 	for _, s := range specs {
 		if s.Gate != "" && !profile.AllowsTool(s.Gate) {
+			dropped = append(dropped, s)
 			continue
 		}
-		out = append(out, s)
+		kept = append(kept, s)
 	}
-	return out
+	return kept, dropped
+}
+
+// warnUnknownGateDrops makes deny-by-ignorance VISIBLE. Denying an
+// unrecognized gate is the right posture (fail-safe); doing it silently is
+// not - a hidden tool reads as "not available" to the model and as "it
+// should be there, the code registers it" to the operator, the exact
+// shape that cost days on the cron-surface starvation. A gate the profile
+// KNOWS and denies (explicit capability, heuristic said no) is deliberate
+// and stays quiet. Warned once per gate per agent - turns are serialized
+// per agent, so the map needs no lock (same discipline as compaction).
+func (a *Agent) warnUnknownGateDrops(dropped []model.ToolSpec, profile model.Profile) {
+	for _, s := range dropped {
+		if profile.GateKnown(s.Gate) || a.warnedGates[s.Gate] {
+			continue
+		}
+		if a.warnedGates == nil {
+			a.warnedGates = map[string]bool{}
+		}
+		a.warnedGates[s.Gate] = true
+		a.log.Warn("tool hidden: the active profile has no Capabilities entry for its gate and no built-in heuristic covers it - if no other profile configures this gate either, the tool will never surface anywhere",
+			"gate", s.Gate, "tool", s.Name, "profile", string(profile.ID))
+		a.emit(Event{Kind: EventToolCatalog,
+			Text: fmt.Sprintf("tool %s hidden: capability gate %q is unrecognized by the active profile (no Capabilities entry, no heuristic)", s.Name, s.Gate)})
+	}
 }
 
 // latestSummaryContent returns the Content of the most recent compaction-summary

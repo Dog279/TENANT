@@ -156,22 +156,45 @@ func (p Profile) WritableBudget() int {
 // (some small local models advertise 128K but have little usable space).
 const recallHeuristicBudget = 32768
 
+// gateHeuristics is the single source of truth for gates AllowsTool can
+// decide WITHOUT an explicit Capabilities entry: gate name -> decision.
+// Both AllowsTool (the decision) and GateKnown (is the decision deliberate?)
+// read this map, so the two cannot drift - adding a heuristic gate is one
+// entry here, nothing else.
+var gateHeuristics = map[string]func(Profile) bool{
+	// recall keys on the usable budget, NOT raw ContextLength (some small
+	// local models advertise 128K but have little usable space).
+	"recall": func(p Profile) bool { return p.WritableBudget() >= recallHeuristicBudget },
+}
+
+// GateKnown reports whether this profile can make a DELIBERATE decision
+// about a gate: an explicit Capabilities entry, or a built-in heuristic.
+// An unknown gate still denies (AllowsTool fail-safe), but the caller
+// should surface that denial as a misconfiguration rather than intent -
+// a tool carrying a gate nobody recognizes will otherwise vanish from
+// every profile with no trace.
+func (p Profile) GateKnown(gate string) bool {
+	if _, ok := p.Capabilities[gate]; ok {
+		return true
+	}
+	_, ok := gateHeuristics[gate]
+	return ok
+}
+
 // AllowsTool reports whether a ToolSpec.Gate capability is permitted for this
 // profile. An explicit Capabilities[gate] bool always wins; otherwise a
-// per-gate heuristic decides (today only "recall", gated on WritableBudget).
-// Unknown gates default to false (fail-safe: a gated tool is hidden unless
-// explicitly understood). The empty gate ("") is handled by the caller.
+// per-gate heuristic decides (gateHeuristics). Unknown gates default to
+// false (fail-safe: a gated tool is hidden unless explicitly understood).
+// The empty gate ("") is handled by the caller.
 func (p Profile) AllowsTool(gate string) bool {
 	if v, ok := p.Capabilities[gate]; ok {
 		b, _ := v.(bool)
 		return b
 	}
-	switch gate {
-	case "recall":
-		return p.WritableBudget() >= recallHeuristicBudget
-	default:
-		return false
+	if h, ok := gateHeuristics[gate]; ok {
+		return h(p)
 	}
+	return false
 }
 
 // validate is called at registry load. Returns ErrInvalidProfile wrapping
