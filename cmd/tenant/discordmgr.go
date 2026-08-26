@@ -177,6 +177,9 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
 		// and the turn text carries the saved-path manifest.
 		rl.files = newAttachmentIngestor(m.dataDir, m.log)
+		// External-automation approvals: ext-approve button verdicts land under
+		// <dataDir>/approvals/<ns> (extapprove.go).
+		rl.dataDir = m.dataDir
 	}
 	rl.Start(ctx)
 	gw := &discord.Gateway{

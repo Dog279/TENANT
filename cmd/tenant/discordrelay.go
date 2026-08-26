@@ -58,6 +58,7 @@ type relay struct {
 	degraded   func() bool         // optional; when true the model is on the echo fallback
 	ingest     func(text string)   // optional; surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
 	files      *attachmentIngestor // optional; downloads operator attachments into the relay inbox — nil ⇒ attachments ignored
+	dataDir    string              // optional; enables ext-approve button verdicts under <dataDir>/approvals (extapprove.go)
 
 	mu     sync.Mutex
 	base   context.Context // lifetime of the relay; background turns derive from it
@@ -222,8 +223,15 @@ func (r *relay) routeTurn(channelID, text string) {
 
 // handleInteraction routes a button click to the approver — but ONLY the
 // operator's clicks count (defense-in-depth; in a DM only they can click).
+// The "ext-" namespace belongs to external-automation approvals
+// (extapprove.go) and is routed before the nonce approver so an external
+// click can't be mis-read as a stale approval.
 func (r *relay) handleInteraction(in discord.Interaction) {
 	if r.operatorID == "" || in.UserID != r.operatorID {
+		return
+	}
+	if strings.HasPrefix(in.CustomID, "ext-") {
+		r.handleExtApprove(in)
 		return
 	}
 	if r.approver != nil {
