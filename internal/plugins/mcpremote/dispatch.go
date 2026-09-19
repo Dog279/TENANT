@@ -40,12 +40,16 @@ type Dispatcher struct {
 // tool can't get it auto-called — only the known federation tools ungate. nil
 // ungate ⇒ pure annotation rule (the remote-MCP / Atlassian path, unchanged).
 func newDispatcher(ctx context.Context, label string, session *mcp.ClientSession, trustAnnotations bool, ungate map[string]bool, policy Policy) (*Dispatcher, error) {
-	res, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
+	// session.Tools iterates ALL pages of tools/list. The old single-shot
+	// ListTools(ctx, nil) read only page one, so a server whose manifest
+	// paginates (or reorders across sessions) silently lost tools — on
+	// 2026-08-26 Atlassian's searchJiraIssuesUsingJql vanished from the cron
+	// surface after a restart while create/edit survived.
 	d := &Dispatcher{label: label, session: session, policy: policy, gated: map[string]bool{}}
-	for _, t := range res.Tools {
+	for t, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
 		readOnly := t.Annotations != nil && t.Annotations.ReadOnlyHint
 		gated := gatedTool(readOnly, trustAnnotations) && !ungate[t.Name]
 		d.gated[t.Name] = gated

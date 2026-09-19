@@ -11,6 +11,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
+	"tenant/internal/plugins/discord"
 	"tenant/internal/tui"
 )
 
@@ -201,6 +202,16 @@ func categorize(action string) string {
 		return catDestructive
 	case "gsuite_send", "imessage_send", "x_post":
 		return catSend
+	// Discord's action ids are PROSE ("posts a Discord message" — see
+	// plugins/discord/dispatch.go), so they missed this table and fell through
+	// to destructive. Consequence on the HOST broker: destructive is ask-only
+	// by design (no flag can blanket-allow it), so a main-agent Discord send
+	// prompted an approval nobody was there to answer and auto-denied after
+	// 5 minutes — while the operator's /relay permissions showed everything
+	// "allow" (those modes govern the RELAY broker, a different gate). A send
+	// is a send: categorize it as one. (2026-09-19)
+	case discord.ActionSendMessage, discord.ActionReact:
+		return catSend
 	}
 	if strings.HasPrefix(action, "web_") {
 		return catWeb
@@ -385,7 +396,11 @@ func (b *approvalBroker) seedFromFlags(pf *pluginFlags) {
 	if pf.webAllowInteract {
 		b.modes[catWeb] = modeAllow
 	}
-	if pf.gsuiteAllowSend || pf.xAllowPost || pf.imsgAllowSend {
+	// discordAllowSend joined 2026-09-19 alongside the send recategorization of
+	// the Discord action ids: the flag ungates the TOOL, and now also pre-
+	// approves the category, so "--discord-allow-send" means what it says on
+	// every surface instead of only the ones with their own approver.
+	if pf.gsuiteAllowSend || pf.xAllowPost || pf.imsgAllowSend || pf.discordAllowSend {
 		b.modes[catSend] = modeAllow
 	}
 }

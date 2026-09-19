@@ -48,6 +48,7 @@ var activityFilters = []activityFilterTab{
 	{Key: "errors", Label: "Errors"},
 	{Key: "bus", Label: "Bus"},
 	{Key: "ingest", Label: "Ingest"},
+	{Key: "addons", Label: "Add-ons"},
 	{Key: "lifecycle", Label: "Lifecycle"},
 }
 
@@ -140,6 +141,8 @@ func kindMatches(ev agent.Event, filter string) bool {
 		return ev.Kind == agent.EventBus
 	case "ingest":
 		return ev.Kind == agent.EventIngest
+	case "addons":
+		return ev.Kind == agent.EventAddon
 	case "lifecycle":
 		switch ev.Kind {
 		case agent.EventTurnStart, agent.EventFinal, agent.EventTruncated, agent.EventCompact, agent.EventInterject, agent.EventSkills:
@@ -168,6 +171,8 @@ func activityRowSeq(se agent.SeqEvent) string {
 		label = "📥 inbox"
 	case ev.Kind == agent.EventBus:
 		label = "🔀 bus"
+	case ev.Kind == agent.EventAddon:
+		label = "🧩 add-on"
 	}
 
 	detail := ev.Text

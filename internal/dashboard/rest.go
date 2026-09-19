@@ -9,7 +9,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"tenant/internal/agent"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -90,6 +93,7 @@ func (s *Server) mountREST(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/approvals", s.handleApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", s.handleApprovalDecide)
 	mux.HandleFunc("GET /api/activity", s.handleActivity)
+	mux.HandleFunc("POST /api/addon/event", s.handleAddonEvent)
 }
 
 // handleStatus reports plugins and tool counts. Best-effort and extensible.
@@ -308,4 +312,66 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeError emits a JSON error envelope: {"error": msg}.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// restAddonEvent is the POST /api/addon/event request body: how an EXTERNAL
+// add-on (a sidecar script, a watcher, custom tooling) reports one activity
+// line into the shared audited feed. Auth is the same Bearer token as every
+// other dashboard route; the event lands in the retained log (backfill) and
+// the live broker (open feeds) exactly like native activity.
+type restAddonEvent struct {
+	Source string `json:"source"`          // add-on name, shown as the agent chip
+	Text   string `json:"text"`            // the activity line
+	Level  string `json:"level,omitempty"` // "error" marks the row as an error; anything else = info
+}
+
+// addonSourceOK validates the add-on name: short, filesystem/HTML-boring
+// charset so a rogue caller can't smuggle markup or unbounded labels into the
+// feed. (Rows are html-escaped at render regardless — defense in depth.)
+func addonSourceOK(s string) bool {
+	if len(s) == 0 || len(s) > 40 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.', r == ' ':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) handleAddonEvent(w http.ResponseWriter, r *http.Request) {
+	var req restAddonEvent
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	req.Source = strings.TrimSpace(req.Source)
+	req.Text = strings.TrimSpace(req.Text)
+	if !addonSourceOK(req.Source) {
+		writeError(w, http.StatusBadRequest, "source: 1-40 chars of [A-Za-z0-9._ -] required")
+		return
+	}
+	if req.Text == "" {
+		writeError(w, http.StatusBadRequest, "text required")
+		return
+	}
+	if len(req.Text) > 2000 {
+		req.Text = req.Text[:2000]
+	}
+	if s.evlog == nil && s.broker == nil {
+		writeError(w, http.StatusServiceUnavailable, "activity feed not configured")
+		return
+	}
+	ev := agent.Event{Kind: agent.EventAddon, Agent: req.Source, Text: req.Text, IsErr: req.Level == "error"}
+	if s.broker != nil {
+		s.broker.Publish(ev)
+	}
+	if s.evlog != nil {
+		s.evlog.Append(ev)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
 }

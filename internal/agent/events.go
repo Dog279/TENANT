@@ -35,6 +35,12 @@ const (
 	// off these — Pending appends a card, Resolved prunes it. Payload in .Approval.
 	EventApprovalPending  EventKind = "approval_pending"
 	EventApprovalResolved EventKind = "approval_resolved"
+	// EventAddon is an activity line reported by an EXTERNAL add-on (a script or
+	// sidecar automation outside tenant.exe) via the dashboard's
+	// POST /api/addon/event — so custom tooling shows up in the same audited
+	// feed as native activity. Agent = the add-on's source name, Text = the
+	// message, IsErr = the add-on flagged it as an error.
+	EventAddon EventKind = "addon"
 )
 
 // ApprovalEvent is the payload for EventApprovalPending / EventApprovalResolved
