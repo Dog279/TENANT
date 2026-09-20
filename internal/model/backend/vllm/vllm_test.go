@@ -641,11 +641,13 @@ func TestVLLM_TokenCountZeroFallsBackToEstimate(t *testing.T) {
 	}
 }
 
-// llama.cpp rejects an over-context prompt with "Failed to tokenize prompt" —
-// no "context" substring — so it must still classify as ErrContextOverflow
-// (which the agent recovers from), not ErrInvalidRequest (which kills the turn:
-// no failover, not retryable). This is the exact 400 Dylan hit at iter=6.
-func TestVLLM_GenerateFailedToTokenizeIsOverflow(t *testing.T) {
+// "Failed to tokenize prompt" (invalid_request_error, no token counts) is a
+// genuine CONTENT tokenization failure — a real invalid request, NOT a size
+// overflow. It must surface as ErrInvalidRequest, never be reclassified as
+// overflow: mapping it to overflow masks the error and triggers a useless
+// compact-and-retry into the identical failure. (Proven on the R640: a real
+// overflow reports differently — see the next test.)
+func TestVLLM_GenerateFailedToTokenizeIsInvalidRequest(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		_, _ = io.WriteString(w, `{"error":{"code":400,"message":"Failed to tokenize prompt","type":"invalid_request_error"}}`)
@@ -653,7 +655,29 @@ func TestVLLM_GenerateFailedToTokenizeIsOverflow(t *testing.T) {
 	defer ts.Close()
 	llm := newBackend(t, ts)
 	_, err := llm.Generate(context.Background(), model.GenerateRequest{
-		Messages: []model.Message{{Role: "user", Content: "huge prompt"}},
+		Messages: []model.Message{{Role: "user", Content: "some prompt"}},
+	})
+	if !errors.Is(err, model.ErrInvalidRequest) {
+		t.Fatalf("err = %v, want ErrInvalidRequest", err)
+	}
+	if errors.Is(err, model.ErrContextOverflow) {
+		t.Fatalf("err = %v, must NOT be ErrContextOverflow (that masks a content tokenize failure)", err)
+	}
+}
+
+// A REAL llama.cpp context overflow (type exceed_context_size_error, message
+// naming "the available context size") must classify as ErrContextOverflow so
+// the agent compacts-and-retries. This "context" substring is the signal Layer 2
+// keys on — distinct from the content tokenize failure above.
+func TestVLLM_GenerateLlamaCppOverflowIsContextOverflow(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = io.WriteString(w, `{"error":{"message":"request (400052 tokens) exceeds the available context size (262144 tokens)","type":"exceed_context_size_error","n_prompt_tokens":400052,"n_ctx":262144}}`)
+	}))
+	defer ts.Close()
+	llm := newBackend(t, ts)
+	_, err := llm.Generate(context.Background(), model.GenerateRequest{
+		Messages: []model.Message{{Role: "user", Content: "huge"}},
 	})
 	if !errors.Is(err, model.ErrContextOverflow) {
 		t.Fatalf("err = %v, want ErrContextOverflow", err)

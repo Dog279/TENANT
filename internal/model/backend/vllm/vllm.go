@@ -494,15 +494,17 @@ func classifyHTTPError(resp *http.Response) error {
 		return fmt.Errorf("%w: %s", model.ErrInsufficientBalance, snippet)
 	case resp.StatusCode == 429:
 		return fmt.Errorf("%w: %s", model.ErrRateLimited, snippet)
-	case resp.StatusCode == 400 && (strings.Contains(lower, "context") || strings.Contains(lower, "tokenize")):
-		// llama.cpp rejects an over-context prompt with "Failed to tokenize
-		// prompt" — no "context" substring — so match "tokenize" too. Treated
-		// as overflow (not a generic invalid request) so the turn compacts and
-		// retries instead of hard-failing: an invalid-request 400 correctly
-		// refuses to fail over AND isn't retryable, which killed R640 qwen3
-		// turns outright. (A genuine non-size tokenize failure just fails on the
-		// retry after compaction — no worse than before, recoverable in the
-		// common case.)
+	case resp.StatusCode == 400 && strings.Contains(lower, "context"):
+		// Real context overflow names "context": vLLM ("maximum context
+		// length"), anthropic, and llama.cpp ("exceeds the available context
+		// size", type exceed_context_size_error, which also carries
+		// n_prompt_tokens/n_ctx). Deliberately does NOT match "Failed to
+		// tokenize prompt": that is a genuine CONTENT tokenization failure
+		// (invalid_request_error, no token counts) — a real invalid request,
+		// not a size problem. Mapping it to overflow masks the error and
+		// triggers a useless compact-and-retry into the identical failure
+		// (proven on the R640: the two errors are distinct). Let it fall through
+		// to ErrInvalidRequest below so it surfaces as itself.
 		return fmt.Errorf("%w: %s", model.ErrContextOverflow, snippet)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return fmt.Errorf("%w: %d %s", model.ErrInvalidRequest, resp.StatusCode, snippet)
