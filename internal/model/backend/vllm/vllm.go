@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -131,13 +132,37 @@ type wireToolFunc struct {
 	Arguments string `json:"arguments"` // stringified JSON, per OpenAI spec
 }
 
+// mediaMarkerRe matches llama.cpp's media placeholder sentinel — a per-server
+// RANDOM string of the form <__media_<random>__> (older builds use the fixed
+// <__media__>). A multimodal llama.cpp server reserves it to mark where image /
+// video data belongs in a prompt. The danger: when that exact string appears in
+// ordinary prompt CONTENT — e.g. a tool result that echoed the server's own
+// /props, which publishes its media_marker, or any os_exec output that happens
+// to contain it — the tokenizer tries to expand it into media tokens, finds no
+// attached image, and fails the WHOLE request with "Failed to tokenize prompt"
+// (a content tokenization failure, not a size overflow). Neutralizing it in
+// outbound content is harmless for every other backend (they carry media as
+// structured content blocks, not an in-band sentinel), so scrubMediaMarkers is
+// applied unconditionally rather than gated on ProviderKind — which also keeps
+// it working if a llama.cpp endpoint is mis-tagged as plain "vllm". The full
+// tool output is preserved in the archive; only the model-facing wire copy is
+// scrubbed. (R640 qwen3.8-flash-next: curling :8081/props re-entered the marker.)
+var mediaMarkerRe = regexp.MustCompile(`<__media(?:_[A-Za-z0-9]+)?__>`)
+
+func scrubMediaMarkers(s string) string {
+	if !strings.Contains(s, "<__media") { // fast path — avoid the regex on the common case
+		return s
+	}
+	return mediaMarkerRe.ReplaceAllString(s, "(media marker omitted)")
+}
+
 // toWireMessages maps internal messages to the OpenAI wire shape.
 func toWireMessages(msgs []model.Message) []wireMsg {
 	out := make([]wireMsg, len(msgs))
 	for i, m := range msgs {
 		wm := wireMsg{
 			Role:       m.Role,
-			Content:    m.Content,
+			Content:    scrubMediaMarkers(m.Content),
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}

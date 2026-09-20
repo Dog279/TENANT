@@ -665,6 +665,46 @@ func TestVLLM_GenerateFailedToTokenizeIsInvalidRequest(t *testing.T) {
 	}
 }
 
+// The real R640 Discord bug: a tool result that echoes a llama.cpp media
+// sentinel (from curling the server's /props, whose media_marker field carries
+// it) must be neutralized on the wire. Otherwise the multimodal tokenizer tries
+// to expand its own marker into image tokens, finds none, and 400s the whole
+// request with "Failed to tokenize prompt". Covers both the randomized current
+// form and the legacy fixed form.
+func TestVLLM_ScrubsLlamaCppMediaMarker(t *testing.T) {
+	for _, marker := range []string{
+		"<__media_KVMAPsHz7ZeOcikFfehMfhVe7qUCImgJ__>", // randomized (current llama.cpp)
+		"<__media__>", // legacy fixed
+	} {
+		t.Run(marker, func(t *testing.T) {
+			var gotBody string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				gotBody = string(b)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{}}`)
+			}))
+			defer ts.Close()
+			llm := newBackend(t, ts)
+			_, err := llm.Generate(context.Background(), model.GenerateRequest{
+				Messages: []model.Message{
+					{Role: "user", Content: "check the R640 config"},
+					{Role: "tool", ToolCallID: "c1", Content: `{"media_marker":"` + marker + `","n_ctx":262144}`},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if strings.Contains(gotBody, marker) {
+				t.Fatalf("media sentinel reached the wire (would 400 the tokenizer): %s", gotBody)
+			}
+			if !strings.Contains(gotBody, "media marker omitted") {
+				t.Errorf("expected a neutralized placeholder on the wire: %s", gotBody)
+			}
+		})
+	}
+}
+
 // A REAL llama.cpp context overflow (type exceed_context_size_error, message
 // naming "the available context size") must classify as ErrContextOverflow so
 // the agent compacts-and-retries. This "context" substring is the signal Layer 2
