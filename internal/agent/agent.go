@@ -666,6 +666,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	var lastToolSig string
 	repeatRuns := 0
 	var stuckErr error
+	overflowCompacted := false // one-shot emergency compaction on a mid-turn context overflow
 	ceiling := profile.PlanLoopCeiling
 	if ceiling <= 0 {
 		ceiling = 5 // safe default if profile didn't set it
@@ -786,6 +787,20 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			continue
 		}
 		if err != nil {
+			// A mid-turn context overflow means the assembled prompt outgrew the
+			// server's window. Accurate token budgeting should prevent this, but a
+			// context length misconfigured above the server's real per-request
+			// window, or a single oversized turn, can still hit it. Compact the
+			// working set once and retry the iteration rather than killing the
+			// turn; the one-shot guard stops an unrecoverable overflow from
+			// looping. (R640 llama.cpp "Failed to tokenize prompt" turn deaths.)
+			if errors.Is(err, model.ErrContextOverflow) && !overflowCompacted && a.cfg.Compactor != nil {
+				overflowCompacted = true
+				a.emit(Event{Kind: EventError, Iter: iter, Text: "context overflow — compacting and retrying: " + err.Error()})
+				a.compactWorking(ctx)
+				iter--
+				continue
+			}
 			a.emit(Event{Kind: EventError, Iter: iter, Text: err.Error()})
 			return nil, fmt.Errorf("agent: planner generate iter=%d: %w", iter, err)
 		}

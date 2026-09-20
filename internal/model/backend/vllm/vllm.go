@@ -319,37 +319,71 @@ func (b *Backend) GenerateStream(ctx context.Context, req model.GenerateRequest)
 
 // ----- LLM.TokenCount -----
 
+// tokenizeRequest carries both server dialects; TokenCount fills only the
+// fields the active provider's /tokenize understands. vLLM reads
+// {prompt, add_special_tokens}; llama.cpp's server reads {content, add_special}.
 type tokenizeRequest struct {
-	Model            string `json:"model"`
-	Prompt           string `json:"prompt"`
-	AddSpecialTokens bool   `json:"add_special_tokens"`
+	Model            string `json:"model,omitempty"`
+	Prompt           string `json:"prompt,omitempty"`             // vLLM
+	Content          string `json:"content,omitempty"`            // llama.cpp
+	AddSpecialTokens bool   `json:"add_special_tokens,omitempty"` // vLLM
+	AddSpecial       bool   `json:"add_special,omitempty"`        // llama.cpp
 }
 
+// tokenizeResponse decodes either dialect's reply: vLLM returns {"count": N},
+// llama.cpp returns {"tokens": [ids…]}. n() reports whichever is present.
 type tokenizeResponse struct {
-	Count int `json:"count"`
+	Count  int   `json:"count"`  // vLLM
+	Tokens []int `json:"tokens"` // llama.cpp
 }
 
-// TokenCount asks the vLLM server for the token count under the active
-// model's tokenizer. This is the only honest way to budget — Go-side
-// estimators drift per model family. Hosted OpenAI-compatible providers
-// (OpenAI, xAI, Z.ai, Ollama, llama.cpp) don't expose /tokenize, so when
-// EstimateTokensOnly is set we budget via a chars/4 estimate instead. We
-// also fall back to the estimate if /tokenize is simply unavailable, so a
-// missing extension degrades budgeting rather than breaking the turn.
+func (r tokenizeResponse) n() int {
+	if r.Count > 0 {
+		return r.Count
+	}
+	return len(r.Tokens)
+}
+
+// TokenCount asks the inference server for the token count under the active
+// model's tokenizer — the only honest way to budget, since Go-side estimators
+// drift per model family. Both self-hosted vLLM and llama.cpp's server expose a
+// real /tokenize (in different dialects, reconciled here). An accurate count is
+// load-bearing: the agent's context-budget guard trims the working set against
+// it, so a silent under-count lets an over-length prompt reach the server,
+// which then rejects it ("Failed to tokenize prompt" on llama.cpp) and kills
+// the turn. llama.cpp therefore must NOT fall back to the chars/4 estimate
+// while its /tokenize is reachable — that stopgap under-counts qwen3's dense
+// JSON tool schemas and is what re-broke the R640. Genuinely tokenize-less
+// providers (hosted APIs, Ollama) keep the estimate, and any /tokenize error
+// degrades to the estimate rather than breaking the turn.
 func (b *Backend) TokenCount(ctx context.Context, text string) (int, error) {
-	if b.profile.EstimateTokensOnly {
+	if b.profile.EstimateTokensOnly && b.profile.ProviderKind != "llamacpp" {
 		return estimateTokens(text), nil
 	}
-	body := tokenizeRequest{Model: b.profile.Model, Prompt: text, AddSpecialTokens: true}
+	body := tokenizeRequest{Model: b.profile.Model}
+	if b.profile.ProviderKind == "llamacpp" {
+		body.Content, body.AddSpecial = text, true
+	} else {
+		body.Prompt, body.AddSpecialTokens = text, true
+	}
 	var resp tokenizeResponse
 	if err := b.postJSON(ctx, "/tokenize", body, &resp); err != nil {
-		// Cancellation is a real failure; an unsupported endpoint is not.
+		// Cancellation is a real failure; an unsupported/erroring endpoint is not.
 		if errors.Is(err, model.ErrCancelled) {
 			return 0, err
 		}
 		return estimateTokens(text), nil
 	}
-	return resp.Count, nil
+	if n := resp.n(); n > 0 {
+		return n, nil
+	}
+	// A reachable endpoint that returns no count on non-empty text spoke a
+	// dialect we didn't decode — estimate rather than hand back 0, which would
+	// fully defeat the budget guard (the original R640 count=0 failure).
+	if strings.TrimSpace(text) != "" {
+		return estimateTokens(text), nil
+	}
+	return 0, nil
 }
 
 // estimateTokens approximates 1 token per 4 characters — the same heuristic
@@ -460,7 +494,15 @@ func classifyHTTPError(resp *http.Response) error {
 		return fmt.Errorf("%w: %s", model.ErrInsufficientBalance, snippet)
 	case resp.StatusCode == 429:
 		return fmt.Errorf("%w: %s", model.ErrRateLimited, snippet)
-	case resp.StatusCode == 400 && strings.Contains(lower, "context"):
+	case resp.StatusCode == 400 && (strings.Contains(lower, "context") || strings.Contains(lower, "tokenize")):
+		// llama.cpp rejects an over-context prompt with "Failed to tokenize
+		// prompt" — no "context" substring — so match "tokenize" too. Treated
+		// as overflow (not a generic invalid request) so the turn compacts and
+		// retries instead of hard-failing: an invalid-request 400 correctly
+		// refuses to fail over AND isn't retryable, which killed R640 qwen3
+		// turns outright. (A genuine non-size tokenize failure just fails on the
+		// retry after compaction — no worse than before, recoverable in the
+		// common case.)
 		return fmt.Errorf("%w: %s", model.ErrContextOverflow, snippet)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
 		return fmt.Errorf("%w: %d %s", model.ErrInvalidRequest, resp.StatusCode, snippet)

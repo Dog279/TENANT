@@ -94,6 +94,80 @@ func TestAgent_Interject_FoldedAndResumes(t *testing.T) {
 	}
 }
 
+// A mid-turn context overflow (llama.cpp's "Failed to tokenize prompt", now
+// classified as ErrContextOverflow) must not kill the turn: the agent compacts
+// the working set once and retries the iteration, and the turn finishes. Before
+// the fix the planner error propagated straight out as "planner generate
+// iter=N" — exactly the failure Dylan hit on the R640.
+func TestAgent_ContextOverflow_CompactsAndRetries(t *testing.T) {
+	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
+	fake := testllm.New()
+	var calls int32
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return nil, fmt.Errorf("model: %w", model.ErrContextOverflow)
+		}
+		return &model.GenerateResponse{Text: "recovered", FinishReason: "stop"}, nil
+	}
+
+	reg, err := model.NewRegistry("")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	router := model.NewRouter(reg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
+	router.RegisterBackend("vllm", func(_ context.Context, _ model.Profile, _ *slog.Logger) (any, error) {
+		return fake, nil
+	})
+
+	comp := &fakeCompactor{}
+	estore, err := episodic.Open(filepath.Join(t.TempDir(), "ep.db"))
+	if err != nil {
+		t.Fatalf("episodic.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = estore.Close() })
+
+	a, err := agent.New(agent.Config{
+		AgentID:    "test-agent",
+		SessionID:  "test-sess",
+		Router:     router,
+		Working:    working.New(),
+		Archive:    archive.NewWriter(t.TempDir()),
+		Episodic:   estore,
+		Tools:      agent.NewStaticRegistry(),
+		Dispatcher: noop,
+		Compactor:  comp,
+	})
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	r, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "do the thing"})
+	if err != nil {
+		t.Fatalf("Turn errored instead of recovering from overflow: %v", err)
+	}
+	if r.Response != "recovered" {
+		t.Fatalf("Response = %q, want recovered (turn should compact-and-retry)", r.Response)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("planner called %d times, want >=2 (overflow + retry)", got)
+	}
+	if got := atomic.LoadInt32(&comp.calls); got < 1 {
+		t.Fatal("compactor was not invoked on overflow")
+	}
+}
+
+// fakeCompactor is a minimal agent.Compactor: it records invocations and shrinks
+// the working set to its last message so the retry sees a smaller context.
+type fakeCompactor struct{ calls int32 }
+
+func (c *fakeCompactor) Compact(_ context.Context, msgs []working.Message) ([]working.Message, bool, error) {
+	atomic.AddInt32(&c.calls, 1)
+	if len(msgs) <= 1 {
+		return msgs, false, nil
+	}
+	return msgs[len(msgs)-1:], true, nil
+}
+
 // --- Test plumbing ---
 
 // buildAgent wires a fresh agent against a fake LLM + embedder. The

@@ -577,3 +577,85 @@ func TestVLLM_ReasoningEffort(t *testing.T) {
 		}
 	}
 }
+
+// The R640 regression: a llama.cpp provider (ProviderKind "llamacpp", with
+// EstimateTokensOnly set as prod configures it) must still get an ACCURATE
+// count from llama.cpp's own /tokenize dialect ({content}→{tokens:[]}), not the
+// chars/4 estimate. Before the fix this returned the estimate (2 for "hello
+// world"), the budget guard under-counted, and an over-length prompt reached the
+// server → 400 "Failed to tokenize prompt".
+func TestVLLM_TokenCountLlamaCppDialect(t *testing.T) {
+	var gotBody string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tokenize" {
+			t.Errorf("path = %s, want /tokenize", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"tokens":[1,2,3,4,5,6,7]}`)
+	}))
+	defer ts.Close()
+	any, err := vllm.New(context.Background(), model.Profile{
+		ID: "r640", Backend: "vllm", Endpoint: ts.URL, Model: "qwen3",
+		ProviderKind: "llamacpp", EstimateTokensOnly: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("vllm.New: %v", err)
+	}
+	llm := any.(model.LLM)
+	n, err := llm.TokenCount(context.Background(), "hello world")
+	if err != nil {
+		t.Fatalf("TokenCount: %v", err)
+	}
+	if n != 7 {
+		t.Fatalf("TokenCount = %d, want 7 (accurate llama.cpp count, not the chars/4 estimate)", n)
+	}
+	if !strings.Contains(gotBody, `"content"`) {
+		t.Errorf("llama.cpp dialect not used (no content field); body: %s", gotBody)
+	}
+	if strings.Contains(gotBody, `"prompt"`) {
+		t.Errorf("vLLM dialect leaked for a llama.cpp provider; body: %s", gotBody)
+	}
+}
+
+// A reachable /tokenize that returns neither a usable count nor tokens (a
+// dialect we can't decode) must degrade to the estimate, never hand back 0 — a
+// 0 fully defeats the context-budget guard (the original R640 count=0 deaths).
+func TestVLLM_TokenCountZeroFallsBackToEstimate(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"count":0}`)
+	}))
+	defer ts.Close()
+	any, _ := vllm.New(context.Background(), model.Profile{
+		ID: "x", Backend: "vllm", Endpoint: ts.URL, Model: "m", ProviderKind: "llamacpp",
+	}, nil)
+	llm := any.(model.LLM)
+	n, err := llm.TokenCount(context.Background(), strings.Repeat("word ", 100))
+	if err != nil {
+		t.Fatalf("TokenCount: %v", err)
+	}
+	if n <= 0 {
+		t.Fatalf("TokenCount = %d, want a positive estimate fallback (never 0 on non-empty text)", n)
+	}
+}
+
+// llama.cpp rejects an over-context prompt with "Failed to tokenize prompt" —
+// no "context" substring — so it must still classify as ErrContextOverflow
+// (which the agent recovers from), not ErrInvalidRequest (which kills the turn:
+// no failover, not retryable). This is the exact 400 Dylan hit at iter=6.
+func TestVLLM_GenerateFailedToTokenizeIsOverflow(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = io.WriteString(w, `{"error":{"code":400,"message":"Failed to tokenize prompt","type":"invalid_request_error"}}`)
+	}))
+	defer ts.Close()
+	llm := newBackend(t, ts)
+	_, err := llm.Generate(context.Background(), model.GenerateRequest{
+		Messages: []model.Message{{Role: "user", Content: "huge prompt"}},
+	})
+	if !errors.Is(err, model.ErrContextOverflow) {
+		t.Fatalf("err = %v, want ErrContextOverflow", err)
+	}
+}
