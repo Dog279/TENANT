@@ -2563,6 +2563,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log, broker)
+	// TEN-230 Phase 2: "ask" prompts the texter over iMessage (APPROVE-<code> /
+	// DENY in the originating chat), not at this TUI — approvals go back out
+	// the channel they came in on. Built once; the responder's send is attached
+	// on each Start (the native transport is opened lazily).
+	imsgApprover := newIMessageApprover(log)
+	imsgBroker.ask = imsgApprover.askBackend()
 	imsgBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return
@@ -2624,8 +2630,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: log, degraded: degraded.Degraded,
-				ingest: func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				ingest:   func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				approver: imsgApprover,
 			}
+			imsgApprover.setSender(resp.send)
 			return resp, func() { _ = nat.Close() }, nil
 		},
 	}

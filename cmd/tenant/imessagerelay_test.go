@@ -71,6 +71,7 @@ func TestIMessageResponder_DrivesTurnAndReplies(t *testing.T) {
 	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
+	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
 
 	if r.turns != 1 || r.lastQuery != "what's the weather?" {
 		t.Fatalf("turn not driven with the inbound text: turns=%d q=%q", r.turns, r.lastQuery)
@@ -99,6 +100,7 @@ func TestIMessageResponder_IngestSurfacesInbound(t *testing.T) {
 		ingest: func(t string) { ingested = append(ingested, t) }}
 
 	resp.drain(context.Background())
+	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
 
 	if len(ingested) != 1 || ingested[0] != "what's the weather?" {
 		t.Fatalf("ingest hook should fire once with the inbound text: %v", ingested)
@@ -116,6 +118,7 @@ func TestIMessageResponder_NoIngestWhenDegraded(t *testing.T) {
 		ingest:   func(t string) { ingested = append(ingested, t) }}
 
 	resp.drain(context.Background())
+	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
 
 	if len(ingested) != 0 {
 		t.Fatalf("degraded refusal must not surface ingest: %v", ingested)
@@ -132,6 +135,7 @@ func TestIMessageResponder_SkipsEmptyOrChatless(t *testing.T) {
 	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
+	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
 
 	if r.turns != 0 {
 		t.Errorf("no turn should run for empty/chatless messages, got %d", r.turns)
@@ -149,6 +153,7 @@ func TestIMessageResponder_DegradedRefuses(t *testing.T) {
 		degraded: func() bool { return true }}
 
 	resp.drain(context.Background())
+	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
 
 	if r.turns != 0 {
 		t.Errorf("degraded model must not drive a turn, got %d turns", r.turns)
@@ -247,6 +252,7 @@ func TestIMessageResponder_TurnErrorReplies(t *testing.T) {
 	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
+	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
 
 	if len(s.sent) != 1 || !strings.Contains(s.sent[0], "error") {
 		t.Errorf("a turn error should send an apology, got %v", s.sent)

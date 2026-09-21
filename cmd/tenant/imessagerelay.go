@@ -65,6 +65,14 @@ type imessageResponder struct {
 	log      *slog.Logger
 	degraded func() bool       // optional: true ⇒ model on echo fallback, refuse turns
 	ingest   func(text string) // optional: surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
+	// approver (TEN-230 Phase 2) resolves gated actions by text nonce in the
+	// originating chat; its replies are consumed here, never routed as turns.
+	approver *imessageApprover
+
+	mu     sync.Mutex
+	active bool           // one turn at a time — a second text mid-turn gets a "busy" reply
+	wg     sync.WaitGroup // in-flight turns (waitIdle, for tests)
+	sendMu sync.Mutex     // serializes SendText: the approver prompts mid-turn from the turn goroutine
 }
 
 // denyAllConfirm is the Phase-1 gate: every gated tool is refused offsite until
@@ -108,11 +116,20 @@ func (r *imessageResponder) drain(ctx context.Context) {
 	}
 }
 
-// handle drives one turn for one inbound message and replies.
+// handle routes one inbound message: an approval reply resolves the pending
+// prompt; otherwise it drives a turn — OFF the poll loop. A turn blocked on an
+// approval needs the loop to keep draining so the operator's reply can reach
+// the approver; run inline, the loop would be stuck behind the very turn that
+// is waiting for it (the Phase-2 deadlock). One turn at a time.
 func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessage) {
 	text := strings.TrimSpace(m.Text)
 	if text == "" || strings.TrimSpace(m.ChatGUID) == "" {
 		return // nothing actionable (attachment-only, empty, or unknown chat)
+	}
+	// An approval reply (APPROVE-<code> / deny) for the turn in flight in THIS
+	// chat is consumed here — it is never a new turn.
+	if r.approver != nil && r.approver.tryConsume(m.ChatGUID, text) {
+		return
 	}
 	// Refuse rather than answer with a stub while the model is degraded — the
 	// remote texter never sees the console banner (mirrors the Discord relay).
@@ -120,31 +137,63 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 		r.send(ctx, m.ChatGUID, "⚠ the model is unavailable on the host right now (running on a local fallback). Try again once it's back.")
 		return
 	}
+	r.mu.Lock()
+	if r.active {
+		r.mu.Unlock()
+		r.send(ctx, m.ChatGUID, "⏳ still working on your last message — I'll answer when it's done.")
+		return
+	}
+	r.active = true
+	r.mu.Unlock()
 	// Surface the inbound in the shared activity feed (TUI + dashboard) before
 	// driving the turn, so the operator sees offsite traffic live (TEN-232).
 	if r.ingest != nil {
 		r.ingest(text)
 	}
-	// Phase 1: deny-all offsite-confirm ⇒ gated/dangerous tools are refused.
+	if r.approver != nil {
+		r.approver.setChat(m.ChatGUID) // prompts post to, and resolve from, THIS chat
+	}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		defer func() {
+			r.mu.Lock()
+			r.active = false
+			r.mu.Unlock()
+		}()
+		r.turn(ctx, m.ChatGUID, text)
+	}()
+}
+
+// turn drives one agent turn and replies. Gated tools route through the
+// stamped offsite-confirm (the iMessage broker → the text-nonce approver).
+func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
 	turnCtx := withOffsiteConfirm(ctx, r.confirm)
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
 		UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
 	})
 	if err != nil {
-		r.logger().Warn("imessage responder: turn failed", "chat", m.ChatGUID, "err", err)
-		r.send(ctx, m.ChatGUID, "sorry — I hit an error handling that. Try again.")
+		r.logger().Warn("imessage responder: turn failed", "chat", chatGUID, "err", err)
+		r.send(ctx, chatGUID, "sorry — I hit an error handling that. Try again.")
 		return
 	}
 	reply := strings.TrimSpace(res.Response)
 	if reply == "" {
 		reply = "(no response)"
 	}
-	r.send(ctx, m.ChatGUID, reply)
+	r.send(ctx, chatGUID, reply)
 }
 
+// waitIdle blocks until no turn is in flight (tests). Stop needs no such wait:
+// cancelling the run ctx unwinds the turn.
+func (r *imessageResponder) waitIdle() { r.wg.Wait() }
+
 // send replies and records the send so the watcher's echo cache drops it if
-// Apple surfaces it back (anti-loop).
+// Apple surfaces it back (anti-loop). Serialized: the approver prompts from
+// the turn goroutine while the poll loop may be sending a "busy" reply.
 func (r *imessageResponder) send(ctx context.Context, chatGUID, text string) {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
 	if _, err := r.sender.SendText(ctx, chatGUID, text); err != nil {
 		r.logger().Warn("imessage responder: send failed", "chat", chatGUID, "err", err)
 		return
@@ -248,7 +297,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 			m.log.Warn("imessage responder: persist enabled failed", "err", perr)
 		}
 	}
-	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools require approval (Phase 2)", len(allow)), nil
+	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools prompt you over iMessage (reply APPROVE-<code> / DENY) per /imessage permissions", len(allow)), nil
 }
 
 // Stop cancels the loop + releases the transport (idempotent). Persists enabled=false.

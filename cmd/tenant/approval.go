@@ -513,9 +513,11 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// activity feed still SEE that a Discord approval is outstanding (visibility
 	// only — not resolvable from those surfaces).
 	if b.ask != nil {
-		b.reg.emitBeside(agent.EventApprovalPending, req, "discord", "")
+		// Mirror labeled with THIS broker's origin (discord / imessage), so the
+		// host surfaces say where the approval actually lives.
+		b.reg.emitBeside(agent.EventApprovalPending, req, b.origin, "")
 		d := b.ask(ctx, req)
-		b.reg.emitBeside(agent.EventApprovalResolved, req, "discord", outcomeOf(d))
+		b.reg.emitBeside(agent.EventApprovalResolved, req, b.origin, outcomeOf(d))
 		logOutcome(outcomeOf(d), "custom backend")
 		return d
 	}

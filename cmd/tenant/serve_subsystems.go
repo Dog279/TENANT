@@ -205,6 +205,9 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// broker's request channel, so an "ask" lands in the same queue the headless
 	// drain surfaces on the dashboard.
 	imsgBroker := newOffsiteApprovalBroker(d.log, d.broker)
+	// TEN-230 Phase 2: "ask" prompts the texter over iMessage, not the host.
+	imsgApprover := newIMessageApprover(d.log)
+	imsgBroker.ask = imsgApprover.askBackend()
 	imsgBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return
@@ -264,8 +267,10 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: d.log, degraded: d.degraded.Degraded,
-				ingest: ingest,
+				ingest:   ingest,
+				approver: imsgApprover,
 			}
+			imsgApprover.setSender(responder.send)
 			return responder, func() { _ = nat.Close() }, nil
 		},
 	}
