@@ -2478,6 +2478,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
 		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken,
 		dataDir: c.dataDir, log: log, notify: pushSys,
+		approvalTimeout: relayApprovalTimeout(c.lc), cardStyle: relayCardStyle(c.lc),
+		persistTimeout: func(d time.Duration) error {
+			if c.lc == nil {
+				return nil
+			}
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.ApprovalTimeout = d.String() })
+		},
 		ingest:   func(t string) { ingestEvent("Discord", t) }, // TEN-232: show inbound DMs in the activity feed
 		degraded: degraded.Degraded,                            // refuse remote turns while on the echo fallback
 		persist: func(enabled bool, opID string, allowExec bool) error {

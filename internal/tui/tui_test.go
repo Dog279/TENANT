@@ -3245,11 +3245,14 @@ type fakeRelay struct {
 	operatorSet bool
 }
 
-func (f *fakeRelay) Enable() error              { return nil }
-func (f *fakeRelay) Disable() error             { return nil }
-func (f *fakeRelay) Status() (bool, bool, bool) { return false, f.operatorSet, false }
-func (f *fakeRelay) SetOperator(string) error   { f.operatorSet = true; return nil }
-func (f *fakeRelay) SetExec(bool) error         { return nil }
+func (f *fakeRelay) Enable() error                          { return nil }
+func (f *fakeRelay) Disable() error                         { return nil }
+func (f *fakeRelay) Status() (bool, bool, bool)             { return false, f.operatorSet, false }
+func (f *fakeRelay) SetOperator(string) error               { f.operatorSet = true; return nil }
+func (f *fakeRelay) SetExec(bool) error                     { return nil }
+func (f *fakeRelay) SetApprovalTimeout(time.Duration) error { return nil }
+func (f *fakeRelay) ApprovalTimeout() time.Duration         { return 10 * time.Minute }
+
 func (f *fakeRelay) Perms() PermissionControl {
 	if f.perms == nil {
 		return nil

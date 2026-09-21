@@ -114,6 +114,13 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken,
 		dataDir: c.dataDir,
 		log:     d.log, notify: d.notify, ingest: ingest, degraded: d.degraded.Degraded,
+		approvalTimeout: relayApprovalTimeout(c.lc), cardStyle: relayCardStyle(c.lc),
+		persistTimeout: func(dur time.Duration) error {
+			if c.lc == nil {
+				return nil
+			}
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.ApprovalTimeout = dur.String() })
+		},
 		persist: func(enabled bool, opID string, allowExec bool) error {
 			if c.lc == nil {
 				return nil

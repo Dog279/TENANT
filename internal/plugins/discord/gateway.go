@@ -399,7 +399,10 @@ func (g *Gateway) session(ctx context.Context, conn gwConn, st *sessionState, re
 			case "MESSAGE_CREATE":
 				g.dispatchMessage(p.D)
 			case "INTERACTION_CREATE":
-				g.dispatchInteraction(p.D)
+				// Off the read loop: the handler ACKs over HTTP, and Discord
+				// invalidates the interaction 3 s after the click. Run inline, a
+				// slow ACK would stall heartbeats AND miss its own window.
+				go g.dispatchInteraction(p.D)
 			}
 		}
 	}

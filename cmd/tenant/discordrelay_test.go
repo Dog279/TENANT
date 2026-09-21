@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -29,10 +30,22 @@ func (f *fakeRunner) Turn(ctx context.Context, req agent.TurnRequest) (*agent.Tu
 func (f *fakeRunner) Interject(string) {}
 
 type fakeSender struct {
-	mu    sync.Mutex
-	sent  []string
-	acked []string // interaction ACK contents
+	mu         sync.Mutex
+	sent       []string           // Send + every card post (content), in order
+	acked      []string           // RespondInteraction contents (the ext-approve path)
+	cards      []string           // SendCard (v2) contents
+	updates    []string           // RespondUpdate contents: in-place verdicts (button ACKs)
+	ephemerals []string           // RespondEphemeral texts
+	edits      []string           // EditMessage contents: expiry / text-reply verdicts
+	buttons    [][]discord.Button // the button row of each card post (the nonce lives in custom_id)
+	updateBtns [][]discord.Button
+	editBtns   [][]discord.Button
+
+	cardFail       bool // SendCard rejects ⇒ the approver falls back to legacy buttons
+	componentsFail bool // SendComponents rejects ⇒ the approver falls back to a text prompt
 }
+
+var errFakeRejected = errors.New("fake: rejected")
 
 func (s *fakeSender) Send(_ context.Context, channelID, content string) error {
 	s.mu.Lock()
@@ -41,19 +54,58 @@ func (s *fakeSender) Send(_ context.Context, channelID, content string) error {
 	return nil
 }
 
-// SendComponents + RespondInteraction make fakeSender a discordIO for the
-// approver tests. SendComponents records the prompt content like Send (so the
-// nonce-in-content assertions still work).
-func (s *fakeSender) SendComponents(_ context.Context, channelID, content string, _ []discord.Button) (string, error) {
+// SendComponents / SendCard record the prompt content like Send (so send
+// counts still line up) plus the button row, and return a message id so the
+// approver can rewrite the card later. A rejecting fake records nothing.
+func (s *fakeSender) SendComponents(_ context.Context, channelID, content string, buttons []discord.Button) (string, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.componentsFail {
+		return "", errFakeRejected
+	}
 	s.sent = append(s.sent, channelID+"|"+content)
-	s.mu.Unlock()
+	s.buttons = append(s.buttons, buttons)
+	return "msg-1", nil
+}
+
+func (s *fakeSender) SendCard(_ context.Context, channelID, content string, buttons []discord.Button) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cardFail {
+		return "", errFakeRejected
+	}
+	s.sent = append(s.sent, channelID+"|"+content)
+	s.cards = append(s.cards, content)
+	s.buttons = append(s.buttons, buttons)
 	return "msg-1", nil
 }
 
 func (s *fakeSender) RespondInteraction(_ context.Context, _, _, content string) error {
 	s.mu.Lock()
 	s.acked = append(s.acked, content)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeSender) RespondUpdate(_ context.Context, _, _, content string, buttons []discord.Button, _ bool) error {
+	s.mu.Lock()
+	s.updates = append(s.updates, content)
+	s.updateBtns = append(s.updateBtns, buttons)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeSender) RespondEphemeral(_ context.Context, _, _, text string) error {
+	s.mu.Lock()
+	s.ephemerals = append(s.ephemerals, text)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeSender) EditMessage(_ context.Context, _, _, content string, buttons []discord.Button, _ bool) error {
+	s.mu.Lock()
+	s.edits = append(s.edits, content)
+	s.editBtns = append(s.editBtns, buttons)
 	s.mu.Unlock()
 	return nil
 }
@@ -67,6 +119,50 @@ func (s *fakeSender) acks() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.acked...)
+}
+func (s *fakeSender) cardsAll() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.cards...)
+}
+func (s *fakeSender) updatesAll() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.updates...)
+}
+func (s *fakeSender) ephemeralsAll() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ephemerals...)
+}
+func (s *fakeSender) editsAll() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.edits...)
+}
+func (s *fakeSender) buttonsAt(i int) []discord.Button {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i < 0 || i >= len(s.buttons) {
+		return nil
+	}
+	return append([]discord.Button(nil), s.buttons[i]...)
+}
+func (s *fakeSender) lastUpdateButtons() []discord.Button {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.updateBtns) == 0 {
+		return nil
+	}
+	return append([]discord.Button(nil), s.updateBtns[len(s.updateBtns)-1]...)
+}
+func (s *fakeSender) lastEditButtons() []discord.Button {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.editBtns) == 0 {
+		return nil
+	}
+	return append([]discord.Button(nil), s.editBtns[len(s.editBtns)-1]...)
 }
 
 func waitSends(s *fakeSender, n int, d time.Duration) bool {

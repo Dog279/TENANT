@@ -43,9 +43,9 @@ func TestApprover_NonceApproveOnce(t *testing.T) {
 	if !waitSends(fs, 1, time.Second) {
 		t.Fatal("no approval prompt posted")
 	}
-	nonce := nonceFrom(fs.all()[0])
+	nonce := approveNonce(fs, 0)
 	if nonce == "" {
-		t.Fatalf("no nonce in prompt: %q", fs.all()[0])
+		t.Fatalf("no nonce on the posted buttons: %v", fs.all())
 	}
 	if !a.tryConsume(discord.Inbound{ChannelID: "dm1", Content: "APPROVE-" + nonce}) {
 		t.Error("the exact nonce reply should be consumed")
@@ -73,8 +73,8 @@ func TestApprover_StackedCorrelation(t *testing.T) {
 	if !waitSends(fs, 2, time.Second) {
 		t.Fatal("prompt 2 missing")
 	}
-	n1 := nonceFrom(fs.all()[0])
-	n2 := nonceFrom(fs.all()[1])
+	n1 := approveNonce(fs, 0)
+	n2 := approveNonce(fs, 1)
 	if n1 == "" || n2 == "" || n1 == n2 {
 		t.Fatalf("expected two distinct nonces, got %q %q", n1, n2)
 	}
@@ -140,9 +140,9 @@ func TestApprover_ButtonApprove(t *testing.T) {
 	if !waitSends(fs, 1, time.Second) {
 		t.Fatal("no button prompt posted")
 	}
-	nonce := nonceFrom(fs.all()[0])
+	nonce := approveNonce(fs, 0)
 	if nonce == "" {
-		t.Fatalf("no nonce in the button prompt: %q", fs.all()[0])
+		t.Fatalf("no nonce on the posted buttons: %v", fs.all())
 	}
 	if !a.tryInteraction(discord.Interaction{ID: "i1", Token: "tok", CustomID: "approve:" + nonce}) {
 		t.Error("the Approve button should be consumed")
@@ -150,8 +150,14 @@ func TestApprover_ButtonApprove(t *testing.T) {
 	if v, ok := waitBool(res, time.Second); !ok || !v {
 		t.Error("Confirm should approve on the Approve button")
 	}
-	if acks := fs.acks(); len(acks) == 0 || !strings.Contains(acks[0], "Approved") {
-		t.Errorf("the interaction must be ACKed with the outcome, acks=%v", acks)
+	// The click is ACKed by rewriting the card IN PLACE: the verdict, the
+	// original action kept as the record, and the buttons frozen.
+	ups := fs.updatesAll()
+	if len(ups) == 0 || !strings.Contains(ups[0], "Approved") || !strings.Contains(ups[0], "run a command") {
+		t.Errorf("the interaction must be ACKed by editing the card to its verdict (keeping the action), updates=%v", ups)
+	}
+	if bs := fs.lastUpdateButtons(); len(bs) != 2 || !bs[0].Disabled || !bs[1].Disabled {
+		t.Errorf("a resolved card must freeze its buttons (disabled), got %+v", bs)
 	}
 }
 
@@ -163,7 +169,7 @@ func TestApprover_ButtonDeny(t *testing.T) {
 	res := make(chan bool, 1)
 	go func() { res <- a.Confirm(context.Background(), "act", "d") }()
 	waitSends(fs, 1, time.Second)
-	a.tryInteraction(discord.Interaction{ID: "i", Token: "t", CustomID: "deny:" + nonceFrom(fs.all()[0])})
+	a.tryInteraction(discord.Interaction{ID: "i", Token: "t", CustomID: "deny:" + approveNonce(fs, 0)})
 	if v, ok := waitBool(res, time.Second); !ok || v {
 		t.Error("the Deny button should refuse the action")
 	}
@@ -177,8 +183,11 @@ func TestApprover_StaleButtonAcks(t *testing.T) {
 	if !a.tryInteraction(discord.Interaction{ID: "i", Token: "t", CustomID: "approve:GONE"}) {
 		t.Error("a stale button should be ACKed/consumed")
 	}
-	if len(fs.acks()) == 0 {
-		t.Error("a stale button must be ACKed")
+	if len(fs.ephemeralsAll()) == 0 {
+		t.Error("a stale button must be ACKed (privately, to the clicker)")
+	}
+	if len(fs.updatesAll()) != 0 {
+		t.Error("a stale click must not rewrite the card")
 	}
 }
 
@@ -202,15 +211,25 @@ func TestRelay_InteractionOperatorGate(t *testing.T) {
 	r := newRelay(&fakeRunner{}, fs, op, nil)
 	r.approver = a
 
-	// A non-operator click never reaches the approver (no ACK happens).
+	// A non-operator click never acts — but it IS answered privately, so the
+	// intruder's client doesn't show "This interaction failed" (and the card
+	// is untouched).
 	r.handleInteraction(discord.Interaction{UserID: "intruder", ID: "x", Token: "x", CustomID: "approve:X"})
-	if len(fs.acks()) != 0 {
-		t.Error("a non-operator click must not reach the approver")
+	if eph := fs.ephemeralsAll(); len(eph) != 1 || !strings.Contains(eph[0], "operator") {
+		t.Errorf("a non-operator click must get an ephemeral 'operator only' ACK and nothing else, got %v", eph)
 	}
-	// The operator's click does reach it (a stale button → an ACK).
+	if len(fs.updatesAll()) != 0 {
+		t.Error("a non-operator click must never touch the card")
+	}
+	// The operator's click does reach the approver (a stale button → a private ACK).
 	r.handleInteraction(discord.Interaction{UserID: op, ID: "i", Token: "t", CustomID: "approve:X"})
-	if len(fs.acks()) != 1 {
+	if len(fs.ephemeralsAll()) != 2 {
 		t.Error("the operator's click should reach the approver")
+	}
+	// An unknown button (neither approve/deny nor ext-) is still answered.
+	r.handleInteraction(discord.Interaction{UserID: op, ID: "j", Token: "u", CustomID: "poll:vote"})
+	if len(fs.ephemeralsAll()) != 3 {
+		t.Error("an unrecognized button must still be ACKed rather than left failing")
 	}
 }
 
@@ -225,7 +244,7 @@ func TestApprover_ApproveOnceNoSession(t *testing.T) {
 	r1 := make(chan bool, 1)
 	go func() { r1 <- a.Confirm(context.Background(), "act", "d") }()
 	waitSends(fs, 1, time.Second)
-	a.tryConsume(discord.Inbound{ChannelID: "dm1", Content: "APPROVE-" + nonceFrom(fs.all()[0])})
+	a.tryConsume(discord.Inbound{ChannelID: "dm1", Content: "APPROVE-" + approveNonce(fs, 0)})
 	if v, _ := waitBool(r1, time.Second); !v {
 		t.Fatal("first action should approve")
 	}

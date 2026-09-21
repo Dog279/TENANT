@@ -466,6 +466,10 @@ type RelayControl interface {
 	// so /relay permissions uses the SAME ask|allow|deny model as /permissions —
 	// "ask" prompts a button in Discord. nil when Discord is unconfigured.
 	Perms() PermissionControl
+	// SetApprovalTimeout / ApprovalTimeout tune how long an approval card waits
+	// for the operator's tap before auto-denying (/relay timeout <duration>).
+	SetApprovalTimeout(d time.Duration) error
+	ApprovalTimeout() time.Duration
 }
 
 // IMessageControl powers /imessage: manage the DENY-BY-DEFAULT allowlist of
@@ -3414,7 +3418,7 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			if execOn {
 				mode = "EXEC ON (dangerous tools, button-approved)"
 			}
-			m.sysChat("discord relay: " + state + " (" + who + "; " + mode + ")  ·  /relay permissions for per-category gating")
+			m.sysChat("discord relay: " + state + " (" + who + "; " + mode + ")  ·  approvals auto-deny after " + m.cfg.Relay.ApprovalTimeout().String() + "  ·  /relay permissions for per-category gating")
 		case "permissions", "perms", "permission":
 			pc := m.cfg.Relay.Perms()
 			if pc == nil {
@@ -3475,8 +3479,19 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			} else {
 				m.sysChat("relay: exec mode off — offsite session is read/research/comms only again")
 			}
+		case "timeout":
+			d, err := time.ParseDuration(rest)
+			if rest == "" || err != nil {
+				m.sysChat("usage: /relay timeout <duration>  (e.g. 10m — how long an approval card waits for your tap before auto-denying; currently " + m.cfg.Relay.ApprovalTimeout().String() + ")")
+				break
+			}
+			if err := m.cfg.Relay.SetApprovalTimeout(d); err != nil {
+				m.sysChat("relay: " + err.Error())
+			} else {
+				m.sysChat("relay: approval cards now auto-deny after " + d.String())
+			}
 		default:
-			m.sysChat("usage: /relay [status|allow <id>|on|off|exec on|off|permissions [set <cat> <mode>]]")
+			m.sysChat("usage: /relay [status|allow <id>|on|off|exec on|off|timeout <duration>|permissions [set <cat> <mode>]]")
 		}
 	case "/imessage", "/imsg":
 		// Manage the deny-by-default allowlist of handles permitted to drive
@@ -5295,12 +5310,27 @@ func (m *model) applyEvent(e agent.Event) {
 	}
 	switch e.Kind {
 	case agent.EventApprovalResolved:
+		if e.Approval != nil && strings.HasPrefix(e.Approval.ID, "beside-") {
+			// The mirror of an approval another surface owned (TEN-203) closed out.
+			m.appendFeed(cDim.Render("approval in " + strings.TrimPrefix(e.Approval.ID, "beside-") + ": " + e.Approval.Outcome))
+			break
+		}
 		// Another observer (the dashboard) resolved a pending action, OR this TUI's
 		// own resolve fired — prune the matching card so it vanishes live (TEN-203).
 		if e.Approval != nil {
 			m.dropPending(e.Approval.ID)
 		}
 	case agent.EventApprovalPending:
+		if e.Approval != nil && strings.HasPrefix(e.Approval.ID, "beside-") {
+			// A MIRROR of an approval owned by another surface (Discord buttons,
+			// TEN-203): shown so the operator knows one is outstanding, but it is
+			// not a card this TUI can resolve — say where it lives instead of
+			// rendering a dead Approve/Deny prompt. (That dead prompt is what read
+			// as "the approval showed up on the TUI instead of Discord.")
+			where := strings.TrimPrefix(e.Approval.ID, "beside-")
+			m.appendFeed(cErr.Render("⏳ approval waiting in " + where + " (" + e.Approval.Category + "): " + e.Approval.Action + " — resolve it there"))
+			break
+		}
 		// Backstop for a dropped non-blocking channel notify: if the fast-path
 		// approvalMsg didn't deliver this id, surface it from the event (TEN-203).
 		// De-duped by ID so the channel + event never double-add.

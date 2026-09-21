@@ -228,14 +228,22 @@ func (r *relay) routeTurn(channelID, text string) {
 // click can't be mis-read as a stale approval.
 func (r *relay) handleInteraction(in discord.Interaction) {
 	if r.operatorID == "" || in.UserID != r.operatorID {
+		// Not the operator: never act, but ACK privately — an un-ACKed click
+		// shows "This interaction failed" to whoever tapped it.
+		if r.approver != nil {
+			r.approver.ackEphemeral(in, "Only the operator can approve this.")
+		}
 		return
 	}
 	if strings.HasPrefix(in.CustomID, "ext-") {
 		r.handleExtApprove(in)
 		return
 	}
+	if r.approver != nil && r.approver.tryInteraction(in) {
+		return
+	}
 	if r.approver != nil {
-		r.approver.tryInteraction(in)
+		r.approver.ackEphemeral(in, "That button isn't active anymore.")
 	}
 }
 
@@ -267,11 +275,19 @@ func (r *relay) start(channelID, text string) bool {
 	// Route gated tools through the per-category broker (TEN-231) when wired —
 	// allow/deny resolve without a prompt, "ask" delegates to the button approver.
 	// Fall back to the raw button approver for older wiring / tests.
+	approvals := "NONE (gated actions will prompt the host broker)"
 	switch {
 	case r.confirm != nil:
 		turnCtx = withOffsiteConfirm(ctx, r.confirm)
+		approvals = "broker"
 	case r.approver != nil:
 		turnCtx = withOffsiteConfirm(ctx, r.approver.Confirm)
+		approvals = "approver"
+	}
+	// One line per turn naming where its approvals will go — the diagnostic
+	// that was missing when prompts seemed to land on the wrong surface.
+	if r.log != nil {
+		r.log.Info("discord relay: turn start", "channel", channelID, "approvals", approvals)
 	}
 
 	go func() {
@@ -473,4 +489,24 @@ func (d discordSender) SendComponents(ctx context.Context, channelID, content st
 
 func (d discordSender) RespondInteraction(ctx context.Context, interactionID, token, content string) error {
 	return d.svc.RespondInteraction(ctx, interactionID, token, content)
+}
+
+func (d discordSender) SendCard(ctx context.Context, channelID, content string, buttons []discord.Button) (string, error) {
+	m, err := d.svc.SendCard(ctx, channelID, content, buttons)
+	if err != nil {
+		return "", err
+	}
+	return m.ID, nil
+}
+
+func (d discordSender) RespondUpdate(ctx context.Context, interactionID, token, content string, buttons []discord.Button, v2 bool) error {
+	return d.svc.RespondUpdate(ctx, interactionID, token, content, buttons, v2)
+}
+
+func (d discordSender) RespondEphemeral(ctx context.Context, interactionID, token, text string) error {
+	return d.svc.RespondEphemeral(ctx, interactionID, token, text)
+}
+
+func (d discordSender) EditMessage(ctx context.Context, channelID, messageID, content string, buttons []discord.Button, v2 bool) error {
+	return d.svc.EditMessage(ctx, channelID, messageID, content, buttons, v2)
 }

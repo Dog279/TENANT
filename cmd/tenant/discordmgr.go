@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/memory/archive"
@@ -161,6 +162,13 @@ type discordRelayManager struct {
 	cancel     context.CancelFunc
 	operatorID string
 	allowExec  bool // last-set exec mode (mirrors gate; persisted)
+
+	// approvalTimeout / cardStyle are the operator's approval-card knobs
+	// (relay.approval_timeout, relay.card_style), applied to the live approver
+	// on every (re)start. Zero / "" ⇒ the approver's defaults (10m, v2).
+	approvalTimeout time.Duration
+	cardStyle       string
+	persistTimeout  func(d time.Duration) error // writes relay.approval_timeout
 }
 
 // realStart wires a fresh relay (bound to operatorID) + gateway and runs the
@@ -168,6 +176,17 @@ type discordRelayManager struct {
 func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) error {
 	rl := newRelay(m.runner, m.sender, operatorID, m.log)
 	rl.approver = m.approver
+	if m.approver != nil {
+		// A prompt that degrades to text surfaces on the operator feed, and the
+		// card knobs follow the config across restarts and token swaps.
+		m.approver.notify = m.notify
+		if m.approvalTimeout > 0 {
+			m.approver.timeout = m.approvalTimeout
+		}
+		if m.cardStyle != "" {
+			m.approver.cardStyle = m.cardStyle
+		}
+	}
 	if m.broker != nil {
 		rl.confirm = m.broker.Confirm // gated tools route through the per-category broker (TEN-231)
 	}
@@ -428,6 +447,62 @@ func (m *discordRelayManager) OperatorID() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.operatorID
+}
+
+// SetApprovalTimeout changes how long an approval card waits before
+// auto-denying, applies it to the live approver, and persists it. Bounded so a
+// typo can't make dangerous actions hang for a day or auto-deny before a human
+// could possibly tap.
+func (m *discordRelayManager) SetApprovalTimeout(d time.Duration) error {
+	if d < 30*time.Second || d > 24*time.Hour {
+		return fmt.Errorf("approval timeout must be between 30s and 24h (got %s)", d)
+	}
+	m.mu.Lock()
+	m.approvalTimeout = d
+	if m.approver != nil {
+		m.approver.timeout = d
+	}
+	persist := m.persistTimeout
+	m.mu.Unlock()
+	if persist != nil {
+		return persist(d)
+	}
+	return nil
+}
+
+// ApprovalTimeout reports the effective card timeout (the default when unset).
+func (m *discordRelayManager) ApprovalTimeout() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.approvalTimeout > 0 {
+		return m.approvalTimeout
+	}
+	return approvalTimeout
+}
+
+// relayApprovalTimeout reads relay.approval_timeout (a Go duration such as
+// "10m"). Unset or unparseable ⇒ 0 ⇒ the approver's default.
+func relayApprovalTimeout(lc *launchConfig) time.Duration {
+	if lc == nil {
+		return 0
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(lc.Relay.ApprovalTimeout))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// relayCardStyle reads relay.card_style; only "legacy" is an override (anything
+// else ⇒ "" ⇒ the v2 default with automatic legacy fallback).
+func relayCardStyle(lc *launchConfig) string {
+	if lc == nil {
+		return ""
+	}
+	if s := strings.ToLower(strings.TrimSpace(lc.Relay.CardStyle)); s == cardStyleLegacy {
+		return s
+	}
+	return ""
 }
 
 // SetOperator records the single operator's Discord user id (and persists it).

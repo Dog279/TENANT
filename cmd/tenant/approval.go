@@ -430,6 +430,16 @@ func (b *approvalBroker) modesSnapshot() map[string]string {
 // Confirm is the hook handed to every plugin Policy. Returns true if the
 // action may proceed. Blocks (on the agent goroutine) for an "ask" while
 // the user decides in the TUI; respects context cancellation.
+// logInfo is the broker's persistent audit line. Approval events otherwise live
+// only in the in-memory event ring, which every restart wipes — after which
+// "did that prompt ever fire, where, and how did it end?" cannot be answered.
+// One line per decision (auto-decided or prompted) makes the log the record.
+func (b *approvalBroker) logInfo(msg string, kv ...any) {
+	if b.log != nil {
+		b.log.Info(msg, kv...)
+	}
+}
+
 func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) bool {
 	cat := categorize(action)
 	b.mu.Lock()
@@ -439,11 +449,14 @@ func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) boo
 
 	switch mode {
 	case modeAllow:
+		b.logInfo("approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
 		return true
 	case modeDeny:
+		b.logInfo("approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
 		return false
 	}
 	if sess {
+		b.logInfo("approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
 		return true
 	}
 
@@ -484,6 +497,12 @@ func (b *approvalBroker) AskPairing(ctx context.Context, detail string) bool {
 // operator must never silently allow.
 func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail string) tui.ApprovalDecision {
 	req := tui.ApprovalRequest{Category: cat, Action: action, Detail: detail}
+	start := time.Now()
+	b.logInfo("approval pending", "origin", b.origin, "category", cat, "action", action)
+	logOutcome := func(outcome, via string) {
+		b.logInfo("approval resolved", "origin", b.origin, "category", cat, "action", action,
+			"outcome", outcome, "via", via, "latency", time.Since(start).Round(time.Millisecond))
+	}
 
 	// THIRD PATH (Discord buttons, TEN-231): b.ask is a REPLACEMENT single-owner
 	// backend — the operator decides in Discord, not at any other surface. It
@@ -497,6 +516,7 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 		b.reg.emitBeside(agent.EventApprovalPending, req, "discord", "")
 		d := b.ask(ctx, req)
 		b.reg.emitBeside(agent.EventApprovalResolved, req, "discord", outcomeOf(d))
+		logOutcome(outcomeOf(d), "custom backend")
 		return d
 	}
 
@@ -505,6 +525,7 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// than block forever on a request nobody can see. (The registry alone is just
 	// storage; it is not an observer.)
 	if b.requests == nil {
+		logOutcome("denied", "no operator surface")
 		return tui.DenyOnce
 	}
 
@@ -527,11 +548,13 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 
 	select {
 	case d := <-reply:
+		logOutcome(outcomeOf(d), "host surface")
 		return d
 	case <-ctx.Done():
 		// Turn cancelled/timed out before anyone resolved → deny-by-default, and
 		// drop the stale entry so Pending() is honest + a late Resolve is a no-op.
 		b.reg.removeIfPending(id)
+		logOutcome("expired", "turn ended")
 		return tui.DenyOnce
 	}
 }

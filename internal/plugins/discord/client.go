@@ -169,11 +169,16 @@ func (s *Service) AddReaction(ctx context.Context, channelID, messageID, emoji s
 }
 
 // Button is one message-component button (v2 approvals). Style: 1=primary,
-// 2=secondary, 3=success (green), 4=danger (red).
+// 2=secondary, 3=success (green), 4=danger (red). Emoji is an optional unicode
+// glyph rendered beside the label (Discord's `emoji` field — the right place for
+// a ✅, not the label text). Disabled renders the button greyed-out and
+// unclickable: how a resolved or expired card freezes its verdict in place.
 type Button struct {
 	Label    string
 	CustomID string
 	Style    int
+	Emoji    string
+	Disabled bool
 }
 
 // SendComponents posts a message carrying a single action-row of buttons (the
@@ -183,19 +188,8 @@ func (s *Service) SendComponents(ctx context.Context, channelID, content string,
 	if strings.TrimSpace(channelID) == "" {
 		return nil, fmt.Errorf("discord: channel id required")
 	}
-	comps := make([]map[string]any, 0, len(buttons))
-	for _, b := range buttons {
-		comps = append(comps, map[string]any{
-			"type": 2, "style": b.Style, "label": b.Label, "custom_id": b.CustomID,
-		})
-	}
-	body := map[string]any{
-		"content":          content,
-		"allowed_mentions": map[string]any{"parse": []string{}},
-		"components":       []map[string]any{{"type": 1, "components": comps}},
-	}
 	var out SentMessage
-	if err := s.a.do(ctx, "POST", "/channels/"+url.PathEscape(channelID)+"/messages", nil, body, &out); err != nil {
+	if err := s.a.do(ctx, "POST", "/channels/"+url.PathEscape(channelID)+"/messages", nil, cardData(content, buttons, false), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -215,4 +209,132 @@ func (s *Service) RespondInteraction(ctx context.Context, interactionID, token, 
 	}
 	path := "/interactions/" + url.PathEscape(interactionID) + "/" + url.PathEscape(token) + "/callback"
 	return s.a.do(ctx, "POST", path, nil, body, nil)
+}
+
+// Message flags (Discord message object, `flags` bitfield).
+const (
+	// flagEphemeral makes an interaction response visible only to the user who
+	// clicked (bit 6). The source message is untouched.
+	flagEphemeral = 1 << 6
+	// flagComponentsV2 opts a message into the Components v2 layout (Container /
+	// Text Display / Separator). With it set, Discord rejects `content` and
+	// `embeds` — every piece of text rides in a Text Display instead — so a v2
+	// message must be EDITED with the same flag and the same component shape.
+	flagComponentsV2 = 1 << 15
+)
+
+// Component type ids (Components reference).
+const (
+	compActionRow   = 1
+	compButton      = 2
+	compTextDisplay = 10
+	compSeparator   = 14
+	compContainer   = 17
+)
+
+// buttonWire serializes one button. emoji/disabled are only emitted when set,
+// so a plain button's wire shape is unchanged from before they existed.
+func buttonWire(b Button) map[string]any {
+	m := map[string]any{"type": compButton, "style": b.Style, "label": b.Label, "custom_id": b.CustomID}
+	if b.Emoji != "" {
+		m["emoji"] = map[string]any{"name": b.Emoji}
+	}
+	if b.Disabled {
+		m["disabled"] = true
+	}
+	return m
+}
+
+func actionRow(buttons []Button) map[string]any {
+	comps := make([]map[string]any, 0, len(buttons))
+	for _, b := range buttons {
+		comps = append(comps, buttonWire(b))
+	}
+	return map[string]any{"type": compActionRow, "components": comps}
+}
+
+// cardData builds the body for an approval card in either layout — the ONE
+// shape shared by posting (SendComponents / SendCard), the interaction ACK
+// (RespondUpdate) and out-of-band edits (EditMessage), so a card can be frozen
+// to its verdict later without knowing anything but its layout.
+//
+// Legacy: `content` + one action row. v2: a Container holding the content as a
+// Text Display, a Separator, and the action row, under flagComponentsV2. No
+// buttons ⇒ no action row (a resolved card with nothing left to click).
+// allowed_mentions parse:[] keeps a "by <@id>" verdict line rendering as a
+// mention without pinging anyone.
+func cardData(content string, buttons []Button, v2 bool) map[string]any {
+	body := map[string]any{"allowed_mentions": map[string]any{"parse": []string{}}}
+	if !v2 {
+		body["content"] = content
+		rows := []map[string]any{}
+		if len(buttons) > 0 {
+			rows = append(rows, actionRow(buttons))
+		}
+		body["components"] = rows
+		return body
+	}
+	inner := []map[string]any{{"type": compTextDisplay, "content": content}}
+	if len(buttons) > 0 {
+		inner = append(inner, map[string]any{"type": compSeparator, "divider": true}, actionRow(buttons))
+	}
+	body["flags"] = flagComponentsV2
+	body["components"] = []map[string]any{{"type": compContainer, "components": inner}}
+	return body
+}
+
+// SendCard posts a Components-v2 approval card (Container → Text Display +
+// Separator + one row of buttons). Callers fall back to SendComponents (the
+// legacy layout) when the post is rejected. MUTATING — gated like SendMessage.
+func (s *Service) SendCard(ctx context.Context, channelID, content string, buttons []Button) (*SentMessage, error) {
+	if strings.TrimSpace(channelID) == "" {
+		return nil, fmt.Errorf("discord: channel id required")
+	}
+	var out SentMessage
+	if err := s.a.do(ctx, "POST", "/channels/"+url.PathEscape(channelID)+"/messages", nil, cardData(content, buttons, true), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RespondUpdate ACKs a component interaction by EDITING its source message
+// (type 7 UPDATE_MESSAGE) to a new card state — the verdict line with the
+// buttons disabled. v2 must match the layout the card was posted with. Discord
+// invalidates the interaction token 3 s after the click, so this must be the
+// FIRST thing a handler does, under a bounded ctx.
+func (s *Service) RespondUpdate(ctx context.Context, interactionID, token, content string, buttons []Button, v2 bool) error {
+	if strings.TrimSpace(interactionID) == "" || strings.TrimSpace(token) == "" {
+		return fmt.Errorf("discord: interaction id + token required")
+	}
+	body := map[string]any{"type": 7, "data": cardData(content, buttons, v2)}
+	path := "/interactions/" + url.PathEscape(interactionID) + "/" + url.PathEscape(token) + "/callback"
+	return s.a.do(ctx, "POST", path, nil, body, nil)
+}
+
+// RespondEphemeral ACKs a component interaction with a reply only the clicker
+// sees (type 4 CHANNEL_MESSAGE_WITH_SOURCE + flagEphemeral), leaving the
+// source message untouched — for "not the operator" and stale clicks, which
+// previously went un-ACKed and showed "This interaction failed."
+func (s *Service) RespondEphemeral(ctx context.Context, interactionID, token, text string) error {
+	if strings.TrimSpace(interactionID) == "" || strings.TrimSpace(token) == "" {
+		return fmt.Errorf("discord: interaction id + token required")
+	}
+	body := map[string]any{"type": 4, "data": map[string]any{
+		"content":          text,
+		"flags":            flagEphemeral,
+		"allowed_mentions": map[string]any{"parse": []string{}},
+	}}
+	path := "/interactions/" + url.PathEscape(interactionID) + "/" + url.PathEscape(token) + "/callback"
+	return s.a.do(ctx, "POST", path, nil, body, nil)
+}
+
+// EditMessage rewrites one of the bot's own messages to a new card state. This
+// is the path for expiry and text-reply resolutions, which happen outside any
+// interaction (and so outside its 15-minute token). MUTATING.
+func (s *Service) EditMessage(ctx context.Context, channelID, messageID, content string, buttons []Button, v2 bool) error {
+	if strings.TrimSpace(channelID) == "" || strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("discord: channel id + message id required")
+	}
+	path := "/channels/" + url.PathEscape(channelID) + "/messages/" + url.PathEscape(messageID)
+	return s.a.do(ctx, "PATCH", path, nil, cardData(content, buttons, v2), nil)
 }
