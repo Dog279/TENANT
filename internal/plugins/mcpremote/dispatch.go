@@ -24,6 +24,29 @@ type Dispatcher struct {
 	specs   []model.ToolSpec
 	gated   map[string]bool
 	policy  Policy
+	auth    *persistentHandler // nil for peers / static servers (no OAuth)
+}
+
+// AuthHealth reports the connector's authorization state (zero for connectors
+// without OAuth — peers, static servers).
+func (d *Dispatcher) AuthHealth() Health {
+	if d.auth == nil {
+		return Health{}
+	}
+	return d.auth.Health()
+}
+
+// reauthText is the failure the MODEL — and so the operator reading its
+// summary — sees while a connector needs re-authorization. An opaque oauth2
+// error gets quietly worked around ("Jira: no data"); this one names the
+// condition and the fix so the brief says it plainly.
+func (d *Dispatcher) reauthText() string {
+	h := d.AuthHealth()
+	since := ""
+	if !h.Since.IsZero() {
+		since = " since " + h.Since.Format("2006-01-02 15:04 UTC")
+	}
+	return d.label + " is NOT AUTHORIZED" + since + ": its sign-in expired and could not be refreshed, so its tools are unavailable until the operator reconnects it at the host (`tenant mcp connect " + d.auth.serverURL + "`, or the dashboard's Remote services page). Report this plainly in your summary; do not retry."
 }
 
 // newDispatcher lists the remote tools and caches their specs + gate status.
@@ -88,6 +111,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	}
 	res, err := d.session.CallTool(ctx, &mcp.CallToolParams{Name: call.Name, Arguments: args})
 	if err != nil {
+		if d.AuthHealth().NeedsReauth {
+			return d.reauthText(), true, nil
+		}
 		return "remote tool call failed: " + err.Error(), true, nil
 	}
 	text := renderContent(res.Content)

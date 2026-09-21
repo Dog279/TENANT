@@ -135,6 +135,8 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 			return buildDiscordAgent(token, deps)
 		},
 	}
+	// Feed line + operator DM when a remote connector's sign-in dies / recovers.
+	d.tools.SetMCPAuthNotifier(mcpAuthNotifier(d.notify, relayMgr.NotifyOperator))
 	discordBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
 			return tui.ApproveOnce

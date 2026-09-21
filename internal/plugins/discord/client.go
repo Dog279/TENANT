@@ -328,6 +328,25 @@ func (s *Service) RespondEphemeral(ctx context.Context, interactionID, token, te
 	return s.a.do(ctx, "POST", path, nil, body, nil)
 }
 
+// OpenDM opens (or returns) the bot's DM channel with a user — the way to reach
+// the operator when no turn is in flight, e.g. "a connector needs your browser
+// to re-authorize". POST /users/@me/channels. MUTATING (may create a channel).
+func (s *Service) OpenDM(ctx context.Context, userID string) (string, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", fmt.Errorf("discord: user id required")
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := s.a.do(ctx, "POST", "/users/@me/channels", nil, map[string]any{"recipient_id": userID}, &out); err != nil {
+		return "", err
+	}
+	if out.ID == "" {
+		return "", fmt.Errorf("discord: open DM: no channel id in response")
+	}
+	return out.ID, nil
+}
+
 // EditMessage rewrites one of the bot's own messages to a new card state. This
 // is the path for expiry and text-reply resolutions, which happen outside any
 // interaction (and so outside its 15-minute token). MUTATING.

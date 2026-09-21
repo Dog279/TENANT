@@ -11,10 +11,15 @@
   {{range .Servers}}
   <div class="soul-row" id="mcp-{{.Label}}">
     <div>
-      <div class="nm">{{.Label}} {{if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
+      <div class="nm">{{.Label}} {{if .NeedsReauth}}<span style="color:#e5484d;font-weight:600">⚠ needs re-authorization{{if .AuthSince}} since {{.AuthSince}}{{end}}</span>{{else if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
       <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}}</div>
+      {{if .NeedsReauth}}<div class="dim" style="margin-top:4px">Its sign-in expired and could not be refreshed{{if .AuthErr}} ({{.AuthErr}}){{end}}. Its tools fail until you reconnect — Reconnect opens a sign-in window <strong>on the computer running Tenant</strong>.</div>{{end}}
     </div>
     <div class="cronactions">
+      {{if .NeedsReauth}}<form method="POST" action="/mcp/connect" class="inline">
+        <input type="hidden" name="url" value="{{.URL}}">
+        <button type="submit" class="btn sm">Reconnect</button>
+      </form>{{end}}
       <form method="POST" action="/mcp/remove" class="inline">
         <input type="hidden" name="target" value="{{.Label}}">
         <button type="submit" class="btn sm danger">Disconnect</button>

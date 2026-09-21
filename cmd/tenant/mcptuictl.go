@@ -6,6 +6,42 @@ package main
 
 import "tenant/internal/tui"
 
+// mcpAuthNotifier builds the mux's auth-change callback: a feed line every
+// time, plus a direct operator DM (best-effort) — the operator is usually
+// remote when a connector dies, and the feed is not where they are looking.
+func mcpAuthNotifier(feed func(string), dm func(string) error) func(label, url string, needsReauth bool, err string) {
+	return func(label, url string, needsReauth bool, err string) {
+		if needsReauth {
+			if feed != nil {
+				feed("⚠ " + label + " needs re-authorization — its tools fail until you reconnect at the host:  tenant mcp connect " + url)
+			}
+			if dm != nil {
+				_ = dm("⚠ **" + label + "** needs re-authorization (its sign-in expired and could not be refreshed: " + err + "). Its tools — Jira/Confluence if this is Atlassian — fail until you reconnect at the host:\n`tenant mcp connect " + url + "`\nor the dashboard's Remote services page.")
+			}
+			return
+		}
+		if feed != nil {
+			feed("✅ " + label + " re-authorized — its tools are back")
+		}
+		if dm != nil {
+			_ = dm("✅ **" + label + "** re-authorized — its tools are back.")
+		}
+	}
+}
+
+// mcpAuthProblemsFn adapts a registry's dead-connector list to the cron
+// runner's banner input ("label (fix: tenant mcp connect url)"). Interface-typed
+// so the composite registry and a bare mux both fit.
+func mcpAuthProblemsFn(m interface{ RemoteMCPAuthProblems() []mcpServerStatus }) func() []string {
+	return func() []string {
+		var out []string
+		for _, s := range m.RemoteMCPAuthProblems() {
+			out = append(out, s.Label+" (fix: tenant mcp connect "+s.URL+")")
+		}
+		return out
+	}
+}
+
 type mcpTUIControl struct {
 	mux    *toolMux
 	cfgDir string
@@ -20,7 +56,10 @@ func (a mcpTUIControl) List() []tui.MCPServerInfo {
 	servers := a.mux.RemoteMCPList()
 	out := make([]tui.MCPServerInfo, 0, len(servers))
 	for _, s := range servers {
-		out = append(out, tui.MCPServerInfo{Label: s.Label, URL: s.URL, Enabled: s.Enabled, ToolCount: s.ToolCount})
+		out = append(out, tui.MCPServerInfo{
+			Label: s.Label, URL: s.URL, Enabled: s.Enabled, ToolCount: s.ToolCount,
+			NeedsReauth: s.NeedsReauth, AuthErr: s.AuthErr, AuthSince: s.AuthSince,
+		})
 	}
 	return out
 }

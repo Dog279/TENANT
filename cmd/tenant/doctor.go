@@ -28,6 +28,7 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
+	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/plugins/web"
 	"tenant/internal/research"
 
@@ -206,6 +207,10 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		{"project SME (memory)", checkProjectSME},
 		{"tool-calling (deep)", checkToolCalling},
 		{"mcp surface (deep)", checkMCPSurface},
+		// A remote connector whose OAuth refresh token died: read offline from
+		// its token cache, so a dead Jira/Confluence bridge is caught by doctor
+		// instead of by a silently empty daily brief.
+		{"remote MCP auth", checkRemoteMCPAuth},
 	}
 
 	results := make([]checkResult, 0, len(checks))
@@ -569,6 +574,38 @@ func checkToolCalling(ctx context.Context, e *doctorEnv) checkResult {
 	}
 	return checkResult{Status: statusOK,
 		Detail: fmt.Sprintf("native tool call OK: %s(%s)", resp.ToolCalls[0].Name, string(resp.ToolCalls[0].Arguments))}
+}
+
+// checkRemoteMCPAuth reads each configured remote connector's persisted auth
+// state from its token cache — no network, no browser. FAIL names the dead
+// connector(s) with the exact reconnect command; WARN flags servers in config
+// that were never connected from this config dir.
+func checkRemoteMCPAuth(_ context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil || len(e.lc.MCPRemotes) == 0 {
+		return checkResult{Status: statusSkip, Detail: "no remote MCP connectors configured"}
+	}
+	cacheDir := filepath.Join(e.c.cfgDir, "mcp")
+	var dead, unknown []string
+	for _, u := range e.lc.MCPRemotes {
+		h, ok := mcpremote.ReadHealth(cacheDir, u)
+		switch {
+		case !ok:
+			unknown = append(unknown, u)
+		case h.NeedsReauth:
+			when := "unknown time"
+			if !h.Since.IsZero() {
+				when = h.Since.Format("2006-01-02 15:04 UTC")
+			}
+			dead = append(dead, fmt.Sprintf("%s (since %s) — fix: tenant mcp connect %s", u, when, u))
+		}
+	}
+	switch {
+	case len(dead) > 0:
+		return checkResult{Status: statusFail, Detail: "needs re-authorization: " + strings.Join(dead, "; ")}
+	case len(unknown) > 0:
+		return checkResult{Status: statusWarn, Detail: "never connected from this config dir (no cached token): " + strings.Join(unknown, ", ")}
+	}
+	return checkResult{Status: statusOK, Detail: fmt.Sprintf("%d connector(s) hold a valid cached sign-in", len(e.lc.MCPRemotes))}
 }
 
 func checkMCPSurface(ctx context.Context, e *doctorEnv) checkResult {

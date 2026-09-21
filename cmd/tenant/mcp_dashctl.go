@@ -14,12 +14,18 @@ func (d dashMCP) Servers() []dashboard.MCPServerView {
 	in := d.m.List()
 	out := make([]dashboard.MCPServerView, 0, len(in))
 	for _, s := range in {
-		out = append(out, dashboard.MCPServerView{
-			Label:     s.Label,
-			URL:       s.URL,
-			Enabled:   s.Enabled,
-			ToolCount: s.ToolCount,
-		})
+		v := dashboard.MCPServerView{
+			Label:       s.Label,
+			URL:         s.URL,
+			Enabled:     s.Enabled,
+			ToolCount:   s.ToolCount,
+			NeedsReauth: s.NeedsReauth,
+			AuthErr:     s.AuthErr,
+		}
+		if !s.AuthSince.IsZero() {
+			v.AuthSince = s.AuthSince.UTC().Format("2006-01-02 15:04 UTC")
+		}
+		out = append(out, v)
 	}
 	return out
 }

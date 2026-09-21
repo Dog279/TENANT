@@ -451,22 +451,23 @@ func cmdServe(ctx context.Context, args []string) error {
 		}
 	}
 	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
-		router:      router,
-		soulLive:    soulLive,
-		skills:      skillRetriever{st: skillStore, agentID: c.agent},
-		compactor:   compressor,
-		userProfile: prof,
-		fullReg:     mainTools,
-		fullDisp:    mainTools,
-		sysPrompt:   sysPrompt,
-		log:         log,
-		routeHook:   routeRT.Hook(),
-		routeActive: routeRT.Active,
-		routeSticky: routeRT.Sticky,
-		events:      emit,
-		cfgDir:      c.cfgDir,
-		dataDir:     c.dataDir,
-		allowExec:   cronExecGate,
+		router:       router,
+		soulLive:     soulLive,
+		skills:       skillRetriever{st: skillStore, agentID: c.agent},
+		compactor:    compressor,
+		userProfile:  prof,
+		fullReg:      mainTools,
+		fullDisp:     mainTools,
+		sysPrompt:    sysPrompt,
+		log:          log,
+		routeHook:    routeRT.Hook(),
+		routeActive:  routeRT.Active,
+		routeSticky:  routeRT.Sticky,
+		events:       emit,
+		cfgDir:       c.cfgDir,
+		dataDir:      c.dataDir,
+		allowExec:    cronExecGate,
+		authProblems: mcpAuthProblemsFn(mainTools), // banner on every summary while a connector's sign-in is dead
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {

@@ -169,6 +169,35 @@ type discordRelayManager struct {
 	approvalTimeout time.Duration
 	cardStyle       string
 	persistTimeout  func(d time.Duration) error // writes relay.approval_timeout
+
+	dmChannel string // the operator's DM channel, opened on first NotifyOperator
+}
+
+// NotifyOperator DMs the operator directly — the out-of-band channel for
+// conditions no in-flight turn will report, like a connector that needs the
+// operator's browser to re-authorize. Best-effort beside the feed line: it
+// fails (never blocks) when the relay isn't configured.
+func (m *discordRelayManager) NotifyOperator(text string) error {
+	m.mu.Lock()
+	svc, op, dm := m.svc, strings.TrimSpace(m.operatorID), m.dmChannel
+	m.mu.Unlock()
+	if svc == nil || op == "" {
+		return fmt.Errorf("discord relay not configured (no bot or no operator)")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if dm == "" {
+		id, err := svc.OpenDM(ctx, op)
+		if err != nil {
+			return fmt.Errorf("open operator DM: %w", err)
+		}
+		m.mu.Lock()
+		m.dmChannel = id
+		m.mu.Unlock()
+		dm = id
+	}
+	_, err := svc.SendMessage(ctx, dm, text)
+	return err
 }
 
 // realStart wires a fresh relay (bound to operatorID) + gateway and runs the

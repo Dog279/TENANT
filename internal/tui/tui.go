@@ -536,6 +536,11 @@ type MCPServerInfo struct {
 	URL       string
 	Enabled   bool
 	ToolCount int
+	// NeedsReauth: the connector's sign-in died and its tools fail until the
+	// operator reconnects it — shown ahead of the (stale) tool count.
+	NeedsReauth bool
+	AuthErr     string
+	AuthSince   time.Time
 }
 
 // PeerControl drives the TUI's `/peer` and `/configure peer` surfaces over the
@@ -1972,6 +1977,12 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 		for _, s := range servers {
 			var state string
 			switch {
+			case s.NeedsReauth:
+				state = "⚠ NEEDS RE-AUTH"
+				if !s.AuthSince.IsZero() {
+					state += " since " + s.AuthSince.Local().Format("Jan 2 15:04")
+				}
+				state += " — its tools fail until you reconnect:  /mcp add " + s.URL
 			case s.Enabled:
 				state = fmt.Sprintf("on, %d tools", s.ToolCount)
 			case s.ToolCount > 0:

@@ -2265,21 +2265,22 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	}
 	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
-		router:      router,
-		soulLive:    soulLive,
-		skills:      skillRetriever{st: skillStore, agentID: c.agent},
-		compactor:   compressor,
-		userProfile: prof,
-		fullReg:     mainTools,
-		fullDisp:    mainTools,
-		sysPrompt:   sysPrompt,
-		log:         log,
-		routeHook:   routeRT.Hook(),
-		routeActive: routeRT.Active,
-		routeSticky: routeRT.Sticky,
-		cfgDir:      c.cfgDir,
-		dataDir:     c.dataDir,
-		allowExec:   cronExecGate,
+		router:       router,
+		soulLive:     soulLive,
+		skills:       skillRetriever{st: skillStore, agentID: c.agent},
+		compactor:    compressor,
+		userProfile:  prof,
+		fullReg:      mainTools,
+		fullDisp:     mainTools,
+		sysPrompt:    sysPrompt,
+		log:          log,
+		routeHook:    routeRT.Hook(),
+		routeActive:  routeRT.Active,
+		routeSticky:  routeRT.Sticky,
+		cfgDir:       c.cfgDir,
+		dataDir:      c.dataDir,
+		allowExec:    cronExecGate,
+		authProblems: mcpAuthProblemsFn(mainTools), // banner on every summary while a connector's sign-in is dead
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {
@@ -2516,6 +2517,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// category raises the Discord button approval via the live approver. A button
 	// tap is per-action ("once"); to stop being prompted the operator sets the
 	// category to allow with /relay permissions.
+	// A remote connector whose sign-in dies (the Atlassian bridge went dark for
+	// three days while the brief's Jira section quietly emptied): feed line AND
+	// a direct DM to the operator, who is usually remote exactly when it matters.
+	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(pushSys, relayMgr.NotifyOperator))
 	discordBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
 			return tui.ApproveOnce

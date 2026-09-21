@@ -32,6 +32,11 @@ type MCPServerView struct {
 	URL       string
 	Enabled   bool
 	ToolCount int
+	// NeedsReauth: the connector's sign-in died; its tools fail until the
+	// operator reconnects it (the Reconnect form re-runs the host-side OAuth).
+	NeedsReauth bool
+	AuthSince   string // rendered, e.g. "2026-09-18 14:02 UTC"; "" when unknown
+	AuthErr     string
 }
 
 // SetMCP installs the MCP control after construction (mirrors SetCron).

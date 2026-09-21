@@ -273,6 +273,36 @@ type composite struct {
 // paths (which hand the agent a composite, not a bare mux) — TEN-225.
 var _ agent.RankingReporter = composite{}
 
+// SetMCPAuthNotifier installs the connector auth-change notifier on both
+// muxes: remote MCP connectors register on whichever mux built them, and the
+// callback is read at fire time, so forwarding to both is exact.
+func (c composite) SetMCPAuthNotifier(fn func(label, url string, needsReauth bool, err string)) {
+	for _, m := range []*toolMux{c.shared, c.local} {
+		if m != nil {
+			m.SetMCPAuthNotifier(fn)
+		}
+	}
+}
+
+// RemoteMCPAuthProblems unions the dead connectors of both muxes (a label can
+// only live on one).
+func (c composite) RemoteMCPAuthProblems() []mcpServerStatus {
+	var out []mcpServerStatus
+	seen := map[string]bool{}
+	for _, m := range []*toolMux{c.shared, c.local} {
+		if m == nil {
+			continue
+		}
+		for _, s := range m.RemoteMCPAuthProblems() {
+			if !seen[s.Label] {
+				seen[s.Label] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
 func (c composite) Get(name string) (model.ToolSpec, bool) {
 	if s, ok := c.local.Get(name); ok {
 		return s, true

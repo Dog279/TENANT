@@ -319,6 +319,11 @@ type mcpRuntimeDeps struct {
 	confirm          func(context.Context, string, string) bool
 	cacheDir         string       // 0600 OAuth token cache dir (persistence across restarts)
 	log              *slog.Logger // connect/refresh failure logging (TEN-166)
+	// onAuthChange is the only mutable member: installed after the mux is built
+	// (SetMCPAuthNotifier, under the mux lock) once the surfaces that can reach
+	// the operator exist. Activators read it at FIRE time via fireMCPAuthChange,
+	// never from a copy taken at registration.
+	onAuthChange func(label, url string, needsReauth bool, err string)
 }
 
 // mcpServerStatus is one remote MCP connector's runtime state (for /mcp list).
@@ -327,6 +332,12 @@ type mcpServerStatus struct {
 	URL       string
 	Enabled   bool
 	ToolCount int
+	// Auth health: a connector whose OAuth token died still lists its tools
+	// (the count is frozen from connect time), which is exactly how a dead
+	// Jira bridge looked healthy for three days. NeedsReauth is the truth.
+	NeedsReauth bool
+	AuthErr     string
+	AuthSince   time.Time
 }
 
 // registerMCPRemote registers a disabled stub + activator for a remote MCP
@@ -349,6 +360,7 @@ func (m *toolMux) registerMCPRemote(url string) string {
 			CacheDir:     d.cacheDir,
 			Interactive:  true, // /enable or /mcp add may sign in via browser (cached token ⇒ silent)
 			Logger:       d.log,
+			OnAuthChange: func(needs bool, err string) { m.fireMCPAuthChange(label, url, needs, err) },
 		}, d.trustAnnotations, mcpremote.Policy{
 			AllowWrite: d.allowWrite,
 			Confirm:    d.confirm,
@@ -380,6 +392,7 @@ func (m *toolMux) reconnectMCPSilently(url string) {
 		CacheDir:     d.cacheDir,
 		Interactive:  false, // launch: never pop a browser
 		Logger:       d.log,
+		OnAuthChange: func(needs bool, err string) { m.fireMCPAuthChange(label, url, needs, err) },
 	}, d.trustAnnotations, mcpremote.Policy{
 		AllowWrite: d.allowWrite,
 		Confirm:    d.confirm,
@@ -538,12 +551,61 @@ func (m *toolMux) RemoteMCPList() []mcpServerStatus {
 				if e.enabled {
 					st.Enabled = true
 				}
+				if !st.NeedsReauth {
+					if hp, ok := e.owner.(interface{ AuthHealth() mcpremote.Health }); ok {
+						if h := hp.AuthHealth(); h.NeedsReauth {
+							st.NeedsReauth, st.AuthErr, st.AuthSince = true, h.Err, h.Since
+						}
+					}
+				}
 			}
 		}
 		out = append(out, st)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out
+}
+
+// RemoteMCPAuthProblems lists the connectors whose OAuth token is dead: their
+// tools fail (loudly) until the operator reconnects them at the host.
+func (m *toolMux) RemoteMCPAuthProblems() []mcpServerStatus {
+	var out []mcpServerStatus
+	for _, s := range m.RemoteMCPList() {
+		if s.NeedsReauth {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// SetMCPAuthNotifier installs the callback fired when a connector flips into
+// or out of the needs-re-auth state (feed line + operator DM). Installed after
+// the relay exists; read at fire time, so already-registered connectors see it.
+func (m *toolMux) SetMCPAuthNotifier(fn func(label, url string, needsReauth bool, err string)) {
+	m.mu.Lock()
+	m.mcpDeps.onAuthChange = fn
+	m.mu.Unlock()
+}
+
+// fireMCPAuthChange is what every remote connector's OnAuthChange points at.
+// It logs with the fix spelled out (the log line is the persistent audit) and
+// forwards to the installed notifier, if any.
+func (m *toolMux) fireMCPAuthChange(label, url string, needsReauth bool, err string) {
+	m.mu.RLock()
+	fn := m.mcpDeps.onAuthChange
+	log := m.mcpDeps.log
+	m.mu.RUnlock()
+	if log != nil {
+		if needsReauth {
+			log.Warn("mcp: connector needs re-authorization — its tools fail until reconnected",
+				"server", label, "url", url, "err", err, "fix", "tenant mcp connect "+url)
+		} else {
+			log.Info("mcp: connector re-authorized", "server", label)
+		}
+	}
+	if fn != nil {
+		fn(label, url, needsReauth, err)
+	}
 }
 
 // addCleanup registers a teardown func (closes a browser/db handle), run

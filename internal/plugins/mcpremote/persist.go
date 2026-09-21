@@ -44,10 +44,65 @@ type persistentHandler struct {
 
 	logger *slog.Logger
 
+	// onAuthChange fires on the healthy↔needs-re-auth transitions (not on every
+	// failing call), so the operator is told once when a connector dies and
+	// once when it is back.
+	onAuthChange func(needsReauth bool, err string)
+
 	mu     sync.Mutex
 	cache  *tokenCache
 	loaded bool
 	src    *refreshingSource // memoized: ONE source per server (rotation-safe)
+}
+
+// Health reports the connector's persisted authorization state.
+func (h *persistentHandler) Health() Health {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ensureLoaded()
+	return h.cache.health()
+}
+
+// markReauth records that the refresh grant failed with no usable token left —
+// persisted so it survives a restart — and fires onAuthChange on the transition.
+func (h *persistentHandler) markReauth(errText string) {
+	h.mu.Lock()
+	h.ensureLoaded()
+	if h.cache == nil {
+		h.cache = &tokenCache{ServerURL: h.serverURL}
+	}
+	transition := !h.cache.ReauthNeeded
+	if transition {
+		h.cache.ReauthNeeded, h.cache.ReauthError, h.cache.ReauthSince = true, errText, time.Now().Unix()
+		if err := saveTokenCache(h.cachePath, h.cache); err != nil {
+			h.logger.Warn("mcp: failed to persist re-auth state", "server", h.serverURL, "err", err.Error())
+		}
+	}
+	cb := h.onAuthChange
+	h.mu.Unlock()
+	if transition && cb != nil {
+		cb(true, errText)
+	}
+}
+
+// clearReauth records a valid token being seen again (a browser re-auth, or a
+// refresh that succeeded after all) and fires onAuthChange on the transition.
+// Cheap when nothing was flagged — it runs on the hot path.
+func (h *persistentHandler) clearReauth() {
+	h.mu.Lock()
+	if h.cache == nil || !h.cache.ReauthNeeded {
+		h.mu.Unlock()
+		return
+	}
+	h.cache.ReauthNeeded, h.cache.ReauthError, h.cache.ReauthSince = false, "", 0
+	if err := saveTokenCache(h.cachePath, h.cache); err != nil {
+		h.logger.Warn("mcp: failed to persist re-auth clear", "server", h.serverURL, "err", err.Error())
+	}
+	cb := h.onAuthChange
+	h.mu.Unlock()
+	if cb != nil {
+		cb(false, "")
+	}
 }
 
 func newPersistentHandler(serverURL, redirect, clientName, cachePath string, interactive bool, fetcher auth.AuthorizationCodeFetcher, httpClient *http.Client, logger *slog.Logger) *persistentHandler {
@@ -126,6 +181,7 @@ func (s *refreshingSource) Token() (*oauth2.Token, error) {
 	// Reuse a non-expiring token, or one comfortably before expiry.
 	if s.cur != nil && s.cur.AccessToken != "" &&
 		(s.cur.Expiry.IsZero() || time.Until(s.cur.Expiry) >= proactiveRefreshWindow) {
+		s.h.clearReauth() // a valid token in hand ⇒ whatever was flagged is over
 		return s.cur, nil
 	}
 	if s.cur == nil || s.cur.RefreshToken == "" {
@@ -146,6 +202,7 @@ func (s *refreshingSource) Token() (*oauth2.Token, error) {
 		}
 		s.h.logger.Warn("mcp: token refresh failed (re-auth needed)",
 			"server", s.h.serverURL, "err", err.Error())
+		s.h.markReauth(err.Error()) // persisted + announced once; every surface reads it
 		return nil, err
 	}
 	s.cur = refreshed
@@ -153,14 +210,23 @@ func (s *refreshingSource) Token() (*oauth2.Token, error) {
 	// survives a crash/restart — non-atomic persistence is the documented way
 	// Atlassian clients strand themselves.
 	s.h.mu.Lock()
+	var recovered bool
 	if s.h.cache != nil {
 		s.h.cache.Token = refreshed
+		if s.h.cache.ReauthNeeded {
+			s.h.cache.ReauthNeeded, s.h.cache.ReauthError, s.h.cache.ReauthSince = false, "", 0
+			recovered = true
+		}
 		if err := saveTokenCache(s.h.cachePath, s.h.cache); err != nil {
 			s.h.logger.Warn("mcp: failed to persist refreshed token",
 				"server", s.h.serverURL, "err", err.Error())
 		}
 	}
+	cb := s.h.onAuthChange
 	s.h.mu.Unlock()
+	if recovered && cb != nil {
+		cb(false, "")
+	}
 	return refreshed, nil
 }
 

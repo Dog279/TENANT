@@ -22,6 +22,13 @@ type tokenCache struct {
 	TokenURL     string        `json:"token_url"`
 	Scopes       []string      `json:"scopes,omitempty"`
 	Token        *oauth2.Token `json:"token,omitempty"`
+	// Re-auth state, persisted beside the token so a restart — and `tenant
+	// doctor`, offline — report a dead connector instead of rediscovering it one
+	// failing call at a time. Set when the refresh grant fails with no valid
+	// access token left; cleared the moment a valid token is seen again.
+	ReauthNeeded bool   `json:"reauth_needed,omitempty"`
+	ReauthError  string `json:"reauth_error,omitempty"`
+	ReauthSince  int64  `json:"reauth_since,omitempty"` // unix seconds
 }
 
 // tokenCachePath is the 0600 cache file for a server URL under dir. The URL is

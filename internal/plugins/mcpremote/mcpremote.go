@@ -31,6 +31,10 @@ type Config struct {
 	Interactive bool
 	// Logger receives connect/refresh failures (TEN-166). Nil = discard.
 	Logger *slog.Logger
+	// OnAuthChange fires once when the connector's OAuth token dies (the refresh
+	// grant failed with nothing valid left) and once when it is authorized
+	// again — the hook for a feed line / operator notification. Nil = none.
+	OnAuthChange func(needsReauth bool, err string)
 }
 
 func (c Config) callbackAddr() string {
@@ -50,9 +54,9 @@ func (c Config) clientName() string {
 // connect authenticates (browser OAuth 2.1 + DCR) and opens an MCP session over
 // Streamable HTTP. Returns the session + a cleanup that closes the session and
 // the callback server.
-func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, func(), error) {
+func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHandler, func(), error) {
 	if cfg.ServerURL == "" {
-		return nil, nil, fmt.Errorf("mcpremote: ServerURL required")
+		return nil, nil, nil, fmt.Errorf("mcpremote: ServerURL required")
 	}
 	redirect := "http://" + cfg.callbackAddr() + "/callback"
 	// A shared client whose transport reconciles CDN-fronted AS-metadata issuers
@@ -68,7 +72,7 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, func(), error
 	if cfg.Interactive {
 		f, s, err := newCodeFetcher(cfg.callbackAddr(), cfg.OpenBrowser)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		fetcher, stop = f, s
 	}
@@ -78,6 +82,7 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, func(), error
 		tokenCachePath(cfg.CacheDir, cfg.ServerURL),
 		cfg.Interactive, fetcher, httpClient, cfg.Logger,
 	)
+	handler.onAuthChange = cfg.OnAuthChange
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   cfg.ServerURL,
 		HTTPClient: httpClient,
@@ -97,20 +102,20 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, func(), error
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		stop()
-		return nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.ServerURL, err)
+		return nil, nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.ServerURL, err)
 	}
 	cleanup := func() {
 		_ = session.Close()
 		stop()
 	}
-	return session, cleanup, nil
+	return session, handler, cleanup, nil
 }
 
 // Open connects and builds a gated Dispatcher over the remote server's tools.
 // trustAnnotations relaxes the deny-by-default gate for tools the server marks
 // read-only; when false, EVERY remote tool is treated as a gated write.
 func Open(ctx context.Context, cfg Config, trustAnnotations bool, policy Policy) (*Dispatcher, func(), error) {
-	session, cleanup, err := connect(ctx, cfg)
+	session, handler, cleanup, err := connect(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -121,5 +126,6 @@ func Open(ctx context.Context, cfg Config, trustAnnotations bool, policy Policy)
 		cleanup()
 		return nil, nil, fmt.Errorf("mcpremote: list tools: %w", err)
 	}
+	d.auth = handler // lets Dispatch/AuthHealth read the connector's auth state
 	return d, cleanup, nil
 }

@@ -77,6 +77,12 @@ type cronAgentDeps struct {
 	// without grepping. Display only; the memory isolation above is intact.
 	events func(agent.Event)
 
+	// authProblems, when set, names the remote connectors whose sign-in is dead.
+	// Every summary carries a banner while any exist — the daily brief is what
+	// the operator actually reads, and "Jira: (nothing)" was how a dead Atlassian
+	// bridge hid for three days.
+	authProblems func() []string
+
 	cfgDir    string    // protected from exec-job writes
 	dataDir   string    // protected from exec-job writes; holds the shell sandbox
 	allowExec *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
@@ -169,8 +175,23 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		if res == nil {
 			return "", nil
 		}
-		return strings.TrimSpace(res.Response), res.Error
+		summary := strings.TrimSpace(res.Response)
+		if d.authProblems != nil {
+			summary = withAuthBanner(summary, d.authProblems())
+		}
+		return summary, res.Error
 	}, nil
+}
+
+// withAuthBanner prefixes a cron summary with the connectors whose sign-in is
+// dead, so the brief the operator reads says WHY a section is missing instead
+// of quietly omitting it. No problems ⇒ the summary is untouched.
+func withAuthBanner(summary string, probs []string) string {
+	if len(probs) == 0 {
+		return summary
+	}
+	return "⚠️ NEEDS RE-AUTHORIZATION (its data is missing from this run until you reconnect at the host): " +
+		strings.Join(probs, "; ") + "\n\n" + summary
 }
 
 // cronExecApprover is the auto-approver for exec cron turns. It is NOT blanket-
