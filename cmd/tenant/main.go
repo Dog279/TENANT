@@ -84,6 +84,8 @@ func main() {
 		err = cmdAttach(ctx, os.Args[2:])
 	case "log":
 		err = cmdLog(ctx, os.Args[2:])
+	case "sandbox":
+		err = cmdSandbox(ctx, os.Args[2:])
 	case "tui":
 		err = cmdTUI(ctx, os.Args[2:])
 	case "orchestrate", "team":
@@ -156,6 +158,7 @@ COMMANDS
   attach [URL]             watch a running hub's activity feed (--follow; --source discord)
   log <source> "<msg>"     file a line into the log book under <source> (folder + dashboard tab
                            appear on first use; k=v fields; --level warn|error; --list)
+  sandbox <sub>            exec sandbox: probe (profiles) | selftest (escape suite) | run --surface S -- CMD
   tui                      full-screen terminal UI: streaming chat + live activity feed
   orchestrate "<task>"     multi-agent team: orchestrator spawns concurrent sub-agents that
                            talk over a live bus and self-resolve; streams all progress
