@@ -38,13 +38,14 @@ stays in front as a fast fail-early check. It is not the boundary.
   long-lived base context.
 - **`exec_profiles`** in `<config-dir>/settings.<agent>.json`, keyed by surface or `default`.
   Operator-only: no agent tool reads or writes a profile. Fields: `backend` (`host` |
-  `restricted`), `enforce` (default `true`; `false` = dry-run), `network`, `allow`,
-  `read_roots`, `write_roots`, `deny_roots`, `env_pass`, `env_set`, `cpu_seconds`, `memory_mb`,
+  `restricted`), `enforce` (default `true`; `false` = dry-run), `network` (`inherit` | `none` |
+  `full`), `read_roots`, `write_roots`, `deny_roots`, `env_pass`, `env_set`, `cpu_seconds`, `memory_mb`,
   `max_pids`. Roots must be absolute or start with `~`. `tenant tui` and `tenant serve` load
   the profiles at startup and re-read the file within about 3 s of a hand edit (a feed line
   reports it). `tenant os` reads it once. The profile is resolved again for every command, so an
   edit applies to the next one with no restart. An invalid entry (unknown surface, backend or
-  network, a relative root, a negative limit, `container`) is skipped and named; the rest load.
+  network, a network allowlist, a relative root, a negative limit, `container`) is skipped and
+  named; the rest load.
 - **Built-in baseline.** Every profile's deny roots include the config dir, the data dir and the
   Tenant binary (the file, not its directory, which may be shared). `deny_roots` adds to this
   set; nothing removes from it. A confining profile also:
@@ -59,10 +60,10 @@ stays in front as a fast fail-early check. It is not the boundary.
     `env_pass` / `env_set`.
 - **Refusals.** When a confining backend refuses a filesystem or network access:
   - with `enforce: true`, the turn's approver is asked for **`os_exec_unsandboxed`**, with the
-    refusal named ("SANDBOX REFUSED: … approve to re-run it OUTSIDE the sandbox"). The action is
-    categorized `destructive`, so it prompts wherever `destructive` is on `ask` (the default on
-    the host broker and on the Discord relay). The iMessage broker denies it by default, and the
-    cron exec approver always denies it. If approved, the command re-runs on the host and its
+    refusal named ("SANDBOX REFUSED: … approve to re-run it OUTSIDE the sandbox"). The action has its
+    own `sandbox` approval category: `ask` by default on the host broker and the Discord relay,
+    `deny` on iMessage, and the cron exec approver always denies it. A session or always grant
+    covers only further escalations. If approved, the command re-runs on the host and its
     output says so. If denied, the model gets the confined result with the refusal appended to
     the error so it can adjust. Cron shell jobs and `tenant os` have no approver: the job or
     command fails with the refusal named.
@@ -154,7 +155,8 @@ Windows.
     env only on confining profiles;
   - host parity with the old runner through the `osys` API;
   - cron `cmd /C` argv and exit text;
-  - `os_exec_unsandboxed` categorized `destructive`;
+  - `os_exec_unsandboxed` in its own `sandbox` category, and a session grant on it does not
+    pre-approve destructive actions (broker-level test);
   - settings hot reload: invalid entries are kept in the file, an unchanged file is a no-op;
   - the resolved self-modification guard, tested with details built to evade the old
     substring check;
@@ -194,19 +196,16 @@ every entry that should be confined.
   4. Dry-run: set `"enforce": false` on the surface and let it run for a representative
      stretch. Read the `sandbox` log (`tenant attach --follow --source sandbox`) for "would have
      refused" lines, and widen `write_roots` / `env_pass` / `network` where a refusal is
-     legitimate. Dry-run needs refusal detection, which only the macOS backend has today (see
+     legitimate. Dry-run needs refusal detection: macOS detects every refusal, Linux detects
+     writes and network but not reads of a masked root, Windows none yet (see
      [Enforcement by OS](#enforcement-by-os)).
   5. Enforce: remove `"enforce": false`.
-- **Pin the escalation prompt.** `os_exec_unsandboxed` is `destructive`, so any broker whose
-  `destructive` mode is `allow` approves it silently. On the Discord relay,
-  `/relay permissions set destructive allow` would auto-approve every re-run outside the
-  sandbox. Pin it with a tool rule, which every broker checks before the category:
-  `/permissions add os_exec_unsandboxed ask` (or `"tool_rules": {"os_exec_unsandboxed": "ask"}`
-  in the settings file). An exact rule also outranks a glob such as `os_exec*`. Answer these
-  prompts with a plain approve (once):
-  - with the rule in place, `always` flips the rule to `allow`;
-  - without it, `session` or `always` at the TUI or dashboard grants the whole `destructive`
-    category, for the session or for good.
+- **The escalation prompt has its own category.** `os_exec_unsandboxed` is in the `sandbox`
+  category: `ask` by default on the host and the Discord relay, `deny` on iMessage, and always
+  denied by the cron exec approver. `session` or `always` on one of these prompts grants only
+  further escalations, never another category. Keep `sandbox` on `ask` on every surface you
+  confine: `/relay permissions set sandbox allow` (or `always` on a prompt) turns every refusal
+  into a silent re-run outside the sandbox.
 - **Keep `write` on `ask` for a surface you confine.** The settings file lives in the config
   dir, which the file tools may write with approval. Under `write: allow`, a turn could edit its
   own `exec_profiles`. The cron exec approver already refuses writes that resolve into the
@@ -228,11 +227,12 @@ every entry that should be confined.
 | | macOS: Seatbelt | Linux: bubblewrap | Windows: Job Object |
 |---|---|---|---|
 | **State** | Implemented, live-tested, red-teamed | Written; argv builder unit-tested; cross-compiles. **Not yet run live**: validate it with `tenant sandbox selftest` on a Linux host or under WSL2 | Job Object live. The dedicated low-privilege account, NTFS ACEs on the roots and the WFP egress filter are scaffolded, **TODO(TEN-346)** |
-| **Filesystem** | Read, write and deny roots enforced (deny also hides metadata) | Write and deny roots enforced. **`read_roots` is ignored**: the whole host stays visible read-only, minus the deny roots. `/tmp` is a private tmpfs | **Not enforced.** `probe` reports `partial` because the Job Object contains the process tree; no root is enforced |
+| **Filesystem** | Read, write and deny roots enforced (deny also hides metadata) | Read, write and deny roots enforced. With `read_roots` set, only the system dirs and those roots are visible; without it, the whole host read-only minus the deny roots. `/tmp` is a private tmpfs | **Not enforced**; `probe` reports `none` |
 | **`network: none`** | Enforced: TCP, UDP/DNS, unix sockets, loopback | `--unshare-net` (fresh network namespace) | **Not enforced** |
 | **Limits** | Wall clock only. The command's process group is reaped after the run. No CPU, memory or PID caps | Wall clock only. Fresh PID namespace, `--die-with-parent`. No CPU, memory or PID caps | Wall clock, plus Job Object caps from `memory_mb`, `max_pids` and `cpu_seconds` (per process); kill-on-close |
 | **Env** | Allowlist. `HOME` and `TMPDIR` point into the work dir when there is one | Allowlist | Allowlist |
-| **Refusal detection** (escalation, dry-run) | Yes, heuristic: it keys on "Operation not permitted" | **No.** A denied access is an ordinary failed command: no escalation prompt, and dry-run does not re-run it on the host | **No** (nothing is refused yet) |
+| **`network: allowlist`** | Rejected in `exec_profiles`; the backend fails closed (no network) | Rejected; fails closed (`--unshare-net`) | Rejected; not enforced |
+| **Refusal detection** (escalation, dry-run) | Yes, heuristic: it keys on "Operation not permitted" | **Partial:** writes outside the roots (read-only file system) and network with the network disabled are attributed. A read of a masked deny root looks like a missing file and is not: that command just fails | **No** (nothing is refused yet) |
 
 - **macOS:** usable today, within the gaps below.
 - **Linux:** needs `bwrap` on `PATH`. Without it, a `restricted` profile fails closed and the
@@ -253,9 +253,10 @@ every entry that should be confined.
   command a second time, on the host. Whatever it did before the boundary stopped it happens
   twice, for example a network call on a profile that allows network, or an append in a
   writable root. Vet non-idempotent jobs with `tenant sandbox run` before a dry-run.
-- **`network: allowlist` is not enforced anywhere yet.** The `allow` list is accepted, but no
-  backend consumes it. Seatbelt and bubblewrap allow all outbound traffic (the same as `full`),
-  and Windows enforces no network policy. Use `none` where it matters.
+- **No host allowlist for the network.** Neither Seatbelt nor bubblewrap can filter outbound
+  traffic by host, so `exec_profiles` rejects `network: allowlist` (and a non-empty `allow`),
+  and the backends fail closed on it (no network). The choice today is `none` or `full`; an
+  enforced allowlist needs the egress-proxy follow-up.
 - **A profile that allows network can reach Tenant's own loopback listeners,** including the
   dashboard API, which accepts unauthenticated requests on a loopback bind when `dashboard.auth`
   is unset. Keep confined surfaces on `network: none`, or set `dashboard.auth` (its token lives
@@ -271,8 +272,8 @@ every entry that should be confined.
   - Refusal detection keys on the "Operation not permitted" text. A command that discards its
     stderr fails with no refusal recorded (no prompt, no dry-run re-run), and one that prints
     that text for another reason is treated as refused.
-- **Linux:** no Landlock layer under bubblewrap, no rlimits or cgroups, and `read_roots` is
-  ignored (TODO(TEN-346)).
+- **Linux:** no Landlock layer under bubblewrap, and no rlimits or cgroups (TODO(TEN-346)).
+  Refusals of reads inside a masked deny root are not attributed (see the table).
 - **Windows:** see [Enforcement by OS](#enforcement-by-os). The restricted backend enforces
   resource limits only.
 - **Container backend:** an ephemeral container per run, with real memory and PID caps and

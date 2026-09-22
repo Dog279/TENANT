@@ -971,7 +971,9 @@ boundary. Operator guide and change record:
   - `container` → an error (TEN-318).
 - `Policy{WorkDir, ReadRoots, WriteRoots, DenyRoots, Network, Allow,
   Env, Limits, Enforce}`:
-  - `Network` is `inherit` | `none` | `allowlist` | `full`.
+  - `Network` is `inherit` | `none` | `allowlist` | `full`. Nothing enforces a
+    host allowlist yet, so the backends treat `allowlist` as `none` (fail
+    closed) and `exec_profiles` rejects it.
   - `EnvPolicy{Isolate, Pass, Set}`: the zero value inherits the parent
     environment (host parity); anything else is an allowlist.
   - `Limits{Wall, CPU, MemoryBytes, MaxPIDs, MaxOutputBytes}`.
@@ -1013,15 +1015,18 @@ boundary. Operator guide and change record:
     processes outside the sandbox.
 - `restricted`, Linux (`restricted_linux.go`; the argv is built by the
   pure `bwrapArgs` in `spec.go`): bubblewrap. Needs `bwrap` on `PATH`.
-  - Whole-host `--ro-bind` and a private `/tmp`.
+  - Whole-host `--ro-bind` when `ReadRoots` is empty; otherwise an
+    allowlist of system dirs plus the read roots (`--ro-bind-try`). A
+    private `/tmp`.
   - rw binds for `WriteRoots`, then stat-aware deny masks (directory →
     tmpfs, file → `/dev/null`, absent → skipped), then the `WorkDir`
     bind, with deny roots inside it masked again.
   - Fresh pid/ipc/uts namespaces, `--unshare-net` for `none`,
     `--die-with-parent`, `--new-session`.
-  - Gaps: `ReadRoots` is not honoured yet (`Probe`'s
-    `filesystem: enforced` covers the write and deny roots). No refusal
-    attribution, no rlimits. Landlock is TODO(TEN-346).
+  - Refusals are attributed from the output (`attributeBwrapDenial`):
+    read-only-filesystem writes and, with the network disabled,
+    unreachable/unresolvable connects. Reads of a masked root look like
+    ENOENT and are not attributed. No rlimits; Landlock is TODO(TEN-346).
 - `restricted`, Windows (`restricted_windows.go`): a Job Object.
   - Memory, active-process and per-process CPU caps from `Limits`, and
     always kill-on-close. The child starts suspended, is assigned to
@@ -1050,8 +1055,10 @@ persistence, deny-root metadata and background processes.
 - `sandboxRunner` / `profileRunner` run `os_exec`, injected as
   `osys.Config.Runner`. `runSandboxShell` runs cron shell jobs (`cmd /C`
   on Windows).
-- The escalation action is `os_exec_unsandboxed`, categorized
-  `destructive`. Runs are recorded in the `sandbox` log source.
+- The escalation action is `os_exec_unsandboxed`, in its own `sandbox`
+  approval category (ask; deny on iMessage; the cron exec approver denies
+  it), so a session/always grant covers only further escalations. Runs
+  are recorded in the `sandbox` log source.
 - `cmd/tenant/sandboxctl.go` holds `tenant sandbox probe|selftest|run`.
 
 **Invariants:**
