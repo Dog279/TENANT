@@ -110,13 +110,40 @@ func TestBwrapArgs(t *testing.T) {
 			},
 		},
 		{
-			name:  "NetAllowlist does not unshare net (out-of-band; TODO)",
+			name:  "NetAllowlist fails CLOSED (nothing enforces an allowlist yet)",
 			pol:   Policy{WorkDir: "/w", Network: NetAllowlist, Allow: []string{"example.com"}},
 			shell: "sh",
 			args:  []string{"-c", "true"},
 			check: func(t *testing.T, argv []string) {
-				if contains(argv, "--unshare-net") {
-					t.Errorf("NetAllowlist must not fully cut the network: %v", argv)
+				if !contains(argv, "--unshare-net") {
+					t.Errorf("NetAllowlist must cut the network rather than grant all of it: %v", argv)
+				}
+			},
+		},
+		{
+			name:  "non-empty ReadRoots is an allowlist: system dirs + read roots, never the whole host",
+			pol:   Policy{WorkDir: "/w", ReadRoots: []string{"/proj"}},
+			shell: "sh",
+			args:  []string{"-c", "true"},
+			check: func(t *testing.T, argv []string) {
+				if tripleAt(argv, "--ro-bind", "/", "/") {
+					t.Errorf("ReadRoots set: the whole host must not be bound: %v", argv)
+				}
+				for _, want := range []string{"/usr", "/etc", "/proj"} {
+					if !tripleAt(argv, "--ro-bind-try", want, want) {
+						t.Errorf("allowlist must bind %s: %v", want, argv)
+					}
+				}
+			},
+		},
+		{
+			name:  "empty ReadRoots binds the whole host read-only",
+			pol:   Policy{WorkDir: "/w"},
+			shell: "sh",
+			args:  []string{"-c", "true"},
+			check: func(t *testing.T, argv []string) {
+				if !tripleAt(argv, "--ro-bind", "/", "/") {
+					t.Errorf("empty ReadRoots means whole host readable: %v", argv)
 				}
 			},
 		},
@@ -222,5 +249,34 @@ func TestJobLimitsFrom(t *testing.T) {
 	wantTicks := int64(2*time.Second) / 100 // 100ns ticks
 	if jl.Flags&jobLimitProcessTime == 0 || jl.PerProcessUserTime100ns != wantTicks {
 		t.Errorf("cpu mapping wrong: got %d want %d", jl.PerProcessUserTime100ns, wantTicks)
+	}
+}
+
+// Linux refusals must be attributed so escalation and dry-run work there too.
+func TestAttributeBwrapDenial(t *testing.T) {
+	none := Policy{Network: NetNone}
+	full := Policy{Network: NetFull}
+	cases := []struct {
+		name, out string
+		pol       Policy
+		kind      string
+	}{
+		{"write outside the write roots", "sh: 1: cannot create /home/u/x: Read-only file system", full, "filesystem"},
+		{"connect with the network unshared", "curl: (7) Couldn't connect to server: Network is unreachable", none, "network"},
+		{"dns with the network unshared", "curl: (6) Could not resolve host: example.com", none, "network"},
+		{"dns failure on a profile WITH network is not a refusal", "curl: (6) Could not resolve host: example.com", full, ""},
+		{"a missing file is not attributable (a masked root looks the same)", "cat: /x: No such file or directory", none, ""},
+	}
+	for _, c := range cases {
+		v, ok := attributeBwrapDenial(c.out, c.pol)
+		if c.kind == "" {
+			if ok {
+				t.Errorf("%s: must not be attributed, got %+v", c.name, v)
+			}
+			continue
+		}
+		if !ok || v.Kind != c.kind {
+			t.Errorf("%s: want kind %q, got %+v ok=%v", c.name, c.kind, v, ok)
+		}
 	}
 }

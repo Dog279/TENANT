@@ -57,8 +57,8 @@ func (seatbelt) Probe(context.Context) Capabilities {
 			"network-deny are kernel-enforced; wall-clock timeout is enforced but " +
 			"memory and PID caps are NOT (no cgroups on macOS without a container) — " +
 			"Limits is wall-only; network allowlist-by-host is best-effort (outbound is " +
-			"all-or-nothing at the Seatbelt layer, so NetAllowlist permits and defers " +
-			"host filtering to the resolved-address blocker / container backend)",
+			"all-or-nothing at the Seatbelt layer, so NetAllowlist fails closed to no " +
+			"network; no backend enforces a host allowlist yet)",
 	}
 }
 
@@ -280,10 +280,10 @@ func seatbeltProfile(pol Policy, scratch string) string {
 	case NetNone:
 		w("(deny network*)")
 	case NetAllowlist:
-		// Seatbelt cannot allowlist by hostname; outbound is all-or-nothing here, so
-		// permit it and let the resolved-address blocker / container backend enforce
-		// the allowlist. Probe reports this as a best-effort gap.
-		w("(allow network*)")
+		// Seatbelt cannot filter outbound by host, and nothing else enforces an
+		// allowlist yet, so fail CLOSED: no network rather than all of it. (Exec
+		// profiles reject "allowlist" at load; this guards direct API use.)
+		w("(deny network*)")
 	default: // NetFull, NetInherit
 		w("(allow network*)")
 	}

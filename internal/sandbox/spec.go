@@ -9,7 +9,10 @@ package sandbox
 // on their own OS. The one exception is bwrapMask's os.Stat: whether a deny root
 // is a directory, a file, or absent decides how bubblewrap can hide it.
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // ---------------------------------------------------------------------------
 // Linux: bubblewrap (bwrap) argument-vector builder.
@@ -24,16 +27,17 @@ import "os"
 //
 //  1. Isolation flags — --die-with-parent, --new-session and namespace
 //     unshares; --unshare-net is added iff the policy forbids the network.
-//  2. Read layer — --ro-bind / / makes the whole host readable (Policy: empty
-//     ReadRoots ⇒ whole host readable), plus a minimal --dev/--proc and an
+//  2. Read layer — with empty ReadRoots, --ro-bind / / makes the whole host
+//     readable; with ReadRoots set, only linuxSystemReadRoots plus the read
+//     roots are bound (an allowlist). Then a minimal --dev/--proc and an
 //     ephemeral --tmpfs /tmp.
 //  3. Write layer — a read-write --bind for WorkDir and each WriteRoot.
 //  4. Deny layer — a --tmpfs mask per DenyRoot, applied LAST so a deny always
 //     wins over a read/write bind (Policy: DenyRoots is checked first and wins).
 //  5. --chdir WorkDir, then the "--" separator and the command.
 //
-// Tightening on top of this (honouring a non-empty ReadRoots as a strict
-// allowlist, and NetAllowlist via nftables/proxy) is TODO(TEN-346).
+// A host-filtered network allowlist is not implemented: NetAllowlist fails
+// closed (the network is unshared). TODO(TEN-346): Landlock, rlimits.
 func bwrapArgs(pol Policy, shell string, args []string) []string {
 	a := make([]string, 0, 32+2*(len(pol.WriteRoots)+len(pol.DenyRoots))+len(args))
 
@@ -45,15 +49,31 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 		"--unshare-ipc",     // fresh SysV IPC namespace
 		"--unshare-uts",     // fresh UTS (hostname) namespace
 	)
-	if pol.Network == NetNone {
-		a = append(a, "--unshare-net") // no outbound network at all
+	if pol.Network == NetNone || pol.Network == NetAllowlist {
+		// NetAllowlist has no bubblewrap-native mechanism and nothing else enforces
+		// it yet, so it fails CLOSED: no network rather than all of it. NetInherit
+		// and NetFull share the host network.
+		a = append(a, "--unshare-net")
 	}
-	// NetAllowlist has no bubblewrap-native mechanism; it is enforced out of band
-	// (nftables/proxy) — TODO(TEN-346). NetInherit and NetFull share the host net.
 
-	// 2. Read layer: whole host read-only, minimal /dev + /proc, ephemeral /tmp.
+	// 2. Read layer. Empty ReadRoots (Policy: whole host readable): the host root
+	// read-only. Non-empty ReadRoots are an ALLOWLIST: only the system directories
+	// a shell and its tools need plus the read roots are bound, so everything else
+	// (a home dir, another project) does not exist inside the sandbox.
+	// --ro-bind-try skips a source this distribution does not have.
+	if len(pol.ReadRoots) == 0 {
+		a = append(a, "--ro-bind", "/", "/")
+	} else {
+		for _, p := range linuxSystemReadRoots {
+			a = append(a, "--ro-bind-try", p, p)
+		}
+		for _, r := range pol.ReadRoots {
+			if r != "" {
+				a = append(a, "--ro-bind-try", r, r)
+			}
+		}
+	}
 	a = append(a,
-		"--ro-bind", "/", "/",
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--tmpfs", "/tmp",
@@ -163,4 +183,31 @@ func bwrapMask(path string) []string {
 	default:
 		return []string{"--ro-bind", "/dev/null", path}
 	}
+}
+
+// linuxSystemReadRoots are what /bin/sh and common tools need to run when
+// ReadRoots is an allowlist. /etc is included for the loader cache, passwd and
+// TLS roots (its secrets, /etc/shadow, are root-only anyway).
+var linuxSystemReadRoots = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/run/systemd/resolve"}
+
+// attributeBwrapDenial makes a best-effort Violation from a failed bwrap run, so
+// refusals escalate (and dry-run works) on Linux as they do on macOS. A write
+// outside the write roots hits the read-only host mount (EROFS); an outbound
+// connect with the network unshared fails as unreachable or unresolvable. A read
+// of a masked deny root looks exactly like a missing file (ENOENT), so reads are
+// not attributed: those refusals fail the command without escalating.
+func attributeBwrapDenial(output string, pol Policy) (Violation, bool) {
+	low := strings.ToLower(output)
+	if strings.Contains(low, "read-only file system") {
+		return Violation{Kind: "filesystem", Detail: "sandbox blocked a write outside the policy's write roots (read-only)"}, true
+	}
+	if pol.Network == NetNone || pol.Network == NetAllowlist {
+		for _, sig := range []string{"network is unreachable", "temporary failure in name resolution",
+			"could not resolve host", "name or service not known", "no address associated with hostname"} {
+			if strings.Contains(low, sig) {
+				return Violation{Kind: "network", Detail: "sandbox blocked a network operation (network disabled for this profile)"}, true
+			}
+		}
+	}
+	return Violation{}, false
 }

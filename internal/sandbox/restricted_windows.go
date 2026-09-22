@@ -53,10 +53,10 @@ func (*windowsRestricted) Probe(context.Context) Capabilities {
 	return Capabilities{
 		Backend:    "restricted",
 		Isolation:  IsolationProcess,
-		Filesystem: EnforcePartial, // Job Object confines the tree; per-root NTFS ACEs are TODO
-		Network:    EnforceNone,    // WFP ALE_AUTH_CONNECT egress filter is TODO
-		Limits:     EnforceFull,    // Job Object: job memory, active-process, CPU-time, kill-on-close
-		Env:        EnforceFull,    // the env allowlist is honoured via materialize
+		Filesystem: EnforceNone, // no root is enforced until the NTFS ACEs land (TODO TEN-346)
+		Network:    EnforceNone, // WFP ALE_AUTH_CONNECT egress filter is TODO
+		Limits:     EnforceFull, // Job Object: job memory, active-process, CPU-time, kill-on-close
+		Env:        EnforceFull, // the env allowlist is honoured via materialize
 		Detail: "windows Job Object limits are live; pending (TODO TEN-346): a dedicated low-privilege " +
 			"account token (LogonUser/CreateRestrictedToken), NTFS ACEs on work/read/write roots, and a " +
 			"WFP ALE_AUTH_CONNECT egress filter — until then there is no filesystem-root or network enforcement",

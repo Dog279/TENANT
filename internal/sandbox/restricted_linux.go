@@ -44,8 +44,9 @@ func (*linuxRestricted) Probe(context.Context) Capabilities {
 		Network:    EnforceFull,    // NetNone is fully cut via --unshare-net
 		Limits:     EnforcePartial, // wall-timeout + output cap only; rlimits/cgroups TODO
 		Env:        EnforceFull,    // the env allowlist is honoured via materialize
-		Detail: "bubblewrap: whole-host ro-bind, rw WorkDir/WriteRoots, tmpfs-masked DenyRoots, " +
-			"network cut with --unshare-net; TODO(TEN-346): Landlock LSM, NetAllowlist, rlimit/cgroup caps",
+		Detail: "bubblewrap: host ro-bind (or a system+ReadRoots allowlist), rw WorkDir/WriteRoots, masked DenyRoots, " +
+			"network cut with --unshare-net (NetAllowlist fails closed); write and network refusals are attributed, " +
+			"reads of masked roots are not; TODO(TEN-346): Landlock LSM, rlimit/cgroup caps",
 	}
 }
 
@@ -86,11 +87,13 @@ func (b *linuxRestricted) Run(ctx context.Context, cmd Command, pol Policy) (Res
 		return res, nil
 	}
 	if err != nil {
-		if ee != nil {
-			return res, nil // a non-zero exit is signal, not an infra error
+		if ee == nil {
+			// Could not start bwrap at all (e.g. it vanished after Probe): infra error.
+			return res, err
 		}
-		// Could not start bwrap at all (e.g. it vanished after Probe): infra error.
-		return res, err
+		if v, ok := attributeBwrapDenial(res.Output, pol); ok {
+			res.Violations = append(res.Violations, v)
+		}
 	}
-	return res, nil
+	return res, nil // a non-zero exit is signal, not an infra error
 }
