@@ -532,7 +532,7 @@ func (h *Hub) Files(source string) ([]FileInfo, error) {
 		if e.IsDir() || !fileRe.MatchString(e.Name()) {
 			continue
 		}
-		fi, ferr := e.Info()
+		fi, ferr := statOpen(filepath.Join(h.root, source, e.Name()))
 		if ferr != nil {
 			continue
 		}
@@ -540,6 +540,18 @@ func (h *Hub) Files(source string) ([]FileInfo, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return fileLess(out[i].Name, out[j].Name) })
 	return out, nil
+}
+
+// statOpen stats a file through a handle. On Windows the directory listing
+// reports a stale size for a file another handle still has open, which is
+// exactly today's file while the hub appends to it.
+func statOpen(path string) (os.FileInfo, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.Stat()
 }
 
 // OpenFile opens one file of a source for reading (raw view / download). Both
