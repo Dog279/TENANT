@@ -153,12 +153,17 @@ func TestMCPBridge_ExposesTeamTools(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
+	cfgDir, dataDir := t.TempDir(), t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
+	// Registered after the temp dirs, so it runs first: the server must be
+	// down before its dirs are removed, or its shutdown writes race RemoveAll.
+	t.Cleanup(func() { cancel(); <-done })
 	go func() {
+		defer close(done)
 		_ = cmdMCPMemory(ctx, []string{
 			"--backend", "echo", "--tools", "--sse-addr", addr,
-			"--config", t.TempDir(), "--data", t.TempDir(),
+			"--config", cfgDir, "--data", dataDir,
 		})
 	}()
 	waitUp(t, addr)
