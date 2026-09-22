@@ -191,6 +191,14 @@ func cmdServe(ctx context.Context, args []string) error {
 		stgMu.Unlock()
 		saveSettings()
 	}
+	// Execution-sandbox profiles (execprofiles.go): same file, re-read on edit.
+	if n, skipped := defaultExecProfiles.Load(stg.ExecProfiles); n > 0 || len(skipped) > 0 {
+		msg := fmt.Sprintf("sandbox: %d exec profile(s) active", n)
+		if len(skipped) > 0 {
+			msg += fmt.Sprintf(", %d invalid skipped: %s", len(skipped), strings.Join(skipped, "; "))
+		}
+		pushSys(msg)
+	}
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is per-agent (own browser each), kept out of the shared mux.

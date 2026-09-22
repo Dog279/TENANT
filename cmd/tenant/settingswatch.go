@@ -89,5 +89,19 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 			parts = append(parts, fmt.Sprintf("%d category mode(s)", diff))
 		}
 	}
+	// Exec profiles: keep stg tracking the FILE (invalid entries included) so a
+	// later save never clobbers the operator's hand edit, and reload the live set
+	// only when its valid content changed.
+	mu.Lock()
+	stg.ExecProfiles = fresh.ExecProfiles
+	mu.Unlock()
+	if wanted, _ := validExecProfiles(fresh.ExecProfiles); !execProfilesEqual(wanted, defaultExecProfiles.Snapshot()) {
+		n, skipped := defaultExecProfiles.Load(fresh.ExecProfiles)
+		s := fmt.Sprintf("%d exec profile(s)", n)
+		if len(skipped) > 0 {
+			s += fmt.Sprintf(" (%d invalid skipped: %s)", len(skipped), strings.Join(skipped, "; "))
+		}
+		parts = append(parts, s)
+	}
 	return strings.Join(parts, ", ")
 }

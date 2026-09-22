@@ -1856,6 +1856,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 		stgMu.Unlock()
 		saveSettings()
 	}
+	// Execution-sandbox profiles (execprofiles.go): same file, re-read on edit.
+	if n, skipped := defaultExecProfiles.Load(stg.ExecProfiles); n > 0 || len(skipped) > 0 {
+		msg := fmt.Sprintf("sandbox: %d exec profile(s) active", n)
+		if len(skipped) > 0 {
+			msg += fmt.Sprintf(", %d invalid skipped: %s", len(skipped), strings.Join(skipped, "; "))
+		}
+		pushSys(msg)
+	}
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is PER-AGENT (each agent gets its own browser so concurrent
@@ -3161,7 +3169,13 @@ func cmdOS(ctx context.Context, args []string) error {
 	}
 	defer closeStores()
 
-	svc, err := osys.Open(osys.Config{})
+	if _, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.agent); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: exec profiles not loaded: %v\n", err)
+	} else if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: invalid exec profiles skipped: %s\n", strings.Join(skipped, "; "))
+	}
+	// No approver here, so a sandbox refusal is final (no escalation).
+	svc, err := osys.Open(osys.Config{Runner: sandboxRunner(c.cfgDir, c.dataDir, nil)})
 	if err != nil {
 		return err
 	}

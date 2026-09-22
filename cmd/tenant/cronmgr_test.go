@@ -70,7 +70,7 @@ func TestScrubbedEnv(t *testing.T) {
 }
 
 func TestRunCronShellBenign(t *testing.T) {
-	out, err := runCronShell(context.Background(), "echo hello-cron", t.TempDir())
+	out, err := runCronShell(context.Background(), "echo hello-cron", t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("benign shell command errored: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestRunCronShellRefusesCatastrophic(t *testing.T) {
 	if dangerous, _ := osys.Classify(probe); !dangerous {
 		t.Skip("classifier did not flag the probe; refusal path is covered by osys tests")
 	}
-	_, err := runCronShell(context.Background(), probe, t.TempDir())
+	_, err := runCronShell(context.Background(), probe, t.TempDir(), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "refused") {
 		t.Errorf("a classifier-flagged command must be refused, got err=%v", err)
 	}

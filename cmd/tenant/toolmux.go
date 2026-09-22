@@ -1653,7 +1653,11 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	// /tools and `/enable os` activates it instantly at runtime. Starts
 	// enabled only if --os was passed (else registered-but-disabled, so
 	// it costs nothing until you turn it on).
-	if svc, err := osys.Open(osys.Config{}); err == nil {
+	// os_exec runs through the execution-backend seam (execprofiles.go): the
+	// turn's surface picks its exec profile per call, the default "host" profile
+	// is the pre-seam behaviour, and a sandbox refusal escalates through the same
+	// origin-routed confirm as every other gated action.
+	if svc, err := osys.Open(osys.Config{Runner: sandboxRunner(c.cfgDir, c.dataDir, confirm)}); err == nil {
 		mux.add("os", osys.NewDispatcher(svc, osys.Policy{
 			AllowExec:  gateAllow(pf.osAllowExec),
 			AllowWrite: gateAllow(pf.osAllowWrite),

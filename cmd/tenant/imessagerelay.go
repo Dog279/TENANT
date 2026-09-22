@@ -168,7 +168,7 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 // turn drives one agent turn and replies. Gated tools route through the
 // stamped offsite-confirm (the iMessage broker → the text-nonce approver).
 func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
-	turnCtx := withOffsiteConfirm(ctx, r.confirm)
+	turnCtx := withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage)
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
 		UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
 	})

@@ -1,0 +1,321 @@
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	stdreflect "reflect"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"tenant/internal/plugins/osys"
+	"tenant/internal/sandbox"
+)
+
+// resetExecProfiles restores the process-wide store after a test that loads it.
+func resetExecProfiles(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { defaultExecProfiles.Load(nil) })
+}
+
+func restrictedOrSkip(t *testing.T) {
+	t.Helper()
+	if _, err := sandbox.Restricted(); err != nil {
+		t.Skipf("no restricted backend on this OS: %v", err)
+	}
+}
+
+func TestExecSurface_ContextStamp(t *testing.T) {
+	ctx := context.Background()
+	if got := execSurfaceFrom(ctx); got != surfaceLocal {
+		t.Fatalf("unstamped ctx = %q, want local", got)
+	}
+	d := withExecSurface(ctx, surfaceDiscord)
+	child, cancel := context.WithCancel(d) // tool calls and sub-contexts inherit it
+	defer cancel()
+	if got := execSurfaceFrom(child); got != surfaceDiscord {
+		t.Fatalf("derived ctx lost the surface: %q", got)
+	}
+}
+
+func TestExecProfileStore_LoadValidates(t *testing.T) {
+	resetExecProfiles(t)
+	n, skipped := defaultExecProfiles.Load(map[string]execProfileSetting{
+		"cron-shell": {Backend: "restricted", Network: "none"},
+		"default":    {Backend: "host"},
+		"bogus":      {Backend: "restricted"},
+		"discord":    {Backend: "container"},
+		"imessage":   {Network: "sideways"},
+		"local":      {WriteRoots: []string{"relative/dir"}},
+		"cron-exec":  {MaxPIDs: -1},
+	})
+	if n != 2 || len(skipped) != 5 {
+		t.Fatalf("applied %d, skipped %v; want 2 applied, 5 skipped", n, skipped)
+	}
+	for _, want := range []string{"unknown surface", "not implemented yet (TEN-318)", "unknown network", "must be absolute", "must not be negative"} {
+		if !strings.Contains(strings.Join(skipped, "\n"), want) {
+			t.Errorf("skip messages should mention %q: %v", want, skipped)
+		}
+	}
+}
+
+func TestResolveExecProfile_AppliesOverrides(t *testing.T) {
+	resetExecProfiles(t)
+	off := false
+	defaultExecProfiles.Load(map[string]execProfileSetting{
+		"cron-shell": {
+			Backend: "restricted", Enforce: &off, Network: "none",
+			WriteRoots: []string{"~/tenant-out"}, DenyRoots: []string{"/opt/secrets"},
+			EnvPass: []string{"PATH"}, EnvSet: map[string]string{"LANG": "C"},
+			CPUSeconds: 30, MemoryMB: 512, MaxPIDs: 64,
+		},
+	})
+	cfg, data := t.TempDir(), t.TempDir()
+	p := resolveExecProfile(surfaceCronShell, cfg, data, "/work")
+	home, _ := os.UserHomeDir()
+
+	if p.Backend != "restricted" || p.Policy.Enforce || p.Policy.Network != sandbox.NetNone || p.Policy.WorkDir != "/work" {
+		t.Fatalf("override not applied: %+v", p)
+	}
+	if !stdreflect.DeepEqual(p.Policy.WriteRoots, []string{filepath.Join(home, "tenant-out")}) {
+		t.Errorf("~ not expanded in write roots: %v", p.Policy.WriteRoots)
+	}
+	for _, must := range []string{cfg, data, "/opt/secrets", filepath.Join(home, ".ssh"), filepath.Join(home, ".aws")} {
+		if !hasString(p.Policy.DenyRoots, must) {
+			t.Errorf("deny roots missing %q: %v", must, p.Policy.DenyRoots)
+		}
+	}
+	if !p.Policy.Env.Isolate || p.Policy.Env.Set["LANG"] != "C" || !hasString(p.Policy.Env.Pass, "PATH") {
+		t.Errorf("env allowlist not applied: %+v", p.Policy.Env)
+	}
+	if p.Policy.Limits.CPU != 30*time.Second || p.Policy.Limits.MemoryBytes != 512<<20 || p.Policy.Limits.MaxPIDs != 64 {
+		t.Errorf("limits not applied: %+v", p.Policy.Limits)
+	}
+	// Host profiles do not grow the credential-store list (host enforces nothing).
+	if hp := resolveExecProfile(surfaceLocal, cfg, data, ""); hasString(hp.Policy.DenyRoots, filepath.Join(home, ".ssh")) {
+		t.Errorf("host profile should keep the built-in deny set only: %v", hp.Policy.DenyRoots)
+	}
+}
+
+func TestResolveExecProfile_SurfaceEntryBeatsDefault(t *testing.T) {
+	resetExecProfiles(t)
+	defaultExecProfiles.Load(map[string]execProfileSetting{
+		"default": {Backend: "restricted"},
+		"local":   {Backend: "host"},
+	})
+	if b := resolveExecProfile(surfaceLocal, "", "", "").Backend; b != "host" {
+		t.Errorf("local's own entry must win, got %q", b)
+	}
+	if b := resolveExecProfile(surfaceDiscord, "", "", "").Backend; b != "restricted" {
+		t.Errorf("surfaces without an entry take default, got %q", b)
+	}
+	defaultExecProfiles.Load(nil)
+	if p := resolveExecProfile(surfaceDiscord, "", "", ""); p.Backend != "host" || !p.Policy.Enforce {
+		t.Errorf("no overrides ⇒ built-in host with enforce on, got %+v", p)
+	}
+}
+
+// The os_exec path through the seam must be indistinguishable from osys's own
+// realRunner on the host profile: same output, same error text, same timeout
+// message. Compared through the public osys API, side by side.
+func TestProfileRunner_HostMatchesRealRunner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh-based comparison; the Windows shell path is covered by osys tests")
+	}
+	cfg := osys.Config{ExecTimeout: 200 * time.Millisecond}
+	legacy, err := osys.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runner = profileRunner(resolveExecProfile(surfaceLocal, "", "", ""), surfaceLocal, nil)
+	seam, err := osys.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"echo hello", "echo out; exit 3", "echo boom >&2; exit 1", "sleep 5"} {
+		lo, le := legacy.Exec(context.Background(), cmd)
+		so, se := seam.Exec(context.Background(), cmd)
+		if lo != so || errText(le) != errText(se) {
+			t.Errorf("%q: legacy=(%q, %q) seam=(%q, %q)", cmd, lo, errText(le), so, errText(se))
+		}
+	}
+}
+
+func errText(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
+}
+
+func TestCronShellArgv_KeepsCmdOnWindows(t *testing.T) {
+	if got := cronShellArgvFor("windows", "dir"); !stdreflect.DeepEqual(got, []string{"cmd", "/C", "dir"}) {
+		t.Errorf("windows cron shell must stay cmd /C (existing jobs are cmd syntax), got %v", got)
+	}
+	if got := cronShellArgvFor("linux", "ls"); !stdreflect.DeepEqual(got, []string{"sh", "-c", "ls"}) {
+		t.Errorf("unix cron shell must stay sh -c, got %v", got)
+	}
+}
+
+func TestRunSandboxShell_ExitTextParity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh-based")
+	}
+	_, err := runSandboxShell(context.Background(), "exit 3", resolveExecProfile(surfaceCronShell, "", t.TempDir(), t.TempDir()))
+	if err == nil || err.Error() != "command failed: exit status 3" {
+		t.Fatalf("want the pre-seam text \"command failed: exit status 3\", got %v", err)
+	}
+}
+
+func TestCategorize_ExecUnsandboxedIsDestructive(t *testing.T) {
+	if got := categorize(actionExecUnsandboxed); got != catDestructive {
+		t.Fatalf("categorize(%q) = %q, want destructive", actionExecUnsandboxed, got)
+	}
+}
+
+func TestApplySettingsFile_ReloadsExecProfiles(t *testing.T) {
+	resetExecProfiles(t)
+	cfg := t.TempDir()
+	rules := newToolRules()
+	broker := newApprovalBroker(nil)
+	broker.rules = rules
+	var mu sync.Mutex
+	stg := &settings{Tools: map[string]bool{}}
+
+	body := `{"tools":{},"exec_profiles":{"cron-shell":{"backend":"restricted","network":"none"},"bogus":{"backend":"host"}}}`
+	if err := os.WriteFile(filepath.Join(cfg, "settings.main.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := applySettingsFile(cfg, "main", broker, rules, &mu, stg)
+	if !strings.Contains(got, "1 exec profile(s) (1 invalid skipped") {
+		t.Fatalf("summary = %q", got)
+	}
+	if p, ok := defaultExecProfiles.lookup(surfaceCronShell); !ok || p.Backend != "restricted" {
+		t.Fatalf("the edited profile must be live: %+v ok=%v", p, ok)
+	}
+	if len(stg.ExecProfiles) != 2 {
+		t.Errorf("stg must track the FILE (invalid entry kept, so a save never deletes it): %v", stg.ExecProfiles)
+	}
+	if again := applySettingsFile(cfg, "main", broker, rules, &mu, stg); again != "" {
+		t.Errorf("unchanged file must be a no-op, got %q", again)
+	}
+}
+
+// The unattended exec approver must refuse writes that RESOLVE into Tenant's own
+// config/data dirs, not just the literal absolute path. These details are built
+// so the old substring check (mentionsDir) provably misses them.
+func TestCronExecApprover_ResolvedSelfModificationGuard(t *testing.T) {
+	cfg, data := t.TempDir(), t.TempDir()
+	ap := cronExecApprover(cfg, data)
+	ctx := context.Background()
+
+	link := filepath.Join(t.TempDir(), "innocent")
+	if err := os.Symlink(cfg, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dotdot := filepath.Dir(cfg) + string(filepath.Separator) + "elsewhere" + string(filepath.Separator) + ".." +
+		string(filepath.Separator) + filepath.Base(cfg) + string(filepath.Separator) + "config.json"
+
+	for _, detail := range []string{
+		"OVERWRITE existing file " + filepath.Join(link, "config.json"),
+		"write " + dotdot,
+	} {
+		if mentionsDir(detail, cfg) || mentionsDir(detail, data) {
+			t.Fatalf("test construction: %q must evade the substring check", detail)
+		}
+		if ap(ctx, "os_write", detail) {
+			t.Errorf("approver allowed a write that resolves into the config dir: %q", detail)
+		}
+	}
+	if !ap(ctx, "os_write", "write "+filepath.Join(t.TempDir(), "report.txt")) {
+		t.Error("a benign write must still be allowed")
+	}
+}
+
+// --- live, macOS (skipped where no restricted backend exists) ---
+
+func secretFixture(t *testing.T) (dir, file string) {
+	dir = t.TempDir()
+	file = filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(file, []byte("S3CRET-VALUE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir, file
+}
+
+func TestProfileRunner_RefusalEscalatesThroughConfirm(t *testing.T) {
+	restrictedOrSkip(t)
+	dir, file := secretFixture(t)
+	p := execProfile{Backend: "restricted", Policy: sandbox.Policy{WorkDir: t.TempDir(), DenyRoots: []string{dir}, Enforce: true}}
+
+	var action, detail string
+	deny := func(_ context.Context, a, d string) bool { action, detail = a, d; return false }
+	out, err := profileRunner(p, surfaceLocal, deny)(context.Background(), "cat "+file, 10*time.Second)
+	if action != actionExecUnsandboxed || !strings.Contains(detail, "SANDBOX REFUSED") {
+		t.Fatalf("refusal must escalate as %s with the refusal named; got action=%q detail=%q", actionExecUnsandboxed, action, detail)
+	}
+	if err == nil || !strings.Contains(err.Error(), "sandbox refused") || strings.Contains(out, "S3CRET") {
+		t.Fatalf("denied escalation must stay confined and name the refusal: out=%q err=%v", out, err)
+	}
+
+	allow := func(context.Context, string, string) bool { return true }
+	out, err = profileRunner(p, surfaceLocal, allow)(context.Background(), "cat "+file, 10*time.Second)
+	if err != nil || !strings.Contains(out, "S3CRET-VALUE") || !strings.Contains(out, "OUTSIDE the sandbox after approval") {
+		t.Fatalf("approved escalation must re-run on the host and say so: out=%q err=%v", out, err)
+	}
+}
+
+func TestProfileRunner_DryRunRunsOnHostWithoutAsking(t *testing.T) {
+	restrictedOrSkip(t)
+	dir, file := secretFixture(t)
+	p := execProfile{Backend: "restricted", Policy: sandbox.Policy{WorkDir: t.TempDir(), DenyRoots: []string{dir}, Enforce: false}}
+	never := func(context.Context, string, string) bool { t.Fatal("dry-run must not ask"); return false }
+	out, err := profileRunner(p, surfaceLocal, never)(context.Background(), "cat "+file, 10*time.Second)
+	if err != nil || !strings.Contains(out, "S3CRET-VALUE") || !strings.Contains(out, "sandbox dry-run") {
+		t.Fatalf("dry-run must run on the host and note the would-be refusal: out=%q err=%v", out, err)
+	}
+}
+
+func TestRunSandboxShell_RestrictedRefusalFailsTheJob(t *testing.T) {
+	restrictedOrSkip(t)
+	dir, file := secretFixture(t)
+	p := execProfile{Backend: "restricted", Policy: sandbox.Policy{WorkDir: t.TempDir(), DenyRoots: []string{dir}, Enforce: true}}
+	out, err := runSandboxShell(context.Background(), "cat "+file, p)
+	if err == nil || !strings.Contains(err.Error(), "sandbox refused") || strings.Contains(out, "S3CRET") {
+		t.Fatalf("an unattended refusal must fail the job with the refusal named: out=%q err=%v", out, err)
+	}
+}
+
+// One shared os service, two surfaces: the profile is resolved per call from the
+// turn's context.
+func TestSandboxRunner_ResolvesProfilePerSurface(t *testing.T) {
+	restrictedOrSkip(t)
+	resetExecProfiles(t)
+	defaultExecProfiles.Load(map[string]execProfileSetting{"discord": {Backend: "restricted"}})
+	cfg := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfg, "config.json"), []byte("CFG-CONTENT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := sandboxRunner(cfg, t.TempDir(), nil)
+	cmd := "cat " + filepath.Join(cfg, "config.json")
+
+	if out, err := run(context.Background(), cmd, 10*time.Second); err != nil || !strings.Contains(out, "CFG-CONTENT") {
+		t.Fatalf("local surface is host (unconfined): out=%q err=%v", out, err)
+	}
+	out, err := run(withExecSurface(context.Background(), surfaceDiscord), cmd, 10*time.Second)
+	if err == nil || strings.Contains(out, "CFG-CONTENT") {
+		t.Fatalf("discord surface is restricted and cfgDir is a deny root: out=%q err=%v", out, err)
+	}
+}
+
+func hasString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}

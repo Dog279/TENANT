@@ -26,6 +26,10 @@ type settings struct {
 	// the category (toolrules.go). Editable by hand: the running hub reloads
 	// this file when it changes.
 	ToolRules map[string]string `json:"tool_rules,omitempty"`
+	// ExecProfiles holds the operator's per-surface execution-sandbox overrides
+	// (execprofiles.go), keyed by surface or "default". Hand-edited; the running
+	// hub re-reads it. There is deliberately no agent tool that writes it.
+	ExecProfiles map[string]execProfileSetting `json:"exec_profiles,omitempty"`
 }
 
 // settingsPath is the per-agent settings file, alongside the soul in the

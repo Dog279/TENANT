@@ -207,6 +207,12 @@ func categorize(action string) string {
 		return catWrite
 	case "os_exec_dangerous", "sql_ddl", "web_transact":
 		return catDestructive
+	// Re-running a command OUTSIDE the execution sandbox after it refused
+	// something (execprofiles.go). Explicitly destructive so it is always-ask on
+	// the host broker, denied by the cron exec approver, and never swept up by a
+	// blanket exec grant or a future prefix rule.
+	case actionExecUnsandboxed:
+		return catDestructive
 	case "gsuite_send", "imessage_send", "x_post":
 		return catSend
 	// Discord's action ids are PROSE ("posts a Discord message" — see

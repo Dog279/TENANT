@@ -284,6 +284,7 @@ func (r *relay) start(channelID, text string) bool {
 		turnCtx = withOffsiteConfirm(ctx, r.approver.Confirm)
 		approvals = "approver"
 	}
+	turnCtx = withExecSurface(turnCtx, surfaceDiscord) // picks the discord exec profile
 	// One line per turn naming where its approvals will go — the diagnostic
 	// that was missing when prompts seemed to land on the wrong surface.
 	if r.log != nil {

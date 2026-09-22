@@ -17,7 +17,7 @@ import (
 // default host backend.
 func TestSandboxRunnerRunsShellCommand(t *testing.T) {
 	p := resolveExecProfile("os-exec", "", "", "")
-	run := sandboxRunner(p)
+	run := profileRunner(p, surfaceLocal, nil)
 	out, err := run(context.Background(), "echo hello-sandbox", 5*time.Second)
 	if err != nil {
 		t.Fatalf("sandboxRunner returned error: %v", err)
@@ -79,7 +79,7 @@ func TestSandboxRunnerEnvAllowlist(t *testing.T) {
 			},
 		},
 	}
-	run := sandboxRunner(p)
+	run := profileRunner(p, surfaceLocal, nil)
 	out, err := run(context.Background(),
 		"echo A=$SANDBOX_ALLOWED S=$SANDBOX_SET K=$SANDBOX_SECRET_KEY", 5*time.Second)
 	if err != nil {

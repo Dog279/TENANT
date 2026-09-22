@@ -143,7 +143,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 			if !execOn() {
 				return "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run shell jobs")
 			}
-			return runCronShell(ctx, job.Prompt, d.dataDir)
+			return runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
 		}
 		// prompt job
 		ag := safeAg
@@ -167,6 +167,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		// refusing to coax valid JSON out of a model that cannot emit it. There
 		// is no per-agent "force big" in route config, so the prompt prefix is
 		// the operator's lever.
+		runCtx = withExecSurface(runCtx, surfaceCronExec) // picks the cron-exec exec profile
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
 			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
@@ -215,7 +216,8 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 			// sql_ddl, web_transact) match neither shape and stay denied.
 			return cronExecDestructiveOverride(action)
 		case catWrite:
-			if mentionsDir(detail, cfgDir) || mentionsDir(detail, dataDir) {
+			if mentionsDir(detail, cfgDir) || mentionsDir(detail, dataDir) ||
+				touchesProtected(detail, cfgDir, dataDir, exeDir()) {
 				return false
 			}
 		}
@@ -227,20 +229,65 @@ func mentionsDir(detail, dir string) bool {
 	return dir != "" && strings.Contains(detail, dir)
 }
 
+// touchesProtected reports whether a write approval's detail names a path that
+// RESOLVES inside one of dirs (Tenant's config, data and binary dirs). The
+// substring check above only catches the literal absolute form: a relative path
+// ("../../Library/Application Support/tenant/config.json"), a "..", or a symlink
+// planted in a writable dir walks straight past it. The file tools' write roots
+// deliberately include these dirs, so this approver is the only thing stopping
+// an unattended exec job from rewriting Tenant's own config or cron definitions.
+// Paths resolve against the process cwd, exactly as the file tools resolve them.
+func touchesProtected(detail string, dirs ...string) bool {
+	deny := osys.Roots{Deny: dedupeNonEmpty(dirs...)}
+	if len(deny.Deny) == 0 {
+		return false
+	}
+	for _, p := range writeDetailPaths(detail) {
+		if deny.Check(p, false) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// writeDetailPrefixes are the osys write-approval detail formats (dispatch.go);
+// everything after the prefix is the path, spaces included.
+var writeDetailPrefixes = []string{"OVERWRITE existing file ", "write ", "append to ", "edit ", "create directory "}
+
+// writeDetailPaths extracts candidate paths from a write approval's detail: the
+// tail after a known osys prefix (keeps a path with spaces whole), plus every
+// path-like token (covers other phrasings).
+func writeDetailPaths(detail string) []string {
+	var out []string
+	for _, pre := range writeDetailPrefixes {
+		if strings.HasPrefix(detail, pre) {
+			out = append(out, strings.TrimSpace(strings.TrimPrefix(detail, pre)))
+			break
+		}
+	}
+	for _, tok := range strings.Fields(detail) {
+		tok = strings.Trim(tok, "\"'`()[]{},;")
+		if strings.ContainsAny(tok, `/\`) || strings.HasPrefix(tok, ".") {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
 // runCronShell runs a shell command unattended: refused outright if the osys
 // classifier flags it catastrophic, with the API-key-scrubbed environment and a
 // sandbox working dir, output combined + capped.
-func runCronShell(ctx context.Context, command, dataDir string) (string, error) {
+func runCronShell(ctx context.Context, command, cfgDir, dataDir string) (string, error) {
 	if dangerous, reason := osys.Classify(command); dangerous {
 		return "", fmt.Errorf("refused: command looks destructive (%s) — cron won't run catastrophic shell commands unattended", reason)
 	}
-	// Route through the execution-backend seam (internal/sandbox). cfgDir isn't
-	// threaded to this call site, so pass what we have; cronSandboxDir is both
-	// the working dir and the tree that keeps jobs out of Tenant's own cwd. The
-	// default host profile scrubs the environment, runs in the sandbox dir, and
-	// trims + caps output with a non-zero exit surfaced as an error — identical
-	// to the pre-seam behaviour.
-	p := resolveExecProfile("cron-shell", "", dataDir, cronSandboxDir(dataDir))
+	// Route through the execution-backend seam (execprofiles.go). The work dir
+	// sits under the data dir, which is a deny root; Policy's work-dir carve-out
+	// keeps it usable on a confining backend. The default host profile scrubs the
+	// environment, runs cmd /C (Windows) or sh -c in the work dir, and trims +
+	// caps output with a non-zero exit surfaced as an error: the pre-seam
+	// behaviour exactly.
+	p := resolveExecProfile(surfaceCronShell, cfgDir, dataDir, cronSandboxDir(dataDir))
 	return runSandboxShell(ctx, command, p)
 }
 
