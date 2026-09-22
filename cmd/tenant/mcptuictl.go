@@ -4,7 +4,19 @@ package main
 // tui.MCPControl (TEN-164), so `/mcp add|list|remove` manages connectors live
 // in the TUI and persists the server list to launchConfig (survives restart).
 
-import "tenant/internal/tui"
+import (
+	"fmt"
+	"log/slog"
+
+	"tenant/internal/logs"
+	"tenant/internal/plugins/mcpremote"
+	"tenant/internal/tui"
+)
+
+// mcpAudit is the log-book line for every connector change, whichever surface
+// (TUI, dashboard, the agent's mcp_* tools, /configure atlassian) drove it —
+// so "when did that server get trusted?" is answerable from <data>/logs/mcp/.
+var mcpAudit = logs.For("mcp")
 
 // mcpAuthNotifier builds the mux's auth-change callback: a feed line every
 // time, plus a direct operator DM (best-effort) — the operator is usually
@@ -57,21 +69,66 @@ func (a mcpTUIControl) List() []tui.MCPServerInfo {
 	out := make([]tui.MCPServerInfo, 0, len(servers))
 	for _, s := range servers {
 		out = append(out, tui.MCPServerInfo{
-			Label: s.Label, URL: s.URL, Enabled: s.Enabled, ToolCount: s.ToolCount,
+			Label: s.Label, URL: s.URL, Enabled: s.Enabled, ToolCount: s.ToolCount, Trust: s.Trust,
 			NeedsReauth: s.NeedsReauth, AuthErr: s.AuthErr, AuthSince: s.AuthSince,
 		})
 	}
 	return out
 }
 
-// Add connects + activates the server (browser OAuth, blocking) and persists it.
+// Add connects + activates the server (browser OAuth if the server asks for
+// one — a local no-auth server connects instantly) and persists it. A new
+// connector starts in trust mode "ask".
 func (a mcpTUIControl) Add(url string) (tui.MCPServerInfo, error) {
 	label, n, err := a.mux.AddRemoteMCP(url)
 	if err != nil {
+		mcpAudit.Warn("mcp: connector add failed", "url", url, "err", err.Error())
 		return tui.MCPServerInfo{}, err
 	}
 	a.persist(url, true)
-	return tui.MCPServerInfo{Label: label, URL: url, Enabled: true, ToolCount: n}, nil
+	trust := a.mux.MCPTrust(label)
+	mcpAudit.Info("mcp: connector added", "label", label, "url", url, "tools", n, "trust", trust)
+	return tui.MCPServerInfo{Label: label, URL: url, Enabled: true, ToolCount: n, Trust: trust}, nil
+}
+
+// SetTrust changes a connector's trust mode LIVE (ask | allow | deny) and
+// persists it, so it survives a restart and applies again when the connector
+// reconnects. No reconnect, no restart.
+func (a mcpTUIControl) SetTrust(target, mode string) (tui.MCPServerInfo, error) {
+	m, ok := mcpremote.ParseTrust(mode)
+	if !ok {
+		return tui.MCPServerInfo{}, fmt.Errorf("trust must be ask | allow | deny")
+	}
+	label, url := a.resolve(target)
+	if label == "" {
+		return tui.MCPServerInfo{}, fmt.Errorf("no remote MCP server matched %q", target)
+	}
+	if err := a.mux.SetMCPTrust(label, m); err != nil {
+		return tui.MCPServerInfo{}, err
+	}
+	a.persistTrust(url, m)
+	lvl := slog.LevelInfo
+	if m == mcpremote.TrustAllow {
+		lvl = slog.LevelWarn // a trust grant is the line an auditor looks for
+	}
+	mcpAudit.Log(nil, lvl, "mcp: connector trust set", "label", label, "url", url, "trust", m)
+	for _, s := range a.List() {
+		if s.Label == label {
+			return s, nil
+		}
+	}
+	return tui.MCPServerInfo{Label: label, URL: url, Trust: m}, nil
+}
+
+// ToolNames lists the tool names a connector currently advertises.
+func (a mcpTUIControl) ToolNames(label string) []string {
+	var out []string
+	for _, t := range a.mux.ToolList() {
+		if t.Plugin == label {
+			out = append(out, t.Name)
+		}
+	}
+	return out
 }
 
 // Remove disables + forgets a server (by URL or label) and drops it from config.
@@ -85,7 +142,27 @@ func (a mcpTUIControl) Remove(target string) (bool, error) {
 	a.mux.SetEnabled(label, false)
 	a.mux.forgetPlugin(label)
 	a.persist(url, false)
+	a.persistTrust(url, "")
+	mcpAudit.Info("mcp: connector removed", "label", label, "url", url)
 	return true, nil
+}
+
+// persistTrust records (mode != "") or clears (mode == "") a connector's trust
+// mode in config.json, keyed by URL like the server list.
+func (a mcpTUIControl) persistTrust(url, mode string) {
+	if a.lc == nil {
+		return
+	}
+	_ = persistLaunchConfig(a.cfgDir, a.lc, func(lc *launchConfig) {
+		if mode == "" || mode == mcpremote.TrustAsk {
+			delete(lc.MCPTrust, url)
+			return
+		}
+		if lc.MCPTrust == nil {
+			lc.MCPTrust = map[string]string{}
+		}
+		lc.MCPTrust[url] = mode
+	})
 }
 
 // resolve maps a URL or label (exact, or the label derived from a URL) to a

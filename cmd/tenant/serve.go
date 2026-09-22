@@ -532,6 +532,13 @@ func cmdServe(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
+	// gated by the "mcp" permission category; each connector's own calls then
+	// follow its live trust mode (ask / allow / deny). Same control the TUI /mcp
+	// and the dashboard's Remote services page drive.
+	mcpCtl := newMCPControl(mux, c.cfgDir, c.lc)
+	mainLocal.add("connectors", newMCPToolPlugin(mcpCtl, mux.mcpDeps.confirm))
+
 	// modelControl powers the dashboard model + key pages and re-points
 	// tool-ranking at a new embedder after a /model swap.
 	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded}
@@ -613,7 +620,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		events: emit, evalProg: evalProg,
 	})
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
-	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}
+	dashMgr.mcp = dashMCP{m: mcpCtl}
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
 
 	dashAddr := ""

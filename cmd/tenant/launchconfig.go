@@ -70,6 +70,12 @@ type launchConfig struct {
 	// so they re-register (as disabled stubs) at next launch. Non-secret; OAuth
 	// tokens live in the mcpremote token cache, never here. (TEN-164)
 	MCPRemotes []string `json:"mcp_remotes,omitempty"`
+	// MCPTrust is each connector's live trust mode by server URL
+	// (ask | allow | deny; absent = ask): whether its tools run without per-call
+	// approval. Set at adoption (the mcp_add / /mcp add prompt) or any time via
+	// /mcp trust and the dashboard; re-applied when the connector reconnects at
+	// launch.
+	MCPTrust map[string]string `json:"mcp_trust,omitempty"`
 	// Improve holds self-improvement settings (TEN-152): the auto-accept policy
 	// for machine-induced skills. Deny-by-default (empty = off).
 	Improve improveConfig `json:"improve,omitempty"`

@@ -14,6 +14,7 @@ type fakeMCPCtl struct {
 	connectURL   string
 	connectGate  chan struct{} // if non-nil, Connect blocks until closed (tests async)
 	removeCalls  []string
+	trustCalls   []string
 	connectCalls int
 }
 
@@ -34,6 +35,12 @@ func (f *fakeMCPCtl) Remove(target string) (bool, error) {
 	f.removeCalls = append(f.removeCalls, target)
 	f.mu.Unlock()
 	return true, nil
+}
+func (f *fakeMCPCtl) SetTrust(target, mode string) error {
+	f.mu.Lock()
+	f.trustCalls = append(f.trustCalls, target+"="+mode)
+	f.mu.Unlock()
+	return nil
 }
 func (f *fakeMCPCtl) calls() int      { f.mu.Lock(); defer f.mu.Unlock(); return f.connectCalls }
 func (f *fakeMCPCtl) lastURL() string { f.mu.Lock(); defer f.mu.Unlock(); return f.connectURL }

@@ -12,10 +12,19 @@
   <div class="soul-row" id="mcp-{{.Label}}">
     <div>
       <div class="nm">{{.Label}} {{if .NeedsReauth}}<span style="color:#e5484d;font-weight:600">⚠ needs re-authorization{{if .AuthSince}} since {{.AuthSince}}{{end}}</span>{{else if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
-      <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}}</div>
+      <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}} · trust: <strong>{{if .Trust}}{{.Trust}}{{else}}ask{{end}}</strong></div>
       {{if .NeedsReauth}}<div class="dim" style="margin-top:4px">Its sign-in expired and could not be refreshed{{if .AuthErr}} ({{.AuthErr}}){{end}}. Its tools fail until you reconnect — Reconnect opens a sign-in window <strong>on the computer running Tenant</strong>.</div>{{end}}
     </div>
     <div class="cronactions">
+      <form method="POST" action="/mcp/trust" class="inline" title="ask: each gated call prompts · allow: its tools run without prompts · deny: refused and hidden">
+        <input type="hidden" name="target" value="{{.Label}}">
+        <select name="mode" class="cinput">
+          <option value="ask" {{if or (eq .Trust "ask") (eq .Trust "")}}selected{{end}}>ask</option>
+          <option value="allow" {{if eq .Trust "allow"}}selected{{end}}>allow</option>
+          <option value="deny" {{if eq .Trust "deny"}}selected{{end}}>deny</option>
+        </select>
+        <button type="submit" class="btn sm">Set trust</button>
+      </form>
       {{if .NeedsReauth}}<form method="POST" action="/mcp/connect" class="inline">
         <input type="hidden" name="url" value="{{.URL}}">
         <button type="submit" class="btn sm">Reconnect</button>
@@ -37,7 +46,7 @@
     <input type="text" name="url" class="cinput wide" placeholder="https://mcp.example.com/v1/mcp" required>
     <button type="submit" class="btn">Connect</button>
   </form>
-  <div class="dim" style="margin-top:9px">Connecting opens a sign-in window <strong>on the computer running Tenant</strong> — do this step at that machine. Once approved, the service's tools come in switched off until you allow them on the Tools page (your agent can't use a new service without your OK).</div>
+  <div class="dim" style="margin-top:9px">A service that requires sign-in opens a window <strong>on the computer running Tenant</strong> — do that step at that machine; a local service with no sign-in connects at once. A new service starts with trust <strong>ask</strong>: each of its gated tools prompts you before running. Set it to <strong>allow</strong> once you trust it, or <strong>deny</strong> to shut it off. Your agent can also adopt a server itself with its <code>mcp_add</code> tool — you approve the adoption (permission category <code>mcp</code>) and then decide its trust.</div>
 </div>
 
 {{end}}

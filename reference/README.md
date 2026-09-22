@@ -8,6 +8,7 @@ so a copy is always current with the running binary.
 | Folder | What you copy | Tutorials |
 |---|---|---|
 | [`logging/`](logging/) | [`tenantlog.go`](logging/tenantlog.go) — one stdlib-only file that logs any Go program into Tenant's log book (its own folder on disk + its own dashboard tab, live when a hub is up, file fallback when it is not, drop-in `slog` handler) | [01 quickstart](logging/01-quickstart.md) · [02 augmenting the file](logging/02-augmenting.md) · [03 hot-patch playbook](logging/03-hotpatch-playbook.md) · [04 inside the binary](logging/04-inside-the-binary.md) |
+| [`mcp/`](mcp/) | [`toolserver/main.go`](mcp/toolserver/main.go) — a complete MCP tool server (Streamable HTTP, no sign-in, logs into the log book) that Tenant's agent adopts with one `mcp_add` call, no rebuild, no restart | [README](mcp/README.md): the adoption loop, trust prompts, making it hands-off |
 
 Ground rules for anything in `reference/`:
 

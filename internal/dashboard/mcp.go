@@ -24,6 +24,8 @@ type MCPControl interface {
 	Servers() []MCPServerView
 	Connect(url string) error // may block on host-side browser OAuth
 	Remove(target string) (bool, error)
+	// SetTrust flips a connector's live trust mode: ask | allow | deny.
+	SetTrust(target, mode string) error
 }
 
 // MCPServerView is one connected server's render-ready state.
@@ -32,6 +34,7 @@ type MCPServerView struct {
 	URL       string
 	Enabled   bool
 	ToolCount int
+	Trust     string // ask | allow | deny ("" renders as ask)
 	// NeedsReauth: the connector's sign-in died; its tools fail until the
 	// operator reconnects it (the Reconnect form re-runs the host-side OAuth).
 	NeedsReauth bool
@@ -46,6 +49,7 @@ func (s *Server) mountMCPSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /mcp", s.handleMCPPage)
 	mux.HandleFunc("POST /mcp/connect", s.handleMCPConnectForm)
 	mux.HandleFunc("POST /mcp/remove", s.handleMCPRemoveForm)
+	mux.HandleFunc("POST /mcp/trust", s.handleMCPTrustForm)
 }
 
 type mcpPageData struct {
@@ -88,7 +92,7 @@ func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("dashboard: mcp connect", "url", u, "err", err)
 		}
 	}(rawURL)
-	redirectMCP(w, r, "Opening a sign-in window on the computer running Tenant — approve it there, then refresh this page.", "")
+	redirectMCP(w, r, "Connecting… A local service with no sign-in appears here in a moment (refresh); one that requires sign-in opens a window on the computer running Tenant — approve it there first.", "")
 }
 
 func (s *Server) handleMCPRemoveForm(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +106,25 @@ func (s *Server) handleMCPRemoveForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectMCP(w, r, "Service disconnected.", "")
+}
+
+// handleMCPTrustForm sets a connector's live trust mode (ask | allow | deny).
+func (s *Server) handleMCPTrustForm(w http.ResponseWriter, r *http.Request) {
+	if s.mcp == nil {
+		http.Redirect(w, r, "/mcp", http.StatusSeeOther)
+		return
+	}
+	target := strings.TrimSpace(r.FormValue("target"))
+	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
+	if target == "" || (mode != "ask" && mode != "allow" && mode != "deny") {
+		redirectMCP(w, r, "", "Pick ask, allow or deny for a connected service.")
+		return
+	}
+	if err := s.mcp.SetTrust(target, mode); err != nil {
+		redirectMCP(w, r, "", "Couldn't change that service's trust: "+err.Error())
+		return
+	}
+	redirectMCP(w, r, "Trust for "+target+" is now "+mode+".", "")
 }
 
 func redirectMCP(w http.ResponseWriter, r *http.Request, msg, errMsg string) {

@@ -83,7 +83,9 @@ kinds or transport settings needs no update at all.
 
 ## When it is more than a sidecar
 
-If the element is really a new Tenant subsystem — it runs inside the binary,
-drives an agent, or wants its lines styled like turns — see
+If the element should give the agent new **tools**, make it an MCP tool server
+and let the agent adopt it live with `mcp_add` — see [`reference/mcp/`](../mcp/).
+If it is really a new Tenant subsystem — it runs inside the binary, drives an
+agent, or wants its lines styled like turns — see
 [04 · inside the binary](04-inside-the-binary.md). That path needs a rebuild,
 but the folder and tab work exactly the same way.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -21,6 +22,35 @@ import (
 const codeDebounce = 800 * time.Millisecond
 
 type authResult struct{ code, state string }
+
+// signInMu serializes browser sign-ins process-wide. The callback port is one
+// shared resource and a person can only click through one consent flow at a
+// time, so a second connector that needs a sign-in WAITS for the first to
+// finish rather than failing to bind the port.
+var signInMu sync.Mutex
+
+// newLazyCodeFetcher returns a fetcher that binds the callback listener only for
+// the duration of ONE sign-in — bind, open the browser, await the code, close —
+// and holds nothing while idle. Before this, connect() bound the port for the
+// connector's whole lifetime, so a hub that had added one connector could not
+// add a second without a restart ("bind callback 127.0.0.1:8765: address
+// already in use"). A server that never answers 401 never triggers a sign-in
+// and never touches the port at all.
+func newLazyCodeFetcher(addr string, open func(string) error) auth.AuthorizationCodeFetcher {
+	return func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+		signInMu.Lock()
+		defer signInMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		fetch, stop, err := newCodeFetcher(addr, open)
+		if err != nil {
+			return nil, err
+		}
+		defer stop()
+		return fetch(ctx, args)
+	}
+}
 
 // newCodeFetcher starts a localhost callback server and returns an
 // AuthorizationCodeFetcher that opens the consent URL in a browser and returns

@@ -178,9 +178,15 @@ const (
 	catDestructive = "destructive" // irreversible: rm -rf, format, DROP, web purchase/delete
 	catWeb         = "web"         // act on the web unprompted: click/fill/select
 	catSend        = "send"        // outbound comms: email / iMessage / X
+	// catMCP governs the agent adopting or reconfiguring tool servers
+	// (mcp_add / mcp_remove / mcp_trust): "allow" is the hands-off automation
+	// switch — the agent can build a tool server, connect it, and have its tools
+	// trusted without a prompt. Each connector's OWN calls are governed by its
+	// live trust mode (ask / allow / deny), not by this category.
+	catMCP = "mcp"
 )
 
-var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend}
+var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend, catMCP}
 
 var catDesc = map[string]string{
 	catExec:        "run shell / python / code (os_exec)",
@@ -188,6 +194,7 @@ var catDesc = map[string]string{
 	catDestructive: "irreversible: rm -rf, format, DROP/ALTER, web purchase/delete",
 	catWeb:         "act on the web unprompted: click, fill, select",
 	catSend:        "send outbound comms: email, iMessage, X posts",
+	catMCP:         "adopt / reconfigure tool servers (mcp_add, mcp_remove, mcp_trust)",
 }
 
 // categorize maps a plugin action id to a safety category. Unknown
@@ -212,6 +219,8 @@ func categorize(action string) string {
 	// is a send: categorize it as one. (2026-09-19)
 	case discord.ActionSendMessage, discord.ActionReact:
 		return catSend
+	case "mcp_add", "mcp_remove", "mcp_trust":
+		return catMCP
 	}
 	if strings.HasPrefix(action, "web_") {
 		return catWeb

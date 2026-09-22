@@ -314,7 +314,7 @@ result and keep using it.
 | `discord` | `internal/plugins/discord/`           | No (REST-only Surface A) | No (immediate when --discord) |
 | `x`       | `internal/plugins/x/`                 | Yes (login) | Yes |
 | `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | Yes |
-| `mcpremote`| `internal/plugins/mcpremote/`        | Yes (remote OAuth2.1 + DCR, browser) | Yes (tools mirror a remote MCP server's gating) |
+| `mcpremote`| `internal/plugins/mcpremote/`        | Only if the server asks (OAuth2.1 + DCR, browser; a local no-auth server connects instantly) | Yes — per-connector trust `ask` / `allow` / `deny`, live (`/mcp trust`, dashboard, `mcp_trust`); under `ask` every unannotated tool prompts |
 | `osys`    | `internal/plugins/osys/`              | No (sandboxed exec) | No (immediate, always on) |
 | `github`  | `internal/plugins/github/`            | No (REST control plane; code I/O stays on the local os_* tools) | Yes |
 | `simplefin`| `internal/plugins/simplefin/`        | No (one HTTPS GET; read-only by protocol) | Yes |

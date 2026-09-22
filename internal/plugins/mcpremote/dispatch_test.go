@@ -59,3 +59,46 @@ func TestRenderContent(t *testing.T) {
 		t.Error("nil content should render empty")
 	}
 }
+
+// Trust is the live per-connector decision: allow skips the gate entirely,
+// deny refuses every call, ask (the default) keeps the deny-by-default gate.
+func TestDispatcher_TrustModes(t *testing.T) {
+	calls := 0
+	d := &Dispatcher{label: "mcp:127.0.0.1:9000", gated: map[string]bool{"write_note": true, "echo": false},
+		policy: Policy{Confirm: func(context.Context, string, string) bool { calls++; return true }}}
+	ctx := context.Background()
+
+	if d.Trust() != TrustAsk {
+		t.Fatalf("default trust = %q, want ask", d.Trust())
+	}
+	if err := d.gateCall(ctx, "write_note"); err != nil || calls != 1 {
+		t.Fatalf("ask: gated tool should prompt once: err=%v calls=%d", err, calls)
+	}
+	if err := d.gateCall(ctx, "echo"); err != nil || calls != 1 {
+		t.Fatalf("ask: ungated tool must not prompt: err=%v calls=%d", err, calls)
+	}
+
+	d.SetTrust("allow")
+	if err := d.gateCall(ctx, "write_note"); err != nil || calls != 1 {
+		t.Fatalf("allow: no prompt expected: err=%v calls=%d", err, calls)
+	}
+
+	d.SetTrust("deny")
+	err := d.gateCall(ctx, "echo")
+	if err == nil || !strings.Contains(err.Error(), "set to deny") || calls != 1 {
+		t.Fatalf("deny: every call refused without prompting: err=%v calls=%d", err, calls)
+	}
+
+	d.SetTrust("bogus") // ignored
+	if d.Trust() != TrustDeny {
+		t.Errorf("an invalid mode must not change trust, got %q", d.Trust())
+	}
+	for in, want := range map[string]string{"": "ask", "ALLOW": "allow", "trusted": "allow", "block": "deny", "prompt": "ask"} {
+		if got, ok := ParseTrust(in); !ok || got != want {
+			t.Errorf("ParseTrust(%q) = %q,%v want %q", in, got, ok, want)
+		}
+	}
+	if _, ok := ParseTrust("maybe"); ok {
+		t.Error("ParseTrust must reject unknown modes")
+	}
+}

@@ -71,6 +71,7 @@ type toolMux struct {
 	// /mcp add|list|remove can manage them at runtime.
 	mcpDeps    mcpRuntimeDeps
 	mcpServers map[string]string
+	mcpTrust   map[string]string // label → live trust mode (ask omitted); see SetMCPTrust
 	// Federated knowledge search (TEN-243): paired peers' dispatchers are kept
 	// here (name→dispatcher) instead of exposing their peer_*_search tools to the
 	// agent. When the agent calls a local search (e.g. wiki_search) it fans out to
@@ -304,6 +305,7 @@ func newToolMux() *toolMux {
 		activators: map[string]func() (plugin, func(), error){},
 		activated:  map[string]bool{},
 		mcpServers: map[string]string{},
+		mcpTrust:   map[string]string{},
 	}
 }
 
@@ -317,8 +319,9 @@ type mcpRuntimeDeps struct {
 	trustAnnotations bool
 	allowWrite       bool
 	confirm          func(context.Context, string, string) bool
-	cacheDir         string       // 0600 OAuth token cache dir (persistence across restarts)
-	log              *slog.Logger // connect/refresh failure logging (TEN-166)
+	cacheDir         string            // 0600 OAuth token cache dir (persistence across restarts)
+	log              *slog.Logger      // connect/refresh failure logging (TEN-166)
+	trust            map[string]string // persisted per-connector trust by URL (config mcp_trust); applied on register
 	// onAuthChange is the only mutable member: installed after the mux is built
 	// (SetMCPAuthNotifier, under the mux lock) once the surfaces that can reach
 	// the operator exist. Activators read it at FIRE time via fireMCPAuthChange,
@@ -332,6 +335,7 @@ type mcpServerStatus struct {
 	URL       string
 	Enabled   bool
 	ToolCount int
+	Trust     string // ask | allow | deny — the connector's live trust mode
 	// Auth health: a connector whose OAuth token died still lists its tools
 	// (the count is frozen from connect time), which is exactly how a dead
 	// Jira bridge looked healthy for three days. NeedsReauth is the truth.
@@ -344,7 +348,7 @@ type mcpServerStatus struct {
 // server using the mux's stored deps (idempotent). Activation — the browser
 // OAuth flow — happens later on SetEnabled. Returns the derived label.
 func (m *toolMux) registerMCPRemote(url string) string {
-	label := mcpLabel(url)
+	label := m.labelFor(url)
 	if m.hasPlugin(label) {
 		return label
 	}
@@ -368,8 +372,101 @@ func (m *toolMux) registerMCPRemote(url string) string {
 	})
 	m.mu.Lock()
 	m.mcpServers[label] = url
+	if t, ok := mcpremote.ParseTrust(d.trust[url]); ok && t != mcpremote.TrustAsk {
+		m.mcpTrust[label] = t // the operator's persisted decision, re-applied on activation
+	}
 	m.mu.Unlock()
 	return label
+}
+
+// labelFor derives a connector's mux label from its URL, keeping the label of
+// an already-registered URL stable and never letting two different URLs share
+// one label: the base is "mcp:<host[:port]>" (the port matters — an operator
+// or the agent may run several local tool servers on 127.0.0.1); if that base
+// already names a DIFFERENT URL, the path is appended ("mcp:127.0.0.1:9000/b").
+func (m *toolMux) labelFor(url string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for label, u := range m.mcpServers {
+		if u == url {
+			return label
+		}
+	}
+	base := mcpLabel(url)
+	if u, taken := m.mcpServers[base]; !taken || u == url {
+		return base
+	}
+	s := strings.TrimPrefix(strings.TrimPrefix(url, "https://"), "http://")
+	path := ""
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		path = strings.TrimRight(s[i:], "/")
+	}
+	label := base + path
+	for n := 2; ; n++ {
+		if u, taken := m.mcpServers[label]; !taken || u == url {
+			return label
+		}
+		label = fmt.Sprintf("%s%s#%d", base, path, n)
+	}
+}
+
+// MCPTrust reports a connector's live trust mode ("ask" when unset).
+func (m *toolMux) MCPTrust(label string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if t := m.mcpTrust[label]; t != "" {
+		return t
+	}
+	return mcpremote.TrustAsk
+}
+
+// SetMCPTrust changes a connector's trust mode LIVE: the mode is pushed into
+// the running dispatcher (no reconnect), a "deny" also hides the tools from the
+// agent, and leaving "deny" shows them again. Unknown label ⇒ error.
+func (m *toolMux) SetMCPTrust(label, mode string) error {
+	t, ok := mcpremote.ParseTrust(mode)
+	if !ok {
+		return fmt.Errorf("trust must be ask | allow | deny")
+	}
+	m.mu.Lock()
+	if _, known := m.mcpServers[label]; !known {
+		m.mu.Unlock()
+		return fmt.Errorf("no remote MCP server labeled %q", label)
+	}
+	if t == mcpremote.TrustAsk {
+		delete(m.mcpTrust, label)
+	} else {
+		m.mcpTrust[label] = t
+	}
+	m.applyTrustLocked(label)
+	activated := m.activated[label]
+	m.mu.Unlock()
+	if activated {
+		// Hide a denied connector's tools; show them again when trust returns.
+		// SetEnabled(true) is a no-op activation-wise for an already-live plugin.
+		_, _, _ = m.SetEnabled(label, t != mcpremote.TrustDeny)
+	}
+	return nil
+}
+
+// applyTrustLocked pushes the connector's trust mode into its live dispatcher
+// (whatever currently owns its tools). Caller holds m.mu.
+func (m *toolMux) applyTrustLocked(label string) {
+	mode := m.mcpTrust[label]
+	if mode == "" {
+		mode = mcpremote.TrustAsk
+	}
+	// No dedupe by owner: a dispatcher may be stored by value (its dynamic type
+	// may not be hashable), and SetTrust is idempotent and cheap.
+	for _, n := range m.order {
+		e := m.byName[n]
+		if e == nil || e.plugin != label {
+			continue
+		}
+		if tp, ok := e.owner.(interface{ SetTrust(string) }); ok {
+			tp.SetTrust(mode)
+		}
+	}
 }
 
 // reconnectMCPSilently attempts a NON-interactive reconnect (cached token, no
@@ -377,7 +474,7 @@ func (m *toolMux) registerMCPRemote(url string) string {
 // A missing/expired token fails cleanly and leaves the disabled stub in place
 // (the interactive activator can sign in later). Safe to run in a goroutine.
 func (m *toolMux) reconnectMCPSilently(url string) {
-	label := mcpLabel(url)
+	label := m.labelFor(url)
 	d := m.mcpDeps
 	// Bound the launch dial so a hung/slow server can't park this goroutine for
 	// the whole session. The SDK runs the session on its own background context
@@ -440,9 +537,13 @@ func (m *toolMux) adoptLiveMCP(label string, p plugin, cleanup func()) {
 		if v, ok := m.savedStates[spec.Name]; ok {
 			enabled = v
 		}
+		if m.mcpTrust[label] == mcpremote.TrustDeny {
+			enabled = false // a denied connector reconnects hidden
+		}
 		m.byName[spec.Name] = &toolEntry{spec: spec, owner: p, plugin: label, enabled: enabled}
 		added = true
 	}
+	m.applyTrustLocked(label)
 	if added {
 		// Invalidate the ranking cache so the newly-adopted tools (e.g. a 31-tool
 		// remote MCP) get real description embeddings on the next Search instead of
@@ -506,10 +607,10 @@ func (m *toolMux) reconnectPeersSilently(cfgDir string) {
 // callback. Returns the label + how many tools came live. On failure it cleans
 // up a freshly-registered stub so a retry works.
 func (m *toolMux) AddRemoteMCP(url string) (label string, toolCount int, err error) {
-	label = mcpLabel(url)
+	label = m.labelFor(url)
 	already := m.hasPlugin(label)
 	m.registerMCPRemote(url)
-	n, _, aerr := m.SetEnabled(label, true) // triggers maybeActivate → browser
+	n, _, aerr := m.SetEnabled(label, true) // triggers maybeActivate → browser only if the server asks for a sign-in
 	if aerr != nil {
 		if !already {
 			m.forgetPlugin(label)
@@ -536,6 +637,7 @@ func (m *toolMux) forgetPlugin(label string) {
 	delete(m.activators, label)
 	delete(m.activated, label)
 	delete(m.mcpServers, label)
+	delete(m.mcpTrust, label)
 }
 
 // RemoteMCPList reports every registered remote MCP connector + its state.
@@ -544,7 +646,10 @@ func (m *toolMux) RemoteMCPList() []mcpServerStatus {
 	defer m.mu.RUnlock()
 	out := make([]mcpServerStatus, 0, len(m.mcpServers))
 	for label, url := range m.mcpServers {
-		st := mcpServerStatus{Label: label, URL: url}
+		st := mcpServerStatus{Label: label, URL: url, Trust: m.mcpTrust[label]}
+		if st.Trust == "" {
+			st.Trust = mcpremote.TrustAsk
+		}
 		for _, n := range m.order {
 			if e := m.byName[n]; e != nil && e.plugin == label {
 				st.ToolCount++
@@ -1235,6 +1340,7 @@ func (m *toolMux) maybeActivate(target string) error {
 		// on. (TEN-226 step 6 — mirrors add()/adoptLiveMCP.)
 		m.toolEmbeddings = nil
 	}
+	m.applyTrustLocked(label) // a remote connector picks up its persisted trust mode
 	if cleanup != nil {
 		m.cleanups = append(m.cleanups, cleanup)
 	}
@@ -1793,6 +1899,9 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		cacheDir:         filepath.Join(c.cfgDir, "mcp"),
 		log:              log,
 	}
+	if c.lc != nil {
+		mux.mcpDeps.trust = c.lc.MCPTrust
+	}
 	mcpURLs := append([]string{}, pf.mcpRemotes...)
 	if c.lc != nil {
 		mcpURLs = append(mcpURLs, c.lc.MCPRemotes...)
@@ -1818,9 +1927,14 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 
 // mcpLabel derives a stable tool-group label from a remote MCP server URL,
 // e.g. https://mcp.atlassian.com/v1/mcp → "mcp:atlassian.com".
+// mcpLabel derives the base label "mcp:<host[:port]>". The port is kept so
+// several tool servers on one host (127.0.0.1:9000, 127.0.0.1:9001 — the
+// agent's own creations) get distinct labels; a hosted service's URL has no
+// port, so its label is unchanged ("mcp:mcp.atlassian.com"). labelFor adds a
+// path suffix when two URLs still collide.
 func mcpLabel(rawURL string) string {
 	s := strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
-	if i := strings.IndexAny(s, "/:"); i >= 0 {
+	if i := strings.IndexByte(s, '/'); i >= 0 {
 		s = s[:i]
 	}
 	if s == "" {

@@ -88,8 +88,12 @@ type cronAgentDeps struct {
 	allowExec *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
 }
 
-// notCron cuts the cron_* tools from a cron runner (no self-scheduling).
-func notCron(name string) bool { return strings.HasPrefix(name, "cron_") }
+// notCron cuts the cron_* tools from a cron runner (no self-scheduling) and the
+// mcp_* connector tools (an unattended job must not adopt or re-trust a tool
+// server — that decision belongs to an interactive turn an operator can answer).
+func notCron(name string) bool {
+	return strings.HasPrefix(name, "cron_") || strings.HasPrefix(name, "mcp_")
+}
 
 // buildCronRunner constructs the safe + exec runner agents and returns a Runner
 // that dispatches each job to the right path.

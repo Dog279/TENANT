@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"tenant/internal/model"
@@ -16,6 +17,29 @@ type Policy struct {
 	Confirm    func(ctx context.Context, action, detail string) bool
 }
 
+// Trust modes — the operator's LIVE, per-connector decision about a server's
+// tools (the same ask / allow / deny vocabulary as the per-category permissions
+// and the Discord relay). Set at adoption (the `mcp_add` / `/mcp add` flow asks)
+// and changeable any time without reconnecting or restarting.
+const (
+	TrustAsk   = "ask"   // default: every gated call prompts (read-only-annotated tools skip the gate when annotations are trusted)
+	TrustAllow = "allow" // the connector is trusted: its tools run without per-call approval
+	TrustDeny  = "deny"  // every call is refused (and the mux hides the tools)
+)
+
+// ParseTrust normalizes a trust mode ("" ⇒ ask).
+func ParseTrust(s string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", TrustAsk, "prompt", "confirm":
+		return TrustAsk, true
+	case TrustAllow, "on", "always", "yes", "trust", "trusted":
+		return TrustAllow, true
+	case TrustDeny, "off", "block", "no":
+		return TrustDeny, true
+	}
+	return "", false
+}
+
 // Dispatcher adapts a remote MCP session to Tenant's agent tool interface:
 // Tools() from the server's tools/list (cached), Dispatch() → tools/call.
 type Dispatcher struct {
@@ -25,6 +49,40 @@ type Dispatcher struct {
 	gated   map[string]bool
 	policy  Policy
 	auth    *persistentHandler // nil for peers / static servers (no OAuth)
+	trust   atomic.Value       // string: TrustAsk / TrustAllow / TrustDeny ("" ⇒ ask)
+}
+
+// Label is the connector's tool-group label in the mux.
+func (d *Dispatcher) Label() string { return d.label }
+
+// SetTrust changes the connector's trust mode live (see Trust* consts).
+func (d *Dispatcher) SetTrust(mode string) {
+	if m, ok := ParseTrust(mode); ok {
+		d.trust.Store(m)
+	}
+}
+
+// Trust reports the connector's current trust mode.
+func (d *Dispatcher) Trust() string {
+	if v, _ := d.trust.Load().(string); v != "" {
+		return v
+	}
+	return TrustAsk
+}
+
+// gateCall is the per-call decision: the connector's trust mode first (deny
+// refuses, allow skips), then — under ask — the deny-by-default annotation gate.
+func (d *Dispatcher) gateCall(ctx context.Context, name string) error {
+	switch d.Trust() {
+	case TrustDeny:
+		return fmt.Errorf("blocked: connector %s is set to deny — its tools cannot run until an operator sets it to ask or allow (/mcp trust %s allow, or the dashboard's Remote services page)", d.label, d.label)
+	case TrustAllow:
+		return nil
+	}
+	if d.gated[name] {
+		return d.gate(ctx, name)
+	}
+	return nil
 }
 
 // AuthHealth reports the connector's authorization state (zero for connectors
@@ -100,10 +158,8 @@ func gatedTool(readOnly, trustAnnotations bool) bool {
 func (d *Dispatcher) Tools() []model.ToolSpec { return d.specs }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
-	if d.gated[call.Name] {
-		if err := d.gate(ctx, call.Name); err != nil {
-			return err.Error(), true, nil
-		}
+	if err := d.gateCall(ctx, call.Name); err != nil {
+		return err.Error(), true, nil
 	}
 	var args any
 	if len(call.Arguments) > 0 {
@@ -131,13 +187,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 // SAME deny-by-default gate as Dispatch — a structured call must not be a way to
 // invoke a gated/write tool without approval.
 func (d *Dispatcher) CallRawJSON(ctx context.Context, call model.ToolCall) ([]byte, error) {
-	// Same deny-by-default gate as Dispatch — exporting a structured call must not
-	// become a way to invoke a gated/write tool without approval. (peer_hello is
-	// marked read-only by a trusting server, so it's ungated and this is a no-op.)
-	if d.gated[call.Name] {
-		if err := d.gate(ctx, call.Name); err != nil {
-			return nil, err
-		}
+	// Same trust + deny-by-default gate as Dispatch — exporting a structured call
+	// must not become a way to invoke a gated/write tool without approval.
+	// (peer_hello is marked read-only by a trusting server, so it's ungated and
+	// this is a no-op.)
+	if err := d.gateCall(ctx, call.Name); err != nil {
+		return nil, err
 	}
 	var args any
 	if len(call.Arguments) > 0 {

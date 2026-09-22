@@ -2351,6 +2351,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
+	// gated by the "mcp" permission category; each connector's own calls then
+	// follow its live trust mode (ask / allow / deny). The same control backs
+	// /mcp, the dashboard's Remote services page and /configure atlassian.
+	mcpCtl := newMCPControl(mux, c.cfgDir, c.lc)
+	mainLocal.add("connectors", newMCPToolPlugin(mcpCtl, mux.mcpDeps.confirm))
+
 	// Web control panel (TEN-86): auto-launches with the TUI by default; the
 	// operator toggles it live via /dashboard, and the choice persists. The
 	// live agent + tool mux + event broker are shared with the TUI. An
@@ -2838,7 +2845,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Remote-services page (TEN-205): a lightweight MCP control over the shared
 	// tool mux. Connect pops a host-side browser (hybrid model — connect local,
 	// manage remote); the dashboard handler runs it async.
-	dashMgr.mcp = dashMCP{m: newMCPControl(mux, c.cfgDir, c.lc)}
+	dashMgr.mcp = dashMCP{m: mcpCtl}
 	// Integrations page (TEN-206): a dashboard-facing skill-config control over
 	// the real catalog. Built WITHOUT the Atlassian-MCP connector — OAuth-server
 	// connects go through the MCP page (TEN-205) — so this covers key-based
@@ -2952,7 +2959,6 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	// Remote MCP control, shared by `/mcp` and by `/configure atlassian` (its
 	// "mcp" mode connects the official endpoint through this same path). (TEN-164)
-	mcpCtl := newMCPControl(mux, c.cfgDir, c.lc)
 	atlassianMCP := func(_ context.Context, url string) (string, error) {
 		info, err := mcpCtl.Add(url)
 		if err != nil {

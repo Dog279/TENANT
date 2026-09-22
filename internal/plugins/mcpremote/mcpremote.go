@@ -64,17 +64,15 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 	// the MCP traffic itself.
 	httpClient := newRewritingClient()
 
-	// The callback server (which binds a port) is only needed for the interactive
-	// browser flow. A non-interactive (launch-time) reconnect uses the cached
+	// The callback listener is only needed for an interactive browser flow, and
+	// even then only WHILE a sign-in runs: the lazy fetcher binds the port when
+	// the server answers 401 and releases it once the code is in hand, so an
+	// idle connector holds no port and a long-running hub can add connectors
+	// indefinitely. A non-interactive (launch-time) reconnect uses the cached
 	// token and never opens a browser.
 	var fetcher auth.AuthorizationCodeFetcher
-	stop := func() {}
 	if cfg.Interactive {
-		f, s, err := newCodeFetcher(cfg.callbackAddr(), cfg.OpenBrowser)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		fetcher, stop = f, s
+		fetcher = newLazyCodeFetcher(cfg.callbackAddr(), cfg.OpenBrowser)
 	}
 
 	handler := newPersistentHandler(
@@ -101,13 +99,9 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 	client := mcp.NewClient(&mcp.Implementation{Name: "tenant", Version: "0.1"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		stop()
 		return nil, nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.ServerURL, err)
 	}
-	cleanup := func() {
-		_ = session.Close()
-		stop()
-	}
+	cleanup := func() { _ = session.Close() }
 	return session, handler, cleanup, nil
 }
 

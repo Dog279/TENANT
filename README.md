@@ -158,7 +158,7 @@ internal/logs/         # the unified log book: per-source text folders + the das
 internal/tui/          # terminal UI
 internal/orchestra/    # multi-agent bus + spawn/await
 internal/eval/         # evaluation harness + task fixtures
-reference/             # copy-paste code + tutorials: log any program into the log book (reference/logging)
+reference/             # copy-paste code + tutorials: log any program into the log book; a tool server the agent adopts live
 docs/                  # architecture, design, plugin, and memory docs
 ```
 

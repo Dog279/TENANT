@@ -19,6 +19,7 @@ func (d dashMCP) Servers() []dashboard.MCPServerView {
 			URL:         s.URL,
 			Enabled:     s.Enabled,
 			ToolCount:   s.ToolCount,
+			Trust:       s.Trust,
 			NeedsReauth: s.NeedsReauth,
 			AuthErr:     s.AuthErr,
 		}
@@ -38,3 +39,9 @@ func (d dashMCP) Connect(url string) error {
 }
 
 func (d dashMCP) Remove(target string) (bool, error) { return d.m.Remove(target) }
+
+// SetTrust flips a connector's live trust mode (ask | allow | deny).
+func (d dashMCP) SetTrust(target, mode string) error {
+	_, err := d.m.SetTrust(target, mode)
+	return err
+}

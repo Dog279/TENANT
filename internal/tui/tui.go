@@ -528,6 +528,10 @@ type MCPControl interface {
 	// Remove disconnects + forgets a server (by URL or label); removed=false if
 	// nothing matched.
 	Remove(target string) (removed bool, err error)
+	// SetTrust changes a connector's live trust mode: "ask" (every gated call
+	// prompts), "allow" (its tools run without per-call approval) or "deny"
+	// (its tools are refused + hidden). Persisted; no reconnect.
+	SetTrust(target, mode string) (MCPServerInfo, error)
 }
 
 // MCPServerInfo is one remote MCP connector's view for /mcp.
@@ -536,6 +540,7 @@ type MCPServerInfo struct {
 	URL       string
 	Enabled   bool
 	ToolCount int
+	Trust     string // ask | allow | deny — the operator's live decision on its tools
 	// NeedsReauth: the connector's sign-in died and its tools fail until the
 	// operator reconnects it — shown ahead of the (stale) tool count.
 	NeedsReauth bool
@@ -1990,8 +1995,13 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 			default:
 				state = "registered — /enable " + s.Label + " to connect"
 			}
-			b.WriteString(fmt.Sprintf("  • %-26s %s  [%s]\n", s.Label, s.URL, state))
+			trust := s.Trust
+			if trust == "" {
+				trust = "ask"
+			}
+			b.WriteString(fmt.Sprintf("  • %-26s %s  [%s]  trust: %s\n", s.Label, s.URL, state, trust))
 		}
+		b.WriteString("  (trust: ask = each gated call prompts · allow = runs without prompts · deny = refused.  /mcp trust <label> <mode>)")
 		m.sysChat(strings.TrimRight(b.String(), "\n"))
 		return nil
 	case "add":
@@ -2007,8 +2017,29 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 			if err != nil {
 				return sysChatMsg{text: "✗ MCP connect failed: " + err.Error()}
 			}
-			return sysChatMsg{text: fmt.Sprintf("✓ connected %s — %d tools live (gated; /tools to review, /disable %s to turn off)", info.Label, info.ToolCount, info.Label)}
+			return sysChatMsg{text: fmt.Sprintf("✓ connected %s — %d tools live, trust: ask (each gated call prompts).  /mcp trust %s allow  to run them without prompts; /tools to review; /disable %s to turn off", info.Label, info.ToolCount, info.Label, info.Label)}
 		}
+	case "trust", "allow", "deny", "ask":
+		target, mode := "", ""
+		if sub == "trust" {
+			parts := strings.Fields(rest)
+			if len(parts) == 2 {
+				target, mode = parts[0], parts[1]
+			}
+		} else { // shorthand: /mcp allow <label>
+			target, mode = strings.TrimSpace(rest), sub
+		}
+		if target == "" || mode == "" {
+			m.sysChat("usage: /mcp trust <url|label> <ask|allow|deny>   (ask = each gated call prompts · allow = no per-call prompts · deny = refuse + hide)")
+			return nil
+		}
+		info, err := m.cfg.MCP.SetTrust(target, mode)
+		if err != nil {
+			m.sysChat("✗ " + err.Error())
+			return nil
+		}
+		m.sysChat(fmt.Sprintf("✓ %s trust: %s (%d tools)", info.Label, info.Trust, info.ToolCount))
+		return nil
 	case "remove", "rm", "forget":
 		target := strings.TrimSpace(rest)
 		if target == "" {
@@ -2026,7 +2057,7 @@ func (m *model) handleMCP(arg string) tea.Cmd {
 		}
 		return nil
 	default:
-		m.sysChat("usage: /mcp [list] | /mcp add <url> | /mcp remove <url|label>")
+		m.sysChat("usage: /mcp [list] | /mcp add <url> | /mcp trust <url|label> <ask|allow|deny> | /mcp remove <url|label>")
 		return nil
 	}
 }
@@ -2765,7 +2796,8 @@ var helpSections = []helpSection{
 		tagline: "connect remote MCP servers (browser OAuth, no app setup) and bring their tools live",
 		rows: [][2]string{
 			{"/mcp", "list connected remote MCP servers + state"},
-			{"/mcp add <url>", "connect a remote MCP server (opens a browser to authorize) — surfaces its tools, gated"},
+			{"/mcp add <url>", "connect an MCP tool server (a browser opens only if it asks for sign-in) — its tools arrive with trust: ask"},
+			{"/mcp trust <label> <ask|allow|deny>", "live trust for a server's tools: allow = no per-call prompts, deny = refuse + hide"},
 			{"/mcp remove <url>", "disconnect a remote MCP server and forget it"},
 			{"/peer serve [addr]", "start the peer listener (default 0.0.0.0:9100, TLS) so peers can reach you + invites prompt here"},
 			{"/peer invite <name> <ip|url>", "pair with a peer by address — they Approve/Deny + match a PIN"},
