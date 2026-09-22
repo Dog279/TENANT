@@ -7,6 +7,8 @@ import (
 	_ "image/gif"  // register decoders for DecodeConfig
 	_ "image/jpeg" // register decoders for DecodeConfig
 	_ "image/png"  // register decoders for DecodeConfig
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -123,9 +125,46 @@ func (s *Service) Exists(path string) bool {
 	return err == nil
 }
 
+// openVetted opens path for writing with flag, which must not include O_TRUNC,
+// and lets vet (nil = none) inspect the OPEN file before the caller writes to
+// it. Checking the open file rather than its path is what makes the check
+// race-free (see Roots.checkOpened), and a refusal leaves the contents as they
+// were.
+func openVetted(path string, flag int, vet func(fs.FileInfo) error) (*os.File, error) {
+	f, err := os.OpenFile(path, flag, 0o644)
+	if err != nil || vet == nil {
+		return f, err
+	}
+	fi, err := f.Stat()
+	if err == nil {
+		err = vet(fi)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// overwrite replaces an open file's contents and closes it. Truncating here,
+// after vetting, instead of with O_TRUNC at open, is what keeps a refused file
+// intact.
+func overwrite(f *os.File, content string) error {
+	err := f.Truncate(0)
+	if err == nil {
+		_, err = f.WriteAt([]byte(content), 0)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 // WriteFile creates or overwrites a text file. When createDirs is true, any
-// missing parent directories are created. Returns a short confirmation.
-func (s *Service) WriteFile(path, content string, createDirs bool) (string, error) {
+// missing parent directories are created. vet, when non-nil, inspects the file
+// once it is open and before anything is written; an error from it aborts the
+// write. Returns a short confirmation.
+func (s *Service) WriteFile(path, content string, createDirs bool, vet func(fs.FileInfo) error) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("osys: file path required")
 	}
@@ -140,7 +179,11 @@ func (s *Service) WriteFile(path, content string, createDirs bool) (string, erro
 			}
 		}
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	f, err := openVetted(path, os.O_WRONLY|os.O_CREATE, vet)
+	if err == nil {
+		err = overwrite(f, content)
+	}
+	if err != nil {
 		return "", fmt.Errorf("osys: write %s: %w", path, err)
 	}
 	verb := "created"
@@ -151,7 +194,8 @@ func (s *Service) WriteFile(path, content string, createDirs bool) (string, erro
 }
 
 // AppendFile appends content to a file, creating it (and parents) if absent.
-func (s *Service) AppendFile(path, content string) (string, error) {
+// vet is as for WriteFile.
+func (s *Service) AppendFile(path, content string, vet func(fs.FileInfo) error) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("osys: file path required")
 	}
@@ -163,7 +207,7 @@ func (s *Service) AppendFile(path, content string) (string, error) {
 			return "", fmt.Errorf("osys: mkdir %s: %w", dir, err)
 		}
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := openVetted(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, vet)
 	if err != nil {
 		return "", fmt.Errorf("osys: open %s: %w", path, err)
 	}
@@ -177,14 +221,22 @@ func (s *Service) AppendFile(path, content string) (string, error) {
 // EditFile replaces occurrences of oldStr with newStr in an existing file.
 // With replaceAll false, oldStr must be unique (a safety check that mirrors
 // the editor's exact-match contract) — otherwise it errors rather than guess.
-func (s *Service) EditFile(path, oldStr, newStr string, replaceAll bool) (string, error) {
+// vet is as for WriteFile.
+func (s *Service) EditFile(path, oldStr, newStr string, replaceAll bool, vet func(fs.FileInfo) error) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("osys: file path required")
 	}
 	if oldStr == "" {
 		return "", fmt.Errorf("osys: old_string required (use os_write_file to create a file)")
 	}
-	b, err := os.ReadFile(path)
+	// One handle for the read and the write, so the file vetted is the file
+	// read and the file changed.
+	f, err := openVetted(path, os.O_RDWR, vet)
+	if err != nil {
+		return "", fmt.Errorf("osys: read %s: %w", path, err)
+	}
+	defer f.Close()
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return "", fmt.Errorf("osys: read %s: %w", path, err)
 	}
@@ -201,7 +253,7 @@ func (s *Service) EditFile(path, oldStr, newStr string, replaceAll bool) (string
 	} else {
 		content = strings.Replace(content, oldStr, newStr, 1)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := overwrite(f, content); err != nil {
 		return "", fmt.Errorf("osys: write %s: %w", path, err)
 	}
 	return fmt.Sprintf("edited %s (%d replacement(s))", path, n), nil

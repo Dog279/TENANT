@@ -925,7 +925,10 @@ unless needed, run Tenant as a least-privilege user, prefer a
 container/VM. Also: the file tools (`os_read_file`, `os_write`, …) run
 in Tenant's own process, **outside** the sandbox. They are bounded only
 by their own roots (`--os-deny-roots`, which by default covers system
-dirs only) and the write approval. Enabling this plugin is consent to
+dirs only), the write approval, and `Roots.Protect`: a hard refusal to
+write Tenant's control files (`settings.<agent>.json`, `config.json`,
+`credentials.json`, `peers.json`), checked on the resolved path and
+again on the opened file. Enabling this plugin is consent to
 filesystem read (exfiltration risk when combined with the send-capable
 plugins). Documented so the operator opts in knowingly.
 

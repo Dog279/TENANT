@@ -1995,6 +1995,8 @@ func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, d
 //
 // Deny always includes the platform defaults even when the operator supplies
 // their own list: an allowlist typo should not silently expose System32.
+// Protect is always Tenant's own control files (protectedConfigFiles), whatever
+// the write roots say.
 //
 // This bounds the FILE tools only. os_exec takes an opaque command string and
 // is bounded by the OS account Tenant runs as, not by this list.
@@ -2038,5 +2040,35 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string) osys.Roots {
 			add(tmp)
 		}
 	}
-	return osys.Roots{Deny: deny, Write: write}
+	return osys.Roots{Deny: deny, Write: write, Protect: protectedConfigFiles(cfgDir)}
+}
+
+// protectedConfigFiles lists the config-dir files the file tools may never
+// write, on any surface and whatever the write mode, because each decides what
+// the agent may do and Tenant applies an edit without asking:
+//   - settings.<agent>.json, for any agent sharing the dir: permission modes,
+//     tool rules and exec profiles, re-read within seconds (settingswatch.go).
+//     Also its fixed-name temp file, which the save renames into place.
+//   - config.json: relay and iMessage permissions, cron jobs, MCP servers and
+//     their trust, providers. persistLaunchConfig folds a hand edit into the
+//     next in-process save, and the next launch applies it.
+//   - credentials.json: every secret, hot-reloaded (watchCredentials).
+//   - peers.json: which peers may call in, with what token and share policy
+//     (exec included), re-read on the next peer request.
+//
+// Tenant's own saves do not go through the file tools, so they are unaffected,
+// and no agent flow writes these files through the tools: cron, MCP and peer
+// changes persist in-process.
+func protectedConfigFiles(cfgDir string) []string {
+	if cfgDir == "" {
+		return nil
+	}
+	settings := settingsPath(cfgDir, "*")
+	return []string{
+		settings,
+		settings + ".tmp",
+		launchConfigPath(cfgDir),
+		credentialsPath(cfgDir),
+		peering.PeersPath(cfgDir),
+	}
 }

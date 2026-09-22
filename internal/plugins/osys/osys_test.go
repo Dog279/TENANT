@@ -21,41 +21,41 @@ func TestService_FileWriteEditAppend(t *testing.T) {
 	svc, _ := Open(Config{})
 	p := filepath.Join(dir, "notes", "wiki.md") // nested → create_dirs
 
-	if _, err := svc.WriteFile(p, "# Title\nhello\n", true); err != nil {
+	if _, err := svc.WriteFile(p, "# Title\nhello\n", true, nil); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != "# Title\nhello\n" {
 		t.Fatalf("written content wrong: %q", b)
 	}
 	// Overwrite is reported distinctly.
-	if msg, _ := svc.WriteFile(p, "x", true); !strings.Contains(msg, "overwrote") {
+	if msg, _ := svc.WriteFile(p, "x", true, nil); !strings.Contains(msg, "overwrote") {
 		t.Fatalf("overwrite not reported: %q", msg)
 	}
 	// Append.
-	_, _ = svc.WriteFile(p, "line1\n", true)
-	if _, err := svc.AppendFile(p, "line2\n"); err != nil {
+	_, _ = svc.WriteFile(p, "line1\n", true, nil)
+	if _, err := svc.AppendFile(p, "line2\n", nil); err != nil {
 		t.Fatalf("AppendFile: %v", err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != "line1\nline2\n" {
 		t.Fatalf("append wrong: %q", b)
 	}
 	// Edit: unique replacement.
-	if _, err := svc.EditFile(p, "line2", "LINE2", false); err != nil {
+	if _, err := svc.EditFile(p, "line2", "LINE2", false, nil); err != nil {
 		t.Fatalf("EditFile: %v", err)
 	}
 	if b, _ := os.ReadFile(p); !strings.Contains(string(b), "LINE2") {
 		t.Fatalf("edit not applied: %q", b)
 	}
 	// Edit: non-unique without replace_all errors.
-	_, _ = svc.WriteFile(p, "dup dup", true)
-	if _, err := svc.EditFile(p, "dup", "x", false); err == nil {
+	_, _ = svc.WriteFile(p, "dup dup", true, nil)
+	if _, err := svc.EditFile(p, "dup", "x", false, nil); err == nil {
 		t.Fatal("non-unique edit without replace_all should error")
 	}
-	if _, err := svc.EditFile(p, "dup", "x", true); err != nil {
+	if _, err := svc.EditFile(p, "dup", "x", true, nil); err != nil {
 		t.Fatalf("replace_all edit: %v", err)
 	}
 	// Edit: not found errors.
-	if _, err := svc.EditFile(p, "nope", "y", false); err == nil {
+	if _, err := svc.EditFile(p, "nope", "y", false, nil); err == nil {
 		t.Fatal("edit of missing string should error")
 	}
 	// MakeDir.
@@ -138,6 +138,94 @@ func TestDispatch_WriteGating(t *testing.T) {
 	}
 	if gotAction != "os_write" {
 		t.Fatalf("write action id = %q, want os_write", gotAction)
+	}
+}
+
+// A protected file is a hard boundary for every writing tool: refused even with
+// writes blanket-allowed and an approver that says yes to anything, and refused
+// before the approver is asked, so there is no prompt to talk anyone into.
+func TestDispatch_ProtectedFileIsAHardBoundary(t *testing.T) {
+	r, base, _, settings := protectRoots(t)
+	const orig = `{"permissions":{"write":"ask"}}`
+	asked := 0
+	d := NewDispatcher(&Service{}, Policy{AllowWrite: true, Roots: r, Confirm: func(context.Context, string, string) bool {
+		asked++
+		return true
+	}})
+	ctx := context.Background()
+
+	for _, c := range []model.ToolCall{
+		call("os_write_file", map[string]any{"path": settings, "content": `{"permissions":{"write":"allow"}}`}),
+		call("os_append_file", map[string]any{"path": settings, "content": `,"x":1`}),
+		call("os_edit_file", map[string]any{"path": settings, "old_string": "ask", "new_string": "allow"}),
+		call("os_make_dir", map[string]any{"path": filepath.Join(filepath.Dir(settings), "settings.other.json")}),
+	} {
+		out, isErr, _ := d.Dispatch(ctx, c)
+		if !isErr || !strings.Contains(out, "hard boundary") {
+			t.Errorf("%s on a protected file must be refused as a hard boundary: isErr=%v %q", c.Name, isErr, out)
+		}
+	}
+	if b, _ := os.ReadFile(settings); string(b) != orig {
+		t.Fatalf("protected file changed: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(settings), "settings.other.json")); err == nil {
+		t.Error("os_make_dir created a directory at a protected name")
+	}
+	if asked != 0 {
+		t.Errorf("the approver was asked %d time(s); a hard boundary refuses first", asked)
+	}
+
+	// Ordinary writes in the write roots still go through (and are approved).
+	note := filepath.Join(base, "notes", "todo.md")
+	if out, isErr, _ := d.Dispatch(ctx, call("os_write_file", map[string]any{"path": note, "content": "hi"})); isErr {
+		t.Fatalf("an ordinary write must still succeed: %q", out)
+	}
+	if out, isErr, _ := d.Dispatch(ctx, call("os_edit_file", map[string]any{"path": note, "old_string": "hi", "new_string": "hello"})); isErr {
+		t.Fatalf("an ordinary edit must still succeed: %q", out)
+	}
+	if b, _ := os.ReadFile(note); string(b) != "hello" {
+		t.Fatalf("ordinary write/edit result wrong: %q", b)
+	}
+}
+
+// The race a path check alone loses: the path is vetted, then something running
+// alongside the turn re-points a symlink at a protected file before the write
+// opens it. Here the approver (which runs between the two) does the swap. The
+// open file is checked by identity, so the write is refused and the protected
+// file keeps its contents; it is not even truncated.
+func TestDispatch_ProtectedFileSurvivesSymlinkSwap(t *testing.T) {
+	r, base, _, settings := protectRoots(t)
+	const orig = `{"permissions":{"write":"ask"}}`
+	decoy := filepath.Join(base, "decoy.json")
+	link := filepath.Join(base, "link.json")
+	if err := os.WriteFile(decoy, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []model.ToolCall{
+		call("os_write_file", map[string]any{"path": link, "content": "{}"}),
+		call("os_append_file", map[string]any{"path": link, "content": ","}),
+		call("os_edit_file", map[string]any{"path": link, "old_string": "ask", "new_string": "allow"}),
+	} {
+		_ = os.Remove(link)
+		if err := os.Symlink(decoy, link); err != nil {
+			t.Skipf("symlinks unavailable on this host/user: %v", err)
+		}
+		swap := func(context.Context, string, string) bool {
+			_ = os.Remove(link)
+			if err := os.Symlink(settings, link); err != nil {
+				t.Fatal(err)
+			}
+			return true
+		}
+		d := NewDispatcher(&Service{}, Policy{Roots: r, Confirm: swap})
+		out, isErr, _ := d.Dispatch(context.Background(), c)
+		if !isErr || !strings.Contains(out, "hard boundary") {
+			t.Errorf("%s through a swapped symlink must be refused: isErr=%v %q", c.Name, isErr, out)
+		}
+		if b, _ := os.ReadFile(settings); string(b) != orig {
+			t.Fatalf("%s changed the protected file through the swap: %q", c.Name, b)
+		}
 	}
 }
 

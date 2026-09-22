@@ -3130,6 +3130,18 @@ func schedulerTick(every time.Duration) time.Duration {
 	return improve.DefaultSchedulerTick
 }
 
+// oneShotOSPolicy is `tenant os`'s policy. Confirm is nil, so destructive
+// commands are hard-denied even with --allow-exec. Its file tools keep no read
+// or write roots, but Tenant's control files stay unwritable: a hub running on
+// the same config dir would apply an edit to them within seconds.
+func oneShotOSPolicy(cfgDir string, allowExec, allowWrite bool) osys.Policy {
+	return osys.Policy{
+		AllowExec:  allowExec,
+		AllowWrite: allowWrite,
+		Roots:      osys.Roots{Protect: protectedConfigFiles(cfgDir)},
+	}
+}
+
 // cmdOS runs an agent turn with the OS plugin (system info, file read,
 // dir list, processes + GATED shell exec). Exec is off unless
 // --allow-exec; even then destructive commands are hard-denied (no
@@ -3179,8 +3191,7 @@ func cmdOS(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Confirm nil → destructive commands hard-denied even with --allow-exec.
-	wd := osys.NewDispatcher(svc, osys.Policy{AllowExec: *allowExec, AllowWrite: *allowWrite, Confirm: nil})
+	wd := osys.NewDispatcher(svc, oneShotOSPolicy(c.cfgDir, *allowExec, *allowWrite))
 	reg := agent.NewStaticRegistry()
 	for _, sp := range wd.Tools() {
 		reg.Register(sp)

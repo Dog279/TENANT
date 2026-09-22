@@ -75,6 +75,14 @@ stays in front as a fast fail-early check. It is not the boundary.
 - **The cron exec approver's self-modification guard** now resolves a write target (relative
   paths, `..`, symlinks) against the config, data and binary dirs. The old substring check could
   be walked around, and the file tools' write roots deliberately include those dirs.
+- **The file tools refuse Tenant's control files on every surface.** `os_write`, `os_edit`,
+  `os_append` and `os_mkdir` can no longer write `settings.<agent>.json`, `config.json`,
+  `credentials.json` or `peers.json` in the config dir. This holds whatever the `write` mode and
+  in `tenant os`, so a write grant can no longer widen an exec profile, a permission mode or
+  anything else those files control. See [Operator notes](#operator-notes).
+- **File-tool paths follow dangling symlinks.** A symlink whose target did not exist yet used to
+  be checked as the link itself, while a write through it created the target. That let a write
+  land inside a deny root or outside the write roots. The target is what gets checked now.
 - **Operator CLI.** `probe` and `run` take `--config` / `--data` / `--agent` to select the
   instance.
   - `tenant sandbox probe [--json]` shows each surface's resolved profile (backend, network,
@@ -161,6 +169,22 @@ Windows.
   - live on macOS: a refusal raises the prompt, a denial stays confined, an approval re-runs
     and says so, dry-run runs on the host without asking, an unattended refusal fails the cron
     job, and one shared `os` service resolves a different profile per surface.
+- **Control-file refusal:**
+  - Through the live tool mux, with `write` on `allow`: `os_write` / `os_edit` / `os_append` /
+    `os_mkdir` on the settings file are refused as a hard boundary on the `local`, `discord`,
+    `imessage` and `cron-exec` surfaces. The paths tried: absolute, relative, `..`, relative
+    `..`, and through a symlinked dir. `config.json`, `credentials.json` and `peers.json` are
+    refused the same way. The broker is never asked, the files keep their contents, ordinary
+    writes still pass, and Tenant's own settings save still works.
+  - The protected set does not depend on the write roots: operator `--os-write-roots` and
+    `tenant os` keep it.
+  - At the `osys` layer, these are refused: a dangling symlink, a symlink loop, case and
+    long-s spellings, another agent's file, a directory in the file's place, a hard link, and a
+    macOS firmlink path (`/System/Volumes/Data/...`). On Windows, so are `settings.json.`,
+    `settings.json ` and `settings.json::$DATA`; that test is written but runs only on Windows.
+  - A symlink swapped between the check and the open is refused and leaves the file untouched,
+    not even truncated.
+  - Each case was confirmed to fail with the guard piece it covers removed.
 
 ## Operator notes
 - **Nothing changes until you set `exec_profiles`.** With no entry, every surface runs on
@@ -207,10 +231,33 @@ every entry that should be confined.
   - with the rule in place, `always` flips the rule to `allow`;
   - without it, `session` or `always` at the TUI or dashboard grants the whole `destructive`
     category, for the session or for good.
-- **Keep `write` on `ask` for a surface you confine.** The settings file lives in the config
-  dir, which the file tools may write with approval. Under `write: allow`, a turn could edit its
-  own `exec_profiles`. The cron exec approver already refuses writes that resolve into the
-  config, data or binary dirs.
+- **The file tools cannot rewrite Tenant's own controls.** `os_write`, `os_edit`, `os_append`
+  and `os_mkdir` refuse these files in the config dir, on every surface and in `tenant os`:
+  - `settings.<agent>.json`, for every agent sharing the dir, and its temp file;
+  - `config.json`;
+  - `credentials.json`;
+  - `peers.json`.
+
+  This is a hard boundary: no approval opens it, and the refusal tells the model so. Every way of
+  reaching the file is refused:
+  - the target is resolved first: relative to Tenant's working directory, through `..`, and
+    through symlinks, dangling ones included;
+  - names match regardless of case;
+  - an existing file is also matched by identity, so a hard link to it is refused too;
+  - the file is checked again once it is open, before anything is written, so a symlink swapped
+    in the meantime cannot redirect the write.
+
+  `write: allow` therefore no longer lets a turn edit its own `exec_profiles`, category modes or
+  tool rules. Tenant's own saves don't go through the file tools and are unaffected: change
+  these files with `/permissions`, `/approve always`, `/model`, `tenant keys`, `tenant peer`,
+  the dashboard, or by hand.
+- **Still keep `write` on `ask` for a surface you confine, unless you narrow
+  `--os-write-roots`.** The default write roots include Documents and the parent of the config
+  and data dirs. On a default install that parent is the OS-wide config root: `~/.config`,
+  `%AppData%` or `~/Library/Application Support`. Under `write: allow`, a turn can still plant
+  something there that later runs outside the sandbox: an XDG autostart entry or a systemd user
+  unit on Linux, or a Startup-folder item or PowerShell profile on Windows. The cron exec
+  approver still refuses any write that resolves into the config, data or binary dirs.
 - **`os_exec` has no work dir.** Under a confining profile it runs in Tenant's own working
   directory and can write only to `write_roots` (plus a per-run scratch dir it is not told about
   on macOS, and a private `/tmp` on Linux). Give the profile a `write_roots` entry for anything
@@ -219,9 +266,11 @@ every entry that should be confined.
   real `os_exec` call. Cron shell jobs run in `<data-dir>/cron-work`, which the carve-out keeps
   usable.
 - **The file tools are not sandboxed.** `os_read_file`, `os_list_dir`, `os_write` and the rest
-  run inside Tenant's own process. They are bounded by `--os-deny-roots` / `--os-write-roots`
-  and the write approval, not by an exec profile, so the credential-store deny list above does
-  not apply to them. Add those paths to `--os-deny-roots` if a surface must not read them.
+  run inside Tenant's own process. They are bounded by `--os-deny-roots` / `--os-write-roots`,
+  the write approval and the control-file refusal above, not by an exec profile, so the
+  credential-store deny list above does not apply to them. The refusal covers writes only:
+  `os_read_file` can still read `credentials.json`. Add those paths to `--os-deny-roots` if a
+  surface must not read them.
 
 ### Enforcement by OS
 
@@ -256,6 +305,14 @@ every entry that should be confined.
 - **`network: allowlist` is not enforced anywhere yet.** The `allow` list is accepted, but no
   backend consumes it. Seatbelt and bubblewrap allow all outbound traffic (the same as `full`),
   and Windows enforces no network policy. Use `none` where it matters.
+- **The control-file refusal has two small residuals.**
+  - A write that wins that symlink-swap race against a control file that does not exist yet can
+    leave an empty file or a directory at its name (directories come from `os_mkdir`, or from a
+    write creating its parent folders). Nothing is ever written into the file. Tenant reads an empty file as corrupt and falls back to defaults, which is what it
+    used while the file was missing. A directory there makes Tenant's own save fail until you
+    remove it.
+  - The file tools' other boundaries (deny and write roots) are still checked only by path, so
+    that race could still carry a write outside them.
 - **A profile that allows network can reach Tenant's own loopback listeners,** including the
   dashboard API, which accepts unauthenticated requests on a loopback bind when `dashboard.auth`
   is unset. Keep confined surfaces on `network: none`, or set `dashboard.auth` (its token lives

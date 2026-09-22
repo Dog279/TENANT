@@ -200,7 +200,7 @@ func (d *Dispatcher) writeFile(ctx context.Context, args json.RawMessage) (strin
 	if a.CreateDirs != nil {
 		createDirs = *a.CreateDirs
 	}
-	out, err := d.svc.WriteFile(a.Path, a.Content, createDirs)
+	out, err := d.svc.WriteFile(a.Path, a.Content, createDirs, d.policy.Roots.checkOpened)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -224,7 +224,7 @@ func (d *Dispatcher) appendFile(ctx context.Context, args json.RawMessage) (stri
 	if err := d.policy.gateWrite(ctx, "os_append", "append to "+a.Path); err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.AppendFile(a.Path, a.Content)
+	out, err := d.svc.AppendFile(a.Path, a.Content, d.policy.Roots.checkOpened)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -250,7 +250,7 @@ func (d *Dispatcher) editFile(ctx context.Context, args json.RawMessage) (string
 	if err := d.policy.gateWrite(ctx, "os_edit", "edit "+a.Path); err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.EditFile(a.Path, a.OldString, a.NewString, a.ReplaceAll)
+	out, err := d.svc.EditFile(a.Path, a.OldString, a.NewString, a.ReplaceAll, d.policy.Roots.checkOpened)
 	if err != nil {
 		return err.Error(), true, nil
 	}

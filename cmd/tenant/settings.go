@@ -28,7 +28,8 @@ type settings struct {
 	ToolRules map[string]string `json:"tool_rules,omitempty"`
 	// ExecProfiles holds the operator's per-surface execution-sandbox overrides
 	// (execprofiles.go), keyed by surface or "default". Hand-edited; the running
-	// hub re-reads it. There is deliberately no agent tool that writes it.
+	// hub re-reads it. There is deliberately no agent tool that writes it, and
+	// the file tools refuse this file (protectedConfigFiles).
 	ExecProfiles map[string]execProfileSetting `json:"exec_profiles,omitempty"`
 }
 

@@ -17,7 +17,8 @@ package main
 // load at startup and are re-read when the file is edited, so a surface moves
 // onto the restricted backend with no restart. There is deliberately NO agent
 // tool that reads or writes a profile: the model must never widen its own
-// boundary.
+// boundary. The file tools refuse the settings file outright
+// (protectedConfigFiles), so write access does not open a way round that.
 //
 //	"exec_profiles": {
 //	  "default":    {"backend": "restricted"},
