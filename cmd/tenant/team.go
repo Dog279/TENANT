@@ -481,7 +481,9 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	// research run.
 	base := ctx
 	if r.cfg.BaseCtx != nil {
-		base = r.cfg.BaseCtx
+		// Outlive the spawning request, but keep its exec surface so the
+		// sub-agent runs os_exec under its parent's sandbox profile.
+		base = inheritExecSurface(r.cfg.BaseCtx, ctx)
 	}
 	agCtx, cancel := context.WithCancel(base)
 	m := &member{id: id, role: role, task: task, status: "running",

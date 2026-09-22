@@ -41,6 +41,17 @@ func TestExecSurface_ContextStamp(t *testing.T) {
 	}
 }
 
+func TestInheritExecSurface_SubAgentKeepsParentSurface(t *testing.T) {
+	base := context.Background() // a team runtime's long-lived BaseCtx
+	turn := withExecSurface(context.Background(), surfaceDiscord)
+	if got := execSurfaceFrom(inheritExecSurface(base, turn)); got != surfaceDiscord {
+		t.Fatalf("sub-agent base ctx must keep the parent's surface, got %q", got)
+	}
+	if got := execSurfaceFrom(inheritExecSurface(base, context.Background())); got != surfaceLocal {
+		t.Fatalf("an unstamped parent leaves the sub-agent local, got %q", got)
+	}
+}
+
 func TestExecProfileStore_LoadValidates(t *testing.T) {
 	resetExecProfiles(t)
 	n, skipped := defaultExecProfiles.Load(map[string]execProfileSetting{

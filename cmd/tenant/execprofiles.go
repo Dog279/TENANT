@@ -82,6 +82,17 @@ func execSurfaceFrom(ctx context.Context) string {
 	return surfaceLocal
 }
 
+// inheritExecSurface carries the exec surface stamped on from onto to. A team
+// runtime with a BaseCtx starts sub-agents on that long-lived context instead of
+// the spawning turn's, which would otherwise drop the stamp and run a sub-agent's
+// os_exec under the local profile: a way around a stricter per-surface boundary.
+func inheritExecSurface(to, from context.Context) context.Context {
+	if s, _ := from.Value(execSurfaceKey{}).(string); s != "" {
+		return withExecSurface(to, s)
+	}
+	return to
+}
+
 // execProfile is the resolved execution profile for one surface: which sandbox
 // backend to run on, and the Policy that backend enforces.
 type execProfile struct {
