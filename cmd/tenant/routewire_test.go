@@ -148,7 +148,10 @@ func TestRouteRuntimeClassifierDeadlineSelectsFastAndFallsBackSlow(t *testing.T)
 					Enabled: true, Mode: route.ModeActive, NeverCloud: true,
 					MinComplexityForBig: 4, StickySession: true,
 				},
-				engine: route.NewEngine(classifier, t.TempDir(), 10), router: router, log: slog.Default(),
+				// No decision log: the route hook records after Turn has stopped
+				// waiting on it, so a log in t.TempDir() races the dir's removal.
+				// This test checks selection only.
+				engine: route.NewEngine(classifier, "", 10), router: router, log: slog.Default(),
 			}
 			ag, err := agent.New(agent.Config{
 				AgentID: "main", SessionID: "s", Router: router, Working: working.New(),

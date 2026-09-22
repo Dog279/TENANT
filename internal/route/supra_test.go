@@ -190,7 +190,9 @@ func TestSupraEndpointDown(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "route: supra:") {
 		t.Fatalf("error = %q", err)
 	}
-	if sig.Latency <= 0 || sig.Raw != "" {
+	// Latency is measured, but Windows' clock ticks coarsely enough that a
+	// refused loopback connect can read as 0, so only a negative value is wrong.
+	if sig.Latency < 0 || sig.Raw != "" {
 		t.Fatalf("signal on failure = %+v", sig)
 	}
 }

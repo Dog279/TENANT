@@ -22,10 +22,17 @@ func resetExecProfiles(t *testing.T) {
 	t.Cleanup(func() { defaultExecProfiles.Load(nil) })
 }
 
+// restrictedOrSkip skips unless this OS's restricted backend enforces
+// filesystem roots: the tests that use it need a real refusal, and Windows
+// enforces none until TEN-346 lands its ACEs.
 func restrictedOrSkip(t *testing.T) {
 	t.Helper()
-	if _, err := sandbox.Restricted(); err != nil {
+	b, err := sandbox.Restricted()
+	if err != nil {
 		t.Skipf("no restricted backend on this OS: %v", err)
+	}
+	if c := b.Probe(context.Background()); c.Filesystem == sandbox.EnforceNone {
+		t.Skipf("the restricted backend enforces no filesystem roots here: %s", c.Detail)
 	}
 }
 
@@ -77,10 +84,11 @@ func TestExecProfileStore_LoadValidates(t *testing.T) {
 func TestResolveExecProfile_AppliesOverrides(t *testing.T) {
 	resetExecProfiles(t)
 	off := false
+	secrets := filepath.Join(t.TempDir(), "secrets") // absolute on every OS; /opt/secrets is not on Windows
 	defaultExecProfiles.Load(map[string]execProfileSetting{
 		"cron-shell": {
 			Backend: "restricted", Enforce: &off, Network: "none",
-			WriteRoots: []string{"~/tenant-out"}, DenyRoots: []string{"/opt/secrets"},
+			WriteRoots: []string{"~/tenant-out"}, DenyRoots: []string{secrets},
 			EnvPass: []string{"PATH"}, EnvSet: map[string]string{"LANG": "C"},
 			CPUSeconds: 30, MemoryMB: 512, MaxPIDs: 64,
 		},
@@ -95,7 +103,7 @@ func TestResolveExecProfile_AppliesOverrides(t *testing.T) {
 	if !stdreflect.DeepEqual(p.Policy.WriteRoots, []string{filepath.Join(home, "tenant-out")}) {
 		t.Errorf("~ not expanded in write roots: %v", p.Policy.WriteRoots)
 	}
-	for _, must := range []string{cfg, data, "/opt/secrets", filepath.Join(home, ".ssh"), filepath.Join(home, ".aws")} {
+	for _, must := range []string{cfg, data, secrets, filepath.Join(home, ".ssh"), filepath.Join(home, ".aws")} {
 		if !hasString(p.Policy.DenyRoots, must) {
 			t.Errorf("deny roots missing %q: %v", must, p.Policy.DenyRoots)
 		}
