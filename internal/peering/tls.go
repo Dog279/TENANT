@@ -38,12 +38,16 @@ func CertFingerprint(der []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// CertPaths returns where this instance's peer TLS cert and private key live.
+func CertPaths(cfgDir string) (cert, key string) {
+	return filepath.Join(cfgDir, peerCertFile), filepath.Join(cfgDir, peerKeyFile)
+}
+
 // LoadOrMintCert returns this instance's stable self-signed TLS cert and its
 // fingerprint, minting + persisting one (0600) under cfgDir on first use. The
 // fingerprint is stable across restarts because the cert is reused.
 func LoadOrMintCert(cfgDir string) (tls.Certificate, string, error) {
-	certPath := filepath.Join(cfgDir, peerCertFile)
-	keyPath := filepath.Join(cfgDir, peerKeyFile)
+	certPath, keyPath := CertPaths(cfgDir)
 
 	if fileExists(certPath) && fileExists(keyPath) {
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)

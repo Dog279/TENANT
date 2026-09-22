@@ -924,11 +924,20 @@ behaviour). A surface is contained only once the operator moves it to
 unless needed, run Tenant as a least-privilege user, prefer a
 container/VM. Also: the file tools (`os_read_file`, `os_write`, …) run
 in Tenant's own process, **outside** the sandbox. They are bounded only
-by their own roots (`--os-deny-roots`, which by default covers system
-dirs only), the write approval, and `Roots.Protect`: a hard refusal to
-write Tenant's control files (`settings.<agent>.json`, `config.json`,
-`credentials.json`, `peers.json`), checked on the resolved path and
-again on the opened file. Enabling this plugin is consent to
+by their own roots, the write approval, and two hard lists built by
+`fileToolGuards`. The roots are `--os-deny-roots`, which by default
+covers system dirs only, and the write roots, which by default are
+Tenant's config and data dirs and the operator's Desktop, Documents,
+Downloads and temp dir. The two lists:
+- `Roots.Protect`: files never written, such as `settings.<agent>.json`,
+  the soul, the spend ledger and the binary;
+- `Roots.Secret`: files never read or written, such as `config.json`,
+  `credentials.json`, the token and key files, the claude CLI's login
+  and the credential stores.
+
+Each path is checked in resolved form. The tools then open exactly that
+path, with no symlink allowed on it on macOS and Linux, and re-check the
+open file's identity. Enabling this plugin is consent to
 filesystem read (exfiltration risk when combined with the send-capable
 plugins). Documented so the operator opts in knowingly.
 

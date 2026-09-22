@@ -17,7 +17,7 @@ import (
 )
 
 func TestService_FileWriteEditAppend(t *testing.T) {
-	dir := t.TempDir()
+	dir := realDir(t)
 	svc, _ := Open(Config{})
 	p := filepath.Join(dir, "notes", "wiki.md") // nested → create_dirs
 
@@ -69,7 +69,7 @@ func TestService_FileWriteEditAppend(t *testing.T) {
 }
 
 func TestService_ReadImage(t *testing.T) {
-	dir := t.TempDir()
+	dir := realDir(t)
 	svc, _ := Open(Config{})
 	p := filepath.Join(dir, "pic.png")
 	img := image.NewRGBA(image.Rect(0, 0, 7, 3))
@@ -78,7 +78,7 @@ func TestService_ReadImage(t *testing.T) {
 	_ = png.Encode(f, img)
 	_ = f.Close()
 
-	out, err := svc.ReadImage(p)
+	out, err := svc.ReadImage(p, nil)
 	if err != nil {
 		t.Fatalf("ReadImage: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestService_ReadImage(t *testing.T) {
 	// A non-image errors clearly.
 	txt := filepath.Join(dir, "x.txt")
 	_ = os.WriteFile(txt, []byte("not an image"), 0o644)
-	if _, err := svc.ReadImage(txt); err == nil {
+	if _, err := svc.ReadImage(txt, nil); err == nil {
 		t.Fatal("ReadImage on a text file should error")
 	}
 }
@@ -188,12 +188,12 @@ func TestDispatch_ProtectedFileIsAHardBoundary(t *testing.T) {
 	}
 }
 
-// The race a path check alone loses: the path is vetted, then something running
-// alongside the turn re-points a symlink at a protected file before the write
-// opens it. Here the approver (which runs between the two) does the swap. The
-// open file is checked by identity, so the write is refused and the protected
-// file keeps its contents; it is not even truncated.
-func TestDispatch_ProtectedFileSurvivesSymlinkSwap(t *testing.T) {
+// The tools open the path that was checked, not the path as given. So when the
+// symlink the model named is re-pointed at a protected file after the check
+// (here the approver, which runs between the two, does it), the write still
+// lands on the file the link pointed to when it was checked, and the protected
+// file keeps its contents.
+func TestDispatch_WritesTheCheckedPathNotTheLink(t *testing.T) {
 	r, base, _, settings := protectRoots(t)
 	const orig = `{"permissions":{"write":"ask"}}`
 	decoy := filepath.Join(base, "decoy.json")
@@ -201,31 +201,145 @@ func TestDispatch_ProtectedFileSurvivesSymlinkSwap(t *testing.T) {
 	if err := os.WriteFile(decoy, []byte(orig), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	for _, c := range []model.ToolCall{
-		call("os_write_file", map[string]any{"path": link, "content": "{}"}),
-		call("os_append_file", map[string]any{"path": link, "content": ","}),
-		call("os_edit_file", map[string]any{"path": link, "old_string": "ask", "new_string": "allow"}),
-	} {
+	if err := os.Symlink(decoy, link); err != nil {
+		t.Skipf("symlinks unavailable on this host/user: %v", err)
+	}
+	swap := func(context.Context, string, string) bool {
 		_ = os.Remove(link)
-		if err := os.Symlink(decoy, link); err != nil {
-			t.Skipf("symlinks unavailable on this host/user: %v", err)
+		if err := os.Symlink(settings, link); err != nil {
+			t.Fatal(err)
 		}
-		swap := func(context.Context, string, string) bool {
-			_ = os.Remove(link)
-			if err := os.Symlink(settings, link); err != nil {
+		return true
+	}
+	d := NewDispatcher(&Service{}, Policy{Roots: r, Confirm: swap})
+	if out, isErr, _ := d.Dispatch(context.Background(), call("os_write_file", map[string]any{"path": link, "content": "{}"})); isErr {
+		t.Fatalf("the write should land on the checked path: %q", out)
+	}
+	if b, _ := os.ReadFile(decoy); string(b) != "{}" {
+		t.Errorf("the checked path (the link's old target) should hold the write: %q", b)
+	}
+	if b, _ := os.ReadFile(settings); string(b) != orig {
+		t.Fatalf("the protected file changed through the swapped link: %q", b)
+	}
+}
+
+// swapDirForLink replaces dir with a symlink to target, the way a process
+// running alongside the turn could between the check and the open.
+func swapDirForLink(t *testing.T, dir, target string) {
+	t.Helper()
+	if err := os.Rename(dir, dir+".real"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The race that remains once the checked path is what gets opened: a
+// directory ON that path is swapped for a symlink after the check. On macOS
+// and Linux the open refuses a symlink anywhere on the path; elsewhere the
+// open file's identity gives the protected file away. Either way the write is
+// refused and the protected file keeps its contents; it is not even truncated.
+func TestDispatch_RefusesADirSwappedForASymlink(t *testing.T) {
+	for _, c := range []struct{ tool, content string }{
+		{"os_write_file", "{}"}, {"os_append_file", ","}, {"os_edit_file", ""},
+	} {
+		t.Run(c.tool, func(t *testing.T) {
+			r, base, cfg, settings := protectRoots(t)
+			const orig = `{"permissions":{"write":"ask"}}`
+			work := filepath.Join(base, "work")
+			if err := os.MkdirAll(work, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			return true
-		}
-		d := NewDispatcher(&Service{}, Policy{Roots: r, Confirm: swap})
+			needSymlinks(t)
+			swap := func(context.Context, string, string) bool {
+				swapDirForLink(t, work, cfg)
+				return true
+			}
+			args := map[string]any{"path": filepath.Join(work, "settings.main.json"), "content": c.content}
+			if c.tool == "os_edit_file" {
+				args = map[string]any{"path": args["path"], "old_string": "ask", "new_string": "allow"}
+			}
+			d := NewDispatcher(&Service{}, Policy{Roots: r, Confirm: swap})
+			out, isErr, _ := d.Dispatch(context.Background(), call(c.tool, args))
+			if !isErr || !strings.Contains(out, "hard boundary") {
+				t.Errorf("a write through a dir swapped for a symlink must be refused: isErr=%v %q", isErr, out)
+			}
+			if b, _ := os.ReadFile(settings); string(b) != orig {
+				t.Fatalf("the protected file changed through the swap: %q", b)
+			}
+		})
+	}
+}
+
+// Reads race the same way: a read is not gated, but a process running alongside
+// the turn can still swap a directory on the checked path for a symlink into a
+// secret directory. The read is refused and no byte of the secret comes back.
+func TestService_ReadRefusesADirSwappedIntoASecret(t *testing.T) {
+	r, base, _, key := secretRoots(t)
+	work := filepath.Join(base, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, filepath.Base(key)), []byte("decoy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target, err := r.Resolve(filepath.Join(work, filepath.Base(key)), false)
+	if err != nil {
+		t.Fatalf("the decoy is readable: %v", err)
+	}
+	needSymlinks(t)
+	swapDirForLink(t, work, filepath.Dir(key))
+	out, err := (&Service{}).ReadFile(target, r.checkOpenedRead)
+	if err == nil || strings.Contains(out, "s3cret") {
+		t.Fatalf("a read through a dir swapped into a secret dir must be refused: %q, %v", out, err)
+	}
+	if !strings.Contains(err.Error(), "hard boundary") {
+		t.Errorf("the refusal should say it is a hard boundary: %v", err)
+	}
+}
+
+// The dispatcher refuses a secret to every reading tool.
+func TestDispatch_SecretIsRefusedToReads(t *testing.T) {
+	r, _, creds, key := secretRoots(t)
+	d := NewDispatcher(&Service{}, Policy{Roots: r})
+	for _, c := range []model.ToolCall{
+		call("os_read_file", map[string]any{"path": creds}),
+		call("os_read_file", map[string]any{"path": key}),
+		call("os_read_image", map[string]any{"path": key}),
+		call("os_list_dir", map[string]any{"path": filepath.Dir(key)}),
+	} {
 		out, isErr, _ := d.Dispatch(context.Background(), c)
-		if !isErr || !strings.Contains(out, "hard boundary") {
-			t.Errorf("%s through a swapped symlink must be refused: isErr=%v %q", c.Name, isErr, out)
+		if !isErr || !strings.Contains(out, "holds secrets") || strings.Contains(out, "s3cret") {
+			t.Errorf("%s(%s) must be refused without leaking: isErr=%v %q", c.Name, c.Arguments, isErr, out)
 		}
-		if b, _ := os.ReadFile(settings); string(b) != orig {
-			t.Fatalf("%s changed the protected file through the swap: %q", c.Name, b)
-		}
+	}
+}
+
+// On macOS and Linux the same swap cannot carry an ordinary write outside the
+// write roots either: the open refuses the symlink, so nothing lands in the
+// directory the link points to.
+func TestDispatch_DirSwapCannotLeaveTheWriteRoots(t *testing.T) {
+	if !refusesLinksOnPath(t) {
+		t.Skip("this host cannot refuse a symlink on the whole path at open (Windows, or no openat2)")
+	}
+	r, base, _, _ := protectRoots(t)
+	outside := t.TempDir()
+	work := filepath.Join(base, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	swap := func(context.Context, string, string) bool {
+		swapDirForLink(t, work, outside)
+		return true
+	}
+	d := NewDispatcher(&Service{}, Policy{Roots: r, Confirm: swap})
+	out, isErr, _ := d.Dispatch(context.Background(), call("os_write_file", map[string]any{"path": filepath.Join(work, "note.txt"), "content": "x"}))
+	if !isErr || !strings.Contains(out, "symbolic link appeared") {
+		t.Errorf("the write must be refused, not redirected: isErr=%v %q", isErr, out)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "note.txt")); err == nil {
+		t.Fatal("the write landed outside the write roots through the swapped dir")
 	}
 }
 
@@ -378,4 +492,45 @@ func TestTools(t *testing.T) {
 			t.Errorf("missing tool %s", w)
 		}
 	}
+}
+
+// needSymlinks skips the test where this host/user cannot create symlinks.
+func needSymlinks(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Symlink(dir, filepath.Join(dir, "link")); err != nil {
+		t.Skipf("symlinks unavailable on this host/user: %v", err)
+	}
+}
+
+// refusesLinksOnPath probes whether openFile refuses a symlink in the middle of
+// a path on this host: macOS 11+, or Linux 5.6+ where no seccomp filter blocks
+// openat2.
+func refusesLinksOnPath(t *testing.T) bool {
+	t.Helper()
+	dir := realDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link")); err != nil {
+		return false
+	}
+	f, err := openFile(filepath.Join(dir, "link", "probe"), os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return true
+	}
+	_ = f.Close()
+	return false
+}
+
+// realDir is t.TempDir() with its symlinks resolved (macOS keeps temp dirs
+// under the /var symlink): the Service opens paths as Roots.Resolve returns
+// them, with no symlink left on the way.
+func realDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

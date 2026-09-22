@@ -22,7 +22,7 @@ package main
 // manage them live with /permissions add|rm and the dashboard's Tools page.
 // There is deliberately NO agent tool for rules: the model must not be able to
 // grant itself permissions. The file tools refuse the settings file outright
-// (protectedConfigFiles), so write access does not open a way round that.
+// (fileToolGuards), so write access does not open a way round that.
 
 import (
 	"fmt"

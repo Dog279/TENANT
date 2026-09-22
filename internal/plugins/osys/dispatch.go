@@ -147,10 +147,14 @@ func (d *Dispatcher) readFile(args json.RawMessage) (string, bool, error) {
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, false); err != nil {
+	if strings.TrimSpace(a.Path) == "" {
+		return "path is required", true, nil
+	}
+	target, err := d.policy.Roots.Resolve(a.Path, false)
+	if err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.ReadFile(a.Path)
+	out, err := d.svc.ReadFile(target, d.policy.Roots.checkOpenedRead)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -164,10 +168,14 @@ func (d *Dispatcher) readImage(args json.RawMessage) (string, bool, error) {
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, false); err != nil {
+	if strings.TrimSpace(a.Path) == "" {
+		return "path is required", true, nil
+	}
+	target, err := d.policy.Roots.Resolve(a.Path, false)
+	if err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.ReadImage(a.Path)
+	out, err := d.svc.ReadImage(target, d.policy.Roots.checkOpenedRead)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -186,11 +194,12 @@ func (d *Dispatcher) writeFile(ctx context.Context, args json.RawMessage) (strin
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, true); err != nil {
+	target, err := d.policy.Roots.Resolve(a.Path, true)
+	if err != nil {
 		return err.Error(), true, nil
 	}
 	detail := "write " + a.Path
-	if d.svc.Exists(a.Path) {
+	if d.svc.Exists(target) {
 		detail = "OVERWRITE existing file " + a.Path
 	}
 	if err := d.policy.gateWrite(ctx, "os_write", detail); err != nil {
@@ -200,7 +209,7 @@ func (d *Dispatcher) writeFile(ctx context.Context, args json.RawMessage) (strin
 	if a.CreateDirs != nil {
 		createDirs = *a.CreateDirs
 	}
-	out, err := d.svc.WriteFile(a.Path, a.Content, createDirs, d.policy.Roots.checkOpened)
+	out, err := d.svc.WriteFile(target, a.Content, createDirs, d.policy.Roots.checkOpened)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -218,13 +227,14 @@ func (d *Dispatcher) appendFile(ctx context.Context, args json.RawMessage) (stri
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, true); err != nil {
+	target, err := d.policy.Roots.Resolve(a.Path, true)
+	if err != nil {
 		return err.Error(), true, nil
 	}
 	if err := d.policy.gateWrite(ctx, "os_append", "append to "+a.Path); err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.AppendFile(a.Path, a.Content, d.policy.Roots.checkOpened)
+	out, err := d.svc.AppendFile(target, a.Content, d.policy.Roots.checkOpened)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -244,13 +254,14 @@ func (d *Dispatcher) editFile(ctx context.Context, args json.RawMessage) (string
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, true); err != nil {
+	target, err := d.policy.Roots.Resolve(a.Path, true)
+	if err != nil {
 		return err.Error(), true, nil
 	}
 	if err := d.policy.gateWrite(ctx, "os_edit", "edit "+a.Path); err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.EditFile(a.Path, a.OldString, a.NewString, a.ReplaceAll, d.policy.Roots.checkOpened)
+	out, err := d.svc.EditFile(target, a.OldString, a.NewString, a.ReplaceAll, d.policy.Roots.checkOpened)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -267,13 +278,14 @@ func (d *Dispatcher) makeDir(ctx context.Context, args json.RawMessage) (string,
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, true); err != nil {
+	target, err := d.policy.Roots.Resolve(a.Path, true)
+	if err != nil {
 		return err.Error(), true, nil
 	}
 	if err := d.policy.gateWrite(ctx, "os_mkdir", "create directory "+a.Path); err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.MakeDir(a.Path)
+	out, err := d.svc.MakeDir(target)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -287,10 +299,11 @@ func (d *Dispatcher) listDir(args json.RawMessage) (string, bool, error) {
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
 	}
-	if err := d.policy.Roots.Check(a.Path, false); err != nil {
+	target, err := d.policy.Roots.Resolve(a.Path, false)
+	if err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.ListDir(a.Path)
+	out, err := d.svc.ListDir(target)
 	if err != nil {
 		return err.Error(), true, nil
 	}

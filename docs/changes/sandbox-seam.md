@@ -75,14 +75,22 @@ stays in front as a fast fail-early check. It is not the boundary.
 - **The cron exec approver's self-modification guard** now resolves a write target (relative
   paths, `..`, symlinks) against the config, data and binary dirs. The old substring check could
   be walked around, and the file tools' write roots deliberately include those dirs.
-- **The file tools refuse Tenant's control files on every surface.** `os_write`, `os_edit`,
-  `os_append` and `os_mkdir` can no longer write `settings.<agent>.json`, `config.json`,
-  `credentials.json` or `peers.json` in the config dir. This holds whatever the `write` mode and
-  in `tenant os`, so a write grant can no longer widen an exec profile, a permission mode or
-  anything else those files control. See [Operator notes](#operator-notes).
-- **File-tool paths follow dangling symlinks.** A symlink whose target did not exist yet used to
-  be checked as the link itself, while a write through it created the target. That let a write
-  land inside a deny root or outside the write roots. The target is what gets checked now.
+- **The file tools cannot touch Tenant's controls or secrets, on any surface.** Two built-in
+  lists apply whatever the `write` mode, and in `tenant os` too. *Protected* files can be read
+  but never written: `settings.<agent>.json`, the soul, the peer cert, the claude spend ledger and
+  the Tenant binary. *Secrets* can be neither read nor written: `config.json` (it holds the
+  dashboard token), `credentials.json`, `peers.json`, the peer key, the OAuth token files, a
+  configured service-account or TLS key, the claude CLI's login, and the credential stores the
+  exec sandbox denies. A write grant can no longer widen an exec profile or a permission mode, and
+  a read can no longer hand a turn a credential to send. See [Operator notes](#operator-notes).
+- **The file tools' default write roots stop at Tenant's own dirs.** They used to include the
+  parent of the config and data dirs. On a default install that is the OS-wide config root, and
+  on a `C:\Tenant` server it holds the binary and the claude CLI's config.
+- **The file tools open exactly the path they checked.** A path is resolved first. Dangling
+  symlinks are followed too: they used to be checked as the link itself while a write through one
+  created the target. On macOS and Linux the resolved path is then opened with no symlink allowed
+  anywhere on it. A symlink swapped in after the check fails the open instead of redirecting it,
+  and that holds for every file-tool boundary.
 - **Operator CLI.** `probe` and `run` take `--config` / `--data` / `--agent` to select the
   instance.
   - `tenant sandbox probe [--json]` shows each surface's resolved profile (backend, network,
@@ -169,22 +177,44 @@ Windows.
   - live on macOS: a refusal raises the prompt, a denial stays confined, an approval re-runs
     and says so, dry-run runs on the host without asking, an unattended refusal fails the cron
     job, and one shared `os` service resolves a different profile per surface.
-- **Control-file refusal:**
+- **File-tool guards:**
   - Through the live tool mux, with `write` on `allow`: `os_write` / `os_edit` / `os_append` /
     `os_mkdir` on the settings file are refused as a hard boundary on the `local`, `discord`,
     `imessage` and `cron-exec` surfaces. The paths tried: absolute, relative, `..`, relative
     `..`, and through a symlinked dir. `config.json`, `credentials.json` and `peers.json` are
     refused the same way. The broker is never asked, the files keep their contents, ordinary
     writes still pass, and Tenant's own settings save still works.
-  - The protected set does not depend on the write roots: operator `--os-write-roots` and
-    `tenant os` keep it.
-  - At the `osys` layer, these are refused: a dangling symlink, a symlink loop, case and
-    long-s spellings, another agent's file, a directory in the file's place, a hard link, and a
-    macOS firmlink path (`/System/Volumes/Data/...`). On Windows, so are `settings.json.`,
-    `settings.json ` and `settings.json::$DATA`; that test is written but runs only on Windows.
-  - A symlink swapped between the check and the open is refused and leaves the file untouched,
-    not even truncated.
-  - Each case was confirmed to fail with the guard piece it covers removed.
+  - Also through the live mux, `os_read_file` is refused, with nothing leaked, for every secret
+    kind:
+    - `config.json`, `credentials.json`, `peers.json` and the peer key;
+    - an MCP token cache and the Atlassian, GitHub and gsuite OAuth files;
+    - a service-account key whose name contains `[`, and a dashboard TLS key;
+    - the claude CLI's login and an `~/.ssh` key.
+
+    Ordinary files still read.
+  - The default write roots include the config and data dirs but not their parent. In a
+    `C:\Tenant`-shaped layout the binary and `claude-config` are refused, while the wiki in `data`
+    stays writable.
+  - On Windows, PowerShell profiles and modules under Documents are refused. That test runs only
+    on Windows.
+  - The guards don't depend on the write roots: operator `--os-write-roots` and `tenant os` keep
+    them all, the soul, peer cert, spend ledger and binary included.
+  - At the `osys` layer, these are refused:
+    - a dangling symlink and a symlink loop;
+    - case and long-s spellings, and another agent's file;
+    - a directory in a file's place;
+    - a hard link to a secret file, and one into a secret directory;
+    - a macOS firmlink path (`/System/Volumes/Data/...`);
+    - on Windows only, `settings.json.`, `settings.json ` and `settings.json::$DATA`.
+
+    Operator paths are literal: only `*` is a wildcard.
+  - Races: a directory on the checked path is swapped for a symlink after the check.
+    - A write through it is refused, and the protected file is untouched, not even truncated.
+    - A read through it is refused, and no byte of the secret comes back.
+    - On macOS and Linux, the swap cannot carry an ordinary write outside the write roots.
+    - The identity re-check, which is what covers hosts that cannot refuse a symlink at open, is
+      tested on its own.
+  - Each guard piece was confirmed to fail a test when removed.
 
 ## Operator notes
 - **Nothing changes until you set `exec_profiles`.** With no entry, every surface runs on
@@ -231,33 +261,55 @@ every entry that should be confined.
   - with the rule in place, `always` flips the rule to `allow`;
   - without it, `session` or `always` at the TUI or dashboard grants the whole `destructive`
     category, for the session or for good.
-- **The file tools cannot rewrite Tenant's own controls.** `os_write`, `os_edit`, `os_append`
-  and `os_mkdir` refuse these files in the config dir, on every surface and in `tenant os`:
-  - `settings.<agent>.json`, for every agent sharing the dir, and its temp file;
-  - `config.json`;
-  - `credentials.json`;
-  - `peers.json`.
+- **The file tools cannot touch Tenant's controls or secrets.** On every surface and in
+  `tenant os`, whatever the `write` mode, two built-in lists apply.
+  - **Protected:** readable, but never written by `os_write`, `os_edit`, `os_append` or
+    `os_mkdir`:
+    - `settings.<agent>.json` for every agent sharing the config dir, and its temp file;
+    - the soul (`soul/`);
+    - `peer-cert.pem`;
+    - the claude spend ledger (`claudecode-usage.json`, the weekly budget rail);
+    - the Tenant binary;
+    - on Windows, the PowerShell profile and module folders under Documents.
+  - **Secret:** never read or written:
+    - `config.json`, because it holds the dashboard's auth token;
+    - `credentials.json`;
+    - `peers.json` and `peer-key.pem`;
+    - `mcp/`, `atlassian-token.json`, `github-token.json` and `oauth_client.json`;
+    - the gsuite service-account key and the dashboard TLS key, when set;
+    - the claude CLI's config: `$CLAUDE_CONFIG_DIR`, else `~/.claude` and `~/.claude.json`;
+    - the credential stores and browser profiles listed above, the same set the exec sandbox
+      denies to confined commands.
 
-  This is a hard boundary: no approval opens it, and the refusal tells the model so. Every way of
-  reaching the file is refused:
+  These are hard boundaries: no approval opens them, and the refusal tells the model so. Every
+  way of reaching a file is refused:
   - the target is resolved first: relative to Tenant's working directory, through `..`, and
     through symlinks, dangling ones included;
-  - names match regardless of case;
+  - names match regardless of case, and an entry naming a directory covers everything in it;
   - an existing file is also matched by identity, so a hard link to it is refused too;
-  - the file is checked again once it is open, before anything is written, so a symlink swapped
-    in the meantime cannot redirect the write.
+  - the tools then open exactly the path they checked, with no symlink allowed anywhere on it
+    (macOS 11+, Linux 5.6+), and check the open file's identity again, so a symlink swapped in
+    after the check cannot redirect the operation.
 
-  `write: allow` therefore no longer lets a turn edit its own `exec_profiles`, category modes or
-  tool rules. Tenant's own saves don't go through the file tools and are unaffected: change
-  these files with `/permissions`, `/approve always`, `/model`, `tenant keys`, `tenant peer`,
-  the dashboard, or by hand.
-- **Still keep `write` on `ask` for a surface you confine, unless you narrow
-  `--os-write-roots`.** The default write roots include Documents and the parent of the config
-  and data dirs. On a default install that parent is the OS-wide config root: `~/.config`,
-  `%AppData%` or `~/Library/Application Support`. Under `write: allow`, a turn can still plant
-  something there that later runs outside the sandbox: an XDG autostart entry or a systemd user
-  unit on Linux, or a Startup-folder item or PowerShell profile on Windows. The cron exec
-  approver still refuses any write that resolves into the config, data or binary dirs.
+  So `write: allow` no longer lets a turn edit its own `exec_profiles`, category modes or tool
+  rules, and no read hands a turn a credential to send. Tenant's own saves don't go through the
+  file tools and are unaffected: change these files with `/permissions`, `/approve always`,
+  `/model`, `tenant keys`, `tenant peer`, the dashboard, or by hand.
+- **The default write roots are Tenant's own dirs and your working folders:** the config and data
+  dirs, Desktop, Documents, Downloads and the temp dir. They are never a parent of the config or
+  data dir. They used to include that parent:
+  - on a default install it is the OS-wide config root (`~/.config`, `%AppData%`,
+    `~/Library/Application Support`), which holds autostart entries;
+  - on a `C:\Tenant` server it holds the binary and the claude CLI's config.
+
+  Nothing Tenant does needs the parent, and on a server the wiki lives in the data dir.
+  `--os-write-roots` still replaces the whole list.
+- **`write: allow` on a confined surface** no longer hands a turn its own controls. None of the
+  known autostart locations are in the default roots any more. A turn can still change anything
+  else in them without asking: your Desktop, Documents and Downloads, the temp dir, and Tenant's
+  data dir, the log book included. Keep `write` on `ask` where that matters, or narrow
+  `--os-write-roots`. The cron exec approver still refuses any write that resolves into the
+  config, data or binary dirs.
 - **`os_exec` has no work dir.** Under a confining profile it runs in Tenant's own working
   directory and can write only to `write_roots` (plus a per-run scratch dir it is not told about
   on macOS, and a private `/tmp` on Linux). Give the profile a `write_roots` entry for anything
@@ -267,9 +319,8 @@ every entry that should be confined.
   usable.
 - **The file tools are not sandboxed.** `os_read_file`, `os_list_dir`, `os_write` and the rest
   run inside Tenant's own process. They are bounded by `--os-deny-roots` / `--os-write-roots`,
-  the write approval and the control-file refusal above, not by an exec profile, so the
-  credential-store deny list above does not apply to them. The refusal covers writes only:
-  `os_read_file` can still read `credentials.json`. Add those paths to `--os-deny-roots` if a
+  the write approval and the two lists above, not by an exec profile. Reads outside those stay
+  broad: a turn can read the rest of your home directory. Add paths to `--os-deny-roots` if a
   surface must not read them.
 
 ### Enforcement by OS
@@ -305,14 +356,25 @@ every entry that should be confined.
 - **`network: allowlist` is not enforced anywhere yet.** The `allow` list is accepted, but no
   backend consumes it. Seatbelt and bubblewrap allow all outbound traffic (the same as `full`),
   and Windows enforces no network policy. Use `none` where it matters.
-- **The control-file refusal has two small residuals.**
-  - A write that wins that symlink-swap race against a control file that does not exist yet can
-    leave an empty file or a directory at its name (directories come from `os_mkdir`, or from a
-    write creating its parent folders). Nothing is ever written into the file. Tenant reads an empty file as corrupt and falls back to defaults, which is what it
-    used while the file was missing. A directory there makes Tenant's own save fail until you
-    remove it.
-  - The file tools' other boundaries (deny and write roots) are still checked only by path, so
-    that race could still carry a write outside them.
+- **The file-tool guards have residuals.**
+  - **No symlink refusal at open on some hosts.** Windows can't refuse a symlink on the whole path
+    at open. Neither can Linux before 5.6, or a host whose seccomp filter blocks openat2. There,
+    the open file's identity is checked again instead:
+    - it catches a redirect into a guarded file, or into a file directly inside a guarded
+      directory;
+    - it misses a redirect into a file deeper inside a guarded directory, and one out of the deny
+      or write roots;
+    - a redirected create can leave an empty file at a guarded name that did not exist yet.
+
+    On Windows the restricted backend doesn't confine the filesystem yet anyway, so a process
+    able to swap a symlink could reach those files directly.
+  - **Directories are still created by path.** This covers `os_mkdir`, and a write creating its
+    parent folders. A swap can make a directory appear at a guarded name that did not exist, and
+    Tenant's own save of that file then fails until you remove it. Nothing is ever written into a
+    guarded file.
+  - **`--os-deny-roots` matches more loosely.** Its entries still match by resolved path, and
+    case-sensitively outside Windows. Only the built-in lists match by folded name and by
+    identity.
 - **A profile that allows network can reach Tenant's own loopback listeners,** including the
   dashboard API, which accepts unauthenticated requests on a loopback bind when `dashboard.auth`
   is unset. Keep confined surfaces on `network: none`, or set `dashboard.auth` (its token lives

@@ -3132,13 +3132,16 @@ func schedulerTick(every time.Duration) time.Duration {
 
 // oneShotOSPolicy is `tenant os`'s policy. Confirm is nil, so destructive
 // commands are hard-denied even with --allow-exec. Its file tools keep no read
-// or write roots, but Tenant's control files stay unwritable: a hub running on
-// the same config dir would apply an edit to them within seconds.
-func oneShotOSPolicy(cfgDir string, allowExec, allowWrite bool) osys.Policy {
+// or write roots, but the same guards as the hub's apply (fileToolGuards):
+// Tenant's control files stay unwritable, since a hub running on the same
+// config dir would apply an edit to them within seconds, and its secrets stay
+// unreadable.
+func oneShotOSPolicy(cfgDir string, lc *launchConfig, allowExec, allowWrite bool) osys.Policy {
+	protect, secret := fileToolGuards(cfgDir, nil, lc)
 	return osys.Policy{
 		AllowExec:  allowExec,
 		AllowWrite: allowWrite,
-		Roots:      osys.Roots{Protect: protectedConfigFiles(cfgDir)},
+		Roots:      osys.Roots{Protect: protect, Secret: secret},
 	}
 }
 
@@ -3191,7 +3194,7 @@ func cmdOS(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	wd := osys.NewDispatcher(svc, oneShotOSPolicy(c.cfgDir, *allowExec, *allowWrite))
+	wd := osys.NewDispatcher(svc, oneShotOSPolicy(c.cfgDir, c.lc, *allowExec, *allowWrite))
 	reg := agent.NewStaticRegistry()
 	for _, sp := range wd.Tools() {
 		reg.Register(sp)

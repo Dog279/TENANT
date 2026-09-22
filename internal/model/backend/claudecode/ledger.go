@@ -50,15 +50,22 @@ func openLedger(log *slog.Logger) *ledger {
 			log.Warn("ignoring invalid weekly budget", "env", budgetEnv, "value", v)
 		}
 	}
+	return &ledger{
+		path:   LedgerPath(),
+		budget: budget,
+		log:    log,
+	}
+}
+
+// LedgerPath is the spend ledger's file: in the OS config dir's tenant folder,
+// whatever --config says. cmd/tenant keeps it out of the file tools' reach, so
+// a turn cannot reset its own budget rail.
+func LedgerPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return &ledger{
-		path:   filepath.Join(dir, "tenant", "claudecode-usage.json"),
-		budget: budget,
-		log:    log,
-	}
+	return filepath.Join(dir, "tenant", "claudecode-usage.json")
 }
 
 // spent returns the token sum inside the rolling window.

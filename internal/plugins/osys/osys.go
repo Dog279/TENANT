@@ -40,7 +40,10 @@ type Config struct {
 	Runner runner
 }
 
-// Service is the opened OS connector.
+// Service is the opened OS connector. Its file methods take paths as
+// Roots.Resolve returns them: absolute, with no symlink left on the way. On
+// macOS and Linux they open such a path refusing a symlink anywhere on it
+// (openFile), so a link that appears after the check fails the open.
 type Service struct {
 	run     runner
 	timeout time.Duration
@@ -107,12 +110,19 @@ func (s *Service) SysInfo() string {
 }
 
 // ReadFile returns a file's contents (capped). Path is whatever the
-// operator's machine exposes — enabling this plugin is the consent.
-func (s *Service) ReadFile(path string) (string, error) {
+// operator's machine exposes — enabling this plugin is the consent. vet, when
+// non-nil, inspects the file once it is open and before anything is read; an
+// error from it aborts the read.
+func (s *Service) ReadFile(path string, vet func(fs.FileInfo) error) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("osys: file path required")
 	}
-	b, err := os.ReadFile(path)
+	f, err := openVetted(path, os.O_RDONLY, vet)
+	if err != nil {
+		return "", fmt.Errorf("osys: read %s: %w", path, err)
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("osys: read %s: %w", path, err)
 	}
@@ -125,13 +135,14 @@ func (s *Service) Exists(path string) bool {
 	return err == nil
 }
 
-// openVetted opens path for writing with flag, which must not include O_TRUNC,
-// and lets vet (nil = none) inspect the OPEN file before the caller writes to
-// it. Checking the open file rather than its path is what makes the check
-// race-free (see Roots.checkOpened), and a refusal leaves the contents as they
-// were.
+// openVetted opens path with openFile (so a symlink swapped onto it fails the
+// open where the OS can refuse one) and lets vet (nil = none) inspect the OPEN
+// file before the caller reads or writes it. Checking the open file rather
+// than its path is what makes the check race-free (see Roots.checkOpened). A
+// write's flag must not include O_TRUNC, so a refusal leaves the contents as
+// they were.
 func openVetted(path string, flag int, vet func(fs.FileInfo) error) (*os.File, error) {
-	f, err := os.OpenFile(path, flag, 0o644)
+	f, err := openFile(path, flag, 0o644)
 	if err != nil || vet == nil {
 		return f, err
 	}
@@ -272,12 +283,13 @@ func (s *Service) MakeDir(path string) (string, error) {
 
 // ReadImage reports an image's format and dimensions without decoding the
 // full pixel data. A text LLM can't "see" pixels, but this lets it reason
-// about images it's working with (and confirm a file is a valid image).
-func (s *Service) ReadImage(path string) (string, error) {
+// about images it's working with (and confirm a file is a valid image). vet
+// is as for ReadFile.
+func (s *Service) ReadImage(path string, vet func(fs.FileInfo) error) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("osys: image path required")
 	}
-	f, err := os.Open(path)
+	f, err := openVetted(path, os.O_RDONLY, vet)
 	if err != nil {
 		return "", fmt.Errorf("osys: open %s: %w", path, err)
 	}

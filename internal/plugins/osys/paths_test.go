@@ -1,6 +1,8 @@
 package osys
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -282,6 +284,164 @@ func TestRoots_ProtectSeesThroughFirmlinks(t *testing.T) {
 		t.Skipf("no firmlinked data volume here (%v, %v)", aerr, berr)
 	}
 	wantHardRefusal(t, "firmlinked dir, new file", r.Check(filepath.Join(alias, "settings.other.json"), true))
+}
+
+// secretRoots is a layout with a secret file (credentials.json in a config
+// dir) and a secret directory (a home dir's .ssh), inside a writable base.
+func secretRoots(t *testing.T) (r Roots, base, creds, key string) {
+	t.Helper()
+	base = t.TempDir()
+	cfg, ssh := filepath.Join(base, "cfg"), filepath.Join(base, "home", ".ssh")
+	for _, d := range []string{cfg, ssh} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	creds, key = filepath.Join(cfg, "credentials.json"), filepath.Join(ssh, "id_ed25519")
+	for _, f := range []string{creds, key} {
+		if err := os.WriteFile(f, []byte("s3cret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return Roots{Write: []string{base}, Secret: []string{creds, ssh}}, base, creds, key
+}
+
+func wantSecretRefusal(t *testing.T, what string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s: a secret must be refused", what)
+		return
+	}
+	for _, want := range []string{"holds secrets", "hard boundary", "not approvable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: refusal should say %q: %v", what, want, err)
+		}
+	}
+}
+
+// A secret is refused to reads as well as writes, by every path to it: the
+// file itself, anything in a secret directory and the directory itself, by
+// case, relative to the working directory, through "..", a symlinked dir or a
+// dangling symlink, and a hard link to it or to a file directly inside a secret
+// directory.
+func TestRoots_SecretRefusesReadsAndWrites(t *testing.T) {
+	r, base, creds, key := secretRoots(t)
+	cfg, ssh := filepath.Dir(creds), filepath.Dir(key)
+	paths := map[string]string{
+		"secret file":             creds,
+		"file in a secret dir":    key,
+		"the secret dir":          ssh,
+		"new file in secret dir":  filepath.Join(ssh, "authorized_keys"),
+		"case variant":            filepath.Join(cfg, "Credentials.JSON"),
+		"dot-dot":                 filepath.Join(base, "home", "..", "cfg", "credentials.json"),
+		"dot-dot into secret dir": filepath.Join(ssh, "..", ".ssh", "config"),
+	}
+	if err := os.Link(creds, filepath.Join(base, "creds-alias")); err == nil {
+		paths["hard link to a secret file"] = filepath.Join(base, "creds-alias")
+	}
+	if err := os.Link(key, filepath.Join(base, "key-alias")); err == nil {
+		paths["hard link into a secret dir"] = filepath.Join(base, "key-alias")
+	}
+	if err := os.Symlink(cfg, filepath.Join(base, "cfglink")); err == nil {
+		paths["symlinked dir"] = filepath.Join(base, "cfglink", "credentials.json")
+		if err := os.Symlink(filepath.Join(ssh, "new_key"), filepath.Join(base, "innocent")); err != nil {
+			t.Fatal(err)
+		}
+		paths["dangling symlink into a secret dir"] = filepath.Join(base, "innocent")
+	} else {
+		t.Logf("symlinks unavailable on this host/user, skipping those cases: %v", err)
+	}
+	for what, p := range paths {
+		for _, write := range []bool{false, true} {
+			wantSecretRefusal(t, fmt.Sprintf("%s (write=%v)", what, write), r.Check(p, write))
+		}
+	}
+	t.Chdir(cfg)
+	wantSecretRefusal(t, "relative to the working directory", r.Check("credentials.json", false))
+
+	// Beside the secrets, everything stays readable and writable.
+	for _, p := range []string{filepath.Join(cfg, "config.toml"), filepath.Join(base, "home", ".sshrc"), filepath.Join(base, "home", "notes.md")} {
+		for _, write := range []bool{false, true} {
+			if err := r.Check(p, write); err != nil {
+				t.Errorf("%s (write=%v) is not a secret: %v", p, write, err)
+			}
+		}
+	}
+}
+
+// The identity half of the race closure. It is what refuses a redirected open
+// where openFile cannot refuse the symlink (Windows, an older kernel): the
+// open file alone gives away a Protect or Secret file, or a file directly
+// inside a Secret directory. Reading a Protect file stays allowed.
+func TestRoots_CheckOpenedRecognisesByIdentity(t *testing.T) {
+	pr, _, _, settings := protectRoots(t)
+	sr, base, creds, key := secretRoots(t)
+	r := Roots{Protect: pr.Protect, Secret: sr.Secret}
+	stat := func(p string) fs.FileInfo {
+		t.Helper()
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi
+	}
+	if err := r.checkOpened(stat(settings)); err == nil || !strings.Contains(err.Error(), "protected file") {
+		t.Errorf("an open Protect file must be refused to writes: %v", err)
+	}
+	if err := r.checkOpenedRead(stat(settings)); err != nil {
+		t.Errorf("an open Protect file may be read: %v", err)
+	}
+	for _, p := range []string{creds, key} {
+		for name, check := range map[string]func(fs.FileInfo) error{"write": r.checkOpened, "read": r.checkOpenedRead} {
+			if err := check(stat(p)); err == nil || !strings.Contains(err.Error(), "holds secrets") {
+				t.Errorf("an open secret (%s) must be refused to a %s: %v", filepath.Base(p), name, err)
+			}
+		}
+	}
+	ordinary := filepath.Join(base, "notes.md")
+	if err := os.WriteFile(ordinary, []byte("s3cret"), 0o644); err != nil { // same size as the secrets
+		t.Fatal(err)
+	}
+	if err := r.checkOpened(stat(ordinary)); err != nil {
+		t.Errorf("an ordinary file is not guarded: %v", err)
+	}
+}
+
+// Operator-supplied paths are literal: only "*" is a wildcard, so a "[" in a
+// file name names exactly that file (filepath.Match would have read "[prod]"
+// as a character class matching "sap.json").
+func TestRoots_EntriesAreLiteralApartFromStar(t *testing.T) {
+	base := t.TempDir()
+	key := filepath.Join(base, "sa[prod].json")
+	r := Roots{Secret: []string{key}}
+	wantSecretRefusal(t, "the literal name", r.Check(key, false))
+	for _, p := range []string{filepath.Join(base, "sap.json"), filepath.Join(base, "sa?prod?.json")} {
+		if err := r.Check(p, false); err != nil {
+			t.Errorf("%s is a different file and must stay readable: %v", p, err)
+		}
+	}
+}
+
+func TestWildcardMatch(t *testing.T) {
+	for _, c := range []struct {
+		pattern, name string
+		want          bool
+	}{
+		{"settings.*.json", "settings.main.json", true},
+		{"settings.*.json", "settings..json", true},
+		{"settings.*.json", "settings.json", false}, // "*" cannot make prefix and suffix overlap
+		{"settings.*.json", "settings.main.json.tmp", false},
+		{"settings.*.json.tmp", "settings.main.json.tmp", true},
+		{"a*b*c", "a-x-b-y-c", true},
+		{"a*b*c", "a-c-b", false},
+		{"sa[prod].json", "sa[prod].json", true},
+		{"sa[prod].json", "sap.json", false},
+		{"*", "", true},
+	} {
+		if got := wildcardMatch(c.pattern, c.name); got != c.want {
+			t.Errorf("wildcardMatch(%q, %q) = %v, want %v", c.pattern, c.name, got, c.want)
+		}
+	}
 }
 
 // NTFS opens settings.json for "settings.json." and "settings.json::$DATA".

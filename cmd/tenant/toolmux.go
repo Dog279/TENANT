@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,7 +17,9 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/memory/soul"
 	"tenant/internal/model"
+	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/peering"
 	"tenant/internal/plugins/atlassian"
 	"tenant/internal/plugins/discord"
@@ -1458,7 +1461,7 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.BoolVar(&p.osEnable, "os", false, "enable the OS plugin (sysinfo, file read, dir list, processes, gated shell exec)")
 	fs.BoolVar(&p.osAllowExec, "os-allow-exec", false, "permit os_exec (run shell commands) — destructive ones still need confirm")
 	fs.BoolVar(&p.osAllowWrite, "os-allow-write", false, "permit os_write/os_edit/os_append/os_make_dir (file writes)")
-	fs.StringVar(&p.osWriteRoots, "os-write-roots", "", "comma-separated directories the file tools may WRITE to (default: the Tenant tree + the operator's Desktop/Documents/Downloads). Empty entry disables the restriction.")
+	fs.StringVar(&p.osWriteRoots, "os-write-roots", "", "comma-separated directories the file tools may WRITE to (default: Tenant's config and data dirs, the operator's Desktop/Documents/Downloads, and the temp dir). Tenant's own control and secret files stay off limits either way.")
 	fs.StringVar(&p.osDenyRoots, "os-deny-roots", "", "comma-separated directories the file tools may never touch, read OR write (default: Windows/Program Files/ProgramData)")
 	return p
 }
@@ -1662,7 +1665,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 			AllowExec:  gateAllow(pf.osAllowExec),
 			AllowWrite: gateAllow(pf.osAllowWrite),
 			Confirm:    confirm,
-			Roots:      resolveOSRoots(pf, c.cfgDir, c.dataDir),
+			Roots:      resolveOSRoots(pf, c.cfgDir, c.dataDir, c.lc),
 		}))
 		if !pf.osEnable {
 			mux.SetEnabled("os", false)
@@ -1988,19 +1991,24 @@ func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, d
 	return ix, nil
 }
 
-// resolveOSRoots builds the file-tool boundary. Defaults are deliberately
-// generous where the agent legitimately works (its own tree, the operator's
-// Desktop/Documents/Downloads) and absolute where a hallucination would be
-// unrecoverable (Windows, Program Files, ProgramData).
+// resolveOSRoots builds the file-tool boundary. The write roots default to
+// where the agent legitimately works: Tenant's own config and data dirs, the
+// operator's Desktop/Documents/Downloads and the temp dir. Never a PARENT of
+// the config or data dir: with default dirs that is the OS-wide config root
+// (~/.config, %AppData%, ~/Library/Application Support), which holds autostart
+// entries and other programs' state, and on a C:\Tenant server it holds the
+// binary and the claude CLI's config. Nothing Tenant does needs it: cron, MCP
+// and peer changes persist in-process, wiki_save writes the wiki, and memory
+// and skills have their own stores.
 //
 // Deny always includes the platform defaults even when the operator supplies
 // their own list: an allowlist typo should not silently expose System32.
-// Protect is always Tenant's own control files (protectedConfigFiles), whatever
-// the write roots say.
+// Protect and Secret are always Tenant's own (fileToolGuards), whatever the
+// write roots say.
 //
 // This bounds the FILE tools only. os_exec takes an opaque command string and
 // is bounded by the OS account Tenant runs as, not by this list.
-func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string) osys.Roots {
+func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) osys.Roots {
 	split := func(v string) []string {
 		var out []string
 		for _, part := range strings.Split(v, ",") {
@@ -2015,10 +2023,6 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string) osys.Roots {
 
 	write := split(pf.osWriteRoots)
 	if len(write) == 0 {
-		// The Tenant tree (config, data, wiki, logs) plus the operator's usual
-		// working directories. cfgDir/dataDir are included via their parent so
-		// the whole install is writable, which is what "cron + wiki + memory
-		// edits" needs.
 		seen := map[string]bool{}
 		add := func(p string) {
 			if p == "" || seen[strings.ToLower(p)] {
@@ -2027,8 +2031,6 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string) osys.Roots {
 			seen[strings.ToLower(p)] = true
 			write = append(write, p)
 		}
-		add(filepath.Dir(cfgDir))
-		add(filepath.Dir(dataDir))
 		add(cfgDir)
 		add(dataDir)
 		if home, err := os.UserHomeDir(); err == nil {
@@ -2040,35 +2042,74 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string) osys.Roots {
 			add(tmp)
 		}
 	}
-	return osys.Roots{Deny: deny, Write: write, Protect: protectedConfigFiles(cfgDir)}
+	protect, secret := fileToolGuards(cfgDir, pf, lc)
+	return osys.Roots{Deny: deny, Write: write, Protect: protect, Secret: secret}
 }
 
-// protectedConfigFiles lists the config-dir files the file tools may never
-// write, on any surface and whatever the write mode, because each decides what
-// the agent may do and Tenant applies an edit without asking:
-//   - settings.<agent>.json, for any agent sharing the dir: permission modes,
-//     tool rules and exec profiles, re-read within seconds (settingswatch.go).
-//     Also its fixed-name temp file, which the save renames into place.
-//   - config.json: relay and iMessage permissions, cron jobs, MCP servers and
-//     their trust, providers. persistLaunchConfig folds a hand edit into the
-//     next in-process save, and the next launch applies it.
-//   - credentials.json: every secret, hot-reloaded (watchCredentials).
-//   - peers.json: which peers may call in, with what token and share policy
-//     (exec included), re-read on the next peer request.
+// fileToolGuards lists what the file tools may never write (protect) and may
+// never read or write (secret), on any surface and whatever the write mode.
+// Tenant writes all of it in-process, and no agent flow needs the tools for
+// any of it.
 //
-// Tenant's own saves do not go through the file tools, so they are unaffected,
-// and no agent flow writes these files through the tools: cron, MCP and peer
-// changes persist in-process.
-func protectedConfigFiles(cfgDir string) []string {
-	if cfgDir == "" {
-		return nil
+// Protected, because Tenant applies an edit without asking, or runs it:
+//   - settings.<agent>.json, for every agent sharing the config dir, and its
+//     fixed-name temp file: permission modes, tool rules and exec profiles,
+//     re-read within seconds (settingswatch.go);
+//   - soul/: the persona in every prompt, which is the operator's alone;
+//   - peer-cert.pem: this instance's peer identity;
+//   - the claudecode spend ledger: the weekly budget rail;
+//   - the Tenant binary;
+//   - on Windows, the PowerShell profile and module folders under Documents,
+//     which run in the operator's next PowerShell session.
+//
+// Secret, because a turn could send what they hold anywhere:
+//   - config.json: the dashboard's auth token, beside cron jobs, MCP servers,
+//     providers and relay and iMessage permissions (persistLaunchConfig folds
+//     a hand edit into the next in-process save);
+//   - credentials.json: every API key and skill secret, hot-reloaded;
+//   - peers.json and peer-key.pem: who may call in, and with what token;
+//   - mcp/, atlassian-token.json, github-token.json and oauth_client.json:
+//     OAuth tokens and the gsuite OAuth client;
+//   - the gsuite service-account key and the dashboard TLS key, when set;
+//   - the claude CLI's config ($CLAUDE_CONFIG_DIR, else ~/.claude and
+//     ~/.claude.json): its login, and the hooks and MCP servers it runs;
+//   - the credential stores and browser profiles the exec sandbox denies to
+//     confined commands (credentialStoreRoots).
+func fileToolGuards(cfgDir string, pf *pluginFlags, lc *launchConfig) (protect, secret []string) {
+	add := func(list *[]string, paths ...string) {
+		for _, p := range paths {
+			if p = strings.TrimSpace(p); p != "" {
+				*list = append(*list, expandHome(p))
+			}
+		}
 	}
-	settings := settingsPath(cfgDir, "*")
-	return []string{
-		settings,
-		settings + ".tmp",
-		launchConfigPath(cfgDir),
-		credentialsPath(cfgDir),
-		peering.PeersPath(cfgDir),
+	if cfgDir != "" {
+		settings := settingsPath(cfgDir, "*")
+		peerCert, peerKey := peering.CertPaths(cfgDir)
+		add(&protect, settings, settings+".tmp", soul.SoulDir(cfgDir), peerCert)
+		add(&secret, launchConfigPath(cfgDir), credentialsPath(cfgDir), peering.PeersPath(cfgDir), peerKey,
+			filepath.Join(cfgDir, "mcp"), atlassianTokenPath(cfgDir), githubp.TokenPath(cfgDir),
+			gsuite.EmbeddedOAuthPath(cfgDir))
 	}
+	add(&protect, claudecode.LedgerPath(), exePath())
+	home, homeErr := os.UserHomeDir()
+	if homeErr == nil && runtime.GOOS == "windows" {
+		add(&protect, filepath.Join(home, "Documents", "WindowsPowerShell"), filepath.Join(home, "Documents", "PowerShell"))
+	}
+	if pf != nil {
+		add(&secret, pf.gsuiteSAJSON)
+	}
+	if lc != nil {
+		if s := lc.Skills["gsuite"]; s != nil {
+			add(&secret, s.Settings["sa_json"])
+		}
+		add(&secret, lc.Dashboard.TLSKey)
+	}
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		add(&secret, dir)
+	} else if homeErr == nil {
+		add(&secret, filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json"))
+	}
+	add(&secret, credentialStoreRoots()...)
+	return protect, secret
 }
