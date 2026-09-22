@@ -89,6 +89,19 @@ and works in tests (records go to stderr at WARN until a hub is installed). A
 subsystem that already has a `*slog.Logger` can also just be handed
 `log.With("source", "myfeature")`.
 
+**A Go program outside the binary** (a sidecar, a watcher, a custom automation) —
+copy the one stdlib-only file in [`reference/logging/tenantlog.go`](../reference/logging/tenantlog.go):
+
+```go
+log := tenantlog.New("deploy")                        // finds the hub via Tenant's config.json
+log.Info("build started", "host", "r640")             // live via the API, or the day's file when no hub is up
+slog.SetDefault(slog.New(log.Handler()))              // optional: the program's whole slog output too
+```
+
+Tutorials on adapting it — defaults, slog, dashboard-styled events, file-only
+mode, the hot-patch checklist for a live box — are beside it in
+[`reference/logging/`](../reference/logging/).
+
 **A script, cron job or sidecar on the box** — the CLI:
 
 ```bash

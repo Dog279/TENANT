@@ -92,7 +92,8 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
   per subsystem (turns, sub-agents, approvals, discord, cron, …), plain text, and
   the same lines feed the dashboard's Activity tab (one tab per folder). Adding a
   source is one line of Go, one `tenant log` call, or one `POST /api/logs/<name>`
-  — see [docs/LOGGING.md](docs/LOGGING.md).
+  — see [docs/LOGGING.md](docs/LOGGING.md). For a program outside the binary,
+  copy the one-file client in [reference/logging/](reference/logging/).
 - **This repository contains no API keys, no learned memory, and no wiki
   content** — it is a clean template. Everything you generate stays on your machine.
 
@@ -157,6 +158,7 @@ internal/logs/         # the unified log book: per-source text folders + the das
 internal/tui/          # terminal UI
 internal/orchestra/    # multi-agent bus + spawn/await
 internal/eval/         # evaluation harness + task fixtures
+reference/             # copy-paste code + tutorials: log any program into the log book (reference/logging)
 docs/                  # architecture, design, plugin, and memory docs
 ```
 

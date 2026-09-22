@@ -30,6 +30,12 @@ tab per folder automatically. A new `internal/logs` package (the hub) is the sin
   are discovered (~5 s) and tailed live.
 - **Config:** `"logs": {"dir", "retention_days" (30; -1 never), "level" (info|debug),
   "max_field_bytes" (4096; -1 unlimited)}`; `--log-dir`. Daily files roll at 64 MB.
+- **`reference/`** — a new top-level folder of copy-paste code with tutorials.
+  `reference/logging/tenantlog.go` is a stdlib-only client any Go program copies to
+  log into the book (hub API when up, file fallback in the exact format, drop-in
+  `slog` handler, discovery of the hub from Tenant's `config.json`); its tests pin the
+  format byte-for-byte to `internal/logs`. Four tutorials cover quickstart,
+  augmenting the file, the hot-patch checklist for a live box, and the in-binary path.
 
 ## Why
 The activity ring lived only in memory (a restart wiped it), slog went to stderr/tui.log at
