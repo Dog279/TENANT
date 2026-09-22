@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -54,18 +55,21 @@ func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, er
 	out, err := c.CombinedOutput()
 	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
 
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		res.ExitCode = ee.ExitCode()
+		res.ExitStatus = ee.Error() // "exit status N" / "signal: killed", as exec reports it
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
-		res.ExitCode = -1
+		if res.ExitCode == 0 {
+			res.ExitCode = -1
+		}
 		return res, nil
 	}
-	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			res.ExitCode = ee.ExitCode()
-			return res, nil // a non-zero exit is signal, not an infra error
-		}
+	if err != nil && ee == nil {
 		// Could not start the process at all: an infrastructure failure.
 		return res, err
 	}
-	return res, nil
+	return res, nil // a non-zero exit is signal, not an infra error
 }

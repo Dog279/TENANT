@@ -147,15 +147,20 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 
 	werr := c.Wait()
 	res := Result{Output: clip(buf.String(), pol.Limits.MaxOutputBytes)}
+	var ee *exec.ExitError
+	if errors.As(werr, &ee) {
+		res.ExitCode = ee.ExitCode()
+		res.ExitStatus = ee.Error()
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
-		res.ExitCode = -1
+		if res.ExitCode == 0 {
+			res.ExitCode = -1
+		}
 		return res, nil
 	}
 	if werr != nil {
-		var ee *exec.ExitError
-		if errors.As(werr, &ee) {
-			res.ExitCode = ee.ExitCode()
+		if ee != nil {
 			return res, nil // a non-zero exit is signal, not an infra error
 		}
 		return res, werr

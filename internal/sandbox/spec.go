@@ -56,10 +56,7 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 		"--tmpfs", "/tmp",
 	)
 
-	// 3. Write layer: WorkDir plus each WriteRoot become read-write binds.
-	if pol.WorkDir != "" {
-		a = append(a, "--bind", pol.WorkDir, pol.WorkDir)
-	}
+	// 3. Write layer: each WriteRoot becomes a read-write bind.
 	for _, wr := range pol.WriteRoots {
 		if wr == "" {
 			continue
@@ -67,9 +64,9 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 		a = append(a, "--bind", wr, wr)
 	}
 
-	// 4. Deny layer LAST so it overrides any read/write bind above. A tmpfs mask
-	// makes the host path an empty, ephemeral dir: its real contents are neither
-	// readable nor (persistently) writable.
+	// 4. Deny layer after the grants so it overrides any read/write bind above. A
+	// tmpfs mask makes the host path an empty, ephemeral dir: its real contents
+	// are neither readable nor (persistently) writable.
 	for _, dr := range pol.DenyRoots {
 		if dr == "" {
 			continue
@@ -77,7 +74,21 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 		a = append(a, "--tmpfs", dr)
 	}
 
-	// 5. cwd inside the sandbox, then the command.
+	// 5. WorkDir carve-out (Policy precedence rule 3): bound AFTER the deny masks,
+	// so a work dir inside a deny root (cron's, under the data dir) stays usable.
+	// bwrap takes --bind SRC from the host and creates the mount point inside the
+	// tmpfs. Then every deny root at or inside the work dir is masked again, so the
+	// carve-out never reopens it.
+	if pol.WorkDir != "" {
+		a = append(a, "--bind", pol.WorkDir, pol.WorkDir)
+		for _, dr := range pol.DenyRoots {
+			if dr != "" && within(dr, pol.WorkDir) {
+				a = append(a, "--tmpfs", dr)
+			}
+		}
+	}
+
+	// 6. cwd inside the sandbox, then the command.
 	if pol.WorkDir != "" {
 		a = append(a, "--chdir", pol.WorkDir)
 	}

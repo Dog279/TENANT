@@ -73,15 +73,20 @@ func (b *linuxRestricted) Run(ctx context.Context, cmd Command, pol Policy) (Res
 	out, err := c.CombinedOutput()
 	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
 
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		res.ExitCode = ee.ExitCode()
+		res.ExitStatus = ee.Error()
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
-		res.ExitCode = -1
+		if res.ExitCode == 0 {
+			res.ExitCode = -1
+		}
 		return res, nil
 	}
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			res.ExitCode = ee.ExitCode()
+		if ee != nil {
 			return res, nil // a non-zero exit is signal, not an infra error
 		}
 		// Could not start bwrap at all (e.g. it vanished after Probe): infra error.

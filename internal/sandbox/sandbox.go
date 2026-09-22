@@ -24,7 +24,9 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -167,17 +169,30 @@ func (e EnvPolicy) materialize(parent []string) []string {
 }
 
 // Policy is the boundary applied to one run. Filesystem roots use the same
-// symlink-resolved semantics as osys.Roots; DenyRoots is checked first and wins.
+// symlink-resolved semantics as osys.Roots. Precedence, strongest last:
+//
+//  1. ReadRoots / WriteRoots grant access (empty ReadRoots = whole host readable).
+//  2. DenyRoots revoke it: nothing under a DenyRoot is readable or writable,
+//     whatever the grants above say.
+//  3. WorkDir (and a backend's per-run scratch) stays readable and writable even
+//     when it sits INSIDE a DenyRoot. This carve-out is what lets cron's work dir
+//     live under Tenant's data dir. It never reopens a DenyRoot that is itself at
+//     or inside WorkDir, so a WorkDir equal to a DenyRoot stays denied (fail
+//     closed).
 type Policy struct {
-	WorkDir    string      // the only implicitly-writable dir; cwd; TMP/TEMP/HOME point here
-	ReadRoots  []string    // empty ⇒ whole host readable (DenyRoots still masks)
+	WorkDir    string      // cwd; always usable (carve-out above); HOME/TMPDIR point here when env is scoped
+	ReadRoots  []string    // empty ⇒ whole host readable (DenyRoots still mask it)
 	WriteRoots []string    // writes confined to these plus WorkDir
-	DenyRoots  []string    // never readable or writable; always includes cfg/data/binary/wiki
+	DenyRoots  []string    // never readable or writable; always includes Tenant's cfg/data/binary dirs
 	Network    NetworkMode //
 	Allow      []string    // hosts/CIDRs when Network == NetAllowlist
 	Env        EnvPolicy   //
 	Limits     Limits      //
-	Enforce    bool        // false ⇒ dry-run: violations are reported but the command still runs
+	// Enforce selects what Execute does when the boundary refuses something:
+	// true asks the Escalator (attended surface: a person; unattended: deny);
+	// false is dry-run, which re-runs on the host and reports the refusal.
+	// Backends always enforce; this flag is consumed by Execute, not Backend.Run.
+	Enforce bool
 }
 
 // Command is one thing to run on a surface.
@@ -202,17 +217,41 @@ type Violation struct {
 // signal); err is reserved for infrastructure failures (the backend could not
 // start the command).
 type Result struct {
-	Output     string
-	ExitCode   int
+	Output   string
+	ExitCode int
+	// ExitStatus is the OS's own description of a non-zero exit ("exit status 3",
+	// "signal: killed"), so adapters can reproduce pre-seam error text exactly.
+	ExitStatus string
 	TimedOut   bool
 	Violations []Violation
+	// Escalated is set by Execute when a refused command was re-run on the host,
+	// after an approved escalation or in dry-run. Violations then records what the
+	// boundary refused on the first attempt.
+	Escalated bool
 }
 
-// Contained reports whether the boundary stopped the command from succeeding —
-// either it recorded a violation, or (the common Seatbelt/bwrap case) the denied
-// access made the command exit non-zero. Used by the escape suite.
+// Contained reports whether the boundary stopped the command from succeeding:
+// it recorded a violation, or (the common Seatbelt/bwrap case) the denied access
+// made the command exit non-zero. An escalated result was not contained. Used by
+// the escape suite, which calls Backend.Run directly.
 func (r Result) Contained() bool {
+	if r.Escalated {
+		return false
+	}
 	return len(r.Violations) > 0 || r.ExitCode != 0 || r.TimedOut
+}
+
+// Refused reports whether the boundary refused a filesystem or network access.
+// Limit violations (a wall-clock timeout, reaped background processes) are
+// reported but are not refusals: re-running on the host would not change them,
+// so Execute never escalates on them.
+func (r Result) Refused() bool {
+	for _, v := range r.Violations {
+		if v.Kind == "filesystem" || v.Kind == "network" {
+			return true
+		}
+	}
+	return false
 }
 
 // Capabilities is what a backend actually enforces on the current host.
@@ -266,6 +305,43 @@ func For(name string) (Backend, error) {
 	}
 }
 
+// Escalator decides whether a command the boundary refused may re-run on the
+// host, unconfined. It is the approval seam: an attended surface asks a person,
+// an unattended surface denies. A nil Escalator denies.
+type Escalator func(ctx context.Context, cmd Command, refused Result) bool
+
+// Execute runs cmd on b under pol and applies the refusal policy. Callers should
+// use Execute; Backend.Run is the raw primitive.
+//
+//   - Nothing refused: the backend's result, unchanged. The host backend never
+//     refuses, so on host Execute is exactly Run.
+//   - Refused, pol.Enforce false (dry-run): re-run on the host so behaviour is
+//     unchanged. The result carries the first attempt's Violations and
+//     Escalated=true so the refusal is still reported.
+//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run on the host
+//     (Escalated=true, Violations kept). Denied or nil ⇒ the confined result,
+//     Violations intact.
+//
+// Re-running after a refusal means whatever the command did BEFORE the boundary
+// stopped it can happen twice. The first attempt could only write inside the
+// policy's writable roots, but a side effect that precedes the first refusal (a
+// network call on a profile that allows network, an append in WorkDir) is not
+// idempotent. Attended surfaces show the refusal before asking; for dry-run, vet
+// non-idempotent jobs with `tenant sandbox run` first.
+func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escalator) (Result, error) {
+	res, err := b.Run(ctx, cmd, pol)
+	if err != nil || !res.Refused() {
+		return res, err
+	}
+	if pol.Enforce && (esc == nil || !esc(ctx, cmd, res)) {
+		return res, nil
+	}
+	hres, herr := Host().Run(ctx, cmd, pol)
+	hres.Violations = append(append([]Violation(nil), res.Violations...), hres.Violations...)
+	hres.Escalated = true
+	return hres, herr
+}
+
 // --- shared helpers used by every backend ---
 
 // shellArgs picks the platform shell for a Command. An explicit Args argv wins
@@ -297,4 +373,21 @@ func cut(s string, sep byte) (before, after string, found bool) {
 		}
 	}
 	return s, "", false
+}
+
+// within reports whether path p is root itself or inside it. Both should already
+// be absolute and cleaned; backends resolve symlinks first. Case-insensitive on
+// Windows, where C:\TENANT and c:\tenant are one path.
+func within(p, root string) bool {
+	if p == "" || root == "" {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		p, root = strings.ToLower(p), strings.ToLower(root)
+	}
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

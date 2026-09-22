@@ -4,10 +4,13 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // This file is the macOS half of the "restricted" backend (SEC-010 / TEN-346):
@@ -98,27 +101,60 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 	}
 	c.Env = env
 
+	// The command leads its own process group so the whole tree it spawns can be
+	// reaped: on cancellation (Cancel) and after it exits (reapGroup below).
+	// WaitDelay stops a backgrounded child that inherited the output pipe from
+	// holding Wait open until the wall deadline.
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
+	c.WaitDelay = 500 * time.Millisecond
+
 	out, err := c.CombinedOutput()
 	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
+	if c.Process != nil && reapGroup(c.Process.Pid) {
+		res.Violations = append(res.Violations, Violation{Kind: "limit",
+			Detail: "terminated background process(es) that outlived the command"})
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil // the command itself succeeded; a straggler held the pipe and was reaped
+	}
 
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		res.ExitCode = ee.ExitCode()
+		res.ExitStatus = ee.Error()
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		res.TimedOut = true
-		res.ExitCode = -1
+		if res.ExitCode == 0 {
+			res.ExitCode = -1
+		}
 		res.Violations = append(res.Violations, Violation{Kind: "limit", Detail: "wall-clock deadline exceeded"})
 		return res, nil
 	}
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			res.ExitCode = ee.ExitCode()
-			if v, ok := attributeDenial(res.Output); ok {
-				res.Violations = append(res.Violations, v)
-			}
-			return res, nil // a non-zero exit is signal, not an infra error
+		if ee == nil {
+			// Could not start sandbox-exec at all: an infrastructure failure.
+			return res, err
 		}
-		// Could not start sandbox-exec at all: an infrastructure failure.
-		return res, err
+		if v, ok := attributeDenial(res.Output); ok {
+			res.Violations = append(res.Violations, v)
+		}
 	}
-	return res, nil
+	return res, nil // a non-zero exit is signal, not an infra error
+}
+
+// reapGroup SIGKILLs whatever still runs in the process group led by pid (the
+// command's own group, via Setpgid) and reports whether anything did. The leader
+// has already been waited on, so a live group means a backgrounded descendant
+// outlived the command. A descendant that calls setsid() leaves the group and is
+// not reaped here; it stays confined by the inherited Seatbelt profile.
+func reapGroup(pid int) bool {
+	if pid <= 0 || syscall.Kill(-pid, 0) != nil {
+		return false // ESRCH: nothing left in the group
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	return true
 }
 
 // systemReadRoots are the paths a /bin/sh plus /usr/bin tools must read to load
@@ -199,10 +235,32 @@ func seatbeltProfile(pol Policy, scratch string) string {
 		w("(allow file-read* (subpath " + sbplStr(p) + "))")
 	}
 
-	// Deny roots LAST so deny wins (later rules win in SBPL), even over subpath "/".
-	for _, p := range resolveAll(pol.DenyRoots) {
+	// Deny roots after every grant so deny wins (later rules win in SBPL), even
+	// over subpath "/".
+	denies := resolveAll(pol.DenyRoots)
+	for _, p := range denies {
 		w("(deny file-read* (subpath " + sbplStr(p) + "))")
 		w("(deny file-write* (subpath " + sbplStr(p) + "))")
+	}
+	// Carve-out: WorkDir and scratch stay usable even when they sit INSIDE a deny
+	// root (cron's work dir lives under the data dir). Re-grant just those
+	// subtrees, then re-deny every deny root at or inside them, so a work dir can
+	// never reopen a denied tree and a WorkDir equal to a deny root stays denied.
+	for _, p := range rw {
+		for _, d := range denies {
+			if p != "" && p != d && within(p, d) {
+				w("(allow file-read* file-write* (subpath " + sbplStr(p) + "))")
+				break
+			}
+		}
+	}
+	for _, d := range denies {
+		for _, p := range rw {
+			if p != "" && within(d, p) {
+				w("(deny file-read* file-write* (subpath " + sbplStr(d) + "))")
+				break
+			}
+		}
 	}
 
 	// Network.
@@ -246,7 +304,10 @@ func setEnv(env []string, key, val string) []string {
 // containment event. Classification is heuristic; Contained() never depends on it.
 func attributeDenial(output string) (Violation, bool) {
 	low := strings.ToLower(output)
-	if !strings.Contains(low, "operation not permitted") && !strings.Contains(low, "sandbox") {
+	// EPERM is the Seatbelt signature. Also matching the bare word "sandbox"
+	// flagged any failing command that merely printed it (a path, a log line),
+	// which would now trigger spurious escalations.
+	if !strings.Contains(low, "operation not permitted") {
 		return Violation{}, false
 	}
 	if strings.Contains(low, "/dev/tcp") || strings.Contains(low, "connect") ||
