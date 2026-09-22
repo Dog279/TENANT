@@ -88,6 +88,11 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
   (or `/model` inside the TUI).
 - Memory, the archive, transcripts, and the wiki live in your OS **data dir**
   (gitignored). Nothing personal is ever committed.
+- Every subsystem logs to **`<data>/logs/<source>/YYYY-MM-DD.log`** — one folder
+  per subsystem (turns, sub-agents, approvals, discord, cron, …), plain text, and
+  the same lines feed the dashboard's Activity tab (one tab per folder). Adding a
+  source is one line of Go, one `tenant log` call, or one `POST /api/logs/<name>`
+  — see [docs/LOGGING.md](docs/LOGGING.md).
 - **This repository contains no API keys, no learned memory, and no wiki
   content** — it is a clean template. Everything you generate stays on your machine.
 
@@ -134,6 +139,8 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `distill` | run one episodic→semantic distillation pass |
 | `mcp-memory` | run the MCP memory server over stdio |
 | `eval` | run the eval harness |
+| `attach [URL]` | watch a running hub's activity feed (`--follow`, `--source discord`) |
+| `log <source> "<msg>" [k=v…]` | file a line into the log book; the folder + dashboard tab appear on first use |
 
 Run `tenant` with no arguments for the full list and flags.
 
@@ -146,6 +153,7 @@ internal/memory/       # working / episodic / semantic / archive / soul / compre
 internal/model/        # model router + backends (vllm-compatible, anthropic, echo) + tool formats
 internal/plugins/      # first-party tools: os, web, sql, gsuite, x, imessage, discord, wiki
 internal/dashboard/    # server-rendered web control panel
+internal/logs/         # the unified log book: per-source text folders + the dashboard feed
 internal/tui/          # terminal UI
 internal/orchestra/    # multi-agent bus + spawn/await
 internal/eval/         # evaluation harness + task fixtures

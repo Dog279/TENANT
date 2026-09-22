@@ -79,6 +79,9 @@ memory/assemble  memory/episodic  memory/semantic  model/backend/vllm
    ▼              memory/working                    model/testllm
 internal/mcp ── mcp/transport                       model/profiles (go:embed)
 
+internal/logs  (leaf: the unified log book — every package above may import it;
+                agent renders its events into it, dashboard reads it)
+
 Rule of thumb: model has NO deps on memory/agent. memory tiers are
 independent of each other (assemble + distill compose them). agent sits
 on top of everything. improve sits beside agent (scheduled jobs).
@@ -100,6 +103,7 @@ episodic + semantic, exposes them to external MCP clients.
 | T3 Semantic | SQLite + FTS5 + BLOB | `%LOCALAPPDATA%\tenant\facts.db` | same + supersede/decay |
 | T5 Archive | JSONL (append-only) | `%LOCALAPPDATA%\tenant\archive\YYYY-MM\{session}.jsonl` | write-once audit/replay |
 | Scheduler cursors | SQLite KV | `%LOCALAPPDATA%\tenant\tenant_meta.db` | tiny durable state |
+| Log book | plain text, one line per entry | `%LOCALAPPDATA%\tenant\logs\{source}\YYYY-MM-DD.log` | one folder per subsystem, human-readable, 30-day retention; see `docs/LOGGING.md` |
 
 Config dir = `os.UserConfigDir()` (Roaming on Windows / `~/.config` Linux /
 `~/Library/Application Support` macOS). Data dir = LOCALAPPDATA / `$XDG_DATA_HOME`
@@ -420,6 +424,44 @@ all-invalid tool batches → bail; ceiling → forced synthesis (Tools=nil),
 `Truncated=true`; archive best-effort (warn, don't fail turn); episode
 persisted at end of turn (one row/pair, query embedding). **17 tests**
 (incl. streaming token emission + streaming tool-call handling).
+
+### 5.10a `internal/logs` — The unified log book
+
+**Purpose:** the single sink every subsystem logs through. One source = one
+folder of plain-text daily files (`<data>/logs/<source>/YYYY-MM-DD.log`) = one
+dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
+`logs.For("name")` without plumbing. Full guide: `docs/LOGGING.md`.
+
+**Public API:**
+- `logs.Open(root, Options) (*Hub, error)` / `logs.NewMemory(cap)`; `Hub.Start(ctx)`
+  (backfill from the newest file of every folder, then folder discovery, foreign-file
+  tailing and retention loops); `Hub.Close()`.
+- `Hub.Log(Entry)` / `Hub.Logf(source, level, msg, kv…)` — writes the line to the
+  source's day file (created on first use) and appends it to a bounded ring
+  keyed by a monotonic `Seq` (eviction never invalidates a cursor).
+- `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Notify()` — the lossless
+  replay + coalescing wake the dashboard's Activity SSE tails (same pattern as
+  `orchestra.Bus`).
+- `Hub.Sources() []SourceInfo` (display order: built-ins, custom, `system` last;
+  counts; native vs discovered), `Hub.Files(source)`, `Hub.OpenFile(source, name)`
+  (names validated to strict shapes — never a path outside the folder).
+- `Hub.Handler(tee) slog.Handler` / `Hub.Logger(source)`; package-level
+  `logs.Install(hub)` + `logs.For(source)` (resolves the hub lazily, stderr-at-WARN
+  until one is installed). Routing: fixed source → `source` attr → the message's
+  `tag:` prefix table → `system`.
+- `Entry.Line()` / `logs.ParseLine` — the round-trippable on-disk format:
+  `<date> <time.ms> <LEVEL> [<source>] <msg>\t<k=v …>`; values quoted when needed
+  so one entry is always one line.
+- `agent.EntryFor(Event) (logs.Entry, bool)` (in `internal/agent`) renders a turn
+  event into an entry (denylists token/usage/assistant/memory noise); `Event.Source`
+  lets an observer name the folder (`cron`, `discord`, `eval`, …).
+
+**Invariants:** never blocks a producer on a reader; a file that cannot be
+written is noted on the source (`SourceInfo.Err`) and the entry still reaches
+the ring; a folder tailed as foreign is drained before this process starts
+writing it (no re-reading our own lines); daily files roll at 64 MB; retention
+30 days (config `logs.retention_days`, `-1` = never); INFO floor
+(`logs.level: debug` / `TENANT_LOG=debug` lowers it).
 
 ### 5.11 `internal/improve` — Self-improvement scheduler
 
@@ -920,8 +962,9 @@ the `echo` backend (default); `--backend vllm` for production.
   conversation; tool calls/results stream into the feed. Background
   self-improvement (distillation) runs in-process by default
   (`--distill-every 5m`, `--self-improve=false` to disable) and its job
-  runs stream into the feed. Logs route to `<data>/tui.log` (stderr
-  would corrupt the alt-screen).
+  runs stream into the feed. Logs go to the log book
+  (`<data>/logs/<source>/`, §5.10a) — nothing is written to stderr, which
+  would corrupt the alt-screen.
 - `tenant memory search <query> [--flags]` — CLI hybrid search over
   episodes+facts (query tokens parsed before flags — Go `flag` stops at
   first non-flag, so the CLI splits leading non-flag args as the query)

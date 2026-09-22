@@ -118,7 +118,9 @@ Type=simple
 ExecStart=/usr/local/bin/tenant serve
 Restart=on-failure
 RestartSec=5
-# Logs go to the journal (slog → stderr). View: journalctl --user -u tenant -f
+# stderr (TENANT_LOG-filtered) goes to the journal: journalctl --user -u tenant -f
+# The full per-subsystem record is the log book: <data>/logs/<source>/YYYY-MM-DD.log
+# (see docs/LOGGING.md); `tenant attach --follow --source approvals` tails one.
 
 [Install]
 WantedBy=default.target
