@@ -28,6 +28,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -97,9 +98,23 @@ type escapeCase struct {
 	needsNet    bool // skip the adversarial half when the host has no outbound network
 	advOrigin   string
 	legitOrigin string
-	adversary   func(e env) string
+	adversary   func(e env) string // POSIX sh (dash, bash, zsh): the unix backends' shell
 	legit       func(e env) string
+	adversaryPS func(e env) string // PowerShell: the Windows backends' shell
+	legitPS     func(e env) string
 	cleanup     func() // optional: remove what an uncontained adversary leaves behind
+}
+
+// usePowerShell selects the PowerShell forms: backends run commands under
+// PowerShell on Windows and sh elsewhere (sandbox.shellArgs). A variable so tests
+// can render the PowerShell forms on any host.
+var usePowerShell = runtime.GOOS == "windows"
+
+func (c escapeCase) commands(e env) (adversary, legit string) {
+	if usePowerShell {
+		return c.adversaryPS(e), c.legitPS(e)
+	}
+	return c.adversary(e), c.legit(e)
 }
 
 // cases is the suite, in run order.
@@ -108,8 +123,10 @@ var cases = []escapeCase{
 	{
 		name: "read-secret-outside-roots", kind: KindFilesystem, checkLeak: true,
 		advOrigin: "read-secret", legitOrigin: "read-inside",
-		adversary: func(e env) string { return "cat " + shq(e.secretFile) },
-		legit:     func(e env) string { return "cat " + shq(e.legitFile) },
+		adversary:   func(e env) string { return "cat " + shq(e.secretFile) },
+		legit:       func(e env) string { return "cat " + shq(e.legitFile) },
+		adversaryPS: func(e env) string { return psRead(e.secretFile) },
+		legitPS:     func(e env) string { return psRead(e.legitFile) },
 	},
 	// (b) write to $HOME (outside the write roots) vs write inside the work dir.
 	{
@@ -118,6 +135,12 @@ var cases = []escapeCase{
 		adversary: func(env) string { return `echo pwned > "$HOME/` + homeArtifact + `"` },
 		legit: func(e env) string {
 			return "echo hi > " + shq(filepath.Join(e.workDir, "legit_write.txt"))
+		},
+		adversaryPS: func(env) string {
+			return psTry("Set-Content -LiteralPath (Join-Path $HOME " + psq(homeArtifact) + ") -Value pwned -ErrorAction Stop")
+		},
+		legitPS: func(e env) string {
+			return psTry("Set-Content -LiteralPath " + psq(filepath.Join(e.workDir, "legit_write.txt")) + " -Value hi -ErrorAction Stop")
 		},
 		cleanup: removeHomeArtifact,
 	},
@@ -130,14 +153,21 @@ var cases = []escapeCase{
 			return "cat " + shq(escape)
 		},
 		legit: func(env) string { return "echo ok" },
+		adversaryPS: func(e env) string {
+			sep := string(filepath.Separator)
+			return psRead(e.workDir + sep + ".." + sep + filepath.Base(e.secretDir) + sep + filepath.Base(e.secretFile))
+		},
+		legitPS: func(env) string { return "Write-Output ok" },
 	},
 	// (d) reach the network vs a plain echo. The adversarial half is skipped when
 	// the host has no outbound network (the filesystem cases above never are).
 	{
 		name: "network-outbound", kind: KindNetwork, needsNet: true,
 		advOrigin: "net", legitOrigin: "echo",
-		adversary: func(env) string { return "exec 3<>/dev/tcp/1.1.1.1/53 && echo connected" },
-		legit:     func(env) string { return "echo ok" },
+		adversary:   func(env) string { return posixNetProbe() },
+		legit:       func(env) string { return "echo ok" },
+		adversaryPS: func(env) string { return psNetProbe() },
+		legitPS:     func(env) string { return "Write-Output ok" },
 	},
 }
 
@@ -176,13 +206,14 @@ func runCase(ctx context.Context, b sandbox.Backend, c escapeCase) (CaseResult, 
 	}
 	pol := e.policy()
 	r := CaseResult{Name: c.name, Kind: c.kind}
+	advCmd, legitCmd := c.commands(e)
 
 	if c.needsNet && !hostHasNetwork(ctx) {
 		r.Skipped = true
 		r.SkipReason = "host has no outbound TCP to " + netProbeAddr +
 			"; only the network containment check is skipped (filesystem cases are still enforced)"
 	} else {
-		cmd := sandbox.Command{Shell: c.adversary(e), Surface: suiteSurface, Origin: c.advOrigin}
+		cmd := sandbox.Command{Shell: advCmd, Surface: suiteSurface, Origin: c.advOrigin}
 		res, err := run(ctx, b, cmd, pol)
 		if err != nil {
 			return r, fmt.Errorf("adversary %q: %w", cmd.Shell, err)
@@ -196,7 +227,7 @@ func runCase(ctx context.Context, b sandbox.Backend, c escapeCase) (CaseResult, 
 		r.AdversarialViolations = res.Violations
 	}
 
-	legit := sandbox.Command{Shell: c.legit(e), Surface: suiteSurface, Origin: c.legitOrigin}
+	legit := sandbox.Command{Shell: legitCmd, Surface: suiteSurface, Origin: c.legitOrigin}
 	res, err := run(ctx, b, legit, pol)
 	if err != nil {
 		return r, fmt.Errorf("legit twin %q: %w", legit.Shell, err)
@@ -310,3 +341,35 @@ var hostHasNetwork = func(ctx context.Context) bool {
 func shq(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// posixNetProbe connects to netProbeAddr with the first tool available. The
+// bash-only /dev/tcp is not usable under dash (Debian/Ubuntu/WSL /bin/sh), so it
+// runs bash explicitly, then falls back to python3 and nc. Exit 0 means it
+// connected; 127 means no probe tool exists, which the host baseline exposes as
+// an unproven case rather than a false "contained".
+func posixNetProbe() string {
+	host, port, _ := net.SplitHostPort(netProbeAddr)
+	return "if command -v bash >/dev/null 2>&1; then exec bash -c 'exec 3<>/dev/tcp/" + host + "/" + port + " && echo connected'; " +
+		"elif command -v python3 >/dev/null 2>&1; then exec python3 -c 'import socket; socket.create_connection((\"" + host + "\", " + port + "), 3); print(\"connected\")'; " +
+		"elif command -v nc >/dev/null 2>&1; then exec nc -z -w 3 " + host + " " + port + "; " +
+		"else echo 'no network probe tool (bash, python3, nc)' >&2; exit 127; fi"
+}
+
+// psNetProbe is the PowerShell connect probe: exit 0 only when the TCP connect
+// succeeds.
+func psNetProbe() string {
+	host, port, _ := net.SplitHostPort(netProbeAddr)
+	return psTry("$c = New-Object System.Net.Sockets.TcpClient; $c.Connect(" + psq(host) + ", " + port + "); $c.Close(); Write-Output connected")
+}
+
+// psRead reads a file in PowerShell, failing (exit 1) when it cannot.
+func psRead(path string) string {
+	return psTry("Get-Content -LiteralPath " + psq(path) + " -ErrorAction Stop")
+}
+
+// psTry wraps a PowerShell statement so any failure exits 1: a statement-level
+// error would otherwise leave the process exit code 0.
+func psTry(stmt string) string { return "try { " + stmt + "; exit 0 } catch { exit 1 }" }
+
+// psq single-quotes a string for PowerShell.
+func psq(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }

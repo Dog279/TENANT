@@ -209,8 +209,8 @@ type Command struct {
 // command, in which case Violations may be empty and containment is observed
 // behaviourally by the escape suite.
 type Violation struct {
-	Kind   string // "filesystem" | "network" | "limit" | "policy"
-	Detail string // model/operator-readable, e.g. "wrote outside write roots: /x"
+	Kind   string `json:"kind"`   // "filesystem" | "network" | "limit" | "policy"
+	Detail string `json:"detail"` // model/operator-readable, e.g. "wrote outside write roots: /x"
 }
 
 // Result is the outcome of a run. A non-zero ExitCode is NOT an error (it is

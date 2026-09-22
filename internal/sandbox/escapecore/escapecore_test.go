@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -212,6 +213,45 @@ func TestEscapeCore_HostBaseline(t *testing.T) {
 	if home, err := os.UserHomeDir(); err == nil {
 		if _, err := os.Stat(filepath.Join(home, homeArtifact)); !os.IsNotExist(err) {
 			t.Errorf("$HOME/%s was not cleaned up (stat err=%v)", homeArtifact, err)
+		}
+	}
+}
+
+// The POSIX network probe must work under dash (Debian/Ubuntu/WSL /bin/sh), not
+// just bash: the old /dev/tcp one-liner fails unconfined under dash, which would
+// leave the network case unprovable on Linux. macOS ships /bin/dash, so run it.
+func TestPosixNetProbe_WorksUnderDash(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("dash not installed")
+	}
+	if !hostHasNetwork(context.Background()) {
+		t.Skip("host has no outbound network")
+	}
+	out, err := exec.Command(dash, "-c", posixNetProbe()).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "connected") {
+		t.Fatalf("probe under dash: err=%v out=%q", err, out)
+	}
+}
+
+// Windows backends run PowerShell; every case must render a PowerShell form that
+// fails closed (try/catch → exit 1) and never uses POSIX-only syntax.
+func TestCases_RenderPowerShellForms(t *testing.T) {
+	prev := usePowerShell
+	usePowerShell = true
+	defer func() { usePowerShell = prev }()
+	e := env{workDir: `C:\w`, secretDir: `C:\s`, secretFile: `C:\s\secret.txt`, legitFile: `C:\w\legit.txt`}
+	for _, c := range cases {
+		adv, legit := c.commands(e)
+		for _, cmd := range []string{adv, legit} {
+			for _, posix := range []string{"/dev/tcp", "cat ", "echo pwned >", "2>/dev/null", "exec "} {
+				if strings.Contains(cmd, posix) {
+					t.Errorf("%s: PowerShell form contains POSIX syntax %q: %s", c.name, posix, cmd)
+				}
+			}
+		}
+		if !strings.HasPrefix(adv, "try {") || !strings.Contains(adv, "catch { exit 1 }") {
+			t.Errorf("%s: adversarial PowerShell form must fail closed via try/catch: %s", c.name, adv)
 		}
 	}
 }

@@ -51,7 +51,7 @@ import (
 )
 
 // sandboxSurfaces are the spawn surfaces an exec profile is resolved for.
-var sandboxSurfaces = []string{"local", "discord", "imessage", "cron-exec", "cron-shell"}
+var sandboxSurfaces = execSurfaces
 
 const sandboxRunUsage = "usage: tenant sandbox run --surface <local|discord|imessage|cron-exec|cron-shell> " +
 	"[--backend host|restricted] [--timeout 60s] [--workdir DIR] -- <command...>"
@@ -173,6 +173,9 @@ type probeReport struct {
 	Surfaces   []surfaceProbe  `json:"surfaces"`
 	Host       sbxCaps         `json:"host"`
 	Restricted restrictedProbe `json:"restricted"`
+	// ProfileNotes reports how the operator's exec_profiles loaded (overrides
+	// applied, invalid entries skipped, or the settings file unreadable).
+	ProfileNotes []string `json:"profile_notes"`
 }
 
 // errSurfaceUnavailable marks a probe that found a surface whose configured
@@ -192,7 +195,9 @@ func sandboxProbe(ctx context.Context, args []string, out io.Writer) error {
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	notes := loadSandboxProfiles(c)
 	rep := buildProbeReport(ctx, c)
+	rep.ProfileNotes = notes
 	if *asJSON {
 		if err := sbxWriteJSON(out, rep); err != nil {
 			return err
@@ -255,7 +260,14 @@ func buildProbeReport(ctx context.Context, c *commonFlags) probeReport {
 
 func renderProbe(w io.Writer, r probeReport) {
 	fmt.Fprintf(w, "Execution sandbox on %s/%s (agent %s)\n", r.OS, r.Arch, r.Agent)
-	fmt.Fprintf(w, "  config  %s\n  data    %s\n\n", r.ConfigDir, r.DataDir)
+	fmt.Fprintf(w, "  config  %s\n  data    %s\n", r.ConfigDir, r.DataDir)
+	if len(r.ProfileNotes) == 0 {
+		fmt.Fprintln(w, "  profiles  built-in defaults (no exec_profiles in settings)")
+	}
+	for _, n := range r.ProfileNotes {
+		fmt.Fprintln(w, "  profiles  "+n)
+	}
+	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "SURFACE PROFILES")
 	tw := sbxTable(w)
@@ -285,8 +297,12 @@ func renderProbe(w io.Writer, r probeReport) {
 			work = "(set per run by the spawn site)"
 		}
 		row("work", []string{work}, "")
-		if root := deniedRootOf(g.s.WorkDir, g.s.DenyRoots); root != "" {
-			row("warn", []string{"the work dir is inside deny root " + root + "; a confining backend blocks the command's own cwd"}, "")
+		if note, fatal := workDirDenyNote(g.s.WorkDir, g.s.DenyRoots); note != "" {
+			label := "note"
+			if fatal {
+				label = "warn"
+			}
+			row(label, []string{note}, "")
 		}
 		row("read", g.s.ReadRoots, "(whole host, minus deny roots)")
 		row("write", g.s.WriteRoots, "(work dir only)")
@@ -800,6 +816,9 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 	if err := o.dirs.resolveDirs(); err != nil {
 		return err
 	}
+	for _, n := range loadSandboxProfiles(o.dirs) {
+		fmt.Fprintln(out, "note: "+n)
+	}
 	if o.workDir != "" {
 		if o.workDir, err = filepath.Abs(expandPath(o.workDir)); err != nil {
 			return fmt.Errorf("sandbox run: --workdir: %w", err)
@@ -809,7 +828,7 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 	p := resolveExecProfile(o.surface, o.dirs.cfgDir, o.dirs.dataDir, o.workDir)
 	chosen := "profile"
 	if o.backend != "" {
-		p.Backend, chosen = o.backend, "forced by --backend"
+		p, chosen = withBackend(p, o.backend), "forced by --backend"
 	}
 	be, err := sandbox.For(p.Backend)
 	if err != nil {
@@ -837,8 +856,12 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 	kv("backend", "%s, isolation %s [%s]", name, be.Isolation(), chosen)
 	kv("enforces", "filesystem=%s  network=%s  limits=%s  env=%s", caps.Filesystem, caps.Network, caps.Limits, caps.Env)
 	kv("work", "%s (%s)", pol.WorkDir, workNote)
-	if root := deniedRootOf(pol.WorkDir, pol.DenyRoots); root != "" {
-		kv("warning", "the work dir is inside deny root %s; a confining backend blocks the command's own cwd", root)
+	if note, fatal := workDirDenyNote(pol.WorkDir, pol.DenyRoots); note != "" {
+		label := "note"
+		if fatal {
+			label = "warning"
+		}
+		kv(label, "%s", note)
 	}
 	row("read", pol.ReadRoots, "(whole host, minus deny roots)")
 	row("write", pol.WriteRoots, "(work dir only)")
@@ -849,7 +872,11 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 	row("mirrors", applied, "(nothing beyond the profile)")
 	kv("command", "%s", o.command)
 
-	res, err := be.Run(ctx, sandbox.Command{Shell: o.command, Surface: o.surface, Origin: "sandbox-run"}, pol)
+	cmd := sandbox.Command{Shell: o.command, Surface: o.surface, Origin: "sandbox-run"}
+	if o.surface == surfaceCronShell {
+		cmd = sandbox.Command{Args: cronShellArgv(o.command), Surface: o.surface, Origin: "sandbox-run"} // cmd /C on Windows, as cron runs it
+	}
+	res, err := be.Run(ctx, cmd, pol)
 	if cerr := ctx.Err(); cerr != nil {
 		return fmt.Errorf("sandbox run: interrupted: %w", cerr)
 	}
@@ -912,10 +939,23 @@ func sandboxRunOutcome(res sandbox.Result) error {
 	return nil
 }
 
-// deniedRootOf returns the deny root that contains (or is) dir, or "". Deny wins
-// over every allow, so a work dir under a deny root is unusable under any
-// confining backend: the command cannot even read or write its own cwd. Paths
-// are compared symlink-resolved, as the backends match them.
+// workDirDenyNote explains how the Policy carve-out treats a work dir that
+// overlaps a deny root. A work dir strictly INSIDE a deny root stays usable (the
+// rest of the root stays denied) — that is how cron's work dir lives under the
+// data dir. A work dir that IS a deny root fails closed. fatal reports the latter.
+func workDirDenyNote(dir string, deny []string) (note string, fatal bool) {
+	root := deniedRootOf(dir, deny)
+	if root == "" {
+		return "", false
+	}
+	if canonicalPath(root) == canonicalPath(dir) {
+		return "the work dir IS deny root " + root + ": a confining backend fails closed (the carve-out never reopens a deny root)", true
+	}
+	return "the work dir is inside deny root " + root + "; the carve-out keeps it usable while the rest of that root stays denied", false
+}
+
+// deniedRootOf returns the deny root that contains (or is) dir, or "". Paths are
+// compared symlink-resolved, as the backends match them.
 func deniedRootOf(dir string, deny []string) string {
 	if dir == "" {
 		return ""
@@ -1028,4 +1068,22 @@ func nonNilStrings(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// loadSandboxProfiles loads the operator's exec_profiles from settings so probe
+// and run show and use the same profiles the running hub does. It returns one
+// line per problem (unreadable settings, invalid entries skipped).
+func loadSandboxProfiles(c *commonFlags) []string {
+	n, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.agent)
+	if err != nil {
+		return []string{"exec_profiles not loaded (" + err.Error() + "); showing built-in defaults"}
+	}
+	notes := make([]string, 0, len(skipped)+1)
+	if n > 0 {
+		notes = append(notes, fmt.Sprintf("%d exec profile override(s) loaded from settings", n))
+	}
+	for _, sk := range skipped {
+		notes = append(notes, "skipped invalid entry: "+sk)
+	}
+	return notes
 }

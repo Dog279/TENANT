@@ -124,6 +124,18 @@ func TestResolveExecProfile_ConfinedEnvDefaultsToScrubbed(t *testing.T) {
 	}
 }
 
+func TestWithBackend_ForcedRestrictedGetsConfinedDefaults(t *testing.T) {
+	resetExecProfiles(t)
+	home, _ := os.UserHomeDir()
+	p := withBackend(resolveExecProfile(surfaceCronShell, "", "", ""), "restricted")
+	if p.Backend != "restricted" || !hasString(p.Policy.DenyRoots, filepath.Join(home, ".ssh")) || !p.Policy.Env.Isolate {
+		t.Fatalf("a forced restricted run must carry the confined defaults (credential deny + scrubbed env): %+v", p)
+	}
+	if h := withBackend(p, "host"); h.Backend != "host" {
+		t.Fatalf("withBackend(host) = %q", h.Backend)
+	}
+}
+
 func TestResolveExecProfile_SurfaceEntryBeatsDefault(t *testing.T) {
 	resetExecProfiles(t)
 	defaultExecProfiles.Load(map[string]execProfileSetting{

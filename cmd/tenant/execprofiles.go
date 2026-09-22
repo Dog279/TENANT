@@ -242,24 +242,40 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	p.Policy.Allow = o.Allow
 	p.Policy.ReadRoots = expandRoots(o.ReadRoots)
 	p.Policy.WriteRoots = expandRoots(o.WriteRoots)
-	deny := append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)
-	if p.Backend != "host" {
-		deny = append(deny, credentialStoreRoots()...)
-	}
-	p.Policy.DenyRoots = dedupeNonEmpty(deny...)
-	switch {
-	case len(o.EnvPass) > 0 || len(o.EnvSet) > 0:
+	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)...)
+	if len(o.EnvPass) > 0 || len(o.EnvSet) > 0 {
 		p.Policy.Env = sandbox.EnvPolicy{Isolate: true, Pass: o.EnvPass, Set: o.EnvSet}
-	case p.Backend != "host":
-		// A confined command should not inherit every token in Tenant's own
-		// environment (red-team #13). Default to cron's scrubbed env; an operator
-		// who needs a strict allowlist sets env_pass.
-		p.Policy.Env = scrubbedEnvPolicy()
 	}
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
 	p.Policy.Limits.MemoryBytes = int64(o.MemoryMB) << 20
 	p.Policy.Limits.MaxPIDs = o.MaxPIDs
+	if p.Backend != "host" {
+		applyConfinedDefaults(&p)
+	}
 	return p
+}
+
+// withBackend returns p moved onto backend, with the defaults every confining
+// profile gets (see applyConfinedDefaults). `tenant sandbox run --backend` uses
+// it so a forced trial run matches what a real profile with that backend does.
+func withBackend(p execProfile, backend string) execProfile {
+	p.Backend = backend
+	if backend != "host" {
+		applyConfinedDefaults(&p)
+	}
+	return p
+}
+
+// applyConfinedDefaults adds what every confining profile gets on top of the
+// operator's settings: the credential/browser-store deny baseline, and cron's
+// scrubbed environment unless the profile already scopes the environment (a
+// confined command should not inherit every token in Tenant's own environment,
+// red-team #13; an operator who needs a strict allowlist sets env_pass).
+func applyConfinedDefaults(p *execProfile) {
+	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, credentialStoreRoots()...)...)
+	if !envScoped(p.Policy.Env) {
+		p.Policy.Env = scrubbedEnvPolicy()
+	}
 }
 
 // credentialStoreRoots are well-known local credential stores. A confining
