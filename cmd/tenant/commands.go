@@ -546,45 +546,66 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		// give each arriving client its own transport.
 		//
 		// A spent transport can never serve again (sessEnd latches closed, so
-		// Recv returns EOF forever), so the handler retires it the instant its
-		// stream drops rather than after ServeTransport notices. Swapping later
-		// leaves a window where the next client attaches to the dead transport
-		// and sees its stream die mid-handshake.
+		// Recv returns EOF forever), so the stream that owns a transport retires
+		// it the instant the stream drops rather than after ServeTransport
+		// notices. Swapping later leaves a window where the next client attaches
+		// to the dead transport and sees its stream die mid-handshake.
+		//
+		// The server can also notice a dropped stream a moment after the client
+		// is gone (on Windows that lags), so a back-to-back client waits briefly
+		// for the old stream to end instead of being refused as a second
+		// session. A genuinely concurrent client is still refused, and only the
+		// stream that claimed the slot can free it.
 		var (
 			sessMu  sync.Mutex
-			current *transport.SSE // nil between sessions; guarded by sessMu
+			current *transport.SSE // the live stream's transport; nil between sessions; guarded by sessMu
+			ended   chan struct{}  // closed when current's stream ends; guarded by sessMu
 		)
 		ready := make(chan *transport.SSE, 1)
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			isStream := r.Method == http.MethodGet && r.URL.Path == "/sse"
-			sessMu.Lock()
-			if current == nil {
-				if !isStream {
+			if r.Method != http.MethodGet || r.URL.Path != "/sse" {
+				sessMu.Lock()
+				t := current
+				sessMu.Unlock()
+				if t == nil {
 					// A POST with no stream open has nowhere to go.
-					sessMu.Unlock()
 					http.Error(w, "no MCP session open; connect GET /sse first", http.StatusServiceUnavailable)
 					return
 				}
-				current = transport.NewSSE(transport.SSEConfig{})
-				select {
-				case ready <- current:
-				default: // the serve loop has not drained the last one yet
-				}
+				t.ServeHTTP(w, r)
+				return
 			}
-			t := current
-			sessMu.Unlock()
-
-			t.ServeHTTP(w, r) // for GET /sse this blocks for the stream's life
-
-			if isStream {
-				// This stream is spent. Retire it now so the next client starts
-				// clean instead of attaching to a transport that can only EOF.
-				sessMu.Lock()
-				if current == t {
-					current = nil
-				}
+			grace := time.NewTimer(2 * time.Second)
+			defer grace.Stop()
+			sessMu.Lock()
+			for ended != nil {
+				wait := ended
 				sessMu.Unlock()
+				select {
+				case <-wait:
+				case <-grace.C:
+					http.Error(w, "session already active", http.StatusConflict)
+					return
+				case <-r.Context().Done():
+					return
+				}
+				sessMu.Lock()
 			}
+			t := transport.NewSSE(transport.SSEConfig{})
+			done := make(chan struct{})
+			current, ended = t, done
+			sessMu.Unlock()
+			select {
+			case ready <- t:
+			default: // the serve loop has not drained the last one yet
+			}
+
+			t.ServeHTTP(w, r) // blocks for the stream's life
+
+			sessMu.Lock()
+			current, ended = nil, nil
+			sessMu.Unlock()
+			close(done)
 		})
 		httpSrv := newSSEHTTPServer(*sseAddr, handler)
 		go func() {

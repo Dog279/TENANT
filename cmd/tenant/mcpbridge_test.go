@@ -146,6 +146,63 @@ func TestMCPBridge_SurvivesClientDisconnect(t *testing.T) {
 // were passed. Reading the registration code proves nothing here; only the
 // wire does.
 func TestMCPBridge_ExposesTeamTools(t *testing.T) {
+	addr := startBridge(t)
+
+	got := map[string]bool{}
+	for _, n := range oneSession(t, addr) {
+		got[n] = true
+	}
+	for _, want := range []string{"spawn_agent", "team_await", "team_send", "team_roster"} {
+		if !got[want] {
+			t.Errorf("tool %q missing over the bridge; a claudecode fallback could read everything and delegate nothing", want)
+		}
+	}
+}
+
+// A second client while a session is live is refused, and the refusal must
+// not end the live session: its POSTs still reach it.
+func TestMCPBridge_RefusedSecondClientKeepsTheLiveSession(t *testing.T) {
+	addr := startBridge(t)
+	live, err := http.Get("http://" + addr + "/sse")
+	if err != nil {
+		t.Fatalf("open live stream: %v", err)
+	}
+	defer live.Body.Close()
+	br := bufio.NewReader(live.Body)
+	msgPath := ""
+	for msgPath == "" {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read endpoint event: %v", err)
+		}
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "data:"); ok {
+			msgPath = strings.TrimSpace(v)
+		}
+	}
+
+	second, err := http.Get("http://" + addr + "/sse")
+	if err != nil {
+		t.Fatalf("open second stream: %v", err)
+	}
+	second.Body.Close()
+	if second.StatusCode != http.StatusConflict {
+		t.Fatalf("second concurrent stream = %d, want 409", second.StatusCode)
+	}
+
+	r, err := http.Post("http://"+addr+msgPath, "application/json", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusAccepted {
+		t.Fatalf("live session's post after the refusal = %d, want 202", r.StatusCode)
+	}
+}
+
+// startBridge runs the MCP bridge on a free loopback port until the test ends.
+func startBridge(t *testing.T) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("pick port: %v", err)
@@ -167,16 +224,7 @@ func TestMCPBridge_ExposesTeamTools(t *testing.T) {
 		})
 	}()
 	waitUp(t, addr)
-
-	got := map[string]bool{}
-	for _, n := range oneSession(t, addr) {
-		got[n] = true
-	}
-	for _, want := range []string{"spawn_agent", "team_await", "team_send", "team_roster"} {
-		if !got[want] {
-			t.Errorf("tool %q missing over the bridge; a claudecode fallback could read everything and delegate nothing", want)
-		}
-	}
+	return addr
 }
 
 func waitUp(t *testing.T, addr string) {
