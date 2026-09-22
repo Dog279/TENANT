@@ -3,7 +3,7 @@ package main
 // peerctl.go is `tenant peer …` (TEN-183): Tenant-to-Tenant federation pairing.
 // Mutual-consent invite codes — `tenant peer invite` on one side prints a
 // one-time short-lived code, `tenant peer join <code>` on the other stores the
-// dial record. peers.json (0600) is the single authoritative store; the
+// dial record. Protected peers.json is the single authoritative store; the
 // TEN-184 listener reads it per-request to authenticate peers. This is the
 // operator surface over internal/peering.
 

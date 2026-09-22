@@ -499,6 +499,7 @@ func cmdGoal(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      agent.NewStaticRegistry(),
 		Dispatcher: noopDispatcher{},
 		Logger:     log,

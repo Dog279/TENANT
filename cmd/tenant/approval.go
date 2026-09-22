@@ -12,6 +12,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
 	"tenant/internal/plugins/discord"
+	"tenant/internal/runtrace"
 	"tenant/internal/tui"
 )
 
@@ -37,6 +38,7 @@ type pendingReq struct {
 	origin string
 	at     time.Time
 	reply  chan tui.ApprovalDecision
+	span   *runtrace.Span
 }
 
 func newApprovalRegistry() *approvalRegistry {
@@ -45,16 +47,17 @@ func newApprovalRegistry() *approvalRegistry {
 
 // register inserts a new pending request and emits EventApprovalPending. Returns
 // the assigned id + the buffered reply chan the caller blocks on.
-func (r *approvalRegistry) register(req tui.ApprovalRequest, origin string) (string, chan tui.ApprovalDecision) {
+func (r *approvalRegistry) register(ctx context.Context, req tui.ApprovalRequest, origin string) (string, chan tui.ApprovalDecision) {
 	id := fmt.Sprintf("ap-%d", r.seq.Add(1)) // atomic — no lock needed for the id
 	reply := make(chan tui.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
-	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply}
+	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply, span: runtrace.SpanFromContext(ctx)}
 	r.mu.Lock()
 	r.pending[id] = p
 	r.mu.Unlock()
 	r.emitEvent(agent.EventApprovalPending, p, "")
+	p.recordApproval("pending")
 	return id, reply
 }
 
@@ -73,6 +76,7 @@ func (r *approvalRegistry) Resolve(id string, d tui.ApprovalDecision) bool {
 	}
 	p.reply <- d // cap-1 buffer ⇒ never blocks, fires exactly once (delete-under-lock gated)
 	r.emitEvent(agent.EventApprovalResolved, p, outcomeOf(d))
+	p.recordApproval(outcomeOf(d))
 	return true
 }
 
@@ -88,6 +92,7 @@ func (r *approvalRegistry) removeIfPending(id string) {
 	r.mu.Unlock()
 	if p != nil {
 		r.emitEvent(agent.EventApprovalResolved, p, "expired")
+		p.recordApproval("expired")
 	}
 }
 
@@ -104,7 +109,18 @@ func (r *approvalRegistry) DenyAll() {
 		default:
 		}
 		r.emitEvent(agent.EventApprovalResolved, p, "denied")
+		p.recordApproval("denied")
 	}
+}
+
+func (p *pendingReq) recordApproval(outcome string) {
+	if p == nil || p.span == nil {
+		return
+	}
+	p.span.AddApproval(runtrace.Approval{
+		ID: p.id, Category: p.req.Category, Action: p.req.Action,
+		Detail: p.req.Detail, Origin: p.origin, Outcome: outcome,
+	})
 }
 
 // Pending is the snapshot the dashboard / TUI read. Never nil (stable REST shape).
@@ -178,6 +194,7 @@ const (
 	catDestructive = "destructive" // irreversible: rm -rf, format, DROP, web purchase/delete
 	catWeb         = "web"         // act on the web unprompted: click/fill/select
 	catSend        = "send"        // outbound comms: email / iMessage / X
+	catEgress      = "egress"      // sensitive data crossing a trust boundary
 	// catMCP governs the agent adopting or reconfiguring tool servers
 	// (mcp_add / mcp_remove / mcp_trust): "allow" is the hands-off automation
 	// switch — the agent can build a tool server, connect it, and have its tools
@@ -186,7 +203,7 @@ const (
 	catMCP = "mcp"
 )
 
-var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend, catMCP}
+var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend, catEgress, catMCP}
 
 var catDesc = map[string]string{
 	catExec:        "run shell / python / code (os_exec)",
@@ -194,6 +211,7 @@ var catDesc = map[string]string{
 	catDestructive: "irreversible: rm -rf, format, DROP/ALTER, web purchase/delete",
 	catWeb:         "act on the web unprompted: click, fill, select",
 	catSend:        "send outbound comms: email, iMessage, X posts",
+	catEgress:      "send sensitive tool results across a trust boundary",
 	catMCP:         "adopt / reconfigure tool servers (mcp_add, mcp_remove, mcp_trust)",
 }
 
@@ -227,6 +245,8 @@ func categorize(action string) string {
 		return catSend
 	case "mcp_add", "mcp_remove", "mcp_trust":
 		return catMCP
+	case "sensitive_egress":
+		return catEgress
 	}
 	if strings.HasPrefix(action, "web_") {
 		return catWeb
@@ -497,13 +517,16 @@ func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) boo
 	switch mode {
 	case modeAllow:
 		b.logInfo("approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "approved_always")
 		return true
 	case modeDeny:
 		b.logInfo("approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_policy")
 		return false
 	}
 	if sess {
 		b.logInfo("approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "approved_session")
 		return true
 	}
 
@@ -590,11 +613,17 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// activity feed still SEE that a Discord approval is outstanding (visibility
 	// only — not resolvable from those surfaces).
 	if b.ask != nil {
-		// Mirror labeled with THIS broker's origin (discord / imessage), so the
-		// host surfaces say where the approval actually lives.
-		b.reg.emitBeside(agent.EventApprovalPending, req, b.origin, "")
+		// Tag the beside-event with THIS broker's origin (discord|imessage) so the
+		// host surfaces and the activity feed show where the approval lives.
+		origin := b.origin
+		if origin == "" {
+			origin = "discord"
+		}
+		b.reg.emitBeside(agent.EventApprovalPending, req, origin, "")
+		recordPolicyApproval(ctx, cat, action, detail, origin, "pending")
 		d := b.ask(ctx, req)
-		b.reg.emitBeside(agent.EventApprovalResolved, req, b.origin, outcomeOf(d))
+		b.reg.emitBeside(agent.EventApprovalResolved, req, origin, outcomeOf(d))
+		recordPolicyApproval(ctx, cat, action, detail, origin, outcomeOf(d))
 		logOutcome(outcomeOf(d), "custom backend")
 		return d
 	}
@@ -605,13 +634,14 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 	// storage; it is not an observer.)
 	if b.requests == nil {
 		logOutcome("denied", "no operator surface")
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_no_surface")
 		return tui.DenyOnce
 	}
 
 	// Register in the shared id-keyed registry (the source of truth) + emit the
 	// pending event. Both observers (TUI + dashboard) now see it and can resolve
 	// by id; the agent goroutine blocks ONLY on its own per-id reply chan.
-	id, reply := b.reg.register(req, b.origin)
+	id, reply := b.reg.register(ctx, req, b.origin)
 	req.ID = id
 	req.Reply = reply
 
@@ -635,6 +665,15 @@ func (b *approvalBroker) askDecision(ctx context.Context, cat, action, detail st
 		b.reg.removeIfPending(id)
 		logOutcome("expired", "turn ended")
 		return tui.DenyOnce
+	}
+}
+
+func recordPolicyApproval(ctx context.Context, category, action, detail, origin, outcome string) {
+	if span := runtrace.SpanFromContext(ctx); span != nil {
+		span.AddApproval(runtrace.Approval{
+			ID: "policy:" + category + ":" + action, Category: category,
+			Action: action, Detail: detail, Origin: origin, Outcome: outcome,
+		})
 	}
 }
 

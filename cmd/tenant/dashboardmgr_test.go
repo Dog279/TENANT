@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -57,21 +58,6 @@ func healthzUp(addr string, within time.Duration) bool {
 	return false
 }
 
-// healthzDown polls until GET /healthz stops answering (connection refused)
-// or the deadline passes. Returns true once the port is no longer serving.
-func healthzDown(addr string, within time.Duration) bool {
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		resp, err := http.Get("http://" + addr + "/healthz")
-		if err != nil {
-			return true
-		}
-		_ = resp.Body.Close()
-		time.Sleep(15 * time.Millisecond)
-	}
-	return false
-}
-
 // TestDashboardManager_ShutdownDoesNotPersist: process teardown (serve SIGTERM
 // / exit) must NOT persist an "off" choice, while Disable (operator /dashboard
 // off) must. Regression for the bug where every serve shutdown wrote
@@ -99,21 +85,21 @@ func TestDashboardManager_ShutdownDoesNotPersist(t *testing.T) {
 }
 
 // TestDashboardManager_Lifecycle drives the full Enable → Disable → re-Enable
-// cycle on a fixed loopback port, asserting the server actually serves, that
+// cycle on an OS-assigned loopback port, asserting the server actually serves, that
 // Disable stops it, that a fresh server starts on re-Enable, and that the
 // on/off choice is persisted and Status tracks state. (TEN-86)
 func TestDashboardManager_Lifecycle(t *testing.T) {
-	const addr = "127.0.0.1:8771"
 	rp := &recordingPersist{}
 	mgr := &dashboardManager{
 		base:    context.Background(),
-		cfg:     dashboard.Config{Addr: addr},
+		cfg:     dashboard.Config{Addr: "127.0.0.1:0", Auth: "test-token"},
 		runner:  nil, // health-only server; no agent needed
 		tools:   fakeDashTools{},
 		broker:  agent.NewBroker(0),
 		notify:  func(string) {},
 		persist: rp.persist,
 	}
+	t.Cleanup(func() { _ = mgr.Shutdown() })
 
 	// Starts stopped.
 	if running, _ := mgr.Status(); running {
@@ -125,9 +111,10 @@ func TestDashboardManager_Lifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
-	if gotAddr != addr {
-		t.Errorf("Enable addr = %q, want %q", gotAddr, addr)
+	if _, port, err := net.SplitHostPort(gotAddr); err != nil || port == "0" {
+		t.Fatalf("Enable addr = %q, want a bound ephemeral port (err=%v)", gotAddr, err)
 	}
+	addr := gotAddr
 	if !healthzUp(addr, 2*time.Second) {
 		t.Fatal("dashboard did not come up after Enable")
 	}
@@ -144,19 +131,21 @@ func TestDashboardManager_Lifecycle(t *testing.T) {
 	if err := mgr.Disable(); err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
-	if !healthzDown(addr, 2*time.Second) {
-		t.Fatal("dashboard still serving after Disable")
+	if resp, err := http.Get("http://" + addr + "/healthz"); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("dashboard still serving after synchronous Disable")
 	}
 	if running, _ := mgr.Status(); running {
 		t.Error("Status after Disable should be not-running")
 	}
 
-	// Re-Enable builds a fresh server on the same port (http.Server can't be
-	// reused after Shutdown — this proves we construct a new one).
-	if _, err := mgr.Enable(); err != nil {
+	// Re-Enable builds a fresh server on another reserved ephemeral port
+	// (http.Server can't be reused after Shutdown).
+	restartedAddr, err := mgr.Enable()
+	if err != nil {
 		t.Fatalf("re-Enable: %v", err)
 	}
-	if !healthzUp(addr, 2*time.Second) {
+	if !healthzUp(restartedAddr, 2*time.Second) {
 		t.Fatal("dashboard did not come back up after re-Enable")
 	}
 
@@ -164,7 +153,6 @@ func TestDashboardManager_Lifecycle(t *testing.T) {
 	if err := mgr.Disable(); err != nil {
 		t.Fatalf("final Disable: %v", err)
 	}
-	healthzDown(addr, 2*time.Second)
 
 	// Persistence: the first Enable wrote true, the first Disable wrote
 	// false. (The no-op second Enable wrote nothing.) We assert the leading

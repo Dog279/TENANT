@@ -78,8 +78,8 @@ stays in front as a fast fail-early check. It is not the boundary.
 - **The file tools cannot touch Tenant's controls or secrets, on any surface.** Two built-in
   lists apply whatever the `write` mode, and in `tenant os` too. *Protected* files can be read
   but never written: `settings.<agent>.json`, the soul, the peer cert, the claude spend ledger and
-  the Tenant binary. *Secrets* can be neither read nor written: `config.json` (it holds the
-  dashboard token), `credentials.json`, `peers.json`, the peer key, the OAuth token files, a
+  the Tenant binary. *Secrets* can be neither read nor written: `config.json` and
+  `dashboard-auth-token` (they hold the dashboard token), `credentials.json`, `peers.json`, the peer key, the OAuth token files, a
   configured service-account or TLS key, the claude CLI's login, and the credential stores the
   exec sandbox denies. A write grant can no longer widen an exec profile or a permission mode, and
   a read can no longer hand a turn a credential to send. See [Operator notes](#operator-notes).
@@ -272,7 +272,7 @@ every entry that should be confined.
     - the Tenant binary;
     - on Windows, the PowerShell profile and module folders under Documents.
   - **Secret:** never read or written:
-    - `config.json`, because it holds the dashboard's auth token;
+    - `config.json` and `dashboard-auth-token`, because they hold the dashboard's auth token;
     - `credentials.json`;
     - `peers.json` and `peer-key.pem`;
     - `mcp/`, `atlassian-token.json`, `github-token.json` and `oauth_client.json`;
@@ -375,11 +375,11 @@ every entry that should be confined.
   - **`--os-deny-roots` matches more loosely.** Its entries still match by resolved path, and
     case-sensitively outside Windows. Only the built-in lists match by folded name and by
     identity.
-- **A profile that allows network can reach Tenant's own loopback listeners,** including the
-  dashboard API, which accepts unauthenticated requests on a loopback bind when `dashboard.auth`
-  is unset. Keep confined surfaces on `network: none`, or set `dashboard.auth` (its token lives
-  in the config dir, which confined commands cannot read). Loopback dashboard authentication is
-  TEN-323.
+- **A profile that allows network can reach Tenant's own loopback listeners.** The dashboard
+  needs its auth token on every listener, loopback included (TEN-323). The token is
+  `dashboard.auth`, else the generated `dashboard-auth-token`, both in the config dir, which
+  confined commands and the file tools cannot read. The legacy MCP HTTP+SSE gateway, when
+  enabled, has no auth: keep confined surfaces on `network: none` while it runs.
 - **macOS:**
   - No CPU, memory or PID caps: a fork or memory bomb runs until the run's deadline stops it
     (the `os_exec` timeout, or the cron job's time limit).

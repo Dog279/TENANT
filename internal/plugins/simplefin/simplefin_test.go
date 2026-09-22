@@ -30,8 +30,8 @@ func TestParseCents(t *testing.T) {
 		{"1234.56", 123456, false},
 		{".99", 99, false},
 		{"5.", 500, false},
-		{"1.500", 150, false},     // padded zeros OK
-		{"1.505", 0, true},        // sub-cent precision
+		{"1.500", 150, false}, // padded zeros OK
+		{"1.505", 0, true},    // sub-cent precision
 		{"", 0, true},
 		{"abc", 0, true},
 		{"1.2.3", 0, true},

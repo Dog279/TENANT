@@ -66,9 +66,9 @@ const (
 // withDefaults; defaults guarantee the stock compress.Compressor (1500-token
 // protected tail, MinMessages 6) actually triggers a compaction.
 type Options struct {
-	FillerTurns        int            // filler turns appended after the planted head (default 14)
-	FillerCharsPerTurn int            // approx chars per filler turn (default 1600 ≈ 400 tok)
-	DriftRounds        int            // sequential compactions in the drift probe (default 4)
+	FillerTurns        int              // filler turns appended after the planted head (default 14)
+	FillerCharsPerTurn int              // approx chars per filler turn (default 1600 ≈ 400 tok)
+	DriftRounds        int              // sequential compactions in the drift probe (default 4)
 	Now                func() time.Time // clock seam for deterministic timestamps
 }
 

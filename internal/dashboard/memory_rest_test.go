@@ -474,7 +474,7 @@ func TestMemNilNotMounted(t *testing.T) {
 // the rest of /api — 401 without a token, 200 with (mirrors wire_test.go).
 func TestMemAuth(t *testing.T) {
 	f := &memFakeControl{facts: []FactView{{ID: 1, Text: "fact"}}}
-	s := New(Config{Auth: "secret"}, nil, nil, f, agent.NewBroker(0), nil)
+	s := New(Config{Addr: "example.com", Auth: "secret"}, nil, nil, f, agent.NewBroker(0), nil)
 	h := s.secure(s.Handler())
 
 	t.Run("no token → 401", func(t *testing.T) {

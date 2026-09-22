@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -152,6 +153,22 @@ func EntryFor(ev Event) (logs.Entry, bool) {
 		text()
 		if e.Source == "" {
 			e.Source = "approvals"
+		}
+	case EventTeamBudget:
+		// The team-run budget status travels as JSON so the activity API can
+		// hand clients the structured value back (see dashboard restEntry).
+		e.Msg = "team budget"
+		text()
+		if st := ev.TeamBudget; st != nil {
+			if b, err := json.Marshal(st); err == nil {
+				e.Fields = append(e.Fields, logs.Field{Key: "team_budget", Value: string(b)})
+			}
+			if st.TerminationReason != "" {
+				e.Level = slog.LevelWarn
+			}
+		}
+		if e.Source == "" {
+			e.Source = "subagents"
 		}
 	case EventAddon:
 		e.Msg = ev.Text

@@ -19,20 +19,24 @@ import (
 	"strings"
 )
 
-// secure wraps the routed handler with bearer-token auth and same-origin CORS.
+// secure wraps the routed handler with host validation, bearer-token auth,
+// same-origin CORS, and CSRF protection for browser mutations.
 //
-// Auth: when s.cfg.Auth is set, every request must carry
+// Auth: every non-health request must carry
 // `Authorization: Bearer <token>` matching it (constant-time compare); a
 // missing or wrong token yields 401 JSON. GET /healthz is exempt so liveness
-// probes work unauthenticated. When s.cfg.Auth is empty, requests pass through
-// — safe only because checkBindPolicy forbids exposing an unauthenticated
-// server off-loopback.
+// probes work unauthenticated. checkBindPolicy refuses to start any listener,
+// including loopback, when s.cfg.Auth is empty.
 //
 // CORS: same-origin only. A cross-origin request (Origin host != request Host)
 // is rejected 403; same-origin and Origin-less (curl, native WebSocket)
 // requests are allowed. No permissive Access-Control-Allow-Origin is emitted.
 func (s *Server) secure(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.checkHost(r.Host) {
+			writeError(w, http.StatusForbidden, "unrecognized dashboard host")
+			return
+		}
 		if !s.checkOrigin(r) {
 			writeError(w, http.StatusForbidden, "cross-origin request rejected")
 			return
@@ -42,14 +46,17 @@ func (s *Server) secure(h http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
+		if !s.checkCSRF(r) {
+			writeError(w, http.StatusForbidden, "CSRF validation failed")
+			return
+		}
 		h.ServeHTTP(w, r)
 	})
 }
 
-// checkAuth reports whether r is authorized. No configured token, or the
-// exempt liveness probe (GET /healthz), is always allowed; otherwise the
-// presented token must match s.cfg.Auth, compared in constant time to avoid
-// leaking the token via timing.
+// checkAuth reports whether r is authorized. The exempt liveness probe and
+// authentication entry points remain reachable without credentials; all other
+// requests require the configured token. Run refuses to start with no token.
 //
 // The token normally comes from `Authorization: Bearer <token>`. For the WS
 // endpoint (GET /ws) ONLY, it may instead come from a `?token=<token>` query
@@ -63,9 +70,6 @@ func (s *Server) secure(h http.Handler) http.Handler {
 const dashCookieName = "tenant-dash"
 
 func (s *Server) checkAuth(r *http.Request) bool {
-	if s.cfg.Auth == "" {
-		return true
-	}
 	if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
 		return true
 	}
@@ -73,6 +77,9 @@ func (s *Server) checkAuth(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/settings", "/auth/login", "/auth/logout":
 		return true
+	}
+	if s.cfg.Auth == "" {
+		return false
 	}
 	// 1. Cookie — SSR page loads + form submissions (browser sends it on same-origin).
 	if c, err := r.Cookie(dashCookieName); err == nil {
@@ -93,6 +100,14 @@ func (s *Server) checkAuth(r *http.Request) bool {
 	return false
 }
 
+// hasValidBearer reports whether the request explicitly authenticates with the
+// dashboard token. Bearer-authenticated API mutations are not vulnerable to
+// CSRF because browsers do not attach Authorization headers ambiently.
+func (s *Server) hasValidBearer(r *http.Request) bool {
+	got := bearerToken(r.Header.Get("Authorization"))
+	return got != "" && s.cfg.Auth != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Auth)) == 1
+}
+
 // bearerToken returns the token from an `Authorization: Bearer <token>` header
 // value, or "" if the value lacks the Bearer prefix.
 func bearerToken(h string) string {
@@ -103,27 +118,106 @@ func bearerToken(h string) string {
 	return strings.TrimPrefix(h, prefix)
 }
 
-// checkOrigin enforces same-origin: an Origin-less request (curl, native WS,
-// same-origin navigations that omit it) is allowed; otherwise the Origin URL's
-// host must equal the request Host. A malformed Origin is rejected.
+// checkOrigin enforces same-origin against an already allowlisted request Host.
+// Origin-less reads (curl, same-origin navigation) are allowed; unsafe browser
+// requests are separately required to carry a matching Origin by checkCSRF.
 func (s *Server) checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" ||
+		(u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
-	return strings.EqualFold(u.Host, r.Host)
+	return sameAuthority(u.Host, r.Host)
+}
+
+// checkHost rejects Host values that were not derived from the configured
+// listener or explicitly listed in AllowedHosts. This check is independent of
+// Origin so an attacker cannot make both reflected values agree during DNS
+// rebinding. An allowlist entry without a port — or a port of 0, i.e. an
+// ephemeral ":0" listener that binds an OS-assigned port — permits that host on
+// any port; entries with a concrete port require an exact authority match. The
+// host part is always matched exactly, so port-wildcarding does not weaken
+// rebinding protection (rebinding attacks the host, never the port).
+func (s *Server) checkHost(requestHost string) bool {
+	for _, allowed := range append([]string{s.cfg.Addr}, s.cfg.AllowedHosts...) {
+		if authorityAllowed(requestHost, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func authorityAllowed(requestHost, allowed string) bool {
+	rh, rp, rok := splitAuthority(requestHost)
+	ah, ap, aok := splitAuthority(allowed)
+	if !rok || !aok || !strings.EqualFold(rh, ah) {
+		return false
+	}
+	return ap == "" || ap == "0" || strings.EqualFold(rp, ap)
+}
+
+func sameAuthority(a, b string) bool {
+	ah, ap, aok := splitAuthority(a)
+	bh, bp, bok := splitAuthority(b)
+	return aok && bok && strings.EqualFold(ah, bh) && strings.EqualFold(ap, bp)
+}
+
+// splitAuthority parses an HTTP Host-style authority without accepting URL
+// syntax, whitespace, userinfo, paths, or malformed IPv6 literals.
+func splitAuthority(authority string) (host, port string, ok bool) {
+	if authority == "" || strings.TrimSpace(authority) != authority || strings.ContainsAny(authority, "/@?#") {
+		return "", "", false
+	}
+	if h, p, err := net.SplitHostPort(authority); err == nil {
+		if h == "" || p == "" {
+			return "", "", false
+		}
+		return strings.TrimSuffix(strings.ToLower(h), "."), p, true
+	}
+	if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+		h := strings.TrimSuffix(strings.TrimPrefix(authority, "["), "]")
+		if ip := net.ParseIP(h); ip != nil {
+			return strings.ToLower(h), "", true
+		}
+		return "", "", false
+	}
+	if strings.Contains(authority, ":") {
+		return "", "", false
+	}
+	host = strings.TrimSuffix(strings.ToLower(authority), ".")
+	if host == "" {
+		return "", "", false
+	}
+	return host, "", true
+}
+
+// checkCSRF requires browser-authenticated mutations to prove they originated
+// at this dashboard. Modern browsers attach Origin to form and fetch POSTs;
+// rejecting a missing Origin closes the origin-less loophole, while the
+// allowlisted Host + exact Origin match prevents DNS rebinding. Explicit Bearer
+// clients remain usable because their credential is never ambient.
+func (s *Server) checkCSRF(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	if s.hasValidBearer(r) {
+		return true
+	}
+	return r.Header.Get("Origin") != "" && s.checkOrigin(r)
 }
 
 // checkBindPolicy is the fail-closed guard called at the top of Run() before
-// Listen. A loopback address (127.0.0.1, ::1, localhost) is always allowed so
-// local dev may run plaintext and tokenless. Any non-loopback bind (0.0.0.0, a
-// LAN IP, any other host) is refused unless BOTH TLS and an auth token are
-// configured, so the dashboard can never be exposed off-host unprotected.
+// Listen. Authentication is required on every listener, including loopback.
+// Non-loopback listeners additionally require TLS.
 func (s *Server) checkBindPolicy() error {
+	if s.cfg.Auth == "" {
+		return fmt.Errorf("dashboard requires an auth token, including on loopback")
+	}
 	host, _, err := net.SplitHostPort(s.cfg.Addr)
 	if err != nil {
 		// No port? Treat the whole value as the host (best-effort) so a
@@ -133,10 +227,10 @@ func (s *Server) checkBindPolicy() error {
 	if isLoopbackHost(host) {
 		return nil
 	}
-	if s.cfg.TLSCert != "" && s.cfg.TLSKey != "" && s.cfg.Auth != "" {
+	if s.cfg.TLSCert != "" && s.cfg.TLSKey != "" {
 		return nil
 	}
-	return fmt.Errorf("dashboard refuses to bind %q without TLS+auth — set dashboard.tls_cert/tls_key and an auth token, or bind 127.0.0.1", s.cfg.Addr)
+	return fmt.Errorf("dashboard refuses to bind %q without TLS — set dashboard.tls_cert/tls_key, or bind 127.0.0.1", s.cfg.Addr)
 }
 
 // isLoopbackHost reports whether host names the local machine: the literal

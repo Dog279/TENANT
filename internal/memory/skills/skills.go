@@ -17,11 +17,15 @@ package skills
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+
+	"tenant/internal/fsperm"
+	"tenant/internal/memory/cosine"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,6 +49,7 @@ type Skill struct {
 	SuccessCount int
 	EmbedderID   string
 	Embedding    []float32
+	SourceRunIDs []string // provenance for induced proposals
 	CreatedAt    time.Time
 }
 
@@ -60,6 +65,8 @@ CREATE TABLE IF NOT EXISTS skills (
     success_count INTEGER NOT NULL DEFAULT 0,
     embedder_id   TEXT,
     embedding     TEXT,
+    embedding_blob BLOB,
+    source_run_ids TEXT,
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_skills_agent ON skills(agent_id, status);
@@ -100,6 +107,9 @@ type Store struct{ db *sql.DB }
 func Open(path string) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
+		if err := fsperm.PrepareFile(path); err != nil {
+			return nil, fmt.Errorf("skills: prepare private database: %w", err)
+		}
 		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", path)
 	}
 	db, err := sql.Open("sqlite", dsn)
@@ -113,7 +123,43 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("skills: schema: %w", err)
 	}
+	if err := ensureSkillColumn(db, "source_run_ids", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("skills: migrate source_run_ids: %w", err)
+	}
+	// Idempotent upgrade for PRE-EXISTING DBs created before the BLOB column
+	// (TEN-283): CREATE TABLE IF NOT EXISTS won't add a column to an already-
+	// existing table.
+	if err := ensureSkillColumn(db, "embedding_blob", "BLOB"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("skills: migrate embedding_blob: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+func ensureSkillColumn(db *sql.DB, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(skills)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE skills ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 // DB exposes the underlying *sql.DB. Use sparingly — most callers should
@@ -199,15 +245,21 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 		}
 	}
 
+	// Write BOTH the new float32 BLOB (the going-forward canonical form,
+	// matching episodic/semantic) AND the legacy JSON TEXT. Keeping the JSON
+	// in sync means a rollback to an older binary that only reads `embedding`
+	// still sees current vectors — backward- AND forward-compatible.
 	emb, _ := json.Marshal(sk.Embedding)
+	sourceRuns, _ := json.Marshal(sk.SourceRunIDs)
 	res, err := tx.ExecContext(ctx, `
-        INSERT INTO skills (agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO skills (agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,embedding_blob,source_run_ids,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(agent_id,name) DO UPDATE SET
             description=excluded.description, recipe=excluded.recipe, status=excluded.status,
-            embedder_id=excluded.embedder_id, embedding=excluded.embedding`,
+            embedder_id=excluded.embedder_id, embedding=excluded.embedding, embedding_blob=excluded.embedding_blob,
+            source_run_ids=CASE WHEN excluded.source_run_ids='null' THEN skills.source_run_ids ELSE excluded.source_run_ids END`,
 		sk.AgentID, sk.Name, sk.Description, sk.Recipe, sk.Status, boolToInt(sk.Enabled || sk.Status == StatusLive),
-		sk.SuccessCount, sk.EmbedderID, string(emb), sk.CreatedAt.Unix())
+		sk.SuccessCount, sk.EmbedderID, string(emb), encodeEmbedding(sk.Embedding), string(sourceRuns), sk.CreatedAt.Unix())
 	if err != nil {
 		return 0, fmt.Errorf("skills: upsert: %w", err)
 	}
@@ -280,6 +332,52 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]*Skill, error) {
 	return out, rows.Err()
 }
 
+// ListAll returns EVERY skill row — all agents, all statuses (including
+// disabled and tombstoned). Unlike List (which is the retrieval-facing,
+// agent+live filter), this is the maintenance view used by
+// `tenant memory reembed` to backfill the float32 BLOB / re-embed after a
+// dimension switch, so no stored row is left behind. Ordered by id for a
+// stable, batch-friendly traversal.
+func (s *Store) ListAll(ctx context.Context) ([]*Skill, error) {
+	rows, err := s.db.QueryContext(ctx, selectCols+` ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Skill
+	for rows.Next() {
+		sk, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sk)
+	}
+	return out, rows.Err()
+}
+
+// BloblessIDs returns the ids of skill rows that have NO float32 BLOB yet
+// (legacy JSON-only rows from a pre-TEN-283 DB). `tenant memory reembed` uses
+// this to backfill BLOBs even when the existing JSON vector is already at the
+// live dimension (so the dimension-skip optimization doesn't strand a row in
+// JSON-only form). Returns ids ascending.
+func (s *Store) BloblessIDs(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM skills WHERE embedding_blob IS NULL OR length(embedding_blob)=0 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // Hit is a ranked retrieval result.
 type Hit struct {
 	Skill *Skill
@@ -308,7 +406,7 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 	kw := strings.ToLower(strings.Join(q.Keywords, " "))
 	hits := make([]Hit, 0, len(all))
 	for _, sk := range all {
-		score := cosine(q.Embedding, sk.Embedding)
+		score := cosine.Similarity(q.Embedding, sk.Embedding)
 		if kw != "" && (strings.Contains(strings.ToLower(sk.Name), kw) || strings.Contains(strings.ToLower(sk.Description), kw)) {
 			score += 0.05
 		}
@@ -372,9 +470,23 @@ func (s *Store) Count(ctx context.Context, agentID string) (int, error) {
 	return n, err
 }
 
+// UpdateEmbedding rewrites one skill's stored vector + embedder id, leaving the
+// description/recipe untouched. Used by `tenant memory reembed` to backfill
+// BLOBs and re-embed after switching embed models (a new embedder's dimension
+// makes old vectors unsearchable — cosine zeroes on a length mismatch). Mirrors
+// the episodic/semantic UpdateEmbedding. Writes BOTH the canonical BLOB and the
+// legacy JSON so the row stays consistent for older binaries (TEN-283).
+func (s *Store) UpdateEmbedding(ctx context.Context, id int64, vec []float32, embedderID string) error {
+	emb, _ := json.Marshal(vec)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE skills SET embedding_blob = ?, embedding = ?, embedder_id = ? WHERE id = ?`,
+		encodeEmbedding(vec), string(emb), embedderID, id)
+	return err
+}
+
 // --- internals ---
 
-const selectCols = `SELECT id,agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,created_at FROM skills`
+const selectCols = `SELECT id,agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,embedding_blob,source_run_ids,created_at FROM skills`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -383,9 +495,10 @@ type rowScanner interface {
 func scan(row rowScanner) (*Skill, error) {
 	var sk Skill
 	var enabled, created int64
-	var embJSON, embID sql.NullString
+	var embJSON, embID, sourceRuns sql.NullString
+	var embBlob []byte
 	if err := row.Scan(&sk.ID, &sk.AgentID, &sk.Name, &sk.Description, &sk.Recipe, &sk.Status,
-		&enabled, &sk.SuccessCount, &embID, &embJSON, &created); err != nil {
+		&enabled, &sk.SuccessCount, &embID, &embJSON, &embBlob, &sourceRuns, &created); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("skills: not found")
 		}
@@ -394,27 +507,50 @@ func scan(row rowScanner) (*Skill, error) {
 	sk.Enabled = enabled != 0
 	sk.EmbedderID = embID.String
 	sk.CreatedAt = time.Unix(created, 0).UTC()
-	if embJSON.Valid && embJSON.String != "" {
+	// Read blob-first (the canonical going-forward form), falling back to the
+	// legacy JSON TEXT column so a PRE-BLOB skills.db (blob NULL) stays fully
+	// searchable with NO migration step (TEN-283). A row written by the new
+	// Upsert has both; either path yields the same vector.
+	if vec, derr := decodeEmbedding(embBlob); derr == nil && len(vec) > 0 {
+		sk.Embedding = vec
+	} else if embJSON.Valid && embJSON.String != "" {
 		_ = json.Unmarshal([]byte(embJSON.String), &sk.Embedding)
+	}
+	if sourceRuns.Valid && sourceRuns.String != "" {
+		_ = json.Unmarshal([]byte(sourceRuns.String), &sk.SourceRunIDs)
 	}
 	return &sk, nil
 }
 
-func cosine(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
+// --- embedding BLOB codec (mirrors episodic/semantic) ------------------
+//
+// Embeddings are stored as little-endian float32 BLOBs; length is implicit
+// from byte length / 4. Pinning to little-endian keeps the DB portable
+// across architectures (x86_64 dev box ↔ ARM Mac).
+
+func encodeEmbedding(v []float32) []byte {
+	if len(v) == 0 {
+		return nil
 	}
-	var dot, na, nb float64
-	for i := range a {
-		x, y := float64(a[i]), float64(b[i])
-		dot += x * y
-		na += x * x
-		nb += y * y
+	out := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(out[i*4:], math.Float32bits(f))
 	}
-	if na == 0 || nb == 0 {
-		return 0
+	return out
+}
+
+func decodeEmbedding(b []byte) ([]float32, error) {
+	if len(b) == 0 {
+		return nil, nil
 	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("skills: embedding BLOB length not multiple of 4")
+	}
+	out := make([]float32, len(b)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return out, nil
 }
 
 func boolToInt(b bool) int {

@@ -36,21 +36,31 @@ func (t CommsTool) Tools() []model.ToolSpec {
 			Name:        "team_send",
 			Description: "Send a direct message to a specific teammate by their agent id. Use to ask a question, hand off work, or resolve a disagreement. Non-blocking — they read it on their next step; check for their reply later with team_check.",
 			Parameters:  t.specObj(`"to":{"type":"string","description":"recipient agent id"},"message":{"type":"string"}`, "to", "message"),
+			Outbound:    true,
 		},
 		{
 			Name:        "team_broadcast",
 			Description: "Send a message to the whole team at once (everyone but you). Use for status updates, decisions, or to surface a blocker.",
 			Parameters:  t.specObj(`"message":{"type":"string"}`, "message"),
+			Outbound:    true,
 		},
 		{
 			Name:        "team_check",
 			Description: "Read and CLEAR your inbox of NEW messages from teammates (drains it, freeing your context). Call this to see what others said before deciding your next step.",
 			Parameters:  t.specObj(``),
+			ResultLabels: []model.InfoFlowLabel{{
+				Sensitivity: model.SensitivitySensitive,
+				Provenance:  model.ProvenancePeer,
+			}},
 		},
 		{
 			Name:        "team_history",
 			Description: "Recall the FULL team conversation relevant to you (everything you sent, were sent, or could see) WITHOUT clearing it. Use to recover context on a long task after a compaction, or to review what was already discussed.",
 			Parameters:  t.specObj(``),
+			ResultLabels: []model.InfoFlowLabel{{
+				Sensitivity: model.SensitivitySensitive,
+				Provenance:  model.ProvenancePeer,
+			}},
 		},
 		{
 			Name:        "team_roster",

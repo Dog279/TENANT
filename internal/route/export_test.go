@@ -28,36 +28,36 @@ func TestDeriveRowLabelPolicy(t *testing.T) {
 		wantSkip   bool
 	}{
 		{
-			name:      "small ran and succeeded → small",
-			mutate:    func(d *Decision) { d.SelectedTier = TierSmall },
-			outcome:   "success", applied: true,
+			name:    "small ran and succeeded → small",
+			mutate:  func(d *Decision) { d.SelectedTier = TierSmall },
+			outcome: "success", applied: true,
 			wantLabel: ExportLabelSmall, wantWeight: ExportWeightDerived, wantSource: ExportSourceDerived,
 		},
 		{
-			name:      "shadow big-label over successful local turn → small correction",
-			mutate:    func(d *Decision) { d.SelectedTier = TierSmall; d.Label = "big" },
-			outcome:   "success", applied: false,
+			name:    "shadow big-label over successful local turn → small correction",
+			mutate:  func(d *Decision) { d.SelectedTier = TierSmall; d.Label = "big" },
+			outcome: "success", applied: false,
 			wantLabel: ExportLabelSmall, wantWeight: ExportWeightDerived, wantSource: ExportSourceDerived,
 		},
 		{
 			// The verification workflow's #8: a shadow decision that SELECTED
 			// big but never ran it must still export as a small correction
 			// when the local turn succeeded.
-			name:      "shadow big-SELECTION over successful local turn → small correction",
-			mutate:    func(d *Decision) { d.SelectedTier = TierBig; d.Label = "big" },
-			outcome:   "success", applied: false,
+			name:    "shadow big-SELECTION over successful local turn → small correction",
+			mutate:  func(d *Decision) { d.SelectedTier = TierBig; d.Label = "big" },
+			outcome: "success", applied: false,
 			wantLabel: ExportLabelSmall, wantWeight: ExportWeightDerived, wantSource: ExportSourceDerived,
 		},
 		{
-			name:      "small ran and failed → big",
-			mutate:    func(d *Decision) { d.SelectedTier = TierSmall },
-			outcome:   TurnOutcomeError, applied: true,
+			name:    "small ran and failed → big",
+			mutate:  func(d *Decision) { d.SelectedTier = TierSmall },
+			outcome: TurnOutcomeError, applied: true,
 			wantLabel: ExportLabelBig, wantWeight: ExportWeightDerived, wantSource: ExportSourceDerived,
 		},
 		{
-			name:      "big ran and succeeded → big confirmation",
-			mutate:    func(d *Decision) { d.SelectedTier = TierBig },
-			outcome:   "success", applied: true,
+			name:    "big ran and succeeded → big confirmation",
+			mutate:  func(d *Decision) { d.SelectedTier = TierBig },
+			outcome: "success", applied: true,
 			wantLabel: ExportLabelBig, wantWeight: ExportWeightDerived, wantSource: ExportSourceDerived,
 		},
 		{
@@ -67,15 +67,15 @@ func TestDeriveRowLabelPolicy(t *testing.T) {
 			wantSkip: true,
 		},
 		{
-			name:      "operator !big is gold regardless of outcome",
-			mutate:    func(d *Decision) { d.PolicyReason = string(ReasonOperatorBig); d.SelectedTier = TierBig },
-			outcome:   TurnOutcomeError, applied: true,
+			name:    "operator !big is gold regardless of outcome",
+			mutate:  func(d *Decision) { d.PolicyReason = string(ReasonOperatorBig); d.SelectedTier = TierBig },
+			outcome: TurnOutcomeError, applied: true,
 			wantLabel: ExportLabelBig, wantWeight: ExportWeightGold, wantSource: ExportSourceGold,
 		},
 		{
-			name:      "confirmed assisted suggestion is gold",
-			mutate:    func(d *Decision) { d.OperatorConfirmed = true },
-			outcome:   "success", applied: false,
+			name:    "confirmed assisted suggestion is gold",
+			mutate:  func(d *Decision) { d.OperatorConfirmed = true },
+			outcome: "success", applied: false,
 			wantLabel: ExportLabelBig, wantWeight: ExportWeightGold, wantSource: ExportSourceGold,
 		},
 	}

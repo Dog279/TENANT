@@ -186,7 +186,10 @@ func TestDiscoverBinaryExplicitPathFound(t *testing.T) {
 }
 
 func TestVersionLess(t *testing.T) {
-	cases := []struct{ a, b string; want bool }{
+	cases := []struct {
+		a, b string
+		want bool
+	}{
 		{"2.1.221", "2.1.1000", true},
 		{"2.1.1000", "2.1.221", false},
 		{"2.1.221", "2.1.221", false},

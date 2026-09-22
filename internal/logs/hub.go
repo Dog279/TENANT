@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 const (
@@ -116,7 +118,7 @@ func Open(root string, opts Options) (*Hub, error) {
 	}
 	if root != "" {
 		root = filepath.Clean(root)
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := fsperm.MkdirAll(root); err != nil {
 			return nil, fmt.Errorf("logs: create %s: %w", root, err)
 		}
 	}
@@ -489,11 +491,11 @@ func (h *Hub) openFileLocked(s *source, day string) {
 	if s.fidx > 0 {
 		name = fmt.Sprintf("%s.%d.log", day, s.fidx)
 	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(s.dir); err != nil {
 		s.err = "mkdir: " + err.Error()
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(s.dir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := fsperm.OpenFile(filepath.Join(s.dir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		s.err = "open: " + err.Error()
 		return

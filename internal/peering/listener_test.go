@@ -5,11 +5,59 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"tenant/internal/httplimits"
 )
+
+func TestPeerHTTPServerLimitsConfigured(t *testing.T) {
+	srv := newPeerHTTPServer(http.NotFoundHandler())
+	if srv.ReadHeaderTimeout != httplimits.ReadHeaderTimeout {
+		t.Errorf("ReadHeaderTimeout = %v, want %v", srv.ReadHeaderTimeout, httplimits.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != httplimits.IdleTimeout {
+		t.Errorf("IdleTimeout = %v, want %v", srv.IdleTimeout, httplimits.IdleTimeout)
+	}
+	if srv.MaxHeaderBytes != httplimits.MaxHeaderBytes {
+		t.Errorf("MaxHeaderBytes = %d, want %d", srv.MaxHeaderBytes, httplimits.MaxHeaderBytes)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want zero for streaming MCP responses", srv.WriteTimeout)
+	}
+}
+
+func TestPairOversizedBodyRejectedBeforeApproval(t *testing.T) {
+	store, err := LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := false
+	l, err := NewListener(ListenerConfig{
+		Store:  store,
+		SelfID: "self",
+		PairApprover: func(context.Context, string) bool {
+			approved = true
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, pairPath, strings.NewReader(strings.Repeat("x", maxPairBody+1)))
+	req.ContentLength = -1 // unknown length must still be rejected before approval
+	rec := httptest.NewRecorder()
+	l.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if approved {
+		t.Fatal("oversized unauthenticated body reached the approval prompt")
+	}
+}
 
 // dialClient connects a go-sdk client to a peer listener test server using a
 // static bearer (the TEN-186 StaticTokenHandler shape).

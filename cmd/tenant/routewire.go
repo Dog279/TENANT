@@ -54,18 +54,42 @@ type swappableClassifier struct {
 
 func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
 	budget := time.Duration(cfg.TimeoutMS) * time.Millisecond
-	s.p.Store(route.NewSupra(cfg.Endpoint, cfg.Model, budget))
+	sup := route.NewSupra(cfg.Endpoint, cfg.Model, budget)
+	s.p.Store(sup)
 	// Keep the agent's active-routing join budget equal to the classifier's own
 	// timeout. Before this, the join was hardcoded at 250ms while timeout_ms fed
 	// only the Supra HTTP client — so raising timeout_ms looked like it granted
 	// more time and granted none, and any classifier slower than 250ms produced
 	// "routed role unavailable; using planner" with zero time left to resolve.
 	agent.SetActiveRouteBudget(budget)
+	// Pre-load the model off the hot path so the FIRST real classify — and the
+	// /route status health probe — do not pay the cold GGUF load cost under the
+	// tight per-turn timeout and report "unhealthy (context deadline exceeded)".
+	// Best-effort; keep_alive then holds the model resident. Fires on the initial
+	// build and whenever a config change rebuilds the classifier.
+	if cfg.Endpoint != "" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			_ = sup.Warm(ctx)
+		}()
+	}
 }
 
 func (s *swappableClassifier) Classify(ctx context.Context, query string) (route.Signal, error) {
 	// A nil load is handled by Supra.Classify's own nil-receiver guard.
 	return s.p.Load().Classify(ctx, query)
+}
+
+// warm synchronously pre-loads the current model using the caller's context
+// deadline (not the tight per-turn timeout). The health probe uses it to recover
+// from a cold model instead of reporting it unhealthy.
+func (s *swappableClassifier) warm(ctx context.Context) error {
+	sup := s.p.Load()
+	if sup == nil {
+		return nil
+	}
+	return sup.Warm(ctx)
 }
 
 // refreshClassifier rebuilds the classifier after a persisted config change
@@ -789,6 +813,16 @@ func (r *routeRuntime) Status(ctx context.Context) string {
 	}
 	fmt.Fprintf(&b, "  provider: %s @ %s\n", cfg.Model, safeDisplayEndpoint(cfg.Endpoint))
 	sig, err := r.engine.Probe(ctx)
+	if err != nil && r.classifier != nil {
+		// A cold model blows the tight per-turn probe timeout with "context
+		// deadline exceeded". Give it one generous warm-load and re-probe before
+		// declaring it unhealthy — the model is small (~110ms once resident).
+		warmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if werr := r.classifier.warm(warmCtx); werr == nil {
+			sig, err = r.engine.Probe(ctx)
+		}
+		cancel()
+	}
 	if err != nil {
 		fmt.Fprintf(&b, "  classifier: unhealthy (%s)", err)
 		return b.String()

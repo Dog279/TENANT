@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 
+	"tenant/internal/fsperm"
 	"tenant/internal/plugins/gsuite"
 )
 
@@ -155,7 +156,7 @@ func installGSuiteOAuthSilent(cfgDir, srcPath string) error {
 	if _, err := gsuite.ParseOAuthClientFile(b, []string{"placeholder"}); err != nil {
 		return fmt.Errorf("invalid OAuth client JSON: %w", err)
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return fmt.Errorf("ensure cfg dir: %w", err)
 	}
 	dstPath := gsuite.EmbeddedOAuthPath(cfgDir)
@@ -176,7 +177,7 @@ func installGSuiteOAuthSilent(cfgDir, srcPath string) error {
 		cleanup()
 		return fmt.Errorf("close temp: %w", err)
 	}
-	if err := os.Chmod(dstName, 0o600); err != nil {
+	if err := fsperm.RestrictFile(dstName); err != nil {
 		cleanup()
 		return fmt.Errorf("chmod: %w", err)
 	}

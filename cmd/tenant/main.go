@@ -4,6 +4,7 @@
 //	tenant chat                    interactive agent loop (stdin → stdout)
 //	tenant distill                 run one distillation pass
 //	tenant memory search <query>   search episodes + facts
+//	tenant memory import <file.md> import operator markdown notes as T3 facts
 //	tenant mcp-memory              run the MCP memory server over stdio
 //	tenant mcp-selftest            spawn mcp-memory as a subprocess and
 //	                               drive the MCP protocol against it
@@ -23,6 +24,7 @@ import (
 	"os/signal"
 
 	"tenant/internal/mcp"
+	"tenant/internal/version"
 )
 
 func main() {
@@ -36,7 +38,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "version", "-v", "--version":
-		fmt.Printf("tenant %s — speaks MCP %s (Go)\n", mcp.LibraryVersion, mcp.ProtocolVersion)
+		fmt.Printf("tenant %s — speaks MCP %s (Go)\n", version.String(), mcp.ProtocolVersion)
 		return
 	case "setup":
 		err = cmdSetup(ctx, os.Args[2:])
@@ -46,6 +48,8 @@ func main() {
 		err = cmdModel(ctx, os.Args[2:])
 	case "route":
 		err = cmdRoute(ctx, os.Args[2:])
+	case "runs":
+		err = cmdRuns(ctx, os.Args[2:])
 	case "agents", "agent":
 		err = cmdAgents(ctx, os.Args[2:])
 	case "chat":
@@ -110,6 +114,10 @@ func main() {
 		err = cmdFeedback(ctx, os.Args[2:], "undo")
 	case "doctor":
 		err = cmdDoctor(ctx, os.Args[2:])
+	case "security":
+		err = cmdSecurity(ctx, os.Args[2:])
+	case "permissions":
+		err = cmdPermissions(ctx, os.Args[2:])
 	case "eval":
 		err = cmdEval(ctx, os.Args[2:])
 	case "help", "-h", "--help":
@@ -138,9 +146,11 @@ COMMANDS
   model <list|use|add|...> manage model backends + set the primary (also /model in the TUI)
   route <status|on|off|shadow|assisted|everywhere|stats|force>
                            inspect or configure prompt routing (also /route in the TUI)
+  runs export              export durable run records as JSONL
   chat                     interactive agent loop (one stdin line = one turn)
   distill                  run one T2->T3 distillation pass
   memory search <query>    search episodes + facts from the CLI
+  memory import <file.md>  import operator markdown notes into T3 facts (--protected, --importance, --dry-run)
   mcp-memory               run the MCP memory server over stdio
   mcp-selftest             spawn mcp-memory as a subprocess and exercise it
   tool-test                run a tool-calling agent turn (hardening harness)
@@ -165,6 +175,9 @@ COMMANDS
   research "<question>"    deep research: plan → parallel web-researchers → cited report (--out FILE)
   review <plan.md>         cascading CEO/Eng/Designer review appended to a plan file
   doctor                   diagnose (and --fix) the setup when things break
+  security audit           inspect effective security posture (human or --json)
+  permissions effective    show composed authority by agent and surface
+  permissions preset       apply safe, balanced, or full category permissions
   eval                     run the eval harness (Phase 1: --subset smoke only)
 
 COMMON FLAGS

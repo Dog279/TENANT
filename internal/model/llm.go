@@ -110,7 +110,35 @@ type ToolSpec struct {
 	// memory_recall) to capable models. Internal only — `json:"-"` keeps it
 	// out of the model-facing tool JSON (TEN-103).
 	Gate string `json:"-"`
+	// ResultLabels declare the sensitivity and provenance attached to a
+	// successful result from this tool. Internal only: the agent copies these
+	// labels onto the result envelope after dispatch; models never see policy
+	// metadata in the tool schema. (TEN-311)
+	ResultLabels []InfoFlowLabel `json:"-"`
+	// Outbound marks tools whose arguments can cross a process, host, account,
+	// or human boundary. The agent checks sensitive-result flows immediately
+	// before dispatch. Internal only. (TEN-311)
+	Outbound bool `json:"-"`
 }
+
+// InfoFlowLabel is security metadata carried by a tool result. Sensitivity is
+// the handling class; Provenance records the trust-boundary source.
+type InfoFlowLabel struct {
+	Sensitivity string `json:"sensitivity"`
+	Provenance  string `json:"provenance"`
+}
+
+const (
+	SensitivitySensitive = "sensitive"
+
+	ProvenanceLocalFile    = "local_file"
+	ProvenanceMemory       = "memory"
+	ProvenanceWiki         = "wiki"
+	ProvenanceLocalService = "local_service"
+	ProvenanceService      = "service"
+	ProvenanceRemoteMCP    = "remote_mcp"
+	ProvenancePeer         = "peer"
+)
 
 // ToolChoice selects whether and how the model is forced to call a tool.
 type ToolChoice struct {

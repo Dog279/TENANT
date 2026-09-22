@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 
+	"tenant/internal/fsperm"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -44,6 +46,9 @@ type Meta struct {
 func OpenMeta(path string) (*Meta, error) {
 	dsn := path
 	if path != ":memory:" {
+		if err := fsperm.PrepareFile(path); err != nil {
+			return nil, fmt.Errorf("improve: prepare private meta database: %w", err)
+		}
 		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", path)
 	}
 	db, err := sql.Open("sqlite", dsn)

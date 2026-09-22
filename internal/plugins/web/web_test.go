@@ -42,8 +42,8 @@ func (f *fakeBrowser) Navigate(_ context.Context, u string) (string, error) {
 	f.navURL = u
 	return f.navTitle, f.navErr
 }
-func (f *fakeBrowser) Text(context.Context) (string, error)        { return f.text, nil }
-func (f *fakeBrowser) Links(context.Context) ([]Link, error)       { return f.links, nil }
+func (f *fakeBrowser) Text(context.Context) (string, error)  { return f.text, nil }
+func (f *fakeBrowser) Links(context.Context) ([]Link, error) { return f.links, nil }
 func (f *fakeBrowser) Find(_ context.Context, q string) ([]string, error) {
 	return f.findRes, nil
 }
@@ -403,5 +403,18 @@ func TestTools_InteractLayerExposed(t2 *testing.T) {
 	// transact tools still not exposed
 	if names["web_purchase"] || names["web_submit"] {
 		t2.Error("transact tools must not be exposed yet")
+	}
+}
+
+func TestTools_OutboundInfoFlowMetadata(t *testing.T) {
+	d := disp(&fakeBrowser{}, Policy{})
+	want := map[string]bool{
+		"web_search": true, "web_navigate": true, "web_click": true,
+		"web_fill": true, "web_select": true,
+	}
+	for _, spec := range d.Tools() {
+		if spec.Outbound != want[spec.Name] {
+			t.Errorf("%s Outbound = %v, want %v", spec.Name, spec.Outbound, want[spec.Name])
+		}
 	}
 }

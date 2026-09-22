@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
+	"tenant/internal/secrets"
 )
 
 // Each new check is exercised against a synthetic environment — no live
@@ -94,6 +96,106 @@ func TestDoctor_CheckLaunchConfig(t *testing.T) {
 				t.Errorf("detail %q should contain %q", r.Detail, c.mustDetail)
 			}
 		})
+	}
+}
+
+func TestDoctor_CheckSecretProtection(t *testing.T) {
+	t.Run("no secret files", func(t *testing.T) {
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: t.TempDir()}})
+		if r.Status != statusOK || !strings.Contains(r.Detail, "no at-rest secret files") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+
+	t.Run("protected credential", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := secrets.WriteFile(credentialsPath(dir), []byte(`{"secrets":{}}`)); err != nil {
+			t.Fatal(err)
+		}
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: dir}})
+		if r.Status != statusOK || !strings.Contains(r.Detail, "1 secret file") || !strings.Contains(r.Detail, "protected") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+
+	t.Run("invalid secret path", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(credentialsPath(dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: dir}})
+		if r.Status != statusFail || !strings.Contains(r.Detail, "not a regular file") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+}
+
+func TestDoctor_CheckPrivatePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes do not represent Windows DACLs; TEN-325")
+	}
+	dataDir := filepath.Join(t.TempDir(), "data")
+	cfgDir := filepath.Join(t.TempDir(), "config")
+	for _, dir := range []string{dataDir, cfgDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		name := "episodes.db"
+		if dir == cfgDir {
+			name = "config.json"
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("sensitive"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := &doctorEnv{c: &commonFlags{dataDir: dataDir, cfgDir: cfgDir}}
+	if r := checkPrivatePermissions(context.Background(), e); r.Status != statusWarn || r.Fixed {
+		t.Fatalf("audit result = %+v, want unfixed WARN", r)
+	}
+	e.fix = true
+	if r := checkPrivatePermissions(context.Background(), e); r.Status != statusWarn || !r.Fixed {
+		t.Fatalf("fix result = %+v, want fixed WARN", r)
+	}
+	for _, path := range []string{
+		dataDir, cfgDir,
+		filepath.Join(dataDir, "episodes.db"), filepath.Join(cfgDir, "config.json"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		maximum := os.FileMode(0o600)
+		if info.IsDir() {
+			maximum = 0o700
+		}
+		if extra := info.Mode().Perm() &^ maximum; extra != 0 {
+			t.Errorf("%s mode = %v, exceeds %v", path, info.Mode().Perm(), maximum)
+		}
+	}
+	unrelated := filepath.Join(dataDir, "unrelated.txt")
+	if err := os.WriteFile(unrelated, []byte("operator-owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unrelated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := checkPrivatePermissions(context.Background(), e); r.Status != statusOK {
+		t.Fatalf("unrelated file should not enter the migration: %+v", r)
+	}
+	info, err := os.Stat(unrelated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o044 == 0 {
+		t.Fatalf("unrelated file was unexpectedly tightened: %v", info.Mode().Perm())
 	}
 }
 
@@ -525,7 +627,7 @@ func TestDoctor_CheckX(t *testing.T) {
 }
 
 // checkDashboard (TEN-81): not configured → SKIP; reachable + 200 → OK;
-// reachable + 401 → FAIL; non-loopback bind without TLS+auth → FAIL
+// reachable + 401 → FAIL; non-loopback bind without TLS → FAIL
 // (config lint, even with the server down). The OK/FAIL-401 paths use an
 // httptest server addressed via the injectable e.httpc seam.
 func TestDoctor_CheckDashboard(t *testing.T) {
@@ -591,20 +693,20 @@ func TestDoctor_CheckDashboard(t *testing.T) {
 		}
 	})
 
-	// Config lint: a non-loopback bind without BOTH TLS and auth must FAIL
+	// Config lint: a non-loopback bind without TLS must FAIL
 	// even though no server is running (mirrors checkBindPolicy's rule).
 	// Enabled is an explicit &true here — the tri-state default-on would
 	// reach the same lint, but pinning it keeps the test's intent clear.
-	t.Run("non-loopback without TLS+auth → FAIL (config lint)", func(t *testing.T) {
+	t.Run("non-loopback without TLS → FAIL (config lint)", func(t *testing.T) {
 		e := &doctorEnv{
 			c:  &commonFlags{},
 			lc: &launchConfig{Dashboard: dashboardConfig{Enabled: boolPtr(true), Addr: "0.0.0.0:8770"}},
 		}
 		r := checkDashboard(context.Background(), e)
 		if r.Status != statusFail {
-			t.Errorf("non-loopback w/o TLS+auth → FAIL, got %v: %q", r.Status, r.Detail)
+			t.Errorf("non-loopback w/o TLS → FAIL, got %v: %q", r.Status, r.Detail)
 		}
-		if !strings.Contains(r.Detail, "non-loopback") || !strings.Contains(r.Detail, "TLS+auth") {
+		if !strings.Contains(r.Detail, "non-loopback") || !strings.Contains(r.Detail, "TLS") {
 			t.Errorf("config-lint detail should explain the fail-closed reason: %q", r.Detail)
 		}
 		if r.Fix == "" {
@@ -646,15 +748,6 @@ func hostPort(t *testing.T, rawURL string) string {
 		t.Fatalf("parse %q: %v", rawURL, err)
 	}
 	return u.Host
-}
-
-// isWindowsRuntime — basic shape check; tracks the OS path separator.
-func TestIsWindowsRuntime(t *testing.T) {
-	got := isWindowsRuntime()
-	want := (os.PathSeparator == '\\')
-	if got != want {
-		t.Errorf("isWindowsRuntime = %v, want %v", got, want)
-	}
 }
 
 // checkWikiFreshness: TEN-48 minimal diagnostic.

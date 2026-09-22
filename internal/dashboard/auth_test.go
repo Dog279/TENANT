@@ -18,7 +18,11 @@ func authOKHandler() http.Handler {
 // authServer builds a Server with the given auth token (TLS/addr irrelevant to
 // the middleware) wrapped by secure().
 func authServer(token string) http.Handler {
-	s := New(Config{Addr: "127.0.0.1:0", Auth: token}, nil, nil, nil, nil, nil)
+	s := New(Config{
+		Addr:         "example.com",
+		Auth:         token,
+		AllowedHosts: []string{"dash.local:8770"},
+	}, nil, nil, nil, nil, nil)
 	return s.secure(authOKHandler())
 }
 
@@ -29,17 +33,18 @@ func authDo(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-// TestAuthBindPolicy covers the fail-closed bind guard: loopback always passes;
-// a non-loopback bind passes only with BOTH TLS and auth set.
+// TestAuthBindPolicy covers the fail-closed bind guard: every listener needs
+// auth, while a non-loopback bind additionally needs TLS.
 func TestAuthBindPolicy(t *testing.T) {
 	cases := []struct {
 		name    string
 		cfg     Config
 		wantErr bool
 	}{
-		{"loopback plain", Config{Addr: "127.0.0.1:8770"}, false},
-		{"loopback ipv6", Config{Addr: "[::1]:8770"}, false},
-		{"localhost", Config{Addr: "localhost:8770"}, false},
+		{"loopback no auth", Config{Addr: "127.0.0.1:8770"}, true},
+		{"loopback plain with auth", Config{Addr: "127.0.0.1:8770", Auth: "tok"}, false},
+		{"loopback ipv6 with auth", Config{Addr: "[::1]:8770", Auth: "tok"}, false},
+		{"localhost with auth", Config{Addr: "localhost:8770", Auth: "tok"}, false},
 		{"wildcard no tls/auth", Config{Addr: "0.0.0.0:8770"}, true},
 		{"wildcard tls only", Config{Addr: "0.0.0.0:8770", TLSCert: "c.pem", TLSKey: "k.pem"}, true},
 		{"wildcard auth only", Config{Addr: "0.0.0.0:8770", Auth: "tok"}, true},
@@ -62,7 +67,7 @@ func TestAuthBindPolicy(t *testing.T) {
 }
 
 // TestAuthBearer covers token enforcement: missing/wrong → 401, correct → 200,
-// GET /healthz exempt, and empty-token passthrough.
+// GET /healthz exempt, and an empty configured token fails closed.
 func TestAuthBearer(t *testing.T) {
 	h := authServer("secret")
 
@@ -98,11 +103,11 @@ func TestAuthBearer(t *testing.T) {
 		}
 	})
 
-	t.Run("empty token passthrough", func(t *testing.T) {
+	t.Run("empty token fails closed", func(t *testing.T) {
 		open := authServer("")
 		rec := authDo(open, httptest.NewRequest(http.MethodGet, "/api/status", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (no token configured)", rec.Code)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (no token configured)", rec.Code)
 		}
 	})
 }
@@ -160,14 +165,15 @@ func TestAuthWSQueryToken(t *testing.T) {
 }
 
 // TestAuthCORS covers same-origin policy: a cross-origin Origin → 403; a
-// same-origin Origin or no Origin → allowed. Auth is empty so only CORS gates.
+// same-origin Origin or no Origin → allowed for an authenticated read.
 func TestAuthCORS(t *testing.T) {
-	h := authServer("")
+	h := authServer("secret")
 
 	t.Run("cross-origin rejected", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = "dash.local:8770"
 		req.Header.Set("Origin", "http://evil.example:8770")
+		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403 for cross-origin", rec.Code)
@@ -178,6 +184,7 @@ func TestAuthCORS(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = "dash.local:8770"
 		req.Header.Set("Origin", "http://dash.local:8770")
+		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 for same-origin", rec.Code)
@@ -187,9 +194,67 @@ func TestAuthCORS(t *testing.T) {
 	t.Run("no origin allowed", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = "dash.local:8770"
+		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 for origin-less request", rec.Code)
+		}
+	})
+}
+
+func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	h := s.secure(authOKHandler())
+
+	t.Run("unknown host on loopback listener", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Host = "evil.example:8770"
+		rec := authDo(h, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("rebinding shaped origin and host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+		req.Host = "attacker.example:8770"
+		req.Header.Set("Origin", "http://attacker.example:8770")
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := authDo(h, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
+}
+
+func TestAuthCSRF(t *testing.T) {
+	h := authServer("secret")
+
+	t.Run("cookie mutation without origin rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		rec := authDo(h, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403", rec.Code)
+		}
+	})
+
+	t.Run("cookie mutation with matching origin allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
+		req.Header.Set("Origin", "http://example.com")
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		rec := authDo(h, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("bearer mutation remains origin independent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := authDo(h, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
 		}
 	})
 }

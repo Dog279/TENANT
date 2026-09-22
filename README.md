@@ -1,5 +1,8 @@
 # Tenant
 
+[![CI](https://github.com/Dog279/TENANT/actions/workflows/ci.yml/badge.svg)](https://github.com/Dog279/TENANT/actions/workflows/ci.yml)
+[![Security](https://github.com/Dog279/TENANT/actions/workflows/security.yml/badge.svg)](https://github.com/Dog279/TENANT/actions/workflows/security.yml)
+
 A **Go-native, single-binary agent framework** built on the Model Context
 Protocol (MCP). A planner↔tool loop with parallel fan-out, a layered memory
 system that learns from interaction traces, a modular plugin model, and both a
@@ -27,8 +30,8 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
   compaction is **archive-sourced** (summaries are reversible and auditable, not
   lossy folds) with a persistent goal header to resist drift.
 - **Tools / plugins** (read-by-default; mutating actions are gated):
-  OS (shell + files), web (browse / search / read), SQL (SQLite + Postgres),
-  Google Workspace (Gmail + Calendar), X / Twitter, iMessage (via BlueBubbles),
+  OS (shell + files), web (browse / search / read), SQL (SQLite; PostgreSQL is
+  not shipped), Google Workspace (Gmail + Calendar), X / Twitter, iMessage (via BlueBubbles),
   Discord, and a plain-markdown wiki with a transparent indexer.
 - **Built-in expert sub-agents.** Five specialists — **Programmer, Researcher,
   Writer, QA, Strategist** — ship in the binary with a workflow-tuned persona
@@ -50,43 +53,49 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
   pdf/csv/txt, mp4): operator attachments download into a local relay inbox
   and the agent gets the saved paths, so file tools can work on what you send.
 
+## Install
+
+Download the archive for your operating system and CPU from the
+[latest release](https://github.com/Dog279/TENANT/releases/latest), extract it,
+and place `tenant` (`tenant.exe` on Windows) somewhere on your `PATH`. Release
+archives include SHA-256 checksums and SBOMs; installing Tenant does not require
+Go.
+
 ## Quickstart
 
 New here? **[docs/QUICKSTART.md](docs/QUICKSTART.md)** is a step-by-step first-time
 setup (Ollama models, the memory DB, model + loop-ceiling tuning, and the soul).
 The short version:
 
-Requires **Go 1.26+** and an LLM you can reach (a local Ollama, or a cloud API key).
+Requires an LLM you can reach (a local Ollama, or a cloud API key). Install the
+Tenant binary as described above, then run:
 
 ```sh
-git clone https://github.com/<you>/tenant.git
-cd tenant
-go build -o tenant ./cmd/tenant          # produces ./tenant (tenant.exe on Windows)
-
-./tenant setup                            # interactive wizard: pick a provider, paste a key
-./tenant doctor                           # verify config, endpoints, and keys
-./tenant tui                              # full-screen chat + activity feed
+tenant setup                            # interactive wizard: pick a provider, paste a key
+tenant doctor                           # verify config, endpoints, and keys
+tenant tui                              # full-screen chat + activity feed
 ```
 
 Kick the tires with **no model and no keys** (deterministic offline backend):
 
 ```sh
-./tenant --backend echo tui
+tenant --backend echo tui
 ```
 
 A couple of one-shot examples:
 
 ```sh
-./tenant web "summarize the top story on Hacker News"
-./tenant os "what's using the most disk in my home dir?"      # read-only; --allow-exec to act
-printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
+tenant web "summarize the top story on Hacker News"
+tenant os "what's using the most disk in my home dir?"      # read-only; --allow-exec to act
+printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
 ```
 
 ## Configuration & your data
 
 - `tenant setup` writes **`config.json`** to your OS config dir and secrets to
-  **`credentials.json`** (perms `0600`) — both in your **home directory**, never
-  in the repo.
+  **`credentials.json`** — both in your **home directory**, never in the repo.
+  Secret files use verified `0600` files/`0700` parent directories on Unix and
+  an explicit protected current-user-only DACL on Windows.
 - Add or switch providers any time: `tenant model add ...` / `tenant model use ...`
   (or `/model` inside the TUI).
 - Memory, the archive, transcripts, and the wiki live in your OS **data dir**
@@ -99,6 +108,11 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | ./tenant chat
   copy the one-file client in [reference/logging/](reference/logging/).
 - **This repository contains no API keys, no learned memory, and no wiki
   content** — it is a clean template. Everything you generate stays on your machine.
+- Chrome's process sandbox is enabled by default. The
+  `"browser_no_sandbox": true` config escape hatch is accepted only when Tenant
+  detects a Linux container or user namespace; it is for separately isolated
+  containers that cannot run Chrome's sandbox, never normal desktop use. Check
+  the effective state with `tenant security audit`.
 
 ## Built-in expert sub-agents
 
@@ -136,6 +150,7 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `chat` | headless agent loop (one stdin line = one turn) |
 | `serve` | background self-improvement (distillation) on a cadence |
 | `doctor [--fix]` | diagnose (and repair) the setup |
+| `security audit` | report Chrome process-sandbox state and other security-sensitive configuration |
 | `web` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `os` | one-shot agent turn scoped to one plugin (read-by-default; `--allow-*` to act) |
 | `orchestrate "<task>"` | multi-agent team over a live bus |
 | `research "<question>"` | deep research → cited report (`--out FILE`) |

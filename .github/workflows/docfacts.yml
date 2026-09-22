@@ -1,0 +1,25 @@
+name: Documentation facts
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  docfacts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Test facts generator
+        run: go test ./scripts/docfacts
+      - name: Emit Markdown and JSON facts
+        run: go run ./scripts/docfacts
+      - name: Check architecture facts for drift
+        run: go run ./scripts/docfacts -check docs/ARCHITECTURE.md

@@ -22,6 +22,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/cron"
 	"tenant/internal/dashboard"
+	"tenant/internal/httplimits"
 	"tenant/internal/improve"
 	"tenant/internal/logs"
 	"tenant/internal/mcp"
@@ -60,6 +61,15 @@ type noopDispatcher struct{}
 
 func (noopDispatcher) Dispatch(_ context.Context, _ model.ToolCall) (string, bool, error) {
 	return "", false, nil
+}
+
+func newSSEHTTPServer(addr string, handler http.Handler) *http.Server {
+	protected := httplimits.Protect(handler, transport.DefaultMaxFrameSize, httplimits.ResponseWriteTimeout, func(r *http.Request) bool {
+		return r.Method == http.MethodGet && r.URL.Path == "/sse"
+	})
+	srv := &http.Server{Addr: addr, Handler: protected}
+	httplimits.Configure(srv)
+	return srv
 }
 
 // cmdChat: one stdin line = one agent turn. Conversation goes to
@@ -106,6 +116,7 @@ func cmdChat(ctx context.Context, args []string) error {
 		Archive:     st.archive,
 		Episodic:    st.episodic,
 		Semantic:    st.semantic,
+		Runs:        st.runs,
 		Tools:       agent.NewStaticRegistry(),
 		Dispatcher:  noopDispatcher{},
 		Logger:      log,
@@ -258,13 +269,17 @@ func cmdConsolidate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// cmdMemory handles `memory search <query>` and `memory reembed`.
+// cmdMemory handles `memory search <query>`, `memory reembed`, and
+// `memory import <file.md>`.
 func cmdMemory(ctx context.Context, args []string) error {
 	if len(args) >= 1 && args[0] == "reembed" {
 		return cmdMemoryReembed(ctx, args[1:])
 	}
+	if len(args) >= 1 && args[0] == "import" {
+		return cmdMemoryImport(ctx, args[1:])
+	}
 	if len(args) < 1 || args[0] != "search" {
-		return fmt.Errorf("usage: tenant memory search <query> [flags]  |  tenant memory reembed")
+		return fmt.Errorf("usage: tenant memory search <query> [flags]  |  tenant memory reembed  |  tenant memory import <file.md> [--protected] [--importance N] [--dry-run]")
 	}
 	// Go's flag package stops at the first non-flag arg, so a natural
 	// `memory search the query here --data X` would never parse --data.
@@ -571,7 +586,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 				sessMu.Unlock()
 			}
 		})
-		httpSrv := &http.Server{Addr: *sseAddr, Handler: handler}
+		httpSrv := newSSEHTTPServer(*sseAddr, handler)
 		go func() {
 			<-ctx.Done()
 			_ = httpSrv.Shutdown(context.Background())
@@ -814,6 +829,7 @@ func cmdToolTest(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: disp,
 		Logger:     log,
@@ -876,6 +892,15 @@ func cmdWeb(ctx context.Context, args []string) error {
 	c := bindCommon(fs)
 	show := fs.Bool("show", false, "run a VISIBLE Chrome window (watch the agent)")
 	allowInteract := fs.Bool("allow-interact", false, "permit click/fill/select (next-turn tools)")
+	var privateNetwork []string
+	fs.Func("web-private-network", "allow an exact named private endpoint (repeatable; explicit SSRF-policy opt-in)", func(s string) error {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return fmt.Errorf("web-private-network hostname cannot be empty")
+		}
+		privateNetwork = append(privateNetwork, s)
+		return nil
+	})
 	if err := fs.Parse(rest[split:]); err != nil {
 		return err
 	}
@@ -892,7 +917,12 @@ func cmdWeb(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStores()
-	sess, err := web.NewSession(web.Config{Headless: !*show, BraveKey: braveKey(c.cfgDir)})
+	sess, err := web.NewSession(web.Config{
+		Headless:       !*show,
+		BraveKey:       braveKey(c.cfgDir),
+		PrivateNetwork: privateNetwork,
+		NoSandbox:      c.lc != nil && c.lc.BrowserNoSandbox,
+	})
 	if err != nil {
 		return fmt.Errorf("start browser: %w (is Chrome installed?)", err)
 	}
@@ -916,6 +946,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1015,6 +1046,7 @@ func cmdSQL(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1150,6 +1182,7 @@ func cmdWiki(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1252,6 +1285,7 @@ func cmdGSuite(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1362,6 +1396,7 @@ func cmdX(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1476,6 +1511,7 @@ func cmdIMessage(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      reg,
 		Dispatcher: wd,
 		Logger:     log,
@@ -1551,7 +1587,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// clobber a shared tab) — so keep it OUT of the shared mux and hand it
 	// to each agent's local tools instead.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false // suppress the shared session
 
@@ -1580,7 +1616,8 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	compressor := &compress.Compressor{Router: router, Logger: log}
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	orchID := c.agent
 	bus.Register(orchID)
 
@@ -1625,7 +1662,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
-		OrchID: orchID, Log: log, Observe: observe,
+		OrchID: orchID, Log: log, Observe: observe, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: orcAgents,
@@ -1642,8 +1679,8 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	olocal.add("team", orchestra.CommsTool{Bus: bus, Self: orchID})
 	olocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: orchID})
 	olocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: orchID})
-	rt.addWebTool(olocal)
-	otools := composite{shared: shared, local: olocal}
+	rt.addWebTool(olocal, orchID)
+	otools := composite{shared: shared, local: olocal, budget: rt.budget, agentID: orchID}
 
 	orch, err := agent.New(agent.Config{
 		AgentID:    orchID,
@@ -1653,13 +1690,14 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 		Archive:    st.archive,
 		Episodic:   st.episodic,
 		Semantic:   st.semantic,
+		Runs:       st.runs,
 		Tools:      otools,
 		Dispatcher: otools,
 		Logger:     log,
 		// Orchestrator's system prompt = base + (when configured) a catalog
 		// of named sub-agents it can spawn by role with specialized models.
 		SystemPrompt: orchestratorPrompt + renderAgentsForOrchestrator(orcAgents),
-		Observer:     func(e agent.Event) { observe(orchID, e) },
+		Observer:     func(e agent.Event) { rt.ObserveMain(e, func(ev agent.Event) { observe(orchID, ev) }) },
 		Skills:       skillRetriever{st: skillStore, agentID: orchID},
 		Compactor:    compressor,
 		UserProfile:  prof,
@@ -1870,7 +1908,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// navigation can't clobber a shared tab), so keep it OUT of the shared
 	// plugin mux and hand it to each agent's local tools instead.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 
@@ -1882,7 +1920,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Discord-driven turn) routes its dangerous-action approval to the
 	// origin-scoped button approver on the ctx, never the local broker — so a
 	// local "exec = allow" can't leak offsite. Local TUI turns are unchanged.
-	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, originConfirm(broker.Confirm), log)
+	egressConfirm := originConfirm(broker.Confirm)
+	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, egressConfirm, log)
 	if err != nil {
 		return err
 	}
@@ -2004,7 +2043,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 
 	// --- Multi-agent orchestration: the main agent IS an orchestrator and
 	// can spin up sub-agents on demand, live (no restart). ---
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	defer bus.Close()
 	bus.Register(c.agent)
 	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
@@ -2025,7 +2065,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	var dashFeed func(agent.Event)
 	subObserve := func(id string, e agent.Event) {
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventUsage:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventUsage, agent.EventTeamBudget:
 			select {
 			case teamCh <- tui.TeamEvent{AgentID: id, Event: e}:
 			default: // feed behind; drop display (counter may undercount under flood — acceptable)
@@ -2035,7 +2075,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// the dashboard feed, attributed by agent id. The TUI skips Agent != "" on
 		// the shared channel (it renders sub-agents via teamCh), so no double-render.
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventTeamBudget:
 			if dashFeed != nil {
 				ev := e
 				ev.Agent = id
@@ -2073,8 +2113,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
-		OrchID: c.agent, Log: log, Observe: subObserve,
-		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
+		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
+		ConfirmSensitiveEgress: egressConfirm,
+		Web:                    teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
 		SpawnRole:     routeRT.SpawnRole, // TEN-292: rule-routed unpinned spawns
@@ -2099,14 +2140,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// ephemeral/task-scoped, so an unbounded recall there widens blast radius for
 	// little benefit.
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
-	rt.addWebTool(mainLocal)
+	rt.addWebTool(mainLocal, c.agent)
 	// Same dispatch counting as serve - the TUI is the operator's daily
 	// surface and its usage is exactly the signal the utilization report needs.
 	tstats := newToolStats(c.dataDir, "tui")
 	mux.enableStats(tstats)
 	mainLocal.enableStats(tstats)
 	defer tstats.startPersist(time.Minute)()
-	mainTools := composite{shared: mux, local: mainLocal}
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Live bus view → feed (lossless cursor over the retained log).
 	go func() {
@@ -2230,6 +2271,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Archive:  st.archive,
 		Episodic: st.episodic,
 		Semantic: st.semantic,
+		Runs:     st.runs,
 		Tools:    mainTools,
 		// Wrap the mux in a retry decorator so transient infra failures
 		// (web/embedder timeouts, SQLite BUSY, network blips) get ONE
@@ -2245,12 +2287,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:      log.With("source", "turns"),
-		Stream:      true,
-		Observer:    emit,
-		RouteHook:   routeRT.Hook(),
-		RouteActive: routeRT.Active,
-		RouteSticky: routeRT.Sticky,
+		ConfirmSensitiveEgress: egressConfirm,
+		Logger:                 log.With("source", "turns"),
+		Stream:                 true,
+		Observer:               func(e agent.Event) { rt.ObserveMain(e, emit) },
+		RouteHook:              routeRT.Hook(),
+		RouteActive:            routeRT.Active,
+		RouteSticky:            routeRT.Sticky,
 		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
 		// Off unless `lazy_tools` is set in config.json — additive.
 		LazyToolLoad: c.lc.LazyTools,
@@ -2304,6 +2347,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
 		router:       router,
 		soulLive:     soulLive,
+		runs:         st.runs,
 		skills:       skillRetriever{st: skillStore, agentID: c.agent},
 		compactor:    compressor,
 		userProfile:  prof,
@@ -2396,6 +2440,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 	})
 	dcfg, dashOn := resolveDashboardConfig(c.lc, dashFlagSet, *dashboardOn, *dashboardAddr)
+	dcfg.Auth, err = resolveDashboardAuth(c.cfgDir, dcfg.Auth)
+	if err != nil {
+		return err
+	}
 	// modelControl powers /model AND backs the dashboard's write-only key page
 	// (TEN-145) for LLM-provider keys via AddCloudModel. Built once and shared.
 	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded}
@@ -2508,6 +2556,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if r, svc, appr, snd, gate, derr := buildDiscordAgent(discordToken, discordAgentDeps{
 			router: router, soulLive: soulLive, archive: st.archive,
 			episodic: st.episodic, semantic: st.semantic,
+			runs:      st.runs,
 			skills:    skillRetriever{st: skillStore, agentID: c.agent},
 			compactor: compressor, userProfile: prof,
 			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
@@ -2549,6 +2598,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return buildDiscordAgent(token, discordAgentDeps{
 				router: router, soulLive: soulLive, archive: st.archive,
 				episodic: st.episodic, semantic: st.semantic,
+				runs:      st.runs,
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
@@ -2608,12 +2658,6 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log.With("source", "approvals"), broker)
-	// TEN-230 Phase 2: "ask" prompts the texter over iMessage (APPROVE-<code> /
-	// DENY in the originating chat), not at this TUI — approvals go back out
-	// the channel they came in on. Built once; the responder's send is attached
-	// on each Start (the native transport is opened lazily).
-	imsgApprover := newIMessageApprover(log.With("source", "imessage"))
-	imsgBroker.ask = imsgApprover.askBackend()
 	imsgBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
 			return
@@ -2624,6 +2668,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 		imsgBroker.loadModes(c.lc.IMessage.Permissions)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
+
+	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
+	// approves a gated action over iMessage. Empty ⇒ Phase-1 (the offsite broker's
+	// "ask" prompts at THIS TUI / stays deny-all; no out-of-band text approval).
+	var imsgOperator string
+	if c.lc != nil {
+		imsgOperator = c.lc.IMessage.Operator
+	}
 
 	// iMessage autonomous responder (TEN-230): a live-toggle manager driven by
 	// `/imessage on|off`, over the native transport (macOS only). buildFn opens
@@ -2657,6 +2709,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			ag, err := buildIMessageAgent(imessageAgentDeps{
 				router: router, soulLive: soulLive, archive: st.archive,
 				episodic: st.episodic, semantic: st.semantic,
+				runs:      st.runs,
 				skills:    skillRetriever{st: skillStore, agentID: c.agent},
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
@@ -2675,10 +2728,22 @@ func cmdTUI(ctx context.Context, args []string) error {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: log.With("source", "imessage"), degraded: degraded.Degraded,
-				ingest:   func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
-				approver: imsgApprover,
+				ingest: func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
 			}
-			imsgApprover.setSender(resp.send)
+			// Phase-2 (TEN-267): with an operator handle configured, the text-confirm
+			// approver over the responder's send path becomes the broker's "ask"
+			// backend, so an "ask"-mode category texts the operator a nonce
+			// handshake. No operator ⇒ nil ⇒ Phase-1 (ask prompts at this TUI /
+			// deny-all offsite).
+			if approver := newIMessageApprover(resp, imsgOperator, log.With("source", "imessage")); approver != nil {
+				resp.approver = approver
+				imsgBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+					if approver.Confirm(cctx, req.Action, req.Detail) {
+						return tui.ApproveOnce
+					}
+					return tui.DenyOnce
+				}
+			}
 			return resp, func() { _ = nat.Close() }, nil
 		},
 	}
@@ -2882,7 +2947,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())
 		} else {
-			pushSys("dashboard: serving on http://" + addr)
+			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
 		}
 	}
 
@@ -3114,10 +3179,11 @@ func resolveDashboardConfig(lc *launchConfig, flagSet, flagVal bool, flagAddr st
 		addr = defaultDashboardAddr
 	}
 	return dashboard.Config{
-		Addr:    addr,
-		TLSCert: saved.TLSCert,
-		TLSKey:  saved.TLSKey,
-		Auth:    saved.Auth,
+		Addr:         addr,
+		TLSCert:      saved.TLSCert,
+		TLSKey:       saved.TLSKey,
+		Auth:         saved.Auth,
+		AllowedHosts: append([]string(nil), saved.AllowedHosts...),
 	}, on
 }
 
@@ -3202,7 +3268,7 @@ func cmdOS(ctx context.Context, args []string) error {
 
 	ag, err := agent.New(agent.Config{
 		AgentID: c.agent, Router: router, Soul: st.soul, Working: working.New(),
-		Archive: st.archive, Episodic: st.episodic, Semantic: st.semantic,
+		Archive: st.archive, Episodic: st.episodic, Semantic: st.semantic, Runs: st.runs,
 		Tools: reg, Dispatcher: wd, Logger: log,
 		SystemPrompt: "You can inspect this machine (os_sysinfo/os_read_file/os_list_dir/" +
 			"os_processes) and run shell commands (os_exec). Prefer the read tools; only run " +

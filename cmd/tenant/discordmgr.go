@@ -26,6 +26,7 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
+	"tenant/internal/runtrace"
 	"tenant/internal/tui"
 )
 
@@ -38,6 +39,7 @@ type discordAgentDeps struct {
 	archive     *archive.Writer
 	episodic    *episodic.Store
 	semantic    *semantic.Store
+	runs        *runtrace.Store
 	skills      agent.SkillRetriever
 	compactor   agent.Compactor
 	userProfile *userprofile.Profile
@@ -110,6 +112,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		Archive:      d.archive,
 		Episodic:     d.episodic,
 		Semantic:     d.semantic,
+		Runs:         d.runs,
 		Tools:        reg,
 		Dispatcher:   disp,
 		Logger:       d.log,

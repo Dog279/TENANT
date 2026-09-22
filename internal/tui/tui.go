@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"tenant/internal/agent"
+	"tenant/internal/fsperm"
 	modelpkg "tenant/internal/model"
 )
 
@@ -3376,7 +3376,11 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			if err != nil {
 				m.sysChat("dashboard: " + err.Error())
 			} else {
-				m.sysChat("dashboard: serving at http://" + addr)
+				msg := "dashboard: serving at http://" + addr
+				if d, ok := m.cfg.Dash.(interface{ AuthToken() string }); ok && d.AuthToken() != "" {
+					msg += "\ndashboard auth token: " + d.AuthToken()
+				}
+				m.sysChat(msg)
 			}
 		case "off", "stop", "disable":
 			if err := m.cfg.Dash.Disable(); err != nil {
@@ -3430,7 +3434,7 @@ func (m *model) handleSlash(line string) tea.Cmd {
 				break
 			}
 			msg := "🔗 dashboard published to your tailnet: " + url +
-				"\n   reachable by your tailnet devices with no extra login (set dashboard.auth for a bearer token if the tailnet is shared). /tailscale serve off to stop."
+				"\n   use the dashboard auth token printed at launch to sign in. /tailscale serve off to stop."
 			if m.cfg.Dash != nil {
 				if running, _ := m.cfg.Dash.Status(); !running {
 					msg += "\n⚠ the dashboard itself is currently stopped — run /dashboard on, or this URL will 502."
@@ -5471,6 +5475,12 @@ func (m *model) applyEvent(e agent.Event) {
 		if m.cfg.RecordUsage != nil {
 			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens)
 		}
+	case agent.EventTeamBudget:
+		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {
+			m.appendFeed(cErr.Render("team " + e.Text))
+		} else {
+			m.appendFeed(cDim.Render(e.Text))
+		}
 	case agent.EventMemory:
 		if e.Budget != nil {
 			// Gauge fullness against the model's REAL context window, not the
@@ -5569,6 +5579,12 @@ func (m *model) applyTeamEvent(te TeamEvent) {
 	switch e.Kind {
 	case agent.EventUsage:
 		m.teamTok += e.PromptTokens + e.CompletionTokens
+	case agent.EventTeamBudget:
+		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {
+			m.appendFeed(cErr.Render(tag + " " + e.Text))
+		} else {
+			m.appendFeed(cDim.Render(tag + " " + e.Text))
+		}
 	case agent.EventToolCall:
 		m.appendFeed(cTool.Render(tag+" → "+e.Tool) + " " + cDim.Render(clip(e.Args, 50)))
 	case agent.EventToolResult:
@@ -5757,7 +5773,7 @@ func (m *model) copyTranscript() {
 	clipErr := clipboard.WriteAll(txt)
 	saved := ""
 	if m.cfg.SavePath != "" {
-		if err := os.WriteFile(m.cfg.SavePath, []byte(txt), 0o644); err == nil {
+		if err := fsperm.WriteFile(m.cfg.SavePath, []byte(txt)); err == nil {
 			saved = m.cfg.SavePath
 		}
 	}

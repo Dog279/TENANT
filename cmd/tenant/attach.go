@@ -11,9 +11,8 @@ package main
 // read-only (monitoring); interactive chat/interject attach is deferred to a
 // follow-up (TEN-248b) pending the dashboard-transport refactor.
 //
-// Auth reuses the dashboard's bearer token: --token, else the local
-// config.json dashboard.auth (the daemon on this box wrote it), else none
-// (loopback no-auth). TLS is whatever the URL scheme says.
+// Auth reuses the dashboard's bearer token: --token, else an explicit
+// config.json dashboard.auth, else the generated config-dir token.
 
 import (
 	"context"
@@ -59,7 +58,7 @@ type attachStatus struct {
 func cmdAttach(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	follow := fs.Bool("follow", false, "keep tailing new events (like `journalctl -f`); otherwise print the current backlog and exit")
-	token := fs.String("token", "", "dashboard auth bearer token (default: config.json dashboard.auth)")
+	token := fs.String("token", "", "dashboard auth bearer token (default: local generated dashboard token)")
 	since := fs.Uint64("since", 0, "start from this event cursor (0 = the start of the retained log)")
 	interval := fs.Duration("interval", time.Second, "poll interval when --follow")
 	source := fs.String("source", "", "only this log source / folder (e.g. discord, cron, turns); default all")
@@ -76,6 +75,13 @@ func cmdAttach(ctx context.Context, args []string) error {
 	tok := *token
 	if tok == "" && c.lc != nil {
 		tok = c.lc.Dashboard.Auth
+	}
+	if tok == "" {
+		var err error
+		tok, err = resolveDashboardAuth(c.cfgDir, "")
+		if err != nil {
+			return err
+		}
 	}
 
 	httpc := &http.Client{Timeout: 15 * time.Second}

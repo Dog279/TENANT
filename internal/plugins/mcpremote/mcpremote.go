@@ -23,7 +23,7 @@ type Config struct {
 	CallbackAddr string             // localhost callback host:port (default 127.0.0.1:8765)
 	OpenBrowser  func(string) error // opens the consent URL (default: print only)
 	// CacheDir, if set, persists the OAuth token (+ DCR client + endpoints) under
-	// it (0600) so the server reconnects across restarts without a browser.
+	// it with owner-only protection so the server reconnects across restarts without a browser.
 	CacheDir string
 	// Interactive permits the browser sign-in flow. When false (launch-time
 	// silent reconnect), a missing/expired cached token fails cleanly instead

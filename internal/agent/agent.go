@@ -21,6 +21,7 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/model/toolfmt"
+	"tenant/internal/runtrace"
 )
 
 // DefaultActiveRouteBudget bounds the ACTIVE-routing join when the operator has
@@ -98,7 +99,13 @@ type Config struct {
 	Semantic   *semantic.Store
 	Tools      ToolRegistry
 	Dispatcher ToolDispatcher
-	Assembler  *assemble.Assembler // optional; if nil, agent builds one from Router
+	// ConfirmSensitiveEgress reuses the host capability/approval broker for a
+	// detected sensitive-result flow into an outbound tool. nil fails closed.
+	ConfirmSensitiveEgress func(ctx context.Context, action, detail string) bool
+	// Runs, when set, durably records each turn. Trace IDs are minted even
+	// when no store is configured so callers can always correlate a result.
+	Runs      *runtrace.Store
+	Assembler *assemble.Assembler // optional; if nil, agent builds one from Router
 
 	Logger      *slog.Logger
 	PlannerRole model.Role // default "planner"
@@ -223,6 +230,8 @@ const (
 	RouteSurfaceDashboard RouteSurface = "dashboard"
 	RouteSurfaceRelay     RouteSurface = "relay"
 	RouteSurfaceCron      RouteSurface = "cron"
+	RouteSurfacePeer      RouteSurface = "peer"
+	RouteSurfaceResearch  RouteSurface = "research"
 )
 
 func (s RouteSurface) Interactive() bool {
@@ -304,6 +313,7 @@ type Agent struct {
 	// (TEN-102). Mutated only from Turn's post-turn defer (turns are serialized
 	// per agent).
 	compaction *hysteresis
+	infoFlow   *infoFlowTracker
 
 	// Active-route continuity is per Agent/SessionID. routeMu keeps diagnostic
 	// tests and any accidentally concurrent callers race-free; production turns
@@ -419,7 +429,10 @@ func New(cfg Config) (*Agent, error) {
 	if er == "" {
 		er = model.RoleEmbedder
 	}
-	a := &Agent{cfg: cfg, log: log, plannerRole: pr, embedderRole: er, compaction: newCompactionHysteresis()}
+	a := &Agent{
+		cfg: cfg, log: log, plannerRole: pr, embedderRole: er,
+		compaction: newCompactionHysteresis(), infoFlow: newInfoFlowTracker(),
+	}
 	a.router.Store(cfg.Router)
 	return a, nil
 }
@@ -439,8 +452,29 @@ type TurnRequest struct {
 	LoopCeiling int
 }
 
+// TurnQueueEntry is the observable, content-free view of one request waiting
+// for a shared agent. Position is one-based in the order requests will be
+// admitted; ETA is the scheduler's best estimate based on recent turn times.
+// UserQuery is deliberately not exposed because dashboard status is an
+// operational surface, not a transcript surface.
+type TurnQueueEntry struct {
+	Position int
+	Source   RouteSurface
+	Age      time.Duration
+	ETA      time.Duration
+}
+
+// TurnQueueStatus is a point-in-time snapshot of shared-turn ingress. Depth
+// excludes the currently active turn. OldestAge is zero for an empty queue.
+type TurnQueueStatus struct {
+	Depth     int
+	OldestAge time.Duration
+	Entries   []TurnQueueEntry
+}
+
 // TurnResult summarizes what happened during the turn.
 type TurnResult struct {
+	TraceID    string
 	Response   string
 	ToolTrace  []ToolCallResult
 	Iterations int
@@ -461,7 +495,7 @@ type TurnResult struct {
 //
 // Cancellation: ctx is checked at every loop boundary. A cancelled
 // ctx stops the loop and surfaces ctx.Err() in TurnResult.Error.
-func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) {
+func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, err error) {
 	if req.RouteSurface.Interactive() {
 		query, prefixOverride := ParseRoutePrefix(req.UserQuery)
 		req.UserQuery = query
@@ -472,7 +506,47 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	if req.UserQuery == "" {
 		return nil, errors.New("agent: TurnRequest.UserQuery required")
 	}
-	a.emit(Event{Kind: EventTurnStart, Text: req.UserQuery})
+	traceID := runtrace.NewID()
+	span := runtrace.NewSpan(traceID)
+	span.SetModel(string(a.plannerRole), "unresolved")
+	ctx = runtrace.WithSpan(ctx, span)
+	result = &TurnResult{TraceID: traceID}
+	started := time.Now().UTC()
+	source := string(req.RouteSurface)
+	if source == "" {
+		source = "headless"
+	}
+	run := runtrace.Run{
+		TraceID: traceID, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
+		Source: source, StartedAt: started,
+	}
+	if a.cfg.Runs != nil {
+		if startErr := a.cfg.Runs.Start(ctx, run); startErr != nil {
+			a.log.Warn("agent: start run record failed", "trace_id", traceID, "err", startErr)
+		}
+		defer func() {
+			completed := time.Now().UTC()
+			run.CompletedAt = &completed
+			run.LatencyMS = completed.Sub(started).Milliseconds()
+			span.Apply(&run)
+			switch {
+			case err != nil:
+				run.Outcome, run.ErrorClass = "error", runErrorClass(err)
+			case result != nil && result.Error != nil:
+				run.Outcome, run.ErrorClass = "error", runErrorClass(result.Error)
+			case result != nil && result.Truncated:
+				run.Outcome = "partial"
+			default:
+				run.Outcome = "success"
+			}
+			finishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if finishErr := a.cfg.Runs.Finish(finishCtx, run); finishErr != nil {
+				a.log.Warn("agent: finish run record failed", "trace_id", traceID, "err", finishErr)
+			}
+		}()
+	}
+	a.emit(Event{Kind: EventTurnStart, TraceID: traceID, Text: req.UserQuery})
 	activeRouteDeadline := time.Now().Add(ActiveRouteBudget())
 	var routeState *turnRouteState
 	var routeDeadline time.Time
@@ -560,6 +634,15 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	// Track the role actually used, including planner fallbacks caused by a
 	// deadline, classifier/policy failure, or routed-role resolution error.
 	a.noteRouteSelection(selectedRole)
+	modelName := profile.Model
+	if modelName == "" {
+		modelName = profile.ID
+	}
+	provider := profile.ProviderKind
+	if provider == "" {
+		provider = profile.Backend
+	}
+	span.SetModel(modelName, provider)
 
 	// 4. Resolve which tools to surface this turn (top-K per profile).
 	availableTools, err := a.cfg.Tools.Search(ctx, queryEmbedding, profile.MaxToolsPerCall)
@@ -644,14 +727,18 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 	goalHeader := compress.ExtractGoalHeader(latestSummaryContent(a.cfg.Working.Messages()))
 
 	// 6. Run the bounded loop.
-	result := &TurnResult{}
 	// After the turn (any exit path), compact the working set if the working
 	// tier crossed the hysteresis high-watermark — so the NEXT turn starts lean.
 	// Best-effort and post-response, so it never blocks the answer. Hysteresis
 	// (vs a single line) stops compaction re-firing every turn near the
 	// threshold; the agent owns the state because the assembler is per-turn.
 	defer func() {
-		if a.cfg.Compactor == nil || ctx.Err() != nil || len(result.Reports) == 0 {
+		// result is a NAMED return (TEN-300 named it so the run-trace finish
+		// defer can inspect the outcome). The error paths below do `return nil,
+		// err`, which sets result to nil before defers run — so this compaction
+		// pass MUST nil-check result first or it dereferences nil (a spawned
+		// sub-agent whose planner/assemble errors would otherwise crash the app).
+		if result == nil || a.cfg.Compactor == nil || ctx.Err() != nil || len(result.Reports) == 0 {
 			return
 		}
 		last := result.Reports[len(result.Reports)-1]
@@ -805,6 +892,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			return nil, fmt.Errorf("agent: planner generate iter=%d: %w", iter, err)
 		}
 		if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
+			span.AddUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 			a.emit(Event{Kind: EventUsage, Iter: iter,
 				PromptTokens: resp.Usage.PromptTokens, CompletionTokens: resp.Usage.CompletionTokens})
 		}
@@ -885,6 +973,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		validCalls := make([]model.ToolCall, 0, len(resp.ToolCalls))
 		for _, call := range resp.ToolCalls {
 			if err := validateToolCall(call, a.cfg.Tools); err != nil {
+				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
 				a.feedValidationError(ctx, call, err)
 				continue
 			}
@@ -894,12 +983,27 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 			// otherwise still reach the dispatcher. Refuse it here with a clean
 			// tool error instead.
 			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Gate != "" && !profile.AllowsTool(spec.Gate) {
+				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Outcome: "denied"})
 				a.feedToolResult(ctx, ToolCallResult{
 					Call:    call,
 					Result:  fmt.Sprintf("%q is not available for the current model.", call.Name),
 					IsError: true,
 				}, profile.ToolResultCap())
 				continue
+			}
+			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Outbound {
+				if label, matched := a.infoFlow.match(call.Arguments); matched {
+					detail := fmt.Sprintf("%s arguments contain sensitive data from %s; allow this outbound flow?", call.Name, label.Provenance)
+					approved := a.cfg.ConfirmSensitiveEgress != nil &&
+						a.cfg.ConfirmSensitiveEgress(ctx, "sensitive_egress", detail)
+					if !approved {
+						a.feedToolResult(ctx, ToolCallResult{
+							Call: call, IsError: true,
+							Result: fmt.Sprintf("blocked: %s arguments contain sensitive data from %s and outbound egress was not approved", call.Name, label.Provenance),
+						}, profile.ToolResultCap())
+						continue
+					}
+				}
 			}
 			allInvalid = false
 			validCalls = append(validCalls, call)
@@ -924,7 +1028,20 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (*TurnResult, error) 
 		}
 		batchResults := dispatchBatch(ctx, validCalls, parallel, a.cfg.Dispatcher)
 		for _, br := range batchResults {
+			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
+				br.Labels = append([]model.InfoFlowLabel(nil), spec.ResultLabels...)
+				a.infoFlow.record(br.Labels, br.Result)
+			}
 			result.ToolTrace = append(result.ToolTrace, br)
+			toolOutcome := "success"
+			if br.IsError || br.Err != nil {
+				toolOutcome = "error"
+			}
+			toolResult := br.Result
+			if br.Err != nil && toolResult == "" {
+				toolResult = br.Err.Error()
+			}
+			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
 			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: br.Result, IsErr: br.IsError})
 			a.feedToolResult(ctx, br, profile.ToolResultCap())
 		}
@@ -1185,6 +1302,9 @@ func (a *Agent) synthesizeFinal(ctx context.Context, planner model.LLM, profile 
 	if err != nil {
 		return "", err
 	}
+	if span := runtrace.SpanFromContext(ctx); span != nil {
+		span.AddUsage(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	}
 	text := strings.TrimSpace(resp.Text)
 	// Fallback: if the model produced nothing usable (stop sequence fired
 	// immediately, or the response is still tool-call shaped despite the
@@ -1302,6 +1422,9 @@ func (a *Agent) plan(ctx context.Context, planner model.LLM, format string, iter
 		}
 		a.log.Warn("agent: planner stream dropped — retrying on a fresh connection",
 			"iter", iter, "attempt", attempt, "err", err)
+		if span := runtrace.SpanFromContext(ctx); span != nil {
+			span.AddRetry()
+		}
 		// Brief, cancellable backoff so we don't hammer an endpoint that's
 		// mid-recycle. The dropped connection is already marked dead by the
 		// transport, so the next attempt dials fresh.
@@ -1427,6 +1550,7 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 		ToolCallID: r.Call.ID,
 		Content:    capToolResultForContext(content, maxResultTokens),
 		Timestamp:  now,
+		Meta:       infoFlowMeta(r.Labels),
 	})
 	a.archiveEvent(ctx, archive.Event{
 		Timestamp: now, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
@@ -1435,8 +1559,16 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 			CallID:  r.Call.ID,
 			Content: content, // full, untruncated — durable history
 			IsError: r.IsError || r.Err != nil,
+			Labels:  append([]model.InfoFlowLabel(nil), r.Labels...),
 		},
 	})
+}
+
+func infoFlowMeta(labels []model.InfoFlowLabel) map[string]any {
+	if len(labels) == 0 {
+		return nil
+	}
+	return map[string]any{"infoflow_labels": append([]model.InfoFlowLabel(nil), labels...)}
 }
 
 // capToolResultForContext truncates a tool result to roughly maxTokens before it
@@ -1541,16 +1673,17 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 		routeTags, routeVersion = routeState.snapshot()
 	}
 	id, err := a.cfg.Episodic.Insert(ctx, &episodic.Episode{
-		AgentID:    a.cfg.AgentID,
-		Visibility: visibility,
-		SessionID:  a.cfg.SessionID,
-		Prompt:     prompt,
-		Response:   response,
-		ToolCalls:  toolCalls,
-		Outcome:    outcome,
-		Tags:       routeTags,
-		EmbedderID: string(embedderID),
-		Embedding:  queryEmbedding,
+		AgentID:     a.cfg.AgentID,
+		Visibility:  visibility,
+		SessionID:   a.cfg.SessionID,
+		SourceRunID: runtrace.IDFromContext(ctx),
+		Prompt:      prompt,
+		Response:    response,
+		ToolCalls:   toolCalls,
+		Outcome:     outcome,
+		Tags:        routeTags,
+		EmbedderID:  string(embedderID),
+		Embedding:   queryEmbedding,
 	})
 	if err != nil {
 		a.log.Warn("agent: episode insert failed", "err", err)
@@ -1558,6 +1691,25 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 		routeState.episodeInserted(id, routeVersion)
 	}
 	_ = embedder // reserved for future per-content embedding (response embedding)
+}
+
+func runErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, ErrLoopCeilingReached):
+		return "loop_ceiling"
+	case errors.Is(err, ErrTooManyValidationFailures):
+		return "validation_failures"
+	case errors.Is(err, ErrOscillationDetected):
+		return "oscillation"
+	default:
+		return "runtime_error"
+	}
 }
 
 // turnRouteState joins a fire-and-forget observation to an episode without

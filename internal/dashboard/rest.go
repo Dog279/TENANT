@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/logs"
+	"tenant/internal/orchestra"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -41,9 +42,22 @@ type restStatus struct {
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
 
-	TurnActive       bool `json:"turn_active"`
-	TurnAgeSecs      int  `json:"turn_age_secs,omitempty"`
-	PendingApprovals int  `json:"pending_approvals"`
+	TurnActive       bool                    `json:"turn_active"`
+	TurnAgeSecs      int                     `json:"turn_age_secs,omitempty"`
+	TurnQueueDepth   int                     `json:"turn_queue_depth"`
+	TurnQueueAgeSecs int                     `json:"turn_queue_age_secs"`
+	TurnQueue        []restTurnQueueEntry    `json:"turn_queue,omitempty"`
+	PendingApprovals int                     `json:"pending_approvals"`
+	TeamBudget       *orchestra.BudgetStatus `json:"team_budget,omitempty"`
+}
+
+// restTurnQueueEntry is the content-free queue projection. Position reflects
+// scheduler dispatch order, not raw arrival order across priority classes.
+type restTurnQueueEntry struct {
+	Position int    `json:"position"`
+	Source   string `json:"source"`
+	AgeSecs  int    `json:"age_secs"`
+	ETASecs  int    `json:"eta_secs"`
 }
 
 // liveness is the optional turn-state reporter a serve-mode runner (the
@@ -51,6 +65,10 @@ type restStatus struct {
 // AgentRunner interface (Turn/Interject) stays unchanged.
 type liveness interface {
 	ActiveTurn() (active bool, age time.Duration)
+}
+
+type queueLiveness interface {
+	TurnQueueStatus() agent.TurnQueueStatus
 }
 
 // restToggleRequest is the body of the POST toggle endpoints.
@@ -126,8 +144,30 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 			st.TurnAgeSecs = int(age.Seconds())
 		}
 	}
+	if qr, ok := s.agent.(queueLiveness); ok && qr != nil {
+		queue := qr.TurnQueueStatus()
+		st.TurnQueueDepth = queue.Depth
+		st.TurnQueueAgeSecs = int(queue.OldestAge.Seconds())
+		for _, entry := range queue.Entries {
+			st.TurnQueue = append(st.TurnQueue, restTurnQueueEntry{
+				Position: entry.Position,
+				Source:   string(entry.Source),
+				AgeSecs:  int(entry.Age.Seconds()),
+				ETASecs:  int(entry.ETA.Seconds()),
+			})
+		}
+	}
 	if s.approvals != nil {
 		st.PendingApprovals = len(s.approvals.Pending())
+	}
+	if s.logs != nil {
+		entries, _ := s.logs.Snapshot()
+		for i := len(entries) - 1; i >= 0; i-- {
+			if tb := teamBudgetOf(entries[i]); tb != nil {
+				st.TeamBudget = tb
+				break
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, st)
 }
@@ -139,18 +179,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 // event-shaped fields (kind/agent/iter/tool/is_err/text) are kept for existing
 // clients; source/level/msg/fields carry the unified log-book shape.
 type restActivityEvent struct {
-	Seq    uint64            `json:"seq"`
-	At     string            `json:"at"` // RFC3339
-	Kind   string            `json:"kind"`
-	Agent  string            `json:"agent,omitempty"`
-	Iter   int               `json:"iter,omitempty"`
-	Tool   string            `json:"tool,omitempty"`
-	IsErr  bool              `json:"is_err,omitempty"`
-	Text   string            `json:"text,omitempty"`
-	Source string            `json:"source"`
-	Level  string            `json:"level"`
-	Msg    string            `json:"msg"`
-	Fields map[string]string `json:"fields,omitempty"`
+	Seq        uint64                  `json:"seq"`
+	At         string                  `json:"at"` // RFC3339
+	Kind       string                  `json:"kind"`
+	Agent      string                  `json:"agent,omitempty"`
+	Iter       int                     `json:"iter,omitempty"`
+	Tool       string                  `json:"tool,omitempty"`
+	IsErr      bool                    `json:"is_err,omitempty"`
+	Text       string                  `json:"text,omitempty"`
+	Source     string                  `json:"source"`
+	Level      string                  `json:"level"`
+	Msg        string                  `json:"msg"`
+	Fields     map[string]string       `json:"fields,omitempty"`
+	TeamBudget *orchestra.BudgetStatus `json:"team_budget,omitempty"`
 }
 
 type restActivityResponse struct {
@@ -184,10 +225,11 @@ func restEntry(e logs.Entry) restActivityEvent {
 			out.Text = e.Msg
 		}
 	}
+	out.TeamBudget = teamBudgetOf(e)
 	if len(e.Fields) > 0 {
 		out.Fields = make(map[string]string, len(e.Fields))
 		for _, f := range e.Fields {
-			if f.Key == "ev" {
+			if f.Key == "ev" || f.Key == "team_budget" {
 				continue
 			}
 			out.Fields[f.Key] = f.Value
@@ -424,4 +466,18 @@ func (s *Server) handleAddonEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ok", "source": logs.NormalizeSource(req.Source)})
+}
+
+// teamBudgetOf decodes the team-budget snapshot an EventTeamBudget entry
+// carries (agent.EntryFor stores it as JSON in the "team_budget" field).
+func teamBudgetOf(e logs.Entry) *orchestra.BudgetStatus {
+	raw := e.Field("team_budget")
+	if raw == "" {
+		return nil
+	}
+	var st orchestra.BudgetStatus
+	if json.Unmarshal([]byte(raw), &st) != nil {
+		return nil
+	}
+	return &st
 }

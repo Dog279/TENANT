@@ -165,7 +165,7 @@ func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[st
 	}
 }
 
-// atlassianTokenPath is the shared 0600 OAuth token cache location — used by the
+// atlassianTokenPath is the shared protected OAuth token cache location — used by the
 // probe, the toolmux activator, and `tenant atlassian login` so they all agree.
 func atlassianTokenPath(cfgDir string) string {
 	return filepath.Join(cfgDir, "atlassian-token.json")

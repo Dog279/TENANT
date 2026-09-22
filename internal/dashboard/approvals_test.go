@@ -31,6 +31,7 @@ func (f *fakeApprovals) Decide(id, decision string) error {
 type fakeLivenessRunner struct {
 	active bool
 	age    time.Duration
+	queue  agent.TurnQueueStatus
 }
 
 func (r *fakeLivenessRunner) Turn(context.Context, agent.TurnRequest) (*agent.TurnResult, error) {
@@ -38,6 +39,9 @@ func (r *fakeLivenessRunner) Turn(context.Context, agent.TurnRequest) (*agent.Tu
 }
 func (r *fakeLivenessRunner) Interject(string)                  {}
 func (r *fakeLivenessRunner) ActiveTurn() (bool, time.Duration) { return r.active, r.age }
+func (r *fakeLivenessRunner) TurnQueueStatus() agent.TurnQueueStatus {
+	return r.queue
+}
 
 // TestRESTApprovals_ListAndDecide: GET lists pending; POST routes the decision.
 func TestRESTApprovals_ListAndDecide(t *testing.T) {
@@ -128,7 +132,17 @@ func TestRESTActivity_SinceCursor(t *testing.T) {
 // populate the serve fields.
 func TestRESTStatus_Liveness(t *testing.T) {
 	fa := &fakeApprovals{pending: []PendingApproval{{ID: "ap-1"}, {ID: "ap-2"}}}
-	runner := &fakeLivenessRunner{active: true, age: 7 * time.Second}
+	runner := &fakeLivenessRunner{
+		active: true,
+		age:    7 * time.Second,
+		queue: agent.TurnQueueStatus{
+			Depth: 2, OldestAge: 5 * time.Second,
+			Entries: []agent.TurnQueueEntry{
+				{Position: 1, Source: agent.RouteSurfaceDashboard, Age: 2 * time.Second, ETA: 4 * time.Second},
+				{Position: 2, Source: agent.RouteSurfaceCron, Age: 5 * time.Second, ETA: 34 * time.Second},
+			},
+		},
+	}
 	s := New(Config{}, runner, &restFakeTools{plugins: []string{}}, nil, agent.NewBroker(0), nil)
 	s.SetApprovals(fa)
 
@@ -143,5 +157,11 @@ func TestRESTStatus_Liveness(t *testing.T) {
 	}
 	if st.PendingApprovals != 2 {
 		t.Errorf("pending_approvals = %d, want 2", st.PendingApprovals)
+	}
+	if st.TurnQueueDepth != 2 || st.TurnQueueAgeSecs != 5 || len(st.TurnQueue) != 2 {
+		t.Fatalf("queue status = depth %d age %d entries %+v", st.TurnQueueDepth, st.TurnQueueAgeSecs, st.TurnQueue)
+	}
+	if got := st.TurnQueue[0]; got.Position != 1 || got.Source != "dashboard" || got.ETASecs != 4 {
+		t.Errorf("queue entry 0 = %+v", got)
 	}
 }

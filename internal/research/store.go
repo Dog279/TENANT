@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 // Status of a Run. Status flips from "running" to one of the terminal values
@@ -123,7 +125,7 @@ func New(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("research: empty data dir")
 	}
 	dir := filepath.Join(dataDir, "research")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(dir); err != nil {
 		return nil, fmt.Errorf("research: mkdir %s: %w", dir, err)
 	}
 	return &Store{dir: dir, open: map[string]*Run{}}, nil
@@ -193,7 +195,7 @@ func (s *Store) Create(m Manifest) (*Run, error) {
 	}
 	m.Status = StatusRunning
 	dir := filepath.Join(s.dir, m.ID)
-	if err := os.MkdirAll(filepath.Join(dir, "findings"), 0o755); err != nil {
+	if err := fsperm.MkdirAll(filepath.Join(dir, "findings")); err != nil {
 		return nil, fmt.Errorf("research: mkdir run %s: %w", m.ID, err)
 	}
 	r := &Run{store: s, dir: dir, manifest: m}
@@ -232,7 +234,7 @@ func (r *Run) AppendFinding(f Finding) error {
 	}
 	// Write the body file first; on failure, don't update the manifest.
 	bodyPath := filepath.Join(r.dir, "findings", safeFilename(f.AgentID)+".md")
-	if err := os.WriteFile(bodyPath, []byte(f.Result), 0o644); err != nil {
+	if err := fsperm.WriteFile(bodyPath, []byte(f.Result)); err != nil {
 		return fmt.Errorf("research: write finding %s: %w", f.AgentID, err)
 	}
 	// Replace by agent id, or append.
@@ -262,8 +264,8 @@ func (r *Run) AppendEvent(e Event) error {
 		return nil
 	}
 	if r.eventsFh == nil {
-		fh, err := os.OpenFile(filepath.Join(r.dir, "events.jsonl"),
-			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		fh, err := fsperm.OpenFile(filepath.Join(r.dir, "events.jsonl"),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND)
 		if err != nil {
 			return fmt.Errorf("research: open events.jsonl: %w", err)
 		}
@@ -304,7 +306,7 @@ func (r *Run) Finalize(report string, references []string, status Status, errMsg
 	}
 	r.manifest.ReportPreview = preview
 	if report != "" {
-		if err := os.WriteFile(filepath.Join(r.dir, "report.md"), []byte(report), 0o644); err != nil {
+		if err := fsperm.WriteFile(filepath.Join(r.dir, "report.md"), []byte(report)); err != nil {
 			return fmt.Errorf("research: write report.md: %w", err)
 		}
 	}
@@ -369,7 +371,7 @@ func (r *Run) writeManifestLocked() error {
 	// Atomic write — temp file + rename — so a crash mid-write never leaves
 	// half a manifest that breaks List().
 	tmp := filepath.Join(r.dir, "run.json.tmp")
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := fsperm.WriteFile(tmp, b); err != nil {
 		return fmt.Errorf("research: write tmp manifest: %w", err)
 	}
 	if err := os.Rename(tmp, filepath.Join(r.dir, "run.json")); err != nil {

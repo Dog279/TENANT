@@ -203,11 +203,12 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
 	teamWeb := pf.web
-	webCfg := webConfig(c.cfgDir, pf)
+	webCfg := webConfig(c.cfgDir, pf, c.lc)
 	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
 	pf.web = false
 
-	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, originConfirm(broker.Confirm), log)
+	egressConfirm := originConfirm(broker.Confirm)
+	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, egressConfirm, log)
 	if err != nil {
 		return err
 	}
@@ -289,7 +290,8 @@ func cmdServe(ctx context.Context, args []string) error {
 		working:        mainWorking,
 	}
 
-	bus := orchestra.NewBus()
+	budgets := configuredBudgets(c.lc)
+	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	defer bus.Close()
 	bus.Register(c.agent)
 	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
@@ -312,7 +314,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// to feed, only the dashboard activity stream.
 	subObserve := func(id string, e agent.Event) {
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventTeamBudget:
 			ev := e
 			ev.Agent = id
 			emit(ev)
@@ -344,8 +346,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
-		OrchID: c.agent, Log: log, Observe: subObserve,
-		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
+		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
+		ConfirmSensitiveEgress: egressConfirm,
+		Web:                    teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
 		SpawnRole: func(task string) (model.Role, bool) { // TEN-292
@@ -367,7 +370,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	mainLocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
 	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
 	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
-	rt.addWebTool(mainLocal)
+	rt.addWebTool(mainLocal, c.agent)
 	// Quality v2 Phase 1: count every dispatch. One shared stats set across
 	// the shared mux and the main agent's local mux; cron's restricted views
 	// and sub-agent shared-tool calls funnel through these same instances.
@@ -376,7 +379,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	mainLocal.enableStats(stats)
 	stopStats := stats.startPersist(time.Minute)
 	defer stopStats()
-	mainTools := composite{shared: mux, local: mainLocal}
+	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).
 	go func() {
@@ -435,6 +438,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		Archive:  st.archive,
 		Episodic: st.episodic,
 		Semantic: st.semantic,
+		Runs:     st.runs,
 		Tools:    mainTools,
 		Dispatcher: &agent.RetryDecorator{
 			Inner:      mainTools,
@@ -443,17 +447,18 @@ func cmdServe(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:       log.With("source", "turns"),
-		Stream:       true,
-		Observer:     emit,
-		RouteHook:    routeRT.Hook(),
-		RouteActive:  routeRT.Active,
-		RouteSticky:  routeRT.Sticky,
-		LazyToolLoad: c.lc.LazyTools,
-		Skills:       skillRetriever{st: skillStore, agentID: c.agent},
-		SystemPrompt: sysPrompt,
-		Compactor:    compressor,
-		UserProfile:  prof,
+		ConfirmSensitiveEgress: egressConfirm,
+		Logger:                 log.With("source", "turns"),
+		Stream:                 true,
+		Observer:               func(e agent.Event) { rt.ObserveMain(e, emit) },
+		RouteHook:              routeRT.Hook(),
+		RouteActive:            routeRT.Active,
+		RouteSticky:            routeRT.Sticky,
+		LazyToolLoad:           c.lc.LazyTools,
+		Skills:                 skillRetriever{st: skillStore, agentID: c.agent},
+		SystemPrompt:           sysPrompt,
+		Compactor:              compressor,
+		UserProfile:            prof,
 		// Per-project SME doc from the live cache (Phase 3). nil-safe.
 		RenderProjectSME: smeLive.String,
 	})
@@ -465,7 +470,11 @@ func cmdServe(ctx context.Context, args []string) error {
 	// ONE turn gate over the shared brain (TEN-194): every driver (dashboard
 	// now, peer-delegated run later) serializes here so concurrent sources can't
 	// race the single working set. It also reports turn liveness to /api/status.
-	gated := newTurnGate(ag)
+	turnSchedCfg := turnSchedulerConfig{}
+	if c.lc != nil {
+		turnSchedCfg = c.lc.TurnScheduler
+	}
+	gated := newTurnGateConfigured(ag, turnSchedCfg)
 
 	// Cron (recurring jobs): dedicated read/comms-safe runner agents on a
 	// schedule; cron_* management tools go to the MAIN agent.
@@ -490,6 +499,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	if cronRunner, cerr := buildCronRunner(cronAgentDeps{
 		router:       router,
 		soulLive:     soulLive,
+		runs:         st.runs,
 		skills:       skillRetriever{st: skillStore, agentID: c.agent},
 		compactor:    compressor,
 		userProfile:  prof,
@@ -583,6 +593,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	broker.reg.emit = emit
 
 	dcfg, _ := resolveDashboardConfig(c.lc, true, *dashboardOn, *dashboardAddr)
+	dcfg.Auth, err = resolveDashboardAuth(c.cfgDir, dcfg.Auth)
+	if err != nil {
+		return err
+	}
 	dashMgr := &dashboardManager{
 		base:   ctx,
 		cfg:    dcfg,
@@ -652,7 +666,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			dashAddr = addr
-			pushSys("dashboard: serving on http://" + addr)
+			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
 		}
 	}
 
@@ -709,6 +723,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	fmt.Printf("tenant serve — agent=%s backend=%s; headless hub\n", c.agent, c.backend)
 	if dashAddr != "" {
 		fmt.Printf("dashboard (control + chat + approvals): http://%s\n", dashAddr)
+		fmt.Printf("dashboard auth token: %s\n", dcfg.Auth)
 	}
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 

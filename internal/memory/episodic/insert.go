@@ -45,12 +45,12 @@ func (s *Store) Insert(ctx context.Context, ep *Episode) (int64, error) {
 
 	res, err := s.db.ExecContext(ctx, `
         INSERT INTO episodes
-            (agent_id, visibility, session_id, ts, prompt, response,
+            (agent_id, visibility, session_id, source_run_id, ts, prompt, response,
              tool_calls, outcome, user_feedback, tags, embedder_id, embedding, tombstoned)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-		ep.AgentID, ep.Visibility, nullString(ep.SessionID), ep.Timestamp.UTC().Unix(),
+		ep.AgentID, ep.Visibility, nullString(ep.SessionID), nullString(ep.SourceRunID), ep.Timestamp.UTC().Unix(),
 		ep.Prompt, ep.Response,
 		nullString(toolCallsJSON), nullString(ep.Outcome), nullString(ep.UserFeedback),
 		nullString(tagsJSON), ep.EmbedderID, encodeEmbedding(ep.Embedding),
@@ -72,7 +72,7 @@ func (s *Store) Insert(ctx context.Context, ep *Episode) (int64, error) {
 // callers do their own check.
 func (s *Store) Get(ctx context.Context, id int64) (*Episode, error) {
 	row := s.db.QueryRowContext(ctx, `
-        SELECT id, agent_id, visibility, session_id, ts, prompt, response,
+        SELECT id, agent_id, visibility, session_id, source_run_id, ts, prompt, response,
                tool_calls, outcome, user_feedback, tags, embedder_id, embedding, tombstoned
         FROM episodes WHERE id = ?
     `, id)
@@ -119,6 +119,7 @@ func scanEpisode(row rowScanner) (*Episode, error) {
 	var (
 		ep             Episode
 		sessionID      sql.NullString
+		sourceRunID    sql.NullString
 		toolCallsJSON  sql.NullString
 		outcome        sql.NullString
 		userFeedback   sql.NullString
@@ -128,7 +129,7 @@ func scanEpisode(row rowScanner) (*Episode, error) {
 		tombstonedInt  int
 	)
 	err := row.Scan(
-		&ep.ID, &ep.AgentID, &ep.Visibility, &sessionID, &tsUnix,
+		&ep.ID, &ep.AgentID, &ep.Visibility, &sessionID, &sourceRunID, &tsUnix,
 		&ep.Prompt, &ep.Response,
 		&toolCallsJSON, &outcome, &userFeedback, &tagsJSON,
 		&ep.EmbedderID, &embeddingBytes, &tombstonedInt,
@@ -140,6 +141,7 @@ func scanEpisode(row rowScanner) (*Episode, error) {
 		return nil, fmt.Errorf("episodic: scan: %w", err)
 	}
 	ep.SessionID = sessionID.String
+	ep.SourceRunID = sourceRunID.String
 	ep.Outcome = outcome.String
 	ep.UserFeedback = userFeedback.String
 	ep.Timestamp = time.Unix(tsUnix, 0).UTC()

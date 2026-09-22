@@ -581,7 +581,7 @@ func (mc *modelControl) AddModel(name, endpoint, toolFormat string) (string, err
 
 // AddCloudModel registers a KEYED cloud provider (zai/openai/grok/anthropic)
 // in one shot using the catalog's known endpoint + chat path + default model
-// + tool format. The API key is stored in credentials.json (0600). The
+// + tool format. The API key is stored in protected credentials.json. The
 // provider gets registered under its kind id as the name (so `zai` is its
 // own bucket, distinct from any vLLM-with-name-zai an operator might add).
 // Idempotent: re-running with a new key overwrites just the secret.
@@ -642,13 +642,13 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 	if err := lc.save(mc.cfgDir); err != nil {
 		return "", err
 	}
-	// Store the key in credentials.json (0600).
+	// Store the key in protected credentials.json.
 	creds, _ := loadCredentials(mc.cfgDir)
 	creds.set(kindID, apiKey)
 	if err := creds.save(mc.cfgDir); err != nil {
 		return "", fmt.Errorf("save credentials: %w", err)
 	}
-	return fmt.Sprintf("added %s backend %q → %s (key stored, 0600). Switch with `/model use %s`. "+
+	return fmt.Sprintf("added %s backend %q → %s (key stored with owner-only protection). Switch with `/model use %s`. "+
 		"Router bind hint: set `route.big_role` to %q, then use `/route on`.",
 		pk.Label, kindID, pk.DefaultEndpoint, kindID, kindID), nil
 }

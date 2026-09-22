@@ -9,15 +9,20 @@ package dashboard
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/httplimits"
 	"tenant/internal/logs"
 )
+
+const maxDashboardRequestBodyBytes = 1 << 20
 
 // AgentRunner is the minimal slice of *agent.Agent the dashboard drives: a
 // turn plus a mid-turn interjection. Per-turn cancellation is the caller's
@@ -52,14 +57,13 @@ type ToolInfo struct {
 	Gated   bool
 }
 
-// Config is the dashboard's static configuration, loaded from the
-// `dashboard` block of launchConfig. TLSCert/TLSKey/Auth are wired in
-// Wave 2 (TEN-79); they're carried here now so the config shape is stable.
+// Config is the dashboard's static security and listener configuration.
 type Config struct {
-	Addr    string // listen address, e.g. 127.0.0.1:8770
-	TLSCert string // PEM cert path; empty = plaintext (Wave 2)
-	TLSKey  string // PEM key path (Wave 2)
-	Auth    string // auth mode/token seam (Wave 2)
+	Addr         string   // listen address, e.g. 127.0.0.1:8770
+	TLSCert      string   // PEM cert path; empty = plaintext (Wave 2)
+	TLSKey       string   // PEM key path (Wave 2)
+	Auth         string   // bearer/cookie authentication secret; required by Run
+	AllowedHosts []string // additional trusted HTTP Host authorities (host or host:port)
 }
 
 // Server is the dashboard HTTP server. Its exported/internal fields are the
@@ -120,10 +124,34 @@ func New(cfg Config, runner AgentRunner, tools ToolControl, mem MemoryControl, b
 	return s
 }
 
-// Handler exposes the server's mux for tests (httptest) and for any caller
-// that wants to wrap it (e.g. the Wave-2 secure() middleware in the start
-// path). Equivalent to the routed *http.ServeMux.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler exposes the routed mux with request-body and finite-response limits
+// applied. It is used by tests and wrapped by secure() in the production start
+// path.
+func (s *Server) Handler() http.Handler {
+	return s.handlerWithWriteTimeout(httplimits.ResponseWriteTimeout)
+}
+
+func (s *Server) handlerWithWriteTimeout(writeTimeout time.Duration) http.Handler {
+	return httplimits.Protect(s.mux, maxDashboardRequestBodyBytes, writeTimeout, isDashboardStream)
+}
+
+func isDashboardStream(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.URL.Path {
+	case "/events", "/activity/events", "/ws":
+		return true
+	default:
+		return false
+	}
+}
+
+func newDashboardHTTPServer(addr string, handler http.Handler, tlsCfg *tls.Config) *http.Server {
+	srv := &http.Server{Addr: addr, Handler: handler, TLSConfig: tlsCfg}
+	httplimits.Configure(srv)
+	return srv
+}
 
 // routes mounts the Wave-1 surface: health + the embedded SPA. Everything
 // else is Wave 2.
@@ -177,7 +205,7 @@ func (s *Server) routes() {
 	// a Bearer header. checkAuth exempts these three paths.
 	s.mux.HandleFunc("GET /settings", s.handleSettingsPage)
 	s.mux.HandleFunc("POST /auth/login", s.handleLogin)
-	s.mux.HandleFunc("GET /auth/logout", s.handleLogout)
+	s.mux.HandleFunc("POST /auth/logout", s.handleLogout)
 
 	// Server-rendered pages (TEN-107), now mounted at the root. The TEN-110
 	// cutover removed the old embedded JS SPA (assets/) and its GET / file
@@ -212,6 +240,21 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // gateway's HTTP start pattern in cmd/tenant (goroutine ListenAndServe +
 // ctx-driven Shutdown). Returns nil on a clean ctx-cancel shutdown.
 func (s *Server) Run(ctx context.Context) error {
+	if err := s.checkBindPolicy(); err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", s.cfg.Addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve serves on an already-bound listener until ctx is canceled. Accepting
+// the listener separately lets lifecycle owners reserve an ephemeral port
+// synchronously and makes shutdown completion observable without bind races.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	defer ln.Close()
 	// Fail-closed: refuse a non-loopback bind without TLS+auth (TEN-79).
 	if err := s.checkBindPolicy(); err != nil {
 		return err
@@ -221,7 +264,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	// secure() wraps the routed mux with bearer auth + same-origin CORS.
-	srv := &http.Server{Addr: s.cfg.Addr, Handler: s.secure(s.mux), TLSConfig: tlsCfg}
+	srv := newDashboardHTTPServer(s.cfg.Addr, s.secure(s.Handler()), tlsCfg)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -233,11 +276,11 @@ func (s *Server) Run(ctx context.Context) error {
 		close(shutdownDone)
 	}()
 
-	s.log.Info("dashboard serving", "addr", s.cfg.Addr, "tls", tlsCfg != nil)
+	s.log.Info("dashboard serving", "addr", ln.Addr().String(), "tls", tlsCfg != nil)
 	if tlsCfg != nil {
-		err = srv.ListenAndServeTLS("", "") // cert+key already in TLSConfig
+		err = srv.ServeTLS(ln, "", "") // cert+key already in TLSConfig
 	} else {
-		err = srv.ListenAndServe()
+		err = srv.Serve(ln)
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone // let Shutdown finish before returning

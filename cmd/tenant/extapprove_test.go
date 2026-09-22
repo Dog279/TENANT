@@ -27,18 +27,18 @@ func TestParseExtButtonID(t *testing.T) {
 
 	invalid := []string{
 		"",
-		"approve:nonce",              // TEN-117 namespace, not ours
-		"qi-approve:QI-1",            // pre-generalization id shape
-		"ext-approve:qi",             // missing id
-		"ext-approve::QI-1",          // empty namespace
-		"ext-approve:qi:",            // empty id
-		"ext-approve:QI:QI-1",        // uppercase namespace
-		"ext-approve:qi:../escape",   // traversal in id
-		"ext-approve:../..:x",        // traversal in namespace
-		"ext-approve:qi:a\\b",        // path separator in id
-		"ext-approve:qi:a/b",         // path separator in id
+		"approve:nonce",            // TEN-117 namespace, not ours
+		"qi-approve:QI-1",          // pre-generalization id shape
+		"ext-approve:qi",           // missing id
+		"ext-approve::QI-1",        // empty namespace
+		"ext-approve:qi:",          // empty id
+		"ext-approve:QI:QI-1",      // uppercase namespace
+		"ext-approve:qi:../escape", // traversal in id
+		"ext-approve:../..:x",      // traversal in namespace
+		"ext-approve:qi:a\\b",      // path separator in id
+		"ext-approve:qi:a/b",       // path separator in id
 		"ext-approve:qi:" + string(make([]byte, 70)), // over-length id
-		"ext-nope:qi:QI-1",           // unknown verb
+		"ext-nope:qi:QI-1",                           // unknown verb
 	}
 	for _, custom := range invalid {
 		if _, _, _, ok := parseExtButtonID(custom); ok {

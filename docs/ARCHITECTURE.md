@@ -2,13 +2,54 @@
 
 Status: LIVING DOC — update when a module's public API or storage changes.
 Purpose: canonical reference for the code that exists. Read this first after
-context compaction or when picking the project back up. For design *intent*
-see DESIGN.md / MEMORY-DESIGN.md / LOCAL-MODEL-ADAPTATION.md; this doc
-describes what is *actually built*.
+context compaction or when picking the project back up.
 
-Last verified: 2026-05-18 — 30 packages, ~17,300 LOC source, ~8,600 LOC tests,
-333 tests passing on Go 1.26.3 (pure Go, no CGO; Chrome external like
-vLLM/Ollama). **Web, SQL AND Wiki plugins verified live** with real
+Claims in this document use three labels:
+
+- **Design intent** describes a target or constraint, not shipped behavior. The
+  detailed design sources are `DESIGN.md`, `MEMORY-DESIGN.md`, and
+  `LOCAL-MODEL-ADAPTATION.md`.
+- **Implemented** means the behavior is present in this repository. It may be
+  covered by deterministic tests without having been exercised against a live
+  external service.
+- **Operator-verified** means a named command or integration was exercised in
+  the stated environment and on the stated date. Historical operator evidence
+  is not a claim that today's full suite passes.
+
+### Generated repository facts
+
+**Implemented.** The marker below records the generation date. Physical LOC
+includes comments and blank lines. “Plugin capability packages” counts immediate Go packages under
+`internal/plugins`; a package may expose more than one end-user tool. Regenerate
+with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
+block for drift.
+
+<!-- docfacts:generated:start; date=2026-09-22; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+| Measure | Result |
+|---|---:|
+| Go packages | 66 |
+| Go files | 733 |
+| Test files | 361 |
+| Production Go LOC | 104,595 |
+| Test Go LOC | 71,104 |
+| Go modules | 1 |
+| Plugin capability packages | 14 |
+| Version | `0.0.1` |
+<!-- docfacts:generated:end -->
+
+### Current automated verification
+
+**Operator-verified 2026-07-17 on Windows:** `go build ./...` and `go vet ./...`
+passed in the architecture audit. `go test ./...` did not fully pass in that
+snapshot. The observed failures were the `cmd/tenant` dashboard lifecycle test,
+POSIX `0600` assertions in `internal/peering`, `internal/plugins/atlassian`, and
+`internal/plugins/mcpremote`, plus the `internal/route` Windows retention
+file-lock test. Do not read individual deterministic-test claims below as a
+contradictory full-suite pass claim.
+
+### Historical live integration verification
+
+**Operator-verified 2026-05-18:** **Web, SQL, and Wiki plugins** were exercised with real
 Gemma 4: web → go.dev cited answer + click mutated DOM + "Buy Now"
 blocked; SQL → real SQLite, schema→query→correct answer, "DROP table"
 blocked (DB intact, 3 rows); wiki → real Nomic 768d, cited answers, a
@@ -44,19 +85,27 @@ role-routing (vLLM gen + Ollama embed) confirmed. Semantic retrieval
 ranks by meaning (cosine magnitude). **Tool calling hardened &
 verified against real Gemma 4**: full round-trip (native tool_call →
 arg normalization → validate → dispatch → result → replay → synthesis),
-`tenant tool-test` → `add(17,25)=42` → "The result is 42."
+`tenant tool-test` → `add(17,25)=42` → "The result is 42." These observations
+record that operator run; they do not replace current automated verification.
 
 ---
 
 ## 1. What Tenant is
 
-A Go-native MCP agent framework, single binary, local-LLM-only (no cloud).
-Runs on a vLLM-first multi-endpoint fleet with role-based model routing
-(planner / executor / coder / summarizer / embedder). Six-tier memory with
-distillation and a self-improvement scheduler.
+**Implemented:** a Go-native MCP agent framework delivered as one binary. Model
+routing supports both local endpoints (vLLM, Ollama, and llama.cpp through an
+OpenAI-compatible path) and shipped cloud providers (including OpenAI,
+Anthropic, Z.ai, and Grok). Deployments can remain fully local, but the product
+is not local-only. It also includes role-based model routing (planner / executor
+/ coder / summarizer / embedder), six-tier memory, distillation, and a
+self-improvement scheduler.
+
+**Design intent:** preserve a pure-Go, single-binary, local-first deployment
+option while allowing operators to opt into cloud inference.
 
 **Build:** `go build -o tenant ./cmd/tenant` (pure Go, no CGO, single binary)
-**Test:** `go test ./...` (all 196 pass; `-race` needs `CGO_ENABLED=1`)
+**Test:** `go test ./...` (see current Windows verification status above;
+`-race` needs `CGO_ENABLED=1`)
 **Module:** `tenant` (local, no remote) — Go 1.26, toolchain go1.26.3
 
 ---
@@ -609,9 +658,12 @@ radius gate — the data-loss analog of the web plugin's transact gate.
 A local model emitting `DROP TABLE` / `DELETE` w/o WHERE is
 irreversible, so statements are CLASSIFIED, never trusted by tool name.
 
-**Public API:** `sql.Open(Config{Driver,DSN})` (v1: `sqlite` via
-modernc — already a dep; pgx/Postgres = next, driver layer shaped for
-it). `sql.NewDispatcher(store, Policy)` → `agent.ToolDispatcher`;
+**Implemented public API:** `sql.Open(Config{Driver,DSN})` accepts only
+`sqlite`, backed by the shipped pure-Go `modernc.org/sqlite` driver. PostgreSQL
+is not shipped: there is no pgx dependency or registered PostgreSQL driver, and
+`Open` rejects `Driver: "postgres"`. The interface leaves room for another
+driver, but that is design intent rather than current capability.
+`sql.NewDispatcher(store, Policy)` → `agent.ToolDispatcher`;
 `Dispatcher.Tools()` → sql_schema / sql_query / sql_exec.
 
 **Classifier (`Classify`)**: strips `--` and `/* */` comments
@@ -637,8 +689,8 @@ assertions), sql_query-refuses-non-read, schema, row-cap. 10 tests.
 **Live (real Gemma 4 + real SQLite):** schema→query→"Sprocket $42, 8
 in stock" (model wrote correct ORDER BY LIMIT); "drop the table"
 deterred (model asked for confirmation) + DB verified intact (3 rows).
-**Status:** SQLite complete & live-verified; Postgres next (driver
-shaped, no live PG here).
+**Status:** SQLite is implemented and was operator-verified on 2026-05-18.
+PostgreSQL is explicitly deferred in [ROADMAP.md](ROADMAP.md).
 
 ### 5.12c `internal/plugins/wiki` — Knowledge plugin (plugin #3)
 
@@ -1305,7 +1357,7 @@ auto-tested (no TTY in CI) — honest.
 
 ---
 
-## 7. What is NOT built (deferred — see TODOS.md for full context)
+## 7. What is NOT built (deferred — see [ROADMAP.md](ROADMAP.md) for public priorities)
 
 | Item | Tier/area | When |
 |---|---|---|
@@ -1320,7 +1372,7 @@ auto-tested (no TTY in CI) — honest.
 | Per-profile budget tuning (Soul/System) | model/profiles | v1.1 (needs evals) |
 | GEPA/DSPy prompt evolution | improve | not on roadmap |
 | Web plugin: transact (submit/purchase/auth) | internal/plugins/web | gated + dangerous-click enforced; needs Confirm-policy decision before explicit purchase tools |
-| SQL plugin: Postgres (pgx) | internal/plugins/sql | next (driver shaped; SQLite done) |
+| SQL plugin: PostgreSQL | internal/plugins/sql | explicitly deferred; SQLite is the only shipped driver |
 | GSuite: live Google verification | internal/plugins/gsuite | operator-run (no creds in this env; deterministic + wire-contract proven) |
 | GSuite: Drive, Contacts, threads/attachments | internal/plugins/gsuite | v1.1 (Gmail+Calendar shipped) |
 | X: live verification | internal/plugins/x | operator-run (no X creds in env; deterministic + PKCE + wire-contract proven) |
@@ -1336,7 +1388,7 @@ auto-tested (no TTY in CI) — honest.
 
 ```
 go build -o tenant ./cmd/tenant       # single binary, pure Go
-go test ./...                          # 218 tests, ~13s
+go test ./...                          # current Windows status is documented above
 go vet ./...                           # clean
 
 # Run it (echo backend = offline, deterministic):

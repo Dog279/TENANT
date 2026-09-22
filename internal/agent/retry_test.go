@@ -202,7 +202,7 @@ func TestRetryDecorator_RespectsContextCancellation(t *testing.T) {
 	}}
 	rd := &RetryDecorator{
 		Inner: inner, Eligible: DefaultEligibleTransient,
-		Backoff: 10 * time.Second, // would be a noticeable delay if we waited
+		Backoff:    10 * time.Second, // would be a noticeable delay if we waited
 		MaxRetries: 1,
 	}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -78,9 +78,9 @@ func HasEmbeddedOAuth(cfgDir string) bool {
 
 // LoadEmbeddedOAuth returns the OAuth client JSON bytes the plugin
 // should use. Resolution order:
-//   1. runtime file under cfgDir (lets ops swap creds without rebuild)
-//   2. compiled-in via go:embed
-//   3. (nil, nil) — caller falls back to operator-supplied JSON
+//  1. runtime file under cfgDir (lets ops swap creds without rebuild)
+//  2. compiled-in via go:embed
+//  3. (nil, nil) — caller falls back to operator-supplied JSON
 //
 // The runtime file wins so an operator can override the distributed
 // default per-machine without a rebuild.

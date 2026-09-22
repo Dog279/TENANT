@@ -119,8 +119,8 @@ func TestEmbed_SharedWordsHaveNonzeroCosine(t *testing.T) {
 		"what language do I prefer",
 		"completely unrelated sentence about cats",
 	})
-	cosShared := cosine(out[0], out[1])     // share "prefer", "i"
-	cosUnrelated := cosine(out[0], out[2])  // share nothing meaningful
+	cosShared := cosine(out[0], out[1])    // share "prefer", "i"
+	cosUnrelated := cosine(out[0], out[2]) // share nothing meaningful
 	if cosShared <= cosUnrelated {
 		t.Errorf("word-overlap not reflected: shared=%v unrelated=%v", cosShared, cosUnrelated)
 	}

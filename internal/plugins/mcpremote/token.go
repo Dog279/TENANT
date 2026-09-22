@@ -8,9 +8,10 @@ import (
 	"path/filepath"
 
 	"golang.org/x/oauth2"
+	"tenant/internal/secrets"
 )
 
-// tokenCache is the persisted per-server OAuth state (0600). It holds the DCR
+// tokenCache is persisted with platform-specific owner-only protection. It holds the DCR
 // client + discovered endpoints (so a refresh can run without re-registering or
 // re-discovering) plus the token itself. No operator secret beyond the
 // dynamically-registered client — the OAuth token is the user's own grant.
@@ -31,7 +32,7 @@ type tokenCache struct {
 	ReauthSince  int64  `json:"reauth_since,omitempty"` // unix seconds
 }
 
-// tokenCachePath is the 0600 cache file for a server URL under dir. The URL is
+// tokenCachePath is the protected cache file for a server URL under dir. The URL is
 // hashed so the filename carries no readable host (and avoids path-unsafe chars).
 func tokenCachePath(dir, serverURL string) string {
 	if dir == "" {
@@ -45,7 +46,7 @@ func loadTokenCache(path string) (*tokenCache, error) {
 	if path == "" {
 		return nil, os.ErrNotExist
 	}
-	b, err := os.ReadFile(path)
+	b, err := secrets.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -60,12 +61,9 @@ func saveTokenCache(path string, c *tokenCache) error {
 	if path == "" {
 		return nil // persistence disabled (no cache dir) — silently skip
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	return secrets.WriteFile(path, b)
 }

@@ -20,11 +20,11 @@ type Fake struct {
 	TokenCountFn     func(ctx context.Context, text string) (int, error)
 	EmbedFn          func(ctx context.Context, texts []string) ([][]float32, error)
 
-	mu          sync.Mutex
-	Generated   []model.GenerateRequest
-	Streamed    []model.GenerateRequest
+	mu           sync.Mutex
+	Generated    []model.GenerateRequest
+	Streamed     []model.GenerateRequest
 	TokenCounted []string
-	Embedded    [][]string
+	Embedded     [][]string
 }
 
 // New constructs a Fake with no-op defaults. Override fields before use.

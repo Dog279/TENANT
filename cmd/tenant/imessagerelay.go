@@ -32,6 +32,7 @@ import (
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/plugins/imessage"
+	"tenant/internal/runtrace"
 )
 
 // imsgPoller yields actionable inbound messages and records our own sends so
@@ -53,8 +54,8 @@ type imsgRunner interface {
 }
 
 // imessageResponder polls the watcher and drives one agent turn per actionable
-// inbound message, replying over iMessage. Single-goroutine (Run owns the loop),
-// so Poll + RecordSent are never called concurrently here.
+// inbound message, replying over iMessage. Run owns the poll loop; each turn
+// runs in its own goroutine, one at a time.
 type imessageResponder struct {
 	poller   imsgPoller
 	sender   imsgSender
@@ -65,14 +66,16 @@ type imessageResponder struct {
 	log      *slog.Logger
 	degraded func() bool       // optional: true ⇒ model on echo fallback, refuse turns
 	ingest   func(text string) // optional: surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
-	// approver (TEN-230 Phase 2) resolves gated actions by text nonce in the
-	// originating chat; its replies are consumed here, never routed as turns.
+	// approver is the Phase-2 text-confirm handshake (TEN-267). nil ⇒ Phase-1
+	// (gated tools stay deny-all via confirm). When set, an inbound approval reply
+	// ("Y <nonce>" from the operator) is consumed here and NEVER drives a turn, and
+	// each turn's prompt-chat is pinned so a gated tool texts the right chat.
 	approver *imessageApprover
 
 	mu     sync.Mutex
 	active bool           // one turn at a time — a second text mid-turn gets a "busy" reply
 	wg     sync.WaitGroup // in-flight turns (waitIdle, for tests)
-	sendMu sync.Mutex     // serializes SendText: the approver prompts mid-turn from the turn goroutine
+	sendMu sync.Mutex     // serializes SendText: replies, "busy" notices and approver prompts
 }
 
 // denyAllConfirm is the Phase-1 gate: every gated tool is refused offsite until
@@ -126,9 +129,14 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if text == "" || strings.TrimSpace(m.ChatGUID) == "" {
 		return // nothing actionable (attachment-only, empty, or unknown chat)
 	}
-	// An approval reply (APPROVE-<code> / deny) for the turn in flight in THIS
-	// chat is consumed here — it is never a new turn.
-	if r.approver != nil && r.approver.tryConsume(m.ChatGUID, text) {
+	// Phase-2 (TEN-267): an approval reply ("Y <nonce>" from the OPERATOR handle)
+	// resolves a pending gated action and is CONSUMED here — it must never drive a
+	// new agent turn. OnReply enforces the operator-handle gate itself; it echoes
+	// the outcome to the operator, so we just stop. A non-operator reply, or a
+	// non-approval message, returns false and falls through to the normal path.
+	// Turns run in their own goroutine (below), so this loop keeps polling while
+	// a turn waits on an approval — that is what lets the reply arrive at all.
+	if r.approver != nil && r.approver.OnReply(text, m.From) {
 		return
 	}
 	// Refuse rather than answer with a stub while the model is degraded — the
@@ -150,8 +158,11 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if r.ingest != nil {
 		r.ingest(text)
 	}
+	// Phase-2 (TEN-267): pin THIS turn's chat as the approval-prompt target, so a
+	// gated tool fired during the turn texts the prompt to the chat that drove it.
+	// (Phase-1: approver is nil and gated tools stay deny-all via confirm.)
 	if r.approver != nil {
-		r.approver.setChat(m.ChatGUID) // prompts post to, and resolve from, THIS chat
+		r.approver.setChat(m.ChatGUID)
 	}
 	r.wg.Add(1)
 	go func() {
@@ -165,8 +176,9 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	}()
 }
 
-// turn drives one agent turn and replies. Gated tools route through the
-// stamped offsite-confirm (the iMessage broker → the text-nonce approver).
+// turn drives one agent turn and replies. The turn ctx carries the
+// offsite-confirm: Phase-1 deny-all, or (Phase-2) the per-category broker whose
+// "ask" texts the operator the nonce handshake.
 func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
 	turnCtx := withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage)
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
@@ -188,17 +200,25 @@ func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
 // cancelling the run ctx unwinds the turn.
 func (r *imessageResponder) waitIdle() { r.wg.Wait() }
 
-// send replies and records the send so the watcher's echo cache drops it if
-// Apple surfaces it back (anti-loop). Serialized: the approver prompts from
-// the turn goroutine while the poll loop may be sending a "busy" reply.
-func (r *imessageResponder) send(ctx context.Context, chatGUID, text string) {
+// SendText is the one iMessage send path — the responder's replies and the
+// approver's prompts (it is the approver's sender) — serialized, since the
+// approver prompts from the turn goroutine while the poll loop may be sending
+// a "busy" reply, and recorded so the watcher's echo cache drops the text if
+// Apple surfaces it back (anti-loop).
+func (r *imessageResponder) SendText(ctx context.Context, chatGUID, text string) (string, error) {
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
-	if _, err := r.sender.SendText(ctx, chatGUID, text); err != nil {
-		r.logger().Warn("imessage responder: send failed", "chat", chatGUID, "err", err)
-		return
+	id, err := r.sender.SendText(ctx, chatGUID, text)
+	if err == nil {
+		r.poller.RecordSent(chatGUID, text)
 	}
-	r.poller.RecordSent(chatGUID, text)
+	return id, err
+}
+
+func (r *imessageResponder) send(ctx context.Context, chatGUID, text string) {
+	if _, err := r.SendText(ctx, chatGUID, text); err != nil {
+		r.logger().Warn("imessage responder: send failed", "chat", chatGUID, "err", err)
+	}
 }
 
 func (r *imessageResponder) logger() *slog.Logger {
@@ -218,6 +238,7 @@ type imessageAgentDeps struct {
 	archive     *archive.Writer
 	episodic    *episodic.Store
 	semantic    *semantic.Store
+	runs        *runtrace.Store
 	skills      agent.SkillRetriever
 	compactor   agent.Compactor
 	userProfile *userprofile.Profile
@@ -297,7 +318,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 			m.log.Warn("imessage responder: persist enabled failed", "err", perr)
 		}
 	}
-	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools prompt you over iMessage (reply APPROVE-<code> / DENY) per /imessage permissions", len(allow)), nil
+	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools follow /imessage permissions (\"ask\" texts the operator a Y <nonce> prompt when imessage.operator is set)", len(allow)), nil
 }
 
 // Stop cancels the loop + releases the transport (idempotent). Persists enabled=false.
@@ -333,6 +354,7 @@ func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 		Archive:      d.archive,
 		Episodic:     d.episodic,
 		Semantic:     d.semantic,
+		Runs:         d.runs,
 		Tools:        d.fullTools,
 		Dispatcher:   d.fullDisp,
 		Logger:       d.log,
