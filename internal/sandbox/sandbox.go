@@ -7,13 +7,13 @@
 // A Backend runs a Command under a Policy. Three backends are planned:
 //
 //   - host       today's behaviour, no filesystem/network confinement (named
-//                honestly; still honours work dir, env allowlist, wall-timeout,
-//                output cap).
+//     honestly; still honours work dir, env allowlist, wall-timeout,
+//     output cap).
 //   - restricted OS primitives, no external runtime: macOS Seatbelt, Linux
-//                bubblewrap/Landlock, Windows dedicated account + ACE/WFP/Job
-//                Object. Registered per-OS via registerRestricted in a
-//                build-tagged file, so this package compiles and runs with only
-//                the host backend on any platform.
+//     bubblewrap/Landlock, Windows dedicated account + ACE/WFP/Job
+//     Object. Registered per-OS via registerRestricted in a
+//     build-tagged file, so this package compiles and runs with only
+//     the host backend on any platform.
 //   - container  an ephemeral container per run (TEN-318; not yet implemented).
 //
 // The vocabulary (allow/deny read+write roots, allowed domains, resolved-address
