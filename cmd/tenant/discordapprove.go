@@ -77,8 +77,8 @@ type discordIO interface {
 type pendingApproval struct {
 	reply    chan bool
 	channel  string
-	msgID    string // "" when no card posted (plain-text fallback) — nothing to edit
-	v2       bool   // layout the card was posted with; edits must match it
+	msgID    string // "" when no card posted (plain-text fallback) — nothing to edit; guarded by the approver's mu
+	v2       bool   // layout the card was posted with; edits must match it; guarded by the approver's mu
 	action   string
 	detail   string
 	postedAt time.Time
@@ -199,7 +199,7 @@ func (a *discordApprover) postCard(ctx context.Context, nonce string, p *pending
 	if a.cardStyle != cardStyleLegacy {
 		id, err := a.io.SendCard(ctx, p.channel, content, buttons)
 		if err == nil {
-			p.msgID, p.v2 = id, true
+			a.setCard(p, id, true)
 			a.logInfo("discord approval posted", "layout", "v2", "channel", p.channel, "message", id, "action", p.action)
 			return
 		}
@@ -207,7 +207,7 @@ func (a *discordApprover) postCard(ctx context.Context, nonce string, p *pending
 	}
 	id, err := a.io.SendComponents(ctx, p.channel, content, buttons)
 	if err == nil {
-		p.msgID = id
+		a.setCard(p, id, false)
 		a.logInfo("discord approval posted", "layout", "legacy", "channel", p.channel, "message", id, "action", p.action)
 		return
 	}
@@ -218,19 +218,34 @@ func (a *discordApprover) postCard(ctx context.Context, nonce string, p *pending
 	a.post(p.channel, fmt.Sprintf("%s\nReply `APPROVE-%s` to approve or `deny` (auto-denies in %s).", content, nonce, a.timeout))
 }
 
+// setCard and card guard the posted card's id and layout: postCard sets them
+// after the entry is already pending (so an early reply still finds it), while
+// the click and text resolvers read them from other goroutines.
+func (a *discordApprover) setCard(p *pendingApproval, msgID string, v2 bool) {
+	a.mu.Lock()
+	p.msgID, p.v2 = msgID, v2
+	a.mu.Unlock()
+}
+
+func (a *discordApprover) card(p *pendingApproval) (msgID string, v2 bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return p.msgID, p.v2
+}
+
 // expire freezes the ORIGINAL card as expired (buttons disabled) so no live
 // buttons linger after the auto-deny, then logs the outcome. When no card ever
 // posted, it falls back to a line.
 func (a *discordApprover) expire(nonce string, p *pendingApproval) {
 	a.logInfo("discord approval expired — denied", "channel", p.channel, "action", p.action,
 		"waited", a.now().Sub(p.postedAt).Round(time.Second))
-	if p.msgID != "" {
+	if msgID, v2 := a.card(p); msgID != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := a.io.EditMessage(ctx, p.channel, p.msgID, verdictText(p, "expired", "", a.now()), approvalButtons(nonce, true), p.v2); err == nil {
+		if err := a.io.EditMessage(ctx, p.channel, msgID, verdictText(p, "expired", "", a.now()), approvalButtons(nonce, true), v2); err == nil {
 			return
 		} else {
-			a.logWarn("discord approval: expiry edit failed", "message", p.msgID, "err", err)
+			a.logWarn("discord approval: expiry edit failed", "message", msgID, "err", err)
 		}
 	}
 	a.post(p.channel, fmt.Sprintf("⌛ approval `%s` expired — denied.", nonce))
@@ -239,13 +254,14 @@ func (a *discordApprover) expire(nonce string, p *pendingApproval) {
 // freeze rewrites a card to its verdict after a TEXT resolution (there is no
 // interaction token to ACK with), via an out-of-band edit. Best-effort.
 func (a *discordApprover) freeze(nonce string, p *pendingApproval, verdict, by string) {
-	if p.msgID == "" {
+	msgID, v2 := a.card(p)
+	if msgID == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := a.io.EditMessage(ctx, p.channel, p.msgID, verdictText(p, verdict, by, a.now()), approvalButtons(nonce, true), p.v2); err != nil {
-		a.logWarn("discord approval: card edit failed", "message", p.msgID, "err", err)
+	if err := a.io.EditMessage(ctx, p.channel, msgID, verdictText(p, verdict, by, a.now()), approvalButtons(nonce, true), v2); err != nil {
+		a.logWarn("discord approval: card edit failed", "message", msgID, "err", err)
 	}
 }
 
@@ -321,7 +337,8 @@ func (a *discordApprover) tryInteraction(in discord.Interaction) bool {
 	if !approve {
 		verdict = "denied"
 	}
-	if err := a.io.RespondUpdate(ctx, in.ID, in.Token, verdictText(p, verdict, in.UserID, a.now()), approvalButtons(nonce, true), p.v2); err != nil {
+	_, v2 := a.card(p)
+	if err := a.io.RespondUpdate(ctx, in.ID, in.Token, verdictText(p, verdict, in.UserID, a.now()), approvalButtons(nonce, true), v2); err != nil {
 		a.logWarn("discord approval: click ACK failed (the tap may show as failed; the verdict still applies)", "err", err)
 	}
 	trySignal(p.reply, approve)
