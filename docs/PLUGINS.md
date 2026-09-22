@@ -315,7 +315,7 @@ result and keep using it.
 | `x`       | `internal/plugins/x/`                 | Yes (login) | Yes |
 | `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | Yes |
 | `mcpremote`| `internal/plugins/mcpremote/`        | Only if the server asks (OAuth2.1 + DCR, browser; a local no-auth server connects instantly) | Yes — per-connector trust `ask` / `allow` / `deny`, live (`/mcp trust`, dashboard, `mcp_trust`); under `ask` every unannotated tool prompts |
-| `osys`    | `internal/plugins/osys/`              | No (sandboxed exec) | No (immediate, always on) |
+| `osys`    | `internal/plugins/osys/`              | No. `os_exec` runs through the execution-sandbox seam (`internal/sandbox`): the default `host` backend confines nothing, and an operator `exec_profiles` entry moves a surface to the OS `restricted` backend (`docs/changes/sandbox-seam.md`). The file tools run in-process, outside it | No (immediate, always on) |
 | `github`  | `internal/plugins/github/`            | No (REST control plane; code I/O stays on the local os_* tools) | Yes |
 | `simplefin`| `internal/plugins/simplefin/`        | No (one HTTPS GET; read-only by protocol) | Yes |
 | `cron`    | `internal/plugins/cron/`              | No     | No (wired live in the TUI, not the stub catalog) |

@@ -68,6 +68,22 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
   **explicit user approval** per action (or an `--allow-*` flag for one-shot
   commands).
 - The agent proposes actions; it does not auto-execute destructive operations.
+- **Execution sandbox.** Approval decides *whether* a shell command runs; an
+  execution backend decides *what it can reach*.
+  - Commands the agent runs (`os_exec` and scheduled shell jobs) go through a
+    backend chosen per surface (`local`, `discord`, `imessage`, `cron-exec`,
+    `cron-shell`) in the operator's `exec_profiles` in `settings.<agent>.json`.
+    No agent tool can change them.
+  - The default backend, `host`, confines nothing. Until a surface is moved to
+    `restricted`, approval is the only gate, as before.
+  - When the `restricted` backend refuses a file or network access, the
+    command can re-run outside the sandbox only if `os_exec_unsandboxed` is
+    approved. That action is categorized destructive; pin it to `ask` with a
+    tool rule. Unattended jobs never escalate.
+  - `tenant sandbox probe` shows what each surface gets on this machine, and
+    `tenant sandbox selftest` tests it.
+  - Per-OS status is in the table below; details are in
+    `docs/changes/sandbox-seam.md`.
 - Eleven plugin channels are available: OS (shell + files), web, SQL, Google
   Workspace, X, iMessage, Discord, wiki, cron, Atlassian, and MCP remote. Each
   respects the same read-by-default, gate-to-act pattern.
@@ -88,6 +104,8 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
 | **Single-user model** | Tenant assumes one operator. It does not authenticate users or separate sessions. Anyone with access to the running process can issue commands as the operator. |
 | **Local secrets** | Credentials are on disk, protected by file permissions. On a shared or compromised machine, this is insufficient. Use a dedicated user account and full-disk encryption. |
 | **LLM output** | The agent processes and acts on LLM-generated text. Prompt injection is a recognized risk. The read-by-default permission model limits blast radius, but a sufficiently crafted input could trick the agent into requesting a destructive action. The user still must approve it. |
+| **Execution sandbox** | Off by default: every surface runs commands on the unconfined `host` backend until `exec_profiles` moves it to `restricted`. **macOS** (Seatbelt): live-tested and red-teamed; filesystem roots, `network: none`, Mach/XPC services and signals to other processes are contained; there are no CPU, memory or process-count caps. **Linux** (bubblewrap): implemented and unit-tested but not yet validated on a live host, so run `tenant sandbox selftest` first; `read_roots` is not honoured. **Windows**: Job Object resource limits only; filesystem and network are **not** enforced, so do not rely on it yet. |
+| **Sandbox gaps** | `network: allowlist` is not enforced on any OS (outbound stays open). A profile that allows network can reach Tenant's own loopback dashboard. A command that needs a credential must be given it raw or run outside the sandbox after approval; there is no credential-injection proxy yet. The file tools (`os_read_file` and the rest) run in Tenant's own process and are not sandboxed. See `docs/changes/sandbox-seam.md`. |
 | **Supply chain** | Go dependencies are pinned in `go.sum`. Run `go vet ./...` and review `go.mod` before building from source. |
 | **Eval harness** | Tenant ships an evaluation harness with adversarial test fixtures. These are designed to probe the agent's safety boundaries. They do not contain real exploits. |
 | **Memory and transcripts** | Agent memory, episode transcripts, and wiki content are stored in plaintext SQLite. Sensitive conversation content may persist indefinitely. The `tenant memory` commands can prune and manage this data. |
