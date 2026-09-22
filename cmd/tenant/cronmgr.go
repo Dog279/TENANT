@@ -20,10 +20,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -236,23 +234,14 @@ func runCronShell(ctx context.Context, command, dataDir string) (string, error) 
 	if dangerous, reason := osys.Classify(command); dangerous {
 		return "", fmt.Errorf("refused: command looks destructive (%s) — cron won't run catastrophic shell commands unattended", reason)
 	}
-	var c *exec.Cmd
-	if runtime.GOOS == "windows" {
-		c = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		c = exec.CommandContext(ctx, "sh", "-c", command)
-	}
-	c.Env = scrubbedEnv()
-	c.Dir = cronSandboxDir(dataDir)
-	out, err := c.CombinedOutput()
-	s := strings.TrimSpace(string(out))
-	if len(s) > cronShellOutputCap {
-		s = s[:cronShellOutputCap] + "\n…[truncated]"
-	}
-	if err != nil {
-		return s, fmt.Errorf("command failed: %v", err)
-	}
-	return s, nil
+	// Route through the execution-backend seam (internal/sandbox). cfgDir isn't
+	// threaded to this call site, so pass what we have; cronSandboxDir is both
+	// the working dir and the tree that keeps jobs out of Tenant's own cwd. The
+	// default host profile scrubs the environment, runs in the sandbox dir, and
+	// trims + caps output with a non-zero exit surfaced as an error — identical
+	// to the pre-seam behaviour.
+	p := resolveExecProfile("cron-shell", "", dataDir, cronSandboxDir(dataDir))
+	return runSandboxShell(ctx, command, p)
 }
 
 // scrubbedEnv returns the process environment with obvious secret-bearing

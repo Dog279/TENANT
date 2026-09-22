@@ -32,6 +32,10 @@ type runner func(ctx context.Context, command string, timeout time.Duration) (st
 // Config opens a Service.
 type Config struct {
 	ExecTimeout time.Duration // 0 ⇒ 60s
+	// Runner, when non-nil, replaces realRunner as the shell executor. It lets
+	// cmd/tenant inject a sandbox-backed runner (the execution-backend seam)
+	// without any osys call site changing. nil ⇒ today's realRunner behaviour.
+	Runner runner
 }
 
 // Service is the opened OS connector.
@@ -46,7 +50,11 @@ func Open(cfg Config) (*Service, error) {
 	if to <= 0 {
 		to = defaultExecTimeout
 	}
-	return &Service{run: realRunner, timeout: to}, nil
+	run := cfg.Runner
+	if run == nil {
+		run = realRunner
+	}
+	return &Service{run: run, timeout: to}, nil
 }
 
 // shellArgs picks the platform shell. PowerShell on Windows, sh on
