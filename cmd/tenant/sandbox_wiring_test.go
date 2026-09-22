@@ -13,6 +13,7 @@ import (
 
 	"tenant/internal/plugins/osys"
 	"tenant/internal/sandbox"
+	"tenant/internal/tui"
 )
 
 // resetExecProfiles restores the process-wide store after a test that loads it.
@@ -206,9 +207,46 @@ func TestRunSandboxShell_ExitTextParity(t *testing.T) {
 	}
 }
 
-func TestCategorize_ExecUnsandboxedIsDestructive(t *testing.T) {
-	if got := categorize(actionExecUnsandboxed); got != catDestructive {
-		t.Fatalf("categorize(%q) = %q, want destructive", actionExecUnsandboxed, got)
+func TestCategorize_ExecUnsandboxedHasItsOwnCategory(t *testing.T) {
+	if got := categorize(actionExecUnsandboxed); got != catSandbox {
+		t.Fatalf("categorize(%q) = %q, want %q", actionExecUnsandboxed, got, catSandbox)
+	}
+}
+
+// Approving one sandbox escalation "for the session" must grant only further
+// escalations. Filed under destructive, it granted every irreversible action.
+func TestBroker_SessionGrantOnEscalationDoesNotGrantDestructive(t *testing.T) {
+	b := newApprovalBroker(nil)
+	b.rules = nil // no per-tool rules: exercise the category logic alone
+	b.ask = func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.ApproveSession }
+	if !b.Confirm(context.Background(), actionExecUnsandboxed, "cat x  [SANDBOX REFUSED: ...]") {
+		t.Fatal("the escalation itself was approved for the session")
+	}
+	asked := false
+	b.ask = func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { asked = true; return tui.DenyOnce }
+	if b.Confirm(context.Background(), "os_exec_dangerous", "rm -rf /  [DANGER]") || !asked {
+		t.Fatalf("a session grant on a sandbox escalation must not pre-approve destructive actions (asked=%v)", asked)
+	}
+	asked = false
+	if !b.Confirm(context.Background(), actionExecUnsandboxed, "cat y") || asked {
+		t.Fatalf("further escalations should ride the session grant (asked=%v)", asked)
+	}
+}
+
+func TestCronExecApprover_DeniesSandboxEscalation(t *testing.T) {
+	if cronExecApprover(t.TempDir(), t.TempDir())(context.Background(), actionExecUnsandboxed, "cat x") {
+		t.Fatal("an unattended job must never re-run a refused command outside the sandbox")
+	}
+}
+
+func TestExecProfileStore_RejectsUnenforcedAllowlist(t *testing.T) {
+	resetExecProfiles(t)
+	n, skipped := defaultExecProfiles.Load(map[string]execProfileSetting{
+		"discord":  {Backend: "restricted", Network: "allowlist"},
+		"imessage": {Backend: "restricted", Allow: []string{"example.com"}},
+	})
+	if n != 0 || len(skipped) != 2 || !strings.Contains(strings.Join(skipped, " "), "not enforced by any backend") {
+		t.Fatalf("an allowlist must be rejected until something enforces it: n=%d skipped=%v", n, skipped)
 	}
 }
 

@@ -177,7 +177,7 @@ func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string
 	// Discord has an outer tool-surface kill switch in addition to its broker.
 	// Compose it here so an "allow" mode never overstates effective authority.
 	if normalized == permissionSurfaceDiscord && !c.lc.Relay.AllowExec {
-		for _, category := range []string{catExec, catWrite, catDestructive} {
+		for _, category := range []string{catExec, catWrite, catDestructive, catSandbox} {
 			categories[category] = effectiveCategory{Mode: modeDeny.String(), Source: "relay.allow_exec=false"}
 		}
 	}

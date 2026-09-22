@@ -288,6 +288,11 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 			"irreversible actions are allowed without per-action approval",
 			"use the safe or balanced preset, or set destructive to ask/deny")
 	}
+	if category, ok := report.Permissions.Categories[catSandbox]; ok && category.Mode == modeAllow.String() {
+		add("permissions.sandbox-allow", "permissions", auditCritical,
+			"commands the execution sandbox refuses re-run outside it without approval, so the sandbox is advisory",
+			"use the safe or balanced preset, or set sandbox to ask/deny")
+	}
 	if category, ok := report.Permissions.Categories[catExec]; ok && category.Mode == modeAllow.String() && report.Execution.Isolation == "none" {
 		add("permissions.host-exec-allow", "permissions", auditCritical,
 			"host shell execution is allowed without approval and has no isolation boundary",

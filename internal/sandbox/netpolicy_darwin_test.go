@@ -51,3 +51,33 @@ func TestSeatbelt_NetNoneBlocksLoopbackListeners(t *testing.T) {
 		t.Fatalf("NetNone must block connecting to a loopback listener (the dashboard API): %+v", res)
 	}
 }
+
+// Nothing enforces a host allowlist yet, so NetAllowlist must fail closed on
+// Seatbelt: no network at all rather than all of it.
+func TestSeatbelt_NetAllowlistFailsClosed(t *testing.T) {
+	b := seatbeltOrSkip(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen on loopback: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	port := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	pol := Policy{WorkDir: t.TempDir(), Network: NetAllowlist, Allow: []string{"127.0.0.1"},
+		Limits: Limits{Wall: 10 * time.Second}}
+	res, err := b.Run(context.Background(), Command{Shell: "nc -z -w 2 127.0.0.1 " + port}, pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Contained() {
+		t.Fatalf("NetAllowlist must fail closed until an allowlist is enforced: %+v", res)
+	}
+}

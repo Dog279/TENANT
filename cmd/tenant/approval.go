@@ -201,9 +201,14 @@ const (
 	// trusted without a prompt. Each connector's OWN calls are governed by its
 	// live trust mode (ask / allow / deny), not by this category.
 	catMCP = "mcp"
+	// catSandbox governs re-running a command OUTSIDE the execution sandbox after
+	// the sandbox refused it (execprofiles.go, action os_exec_unsandboxed). Its own
+	// category so "approve session/always" on an escalation grants only further
+	// escalations; filed under destructive, it granted every irreversible action.
+	catSandbox = "sandbox"
 )
 
-var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend, catEgress, catMCP}
+var catOrder = []string{catExec, catWrite, catDestructive, catWeb, catSend, catEgress, catMCP, catSandbox}
 
 var catDesc = map[string]string{
 	catExec:        "run shell / python / code (os_exec)",
@@ -213,6 +218,7 @@ var catDesc = map[string]string{
 	catSend:        "send outbound comms: email, iMessage, X posts",
 	catEgress:      "send sensitive tool results across a trust boundary",
 	catMCP:         "adopt / reconfigure tool servers (mcp_add, mcp_remove, mcp_trust)",
+	catSandbox:     "re-run a command outside the execution sandbox after it refused it",
 }
 
 // categorize maps a plugin action id to a safety category. Unknown
@@ -226,11 +232,10 @@ func categorize(action string) string {
 	case "os_exec_dangerous", "sql_ddl", "web_transact":
 		return catDestructive
 	// Re-running a command OUTSIDE the execution sandbox after it refused
-	// something (execprofiles.go). Explicitly destructive so it is always-ask on
-	// the host broker, denied by the cron exec approver, and never swept up by a
-	// blanket exec grant or a future prefix rule.
+	// something (execprofiles.go): its own category (ask by default; deny on
+	// iMessage), never swept into exec or destructive grants.
 	case actionExecUnsandboxed:
-		return catDestructive
+		return catSandbox
 	case "gsuite_send", "imessage_send", "x_post":
 		return catSend
 	// Discord's action ids are PROSE ("posts a Discord message" — see

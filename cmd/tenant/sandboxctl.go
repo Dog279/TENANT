@@ -148,6 +148,7 @@ type surfaceProbe struct {
 	Backend    string   `json:"backend"`             // profile backend name: host | restricted | ...
 	Isolation  string   `json:"isolation,omitempty"` // "" when the backend is unavailable
 	Network    string   `json:"network"`             // policy network mode
+	Mode       string   `json:"mode"`                // enforce | dry-run (what a refusal does)
 	Allow      []string `json:"allow"`               // hosts/CIDRs when network=allowlist
 	WorkDir    string   `json:"work_dir"`            // "" = set per run by the spawn site
 	ReadRoots  []string `json:"read_roots"`          // empty = whole host (deny roots still mask)
@@ -230,6 +231,7 @@ func buildProbeReport(ctx context.Context, c *commonFlags) probeReport {
 			Surface:    name,
 			Backend:    p.Backend,
 			Network:    p.Policy.Network.String(),
+			Mode:       refusalMode(p.Policy.Enforce),
 			Allow:      nonNilStrings(p.Policy.Allow),
 			WorkDir:    p.Policy.WorkDir,
 			ReadRoots:  nonNilStrings(p.Policy.ReadRoots),
@@ -271,13 +273,13 @@ func renderProbe(w io.Writer, r probeReport) {
 
 	fmt.Fprintln(w, "SURFACE PROFILES")
 	tw := sbxTable(w)
-	fmt.Fprintln(tw, "  SURFACE\tBACKEND\tISOLATION\tNET POLICY\tFS\tNET\tLIMITS\tENV")
+	fmt.Fprintln(tw, "  SURFACE\tBACKEND\tMODE\tISOLATION\tNET POLICY\tFS\tNET\tLIMITS\tENV")
 	for _, s := range r.Surfaces {
 		if s.Caps == nil {
-			fmt.Fprintf(tw, "  %s\t%s\t-\t%s\tUNAVAILABLE\t-\t-\t-\n", s.Surface, s.Backend, s.Network)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t-\t%s\tUNAVAILABLE\t-\t-\t-\n", s.Surface, s.Backend, s.Mode, s.Network)
 			continue
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Surface, s.Backend, s.Isolation, s.Network,
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Surface, s.Backend, s.Mode, s.Isolation, s.Network,
 			s.Caps.Filesystem, s.Caps.Network, s.Caps.Limits, s.Caps.Env)
 	}
 	tw.Flush()
@@ -1086,4 +1088,14 @@ func loadSandboxProfiles(c *commonFlags) []string {
 		notes = append(notes, "skipped invalid entry: "+sk)
 	}
 	return notes
+}
+
+// refusalMode names what a refusal does on a surface: enforce escalates to the
+// surface's approver (unattended surfaces deny); dry-run re-runs on the host and
+// only logs the refusal.
+func refusalMode(enforce bool) string {
+	if enforce {
+		return "enforce"
+	}
+	return "dry-run"
 }

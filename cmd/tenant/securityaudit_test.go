@@ -85,6 +85,16 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 			wantWarnings:  1,
 			wantFindingID: "permissions.destructive-allow",
 		},
+		{
+			name: "unprompted sandbox escalation is critical",
+			report: securityAuditReport{
+				Permissions: effectivePermissions{Categories: map[string]effectiveCategory{
+					catSandbox: {Mode: "allow"},
+				}},
+			},
+			wantCritical:  1,
+			wantFindingID: "permissions.sandbox-allow",
+		},
 	}
 
 	for _, tt := range tests {

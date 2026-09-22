@@ -64,8 +64,9 @@ var execSurfaces = []string{surfaceLocal, surfaceDiscord, surfaceIMessage, surfa
 
 // actionExecUnsandboxed is the approval action raised when a sandbox refused an
 // os_exec command and the turn wants it re-run outside the sandbox. categorize
-// maps it to the destructive category explicitly: always-ask on the host broker,
-// denied by the cron exec approver, and never covered by a blanket exec grant.
+// maps it to its own "sandbox" category (ask by default, deny on iMessage), so a
+// session/always grant covers only further escalations; the cron exec approver
+// always denies it.
 const actionExecUnsandboxed = "os_exec_unsandboxed"
 
 type execSurfaceKey struct{}
@@ -108,8 +109,8 @@ type execProfile struct {
 type execProfileSetting struct {
 	Backend    string            `json:"backend,omitempty"`     // host | restricted
 	Enforce    *bool             `json:"enforce,omitempty"`     // default true; false = dry-run
-	Network    string            `json:"network,omitempty"`     // inherit | none | allowlist | full
-	Allow      []string          `json:"allow,omitempty"`       // hosts/CIDRs for network=allowlist
+	Network    string            `json:"network,omitempty"`     // inherit | none | full (allowlist: rejected until enforced)
+	Allow      []string          `json:"allow,omitempty"`       // reserved for a future enforced allowlist; rejected today
 	ReadRoots  []string          `json:"read_roots,omitempty"`  // empty = whole host readable (deny roots still mask)
 	WriteRoots []string          `json:"write_roots,omitempty"` // writable, in addition to the work dir
 	DenyRoots  []string          `json:"deny_roots,omitempty"`  // added to the built-in deny set
@@ -191,8 +192,12 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 	default:
 		return fmt.Errorf("exec_profiles.%s: unknown backend %q (want host or restricted)", surface, p.Backend)
 	}
-	if _, ok := sandbox.ParseNetworkMode(p.Network); !ok {
-		return fmt.Errorf("exec_profiles.%s: unknown network %q (want inherit, none, allowlist, full)", surface, p.Network)
+	n, ok := sandbox.ParseNetworkMode(p.Network)
+	if !ok {
+		return fmt.Errorf("exec_profiles.%s: unknown network %q (want inherit, none, full)", surface, p.Network)
+	}
+	if n == sandbox.NetAllowlist || len(p.Allow) > 0 {
+		return fmt.Errorf("exec_profiles.%s: a network allowlist is not enforced by any backend yet (an egress proxy is a follow-up); use \"none\" or \"full\"", surface)
 	}
 	if p.CPUSeconds < 0 || p.MemoryMB < 0 || p.MaxPIDs < 0 {
 		return fmt.Errorf("exec_profiles.%s: limits must not be negative", surface)
@@ -368,6 +373,8 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 	return func(ctx context.Context, command string, timeout time.Duration) (string, error) {
 		be, err := sandbox.For(p.Backend)
 		if err != nil {
+			sandboxLog.Error("exec profile backend unavailable; command not run (fail closed)",
+				"surface", surface, "backend", p.Backend, "err", err.Error())
 			return "", fmt.Errorf("sandbox: the %s exec profile's backend %q is unavailable, so the command was not run (fail closed): %w",
 				surface, p.Backend, err)
 		}
@@ -425,6 +432,8 @@ func execEscalator(confirm confirmFunc) sandbox.Escalator {
 func runSandboxShell(ctx context.Context, command string, p execProfile) (string, error) {
 	be, err := sandbox.For(p.Backend)
 	if err != nil {
+		sandboxLog.Error("exec profile backend unavailable; job not run (fail closed)",
+			"surface", surfaceCronShell, "backend", p.Backend, "err", err.Error())
 		return "", fmt.Errorf("sandbox: the cron-shell exec profile's backend %q is unavailable, so the job was not run (fail closed): %w",
 			p.Backend, err)
 	}

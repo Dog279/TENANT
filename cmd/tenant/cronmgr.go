@@ -208,6 +208,10 @@ func withAuthBanner(summary string, probs []string) string {
 func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 	return func(_ context.Context, action, detail string) bool {
 		switch categorize(action) {
+		case catSandbox:
+			// Unattended: a sandbox refusal is final. Re-running outside the
+			// sandbox with nobody to ask would make the boundary advisory.
+			return false
 		case catDestructive:
 			// categorize maps every UNKNOWN action id to destructive - right
 			// for interactive surfaces (always ask), but on the exec surface
