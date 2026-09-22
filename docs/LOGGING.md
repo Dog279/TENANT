@@ -19,6 +19,7 @@ one folder is one tab.
 ├── improve/                      ← distill / reflect / consolidate / soul jobs
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
 ├── route/ memory/ mcp/ peering/ dashboard/
+├── sandbox/                      ← the execution sandbox: confined runs, refusals, escalations, dry-run would-be refusals
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log)
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
 ```
@@ -58,6 +59,42 @@ else a `source` attribute, else its `"tag: …"` message prefix (`mcp:` → `mcp
 `serve` still writes its TENANT_LOG-filtered stream to stderr for the
 supervisor (launchd/systemd) — the hub tees to it. The TUI writes nothing to
 stderr; `<data>/tui.log` no longer exists.
+
+## The `sandbox` source
+
+The execution sandbox (`docs/changes/sandbox-seam.md`) writes one line per
+`os_exec` command or cron shell job it runs on a confining backend, and one per
+refusal:
+
+| Level | Message | When |
+|---|---|---|
+| INFO | `ran in the sandbox` | ran on a confining backend and nothing was refused. On macOS, a timeout or a reaped background process still shows in `violations` |
+| WARN | `refused by the sandbox` | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
+| WARN | `refused, then approved to re-run outside the sandbox` | an approved `os_exec_unsandboxed` re-ran it on the host |
+| WARN | `dry-run: the sandbox would have refused this; it ran on the host` | `"enforce": false`: what enforcing would have refused |
+| ERROR | `sandbox could not start the command` | the backend could not start the command (`err=`) |
+
+The fields are `surface`, `backend`, `exit`, `timed_out`, `command`,
+`violations` when there are any, and `err` on a start failure. `command` holds
+the first 300 characters of the command. For an escalation or a dry-run,
+`exit` and `timed_out` describe the host re-run.
+
+```
+2026-09-22 14:05:10.412 WARN  [sandbox] refused by the sandbox	surface=discord backend=restricted exit=1 timed_out=false command="cat ~/.ssh/id_ed25519" violations="filesystem: sandbox blocked access outside the policy's read/write roots"
+```
+
+Some things are recorded elsewhere or not at all:
+- A command on the `host` backend with nothing refused is the pre-seam path and
+  is **not logged** here (a `host` command that cannot even start still is). The
+  folder and its tab appear once a surface runs on a confining backend.
+- A surface whose backend is unavailable fails closed before anything runs. That
+  error goes back to the turn or cron job, not to this folder.
+- On surfaces with an approval broker (TUI and dashboard, Discord, iMessage), the
+  escalation prompt itself is an `approvals` line (`action=os_exec_unsandboxed`).
+- The `command` field is the literal command text, so a secret typed inline into
+  a command ends up in this log.
+- On Linux and Windows the backends do not attribute refusals yet. A denied
+  access there shows as `ran in the sandbox` with a non-zero `exit`.
 
 ## The dashboard
 

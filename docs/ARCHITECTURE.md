@@ -912,15 +912,26 @@ runs. The classifier scans the whole string so chaining
 **HONEST SECURITY LIMIT (stated, not glossed):** the classifier is a
 guardrail against accidents + obvious destructive cases, **not a
 sandbox**. An obfuscated/indirected command (base64, odd flag order)
-can slip past it when `AllowExec` is on without `Confirm`. Real
-containment = keep exec off unless needed, run Tenant as a
-least-privilege user, prefer a container/VM. Also: `os_read_file` reads
-any path the process can — enabling this plugin is consent to
+can slip past it when `AllowExec` is on without `Confirm`. It stays as
+a fast fail-early layer. The boundary is the execution sandbox
+(§5.12h): `os_exec` runs through the runner injected as
+`Config.Runner`, on a `sandbox.Backend` picked per surface from the
+operator's `exec_profiles`. The default
+backend is `host`, which confines **nothing** (the pre-seam
+behaviour). A surface is contained only once the operator moves it to
+`restricted`, and only as far as that OS's backend enforces
+(`tenant sandbox probe` / `selftest`). Until then: keep exec off
+unless needed, run Tenant as a least-privilege user, prefer a
+container/VM. Also: the file tools (`os_read_file`, `os_write`, …) run
+in Tenant's own process, **outside** the sandbox. They are bounded only
+by their own roots (`--os-deny-roots`, which by default covers system
+dirs only) and the write approval. Enabling this plugin is consent to
 filesystem read (exfiltration risk when combined with the send-capable
 plugins). Documented so the operator opts in knowingly.
 
-**Public API:** `osys.Open(Config{ExecTimeout})` → `Service`
-(`SysInfo`/`ReadFile`/`ListDir`/`Processes`/`Exec`);
+**Public API:** `osys.Open(Config{ExecTimeout, Runner})` → `Service`
+(`SysInfo`/`ReadFile`/`ListDir`/`Processes`/`Exec`); `Runner` nil ⇒ the
+built-in shell runner (`cmd/tenant` injects the sandbox runner);
 `osys.NewDispatcher(svc, Policy{AllowExec,Confirm})`; `osys.Classify`.
 
 **Verified:** classifier (12 catastrophic patterns flagged incl.
@@ -933,6 +944,130 @@ specs. Exec runs through an injected runner in tests (no real
 processes). 5 test funcs.
 **Status:** complete; deterministic-verified. CLI: `tenant os` and the
 TUI `--os`/`--os-allow-exec` flags.
+
+### 5.12h `internal/sandbox` — Execution sandbox (the exec-backend seam)
+
+**Purpose:** the boundary under the approval gate for every command a
+model turn can run on the host: `os_exec` (the live tool mux and
+`tenant os`) and cron shell jobs. Approval decides *whether* a command
+runs; a `Backend` decides *what it can reach* when it does. The osys
+classifier (§5.12g) stays in front as a fast fail-early check, not the
+boundary. Operator guide and change record:
+`docs/changes/sandbox-seam.md`.
+
+**Public API:**
+- `Backend` iface: `Name()`, `Isolation()` (`none` | `process` |
+  `container` | `vm`), `Probe(ctx) Capabilities`, `Run(ctx, Command,
+  Policy) (Result, error)`. `Probe` reports what the backend enforces
+  on this host, per dimension (filesystem / network / limits / env), as
+  `enforced` | `partial` | `none`, plus a detail line. From `Run`, a
+  non-zero exit is a result; `err` means the command could not be
+  started.
+- `For(name)`:
+  - `""` / `host` → `Host()`;
+  - `restricted` → `Restricted()`, which each OS registers from a
+    build-tagged file; it is an error where none exists, and callers
+    then fail closed;
+  - `container` → an error (TEN-318).
+- `Policy{WorkDir, ReadRoots, WriteRoots, DenyRoots, Network, Allow,
+  Env, Limits, Enforce}`:
+  - `Network` is `inherit` | `none` | `allowlist` | `full`.
+  - `EnvPolicy{Isolate, Pass, Set}`: the zero value inherits the parent
+    environment (host parity); anything else is an allowlist.
+  - `Limits{Wall, CPU, MemoryBytes, MaxPIDs, MaxOutputBytes}`.
+  - Precedence: grants (an empty `ReadRoots` means the whole host is
+    readable) < `DenyRoots` < the `WorkDir` carve-out (plus a backend's
+    per-run scratch). The carve-out never reopens a deny root at or
+    inside the work dir; a work dir equal to a deny root stays denied.
+- `Execute(ctx, b, cmd, pol, esc)` is the caller-facing entry; `Run` is
+  the raw primitive.
+  - Nothing refused: the result is unchanged (on `host`, `Execute` is
+    exactly `Run`).
+  - A `filesystem` or `network` refusal under `Enforce`: the `Escalator`
+    decides. Approved re-runs on the host (`Escalated`, violations
+    kept); denied or nil returns the confined result.
+  - Without `Enforce` (dry-run): re-run on the host without asking.
+  - `limit` violations never escalate.
+- `Result{Output, ExitCode, ExitStatus, TimedOut, Violations[]{Kind,
+  Detail}, Escalated}`, with `Refused()` (a filesystem or network
+  violation) and `Contained()` (a violation, a non-zero exit or a
+  timeout, and not escalated; the escape suite's verdict).
+
+**Backends:**
+- `host` (`host.go`): the default on every surface. No filesystem or
+  network confinement, and named honestly. It honours the work dir, the
+  env allowlist, the wall timeout and the output cap.
+- `restricted`, macOS (`restricted_darwin.go`): Seatbelt.
+  - A per-run SBPL profile generated from the Policy under
+    `(deny default)` and run with `/usr/bin/sandbox-exec`.
+  - Every path is symlink-resolved. Deny rules (read, write and
+    metadata) are emitted after every grant. The carve-out re-grants
+    the work-dir subtree, plus metadata on just the ancestor directory
+    nodes that lead to it.
+  - The command leads its own process group, reaped after the run
+    (reported as a `limit` violation).
+  - With a scoped env and a work dir, `HOME` and `TMPDIR` point into
+    the work dir.
+  - Refusals are attributed from the EPERM text (a heuristic).
+  - The default-deny also blocks Mach/XPC lookups and signals to
+    processes outside the sandbox.
+- `restricted`, Linux (`restricted_linux.go`; the argv is built by the
+  pure `bwrapArgs` in `spec.go`): bubblewrap. Needs `bwrap` on `PATH`.
+  - Whole-host `--ro-bind` and a private `/tmp`.
+  - rw binds for `WriteRoots`, then stat-aware deny masks (directory →
+    tmpfs, file → `/dev/null`, absent → skipped), then the `WorkDir`
+    bind, with deny roots inside it masked again.
+  - Fresh pid/ipc/uts namespaces, `--unshare-net` for `none`,
+    `--die-with-parent`, `--new-session`.
+  - Gaps: `ReadRoots` is not honoured yet (`Probe`'s
+    `filesystem: enforced` covers the write and deny roots). No refusal
+    attribution, no rlimits. Landlock is TODO(TEN-346).
+- `restricted`, Windows (`restricted_windows.go`): a Job Object.
+  - Memory, active-process and per-process CPU caps from `Limits`, and
+    always kill-on-close. The child starts suspended, is assigned to
+    the job, then resumed.
+  - The dedicated low-privilege account, NTFS ACEs and the WFP egress
+    filter are TODO(TEN-346) scaffolds. There is **no filesystem or
+    network enforcement** yet.
+
+**Escape suite:** `escapecore` is a testing-free case table: read a
+secret outside the roots, write outside the roots, a `..` escape, and
+outbound network, each with a legitimate twin that must succeed. It
+backs both `escapetest.Harness` (`go test`) and `tenant sandbox
+selftest`. `redteam_darwin_test.go` adds the macOS adversarial cases:
+hard/symlinks, rename, Mach/XPC, signals, nested `sandbox-exec`,
+persistence, deny-root metadata and background processes.
+
+**Wiring (`cmd/tenant/execprofiles.go`):**
+- The exec surfaces (`local`, `discord`, `imessage`, `cron-exec`,
+  `cron-shell`) are stamped on the turn context and inherited by
+  sub-agents.
+- The operator's `exec_profiles` live in the settings file:
+  hot-reloaded, validated, and never reachable from an agent tool.
+- `resolveExecProfile`: the built-in deny set is the config dir, the
+  data dir and the Tenant binary. Confining profiles add the
+  credential- and browser-store baseline and the scrubbed env.
+- `sandboxRunner` / `profileRunner` run `os_exec`, injected as
+  `osys.Config.Runner`. `runSandboxShell` runs cron shell jobs (`cmd /C`
+  on Windows).
+- The escalation action is `os_exec_unsandboxed`, categorized
+  `destructive`. Runs are recorded in the `sandbox` log source.
+- `cmd/tenant/sandboxctl.go` holds `tenant sandbox probe|selftest|run`.
+
+**Invariants:**
+- `host` is the default everywhere, so the seam is a behavioural no-op
+  until an operator opts a surface in.
+- An unavailable backend fails closed: the command is not run.
+- No agent tool reads or writes a profile.
+- Deny roots always include Tenant's config, data and binary.
+- Unattended surfaces never escalate.
+
+**Verified:** green on macOS. The package also vets and builds for
+Linux and Windows. Seatbelt is live-tested: the escape suite contains
+4/4 (host 0/4), and the red-team suite is contained, with one recorded
+skip (macOS has no PID or memory cap). **Status:** the seam, `host` and
+Seatbelt are complete. Linux is written and argv-tested but not
+validated live. Windows has the Job Object only.
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
