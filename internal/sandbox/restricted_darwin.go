@@ -237,19 +237,30 @@ func seatbeltProfile(pol Policy, scratch string) string {
 
 	// Deny roots after every grant so deny wins (later rules win in SBPL), even
 	// over subpath "/".
+	// file-read-metadata is denied explicitly: the broad metadata grant above is
+	// not masked by a file-read* deny, so without it `stat` on a known name inside
+	// a deny root leaked existence, size and mtime (red-team #9).
 	denies := resolveAll(pol.DenyRoots)
 	for _, p := range denies {
 		w("(deny file-read* (subpath " + sbplStr(p) + "))")
+		w("(deny file-read-metadata (subpath " + sbplStr(p) + "))")
 		w("(deny file-write* (subpath " + sbplStr(p) + "))")
 	}
 	// Carve-out: WorkDir and scratch stay usable even when they sit INSIDE a deny
-	// root (cron's work dir lives under the data dir). Re-grant just those
-	// subtrees, then re-deny every deny root at or inside them, so a work dir can
-	// never reopen a denied tree and a WorkDir equal to a deny root stays denied.
+	// root (cron's work dir lives under the data dir). The loader and getcwd stat
+	// every directory on the way down, so re-grant metadata on each ancestor
+	// directory NODE from the deny root to the work dir (literal: never its other
+	// children), then the whole work-dir subtree. Finally re-deny every deny root
+	// at or inside a work dir, so the carve-out never reopens a denied tree and a
+	// WorkDir equal to a deny root stays denied.
 	for _, p := range rw {
 		for _, d := range denies {
 			if p != "" && p != d && within(p, d) {
+				for _, a := range ancestorsBetween(d, p) {
+					w("(allow file-read-metadata (literal " + sbplStr(a) + "))")
+				}
 				w("(allow file-read* file-write* (subpath " + sbplStr(p) + "))")
+				w("(allow file-read-metadata (subpath " + sbplStr(p) + "))")
 				break
 			}
 		}
@@ -258,6 +269,7 @@ func seatbeltProfile(pol Policy, scratch string) string {
 		for _, p := range rw {
 			if p != "" && within(d, p) {
 				w("(deny file-read* file-write* (subpath " + sbplStr(d) + "))")
+				w("(deny file-read-metadata (subpath " + sbplStr(d) + "))")
 				break
 			}
 		}
@@ -315,6 +327,20 @@ func attributeDenial(output string) (Violation, bool) {
 		return Violation{Kind: "network", Detail: "sandbox blocked a network operation"}, true
 	}
 	return Violation{Kind: "filesystem", Detail: "sandbox blocked access outside the policy's read/write roots"}, true
+}
+
+// ancestorsBetween lists the directories from root down to p's parent, root
+// included: ancestorsBetween("/d", "/d/a/b/w") = ["/d/a/b", "/d/a", "/d"].
+// Empty when p is not strictly inside root.
+func ancestorsBetween(root, p string) []string {
+	var out []string
+	for dir := filepath.Dir(p); within(dir, root); dir = filepath.Dir(dir) {
+		out = append(out, dir)
+		if dir == root {
+			break
+		}
+	}
+	return out
 }
 
 // sbplStr renders a Go string as an SBPL string literal (C-like escaping).

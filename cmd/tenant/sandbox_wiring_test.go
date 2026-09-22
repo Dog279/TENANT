@@ -111,6 +111,19 @@ func TestResolveExecProfile_AppliesOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveExecProfile_ConfinedEnvDefaultsToScrubbed(t *testing.T) {
+	resetExecProfiles(t)
+	t.Setenv("TENANT_TEST_API_KEY", "leak-me")
+	defaultExecProfiles.Load(map[string]execProfileSetting{"discord": {Backend: "restricted"}})
+	p := resolveExecProfile(surfaceDiscord, "", "", "")
+	if !p.Policy.Env.Isolate || hasString(p.Policy.Env.Pass, "TENANT_TEST_API_KEY") || !hasString(p.Policy.Env.Pass, "PATH") {
+		t.Fatalf("a confined profile must default to the scrubbed env (PATH kept, secret-named vars dropped): %+v", p.Policy.Env)
+	}
+	if hp := resolveExecProfile(surfaceLocal, "", "", ""); envScoped(hp.Policy.Env) {
+		t.Fatalf("the host profile must keep inheriting the full env (pre-seam parity): %+v", hp.Policy.Env)
+	}
+}
+
 func TestResolveExecProfile_SurfaceEntryBeatsDefault(t *testing.T) {
 	resetExecProfiles(t)
 	defaultExecProfiles.Load(map[string]execProfileSetting{

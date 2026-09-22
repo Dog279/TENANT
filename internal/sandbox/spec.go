@@ -6,7 +6,10 @@ package sandbox
 // build tags, NO golang.org/x/sys types. That is what lets these builders be
 // unit-tested on any host (see spec_test.go) even though the backends that
 // consume them (restricted_linux.go, restricted_windows.go) only build and run
-// on their own OS.
+// on their own OS. The one exception is bwrapMask's os.Stat: whether a deny root
+// is a directory, a file, or absent decides how bubblewrap can hide it.
+
+import "os"
 
 // ---------------------------------------------------------------------------
 // Linux: bubblewrap (bwrap) argument-vector builder.
@@ -68,10 +71,7 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 	// tmpfs mask makes the host path an empty, ephemeral dir: its real contents
 	// are neither readable nor (persistently) writable.
 	for _, dr := range pol.DenyRoots {
-		if dr == "" {
-			continue
-		}
-		a = append(a, "--tmpfs", dr)
+		a = append(a, bwrapMask(dr)...)
 	}
 
 	// 5. WorkDir carve-out (Policy precedence rule 3): bound AFTER the deny masks,
@@ -82,8 +82,8 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 	if pol.WorkDir != "" {
 		a = append(a, "--bind", pol.WorkDir, pol.WorkDir)
 		for _, dr := range pol.DenyRoots {
-			if dr != "" && within(dr, pol.WorkDir) {
-				a = append(a, "--tmpfs", dr)
+			if within(dr, pol.WorkDir) {
+				a = append(a, bwrapMask(dr)...)
 			}
 		}
 	}
@@ -142,4 +142,25 @@ func jobLimitsFrom(l Limits) jobLimits {
 		jl.PerProcessUserTime100ns = l.CPU.Nanoseconds() / 100
 	}
 	return jl
+}
+
+// bwrapMask hides one deny root from the sandbox. A directory gets an empty tmpfs;
+// a file gets /dev/null bound over it (tmpfs cannot mount on a file). A path that
+// does not exist is skipped: there is nothing to hide, writes are allow-only
+// anyway, and bwrap cannot create the mount point under the read-only root, so
+// masking it would fail the whole run (the credential-store deny list is mostly
+// paths that are absent on any given host).
+func bwrapMask(path string) []string {
+	if path == "" {
+		return nil
+	}
+	fi, err := os.Stat(path)
+	switch {
+	case err != nil:
+		return nil
+	case fi.IsDir():
+		return []string{"--tmpfs", path}
+	default:
+		return []string{"--ro-bind", "/dev/null", path}
+	}
 }

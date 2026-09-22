@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -117,11 +119,13 @@ func TestWithin(t *testing.T) {
 }
 
 func TestBwrapArgs_WorkDirCarveOut(t *testing.T) {
-	pol := Policy{
-		WorkDir:   "/data/cron-work",
-		DenyRoots: []string{"/data", "/data/cron-work/secrets"},
-		Network:   NetFull,
+	data := t.TempDir()
+	work := filepath.Join(data, "cron-work")
+	secrets := filepath.Join(work, "secrets")
+	if err := os.MkdirAll(secrets, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	pol := Policy{WorkDir: work, DenyRoots: []string{data, secrets}, Network: NetFull}
 	a := bwrapArgs(pol, "sh", []string{"-c", "true"})
 	find := func(last bool, seq ...string) int {
 		at := -1
@@ -142,9 +146,9 @@ func TestBwrapArgs_WorkDirCarveOut(t *testing.T) {
 		}
 		return at
 	}
-	maskData := find(false, "--tmpfs", "/data")
-	bindWork := find(false, "--bind", "/data/cron-work", "/data/cron-work")
-	remask := find(true, "--tmpfs", "/data/cron-work/secrets")
+	maskData := find(false, "--tmpfs", data)
+	bindWork := find(false, "--bind", work, work)
+	remask := find(true, "--tmpfs", secrets)
 	if maskData < 0 || bindWork < 0 || remask < 0 {
 		t.Fatalf("missing args: %v", a)
 	}

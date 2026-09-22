@@ -38,12 +38,16 @@ func TestResolveExecProfileDenyRootsAlwaysPinned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	wantExeDir := filepath.Dir(exe)
-
-	for _, want := range []string{cfg, data, wantExeDir} {
+	for _, want := range []string{cfg, data, exe} {
 		if !slices.Contains(p.Policy.DenyRoots, want) {
 			t.Errorf("DenyRoots %v is missing %q", p.Policy.DenyRoots, want)
 		}
+	}
+
+	// The binary's DIRECTORY must not be denied: it may be shared (/usr/local/bin)
+	// and denying it would break every tool installed beside Tenant.
+	if slices.Contains(p.Policy.DenyRoots, filepath.Dir(exe)) {
+		t.Errorf("DenyRoots %v must not include the executable's directory", p.Policy.DenyRoots)
 	}
 
 	// De-duplicated + non-empty: an empty cfgDir is dropped, and passing the

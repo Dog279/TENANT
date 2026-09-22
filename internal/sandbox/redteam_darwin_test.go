@@ -239,7 +239,7 @@ func TestRedteam_RenameAcrossBoundary(t *testing.T) {
 //
 // ---------------------------------------------------------------------------
 func TestRedteam_BackgroundProcessOutlivesRun(t *testing.T) {
-	t.Skip("KNOWN ESCAPE: backgrounded children outlive the run (no process-group kill in restricted_darwin.go Run); orphaned processes reparent to launchd")
+	// FIXED (c9bfb5f): the command leads its own process group, reaped after the run.
 
 	b := restricted(t)
 	e := newRTEnv(t)
@@ -459,7 +459,7 @@ func TestRedteam_WholeHostReadReachesOutsideWorkDir(t *testing.T) {
 //
 // ---------------------------------------------------------------------------
 func TestRedteam_DenyRootMetadataLeak(t *testing.T) {
-	t.Skip("KNOWN GAP: `stat` leaks size/existence/mtime of DenyRoot files (broad file-read-metadata is not masked by the DenyRoot deny); add (deny file-read-metadata (subpath denyroot))")
+	// FIXED: DenyRoots now also deny file-read-metadata explicitly.
 
 	b := restricted(t)
 	e := newRTEnv(t)

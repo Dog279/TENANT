@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -50,6 +52,14 @@ func endsWith(argv, tail []string) bool {
 }
 
 func TestBwrapArgs(t *testing.T) {
+	// Deny masks depend on what is on disk (dir → tmpfs, file → /dev/null bind,
+	// absent → skipped), so deny-root cases use real paths.
+	secretDir, keysDir := t.TempDir(), t.TempDir()
+	keyFile := filepath.Join(t.TempDir(), "id_key")
+	if err := os.WriteFile(keyFile, []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "absent")
 	tests := []struct {
 		name  string
 		pol   Policy
@@ -123,13 +133,37 @@ func TestBwrapArgs(t *testing.T) {
 		},
 		{
 			name:  "each DenyRoot is masked with its own --tmpfs",
-			pol:   Policy{WorkDir: "/w", DenyRoots: []string{"/etc/secret", "/var/keys"}},
+			pol:   Policy{WorkDir: "/w", DenyRoots: []string{secretDir, keysDir}},
 			shell: "sh",
 			args:  []string{"-c", "true"},
 			check: func(t *testing.T, argv []string) {
-				for _, dr := range []string{"/etc/secret", "/var/keys"} {
+				for _, dr := range []string{secretDir, keysDir} {
 					if !pairAt(argv, "--tmpfs", dr) {
 						t.Errorf("DenyRoot %s must be tmpfs-masked: %v", dr, argv)
+					}
+				}
+			},
+		},
+		{
+			name:  "a file DenyRoot is hidden with /dev/null (tmpfs cannot mount on a file)",
+			pol:   Policy{WorkDir: "/w", DenyRoots: []string{keyFile}},
+			shell: "sh",
+			args:  []string{"-c", "true"},
+			check: func(t *testing.T, argv []string) {
+				if !tripleAt(argv, "--ro-bind", "/dev/null", keyFile) || pairAt(argv, "--tmpfs", keyFile) {
+					t.Errorf("file deny root must be /dev/null-bound, never tmpfs: %v", argv)
+				}
+			},
+		},
+		{
+			name:  "an absent DenyRoot is skipped (bwrap cannot mkdir under the ro root)",
+			pol:   Policy{WorkDir: "/w", DenyRoots: []string{missing}},
+			shell: "sh",
+			args:  []string{"-c", "true"},
+			check: func(t *testing.T, argv []string) {
+				for _, a := range argv {
+					if a == missing {
+						t.Errorf("absent deny root must not appear (it would fail the run): %v", argv)
 					}
 				}
 			},

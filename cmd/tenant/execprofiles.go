@@ -211,15 +211,18 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 // exec_profiles overrides.
 //
 // The built-in default is the "host" backend with Enforce on, so a routed spawn
-// behaves exactly as before. DenyRoots ALWAYS include the config dir, data dir
-// and the running executable's directory. A confining backend additionally
-// denies the well-known credential stores (credentialStoreRoots).
+// behaves exactly as before. DenyRoots ALWAYS include the config dir, the data
+// dir and the running executable FILE (its directory may be shared, e.g.
+// /usr/local/bin, and denying it would break every tool installed beside Tenant).
+// A confining backend additionally denies the well-known credential stores
+// (credentialStoreRoots) and, unless the operator set an env allowlist, runs with
+// cron's scrubbed environment rather than inheriting all of Tenant's.
 func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	p := execProfile{
 		Backend: "host",
 		Policy: sandbox.Policy{
 			WorkDir:   workDir,
-			DenyRoots: dedupeNonEmpty(cfgDir, dataDir, exeDir()),
+			DenyRoots: dedupeNonEmpty(cfgDir, dataDir, exePath()),
 			Enforce:   true,
 		},
 	}
@@ -244,8 +247,14 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 		deny = append(deny, credentialStoreRoots()...)
 	}
 	p.Policy.DenyRoots = dedupeNonEmpty(deny...)
-	if len(o.EnvPass) > 0 || len(o.EnvSet) > 0 {
+	switch {
+	case len(o.EnvPass) > 0 || len(o.EnvSet) > 0:
 		p.Policy.Env = sandbox.EnvPolicy{Isolate: true, Pass: o.EnvPass, Set: o.EnvSet}
+	case p.Backend != "host":
+		// A confined command should not inherit every token in Tenant's own
+		// environment (red-team #13). Default to cron's scrubbed env; an operator
+		// who needs a strict allowlist sets env_pass.
+		p.Policy.Env = scrubbedEnvPolicy()
 	}
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
 	p.Policy.Limits.MemoryBytes = int64(o.MemoryMB) << 20
@@ -263,7 +272,13 @@ func credentialStoreRoots() []string {
 		return nil
 	}
 	rel := []string{".ssh", ".aws", ".gnupg", ".netrc", ".git-credentials", ".config/gh", ".config/gcloud",
-		".azure", ".kube", ".docker", ".npmrc", ".pypirc", "Library/Keychains"}
+		".azure", ".kube", ".docker", ".npmrc", ".pypirc",
+		// Browser profiles: session cookies and saved logins (red-team #8).
+		".mozilla", ".config/google-chrome", ".config/chromium", ".config/BraveSoftware", ".config/microsoft-edge",
+		// macOS: Keychains, cookie jars and browser profiles.
+		"Library/Keychains", "Library/Cookies", "Library/Safari",
+		"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
+		"Library/Application Support/Microsoft Edge", "Library/Application Support/BraveSoftware"}
 	out := make([]string, 0, len(rel)+3)
 	for _, r := range rel {
 		out = append(out, filepath.Join(home, filepath.FromSlash(r)))
@@ -275,7 +290,13 @@ func credentialStoreRoots() []string {
 			}
 		}
 		if dir := os.Getenv("APPDATA"); dir != "" {
-			out = append(out, filepath.Join(dir, "gcloud"))
+			out = append(out, filepath.Join(dir, "gcloud"), filepath.Join(dir, "Mozilla", "Firefox"))
+		}
+		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+			out = append(out,
+				filepath.Join(dir, "Google", "Chrome", "User Data"),
+				filepath.Join(dir, "Microsoft", "Edge", "User Data"),
+				filepath.Join(dir, "BraveSoftware", "Brave-Browser", "User Data"))
 		}
 	}
 	return out
@@ -533,9 +554,20 @@ func loadExecProfilesFromSettings(cfgDir, agentID string) (int, []string, error)
 	return n, skipped, nil
 }
 
+// exePath is the running executable, or "" when it can't be resolved. Always in
+// the sandbox deny set so a confined command can't read or tamper with Tenant's
+// own binary.
+func exePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
+}
+
 // exeDir is the directory of the running executable, or "" when it can't be
-// resolved. Always part of the deny set so a sandboxed command can't reach
-// Tenant's own binary.
+// resolved. The cron exec approver refuses writes into it (planting a library
+// beside the binary is a hijack vector), which is narrower than denying reads.
 func exeDir() string {
 	exe, err := os.Executable()
 	if err != nil {
