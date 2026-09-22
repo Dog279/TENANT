@@ -7,6 +7,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
+	"tenant/internal/logs"
 )
 
 // dashboardManager owns the lifecycle of the web control panel so the
@@ -36,7 +37,7 @@ type dashboardManager struct {
 	access       dashboard.AccessControl       // TEN-208: iMessage + Discord access surface (nil-safe)
 	approvals    dashboard.ApprovalControl     // TEN-194: headless approval queue surface (serve mode; nil-safe)
 	broker       *agent.Broker
-	evlog        *agent.EventLog // TEN-238: retained activity-feed event log (nil-safe)
+	logs         *logs.Hub // the unified log book: Activity feed + folders (nil-safe)
 	log          *slog.Logger
 	notify       func(string)             // feed sink (pushSys) for async status
 	persist      func(enabled bool) error // record the on/off choice to config
@@ -86,8 +87,8 @@ func (m *dashboardManager) Enable() (string, error) {
 	if m.approvals != nil {
 		srv.SetApprovals(m.approvals)
 	}
-	if m.evlog != nil {
-		srv.SetEventLog(m.evlog)
+	if m.logs != nil {
+		srv.SetLogs(m.logs)
 	}
 	dctx, cancel := context.WithCancel(m.base)
 	go func() {

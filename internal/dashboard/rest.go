@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -94,6 +95,12 @@ func (s *Server) mountREST(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/approvals/{id}", s.handleApprovalDecide)
 	mux.HandleFunc("GET /api/activity", s.handleActivity)
 	mux.HandleFunc("POST /api/addon/event", s.handleAddonEvent)
+	// The live logging API (rest_logs.go): sources = folders = tabs; anything
+	// may write a line into a new source without a rebuild.
+	mux.HandleFunc("GET /api/logs", s.handleLogSources)
+	mux.HandleFunc("GET /api/logs/{source}", s.handleLogFiles)
+	mux.HandleFunc("POST /api/logs/{source}", s.handleLogWrite)
+	mux.HandleFunc("GET /api/logs/{source}/{name}", s.handleLogFile)
 }
 
 // handleStatus reports plugins and tool counts. Best-effort and extensible.
@@ -125,19 +132,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-// restActivityEvent is one retained event as the JSON activity projection
+// restActivityEvent is one retained entry as the JSON activity projection
 // renders it (TEN-194): structured fields a programmatic attach client and the
 // doctor liveness probe can read directly — NOT the Datastar HTML the SSR
-// /activity feed streams. Mirrors the EventLog's lossless cursor.
+// /activity feed streams. Mirrors the hub's lossless cursor. The original
+// event-shaped fields (kind/agent/iter/tool/is_err/text) are kept for existing
+// clients; source/level/msg/fields carry the unified log-book shape.
 type restActivityEvent struct {
-	Seq   uint64 `json:"seq"`
-	At    string `json:"at"` // RFC3339
-	Kind  string `json:"kind"`
-	Agent string `json:"agent,omitempty"`
-	Iter  int    `json:"iter,omitempty"`
-	Tool  string `json:"tool,omitempty"`
-	IsErr bool   `json:"is_err,omitempty"`
-	Text  string `json:"text,omitempty"`
+	Seq    uint64            `json:"seq"`
+	At     string            `json:"at"` // RFC3339
+	Kind   string            `json:"kind"`
+	Agent  string            `json:"agent,omitempty"`
+	Iter   int               `json:"iter,omitempty"`
+	Tool   string            `json:"tool,omitempty"`
+	IsErr  bool              `json:"is_err,omitempty"`
+	Text   string            `json:"text,omitempty"`
+	Source string            `json:"source"`
+	Level  string            `json:"level"`
+	Msg    string            `json:"msg"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 type restActivityResponse struct {
@@ -145,12 +158,50 @@ type restActivityResponse struct {
 	Cursor uint64              `json:"cursor"` // pass back as ?since= for a gap-free tail
 }
 
-// handleActivity — GET /api/activity?since=<seq>: the structured replay of the
-// retained activity log. Returns events with Seq > since plus the new head
-// cursor. Empty (not an error) when no event log is wired.
+// restEntry projects one hub entry. kind is "log" for a plain record.
+func restEntry(e logs.Entry) restActivityEvent {
+	out := restActivityEvent{
+		Seq: e.Seq, At: e.At.UTC().Format(time.RFC3339), Kind: e.Kind(),
+		Agent: e.Field("agent"), Tool: e.Field("tool"), IsErr: e.IsErr(),
+		Source: e.Source, Level: logs.LevelName(e.Level), Msg: e.Msg,
+	}
+	if out.Kind == "" {
+		out.Kind = "log"
+	}
+	if it := e.Field("iter"); it != "" {
+		out.Iter, _ = strconv.Atoi(it)
+	}
+	switch out.Kind {
+	case "tool_call":
+		out.Text = e.Field("args")
+	case "tool_result":
+		out.Text = e.Field("result")
+	case "log":
+		out.Text = e.Msg
+	default:
+		out.Text = e.Field("text")
+		if out.Text == "" {
+			out.Text = e.Msg
+		}
+	}
+	if len(e.Fields) > 0 {
+		out.Fields = make(map[string]string, len(e.Fields))
+		for _, f := range e.Fields {
+			if f.Key == "ev" {
+				continue
+			}
+			out.Fields[f.Key] = f.Value
+		}
+	}
+	return out
+}
+
+// handleActivity — GET /api/activity?since=<seq>[&source=x][&level=error]: the
+// structured replay of the retained log. Returns entries with Seq > since plus
+// the new head cursor. Empty (not an error) when no hub is wired.
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	resp := restActivityResponse{Events: []restActivityEvent{}}
-	if s.evlog == nil {
+	if s.logs == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -160,19 +211,14 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			since = n
 		}
 	}
-	events, cursor := s.evlog.Since(since)
+	f := activityFilterFrom(r)
+	entries, cursor := s.logs.Since(since)
 	resp.Cursor = cursor
-	for _, se := range events {
-		resp.Events = append(resp.Events, restActivityEvent{
-			Seq:   se.Seq,
-			At:    se.At.UTC().Format(time.RFC3339),
-			Kind:  string(se.Ev.Kind),
-			Agent: se.Ev.Agent,
-			Iter:  se.Ev.Iter,
-			Tool:  se.Ev.Tool,
-			IsErr: se.Ev.IsErr,
-			Text:  se.Ev.Text,
-		})
+	for _, e := range entries {
+		if !f.match(e) {
+			continue
+		}
+		resp.Events = append(resp.Events, restEntry(e))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -362,16 +408,20 @@ func (s *Server) handleAddonEvent(w http.ResponseWriter, r *http.Request) {
 	if len(req.Text) > 2000 {
 		req.Text = req.Text[:2000]
 	}
-	if s.evlog == nil && s.broker == nil {
+	if s.logs == nil && s.broker == nil {
 		writeError(w, http.StatusServiceUnavailable, "activity feed not configured")
 		return
 	}
+	// The add-on's name is its folder/tab; the broker still sees the event so
+	// the live TUI feed shows it exactly as before.
 	ev := agent.Event{Kind: agent.EventAddon, Agent: req.Source, Text: req.Text, IsErr: req.Level == "error"}
 	if s.broker != nil {
 		s.broker.Publish(ev)
 	}
-	if s.evlog != nil {
-		s.evlog.Append(ev)
+	if s.logs != nil {
+		if e, ok := agent.EntryFor(ev); ok {
+			s.logs.Log(e)
+		}
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ok", "source": logs.NormalizeSource(req.Source)})
 }

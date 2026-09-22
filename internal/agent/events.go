@@ -63,7 +63,12 @@ type Event struct {
 	// bus message is mirrored into the shared feed so the dashboard can label it;
 	// the TUI skips Agent != "" on its main channel (it renders sub-agents via the
 	// separate TeamEvents channel). (TEN-234)
-	Agent  string
+	Agent string
+	// Source names the log-book folder (and dashboard tab) this event is filed
+	// under when it is not the primary agent's own turn: the observer wrappers
+	// set it ("cron", "discord", "imessage", "eval", …). "" ⇒ derived by
+	// EntryFor: "subagents" when Agent is set, else "turns".
+	Source string
 	Iter   int    // planner-loop iteration (1-based), 0 for turn-level events
 	Text   string // user query / token delta / assistant text / final / error
 	Tool   string // tool name (ToolCall/ToolResult/Validation)

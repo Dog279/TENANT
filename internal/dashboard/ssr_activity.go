@@ -1,103 +1,165 @@
 package dashboard
 
-// ssr_activity.go (TEN-238) is the Activity tab: a RETAINED, replayable event
-// feed. Unlike the chat /events stream (live broker fan-out), this reads the
-// agent.EventLog ring so the feed BACKFILLS the full backlog on page load and
-// resumes GAP-FREE after any reconnect (fixing "no history before I opened the
-// tab" + "stops updating when the macOS tab is unfocused"). The page renders the
-// backlog server-side; /activity/events replays from a cursor (Last-Event-ID on
-// reconnect, else ?cursor= on first load) then tails via the log's Notify/Since.
+// ssr_activity.go is the Activity tab: the dashboard's window onto the unified
+// log book (internal/logs). The hub retains a replayable, cursor-indexed ring of
+// every subsystem's lines — the agent's turns, sub-agents, approvals, the
+// Discord/iMessage relays, cron, eval, plain slog records, add-ons — and files
+// each under <data>/logs/<source>/. This page renders the backlog server-side,
+// then tails from the head cursor over SSE (Last-Event-ID on reconnect ⇒
+// gap-free, openWhenHidden ⇒ keeps updating in a background tab).
+//
+// One source = one folder on disk = one tab here. The tab row is read from the
+// hub on every render, so a source that appears at runtime (a new subsystem,
+// `tenant log <name> …`, a POST /api/logs/<name>, or a script that drops a
+// folder under the log root) gets its tab without a rebuild.
 
 import (
 	"bytes"
 	"fmt"
 	"html"
 	"html/template"
+	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
-// SetEventLog installs the retained activity log after construction (mirrors
-// SetCron). nil ⇒ the Activity tab renders empty + the stream is a no-op.
-func (s *Server) SetEventLog(l *agent.EventLog) { s.evlog = l }
+// SetLogs installs the log hub after construction (mirrors SetCron). nil ⇒ the
+// Activity tab renders "unavailable", the stream and the log API are no-ops.
+func (s *Server) SetLogs(h *logs.Hub) { s.logs = h }
 
-type activityFilterTab struct {
+type activityTab struct {
 	Key, Label string
+	Count      int
 	On         bool
+	Title      string // hover text: native/foreign + last write + any file error
+	Err        bool
+}
+
+type activityFileView struct {
+	Name, Size, When, Href string
 }
 
 type activityPageData struct {
 	layoutData
 	Configured bool
-	Backlog    template.HTML       // pre-rendered rows (each self-escaped via activityRowSeq)
-	Cursor     uint64              // head Seq the live stream tails from
-	Filter     string              // active kind filter ("" = all)
-	Tabs       []activityFilterTab // sub-nav (Memory idiom)
-	Empty      bool                // no rows match the current filter
+	Root       string        // on-disk log root ("" for a memory-only hub)
+	Backlog    template.HTML // pre-rendered rows (each self-escaped via logRow)
+	Cursor     uint64        // head Seq the live stream tails from
+	Source     string        // active source filter ("" = all)
+	Level      string        // "error" = errors only; "" = everything
+	Tabs       []activityTab
+	Files      []activityFileView // the active source's files on disk
+	Empty      bool
 }
 
-// activityFilters is the troubleshooting sub-nav: each maps to a set of
-// agent.EventKind (kindMatches). Order = display order.
-var activityFilters = []activityFilterTab{
-	{Key: "", Label: "All"},
-	{Key: "tools", Label: "Tools"},
-	{Key: "errors", Label: "Errors"},
-	{Key: "bus", Label: "Bus"},
-	{Key: "ingest", Label: "Ingest"},
-	{Key: "addons", Label: "Add-ons"},
-	{Key: "lifecycle", Label: "Lifecycle"},
+// activityFilter is the (source, level) selection shared by the page, the SSE
+// tail and the REST projection.
+type activityFilter struct {
+	Source string
+	Level  string
 }
 
-// handleActivityPage renders the full retained backlog server-side (filtered by
-// ?kind), so history is visible instantly on load; the stream then tails from
-// the head cursor with the same filter.
+func activityFilterFrom(r *http.Request) activityFilter {
+	q := r.URL.Query()
+	f := activityFilter{Source: strings.TrimSpace(q.Get("source")), Level: strings.ToLower(strings.TrimSpace(q.Get("level")))}
+	if f.Source != "" && !logs.ValidSource(f.Source) {
+		f.Source = logs.NormalizeSource(f.Source)
+	}
+	if f.Level != "" && f.Level != "error" && f.Level != "warn" {
+		f.Level = ""
+	}
+	return f
+}
+
+func (f activityFilter) match(e logs.Entry) bool {
+	if f.Source != "" && e.Source != f.Source {
+		return false
+	}
+	switch f.Level {
+	case "error":
+		return e.Level >= slog.LevelError
+	case "warn":
+		return e.Level >= slog.LevelWarn
+	}
+	return true
+}
+
+// handleActivityPage renders the retained backlog server-side (filtered), so
+// history is visible instantly on load; the stream then tails from the head
+// cursor with the same filter.
 func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
-	filter := strings.TrimSpace(r.URL.Query().Get("kind"))
-	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Filter: filter}
-	for _, t := range activityFilters {
-		t.On = t.Key == filter
+	f := activityFilterFrom(r)
+	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level}
+	if s.logs == nil {
+		s.render(w, s.tmpl.activity, d)
+		return
+	}
+	d.Configured = true
+	d.Root = s.logs.Root()
+	for _, src := range s.logs.Sources() {
+		t := activityTab{Key: src.Name, Label: src.Name, Count: src.Count, On: src.Name == f.Source}
+		switch {
+		case src.Err != "":
+			t.Title = "file problem: " + src.Err
+			t.Err = true
+		case !src.Native:
+			t.Title = "written by another process (tailed from disk)"
+		default:
+			t.Title = "written by tenant"
+		}
+		if !src.LastAt.IsZero() {
+			t.Title += " · last " + relAge(src.LastAt)
+		}
 		d.Tabs = append(d.Tabs, t)
 	}
-	if s.evlog != nil {
-		d.Configured = true
-		events, head := s.evlog.Snapshot()
-		var b strings.Builder
-		n := 0
-		for _, se := range events {
-			if !kindMatches(se.Ev, filter) {
-				continue
-			}
-			b.WriteString(activityRowSeq(se))
-			n++
+	entries, head := s.logs.Snapshot()
+	var b strings.Builder
+	n := 0
+	for _, e := range entries {
+		if !f.match(e) {
+			continue
 		}
-		d.Backlog = template.HTML(b.String())
-		d.Cursor = head
-		d.Empty = n == 0
+		b.WriteString(logRow(e))
+		n++
+	}
+	d.Backlog = template.HTML(b.String())
+	d.Cursor = head
+	d.Empty = n == 0
+	if f.Source != "" {
+		if files, err := s.logs.Files(f.Source); err == nil {
+			for _, fi := range files {
+				d.Files = append(d.Files, activityFileView{
+					Name: fi.Name, Size: humanBytes(fi.Size), When: relAge(fi.ModTime),
+					Href: "/activity/files/" + f.Source + "/" + fi.Name,
+				})
+			}
+		}
 	}
 	s.render(w, s.tmpl.activity, d)
 }
 
-// handleActivitySSE replays every event after the start cursor, then tails new
+// handleActivitySSE replays every entry after the start cursor, then tails new
 // ones — each patch tagged with its Seq as the SSE id so the browser's
 // Last-Event-ID advances and a reconnect resumes gap-free.
 func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	setSSEHeaders(w)
 	flush(w)
-	if s.evlog == nil {
+	if s.logs == nil {
 		return
 	}
-	filter := strings.TrimSpace(r.URL.Query().Get("kind"))
+	f := activityFilterFrom(r)
 	cursor := activityStartCursor(r)
-	missed, head := s.evlog.Since(cursor)
-	for _, se := range missed {
-		if !kindMatches(se.Ev, filter) {
+	missed, head := s.logs.Since(cursor)
+	for _, e := range missed {
+		if !f.match(e) {
 			continue
 		}
-		if _, err := w.Write(activityAppend(se.Seq, activityRowSeq(se))); err != nil {
+		if _, err := w.Write(activityAppend(e.Seq, logRow(e))); err != nil {
 			return
 		}
 	}
@@ -106,17 +168,17 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case _, ok := <-s.evlog.Notify():
+		case _, ok := <-s.logs.Notify():
 			if !ok {
 				return
 			}
-			var evs []agent.SeqEvent
-			evs, head = s.evlog.Since(head)
-			for _, se := range evs {
-				if !kindMatches(se.Ev, filter) {
+			var entries []logs.Entry
+			entries, head = s.logs.Since(head)
+			for _, e := range entries {
+				if !f.match(e) {
 					continue
 				}
-				if _, err := w.Write(activityAppend(se.Seq, activityRowSeq(se))); err != nil {
+				if _, err := w.Write(activityAppend(e.Seq, logRow(e))); err != nil {
 					return
 				}
 			}
@@ -125,85 +187,104 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// kindMatches reports whether ev belongs to the named filter bucket ("" = all).
-func kindMatches(ev agent.Event, filter string) bool {
-	switch filter {
-	case "", "all":
-		return true
-	case "tools":
-		switch ev.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventValidation, agent.EventRetry, agent.EventToolCatalog:
-			return true
-		}
-	case "errors":
-		return ev.Kind == agent.EventError || ev.IsErr
-	case "bus":
-		return ev.Kind == agent.EventBus
-	case "ingest":
-		return ev.Kind == agent.EventIngest
-	case "addons":
-		return ev.Kind == agent.EventAddon
-	case "lifecycle":
-		switch ev.Kind {
-		case agent.EventTurnStart, agent.EventFinal, agent.EventTruncated, agent.EventCompact, agent.EventInterject, agent.EventSkills:
-			return true
-		}
+// handleActivityFile serves one on-disk log file as plain text (inline for a
+// browser tab; ?download=1 for an attachment). Names are validated by the hub.
+func (s *Server) handleActivityFile(w http.ResponseWriter, r *http.Request) {
+	if s.logs == nil {
+		http.Error(w, "log files unavailable", http.StatusNotFound)
+		return
 	}
-	return false
+	src, name := r.PathValue("source"), r.PathValue("name")
+	rc, fi, err := s.logs.OpenFile(src, name)
+	if err != nil {
+		http.Error(w, "no such log file", http.StatusNotFound)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	disp := "inline"
+	if r.URL.Query().Get("download") != "" {
+		disp = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s-%s"`, disp, src, name))
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size, 10))
+	_, _ = io.Copy(w, rc)
 }
 
-// activityRowSeq renders one retained event as a themed card (TEN-238) matching
-// the Memory/Skills idiom: relative timestamp, a semantic kind badge (red for
-// errors → free error-highlighting, amber for validation/retry, cyan otherwise),
-// an agent chip for cross-agent/bus events, the tool name in mono, and a
-// snippet (errors get more room). All dynamic values are html-escaped.
-func activityRowSeq(se agent.SeqEvent) string {
-	ev := se.Ev
-	isErr := ev.Kind == agent.EventError || ev.IsErr
-
-	badgeClass, label := "tag", string(ev.Kind)
+// logRow renders one retained entry as a themed card matching the Memory/Skills
+// idiom: relative timestamp, the source chip, a semantic badge (the event kind
+// for turn events, the level for plain records; red for errors, amber for
+// warnings/validation/retry, cyan otherwise), an agent chip for cross-agent
+// events, the tool name in mono, and a snippet (errors get more room; plain
+// records show their key=value fields in dim mono). Everything is html-escaped.
+func logRow(e logs.Entry) string {
+	kind := e.Kind()
+	isErr := e.IsErr()
+	badgeClass, label := "tag", kind
+	if kind == "" {
+		label = strings.ToLower(logs.LevelName(e.Level))
+	}
 	switch {
 	case isErr:
 		badgeClass = "act-errtag"
-	case ev.Kind == agent.EventValidation || ev.Kind == agent.EventRetry:
+	case e.Level >= slog.LevelWarn, kind == "validation", kind == "retry":
 		badgeClass = "risk"
-	case ev.Kind == agent.EventIngest:
+	case kind == "ingest":
 		label = "📥 inbox"
-	case ev.Kind == agent.EventBus:
+	case kind == "bus":
 		label = "🔀 bus"
-	case ev.Kind == agent.EventAddon:
+	case kind == "addon":
 		label = "🧩 add-on"
 	}
 
-	detail := ev.Text
-	if ev.Tool != "" {
-		detail = strings.TrimSpace(ev.Tool + " " + ev.Result)
+	tool := e.Field("tool")
+	detail := e.Msg
+	var kv string
+	switch kind {
+	case "tool_call":
+		detail = e.Field("args")
+	case "tool_result":
+		detail = e.Field("result")
+	case "":
+		var parts []string
+		for _, f := range e.Fields {
+			parts = append(parts, f.Key+"="+f.Value)
+		}
+		kv = strings.Join(parts, " ")
+	default:
+		if t := e.Field("text"); t != "" {
+			detail = t
+		}
 	}
 	max := 200
 	if isErr {
 		max = 400 // errors carry the diagnostic — give them room
 	}
-
-	tool := ""
-	if ev.Tool != "" {
-		tool = `<span class="nm">` + html.EscapeString(ev.Tool) + `</span> `
-		detail = strings.TrimSpace(ev.Result) // tool name shown separately
+	toolHTML := ""
+	if tool != "" {
+		toolHTML = `<span class="nm">` + html.EscapeString(tool) + `</span> `
 	}
 	chip := ""
-	if ev.Agent != "" {
-		chip = ` <span class="chip">` + html.EscapeString(ev.Agent) + `</span>`
+	if a := e.Field("agent"); a != "" {
+		chip = ` <span class="chip">` + html.EscapeString(a) + `</span>`
+	}
+	kvHTML := ""
+	if kv != "" {
+		kvHTML = ` <span class="kv">` + html.EscapeString(snippetStr(kv, 240)) + `</span>`
 	}
 	rowClass := "ep act-row"
 	if isErr {
 		rowClass += " act-rowerr"
 	}
 	return fmt.Sprintf(
-		`<div class="%s"><div class="ep-when dim" title="%s">%s · <span class="%s">%s</span>%s</div><div class="ep-line">%s%s</div></div>`,
+		`<div class="%s"><div class="ep-when dim" title="%s">%s · <span class="src">%s</span> <span class="%s">%s</span>%s</div><div class="ep-line">%s%s%s</div></div>`,
 		rowClass,
-		html.EscapeString(se.At.Format("2006-01-02 15:04:05")),
-		html.EscapeString(relAge(se.At)),
+		html.EscapeString(e.At.Format("2006-01-02 15:04:05")),
+		html.EscapeString(relAge(e.At)),
+		html.EscapeString(e.Source),
 		badgeClass, html.EscapeString(label), chip,
-		tool, html.EscapeString(snippetStr(detail, max)),
+		toolHTML, html.EscapeString(snippetStr(detail, max)), kvHTML,
 	)
 }
 
@@ -220,6 +301,16 @@ func relAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/float64(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/float64(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
 }
 
 // activityStartCursor resolves where the stream should resume: the Last-Event-ID
@@ -239,7 +330,7 @@ func activityStartCursor(r *http.Request) uint64 {
 	return 0
 }
 
-// activityAppend builds an append-to-#activity-feed patch tagged with the event
+// activityAppend builds an append-to-#activity-feed patch tagged with the entry
 // Seq as the SSE id (so Last-Event-ID advances for gap-free reconnect).
 func activityAppend(seq uint64, rowHTML string) []byte {
 	var b bytes.Buffer

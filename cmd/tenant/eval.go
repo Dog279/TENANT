@@ -779,7 +779,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			obs = func(e agent.Event) {
 				switch e.Kind {
 				case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-					e.Agent = id
+					e.Agent, e.Source = id, "eval"
 					events(e)
 				}
 			}

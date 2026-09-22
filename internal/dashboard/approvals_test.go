@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
 // fakeApprovals is a static ApprovalControl for the REST tests.
@@ -92,11 +93,11 @@ func TestRESTApprovals_NotConfigured(t *testing.T) {
 // TestRESTActivity_SinceCursor: GET /api/activity?since= returns events after
 // the cursor plus the new head cursor.
 func TestRESTActivity_SinceCursor(t *testing.T) {
-	l := agent.NewEventLog(100)
-	l.Append(agent.Event{Kind: agent.EventToolCall, Tool: "os_read"})
-	l.Append(agent.Event{Kind: agent.EventFinal, Text: "done"})
+	l := logs.NewMemory(100)
+	logEvent(l, agent.Event{Kind: agent.EventToolCall, Tool: "os_read"})
+	logEvent(l, agent.Event{Kind: agent.EventFinal, Text: "done"})
 	s := New(Config{}, nil, &restFakeTools{}, nil, agent.NewBroker(0), nil)
-	s.SetEventLog(l)
+	s.SetLogs(l)
 
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/activity", nil))
@@ -110,7 +111,7 @@ func TestRESTActivity_SinceCursor(t *testing.T) {
 	if len(resp.Events) != 2 || resp.Cursor != 2 {
 		t.Fatalf("events=%d cursor=%d, want 2/2", len(resp.Events), resp.Cursor)
 	}
-	if resp.Events[0].Kind != "tool_call" || resp.Events[0].Tool != "os_read" {
+	if resp.Events[0].Kind != "tool_call" || resp.Events[0].Tool != "os_read" || resp.Events[0].Source != "turns" || resp.Events[0].Level != "INFO" {
 		t.Fatalf("event[0] = %+v", resp.Events[0])
 	}
 

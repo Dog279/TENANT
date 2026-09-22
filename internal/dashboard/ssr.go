@@ -99,7 +99,8 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 
 	// Real-time event stream (chat transcript + activity feed) — TEN-109.
 	mux.HandleFunc("GET /events", s.handleEventsSSE)
-	mux.HandleFunc("GET /activity/events", s.handleActivitySSE) // TEN-238: evlog-driven backfill+replay stream
+	mux.HandleFunc("GET /activity/events", s.handleActivitySSE)                 // log-hub backfill + replay stream
+	mux.HandleFunc("GET /activity/files/{source}/{name}", s.handleActivityFile) // one on-disk log file, plain text
 
 	// Memory curator pages (TEN-111). Mounted unconditionally and nil-guarded:
 	// a server without a MemoryControl renders an "isn't configured" state

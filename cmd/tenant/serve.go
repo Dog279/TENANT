@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"tenant/internal/cron"
 	"tenant/internal/dashboard"
 	"tenant/internal/improve"
+	"tenant/internal/logs"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/distill"
 	"tenant/internal/memory/skills"
@@ -79,9 +81,20 @@ func cmdServe(ctx context.Context, args []string) error {
 	// (notify/sysCh) routes every status line to the log so an operator reading
 	// `journalctl`/the log file sees setup, health, fallback, cron, and relay
 	// activity exactly as the TUI would surface it.
-	log := newLogger()
+	// The unified log book (internal/logs): every subsystem's lines are filed
+	// under <data>/logs/<source>/<day>.log and retained for the dashboard feed;
+	// stderr keeps the TENANT_LOG-filtered stream the supervisor captures,
+	// exactly as before (the hub handler tees to it).
+	hub, herr := openLogHub(c)
+	if herr != nil {
+		hub = logs.NewMemory(0)
+		fmt.Fprintln(os.Stderr, "warning: "+herr.Error()+" — logging to memory only")
+	}
+	defer hub.Close()
+	log := slog.New(hub.Handler(newLogger().Handler()))
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	hub.Start(ctx)
 
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) {
@@ -100,7 +113,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			select {
 			case s := <-sysCh:
 				fmt.Println("• " + s)
-				log.Info("serve", "evt", s)
+				hub.Logf("system", slog.LevelInfo, s)
 			case <-ctx.Done():
 				return
 			}
@@ -117,7 +130,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// Resilient launch: degrade to echo rather than abort if the model can't be
 	// built, so the hub still comes up and the operator can recover via the
 	// dashboard's model page. `degraded` suppresses autonomous work on echo.
-	router, degraded, degradedBanner, err := buildRouterResilient(c, log)
+	router, degraded, degradedBanner, err := buildRouterResilient(c, log.With("source", "model"))
 	if err != nil {
 		return err
 	}
@@ -144,7 +157,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// from --allow-* flags, overridden by persisted per-category modes. In serve
 	// there is no TUI to prompt, so a headless drain (below) routes "ask"-mode
 	// requests to the dashboard.
-	broker := newApprovalBroker(log)
+	broker := newApprovalBroker(log.With("source", "approvals"))
 	broker.seedFromFlags(pf)
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
@@ -211,10 +224,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	mux.SetEmbedder(embedderID, skEmb)
 
 	// Auto-fallback (TEN-246): wire the configured chain + surface failovers.
-	if err := installRouteBigRole(router, c.cfgDir, c.lc, c.planCeiling, log); err != nil {
+	if err := installRouteBigRole(router, c.cfgDir, c.lc, c.planCeiling, log.With("source", "route")); err != nil {
 		return err
 	}
-	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
+	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log.With("source", "model"))
 	router.SetFailoverObserver(func(ev model.FailoverEvent) {
 		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
 		to := fallbackLabelToProvider(ev.To, c.lc.Provider)
@@ -240,7 +253,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return merr
 	}
 	defer meta.Close()
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	soulLive := soul.NewLive(st.soul)
@@ -257,16 +270,18 @@ func cmdServe(ctx context.Context, args []string) error {
 	bus := orchestra.NewBus()
 	defer bus.Close()
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log}
+	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
 
-	// Event broker + retained log. emit fans every event to BOTH the live
-	// broker (dashboard chat/feed) AND the replayable log (backfill + the
-	// /api/activity projection).
+	// Event broker + the log book. emit fans every event to BOTH the live
+	// broker (dashboard chat/feed) AND the hub, which files it under its source
+	// folder (turns / subagents / approvals / cron / …) and retains it for the
+	// Activity backfill + the /api/activity projection.
 	evBroker := agent.NewBroker(0)
-	evlog := agent.NewEventLog(10000)
 	emit := func(ev agent.Event) {
 		evBroker.Publish(ev)
-		evlog.Append(ev)
+		if e, ok := agent.EntryFor(ev); ok { // denylists token/usage/assistant/memory noise
+			hub.Log(e)
+		}
 	}
 
 	// Sub-agent + bus activity mirrored to the dashboard feed (attributed by
@@ -383,7 +398,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		}
 	}
 
-	routeRT, err = newRouteRuntime(c.lc, c.cfgDir, c.dataDir, router, log)
+	routeRT, err = newRouteRuntime(c.lc, c.cfgDir, c.dataDir, router, log.With("source", "route"))
 	if err != nil {
 		return err
 	}
@@ -406,7 +421,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			MaxRetries: 1,
 			Observer:   emit,
 		},
-		Logger:       log,
+		Logger:       log.With("source", "turns"),
 		Stream:       true,
 		Observer:     emit,
 		RouteHook:    routeRT.Hook(),
@@ -459,7 +474,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		fullReg:      mainTools,
 		fullDisp:     mainTools,
 		sysPrompt:    sysPrompt,
-		log:          log,
+		log:          log.With("source", "cron"),
 		routeHook:    routeRT.Hook(),
 		routeActive:  routeRT.Active,
 		routeSticky:  routeRT.Sticky,
@@ -492,7 +507,7 @@ func cmdServe(ctx context.Context, args []string) error {
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
-		}, log)
+		}, log.With("source", "cron"))
 		cronEngine.SetPaused(degraded.Degraded)
 		cronEngine.Prime(cron.PrimeOptions{
 			Location: cronLoc,
@@ -519,7 +534,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	// modelControl powers the dashboard model + key pages and re-points
 	// tool-ranking at a new embedder after a /model swap.
-	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log, degraded: degraded}
+	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded}
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
@@ -555,8 +570,8 @@ func cmdServe(ctx context.Context, args []string) error {
 		models:      dashModel{mc: modelCtl},
 		approvals:   broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
 		broker:      evBroker,
-		evlog:       evlog,
-		log:         log,
+		logs:        hub,
+		log:         log.With("source", "dashboard"),
 		notify:      pushSys,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -572,7 +587,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	relayMgr := buildServeRelay(ctx, serveRelayDeps{
 		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
-		emit: emit, notify: pushSys, degraded: degraded, log: log, routeHook: routeRT.Hook(),
+		emit: emit, notify: pushSys, degraded: degraded, log: log.With("source", "discord"), routeHook: routeRT.Hook(),
 		routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 	})
 
@@ -582,7 +597,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	imsgAllowMgr := buildServeIMessage(ctx, serveIMessageDeps{
 		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
-		meta: meta, broker: broker, degraded: degraded, emit: emit, notify: pushSys, log: log,
+		meta: meta, broker: broker, degraded: degraded, emit: emit, notify: pushSys, log: log.With("source", "imessage"),
 		routeHook: routeRT.Hook(), routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 	})
 	dashMgr.access = dashAccess{im: imsgAllowMgr, relay: relayMgr}
@@ -594,7 +609,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		c: c, pf: pf, on: *selfImprove, router: router, distiller: distiller, distillJob: distillJob,
 		skills: skillStore, embedder: skEmb, stores: st, sme: smeStore, smeLive: smeLive, refreshProfile: refreshProfile,
 		degraded: degraded, feed: sysCh, distillEvery: *distillEvery, profileEvery: *profileEvery,
-		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log,
+		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log.With("source", "improve"),
 		events: emit, evalProg: evalProg,
 	})
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
@@ -615,7 +630,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// is up — publishes the loopback dashboard onto the tailnet so the operator
 	// can reach the hub off-LAN, matching the TUI. Best-effort.
 	if c.lc != nil && c.lc.Tailscale.Serve {
-		tsMgr := newTailscaleManager(ctx, dashMgr.Status, log)
+		tsMgr := newTailscaleManager(ctx, dashMgr.Status, log.With("source", "dashboard"))
 		if url, terr := tsMgr.reassertOnLaunch(); terr != nil {
 			pushSys("tailscale: serve not restored — " + terr.Error())
 		} else {
@@ -634,7 +649,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// Peer liveness heartbeat (TEN-250): inbound OnAuth + background outbound
 	// prober. Tracked headless too (the dashboard peer surface can read it later).
 	peerHealth := newPeerHealthRegistry()
-	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log}).run(ctx)
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log.With("source", "peering")}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
@@ -646,7 +661,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	var peerSrvStop func()
 	if c.lc != nil && c.lc.Peer.Listen != "" {
-		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen, log)
+		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen, log.With("source", "peering"))
 		if perr != nil {
 			pushSys("peer: listener not started — " + perr.Error())
 		} else {
@@ -655,7 +670,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		}
 	}
 
-	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log}
+	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
 	if degraded.Degraded() && degraded.class == degradeReachability {
 		reconnectMon.OnGenerationDown()
 	}

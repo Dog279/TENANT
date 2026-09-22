@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
 // AgentRunner is the minimal slice of *agent.Agent the dashboard drives: a
@@ -80,7 +81,7 @@ type Server struct {
 	integrations IntegrationsControl // TEN-206: integration-config page; nil = "not configured"
 	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
 	approvals    ApprovalControl     // TEN-194: headless approval surface (serve mode); nil = TUI drains its own prompts
-	evlog        *agent.EventLog     // TEN-238: retained activity-feed log (backfill + replay); nil = live-only
+	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Activity unavailable
 	broker       *agent.Broker
 	mux          *http.ServeMux
 	log          *slog.Logger

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
 // fakeTools is a minimal ToolControl for the SSR page tests.
@@ -185,7 +185,7 @@ func TestSSR_PluginToggleForm(t *testing.T) {
 // tests can check, uses the colon syntax and none of the dead hyphen forms.
 func TestSSR_DatastarColonSyntax(t *testing.T) {
 	s := mustServer()
-	s.SetEventLog(agent.NewEventLog(10)) // TEN-238: activity feed renders only when an event log is wired
+	s.SetLogs(logs.NewMemory(10)) // the activity feed renders only when a log hub is wired
 	cases := []struct {
 		path, want, reject string
 	}{

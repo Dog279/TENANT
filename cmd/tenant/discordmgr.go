@@ -97,7 +97,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		obs = func(e agent.Event) {
 			switch e.Kind {
 			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent = "tenant-discord"
+				e.Agent, e.Source = "tenant-discord", "discord"
 				d.events(e)
 			}
 		}

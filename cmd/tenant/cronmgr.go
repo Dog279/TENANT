@@ -103,7 +103,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		return func(e agent.Event) {
 			switch e.Kind {
 			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent = id
+				e.Agent, e.Source = id, "cron"
 				d.events(e)
 			}
 		}

@@ -30,14 +30,16 @@ import (
 // attachEvent mirrors the dashboard's restActivityEvent JSON (stable since
 // TEN-194). Kept local so the client doesn't import the dashboard package.
 type attachEvent struct {
-	Seq   uint64 `json:"seq"`
-	At    string `json:"at"`
-	Kind  string `json:"kind"`
-	Agent string `json:"agent,omitempty"`
-	Iter  int    `json:"iter,omitempty"`
-	Tool  string `json:"tool,omitempty"`
-	IsErr bool   `json:"is_err,omitempty"`
-	Text  string `json:"text,omitempty"`
+	Seq    uint64 `json:"seq"`
+	At     string `json:"at"`
+	Kind   string `json:"kind"`
+	Agent  string `json:"agent,omitempty"`
+	Iter   int    `json:"iter,omitempty"`
+	Tool   string `json:"tool,omitempty"`
+	IsErr  bool   `json:"is_err,omitempty"`
+	Text   string `json:"text,omitempty"`
+	Source string `json:"source,omitempty"` // the log-book folder (turns, discord, cron, …)
+	Level  string `json:"level,omitempty"`
 }
 
 type attachActivityResp struct {
@@ -60,6 +62,8 @@ func cmdAttach(ctx context.Context, args []string) error {
 	token := fs.String("token", "", "dashboard auth bearer token (default: config.json dashboard.auth)")
 	since := fs.Uint64("since", 0, "start from this event cursor (0 = the start of the retained log)")
 	interval := fs.Duration("interval", time.Second, "poll interval when --follow")
+	source := fs.String("source", "", "only this log source / folder (e.g. discord, cron, turns); default all")
+	level := fs.String("level", "", "only lines at or above this level: warn|error; default all")
 	c := bindCommon(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -88,9 +92,16 @@ func cmdAttach(ctx context.Context, args []string) error {
 		fmt.Println("(snapshot — pass --follow to keep tailing)")
 	}
 
+	filter := ""
+	if *source != "" {
+		filter += "&source=" + *source
+	}
+	if *level != "" {
+		filter += "&level=" + *level
+	}
 	cursor := *since
 	for {
-		evs, next, ferr := attachFetchActivity(ctx, httpc, base, tok, cursor)
+		evs, next, ferr := attachFetchActivityFiltered(ctx, httpc, base, tok, cursor, filter)
 		if ferr != nil {
 			if !*follow {
 				return fmt.Errorf("attach: activity fetch failed: %w", ferr)
@@ -157,8 +168,14 @@ func attachFetchStatus(ctx context.Context, httpc *http.Client, base, token stri
 }
 
 func attachFetchActivity(ctx context.Context, httpc *http.Client, base, token string, since uint64) ([]attachEvent, uint64, error) {
+	return attachFetchActivityFiltered(ctx, httpc, base, token, since, "")
+}
+
+// attachFetchActivityFiltered reads one page of the projection; filter is an
+// optional "&source=…&level=…" narrowing (the log-book folder / level floor).
+func attachFetchActivityFiltered(ctx context.Context, httpc *http.Client, base, token string, since uint64, filter string) ([]attachEvent, uint64, error) {
 	var resp attachActivityResp
-	url := fmt.Sprintf("%s/api/activity?since=%d", base, since)
+	url := fmt.Sprintf("%s/api/activity?since=%d%s", base, since, filter)
 	if err := attachGet(ctx, httpc, url, token, &resp); err != nil {
 		return nil, since, err
 	}
@@ -179,6 +196,9 @@ func formatAttachEvent(e attachEvent) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s  %-14s", ts, e.Kind)
+	if e.Source != "" {
+		fmt.Fprintf(&b, " %-10s", "["+e.Source+"]")
+	}
 	if e.Agent != "" {
 		fmt.Fprintf(&b, " (%s)", e.Agent)
 	}

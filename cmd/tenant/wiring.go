@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/logs"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -30,6 +30,7 @@ type commonFlags struct {
 	agent   string
 	dataDir string
 	cfgDir  string
+	logDir  string // log book root override (default <data>/logs, or config logs.dir)
 
 	// vLLM overrides. When backend=vllm and these are set, the CLI
 	// builds an in-memory registry: generation roles point at this
@@ -74,6 +75,7 @@ func bindCommon(fs *flag.FlagSet) *commonFlags {
 	fs.StringVar(&c.agent, "agent", "main", "agent id")
 	fs.StringVar(&c.dataDir, "data", "", "data dir (default OS data dir)")
 	fs.StringVar(&c.cfgDir, "config", "", "config dir (default OS config dir)")
+	fs.StringVar(&c.logDir, "log-dir", "", "log book root: one folder per subsystem (default <data>/logs; config logs.dir)")
 	fs.StringVar(&c.vllmEndpoint, "vllm-endpoint", "", "vLLM base URL, e.g. http://localhost:8000 (backend=vllm)")
 	fs.StringVar(&c.vllmModel, "vllm-model", "", "vLLM model id, e.g. gemma-4-26b (backend=vllm)")
 	fs.StringVar(&c.vllmToolFmt, "vllm-tool-format", "gemma", "tool format for the vLLM model: qwen|gemma|llama|mistral|openai")
@@ -284,15 +286,51 @@ func logLevel() slog.Level {
 	return slog.LevelWarn
 }
 
-// newFileLogger routes logs to a file instead of stderr — required by
-// the TUI, whose alt-screen would be corrupted by stderr writes. Falls
-// back to discarding logs if the file can't be opened.
-func newFileLogger(path string) (*slog.Logger, func()) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return slog.New(slog.NewTextHandler(io.Discard, nil)), func() {}
+// logsRoot resolves the log book root: --log-dir, else config logs.dir, else
+// <data>/logs.
+func (c *commonFlags) logsRoot() string {
+	if c.logDir != "" {
+		return expandPath(c.logDir)
 	}
-	return slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel()})), func() { _ = f.Close() }
+	if c.lc != nil && c.lc.Logs.Dir != "" {
+		return expandPath(c.lc.Logs.Dir)
+	}
+	return filepath.Join(c.dataDir, "logs")
+}
+
+// logsOptions maps config logs.* (+ TENANT_LOG=debug) onto hub options.
+func (c *commonFlags) logsOptions() logs.Options {
+	var opts logs.Options
+	var cfg logsConfig
+	if c.lc != nil {
+		cfg = c.lc.Logs
+	}
+	switch {
+	case cfg.RetentionDays < 0:
+		opts.Retention = -1
+	case cfg.RetentionDays > 0:
+		opts.Retention = time.Duration(cfg.RetentionDays) * 24 * time.Hour
+	}
+	if cfg.MaxFieldBytes != 0 {
+		opts.MaxFieldBytes = cfg.MaxFieldBytes
+	}
+	if strings.EqualFold(cfg.Level, "debug") || logLevel() == slog.LevelDebug {
+		opts.MinLevel = slog.LevelDebug
+	}
+	return opts
+}
+
+// openLogHub opens the unified log book for a long-running surface (serve,
+// tui) and installs it as the process default, so every logs.For(...) logger
+// anywhere in the binary starts filing. The caller Starts it (discovery,
+// tailing, retention) once it has a lifetime context, and Closes it on exit.
+func openLogHub(c *commonFlags) (*logs.Hub, error) {
+	h, err := logs.Open(c.logsRoot(), c.logsOptions())
+	if err != nil {
+		return nil, err
+	}
+	logs.Install(h)
+	return h, nil
 }
 
 // buildRouter constructs a model.Router for the chosen backend.

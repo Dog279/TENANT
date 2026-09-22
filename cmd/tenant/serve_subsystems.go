@@ -72,7 +72,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		d.emit(agent.Event{Kind: agent.EventIngest, Text: "Discord: " + preview})
 	}
 
-	discordBroker := newDiscordApprovalBroker(d.log)
+	discordBroker := newDiscordApprovalBroker(d.log.With("source", "approvals"))
 	discordBroker.reg.emit = d.emit // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
 	discordBroker.persist = func(snap map[string]string) {
 		if c.lc == nil {
@@ -204,7 +204,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// Offsite broker: own per-category modes (default DENY) but SHARES the global
 	// broker's request channel, so an "ask" lands in the same queue the headless
 	// drain surfaces on the dashboard.
-	imsgBroker := newOffsiteApprovalBroker(d.log, d.broker)
+	imsgBroker := newOffsiteApprovalBroker(d.log.With("source", "approvals"), d.broker)
 	// TEN-230 Phase 2: "ask" prompts the texter over iMessage, not the host.
 	imsgApprover := newIMessageApprover(d.log)
 	imsgBroker.ask = imsgApprover.askBackend()

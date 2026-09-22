@@ -110,13 +110,7 @@ func (s *Server) handleChatStop(w http.ResponseWriter, _ *http.Request) {
 // counts, per-iteration assistant prose, and the memory-budget report — so any
 // meaningful or future event kind shows by default (tool calls, lifecycle,
 // cross-agent activity, bus messages). (TEN-234)
-func activityRelevant(ev agent.Event) bool {
-	switch ev.Kind {
-	case agent.EventToken, agent.EventUsage, agent.EventAssistant, agent.EventMemory:
-		return false
-	}
-	return true
-}
+func activityRelevant(ev agent.Event) bool { return agent.Retained(ev) }
 
 func activityRow(ev agent.Event) string {
 	detail := ev.Text

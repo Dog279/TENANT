@@ -104,6 +104,9 @@ type launchConfig struct {
 	// Goal holds /goal autonomous-loop settings (TEN-216). Persisted only — no
 	// inline command sets it.
 	Goal goalConfig `json:"goal,omitempty"`
+	// Logs tunes the unified log book (internal/logs): where the per-source
+	// folders live, how long files are kept, the level floor.
+	Logs logsConfig `json:"logs,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`
@@ -114,6 +117,20 @@ type launchConfig struct {
 	EmbedModel    string `json:"embed_model,omitempty"`
 	EmbedDim      int    `json:"embed_dim,omitempty"`
 	SSEAddr       string `json:"sse_addr,omitempty"`
+}
+
+// logsConfig is the log book's persisted tuning. Every field is optional.
+type logsConfig struct {
+	// Dir is the log root (default <data>/logs). One folder per source inside.
+	Dir string `json:"dir,omitempty"`
+	// RetentionDays deletes a source's files older than this (0 ⇒ 30; -1 ⇒ never).
+	RetentionDays int `json:"retention_days,omitempty"`
+	// Level is the floor for the files + feed: "info" (default) or "debug".
+	// TENANT_LOG=debug also lowers it for that launch.
+	Level string `json:"level,omitempty"`
+	// MaxFieldBytes caps one value (a tool result, an argument blob) per line
+	// (0 ⇒ 4096; -1 ⇒ unlimited).
+	MaxFieldBytes int `json:"max_field_bytes,omitempty"`
 }
 
 // goalConfig holds persisted /goal autonomous-loop settings (TEN-216).

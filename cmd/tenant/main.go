@@ -82,6 +82,8 @@ func main() {
 		err = cmdServe(ctx, os.Args[2:])
 	case "attach":
 		err = cmdAttach(ctx, os.Args[2:])
+	case "log":
+		err = cmdLog(ctx, os.Args[2:])
 	case "tui":
 		err = cmdTUI(ctx, os.Args[2:])
 	case "orchestrate", "team":
@@ -151,6 +153,9 @@ COMMANDS
   mcp connect <url>        connect to a remote MCP server (OAuth2.1+DCR browser sign-in) + list its tools
   peer <invite|join|...>   federate Tenant instances: mutual-consent invite pairing + share policy
   serve                    run background self-improvement (distillation) on a cadence
+  attach [URL]             watch a running hub's activity feed (--follow; --source discord)
+  log <source> "<msg>"     file a line into the log book under <source> (folder + dashboard tab
+                           appear on first use; k=v fields; --level warn|error; --list)
   tui                      full-screen terminal UI: streaming chat + live activity feed
   orchestrate "<task>"     multi-agent team: orchestrator spawns concurrent sub-agents that
                            talk over a live bus and self-resolve; streams all progress
