@@ -1,9 +1,40 @@
 {{define "content"}}
+{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
+{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
 <form method="POST" action="/posture" class="postbar">
   <span class="dim">Posture</span>
   <button name="allow_send" value="false" class="btn{{if not .AllowSend}} on{{end}}">Read-only</button>
   <button name="allow_send" value="true" class="btn{{if .AllowSend}} on{{end}}">Allow-send</button>
 </form>
+{{if .RulesOn}}
+<div class="card">
+  <div class="card-head">Tool rules <span class="dim">· per-tool allow / deny / ask, checked before the safety category on every surface — most specific wins</span></div>
+  {{range .Rules}}
+  <div class="ghead" id="rule-{{.Pattern}}">
+    <span class="nm">{{.Pattern}}</span>
+    <span class="{{if eq .Mode "deny"}}act-errtag{{else if eq .Mode "ask"}}risk{{else}}tag{{end}}">{{.Mode}}</span>
+    <span class="dim">{{.Kind}}</span>
+    <span class="sp"></span>
+    <form method="POST" action="/tools/rules/remove" class="inline">
+      <input type="hidden" name="pattern" value="{{.Pattern}}">
+      <button type="submit" class="btn sm danger">remove</button>
+    </form>
+  </div>
+  {{else}}
+  <div class="dim">No rules yet. A tool the categories don't know prompts every time; add its name here to allow it, deny it, or always ask.</div>
+  {{end}}
+  <form method="POST" action="/tools/rules/add" class="inline" style="margin-top:10px">
+    <input type="text" name="pattern" class="cinput wide" placeholder="write_note · mcp:127.0.0.1:9000:* · delete_*" required>
+    <select name="mode" class="cinput">
+      <option value="allow">allow</option>
+      <option value="deny">deny</option>
+      <option value="ask">ask</option>
+    </select>
+    <button type="submit" class="btn">Add rule</button>
+  </form>
+  <div class="dim" style="margin-top:8px">A bare name (<code>write_note</code>) matches that tool on any connector or the local tool of that name; an exact id (<code>mcp:127.0.0.1:9000:write_note</code>) one tool on one server; a glob (<code>delete_*</code>, <code>mcp:127.0.0.1:9000:*</code>) many. Rules also live in <code>settings.&lt;agent&gt;.json</code> under <code>tool_rules</code> — edit the file and the running hub picks it up.</div>
+</div>
+{{end}}
 {{range .Groups}}
 <div class="tgroup">
   <div class="ghead">

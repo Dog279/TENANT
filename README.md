@@ -39,7 +39,10 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
   concurrent sub-agents that coordinate over a live bus; a research mode plans →
   fans out web researchers → returns a cited report.
 - **Safety.** Dangerous actions (exec / write / destructive / outbound send)
-  require explicit approval, with per-category permissions you control.
+  require explicit approval, with per-category permissions you control, plus
+  per-tool rules (`/permissions add delete_* deny`, or a JSON map in
+  `settings.<agent>.json` the running hub reloads) for tools nobody
+  pre-programmed — a newly adopted MCP server's, for instance.
 - **Surfaces.** Full-screen TUI (streaming chat + live activity), a
   server-rendered web dashboard (no JS build step), an MCP memory server over
   stdio, and an **offsite Discord relay** — text your agent from your phone and

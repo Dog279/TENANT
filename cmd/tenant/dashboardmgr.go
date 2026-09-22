@@ -36,6 +36,7 @@ type dashboardManager struct {
 	integrations dashboard.IntegrationsControl // TEN-206: integration-config surface (nil-safe)
 	access       dashboard.AccessControl       // TEN-208: iMessage + Discord access surface (nil-safe)
 	approvals    dashboard.ApprovalControl     // TEN-194: headless approval queue surface (serve mode; nil-safe)
+	rules        dashboard.RuleControl         // per-tool permission rules card on the Tools page (nil-safe)
 	broker       *agent.Broker
 	logs         *logs.Hub // the unified log book: Activity feed + folders (nil-safe)
 	log          *slog.Logger
@@ -86,6 +87,9 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.approvals != nil {
 		srv.SetApprovals(m.approvals)
+	}
+	if m.rules != nil {
+		srv.SetRules(m.rules)
 	}
 	if m.logs != nil {
 		srv.SetLogs(m.logs)

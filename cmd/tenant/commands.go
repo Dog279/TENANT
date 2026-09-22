@@ -1843,6 +1843,20 @@ func cmdTUI(ctx context.Context, args []string) error {
 		stgMu.Unlock()
 		saveSettings()
 	}
+	// Per-tool permission rules (toolrules.go): loaded from the same file,
+	// persisted on every /permissions add|rm, and re-read when the file is
+	// edited by hand — so a rule for a tool nobody programmed for is one line
+	// in settings.<agent>.json away, with no restart.
+	if n, skipped := defaultToolRules.Load(stg.ToolRules); skipped > 0 {
+		pushSys(fmt.Sprintf("permissions: %d tool rule(s) loaded, %d invalid skipped", n, skipped))
+	}
+	defaultToolRules.persist = func(rules map[string]string) {
+		stgMu.Lock()
+		stg.ToolRules = rules
+		stgMu.Unlock()
+		saveSettings()
+	}
+	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is PER-AGENT (each agent gets its own browser so concurrent
 	// navigation can't clobber a shared tab), so keep it OUT of the shared
@@ -2412,6 +2426,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// The broker IS the ApprovalControl (TEN-203): a dashboard open alongside
 		// the TUI now shows + resolves the SAME pending queue, no channel-stealing.
 		approvals: broker,
+		rules:     dashRules{defaultToolRules},
 		broker:    evBroker,
 		logs:      hub, // the log book: Activity backfill + replay + the folders on disk
 		log:       log.With("source", "dashboard"),

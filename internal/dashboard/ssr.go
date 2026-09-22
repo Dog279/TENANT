@@ -115,6 +115,8 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /tools/{name}/toggle", s.handleToolToggleForm)
 	mux.HandleFunc("POST /plugins/{label}/toggle", s.handlePluginToggleForm)
 	mux.HandleFunc("POST /posture", s.handlePostureForm)
+	mux.HandleFunc("POST /tools/rules/add", s.handleRuleAddForm)
+	mux.HandleFunc("POST /tools/rules/remove", s.handleRuleRemoveForm)
 	mux.HandleFunc("POST /chat/send", s.handleChatSend)
 	mux.HandleFunc("POST /chat/interject", s.handleChatInterject)
 	mux.HandleFunc("POST /chat/stop", s.handleChatStop)
@@ -272,9 +274,13 @@ type toolsData struct {
 	layoutData
 	Groups    []toolGroup
 	AllowSend bool
+	// Per-tool permission rules card (RuleControl); RulesOn=false hides it.
+	RulesOn  bool
+	Rules    []ToolRuleRow
+	Msg, Err string
 }
 
-func (s *Server) handleToolsPage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
 	tools := s.toolList()
 	var order []string
 	groups := map[string]*toolGroup{}
@@ -298,11 +304,18 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, _ *http.Request) {
 	for _, p := range order {
 		out = append(out, *groups[p])
 	}
-	s.render(w, s.tmpl.tools, toolsData{
+	d := toolsData{
 		layoutData: layoutData{Title: "Tools", Page: "tools"},
 		Groups:     out,
 		AllowSend:  posture(tools),
-	})
+		Msg:        r.URL.Query().Get("msg"),
+		Err:        r.URL.Query().Get("err"),
+	}
+	if s.rules != nil {
+		d.RulesOn = true
+		d.Rules = s.rules.Rules()
+	}
+	s.render(w, s.tmpl.tools, d)
 }
 
 // handleActivityPage + the activity SSE live in ssr_activity.go (TEN-238).

@@ -44,6 +44,28 @@ turns): adoption and trust prompts auto-approve, so an agent that builds a tool
 can wire it in and use it in one turn. `deny` forbids adoption entirely.
 Unattended cron jobs never get the `mcp_*` tools regardless.
 
+## Per-tool rules (for tools nobody pre-programmed)
+
+Trust is per server; rules are per tool, and they win over both the category
+and the trust mode:
+
+```
+/permissions add write_note allow          # this tool, on any server, never prompts
+/permissions add delete_* deny             # any tool named delete_… is refused
+/permissions add mcp:127.0.0.1:9000:* allow   # everything this server offers
+/permissions rm delete_*
+```
+
+The same rules are one JSON object in `settings.<agent>.json`:
+
+```json
+"tool_rules": {"write_note": "allow", "delete_*": "deny"}
+```
+
+Edit the file and the running hub applies it within seconds; the dashboard's
+Tools page has the same list. A tool with no rule follows its server's trust
+(`ask` = prompt; `allow` = run), exactly as above.
+
 ## Writing your own
 
 - Keep it Streamable HTTP (the SDKs' default). Tenant connects only over HTTP;

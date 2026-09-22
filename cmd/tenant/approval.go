@@ -271,6 +271,7 @@ type approvalBroker struct {
 	requests chan tui.ApprovalRequest
 	persist  func(map[string]string) // save modes to settings (nil = no persist)
 	log      *slog.Logger
+	rules    *toolRules // per-tool permission rules, shared process-wide (toolrules.go); nil in bare tests
 
 	// reg is the SHARED id-keyed pending registry (TEN-203). The host broker owns
 	// it; the iMessage offsite broker shares the SAME registry (so its approvals
@@ -297,6 +298,7 @@ func newApprovalBroker(log *slog.Logger) *approvalBroker {
 		reg:      newApprovalRegistry(),
 		origin:   "local",
 		log:      log,
+		rules:    defaultToolRules,
 	}
 	for _, c := range catOrder {
 		b.modes[c] = modeAsk // safe by default: everything prompts
@@ -361,6 +363,7 @@ func newOffsiteApprovalBroker(log *slog.Logger, host *approvalBroker) *approvalB
 		reg:      host.reg,      // SHARE the registry so iMessage approvals are resolvable by id (TEN-203)
 		origin:   "imessage",
 		log:      log,
+		rules:    defaultToolRules, // tool rules are about the tool, not the surface: one set everywhere
 	}
 	for _, c := range catOrder {
 		b.modes[c] = modeDeny
@@ -382,6 +385,7 @@ func newDiscordApprovalBroker(log *slog.Logger) *approvalBroker {
 		session: map[string]bool{},
 		reg:     newApprovalRegistry(), // own registry; wiring may point reg.emit at the shared stream for the visibility bridge
 		origin:  "discord",
+		rules:   defaultToolRules,
 		log:     log,
 	}
 	for _, c := range catOrder {
@@ -451,6 +455,34 @@ func (b *approvalBroker) logInfo(msg string, kv ...any) {
 
 func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) bool {
 	cat := categorize(action)
+
+	// A per-tool rule (toolrules.go) is the operator's explicit word for THIS
+	// tool and wins over the category: allow/deny decide silently; ask always
+	// prompts, even past a category allow or a session grant.
+	if b.rules != nil {
+		if rmode, pat, ok := b.rules.Lookup(action); ok {
+			switch rmode {
+			case "allow":
+				b.logInfo("approval allowed by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
+				return true
+			case "deny":
+				b.logInfo("approval denied by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
+				return false
+			}
+			b.logInfo("approval prompt forced by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
+			switch b.askDecision(ctx, cat, action, detail) {
+			case tui.ApproveAlways:
+				// "Always" on a rule-forced prompt means THIS tool, not its category.
+				_ = b.rules.Set(pat, "allow")
+				return true
+			case tui.ApproveSession, tui.ApproveOnce:
+				return true // a rule that says ask keeps asking: session = this time
+			default:
+				return false
+			}
+		}
+	}
+
 	b.mu.Lock()
 	mode := b.modes[cat]
 	sess := b.session[cat]
@@ -483,6 +515,36 @@ func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) boo
 	default:
 		return false
 	}
+}
+
+// modesPublic is modesSnapshot with locking (for the settings watcher).
+func (b *approvalBroker) modesPublic() map[string]string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.modesSnapshot()
+}
+
+// --- tui.ToolRuleControl (per-tool rules; the set is shared by every broker) ---
+
+func (b *approvalBroker) Rules() []tui.ToolRuleInfo {
+	if b.rules == nil {
+		return nil
+	}
+	return b.rules.Rules()
+}
+
+func (b *approvalBroker) SetRule(pattern, mode string) error {
+	if b.rules == nil {
+		return fmt.Errorf("tool rules are not available")
+	}
+	return b.rules.Set(pattern, mode)
+}
+
+func (b *approvalBroker) RemoveRule(pattern string) (bool, error) {
+	if b.rules == nil {
+		return false, fmt.Errorf("tool rules are not available")
+	}
+	return b.rules.Remove(pattern), nil
 }
 
 // AskPairing raises an Approve/Deny prompt for an inbound peer pairing request

@@ -385,6 +385,23 @@ type ApprovalRequest struct {
 	Reply    chan ApprovalDecision
 }
 
+// ToolRuleInfo is one per-tool permission rule (pattern → mode): the layer the
+// operator fills in for tools the categories cannot know in advance.
+type ToolRuleInfo struct {
+	Pattern string // exact action id, bare tool name, or glob
+	Mode    string // ask | allow | deny
+	Kind    string // exact | name | glob
+}
+
+// ToolRuleControl is the optional per-tool rule surface a PermissionControl
+// may also offer (/permissions add|rm). The rule set is shared by every
+// surface, so it is listed identically under each permissions view.
+type ToolRuleControl interface {
+	Rules() []ToolRuleInfo
+	SetRule(pattern, mode string) error
+	RemoveRule(pattern string) (bool, error)
+}
+
 // PermissionInfo is one safety category's current mode, for /permissions.
 type PermissionInfo struct {
 	Category string
@@ -2842,8 +2859,10 @@ var helpSections = []helpSection{
 		id: "safety", title: "Safety & approvals",
 		tagline: "per-category permission modes; approve/deny paused actions",
 		rows: [][2]string{
-			{"/permissions", "view per-category safety (ask/allow/deny)"},
+			{"/permissions", "view per-category safety (ask/allow/deny) + per-tool rules"},
 			{"/permissions set <cat> <mode>", "e.g. /permissions set exec allow"},
+			{"/permissions add <tool|pattern> <mode>", "per-tool rule: a name (any connector), an exact id, or a glob — delete_* deny, mcp:host:port:* allow"},
+			{"/permissions rm <pattern>", "remove a tool rule"},
 			{"/approve [session|always]", "approve a paused dangerous action"},
 			{"/deny", "reject a paused dangerous action"},
 			{"/imessage [list]", "view the iMessage allowlist + responder state"},
@@ -3305,8 +3324,35 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			default:
 				m.sysChat("set " + cat + " → " + mode)
 			}
+		case (strings.ToLower(f[0]) == "add" || strings.ToLower(f[0]) == "rule") && len(f) >= 3:
+			rc, ok := m.cfg.Perms.(ToolRuleControl)
+			if !ok {
+				m.sysChat("tool rules are not available in this session")
+				break
+			}
+			pattern, mode := f[1], strings.ToLower(f[2])
+			if err := rc.SetRule(pattern, mode); err != nil {
+				m.sysChat("error: " + err.Error())
+				break
+			}
+			m.sysChat("rule: " + pattern + " → " + mode + "   (checked before the category on every surface; most specific pattern wins)")
+		case (strings.ToLower(f[0]) == "rm" || strings.ToLower(f[0]) == "remove" || strings.ToLower(f[0]) == "del") && len(f) >= 2:
+			rc, ok := m.cfg.Perms.(ToolRuleControl)
+			if !ok {
+				m.sysChat("tool rules are not available in this session")
+				break
+			}
+			removed, err := rc.RemoveRule(f[1])
+			switch {
+			case err != nil:
+				m.sysChat("error: " + err.Error())
+			case !removed:
+				m.sysChat("no rule " + f[1] + " (see /permissions)")
+			default:
+				m.sysChat("removed rule " + f[1])
+			}
 		default:
-			m.sysChat("usage: /permissions   |   /permissions set <category> <ask|allow|deny>")
+			m.sysChat("usage: /permissions   |   /permissions set <category> <ask|allow|deny>   |   /permissions add <tool|pattern> <ask|allow|deny>   |   /permissions rm <pattern>")
 		}
 	case "/dashboard":
 		// Start/stop the web control panel live; the choice persists.
@@ -5279,6 +5325,30 @@ func renderPermissionsFor(pc PermissionControl, header, cmd string) (string, str
 		}
 		s.WriteString("  " + cKey.Render(fmt.Sprintf("%-12s", in.Category)) + " " +
 			ms.Render(fmt.Sprintf("%-5s", in.Mode)) + "  " + cDim.Render(in.Desc) + "\n")
+	}
+	// Per-tool rules (shared by every surface) — the layer for tools the
+	// categories don't know: a connector's tools, an unusual action id.
+	if rc, ok := pc.(ToolRuleControl); ok {
+		rules := rc.Rules()
+		manage := "/permissions add <tool|pattern> <mode> · /permissions rm <pattern>"
+		p.WriteString("Tool rules  (checked before the category; most specific wins)   ·   " + manage + "\n")
+		s.WriteString(cHeading.Render("Tool rules") + cDim.Render("  checked before the category; most specific wins   ·   "+manage) + "\n")
+		if len(rules) == 0 {
+			p.WriteString("  (none — a tool the categories don't know prompts every time; add its name to allow, deny, or always ask)\n")
+			s.WriteString("  " + cDim.Render("(none — a tool the categories don't know prompts every time; add its name to allow, deny, or always ask)") + "\n")
+		}
+		for _, r := range rules {
+			p.WriteString(fmt.Sprintf("  %-40s %-5s  %s\n", r.Pattern, r.Mode, r.Kind))
+			ms := cSys
+			switch r.Mode {
+			case "allow":
+				ms = cOnMark
+			case "deny":
+				ms = cErr
+			}
+			s.WriteString("  " + cKey.Render(fmt.Sprintf("%-40s", r.Pattern)) + " " +
+				ms.Render(fmt.Sprintf("%-5s", r.Mode)) + "  " + cDim.Render(r.Kind) + "\n")
+		}
 	}
 	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
 }

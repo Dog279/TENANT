@@ -178,6 +178,20 @@ func cmdServe(ctx context.Context, args []string) error {
 		stgMu.Unlock()
 		saveSettings()
 	}
+	// Per-tool permission rules (toolrules.go): loaded from the same file,
+	// persisted on every /permissions add|rm, and re-read when the file is
+	// edited by hand — so a rule for a tool nobody programmed for is one line
+	// in settings.<agent>.json away, with no restart.
+	if n, skipped := defaultToolRules.Load(stg.ToolRules); skipped > 0 {
+		pushSys(fmt.Sprintf("permissions: %d tool rule(s) loaded, %d invalid skipped", n, skipped))
+	}
+	defaultToolRules.persist = func(rules map[string]string) {
+		stgMu.Lock()
+		stg.ToolRules = rules
+		stgMu.Unlock()
+		saveSettings()
+	}
+	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
 	teamWeb := pf.web
@@ -576,6 +590,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		skills:      dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models:      dashModel{mc: modelCtl},
 		approvals:   broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
+		rules:       dashRules{defaultToolRules},
 		broker:      evBroker,
 		logs:        hub,
 		log:         log.With("source", "dashboard"),

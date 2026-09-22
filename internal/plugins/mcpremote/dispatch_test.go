@@ -102,3 +102,40 @@ func TestDispatcher_TrustModes(t *testing.T) {
 		t.Error("ParseTrust must reject unknown modes")
 	}
 }
+
+// A per-tool rule is consulted before the connector's trust: deny beats a
+// trusted connector, allow skips the gate under ask, ask prompts under allow.
+func TestDispatcher_RulesBeforeTrust(t *testing.T) {
+	calls := 0
+	rules := map[string]string{"mcp:t:delete_all": "deny", "mcp:t:search": "allow", "mcp:t:write_note": "ask"}
+	d := &Dispatcher{label: "mcp:t", gated: map[string]bool{"delete_all": true, "search": true, "write_note": true, "other": true},
+		policy: Policy{
+			Confirm: func(context.Context, string, string) bool { calls++; return true },
+			Rule:    func(action string) string { return rules[action] },
+		}}
+	ctx := context.Background()
+
+	d.SetTrust("allow")
+	if err := d.gateCall(ctx, "delete_all"); err == nil || !strings.Contains(err.Error(), "denied by a tool rule") {
+		t.Errorf("deny rule must beat trust allow: %v", err)
+	}
+	if err := d.gateCall(ctx, "write_note"); err != nil || calls != 1 {
+		t.Errorf("ask rule must prompt even under trust allow: err=%v calls=%d", err, calls)
+	}
+	if err := d.gateCall(ctx, "other"); err != nil || calls != 1 {
+		t.Errorf("no rule + trust allow: no prompt: err=%v calls=%d", err, calls)
+	}
+
+	d.SetTrust("ask")
+	if err := d.gateCall(ctx, "search"); err != nil || calls != 1 {
+		t.Errorf("allow rule must skip the gate under trust ask: err=%v calls=%d", err, calls)
+	}
+	if err := d.gateCall(ctx, "other"); err != nil || calls != 2 {
+		t.Errorf("no rule + trust ask: gated tool prompts: err=%v calls=%d", err, calls)
+	}
+
+	d.SetTrust("deny")
+	if err := d.gateCall(ctx, "search"); err == nil || !strings.Contains(err.Error(), "set to deny") {
+		t.Errorf("connector deny still wins over an allow rule (the operator hid it): %v", err)
+	}
+}

@@ -21,6 +21,11 @@ type settings struct {
 	// mode (ask/allow/deny). Persists "/approve always" and "/permissions
 	// set" so the operator's safety choices survive restarts.
 	Permissions map[string]string `json:"permissions,omitempty"`
+	// ToolRules maps a tool pattern (an exact action id, a bare tool name, or
+	// a glob) to a mode (ask/allow/deny) — the per-tool layer checked before
+	// the category (toolrules.go). Editable by hand: the running hub reloads
+	// this file when it changes.
+	ToolRules map[string]string `json:"tool_rules,omitempty"`
 }
 
 // settingsPath is the per-agent settings file, alongside the soul in the

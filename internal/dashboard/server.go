@@ -82,6 +82,7 @@ type Server struct {
 	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
 	approvals    ApprovalControl     // TEN-194: headless approval surface (serve mode); nil = TUI drains its own prompts
 	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Activity unavailable
+	rules        RuleControl         // per-tool permission rules (Tools page card); nil = card hidden
 	broker       *agent.Broker
 	mux          *http.ServeMux
 	log          *slog.Logger

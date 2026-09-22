@@ -319,9 +319,10 @@ type mcpRuntimeDeps struct {
 	trustAnnotations bool
 	allowWrite       bool
 	confirm          func(context.Context, string, string) bool
-	cacheDir         string            // 0600 OAuth token cache dir (persistence across restarts)
-	log              *slog.Logger      // connect/refresh failure logging (TEN-166)
-	trust            map[string]string // persisted per-connector trust by URL (config mcp_trust); applied on register
+	rule             func(action string) string // per-tool permission rule lookup (toolrules.go); nil ⇒ none
+	cacheDir         string                     // 0600 OAuth token cache dir (persistence across restarts)
+	log              *slog.Logger               // connect/refresh failure logging (TEN-166)
+	trust            map[string]string          // persisted per-connector trust by URL (config mcp_trust); applied on register
 	// onAuthChange is the only mutable member: installed after the mux is built
 	// (SetMCPAuthNotifier, under the mux lock) once the surfaces that can reach
 	// the operator exist. Activators read it at FIRE time via fireMCPAuthChange,
@@ -368,6 +369,7 @@ func (m *toolMux) registerMCPRemote(url string) string {
 		}, d.trustAnnotations, mcpremote.Policy{
 			AllowWrite: d.allowWrite,
 			Confirm:    d.confirm,
+			Rule:       d.rule,
 		})
 	})
 	m.mu.Lock()
@@ -493,6 +495,7 @@ func (m *toolMux) reconnectMCPSilently(url string) {
 	}, d.trustAnnotations, mcpremote.Policy{
 		AllowWrite: d.allowWrite,
 		Confirm:    d.confirm,
+		Rule:       d.rule,
 	})
 	if err != nil {
 		// Previously swallowed — that's why "check the logs" showed nothing for a
@@ -588,7 +591,7 @@ func (m *toolMux) reconnectPeersSilently(cfgDir string) {
 				Label:       label,
 				TLS:         peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
 				UngateTools: peerFederationTools,                          // TEN-252: only the known federation tools ungate
-			}, mcpremote.Policy{Confirm: d.confirm})
+			}, mcpremote.Policy{Confirm: d.confirm, Rule: d.rule})
 			if derr != nil {
 				if d.log != nil {
 					d.log.Warn("peer: silent reconnect failed", "peer", p.Name, "err", derr.Error())
@@ -1896,6 +1899,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		trustAnnotations: pf.mcpTrustAnnotations,
 		allowWrite:       gateAllow(pf.mcpAllowWrite),
 		confirm:          confirm,
+		rule:             defaultToolRules.Mode,
 		cacheDir:         filepath.Join(c.cfgDir, "mcp"),
 		log:              log,
 	}

@@ -15,6 +15,11 @@ import (
 type Policy struct {
 	AllowWrite bool
 	Confirm    func(ctx context.Context, action, detail string) bool
+	// Rule, when set, returns the operator's per-tool rule for an action id
+	// ("<label>:<tool>"): "allow" | "deny" | "ask" | "" for none. Consulted
+	// before the connector's trust: deny refuses even a trusted connector, ask
+	// prompts even under trust allow, allow skips the gate even under trust ask.
+	Rule func(action string) string
 }
 
 // Trust modes — the operator's LIVE, per-connector decision about a server's
@@ -73,10 +78,21 @@ func (d *Dispatcher) Trust() string {
 // gateCall is the per-call decision: the connector's trust mode first (deny
 // refuses, allow skips), then — under ask — the deny-by-default annotation gate.
 func (d *Dispatcher) gateCall(ctx context.Context, name string) error {
-	switch d.Trust() {
-	case TrustDeny:
+	if d.Trust() == TrustDeny {
 		return fmt.Errorf("blocked: connector %s is set to deny — its tools cannot run until an operator sets it to ask or allow (/mcp trust %s allow, or the dashboard's Remote services page)", d.label, d.label)
-	case TrustAllow:
+	}
+	if d.policy.Rule != nil {
+		action := d.label + ":" + name
+		switch d.policy.Rule(action) {
+		case "deny":
+			return fmt.Errorf("blocked: %s is denied by a tool rule (an operator can change it: /permissions rm %s, or the dashboard's Tools page)", action, name)
+		case "allow":
+			return nil
+		case "ask":
+			return d.gate(ctx, name) // the broker sees the same rule and prompts
+		}
+	}
+	if d.Trust() == TrustAllow {
 		return nil
 	}
 	if d.gated[name] {
