@@ -53,6 +53,7 @@ func (seatbelt) Probe(context.Context) Capabilities {
 		Network:    EnforceFull,    // NetNone fully cuts outbound; see Detail for allowlist caveat
 		Limits:     EnforcePartial, // wall-clock only
 		Env:        EnforceFull,    // env allowlist honoured by the shared materialize()
+		Shell:      "sh",
 		Detail: "macOS Seatbelt (sandbox-exec): filesystem read/write roots and full " +
 			"network-deny are kernel-enforced; wall-clock timeout is enforced but " +
 			"memory and PID caps are NOT (no cgroups on macOS without a container) — " +

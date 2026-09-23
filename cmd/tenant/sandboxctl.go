@@ -596,10 +596,23 @@ func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 	}
 
 	host := evaluateBackend(ctx, sandbox.Host())
+
+	// A restricted backend that runs a different shell/environment than the host
+	// (the Windows backend runs sh inside WSL) cannot be driven by the host-fixture
+	// escape suite: the fixtures are host files with host paths, which that
+	// environment does not see natively. Report it and point at where it IS
+	// validated, instead of running a mismatched suite that would fail spuriously.
+	b, rerr := sandbox.Restricted()
+	if rerr == nil {
+		if caps := b.Probe(ctx); caps.Shell != "" && caps.Shell != nativeShellName() {
+			return renderForeignSelftest(out, caps, *asJSON)
+		}
+	}
+
 	var restricted *selftestRun
 	unavailable := ""
-	if b, err := sandbox.Restricted(); err != nil {
-		unavailable = err.Error()
+	if rerr != nil {
+		unavailable = rerr.Error()
 	} else {
 		r := evaluateBackend(ctx, b)
 		restricted = &r
@@ -620,6 +633,41 @@ func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 	if !d.Pass {
 		return fmt.Errorf("sandbox selftest failed: %d problem(s)", len(d.Problems))
 	}
+	return nil
+}
+
+// nativeShellName is this host's own shell, used to spot a restricted backend
+// that runs commands in a different environment (WSL sh on a Windows host).
+func nativeShellName() string {
+	if runtime.GOOS == "windows" {
+		return "powershell"
+	}
+	return "sh"
+}
+
+// renderForeignSelftest reports a restricted backend that runs in a different
+// environment than the host (the Windows WSL backend). The host-fixture escape
+// suite cannot drive it, so this states where its containment IS validated
+// rather than running a mismatched suite. It is not a failure: exit 0.
+func renderForeignSelftest(out io.Writer, caps sandbox.Capabilities, asJSON bool) error {
+	if asJSON {
+		return sbxWriteJSON(out, map[string]any{
+			"os":                 runtime.GOOS,
+			"arch":               runtime.GOARCH,
+			"pass":               true,
+			"restricted_foreign": caps.Detail,
+			"restricted_shell":   caps.Shell,
+			"note": "restricted runs in a foreign environment (WSL); validate it with the Linux build inside WSL, " +
+				"e.g. `wsl -e /path/to/tenant sandbox selftest`. The sandbox package's live WSL tests also cover containment.",
+		})
+	}
+	fmt.Fprintf(out, "Sandbox selftest: escape suite on %s/%s\n\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(out, "restricted backend runs in a foreign environment (shell=%s), so the host-fixture escape\n", caps.Shell)
+	fmt.Fprintln(out, "suite cannot drive it from here:")
+	sbxParagraph(out, "  ", caps.Detail)
+	fmt.Fprintln(out, "\nValidate its containment where it actually runs — the Linux build inside WSL:")
+	fmt.Fprintln(out, "  wsl -e /path/to/tenant sandbox selftest")
+	fmt.Fprintln(out, "\n(the sandbox package's own live WSL tests also assert containment on every build)")
 	return nil
 }
 

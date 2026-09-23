@@ -44,6 +44,7 @@ func (*linuxRestricted) Probe(context.Context) Capabilities {
 		Network:    EnforceFull,    // NetNone is fully cut via --unshare-net
 		Limits:     EnforcePartial, // wall-timeout + output cap only; rlimits/cgroups TODO
 		Env:        EnforceFull,    // the env allowlist is honoured via materialize
+		Shell:      "sh",
 		Detail: "bubblewrap: host ro-bind (or a system+ReadRoots allowlist), rw WorkDir/WriteRoots, masked DenyRoots, " +
 			"network cut with --unshare-net (NetAllowlist fails closed); write and network refusals are attributed, " +
 			"reads of masked roots are not; TODO(TEN-346): Landlock LSM, rlimit/cgroup caps",

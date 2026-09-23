@@ -105,16 +105,30 @@ type escapeCase struct {
 	cleanup     func() // optional: remove what an uncontained adversary leaves behind
 }
 
-// usePowerShell selects the PowerShell forms: backends run commands under
-// PowerShell on Windows and sh elsewhere (sandbox.shellArgs). A variable so tests
-// can render the PowerShell forms on any host.
-var usePowerShell = runtime.GOOS == "windows"
-
-func (c escapeCase) commands(e env) (adversary, legit string) {
-	if usePowerShell {
+// commands renders one case's adversary and legit command lines for the shell
+// the backend under test actually runs: the PowerShell forms when powershell is
+// true (a Windows-native backend), the POSIX-sh forms otherwise. The caller
+// derives powershell from the backend's Capabilities.Shell, so a backend that
+// runs sh on a Windows host (the WSL backend) still gets the sh forms.
+func (c escapeCase) commands(e env, powershell bool) (adversary, legit string) {
+	if powershell {
 		return c.adversaryPS(e), c.legitPS(e)
 	}
 	return c.adversary(e), c.legit(e)
+}
+
+// usePowerShellFor decides which command forms a backend needs from the shell it
+// reports. An unset Shell falls back to the host's native shell, preserving the
+// pre-Capabilities.Shell behaviour for any backend that does not report one.
+func usePowerShellFor(caps sandbox.Capabilities) bool {
+	switch caps.Shell {
+	case "powershell":
+		return true
+	case "sh":
+		return false
+	default:
+		return runtime.GOOS == "windows"
+	}
 }
 
 // cases is the suite, in run order.
@@ -184,9 +198,10 @@ func Evaluate(ctx context.Context, b sandbox.Backend) ([]CaseResult, error) {
 	if b == nil {
 		return nil, errors.New("escapecore: nil backend")
 	}
+	powershell := usePowerShellFor(b.Probe(ctx))
 	results := make([]CaseResult, 0, len(cases))
 	for _, c := range cases {
-		r, err := runCase(ctx, b, c)
+		r, err := runCase(ctx, b, c, powershell)
 		if err != nil {
 			return results, fmt.Errorf("escape case %s: %w", c.name, err)
 		}
@@ -195,7 +210,7 @@ func Evaluate(ctx context.Context, b sandbox.Backend) ([]CaseResult, error) {
 	return results, nil
 }
 
-func runCase(ctx context.Context, b sandbox.Backend, c escapeCase) (CaseResult, error) {
+func runCase(ctx context.Context, b sandbox.Backend, c escapeCase, powershell bool) (CaseResult, error) {
 	e, err := newEnv()
 	if err != nil {
 		return CaseResult{}, err
@@ -206,7 +221,7 @@ func runCase(ctx context.Context, b sandbox.Backend, c escapeCase) (CaseResult, 
 	}
 	pol := e.policy()
 	r := CaseResult{Name: c.name, Kind: c.kind}
-	advCmd, legitCmd := c.commands(e)
+	advCmd, legitCmd := c.commands(e, powershell)
 
 	if c.needsNet && !hostHasNetwork(ctx) {
 		r.Skipped = true

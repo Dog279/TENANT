@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -31,6 +32,7 @@ func (hostBackend) Probe(context.Context) Capabilities {
 		Network:    EnforceNone,
 		Limits:     EnforcePartial, // wall-timeout + output cap only
 		Env:        EnforceFull,    // the env allowlist is honoured
+		Shell:      shellName(runtime.GOOS),
 		Detail:     "no filesystem or network confinement; wall-timeout, output cap and env allowlist only",
 	}
 }

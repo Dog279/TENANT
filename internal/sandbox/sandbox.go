@@ -262,7 +262,14 @@ type Capabilities struct {
 	Network    Enforcement
 	Limits     Enforcement
 	Env        Enforcement
-	Detail     string
+	// Shell is the command interpreter the backend runs commands under —
+	// "sh" or "powershell". It is usually the host's native shell, but a
+	// backend that runs commands in a different environment reports that
+	// environment's shell instead: the Windows WSL backend runs sh even though
+	// the host is Windows. The escape suite reads this to pick the right
+	// adversary/twin command forms for the backend it is probing.
+	Shell  string
+	Detail string
 }
 
 // Backend runs commands under a Policy.
@@ -343,6 +350,16 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 }
 
 // --- shared helpers used by every backend ---
+
+// shellName is the native shell for a GOOS: "powershell" on Windows, "sh"
+// elsewhere. Backends report it in Capabilities.Shell unless they run commands
+// in a different environment (the WSL backend runs sh on a Windows host).
+func shellName(goos string) string {
+	if goos == "windows" {
+		return "powershell"
+	}
+	return "sh"
+}
 
 // shellArgs picks the platform shell for a Command. An explicit Args argv wins
 // over Shell. Mirrors osys.shellArgs: PowerShell (non-interactive, no profile)
