@@ -46,6 +46,7 @@ Initial sensitive sources include:
 | Private integrations | Google, Jira, Discord, and iMessage service reads | `service` / `local_service` |
 | Remote MCP | dynamically discovered remote MCP tools | `remote_mcp` |
 | Agent peers | team inbox/history reads | `peer` |
+| Sub-agents | `team_await`, when an answer quotes the sub-agent's own sensitive reads | the quoted results' provenance |
 
 Credential-adjacent service integrations opt into the same metadata, and future
 plugins must declare their source and sink behavior as the catalog evolves.
@@ -61,10 +62,15 @@ calls, peer-backed searches, and every dynamically discovered remote MCP tool.
 
 The matcher compares normalized outbound argument strings with bounded
 fragments derived from recent sensitive results. V1 normalization is
-case-insensitive, decodes JSON and URL/query escaping, and considers whole
-results, lines, and sufficiently long tokens. This intentionally catches the
-common direct-copy and URL-encoding exfiltration shapes while remaining
-deterministic. Tracking is bounded by result count, fragment count, and bytes.
+case-insensitive, decodes JSON and up to two rounds of URL/query escaping, and
+considers whole results, lines, and sufficiently long tokens. Percent-decoding
+is tolerant: valid `%HH` escapes decode even when the string also holds
+malformed ones, so one stray `%zz` cannot hide an otherwise encoded secret
+(TEN-336). This intentionally catches the common direct-copy and URL-encoding
+exfiltration shapes while remaining deterministic. Tracking is bounded by result
+count and fragment count, and each sensitive result by 1 MiB: the same bound the
+model's context copy of a sensitive result is held to, so every byte of it the
+model can see is tracked (TEN-336).
 
 On a match the hook calls the configured approval callback with action
 `sensitive_egress`. The existing approval broker maps this to its distinct
@@ -77,10 +83,24 @@ not remove or relabel the source result.
 ## Trust boundaries and lifecycle
 
 - Labels and match fragments are per `Agent`, not global between agents.
+  Delegation carries them explicitly (TEN-336):
+  - `spawn_agent` is `Outbound`, so a task quoting sensitive results asks
+    first. The approved flow (the sensitive results the task quotes) reaches
+    the tool through `agent.DispatchFlow`, and the team runtime seeds it into
+    the child's tracker (`Config.InboundFlow`), so the child's own egress of
+    that data is checked too.
+  - When a sub-agent finishes, `Agent.FlowFor` records which of its sensitive
+    results its answer quotes. `team_await` hands those back with
+    `agent.ReportFlow`; the parent tracks them and labels the awaited result
+    with their provenance. A result that quotes nothing sensitive stays
+    unlabelled, so ordinary research hand-offs do not prompt.
 - Recent sensitive fragments survive turn boundaries for the life of that agent
   because prior tool results can remain in its working context.
-- Sub-agents and offsite surfaces use their own configured approval callback and
-  therefore preserve the existing origin-aware approval routing.
+- Sub-agents use their parent's approval callback. The Discord and iMessage
+  agents use the approver stamped on each offsite turn (the Discord broker; the
+  iMessage deny-all or operator `Y <nonce>` handshake), so a sensitive flow from
+  those surfaces routes like any other gated action instead of always failing
+  closed (TEN-336).
 - Parallel calls in one batch cannot consume each other's results: a result is
   labelled only after that batch finishes. A later iteration is checked.
 
@@ -88,7 +108,8 @@ not remove or relabel the source result.
 
 This is explicit-label, direct-flow enforcement, not full taint propagation.
 Model transformations that substantially rewrite, summarize, encrypt, split, or
-encode sensitive text may evade substring matching; conversely, a long shared
+encode sensitive text (Base64, for example; only percent-encoding is decoded)
+may evade substring matching; conversely, a long shared
 token can cause a conservative approval prompt. Future versions should carry
 field-level taint through structured tool results and model-generated values,
 add content-aware declassification, expose labels in operator traces, and define

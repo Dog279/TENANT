@@ -50,11 +50,15 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
 - **API keys and tokens** are stored in
   `~/Library/Application Support/tenant/credentials.json` (macOS; equivalent
   OS config directories on Linux and Windows).
-- Tenant centralizes credentials, Atlassian/MCP OAuth caches, peering tokens,
-  and peer private keys behind one secret-storage boundary. On Unix, files are
+- Tenant centralizes credentials, the Atlassian, GitHub, X and MCP OAuth
+  caches, the gsuite OAuth client, the dashboard token, peering tokens, and
+  peer private keys behind one secret-storage boundary. On Unix, files are
   verified as **0600** and their direct parent directories as **0700**. On
   Windows, inherited access is disabled and an explicit DACL grants full
-  control only to the current user.
+  control only to the current user. Reading a cache that an older build left
+  loose tightens it. One list of these files drives both `tenant doctor`,
+  which fails on any that is unprotected, and the file tools, which refuse to
+  read them (TEN-337).
 - **No secrets are committed to the repository.** The repo is a clean template;
   `credentials.json` is in `.gitignore`.
 - MCP remote connectors use **OAuth 2.1 with Dynamic Client Registration
@@ -73,8 +77,11 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
   in the repo.
 - Tenant creates its config/data roots with owner-only directory permissions and
   writes archives, databases, research artifacts, proposals, OAuth caches, and
-  peer/identity state as owner-only files on POSIX systems. `tenant doctor
-  --fix` removes legacy group/world permission bits without following symlinks.
+  peer/identity state as owner-only files on POSIX systems, eval reports
+  included. Plain `tenant doctor` only reports loose permissions and changes
+  nothing; `tenant doctor --fix` removes legacy group/world permission bits. It
+  opens every path without following symlinks and changes the mode through that
+  descriptor, so a symlink swapped in during the repair is skipped (TEN-333).
 - **Tenant does not encrypt local data at rest.** File modes are access control,
   not encryption; database, transcript, report, and credential contents remain
   plaintext to the owning account and to any process or administrator that can

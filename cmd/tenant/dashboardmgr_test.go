@@ -58,6 +58,89 @@ func healthzUp(addr string, within time.Duration) bool {
 	return false
 }
 
+// TEN-332 integration: the URL `/tailscale serve` prints must load through the
+// real dashboard listener, keep loading across a dashboard stop/start, and stop
+// loading after unserve. The manager comes from newTailscaleManager unchanged,
+// so this also proves the constructor wires the dashboard's Host trust.
+func TestDashboardManager_TailscaleServeHostReachesDashboard(t *testing.T) {
+	mgr := &dashboardManager{
+		base:   context.Background(),
+		cfg:    dashboard.Config{Addr: "127.0.0.1:0", Auth: "test-token"},
+		tools:  fakeDashTools{},
+		broker: agent.NewBroker(0),
+		notify: func(string) {},
+	}
+	t.Cleanup(func() { _ = mgr.Shutdown() })
+	addr, err := mgr.Enable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !healthzUp(addr, 2*time.Second) {
+		t.Fatal("dashboard did not come up")
+	}
+
+	f := &fakeTSCLI{resp: map[string]string{
+		"status --json":              tsRunningJSON,
+		"serve status":               "No serve config",
+		"serve --bg " + portOf(addr): "",
+		"serve reset":                "",
+	}}
+	ts := newTailscaleManager(context.Background(), mgr, nil)
+	ts.bin, ts.run = "tailscale", f.run
+
+	const tailnet = "host.tailnet-name.ts.net"
+	if code := settingsViaHost(t, addr, tailnet); code != http.StatusForbidden {
+		t.Fatalf("before serve: /settings via %s = %d, want 403", tailnet, code)
+	}
+	if _, err := ts.Serve(); err != nil {
+		t.Fatal(err)
+	}
+	if code := settingsViaHost(t, addr, tailnet); code != http.StatusOK {
+		t.Fatalf("after serve: /settings via %s = %d, want 200", tailnet, code)
+	}
+
+	// A stop/start builds a fresh server; the trust must carry over.
+	if err := mgr.Disable(); err != nil {
+		t.Fatal(err)
+	}
+	if addr, err = mgr.Enable(); err != nil {
+		t.Fatal(err)
+	}
+	if !healthzUp(addr, 2*time.Second) {
+		t.Fatal("dashboard did not come back up")
+	}
+	if code := settingsViaHost(t, addr, tailnet); code != http.StatusOK {
+		t.Fatalf("after restart: /settings via %s = %d, want 200", tailnet, code)
+	}
+
+	if err := ts.Unserve(); err != nil {
+		t.Fatal(err)
+	}
+	if code := settingsViaHost(t, addr, tailnet); code != http.StatusForbidden {
+		t.Fatalf("after unserve: /settings via %s = %d, want 403", tailnet, code)
+	}
+}
+
+// settingsViaHost GETs /settings from the listener at addr carrying the given
+// Host header, as Tailscale's proxy forwards it, without following redirects.
+func settingsViaHost(t *testing.T, addr, host string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/settings", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
 // TestDashboardManager_ShutdownDoesNotPersist: process teardown (serve SIGTERM
 // / exit) must NOT persist an "off" choice, while Disable (operator /dashboard
 // off) must. Regression for the bug where every serve shutdown wrote

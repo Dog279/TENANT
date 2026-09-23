@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tenant/internal/fsperm"
 )
 
 // evalTrendEntry is one line in trend.jsonl.
@@ -57,7 +59,8 @@ func appendEvalTrend(artifactDir string, e evalTrendEntry, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+	// Owner-only, tightening an existing trend file too (TEN-333).
+	if err := fsperm.MkdirAll(artifactDir); err != nil {
 		log.Warn("eval-trend: mkdir", "err", err)
 		return
 	}
@@ -66,7 +69,7 @@ func appendEvalTrend(artifactDir string, e evalTrendEntry, log *slog.Logger) {
 		log.Warn("eval-trend: marshal", "err", err)
 		return
 	}
-	f, err := os.OpenFile(evalTrendPath(artifactDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := fsperm.OpenFile(evalTrendPath(artifactDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		log.Warn("eval-trend: open", "err", err)
 		return

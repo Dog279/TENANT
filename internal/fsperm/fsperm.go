@@ -49,16 +49,16 @@ func Audit(path string) (*Issue, error) {
 	return &Issue{Path: path, Mode: info.Mode().Perm(), Want: want}, nil
 }
 
-// Repair tightens one regular file or directory when Audit finds an issue.
+// Repair tightens one regular file or directory that exceeds the private
+// policy. It never follows a symlink: the path is opened without following
+// one, and the object is checked and tightened through that descriptor, so a
+// symlink swapped in after an audit is skipped instead of redirecting the
+// chmod to its target (TEN-333).
 func Repair(path string) (bool, error) {
-	issue, err := Audit(path)
-	if err != nil || issue == nil {
-		return false, err
+	if isVolumeRoot(path) {
+		return false, fmt.Errorf("fsperm: refusing to repair filesystem root %s", path)
 	}
-	if err := restrict(issue.Path, issue.Want); err != nil {
-		return false, err
-	}
-	return true, nil
+	return repairPath(path)
 }
 
 // MkdirAll creates a private directory tree and tightens the final directory
@@ -159,19 +159,14 @@ func isVolumeRoot(path string) bool {
 	return clean == volume+string(filepath.Separator)
 }
 
-// RepairTree removes permissions that exceed the private policy without
-// granting any missing owner permission. Symlinks are skipped and never followed.
+// RepairTree removes permissions that exceed the private policy below root,
+// without granting any missing owner permission. It walks through directory
+// descriptors, opening each entry relative to its parent without following
+// symlinks, so no path is re-resolved between the check and the chmod and a
+// symlink swapped in mid-walk is skipped (TEN-333).
 func RepairTree(root string) (int, error) {
-	issues, err := AuditTree(root)
-	if err != nil {
-		return 0, err
+	if isVolumeRoot(root) {
+		return 0, fmt.Errorf("fsperm: refusing to repair filesystem root %s", root)
 	}
-	fixed := 0
-	for _, issue := range issues {
-		if err := restrict(issue.Path, issue.Want); err != nil {
-			return fixed, err
-		}
-		fixed++
-	}
-	return fixed, nil
+	return repairTree(root)
 }

@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 67 |
-| Go files | 742 |
-| Test files | 367 |
-| Production Go LOC | 106,532 |
-| Test Go LOC | 72,594 |
+| Go files | 754 |
+| Test files | 376 |
+| Production Go LOC | 107,385 |
+| Test Go LOC | 73,962 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -860,8 +860,9 @@ discipline as gsuite).
 - **OAuth2 Authorization-Code + PKCE** — user context (post/reply/
   delete *as the user*). `S256` challenge = base64url(sha256(verifier));
   one-time browser consent via a localhost callback (`tenant x
-  --login`); refresh token cached at `<data>/x-token.json` (0600,
-  plain JSON — same transparency ethos as the wiki sidecar). **X
+  --login`); refresh token cached at `<data>/x-token.json` (plain JSON,
+  same transparency ethos as the wiki sidecar, stored through the secrets
+  package: 0600 or a current-user-only Windows DACL, TEN-337). **X
   rotates refresh tokens**, so every refresh re-persists. State param
   checked (CSRF). Reads prefer the bearer; if only a user token
   exists it reads with that; a bearer **cannot** post (enforced in

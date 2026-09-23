@@ -37,6 +37,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"tenant/internal/secrets"
 )
 
 // EmbeddedOAuthFilename is the well-known filename for the
@@ -89,7 +91,9 @@ func LoadEmbeddedOAuth(cfgDir string) ([]byte, error) {
 	if cfgDir != "" {
 		path := EmbeddedOAuthPath(cfgDir)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return os.ReadFile(path)
+			// Through the secrets package like the other OAuth files, which
+			// also tightens a copy an older build left loose (TEN-337).
+			return secrets.ReadFile(path)
 		}
 	}
 	if compiledInLooksValid() {

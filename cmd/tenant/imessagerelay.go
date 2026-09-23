@@ -347,23 +347,28 @@ func (m *imessageResponderManager) Stop() (string, error) {
 // surface (gating enforced per-turn via the responder's offsite-confirm).
 func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 	return agent.New(agent.Config{
-		AgentID:      "tenant-imessage",
-		Router:       d.router,
-		SoulLive:     d.soulLive,
-		Working:      working.New(),
-		Archive:      d.archive,
-		Episodic:     d.episodic,
-		Semantic:     d.semantic,
-		Runs:         d.runs,
-		Tools:        d.fullTools,
-		Dispatcher:   d.fullDisp,
-		Logger:       d.log,
-		Skills:       d.skills,
-		Compactor:    d.compactor,
-		UserProfile:  d.userProfile,
-		SystemPrompt: d.sysPrompt + imessageSysSuffix,
-		RouteHook:    d.routeHook,
-		RouteActive:  d.routeActive,
-		RouteSticky:  d.routeSticky,
+		AgentID:    "tenant-imessage",
+		Router:     d.router,
+		SoulLive:   d.soulLive,
+		Working:    working.New(),
+		Archive:    d.archive,
+		Episodic:   d.episodic,
+		Semantic:   d.semantic,
+		Runs:       d.runs,
+		Tools:      d.fullTools,
+		Dispatcher: d.fullDisp,
+		// A sensitive outbound flow asks the approver stamped on the turn
+		// ctx (deny-all in Phase 1, the operator's "Y <nonce>" in Phase 2),
+		// like any gated tool. nil here denied every such flow outright
+		// (TEN-336).
+		ConfirmSensitiveEgress: originConfirm(nil),
+		Logger:                 d.log,
+		Skills:                 d.skills,
+		Compactor:              d.compactor,
+		UserProfile:            d.userProfile,
+		SystemPrompt:           d.sysPrompt + imessageSysSuffix,
+		RouteHook:              d.routeHook,
+		RouteActive:            d.routeActive,
+		RouteSticky:            d.routeSticky,
 	})
 }

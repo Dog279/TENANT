@@ -67,6 +67,20 @@ type commonFlags struct {
 	// empty (first run). Cached so callers (e.g. mcp-memory's --sse-addr)
 	// can read it without re-reading the file.
 	lc *launchConfig
+	// auditOnly makes resolve() read-only: the data dir is neither created
+	// nor tightened, and credentials.json is read without being hardened.
+	// Plain `tenant doctor` sets it so its audit changes nothing it reports
+	// on (TEN-333).
+	auditOnly bool
+}
+
+// credentialsLoader is how this command reads credentials.json: hardening it
+// like any other secret read, or as-is when auditOnly.
+func (c *commonFlags) credentialsLoader() func(string) (*credentials, error) {
+	if c.auditOnly {
+		return peekCredentials
+	}
+	return loadCredentials
 }
 
 // bindCommon registers the shared flags on fs and returns a pointer
@@ -109,6 +123,9 @@ func (c *commonFlags) resolveDirs() error {
 			return fmt.Errorf("resolve config dir: %w", err)
 		}
 		c.cfgDir = d
+	}
+	if c.auditOnly {
+		return nil
 	}
 	if err := fsperm.MkdirAll(c.dataDir); err != nil {
 		return fmt.Errorf("mkdir data dir: %w", err)
@@ -186,7 +203,7 @@ func (c *commonFlags) applyLaunchConfig() error {
 			c.reasoning = p.Reasoning
 		}
 		if !set["api-key"] {
-			c.genAPIKey = resolveSecret(c.cfgDir, lc.Provider, p.Auth)
+			c.genAPIKey = resolveSecretWith(c.credentialsLoader(), c.cfgDir, lc.Provider, p.Auth)
 		}
 	}
 
@@ -201,7 +218,7 @@ func (c *commonFlags) applyLaunchConfig() error {
 		if !set["embed-dim"] && e.EmbedDim != 0 {
 			c.embedDim = e.EmbedDim
 		}
-		c.embedAPIKey = resolveSecret(c.cfgDir, "embed", e.Auth)
+		c.embedAPIKey = resolveSecretWith(c.credentialsLoader(), c.cfgDir, "embed", e.Auth)
 	}
 
 	if !set["plan-loop-ceiling"] && lc.PlanLoopCeiling != 0 {

@@ -16,6 +16,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/eval"
 	"tenant/internal/eval/compaction"
+	"tenant/internal/fsperm"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/episodic"
@@ -995,10 +996,10 @@ func baselineFromArtifact(artifactPath, artifactDir string, w io.Writer) error {
 		return err
 	}
 	dst := filepath.Join(artifactDir, "baseline."+string(rep.Subset)+".json")
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+	if err := fsperm.MkdirAll(artifactDir); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, out, 0o644); err != nil {
+	if err := fsperm.WriteFile(dst, out); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "baseline written: %s (from %s: overall %.1f, %d graded tasks)\n",

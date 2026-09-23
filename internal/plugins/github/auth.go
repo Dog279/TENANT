@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"tenant/internal/secrets"
 )
 
 // TokenFileName is the cache file inside the config dir.
@@ -31,7 +33,7 @@ func TokenPath(cfgDir string) string { return filepath.Join(cfgDir, TokenFileNam
 // LoadToken reads the cached PAT. Missing file is not an error — it just means
 // "not configured yet", which callers report as a setup hint.
 func LoadToken(cfgDir string) (string, error) {
-	b, err := os.ReadFile(TokenPath(cfgDir))
+	b, err := secrets.ReadFile(TokenPath(cfgDir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -45,26 +47,19 @@ func LoadToken(cfgDir string) (string, error) {
 	return strings.TrimSpace(tf.Token), nil
 }
 
-// SaveToken writes the PAT 0600 into a 0700 dir.
-//
-// NOTE: on Windows these mode bits do NOT produce an owner-only DACL — Go maps
-// them loosely and the file lands 0666-equivalent. That is a known, tracked gap
-// (TEN-325, centralize secret storage), not something this plugin can fix
-// locally; the same caveat already applies to the Atlassian and MCP token
-// stores. Documented here so nobody reads 0600 as a Windows guarantee.
+// SaveToken writes the PAT through the secrets package: 0600 in a 0700 dir
+// on POSIX, a current-user-only DACL on Windows (TEN-337). A plain
+// os.WriteFile left an existing loose cache loose and gave Windows no DACL.
 func SaveToken(cfgDir, token string) error {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return errors.New("github: refusing to save an empty token")
 	}
-	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.Marshal(tokenFile{Token: token})
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(TokenPath(cfgDir), b, 0o600)
+	return secrets.WriteFile(TokenPath(cfgDir), b)
 }
 
 // ResolveToken picks the PAT: explicit > $GITHUB_TOKEN > $GITHUB_PAT > cache.

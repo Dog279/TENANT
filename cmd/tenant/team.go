@@ -27,7 +27,10 @@ type member struct {
 	id, role, task string
 	status         string // running | done | error
 	result         string
-	done           chan struct{}
+	// flow is the sensitive provenance result quotes: what this agent read
+	// that its answer repeats (TEN-336). Reported back by team_await.
+	flow agent.Flow
+	done chan struct{}
 	// cancel lets the orchestrator preempt a STILL-RUNNING agent. The agent's
 	// loop notices ctx.Err() at the next iteration boundary and triggers the
 	// salvage path (synthesizeFinal on a fresh ctx) — so a wave-timeout in
@@ -603,12 +606,15 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		Tools:                  tools,
 		Dispatcher:             tools,
 		ConfirmSensitiveEgress: r.cfg.ConfirmSensitiveEgress,
-		Logger:                 r.cfg.Log,
-		SystemPrompt:           systemPrompt,
-		Observer:               func(e agent.Event) { r.emit(id, e) },
-		Skills:                 r.skillRetriever(id),
-		Compactor:              r.cfg.Compressor,
-		UserProfile:            r.cfg.Profile,
+		// A task that quoted the spawner's sensitive results carries that
+		// provenance, so this agent's egress of it asks too (TEN-336).
+		InboundFlow:  agent.DispatchFlow(ctx),
+		Logger:       r.cfg.Log,
+		SystemPrompt: systemPrompt,
+		Observer:     func(e agent.Event) { r.emit(id, e) },
+		Skills:       r.skillRetriever(id),
+		Compactor:    r.cfg.Compressor,
+		UserProfile:  r.cfg.Profile,
 		// Sub-agents persist episodes as `shared` so the parent orchestrator's
 		// retrieval can surface their work via the assembler's agent-glob filter
 		// (TEN-45). Without this, the orchestrator's normal episodic retrieval
@@ -646,6 +652,10 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		// post-await inbox read (the missed-DONE flake under -race).
 		_ = r.cfg.Bus.Send(orchestra.Message{From: id,
 			Content: "DONE — " + clip(result, 600)})
+		flow := ag.FlowFor(result)
+		r.mu.Lock()
+		m.flow = flow
+		r.mu.Unlock()
 		r.finish(m, status, result)
 	}()
 
@@ -702,6 +712,18 @@ func (r *TeamRuntime) skillRetriever(id string) agent.SkillRetriever {
 		return nil
 	}
 	return skillRetriever{st: r.cfg.Skills, agentID: id}
+}
+
+// resultFlow joins the sensitive provenance of every member's result, for
+// team_await to report to the orchestrator (TEN-336).
+func (r *TeamRuntime) resultFlow() agent.Flow {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	flows := make([]agent.Flow, 0, len(r.order))
+	for _, id := range r.order {
+		flows = append(flows, r.agents[id].flow)
+	}
+	return agent.JoinFlows(flows...)
 }
 
 func (r *TeamRuntime) finish(m *member, status, result string) {
@@ -946,6 +968,11 @@ func (t spawnTool) Tools() []model.ToolSpec {
 			Name:        "spawn_agent",
 			Description: "Spawn a sub-agent to work concurrently on part of the task. Give it a short role (e.g. \"researcher\", \"writer\") and a clear, self-contained task. It runs in parallel and can talk to the team; returns its id immediately.",
 			Parameters:  t.obj(`"role":{"type":"string"},"task":{"type":"string","description":"a clear, self-contained instruction"}`, "role", "task"),
+			// The task leaves this agent: the sub-agent may run on another
+			// model or provider, and it has outbound tools of its own. A task
+			// quoting sensitive results needs approval, and the approved flow
+			// seeds the sub-agent's tracker (TEN-336).
+			Outbound: true,
 		},
 		{
 			Name:        "team_await",
@@ -979,6 +1006,9 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 			to = 3 * time.Minute
 		}
 		out := t.rt.Await(ctx, to)
+		// Sub-agents' answers can quote what they read; hand that provenance
+		// back so the orchestrator tracks it before egress (TEN-336).
+		agent.ReportFlow(ctx, t.rt.resultFlow())
 		// An await TIMEOUT with workers still active is a normal beat of long
 		// autonomous work: report current state and let them keep working (the
 		// orchestrator can await again). Ending the run here cancelled the run

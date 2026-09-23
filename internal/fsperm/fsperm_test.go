@@ -58,6 +58,9 @@ func TestPrepareFileCreatesPrivateDatabaseWithoutTighteningExistingParent(t *tes
 }
 
 func TestRepairTreeTightensWithoutFollowingSymlinks(t *testing.T) {
+	if !Supported() {
+		t.Skip("POSIX modes are not enforceable on this platform")
+	}
 	root := filepath.Join(t.TempDir(), "data")
 	if err := os.Mkdir(root, 0o777); err != nil {
 		t.Fatal(err)

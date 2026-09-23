@@ -148,7 +148,25 @@ func (s *Server) checkHost(requestHost string) bool {
 			return true
 		}
 	}
+	s.trustedMu.RLock()
+	defer s.trustedMu.RUnlock()
+	for _, allowed := range s.trusted {
+		if authorityAllowed(requestHost, allowed) {
+			return true
+		}
+	}
 	return false
+}
+
+// SetTrustedHosts replaces the Host authorities trusted at runtime in addition
+// to the listener address and cfg.AllowedHosts, with the same matching rules.
+// `tailscale serve` needs it: Tailscale's proxy forwards the browser's Host
+// (node.tailnet.ts.net), which the listener-derived allowlist rejects with 403
+// (TEN-332). Safe to call while serving; nil clears the set.
+func (s *Server) SetTrustedHosts(hosts []string) {
+	s.trustedMu.Lock()
+	s.trusted = append([]string(nil), hosts...)
+	s.trustedMu.Unlock()
 }
 
 func authorityAllowed(requestHost, allowed string) bool {

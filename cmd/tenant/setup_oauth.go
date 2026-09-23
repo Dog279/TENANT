@@ -14,14 +14,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 
-	"tenant/internal/fsperm"
 	"tenant/internal/plugins/gsuite"
+	"tenant/internal/secrets"
 )
 
 func cmdOAuthSetup(ctx context.Context, args []string) error {
@@ -156,54 +155,10 @@ func installGSuiteOAuthSilent(cfgDir, srcPath string) error {
 	if _, err := gsuite.ParseOAuthClientFile(b, []string{"placeholder"}); err != nil {
 		return fmt.Errorf("invalid OAuth client JSON: %w", err)
 	}
-	if err := fsperm.MkdirAll(cfgDir); err != nil {
-		return fmt.Errorf("ensure cfg dir: %w", err)
-	}
-	dstPath := gsuite.EmbeddedOAuthPath(cfgDir)
-	dst, err := os.CreateTemp(cfgDir, ".oauth_client.json.*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	dstName := dst.Name()
-	cleanup := func() {
-		dst.Close()
-		_ = os.Remove(dstName)
-	}
-	if _, err := io.Copy(dst, fileBytes(b)); err != nil {
-		cleanup()
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := dst.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := fsperm.RestrictFile(dstName); err != nil {
-		cleanup()
-		return fmt.Errorf("chmod: %w", err)
-	}
-	if err := os.Rename(dstName, dstPath); err != nil {
-		cleanup()
-		return fmt.Errorf("rename: %w", err)
+	// Atomic, owner-only (POSIX) or current-user-only DACL (Windows), like the
+	// other OAuth files (TEN-337).
+	if err := secrets.WriteFile(gsuite.EmbeddedOAuthPath(cfgDir), b); err != nil {
+		return fmt.Errorf("install OAuth client: %w", err)
 	}
 	return nil
-}
-
-// fileBytes wraps a byte slice as an io.Reader. Tiny helper so the
-// io.Copy above stays readable.
-func fileBytes(b []byte) io.Reader {
-	return &byteReader{b: b}
-}
-
-type byteReader struct {
-	b   []byte
-	pos int
-}
-
-func (r *byteReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.pos:])
-	r.pos += n
-	return n, nil
 }

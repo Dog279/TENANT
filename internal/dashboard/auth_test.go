@@ -227,6 +227,50 @@ func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
 	})
 }
 
+// TEN-332: `tailscale serve` forwards the browser's Host, the tailnet name. A
+// host trusted at runtime must pass the allowlist, /settings included, and
+// stop passing once cleared.
+func TestAuthTrustedHostsForTailscaleServe(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	h := s.secure(authOKHandler())
+	get := func(path, host string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = host
+		req.Header.Set("Authorization", "Bearer secret")
+		return authDo(h, req).Code
+	}
+	const tailnet = "node.tailnet-name.ts.net"
+
+	if code := get("/settings", tailnet); code != http.StatusForbidden {
+		t.Fatalf("untrusted tailnet host: status = %d, want 403", code)
+	}
+	s.SetTrustedHosts([]string{tailnet})
+	for _, host := range []string{tailnet, tailnet + ":443", "NODE.Tailnet-Name.ts.net"} {
+		for _, path := range []string{"/settings", "/api/status"} {
+			if code := get(path, host); code != http.StatusOK {
+				t.Errorf("GET %s with Host %s: status = %d, want 200", path, host, code)
+			}
+		}
+	}
+	// A cookie-authenticated form post through the proxy carries the tailnet
+	// Origin and must still pass the CSRF check.
+	post := httptest.NewRequest(http.MethodPost, "/posture", nil)
+	post.Host = tailnet
+	post.Header.Set("Origin", "https://"+tailnet)
+	post.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+	if code := authDo(h, post).Code; code != http.StatusOK {
+		t.Errorf("proxied form post: status = %d, want 200", code)
+	}
+	if code := get("/api/status", "evil.example"); code != http.StatusForbidden {
+		t.Errorf("trusting the tailnet name widened the allowlist: status = %d, want 403", code)
+	}
+
+	s.SetTrustedHosts(nil)
+	if code := get("/settings", tailnet); code != http.StatusForbidden {
+		t.Fatalf("cleared tailnet host: status = %d, want 403", code)
+	}
+}
+
 func TestAuthCSRF(t *testing.T) {
 	h := authServer("secret")
 

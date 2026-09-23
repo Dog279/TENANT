@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"regexp"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -29,6 +31,42 @@ func TestResolveDashboardAuthGeneratesAndPersistsDefault(t *testing.T) {
 	}
 	if second != first {
 		t.Fatalf("token rotated across resolves: %q != %q", second, first)
+	}
+}
+
+// TEN-332: `tenant serve` and `tenant attach` racing on a fresh install must
+// converge on one token. Before, each minted its own and the later rename won,
+// so the running server kept a token that no longer matched the file.
+func TestResolveDashboardAuthConcurrentCallersAgree(t *testing.T) {
+	dir := t.TempDir()
+	const callers = 8
+	tokens := make([]string, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			tokens[i], errs[i] = resolveDashboardAuth(dir, "")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	b, err := os.ReadFile(dashboardAuthTokenPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := strings.TrimSpace(string(b))
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if tokens[i] != persisted {
+			t.Fatalf("caller %d got %q, but the persisted token is %q", i, tokens[i], persisted)
+		}
 	}
 }
 

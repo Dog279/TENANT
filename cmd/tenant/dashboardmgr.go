@@ -48,6 +48,10 @@ type dashboardManager struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	addr    string
+	srv     *dashboard.Server // the running server; nil when stopped
+	// tailnetHost is the tailnet DNS name `tailscale serve` publishes the
+	// dashboard under (TEN-332). Kept here so a stop/start still trusts it.
+	tailnetHost string
 }
 
 // Enable starts the dashboard if it isn't already running and persists the
@@ -100,6 +104,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	if m.logs != nil {
 		srv.SetLogs(m.logs)
 	}
+	srv.SetTrustedHosts(m.trustedHostsLocked())
 	dctx, cancel := context.WithCancel(m.base)
 	done := make(chan struct{})
 	go func() {
@@ -112,6 +117,7 @@ func (m *dashboardManager) Enable() (string, error) {
 				m.running = false
 				m.cancel = nil
 				m.done = nil
+				m.srv = nil
 			}
 			m.mu.Unlock()
 			if current && m.notify != nil {
@@ -122,6 +128,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	m.running = true
 	m.cancel = cancel
 	m.done = done
+	m.srv = srv
 	m.addr = ln.Addr().String()
 	if m.persist != nil {
 		if err := m.persist(true); err != nil {
@@ -164,7 +171,30 @@ func (m *dashboardManager) stopLocked() {
 		m.running = false
 		m.cancel = nil
 		m.done = nil
+		m.srv = nil
 	}
+}
+
+// SetTailnetHost trusts the tailnet DNS name `tailscale serve` publishes the
+// dashboard under, or stops trusting it when host is "" (TEN-332). Tailscale's
+// proxy keeps the browser's Host, which the listener-derived allowlist would
+// reject. Applies to the running server and to any server started later.
+func (m *dashboardManager) SetTailnetHost(host string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tailnetHost = host
+	if m.srv != nil {
+		m.srv.SetTrustedHosts(m.trustedHostsLocked())
+	}
+}
+
+// trustedHostsLocked lists the runtime-trusted Host authorities. Caller must
+// hold m.mu.
+func (m *dashboardManager) trustedHostsLocked() []string {
+	if m.tailnetHost == "" {
+		return nil
+	}
+	return []string{m.tailnetHost}
 }
 
 // Status reports whether the dashboard is running and its bind address.

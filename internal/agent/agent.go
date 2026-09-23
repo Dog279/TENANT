@@ -102,6 +102,10 @@ type Config struct {
 	// ConfirmSensitiveEgress reuses the host capability/approval broker for a
 	// detected sensitive-result flow into an outbound tool. nil fails closed.
 	ConfirmSensitiveEgress func(ctx context.Context, action, detail string) bool
+	// InboundFlow seeds the sensitive-data tracker of a sub-agent whose task
+	// quoted its parent's sensitive results (see DispatchFlow), so the child's
+	// own egress of that data is checked too (TEN-336).
+	InboundFlow Flow
 	// Runs, when set, durably records each turn. Trace IDs are minted even
 	// when no store is configured so callers can always correlate a result.
 	Runs      *runtrace.Store
@@ -433,8 +437,16 @@ func New(cfg Config) (*Agent, error) {
 		cfg: cfg, log: log, plannerRole: pr, embedderRole: er,
 		compaction: newCompactionHysteresis(), infoFlow: newInfoFlowTracker(),
 	}
+	a.infoFlow.adopt(cfg.InboundFlow.results)
 	a.router.Store(cfg.Router)
 	return a, nil
+}
+
+// FlowFor returns the sensitive results this agent recorded that text quotes,
+// to hand along with text to another agent: a sub-agent's final answer going
+// back to its parent (TEN-336).
+func (a *Agent) FlowFor(text string) Flow {
+	return Flow{results: a.infoFlow.quotedByText(text)}
 }
 
 // TurnRequest is one user-facing call into the agent.
@@ -971,6 +983,10 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		// Two consecutive iterations of all-invalid calls → bail.
 		allInvalid := true
 		validCalls := make([]model.ToolCall, 0, len(resp.ToolCalls))
+		// callFlows[i] is the sensitive provenance validCalls[i] carries once
+		// the operator approved the flow; a delegating tool hands it to the
+		// agent it starts (DispatchFlow, TEN-336).
+		callFlows := make([]Flow, 0, len(resp.ToolCalls))
 		for _, call := range resp.ToolCalls {
 			if err := validateToolCall(call, a.cfg.Tools); err != nil {
 				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
@@ -991,6 +1007,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				}, profile.ToolResultCap())
 				continue
 			}
+			var flow Flow
 			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Outbound {
 				if label, matched := a.infoFlow.match(call.Arguments); matched {
 					detail := fmt.Sprintf("%s arguments contain sensitive data from %s; allow this outbound flow?", call.Name, label.Provenance)
@@ -1003,10 +1020,12 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 						}, profile.ToolResultCap())
 						continue
 					}
+					flow = Flow{results: a.infoFlow.quotedByArgs(call.Arguments)}
 				}
 			}
 			allInvalid = false
 			validCalls = append(validCalls, call)
+			callFlows = append(callFlows, flow)
 		}
 		if allInvalid {
 			consecutiveValidationFailures++
@@ -1026,11 +1045,21 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		for _, call := range validCalls {
 			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Args: string(call.Arguments)})
 		}
-		batchResults := dispatchBatch(ctx, validCalls, parallel, a.cfg.Dispatcher)
+		batchResults := dispatchBatch(ctx, validCalls, callFlows, parallel, a.cfg.Dispatcher)
 		for _, br := range batchResults {
 			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
 				br.Labels = append([]model.InfoFlowLabel(nil), spec.ResultLabels...)
+				// record keeps up to infoFlowMaxResultBytes, the same bound
+				// contextView holds a sensitive result to, so every byte the
+				// model can see is tracked, even past a token cap that archive-
+				// sourced compaction may still summarize from (TEN-336).
 				a.infoFlow.record(br.Labels, br.Result)
+				// A delegating tool's result can quote its sub-agents' sensitive
+				// reads: track those and label the result with them (TEN-336).
+				a.infoFlow.adopt(br.reported.results)
+				for _, label := range br.reported.Labels() {
+					br.Labels = appendLabel(br.Labels, label)
+				}
 			}
 			result.ToolTrace = append(result.ToolTrace, br)
 			toolOutcome := "success"
@@ -1545,10 +1574,11 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 	// model's attention or blow the working budget. The archive below always
 	// keeps the FULL body, so nothing durable is lost (microcompaction and
 	// recall read the archive, not this capped copy).
+	body, note := contextView(content, maxResultTokens, hasSensitiveLabel(r.Labels))
 	a.cfg.Working.Append(working.Message{
 		Role:       "tool",
 		ToolCallID: r.Call.ID,
-		Content:    capToolResultForContext(content, maxResultTokens),
+		Content:    body + note,
 		Timestamp:  now,
 		Meta:       infoFlowMeta(r.Labels),
 	})
@@ -1578,19 +1608,48 @@ func infoFlowMeta(labels []model.InfoFlowLabel) map[string]any {
 // was truncated and can refine the query or request a specific section. The full
 // result is preserved in the archive by the caller.
 func capToolResultForContext(content string, maxTokens int) string {
-	if maxTokens <= 0 {
-		return content
+	body, note := contextView(content, maxTokens, false)
+	return body + note
+}
+
+// toolResultCharsPerToken is a coarse heuristic — a safety cap, not a
+// tokenizer.
+const toolResultCharsPerToken = 4
+
+// contextView splits a tool result into the body that re-enters the model's
+// context and the truncation note that follows it when anything was cut.
+// maxTokens > 0 caps every result at roughly that many tokens. A sensitive
+// result is also held to infoFlowMaxResultBytes, the size the flow tracker
+// records, so every byte of it the model sees is tracked (TEN-336).
+func contextView(content string, maxTokens int, sensitive bool) (body, note string) {
+	limit, byTokens := 0, maxTokens > 0
+	if byTokens {
+		limit = maxTokens * toolResultCharsPerToken
 	}
-	const charsPerToken = 4 // coarse heuristic — a safety cap, not a tokenizer
-	maxChars := maxTokens * charsPerToken
-	if len(content) <= maxChars {
-		return content
+	if sensitive && (limit == 0 || infoFlowMaxResultBytes < limit) {
+		limit, byTokens = infoFlowMaxResultBytes, false
+	}
+	if limit == 0 || len(content) <= limit {
+		return content, ""
 	}
 	// Slicing can split a multi-byte rune; ToValidUTF8 drops the partial tail so
 	// we never emit invalid UTF-8 into the prompt.
-	head := strings.ToValidUTF8(content[:maxChars], "")
-	return fmt.Sprintf("%s\n…[truncated: tool result exceeded the %d-token context cap (%d of %d bytes shown). Refine the query or request a specific section to see the rest.]",
-		head, maxTokens, len(head), len(content))
+	body = strings.ToValidUTF8(content[:limit], "")
+	if byTokens {
+		return body, fmt.Sprintf("\n…[truncated: tool result exceeded the %d-token context cap (%d of %d bytes shown). Refine the query or request a specific section to see the rest.]",
+			maxTokens, len(body), len(content))
+	}
+	return body, fmt.Sprintf("\n…[truncated: sensitive tool result exceeded %d bytes (%d of %d bytes shown). Request a specific section to see the rest.]",
+		infoFlowMaxResultBytes, len(body), len(content))
+}
+
+func hasSensitiveLabel(labels []model.InfoFlowLabel) bool {
+	for _, label := range labels {
+		if label.Sensitivity == model.SensitivitySensitive {
+			return true
+		}
+	}
+	return false
 }
 
 // toolCallSignature builds a stable, order-independent signature of a dispatched

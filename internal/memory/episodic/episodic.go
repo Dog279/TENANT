@@ -16,6 +16,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"tenant/internal/fsperm"
@@ -81,11 +82,26 @@ type Store struct {
 // Open returns a Store backed by the SQLite database at path. Uses WAL
 // mode for crash safety + concurrent readers. Path can be ":memory:"
 // for tests.
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return open(path, true) }
+
+// OpenExisting opens the database at path like Open, but only when the file
+// already exists, and without changing its permissions. Plain `tenant doctor`
+// uses it so its audit neither creates a database nor tightens one before
+// reporting on it (TEN-333).
+func OpenExisting(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	return open(path, false)
+}
+
+func open(path string, prepare bool) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
-		if err := fsperm.PrepareFile(path); err != nil {
-			return nil, fmt.Errorf("episodic: prepare private database: %w", err)
+		if prepare {
+			if err := fsperm.PrepareFile(path); err != nil {
+				return nil, fmt.Errorf("episodic: prepare private database: %w", err)
+			}
 		}
 		// WAL + relaxed sync for write throughput on personal hardware.
 		// busy_timeout handles transient lock contention without errors.

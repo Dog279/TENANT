@@ -131,6 +131,16 @@ func New(dataDir string) (*Store, error) {
 	return &Store{dir: dir, open: map[string]*Run{}}, nil
 }
 
+// OpenExisting returns a store over <dataDir>/research without creating or
+// re-permissioning the directory, for read-only audits such as plain `tenant
+// doctor` (TEN-333). A missing directory lists as empty.
+func OpenExisting(dataDir string) (*Store, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return nil, fmt.Errorf("research: empty data dir")
+	}
+	return &Store{dir: filepath.Join(dataDir, "research"), open: map[string]*Run{}}, nil
+}
+
 // Dir is the root research directory. Tests + operators.
 func (s *Store) Dir() string { return s.dir }
 

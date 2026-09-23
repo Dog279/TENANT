@@ -19,6 +19,7 @@ import (
 	githubp "tenant/internal/plugins/github"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/osys"
+	xp "tenant/internal/plugins/x"
 )
 
 // controlFilesFixture lays out a config dir holding every protected control file
@@ -166,7 +167,7 @@ func TestFileToolsCannotRewriteControlFiles(t *testing.T) {
 func TestControlFilesProtectedWhateverTheRoots(t *testing.T) {
 	cfgDir, dataDir, _ := controlFilesFixture(t)
 	settingsFile := settingsPath(cfgDir, "main")
-	oneShot := oneShotOSPolicy(cfgDir, nil, false, true).Roots
+	oneShot := oneShotOSPolicy(cfgDir, dataDir, nil, false, true).Roots
 	peerCert, _ := peering.CertPaths(cfgDir)
 
 	for _, tc := range []struct {
@@ -192,7 +193,7 @@ func TestControlFilesProtectedWhateverTheRoots(t *testing.T) {
 	if err := oneShot.Check(filepath.Join(dataDir, "out.txt"), true); err != nil {
 		t.Errorf("tenant os must still write anywhere else: %v", err)
 	}
-	if protect, secret := fileToolGuards("", nil, nil); slices.ContainsFunc(append(protect, secret...), func(p string) bool {
+	if protect, secret := fileToolGuards("", "", nil, nil); slices.ContainsFunc(append(protect, secret...), func(p string) bool {
 		return strings.Contains(p, "settings.") || strings.HasSuffix(p, "config.json")
 	}) {
 		t.Errorf("no config dir, no config-dir guards: %v %v", protect, secret)
@@ -235,6 +236,9 @@ func TestFileToolsCannotReadSecrets(t *testing.T) {
 		launchConfigPath(cfgDir), credentialsPath(cfgDir), peering.PeersPath(cfgDir), peerKey,
 		filepath.Join(cfgDir, "mcp", "mcp-0123.json"), atlassianTokenPath(cfgDir),
 		githubp.TokenPath(cfgDir), gsuite.EmbeddedOAuthPath(cfgDir),
+		// TEN-337: the data-dir X cache and the dashboard token come from
+		// the same managedSecrets list doctor audits.
+		xp.TokenPath(dataDir), dashboardAuthTokenPath(cfgDir),
 		saKey, tlsKey, sshKey, claudeCreds,
 	}
 	for _, p := range secrets {

@@ -1079,8 +1079,18 @@ type credentials struct {
 func credentialsPath(cfgDir string) string { return filepath.Join(cfgDir, "credentials.json") }
 
 func loadCredentials(cfgDir string) (*credentials, error) {
+	return loadCredentialsWith(cfgDir, secrets.ReadFile)
+}
+
+// peekCredentials reads credentials.json without hardening it, for plain
+// `tenant doctor`, whose audit must not change what it reports (TEN-333).
+func peekCredentials(cfgDir string) (*credentials, error) {
+	return loadCredentialsWith(cfgDir, secrets.Peek)
+}
+
+func loadCredentialsWith(cfgDir string, read func(string) ([]byte, error)) (*credentials, error) {
 	c := &credentials{Secrets: map[string]string{}}
-	b, err := secrets.ReadFile(credentialsPath(cfgDir))
+	b, err := read(credentialsPath(cfgDir))
 	if os.IsNotExist(err) {
 		return c, nil
 	}
@@ -1120,13 +1130,19 @@ func (c *credentials) set(id, secret string) {
 // an env-var reference takes priority over a stored secret. Empty when the
 // provider needs no key or none is configured.
 func resolveSecret(cfgDir, providerID string, auth authCfg) string {
+	return resolveSecretWith(loadCredentials, cfgDir, providerID, auth)
+}
+
+// resolveSecretWith is resolveSecret with the credentials reader chosen by the
+// caller; see commonFlags.credentialsLoader.
+func resolveSecretWith(load func(string) (*credentials, error), cfgDir, providerID string, auth authCfg) string {
 	if auth.KeyEnv != "" {
 		if v := os.Getenv(auth.KeyEnv); v != "" {
 			return v
 		}
 	}
 	if auth.Stored {
-		if creds, err := loadCredentials(cfgDir); err == nil {
+		if creds, err := load(cfgDir); err == nil {
 			return creds.get(providerID)
 		}
 	}

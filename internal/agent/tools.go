@@ -135,12 +135,16 @@ type ToolCallResult struct {
 	// Labels carry sensitivity/provenance on the tool-result envelope. They are
 	// populated from the registered ToolSpec only for successful results.
 	Labels []model.InfoFlowLabel
+	// reported is the provenance the tool handed back through ReportFlow.
+	reported Flow
 }
 
 // dispatchBatch runs up to maxParallel tool calls concurrently. Order
 // of the returned results matches the input order. Errors are kept
-// per-call (one bad tool doesn't kill the batch).
-func dispatchBatch(ctx context.Context, calls []model.ToolCall, maxParallel int, d ToolDispatcher) []ToolCallResult {
+// per-call (one bad tool doesn't kill the batch). flows[i], when present,
+// is the approved provenance calls[i] carries (see DispatchFlow); each call
+// also gets a sink for what its tool reports back (see ReportFlow).
+func dispatchBatch(ctx context.Context, calls []model.ToolCall, flows []Flow, maxParallel int, d ToolDispatcher) []ToolCallResult {
 	if maxParallel < 1 {
 		maxParallel = 1
 	}
@@ -153,8 +157,13 @@ func dispatchBatch(ctx context.Context, calls []model.ToolCall, maxParallel int,
 		go func(i int, call model.ToolCall) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			out, isErr, err := d.Dispatch(ctx, call)
-			results[i] = ToolCallResult{Call: call, Result: out, IsError: isErr, Err: err}
+			report := &flowReport{}
+			callCtx := context.WithValue(ctx, flowReportKey{}, report)
+			if i < len(flows) && !flows[i].Empty() {
+				callCtx = context.WithValue(callCtx, dispatchFlowKey{}, flows[i])
+			}
+			out, isErr, err := d.Dispatch(callCtx, call)
+			results[i] = ToolCallResult{Call: call, Result: out, IsError: isErr, Err: err, reported: report.get()}
 		}(i, call)
 	}
 	wg.Wait()

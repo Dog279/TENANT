@@ -17,6 +17,8 @@ import (
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
+	"tenant/internal/plugins/gsuite"
+	xp "tenant/internal/plugins/x"
 	"tenant/internal/secrets"
 )
 
@@ -128,6 +130,83 @@ func TestDoctor_CheckSecretProtection(t *testing.T) {
 			t.Fatalf("unexpected result: %+v", r)
 		}
 	})
+
+	// TEN-337: the X token cache lives in the data dir, which this check never
+	// looked at, so a loose refresh token sat beside a healthy report.
+	t.Run("loose X token cache in the data dir fails", func(t *testing.T) {
+		cfg, data := t.TempDir(), filepath.Join(t.TempDir(), "data")
+		if err := os.MkdirAll(data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(xp.TokenPath(data), []byte(`{}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(xp.TokenPath(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: cfg, dataDir: data}})
+		if r.Status != statusFail || !strings.Contains(r.Detail, "x-token.json") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+
+	t.Run("protected X token cache counts", func(t *testing.T) {
+		cfg, data := t.TempDir(), t.TempDir()
+		if err := secrets.WriteFile(xp.TokenPath(data), []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+		r := checkSecretProtection(context.Background(), &doctorEnv{c: &commonFlags{cfgDir: cfg, dataDir: data}})
+		if r.Status != statusOK || !strings.Contains(r.Detail, "1 secret file") {
+			t.Fatalf("unexpected result: %+v", r)
+		}
+	})
+}
+
+// managedSecrets lists the MCP caches by reading the directory: a glob would
+// treat a '[' in the config dir path as a pattern and miss them.
+func TestManagedSecretsWithABracketInTheConfigDir(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "cfg[dev]")
+	cache := filepath.Join(mcpCacheDir(cfg), "mcp-0123.json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed, err := managedSecrets(cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range managed {
+		found = found || (m.path == cache && m.label == "mcp/mcp-0123.json")
+	}
+	if !found {
+		t.Fatalf("MCP cache under %s missing from %+v", cfg, managed)
+	}
+}
+
+// TEN-337: `tenant oauth-setup gsuite` installs the OAuth client through the
+// secrets package, like the other OAuth files.
+func TestInstallGSuiteOAuthWritesAProtectedFile(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "client.json")
+	client := `{"installed":{"client_id":"fake.apps.googleusercontent.com","client_secret":"fake",` +
+		`"auth_uri":"https://accounts.google.com/o/oauth2/v2/auth","token_uri":"https://oauth2.googleapis.com/token",` +
+		`"redirect_uris":["http://localhost"]}}`
+	if err := os.WriteFile(src, []byte(client), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := t.TempDir()
+	if err := installGSuiteOAuthSilent(cfg, src); err != nil {
+		t.Fatal(err)
+	}
+	path := gsuite.EmbeddedOAuthPath(cfg)
+	if b, err := os.ReadFile(path); err != nil || string(b) != client {
+		t.Fatalf("installed client = %q, %v", b, err)
+	}
+	if report := secrets.Probe(path); !report.Protected {
+		t.Fatalf("installed OAuth client is not protected: %+v", report)
+	}
 }
 
 func TestDoctor_CheckPrivatePermissions(t *testing.T) {
