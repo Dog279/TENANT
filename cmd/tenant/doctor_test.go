@@ -21,7 +21,7 @@ import (
 )
 
 // Each new check is exercised against a synthetic environment — no live
-// network, no DGX. The integrity check uses a real SQLite file we
+// network, no model host. The integrity check uses a real SQLite file we
 // deliberately corrupt to exercise the FAIL + --fix paths.
 
 // checkLaunchConfig: missing config = OK (defaults), parseable = OK,

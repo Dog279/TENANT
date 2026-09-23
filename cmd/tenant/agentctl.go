@@ -175,7 +175,7 @@ func (ac *agentControl) Rename(oldName, newName string) (string, error) {
 //
 // A built-in isn't in lc.Agents until it's overridden, so editing one used to
 // fail with "no agent named" — which blocked the headline use case of pinning
-// the Programmer to a local/DGX model (TEN-139). Here we MATERIALIZE the built-in
+// the Programmer to a local/self-hosted model (TEN-139). Here we MATERIALIZE the built-in
 // into lc.Agents on first edit, copying its soul + description so the persona is
 // preserved, and clearing Builtin since it's now operator-owned. The caller is
 // responsible for saving lc. The returned name is the built-in's canonical

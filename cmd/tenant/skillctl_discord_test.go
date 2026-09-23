@@ -269,7 +269,7 @@ func TestDiscordRegisteredInSkillKinds(t *testing.T) {
 // --- validateDiscordUserID ---
 
 func TestValidateDiscordUserID_Valid(t *testing.T) {
-	err := validateDiscordUserID("1470226458332106895")
+	err := validateDiscordUserID("123456789012345678")
 	if err != nil {
 		t.Fatalf("valid snowflake rejected: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestValidateDiscordUserID_Whitespace(t *testing.T) {
 }
 
 func TestValidateDiscordUserID_NonNumeric(t *testing.T) {
-	err := validateDiscordUserID("dylan#1234")
+	err := validateDiscordUserID("ada#1234")
 	if err == nil {
 		t.Fatal("expected error for non-numeric user ID")
 	}

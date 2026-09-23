@@ -638,7 +638,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	// it the harness measures the primary endpoint's uptime rather than the
 	// agent's quality: five consecutive nightly runs scored an identical
 	// 10.4/100 with 42 of 48 tasks failing on "model: endpoint down" because
-	// the DGX was unreachable, while the live agent sailed through the same
+	// the model host was unreachable, while the live agent sailed through the same
 	// window on zai/claudecode. A flapping endpoint should degrade a run, not
 	// zero it — and a scored-zero run also trips the regression gate for a
 	// purely infrastructural reason.
@@ -970,7 +970,7 @@ func baselineFromArtifact(artifactPath, artifactDir string, w io.Writer) error {
 	}
 	// Artifacts written BEFORE the error-class change scored infra failures
 	// as graded zeros with Ungraded=false, so UngradedCount alone cannot
-	// see the damage - the five 10.4-overall DGX-down nights would pass a
+	// see the damage - the five 10.4-overall model-host-down nights would pass a
 	// naive check and arm a baseline that masks every future regression.
 	// Count both signals.
 	infra := rep.Aggregates.UngradedCount

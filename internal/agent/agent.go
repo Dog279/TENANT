@@ -880,7 +880,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			// window, or a single oversized turn, can still hit it. Compact the
 			// working set once and retry the iteration rather than killing the
 			// turn; the one-shot guard stops an unrecoverable overflow from
-			// looping. (R640 llama.cpp "Failed to tokenize prompt" turn deaths.)
+			// looping. (llama.cpp "Failed to tokenize prompt" turn deaths.)
 			if errors.Is(err, model.ErrContextOverflow) && !overflowCompacted && a.cfg.Compactor != nil {
 				overflowCompacted = true
 				a.emit(Event{Kind: EventError, Iter: iter, Text: "context overflow — compacting and retrying: " + err.Error()})

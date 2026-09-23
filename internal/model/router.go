@@ -86,7 +86,7 @@ func (r *Router) RegisterBackend(kind string, f BackendFactory) {
 
 // PinRole overrides the default role preference. Useful when the user
 // has multiple profiles for the same role and wants a specific one
-// (e.g. "use the Mac Studio Gemma as the planner, not the DGX Qwen").
+// (e.g. "use the local Gemma as the planner, not the remote Qwen").
 func (r *Router) PinRole(role Role, profileID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

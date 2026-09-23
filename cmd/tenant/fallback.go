@@ -184,7 +184,7 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 	}
 }
 
-// fallbackLabelToProvider turns a fallback profile-ID ("qwen-dgx/vllm-planner")
+// fallbackLabelToProvider turns a fallback profile-ID ("qwen-gpu/vllm-planner")
 // or a primary's role-ID ("vllm-planner") into a human label for the feed. The
 // fallback IDs are provider-namespaced; the primary isn't, so it falls back to
 // the supplied active-provider name.

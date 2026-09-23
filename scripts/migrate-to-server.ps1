@@ -41,7 +41,9 @@
 param(
     [Parameter(Mandatory = $true)] [string]$Server,
     [string]$RemoteRoot = "C:\Tenant",
-    [long]$WeeklyBudget = 5000000
+    [long]$WeeklyBudget = 5000000,
+    # Model host (vLLM on :8000) the server must reach; empty skips that preflight check.
+    [string]$ModelHost = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,17 +64,21 @@ $sess = New-PSSession -ComputerName $Server -Credential $cred
 try {
     # --- preflight -------------------------------------------------------
     $pre = Invoke-Command -Session $sess -ScriptBlock {
-        $dgx = Test-NetConnection -ComputerName 192.168.1.229 -Port 8000 -WarningAction SilentlyContinue
-        [pscustomobject]@{
-            OS        = (Get-CimInstance Win32_OperatingSystem).Caption
-            PS        = $PSVersionTable.PSVersion.ToString()
-            DGXReach  = $dgx.TcpTestSucceeded
-            HasOllama = [bool](Get-Command ollama -ErrorAction SilentlyContinue)
+        param($probeHost)
+        $probe = $null
+        if ($probeHost) {
+            $probe = Test-NetConnection -ComputerName $probeHost -Port 8000 -WarningAction SilentlyContinue
         }
-    }
+        [pscustomobject]@{
+            OS         = (Get-CimInstance Win32_OperatingSystem).Caption
+            PS         = $PSVersionTable.PSVersion.ToString()
+            ModelReach = $probe.TcpTestSucceeded
+            HasOllama  = [bool](Get-Command ollama -ErrorAction SilentlyContinue)
+        }
+    } -ArgumentList $ModelHost
     Write-Host ("server: {0} (PS {1})" -f $pre.OS, $pre.PS)
-    if (-not $pre.DGXReach) {
-        Write-Warning "server cannot reach the DGX at 192.168.1.229:8000 - the local-model leg will be dead until that routes; continuing (claudecode/zai legs still work)."
+    if ($ModelHost -and -not $pre.ModelReach) {
+        Write-Warning ("server cannot reach the model host at {0}:8000 - the local-model leg will be dead until that routes; continuing (claudecode/zai legs still work)." -f $ModelHost)
     }
 
     # --- layout + payload -------------------------------------------------
@@ -103,7 +109,7 @@ try {
         return ""
     }
     if (-not $claudeBin) {
-        Write-Warning "claude CLI install could not be verified - the claudecode leg will fail over to zai/DGX until you install it on the server and set TENANT_CLAUDE_BIN."
+        Write-Warning "claude CLI install could not be verified - the claudecode leg will fail over to the zai/local-model legs until you install it on the server and set TENANT_CLAUDE_BIN."
     } else {
         Write-Host "claude CLI: $claudeBin"
     }

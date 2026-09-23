@@ -14,7 +14,7 @@ import (
 // researchControl's History / Show / Delete don't need the agent stack — they
 // work purely against the store. These tests verify the TUI-facing surface
 // without spinning up a model. (Replay needs a planner; that's exercised
-// live on the DGX.)
+// live against a real model.)
 
 func newCtl(t *testing.T) (*researchControl, *research.Store, string) {
 	t.Helper()

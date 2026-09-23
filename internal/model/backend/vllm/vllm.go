@@ -146,7 +146,7 @@ type wireToolFunc struct {
 // applied unconditionally rather than gated on ProviderKind — which also keeps
 // it working if a llama.cpp endpoint is mis-tagged as plain "vllm". The full
 // tool output is preserved in the archive; only the model-facing wire copy is
-// scrubbed. (R640 qwen3.8-flash-next: curling :8081/props re-entered the marker.)
+// scrubbed. (llama.cpp qwen3.8-flash-next: curling :8081/props re-entered the marker.)
 var mediaMarkerRe = regexp.MustCompile(`<__media(?:_[A-Za-z0-9]+)?__>`)
 
 func scrubMediaMarkers(s string) string {
@@ -378,7 +378,7 @@ func (r tokenizeResponse) n() int {
 // which then rejects it ("Failed to tokenize prompt" on llama.cpp) and kills
 // the turn. llama.cpp therefore must NOT fall back to the chars/4 estimate
 // while its /tokenize is reachable — that stopgap under-counts qwen3's dense
-// JSON tool schemas and is what re-broke the R640. Genuinely tokenize-less
+// JSON tool schemas and is what re-broke the llama.cpp host. Genuinely tokenize-less
 // providers (hosted APIs, Ollama) keep the estimate, and any /tokenize error
 // degrades to the estimate rather than breaking the turn.
 func (b *Backend) TokenCount(ctx context.Context, text string) (int, error) {
@@ -404,7 +404,7 @@ func (b *Backend) TokenCount(ctx context.Context, text string) (int, error) {
 	}
 	// A reachable endpoint that returns no count on non-empty text spoke a
 	// dialect we didn't decode — estimate rather than hand back 0, which would
-	// fully defeat the budget guard (the original R640 count=0 failure).
+	// fully defeat the budget guard (the original llama.cpp count=0 failure).
 	if strings.TrimSpace(text) != "" {
 		return estimateTokens(text), nil
 	}
@@ -528,7 +528,7 @@ func classifyHTTPError(resp *http.Response) error {
 		// (invalid_request_error, no token counts) — a real invalid request,
 		// not a size problem. Mapping it to overflow masks the error and
 		// triggers a useless compact-and-retry into the identical failure
-		// (proven on the R640: the two errors are distinct). Let it fall through
+		// (proven on a live llama.cpp host: the two errors are distinct). Let it fall through
 		// to ErrInvalidRequest below so it surfaces as itself.
 		return fmt.Errorf("%w: %s", model.ErrContextOverflow, snippet)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
@@ -587,7 +587,7 @@ func toolChoiceWire(tc model.ToolChoice) any {
 // normalizeToolArgs reconciles how tool-call arguments arrive on the
 // wire. Per the OpenAI spec (which vLLM follows), function.arguments
 // is a JSON-encoded STRING — e.g. "{\"a\": 17, \"b\": 25}" — not a
-// nested object. Verified against real Gemma 4 on the DGX. The agent's
+// nested object. Verified against a real Gemma 4 vLLM server. The agent's
 // validateToolCall json.Unmarshal's the args into a map, which fails
 // on a quoted string. So:
 //

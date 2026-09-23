@@ -3,8 +3,9 @@
   TEN-263 — Production launchd unit for `tenant serve` (the headless 24/7 hub).
 
   This is a TEMPLATE. Before loading it:
-    1. Rename the file + Label to your convention (the migration uses com.tyclaw.tenant).
-    2. Replace the {{PLACEHOLDERS}} below with absolute paths.
+    1. Rename the file + Label to your convention (the migration docs use com.example.tenant).
+    2. Replace the {{PLACEHOLDERS}} below with absolute paths. launchd does not
+       expand ~, so write the examples' ~ out as your home directory.
     3. CRITICAL (TCC): every path the unit touches — the binary, --config, --data,
        and the logs — MUST live OUTSIDE ~/Desktop, ~/Documents, and ~/Downloads,
        or macOS TCC will silently deny file access to a launchd-spawned process.
@@ -14,28 +15,28 @@
        or with an interactive `tenant tui` you run by hand.
 
   Install (per-user LaunchAgent):
-    cp deploy/launchd/com.tenant.serve.plist ~/Library/LaunchAgents/com.tyclaw.tenant.plist
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tyclaw.tenant.plist
-    launchctl kickstart -k gui/$(id -u)/com.tyclaw.tenant   # start now
+    cp deploy/launchd/com.tenant.serve.plist ~/Library/LaunchAgents/com.example.tenant.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.tenant.plist
+    launchctl kickstart -k gui/$(id -u)/com.example.tenant   # start now
   Status / logs:
-    launchctl print gui/$(id -u)/com.tyclaw.tenant | grep -E 'state|pid'
+    launchctl print gui/$(id -u)/com.example.tenant | grep -E 'state|pid'
     tail -f {{LOG_DIR}}/tenant.serve.log
   Stop / uninstall:
-    launchctl bootout gui/$(id -u)/com.tyclaw.tenant
+    launchctl bootout gui/$(id -u)/com.example.tenant
 -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.tyclaw.tenant</string>
+  <string>com.example.tenant</string>
 
   <key>ProgramArguments</key>
   <array>
-    <string>{{TENANT_BIN}}</string>            <!-- e.g. /Users/tyclaw/bin/tenant -->
+    <string>{{TENANT_BIN}}</string>            <!-- e.g. ~/bin/tenant -->
     <string>serve</string>
     <string>--config</string>
-    <string>{{CONFIG_DIR}}</string>            <!-- e.g. /Users/tyclaw/.config/tenant -->
+    <string>{{CONFIG_DIR}}</string>            <!-- e.g. ~/.config/tenant -->
     <string>--data</string>
-    <string>{{DATA_DIR}}</string>              <!-- e.g. /Users/tyclaw/Library/Application Support/tenant -->
+    <string>{{DATA_DIR}}</string>              <!-- e.g. ~/Library/Application Support/tenant -->
     <!-- dashboard is on by default at 127.0.0.1:8770; uncomment to pin a token-protected addr -->
     <!-- <string>- -dashboard-addr</string><string>127.0.0.1:8770</string> -->
   </array>
@@ -71,7 +72,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>{{HOME_DIR}}</string>             <!-- e.g. /Users/tyclaw -->
+    <string>{{HOME_DIR}}</string>             <!-- your home directory (the ~ above) -->
     <!-- <key>ZAI_API_KEY</key><string>...</string> -->
   </dict>
 

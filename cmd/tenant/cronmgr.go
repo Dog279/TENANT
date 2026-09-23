@@ -562,7 +562,7 @@ func cronExecDestructiveOverride(action string) bool {
 	}
 	// Wiki writes: categorize doesn't know wiki_save, so it lands here as
 	// "destructive" and the daily brief's MON-ledger write-back was silently
-	// denied (2026-08-26 — masked until then because the flaky-DGX mornings
+	// denied (2026-08-26 — masked until then because the flaky-model-host mornings
 	// pushed the brief onto the claudecode path, whose bridge allows writes).
 	// wiki_save carries its own root containment + overwrite gate; an
 	// unattended ledger update is exactly what it exists for.

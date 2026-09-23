@@ -29,7 +29,7 @@ func TestLineMatchesHubByteForByte(t *testing.T) {
 		msg    string
 		fields []field
 	}{
-		{Info, "build started", []field{{"commit", "abc123"}, {"host", "r640"}}},
+		{Info, "build started", []field{{"commit", "abc123"}, {"host", "build-box"}}},
 		{Error, "tool result web_search\tfailed\nhard", []field{{"args", `{"q":"a b"}`}, {"empty", ""}, {"eq", "a=b"}, {"uni", "héllo → wörld"}, {"multi", "l1\nl2"}}},
 		{Warn, "no fields", nil},
 		{Debug, "custom level buckets", []field{{"k", "v"}}},
@@ -74,7 +74,7 @@ func TestDefaultDataDirMatchesTenant(t *testing.T) {
 // under the sidecar's own tab.
 func TestFileFallbackIsDiscoveredByHub(t *testing.T) {
 	data := t.TempDir()
-	l, err := NewWithConfig(Config{Source: "My Sidecar", DataDir: data, FileOnly: true, Defaults: map[string]string{"host": "r640"}})
+	l, err := NewWithConfig(Config{Source: "My Sidecar", DataDir: data, FileOnly: true, Defaults: map[string]string{"host": "build-box"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestFileFallbackIsDiscoveredByHub(t *testing.T) {
 	if len(all) != 3 {
 		t.Fatalf("hub backfilled %d entries, want 3: %+v", len(all), all)
 	}
-	if all[0].Source != "my-sidecar" || all[0].Msg != "hello from a script" || all[0].Field("k") != "v" || all[0].Field("host") != "r640" {
+	if all[0].Source != "my-sidecar" || all[0].Msg != "hello from a script" || all[0].Field("k") != "v" || all[0].Field("host") != "build-box" {
 		t.Errorf("entry 0 = %+v", all[0])
 	}
 	if !all[1].IsErr() || all[1].Field("err") != "file does not exist" {
@@ -195,7 +195,7 @@ func TestRejectedLineIsKeptOnDiskAndReported(t *testing.T) {
 func TestHandlerRoutesSlogRecords(t *testing.T) {
 	srv, got := hubStub(t, http.StatusAccepted)
 	l, _ := NewWithConfig(Config{Source: "sidecar", URL: srv.URL, DataDir: t.TempDir()})
-	log := slog.New(l.Handler()).With("host", "r640").WithGroup("req").With("id", 7)
+	log := slog.New(l.Handler()).With("host", "build-box").WithGroup("req").With("id", 7)
 	log.Debug("dropped at the default floor")
 	if got.n != 0 {
 		t.Fatal("DEBUG should not be sent by default")
@@ -205,7 +205,7 @@ func TestHandlerRoutesSlogRecords(t *testing.T) {
 		t.Fatalf("got %d posts, body %v", got.n, got.body)
 	}
 	f, _ := got.body["fields"].(map[string]any)
-	for k, v := range map[string]string{"host": "r640", "req.id": "7", "req.path": "/x", "req.peer.ip": "10.0.0.1", "req.err": "file does not exist"} {
+	for k, v := range map[string]string{"host": "build-box", "req.id": "7", "req.path": "/x", "req.peer.ip": "10.0.0.1", "req.err": "file does not exist"} {
 		if f[k] != v {
 			t.Errorf("field %s = %v, want %s (all: %v)", k, f[k], v, f)
 		}
@@ -220,7 +220,7 @@ func TestHandlerRoutesSlogRecords(t *testing.T) {
 func TestSubAndDefaultsAndStderr(t *testing.T) {
 	srv, got := hubStub(t, http.StatusAccepted)
 	var errOut strings.Builder
-	l, _ := NewWithConfig(Config{Source: "deploy", URL: srv.URL, DataDir: t.TempDir(), Defaults: map[string]string{"host": "r640"}, Stderr: &errOut})
+	l, _ := NewWithConfig(Config{Source: "deploy", URL: srv.URL, DataDir: t.TempDir(), Defaults: map[string]string{"host": "build-box"}, Stderr: &errOut})
 	audit := l.Sub("Deploy Audit")
 	if audit.Source() != "deploy-audit" {
 		t.Errorf("Sub source = %q", audit.Source())
@@ -229,10 +229,10 @@ func TestSubAndDefaultsAndStderr(t *testing.T) {
 	if got.path != "/api/logs/deploy-audit" {
 		t.Errorf("path = %s", got.path)
 	}
-	if f, _ := got.body["fields"].(map[string]any); f["host"] != "r640" || f["id"] != "42" {
+	if f, _ := got.body["fields"].(map[string]any); f["host"] != "build-box" || f["id"] != "42" {
 		t.Errorf("defaults should stamp every line: %v", got.body["fields"])
 	}
-	if !strings.Contains(errOut.String(), "INFO  [deploy-audit] verdict recorded\thost=r640 id=42\n") {
+	if !strings.Contains(errOut.String(), "INFO  [deploy-audit] verdict recorded\thost=build-box id=42\n") {
 		t.Errorf("stderr mirror = %q", errOut.String())
 	}
 }

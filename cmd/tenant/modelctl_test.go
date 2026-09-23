@@ -140,33 +140,33 @@ func TestModelControl_ListUseAdd(t *testing.T) {
 	}
 
 	// Add a new vLLM backend → persisted, switchable.
-	addStatus, err := mc.AddModel("dgx", "http://localhost:8000/", "qwen")
+	addStatus, err := mc.AddModel("gpu", "http://localhost:8000/", "qwen")
 	if err != nil {
 		t.Fatalf("AddModel: %v", err)
 	}
-	if !strings.Contains(addStatus, "route.big_role") || !strings.Contains(addStatus, `"dgx"`) {
+	if !strings.Contains(addStatus, "route.big_role") || !strings.Contains(addStatus, `"gpu"`) {
 		t.Errorf("AddModel status missing planner-big bind hint: %q", addStatus)
 	}
 	got, _ = loadLaunchConfig(dir)
-	p := got.Providers["dgx"]
+	p := got.Providers["gpu"]
 	if p == nil || p.Kind != "vllm" || p.ToolFmt != "qwen" || p.Endpoint != "http://localhost:8000" {
 		t.Fatalf("added backend wrong: %+v", p)
 	}
 
 	// Remove a non-active backend (and its stored credential).
 	creds, _ := loadCredentials(dir)
-	creds.set("dgx", "sk-x")
+	creds.set("gpu", "sk-x")
 	_ = creds.save(dir)
-	if _, err := mc.RemoveModel("dgx"); err != nil {
-		t.Fatalf("RemoveModel(dgx): %v", err)
+	if _, err := mc.RemoveModel("gpu"); err != nil {
+		t.Fatalf("RemoveModel(gpu): %v", err)
 	}
 	got, _ = loadLaunchConfig(dir)
-	if got.Providers["dgx"] != nil {
-		t.Fatal("dgx not removed")
+	if got.Providers["gpu"] != nil {
+		t.Fatal("gpu not removed")
 	}
 	creds, _ = loadCredentials(dir)
-	if _, ok := creds.Secrets["dgx"]; ok {
-		t.Fatal("dgx credential not cleaned up")
+	if _, ok := creds.Secrets["gpu"]; ok {
+		t.Fatal("gpu credential not cleaned up")
 	}
 
 	// Removing the active model is refused.

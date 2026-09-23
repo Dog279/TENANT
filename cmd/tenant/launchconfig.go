@@ -95,7 +95,7 @@ type launchConfig struct {
 	// runs on the profile's chosen model with the profile's soul — instead
 	// of inheriting the orchestrator's primary model + role-stamped base
 	// soul. Lets you mix models per role: researcher → glm-4.6 on Z.ai,
-	// synthesizer → aeon-ultimate on DGX, etc.
+	// synthesizer → aeon-ultimate on a self-hosted vLLM, etc.
 	Agents map[string]*agentProfile `json:"agents,omitempty"`
 	// Budgets is the structural resource envelope for each agent-team run.
 	// Omitted/zero fields receive orchestra.DefaultBudgets at runtime.
@@ -107,8 +107,8 @@ type launchConfig struct {
 	// Fallbacks is the ordered list of provider names (keys into Providers) to
 	// try when the active provider rate-limits / runs out of credits / is
 	// unreachable (TEN-246). Empty (default) = no auto-fallback. e.g. with
-	// provider "zai" + `"fallbacks": ["qwen-dgx"]`, a glm 429 transparently routes
-	// to the DGX Qwen for that call; the preferred provider is retried first once
+	// provider "zai" + `"fallbacks": ["qwen-gpu"]`, a glm 429 transparently routes
+	// to the self-hosted Qwen for that call; the preferred provider is retried first once
 	// its cooldown lapses.
 	Fallbacks []string `json:"fallbacks,omitempty"`
 	// LazyTools enables on-demand tool loading (TEN-228): the per-turn tool array
@@ -324,7 +324,7 @@ func routeConfigErrorf(format string, args ...any) error {
 // model + the role-stamped base soul.
 //
 // Provider is the id of an entry in launchConfig.Providers (e.g. "zai",
-// "dgx", "anthropic"). Model optionally overrides that provider's default
+// "gpu", "anthropic"). Model optionally overrides that provider's default
 // model — leave blank to use the provider's configured Model. Soul is the
 // agent's identity/persona as markdown; when blank, the role label is
 // stamped onto the base operator soul (the existing behavior). Description

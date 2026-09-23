@@ -1042,7 +1042,7 @@ type AgentControl interface {
 // AgentInfo is the lightweight summary row for /agents listings.
 type AgentInfo struct {
 	Name        string
-	Provider    string // provider id (e.g. "zai", "dgx")
+	Provider    string // provider id (e.g. "zai", "gpu")
 	Model       string // resolved model — profile override > provider default
 	Description string
 	HasSoul     bool // whether the profile has a custom soul markdown
@@ -4354,7 +4354,7 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 			return
 		}
 		if len(f) < 3 {
-			m.sysChat("usage: /model add <name> <endpoint> [tool-format]   e.g. /model add dgx http://localhost:8000 qwen   |   keyless kinds: /model add claudecode")
+			m.sysChat("usage: /model add <name> <endpoint> [tool-format]   e.g. /model add gpu http://localhost:8000 qwen   |   keyless kinds: /model add claudecode")
 			return
 		}
 		name, endpoint := f[1], f[2]

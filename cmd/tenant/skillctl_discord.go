@@ -59,7 +59,7 @@ func validateDiscordUserID(s string) error {
 	}
 	for _, c := range s {
 		if c < '0' || c > '9' {
-			return fmt.Errorf("Discord user ID must be numeric (a snowflake ID like 1470226458332106895), not a username — got %q", s)
+			return fmt.Errorf("Discord user ID must be numeric (a snowflake ID like 123456789012345678), not a username — got %q", s)
 		}
 	}
 	if len(s) < 17 || len(s) > 20 {

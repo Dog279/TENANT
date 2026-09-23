@@ -222,8 +222,8 @@ func TestNormalizeHandle(t *testing.T) {
 	cases := map[string]string{
 		"+1 (555) 123-0000": "15551230000", // digits only — the leading + is dropped
 		"555-123-0000":      "5551230000",
-		"+15307606113":      "15307606113", // E.164 ...
-		"15307606113":       "15307606113", // ... matches the same number typed without +
+		"+15559876543":      "15559876543", // E.164 ...
+		"15559876543":       "15559876543", // ... matches the same number typed without +
 		"Mom@Example.com":   "mom@example.com",
 		"  ":                "",
 	}

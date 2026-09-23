@@ -45,7 +45,7 @@ func TestRegistry_DiskOverrideMergesByID(t *testing.T) {
 id: my-custom-planner
 role: planner
 backend: vllm
-endpoint: http://mac-studio:8000
+endpoint: http://model-host:8000
 model: my/model
 context_length: 64000
 `)

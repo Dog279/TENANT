@@ -162,17 +162,17 @@ func TestHandleConfigurePeer_PermissionsStyle(t *testing.T) {
 }
 
 func TestHandlePeer_Rename(t *testing.T) {
-	f := newFakePeerControl("Dylans-MacBook-Pro-2.local")
+	f := newFakePeerControl("build-box.local")
 	m := newModel(context.Background(), Config{Peer: f})
 
-	m.handlePeer("rename Dylans-MacBook-Pro-2.local mac")
+	m.handlePeer("rename build-box.local mac")
 	if !strings.Contains(lastSys(m), "renamed") {
 		t.Errorf("rename should confirm: %q", lastSys(m))
 	}
 	if _, ok := f.peers["mac"]; !ok {
 		t.Error("peer should now be under 'mac'")
 	}
-	if _, ok := f.peers["Dylans-MacBook-Pro-2.local"]; ok {
+	if _, ok := f.peers["build-box.local"]; ok {
 		t.Error("old name should be gone")
 	}
 	// alias is the same command.
@@ -280,8 +280,8 @@ func TestHandlePeer_Serve(t *testing.T) {
 		t.Errorf("serve should confirm the listener + that invites prompt here: %q", lastSys(m))
 	}
 	// Explicit address.
-	m.handlePeer("serve 100.76.238.69:9100")
-	if f.served != "100.76.238.69:9100" {
+	m.handlePeer("serve 100.64.0.10:9100")
+	if f.served != "100.64.0.10:9100" {
 		t.Errorf("serve should bind the given addr, got %q", f.served)
 	}
 }

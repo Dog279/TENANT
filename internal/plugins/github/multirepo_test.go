@@ -156,7 +156,7 @@ func TestChanges_FansOutAndSurvivesPartialFailure(t *testing.T) {
 		switch {
 		case strings.Contains(r.URL.Path, "/TENANT/commits"):
 			_, _ = w.Write([]byte(`[{"sha":"abcdef1234567","commit":{"message":"fix(route): honor timeout",
-				"author":{"name":"Dylan","date":"2026-08-18T09:00:00Z"}}}]`))
+				"author":{"name":"Ada","date":"2026-08-18T09:00:00Z"}}}]`))
 		case strings.Contains(r.URL.Path, "/bitematch/commits"):
 			http.Error(w, "boom", http.StatusInternalServerError)
 		case strings.HasPrefix(r.URL.Path, "/api/v3/search/issues"):

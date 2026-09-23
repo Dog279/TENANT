@@ -136,7 +136,7 @@ func TestAgent_Interject_FoldedAndResumes(t *testing.T) {
 // classified as ErrContextOverflow) must not kill the turn: the agent compacts
 // the working set once and retries the iteration, and the turn finishes. Before
 // the fix the planner error propagated straight out as "planner generate
-// iter=N" — exactly the failure Dylan hit on the R640.
+// iter=N" — exactly the failure the operator hit on a llama.cpp server.
 func TestAgent_ContextOverflow_CompactsAndRetries(t *testing.T) {
 	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
 	fake := testllm.New()

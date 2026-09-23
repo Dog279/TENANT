@@ -3,8 +3,8 @@
 // Ollama, llama.cpp HTTP — can be added without churn).
 //
 // The split between LLM and Embedder reflects the deployment reality: a
-// generation model (Qwen 3.6-72B on a DGX Spark) and an embedding model
-// (Qwen3-Embedding-8B on a Mac Studio) are different processes serving
+// generation model (Qwen 3.6-72B on a GPU server) and an embedding model
+// (Qwen3-Embedding-8B on a second machine) are different processes serving
 // different endpoints. Coupling them onto one interface would force every
 // backend implementation to support both or return ErrNotSupported.
 package model

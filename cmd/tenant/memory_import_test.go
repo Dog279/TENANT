@@ -29,7 +29,7 @@ func (f fakeImportEmbedder) Embed(_ context.Context, texts []string) ([][]float3
 // else is scaffolding the importer must skip.
 const sampleMemoryMD = "# Memory Index\n" +
 	"\n" +
-	"Dylan is the owner of the Tenant project.\n" +
+	"Ada is the owner of the Tenant project.\n" +
 	"\n" +
 	"## Topics\n" +
 	"\n" +

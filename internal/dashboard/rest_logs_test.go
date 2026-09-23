@@ -44,7 +44,7 @@ func TestRESTLogs_WriteCreatesSource(t *testing.T) {
 	s, h := logsServer(t, root)
 
 	rec := do(t, s, http.MethodPost, "/api/logs/My%20Sidecar", "application/json",
-		`{"level":"warn","msg":"disk at 91%","fields":{"host":"r640","pct":"91"}}`)
+		`{"level":"warn","msg":"disk at 91%","fields":{"host":"build-box","pct":"91"}}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -54,7 +54,7 @@ func TestRESTLogs_WriteCreatesSource(t *testing.T) {
 		t.Errorf("ack = %v", ack)
 	}
 	all, _ := h.Snapshot()
-	if len(all) != 1 || all[0].Source != "my-sidecar" || all[0].Level != slog.LevelWarn || all[0].Field("host") != "r640" || all[0].Field("pct") != "91" {
+	if len(all) != 1 || all[0].Source != "my-sidecar" || all[0].Level != slog.LevelWarn || all[0].Field("host") != "build-box" || all[0].Field("pct") != "91" {
 		t.Fatalf("entry = %+v", all)
 	}
 	files, _ := filepath.Glob(filepath.Join(root, "my-sidecar", "*.log"))
@@ -62,7 +62,7 @@ func TestRESTLogs_WriteCreatesSource(t *testing.T) {
 		t.Fatalf("expected one daily file, got %v", files)
 	}
 	b, _ := os.ReadFile(files[0])
-	if !strings.Contains(string(b), "WARN  [my-sidecar] disk at 91%\thost=r640 pct=91\n") {
+	if !strings.Contains(string(b), "WARN  [my-sidecar] disk at 91%\thost=build-box pct=91\n") {
 		t.Errorf("file line = %q", string(b))
 	}
 

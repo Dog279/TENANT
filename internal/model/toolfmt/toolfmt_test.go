@@ -390,7 +390,7 @@ func TestQwen_CleanText_SalvagesAllThinkResponse(t *testing.T) {
 	q := toolfmt.Qwen{}
 	cases := []struct{ in, mustContain string }{
 		{"<think>The answer is that NVDA closed at $850 yesterday.</think>", "NVDA closed at $850"},
-		{"<thinking>Hundred Health is a telehealth platform focused on...</thinking>", "telehealth platform"},
+		{"<thinking>Acme Health is a telehealth platform focused on...</thinking>", "telehealth platform"},
 		{"   <think>some reasoning</think>   ", "some reasoning"},
 	}
 	for _, c := range cases {

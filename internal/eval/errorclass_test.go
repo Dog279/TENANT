@@ -25,7 +25,7 @@ func TestRunError_InfraClassesAreUngraded(t *testing.T) {
 		want string
 	}{
 		{fmt.Errorf("agent: planner generate iter=1: %w: claudecode weekly token budget exhausted", model.ErrInsufficientBalance), "quota"},
-		{fmt.Errorf("agent: planner generate iter=2: %w: Post \"http://dgx:8000\": connect refused", model.ErrEndpointDown), "endpoint"},
+		{fmt.Errorf("agent: planner generate iter=2: %w: Post \"http://model-host:8000\": connect refused", model.ErrEndpointDown), "endpoint"},
 		{fmt.Errorf("agent: planner generate iter=1: %w: 429", model.ErrRateLimited), "ratelimit"},
 	}
 	for _, c := range cases {

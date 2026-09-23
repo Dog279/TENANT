@@ -29,7 +29,7 @@ func (f *fakeTSCLI) ran(want string) bool {
 	return false
 }
 
-const tsRunningJSON = `{"BackendState":"Running","Self":{"DNSName":"host.tail47e9b.ts.net.","Online":true}}`
+const tsRunningJSON = `{"BackendState":"Running","Self":{"DNSName":"host.tailnet-name.ts.net.","Online":true}}`
 
 func newTSMgr(f *fakeTSCLI, bin string) *tailscaleManager {
 	return &tailscaleManager{
@@ -49,10 +49,10 @@ func TestTailscale_StatusConnectedNotServing(t *testing.T) {
 	if !st.Installed || !st.LoggedIn {
 		t.Fatalf("want installed+loggedIn, got %+v", st)
 	}
-	if st.DNSName != "host.tail47e9b.ts.net" { // trailing dot trimmed
+	if st.DNSName != "host.tailnet-name.ts.net" { // trailing dot trimmed
 		t.Errorf("DNSName not trimmed: %q", st.DNSName)
 	}
-	if st.URL != "https://host.tail47e9b.ts.net/" {
+	if st.URL != "https://host.tailnet-name.ts.net/" {
 		t.Errorf("URL wrong: %q", st.URL)
 	}
 	if st.Serving {
@@ -63,7 +63,7 @@ func TestTailscale_StatusConnectedNotServing(t *testing.T) {
 func TestTailscale_StatusServing(t *testing.T) {
 	f := &fakeTSCLI{resp: map[string]string{
 		"status --json": tsRunningJSON,
-		"serve status":  "https://host.tail47e9b.ts.net/ proxies to http://127.0.0.1:8770",
+		"serve status":  "https://host.tailnet-name.ts.net/ proxies to http://127.0.0.1:8770",
 	}}
 	st, _ := newTSMgr(f, "tailscale").Status()
 	if !st.Serving {
@@ -88,7 +88,7 @@ func TestTailscale_ServePublishesDashboardPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serve failed: %v", err)
 	}
-	if url != "https://host.tail47e9b.ts.net/" {
+	if url != "https://host.tailnet-name.ts.net/" {
 		t.Errorf("serve url wrong: %q", url)
 	}
 	if !f.ran("serve --bg 8770") {

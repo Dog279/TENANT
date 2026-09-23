@@ -17,11 +17,11 @@ func TestParseInterspersed_FlagsAfterPositionals(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	level := fs.String("level", "info", "")
 	list := fs.Bool("list", false, "")
-	pos, err := parseInterspersed(fs, []string{"deploy", "started build", "--level", "warn", "host=r640", "--list"})
+	pos, err := parseInterspersed(fs, []string{"deploy", "started build", "--level", "warn", "host=build-box", "--list"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(pos, "|") != "deploy|started build|host=r640" || *level != "warn" || !*list {
+	if strings.Join(pos, "|") != "deploy|started build|host=build-box" || *level != "warn" || !*list {
 		t.Errorf("pos=%v level=%s list=%v", pos, *level, *list)
 	}
 }
@@ -43,7 +43,7 @@ func TestCmdLog_PostsToRunningHub(t *testing.T) {
 	defer ts.Close()
 	data := t.TempDir()
 	err := cmdLog(context.Background(), []string{"--url", ts.URL, "--token", "tok", "--data", data, "--config", data, "--level", "error",
-		"My Deploy", "build failed", "host=r640", "step=link"})
+		"My Deploy", "build failed", "host=build-box", "step=link"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestCmdLog_PostsToRunningHub(t *testing.T) {
 	if got.body["level"] != "ERROR" || got.body["msg"] != "build failed" {
 		t.Errorf("body = %v", got.body)
 	}
-	if f, _ := got.body["fields"].(map[string]any); f["host"] != "r640" || f["step"] != "link" {
+	if f, _ := got.body["fields"].(map[string]any); f["host"] != "build-box" || f["step"] != "link" {
 		t.Errorf("fields = %v", got.body["fields"])
 	}
 	if _, err := os.Stat(filepath.Join(data, "logs")); err == nil {

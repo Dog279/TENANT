@@ -373,15 +373,15 @@ func TestVLLM_GenerateStreamCancelDuringStream(t *testing.T) {
 	}
 }
 
-// TestVLLM_NativeToolCall_StringifiedArgs reproduces exactly what real
-// Gemma 4 on the DGX returns: tool_calls[].function.arguments as a
+// TestVLLM_NativeToolCall_StringifiedArgs reproduces exactly what a real
+// Gemma 4 vLLM server returns: tool_calls[].function.arguments as a
 // JSON-ENCODED STRING (OpenAI spec), not a nested object. Before the
 // normalizeToolArgs fix, the agent's validateToolCall json.Unmarshal
 // of these args into a map failed on every real tool call.
 func TestVLLM_NativeToolCall_StringifiedArgs(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// Verbatim shape from the DGX probe.
+		// Verbatim shape from a live vLLM probe.
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":null,
 		  "tool_calls":[{"id":"chatcmpl-tool-9f07","type":"function",
 		  "function":{"name":"add","arguments":"{\"a\": 17, \"b\": 25}"}}]},
@@ -578,7 +578,7 @@ func TestVLLM_ReasoningEffort(t *testing.T) {
 	}
 }
 
-// The R640 regression: a llama.cpp provider (ProviderKind "llamacpp", with
+// The production regression: a llama.cpp provider (ProviderKind "llamacpp", with
 // EstimateTokensOnly set as prod configures it) must still get an ACCURATE
 // count from llama.cpp's own /tokenize dialect ({content}→{tokens:[]}), not the
 // chars/4 estimate. Before the fix this returned the estimate (2 for "hello
@@ -597,7 +597,7 @@ func TestVLLM_TokenCountLlamaCppDialect(t *testing.T) {
 	}))
 	defer ts.Close()
 	any, err := vllm.New(context.Background(), model.Profile{
-		ID: "r640", Backend: "vllm", Endpoint: ts.URL, Model: "qwen3",
+		ID: "llamacpp", Backend: "vllm", Endpoint: ts.URL, Model: "qwen3",
 		ProviderKind: "llamacpp", EstimateTokensOnly: true,
 	}, nil)
 	if err != nil {
@@ -621,7 +621,7 @@ func TestVLLM_TokenCountLlamaCppDialect(t *testing.T) {
 
 // A reachable /tokenize that returns neither a usable count nor tokens (a
 // dialect we can't decode) must degrade to the estimate, never hand back 0 — a
-// 0 fully defeats the context-budget guard (the original R640 count=0 deaths).
+// 0 fully defeats the context-budget guard (the original llama.cpp count=0 deaths).
 func TestVLLM_TokenCountZeroFallsBackToEstimate(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -645,7 +645,7 @@ func TestVLLM_TokenCountZeroFallsBackToEstimate(t *testing.T) {
 // genuine CONTENT tokenization failure — a real invalid request, NOT a size
 // overflow. It must surface as ErrInvalidRequest, never be reclassified as
 // overflow: mapping it to overflow masks the error and triggers a useless
-// compact-and-retry into the identical failure. (Proven on the R640: a real
+// compact-and-retry into the identical failure. (Proven on a live llama.cpp host: a real
 // overflow reports differently — see the next test.)
 func TestVLLM_GenerateFailedToTokenizeIsInvalidRequest(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -665,7 +665,7 @@ func TestVLLM_GenerateFailedToTokenizeIsInvalidRequest(t *testing.T) {
 	}
 }
 
-// The real R640 Discord bug: a tool result that echoes a llama.cpp media
+// The real Discord bug: a tool result that echoes a llama.cpp media
 // sentinel (from curling the server's /props, whose media_marker field carries
 // it) must be neutralized on the wire. Otherwise the multimodal tokenizer tries
 // to expand its own marker into image tokens, finds none, and 400s the whole
@@ -688,7 +688,7 @@ func TestVLLM_ScrubsLlamaCppMediaMarker(t *testing.T) {
 			llm := newBackend(t, ts)
 			_, err := llm.Generate(context.Background(), model.GenerateRequest{
 				Messages: []model.Message{
-					{Role: "user", Content: "check the R640 config"},
+					{Role: "user", Content: "check the server config"},
 					{Role: "tool", ToolCallID: "c1", Content: `{"media_marker":"` + marker + `","n_ctx":262144}`},
 				},
 			})

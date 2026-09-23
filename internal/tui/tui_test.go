@@ -2058,7 +2058,7 @@ func TestAgents_BareListsEmpty(t *testing.T) {
 func TestAgents_ListRenders(t *testing.T) {
 	ac := &fakeAgentCtl{rows: []AgentInfo{
 		{Name: "researcher", Provider: "zai", Model: "glm-4.6", Description: "web", HasSoul: true, Valid: true},
-		{Name: "writer", Provider: "dgx", Model: "aeon-ultimate", Valid: true},
+		{Name: "writer", Provider: "gpu", Model: "aeon-ultimate", Valid: true},
 		{Name: "broken", Provider: "ghost", Model: "", Valid: false},
 	}}
 	m := newModel(context.Background(), Config{Agents: ac})
@@ -2068,7 +2068,7 @@ func TestAgents_ListRenders(t *testing.T) {
 	for _, want := range []string{
 		"3 named agent(s)",
 		"researcher", "zai/glm-4.6", "has soul", "web",
-		"writer", "dgx/aeon-ultimate",
+		"writer", "gpu/aeon-ultimate",
 		"broken", // appears with ⚠ marker
 	} {
 		if !strings.Contains(last, want) {
@@ -2091,8 +2091,8 @@ func TestAgents_Add_BasicAndWithDescription(t *testing.T) {
 
 	// With explicit model.
 	ac.calls = nil
-	m.handleSlash("/agents add writer dgx aeon-ultimate")
-	if len(ac.calls) != 1 || !strings.Contains(ac.calls[0], "Add:writer/dgx/aeon-ultimate/") {
+	m.handleSlash("/agents add writer gpu aeon-ultimate")
+	if len(ac.calls) != 1 || !strings.Contains(ac.calls[0], "Add:writer/gpu/aeon-ultimate/") {
 		t.Errorf("Add with model not routed: %v", ac.calls)
 	}
 
@@ -2244,7 +2244,7 @@ func TestAgents_SetModel_BasicAndOverride(t *testing.T) {
 // follow-up). The picker only engages when BOTH controls exist.
 func TestAgents_ModelPicker_Routing(t *testing.T) {
 	ac := &fakeAgentCtl{rows: []AgentInfo{{Name: "Programmer", Provider: "", Model: ""}}}
-	mc := &fakeModelCtl{infos: []ModelInfo{{Name: "zai", Model: "glm-4.6"}, {Name: "dgx", Model: "qwen"}}}
+	mc := &fakeModelCtl{infos: []ModelInfo{{Name: "zai", Model: "glm-4.6"}, {Name: "gpu", Model: "qwen"}}}
 	m := newModel(context.Background(), Config{Agents: ac, Models: mc})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 

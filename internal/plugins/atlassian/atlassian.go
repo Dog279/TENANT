@@ -22,7 +22,7 @@ import (
 // Path A (the Cloud base URL); for Path B the effective base is resolved to the
 // cloudId-routed api.atlassian.com endpoint after login.
 type Config struct {
-	SiteURL string // e.g. https://findtime.atlassian.net (Path A)
+	SiteURL string // e.g. https://you.atlassian.net (Path A)
 	Project string // default project key (e.g. TEN); optional
 
 	// Path A

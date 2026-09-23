@@ -27,9 +27,9 @@ func TestAgentControl_AddListShowRemove(t *testing.T) {
 	dir := t.TempDir()
 	// Seed providers so Add can validate against them.
 	lc := &launchConfig{
-		Provider: "dgx",
+		Provider: "gpu",
 		Providers: map[string]*providerConfig{
-			"dgx": {Kind: "vllm", Endpoint: "http://localhost:8000", Model: "aeon-ultimate"},
+			"gpu": {Kind: "vllm", Endpoint: "http://localhost:8000", Model: "aeon-ultimate"},
 			"zai": {Kind: "zai", Endpoint: "https://api.z.ai/api/paas/v4", Model: "glm-4.6"},
 		},
 	}
@@ -46,8 +46,8 @@ func TestAgentControl_AddListShowRemove(t *testing.T) {
 	if !strings.Contains(status, "zai/glm-4.6") {
 		t.Errorf("status missing model: %q", status)
 	}
-	// Add a synthesizer pinned to DGX (model omitted → falls back to provider default).
-	if _, err := ac.Add("synthesizer", "dgx", "", "report writer", ""); err != nil {
+	// Add a synthesizer pinned to the gpu provider (model omitted → falls back to provider default).
+	if _, err := ac.Add("synthesizer", "gpu", "", "report writer", ""); err != nil {
 		t.Fatalf("Add synth: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestAgentControl_AddListShowRemove(t *testing.T) {
 func TestAgentControl_Add_Rejects(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
 	if err := lc.save(dir); err != nil {
 		t.Fatal(err)
@@ -108,12 +108,12 @@ func TestAgentControl_Add_Rejects(t *testing.T) {
 	ac := &agentControl{cfgDir: dir}
 
 	cases := []struct{ name, prov, want string }{
-		{"", "dgx", "name and provider"},
+		{"", "gpu", "name and provider"},
 		{"researcher", "", "name and provider"},
 		{"researcher", "nope", "not configured"},
-		{"bad name!", "dgx", "unsafe characters"},
-		{"with space", "dgx", "unsafe characters"},
-		{"../slash", "dgx", "unsafe characters"},
+		{"bad name!", "gpu", "unsafe characters"},
+		{"with space", "gpu", "unsafe characters"},
+		{"../slash", "gpu", "unsafe characters"},
 	}
 	for _, c := range cases {
 		_, err := ac.Add(c.name, c.prov, "", "", "")
@@ -131,11 +131,11 @@ func TestAgentControl_Add_Rejects(t *testing.T) {
 func TestAgentControl_SetSoul(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
-	_, _ = ac.Add("researcher", "dgx", "", "", "")
+	_, _ = ac.Add("researcher", "gpu", "", "", "")
 
 	body := "You are a thorough web researcher. Cite every claim."
 	if _, err := ac.SetSoul("researcher", body); err != nil {
@@ -169,13 +169,13 @@ func TestAgentControl_SetSoul(t *testing.T) {
 func TestAgentControl_Add_PreservesPriorSoulOnPartialUpdate(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "m1"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m1"},
 		"zai": {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
 
-	_, _ = ac.Add("researcher", "dgx", "", "old desc", "")
+	_, _ = ac.Add("researcher", "gpu", "", "old desc", "")
 	_, _ = ac.SetSoul("researcher", "thorough researcher")
 
 	// Re-add: change provider, leave description + soul blank to inherit.
@@ -198,11 +198,11 @@ func TestAgentControl_Add_PreservesPriorSoulOnPartialUpdate(t *testing.T) {
 func TestAgentControl_Rename(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
-	_, _ = ac.Add("researcher", "dgx", "", "deep web", "")
+	_, _ = ac.Add("researcher", "gpu", "", "deep web", "")
 	_, _ = ac.SetSoul("researcher", "be thorough")
 
 	status, err := ac.Rename("researcher", "deep-researcher")
@@ -232,12 +232,12 @@ func TestAgentControl_Rename(t *testing.T) {
 func TestAgentControl_Rename_Rejects(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
-	_, _ = ac.Add("a", "dgx", "", "", "")
-	_, _ = ac.Add("b", "dgx", "", "", "")
+	_, _ = ac.Add("a", "gpu", "", "", "")
+	_, _ = ac.Add("b", "gpu", "", "", "")
 
 	cases := []struct{ old_, new_, want string }{
 		{"", "x", "both old and new"},
@@ -263,12 +263,12 @@ func TestAgentControl_Rename_Rejects(t *testing.T) {
 func TestAgentControl_SetModel(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "old-model"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "old-model"},
 		"zai": {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
-	_, _ = ac.Add("researcher", "dgx", "", "the role", "")
+	_, _ = ac.Add("researcher", "gpu", "", "the role", "")
 	_, _ = ac.SetSoul("researcher", "stay focused")
 
 	// Swap to Z.ai (no model override → uses provider default).
@@ -287,12 +287,12 @@ func TestAgentControl_SetModel(t *testing.T) {
 		t.Errorf("SetModel clobbered preserved fields: %+v", d)
 	}
 
-	// Swap to DGX with an explicit model override.
-	if _, err := ac.SetModel("researcher", "dgx", "aeon-ultimate"); err != nil {
+	// Swap to gpu with an explicit model override.
+	if _, err := ac.SetModel("researcher", "gpu", "aeon-ultimate"); err != nil {
 		t.Fatalf("SetModel override: %v", err)
 	}
 	d, _ = ac.Show("researcher")
-	if d.Provider != "dgx" || d.Model != "aeon-ultimate" {
+	if d.Provider != "gpu" || d.Model != "aeon-ultimate" {
 		t.Errorf("override not applied: %+v", d)
 	}
 	// Soul + description still intact.
@@ -305,22 +305,22 @@ func TestAgentControl_SetModel(t *testing.T) {
 // though it isn't in the persisted Agents map — SetModel materializes an
 // operator-owned override that PRESERVES the built-in's soul + description.
 // Case-insensitive ("programmer" resolves "Programmer"). This is the headline
-// TEN-139 use case (pin the Programmer to a local/DGX model).
+// TEN-139 use case (pin the Programmer to a local/self-hosted model).
 func TestAgentControl_SetModel_MaterializesBuiltin(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx": {Kind: "vllm", Endpoint: "http://x", Model: "qwen-coder"},
+		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "qwen-coder"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
 
 	// Lowercase input must resolve the canonically-cased built-in.
-	status, err := ac.SetModel("programmer", "dgx", "")
+	status, err := ac.SetModel("programmer", "gpu", "")
 	if err != nil {
 		t.Fatalf("SetModel on built-in should succeed, got: %v", err)
 	}
-	if !strings.Contains(status, "dgx/qwen-coder") {
-		t.Errorf("status missing dgx/qwen-coder: %q", status)
+	if !strings.Contains(status, "gpu/qwen-coder") {
+		t.Errorf("status missing gpu/qwen-coder: %q", status)
 	}
 
 	// It now exists as a persisted override under the canonical name, with the
@@ -329,7 +329,7 @@ func TestAgentControl_SetModel_MaterializesBuiltin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Show(Programmer): %v", err)
 	}
-	if d.Provider != "dgx" {
+	if d.Provider != "gpu" {
 		t.Errorf("provider not pinned: %q", d.Provider)
 	}
 	if strings.TrimSpace(d.Soul) == "" {
@@ -367,17 +367,17 @@ func TestAgentControl_SetSoul_MaterializesBuiltin(t *testing.T) {
 func TestAgentControl_SetModel_Rejects(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx":         {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"gpu":         {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 		"vllm-no-mdl": {Kind: "vllm", Endpoint: "http://x"},
 	}}
 	_ = lc.save(dir)
 	ac := &agentControl{cfgDir: dir}
-	_, _ = ac.Add("researcher", "dgx", "", "", "")
+	_, _ = ac.Add("researcher", "gpu", "", "", "")
 
 	cases := []struct{ name, prov, mdl, want string }{
-		{"", "dgx", "", "name and provider"},
+		{"", "gpu", "", "name and provider"},
 		{"researcher", "", "", "name and provider"},
-		{"ghost", "dgx", "", "no agent named"},
+		{"ghost", "gpu", "", "no agent named"},
 		{"researcher", "nope", "", "is not configured"},
 		{"researcher", "vllm-no-mdl", "", "has no Model"},
 	}
@@ -421,11 +421,11 @@ func TestRenderAgentsForOrchestrator(t *testing.T) {
 	}
 	got := renderAgentsForOrchestrator(map[string]*agentProfile{
 		"researcher": {Provider: "zai", Model: "glm-4.6", Description: "web research"},
-		"writer":     {Provider: "dgx", Description: "synthesis"},
+		"writer":     {Provider: "gpu", Description: "synthesis"},
 	})
 	for _, want := range []string{
 		"researcher", "zai/glm-4.6", "web research",
-		"writer", "dgx", "synthesis",
+		"writer", "gpu", "synthesis",
 		"spawn_agent(role=<name>",
 		// TEN-139: coding-delegation steering with the trivial/substantial
 		// threshold present when agents exist.
@@ -479,11 +479,11 @@ func TestProfileSystemPrompt(t *testing.T) {
 
 // buildProfileRouter validates inputs upfront (missing provider, missing key
 // on a keyed kind, missing model). Real router build is integration-tested
-// via the live DGX run.
+// via a live run.
 func TestBuildProfileRouter_RejectsMisconfig(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{
-		"dgx-good":    {Kind: "vllm", Endpoint: "http://x", Model: "m"},
+		"gpu-good":    {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 		"zai-no-key":  {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6", Auth: authCfg{Mode: "apikey", Stored: true}},
 		"vllm-no-mdl": {Kind: "vllm", Endpoint: "http://x"},
 	}}
@@ -510,7 +510,7 @@ func TestBuildProfileRouter_RejectsMisconfig(t *testing.T) {
 	}
 
 	// Happy path: vllm with model → router builds.
-	r, err := buildProfileRouter("ok", &agentProfile{Provider: "dgx-good"}, lc, dir, model.Profile{}, nil)
+	r, err := buildProfileRouter("ok", &agentProfile{Provider: "gpu-good"}, lc, dir, model.Profile{}, nil)
 	if err != nil {
 		t.Fatalf("happy path: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestLaunchConfig_AgentsRoundTrip(t *testing.T) {
 	in := &launchConfig{
 		Agents: map[string]*agentProfile{
 			"researcher": {Provider: "zai", Model: "glm-4.6", Description: "web", Soul: "be thorough"},
-			"writer":     {Provider: "dgx"},
+			"writer":     {Provider: "gpu"},
 		},
 	}
 	if err := in.save(dir); err != nil {
