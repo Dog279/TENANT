@@ -68,6 +68,11 @@ const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
                       run one command under surface S's profile the way its spawn site
                       would; prints output, exit code, timeout and violations. Exits 1
                       unless the command ran cleanly.
+  redteam [--model M] [--endpoint URL] [--backend restricted|host] [--turns N] [--json]
+                      put a local Ollama model in the adversary seat and let it drive the
+                      real sandbox boundary inside a disposable fake environment with
+                      canary secrets. Reports what the boundary contained; exits 1 if the
+                      model escapes a boundary the backend claims to enforce.
 
   probe and run take --config DIR / --data DIR / --agent ID to select the instance.`
 
@@ -88,6 +93,8 @@ func sandboxMain(ctx context.Context, args []string, out io.Writer) error {
 		return sandboxSelftest(ctx, args[1:], out)
 	case "run":
 		return sandboxRun(ctx, args[1:], out)
+	case "redteam":
+		return sandboxRedteam(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprintln(out, sandboxUsage)
 		return nil
