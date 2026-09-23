@@ -1625,7 +1625,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 
 	if pf.x {
 		bearer := resolveXBearer(c.cfgDir, pf.xBearer)
-		svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: filepath.Join(c.dataDir, "x-token.json"), AllowPost: pf.xAllowPost})
+		svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: xp.TokenPath(c.dataDir), AllowPost: pf.xAllowPost})
 		if err != nil {
 			return fail(fmt.Errorf("x plugin: %w", err))
 		}
@@ -1805,7 +1805,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 				if bearer == "" {
 					return nil, nil, fmt.Errorf("x plugin: %w yet — run `/configure x <bearer>`", errNotConfigured)
 				}
-				svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: filepath.Join(c.dataDir, "x-token.json"), AllowPost: pf.xAllowPost})
+				svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: xp.TokenPath(c.dataDir), AllowPost: pf.xAllowPost})
 				if err != nil {
 					return nil, nil, fmt.Errorf("x plugin: %w", err)
 				}
@@ -2077,7 +2077,7 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) o
 			add(tmp)
 		}
 	}
-	protect, secret := fileToolGuards(cfgDir, pf, lc)
+	protect, secret := fileToolGuards(cfgDir, dataDir, pf, lc)
 	return osys.Roots{Deny: deny, Write: write, Protect: protect, Secret: secret}
 }
 
@@ -2101,16 +2101,17 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) o
 //   - config.json: the dashboard's auth token, beside cron jobs, MCP servers,
 //     providers and relay and iMessage permissions (persistLaunchConfig folds
 //     a hand edit into the next in-process save);
-//   - credentials.json: every API key and skill secret, hot-reloaded;
-//   - peers.json and peer-key.pem: who may call in, and with what token;
-//   - mcp/, atlassian-token.json, github-token.json and oauth_client.json:
-//     OAuth tokens and the gsuite OAuth client;
+//   - every file on managedSecrets, the authoritative list doctor audits too
+//     (TEN-337): credentials.json with every API key and skill secret; the
+//     dashboard-auth-token; peers.json and the peer key and cert, who may call
+//     in and with what token; the OAuth token files (Atlassian, GitHub, X in
+//     the data dir, and the mcp/ caches) and the gsuite OAuth client;
 //   - the gsuite service-account key and the dashboard TLS key, when set;
 //   - the claude CLI's config ($CLAUDE_CONFIG_DIR, else ~/.claude and
 //     ~/.claude.json): its login, and the hooks and MCP servers it runs;
 //   - the credential stores and browser profiles the exec sandbox denies to
 //     confined commands (credentialStoreRoots).
-func fileToolGuards(cfgDir string, pf *pluginFlags, lc *launchConfig) (protect, secret []string) {
+func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (protect, secret []string) {
 	add := func(list *[]string, paths ...string) {
 		for _, p := range paths {
 			if p = strings.TrimSpace(p); p != "" {
@@ -2120,11 +2121,16 @@ func fileToolGuards(cfgDir string, pf *pluginFlags, lc *launchConfig) (protect, 
 	}
 	if cfgDir != "" {
 		settings := settingsPath(cfgDir, "*")
-		peerCert, peerKey := peering.CertPaths(cfgDir)
+		peerCert, _ := peering.CertPaths(cfgDir)
 		add(&protect, settings, settings+".tmp", soul.SoulDir(cfgDir), peerCert)
-		add(&secret, launchConfigPath(cfgDir), credentialsPath(cfgDir), peering.PeersPath(cfgDir), peerKey,
-			filepath.Join(cfgDir, "mcp"), atlassianTokenPath(cfgDir), githubp.TokenPath(cfgDir),
-			gsuite.EmbeddedOAuthPath(cfgDir), dashboardAuthTokenPath(cfgDir))
+		// The mcp dir as a whole also covers caches created after this list.
+		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
+	}
+	// Every file on the authoritative secret list, config and data dirs both
+	// (TEN-337). A listing error still leaves every other entry.
+	managed, _ := managedSecrets(cfgDir, dataDir)
+	for _, m := range managed {
+		add(&secret, m.path)
 	}
 	add(&protect, claudecode.LedgerPath(), exePath())
 	home, homeErr := os.UserHomeDir()

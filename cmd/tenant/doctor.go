@@ -28,7 +28,6 @@ import (
 	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
-	"tenant/internal/peering"
 	"tenant/internal/plugins/gsuite"
 	"tenant/internal/plugins/imessage"
 	"tenant/internal/plugins/mcpremote"
@@ -959,26 +958,14 @@ func checkLaunchConfig(_ context.Context, e *doctorEnv) checkResult {
 }
 
 // checkSecretProtection audits the effective platform protection for every
-// at-rest secret file Tenant knows about. POSIX reports verified 0600/0700
-// modes; Windows reports the protected current-user-only DACL.
+// at-rest secret file on the authoritative managedSecrets list, config and
+// data dirs both (TEN-337). POSIX reports verified 0600/0700 modes; Windows
+// reports the protected current-user-only DACL. It only probes: nothing is
+// tightened here.
 func checkSecretProtection(_ context.Context, e *doctorEnv) checkResult {
-	type candidate struct {
-		label string
-		path  string
-	}
-	paths := []candidate{
-		{"credentials.json", credentialsPath(e.c.cfgDir)},
-		{"atlassian-token.json", atlassianTokenPath(e.c.cfgDir)},
-	}
-	for _, path := range peering.AtRestPaths(e.c.cfgDir) {
-		paths = append(paths, candidate{filepath.Base(path), path})
-	}
-	mcpPaths, err := filepath.Glob(filepath.Join(e.c.cfgDir, "mcp", "mcp-*.json"))
+	paths, err := managedSecrets(e.c.cfgDir, e.c.dataDir)
 	if err != nil {
-		return checkResult{Status: statusFail, Detail: "enumerate MCP OAuth caches: " + err.Error()}
-	}
-	for _, path := range mcpPaths {
-		paths = append(paths, candidate{filepath.Join("mcp", filepath.Base(path)), path})
+		return checkResult{Status: statusFail, Detail: err.Error()}
 	}
 
 	protected := 0

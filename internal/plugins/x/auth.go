@@ -21,11 +21,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"tenant/internal/fsperm"
+	"tenant/internal/secrets"
 )
 
 const (
@@ -65,8 +66,16 @@ func (bearerSource) userContext() bool { return false }
 
 const refreshSkew = 60 * time.Second
 
-// tokenStore is the on-disk credential (data dir, 0600). Plain JSON —
-// you can read it, same transparency ethos as the wiki sidecar.
+// TokenFileName is the user-context token cache inside the data dir.
+const TokenFileName = "x-token.json"
+
+// TokenPath is the token cache location for a given data dir.
+func TokenPath(dataDir string) string { return filepath.Join(dataDir, TokenFileName) }
+
+// tokenStore is the on-disk credential (data dir), stored through the secrets
+// package: owner-only mode on POSIX, a current-user-only DACL on Windows
+// (TEN-337). Plain JSON — you can read it, same transparency ethos as the wiki
+// sidecar.
 type tokenStore struct {
 	ClientID string    `json:"client_id"`
 	Access   string    `json:"access_token"`
@@ -75,8 +84,10 @@ type tokenStore struct {
 	Scopes   string    `json:"scopes"`
 }
 
+// loadStore reads the cache through secrets.ReadFile, which also tightens a
+// cache an older build left loose.
 func loadStore(path string) (*tokenStore, error) {
-	b, err := os.ReadFile(path)
+	b, err := secrets.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +100,7 @@ func loadStore(path string) (*tokenStore, error) {
 
 func (s *tokenStore) save(path string) error {
 	b, _ := json.MarshalIndent(s, "", " ")
-	return fsperm.WriteFile(path, b)
+	return secrets.WriteFile(path, b)
 }
 
 type pkceSource struct {

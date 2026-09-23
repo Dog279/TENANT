@@ -860,8 +860,9 @@ discipline as gsuite).
 - **OAuth2 Authorization-Code + PKCE** — user context (post/reply/
   delete *as the user*). `S256` challenge = base64url(sha256(verifier));
   one-time browser consent via a localhost callback (`tenant x
-  --login`); refresh token cached at `<data>/x-token.json` (0600,
-  plain JSON — same transparency ethos as the wiki sidecar). **X
+  --login`); refresh token cached at `<data>/x-token.json` (plain JSON,
+  same transparency ethos as the wiki sidecar, stored through the secrets
+  package: 0600 or a current-user-only Windows DACL, TEN-337). **X
   rotates refresh tokens**, so every refresh re-persists. State param
   checked (CSRF). Reads prefer the bearer; if only a user token
   exists it reads with that; a bearer **cannot** post (enforced in

@@ -264,6 +264,12 @@ func ensurePrivateDir(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("secrets: parent %s is not a real directory", path)
 	}
+	// Skip re-protecting a directory that already probes private: on Windows,
+	// setting the DACL re-propagates it to every child, and the data dir can
+	// hold thousands of archive files (TEN-337).
+	if ok, _, _, err := probePath(path, true); err == nil && ok {
+		return nil
+	}
 	if err := protectPath(path, true); err != nil {
 		return err
 	}

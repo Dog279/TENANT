@@ -50,11 +50,15 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
 - **API keys and tokens** are stored in
   `~/Library/Application Support/tenant/credentials.json` (macOS; equivalent
   OS config directories on Linux and Windows).
-- Tenant centralizes credentials, Atlassian/MCP OAuth caches, peering tokens,
-  and peer private keys behind one secret-storage boundary. On Unix, files are
+- Tenant centralizes credentials, the Atlassian, GitHub, X and MCP OAuth
+  caches, the gsuite OAuth client, the dashboard token, peering tokens, and
+  peer private keys behind one secret-storage boundary. On Unix, files are
   verified as **0600** and their direct parent directories as **0700**. On
   Windows, inherited access is disabled and an explicit DACL grants full
-  control only to the current user.
+  control only to the current user. Reading a cache that an older build left
+  loose tightens it. One list of these files drives both `tenant doctor`,
+  which fails on any that is unprotected, and the file tools, which refuse to
+  read them (TEN-337).
 - **No secrets are committed to the repository.** The repo is a clean template;
   `credentials.json` is in `.gitignore`.
 - MCP remote connectors use **OAuth 2.1 with Dynamic Client Registration

@@ -1365,7 +1365,7 @@ func cmdX(ctx context.Context, args []string) error {
 	if err := c.resolve(); err != nil {
 		return err
 	}
-	tokenPath := filepath.Join(c.dataDir, "x-token.json")
+	tokenPath := xp.TokenPath(c.dataDir)
 
 	if *login {
 		if err := xp.Login(ctx, xp.LoginConfig{
@@ -3223,8 +3223,8 @@ func schedulerTick(every time.Duration) time.Duration {
 // Tenant's control files stay unwritable, since a hub running on the same
 // config dir would apply an edit to them within seconds, and its secrets stay
 // unreadable.
-func oneShotOSPolicy(cfgDir string, lc *launchConfig, allowExec, allowWrite bool) osys.Policy {
-	protect, secret := fileToolGuards(cfgDir, nil, lc)
+func oneShotOSPolicy(cfgDir, dataDir string, lc *launchConfig, allowExec, allowWrite bool) osys.Policy {
+	protect, secret := fileToolGuards(cfgDir, dataDir, nil, lc)
 	return osys.Policy{
 		AllowExec:  allowExec,
 		AllowWrite: allowWrite,
@@ -3281,7 +3281,7 @@ func cmdOS(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	wd := osys.NewDispatcher(svc, oneShotOSPolicy(c.cfgDir, c.lc, *allowExec, *allowWrite))
+	wd := osys.NewDispatcher(svc, oneShotOSPolicy(c.cfgDir, c.dataDir, c.lc, *allowExec, *allowWrite))
 	reg := agent.NewStaticRegistry()
 	for _, sp := range wd.Tools() {
 		reg.Register(sp)
