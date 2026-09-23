@@ -16,6 +16,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"os"
 
 	"tenant/internal/fsperm"
 
@@ -43,11 +44,26 @@ type Meta struct {
 // OpenMeta opens (or creates) the meta table at path. ":memory:" is
 // supported for tests. Safe to point at the same file as the episodic
 // store — CREATE TABLE IF NOT EXISTS won't disturb sibling tables.
-func OpenMeta(path string) (*Meta, error) {
+func OpenMeta(path string) (*Meta, error) { return openMeta(path, true) }
+
+// OpenMetaExisting opens the meta database like OpenMeta, but only when the
+// file already exists, and without changing its permissions. Plain `tenant
+// doctor` uses it so its audit neither creates the database nor tightens it
+// before reporting on it (TEN-333).
+func OpenMetaExisting(path string) (*Meta, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	return openMeta(path, false)
+}
+
+func openMeta(path string, prepare bool) (*Meta, error) {
 	dsn := path
 	if path != ":memory:" {
-		if err := fsperm.PrepareFile(path); err != nil {
-			return nil, fmt.Errorf("improve: prepare private meta database: %w", err)
+		if prepare {
+			if err := fsperm.PrepareFile(path); err != nil {
+				return nil, fmt.Errorf("improve: prepare private meta database: %w", err)
+			}
 		}
 		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", path)
 	}

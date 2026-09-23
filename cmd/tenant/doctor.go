@@ -48,9 +48,13 @@ import (
 // cursor skipping everything, malformed soul TOML, unreadable store,
 // tool-calling not configured server-side.
 //
-// Safety (openclaw pattern): read-only by default. --fix applies ONLY
-// safe, reversible repairs (mkdir dirs, reset a stale cursor after
-// recording the old value). It never deletes a store or re-embeds.
+// Safety (openclaw pattern): read-only by default. Without --fix doctor
+// creates no dir or database and changes no permission, so its audit reports
+// what is on disk (TEN-333); a live probe of an enabled OAuth plugin may still
+// refresh that plugin's token cache, but only after the permission checks ran.
+// --fix applies ONLY safe, reversible repairs (mkdir dirs, owner-only modes,
+// reset a stale cursor after recording the old value). It never deletes a
+// store or re-embeds.
 
 type checkStatus int
 
@@ -95,6 +99,18 @@ type doctorEnv struct {
 	lc       *launchConfig // populated by checkLaunchConfig (others reuse)
 }
 
+// readCredentials loads credentials.json for a check: as-is in plain doctor,
+// hardened like any other secret read under --fix (TEN-333).
+func (e *doctorEnv) readCredentials() (*credentials, error) {
+	return e.c.credentialsLoader()(e.c.cfgDir)
+}
+
+// resolveSecret is the package resolveSecret through the same audit-aware
+// credentials reader.
+func (e *doctorEnv) resolveSecret(providerID string, auth authCfg) string {
+	return resolveSecretWith(e.c.credentialsLoader(), e.c.cfgDir, providerID, auth)
+}
+
 func cmdDoctor(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	c := bindCommon(fs)
@@ -105,6 +121,10 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Without --fix, doctor changes nothing it audits (TEN-333): no dir is
+	// created or tightened, credentials are read as-is, and only existing
+	// databases are opened, without touching their permissions.
+	c.auditOnly = !*fix
 	if err := c.resolve(); err != nil {
 		return err
 	}
@@ -118,15 +138,19 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	if r, err := buildRouter(c, newLogger()); err == nil {
 		env.router = r
 	}
-	if es, err := episodic.Open(filepath.Join(c.dataDir, "episodes.db")); err == nil {
+	openEpisodic, openSemantic, openSkills := episodic.OpenExisting, semantic.OpenExisting, skills.OpenExisting
+	if *fix {
+		openEpisodic, openSemantic, openSkills = episodic.Open, semantic.Open, skills.Open
+	}
+	if es, err := openEpisodic(filepath.Join(c.dataDir, "episodes.db")); err == nil {
 		env.episodic = es
 		defer es.Close()
 	}
-	if ss, err := semantic.Open(filepath.Join(c.dataDir, "facts.db")); err == nil {
+	if ss, err := openSemantic(filepath.Join(c.dataDir, "facts.db")); err == nil {
 		env.semantic = ss
 		defer ss.Close()
 	}
-	if sk, err := skills.Open(filepath.Join(c.dataDir, "skills.db")); err == nil {
+	if sk, err := openSkills(filepath.Join(c.dataDir, "skills.db")); err == nil {
 		env.skills = sk
 		defer sk.Close()
 	}
@@ -576,8 +600,32 @@ func checkEmbedDim(ctx context.Context, e *doctorEnv) checkResult {
 	return checkResult{Status: statusOK, Detail: fmt.Sprintf("stored vectors match live embedder (%dd)", liveDim)}
 }
 
+// missingDataFiles returns which of the named data-dir files do not exist.
+// Plain doctor opens only existing databases (TEN-333), so on a fresh install
+// a nil store means "not created yet", not "failed to open".
+func missingDataFiles(dataDir string, names ...string) []string {
+	var missing []string
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(dataDir, name)); os.IsNotExist(err) {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
 func checkStores(ctx context.Context, e *doctorEnv) checkResult {
 	if e.episodic == nil || e.semantic == nil {
+		var unopened []string
+		if e.episodic == nil {
+			unopened = append(unopened, "episodes.db")
+		}
+		if e.semantic == nil {
+			unopened = append(unopened, "facts.db")
+		}
+		if missing := missingDataFiles(e.c.dataDir, unopened...); len(missing) == len(unopened) {
+			return checkResult{Status: statusSkip,
+				Detail: strings.Join(missing, " / ") + " not created yet (Tenant creates them on first run)"}
+		}
 		return checkResult{Status: statusFail,
 			Detail: "could not open episodes.db / facts.db",
 			Fix:    "check the --data dir for corruption or permission issues"}
@@ -684,7 +732,11 @@ func join(a, b string) string {
 }
 
 func checkDistillCursor(ctx context.Context, e *doctorEnv) checkResult {
-	meta, err := improve.OpenMeta(filepath.Join(e.c.dataDir, "tenant_meta.db"))
+	openMeta := improve.OpenMetaExisting // plain doctor changes nothing (TEN-333)
+	if e.fix {
+		openMeta = improve.OpenMeta
+	}
+	meta, err := openMeta(filepath.Join(e.c.dataDir, "tenant_meta.db"))
 	if err != nil {
 		return checkResult{Status: statusSkip, Detail: "meta store unavailable"}
 	}
@@ -969,7 +1021,7 @@ func checkSecretProtection(_ context.Context, e *doctorEnv) checkResult {
 // keyed provider in the active config has a resolvable secret (environment
 // reference or stored credential). Effective file protection is checked above.
 func checkCredentials(_ context.Context, e *doctorEnv) checkResult {
-	creds, err := loadCredentials(e.c.cfgDir)
+	creds, err := e.readCredentials()
 	if err != nil {
 		return checkResult{Status: statusFail,
 			Detail: "credentials.json present but unparseable: " + err.Error(),
@@ -1129,7 +1181,7 @@ func checkAgentProfiles(_ context.Context, e *doctorEnv) checkResult {
 		// Keyed provider must have a resolvable secret (env-var present or
 		// stored). Mirrors the buildProfileRouter pre-flight check.
 		if pk.NeedsKey {
-			key := resolveSecret(e.c.cfgDir, ap.Provider, pc.Auth)
+			key := e.resolveSecret(ap.Provider, pc.Auth)
 			if key == "" {
 				bad = append(bad, fmt.Sprintf("%s → provider %q has no resolvable API key", name, ap.Provider))
 				continue
@@ -1151,6 +1203,9 @@ func checkAgentProfiles(_ context.Context, e *doctorEnv) checkResult {
 // check. Optionally reports whether the GStack starter bundle is installed.
 func checkSkillsStore(ctx context.Context, e *doctorEnv) checkResult {
 	if e.skills == nil {
+		if len(missingDataFiles(e.c.dataDir, "skills.db")) == 1 {
+			return checkResult{Status: statusSkip, Detail: "skills.db not created yet (Tenant creates it on first run)"}
+		}
 		return checkResult{Status: statusWarn,
 			Detail: "skills.db could not be opened",
 			Fix:    "check perms / disk on " + filepath.Join(e.c.dataDir, "skills.db")}
@@ -1185,7 +1240,11 @@ func checkSkillsStore(ctx context.Context, e *doctorEnv) checkResult {
 // checkResearchStore — research dir opens + List works without erroring on
 // corrupt manifests. Surfaces stuck/orphaned runs as info.
 func checkResearchStore(_ context.Context, e *doctorEnv) checkResult {
-	store, err := research.New(e.c.dataDir)
+	openStore := research.OpenExisting // plain doctor changes nothing (TEN-333)
+	if e.fix {
+		openStore = research.New
+	}
+	store, err := openStore(e.c.dataDir)
 	if err != nil {
 		return checkResult{Status: statusFail,
 			Detail: "research store: " + err.Error(),
@@ -1424,7 +1483,7 @@ func checkGSuite(_ context.Context, e *doctorEnv) checkResult {
 	}
 	// Don't load credentials separately — gsuite has no credentials.json
 	// secrets (auth/sa_json/subject are all non-secret settings).
-	creds, _ := loadCredentials(e.c.cfgDir)
+	creds, _ := e.readCredentials()
 
 	auth := settings["auth"]
 	if auth == "" {
@@ -1506,7 +1565,7 @@ func checkDiscord(ctx context.Context, e *doctorEnv) checkResult {
 	// pluginFlags resolution at toolmux.go).
 	token := os.Getenv("DISCORD_BOT_TOKEN")
 	if token == "" {
-		token = resolveSecret(e.c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
+		token = e.resolveSecret(skillSecretID("discord", "token"), authCfg{Stored: true})
 	}
 	if token == "" {
 		return checkResult{Status: statusFail,
@@ -1563,7 +1622,7 @@ func checkX(ctx context.Context, e *doctorEnv) checkResult {
 	// Resolve bearer. Env wins over stored secret (matches toolmux.go).
 	bearer := os.Getenv("X_BEARER_TOKEN")
 	if bearer == "" {
-		bearer = resolveSecret(e.c.cfgDir, skillSecretID("x", "bearer"), authCfg{Stored: true})
+		bearer = e.resolveSecret(skillSecretID("x", "bearer"), authCfg{Stored: true})
 	}
 	if bearer == "" {
 		return checkResult{Status: statusFail,

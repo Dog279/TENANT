@@ -28,6 +28,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"tenant/internal/fsperm"
@@ -147,11 +148,26 @@ type Store struct {
 // Open returns a Store backed by SQLite at path. Use ":memory:" for tests.
 // Sibling tables (e.g. episodic in the same file) are not disturbed —
 // schema only creates IF NOT EXISTS.
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return open(path, true) }
+
+// OpenExisting opens the database at path like Open, but only when the file
+// already exists, and without changing its permissions. Plain `tenant doctor`
+// uses it so its audit neither creates a database nor tightens one before
+// reporting on it (TEN-333).
+func OpenExisting(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	return open(path, false)
+}
+
+func open(path string, prepare bool) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
-		if err := fsperm.PrepareFile(path); err != nil {
-			return nil, fmt.Errorf("semantic: prepare private database: %w", err)
+		if prepare {
+			if err := fsperm.PrepareFile(path); err != nil {
+				return nil, fmt.Errorf("semantic: prepare private database: %w", err)
+			}
 		}
 		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)", path)
 	}

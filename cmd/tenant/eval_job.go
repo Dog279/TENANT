@@ -11,6 +11,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/eval"
+	"tenant/internal/fsperm"
 	"tenant/internal/improve"
 )
 
@@ -145,12 +146,14 @@ func writeEvalArtifact(dir string, rep *eval.Report, log *slog.Logger) string {
 	if log == nil {
 		log = slog.Default()
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Owner-only like the rest of the data dir, so a run after `doctor --fix`
+	// does not widen the tree again (TEN-333).
+	if err := fsperm.MkdirAll(dir); err != nil {
 		log.Warn("eval: artifact mkdir failed", "err", err)
 		return ""
 	}
 	path := filepath.Join(dir, "eval-"+time.Now().UTC().Format("20060102-150405")+".json")
-	f, err := os.Create(path)
+	f, err := fsperm.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
 		log.Warn("eval: artifact write failed", "err", err)
 		return ""

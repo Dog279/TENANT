@@ -39,6 +39,26 @@ func ReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// Peek reads a secret file as it is, for read-only audits such as plain
+// `tenant doctor` (TEN-333). Like ReadFile it refuses a symlink or a
+// non-regular file, but it never changes the file's or directory's protection.
+func Peek(path string) ([]byte, error) {
+	if path == "" {
+		return nil, &os.PathError{Op: "read", Path: path, Err: os.ErrInvalid}
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("secrets: refusing symlink %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("secrets: %s is not a regular file", path)
+	}
+	return os.ReadFile(path)
+}
+
 // WriteFile atomically replaces path and verifies owner-only protection on the
 // file and its direct parent directory before returning.
 func WriteFile(path string, data []byte) error {

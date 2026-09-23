@@ -73,8 +73,11 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
   in the repo.
 - Tenant creates its config/data roots with owner-only directory permissions and
   writes archives, databases, research artifacts, proposals, OAuth caches, and
-  peer/identity state as owner-only files on POSIX systems. `tenant doctor
-  --fix` removes legacy group/world permission bits without following symlinks.
+  peer/identity state as owner-only files on POSIX systems, eval reports
+  included. Plain `tenant doctor` only reports loose permissions and changes
+  nothing; `tenant doctor --fix` removes legacy group/world permission bits. It
+  opens every path without following symlinks and changes the mode through that
+  descriptor, so a symlink swapped in during the repair is skipped (TEN-333).
 - **Tenant does not encrypt local data at rest.** File modes are access control,
   not encryption; database, transcript, report, and credential contents remain
   plaintext to the owning account and to any process or administrator that can

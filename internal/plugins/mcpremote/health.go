@@ -10,7 +10,11 @@ package mcpremote
 // so it survives restarts and can be read offline, surfaced on every status
 // page, announced on transition, and stamped into the tool error the model sees.
 
-import "time"
+import (
+	"time"
+
+	"tenant/internal/secrets"
+)
 
 // Health is a connector's authorization state.
 type Health struct {
@@ -38,7 +42,7 @@ func TokenCachePath(cacheDir, serverURL string) string { return tokenCachePath(c
 // the offline view `tenant doctor` uses (no network, no browser). ok=false when
 // there is no cache at all: the server was never connected from this config dir.
 func ReadHealth(cacheDir, serverURL string) (h Health, ok bool) {
-	c, err := loadTokenCache(tokenCachePath(cacheDir, serverURL))
+	c, err := readTokenCache(tokenCachePath(cacheDir, serverURL), secrets.Peek)
 	if err != nil || c == nil {
 		return Health{}, false
 	}

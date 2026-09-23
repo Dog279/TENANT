@@ -43,10 +43,17 @@ func tokenCachePath(dir, serverURL string) string {
 }
 
 func loadTokenCache(path string) (*tokenCache, error) {
+	return readTokenCache(path, secrets.ReadFile)
+}
+
+// readTokenCache decodes the cache at path with the given reader. ReadHealth
+// passes secrets.Peek: it is doctor's offline view, which must not re-protect
+// the file it reports on (TEN-333).
+func readTokenCache(path string, read func(string) ([]byte, error)) (*tokenCache, error) {
 	if path == "" {
 		return nil, os.ErrNotExist
 	}
-	b, err := secrets.ReadFile(path)
+	b, err := read(path)
 	if err != nil {
 		return nil, err
 	}
