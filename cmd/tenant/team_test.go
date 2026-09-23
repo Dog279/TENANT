@@ -290,7 +290,7 @@ func TestTeamRuntime_SpawnRefusedAtAgentsPerRunCap(t *testing.T) {
 	if _, err := rt.Spawn(context.Background(), "first", "work"); err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
-	rt.Await(context.Background(), time.Second)
+	rt.Await(context.Background(), 30*time.Second) // returns once the agent is done; it must not outlive the stores
 	if _, err := rt.Spawn(context.Background(), "second", "work"); err == nil || !strings.Contains(err.Error(), "agents per run") {
 		t.Fatalf("second spawn should be structurally refused with cap context, got %v", err)
 	}
@@ -411,8 +411,19 @@ func TestTeamRuntime_SpawnCapRefusesRunaway(t *testing.T) {
 	rt.mu.Lock()
 	rt.agents["held-1"].status = "done"
 	rt.mu.Unlock()
-	if _, err := rt.Spawn(context.Background(), "researcher", "now there is room"); err != nil {
+	id, err := rt.Spawn(context.Background(), "researcher", "now there is room")
+	if err != nil {
 		t.Fatalf("spawn after a slot freed should succeed: %v", err)
+	}
+	// Let that turn finish before the deferred store close: an agent still
+	// searching memory when the stores close races the DB (or hits a nil one).
+	rt.mu.Lock()
+	done := rt.agents[id].done
+	rt.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the spawned agent never finished")
 	}
 }
 
