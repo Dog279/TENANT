@@ -804,6 +804,9 @@ type ModelControl interface {
 	// Fallback returns the configured auto-fallback provider chain (TEN-246),
 	// in order. Empty = no fallback.
 	Fallback() []string
+	// HealthGating describes the chain's latency health gating (TEN-282):
+	// "off", or what it skips and for how long.
+	HealthGating() string
 	// SetFallback persists + live-installs the ordered fallback provider chain
 	// (each name must be a configured provider). Empty clears it.
 	SetFallback(names []string) (status string, err error)
@@ -4279,7 +4282,8 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 			if len(chain) == 0 {
 				m.sysChat("no model fallback configured. Set one with `/model fallback <provider...>` so a rate-limited/unavailable model auto-routes to the next.")
 			} else {
-				m.sysChat("model fallback: " + strings.Join(chain, " → ") + "  (tried after the active model on 429 / out-of-credits / unreachable)")
+				m.sysChat("model fallback: " + strings.Join(chain, " → ") + "  (tried after the active model on 429 / out-of-credits / unreachable)\n" +
+					"health gating: " + m.cfg.Models.HealthGating())
 			}
 			return
 		}

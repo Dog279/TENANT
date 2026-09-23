@@ -1592,6 +1592,8 @@ type fakeModelCtl struct {
 	addCloudFn func(kind, key string) (string, error)
 	addFn      func(name, endpoint, fmt string) (string, error)
 	infos      []ModelInfo // canned ModelList() result (nil = none configured)
+	fallback   []string    // canned Fallback() chain
+	health     string      // canned HealthGating() description
 	calls      []string
 }
 
@@ -1615,7 +1617,8 @@ func (f *fakeModelCtl) ReasoningSupported() bool                  { return false
 func (f *fakeModelCtl) ReasoningLevels() []string                 { return nil }
 func (f *fakeModelCtl) ReasoningEffort() string                   { return "" }
 func (f *fakeModelCtl) SetReasoningEffort(string) (string, error) { return "", nil }
-func (f *fakeModelCtl) Fallback() []string                        { return nil }
+func (f *fakeModelCtl) Fallback() []string                        { return f.fallback }
+func (f *fakeModelCtl) HealthGating() string                      { return f.health }
 func (f *fakeModelCtl) SetFallback([]string) (string, error)      { return "", nil }
 func (f *fakeModelCtl) AddModel(name, endpoint, format string) (string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Add:%s,%s,%s", name, endpoint, format))
@@ -1650,6 +1653,25 @@ func TestModel_Reload_Dispatches(t *testing.T) {
 	}
 	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "reloaded") {
 		t.Errorf("status missing: %q", last)
+	}
+}
+
+// /model fallback shows the chain's health gating under the chain (TEN-358).
+func TestModel_Fallback_ShowsHealthGating(t *testing.T) {
+	mc := &fakeModelCtl{
+		fallback: []string{"backup"},
+		health:   "on: a model whose average call takes over 20s (after 5 calls) is skipped for 30s",
+	}
+	m := newModel(context.Background(), Config{Models: mc})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	m.handleSlash("/model fallback")
+	out := lastSys(m)
+	if !strings.Contains(out, "model fallback: backup") {
+		t.Fatalf("chain missing from /model fallback: %q", out)
+	}
+	if !strings.Contains(out, "health gating: "+mc.health) {
+		t.Fatalf("health gating missing from /model fallback: %q", out)
 	}
 }
 

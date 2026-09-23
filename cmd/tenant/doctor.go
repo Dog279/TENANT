@@ -151,6 +151,9 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// secret (env-var present OR stored in creds).
 		{"credentials", checkCredentials},
 		{"profiles/router", checkRouter},
+		// TEN-358: TEN-282's latency gating on the fallback chain — whether it is
+		// on, what it skips, and whether there is a chain for it to move to.
+		{"fallback health gating", checkHealthGating},
 		{"generation endpoint", checkGenEndpoint},
 		{"tokenize endpoint", checkTokenize},
 		{"embedding endpoint", checkEmbedEndpoint},
@@ -454,6 +457,40 @@ func checkRouter(_ context.Context, e *doctorEnv) checkResult {
 			Fix:    "add a profile for each role, or use --backend echo for offline dev"}
 	}
 	return checkResult{Status: statusOK, Detail: "planner + embedder roles resolve"}
+}
+
+// checkHealthGating reports config.json `health_gating` (TEN-358): off, on with
+// a fallback chain to move to, or on with nothing to move to or with values
+// the engine will replace.
+func checkHealthGating(_ context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil {
+		return checkResult{Status: statusSkip, Detail: "launch config unavailable (see launch config check)"}
+	}
+	cfg := e.lc.HealthGating.modelConfig()
+	if cfg.SlowThreshold <= 0 {
+		return checkResult{Status: statusSkip,
+			Detail: "off (set health_gating.slow_threshold_ms in config.json to skip a slow model in the fallback chain)"}
+	}
+	desc := describeHealthGating(cfg)
+	var chain []string
+	for _, name := range e.lc.Fallbacks {
+		name = strings.TrimSpace(name)
+		if name != "" && name != e.lc.Provider && e.lc.Providers[name] != nil {
+			chain = append(chain, name)
+		}
+	}
+	if len(chain) == 0 {
+		return checkResult{Status: statusWarn,
+			Detail: desc + ", but no fallback provider is configured, so there is nothing to move to",
+			Fix:    "`/model fallback <provider...>` or set \"fallbacks\" in config.json"}
+	}
+	if problems := e.lc.HealthGating.problems(); len(problems) > 0 {
+		return checkResult{Status: statusWarn,
+			Detail: desc + "; " + strings.Join(problems, "; "),
+			Fix:    "correct health_gating in config.json"}
+	}
+	return checkResult{Status: statusOK,
+		Detail: desc + "; chain: " + firstNonEmpty(e.lc.Provider, "active") + " → " + strings.Join(chain, " → ")}
 }
 
 func checkGenEndpoint(ctx context.Context, e *doctorEnv) checkResult {

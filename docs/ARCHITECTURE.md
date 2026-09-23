@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 67 |
-| Go files | 739 |
-| Test files | 364 |
-| Production Go LOC | 106,139 |
-| Test Go LOC | 71,945 |
+| Go files | 742 |
+| Test files | 367 |
+| Production Go LOC | 106,532 |
+| Test Go LOC | 72,594 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -383,13 +383,22 @@ the chain for audit; Supersede-on-contradiction is v1.1 (LLM judge — TODO).
 
 **Public API:** `archive.NewWriter(baseDir) *Writer`; `Writer.Append(Event)`
 (concurrent-safe, monthly rotation, session-ID sanitized for path safety).
-`archive.NewReader(baseDir) *Reader`; `Reader.Stream(Filter) iter.Seq2[Event,error]`
-(Go 1.23 iterator, chronological). `Event{Timestamp, AgentID, SessionID,
-Role, Content, ToolCalls, ToolResult, Metadata}`.
-**Storage:** JSONL at `archive/YYYY-MM/{session}.jsonl`, one Event/line.
+`archive.NewWriterWithOptions(baseDir, WriterOptions)` and `Writer.Flush()` for
+batched syncing. `archive.NewReader(baseDir) *Reader`;
+`Reader.Stream(Filter) iter.Seq2[Event,error]` (Go 1.23 iterator,
+chronological). `Event{Timestamp, AgentID, SessionID, Role, Content,
+ToolCalls, ToolResult, Metadata}`.
+**Storage:** JSONL at `archive/YYYY-MM/{session}.jsonl`, one Event/line,
+owner-only (`fsperm`).
 **Invariants:** append-only (deletion = tombstone in higher tiers, never
-rewrite history); per-Append open+close (concurrent-safe via mutex);
-malformed line surfaces as stream error, doesn't halt iteration. **14 tests.**
+rewrite history); per-Append open+write+fsync+close under a mutex, so a nil
+`Append` means the event is on disk, and a write, sync or close error is
+returned, never dropped (TEN-327). `WriterOptions.SyncInterval > 1` batches
+syncs and can lose up to that many acknowledged events per file on power loss;
+no production caller batches. A torn final line (no trailing newline, from a
+crash mid-write) is skipped on read and truncated before the next append. A
+complete malformed line surfaces as a stream error and doesn't halt iteration.
+**20 tests.**
 
 ### 5.8 `internal/memory/assemble` — Prompt assembler
 

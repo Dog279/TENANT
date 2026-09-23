@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"tenant/internal/model"
 )
@@ -134,7 +135,14 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 		r.SetFallbackChain(role, nil)
 	}
 	r.SetFallbackChain(plannerBigRole, nil)
+	// Health gating is re-asserted with the chain, so removing it from config
+	// turns it off at the next install (TEN-358).
+	health := lc.HealthGating.modelConfig()
+	r.SetHealthGating(health)
 	if len(lc.Fallbacks) == 0 {
+		if health.SlowThreshold > 0 {
+			log.Warn("fallback: health_gating is set but no fallbacks are configured; it has nothing to move to")
+		}
 		return
 	}
 	seen := map[string]bool{strings.TrimSpace(lc.Provider): true} // exclude the active primary
@@ -182,6 +190,56 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 		}
 		r.SetFallbackChain(plannerBigRole, bigChain)
 	}
+	if health.SlowThreshold > 0 {
+		log.Info("fallback: health gating " + describeHealthGating(health))
+	}
+}
+
+// modelConfig converts the persisted settings to the router's HealthConfig. A
+// nil receiver or a non-positive threshold is the zero value, which is off.
+func (h *healthGatingConfig) modelConfig() model.HealthConfig {
+	if h == nil || h.SlowThresholdMS <= 0 {
+		return model.HealthConfig{}
+	}
+	cfg := model.HealthConfig{
+		SlowThreshold: time.Duration(h.SlowThresholdMS) * time.Millisecond,
+		MinSamples:    h.MinSamples,
+		Alpha:         h.Alpha,
+	}
+	if h.CooldownMS > 0 {
+		cfg.Cooldown = time.Duration(h.CooldownMS) * time.Millisecond
+	}
+	return cfg
+}
+
+// problems lists configured values the engine will replace with its default,
+// so doctor can say so instead of the gate quietly behaving differently.
+func (h *healthGatingConfig) problems() []string {
+	if h == nil || h.SlowThresholdMS <= 0 {
+		return nil
+	}
+	var out []string
+	if h.MinSamples < 0 {
+		out = append(out, fmt.Sprintf("min_samples %d is negative; using 5", h.MinSamples))
+	}
+	if h.Alpha < 0 || h.Alpha > 1 {
+		out = append(out, fmt.Sprintf("alpha %g is outside (0,1]; using 0.3", h.Alpha))
+	}
+	if h.CooldownMS < 0 {
+		out = append(out, fmt.Sprintf("cooldown_ms %d is negative; using 30s", h.CooldownMS))
+	}
+	return out
+}
+
+// describeHealthGating renders the effective gating policy for doctor, the
+// startup log and /model fallback.
+func describeHealthGating(cfg model.HealthConfig) string {
+	if cfg.SlowThreshold <= 0 {
+		return "off"
+	}
+	cfg = cfg.Normalized()
+	return fmt.Sprintf("on: a model whose average call takes over %s (after %d calls) is skipped for %s",
+		cfg.SlowThreshold, cfg.MinSamples, cfg.Cooldown)
 }
 
 // fallbackLabelToProvider turns a fallback profile-ID ("qwen-gpu/vllm-planner")
