@@ -105,25 +105,29 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		}
 	}
 	ag, err := agent.New(agent.Config{
-		AgentID:      "tenant-discord",
-		Router:       d.router,
-		SoulLive:     d.soulLive,
-		Working:      working.New(),
-		Archive:      d.archive,
-		Episodic:     d.episodic,
-		Semantic:     d.semantic,
-		Runs:         d.runs,
-		Tools:        reg,
-		Dispatcher:   disp,
-		Logger:       d.log,
-		Skills:       d.skills,
-		Compactor:    d.compactor,
-		UserProfile:  d.userProfile,
-		SystemPrompt: d.sysPrompt + discordSysSuffix,
-		Observer:     obs,
-		RouteHook:    d.routeHook,
-		RouteActive:  d.routeActive,
-		RouteSticky:  d.routeSticky,
+		AgentID:    "tenant-discord",
+		Router:     d.router,
+		SoulLive:   d.soulLive,
+		Working:    working.New(),
+		Archive:    d.archive,
+		Episodic:   d.episodic,
+		Semantic:   d.semantic,
+		Runs:       d.runs,
+		Tools:      reg,
+		Dispatcher: disp,
+		// A sensitive outbound flow asks the approver stamped on the turn
+		// ctx (the Discord broker), like any gated tool; unstamped fails
+		// closed. nil here denied every such flow outright (TEN-336).
+		ConfirmSensitiveEgress: originConfirm(nil),
+		Logger:                 d.log,
+		Skills:                 d.skills,
+		Compactor:              d.compactor,
+		UserProfile:            d.userProfile,
+		SystemPrompt:           d.sysPrompt + discordSysSuffix,
+		Observer:               obs,
+		RouteHook:              d.routeHook,
+		RouteActive:            d.routeActive,
+		RouteSticky:            d.routeSticky,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
