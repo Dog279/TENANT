@@ -161,6 +161,16 @@ func (mc *modelControl) Fallback() []string {
 	return lc.Fallbacks
 }
 
+// HealthGating describes config.json `health_gating` for /model fallback
+// (TEN-358): "off", or what it skips and for how long.
+func (mc *modelControl) HealthGating() string {
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		return "unknown (config.json unreadable)"
+	}
+	return describeHealthGating(lc.HealthGating.modelConfig())
+}
+
 // SetFallback validates + persists the ordered fallback provider chain and
 // re-installs it on the live router (TEN-246) — so it takes effect this session
 // with no restart. Each name must be a configured provider; empty clears it.

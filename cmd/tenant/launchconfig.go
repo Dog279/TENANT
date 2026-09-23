@@ -111,6 +111,11 @@ type launchConfig struct {
 	// to the self-hosted Qwen for that call; the preferred provider is retried first once
 	// its cooldown lapses.
 	Fallbacks []string `json:"fallbacks,omitempty"`
+	// HealthGating turns on TEN-282's latency gating for the fallback chain: a
+	// provider that keeps answering, but slowly, is skipped for a cooldown so
+	// the next provider in Fallbacks serves. Nil or a zero slow_threshold_ms
+	// keeps it off (TEN-358).
+	HealthGating *healthGatingConfig `json:"health_gating,omitempty"`
 	// LazyTools enables on-demand tool loading (TEN-228): the per-turn tool array
 	// carries only the ranked working set + a load_tool meta-tool, with a cheap
 	// name+description catalog of the rest in the system prompt. Off by default
@@ -158,6 +163,17 @@ type runTraceConfig struct {
 	MaxAgeDays       int  `json:"max_age_days,omitempty"` // 0=90 default; negative disables age pruning
 	MaxCount         int  `json:"max_count,omitempty"`    // 0=10000 default; negative disables count pruning
 	RedactToolBodies bool `json:"redact_tool_bodies,omitempty"`
+}
+
+// healthGatingConfig is the persisted form of model.HealthConfig. Latency is
+// timed per call, from the request to the end of the answer, so the threshold
+// has to sit above the normal time for a long reply. Omitted fields take the
+// engine defaults.
+type healthGatingConfig struct {
+	SlowThresholdMS int     `json:"slow_threshold_ms,omitempty"` // average call time that marks a provider slow; <=0 = off
+	MinSamples      int     `json:"min_samples,omitempty"`       // successful calls before the average can trip; 0 = 5
+	Alpha           float64 `json:"alpha,omitempty"`             // weight of the newest call in the average, (0,1]; 0 = 0.3
+	CooldownMS      int     `json:"cooldown_ms,omitempty"`       // how long a slow provider is skipped; 0 = 30000
 }
 
 func configuredBudgets(lc *launchConfig) orchestra.Budgets {

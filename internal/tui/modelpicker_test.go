@@ -48,6 +48,7 @@ func (f *fakeModels) ReasoningLevels() []string                    { return nil 
 func (f *fakeModels) ReasoningEffort() string                      { return "" }
 func (f *fakeModels) SetReasoningEffort(string) (string, error)    { return "", nil }
 func (f *fakeModels) Fallback() []string                           { return nil }
+func (f *fakeModels) HealthGating() string                         { return "off" }
 func (f *fakeModels) SetFallback([]string) (string, error)         { return "", nil }
 
 func newModelPickerModel(f *fakeModels) *model {

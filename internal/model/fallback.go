@@ -55,7 +55,7 @@ type HealthConfig struct {
 	SlowThreshold time.Duration
 	// MinSamples is how many successful calls a link must have served before its
 	// EWMA can trip a demotion. Guards against cold-start / single-outlier trips.
-	// Clamped to >=1 when health-gating is enabled.
+	// Defaults to 5 when health-gating is enabled and MinSamples<1.
 	MinSamples int
 	// Alpha is the EWMA smoothing factor in (0,1]: higher = more weight on the
 	// latest sample (reacts faster, noisier); lower = smoother. Defaults to 0.3
@@ -65,6 +65,26 @@ type HealthConfig struct {
 	// preferred again once the cooldown lapses — never a permanent demotion).
 	// Defaults to 30s when health-gating is enabled and Cooldown<=0.
 	Cooldown time.Duration
+}
+
+// Normalized returns c with the defaults filled in that an enabled gate uses:
+// MinSamples<1 becomes 5, an Alpha outside (0,1] becomes 0.3, and a
+// non-positive Cooldown becomes 30s. A disabled config (SlowThreshold<=0) is
+// returned unchanged.
+func (c HealthConfig) Normalized() HealthConfig {
+	if c.SlowThreshold <= 0 {
+		return c
+	}
+	if c.MinSamples < 1 {
+		c.MinSamples = 5
+	}
+	if c.Alpha <= 0 || c.Alpha > 1 {
+		c.Alpha = 0.3
+	}
+	if c.Cooldown <= 0 {
+		c.Cooldown = 30 * time.Second
+	}
+	return c
 }
 
 // FallbackLLM implements model.LLM over an ordered chain (primary first).
@@ -102,17 +122,7 @@ func NewFallbackLLM(links []fbLink, observer func(FailoverEvent)) *FallbackLLM {
 // defaults so a partial config can't silently disable the guard or trip it on a
 // single sample. Concurrency-safe (guarded by the existing cooldown mutex).
 func (f *FallbackLLM) SetHealthGating(cfg HealthConfig) {
-	if cfg.SlowThreshold > 0 { // only normalize when the feature is actually on
-		if cfg.MinSamples < 1 {
-			cfg.MinSamples = 5
-		}
-		if cfg.Alpha <= 0 || cfg.Alpha > 1 {
-			cfg.Alpha = 0.3
-		}
-		if cfg.Cooldown <= 0 {
-			cfg.Cooldown = 30 * time.Second
-		}
-	}
+	cfg = cfg.Normalized()
 	f.mu.Lock()
 	f.health = cfg
 	f.mu.Unlock()

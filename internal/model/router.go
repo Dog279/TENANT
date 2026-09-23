@@ -24,7 +24,9 @@ type BackendFactory func(ctx context.Context, p Profile, log *slog.Logger) (any,
 // latency health-gating (a link that returns 200 OK but is persistently SLOW
 // gets a short cooldown via the same per-link mechanism, so the chain prefers
 // the next link and re-probes after the cooldown — never a permanent demotion).
-// Health-gating is OFF unless configured via FallbackLLM.SetHealthGating.
+// Health-gating is OFF unless Router.SetHealthGating installs a config, which
+// every role's fallback chain then uses (cmd/tenant sets it from config.json
+// `health_gating`, TEN-358).
 // STILL FUTURE: cross-endpoint load balancing / weighted routing, and feeding
 // real production latency/error data into the thresholds.
 type Router struct {
@@ -46,6 +48,10 @@ type Router struct {
 	fallbackChains   map[Role][]string
 	fallbackLLMs     map[Role]LLM
 	failoverObserver func(FailoverEvent)
+
+	// health is the TEN-282 latency health-gating config given to every
+	// fallback wrapper built for a role. The zero value keeps gating off.
+	health HealthConfig
 }
 
 // NewRouter builds a Router on top of a Registry. Backend factories must
@@ -126,6 +132,27 @@ func (r *Router) SetFailoverObserver(fn func(FailoverEvent)) {
 	r.mu.Lock()
 	r.failoverObserver = fn
 	r.mu.Unlock()
+}
+
+// SetHealthGating installs the latency health-gating config (TEN-282) for every
+// role's fallback chain. Wrappers already built are reconfigured in place, so
+// their cooldown and latency state is kept. The zero value turns gating off.
+func (r *Router) SetHealthGating(cfg HealthConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.health = cfg
+	for _, llm := range r.fallbackLLMs {
+		if fb, ok := llm.(*FallbackLLM); ok {
+			fb.SetHealthGating(cfg)
+		}
+	}
+}
+
+// HealthGating returns the config last passed to SetHealthGating.
+func (r *Router) HealthGating() HealthConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.health
 }
 
 // AddFallbackProfiles upserts profiles into the registry WITHOUT changing any
@@ -296,6 +323,7 @@ func (r *Router) LLMForRoleFiltered(ctx context.Context, role Role, allow Profil
 		return llm, p, nil // no usable fallback → just the primary
 	}
 	fb := NewFallbackLLM(links, obs)
+	fb.SetHealthGating(r.health)
 	if allow == nil {
 		r.fallbackLLMs[role] = fb
 	}
@@ -341,6 +369,8 @@ func (r *Router) LLMWithEffort(ctx context.Context, base Profile, baseLLM LLM, e
 	if !isLLM {
 		return nil, false
 	}
+	// Not health-gated: a higher-effort variant is expected to be slower, and
+	// demoting it for that would quietly drop the effort the turn asked for.
 	return NewFallbackLLM([]fbLink{
 		{llm: llm, label: variant.ID},
 		{llm: baseLLM, label: base.ID + " (effort fallback)"},
