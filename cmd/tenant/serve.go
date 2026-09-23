@@ -674,7 +674,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// is up — publishes the loopback dashboard onto the tailnet so the operator
 	// can reach the hub off-LAN, matching the TUI. Best-effort.
 	if c.lc != nil && c.lc.Tailscale.Serve {
-		tsMgr := newTailscaleManager(ctx, dashMgr.Status, log.With("source", "dashboard"))
+		tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
 		if url, terr := tsMgr.reassertOnLaunch(); terr != nil {
 			pushSys("tailscale: serve not restored — " + terr.Error())
 		} else {

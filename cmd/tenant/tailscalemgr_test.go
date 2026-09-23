@@ -166,6 +166,39 @@ func TestTailscale_PersistsChoice(t *testing.T) {
 	}
 }
 
+// TEN-332: a successful serve trusts the tailnet name on the dashboard, unserve
+// clears it, and a serve that fails trusts nothing.
+func TestTailscale_ServeTrustsTailnetHost(t *testing.T) {
+	f := &fakeTSCLI{resp: map[string]string{
+		"status --json":   tsRunningJSON,
+		"serve status":    "No serve config",
+		"serve --bg 8770": "",
+		"serve reset":     "",
+	}}
+	m := newTSMgr(f, "tailscale")
+	var trusted []string
+	m.trustHost = func(host string) { trusted = append(trusted, host) }
+	if _, err := m.Serve(); err != nil {
+		t.Fatal(err)
+	}
+	if len(trusted) != 1 || trusted[0] != "host.tailnet-name.ts.net" {
+		t.Fatalf("serve trusted %q, want the tailnet name", trusted)
+	}
+	if err := m.Unserve(); err != nil {
+		t.Fatal(err)
+	}
+	if len(trusted) != 2 || trusted[1] != "" {
+		t.Fatalf("unserve should clear the trusted host; calls=%q", trusted)
+	}
+
+	fDown := &fakeTSCLI{resp: map[string]string{"status --json": `{"BackendState":"Stopped","Self":{}}`}}
+	mDown := newTSMgr(fDown, "tailscale")
+	mDown.trustHost = func(host string) { t.Errorf("a failed serve trusted %q", host) }
+	if _, err := mDown.Serve(); err == nil {
+		t.Fatal("serve while Stopped should error")
+	}
+}
+
 func TestPortOf(t *testing.T) {
 	if got := portOf("127.0.0.1:8770"); got != "8770" {
 		t.Errorf("portOf loopback: %q", got)

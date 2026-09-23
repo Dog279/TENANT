@@ -50,11 +50,25 @@ type tailscaleManager struct {
 	// (TEN-233). Only called on a SUCCESSFUL serve/unserve, so a transient failure
 	// (e.g. tailscale not up yet at launch) never flips the operator's intent.
 	persist func(serve bool)
-	log     *slog.Logger
+	// trustHost tells the dashboard which Host the tailnet proxy forwards: the
+	// tailnet DNS name after a successful serve, "" after unserve (TEN-332).
+	// Without it the published URL answers 403. nil ⇒ no-op.
+	trustHost func(host string)
+	log       *slog.Logger
 }
 
-func newTailscaleManager(base context.Context, dashInfo func() (bool, string), log *slog.Logger) *tailscaleManager {
-	return &tailscaleManager{base: base, bin: resolveTailscaleBin(), dashInfo: dashInfo, run: execTailscale, log: log}
+// newTailscaleManager wires the manager to the dashboard it publishes. Taking
+// the dashboard manager, not loose callbacks, keeps the /tailscale path and
+// the launch-time reassert path from wiring the Host trust differently.
+func newTailscaleManager(base context.Context, dash *dashboardManager, log *slog.Logger) *tailscaleManager {
+	return &tailscaleManager{
+		base:      base,
+		bin:       resolveTailscaleBin(),
+		dashInfo:  dash.Status,
+		run:       execTailscale,
+		trustHost: dash.SetTailnetHost,
+		log:       log,
+	}
 }
 
 // resolveTailscaleBin finds the tailscale CLI: an explicit $TAILSCALE_CLI wins,
@@ -141,6 +155,9 @@ func (m *tailscaleManager) Serve() (string, error) {
 	if out, err := m.run(m.base, m.bin, "serve", "--bg", port); err != nil {
 		return "", fmt.Errorf("`tailscale serve --bg %s` failed: %s", port, firstLine(out, err))
 	}
+	if m.trustHost != nil && st.DNSName != "" {
+		m.trustHost(st.DNSName)
+	}
 	if m.persist != nil {
 		m.persist(true)
 	}
@@ -158,6 +175,9 @@ func (m *tailscaleManager) Unserve() error {
 	}
 	if out, err := m.run(m.base, m.bin, "serve", "reset"); err != nil {
 		return fmt.Errorf("`tailscale serve reset` failed: %s", firstLine(out, err))
+	}
+	if m.trustHost != nil {
+		m.trustHost("")
 	}
 	if m.persist != nil {
 		m.persist(false)

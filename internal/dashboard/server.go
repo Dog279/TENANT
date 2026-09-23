@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"tenant/internal/agent"
@@ -96,6 +97,12 @@ type Server struct {
 	coord *wsCoordinator
 	// tmpl holds the server-rendered page templates (TEN-107).
 	tmpl *ssrTemplates
+
+	// trusted holds Host authorities trusted at runtime on top of cfg, such as
+	// the tailnet name `tailscale serve` publishes the dashboard under
+	// (TEN-332). Set through SetTrustedHosts.
+	trustedMu sync.RWMutex
+	trusted   []string
 }
 
 // New constructs the dashboard server and builds its routes. A nil logger

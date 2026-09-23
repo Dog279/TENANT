@@ -5,6 +5,7 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -54,15 +55,7 @@ func WriteFile(path string, data []byte) error {
 	}
 	tmp := f.Name()
 	defer func() { _ = os.Remove(tmp) }()
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
+	if err := writeSyncClose(f, data); err != nil {
 		return err
 	}
 	if err := protectPath(tmp, false); err != nil {
@@ -82,6 +75,85 @@ func WriteFile(path string, data []byte) error {
 		return fmt.Errorf("secrets: %s: %s", path, report.Detail)
 	}
 	return nil
+}
+
+// linkFile publishes a finished temporary file under its final name. Tests
+// replace it to exercise the no-hard-link fallback.
+var linkFile = os.Link
+
+// CreateExclusive writes data to path only when path does not exist yet, with
+// the owner-only protection WriteFile verifies. It returns created=false, and
+// leaves the existing file untouched, when another writer got there first, so
+// racing processes converge on the first value instead of the last. The data
+// is written and protected under a temporary name, then published with a hard
+// link, which fails when path exists; a reader never sees a partial file. On a
+// filesystem without hard links it claims path with O_EXCL and then writes.
+func CreateExclusive(path string, data []byte) (created bool, err error) {
+	if path == "" {
+		return false, &os.PathError{Op: "create", Path: path, Err: os.ErrInvalid}
+	}
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	if err := ensurePrivateDir(dir); err != nil {
+		return false, fmt.Errorf("secrets: protect parent %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, base+".*.tmp")
+	if err != nil {
+		return false, err
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if err := writeSyncClose(f, data); err != nil {
+		return false, err
+	}
+	if err := protectPath(tmp, false); err != nil {
+		return false, fmt.Errorf("secrets: protect temporary file: %w", err)
+	}
+	if err := linkFile(tmp, path); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
+		if created, err := createExclusiveInPlace(path, data); !created || err != nil {
+			return created, err
+		}
+	}
+	report := Probe(path)
+	if !report.Protected {
+		if report.Detail == "" {
+			report.Detail = "effective protection could not be verified"
+		}
+		return true, fmt.Errorf("secrets: %s: %s", path, report.Detail)
+	}
+	return true, nil
+}
+
+// createExclusiveInPlace is CreateExclusive's fallback for filesystems without
+// hard links. The name is claimed empty and protected before data is written,
+// so a concurrent reader can briefly see an empty file.
+func createExclusiveInPlace(path string, data []byte) (bool, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := protectPath(path, false); err != nil {
+		_ = f.Close()
+		return true, fmt.Errorf("secrets: protect %s: %w", path, err)
+	}
+	return true, writeSyncClose(f, data)
+}
+
+func writeSyncClose(f *os.File, data []byte) error {
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Harden applies and verifies owner-only protection to an existing secret file

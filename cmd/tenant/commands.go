@@ -2519,7 +2519,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// dashboard onto the operator's tailnet via `tailscale serve`. It reads the
 	// dashboard's port + running state from dashMgr.Status, and persists the serve
 	// choice so it is re-asserted at next launch (below, after dashMgr.Enable).
-	tsMgr := newTailscaleManager(ctx, dashMgr.Status, log.With("source", "dashboard"))
+	tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
 	tsMgr.persist = func(serve bool) {
 		if c.lc == nil {
 			return
