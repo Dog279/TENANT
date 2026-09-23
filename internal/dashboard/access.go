@@ -258,9 +258,9 @@ func (s *Server) handleRelayExecForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if on {
-		redirectAccess(w, r, "Discord exec mode on (dangerous tools reachable, each per-action approved).", "")
+		redirectAccess(w, r, "Discord exec mode on (dangerous tools reachable, each following the permissions below).", "")
 	} else {
-		redirectAccess(w, r, "Discord exec mode off.", "")
+		redirectAccess(w, r, "Discord exec mode off (exec, write, destructive, sandbox and send refused over Discord).", "")
 	}
 }
 

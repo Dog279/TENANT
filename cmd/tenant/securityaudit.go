@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"tenant/internal/secrets"
 )
 
 type auditSeverity string
@@ -79,12 +81,24 @@ type executionAudit struct {
 	FilesystemRoot string `json:"filesystem_root"`
 }
 
+// surfaceAudit is one authority surface: whether it is live, and what its
+// broker would decide per category (TEN-338). Inactive surfaces are listed so
+// the report shows what enabling one would grant; only active ones produce
+// findings.
+type surfaceAudit struct {
+	authoritySurface
+	Preset     string                       `json:"preset"`
+	Categories map[string]effectiveCategory `json:"categories"`
+}
+
 type securityAuditReport struct {
-	Agent         string                `json:"agent"`
-	Listeners     []listenerAudit       `json:"listeners"`
-	Browser       browserAudit          `json:"browser"`
-	Web           webAudit              `json:"web"`
+	Agent     string          `json:"agent"`
+	Listeners []listenerAudit `json:"listeners"`
+	Browser   browserAudit    `json:"browser"`
+	Web       webAudit        `json:"web"`
+	// Permissions is the local surface, as before surfaces were added.
 	Permissions   effectivePermissions  `json:"permissions"`
+	Surfaces      []surfaceAudit        `json:"surfaces"`
 	RemoteMCP     remoteMCPAudit        `json:"remote_mcp"`
 	Files         []fileProtectionAudit `json:"file_protection"`
 	SecretStorage secretStorageAudit    `json:"secret_storage"`
@@ -110,6 +124,10 @@ func cmdSecurityAudit(_ context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// The audit reports file protection, so resolving the config must not
+	// tighten those files first: reading credentials.json used to harden it
+	// before the checks below ran (TEN-338).
+	c.auditOnly = true
 	if err := c.resolve(); err != nil {
 		return err
 	}
@@ -118,7 +136,12 @@ func cmdSecurityAudit(_ context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("compose permissions: %w", err)
 	}
+	surfaces, err := composeSurfaceAudits(c, pf, runtime.GOOS)
+	if err != nil {
+		return fmt.Errorf("compose permissions: %w", err)
+	}
 	report := buildSecurityAuditReport(c, pf, permissions)
+	report.Surfaces = surfaces
 	evaluateSecurityAudit(&report)
 
 	if *asJSON {
@@ -138,6 +161,19 @@ func securityAuditError(report securityAuditReport) error {
 		return nil
 	}
 	return fmt.Errorf("security audit found %d critical unsafe configuration(s)", report.Critical)
+}
+
+// composeSurfaceAudits composes every authority surface, active or not.
+func composeSurfaceAudits(c *commonFlags, pf *pluginFlags, goos string) ([]surfaceAudit, error) {
+	var out []surfaceAudit
+	for _, surface := range authoritySurfaces(c.lc, goos) {
+		effective, err := composeEffectivePermissions(c, pf, surface.Surface)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, surfaceAudit{authoritySurface: surface, Preset: effective.Preset, Categories: effective.Categories})
+	}
+	return out, nil
 }
 
 func buildSecurityAuditReport(c *commonFlags, pf *pluginFlags, permissions effectivePermissions) securityAuditReport {
@@ -170,7 +206,7 @@ func buildSecurityAuditReport(c *commonFlags, pf *pluginFlags, permissions effec
 		RemoteMCP: remoteMCPAudit{
 			Servers: servers, TrustAnnotations: pf.mcpTrustAnnotations, AllowWrite: pf.mcpAllowWrite,
 		},
-		Files: protectedFileSpotChecks(c.cfgDir, c.agent, c.lc.Dashboard.Auth != ""),
+		Files: protectedFileSpotChecks(c.cfgDir, c.dataDir, c.agent, c.lc.Dashboard.Auth != ""),
 		SecretStorage: secretStorageAudit{
 			ProviderSecrets: credentialsPath(c.cfgDir),
 			MCPTokenCache:   filepath.Join(c.cfgDir, "mcp", "mcp-*.json"),
@@ -303,6 +339,20 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 			"shell execution is enabled directly on the host without a container or filesystem root",
 			"use deny/ask permissions and a restricted execution backend when one is available")
 	}
+	for _, surface := range report.Surfaces {
+		if !surface.Active || surface.Surface == permissionSurfaceLocal {
+			continue
+		}
+		for _, risk := range offsiteRisks {
+			effective, ok := surface.Categories[risk.category]
+			if !ok || effective.Mode != modeAllow.String() {
+				continue
+			}
+			add("permissions."+surface.Surface+"."+risk.category+"-allow", "permissions", risk.severity,
+				fmt.Sprintf("a %s message %s (%s: allow, from %s)", surfaceLabel(surface.Surface), risk.consequence, risk.category, effective.Source),
+				offsiteRemedy(surface.Surface, risk.category, effective.Source))
+		}
+	}
 
 	report.Critical, report.Warnings = 0, 0
 	for _, finding := range report.Findings {
@@ -316,31 +366,74 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 	report.Safe = report.Critical == 0
 }
 
-func protectedFileSpotChecks(cfgDir, agent string, configContainsSecret bool) []fileProtectionAudit {
-	type target struct {
-		path      string
-		sensitive bool
+// offsiteRisks are the categories whose "allow" on an offsite surface lets a
+// remote message act on this host, or send data out, with no one approving.
+var offsiteRisks = []struct {
+	category    string
+	severity    auditSeverity
+	consequence string
+}{
+	{catExec, auditCritical, "runs shell commands on this host without approval"},
+	{catWrite, auditCritical, "writes files on this host without approval"},
+	{catDestructive, auditCritical, "takes irreversible actions without approval"},
+	{catSandbox, auditCritical, "re-runs commands outside the execution sandbox without approval"},
+	{catSend, auditWarning, "sends email, messages or posts without approval"},
+	{catEgress, auditWarning, "sends sensitive tool results across a trust boundary without approval"},
+	{catMCP, auditWarning, "connects and trusts new tool servers without approval"},
+}
+
+func surfaceLabel(surface string) string {
+	switch surface {
+	case permissionSurfaceDiscord:
+		return "Discord"
+	case permissionSurfaceIMessage:
+		return "iMessage"
 	}
-	targets := []target{
-		{credentialsPath(cfgDir), true},
-		{launchConfigPath(cfgDir), configContainsSecret},
-		{settingsPath(cfgDir, agent), false},
+	return surface
+}
+
+// offsiteRemedy points at the setting that produced the allow.
+func offsiteRemedy(surface, category, source string) string {
+	if pattern, ok := strings.CutPrefix(source, "tool rule "); ok {
+		return fmt.Sprintf("remove or narrow the tool rule %q (/permissions rm %s): tool rules apply on every surface", pattern, pattern)
 	}
-	if matches, err := filepath.Glob(filepath.Join(cfgDir, "mcp", "mcp-*.json")); err == nil {
-		for _, match := range matches {
-			targets = append(targets, target{match, true})
+	switch surface {
+	case permissionSurfaceDiscord:
+		remedy := fmt.Sprintf("set it to ask or deny (/relay permissions set %s ask)", category)
+		if containsString(relayExecCategories, category) {
+			remedy += ", or turn off exec mode (/relay exec off)"
 		}
+		return remedy
+	case permissionSurfaceIMessage:
+		return fmt.Sprintf("set it to ask or deny (/imessage permissions set %s deny)", category)
 	}
-	checks := make([]fileProtectionAudit, 0, len(targets))
-	for _, target := range targets {
-		checks = append(checks, checkFileProtection(target.path, target.sensitive))
+	return "set it to ask or deny"
+}
+
+// protectedFileSpotChecks checks every managed secret file (the list doctor and
+// the file tools use, TEN-337), config.json (sensitive while it holds the
+// dashboard token) and the agent's settings file.
+func protectedFileSpotChecks(cfgDir, dataDir, agent string, configContainsSecret bool) []fileProtectionAudit {
+	managed, err := managedSecrets(cfgDir, dataDir)
+	checks := make([]fileProtectionAudit, 0, len(managed)+3)
+	for _, secret := range managed {
+		checks = append(checks, checkFileProtection(secret.path, true))
 	}
+	if err != nil {
+		checks = append(checks, fileProtectionAudit{Path: mcpCacheDir(cfgDir), Sensitive: true, Status: "warning", Detail: err.Error()})
+	}
+	checks = append(checks,
+		checkFileProtection(launchConfigPath(cfgDir), configContainsSecret),
+		checkFileProtection(settingsPath(cfgDir, agent), false))
 	return checks
 }
 
+// checkFileProtection reports path without changing it. A sensitive file must
+// be owner-only as secrets.Probe verifies it (0600 in a 0700 directory on
+// POSIX, a current-user-only DACL on Windows), and must not be a symlink.
 func checkFileProtection(path string, sensitive bool) fileProtectionAudit {
 	check := fileProtectionAudit{Path: path, Sensitive: sensitive}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		check.Status = "not_found"
 		return check
@@ -350,20 +443,22 @@ func checkFileProtection(path string, sensitive bool) fileProtectionAudit {
 		check.Detail = fmt.Sprintf("cannot inspect %s: %v", path, err)
 		return check
 	}
-	check.Mode = fmt.Sprintf("%#o", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		check.Mode = fmt.Sprintf("%#o", info.Mode().Perm())
+	}
+	if sensitive {
+		report := secrets.Probe(path)
+		if !report.Protected {
+			check.Status = "warning"
+			check.Detail = fmt.Sprintf("%s is not owner-only: %s", path, report.Detail)
+			return check
+		}
+		check.Status, check.Detail = "ok", report.Detail
+		return check
+	}
 	if !info.Mode().IsRegular() {
 		check.Status = "warning"
 		check.Detail = path + " is not a regular file"
-		return check
-	}
-	if sensitive && runtime.GOOS == "windows" {
-		check.Status = "unverified"
-		check.Detail = path + " exists; Windows ACL protection was not verified"
-		return check
-	}
-	if sensitive && info.Mode().Perm()&0o077 != 0 {
-		check.Status = "warning"
-		check.Detail = fmt.Sprintf("%s has group/world permission bits %s", path, check.Mode)
 		return check
 	}
 	check.Status = "ok"
@@ -404,11 +499,23 @@ func printSecurityAudit(report securityAuditReport) {
 		report.RemoteMCP.TrustAnnotations, report.RemoteMCP.AllowWrite)
 	fmt.Printf("execution: %s isolation=%s enabled=%t (model=%s)\n", report.Execution.Backend,
 		report.Execution.Isolation, report.Execution.Enabled, report.Execution.ModelBackend)
-	fmt.Printf("permissions: surface=%s preset=%s\n", report.Permissions.Surface, report.Permissions.Preset)
-	for _, category := range catOrder {
-		if effective, ok := report.Permissions.Categories[category]; ok {
-			fmt.Printf("  %-12s %-5s (%s)\n", category, effective.Mode, effective.Source)
+	for _, surface := range report.Surfaces {
+		state := "inactive"
+		if surface.Active {
+			state = "active"
 		}
+		fmt.Printf("permissions: surface=%s %s (%s) preset=%s\n", surface.Surface, state, surface.Reason, surface.Preset)
+		if !surface.Active {
+			continue
+		}
+		for _, category := range catOrder {
+			if effective, ok := surface.Categories[category]; ok {
+				fmt.Printf("  %-12s %-5s (%s)\n", category, effective.Mode, effective.Source)
+			}
+		}
+	}
+	if len(report.Permissions.ToolRules) > 0 {
+		fmt.Printf("tool rules: %d, applied on every surface (see `tenant permissions effective`)\n", len(report.Permissions.ToolRules))
 	}
 	fmt.Printf("secret storage: providers=%s; mcp_tokens=%s; dashboard_auth=%s\n",
 		report.SecretStorage.ProviderSecrets, report.SecretStorage.MCPTokenCache, report.SecretStorage.DashboardAuth)

@@ -100,19 +100,18 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		relaySvc      *discord.Service
 		relayApprover *discordApprover
 		relaySender   messageSender
-		relayGate     *execGate
 	)
 	discordToken := resolveSecret(c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
 	if strings.TrimSpace(discordToken) != "" {
-		if r, svc, appr, snd, gate, derr := buildDiscordAgent(discordToken, deps); derr != nil {
+		if r, svc, appr, snd, derr := buildDiscordAgent(discordToken, deps); derr != nil {
 			d.notify("discord relay: " + derr.Error())
 		} else {
-			relayRunnerAg, relaySvc, relayApprover, relaySender, relayGate = r, svc, appr, snd, gate
+			relayRunnerAg, relaySvc, relayApprover, relaySender = r, svc, appr, snd
 		}
 	}
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
-		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken,
+		sender: relaySender, broker: discordBroker, token: discordToken,
 		dataDir: c.dataDir,
 		log:     d.log, notify: d.notify, ingest: ingest, degraded: d.degraded.Degraded,
 		approvalTimeout: relayApprovalTimeout(c.lc), cardStyle: relayCardStyle(c.lc),
@@ -132,7 +131,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 				lc.Relay.AllowExec = allowExec
 			})
 		},
-		buildFn: func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error) {
+		buildFn: func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, error) {
 			return buildDiscordAgent(token, deps)
 		},
 	}
@@ -144,12 +143,10 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		}
 		return tui.DenyOnce
 	}
+	discordBroker.locked = relayMgr.execLocked // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
 		relayMgr.operatorID = c.lc.Relay.OperatorID
-		if c.lc.Relay.AllowExec && relayGate != nil {
-			relayMgr.allowExec = true
-			relayGate.set(true)
-		}
+		relayMgr.allowExec = c.lc.Relay.AllowExec // restored with or without a bot token, as in cmdTUI
 		if c.lc.Relay.Enabled {
 			if err := relayMgr.Enable(); err != nil {
 				d.notify("discord relay: " + err.Error())

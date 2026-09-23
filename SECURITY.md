@@ -105,6 +105,22 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
 - Interactive destructive paths ask unless the operator has already selected an
   applicable allow mode; scheduled exec runs only after separate job/global
   opt-ins and applies additional destructive-command checks.
+- **Offsite surfaces.** A turn from the Discord relay or the iMessage responder
+  is approved by that surface's own broker, never the local one. iMessage modes
+  default to `deny`; Discord's default to `ask`, a button in the channel. Tool
+  rules apply on every surface.
+  - The relay's exec mode (`relay.allow_exec`, `/relay exec`) is off by
+    default. While it is off, the Discord broker refuses exec, write,
+    destructive, sandbox and send, whatever the relay permissions or a tool
+    rule say. Discord's own posts and reactions still follow `send`.
+  - `tenant permissions effective --surface local|discord|imessage` shows what
+    each broker grants, and which setting grants it.
+  - `tenant security audit` checks every live surface and exits non-zero on a
+    critical finding, such as a surface that runs commands or writes files with
+    no approval.
+  - Both commands read the config without changing any file. Pass them the
+    launch flags Tenant runs with (`--os-allow-exec` and the like): they cannot
+    see a running process's flags.
 - **Execution sandbox.** Approval decides *whether* a shell command runs; an
   execution backend decides *what it can reach*.
   - Commands the agent runs (`os_exec` and scheduled shell jobs) go through a
@@ -115,8 +131,9 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
     `restricted`, approval is the only gate, as before.
   - When the `restricted` backend refuses a file or network access, the
     command can re-run outside the sandbox only if `os_exec_unsandboxed` is
-    approved. That action is categorized destructive; pin it to `ask` with a
-    tool rule. Unattended jobs never escalate.
+    approved. That action has its own `sandbox` category (ask by default, deny
+    on iMessage), so a grant for it covers only further escalations.
+    Unattended jobs never escalate.
   - `tenant sandbox probe` shows what each surface gets on this machine, and
     `tenant sandbox selftest` tests it.
   - Per-OS status is in the table below; details are in

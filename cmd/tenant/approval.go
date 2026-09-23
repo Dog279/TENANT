@@ -221,23 +221,23 @@ var catDesc = map[string]string{
 	catSandbox:     "re-run a command outside the execution sandbox after it refused it",
 }
 
-// categorize maps a plugin action id to a safety category. Unknown
-// actions fall through to destructive (the safest default — always ask).
-func categorize(action string) string {
-	switch action {
-	case "os_exec":
-		return catExec
-	case "os_write", "os_append", "os_edit", "os_mkdir":
-		return catWrite
-	case "os_exec_dangerous", "sql_ddl", "web_transact":
-		return catDestructive
+// actionCategories maps every action id the category table knows to its
+// category. categorize reads it, and so does `tenant permissions effective`
+// when it applies tool rules to a category's actions (TEN-338), so the two
+// cannot disagree about which actions a category holds.
+var actionCategories = map[string]string{
+	"os_exec": catExec,
+
+	"os_write": catWrite, "os_append": catWrite, "os_edit": catWrite, "os_mkdir": catWrite,
+
+	"os_exec_dangerous": catDestructive, "sql_ddl": catDestructive, "web_transact": catDestructive,
+
 	// Re-running a command OUTSIDE the execution sandbox after it refused
 	// something (execprofiles.go): its own category (ask by default; deny on
 	// iMessage), never swept into exec or destructive grants.
-	case actionExecUnsandboxed:
-		return catSandbox
-	case "gsuite_send", "imessage_send", "x_post":
-		return catSend
+	actionExecUnsandboxed: catSandbox,
+
+	"gsuite_send": catSend, "imessage_send": catSend, "x_post": catSend,
 	// Discord's action ids are PROSE ("posts a Discord message" — see
 	// plugins/discord/dispatch.go), so they missed this table and fell through
 	// to destructive. Consequence on the HOST broker: destructive is ask-only
@@ -246,12 +246,18 @@ func categorize(action string) string {
 	// 5 minutes — while the operator's /relay permissions showed everything
 	// "allow" (those modes govern the RELAY broker, a different gate). A send
 	// is a send: categorize it as one. (2026-09-19)
-	case discord.ActionSendMessage, discord.ActionReact:
-		return catSend
-	case "mcp_add", "mcp_remove", "mcp_trust":
-		return catMCP
-	case "sensitive_egress":
-		return catEgress
+	discord.ActionSendMessage: catSend, discord.ActionReact: catSend,
+
+	"mcp_add": catMCP, "mcp_remove": catMCP, "mcp_trust": catMCP,
+
+	"sensitive_egress": catEgress,
+}
+
+// categorize maps a plugin action id to a safety category. Unknown
+// actions fall through to destructive (the safest default — always ask).
+func categorize(action string) string {
+	if cat, ok := actionCategories[action]; ok {
+		return cat
 	}
 	if strings.HasPrefix(action, "web_") {
 		return catWeb
@@ -319,6 +325,12 @@ type approvalBroker struct {
 	// blocks on the TUI. This is what lets one broker model (per-category
 	// ask|allow|deny) front every channel — only the "ask" plumbing differs.
 	ask func(ctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision
+
+	// locked, when set, is consulted before anything else in Confirm: an action
+	// it reports is refused whatever a tool rule, the category mode or a session
+	// grant says. The Discord relay's exec mode drives it (TEN-338), so
+	// relay.allow_exec=false keeps dangerous actions out of reach offsite.
+	locked func(action, cat string) bool
 }
 
 func newApprovalBroker(log *slog.Logger) *approvalBroker {
@@ -425,41 +437,74 @@ func newDiscordApprovalBroker(log *slog.Logger) *approvalBroker {
 	return b
 }
 
-// seedFromFlags lifts the launch --allow-* flags into category modes, so
-// existing flags still work: they pre-approve a whole category. Destructive
-// always stays "ask" — no flag blanket-approves irreversible actions.
-func (b *approvalBroker) seedFromFlags(pf *pluginFlags) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+// launchFlagGrants maps each category a launch --*-allow-* flag pre-approves
+// to the flag that does it. seedFromFlags applies it and `tenant permissions
+// effective` reports it (TEN-338), so both read the flags the same way.
+// Destructive is never here: no flag blanket-approves irreversible actions.
+func launchFlagGrants(pf *pluginFlags) map[string]string {
+	grants := map[string]string{}
+	if pf == nil {
+		return grants
+	}
 	if pf.osAllowExec {
-		b.modes[catExec] = modeAllow
+		grants[catExec] = "--os-allow-exec"
 	}
 	if pf.osAllowWrite {
-		b.modes[catWrite] = modeAllow
+		grants[catWrite] = "--os-allow-write"
 	}
 	if pf.webAllowInteract {
-		b.modes[catWeb] = modeAllow
+		grants[catWeb] = "--web-allow-interact"
 	}
 	// discordAllowSend joined 2026-09-19 alongside the send recategorization of
 	// the Discord action ids: the flag ungates the TOOL, and now also pre-
 	// approves the category, so "--discord-allow-send" means what it says on
 	// every surface instead of only the ones with their own approver.
-	if pf.gsuiteAllowSend || pf.xAllowPost || pf.imsgAllowSend || pf.discordAllowSend {
-		b.modes[catSend] = modeAllow
+	for _, f := range []struct {
+		on   bool
+		name string
+	}{
+		{pf.gsuiteAllowSend, "--gsuite-allow-send"}, {pf.xAllowPost, "--x-allow-post"},
+		{pf.imsgAllowSend, "--imessage-allow-send"}, {pf.discordAllowSend, "--discord-allow-send"},
+	} {
+		if f.on {
+			grants[catSend] = f.name
+			break
+		}
 	}
+	return grants
+}
+
+// seedFromFlags lifts the launch --allow-* flags into category modes, so
+// existing flags still work: they pre-approve a whole category.
+func (b *approvalBroker) seedFromFlags(pf *pluginFlags) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for cat := range launchFlagGrants(pf) {
+		b.modes[cat] = modeAllow
+	}
+}
+
+// savedModes keeps the entries of a persisted category → mode map that name a
+// known category and a valid mode: the ones loadModes applies.
+func savedModes(saved map[string]string) map[string]permMode {
+	out := map[string]permMode{}
+	for cat, ms := range saved {
+		if !containsString(catOrder, cat) {
+			continue
+		}
+		if m, ok := parseMode(ms); ok {
+			out[cat] = m
+		}
+	}
+	return out
 }
 
 // loadModes applies persisted per-category modes (override flag defaults).
 func (b *approvalBroker) loadModes(saved map[string]string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for cat, ms := range saved {
-		if _, known := b.modes[cat]; !known {
-			continue
-		}
-		if m, ok := parseMode(ms); ok {
-			b.modes[cat] = m
-		}
+	for cat, m := range savedModes(saved) {
+		b.modes[cat] = m
 	}
 }
 
@@ -486,6 +531,14 @@ func (b *approvalBroker) logInfo(msg string, kv ...any) {
 
 func (b *approvalBroker) Confirm(ctx context.Context, action, detail string) bool {
 	cat := categorize(action)
+
+	// The surface's lock (the Discord exec mode) outranks every setting below:
+	// a tool rule or a category allow must not reopen what it closed.
+	if b.locked != nil && b.locked(action, cat) {
+		b.logInfo("approval refused: locked on this surface", "origin", b.origin, "category", cat, "action", action)
+		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_policy")
+		return false
+	}
 
 	// A per-tool rule (toolrules.go) is the operator's explicit word for THIS
 	// tool and wins over the category: allow/deny decide silently; ask always

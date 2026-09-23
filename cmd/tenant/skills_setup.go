@@ -263,7 +263,7 @@ func applyPluginConfig(c *commonFlags, pf *pluginFlags) {
 		return s != nil && s.Enabled
 	}
 	secret := func(skill, field string) string {
-		return resolveSecret(c.cfgDir, skillSecretID(skill, field), authCfg{Stored: true})
+		return resolveSecretWith(c.credentialsLoader(), c.cfgDir, skillSecretID(skill, field), authCfg{Stored: true})
 	}
 
 	if enabled("wiki") && !set["wiki-dir"] {

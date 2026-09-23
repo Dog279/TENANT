@@ -409,15 +409,17 @@ type peerConfig struct {
 type relayConfig struct {
 	Enabled    bool   `json:"enabled,omitempty"`     // default false = opt-in
 	OperatorID string `json:"operator_id,omitempty"` // the single allowed Discord user id
-	// AllowExec opts the offsite session into the gated dangerous tools
-	// (exec/write/destructive/outbound-send) — each still per-action button-
-	// approved. Default false: read/research/comms only. (TEN-123)
+	// AllowExec is the relay's exec mode (TEN-123; enforced at the Discord
+	// broker again since TEN-338). False, the default: exec, write,
+	// destructive, sandbox and send are refused offsite whatever Permissions or
+	// a tool rule says; Discord's own post/react still follow send. True: those
+	// categories follow Permissions.
 	AllowExec bool `json:"allow_exec,omitempty"`
 	// Permissions is the per-category ask|allow|deny map for the Discord agent's
 	// gated tools (TEN-231), driven by /relay permissions with the SAME model as
 	// the global /permissions and /imessage permissions. Empty ⇒ default ASK
 	// (every dangerous action prompts a button). Categories: exec/write/
-	// destructive/web/send.
+	// destructive/web/send/egress/mcp/sandbox; AllowExec gates five of them.
 	Permissions map[string]string `json:"permissions,omitempty"`
 	// ApprovalTimeout is how long an approval card waits for the operator before
 	// auto-denying (a Go duration, e.g. "10m"). Empty ⇒ 10m. /relay timeout.
