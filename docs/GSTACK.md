@@ -156,8 +156,8 @@ After running:
 ```
 /memory soul import cmd/tenant/builtinsouls/founder.md
 /skills seed gstack             # one-time
-/agents add ceo-reviewer dgx aeon-ultimate -- scope + strategy reviewer
-/agents add eng-reviewer dgx aeon-ultimate -- architecture + tests reviewer
+/agents add ceo-reviewer <provider> aeon-ultimate -- scope + strategy reviewer
+/agents add eng-reviewer <provider> aeon-ultimate -- architecture + tests reviewer
 ```
 
 The main agent talks like a builder (voice rules), refuses to ship symptomatic

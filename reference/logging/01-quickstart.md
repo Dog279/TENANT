@@ -31,7 +31,7 @@ The file imports only the standard library. Go 1.21 or newer.
 ```go
 log := tenantlog.New("deploy")        // folder: <data>/logs/deploy/   tab: "deploy"
 
-log.Info("build started", "host", "r640", "commit", sha)
+log.Info("build started", "host", "build-box", "commit", sha)
 log.Warn("slow step", "step", "link", "took", 42*time.Second)
 log.Error("build failed", "step", "link", "err", err)
 ```
@@ -58,7 +58,7 @@ its lines and its files on disk. On disk:
 ```
 
 ```
-2026-09-22 14:03:11.123 INFO  [deploy] build started	commit=abc123 host=r640
+2026-09-22 14:03:11.123 INFO  [deploy] build started	commit=abc123 host=build-box
 2026-09-22 14:03:53.001 ERROR [deploy] build failed	err="exit status 1" step=link
 ```
 

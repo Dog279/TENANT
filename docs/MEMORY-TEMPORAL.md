@@ -312,7 +312,7 @@ interactive hot path**:
 - **Bounded LLM calls.** One contradiction-judgment call per candidate fact
   (batched top-K in a single prompt), one resolution call per new entity. No
   unbounded fan-out. Reuse the planner/summarizer role — runs on the same vLLM
-  the agent already uses (DGX throughput is the design point).
+  the agent already uses (`<model-host>` throughput is the design point).
 - **Idempotent + resumable.** Re-running extraction over the same episodes must
   not double-insert (dedup via `source_episodes` + entity resolution). Survives
   restarts and model swaps (the router is already hot-swappable).

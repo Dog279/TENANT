@@ -18,7 +18,7 @@
 // of it with Config, or with the env vars TENANT_URL, TENANT_TOKEN, TENANT_DATA.
 //
 //	log := tenantlog.New("deploy")                         // folder + tab: "deploy"
-//	log.Info("build started", "host", "r640", "commit", sha)
+//	log.Info("build started", "host", "build-box", "commit", sha)
 //	log.Error("build failed", "step", "link", "err", err)
 //
 //	slog.SetDefault(slog.New(log.Handler()))              // optional: your whole program's slog → Tenant

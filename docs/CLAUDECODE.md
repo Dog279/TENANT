@@ -116,7 +116,7 @@ drive the full tenant tool loop.
 ## Cost model (why this exists)
 
 The subscription is prepaid frontier capacity with a weekly ceiling; the
-metered API is unlimited but per-token. Ladder: DGX Qwen (free bulk) →
+metered API is unlimited but per-token. Ladder: Qwen on `<model-host>` (free bulk) →
 `claudecode` (frontier, prepaid, budget-railed) → `anthropic`/`zai`
 (metered overflow via the fallback chain). Default model is `opus` — half
 the burn of `fable`, which is capped at 50% of the weekly pool and better

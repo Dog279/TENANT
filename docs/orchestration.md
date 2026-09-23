@@ -42,7 +42,7 @@ spawning. When you have your own independent work to do, overlap it with the
 worker:
 
 1. `spawn_agent` a long-running worker (e.g. a coder implementing a feature on a
-   local/DGX model).
+   local/`<model-host>` model).
 2. **Keep doing your own independent work** — research, draft, or spawn more
    independent workers — while the worker runs.
 3. Call `team_await` **only when you actually need the worker's results**.
@@ -77,7 +77,7 @@ Delegation is worthwhile **regardless of the specialist's model**: the
 disciplined coding persona is the value even on the same model. It is *extra*
 valuable when the specialist is pinned to a different model than the
 orchestrator (e.g. orchestrator on a fast cloud model, `Programmer` pinned to a
-local Qwen/DGX endpoint via `/agents model Programmer …`): the orchestrator
+local Qwen endpoint on `<model-host>` via `/agents model Programmer …`): the orchestrator
 stays responsive while implementation runs on the model best suited for it. By
 default a specialist with no pinned provider simply inherits the orchestrator's
 model.

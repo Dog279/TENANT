@@ -78,8 +78,8 @@ event stream + token streaming (which also closed the StreamChunk.Error
 v1 item). The one deliberate minimal-deps exception (owner-approved),
 still pure Go.
 `tenant doctor` verified by induced-failure runs. Verified end-to-end
-with REAL models: generation = Gemma 4 (gemma-4-26b) on a networked DGX
-Spark vLLM @ localhost:8000; embeddings = Nomic Embed v1.5 (768d)
+with REAL models: generation = Gemma 4 (gemma-4-26b) on a networked
+`<model-host>` (vLLM @ localhost:8000); embeddings = Nomic Embed v1.5 (768d)
 via local Ollama OpenAI-compat @ localhost:11434. Heterogeneous
 role-routing (vLLM gen + Ollama embed) confirmed. Semantic retrieval
 ranks by meaning (cosine magnitude). **Tool calling hardened &
@@ -1233,7 +1233,7 @@ the `echo` backend (default); `--backend vllm` for production.
   in-process MCP self-loop. `--fix`: safe reversible repairs only
   (mkdir dirs, reset stale cursor — old value saved to `:prev`).
   Non-zero exit on any FAIL (CI-usable). Verified: 11/11 OK on real
-  DGX+Ollama; correctly FAILs dead endpoint / dim mismatch, WARNs
+  `<model-host>` + Ollama; correctly FAILs dead endpoint / dim mismatch, WARNs
   wrong model name, FIXES stale cursor.
 
 **Common flags:** `--backend echo|vllm`, `--agent ID`, `--data DIR`,

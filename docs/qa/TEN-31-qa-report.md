@@ -1,7 +1,7 @@
 # QA Report: TEN-31 — Memory recall tasks + injected_facts/injected_episodes YAML schema
 
 **Date:** 2026-06-14  
-**Ticket:** [TEN-31](https://findtime.atlassian.net/browse/TEN-31)  
+**Ticket:** TEN-31  
 **Status in Jira:** Done  
 **QA Verdict:** ✅ PASS (with notes)
 

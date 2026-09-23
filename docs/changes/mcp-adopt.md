@@ -36,7 +36,7 @@ The report of 2026-09-22 found the architecture already supported "an LLM builds
 picks it up live" through MCP, but three things stopped it from being one step: the agent had no
 way to connect a server itself, every call to a new server prompted as `destructive` with only a
 launch flag to relax it, and the OAuth callback port made the second live add of a session fail.
-Dylan runs the hub for months at a time; restarts are not an option.
+The operator runs the hub for months at a time; restarts are not an option.
 
 ## Evidence
 `internal/plugins/mcpremote`: lazy fetcher holds the port only during a sign-in, serializes

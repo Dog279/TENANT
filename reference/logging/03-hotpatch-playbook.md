@@ -1,6 +1,6 @@
 # 03 · Hot-patch playbook — plug a new element into the live box
 
-The situation: `tenant` is running (the R640, a Mac, wherever) and you are
+The situation: `tenant` is running (a server, a Mac, wherever) and you are
 adding a custom element — a sidecar, a quality loop, a watcher, a scheduled
 script — that should join the audited record now, without a `tenant` rebuild
 or restart. The log book makes that a drop-in: **a source registers itself the

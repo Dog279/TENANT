@@ -131,7 +131,7 @@ copy the one stdlib-only file in [`reference/logging/tenantlog.go`](../reference
 
 ```go
 log := tenantlog.New("deploy")                        // finds the hub via Tenant's config.json
-log.Info("build started", "host", "r640")             // live via the API, or the day's file when no hub is up
+log.Info("build started", "host", "build-box")        // live via the API, or the day's file when no hub is up
 slog.SetDefault(slog.New(log.Handler()))              // optional: the program's whole slog output too
 ```
 
@@ -142,7 +142,7 @@ mode, the hot-patch checklist for a live box — are beside it in
 **A script, cron job or sidecar on the box** — the CLI:
 
 ```bash
-tenant log deploy "build started" host=r640 commit=abc123
+tenant log deploy "build started" host=build-box commit=abc123
 tenant log deploy "build failed" --level error step=link
 tenant log --list
 ```
@@ -157,7 +157,7 @@ rest of the dashboard):
 ```bash
 curl -s -X POST http://127.0.0.1:8770/api/logs/watcher \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"level":"warn","msg":"disk at 91%","fields":{"host":"r640","pct":"91"}}'
+  -d '{"level":"warn","msg":"disk at 91%","fields":{"host":"build-box","pct":"91"}}'
 
 # or a bare text body:
 curl -s -X POST 'http://127.0.0.1:8770/api/logs/watcher?level=error' \
