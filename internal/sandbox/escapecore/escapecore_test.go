@@ -237,12 +237,9 @@ func TestPosixNetProbe_WorksUnderDash(t *testing.T) {
 // Windows backends run PowerShell; every case must render a PowerShell form that
 // fails closed (try/catch → exit 1) and never uses POSIX-only syntax.
 func TestCases_RenderPowerShellForms(t *testing.T) {
-	prev := usePowerShell
-	usePowerShell = true
-	defer func() { usePowerShell = prev }()
 	e := env{workDir: `C:\w`, secretDir: `C:\s`, secretFile: `C:\s\secret.txt`, legitFile: `C:\w\legit.txt`}
 	for _, c := range cases {
-		adv, legit := c.commands(e)
+		adv, legit := c.commands(e, true)
 		for _, cmd := range []string{adv, legit} {
 			for _, posix := range []string{"/dev/tcp", "cat ", "echo pwned >", "2>/dev/null", "exec "} {
 				if strings.Contains(cmd, posix) {

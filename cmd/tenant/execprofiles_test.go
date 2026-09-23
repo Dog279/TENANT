@@ -18,7 +18,10 @@ import (
 func TestSandboxRunnerRunsShellCommand(t *testing.T) {
 	p := resolveExecProfile("os-exec", "", "", "")
 	run := profileRunner(p, surfaceLocal, nil)
-	out, err := run(context.Background(), "echo hello-sandbox", 5*time.Second)
+	// 30s, not 5s: this asserts the command runs and returns its output, not its
+	// latency. On a loaded CI runner a cold PowerShell start (the host backend's
+	// shell on Windows) can exceed a 5s budget and flake the assertion.
+	out, err := run(context.Background(), "echo hello-sandbox", 30*time.Second)
 	if err != nil {
 		t.Fatalf("sandboxRunner returned error: %v", err)
 	}

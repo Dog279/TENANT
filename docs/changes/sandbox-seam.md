@@ -1,8 +1,9 @@
 # Change: the execution sandbox — per-surface exec backends, `exec_profiles`, refusal escalation (SEC-009/010/011)
 
 **Branch:** `feat/sandbox-seam` · **Status:** implemented and tested; the macOS backend is
-live-tested and red-teamed, the Linux and Windows backends are not yet validated live; not yet
-deployed. **Nothing changes until an operator sets `exec_profiles`.**
+live-tested and red-teamed, the Linux backend is live-tested and red-teamed under WSL2, and the
+Windows backend runs commands through WSL2 bubblewrap and is live-tested; not yet deployed.
+**Nothing changes until an operator sets `exec_profiles`.**
 **Tickets:** SEC-009 / TEN-345 (seam, host backend, profiles), SEC-010 / TEN-346 (restricted
 backends), SEC-011 / TEN-347 (escalation, dry-run, unattended deny).
 
@@ -325,23 +326,30 @@ every entry that should be confined.
 
 ### Enforcement by OS
 
-| | macOS: Seatbelt | Linux: bubblewrap | Windows: Job Object |
+| | macOS: Seatbelt | Linux: bubblewrap | Windows: WSL2 bubblewrap |
 |---|---|---|---|
-| **State** | Implemented, live-tested, red-teamed | Written; argv builder unit-tested; cross-compiles. **Not yet run live**: validate it with `tenant sandbox selftest` on a Linux host or under WSL2 | Job Object live. The dedicated low-privilege account, NTFS ACEs on the roots and the WFP egress filter are scaffolded, **TODO(TEN-346)** |
-| **Filesystem** | Read, write and deny roots enforced (deny also hides metadata) | Read, write and deny roots enforced. With `read_roots` set, only the system dirs and those roots are visible; without it, the whole host read-only minus the deny roots. `/tmp` is a private tmpfs | **Not enforced**; `probe` reports `none` |
-| **`network: none`** | Enforced: TCP, UDP/DNS, unix sockets, loopback | `--unshare-net` (fresh network namespace) | **Not enforced** |
-| **Limits** | Wall clock only. The command's process group is reaped after the run. No CPU, memory or PID caps | Wall clock only. Fresh PID namespace, `--die-with-parent`. No CPU, memory or PID caps | Wall clock, plus Job Object caps from `memory_mb`, `max_pids` and `cpu_seconds` (per process); kill-on-close |
-| **Env** | Allowlist. `HOME` and `TMPDIR` point into the work dir when there is one | Allowlist | Allowlist |
-| **`network: allowlist`** | Rejected in `exec_profiles`; the backend fails closed (no network) | Rejected; fails closed (`--unshare-net`) | Rejected; not enforced |
-| **Refusal detection** (escalation, dry-run) | Yes, heuristic: it keys on "Operation not permitted" | **Partial:** writes outside the roots (read-only file system) and network with the network disabled are attributed. A read of a masked deny root looks like a missing file and is not: that command just fails | **No** (nothing is refused yet) |
+| **State** | Implemented, live-tested, red-teamed | Implemented, live-tested (bubblewrap) and red-teamed under WSL2 | Implemented: `restricted` runs the command inside a WSL2 distro under bubblewrap. Live-tested. The native token/ACE/WFP path is still **TODO(TEN-346)**; the Job Object remains as a limits primitive |
+| **Filesystem** | Read, write and deny roots enforced (deny also hides metadata) | Read, write and deny roots enforced. With `read_roots` set, only the system dirs and those roots are visible; without it, the whole host read-only minus the deny roots. `/tmp` is a private tmpfs | Same bubblewrap enforcement as Linux, inside WSL. Windows paths in a policy are translated to their WSL mount (e.g. `C:\x` → `/mnt/c/x`), so roots may be written as Windows or Linux paths |
+| **`network: none`** | Enforced: TCP, UDP/DNS, unix sockets, loopback | `--unshare-net` (fresh network namespace) | `--unshare-net`, same as Linux |
+| **Limits** | Wall clock only. The command's process group is reaped after the run. No CPU, memory or PID caps | Wall clock only. Fresh PID namespace, `--die-with-parent`. No CPU, memory or PID caps | Wall clock only through the WSL boundary. The Job Object primitive enforces `memory_mb` / `max_pids` / `cpu_seconds` + kill-on-close, but is not composed with the WSL path yet |
+| **Env** | Allowlist. `HOME` and `TMPDIR` point into the work dir when there is one | Allowlist | WSL's default environment, **not** a strict allowlist yet (the wsl.exe boundary does not forward the host env); `probe` reports env `partial` |
+| **`network: allowlist`** | Rejected in `exec_profiles`; the backend fails closed (no network) | Rejected; fails closed (`--unshare-net`) | Rejected; fails closed (`--unshare-net`), same as Linux |
+| **Refusal detection** (escalation, dry-run) | Yes, heuristic: it keys on "Operation not permitted" | **Partial:** writes outside the roots (read-only file system) and network with the network disabled are attributed. A read of a masked deny root looks like a missing file and is not: that command just fails | Same as Linux (shares the bubblewrap attribution): writes and network attributed; a masked-root read is not |
 
 - **macOS:** usable today, within the gaps below.
 - **Linux:** needs `bwrap` on `PATH`. Without it, a `restricted` profile fails closed and the
   command is not run. If bubblewrap cannot create its namespaces on the host, every command
   fails, and `selftest` shows it as failed legitimate twins. Until `selftest` passes on your
   host, treat it as unverified.
-- **Windows:** filesystem and network are not enforced until the account, ACE and WFP work
-  lands. **Do not rely on the `restricted` backend on Windows yet.**
+- **Windows:** `restricted` runs the command inside a WSL2 distro under bubblewrap, so it gets
+  the same filesystem/network confinement as Linux. **The confined command runs as Linux `sh`,
+  not PowerShell**, and Windows paths are translated to their WSL mount. At startup the backend
+  finds a distro whose bubblewrap actually works (an operator override `TENANT_SANDBOX_WSL_DISTRO`,
+  then the default distro, then any installed distro, each namespace-self-checked); if none can
+  confine, `restricted` **fails closed** — the command is refused, never run unconfined. Because
+  the command runs in WSL, `tenant sandbox selftest` on Windows cannot drive it from the host and
+  says so; validate it with the Linux build inside WSL (`wsl -e /path/to/tenant sandbox selftest`),
+  which the sandbox package's live WSL tests also cover on every build.
 
 ### Known gaps
 - **No secret proxying.** A confined command that needs a credential either gets it raw

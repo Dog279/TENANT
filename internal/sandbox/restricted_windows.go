@@ -16,7 +16,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func init() { registerRestricted(newWindowsRestricted) }
+// The registered Windows restricted backend is the WSL-bubblewrap backend in
+// wsl_windows.go (all restricted → WSL). The Job Object backend below is kept as
+// a resource-limit primitive: it enforces job memory / CPU-time / active-process
+// caps and kill-on-close, which bubblewrap-through-WSL does not, and it is the
+// foundation the native-Windows confinement path (TEN-346) will build on. It is
+// exercised directly by tests, not resolved by `restricted`.
 
 // errNotImplemented marks a Windows confinement primitive that is scaffolded but
 // not yet built out. Run tolerates it (the Job Object limits still apply) and
@@ -44,22 +49,27 @@ const (
 // those are live so nothing is over-claimed.
 type windowsRestricted struct{}
 
-func newWindowsRestricted() (Backend, error) { return &windowsRestricted{}, nil }
+// newJobObjectBackend returns the Windows Job Object limits primitive. It is NOT
+// the registered restricted backend (that is WSL bubblewrap, wsl_windows.go);
+// tests construct it directly to validate the resource-limit enforcement, and
+// the native-Windows confinement path (TEN-346) will build on it.
+func newJobObjectBackend() Backend { return &windowsRestricted{} }
 
-func (*windowsRestricted) Name() string         { return "restricted" }
+func (*windowsRestricted) Name() string         { return "jobobject" }
 func (*windowsRestricted) Isolation() Isolation { return IsolationProcess }
 
 func (*windowsRestricted) Probe(context.Context) Capabilities {
 	return Capabilities{
-		Backend:    "restricted",
+		Backend:    "jobobject",
 		Isolation:  IsolationProcess,
 		Filesystem: EnforceNone, // no root is enforced until the NTFS ACEs land (TODO TEN-346)
 		Network:    EnforceNone, // WFP ALE_AUTH_CONNECT egress filter is TODO
 		Limits:     EnforceFull, // Job Object: job memory, active-process, CPU-time, kill-on-close
 		Env:        EnforceFull, // the env allowlist is honoured via materialize
-		Detail: "windows Job Object limits are live; pending (TODO TEN-346): a dedicated low-privilege " +
-			"account token (LogonUser/CreateRestrictedToken), NTFS ACEs on work/read/write roots, and a " +
-			"WFP ALE_AUTH_CONNECT egress filter — until then there is no filesystem-root or network enforcement",
+		Shell:      "powershell",
+		Detail: "windows Job Object limits primitive (not the restricted backend; restricted uses WSL): " +
+			"job memory, active-process, CPU-time and kill-on-close are enforced; no filesystem-root or " +
+			"network enforcement (native token/ACE/WFP work is TODO TEN-346)",
 	}
 }
 

@@ -31,8 +31,21 @@ func restrictedOrSkip(t *testing.T) {
 	if err != nil {
 		t.Skipf("no restricted backend on this OS: %v", err)
 	}
-	if c := b.Probe(context.Background()); c.Filesystem == sandbox.EnforceNone {
+	c := b.Probe(context.Background())
+	if c.Filesystem == sandbox.EnforceNone {
 		t.Skipf("the restricted backend enforces no filesystem roots here: %s", c.Detail)
+	}
+	// These tests author POSIX-sh commands with the host's native paths, so they
+	// only apply when the backend runs the host's native shell. On Windows the
+	// restricted backend runs sh inside WSL with Linux paths (Capabilities.Shell
+	// == "sh"), so its refusals are covered by the sandbox package's own live WSL
+	// tests instead.
+	native := "sh"
+	if runtime.GOOS == "windows" {
+		native = "powershell"
+	}
+	if c.Shell != "" && c.Shell != native {
+		t.Skipf("restricted backend runs %q, not this host's %q shell; its containment is tested in internal/sandbox", c.Shell, native)
 	}
 }
 

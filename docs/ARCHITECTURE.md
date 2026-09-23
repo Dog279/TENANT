@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-09-23; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 66 |
-| Go files | 733 |
-| Test files | 361 |
-| Production Go LOC | 104,734 |
-| Test Go LOC | 71,315 |
+| Go packages | 67 |
+| Go files | 739 |
+| Test files | 364 |
+| Production Go LOC | 106,139 |
+| Test Go LOC | 71,945 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -1091,13 +1091,21 @@ boundary. Operator guide and change record:
     read-only-filesystem writes and, with the network disabled,
     unreachable/unresolvable connects. Reads of a masked root look like
     ENOENT and are not attributed. No rlimits; Landlock is TODO(TEN-346).
-- `restricted`, Windows (`restricted_windows.go`): a Job Object.
-  - Memory, active-process and per-process CPU caps from `Limits`, and
-    always kill-on-close. The child starts suspended, is assigned to
-    the job, then resumed.
-  - The dedicated low-privilege account, NTFS ACEs and the WFP egress
-    filter are TODO(TEN-346) scaffolds. There is **no filesystem or
-    network enforcement** yet.
+- `restricted`, Windows (`wsl_windows.go`): the command runs inside a
+  WSL2 distro under bubblewrap, so it gets the same filesystem/network
+  confinement as Linux. Windows paths in a policy are translated to their
+  WSL mount (`C:\x` → `/mnt/c/x`); the command runs as Linux `sh`.
+  - Discovery (once per process) finds a distro whose bubblewrap actually
+    works: an operator override (`TENANT_SANDBOX_WSL_DISTRO`), then the
+    default distro, then any installed distro, each namespace-self-checked.
+    If none can confine, `restricted` **fails closed** — never unconfined.
+  - Limits are wall-clock only through the WSL boundary; env is WSL's
+    default, not a strict allowlist yet (`probe` reports both `partial`).
+- The Job Object (`restricted_windows.go`, `newJobObjectBackend`) is kept
+  as a resource-limit primitive — memory, active-process and per-process
+  CPU caps from `Limits`, plus kill-on-close — and is the base the native
+  token/ACE/WFP path (TODO(TEN-346)) will build on. It is not the
+  registered `restricted` backend.
 
 **Escape suite:** `escapecore` is a testing-free case table: read a
 secret outside the roots, write outside the roots, a `..` escape, and
@@ -1133,12 +1141,15 @@ persistence, deny-root metadata and background processes.
 - Deny roots always include Tenant's config, data and binary.
 - Unattended surfaces never escalate.
 
-**Verified:** green on macOS. The package also vets and builds for
-Linux and Windows. Seatbelt is live-tested: the escape suite contains
-4/4 (host 0/4), and the red-team suite is contained, with one recorded
-skip (macOS has no PID or memory cap). **Status:** the seam, `host` and
-Seatbelt are complete. Linux is written and argv-tested but not
-validated live. Windows has the Job Object only.
+**Verified:** green on macOS, Linux and Windows. Seatbelt is live-tested:
+the escape suite contains 4/4 (host 0/4), and the red-team suite is
+contained, with one recorded skip (macOS has no PID or memory cap). Linux
+bubblewrap is live-tested under WSL2 (`selftest` 4/4). Windows
+`restricted` runs through WSL2 bubblewrap and is live-tested (secret read,
+write-outside and network containment); the Job Object limits primitive
+has its own live tests. **Status:** the seam, `host`, Seatbelt, Linux
+bubblewrap and the Windows WSL backend are complete; native Windows
+confinement (token/ACE/WFP) remains TODO(TEN-346).
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
