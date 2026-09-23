@@ -1,0 +1,4 @@
+# False positives: "searchJiraIssuesUsingJql" is an Atlassian MCP tool name in
+# cron approver test fixtures; at 24 characters it reads as an Atlassian token.
+6f5860a6634c182d811f8589e0f1b22ffd60f686:cmd/tenant/cronmgr_test.go:atlassian-api-token:100
+61eb1819d21068ef3b5607f785e23b86d0316252:cmd/tenant/cronmgr_test.go:atlassian-api-token:102
