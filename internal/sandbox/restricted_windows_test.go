@@ -73,9 +73,16 @@ func TestJobObject_BasicAndExit(t *testing.T) {
 
 func TestJobObject_WorkDir(t *testing.T) {
 	dir := t.TempDir()
-	res := jobRun(t, "(Get-Location).Path", Policy{WorkDir: dir})
-	if !strings.Contains(strings.ToLower(res.Output), strings.ToLower(dir)) {
-		t.Fatalf("Get-Location = %q, want work dir %q", strings.TrimSpace(res.Output), dir)
+	// Prove the process ran with cwd == dir by a RELATIVE write landing there,
+	// rather than string-comparing paths: on some hosts t.TempDir() is an 8.3
+	// short name (C:\Users\RUNNER~1\…) while Get-Location resolves the long form
+	// (…\runneradmin\…), so a substring match spuriously fails.
+	res := jobRun(t, "Set-Content -LiteralPath wd_marker.txt -Value ok; Write-Output done", Policy{WorkDir: dir})
+	if res.ExitCode != 0 {
+		t.Fatalf("command failed: exit=%d out=%q", res.ExitCode, res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "wd_marker.txt")); err != nil {
+		t.Fatalf("work dir not honoured: relative write did not land in %q: %v (out=%q)", dir, err, res.Output)
 	}
 }
 
