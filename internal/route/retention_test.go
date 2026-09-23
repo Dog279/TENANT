@@ -129,10 +129,7 @@ func TestRecordTriggersDailyPruneGate(t *testing.T) {
 	// The append-path prune is deliberately asynchronous; poll briefly.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
+		raw := readLogRetry(t, path, deadline)
 		if !strings.Contains(string(raw), `"ancient"`) {
 			break
 		}
@@ -149,11 +146,31 @@ func TestRecordTriggersDailyPruneGate(t *testing.T) {
 	})
 	e.record(Decision{ID: "r2", Timestamp: now})
 	time.Sleep(50 * time.Millisecond) // give a (buggy) second prune time to fire
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := readLogRetry(t, path, time.Now().Add(2*time.Second))
 	if !strings.Contains(string(raw), `"ancient2"`) {
 		t.Fatal("prune ran again inside the 24h gate")
+	}
+}
+
+// readLogRetry reads path, tolerating the transient failure a read hits when it
+// lands exactly while a concurrent prune is swapping the log in
+// (replaceDecisionLog writes a temp file then os.Rename's it over path). On
+// Windows that overlap surfaces as a sharing violation ("The process cannot
+// access the file because it is being used by another process"); on any OS a
+// momentary miss is the rewrite in flight, not a real failure. Retry until the
+// deadline so the test measures pruning, not this race. The production readers
+// (decisionsForStats, the dashboard) already fall back on such an error; only
+// the test asserted strictly enough to flake.
+func readLogRetry(t *testing.T, path string, deadline time.Time) []byte {
+	t.Helper()
+	for {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			return raw
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
