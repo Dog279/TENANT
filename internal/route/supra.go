@@ -20,8 +20,12 @@ const (
 	// does not affect callers or policy code.
 	DefaultModel = "hf.co/SupraLabs/Supra-Router-51M-gguf:Q4_K_M"
 
-	DefaultTimeout   = 250 * time.Millisecond
-	defaultKeepAlive = "5m"
+	DefaultTimeout = 250 * time.Millisecond
+	// defaultKeepAlive is negative so Ollama keeps the router loaded
+	// indefinitely. "5m" evicted it between quiet spells (and overrode a
+	// server-wide OLLAMA_KEEP_ALIVE); every cold load (~2.7s) then blew the
+	// per-turn classify budget and routed turns fell back to the planner.
+	defaultKeepAlive = "-1s"
 	maxResponseBytes = 1 << 20
 )
 

@@ -72,7 +72,7 @@ $body = @{
   prompt = "Task: Say hello.`nAnalysis: "
   raw = $true
   stream = $false
-  keep_alive = "5m"
+  keep_alive = "-1s"
 } | ConvertTo-Json -Compress
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:11435/api/generate" -ContentType "application/json" -Body $body
 .\tenant.exe route status --config $ConfigDir --data $DataDir

@@ -150,8 +150,8 @@ func TestSupraClassifyUsesNativeOllamaRequest(t *testing.T) {
 	if !body.Raw || body.Stream {
 		t.Errorf("raw/stream = %v/%v, want true/false", body.Raw, body.Stream)
 	}
-	if body.KeepAlive != "5m" {
-		t.Errorf("keep_alive = %q, want 5m", body.KeepAlive)
+	if d, err := time.ParseDuration(body.KeepAlive); err != nil || d >= 0 {
+		t.Errorf("keep_alive = %q, want a negative duration (model stays resident)", body.KeepAlive)
 	}
 }
 
