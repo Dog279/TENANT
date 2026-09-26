@@ -3,10 +3,15 @@
 [![CI](https://github.com/Dog279/TENANT/actions/workflows/ci.yml/badge.svg)](https://github.com/Dog279/TENANT/actions/workflows/ci.yml)
 [![Security](https://github.com/Dog279/TENANT/actions/workflows/security.yml/badge.svg)](https://github.com/Dog279/TENANT/actions/workflows/security.yml)
 
-A **Go-native, single-binary agent framework** built on the Model Context
-Protocol (MCP). A planner↔tool loop with parallel fan-out, a layered memory
-system that learns from interaction traces, a modular plugin model, and both a
-terminal UI and a web dashboard — all in one statically-linked, CGO-free binary.
+A **Go-native, single-binary AI agent** you run yourself, built on the Model
+Context Protocol (MCP). A planner↔tool loop with parallel fan-out, a layered
+memory system that learns from interaction traces, first-party plugins built in,
+and both a terminal UI and a web dashboard — all in one statically-linked,
+CGO-free binary.
+
+Tenant is an **appliance, not a library**: you extend it with MCP servers (your
+tools, run out of process) and Agent Skills (your know-how), not by importing
+its Go packages. See [ADR 0001](docs/adr/0001-appliance-not-framework.md).
 
 Bring your own LLM: it runs against a **local** model (Ollama, llama.cpp, vLLM)
 or a **cloud** API (OpenAI, Anthropic, Z.ai, Grok) through one OpenAI-compatible

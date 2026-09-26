@@ -75,7 +75,7 @@ tenant setup --backend vllm --vllm-endpoint http://localhost:11434 \
 ```
 
 > Offline/dev with no model? `--backend echo` runs a deterministic stub (no real
-> inference, no real memory) — fine for poking at the framework, not for real use.
+> inference, no real memory) — fine for poking at Tenant, not for real use.
 
 ---
 

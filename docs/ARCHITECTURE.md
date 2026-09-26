@@ -92,7 +92,9 @@ record that operator run; they do not replace current automated verification.
 
 ## 1. What Tenant is
 
-**Implemented:** a Go-native MCP agent framework delivered as one binary. Model
+**Implemented:** a Go-native MCP agent delivered as one binary: an appliance,
+not a library ([ADR 0001](adr/0001-appliance-not-framework.md)); it is extended
+through MCP servers and Agent Skills, and its Go packages are not an API. Model
 routing supports both local endpoints (vLLM, Ollama, and llama.cpp through an
 OpenAI-compatible path) and shipped cloud providers (including OpenAI,
 Anthropic, Z.ai, and Grok). Deployments can remain fully local, but the product
@@ -1363,7 +1365,7 @@ unused/unconfigured tools mid-session without bouncing the gateway.
 **Every plugin is always visible** in `/tools`: configured ones load
 real; unconfigured ones register as **disabled stubs** that advertise
 their real specs and return a "needs setup" status if enabled+called
-(the framework runs even unauthenticated — like a 401). **`/skills`**
+(the tool mux runs even unauthenticated — like a 401). **`/skills`**
 manages the T4 library (list / add / enable / disable / forget /
 accept). **`/memory`** inspects + lightly edits the memory tiers:
 `stats`, `search <q>`, `facts [q]`, `recent [n]`, `forget fact:<id>|

@@ -140,7 +140,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `tenant — Go-native MCP agent framework
+	fmt.Fprint(os.Stderr, `tenant — Go-native MCP agent (an appliance: extend it with MCP servers and Agent Skills)
 
 USAGE
   tenant <command> [flags]
