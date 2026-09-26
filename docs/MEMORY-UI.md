@@ -170,3 +170,71 @@ Each panel × {loading, empty, error, partial} → what renders, in the existing
 - Profile resync toast: `Re-synthesizing the profile…`
 - Profile empty: `No profile yet.`
 - Profile unavailable: `Profile unavailable.`
+
+---
+
+## 4. Fact page (TEN-297)
+
+One fact, fully explained, at `/memory/facts/{id}`. Every row of the Facts list
+links to it (`Everything about it`) when the server's memory can explain facts.
+A plain GET page; its states are query params (`?turns=1`, `?compare=A,B`,
+`?edit=1`), its actions are forms that redirect back. The same data is JSON at
+`/api/memory/facts/{id}` for scripts.
+
+```
+┌─ Memory · Fact ──────────────────────────────────────────────────────────┐
+│ User lives in Munich.                        #7 · current · 0.90 (now 0.88)│
+│ [Edit] [No longer true] [It contradicts another fact] [Remove]           │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Where it came from                                                        │
+│ How it got here: learned from a conversation · glm-5 · 2026-09-26 12:00   │
+│ Learned 2026-09-01 10:00 · last confirmed 2026-09-20 08:12                │
+│   You: I moved to Munich   Agent: noted                  2026-09-01 10:00 │
+│   Conversation #12 is no longer in memory.                                │
+│ A source was deleted: conversation #10, by a forget on 2026-09-02.        │
+│ Show the full conversations from the archive                              │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Signals    Importance: 0.70 · Pinned: yes · Protected: no                 │
+│ Used: 4 retrieval(s), last 2026-09-25 18:40                               │
+│ Cited by the expert notes: About the user                                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Versions and conflicts                                                    │
+│ Replaced #5 (your edit): User lives in Berlin.                            │
+│   User lives in Berlin.      #5 · 2026-09-01 · replaced · learned from …  │
+│     Compare   Make this current again                                     │
+│   User lives in Munich.      #7 · 2026-09-26 · current · your edit        │
+│ #5 → #7   User lives in [-Berlin-] [+Munich+]                             │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Microcopy**
+- List link: `Everything about it`
+- Status words: `current`, `replaced`, `removed` (never superseded / tombstoned)
+- Actions on a current fact: `Edit`, `No longer true` (or `It's true again`),
+  `It contradicts another fact` (opens the conflict picker with this fact),
+  `Remove`. On a removed fact: `Restore`.
+- Editor: `Save as a new version` / `Cancel`. Empty: `A fact can't be empty.`
+  Saved: `Saved as a new version; the earlier one is kept below.`
+- Validity: `No longer true since <date>.` Notices: `Marked no longer true.` /
+  `Marked true again.` Errors: `Couldn't mark that fact no longer true: <msg>` /
+  `Couldn't mark that fact true again: <msg>`
+- Origin: `How it got here: <how> · <model> · <date>`, where how is one of
+  `learned from a conversation`, `merged during memory upkeep`, `your edit`,
+  `your restore of an earlier version`, `imported`, `saved by the agent`,
+  `saved by an MCP client`, `an eval run`. None recorded: `not recorded
+  (learned before Tenant kept this)`.
+- Sources: `No source conversations are recorded for this fact.` Missing:
+  `Conversation #N is no longer in memory.` Deleted: `A source was deleted:
+  conversation #N, by a forget on <date>.` (or `run record <id>`, `by retention`)
+- Archive: `Show the full conversations from the archive`. A turn it can't
+  rebuild says why: `the conversation is no longer in memory`, `the archive has
+  no record of it (pruned, or older than the archive)`, `the archive isn't
+  available here`.
+- Versions: `Replaced by #N (<how>): <text>`, `Replaced #N (<how>): <text>`,
+  `Compare`, `Make this current again`. Restored: `Restored as a new version.`
+- Use: `Used: N retrieval(s)`, `, last <date>`; `Cited by the expert notes:
+  <sections>`
+- Errors: `Couldn't load that fact: <msg>.`, `Couldn't save that: <msg>`,
+  `Couldn't restore that version: <msg>`, `Couldn't rebuild the conversations:
+  <msg>.` Without an inspector: `This server's memory can't explain individual
+  facts.`

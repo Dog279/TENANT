@@ -74,6 +74,7 @@
   </div>
   <div class="fact-actions">
     <a class="linkbtn" href="{{.ProvHref}}">{{if .Expanded}}Hide{{else}}Why does the agent know this?{{end}}</a>
+    {{if .DetailHref}}<a class="linkbtn" href="{{.DetailHref}}">Everything about it</a>{{end}}
     {{if $.Resolving}}
       {{if .Pinned}}<span class="tag">Selected</span>{{else if .ShowSelect}}<a class="linkbtn" href="{{.SelectHref}}">This conflicts with it</a>{{end}}
     {{else}}

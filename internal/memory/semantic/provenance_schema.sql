@@ -14,3 +14,15 @@ CREATE TABLE IF NOT EXISTS fact_source_tombstones (
     reason      TEXT    NOT NULL,   -- forget | retention
     PRIMARY KEY (fact_id, source_kind, source_id)
 );
+
+-- Fact origin (PRD-001 / TEN-297): which job put a fact here (distill,
+-- consolidate, import, remember, mcp, edit, restore) and, where a model did
+-- the work, which one. A side table like fact_signals, so the hot facts
+-- table and its scans are untouched; a fact from before this table simply
+-- has no origin row.
+CREATE TABLE IF NOT EXISTS fact_origin (
+    fact_id     INTEGER PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+    job         TEXT    NOT NULL,
+    model       TEXT,
+    recorded_at INTEGER NOT NULL
+);

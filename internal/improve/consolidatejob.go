@@ -179,6 +179,8 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 			Confidence:     maxConfidence(g.members),
 			EmbedderID:     string(embProfile.ID),
 			Embedding:      vecs[0],
+			OriginJob:      "consolidate",
+			OriginModel:    sumProf.Model,
 		})
 		if ierr != nil {
 			log.Warn("consolidate: insert merged fact failed", "err", ierr)

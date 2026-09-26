@@ -918,6 +918,7 @@ func seedTaskMemory(ctx context.Context, es *episodic.Store, ss *semantic.Store,
 			Confidence: conf,
 			EmbedderID: embedderID,
 			Embedding:  vec,
+			OriginJob:  "eval",
 		}); err != nil {
 			return err
 		}

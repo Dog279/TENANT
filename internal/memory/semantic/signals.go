@@ -83,7 +83,11 @@ const signalsCols = `fact_id, importance, confirm_count, access_count, last_acce
 // GetSignals returns the signals for a fact, or the neutral defaults
 // (importance=0.5) if the fact has no signals row yet. Never ErrNotFound.
 func (s *Store) GetSignals(ctx context.Context, id int64) (Signals, error) {
-	row := s.db.QueryRowContext(ctx,
+	return getSignals(ctx, s.db, id)
+}
+
+func getSignals(ctx context.Context, q dbtx, id int64) (Signals, error) {
+	row := q.QueryRowContext(ctx,
 		`SELECT `+signalsCols+` FROM fact_signals WHERE fact_id = ?`, id)
 	sig, err := scanSignals(row)
 	if errors.Is(err, ErrNotFound) {
@@ -130,10 +134,14 @@ func (s *Store) SignalsBatch(ctx context.Context, ids []int64) (map[int64]Signal
 
 // UpsertSignals writes (or replaces) a fact's full signals row.
 func (s *Store) UpsertSignals(ctx context.Context, sig Signals) error {
+	return upsertSignals(ctx, s.db, sig)
+}
+
+func upsertSignals(ctx context.Context, q dbtx, sig Signals) error {
 	if sig.FactID == 0 {
 		return errors.New("semantic: UpsertSignals requires FactID")
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := q.ExecContext(ctx, `
         INSERT INTO fact_signals
             (fact_id, importance, confirm_count, access_count, last_accessed,
              pinned, protected, valid_from, valid_to, project_id)

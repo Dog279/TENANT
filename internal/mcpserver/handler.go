@@ -322,6 +322,7 @@ func (h *handler) callFactAdd(ctx context.Context, args json.RawMessage) (json.R
 		Confidence: a.Confidence,
 		EmbedderID: "mcpserver",
 		Embedding:  vecs[0],
+		OriginJob:  "mcp",
 	})
 	if err != nil {
 		return toolErr("insert fact: " + err.Error())

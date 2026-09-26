@@ -240,6 +240,9 @@ type factRow struct {
 	Episodes []episodeRow
 	ProvErr  string
 	ProvHref string // expand, or collapse back to the list
+	// DetailHref opens the provenance inspector (TEN-297); empty when the
+	// memory control cannot explain facts.
+	DetailHref string
 
 	// delete (inline confirm → POST → undo banner)
 	Confirming   bool
@@ -355,6 +358,9 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			row.ProvHref = urlWith(memFactsURL, "q", query, "expand", strconv.FormatInt(f.ID, 10))
+		}
+		if _, ok := s.mem.(FactInspector); ok {
+			row.DetailHref = memFactsURL + "/" + strconv.FormatInt(f.ID, 10)
 		}
 
 		row.Confirming = confirm == f.ID

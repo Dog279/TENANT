@@ -49,6 +49,7 @@ type ssrTemplates struct {
 	memRemoved    *template.Template
 	memTemporal   *template.Template
 	memProvenance *template.Template
+	memFact       *template.Template // provenance inspector (TEN-297)
 	cron          *template.Template // recurring-job admin section
 	keys          *template.Template // write-only API-key settings (TEN-145)
 	eval          *template.Template // eval & quality page (TEN-201)
@@ -75,6 +76,7 @@ func parseSSR() *ssrTemplates {
 		memRemoved:    must("templates/layout.html", "templates/memnav.html", "templates/memory_removed.html"),
 		memTemporal:   must("templates/layout.html", "templates/memnav.html", "templates/memory_temporal.html"),
 		memProvenance: must("templates/layout.html", "templates/memnav.html", "templates/memory_provenance.html"),
+		memFact:       must("templates/layout.html", "templates/memnav.html", "templates/memory_fact.html"),
 		cron:          must("templates/layout.html", "templates/cron.html"),
 		keys:          must("templates/layout.html", "templates/keys.html"),
 		eval:          must("templates/layout.html", "templates/eval.html"),
@@ -111,6 +113,7 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /memory/facts/removed", s.handleMemoryRemovedPage)
 	mux.HandleFunc("GET /memory/facts/temporal", s.handleMemoryTemporalPage)
 	mux.HandleFunc("GET /memory/provenance", s.handleMemoryProvenancePage)
+	mux.HandleFunc("GET /memory/facts/{id}", s.handleMemoryFactPage) // the provenance inspector (TEN-297)
 
 	mux.HandleFunc("POST /tools/{name}/toggle", s.handleToolToggleForm)
 	mux.HandleFunc("POST /plugins/{label}/toggle", s.handlePluginToggleForm)
@@ -126,6 +129,10 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /memory/facts/resolve", s.handleMemoryResolveForm)
 	mux.HandleFunc("POST /memory/facts/{id}/delete", s.handleMemoryFactDeleteForm)
 	mux.HandleFunc("POST /memory/facts/{id}/restore", s.handleMemoryFactRestoreForm)
+	mux.HandleFunc("POST /memory/facts/{id}/edit", s.handleMemoryFactEditForm)
+	mux.HandleFunc("POST /memory/facts/{id}/invalidate", s.handleMemoryFactInvalidateForm)
+	mux.HandleFunc("POST /memory/facts/{id}/revalidate", s.handleMemoryFactRevalidateForm)
+	mux.HandleFunc("POST /memory/facts/{id}/restore-version", s.handleMemoryFactRestoreVersionForm)
 }
 
 func (s *Server) handleSSRCSS(w http.ResponseWriter, _ *http.Request) {

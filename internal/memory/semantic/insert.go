@@ -9,11 +9,35 @@ import (
 	"time"
 )
 
+// dbtx is what the store's statements run on: the database, or a
+// transaction when several must land together.
+type dbtx interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // Insert writes a new Fact and returns its assigned ID. Required:
 // AgentID, Fact (the claim text), EmbedderID, Embedding. Defaults:
 // Visibility = private, Confidence = 1.0 if 0, FirstSeen / LastConfirmed
-// = now if zero.
+// = now if zero. The fact and its origin record land together.
 func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("semantic: insert: %w", err)
+	}
+	defer tx.Rollback()
+	id, err := insertFact(ctx, tx, f)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("semantic: insert: %w", err)
+	}
+	f.ID = id
+	return id, nil
+}
+
+func insertFact(ctx context.Context, q dbtx, f *Fact) (int64, error) {
 	if f == nil {
 		return 0, errors.New("semantic: Insert nil fact")
 	}
@@ -56,7 +80,7 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 		supersededBy = f.SupersededBy
 	}
 
-	res, err := s.db.ExecContext(ctx, `
+	res, err := q.ExecContext(ctx, `
         INSERT INTO facts
             (agent_id, visibility, fact, source_episodes, source_run_ids, confidence,
              first_seen, last_confirmed, superseded_by, embedder_id, embedding, tombstoned)
@@ -75,7 +99,13 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("semantic: lastinsertid: %w", err)
 	}
-	f.ID = id
+	if f.OriginJob != "" {
+		if _, err := q.ExecContext(ctx,
+			`INSERT OR REPLACE INTO fact_origin (fact_id, job, model, recorded_at) VALUES (?, ?, ?, ?)`,
+			id, f.OriginJob, nullString(f.OriginModel), time.Now().UTC().Unix()); err != nil {
+			return 0, fmt.Errorf("semantic: record origin: %w", err)
+		}
+	}
 	return id, nil
 }
 
@@ -83,7 +113,11 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 // Tombstoned and superseded facts are returned (audit path); Search
 // filters them out.
 func (s *Store) Get(ctx context.Context, id int64) (*Fact, error) {
-	row := s.db.QueryRowContext(ctx, `
+	return getFact(ctx, s.db, id)
+}
+
+func getFact(ctx context.Context, q dbtx, id int64) (*Fact, error) {
+	row := q.QueryRowContext(ctx, `
         SELECT id, agent_id, visibility, fact, source_episodes, source_run_ids, confidence,
                first_seen, last_confirmed, superseded_by, embedder_id, embedding, tombstoned
         FROM facts WHERE id = ?

@@ -204,6 +204,7 @@ func importClaims(ctx context.Context, emb model.Embedder, store *semantic.Store
 				Confidence: 1.0,
 				EmbedderID: p.EmbedderID,
 				Embedding:  vecs[j],
+				OriginJob:  "import",
 			})
 			if ierr != nil {
 				return res, fmt.Errorf("insert fact: %w", ierr)
