@@ -1207,18 +1207,32 @@ service's token and data files), the status view, and the daily prune in `serve`
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on
 the `echo` backend (default); `--backend vllm` for production.
 
+**Dispatch and help (TEN-320).** Every subcommand is declared once in
+`cliregistry.go`, as an `internal/cmdreg` command with its names, section, summary,
+usage rows and handler. `main` dispatches through that registry. `tenant help`
+(the jobs a new operator does first), `tenant help all` (every command, by
+section), `tenant help <command>` and `tenant completion bash|zsh|fish|powershell`
+all render from it, so nothing dispatches without being documented. A test holds
+every name the old `switch` accepted. The TUI's slash commands use the same
+registry type (§5.14).
+
 **Subcommands:**
 - `tenant version`
 - `tenant chat` — interactive agent loop; one stdin line = one
   `agent.Turn`; conversation to stdout, logs to stderr, memory persists
 - `tenant distill` — one distillation pass via `improve.DistillJob`
   (real cursor persistence in `tenant_meta.db`)
-- `tenant serve [--distill-every 30m] [--tick 1m]` — the long-running
-  home for background self-improvement: registers DistillJob on the
-  scheduler and ticks it on a cadence, so learning happens without
-  manual `tenant distill`. SIGINT/SIGTERM shuts down cleanly (drains
-  the in-flight job, prints run history). Scoped to the improve
-  scheduler; a full always-on agent server is still future.
+- `tenant serve` — the headless 24/7 hub (TEN-194): the same memory, tools
+  and approvals as the TUI, driven from the web dashboard (chat, approvals,
+  settings; `--dashboard-addr`, `--dashboard=false`). It also runs:
+  - self-improvement (distill, skill induction, consolidation, profile; the
+    nightly eval with `--eval-every`);
+  - cron jobs and the daily retention prune;
+  - remote MCP connectors;
+  - the peer listener when federation is on;
+  - the Discord relay when enabled.
+
+  SIGINT/SIGTERM shuts down in order.
 - `tenant os "<task>" [--allow-exec]` — agent inspects the machine
   (sysinfo/read/list/processes) + runs shell commands (gated; off
   unless `--allow-exec`, destructive commands hard-denied). §5.12g.
@@ -1332,6 +1346,17 @@ transitive deps. Signed off by the owner: hand-rolling a TUI (resize,
 scrollback, input, ANSI) would be a large permanent maintenance burden,
 and Bubble Tea is the industry-standard Go choice. Still pure Go, no
 CGO — the single-binary story holds.
+
+**Slash commands (TEN-303).** Each feature owns its commands in its own file
+(`cmd_models.go`, `cmd_memory.go`, `cmd_skills.go`, `cmd_peers.go`,
+`cmd_approvals.go`, `cmd_setup.go`, `cmd_research.go`, `cmd_agents.go`,
+`cmd_cron.go`, `cmd_session.go`). A file declares its handlers and help rows
+together in an `xxxCommands()` list. `cmd_registry.go` builds an
+`internal/cmdreg` registry from those lists, and `handleSlash` is a lookup in it.
+`/help`, `/help <category>` and `/help all` render from the same registry, and
+bare `/help` opens with a short "Start here" list before the categories. Adding
+a command means adding it to its feature's list; adding a feature is one line in
+`slashFeatures`.
 
 **Design:** the agent is constructed with `Stream: true` + an
 `Observer` that pushes `agent.Event`s into a buffered channel; the

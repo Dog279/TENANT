@@ -180,7 +180,11 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `attach [URL]` | watch a running hub's activity feed (`--follow`, `--source discord`) |
 | `log <source> "<msg>" [k=v…]` | file a line into the log book; the folder + dashboard tab appear on first use |
 
-Run `tenant` with no arguments for the full list and flags.
+`tenant help` lists the jobs to start with, `tenant help all` every command,
+`tenant help <command>` one command, and `tenant <command> --help` its flags.
+Tab completion: `tenant completion bash|zsh|fish|powershell` (see `tenant help
+completion` for how to load it). Inside the TUI, `/help` does the same for the
+slash commands.
 
 ## Repository layout
 
