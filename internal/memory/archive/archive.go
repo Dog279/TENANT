@@ -422,6 +422,10 @@ func (f Filter) matches(e Event) bool {
 	return true
 }
 
+// SessionFileName is the file a session's events are archived under, in every
+// month directory the session spans.
+func SessionFileName(sessionID string) string { return sanitizeSession(sessionID) + ".jsonl" }
+
 // sanitizeSession strips path-traversal characters from a session ID.
 // We don't get to trust caller-supplied IDs even though they're
 // internal — a stray "../" turns the archive write into a path

@@ -117,6 +117,8 @@ func main() {
 		err = cmdDoctor(ctx, os.Args[2:])
 	case "backup":
 		err = cmdBackup(ctx, os.Args[2:])
+	case "privacy":
+		err = cmdPrivacy(ctx, os.Args[2:])
 	case "security":
 		err = cmdSecurity(ctx, os.Args[2:])
 	case "permissions":
@@ -181,6 +183,9 @@ COMMANDS
   backup [create|verify|restore]
                            one-file backup of the config + data dirs (--encrypt carries secrets);
                            verify checks it end to end; restore swaps it in, keeping the old dirs
+  privacy [status|retention|prune|forget|sessions|export]
+                           retention by data class; remove a session, fact, skill, text or connector
+                           with a preview first; export what Tenant knows
   security audit           inspect effective security posture (human or --json)
   permissions effective    show composed authority by agent and surface
   permissions preset       apply safe, balanced, or full category permissions

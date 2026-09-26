@@ -80,6 +80,9 @@ type attachmentIngestor struct {
 	log       *slog.Logger
 	anyHost   bool // tests only: permit non-Discord-CDN URLs (httptest)
 	sweepOnce sync.Once
+	// keep is the configured retention (privacy.retention_days.relay_inbox,
+	// TEN-309); nil means relayInboxRetention, and 0 keeps files forever.
+	keep func() time.Duration
 }
 
 func newAttachmentIngestor(dataDir string, log *slog.Logger) *attachmentIngestor {
@@ -239,7 +242,14 @@ func uniquePath(dir, name string) string {
 // emptied date dirs. Best-effort: the inbox filling with stale files is an
 // annoyance, not a failure worth surfacing to the operator.
 func (ai *attachmentIngestor) sweep() {
-	cutoff := time.Now().Add(-relayInboxRetention)
+	keep := relayInboxRetention
+	if ai.keep != nil {
+		keep = ai.keep()
+	}
+	if keep <= 0 {
+		return
+	}
+	cutoff := time.Now().Add(-keep)
 	days, err := os.ReadDir(ai.dir)
 	if err != nil {
 		return

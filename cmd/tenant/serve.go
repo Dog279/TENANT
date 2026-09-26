@@ -95,6 +95,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hub.Start(ctx)
+	startRetention(ctx, c, log.With("source", "privacy"))
 
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) {

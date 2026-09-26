@@ -42,6 +42,9 @@ var schemaSQL string
 //go:embed signals_schema.sql
 var signalsSchemaSQL string
 
+//go:embed provenance_schema.sql
+var provenanceSchemaSQL string
+
 const (
 	VisibilityPrivate = "private"
 	VisibilityShared  = "shared"
@@ -202,6 +205,11 @@ func open(path string, prepare bool) (*Store, error) {
 	if _, err := db.ExecContext(context.Background(), signalsSchemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("semantic: init signals schema: %w", err)
+	}
+	// TEN-309: removed-source records, additive like the signals table.
+	if _, err := db.ExecContext(context.Background(), provenanceSchemaSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("semantic: init provenance schema: %w", err)
 	}
 	return &Store{db: db}, nil
 }

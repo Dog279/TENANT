@@ -96,6 +96,15 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
   holds the data-dir lock (`<data>/.tenant.lock`) or a dashboard answers.
   A restore also brings back the instance identity (peer key, paired peers,
   dashboard token, relay setup).
+- **Retention and deletion** (`tenant privacy`, TEN-309). Every data class can
+  have a retention period (`privacy.retention_days`); nothing but the relay
+  inbox (30 days) is pruned until one is set. `tenant privacy forget` deletes
+  rows for real, on a `secure_delete` connection, optimizes the full-text
+  indexes, truncates the WAL, and rewrites archive files without the removed
+  events. It also removes what was derived only from them. Facts that lose one
+  of several sources record the removal in `fact_source_tombstones`. It cannot
+  reach backups already made, the log book before its own retention, or a soul
+  you wrote; its preview says so.
 - Outbound reads also disclose data: model calls send prompt/tool context;
   search sends queries; browser/Jina reads send URLs; integrations send resource
   identifiers and credentials. The complete flows are in `docs/DATAFLOW.md`.

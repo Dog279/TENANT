@@ -1182,6 +1182,24 @@ the live ones aside and the restored ones in, undoing on failure. `internal/data
 guard: every command holds `<data>/.tenant.lock` shared (`flock` / `LockFileEx`), `Restore`
 exclusively.
 
+### 5.13b `internal/privacy` — Retention, forgetting, export
+
+`tenant privacy` (TEN-309). One planner serves a **forget** (a session, episode, fact, skill,
+text, a date, an archive month) and a **retention prune** (each class older than
+`privacy.retention_days`): it selects what goes, then works out what follows. Facts every
+source of which goes, the run records of forgotten turns, SME section versions citing only
+removed facts, the turn's archive events (the user message up to the next one), and, for
+text, matching archive events, skills, skill history and profile lines. A retention prune
+keeps distilled facts. A kept fact that loses a source records it in
+`fact_source_tombstones` (`semantic.Store.RemovedSources`). `Plan.Items` is the preview;
+`Apply` selects again (so rows written since the preview are covered), then deletes store by
+store in single transactions, facts first. It works on `secure_delete` connections, then
+runs an FTS `optimize` and `wal_checkpoint(TRUNCATE)`. Archive files are rewritten through
+temp + rename, starting over if the live archive appended meanwhile. `Export` writes each
+table as JSON Lines (no embeddings) plus profiles, souls, research and the archive.
+`cmd/tenant` adds connector forgetting (`credentials.json` `skill:<name>:*` entries plus each
+service's token and data files), the status view, and the daily prune in `serve` and the TUI.
+
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on

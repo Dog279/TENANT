@@ -106,6 +106,12 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
   Encrypt it (`--encrypt`, or `--recipient` with an [age](https://age-encryption.org)
   public key) and it carries your credentials too. See
   [docs/changes/backup-restore.md](docs/changes/backup-restore.md).
+- `tenant privacy` shows every data class, how long it is kept, and how to
+  remove it. Set a retention period per class, forget a session, a fact, a skill
+  or a piece of text everywhere it appears (with a preview, and real deletion:
+  rows, search index and archive events), remove a connected service's stored
+  credentials, or export everything as readable files. See
+  [docs/changes/privacy-controls.md](docs/changes/privacy-controls.md).
 - Every subsystem logs to **`<data>/logs/<source>/YYYY-MM-DD.log`** — one folder
   per subsystem (turns, sub-agents, approvals, discord, cron, …), plain text, and
   the same lines feed the dashboard's Activity tab (one tab per folder). Adding a
@@ -156,6 +162,7 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `chat` | headless agent loop (one stdin line = one turn) |
 | `serve` | background self-improvement (distillation) on a cadence |
 | `doctor [--fix]` | diagnose (and repair) the setup |
+| `privacy [status\|retention\|prune\|forget\|sessions\|export]` | see what Tenant keeps and for how long; set retention per data class; forget a session, fact, skill, text or connector with a preview first; export what Tenant knows |
 | `backup [create\|verify\|restore]` | one-file backup of every store, the archive and your config (`--encrypt` or `--recipient age1…` also carries credentials); `verify` checks it end to end; `restore` swaps it in and keeps the old directories |
 | `security audit` | report what each live surface (local, Discord relay, iMessage) may do without approval, the Chrome process sandbox, listeners and secret-file protection; exits non-zero on a critical finding |
 | `web` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `os` | one-shot agent turn scoped to one plugin (read-by-default; `--allow-*` to act) |

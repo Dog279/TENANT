@@ -147,14 +147,16 @@ type discordRelayManager struct {
 	// gated tool the Discord agent reaches. Its "ask" backend is askOperator (the
 	// button approver). Stable across Reconfigure (only the approver swaps), so
 	// /relay permissions modes survive a token hot-swap. nil ⇒ pre-TEN-231 path.
-	broker   *approvalBroker
-	token    string
-	dataDir  string // enables attachment ingest into <dataDir>/relay-inbox when set
-	log      *slog.Logger
-	notify   func(string)
-	ingest   func(text string) // surface inbound DMs in the shared activity feed (TUI + dashboard), TEN-232
-	degraded func() bool       // when true, the model is on the echo fallback; relay refuses turns
-	persist  func(enabled bool, operatorID string, allowExec bool) error
+	broker  *approvalBroker
+	token   string
+	dataDir string // enables attachment ingest into <dataDir>/relay-inbox when set
+	// inboxKeep is the relay-inbox retention (TEN-309); nil = 30 days.
+	inboxKeep func() time.Duration
+	log       *slog.Logger
+	notify    func(string)
+	ingest    func(text string) // surface inbound DMs in the shared activity feed (TUI + dashboard), TEN-232
+	degraded  func() bool       // when true, the model is on the echo fallback; relay refuses turns
+	persist   func(enabled bool, operatorID string, allowExec bool) error
 
 	// buildFn rebuilds the Discord agent + gateway internals with a fresh token.
 	// Set at the serve wiring point so Reconfigure can hot-swap after a live
@@ -232,6 +234,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
 		// and the turn text carries the saved-path manifest.
 		rl.files = newAttachmentIngestor(m.dataDir, m.log)
+		rl.files.keep = m.inboxKeep
 		// External-automation approvals: ext-approve button verdicts land under
 		// <dataDir>/approvals/<ns> (extapprove.go).
 		rl.dataDir = m.dataDir

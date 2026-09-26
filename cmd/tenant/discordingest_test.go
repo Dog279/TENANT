@@ -157,6 +157,34 @@ func TestInboxSweep(t *testing.T) {
 	}
 }
 
+// The configured relay_inbox retention (TEN-309) replaces the 30-day default:
+// a shorter period prunes sooner, and 0 (forever) prunes nothing.
+func TestInboxSweepHonorsConfiguredRetention(t *testing.T) {
+	ai := newAttachmentIngestor(t.TempDir(), nil)
+	dir := filepath.Join(ai.dir, "2026-09-20")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "week-old.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-7 * 24 * time.Hour)
+	if err := os.Chtimes(file, past, past); err != nil {
+		t.Fatal(err)
+	}
+	ai.keep = func() time.Duration { return 0 }
+	ai.sweep()
+	if _, err := os.Stat(file); err != nil {
+		t.Fatal("a relay file was pruned while retention is forever")
+	}
+	ai.keep = func() time.Duration { return 3 * 24 * time.Hour }
+	ai.sweep()
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatal("a relay file outlived a 3-day retention")
+	}
+}
+
 // --- relay flow -----------------------------------------------------------
 
 // Operator DM with an attachment: the turn text carries both the operator's
