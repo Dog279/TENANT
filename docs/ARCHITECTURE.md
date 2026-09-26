@@ -153,6 +153,8 @@ episodic + semantic, exposes them to external MCP clients.
 | T5 Archive | JSONL (append-only) | `%LOCALAPPDATA%\tenant\archive\YYYY-MM\{session}.jsonl` | write-once audit/replay |
 | Scheduler cursors | SQLite KV | `%LOCALAPPDATA%\tenant\tenant_meta.db` | tiny durable state |
 | Log book | plain text, one line per entry | `%LOCALAPPDATA%\tenant\logs\{source}\YYYY-MM-DD.log` | one folder per subsystem, human-readable, 30-day retention; see `docs/LOGGING.md` |
+| Data-dir lock | empty file, OS lock | `%LOCALAPPDATA%\tenant\.tenant.lock` | held shared by every command, exclusively by `backup restore` |
+| Backup | tar + gzip (+ age) with `MANIFEST.json` first | wherever `tenant backup --out` puts it | one consistent, verifiable copy of both dirs; see §5.13a |
 
 Config dir = `os.UserConfigDir()` (Roaming on Windows / `~/.config` Linux /
 `~/Library/Application Support` macOS). Data dir = LOCALAPPDATA / `$XDG_DATA_HOME`
@@ -1160,6 +1162,25 @@ write-outside and network containment); the Job Object limits primitive
 has its own live tests. **Status:** the seam, `host`, Seatbelt, Linux
 bubblewrap and the Windows WSL backend are complete; native Windows
 confinement (token/ACE/WFP) remains TODO(TEN-346).
+
+### 5.13a `internal/backup` + `internal/datalock` — Backup, verify, restore
+
+`tenant backup` (TEN-305). `Create` walks the config and data dirs, captures each SQLite
+store with `VACUUM INTO` on a read-only connection (read-write only to recover a store a
+crash left mid-transaction), each `.jsonl` log up to its last complete record, and every
+other file as is, in reference order: facts and skills, then the distill cursor, episodes,
+runs, and the archive last. The snapshots are staged in a private directory inside the data
+dir and streamed out as a tar whose first entry, `MANIFEST.json`, names every later entry
+with its size, SHA-256 and kind; gzip, then age (`filippo.io/age`, scrypt passphrase or
+X25519 recipients) when encrypting. Managed secrets go only into encrypted backups. `Reader`
+checks each entry against the manifest as it streams (name, order, type, size, checksum, the
+end of the stream). `Verify` unpacks into a scratch dir and adds `integrity_check`, a JSON
+parse of every log, and a schema comparison against stores this binary builds in a scratch
+dir (`cmd/tenant` supplies them): an unknown column means a newer Tenant, which `Restore`
+refuses without `--force`. `Restore` unpacks and checks beside the live dirs, then renames
+the live ones aside and the restored ones in, undoing on failure. `internal/datalock` is the
+guard: every command holds `<data>/.tenant.lock` shared (`flock` / `LockFileEx`), `Restore`
+exclusively.
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
