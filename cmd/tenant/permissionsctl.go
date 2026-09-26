@@ -37,6 +37,7 @@ type effectivePermissions struct {
 	Surface          string                       `json:"surface"`
 	Preset           string                       `json:"preset,omitempty"`
 	Categories       map[string]effectiveCategory `json:"categories"`
+	ToolRules        map[string]string            `json:"tool_rules"`
 	ConfiguredTools  []string                     `json:"configured_tool_groups"`
 	ToolOverrides    map[string]bool              `json:"tool_overrides"`
 	Execution        effectiveExecution           `json:"execution"`
@@ -83,6 +84,7 @@ func cmdPermissionsEffective(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	c.auditOnly = true // a report: it must not create or tighten anything
 	if err := c.resolve(); err != nil {
 		return err
 	}
@@ -138,50 +140,40 @@ func cmdPermissionsPreset(args []string) error {
 	return nil
 }
 
+// composeEffectivePermissions reports what a surface's approval broker would
+// decide, built the way the runtime builds it (TEN-338): the surface's real
+// constructor defaults, then the launch --*-allow-* flags (local only), then the
+// saved modes, then the tool rules Confirm checks first, then the surface's
+// lock (the Discord exec mode), which outranks all of them. Pass the flags the
+// surface is launched with: an audit run without --os-allow-exec cannot know
+// that a running `tenant serve --os-allow-exec` has it.
 func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string) (effectivePermissions, error) {
 	normalized, err := normalizePermissionSurface(surface)
 	if err != nil {
 		return effectivePermissions{}, err
 	}
-
-	defaults := modeAsk.String()
-	source := "local default"
-	var overrides map[string]string
-	var toolOverrides map[string]bool
-	switch normalized {
-	case permissionSurfaceLocal:
-		stg, loadErr := loadSettings(c.cfgDir, c.agent)
-		if loadErr != nil {
-			return effectivePermissions{}, loadErr
-		}
-		overrides = stg.Permissions
-		toolOverrides = stg.Tools
-	case permissionSurfaceDiscord:
-		overrides = c.lc.Relay.Permissions
-		source = "discord default"
-	case permissionSurfaceIMessage:
-		defaults = modeDeny.String()
-		source = "imessage deny-by-default"
-		overrides = c.lc.IMessage.Permissions
+	if pf == nil {
+		pf = &pluginFlags{}
 	}
-
-	categories := make(map[string]effectiveCategory, len(catOrder))
-	for _, category := range catOrder {
-		categories[category] = effectiveCategory{Mode: defaults, Source: source}
-		if raw, ok := overrides[category]; ok {
-			if mode, valid := parseMode(raw); valid {
-				categories[category] = effectiveCategory{Mode: mode.String(), Source: normalized + " override"}
-			}
-		}
+	lc := c.lc
+	if lc == nil {
+		lc = &launchConfig{}
 	}
-	// Discord has an outer tool-surface kill switch in addition to its broker.
-	// Compose it here so an "allow" mode never overstates effective authority.
-	if normalized == permissionSurfaceDiscord && !c.lc.Relay.AllowExec {
-		for _, category := range []string{catExec, catWrite, catDestructive, catSandbox} {
-			categories[category] = effectiveCategory{Mode: modeDeny.String(), Source: "relay.allow_exec=false"}
-		}
+	stg, err := loadSettings(c.cfgDir, c.agent)
+	if err != nil {
+		return effectivePermissions{}, err
 	}
+	rules := newToolRules()
+	rules.Load(stg.ToolRules)
 
+	var locked func(action, cat string) bool
+	lockSource := ""
+	if normalized == permissionSurfaceDiscord && !lc.Relay.AllowExec {
+		locked, lockSource = relayExecLocks, "relay.allow_exec=false"
+	}
+	categories := foldAuthority(surfaceModes(normalized, pf, stg, lc), rules, locked, lockSource)
+
+	toolOverrides := stg.Tools
 	if toolOverrides == nil {
 		toolOverrides = map[string]bool{}
 	}
@@ -190,6 +182,7 @@ func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string
 		Agent:           c.agent,
 		Surface:         normalized,
 		Categories:      categories,
+		ToolRules:       rules.Snapshot(),
 		ConfiguredTools: tools,
 		ToolOverrides:   toolOverrides,
 		Execution: effectiveExecution{
@@ -197,13 +190,159 @@ func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string
 			Enabled: containsString(tools, "os") && categories[catExec].Mode != modeDeny.String(),
 		},
 		RemoteMCP: effectiveRemoteMCP{
-			Servers: len(c.lc.MCPRemotes) + len(pf.mcpRemotes), TrustAnnotations: pf.mcpTrustAnnotations,
+			Servers: len(lc.MCPRemotes) + len(pf.mcpRemotes), TrustAnnotations: pf.mcpTrustAnnotations,
 			AllowWrite: pf.mcpAllowWrite,
 		},
 		AvailablePresets: []string{"safe", "balanced", "full"},
 	}
 	report.Preset = matchingPermissionPreset(categories)
 	return report, nil
+}
+
+// surfaceModes builds the surface's broker the way the runtime does (its
+// constructor, seedFromFlags on the local surface, then loadModes) and names
+// the layer that set each category's mode.
+func surfaceModes(surface string, pf *pluginFlags, stg *settings, lc *launchConfig) map[string]effectiveCategory {
+	var (
+		b                 *approvalBroker
+		base, savedSource string
+		saved             map[string]string
+		flags             map[string]string
+	)
+	switch surface {
+	case permissionSurfaceDiscord:
+		b, base = newDiscordApprovalBroker(nil), "discord default"
+		saved, savedSource = lc.Relay.Permissions, "relay.permissions"
+	case permissionSurfaceIMessage:
+		b, base = newOffsiteApprovalBroker(nil, newApprovalBroker(nil)), "imessage deny-by-default"
+		saved, savedSource = lc.IMessage.Permissions, "imessage.permissions"
+	default:
+		b, base = newApprovalBroker(nil), "local default"
+		saved, savedSource = stg.Permissions, "settings permissions"
+		flags = launchFlagGrants(pf)
+		b.seedFromFlags(pf)
+	}
+	b.loadModes(saved)
+	modes, persisted := b.modesPublic(), savedModes(saved)
+	out := make(map[string]effectiveCategory, len(catOrder))
+	for _, cat := range catOrder {
+		source := base
+		if flag, ok := flags[cat]; ok {
+			source = "launch flag " + flag
+		}
+		if _, ok := persisted[cat]; ok {
+			source = savedSource
+		}
+		out[cat] = effectiveCategory{Mode: modes[cat], Source: source}
+	}
+	return out
+}
+
+// openCategories also take action ids actionCategories does not list:
+// destructive is where every unknown id lands (a remote connector's tools, a
+// plugin's own ids) and web takes any web_ id. A tool rule for those ids cannot
+// be checked here, so the category mode stands for them.
+var openCategories = map[string]bool{catDestructive: true, catWeb: true}
+
+// foldAuthority applies what Confirm checks before the category mode — the
+// surface lock, then tool rules — to each action a category holds, and reports
+// the most permissive result: the authority a caller can actually reach in
+// that category. The source names the layer that produced it.
+func foldAuthority(modes map[string]effectiveCategory, rules *toolRules, locked func(action, cat string) bool, lockSource string) map[string]effectiveCategory {
+	actions := map[string][]string{}
+	for action, cat := range actionCategories {
+		actions[cat] = append(actions[cat], action)
+	}
+	type outcome struct {
+		effectiveCategory
+		priority int // breaks a tie in mode: the lock, then the category mode, then a rule
+	}
+	out := make(map[string]effectiveCategory, len(catOrder))
+	for _, cat := range catOrder {
+		var best outcome
+		found, lockedSome := false, false
+		consider := func(o outcome) {
+			if !found || modeRank(o.Mode) > modeRank(best.Mode) ||
+				(modeRank(o.Mode) == modeRank(best.Mode) && o.priority > best.priority) {
+				best, found = o, true
+			}
+		}
+		decide := func(action string, checkRules bool) {
+			if locked != nil && locked(action, cat) {
+				lockedSome = true
+				consider(outcome{effectiveCategory{Mode: modeDeny.String(), Source: lockSource}, 2})
+				return
+			}
+			if checkRules {
+				if mode, pattern, ok := rules.Lookup(action); ok {
+					consider(outcome{effectiveCategory{Mode: mode, Source: "tool rule " + pattern}, 0})
+					return
+				}
+			}
+			consider(outcome{modes[cat], 1})
+		}
+		sort.Strings(actions[cat])
+		for _, action := range actions[cat] {
+			decide(action, true)
+		}
+		if openCategories[cat] {
+			decide("", false) // an id the table does not list
+		}
+		result := best.effectiveCategory
+		if lockedSome && result.Source != lockSource {
+			result.Source += "; other actions refused by " + lockSource
+		}
+		out[cat] = result
+	}
+	return out
+}
+
+// modeRank orders modes by how much they let through.
+func modeRank(mode string) int {
+	switch mode {
+	case "allow":
+		return 2
+	case "ask":
+		return 1
+	}
+	return 0
+}
+
+// authoritySurface is a surface a turn can arrive from, and whether this
+// configuration has it live.
+type authoritySurface struct {
+	Surface string `json:"surface"`
+	Active  bool   `json:"active"`
+	Reason  string `json:"reason"`
+}
+
+// authoritySurfaces lists every surface with the setting that makes it live
+// or not. goos is runtime.GOOS: the iMessage responder is macOS-only.
+func authoritySurfaces(lc *launchConfig, goos string) []authoritySurface {
+	if lc == nil {
+		lc = &launchConfig{}
+	}
+	out := []authoritySurface{{Surface: permissionSurfaceLocal, Active: true, Reason: "the TUI, dashboard and serve chat at this host"}}
+
+	relay := authoritySurface{Surface: permissionSurfaceDiscord, Reason: "relay.enabled=false"}
+	if lc.Relay.Enabled {
+		relay.Active, relay.Reason = true, "relay.enabled=true"
+	}
+	out = append(out, relay)
+
+	imsg := authoritySurface{Surface: permissionSurfaceIMessage}
+	switch {
+	case !lc.IMessage.Enabled:
+		imsg.Reason = "imessage.enabled=false"
+	case goos != "darwin":
+		imsg.Reason = "imessage.enabled=true, but the responder runs on macOS only"
+	case len(lc.IMessage.AllowFrom) == 0:
+		imsg.Reason = "imessage.enabled=true, but imessage.allow_from is empty, so nobody can drive it"
+	default:
+		imsg.Active = true
+		imsg.Reason = fmt.Sprintf("imessage.enabled=true, %d allowed handle(s)", len(lc.IMessage.AllowFrom))
+	}
+	return append(out, imsg)
 }
 
 func normalizePermissionSurface(surface string) (string, error) {
@@ -319,6 +458,17 @@ func printEffectivePermissions(report effectivePermissions) {
 	for _, category := range catOrder {
 		p := report.Categories[category]
 		fmt.Printf("  %-12s %-5s  (%s)\n", category, p.Mode, p.Source)
+	}
+	if len(report.ToolRules) > 0 {
+		patterns := make([]string, 0, len(report.ToolRules))
+		for pattern := range report.ToolRules {
+			patterns = append(patterns, pattern)
+		}
+		sort.Strings(patterns)
+		fmt.Println("  tool rules (every surface; checked before the category):")
+		for _, pattern := range patterns {
+			fmt.Printf("    %-40s %s\n", pattern, report.ToolRules[pattern])
+		}
 	}
 	fmt.Printf("  tools: %s\n", strings.Join(report.ConfiguredTools, ", "))
 	fmt.Printf("  execution: %s (isolated=%t, enabled=%t)\n", report.Execution.Backend, report.Execution.Isolated, report.Execution.Enabled)

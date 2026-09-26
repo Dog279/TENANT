@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/agent"
@@ -356,6 +357,13 @@ func saveCronHistory(dataDir string, h []croneng.RunRecord) error {
 	}
 	return atomicWrite(cronHistoryPath(dataDir), b)
 }
+
+// execGate is the live on/off switch behind cron-exec (cron.allow_exec,
+// `/cron exec`): the runner reads it per run, so a flip takes effect at once.
+type execGate struct{ on atomic.Bool }
+
+func (g *execGate) set(v bool)    { g.on.Store(v) }
+func (g *execGate) enabled() bool { return g.on.Load() }
 
 // cronManager wraps the cron engine. tuiCron / dashCron adapt it to the TUI and
 // dashboard control interfaces; cronManager itself implements cronp.Manager.

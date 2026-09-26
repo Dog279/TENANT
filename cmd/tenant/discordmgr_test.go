@@ -134,41 +134,48 @@ func TestRelayManager_ShutdownDoesNotPersistOff(t *testing.T) {
 	}
 }
 
-// SetExec flips the live gate + reports through Status, and persists alongside
-// the running/operator state.
+// SetExec switches exec mode, reports it through Status, persists it alongside
+// the running/operator state, and moves the Discord broker's lock with it.
 func TestRelayManager_ExecToggle(t *testing.T) {
-	gate := &execGate{}
 	var lastPersist string
+	br := newDiscordApprovalBroker(testLog())
 	m := &discordRelayManager{
 		base:       context.Background(),
 		runner:     &fakeRunner{}, // non-nil so SetExec's "not configured" guard passes
-		gate:       gate,
+		broker:     br,
 		operatorID: "op123",
 		persist: func(enabled bool, op string, allowExec bool) error {
 			lastPersist = fmt.Sprintf("%v:%s:%v", enabled, op, allowExec)
 			return nil
 		},
 	}
+	br.locked = m.execLocked
+	if ok, err := br.SetPermission(catExec, "allow"); err != nil || !ok {
+		t.Fatalf("SetPermission: ok=%v err=%v", ok, err)
+	}
 	if _, _, execOn := m.Status(); execOn {
 		t.Fatal("exec mode should default off")
+	}
+	if br.Confirm(context.Background(), "os_exec", "ls") {
+		t.Fatal("exec mode off must refuse os_exec even with relay exec=allow")
 	}
 	if err := m.SetExec(true); err != nil {
 		t.Fatal(err)
 	}
-	if !gate.enabled() {
-		t.Error("SetExec(true) must flip the shared gate on")
-	}
-	if _, _, execOn := m.Status(); !execOn {
-		t.Error("Status should report exec on")
+	if _, _, execOn := m.Status(); !execOn || !m.ExecOn() {
+		t.Error("Status and ExecOn should report exec on")
 	}
 	if lastPersist != "false:op123:true" {
 		t.Errorf("exec toggle should persist with allowExec=true, got %q", lastPersist)
 	}
+	if !br.Confirm(context.Background(), "os_exec", "ls") {
+		t.Fatal("exec mode on must hand os_exec to the exec category (allow)")
+	}
 	if err := m.SetExec(false); err != nil {
 		t.Fatal(err)
 	}
-	if gate.enabled() {
-		t.Error("SetExec(false) must flip the gate off")
+	if m.ExecOn() || br.Confirm(context.Background(), "os_exec", "ls") {
+		t.Error("SetExec(false) must close exec again on the next call")
 	}
 }
 

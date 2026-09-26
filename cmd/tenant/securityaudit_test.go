@@ -196,21 +196,34 @@ func hasSecurityFinding(findings []securityFinding, id string) bool {
 	return false
 }
 
+// captureTenantStdout runs fn with stdout redirected to a pipe. The pipe is
+// drained while fn writes: output larger than the pipe buffer (a few KiB on
+// Windows, which the multi-surface audit report exceeds) would otherwise block
+// fn forever.
 func captureTenantStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	type readResult struct {
+		b   []byte
+		err error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		b, err := io.ReadAll(r)
+		read <- readResult{b, err}
+	}()
 	old := os.Stdout
 	os.Stdout = w
 	err = fn()
-	_ = w.Close()
 	os.Stdout = old
-	b, readErr := io.ReadAll(r)
+	_ = w.Close()
+	got := <-read
 	_ = r.Close()
-	if readErr != nil {
-		t.Fatal(readErr)
+	if got.err != nil {
+		t.Fatal(got.err)
 	}
-	return strings.TrimSpace(string(b)), err
+	return strings.TrimSpace(string(got.b)), err
 }

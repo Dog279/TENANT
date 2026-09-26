@@ -31,7 +31,7 @@ func TestRestrictForDiscord_AllToolsExposed(t *testing.T) {
 		live.Register(sp)
 	}
 	inner := &recordDispatcher{}
-	reg, disp, _ := restrictForDiscord(live, inner)
+	reg, disp := restrictForDiscord(live, inner)
 
 	// Every tool must be in the registry — no filtering.
 	regNames := map[string]bool{}
@@ -63,7 +63,7 @@ func TestRestrictForDiscord_AllToolsExposed(t *testing.T) {
 func TestRestrictForDiscord_RegistryIsLive(t *testing.T) {
 	live := agent.NewStaticRegistry()
 	live.Register(model.ToolSpec{Name: "web_search"})
-	reg, _, _ := restrictForDiscord(live, &recordDispatcher{})
+	reg, _ := restrictForDiscord(live, &recordDispatcher{})
 
 	if _, ok := reg.Get("jira_transition"); ok {
 		t.Fatal("jira_transition should not exist yet")

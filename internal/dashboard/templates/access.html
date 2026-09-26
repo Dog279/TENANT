@@ -84,13 +84,14 @@
     <span class="sp"></span>
     <button type="submit" class="btn">{{if .View.RelayRunning}}Stop{{else}}Start{{end}}</button>
   </form>
-  <form method="POST" action="/access/discord/exec"{{if not .View.ExecOn}} onsubmit="return confirm('Enable exec mode? Dangerous tools (exec/write/destructive) become reachable over Discord — each still requires your per-action approval.')"{{end}}>
+  <form method="POST" action="/access/discord/exec"{{if not .View.ExecOn}} onsubmit="return confirm('Enable exec mode? Commands, file writes, irreversible actions and outbound sends become reachable over Discord, each following the permissions below (ask = your per-action approval).')"{{end}}>
     <input type="hidden" name="on" value="{{if .View.ExecOn}}false{{else}}true{{end}}">
     <span class="dim">exec mode</span>
     {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
     <span class="sp"></span>
     <button type="submit" class="btn">{{if .View.ExecOn}}Disable{{else}}Enable{{end}}</button>
   </form>
+  {{if not .View.ExecOn}}<div class="dim">Off: exec, write, destructive, sandbox and send are refused over Discord whatever the permissions below say. Discord posts and reactions still follow send.</div>{{end}}
 </div>
 
 <div class="card">

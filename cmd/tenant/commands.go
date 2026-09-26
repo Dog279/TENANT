@@ -2532,17 +2532,16 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// before the dashboard starts serving (TEN-201).
 
 	// Offsite Discord relay (TEN-114): DM the bot to drive a DEDICATED agent
-	// (shared long-term memory, own working set, read/research/comms-only tools,
-	// nonce approvals over Discord) while away. Built only when a bot token is
-	// configured; OFF by default (explicit opt-in — it exposes the agent over a
-	// third-party network). The manager is always wired into the TUI so /relay
-	// works even when it launched off.
+	// (shared long-term memory, own working set, the live tool surface gated by
+	// its own broker and exec mode, button approvals over Discord) while away.
+	// Built only when a bot token is configured; OFF by default (explicit
+	// opt-in — it exposes the agent over a third-party network). The manager is
+	// always wired into the TUI so /relay works even when it launched off.
 	var (
 		relayRunnerAg relayRunner
 		relaySvc      *discord.Service
 		relayApprover *discordApprover
 		relaySender   messageSender
-		relayGate     *execGate
 	)
 	// ingestEvent surfaces an inbound offsite message (Discord/iMessage) in the
 	// SHARED activity feed: emit publishes to evBroker, which fans out to BOTH the
@@ -2574,7 +2573,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	discordToken := resolveSecret(c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
 	if strings.TrimSpace(discordToken) != "" {
-		if r, svc, appr, snd, gate, derr := buildDiscordAgent(discordToken, discordAgentDeps{
+		if r, svc, appr, snd, derr := buildDiscordAgent(discordToken, discordAgentDeps{
 			router: router, soulLive: soulLive, archive: st.archive,
 			episodic: st.episodic, semantic: st.semantic,
 			runs:      st.runs,
@@ -2587,12 +2586,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}); derr != nil {
 			pushSys("discord relay: " + derr.Error())
 		} else {
-			relayRunnerAg, relaySvc, relayApprover, relaySender, relayGate = r, svc, appr, snd, gate
+			relayRunnerAg, relaySvc, relayApprover, relaySender = r, svc, appr, snd
 		}
 	}
 	relayMgr := &discordRelayManager{
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
-		sender: relaySender, gate: relayGate, broker: discordBroker, token: discordToken,
+		sender: relaySender, broker: discordBroker, token: discordToken,
 		dataDir: c.dataDir, log: log.With("source", "discord"), notify: pushSys,
 		approvalTimeout: relayApprovalTimeout(c.lc), cardStyle: relayCardStyle(c.lc),
 		persistTimeout: func(d time.Duration) error {
@@ -2615,7 +2614,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		},
 		// buildFn lets Reconfigure (triggered by /skill configure discord)
 		// rebuild the agent+gateway with a new token without restarting.
-		buildFn: func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error) {
+		buildFn: func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, error) {
 			return buildDiscordAgent(token, discordAgentDeps{
 				router: router, soulLive: soulLive, archive: st.archive,
 				episodic: st.episodic, semantic: st.semantic,
@@ -2643,14 +2642,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		return tui.DenyOnce
 	}
+	discordBroker.locked = relayMgr.execLocked // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
 		relayMgr.operatorID = c.lc.Relay.OperatorID
-		// Restore the persisted exec-mode preference before any auto-start, so
-		// an enabled relay comes up in the operator's last-chosen mode.
-		if c.lc.Relay.AllowExec && relayGate != nil {
-			relayMgr.allowExec = true
-			relayGate.set(true)
-		}
+		// Restore the persisted exec mode before any auto-start, so an enabled
+		// relay comes up in the operator's last-chosen mode. Restored with or
+		// without a bot token: a token added later must not reset it, and the
+		// next persist would otherwise write the reset back.
+		relayMgr.allowExec = c.lc.Relay.AllowExec
 		if c.lc.Relay.Enabled {
 			if err := relayMgr.Enable(); err != nil {
 				pushSys("discord relay: " + err.Error())

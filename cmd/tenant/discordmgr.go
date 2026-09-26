@@ -66,17 +66,18 @@ type discordAgentDeps struct {
 }
 
 const discordSysSuffix = " You are reachable over Discord while the operator is away from the machine. " +
-	"You have the same tools as the local TUI — use them freely. Any dangerous action requires the " +
-	"operator's per-action approval (a button tap that can also time out and deny). Keep answers concise " +
-	"for a phone screen."
+	"You have the same tools as the local TUI. While the operator has Discord exec mode off, running " +
+	"commands, writing files, irreversible actions and sends other than Discord posts are refused; they " +
+	"turn it on with /relay exec on at the machine. Otherwise a dangerous action may need the operator's " +
+	"approval (a button tap that can also time out and deny). Keep answers concise for a phone screen."
 
 // buildDiscordAgent constructs the dedicated Discord agent + Discord service +
 // nonce approver + reply sender. Shares the long-term memory stores (continuity)
 // but gets its OWN working set and the restricted, approver-wired tool surface.
-func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error) {
+func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.Service, *discordApprover, messageSender, error) {
 	svc, err := discord.Open(discord.Config{Token: token})
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	sender := discordSender{svc: svc}
 	approver := newDiscordApprover(sender, d.log)
@@ -91,7 +92,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		gateConfirm = approver.Confirm
 	}
 	ddisc := discord.NewDispatcher(svc, discord.Policy{Confirm: gateConfirm})
-	reg, restDisp, gate := restrictForDiscord(d.fullTools, d.fullDisp)
+	reg, restDisp := restrictForDiscord(d.fullTools, d.fullDisp)
 	disp := &discordRoutingDispatcher{discord: ddisc, rest: restDisp}
 
 	var obs func(agent.Event)
@@ -130,9 +131,9 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		RouteSticky:            d.routeSticky,
 	})
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
-	return ag, svc, approver, sender, gate, nil
+	return ag, svc, approver, sender, nil
 }
 
 // discordRelayManager owns the relay lifecycle. tui.RelayControl.
@@ -142,7 +143,6 @@ type discordRelayManager struct {
 	svc      *discord.Service
 	approver *discordApprover
 	sender   messageSender
-	gate     *execGate // offsite exec-mode switch (nil if discord unconfigured)
 	// broker is the per-category permission broker (TEN-231) that fronts every
 	// gated tool the Discord agent reaches. Its "ask" backend is askOperator (the
 	// button approver). Stable across Reconfigure (only the approver swaps), so
@@ -159,7 +159,7 @@ type discordRelayManager struct {
 	// buildFn rebuilds the Discord agent + gateway internals with a fresh token.
 	// Set at the serve wiring point so Reconfigure can hot-swap after a live
 	// /skill configure discord without restarting the process.
-	buildFn func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, *execGate, error)
+	buildFn func(token string) (relayRunner, *discord.Service, *discordApprover, messageSender, error)
 
 	// start is the test seam (real = realStart: wire+run gateway/relay).
 	start func(ctx context.Context, operatorID string) error
@@ -168,7 +168,7 @@ type discordRelayManager struct {
 	running    bool
 	cancel     context.CancelFunc
 	operatorID string
-	allowExec  bool // last-set exec mode (mirrors gate; persisted)
+	allowExec  bool // exec mode (relay.allow_exec): the broker's lock reads it via execLocked
 
 	// approvalTimeout / cardStyle are the operator's approval-card knobs
 	// (relay.approval_timeout, relay.card_style), applied to the live approver
@@ -316,6 +316,20 @@ func (m *discordRelayManager) Shutdown() {
 	}
 }
 
+// ExecOn reports whether offsite exec mode is on.
+func (m *discordRelayManager) ExecOn() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.allowExec
+}
+
+// execLocked is the Discord broker's lock (approvalBroker.locked): with exec
+// mode off it refuses what relayExecLocks names, before any tool rule or
+// relay.permissions mode is consulted.
+func (m *discordRelayManager) execLocked(action, cat string) bool {
+	return !m.ExecOn() && relayExecLocks(action, cat)
+}
+
 // Status reports whether the relay is running, whether an operator id is set,
 // and whether offsite exec mode is on.
 func (m *discordRelayManager) Status() (running bool, operatorSet bool, execOn bool) {
@@ -324,20 +338,16 @@ func (m *discordRelayManager) Status() (running bool, operatorSet bool, execOn b
 	return m.running, strings.TrimSpace(m.operatorID) != "", m.allowExec
 }
 
-// SetExec persists the operator's offsite exec-mode preference and mirrors it
-// onto the shared gate (which the cron runner still consults). NOTE: since
-// TEN-229 the Discord agent sees the full live tool surface regardless of this
-// flag — every dangerous call is gated per-action by the button approver — so
-// for Discord this is a persisted preference, not a tool-visibility switch.
+// SetExec switches offsite exec mode and persists it. It takes effect on the
+// next gated call, including one in a turn already running: the Discord
+// broker's lock (execLocked) reads the mode on every call. The tools stay
+// visible either way (TEN-229); the broker refuses what exec mode keeps closed.
 func (m *discordRelayManager) SetExec(on bool) error {
 	if m.runner == nil {
 		return fmt.Errorf("discord not configured — run `/skill configure discord <bot-token>` first")
 	}
 	m.mu.Lock()
 	m.allowExec = on
-	if m.gate != nil {
-		m.gate.set(on)
-	}
 	running, opID := m.running, m.operatorID
 	m.mu.Unlock()
 	if m.persist != nil {
@@ -398,7 +408,7 @@ func (m *discordRelayManager) Reconfigure(token string) error {
 	m.mu.Unlock()
 
 	// Rebuild outside the lock — buildFn calls discord.Open (network).
-	runner, svc, appr, snd, gate, err := m.buildFn(token)
+	runner, svc, appr, snd, err := m.buildFn(token)
 	if err != nil {
 		if m.notify != nil {
 			m.notify("discord relay: reconfigure FAILED — " + err.Error())
@@ -411,12 +421,7 @@ func (m *discordRelayManager) Reconfigure(token string) error {
 	m.svc = svc
 	m.approver = appr
 	m.sender = snd
-	m.gate = gate
 	m.token = token
-	// Restore exec-mode preference on the new gate.
-	if gate != nil && m.allowExec {
-		gate.set(true)
-	}
 	m.mu.Unlock()
 
 	if wasRunning {

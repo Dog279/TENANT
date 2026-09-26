@@ -150,7 +150,7 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `chat` | headless agent loop (one stdin line = one turn) |
 | `serve` | background self-improvement (distillation) on a cadence |
 | `doctor [--fix]` | diagnose (and repair) the setup |
-| `security audit` | report Chrome process-sandbox state and other security-sensitive configuration |
+| `security audit` | report what each live surface (local, Discord relay, iMessage) may do without approval, the Chrome process sandbox, listeners and secret-file protection; exits non-zero on a critical finding |
 | `web` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `os` | one-shot agent turn scoped to one plugin (read-by-default; `--allow-*` to act) |
 | `orchestrate "<task>"` | multi-agent team over a live bus |
 | `research "<question>"` | deep research → cited report (`--out FILE`) |

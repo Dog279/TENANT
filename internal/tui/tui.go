@@ -476,8 +476,9 @@ type RelayControl interface {
 	Disable() error
 	Status() (running bool, operatorSet bool, execOn bool)
 	SetOperator(id string) error
-	// SetExec toggles offsite exec mode (the gated dangerous tools, each still
-	// per-action button-approved over Discord). Off = read/research/comms only.
+	// SetExec toggles offsite exec mode. Off, the Discord broker refuses exec,
+	// write, destructive, sandbox and send (Discord posts excepted) whatever the
+	// relay permissions say; on, those follow the relay permissions.
 	SetExec(on bool) error
 	// Perms exposes the Discord agent's per-category permission control (TEN-231)
 	// so /relay permissions uses the SAME ask|allow|deny model as /permissions —
@@ -3510,9 +3511,9 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			if opset {
 				who = "operator set"
 			}
-			mode := "read/comms only"
+			mode := "exec off: read/research/Discord comms only"
 			if execOn {
-				mode = "EXEC ON (dangerous tools, button-approved)"
+				mode = "EXEC ON: dangerous tools follow /relay permissions"
 			}
 			m.sysChat("discord relay: " + state + " (" + who + "; " + mode + ")  ·  approvals auto-deny after " + m.cfg.Relay.ApprovalTimeout().String() + "  ·  /relay permissions for per-category gating")
 		case "permissions", "perms", "permission":
@@ -3525,6 +3526,11 @@ func (m *model) handleSlash(line string) tea.Cmd {
 			switch {
 			case len(pf) == 0:
 				plain, styled := renderPermissionsFor(pc, "Discord relay permissions", "/relay permissions")
+				if _, _, execOn := m.cfg.Relay.Status(); !execOn {
+					note := "exec mode is off: exec, write, destructive, sandbox and send (Discord posts excepted) are refused whatever these modes say — /relay exec on to unlock"
+					plain += note + "\n"
+					styled += cErr.Render(note) + "\n"
+				}
 				m.sysChatStyled(plain, styled)
 			case strings.ToLower(pf[0]) == "set" && len(pf) >= 3:
 				cat, mode := strings.ToLower(pf[1]), strings.ToLower(pf[2])
@@ -3565,15 +3571,15 @@ func (m *model) handleSlash(line string) tea.Cmd {
 		case "exec":
 			on, ok := parseOnOff(rest)
 			if !ok {
-				m.sysChat("usage: /relay exec on|off  (on = unlock dangerous tools offsite, each button-approved)")
+				m.sysChat("usage: /relay exec on|off  (on = unlock dangerous tools offsite, each following /relay permissions)")
 				break
 			}
 			if err := m.cfg.Relay.SetExec(on); err != nil {
 				m.sysChat("relay: " + err.Error())
 			} else if on {
-				m.sysChat("relay: EXEC MODE ON — offsite exec/write/destructive/send are now reachable, each requires your per-action button approval. /relay exec off to revoke.")
+				m.sysChat("relay: EXEC MODE ON — offsite exec/write/destructive/sandbox/send are now reachable, each following /relay permissions (ask = your button approval). /relay exec off to revoke.")
 			} else {
-				m.sysChat("relay: exec mode off — offsite session is read/research/comms only again")
+				m.sysChat("relay: exec mode off — offsite exec/write/destructive/sandbox/send are refused again (Discord posts still follow /relay permissions)")
 			}
 		case "timeout":
 			d, err := time.ParseDuration(rest)

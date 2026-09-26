@@ -2,9 +2,11 @@ package main
 
 // discordtools.go is the offsite capability surface for the Discord relay agent.
 //
-// All tools are available — the Discord agent has the same tool surface as the
-// local TUI. The operator allowlist verifies identity; the per-action button
-// approver gates dangerous calls. No tool wall.
+// The Discord agent sees the same tools as the local TUI. The operator
+// allowlist verifies identity; the Discord broker gates every dangerous call.
+// Tool visibility is not the boundary: the broker is. It refuses the categories
+// the relay's exec mode unlocks while that mode is off (relayExecLocks), then
+// applies tool rules and relay.permissions (ask = a button in Discord).
 //
 // The registry is LIVE (TEN-229): it delegates to the running tool mux rather
 // than a snapshot taken at relay-construction time, so tools that come online
@@ -16,26 +18,35 @@ package main
 import (
 	"context"
 	"strings"
-	"sync/atomic"
 
 	"tenant/internal/agent"
 	"tenant/internal/model"
+	"tenant/internal/plugins/discord"
 )
 
-// execGate is a live on/off switch, retained for backward compatibility with
-// the relay manager's SetExec / AllowExec persistence. When all tools are
-// available regardless, the gate no longer restricts the surface — but the
-// manager still flips it and persists the preference.
-type execGate struct{ on atomic.Bool }
+// relayExecCategories are what the relay's exec mode (relay.allow_exec,
+// `/relay exec`) unlocks: while it is off the Discord broker refuses them
+// whatever relay.permissions or a tool rule says. TEN-123 introduced the mode;
+// TEN-229 dropped its enforcement along with the tool wall, leaving a switch
+// that changed nothing while `/relay status` still reported "read/comms only".
+// TEN-338 enforces it again, at the broker.
+var relayExecCategories = []string{catExec, catWrite, catDestructive, catSandbox, catSend}
 
-func (g *execGate) set(v bool)    { g.on.Store(v) }
-func (g *execGate) enabled() bool { return g.on.Load() }
+// relayExecLocks reports whether exec mode must be on for action. Discord's
+// own post and react stay available with exec mode off, as TEN-123 kept them:
+// talking in Discord is the "comms" in read/research/comms. They still follow
+// the send category's mode.
+func relayExecLocks(action, cat string) bool {
+	switch action {
+	case discord.ActionSendMessage, discord.ActionReact:
+		return false
+	}
+	return containsString(relayExecCategories, cat)
+}
 
 // discordRegistry exposes the full, LIVE tool catalog by delegating to the
 // running mux — so the Discord agent always sees what the TUI sees, including
-// tools registered after the relay started. The gate is retained but no longer
-// changes which tools are visible — it's a no-op surface switch kept for API
-// compatibility with the relay manager.
+// tools registered after the relay started.
 type discordRegistry struct {
 	live agent.ToolRegistry // the running mux (composite), not a snapshot
 }
@@ -47,19 +58,14 @@ func (r *discordRegistry) Search(ctx context.Context, emb []float32, k int) ([]m
 func (r *discordRegistry) All() []model.ToolSpec { return r.live.All() }
 
 // restrictForDiscord builds the offsite tool surface over the LIVE registry (no
-// filtering, no snapshot). Returns a registry + dispatcher that expose every
-// tool, plus the execGate for API compatibility with the relay manager.
-// Dangerous calls are still routed to the per-action button approver via
+// filtering, no snapshot). Dangerous calls route to the Discord broker via
 // originConfirm; the operator allowlist gates who can drive the agent at all.
-func restrictForDiscord(live agent.ToolRegistry, inner agent.ToolDispatcher) (*discordRegistry, *restrictedDispatcher, *execGate) {
-	gate := &execGate{}
-	registry := &discordRegistry{live: live}
-	disp := &restrictedDispatcher{inner: inner}
-	return registry, disp, gate
+func restrictForDiscord(live agent.ToolRegistry, inner agent.ToolDispatcher) (*discordRegistry, *restrictedDispatcher) {
+	return &discordRegistry{live: live}, &restrictedDispatcher{inner: inner}
 }
 
 // restrictedDispatcher delegates every call to the inner (full) dispatcher.
-// No tool is refused — the wall is removed.
+// No tool is refused here; the broker decides each dangerous call.
 type restrictedDispatcher struct {
 	inner agent.ToolDispatcher
 }
