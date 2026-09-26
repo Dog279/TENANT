@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-09-23; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-09-26; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 67 |
-| Go files | 756 |
-| Test files | 378 |
-| Production Go LOC | 107,718 |
-| Test Go LOC | 74,495 |
+| Go packages | 69 |
+| Go files | 782 |
+| Test files | 389 |
+| Production Go LOC | 110,511 |
+| Test Go LOC | 76,377 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
