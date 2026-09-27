@@ -60,6 +60,18 @@ else a `source` attribute, else its `"tag: …"` message prefix (`mcp:` → `mcp
 supervisor (launchd/systemd) — the hub tees to it. The TUI writes nothing to
 stderr; `<data>/tui.log` no longer exists.
 
+## Secrets
+
+The dashboard's auth token never goes to the log book. The `system` line
+written when the dashboard starts says where the token lives
+(`<config>/dashboard-auth-token`, or `dashboard.auth` in config.json) and how
+to show it. `serve` prints the token itself only when stdout is a terminal.
+
+Builds before TEN-360 wrote the token into `system/*.log`, the Activity feed
+and serve's stdout. If you ran one, rotate the token: stop Tenant, delete
+`<config>/dashboard-auth-token` (or change `dashboard.auth`), and start it
+again. The old files then hold a dead token.
+
 ## The `sandbox` source
 
 The execution sandbox (`docs/changes/sandbox-seam.md`) writes one line per

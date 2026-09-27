@@ -690,7 +690,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			dashAddr = addr
-			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
+			pushSys(dashboardServingLine(addr, c.cfgDir, c.lc))
 		}
 	}
 
@@ -746,7 +746,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	fmt.Printf("tenant serve — agent=%s backend=%s; headless hub\n", c.agent, c.backend)
 	if dashAddr != "" {
 		fmt.Printf("dashboard (control + chat + approvals): http://%s\n", dashAddr)
-		fmt.Printf("dashboard auth token: %s\n", dcfg.Auth)
+		fmt.Println(dashboardTokenBanner(dcfg.Auth, c.cfgDir, c.lc, stdoutIsTerminal()))
 	}
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 

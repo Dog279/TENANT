@@ -4,9 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-isatty"
 
 	"tenant/internal/dashboard"
 	"tenant/internal/secrets"
@@ -16,6 +20,42 @@ const dashboardAuthTokenFile = "dashboard-auth-token"
 
 func dashboardAuthTokenPath(cfgDir string) string {
 	return filepath.Join(cfgDir, dashboardAuthTokenFile)
+}
+
+// dashboardServingLine is the status line for a started dashboard. It goes to
+// the log book, so it says where the auth token lives and how to show it,
+// never the token itself (TEN-360).
+func dashboardServingLine(addr, cfgDir string, lc *launchConfig) string {
+	return "dashboard: serving on http://" + addr + "; " + dashboardTokenHint(cfgDir, lc)
+}
+
+// dashboardTokenBanner is serve's start-up line about the token. It prints the
+// token only to a terminal: launchd and systemd capture a daemon's stdout to
+// files nobody rotates.
+func dashboardTokenBanner(token, cfgDir string, lc *launchConfig, tty bool) string {
+	if tty {
+		return "dashboard auth token: " + token
+	}
+	return "dashboard: " + dashboardTokenHint(cfgDir, lc)
+}
+
+// dashboardTokenHint says where the dashboard's auth token lives and how to
+// show it.
+func dashboardTokenHint(cfgDir string, lc *launchConfig) string {
+	if lc != nil && lc.Dashboard.Auth != "" {
+		return "the auth token is dashboard.auth in " + launchConfigPath(cfgDir)
+	}
+	path := dashboardAuthTokenPath(cfgDir)
+	show := "cat"
+	if runtime.GOOS == "windows" {
+		show = "type"
+	}
+	return "the auth token is in " + path + " (show it: " + show + ` "` + path + `")`
+}
+
+func stdoutIsTerminal() bool {
+	fd := os.Stdout.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
 // resolveDashboardAuth returns an explicitly configured token when present.

@@ -2978,7 +2978,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())
 		} else {
-			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
+			pushSys(dashboardServingLine(addr, c.cfgDir, c.lc))
 		}
 	}
 

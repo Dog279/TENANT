@@ -61,6 +61,20 @@ The dashboard binds **loopback by default**. A non-loopback `--dashboard-addr` i
 certs, prefer publishing the loopback dashboard onto your tailnet (`/tailscale serve`
 from a TUI session, persisted) rather than binding a public interface.
 
+## The dashboard token
+
+Every dashboard request needs the bearer token in `<config>/dashboard-auth-token`
+(created on first start), or `dashboard.auth` in config.json when you set one.
+`tenant serve` prints the token at start-up only when stdout is a terminal. Under
+launchd or systemd, stdout goes to a file, so the start-up banner and the `system`
+log line say where the token lives instead: `cat` that file to see it.
+`tenant attach` reads it itself.
+
+Builds before TEN-360 printed the token to stdout (launchd keeps it in `serve.log`,
+which nothing rotates) and wrote it into `<data>/logs/system/*.log`. If you ran one,
+rotate the token: stop serve, delete `<config>/dashboard-auth-token` (or change
+`dashboard.auth`), and start serve again. Browsers then sign in with the new token.
+
 ## Graceful shutdown
 
 `SIGTERM` / `SIGINT` shut down in order: stop accepting new work (peer listener →
