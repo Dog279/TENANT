@@ -65,6 +65,7 @@ var rules = []rule{
 	{Pkg: "internal/eval/**", May: []string{"internal/model", "internal/route", "internal/memory/working"}},
 	{Pkg: "internal/improve", May: []string{"internal/memory/**", "internal/model", "internal/fsperm"}},
 	{Pkg: "internal/privacy", May: []string{"internal/memory/**", "internal/fsperm", "internal/logs", "internal/logs/store"}},
+	{Pkg: "internal/logs/alerts", May: []string{"internal/logs", "internal/logs/event", "internal/logs/query", "internal/logs/store"}, Notes: "alert rules, evaluated in the housekeeper-lease holder; the composition root sends the actions"},
 	{Pkg: "internal/mcpserver", May: []string{"internal/mcp/**", "internal/memory/**", "internal/model"}},
 	{Pkg: "internal/agent", May: []string{"internal/logs", "internal/memory/**", "internal/model/**", "internal/orchestra", "internal/runtrace"}, Notes: "the turn loop; knows no plugin and no surface"},
 	{Pkg: "internal/approval", May: []string{"internal/agent", "internal/control", "internal/logs", "internal/runtrace"}, Notes: "the approval decision point; knows no plugin and no surface"},

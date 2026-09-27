@@ -161,8 +161,9 @@ func (h *Hub) Degraded() string {
 
 // OnAlert gives fn a line for the operator's status feed each time the log
 // book stops writing logbook.db and when it writes it again, and one at once
-// if it isn't writing it now. Serve and the TUI pass their feed, which the
-// terminal, the TUI and the system log show.
+// if it isn't writing it now; Notify's lines (alert rules' banners) go
+// there too. Serve and the TUI pass their feed, which the terminal, the TUI
+// and the system log show.
 func (h *Hub) OnAlert(fn func(string)) {
 	h.lb.mu.Lock()
 	h.lb.alert = fn

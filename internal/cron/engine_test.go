@@ -245,6 +245,16 @@ func TestEngineRunNowAndHistory(t *testing.T) {
 	}
 }
 
+// RunOnce runs a job that is not one of the engine's, once, into the history.
+func TestEngineRunOnce(t *testing.T) {
+	var got Job
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { got = j; return "done", "", nil }, nil)
+	rec := e.RunOnce(context.Background(), JobDef{Name: "alert critical", Prompt: "look"})
+	if !rec.OK || got.Prompt != "look" || got.ID == "" || len(e.List()) != 0 || len(e.History()) != 1 {
+		t.Fatalf("RunOnce = %+v, ran %+v, jobs %d", rec, got, len(e.List()))
+	}
+}
+
 func TestEngineSeedFromDefs(t *testing.T) {
 	defs := []JobDef{
 		{ID: "1", Name: "good", Spec: "0 9 * * *", Prompt: "p", Enabled: true},

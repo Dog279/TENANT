@@ -177,6 +177,37 @@ type Logs struct {
 	// RateLimit caps how fast one provider may write one event (the
 	// Security log is never limited), applied live.
 	RateLimit LogRate `json:"rate_limit,omitzero"`
+	// Alerts are the alert rules (docs/LOGGING.md), read live. An entry
+	// named like a built-in rule (critical, unexpected-exit, audit-failures,
+	// sandbox-unattended, logbook-full) changes or disables it.
+	Alerts []AlertRule `json:"alerts,omitempty"`
+}
+
+// AlertRule is one entry of logs.alerts: a filter in the filter language,
+// an optional threshold, an action and a throttle.
+type AlertRule struct {
+	Name      string         `json:"name"`
+	Filter    string         `json:"filter,omitempty"`
+	Threshold AlertThreshold `json:"threshold,omitzero"`
+	Action    AlertAction    `json:"action,omitzero"`
+	Throttle  string         `json:"throttle,omitempty"` // fire at most once per this long ("" ⇒ 15m; at least 1m)
+	Disabled  bool           `json:"disabled,omitempty"`
+}
+
+// AlertThreshold fires a rule once Count events match within Window (a
+// duration, 10m); without one, every match fires.
+type AlertThreshold struct {
+	Count  int    `json:"count,omitempty"`
+	Window string `json:"window,omitempty"`
+}
+
+// AlertAction is what a firing does besides filing the alert, which the
+// dashboard shows: Kind is dashboard (the default: nothing more), discord
+// or imessage (a message to the operator), or cron (a one-off prompt job,
+// Target its prompt).
+type AlertAction struct {
+	Kind   string `json:"kind,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 // LogRate is a token bucket: PerSecond events a second (0 ⇒ 100; -1 ⇒ no
