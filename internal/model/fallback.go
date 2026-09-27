@@ -247,22 +247,37 @@ func (f *FallbackLLM) recordLatency(label string, d time.Duration) (demotedFrom 
 // fired, emits a synthetic FailoverEvent so operators see WHY the chain moved
 // off a link that returned 200 OK. Kept out of the locked section so the
 // observer callback never runs while holding f.mu.
-func (f *FallbackLLM) noteLatency(label string, d time.Duration) {
+func (f *FallbackLLM) noteLatency(ctx context.Context, label string, d time.Duration) {
 	from, ewma := f.recordLatency(label, d)
-	if from == "" || f.observer == nil {
+	if from == "" {
+		return
+	}
+	avg := ewma.Round(time.Millisecond)
+	f.mu.Lock()
+	cooldown := f.health.Cooldown
+	f.mu.Unlock()
+	SlowSkipped.Log(ctx, "profile", from, "average", avg, "cooldown", cooldown)
+	if f.observer == nil {
 		return
 	}
 	f.observer(FailoverEvent{
 		From:   from,
 		To:     "",  // demotion, not an in-flight switch; next call prefers the next ready link
 		Err:    nil, // succeeded — it was just slow
-		Reason: "slow (" + ewma.Round(time.Millisecond).String() + " avg)",
+		Reason: "slow (" + avg.String() + " avg)",
 	})
 }
 
-func (f *FallbackLLM) fire(from, to string, err error) {
+// fire records a failover from one link to the next: the model log, the
+// turn's trace span and the operator's feed (the observer).
+func (f *FallbackLLM) fire(ctx context.Context, from, to string, err error) {
+	reason := failoverReason(err)
+	FellBack.Log(ctx, "from", from, "to", to, "reason", reason, "err", err)
+	if span := runtrace.SpanFromContext(ctx); span != nil {
+		span.AddFallback(from, to, reason)
+	}
 	if f.observer != nil {
-		f.observer(FailoverEvent{From: from, To: to, Err: err, Reason: failoverReason(err)})
+		f.observer(FailoverEvent{From: from, To: to, Err: err, Reason: reason})
 	}
 }
 
@@ -277,7 +292,7 @@ func (f *FallbackLLM) Generate(ctx context.Context, req GenerateRequest) (*Gener
 		resp, err := lk.llm.Generate(ctx, req)
 		if err == nil {
 			// Succeeded — feed latency into the health gate (no-op unless enabled).
-			f.noteLatency(lk.label, f.now().Sub(start))
+			f.noteLatency(ctx, lk.label, f.now().Sub(start))
 			return resp, nil
 		}
 		lastErr = err
@@ -286,10 +301,7 @@ func (f *FallbackLLM) Generate(ctx context.Context, req GenerateRequest) (*Gener
 		}
 		f.markCooldown(lk.label, err)
 		if i < len(attempts)-1 {
-			f.fire(lk.label, attempts[i+1].label, err)
-			if span := runtrace.SpanFromContext(ctx); span != nil {
-				span.AddFallback(lk.label, attempts[i+1].label, failoverReason(err))
-			}
+			f.fire(ctx, lk.label, attempts[i+1].label, err)
 		}
 	}
 	return nil, lastErr
@@ -312,10 +324,7 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 				lastErr = err
 				if FailoverAction(err) && i < len(attempts)-1 {
 					f.markCooldown(lk.label, err)
-					f.fire(lk.label, attempts[i+1].label, err)
-					if span := runtrace.SpanFromContext(ctx); span != nil {
-						span.AddFallback(lk.label, attempts[i+1].label, failoverReason(err))
-					}
+					f.fire(ctx, lk.label, attempts[i+1].label, err)
 					continue
 				}
 				out <- StreamChunk{Error: err}
@@ -330,10 +339,7 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 					lastErr = chunk.Error
 					if FailoverAction(chunk.Error) && i < len(attempts)-1 {
 						f.markCooldown(lk.label, chunk.Error)
-						f.fire(lk.label, attempts[i+1].label, chunk.Error)
-						if span := runtrace.SpanFromContext(ctx); span != nil {
-							span.AddFallback(lk.label, attempts[i+1].label, failoverReason(chunk.Error))
-						}
+						f.fire(ctx, lk.label, attempts[i+1].label, chunk.Error)
 						failedPreToken = true
 						break
 					}
@@ -355,7 +361,7 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, req GenerateRequest) (
 				// signal and must not arm/fire the health gate. No-op unless
 				// health-gating is enabled.
 				if emitted && !postTokenErr {
-					f.noteLatency(lk.label, f.now().Sub(start))
+					f.noteLatency(ctx, lk.label, f.now().Sub(start))
 				}
 				return
 			}

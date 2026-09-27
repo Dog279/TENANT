@@ -13,6 +13,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/config"
+	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/model"
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/tui"
@@ -138,6 +139,8 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 	if active == "" {
 		active = name
 	}
+	model.Switched.Log(context.Background(), "provider", name, "model", active, "backend", c2.backend,
+		"endpoint", safeDisplayEndpoint(c2.vllmEndpoint))
 	// Probe the new backend NOW so the operator sees connect success/fail in
 	// the feed immediately, instead of discovering a 404 on the next message.
 	status := probeSwap(name, active, c2)
@@ -247,6 +250,8 @@ func probeSwap(name, active string, c2 *commonFlags) string {
 	defer cancel()
 	ms, err := fetchModels(ctx, c2.vllmEndpoint, c2.genAPIKey)
 	if err != nil {
+		model.SwapUnready.Log(ctx, "provider", name, "model", active, "endpoint", safeDisplayEndpoint(c2.vllmEndpoint),
+			"problem", "its endpoint is unreachable: "+err.Error())
 		return fmt.Sprintf("⚠ switched to %q but the endpoint is UNREACHABLE at %s (%v) — start the server, then send a message to retry",
 			name, c2.vllmEndpoint, err)
 	}
@@ -257,6 +262,8 @@ func probeSwap(name, active string, c2 *commonFlags) string {
 			return fmt.Sprintf("✓ now using %q — connected: %s @ %s (live, no restart)", name, active, c2.vllmEndpoint)
 		}
 	}
+	model.SwapUnready.Log(ctx, "provider", name, "model", active, "endpoint", safeDisplayEndpoint(c2.vllmEndpoint),
+		"problem", "it does not serve "+active+" (it serves: "+strings.Join(served, ", ")+")")
 	return fmt.Sprintf("⚠ now using %q @ %s, but it does not serve model %q (it serves: %s) — calls may 404; fix with `/model` or set model to \"\" for auto-detect",
 		name, c2.vllmEndpoint, active, strings.Join(served, ", "))
 }
@@ -969,5 +976,18 @@ func printModelList(lc *launchConfig) {
 			model = "(auto)"
 		}
 		fmt.Printf("%s %-16s %-10s %-22s %s\n", mark, mi.Name, mi.Kind, model, mi.Endpoint)
+	}
+}
+
+// recordUsage files one main-agent model call in the usage ledger (TEN-167),
+// under the launch's model. A failed write is logged, never returned: the
+// ledger must not block a turn. s may be nil (no ledger).
+func recordUsage(ctx context.Context, s *usagestore.Store, c *commonFlags, in, out int, traceID string) {
+	name := c.vllmModel
+	if c.backend == "echo" || name == "" {
+		name = c.backend
+	}
+	if err := s.Record(ctx, c.agent, name, in, out, traceID); err != nil {
+		model.UsageUnrecorded.Log(ctx, "model", name, "err", err)
 	}
 }

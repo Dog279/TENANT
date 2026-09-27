@@ -56,7 +56,11 @@ var providers = []struct {
 // A coverage ticket adds its packages with their counts. A count only goes
 // down: give a new call site a catalogued event, and lower the number when
 // the test says so.
-var catalogued = map[string]int{}
+var catalogued = map[string]int{
+	"internal/model": 0, "internal/model/backend/anthropic": 0, "internal/model/backend/claudecode": 0,
+	"internal/model/backend/echo": 0, "internal/model/backend/vllm": 0, "internal/model/toolfmt": 0,
+	"internal/route": 0,
+}
 
 // providerOf names the provider file (module-relative) counts toward, or ""
 // for code outside Tenant's runtime (reference, scripts, these tests).

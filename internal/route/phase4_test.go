@@ -134,11 +134,11 @@ func TestRetentionSurvivesConcurrentRecords(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 25; i++ {
-			e.record(Decision{ID: "a", Timestamp: now})
+			e.record(context.Background(), Decision{ID: "a", Timestamp: now})
 		}
 	}()
 	for i := 0; i < 25; i++ {
-		e.record(Decision{ID: "b", Timestamp: now})
+		e.record(context.Background(), Decision{ID: "b", Timestamp: now})
 	}
 	<-done
 	if got := len(e.decisionsForStats()); got != 50 {

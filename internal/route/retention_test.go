@@ -1,6 +1,7 @@
 package route
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -127,7 +128,7 @@ func TestRecordTriggersDailyPruneGate(t *testing.T) {
 
 	e := NewEngine(nil, dir, 0)
 	e.SetRetention(90)
-	e.record(Decision{ID: "r1", Timestamp: now})
+	e.record(context.Background(), Decision{ID: "r1", Timestamp: now})
 	// The append-path prune is deliberately asynchronous; poll briefly.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -146,7 +147,7 @@ func TestRecordTriggersDailyPruneGate(t *testing.T) {
 		{ID: "ancient2", Timestamp: now.Add(-200 * 24 * time.Hour)},
 		{ID: "r1", Timestamp: now},
 	})
-	e.record(Decision{ID: "r2", Timestamp: now})
+	e.record(context.Background(), Decision{ID: "r2", Timestamp: now})
 	time.Sleep(50 * time.Millisecond) // give a (buggy) second prune time to fire
 	raw := readLogRetry(t, path, time.Now().Add(2*time.Second))
 	if !strings.Contains(string(raw), `"ancient2"`) {
@@ -216,7 +217,7 @@ func TestRewritesLoseNoConcurrentAppends(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range 100 {
-				e.record(Decision{ID: fmt.Sprintf("%s-%d", name, i), Timestamp: now})
+				e.record(context.Background(), Decision{ID: fmt.Sprintf("%s-%d", name, i), Timestamp: now})
 			}
 		}()
 	}

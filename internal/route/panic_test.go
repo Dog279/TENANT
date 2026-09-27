@@ -23,9 +23,9 @@ func TestPanicGuardsLogTheStack(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev); log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
-	annotateSafely(func(*Decision) { panic("annotator bug") }, &Decision{})
+	annotateSafely(context.Background(), func(*Decision) { panic("annotator bug") }, &Decision{})
 	_, _ = classifySafely(panicClassifier{}, context.Background(), "p")
-	_ = refreshPolicyInput(func(*PolicyInput) { panic("refresh bug") }, &PolicyInput{})
+	_ = refreshPolicyInput(context.Background(), func(*PolicyInput) { panic("refresh bug") }, &PolicyInput{})
 
 	lines := strings.Split(buf.String(), "\n")
 	for _, want := range []string{"annotator bug", "classifier bug", "refresh bug"} {
