@@ -89,6 +89,7 @@ type Hub struct {
 
 	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
 	hk   housekeeper              // housekeeper.go
+	in   intakeState              // intake.go
 }
 
 type source struct {
@@ -186,6 +187,7 @@ func (h *Hub) Start(ctx context.Context) {
 	if h.pipe.Load() != nil {
 		h.Housekeep("retention", retainEvery, h.retain)
 		h.Housekeep("checkpoint", 0, h.checkpointWAL)
+		h.Housekeep("intake", 0, h.intake)
 		h.wg.Add(1)
 		go h.housekeep(ctx)
 	}
@@ -630,10 +632,10 @@ func (h *Hub) OpenFile(source, name string) (io.ReadCloser, FileInfo, error) {
 // --- discovery + tailing ------------------------------------------------------
 
 // recordDirs hold records, not logs: serve's and the TUI's boot records,
-// crash dumps waiting to be filed (TEN-365), and the store's archives
-// (TEN-371). Tailed as sources, a dump would flood the feed one stack line
-// at a time.
-var recordDirs = map[string]bool{"boots": true, "crash": true, "archive": true}
+// crash dumps waiting to be filed (TEN-365), the store's archives (TEN-371)
+// and the spool (spool.go). Tailed as sources, a dump would flood the feed
+// one stack line at a time.
+var recordDirs = map[string]bool{"boots": true, "crash": true, "archive": true, spoolDir: true}
 
 // scanLocked registers every valid folder under root not yet known as a
 // FOREIGN source (some other process writes it) and returns the new ones.

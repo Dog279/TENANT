@@ -48,6 +48,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -381,11 +382,38 @@ func LevelName(l slog.Level) string {
 	}
 }
 
+// flattenMsg puts the message on one line: CR, LF and TAB become spaces, and
+// any other control character (or a byte that isn't UTF-8) is escaped as Go
+// quotes it, so the line can't drive the terminal of a `tail -f`.
 func flattenMsg(s string) string {
-	if !strings.ContainsAny(s, "\n\r\t") {
+	clean := true
+	for _, r := range s {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			clean = false
+			break
+		}
+	}
+	if clean {
 		return s
 	}
-	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ").Replace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case strings.HasPrefix(s[i:], "\r\n"):
+			b.WriteByte(' ')
+			n = 2
+		case r == '\r' || r == '\n' || r == '\t':
+			b.WriteByte(' ')
+		case unicode.IsControl(r) || r == utf8.RuneError && n == 1:
+			q := strconv.Quote(s[i : i+n])
+			b.WriteString(q[1 : len(q)-1])
+		default:
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 func quoteValue(v string) string {
@@ -393,7 +421,7 @@ func quoteValue(v string) string {
 		return `""`
 	}
 	for _, r := range v {
-		if r <= ' ' || r == '"' || r == '\\' || r == '=' || r == 0x7f {
+		if r <= ' ' || r == '"' || r == '\\' || r == '=' || unicode.IsControl(r) || r == utf8.RuneError {
 			return strconv.Quote(v)
 		}
 	}
@@ -434,7 +462,8 @@ func cleanKey(k string) string {
 
 // NormalizeSource coerces a free-form label into a valid source name the way
 // the hub does: lowercase, other punctuation → '-', trimmed to 40 chars, must
-// start with a letter or digit. "" when nothing usable remains.
+// start with a letter or digit. "" when nothing usable remains, or when the
+// name is a Windows device name (con, nul, com1, lpt1.log …): it is a folder.
 func NormalizeSource(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	var b strings.Builder
@@ -451,6 +480,12 @@ func NormalizeSource(name string) string {
 		s = strings.Trim(s[:40], "-._")
 	}
 	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= '0' && s[0] <= '9') {
+		return ""
+	}
+	switch base, _, _ := strings.Cut(s, "."); {
+	case base == "con", base == "prn", base == "aux", base == "nul":
+		return ""
+	case len(base) == 4 && (base[:3] == "com" || base[:3] == "lpt") && base[3] >= '0' && base[3] <= '9':
 		return ""
 	}
 	return s
