@@ -223,6 +223,50 @@ defer act.End(&err)
 - `Audit` is for records that must not be lost. For now it returns once the
   line is written; the Security log's store will make it wait for its commit.
 
+### Event IDs, the reference and coverage
+
+**Declaring an event.** Declare it as a package-level `var`, next to the
+provider it belongs to (the built-in ones in `internal/logs/catalog`), and
+give it `.Doc(meaning, cause, action)`. All three are required. The ID goes in
+its block:
+
+| Block | Use |
+|---|---|
+| 1–999 | lifecycle: starting, ready, stopping, stopped, degraded, recovered |
+| 1000s | normal operations |
+| 2000s | warnings, retries and degradation (level warning) |
+| 3000s | errors and failures (level error or critical) |
+| 4000s | security and audit |
+| 5000s | configuration changes |
+| 9000s | diagnostics: `.Diagnostic()`, and only these |
+
+An ID means one thing forever. When an event stops being written, keep its
+definition and mark it `.Retired()`; never delete it or reuse its number.
+
+**The reference.** [`docs/EVENTS.md`](EVENTS.md) is generated from every
+provider linked into the binary. After adding or changing a definition, run:
+
+```bash
+go test ./cmd/tenant -run TestEventsDoc -update
+```
+
+The same test fails when the file is stale, when a definition breaks the
+conventions above, or when an ID the file lists is no longer declared. The
+event Help text (`catalog.Help`, looked up with `catalog.Lookup(provider, id)`)
+is the same entry, so the dashboard and `tenant logs` show what the file says.
+
+**Coverage.** `go test ./internal/archtest -run Coverage -v` prints, per
+provider, how many static warning-and-above call sites carry a catalogued ID
+(a warning-or-worse `Def`'s `Log` or `Audit`, and `event.Start`), against
+those that don't (`Warn`, `Error`, `Log` at a constant warning level or worse,
+and `hub.Logf` at one). The `providers` table in
+`internal/archtest/coverage.go` maps each provider to its packages and files.
+
+**The ratchet.** A package listed in `catalogued` (same file) may have at most
+its recorded number of warning or error call sites without an ID. Adding one
+fails the test: log it through a catalogued event instead. When the number
+drops, the test fails too, and says what to lower it to.
+
 ## Reading it back programmatically
 
 `logs.ParseLine` inverts the format, so another tool (or an AI pulling logs)
