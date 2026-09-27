@@ -60,11 +60,11 @@ type Report struct {
 // runs it.
 func (s *Store) Retain(ctx context.Context, b Budget, now time.Time) (Report, error) {
 	rep := Report{Deleted: map[string]int64{}, Full: map[string]int64{}}
-	path, err := s.file(ctx)
+	dir, err := s.archiveDir(ctx)
 	if err != nil {
 		return rep, err
 	}
-	r := &retention{s: s, b: b, rep: &rep, names: map[int64]string{}, archiveDir: filepath.Join(filepath.Dir(path), "archive")}
+	r := &retention{s: s, b: b, rep: &rep, names: map[int64]string{}, archiveDir: dir}
 	logs, err := r.policies(ctx)
 	if err != nil {
 		return rep, err
@@ -405,18 +405,19 @@ func (s *Store) compact(ctx context.Context) error {
 			return fmt.Errorf("store: vacuum: %w", err)
 		}
 	}
-	return s.Checkpoint(ctx)
+	_, err := s.Checkpoint(ctx)
+	return err
 }
 
 // Checkpoint copies the WAL into the database and truncates it
 // (wal_checkpoint(TRUNCATE)). A reader in the middle of a transaction can
-// keep it from finishing; the next one catches up.
-func (s *Store) Checkpoint(ctx context.Context) error {
-	var busy, log, done int64
-	if err := s.w.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &log, &done); err != nil {
-		return fmt.Errorf("store: checkpoint: %w", err)
+// keep it from finishing, and busy says so; the next one catches up.
+func (s *Store) Checkpoint(ctx context.Context) (busy bool, err error) {
+	var b, log, done int64
+	if err := s.w.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&b, &log, &done); err != nil {
+		return false, fmt.Errorf("store: checkpoint: %w", err)
 	}
-	return nil
+	return b != 0, nil
 }
 
 // Size is the store's size on disk: the database file and its WAL.

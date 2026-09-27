@@ -2,7 +2,6 @@ package store
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"os"
@@ -123,37 +122,6 @@ func TestForgetSessionFollowsTheRecipe(t *testing.T) {
 	}
 }
 
-func writeTestArchive(t *testing.T, path string, lines ...string) {
-	t.Helper()
-	var b bytes.Buffer
-	zw := gzip.NewWriter(&b)
-	for _, l := range lines {
-		zw.Write([]byte(l + "\n"))
-	}
-	zw.Close()
-	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func readArchiveText(t *testing.T, path string) string {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	zr, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var b bytes.Buffer
-	if _, err := b.ReadFrom(zr); err != nil {
-		t.Fatal(err)
-	}
-	return b.String()
-}
-
 // Archives are rewritten too: another log's events go, a security record
 // becomes a tombstone that keeps its hash, a closing line stays, and a file
 // left empty is removed. A dry run only counts.
@@ -162,41 +130,46 @@ func TestForgetArchivedRewritesTheArchives(t *testing.T) {
 	turns := filepath.Join(dir, "turns-1-3.ndjson.gz")
 	security := filepath.Join(dir, "security-1-2.ndjson.gz")
 	only := filepath.Join(dir, "model-5-5.ndjson.gz")
-	writeTestArchive(t, turns,
-		`{"seq":1,"session_id":"sess_a","msg":"`+secretWord+`"}`,
-		`{"seq":2,"session_id":"sess_b","msg":"keep"}`,
-		`{"seq":3,"trace_id":"run-1","msg":"`+secretWord+` again"}`)
-	writeTestArchive(t, security,
-		`{"rec":1,"session_id":"sess_a","msg":"`+secretWord+`","data":{"d":"`+secretWord+`"},"dtypes":"s","salt":"c2FsdA==","data_hash":"aGFzaA==","hash":"aA=="}`,
-		`{"rec":2,"session_id":"sess_b","msg":"other"}`,
-		`{"last_rec":2,"last_hash":"aA=="}`)
-	writeTestArchive(t, only, `{"seq":5,"trace_id":"run-1","msg":"x"}`)
+	if err := errors.Join(
+		writeArchive(turns, [][]byte{
+			[]byte(`{"seq":1,"session_id":"sess_a","msg":"` + secretWord + `"}`),
+			[]byte(`{"seq":2,"session_id":"sess_b","msg":"keep"}`),
+			[]byte(`{"seq":3,"trace_id":"run-1","msg":"` + secretWord + ` again"}`)}),
+		writeArchive(security, [][]byte{
+			[]byte(`{"rec":1,"session_id":"sess_a","msg":"` + secretWord + `","data":{"d":"` + secretWord + `"},"dtypes":"s","salt":"c2FsdA==","data_hash":"aGFzaA==","hash":"aA=="}`),
+			[]byte(`{"rec":2,"session_id":"sess_b","msg":"other"}`),
+			[]byte(`{"last_rec":2,"last_hash":"aA=="}`)}),
+		writeArchive(only, [][]byte{[]byte(`{"seq":5,"trace_id":"run-1","msg":"x"}`)}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	text := func(path string) string { return string(bytes.Join(readArchive(t, path), []byte("\n"))) }
 	m := Match{Sessions: map[string]bool{"sess_a": true}, Traces: map[string]bool{"run-1": true}}
 
-	before := readArchiveText(t, turns)
+	before := text(turns)
 	d, tb, err := ForgetArchived(dir, m, false)
 	if err != nil || d != 3 || tb != 1 {
 		t.Fatalf("dry run = %d dropped, %d tombstoned, %v; want 3, 1", d, tb, err)
 	}
-	if readArchiveText(t, turns) != before {
+	if text(turns) != before {
 		t.Fatal("a dry run changed an archive")
 	}
 	if d, tb, err = ForgetArchived(dir, m, true); err != nil || d != 3 || tb != 1 {
 		t.Fatalf("apply = %d dropped, %d tombstoned, %v", d, tb, err)
 	}
-	if got := readArchiveText(t, turns); got != `{"seq":2,"session_id":"sess_b","msg":"keep"}`+"\n" {
+	if got := text(turns); got != `{"seq":2,"session_id":"sess_b","msg":"keep"}` {
 		t.Errorf("turns archive after the forget:\n%s", got)
 	}
-	sec := strings.Split(strings.TrimSpace(readArchiveText(t, security)), "\n")
+	sec := readArchive(t, security)
 	var rec map[string]any
-	if len(sec) != 3 || json.Unmarshal([]byte(sec[0]), &rec) != nil {
-		t.Fatalf("security archive after the forget:\n%s", strings.Join(sec, "\n"))
+	if len(sec) != 3 || json.Unmarshal(sec[0], &rec) != nil {
+		t.Fatalf("security archive after the forget:\n%s", text(security))
 	}
 	if rec["msg"] != Tombstone || rec["data"] != nil || rec["salt"] != nil || rec["dtypes"] != nil || rec["data_hash"] != "aGFzaA==" || rec["hash"] != "aA==" {
 		t.Errorf("tombstoned record = %v", rec)
 	}
-	if !strings.Contains(sec[1], `"other"`) || sec[2] != `{"last_rec":2,"last_hash":"aA=="}` {
-		t.Errorf("the rest of the security archive changed:\n%s", strings.Join(sec[1:], "\n"))
+	if !bytes.Contains(sec[1], []byte(`"other"`)) || string(sec[2]) != `{"last_rec":2,"last_hash":"aA=="}` {
+		t.Errorf("the rest of the security archive changed:\n%s", text(security))
 	}
 	if _, err := os.Stat(only); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("an archive left with no events is still there: %v", err)

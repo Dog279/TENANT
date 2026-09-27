@@ -61,9 +61,7 @@ func (s *Store) EndBoot(ctx context.Context, id string, at time.Time) error {
 // Unfinished lists the processes, other than self, whose rows have neither a
 // clean stop nor a report: each is running, or died.
 func (s *Store) Unfinished(ctx context.Context, self string) ([]Boot, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT b.boot_id, coalesce(b.pid, 0), coalesce(r.name, ''), coalesce(b.version, ''),
-		coalesce(b.host, ''), coalesce(b.started_ns, 0), coalesce(b.heartbeat_ns, 0)
-		FROM boots b LEFT JOIN names r ON r.id = b.role
+	rows, err := s.r.QueryContext(ctx, bootSelect+`
 		WHERE coalesce(b.clean, 0) = 0 AND coalesce(b.reported, 0) = 0 AND b.boot_id != ?`, idBytes(self))
 	if err != nil {
 		return nil, fmt.Errorf("store: boots: %w", err)
@@ -71,16 +69,29 @@ func (s *Store) Unfinished(ctx context.Context, self string) ([]Boot, error) {
 	defer rows.Close()
 	var out []Boot
 	for rows.Next() {
-		var b Boot
-		var id any
-		var started, beat int64
-		if err := rows.Scan(&id, &b.PID, &b.Role, &b.Version, &b.Host, &started, &beat); err != nil {
+		b, err := scanBoot(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: boots: %w", err)
 		}
-		b.ID, b.Started, b.Heartbeat = idText(id), time.Unix(0, started).UTC(), time.Unix(0, beat).UTC()
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// bootSelect reads boots rows as scanBoot takes them.
+const bootSelect = `SELECT b.boot_id, coalesce(b.pid, 0), coalesce(r.name, ''), coalesce(b.version, ''),
+	coalesce(b.host, ''), coalesce(b.started_ns, 0), coalesce(b.heartbeat_ns, 0)
+	FROM boots b LEFT JOIN names r ON r.id = b.role`
+
+func scanBoot(sc scanner) (Boot, error) {
+	var b Boot
+	var id any
+	var started, beat int64
+	if err := sc.Scan(&id, &b.PID, &b.Role, &b.Version, &b.Host, &started, &beat); err != nil {
+		return b, err
+	}
+	b.ID, b.Started, b.Heartbeat = idText(id), time.Unix(0, started).UTC(), time.Unix(0, beat).UTC()
+	return b, nil
 }
 
 // MarkReported flags id's row reported, and says whether this call did: of

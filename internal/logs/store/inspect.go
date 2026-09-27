@@ -27,18 +27,13 @@ func (s *Store) Lease(ctx context.Context, name string) (holder string, expires 
 
 // Boot returns the boots row of the process id, or ErrNotFound.
 func (s *Store) Boot(ctx context.Context, id string) (Boot, error) {
-	b := Boot{ID: id}
-	var started, beat int64
-	err := s.r.QueryRowContext(ctx, `SELECT coalesce(b.pid, 0), coalesce(r.name, ''), coalesce(b.version, ''),
-		coalesce(b.host, ''), coalesce(b.started_ns, 0), coalesce(b.heartbeat_ns, 0)
-		FROM boots b LEFT JOIN names r ON r.id = b.role WHERE b.boot_id = ?`, idBytes(id)).
-		Scan(&b.PID, &b.Role, &b.Version, &b.Host, &started, &beat)
+	b, err := scanBoot(s.r.QueryRowContext(ctx, bootSelect+` WHERE b.boot_id = ?`, idBytes(id)))
+	b.ID = id
 	if errors.Is(err, sql.ErrNoRows) {
 		return b, ErrNotFound
 	}
 	if err != nil {
 		return b, fmt.Errorf("store: boots: %w", err)
 	}
-	b.Started, b.Heartbeat = time.Unix(0, started).UTC(), time.Unix(0, beat).UTC()
 	return b, nil
 }

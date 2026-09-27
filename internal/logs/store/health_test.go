@@ -109,7 +109,7 @@ func TestCheckFindsDamage(t *testing.T) {
 	if err := s.Check(ctx); err != nil {
 		t.Fatalf("Check of a sound store = %v", err)
 	}
-	if err := s.Checkpoint(ctx); err != nil {
+	if _, err := s.Checkpoint(ctx); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()

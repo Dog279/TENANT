@@ -37,22 +37,12 @@ func (s *Store) Query(ctx context.Context, f query.Filter, from Cursor, limit in
 		order = " DESC"
 	}
 	list, _ := json.Marshal(seqs)
-	rows, err := s.r.QueryContext(ctx, selectEvents+` WHERE e.seq IN (SELECT value FROM json_each(?)) ORDER BY e.seq`+order, string(list))
+	evs, err = queryEvents(ctx, s.r, selectEvents+` WHERE e.seq IN (SELECT value FROM json_each(?)) ORDER BY e.seq`+order, string(list))
 	if err != nil {
 		return nil, from, restarted, fmt.Errorf("store: query: %w", err)
 	}
-	defer rows.Close()
-	next = from
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, from, restarted, fmt.Errorf("store: query: %w", err)
-		}
-		evs = append(evs, e)
-		next.Seq = e.Seq
-	}
-	if err := rows.Err(); err != nil {
-		return nil, from, restarted, fmt.Errorf("store: query: %w", err)
+	if next = from; len(evs) > 0 {
+		next.Seq = evs[len(evs)-1].Seq
 	}
 	return evs, next, restarted, nil
 }
@@ -251,7 +241,7 @@ func (s *Store) Timeline(ctx context.Context, id string, depth int) ([]event.Eve
 		return nil, nil
 	}
 	depth = min(max(depth, 0), MaxTimelineDepth)
-	rows, err := s.r.QueryContext(ctx, `WITH RECURSIVE ids(id, depth) AS (
+	evs, err := queryEvents(ctx, s.r, `WITH RECURSIVE ids(id, depth) AS (
 		SELECT ?, 0
 		UNION
 		SELECT e.activity_id, ids.depth + 1 FROM ids JOIN events e ON e.related_id = ids.id
@@ -264,16 +254,7 @@ func (s *Store) Timeline(ctx context.Context, id string, depth int) ([]event.Eve
 	if err != nil {
 		return nil, fmt.Errorf("store: timeline: %w", err)
 	}
-	defer rows.Close()
-	var out []event.Event
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: timeline: %w", err)
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return evs, nil
 }
 
 // IDStats is how often one event ID has occurred: "has this happened

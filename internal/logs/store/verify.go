@@ -124,7 +124,7 @@ func (s *Store) walk(ctx context.Context, fn func(where string, l *line) error) 
 	}
 	for _, f := range files {
 		where := "archive " + filepath.Base(f.path)
-		err := readLines(f.path, func(l *line) error { return fn(where, l) })
+		err := readLines(f.path, parsed(func(l *line) error { return fn(where, l) }))
 		var b *Break
 		if err != nil && !errors.As(err, &b) {
 			return &Break{Where: where, Reason: "unreadable: " + err.Error()}
@@ -209,8 +209,9 @@ func securityArchives(dir string) ([]archiveFile, error) {
 	return out, nil
 }
 
-// readLines calls fn with each line of a gzip NDJSON archive.
-func readLines(path string, fn func(l *line) error) error {
+// readLines calls fn with each line of a gzip NDJSON archive, as it is: the
+// bytes are good until fn returns. parsed reads them as lines.
+func readLines(path string, fn func([]byte) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -223,19 +224,26 @@ func readLines(path string, fn func(l *line) error) error {
 	return scanLines(z, fn)
 }
 
-func scanLines(r io.Reader, fn func(l *line) error) error {
+func scanLines(r io.Reader, fn func([]byte) error) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
 	for sc.Scan() {
-		var l line
-		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
-			return err
-		}
-		if err := fn(&l); err != nil {
+		if err := fn(sc.Bytes()); err != nil {
 			return err
 		}
 	}
 	return sc.Err()
+}
+
+// parsed is fn reading each line's JSON as a line.
+func parsed(fn func(l *line) error) func([]byte) error {
+	return func(b []byte) error {
+		var l line
+		if err := json.Unmarshal(b, &l); err != nil {
+			return err
+		}
+		return fn(&l)
+	}
 }
 
 // checker verifies records in chain order.
@@ -509,7 +517,7 @@ func VerifyBundle(r io.Reader, key []byte) (BundleHeader, Verification, error) {
 	}
 	c.v.Head = hdr.Prev
 	c.seen[hdr.Prev.Rec] = c.prev // an empty bundle's closing line names it
-	err = scanLines(br, func(l *line) error { return c.check("bundle", l) })
+	err = scanLines(br, parsed(func(l *line) error { return c.check("bundle", l) }))
 	var b *Break
 	switch {
 	case errors.As(err, &b):

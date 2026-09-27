@@ -120,7 +120,7 @@ func (in *interner) row(e *event.Event) (*row, error) {
 		b, _ := json.Marshal(e.Keywords)
 		r.keywords = string(b)
 	}
-	if data, types := encodeData(e.Data); data != "" {
+	if data, types := event.EncodeData(e.Data); data != "" {
 		r.data, r.dtypes = data, types
 		r.bytes = int64(len(data) + len(types))
 	}
@@ -172,10 +172,8 @@ func idText(v any) string {
 	return ""
 }
 
-// encodeData and decodeData are the data and dtypes columns: the event
-// package's encoding, so an event's JSON carries them as stored.
-func encodeData(fields []event.Field) (data, types string) { return event.EncodeData(fields) }
-
+// decodeData reads the data and dtypes columns: the event package's encoding
+// (event.EncodeData), so an event's JSON carries them as stored.
 func decodeData(data, types string) ([]event.Field, error) {
 	if data != "" && types == "" {
 		return nil, errors.New("data without dtypes")
@@ -209,4 +207,23 @@ func scanEvent(sc scanner) (event.Event, error) {
 		return e, fmt.Errorf("event %d: data: %w", e.Seq, err)
 	}
 	return e, nil
+}
+
+// queryEvents runs q, a selectEvents query, and returns its events: with an
+// error, the ones read before it.
+func queryEvents(ctx context.Context, db *sql.DB, q string, args ...any) ([]event.Event, error) {
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []event.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

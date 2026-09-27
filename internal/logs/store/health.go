@@ -15,7 +15,6 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"tenant/internal/datalock"
-	"tenant/internal/logs/event"
 )
 
 // The store's health (docs/design/logging-v2.md §12.1): its lock, a damaged
@@ -79,8 +78,9 @@ func Quarantine(path string) (string, error) {
 	return to, nil
 }
 
-// salvageSkip is how far Salvage jumps past a stretch it can't read, and
-// salvageTries how many jumps in a row it makes before it gives up.
+// salvageSkip is how many events Salvage reads at a time, as many as it can
+// before an error, and how far it jumps past a stretch it can't read;
+// salvageTries is how many jumps in a row it makes before it gives up.
 const (
 	salvageSkip  = 500
 	salvageTries = 1000
@@ -103,7 +103,7 @@ func Salvage(ctx context.Context, from string, to *Store) (n int, err error) {
 	defer db.Close()
 	var errs []error
 	for seq, tries := int64(0), 0; tries < salvageTries && ctx.Err() == nil; {
-		evs, err := salvagePage(ctx, db, seq)
+		evs, err := queryEvents(ctx, db, selectEvents+` WHERE e.seq > ? ORDER BY e.seq LIMIT ?`, seq, salvageSkip)
 		if err != nil && len(evs) == 0 {
 			errs = append(errs, fmt.Errorf("after seq %d: %w", seq, err))
 			seq, tries = seq+salvageSkip, tries+1
@@ -138,25 +138,6 @@ func Salvage(ctx context.Context, from string, to *Store) (n int, err error) {
 		return n, fmt.Errorf("store: salvage: %w", errors.Join(errs...))
 	}
 	return n, nil
-}
-
-// salvagePage reads up to salvageSkip events after seq, as many as it can
-// before an error.
-func salvagePage(ctx context.Context, db *sql.DB, seq int64) ([]event.Event, error) {
-	rows, err := db.QueryContext(ctx, selectEvents+` WHERE e.seq > ? ORDER BY e.seq LIMIT ?`, seq, salvageSkip)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []event.Event
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return out, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
 }
 
 // Check runs SQLite's quick_check: nil when the database is sound, else an

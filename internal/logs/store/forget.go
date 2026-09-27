@@ -101,21 +101,13 @@ func (s *Store) Matching(ctx context.Context, m Match, fn func(event.Event) erro
 }
 
 func (s *Store) each(ctx context.Context, seqs []any, fn func(event.Event) error) error {
-	rows, err := s.r.QueryContext(ctx, selectEvents+` WHERE e.seq IN (?`+strings.Repeat(", ?", len(seqs)-1)+`) ORDER BY e.seq`, seqs...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return err
-		}
+	evs, err := queryEvents(ctx, s.r, selectEvents+` WHERE e.seq IN (?`+strings.Repeat(", ?", len(seqs)-1)+`) ORDER BY e.seq`, seqs...)
+	for _, e := range evs {
 		if err := fn(e); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return err
 }
 
 // ForgetResult is what Forget changed.
@@ -155,12 +147,8 @@ func (s *Store) Forget(ctx context.Context, m Match) (ForgetResult, error) {
 	if _, err := s.w.ExecContext(ctx, `INSERT INTO events_fts (events_fts) VALUES ('optimize')`); err != nil {
 		return res, fmt.Errorf("store: forget: optimize the search index: %w", err)
 	}
-	var busy, frames, done int
-	if err := s.w.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &frames, &done); err != nil {
-		return res, fmt.Errorf("store: forget: checkpoint: %w", err)
-	}
-	res.Busy = busy != 0
-	return res, nil
+	res.Busy, err = s.Checkpoint(ctx)
+	return res, err
 }
 
 func (s *Store) forgetChunk(ctx context.Context, hs []hit, res *ForgetResult) error {

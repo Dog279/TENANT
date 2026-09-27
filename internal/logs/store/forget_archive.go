@@ -1,33 +1,20 @@
 package store
 
 import (
-	"bufio"
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"tenant/internal/fsperm"
 )
 
 // The log book's archives hold events that left the database:
 // <logs root>/archive/<log>-<first>-<last>.ndjson.gz, one JSON event per line,
 // and for security a closing (rec, hash) line (§10.2). The archive writer
-// (TEN-371) owns that shape; the line fields a privacy rewrite reads and
-// changes are named here, to keep in step with it.
-const (
-	archiveSession = "session_id"
-	archiveTrace   = "trace_id" // runtrace's 32 hex characters, or the ID's text
-	archiveMsg     = "msg"
-)
-
-// archiveErased are what a security tombstone removes from an archived
-// record; data_hash, rec and hash stay, so the chain still verifies.
-var archiveErased = []string{"data", "dtypes", "salt"}
+// (TEN-371) owns that shape: archiveSelect writes a line's keys, and line
+// names them.
 
 // ForgetArchived rewrites the archives in dir (<logs root>/archive) without
 // the events m selects. In a security file each such line becomes a
@@ -69,82 +56,47 @@ func archiveLog(name string) (string, bool) {
 }
 
 func forgetArchive(path string, security bool, m Match, apply bool) (dropped, tombstoned int, err error) {
-	f, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0, 0, nil
-	}
-	if err != nil {
-		return 0, 0, err
-	}
-	defer f.Close()
-	zr, err := gzip.NewReader(f)
-	if err != nil {
-		return 0, 0, err
-	}
-	var out bytes.Buffer
-	kept := 0
-	sc := bufio.NewScanner(zr)
-	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
+	// readLines closes the file before writeArchive replaces it, which
+	// Windows can't do to an open file.
+	var kept [][]byte
+	err = readLines(path, func(line []byte) error {
 		var obj map[string]json.RawMessage
 		var session, trace string
 		if json.Unmarshal(line, &obj) == nil {
-			_ = json.Unmarshal(obj[archiveSession], &session)
-			_ = json.Unmarshal(obj[archiveTrace], &trace)
+			_ = json.Unmarshal(obj["session_id"], &session)
+			_ = json.Unmarshal(obj["trace_id"], &trace) // runtrace's 32 hex characters, or the ID's text
 		}
 		switch {
 		case !m.Selects(session, trace):
 		case !security:
 			dropped++
-			continue
+			return nil
 		default:
 			tomb, _ := json.Marshal(Tombstone)
-			if string(obj[archiveMsg]) == string(tomb) {
+			if string(obj["msg"]) == string(tomb) {
 				break // tombstoned already
 			}
-			obj[archiveMsg] = tomb
-			for _, k := range archiveErased {
+			obj["msg"] = tomb
+			for _, k := range []string{"data", "dtypes", "salt"} { // data_hash, rec and hash stay, so the chain still verifies
 				delete(obj, k)
 			}
 			line, _ = json.Marshal(obj) // a map of raw JSON always marshals
 			tombstoned++
 		}
-		out.Write(line)
-		out.WriteByte('\n')
-		kept++
-	}
-	if err := sc.Err(); err != nil {
+		kept = append(kept, bytes.Clone(line))
+		return nil
+	})
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return 0, 0, nil
+	case err != nil:
 		return 0, 0, err
-	}
-	if !apply || dropped+tombstoned == 0 {
+	case !apply || dropped+tombstoned == 0:
 		return dropped, tombstoned, nil
-	}
-	_ = f.Close() // Windows can't replace a file that is still open
-	if kept == 0 {
+	case len(kept) == 0:
 		return dropped, tombstoned, os.Remove(path)
 	}
-	tmp := path + ".tmp"
-	w, err := fsperm.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-	if err != nil {
-		return 0, 0, err
-	}
-	zw := gzip.NewWriter(w)
-	_, err = zw.Write(out.Bytes())
-	if err == nil {
-		err = zw.Close()
-	}
-	if err == nil {
-		err = w.Sync()
-	}
-	if cerr := w.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
+	if err := writeArchive(path, kept); err != nil {
 		return 0, 0, err
 	}
 	return dropped, tombstoned, nil
