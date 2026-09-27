@@ -97,11 +97,5 @@ func (s *Settings) Save(cfgDir, agentID string) error {
 	if err := fsperm.MkdirAll(filepath.Dir(p)); err != nil {
 		return err
 	}
-	return saveAudited(p, b, func(p string, b []byte) error {
-		tmp := p + ".tmp"
-		if err := fsperm.WriteFile(tmp, b); err != nil {
-			return err
-		}
-		return os.Rename(tmp, p)
-	})
+	return saveAudited(p, b)
 }

@@ -110,10 +110,3 @@ func (r approvalRec) decided(ctx context.Context, d control.ApprovalDecision, ac
 	}
 	return d
 }
-
-// modeChanged records the operator setting category to m on this broker,
-// from surface.
-func (b *Broker) modeChanged(category string, was, m Mode, surface string) {
-	_ = catalog.ModeChanged.Audit(context.Background(), "broker", b.origin, "category", category, "mode", m.String(), "was", was.String(),
-		"actor", "operator", "surface", surface)
-}

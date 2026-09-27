@@ -12,10 +12,10 @@ import (
 )
 
 // What is running now (logging v2 §8.7): the component registry the
-// Components view reads. A component is tracked where it starts: Group.Start
-// for what the group also stops, Track for what it doesn't (the iMessage
-// responder, the watchers, the peer heartbeat, the turn gate), and
-// internal/logs/capture for each child process while it runs. Every state
+// Components view reads. A component is tracked where it starts:
+// Group.StartFunc for what the group also stops, Track for what it doesn't
+// (the iMessage responder, the watchers, the peer heartbeat, the turn gate),
+// and internal/logs/capture for each child process while it runs. Every state
 // change is a system event under the run's activity, so "when did Discord
 // last reconnect, and why?" is one query: activity:<id>.
 //
@@ -163,27 +163,11 @@ func (c *Comp) Set(st State, err error) {
 	}
 }
 
-// Start is Add for a component that is running now: it is tracked, so the
-// Components view lists it, and its stop marks it stopped, or failed with
-// the stop's error. It returns the component, to report a failed start or a
-// degraded state.
-func (g *Group) Start(stage Stage, name string, kind Kind, log string, stop func() error) *Comp {
+// StartFunc is AddFunc for a component that is running now: it is tracked,
+// so the Components view lists it, and its stop marks it stopped.
+func (g *Group) StartFunc(stage Stage, name string, kind Kind, log string, stop func()) {
 	c := Track(context.Background(), name, kind, log, Running, nil)
-	g.Add(stage, name, func() error {
-		err := stop()
-		if err != nil {
-			c.Set(Failed, err)
-		} else {
-			c.Set(Stopped, nil)
-		}
-		return err
-	})
-	return c
-}
-
-// StartFunc is Start for a stop that cannot fail.
-func (g *Group) StartFunc(stage Stage, name string, kind Kind, log string, stop func()) *Comp {
-	return g.Start(stage, name, kind, log, func() error { stop(); return nil })
+	g.AddFunc(stage, name, func() { stop(); c.Set(Stopped, nil) })
 }
 
 // Components lists what is tracked, by kind and then name: the Components

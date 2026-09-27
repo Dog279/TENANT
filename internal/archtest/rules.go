@@ -45,6 +45,7 @@ var rules = []rule{
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
 	{Pkg: "internal/logs/event", Notes: "leaf: the event model; every internal package may import it"},
+	{Pkg: "internal/logs/event/eventtest", Notes: "tests' event recorder, on the event model alone"},
 
 	{Pkg: "internal/logs/query", May: []string{"internal/logs/event"}, Notes: "the filter language; the store plans it into SQL"},
 	{Pkg: "internal/logs/store", May: []string{"internal/logs/event", "internal/logs/query", "internal/fsperm", "internal/datalock"}, Notes: "logbook.db, the system of record"},

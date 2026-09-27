@@ -5,23 +5,13 @@ import (
 	"fmt"
 	"testing"
 
-	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
-
-type recorder struct{ events []*event.Event }
-
-func (r *recorder) Emit(_ context.Context, e *event.Event) { r.events = append(r.events, e) }
-func (r *recorder) Audit(ctx context.Context, e *event.Event) error {
-	r.Emit(ctx, e)
-	return nil
-}
 
 // Accepting, enabling, disabling and forgetting a skill are events, and
 // skill_history records each, like any other change (TEN-394).
 func TestStateChangesAreEventsAndHistory(t *testing.T) {
-	rec := &recorder{}
-	event.Install(rec)
-	t.Cleanup(func() { event.Install(nil) })
+	rec := eventtest.Capture(t)
 	s := mk(t)
 	ctx := context.Background()
 	id, err := s.UpsertWithSource(ctx, &Skill{AgentID: "a", Name: "deploy", Description: "ship it", Status: StatusProposed}, "induction")
@@ -48,7 +38,7 @@ func TestStateChangesAreEventsAndHistory(t *testing.T) {
 	}
 
 	var msgs []string
-	for _, e := range rec.events {
+	for _, e := range rec.Events() {
 		msgs = append(msgs, e.Msg)
 	}
 	want := "[Skill deploy saved (induction) Skill deploy accepted Skill deploy disabled Skill deploy is now untrusted (was trusted) Skill deploy removed]"

@@ -14,14 +14,14 @@ import (
 	"tenant/internal/logs/catalog"
 )
 
-// saveAudited writes data to path through write, then files the Security
+// saveAudited writes data to path (AtomicWrite), then files the Security
 // record of the change (docs/design/logging-v2.md §10.1): each setting that
 // changed, old → new, with every secret value replaced by its name. It is
 // the one place config.json and settings.<agent>.json are written, so every
 // caller is covered. A save that changes nothing files nothing.
-func saveAudited(path string, data []byte, write func(string, []byte) error) error {
+func saveAudited(path string, data []byte) error {
 	old, _ := os.ReadFile(path) // missing: every setting is new
-	if err := write(path, data); err != nil {
+	if err := AtomicWrite(path, data); err != nil {
 		return err
 	}
 	if diff := configDiff(old, data); len(diff) > 0 {

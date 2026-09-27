@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tenant/internal/logs/event/eventtest"
 )
 
 // security renders the Security records captured, "msg | actor@surface
 // k=v…" each.
-func (c *captured) security() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func security(c *eventtest.Recorder) []string {
 	var out []string
-	for _, e := range c.events {
+	for _, e := range c.Events() {
 		if e.Log != "security" {
 			continue
 		}
@@ -33,7 +33,7 @@ func (c *captured) security() []string {
 func TestPeeringSecurityRecords(t *testing.T) {
 	srv, _, _ := pairedListener(t, nil) // mints an invite for "spoke"
 	defer srv.Close()
-	c := capture(t)
+	c := eventtest.Capture(t)
 	s, _ := LoadStore(t.TempDir())
 	if err := s.Put(&Peer{Name: "bob", InstanceID: "i-bob", Dial: true, Token: "t"}); err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestPeeringSecurityRecords(t *testing.T) {
 		"Unpaired peer bob (revoke) | operator@peering peer=bob how=revoke",
 		"Unpaired peer bob (remove) | operator@peering peer=bob how=remove",
 	}
-	got := c.security()
+	got := security(c)
 	if len(got) < len(want)+1 || strings.Join(got[:len(want)], "\n") != strings.Join(want, "\n") ||
 		!strings.Contains(got[len(want)], "refused: token") || !strings.HasSuffix(got[len(want)], "@peering reason=token method=POST route=/") {
 		t.Errorf("security records:\n%s\nwant:\n%s\nthen a refused token", strings.Join(got, "\n"), strings.Join(want, "\n"))

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
 
 // fakeConn scripts server→client frames and records client→client writes, so
@@ -215,41 +216,16 @@ func TestWithGatewayQuery(t *testing.T) {
 	}
 }
 
-// captured is an event emitter for tests: it keeps what it is given, from any
-// goroutine (Run emits from its own).
-type captured struct {
-	mu     sync.Mutex
-	events []*event.Event
-}
-
-func (c *captured) Emit(_ context.Context, e *event.Event) {
-	c.mu.Lock()
-	c.events = append(c.events, e)
-	c.mu.Unlock()
-}
-
-func (c *captured) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
-
 // find returns the first event of d with opcode op ("" for a plain event), or
 // nil.
-func (c *captured) find(d *event.Def, op string) *event.Event {
+func find(c *eventtest.Recorder, d *event.Def, op string) *event.Event {
 	s := d.Spec()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, e := range c.events {
+	for _, e := range c.Events() {
 		if e.Provider == s.Provider && e.ID == s.ID && e.Opcode == op {
 			return e
 		}
 	}
 	return nil
-}
-
-func captureEvents(t *testing.T) *captured {
-	t.Helper()
-	c := &captured{}
-	event.Install(c)
-	t.Cleanup(func() { event.Install(nil) })
-	return c
 }
 
 // field is the text of e's field key ("" when absent).
@@ -266,7 +242,7 @@ func field(e *event.Event, key string) string {
 // it are recorded under it, with the cause, before Run reconnects; cancelling
 // Run stops it.
 func TestGateway_RunRecordsConnection(t *testing.T) {
-	c := captureEvents(t)
+	c := eventtest.Capture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g := &Gateway{
@@ -283,7 +259,7 @@ func TestGateway_RunRecordsConnection(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- g.Run(ctx) }()
 	var ended *event.Event
-	for deadline := time.Now().Add(3 * time.Second); ended == nil; ended = c.find(SessionEnded, "") {
+	for deadline := time.Now().Add(3 * time.Second); ended == nil; ended = find(c, SessionEnded, "") {
 		if time.Now().After(deadline) {
 			t.Fatal("the drop was not recorded")
 		}
@@ -293,7 +269,7 @@ func TestGateway_RunRecordsConnection(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	start, ready, stop := c.find(Connection, event.OpStart), c.find(SessionReady, ""), c.find(Connection, event.OpStop)
+	start, ready, stop := find(c, Connection, event.OpStart), find(c, SessionReady, ""), find(c, Connection, event.OpStop)
 	if start == nil || ready == nil || stop == nil {
 		t.Fatalf("want the connection's start, its ready session and its stop; got start=%v ready=%v stop=%v", start, ready, stop)
 	}
@@ -313,7 +289,7 @@ func TestGateway_RunRecordsConnection(t *testing.T) {
 
 // A fatal close fails the Connection activity with its code, after OnFatal.
 func TestGateway_FatalCloseFailsConnection(t *testing.T) {
-	c := captureEvents(t)
+	c := eventtest.Capture(t)
 	var fatal error
 	g := &Gateway{
 		Token:   "bad",
@@ -327,7 +303,7 @@ func TestGateway_FatalCloseFailsConnection(t *testing.T) {
 	if err == nil || fatal == nil {
 		t.Fatalf("Run = %v, OnFatal got %v; want the fatal close", err, fatal)
 	}
-	fail := c.find(Connection, event.OpFail)
+	fail := find(c, Connection, event.OpFail)
 	if fail == nil || fail.Level != event.Error || !strings.Contains(field(fail, "error"), "4004") {
 		t.Fatalf("want the connection failed with the 4004 close, got %+v", fail)
 	}
@@ -336,25 +312,25 @@ func TestGateway_FatalCloseFailsConnection(t *testing.T) {
 // A heartbeat Discord never acknowledged closes the connection as a zombie,
 // and says so.
 func TestGateway_ZombieHeartbeatRecorded(t *testing.T) {
-	c := captureEvents(t)
+	c := eventtest.Capture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hb := &heart{}
 	hb.markPending()
 	conn := newFakeConn()
 	(&Gateway{}).heartbeatLoop(ctx, conn, 10*time.Millisecond, hb, cancel)
-	if c.find(HeartbeatUnacked, "") == nil || ctx.Err() == nil {
-		t.Fatalf("want the zombie recorded and the session cancelled; events %d, ctx %v", len(c.events), ctx.Err())
+	if find(c, HeartbeatUnacked, "") == nil || ctx.Err() == nil {
+		t.Fatalf("want the zombie recorded and the session cancelled; events %d, ctx %v", len(c.Events()), ctx.Err())
 	}
 }
 
 // An operator message Discord sent but we could not decode is recorded, not
 // lost without a word.
 func TestGateway_UndecodableMessageLogged(t *testing.T) {
-	c := captureEvents(t)
+	c := eventtest.Capture(t)
 	g := &Gateway{seen: newSeenSet(8), OnMessage: func(Inbound) { t.Error("an undecodable message was delivered") }}
 	g.dispatchMessage(json.RawMessage(`{"id": 12}`))
-	if e := c.find(Undecodable, ""); e == nil || field(e, "payload") != "MESSAGE_CREATE" || e.Level != event.Warning {
+	if e := find(c, Undecodable, ""); e == nil || field(e, "payload") != "MESSAGE_CREATE" || e.Level != event.Warning {
 		t.Errorf("not recorded: %+v", e)
 	}
 }

@@ -985,7 +985,7 @@ index reads every row it can't rule out, so it can take longer.
 each with a name, a kind (`subsystem`, `connector`, `server`, `child`, `job`),
 its log, a state (`starting`, `running`, `degraded`, `stopped`, `failed`),
 since when, when this run started (its uptime) and its last error. They are
-tracked where they start: `Group.Start` registers a stop that also tracks
+tracked where they start: `Group.StartFunc` registers a stop that also tracks
 (cron, the improve scheduler); `lifecycle.Track` covers the rest (the
 dashboard, the Discord relay, the iMessage responder, degraded while chat.db
 can't be polled; the peer listener; the peer heartbeat, degraded while

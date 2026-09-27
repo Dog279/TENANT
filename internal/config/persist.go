@@ -119,7 +119,7 @@ func (lc *Launch) Save(cfgDir string) error {
 	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return err
 	}
-	return saveAudited(Path(cfgDir), b, AtomicWrite)
+	return saveAudited(Path(cfgDir), b)
 }
 
 // Active returns the selected generation provider's config (or nil).

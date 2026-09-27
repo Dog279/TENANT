@@ -5,37 +5,25 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
 	"tenant/internal/runtrace"
 )
 
-// capture keeps the catalogued events written while it is installed, with
-// the trace of the context each was written under.
-type capture struct {
-	mu     sync.Mutex
-	events []*event.Event
+// installCapture captures the events for the test, each with the trace of
+// the context it was written under.
+func installCapture(t *testing.T) *eventtest.Recorder {
+	return eventtest.Capture(t, func(ctx context.Context, e *event.Event) { e.Corr.TraceID = runtrace.IDFromContext(ctx) })
 }
-
-func (c *capture) Emit(ctx context.Context, e *event.Event) {
-	e.Corr.TraceID = runtrace.IDFromContext(ctx)
-	c.mu.Lock()
-	c.events = append(c.events, e)
-	c.mu.Unlock()
-}
-
-func (c *capture) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
 
 // lines renders the model events as "id opcode profile trace", one each.
-func (c *capture) lines() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func lines(c *eventtest.Recorder) []string {
 	var out []string
-	for _, e := range c.events {
+	for _, e := range c.Events() {
 		if e.Provider != "model" {
 			continue
 		}
@@ -51,15 +39,6 @@ func (c *capture) lines() []string {
 		out = append(out, fmt.Sprintf("%d %s %s %s%s", e.ID, e.Opcode, profile, e.Corr.TraceID, tokens))
 	}
 	return out
-}
-
-// installCapture makes a capture the event emitter for the test. Not for
-// parallel tests: the emitter is process-wide.
-func installCapture(t *testing.T) *capture {
-	c := &capture{}
-	event.Install(c)
-	t.Cleanup(func() { event.Install(nil) })
-	return c
 }
 
 // router binds the planner to "primary", falling back to "backup", each a
@@ -115,12 +94,11 @@ func TestModelCallsAreActivitiesUnderTheTurn(t *testing.T) {
 		"9002  backup t1 tokens=7",
 		"9001 stop backup t1",
 	}
-	if got := c.lines(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := lines(c); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if start, fail := c.events[0], c.events[2]; start.Channel != event.Diagnostic || fail.Level != event.Error ||
+	evs := c.Events()
+	if start, fail := evs[0], evs[2]; start.Channel != event.Diagnostic || fail.Level != event.Error ||
 		start.Corr.ActivityID == "" || fail.Corr.ActivityID != start.Corr.ActivityID {
 		t.Fatalf("start %+v / fail %+v: want one diagnostic activity, failing at error", start, fail)
 	}
@@ -155,7 +133,7 @@ func TestStreamedCallEndsWithItsStream(t *testing.T) {
 	}
 	_, _ = llm.Generate(context.Background(), model.GenerateRequest{})
 	want := "9001 start primary |9002  primary  tokens=2|9001 stop primary |9001 start primary |9001 stop primary "
-	if got := strings.Join(c.lines(), "|"); got != want {
+	if got := strings.Join(lines(c), "|"); got != want {
 		t.Fatalf("events = %q, want %q", got, want)
 	}
 }

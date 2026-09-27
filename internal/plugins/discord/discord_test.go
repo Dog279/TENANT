@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 	"tenant/internal/model"
 )
 
@@ -236,7 +237,7 @@ func TestErrorPath_429RetryAfter(t *testing.T) {
 // the resource but none of the path's IDs, and the Delivery activity failing,
 // with the rate limit inside it.
 func TestSendMessage_RateLimitRecorded(t *testing.T) {
-	c := captureEvents(t)
+	c := eventtest.Capture(t)
 	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "2")
 		w.WriteHeader(429)
@@ -244,7 +245,7 @@ func TestSendMessage_RateLimitRecorded(t *testing.T) {
 	if _, err := svc.SendMessage(context.Background(), "1234", "hi"); err == nil {
 		t.Fatal("expected the 429")
 	}
-	rl, start, fail := c.find(RateLimited, ""), c.find(Delivery, event.OpStart), c.find(Delivery, event.OpFail)
+	rl, start, fail := find(c, RateLimited, ""), find(c, Delivery, event.OpStart), find(c, Delivery, event.OpFail)
 	if rl == nil || start == nil || fail == nil {
 		t.Fatalf("want the rate limit and the failed delivery; got %v %v %v", rl, start, fail)
 	}

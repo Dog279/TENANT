@@ -230,9 +230,6 @@ type Config struct {
 	// container-only escape hatch: NewSession rejects it unless Tenant detects
 	// a container or user namespace around the process. The default is false.
 	NoSandbox bool
-	// Warn receives security warnings such as activation of NoSandbox. When
-	// nil, warnings are logged as browser events.
-	Warn func(string)
 	// Headless runs Chrome without a window (default true). Set false
 	// to watch the agent drive a visible browser (useful for trust /
 	// debugging interact+transact later).
@@ -428,14 +425,7 @@ func validateNoSandboxMode(requested bool, outerDetected bool) error {
 // on the process and drops the status.
 var errChromeExit = errors.New("exit status unknown (chromedp keeps it)")
 
-const noSandboxWarning = "SECURITY WARNING: Chrome process sandbox disabled by browser_no_sandbox; use only inside the detected outer sandbox"
-
-func emitNoSandboxWarning(cfg Config, outerKind string) {
-	message := noSandboxWarning + " (" + outerKind + ")"
-	if cfg.Warn != nil {
-		cfg.Warn(message)
-		return
-	}
+func emitNoSandboxWarning(outerKind string) {
 	NoSandbox.Log(context.Background(), "outer", outerKind)
 }
 
@@ -483,7 +473,7 @@ func NewSession(cfg Config) (*Session, error) {
 		return nil, err
 	}
 	if cfg.NoSandbox {
-		emitNoSandboxWarning(cfg, outerKind)
+		emitNoSandboxWarning(outerKind)
 	}
 	if cfg.NavTimeout == 0 {
 		cfg.NavTimeout = 60 * time.Second

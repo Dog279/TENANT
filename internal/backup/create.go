@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -391,10 +392,7 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 	if !shared {
 		roots = append([]walkRoot{{RootConfig, cfg}}, roots...)
 	}
-	logsDir := opts.LogsDir
-	if logsDir == "" {
-		logsDir = filepath.Join(data, "logs")
-	}
+	logsDir := cmp.Or(opts.LogsDir, filepath.Join(data, "logs"))
 	mirrorLeft := "" // the mirror's files, as a pattern, once one is left out
 	var plan []source
 	var skipped []Skipped

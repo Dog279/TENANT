@@ -5,10 +5,14 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/chromedp/chromedp"
+
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
 
 func TestEffectiveLaunchFlagsSandboxDefaultAndOptIn(t *testing.T) {
@@ -108,9 +112,11 @@ func TestDetectOuterSandbox(t *testing.T) {
 }
 
 func TestNoSandboxEmitsSecurityWarning(t *testing.T) {
-	var got string
-	emitNoSandboxWarning(Config{Warn: func(message string) { got = message }}, "test container")
-	if !strings.Contains(got, "SECURITY WARNING") || !strings.Contains(got, "test container") {
-		t.Fatalf("warning = %q", got)
+	rec := eventtest.Capture(t)
+	emitNoSandboxWarning("test container")
+	got := rec.Events()
+	if len(got) != 1 || got[0].Provider != "browser" || got[0].ID != 2001 || got[0].Level != event.Warning ||
+		!slices.Contains(got[0].Keywords, "security") || !strings.Contains(got[0].Msg, "test container") {
+		t.Fatalf("logged %+v, want one security warning naming the outer sandbox", got)
 	}
 }

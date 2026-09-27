@@ -148,6 +148,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
+| `internal/logs/event/eventtest` | nothing in the module | tests' event recorder, on the event model alone |
 | `internal/logs/query` | `internal/logs/event` | the filter language; the store plans it into SQL |
 | `internal/logs/store` | `internal/logs/event`, `internal/logs/query`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
 | `internal/logs` | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
@@ -607,7 +608,7 @@ guide: `docs/LOGGING.md`.
   budget, now)` is the Summary page, from the per-hour rollups
   (`Hub.Summary(ctx, now)` with the budget in force).
 - `internal/lifecycle` also keeps what is running: `Track(ctx, name, kind,
-  log, state, err)`, `Group.Start`/`StartFunc` (a stop that tracks),
+  log, state, err)`, `Group.StartFunc` (a stop that tracks),
   `Comp.Set` and the snapshot `Components()`; each state change is a
   `system` event (TEN-380).
 
