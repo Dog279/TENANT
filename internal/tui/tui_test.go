@@ -91,18 +91,15 @@ func TestRenderHelpIndex(t *testing.T) {
 		t.Fatalf("styled visible text != plain:\nplain=%q\nvis=%q", plain, stripANSI(styled))
 	}
 	// Every non-hidden section's id + title appears.
-	for _, sec := range helpSections {
-		if sec.hidden {
-			continue
+	for _, sec := range slashRegistry().Sections() {
+		if !strings.Contains(plain, "/help "+sec.ID) {
+			t.Errorf("index missing /help %s", sec.ID)
 		}
-		if !strings.Contains(plain, "/help "+sec.id) {
-			t.Errorf("index missing /help %s", sec.id)
+		if !strings.Contains(plain, sec.Title) {
+			t.Errorf("index missing title %q", sec.Title)
 		}
-		if !strings.Contains(plain, sec.title) {
-			t.Errorf("index missing title %q", sec.title)
-		}
-		if !strings.Contains(plain, sec.tagline) {
-			t.Errorf("index missing tagline for %s", sec.id)
+		if !strings.Contains(plain, sec.Tagline) {
+			t.Errorf("index missing tagline for %s", sec.ID)
 		}
 	}
 	// `/help all` hint shown.
@@ -134,16 +131,16 @@ func TestRenderHelpSection(t *testing.T) {
 		t.Fatalf("styled visible text != plain:\nplain=%q\nvis=%q", plain, stripANSI(styled))
 	}
 	// Every command row appears.
-	for _, r := range sec.rows {
-		if !strings.Contains(plain, r[0]) {
-			t.Errorf("section missing %q", r[0])
+	for _, r := range slashRegistry().Rows(sec.ID) {
+		if !strings.Contains(plain, r.Syntax) {
+			t.Errorf("section missing %q", r.Syntax)
 		}
 	}
 	// Title + tagline appear in the header.
-	if !strings.Contains(plain, sec.title) {
+	if !strings.Contains(plain, sec.Title) {
 		t.Errorf("section missing title")
 	}
-	if !strings.Contains(plain, sec.tagline) {
+	if !strings.Contains(plain, sec.Tagline) {
 		t.Errorf("section missing tagline")
 	}
 }
@@ -171,8 +168,8 @@ func TestHelpSectionByID_Aliases(t *testing.T) {
 			t.Errorf("alias %q didn't resolve", alias)
 			continue
 		}
-		if sec.id != want {
-			t.Errorf("alias %q resolved to %q, want %q", alias, sec.id, want)
+		if sec.ID != want {
+			t.Errorf("alias %q resolved to %q, want %q", alias, sec.ID, want)
 		}
 	}
 	if helpSectionByID("nope") != nil {
