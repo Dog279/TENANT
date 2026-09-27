@@ -7,57 +7,28 @@ import (
 	"strings"
 )
 
-// TEN-70: the setup wizard and the TUI `/skill configure` walkthrough now read
-// from ONE catalog. The framework skills (gsuite/atlassian/discord/web/x) live
-// in `skillKinds` (skillctl.go) — their fields, validators, notes, and probes
-// are defined exactly once there, so there is no second copy to drift from (the
-// old `skillSpecs`/`skillField` drift-guard is gone). The skills below are the
-// few the wizard configures that are NOT part of the /configure framework
-// (path/flag-driven, no API-key probe); they're kept in a SEPARATE map so they
-// stay wizard-only and don't leak into the TUI `/configure` picker or the web
-// Integrations page (both of which enumerate `skillKinds`).
-var wizardLocalKinds = map[string]skillKind{
-	"wiki": {ID: "wiki", Label: "Wiki (markdown knowledge base)", Wired: true, Fields: []skillKindField{
-		{Key: "dir", Prompt: "Wiki markdown directory"},
-	}},
-	"sql": {ID: "sql", Label: "SQL (SQLite database)", Wired: true, Fields: []skillKindField{
-		{Key: "db", Prompt: "SQLite database file path"},
-	}},
-	"imessage": {ID: "imessage", Label: "iMessage (via BlueBubbles)", Wired: true, Fields: []skillKindField{
-		{Key: "url", Prompt: "BlueBubbles server URL"},
-		{Key: "password", Prompt: "BlueBubbles password", Secret: true},
-	}},
-	"os": {ID: "os", Label: "OS access (sysinfo, files, gated shell)", Wired: true},
-}
-
-// wizardOrder is the display order of the setup wizard, preserved from the
-// original skillSpecs list. Each id resolves to a skillKinds entry (framework)
-// or a wizardLocalKinds entry — wizardCatalog merges them in this order.
-var wizardOrder = []string{"wiki", "sql", "gsuite", "x", "imessage", "discord", "github", "web", "os"}
-
-// wizardCatalog returns the wizard's skills as a single ordered []skillKind,
-// sourcing each id from skillKinds (framework) or wizardLocalKinds (local).
-// Unknown ids (e.g. a skillKinds entry not yet wired) are skipped.
+// wizardCatalog returns the skills `tenant setup` offers, in its order: every
+// plugin whose descriptor (plugin_<id>.go) has a Setup position (TEN-70,
+// TEN-321). A plugin /configure manages is read from skillKinds, the catalog
+// /configure itself uses, so the wizard and /configure cannot drift; a
+// setup-only plugin (wiki, sql, imessage, os) brings its own schema.
 //
 // gsuite is adapted for cfgDir exactly as newSkillCfgControl adapts the TUI
-// copy (adaptGSuiteForCfgDir) — the global skillKinds["gsuite"] is the raw,
+// copy (adaptGSuiteForCfgDir): the global skillKinds["gsuite"] is the raw,
 // cfgDir-less entry, so without this the wizard's oauth branch would always
 // take the slow-path abort and the opt-in probe would lack the embedded-creds
-// reader. Applying it here keeps the wizard and /configure behaviourally
-// identical, which is the whole point of TEN-70.
+// reader.
 func wizardCatalog(cfgDir string) []skillKind {
-	out := make([]skillKind, 0, len(wizardOrder))
-	for _, id := range wizardOrder {
-		if k, ok := skillKinds[id]; ok {
-			if id == "gsuite" {
-				k = adaptGSuiteForCfgDir(k, cfgDir)
-			}
-			out = append(out, k)
-			continue
+	var out []skillKind
+	for _, d := range setupPlugins() {
+		k, ok := skillKinds[d.ID]
+		if !ok {
+			k = d.Configure()
 		}
-		if k, ok := wizardLocalKinds[id]; ok {
-			out = append(out, k)
+		if d.ID == "gsuite" {
+			k = adaptGSuiteForCfgDir(k, cfgDir)
 		}
+		out = append(out, k)
 	}
 	return out
 }
@@ -72,11 +43,16 @@ const maxWizardFieldAttempts = 3
 // catalog (wizardCatalog) so validators, ShowIf gating, NoteAfter hooks, and
 // SetupHints all come from the same definitions the TUI uses.
 func configureSkills(in *bufio.Reader, cur map[string]*skillConfig, creds *credentials, cfgDir string) map[string]*skillConfig {
+	return configureSkillCatalog(in, cur, creds, wizardCatalog(cfgDir))
+}
+
+// configureSkillCatalog is configureSkills over a given catalog.
+func configureSkillCatalog(in *bufio.Reader, cur map[string]*skillConfig, creds *credentials, catalog []skillKind) map[string]*skillConfig {
 	if cur == nil {
 		cur = map[string]*skillConfig{}
 	}
 	fmt.Fprintln(os.Stderr, "\nSkills / integrations (Enter to skip each):")
-	for _, k := range wizardCatalog(cfgDir) {
+	for _, k := range catalog {
 		existing := cur[k.ID]
 		def := "n"
 		if existing != nil && existing.Enabled {

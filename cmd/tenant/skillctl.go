@@ -156,7 +156,7 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 
 // SkillList returns every skill known to this control. It surfaces BOTH the
 // /configure-framework catalog (skillKinds) AND the wizard-only skills
-// (wizardLocalKinds, skills_setup.go) so a fresh install where the new catalog
+// (setupOnlyKinds(): setup-only plugins) so a fresh install where the new catalog
 // is empty still gives operators a discoverable list rather than the
 // unactionable "(no skills configured)" surface (audit P1).
 //
@@ -166,7 +166,7 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 func (sc *skillCfgControl) SkillList() []tui.SkillConfigInfo {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	out := make([]tui.SkillConfigInfo, 0, len(sc.kinds)+len(wizardLocalKinds))
+	out := make([]tui.SkillConfigInfo, 0, len(sc.kinds)+len(setupOnlyKinds()))
 	// Wizard-only skills (wiki/sql/imessage/os) aren't part of the /configure
 	// framework — surface them as Legacy so operators can still discover them
 	// and get redirected to `tenant setup`.
@@ -182,7 +182,7 @@ func (sc *skillCfgControl) SkillList() []tui.SkillConfigInfo {
 		})
 		seenIDs[id] = true
 	}
-	for id, k := range wizardLocalKinds {
+	for id, k := range setupOnlyKinds() {
 		if seenIDs[id] {
 			continue
 		}
@@ -205,7 +205,7 @@ func (sc *skillCfgControl) SkillShow(id string) (string, error) {
 	k, ok := sc.kinds[id]
 	if !ok {
 		// Wizard-only skill — discoverable but configured via `tenant setup`.
-		if wk, isLocal := wizardLocalKinds[id]; isLocal {
+		if wk, isLocal := setupOnlyKinds()[id]; isLocal {
 			return fmt.Sprintf("%s — %s\n  (wizard-only — configure via `tenant setup`)", id, wk.Label), nil
 		}
 		return "", fmt.Errorf("no skill named %q (use /skill list to see available skills)", id)
@@ -272,7 +272,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 
 	k, ok := sc.kinds[id]
 	if !ok {
-		if _, isLocal := wizardLocalKinds[id]; isLocal {
+		if _, isLocal := setupOnlyKinds()[id]; isLocal {
 			return "", fmt.Errorf("%q is a wizard-only skill — configure it via `tenant setup`", id)
 		}
 		return "", fmt.Errorf("no skill named %q (use /skill list to see available skills)", id)

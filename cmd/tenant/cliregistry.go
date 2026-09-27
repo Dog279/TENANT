@@ -42,10 +42,25 @@ var cliSections = []cmdreg.Section{
 var commonFlagNames = []string{"--backend", "--agent", "--data", "--config", "--log-dir", "--vllm-endpoint", "--vllm-model",
 	"--vllm-tool-format", "--embed-endpoint", "--embed-model", "--embed-dim", "--api-key", "--plan-loop-ceiling"}
 
+// withPluginCommands places every plugin's commands (plugin_<id>.go) before
+// the first command of the connect section, where the plugin block sits.
+func withPluginCommands(cmds []*cliCommand) []*cliCommand {
+	at := len(cmds)
+	for i, c := range cmds {
+		if c.Section == "connect" {
+			at = i
+			break
+		}
+	}
+	out := append([]*cliCommand{}, cmds[:at]...)
+	out = append(out, pluginCommands()...)
+	return append(out, cmds[at:]...)
+}
+
 // cliCommands declares every subcommand. It is a function, not a variable,
 // because the help command reads the registry the list is built into.
 func cliCommands() []*cliCommand {
-	return []*cliCommand{
+	cmds := []*cliCommand{
 		// Get started.
 		{Names: []string{"setup"}, Section: "start", Run: cmdSetup,
 			Summary: "one-time wizard: endpoints, model, gateway → config.json",
@@ -165,31 +180,6 @@ func cliCommands() []*cliCommand {
 			Summary: "cascading CEO / Eng / Designer review appended to a plan file",
 			Rows:    []cmdreg.Row{{Syntax: "review <plan.md> [--reviewers ceo,eng,design]", Desc: "cascading CEO / Eng / Designer review appended to the plan"}}},
 
-		// One-shot plugin turns.
-		{Names: []string{"web"}, Section: "plugins", Run: cmdWeb,
-			Summary: "the agent browses the live web (read/explore)",
-			Rows:    []cmdreg.Row{{Syntax: `web "<task>"`, Desc: "the agent browses the live web (read/explore)"}}},
-		{Names: []string{"sql"}, Section: "plugins", Run: cmdSQL,
-			Summary: "the agent queries a SQLite database",
-			Rows:    []cmdreg.Row{{Syntax: `sql "<q>" --db FILE`, Desc: "the agent queries a SQLite database (read; --allow-write)"}}},
-		{Names: []string{"wiki"}, Section: "plugins", Run: cmdWiki,
-			Summary: "the agent answers from a markdown knowledge base",
-			Rows:    []cmdreg.Row{{Syntax: `wiki "<q>" --dir DIR`, Desc: "the agent answers from a markdown knowledge base (read-only)"}}},
-		{Names: []string{"gsuite"}, Section: "plugins", Run: cmdGSuite,
-			Summary: "the agent uses Gmail + Calendar",
-			Rows:    []cmdreg.Row{{Syntax: `gsuite "<task>"`, Desc: "the agent uses Gmail + Calendar (read; --allow-send to act)"}}},
-		{Names: []string{"x"}, Section: "plugins", Run: cmdX,
-			Summary: "the agent uses X/Twitter",
-			Rows:    []cmdreg.Row{{Syntax: `x "<task>" | x --login`, Desc: "the agent uses X/Twitter (read; --allow-post to act)"}}},
-		{Names: []string{"imessage"}, Section: "plugins", Run: cmdIMessage,
-			Summary: "the agent uses iMessage via BlueBubbles",
-			Rows:    []cmdreg.Row{{Syntax: `imessage "<task>"`, Desc: "the agent uses iMessage via BlueBubbles (read; --allow-send to act)"}}},
-		{Names: []string{"os"}, Section: "plugins", Run: cmdOS,
-			Summary: "the agent inspects the machine and runs shell commands",
-			Rows:    []cmdreg.Row{{Syntax: `os "<task>"`, Desc: "the agent inspects the machine + runs shell commands (read; --allow-exec to run)"}}},
-		{Names: []string{"simplefin"}, Section: "plugins", Run: cmdSimpleFIN, Flags: []string{"--days"},
-			Summary: "print linked bank balances and recent transactions (read-only)"},
-
 		// Connections and federation.
 		{Names: []string{"mcp"}, Section: "connect", Run: cmdMCP, Sub: []string{"connect"}, Flags: []string{"--trust-annotations", "--callback", "--no-browser"},
 			Summary: "connect to a remote MCP server and list its tools",
@@ -201,12 +191,6 @@ func cliCommands() []*cliCommand {
 				{Syntax: "peer list | show | rename | remove | revoke | rotate", Desc: "manage paired peers"},
 				{Syntax: "peer share …", Desc: "what each peer may see"},
 			}},
-		{Names: []string{"atlassian"}, Section: "connect", Run: cmdAtlassian, Sub: []string{"login"}, Flags: []string{"--site", "--client-id", "--oauth-callback"},
-			Summary: "sign in to Atlassian (Jira, Confluence)",
-			Rows:    []cmdreg.Row{{Syntax: "atlassian login --site <url> --client-id <id>", Desc: "sign in to Atlassian ($ATLASSIAN_CLIENT_SECRET holds the secret)"}}},
-		{Names: []string{"oauth-setup"}, Section: "connect", Run: cmdOAuthSetup, Sub: []string{"gsuite"},
-			Summary: "set up an OAuth client for Google Workspace",
-			Rows:    []cmdreg.Row{{Syntax: "oauth-setup gsuite", Desc: "set up the Google Workspace OAuth client (see docs/SETUP-GSUITE-OAUTH.md)"}}},
 		{Names: []string{"mcp-memory"}, Section: "connect", Run: cmdMCPMemory,
 			Summary: "serve Tenant's memory over MCP (stdio) to another client"},
 
@@ -258,6 +242,7 @@ func cliCommands() []*cliCommand {
 		{Names: []string{"tool-test"}, Section: "dev", Run: cmdToolTest,
 			Summary: "run one tool-calling agent turn (the hardening harness)"},
 	}
+	return withPluginCommands(cmds)
 }
 
 var (

@@ -11,7 +11,6 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
-	"tenant/internal/plugins/discord"
 	"tenant/internal/runtrace"
 	"tenant/internal/tui"
 )
@@ -221,46 +220,40 @@ var catDesc = map[string]string{
 	catSandbox:     "re-run a command outside the execution sandbox after it refused it",
 }
 
-// actionCategories maps every action id the category table knows to its
-// category. categorize reads it, and so does `tenant permissions effective`
-// when it applies tool rules to a category's actions (TEN-338), so the two
-// cannot disagree about which actions a category holds.
-var actionCategories = map[string]string{
-	"os_exec": catExec,
-
-	"os_write": catWrite, "os_append": catWrite, "os_edit": catWrite, "os_mkdir": catWrite,
-
-	"os_exec_dangerous": catDestructive, "sql_ddl": catDestructive, "web_transact": catDestructive,
-
+// hostActionCategories maps the approval action ids the host raises itself to
+// their category. Every plugin declares its own in its descriptor
+// (plugin_<id>.go). categorize and `tenant permissions effective` both read
+// them through allActionCategories, so the two cannot disagree about which
+// actions a category holds (TEN-338).
+var hostActionCategories = map[string]string{
 	// Re-running a command OUTSIDE the execution sandbox after it refused
 	// something (execprofiles.go): its own category (ask by default; deny on
 	// iMessage), never swept into exec or destructive grants.
 	actionExecUnsandboxed: catSandbox,
-
-	"gsuite_send": catSend, "imessage_send": catSend, "x_post": catSend,
-	// Discord's action ids are PROSE ("posts a Discord message" — see
-	// plugins/discord/dispatch.go), so they missed this table and fell through
-	// to destructive. Consequence on the HOST broker: destructive is ask-only
-	// by design (no flag can blanket-allow it), so a main-agent Discord send
-	// prompted an approval nobody was there to answer and auto-denied after
-	// 5 minutes — while the operator's /relay permissions showed everything
-	// "allow" (those modes govern the RELAY broker, a different gate). A send
-	// is a send: categorize it as one. (2026-09-19)
-	discord.ActionSendMessage: catSend, discord.ActionReact: catSend,
 
 	"mcp_add": catMCP, "mcp_remove": catMCP, "mcp_trust": catMCP,
 
 	"sensitive_egress": catEgress,
 }
 
-// categorize maps a plugin action id to a safety category. Unknown
-// actions fall through to destructive (the safest default — always ask).
+// allActionCategories is every known action id with its category: the host's
+// own and every plugin's.
+func allActionCategories() map[string]string {
+	out := plugins().Actions()
+	for action, cat := range hostActionCategories {
+		out[action] = cat
+	}
+	return out
+}
+
+// categorize maps an action id to a safety category. Unknown actions fall
+// through to destructive (the safest default — always ask).
 func categorize(action string) string {
-	if cat, ok := actionCategories[action]; ok {
+	if cat, ok := hostActionCategories[action]; ok {
 		return cat
 	}
-	if strings.HasPrefix(action, "web_") {
-		return catWeb
+	if cat, ok := plugins().ActionCategory(action); ok {
+		return cat
 	}
 	return catDestructive
 }

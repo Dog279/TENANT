@@ -39,6 +39,7 @@ var rules = []rule{
 	{Pkg: "internal/mcp/transport", Notes: "leaf"},
 	{Pkg: "internal/model/profiles", Notes: "leaf"},
 	{Pkg: "internal/control", Notes: "leaf: the data types the runtime, the TUI and the dashboard share"},
+	{Pkg: "internal/pluginreg", Notes: "leaf: the plugin registry's invariants and indexes"},
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
 

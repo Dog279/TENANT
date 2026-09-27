@@ -238,7 +238,7 @@ func surfaceModes(surface string, pf *pluginFlags, stg *settings, lc *launchConf
 	return out
 }
 
-// openCategories also take action ids actionCategories does not list:
+// openCategories also take action ids allActionCategories does not list:
 // destructive is where every unknown id lands (a remote connector's tools, a
 // plugin's own ids) and web takes any web_ id. A tool rule for those ids cannot
 // be checked here, so the category mode stands for them.
@@ -250,7 +250,7 @@ var openCategories = map[string]bool{catDestructive: true, catWeb: true}
 // that category. The source names the layer that produced it.
 func foldAuthority(modes map[string]effectiveCategory, rules *toolRules, locked func(action, cat string) bool, lockSource string) map[string]effectiveCategory {
 	actions := map[string][]string{}
-	for action, cat := range actionCategories {
+	for action, cat := range allActionCategories() {
 		actions[cat] = append(actions[cat], action)
 	}
 	type outcome struct {
@@ -400,15 +400,10 @@ func configuredToolGroups(c *commonFlags, pf *pluginFlags, toolOverrides map[str
 		if !enabled {
 			continue
 		}
-		for prefix, group := range map[string]string{
-			"wiki_": "wiki", "sql_": "sql", "web_": "web", "gsuite_": "gsuite",
-			"jira_": "atlassian", "x_": "x", "imessage_": "imessage",
-			"discord_": "discord", "os_": "os", "memory_": "memory",
-		} {
-			if strings.HasPrefix(tool, prefix) {
-				configured[group] = true
-				break
-			}
+		if id, ok := plugins().OwnerOfTool(tool); ok {
+			configured[id] = true
+		} else if strings.HasPrefix(tool, "memory_") {
+			configured["memory"] = true
 		}
 	}
 	groups := make([]string, 0, len(configured))

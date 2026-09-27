@@ -140,6 +140,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/mcp/transport` | nothing in the module | leaf |
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
+| `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs` | `internal/fsperm` | any package may log through it |

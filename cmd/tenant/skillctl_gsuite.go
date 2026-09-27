@@ -584,17 +584,3 @@ func isProductionGSuiteProbe(p skillProbe) bool {
 	}
 	return refpkg.ValueOf(p).Pointer() == refpkg.ValueOf(skillProbe(probeGSuite)).Pointer()
 }
-
-// init wires gsuite into the production catalog. The only init() in
-// this package (audit P2 contract from TEN-64). Per-platform tickets
-// each register via this same shape — keeps the catalog discoverable
-// (grep for `skillKinds["<id>"]` finds every platform).
-func init() {
-	skillKinds["gsuite"] = gsuiteSkillKind()
-	skillKinds["atlassian"] = atlassianSkillKind() // TEN-160
-	skillKinds["github"] = githubSkillKind()       // TEN-177
-	skillKinds["discord"] = discordSkillKind()     // TEN-66
-	skillKinds["web"] = webSkillKind()             // TEN-69
-	skillKinds["x"] = xSkillKind()                 // TEN-67
-	skillKinds["simplefin"] = simplefinSkillKind() // read-only finance
-}

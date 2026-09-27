@@ -77,6 +77,13 @@ func (s checkStatus) tag() string {
 	}
 }
 
+// doctorCheck is one named check. Plugins contribute theirs through their
+// descriptors (plugin_<id>.go).
+type doctorCheck struct {
+	Name string
+	Run  func(context.Context, *doctorEnv) checkResult
+}
+
 type checkResult struct {
 	Name   string      `json:"name"`
 	Status checkStatus `json:"-"`
@@ -160,10 +167,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		return runContextDebug(ctx, env, *contextDebug)
 	}
 
-	checks := []struct {
-		name string
-		fn   func(context.Context, *doctorEnv) checkResult
-	}{
+	checks := []doctorCheck{
 		{"directories", checkDirs},
 		{"private data permissions", checkPrivatePermissions},
 		// NEW: validates config.json + active provider exists. Runs early
@@ -197,31 +201,10 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// blocking history).
 		{"research store", checkResearchStore},
 		{"soul", checkSoul},
-		// NEW: optional wiki dir reachable when configured.
-		{"wiki dir (if configured)", checkWikiDir},
-		// TEN-48: detect "file on disk newer than sidecar index" — the
-		// proximate diagnostic for the 2026-05-26 lost-context bug
-		// (TEN-43). Independent of TEN-44's fix because that only
-		// covered the research deposit path; manual `cp` to wikiDir or
-		// future producers can still leave the index stale.
-		{"wiki freshness", checkWikiFreshness},
-		// NEW: Chrome detectable if web plugin will be used.
-		{"chrome (if web enabled)", checkChrome},
-		// TEN-25: os_processes shells out to `ps` / `tasklist`. Missing on
-		// minimal containers; warn early so fitness-019 doesn't fail for an
-		// infrastructure reason.
-		{"os_processes tool", checkOSProcesses},
-		// TEN-65: gsuite auth + Gmail reachability when enabled.
-		{"gsuite (if enabled)", checkGSuite},
-		// NEW: Discord bot token resolvable + reachable when discord enabled.
-		{"discord (if enabled)", checkDiscord},
-		// TEN-67: X bearer resolvable + api.x.com reachable when x enabled.
-		{"x (if enabled)", checkX},
-		// TEN-68: iMessage transport readiness. Native (default on macOS)
-		// reads chat.db — probe Full Disk Access by opening it read-only so
-		// the FDA requirement surfaces before a live read/send. A configured
-		// BlueBubbles URL is noted instead (server bridge).
-		{"imessage (if configured)", checkIMessage},
+	}
+	// Each plugin's own checks (plugin_<id>.go), in registry order.
+	checks = append(checks, pluginDoctorChecks()...)
+	checks = append(checks, []doctorCheck{
 		// TEN-81: dashboard reachability + bind-policy config lint when the
 		// web control panel is configured.
 		{"dashboard (if configured)", checkDashboard},
@@ -240,12 +223,12 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// its token cache, so a dead Jira/Confluence bridge is caught by doctor
 		// instead of by a silently empty daily brief.
 		{"remote MCP auth", checkRemoteMCPAuth},
-	}
+	}...)
 
 	results := make([]checkResult, 0, len(checks))
 	for _, ck := range checks {
-		r := ck.fn(ctx, env)
-		r.Name = ck.name
+		r := ck.Run(ctx, env)
+		r.Name = ck.Name
 		r.Stat = strings.TrimSpace(r.Status.tag())
 		results = append(results, r)
 	}

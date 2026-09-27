@@ -255,7 +255,7 @@ func TestComposeMatchesConfirm(t *testing.T) {
 		IMessage: imessageConfig{Permissions: map[string]string{catSend: "ask", catEgress: "allow"}},
 	}
 	probes := map[string][]string{}
-	for action, cat := range actionCategories {
+	for action, cat := range allActionCategories() {
 		probes[cat] = append(probes[cat], action)
 	}
 	probes[catDestructive] = append(probes[catDestructive], "mcp:127.0.0.1:9000:write_note")

@@ -122,7 +122,7 @@ func TestConfigureSkills_KeepSavedSecret(t *testing.T) {
 // abort NoteAfter and assert the secret never lands in creds.
 func TestConfigureSkills_AbortDoesNotLeakSecret(t *testing.T) {
 	const id = "leaktest"
-	skillKinds[id] = skillKind{
+	leak := skillKind{
 		ID: id, Label: "Leak Test", Wired: true,
 		Fields: []skillKindField{
 			{Key: "token", Prompt: "secret token", Secret: true},
@@ -131,16 +131,12 @@ func TestConfigureSkills_AbortDoesNotLeakSecret(t *testing.T) {
 			}},
 		},
 	}
-	origOrder := wizardOrder
-	wizardOrder = append(append([]string{}, origOrder...), id)
-	defer func() { delete(skillKinds, id); wizardOrder = origOrder }()
-
 	dir := t.TempDir()
 	creds, _ := loadCredentials(dir)
-	// Skip every real skill (one "n" per wizardOrder entry), then enable
+	// Skip every real skill (one "n" per wizard entry), then enable
 	// leaktest, enter the secret, then hit the aborting trigger (empty value).
 	lines := append(skipAll(), "y", "super-secret-token", "")
-	out := configureSkills(feed(lines...), nil, creds, dir)
+	out := configureSkillCatalog(feed(lines...), nil, creds, append(wizardCatalog(dir), leak))
 
 	if out[id] != nil && out[id].Enabled {
 		t.Error("aborted skill must not be enabled")
@@ -164,12 +160,12 @@ func TestConfigureSkills_DisableTogglesOff(t *testing.T) {
 	}
 }
 
-// skipAll answers "n" once per wizard entry. Derived from wizardOrder so that
+// skipAll answers "n" once per wizard entry. Derived from setupPlugins so that
 // adding a skill (e.g. github, TEN-177) does not silently truncate these feeds
 // and leave the last skill unanswered.
 func skipAll() []string {
-	out := make([]string, 0, len(wizardOrder))
-	for range wizardOrder {
+	out := make([]string, 0, len(setupPlugins()))
+	for range setupPlugins() {
 		out = append(out, "n")
 	}
 	return out
