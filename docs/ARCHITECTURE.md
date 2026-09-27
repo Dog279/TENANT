@@ -114,32 +114,63 @@ option while allowing operators to opt into cloud inference.
 
 ## 2. Package dependency graph
 
-```
-cmd/tenant  (wiring + demo)
-   │
-   ├──────────────┬───────────────┬──────────────┐
-   ▼              ▼               ▼              ▼
-internal/agent  internal/improve  (memory tiers) internal/model
-   │                │                              │
-   │                ▼                              │
-   │          memory/distill ──────────────────────┤
-   │                │                              │
-   ▼                ▼                              ▼
-memory/assemble  memory/episodic  memory/semantic  model/backend/vllm
-   │              memory/archive   memory/soul      model/toolfmt
-   ▼              memory/working                    model/testllm
-internal/mcp ── mcp/transport                       model/profiles (go:embed)
+Every module package has a dependency rule: the module packages it may import.
+`internal/archtest` checks the source tree against these rules on every
+`go test ./...` (TEN-314). A package that no rule covers fails, and so does an
+import its rule doesn't allow, or Bubble Tea anywhere but `internal/tui` and
+`cmd/tenant`. The first row that matches a package governs it. The table is
+generated from `internal/archtest/rules.go`, and
+`go test ./internal/archtest -update` rewrites it.
 
-internal/logs  (leaf: the unified log book — every package above may import it;
-                agent renders its events into it, dashboard reads it)
+<!-- archtest:rules -->
+| Package | May import | Note |
+|---|---|---|
+| `cmd/**` | anything | the composition root and command adapters |
+| `scripts/**` | nothing in the module | build tools stand alone |
+| `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
+| `internal/archtest` | nothing in the module | these tests |
+| `internal/fsperm` | nothing in the module | leaf |
+| `internal/secrets` | nothing in the module | leaf |
+| `internal/datalock` | nothing in the module | leaf |
+| `internal/httplimits` | nothing in the module | leaf |
+| `internal/version` | nothing in the module | leaf |
+| `internal/runtrace` | nothing in the module | leaf |
+| `internal/cmdreg` | nothing in the module | leaf |
+| `internal/cron` | nothing in the module | leaf |
+| `internal/mcp/transport` | nothing in the module | leaf |
+| `internal/model/profiles` | nothing in the module | leaf |
+| `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
+| `internal/sandbox/**` | `internal/sandbox/**` |  |
+| `internal/logs` | `internal/fsperm` | any package may log through it |
+| `internal/research` | `internal/fsperm` |  |
+| `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
+| `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
+| `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
+| `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
+| `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
+| `internal/orchestra` | `internal/model` |  |
+| `internal/route` | `internal/model`, `internal/fsperm` |  |
+| `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
+| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
+| `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
+| `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
+| `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |
+| `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
+| `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
+| `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/fsperm`, `internal/model` | never the dashboard |
+| `internal/dashboard` | `internal/agent`, `internal/httplimits`, `internal/logs`, `internal/orchestra` | never the terminal UI |
+<!-- /archtest:rules -->
 
-Rule of thumb: model has NO deps on memory/agent. memory tiers are
-independent of each other (assemble + distill compose them). agent sits
-on top of everything. improve sits beside agent (scheduled jobs).
-mcp is standalone (wire protocol only, no LLM knowledge).
-mcpserver sits beside agent: mcp.Handler over stdio, reads soul +
-episodic + semantic, exposes them to external MCP clients.
-```
+In short:
+- The leaves (file permissions, secrets, locks, limits, version, run traces)
+  import nothing.
+- `model` knows no memory, agent or plugin.
+- The memory tiers compose only through `assemble`, `distill` and `compress`.
+- Plugins never import each other.
+- `agent` sits on top of memory and models, and knows no plugin and no surface.
+- The terminal UI and the dashboard both sit on the agent, and never import each
+  other.
+- Only `cmd/tenant`, the composition root, may import anything.
 
 ---
 
