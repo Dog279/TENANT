@@ -88,6 +88,7 @@ config.json: logs.dir
 config.json: logs.level
 config.json: logs.max_field_bytes
 config.json: logs.retention_days
+config.json: logs.store
 config.json: mcp_remotes
 config.json: mcp_servers
 config.json: mcp_servers[].command

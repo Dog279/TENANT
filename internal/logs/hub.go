@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/fsperm"
@@ -80,6 +81,8 @@ type Hub struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
 }
 
 type source struct {
@@ -204,6 +207,9 @@ func (h *Hub) run(ctx context.Context) {
 
 // Close stops the loops and closes every open file. Idempotent.
 func (h *Hub) Close() error {
+	if p := h.pipe.Swap(nil); p != nil {
+		p.close() // flushes into the files and the store while they are open
+	}
 	h.stopOnce.Do(func() { close(h.stop) })
 	h.wg.Wait()
 	h.mu.Lock()
@@ -228,6 +234,9 @@ func (h *Hub) now() time.Time { return h.opts.Now() }
 func (h *Hub) Log(e Entry) {
 	if e.Level < h.opts.MinLevel {
 		return
+	}
+	if p := h.pipe.Load(); p != nil && p.logEntry(e) {
+		return // the pipeline scrubs, caps, mirrors and commits it
 	}
 	if !ValidSource(e.Source) {
 		if n := NormalizeSource(e.Source); n != "" {

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tenant/internal/logs"
 )
 
 func TestParseInterspersed_FlagsAfterPositionals(t *testing.T) {
@@ -123,5 +125,26 @@ func TestCmdLog_TokenFileAndBuiltinSources(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(data, "logs", "approvals")); err == nil {
 		t.Error("a refused line must not reach the folder")
+	}
+}
+
+// serve and the TUI attach <logs root>/logbook.db unless logs.store is false.
+func TestOpenLogHub_AttachesTheStore(t *testing.T) {
+	defer logs.Install(nil)
+	off := false
+	for _, tc := range []struct {
+		store *bool
+		want  bool
+	}{{nil, true}, {&off, false}} {
+		c := &commonFlags{dataDir: t.TempDir(), lc: &launchConfig{Logs: logsConfig{Store: tc.store}}}
+		h, err := openLogHub(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, statErr := os.Stat(filepath.Join(c.dataDir, "logs", "logbook.db"))
+		if attached := h.Dropped() != nil; attached != tc.want || (statErr == nil) != tc.want {
+			t.Errorf("logs.store %v: attached %v (logbook.db: %v), want %v", tc.store, attached, statErr, tc.want)
+		}
+		_ = h.Close()
 	}
 }
