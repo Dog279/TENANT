@@ -139,19 +139,19 @@ func TestCreateCapturesTheRightFilesInReferenceOrder(t *testing.T) {
 	}
 	got := entryPaths(res.Manifest)
 	for _, want := range []string{"config/config.json", "config/soul/main.toml", "data/episodes.db", "data/facts.db",
-		"data/archive/2026-09/sess_a.jsonl", "data/logs/tui/2026-09-26.log", "data/research/r1/report.md"} {
+		"data/archive/2026-09/sess_a.jsonl", "data/research/r1/report.md"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("backup is missing %s (has %v)", want, got)
 		}
 	}
 	for _, never := range []string{"config/credentials.json", "data/x-token.json", "data/.tenant.lock",
-		"data/episodes.db-journal", "data/config.json.123.tmp", "data/wiki/a1b2c3d4e5f60718.json"} {
+		"data/episodes.db-journal", "data/config.json.123.tmp", "data/wiki/a1b2c3d4e5f60718.json", "data/logs/tui/2026-09-26.log"} {
 		if slices.Contains(got, never) {
 			t.Errorf("backup carries %s", never)
 		}
 	}
 	skipped := skippedPaths(res.Manifest)
-	for _, want := range []string{"config/credentials.json", "data/x-token.json", "data/wiki/a1b2c3d4e5f60718.json"} {
+	for _, want := range []string{"config/credentials.json", "data/x-token.json", "data/wiki/a1b2c3d4e5f60718.json", "data/logs/*/*.log"} {
 		if !slices.Contains(skipped, want) {
 			t.Errorf("%s is not listed as skipped (%v)", want, skipped)
 		}

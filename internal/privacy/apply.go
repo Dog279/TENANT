@@ -51,6 +51,14 @@ func (p *Plan) Apply(ctx context.Context) (res *Result, err error) {
 			res.Items = append(res.Items, Item{What: what, Action: action, Count: n})
 		}
 	}
+	// Backups made before now keep what a forget removes; status counts them.
+	defer func() {
+		if p.Reason == ReasonForget && len(res.Items) > 0 {
+			if err := appendLedger(p.d, ledgerLine{At: p.d.now().UTC(), Forget: true}); err != nil {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("could not record the deletion for `tenant privacy status`: %v", err))
+			}
+		}
+	}()
 	removedAt := p.d.now().Unix()
 
 	// Stores opened through their own packages first, so their newest
@@ -186,6 +194,12 @@ func (p *Plan) Apply(ctx context.Context) (res *Result, err error) {
 		return nil
 	}, "episodes_fts")
 	if err != nil {
+		return res, err
+	}
+
+	// The log book, before the runs: their trace IDs pick its events, so a
+	// forget that stops here finds them again when it is run again.
+	if err := forgetLogbook(ctx, p.d, &s, res, count); err != nil {
 		return res, err
 	}
 

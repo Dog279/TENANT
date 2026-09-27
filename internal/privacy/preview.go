@@ -186,6 +186,14 @@ func (p *Plan) preview(ctx context.Context, s *selection) error {
 	add(months)
 	add(files)
 	add(events)
+	// The log book.
+	lb, err := logbookItems(ctx, p.d, s)
+	if err != nil {
+		return err
+	}
+	for _, it := range lb {
+		add(it)
+	}
 	// Files by class.
 	byClass := pathsByClass(p.d, s.paths)
 	for _, c := range []Class{Research, Screenshots, RelayInbox, EvalArtifacts} {
@@ -250,7 +258,7 @@ func (p *Plan) notes(sel Selector, s *selection) {
 			p.Notes = append(p.Notes, fmt.Sprintf("research runs mention it: %s; delete them with /research delete <id>", strings.Join(runs, ", ")))
 		}
 	}
-	p.Notes = append(p.Notes, "the log book (logs/) keeps each day's lines until its own retention (logs.retention_days) removes them")
+	p.Notes = append(p.Notes, "the log book loses the events of the sessions and runs forgotten here; its other events stay until its own retention (logs.retention_days), and a running Tenant's live feed shows what it already read until it scrolls past")
 	if sel.Agent != "" {
 		p.Notes = append(p.Notes, "limited to agent "+sel.Agent+"; research runs, screenshots, relay files and eval reports belong to no agent and are left alone")
 	}

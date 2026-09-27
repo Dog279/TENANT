@@ -15,6 +15,8 @@ import (
 type Data struct {
 	DataDir   string
 	ConfigDir string
+	// LogsDir is the log book's root (logs.dir); empty means <data>/logs.
+	LogsDir string
 	// Now is the clock; tests fix it.
 	Now func() time.Time
 }

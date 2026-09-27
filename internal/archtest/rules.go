@@ -63,7 +63,7 @@ var rules = []rule{
 	{Pkg: "internal/plugins/*", May: []string{"internal/model", "internal/secrets", "internal/fsperm", "internal/httplimits", "internal/memory/cosine", "internal/pluginreg"}, Notes: "capabilities never import each other; each declares its events through pluginreg"},
 	{Pkg: "internal/eval/**", May: []string{"internal/model", "internal/route", "internal/memory/working"}},
 	{Pkg: "internal/improve", May: []string{"internal/memory/**", "internal/model", "internal/fsperm"}},
-	{Pkg: "internal/privacy", May: []string{"internal/memory/**", "internal/fsperm"}},
+	{Pkg: "internal/privacy", May: []string{"internal/memory/**", "internal/fsperm", "internal/logs", "internal/logs/store"}},
 	{Pkg: "internal/mcpserver", May: []string{"internal/mcp/**", "internal/memory/**", "internal/model"}},
 	{Pkg: "internal/agent", May: []string{"internal/logs", "internal/memory/**", "internal/model/**", "internal/orchestra", "internal/runtrace"}, Notes: "the turn loop; knows no plugin and no surface"},
 	{Pkg: "internal/approval", May: []string{"internal/agent", "internal/control", "internal/logs", "internal/runtrace"}, Notes: "the approval decision point; knows no plugin and no surface"},
