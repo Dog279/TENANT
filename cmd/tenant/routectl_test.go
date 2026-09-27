@@ -31,7 +31,7 @@ func TestCmdRouteModePersistence(t *testing.T) {
 			lc := routeCLITestConfig()
 			lc.Route.Mode = route.ModeActive
 			lc.Route.ForceProfile = "big/vllm-planner"
-			if err := lc.save(cfgDir); err != nil {
+			if err := lc.Save(cfgDir); err != nil {
 				t.Fatal(err)
 			}
 
@@ -59,7 +59,7 @@ func TestCmdRouteEverywhereRequiresPassingGraduationGate(t *testing.T) {
 	cfgDir, dataDir := t.TempDir(), t.TempDir()
 	lc := routeCLITestConfig()
 	lc.Route.Mode = route.ModeActive
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	_, err := captureRouteCLIOutput(t, func() error {
@@ -84,7 +84,7 @@ func TestCmdRouteOnRetainsActionableBigRoleValidation(t *testing.T) {
 		Providers: map[string]*providerConfig{"small": {Kind: "vllm"}},
 		Route:     &routeConfig{Enabled: true, Mode: route.ModeShadow},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestCmdRouteForceOfflineValidationAndPersistence(t *testing.T) {
 		t.Run(profileID, func(t *testing.T) {
 			cfgDir, dataDir := t.TempDir(), t.TempDir()
 			lc := routeCLITestConfig()
-			if err := lc.save(cfgDir); err != nil {
+			if err := lc.Save(cfgDir); err != nil {
 				t.Fatal(err)
 			}
 
@@ -147,7 +147,7 @@ func TestCmdRouteForceOfflineValidationAndPersistence(t *testing.T) {
 	}
 
 	cfgDir, dataDir := t.TempDir(), t.TempDir()
-	if err := routeCLITestConfig().save(cfgDir); err != nil {
+	if err := routeCLITestConfig().Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	_, err := captureRouteCLIOutput(t, func() error {
@@ -165,7 +165,7 @@ func TestCmdRouteForceStillRequiresBigRole(t *testing.T) {
 		Providers: map[string]*providerConfig{"small": {Kind: "vllm"}},
 		Route:     &routeConfig{Mode: route.ModeShadow},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,7 +179,7 @@ func TestCmdRouteForceStillRequiresBigRole(t *testing.T) {
 
 func TestCmdRouteStatusAndDurableStats(t *testing.T) {
 	cfgDir, dataDir := t.TempDir(), t.TempDir()
-	if err := (&launchConfig{}).save(cfgDir); err != nil {
+	if err := (&launchConfig{}).Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 

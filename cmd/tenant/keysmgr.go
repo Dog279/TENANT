@@ -62,7 +62,7 @@ func (k dashKeys) List() []dashboard.ServiceKeyView {
 				break
 			}
 		}
-		set := creds != nil && creds.get(spec.CredID) != ""
+		set := creds != nil && creds.Get(spec.CredID) != ""
 		out = append(out, dashboard.ServiceKeyView{
 			CredID:      spec.CredID,
 			Name:        spec.Name,
@@ -95,8 +95,8 @@ func (k dashKeys) SetSecret(credID, value string) error {
 		if err != nil {
 			return err
 		}
-		creds.set(spec.CredID, value)
-		return creds.save(k.cfgDir)
+		creds.Set(spec.CredID, value)
+		return creds.Save(k.cfgDir)
 	}
 }
 
@@ -122,7 +122,7 @@ func (k dashKeys) RemoveSecret(credID string) error {
 			return err
 		}
 		delete(creds.Secrets, spec.CredID)
-		return creds.save(k.cfgDir)
+		return creds.Save(k.cfgDir)
 	}
 }
 
@@ -208,5 +208,5 @@ func clearProviderStored(cfgDir, kindID string) error {
 		return nil
 	}
 	pc.Auth.Stored = false
-	return lc.save(cfgDir)
+	return lc.Save(cfgDir)
 }

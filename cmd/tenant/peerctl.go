@@ -674,7 +674,7 @@ func ensureInstanceID(c *commonFlags) (string, error) {
 		return "", err
 	}
 	lc.InstanceID = id
-	if err := lc.save(c.cfgDir); err != nil {
+	if err := lc.Save(c.cfgDir); err != nil {
 		return "", fmt.Errorf("persist instance_id: %w", err)
 	}
 	c.lc = lc

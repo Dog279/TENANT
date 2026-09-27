@@ -367,14 +367,14 @@ func applyPermissionPreset(c *commonFlags, surface, name string, modes map[strin
 			return err
 		}
 		stg.Permissions = copyModes
-		return stg.save(c.cfgDir, c.agent)
+		return stg.Save(c.cfgDir, c.agent)
 	case permissionSurfaceDiscord:
 		c.lc.Relay.Permissions = copyModes
 		c.lc.Relay.AllowExec = name != "safe"
 	case permissionSurfaceIMessage:
 		c.lc.IMessage.Permissions = copyModes
 	}
-	return c.lc.save(c.cfgDir)
+	return c.lc.Save(c.cfgDir)
 }
 
 func configuredToolGroups(c *commonFlags, pf *pluginFlags, toolOverrides map[string]bool) []string {

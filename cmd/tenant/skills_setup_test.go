@@ -58,7 +58,7 @@ func TestConfigureSkills_EndToEnd(t *testing.T) {
 	if out["x"] == nil || !out["x"].Enabled {
 		t.Fatalf("x should be enabled, got %+v", out["x"])
 	}
-	if got := creds.get(skillSecretID("x", "bearer")); got != validBearer {
+	if got := creds.Get(skillSecretID("x", "bearer")); got != validBearer {
 		t.Errorf("x bearer = %q, want the valid 90-char token (re-ask should have replaced 'bad')", got)
 	}
 	// imessage enabled with url setting + secret in creds (not settings).
@@ -68,7 +68,7 @@ func TestConfigureSkills_EndToEnd(t *testing.T) {
 	if got := out["imessage"].Settings["url"]; got != "http://localhost:1234" {
 		t.Errorf("imessage url = %q", got)
 	}
-	if got := creds.get(skillSecretID("imessage", "password")); got != "imsg-pass" {
+	if got := creds.Get(skillSecretID("imessage", "password")); got != "imsg-pass" {
 		t.Errorf("imessage password should be in creds, got %q", got)
 	}
 	if _, leaked := out["imessage"].Settings["password"]; leaked {
@@ -86,7 +86,7 @@ func TestConfigureSkills_EndToEnd(t *testing.T) {
 func TestConfigureSkills_KeepSavedSecret(t *testing.T) {
 	dir := t.TempDir()
 	creds, _ := loadCredentials(dir)
-	creds.set(skillSecretID("imessage", "password"), "previously-saved")
+	creds.Set(skillSecretID("imessage", "password"), "previously-saved")
 
 	// Enable imessage, set a new url, press Enter at the password prompt to
 	// keep the saved secret. Skip everything else.
@@ -109,7 +109,7 @@ func TestConfigureSkills_KeepSavedSecret(t *testing.T) {
 	if got := out["imessage"].Settings["url"]; got != "http://new-url:9999" {
 		t.Errorf("imessage url = %q, want the new url", got)
 	}
-	if got := creds.get(skillSecretID("imessage", "password")); got != "previously-saved" {
+	if got := creds.Get(skillSecretID("imessage", "password")); got != "previously-saved" {
 		t.Errorf("blank password entry should KEEP the saved secret, got %q", got)
 	}
 }
@@ -145,7 +145,7 @@ func TestConfigureSkills_AbortDoesNotLeakSecret(t *testing.T) {
 	if out[id] != nil && out[id].Enabled {
 		t.Error("aborted skill must not be enabled")
 	}
-	if got := creds.get(skillSecretID(id, "token")); got != "" {
+	if got := creds.Get(skillSecretID(id, "token")); got != "" {
 		t.Errorf("secret entered before an aborting NoteAfter leaked into creds: %q", got)
 	}
 }

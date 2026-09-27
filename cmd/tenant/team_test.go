@@ -184,7 +184,7 @@ func TestRouterForProfile_Lookup(t *testing.T) {
 			"researcher": {Provider: "echo-fallback", Description: "test"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	bus := orchestra.NewBus()

@@ -71,7 +71,7 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	fmt.Fprintf(os.Stderr, "config:      %s\ncredentials: %s\n\n", launchConfigPath(c.cfgDir), credentialsPath(c.cfgDir))
 
 	// Existing-config: Keep / Modify / Reset (OpenClaw pattern, arrow-key).
-	if lc.active() != nil && interactive {
+	if lc.Active() != nil && interactive {
 		switch selectOne("Existing config found — what now?", []pickOption{
 			{Label: "Modify", Value: "modify", Desc: "update the current configuration"},
 			{Label: "Keep", Value: "keep", Desc: "use it as-is and exit"},
@@ -197,10 +197,10 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	}
 
 	// --- save ---
-	if err := creds.save(c.cfgDir); err != nil {
+	if err := creds.Save(c.cfgDir); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	if err := lc.save(c.cfgDir); err != nil {
+	if err := lc.Save(c.cfgDir); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 	printSetupSummary(c.cfgDir, lc)
@@ -237,7 +237,7 @@ func maybeOfferSetup(ctx context.Context, c *commonFlags) (bool, error) {
 func configureAuth(in *bufio.Reader, interactive bool, providerID string, pk providerKind, cur authCfg, creds *credentials, flagKey string) authCfg {
 	// A key passed via --api-key is stored immediately.
 	if flagKey != "" {
-		creds.set(providerID, flagKey)
+		creds.Set(providerID, flagKey)
 		return authCfg{Mode: "apikey", Stored: true}
 	}
 	if !interactive {
@@ -258,7 +258,7 @@ func configureAuth(in *bufio.Reader, interactive bool, providerID string, pk pro
 	case "paste", "p", "key":
 		k := ask(in, "Paste API key (stored in owner-only credentials.json)", "")
 		if strings.TrimSpace(k) != "" {
-			creds.set(providerID, strings.TrimSpace(k))
+			creds.Set(providerID, strings.TrimSpace(k))
 			return authCfg{Mode: "apikey", Stored: true}
 		}
 		fallthrough
@@ -369,7 +369,7 @@ func firstNonEmpty(vals ...string) string {
 func printSetupSummary(cfgDir string, lc *launchConfig) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nSaved %s\n", launchConfigPath(cfgDir))
-	p := lc.active()
+	p := lc.Active()
 	if p == nil {
 		fmt.Fprintf(&b, "  (no provider configured)\n")
 		fmt.Fprint(os.Stderr, b.String())

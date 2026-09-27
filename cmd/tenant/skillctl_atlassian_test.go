@@ -60,7 +60,7 @@ func TestProbeAtlassian_TokenMode(t *testing.T) {
 
 	dir := t.TempDir()
 	creds, _ := loadCredentials(dir)
-	creds.set(skillSecretID("atlassian", "api_token"), "tok")
+	creds.Set(skillSecretID("atlassian", "api_token"), "tok")
 	settings := map[string]string{"auth": "token", "site": srv.URL, "email": "e@x.com"}
 
 	id, err := probeAtlassianWith(context.Background(), creds, settings, dir, nil, nil)

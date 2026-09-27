@@ -85,7 +85,7 @@ func probeWebBrave(ctx context.Context, creds *credentials, _ map[string]string,
 // The "no key" branch returns a non-error identity — for web, probe-success
 // with no config is a VALID state (the DuckDuckGo fallback works).
 func probeWebBraveWith(ctx context.Context, creds *credentials, deps webProbeDeps) (string, error) {
-	key := creds.get(skillSecretID("web", "brave_key"))
+	key := creds.Get(skillSecretID("web", "brave_key"))
 	if strings.TrimSpace(key) == "" {
 		return "no Brave key configured — web_search uses DuckDuckGo (works without setup)", nil
 	}

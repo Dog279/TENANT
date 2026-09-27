@@ -3,46 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"tenant/internal/model"
 )
-
-func TestSettings_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-
-	// Missing file => empty, no error (first run).
-	s, err := loadSettings(dir, "main")
-	if err != nil || len(s.Tools) != 0 {
-		t.Fatalf("first-run load: s=%+v err=%v", s, err)
-	}
-
-	s.Tools = map[string]bool{"web_navigate": true, "os_exec": false}
-	if err := s.save(dir, "main"); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	got, err := loadSettings(dir, "main")
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if !got.Tools["web_navigate"] || got.Tools["os_exec"] {
-		t.Fatalf("round-trip wrong: %+v", got.Tools)
-	}
-
-	// Per-agent isolation: a different agent has its own file.
-	if other, _ := loadSettings(dir, "other"); len(other.Tools) != 0 {
-		t.Fatalf("agent isolation broken: %+v", other.Tools)
-	}
-
-	// Corrupt file => error surfaced, defaults returned (not a wipe).
-	if err := os.WriteFile(settingsPath(dir, "main"), []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if c, cerr := loadSettings(dir, "main"); cerr == nil || len(c.Tools) != 0 {
-		t.Fatalf("corrupt should error + empty: c=%+v err=%v", c, cerr)
-	}
-}
 
 // A toggle must fire onChange with a full snapshot, and that snapshot,
 // fed to a fresh mux's restore, must reproduce the curation — the core

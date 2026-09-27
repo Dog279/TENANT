@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"testing"
@@ -22,14 +22,14 @@ func TestLaunchConfigTeamBudgetsRoundTrip(t *testing.T) {
 		InputCostPerMillionUSD:  1.25,
 		OutputCostPerMillionUSD: 4.5,
 	}
-	if err := (&launchConfig{Budgets: want}).save(dir); err != nil {
+	if err := (&Launch{Budgets: want}).Save(dir); err != nil {
 		t.Fatal(err)
 	}
-	lc, err := loadLaunchConfig(dir)
+	lc, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := configuredBudgets(lc); got != want {
+	if got := EffectiveBudgets(lc); got != want {
 		t.Fatalf("budgets did not round-trip: got %+v want %+v", got, want)
 	}
 }

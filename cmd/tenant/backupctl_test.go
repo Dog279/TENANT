@@ -61,7 +61,7 @@ func seedInstall(t *testing.T) (cfg, data string) {
 		t.Fatal(err)
 	}
 	creds := &credentials{Secrets: map[string]string{"openai": "sk-original"}}
-	if err := creds.save(cfg); err != nil {
+	if err := creds.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	return cfg, data
@@ -105,7 +105,7 @@ func TestBackupCommandsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	creds := &credentials{Secrets: map[string]string{"openai": "sk-rotated"}}
-	if err := creds.save(cfg); err != nil {
+	if err := creds.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()
@@ -116,7 +116,7 @@ func TestBackupCommandsRoundTrip(t *testing.T) {
 		t.Fatalf("soul not restored: %s", b)
 	}
 	got, err := loadCredentials(cfg)
-	if err != nil || got.get("openai") != "sk-rotated" {
+	if err != nil || got.Get("openai") != "sk-rotated" {
 		t.Fatalf("a plain backup's restore must keep the live credentials: %v %v", got, err)
 	}
 	if !strings.Contains(out.String(), "previous directory is kept") {
@@ -202,7 +202,7 @@ func TestBackupEncryptedWithPassphraseFile(t *testing.T) {
 		t.Fatalf("verify output:\n%s", out.String())
 	}
 	creds := &credentials{Secrets: map[string]string{"openai": "sk-rotated"}}
-	if err := creds.save(cfg); err != nil {
+	if err := creds.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(passphraseEnv, "correct horse battery")
@@ -210,7 +210,7 @@ func TestBackupEncryptedWithPassphraseFile(t *testing.T) {
 		return cmdBackupRestore(ctx, []string{file, "--config", cfg, "--data", data, "--yes"}, strings.NewReader(""), &bytes.Buffer{})
 	})
 	got, err := loadCredentials(cfg)
-	if err != nil || got.get("openai") != "sk-original" {
+	if err != nil || got.Get("openai") != "sk-original" {
 		t.Fatalf("an encrypted backup restores its own credentials: %v %v", got, err)
 	}
 }

@@ -14,7 +14,7 @@ import (
 // demanding a key and non-catalog names keep demanding an endpoint.
 func TestAddClaudecodeKeyless(t *testing.T) {
 	dir := t.TempDir()
-	(&launchConfig{}).save(dir)
+	(&launchConfig{}).Save(dir)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ag := newEchoAgent(t, log)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag, log: log}
@@ -94,7 +94,7 @@ func TestSetReasoningEffortClaudecode(t *testing.T) {
 			"claudecode": {Kind: "claudecode", Endpoint: "claudecode://auto", Model: "opus"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -133,7 +133,7 @@ func TestListProviderModelsClaudecode(t *testing.T) {
 			"claudecode": {Kind: "claudecode", Endpoint: "claudecode://auto", Model: "opus"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

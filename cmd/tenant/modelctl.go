@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/config"
 	"tenant/internal/model"
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/tui"
@@ -91,7 +92,7 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 		lc.Providers[name].Model = mo
 	}
 	lc.Provider = name
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", "", err
 	}
 	// Resolve the now-active provider (loads the config we just saved,
@@ -168,7 +169,7 @@ func (mc *modelControl) HealthGating() string {
 	if err != nil {
 		return "unknown (config.json unreadable)"
 	}
-	return describeHealthGating(lc.HealthGating.modelConfig())
+	return describeHealthGating(lc.HealthGating.ModelConfig())
 }
 
 // SetFallback validates + persists the ordered fallback provider chain and
@@ -196,7 +197,7 @@ func (mc *modelControl) SetFallback(names []string) (string, error) {
 		valid = append(valid, n)
 	}
 	lc.Fallbacks = valid
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
 	if r := mc.ag.Router(); r != nil {
@@ -350,7 +351,7 @@ func (mc *modelControl) SetLoopCeiling(n int) (string, error) {
 	updated := r.SetPlanLoopCeiling(n)
 	if lc, err := loadLaunchConfig(mc.cfgDir); err == nil {
 		lc.PlanLoopCeiling = n
-		_ = lc.save(mc.cfgDir) // best-effort persistence
+		_ = lc.Save(mc.cfgDir) // best-effort persistence
 	}
 	return fmt.Sprintf("loop ceiling → %d (updated %d role(s); applies next turn, incl. newly spawned sub-agents)", n, updated), nil
 }
@@ -454,7 +455,7 @@ func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
 		}
 	}
 	pc.Reasoning = effort
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
 	// Rebuild the generation profiles for the (unchanged) active provider and
@@ -488,43 +489,11 @@ func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
 	return fmt.Sprintf("reasoning effort → %s for %s (applies next turn, incl. sub-agents)", effort, lc.Provider), nil
 }
 
-// looksLikeURL is a lenient gate for "this string is plausibly an HTTP
-// URL the operator typed." Doesn't validate the full URL — just enough
-// to catch "I pasted my API key as the endpoint" mistakes. False
-// positives are acceptable (a malformed URL still hits the backend and
-// fails with a clear network error); false negatives (rejecting a real
-// URL) are the danger we minimize.
-func looksLikeURL(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
-}
+// looksLikeURL and safeDisplayEndpoint live in internal/config (TEN-314),
+// which validates endpoints on load.
+func looksLikeURL(s string) bool { return config.LooksLikeURL(s) }
 
-// safeDisplayEndpoint is the LAST-LINE-OF-DEFENSE renderer for any
-// endpoint string that's about to be shown in operator-facing output
-// (the /model list, the CLI listing, transcripts, etc.). If the input
-// doesn't look like an HTTP URL — meaning something malformed slipped
-// past the entry-point validation OR the operator loaded an old
-// pre-fix config — we replace it with a redacted marker instead of
-// echoing what might be a secret.
-//
-// Defense-in-depth. The actual fix is preventing the bad value from
-// reaching config in the first place (looksLikeURL in AddModel + the
-// load-time guard). This catches anything that did anyway.
-func safeDisplayEndpoint(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "(unset)"
-	}
-	if looksLikeURL(s) {
-		return s
-	}
-	// The claudecode discovery sentinel is a known non-secret non-URL —
-	// redacting it would just confuse the /model list.
-	if s == claudecode.AutoEndpoint {
-		return s
-	}
-	return "[redacted — non-URL endpoint, see `tenant doctor`]"
-}
+func safeDisplayEndpoint(s string) string { return config.SafeDisplayEndpoint(s) }
 
 // clipSecret renders a suspect string for an error message WITHOUT
 // echoing the whole thing. If the value happened to be an API key,
@@ -582,7 +551,7 @@ func (mc *modelControl) AddModel(name, endpoint, toolFormat string) (string, err
 	if lc.Embed == nil {
 		lc.Embed = &providerConfig{Kind: "ollama", Endpoint: defaultEmbedEndpoint, Model: defaultEmbedModel, EmbedDim: defaultEmbedDim}
 	}
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("added vLLM backend %q → %s — switch with `/model use %s`. "+
@@ -649,13 +618,13 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 	if lc.Embed == nil {
 		lc.Embed = &providerConfig{Kind: "ollama", Endpoint: defaultEmbedEndpoint, Model: defaultEmbedModel, EmbedDim: defaultEmbedDim}
 	}
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
 	// Store the key in protected credentials.json.
 	creds, _ := loadCredentials(mc.cfgDir)
-	creds.set(kindID, apiKey)
-	if err := creds.save(mc.cfgDir); err != nil {
+	creds.Set(kindID, apiKey)
+	if err := creds.Save(mc.cfgDir); err != nil {
 		return "", fmt.Errorf("save credentials: %w", err)
 	}
 	return fmt.Sprintf("added %s backend %q → %s (key stored with owner-only protection). Switch with `/model use %s`. "+
@@ -707,7 +676,7 @@ func (mc *modelControl) addKeylessCatalogProvider(kindID string) (string, error)
 	if lc.Embed == nil {
 		lc.Embed = &providerConfig{Kind: "ollama", Endpoint: defaultEmbedEndpoint, Model: defaultEmbedModel, EmbedDim: defaultEmbedDim}
 	}
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
 	note := ""
@@ -740,7 +709,7 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 	}
 	delete(lc.Providers, name)
 	forgetProviderSecret(mc.cfgDir, name)
-	if err := lc.save(mc.cfgDir); err != nil {
+	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("removed backend %q", name), nil
@@ -754,7 +723,7 @@ func forgetProviderSecret(cfgDir, name string) {
 	}
 	if _, ok := creds.Secrets[name]; ok {
 		delete(creds.Secrets, name)
-		_ = creds.save(cfgDir)
+		_ = creds.Save(cfgDir)
 	}
 }
 
@@ -815,7 +784,7 @@ func cmdModel(_ context.Context, args []string) error {
 		printModelList(lc)
 		return nil
 	case "show":
-		p := lc.active()
+		p := lc.Active()
 		if p == nil {
 			fmt.Println("no active model backend (run `tenant setup` or `tenant model add`)")
 			return nil
@@ -836,7 +805,7 @@ func cmdModel(_ context.Context, args []string) error {
 			lc.Providers[name].Model = posModel
 		}
 		lc.Provider = name
-		if err := lc.save(c.cfgDir); err != nil {
+		if err := lc.Save(c.cfgDir); err != nil {
 			return err
 		}
 		extra := ""
@@ -931,8 +900,8 @@ func cmdModel(_ context.Context, args []string) error {
 		pc := &providerConfig{Kind: kind, Endpoint: strings.TrimRight(endpoint, "/"), Model: mdl, ToolFmt: toolFmt}
 		if c.genAPIKey != "" {
 			creds, _ := loadCredentials(c.cfgDir)
-			creds.set(name, c.genAPIKey)
-			if err := creds.save(c.cfgDir); err != nil {
+			creds.Set(name, c.genAPIKey)
+			if err := creds.Save(c.cfgDir); err != nil {
 				return err
 			}
 			pc.Auth = authCfg{Mode: "apikey", Stored: true}
@@ -941,7 +910,7 @@ func cmdModel(_ context.Context, args []string) error {
 		if lc.Embed == nil {
 			lc.Embed = &providerConfig{Kind: "ollama", Endpoint: defaultEmbedEndpoint, Model: defaultEmbedModel, EmbedDim: defaultEmbedDim}
 		}
-		if err := lc.save(c.cfgDir); err != nil {
+		if err := lc.Save(c.cfgDir); err != nil {
 			return err
 		}
 		fmt.Printf("added backend %q (kind=%s endpoint=%s) — `tenant model use %s` to make it primary; "+
@@ -960,7 +929,7 @@ func cmdModel(_ context.Context, args []string) error {
 		}
 		delete(lc.Providers, name)
 		forgetProviderSecret(c.cfgDir, name)
-		if err := lc.save(c.cfgDir); err != nil {
+		if err := lc.Save(c.cfgDir); err != nil {
 			return err
 		}
 		fmt.Printf("removed backend %q\n", name)

@@ -117,7 +117,7 @@ func (c skillControl) SetAutoAccept(mode string) error {
 		mode = "" // store empty = default-off
 	}
 	lc.Improve.AutoAccept = mode
-	return lc.save(c.cfgDir)
+	return lc.Save(c.cfgDir)
 }
 
 func (c skillControl) SkillList() []tui.SkillInfo {

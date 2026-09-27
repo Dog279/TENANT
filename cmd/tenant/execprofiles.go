@@ -102,25 +102,6 @@ type execProfile struct {
 	Policy  sandbox.Policy
 }
 
-// execProfileSetting is one operator override under "exec_profiles", keyed by a
-// surface or "default" (every surface without its own entry). Unset fields keep
-// the built-in default. deny_roots ADD to the built-in deny set; nothing can
-// remove Tenant's own dirs from it.
-type execProfileSetting struct {
-	Backend    string            `json:"backend,omitempty"`     // host | restricted
-	Enforce    *bool             `json:"enforce,omitempty"`     // default true; false = dry-run
-	Network    string            `json:"network,omitempty"`     // inherit | none | full (allowlist: rejected until enforced)
-	Allow      []string          `json:"allow,omitempty"`       // reserved for a future enforced allowlist; rejected today
-	ReadRoots  []string          `json:"read_roots,omitempty"`  // empty = whole host readable (deny roots still mask)
-	WriteRoots []string          `json:"write_roots,omitempty"` // writable, in addition to the work dir
-	DenyRoots  []string          `json:"deny_roots,omitempty"`  // added to the built-in deny set
-	EnvPass    []string          `json:"env_pass,omitempty"`    // env allowlist: variable names to forward
-	EnvSet     map[string]string `json:"env_set,omitempty"`     // env: fixed values
-	CPUSeconds int               `json:"cpu_seconds,omitempty"`
-	MemoryMB   int               `json:"memory_mb,omitempty"`
-	MaxPIDs    int               `json:"max_pids,omitempty"`
-}
-
 // execProfileStore is the process-wide, live set of operator overrides: loaded
 // at startup, re-loaded by the settings watcher. No agent tool writes it.
 type execProfileStore struct {

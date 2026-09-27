@@ -87,7 +87,7 @@ func probeDiscord(ctx context.Context, creds *credentials, settings map[string]s
 // httptest-backed deps; production callers reach it via probeDiscord with a
 // zero-valued deps.
 func probeDiscordWith(ctx context.Context, creds *credentials, _ map[string]string, deps discordProbeDeps) (string, error) {
-	token := creds.get(skillSecretID("discord", "token"))
+	token := creds.Get(skillSecretID("discord", "token"))
 	if token == "" {
 		return "", fmt.Errorf("discord bot token is missing — run `/skill configure discord <token>`")
 	}

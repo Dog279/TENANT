@@ -1893,7 +1893,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		if err := stg.save(c.cfgDir, c.agent); err != nil {
+		if err := stg.Save(c.cfgDir, c.agent); err != nil {
 			log.Warn("settings save failed", "err", err)
 		}
 	}
@@ -3190,7 +3190,7 @@ func resolveDashboardConfig(lc *launchConfig, flagSet, flagVal bool, flagAddr st
 	if lc != nil {
 		saved = lc.Dashboard
 	}
-	on := saved.dashboardEnabled()
+	on := saved.IsEnabled()
 	if flagSet {
 		on = flagVal
 	}

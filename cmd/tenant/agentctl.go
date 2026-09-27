@@ -123,7 +123,7 @@ func (ac *agentControl) Add(name, provider, modelID, description, soul string) (
 		Description: strings.TrimSpace(description),
 		Soul:        strings.TrimSpace(soul),
 	}
-	if err := lc.save(ac.cfgDir); err != nil {
+	if err := lc.Save(ac.cfgDir); err != nil {
 		return "", err
 	}
 	ac.publishRuntime(lc.Agents)
@@ -162,7 +162,7 @@ func (ac *agentControl) Rename(oldName, newName string) (string, error) {
 	}
 	delete(lc.Agents, oldName)
 	lc.Agents[newName] = ap
-	if err := lc.save(ac.cfgDir); err != nil {
+	if err := lc.Save(ac.cfgDir); err != nil {
 		return "", err
 	}
 	ac.publishRuntime(lc.Agents)
@@ -248,7 +248,7 @@ func (ac *agentControl) SetModel(name, provider, modelID string) (string, error)
 	}
 	ap.Provider = provider
 	ap.Model = strings.TrimSpace(modelID)
-	if err := lc.save(ac.cfgDir); err != nil {
+	if err := lc.Save(ac.cfgDir); err != nil {
 		return "", err
 	}
 	ac.publishRuntime(lc.Agents) // invalidates the per-profile router cache
@@ -274,7 +274,7 @@ func (ac *agentControl) SetSoul(name, soulText string) (string, error) {
 		return "", err
 	}
 	ap.Soul = strings.TrimSpace(soulText)
-	if err := lc.save(ac.cfgDir); err != nil {
+	if err := lc.Save(ac.cfgDir); err != nil {
 		return "", err
 	}
 	ac.publishRuntime(lc.Agents)
@@ -304,7 +304,7 @@ func (ac *agentControl) Remove(name string) (string, error) {
 		return "", fmt.Errorf("no agent named %q", name)
 	}
 	delete(lc.Agents, name)
-	if err := lc.save(ac.cfgDir); err != nil {
+	if err := lc.Save(ac.cfgDir); err != nil {
 		return "", err
 	}
 	ac.publishRuntime(lc.Agents)

@@ -455,7 +455,7 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 // hold it, so this is the second guard against restoring under a live hub.
 func hubAnswering(ctx context.Context, lc *launchConfig) (string, bool) {
 	dc := lc.Dashboard
-	if !dc.dashboardEnabled() && dc.Addr == "" {
+	if !dc.IsEnabled() && dc.Addr == "" {
 		return "", false
 	}
 	addr := dc.Addr

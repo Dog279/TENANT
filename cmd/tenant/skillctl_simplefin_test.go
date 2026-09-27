@@ -48,7 +48,7 @@ func TestSimpleFINProbe_ClaimsTokenAndPersists(t *testing.T) {
 	if saved != 1 {
 		t.Errorf("save called %d times, want 1 (claim must persist immediately)", saved)
 	}
-	stored := creds.get(skillSecretID("simplefin", "access_url"))
+	stored := creds.Get(skillSecretID("simplefin", "access_url"))
 	if !strings.Contains(stored, "u:p@") || !strings.HasPrefix(stored, "http") {
 		t.Errorf("stored secret not rewritten to the access URL: %q", stored)
 	}

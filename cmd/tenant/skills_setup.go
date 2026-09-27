@@ -146,7 +146,7 @@ func configureSkills(in *bufio.Reader, cur map[string]*skillConfig, creds *crede
 		// auth mode, so a stale sibling-branch path is inert.
 		sc.Enabled = true
 		for secretID, v := range pendingSecrets {
-			creds.set(secretID, v)
+			creds.Set(secretID, v)
 		}
 		for _, f := range k.Fields {
 			if f.Secret {
@@ -190,7 +190,7 @@ func askSkillField(in *bufio.Reader, id string, f skillKindField, creds *credent
 	}
 	for attempt := 0; attempt < maxWizardFieldAttempts; attempt++ {
 		if f.Secret {
-			existing := creds.get(skillSecretID(id, f.Key))
+			existing := creds.Get(skillSecretID(id, f.Key))
 			curDef := ""
 			if existing != "" {
 				curDef = "(keep saved)"

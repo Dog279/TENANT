@@ -55,7 +55,7 @@ func braveKey(cfgDir string) string {
 	// Also honor a key set via `/skill configure web brave_key=…` (TEN-69), which
 	// stores under the skill namespace rather than the brave_search credential.
 	if creds, err := loadCredentials(cfgDir); err == nil {
-		return strings.TrimSpace(creds.get(skillSecretID("web", "brave_key")))
+		return strings.TrimSpace(creds.Get(skillSecretID("web", "brave_key")))
 	}
 	return ""
 }
@@ -72,7 +72,7 @@ func credKey(cfgDir, credName string, envVars ...string) string {
 		return ""
 	}
 	if creds, err := loadCredentials(cfgDir); err == nil {
-		if v := strings.TrimSpace(creds.get(credName)); v != "" {
+		if v := strings.TrimSpace(creds.Get(credName)); v != "" {
 			return v
 		}
 	}

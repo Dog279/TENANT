@@ -150,6 +150,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
 | `internal/orchestra` | `internal/model` |  |
 | `internal/route` | `internal/model`, `internal/fsperm` |  |
+| `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra` | the persisted configuration; knows no runtime |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
 | `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
@@ -1248,6 +1249,20 @@ temp + rename, starting over if the live archive appended meanwhile. `Export` wr
 table as JSON Lines (no embeddings) plus profiles, souls, research and the archive.
 `cmd/tenant` adds connector forgetting (`credentials.json` `skill:<name>:*` entries plus each
 service's token and data files), the status view, and the daily prune in `serve` and the TUI.
+
+### 5.13c `internal/config` — Persisted configuration
+
+The types, defaults and validation of `config.json` (`Launch` and its blocks,
+the provider catalog, route resolution), the owner-only `credentials.json`
+(`Credentials`, `ResolveSecret`) and the per-agent `settings.<agent>.json`
+(`Settings`, `ExecProfile`), with the only safe ways to read and write them
+(`Load`, `Launch.Save`, `Persist` for long-lived holders, `AtomicWrite`,
+`LoadCredentials`/`PeekCredentials`, `LoadSettings`). It imports `fsperm`,
+`secrets`, `model`, `route` and `orchestra`, and no runtime package; the
+claudecode discovery sentinel is copied rather than imported, and a test holds
+the copies together. Moved out of `package main` in TEN-314;
+`cmd/tenant/config_compat.go` keeps main's names (`launchConfig`,
+`loadLaunchConfig`, …) as aliases and one-line wrappers.
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 

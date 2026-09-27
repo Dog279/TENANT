@@ -107,7 +107,7 @@ func TestAddModel_NeverLeaksFullSecretInError(t *testing.T) {
 func TestAddModel_AcceptsValidHTTPURL(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Provider: "echo", Providers: map[string]*providerConfig{"echo": {Kind: "echo"}}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: newEchoAgentForAdd(t),
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	for _, url := range []string{
@@ -124,7 +124,7 @@ func TestAddModel_AcceptsValidHTTPURL(t *testing.T) {
 			// Cleanup so the next iteration doesn't see leftover state.
 			got, _ := loadLaunchConfig(dir)
 			delete(got.Providers, "test")
-			_ = got.save(dir)
+			_ = got.Save(dir)
 		})
 	}
 }

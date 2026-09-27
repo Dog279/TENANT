@@ -62,7 +62,7 @@ func TestProbeWebBrave(t *testing.T) {
 
 	withKey := func() *credentials {
 		c, _ := loadCredentials(t.TempDir())
-		c.set(skillSecretID("web", "brave_key"), "BSA1234567890abcdefghijklmnop")
+		c.Set(skillSecretID("web", "brave_key"), "BSA1234567890abcdefghijklmnop")
 		return c
 	}
 	cases := []struct {
@@ -104,8 +104,8 @@ func TestBraveKey_HonorsSkillSecret(t *testing.T) {
 		t.Fatalf("no key anywhere → empty, got %q", got)
 	}
 	c, _ := loadCredentials(dir)
-	c.set(skillSecretID("web", "brave_key"), "BSA-skill-configured-key-xxxxxx")
-	if err := c.save(dir); err != nil {
+	c.Set(skillSecretID("web", "brave_key"), "BSA-skill-configured-key-xxxxxx")
+	if err := c.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	if got := braveKey(dir); got != "BSA-skill-configured-key-xxxxxx" {

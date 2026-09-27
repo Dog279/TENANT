@@ -22,7 +22,7 @@ func TestComposeEffectivePermissions(t *testing.T) {
 		Tools:       map[string]bool{"web_navigate": true},
 		Permissions: map[string]string{catExec: "deny", catWeb: "allow"},
 	}
-	if err := stg.save(cfgDir, c.agent); err != nil {
+	if err := stg.Save(cfgDir, c.agent); err != nil {
 		t.Fatal(err)
 	}
 

@@ -129,7 +129,7 @@ func (p connectorPlan) apply(cfgDir string) error {
 	for _, k := range p.keys {
 		delete(creds.Secrets, k)
 	}
-	return creds.save(cfgDir)
+	return creds.Save(cfgDir)
 }
 
 // storedConnectors names each connected service with something stored, and

@@ -125,7 +125,7 @@ func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Rou
 	}
 	if lc != nil {
 		rt.configuredSmall, rt.configuredBig = configuredRouteTargets(lc, cfg)
-		if pc := lc.active(); pc != nil {
+		if pc := lc.Active(); pc != nil {
 			pk, known := providerKinds[pc.Kind]
 			rt.plannerCloudNotice = !known || !pk.Local
 		}
@@ -718,7 +718,7 @@ func (r *routeRuntime) BindConfiguredForce() error {
 	}
 	if canonical != profileID {
 		lc.Route.ForceProfile = canonical
-		if err := lc.save(r.cfgDir); err != nil {
+		if err := lc.Save(r.cfgDir); err != nil {
 			return fmt.Errorf("persist stable forced profile: %w", err)
 		}
 		cfg, err := resolveRouteConfig(lc)
@@ -944,7 +944,7 @@ func (r *routeRuntime) SetMode(mode string) (string, error) {
 		}
 		installFallbackChain(r.router, r.cfgDir, lc, lc.PlanLoopCeiling, r.log)
 	}
-	if err := lc.save(r.cfgDir); err != nil {
+	if err := lc.Save(r.cfgDir); err != nil {
 		return "", err
 	}
 	r.mu.Lock()
@@ -997,12 +997,12 @@ func (r *routeRuntime) Force(profileID string) (string, error) {
 	lc.Route.Mode = route.ModeActive
 	lc.Route.Assist = false
 	lc.Route.ForceProfile = canonical
-	if err := lc.save(r.cfgDir); err != nil {
+	if err := lc.Save(r.cfgDir); err != nil {
 		return "", err
 	}
 	if err := r.bindForce(canonical); err != nil {
 		lc.Route.Enabled, lc.Route.Mode, lc.Route.ForceProfile = oldEnabled, oldMode, oldForce
-		_ = lc.save(r.cfgDir)
+		_ = lc.Save(r.cfgDir)
 		return "", err
 	}
 	cfg, err := resolveRouteConfig(lc)

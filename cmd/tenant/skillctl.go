@@ -23,7 +23,7 @@ import (
 )
 
 // skillKind is the static catalog metadata for one configurable
-// integration. Mirrors providerKind (launchconfig.go:133) in shape.
+// integration. Mirrors config.ProviderKind (internal/config/providers.go) in shape.
 //
 // Per-platform tickets (TEN-65..69) register entries in skillKinds
 // with their own Validate + Probe. This file ships the framework with
@@ -352,7 +352,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 			continue
 		}
 		if f.Secret {
-			creds.set(skillSecretID(id, f.Key), v)
+			creds.Set(skillSecretID(id, f.Key), v)
 		} else {
 			sk.Settings[f.Key] = v
 		}
@@ -360,12 +360,12 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 	lc.Skills[id] = sk
 
 	// --- Phase 3: write credentials.json FIRST (audit P0).
-	if err := creds.save(sc.cfgDir); err != nil {
+	if err := creds.Save(sc.cfgDir); err != nil {
 		return "", fmt.Errorf("save credentials.json: %w", err)
 	}
 
 	// --- Phase 4: write config.json.
-	if err := lc.save(sc.cfgDir); err != nil {
+	if err := lc.Save(sc.cfgDir); err != nil {
 		return "", fmt.Errorf("save config.json (credentials were written, retry the configure to align): %w", err)
 	}
 
@@ -413,7 +413,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 	// token + operator_id are already stored on disk and will be used on
 	// next launch.
 	if id == "discord" && sc.onDiscordConfigured != nil {
-		newToken := creds.get(skillSecretID("discord", "token"))
+		newToken := creds.Get(skillSecretID("discord", "token"))
 		operatorID := ""
 		if lc.Skills["discord"] != nil {
 			operatorID = lc.Skills["discord"].Settings["operator_id"]
@@ -421,7 +421,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 		if operatorID != "" {
 			lc.Relay.OperatorID = operatorID
 			lc.Relay.Enabled = true
-			if err := lc.save(sc.cfgDir); err != nil {
+			if err := lc.Save(sc.cfgDir); err != nil {
 				fmt.Fprintf(&out, "  ! could not persist relay config: %v\n", err)
 			}
 		}
@@ -521,10 +521,10 @@ func (sc *skillCfgControl) SkillClear(id, fieldKey string) (string, error) {
 	}
 
 	// Write order matches Configure: creds first, then config.
-	if err := creds.save(sc.cfgDir); err != nil {
+	if err := creds.Save(sc.cfgDir); err != nil {
 		return "", fmt.Errorf("save credentials.json: %w", err)
 	}
-	if err := lc.save(sc.cfgDir); err != nil {
+	if err := lc.Save(sc.cfgDir); err != nil {
 		return "", fmt.Errorf("save config.json (credentials were updated, retry the clear to align): %w", err)
 	}
 
@@ -561,7 +561,7 @@ func (sc *skillCfgControl) runProbeWithSave(k skillKind, creds *credentials, set
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	save := func() error { return creds.save(sc.cfgDir) }
+	save := func() error { return creds.Save(sc.cfgDir) }
 	done := make(chan struct {
 		identity string
 		err      error
@@ -711,7 +711,7 @@ func (sc *skillCfgControl) isConfigured(id string, k skillKind) bool {
 		}
 		v := ""
 		if f.Secret {
-			v = creds.get(skillSecretID(id, f.Key))
+			v = creds.Get(skillSecretID(id, f.Key))
 		} else if lc.Skills != nil && lc.Skills[id] != nil && lc.Skills[id].Settings != nil {
 			v = lc.Skills[id].Settings[f.Key]
 		}
@@ -746,7 +746,7 @@ func (sc *skillCfgControl) stateLabel(id string, k skillKind, lc *launchConfig) 
 
 func (sc *skillCfgControl) fieldValue(id string, f skillKindField, lc *launchConfig, creds *credentials) string {
 	if f.Secret {
-		return creds.get(skillSecretID(id, f.Key))
+		return creds.Get(skillSecretID(id, f.Key))
 	}
 	if lc.Skills == nil || lc.Skills[id] == nil || lc.Skills[id].Settings == nil {
 		return ""

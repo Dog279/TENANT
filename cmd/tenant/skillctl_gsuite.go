@@ -345,7 +345,7 @@ func probeGSuiteWith(ctx context.Context, creds *credentials, settings map[strin
 		// are atomic — wins over splitting into refresh_token /
 		// access_token / expiry separately.
 		var cachedTok *oauth2.Token
-		if raw := creds.get(skillSecretID("gsuite", "oauth_token")); raw != "" {
+		if raw := creds.Get(skillSecretID("gsuite", "oauth_token")); raw != "" {
 			var t oauth2.Token
 			if err := json.Unmarshal([]byte(raw), &t); err == nil {
 				cachedTok = &t
@@ -360,7 +360,7 @@ func probeGSuiteWith(ctx context.Context, creds *credentials, settings map[strin
 			if err != nil {
 				return err
 			}
-			creds.set(skillSecretID("gsuite", "oauth_token"), string(b))
+			creds.Set(skillSecretID("gsuite", "oauth_token"), string(b))
 			if save != nil {
 				return save()
 			}

@@ -26,8 +26,8 @@ func TestDashKeys_DirectSetRemove(t *testing.T) {
 	if err := k.SetSecret("tavily", "tav-key"); err != nil {
 		t.Fatal(err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("tavily") != "tav-key" {
-		t.Fatalf("tavily not stored: %q", creds.get("tavily"))
+	if creds, _ := loadCredentials(dir); creds.Get("tavily") != "tav-key" {
+		t.Fatalf("tavily not stored: %q", creds.Get("tavily"))
 	}
 	set := false
 	for _, v := range k.List() {
@@ -41,8 +41,8 @@ func TestDashKeys_DirectSetRemove(t *testing.T) {
 	if err := k.RemoveSecret("tavily"); err != nil {
 		t.Fatal(err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("tavily") != "" {
-		t.Errorf("tavily should be removed, got %q", creds.get("tavily"))
+	if creds, _ := loadCredentials(dir); creds.Get("tavily") != "" {
+		t.Errorf("tavily should be removed, got %q", creds.Get("tavily"))
 	}
 }
 
@@ -52,8 +52,8 @@ func TestDashKeys_SkillDirect(t *testing.T) {
 	if err := k.SetSecret("skill:discord:token", "bot-token"); err != nil {
 		t.Fatal(err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("skill:discord:token") != "bot-token" {
-		t.Errorf("discord token not stored under the skill id: %q", creds.get("skill:discord:token"))
+	if creds, _ := loadCredentials(dir); creds.Get("skill:discord:token") != "bot-token" {
+		t.Errorf("discord token not stored under the skill id: %q", creds.Get("skill:discord:token"))
 	}
 }
 
@@ -77,8 +77,8 @@ func TestDashKeys_ProviderRoundTrip(t *testing.T) {
 	if err := k.SetSecret("zai", "zai-key"); err != nil {
 		t.Fatalf("provider set: %v", err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("zai") != "zai-key" {
-		t.Fatalf("zai key not stored: %q", creds.get("zai"))
+	if creds, _ := loadCredentials(dir); creds.Get("zai") != "zai-key" {
+		t.Fatalf("zai key not stored: %q", creds.Get("zai"))
 	}
 	lc, _ := loadLaunchConfig(dir)
 	if lc.Providers["zai"] == nil || !lc.Providers["zai"].Auth.Stored {
@@ -88,8 +88,8 @@ func TestDashKeys_ProviderRoundTrip(t *testing.T) {
 	if err := k.RemoveSecret("zai"); err != nil {
 		t.Fatal(err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("zai") != "" {
-		t.Errorf("zai key should be gone: %q", creds.get("zai"))
+	if creds, _ := loadCredentials(dir); creds.Get("zai") != "" {
+		t.Errorf("zai key should be gone: %q", creds.Get("zai"))
 	}
 	lc2, _ := loadLaunchConfig(dir)
 	if pc := lc2.Providers["zai"]; pc != nil && pc.Auth.Stored {
@@ -138,8 +138,8 @@ func TestTuiKeysAdapter(t *testing.T) {
 	if err := k.Set("tavily", "tk"); err != nil {
 		t.Fatal(err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("tavily") != "tk" {
-		t.Errorf("Set didn't persist: %q", creds.get("tavily"))
+	if creds, _ := loadCredentials(dir); creds.Get("tavily") != "tk" {
+		t.Errorf("Set didn't persist: %q", creds.Get("tavily"))
 	}
 	found := false
 	for _, it := range k.List() {

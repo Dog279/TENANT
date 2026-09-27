@@ -229,7 +229,7 @@ func configuredListeners(lc *launchConfig) []listenerAudit {
 		dashboardAddr = defaultDashboardAddr
 	}
 	listeners := []listenerAudit{
-		newListenerAudit("dashboard", lc.Dashboard.dashboardEnabled(), dashboardAddr,
+		newListenerAudit("dashboard", lc.Dashboard.IsEnabled(), dashboardAddr,
 			lc.Dashboard.TLSCert != "" && lc.Dashboard.TLSKey != "", lc.Dashboard.Auth != "", "web control panel"),
 	}
 	if lc.Gateway.Mode == "sse" || lc.Gateway.Mode == "both" {

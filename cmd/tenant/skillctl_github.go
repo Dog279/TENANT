@@ -84,7 +84,7 @@ func probeGitHub(ctx context.Context, creds *credentials, settings map[string]st
 	if repo == "" {
 		return "", fmt.Errorf("no repo configured")
 	}
-	token := creds.get(skillSecretID("github", "token"))
+	token := creds.Get(skillSecretID("github", "token"))
 	if strings.TrimSpace(token) == "" {
 		return "", fmt.Errorf("no token stored - run `/configure github` again")
 	}

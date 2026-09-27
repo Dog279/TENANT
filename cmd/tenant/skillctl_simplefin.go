@@ -51,7 +51,7 @@ func probeSimpleFIN(ctx context.Context, creds *credentials, _ map[string]string
 // network). Claims a stored setup token in place, then verifies with a
 // 7-day accounts fetch.
 func probeSimpleFINWith(ctx context.Context, creds *credentials, save func() error, hc *http.Client) (string, error) {
-	raw := strings.TrimSpace(creds.get(skillSecretID("simplefin", "access_url")))
+	raw := strings.TrimSpace(creds.Get(skillSecretID("simplefin", "access_url")))
 	if raw == "" {
 		return "", errors.New("no setup token stored — run `/configure simplefin <setup-token>`")
 	}
@@ -66,7 +66,7 @@ func probeSimpleFINWith(ctx context.Context, creds *credentials, save func() err
 		if err != nil {
 			return "", err
 		}
-		creds.set(skillSecretID("simplefin", "access_url"), access)
+		creds.Set(skillSecretID("simplefin", "access_url"), access)
 		if save != nil {
 			if err := save(); err != nil {
 				return "", fmt.Errorf("claimed OK but could not persist the access URL (the setup token is now consumed — mint a fresh one if this state is lost): %w", err)
@@ -108,7 +108,7 @@ func resolveSimpleFINAccessURL(ctx context.Context, cfgDir string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("simplefin plugin: load credentials: %w", err)
 	}
-	raw := strings.TrimSpace(creds.get(skillSecretID("simplefin", "access_url")))
+	raw := strings.TrimSpace(creds.Get(skillSecretID("simplefin", "access_url")))
 	if raw == "" {
 		return "", fmt.Errorf("simplefin plugin: %w yet — run `/configure simplefin <setup-token>`", errNotConfigured)
 	}
@@ -117,8 +117,8 @@ func resolveSimpleFINAccessURL(ctx context.Context, cfgDir string) (string, erro
 		if err != nil {
 			return "", fmt.Errorf("simplefin plugin: claim setup token: %w", err)
 		}
-		creds.set(skillSecretID("simplefin", "access_url"), access)
-		if err := creds.save(cfgDir); err != nil {
+		creds.Set(skillSecretID("simplefin", "access_url"), access)
+		if err := creds.Save(cfgDir); err != nil {
 			return "", fmt.Errorf("simplefin plugin: claimed OK but could not persist the access URL (the one-time token is consumed — mint a fresh one if this state is lost): %w", err)
 		}
 		raw = access

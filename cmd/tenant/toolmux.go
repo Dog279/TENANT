@@ -1838,10 +1838,10 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 				switch sk.Settings["auth"] {
 				case "token":
 					acfg.Email = sk.Settings["email"]
-					acfg.APIToken = creds.get(skillSecretID("atlassian", "api_token"))
+					acfg.APIToken = creds.Get(skillSecretID("atlassian", "api_token"))
 				default: // oauth
 					acfg.ClientID = sk.Settings["client_id"]
-					acfg.ClientSecret = creds.get(skillSecretID("atlassian", "client_secret"))
+					acfg.ClientSecret = creds.Get(skillSecretID("atlassian", "client_secret"))
 				}
 				svc, err := atlassian.Open(ctx, acfg)
 				if err != nil {
@@ -1866,7 +1866,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 					return nil, nil, fmt.Errorf("github plugin: %w yet - run `/configure github`", errNotConfigured)
 				}
 				creds, _ := loadCredentials(c.cfgDir)
-				tok := githubp.ResolveToken(creds.get(skillSecretID("github", "token")), c.cfgDir)
+				tok := githubp.ResolveToken(creds.Get(skillSecretID("github", "token")), c.cfgDir)
 				if tok == "" {
 					return nil, nil, fmt.Errorf("github plugin: %w yet - no token; run `/configure github`", errNotConfigured)
 				}
