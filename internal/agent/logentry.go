@@ -59,6 +59,9 @@ func EntryFor(ev Event) (logs.Entry, bool) {
 		if ev.Tool != "" {
 			e.Fields = append(e.Fields, logs.Field{Key: "tool", Value: ev.Tool})
 		}
+		if ev.ToolCallID != "" { // read back as the event's tool_call correlation
+			e.Fields = append(e.Fields, logs.Field{Key: "tool_call", Value: ev.ToolCallID})
+		}
 	}
 	field := func(k, v string) {
 		if v != "" {

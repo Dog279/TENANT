@@ -87,9 +87,12 @@ type Event struct {
 	Iter   int    // planner-loop iteration (1-based), 0 for turn-level events
 	Text   string // user query / token delta / assistant text / final / error
 	Tool   string // tool name (ToolCall/ToolResult/Validation)
-	Args   string // tool arguments JSON (ToolCall)
-	Result string // tool result text (ToolResult)
-	IsErr  bool   // tool result was an error (ToolResult)
+	// ToolCallID is the model's ID for the call (ToolCall/ToolResult), so its
+	// approval and sandbox run, which carry it too, stay with it.
+	ToolCallID string
+	Args       string // tool arguments JSON (ToolCall)
+	Result     string // tool result text (ToolResult)
+	IsErr      bool   // tool result was an error (ToolResult)
 
 	Budget     *assemble.BudgetReport  // EventMemory
 	TeamBudget *orchestra.BudgetStatus // EventTeamBudget

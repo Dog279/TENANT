@@ -165,6 +165,11 @@ func TestLoggingEndToEnd(t *testing.T) {
 				t.Errorf("%s: approval %q, want %s", name, e.Corr.ApprovalID, approvalID)
 			}
 		}
+		// The tool call, its approval, its run and their records name the
+		// call itself, so two calls in one turn stay apart.
+		if name != "turns/1 start" && name != "turns/1101" && name != "turns/1 stop" && e.Corr.ToolCallID != "call-1" {
+			t.Errorf("%s: tool call %q, want call-1", name, e.Corr.ToolCallID)
+		}
 	}
 	run := at["sandbox/1 start"]
 	if run.Corr.RelatedID != trace || run.Corr.ActivityID == "" || at["security/4201"].Corr.ActivityID != run.Corr.ActivityID {

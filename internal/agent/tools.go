@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+	"tenant/internal/logs/event"
 	"time"
 
 	"tenant/internal/model"
@@ -172,7 +173,7 @@ func dispatchBatch(ctx context.Context, calls []model.ToolCall, flows []Flow, ma
 				results[i].Duration = time.Since(start).Round(time.Millisecond)
 			}()
 			report := &flowReport{}
-			callCtx := context.WithValue(ctx, flowReportKey{}, report)
+			callCtx := context.WithValue(event.WithToolCall(ctx, call.ID), flowReportKey{}, report)
 			if i < len(flows) && !flows[i].Empty() {
 				callCtx = context.WithValue(callCtx, dispatchFlowKey{}, flows[i])
 			}

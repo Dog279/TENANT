@@ -997,7 +997,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		if a.cfg.LazyToolLoad {
 			if loads, rest := splitLoadToolCalls(resp.ToolCalls); len(loads) > 0 {
 				for _, call := range loads {
-					a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Args: string(call.Arguments)})
+					a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, ToolCallID: call.ID, Args: string(call.Arguments)})
 					a.handleLoadTool(ctx, call, loaded)
 				}
 				// rest is a FRESH slice — does NOT alias the assistant message's
@@ -1075,7 +1075,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			parallel = 1
 		}
 		for _, call := range validCalls {
-			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Args: string(call.Arguments)})
+			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, ToolCallID: call.ID, Args: string(call.Arguments)})
 		}
 		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
 		for _, br := range batchResults {
@@ -1103,7 +1103,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				toolResult = br.Err.Error()
 			}
 			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
-			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
+			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, ToolCallID: br.Call.ID, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
 			// The operational record of the call; its payloads are the
 			// diagnostic rows above (EntryFor).
 			if toolOutcome == "error" {

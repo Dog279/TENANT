@@ -35,8 +35,20 @@ func NoteApproval(ctx context.Context, id string) {
 	}
 }
 
+type toolCallKey struct{}
+
+// WithToolCall correlates the events written under ctx with one tool call:
+// its approval, its sandbox run and their records name the call, so two
+// calls in one turn stay apart.
+func WithToolCall(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, toolCallKey{}, id)
+}
+
 // attribute moves e's actor and surface fields into its attributes, and sets
-// its approval from ctx.
+// its approval and tool call from ctx.
 func attribute(ctx context.Context, e *Event) {
 	e.Data = slices.DeleteFunc(e.Data, func(f Field) bool {
 		switch f.Key {
@@ -54,6 +66,9 @@ func attribute(ctx context.Context, e *Event) {
 	}
 	if s, ok := ctx.Value(approvalKey{}).(*atomic.Pointer[string]); ok {
 		e.Corr.ApprovalID = *s.Load()
+	}
+	if id, ok := ctx.Value(toolCallKey{}).(string); ok && e.Corr.ToolCallID == "" {
+		e.Corr.ToolCallID = id
 	}
 }
 
