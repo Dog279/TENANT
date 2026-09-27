@@ -80,7 +80,7 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	// served list; an unreachable endpoint changes nothing (offline spawns must
 	// not be blocked by a health check).
 	if pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
-		mdl = reconcileServedModel(pc.Endpoint, apiKey, mdl, profileName, log)
+		mdl = reconcileServedModel(pc.Endpoint, apiKey, mdl, profileName)
 	}
 
 	// Build a commonFlags view that genProfiles can consume — same shape as
@@ -210,7 +210,7 @@ var servedModelHTTPClient = &http.Client{}
 //	case-insensitive match -> the SERVED casing (self-heal + warn)
 //	no match               -> configured name + a warning listing served models
 //	endpoint unreachable   -> configured name (never block offline spawns)
-func reconcileServedModel(endpoint, apiKey, mdl, profileName string, log *slog.Logger) string {
+func reconcileServedModel(endpoint, apiKey, mdl, profileName string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	url := strings.TrimRight(strings.TrimSpace(endpoint), "/") + "/v1/models"
@@ -246,16 +246,10 @@ func reconcileServedModel(endpoint, apiKey, mdl, profileName string, log *slog.L
 	}
 	for _, id := range served {
 		if strings.EqualFold(id, mdl) {
-			if log != nil {
-				log.Warn("agent profile: model name casing corrected to the endpoint's served name",
-					"profile", profileName, "configured", mdl, "served", id)
-			}
+			sysProfileModelCased.Log(ctx, "profile", profileName, "configured", mdl, "served", id)
 			return id
 		}
 	}
-	if log != nil {
-		log.Warn("agent profile: configured model is not in the endpoint's served list; generate calls may 404",
-			"profile", profileName, "configured", mdl, "served", strings.Join(served, ", "))
-	}
+	sysProfileModelMissing.Log(ctx, "profile", profileName, "configured", mdl, "served", strings.Join(served, ", "))
 	return mdl
 }

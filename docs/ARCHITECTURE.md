@@ -143,7 +143,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
 | `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes, and the events every plugin has |
-| `internal/lifecycle` | nothing in the module | leaf: the staged shutdown of a long-running command |
+| `internal/lifecycle` | `internal/logs/catalog` | the staged shutdown of a long-running command, filed in the system log |
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |

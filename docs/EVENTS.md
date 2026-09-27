@@ -3261,7 +3261,23 @@ Writes the `system` log.
 | [1](#system-1) | info | Lifecycle | `Tenant {version} started as {role}` |
 | [2](#system-2) | info | Lifecycle | `Tenant stopped cleanly after {uptime}` |
 | [3](#system-3) | critical | Lifecycle | `The previous run ended unexpectedly; its last event was at {last}` |
+| [10](#system-10) | info | Lifecycle | `Start-up of {role}` |
+| [20](#system-20) | info | Shutdown | `Shutdown of {steps} steps` |
+| [21](#system-21) | info | Shutdown | `Shutdown stage {stage}: {steps} steps` |
+| [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
+| [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
+| [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
+| [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
+| [2201](#system-2201) | warning | Storage | `{what} was not saved: {err}` |
+| [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
+| [3020](#system-3020) | error | Shutdown | `Shutdown step {stage}/{step} panicked: {panic}` |
 | [3101](#system-3101) | error | Component | `{component} failed: {err}` |
+| [5001](#system-5001) | info | Configuration | `{path} was edited; applied {changed}` |
+| [5002](#system-5002) | warning | Configuration | `{path} did not load, so {fallback}: {err}` |
+| [5003](#system-5003) | info | Configuration | `credentials.json changed; the active model provider's key was reloaded` |
+| [5004](#system-5004) | warning | Configuration | `A changed key did not reload into the live model provider: {err}` |
+| [5010](#system-5010) | warning | Agent profile | `Agent profile {profile}: model {configured} is served as {served}; using that` |
+| [5011](#system-5011) | warning | Agent profile | `Agent profile {profile}: the endpoint does not serve model {configured}; its calls may fail` |
 
 ### system 1
 
@@ -3305,6 +3321,148 @@ Writes the `system` log.
 
 **What to do.** Read the events before its last one, and any crash file filed at this start.
 
+### system 10
+
+`Start-up of {role}`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `role`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:10`
+
+**What it means.** serve or the TUI starting up: its start, then its stop with the duration once it is ready, or its failure with the error.
+
+**Why it happens.** The operator or a service manager started Tenant.
+
+**What to do.** None when it stops. On a failure Tenant did not start: read the error, fix its cause and start it again.
+
+### system 20
+
+`Shutdown of {steps} steps`
+
+- **Level:** info · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `steps`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:20`
+
+**What it means.** Tenant shutting down, stage by stage: its start, then its stop with the duration, or its failure naming every step that failed.
+
+**Why it happens.** serve or the TUI was asked to stop (Ctrl-C, the service manager, an update), or it is leaving after an error.
+
+**What to do.** None when it stops. On a failure, read the steps' events under it; the shutdown still ran every other step.
+
+### system 21
+
+`Shutdown stage {stage}: {steps} steps`
+
+- **Level:** info · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `steps`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:21`
+
+**What it means.** One stage of the shutdown: unblock (deny pending approvals), intake (stop taking new work), drain (let running work finish) or release (close stores). Its start, then its stop with the duration, or its failure.
+
+**Why it happens.** The shutdown reached the stage.
+
+**What to do.** None when it stops. A slow drain is a job or turn still running; a failure names the steps that failed.
+
+### system 1301
+
+`Publish the dashboard to the tailnet`
+
+- **Level:** info · **Channel:** operational · **Task:** Tailscale · **Log:** system
+- **Find it:** `provider:system id:1301`
+
+**What it means.** tailscale serve publishing the loopback dashboard to the operator's tailnet: its start, then its stop with the duration, or its failure with the error.
+
+**Why it happens.** The operator ran /tailscale serve, or Tenant re-applied that choice at start.
+
+**What to do.** None when it stops. On a failure, install Tailscale or run tailscale up, then try again.
+
+### system 1302
+
+`Withdraw the dashboard from the tailnet`
+
+- **Level:** info · **Channel:** operational · **Task:** Tailscale · **Log:** system
+- **Find it:** `provider:system id:1302`
+
+**What it means.** tailscale serve reset withdrawing the dashboard from the tailnet: its start, then its stop with the duration, or its failure with the error.
+
+**Why it happens.** The operator ran /tailscale unserve.
+
+**What to do.** None when it stops. On a failure, check tailscale serve status and reset it by hand.
+
+### system 2020
+
+`Shutdown step {stage}/{step} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `step`, `err`, `took`
+- **Find it:** `provider:system id:2020`
+
+**What it means.** A component did not stop cleanly. The shutdown went on with the other steps.
+
+**Why it happens.** Closing it returned an error: a store that could not flush, a listener already gone, a timeout.
+
+**What to do.** Read the error. A store that failed to close may have lost its last writes; tenant doctor checks the databases.
+
+### system 2110
+
+`{component} unavailable ({effect}): {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `effect`, `err`
+- **Find it:** `provider:system id:2110`
+
+**What it means.** A part of Tenant did not come up, or could not be refreshed, so Tenant runs without it. effect says what is missing.
+
+**Why it happens.** Its store or file could not be opened (permissions, a full disk, a database another process holds), or what it depends on failed.
+
+**What to do.** Read the error and fix its cause, then restart Tenant, or for the embedder switch the model again.
+
+### system 2201
+
+`{what} was not saved: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Storage · **Log:** system
+- **Fields:** `what`, `path`, `err`
+- **Find it:** `provider:system id:2201`
+
+**What it means.** A change applies in the running process but was not written to disk, so a restart will undo it.
+
+**Why it happens.** The file could not be written: permissions, a full disk, or a read-only config or data directory.
+
+**What to do.** Fix the path's permissions or free space, then make the change again so it is saved.
+
+### system 3010
+
+`{role} stopped with an error: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `role`, `err`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:3010`
+
+**What it means.** Tenant ran, then stopped because of an error rather than being asked to. Its shutdown still ran.
+
+**Why it happens.** The terminal UI failed: the terminal went away or could not be driven.
+
+**What to do.** Read the error, then start Tenant again. If it repeats, run it in another terminal.
+
+### system 3020
+
+`Shutdown step {stage}/{step} panicked: {panic}`
+
+- **Level:** error · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `step`, `panic`, `stack`, `took`
+- **Find it:** `provider:system id:3020`
+
+**What it means.** A component's stop crashed. The panic was contained and the shutdown went on with the other steps.
+
+**Why it happens.** A bug in that component's stop.
+
+**What to do.** Report it with the stack. The component may not have released what it held; check its store with tenant doctor.
+
 ### system 3101
 
 `{component} failed: {err}`
@@ -3318,6 +3476,95 @@ Writes the `system` log.
 **Why it happens.** Something it depends on failed: a connection, a file or its configuration.
 
 **What to do.** Open the component's log; the event before this one usually names the cause.
+
+### system 5001
+
+`{path} was edited; applied {changed}`
+
+- **Level:** info · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `path`, `changed`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5001`
+
+**What it means.** The settings file changed on disk, and the running Tenant applied what differs, with no restart: tool rules, category approval modes or exec profiles.
+
+**Why it happens.** Someone edited the file by hand or from another window, or a script pushed it.
+
+**What to do.** None. Check that changed lists what you meant to change.
+
+### system 5002
+
+`{path} did not load, so {fallback}: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `path`, `fallback`, `err`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5002`
+
+**What it means.** A configuration file could not be read or parsed, so Tenant goes on without it; fallback says what it uses instead.
+
+**Why it happens.** The file has a JSON error, or it cannot be read.
+
+**What to do.** Fix the file (tenant doctor points at a JSON error); an edit is picked up without a restart.
+
+### system 5003
+
+`credentials.json changed; the active model provider's key was reloaded`
+
+- **Level:** info · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5003`
+
+**What it means.** A key was rotated outside the settings page, and the running Tenant now uses it, with no restart. The model log records the swap.
+
+**Why it happens.** A secrets manager or a hand edit changed credentials.json.
+
+**What to do.** None.
+
+### system 5004
+
+`A changed key did not reload into the live model provider: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `provider`, `source`, `err`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5004`
+
+**What it means.** A model provider's key changed, but the running Tenant still uses the old one. source says where the change came from.
+
+**Why it happens.** The provider's configuration could not be read, or the provider could not be rebuilt with the new key.
+
+**What to do.** Read the error, then switch to the provider again with /model use or the dashboard's model page.
+
+### system 5010
+
+`Agent profile {profile}: model {configured} is served as {served}; using that`
+
+- **Level:** warning · **Channel:** operational · **Task:** Agent profile · **Log:** system
+- **Fields:** `profile`, `configured`, `served`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5010`
+
+**What it means.** An agent profile names its model in a different letter case than the endpoint serves it, so Tenant uses the served name.
+
+**Why it happens.** A typo in the profile's model name. The endpoint's model lookup is case-sensitive.
+
+**What to do.** Correct the model name in the agent profile.
+
+### system 5011
+
+`Agent profile {profile}: the endpoint does not serve model {configured}; its calls may fail`
+
+- **Level:** warning · **Channel:** operational · **Task:** Agent profile · **Log:** system
+- **Fields:** `profile`, `configured`, `served`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5011`
+
+**What it means.** An agent profile names a model its endpoint does not list, so the sub-agents that use it may fail every call.
+
+**Why it happens.** The model name is wrong, or the server loaded another model.
+
+**What to do.** Set the profile's model to one of served, or load the model on the server.
 
 ## toolmux
 

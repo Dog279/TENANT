@@ -40,7 +40,7 @@ var rules = []rule{
 	{Pkg: "internal/model/profiles", Notes: "leaf"},
 	{Pkg: "internal/control", Notes: "leaf: the data types the runtime, the TUI and the dashboard share"},
 	{Pkg: "internal/pluginreg", Notes: "leaf: the plugin registry's invariants and indexes, and the events every plugin has"},
-	{Pkg: "internal/lifecycle", Notes: "leaf: the staged shutdown of a long-running command"},
+	{Pkg: "internal/lifecycle", May: []string{"internal/logs/catalog"}, Notes: "the staged shutdown of a long-running command, filed in the system log"},
 	{Pkg: "internal/skillpkg", Notes: "leaf: the Agent Skills package format (SKILL.md)"},
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},

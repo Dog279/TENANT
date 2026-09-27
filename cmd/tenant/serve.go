@@ -49,7 +49,7 @@ import (
 // and the tailscale re-assert are TUI-resident today and are picked up by the
 // TEN-194a extraction; the Discord relay (opt-in) covers the away-from-desk
 // drive case in v1.
-func cmdServe(ctx context.Context, args []string) error {
+func cmdServe(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs)
@@ -86,7 +86,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	// exactly as before (the hub handler tees to it).
 	hub, log, herr := openLogHub(c, slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()}))
 	if herr != nil {
-		log.Warn("logs: " + herr.Error() + " — logging to memory only")
+		sysUnavailable.Log(ctx, "component", "the log folder", "effect", "logging to memory only", "err", herr)
+		fmt.Println("• logs: " + herr.Error() + " — logging to memory only") // stdout: the supervisor's log, as the feed
 	}
 	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
@@ -101,8 +102,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	// work; then close what it used, last opened first — no goroutine may
 	// write to a closed store. Each component registers its stop where it is
 	// built; an early return runs whatever is registered so far.
-	life := lifecycle.New(log.With("source", "shutdown"))
+	life := lifecycle.New(log)
 	defer life.Shutdown()
+	run := beginRun(ctx, "serve") // the system log's start-up and stop (TEN-383)
+	defer run.failed(&err)
 	// Crash capture and the boot record (TEN-365): its clean stop is the
 	// first Release step registered, so it runs last.
 	onPanic := startBootRecord(hub, life, "serve")
@@ -156,7 +159,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
 	if uerr != nil {
-		log.Warn("usage ledger unavailable", "err", uerr)
+		sysUnavailable.Log(ctx, "component", "usage ledger", "effect", "token usage is not recorded", "err", uerr)
 	} else {
 		life.Add(lifecycle.Release, "usage ledger", usageStore.Close)
 	}
@@ -172,6 +175,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	seedFromFlags(broker, pf)
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
+		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
 	broker.LoadModes(stg.Permissions)
@@ -179,7 +183,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		saveSettingsOrTell(stg, c.cfgDir, c.agent, log, pushSys)
+		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
 	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
@@ -247,7 +251,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		defer profMu.Unlock()
 		prof.AppendRemembered(fact)
 		if err := prof.Save(c.dataDir); err != nil {
-			log.Warn("profile note save failed", "err", err)
+			sysNotSaved.Log(ctx, "what", "the user profile", "err", err)
 		}
 	}
 
@@ -428,7 +432,7 @@ func cmdServe(ctx context.Context, args []string) error {
 				smeLive.Set(rendered)
 			}
 		} else {
-			log.Warn("sme: init failed; project SME disabled", "err", serr.Error())
+			sysUnavailable.Log(ctx, "component", "project SME", "effect", "no project SME in the prompt", "err", serr)
 		}
 	}
 
@@ -593,7 +597,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
-			modelCtl.log.Warn("model: embedder not re-resolved after the swap; tool ranking keeps the old one", "err", err)
+			sysUnavailable.Log(ctx, "component", "the new embedder", "effect", "tool ranking keeps the old one", "err", err)
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
@@ -702,7 +706,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// is up — publishes the loopback dashboard onto the tailnet so the operator
 	// can reach the hub off-LAN, matching the TUI. Best-effort.
 	if c.lc != nil && c.lc.Tailscale.Serve {
-		tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
+		tsMgr := newTailscaleManager(ctx, dashMgr)
 		if url, terr := tsMgr.reassertOnLaunch(); terr != nil {
 			pushSys("tailscale: serve not restored — " + terr.Error())
 		} else {
@@ -754,9 +758,11 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 
+	run.ready()
 	<-ctx.Done()
 	fmt.Println("\nshutting down…")
 	life.Shutdown() // each failed step is logged
+	run.stopped(ctx, nil)
 	return nil
 }
 

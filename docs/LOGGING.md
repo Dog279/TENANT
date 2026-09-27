@@ -25,8 +25,7 @@ one folder is one tab.
 ├── sandbox/                      ← the execution sandbox: every run's start and exit, refusals, escalations, dry-run would-be refusals
 ├── backup/                       ← each backup, verify and restore, with its counts and result
 ├── privacy/                      ← each retention sweep and deletion, with what it removed
-├── shutdown/                     ← the staged shutdown's steps
-├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
+├── system/                       ← start-up and shutdown (each shutdown stage an activity; was shutdown/), settings and credentials reloads, Tailscale, setup, health, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 ├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
 ├── archive/                      ← the store's archived records (security-<first>-<last>.ndjson.gz)
@@ -322,9 +321,9 @@ starts next.
 A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
 critical `agent: tool panicked` record. The other guards (routing, the spawn
-classifier, shutdown steps) log at ERROR. The `route` guards write `route
-3003`. The `eval` guards log through slog's default logger, which serve and
-the TUI point at the log book.
+classifier) log at ERROR, and a shutdown step writes `system 3020`. The
+`route` guards write `route 3003`. The `eval` guards log through slog's
+default logger, which serve and the TUI point at the log book.
 
 ## The dashboard
 

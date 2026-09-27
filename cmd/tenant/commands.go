@@ -511,7 +511,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		// no setOnChange persistence here, because curation belongs to the
 		// interactive surfaces, not to a bridge process reacting to a remote client.
 		if stg, serr := loadSettings(c.cfgDir, c.agent); serr != nil {
-			log.Warn("mcp-memory: could not load saved tool states", "err", serr)
+			sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the bridge shows every tool's default state", "err", serr)
 		} else {
 			for _, note := range mux.Restore(stg.Tools) {
 				log.Info("mcp-memory settings", "note", note)
@@ -1765,7 +1765,7 @@ func oneLineStr(s string) string { return strings.Join(strings.Fields(s), " ") }
 // tool dispatcher can be wired in (the agent takes any), but v1 ships
 // the memory-chat experience. Logs go to <data>/tui.log so they don't
 // corrupt the alt-screen.
-func cmdTUI(ctx context.Context, args []string) error {
+func cmdTUI(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs)
@@ -1810,8 +1810,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// deny pending approvals, stop the peer listener, the relay and the
 	// dashboard, drain cron and self-improvement, then close what they used,
 	// last opened first. Each component registers its stop where it is built.
-	life := lifecycle.New(log.With("source", "shutdown"))
+	life := lifecycle.New(log)
 	defer life.Shutdown()
+	run := beginRun(ctx, "tui") // the system log's start-up and stop (TEN-383)
+	defer run.failed(&err)
 	// Crash capture and the boot record (TEN-365): its clean stop is the
 	// first Release step registered, so it runs last.
 	onPanic := startBootRecord(hub, life, "tui")
@@ -1824,6 +1826,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	pushSys := func(s string) { pushTo("system", s) }
 	signInNotice = pushSys // a sign-in URL must not draw over the TUI
 	if herr != nil {
+		sysUnavailable.Log(ctx, "component", "the log folder", "effect", "logging to memory only", "err", herr)
 		pushSys("logs: " + herr.Error() + " — logging to memory only")
 	}
 	for _, ln := range ensureSetup(c, pf) {
@@ -1866,7 +1869,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// independent and keeps working).
 	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
 	if uerr != nil {
-		log.Warn("usage ledger unavailable", "err", uerr)
+		sysUnavailable.Log(ctx, "component", "usage ledger", "effect", "token usage is not recorded", "err", uerr)
 	} else {
 		life.Add(lifecycle.Release, "usage ledger", usageStore.Close)
 	}
@@ -1884,6 +1887,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// from the agent goroutine while /enable persists from the UI goroutine.
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
+		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
 	broker.LoadModes(stg.Permissions)
@@ -1891,7 +1895,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		saveSettingsOrTell(stg, c.cfgDir, c.agent, log, pushSys)
+		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
 	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
@@ -1977,7 +1981,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		defer profMu.Unlock()
 		prof.AppendRemembered(fact)
 		if err := prof.Save(c.dataDir); err != nil {
-			log.Warn("profile note save failed", "err", err)
+			sysNotSaved.Log(ctx, "what", "the user profile", "err", err)
 		}
 	}
 
@@ -2276,7 +2280,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				smeLive.Set(rendered)
 			}
 		} else {
-			log.Warn("sme: init failed; project SME disabled", "err", serr.Error())
+			sysUnavailable.Log(ctx, "component", "project SME", "effect", "no project SME in the prompt", "err", serr)
 		}
 	}
 
@@ -2475,7 +2479,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
-			modelCtl.log.Warn("model: embedder not re-resolved after the swap; tool ranking keeps the old one", "err", err)
+			sysUnavailable.Log(ctx, "component", "the new embedder", "effect", "tool ranking keeps the old one", "err", err)
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
@@ -2522,7 +2526,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// dashboard onto the operator's tailnet via `tailscale serve`. It reads the
 	// dashboard's port + running state from dashMgr.Status, and persists the serve
 	// choice so it is re-asserted at next launch (below, after dashMgr.Enable).
-	tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
+	tsMgr := newTailscaleManager(ctx, dashMgr)
 	tsMgr.persist = func(serve bool) {
 		persistChoice(c.cfgDir, c.lc, pushSys, "tailscale: the serve choice", func(lc *launchConfig) { lc.Tailscale.Serve = serve })
 	}
@@ -3042,7 +3046,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// history will surface "unavailable" cleanly.
 	rstore, rerr := research.New(c.dataDir)
 	if rerr != nil {
-		log.Warn("research store unavailable; /research history disabled", "err", rerr)
+		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
 		rstore = nil
 	}
 	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
@@ -3061,6 +3065,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		return fmt.Sprintf("connected to %s — %d tools live (gated)", info.Label, info.ToolCount), nil
 	}
+	run.ready()
 	err = tui.Run(ctx, tui.Config{
 		Agent: ag, Events: evCh, AgentID: c.agent, Backend: c.backend, Model: modelName, System: sysCh,
 		SavePath: filepath.Join(c.dataDir, "transcript.txt"), Tools: mainTools,
@@ -3131,6 +3136,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		},
 	})
 	life.Shutdown() // each failed step is logged
+	run.stopped(ctx, err)
 	return err
 }
 
