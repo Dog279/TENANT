@@ -169,8 +169,8 @@ type Logs struct {
 	// Diagnostic limits every log's diagnostic events together (256 MB, 7 days).
 	Diagnostic LogLimits `json:"diagnostic,omitzero"`
 	// Security limits the Security log (256 MB, 365 days); its oldest records
-	// are archived, never just deleted.
-	Security LogLimits `json:"security,omitzero"`
+	// are archived, never just deleted. It also names the chain's witness.
+	Security SecurityLog `json:"security,omitzero"`
 	// PerLog sets one log's policy, by log name, over its class default
 	// (system: 128 MB, 90 days; any other: 64 MB, retention_days).
 	PerLog map[string]LogPolicy `json:"per_log,omitempty"`
@@ -181,6 +181,16 @@ type Logs struct {
 type LogLimits struct {
 	MaxMB      int `json:"max_mb,omitempty"`
 	MaxAgeDays int `json:"max_age_days,omitempty"`
+}
+
+// SecurityLog is logs.security: LogLimits, plus the witness the chain's head
+// is also sent to at each anchor (docs/LOGGING.md): "" (none), "discord"
+// (the operator's DM), or the path of a file, best on another machine.
+// "peer:<name>" is reserved; no peer call stores a head yet.
+type SecurityLog struct {
+	MaxMB      int    `json:"max_mb,omitempty"`
+	MaxAgeDays int    `json:"max_age_days,omitempty"`
+	Witness    string `json:"witness,omitempty"`
 }
 
 // LogPolicy is one log's entry in logs.per_log; a key left out keeps the

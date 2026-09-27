@@ -23,7 +23,7 @@ import (
 func (fx *fixture) seedLogbook(t *testing.T) {
 	t.Helper()
 	root := fx.d.logsDir()
-	st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{})
+	st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{ChainKey: []byte("test chain key")})
 	if err != nil {
 		t.Fatal(err)
 	}

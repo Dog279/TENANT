@@ -434,6 +434,9 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	}
 	defer schemas.Close()
 	managed, _ := managedSecrets(c.cfgDir, c.dataDir)
+	// The Security log's anchor from before the restore, which moves the
+	// config dir aside: the head the re-anchor record says was replaced.
+	replaced, _ := readChainHead(chainAnchorPath(c.cfgDir))
 	opts := backup.RestoreOptions{
 		ConfigDir: c.cfgDir,
 		DataDir:   c.dataDir,
@@ -465,14 +468,16 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	}
 	// The restored logbook.db's seq counter went back with it: a new store ID
 	// makes every live-tail cursor restart instead of skipping what comes next.
+	// Its Security log gets a re-anchor record (the restored head, the head it
+	// replaced, the backup), so the restore verifies as one, not as tampering.
 	if lb := filepath.Join(c.logsRoot(), "logbook.db"); statOK(lb) {
 		if err := store.Reidentify(lb); err != nil {
 			fmt.Fprintf(out, "  warning: the log book was restored but not re-identified (%v); viewers left open may miss new events until they reload\n", err)
 		}
+		if err := reanchorAfterRestore(ctx, c.cfgDir, lb, replaced, file); err != nil {
+			fmt.Fprintf(out, "  warning: the Security log's restore was not fully recorded (%v); `tenant logs verify security` may report it as a break\n", err)
+		}
 	}
-	// TEN-396: the Security log's re-anchor record goes here: write the
-	// restored head, the head it replaced and the backup it came from, so a
-	// restore reads as a restore rather than as tampering.
 	fmt.Fprintln(out, "restored.")
 	for _, a := range res.Aside {
 		fmt.Fprintf(out, "  the previous directory is kept at %s; delete it once you are happy\n", a)
@@ -566,6 +571,8 @@ func configDirFile(rel string) bool {
 		launchConfigPath(base),
 		credentialsPath(base),
 		dashboardAuthTokenPath(base),
+		chainKeyPath(base),
+		chainAnchorPath(base),
 		filepath.Join(base, filepath.Base(claudecode.LedgerPath())),
 	}
 	files = append(files, pluginConfigSecrets(base)...)

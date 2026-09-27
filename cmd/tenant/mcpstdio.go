@@ -93,7 +93,7 @@ func planMCPServer(s config.MCPServer, cfgDir, dataDir string) (mcpServerPlan, e
 		WorkDir:    workDir,
 		ReadRoots:  expandRoots(s.ReadRoots),
 		WriteRoots: expandRoots(s.WriteRoots),
-		DenyRoots:  dedupeNonEmpty(append([]string{cfgDir, dataDir, exePath()}, expandRoots(s.DenyRoots)...)...),
+		DenyRoots:  tenantDenyRoots(cfgDir, dataDir, expandRoots(s.DenyRoots)...),
 		Network:    network,
 		Env:        env,
 		Limits: sandbox.Limits{
