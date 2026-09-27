@@ -33,6 +33,7 @@ import (
 	"tenant/internal/dashboard"
 	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/userprofile"
@@ -513,12 +514,8 @@ func (m *cronManager) ExecEnabled() bool {
 
 // SetExec flips the global cron-exec kill-switch (persisting the choice) so
 // shell jobs and exec-opted-in prompt jobs may run. It takes effect live — the
-// runner reads the gate per run.
-func (m *cronManager) SetExec(on bool) error { return m.setExecFrom(on, "tui") }
-
-// setExecFrom is SetExec from surface (tui or dashboard), which the change's
-// Security record names.
-func (m *cronManager) setExecFrom(on bool, surface string) error {
+// runner reads the gate per run. surface is where the operator flipped it.
+func (m *cronManager) SetExec(on bool, surface string) error {
 	if m.execGate == nil {
 		return fmt.Errorf("cron-exec control unavailable")
 	}
@@ -535,8 +532,40 @@ func (m *cronManager) setExecFrom(on bool, surface string) error {
 		state = "on"
 	}
 	croneng.ExecSwitched.Log(m.base, "state", state)
-	auditExecMode("cron", on, surface)
+	_ = catalog.CronExecSwitched.Audit(context.Background(), "state", state, "actor", actorOperator, "surface", surface)
 	return nil
+}
+
+// addJob, removeJob and setJobEnabled change a job, then file the change's
+// Security record: the engine files the cron log's events, and these say
+// who made the change and from where (TEN-398). The agent's name its turn.
+func (m *cronManager) addJob(ctx context.Context, s croneng.AddSpec, actor, surface string) (croneng.Job, error) {
+	j, err := m.engine.Add(s)
+	if err == nil {
+		_ = catalog.ScheduledJobAdded.Audit(ctx, "job", j.Label(), "id", j.ID, "spec", j.Spec, "kind", j.KindOf(), "exec", j.Exec,
+			"actor", actor, "surface", surface)
+	}
+	return j, err
+}
+
+func (m *cronManager) removeJob(ctx context.Context, id, actor, surface string) (bool, error) {
+	removed, err := m.engine.Remove(id)
+	if removed {
+		_ = catalog.ScheduledJobRemoved.Audit(ctx, "id", id, "actor", actor, "surface", surface)
+	}
+	return removed, err
+}
+
+func (m *cronManager) setJobEnabled(ctx context.Context, id string, on bool, actor, surface string) (croneng.Job, bool, error) {
+	j, changed, err := m.engine.SetEnabled(id, on)
+	if changed {
+		state := "disabled"
+		if on {
+			state = "enabled"
+		}
+		_ = catalog.ScheduledJobChanged.Audit(ctx, "job", j.Label(), "id", j.ID, "state", state, "actor", actor, "surface", surface)
+	}
+	return j, changed, err
 }
 
 func cronFmtTime(t time.Time) string {
@@ -573,10 +602,10 @@ func (m *cronManager) ListJobs() []cronp.JobView {
 	return out
 }
 
-func (m *cronManager) AddJob(s cronp.AddSpec) (cronp.JobView, error) {
-	j, err := m.engine.Add(croneng.AddSpec{
+func (m *cronManager) AddJob(ctx context.Context, s cronp.AddSpec) (cronp.JobView, error) {
+	j, err := m.addJob(ctx, croneng.AddSpec{
 		Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: s.Enabled, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ,
-	})
+	}, actorAgent, execSurfaceFrom(ctx))
 	if err != nil {
 		return cronp.JobView{}, err
 	}
@@ -586,10 +615,12 @@ func (m *cronManager) AddJob(s cronp.AddSpec) (cronp.JobView, error) {
 	}, nil
 }
 
-func (m *cronManager) RemoveJob(id string) (bool, error) { return m.engine.Remove(id) }
+func (m *cronManager) RemoveJob(ctx context.Context, id string) (bool, error) {
+	return m.removeJob(ctx, id, actorAgent, execSurfaceFrom(ctx))
+}
 
-func (m *cronManager) SetJobEnabled(id string, on bool) (cronp.JobView, bool, error) {
-	j, changed, err := m.engine.SetEnabled(id, on)
+func (m *cronManager) SetJobEnabled(ctx context.Context, id string, on bool) (cronp.JobView, bool, error) {
+	j, changed, err := m.setJobEnabled(ctx, id, on, actorAgent, execSurfaceFrom(ctx))
 	if err != nil {
 		return cronp.JobView{}, false, err
 	}
@@ -625,19 +656,21 @@ func (a tuiCron) Jobs() []tui.CronJobView {
 }
 
 func (a tuiCron) Add(s tui.CronAddSpec) (tui.CronJobView, error) {
-	j, err := a.m.engine.Add(croneng.AddSpec{
+	j, err := a.m.addJob(context.Background(), croneng.AddSpec{
 		Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: true, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ,
-	})
+	}, actorOperator, surfaceTUI)
 	if err != nil {
 		return tui.CronJobView{}, err
 	}
 	return tui.CronJobView{ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt, Enabled: j.Enabled, Kind: j.KindOf(), Exec: j.Exec, TZ: j.TZ, NextRun: cronFmtTime(j.NextRun)}, nil
 }
 
-func (a tuiCron) Remove(id string) (bool, error) { return a.m.engine.Remove(id) }
+func (a tuiCron) Remove(id string) (bool, error) {
+	return a.m.removeJob(context.Background(), id, actorOperator, surfaceTUI)
+}
 
 func (a tuiCron) SetEnabled(id string, on bool) (tui.CronJobView, bool, error) {
-	j, changed, err := a.m.engine.SetEnabled(id, on)
+	j, changed, err := a.m.setJobEnabled(context.Background(), id, on, actorOperator, surfaceTUI)
 	if err != nil {
 		return tui.CronJobView{}, false, err
 	}
@@ -646,7 +679,7 @@ func (a tuiCron) SetEnabled(id string, on bool) (tui.CronJobView, bool, error) {
 
 func (a tuiCron) RunNow(id string) error { return a.m.runAsync(id) }
 func (a tuiCron) ExecEnabled() bool      { return a.m.ExecEnabled() }
-func (a tuiCron) SetExec(on bool) error  { return a.m.SetExec(on) }
+func (a tuiCron) SetExec(on bool) error  { return a.m.SetExec(on, surfaceTUI) }
 
 // --- dashboard.CronControl ---
 
@@ -666,20 +699,23 @@ func (a dashCron) Jobs() []dashboard.CronJobView {
 }
 
 func (a dashCron) Add(s dashboard.CronAddSpec) error {
-	_, err := a.m.engine.Add(croneng.AddSpec{
+	_, err := a.m.addJob(context.Background(), croneng.AddSpec{
 		Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: true, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ,
-	})
+	}, actorOperator, surfaceDashboard)
 	return err
 }
-func (a dashCron) Remove(id string) error { _, err := a.m.engine.Remove(id); return err }
+func (a dashCron) Remove(id string) error {
+	_, err := a.m.removeJob(context.Background(), id, actorOperator, surfaceDashboard)
+	return err
+}
 
 // ExecEnabled / SetExec expose the GLOBAL cron-exec kill-switch to the
 // dashboard so it no longer requires the TUI (/cron exec on|off) — the console
 // was the only way to change a setting that gates every unattended job.
 func (a dashCron) ExecEnabled() bool     { return a.m.ExecEnabled() }
-func (a dashCron) SetExec(on bool) error { return a.m.setExecFrom(on, "dashboard") }
+func (a dashCron) SetExec(on bool) error { return a.m.SetExec(on, surfaceDashboard) }
 func (a dashCron) SetEnabled(id string, on bool) error {
-	_, _, err := a.m.engine.SetEnabled(id, on)
+	_, _, err := a.m.setJobEnabled(context.Background(), id, on, actorOperator, surfaceDashboard)
 	return err
 }
 func (a dashCron) RunNow(id string) error { return a.m.runAsync(id) }

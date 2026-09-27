@@ -32,6 +32,9 @@ type events struct {
 }
 
 func (e *events) Emit(_ context.Context, ev *event.Event) {
+	if ev.Log == "system" {
+		return // the child's component events (internal/lifecycle)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.got = append(e.got, ev)

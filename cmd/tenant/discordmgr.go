@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/lifecycle"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -247,6 +248,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		OnInteraction: rl.handleInteraction,
 		OnReady:       rl.setBotID,
 		OnFatal: func(e error) {
+			m.track(lifecycle.Failed, e)
 			if m.notify != nil {
 				m.notify("discord relay stopped: " + e.Error())
 			}
@@ -286,6 +288,7 @@ func (m *discordRelayManager) Enable() error {
 	}
 	m.running = true
 	m.cancel = cancel
+	m.track(lifecycle.Running, nil)
 	if m.persist != nil {
 		if err := m.persist(true, m.operatorID, m.allowExec); err != nil {
 			return errNotSaved("relay: turning the relay on", err)
@@ -301,6 +304,7 @@ func (m *discordRelayManager) Disable() error {
 	if m.running {
 		m.cancel()
 		m.running = false
+		m.track(lifecycle.Stopped, nil)
 	}
 	if m.persist != nil {
 		return m.persist(false, m.operatorID, m.allowExec)
@@ -319,7 +323,13 @@ func (m *discordRelayManager) Shutdown() {
 	if m.running {
 		m.cancel()
 		m.running = false
+		m.track(lifecycle.Stopped, nil)
 	}
+}
+
+// track files the relay's state in the Components view (lifecycle).
+func (m *discordRelayManager) track(st lifecycle.State, err error) {
+	lifecycle.Track(m.base, "discord relay", lifecycle.Connector, "discord", st, err)
 }
 
 // ExecOn reports whether offsite exec mode is on.
@@ -360,7 +370,7 @@ func (m *discordRelayManager) setExecFrom(on bool, surface string) error {
 	m.allowExec = on
 	running, opID := m.running, m.operatorID
 	m.mu.Unlock()
-	auditExecMode("relay", on, surface)
+	auditRelayExec(on, surface)
 	if m.persist != nil {
 		return m.persist(running, opID, on)
 	}

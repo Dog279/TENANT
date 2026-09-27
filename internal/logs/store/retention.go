@@ -31,6 +31,7 @@ const (
 // Report is what a retention pass did.
 type Report struct {
 	Deleted  map[string]int64 // events removed, by log
+	Full     map[string]int64 // of those, removed because their log was past its MaxBytes
 	Archived []string         // archive files written
 	Kept     []string         // logs past their MaxBytes that keep every record
 	Over     bool             // the book is over its budget with nothing left it may delete
@@ -58,7 +59,7 @@ type Report struct {
 // measured again, so the files end within the budget. Only the housekeeper
 // runs it.
 func (s *Store) Retain(ctx context.Context, b Budget, now time.Time) (Report, error) {
-	rep := Report{Deleted: map[string]int64{}}
+	rep := Report{Deleted: map[string]int64{}, Full: map[string]int64{}}
 	path, err := s.file(ctx)
 	if err != nil {
 		return rep, err
@@ -179,7 +180,9 @@ func (r *retention) fit(ctx context.Context) (int64, error) {
 			r.rep.Kept = append(r.rep.Kept, l.name)
 			continue
 		}
+		was := r.rep.Deleted[l.name]
 		n, err := r.sweep(ctx, l.archive(), l.bytes-payload(l.MaxBytes), "log_id = ?", l.id)
+		r.rep.Full[l.name] += r.rep.Deleted[l.name] - was
 		if err != nil {
 			return 0, err
 		}
@@ -348,8 +351,9 @@ func (r *retention) delete(ctx context.Context, seqs []int64) (int64, error) {
 	return freed, nil
 }
 
-// pruneRollups drops the per-minute counts older than the longest MaxAge of
-// any log: no log holds events that old. None go while a log keeps forever.
+// pruneRollups drops the per-minute and per-hour counts older than the
+// longest MaxAge of any log: no log holds events that old. None go while a
+// log keeps forever.
 func (r *retention) pruneRollups(ctx context.Context, logs []logPolicy, now time.Time) error {
 	var longest time.Duration
 	for _, l := range logs {
@@ -362,16 +366,27 @@ func (r *retention) pruneRollups(ctx context.Context, logs []logPolicy, now time
 		return nil
 	}
 	cutoff := now.Add(-longest).UnixNano() / int64(time.Minute)
-	for {
-		res, err := r.s.w.ExecContext(ctx, `DELETE FROM rollup WHERE (minute, log_id, level) IN
-			(SELECT minute, log_id, level FROM rollup WHERE minute < ? LIMIT `+strconv.Itoa(chunkRows)+`)`, cutoff)
-		if err != nil {
-			return fmt.Errorf("store: retain: rollups: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return nil
+	for _, q := range []struct {
+		table, key string // the key's first column is the time
+		cutoff     int64
+	}{
+		{"rollup", "minute, log_id, level", cutoff},
+		{"rollup_hour", "hour, log_id, level", cutoff / 60},
+		{"rollup_id", "hour, provider_id, event_id", cutoff / 60},
+	} {
+		col, _, _ := strings.Cut(q.key, ",")
+		for {
+			res, err := r.s.w.ExecContext(ctx, `DELETE FROM `+q.table+` WHERE (`+q.key+`) IN
+				(SELECT `+q.key+` FROM `+q.table+` WHERE `+col+` < ? LIMIT `+strconv.Itoa(chunkRows)+`)`, q.cutoff)
+			if err != nil {
+				return fmt.Errorf("store: retain: rollups: %w", err)
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				break
+			}
 		}
 	}
+	return nil
 }
 
 // compact gives the freed pages back to the file system, vacuumPages at a

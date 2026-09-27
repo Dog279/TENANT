@@ -575,7 +575,13 @@ func (mc *modelControl) AddModel(name, endpoint, toolFormat string) (string, err
 // provider gets registered under its kind id as the name (so `zai` is its
 // own bucket, distinct from any vLLM-with-name-zai an operator might add).
 // Idempotent: re-running with a new key overwrites just the secret.
+// AddCloudModel is the TUI's /model add-cloud; the Keys and Model pages call
+// addCloudModel, naming the dashboard.
 func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
+	return mc.addCloudModel(kindID, apiKey, surfaceTUI)
+}
+
+func (mc *modelControl) addCloudModel(kindID, apiKey, surface string) (string, error) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	kindID = strings.TrimSpace(kindID)
@@ -635,7 +641,7 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 	// Store the key in protected credentials.json.
 	creds, _ := loadCredentials(mc.cfgDir)
 	creds.Set(kindID, apiKey)
-	if err := creds.Save(mc.cfgDir); err != nil {
+	if err := saveCredentials(mc.cfgDir, creds, surface); err != nil {
 		return "", fmt.Errorf("save credentials: %w", err)
 	}
 	return fmt.Sprintf("added %s backend %q → %s (key stored with owner-only protection). Switch with `/model use %s`. "+
@@ -704,8 +710,13 @@ func (mc *modelControl) addKeylessCatalogProvider(kindID string) (string, error)
 }
 
 // RemoveModel deletes a configured backend (and its stored credential).
-// Refuses to remove the currently-active model — switch first.
+// Refuses to remove the currently-active model — switch first. RemoveModel
+// is the TUI's /model remove; the Model page calls removeModel.
 func (mc *modelControl) RemoveModel(name string) (string, error) {
+	return mc.removeModel(name, surfaceTUI)
+}
+
+func (mc *modelControl) removeModel(name, surface string) (string, error) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	lc, err := loadLaunchConfig(mc.cfgDir)
@@ -719,7 +730,7 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 		return "", fmt.Errorf("%q is the active model — `/model use <other>` first, then remove it", name)
 	}
 	delete(lc.Providers, name)
-	if err := forgetProviderSecret(mc.cfgDir, name); err != nil {
+	if err := forgetProviderSecret(mc.cfgDir, name, surface); err != nil {
 		return "", err
 	}
 	if err := lc.Save(mc.cfgDir); err != nil {
@@ -731,7 +742,7 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 // forgetProviderSecret drops any stored API key keyed by the provider name.
 // An error means the key is still on disk, which the operator removing it
 // must hear about.
-func forgetProviderSecret(cfgDir, name string) error {
+func forgetProviderSecret(cfgDir, name, surface string) error {
 	creds, err := loadCredentials(cfgDir)
 	if err != nil {
 		return fmt.Errorf("forget the %s key: %w", name, err)
@@ -740,7 +751,7 @@ func forgetProviderSecret(cfgDir, name string) error {
 		return nil
 	}
 	delete(creds.Secrets, name)
-	if err := creds.Save(cfgDir); err != nil {
+	if err := saveCredentials(cfgDir, creds, surface); err != nil {
 		return fmt.Errorf("forget the %s key: %w", name, err)
 	}
 	return nil
@@ -787,6 +798,7 @@ func cmdModel(_ context.Context, args []string) error {
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	defer fileEvents(c)() // the Security records of the change
 	lc, err := loadLaunchConfig(c.cfgDir)
 	if err != nil {
 		return err
@@ -920,7 +932,7 @@ func cmdModel(_ context.Context, args []string) error {
 		if c.genAPIKey != "" {
 			creds, _ := loadCredentials(c.cfgDir)
 			creds.Set(name, c.genAPIKey)
-			if err := creds.Save(c.cfgDir); err != nil {
+			if err := saveCredentials(c.cfgDir, creds, surfaceCLI); err != nil {
 				return err
 			}
 			pc.Auth = authCfg{Mode: "apikey", Stored: true}
@@ -947,7 +959,7 @@ func cmdModel(_ context.Context, args []string) error {
 			return fmt.Errorf("%q is the active model — `tenant model use <other>` first, then remove it", name)
 		}
 		delete(lc.Providers, name)
-		if err := forgetProviderSecret(c.cfgDir, name); err != nil {
+		if err := forgetProviderSecret(c.cfgDir, name, surfaceCLI); err != nil {
 			return err
 		}
 		if err := lc.Save(c.cfgDir); err != nil {

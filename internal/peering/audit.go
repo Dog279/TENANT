@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"tenant/internal/logs/catalog"
-	"tenant/internal/logs/event"
 )
 
 // The Security log's peering records (docs/design/logging-v2.md §10.1): a
@@ -17,10 +16,10 @@ func paired(peer, instance string, dial bool) {
 	if dial {
 		direction = "outbound"
 	}
-	_ = catalog.PeerPaired.Audit(event.WithActor(context.Background(), "operator", "peering"),
-		"peer", peer, "instance", instance, "direction", direction)
+	_ = catalog.PeerPaired.Audit(context.Background(),
+		"peer", peer, "instance", instance, "direction", direction, "actor", "operator", "surface", "peering")
 }
 
 func unpaired(peer, how string) {
-	_ = catalog.PeerUnpaired.Audit(event.WithActor(context.Background(), "operator", "peering"), "peer", peer, "how", how)
+	_ = catalog.PeerUnpaired.Audit(context.Background(), "peer", peer, "how", how, "actor", "operator", "surface", "peering")
 }

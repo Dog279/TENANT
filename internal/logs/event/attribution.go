@@ -3,27 +3,17 @@ package event
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 )
 
-// Attribution: who did the work under a context, through which surface, and
-// under which approval. They are the event's Actor, Surface and
-// Corr.ApprovalID, set for every event written under ctx, whatever its
-// provider, so a definition never declares them as fields:
+// Attribution: who did the work, through which surface, and under which
+// approval. They are the event's Actor, Surface and Corr.ApprovalID, not
+// data. The fields "actor" and "surface", passed like any other (declared or
+// not), set the first two; a template may still name them. The approval comes
+// from the context:
 //
-//	ctx = event.WithActor(ctx, "discord:1234", "discord")
-//	catalog.ApprovalYes.Audit(event.WithApproval(ctx, id), "category", cat, …)
-
-type actorKey struct{}
-
-type actor struct{ name, surface string }
-
-// WithActor attributes the events written under ctx to actor (the operator,
-// a Discord user, a peer, a remote address, Tenant itself), acting through
-// surface (tui, dashboard, discord, imessage, cron, peering…).
-func WithActor(ctx context.Context, name, surface string) context.Context {
-	return context.WithValue(ctx, actorKey{}, actor{name, surface})
-}
+//	catalog.ApprovalYes.Audit(event.WithApproval(ctx, id), "actor", "discord:1234", "surface", "discord", …)
 
 type approvalKey struct{}
 
@@ -45,13 +35,22 @@ func NoteApproval(ctx context.Context, id string) {
 	}
 }
 
-// attribute sets e's actor, surface and approval from ctx.
+// attribute moves e's actor and surface fields into its attributes, and sets
+// its approval from ctx.
 func attribute(ctx context.Context, e *Event) {
+	e.Data = slices.DeleteFunc(e.Data, func(f Field) bool {
+		switch f.Key {
+		case "actor":
+			e.Actor = f.Text()
+		case "surface":
+			e.Surface = f.Text()
+		default:
+			return false
+		}
+		return true
+	})
 	if ctx == nil {
 		return
-	}
-	if a, ok := ctx.Value(actorKey{}).(actor); ok {
-		e.Actor, e.Surface = a.name, a.surface
 	}
 	if s, ok := ctx.Value(approvalKey{}).(*atomic.Pointer[string]); ok {
 		e.Corr.ApprovalID = *s.Load()

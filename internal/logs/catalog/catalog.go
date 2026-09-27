@@ -16,7 +16,7 @@ var (
 	Logbook  = event.NewProvider("logbook", "logbook")   // the log book itself
 )
 
-// system: lifecycle (1–999) and components (3100s).
+// system: lifecycle (1–999) and components (the 100s, 2100s and 3100s).
 
 var Started = System.Event(1, event.Info, "Lifecycle", "Tenant {version} started as {role}", "version", "role").
 	Doc("Tenant started.",
@@ -33,7 +33,35 @@ var Unexpected = System.Event(3, event.Critical, "Lifecycle", "The previous run 
 		"It crashed or was killed, or the machine lost power or restarted.",
 		"Read the events before its last one, and any crash file filed at this start.")
 
-var CompFailed = System.Event(3101, event.Error, "Component", "{component} failed: {err}", "component", "err").
+// A component's state changes (internal/lifecycle's registry): each run of a
+// component is one activity, so activity:<id> is its history.
+
+var CompStarting = System.Event(101, event.Info, "Component", "{component} is starting", "component", "kind", "log").
+	Doc("A component began to start.",
+		"Tenant started it, or the operator turned it on.",
+		"None; a running or failed event follows.")
+
+var CompRunning = System.Event(102, event.Info, "Component", "{component} is running", "component", "kind", "log").
+	Doc("A component is running, or has recovered from a degraded state.",
+		"It started, or what it depends on works again.",
+		"None.")
+
+var CompStopped = System.Event(103, event.Info, "Component", "{component} stopped", "component", "kind", "log", "uptime").
+	Doc("A component stopped in order.",
+		"Tenant is shutting down, the operator turned it off, or a child process finished.",
+		"None.")
+
+var CompDegraded = System.Event(2101, event.Warning, "Component", "{component} is degraded: {err}", "component", "kind", "log", "err").
+	Doc("A component still runs, but not as it should.",
+		"Something it depends on failed: a file it reads, a connection, a poll.",
+		"Open the component's log for the cause; a running event follows when it recovers.")
+
+var ChildFailed = System.Event(2102, event.Warning, "Component", "Child process {component} failed: {err}", "component", "kind", "log", "err", "uptime").
+	Doc("A child process exited with an error, or did not start.",
+		"Its command failed, it crashed, or it could not be run. A command's non-zero exit is often its answer, not a fault.",
+		"Its exit line in its own log has the code and the last lines it wrote.")
+
+var CompFailed = System.Event(3101, event.Error, "Component", "{component} failed: {err}", "component", "err", "kind", "log", "uptime").
 	Doc("A subsystem stopped with an error.",
 		"Something it depends on failed: a connection, a file or its configuration.",
 		"Open the component's log; the event before this one usually names the cause.")

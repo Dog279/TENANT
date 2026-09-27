@@ -17,7 +17,8 @@ import (
 // record written ends the outage: a system/4002 and a second banner.
 func TestAuditFailureReportedUntilRecovered(t *testing.T) {
 	var notices []string
-	h, root, _ := openHub(t, Options{Notice: func(s string) { notices = append(notices, s) }, AuditDeny: func() bool { return true }})
+	h, root, _ := openHub(t, Options{AuditDeny: func() bool { return true }})
+	h.OnAlert(func(s string) { notices = append(notices, s) })
 	keyless, err := store.Open(filepath.Join(root, "keyless.db"), store.Options{}) // refuses security records
 	if err != nil {
 		t.Fatal(err)

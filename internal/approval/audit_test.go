@@ -280,11 +280,12 @@ func TestAuditFailurePolicy(t *testing.T) {
 		var mu sync.Mutex
 		var notices []string
 		// No chain key: the store refuses every security record.
-		read := securityLog(t, logs.Options{AuditDeny: func() bool { return deny }, Notice: func(s string) {
+		read := securityLog(t, logs.Options{AuditDeny: func() bool { return deny }}, nil)
+		logs.Default().OnAlert(func(s string) { // the status feed
 			mu.Lock()
 			notices = append(notices, s)
 			mu.Unlock()
-		}}, nil)
+		})
 		b := newTestBroker(testLog())
 		b.Allow(CatExec)
 		for range 2 {

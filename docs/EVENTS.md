@@ -1333,8 +1333,218 @@ Writes the `logbook` log.
 
 | ID | Level | Task | Message |
 |---|---|---|---|
+| [1](#logbook-1) | info | Lifecycle | `The log book opened: logbook.db holds {bytes} bytes, schema version {schema}, store {store}` |
+| [2](#logbook-2) | critical | Lifecycle | `logbook.db can't be written; the log book runs on its text files alone: {err}` |
+| [3](#logbook-3) | info | Lifecycle | `logbook.db is written again after {outage} on the text files alone` |
+| [4](#logbook-4) | critical | Lifecycle | `logbook.db was corrupt; it was moved aside to {file} and a new store {store} started` |
+| [5](#logbook-5) | critical | Lifecycle | `logbook.db is corrupt, and other Tenant processes have it open; this process runs on the text files alone: {err}` |
+| [1001](#logbook-1001) | info | Recovery | `Imported {count} lines the text files took while logbook.db was down` |
+| [1002](#logbook-1002) | info | Integrity | `logbook.db passed its integrity check in {took}` |
+| [1003](#logbook-1003) | info | Retention | `The oldest records were archived to {file}` |
+| [1004](#logbook-1004) | info | Retention | `Log {log} was full; its oldest {count} events were deleted` |
+| [1005](#logbook-1005) | info | Retention | `The WAL passed its checkpoint threshold at {wal_mb} MB; checkpointing it` |
+| [1006](#logbook-1006) | info | Disk | `Disk space recovered ({free_mb} MB free); every event is written again` |
+| [1007](#logbook-1007) | info | Housekeeping | `This process now does the log book's housekeeping` |
+| [1008](#logbook-1008) | info | Housekeeping | `This process no longer does the log book's housekeeping` |
 | [1101](#logbook-1101) | info | Intake | `Imported {lines} lines of v1 history from {files} files` |
 | [1102](#logbook-1102) | warning | Intake | `{lines} lines of spool file {file} were not filed: {err}` |
+| [2001](#logbook-2001) | warning | Write path | `The log book's queue reached {depth} of {cap} events in the last {window}` |
+| [2002](#logbook-2002) | warning | Write path | `Suppressed {count} × {provider} {event} in the last {window}` |
+| [2003](#logbook-2003) | warning | Write path | `Dropped {count} events of {provider} in the last {window}` |
+| [2004](#logbook-2004) | warning | Retention | `Log {log} is at {percent}% of its size limit` |
+| [2005](#logbook-2005) | warning | Retention | `Log {log} is past its size limit; its policy keeps every record, so nothing is deleted` |
+| [2006](#logbook-2006) | warning | Disk | `Low disk space ({free_mb} MB free); diagnostic events are not written until space is freed` |
+| [2007](#logbook-2007) | warning | Disk | `Very low disk space ({free_mb} MB free); only warnings, errors and the security log are written until space is freed` |
+| [2008](#logbook-2008) | warning | Boot records | `No boot record for this process; an unexpected exit will go unreported: {err}` |
+| [3001](#logbook-3001) | error | Write path | `logbook.db could not commit {count} events (attempt {attempt}): {err}` |
+| [3002](#logbook-3002) | error | Write path | `The text files could not be written: {err}` |
+| [3003](#logbook-3003) | critical | Retention | `The log book is over its disk budget, and only records retention may not delete are left` |
+| [3004](#logbook-3004) | critical | Integrity | `logbook.db failed its integrity check: {err}` |
+| [3005](#logbook-3005) | error | Housekeeping | `Housekeeping task {task} failed: {err}` |
+| [3006](#logbook-3006) | error | Recovery | `The text files' lines from the outage were not imported: {err}` |
+
+### logbook 1
+
+`The log book opened: logbook.db holds {bytes} bytes, schema version {schema}, store {store}`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** logbook
+- **Fields:** `bytes`, `schema`, `store`
+- **Find it:** `provider:logbook id:1`
+
+**What it means.** This process opened logbook.db, the system of record.
+
+**Why it happens.** Serve or the TUI started.
+
+**What to do.** None.
+
+### logbook 2
+
+`logbook.db can't be written; the log book runs on its text files alone: {err}`
+
+- **Level:** critical · **Channel:** operational · **Task:** Lifecycle · **Log:** logbook
+- **Fields:** `err`, `since`
+- **Find it:** `provider:logbook id:2`
+
+**What it means.** Events are written to the text files only. Nothing is lost: the text files are written before the store.
+
+**Why it happens.** logbook.db did not open, or three commits in a row failed: a full disk, a lock held past its timeout, an I/O error.
+
+**What to do.** Fix the cause the error names. The process keeps retrying; once a commit succeeds, the text files' lines from the outage are imported.
+
+### logbook 3
+
+`logbook.db is written again after {outage} on the text files alone`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** logbook
+- **Fields:** `outage`, `from`, `to`
+- **Find it:** `provider:logbook id:3`
+
+**What it means.** The store accepts commits again.
+
+**Why it happens.** Whatever failed the commits cleared.
+
+**What to do.** None; the outage's lines are imported next.
+
+### logbook 4
+
+`logbook.db was corrupt; it was moved aside to {file} and a new store {store} started`
+
+- **Level:** critical · **Channel:** operational · **Task:** Lifecycle · **Log:** logbook
+- **Fields:** `file`, `store`, `err`
+- **Find it:** `provider:logbook id:4`
+
+**What it means.** The database was damaged, so it and its -wal and -shm files were moved aside and an empty store started. Cursors held by viewers restart.
+
+**Why it happens.** A crash of the machine or the disk, a bad sector, or the file was changed by another program.
+
+**What to do.** Run tenant logs recover to copy what can still be read into the new store.
+
+### logbook 5
+
+`logbook.db is corrupt, and other Tenant processes have it open; this process runs on the text files alone: {err}`
+
+- **Level:** critical · **Channel:** operational · **Task:** Lifecycle · **Log:** logbook
+- **Fields:** `err`
+- **Find it:** `provider:logbook id:5`
+
+**What it means.** The database is damaged, but it can only be moved aside while no other process has it open.
+
+**Why it happens.** Moving a database other processes have open fails on Windows and corrupts it on POSIX.
+
+**What to do.** Stop every Tenant process, then start one again: it moves the file aside. Or run tenant logs recover.
+
+### logbook 1001
+
+`Imported {count} lines the text files took while logbook.db was down`
+
+- **Level:** info · **Channel:** operational · **Task:** Recovery · **Log:** logbook
+- **Fields:** `count`, `from`, `to`
+- **Keywords:** `recovered`
+- **Find it:** `provider:logbook id:1001`
+
+**What it means.** The events written only to the text files during an outage are in the store now, keyword recovered.
+
+**Why it happens.** logbook.db accepted commits again after running on the text files alone.
+
+**What to do.** None.
+
+### logbook 1002
+
+`logbook.db passed its integrity check in {took}`
+
+- **Level:** info · **Channel:** operational · **Task:** Integrity · **Log:** logbook
+- **Fields:** `took`
+- **Find it:** `provider:logbook id:1002`
+
+**What it means.** The daily quick_check found no damage.
+
+**Why it happens.** The housekeeper checks the database once a day.
+
+**What to do.** None.
+
+### logbook 1003
+
+`The oldest records were archived to {file}`
+
+- **Level:** info · **Channel:** operational · **Task:** Retention · **Log:** logbook
+- **Fields:** `file`
+- **Find it:** `provider:logbook id:1003`
+
+**What it means.** A log past its size or age limit had its oldest records moved to an archive file before they were deleted.
+
+**Why it happens.** The log's policy is archive (the Security log's always is).
+
+**What to do.** None; the archive is gzip, one JSON object per line.
+
+### logbook 1004
+
+`Log {log} was full; its oldest {count} events were deleted`
+
+- **Level:** info · **Channel:** operational · **Task:** Retention · **Log:** logbook
+- **Fields:** `log`, `count`
+- **Find it:** `provider:logbook id:1004`
+
+**What it means.** A log reached its size limit and its oldest events were deleted to make room.
+
+**Why it happens.** The log's policy is overwrite.
+
+**What to do.** Raise the log's max_mb, or set on_full to archive, if these events matter.
+
+### logbook 1005
+
+`The WAL passed its checkpoint threshold at {wal_mb} MB; checkpointing it`
+
+- **Level:** info · **Channel:** operational · **Task:** Retention · **Log:** logbook
+- **Fields:** `wal_mb`
+- **Find it:** `provider:logbook id:1005`
+
+**What it means.** logbook.db's write-ahead log grew past 64 MB and is copied into the database.
+
+**Why it happens.** Heavy writing, or a reader kept a checkpoint from finishing.
+
+**What to do.** None.
+
+### logbook 1006
+
+`Disk space recovered ({free_mb} MB free); every event is written again`
+
+- **Level:** info · **Channel:** operational · **Task:** Disk · **Log:** logbook
+- **Fields:** `free_mb`
+- **Find it:** `provider:logbook id:1006`
+
+**What it means.** The data volume has room again, so no events are shed.
+
+**Why it happens.** Space was freed.
+
+**What to do.** None.
+
+### logbook 1007
+
+`This process now does the log book's housekeeping`
+
+- **Level:** info · **Channel:** operational · **Task:** Housekeeping · **Log:** logbook
+- **Fields:** `boot`
+- **Find it:** `provider:logbook id:1007`
+
+**What it means.** This process holds the housekeeper lease: retention, checkpoints, imports and the dead-process check run here.
+
+**Why it happens.** It started first, or the previous holder stopped or died.
+
+**What to do.** None.
+
+### logbook 1008
+
+`This process no longer does the log book's housekeeping`
+
+- **Level:** info · **Channel:** operational · **Task:** Housekeeping · **Log:** logbook
+- **Fields:** `boot`, `err`
+- **Find it:** `provider:logbook id:1008`
+
+**What it means.** Another process holds the housekeeper lease now.
+
+**Why it happens.** This process could not renew it in time, or the store failed.
+
+**What to do.** None, unless err names a failure.
 
 ### logbook 1101
 
@@ -1363,6 +1573,202 @@ Writes the `logbook` log.
 **Why it happens.** A writer outside Tenant spooled a malformed line, or one claiming a log only Tenant writes (security, tenant.*, a built-in).
 
 **What to do.** Fix the writer: one JSON event per line, into a log of its own.
+
+### logbook 2001
+
+`The log book's queue reached {depth} of {cap} events in the last {window}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Write path · **Log:** logbook
+- **Fields:** `depth`, `cap`, `window`
+- **Find it:** `provider:logbook id:2001`
+
+**What it means.** The writer fell behind; events wait in memory before they are committed.
+
+**Why it happens.** A burst of events, or slow commits (a busy disk, another process holding the write lock).
+
+**What to do.** If it recurs, find the chatty provider in the logbook log's suppressed and dropped reports.
+
+### logbook 2002
+
+`Suppressed {count} × {provider} {event} in the last {window}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Write path · **Log:** logbook
+- **Fields:** `count`, `provider`, `event`, `log`, `window`
+- **Find it:** `provider:logbook id:2002`
+
+**What it means.** A provider wrote one event faster than its rate limit, so the extra ones were not kept.
+
+**Why it happens.** Each provider and event ID may write 100 a second, in bursts of 500 (logs.rate_limit); an uncatalogued line counts by its text with the numbers and quoted values taken out.
+
+**What to do.** Find why the provider repeats the event; raise logs.rate_limit only if every copy matters.
+
+### logbook 2003
+
+`Dropped {count} events of {provider} in the last {window}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Write path · **Log:** logbook
+- **Fields:** `count`, `provider`, `log`, `window`
+- **Find it:** `provider:logbook id:2003`
+
+**What it means.** Events were not written.
+
+**Why it happens.** The queue was full (64k events), or the disk is low and less important events are shed.
+
+**What to do.** Free disk space, or find what floods the log book.
+
+### logbook 2004
+
+`Log {log} is at {percent}% of its size limit`
+
+- **Level:** warning · **Channel:** operational · **Task:** Retention · **Log:** logbook
+- **Fields:** `log`, `percent`, `limit_mb`
+- **Find it:** `provider:logbook id:2004`
+
+**What it means.** A log is close to its max_mb; at the limit its policy overwrites, archives or keeps its oldest records.
+
+**Why it happens.** The log is busy, or its limit is small.
+
+**What to do.** None if its policy is what you want; otherwise raise its max_mb.
+
+### logbook 2005
+
+`Log {log} is past its size limit; its policy keeps every record, so nothing is deleted`
+
+- **Level:** warning · **Channel:** operational · **Task:** Retention · **Log:** logbook
+- **Fields:** `log`
+- **Find it:** `provider:logbook id:2005`
+
+**What it means.** A log whose policy is keep grew past its max_mb.
+
+**Why it happens.** Its policy is keep, so retention never deletes from it.
+
+**What to do.** Raise its max_mb, clear it, or change its policy.
+
+### logbook 2006
+
+`Low disk space ({free_mb} MB free); diagnostic events are not written until space is freed`
+
+- **Level:** warning · **Channel:** operational · **Task:** Disk · **Log:** logbook
+- **Fields:** `free_mb`
+- **Find it:** `provider:logbook id:2006`
+
+**What it means.** Diagnostic events are shed to save space.
+
+**Why it happens.** Under 1 GB, or 5%, is free on the data volume.
+
+**What to do.** Free disk space.
+
+### logbook 2007
+
+`Very low disk space ({free_mb} MB free); only warnings, errors and the security log are written until space is freed`
+
+- **Level:** warning · **Channel:** operational · **Task:** Disk · **Log:** logbook
+- **Fields:** `free_mb`
+- **Find it:** `provider:logbook id:2007`
+
+**What it means.** Informational and diagnostic events are shed.
+
+**Why it happens.** Under 256 MB is free on the data volume.
+
+**What to do.** Free disk space now.
+
+### logbook 2008
+
+`No boot record for this process; an unexpected exit will go unreported: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Boot records · **Log:** logbook
+- **Fields:** `err`
+- **Find it:** `provider:logbook id:2008`
+
+**What it means.** This process could not start its boot record, so a crash or kill would not be reported later.
+
+**Why it happens.** The boots folder or logbook.db could not be written.
+
+**What to do.** Check the log root's permissions and free space.
+
+### logbook 3001
+
+`logbook.db could not commit {count} events (attempt {attempt}): {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Write path · **Log:** logbook
+- **Fields:** `count`, `attempt`, `err`
+- **Find it:** `provider:logbook id:3001`
+
+**What it means.** A batch failed to commit; the text files have it. After three failures in a row the log book runs on the text files alone.
+
+**Why it happens.** A full disk, a lock held past its timeout, or an I/O error.
+
+**What to do.** Fix the cause the error names.
+
+### logbook 3002
+
+`The text files could not be written: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Write path · **Log:** logbook
+- **Fields:** `err`
+- **Find it:** `provider:logbook id:3002`
+
+**What it means.** Lines meant for the text files were lost; logbook.db still has the events.
+
+**Why it happens.** A full disk, a permission change, or the log root is gone.
+
+**What to do.** Fix the cause the error names.
+
+### logbook 3003
+
+`The log book is over its disk budget, and only records retention may not delete are left`
+
+- **Level:** critical · **Channel:** operational · **Task:** Retention · **Log:** logbook
+- **Fields:** `size_mb`, `budget_mb`
+- **Find it:** `provider:logbook id:3003`
+
+**What it means.** logbook.db and its WAL are past logs.budget_mb, and what is left is the Security log, archived logs and kept logs.
+
+**Why it happens.** Those logs are never shed to meet the budget.
+
+**What to do.** Raise budget_mb, or clear or re-policy a kept log.
+
+### logbook 3004
+
+`logbook.db failed its integrity check: {err}`
+
+- **Level:** critical · **Channel:** operational · **Task:** Integrity · **Log:** logbook
+- **Fields:** `err`
+- **Find it:** `provider:logbook id:3004`
+
+**What it means.** The database is damaged.
+
+**Why it happens.** A crash of the machine or the disk, or a bad sector.
+
+**What to do.** Stop every Tenant process and run tenant logs recover.
+
+### logbook 3005
+
+`Housekeeping task {task} failed: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Housekeeping · **Log:** logbook
+- **Fields:** `task`, `err`
+- **Find it:** `provider:logbook id:3005`
+
+**What it means.** One of the log book's housekeeping tasks failed; the next run tries again.
+
+**Why it happens.** The store failed, or the task's own work did.
+
+**What to do.** Read the error; repeated failures need the cause fixed.
+
+### logbook 3006
+
+`The text files' lines from the outage were not imported: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Recovery · **Log:** logbook
+- **Fields:** `err`, `from`, `to`
+- **Find it:** `provider:logbook id:3006`
+
+**What it means.** After an outage, the lines written only to the text files could not be imported into logbook.db.
+
+**Why it happens.** The import failed; the text files still have them.
+
+**What to do.** Read the error; the lines stay in the text files.
 
 ## mcp
 
@@ -3921,12 +4327,30 @@ Writes the `security` log.
 | [4201](#security-4201) | info | Execution | `Command ran on {backend}: exit {exit}` |
 | [4202](#security-4202) | warning | Execution | `The sandbox refused a command on {backend}: {violations}` |
 | [4203](#security-4203) | warning | Execution | `A command the sandbox refused ran outside it ({why}): {violations}` |
-| [4204](#security-4204) | info | Execution | `Exec mode for {target} turned {mode}` |
+| [4204](#security-4204) | info | Execution | `The Discord relay's exec mode turned {mode}` |
 | [4301](#security-4301) | info | Access | `Dashboard sign-in from {remote}` |
 | [4302](#security-4302) | info | Access | `Dashboard sign-out from {remote}` |
 | [4303](#security-4303) | warning | Access | `Request from {remote} refused: {reason}` |
 | [4311](#security-4311) | info | Peering | `Paired with peer {peer}` |
 | [4312](#security-4312) | info | Peering | `Unpaired peer {peer} ({how})` |
+| [4501](#security-4501) | info | Configuration | `{file} changed: {changes} settings` |
+| [4601](#security-4601) | info | Secret | `Secret {secret} stored from {surface}` |
+| [4602](#security-4602) | info | Secret | `Secret {secret} changed from {surface}` |
+| [4603](#security-4603) | info | Secret | `Secret {secret} deleted from {surface}` |
+| [4701](#security-4701) | info | Scheduled job | `Scheduled job {job} added by the {actor} from {surface}` |
+| [4702](#security-4702) | info | Scheduled job | `Scheduled job {job} {state} by the {actor} from {surface}` |
+| [4703](#security-4703) | info | Scheduled job | `Scheduled job {id} removed by the {actor} from {surface}` |
+| [4704](#security-4704) | info | Scheduled job | `cron-exec turned {state} from {surface}` |
+| [4801](#security-4801) | info | Data lifecycle | `Privacy deletion ({reason}) by the {actor}: {removed}` |
+| [4802](#security-4802) | info | Data lifecycle | `Personal data exported to {dir}: {files} files` |
+| [4803](#security-4803) | info | Data lifecycle | `Backup written to {path}` |
+| [4804](#security-4804) | info | Data lifecycle | `Backup {path} restored over this install` |
+| [4901](#security-4901) | info | Log book | `Log {log} cleared: {details}` |
+| [4902](#security-4902) | info | Log book | `Log {log} reconfigured: {details}` |
+| [4903](#security-4903) | info | Log book | `Log {log} exported: {details}` |
+| [4904](#security-4904) | info | Log book | `Sensitive field revealed in {log}: {details}` |
+| [4905](#security-4905) | info | Log book | `Log {log} verified: {details}` |
+| [4906](#security-4906) | error | Log book | `Log {log} failed verification: {details}` |
 
 ### security 4101
 
@@ -4065,16 +4489,16 @@ Writes the `security` log.
 
 ### security 4204
 
-`Exec mode for {target} turned {mode}`
+`The Discord relay's exec mode turned {mode}`
 
 - **Level:** info · **Channel:** operational · **Task:** Execution · **Log:** security
-- **Fields:** `target`, `mode`
+- **Fields:** `mode`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4204`
 
-**What it means.** The operator turned a surface's exec mode on or off (target: relay, the Discord relay's; cron, cron-exec's). Off refuses exec, write, destructive and send actions there whatever the category modes say.
+**What it means.** The operator turned the Discord relay's exec mode on or off. Off refuses exec, write, destructive, sandbox and send actions offsite whatever the relay's category modes say. cron-exec's switch is security/4704.
 
-**Why it happens.** /relay exec or /cron exec in the terminal, or the dashboard.
+**Why it happens.** /relay exec in the terminal, or the dashboard's Access page.
 
 **What to do.** None when intended.
 
@@ -4152,6 +4576,276 @@ Writes the `security` log.
 **Why it happens.** tenant peer remove or revoke, or /peer remove.
 
 **What to do.** None when intended. Pair again to restore it.
+
+### security 4501
+
+`{file} changed: {changes} settings`
+
+- **Level:** info · **Channel:** operational · **Task:** Configuration · **Log:** security
+- **Fields:** `file`, `changes`, `diff`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4501`
+
+**What it means.** A configuration file was saved with changes. diff lists each setting that changed, old → new, with every secret value replaced by its name.
+
+**Why it happens.** The operator changed a setting (the TUI, the dashboard, a tenant command), the agent changed one through a tool, or Tenant saved one it manages.
+
+**What to do.** None when expected. Otherwise read diff, and the process that wrote it, to see what changed and who ran it.
+
+### security 4601
+
+`Secret {secret} stored from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secret · **Log:** security
+- **Fields:** `secret`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4601`
+
+**What it means.** A secret (an API key, a token, a password) was stored under an ID that had none. The record names the ID, never the value.
+
+**Why it happens.** The operator entered a key: the dashboard's Keys page, /configure, /model add-cloud, a skill's configure, or tenant setup.
+
+**What to do.** None when expected. Otherwise rotate the secret at its service and remove it (the Keys page, or /skill clear).
+
+### security 4602
+
+`Secret {secret} changed from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secret · **Log:** security
+- **Fields:** `secret`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4602`
+
+**What it means.** A stored secret was replaced with a new value. The record names the ID, never the value.
+
+**Why it happens.** The operator re-entered a key, or a skill's configure or probe stored a fresh token.
+
+**What to do.** None when expected. Otherwise rotate the secret at its service.
+
+### security 4603
+
+`Secret {secret} deleted from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secret · **Log:** security
+- **Fields:** `secret`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4603`
+
+**What it means.** A stored secret was removed. The record names the ID, never the value.
+
+**Why it happens.** The operator removed a key or a model, cleared a skill field, or forgot a connected service (tenant privacy forget --connector).
+
+**What to do.** None when expected. The integration that used it stops working until a new one is stored.
+
+### security 4701
+
+`Scheduled job {job} added by the {actor} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `job`, `id`, `spec`, `kind`, `exec`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4701`
+
+**What it means.** A cron job was created. A job runs unattended: a prompt job as a turn of the agent, a shell job as a command.
+
+**Why it happens.** The operator added it (/cron add, the dashboard), or the agent did with cron_add, which asks nobody (audit item D4).
+
+**What to do.** None when expected. Otherwise remove it (/cron remove, the dashboard), and read the turn that added it (its trace).
+
+### security 4702
+
+`Scheduled job {job} {state} by the {actor} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `job`, `id`, `state`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4702`
+
+**What it means.** A cron job was enabled or disabled.
+
+**Why it happens.** The operator changed it (/cron, the dashboard), or the agent did with cron_set_enabled.
+
+**What to do.** None when expected.
+
+### security 4703
+
+`Scheduled job {id} removed by the {actor} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `id`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4703`
+
+**What it means.** A cron job was deleted. The cron log's job events name it.
+
+**Why it happens.** The operator removed it (/cron remove, the dashboard), or the agent did with cron_remove.
+
+**What to do.** None when expected.
+
+### security 4704
+
+`cron-exec turned {state} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `state`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4704`
+
+**What it means.** The global cron-exec switch changed. While it is on, shell jobs and exec prompt jobs run commands unattended.
+
+**Why it happens.** The operator flipped it: /cron exec, or the dashboard.
+
+**What to do.** None when expected. Turn it off if nobody meant to.
+
+### security 4801
+
+`Privacy deletion ({reason}) by the {actor}: {removed}`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `reason`, `removed`, `actor`, `surface`, `err`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4801`
+
+**What it means.** Personal data was deleted for good. removed counts what went, kind by kind; err is set when the deletion stopped part way, after what removed lists.
+
+**Why it happens.** The operator ran tenant privacy forget or prune, or the daily retention sweep aged a class out (actor tenant).
+
+**What to do.** None when expected. Deleted data can only come back from a backup made before it.
+
+### security 4802
+
+`Personal data exported to {dir}: {files} files`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `dir`, `files`, `bytes`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4802`
+
+**What it means.** Everything Tenant remembers was written out, in plaintext, to a directory.
+
+**Why it happens.** The operator ran tenant privacy export.
+
+**What to do.** None when expected. The export is plaintext: keep it private, and delete it when done.
+
+### security 4803
+
+`Backup written to {path}`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `path`, `bytes`, `encrypted`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4803`
+
+**What it means.** A backup of the configuration and data directories was written. An unencrypted one leaves the credentials out.
+
+**Why it happens.** The operator ran tenant backup create.
+
+**What to do.** None when expected. Keep the file private: it holds everything Tenant remembers.
+
+### security 4804
+
+`Backup {path} restored over this install`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `path`, `created`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4804`
+
+**What it means.** The configuration and data directories were replaced by a backup's. The previous ones are kept beside them.
+
+**Why it happens.** The operator ran tenant backup restore.
+
+**What to do.** None when expected. The Security log's re-anchor record, next to this one, says which head the restore replaced.
+
+### security 4901
+
+`Log {log} cleared: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4901`
+
+**What it means.** Every event of a log was deleted.
+
+**Why it happens.** The operator cleared it: tenant logs clear, or the Logs page.
+
+**What to do.** None when expected. The events can only come back from a backup.
+
+### security 4902
+
+`Log {log} reconfigured: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4902`
+
+**What it means.** A log's retention, size limit, level or debug switch changed.
+
+**Why it happens.** The operator changed it: tenant logs config, or the log's Properties.
+
+**What to do.** None when expected.
+
+### security 4903
+
+`Log {log} exported: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4903`
+
+**What it means.** Events were exported from the log book.
+
+**Why it happens.** The operator exported them: tenant logs export, or the Logs page.
+
+**What to do.** None when expected. An export holds whatever the events held: keep it private.
+
+### security 4904
+
+`Sensitive field revealed in {log}: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4904`
+
+**What it means.** A viewer showed the value of a field the log book masks as sensitive.
+
+**Why it happens.** The operator chose to reveal it on the Logs page.
+
+**What to do.** None when expected.
+
+### security 4905
+
+`Log {log} verified: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4905`
+
+**What it means.** An integrity check of the log passed.
+
+**Why it happens.** The operator ran tenant logs verify, or the log book checked itself.
+
+**What to do.** None.
+
+### security 4906
+
+`Log {log} failed verification: {details}`
+
+- **Level:** error · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4906`
+
+**What it means.** An integrity check of the log failed: a record was changed, removed or forged, or the log was cut short.
+
+**Why it happens.** Something edited logbook.db or its archives, or restored an older copy outside tenant backup restore; or the disk corrupted it.
+
+**What to do.** Keep the database and its archives as they are, and read details: it names the first bad record.
 
 ## skills
 
@@ -4401,12 +5095,19 @@ Writes the `system` log.
 | [1](#system-1) | info | Lifecycle | `Tenant {version} started as {role}` |
 | [2](#system-2) | info | Lifecycle | `Tenant stopped cleanly after {uptime}` |
 | [3](#system-3) | critical | Lifecycle | `The previous run ended unexpectedly; its last event was at {last}` |
+| [4](#system-4) | critical | Lifecycle | `The previous run crashed: {panic}` |
 | [10](#system-10) | info | Lifecycle | `Start-up of {role}` |
 | [20](#system-20) | info | Shutdown | `Shutdown of {steps} steps` |
 | [21](#system-21) | info | Shutdown | `Shutdown stage {stage}: {steps} steps` |
+| [101](#system-101) | info | Component | `{component} is starting` |
+| [102](#system-102) | info | Component | `{component} is running` |
+| [103](#system-103) | info | Component | `{component} stopped` |
 | [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
 | [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
+| [2001](#system-2001) | warning | Clock | `The wall clock moved {delta} against the monotonic clock` |
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
+| [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
+| [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
 | [2201](#system-2201) | warning | Storage | `{what} was not saved: {err}` |
 | [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
@@ -4463,6 +5164,20 @@ Writes the `system` log.
 
 **What to do.** Read the events before its last one, and any crash file filed at this start.
 
+### system 4
+
+`The previous run crashed: {panic}`
+
+- **Level:** critical · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `panic`, `last`, `boot`, `pid`, `role`, `file`, `stack`
+- **Find it:** `provider:system id:4`
+
+**What it means.** The previous run of Tenant crashed, and the runtime's dump of every goroutine was read in.
+
+**Why it happens.** An unrecovered panic or a fatal runtime error.
+
+**What to do.** Read stack, or the whole dump in the file field; report it with the version.
+
 ### system 10
 
 `Start-up of {role}`
@@ -4508,6 +5223,48 @@ Writes the `system` log.
 
 **What to do.** None when it stops. A slow drain is a job or turn still running; a failure names the steps that failed.
 
+### system 101
+
+`{component} is starting`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`
+- **Find it:** `provider:system id:101`
+
+**What it means.** A component began to start.
+
+**Why it happens.** Tenant started it, or the operator turned it on.
+
+**What to do.** None; a running or failed event follows.
+
+### system 102
+
+`{component} is running`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`
+- **Find it:** `provider:system id:102`
+
+**What it means.** A component is running, or has recovered from a degraded state.
+
+**Why it happens.** It started, or what it depends on works again.
+
+**What to do.** None.
+
+### system 103
+
+`{component} stopped`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`, `uptime`
+- **Find it:** `provider:system id:103`
+
+**What it means.** A component stopped in order.
+
+**Why it happens.** Tenant is shutting down, the operator turned it off, or a child process finished.
+
+**What to do.** None.
+
 ### system 1301
 
 `Publish the dashboard to the tailnet`
@@ -4534,6 +5291,20 @@ Writes the `system` log.
 
 **What to do.** None when it stops. On a failure, check tailscale serve status and reset it by hand.
 
+### system 2001
+
+`The wall clock moved {delta} against the monotonic clock`
+
+- **Level:** warning · **Channel:** operational · **Task:** Clock · **Log:** system
+- **Fields:** `delta`
+- **Find it:** `provider:system id:2001`
+
+**What it means.** The system time changed by more than 2 seconds relative to elapsed time. Events keep their order (by seq), but their times jump.
+
+**Why it happens.** The clock was set or synced, or the machine slept.
+
+**What to do.** None, unless it recurs without a sleep: then check time sync.
+
 ### system 2020
 
 `Shutdown step {stage}/{step} failed: {err}`
@@ -4547,6 +5318,34 @@ Writes the `system` log.
 **Why it happens.** Closing it returned an error: a store that could not flush, a listener already gone, a timeout.
 
 **What to do.** Read the error. A store that failed to close may have lost its last writes; tenant doctor checks the databases.
+
+### system 2101
+
+`{component} is degraded: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`, `err`
+- **Find it:** `provider:system id:2101`
+
+**What it means.** A component still runs, but not as it should.
+
+**Why it happens.** Something it depends on failed: a file it reads, a connection, a poll.
+
+**What to do.** Open the component's log for the cause; a running event follows when it recovers.
+
+### system 2102
+
+`Child process {component} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`, `err`, `uptime`
+- **Find it:** `provider:system id:2102`
+
+**What it means.** A child process exited with an error, or did not start.
+
+**Why it happens.** Its command failed, it crashed, or it could not be run. A command's non-zero exit is often its answer, not a fault.
+
+**What to do.** Its exit line in its own log has the code and the last lines it wrote.
 
 ### system 2110
 
@@ -4610,7 +5409,7 @@ Writes the `system` log.
 `{component} failed: {err}`
 
 - **Level:** error · **Channel:** operational · **Task:** Component · **Log:** system
-- **Fields:** `component`, `err`
+- **Fields:** `component`, `err`, `kind`, `log`, `uptime`
 - **Find it:** `provider:system id:3101`
 
 **What it means.** A subsystem stopped with an error.

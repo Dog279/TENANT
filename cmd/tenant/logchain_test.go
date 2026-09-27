@@ -210,7 +210,8 @@ func TestBackupRestoreReanchors(t *testing.T) {
 		return cmdBackupCreate(ctx, []string{"--config", cfg, "--data", data, "--out", outDir}, &out)
 	})
 	replaced := commit(4)
-	if v, err := verifySecurityLog(ctx, c); err != nil || v.Break != nil || v.Records != 7 {
+	// 3, the backup's own record (TEN-398), then 4.
+	if v, err := verifySecurityLog(ctx, c); err != nil || v.Break != nil || v.Records != 8 {
 		t.Fatalf("before the restore: %+v, %v", v, err)
 	}
 	files, _ := filepath.Glob(filepath.Join(outDir, "tenant-backup-*.tar.gz"))
@@ -224,8 +225,9 @@ func TestBackupRestoreReanchors(t *testing.T) {
 	if strings.Contains(out.String(), "Security log") {
 		t.Errorf("restore warned about the Security log:\n%s", out.String())
 	}
+	// 3, the re-anchor, then the restore's own record.
 	v, err := verifySecurityLog(ctx, c)
-	if err != nil || v.Break != nil || v.Records != 4 || len(v.Restores) != 1 {
+	if err != nil || v.Break != nil || v.Records != 5 || len(v.Restores) != 1 {
 		t.Fatalf("after the restore: %+v, %v", v, err)
 	}
 	r := v.Restores[0]
@@ -242,7 +244,7 @@ func TestBackupRestoreReanchors(t *testing.T) {
 	if err := exportSecurityLog(ctx, c, &bundle, time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	if hdr, v, err := verifySecurityBundle(c, &bundle); err != nil || v.Break != nil || v.Records != 4 || hdr.Anchor == nil || hdr.Anchor.Rec != 4 {
+	if hdr, v, err := verifySecurityBundle(c, &bundle); err != nil || v.Break != nil || v.Records != 5 || hdr.Anchor == nil || hdr.Anchor.Rec != 4 {
 		t.Errorf("bundle %+v: %+v, %v", hdr, v, err)
 	}
 }

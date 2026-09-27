@@ -20,7 +20,6 @@ import (
 	"strings"
 
 	"tenant/internal/logs/catalog"
-	"tenant/internal/logs/event"
 )
 
 // secure wraps the routed handler with host validation, bearer-token auth,
@@ -74,8 +73,8 @@ func (s *Server) secure(h http.Handler) http.Handler {
 // its remote address, before the response goes out: whole even when the
 // client has gone (auditCtx).
 func refused(r *http.Request, reason, route string) {
-	_ = catalog.AccessRefused.Audit(event.WithActor(auditCtx(r), r.RemoteAddr, "dashboard"),
-		"reason", reason, "remote", r.RemoteAddr, "method", r.Method, "route", route)
+	_ = catalog.AccessRefused.Audit(auditCtx(r), "reason", reason, "remote", r.RemoteAddr, "method", r.Method, "route", route,
+		"actor", r.RemoteAddr, "surface", "dashboard")
 }
 
 // auditCtx is r's context for a Security record: not cancelled when the

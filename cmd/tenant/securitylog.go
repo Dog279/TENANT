@@ -2,9 +2,9 @@ package main
 
 // securitylog.go writes the composition root's Security log records
 // (docs/design/logging-v2.md §10.1): each command run through the exec seam,
-// and the exec modes; and it gives the log book the failure policy
-// (logs.security.on_failure) and the banner it raises when a record can't be
-// written (§10.3). The approval records are internal/approval's.
+// and the relay's exec mode; and it gives the log book the failure policy
+// (logs.security.on_failure) it applies when a record can't be written
+// (§10.3). The approval records are internal/approval's.
 
 import (
 	"context"
@@ -12,14 +12,8 @@ import (
 
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
-	"tenant/internal/logs/event"
 	"tenant/internal/sandbox"
 )
-
-// securityNotice shows the operator the Security log's banner where they will
-// see it: the status feed, which serve and the TUI set it to. Until then the
-// critical system event stands alone.
-var securityNotice = func(string) {}
 
 // auditDenies reports whether logs.security.on_failure is deny. The log book
 // asks only when a record fails, so config.json is read then and an edit
@@ -43,9 +37,10 @@ func auditExec(ctx context.Context, backend string, cmd sandbox.Command, enforce
 	if cmd.Surface == surfaceCronShell {
 		actor = "cron"
 	}
-	ctx = event.WithActor(context.WithoutCancel(ctx), actor, cmd.Surface)
+	ctx = context.WithoutCancel(ctx)
 	command := logs.Scrub(commandText(cmd))
-	kv := []any{"command", command, "backend", backend, "exit", res.ExitCode, "timed_out", res.TimedOut}
+	who := []any{"actor", actor, "surface", cmd.Surface}
+	kv := append([]any{"command", command, "backend", backend, "exit", res.ExitCode, "timed_out", res.TimedOut}, who...)
 	if err != nil {
 		kv = append(kv, "err", err)
 	}
@@ -56,18 +51,18 @@ func auditExec(ctx context.Context, backend string, cmd sandbox.Command, enforce
 		if !enforce {
 			why = "dry_run"
 		}
-		_ = catalog.ExecEscalated.Audit(ctx, "command", command, "backend", backend, "violations", describeViolations(res), "why", why)
+		_ = catalog.ExecEscalated.Audit(ctx, append([]any{"command", command, "backend", backend, "violations", describeViolations(res), "why", why}, who...)...)
 	case res.Refused():
-		_ = catalog.ExecRefused.Audit(ctx, "command", command, "backend", backend, "violations", describeViolations(res))
+		_ = catalog.ExecRefused.Audit(ctx, append([]any{"command", command, "backend", backend, "violations", describeViolations(res)}, who...)...)
 	}
 }
 
-// auditExecMode records the operator turning target's exec mode (relay:
-// the Discord relay's; cron: cron-exec's) on or off, from surface.
-func auditExecMode(target string, on bool, surface string) {
+// auditRelayExec records the operator turning the Discord relay's exec mode
+// on or off, from surface. (cron-exec's switch is TEN-398's CronExecSwitched.)
+func auditRelayExec(on bool, surface string) {
 	mode := "off"
 	if on {
 		mode = "on"
 	}
-	_ = catalog.ExecMode.Audit(event.WithActor(context.Background(), "operator", surface), "target", target, "mode", mode)
+	_ = catalog.RelayExecMode.Audit(context.Background(), "mode", mode, "actor", "operator", "surface", surface)
 }

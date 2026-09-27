@@ -1,9 +1,11 @@
 package logs
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,27 +15,60 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
 	"tenant/internal/logs/store"
 )
 
 var testDetail = testProvider.Event(9002, event.Info, "Detail", "detail {n}", "n").Diagnostic()
 
-// TestMain lets the test binary stand in for a Tenant process that is
-// killed while it writes: with TENANT_LOGBOOK_HELPER=crash it logs into the
-// hub at TENANT_LOGBOOK_ROOT, with a store attached, until it is killed.
+// startHelper starts the test binary as a Tenant process (TestMain) and,
+// for live, waits until it is up.
+func startHelper(t *testing.T, mode, root string) (*exec.Cmd, io.WriteCloser) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), "TENANT_LOGBOOK_HELPER="+mode, "TENANT_LOGBOOK_ROOT="+root)
+	cmd.Stderr = os.Stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	if mode == "live" {
+		if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "ready" {
+			t.Fatalf("helper did not come up: %q %v", line, err)
+		}
+	}
+	return cmd, stdin
+}
+
+// TestMain lets the test binary stand in for a Tenant process, with the hub
+// at TENANT_LOGBOOK_ROOT, its store and a boot record: with
+// TENANT_LOGBOOK_HELPER=crash it logs until it is killed; with live it says
+// ready and waits to be killed.
 func TestMain(m *testing.M) {
-	if os.Getenv("TENANT_LOGBOOK_HELPER") == "crash" {
-		root := os.Getenv("TENANT_LOGBOOK_ROOT")
-		h, err := Open(root, Options{})
+	if mode := os.Getenv("TENANT_LOGBOOK_HELPER"); mode != "" {
+		h, err := Open(os.Getenv("TENANT_LOGBOOK_ROOT"), Options{})
+		if err == nil {
+			_, err = h.OpenStore(nil)
+		}
 		if err != nil {
 			panic(err)
 		}
-		st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{})
-		if err != nil {
-			panic(err)
+		h.BeginBoot("serve")
+		if mode == "live" {
+			fmt.Println("ready")
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			os.Exit(0)
 		}
-		h.AttachStore(st)
+		h.lb.lim.set(-1, 0) // one line as fast as it goes: past its rate limit
 		for i := 0; ; i++ {
 			h.Logf("crashtest", slog.LevelInfo, "event "+strconv.Itoa(i))
 			if i%256 == 255 {
@@ -236,9 +271,9 @@ func TestAuditForcesCommit(t *testing.T) {
 	if !strings.Contains(readLogs(t, filepath.Join(root, "logstest")), "Sync lost") {
 		t.Error("the text file lacks a record the store failed to commit")
 	}
-	if !strings.Contains(readLogs(t, filepath.Join(root, "logbook")), "could not commit") {
-		t.Error("no logbook warning for the failed commit")
-	}
+	waitFor(t, 5*time.Second, func() bool { // the writer files it with the next batch
+		return strings.Contains(readLogs(t, filepath.Join(root, "logbook")), "could not commit")
+	})
 }
 
 // A full queue makes an operational event wait a millisecond and a
@@ -282,6 +317,7 @@ func TestCloseFlushes(t *testing.T) {
 	st := attach(t, h)
 	Install(h)
 	defer Install(nil)
+	h.lb.lim.set(-1, 0) // one line 2,000 times: past its rate limit
 	for i := range 2000 {
 		h.Logf("flush", slog.LevelInfo, "line "+strconv.Itoa(i))
 	}
@@ -304,15 +340,11 @@ func TestCloseFlushes(t *testing.T) {
 
 // A writer killed mid-batch loses at most the batch it had not committed,
 // which the text files still hold, and the database passes its integrity
-// check.
+// check. The next process to look reports it dead, with the time of the
+// last event it committed.
 func TestCrashLosesAtMostTheBatchInFlight(t *testing.T) {
 	root := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(), "TENANT_LOGBOOK_HELPER=crash", "TENANT_LOGBOOK_ROOT="+root)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	cmd, _ := startHelper(t, "crash", root)
 	path := filepath.Join(root, "logbook.db")
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -385,6 +417,25 @@ func TestCrashLosesAtMostTheBatchInFlight(t *testing.T) {
 		t.Errorf("%d events in the text file never reached the store; at most one batch (%d) may", lost, batchMax)
 	}
 	t.Logf("%d events committed, %d in the text file only (the batch in flight)", len(stored), lost)
+
+	var lastAt time.Time
+	for _, e := range all(t, st) {
+		lastAt = e.Time
+	}
+	h, err := Open(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.OpenStore(nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool { _ = h.CheckBoots(context.Background()); return has(t, st, catalog.Unexpected) })
+	_ = h.Close()
+	for _, e := range all(t, st) {
+		if e.Provider == "system" && e.ID == catalog.Unexpected.Spec().ID && !e.Data[0].Value.(time.Time).Equal(lastAt) {
+			t.Errorf("unexpected end at %v, want the last committed event's %v", e.Data[0].Value, lastAt)
+		}
+	}
 }
 
 // BenchmarkEmit is an enabled emit up to the moment it is queued (§12.3: p99

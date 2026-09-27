@@ -68,8 +68,9 @@ func (r *relay) handleExtApprove(in discord.Interaction) {
 	// The verdict's Security record names the clicker, and comes before the
 	// marker the automation acts on: under logs.security.on_failure: deny, an
 	// approval that can't be recorded is not given.
-	ctx := event.WithActor(event.WithApproval(context.Background(), "ext:"+ns+":"+id), "discord:"+in.UserID, "discord")
-	kv := []any{"category", "external", "action", ns + "/" + id, "origin", "discord", "via", "operator"}
+	ctx := event.WithApproval(context.Background(), "ext:"+ns+":"+id)
+	kv := []any{"category", "external", "action", ns + "/" + id, "origin", "discord", "via", "operator",
+		"actor", "discord:" + in.UserID, "surface", "discord"}
 	if verdict != "approve" {
 		_ = catalog.ApprovalNo.Audit(ctx, kv...)
 	} else if catalog.ApprovalYes.Gate(ctx, append(kv, "grant", "once")...) != nil {

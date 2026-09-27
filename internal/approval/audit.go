@@ -69,43 +69,44 @@ func granted(d control.ApprovalDecision) bool {
 // approvalRec is one approval as its records name it.
 type approvalRec struct{ id, cat, action, detail, origin string }
 
-// under is ctx for r's records: attributed to actor on surface, correlated
-// with the approval, and not cancelled with the turn (the record of a prompt
-// that expired because its turn ended must still be written). It also tells
-// the gated action, through its slot (event.WithApproval), which approval
-// decided it.
-func (r approvalRec) under(ctx context.Context, actor, surface string) context.Context {
+// under is ctx for r's records: correlated with the approval, and not
+// cancelled with the turn (the record of a prompt that expired because its
+// turn ended must still be written). It also tells the gated action, through
+// its slot (event.WithApproval), which approval decided it.
+func (r approvalRec) under(ctx context.Context) context.Context {
 	event.NoteApproval(ctx, r.id)
-	return event.WithActor(event.WithApproval(context.WithoutCancel(ctx), r.id), actor, surface)
+	return event.WithApproval(context.WithoutCancel(ctx), r.id)
 }
 
-func (r approvalRec) fields(kv ...any) []any {
-	return append([]any{"category", r.cat, "action", r.action, "detail", r.detail, "origin", r.origin}, kv...)
+// fields are r's record's fields, attributed to actor on surface.
+func (r approvalRec) fields(actor, surface string, kv ...any) []any {
+	return append([]any{"category", r.cat, "action", r.action, "detail", r.detail, "origin", r.origin,
+		"actor", actor, "surface", surface}, kv...)
 }
 
 // asked records the prompt, raised by actor. An error means the action must
 // not go ahead.
 func (r approvalRec) asked(ctx context.Context, actor string) error {
-	return catalog.ApprovalAsk.Gate(r.under(ctx, actor, r.origin), r.fields()...)
+	return catalog.ApprovalAsk.Gate(r.under(ctx), r.fields(actor, r.origin)...)
 }
 
 // decided records d, decided by actor on surface (via: what decided, see
 // catalog.ApprovalYes), and returns it, or DenyOnce when a grant's record
 // could not be written under the deny policy.
 func (r approvalRec) decided(ctx context.Context, d control.ApprovalDecision, actor, surface, via string, kv ...any) control.ApprovalDecision {
-	ctx = r.under(ctx, actor, surface)
+	ctx = r.under(ctx)
 	switch {
 	case granted(d):
 		grant := map[control.ApprovalDecision]string{control.ApproveOnce: "once", control.ApproveSession: "session", control.ApproveAlways: "always"}[d]
-		if catalog.ApprovalYes.Gate(ctx, r.fields(append([]any{"grant", grant, "via", via}, kv...)...)...) != nil {
+		if catalog.ApprovalYes.Gate(ctx, r.fields(actor, surface, append([]any{"grant", grant, "via", via}, kv...)...)...) != nil {
 			return control.DenyOnce
 		}
 	case d == control.Expired:
-		_ = catalog.ApprovalExpired.Audit(ctx, r.fields(kv...)...)
+		_ = catalog.ApprovalExpired.Audit(ctx, r.fields(actor, surface, kv...)...)
 	case d == control.DenyShutdown:
-		_ = catalog.ApprovalShutdown.Audit(ctx, r.fields(kv...)...)
+		_ = catalog.ApprovalShutdown.Audit(ctx, r.fields(actor, surface, kv...)...)
 	default:
-		_ = catalog.ApprovalNo.Audit(ctx, r.fields(append([]any{"via", via}, kv...)...)...)
+		_ = catalog.ApprovalNo.Audit(ctx, r.fields(actor, surface, append([]any{"via", via}, kv...)...)...)
 	}
 	return d
 }
@@ -113,6 +114,6 @@ func (r approvalRec) decided(ctx context.Context, d control.ApprovalDecision, ac
 // modeChanged records the operator setting category to m on this broker,
 // from surface.
 func (b *Broker) modeChanged(category string, was, m Mode, surface string) {
-	ctx := event.WithActor(context.Background(), "operator", surface)
-	_ = catalog.ModeChanged.Audit(ctx, "broker", b.origin, "category", category, "mode", m.String(), "was", was.String())
+	_ = catalog.ModeChanged.Audit(context.Background(), "broker", b.origin, "category", category, "mode", m.String(), "was", was.String(),
+		"actor", "operator", "surface", surface)
 }

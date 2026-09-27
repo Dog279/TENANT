@@ -11,14 +11,15 @@ import (
 
 // audited reports how a Security record's commit ended (docs/design/logging-v2.md
 // §10.3). A failure files a critical system event, raises the operator's
-// banner once until records commit again, and, under logs.security.on_failure:
-// deny, is marked event.ErrRefused so the action the record gates is refused
-// (event.Def.Gate). The next commit that works ends the outage.
+// banner (OnAlert) once until records commit again, and, under
+// logs.security.on_failure: deny, is marked event.ErrRefused so the action
+// the record gates is refused (event.Def.Gate). The next commit that works
+// ends the outage.
 func (h *Hub) audited(ctx context.Context, e *event.Event, err error) error {
 	if err == nil {
 		if n := h.auditFails.Swap(0); n > 0 {
 			catalog.AuditRecovered.Log(ctx, "failed", n)
-			h.notice(fmt.Sprintf("security log: records are written again (%d were not; the text mirror has them)", n))
+			h.notice(fmt.Sprintf("✅ security log: records are written again (%d were not; the text mirror has them)", n))
 		}
 		return nil
 	}
@@ -41,8 +42,12 @@ func (h *Hub) audited(ctx context.Context, e *event.Event, err error) error {
 	return err
 }
 
+// notice gives the operator's status feed (OnAlert) a line.
 func (h *Hub) notice(s string) {
-	if h.opts.Notice != nil {
-		h.opts.Notice(s)
+	h.lb.mu.Lock()
+	fn := h.lb.alert
+	h.lb.mu.Unlock()
+	if fn != nil {
+		fn(s)
 	}
 }

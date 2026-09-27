@@ -178,8 +178,8 @@ func (l *Listener) verify(ctx context.Context, token string, r *http.Request) (*
 		// ponytail: one event per refused request, so a client hammering the
 		// port with bad tokens fills the log; count per source if that shows up.
 		TokenRejected.Log(ctx, "remote", r.RemoteAddr)
-		_ = catalog.AccessRefused.Audit(event.WithActor(context.WithoutCancel(ctx), r.RemoteAddr, "peering"),
-			"reason", "token", "remote", r.RemoteAddr, "method", r.Method, "route", r.URL.Path)
+		_ = catalog.AccessRefused.Audit(context.WithoutCancel(ctx), "reason", "token", "remote", r.RemoteAddr,
+			"method", r.Method, "route", r.URL.Path, "actor", r.RemoteAddr, "surface", "peering")
 		return nil, auth.ErrInvalidToken
 	}
 	// First successful auth retires the unused-invite bound; a pending-token

@@ -214,8 +214,9 @@ func TestExternalApprovalSecurityRecords(t *testing.T) {
 	}
 }
 
-// Changing a category's mode or an exec mode is recorded with the surface
-// the operator changed it on.
+// Changing a category's mode or the relay's exec mode is recorded with the
+// surface the operator changed it on, as every Security record's actor and
+// surface are.
 func TestModeChangeSecurityRecords(t *testing.T) {
 	s := installSecSink(t)
 	br := newDiscordApprovalBroker(testLog())
@@ -239,10 +240,10 @@ func TestModeChangeSecurityRecords(t *testing.T) {
 	}
 	wantLines(t, s.lines(),
 		"4106 operator@dashboard broker=discord category=exec mode=allow was=ask",
-		"4204 operator@dashboard target=relay mode=on",
-		"4204 operator@tui target=relay mode=off",
-		"4204 operator@dashboard target=cron mode=on",
-		"4204 operator@tui target=cron mode=off")
+		"4204 operator@dashboard mode=on",
+		"4204 operator@tui mode=off",
+		"4704 operator@dashboard state=on", // TEN-398's cron-exec switch, attributed the same way
+		"4704 operator@tui state=off")
 }
 
 // logs.security.on_failure is read from config.json each time a record

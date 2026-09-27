@@ -331,7 +331,9 @@ func TestRunRetentionAppliesConfiguredPeriods(t *testing.T) {
 	}
 	want := []string{
 		"privacy/1001 start Retention sweep", "privacy/1002 start Privacy deletion (retention)",
-		"privacy/1003  delete 1 screenshots", "privacy/1002 stop Privacy deletion (retention)", "privacy/1001 stop Retention sweep",
+		"privacy/1003  delete 1 screenshots", "privacy/1002 stop Privacy deletion (retention)",
+		"security/4801  Privacy deletion (retention) by the tenant: delete 1 screenshots", // TEN-398
+		"privacy/1001 stop Retention sweep",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("privacy log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

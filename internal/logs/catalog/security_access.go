@@ -5,8 +5,9 @@ import "tenant/internal/logs/event"
 // security: approvals (4100s), execution (4200s) and access (4300s)
 // (docs/design/logging-v2.md §10.1). Each record is written where the action
 // happens, before it returns: with Gate when the action waits on it, else
-// Audit. Who acted, through which surface and under which approval are the
-// event's own attributes (event.WithActor, event.WithApproval), not fields.
+// Audit. Who acted and through which surface are passed as "actor" and
+// "surface", which become the event's own attributes; the approval comes from
+// the context (event.WithApproval).
 
 // Approvals. category, action and detail name what was asked; origin is the
 // surface that raised it: local, discord, imessage or cron. via says what
@@ -70,10 +71,10 @@ var ExecEscalated = Security.Event(4203, event.Warning, "Execution", "A command 
 		"The operator approved os_exec_unsandboxed, or the surface's exec profile has enforce off.",
 		"None when intended. Turn enforce on to make refusals final.")
 
-var ExecMode = Security.Event(4204, event.Info, "Execution", "Exec mode for {target} turned {mode}", "target", "mode").
+var RelayExecMode = Security.Event(4204, event.Info, "Execution", "The Discord relay's exec mode turned {mode}", "mode").
 	Keywords("audit.success").
-	Doc("The operator turned a surface's exec mode on or off (target: relay, the Discord relay's; cron, cron-exec's). Off refuses exec, write, destructive and send actions there whatever the category modes say.",
-		"/relay exec or /cron exec in the terminal, or the dashboard.",
+	Doc("The operator turned the Discord relay's exec mode on or off. Off refuses exec, write, destructive, sandbox and send actions offsite whatever the relay's category modes say. cron-exec's switch is security/4704.",
+		"/relay exec in the terminal, or the dashboard's Access page.",
 		"None when intended.")
 
 // Access: the dashboard's sign-in and the requests it refuses, and peering.

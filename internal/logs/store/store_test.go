@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/datalock"
 	"tenant/internal/logs/event"
 )
 
@@ -388,6 +390,13 @@ func TestReidentifyRestartsCursors(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := s.StoreID()
+	running := Boot{ID: "0123456789abcdef0123456789abcdef", Role: "serve", Started: time.Now()} // when the backup was taken
+	if err := s.BeginBoot(context.Background(), running); err != nil {
+		t.Fatal(err)
+	}
+	if err := Reidentify(path); !errors.Is(err, datalock.ErrBusy) {
+		t.Fatalf("Reidentify while the store is open = %v, want ErrBusy", err)
+	}
 	_ = s.Close()
 	if err := Reidentify(path); err != nil {
 		t.Fatal(err)
@@ -402,5 +411,8 @@ func TestReidentifyRestartsCursors(t *testing.T) {
 	}
 	if _, _, restarted, err := s.Since(context.Background(), Cursor{StoreID: old, Seq: 5}, 10); err != nil || !restarted {
 		t.Fatalf("a pre-restore cursor: restarted=%v err=%v", restarted, err)
+	}
+	if open, _ := s.Unfinished(context.Background(), ""); len(open) != 0 {
+		t.Errorf("a restored boot row would read as a dead process: %+v", open)
 	}
 }

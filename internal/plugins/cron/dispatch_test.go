@@ -22,7 +22,7 @@ type fakeManager struct {
 }
 
 func (f *fakeManager) ListJobs() []JobView { return f.jobs }
-func (f *fakeManager) AddJob(s AddSpec) (JobView, error) {
+func (f *fakeManager) AddJob(_ context.Context, s AddSpec) (JobView, error) {
 	f.addCalls++
 	f.lastAdd = s
 	if f.addErr != nil {
@@ -30,8 +30,11 @@ func (f *fakeManager) AddJob(s AddSpec) (JobView, error) {
 	}
 	return JobView{ID: "abc123", Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: s.Enabled, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ, NextRun: "soon"}, nil
 }
-func (f *fakeManager) RemoveJob(id string) (bool, error) { f.rmCalls++; return id == "abc123", nil }
-func (f *fakeManager) SetJobEnabled(id string, on bool) (JobView, bool, error) {
+func (f *fakeManager) RemoveJob(_ context.Context, id string) (bool, error) {
+	f.rmCalls++
+	return id == "abc123", nil
+}
+func (f *fakeManager) SetJobEnabled(_ context.Context, id string, on bool) (JobView, bool, error) {
 	f.enCalls++
 	return JobView{ID: id, Enabled: on, NextRun: "soon"}, true, nil
 }

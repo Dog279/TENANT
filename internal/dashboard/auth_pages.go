@@ -11,7 +11,6 @@ import (
 	"net/http"
 
 	"tenant/internal/logs/catalog"
-	"tenant/internal/logs/event"
 )
 
 // settingsTmpl is the standalone PSK-entry page. Dark palette matching the panel.
@@ -87,7 +86,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Secure only when TLS is configured; loopback HTTP is the common case.
 		Secure: s.cfg.TLSCert != "" && s.cfg.TLSKey != "",
 	})
-	_ = catalog.SignedIn.Audit(event.WithActor(auditCtx(r), "operator", "dashboard"), "remote", r.RemoteAddr)
+	_ = catalog.SignedIn.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -101,6 +100,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	_ = catalog.SignedOut.Audit(event.WithActor(auditCtx(r), "operator", "dashboard"), "remote", r.RemoteAddr)
+	_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

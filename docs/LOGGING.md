@@ -12,7 +12,7 @@ one folder is one tab.
 │   └── 2026-09-22.log
 ├── subagents/                    ← orchestrated sub-agents (Programmer, Researcher, …), their own warnings, the bus, the team budget
 ├── research/                     ← /research passes and their record failures
-├── approvals/                    ← every gated-action decision: pending / approved / denied / expired
+├── approvals/                    ← every gated-action decision: pending / approved / denied / expired (kept this release; they move into security)
 ├── discord/                      ← the relay: inbound messages, the relay agent's actions, relay logs
 ├── imessage/
 ├── cron/                         ← scheduled-job runner agents + the engine
@@ -31,6 +31,8 @@ one folder is one tab.
 ├── system/                       ← start-up and shutdown (each shutdown stage an activity; was shutdown/), settings and credentials reloads, Tailscale, setup, health, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 ├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
+├── logbook.lock                  ← held shared by every process with the store open
+├── logbook/                      ← the log book's own events: its store, write failures, what it dropped and suppressed
 ├── archive/                      ← the store's archived records (security-<first>-<last>.ndjson.gz)
 ├── spool/                        ← events left by writers while no Tenant process was up (see "Intake")
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
@@ -274,6 +276,11 @@ that logs through `POST /api/logs` or `tenant log` joins them by passing them
 on as its `trace` and `activity` fields
 (`tenant log deploy "done" trace=$TENANT_TRACE_ID`).
 
+**While it runs, a child is a component** (see
+[What is running](#what-is-running-components-and-the-summary)), named by its
+first tag (`server`, `child` or the sandbox's `surface`); it leaves the list
+when it exits.
+
 ## The `model` and `route` logs
 
 Both are catalogued ([EVENTS.md](EVENTS.md#model)) and sit in the viewer's
@@ -332,32 +339,36 @@ the hub.
 ## Crashes and unexpected exits
 
 Serve and the TUI (never a one-shot command, so a Ctrl-C is never a crash)
-keep two folders under the root. They hold records, not logs, so they never
-become tabs, and backups leave them out:
+keep a boot record in `logbook.db` and two folders under the root. The
+folders hold records, not logs, so they never become tabs, and backups leave
+them out:
 
-- `boots/<boot_id>.lock` and `boots/<boot_id>.json`: the process's boot lock,
-  held for its lifetime, and its record (pid, role, version, host, start time).
-  An orderly stop marks the record clean.
+- a row in `logbook.db`'s `boots` table: pid, role, version, host, start time,
+  and a heartbeat refreshed every 30 seconds. An orderly stop marks it clean.
+- `boots/<boot_id>.lock`: the process's boot lock, held for its lifetime.
 - `crash/<boot_id>.txt`: the Go runtime's fatal output with every goroutine's
   stack (`debug.SetCrashOutput`, `SetTraceback("all")`). It still goes to
   stderr as well, but stderr is lost under the Windows task and drawn over the
   TUI's screen. An orderly stop deletes the file if it is empty.
 
-At start, a record whose lock can be taken belongs to a process that has
-exited. If it was not marked clean, it is filed once as a critical `system`
-event and its files are cleared:
+A row with no clean stop whose lock can be taken belongs to a process that
+has died. It is filed once as a critical `system` event, carrying the time of
+the process's last event, and its files are cleared:
 
-| Message | When |
+| Event | When |
 |---|---|
-| `the previous run crashed: <first line of the dump>` | the runtime left its fatal output. The dump moves to `system/crash-<boot_id>.txt` (listed with the tab's files). The event carries its path in `file` and its head in `stack` |
-| `the previous run ended unexpectedly` | no dump: the process was killed, lost power or called `os.Exit` |
+| `system/4` `The previous run crashed: <first line of the dump>` | the runtime left its fatal output. The dump moves to `system/crash-<boot_id>.txt` (listed with the tab's files). The event carries its path in `file` and its head in `stack` |
+| `system/3` `The previous run ended unexpectedly; its last event was at <time>` | no dump: the process was killed, lost power or called `os.Exit` |
 
 Both carry `boot`, `pid`, `role`, `version`, `host` and `started`. v1 files
 have no CRITICAL level, so these lines read `ERROR` and carry
-`severity=critical`. Only the lock decides, never how old a record is, so a
-live process is never reported (for example after a laptop wakes). The check
-runs at start only: a serve crash while the TUI is open is reported when either
-starts next.
+`severity=critical`. Only the lock decides, never the heartbeat's age, so a
+live process is never reported (for example after a laptop wakes), and a
+crash file is read only once its process's lock is free. The check runs at
+start and every minute in whichever process does the housekeeping, so a serve
+crash while the TUI is open is reported within a minute. With the store off
+(`"store": false`) or unavailable there are no boot records: an unexpected
+exit is not reported, and a crash dump goes to stderr only.
 
 A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
@@ -530,19 +541,57 @@ defer act.End(&err)                               // End(&err, "status", code) a
 `serve` and the TUI also keep every event in `<logs root>/logbook.db`, one
 SQLite database (WAL, `synchronous=FULL`, `fullfsync` on macOS). Each writes
 through its own connection, so both can share a data directory.
-`"logs": {"store": false}` turns it off (read at start); if it can't open, a
-`logbook` warning says so and the text files carry on alone.
+`"logs": {"store": false}` turns it off (read at start). The log book is the
+first thing a process opens and the last it releases: its final flush
+(bounded at 2 s) is the last shutdown step, and the store closes after the
+shutdown's own last events.
 
 - **The write path.** An event joins one queue (64k events); one writer
   goroutine takes a batch every 100 ms or 512 events, scrubs it, caps its
   values, appends its operational events to the text files, then commits the
   batch, and only then feeds the Activity tab. The text files are written
   first, so a batch the store loses (a crash mid-commit, a failed write) is
-  still in them; a failed commit leaves one `logbook` warning.
+  still in them.
+- **When a commit fails** (a full disk, a lock held past its timeout, an I/O
+  error) it is retried after 100 ms and 200 ms, each failure a `logbook/3001`
+  error. After the third the process runs on the text files alone: a critical
+  `logbook/2` and a `⚠ log book:` line in the status feed (the TUI's feed,
+  serve's stdout, the `system` log; `Hub.OnAlert`, `Hub.Degraded`). It keeps
+  trying, backing off to every 30 seconds; the first commit that succeeds
+  ends the outage (`logbook/3`, `✅`) and imports the text files' lines from it
+  with keyword `recovered` (`logbook/1001`), so the store has no hole. A
+  `security` record's `Audit` returns the error meanwhile.
+- **A corrupt database** found at open is moved aside, with its `-wal` and
+  `-shm`, to `logbook.db.corrupt-<time>`, and an empty store with a new ID
+  starts (critical `logbook/4`). Every process holds `logbook.lock` shared
+  while it has the store open; the move takes it exclusively, so a process
+  that finds the file corrupt while others have it open moves nothing (that
+  fails on Windows and corrupts the file on POSIX): it runs on the text files
+  alone and says so (`logbook/5`). A restore's re-identify takes the lock
+  exclusively too. `store.Salvage` (for `tenant logs recover`) copies what
+  can still be read from the moved file into the store, keyword `recovered`.
+  The housekeeper runs `quick_check` once a day (`logbook/1002`, or critical
+  `logbook/3004`).
 - **When the queue is full,** an operational event waits up to 1 ms and a
   diagnostic one not at all, then it is dropped and counted per log
   (`Hub.Dropped`). A `security` event is never queued: it forces its batch to
   commit.
+- **Rate limits.** Each provider and event ID may write 100 events a second,
+  in bursts of 500; the rest are suppressed. An uncatalogued line (ID 0) is
+  limited by its provider and its template, the message with numbers,
+  words holding a digit and quoted values taken out, so one chatty line
+  can't silence the rest of its provider. `security` is never limited.
+  `"logs": {"rate_limit": {"per_second": 100, "burst": 500}}` changes it
+  live (`per_second: -1` lifts it).
+- **Self-monitoring.** Once a minute each process reports what it dropped
+  and suppressed, per provider (`Suppressed 1203 × mcp.github 3001 in the
+  last 1m0s`, `logbook/2002` and `2003`), adds them to each log's `dropped`
+  and `suppressed` counters in the store (`store.Logs`), and reports its
+  queue's high-water mark when it passed half the queue (`logbook/2001`). A
+  failed text-file write is `logbook/3002`, once until writes succeed again.
+  A jump of more than 2 seconds between the wall clock and the monotonic
+  clock is a `system/2001` warning. The full list is the `logbook` provider in
+  [EVENTS.md](EVENTS.md).
 - **Diagnostic events** (`.Diagnostic()` definitions) go to the store only.
 - **Reading it.** `store.Since(cursor)` returns every event after a cursor,
   `<store ID>.<seq>`, in commit order, so a tail never misses a row. A cursor
@@ -641,7 +690,9 @@ full, a minimum level and an enabled switch. The defaults, by class:
   the Security log's are named by record number, taken oldest record first,
   and end with a `{"rec":…,"hash":…}` line);
   *keep* deletes nothing and writes one `logbook` warning each time the log
-  passes its limit. The Security log is always written in full and never
+  passes its limit. A log reaching 80% and 95% of its limit is a warning,
+  once per crossing, and a full one says what was done: its oldest events
+  overwritten, with how many, or archived, with the file. The Security log is always written in full and never
   overwritten: its records are archived before any is deleted, the whole-book
   budget never sheds it, and a book left over budget by records it may not
   delete raises one critical `logbook` event.
@@ -653,7 +704,8 @@ full, a minimum level and an enabled switch. The defaults, by class:
   `wal_checkpoint(TRUNCATE)`. It also checkpoints whenever the WAL passes
   64 MB. Rollups older than the longest max age of any log go too. Other
   tickets add their tasks with `Hub.Housekeep(name, every, fn)`; a task's
-  error is a `logbook` error line, never fatal.
+  error is a `logbook/3005` error, never fatal. The lease changing hands is
+  `logbook/1007` and `1008`.
 - **Low disk.** Below 1 GB or 5% free on the data volume, diagnostic events
   are not written; below 256 MB, only warnings and worse. The Security log
   always writes. Shed events count as dropped (`Hub.Dropped`), and crossing
@@ -715,13 +767,15 @@ keyed hash chain (design §10.2):
   data hash commits to them), and a closing `(rec, hash)` line.
   `store.VerifyBundle` checks it offline with the key.
 
-#### What the Security log records
+#### What the Security log records: approvals, execution and access
 
 Each record is written where the action happens, synchronously, before the
 action returns (design §10.1; `internal/logs/catalog/security_access.go`, IDs
-in [EVENTS.md](EVENTS.md#security)). Who acted, the surface and the approval
-are the event's own `actor`, `surface` and `approval` attributes, set from the
-context (`event.WithActor`, `event.WithApproval`), and the turn's `trace` is
+in [EVENTS.md](EVENTS.md#security)). Every Security record carries who acted
+and where as the event's own `actor` and `surface`: a call passes them as
+`"actor", …, "surface", …`, which set those attributes rather than data
+fields (a template may still name them). The approval is the event's
+`approval`, from the context (`event.WithApproval`), and the turn's `trace` is
 filled in as for any event. Keywords are `audit.success` or `audit.failure`.
 
 - **Approvals** (`internal/approval`): requested (`4101`), granted once, for
@@ -743,8 +797,8 @@ filled in as for any event. Keywords are `audit.success` or `audit.failure`.
   backend, the exit code; its approval is the one that let it run: `osys`
   opens a slot the approval gate fills). A sandbox refusal is `4202`, a
   command run outside the sandbox after one `4203` (`why`: `approved` or
-  `dry_run`), and the Discord relay's or cron's exec mode turned on or off
-  `4204`.
+  `dry_run`), and the Discord relay's exec mode turned on or off `4204`
+  (cron-exec's is `4704`, below).
 - **Access:** dashboard sign-in and sign-out (`4301`, `4302`); a request
   refused (`4303`, `reason`: `token` for a wrong dashboard or peer token,
   `sign_in`, `csrf`, `host`, `origin`; a request with no token at all is only
@@ -753,15 +807,55 @@ filled in as for any event. Keywords are `audit.success` or `audit.failure`.
   `remove` or `revoke`).
 - **When a record can't be written** (design §10.3), the log book files a
   critical `system/4001` for each lost record, raises one banner on the
-  status feed until a record commits again (then `system/4002`, and a second
-  line), and applies `logs.security.on_failure`, read at each failure so an
+  status feed (`Hub.OnAlert`) until a record commits again (then
+  `system/4002`, and a second line), and applies `logs.security.on_failure`, read at each failure so an
   edit applies at once: `continue` (the default) lets the action go ahead;
   `deny` refuses every gated action (an approval, prompted or not, the
   cron-exec approver's, a pairing, an external approval) until records are
   written again. Code that gates an action writes its record with
   `Def.Gate`, which returns an error only then (`event.ErrRefused`).
-- One-shot commands (`tenant peer remove`, `tenant peer invite`) have no log
-  book emitter, so their records aren't written yet.
+
+#### What the Security log records: changes
+
+Each record below is written through `Def.Audit` by the code that makes the
+change, before it returns (design §10.1; `docs/EVENTS.md` has each ID). It
+names who made the change, `actor` (`operator`, `agent`, or `tenant` for a
+scheduled sweep), and from where, `surface` (`tui`, `dashboard`, `cli`, or,
+for the agent, its turn's surface: `local`, `discord`, `imessage`,
+`cron-exec`); an agent's change also carries its turn's `trace_id`.
+
+- **Configuration** (`security/4501`): every save of `config.json` or
+  `settings.<agent>.json` that changes something, whoever saves it (the
+  record is filed by `internal/config`'s `Save`). `diff` has one line per
+  changed setting, `path: old → new`; a secret value (`dashboard.auth`, a key
+  ending in password, secret, token or api_key, every `env_set` value) is
+  shown as `«secret:<path>»`.
+- **Secrets** (`4601` stored, `4602` changed, `4603` deleted), by ID, never
+  the value, where the operator's action is handled: the Keys page,
+  `/configure`, `/model add-cloud` and `remove` (and the Model page),
+  `/skill configure` and `clear`, `tenant setup`, `tenant model add|remove`,
+  `tenant privacy forget --connector`. `internal/secrets` doesn't log; token
+  refreshes a plugin makes on its own aren't recorded.
+- **Scheduled jobs** (`4701` added, `4702` enabled or disabled, `4703`
+  removed, `4704` the cron-exec switch): from `/cron`, the dashboard, and the
+  agent's `cron_*` tools, which ask nobody (audit item D4).
+- **Data lifecycle**: `4801` a privacy deletion (forget, prune, and the
+  retention sweep as `tenant`), with what it removed; `4802` a privacy
+  export; `4803` a backup written; `4804` a backup restored, after the
+  re-anchor record.
+- **The log book**: `4901` cleared, `4902` reconfigured, `4903` exported,
+  `4904` a sensitive field revealed, `4905`/`4906` a verify passed or failed.
+  Verifying the Security log and its audit export bundle write theirs;
+  `catalog.AuditLogAdmin` is the call for the rest.
+
+A one-shot command (`tenant backup`, `tenant privacy`, `tenant setup`,
+`tenant model`) files its events into `logbook.db` when it ends, so its
+records join the chain. Other one-shot commands have no log book to take a
+record yet: a config change made by one (`tenant route`, `tenant peer`, …)
+is not recorded.
+
+The v1 `approvals` folder keeps being written through this release while
+approvals move into `security`; it goes in the next.
 
 ### Turns, sub-agents and research
 
@@ -827,6 +921,43 @@ trend. On 1M events (`TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run
 TestQueryBudgets -v`) a page takes well under the budgets: 200 ms on indexed
 fields, 1 s for `data.<key>` and full text. `Count` over a field without an
 index reads every row it can't rule out, so it can take longer.
+
+### What is running: components and the Summary
+
+**Components** (`internal/lifecycle`) are what a serve or TUI process runs:
+each with a name, a kind (`subsystem`, `connector`, `server`, `child`, `job`),
+its log, a state (`starting`, `running`, `degraded`, `stopped`, `failed`),
+since when, when this run started (its uptime) and its last error. They are
+tracked where they start: `Group.Start` registers a stop that also tracks
+(cron, the improve scheduler); `lifecycle.Track` covers the rest (the
+dashboard, the Discord relay, the iMessage responder, degraded while chat.db
+can't be polled; the peer listener; the peer heartbeat, degraded while
+`peers.json` can't be read; the settings and credentials watchers; the turn
+gate); and `internal/logs/capture` tracks each child while it runs.
+`lifecycle.Components()` lists them, JSON-ready, for the Components view and
+`GET /api/logbook/components`.
+
+Every state change is a `system` event: `system/101` starting, `102`
+running, `103` stopped, `2101` degraded, `3101` failed, and `2102` for a
+child that failed (a warning, as its exit line is: a command's non-zero exit
+is often its answer). Each run of a component is one activity, so
+`activity:<id>` is its history, and
+`provider:system task:Component data.component:"discord relay"` every run's.
+
+**The Summary** (`store.Summary`; `Hub.Summary` adds the retention settings
+in force and the events this process's queue dropped) is, per log, the
+counts by level over the last hour, 24 hours and 7 days, exact to the minute,
+with a sparkline of the week's 168 hours; its size against its limit, its
+retention and what happens when it is full, its dropped and suppressed
+counts and its newest event. Then the 10 event IDs most frequent among
+warnings and worse over the last 24 hours (in whole hours), and the latest 10
+critical events, errors and unexpected exits (the `system` log's critical
+events) of the week. It reads per-hour rollups: `rollup_hour` (log and
+level) and `rollup_id` (event ID, warnings and worse), which each commit keeps
+beside the per-minute ones, retention prunes with them and a privacy forget
+takes its events out of. On 1M events it takes 14–20 ms (p95; the budget is 50;
+`TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run TestSummaryBudget -v`),
+where a week from the per-minute rollups alone took 135 ms.
 
 ### Event IDs, the reference and coverage
 
