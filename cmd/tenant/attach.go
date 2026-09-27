@@ -45,6 +45,7 @@ type attachEvent struct {
 type attachActivityResp struct {
 	Events []attachEvent `json:"events"`
 	Cursor uint64        `json:"cursor"`
+	Epoch  string        `json:"epoch,omitempty"` // changes when the hub restarts; "" from an older hub
 }
 
 type attachStatus struct {
@@ -66,14 +67,19 @@ func cmdAttach(ctx context.Context, args []string) error {
 	level := fs.String("level", "", "only lines at or above this level: warn|error; default all")
 	trace := fs.String("trace", "", "only one turn's lines: its trace ID (runs.db trace_id, the lines' trace= field)")
 	c := bindCommon(fs)
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterspersed(fs, args) // `attach URL --follow` works too
+	if err != nil {
 		return err
 	}
 	if err := c.resolve(); err != nil { // loads c.lc (dashboard addr + auth)
 		return err
 	}
 
-	base := attachBaseURL(strings.TrimSpace(fs.Arg(0)), c.lc)
+	var arg string
+	if len(pos) > 0 {
+		arg = strings.TrimSpace(pos[0])
+	}
+	base := attachBaseURL(arg, c.lc)
 	tok := *token
 	if tok == "" && c.lc != nil {
 		tok = c.lc.Dashboard.Auth
@@ -110,19 +116,22 @@ func cmdAttach(ctx context.Context, args []string) error {
 	if *trace != "" {
 		filter += "&trace=" + url.QueryEscape(*trace)
 	}
-	cursor := *since
+	cursor, epoch := *since, ""
 	for {
-		evs, next, ferr := attachFetchActivityFiltered(ctx, httpc, base, tok, cursor, filter)
+		evs, next, nextEpoch, ferr := attachFetchActivityFiltered(ctx, httpc, base, tok, cursor, epoch, filter)
 		if ferr != nil {
 			if !*follow {
 				return fmt.Errorf("attach: activity fetch failed: %w", ferr)
 			}
 			fmt.Fprintln(os.Stderr, "attach: fetch failed, retrying: "+ferr.Error())
 		} else {
+			if epoch != "" && nextEpoch != epoch {
+				fmt.Fprintln(os.Stderr, "attach: the hub restarted; replaying the lines it kept")
+			}
 			for _, e := range evs {
 				fmt.Println(formatAttachEvent(e))
 			}
-			cursor = next
+			cursor, epoch = next, nextEpoch
 		}
 		if !*follow {
 			return nil
@@ -179,23 +188,31 @@ func attachFetchStatus(ctx context.Context, httpc *http.Client, base, token stri
 }
 
 func attachFetchActivity(ctx context.Context, httpc *http.Client, base, token string, since uint64) ([]attachEvent, uint64, error) {
-	return attachFetchActivityFiltered(ctx, httpc, base, token, since, "")
+	evs, next, _, err := attachFetchActivityFiltered(ctx, httpc, base, token, since, "", "")
+	return evs, next, err
 }
 
-// attachFetchActivityFiltered reads one page of the projection; filter is an
-// optional "&source=…&level=…&trace=…" narrowing (the log-book folder, level
-// floor, one turn).
-func attachFetchActivityFiltered(ctx context.Context, httpc *http.Client, base, token string, since uint64, filter string) ([]attachEvent, uint64, error) {
+// attachFetchActivityFiltered reads one page of the projection after the
+// cursor since, which belongs to the hub epoch epoch ("" before the first
+// page); filter is an optional "&source=…&level=…&trace=…" narrowing (the
+// log-book folder, level floor, one turn). It returns the next cursor and its
+// epoch.
+func attachFetchActivityFiltered(ctx context.Context, httpc *http.Client, base, token string, since uint64, epoch, filter string) ([]attachEvent, uint64, string, error) {
 	var resp attachActivityResp
-	url := fmt.Sprintf("%s/api/activity?since=%d%s", base, since, filter)
-	if err := attachGet(ctx, httpc, url, token, &resp); err != nil {
-		return nil, since, err
+	u := fmt.Sprintf("%s/api/activity?since=%d%s", base, since, filter)
+	if epoch != "" {
+		u += "&epoch=" + url.QueryEscape(epoch)
 	}
-	// Never regress the cursor (defensive against a malformed/older response).
-	if resp.Cursor < since {
+	if err := attachGet(ctx, httpc, u, token, &resp); err != nil {
+		return nil, since, epoch, err
+	}
+	// Never regress the cursor within one epoch (defensive against a
+	// malformed/older response). A new epoch means the hub restarted and
+	// numbers from 1 again, so its cursor is taken as it is.
+	if resp.Cursor < since && (epoch == "" || resp.Epoch == epoch) {
 		resp.Cursor = since
 	}
-	return resp.Events, resp.Cursor, nil
+	return resp.Events, resp.Cursor, resp.Epoch, nil
 }
 
 // formatAttachEvent renders one event as a single tail line: `HH:MM:SS KIND

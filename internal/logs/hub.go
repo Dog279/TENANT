@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"tenant/internal/fsperm"
+	"tenant/internal/runtrace"
 )
 
 const (
@@ -62,8 +63,9 @@ type FileInfo struct {
 // (Install it for package-level For loggers), Start it in daemons so folders
 // dropped by other processes get discovered and tailed, Close it on exit.
 type Hub struct {
-	root string // "" ⇒ memory-only (ring, no files, no discovery)
-	opts Options
+	root  string // "" ⇒ memory-only (ring, no files, no discovery)
+	opts  Options
+	epoch string // names this hub's Seq numbering, which starts at 1 on every Open
 
 	mu       sync.Mutex
 	ring     []Entry
@@ -71,7 +73,7 @@ type Hub struct {
 	sources  map[string]*source
 	lastScan time.Time
 	closed   bool
-	notify   chan struct{}
+	subs     map[chan struct{}]struct{} // one wake-up channel per Subscribe
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -125,9 +127,10 @@ func Open(root string, opts Options) (*Hub, error) {
 	return &Hub{
 		root:    root,
 		opts:    opts,
+		epoch:   runtrace.BootID(), // one hub per process
 		next:    1,
 		sources: map[string]*source{},
-		notify:  make(chan struct{}, 1),
+		subs:    map[chan struct{}]struct{}{},
 		stop:    make(chan struct{}),
 	}, nil
 }
@@ -311,15 +314,36 @@ func (h *Hub) appendLocked(e Entry) {
 }
 
 func (h *Hub) wake() {
-	select {
-	case h.notify <- struct{}{}:
-	default:
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
-// Notify is a coalescing wake-up: a receive means "new entries exist — call
-// Since". Pair with Since for a gap-free live tail.
-func (h *Hub) Notify() <-chan struct{} { return h.notify }
+// Subscribe returns a wake-up channel of the caller's own and a cancel func
+// that drops it. Every write wakes every subscriber; wake-ups coalesce, so a
+// receive means "new entries exist — call Since". Subscribe before the first
+// Since for a gap-free live tail.
+func (h *Hub) Subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.mu.Lock()
+	h.subs[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.subs, ch)
+		h.mu.Unlock()
+	}
+}
+
+// Epoch names this hub's sequence numbering. Seq starts again at 1 each time
+// a hub opens, so a cursor is only meaningful with the epoch it came from: a
+// client holding another epoch's cursor re-syncs from the start of the ring.
+func (h *Hub) Epoch() string { return h.epoch }
 
 // Since returns every retained entry with Seq > cursor (oldest first) plus the
 // new head cursor to pass next time. A cursor older than the ring returns the
@@ -372,11 +396,21 @@ func (h *Hub) Sources() []SourceInfo {
 }
 
 // preferredOrder pins the built-in subsystems to a stable, meaningful order in
-// the dashboard's tab row; everything else follows alphabetically.
+// the dashboard's tab row; everything else follows alphabetically. Its keys
+// are Tenant's own sources (Builtin).
 var preferredOrder = map[string]int{
 	"turns": 0, "subagents": 1, "approvals": 2, "discord": 3, "imessage": 4, "cron": 5,
 	"eval": 6, "improve": 7, "model": 8, "route": 9, "memory": 10, "mcp": 11,
-	"peering": 12, "dashboard": 13, "system": 99,
+	"peering": 12, "dashboard": 13, "sandbox": 14, "privacy": 15, "shutdown": 16,
+	"system": 99,
+}
+
+// Builtin reports whether name is one of Tenant's own sources. The logging
+// API refuses to write into them, so an outside script can't forge an
+// approval or a turn.
+func Builtin(name string) bool {
+	_, ok := preferredOrder[name]
+	return ok
 }
 
 // SourceLess is the tab/display ordering: built-ins in preferredOrder, then
@@ -811,6 +845,19 @@ func tailLines(path string, n int, maxBytes int64) ([]string, int64) {
 }
 
 // --- retention ----------------------------------------------------------------
+
+// SetRetention changes a running hub's retention (as Options.Retention: 0 ⇒
+// 30 days, <0 ⇒ never) and prunes with it at once, so a new setting needs no
+// restart.
+func (h *Hub) SetRetention(d time.Duration) {
+	if d == 0 {
+		d = defaultRetention
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.opts.Retention = d
+	h.pruneLocked()
+}
 
 var dayPrefixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})`)
 

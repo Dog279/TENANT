@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -82,5 +83,27 @@ func TestCheckServe_DisabledSkips(t *testing.T) {
 	r := checkServe(context.Background(), e)
 	if r.Status != statusSkip {
 		t.Fatalf("status = %v, want SKIP when dashboard disabled", r.Status)
+	}
+}
+
+// A default install keeps the dashboard token in its file, not in
+// dashboard.auth: the probe presents it instead of drawing a 401 (TEN-367).
+func TestCheckServe_UsesTokenFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer filetok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","turn_active":false,"pending_approvals":0}`))
+	}))
+	defer srv.Close()
+	cfg := t.TempDir()
+	if err := os.WriteFile(dashboardAuthTokenPath(cfg), []byte("filetok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e := serveEnv(strings.TrimPrefix(srv.URL, "http://"))
+	e.c = &commonFlags{cfgDir: cfg, auditOnly: true}
+	if r := checkServe(context.Background(), e); r.Status != statusOK {
+		t.Fatalf("got %v %q, want OK with the token file", r.Status, r.Detail)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
 	"tenant/internal/memory/episodic"
 	xp "tenant/internal/plugins/x"
 	"tenant/internal/secrets"
@@ -65,6 +66,48 @@ func TestPrivacyRetentionSet(t *testing.T) {
 		if err := set(bad[0], bad[1]); err == nil {
 			t.Errorf("set %s %s accepted", bad[0], bad[1])
 		}
+	}
+}
+
+// `tenant privacy retention set logs` reaches a running Tenant: its daily
+// sweep hands the hub the new retention, and the hub prunes with it (TEN-367).
+func TestPrivacyRetentionSetLogsAppliesLive(t *testing.T) {
+	cfg, data := t.TempDir(), t.TempDir()
+	h, err := logs.Open(filepath.Join(data, "logs"), logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	h.Logf("sidecar", slog.LevelInfo, "today")
+	old := filepath.Join(data, "logs", "sidecar", time.Now().AddDate(0, 0, -10).Format("2006-01-02")+".log")
+	if err := os.WriteFile(old, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := logs.Default()
+	logs.Install(h)
+	defer logs.Install(prev)
+
+	if err := cmdPrivacyRetention(context.Background(), append([]string{"set", "logs", "7"}, privacyArgs(cfg, data)...), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	runRetention(context.Background(), &commonFlags{cfgDir: cfg, dataDir: data}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("the running hub should prune with the 7 days just set")
+	}
+}
+
+// logs.level raises the floor as well as lowering it (TEN-367).
+func TestLogsOptionsLevel(t *testing.T) {
+	t.Setenv("TENANT_LOG", "")
+	for in, want := range map[string]slog.Level{"": slog.LevelInfo, "debug": slog.LevelDebug, "warn": slog.LevelWarn, "warning": slog.LevelWarn, "ERROR": slog.LevelError, "loud": slog.LevelInfo} {
+		c := &commonFlags{lc: &launchConfig{Logs: logsConfig{Level: in}}}
+		if got := c.logsOptions().MinLevel; got != want {
+			t.Errorf("logs.level %q → %v, want %v", in, got, want)
+		}
+	}
+	t.Setenv("TENANT_LOG", "debug")
+	if got := (&commonFlags{lc: &launchConfig{Logs: logsConfig{Level: "error"}}}).logsOptions().MinLevel; got != slog.LevelDebug {
+		t.Errorf("TENANT_LOG=debug should still lower the floor, got %v", got)
 	}
 }
 

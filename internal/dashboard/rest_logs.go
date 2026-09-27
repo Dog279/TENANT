@@ -11,6 +11,10 @@ package dashboard
 //	GET  /api/logs/{source}             → {"source": "x", "files": [{name, size, mod_time}]}
 //	GET  /api/logs/{source}/{name}      → the raw file (text/plain)
 //	POST /api/logs/{source}             ← {"level": "info", "msg": "...", "fields": {"k": "v"}}  (or a text/plain body = the message)
+//
+// Tenant's own sources (turns, approvals, system, …: logs.Builtin) are
+// refused, and an `ev` field is dropped: only Tenant files turn events, so an
+// outside line can never pass for an approval or a tool call.
 
 import (
 	"encoding/json"
@@ -109,12 +113,21 @@ func (s *Server) handleLogFile(w http.ResponseWriter, r *http.Request) {
 	s.handleActivityFile(w, r)
 }
 
+// builtinSourceErr is the refusal for a write into one of Tenant's own sources.
+func builtinSourceErr(name string) string {
+	return fmt.Sprintf("source %q is one of Tenant's own logs; pick another name", name)
+}
+
 // handleLogWrite files one line into the named source, creating it on first
 // use. Accepts JSON (restLogWrite) or a text/plain body (the message).
 func (s *Server) handleLogWrite(w http.ResponseWriter, r *http.Request) {
 	src := logs.NormalizeSource(r.PathValue("source"))
 	if src == "" {
 		writeError(w, http.StatusBadRequest, "source: needs at least one letter or digit ([a-z0-9._-], ≤40 chars after normalization)")
+		return
+	}
+	if logs.Builtin(src) {
+		writeError(w, http.StatusForbidden, builtinSourceErr(src))
 		return
 	}
 	if s.logs == nil {
@@ -165,6 +178,9 @@ func (s *Server) handleLogWrite(w http.ResponseWriter, r *http.Request) {
 		if k == "" || strings.ContainsAny(k, " \t\n=\"") || len(k) > 64 {
 			writeError(w, http.StatusBadRequest, "fields: keys are 1-64 chars with no spaces, quotes or '='")
 			return
+		}
+		if k == "ev" {
+			continue
 		}
 		e.Fields = append(e.Fields, logs.Field{Key: k, Value: req.Fields[k]})
 	}

@@ -196,7 +196,8 @@ type restActivityEvent struct {
 
 type restActivityResponse struct {
 	Events []restActivityEvent `json:"events"`
-	Cursor uint64              `json:"cursor"` // pass back as ?since= for a gap-free tail
+	Cursor uint64              `json:"cursor"`          // pass back as ?since= for a gap-free tail
+	Epoch  string              `json:"epoch,omitempty"` // pass back as ?epoch=; it changes when the hub restarts
 }
 
 // restEntry projects one hub entry. kind is "log" for a plain record.
@@ -238,29 +239,42 @@ func restEntry(e logs.Entry) restActivityEvent {
 	return out
 }
 
-// handleActivity — GET /api/activity?since=<seq>[&source=x][&level=error][&trace=id]:
+// handleActivity — GET /api/activity?since=<seq>[&epoch=e][&limit=n][&source=x][&level=error][&trace=id]:
 // the structured replay of the retained log. Returns entries with Seq > since
-// plus the new head cursor. Empty (not an error) when no hub is wired.
+// plus the new head cursor and the hub's epoch. Sequence numbers start again
+// at 1 when the hub restarts, so a since from another epoch replays the ring
+// from its start; a since with no epoch keeps its old meaning. With limit, at
+// most n events come back and the cursor is the last one's, so the next call
+// continues from there. Empty (not an error) when no hub is wired.
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	resp := restActivityResponse{Events: []restActivityEvent{}}
 	if s.logs == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	q := r.URL.Query()
 	var since uint64
-	if v := r.URL.Query().Get("since"); v != "" {
+	if v := q.Get("since"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			since = n
 		}
 	}
+	if e := q.Get("epoch"); e != "" && e != s.logs.Epoch() {
+		since = 0
+	}
+	limit, _ := strconv.Atoi(q.Get("limit")) // ≤0 or absent: no limit
 	f := activityFilterFrom(r)
 	entries, cursor := s.logs.Since(since)
-	resp.Cursor = cursor
+	resp.Cursor, resp.Epoch = cursor, s.logs.Epoch()
 	for _, e := range entries {
 		if !f.match(e) {
 			continue
 		}
 		resp.Events = append(resp.Events, restEntry(e))
+		if len(resp.Events) == limit {
+			resp.Cursor = e.Seq
+			break
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -443,6 +457,10 @@ func (s *Server) handleAddonEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "source: 1-40 chars of [A-Za-z0-9._ -] required")
 		return
 	}
+	if logs.Builtin(logs.NormalizeSource(req.Source)) {
+		writeError(w, http.StatusForbidden, builtinSourceErr(req.Source))
+		return
+	}
 	if req.Text == "" {
 		writeError(w, http.StatusBadRequest, "text required")
 		return
@@ -469,10 +487,12 @@ func (s *Server) handleAddonEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // teamBudgetOf decodes the team-budget snapshot an EventTeamBudget entry
-// carries (agent.EntryFor stores it as JSON in the "team_budget" field).
+// carries (agent.EntryFor stores it as JSON in the "team_budget" field). Only
+// Tenant's own team_budget events count: the logging API strips `ev`, so an
+// outside line can't pass one off.
 func teamBudgetOf(e logs.Entry) *orchestra.BudgetStatus {
 	raw := e.Field("team_budget")
-	if raw == "" {
+	if raw == "" || e.Kind() != string(agent.EventTeamBudget) {
 		return nil
 	}
 	var st orchestra.BudgetStatus

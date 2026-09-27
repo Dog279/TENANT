@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -76,7 +77,8 @@ func TestAttach_FetchActivityCursorPaging(t *testing.T) {
 	}
 }
 
-// --trace narrows the tail to one turn's lines (TEN-362).
+// --trace narrows the tail to one turn's lines (TEN-362); flags placed after
+// the URL are honored (TEN-367).
 func TestAttach_TraceFilter(t *testing.T) {
 	sent := make(chan string, 1)
 	mux := http.NewServeMux()
@@ -93,11 +95,51 @@ func TestAttach_TraceFilter(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	dir := t.TempDir()
-	if err := cmdAttach(context.Background(), []string{"--config", dir, "--data", dir, "--token", "x", "--trace", "4f2a", srv.URL}); err != nil {
+	if err := cmdAttach(context.Background(), []string{srv.URL, "--config", dir, "--data", dir, "--token", "x", "--trace", "4f2a"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-sent; got != "4f2a" {
 		t.Fatalf("trace sent = %q, want 4f2a", got)
+	}
+}
+
+// A restarted hub numbers from 1 again under a new epoch: the next page takes
+// its lower cursor and replays what it kept, instead of going quiet until the
+// new head passes the old cursor. Within one epoch the cursor never regresses
+// (TEN-367).
+func TestAttach_ResyncsAcrossRestart(t *testing.T) {
+	var mu sync.Mutex
+	epoch, head, reported := "e1", uint64(5), uint64(5)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		q := r.URL.Query()
+		since, _ := strconv.ParseUint(q.Get("since"), 10, 64)
+		if e := q.Get("epoch"); e != "" && e != epoch {
+			since = 0
+		}
+		out := attachActivityResp{Events: []attachEvent{}, Cursor: reported, Epoch: epoch}
+		for s := since + 1; s <= head; s++ {
+			out.Events = append(out.Events, attachEvent{Seq: s, Kind: "log"})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	defer srv.Close()
+	ctx, httpc := context.Background(), srv.Client()
+	set := func(e string, h, rep uint64) { mu.Lock(); epoch, head, reported = e, h, rep; mu.Unlock() }
+
+	_, cur, ep, err := attachFetchActivityFiltered(ctx, httpc, srv.URL, "", 0, "", "")
+	if err != nil || cur != 5 || ep != "e1" {
+		t.Fatalf("first page: cursor=%d epoch=%q err=%v", cur, ep, err)
+	}
+	set("e1", 5, 3) // same epoch, a lower cursor: malformed, ignored
+	if _, cur, _, _ = attachFetchActivityFiltered(ctx, httpc, srv.URL, "", cur, ep, ""); cur != 5 {
+		t.Fatalf("within one epoch the cursor regressed to %d", cur)
+	}
+	set("e2", 2, 2) // restarted
+	evs, cur, ep, err := attachFetchActivityFiltered(ctx, httpc, srv.URL, "", cur, ep, "")
+	if err != nil || len(evs) != 2 || cur != 2 || ep != "e2" {
+		t.Fatalf("after restart: %d events cursor=%d epoch=%q err=%v, want 2/2/e2", len(evs), cur, ep, err)
 	}
 }
 

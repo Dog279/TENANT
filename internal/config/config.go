@@ -153,8 +153,8 @@ type Logs struct {
 	Dir string `json:"dir,omitempty"`
 	// RetentionDays deletes a source's files older than this (0 ⇒ 30; -1 ⇒ never).
 	RetentionDays int `json:"retention_days,omitempty"`
-	// Level is the floor for the files + feed: "info" (default) or "debug".
-	// TENANT_LOG=debug also lowers it for that launch.
+	// Level is the floor for the files + feed: "debug", "info" (default),
+	// "warn" or "error". TENANT_LOG=debug also lowers it for that launch.
 	Level string `json:"level,omitempty"`
 	// MaxFieldBytes caps one value (a tool result, an argument blob) per line
 	// (0 ⇒ 4096; -1 ⇒ unlimited).

@@ -49,7 +49,7 @@ type activityPageData struct {
 	Configured bool
 	Root       string        // on-disk log root ("" for a memory-only hub)
 	Backlog    template.HTML // pre-rendered rows (each self-escaped via logRow)
-	Cursor     uint64        // head Seq the live stream tails from
+	Cursor     string        // head cursor (<epoch>.<seq>) the live stream tails from
 	Source     string        // active source filter ("" = all)
 	Level      string        // "error" = errors only; "" = everything
 	Trace      string        // one turn's lines only ("" = every line)
@@ -134,7 +134,7 @@ func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 		n++
 	}
 	d.Backlog = template.HTML(b.String())
-	d.Cursor = head
+	d.Cursor = s.activityCursor(head)
 	d.Empty = n == 0
 	if f.Source != "" {
 		if files, err := s.logs.Files(f.Source); err == nil {
@@ -150,22 +150,42 @@ func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleActivitySSE replays every entry after the start cursor, then tails new
-// ones — each patch tagged with its Seq as the SSE id so the browser's
-// Last-Event-ID advances and a reconnect resumes gap-free.
+// ones — each patch tagged with its cursor as the SSE id so the browser's
+// Last-Event-ID advances and a reconnect resumes gap-free. A cursor from
+// another epoch means the hub restarted and numbers from 1 again: the feed is
+// redrawn from what the hub retained, as a page load would draw it.
 func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	setSSEHeaders(w)
 	flush(w)
 	if s.logs == nil {
 		return
 	}
+	wake, unsubscribe := s.logs.Subscribe()
+	defer unsubscribe()
 	f := activityFilterFrom(r)
-	cursor := activityStartCursor(r)
+	epoch, cursor := activityStartCursor(r)
+	restarted := epoch != "" && epoch != s.logs.Epoch()
+	if restarted {
+		cursor = 0
+	}
 	missed, head := s.logs.Since(cursor)
+	if restarted {
+		var b strings.Builder
+		for _, e := range missed {
+			if f.match(e) {
+				b.WriteString(logRow(e))
+			}
+		}
+		if _, err := w.Write(activityPatch(s.activityCursor(head), "inner", b.String())); err != nil {
+			return
+		}
+		missed = nil
+	}
 	for _, e := range missed {
 		if !f.match(e) {
 			continue
 		}
-		if _, err := w.Write(activityAppend(e.Seq, logRow(e))); err != nil {
+		if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "append", logRow(e))); err != nil {
 			return
 		}
 	}
@@ -174,17 +194,14 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case _, ok := <-s.logs.Notify():
-			if !ok {
-				return
-			}
+		case <-wake:
 			var entries []logs.Entry
 			entries, head = s.logs.Since(head)
 			for _, e := range entries {
 				if !f.match(e) {
 					continue
 				}
-				if _, err := w.Write(activityAppend(e.Seq, logRow(e))); err != nil {
+				if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "append", logRow(e))); err != nil {
 					return
 				}
 			}
@@ -322,25 +339,31 @@ func humanBytes(n int64) string {
 // activityStartCursor resolves where the stream should resume: the Last-Event-ID
 // header (sent by the client on reconnect) wins; else the ?cursor= query param
 // (the page's render-time head on first connect); else 0 (replay everything).
-func activityStartCursor(r *http.Request) uint64 {
-	if v := strings.TrimSpace(r.Header.Get("Last-Event-ID")); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-			return n
+// A cursor is "<epoch>.<seq>"; a bare "<seq>" (from a page served before
+// cursors carried an epoch) keeps its old meaning, with epoch "".
+func activityStartCursor(r *http.Request) (epoch string, seq uint64) {
+	for _, v := range []string{r.Header.Get("Last-Event-ID"), r.URL.Query().Get("cursor")} {
+		ep, num, found := strings.Cut(strings.TrimSpace(v), ".")
+		if !found {
+			ep, num = "", ep
+		}
+		if n, err := strconv.ParseUint(num, 10, 64); err == nil {
+			return ep, n
 		}
 	}
-	if v := strings.TrimSpace(r.URL.Query().Get("cursor")); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-			return n
-		}
-	}
-	return 0
+	return "", 0
 }
 
-// activityAppend builds an append-to-#activity-feed patch tagged with the entry
-// Seq as the SSE id (so Last-Event-ID advances for gap-free reconnect).
-func activityAppend(seq uint64, rowHTML string) []byte {
+// activityCursor is the feed cursor for seq: "<epoch>.<seq>".
+func (s *Server) activityCursor(seq uint64) string {
+	return s.logs.Epoch() + "." + strconv.FormatUint(seq, 10)
+}
+
+// activityPatch builds a #activity-feed patch tagged with a feed cursor as the
+// SSE id (so Last-Event-ID advances for gap-free reconnect).
+func activityPatch(cursor, mode, rowsHTML string) []byte {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "id: %d\n", seq)
-	b.Write(patchElements("#activity-feed", "append", rowHTML))
+	fmt.Fprintf(&b, "id: %s\n", cursor)
+	b.Write(patchElements("#activity-feed", mode, rowsHTML))
 	return b.Bytes()
 }

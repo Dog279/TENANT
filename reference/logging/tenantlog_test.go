@@ -20,6 +20,7 @@ import (
 
 	"tenant/internal/logs"
 	"tenant/internal/memory/archive"
+	"tenant/internal/memory/soul"
 )
 
 func TestLineMatchesHubByteForByte(t *testing.T) {
@@ -245,6 +246,33 @@ func TestNewPanicsOnUnusableSource(t *testing.T) {
 	}()
 	t.Setenv("TENANT_URL", "http://127.0.0.1:1")
 	New("..")
+}
+
+// With no TENANT_TOKEN and no dashboard.auth, the token comes from the file a
+// default install keeps it in, in Tenant's own config dir (TEN-367).
+func TestDiscoveryReadsTokenFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	t.Setenv("TENANT_TOKEN", "")
+	t.Setenv("TENANT_URL", "")
+	cfgDir, err := soul.DefaultDir() // Tenant's config dir rule
+	if err != nil {
+		t.Skip(err)
+	}
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"dashboard":{"addr":"127.0.0.1:9123"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "dashboard-auth-token"), []byte("filetok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if d := discover(); d.token != "filetok" || d.url != "127.0.0.1:9123" {
+		t.Errorf("discovered = %+v, want the token file's token", d)
+	}
 }
 
 func TestDiscoveryHonorsEnv(t *testing.T) {

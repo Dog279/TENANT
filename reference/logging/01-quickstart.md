@@ -38,7 +38,8 @@ log.Error("build failed", "step", "link", "err", err)
 
 Source names are lowercase `[a-z0-9._-]`, at most 40 characters; anything
 else is normalized ("My Deploy" → `my-deploy`). Pick a name you would want to
-see as a tab.
+see as a tab, and not one of Tenant's own (`turns`, `approvals`, `system`, …):
+the hub refuses those.
 
 ## 3. Run it and look
 
@@ -64,11 +65,14 @@ its lines and its files on disk. On disk:
 
 ## What happened underneath
 
-- The file found your hub by reading Tenant's own `config.json`
-  (`dashboard.addr`, `dashboard.auth`) — nothing to configure on a Tenant
-  box. Override with `TENANT_URL`, `TENANT_TOKEN`, `TENANT_DATA`, or `Config`.
+- The file found your hub by reading Tenant's own config dir: `config.json`
+  (`dashboard.addr`, `dashboard.auth`), and on a default install, which keeps
+  the token out of `config.json`, the `dashboard-auth-token` file beside it.
+  Nothing to configure on a Tenant box. Override with `TENANT_URL`,
+  `TENANT_TOKEN`, `TENANT_DATA`, or `Config`.
 - Each line was `POST`ed to `/api/logs/deploy`. The hub wrote the file, kept
-  the line for the feed, and pushed it to open dashboards and TUI feeds.
+  the line for the feed, and pushed it to open dashboards. The TUI's feed
+  does not show lines from outside Tenant.
 - If no hub had been reachable, the same line would have been appended to
   the same file directly, in the same format; a hub that starts later reads
   the folder's tail and follows it. Nothing is ever dropped.
