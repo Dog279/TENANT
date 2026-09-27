@@ -225,18 +225,17 @@ func (a *imessageApprover) PendingCount() int {
 	return len(a.pending)
 }
 
-// post sends one iMessage best-effort (the approval prompt / echo). Failures are
-// logged, never fatal: a dropped prompt simply means the operator never approves
-// and the action auto-denies on timeout (fail closed).
+// post sends one iMessage best-effort (the approval prompt / echo). A failure is
+// recorded by the sender, the responder's SendText (its Delivery activity), and
+// is never fatal: a dropped prompt simply means the operator never approves and
+// the action auto-denies on timeout (fail closed).
 func (a *imessageApprover) post(chatGUID, text string) {
 	if a.sender == nil || strings.TrimSpace(chatGUID) == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := a.sender.SendText(ctx, chatGUID, text); err != nil && a.log != nil {
-		a.log.Warn("imessage approver: send failed", "err", err)
-	}
+	_, _ = a.sender.SendText(ctx, chatGUID, text)
 }
 
 // parseIMsgApprovalReply recognizes an approval reply and splits it into a verb

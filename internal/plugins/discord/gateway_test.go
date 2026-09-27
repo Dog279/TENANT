@@ -1,15 +1,15 @@
 package discord
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"tenant/internal/logs/event"
 )
 
 // fakeConn scripts server→client frames and records client→client writes, so
@@ -215,67 +215,146 @@ func TestWithGatewayQuery(t *testing.T) {
 	}
 }
 
-// logSink is a goroutine-safe log capture: Run logs from its own goroutine.
-type logSink struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+// captured is an event emitter for tests: it keeps what it is given, from any
+// goroutine (Run emits from its own).
+type captured struct {
+	mu     sync.Mutex
+	events []*event.Event
 }
 
-func (l *logSink) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
+func (c *captured) Emit(_ context.Context, e *event.Event) {
+	c.mu.Lock()
+	c.events = append(c.events, e)
+	c.mu.Unlock()
 }
 
-func (l *logSink) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
+func (c *captured) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
+
+// find returns the first event of d with opcode op ("" for a plain event), or
+// nil.
+func (c *captured) find(d *event.Def, op string) *event.Event {
+	s := d.Spec()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.events {
+		if e.Provider == s.Provider && e.ID == s.ID && e.Opcode == op {
+			return e
+		}
+	}
+	return nil
 }
 
-// A dropped connection is logged with its cause before Run reconnects, so the
-// relay never goes quiet without a trace.
-func TestGateway_RunLogsSessionDrop(t *testing.T) {
-	var sink logSink
+func captureEvents(t *testing.T) *captured {
+	t.Helper()
+	c := &captured{}
+	event.Install(c)
+	t.Cleanup(func() { event.Install(nil) })
+	return c
+}
+
+// field is the text of e's field key ("" when absent).
+func field(e *event.Event, key string) string {
+	for _, f := range e.Data {
+		if f.Key == key {
+			return f.Text()
+		}
+	}
+	return ""
+}
+
+// Run is one Connection activity: the session it opens and the drop that ends
+// it are recorded under it, with the cause, before Run reconnects; cancelling
+// Run stops it.
+func TestGateway_RunRecordsConnection(t *testing.T) {
+	c := captureEvents(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	g := &Gateway{
 		Token:  "tok",
 		GetURL: func(context.Context) (string, error) { return "wss://gateway.test", nil },
-		Log:    slog.New(slog.NewTextHandler(&sink, nil)),
 		dial: func(context.Context, string) (gwConn, error) {
 			return newFakeConn(
 				srv(opHello, `{"heartbeat_interval":60000}`, nil, ""),
-				srv(opDispatch, `{"session_id":"s1","resume_gateway_url":"wss://resume.test"}`, intp(1), "READY"),
+				srv(opDispatch, `{"session_id":"s1","resume_gateway_url":"wss://resume.test","user":{"id":"bot1"}}`, intp(1), "READY"),
 				readResult{err: errors.New("connection reset by peer")},
 			), nil
 		},
 	}
 	done := make(chan error, 1)
 	go func() { done <- g.Run(ctx) }()
-	for deadline := time.Now().Add(3 * time.Second); !strings.Contains(sink.String(), "connection reset by peer"); {
+	var ended *event.Event
+	for deadline := time.Now().Add(3 * time.Second); ended == nil; ended = c.find(SessionEnded, "") {
 		if time.Now().After(deadline) {
-			t.Fatalf("the drop was not logged: %q", sink.String())
+			t.Fatal("the drop was not recorded")
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if got := sink.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "session ended; resuming") {
-		t.Errorf("want a warning that says the session resumes, got %q", got)
 	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	start, ready, stop := c.find(Connection, event.OpStart), c.find(SessionReady, ""), c.find(Connection, event.OpStop)
+	if start == nil || ready == nil || stop == nil {
+		t.Fatalf("want the connection's start, its ready session and its stop; got start=%v ready=%v stop=%v", start, ready, stop)
+	}
+	if field(ended, "next") != "resuming" || !strings.Contains(field(ended, "err"), "connection reset by peer") {
+		t.Errorf("session ended = %q, want it resuming after the reset", ended.Msg)
+	}
+	if field(ready, "mode") != "identified" || field(ready, "bot") != "bot1" {
+		t.Errorf("session ready = %q %v", ready.Msg, ready.Data)
+	}
+	act := start.Corr.ActivityID
+	for _, e := range []*event.Event{ready, ended, stop} {
+		if act == "" || e.Corr.ActivityID != act {
+			t.Errorf("%q is not under the connection activity %q (has %q)", e.Msg, act, e.Corr.ActivityID)
+		}
+	}
 }
 
-// An operator message Discord sent but we could not decode is logged, not lost
-// without a word.
+// A fatal close fails the Connection activity with its code, after OnFatal.
+func TestGateway_FatalCloseFailsConnection(t *testing.T) {
+	c := captureEvents(t)
+	var fatal error
+	g := &Gateway{
+		Token:   "bad",
+		GetURL:  func(context.Context) (string, error) { return "wss://gateway.test", nil },
+		OnFatal: func(err error) { fatal = err },
+		dial: func(context.Context, string) (gwConn, error) {
+			return newFakeConn(srv(opHello, `{"heartbeat_interval":60000}`, nil, ""), readResult{err: &gwClose{code: 4004}}), nil
+		},
+	}
+	err := g.Run(context.Background())
+	if err == nil || fatal == nil {
+		t.Fatalf("Run = %v, OnFatal got %v; want the fatal close", err, fatal)
+	}
+	fail := c.find(Connection, event.OpFail)
+	if fail == nil || fail.Level != event.Error || !strings.Contains(field(fail, "error"), "4004") {
+		t.Fatalf("want the connection failed with the 4004 close, got %+v", fail)
+	}
+}
+
+// A heartbeat Discord never acknowledged closes the connection as a zombie,
+// and says so.
+func TestGateway_ZombieHeartbeatRecorded(t *testing.T) {
+	c := captureEvents(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hb := &heart{}
+	hb.markPending()
+	conn := newFakeConn()
+	(&Gateway{}).heartbeatLoop(ctx, conn, 10*time.Millisecond, hb, cancel)
+	if c.find(HeartbeatUnacked, "") == nil || ctx.Err() == nil {
+		t.Fatalf("want the zombie recorded and the session cancelled; events %d, ctx %v", len(c.events), ctx.Err())
+	}
+}
+
+// An operator message Discord sent but we could not decode is recorded, not
+// lost without a word.
 func TestGateway_UndecodableMessageLogged(t *testing.T) {
-	var sink logSink
-	g := &Gateway{Log: slog.New(slog.NewTextHandler(&sink, nil)), seen: newSeenSet(8),
-		OnMessage: func(Inbound) { t.Error("an undecodable message was delivered") }}
+	c := captureEvents(t)
+	g := &Gateway{seen: newSeenSet(8), OnMessage: func(Inbound) { t.Error("an undecodable message was delivered") }}
 	g.dispatchMessage(json.RawMessage(`{"id": 12}`))
-	if !strings.Contains(sink.String(), "undecodable MESSAGE_CREATE") {
-		t.Errorf("not logged: %q", sink.String())
+	if e := c.find(Undecodable, ""); e == nil || field(e, "payload") != "MESSAGE_CREATE" || e.Level != event.Warning {
+		t.Errorf("not recorded: %+v", e)
 	}
 }

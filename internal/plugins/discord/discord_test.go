@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"tenant/internal/logs/event"
 	"tenant/internal/model"
 )
 
@@ -228,6 +229,30 @@ func TestErrorPath_429RetryAfter(t *testing.T) {
 	}
 	if ae.RetryAfter <= 0 {
 		t.Errorf("RetryAfter not populated from header; got %v", ae.RetryAfter)
+	}
+}
+
+// A send Discord rate-limits is recorded twice over: the rate limit, naming
+// the resource but none of the path's IDs, and the Delivery activity failing,
+// with the rate limit inside it.
+func TestSendMessage_RateLimitRecorded(t *testing.T) {
+	c := captureEvents(t)
+	svc, _ := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(429)
+	})
+	if _, err := svc.SendMessage(context.Background(), "1234", "hi"); err == nil {
+		t.Fatal("expected the 429")
+	}
+	rl, start, fail := c.find(RateLimited, ""), c.find(Delivery, event.OpStart), c.find(Delivery, event.OpFail)
+	if rl == nil || start == nil || fail == nil {
+		t.Fatalf("want the rate limit and the failed delivery; got %v %v %v", rl, start, fail)
+	}
+	if field(rl, "resource") != "channels" || field(rl, "method") != "POST" || field(rl, "retry_after") != "2s" {
+		t.Errorf("rate limit = %v", rl.Data)
+	}
+	if rl.Corr.ActivityID != start.Corr.ActivityID || field(fail, "channel") != "1234" || !strings.Contains(field(fail, "error"), "429") {
+		t.Errorf("rate limit %v not inside the failed delivery %v", rl.Corr, fail.Data)
 	}
 }
 

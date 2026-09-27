@@ -16,7 +16,7 @@ import (
 // --- filtering ------------------------------------------------------------
 
 func TestAttachmentAcceptable(t *testing.T) {
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	ai := newAttachmentIngestor(t.TempDir())
 	cdn := "https://cdn.discordapp.com/attachments/1/2/"
 	cases := []struct {
 		name   string
@@ -81,7 +81,7 @@ func TestIngestDownloadsAndManifests(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	ai := newAttachmentIngestor(t.TempDir())
 	ai.anyHost = true // httptest is not a Discord CDN host
 
 	saved, rejected := ai.Ingest(context.Background(), []discord.Attachment{
@@ -121,7 +121,7 @@ func TestIngestRejectsLyingContentLength(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	ai := newAttachmentIngestor(t.TempDir())
 	ai.anyHost = true
 	saved, rejected := ai.Ingest(context.Background(), []discord.Attachment{
 		{Filename: "honest.mp4", Size: 1000, URL: srv.URL + "/honest.mp4"},
@@ -135,7 +135,7 @@ func TestIngestRejectsLyingContentLength(t *testing.T) {
 
 func TestInboxSweep(t *testing.T) {
 	dataDir := t.TempDir()
-	ai := newAttachmentIngestor(dataDir, nil)
+	ai := newAttachmentIngestor(dataDir)
 	oldDir := filepath.Join(ai.dir, "2020-01-01")
 	if err := os.MkdirAll(oldDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestInboxSweep(t *testing.T) {
 // The configured relay_inbox retention (TEN-309) replaces the 30-day default:
 // a shorter period prunes sooner, and 0 (forever) prunes nothing.
 func TestInboxSweepHonorsConfiguredRetention(t *testing.T) {
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	ai := newAttachmentIngestor(t.TempDir())
 	dir := filepath.Join(ai.dir, "2026-09-20")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -197,8 +197,8 @@ func TestRelay_AttachmentIngestFlow(t *testing.T) {
 
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, "op1", testLog())
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	r := newRelay(fr, fs, "op1")
+	ai := newAttachmentIngestor(t.TempDir())
 	ai.anyHost = true
 	r.files = ai
 	r.Start(context.Background())
@@ -230,8 +230,8 @@ func TestRelay_AttachmentOnlyMessage(t *testing.T) {
 
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, "op1", testLog())
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	r := newRelay(fr, fs, "op1")
+	ai := newAttachmentIngestor(t.TempDir())
 	ai.anyHost = true
 	r.files = ai
 	r.Start(context.Background())
@@ -255,8 +255,8 @@ func TestRelay_AttachmentOnlyMessage(t *testing.T) {
 func TestRelay_AttachmentAllRejected(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, "op1", testLog())
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	r := newRelay(fr, fs, "op1")
+	ai := newAttachmentIngestor(t.TempDir())
 	ai.anyHost = true
 	r.files = ai
 	r.Start(context.Background())
@@ -284,8 +284,8 @@ func TestRelay_AttachmentAllRejected(t *testing.T) {
 func TestRelay_NonOperatorAttachmentsDropped(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, "op1", testLog())
-	ai := newAttachmentIngestor(t.TempDir(), nil)
+	r := newRelay(fr, fs, "op1")
+	ai := newAttachmentIngestor(t.TempDir())
 	ai.anyHost = true
 	r.files = ai
 	r.Start(context.Background())

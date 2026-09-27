@@ -119,10 +119,15 @@ what the operator believes reach the operator too:
 - **A dashboard chat turn that failed** (a full turn queue, a model that will
   not resolve) is logged under `dashboard` and shown in the chat as
   `⚠ turn failed: …`. A turn you stopped is not a failure.
-- **The Discord gateway** logs how each session ended and how it reconnects: a
-  drop, a failed RESUME or IDENTIFY, an invalidated session or a missed
-  heartbeat at WARN, a reconnect Discord asked for at INFO. Undecodable
-  messages and a fatal stop are logged too.
+- **Discord and iMessage** write catalogued events (`discord/…`,
+  `imessage/…` in [EVENTS.md](EVENTS.md)). The gateway records how each
+  session ended and how it reconnects: a drop, a failed RESUME or IDENTIFY,
+  an invalidated session or a missed heartbeat at WARN, a reconnect Discord
+  asked for at INFO. Undecodable payloads are recorded, and a fatal stop fails
+  the relay's connection activity. Every message the bot or the iMessage
+  responder sends is a delivery activity, so a failed send is recorded
+  whichever path sent it. A failing iMessage poll (every 3 s) is recorded
+  once per error.
 - **Stores and files:** tool stats, the nightly eval artifact, rotated OAuth
   tokens, the relay-inbox retention sweep and `peers.json` reads are logged; a
   research run record that could not be written is reported on the research

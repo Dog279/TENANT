@@ -11,13 +11,13 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs/event"
 	"tenant/internal/plugins/discord"
 )
 
@@ -51,7 +51,6 @@ type relay struct {
 	sender     messageSender
 	operatorID string
 	botID      string // the bot's own Discord user ID; set from READY via OnReady
-	log        *slog.Logger
 	rl         *rateLimiter
 	approver   *discordApprover    // optional; set by the manager (TEN-117/119) — drives the button prompts
 	confirm    offsiteConfirm      // optional; the per-category permission broker (TEN-231) the turn's gated tools route through; nil ⇒ fall back to approver.Confirm
@@ -66,12 +65,12 @@ type relay struct {
 	cancel context.CancelFunc
 }
 
-func newRelay(runner relayRunner, sender messageSender, operatorID string, log *slog.Logger) *relay {
+func newRelay(runner relayRunner, sender messageSender, operatorID string) *relay {
 	return &relay{
 		runner: runner, sender: sender,
-		operatorID: strings.TrimSpace(operatorID), log: log,
-		rl:   newRateLimiter(6, 30*time.Second), // ~6 messages / 30s per user
-		base: context.Background(),
+		operatorID: strings.TrimSpace(operatorID),
+		rl:         newRateLimiter(6, 30*time.Second), // ~6 messages / 30s per user
+		base:       context.Background(),
 	}
 }
 
@@ -122,6 +121,9 @@ func (r *relay) handleInbound(in discord.Inbound) {
 		}
 	}
 
+	discord.Received.Log(context.Background(), "message", in.MessageID, "channel", in.ChannelID, "guild", in.GuildID,
+		"author", in.AuthorID, "bytes", len(in.Content), "attachments", len(in.Attachments), "text", in.Content)
+
 	// An approval reply (exact nonce / "deny") is consumed by the approver, not
 	// routed as a new turn or counted against the rate limit.
 	if r.approver != nil && r.approver.tryConsume(in) {
@@ -141,6 +143,7 @@ func (r *relay) handleInbound(in discord.Inbound) {
 		text = text[:maxInboundLen]
 	}
 	if !r.rl.allow(in.AuthorID) {
+		discord.Throttled.Log(context.Background(), "author", in.AuthorID, "channel", in.ChannelID)
 		r.reply(in.ChannelID, "slow down — rate limited; try again shortly.")
 		return
 	}
@@ -285,17 +288,21 @@ func (r *relay) start(channelID, text string) bool {
 		approvals = "approver"
 	}
 	turnCtx = withExecSurface(turnCtx, surfaceDiscord) // picks the discord exec profile
-	// One line per turn naming where its approvals will go — the diagnostic
-	// that was missing when prompts seemed to land on the wrong surface.
-	if r.log != nil {
-		r.log.Info("discord relay: turn start", "channel", channelID, "approvals", approvals)
-	}
 
 	go func() {
 		defer r.finish(cancel)
-		res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
+		// The turn is a RelayTurn activity naming where its approvals go — the
+		// diagnostic that was missing when prompts seemed to land on the wrong
+		// surface. A turn the operator stopped is not a failure.
+		actCtx, act := event.Start(turnCtx, discord.RelayTurn, "channel", channelID, "approvals", approvals)
+		res, err := r.runner.Turn(actCtx, agent.TurnRequest{
 			UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
 		})
+		failed := err
+		if ctx.Err() != nil {
+			failed = nil
+		}
+		act.End(&failed)
 		r.deliver(ctx, channelID, res, err)
 	}()
 	return true
@@ -329,9 +336,6 @@ func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnRe
 		return // stopped/cancelled
 	}
 	if err != nil {
-		if r.log != nil {
-			r.log.Warn("discord relay: turn failed", "channel", channelID, "err", err)
-		}
 		r.reply(channelID, "the turn failed: "+err.Error())
 		return
 	}
@@ -347,16 +351,15 @@ func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnRe
 	}
 }
 
-// reply sends a bot message, logging (not surfacing) a transport failure.
+// reply sends a bot message best-effort: a transport failure is not surfaced,
+// and discord.Service.SendMessage's Delivery activity records it.
 func (r *relay) reply(channelID, content string) {
 	if r.sender == nil || channelID == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := r.sender.Send(ctx, channelID, content); err != nil && r.log != nil {
-		r.log.Warn("discord relay: send failed", "channel", channelID, "err", err)
-	}
+	_ = r.sender.Send(ctx, channelID, content)
 }
 
 // stripStatusToken removes trailing status-escalation tokens that the agent
