@@ -93,7 +93,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hub.Start(ctx)
-	startRetention(ctx, c, log.With("source", "privacy"))
+	startRetention(ctx, c)
 
 	// Graceful, ordered teardown (TEN-194), in stages (internal/lifecycle):
 	// deny pending approvals so no gated turn stays blocked; STOP ACCEPTING NEW
@@ -285,7 +285,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return merr
 	}
 	life.Add(lifecycle.Release, "improve meta", meta.Close)
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	soulLive := soul.NewLive(st.soul)

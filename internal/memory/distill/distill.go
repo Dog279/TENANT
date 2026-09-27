@@ -31,11 +31,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"tenant/internal/memory"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/model"
@@ -74,7 +75,6 @@ type Distiller struct {
 	SimilarityThreshold float64
 	SummarizerRole      model.Role
 	EmbedderRole        model.Role
-	Logger              *slog.Logger
 }
 
 // RunResult summarizes what one Distill.Run did. The caller persists
@@ -87,6 +87,9 @@ type RunResult struct {
 	FactsReaffirmed   int
 	FactsSuperseded   int // Phase 2: borderline contradictions recorded as transitions
 	LastEpisodeID     int64
+	// SourceRunIDs are the runs (runs.db trace ids) of the episodes the run
+	// processed, sorted.
+	SourceRunIDs []string
 	// BatchErrors holds non-fatal errors from individual batches
 	// (e.g. LLM returned malformed JSON for batch 3). The run
 	// continues past these; the caller decides whether to alert.
@@ -104,10 +107,6 @@ type RunResult struct {
 func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, error) {
 	if err := d.validate(); err != nil {
 		return nil, err
-	}
-	log := d.Logger
-	if log == nil {
-		log = slog.Default()
 	}
 	batchSize := d.BatchSize
 	if batchSize <= 0 {
@@ -144,6 +143,7 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 	}
 
 	// 3. Process in batches.
+	defer func() { result.SourceRunIDs = episodeRuns(episodes[:result.EpisodesProcessed]) }()
 	for start := 0; start < len(episodes); start += batchSize {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -159,7 +159,7 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 		if err != nil {
 			// Non-fatal: log + continue. One bad LLM batch shouldn't
 			// strand the cursor; the next run will scan past these.
-			log.Warn("distill: batch extract failed", "agent", d.AgentID, "batch_start", start, "err", err)
+			memory.DistillBatchSkipped.Log(ctx, "step", "extract", "first_episode", batch[0].ID, "episodes", len(batch), "agent", d.AgentID, "err", err)
 			result.BatchErrors = append(result.BatchErrors, fmt.Errorf("batch starting at episode %d: %w", batch[0].ID, err))
 			result.EpisodesProcessed += len(batch)
 			result.LastEpisodeID = batch[len(batch)-1].ID
@@ -171,7 +171,7 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 		// 4. Embed all extracted facts in one call (cheaper than per-fact).
 		ins, reaff, sup, err := d.persistFacts(ctx, summarizer, sumProfile.Model, embedder, string(embProfile.ID), extracted, threshold)
 		if err != nil {
-			log.Warn("distill: persist failed", "agent", d.AgentID, "batch_start", start, "err", err)
+			memory.DistillBatchSkipped.Log(ctx, "step", "persist", "first_episode", batch[0].ID, "episodes", len(batch), "agent", d.AgentID, "err", err)
 			result.BatchErrors = append(result.BatchErrors, fmt.Errorf("persist for batch starting at episode %d: %w", batch[0].ID, err))
 		}
 		result.FactsInserted += ins
@@ -224,11 +224,16 @@ func (d *Distiller) embedderRole() model.Role {
 	return DefaultEmbedderRole
 }
 
-func (d *Distiller) logger() *slog.Logger {
-	if d.Logger != nil {
-		return d.Logger
+// episodeRuns lists the distinct runs eps came from, sorted.
+func episodeRuns(eps []*episodic.Episode) []string {
+	var out []string
+	for _, e := range eps {
+		if e.SourceRunID != "" {
+			out = append(out, e.SourceRunID)
+		}
 	}
-	return slog.Default()
+	sort.Strings(out)
+	return slices.Compact(out)
 }
 
 // reinforceImportance folds a fresh poignancy score into an existing
@@ -241,7 +246,7 @@ func (d *Distiller) reinforceImportance(ctx context.Context, id int64, imp int) 
 		return
 	}
 	if err := d.Semantic.ReinforceImportance(ctx, id, float64(imp)/10.0); err != nil {
-		d.logger().Warn("distill: reinforce importance failed", "fact", id, "err", err)
+		memory.DistillStepFailed.Log(ctx, "step", "reinforce importance", "fact_id", id, "err", err)
 	}
 }
 
@@ -373,7 +378,7 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, summ
 		if existing != nil && existing.Score >= DefaultBorderlineThreshold && summarizer != nil {
 			verdict, aerr := d.classifyBorderline(ctx, summarizer, f.Fact, existing.Fact.Fact)
 			if aerr != nil {
-				d.logger().Warn("distill: borderline adjudication failed; inserting", "err", aerr)
+				memory.BorderlineUndecided.Log(ctx, "fact_id", existing.Fact.ID, "err", aerr)
 			} else {
 				switch verdict {
 				case verdictSame:
@@ -415,17 +420,17 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, summ
 			newSig.ValidFrom = now
 		}
 		if serr := d.Semantic.UpsertSignals(ctx, newSig); serr != nil {
-			d.logger().Warn("distill: seed importance failed", "fact", newID, "err", serr)
+			memory.DistillStepFailed.Log(ctx, "step", "seed importance", "fact_id", newID, "err", serr)
 		}
 		// Supersession-as-transition: close the old fact's event-time validity
 		// (it stopped being true now) and soft-supersede it. Both best-effort
 		// and reversible; the old fact stays for audit / as-of recall.
 		if supersedeOldID != 0 {
 			if serr := d.Semantic.SetValidTo(ctx, supersedeOldID, now); serr != nil {
-				d.logger().Warn("distill: set valid_to failed", "fact", supersedeOldID, "err", serr)
+				memory.DistillStepFailed.Log(ctx, "step", "close validity", "fact_id", supersedeOldID, "err", serr)
 			}
 			if serr := d.Semantic.Supersede(ctx, supersedeOldID, newID); serr != nil {
-				d.logger().Warn("distill: supersede failed", "old", supersedeOldID, "new", newID, "err", serr)
+				memory.DistillStepFailed.Log(ctx, "step", "supersede", "fact_id", supersedeOldID, "by", newID, "err", serr)
 			} else {
 				superseded++
 			}

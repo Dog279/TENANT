@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"tenant/internal/memory/semantic"
@@ -102,18 +103,18 @@ func TestConsolidationJob_MergesDuplicateCluster(t *testing.T) {
 	ctx := context.Background()
 	ss, router, fakeLLM, fakeEmb := consolidateScaffold(t)
 
-	seed := func(text string, v []float32) {
+	seed := func(text string, v []float32, runs ...string) {
 		if _, err := ss.Insert(ctx, &semantic.Fact{
-			AgentID: "main", Fact: text, EmbedderID: "e", Embedding: v, Confidence: 0.8,
+			AgentID: "main", Fact: text, EmbedderID: "e", Embedding: v, Confidence: 0.8, SourceRunIDs: runs,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// 3 paraphrases of one claim + 1 distinct fact.
-	seed("Tenant is a Go MCP framework", []float32{1, 0, 0, 0})
-	seed("Tenant: an MCP framework written in Go", []float32{0.99, 0.08, 0, 0})
+	seed("Tenant is a Go MCP framework", []float32{1, 0, 0, 0}, "run-b")
+	seed("Tenant: an MCP framework written in Go", []float32{0.99, 0.08, 0, 0}, "run-a", "run-b")
 	seed("Go-based project Tenant implements MCP", []float32{0.98, 0.05, 0.02, 0})
-	seed("User develops on Windows", []float32{0, 1, 0, 0})
+	seed("User develops on Windows", []float32{0, 1, 0, 0}, "run-c")
 
 	fakeLLM.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
 		return &model.GenerateResponse{Text: `{"merge":true,"fact":"Tenant is a Go MCP framework"}`, FinishReason: "stop"}, nil
@@ -162,6 +163,11 @@ func TestConsolidationJob_MergesDuplicateCluster(t *testing.T) {
 			merged++
 			if o.Job != "consolidate" || o.Model != sumProf.Model || o.Model == "" {
 				t.Fatalf("merged fact origin = %+v, want consolidate by %q", o, sumProf.Model)
+			}
+			// It keeps the runs its members were learned from, and the job
+			// reports them as its source runs.
+			if !slices.Equal(f.SourceRunIDs, []string{"run-b", "run-a"}) || !slices.Equal(res.SourceRuns, []string{"run-a", "run-b"}) {
+				t.Fatalf("merged fact runs %v, job source runs %v; want run-b, run-a and run-a, run-b", f.SourceRunIDs, res.SourceRuns)
 			}
 		}
 	}

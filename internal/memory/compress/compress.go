@@ -18,7 +18,6 @@ package compress
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"tenant/internal/memory/working"
@@ -73,7 +72,6 @@ type Compressor struct {
 	// MicrocompactProtectRecent keeps this many of the most-recent tool results
 	// verbatim (the agent is likely still using them). Default 3.
 	MicrocompactProtectRecent int
-	Logger                    *slog.Logger
 }
 
 func (c *Compressor) role() model.Role {

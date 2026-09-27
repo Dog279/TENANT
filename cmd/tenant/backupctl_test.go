@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -92,12 +93,23 @@ func TestBackupCommandsRoundTrip(t *testing.T) {
 	file := files[0]
 
 	out.Reset()
-	runBackup(t, func() error { return cmdBackupVerify(ctx, []string{file}, &out) })
+	runBackup(t, func() error { return cmdBackupVerify(ctx, []string{file, "--config", cfg, "--data", data}, &out) })
 	if !strings.Contains(out.String(), "OK:") || strings.Contains(out.String(), "newer than this Tenant") {
 		t.Fatalf("verify of a fresh backup:\n%s", out.String())
 	}
 	if strings.Contains(out.String(), "not a store this Tenant knows") {
 		t.Fatalf("a real store was not recognized:\n%s", out.String())
+	}
+	// The one-shot commands file their activities in the install's log book.
+	backupLog := func() string {
+		b, _ := os.ReadFile(filepath.Join(data, "logs", "backup", time.Now().Format("2006-01-02")+".log"))
+		return string(b)
+	}
+	for _, want := range []string{"event=backup/1001 task=Backup opcode=start", "event=backup/1002", "event=backup/1001 task=Backup opcode=stop",
+		"event=backup/1003 task=Verify opcode=start", "event=backup/1004", "event=backup/1003 task=Verify opcode=stop"} {
+		if !strings.Contains(backupLog(), want) {
+			t.Fatalf("the backup log lacks %q:\n%s", want, backupLog())
+		}
 	}
 
 	// Change the install, then restore over it.
@@ -121,6 +133,12 @@ func TestBackupCommandsRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "previous directory is kept") {
 		t.Fatalf("restore output:\n%s", out.String())
+	}
+	// The restored log book records the restore.
+	for _, want := range []string{"event=backup/1005 task=Restore opcode=start", "event=backup/1006", "event=backup/1005 task=Restore opcode=stop"} {
+		if !strings.Contains(backupLog(), want) {
+			t.Fatalf("the backup log lacks %q:\n%s", want, backupLog())
+		}
 	}
 	ep, err := episodic.OpenExisting(filepath.Join(data, "episodes.db"))
 	if err != nil {
@@ -193,11 +211,13 @@ func TestBackupEncryptedWithPassphraseFile(t *testing.T) {
 	prev := promptPassphrase
 	promptPassphrase = func(io.Writer, bool) (string, error) { return "", errors.New("no terminal in tests") }
 	defer func() { promptPassphrase = prev }()
-	if err := cmdBackupVerify(ctx, []string{file}, &bytes.Buffer{}); err == nil {
+	if err := cmdBackupVerify(ctx, []string{file, "--config", cfg, "--data", data}, &bytes.Buffer{}); err == nil {
 		t.Fatal("verified an encrypted backup without its passphrase")
 	}
 	out.Reset()
-	runBackup(t, func() error { return cmdBackupVerify(ctx, []string{file, "--passphrase-file", pass}, &out) })
+	runBackup(t, func() error {
+		return cmdBackupVerify(ctx, []string{file, "--passphrase-file", pass, "--config", cfg, "--data", data}, &out)
+	})
 	if !strings.Contains(out.String(), "encrypted") || !strings.Contains(out.String(), "OK:") {
 		t.Fatalf("verify output:\n%s", out.String())
 	}

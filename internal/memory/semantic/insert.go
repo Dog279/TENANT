@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"tenant/internal/logs/event"
+	"tenant/internal/memory"
 )
 
 // dbtx is what the store's statements run on: the database, or a
@@ -34,7 +37,23 @@ func (s *Store) Insert(ctx context.Context, f *Fact) (int64, error) {
 		return 0, fmt.Errorf("semantic: insert: %w", err)
 	}
 	f.ID = id
+	s.logAdded(ctx, f)
 	return id, nil
+}
+
+// log writes one of the memory provider's fact events, unless s is quiet.
+func (s *Store) log(ctx context.Context, d *event.Def, kv ...any) {
+	if !s.quiet {
+		d.Log(ctx, kv...)
+	}
+}
+
+func (s *Store) logAdded(ctx context.Context, f *Fact) {
+	kv := []any{"fact_id", f.ID, "job", f.OriginJob, "agent", f.AgentID, "fact", f.Fact}
+	if len(f.SourceRunIDs) > 0 {
+		kv = append(kv, "source_runs", f.SourceRunIDs)
+	}
+	s.log(ctx, memory.FactAdded, kv...)
 }
 
 func insertFact(ctx context.Context, q dbtx, f *Fact) (int64, error) {
@@ -145,6 +164,7 @@ func (s *Store) Supersede(ctx context.Context, oldID, newID int64) error {
 		`UPDATE facts SET superseded_by = ? WHERE id = ?`, newID, oldID); err != nil {
 		return fmt.Errorf("semantic: supersede: %w", err)
 	}
+	s.log(ctx, memory.FactSuperseded, "fact_id", oldID, "by", newID)
 	return nil
 }
 
@@ -178,6 +198,7 @@ func (s *Store) Tombstone(ctx context.Context, id int64) error {
 	if n == 0 {
 		return fmt.Errorf("%w: id=%d", ErrNotFound, id)
 	}
+	s.log(ctx, memory.FactTombstoned, "fact_id", id)
 	return nil
 }
 
@@ -197,6 +218,7 @@ func (s *Store) Restore(ctx context.Context, id int64) error {
 	if n == 0 {
 		return fmt.Errorf("%w: id=%d", ErrNotFound, id)
 	}
+	s.log(ctx, memory.FactRestored, "fact_id", id)
 	return nil
 }
 

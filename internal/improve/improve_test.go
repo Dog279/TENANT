@@ -118,7 +118,7 @@ func (j *fakeJob) Run(ctx context.Context) (improve.JobResult, error) {
 }
 
 func TestScheduler_RunAllForcesEveryJob(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	a := &fakeJob{name: "a"}
 	b := &fakeJob{name: "b"}
 	s.Register(a, time.Hour) // long interval — RunDue wouldn't fire it
@@ -134,7 +134,7 @@ func TestScheduler_RunAllForcesEveryJob(t *testing.T) {
 }
 
 func TestScheduler_RunDueRespectsInterval(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	j := &fakeJob{name: "j"}
 	s.Register(j, 50*time.Millisecond)
 
@@ -157,7 +157,7 @@ func TestScheduler_RunDueRespectsInterval(t *testing.T) {
 }
 
 func TestScheduler_ZeroIntervalNeverAutoFires(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	j := &fakeJob{name: "manual"}
 	s.Register(j, 0) // manual-only
 
@@ -172,7 +172,7 @@ func TestScheduler_ZeroIntervalNeverAutoFires(t *testing.T) {
 }
 
 func TestScheduler_JobErrorDoesNotStopOthers(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	bad := &fakeJob{name: "bad", fn: func(context.Context) (improve.JobResult, error) {
 		return improve.JobResult{}, errors.New("boom")
 	}}
@@ -200,7 +200,7 @@ func TestScheduler_JobErrorDoesNotStopOthers(t *testing.T) {
 }
 
 func TestScheduler_HistoryRingBounded(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 3)
+	s := improve.NewScheduler(3)
 	j := &fakeJob{name: "j"}
 	s.Register(j, 0)
 	for i := 0; i < 10; i++ {
@@ -213,7 +213,7 @@ func TestScheduler_HistoryRingBounded(t *testing.T) {
 }
 
 func TestScheduler_StartStopBackgroundLoop(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 16)
+	s := improve.NewScheduler(16)
 	j := &fakeJob{name: "bg"}
 	s.Register(j, 10*time.Millisecond)
 
@@ -238,19 +238,19 @@ func TestScheduler_StartStopBackgroundLoop(t *testing.T) {
 }
 
 func TestScheduler_StopBeforeStartIsSafe(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	s.Stop() // must not panic / hang
 }
 
 func TestScheduler_StartRejectsBadTick(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	if err := s.Start(context.Background(), 0); err == nil {
 		t.Fatal("expected error for tick <= 0")
 	}
 }
 
 func TestScheduler_ContextCancelStopsRunDue(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	var ran sync.Map
 	for _, name := range []string{"a", "b", "c"} {
 		n := name
@@ -371,7 +371,7 @@ func TestDistillJob_NameStable(t *testing.T) {
 // The background loop `tenant serve` relies on: Start ticks due jobs;
 // Stop drains an in-flight job and blocks until the loop has exited.
 func TestScheduler_StartTicksAndStopDrains(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	release := make(chan struct{})
 	entered := make(chan struct{}, 1)
 	j := &fakeJob{name: "slow", fn: func(ctx context.Context) (improve.JobResult, error) {
@@ -420,7 +420,7 @@ func TestScheduler_StartTicksAndStopDrains(t *testing.T) {
 // OnRun fires after each job run (the TUI uses it to stream
 // self-improvement into the live feed).
 func TestScheduler_OnRunHookFires(t *testing.T) {
-	s := improve.NewScheduler(slog.Default(), 8)
+	s := improve.NewScheduler(8)
 	var mu sync.Mutex
 	var seen []string
 	s.OnRun = func(rec improve.JobRunRecord) {

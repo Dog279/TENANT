@@ -331,7 +331,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		default:
 		}
 	}
-	sched := improve.NewScheduler(d.log, 0)
+	sched := improve.NewScheduler(0)
 	sched.Paused = d.degraded.Degraded
 	sched.OnRun = func(rec improve.JobRunRecord) {
 		if line, ok := formatSelfImproveFeedLine(rec); ok {
@@ -376,7 +376,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	// Feedback-driven protection (TEN-255 Phase 4): ACKed turns → protected
 	// facts. Promote-only, no LLM; mirrors the TUI path.
 	sched.Register(&improve.FeedbackProtectionJob{
-		Semantic: d.stores.semantic, Episodic: d.stores.episodic, AgentID: c.agent, Logger: d.log,
+		Semantic: d.stores.semantic, Episodic: d.stores.episodic, AgentID: c.agent,
 	}, d.distillEvery)
 	sched.Register(profileJob{refresh: d.refreshProfile}, d.profileEvery)
 
@@ -395,7 +395,6 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 			Episodic: d.stores.episodic, AgentID: c.agent, BaseDir: c.cfgDir,
 			Proposer: improve.NewLLMSoulProposer(proposerRouter),
 			Scorer:   evalSoulScorer{c: c, pf: d.pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: d.log},
-			Logger:   d.log,
 		}, soulCadence)
 	}
 

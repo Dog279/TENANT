@@ -202,7 +202,7 @@ func cmdDistill(ctx context.Context, args []string) error {
 
 	d := &distill.Distiller{
 		Router: router, Episodic: st.episodic, Semantic: st.semantic,
-		AgentID: c.agent, Logger: log,
+		AgentID: c.agent,
 	}
 	job := improve.NewDistillJob(d, meta, c.agent)
 	res, err := job.Run(ctx)
@@ -1804,7 +1804,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
 	hub.Start(ctx)
-	startRetention(ctx, c, log.With("source", "privacy"))
+	startRetention(ctx, c)
 
 	// Teardown runs in the same stages as serve (internal/lifecycle, TEN-314):
 	// deny pending approvals, stop the peer listener, the relay and the
@@ -2033,7 +2033,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return merr
 	}
 	life.Add(lifecycle.Release, "improve meta", meta.Close)
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	// One live-soul holder shared by the agent (reads it each turn) and the
@@ -2778,7 +2778,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// changes for the next launch instead of re-arming a running scheduler.
 	var evalSched *evalSchedule
 	if *selfImprove {
-		sched = improve.NewScheduler(log, 0)
+		sched = improve.NewScheduler(0)
 		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop)
 		// While the model is degraded to echo, suspend ALL self-improvement:
 		// consolidation/profile jobs would persist echo-derived garbage and the
@@ -2844,7 +2844,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// real use. Promote-only (never auto-unprotects), no LLM, cheap; runs on
 		// the distill cadence right after new facts land.
 		sched.Register(&improve.FeedbackProtectionJob{
-			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent, Logger: log,
+			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent,
 		}, *distillEvery)
 		// Profile re-synthesis runs on its OWN cadence (--profile-every,
 		// default 15m). Distillation is cheap and benefits from being
@@ -2893,7 +2893,6 @@ func cmdTUI(ctx context.Context, args []string) error {
 				// model than the one it will actually run under.
 				Proposer: improve.NewLLMSoulProposer(proposerRouter),
 				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: log},
-				Logger:   log,
 			}, soulCadence)
 		}
 		// Reflection / SME synthesis (TEN-255 Phase 3): config-gated, OFF by

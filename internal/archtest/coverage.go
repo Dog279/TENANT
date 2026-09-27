@@ -70,6 +70,28 @@ var catalogued = map[string]int{
 	"internal/plugins/gsuite": 0, "internal/plugins/osys": 0, "internal/plugins/simplefin": 0,
 	"internal/plugins/sql": 0, "internal/plugins/wiki": 0, "internal/plugins/x": 0,
 	"internal/plugins/web": 1, // cfg.Warn, the NoSandbox callback a host may install
+	// memory and improve (TEN-390)
+	"internal/improve":            0,
+	"internal/memory":             0,
+	"internal/memory/archive":     0,
+	"internal/memory/assemble":    0,
+	"internal/memory/compress":    0,
+	"internal/memory/cosine":      0,
+	"internal/memory/distill":     0,
+	"internal/memory/episodic":    0,
+	"internal/memory/ftsutil":     0,
+	"internal/memory/mdimport":    0,
+	"internal/memory/semantic":    0,
+	"internal/memory/sme":         0,
+	"internal/memory/soul":        0,
+	"internal/memory/usage":       0,
+	"internal/memory/userprofile": 0,
+	"internal/memory/working":     0,
+	// backup, privacy and skills (TEN-394)
+	"internal/backup":        0,
+	"internal/privacy":       0,
+	"internal/memory/skills": 0,
+	"internal/skillpkg":      0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

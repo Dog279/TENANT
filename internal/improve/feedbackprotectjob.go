@@ -3,7 +3,6 @@ package improve
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -26,7 +25,6 @@ type FeedbackProtectionJob struct {
 	AgentID  string
 	// MaxFacts bounds the scan. 0 ⇒ default.
 	MaxFacts int
-	Logger   *slog.Logger
 }
 
 const defaultFeedbackProtectMaxFacts = 2000
@@ -42,10 +40,6 @@ func (j *FeedbackProtectionJob) Run(ctx context.Context) (JobResult, error) {
 	}
 	if j.AgentID == "" {
 		return JobResult{}, fmt.Errorf("feedback-protect: empty AgentID")
-	}
-	log := j.Logger
-	if log == nil {
-		log = slog.Default()
 	}
 
 	ackedIDs, err := j.Episodic.AckedEpisodeIDs(ctx, j.AgentID)
@@ -96,7 +90,7 @@ func (j *FeedbackProtectionJob) Run(ctx context.Context) (JobResult, error) {
 			continue
 		}
 		if serr := j.Semantic.SetProtected(ctx, id, true); serr != nil {
-			log.Warn("feedback-protect: set protected failed", "fact", id, "err", serr)
+			StepFailed.Log(ctx, "job", j.Name(), "step", "protect", "fact_id", id, "err", serr)
 			continue
 		}
 		promoted++

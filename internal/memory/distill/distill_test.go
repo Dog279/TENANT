@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -91,7 +92,6 @@ func (s *scaffold) distiller() *distill.Distiller {
 		AgentID:             "test-agent",
 		BatchSize:           5,
 		SimilarityThreshold: 0.85,
-		Logger:              slog.Default(),
 	}
 }
 
@@ -169,6 +169,9 @@ func TestRun_ExtractsFactsFromEpisodes(t *testing.T) {
 	}
 	if res.LastEpisodeID != id2 {
 		t.Errorf("LastEpisodeID = %d, want %d", res.LastEpisodeID, id2)
+	}
+	if got := fmt.Sprint(res.SourceRunIDs); got != "[run:I prefer Go for backend services run:I'm working on Tenant]" {
+		t.Errorf("SourceRunIDs = %s, want the processed episodes' runs", got)
 	}
 	// Verify facts actually landed in the semantic store.
 	n, _ := s.sstore.Count(context.Background(), false, false)

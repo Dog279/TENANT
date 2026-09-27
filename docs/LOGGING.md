@@ -16,11 +16,15 @@ one folder is one tab.
 ├── imessage/
 ├── cron/                         ← scheduled-job runner agents + the engine
 ├── eval/                         ← nightly/manual eval task agents
-├── improve/                      ← distill / reflect / consolidate / soul jobs
+├── improve/                      ← every self-improvement job run (distill, skills, consolidate, reflect, soul, profile, eval), serve's and the TUI's
+├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
+├── skills/                       ← skills saved, accepted, enabled/disabled, trusted, removed, imported, exported
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
-├── route/ memory/ mcp/ peering/ dashboard/
+├── route/ mcp/ peering/ dashboard/
 ├── sandbox/                      ← the execution sandbox: confined runs, refusals, escalations, dry-run would-be refusals
-├── privacy/ shutdown/            ← the daily retention sweep; the staged shutdown's steps
+├── backup/                       ← each backup, verify and restore, with its counts and result
+├── privacy/                      ← each retention sweep and deletion, with what it removed
+├── shutdown/                     ← the staged shutdown's steps
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 ├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
@@ -65,6 +69,10 @@ Where lines land: a turn-event's source is decided by the emitter (`cron`,
 record goes to the logger's fixed source (`logs.For("x")` / `hub.Logger("x")`),
 else a `source` attribute, else its `"tag: …"` message prefix (`mcp:` → `mcp`,
 `vllm:` → `model`, `reflect:` → `improve`, …), else `system`.
+
+`tenant backup` and `tenant privacy prune|forget` are one-shot commands, yet
+their events land here too: held in memory while the command runs, appended
+when it ends (a restore's go into the restored log book).
 
 `serve` still writes its TENANT_LOG-filtered stream to stderr for the
 supervisor (launchd/systemd) — the hub tees to it. The TUI writes nothing to
