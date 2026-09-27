@@ -236,7 +236,7 @@ func TestComposeFoldsToolRules(t *testing.T) {
 	if err := stg.Save(cfgDir, "main"); err != nil {
 		t.Fatal(err)
 	}
-	if e := compose(&pluginFlags{osAllowExec: true}, permissionSurfaceLocal).Categories[catExec]; e.Mode != "ask" || e.Source != "tool rule os_exec" {
+	if e := compose(testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).allowExec = true }), permissionSurfaceLocal).Categories[catExec]; e.Mode != "ask" || e.Source != "tool rule os_exec" {
 		t.Errorf("exec with --os-allow-exec and an ask rule = %+v", e)
 	}
 }
@@ -248,14 +248,14 @@ func TestComposeFoldsToolRules(t *testing.T) {
 // answer in each category must be what the composition reports.
 func TestComposeMatchesConfirm(t *testing.T) {
 	ruleSet := map[string]string{"os_exec": "ask", "os_append": "allow", "x_post": "deny", "mcp_*": "allow"}
-	pf := &pluginFlags{osAllowExec: true, gsuiteAllowSend: true}
+	pf := testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).allowExec = true; gsuiteFlagsOf(pf).allowSend = true })
 	saved := map[string]string{catWrite: "deny", catWeb: "allow", catSandbox: "allow"}
 	lc := &launchConfig{
 		Relay:    relayConfig{Permissions: map[string]string{catExec: "allow", catSend: "allow", catDestructive: "deny"}},
 		IMessage: imessageConfig{Permissions: map[string]string{catSend: "ask", catEgress: "allow"}},
 	}
 	probes := map[string][]string{}
-	for action, cat := range actionCategories {
+	for action, cat := range allActionCategories() {
 		probes[cat] = append(probes[cat], action)
 	}
 	probes[catDestructive] = append(probes[catDestructive], "mcp:127.0.0.1:9000:write_note")

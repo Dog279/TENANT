@@ -381,78 +381,11 @@ func resolveJudgeKey(kind, flagKeyEnv string) (string, error) {
 // sql_query, os_list_dir, wiki_search, etc.) fails at the must_call gate.
 func autoEnableEvalPlugins(pf *pluginFlags, c *commonFlags, explicitFlags map[string]bool) []string {
 	var enabled []string
-
-	// web: always available if Chrome is installed. No config needed.
-	if !explicitFlags["web"] && !pf.web {
-		pf.web = true
-		enabled = append(enabled, "web")
-	}
-
-	// os: always available (pure Go, no external deps).
-	if !explicitFlags["os"] && !pf.osEnable {
-		pf.osEnable = true
-		pf.osAllowExec = true  // eval needs real tool execution
-		pf.osAllowWrite = true // file-write tasks need this
-		enabled = append(enabled, "os")
-	}
-
-	// sql: auto-detect the operator's real DB if they have one.
-	if !explicitFlags["sql-db"] && pf.sqlDB == "" {
-		candidate := ""
-		if c.dataDir != "" {
-			candidate = findFirstExisting(
-				filepath.Join(c.dataDir, "tenant.db"),
-				filepath.Join(c.dataDir, "eval.db"),
-			)
-		}
-		if candidate != "" {
-			pf.sqlDB = candidate
-			pf.sqlAllowWrite = true
-			enabled = append(enabled, "sql")
+	for _, d := range plugins().All() {
+		if d.Eval != nil && d.Eval(pf, c, explicitFlags) {
+			enabled = append(enabled, d.ID)
 		}
 	}
-
-	// wiki: use the same wiki dir the operator configured in launchConfig.
-	if !explicitFlags["wiki-dir"] && pf.wikiDir == "" {
-		if lc, err := loadLaunchConfig(c.cfgDir); err == nil && lc != nil {
-			if sk, ok := lc.Skills["wiki"]; ok && sk.Enabled {
-				if dir := sk.Settings["dir"]; dir != "" {
-					if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-						pf.wikiDir = dir
-						enabled = append(enabled, "wiki")
-					}
-				}
-			}
-		}
-	}
-
-	// atlassian: auto-enable if /configure already set it up (has a site + auth).
-	// The activator in buildToolMux handles the token-based or OAuth path from
-	// saved config; no browser popup needed for token auth.
-	if !explicitFlags["atlassian"] && !pf.atlassian {
-		if lc, err := loadLaunchConfig(c.cfgDir); err == nil && lc != nil {
-			if sk, ok := lc.Skills["atlassian"]; ok && sk.Enabled && sk.Settings != nil {
-				if sk.Settings["site"] != "" {
-					pf.atlassian = true
-					pf.atlassianSite = sk.Settings["site"]
-					pf.atlassianProject = sk.Settings["project"]
-					pf.atlassianAllowWrite = true
-					// Token auth: load email + api_token from config/credentials.
-					if sk.Settings["auth"] == "token" {
-						pf.atlassianEmail = sk.Settings["email"]
-						if creds, cerr := loadCredentials(c.cfgDir); cerr == nil {
-							pf.atlassianClientID = creds.Get(skillSecretID("atlassian", "client_id"))
-						}
-					} else {
-						// OAuth path: needs client_id from config.
-						pf.atlassianClientID = sk.Settings["client_id"]
-					}
-					enabled = append(enabled, "atlassian")
-				}
-			}
-		}
-	}
-
 	return enabled
 }
 

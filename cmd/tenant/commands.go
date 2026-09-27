@@ -390,9 +390,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	pf.wikiDir = expandPath(pf.wikiDir)
-	pf.sqlDB = expandPath(pf.sqlDB)
-	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	expandPluginPaths(pf)
 	if err := c.resolve(); err != nil {
 		return err
 	}
@@ -1590,9 +1588,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf) // honor skills from `tenant setup`
-	pf.wikiDir = expandPath(pf.wikiDir)
-	pf.sqlDB = expandPath(pf.sqlDB)
-	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	expandPluginPaths(pf)
 	log := newLogger() // stderr; stdout is the live team view
 	router, err := buildRouter(c, log)
 	if err != nil {
@@ -1607,10 +1603,10 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// Web is PER-AGENT (own browser each, so concurrent navigation can't
 	// clobber a shared tab) — so keep it OUT of the shared mux and hand it
 	// to each agent's local tools instead.
-	teamWeb := pf.web
+	teamWeb := webFlagsOf(pf).on
 	webCfg := webConfig(c.cfgDir, pf, c.lc)
-	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
-	pf.web = false // suppress the shared session
+	webPolicy := web.Policy{AllowInteract: webFlagsOf(pf).allowInteract}
+	webFlagsOf(pf).on = false // suppress the shared session
 
 	// Shared plugin tools for the whole team. confirm=nil ⇒ autonomous: no
 	// interactive approval (there's no user in the loop), so dangerous
@@ -1795,9 +1791,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf) // honor skills from `tenant setup`
-	pf.wikiDir = expandPath(pf.wikiDir)
-	pf.sqlDB = expandPath(pf.sqlDB)
-	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	expandPluginPaths(pf)
 	// Semantic memory is a core pillar (TEN-254): refuse to start the TUI when the
 	// embedder is down, so the operator never silently runs amnesiac. --backend
 	// echo (offline dev) and --allow-no-memory are the explicit opt-outs.
@@ -1929,10 +1923,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Web is PER-AGENT (each agent gets its own browser so concurrent
 	// navigation can't clobber a shared tab), so keep it OUT of the shared
 	// plugin mux and hand it to each agent's local tools instead.
-	teamWeb := pf.web
+	teamWeb := webFlagsOf(pf).on
 	webCfg := webConfig(c.cfgDir, pf, c.lc)
-	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
-	pf.web = false
+	webPolicy := web.Policy{AllowInteract: webFlagsOf(pf).allowInteract}
+	webFlagsOf(pf).on = false
 
 	// Build the SHARED plugin tool set (wiki/sql/os/…). The broker gates
 	// every dangerous action through Confirm. Agent-id-bound tools (memory,
@@ -2573,7 +2567,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if c.lc != nil {
 		discordBroker.loadModes(c.lc.Relay.Permissions)
 	}
-	discordToken := resolveSecret(c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
+	discordToken := discordRelayToken(c.cfgDir)
 	if strings.TrimSpace(discordToken) != "" {
 		if r, svc, appr, snd, derr := buildDiscordAgent(discordToken, discordAgentDeps{
 			router: router, soulLive: soulLive, archive: st.archive,
@@ -3121,7 +3115,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return sc
 		}(),
 		Research: &researchControl{
-			ag: ag, rt: rt, say: researchSay, wikiDir: pf.wikiDir, wikiIndex: wikiIx,
+			ag: ag, rt: rt, say: researchSay, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx,
 			opts: defaultResearchOpts(), store: rstore,
 			emitTimeline: func(u tui.ResearchTimelineUpdate) {
 				// Non-blocking send: a paused/slow TUI must not stall the

@@ -66,9 +66,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf)
-	pf.wikiDir = expandPath(pf.wikiDir)
-	pf.sqlDB = expandPath(pf.sqlDB)
-	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	expandPluginPaths(pf)
 	// Semantic memory is a core pillar (TEN-254): a 24/7 hub running amnesiac is
 	// worse than not running. Refuse to start when the embedder is down unless the
 	// operator opts out (--allow-no-memory, or --backend echo for offline dev).
@@ -203,10 +201,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
-	teamWeb := pf.web
+	teamWeb := webFlagsOf(pf).on
 	webCfg := webConfig(c.cfgDir, pf, c.lc)
-	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
-	pf.web = false
+	webPolicy := web.Policy{AllowInteract: webFlagsOf(pf).allowInteract}
+	webFlagsOf(pf).on = false
 
 	egressConfirm := originConfirm(broker.Confirm)
 	mux, wikiIx, cleanupMux, err := buildToolMux(ctx, c, router, pf, egressConfirm, log)

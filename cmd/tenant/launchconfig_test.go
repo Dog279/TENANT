@@ -152,16 +152,16 @@ func TestApplyPluginConfig(t *testing.T) {
 	}
 	applyPluginConfig(c, pf)
 
-	if pf.wikiDir != "/notes" {
-		t.Errorf("wiki dir not applied: %q", pf.wikiDir)
+	if wikiFlagsOf(pf).dir != "/notes" {
+		t.Errorf("wiki dir not applied: %q", wikiFlagsOf(pf).dir)
 	}
-	if !pf.osEnable {
+	if !osFlagsOf(pf).on {
 		t.Error("os not enabled")
 	}
-	if pf.sqlDB != "" {
-		t.Errorf("disabled sql skill leaked: %q", pf.sqlDB)
+	if sqlFlagsOf(pf).db != "" {
+		t.Errorf("disabled sql skill leaked: %q", sqlFlagsOf(pf).db)
 	}
-	if !pf.x || pf.xBearer != "tok-123" {
-		t.Errorf("x bearer secret not applied: enabled=%v key=%q", pf.x, pf.xBearer)
+	if !xFlagsOf(pf).on || xFlagsOf(pf).bearer != "tok-123" {
+		t.Errorf("x bearer secret not applied: enabled=%v key=%q", xFlagsOf(pf).on, xFlagsOf(pf).bearer)
 	}
 }

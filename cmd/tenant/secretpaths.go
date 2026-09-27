@@ -9,9 +9,6 @@ import (
 	"strings"
 
 	"tenant/internal/peering"
-	githubp "tenant/internal/plugins/github"
-	"tenant/internal/plugins/gsuite"
-	xp "tenant/internal/plugins/x"
 )
 
 // managedSecret is one at-rest secret file Tenant writes through the secrets
@@ -24,8 +21,8 @@ type managedSecret struct {
 // managedSecrets is the authoritative list of Tenant's at-rest secret files
 // under the config and data dirs, present or not (TEN-337). doctor audits the
 // protection of each one and the file tools refuse to read any of them, so a
-// new secret file belongs here rather than in either consumer; the X token
-// cache was missing from both. Remote-MCP token caches are listed as found on
+// new secret file belongs here (a plugin's, in its descriptor) rather than in
+// either consumer; the X token cache was missing from both. Remote-MCP token caches are listed as found on
 // disk; fileToolGuards also guards their whole directory. The list is
 // complete apart from those caches even when it also returns an error.
 func managedSecrets(cfgDir, dataDir string) ([]managedSecret, error) {
@@ -42,10 +39,10 @@ func managedSecrets(cfgDir, dataDir string) ([]managedSecret, error) {
 		for _, path := range []string{
 			credentialsPath(cfgDir),
 			dashboardAuthTokenPath(cfgDir),
-			atlassianTokenPath(cfgDir),
-			githubp.TokenPath(cfgDir),
-			gsuite.EmbeddedOAuthPath(cfgDir),
 		} {
+			add(cfgDir, path)
+		}
+		for _, path := range pluginConfigSecrets(cfgDir) {
 			add(cfgDir, path)
 		}
 		for _, path := range peering.AtRestPaths(cfgDir) {
@@ -64,7 +61,9 @@ func managedSecrets(cfgDir, dataDir string) ([]managedSecret, error) {
 		}
 	}
 	if dataDir != "" {
-		add(dataDir, xp.TokenPath(dataDir))
+		for _, path := range pluginDataSecrets(dataDir) {
+			add(dataDir, path)
+		}
 	}
 	return out, listErr
 }

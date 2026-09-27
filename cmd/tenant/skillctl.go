@@ -145,18 +145,17 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 	// OAuth credentials exist under cfgDir). Apply those adaptations
 	// once at construction so subsequent SkillFields calls see the
 	// resolved catalog.
-	if k, ok := kinds["gsuite"]; ok {
-		kinds["gsuite"] = adaptGSuiteForCfgDir(k, cfgDir)
-	}
-	if k, ok := kinds["atlassian"]; ok { // TEN-160/164: cfgDir for native OAuth cache + the MCP connector
-		kinds["atlassian"] = adaptAtlassianForCfgDir(k, cfgDir, connect)
+	for _, d := range plugins().All() {
+		if k, ok := kinds[d.ID]; ok && d.AdaptConfigure != nil {
+			kinds[d.ID] = d.AdaptConfigure(k, configureHost{cfgDir: cfgDir, mcpConnect: connect})
+		}
 	}
 	return &skillCfgControl{cfgDir: cfgDir, kinds: kinds, setPluginEnabled: setPluginEnabled}
 }
 
 // SkillList returns every skill known to this control. It surfaces BOTH the
 // /configure-framework catalog (skillKinds) AND the wizard-only skills
-// (wizardLocalKinds, skills_setup.go) so a fresh install where the new catalog
+// (setupOnlyKinds(): setup-only plugins) so a fresh install where the new catalog
 // is empty still gives operators a discoverable list rather than the
 // unactionable "(no skills configured)" surface (audit P1).
 //
@@ -166,7 +165,7 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 func (sc *skillCfgControl) SkillList() []tui.SkillConfigInfo {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	out := make([]tui.SkillConfigInfo, 0, len(sc.kinds)+len(wizardLocalKinds))
+	out := make([]tui.SkillConfigInfo, 0, len(sc.kinds)+len(setupOnlyKinds()))
 	// Wizard-only skills (wiki/sql/imessage/os) aren't part of the /configure
 	// framework — surface them as Legacy so operators can still discover them
 	// and get redirected to `tenant setup`.
@@ -182,7 +181,7 @@ func (sc *skillCfgControl) SkillList() []tui.SkillConfigInfo {
 		})
 		seenIDs[id] = true
 	}
-	for id, k := range wizardLocalKinds {
+	for id, k := range setupOnlyKinds() {
 		if seenIDs[id] {
 			continue
 		}
@@ -205,7 +204,7 @@ func (sc *skillCfgControl) SkillShow(id string) (string, error) {
 	k, ok := sc.kinds[id]
 	if !ok {
 		// Wizard-only skill — discoverable but configured via `tenant setup`.
-		if wk, isLocal := wizardLocalKinds[id]; isLocal {
+		if wk, isLocal := setupOnlyKinds()[id]; isLocal {
 			return fmt.Sprintf("%s — %s\n  (wizard-only — configure via `tenant setup`)", id, wk.Label), nil
 		}
 		return "", fmt.Errorf("no skill named %q (use /skill list to see available skills)", id)
@@ -272,7 +271,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 
 	k, ok := sc.kinds[id]
 	if !ok {
-		if _, isLocal := wizardLocalKinds[id]; isLocal {
+		if _, isLocal := setupOnlyKinds()[id]; isLocal {
 			return "", fmt.Errorf("%q is a wizard-only skill — configure it via `tenant setup`", id)
 		}
 		return "", fmt.Errorf("no skill named %q (use /skill list to see available skills)", id)
@@ -393,41 +392,20 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 	}
 	fmt.Fprintf(&out, "  ✓ probe OK — %s\n", identity)
 
-	// atlassian "mcp" mode is SELF-ENABLING: the probe connected via the remote
-	// MCP connector, which already brought its tools live under the mcp:<host>
-	// label. The generic auto-enable targets the NATIVE "atlassian" plugin (no
-	// site in mcp mode), so it would spuriously report "not configured" — skip it.
-	mcpSelfEnabled := id == "atlassian" && sk.Settings["auth"] == "mcp"
-	if !noEnable && !mcpSelfEnabled {
+	// A plugin whose configure already brought its tools live another way
+	// (atlassian's "mcp" mode, via the remote MCP connector) must not be
+	// auto-enabled as the native plugin, which would report "not configured".
+	d, declared := plugins().Get(id)
+	selfEnabled := declared && d.SelfEnables != nil && d.SelfEnables(sk.Settings)
+	if !noEnable && !selfEnabled {
 		if msg, err := sc.tryAutoEnable(id); err != nil {
 			fmt.Fprintf(&out, "  ! %s\n", err.Error())
 		} else if msg != "" {
 			fmt.Fprintf(&out, "  ✓ %s\n", msg)
 		}
 	}
-	// Hot-rebuild the Discord relay with the new token AND auto-start it
-	// bound to the operator's user ID. Only fires when the probe passed
-	// (token verified) and the callback is wired. Also persists
-	// Relay.Enabled=true + Relay.OperatorID so the relay auto-boots on
-	// every future launch. A failure is a warning, not a roll-back — the
-	// token + operator_id are already stored on disk and will be used on
-	// next launch.
-	if id == "discord" && sc.onDiscordConfigured != nil {
-		newToken := creds.Get(skillSecretID("discord", "token"))
-		operatorID := ""
-		if lc.Skills["discord"] != nil {
-			operatorID = lc.Skills["discord"].Settings["operator_id"]
-		}
-		if operatorID != "" {
-			lc.Relay.OperatorID = operatorID
-			lc.Relay.Enabled = true
-			if err := lc.Save(sc.cfgDir); err != nil {
-				fmt.Fprintf(&out, "  ! could not persist relay config: %v\n", err)
-			}
-		}
-		if err := sc.onDiscordConfigured(newToken, operatorID); err != nil {
-			fmt.Fprintf(&out, "  ! relay: %v\n", err)
-		}
+	if declared && d.OnConfigured != nil {
+		d.OnConfigured(sc, lc, creds, &out)
 	}
 	return strings.TrimRight(out.String(), "\n"), nil
 }

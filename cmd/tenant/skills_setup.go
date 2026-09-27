@@ -7,57 +7,28 @@ import (
 	"strings"
 )
 
-// TEN-70: the setup wizard and the TUI `/skill configure` walkthrough now read
-// from ONE catalog. The framework skills (gsuite/atlassian/discord/web/x) live
-// in `skillKinds` (skillctl.go) — their fields, validators, notes, and probes
-// are defined exactly once there, so there is no second copy to drift from (the
-// old `skillSpecs`/`skillField` drift-guard is gone). The skills below are the
-// few the wizard configures that are NOT part of the /configure framework
-// (path/flag-driven, no API-key probe); they're kept in a SEPARATE map so they
-// stay wizard-only and don't leak into the TUI `/configure` picker or the web
-// Integrations page (both of which enumerate `skillKinds`).
-var wizardLocalKinds = map[string]skillKind{
-	"wiki": {ID: "wiki", Label: "Wiki (markdown knowledge base)", Wired: true, Fields: []skillKindField{
-		{Key: "dir", Prompt: "Wiki markdown directory"},
-	}},
-	"sql": {ID: "sql", Label: "SQL (SQLite database)", Wired: true, Fields: []skillKindField{
-		{Key: "db", Prompt: "SQLite database file path"},
-	}},
-	"imessage": {ID: "imessage", Label: "iMessage (via BlueBubbles)", Wired: true, Fields: []skillKindField{
-		{Key: "url", Prompt: "BlueBubbles server URL"},
-		{Key: "password", Prompt: "BlueBubbles password", Secret: true},
-	}},
-	"os": {ID: "os", Label: "OS access (sysinfo, files, gated shell)", Wired: true},
-}
-
-// wizardOrder is the display order of the setup wizard, preserved from the
-// original skillSpecs list. Each id resolves to a skillKinds entry (framework)
-// or a wizardLocalKinds entry — wizardCatalog merges them in this order.
-var wizardOrder = []string{"wiki", "sql", "gsuite", "x", "imessage", "discord", "github", "web", "os"}
-
-// wizardCatalog returns the wizard's skills as a single ordered []skillKind,
-// sourcing each id from skillKinds (framework) or wizardLocalKinds (local).
-// Unknown ids (e.g. a skillKinds entry not yet wired) are skipped.
+// wizardCatalog returns the skills `tenant setup` offers, in its order: every
+// plugin whose descriptor (plugin_<id>.go) has a Setup position (TEN-70,
+// TEN-321). A plugin /configure manages is read from skillKinds, the catalog
+// /configure itself uses, so the wizard and /configure cannot drift; a
+// setup-only plugin (wiki, sql, imessage, os) brings its own schema.
 //
-// gsuite is adapted for cfgDir exactly as newSkillCfgControl adapts the TUI
-// copy (adaptGSuiteForCfgDir) — the global skillKinds["gsuite"] is the raw,
-// cfgDir-less entry, so without this the wizard's oauth branch would always
-// take the slow-path abort and the opt-in probe would lack the embedded-creds
-// reader. Applying it here keeps the wizard and /configure behaviourally
-// identical, which is the whole point of TEN-70.
+// Each schema is adapted to this install exactly as newSkillCfgControl adapts
+// /configure's copy (the descriptor's AdaptConfigure): the global skillKinds
+// entries are the raw, cfgDir-less ones, so without this gsuite's oauth branch
+// would always take the slow-path abort and its opt-in probe would lack the
+// embedded-creds reader.
 func wizardCatalog(cfgDir string) []skillKind {
-	out := make([]skillKind, 0, len(wizardOrder))
-	for _, id := range wizardOrder {
-		if k, ok := skillKinds[id]; ok {
-			if id == "gsuite" {
-				k = adaptGSuiteForCfgDir(k, cfgDir)
-			}
-			out = append(out, k)
-			continue
+	var out []skillKind
+	for _, d := range setupPlugins() {
+		k, ok := skillKinds[d.ID]
+		if !ok {
+			k = d.Configure()
 		}
-		if k, ok := wizardLocalKinds[id]; ok {
-			out = append(out, k)
+		if d.AdaptConfigure != nil {
+			k = d.AdaptConfigure(k, configureHost{cfgDir: cfgDir})
 		}
+		out = append(out, k)
 	}
 	return out
 }
@@ -72,11 +43,16 @@ const maxWizardFieldAttempts = 3
 // catalog (wizardCatalog) so validators, ShowIf gating, NoteAfter hooks, and
 // SetupHints all come from the same definitions the TUI uses.
 func configureSkills(in *bufio.Reader, cur map[string]*skillConfig, creds *credentials, cfgDir string) map[string]*skillConfig {
+	return configureSkillCatalog(in, cur, creds, wizardCatalog(cfgDir))
+}
+
+// configureSkillCatalog is configureSkills over a given catalog.
+func configureSkillCatalog(in *bufio.Reader, cur map[string]*skillConfig, creds *credentials, catalog []skillKind) map[string]*skillConfig {
 	if cur == nil {
 		cur = map[string]*skillConfig{}
 	}
 	fmt.Fprintln(os.Stderr, "\nSkills / integrations (Enter to skip each):")
-	for _, k := range wizardCatalog(cfgDir) {
+	for _, k := range catalog {
 		existing := cur[k.ID]
 		def := "n"
 		if existing != nil && existing.Enabled {
@@ -246,91 +222,21 @@ func yes(s string) bool {
 // applyPluginConfig fills pluginFlags from the saved skills config for any
 // flag the operator did NOT pass explicitly — so `tenant tui` honors what
 // `tenant setup` configured, without re-typing plugin flags. Explicit flags
-// always win (checked via the shared FlagSet's Visit set).
+// always win (checked via the shared FlagSet's Visit set). Each plugin folds
+// in its own config (its descriptor's ApplyConfig).
 func applyPluginConfig(c *commonFlags, pf *pluginFlags) {
 	if c == nil || c.lc == nil || len(c.lc.Skills) == 0 {
 		return
 	}
 	set := c.flagSet()
-	get := func(skill, key string) string {
-		if s := c.lc.Skills[skill]; s != nil && s.Settings != nil {
-			return s.Settings[key]
+	for _, d := range plugins().All() {
+		sc := c.lc.Skills[d.ID]
+		if d.ApplyConfig == nil || sc == nil || !sc.Enabled {
+			continue
 		}
-		return ""
-	}
-	enabled := func(skill string) bool {
-		s := c.lc.Skills[skill]
-		return s != nil && s.Enabled
-	}
-	secret := func(skill, field string) string {
-		return resolveSecretWith(c.credentialsLoader(), c.cfgDir, skillSecretID(skill, field), authCfg{Stored: true})
-	}
-
-	if enabled("wiki") && !set["wiki-dir"] {
-		pf.wikiDir = firstNonEmpty(pf.wikiDir, get("wiki", "dir"))
-	}
-	if enabled("sql") && !set["sql-db"] {
-		pf.sqlDB = firstNonEmpty(pf.sqlDB, get("sql", "db"))
-	}
-	if enabled("gsuite") {
-		if !set["gsuite"] {
-			pf.gsuite = true
-		}
-		if !set["gsuite-auth"] && get("gsuite", "auth") != "" {
-			pf.gsuiteAuth = get("gsuite", "auth")
-		}
-		if !set["gsuite-sa-json"] {
-			pf.gsuiteSAJSON = firstNonEmpty(pf.gsuiteSAJSON, get("gsuite", "sa_json"))
-		}
-		if !set["gsuite-subject"] {
-			pf.gsuiteSubject = firstNonEmpty(pf.gsuiteSubject, get("gsuite", "subject"))
-		}
-	}
-	if enabled("x") {
-		if !set["x"] {
-			pf.x = true
-		}
-		if !set["x-bearer"] {
-			pf.xBearer = firstNonEmpty(pf.xBearer, secret("x", "bearer"))
-		}
-	}
-	if enabled("imessage") {
-		if !set["imessage"] {
-			pf.imsg = true
-		}
-		if !set["bb-url"] {
-			pf.imsgURL = firstNonEmpty(pf.imsgURL, get("imessage", "url"))
-		}
-		if !set["bb-password"] {
-			pf.imsgPass = firstNonEmpty(pf.imsgPass, secret("imessage", "password"))
-		}
-	}
-	if enabled("discord") {
-		if !set["discord"] {
-			pf.discord = true
-		}
-		if !set["discord-bot-token"] {
-			pf.discordToken = firstNonEmpty(pf.discordToken, secret("discord", "token"))
-		}
-	}
-	if enabled("github") {
-		if !set["github"] {
-			pf.github = true
-		}
-		if !set["github-repo"] {
-			pf.githubRepo = firstNonEmpty(pf.githubRepo, get("github", "repo"))
-		}
-		if !set["github-api-base"] {
-			pf.githubAPIBase = firstNonEmpty(pf.githubAPIBase, get("github", "api_base"))
-		}
-		if !set["github-allow-write"] && get("github", "allow_write") == "true" {
-			pf.githubAllowWrite = true
-		}
-	}
-	if enabled("web") && !set["web"] {
-		pf.web = true
-	}
-	if enabled("os") && !set["os"] {
-		pf.osEnable = true
+		id := d.ID
+		d.ApplyConfig(pf, savedConfig{settings: sc.Settings, set: set, secret: func(field string) string {
+			return resolveSecretWith(c.credentialsLoader(), c.cfgDir, skillSecretID(id, field), authCfg{Stored: true})
+		}})
 	}
 }

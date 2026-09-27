@@ -33,11 +33,14 @@ func TestEnsureSetup_CreatesAndIsIdempotent(t *testing.T) {
 	if err := os.MkdirAll(c.dataDir, 0o755); err != nil { // resolve() normally does this
 		t.Fatal(err)
 	}
-	pf := &pluginFlags{wikiDir: filepath.Join(root, "notes"), sqlDB: filepath.Join(root, "db", "app.db")}
+	pf := testPluginFlags(func(pf *pluginFlags) {
+		wikiFlagsOf(pf).dir = filepath.Join(root, "notes")
+		sqlFlagsOf(pf).db = filepath.Join(root, "db", "app.db")
+	})
 
 	first := ensureSetup(c, pf)
 	// Everything should now exist.
-	for _, p := range []string{c.cfgDir, pf.wikiDir, filepath.Join(pf.wikiDir, "welcome.md"), filepath.Dir(pf.sqlDB)} {
+	for _, p := range []string{c.cfgDir, wikiFlagsOf(pf).dir, filepath.Join(wikiFlagsOf(pf).dir, "welcome.md"), filepath.Dir(sqlFlagsOf(pf).db)} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("expected %s to exist after setup: %v", p, err)
 		}

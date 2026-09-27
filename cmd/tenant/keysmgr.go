@@ -53,8 +53,8 @@ func (k tuiKeys) Remove(credID string) error     { return k.dk.RemoveSecret(cred
 // value.
 func (k dashKeys) List() []dashboard.ServiceKeyView {
 	creds, _ := loadCredentials(k.cfgDir) // missing/corrupt → empty store, no panic
-	out := make([]dashboard.ServiceKeyView, 0, len(keyCatalog))
-	for _, spec := range keyCatalog {
+	out := make([]dashboard.ServiceKeyView, 0, len(keyCatalog()))
+	for _, spec := range keyCatalog() {
 		var envVar string
 		for _, ev := range spec.EnvVars {
 			if os.Getenv(ev) != "" {

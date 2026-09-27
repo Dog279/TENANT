@@ -7,131 +7,54 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
 
-	"tenant/internal/memory/soul"
 	"tenant/internal/model"
-	"tenant/internal/model/backend/claudecode"
-	"tenant/internal/peering"
-	"tenant/internal/plugins/atlassian"
-	"tenant/internal/plugins/crm"
-	"tenant/internal/plugins/discord"
-	githubp "tenant/internal/plugins/github"
-	"tenant/internal/plugins/gsuite"
-	"tenant/internal/plugins/imessage"
-	"tenant/internal/plugins/osys"
-	"tenant/internal/plugins/simplefin"
-	sqlp "tenant/internal/plugins/sql"
-	"tenant/internal/plugins/web"
 	"tenant/internal/plugins/wiki"
-	xp "tenant/internal/plugins/x"
 )
 
-// pluginFlags collects the enable/config flags for every plugin. All
-// default OFF (memory-only chat). Dangerous actions (write/send/post)
-// default OFF even when a plugin is enabled — the operator opts in.
+// pluginFlags holds every plugin's launch flags, each plugin's in its own
+// struct declared in its plugin_<id>.go (read with flagsOf), plus the
+// remote-MCP family's. All default OFF (memory-only chat). Dangerous actions
+// (write/send/post) default OFF even when a plugin is enabled — the operator
+// opts in.
 type pluginFlags struct {
-	wikiDir string
-
-	sqlDB         string
-	sqlAllowWrite bool
-
-	web               bool
-	webShow           bool
-	webAllowInteract  bool
-	webPrivateNetwork []string
-
-	gsuite          bool
-	gsuiteAuth      string
-	gsuiteSAJSON    string
-	gsuiteSubject   string
-	gsuiteAllowSend bool
-
-	atlassian           bool
-	atlassianSite       string
-	atlassianEmail      string
-	atlassianProject    string
-	atlassianAllowWrite bool
-	atlassianClientID   string
-	atlassianCallback   string
-
-	github           bool
-	githubRepo       string
-	githubAllowWrite bool
-	githubAPIBase    string
+	of map[string]any
 
 	mcpRemotes          []string // --mcp-remote (repeatable): remote MCP server URLs
 	mcpTrustAnnotations bool
 	mcpAllowWrite       bool
 	mcpCallback         string
-
-	x          bool
-	xBearer    string
-	xAllowPost bool
-
-	imsg          bool
-	imsgURL       string
-	imsgPass      string
-	imsgPrivate   bool
-	imsgAllowSend bool
-
-	discord          bool
-	discordToken     string
-	discordAllowSend bool
-
-	osEnable     bool
-	osAllowExec  bool
-	osAllowWrite bool
-	osWriteRoots string
-	osDenyRoots  string
-
-	crmToolPath    string
-	crmAllowMutate bool
 }
 
-func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
-	p := &pluginFlags{}
-	fs.StringVar(&p.wikiDir, "wiki-dir", "", "enable the wiki plugin over this markdown dir")
-	fs.StringVar(&p.sqlDB, "sql-db", "", "enable the sql plugin over this SQLite file")
-	fs.BoolVar(&p.sqlAllowWrite, "sql-allow-write", false, "permit SQL INSERT/UPDATE/DELETE")
-	fs.BoolVar(&p.web, "web", false, "enable the web plugin (drives Chrome)")
-	fs.BoolVar(&p.webShow, "web-show", false, "run a visible Chrome window")
-	fs.BoolVar(&p.webAllowInteract, "web-allow-interact", false, "permit web click/fill/select")
-	fs.Func("web-private-network", "allow an exact named private endpoint (repeatable; explicit SSRF-policy opt-in)", func(s string) error {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return fmt.Errorf("web-private-network hostname cannot be empty")
-		}
-		p.webPrivateNetwork = append(p.webPrivateNetwork, s)
-		return nil
-	})
-	fs.BoolVar(&p.gsuite, "gsuite", false, "enable Gmail + Calendar")
-	fs.StringVar(&p.gsuiteAuth, "gsuite-auth", "gcloud", "gsuite auth: gcloud|sa")
-	fs.StringVar(&p.gsuiteSAJSON, "gsuite-sa-json", "", "gsuite service-account JSON (auth=sa)")
-	fs.StringVar(&p.gsuiteSubject, "gsuite-subject", "", "gsuite impersonated user (auth=sa)")
-	fs.BoolVar(&p.gsuiteAllowSend, "gsuite-allow-send", false, "permit gmail_send/calendar_create")
-	fs.BoolVar(&p.atlassian, "atlassian", false, "enable Jira tools (Atlassian)")
-	fs.StringVar(&p.atlassianSite, "atlassian-site", "", "Atlassian site URL, e.g. https://you.atlassian.net (Path A)")
-	fs.StringVar(&p.atlassianEmail, "atlassian-email", "", "Atlassian account email (Path A; token via $ATLASSIAN_TOKEN)")
-	fs.StringVar(&p.atlassianProject, "atlassian-project", "", "default Jira project key (e.g. TEN)")
-	fs.BoolVar(&p.atlassianAllowWrite, "atlassian-allow-write", false, "permit jira_create/comment/transition (writes to the board)")
-	fs.StringVar(&p.atlassianClientID, "atlassian-client-id", "", "Atlassian OAuth app client id (Path B; secret via $ATLASSIAN_CLIENT_SECRET, login via `tenant atlassian login`)")
-	fs.StringVar(&p.atlassianCallback, "atlassian-oauth-callback", "", "OAuth callback bind addr (default 127.0.0.1:8765)")
+// flagsOf returns plugin id's flag struct. A pluginFlags built by hand (tests)
+// starts empty, so a missing struct is created and kept.
+func flagsOf[T any](pf *pluginFlags, id string) *T {
+	if pf == nil {
+		return new(T)
+	}
+	if v, ok := pf.of[id].(*T); ok {
+		return v
+	}
+	v := new(T)
+	if pf.of == nil {
+		pf.of = map[string]any{}
+	}
+	pf.of[id] = v
+	return v
+}
 
-	fs.BoolVar(&p.github, "github", false, "enable GitHub tools (control plane: branches/PRs/issues/CI)")
-	fs.StringVar(&p.githubRepo, "github-repo", "", "GitHub repo this agent may touch, owner/name (single-repo by design)")
-	fs.BoolVar(&p.githubAllowWrite, "github-allow-write", false, "permit github_create_branch/issue/comment/pr (writes to the repo)")
-	fs.StringVar(&p.githubAPIBase, "github-api-base", "", "GitHub Enterprise API base, e.g. https://ghe.example.com/api/v3/")
-	// Deliberately NO --github-token flag: a token passed as a flag lands in
-	// shell history, ps output, and the scheduled-task XML. The token comes from
-	// $GITHUB_TOKEN, /configure github, or the dashboard keys page.
+// bindPluginFlags binds every plugin's launch flags (from its descriptor) and
+// the remote-MCP family's.
+func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
+	p := &pluginFlags{of: map[string]any{}}
+	for _, d := range plugins().All() {
+		if d.Flags != nil {
+			p.of[d.ID] = d.Flags(fs)
+		}
+	}
 	fs.Func("mcp-remote", "remote MCP server URL to connect as a client (repeatable; OAuth2.1+DCR browser sign-in via `/enable`)", func(s string) error {
 		p.mcpRemotes = append(p.mcpRemotes, s)
 		return nil
@@ -139,24 +62,6 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 	fs.BoolVar(&p.mcpTrustAnnotations, "mcp-trust-annotations", false, "trust remote servers' read-only tool annotations (relax the deny-by-default gate)")
 	fs.BoolVar(&p.mcpAllowWrite, "mcp-allow-write", false, "permit remote MCP write tools without per-action confirm")
 	fs.StringVar(&p.mcpCallback, "mcp-callback", "", "localhost OAuth callback for --mcp-remote (default 127.0.0.1:8765)")
-	fs.BoolVar(&p.x, "x", false, "enable X/Twitter")
-	fs.StringVar(&p.xBearer, "x-bearer", "", "X app bearer token (or $X_BEARER_TOKEN)")
-	fs.BoolVar(&p.xAllowPost, "x-allow-post", false, "permit x_post/x_delete")
-	fs.BoolVar(&p.imsg, "imessage", false, "enable iMessage (native chat.db on macOS; --bb-url switches to BlueBubbles)")
-	fs.StringVar(&p.imsgURL, "bb-url", "", "BlueBubbles URL (or $BLUEBUBBLES_URL)")
-	fs.StringVar(&p.imsgPass, "bb-password", "", "BlueBubbles password (or $BLUEBUBBLES_PASSWORD)")
-	fs.BoolVar(&p.imsgPrivate, "bb-private-api", false, "use BlueBubbles private-api send method")
-	fs.BoolVar(&p.imsgAllowSend, "imessage-allow-send", false, "permit imessage_send/new_chat")
-	fs.BoolVar(&p.discord, "discord", false, "enable the Discord plugin (REST: read/send/react)")
-	fs.StringVar(&p.discordToken, "discord-bot-token", "", "Discord bot token (or $DISCORD_BOT_TOKEN)")
-	fs.BoolVar(&p.discordAllowSend, "discord-allow-send", false, "permit discord_send_message/discord_react (posts publicly as the bot)")
-	fs.BoolVar(&p.osEnable, "os", false, "enable the OS plugin (sysinfo, file read, dir list, processes, gated shell exec)")
-	fs.BoolVar(&p.osAllowExec, "os-allow-exec", false, "permit os_exec (run shell commands) — destructive ones still need confirm")
-	fs.BoolVar(&p.osAllowWrite, "os-allow-write", false, "permit os_write/os_edit/os_append/os_make_dir (file writes)")
-	fs.StringVar(&p.osWriteRoots, "os-write-roots", "", "comma-separated directories the file tools may WRITE to (default: Tenant's config and data dirs, the operator's Desktop/Documents/Downloads, and the temp dir). Tenant's own control and secret files stay off limits either way.")
-	fs.StringVar(&p.osDenyRoots, "os-deny-roots", "", "comma-separated directories the file tools may never touch, read OR write (default: Windows/Program Files/ProgramData)")
-	fs.StringVar(&p.crmToolPath, "crm-tool-path", "", "path to the external crm-tool binary (or $CRM_TOOL_PATH) — enables the gated crm_* tools")
-	fs.BoolVar(&p.crmAllowMutate, "crm-allow-mutate", false, "permit the gated crm subcommands (ask/align/commitments-list) without per-action confirm")
 	return p
 }
 
@@ -166,47 +71,11 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 // operator their flag is wrong than to silently drop the tool.
 func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf *pluginFlags, confirm func(context.Context, string, string) bool, log *slog.Logger) (*toolMux, *wiki.Index, func(), error) {
 	mux := newToolMux()
-	// wikiIx is captured here so callers (cmdTUI / research auto-deposit)
-	// can force a reindex after writeWikiReport without having to chase
-	// the dispatcher's unexported `ix` field. nil when --wiki-dir is
-	// unset. TEN-44.
-	var wikiIx *wiki.Index
 	fail := func(err error) (*toolMux, *wiki.Index, func(), error) {
 		mux.Close()
 		return nil, nil, nil, err
 	}
-	// When an approval broker is wired (TUI), it is the single decision
-	// point: per-action gate flags drop to false so every dangerous action
-	// flows through Confirm, and the broker's category modes decide. The
-	// auth/scope-level flags (gsuite/x Config) are untouched — they pick
-	// OAuth scopes, a separate concern from per-action approval.
-	gateAllow := func(flag bool) bool {
-		if confirm != nil {
-			return false
-		}
-		return flag
-	}
-
-	if pf.sqlDB != "" {
-		db, err := sqlp.Open(sqlp.Config{Driver: "sqlite", DSN: pf.sqlDB})
-		if err != nil {
-			return fail(fmt.Errorf("sql plugin: %w", err))
-		}
-		mux.AddCleanup(func() { _ = db.Close() })
-		mux.Add("sql", sqlp.NewDispatcher(db, sqlp.Policy{AllowWrite: pf.sqlAllowWrite, Confirm: confirm}))
-	}
-
-	if pf.wikiDir != "" {
-		ix, err := buildWikiIndex(ctx, c, router, pf.wikiDir, log)
-		if err != nil {
-			return fail(err)
-		}
-		mux.Add("wiki", wiki.NewDispatcher(ix))
-		// Gated local-write counterpart so a fetched peer note (or research) can
-		// be ingested into the wiki on the user's direction. (TEN-244)
-		mux.Add("wiki", newWikiSaveDispatcher(pf.wikiDir, ix, confirm))
-		wikiIx = ix // exported via the return tuple for TEN-44 auto-reindex
-	}
+	e := &pluginEnv{c: c, pf: pf, confirm: confirm, log: log, router: router}
 
 	// Local memory recall tool (TEN-243 Phase B). Enabled by default as of
 	// TEN-249: it gives the agent ACTIVE recall of its own long-term memory and,
@@ -236,377 +105,14 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		log.Debug("memory_search: store open failed; tool unavailable", "err", merr.Error())
 	}
 
-	if pf.web {
-		cfg := webConfig(c.cfgDir, pf, c.lc)
-		cfg.ReaderObserver = func(a web.ReaderActivity) {
-			if log != nil {
-				log.Info("web reader remote request", "provider", a.Provider, "target_host", a.TargetHost)
-			}
-		}
-		sess, err := web.NewSession(cfg)
-		if err != nil {
-			return fail(fmt.Errorf("web plugin: %w (is Chrome installed?)", err))
-		}
-		mux.AddCleanup(func() { _ = sess.Close() })
-		mux.Add("web", web.NewDispatcher(sess, web.Policy{AllowInteract: gateAllow(pf.webAllowInteract), Confirm: confirm},
-			filepath.Join(c.dataDir, "screenshots")))
+	// Every plugin its launch flags configure, declared in plugin_<id>.go.
+	if err := launchPlugins(ctx, mux, e); err != nil {
+		return fail(err)
 	}
 
-	if pf.gsuite {
-		gcfg := gsuite.Config{Auth: pf.gsuiteAuth, Subject: pf.gsuiteSubject, AllowSend: pf.gsuiteAllowSend}
-		if pf.gsuiteAuth == "sa" {
-			if pf.gsuiteSAJSON == "" {
-				return fail(fmt.Errorf("gsuite plugin: --gsuite-auth sa needs --gsuite-sa-json"))
-			}
-			b, err := os.ReadFile(pf.gsuiteSAJSON)
-			if err != nil {
-				return fail(fmt.Errorf("gsuite plugin: read sa json: %w", err))
-			}
-			gcfg.SAJSON = b
-		}
-		svc, err := gsuite.Open(gcfg)
-		if err != nil {
-			return fail(fmt.Errorf("gsuite plugin: %w", err))
-		}
-		mux.Add("gsuite", gsuite.NewDispatcher(svc, gsuite.Policy{AllowSend: gateAllow(pf.gsuiteAllowSend), Confirm: confirm}))
-	}
-
-	if pf.atlassian {
-		svc, err := atlassian.Open(ctx, atlassian.Config{
-			SiteURL:       pf.atlassianSite,
-			Email:         pf.atlassianEmail,
-			Project:       pf.atlassianProject,
-			ClientID:      pf.atlassianClientID,
-			TokenPath:     atlassianTokenPath(c.cfgDir),
-			OAuthCallback: pf.atlassianCallback,
-		})
-		if err != nil {
-			return fail(fmt.Errorf("atlassian plugin: %w", err))
-		}
-		mux.Add("atlassian", atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: gateAllow(pf.atlassianAllowWrite), Confirm: confirm}))
-	}
-
-	if pf.github {
-		repos, rerr := githubp.ParseRepos(pf.githubRepo)
-		if rerr != nil {
-			return fail(fmt.Errorf("github plugin: %w", rerr))
-		}
-		svc, err := githubp.Open(githubp.Config{
-			Repos:   repos,
-			Token:   githubp.ResolveToken("", c.cfgDir),
-			APIBase: pf.githubAPIBase,
-		})
-		if err != nil {
-			return fail(fmt.Errorf("github plugin: %w", err))
-		}
-		mux.Add("github", githubp.NewDispatcher(svc, githubp.Policy{AllowWrite: gateAllow(pf.githubAllowWrite), Confirm: confirm}))
-	}
-
-	if pf.x {
-		bearer := resolveXBearer(c.cfgDir, pf.xBearer)
-		svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: xp.TokenPath(c.dataDir), AllowPost: pf.xAllowPost})
-		if err != nil {
-			return fail(fmt.Errorf("x plugin: %w", err))
-		}
-		mux.Add("x", xp.NewDispatcher(svc, xp.Policy{AllowPost: gateAllow(pf.xAllowPost), Confirm: confirm}))
-	}
-
-	if pf.imsg {
-		url, pass := pf.imsgURL, pf.imsgPass
-		if url == "" {
-			url = os.Getenv("BLUEBUBBLES_URL")
-		}
-		if pass == "" {
-			pass = os.Getenv("BLUEBUBBLES_PASSWORD")
-		}
-		pol := imessage.Policy{AllowSend: gateAllow(pf.imsgAllowSend), Confirm: confirm}
-		// Transport selection: a BlueBubbles URL (flag or env) is an
-		// explicit opt-in to the server bridge; otherwise the default is the
-		// native macOS transport (chat.db read + AppleScript send, no
-		// server). OpenNative returns a "macOS only" error off darwin.
-		if url != "" {
-			svc, err := imessage.Open(imessage.Config{URL: url, Password: pass, PrivateAPI: pf.imsgPrivate})
-			if err != nil {
-				return fail(fmt.Errorf("imessage plugin: %w", err))
-			}
-			mux.Add("imessage", imessage.NewDispatcher(svc, pol))
-		} else {
-			nat, err := imessage.OpenNative(imessage.NativeConfig{})
-			if err != nil {
-				return fail(fmt.Errorf("imessage plugin: %w", err))
-			}
-			mux.AddCleanup(func() { _ = nat.Close() })
-			mux.Add("imessage", imessage.NewDispatcher(nat, pol))
-		}
-	}
-
-	if pf.discord {
-		token := pf.discordToken
-		if token == "" {
-			token = os.Getenv("DISCORD_BOT_TOKEN")
-		}
-		svc, err := discord.Open(discord.Config{Token: token})
-		if err != nil {
-			return fail(fmt.Errorf("discord plugin: %w", err))
-		}
-		mux.Add("discord", discord.NewDispatcher(svc, discord.Policy{AllowSend: gateAllow(pf.discordAllowSend), Confirm: confirm}))
-	}
-
-	// OS needs no config, so always register it — it's visible in
-	// /tools and `/enable os` activates it instantly at runtime. Starts
-	// enabled only if --os was passed (else registered-but-disabled, so
-	// it costs nothing until you turn it on).
-	// os_exec runs through the execution-backend seam (execprofiles.go): the
-	// turn's surface picks its exec profile per call, the default "host" profile
-	// is the pre-seam behaviour, and a sandbox refusal escalates through the same
-	// origin-routed confirm as every other gated action.
-	if svc, err := osys.Open(osys.Config{Runner: sandboxRunner(c.cfgDir, c.dataDir, confirm)}); err == nil {
-		mux.Add("os", osys.NewDispatcher(svc, osys.Policy{
-			AllowExec:  gateAllow(pf.osAllowExec),
-			AllowWrite: gateAllow(pf.osAllowWrite),
-			Confirm:    confirm,
-			Roots:      resolveOSRoots(pf, c.cfgDir, c.dataDir, c.lc),
-		}))
-		if !pf.osEnable {
-			mux.SetEnabled("os", false)
-		}
-	}
-
-	// CRM wraps the operator's external crm-tool binary (TEN-269). It needs
-	// a configured path (flag or $CRM_TOOL_PATH) — without one we register
-	// nothing here and the stub catalog below advertises the tools + how to
-	// enable them. Read subcommands are ungated; the heavier set
-	// (ask/align/commitments-list) is gated through the confirm broker.
-	if crmPath := strings.TrimSpace(firstNonEmpty(pf.crmToolPath, os.Getenv("CRM_TOOL_PATH"))); crmPath != "" {
-		svc, err := crm.Open(crm.Config{Path: crmPath})
-		if err != nil {
-			return fail(fmt.Errorf("crm plugin: %w", err))
-		}
-		mux.Add("crm", crm.NewDispatcher(svc, crm.Policy{AllowMutate: gateAllow(pf.crmAllowMutate), Confirm: confirm}))
-	}
-
-	// Register stubs for every plugin that wasn't configured, so the
-	// whole catalog shows in /tools. A stub advertises the real tool
-	// specs (Tools() is static — safe with a nil service) but returns a
-	// "needs setup" status if called. Registered disabled: visible,
-	// zero context until /enable.
-	catalog := []struct {
-		label string
-		specs []model.ToolSpec
-		hint  string
-		// activate, if set, builds the real plugin the first time it's
-		// enabled (config-free plugins only). Otherwise the stub just tells
-		// the operator to relaunch with the configuring flag.
-		activate func() (plugin, func(), error)
-	}{
-		{label: "sql", specs: sqlp.NewDispatcher(nil, sqlp.Policy{}).Tools(), hint: "relaunch with --sql-db <file>"},
-		{label: "wiki", specs: wiki.NewDispatcher(nil).Tools(), hint: "relaunch with --wiki-dir <dir>"},
-		// Web is intentionally OMITTED from the shared catalog: it's
-		// registered per-agent in team.go via addWebTool because each
-		// agent gets its own Chrome session (concurrent navigation can't
-		// share a tab). Leaving a stub here registered web tools TWICE
-		// in the composite view — once via local (the real one) and once
-		// via shared — which showed up as duplicate entries in /tools AND
-		// broke /enable persistence (composite.SetEnabled hits local
-		// first which had no setOnChange callback). Fix: don't register
-		// web here at all; persistence is wired on the local mux below.
-		{
-			label: "gsuite",
-			specs: gsuite.NewDispatcher(nil, gsuite.Policy{}).Tools(),
-			hint:  "run `/configure gsuite` and pick a sign-in method (or relaunch with --gsuite gcloud/SA flags)",
-			activate: func() (plugin, func(), error) {
-				// Runtime activator: when the operator has configured
-				// gsuite via /configure (saved in
-				// launchConfig.Skills["gsuite"]), build the real
-				// dispatcher on-demand. Supports all three auth modes:
-				// sa (the business primary), gcloud (dev), and oauth
-				// (advanced personal).
-				lc, err := loadLaunchConfig(c.cfgDir)
-				if err != nil {
-					return nil, nil, fmt.Errorf("gsuite plugin: load config: %w", err)
-				}
-				sk, ok := lc.Skills["gsuite"]
-				if !ok || sk.Settings == nil || sk.Settings["auth"] == "" {
-					return nil, nil, fmt.Errorf("gsuite plugin: %w yet — run `/configure gsuite`", errNotConfigured)
-				}
-				auth := sk.Settings["auth"]
-				gcfg := gsuite.Config{Auth: auth, AllowSend: pf.gsuiteAllowSend}
-				switch auth {
-				case "sa":
-					saPath := sk.Settings["sa_json"]
-					subject := sk.Settings["subject"]
-					if saPath == "" || subject == "" {
-						return nil, nil, fmt.Errorf("gsuite plugin: auth=sa needs sa_json + subject — re-run `/configure gsuite`")
-					}
-					b, err := os.ReadFile(saPath)
-					if err != nil {
-						return nil, nil, fmt.Errorf("gsuite plugin: read sa json: %w", err)
-					}
-					gcfg.SAJSON = b
-					gcfg.Subject = subject
-				case "gcloud":
-					// nothing extra — Open() shells out to gcloud.
-				case "oauth":
-					credsPath := sk.Settings["oauth_creds_json"]
-					if credsPath == "" {
-						return nil, nil, fmt.Errorf("gsuite plugin: auth=oauth needs oauth_creds_json — re-run `/configure gsuite`")
-					}
-					oauthCredsBytes, err := os.ReadFile(credsPath)
-					if err != nil {
-						return nil, nil, fmt.Errorf("gsuite plugin: read oauth creds: %w", err)
-					}
-					gcfg.OAuthCreds = oauthCredsBytes
-				default:
-					// Reached when config.json carries an auth this build
-					// doesn't implement (e.g. a stale "composio"). Make it
-					// actionable rather than just "unknown".
-					return nil, nil, fmt.Errorf("gsuite plugin: auth %q isn't supported in this build — run `/configure gsuite` and pick sa, gcloud, or oauth", auth)
-				}
-				svc, err := gsuite.Open(gcfg)
-				if err != nil {
-					return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
-				}
-				return gsuite.NewDispatcher(svc, gsuite.Policy{
-					AllowSend: gateAllow(pf.gsuiteAllowSend),
-					Confirm:   confirm,
-				}), nil, nil
-			},
-		},
-		{
-			label: "x",
-			specs: xp.NewDispatcher(nil, xp.Policy{}).Tools(),
-			hint:  "run `/configure x <bearer>`, then `/enable x` (or relaunch with --x)",
-			activate: func() (plugin, func(), error) {
-				// TEN-67: build the X plugin from the /configure-saved bearer
-				// (or the launch flag / env). Same resolution as the launch
-				// path via resolveXBearer so both pick the same token.
-				bearer := resolveXBearer(c.cfgDir, pf.xBearer)
-				if bearer == "" {
-					return nil, nil, fmt.Errorf("x plugin: %w yet — run `/configure x <bearer>`", errNotConfigured)
-				}
-				svc, err := xp.Open(xp.Config{Bearer: bearer, TokenPath: xp.TokenPath(c.dataDir), AllowPost: pf.xAllowPost})
-				if err != nil {
-					return nil, nil, fmt.Errorf("x plugin: %w", err)
-				}
-				return xp.NewDispatcher(svc, xp.Policy{AllowPost: gateAllow(pf.xAllowPost), Confirm: confirm}), func() {}, nil
-			},
-		},
-		{label: "imessage", specs: imessage.NewDispatcher(nil, imessage.Policy{}).Tools(), hint: "relaunch with --imessage (native chat.db on macOS; or --bb-url for BlueBubbles)"},
-		{label: "crm", specs: crm.NewDispatcher(nil, crm.Policy{}).Tools(), hint: "relaunch with --crm-tool-path <path> (or set $CRM_TOOL_PATH) to wrap the external crm-tool binary"},
-		{label: "discord", specs: discord.NewDispatcher(nil, discord.Policy{}).Tools(), hint: "relaunch with --discord --discord-bot-token=<token>"},
-		{
-			label: "atlassian",
-			specs: atlassian.NewDispatcher(nil, atlassian.Policy{}).Tools(),
-			hint:  "run `/configure atlassian` (OAuth sign-in or API token), then `/enable atlassian`",
-			activate: func() (plugin, func(), error) {
-				// TEN-160: build the real Jira plugin from /configure-saved settings.
-				lc, err := loadLaunchConfig(c.cfgDir)
-				if err != nil {
-					return nil, nil, fmt.Errorf("atlassian plugin: load config: %w", err)
-				}
-				sk, ok := lc.Skills["atlassian"]
-				if !ok || sk.Settings == nil || sk.Settings["site"] == "" {
-					return nil, nil, fmt.Errorf("atlassian plugin: %w yet — run `/configure atlassian`", errNotConfigured)
-				}
-				creds, _ := loadCredentials(c.cfgDir)
-				acfg := atlassian.Config{
-					SiteURL:   sk.Settings["site"],
-					Project:   sk.Settings["project"],
-					TokenPath: atlassianTokenPath(c.cfgDir),
-				}
-				switch sk.Settings["auth"] {
-				case "token":
-					acfg.Email = sk.Settings["email"]
-					acfg.APIToken = creds.Get(skillSecretID("atlassian", "api_token"))
-				default: // oauth
-					acfg.ClientID = sk.Settings["client_id"]
-					acfg.ClientSecret = creds.Get(skillSecretID("atlassian", "client_secret"))
-				}
-				svc, err := atlassian.Open(ctx, acfg)
-				if err != nil {
-					return nil, nil, fmt.Errorf("atlassian plugin: %w", err)
-				}
-				return atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: gateAllow(pf.atlassianAllowWrite), Confirm: confirm}), func() {}, nil
-			},
-		},
-		{
-			label: "github",
-			specs: githubp.NewDispatcher(nil, githubp.Policy{}).Tools(),
-			hint:  "run `/configure github` (fine-grained PAT), then `/enable github`",
-			activate: func() (plugin, func(), error) {
-				// TEN-176: build the real GitHub plugin from /configure-saved settings,
-				// so enabling it mid-session needs no relaunch.
-				lc, err := loadLaunchConfig(c.cfgDir)
-				if err != nil {
-					return nil, nil, fmt.Errorf("github plugin: load config: %w", err)
-				}
-				sk, ok := lc.Skills["github"]
-				if !ok || sk.Settings == nil || sk.Settings["repo"] == "" {
-					return nil, nil, fmt.Errorf("github plugin: %w yet - run `/configure github`", errNotConfigured)
-				}
-				creds, _ := loadCredentials(c.cfgDir)
-				tok := githubp.ResolveToken(creds.Get(skillSecretID("github", "token")), c.cfgDir)
-				if tok == "" {
-					return nil, nil, fmt.Errorf("github plugin: %w yet - no token; run `/configure github`", errNotConfigured)
-				}
-				// "repo" holds the watch list: comma-separated owner/name, each
-				// optionally suffixed :write. Repos without the suffix are
-				// reported on but never written to (the operator's per-repo
-				// choice, enforced in the plugin, not by prompt).
-				repos, rerr := githubp.ParseRepos(sk.Settings["repo"])
-				if rerr != nil {
-					return nil, nil, fmt.Errorf("github plugin: %w", rerr)
-				}
-				svc, err := githubp.Open(githubp.Config{
-					Repos:   repos,
-					Token:   tok,
-					APIBase: sk.Settings["api_base"],
-				})
-				if err != nil {
-					return nil, nil, fmt.Errorf("github plugin: %w", err)
-				}
-				// Write permission comes from the SAVED setting as well as the launch
-				// flag: an operator who opted into writes via /configure should not
-				// have to relaunch with a flag to keep them.
-				allowWrite := pf.githubAllowWrite || sk.Settings["allow_write"] == "true"
-				return githubp.NewDispatcher(svc, githubp.Policy{AllowWrite: gateAllow(allowWrite), Confirm: confirm}), func() {}, nil
-			},
-		},
-		{
-			label: "simplefin",
-			specs: simplefin.NewDispatcher(nil, nil).Tools(),
-			hint:  "run `/configure simplefin <setup-token>` (token from bridge.simplefin.org), then `/enable simplefin`",
-			activate: func() (plugin, func(), error) {
-				// Read-only finance connector: the only credential is the
-				// access URL (claim-on-first-use handles a raw setup token
-				// pasted via the dashboard keys page). Ledger lives under
-				// <dataDir>/simplefin as an append-only JSONL.
-				access, err := resolveSimpleFINAccessURL(ctx, c.cfgDir)
-				if err != nil {
-					return nil, nil, err
-				}
-				svc, err := simplefin.Open(simplefin.Config{AccessURL: access})
-				if err != nil {
-					return nil, nil, fmt.Errorf("simplefin plugin: %w", err)
-				}
-				led, err := simplefin.OpenLedger(filepath.Join(c.dataDir, "simplefin"))
-				if err != nil {
-					return nil, nil, fmt.Errorf("simplefin plugin: %w", err)
-				}
-				return simplefin.NewDispatcher(svc, led), nil, nil
-			},
-		},
-	}
-	for _, e := range catalog {
-		if mux.HasPlugin(e.label) {
-			continue
-		}
-		mux.Add(e.label, stubPlugin{Specs: e.specs, Hint: e.hint})
-		mux.SetEnabled(e.label, false)
-		if e.activate != nil {
-			mux.RegisterActivator(e.label, e.activate)
-		}
-	}
+	// Every shared plugin the launch path did not build gets a disabled stub
+	// (and its activator), declared in its descriptor (plugin_<id>.go).
+	registerPluginStubs(ctx, mux, e)
 
 	// Remote MCP connectors (TEN-162/164): stash the deps so runtime `/mcp add`
 	// builds connectors identical (gated, deny-by-default) to launch-time ones,
@@ -618,7 +124,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		Callback:         pf.mcpCallback,
 		OpenBrowser:      openBrowser,
 		TrustAnnotations: pf.mcpTrustAnnotations,
-		AllowWrite:       gateAllow(pf.mcpAllowWrite),
+		AllowWrite:       e.gateAllow(pf.mcpAllowWrite),
 		Confirm:          confirm,
 		Rule:             defaultToolRules.Mode,
 		CacheDir:         filepath.Join(c.cfgDir, "mcp"),
@@ -648,171 +154,5 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	// same silent/non-blocking pattern.
 	mux.ReconnectPeersSilently(c.cfgDir)
 
-	return mux, wikiIx, mux.Close, nil
-}
-
-// buildWikiIndex constructs the wiki index for the TUI. Unlike the
-// `tenant wiki` command (where a dead embedder is fatal — wiki is the
-// whole point there), here it must NOT crash the TUI: `wiki.New` is
-// offline-safe (validates the dir + loads the sidecar, no network), the
-// embedder fingerprint falls back to the profile's declared dim if the
-// probe fails, and the initial reindex is best-effort (wiki.Search
-// auto-reindexes lazily on first use, so it self-heals when the
-// embedder comes back). A search while the embedder is down surfaces a
-// clean tool error in the feed instead of a startup crash.
-func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string, log *slog.Logger) (*wiki.Index, error) {
-	emb, embProfile, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
-	if err != nil {
-		return nil, fmt.Errorf("wiki plugin: resolve embedder: %w", err)
-	}
-	dim := embProfile.EmbedDim // declared; preferred = actual (probed) when reachable
-	if probe, perr := emb.Embed(ctx, []string{"wiki embedder fingerprint probe"}); perr == nil && len(probe) == 1 && len(probe[0]) > 0 {
-		dim = len(probe[0])
-	} else {
-		log.Warn("wiki: embedder probe failed; using declared dim, reindex deferred to first search",
-			"declared_dim", dim, "err", perr)
-	}
-	embedID := embProfile.Model + "/" + strconv.Itoa(dim)
-	absVault, _ := filepath.Abs(dir)
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(absVault))
-	sidecar := filepath.Join(c.dataDir, "wiki", fmt.Sprintf("%x.json", h.Sum64()))
-	ix, err := wiki.New(dir, sidecar, embedID, emb)
-	if err != nil {
-		return nil, fmt.Errorf("wiki plugin: %w", err)
-	}
-	if _, _, rerr := ix.Reindex(ctx); rerr != nil {
-		// Embedder down at launch — don't crash; lazy reindex on first search.
-		log.Warn("wiki: initial reindex failed; will reindex on first search", "err", rerr)
-	}
-	return ix, nil
-}
-
-// resolveOSRoots builds the file-tool boundary. The write roots default to
-// where the agent legitimately works: Tenant's own config and data dirs, the
-// operator's Desktop/Documents/Downloads and the temp dir. Never a PARENT of
-// the config or data dir: with default dirs that is the OS-wide config root
-// (~/.config, %AppData%, ~/Library/Application Support), which holds autostart
-// entries and other programs' state, and on a C:\Tenant server it holds the
-// binary and the claude CLI's config. Nothing Tenant does needs it: cron, MCP
-// and peer changes persist in-process, wiki_save writes the wiki, and memory
-// and skills have their own stores.
-//
-// Deny always includes the platform defaults even when the operator supplies
-// their own list: an allowlist typo should not silently expose System32.
-// Protect and Secret are always Tenant's own (fileToolGuards), whatever the
-// write roots say.
-//
-// This bounds the FILE tools only. os_exec takes an opaque command string and
-// is bounded by the OS account Tenant runs as, not by this list.
-func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) osys.Roots {
-	split := func(v string) []string {
-		var out []string
-		for _, part := range strings.Split(v, ",") {
-			if p := strings.TrimSpace(part); p != "" {
-				out = append(out, p)
-			}
-		}
-		return out
-	}
-
-	deny := append(osys.DefaultDeny(), split(pf.osDenyRoots)...)
-
-	write := split(pf.osWriteRoots)
-	if len(write) == 0 {
-		seen := map[string]bool{}
-		add := func(p string) {
-			if p == "" || seen[strings.ToLower(p)] {
-				return
-			}
-			seen[strings.ToLower(p)] = true
-			write = append(write, p)
-		}
-		add(cfgDir)
-		add(dataDir)
-		if home, err := os.UserHomeDir(); err == nil {
-			for _, sub := range []string{"Desktop", "Documents", "Downloads"} {
-				add(filepath.Join(home, sub))
-			}
-		}
-		if tmp := os.TempDir(); tmp != "" {
-			add(tmp)
-		}
-	}
-	protect, secret := fileToolGuards(cfgDir, dataDir, pf, lc)
-	return osys.Roots{Deny: deny, Write: write, Protect: protect, Secret: secret}
-}
-
-// fileToolGuards lists what the file tools may never write (protect) and may
-// never read or write (secret), on any surface and whatever the write mode.
-// Tenant writes all of it in-process, and no agent flow needs the tools for
-// any of it.
-//
-// Protected, because Tenant applies an edit without asking, or runs it:
-//   - settings.<agent>.json, for every agent sharing the config dir, and its
-//     fixed-name temp file: permission modes, tool rules and exec profiles,
-//     re-read within seconds (settingswatch.go);
-//   - soul/: the persona in every prompt, which is the operator's alone;
-//   - peer-cert.pem: this instance's peer identity;
-//   - the claudecode spend ledger: the weekly budget rail;
-//   - the Tenant binary;
-//   - on Windows, the PowerShell profile and module folders under Documents,
-//     which run in the operator's next PowerShell session.
-//
-// Secret, because a turn could send what they hold anywhere:
-//   - config.json: the dashboard's auth token, beside cron jobs, MCP servers,
-//     providers and relay and iMessage permissions (persistLaunchConfig folds
-//     a hand edit into the next in-process save);
-//   - every file on managedSecrets, the authoritative list doctor audits too
-//     (TEN-337): credentials.json with every API key and skill secret; the
-//     dashboard-auth-token; peers.json and the peer key and cert, who may call
-//     in and with what token; the OAuth token files (Atlassian, GitHub, X in
-//     the data dir, and the mcp/ caches) and the gsuite OAuth client;
-//   - the gsuite service-account key and the dashboard TLS key, when set;
-//   - the claude CLI's config ($CLAUDE_CONFIG_DIR, else ~/.claude and
-//     ~/.claude.json): its login, and the hooks and MCP servers it runs;
-//   - the credential stores and browser profiles the exec sandbox denies to
-//     confined commands (credentialStoreRoots).
-func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (protect, secret []string) {
-	add := func(list *[]string, paths ...string) {
-		for _, p := range paths {
-			if p = strings.TrimSpace(p); p != "" {
-				*list = append(*list, expandHome(p))
-			}
-		}
-	}
-	if cfgDir != "" {
-		settings := settingsPath(cfgDir, "*")
-		peerCert, _ := peering.CertPaths(cfgDir)
-		add(&protect, settings, settings+".tmp", soul.SoulDir(cfgDir), peerCert)
-		// The mcp dir as a whole also covers caches created after this list.
-		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
-	}
-	// Every file on the authoritative secret list, config and data dirs both
-	// (TEN-337). A listing error still leaves every other entry.
-	managed, _ := managedSecrets(cfgDir, dataDir)
-	for _, m := range managed {
-		add(&secret, m.path)
-	}
-	add(&protect, claudecode.LedgerPath(), exePath())
-	home, homeErr := os.UserHomeDir()
-	if homeErr == nil && runtime.GOOS == "windows" {
-		add(&protect, filepath.Join(home, "Documents", "WindowsPowerShell"), filepath.Join(home, "Documents", "PowerShell"))
-	}
-	if pf != nil {
-		add(&secret, pf.gsuiteSAJSON)
-	}
-	if lc != nil {
-		if s := lc.Skills["gsuite"]; s != nil {
-			add(&secret, s.Settings["sa_json"])
-		}
-		add(&secret, lc.Dashboard.TLSKey)
-	}
-	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
-		add(&secret, dir)
-	} else if homeErr == nil {
-		add(&secret, filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json"))
-	}
-	add(&secret, credentialStoreRoots()...)
-	return protect, secret
+	return mux, e.wikiIndex, mux.Close, nil
 }

@@ -19,12 +19,19 @@ func TestCategorize(t *testing.T) {
 		"sql_ddl":           catDestructive,
 		"web_transact":      catDestructive,
 		"web_interact":      catWeb,
-		"web_click":         catWeb,
 		"gsuite_send":       catSend,
 		"imessage_send":     catSend,
 		"x_post":            catSend,
 		"sensitive_egress":  catEgress,
 		"something_unknown": catDestructive, // safest default
+		// Every class is declared by its plugin (TEN-321): a tool name is not an
+		// action id, and no prefix guesses a category.
+		"web_click":    catDestructive,
+		"jira_write":   catDestructive,
+		"github_write": catDestructive,
+		"wiki_save":    catDestructive,
+		"crm_ask":      catDestructive,
+		"mcp_add":      catMCP,
 	}
 	for action, want := range cases {
 		if got := categorize(action); got != want {
@@ -107,7 +114,7 @@ func TestBroker_ApproveAlwaysPersists(t *testing.T) {
 		t.Fatalf("approve always must persist: %v", saved)
 	}
 	// Subsequent calls are silent (allow mode).
-	if !b.Confirm(context.Background(), "web_click", "click Y") {
+	if !b.Confirm(context.Background(), "web_interact", "click Y") {
 		t.Fatal("after always, web is allowed silently")
 	}
 }
@@ -191,7 +198,7 @@ func TestBroker_ContextCancelDenies(t *testing.T) {
 
 func TestBroker_SeedAndLoadModes(t *testing.T) {
 	b := newApprovalBroker(testLog())
-	b.seedFromFlags(&pluginFlags{osAllowExec: true, gsuiteAllowSend: true})
+	b.seedFromFlags(testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).allowExec = true; gsuiteFlagsOf(pf).allowSend = true }))
 	if b.modes[catExec] != modeAllow || b.modes[catSend] != modeAllow {
 		t.Fatal("flags should seed allow")
 	}

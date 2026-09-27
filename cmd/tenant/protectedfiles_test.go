@@ -75,7 +75,7 @@ func TestFileToolsCannotRewriteControlFiles(t *testing.T) {
 		return broker.Confirm(ctx, action, detail)
 	}
 	c := &commonFlags{agent: "main", cfgDir: cfgDir, dataDir: dataDir}
-	mux, _, cleanup, err := buildToolMux(context.Background(), c, nil, &pluginFlags{osEnable: true}, confirm,
+	mux, _, cleanup, err := buildToolMux(context.Background(), c, nil, testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).on = true }), confirm,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("buildToolMux: %v", err)
@@ -176,7 +176,7 @@ func TestControlFilesProtectedWhateverTheRoots(t *testing.T) {
 		path  string
 	}{
 		{"default roots", resolveOSRoots(&pluginFlags{}, cfgDir, dataDir, nil), settingsFile},
-		{"explicit write roots", resolveOSRoots(&pluginFlags{osWriteRoots: cfgDir}, cfgDir, dataDir, nil), settingsFile},
+		{"explicit write roots", resolveOSRoots(testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).writeRoots = cfgDir }), cfgDir, dataDir, nil), settingsFile},
 		{"tenant os (no roots)", oneShot, settingsFile},
 		{"another agent's file", oneShot, settingsPath(cfgDir, "helper")},
 		{"the settings temp file", oneShot, settingsFile + ".tmp"},
@@ -254,7 +254,7 @@ func TestFileToolsCannotReadSecrets(t *testing.T) {
 		Dashboard: dashboardConfig{TLSKey: tlsKey},
 	}
 	c := &commonFlags{agent: "main", cfgDir: cfgDir, dataDir: dataDir, lc: lc}
-	mux, _, cleanup, err := buildToolMux(context.Background(), c, nil, &pluginFlags{osEnable: true}, nil,
+	mux, _, cleanup, err := buildToolMux(context.Background(), c, nil, testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).on = true }), nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("buildToolMux: %v", err)

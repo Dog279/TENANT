@@ -1263,9 +1263,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf)
-	pf.wikiDir = expandPath(pf.wikiDir)
-	pf.sqlDB = expandPath(pf.sqlDB)
-	pf.gsuiteSAJSON = expandPath(pf.gsuiteSAJSON)
+	expandPluginPaths(pf)
 	log := newLogger() // stderr; stdout is reserved for the report
 
 	router, err := buildRouter(c, log)
@@ -1282,8 +1280,8 @@ func cmdResearch(ctx context.Context, args []string) error {
 	// share one tab). Force it on; keep it OUT of the shared mux.
 	teamWeb := true
 	webCfg := webConfig(c.cfgDir, pf, c.lc)
-	webPolicy := web.Policy{AllowInteract: pf.webAllowInteract}
-	pf.web = false
+	webPolicy := web.Policy{AllowInteract: webFlagsOf(pf).allowInteract}
+	webFlagsOf(pf).on = false
 
 	shared, _, cleanupMux, err := buildToolMux(ctx, c, router, pf, nil, log)
 	if err != nil {
@@ -1396,8 +1394,8 @@ func cmdResearch(ctx context.Context, args []string) error {
 		say("report written to %s", *out)
 	case *toStdout:
 		fmt.Println(report)
-	case pf.wikiDir != "":
-		path, werr := writeWikiReport(pf.wikiDir, question, report)
+	case wikiFlagsOf(pf).dir != "":
+		path, werr := writeWikiReport(wikiFlagsOf(pf).dir, question, report)
 		if werr != nil {
 			say("⚠ couldn't write to wiki (%v) — printing instead", werr)
 			fmt.Println(report)

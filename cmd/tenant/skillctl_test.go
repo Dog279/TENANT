@@ -527,9 +527,9 @@ func TestSkillClear_UnknownField(t *testing.T) {
 // the unification removed. (Per-skill field/Secret parity is no longer a
 // concern: framework skills are defined exactly once, in skillKinds.)
 func TestNoWizardLocalShadowsFramework(t *testing.T) {
-	for id := range wizardLocalKinds {
+	for id := range setupOnlyKinds() {
 		if _, clash := skillKinds[id]; clash {
-			t.Errorf("skill %q is in BOTH wizardLocalKinds and skillKinds — "+
+			t.Errorf("skill %q is in BOTH setupOnlyKinds() and skillKinds — "+
 				"a wizard-only skill must not shadow a framework skill", id)
 		}
 	}

@@ -26,8 +26,6 @@ import (
 	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/peering"
-	githubp "tenant/internal/plugins/github"
-	"tenant/internal/plugins/gsuite"
 	"tenant/internal/runtrace"
 )
 
@@ -503,11 +501,9 @@ func configDirFile(rel string) bool {
 		launchConfigPath(base),
 		credentialsPath(base),
 		dashboardAuthTokenPath(base),
-		atlassianTokenPath(base),
-		githubp.TokenPath(base),
-		gsuite.EmbeddedOAuthPath(base),
 		filepath.Join(base, filepath.Base(claudecode.LedgerPath())),
 	}
+	files = append(files, pluginConfigSecrets(base)...)
 	files = append(files, peering.AtRestPaths(base)...)
 	for _, f := range files {
 		if r, err := filepath.Rel(base, f); err == nil && filepath.ToSlash(r) == rel {
@@ -545,14 +541,15 @@ func outsideTenantDirs(c *commonFlags) []backup.Skipped {
 		out = append(out, backup.Skipped{Path: abs, Reason: what + ", outside Tenant's directories; back it up separately"})
 	}
 	if c.lc != nil {
-		setting := func(skill, key string) string {
-			if s := c.lc.Skills[skill]; s != nil && s.Enabled && s.Settings != nil {
-				return s.Settings[key]
+		for _, d := range plugins().All() {
+			s := c.lc.Skills[d.ID]
+			if d.External == nil || s == nil || !s.Enabled || s.Settings == nil {
+				continue
 			}
-			return ""
+			for path, what := range d.External(s.Settings) {
+				add(path, what)
+			}
 		}
-		add(setting("wiki", "dir"), "wiki vault")
-		add(setting("sql", "db"), "SQL plugin database")
 	}
 	add(c.logsRoot(), "log book")
 	add(claudecode.LedgerPath(), "Claude Code usage ledger")

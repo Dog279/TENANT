@@ -21,3 +21,14 @@ func (f fakePlugin) Dispatch(_ context.Context, c model.ToolCall) (string, bool,
 	*f.lastHit = f.name
 	return "ok:" + f.name, false, nil
 }
+
+// testPluginFlags builds a pluginFlags with some plugins' flags set, the way
+// a command line would: testPluginFlags(func(pf *pluginFlags) {
+// osFlagsOf(pf).on = true }).
+func testPluginFlags(set ...func(*pluginFlags)) *pluginFlags {
+	pf := &pluginFlags{}
+	for _, f := range set {
+		f(pf)
+	}
+	return pf
+}

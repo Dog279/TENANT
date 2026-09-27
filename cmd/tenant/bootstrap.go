@@ -92,12 +92,11 @@ func ensureSetup(c *commonFlags, pf *pluginFlags) []string {
 		lines = append(lines, "created soul: "+soulPath)
 	}
 
-	if pf.wikiDir != "" {
-		ensureDir("wiki dir", pf.wikiDir)
-		seedWikiNote(pf.wikiDir, &lines)
-	}
-	if pf.sqlDB != "" {
-		ensureDir("sql dir", filepath.Dir(pf.sqlDB))
+	// Each plugin creates what it needs (its descriptor's Prepare).
+	for _, d := range plugins().All() {
+		if d.Prepare != nil {
+			d.Prepare(pf, ensureDir, &lines)
+		}
 	}
 	return lines
 }

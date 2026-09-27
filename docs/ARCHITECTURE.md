@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-09-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 75 |
-| Go files | 854 |
-| Test files | 415 |
-| Production Go LOC | 116,590 |
-| Test Go LOC | 79,252 |
+| Go packages | 76 |
+| Go files | 871 |
+| Test files | 418 |
+| Production Go LOC | 117,858 |
+| Test Go LOC | 79,926 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -140,6 +140,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/mcp/transport` | nothing in the module | leaf |
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
+| `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs` | `internal/fsperm` | any package may log through it |
@@ -1275,7 +1276,13 @@ the agent: runtime enable/disable with persisted curation (`Restore`,
 federated knowledge search across paired peers, remote-MCP adoption and trust
 (`RegisterMCPRemote`, `SetMCPTrust`, `RemoteMCPList`), and per-tool dispatch
 counts (`Stats`). It builds no plugin itself: `cmd/tenant/toolmux_build.go`
-decides what to register. `internal/control` is a leaf of plain data types the
+decides what to register, from the plugin registry. Each first-party plugin is
+declared once, by a descriptor in `cmd/tenant/plugin_<id>.go` (TEN-321):
+identity, tools, config schema and secrets, permission classes, health checks
+and lifecycle hooks. `cmd/tenant/plugindesc.go` builds the registry, which
+`internal/pluginreg` checks and indexes; the launch, the stub catalog,
+approvals, `/configure`, doctor, the CLI, privacy, backup and the keys page
+read it (`docs/PLUGINS.md` §5). `internal/control` is a leaf of plain data types the
 runtime, the terminal UI and the dashboard share (`ToolInfo` so far), so none
 of them imports another. Moved out of `package main` in TEN-314;
 `cmd/tenant/toolmux_compat.go` keeps main's names.

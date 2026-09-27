@@ -15,16 +15,16 @@ func TestAutoEnableEvalPlugins_AllOffBaseline(t *testing.T) {
 
 	enabled := autoEnableEvalPlugins(pf, c, explicit)
 
-	if !pf.web {
+	if !webFlagsOf(pf).on {
 		t.Error("pf.web should be auto-enabled")
 	}
-	if !pf.osEnable {
+	if !osFlagsOf(pf).on {
 		t.Error("pf.osEnable should be auto-enabled")
 	}
-	if !pf.osAllowExec {
+	if !osFlagsOf(pf).allowExec {
 		t.Error("pf.osAllowExec should be set when os is auto-enabled")
 	}
-	if !pf.osAllowWrite {
+	if !osFlagsOf(pf).allowWrite {
 		t.Error("pf.osAllowWrite should be set when os is auto-enabled")
 	}
 
@@ -51,7 +51,7 @@ func TestAutoEnableEvalPlugins_ExplicitOverrideRespected(t *testing.T) {
 
 	enabled := autoEnableEvalPlugins(pf, c, explicit)
 
-	if pf.web {
+	if webFlagsOf(pf).on {
 		t.Error("pf.web should NOT be flipped when explicitFlags[\"web\"] is true")
 	}
 	for _, name := range enabled {
@@ -84,10 +84,10 @@ func TestAutoEnableEvalPlugins_SQLAutoDetect(t *testing.T) {
 	if !hasSQL {
 		t.Error("sql should be auto-detected when tenant.db exists in dataDir")
 	}
-	if pf.sqlDB != dbPath {
-		t.Errorf("pf.sqlDB = %q, want %q", pf.sqlDB, dbPath)
+	if sqlFlagsOf(pf).db != dbPath {
+		t.Errorf("pf.sqlDB = %q, want %q", sqlFlagsOf(pf).db, dbPath)
 	}
-	if !pf.sqlAllowWrite {
+	if !sqlFlagsOf(pf).allowWrite {
 		t.Error("pf.sqlAllowWrite should be set when sql is auto-detected")
 	}
 }
@@ -133,8 +133,8 @@ func TestAutoEnableEvalPlugins_WikiFromLaunchConfig(t *testing.T) {
 		sort.Strings(enabledSorted)
 		t.Errorf("wiki should be auto-enabled from launchConfig; enabled = %v", enabledSorted)
 	}
-	if pf.wikiDir != wikiDir {
-		t.Errorf("pf.wikiDir = %q, want %q", pf.wikiDir, wikiDir)
+	if wikiFlagsOf(pf).dir != wikiDir {
+		t.Errorf("pf.wikiDir = %q, want %q", wikiFlagsOf(pf).dir, wikiDir)
 	}
 }
 

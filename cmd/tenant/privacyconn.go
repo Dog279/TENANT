@@ -9,9 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
-	githubp "tenant/internal/plugins/github"
-	xp "tenant/internal/plugins/x"
 	"tenant/internal/privacy"
 )
 
@@ -22,30 +21,37 @@ type connectorDef struct {
 	files func(cfgDir, dataDir string) []string
 }
 
-var connectorDefs = []connectorDef{
-	{name: "gsuite"},
-	{name: "x", files: func(_, data string) []string { return []string{xp.TokenPath(data)} }},
-	{name: "github", files: func(cfg, _ string) []string { return []string{githubp.TokenPath(cfg)} }},
-	{name: "atlassian", files: func(cfg, _ string) []string { return []string{atlassianTokenPath(cfg)} }},
-	{name: "discord"},
-	{name: "imessage"},
-	{name: "simplefin", files: func(_, data string) []string { return []string{filepath.Join(data, "simplefin")} }},
-	{name: "web"},
-	{name: "mcp", files: func(cfg, _ string) []string {
-		var out []string
-		entries, _ := os.ReadDir(mcpCacheDir(cfg))
-		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), "mcp-") && strings.HasSuffix(e.Name(), ".json") {
-				out = append(out, filepath.Join(mcpCacheDir(cfg), e.Name()))
+var (
+	connectorsOnce sync.Once
+	connectorList  []connectorDef
+)
+
+// connectorDefs lists every connected service: each plugin that is one (its
+// descriptor's Connector), then the remote-MCP family.
+func connectorDefs() []connectorDef {
+	connectorsOnce.Do(func() {
+		for _, d := range plugins().All() {
+			if d.Connector {
+				connectorList = append(connectorList, connectorDef{name: d.ID, files: d.Forget})
 			}
 		}
-		return out
-	}},
+		connectorList = append(connectorList, connectorDef{name: "mcp", files: func(cfg, _ string) []string {
+			var out []string
+			entries, _ := os.ReadDir(mcpCacheDir(cfg))
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "mcp-") && strings.HasSuffix(e.Name(), ".json") {
+					out = append(out, filepath.Join(mcpCacheDir(cfg), e.Name()))
+				}
+			}
+			return out
+		}})
+	})
+	return connectorList
 }
 
 func connectorNames() string {
 	var names []string
-	for _, d := range connectorDefs {
+	for _, d := range connectorDefs() {
 		names = append(names, d.name)
 	}
 	return strings.Join(names, ", ")
@@ -69,7 +75,7 @@ func connectorsEmpty(plans []connectorPlan) bool {
 
 // planConnector lists what name has stored, without changing anything.
 func planConnector(cfgDir, dataDir, name string) (connectorPlan, error) {
-	for _, d := range connectorDefs {
+	for _, d := range connectorDefs() {
 		if d.name != name {
 			continue
 		}
@@ -136,7 +142,7 @@ func (p connectorPlan) apply(cfgDir string) error {
 // what (entry names and file names, never values).
 func storedConnectors(cfgDir, dataDir string) []privacy.Connector {
 	var out []privacy.Connector
-	for _, d := range connectorDefs {
+	for _, d := range connectorDefs() {
 		p, err := planConnector(cfgDir, dataDir, d.name)
 		if err != nil || len(p.files)+len(p.keys) == 0 {
 			continue
