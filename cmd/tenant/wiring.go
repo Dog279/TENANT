@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 	"tenant/internal/logs/store"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
@@ -334,6 +335,12 @@ func (c *commonFlags) logsOptions() logs.Options {
 		cfg = c.lc.Logs
 	}
 	opts.Retention = logsRetention(cfg)
+	opts.Budget = func() store.Budget { // read every housekeeper tick, so an edit applies live
+		if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
+			return logsBudget(lc.Logs)
+		}
+		return logsBudget(cfg)
+	}
 	if cfg.MaxFieldBytes != 0 {
 		opts.MaxFieldBytes = cfg.MaxFieldBytes
 	}
@@ -356,6 +363,47 @@ func logsRetention(cfg logsConfig) time.Duration {
 		return time.Duration(cfg.RetentionDays) * 24 * time.Hour
 	}
 	return 0
+}
+
+// logsBudget maps config logs.* onto logbook.db's retention: §6.2's defaults
+// (store.DefaultBudget), then retention_days for every operational log,
+// budget_mb, diagnostic, security and per_log. A per_log min_level or on_full
+// the store doesn't know keeps the default.
+func logsBudget(cfg logsConfig) store.Budget {
+	b := store.DefaultBudget()
+	b.Operational = limits(b.Operational, 0, cfg.RetentionDays)
+	b.TotalBytes = limits(store.Policy{MaxBytes: b.TotalBytes}, cfg.BudgetMB, 0).MaxBytes
+	b.Diagnostic = limits(b.Diagnostic, cfg.Diagnostic.MaxMB, cfg.Diagnostic.MaxAgeDays)
+	b.Logs[store.SecurityLog] = limits(b.Logs[store.SecurityLog], cfg.Security.MaxMB, cfg.Security.MaxAgeDays)
+	for name, pl := range cfg.PerLog {
+		p := limits(b.For(name), pl.MaxMB, pl.MaxAgeDays)
+		if lvl, ok := event.ParseLevel(pl.MinLevel); ok {
+			p.MinLevel = lvl
+		}
+		if pl.OnFull == store.Overwrite || pl.OnFull == store.Archive || pl.OnFull == store.Keep {
+			p.OnFull = pl.OnFull
+		}
+		b.Logs[name] = p
+	}
+	return b
+}
+
+// limits applies a config max_mb / max_age_days pair to p: 0 keeps p's, -1
+// lifts the limit.
+func limits(p store.Policy, maxMB, maxAgeDays int) store.Policy {
+	switch {
+	case maxMB < 0:
+		p.MaxBytes = 0
+	case maxMB > 0:
+		p.MaxBytes = int64(maxMB) << 20
+	}
+	switch {
+	case maxAgeDays < 0:
+		p.MaxAge = 0
+	case maxAgeDays > 0:
+		p.MaxAge = time.Duration(maxAgeDays) * 24 * time.Hour
+	}
+	return p
 }
 
 // openLogHub opens the unified log book for a long-running surface (serve,

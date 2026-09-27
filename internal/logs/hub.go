@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/store"
 	"tenant/internal/runtrace"
 )
 
@@ -42,6 +43,10 @@ type Options struct {
 	MaxFileBytes  int64         // a day's file rolls to <day>.N.log past this (0 ⇒ 64 MiB)
 	MinLevel      slog.Level    // records below this are dropped (zero ⇒ INFO; use slog.LevelDebug for everything)
 	Now           func() time.Time
+	// Budget returns the log book's retention settings. The housekeeper
+	// reads it every tick, so a changed config.json applies without a
+	// restart (nil ⇒ store.DefaultBudget).
+	Budget func() store.Budget
 }
 
 // SourceInfo describes one source (= one folder = one dashboard tab).
@@ -83,6 +88,7 @@ type Hub struct {
 	wg       sync.WaitGroup
 
 	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
+	hk   housekeeper              // housekeeper.go
 }
 
 type source struct {
@@ -177,6 +183,12 @@ func (h *Hub) Start(ctx context.Context) {
 	}
 	h.wg.Add(1)
 	go h.run(ctx)
+	if h.pipe.Load() != nil {
+		h.Housekeep("retention", retainEvery, h.retain)
+		h.Housekeep("checkpoint", 0, h.checkpointWAL)
+		h.wg.Add(1)
+		go h.housekeep(ctx)
+	}
 }
 
 func (h *Hub) run(ctx context.Context) {
@@ -199,19 +211,22 @@ func (h *Hub) run(ctx context.Context) {
 			h.scanTick()
 		case <-pruneT.C:
 			h.mu.Lock()
-			h.pruneLocked()
+			busy := h.pruneLocked()
 			h.mu.Unlock()
+			if busy > 0 {
+				h.Logf("logbook", slog.LevelInfo, "logbook: old log files another process has open were not deleted; retrying at the next prune", "files", busy)
+			}
 		}
 	}
 }
 
 // Close stops the loops and closes every open file. Idempotent.
 func (h *Hub) Close() error {
+	h.stopOnce.Do(func() { close(h.stop) })
+	h.wg.Wait() // the housekeeper first: its tasks use the store
 	if p := h.pipe.Swap(nil); p != nil {
 		p.close() // flushes into the files and the store while they are open
 	}
-	h.stopOnce.Do(func() { close(h.stop) })
-	h.wg.Wait()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closed = true
@@ -614,10 +629,11 @@ func (h *Hub) OpenFile(source, name string) (io.ReadCloser, FileInfo, error) {
 
 // --- discovery + tailing ------------------------------------------------------
 
-// recordDirs hold records, not logs: serve's and the TUI's boot records, and
-// crash dumps waiting to be filed (TEN-365). Tailed as sources, a dump would
-// flood the feed one stack line at a time.
-var recordDirs = map[string]bool{"boots": true, "crash": true}
+// recordDirs hold records, not logs: serve's and the TUI's boot records,
+// crash dumps waiting to be filed (TEN-365), and the store's archives
+// (TEN-371). Tailed as sources, a dump would flood the feed one stack line
+// at a time.
+var recordDirs = map[string]bool{"boots": true, "crash": true, "archive": true}
 
 // scanLocked registers every valid folder under root not yet known as a
 // FOREIGN source (some other process writes it) and returns the new ones.
@@ -872,15 +888,25 @@ func (h *Hub) SetRetention(d time.Duration) {
 var dayPrefixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})`)
 
 // pruneLocked deletes files older than the retention window in every source
-// folder (by the date in the file name when it has one, else by mtime). The
-// file currently being written or tailed is never removed.
-func (h *Hub) pruneLocked() {
-	if h.root == "" || h.opts.Retention < 0 {
-		return
+// folder (by the date in the file name when it has one, else by mtime): with
+// a store attached, its log's MaxAge (§6.3). The file currently being written
+// or tailed is never removed. It returns how many old files it could not
+// delete because another process has them open (Windows); the next prune
+// tries again.
+func (h *Hub) pruneLocked() (busy int) {
+	if h.root == "" {
+		return 0
 	}
 	now := h.now()
+	g := h.hk.gate.Load()
 	for _, s := range h.sources {
-		if s.dir == "" {
+		keep := h.opts.Retention
+		if g != nil {
+			if keep = g.policy(s.name).MaxAge; keep == 0 {
+				keep = -1
+			}
+		}
+		if s.dir == "" || keep < 0 {
 			continue
 		}
 		ents, err := os.ReadDir(s.dir)
@@ -908,9 +934,12 @@ func (h *Hub) pruneLocked() {
 				}
 				stamp = fi.ModTime()
 			}
-			if now.Sub(stamp) > h.opts.Retention {
-				_ = os.Remove(p)
+			if now.Sub(stamp) > keep {
+				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+					busy++
+				}
 			}
 		}
 	}
+	return busy
 }

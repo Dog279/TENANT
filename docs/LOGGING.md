@@ -24,6 +24,7 @@ one folder is one tab.
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 ├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
+├── archive/                      ← the store's archived records (security-<first>-<last>.ndjson.gz)
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
 ```
 
@@ -51,7 +52,11 @@ with a `…Context` call inside a turn carries it too.
 - **Retention:** files older than 30 days are deleted (`"logs": {"retention_days": N}`;
   `-1` keeps forever, or `tenant privacy retention set logs N|forever`). A
   running Tenant applies a change at its next daily privacy sweep, with no
-  restart. A day's file rolls to `<day>.1.log` past 64 MB.
+  restart. With the store on, each folder keeps its log's max age instead
+  (see [Retention and disk budgets](#retention-and-disk-budgets)). A file
+  another process has open (Windows) is skipped, counted in a `logbook` line,
+  and retried at the next hourly prune. A day's file rolls to `<day>.1.log`
+  past 64 MB.
 - **Level floor:** INFO by default. `"logs": {"level": "warn"}` (or `"error"`)
   raises it for the files and the feed; `"debug"` or `TENANT_LOG=debug` lowers
   it (the files then hold the backend internals too).
@@ -380,8 +385,61 @@ through its own connection, so both can share a data directory.
 - **Reading it.** `store.Since(cursor)` returns every event after a cursor,
   `<store ID>.<seq>`, in commit order, so a tail never misses a row. A cursor
   from another database (restored or rebuilt) starts again from the beginning.
-- The file is owner-only. Retention, the v1 history import, the viewer and
-  the query language arrive with the next logging v2 tickets.
+- The file is owner-only. The v1 history import, the viewer and the query
+  language arrive with the next logging v2 tickets.
+
+#### Retention and disk budgets
+
+Every log has a policy: a maximum size, a maximum age, what happens when it is
+full, a minimum level and an enabled switch. The defaults, by class:
+
+| Log | Max age | Max size | When full |
+|---|---|---|---|
+| `security` | 365 days | 256 MB | archive |
+| `system` | 90 days | 128 MB | overwrite |
+| any other log | `retention_days` (30) | 64 MB | overwrite |
+| diagnostic events, all logs together | 7 days | 256 MB | overwrite |
+| the whole book, `logbook.db` plus its WAL | — | 2 GB | shed diagnostic, then the oldest events of overwrite logs |
+
+```json
+"logs": {
+  "retention_days": 30, "budget_mb": 2048,
+  "diagnostic": { "max_mb": 256, "max_age_days": 7 },
+  "security":   { "max_mb": 256, "max_age_days": 365 },
+  "per_log": { "mcp.github": { "max_mb": 32, "max_age_days": 14, "min_level": "warning", "on_full": "overwrite" } }
+}
+```
+
+- `0` or a missing key keeps the default; `-1` lifts a limit. `min_level` is
+  `critical`, `error`, `warning`, `info` or `verbose`; `on_full` is
+  `overwrite`, `archive` or `keep`. Edits apply with no restart: to writes
+  within 30 seconds, to retention at its next pass. A policy set on the log
+  itself (`store.SetPolicy`, for `tenant logs config` and the dashboard) wins
+  over `config.json`.
+- **Size** is measured on disk, database plus WAL, and a log's share is
+  apportioned by its events' summed payload.
+- **When full:** *overwrite* deletes the oldest events; *archive* first moves
+  them to `<logs root>/archive/<log>-<first seq>-<last seq>.ndjson.gz`
+  (gzip, one JSON object per line, every column, `data` as its stored text);
+  *keep* deletes nothing and writes one `logbook` warning each time the log
+  passes its limit. The Security log is always written in full and never
+  overwritten: its records are archived before any is deleted, the whole-book
+  budget never sheds it, and a book left over budget by records it may not
+  delete raises one critical `logbook` event.
+- **The housekeeper.** Serve and the TUI each run a loop every 30 seconds.
+  Whichever holds the `housekeeper` lease in `logbook.db` (renewed every 30
+  seconds, taken over within a minute of its holder dying) runs retention every
+  5 minutes: it deletes in transactions of at most 500 events (each holds the
+  write lock for well under 50 ms), then runs `incremental_vacuum` and
+  `wal_checkpoint(TRUNCATE)`. It also checkpoints whenever the WAL passes
+  64 MB. Rollups older than the longest max age of any log go too. Other
+  tickets add their tasks with `Hub.Housekeep(name, every, fn)`; a task's
+  error is a `logbook` error line, never fatal.
+- **Low disk.** Below 1 GB or 5% free on the data volume, diagnostic events
+  are not written; below 256 MB, only warnings and worse. The Security log
+  always writes. Shed events count as dropped (`Hub.Dropped`), and crossing
+  either line writes a `logbook` warning.
+- `runs.db` keeps its own retention (`runs.max_age_days`, `runs.max_count`).
 
 ### Event IDs, the reference and coverage
 

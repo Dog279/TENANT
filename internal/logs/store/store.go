@@ -93,7 +93,11 @@ CREATE TABLE boots (boot_id BLOB PRIMARY KEY, pid INTEGER, role INTEGER, version
   started_ns INTEGER, heartbeat_ns INTEGER, stopped_ns INTEGER, clean INTEGER, reported INTEGER);
 CREATE TABLE leases (name TEXT PRIMARY KEY, boot_id BLOB, expires_ns INTEGER);
 CREATE TABLE views (name TEXT PRIMARY KEY, filter TEXT NOT NULL, builtin INTEGER, created_ns INTEGER);
-`}
+`,
+	// 2: retention (TEN-371) sums and sheds the diagnostic channel's bytes
+	// without scanning every event.
+	`CREATE INDEX events_diag ON events(time_ns, bytes) WHERE channel = 1;`,
+}
 
 // Options configures a Store.
 type Options struct {
