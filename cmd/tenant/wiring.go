@@ -490,7 +490,19 @@ func openOneShotLog(c *commonFlags) {
 	scrubLogSecrets(h, &cc) // TEN-361: credentials never reach a log line
 	handler := h.Handler(slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()}))
 	slog.SetDefault(slog.New(handler))
-	logs.SetFallback(handler) // logs.For loggers: no hub is installed, so no feed or emitter either
+	logs.SetFallback(handler) // logs.For loggers: no hub is installed, so no feed either
+	if cc.lc == nil || cc.lc.Logs.Store == nil || *cc.lc.Logs.Store {
+		// A command's Security records (a config change, a secret stored, a
+		// job removed) go to logbook.db and the chain, opened only when the
+		// first one is written; its other events keep the path above.
+		event.Install(logs.AuditEmitter(h, func() (*store.Store, error) {
+			key, err := chainKey(cc.cfgDir)
+			if err != nil {
+				return nil, err
+			}
+			return store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID(), ChainKey: key})
+		}))
+	}
 	commandLog = h
 }
 
