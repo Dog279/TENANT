@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"testing"
 
 	"tenant/internal/logs/event"
@@ -101,6 +100,6 @@ func TestAlertRules(t *testing.T) {
 			`Log alerts reconfigured: alert rule cron-errors saved: filter "log:cron level>=error", action discord`,
 			"Log alerts reconfigured: alert rule critical disabled",
 			"Log alerts reconfigured: alert rule cron-errors removed",
-		}) && strings.Contains(fmt.Sprint(evs[len(evs)-1].Data), "dashboard")
+		}) && evs[len(evs)-1].Surface == "dashboard" // an attribute since TEN-397, not data
 	})
 }
