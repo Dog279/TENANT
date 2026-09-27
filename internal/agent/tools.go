@@ -16,12 +16,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"runtime/debug"
 	"sort"
 	"sync"
+	"time"
 
-	"tenant/internal/logs"
 	"tenant/internal/model"
 )
 
@@ -135,6 +134,8 @@ type ToolCallResult struct {
 	Result  string
 	IsError bool
 	Err     error
+	// Duration is how long the call took to return.
+	Duration time.Duration
 	// Labels carry sensitivity/provenance on the tool-result envelope. They are
 	// populated from the registered ToolSpec only for successful results.
 	Labels []model.InfoFlowLabel
@@ -149,7 +150,7 @@ type ToolCallResult struct {
 // also gets a sink for what its tool reports back (see ReportFlow). A tool
 // that panics fails only its own call: the model gets an error result and
 // the log a critical record with the stack (TEN-365).
-func dispatchBatch(ctx context.Context, calls []model.ToolCall, flows []Flow, maxParallel int, d ToolDispatcher, log *slog.Logger) []ToolCallResult {
+func dispatchBatch(ctx context.Context, calls []model.ToolCall, flows []Flow, maxParallel int, d ToolDispatcher) []ToolCallResult {
 	if maxParallel < 1 {
 		maxParallel = 1
 	}
@@ -162,12 +163,13 @@ func dispatchBatch(ctx context.Context, calls []model.ToolCall, flows []Flow, ma
 		go func(i int, call model.ToolCall) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			start := time.Now()
 			defer func() {
 				if v := recover(); v != nil {
-					log.Log(ctx, logs.LevelCritical, "agent: tool panicked", "tool", call.Name, "panic", v,
-						"severity", "critical", "stack", string(debug.Stack()))
+					ToolPanicked.Log(ctx, "tool", call.Name, "panic", v, "stack", string(debug.Stack()))
 					results[i] = ToolCallResult{Call: call, Err: fmt.Errorf("tool %s panicked: %v", call.Name, v)}
 				}
+				results[i].Duration = time.Since(start).Round(time.Millisecond)
 			}()
 			report := &flowReport{}
 			callCtx := context.WithValue(ctx, flowReportKey{}, report)

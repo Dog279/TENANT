@@ -1,13 +1,11 @@
 package agent
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/working"
@@ -113,12 +111,12 @@ func expHas(ss []string, want string) bool {
 // it, it should be there" to the operator: the exact shape that cost days on
 // the cron-surface starvation.
 func TestWarnUnknownGateDrops(t *testing.T) {
-	var logBuf bytes.Buffer
+	hub := logs.NewMemory(10)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
 	var events []Event
-	a := &Agent{
-		log: slog.New(slog.NewTextHandler(&logBuf, nil)),
-		cfg: Config{Observer: func(e Event) { events = append(events, e) }},
-	}
+	a := &Agent{cfg: Config{Observer: func(e Event) { events = append(events, e) }}}
 	profile := model.Profile{ID: "test-prof"}
 
 	specs := []model.ToolSpec{
@@ -130,21 +128,18 @@ func TestWarnUnknownGateDrops(t *testing.T) {
 		t.Fatalf("kept=%d dropped=%d, want 0/2", len(kept), len(dropped))
 	}
 
-	a.warnUnknownGateDrops(dropped, profile)
-	if !strings.Contains(logBuf.String(), "novel-gate") || !strings.Contains(logBuf.String(), "mystery_tool") {
-		t.Errorf("unknown gate drop not logged:\n%s", logBuf.String())
-	}
-	if strings.Contains(logBuf.String(), `gate=recall`) {
-		t.Errorf("known-gate denial must stay quiet:\n%s", logBuf.String())
+	a.warnUnknownGateDrops(context.Background(), dropped, profile)
+	es, _ := hub.Snapshot()
+	if len(es) != 1 || es[0].Field("event") != "turns/2107" || es[0].Field("gate") != "novel-gate" || es[0].Field("tool") != "mystery_tool" {
+		t.Errorf("want one warning, for the unknown gate only: %+v", es)
 	}
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want exactly 1 (the unknown gate)", len(events))
 	}
 
 	// Second turn with the same drop: deduped, no new warning or event.
-	logBuf.Reset()
-	a.warnUnknownGateDrops(dropped, profile)
-	if logBuf.Len() != 0 || len(events) != 1 {
-		t.Errorf("repeat drop must be deduped: log=%q events=%d", logBuf.String(), len(events))
+	a.warnUnknownGateDrops(context.Background(), dropped, profile)
+	if es, _ := hub.Snapshot(); len(es) != 1 || len(events) != 1 {
+		t.Errorf("repeat drop must be deduped: log=%+v events=%d", es, len(events))
 	}
 }

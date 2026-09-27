@@ -17,6 +17,9 @@ import (
 // (TEN-365).
 func TestAgent_Turn_ToolPanicBecomesAnErrorResult(t *testing.T) {
 	hub := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(hub) // the catalogued record goes to the installed emitter
+	t.Cleanup(func() { logs.Install(prev) })
 	tools := []model.ToolSpec{{Name: "boom", Parameters: json.RawMessage(`{}`)}}
 	disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) {
 		panic("plugin bug")

@@ -10,7 +10,8 @@ one folder is one tab.
 ├── turns/                        ← the primary agent's own turns: lifecycle, tool calls/results, errors
 │   ├── 2026-09-21.log
 │   └── 2026-09-22.log
-├── subagents/                    ← orchestrated sub-agents (Programmer, Researcher, …) + the bus
+├── subagents/                    ← orchestrated sub-agents (Programmer, Researcher, …), their own warnings, the bus, the team budget
+├── research/                     ← /research passes and their record failures
 ├── approvals/                    ← every gated-action decision: pending / approved / denied / expired
 ├── discord/                      ← the relay: inbound messages, the relay agent's actions, relay logs
 ├── imessage/
@@ -33,8 +34,8 @@ Override the root with `--log-dir DIR` or `"logs": {"dir": "…"}` in config.jso
 One entry is exactly one line, readable in `tail -f` and exact under `grep`:
 
 ```
-2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	ev=tool_call iter=2 args="{\"q\":\"hn top\"}" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
-2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	ev=tool_result iter=2 result="timeout after 30s" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
+2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	event=turns/9001 task="Tool call" ev=tool_call iter=2 tool=web_search args="{\"q\":\"hn top\"}" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
+2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	event=turns/9003 task="Tool call" ev=tool_result iter=2 tool=web_search duration=30.001s result="timeout after 30s" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
 2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3f9c2a1b-3	ev=approval_resolved category=exec action=os_exec origin=local outcome=denied trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
 2026-09-22 14:04:02.000 INFO  [discord] relay attachment saved	chat=general path=/…/relay-inbox/img.png
 ```
@@ -314,6 +315,28 @@ defer act.End(&err)
   sensitive field as `«sensitive»`, never its value.
 - `Audit` is for records that must not be lost. For now it returns once the
   line is written; the Security log's store will make it wait for its commit.
+
+### Turns, sub-agents and research
+
+- **Turn-event lines** (the ones with `ev=`) name their catalogued event:
+  `event=turns/<id> task=…`; bus messages and the team budget are
+  `subagents/…`. Approvals, inbound messages and add-on lines carry none yet.
+- **A turn is an activity:** its `turn started` line has `opcode=start` (and
+  `related=` the spawning turn, for a sub-agent's); a `turn finished` or
+  `turn failed` line (`ev=turn_end`, `opcode=stop` or `fail`, `duration=`)
+  ends it. Its correlation is its `trace`.
+- **Tool calls:** the `tool call` and `tool result` lines are the payload
+  records (diagnostic channel, `args` and `result` sensitive; until the store
+  lands, these files and the Activity tab still show them in full). Each call
+  also writes an operational `Tool <name> finished in <d>` or `failed after <d>`.
+- **Where an agent's events land:** in its surface's folder, as its logger
+  names it (`logs.SourceOf`): a sub-agent's in `subagents`, a cron job's in
+  `cron`, the main agent's in `turns`. `event.WithLog(ctx, provider, log)` is
+  what re-files one provider's events under a context.
+- **Sub-agents and research passes** are activities too: `subagents/1`
+  (related to the spawning turn, naming its own turn's trace as `run`) and
+  `research/1` (its sub-agents are related to it). The turn gate logs each
+  turn it refuses (`turns/2201`).
 
 ### Event IDs, the reference and coverage
 

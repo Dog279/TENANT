@@ -2,7 +2,13 @@ package agent
 
 import (
 	"log/slog"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
+
+	"tenant/internal/logs/event"
+	"tenant/internal/orchestra"
 )
 
 func TestEntryFor_DenylistsNoise(t *testing.T) {
@@ -73,5 +79,53 @@ func TestEntryFor_WritesTrace(t *testing.T) {
 	}
 	if e, _ := EntryFor(Event{Kind: EventBus, Agent: "a", Text: "x"}); e.Field("trace") != "" {
 		t.Errorf("an event with no trace must not carry one: %+v", e.Fields)
+	}
+}
+
+// Each line EntryFor tags names a registered definition and its task. A
+// plain event's line has the definition's level, and its message is the
+// template rendered from the line's fields; a turn's start and end carry
+// their opcode, the fail at error level. Lines of other owners carry none.
+func TestEntryFor_NamesItsCatalogueEntry(t *testing.T) {
+	hole := regexp.MustCompile(`\{([A-Za-z0-9_.]+)\}`)
+	stopped := &orchestra.BudgetStatus{TerminationReason: "token budget"}
+	for _, ev := range []Event{
+		{Kind: EventTurnStart, Text: "q"}, {Kind: EventTurnEnd}, {Kind: EventTurnEnd, IsErr: true, Text: "boom"},
+		{Kind: EventRoute, Text: "r"}, {Kind: EventSkills}, {Kind: EventToolCall, Tool: "t", Args: "{}"},
+		{Kind: EventToolResult, Tool: "t"}, {Kind: EventToolResult, Tool: "t", IsErr: true},
+		{Kind: EventValidation, Tool: "t"}, {Kind: EventRetry, Tool: "t"}, {Kind: EventFinal}, {Kind: EventTruncated},
+		{Kind: EventError}, {Kind: EventCompact}, {Kind: EventInterject}, {Kind: EventToolCatalog},
+		{Kind: EventBus, Agent: "a"}, {Kind: EventTeamBudget}, {Kind: EventTeamBudget, TeamBudget: stopped},
+	} {
+		e, _ := EntryFor(ev)
+		p, id, _ := strings.Cut(e.Field("event"), "/")
+		n, _ := strconv.ParseUint(id, 10, 32)
+		d, ok := event.Lookup(p, uint32(n))
+		if !ok {
+			t.Errorf("%s: event=%q names no definition", ev.Kind, e.Field("event"))
+			continue
+		}
+		s := d.Spec()
+		if e.Field("task") != s.Task {
+			t.Errorf("%s: task %q, want %q", ev.Kind, e.Field("task"), s.Task)
+		}
+		switch op := e.Field("opcode"); op {
+		case "":
+			msg := hole.ReplaceAllStringFunc(s.Template, func(h string) string { return e.Field(h[1 : len(h)-1]) })
+			if e.Level != s.Level.Slog() || e.Msg != msg {
+				t.Errorf("%s: %v %q, want %v %q", ev.Kind, e.Level, e.Msg, s.Level.Slog(), msg)
+			}
+		case event.OpStart, event.OpStop, event.OpFail:
+			if (op == event.OpFail) != (e.Level == slog.LevelError) {
+				t.Errorf("%s: opcode %s at %v", ev.Kind, op, e.Level)
+			}
+		default:
+			t.Errorf("%s: opcode %q", ev.Kind, op)
+		}
+	}
+	for _, k := range []EventKind{EventIngest, EventApproval, EventApprovalPending, EventApprovalResolved, EventAddon, "future_kind"} {
+		if e, _ := EntryFor(Event{Kind: k, Agent: "x", Text: "discord: hi"}); e.Field("event") != "" {
+			t.Errorf("%s is not the turns' to catalogue: %s", k, e.Line())
+		}
 	}
 }
