@@ -33,9 +33,8 @@ import (
 // decides, never the heartbeat's age: after a laptop wakes, a live process
 // would look long dead. The check runs at start and every minute in the
 // housekeeper, so a serve crash while the TUI is open is reported within a
-// minute. With no store (logs.store false, or it didn't open) nothing is
-// kept: an unexpected exit goes unreported and a crash dump goes to stderr
-// only.
+// minute. With no store (it didn't open) nothing is kept: an unexpected exit
+// goes unreported and a crash dump goes to stderr only.
 
 var bootsEvery = time.Minute // the dead-process check; tests shorten it
 

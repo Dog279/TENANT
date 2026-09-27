@@ -182,8 +182,8 @@ func TestLoggingEndToEnd(t *testing.T) {
 
 	// Question 6: who did this, from where, and with whose approval?
 	exec, grant := at["security/4201"], at["security/4102"]
-	if got, want := fmt.Sprintf("%s@%s ran %q on %s under %s, granted %s by %s@%s", exec.Actor, exec.Surface, e2eField(exec, "command"),
-		e2eField(exec, "backend"), exec.Corr.ApprovalID, e2eField(grant, "grant"), grant.Actor, grant.Surface),
+	if got, want := fmt.Sprintf("%s@%s ran %q on %s under %s, granted %s by %s@%s", exec.Actor, exec.Surface, eventField(&exec, "command").Text(),
+		eventField(&exec, "backend").Text(), exec.Corr.ApprovalID, eventField(&grant, "grant").Text(), grant.Actor, grant.Surface),
 		fmt.Sprintf(`agent@local ran "echo ok" on host under %s, granted once by operator@dashboard`, approvalID); got != want {
 		t.Errorf("question 6:\n got %s\nwant %s", got, want)
 	}
@@ -213,13 +213,4 @@ func TestLoggingEndToEnd(t *testing.T) {
 // e2eName is an event's provider/ID, and its opcode when it has one.
 func e2eName(e event.Event) string {
 	return strings.TrimSpace(fmt.Sprintf("%s/%d %s", e.Provider, e.ID, e.Opcode))
-}
-
-func e2eField(e event.Event, key string) string {
-	for _, f := range e.Data {
-		if f.Key == key {
-			return f.Text()
-		}
-	}
-	return ""
 }

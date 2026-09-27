@@ -108,16 +108,12 @@ func sendAlert(ctx context.Context, cfgDir string, a alerts.Alert) error {
 	return fmt.Errorf("unknown action %q", a.Action)
 }
 
-// dashboardBase is the dashboard's address, as its start-up line gives it.
+// dashboardBase is the dashboard's address: attachBaseURL's, over https when
+// the dashboard serves TLS.
 func dashboardBase(lc *launchConfig) string {
-	addr, scheme := defaultDashboardAddr, "http://"
-	if lc != nil {
-		if a := strings.TrimSpace(lc.Dashboard.Addr); a != "" {
-			addr = a
-		}
-		if lc.Dashboard.TLSCert != "" {
-			scheme = "https://"
-		}
+	base := attachBaseURL("", lc)
+	if lc != nil && lc.Dashboard.TLSCert != "" {
+		base = "https://" + strings.TrimPrefix(base, "http://")
 	}
-	return scheme + addr
+	return base
 }

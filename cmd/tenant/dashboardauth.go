@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/mattn/go-isatty"
 
@@ -96,7 +95,7 @@ func dashboardClientToken(cfgDir string, lc *launchConfig, audit bool) (string, 
 	if audit {
 		read = secrets.Peek
 	}
-	b, err := read(dashboardAuthTokenPath(cfgDir))
+	b, err := readClaimed(dashboardAuthTokenPath(cfgDir), read)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
@@ -106,24 +105,19 @@ func dashboardClientToken(cfgDir string, lc *launchConfig, audit bool) (string, 
 	return strings.TrimSpace(string(b)), nil
 }
 
-// readDashboardAuthToken reads a persisted token. A present but empty file is
-// re-read for up to a second: without hard links, secrets.CreateExclusive
-// claims the name before it writes the token.
+// readDashboardAuthToken reads a persisted token, waiting out a claimed but
+// unwritten file (readClaimed).
 func readDashboardAuthToken(path string) (string, error) {
-	for attempt := 1; ; attempt++ {
-		b, err := secrets.ReadFile(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", err
-		}
-		if err != nil {
-			return "", fmt.Errorf("read dashboard auth token: %w", err)
-		}
-		if token := strings.TrimSpace(string(b)); token != "" {
-			return token, nil
-		}
-		if attempt == 20 {
-			return "", fmt.Errorf("dashboard auth token file %q is empty", path)
-		}
-		time.Sleep(50 * time.Millisecond)
+	b, err := readClaimed(path, secrets.ReadFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", err
 	}
+	if err != nil {
+		return "", fmt.Errorf("read dashboard auth token: %w", err)
+	}
+	token := strings.TrimSpace(string(b))
+	if token == "" {
+		return "", fmt.Errorf("dashboard auth token file %q is empty", path)
+	}
+	return token, nil
 }

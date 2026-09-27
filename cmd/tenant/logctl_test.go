@@ -66,9 +66,7 @@ func TestCmdLog_PostsToRunningHub(t *testing.T) {
 }
 
 // With no hub reachable, the line is left in the spool as one event, for
-// the next Tenant process to file; with the store off, nothing reads the
-// spool, so it is appended straight to the day's file in the log-book
-// format, under <data>/logs/<source>/.
+// the next Tenant process to file.
 func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 	data := t.TempDir()
 	err := cmdLog(context.Background(), []string{"--url", "http://127.0.0.1:1", "--data", data, "--config", data,
@@ -84,22 +82,6 @@ func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 	if b, _ := os.ReadFile(spooled[0]); json.Unmarshal(b, &ev) != nil || ev.Log != "sidecar" || ev.Msg != "hello from a script" ||
 		len(ev.Data) != 1 || ev.Data[0].Key != "k" || ev.Data[0].Value != "v" || ev.Level != event.Info {
 		t.Fatalf("spooled %+v", ev)
-	}
-	if err := os.WriteFile(filepath.Join(data, "config.json"), []byte(`{"logs":{"store":false}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err = cmdLog(context.Background(), []string{"--url", "http://127.0.0.1:1", "--data", data, "--config", data,
-		"sidecar", "hello from a script", "k=v"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	files, _ := filepath.Glob(filepath.Join(data, "logs", "sidecar", "*.log"))
-	if len(files) != 1 {
-		t.Fatalf("expected one daily file, got %v", files)
-	}
-	b, _ := os.ReadFile(files[0])
-	if !strings.Contains(string(b), "INFO  [sidecar] hello from a script\tk=v\n") {
-		t.Errorf("file line = %q", string(b))
 	}
 	// A 4xx from a live hub is an error, not a fallback.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

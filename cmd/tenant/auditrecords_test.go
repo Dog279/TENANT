@@ -50,20 +50,13 @@ func (c *channelEvents) audited() []string {
 	return out
 }
 
-func wantRecords(t *testing.T, got []string, want ...string) {
-	t.Helper()
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("security records:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-}
-
 // A secret's store, change and delete are each recorded where the operator
 // did it, by ID only: the value is in no record, and neither is config.json's
 // diff given one.
 func TestSecretChangesAreAuditedByIDOnly(t *testing.T) {
 	cfg := t.TempDir()
 	ev := captureChannelEvents(t)
-	dash := dashKeys{cfgDir: cfg, mc: &modelControl{cfgDir: cfg}}
+	dash := dashKeys{cfgDir: cfg, mc: &modelControl{cfgDir: cfg}, surface: surfaceDashboard}
 	tui := tuiKeys{dk: dashKeys{cfgDir: cfg, mc: dash.mc, surface: surfaceTUI}}
 	for _, step := range []func() error{
 		func() error { return dash.SetSecret("tavily", "tvly-first-value-123") },
@@ -87,7 +80,7 @@ func TestSecretChangesAreAuditedByIDOnly(t *testing.T) {
 			secrets = append(secrets, r)
 		}
 	}
-	wantRecords(t, secrets,
+	wantLines(t, secrets,
 		"security/4601 secret=tavily actor=operator surface=dashboard",
 		"security/4602 secret=tavily actor=operator surface=tui",
 		"security/4603 secret=tavily actor=operator surface=dashboard",
@@ -145,7 +138,7 @@ func TestScheduledJobChangesAreAuditedFromEverySurface(t *testing.T) {
 			t.Fatalf("%s: %v (after %q)", c.Name, err, out)
 		}
 	}
-	wantRecords(t, ev.audited(),
+	wantLines(t, ev.audited(),
 		"security/4701 job=brief id="+j.ID+" spec=0 9 * * * kind=prompt exec=false actor=operator surface=tui",
 		"security/4702 job=brief id="+j.ID+" state=disabled actor=operator surface=tui",
 		"security/4703 id="+j.ID+" actor=operator surface=tui",
@@ -243,7 +236,7 @@ func TestDataAndLogBookActionsAreAudited(t *testing.T) {
 	for _, e := range evs {
 		records = append(records, strconv.Itoa(int(e.ID))+" "+e.Actor+" "+e.Surface+" "+e.Msg[:strings.Index(e.Msg, " to ")])
 	}
-	wantRecords(t, records, "4802 operator cli Personal data exported", "4803 operator cli Backup written")
+	wantLines(t, records, "4802 operator cli Personal data exported", "4803 operator cli Backup written")
 
 	ev := captureChannelEvents(t) // in process, as tenant logs runs them
 	if _, err := verifySecurityLog(ctx, c); err != nil {
@@ -252,7 +245,7 @@ func TestDataAndLogBookActionsAreAudited(t *testing.T) {
 	if err := exportSecurityLog(ctx, c, &bytes.Buffer{}, time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	wantRecords(t, ev.audited(),
+	wantLines(t, ev.audited(),
 		"security/4905 log=security details=2 records, 0 archives, 0 restores actor=operator surface=cli",
 		"security/4903 log=security details=audit bundle actor=operator surface=cli",
 	)

@@ -586,11 +586,6 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	// is minted here so the activity can name it (run).
 	subTrace := runtrace.NewID()
 	_, act := event.Start(ctx, orchestra.SubagentRun, "agent", id, "role", role, "run", subTrace, "prompt", task)
-	// Its own lines go to subagents, not turns (their "agent:" prefix).
-	subLog := r.cfg.Log
-	if subLog != nil {
-		subLog = subLog.With("source", "subagents")
-	}
 
 	// Spawn-time N-way routing (TEN-292): UNPINNED spawns only — a spawn that
 	// matched a pinned AgentProfile (profile with a provider) keeps its pinned
@@ -626,7 +621,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		// A task that quoted the spawner's sensitive results carries that
 		// provenance, so this agent's egress of it asks too (TEN-336).
 		InboundFlow:  agent.DispatchFlow(ctx),
-		Logger:       subLog,
+		Logger:       r.cfg.Log, // under subagents (newTeamRuntime)
 		SystemPrompt: systemPrompt,
 		Observer:     func(e agent.Event) { r.emit(id, e) },
 		Skills:       r.skillRetriever(id),

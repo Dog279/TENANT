@@ -2501,7 +2501,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// Watched-repo list for the Integrations page; shares storage and
 		// semantics with the TUI /github command via githubTUIControl.
 		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
-		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceDashboard},
 		// Skills page (TEN-202) reuses the same skill store as the TUI /skills.
 		// Models page (TEN-204) reuses modelCtl. Eval (TEN-201) wired below,
 		// after evalSched is built.

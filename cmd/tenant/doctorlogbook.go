@@ -30,18 +30,11 @@ func (e *doctorEnv) logbookStore() (*store.Store, checkResult) {
 	switch {
 	case e.logbook != nil:
 		return e.logbook, checkResult{}
-	case logbookOff(e.c):
-		return nil, checkResult{Status: statusSkip, Detail: "logs.store is false: the log book keeps its text files only"}
 	case errors.Is(e.logbookErr, fs.ErrNotExist):
 		return nil, checkResult{Status: statusSkip, Detail: "logbook.db not created yet (serve and the TUI create it)"}
 	}
 	return nil, checkResult{Status: statusFail, Detail: fmt.Sprintf("logbook.db could not be opened: %v", e.logbookErr),
 		Fix: "check permissions and disk space on " + e.c.logsRoot()}
-}
-
-// logbookOff reports config logs.store false.
-func logbookOff(c *commonFlags) bool {
-	return c.lc != nil && c.lc.Logs.Store != nil && !*c.lc.Logs.Store
 }
 
 // checkLogbookIntegrity runs SQLite's quick_check on logbook.db, as the
@@ -165,9 +158,6 @@ func describeBoot(ctx context.Context, st *store.Store, id string) string {
 // alone, their logbook.db unwritten. --fix clears the markers of processes
 // that exited that way.
 func checkLogbookMirrorOnly(_ context.Context, e *doctorEnv) checkResult {
-	if logbookOff(e.c) {
-		return checkResult{Status: statusOK, Detail: "logs.store is false: every process keeps the text files only, by configuration"}
-	}
 	marks, err := logs.MirrorOnlyProcesses(e.c.logsRoot())
 	if err != nil {
 		return checkResult{Status: statusWarn, Detail: "could not read the mirror-only markers: " + err.Error()}

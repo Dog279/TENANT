@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -92,7 +91,7 @@ func launchWiki(ctx context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if f.dir == "" {
 		return nil, nil, nil
 	}
-	ix, err := buildWikiIndex(ctx, e.c, e.router, f.dir, e.log)
+	ix, err := buildWikiIndex(ctx, e.c, e.router, f.dir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -274,7 +273,7 @@ func checkWikiFreshness(_ context.Context, e *doctorEnv) checkResult {
 // auto-reindexes lazily on first use, so it self-heals when the
 // embedder comes back). A search while the embedder is down surfaces a
 // clean tool error in the feed instead of a startup crash.
-func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string, _ *slog.Logger) (*wiki.Index, error) {
+func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string) (*wiki.Index, error) {
 	emb, embProfile, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	if err != nil {
 		return nil, fmt.Errorf("wiki plugin: resolve embedder: %w", err)

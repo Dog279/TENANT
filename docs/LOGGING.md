@@ -366,9 +366,9 @@ have no CRITICAL level, so these lines read `ERROR` and carry
 live process is never reported (for example after a laptop wakes), and a
 crash file is read only once its process's lock is free. The check runs at
 start and every minute in whichever process does the housekeeping, so a serve
-crash while the TUI is open is reported within a minute. With the store off
-(`"store": false`) or unavailable there are no boot records: an unexpected
-exit is not reported, and a crash dump goes to stderr only.
+crash while the TUI is open is reported within a minute. With the store
+unavailable there are no boot records: an unexpected exit is not reported,
+and a crash dump goes to stderr only.
 
 A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
@@ -443,8 +443,7 @@ It POSTs to the running hub (the line shows up live in open dashboards; the
 TUI's feed does not show it); when no hub is reachable (or with `--file`) it
 leaves the line in the spool, which the next Tenant process to run files into
 the log book, tagged `external` (see [Intake](#intake-v1-history-foreign-folders-and-the-spool)).
-With `"logs": {"store": false}` it appends to the day's file instead. The token is
-`dashboard.auth` when config.json sets one, else the generated
+The token is `dashboard.auth` when config.json sets one, else the generated
 `<config>/dashboard-auth-token` a default install uses (`--token` overrides).
 Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
 `system`, …) are refused, hub up or not.
@@ -536,8 +535,8 @@ defer act.End(&err)                               // End(&err, "status", code) a
   written as `ERROR` with `severity=critical`, and a sensitive field as
   `«sensitive»`, never its value. The store keeps the typed values.
 - `Audit` is for records that must not be lost: it returns once the record is
-  committed to `logbook.db`, with the commit's error. With the store off it
-  returns once the line is written.
+  committed to `logbook.db`, with the commit's error. Without the store (it
+  did not open) it returns once the line is written.
 - **Plugins** each write their own log, `plugin.<id>`, under Integrations ›
   Plugins: started or could not start, the operator's enable and disable,
   token refreshes, and their API's rate limits, refused credentials and

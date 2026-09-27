@@ -306,7 +306,7 @@ func (a *discordApprover) tryConsume(in discord.Inbound) bool {
 		}
 		var denied []hit
 		for nonce, p := range a.pending {
-			signalCard(p.reply, cardVerdict{false, in.AuthorID})
+			trySignal(p.reply, cardVerdict{false, in.AuthorID})
 			denied = append(denied, hit{nonce, p})
 		}
 		a.mu.Unlock()
@@ -321,7 +321,7 @@ func (a *discordApprover) tryConsume(in discord.Inbound) bool {
 	for nonce, p := range a.pending {
 		n := strings.ToLower(nonce)
 		if text == "approve-"+n || text == n {
-			signalCard(p.reply, cardVerdict{true, in.AuthorID})
+			trySignal(p.reply, cardVerdict{true, in.AuthorID})
 			a.mu.Unlock()
 			a.freeze(nonce, p, "approved", in.AuthorID)
 			a.logInfo("discord approval resolved", "outcome", "approved", "via", "text", "by", in.AuthorID,
@@ -365,7 +365,7 @@ func (a *discordApprover) tryInteraction(in discord.Interaction) bool {
 	if err := a.io.RespondUpdate(ctx, in.ID, in.Token, verdictText(p, verdict, in.UserID, a.now()), approvalButtons(nonce, true), v2); err != nil {
 		discord.AckFailed.Log(ctx, "click", verdict, "err", err)
 	}
-	signalCard(p.reply, cardVerdict{approve, in.UserID})
+	trySignal(p.reply, cardVerdict{approve, in.UserID})
 	a.logInfo("discord approval resolved", "outcome", verdict, "via", "button", "by", in.UserID,
 		"channel", p.channel, "action", p.action, "latency", a.now().Sub(p.postedAt).Round(time.Millisecond))
 	return true
@@ -412,14 +412,7 @@ func (a *discordApprover) logInfo(msg string, kv ...any) {
 	}
 }
 
-func trySignal(ch chan bool, v bool) {
-	select {
-	case ch <- v:
-	default:
-	}
-}
-
-func signalCard(ch chan cardVerdict, v cardVerdict) {
+func trySignal[T any](ch chan T, v T) {
 	select {
 	case ch <- v:
 	default:

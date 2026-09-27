@@ -75,22 +75,28 @@ func chainKey(cfgDir string) ([]byte, error) {
 	return nil, errors.New("the Security log key keeps disappearing")
 }
 
-// readChainKey reads the Security log's key; fs.ErrNotExist when there is
-// none yet. A file claimed but not yet written (secrets.CreateExclusive's
-// fallback without hard links) is read again for up to a second.
-func readChainKey(cfgDir string) ([]byte, error) { return readChainKeyWith(cfgDir, secrets.ReadFile) }
-
-// readChainKeyWith reads the key through read: secrets.ReadFile, which
-// hardens the file, or secrets.Peek for a report that changes nothing.
-func readChainKeyWith(cfgDir string, read func(string) ([]byte, error)) ([]byte, error) {
-	var b []byte
-	var err error
+// readClaimed reads a file secrets.CreateExclusive creates, through read:
+// secrets.ReadFile, which hardens the file, or secrets.Peek for a report that
+// changes nothing. A file claimed but not yet written (CreateExclusive's
+// fallback without hard links) is read again for up to a second while it is
+// empty.
+func readClaimed(path string, read func(string) ([]byte, error)) (b []byte, err error) {
 	for range 10 {
-		if b, err = read(chainKeyPath(cfgDir)); err != nil || len(bytes.TrimSpace(b)) > 0 {
+		if b, err = read(path); err != nil || len(bytes.TrimSpace(b)) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	return b, err
+}
+
+// readChainKey reads the Security log's key; fs.ErrNotExist when there is
+// none yet.
+func readChainKey(cfgDir string) ([]byte, error) { return readChainKeyWith(cfgDir, secrets.ReadFile) }
+
+// readChainKeyWith reads the key through read (readClaimed's).
+func readChainKeyWith(cfgDir string, read func(string) ([]byte, error)) ([]byte, error) {
+	b, err := readClaimed(chainKeyPath(cfgDir), read)
 	if err != nil {
 		return nil, err
 	}
@@ -153,25 +159,23 @@ func witnessChain(cfgDir string, head store.Head) error {
 	if err != nil {
 		return err
 	}
-	switch w := strings.TrimSpace(lc.Logs.Security.Witness); {
-	case w == "":
+	switch w := witnessOf(lc); {
+	case w.Kind == "":
 		return nil
-	case w == "discord":
+	case w.Kind == "discord":
 		dm := witnessDM.Load()
 		if dm == nil {
 			return errors.New("witness discord: no Discord relay runs in this process")
 		}
 		return (*dm)(fmt.Sprintf("Tenant Security log anchor: record %d, hash %s, at %s", head.Rec, head.Hash, head.Time.Format(time.RFC3339)))
-	case strings.HasPrefix(w, "peer:"):
+	case w.Kind == "peer":
 		// ponytail: no peer call stores a head yet; add one to the peering API (TEN-189/190) to allow peer witnesses.
-		return fmt.Errorf("witness %s: a peer can't be a witness yet; use discord or a file", w)
+		return fmt.Errorf("witness %s: a peer can't be a witness yet; use discord or a file", w.Target)
+	case w.Problem != "":
+		return fmt.Errorf("witness %q: want discord or an absolute file path", w.Target)
 	default:
-		path := expandPath(w)
-		if !filepath.IsAbs(path) {
-			return fmt.Errorf("witness %q: want discord or an absolute file path", w)
-		}
 		b, _ := json.Marshal(head)
-		return atomicWrite(path, append(b, '\n'))
+		return atomicWrite(w.Target, append(b, '\n'))
 	}
 }
 
@@ -260,6 +264,17 @@ func openSecurityLog(c *commonFlags) (*store.Store, error) {
 	return store.Open(filepath.Join(c.logsRoot(), "logbook.db"), store.Options{ChainKey: key})
 }
 
+// chainVerifyOptions reads what the Security log is verified against: the
+// anchor and, when w is a usable file, the witness's head.
+func chainVerifyOptions(cfgDir string, w witnessAudit) (store.VerifyOptions, error) {
+	var opts store.VerifyOptions
+	var err error
+	if opts.Anchor, err = readChainHead(chainAnchorPath(cfgDir)); err == nil && w.Kind == "file" && w.Problem == "" {
+		opts.Witness, err = readChainHead(w.Target)
+	}
+	return opts, err
+}
+
 // verifySecurityLog verifies the install's Security log: its archives and
 // database against the key, the anchor and, when logs.security.witness is a
 // file, the witness. `tenant logs verify security` (TEN-377) reports it.
@@ -269,16 +284,10 @@ func verifySecurityLog(ctx context.Context, c *commonFlags) (store.Verification,
 		return store.Verification{}, err
 	}
 	defer st.Close()
-	var opts store.VerifyOptions
-	if opts.Anchor, err = readChainHead(chainAnchorPath(c.cfgDir)); err != nil {
+	lc, _ := loadLaunchConfig(c.cfgDir)
+	opts, err := chainVerifyOptions(c.cfgDir, witnessOf(lc))
+	if err != nil {
 		return store.Verification{}, err
-	}
-	if lc, _ := loadLaunchConfig(c.cfgDir); lc != nil {
-		if w := expandPath(strings.TrimSpace(lc.Logs.Security.Witness)); filepath.IsAbs(w) {
-			if opts.Witness, err = readChainHead(w); err != nil {
-				return store.Verification{}, err
-			}
-		}
 	}
 	v, err := st.Verify(ctx, opts)
 	if err == nil {

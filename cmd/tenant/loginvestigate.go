@@ -247,20 +247,17 @@ func (inv *investigator) turn(ctx context.Context, st *store.Store, prompt, atta
 	ctx = gov.Begin(ctx) // cancelled when a limit runs out
 	defer gov.End()
 	surface := &investigationSurface{st: st, tools: inv.tools, disp: inv.disp, gov: gov}
+	mirror := mirrorObserver(inv.events, investigatorID, alerts.Events.Log)
 	ag, err := agent.New(agent.Config{
 		AgentID: investigatorID, Router: inv.router, Working: working.New(),
 		Tools: surface, Dispatcher: surface, Runs: inv.runs, Logger: inv.log,
 		SystemPrompt: inv.sysPrompt + investigateSysSuffix,
 		InboundFlow:  agent.NewFlow(logLabel, attached),
 		Observer: func(e agent.Event) {
-			switch e.Kind {
-			case agent.EventUsage:
+			if e.Kind == agent.EventUsage {
 				_ = gov.RecordUsage(e.PromptTokens, e.CompletionTokens)
-			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				if inv.events != nil {
-					e.Agent, e.Source = investigatorID, alerts.Events.Log
-					inv.events(e)
-				}
+			} else if mirror != nil {
+				mirror(e)
 			}
 		},
 	})
