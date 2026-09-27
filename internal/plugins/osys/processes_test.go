@@ -9,7 +9,12 @@ import (
 
 type filed []*event.Event
 
-func (f *filed) Emit(_ context.Context, e *event.Event)          { *f = append(*f, e) }
+// Emit keeps the child's own lines, not its component events (internal/lifecycle).
+func (f *filed) Emit(_ context.Context, e *event.Event) {
+	if e.Log != "system" {
+		*f = append(*f, e)
+	}
+}
 func (f *filed) Audit(ctx context.Context, e *event.Event) error { f.Emit(ctx, e); return nil }
 
 // ps (tasklist on Windows) is filed as a child of the os plugin: its start

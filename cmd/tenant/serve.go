@@ -106,8 +106,8 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	defer life.Shutdown()
 	run := beginRun(ctx, "serve") // the system log's start-up and stop (TEN-383)
 	defer run.failed(&err)
-	// Crash capture and the boot record (TEN-365): its clean stop is the
-	// first Release step registered, so it runs last.
+	// The log book's final flush, then the boot record and crash capture
+	// (TEN-373): the first Release steps registered, so they run last.
 	onPanic := startBootRecord(hub, life, "serve")
 	defer onPanic()
 
@@ -116,6 +116,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
 	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
+	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/
 	// dashboard/peer/iMessage/fallback/cron lines are the operator's only window
 	// into "is it working", so route them at always-visible level rather than the
@@ -494,6 +495,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		turnSchedCfg = c.lc.TurnScheduler
 	}
 	gated := newTurnGateConfigured(ag, turnSchedCfg)
+	lifecycle.Track(ctx, "turn gate", lifecycle.Subsystem, "turns", lifecycle.Running, nil) // lives as long as serve
 
 	// Cron (recurring jobs): dedicated read/comms-safe runner agents on a
 	// schedule; cron_* management tools go to the MAIN agent.
@@ -581,7 +583,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
 		}
-		life.AddFunc(lifecycle.Drain, "cron", cronEngine.Stop) // drains any in-flight cron run
+		life.StartFunc(lifecycle.Drain, "cron", lifecycle.Subsystem, "cron", cronEngine.Stop) // drains any in-flight cron run
 	}
 
 	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
@@ -686,7 +688,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		events: emit, evalProg: evalProg,
 	})
 	if sched != nil {
-		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop) // drains any in-flight improve job
+		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop) // drains any in-flight improve job
 	}
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: mcpCtl}

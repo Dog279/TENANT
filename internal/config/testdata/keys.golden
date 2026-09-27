@@ -96,6 +96,9 @@ config.json: logs.per_log.*.max_age_days
 config.json: logs.per_log.*.max_mb
 config.json: logs.per_log.*.min_level
 config.json: logs.per_log.*.on_full
+config.json: logs.rate_limit
+config.json: logs.rate_limit.burst
+config.json: logs.rate_limit.per_second
 config.json: logs.retention_days
 config.json: logs.security
 config.json: logs.security.max_age_days

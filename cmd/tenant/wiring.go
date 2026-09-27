@@ -342,6 +342,13 @@ func (c *commonFlags) logsOptions() logs.Options {
 		}
 		return logsBudget(cfg)
 	}
+	opts.RateLimit = func() (float64, int) { // the same
+		rl := cfg.RateLimit
+		if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
+			rl = lc.Logs.RateLimit
+		}
+		return rl.PerSecond, rl.Burst
+	}
 	if cfg.MaxFieldBytes != 0 {
 		opts.MaxFieldBytes = cfg.MaxFieldBytes
 	}
@@ -413,8 +420,9 @@ func limits(p store.Policy, maxMB, maxAgeDays int) store.Policy {
 // to tee when non-nil) becomes slog.Default, which also carries the log
 // package: nothing a library prints that way reaches the terminal behind
 // the surface's back. Unless logs.store is false it also attaches
-// <logs root>/logbook.db, the system of record; a store that won't open
-// leaves a warning and the text files carrying on alone. When the book
+// <logs root>/logbook.db, the system of record (Hub.OpenStore); a store that
+// won't open leaves a critical logbook event and the text files carrying on
+// alone. When the book
 // cannot be opened, a memory hub stands in and err says why; the caller
 // shows it. The caller Starts the hub (discovery, tailing, retention) once
 // it has a lifetime context, and Closes it on exit, which flushes and closes
@@ -433,14 +441,9 @@ func openLogHub(c *commonFlags, tee slog.Handler) (*logs.Hub, *slog.Logger, erro
 				h.Logf("logbook", logs.LevelCritical, "logbook: no Security log key; security records can't be written", "err", kerr)
 			}
 		}
-		st, serr := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID(), ChainKey: key})
-		if serr != nil {
-			h.Logf("logbook", slog.LevelWarn, "logbook: the store did not open; logging to the text files only", "err", serr)
-		} else {
-			h.AttachStore(st)
-			if c.cfgDir != "" {
-				h.Housekeep("anchor", 0, anchorChain(h, st, c.cfgDir))
-			}
+		// A store that won't open is logged, and Degraded says why.
+		if st, serr := h.OpenStore(key); serr == nil && c.cfgDir != "" {
+			h.Housekeep("anchor", 0, anchorChain(h, st, c.cfgDir))
 		}
 	}
 	log := slog.New(h.Handler(tee))

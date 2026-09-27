@@ -3,7 +3,7 @@
 // writer connection (docs/design/logging-v2.md §5, §6.1).
 //
 // Commit files a batch in one transaction: the events, their full-text rows,
-// the per-minute rollups and each log's byte count. Commit order is sequence
+// the per-minute and per-hour rollups and each log's byte count. Commit order is sequence
 // order, so a reader holding a Cursor (the store's ID plus a seq) never
 // misses a row: Since returns everything after it. A cursor from another
 // store (a rebuilt or restored database) restarts from the beginning.
@@ -75,6 +75,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
 	"tenant/internal/logs/event"
 
@@ -128,6 +129,16 @@ CREATE TABLE views (name TEXT PRIMARY KEY, filter TEXT NOT NULL, builtin INTEGER
 	// 2: retention (TEN-371) sums and sheds the diagnostic channel's bytes
 	// without scanning every event.
 	`CREATE INDEX events_diag ON events(time_ns, bytes) WHERE channel = 1;`,
+	// 3: the Summary page (TEN-380) reads per-hour rollups, which Commit
+	// keeps beside the minutes (addHourRollups): by log and level, and by
+	// event ID for warnings and worse. Filled here from what the store holds.
+	`CREATE TABLE rollup_hour (hour INTEGER, log_id INTEGER, level INTEGER, n INTEGER,
+  PRIMARY KEY (hour, log_id, level)) WITHOUT ROWID;
+CREATE TABLE rollup_id (hour INTEGER, provider_id INTEGER, event_id INTEGER, n INTEGER,
+  PRIMARY KEY (hour, provider_id, event_id)) WITHOUT ROWID;
+INSERT INTO rollup_hour (hour, log_id, level, n) SELECT minute / 60, log_id, level, sum(n) FROM rollup GROUP BY 1, 2, 3;
+INSERT INTO rollup_id (hour, provider_id, event_id, n)
+  SELECT time_ns / 3600000000000, provider_id, event_id, count(*) FROM events WHERE level <= 3 GROUP BY 1, 2, 3;`,
 }
 
 // Options configures a Store.
@@ -145,7 +156,8 @@ type Store struct {
 	r    *sql.DB // readers
 	id   [16]byte
 	boot []byte
-	key  []byte // the chain key; nil refuses security records
+	key  []byte         // the chain key; nil refuses security records
+	lock *datalock.Lock // logbook.lock, shared (health.go)
 
 	mu    sync.Mutex       // one Commit at a time; guards names
 	names map[string]int64 // kind "\x00" name → names.id, committed ones only
@@ -199,8 +211,25 @@ func writerPragmas() []string {
 }
 
 // Open opens the store at path, creating it (owner-only) and bringing its
-// schema up to date.
+// schema up to date. It holds the store's lock file shared until Close, so
+// a quarantine or a restore can't move the files away (health.go), and
+// waits out one in progress. A database SQLite finds damaged fails with
+// ErrCorrupt.
 func Open(path string, opts Options) (*Store, error) {
+	lock, err := datalock.File(strings.TrimSuffix(path, ".db"), false)
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	s, err := openDB(path, opts)
+	if err != nil {
+		_ = lock.Release()
+		return nil, err
+	}
+	s.lock = lock
+	return s, nil
+}
+
+func openDB(path string, opts Options) (*Store, error) {
 	if err := fsperm.PrepareFile(path); err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
@@ -222,7 +251,7 @@ func Open(path string, opts Options) (*Store, error) {
 		subs: map[chan struct{}]struct{}{}, stop: make(chan struct{})}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = s.Close()
-		return nil, err
+		return nil, corrupt(err)
 	}
 	return s, nil
 }
@@ -295,7 +324,9 @@ func (s *Store) StoreID() [16]byte { return s.id }
 func (s *Store) Close() error {
 	s.stopOnce.Do(func() { close(s.stop) })
 	s.wg.Wait()
-	return errors.Join(s.r.Close(), s.w.Close())
+	err := errors.Join(s.r.Close(), s.w.Close())
+	_ = s.lock.Release()
+	return err
 }
 
 // Commit files batch in one transaction: the events, their full-text rows,
@@ -364,6 +395,9 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 			return fmt.Errorf("store: commit: %w", err)
 		}
 	}
+	if err := addHourRollups(ctx, tx, seqs[0], seqs[len(seqs)-1]); err != nil {
+		return fmt.Errorf("store: commit: %w", err)
+	}
 	for id, b := range bytesByLog {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO logs (log_id, bytes) VALUES (?, ?)
 			ON CONFLICT (log_id) DO UPDATE SET bytes = coalesce(bytes, 0) + excluded.bytes`, id, b); err != nil {
@@ -430,13 +464,16 @@ func (s *Store) Get(ctx context.Context, seq uint64) (event.Event, error) {
 
 // LogInfo is one log the store holds.
 type LogInfo struct {
-	Name  string
-	Bytes int64 // the summed payload of its events: its share of the budget
+	Name       string
+	Bytes      int64 // the summed payload of its events: its share of the budget
+	Dropped    int64 // events not written: a full queue, or low disk (AddLost)
+	Suppressed int64 // events over their rate limit
 }
 
 // Logs lists every log that has events, by name.
 func (s *Store) Logs(ctx context.Context) ([]LogInfo, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT n.name, coalesce(l.bytes, 0) FROM logs l JOIN names n ON n.id = l.log_id ORDER BY n.name`)
+	rows, err := s.r.QueryContext(ctx, `SELECT n.name, coalesce(l.bytes, 0), coalesce(l.dropped, 0), coalesce(l.suppressed, 0)
+		FROM logs l JOIN names n ON n.id = l.log_id ORDER BY n.name`)
 	if err != nil {
 		return nil, fmt.Errorf("store: logs: %w", err)
 	}
@@ -444,7 +481,7 @@ func (s *Store) Logs(ctx context.Context) ([]LogInfo, error) {
 	var out []LogInfo
 	for rows.Next() {
 		var li LogInfo
-		if err := rows.Scan(&li.Name, &li.Bytes); err != nil {
+		if err := rows.Scan(&li.Name, &li.Bytes, &li.Dropped, &li.Suppressed); err != nil {
 			return nil, fmt.Errorf("store: logs: %w", err)
 		}
 		out = append(out, li)
@@ -541,9 +578,17 @@ func (s *Store) TryLease(ctx context.Context, name string, ttl time.Duration) (b
 // Reidentify gives the database at path a new store ID. A restore calls it:
 // the restored file's seq counter is back where the backup left it, so a
 // cursor from before the restore could skip the rows committed after it,
-// unless every cursor restarts.
+// unless every cursor restarts. The boot rows of the processes that were
+// running when the backup was taken came back with no clean stop; they are
+// retired, since those processes did not die here. It takes the store's lock
+// exclusively, so it fails while a process has the store open.
 func Reidentify(path string) error {
-	s, err := Open(path, Options{})
+	lock, err := datalock.ExclusiveFile(lockFile(path))
+	if err != nil {
+		return fmt.Errorf("store: reidentify: %w", err)
+	}
+	defer lock.Release()
+	s, err := openDB(path, Options{})
 	if err != nil {
 		return err
 	}
@@ -551,6 +596,9 @@ func Reidentify(path string) error {
 	_, _ = rand.Read(b[:])
 	id := hex.EncodeToString(b[:])
 	_, err = s.w.Exec(`UPDATE meta SET value = ? WHERE key = 'store_id'`, id)
+	if err == nil {
+		_, err = s.w.Exec(`UPDATE boots SET reported = 1 WHERE coalesce(clean, 0) = 0`)
+	}
 	return errors.Join(err, s.Close())
 }
 

@@ -489,7 +489,7 @@ func TestCreateWhileAStoreIsOpenForWriting(t *testing.T) {
 // time: restored, they would read as processes that died (TEN-365). A crash
 // dump already filed into the system folder is an ordinary log.
 func TestBootRecordsAreNotBackedUp(t *testing.T) {
-	for _, rel := range []string{"logs/boots/b1.json", "logs/boots/b1.lock", "logs/crash/b1.txt"} {
+	for _, rel := range []string{"logs/boots/b1.json", "logs/boots/b1.lock", "logs/crash/b1.txt", "logs/logbook.lock", "logs/logbook.db.corrupt-20260927-101010"} {
 		if _, skip := builtinSkip(RootData, rel, filepath.Base(rel)); !skip {
 			t.Errorf("%s is backed up", rel)
 		}

@@ -76,6 +76,10 @@ func TestHousekeeperOneHolderAndTakeover(t *testing.T) {
 	if took := time.Since(closed); took < leaseTTL/2 {
 		t.Errorf("took over after %v, before the lease could expire", took)
 	}
+	waitFor(t, 5*time.Second, func() bool { // the lease changing hands is an event
+		ring, _ := hubs[other].Snapshot()
+		return slices.ContainsFunc(ring, func(e Entry) bool { return e.Field("event") == "logbook/1007" })
+	})
 }
 
 func waitFor(t *testing.T, d time.Duration, ok func() bool) {
@@ -128,7 +132,7 @@ func TestLowDiskSheds(t *testing.T) {
 			if int(dropped) != 3-len(c.want) {
 				t.Errorf("dropped %d", dropped)
 			}
-			warned := slices.ContainsFunc(msgs(t, st, "logbook"), func(m string) bool { return strings.Contains(m, "low disk") })
+			warned := slices.ContainsFunc(msgs(t, st, "logbook"), func(m string) bool { return strings.Contains(strings.ToLower(m), "low disk") })
 			if warned != (len(c.want) < 3) {
 				t.Errorf("low-disk warning written: %v", warned)
 			}
@@ -211,7 +215,7 @@ func TestKeepWarnsOncePerCrossing(t *testing.T) {
 	_ = h.Close()
 	var warned int
 	for _, m := range msgs(t, other, "logbook") {
-		if strings.Contains(m, "log x is past its size limit") {
+		if strings.Contains(m, "Log x is past its size limit") {
 			warned++
 		}
 	}

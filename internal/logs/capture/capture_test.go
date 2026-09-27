@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
 	"tenant/internal/runtrace"
 )
@@ -40,11 +41,16 @@ func helper(ctx context.Context, what string) *exec.Cmd {
 type sink struct {
 	mu     sync.Mutex
 	events []*event.Event
+	system []*event.Event // the child's component events (internal/lifecycle)
 }
 
 func (s *sink) Emit(_ context.Context, e *event.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if e.Provider == "system" {
+		s.system = append(s.system, e)
+		return
+	}
 	s.events = append(s.events, e)
 }
 func (s *sink) Audit(ctx context.Context, e *event.Event) error { s.Emit(ctx, e); return nil }
@@ -205,5 +211,66 @@ func TestTheChildGetsTheTraceAndActivity(t *testing.T) {
 	}
 	if env := New(context.Background(), "x").Env(); env != nil {
 		t.Errorf("with nothing known, Env = %v", env)
+	}
+}
+
+// A running child is a component while it runs (internal/lifecycle): it is
+// listed, and its start and end are system events under an activity of its
+// own, related to the work that started it. It goes when it exits; a failed
+// one is a warning.
+func TestAChildIsAComponentWhileItRuns(t *testing.T) {
+	s := install(t)
+	ctx, _ := event.Start(context.Background(), job)
+	parent := event.ActivityFromContext(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	c := New(ctx, "mcp", "server", "files-380")
+	done := make(chan struct{})
+	go func() { _ = c.Run(helper(ctx, "sleep")); close(done) }()
+
+	listed := func() (lifecycle.Component, bool) {
+		for _, comp := range lifecycle.Components() {
+			if comp.Name == "files-380" {
+				return comp, true
+			}
+		}
+		return lifecycle.Component{}, false
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if comp, ok := listed(); ok {
+			if comp.Kind != lifecycle.Child || comp.Log != "mcp" || comp.State != lifecycle.Running || comp.Activity == "" {
+				t.Errorf("listed as %+v", comp)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the running child is not listed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if comp, ok := listed(); ok {
+		t.Errorf("the child is still listed after it exited: %+v", comp)
+	}
+	s.mu.Lock()
+	sys := append([]*event.Event(nil), s.system...)
+	s.mu.Unlock()
+	if len(sys) != 2 || sys[0].ID != 102 || sys[0].Corr.RelatedID != parent || sys[1].ID != 103 || sys[1].Corr.ActivityID != sys[0].Corr.ActivityID {
+		for _, e := range sys {
+			t.Logf("%d %s activity %s related %s", e.ID, e.Msg, e.Corr.ActivityID, e.Corr.RelatedID)
+		}
+		t.Fatalf("want running (related to the parent %s) then stopped, under one activity", parent)
+	}
+
+	_ = New(context.Background(), "model", "child", "ghost-380").Run(exec.Command("no-such-program-380"))
+	s.mu.Lock()
+	last := s.system[len(s.system)-1]
+	s.mu.Unlock()
+	if last.ID != 2102 || last.Level != event.Warning || field(last, "component") != "ghost-380" {
+		t.Errorf("a child that did not start: %d %v %q", last.ID, last.Level, last.Msg)
+	}
+	if _, ok := listed(); ok {
+		t.Error("a child that never ran is listed")
 	}
 }
