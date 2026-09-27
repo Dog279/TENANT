@@ -68,7 +68,7 @@ Every dashboard request needs the bearer token in `<config>/dashboard-auth-token
 `tenant serve` prints the token at start-up only when stdout is a terminal. Under
 launchd or systemd, stdout goes to a file, so the start-up banner and the `system`
 log line say where the token lives instead: `cat` that file to see it.
-`tenant attach` reads it itself.
+`tenant attach` and `tenant logs` read it themselves.
 
 Builds before TEN-360 printed the token to stdout (launchd keeps it in `serve.log`,
 which nothing rotates) and wrote it into `<data>/logs/system/*.log`. If you ran one,
@@ -134,7 +134,7 @@ Restart=on-failure
 RestartSec=5
 # stderr (TENANT_LOG-filtered) goes to the journal: journalctl --user -u tenant -f
 # The full per-subsystem record is the log book: <data>/logs/<source>/YYYY-MM-DD.log
-# (see docs/LOGGING.md); `tenant attach --follow --source approvals` tails one.
+# (see docs/LOGGING.md); `tenant logs query log:approvals --follow` tails one.
 
 [Install]
 WantedBy=default.target

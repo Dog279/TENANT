@@ -111,7 +111,7 @@ func (s *Server) mountREST(mux *http.ServeMux) {
 	// TEN-194: headless approval queue + structured activity projection.
 	mux.HandleFunc("GET /api/approvals", s.handleApprovals)
 	mux.HandleFunc("POST /api/approvals/{id}", s.handleApprovalDecide)
-	mux.HandleFunc("GET /api/activity", s.handleActivity)
+	mux.HandleFunc("GET /api/activity", s.handleActivityStore)
 	mux.HandleFunc("POST /api/addon/event", s.handleAddonEvent)
 	// The live logging API (rest_logs.go): sources = folders = tabs; anything
 	// may write a line into a new source without a rebuild.
@@ -479,7 +479,7 @@ func (s *Server) handleAddonEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.logs != nil {
 		if e, ok := agent.EntryFor(ev); ok {
-			s.logs.Log(e)
+			s.logs.LogExternal(e)
 		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "ok", "source": logs.NormalizeSource(req.Source)})

@@ -120,7 +120,7 @@ func (h *Handler) Enabled(ctx context.Context, l slog.Level) bool {
 	if hub == nil {
 		return fallbackHandler().Enabled(ctx, l)
 	}
-	return l >= hub.opts.MinLevel
+	return l >= hub.opts.MinLevel || hub.debugAny()
 }
 
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
@@ -141,7 +141,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		}
 		return fb.Handle(ctx, r)
 	}
-	if r.Level < hub.opts.MinLevel {
+	if r.Level < hub.opts.MinLevel && !hub.debugAny() { // hub.Log checks the record's own log
 		return nil
 	}
 	src := h.source

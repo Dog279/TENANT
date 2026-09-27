@@ -25,6 +25,7 @@ import (
 	"tenant/internal/httplimits"
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/logapi"
 )
 
 const maxDashboardRequestBodyBytes = 1 << 20
@@ -91,6 +92,7 @@ type Server struct {
 	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
 	approvals    ApprovalControl     // TEN-194: headless approval surface (serve mode); nil = TUI drains its own prompts
 	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Activity unavailable
+	logbook      *logapi.API         // the log book's API v2 over logs (logbook.go)
 	rules        RuleControl         // per-tool permission rules (Tools page card); nil = card hidden
 	broker       *agent.Broker
 	mux          *http.ServeMux
@@ -154,7 +156,7 @@ func isDashboardStream(r *http.Request) bool {
 	case "/events", "/activity/events", "/ws":
 		return true
 	default:
-		return false
+		return logapi.Streaming(r)
 	}
 }
 
@@ -283,6 +285,7 @@ func (s *Server) routes() {
 	// precedence (most-specific pattern wins) routes /api/... and /ws here.
 	s.mountREST(s.mux)
 	s.mountWS(s.mux)
+	s.mountLogbook(s.mux) // the log book's API v2 (logbook.go)
 
 	// Memory Curator REST surface (TEN-89, memory_rest.go). Nil-safe: a server
 	// constructed without a MemoryControl serves without the memory routes.

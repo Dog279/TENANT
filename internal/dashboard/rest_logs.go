@@ -184,7 +184,7 @@ func (s *Server) handleLogWrite(w http.ResponseWriter, r *http.Request) {
 		}
 		e.Fields = append(e.Fields, logs.Field{Key: k, Value: req.Fields[k]})
 	}
-	s.logs.Log(e)
+	s.logs.LogExternal(e)
 	// Mirror onto the live broker so an open TUI feed sees the line too, as
 	// add-on events always have.
 	if s.broker != nil {
