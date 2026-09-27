@@ -816,12 +816,51 @@ for the agent, its turn's surface: `local`, `discord`, `imessage`,
 
 A one-shot command (`tenant backup`, `tenant privacy`, `tenant setup`,
 `tenant model`) files its events into `logbook.db` when it ends, so its
-records join the chain. Other one-shot commands have no log book to take a
-record yet: a config change made by one (`tenant route`, `tenant peer`, …)
-is not recorded.
+records join the chain. Every other one-shot command (`tenant route`,
+`tenant peer`, …) opens `logbook.db` when it writes its first Security
+record (`logs.AuditEmitter`), so its changes are recorded and chained too.
 
 The v1 `approvals` folder keeps being written through this release while
 approvals move into `security`; it goes in the next.
+
+#### Health checks: `tenant doctor` and `tenant security audit`
+
+Both open `logbook.db` read-only (`store.Options.ReadOnly`): they create,
+tighten and migrate nothing there, and read beside a running serve without
+holding it up.
+
+- **`tenant doctor`** adds six `log book …` checks: its **location** (a
+  `logs.dir` outside the data dir is left out of `tenant backup`), its
+  **integrity** (`quick_check` and the schema version), its **size** (the
+  database and WAL against `logs.budget_mb`, and the fullest logs against
+  their limits; WARN over the budget, or a `keep` log past its limit), who
+  holds the **housekeeper** lease (role, pid, host and boot ID from `boots`;
+  WARN when it has expired while a process that keeps the log book runs),
+  **mirror-only** processes, and the **losses** (each log's dropped and
+  suppressed counters since the store was created). A process running on its
+  text files alone leaves `<logs root>/boots/<boot id>.mirror-only` (why and
+  since), removed once `logbook.db` is written again or it exits; its boot
+  lock says whether it still runs (one whose store never opened holds the
+  lock itself while marked). A marker whose process died is a WARN, and
+  `--fix` clears it. The private-data permission check, and its `--fix`, now
+  cover a relocated `logs.dir` too, unless its root holds the home, data or
+  config directory. `logbook.key` and `logbook.anchor` join the config
+  files `--fix` tightens.
+- **`tenant security audit`** adds a `logbook` section and the log book's
+  files to `file_protection`: `logbook.db`, `-wal`, `-shm`, every folder of
+  the root (the text files, `archive`, `spool`, `crash`, `boots`) and the
+  anchor (the key is checked with the managed secrets). On Windows they are
+  `inherited`: `fsperm` is a no-op until TEN-325, so they carry only the data
+  directory's ACL, a warning. The section reports the **scrubber** (on, how
+  many known values it holds and how many are under its 8-character floor,
+  never the values), a **secret scan** (every text file and the newest
+  10,000 events of `logbook.db`, searched for the known values in every
+  encoding the scrubber matches, reported by the credential's name with line
+  numbers or seqs, never the value; a warning), the Security log's
+  **verify** result with the time it ran (`ok`, `broken`, a critical
+  finding, `unverified`, `no_key` or `no_store`; the audit files no event of
+  its own), and the **witness** (none, `discord`, a file, or a setting that
+  reaches no witness, a warning).
 
 ### Turns, sub-agents and research
 
