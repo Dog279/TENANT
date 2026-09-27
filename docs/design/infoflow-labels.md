@@ -35,6 +35,13 @@ and archive copies of the result, so the envelope remains inspectable after the
 immediate dispatch. Errors are not retained as sensitive source values because
 they do not contain a successful read result.
 
+`Sensitivity` may also be `untrusted` (TEN-400): text anyone can write, which
+may try to steer the agent. The log book is the first such source, with
+provenance `log`: the events attached to an alert's investigation, and its
+`logs_query` results. The tracker follows untrusted results exactly as it
+follows sensitive ones (`InfoFlowLabel.Tracked`), and `agent.NewFlow` seeds
+text that arrives other than as a tool result, such as that attachment.
+
 Initial sensitive sources include:
 
 | Source | Tools | Provenance |

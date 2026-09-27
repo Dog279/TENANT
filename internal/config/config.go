@@ -204,8 +204,10 @@ type AlertThreshold struct {
 
 // AlertAction is what a firing does besides filing the alert, which the
 // dashboard shows: Kind is dashboard (the default: nothing more), discord
-// or imessage (a message to the operator), or cron (a one-off prompt job,
-// Target its prompt).
+// or imessage (a message to the operator), cron (a one-off prompt job,
+// Target its prompt), or investigate (a read-only agent turn over the
+// event, once the operator approves it; Target is "", discord or imessage,
+// where its result also goes).
 type AlertAction struct {
 	Kind   string `json:"kind,omitempty"`
 	Target string `json:"target,omitempty"`

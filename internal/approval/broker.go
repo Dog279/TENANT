@@ -369,7 +369,16 @@ func (b *Broker) RemoveRule(pattern string) (bool, error) {
 // every time and fails closed (deny) when there's no operator channel. detail
 // carries the inviter name/addr + the PIN the operator must match.
 func (b *Broker) AskPairing(ctx context.Context, detail string) bool {
-	switch b.askDecision(ctx, "pairing", "peer pairing", detail) {
+	return b.Ask(ctx, "pairing", "peer pairing", detail)
+}
+
+// Ask raises an Approve/Deny prompt that no category mode, tool rule or
+// session grant answers: the operator decides every time, and it is denied
+// when nobody answers before ctx ends or no surface can reach the operator.
+// For requests that are not a tool's action: peer pairing, an alert's agent
+// investigation (TEN-400).
+func (b *Broker) Ask(ctx context.Context, category, action, detail string) bool {
+	switch b.askDecision(ctx, category, action, detail) {
 	case control.ApproveAlways, control.ApproveSession, control.ApproveOnce:
 		return true
 	default:

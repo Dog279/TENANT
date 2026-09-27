@@ -37,6 +37,11 @@ const (
 	Discord   = "discord"   // and a DM to the operator
 	IMessage  = "imessage"  // and a text to the operator (imessage.operator)
 	Cron      = "cron"      // and a one-off prompt job; Target is the prompt
+	// Investigate is an agent turn over the event and its timeline, read-only
+	// and within a budget, once the operator approves it (TEN-400,
+	// investigate.go); Target is where its result also goes: "", Discord or
+	// IMessage.
+	Investigate = "investigate"
 )
 
 const (
@@ -59,8 +64,8 @@ type Spec struct {
 	Filter   string // the filter language (docs/LOGGING.md)
 	Count    int    // threshold: fire once Count events match within Window; <= 1 fires on every match
 	Window   string // a duration: 10m, 1h
-	Action   string // Dashboard (""), Discord, IMessage or Cron
-	Target   string // Cron's prompt
+	Action   string // Dashboard (""), Discord, IMessage, Cron or Investigate
+	Target   string // Cron's prompt; Investigate's channel
 	Throttle string // fire at most once per this long; "" is DefaultThrottle
 	Disabled bool
 }
@@ -192,8 +197,12 @@ func Compile(s Spec) (Rule, error) {
 		if strings.TrimSpace(s.Target) == "" {
 			return r, errors.New("action.target: a cron action needs the prompt to run")
 		}
+	case Investigate:
+		if s.Target != "" && s.Target != Discord && s.Target != IMessage {
+			return r, fmt.Errorf("action.target %q: where an investigation's result also goes: empty (the dashboard alone), discord or imessage", s.Target)
+		}
 	default:
-		return r, fmt.Errorf("action.kind %q: want dashboard, discord, imessage or cron", s.Action)
+		return r, fmt.Errorf("action.kind %q: want dashboard, discord, imessage, cron or investigate", s.Action)
 	}
 	return r, nil
 }
@@ -215,7 +224,7 @@ type Alert struct {
 
 func newAlert(r Rule, e event.Event, n int64) Alert {
 	return Alert{Rule: r.Name, Action: r.Action, Target: r.Target, Seq: e.Seq, Time: e.Time, Level: e.Level,
-		Log: name(e.Log), Provider: name(e.Provider), ID: e.ID, Msg: clip(logs.Scrub(e.Msg)), Count: int(n), Window: r.window}
+		Log: name(e.Log), Provider: name(e.Provider), ID: e.ID, Msg: clip(logs.Scrub(e.Msg), msgMax), Count: int(n), Window: r.window}
 }
 
 // name is a log's or a provider's name, which an outside writer may have
@@ -227,11 +236,11 @@ func name(s string) string {
 	return "(unnamed)"
 }
 
-// clip puts s on one line and cuts it to msgMax runes.
-func clip(s string) string {
+// clip puts s on one line and cuts it to n runes.
+func clip(s string, n int) string {
 	s = strings.Join(strings.FieldsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }), " ")
-	if r := []rune(s); len(r) > msgMax {
-		s = string(r[:msgMax]) + "…"
+	if r := []rune(s); len(r) > n {
+		s = string(r[:n]) + "…"
 	}
 	return s
 }

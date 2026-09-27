@@ -31,7 +31,7 @@ Writes the `alerts` log.
 - **Fields:** `rule`, `action`, `seq`, `source`, `source_level`, `message`, `count`
 - **Find it:** `provider:alerts id:1001`
 
-**What it means.** An alert rule matched an event and fired: its banner went to the status feed, and a discord, imessage or cron action was sent (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.
+**What it means.** An alert rule matched an event and fired: its banner went to the status feed, and a discord, imessage or cron action was sent, or an investigation asked for (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.
 
 **Why it happens.** The event matched the rule's filter, as often as its threshold asks, and the rule had not fired within its throttle window.
 
@@ -45,9 +45,9 @@ Writes the `alerts` log.
 - **Fields:** `rule`, `action`, `seq`, `err`
 - **Find it:** `provider:alerts id:3001`
 
-**What it means.** An alert fired, but its Discord, iMessage or cron action failed. The alert itself is still in the alerts log.
+**What it means.** An alert fired, but its Discord, iMessage or cron action failed, or its investigation could not be asked for. The alert itself is still in the alerts log.
 
-**Why it happens.** The Discord relay has no bot or operator, imessage.operator is unset or Messages can't send from this process, or no cron scheduler runs in the process that evaluates the rules.
+**Why it happens.** The Discord relay has no bot or operator, imessage.operator is unset or Messages can't send from this process, no cron scheduler or agent runs in the process that evaluates the rules, or another investigation is still running or waiting for approval.
 
 **What to do.** Fix what the error names, or point the rule at another action in logs.alerts.
 
@@ -1378,6 +1378,59 @@ Writes the `improve` log.
 **Why it happens.** The profile is not in config.json, or its model could not be set up.
 
 **What to do.** Fix the profile's entry in config.json, or clear improve.profile.
+
+## investigate
+
+Writes the `security` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [4001](#investigate-4001) | info | Investigation | `Investigation of alert {rule} started as turn {trace}, approved by the operator` |
+| [4002](#investigate-4002) | warning | Investigation | `Investigation of alert {rule} not started: {reason}` |
+| [4003](#investigate-4003) | info | Investigation | `Investigation {trace} of alert {rule} {outcome}: {steps} steps, {tool_calls} tool calls, {tokens} tokens` |
+
+### investigate 4001
+
+`Investigation of alert {rule} started as turn {trace}, approved by the operator`
+
+- **Level:** info · **Channel:** operational · **Task:** Investigation · **Log:** security
+- **Fields:** `rule`, `seq`, `trace`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:investigate id:4001`
+
+**What it means.** The operator approved an alert rule's investigate action, and an agent turn began looking into the event: read-only tools, within its budget, the log text labelled untrusted. seq is the alert's event.
+
+**Why it happens.** An alert rule with action.kind investigate fired, and the operator approved the request.
+
+**What to do.** None. trace:<trace> follows the turn; investigate 4003 is its result.
+
+### investigate 4002
+
+`Investigation of alert {rule} not started: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Investigation · **Log:** security
+- **Fields:** `rule`, `seq`, `reason`
+- **Find it:** `provider:investigate id:4002`
+
+**What it means.** An alert rule's investigate action asked the operator to approve an agent investigation, and no turn ran.
+
+**Why it happens.** The operator denied it, nobody answered in time, Tenant stopped first, no surface could ask the operator, or the event could not be read.
+
+**What to do.** None when intended. To be asked less often, raise the rule's throttle or narrow its filter in logs.alerts.
+
+### investigate 4003
+
+`Investigation {trace} of alert {rule} {outcome}: {steps} steps, {tool_calls} tool calls, {tokens} tokens`
+
+- **Level:** info · **Channel:** operational · **Task:** Investigation · **Log:** security
+- **Fields:** `rule`, `seq`, `trace`, `outcome`, `steps`, `tool_calls`, `tokens`, `result` (sensitive, masked: `result`)
+- **Find it:** `provider:investigate id:4003`
+
+**What it means.** An alert's investigation ended. result is the agent's report, masked until revealed: it is written from log text anyone can write, and may quote memory. The same report is on the status feed and, when the rule names one, its channel, unless it quotes sensitive data.
+
+**Why it happens.** An approved investigation finished, reached its budget or step limit, or failed.
+
+**What to do.** Read the result, and check what it claims against the events (trace:<trace>, and the alert's event, seq): it can be wrong, or steered by a crafted log line.
 
 ## logbook
 

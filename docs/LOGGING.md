@@ -1048,6 +1048,7 @@ on the evaluating process's status feed (the TUI's, or serve's terminal and
 | `discord` | a DM to the operator through the relay (as the MCP re-auth notice) |
 | `imessage` | a text to `imessage.operator` |
 | `cron` | a one-off prompt job through the scheduler (the safe runner, no exec); `target` is the prompt |
+| `investigate` | once the operator approves, a read-only agent turn over the event (below); `target` is empty, `discord` or `imessage`: where its result also goes |
 
 What leaves the log book is only the rule, the event's level, log,
 provider and ID, its number and time, its message (scrubbed again, on one
@@ -1081,6 +1082,48 @@ the fields it sets:
     "throttle": "2h" }
 ] }
 ```
+
+#### Investigating an alert with the agent (TEN-400)
+
+The `investigate` action asks the agent to explain an alert. Open question
+Q2 of the design (§15) was decided yes by the operator, on the condition
+that log text is treated as what it is: input anyone can write. So each
+limit is enforced by code, not asked of the model (`cmd/tenant/loginvestigate.go`):
+
+- **Approval, every time.** A firing asks the operator through the approval
+  broker (the TUI and the dashboard's approvals, category `investigate`),
+  showing the alert's facts but no log text. No mode, rule or session grant
+  answers it. Denied, unanswered within 15 minutes, or with no surface to
+  ask, no turn runs, and `investigate/4002` says why. One investigation runs
+  (or waits) at a time; a firing meanwhile fails as `alerts/3001`.
+- **Read-only tools.** The turn's whole tool surface is `logs_query` (the
+  log book, in the filter language, sensitive fields never shown) and the
+  memory reads `memory_recall`, `recall` and `memory_history`, each only if
+  it is neither gated nor outbound (`memory_search` is outbound: peers see
+  the query). The model is offered nothing else; a call to any other tool
+  fails the agent's validation and is refused again at dispatch. It has no
+  exec, no file access, no network, no messaging, no config, cron or
+  memory writes, and no sub-agents.
+- **A budget.** The top-level `budgets` apply, held under an investigation's
+  ceiling: 200,000 tokens, 24 tool calls, $5 at the budgets' rates, 10
+  minutes, and 8 steps. The first one reached stops the turn.
+- **Untrusted input.** The attachment is the alert's event and the up to 40
+  nearest events of its turn or activity (`trace:`/`activity:` timeline),
+  each line only the time, level, number, provider/ID, log, correlation IDs,
+  message and non-sensitive fields, scrubbed again and cut (16 KB in all).
+  It and every `logs_query` result carry TEN-311's label
+  `{untrusted, log}`, so the flow rules follow them: an outbound call
+  quoting them would ask first.
+
+The turn's activity is filed in the `alerts` log, which no rule reads, and
+shows in the dashboard's activity feed as `tenant-investigate`. Its result
+goes to the status feed, to the rule's channel when `target` names one, and
+to the Security log: `investigate/4001` when it starts and `4003` when it
+ends (outcome, steps, tool calls, tokens, and the result as a sensitive
+field), both with the turn's trace, so `trace:<id>` finds the whole run and
+`runs.db` its record. A result that quotes a sensitive read (memory) stays
+behind the Security record's reveal: the feed and the channel get a pointer
+to the trace instead.
 
 ### Event IDs, the reference and coverage
 
