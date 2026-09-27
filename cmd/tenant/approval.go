@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -439,29 +440,22 @@ func launchFlagGrants(pf *pluginFlags) map[string]string {
 	if pf == nil {
 		return grants
 	}
-	if pf.osAllowExec {
-		grants[catExec] = "--os-allow-exec"
-	}
-	if pf.osAllowWrite {
-		grants[catWrite] = "--os-allow-write"
-	}
-	if pf.webAllowInteract {
-		grants[catWeb] = "--web-allow-interact"
-	}
-	// discordAllowSend joined 2026-09-19 alongside the send recategorization of
-	// the Discord action ids: the flag ungates the TOOL, and now also pre-
-	// approves the category, so "--discord-allow-send" means what it says on
-	// every surface instead of only the ones with their own approver.
-	for _, f := range []struct {
-		on   bool
-		name string
-	}{
-		{pf.gsuiteAllowSend, "--gsuite-allow-send"}, {pf.xAllowPost, "--x-allow-post"},
-		{pf.imsgAllowSend, "--imessage-allow-send"}, {pf.discordAllowSend, "--discord-allow-send"},
-	} {
-		if f.on {
-			grants[catSend] = f.name
-			break
+	// Each plugin declares what its allow-flags grant; the first flag to
+	// grant a category is the one reported.
+	for _, d := range plugins().All() {
+		if d.Grants == nil {
+			continue
+		}
+		g := d.Grants(pf)
+		cats := make([]string, 0, len(g))
+		for cat := range g {
+			cats = append(cats, cat)
+		}
+		sort.Strings(cats)
+		for _, cat := range cats {
+			if _, ok := grants[cat]; !ok {
+				grants[cat] = g[cat]
+			}
 		}
 	}
 	return grants

@@ -177,7 +177,7 @@ func composeSurfaceAudits(c *commonFlags, pf *pluginFlags, goos string) ([]surfa
 }
 
 func buildSecurityAuditReport(c *commonFlags, pf *pluginFlags, permissions effectivePermissions) securityAuditReport {
-	webEnabled := pf.web || toolOverrideEnabled(permissions.ToolOverrides, "web_")
+	webEnabled := webFlagsOf(pf).on || toolOverrideEnabled(permissions.ToolOverrides, "web_")
 	// Remote reader is opt-in (default off) since TEN-319; readerEnabled reads
 	// the persisted/env opt-in state.
 	remoteReaderOn := webEnabled && readerEnabled(c.lc)

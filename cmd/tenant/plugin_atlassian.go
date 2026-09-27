@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 
 	"tenant/internal/cmdreg"
@@ -13,6 +14,10 @@ import (
 func atlassianPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:        "atlassian",
+		Flags:     bindAtlassianFlags,
+		On:        func(pf *pluginFlags) bool { return atlassianFlagsOf(pf).on },
+		Launch:    launchAtlassian,
+		Eval:      evalAtlassian,
 		Title:     "Atlassian (Jira)",
 		Version:   1,
 		Tools:     func() []model.ToolSpec { return atlassian.NewDispatcher(nil, atlassian.Policy{}).Tools() },
@@ -57,5 +62,84 @@ func activateAtlassian(ctx context.Context, e *pluginEnv) (plugin, func(), error
 	if err != nil {
 		return nil, nil, fmt.Errorf("atlassian plugin: %w", err)
 	}
-	return atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: e.gateAllow(e.pf.atlassianAllowWrite), Confirm: e.confirm}), func() {}, nil
+	return atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: e.gateAllow(atlassianFlagsOf(e.pf).allowWrite), Confirm: e.confirm}), func() {}, nil
+}
+
+// atlassianFlags are Atlassian's launch flags.
+type atlassianFlags struct {
+	on         bool
+	site       string
+	email      string
+	project    string
+	allowWrite bool
+	clientID   string
+	callback   string
+}
+
+func atlassianFlagsOf(pf *pluginFlags) *atlassianFlags {
+	return flagsOf[atlassianFlags](pf, "atlassian")
+}
+
+func bindAtlassianFlags(fs *flag.FlagSet) any {
+	f := &atlassianFlags{}
+	fs.BoolVar(&f.on, "atlassian", false, "enable Jira tools (Atlassian)")
+	fs.StringVar(&f.site, "atlassian-site", "", "Atlassian site URL, e.g. https://you.atlassian.net (Path A)")
+	fs.StringVar(&f.email, "atlassian-email", "", "Atlassian account email (Path A; token via $ATLASSIAN_TOKEN)")
+	fs.StringVar(&f.project, "atlassian-project", "", "default Jira project key (e.g. TEN)")
+	fs.BoolVar(&f.allowWrite, "atlassian-allow-write", false, "permit jira_create/comment/transition (writes to the board)")
+	fs.StringVar(&f.clientID, "atlassian-client-id", "", "Atlassian OAuth app client id (Path B; secret via $ATLASSIAN_CLIENT_SECRET, login via `tenant atlassian login`)")
+	fs.StringVar(&f.callback, "atlassian-oauth-callback", "", "OAuth callback bind addr (default 127.0.0.1:8765)")
+	return f
+}
+
+// launchAtlassian builds the Jira plugin from the launch flags.
+func launchAtlassian(ctx context.Context, e *pluginEnv) ([]plugin, func(), error) {
+	f := atlassianFlagsOf(e.pf)
+	if !f.on {
+		return nil, nil, nil
+	}
+	svc, err := atlassian.Open(ctx, atlassian.Config{
+		SiteURL:       f.site,
+		Email:         f.email,
+		Project:       f.project,
+		ClientID:      f.clientID,
+		TokenPath:     atlassianTokenPath(e.c.cfgDir),
+		OAuthCallback: f.callback,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("atlassian plugin: %w", err)
+	}
+	return []plugin{atlassian.NewDispatcher(svc, atlassian.Policy{AllowWrite: e.gateAllow(f.allowWrite), Confirm: e.confirm})}, nil, nil
+}
+
+// evalAtlassian turns Jira on when /configure already set it up (a site and
+// auth). The token path needs no browser.
+func evalAtlassian(pf *pluginFlags, c *commonFlags, explicit map[string]bool) bool {
+	f := atlassianFlagsOf(pf)
+	if explicit["atlassian"] || f.on {
+		return false
+	}
+	lc, err := loadLaunchConfig(c.cfgDir)
+	if err != nil || lc == nil {
+		return false
+	}
+	sk, ok := lc.Skills["atlassian"]
+	if !ok || !sk.Enabled || sk.Settings == nil || sk.Settings["site"] == "" {
+		return false
+	}
+	f.on = true
+	f.site = sk.Settings["site"]
+	f.project = sk.Settings["project"]
+	f.allowWrite = true
+	if sk.Settings["auth"] == "token" {
+		// Token auth: load email + api_token from config/credentials.
+		f.email = sk.Settings["email"]
+		if creds, cerr := loadCredentials(c.cfgDir); cerr == nil {
+			f.clientID = creds.Get(skillSecretID("atlassian", "client_id"))
+		}
+	} else {
+		// OAuth path: needs client_id from config.
+		f.clientID = sk.Settings["client_id"]
+	}
+	return true
 }

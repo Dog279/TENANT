@@ -379,20 +379,11 @@ func applyPermissionPreset(c *commonFlags, surface, name string, modes map[strin
 
 func configuredToolGroups(c *commonFlags, pf *pluginFlags, toolOverrides map[string]bool) []string {
 	configured := map[string]bool{"memory": true}
-	add := func(enabled bool, name string) {
-		if enabled {
-			configured[name] = true
+	for _, d := range plugins().All() {
+		if d.On != nil && d.On(pf) {
+			configured[d.ID] = true
 		}
 	}
-	add(pf.wikiDir != "", "wiki")
-	add(pf.sqlDB != "", "sql")
-	add(pf.web, "web")
-	add(pf.gsuite, "gsuite")
-	add(pf.atlassian, "atlassian")
-	add(pf.x, "x")
-	add(pf.imsg, "imessage")
-	add(pf.discord, "discord")
-	add(pf.osEnable, "os")
 	if len(c.lc.MCPRemotes)+len(pf.mcpRemotes) > 0 {
 		configured["remote-mcp"] = true
 	}

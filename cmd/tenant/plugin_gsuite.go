@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 
@@ -13,12 +14,18 @@ import (
 // gsuitePlugin declares Google Workspace: Gmail, Calendar and Drive.
 func gsuitePlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:        "gsuite",
-		Title:     "Google Workspace (Gmail, Calendar, Drive)",
-		Version:   1,
-		Tools:     func() []model.ToolSpec { return gsuite.NewDispatcher(nil, gsuite.Policy{}).Tools() },
-		Configure: gsuiteSkillKind,
-		Setup:     3,
+		ID:          "gsuite",
+		Flags:       bindGSuiteFlags,
+		On:          func(pf *pluginFlags) bool { return gsuiteFlagsOf(pf).on },
+		ApplyConfig: applyGSuiteConfig,
+		ExpandPaths: expandGSuitePaths,
+		Grants:      gsuiteGrants,
+		Launch:      launchGSuite,
+		Title:       "Google Workspace (Gmail, Calendar, Drive)",
+		Version:     1,
+		Tools:       func() []model.ToolSpec { return gsuite.NewDispatcher(nil, gsuite.Policy{}).Tools() },
+		Configure:   gsuiteSkillKind,
+		SetupOrder:  3,
 		// Every gated gsuite tool (send, calendar and drive writes, trash)
 		// raises the one gsuite_send action.
 		Actions:  map[string]string{"gsuite_send": catSend},
@@ -53,7 +60,7 @@ func activateGSuite(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 		return nil, nil, fmt.Errorf("gsuite plugin: %w yet — run `/configure gsuite`", errNotConfigured)
 	}
 	auth := sk.Settings["auth"]
-	gcfg := gsuite.Config{Auth: auth, AllowSend: e.pf.gsuiteAllowSend}
+	gcfg := gsuite.Config{Auth: auth, AllowSend: gsuiteFlagsOf(e.pf).allowSend}
 	switch auth {
 	case "sa":
 		saPath := sk.Settings["sa_json"]
@@ -90,7 +97,78 @@ func activateGSuite(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 		return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
 	}
 	return gsuite.NewDispatcher(svc, gsuite.Policy{
-		AllowSend: e.gateAllow(e.pf.gsuiteAllowSend),
+		AllowSend: e.gateAllow(gsuiteFlagsOf(e.pf).allowSend),
 		Confirm:   e.confirm,
 	}), nil, nil
+}
+
+// gsuiteFlags are Google Workspace's launch flags.
+type gsuiteFlags struct {
+	on        bool
+	auth      string
+	saJSON    string
+	subject   string
+	allowSend bool
+}
+
+func gsuiteFlagsOf(pf *pluginFlags) *gsuiteFlags { return flagsOf[gsuiteFlags](pf, "gsuite") }
+
+func bindGSuiteFlags(fs *flag.FlagSet) any {
+	f := &gsuiteFlags{}
+	fs.BoolVar(&f.on, "gsuite", false, "enable Gmail + Calendar")
+	fs.StringVar(&f.auth, "gsuite-auth", "gcloud", "gsuite auth: gcloud|sa")
+	fs.StringVar(&f.saJSON, "gsuite-sa-json", "", "gsuite service-account JSON (auth=sa)")
+	fs.StringVar(&f.subject, "gsuite-subject", "", "gsuite impersonated user (auth=sa)")
+	fs.BoolVar(&f.allowSend, "gsuite-allow-send", false, "permit gmail_send/calendar_create")
+	return f
+}
+
+func applyGSuiteConfig(pf *pluginFlags, s savedConfig) {
+	f := gsuiteFlagsOf(pf)
+	if !s.set["gsuite"] {
+		f.on = true
+	}
+	if !s.set["gsuite-auth"] && s.get("auth") != "" {
+		f.auth = s.get("auth")
+	}
+	if !s.set["gsuite-sa-json"] {
+		f.saJSON = firstNonEmpty(f.saJSON, s.get("sa_json"))
+	}
+	if !s.set["gsuite-subject"] {
+		f.subject = firstNonEmpty(f.subject, s.get("subject"))
+	}
+}
+
+func expandGSuitePaths(pf *pluginFlags) { f := gsuiteFlagsOf(pf); f.saJSON = expandPath(f.saJSON) }
+
+func gsuiteGrants(pf *pluginFlags) map[string]string {
+	if gsuiteFlagsOf(pf).allowSend {
+		return map[string]string{catSend: "--gsuite-allow-send"}
+	}
+	return nil
+}
+
+// launchGSuite builds Google Workspace from the launch flags (gcloud or a
+// service account).
+func launchGSuite(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
+	f := gsuiteFlagsOf(e.pf)
+	if !f.on {
+		return nil, nil, nil
+	}
+	gcfg := gsuite.Config{Auth: f.auth, Subject: f.subject, AllowSend: f.allowSend}
+	if f.auth == "sa" {
+		if f.saJSON == "" {
+			return nil, nil, fmt.Errorf("gsuite plugin: --gsuite-auth sa needs --gsuite-sa-json")
+		}
+		b, err := os.ReadFile(f.saJSON)
+		if err != nil {
+			return nil, nil, fmt.Errorf("gsuite plugin: read sa json: %w", err)
+		}
+		gcfg.SAJSON = b
+	}
+	svc, err := gsuite.Open(gcfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
+	}
+	return []plugin{gsuite.NewDispatcher(svc, gsuite.Policy{AllowSend: e.gateAllow(f.allowSend), Confirm: e.confirm})}, nil, nil
 }

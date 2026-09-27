@@ -198,7 +198,7 @@ func TestBroker_ContextCancelDenies(t *testing.T) {
 
 func TestBroker_SeedAndLoadModes(t *testing.T) {
 	b := newApprovalBroker(testLog())
-	b.seedFromFlags(&pluginFlags{osAllowExec: true, gsuiteAllowSend: true})
+	b.seedFromFlags(testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).allowExec = true; gsuiteFlagsOf(pf).allowSend = true }))
 	if b.modes[catExec] != modeAllow || b.modes[catSend] != modeAllow {
 		t.Fatal("flags should seed allow")
 	}

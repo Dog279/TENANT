@@ -38,13 +38,13 @@ func webConfig(cfgDir string, pf *pluginFlags, lc *launchConfig) web.Config {
 	// a key added or rotated at runtime — via the settings page or an external
 	// edit — is picked up without restarting. credKey is read-only + cheap.
 	return web.Config{
-		Headless:       !pf.webShow,
+		Headless:       !webFlagsOf(pf).show,
 		NoSandbox:      lc != nil && lc.BrowserNoSandbox,
 		ReaderEnabled:  readerEnabled(lc),
 		BraveKeyFunc:   func() string { return braveKey(cfgDir) },
 		TavilyKeyFunc:  func() string { return credKey(cfgDir, "tavily", "TAVILY_API_KEY", "TAVILY_KEY") },
 		JinaKeyFunc:    func() string { return credKey(cfgDir, "jina", "JINA_API_KEY", "JINA_KEY") },
-		PrivateNetwork: append([]string(nil), pf.webPrivateNetwork...),
+		PrivateNetwork: append([]string(nil), webFlagsOf(pf).privateNetwork...),
 	}
 }
 

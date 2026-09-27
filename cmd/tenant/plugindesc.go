@@ -10,12 +10,14 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"sort"
 	"sync"
 
 	"tenant/internal/model"
 	"tenant/internal/pluginreg"
+	"tenant/internal/plugins/wiki"
 )
 
 // pluginDescriptor declares one first-party plugin.
@@ -43,8 +45,33 @@ type pluginDescriptor struct {
 	// SetupOnly marks a schema only `tenant setup` walks (path- or flag-driven
 	// plugins); /configure lists the plugin as legacy.
 	SetupOnly bool
-	// Setup is the plugin's place in `tenant setup` (0: not offered there).
-	Setup int
+	// SetupOrder is the plugin's place in `tenant setup` (0: not offered).
+	SetupOrder int
+
+	// Flags binds the plugin's launch flags and returns where they land: the
+	// plugin's own struct, read back with flagsOf.
+	Flags func(fs *flag.FlagSet) any
+	// On reports whether the launch flags turn the plugin on.
+	On func(pf *pluginFlags) bool
+	// ApplyConfig folds the plugin's saved config into its launch flags
+	// wherever the operator passed none: explicit flags always win.
+	ApplyConfig func(pf *pluginFlags, s savedConfig)
+	// ExpandPaths expands ~ in the plugin's path-valued flags.
+	ExpandPaths func(pf *pluginFlags)
+	// Grants maps each approval category the plugin's allow-flags
+	// pre-approve to the flag that does it.
+	Grants func(pf *pluginFlags) map[string]string
+	// Launch builds the plugin at launch when its flags configure it.
+	// Nothing built means "not configured here": the stub stands in. A
+	// plugin built but not turned on by its flags (On false) is registered
+	// disabled.
+	Launch func(ctx context.Context, e *pluginEnv) (built []plugin, cleanup func(), err error)
+	// Prepare creates what the plugin needs on first run, reporting each
+	// action (ensureSetup); ensureDir makes a directory and reports it.
+	Prepare func(pf *pluginFlags, ensureDir func(label, dir string), lines *[]string)
+	// Eval turns the plugin on for `tenant eval` when the operator set none
+	// of its flags, and reports whether it did.
+	Eval func(pf *pluginFlags, c *commonFlags, explicit map[string]bool) bool
 
 	// Actions maps each approval action id the plugin raises to its category:
 	// the plugin's permission classes.
@@ -92,7 +119,22 @@ type pluginEnv struct {
 	// the command runs without one (one-shot CLI turns).
 	confirm func(context.Context, string, string) bool
 	log     *slog.Logger
+	router  *model.Router
+
+	// wikiIndex is set by the wiki plugin's launch for the callers that
+	// reindex after writing a note (TEN-44).
+	wikiIndex *wiki.Index
 }
+
+// savedConfig is one plugin's saved config (config.json skills.<id> and its
+// credentials), as ApplyConfig reads it.
+type savedConfig struct {
+	settings map[string]string
+	secret   func(field string) string // the value of skill:<id>:<field>
+	set      map[string]bool           // the launch flags passed explicitly
+}
+
+func (s savedConfig) get(key string) string { return s.settings[key] }
 
 // gateAllow is a plugin's allow flag as its policy should see it: when an
 // approval broker is wired it is the single decision point, so the per-action
@@ -114,14 +156,14 @@ var (
 	pluginsReg  *pluginreg.Registry[*pluginDescriptor]
 )
 
-// plugins is the registry of first-party plugins, in the order the stub
-// catalog, doctor and the configure surfaces list them. Adding a plugin means
+// plugins is the registry of first-party plugins, in the order they are
+// built at launch and listed by the stub catalog, doctor and the CLI. Adding a plugin means
 // writing its plugin_<id>.go and naming its descriptor here.
 func plugins() *pluginreg.Registry[*pluginDescriptor] {
 	pluginsOnce.Do(func() {
 		pluginsReg = pluginreg.MustNew(pluginreg.Rules{Categories: catOrder, Reserved: hostToolLabels},
-			sqlPlugin(), wikiPlugin(), webPlugin(), osPlugin(), gsuitePlugin(), xPlugin(), imessagePlugin(),
-			crmPlugin(), discordPlugin(), atlassianPlugin(), githubPlugin(), simplefinPlugin(),
+			sqlPlugin(), wikiPlugin(), webPlugin(), gsuitePlugin(), atlassianPlugin(), githubPlugin(),
+			xPlugin(), imessagePlugin(), discordPlugin(), osPlugin(), crmPlugin(), simplefinPlugin(),
 		)
 	})
 	return pluginsReg
@@ -131,11 +173,11 @@ func plugins() *pluginreg.Registry[*pluginDescriptor] {
 func setupPlugins() []*pluginDescriptor {
 	var out []*pluginDescriptor
 	for _, d := range plugins().All() {
-		if d.Setup > 0 && d.Configure != nil {
+		if d.SetupOrder > 0 && d.Configure != nil {
 			out = append(out, d)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Setup < out[j].Setup })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].SetupOrder < out[j].SetupOrder })
 	return out
 }
 
@@ -196,4 +238,37 @@ func pluginDoctorChecks() []doctorCheck {
 		out = append(out, d.Doctor...)
 	}
 	return out
+}
+
+// launchPlugins builds every plugin its launch flags configure, in registry
+// order, and registers it on mux. The first plugin that fails to build fails
+// the launch: better to tell the operator their flag is wrong than to drop
+// the tool silently.
+func launchPlugins(ctx context.Context, mux *toolMux, e *pluginEnv) error {
+	for _, d := range plugins().All() {
+		if d.Launch == nil {
+			continue
+		}
+		built, cleanup, err := d.Launch(ctx, e)
+		if err != nil {
+			return err
+		}
+		mux.AddCleanup(cleanup)
+		for _, p := range built {
+			mux.Add(d.ID, p)
+		}
+		if len(built) > 0 && d.On != nil && !d.On(e.pf) {
+			mux.SetEnabled(d.ID, false)
+		}
+	}
+	return nil
+}
+
+// expandPluginPaths expands ~ in every plugin's path-valued launch flags.
+func expandPluginPaths(pf *pluginFlags) {
+	for _, d := range plugins().All() {
+		if d.ExpandPaths != nil {
+			d.ExpandPaths(pf)
+		}
+	}
 }

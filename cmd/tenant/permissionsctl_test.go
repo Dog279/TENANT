@@ -26,7 +26,7 @@ func TestComposeEffectivePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	local, err := composeEffectivePermissions(c, &pluginFlags{osEnable: true}, "tui")
+	local, err := composeEffectivePermissions(c, testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).on = true }), "tui")
 	if err != nil {
 		t.Fatal(err)
 	}

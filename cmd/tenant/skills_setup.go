@@ -222,91 +222,21 @@ func yes(s string) bool {
 // applyPluginConfig fills pluginFlags from the saved skills config for any
 // flag the operator did NOT pass explicitly — so `tenant tui` honors what
 // `tenant setup` configured, without re-typing plugin flags. Explicit flags
-// always win (checked via the shared FlagSet's Visit set).
+// always win (checked via the shared FlagSet's Visit set). Each plugin folds
+// in its own config (its descriptor's ApplyConfig).
 func applyPluginConfig(c *commonFlags, pf *pluginFlags) {
 	if c == nil || c.lc == nil || len(c.lc.Skills) == 0 {
 		return
 	}
 	set := c.flagSet()
-	get := func(skill, key string) string {
-		if s := c.lc.Skills[skill]; s != nil && s.Settings != nil {
-			return s.Settings[key]
+	for _, d := range plugins().All() {
+		sc := c.lc.Skills[d.ID]
+		if d.ApplyConfig == nil || sc == nil || !sc.Enabled {
+			continue
 		}
-		return ""
-	}
-	enabled := func(skill string) bool {
-		s := c.lc.Skills[skill]
-		return s != nil && s.Enabled
-	}
-	secret := func(skill, field string) string {
-		return resolveSecretWith(c.credentialsLoader(), c.cfgDir, skillSecretID(skill, field), authCfg{Stored: true})
-	}
-
-	if enabled("wiki") && !set["wiki-dir"] {
-		pf.wikiDir = firstNonEmpty(pf.wikiDir, get("wiki", "dir"))
-	}
-	if enabled("sql") && !set["sql-db"] {
-		pf.sqlDB = firstNonEmpty(pf.sqlDB, get("sql", "db"))
-	}
-	if enabled("gsuite") {
-		if !set["gsuite"] {
-			pf.gsuite = true
-		}
-		if !set["gsuite-auth"] && get("gsuite", "auth") != "" {
-			pf.gsuiteAuth = get("gsuite", "auth")
-		}
-		if !set["gsuite-sa-json"] {
-			pf.gsuiteSAJSON = firstNonEmpty(pf.gsuiteSAJSON, get("gsuite", "sa_json"))
-		}
-		if !set["gsuite-subject"] {
-			pf.gsuiteSubject = firstNonEmpty(pf.gsuiteSubject, get("gsuite", "subject"))
-		}
-	}
-	if enabled("x") {
-		if !set["x"] {
-			pf.x = true
-		}
-		if !set["x-bearer"] {
-			pf.xBearer = firstNonEmpty(pf.xBearer, secret("x", "bearer"))
-		}
-	}
-	if enabled("imessage") {
-		if !set["imessage"] {
-			pf.imsg = true
-		}
-		if !set["bb-url"] {
-			pf.imsgURL = firstNonEmpty(pf.imsgURL, get("imessage", "url"))
-		}
-		if !set["bb-password"] {
-			pf.imsgPass = firstNonEmpty(pf.imsgPass, secret("imessage", "password"))
-		}
-	}
-	if enabled("discord") {
-		if !set["discord"] {
-			pf.discord = true
-		}
-		if !set["discord-bot-token"] {
-			pf.discordToken = firstNonEmpty(pf.discordToken, secret("discord", "token"))
-		}
-	}
-	if enabled("github") {
-		if !set["github"] {
-			pf.github = true
-		}
-		if !set["github-repo"] {
-			pf.githubRepo = firstNonEmpty(pf.githubRepo, get("github", "repo"))
-		}
-		if !set["github-api-base"] {
-			pf.githubAPIBase = firstNonEmpty(pf.githubAPIBase, get("github", "api_base"))
-		}
-		if !set["github-allow-write"] && get("github", "allow_write") == "true" {
-			pf.githubAllowWrite = true
-		}
-	}
-	if enabled("web") && !set["web"] {
-		pf.web = true
-	}
-	if enabled("os") && !set["os"] {
-		pf.osEnable = true
+		id := d.ID
+		d.ApplyConfig(pf, savedConfig{settings: sc.Settings, set: set, secret: func(field string) string {
+			return resolveSecretWith(c.credentialsLoader(), c.cfgDir, skillSecretID(id, field), authCfg{Stored: true})
+		}})
 	}
 }
