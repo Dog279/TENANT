@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"strconv"
-	"strings"
 	"time"
 
 	"tenant/internal/logs/event"
@@ -175,128 +172,15 @@ func idText(v any) string {
 	return ""
 }
 
-// encodeData renders fields as the data and dtypes columns (see the package
-// doc). Both are "" when there are no fields.
-func encodeData(fields []event.Field) (data, types string) {
-	if len(fields) == 0 {
-		return "", ""
-	}
-	b := make([]byte, 0, 64*len(fields))
-	t := make([]byte, 0, len(fields))
-	b = append(b, '{')
-	for i, f := range fields {
-		if i > 0 {
-			b = append(b, ',')
-		}
-		b = appendString(b, f.Key)
-		b = append(b, ':')
-		var code byte
-		b, code = appendValue(b, f.Value)
-		if f.Sensitive {
-			code -= 'a' - 'A'
-		}
-		t = append(t, code)
-	}
-	return string(append(b, '}')), string(t)
-}
+// encodeData and decodeData are the data and dtypes columns: the event
+// package's encoding, so an event's JSON carries them as stored.
+func encodeData(fields []event.Field) (data, types string) { return event.EncodeData(fields) }
 
-func appendString(b []byte, s string) []byte {
-	j, _ := json.Marshal(s) // a string always marshals
-	return append(b, j...)
-}
-
-// appendValue appends v as JSON and returns its type letter.
-func appendValue(b []byte, v any) ([]byte, byte) {
-	switch x := v.(type) {
-	case string:
-		return appendString(b, x), 's'
-	case int64:
-		return strconv.AppendInt(b, x, 10), 'i'
-	case float64:
-		if !math.IsNaN(x) && !math.IsInf(x, 0) {
-			return strconv.AppendFloat(b, x, 'g', -1, 64), 'f'
-		}
-	case bool:
-		return strconv.AppendBool(b, x), 'b'
-	case nil:
-		return append(b, "null"...), 'n'
-	case json.RawMessage:
-		if json.Valid(x) {
-			return append(b, x...), 'j'
-		}
-	case time.Time:
-		return appendString(b, x.UTC().Format(time.RFC3339Nano)), 't'
-	case time.Duration:
-		return strconv.AppendInt(b, int64(x), 10), 'd'
-	}
-	return appendString(b, event.Field{Value: v}.Text()), 's'
-}
-
-// decodeData reads the data and dtypes columns back into fields.
 func decodeData(data, types string) ([]event.Field, error) {
-	if data == "" {
-		return nil, nil
+	if data != "" && types == "" {
+		return nil, errors.New("data without dtypes")
 	}
-	dec := json.NewDecoder(strings.NewReader(data))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return nil, fmt.Errorf("data is not a JSON object")
-	}
-	out := make([]event.Field, 0, len(types))
-	for i := 0; dec.More(); i++ {
-		tok, err := dec.Token()
-		if err != nil {
-			return nil, err
-		}
-		if i >= len(types) {
-			return nil, errors.New("data has more fields than dtypes")
-		}
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			return nil, err
-		}
-		f := event.Field{Key: tok.(string)}
-		code := types[i]
-		if code >= 'A' && code <= 'Z' {
-			f.Sensitive, code = true, code+('a'-'A')
-		}
-		if f.Value, err = decodeValue(raw, code); err != nil {
-			return nil, fmt.Errorf("field %q: %w", f.Key, err)
-		}
-		out = append(out, f)
-	}
-	if len(out) != len(types) {
-		return nil, errors.New("dtypes has more fields than data")
-	}
-	return out, nil
-}
-
-func decodeValue(raw json.RawMessage, code byte) (any, error) {
-	switch code {
-	case 's':
-		var s string
-		err := json.Unmarshal(raw, &s)
-		return s, err
-	case 'i':
-		return strconv.ParseInt(string(raw), 10, 64)
-	case 'f':
-		return strconv.ParseFloat(string(raw), 64)
-	case 'b':
-		return string(raw) == "true", nil
-	case 'n':
-		return nil, nil
-	case 'j':
-		return json.RawMessage(append([]byte(nil), raw...)), nil
-	case 't':
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, err
-		}
-		return time.Parse(time.RFC3339Nano, s)
-	case 'd':
-		n, err := strconv.ParseInt(string(raw), 10, 64)
-		return time.Duration(n), err
-	}
-	return nil, fmt.Errorf("unknown type %q", code)
+	return event.DecodeData(data, types)
 }
 
 type scanner interface{ Scan(dest ...any) error }
