@@ -327,16 +327,17 @@ zero-config plugin.
 
 ---
 
-## 8. Future work (NOT in scope today)
+## 8. Who writes plugins
 
-- **Out-of-process plugins** — running each plugin as a separate
-  process over the existing MCP transport so a crashing web plugin
-  doesn't take the binary down. Promising but fights the
-  single-binary CGO-free thesis. Defer until in-process crash
-  reliability is the bottleneck.
-- **A `plugin/v1` package** — extracting the interface into its own
-  package to forbid deep imports from out-of-tree plugins. Worth
-  doing the moment Tenant gets its first external contributor.
-- **Per-plugin health checks** — `mux.Health()` returning per-plugin
-  liveness so `tenant doctor` surfaces a degraded plugin without
-  needing a tool call to discover it.
+In-process plugins are **first-party only** ([ADR 0001](adr/0001-appliance-not-framework.md)):
+they are compiled into the binary and reviewed with it, and this contract is an internal one
+that may change with any refactor. A tool from anyone else is an **MCP server**, which Tenant
+reaches over the protocol, gates with connector trust and tool rules, and runs out of process
+when it is local (EXT-003 / TEN-318). Know-how, as opposed to a tool, is an **Agent Skill**
+(EXT-001 / TEN-298). There is deliberately no `plugin/v1` package: an importable plugin API
+would put untrusted code inside the approval, egress and sandbox boundaries.
+
+Still open:
+- **Per-plugin health checks**: `mux.Health()` returning per-plugin liveness, so
+  `tenant doctor` surfaces a degraded plugin without needing a tool call to find it. The
+  plugin descriptor registry (ARC-003 / TEN-321) is where a plugin declares its probe.
