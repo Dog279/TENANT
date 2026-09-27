@@ -1806,6 +1806,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if herr != nil {
 		hub = logs.NewMemory(0)
 	}
+	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
 	hub.Start(ctx)
 	log := slog.New(hub.Handler(nil))
@@ -2966,7 +2967,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())
 		} else {
-			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
+			pushSys(dashboardServingLine(addr, c.cfgDir, c.lc))
 		}
 	}
 

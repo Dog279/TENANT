@@ -89,8 +89,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		hub = logs.NewMemory(0)
 		fmt.Fprintln(os.Stderr, "warning: "+herr.Error()+" — logging to memory only")
 	}
+	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
-	log := slog.New(hub.Handler(newLogger().Handler()))
+	log := slog.New(hub.Handler(slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()})))
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hub.Start(ctx)
@@ -125,7 +126,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		for {
 			select {
 			case s := <-sysCh:
-				fmt.Println("• " + s)
+				fmt.Println("• " + logs.Scrub(s))
 				hub.Logf("system", slog.LevelInfo, s)
 			case <-ctx.Done():
 				return
@@ -693,7 +694,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			dashAddr = addr
-			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
+			pushSys(dashboardServingLine(addr, c.cfgDir, c.lc))
 		}
 	}
 
@@ -749,7 +750,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	fmt.Printf("tenant serve — agent=%s backend=%s; headless hub\n", c.agent, c.backend)
 	if dashAddr != "" {
 		fmt.Printf("dashboard (control + chat + approvals): http://%s\n", dashAddr)
-		fmt.Printf("dashboard auth token: %s\n", dcfg.Auth)
+		fmt.Println(dashboardTokenBanner(dcfg.Auth, c.cfgDir, c.lc, stdoutIsTerminal()))
 	}
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 

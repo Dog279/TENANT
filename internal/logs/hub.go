@@ -67,6 +67,9 @@ type Hub struct {
 	opts  Options
 	epoch string // names this hub's Seq numbering, which starts at 1 on every Open
 
+	// scrub runs on every entry before the value cap, the ring and the files.
+	scrub Scrubber
+
 	mu       sync.Mutex
 	ring     []Entry
 	next     uint64
@@ -236,17 +239,7 @@ func (h *Hub) Log(e Entry) {
 	if e.At.IsZero() {
 		e.At = h.now()
 	}
-	if max := h.opts.MaxFieldBytes; max > 0 {
-		e.Msg = capValue(e.Msg, max)
-		if len(e.Fields) > 0 {
-			fields := make([]Field, len(e.Fields))
-			copy(fields, e.Fields)
-			for i := range fields {
-				fields[i].Value = capValue(fields[i].Value, max)
-			}
-			e.Fields = fields
-		}
-	}
+	e = h.scrub.Entry(e, h.opts.MaxFieldBytes)
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -780,7 +773,10 @@ func (h *Hub) lineEntry(s *source, line string) (Entry, bool) {
 	if e.Level < h.opts.MinLevel {
 		return Entry{}, false
 	}
-	return e, true
+	// Older files and other writers may hold secrets. ponytail: the line is
+	// scrubbed whole under h.mu (at most tailReadMax a tick); window it as Log
+	// does if a flooding foreign writer ever shows up.
+	return h.scrub.Entry(e, 0), true
 }
 
 // newestFile picks the file to follow in a folder: the most recently modified

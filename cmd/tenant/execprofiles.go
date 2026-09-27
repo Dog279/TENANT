@@ -541,6 +541,7 @@ func exitText(res sandbox.Result) string {
 }
 
 func clipLog(s string) string {
+	s = logs.Scrub(s) // before the cut, so no secret is left half-cut (TEN-361)
 	if len(s) > 300 {
 		return s[:300] + "…"
 	}
