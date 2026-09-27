@@ -42,5 +42,6 @@ var (
 		"backup":    backupPriv, "privacy": backupPriv,
 		"eval":    {"Subsystems", "Eval"},
 		"browser": {"Subsystems", "Integrations", "Plugins"},
+		"toolmux": {"Subsystems", "Integrations", "Plugins"},
 	}
 )

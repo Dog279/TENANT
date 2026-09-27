@@ -16,6 +16,7 @@ import (
 func crmPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:      "crm",
+		Events:  crm.Events,
 		Flags:   bindCRMFlags,
 		On:      func(pf *pluginFlags) bool { return crmToolPath(pf) != "" },
 		Launch:  launchCRM,

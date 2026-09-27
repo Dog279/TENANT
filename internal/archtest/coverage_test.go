@@ -62,7 +62,7 @@ func TestCountSitesOnAFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]tally{"defs/defs.go": {ID: 1}, "use/use.go": {ID: 3, NoID: 6}}
+	want := map[string]tally{"defs/defs.go": {ID: 1}, "use/use.go": {ID: 4, NoID: 6}}
 	if !reflect.DeepEqual(files, want) {
 		t.Fatalf("countSites = %+v, want %+v", files, want)
 	}

@@ -131,6 +131,12 @@ type pluginDescriptor struct {
 
 	// CLI lists the plugin's commands.
 	CLI []*cliCommand
+
+	// Events is the plugin's event catalog (TEN-393): its provider,
+	// plugin.<id>, declared in its package with everything it logs. The host
+	// writes its lifecycle through it (plugin_events.go). Nil only for the
+	// channels, whose events are their own providers'.
+	Events *pluginreg.Events
 }
 
 // PluginID, ToolNames and ActionCategories make a descriptor a
@@ -150,6 +156,8 @@ func (d *pluginDescriptor) ToolNames() []string {
 }
 
 func (d *pluginDescriptor) ActionCategories() map[string]string { return d.Actions }
+
+func (d *pluginDescriptor) PluginEvents() *pluginreg.Events { return d.Events }
 
 // pluginEnv is what a descriptor's lifecycle hooks get from the host.
 type pluginEnv struct {
@@ -246,7 +254,11 @@ func registerPluginStubs(ctx context.Context, mux *toolMux, e *pluginEnv) {
 		mux.SetEnabled(d.ID, false)
 		if d.Activate != nil {
 			activate := d.Activate
-			mux.RegisterActivator(d.ID, func() (plugin, func(), error) { return activate(ctx, e) })
+			mux.RegisterActivator(d.ID, func() (plugin, func(), error) {
+				p, cleanup, err := activate(ctx, e)
+				d.logStart(ctx, err)
+				return p, cleanup, err
+			})
 		}
 	}
 }
@@ -290,6 +302,9 @@ func launchPlugins(ctx context.Context, mux *toolMux, e *pluginEnv) error {
 			continue
 		}
 		built, cleanup, err := d.Launch(ctx, e)
+		if err != nil || len(built) > 0 {
+			d.logStart(ctx, err)
+		}
 		if err != nil {
 			return err
 		}

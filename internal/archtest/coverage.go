@@ -56,7 +56,14 @@ var providers = []struct {
 // A coverage ticket adds its packages with their counts. A count only goes
 // down: give a new call site a catalogued event, and lower the number when
 // the test says so.
-var catalogued = map[string]int{}
+var catalogued = map[string]int{
+	// plugin.* (TEN-393)
+	"internal/pluginreg": 0, "internal/toolmux": 0,
+	"internal/plugins/atlassian": 0, "internal/plugins/crm": 0, "internal/plugins/github": 0,
+	"internal/plugins/gsuite": 0, "internal/plugins/osys": 0, "internal/plugins/simplefin": 0,
+	"internal/plugins/sql": 0, "internal/plugins/wiki": 0, "internal/plugins/x": 0,
+	"internal/plugins/web": 2, // the NoSandbox warning, which TEN-363 reroutes
+}
 
 // providerOf names the provider file (module-relative) counts toward, or ""
 // for code outside Tenant's runtime (reference, scripts, these tests).
@@ -82,16 +89,18 @@ type tally struct{ ID, NoID int }
 // and tallies each file's (module-relative) warning-and-above call sites:
 //   - with an ID: a Def's Log or Audit, when the Def is a package-level
 //     variable declared at warning or worse (P.Event(id, event.Warning, …)
-//     and the methods chained on it); and event.Start, whose activity fails at
-//     error;
+//     and the methods chained on it), or a struct field one is assigned to
+//     (pluginreg.Events' shared plugin events); and event.Start, whose
+//     activity fails at error;
 //   - without: a Warn or Error (of a logger, logs.For's or package slog's), a
 //     Log or LogAttrs at a constant level of warning or worse, and the hub's
 //     Logf at one.
 //
 // ponytail: syntax only, no type checking. Any method called Warn or Error
-// with arguments counts as a logger's, and a Def held anywhere but a
-// package-level variable is not recognised. Load go/types if the figures
-// drift from a reader's count.
+// with arguments counts as a logger's, a Def held in a field is known by the
+// field's name alone, and one held anywhere but a package-level variable or
+// a field is not recognised. Load go/types if the figures drift from a
+// reader's count.
 func countSites(root, mod string) (map[string]tally, error) {
 	type file struct {
 		rel string
@@ -143,6 +152,31 @@ func countSites(root, mod string) (map[string]tally, error) {
 		}
 	}
 
+	// Every Def assigned to a struct field, Events{Failed: P.Event(…)} or
+	// e.Failed = P.Event(…): the field's name → whether a warning or worse.
+	fields := map[string]bool{}
+	for _, f := range files {
+		ast.Inspect(f.ast, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.KeyValueExpr:
+				if k, isIdent := n.Key.(*ast.Ident); isIdent {
+					if warn, ok := defLevel(n.Value); ok {
+						fields[k.Name] = warn
+					}
+				}
+			case *ast.AssignStmt:
+				for i, l := range n.Lhs {
+					if sel, isSel := l.(*ast.SelectorExpr); isSel && i < len(n.Rhs) {
+						if warn, ok := defLevel(n.Rhs[i]); ok {
+							fields[sel.Sel.Name] = warn
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+
 	out := make(map[string]tally, len(files))
 	for _, f := range files {
 		imports := map[string]string{} // the name a file uses → the import path
@@ -154,7 +188,8 @@ func countSites(root, mod string) (map[string]tally, error) {
 			}
 			imports[name] = p
 		}
-		// def resolves x, a Def or pkg.Def, to whether it is a warning or worse.
+		// def resolves x, a Def, pkg.Def or v.Field, to whether it is a
+		// warning or worse.
 		def := func(x ast.Expr) (warn, ok bool) {
 			switch x := x.(type) {
 			case *ast.Ident:
@@ -162,6 +197,9 @@ func countSites(root, mod string) (map[string]tally, error) {
 			case *ast.SelectorExpr:
 				if pkg, isIdent := x.X.(*ast.Ident); isIdent && imports[pkg.Name] != "" {
 					warn, ok = defs[strings.TrimPrefix(imports[pkg.Name], mod+"/")+"."+x.Sel.Name]
+				}
+				if !ok {
+					warn, ok = fields[x.Sel.Name]
 				}
 			}
 			return warn, ok

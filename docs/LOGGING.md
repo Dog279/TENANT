@@ -314,6 +314,13 @@ defer act.End(&err)
   sensitive field as `«sensitive»`, never its value.
 - `Audit` is for records that must not be lost. For now it returns once the
   line is written; the Security log's store will make it wait for its commit.
+- **Plugins** each write their own log, `plugin.<id>`, under Integrations ›
+  Plugins: started or could not start, the operator's enable and disable,
+  token refreshes, and their API's rate limits, refused credentials and
+  failed calls. The catalog comes with the plugin's descriptor
+  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (connectors and
+  peers that did not come back at launch, unsaved tool stats) are the
+  `toolmux` log's.
 
 ### Event IDs, the reference and coverage
 

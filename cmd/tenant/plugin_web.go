@@ -17,6 +17,7 @@ import (
 func webPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:        "web",
+		Events:    web.Events,
 		Connector: true,
 		// The search backends (optional; a key just upgrades the backend). env
 		// wins at runtime, so EnvVars reflect resolution order.

@@ -120,14 +120,14 @@ func TestToolStats_FlushFailureLoggedOnce(t *testing.T) {
 	s.path = filepath.Join(dir, "missing", "toolstats.json") // its dir does not exist
 	s.flush()
 	s.flush()
-	if n := strings.Count(buf.String(), "tool stats not saved"); n != 1 {
+	if n := strings.Count(buf.String(), "Tool stats not saved"); n != 1 {
 		t.Fatalf("two failed flushes logged %d times, want once: %q", n, buf.String())
 	}
 	s.path = filepath.Join(dir, "toolstats.json")
 	s.flush() // recovers
 	s.path = filepath.Join(dir, "missing", "toolstats.json")
 	s.flush()
-	if n := strings.Count(buf.String(), "tool stats not saved"); n != 2 {
+	if n := strings.Count(buf.String(), "Tool stats not saved"); n != 2 {
 		t.Errorf("a new failure after a recovery must be logged again, got %d lines", n)
 	}
 }

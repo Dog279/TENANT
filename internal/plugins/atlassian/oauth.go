@@ -103,13 +103,20 @@ func (s fileTokenStore) GetRefreshToken(ctx context.Context) (string, error) {
 	return t.RefreshToken, nil
 }
 
+// SetRefreshToken is how go-atlassian's auto-renewal hands back the refresh
+// token it rotated on each renewal, so it logs the refresh.
 func (s fileTokenStore) SetRefreshToken(ctx context.Context, refreshToken string) error {
 	t, err := s.GetToken(ctx)
 	if err != nil || t == nil {
 		t = &common.OAuth2Token{}
 	}
 	t.RefreshToken = refreshToken
-	return s.SetToken(ctx, t)
+	if err := s.SetToken(ctx, t); err != nil {
+		TokenNotSaved.Log(ctx, "err", err)
+		return err
+	}
+	TokenRefreshed.Log(ctx)
+	return nil
 }
 
 // openOAuthClient loads the cached token, refreshes it, resolves the cloudId,
@@ -127,7 +134,7 @@ func openOAuthClient(ctx context.Context, cfg Config) (*v2.Client, string, error
 	config := oauthConfig(cfg)
 
 	// Bootstrap client just to reach the OAuth2 service (refresh + cloudId).
-	boot, err := v2.New(http.DefaultClient, "https://api.atlassian.com", v2.WithOAuth(config))
+	boot, err := v2.New(apiClient, "https://api.atlassian.com", v2.WithOAuth(config))
 	if err != nil {
 		return nil, "", fmt.Errorf("atlassian: oauth bootstrap: %w", err)
 	}
@@ -152,7 +159,7 @@ func openOAuthClient(ctx context.Context, cfg Config) (*v2.Client, string, error
 	// set up, or the library captures a nil store and never writes refreshed/
 	// rotated tokens back to disk (so a restart after rotation forces re-login).
 	// This mirrors go-atlassian's own storage example ordering.
-	c, err := v2.New(http.DefaultClient, site,
+	c, err := v2.New(apiClient, site,
 		v2.WithOAuth(config),
 		v2.WithTokenStore(store),
 		v2.WithAutoRenewalToken(fresh))

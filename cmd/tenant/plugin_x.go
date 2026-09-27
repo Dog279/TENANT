@@ -17,6 +17,7 @@ import (
 func xPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:          "x",
+		Events:      xp.Events,
 		Connector:   true,
 		Forget:      func(_, data string) []string { return []string{xp.TokenPath(data)} },
 		DataSecrets: func(data string) []string { return []string{xp.TokenPath(data)} },

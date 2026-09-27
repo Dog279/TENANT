@@ -18,6 +18,7 @@ import (
 func gsuitePlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:             "gsuite",
+		Events:         gsuite.Events,
 		AdaptConfigure: func(k skillKind, h configureHost) skillKind { return adaptGSuiteForCfgDir(k, h.cfgDir) },
 		Connector:      true,
 		ConfigSecrets:  func(cfg string) []string { return []string{gsuite.EmbeddedOAuthPath(cfg)} },

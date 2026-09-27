@@ -23,6 +23,7 @@ import (
 func osPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:          "os",
+		Events:      osys.Events,
 		Flags:       bindOSFlags,
 		On:          func(pf *pluginFlags) bool { return osFlagsOf(pf).on },
 		ApplyConfig: applyOSConfig,

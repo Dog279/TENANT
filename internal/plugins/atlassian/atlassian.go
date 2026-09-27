@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 
@@ -73,7 +72,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		if cfg.Email == "" {
 			return nil, errors.New("atlassian: Path A (API token) requires Email")
 		}
-		c, err := v2.New(http.DefaultClient, cfg.SiteURL)
+		c, err := v2.New(apiClient, cfg.SiteURL)
 		if err != nil {
 			return nil, fmt.Errorf("atlassian: build jira client: %w", err)
 		}

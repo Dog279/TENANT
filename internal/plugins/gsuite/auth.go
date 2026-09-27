@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -79,8 +78,12 @@ func (c *cachedSource) token(ctx context.Context) (string, error) {
 	}
 	t, e, err := c.mint(ctx)
 	if err != nil {
+		if ctx.Err() == nil {
+			TokenRefreshFailed.Log(ctx, "err", err)
+		}
 		return "", err
 	}
+	TokenRefreshed.Log(ctx, "expires", e)
 	c.tok, c.exp = t, e
 	return t, nil
 }
@@ -335,7 +338,7 @@ func (o *oauthSource) mint(ctx context.Context) (string, time.Time, error) {
 	if o.save != nil && tok != nil && tok.RefreshToken != "" {
 		if o.saved == nil || tok.RefreshToken != o.saved.RefreshToken {
 			if err := o.save(tok); err != nil {
-				slog.Default().Warn("gsuite: rotated OAuth token not saved; a restart may need a new sign-in", "source", "plugin.gsuite", "err", err)
+				TokenNotSaved.Log(ctx, "err", err)
 				return tok.AccessToken, tok.Expiry, nil
 			}
 		}
