@@ -164,7 +164,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
 | `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
-| `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |
+| `internal/privacy` | `internal/memory/**`, `internal/fsperm`, `internal/logs`, `internal/logs/store` |  |
 | `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
 | `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
@@ -1301,7 +1301,9 @@ dir (`cmd/tenant` supplies them): an unknown column means a newer Tenant, which 
 refuses without `--force`. `Restore` unpacks and checks beside the live dirs, then renames
 the live ones aside and the restored ones in, undoing on failure. `internal/datalock` is the
 guard: every command holds `<data>/.tenant.lock` shared (`flock` / `LockFileEx`), `Restore`
-exclusively.
+exclusively. The log book's `logbook.db` is captured by name, never opened raw (on POSIX a raw
+close drops the capturing process's own locks on it), with its archives; its text mirror only
+with `--include-mirror` (TEN-374).
 
 ### 5.13b `internal/privacy` — Retention, forgetting, export
 
@@ -1318,6 +1320,11 @@ store in single transactions, facts first. It works on `secure_delete` connectio
 runs an FTS `optimize` and `wal_checkpoint(TRUNCATE)`. Archive files are rewritten through
 temp + rename, starting over if the live archive appended meanwhile. `Export` writes each
 table as JSON Lines (no embeddings) plus profiles, souls, research and the archive.
+The log book is covered too (`logbook.go`, TEN-374): a forget's sessions and runs pick its
+events, which `store.Forget` deletes (tombstoning `security` records) by the same recipe,
+`logs.ForgetLines` blanks in the text files, and `store.ForgetArchived` rewrites in the
+archives; `Export` adds `logbook.jsonl`. `privacy-ledger.jsonl` records backups and forgets
+so status can count the backups a forget left holding deleted data.
 `cmd/tenant` adds connector forgetting (`credentials.json` `skill:<name>:*` entries plus each
 service's token and data files), the status view, and the daily prune in `serve` and the TUI.
 

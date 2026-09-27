@@ -18,6 +18,7 @@ import (
 
 	"tenant/internal/backup"
 	"tenant/internal/improve"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
@@ -26,19 +27,22 @@ import (
 	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/peering"
+	"tenant/internal/privacy"
 	"tenant/internal/runtrace"
 )
 
 const backupUsage = `usage:
-  tenant backup [create] [--out FILE|DIR] [--encrypt | --passphrase-file F | --recipient AGE1… | --recipients-file F] [--json]
+  tenant backup [create] [--out FILE|DIR] [--encrypt | --passphrase-file F | --recipient AGE1… | --recipients-file F] [--include-mirror] [--json]
   tenant backup verify FILE [--passphrase-file F | --identity F] [--json]
   tenant backup restore FILE [--dry-run] [--yes] [--force] [--passphrase-file F | --identity F]
 
 A backup is one file holding the config and data dirs: every store, the
-archive, souls, settings and logs. It is age-encrypted when you pass
---encrypt (a passphrase), --passphrase-file, or --recipient (a public key from
-age-keygen); only encrypted backups carry your credentials and keys. The
-passphrase can also come from TENANT_BACKUP_PASSPHRASE.`
+archive, souls, settings and the log book (logbook.db and its archives; its
+text files hold the same events and come along with --include-mirror). It is
+age-encrypted when you pass --encrypt (a passphrase), --passphrase-file, or
+--recipient (a public key from age-keygen); only encrypted backups carry your
+credentials and keys. The passphrase can also come from
+TENANT_BACKUP_PASSPHRASE.`
 
 // passphraseEnv supplies a backup passphrase without a prompt or a file.
 const passphraseEnv = "TENANT_BACKUP_PASSPHRASE"
@@ -221,6 +225,7 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	k.bindEncrypt(fs)
 	outPath := fs.String("out", "", "backup file, or a directory to put it in (default: the current directory)")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
+	mirror := fs.Bool("include-mirror", false, "also take the log book's text files (<logs>/<log>/*.log); logbook.db holds the same events")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -254,9 +259,18 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 		ConfigFile:  configDirFile,
 		NotIncluded: outsideTenantDirs(c),
 		Keys:        keys,
+		// The log book: logbook.db by VACUUM INTO, its archives, and its
+		// text mirror only when asked for.
+		LogsDir:       c.logsRoot(),
+		IncludeMirror: *mirror,
 	})
 	if err != nil {
 		return err
+	}
+	// So `tenant privacy status` can count the backups a later forget
+	// leaves holding deleted data.
+	if err := privacy.NoteBackup(privacy.Data{DataDir: c.dataDir}, res.Path, res.Manifest.CreatedAt); err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("could not record this backup for `tenant privacy status`: %v", err))
 	}
 	if *asJSON {
 		enc := json.NewEncoder(out)
@@ -440,6 +454,10 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 		fmt.Fprintln(out, "dry run: the backup restores cleanly; nothing was changed")
 		return nil
 	}
+	// TEN-396: the Security log's re-anchor record goes here: the restored
+	// logbook.db keeps its store ID and its chain, so write the restored head,
+	// the head it replaced and the backup it came from, and a restore reads
+	// as a restore rather than as tampering.
 	fmt.Fprintln(out, "restored.")
 	for _, a := range res.Aside {
 		fmt.Fprintf(out, "  the previous directory is kept at %s; delete it once you are happy\n", a)
@@ -649,7 +667,14 @@ func (s *storeSchemas) reference(ctx context.Context, entryPath string) (backup.
 		}
 		closeStore = st.Close
 	default:
-		return nil, false, nil
+		if filepath.Base(entryPath) != "logbook.db" { // wherever logs.dir puts it in the data dir
+			return nil, false, nil
+		}
+		st, err := store.Open(path, store.Options{})
+		if err != nil {
+			return nil, false, err
+		}
+		closeStore = st.Close
 	}
 	if err := closeStore(); err != nil {
 		return nil, false, err

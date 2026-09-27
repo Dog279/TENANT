@@ -41,7 +41,12 @@ type Options struct {
 	// NotIncluded is recorded in the manifest as skipped: things Tenant uses
 	// that live outside both directories, such as a wiki vault.
 	NotIncluded []Skipped
-	Keys        Keys
+	// LogsDir is the log book's root (logs.dir); empty means <data>/logs.
+	// IncludeMirror also captures its text mirror, which logbook.db
+	// already holds (logbook.go).
+	LogsDir       string
+	IncludeMirror bool
+	Keys          Keys
 	// Now stamps the backup; tests fix it.
 	Now func() time.Time
 }
@@ -374,6 +379,11 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 	if !shared {
 		roots = append([]walkRoot{{RootConfig, cfg}}, roots...)
 	}
+	logsDir := opts.LogsDir
+	if logsDir == "" {
+		logsDir = filepath.Join(data, "logs")
+	}
+	mirrorLeft := "" // the mirror's files, as a pattern, once one is left out
 	var plan []source
 	var skipped []Skipped
 	for _, r := range roots {
@@ -421,7 +431,13 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 				return nil
 			}
 			kind := KindFile
+			db, mirror := logbookFile(abs, logsDir)
 			switch {
+			case mirror && !opts.IncludeMirror:
+				mirrorLeft = path.Dir(path.Dir(entryPath)) + "/*/*.log"
+				return nil
+			case db:
+				kind = KindSQLite // never opened raw: see logbook.go
 			case secretSet[canonical(abs)]:
 				if !encrypted {
 					skipped = append(skipped, Skipped{Path: entryPath, Reason: "secret; only encrypted backups carry secrets"})
@@ -448,6 +464,9 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 		if err != nil {
 			return nil, nil, fmt.Errorf("backup: walk %s: %w", r.dir, err)
 		}
+	}
+	if mirrorLeft != "" {
+		skipped = append(skipped, Skipped{Path: mirrorLeft, Reason: "the log book's text mirror; logbook.db holds the same events (--include-mirror takes it too)"})
 	}
 	sort.SliceStable(plan, func(i, j int) bool {
 		if plan[i].rank != plan[j].rank {

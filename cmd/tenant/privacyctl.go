@@ -78,7 +78,8 @@ func privacyDirs(fs *flag.FlagSet, c *commonFlags, args []string) (privacy.Data,
 	if err != nil {
 		lc = &launchConfig{}
 	}
-	return privacy.Data{DataDir: c.dataDir, ConfigDir: c.cfgDir}, lc, nil
+	c.lc = lc // logs.dir moves the log book
+	return privacy.Data{DataDir: c.dataDir, ConfigDir: c.cfgDir, LogsDir: c.logsRoot()}, lc, nil
 }
 
 // retentionRow is one class in the status view and the retention setter.
@@ -220,6 +221,13 @@ func cmdPrivacyStatus(ctx context.Context, args []string, out io.Writer) error {
 			names = append(names, cn.Name+" ("+strings.Join(cn.Stored, ", ")+")")
 		}
 		fmt.Fprintf(out, "\n  Connected services with stored credentials or data:\n    %s\n", strings.Join(names, "\n    "))
+	}
+	if last, stale, err := privacy.BackupsBeforeForget(d); err == nil && !last.IsZero() {
+		fmt.Fprintf(out, "\n  Last deletion %s: %d backup(s) made before it still hold what it removed, until you delete them or they rotate out\n",
+			last.Local().Format("2006-01-02 15:04"), len(stale))
+		for _, b := range stale {
+			fmt.Fprintf(out, "    %s\n", b)
+		}
 	}
 	fmt.Fprintf(out, "\n  Change a period:  tenant privacy retention set <class> <days|forever>\n")
 	fmt.Fprintf(out, "  Remove something: tenant privacy forget --match \"text\" (or --session, --fact, --connector …); it shows a preview first\n")

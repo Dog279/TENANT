@@ -380,6 +380,27 @@ through its own connection, so both can share a data directory.
 - **Reading it.** `store.Since(cursor)` returns every event after a cursor,
   `<store ID>.<seq>`, in commit order, so a tail never misses a row. A cursor
   from another database (restored or rebuilt) starts again from the beginning.
+- **Backups** (`tenant backup`) take `logbook.db` with `VACUUM INTO` on a
+  fresh connection, never by opening the raw file (on POSIX that would drop
+  the locks the backing-up process holds on it), plus `archive/`. The text
+  files hold the same events and are left out unless `--include-mirror` is
+  given. A restore brings `logbook.db` back with its store ID. A log book
+  moved outside the data dir by `logs.dir` is not in the backup, and `create`
+  says so.
+- **Privacy** (`tenant privacy forget --session …`, or any forget that removes
+  runs) removes the session's events and the events of its runs' trace IDs
+  from every log but `security`, where the record is tombstoned instead: its
+  message becomes `«deleted by a privacy request»` and its data and salt are
+  cleared, while its record number and hashes stay so the chain verifies.
+  The deletion zeroes freed pages (`secure_delete`), optimizes the full-text
+  index and truncates the WAL. The matching lines of the text files are
+  blanked in place (overwritten with spaces), so a process appending to the
+  file loses nothing; archives holding the events are rewritten. The preview
+  lists what goes per log, with samples. `tenant privacy export` writes every
+  event to `logbook.jsonl`, sensitive fields included. `tenant privacy status`
+  counts the backups made before the last forget that still hold what it
+  removed. A running Tenant's Activity tab keeps what it already read until
+  it scrolls past.
 - The file is owner-only. Retention, the v1 history import, the viewer and
   the query language arrive with the next logging v2 tickets.
 
