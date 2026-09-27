@@ -250,7 +250,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 				compactor: d.compressor, userProfile: d.profile,
 				fullTools: d.tools, fullDisp: d.tools,
 				sysPrompt: d.sysPrompt, log: d.log, routeHook: d.routeHook,
-				routeActive: d.routeActive, routeSticky: d.routeSticky,
+				routeActive: d.routeActive, routeSticky: d.routeSticky, events: d.emit,
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -325,6 +325,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	}
 	c := d.c
 	feed := func(line string) {
+		d.log.Info(line) // filed first: a full feed costs only the stdout copy
 		select {
 		case d.feed <- line:
 		default:

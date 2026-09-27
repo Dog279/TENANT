@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/httplimits"
 	"tenant/internal/secrets"
 )
 
@@ -297,6 +298,7 @@ func loginPKCE(ctx context.Context, h httpDoer, clientID, redirectURI, scopes st
 		codeCh <- r.URL.Query().Get("code")
 	})
 	srv.Handler = mux
+	httplimits.Configure(srv)
 	go func() { _ = srv.ListenAndServe() }()
 	defer srv.Close()
 

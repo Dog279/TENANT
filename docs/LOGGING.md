@@ -69,6 +69,39 @@ else a `source` attribute, else its `"tag: …"` message prefix (`mcp:` → `mcp
 supervisor (launchd/systemd) — the hub tees to it. The TUI writes nothing to
 stderr; `<data>/tui.log` no longer exists.
 
+Nothing in serve or the TUI writes around the log book (TEN-363):
+
+- `slog.Default()` and the `log` package point at the hub, so a library's line
+  (chromedp, a plugin's `slog.Default().Warn`) is filed, never drawn over the
+  TUI. So does every `http.Server`'s error log (TLS handshake failures, handler
+  panics): `httplimits.Configure` gives it one at WARN, and an archtest check
+  fails a server built without it.
+- Status-feed lines are filed before the feed gets them, so a full feed drops
+  only its own copy: serve's setup and health lines under `system`, the TUI's
+  self-improvement results under `improve`, research progress under `research`
+  and the model reconnect monitor under `model`.
+- The Discord relay, iMessage and cron agents' tool calls, results and finals
+  are filed under `discord`, `imessage` and `cron` under the TUI as under
+  serve. Sub-agents' own lines go to `subagents`, not `turns`. A peer that stops
+  answering health probes, or comes back, is logged under `peering`.
+- A sign-in URL (remote MCP, Atlassian, Google) is shown in the status feed and
+  filed under `system`; a one-shot command prints it on stderr.
+- When the log book cannot be opened, a memory-only hub stands in (the lines
+  still reach the dashboard feed) and the failure is shown: in the TUI's feed,
+  on serve's stderr.
+
+A one-shot command (and `tenant mcp-memory`) files its warnings and errors in
+the log book too, under the same sources, while still printing them on stderr
+at the TENANT_LOG level. Its hub runs no background loops and opens a day
+file only when the first warning comes. The nightly eval harness's notes go to
+`eval` under serve and the TUI, and to stderr from `tenant eval`.
+
+A new `fmt.Fprint*(os.Stderr, …)` or `log.Print*` call in `cmd/tenant` or an
+internal package fails `go test ./internal/archtest`: the files that had one
+(mostly one-shot commands' terminal output) are listed with their counts in
+`internal/archtest/stray.go`, and a count only goes down. Log through
+`logs.For` or `slog.Default()` instead.
+
 ## Secrets
 
 Every entry is scrubbed before the value cap, the Activity feed and the files:
@@ -171,8 +204,8 @@ what the operator believes reach the operator too:
   probes every 30 s) is logged once per streak.
 
 Packages that may not import the log book (plugins, toolmux) log through
-`slog.Default()` with a `source` attribute; those lines reach stderr until the
-default logger is pointed at the hub (LOG-002).
+`slog.Default()` with a `source` attribute, which serve and the TUI point at
+the hub.
 
 ## Crashes and unexpected exits
 
@@ -208,8 +241,7 @@ A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
 critical `agent: tool panicked` record. The other guards (routing, the spawn
 classifier, shutdown steps) log at ERROR. The `route` and `eval` guards log
-through slog's default logger, which reaches stderr until serve and the TUI
-point it at the log book.
+through slog's default logger, which serve and the TUI point at the log book.
 
 ## The dashboard
 
@@ -242,7 +274,8 @@ log.Error("sync failed", "err", err)
 ```
 
 `logs.For` resolves the process-wide hub lazily, so it is safe at package init
-and works in tests (records go to stderr at WARN until a hub is installed). A
+and works in tests (records go to stderr at WARN until a hub is installed; a
+one-shot command with a data directory files them as well). A
 subsystem that already has a `*slog.Logger` can also just be handed
 `log.With("source", "myfeature")`.
 

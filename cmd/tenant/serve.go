@@ -84,14 +84,12 @@ func cmdServe(ctx context.Context, args []string) error {
 	// under <data>/logs/<source>/<day>.log and retained for the dashboard feed;
 	// stderr keeps the TENANT_LOG-filtered stream the supervisor captures,
 	// exactly as before (the hub handler tees to it).
-	hub, herr := openLogHub(c)
+	hub, log, herr := openLogHub(c, slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()}))
 	if herr != nil {
-		hub = logs.NewMemory(0)
-		fmt.Fprintln(os.Stderr, "warning: "+herr.Error()+" — logging to memory only")
+		log.Warn("logs: " + herr.Error() + " — logging to memory only")
 	}
 	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
-	log := slog.New(hub.Handler(slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()})))
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hub.Start(ctx)
@@ -110,24 +108,20 @@ func cmdServe(ctx context.Context, args []string) error {
 	onPanic := startBootRecord(hub, life, "serve")
 	defer onPanic()
 
+	// Status feed. Whatever else writes to sysCh (the improve feed, the
+	// reconnect monitor) logs its line itself.
 	sysCh := make(chan string, 64)
-	pushSys := func(s string) {
-		select {
-		case sysCh <- s:
-		default:
-		}
-	}
+	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
+	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/
 	// dashboard/peer/iMessage/fallback/cron lines are the operator's only window
 	// into "is it working", so route them at always-visible level rather than the
-	// WARN-filtered slog (newLogger defaults to WARN). Also mirror to the debug
-	// log for structured capture when TENANT_LOG=info|debug.
+	// WARN-filtered slog (newLogger defaults to WARN).
 	go func() {
 		for {
 			select {
 			case s := <-sysCh:
 				fmt.Println("• " + logs.Scrub(s))
-				hub.Logf("system", slog.LevelInfo, s)
 			case <-ctx.Done():
 				return
 			}
@@ -310,7 +304,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
+	compressor := &compress.Compressor{Router: router}
 
 	// Event broker + the log book. emit fans every event to BOTH the live
 	// broker (dashboard chat/feed) AND the hub, which files it under its source

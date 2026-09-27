@@ -96,11 +96,13 @@ func (r *peerHealthRegistry) markInboundGrant(name string, grant []string) {
 
 // recordProbe records an outbound probe result. caps is the peer's grant to us
 // from peer_hello (nil when the probe failed); the last-known grant is retained
-// across a transient failure rather than blanked.
-func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.Duration, caps []string, err error) {
+// across a transient failure rather than blanked. It reports whether the peer
+// went up or down: a first probe that fails counts, a first that succeeds not.
+func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.Duration, caps []string, err error) (changed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.entryLocked(name)
+	changed = s.outProbed && s.outAlive != alive || !s.outProbed && !alive
 	s.outProbed = true
 	s.outAlive = alive
 	s.outLatency = latency
@@ -116,6 +118,7 @@ func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.D
 			s.capsKnown = true
 		}
 	}
+	return changed
 }
 
 // tuiHealth derives the displayable liveness view for every peer the registry
@@ -251,7 +254,13 @@ func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			lat, caps, perr := probePeerHello(ctx, p)
-			m.reg.recordProbe(p.Name, perr == nil, lat, caps, perr)
+			if m.reg.recordProbe(p.Name, perr == nil, lat, caps, perr) && m.log != nil {
+				if perr != nil {
+					m.log.Warn("peer: unreachable", "peer", p.Name, "err", perr)
+				} else {
+					m.log.Info("peer: reachable again", "peer", p.Name, "latency", lat)
+				}
+			}
 		}()
 	}
 	wg.Wait()

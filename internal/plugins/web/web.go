@@ -432,7 +432,7 @@ func emitNoSandboxWarning(cfg Config, outerKind string) {
 		cfg.Warn(message)
 		return
 	}
-	slog.Default().Warn(message)
+	slog.Default().Warn(message, "source", "browser")
 }
 
 // execAllocatorOptions is the single source of truth for Chrome's effective
@@ -818,12 +818,13 @@ func (b *cdpBrowser) Close() error { return nil } // session owns Chrome lifecyc
 // floodgate closed. cdproto trails Chrome's protocol surface (new DOM event
 // types ship in every Chrome release before cdproto adds them), so chromedp
 // emits ERROR for each unknown event — hundreds per page on commercial
-// sites. Everything else still goes to stderr unchanged.
+// sites. Everything else goes to the browser log (the process logger, which
+// serve and the TUI point at the log book).
 func filteredErrorf(format string, args ...any) {
 	if strings.Contains(format, "unhandled") && strings.Contains(format, "event") {
 		return
 	}
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	slog.Default().Error("chromedp: "+fmt.Sprintf(format, args...), "source", "browser")
 }
 
 // the chrome tab ctx is done. chromedp.Run must run on the tab ctx;

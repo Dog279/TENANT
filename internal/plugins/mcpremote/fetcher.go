@@ -4,14 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+
+	"tenant/internal/httplimits"
 )
 
 // codeDebounce is how long awaitCode waits, after the first matching callback,
@@ -79,6 +81,7 @@ func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCod
 		_, _ = w.Write([]byte("Connected. You can close this tab and return to Tenant."))
 	})
 	srv := &http.Server{Handler: mux}
+	httplimits.Configure(srv)
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			_ = err // surfaces as a fetch timeout / ctx cancel
@@ -87,10 +90,11 @@ func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCod
 
 	fetcher := func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 		want := stateFromURL(args.URL)
-		fmt.Fprintf(os.Stderr, "\nAuthorize Tenant's access in your browser:\n\n  %s\n\n"+
-			"(Atlassian shows TWO screens — approve access, then pick a site. Click through once each; don't re-click.)\n", args.URL)
-		if open != nil {
-			_ = open(args.URL) // best-effort auto-open; the printed URL is the fallback
+		// The opener shows the operator the URL where they will see it (the
+		// TUI feed, the terminal) and opens the browser. Without one, or when
+		// it fails, the URL goes to the log instead.
+		if open == nil || open(args.URL) != nil {
+			slog.Default().Warn("mcpremote: open this URL in a browser to sign in", "source", "mcp", "url", args.URL)
 		}
 		res, err := awaitCode(ctx, results, want, codeDebounce)
 		if err != nil {

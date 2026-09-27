@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os/exec"
@@ -31,6 +32,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"tenant/internal/httplimits"
 )
 
 // OAuthClientFile is the shape of the OAuth Client credentials JSON
@@ -194,10 +197,8 @@ func runLoopbackFlow(ctx context.Context, c OAuthFlowConfig) (*oauth2.Token, err
 		send(result{token: tok})
 	})
 
-	server := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	server := &http.Server{Handler: handler}
+	httplimits.Configure(server)
 	go func() { _ = server.Serve(ln) }()
 	defer func() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -206,9 +207,10 @@ func runLoopbackFlow(ctx context.Context, c OAuthFlowConfig) (*oauth2.Token, err
 	}()
 
 	if err := c.OpenBrowser(authURL); err != nil {
-		// Don't fail — print the URL for manual paste. The token wait
-		// loop below still runs.
-		fmt.Printf("(could not open browser automatically: %v)\nVisit this URL to authorize:\n  %s\n", err, authURL)
+		// Don't fail — log the URL for manual paste (the process logger
+		// reaches the terminal of a one-shot command, and the log book). The
+		// token wait loop below still runs.
+		slog.Default().Warn("gsuite: could not open the browser; visit this URL to authorize", "source", "plugin.gsuite", "url", authURL, "err", err)
 	}
 
 	select {

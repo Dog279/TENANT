@@ -160,7 +160,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
 | `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra` | the persisted configuration; knows no runtime |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
-| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
+| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/httplimits`, `internal/memory/cosine` | capabilities never import each other |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
 | `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
 | `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |

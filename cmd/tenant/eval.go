@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"tenant/internal/eval"
 	"tenant/internal/eval/compaction"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/episodic"
@@ -243,7 +245,7 @@ func runCompactionEval(ctx context.Context, c *commonFlags, jsonOut bool) error 
 	if err != nil {
 		return fmt.Errorf("eval: build router: %w", err)
 	}
-	comp := &compress.Compressor{Router: router, Logger: log}
+	comp := &compress.Compressor{Router: router}
 	// Prefer the planner model's own token counter so tokens-saved matches what
 	// the agent actually budgets; fall back to the char/4 estimate if it can't
 	// be resolved (e.g. model offline).
@@ -562,7 +564,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		// probing their embed endpoint.
 		h.RouteClassifier = route.NewSupra(cfg.Endpoint, cfg.Model, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	}
-	log := newLogger()
+	log := newLogger().With("source", "eval") // the harness's router and agents too
 	router, err := buildRouter(c, log)
 	if err != nil {
 		return nil, fmt.Errorf("eval: build router: %w", err)
@@ -584,7 +586,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	// did NOT set explicitly (so --no-web is respected).
 	autoEnabled := autoEnableEvalPlugins(pf, c, c.flagSet())
 	if len(autoEnabled) > 0 {
-		fmt.Fprintf(os.Stderr, "eval: auto-enabled plugins: %s\n", strings.Join(autoEnabled, ", "))
+		evalNote("auto-enabled plugins: %s", strings.Join(autoEnabled, ", "))
 	}
 	// confirm=nil: eval is non-interactive, so gated destructive tools stay
 	// off unless the operator passed their explicit allow flags (--os-allow-*,
@@ -744,7 +746,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	}
 
 	if jOpts.gateOnly {
-		fmt.Fprintln(os.Stderr, "eval: --gate-only — scoring on the deterministic gate only; answer QUALITY is not judged.")
+		evalNote("--gate-only — scoring on the deterministic gate only; answer QUALITY is not judged.")
 		return cleanup, nil
 	}
 
@@ -759,7 +761,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			cleanup()
 			return nil, fmt.Errorf("eval: resolve planner as default judge: %w", perr)
 		}
-		fmt.Fprintf(os.Stderr, "eval: judge = planner model %q (self-judging; pass --judge-model <id> for a separate judge).\n", plannerProf.Model)
+		evalNote("judge = planner model %q (self-judging; pass --judge-model <id> for a separate judge).", plannerProf.Model)
 		h.Judge = &eval.LLMJudge{LLM: plannerLLM, Profile: plannerProf}
 		return cleanup, nil
 	}
@@ -788,10 +790,22 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		return nil, fmt.Errorf("eval: resolve override judge: %w", jerr)
 	}
 	if _, plannerProf, perr := router.LLMForRole(ctx, model.RolePlanner); perr == nil && plannerProf.Model == judgeProf.Model {
-		fmt.Fprintf(os.Stderr, "eval: note — override judge %q matches the planner; that's the same as the default (self-judging).\n", judgeProf.Model)
+		evalNote("note — override judge %q matches the planner; that's the same as the default (self-judging).", judgeProf.Model)
 	}
 	h.Judge = &eval.LLMJudge{LLM: judgeLLM, Profile: judgeProf}
 	return cleanup, nil
+}
+
+// evalNote tells the operator of `tenant eval` on stderr. Under serve or the
+// TUI (the nightly run, where a log book is installed) it goes to the eval log
+// instead: the TUI owns the terminal, and serve's operator reads the book.
+func evalNote(format string, a ...any) {
+	msg := "eval: " + fmt.Sprintf(format, a...)
+	if h := logs.Default(); h != nil {
+		h.Logf("eval", slog.LevelInfo, msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, msg)
 }
 
 // evalAgentRunner adapts a *agent.Agent to eval.AgentRunner: one Turn per task

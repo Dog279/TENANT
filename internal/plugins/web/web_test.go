@@ -1,8 +1,11 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -416,5 +419,25 @@ func TestTools_OutboundInfoFlowMetadata(t *testing.T) {
 		if spec.Outbound != want[spec.Name] {
 			t.Errorf("%s Outbound = %v, want %v", spec.Name, spec.Outbound, want[spec.Name])
 		}
+	}
+}
+
+// chromedp's errors go to the process logger under browser (the log book once
+// serve or the TUI sets it), not to stderr; the unhandled-event flood stays
+// dropped.
+func TestChromedpErrorsGoToTheBrowserLog(t *testing.T) {
+	var buf bytes.Buffer
+	prev, prevW, prevF := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev); log.SetOutput(prevW); log.SetFlags(prevF) })
+
+	filteredErrorf("could not unmarshal event: %v", "bad json")
+	filteredErrorf("unhandled node event %s", "DOM.whatever")
+	out := buf.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "could not unmarshal event: bad json") || !strings.Contains(out, "source=browser") {
+		t.Errorf("chromedp error not logged under browser:\n%s", out)
+	}
+	if strings.Contains(out, "unhandled") {
+		t.Errorf("the unhandled-event flood leaked:\n%s", out)
 	}
 }

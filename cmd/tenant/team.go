@@ -137,6 +137,9 @@ type TeamRuntime struct {
 }
 
 func newTeamRuntime(cfg TeamConfig) *TeamRuntime {
+	if cfg.Log != nil { // sub-agents' lines file under subagents, not the turns their "agent:" prefix names
+		cfg.Log = cfg.Log.With("source", "subagents")
+	}
 	r := &TeamRuntime{
 		cfg:            cfg,
 		agents:         map[string]*member{},

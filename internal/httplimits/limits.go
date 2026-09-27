@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -29,10 +30,14 @@ const (
 
 // Configure applies the shared connection-level limits to srv. WriteTimeout is
 // intentionally left at zero because several callers serve long-lived streams.
+// Its error log (TLS handshake failures, handler panics) goes to the process
+// logger at WARN, which serve and the TUI point at the log book, instead of
+// net/http's default of stderr. Every server is configured after that.
 func Configure(srv *http.Server) {
 	srv.ReadHeaderTimeout = ReadHeaderTimeout
 	srv.IdleTimeout = IdleTimeout
 	srv.MaxHeaderBytes = MaxHeaderBytes
+	srv.ErrorLog = slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn)
 }
 
 // Protect caps POST/PUT request bodies and gives non-streaming responses a

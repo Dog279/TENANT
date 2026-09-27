@@ -18,8 +18,29 @@ import (
 var defaultHub atomic.Pointer[Hub]
 
 // fallback catches records from For() loggers while no hub is installed
-// (one-shot commands, tests): stderr at WARN, like the historical CLI logger.
-var fallback slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})
+// (one-shot commands, tests): stderr at WARN, like the historical CLI logger,
+// unless SetFallback swapped in another handler.
+var fallback atomic.Pointer[slog.Handler]
+
+var stderrWarn slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})
+
+// SetFallback routes For loggers through h while no hub is installed; nil
+// restores stderr at WARN. A one-shot command hands it a handler that files
+// its warnings in the log book as well as printing them.
+func SetFallback(h slog.Handler) {
+	if h == nil {
+		fallback.Store(nil)
+		return
+	}
+	fallback.Store(&h)
+}
+
+func fallbackHandler() slog.Handler {
+	if p := fallback.Load(); p != nil {
+		return *p
+	}
+	return stderrWarn
+}
 
 // Install makes h the hub that For loggers (and anything else asking for
 // Default) write to, and the emitter of catalogued events (emit.go). Call
@@ -78,7 +99,7 @@ func (h *Handler) Enabled(ctx context.Context, l slog.Level) bool {
 	}
 	hub := h.resolve()
 	if hub == nil {
-		return fallback.Enabled(ctx, l)
+		return fallbackHandler().Enabled(ctx, l)
 	}
 	return l >= hub.opts.MinLevel
 }
@@ -89,14 +110,17 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	}
 	hub := h.resolve()
 	if hub == nil {
-		if fallback.Enabled(ctx, r.Level) {
-			fb := fallback
-			if len(h.attrs) > 0 {
-				fb = fb.WithAttrs(h.attrs)
-			}
-			return fb.Handle(ctx, r)
+		fb := fallbackHandler()
+		if !fb.Enabled(ctx, r.Level) {
+			return nil
 		}
-		return nil
+		if h.source != "" { // the fallback may file it too: keep the folder
+			fb = fb.WithAttrs([]slog.Attr{slog.String("source", h.source)})
+		}
+		if len(h.attrs) > 0 {
+			fb = fb.WithAttrs(h.attrs)
+		}
+		return fb.Handle(ctx, r)
 	}
 	if r.Level < hub.opts.MinLevel {
 		return nil
