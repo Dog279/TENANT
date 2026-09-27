@@ -295,6 +295,10 @@ func Line(ctx context.Context, log string, lvl Level, msg string, kv ...any) {
 	emit(ctx, e)
 }
 
+// Build makes the event d describes, as Log would write it, without writing
+// it: for a writer that files its own events, such as the log book's.
+func (d *Def) Build(ctx context.Context, kv ...any) *Event { return d.build(ctx, "", kv) }
+
 // Audit writes the event like Log, but returns only once its record is
 // committed, or with the error that stopped it: for records that must not be
 // lost, such as the Security log's.

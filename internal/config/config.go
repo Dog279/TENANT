@@ -174,6 +174,16 @@ type Logs struct {
 	// PerLog sets one log's policy, by log name, over its class default
 	// (system: 128 MB, 90 days; any other: 64 MB, retention_days).
 	PerLog map[string]LogPolicy `json:"per_log,omitempty"`
+	// RateLimit caps how fast one provider may write one event (the
+	// Security log is never limited), applied live.
+	RateLimit LogRate `json:"rate_limit,omitzero"`
+}
+
+// LogRate is a token bucket: PerSecond events a second (0 ⇒ 100; -1 ⇒ no
+// limit), in bursts of up to Burst (0 ⇒ 500).
+type LogRate struct {
+	PerSecond float64 `json:"per_second,omitempty"`
+	Burst     int     `json:"burst,omitempty"`
 }
 
 // LogLimits bounds records by size and age: 0 keeps the default, -1 lifts
