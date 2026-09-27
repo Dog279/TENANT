@@ -47,6 +47,11 @@ type Entry struct {
 // DefaultSource is where records land when nothing names a source.
 const DefaultSource = "system"
 
+// LevelCritical is the level above ERROR (Event Viewer's Critical): a crash, a
+// lost store, a broken audit chain. v1 files write it as ERROR (LevelName
+// buckets it) with a severity=critical field.
+const LevelCritical = slog.LevelError + 4
+
 // Field returns the value of the first field named key ("" when absent).
 func (e Entry) Field(key string) string {
 	for _, f := range e.Fields {
