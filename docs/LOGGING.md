@@ -1021,6 +1021,67 @@ tenant logs recover [FILE]                  salvage a quarantined logbook.db.cor
   header record, are owner-only files, and file a Security record. `clear --export`
   exports the log first.
 
+### Alert rules
+
+An alert rule (`internal/logs/alerts`) is a filter, an optional threshold
+(N events within a window), an action and a throttle. The rules are
+evaluated every housekeeper tick (30 s) in the process that holds the
+housekeeper lease, so two processes sharing the log book never both alert.
+It reads the events committed since its cursor, which it keeps with each
+rule's last firing in `logbook.db`'s meta table: a lease handover neither
+fires twice nor misses an event. A new or restored log book starts with its
+last 5 minutes. A rule fires on a new match, once its threshold holds (the
+count within the window ending now), at most once per throttle (15 minutes
+unless set; 1 minute at least); when two rules would send one event to the
+same place, the earlier one does. The `alerts` log is never evaluated, so an
+alert can't set off another.
+
+Every firing is an event, `alerts/1001` (warning), so `log:alerts` finds
+them; `alerts/3001` is an action that failed and `alerts/3002` a rule that
+doesn't compile. A firing also puts a banner, `⚠ alert <rule>: <message>`,
+on the evaluating process's status feed (the TUI's, or serve's terminal and
+`system` log). The actions:
+
+| `action.kind` | Does |
+|---|---|
+| `dashboard` (default) | the alert event and the banner only |
+| `discord` | a DM to the operator through the relay (as the MCP re-auth notice) |
+| `imessage` | a text to `imessage.operator` |
+| `cron` | a one-off prompt job through the scheduler (the safe runner, no exec); `target` is the prompt |
+
+What leaves the log book is only the rule, the event's level, log,
+provider and ID, its number and time, its message (scrubbed again, on one
+line, cut at 300 characters, in a code span so it can't pass for Tenant's
+own text) and a link to it on the dashboard (`/logs/event/<seq>`). Never a
+data field. A cron prompt carries no log text at all: the operator's prompt,
+then those facts without the message.
+
+The built-in rules run unless an entry of the same name changes or
+disables them:
+
+| Rule | Filter |
+|---|---|
+| `unexpected-exit` | `provider:system id:3,4`: a crash or a kill, found at the next start |
+| `sandbox-unattended` | `provider:sandbox id:2001,2002 data.surface:cron-*`: a refusal, or in a dry run an unconfined run, on a cron surface, where nobody could be asked (TEN-347) |
+| `audit-failures` | `tag:audit.failure`, 5 within 10 minutes |
+| `logbook-full` | `provider:logbook id:2004 data.percent>=95` |
+| `critical` | `level:critical` |
+
+`logs.alerts` in `config.json` is read at every evaluation, so an edit
+applies without a restart. An entry named like a built-in rule overrides
+the fields it sets:
+
+```json
+"logs": { "alerts": [
+  { "name": "critical", "action": { "kind": "discord" } },
+  { "name": "audit-failures", "disabled": true },
+  { "name": "cron-errors", "filter": "log:cron level>=error",
+    "threshold": { "count": 3, "window": "1h" },
+    "action": { "kind": "cron", "target": "Find out why the cron jobs fail." },
+    "throttle": "2h" }
+] }
+```
+
 ### Event IDs, the reference and coverage
 
 **Declaring an event.** Declare it as a package-level `var`, next to the

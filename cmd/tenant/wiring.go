@@ -448,6 +448,7 @@ func openLogHub(c *commonFlags, tee slog.Handler) (*logs.Hub, *slog.Logger, erro
 		// A store that won't open is logged, and Degraded says why.
 		if st, serr := h.OpenStore(key); serr == nil && c.cfgDir != "" {
 			h.Housekeep("anchor", 0, anchorChain(h, st, c.cfgDir))
+			h.Housekeep("alerts", 0, alertEvaluator(c.cfgDir, st, h.Notify).Run) // TEN-399: in the lease holder alone
 		}
 	}
 	log := slog.New(h.Handler(tee))
