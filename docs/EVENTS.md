@@ -3912,37 +3912,246 @@ Writes the `security` log.
 
 | ID | Level | Task | Message |
 |---|---|---|---|
-| [4101](#security-4101) | info | Approval | `Approval {approval} requested: {action}` |
-| [4103](#security-4103) | warning | Approval | `Approval {approval} denied: {action}` |
+| [4101](#security-4101) | info | Approval | `Approval requested: {action} ({category})` |
+| [4102](#security-4102) | info | Approval | `Approval granted {grant}: {action} ({category})` |
+| [4103](#security-4103) | warning | Approval | `Approval denied: {action} ({category})` |
+| [4104](#security-4104) | warning | Approval | `Approval denied at shutdown: {action} ({category})` |
+| [4105](#security-4105) | warning | Approval | `Approval expired unanswered: {action} ({category})` |
+| [4106](#security-4106) | info | Approval | `{broker} approvals for {category} set to {mode}` |
+| [4201](#security-4201) | info | Execution | `Command ran on {backend}: exit {exit}` |
+| [4202](#security-4202) | warning | Execution | `The sandbox refused a command on {backend}: {violations}` |
+| [4203](#security-4203) | warning | Execution | `A command the sandbox refused ran outside it ({why}): {violations}` |
+| [4204](#security-4204) | info | Execution | `Exec mode for {target} turned {mode}` |
+| [4301](#security-4301) | info | Access | `Dashboard sign-in from {remote}` |
+| [4302](#security-4302) | info | Access | `Dashboard sign-out from {remote}` |
+| [4303](#security-4303) | warning | Access | `Request from {remote} refused: {reason}` |
+| [4311](#security-4311) | info | Peering | `Paired with peer {peer}` |
+| [4312](#security-4312) | info | Peering | `Unpaired peer {peer} ({how})` |
 
 ### security 4101
 
-`Approval {approval} requested: {action}`
+`Approval requested: {action} ({category})`
 
 - **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `approval`, `category`, `action`, `surface`
+- **Fields:** `category`, `action`, `detail`, `origin`
+- **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4101`
 
 **What it means.** A gated action is waiting for the operator's decision.
 
-**Why it happens.** The agent, a job or a plugin asked for an action whose category needs approval.
+**Why it happens.** The agent, a job or a peer asked for an action whose category needs approval.
 
 **What to do.** Approve or deny it where it was asked; it expires when nobody answers.
 
+### security 4102
+
+`Approval granted {grant}: {action} ({category})`
+
+- **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
+- **Fields:** `category`, `action`, `detail`, `origin`, `grant`, `via`, `nonce`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4102`
+
+**What it means.** A gated action was allowed, so it went ahead: once, for the session, or always (which sets its category, or its tool rule, to allow).
+
+**Why it happens.** The operator approved it (via operator; on a Discord card, nonce is the card's), or a standing setting allowed it without asking: the category's mode, a session grant, a tool rule, the cron-exec approver.
+
+**What to do.** None when intended. To be asked again, set the category back to ask (/permissions).
+
 ### security 4103
 
-`Approval {approval} denied: {action}`
+`Approval denied: {action} ({category})`
 
 - **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
-- **Fields:** `approval`, `action`, `surface`, `actor`
+- **Fields:** `category`, `action`, `detail`, `origin`, `via`, `nonce`
 - **Keywords:** `audit.failure`
 - **Find it:** `provider:security id:4103`
 
 **What it means.** A gated action was denied, so it did not run.
 
-**Why it happens.** The operator denied it, or Tenant denied it while shutting down.
+**Why it happens.** The operator denied it (via operator), a standing setting did (the category's mode, a tool rule, the surface's lock: the Discord relay's exec mode, or the cron-exec approver), or no operator could be reached (no_surface).
 
 **What to do.** None when intended; otherwise check the category's approval mode.
+
+### security 4104
+
+`Approval denied at shutdown: {action} ({category})`
+
+- **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
+- **Fields:** `category`, `action`, `detail`, `origin`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4104`
+
+**What it means.** A gated action still waiting for its decision was denied because Tenant was stopping.
+
+**Why it happens.** Tenant stopped while the prompt was open.
+
+**What to do.** None. The agent can ask again after the restart.
+
+### security 4105
+
+`Approval expired unanswered: {action} ({category})`
+
+- **Level:** warning · **Channel:** operational · **Task:** Approval · **Log:** security
+- **Fields:** `category`, `action`, `detail`, `origin`, `nonce`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4105`
+
+**What it means.** Nobody answered a gated action's prompt in time, so it did not run.
+
+**Why it happens.** The prompt timed out (relay.approval_timeout on Discord and iMessage), or the turn that asked ended first.
+
+**What to do.** None when intended. Otherwise answer sooner, or raise the timeout.
+
+### security 4106
+
+`{broker} approvals for {category} set to {mode}`
+
+- **Level:** info · **Channel:** operational · **Task:** Approval · **Log:** security
+- **Fields:** `broker`, `category`, `mode`, `was`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4106`
+
+**What it means.** The operator changed how one category of gated actions is approved on one surface (broker: local, discord or imessage): ask, allow or deny.
+
+**Why it happens.** /permissions, /relay permissions or /imessage permissions in the terminal, or the dashboard's Access page. An Always grant sets allow too; its record is the grant (4102).
+
+**What to do.** None when intended.
+
+### security 4201
+
+`Command ran on {backend}: exit {exit}`
+
+- **Level:** info · **Channel:** operational · **Task:** Execution · **Log:** security
+- **Fields:** `command`, `backend`, `exit`, `timed_out`, `err`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4201`
+
+**What it means.** A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets.
+
+**Why it happens.** The agent called os_exec (approved, or allowed by --allow-exec or its category's mode), or a cron shell job ran.
+
+**What to do.** None when expected. An unexpected command: read the turn (trace) and its approval, and tighten os_exec's approval mode or exec profile.
+
+### security 4202
+
+`The sandbox refused a command on {backend}: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Execution · **Log:** security
+- **Fields:** `command`, `backend`, `violations`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4202`
+
+**What it means.** A confining exec backend refused what a command tried to reach, and the command was not re-run outside it.
+
+**Why it happens.** The command read or wrote outside its profile's roots, or used the network where the profile forbids it.
+
+**What to do.** None when the refusal is right. Otherwise widen the surface's exec profile (exec_profiles in settings), or approve the escalation when asked.
+
+### security 4203
+
+`A command the sandbox refused ran outside it ({why}): {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Execution · **Log:** security
+- **Fields:** `command`, `backend`, `violations`, `why`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4203`
+
+**What it means.** A command the sandbox refused was re-run on the host: approved by the operator (why approved; the approval is the event's), or in a dry-run profile (why dry_run), which only reports.
+
+**Why it happens.** The operator approved os_exec_unsandboxed, or the surface's exec profile has enforce off.
+
+**What to do.** None when intended. Turn enforce on to make refusals final.
+
+### security 4204
+
+`Exec mode for {target} turned {mode}`
+
+- **Level:** info · **Channel:** operational · **Task:** Execution · **Log:** security
+- **Fields:** `target`, `mode`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4204`
+
+**What it means.** The operator turned a surface's exec mode on or off (target: relay, the Discord relay's; cron, cron-exec's). Off refuses exec, write, destructive and send actions there whatever the category modes say.
+
+**Why it happens.** /relay exec or /cron exec in the terminal, or the dashboard.
+
+**What to do.** None when intended.
+
+### security 4301
+
+`Dashboard sign-in from {remote}`
+
+- **Level:** info · **Channel:** operational · **Task:** Access · **Log:** security
+- **Fields:** `remote`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4301`
+
+**What it means.** Someone signed in to the dashboard with its token.
+
+**Why it happens.** The sign-in form at /settings was sent the right token.
+
+**What to do.** None when it was you. An address you don't know means the token has leaked: rotate it.
+
+### security 4302
+
+`Dashboard sign-out from {remote}`
+
+- **Level:** info · **Channel:** operational · **Task:** Access · **Log:** security
+- **Fields:** `remote`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4302`
+
+**What it means.** A browser signed out of the dashboard: its sign-in cookie was cleared.
+
+**Why it happens.** The sign-out link.
+
+**What to do.** None.
+
+### security 4303
+
+`Request from {remote} refused: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** security
+- **Fields:** `reason`, `remote`, `method`, `route`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4303`
+
+**What it means.** A request was refused before it reached anything (reason: token, a wrong dashboard or peer token; sign_in, a wrong token on the sign-in form; csrf; host; origin). A request with no token at all is not recorded here: the dashboard log has it.
+
+**Why it happens.** A token that changed, a script with an old one, a page on another site, a name the dashboard doesn't answer to, or someone probing.
+
+**What to do.** Many from an address you don't know mean someone is guessing: keep the dashboard and the peer listener off public networks. See the dashboard or peering log's event for the same request.
+
+### security 4311
+
+`Paired with peer {peer}`
+
+- **Level:** info · **Channel:** operational · **Task:** Peering · **Log:** security
+- **Fields:** `peer`, `instance`, `direction`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4311`
+
+**What it means.** A peer record now holds a live token: a pairing approved here (direction inbound), this instance pairing with another (outbound), or an invite code minted for one (inbound, until it expires unused).
+
+**Why it happens.** tenant peer invite, /peer invite, or another instance pairing with this one.
+
+**What to do.** None when intended. Otherwise tenant peer remove the peer.
+
+### security 4312
+
+`Unpaired peer {peer} ({how})`
+
+- **Level:** info · **Channel:** operational · **Task:** Peering · **Log:** security
+- **Fields:** `peer`, `how`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4312`
+
+**What it means.** A peer can no longer authenticate: its record was removed (how remove) or its tokens revoked (how revoke).
+
+**Why it happens.** tenant peer remove or revoke, or /peer remove.
+
+**What to do.** None when intended. Pair again to restore it.
 
 ## skills
 
@@ -4203,6 +4412,8 @@ Writes the `system` log.
 | [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
 | [3020](#system-3020) | error | Shutdown | `Shutdown step {stage}/{step} panicked: {panic}` |
 | [3101](#system-3101) | error | Component | `{component} failed: {err}` |
+| [4001](#system-4001) | critical | Audit | `A Security record was not written: {err}` |
+| [4002](#system-4002) | info | Audit | `Security records are written again, after {failed} were not` |
 | [5001](#system-5001) | info | Configuration | `{path} was edited; applied {changed}` |
 | [5002](#system-5002) | warning | Configuration | `{path} did not load, so {fallback}: {err}` |
 | [5003](#system-5003) | info | Configuration | `credentials.json changed; the active model provider's key was reloaded` |
@@ -4407,6 +4618,34 @@ Writes the `system` log.
 **Why it happens.** Something it depends on failed: a connection, a file or its configuration.
 
 **What to do.** Open the component's log; the event before this one usually names the cause.
+
+### system 4001
+
+`A Security record was not written: {err}`
+
+- **Level:** critical · **Channel:** operational · **Task:** Audit · **Log:** system
+- **Fields:** `event`, `policy`, `err`
+- **Find it:** `provider:system id:4001`
+
+**What it means.** An audit record (a security event) could not be committed to logbook.db, so the Security log is missing it. The text mirror still has its line. policy is logs.security.on_failure: with continue the action went ahead; with deny, gated actions are refused until records are written again.
+
+**Why it happens.** The store is failing (a full disk, a locked or corrupt database), or it has no Security log key.
+
+**What to do.** Read the error and the logbook log; fix the disk or the key, then check that later records land (a system/4002 follows). tenant logs verify security checks the chain.
+
+### system 4002
+
+`Security records are written again, after {failed} were not`
+
+- **Level:** info · **Channel:** operational · **Task:** Audit · **Log:** system
+- **Fields:** `failed`
+- **Find it:** `provider:system id:4002`
+
+**What it means.** An audit record committed after one or more failed, so the Security log is being written again.
+
+**Why it happens.** Whatever stopped the store's commits was fixed or went away.
+
+**What to do.** None. The records that failed (system/4001) are only in the text mirror.
 
 ### system 5001
 

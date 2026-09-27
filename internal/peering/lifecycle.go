@@ -42,6 +42,7 @@ func (s *Store) CreateInvite(selfName, selfInstanceID, selfURL, fingerprint stri
 	if err != nil {
 		return "", err
 	}
+	paired(peerName, "", false) // the slot's token is live until it's used or expires
 
 	return Invite{
 		Name:        selfName,
@@ -100,14 +101,19 @@ func (s *Store) MarkAuthenticated(name string) error {
 // peer; use Remove to delete it entirely). Returns false if unknown.
 func (s *Store) Revoke(name string) (bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	p, ok := s.peers[name]
 	if !ok {
+		s.mu.Unlock()
 		return false, nil
 	}
 	p.Token = ""
 	p.PendingToken = ""
-	return true, s.save()
+	err := s.save()
+	s.mu.Unlock()
+	if err == nil {
+		unpaired(name, "revoke")
+	}
+	return true, err
 }
 
 // Rotate stages a NEW secret on the serving side WITHOUT invalidating the old

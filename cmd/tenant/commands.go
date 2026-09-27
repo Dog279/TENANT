@@ -1825,6 +1825,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	pushTo := func(source, s string) { feedLine(hub, sysCh, source, s) }
 	pushSys := func(s string) { pushTo("system", s) }
 	signInNotice = pushSys // a sign-in URL must not draw over the TUI
+	securityNotice = pushSys
 	if herr != nil {
 		sysUnavailable.Log(ctx, "component", "the log folder", "effect", "logging to memory only", "err", herr)
 		pushSys("logs: " + herr.Error() + " — logging to memory only")

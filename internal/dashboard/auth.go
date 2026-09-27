@@ -8,6 +8,7 @@ package dashboard
 // selects ListenAndServeTLS vs ListenAndServe.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
@@ -17,6 +18,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
 )
 
 // secure wraps the routed handler with host validation, bearer-token auth,
@@ -36,28 +40,47 @@ func (s *Server) secure(h http.Handler) http.Handler {
 		ctx, route := r.Context(), s.route(r)
 		if !s.checkHost(r.Host) {
 			HostRejected.Log(ctx, "host", r.Host, "method", r.Method, "route", route, "remote", r.RemoteAddr)
+			refused(r, "host", route)
 			writeError(w, http.StatusForbidden, "unrecognized dashboard host")
 			return
 		}
 		if !s.checkOrigin(r) {
 			OriginRejected.Log(ctx, "origin", r.Header.Get("Origin"), "method", r.Method, "route", route, "remote", r.RemoteAddr)
+			refused(r, "origin", route)
 			writeError(w, http.StatusForbidden, "cross-origin request rejected")
 			return
 		}
 		if !s.checkAuth(r) {
-			AuthRejected.Log(ctx, "method", r.Method, "route", route, "remote", r.RemoteAddr, "credential", credential(r))
+			cred := credential(r)
+			AuthRejected.Log(ctx, "method", r.Method, "route", route, "remote", r.RemoteAddr, "credential", cred)
+			if cred == "invalid" { // a failed token; none at all is only a visitor who hasn't signed in
+				refused(r, "token", route)
+			}
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
 		if !s.checkCSRF(r) {
 			CSRFRejected.Log(ctx, "method", r.Method, "route", route, "remote", r.RemoteAddr)
+			refused(r, "csrf", route)
 			writeError(w, http.StatusForbidden, "CSRF validation failed")
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
 }
+
+// refused writes a refused request's Security record (4303), attributed to
+// its remote address, before the response goes out: whole even when the
+// client has gone (auditCtx).
+func refused(r *http.Request, reason, route string) {
+	_ = catalog.AccessRefused.Audit(event.WithActor(auditCtx(r), r.RemoteAddr, "dashboard"),
+		"reason", reason, "remote", r.RemoteAddr, "method", r.Method, "route", route)
+}
+
+// auditCtx is r's context for a Security record: not cancelled when the
+// client disconnects, since the record must be written whatever it does.
+func auditCtx(r *http.Request) context.Context { return context.WithoutCancel(r.Context()) }
 
 // credential says whether a rejected request carried a credential at all
 // ("invalid") or none ("missing"), never what it was.

@@ -621,7 +621,7 @@ full, a minimum level and an enabled switch. The defaults, by class:
 "logs": {
   "retention_days": 30, "budget_mb": 2048,
   "diagnostic": { "max_mb": 256, "max_age_days": 7 },
-  "security":   { "max_mb": 256, "max_age_days": 365, "witness": "" },
+  "security":   { "max_mb": 256, "max_age_days": 365, "witness": "", "on_failure": "continue" },
   "per_log": { "mcp.github": { "max_mb": 32, "max_age_days": 14, "min_level": "warning", "on_full": "overwrite" } }
 }
 ```
@@ -714,6 +714,54 @@ keyed hash chain (design §10.2):
   the anchor), the records as archive lines (sensitive fields included: the
   data hash commits to them), and a closing `(rec, hash)` line.
   `store.VerifyBundle` checks it offline with the key.
+
+#### What the Security log records
+
+Each record is written where the action happens, synchronously, before the
+action returns (design §10.1; `internal/logs/catalog/security_access.go`, IDs
+in [EVENTS.md](EVENTS.md#security)). Who acted, the surface and the approval
+are the event's own `actor`, `surface` and `approval` attributes, set from the
+context (`event.WithActor`, `event.WithApproval`), and the turn's `trace` is
+filled in as for any event. Keywords are `audit.success` or `audit.failure`.
+
+- **Approvals** (`internal/approval`): requested (`4101`), granted once, for
+  the session or always (`4102`), denied (`4103`), denied at shutdown
+  (`4104`), expired (`4105`), each with `category`, `action`, `detail`
+  (scrubbed) and `origin` (the surface that raised it). `via` says what
+  decided: `operator` (the actor names who: `operator` on the TUI or the
+  dashboard, `discord:<user id>` on a Discord card, with the card's `nonce`;
+  the operator on an iMessage reply, with its nonce), or a standing setting
+  (`mode`, `session`, `rule`, `lock`, `cron`), or `no_surface`. Every broker
+  path writes them, prompts and policy verdicts alike; so do the cron-exec
+  auto-approver (origin `cron`), peer pairing (category `pairing`, asked by
+  the `peer`) and a click on an external approval link (category `external`,
+  approval `ext:<ns>:<id>`; its marker line names the clicker too). A
+  category's mode changed from `/permissions` (and the relay's and iMessage's)
+  or the dashboard's Access page is `4106`.
+- **Execution** (`cmd/tenant/securitylog.go`): every command run through the
+  exec seam, `os_exec` and cron shell jobs (`4201`: the scrubbed command, the
+  backend, the exit code; its approval is the one that let it run: `osys`
+  opens a slot the approval gate fills). A sandbox refusal is `4202`, a
+  command run outside the sandbox after one `4203` (`why`: `approved` or
+  `dry_run`), and the Discord relay's or cron's exec mode turned on or off
+  `4204`.
+- **Access:** dashboard sign-in and sign-out (`4301`, `4302`); a request
+  refused (`4303`, `reason`: `token` for a wrong dashboard or peer token,
+  `sign_in`, `csrf`, `host`, `origin`; a request with no token at all is only
+  in the dashboard log); a peer record gaining a live token (`4311`: a
+  pairing either way, or an invite code minted) or losing it (`4312`, `how`:
+  `remove` or `revoke`).
+- **When a record can't be written** (design §10.3), the log book files a
+  critical `system/4001` for each lost record, raises one banner on the
+  status feed until a record commits again (then `system/4002`, and a second
+  line), and applies `logs.security.on_failure`, read at each failure so an
+  edit applies at once: `continue` (the default) lets the action go ahead;
+  `deny` refuses every gated action (an approval, prompted or not, the
+  cron-exec approver's, a pairing, an external approval) until records are
+  written again. Code that gates an action writes its record with
+  `Def.Gate`, which returns an error only then (`event.ErrRefused`).
+- One-shot commands (`tenant peer remove`, `tenant peer invite`) have no log
+  book emitter, so their records aren't written yet.
 
 ### Turns, sub-agents and research
 

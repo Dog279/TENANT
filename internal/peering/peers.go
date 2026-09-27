@@ -189,24 +189,34 @@ func (s *Store) List() []*Peer {
 	return out
 }
 
-// Put inserts/updates a peer and persists.
+// Put inserts/updates a peer and persists. Every caller is a pairing, so a
+// saved one is the pairing's Security record.
 func (s *Store) Put(p *Peer) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	cp := *p
 	s.peers[p.Name] = &cp
-	return s.save()
+	err := s.save()
+	s.mu.Unlock()
+	if err == nil {
+		paired(p.Name, p.InstanceID, p.Dial)
+	}
+	return err
 }
 
 // Remove deletes a peer and persists. Removing an unknown name is a no-op.
 func (s *Store) Remove(name string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, ok := s.peers[name]; !ok {
+		s.mu.Unlock()
 		return nil
 	}
 	delete(s.peers, name)
-	return s.save()
+	err := s.save()
+	s.mu.Unlock()
+	if err == nil {
+		unpaired(name, "remove")
+	}
+	return err
 }
 
 // VerifyToken looks up the peer that presents this bearer, in constant time

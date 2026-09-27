@@ -271,7 +271,7 @@ func TestBroker_ApprovalEventsCarryTrace(t *testing.T) {
 	var beside []string
 	d.SetEvents(func(e agent.Event) { beside = append(beside, e.TraceID) })
 	d.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.ApproveOnce })
-	d.askDecision(ctx, CatExec, "os_exec", "x")
+	d.askDecision(ctx, "agent", CatExec, "os_exec", "x")
 	if s := strings.Join(beside, ","); s != "4f2a,4f2a" {
 		t.Fatalf("beside traces = %s", s)
 	}
@@ -463,7 +463,7 @@ func TestOffsiteBroker_MirrorCarriesOwnOrigin(t *testing.T) {
 		}
 	})
 	b.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.DenyOnce })
-	if d := b.askDecision(context.Background(), CatExec, "run", "d"); d != control.DenyOnce {
+	if d := b.askDecision(context.Background(), "agent", CatExec, "run", "d"); d != control.DenyOnce {
 		t.Fatalf("askDecision = %v", d)
 	}
 	if len(ids) != 2 || ids[0] != "beside-imessage/imessage" || ids[1] != "beside-imessage/imessage" {

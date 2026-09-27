@@ -47,6 +47,12 @@ type Options struct {
 	// reads it every tick, so a changed config.json applies without a
 	// restart (nil ⇒ store.DefaultBudget).
 	Budget func() store.Budget
+	// AuditDeny reports whether logs.security.on_failure is deny. It is read
+	// each time a Security record fails to commit, so an edit applies at
+	// once (nil ⇒ continue). Notice shows the operator a banner: Security
+	// records failing, then written again (nil ⇒ the events alone). audit.go.
+	AuditDeny func() bool
+	Notice    func(string)
 }
 
 // SourceInfo describes one source (= one folder = one dashboard tab).
@@ -90,6 +96,8 @@ type Hub struct {
 	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
 	hk   housekeeper              // housekeeper.go
 	in   intakeState              // intake.go
+
+	auditFails atomic.Int64 // Security records not written since the last one that was (audit.go)
 }
 
 type source struct {

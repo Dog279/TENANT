@@ -116,6 +116,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
 	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
+	securityNotice = pushSys
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/
 	// dashboard/peer/iMessage/fallback/cron lines are the operator's only window
 	// into "is it working", so route them at always-visible level rather than the

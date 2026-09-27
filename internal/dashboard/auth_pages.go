@@ -9,6 +9,9 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
+
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
 )
 
 // settingsTmpl is the standalone PSK-entry page. Dark palette matching the panel.
@@ -69,6 +72,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token := r.FormValue("token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Auth)) != 1 {
 		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr)
+		refused(r, "sign_in", "/auth/login")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
 		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the value printed in your terminal."})
@@ -83,6 +87,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Secure only when TLS is configured; loopback HTTP is the common case.
 		Secure: s.cfg.TLSCert != "" && s.cfg.TLSKey != "",
 	})
+	_ = catalog.SignedIn.Audit(event.WithActor(auditCtx(r), "operator", "dashboard"), "remote", r.RemoteAddr)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -96,5 +101,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
+	_ = catalog.SignedOut.Audit(event.WithActor(auditCtx(r), "operator", "dashboard"), "remote", r.RemoteAddr)
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

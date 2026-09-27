@@ -9,6 +9,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/control"
+	"tenant/internal/logs/event"
 	"tenant/internal/runtrace"
 )
 
@@ -175,9 +176,11 @@ func (b *Broker) Requests() <-chan control.ApprovalRequest { return b.requests }
 
 // Pending / Resolve / Decide / DenyAll delegate to the shared registry, so the
 // broker IS the dashboard's ApprovalControl and the TUI's resolve-by-id target.
+// Resolve is the terminal's (its records name the tui surface); Decide the
+// dashboard's.
 func (b *Broker) Pending() []control.PendingApproval { return b.reg.Pending() }
 func (b *Broker) Resolve(id string, d control.ApprovalDecision) bool {
-	return b.reg.Resolve(id, d)
+	return b.reg.Resolve(id, d, "tui")
 }
 func (b *Broker) DenyAll() { b.reg.DenyAll() }
 
@@ -188,7 +191,7 @@ func (b *Broker) Decide(id, decision string) error {
 	if err != nil {
 		return err
 	}
-	if !b.reg.Resolve(id, d) {
+	if !b.reg.Resolve(id, d, "dashboard") {
 		return fmt.Errorf("approval %q not found (already resolved or expired)", id)
 	}
 	return nil
@@ -269,8 +272,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	// a tool rule or a category allow must not reopen what it closed.
 	if locked != nil && locked(action, cat) {
 		b.logInfo("approval refused: locked on this surface", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "denied_policy")
-		return false
+		return verdict(ctx, cat, action, detail, b.origin, "lock", "denied_policy", control.DenyOnce)
 	}
 
 	// A per-tool rule is the operator's explicit word for THIS tool and wins
@@ -281,13 +283,13 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 			switch rmode {
 			case "allow":
 				b.logInfo("approval allowed by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
-				return true
+				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.ApproveAlways)
 			case "deny":
 				b.logInfo("approval denied by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
-				return false
+				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.DenyOnce)
 			}
 			b.logInfo("approval prompt forced by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
-			switch b.askDecision(ctx, cat, action, detail) {
+			switch b.askDecision(ctx, "agent", cat, action, detail) {
 			case control.ApproveAlways:
 				// "Always" on a rule-forced prompt means THIS tool, not its category.
 				// A failed save is told to the operator by the settings persist hook.
@@ -311,20 +313,17 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	switch mode {
 	case ModeAllow:
 		b.logInfo("approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "approved_always")
-		return true
+		return verdict(ctx, cat, action, detail, b.origin, "mode", "approved_always", control.ApproveAlways)
 	case ModeDeny:
 		b.logInfo("approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "denied_policy")
-		return false
+		return verdict(ctx, cat, action, detail, b.origin, "mode", "denied_policy", control.DenyOnce)
 	}
 	if sess {
 		b.logInfo("approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "approved_session")
-		return true
+		return verdict(ctx, cat, action, detail, b.origin, "session", "approved_session", control.ApproveSession)
 	}
 
-	switch b.askDecision(ctx, cat, action, detail) {
+	switch b.askDecision(ctx, "agent", cat, action, detail) {
 	case control.ApproveAlways:
 		b.setMode(cat, ModeAllow)
 		return true
@@ -369,7 +368,7 @@ func (b *Broker) RemoveRule(pattern string) (bool, error) {
 // every time and fails closed (deny) when there's no operator channel. detail
 // carries the inviter name/addr + the PIN the operator must match.
 func (b *Broker) AskPairing(ctx context.Context, detail string) bool {
-	switch b.askDecision(ctx, "pairing", "peer pairing", detail) {
+	switch b.askDecision(ctx, "peer", "pairing", "peer pairing", detail) {
 	case control.ApproveAlways, control.ApproveSession, control.ApproveOnce:
 		return true
 	default:
@@ -377,12 +376,15 @@ func (b *Broker) AskPairing(ctx context.Context, detail string) bool {
 	}
 }
 
-// askDecision raises an "ask"-mode prompt and returns the operator's decision.
+// askDecision raises an "ask"-mode prompt from by (the agent, a peer) and
+// returns the operator's decision.
 // The custom backend (b.ask, e.g. Discord buttons) takes precedence; otherwise
 // the default backend posts to the host request channel and blocks. With
 // NEITHER wired it fails closed (DenyOnce) — a broker with no way to reach the
-// operator must never silently allow.
-func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) control.ApprovalDecision {
+// operator must never silently allow. The prompt and its outcome are Security
+// records (audit.go); a prompt whose record can't be written under the deny
+// policy is never raised.
+func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string) control.ApprovalDecision {
 	req := control.ApprovalRequest{Category: cat, Action: action, Detail: detail}
 	start := time.Now()
 	b.logInfo("approval pending", "origin", b.origin, "category", cat, "action", action)
@@ -410,9 +412,22 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 			origin = "discord"
 		}
 		id := policyID(cat, action) // one prompt, one record: pending, then its outcome
+		rec := approvalRec{id, cat, action, detail, origin}
+		if rec.asked(ctx, by) != nil {
+			logOutcome("denied", "security log unwritable")
+			return control.DenyOnce
+		}
 		b.reg.emitBeside(ctx, agent.EventApprovalPending, req, origin, "")
 		recordPolicyApproval(ctx, id, cat, action, detail, origin, "pending")
-		d := ask(ctx, req)
+		// The backend names who decided (DecidedBy); nobody means Tenant did:
+		// it expired, or no operator could be reached.
+		who := &decider{actor: actorTenant}
+		d := ask(context.WithValue(event.WithApproval(ctx, id), deciderKey{}, who), req)
+		via := "operator"
+		if who.actor == actorTenant {
+			via = "no_surface"
+		}
+		d = rec.decided(ctx, d, who.actor, origin, via, who.kv...)
 		b.reg.emitBeside(ctx, agent.EventApprovalResolved, req, origin, outcomeOf(d))
 		recordPolicyApproval(ctx, id, cat, action, detail, origin, outcomeOf(d))
 		logOutcome(outcomeOf(d), "custom backend")
@@ -425,16 +440,22 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 	// storage; it is not an observer.)
 	if b.requests == nil {
 		logOutcome("denied", "no operator surface")
-		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "denied_no_surface")
+		verdict(ctx, cat, action, detail, b.origin, "no_surface", "denied_no_surface", control.DenyOnce)
 		return control.DenyOnce
 	}
 
+	id := "ap-" + nextID()
+	rec := approvalRec{id, cat, action, detail, b.origin}
+	if rec.asked(ctx, by) != nil {
+		logOutcome("denied", "security log unwritable")
+		return control.DenyOnce
+	}
 	// Register in the shared id-keyed registry (the source of truth) + emit the
 	// pending event. Both observers (TUI + dashboard) now see it and can resolve
 	// by id; the agent goroutine blocks ONLY on its own per-id reply chan.
-	id, reply := b.reg.register(ctx, req, b.origin)
+	p := b.reg.register(ctx, id, req, b.origin)
 	req.ID = id
-	req.Reply = reply
+	req.Reply = p.reply
 
 	// Best-effort NOTIFY the on-host TUI via its channel — non-blocking, so a
 	// full buffer (or no drainer, e.g. serve) never wedges the agent. The event
@@ -445,13 +466,24 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 	}
 
 	select {
-	case d := <-reply:
+	case d := <-p.reply:
+		// Resolve named the surface; a reply sent straight to req.Reply is the
+		// terminal's fallback, and a shutdown is Tenant's.
+		actor, surface := "operator", p.by
+		if surface == "" {
+			surface = "tui"
+		}
+		if d == control.DenyShutdown {
+			actor, surface = actorTenant, b.origin
+		}
+		d = rec.decided(ctx, d, actor, surface, "operator")
 		logOutcome(outcomeOf(d), "host surface")
 		return d
 	case <-ctx.Done():
 		// Turn cancelled/timed out before anyone resolved → deny-by-default, and
 		// drop the stale entry so Pending() is honest + a late Resolve is a no-op.
 		b.reg.removeIfPending(id)
+		rec.decided(ctx, control.Expired, actorTenant, b.origin, "")
 		logOutcome("expired", "turn ended")
 		return control.DenyOnce
 	}
@@ -496,18 +528,25 @@ func (b *Broker) Permissions() []control.PermissionInfo {
 	return out
 }
 
+// SetPermission sets a category's mode from the terminal; SetPermissionFrom
+// names the surface the operator changed it on, for its Security record.
 func (b *Broker) SetPermission(category, mode string) (bool, error) {
+	return b.SetPermissionFrom("tui", category, mode)
+}
+
+func (b *Broker) SetPermissionFrom(surface, category, mode string) (bool, error) {
 	m, ok := ParseMode(mode)
 	if !ok {
 		return false, fmt.Errorf("mode must be ask|allow|deny")
 	}
 	b.mu.Lock()
-	_, known := b.modes[category]
+	was, known := b.modes[category]
 	b.mu.Unlock()
 	if !known {
 		return false, nil
 	}
 	b.setMode(category, m)
+	b.modeChanged(category, was, m, surface)
 	// Reconfiguring a category clears any prior "session" grant — the
 	// explicit setting is now the source of truth.
 	b.mu.Lock()

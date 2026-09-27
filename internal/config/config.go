@@ -186,11 +186,16 @@ type LogLimits struct {
 // SecurityLog is logs.security: LogLimits, plus the witness the chain's head
 // is also sent to at each anchor (docs/LOGGING.md): "" (none), "discord"
 // (the operator's DM), or the path of a file, best on another machine.
-// "peer:<name>" is reserved; no peer call stores a head yet.
+// "peer:<name>" is reserved; no peer call stores a head yet. OnFailure is
+// what a gated action does when its audit record can't be written: continue
+// (the default: it goes ahead, with a critical event and a banner) or deny
+// (refused until records are written again). Read at each failure, so an
+// edit applies at once.
 type SecurityLog struct {
 	MaxMB      int    `json:"max_mb,omitempty"`
 	MaxAgeDays int    `json:"max_age_days,omitempty"`
 	Witness    string `json:"witness,omitempty"`
+	OnFailure  string `json:"on_failure,omitempty"`
 }
 
 // LogPolicy is one log's entry in logs.per_log; a key left out keeps the

@@ -323,6 +323,7 @@ func (d *Def) build(ctx context.Context, op string, kv []any) *Event {
 			e.Log = log
 		}
 	}
+	attribute(ctx, e)
 	for len(kv) > 0 {
 		key, ok := kv[0].(string)
 		if !ok || len(kv) == 1 {

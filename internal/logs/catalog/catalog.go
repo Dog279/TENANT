@@ -37,16 +37,3 @@ var CompFailed = System.Event(3101, event.Error, "Component", "{component} faile
 	Doc("A subsystem stopped with an error.",
 		"Something it depends on failed: a connection, a file or its configuration.",
 		"Open the component's log; the event before this one usually names the cause.")
-
-// security: approvals (4100s).
-
-var ApprovalAsk = Security.Event(4101, event.Info, "Approval", "Approval {approval} requested: {action}", "approval", "category", "action", "surface").
-	Doc("A gated action is waiting for the operator's decision.",
-		"The agent, a job or a plugin asked for an action whose category needs approval.",
-		"Approve or deny it where it was asked; it expires when nobody answers.")
-
-var ApprovalNo = Security.Event(4103, event.Warning, "Approval", "Approval {approval} denied: {action}", "approval", "action", "surface", "actor").
-	Keywords("audit.failure").
-	Doc("A gated action was denied, so it did not run.",
-		"The operator denied it, or Tenant denied it while shutting down.",
-		"None when intended; otherwise check the category's approval mode.")

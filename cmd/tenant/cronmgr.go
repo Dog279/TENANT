@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/approval"
 	croneng "tenant/internal/cron"
 	"tenant/internal/dashboard"
 	"tenant/internal/datalock"
@@ -225,9 +226,11 @@ func withAuthBanner(summary string, probs []string) string {
 // yes: it hard-denies the irreversible/destructive category (so a catastrophic
 // command/DDL/web-purchase still can't run unattended) and denies writes into
 // the config/data dirs (so an exec job can't rewrite Tenant's own cron defs to
-// self-replicate). The Gated cron_add approval pre-authorizes the rest.
+// self-replicate). The Gated cron_add approval pre-authorizes the rest. It
+// asks nobody, so each verdict is its own Security record (and, under
+// logs.security.on_failure: deny, a grant it can't record is a denial).
 func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
-	return func(_ context.Context, action, detail string) bool {
+	allows := func(action, detail string) bool {
 		switch categorize(action) {
 		case catSandbox:
 			// Unattended: a sandbox refusal is final. Re-running outside the
@@ -250,6 +253,9 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 			}
 		}
 		return true
+	}
+	return func(ctx context.Context, action, detail string) bool {
+		return approval.Verdict(ctx, categorize(action), action, detail, "cron", "cron", allows(action, detail))
 	}
 }
 
@@ -508,7 +514,11 @@ func (m *cronManager) ExecEnabled() bool {
 // SetExec flips the global cron-exec kill-switch (persisting the choice) so
 // shell jobs and exec-opted-in prompt jobs may run. It takes effect live — the
 // runner reads the gate per run.
-func (m *cronManager) SetExec(on bool) error {
+func (m *cronManager) SetExec(on bool) error { return m.setExecFrom(on, "tui") }
+
+// setExecFrom is SetExec from surface (tui or dashboard), which the change's
+// Security record names.
+func (m *cronManager) setExecFrom(on bool, surface string) error {
 	if m.execGate == nil {
 		return fmt.Errorf("cron-exec control unavailable")
 	}
@@ -525,6 +535,7 @@ func (m *cronManager) SetExec(on bool) error {
 		state = "on"
 	}
 	croneng.ExecSwitched.Log(m.base, "state", state)
+	auditExecMode("cron", on, surface)
 	return nil
 }
 
@@ -666,7 +677,7 @@ func (a dashCron) Remove(id string) error { _, err := a.m.engine.Remove(id); ret
 // dashboard so it no longer requires the TUI (/cron exec on|off) — the console
 // was the only way to change a setting that gates every unattended job.
 func (a dashCron) ExecEnabled() bool     { return a.m.ExecEnabled() }
-func (a dashCron) SetExec(on bool) error { return a.m.SetExec(on) }
+func (a dashCron) SetExec(on bool) error { return a.m.setExecFrom(on, "dashboard") }
 func (a dashCron) SetEnabled(id string, on bool) error {
 	_, _, err := a.m.engine.SetEnabled(id, on)
 	return err

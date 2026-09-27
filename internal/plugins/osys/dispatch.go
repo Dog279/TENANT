@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"tenant/internal/logs/event"
 	"tenant/internal/model"
 )
 
@@ -320,6 +321,9 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 	if strings.TrimSpace(a.Command) == "" {
 		return "command is required", true, nil
 	}
+	// The approval gateExec gets fills this slot, so the command's Security
+	// record names the approval that let it run.
+	ctx = event.WithApproval(ctx, "")
 	if err := d.policy.gateExec(ctx, a.Command); err != nil {
 		return err.Error(), true, nil
 	}

@@ -348,7 +348,11 @@ func (m *discordRelayManager) Status() (running bool, operatorSet bool, execOn b
 // next gated call, including one in a turn already running: the Discord
 // broker's lock (execLocked) reads the mode on every call. The tools stay
 // visible either way (TEN-229); the broker refuses what exec mode keeps closed.
-func (m *discordRelayManager) SetExec(on bool) error {
+func (m *discordRelayManager) SetExec(on bool) error { return m.setExecFrom(on, "tui") }
+
+// setExecFrom is SetExec from surface (tui or dashboard), which the change's
+// Security record names.
+func (m *discordRelayManager) setExecFrom(on bool, surface string) error {
 	if m.runner == nil {
 		return fmt.Errorf("discord not configured — run `/skill configure discord <bot-token>` first")
 	}
@@ -356,6 +360,7 @@ func (m *discordRelayManager) SetExec(on bool) error {
 	m.allowExec = on
 	running, opID := m.running, m.operatorID
 	m.mu.Unlock()
+	auditExecMode("relay", on, surface)
 	if m.persist != nil {
 		return m.persist(running, opID, on)
 	}
