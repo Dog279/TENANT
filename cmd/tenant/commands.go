@@ -1716,7 +1716,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 		// of named sub-agents it can spawn by role with specialized models.
 		SystemPrompt: orchestratorPrompt + renderAgentsForOrchestrator(orcAgents),
 		Observer:     func(e agent.Event) { rt.ObserveMain(e, func(ev agent.Event) { observe(orchID, ev) }) },
-		Skills:       skillRetriever{st: skillStore, agentID: orchID},
+		Skills:       skillRetriever{st: skillStore, agentID: orchID, tools: otools},
 		Compactor:    compressor,
 		UserProfile:  prof,
 	})
@@ -2323,7 +2323,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
 		// Off unless `lazy_tools` is set in config.json — additive.
 		LazyToolLoad: c.lc.LazyTools,
-		Skills:       skillRetriever{st: skillStore, agentID: c.agent},
+		Skills:       skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt: sysPrompt,
 		// Context compaction: when the budget fills, summarize old turns
 		// (via the summarizer role) instead of hard-truncating them.
@@ -3104,7 +3104,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// each seed through the same skillControl.AddSkill path so embedding
 		// + persistence stays consistent with manually-added skills.
 		SkillSeeds: func(bundle string) (int, error) {
-			return installSkillSeeds(bundle, skillControl{st: skillStore, emb: skEmb, agentID: c.agent})
+			return installSkillSeeds(bundle, seedAdder{skillControl{st: skillStore, emb: skEmb, agentID: c.agent}})
 		},
 		Memory:    memCtl,
 		Approvals: broker.Requests(),

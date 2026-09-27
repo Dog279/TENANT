@@ -27,6 +27,9 @@ type SkillControl interface {
 	Forget(name string) (bool, error)
 	AutoAcceptMode() string
 	SetAutoAccept(mode string) error
+	// SetTrust trusts or distrusts a skill (TEN-298): only a trusted skill is
+	// offered to the agent.
+	SetTrust(name string, trusted bool) (bool, error)
 }
 
 // SkillView is one skill's render-ready state. Status is
@@ -36,6 +39,13 @@ type SkillView struct {
 	Description string
 	Status      string
 	Enabled     bool
+	// Untrusted skills wait for the operator's review: what the agent saved
+	// itself, and imported packages (TEN-298). The zero value is trusted.
+	Untrusted     bool
+	Origin        string   // operator, agent, induction, seed, import
+	Source        string   // an imported skill's package
+	RequiresTools []string // tools it expects; offered only where they are enabled
+	Recipe        string   // the instructions, shown for review
 }
 
 // SetSkills installs the skill control after construction (mirrors SetCron).
@@ -47,12 +57,14 @@ func (s *Server) mountSkillsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /skills/{name}/accept", s.handleSkillAcceptForm)
 	mux.HandleFunc("POST /skills/{name}/enable", s.handleSkillEnableForm)
 	mux.HandleFunc("POST /skills/{name}/forget", s.handleSkillForgetForm)
+	mux.HandleFunc("POST /skills/{name}/trust", s.handleSkillTrustForm)
 }
 
 type skillsPageData struct {
 	layoutData
 	Configured bool
 	Proposed   []SkillView
+	Untrusted  []SkillView // live but untrusted: waiting for review (TEN-298)
 	Live       []SkillView
 	AutoMode   string
 	Err        string
@@ -79,6 +91,10 @@ func (s *Server) handleSkillsPage(w http.ResponseWriter, r *http.Request) {
 		case "tombstoned":
 			// hidden from the page; forgetting is terminal
 		default:
+			if sk.Untrusted {
+				d.Untrusted = append(d.Untrusted, sk)
+				continue
+			}
 			d.Live = append(d.Live, sk)
 		}
 	}
@@ -136,6 +152,26 @@ func (s *Server) handleSkillForgetForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectSkills(w, r, "Skill removed.", "")
+}
+
+func (s *Server) handleSkillTrustForm(w http.ResponseWriter, r *http.Request) {
+	if s.skills == nil {
+		http.Redirect(w, r, "/skills", http.StatusSeeOther)
+		return
+	}
+	name := r.PathValue("name")
+	trusted := r.FormValue("trusted") == "true"
+	ok, err := s.skills.SetTrust(name, trusted)
+	switch {
+	case err != nil:
+		redirectSkills(w, r, "", "Couldn't change that skill's trust: "+err.Error())
+	case !ok:
+		redirectSkills(w, r, "", "There's no skill named "+name+".")
+	case trusted:
+		redirectSkills(w, r, "Skill trusted — your agent can use it now.", "")
+	default:
+		redirectSkills(w, r, "Skill untrusted — your agent won't use it until you trust it again.", "")
+	}
 }
 
 func redirectSkills(w http.ResponseWriter, r *http.Request, msg, errMsg string) {

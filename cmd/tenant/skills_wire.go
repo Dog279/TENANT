@@ -13,14 +13,30 @@ import (
 )
 
 // skillRetriever adapts the skills.Store to agent.SkillRetriever so the
-// agent can pull relevant T4 recipes into the prompt.
+// agent can pull relevant T4 recipes into the prompt. Only eligible skills
+// come back: trusted ones, and with tools set, ones whose required tools are
+// enabled in the agent's registry (TEN-298).
 type skillRetriever struct {
 	st      *skills.Store
 	agentID string
+	tools   toolLister // the agent's tool registry; nil skips the tool check
 }
 
+// toolLister is a tool registry that lists its tools with their state.
+type toolLister interface{ ToolList() []tui.ToolInfo }
+
 func (r skillRetriever) RetrieveSkills(ctx context.Context, emb []float32, k int) ([]agent.SkillCard, error) {
-	hits, err := r.st.Search(ctx, skills.Query{AgentID: r.agentID, Embedding: emb, K: k})
+	q := skills.Query{AgentID: r.agentID, Embedding: emb, K: k}
+	if r.tools != nil {
+		enabled := map[string]bool{}
+		for _, ti := range r.tools.ToolList() {
+			if ti.Enabled {
+				enabled[ti.Name] = true
+			}
+		}
+		q.Available = func(tool string) bool { return skillToolAvailable(enabled, tool) }
+	}
+	hits, err := r.st.Search(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +51,12 @@ func (r skillRetriever) RetrieveSkills(ctx context.Context, emb []float32, k int
 // the `plugin` interface so it slots into the tool mux and shows in
 // /tools). The agent calls skill_save when it works out a reusable
 // procedure worth keeping.
+//
+// What the agent saves is untrusted until the operator trusts it (TEN-298).
+// A skill is injected into every later turn's operating rules, and the agent
+// may be writing what a web page, an email or a relayed message told it to:
+// so a saved skill, or an agent edit of a trusted one, is not offered to any
+// agent until the operator reviews it.
 type skillTool struct {
 	st      *skills.Store
 	emb     model.Embedder
@@ -47,7 +69,7 @@ func (skillTool) Tools() []model.ToolSpec {
 		`"recipe":{"type":"string","description":"the steps to follow"}},"required":["name","description","recipe"]}`)
 	return []model.ToolSpec{{
 		Name:        "skill_save",
-		Description: "Save a reusable procedure (a 'skill') so it can be recalled for similar future tasks. Use after you work out a multi-step approach worth keeping.",
+		Description: "Save a reusable procedure (a 'skill') so it can be recalled for similar future tasks. Use after you work out a multi-step approach worth keeping. The operator reviews a saved skill before it is used.",
 		Parameters:  params,
 	}}
 }
@@ -64,20 +86,15 @@ func (t skillTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 	if strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Description) == "" {
 		return "skill name and description are required", true, nil
 	}
-	var embed []float32
-	if t.emb != nil {
-		if vecs, err := t.emb.Embed(ctx, []string{a.Name + ": " + a.Description}); err == nil && len(vecs) == 1 {
-			embed = vecs[0]
-		}
-	}
-	id, err := t.st.Upsert(ctx, &skills.Skill{
+	id, err := t.st.UpsertWithSource(ctx, &skills.Skill{
 		AgentID: t.agentID, Name: a.Name, Description: a.Description, Recipe: a.Recipe,
-		Status: skills.StatusLive, Enabled: true, Embedding: embed,
-	})
+		Status: skills.StatusLive, Enabled: true, Embedding: embedSkill(ctx, t.emb, a.Name, a.Description),
+		Trust: skills.TrustUntrusted, Origin: skills.OriginAgent,
+	}, skills.OriginAgent)
 	if err != nil {
 		return "skill save failed: " + err.Error(), true, nil
 	}
-	return fmt.Sprintf("saved skill %q (#%d)", a.Name, id), false, nil
+	return fmt.Sprintf("saved skill %q (#%d). It is used once the operator reviews and trusts it (/skills trust %s).", a.Name, id, a.Name), false, nil
 }
 
 // skillControl implements tui.SkillControl for the /skills command.
@@ -127,23 +144,73 @@ func (c skillControl) SkillList() []tui.SkillInfo {
 	}
 	out := make([]tui.SkillInfo, 0, len(list))
 	for _, sk := range list {
-		out = append(out, tui.SkillInfo{Name: sk.Name, Description: sk.Description, Enabled: sk.Enabled, Status: sk.Status})
+		out = append(out, tui.SkillInfo{Name: sk.Name, Description: sk.Description, Enabled: sk.Enabled, Status: sk.Status,
+			Trusted: sk.Trust == skills.TrustTrusted, Origin: sk.Origin})
 	}
 	return out
 }
 
+// AddSkill saves a skill the operator wrote: trusted, since they wrote it.
 func (c skillControl) AddSkill(name, description, recipe string) error {
-	var embed []float32
-	if c.emb != nil {
-		if vecs, err := c.emb.Embed(context.Background(), []string{name + ": " + description}); err == nil && len(vecs) == 1 {
-			embed = vecs[0]
-		}
-	}
-	_, err := c.st.Upsert(context.Background(), &skills.Skill{
+	return c.addSkill(name, description, recipe, skills.OriginOperator)
+}
+
+// addSkill saves a trusted skill with the given origin (operator or seed),
+// which is also its history's change source.
+func (c skillControl) addSkill(name, description, recipe, origin string) error {
+	ctx := context.Background()
+	_, err := c.st.UpsertWithSource(ctx, &skills.Skill{
 		AgentID: c.agentID, Name: name, Description: description, Recipe: recipe,
-		Status: skills.StatusLive, Enabled: true, Embedding: embed,
-	})
+		Status: skills.StatusLive, Enabled: true, Embedding: embedSkill(ctx, c.emb, name, description),
+		Trust: skills.TrustTrusted, Origin: origin,
+	}, origin)
 	return err
+}
+
+// ImportSkill imports an Agent Skills package (TEN-298): untrusted unless
+// trust is set.
+func (c skillControl) ImportSkill(path string, trust bool) (string, error) {
+	res, err := importSkillPackage(context.Background(), c.st, c.emb, c.agentID, path, trust)
+	if err != nil {
+		return "", err
+	}
+	return res.Summary(), nil
+}
+
+// ExportSkill writes a skill as dir/<name>/SKILL.md and returns the directory.
+func (c skillControl) ExportSkill(name, dir string) (string, error) {
+	return exportSkillPackage(context.Background(), c.st, c.agentID, name, dir)
+}
+
+// SetSkillTrust trusts or distrusts a skill; false when there is no such skill.
+func (c skillControl) SetSkillTrust(name string, trusted bool) (bool, error) {
+	trust := skills.TrustUntrusted
+	if trusted {
+		trust = skills.TrustTrusted
+	}
+	return c.st.SetTrust(context.Background(), c.agentID, name, trust)
+}
+
+// SkillDetail describes one skill for /skills show: its text, trust,
+// provenance, required tools and whether it is offered to the agent, and why
+// not. nil when there is no such skill.
+func (c skillControl) SkillDetail(name string) (*tui.SkillDetail, error) {
+	sk, err := c.st.GetByName(context.Background(), c.agentID, name)
+	if err != nil || sk == nil {
+		return nil, err
+	}
+	d := &tui.SkillDetail{
+		Name: sk.Name, Description: sk.Description, Recipe: sk.Recipe, Status: sk.Status, Enabled: sk.Enabled,
+		Trusted: sk.Trust == skills.TrustTrusted, Origin: sk.Origin, Version: sk.Version, RequiresTools: sk.RequiresTools,
+	}
+	if ok, why := sk.Eligible(nil); !ok {
+		d.NotOffered = why
+	}
+	if p := sk.Package; p != nil {
+		d.Source, d.Digest, d.License, d.Compatibility, d.Files = p.Source, p.Digest, p.License, p.Compatibility, p.Files
+		d.ImportedAt = p.ImportedAt
+	}
+	return d, nil
 }
 
 func (c skillControl) SetSkillEnabled(name string, on bool) (bool, error) {

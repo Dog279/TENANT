@@ -145,7 +145,7 @@ on first use. Same lifecycle as `/research` (persisted to `<data>/reviews/<id>/`
 |---------------------------------------------------|----------------------------------------|
 | `docs/GSTACK.md` (this file)                      | design doc                             |
 | `cmd/tenant/builtinsouls/founder.md`              | soul template for `founder` mode       |
-| `cmd/tenant/builtinskills/gstack.go`              | seed the 5 T4 skill cards on first run |
+| `cmd/tenant/gstackseeds.go`                       | `/skills seed gstack` installs the 5 T4 skill cards (recorded as seeds, trusted) |
 | `cmd/tenant/review.go`                            | `/review <plan.md>` command            |
 | (TUI) `internal/tui/tui.go`                       | `/review` dispatcher + help entry      |
 | `tasks/lessons.md`                                | "founder-mode" lessons entry           |

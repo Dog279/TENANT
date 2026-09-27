@@ -182,6 +182,23 @@ type SkillInfo struct {
 	Description string
 	Enabled     bool
 	Status      string
+	Trusted     bool   // only a trusted skill is offered to the agent (TEN-298)
+	Origin      string // operator, agent, induction, seed, import; "" before TEN-298
+}
+
+// SkillDetail is one skill in full, for /skills show: its text, trust,
+// provenance and required tools, and why it is not offered, if it is not.
+type SkillDetail struct {
+	Name, Description, Recipe, Status string
+	Enabled, Trusted                  bool
+	Origin, Version                   string
+	RequiresTools                     []string
+	NotOffered                        string // "" when the agent is offered it
+
+	// An imported skill's package: where it came from and what it held.
+	Source, Digest, License, Compatibility string
+	Files                                  []string // bundled files not installed
+	ImportedAt                             time.Time
 }
 
 // SkillControl is how the TUI manages the T4 skill library on the fly.
@@ -211,6 +228,16 @@ type SkillControl interface {
 	// they trust the loop — "trusted" auto-accepts only while feedback is healthy.
 	AutoAcceptMode() string
 	SetAutoAccept(mode string) error
+
+	// Agent Skills packages and trust (TEN-298). ImportSkill imports a
+	// SKILL.md package (its directory or the file), untrusted unless trust is
+	// set, and returns a report; ExportSkill writes dir/<name>/SKILL.md and
+	// returns the directory. SetSkillTrust trusts or distrusts a skill;
+	// SkillDetail returns one skill in full (nil, nil when unknown).
+	ImportSkill(path string, trust bool) (string, error)
+	ExportSkill(name, dir string) (string, error)
+	SetSkillTrust(name string, trusted bool) (bool, error)
+	SkillDetail(name string) (*SkillDetail, error)
 }
 
 // FeedbackControl records the operator's ack/undo on the last turn (TEN-151) —
@@ -252,7 +279,7 @@ type SkillHistoryEntry struct {
 	PriorDescription string
 	PriorRecipe      string
 	PriorStatus      string
-	ChangeSource     string // "operator" | "induction" | "revert" | "seed"
+	ChangeSource     string // "operator" | "agent" | "induction" | "auto-accept" | "seed" | "import" | "trust" | "distrust" | "revert"
 	ChangedAt        time.Time
 }
 
