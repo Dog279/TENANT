@@ -67,6 +67,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"slices"
 	"strconv"
@@ -148,6 +149,10 @@ type Options struct {
 	// ChainKey is the Security log's HMAC key. Without it a commit holding a
 	// security record is refused (ErrNoChainKey).
 	ChainKey []byte
+	// ReadOnly opens an existing store as it is, for a report (doctor, the
+	// security audit): nothing is created, tightened or migrated, and a write
+	// fails.
+	ReadOnly bool
 }
 
 // Store is an open logbook.db. Safe for concurrent use.
@@ -216,6 +221,11 @@ func writerPragmas() []string {
 // waits out one in progress. A database SQLite finds damaged fails with
 // ErrCorrupt.
 func Open(path string, opts Options) (*Store, error) {
+	if opts.ReadOnly {
+		if _, err := os.Stat(path); err != nil { // before the lock file: a report creates nothing
+			return nil, fmt.Errorf("store: %w", err)
+		}
+	}
 	lock, err := datalock.File(strings.TrimSuffix(path, ".db"), false)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
@@ -230,11 +240,14 @@ func Open(path string, opts Options) (*Store, error) {
 }
 
 func openDB(path string, opts Options) (*Store, error) {
-	if err := fsperm.PrepareFile(path); err != nil {
+	pragmas := writerPragmas()
+	if opts.ReadOnly {
+		pragmas = []string{"busy_timeout(5000)", "query_only(1)"}
+	} else if err := fsperm.PrepareFile(path); err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
 	dsn := "file:" + path + "?_txlock=immediate"
-	for _, p := range writerPragmas() {
+	for _, p := range pragmas {
 		dsn += "&_pragma=" + p
 	}
 	w, err := sql.Open("sqlite", dsn)
@@ -249,6 +262,11 @@ func openDB(path string, opts Options) (*Store, error) {
 	}
 	s := &Store{w: w, r: r, boot: idBytes(opts.BootID), key: opts.ChainKey, names: map[string]int64{},
 		subs: map[chan struct{}]struct{}{}, stop: make(chan struct{})}
+	if opts.ReadOnly { // read as it is, whatever its schema version
+		_, id := meta(context.Background(), s.r)
+		_ = s.setID(id)
+		return s, nil
+	}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = s.Close()
 		return nil, corrupt(err)

@@ -235,6 +235,9 @@ func (h *Hub) Close() error {
 	if p := h.pipe.Swap(nil); p != nil {
 		p.close() // flushes into the files and the store while they are open
 	}
+	if h.Degraded() != "" {
+		h.markMirrorOnly("") // this process no longer runs at all
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closed = true

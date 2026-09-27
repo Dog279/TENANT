@@ -103,6 +103,7 @@ type securityAuditReport struct {
 	Files         []fileProtectionAudit `json:"file_protection"`
 	SecretStorage secretStorageAudit    `json:"secret_storage"`
 	Execution     executionAudit        `json:"execution"`
+	Logbook       logbookAudit          `json:"logbook"`
 	Findings      []securityFinding     `json:"findings"`
 	Critical      int                   `json:"critical"`
 	Warnings      int                   `json:"warnings"`
@@ -116,7 +117,7 @@ func cmdSecurity(ctx context.Context, args []string) error {
 	return cmdSecurityAudit(ctx, args[1:])
 }
 
-func cmdSecurityAudit(_ context.Context, args []string) error {
+func cmdSecurityAudit(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("security audit", flag.ContinueOnError)
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs)
@@ -142,6 +143,9 @@ func cmdSecurityAudit(_ context.Context, args []string) error {
 	}
 	report := buildSecurityAuditReport(c, pf, permissions)
 	report.Surfaces = surfaces
+	var logbookFiles []fileProtectionAudit
+	report.Logbook, logbookFiles = auditLogbook(ctx, c)
+	report.Files = append(report.Files, logbookFiles...)
 	evaluateSecurityAudit(&report)
 
 	if *asJSON {
@@ -368,6 +372,7 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 				offsiteRemedy(surface.Surface, risk.category, effective.Source))
 		}
 	}
+	logbookFindings(report, add)
 
 	report.Critical, report.Warnings = 0, 0
 	for _, finding := range report.Findings {
@@ -542,6 +547,7 @@ func printSecurityAudit(report securityAuditReport) {
 		}
 		fmt.Println()
 	}
+	printLogbookAudit(report.Logbook)
 	fmt.Println("\nfindings:")
 	if len(report.Findings) == 0 {
 		fmt.Println("  none")

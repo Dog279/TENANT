@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"tenant/internal/improve"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
@@ -77,10 +78,15 @@ func seedLooseTenantTree(t *testing.T, cfg, data string) {
 			}
 			return err
 		},
+		// TEN-375: the log book, which doctor and the audit read in place.
+		filepath.Join("logs", "logbook.db"): func(p string) error { s, err := store.Open(p, store.Options{}); closeIfOpen(s, err); return err },
 	} {
 		if err := open(filepath.Join(data, name)); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
+	}
+	if _, err := chainKey(cfg); err != nil { // the Security log's key, read as it is
+		t.Fatal(err)
 	}
 	// The config reaches every credential reader doctor has: a stored
 	// provider key (read while resolving flags), an agent profile on it, X and

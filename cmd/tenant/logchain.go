@@ -76,11 +76,15 @@ func chainKey(cfgDir string) ([]byte, error) {
 // readChainKey reads the Security log's key; fs.ErrNotExist when there is
 // none yet. A file claimed but not yet written (secrets.CreateExclusive's
 // fallback without hard links) is read again for up to a second.
-func readChainKey(cfgDir string) ([]byte, error) {
+func readChainKey(cfgDir string) ([]byte, error) { return readChainKeyWith(cfgDir, secrets.ReadFile) }
+
+// readChainKeyWith reads the key through read: secrets.ReadFile, which
+// hardens the file, or secrets.Peek for a report that changes nothing.
+func readChainKeyWith(cfgDir string, read func(string) ([]byte, error)) ([]byte, error) {
 	var b []byte
 	var err error
 	for range 10 {
-		if b, err = secrets.ReadFile(chainKeyPath(cfgDir)); err != nil || len(bytes.TrimSpace(b)) > 0 {
+		if b, err = read(chainKeyPath(cfgDir)); err != nil || len(bytes.TrimSpace(b)) > 0 {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

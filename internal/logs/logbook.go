@@ -59,6 +59,10 @@ type logbook struct {
 	lim  limiter                 // ratelimit.go
 	boot atomic.Pointer[bootRec] // this process's boot record, while it keeps one (boots.go)
 
+	// The boot lock a process with no boot record holds while it runs on
+	// its text files alone (inspect.go).
+	mark atomic.Pointer[datalock.Lock]
+
 	// The housekeeper loop's (watch).
 	wall       time.Time
 	mono       time.Duration
@@ -180,6 +184,9 @@ func (h *Hub) degrade(why string) {
 	was, fn := h.lb.degraded, h.lb.alert
 	h.lb.degraded = why
 	h.lb.mu.Unlock()
+	if (was == "") != (why == "") {
+		h.markMirrorOnly(why)
+	}
 	switch {
 	case fn == nil || (was == "") == (why == ""):
 	case why != "":
