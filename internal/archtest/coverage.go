@@ -92,6 +92,7 @@ var catalogued = map[string]int{
 	"internal/privacy":       0,
 	"internal/memory/skills": 0,
 	"internal/skillpkg":      0,
+	"internal/agent":         0, "internal/orchestra": 0, "internal/research": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

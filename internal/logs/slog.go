@@ -63,6 +63,25 @@ func Default() *Hub { return defaultHub.Load() }
 // and needs no plumbing: no handle to pass around, nothing to register.
 func For(source string) *slog.Logger { return slog.New(&Handler{source: source}) }
 
+// SourceOf names the folder l files its records in: its fixed source, or the
+// source it was built With. "" when l doesn't write to the log book, or
+// leaves each record to name its own.
+func SourceOf(l *slog.Logger) string {
+	h, ok := l.Handler().(*Handler)
+	if !ok {
+		return ""
+	}
+	if h.source != "" {
+		return h.source
+	}
+	for i := len(h.attrs) - 1; i >= 0; i-- {
+		if h.attrs[i].Key == "source" {
+			return NormalizeSource(h.attrs[i].Value.String())
+		}
+	}
+	return ""
+}
+
 // Handler is a slog.Handler that files records into a Hub. The source is the
 // handler's fixed source (Hub.Logger / For), else a `source` attribute on the
 // record or logger, else derived from the message's "subsystem: …" prefix

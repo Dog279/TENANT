@@ -18,7 +18,24 @@ var (
 	testProvider = event.NewProvider("logstest", "logstest")
 	testOp       = testProvider.Event(1001, event.Info, "Sync", "Sync {name}", "name", "payload").Sensitive("payload")
 	testLost     = testProvider.Event(3001, event.Critical, "Store", "Store {name} lost", "name")
+	testDiag     = testProvider.Event(9001, event.Info, "Sync", "Sync {name} body", "name", "body").
+			Sensitive("body").Keywords("payload").Diagnostic()
 )
+
+// A v1 line that names a catalogued event (agent.EntryFor writes them) reads
+// back with what the line can't carry: its channel, keywords and which fields
+// are sensitive.
+func TestEventFromEntryTakesTheDefinitionsChannelAndSensitivity(t *testing.T) {
+	e := EventFromEntry(Entry{Source: "turns", Msg: "Sync a body", Fields: []Field{
+		{"event", "logstest/9001"}, {"name", "a"}, {"body", "secret"}, {"other", "x"}}})
+	if e.Channel != event.Diagnostic || e.Task != "Sync" || !reflect.DeepEqual(e.Keywords, []string{"payload"}) || e.Log != "turns" {
+		t.Errorf("identity: %+v", e)
+	}
+	want := []event.Field{{Key: "name", Value: "a"}, {Key: "body", Value: "secret", Sensitive: true}, {Key: "other", Value: "x"}}
+	if !reflect.DeepEqual(e.Data, want) {
+		t.Errorf("Data = %+v, want %+v", e.Data, want)
+	}
+}
 
 // Install makes the hub the event emitter: events land in the hub as v1
 // lines, correlated with the turn and activity in ctx, sensitive values

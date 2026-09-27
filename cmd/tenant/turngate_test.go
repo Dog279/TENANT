@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
 // gateFakeRunner records admission order and max concurrency. Individual
@@ -157,6 +158,10 @@ func TestTurnGate_FIFOFairnessWithinClass(t *testing.T) {
 }
 
 func TestTurnGate_BoundedQueueRejectsClearly(t *testing.T) {
+	hub := logs.NewMemory(10)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
 	r := newGateFakeRunner()
 	release := r.block("active")
 	g := newTurnGateConfigured(r, turnSchedulerConfig{QueueDepth: 1})
@@ -171,6 +176,10 @@ func TestTurnGate_BoundedQueueRejectsClearly(t *testing.T) {
 	}
 	if got := err.Error(); got != "turn scheduler queue full (depth 1)" {
 		t.Fatalf("error = %q, want clear bounded-depth message", got)
+	}
+	// The refusal is logged too: the gate used to log nothing.
+	if es, _ := hub.Snapshot(); len(es) != 1 || es[0].Source != "turns" || es[0].Field("event") != "turns/2201" || es[0].Field("source") != "cron" {
+		t.Errorf("refusal not logged: %+v", es)
 	}
 	close(release)
 	_ = awaitTurn(t, active)

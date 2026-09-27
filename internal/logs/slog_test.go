@@ -128,3 +128,24 @@ func TestFor_ResolvesHubLazily(t *testing.T) {
 		t.Error("Default() should be the installed hub")
 	}
 }
+
+// SourceOf reads back the folder a logger files into.
+func TestSourceOf(t *testing.T) {
+	h := NewMemory(10)
+	for _, c := range []struct {
+		l    *slog.Logger
+		want string
+	}{
+		{h.Logger("cron"), "cron"},
+		{For("discord").With("source", "x"), "discord"},
+		{slog.New(h.Handler(nil)).With("source", "subagents"), "subagents"},
+		{slog.New(h.Handler(nil)).With("source", "a").With("source", "Sub Agents"), "sub-agents"},
+		{slog.New(h.Handler(nil)).WithGroup("g").With("source", "x"), ""},
+		{slog.New(h.Handler(nil)), ""},
+		{slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)).With("source", "x"), ""},
+	} {
+		if got := SourceOf(c.l); got != c.want {
+			t.Errorf("SourceOf = %q, want %q", got, c.want)
+		}
+	}
+}

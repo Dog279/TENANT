@@ -78,6 +78,17 @@ func Providers() []*Provider {
 	return out
 }
 
+// Lookup finds definition id of provider.
+func Lookup(provider string, id uint32) (*Def, bool) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	if p := providers[provider]; p != nil {
+		d, ok := p.defs[id]
+		return d, ok
+	}
+	return nil, false
+}
+
 // Defs lists p's definitions, by ID.
 func (p *Provider) Defs() []*Def {
 	regMu.Lock()

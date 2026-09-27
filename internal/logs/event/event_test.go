@@ -23,8 +23,9 @@ var (
 	run     = testP.Event(1002, event.Info, "Job run", "Job {job}", "job").Diagnostic()
 	dropped = testP.Event(2001, event.Warning, "Send", "Dropped {n} messages", "n", "body").Sensitive("body")
 
-	badP = event.NewProvider("eventtest.bad", "eventtest")
-	_    = badP.Event(1, event.Info, "T", "ok {a}", "a")
+	badP  = event.NewProvider("eventtest.bad", "eventtest")
+	_     = badP.Event(1, event.Info, "T", "ok {a}", "a")
+	other = badP.Event(2, event.Info, "T", "other")
 )
 
 // capture is an emitter that keeps what it is given.
@@ -122,6 +123,35 @@ func TestActivitiesNestAndEnd(t *testing.T) {
 	}
 	if oStop.Opcode != event.OpStop || oStop.Level != event.Info || oStop.Corr.ActivityID != a || oStop.Corr.RelatedID != "" {
 		t.Errorf("outer stop: %+v", oStop)
+	}
+}
+
+// WithLog files one provider's events in another log; the other providers'
+// events, and a bad log name, leave theirs alone. Lookup finds a definition.
+func TestWithLogAndLookup(t *testing.T) {
+	c := install(t)
+	ctx := event.WithLog(context.Background(), testP, "elsewhere")
+	sent.Log(ctx, "n", 1)
+	other.Log(ctx)
+	event.Start(ctx, run, "job", "j")
+	sent.Log(event.WithLog(context.Background(), testP, "Bad Name"), "n", 1)
+	var logs []string
+	for _, e := range c.events {
+		logs = append(logs, e.Log)
+	}
+	if want := []string{"elsewhere", "eventtest", "elsewhere", "eventtest"}; !reflect.DeepEqual(logs, want) {
+		t.Errorf("logs = %q, want %q", logs, want)
+	}
+	if d, ok := event.Lookup("eventtest", 1001); !ok || d != sent {
+		t.Errorf("Lookup(eventtest, 1001) = %v, %v", d, ok)
+	}
+	for _, miss := range []struct {
+		p  string
+		id uint32
+	}{{"eventtest", 9}, {"nope", 1001}, {"eventtest", 0}} {
+		if _, ok := event.Lookup(miss.p, miss.id); ok {
+			t.Errorf("Lookup(%s, %d) found a definition", miss.p, miss.id)
+		}
 	}
 }
 

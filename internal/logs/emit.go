@@ -147,6 +147,21 @@ func EventFromEntry(en Entry) event.Event {
 		}
 		e.Data = append(e.Data, event.Field{Key: f.Key, Value: f.Value, Sensitive: f.Value == event.Masked})
 	}
+	// A catalogued entry (agent.EntryFor's) takes what its v1 line doesn't
+	// carry from its definition: its channel, its keywords and which fields
+	// are sensitive.
+	if e.ID != 0 {
+		if d, ok := event.Lookup(e.Provider, e.ID); ok {
+			s := d.Spec()
+			e.Channel, e.Keywords = s.Channel, s.Keywords
+			if e.Task == "" {
+				e.Task = s.Task
+			}
+			for i := range e.Data {
+				e.Data[i].Sensitive = e.Data[i].Sensitive || slices.Contains(s.Sensitive, e.Data[i].Key)
+			}
+		}
+	}
 	return e
 }
 

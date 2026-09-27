@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -12,7 +13,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
-	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/soul"
@@ -241,16 +242,12 @@ func (r *TeamRuntime) routerForProfile(role string) (*model.Router, *agentProfil
 	// estimation, etc.) and shouldn't block other spawns.
 	lc, err := loadLaunchConfig(r.cfg.CfgDir)
 	if err != nil {
-		if r.cfg.Log != nil {
-			r.cfg.Log.Warn("team: load config for profile router; using shared router", "profile", role, "err", err)
-		}
+		orchestra.ProfileRouterFailed.Log(context.Background(), "profile", role, "err", err)
 		return r.cfg.Router, ap
 	}
 	pr, err := buildProfileRouter(role, ap, lc, r.cfg.CfgDir, r.cfg.EmbedProfile, r.cfg.Log)
 	if err != nil {
-		if r.cfg.Log != nil {
-			r.cfg.Log.Warn("team: build profile router; using shared router", "profile", role, "err", err)
-		}
+		orchestra.ProfileRouterFailed.Log(context.Background(), "profile", role, "err", err)
 		return r.cfg.Router, ap
 	}
 	// Cache. Double-check under the lock in case a parallel call beat us.
@@ -269,7 +266,7 @@ func (r *TeamRuntime) routerForProfile(role string) (*model.Router, *agentProfil
 func spawnRoleSafely(ctx context.Context, fn func(context.Context, string) (model.Role, bool), task string) (role model.Role, ok bool) {
 	defer func() {
 		if v := recover(); v != nil {
-			logs.For("subagents").Error("team: spawn classifier panicked; using the planner role", "panic", v, "stack", string(debug.Stack()))
+			orchestra.ClassifierPanicked.Log(ctx, "panic", v, "stack", string(debug.Stack()))
 			role, ok = "", false
 		}
 	}()
@@ -529,6 +526,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	r.budget.Ensure(base)
 	runCtx, releaseAgent, err := r.budget.AcquireAgent()
 	if err != nil {
+		orchestra.SpawnRefused.Log(ctx, "role", role, "err", err)
 		return "", err
 	}
 
@@ -549,7 +547,9 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	if max := r.maxConcurrent(); live >= max {
 		r.mu.Unlock()
 		releaseAgent() // hand the budget slot back, or every refusal leaks one
-		return "", fmt.Errorf("refused: %d sub-agents are already running (limit %d) — await or collect the running ones before spawning more", live, max)
+		err := fmt.Errorf("refused: %d sub-agents are already running (limit %d) — await or collect the running ones before spawning more", live, max)
+		orchestra.SpawnRefused.Log(ctx, "role", role, "err", err)
+		return "", err
 	}
 	r.seq++
 	id := fmt.Sprintf("%s-%s-%d", r.cfg.OrchID, slug(role), r.seq)
@@ -581,6 +581,17 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	}
 	tools, closeTools := r.agentTools(id) // full plugin set + this agent's own tools
 
+	// The sub-agent's run is an activity related to what spawned it: the
+	// orchestrator's turn, or the research run, in ctx. Its own turn's trace
+	// is minted here so the activity can name it (run).
+	subTrace := runtrace.NewID()
+	_, act := event.Start(ctx, orchestra.SubagentRun, "agent", id, "role", role, "run", subTrace, "prompt", task)
+	// Its own lines go to subagents, not turns (their "agent:" prefix).
+	subLog := r.cfg.Log
+	if subLog != nil {
+		subLog = subLog.With("source", "subagents")
+	}
+
 	// Spawn-time N-way routing (TEN-292): UNPINNED spawns only — a spawn that
 	// matched a pinned AgentProfile (profile with a provider) keeps its pinned
 	// router untouched. The suggested role must already resolve on the router
@@ -593,9 +604,8 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 				if r.cfg.Log != nil {
 					r.cfg.Log.Info("team: spawn routed by rule", "agent", id, "role", string(suggested))
 				}
-			} else if r.cfg.Log != nil {
-				r.cfg.Log.Warn("team: spawn rule role unbound on spawn router; using planner",
-					"agent", id, "role", string(suggested))
+			} else {
+				orchestra.SpawnRoleUnbound.Log(ctx, "agent", id, "role", string(suggested))
 			}
 		}
 	}
@@ -616,7 +626,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		// A task that quoted the spawner's sensitive results carries that
 		// provenance, so this agent's egress of it asks too (TEN-336).
 		InboundFlow:  agent.DispatchFlow(ctx),
-		Logger:       r.cfg.Log,
+		Logger:       subLog,
 		SystemPrompt: systemPrompt,
 		Observer:     func(e agent.Event) { r.emit(id, e) },
 		Skills:       r.skillRetriever(id),
@@ -632,6 +642,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	if err != nil {
 		closeTools()
 		releaseAgent()
+		act.End(&err)
 		r.finish(m, "error", "failed to start: "+err.Error())
 		return "", err
 	}
@@ -641,13 +652,16 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		defer cancel() // release the ctx when this agent finishes naturally
 		defer releaseAgent()
 		defer closeTools()
-		res, terr := ag.Turn(agCtx, agent.TurnRequest{UserQuery: task, ParentTraceID: parentTrace})
+		res, terr := ag.Turn(agCtx, agent.TurnRequest{UserQuery: task, ParentTraceID: parentTrace, TraceID: subTrace})
 		var status, result string
+		var endErr error // the activity's: a fail
 		switch {
 		case context.Cause(agCtx) != nil && r.budget.Status().TerminationReason != "":
 			status, result = "terminated", "terminated: "+r.budget.Status().TerminationReason
+			endErr = errors.New(result)
 		case terr != nil:
 			status, result = "error", "error: "+terr.Error()
+			endErr = terr
 		case res != nil && strings.TrimSpace(res.Response) != "":
 			status, result = "done", res.Response
 		default:
@@ -664,6 +678,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		r.mu.Lock()
 		m.flow = flow
 		r.mu.Unlock()
+		act.End(&endErr)
 		r.finish(m, status, result)
 	}()
 

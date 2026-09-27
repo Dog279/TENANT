@@ -17,7 +17,7 @@ import (
 	"tenant/internal/logs/store"
 )
 
-var testDetail = testProvider.Event(9001, event.Info, "Detail", "detail {n}", "n").Diagnostic()
+var testDetail = testProvider.Event(9002, event.Info, "Detail", "detail {n}", "n").Diagnostic()
 
 // TestMain lets the test binary stand in for a Tenant process that is
 // killed while it writes: with TENANT_LOGBOOK_HELPER=crash it logs into the

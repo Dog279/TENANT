@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"tenant/internal/logs"
+	"tenant/internal/model"
+	"tenant/internal/model/testllm"
 	"tenant/internal/research"
 	"tenant/internal/tui"
 )
@@ -274,6 +278,34 @@ func TestRunWithPersistence_StoresEvenOnFailure(t *testing.T) {
 	// Unused: errors.Is sanity for the Get path.
 	if _, _, err := s.Get("missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("missing get wrong: %v", err)
+	}
+}
+
+// A research pass is an activity in the research log: a start with the
+// question masked, then a fail with the error when its planner fails.
+func TestRunWithPersistence_IsAnActivity(t *testing.T) {
+	hub := logs.NewMemory(20)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+	planner := testllm.New()
+	planner.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+		return nil, errors.New("planner down")
+	}
+	_, _, err := runWithPersistence(context.Background(), planner, newTeamRuntime(TeamConfig{}), nil, "why?",
+		researchOpts{noClarify: true, depth: 1}, "m", "b", "", func(string, ...any) {}, nil)
+	if err == nil {
+		t.Fatal("want the planner's error")
+	}
+	es, _ := hub.Snapshot()
+	var ops []string
+	for _, e := range es {
+		if e.Source == "research" && e.Field("event") == "research/1" && e.Field("question") == "«sensitive»" {
+			ops = append(ops, e.Field("opcode"))
+		}
+	}
+	if len(ops) != 2 || ops[0] != "start" || ops[1] != "fail" || !strings.Contains(es[len(es)-1].Field("error"), "planner down") {
+		t.Fatalf("research activity = %v in %+v", ops, es)
 	}
 }
 

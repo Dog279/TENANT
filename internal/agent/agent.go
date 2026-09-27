@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/assemble"
 	"tenant/internal/memory/compress"
@@ -296,6 +299,7 @@ type SkillRetriever interface {
 type Agent struct {
 	cfg                       Config
 	log                       *slog.Logger
+	evlog                     string // the log its turns events go to: its logger's (logs.SourceOf), else turns
 	plannerRole, embedderRole model.Role
 
 	// Interjection support: a running turn can accept a mid-flight user
@@ -439,7 +443,7 @@ func New(cfg Config) (*Agent, error) {
 		er = model.RoleEmbedder
 	}
 	a := &Agent{
-		cfg: cfg, log: log, plannerRole: pr, embedderRole: er,
+		cfg: cfg, log: log, evlog: cmp.Or(logs.SourceOf(log), Turns.Log), plannerRole: pr, embedderRole: er,
 		compaction: newCompactionHysteresis(), infoFlow: newInfoFlowTracker(),
 	}
 	a.infoFlow.adopt(cfg.InboundFlow.results)
@@ -551,7 +555,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	}
 	if a.cfg.Runs != nil {
 		if startErr := a.cfg.Runs.Start(ctx, run); startErr != nil {
-			a.log.Warn("agent: start run record failed", "trace_id", traceID, "err", startErr)
+			RunRecordFailed.Log(a.ev(ctx), "op", "start", "trace_id", traceID, "err", startErr)
 		}
 		defer func() {
 			completed := time.Now().UTC()
@@ -571,11 +575,25 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			finishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if finishErr := a.cfg.Runs.Finish(finishCtx, run); finishErr != nil {
-				a.log.Warn("agent: finish run record failed", "trace_id", traceID, "err", finishErr)
+				RunRecordFailed.Log(a.ev(ctx), "op", "finish", "trace_id", traceID, "err", finishErr)
 			}
 		}()
 	}
-	a.emit(Event{Kind: EventTurnStart, TraceID: traceID, Text: req.UserQuery})
+	a.emit(Event{Kind: EventTurnStart, TraceID: traceID, ParentTraceID: req.ParentTraceID, Text: req.UserQuery})
+	// The turn's end, as its activity's stop or fail (TurnRun). A cancelled
+	// turn (Esc, shutdown) or one that was cut short but still answered
+	// stops; one that errored fails.
+	defer func() {
+		end := Event{Kind: EventTurnEnd, TraceID: traceID, Duration: time.Since(started).Round(time.Millisecond)}
+		failure := err
+		if failure == nil && result != nil && !result.Truncated && !errors.Is(result.Error, context.Canceled) {
+			failure = result.Error
+		}
+		if failure != nil {
+			end.IsErr, end.Text = true, failure.Error()
+		}
+		a.emit(end)
+	}()
 	activeRouteDeadline := time.Now().Add(ActiveRouteBudget())
 	var routeState *turnRouteState
 	var routeDeadline time.Time
@@ -593,13 +611,13 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			PreviousRole: previous, StickyRole: sticky,
 			ContextTokens: contextTokens, ContextKnown: contextKnown,
 		}
-		joinRoute = a.routeActive(routeReq)
+		joinRoute = a.routeActive(ctx, routeReq)
 		routeReq.Active = joinRoute
 		if joinRoute {
 			routeDeadline = activeRouteDeadline
-			routeStickySession = a.routeSticky(routeReq)
+			routeStickySession = a.routeSticky(ctx, routeReq)
 		}
-		routeState = &turnRouteState{store: a.cfg.Episodic, log: a.log, ready: make(chan routeReady, 1)}
+		routeState = &turnRouteState{store: a.cfg.Episodic, evlog: a.evlog, agent: a.cfg.AgentID, ready: make(chan routeReady, 1)}
 		routeCtx := context.WithoutCancel(ctx)
 		cancelRoute := func() {}
 		if joinRoute {
@@ -637,8 +655,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	if err != nil {
 		// Retrieval is best-effort; embedding failures shouldn't kill
 		// the turn. Log and continue without retrieval.
-		a.log.Warn("agent: embed query failed; continuing without retrieval",
-			"agent", a.cfg.AgentID, "err", err)
+		EmbedFailed.Log(a.ev(ctx), "agent", a.cfg.AgentID, "err", err)
 	}
 
 	// Active selection joins only after embedding, and only until the deadline
@@ -650,8 +667,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			routeStickySession = routeStickySession || obs.StickySession
 			if obs.Applied && obs.Role != "" {
 				if routed, routedProfile, routeErr := resolveRoutedRole(ctx, router, obs, routeDeadline); routeErr != nil {
-					a.log.Warn("agent: routed role unavailable; using planner",
-						"agent", a.cfg.AgentID, "role", obs.Role, "err", routeErr)
+					RoutedRoleUnavailable.Log(a.ev(ctx), "agent", a.cfg.AgentID, "role", obs.Role, "err", routeErr)
 					routeState.appendTags("route:routing_error=true")
 				} else {
 					planner, profile = routed, routedProfile
@@ -681,7 +697,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// Capability gate (TEN-103): only offer tools the active model may use, so a
 	// small local planner never sees an augmentation tool like memory_recall.
 	availableTools, droppedGated := filterGatedTools(availableTools, profile)
-	a.warnUnknownGateDrops(droppedGated, profile)
+	a.warnUnknownGateDrops(ctx, droppedGated, profile)
 	// Minify the SURVIVORS' JSON schemas before they hit the wire (TEN-227):
 	// drop pure-doc keywords + compact whitespace + trim paragraph-length
 	// property prose, preserving types/enums/required. Applied here (post rank +
@@ -955,8 +971,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			// loop-ceiling — that gives the model one more chance to write
 			// the answer it implicitly already has.
 			if strings.TrimSpace(resp.Text) == "" && len(result.ToolTrace) > 0 {
-				a.log.Warn("agent: degenerate empty-final after tool use; forcing synthesis",
-					"agent", a.cfg.AgentID, "iter", iter, "tools_called", len(result.ToolTrace))
+				EmptyFinal.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tools_called", len(result.ToolTrace))
 				final, ferr := a.synthesizeFinal(ctx, planner, profile, asm, queryEmbedding, goalHeader)
 				if ferr == nil && strings.TrimSpace(final) != "" {
 					result.Response = final
@@ -1062,7 +1077,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		for _, call := range validCalls {
 			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Args: string(call.Arguments)})
 		}
-		batchResults := dispatchBatch(ctx, validCalls, callFlows, parallel, a.cfg.Dispatcher, a.log)
+		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
 		for _, br := range batchResults {
 			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
 				br.Labels = append([]model.InfoFlowLabel(nil), spec.ResultLabels...)
@@ -1088,7 +1103,18 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				toolResult = br.Err.Error()
 			}
 			span.AddTool(runtrace.ToolCall{ID: br.Call.ID, Name: br.Call.Name, Arguments: string(br.Call.Arguments), Result: toolResult, Outcome: toolOutcome})
-			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: br.Result, IsErr: br.IsError})
+			a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: br.Call.Name, Result: toolResult, IsErr: toolOutcome == "error", Duration: br.Duration})
+			// The operational record of the call; its payloads are the
+			// diagnostic rows above (EntryFor).
+			if toolOutcome == "error" {
+				kv := []any{"agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration}
+				if br.Err != nil {
+					kv = append(kv, "error", br.Err)
+				}
+				ToolFailed.Log(a.ev(ctx), kv...)
+			} else {
+				ToolDone.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration)
+			}
 			a.feedToolResult(ctx, br, profile.ToolResultCap())
 		}
 
@@ -1099,7 +1125,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		// call-set this many times in a row. Operator PlanLoopCeiling is untouched.
 		if sig := toolCallSignature(validCalls); sig != "" && sig == lastToolSig {
 			if repeatRuns++; repeatRuns >= oscillationLimit {
-				a.log.Warn("agent: oscillation — identical tool call repeated; forcing synthesis", "iter", iter, "identical_runs", repeatRuns+1)
+				Oscillating.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "identical_runs", repeatRuns+1)
 				a.emit(Event{Kind: EventError, Iter: iter, Text: "stuck repeating the same tool call — synthesizing from gathered results"})
 				stuckErr = ErrOscillationDetected
 				break
@@ -1136,7 +1162,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 // tool-result BODIES to stubs while the full bodies stay durable in the archive —
 // lossless at the system level, so it runs BEFORE the LLM summarizer (and shrinks
 // its input too). Best-effort: an error is logged and treated as "no change".
-func (a *Agent) microcompact(msgs []working.Message) ([]working.Message, bool) {
+func (a *Agent) microcompact(ctx context.Context, msgs []working.Message) ([]working.Message, bool) {
 	mc, ok := a.cfg.Compactor.(interface {
 		Microcompact([]working.Message) ([]working.Message, bool, error)
 	})
@@ -1145,7 +1171,7 @@ func (a *Agent) microcompact(msgs []working.Message) ([]working.Message, bool) {
 	}
 	out, changed, err := mc.Microcompact(msgs)
 	if err != nil {
-		a.log.Warn("agent: microcompact failed", "agent", a.cfg.AgentID, "err", err)
+		CompactFailed.Log(a.ev(ctx), "agent", a.cfg.AgentID, "stage", "microcompaction", "err", err)
 		return msgs, false
 	}
 	return out, changed
@@ -1177,10 +1203,10 @@ func (a *Agent) compactWorking(ctx context.Context) {
 	}
 	msgs := a.cfg.Working.Messages()
 	origLen := len(msgs)
-	msgs, microChanged := a.microcompact(msgs)
+	msgs, microChanged := a.microcompact(ctx, msgs)
 	out, changed, err := a.runCompact(ctx, msgs)
 	if err != nil {
-		a.log.Warn("agent: working-set compaction failed", "agent", a.cfg.AgentID, "err", err)
+		CompactFailed.Log(a.ev(ctx), "agent", a.cfg.AgentID, "stage", "summary", "err", err)
 		if microChanged {
 			// The elision is lossless (bodies live in the archive); keep it even
 			// though summarization failed.
@@ -1221,7 +1247,7 @@ func filterGatedTools(specs []model.ToolSpec, profile model.Profile) (kept, drop
 // KNOWS and denies (explicit capability, heuristic said no) is deliberate
 // and stays quiet. Warned once per gate per agent - turns are serialized
 // per agent, so the map needs no lock (same discipline as compaction).
-func (a *Agent) warnUnknownGateDrops(dropped []model.ToolSpec, profile model.Profile) {
+func (a *Agent) warnUnknownGateDrops(ctx context.Context, dropped []model.ToolSpec, profile model.Profile) {
 	for _, s := range dropped {
 		if profile.GateKnown(s.Gate) || a.warnedGates[s.Gate] {
 			continue
@@ -1230,8 +1256,7 @@ func (a *Agent) warnUnknownGateDrops(dropped []model.ToolSpec, profile model.Pro
 			a.warnedGates = map[string]bool{}
 		}
 		a.warnedGates[s.Gate] = true
-		a.log.Warn("tool hidden: the active profile has no Capabilities entry for its gate and no built-in heuristic covers it - if no other profile configures this gate either, the tool will never surface anywhere",
-			"gate", s.Gate, "tool", s.Name, "profile", string(profile.ID))
+		ToolHidden.Log(a.ev(ctx), "tool", s.Name, "gate", s.Gate, "profile", string(profile.ID))
 		a.emit(Event{Kind: EventToolCatalog,
 			Text: fmt.Sprintf("tool %s hidden: capability gate %q is unrecognized by the active profile (no Capabilities entry, no heuristic)", s.Name, s.Gate)})
 	}
@@ -1261,7 +1286,7 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 	}
 	msgs := a.cfg.Working.Messages()
 	before = len(msgs)
-	msgs, microChanged := a.microcompact(msgs)
+	msgs, microChanged := a.microcompact(ctx, msgs)
 	out, changed, cerr := a.runCompact(ctx, msgs)
 	if cerr != nil {
 		return before, before, cerr
@@ -1466,8 +1491,7 @@ func (a *Agent) plan(ctx context.Context, planner model.LLM, format string, iter
 		if ctx.Err() != nil || attempt >= planMaxAttempts || !isRetryableStreamErr(err) {
 			return nil, err
 		}
-		a.log.Warn("agent: planner stream dropped — retrying on a fresh connection",
-			"iter", iter, "attempt", attempt, "err", err)
+		StreamRetry.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "attempt", attempt, "err", err)
 		if span := runtrace.SpanFromContext(ctx); span != nil {
 			span.AddRetry()
 		}
@@ -1709,7 +1733,7 @@ func (a *Agent) archiveEvent(ctx context.Context, e archive.Event) {
 	}
 	e.TraceID = runtrace.IDFromContext(ctx)
 	if err := a.cfg.Archive.Append(e); err != nil {
-		a.log.Warn("agent: archive append failed", "err", err)
+		RecordNotSaved.Log(a.ev(ctx), "agent", a.cfg.AgentID, "record", "archive event", "err", err)
 	}
 }
 
@@ -1763,7 +1787,7 @@ func (a *Agent) persistEpisode(ctx context.Context, prompt, response string, tra
 		Embedding:   queryEmbedding,
 	})
 	if err != nil {
-		a.log.Warn("agent: episode insert failed", "err", err)
+		RecordNotSaved.Log(a.ev(ctx), "agent", a.cfg.AgentID, "record", "episode", "err", err)
 	} else if routeState != nil {
 		routeState.episodeInserted(id, routeVersion)
 	}
@@ -1798,7 +1822,8 @@ type turnRouteState struct {
 	version   uint64
 	episodeID int64
 	store     *episodic.Store
-	log       *slog.Logger
+	evlog     string // the agent's log (Agent.evlog), and its ID, for RecordNotSaved
+	agent     string
 	ready     chan routeReady
 }
 
@@ -1858,26 +1883,26 @@ func (a *Agent) noteRouteContext(tokens, workingBytes int) {
 	a.routeMu.Unlock()
 }
 
-func (a *Agent) routeActive(req RouteRequest) (active bool) {
+func (a *Agent) routeActive(ctx context.Context, req RouteRequest) (active bool) {
 	if a.cfg.RouteActive == nil {
 		return false
 	}
 	defer func() {
 		if v := recover(); v != nil {
-			a.log.Error("agent: route active gate panicked; using shadow", "agent", a.cfg.AgentID, "panic", v, "stack", string(debug.Stack()))
+			RoutePanicked.Log(a.ev(ctx), "agent", a.cfg.AgentID, "hook", "active gate", "fallback", "using shadow", "panic", v, "stack", string(debug.Stack()))
 			active = false
 		}
 	}()
 	return a.cfg.RouteActive(req)
 }
 
-func (a *Agent) routeSticky(req RouteRequest) (sticky bool) {
+func (a *Agent) routeSticky(ctx context.Context, req RouteRequest) (sticky bool) {
 	if a.cfg.RouteSticky == nil {
 		return false
 	}
 	defer func() {
 		if v := recover(); v != nil {
-			a.log.Error("agent: route sticky gate panicked; not pinning", "agent", a.cfg.AgentID, "panic", v, "stack", string(debug.Stack()))
+			RoutePanicked.Log(a.ev(ctx), "agent", a.cfg.AgentID, "hook", "sticky gate", "fallback", "not pinning", "panic", v, "stack", string(debug.Stack()))
 			sticky = false
 		}
 	}()
@@ -1993,7 +2018,7 @@ func (a *Agent) runRouteHook(ctx context.Context, req RouteRequest, state *turnR
 	var obs RouteObservation
 	defer func() {
 		if v := recover(); v != nil {
-			a.log.Error("agent: route hook panicked; ignored", "agent", a.cfg.AgentID, "panic", v, "stack", string(debug.Stack()))
+			RoutePanicked.Log(a.ev(ctx), "agent", a.cfg.AgentID, "hook", "hook", "fallback", "ignored", "panic", v, "stack", string(debug.Stack()))
 		}
 		state.publish(obs)
 		if strings.TrimSpace(obs.Text) != "" {
@@ -2084,8 +2109,8 @@ func (s *turnRouteState) addTagsAsync(id int64, tags []string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		if err := s.store.AddTags(ctx, id, tags); err != nil && s.log != nil {
-			s.log.Warn("agent: append route episode tags failed", "episode", id, "err", err)
+		if err := s.store.AddTags(ctx, id, tags); err != nil {
+			RecordNotSaved.Log(event.WithLog(ctx, Turns, s.evlog), "agent", s.agent, "record", "route tags", "episode", id, "err", err)
 		}
 	}()
 }

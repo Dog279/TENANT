@@ -307,6 +307,11 @@ func (d *Def) build(ctx context.Context, op string, kv []any) *Event {
 		Data: make([]Field, 0, (len(kv)+1)/2),
 		Corr: Correlation{ActivityID: ActivityFromContext(ctx)},
 	}
+	if ctx != nil {
+		if log, ok := ctx.Value(logKey(s.Provider)).(string); ok {
+			e.Log = log
+		}
+	}
 	for len(kv) > 0 {
 		key, ok := kv[0].(string)
 		if !ok || len(kv) == 1 {
@@ -355,6 +360,19 @@ func ActivityFromContext(ctx context.Context) string {
 	}
 	id, _ := ctx.Value(activityKey{}).(string)
 	return id
+}
+
+type logKey string // a provider's name
+
+// WithLog files the events of p written under ctx in log instead of p's own.
+// An agent's turn events belong to the surface that runs it: a sub-agent's
+// land in subagents, a cron job's in cron. Other providers' events are
+// unaffected, and a bad log name is ignored.
+func WithLog(ctx context.Context, p *Provider, log string) context.Context {
+	if !nameRe.MatchString(log) {
+		return ctx
+	}
+	return context.WithValue(ctx, logKey(p.Name), log)
 }
 
 // Activity is an operation in flight, from Start to End.
