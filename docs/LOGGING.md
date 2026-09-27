@@ -32,6 +32,7 @@ one folder is one tab.
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 ├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
 ├── archive/                      ← the store's archived records (security-<first>-<last>.ndjson.gz)
+├── spool/                        ← events left by writers while no Tenant process was up (see "Intake")
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
 ```
 
@@ -49,8 +50,12 @@ One entry is exactly one line, readable in `tail -f` and exact under `grep`:
 ```
 
 `<local date> <time.ms> <LEVEL> [<source>] <message>` then a **tab** and
-`key=value` fields. Values with spaces, quotes or newlines are quoted (Go
-`strconv.Quote` escaping), so a multi-line tool result still occupies one line.
+`key=value` fields. Values with spaces, quotes, newlines or other control
+characters are quoted (Go `strconv.Quote` escaping), so a multi-line tool
+result still occupies one line. In the message, newlines and tabs become
+spaces and every other control character (ESC, DEL, the C1 set, a byte that
+isn't UTF-8) is escaped the same way (`\x1b`), so a line can't drive the
+terminal of a `tail -f`.
 Turn events carry their kind in `ev=`; plain records have no `ev`. Every
 event a turn raises, and the approvals it asks for, carries `trace=`: the
 turn's trace ID, the `trace_id` of its record in `runs.db`. A slog line logged
@@ -418,8 +423,10 @@ tenant log --list
 ```
 
 It POSTs to the running hub (the line shows up live in open dashboards; the
-TUI's feed does not show it); when no hub is reachable it appends straight to
-the day's file, and a hub that starts later picks the folder up. The token is
+TUI's feed does not show it); when no hub is reachable (or with `--file`) it
+leaves the line in the spool, which the next Tenant process to run files into
+the log book, tagged `external` (see [Intake](#intake-v1-history-foreign-folders-and-the-spool)).
+With `"logs": {"store": false}` it appends to the day's file instead. The token is
 `dashboard.auth` when config.json sets one, else the generated
 `<config>/dashboard-auth-token` a default install uses (`--token` overrides).
 Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
@@ -427,8 +434,9 @@ Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
 
 **Anything that speaks HTTP** — the live logging API (same Bearer token as the
 rest of the dashboard). It refuses Tenant's own sources with HTTP 403 and drops
-an `ev` field: only Tenant files turn events, so an outside line can never pass
-for an approval or a tool call.
+`ev` and `event` fields: only Tenant files turn events and catalogued events,
+so an outside line can never pass for an approval, a tool call or a
+`security` record.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8770/api/logs/watcher \
@@ -467,7 +475,10 @@ to a `.log` file in it (`<root>/mytool/2026-09-22.log`). The hub discovers new
 folders within ~5 s, seeds the tab from the file's tail, and follows it live.
 Lines in the format above keep their level and fields; any other text is kept
 verbatim as an INFO line. The folder name is the source name
-(`[a-z0-9][a-z0-9._-]{0,39}`).
+(`[a-z0-9][a-z0-9._-]{0,39}`, not ending in a dot and not a Windows device
+name such as `con`, `nul`, `com1` or `lpt1.log`, since it is a folder on every
+OS). With the store on, the housekeeper also files the folder's lines into
+`logbook.db` as the log `ext.<folder>` (see [Intake](#intake-v1-history-foreign-folders-and-the-spool)).
 
 **A turn event from a new agent surface** — set `Source` on the events you
 mirror into the feed, as the cron / Discord / eval observers do:
@@ -557,8 +568,39 @@ through its own connection, so both can share a data directory.
   counts the backups made before the last forget that still hold what it
   removed. A running Tenant's Activity tab keeps what it already read until
   it scrolls past.
-- The file is owner-only. The v1 history import and the viewer arrive with
-  the next logging v2 tickets.
+- The file is owner-only. The viewer arrives with the next logging v2
+  tickets.
+
+#### Intake: v1 history, foreign folders and the spool
+
+The housekeeper (whichever process holds its lease) files, every tick, what
+no Tenant process wrote through its pipeline. Nothing it files is mirrored.
+It never reads a folder into `security` or a log under `tenant.*`.
+
+- **v1 history, once.** The lines of Tenant's own folders written before the
+  store's first event are imported as events of their log, tagged `imported`
+  and scrubbed on the way in (v1's `system` files hold the dashboard token).
+  An `event=` claim is dropped. Progress is kept in the store's `meta`
+  table, so a run cut short resumes and files nothing twice; `logbook/1101`
+  says when it is done.
+- **Foreign folders.** A folder is foreign only when no Tenant log has its
+  name: not in the store, not a built-in or registered provider, not written
+  by the running process. Its lines become events of `ext.<folder>`, tagged
+  `external`, with any `event=` dropped. Each file's offset is kept in `meta`.
+  A byte is read only once it was there at the previous tick: a process
+  mirrors a line before it commits it, so another process's new log could
+  look foreign for that moment, and is never filed as external.
+- **The spool,** `<logs root>/spool/`, for writers when no Tenant process is
+  up. A writer creates `<name>.tmp`, writes one event per line in the event's
+  JSON form (`{"time":…,"log":"deploy","level":"warning","msg":"…","data":{…}}`;
+  `logs.Spool` in Go), closes it and renames it `<name>.ndjson`. The
+  housekeeper claims a file by renaming it `<name>.ingesting`, files it and
+  deletes it. A rename that fails (on Windows, while another process has the
+  file open) is retried at the next tick, and a `.tmp` is never read. What it
+  files is tagged `external` and never catalogued (its `id` is dropped). An
+  event for `security`, a log or provider under `tenant.*`, a built-in or a
+  registered provider is refused, and so is a malformed line; `logbook/1102`
+  counts them per file.
 
 #### Retention and disk budgets
 

@@ -1327,6 +1327,43 @@ Writes the `improve` log.
 
 **What to do.** Fix the profile's entry in config.json, or clear improve.profile.
 
+## logbook
+
+Writes the `logbook` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1101](#logbook-1101) | info | Intake | `Imported {lines} lines of v1 history from {files} files` |
+| [1102](#logbook-1102) | warning | Intake | `{lines} lines of spool file {file} were not filed: {err}` |
+
+### logbook 1101
+
+`Imported {lines} lines of v1 history from {files} files`
+
+- **Level:** info · **Channel:** operational · **Task:** Intake · **Log:** logbook
+- **Fields:** `lines`, `files`
+- **Find it:** `provider:logbook id:1101`
+
+**What it means.** The log book filed the text files Tenant wrote before it kept logbook.db, once; the lines are tagged imported.
+
+**Why it happens.** The first run with the store found v1 log files in the logs folders.
+
+**What to do.** None. The text files are left as they were.
+
+### logbook 1102
+
+`{lines} lines of spool file {file} were not filed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Intake · **Log:** logbook
+- **Fields:** `file`, `lines`, `err`
+- **Find it:** `provider:logbook id:1102`
+
+**What it means.** Lines of a spool file were dropped: they were not an event, or they named one of Tenant's own logs or providers.
+
+**Why it happens.** A writer outside Tenant spooled a malformed line, or one claiming a log only Tenant writes (security, tenant.*, a built-in).
+
+**What to do.** Fix the writer: one JSON event per line, into a log of its own.
+
 ## mcp
 
 Writes the `mcp` log.

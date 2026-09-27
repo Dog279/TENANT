@@ -380,7 +380,7 @@ type logKey string // a provider's name
 // land in subagents, a cron job's in cron. Other providers' events are
 // unaffected, and a bad log name is ignored.
 func WithLog(ctx context.Context, p *Provider, log string) context.Context {
-	if !nameRe.MatchString(log) {
+	if !ValidName(log) {
 		return ctx
 	}
 	return context.WithValue(ctx, logKey(p.Name), log)

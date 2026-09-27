@@ -9,9 +9,9 @@ package main
 // the log book under <source>; the folder (<data>/logs/<source>/) and the
 // dashboard tab appear on first use. The line goes through the running hub's
 // POST /api/logs/{source} when a hub is reachable (so open dashboards and TUI
-// feeds see it live); otherwise it is appended straight to the day's file in
-// the same format, where a running hub's folder discovery picks it up within a
-// few seconds. No rebuild, no registration.
+// feeds see it live); otherwise it is left in the spool (<logs root>/spool/),
+// which the next Tenant process to run files into the log book, tagged
+// external. No rebuild, no registration.
 
 import (
 	"bytes"
@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 )
 
 func cmdLog(ctx context.Context, args []string) error {
@@ -35,7 +36,7 @@ func cmdLog(ctx context.Context, args []string) error {
 	urlFlag := fs.String("url", "", "hub dashboard URL (default: config.json dashboard address)")
 	token := fs.String("token", "", "dashboard auth bearer token (default: config.json dashboard.auth, else the dashboard-auth-token file)")
 	list := fs.Bool("list", false, "list the log book's sources (folders) and exit")
-	direct := fs.Bool("file", false, "append straight to the day's file without trying the running hub")
+	direct := fs.Bool("file", false, "spool the line (or, with the store off, append to the day's file) without trying the running hub")
 	c := bindCommon(fs)
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -91,18 +92,31 @@ func cmdLog(ctx context.Context, args []string) error {
 			return fmt.Errorf("log: hub rejected the line: %w", err)
 		}
 	}
-	// No hub running (or --file): write the day's file ourselves.
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	// No hub running (or --file): leave the line in the spool, which the
+	// next Tenant process to run files, tagged external. With the store off
+	// nothing reads the spool, so append to the day's file instead.
+	if c.lc == nil || c.lc.Logs.Store == nil || *c.lc.Logs.Store {
+		ev := event.Event{Time: time.Now().UTC(), Log: source, Level: event.LevelFromSlog(lvl), Msg: msg}
+		for _, k := range keys {
+			ev.Data = append(ev.Data, event.Field{Key: k, Value: fields[k]})
+		}
+		if err := logs.Spool(c.logsRoot(), ev); err != nil {
+			return fmt.Errorf("log: %w", err)
+		}
+		fmt.Printf("spooled to %s (no hub reachable; Tenant files it from %s when it runs)\n", source, c.logsRoot())
+		return nil
+	}
 	h, err := logs.Open(c.logsRoot(), c.logsOptions())
 	if err != nil {
 		return fmt.Errorf("log: %w", err)
 	}
 	defer h.Close()
 	e := logs.Entry{Source: source, Level: lvl, Msg: msg}
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	for _, k := range keys {
 		e.Fields = append(e.Fields, logs.Field{Key: k, Value: fields[k]})
 	}
