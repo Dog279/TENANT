@@ -106,7 +106,7 @@ func TestEntriesAndEventsRoundTrip(t *testing.T) {
 		{At: at, Source: "turns", Level: slog.LevelWarn, Msg: "tool retry web_search",
 			Fields: []Field{{"trace", trace}, {"ev", "retry"}, {"tool", "web_search"}}},
 		{At: at, Source: "system", Level: LevelCritical, Msg: "store lost",
-			Fields: []Field{{"severity", "critical"}, {"event", "system/3"}, {"err", "disk"}}},
+			Fields: []Field{{"severity", "critical"}, {"event", "sidecar/3"}, {"err", "disk"}}}, // uncatalogued: a definition would add its task
 		{At: at, Source: "sandbox", Level: slog.LevelDebug, Msg: "ran", Fields: []Field{{"surface", "discord"}, {"event", "not/an/id"}}},
 	} {
 		e := EventFromEntry(v1)

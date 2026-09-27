@@ -23,7 +23,7 @@ import (
 func (fx *fixture) seedLogbook(t *testing.T) {
 	t.Helper()
 	root := fx.d.logsDir()
-	st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{})
+	st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{ChainKey: []byte("test chain key")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,16 +180,22 @@ func TestExportIncludesTheLogBook(t *testing.T) {
 	if len(evs) != 6 || res.Rows["logbook.jsonl"] != 6 {
 		t.Fatalf("exported %d log book events (%d counted), want 6", len(evs), res.Rows["logbook.jsonl"])
 	}
-	data, _ := evs[0]["Data"].([]any)
-	field, _ := data[0].(map[string]any)
-	if field["Value"] != "my address is 221B Baker Street" || field["Sensitive"] != true {
-		t.Errorf("the sensitive field was not exported as it is: %v", evs[0]["Data"])
+	// The event's wire form: data as an object, dtypes upper case for a
+	// sensitive field (internal/logs/event/json.go).
+	data, _ := evs[0]["data"].(map[string]any)
+	dtypes, _ := evs[0]["dtypes"].(string)
+	var sensitive bool
+	for _, v := range data {
+		sensitive = sensitive || v == "my address is 221B Baker Street"
+	}
+	if !sensitive || !strings.ContainsAny(dtypes, "SIFBNJTD") {
+		t.Errorf("the sensitive field was not exported as it is: data %v, dtypes %q", evs[0]["data"], dtypes)
 	}
 	one := filepath.Join(t.TempDir(), "one")
 	if _, err := Export(context.Background(), fx.d, ExportOptions{Out: one, Agent: "researcher"}); err != nil {
 		t.Fatal(err)
 	}
-	if evs := readJSONL(t, filepath.Join(one, "logbook.jsonl")); len(evs) != 1 || evs[0]["Msg"] != "researcher turn" {
+	if evs := readJSONL(t, filepath.Join(one, "logbook.jsonl")); len(evs) != 1 || evs[0]["msg"] != "researcher turn" {
 		t.Errorf("researcher's export = %v", evs)
 	}
 }

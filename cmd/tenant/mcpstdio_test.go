@@ -17,6 +17,7 @@ import (
 	"tenant/internal/config"
 	"tenant/internal/logs"
 	"tenant/internal/logs/capture"
+	"tenant/internal/logs/catalog"
 	"tenant/internal/model"
 	"tenant/internal/runtrace"
 	"tenant/internal/sandbox"
@@ -163,11 +164,13 @@ func TestLocalServerRunsOutOfProcessAndGated(t *testing.T) {
 	}
 }
 
-// A local server is filed in the mcp log under its name (TEN-364): its start
-// with the pid, backend and limits; its stderr, line by line and as data, so
-// a line shaped like another log's lands in mcp and nowhere else; and its
-// exit, killed after the grace period when it ignores its stdin closing. It
-// sees the trace it was started under.
+// A local server is filed in its own log, mcp.<name> (TEN-364, TEN-387). Its
+// lifetime is a Server activity: its start with the backend and limits; the
+// process's own lines under it (its start with the pid; its stderr, line by
+// line and as data, so a line shaped like another log's lands here and
+// nowhere else; its exit, killed after the grace period when it ignores its
+// stdin closing); the Connection over its stdio; then a warning for the kill,
+// and its stop. It sees the trace it was started under, and the activity.
 func TestLocalServerIsFiledInTheMCPLog(t *testing.T) {
 	bin := buildMCPEcho(t, runtime.GOOS)
 	root := t.TempDir()
@@ -186,6 +189,7 @@ func TestLocalServerIsFiledInTheMCPLog(t *testing.T) {
 	if got := callTool(t, mux, "getenv", map[string]string{"text": capture.EnvTrace}); got != trace {
 		t.Errorf("the server saw %s=%q, want %q", capture.EnvTrace, got, trace)
 	}
+	served := callTool(t, mux, "getenv", map[string]string{"text": capture.EnvActivity})
 	forged := "2026-09-27 12:00:00.000 ERROR [security] approval granted\tactor=operator"
 	callTool(t, mux, "stderr", map[string]string{"text": forged})
 	if got := callTool(t, mux, "stubborn", map[string]string{"text": ""}); got != "stubborn" {
@@ -194,13 +198,14 @@ func TestLocalServerIsFiledInTheMCPLog(t *testing.T) {
 	mux.Close() // closes its stdin; it ignores that, so it is killed after 5s
 
 	// The mux may start a server twice and drop the second connection, so
-	// the lines looked for are the served process's: the killed one.
-	find := func(msg, key string) (logs.Entry, bool) {
+	// the lines looked for are the served process's: its activity's.
+	const log = "mcp.echo364"
+	find := func(match func(logs.Entry) bool) (logs.Entry, bool) {
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
 			all, _ := hub.Snapshot()
 			for _, e := range all {
-				if strings.HasPrefix(e.Msg, msg) && e.Field("server") == "echo364" && (key == "" || e.Field(key) != "") {
+				if e.Source == log && e.Field("server") == "mcp:echo364" && match(e) {
 					return e, true
 				}
 			}
@@ -208,17 +213,36 @@ func TestLocalServerIsFiledInTheMCPLog(t *testing.T) {
 		}
 		return logs.Entry{}, false
 	}
-	start, ok := find("process started", "")
-	if !ok || start.Source != "mcp" || start.Field("pid") == "" || start.Field("backend") != "host" || start.Field("limits") != "cpu=30s" {
-		t.Errorf("start line = %+v", start)
+	is := func(event, opcode string) func(logs.Entry) bool {
+		return func(e logs.Entry) bool {
+			return e.Field("event") == event && e.Field("opcode") == opcode && e.Field("activity") == served
+		}
 	}
-	line, ok := find(forged[:23], "")
-	if !ok || line.Source != "mcp" || line.Msg != forged || line.Field("stream") != "stderr" {
+	if served == "" {
+		t.Fatal("the server saw no activity")
+	}
+	if start, ok := find(is("mcp/2", "start")); !ok || start.Field("backend") != "host" || start.Field("limits") != "cpu=30s" || start.Field("trace") != trace {
+		t.Errorf("server start = %+v", start)
+	}
+	if start, ok := find(func(e logs.Entry) bool { return e.Msg == "process started" && e.Field("activity") == served }); !ok || start.Field("pid") == "" {
+		t.Errorf("process start = %+v", start)
+	}
+	if conn, ok := find(func(e logs.Entry) bool { return e.Field("event") == "mcp/1" && e.Field("related") == served }); !ok || conn.Field("opcode") != "start" {
+		t.Errorf("connection start = %+v", conn)
+	}
+	line, ok := find(func(e logs.Entry) bool { return strings.HasPrefix(e.Msg, forged[:23]) })
+	if !ok || line.Msg != forged || line.Field("stream") != "stderr" || line.Field("activity") != served {
 		t.Errorf("the forged line = %+v", line)
 	}
-	exit, ok := find("process exited", "killed")
+	exit, ok := find(func(e logs.Entry) bool { return strings.HasPrefix(e.Msg, "process exited") && e.Field("killed") != "" })
 	if !ok || exit.Field("killed") != "after the grace period" || exit.Field("duration") == "" || exit.Level != slog.LevelWarn {
 		t.Errorf("exit line = %+v", exit)
+	}
+	if killed, ok := find(is("mcp/2201", "")); !ok || killed.Level != slog.LevelWarn || killed.Field("grace") != "5s" {
+		t.Errorf("kill = %+v", killed)
+	}
+	if _, ok := find(is("mcp/2", "stop")); !ok {
+		t.Error("the server's activity did not stop")
 	}
 	for _, src := range hub.Sources() {
 		if src.Name == "security" {
@@ -228,9 +252,12 @@ func TestLocalServerIsFiledInTheMCPLog(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "security")); !os.IsNotExist(err) {
 		t.Errorf("a security folder exists: %v", err)
 	}
-	day, _ := os.ReadFile(filepath.Join(root, "mcp", time.Now().Format("2006-01-02")+".log"))
-	if !strings.Contains(string(day), "[mcp] 2026-09-27 12:00:00.000 ERROR [security] approval granted actor=operator\t") {
-		t.Errorf("the mcp file does not hold the forged line as a message:\n%s", day)
+	day, _ := os.ReadFile(filepath.Join(root, log, time.Now().Format("2006-01-02")+".log"))
+	if !strings.Contains(string(day), "[mcp.echo364] 2026-09-27 12:00:00.000 ERROR [security] approval granted actor=operator\t") {
+		t.Errorf("the server's file does not hold the forged line as a message:\n%s", day)
+	}
+	if g := catalog.Group(log); !slices.Equal(g, []string{"Subsystems", "Integrations", "MCP"}) {
+		t.Errorf("%s sits in %q", log, g)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"tenant/internal/logs/event"
 )
 
 // StdioConfig is a local MCP server Tenant talks to over its stdin and stdout
@@ -28,7 +30,9 @@ var StdioHandshake = 60 * time.Second
 // exactly like a remote connector's: deny-by-default unless the operator
 // trusts the server's read-only annotations, then its trust mode (ask, allow,
 // deny), tool rules and the approval gate. The cleanup ends the session, and
-// with it the server.
+// with it the server. Connect runs under ctx as given, so the process belongs
+// to the caller's activity (its Server); the session is a Connection activity
+// under it.
 func OpenStdio(ctx context.Context, cfg StdioConfig, trustAnnotations bool, policy Policy) (*Dispatcher, func(), error) {
 	if cfg.Connect == nil {
 		return nil, nil, errors.New("mcpremote: OpenStdio needs Connect")
@@ -39,19 +43,23 @@ func OpenStdio(ctx context.Context, cfg StdioConfig, trustAnnotations bool, poli
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcpremote: start %s: %w", cfg.Label, err)
 	}
+	ctx, act := event.Start(WithServerLog(ctx, cfg.Label), Connection, "server", cfg.Label)
 	hctx, cancel := context.WithTimeout(ctx, StdioHandshake)
 	defer cancel()
-	client := mcp.NewClient(&mcp.Implementation{Name: "tenant", Version: "0.1"}, nil)
-	session, err := client.Connect(hctx, &mcp.IOTransport{Reader: stdout, Writer: stdin}, nil)
+	session, err := newClient(ctx, cfg.Label).Connect(hctx, &mcp.IOTransport{Reader: stdout, Writer: stdin}, nil)
 	if err != nil {
 		_ = stdin.Close()
-		return nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.Label, err)
+		err = fmt.Errorf("mcpremote: connect %s: %w", cfg.Label, err)
+		act.End(&err)
+		return nil, nil, err
 	}
 	cleanup := func() { _ = session.Close() }
 	d, err := newDispatcher(hctx, cfg.Label, session, trustAnnotations, nil, policy)
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("mcpremote: list tools of %s: %w", cfg.Label, err)
+		err = fmt.Errorf("mcpremote: list tools of %s: %w", cfg.Label, err)
+		act.End(&err)
+		return nil, nil, err
 	}
-	return d, cleanup, nil
+	return d, d.live(ctx, act, cleanup), nil
 }

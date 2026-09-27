@@ -128,7 +128,7 @@ func (s *Server) handleIMessageAllowForm(w http.ResponseWriter, r *http.Request)
 	}
 	norm, added, err := s.access.IMessageAllow(handle)
 	if err != nil {
-		s.log.Warn("dashboard: imessage allow", "err", err)
+		ActionFailed.Log(r.Context(), "action", "imessage allow", "err", err)
 		redirectAccess(w, r, "", "Couldn't allow that handle: "+err.Error())
 		return
 	}
@@ -151,7 +151,7 @@ func (s *Server) handleIMessageDenyForm(w http.ResponseWriter, r *http.Request) 
 	}
 	norm, removed, err := s.access.IMessageDeny(handle)
 	if err != nil {
-		s.log.Warn("dashboard: imessage deny", "err", err)
+		ActionFailed.Log(r.Context(), "action", "imessage deny", "err", err)
 		redirectAccess(w, r, "", "Couldn't remove that handle: "+err.Error())
 		return
 	}
@@ -169,7 +169,7 @@ func (s *Server) handleIMessageClearForm(w http.ResponseWriter, r *http.Request)
 	}
 	n, err := s.access.IMessageClear()
 	if err != nil {
-		s.log.Warn("dashboard: imessage clear", "err", err)
+		ActionFailed.Log(r.Context(), "action", "imessage clear", "err", err)
 		redirectAccess(w, r, "", "Couldn't clear the allowlist: "+err.Error())
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleIMessageResponderForm(w http.ResponseWriter, r *http.Requ
 	on := formOn(r)
 	msg, err := s.access.SetIMessageResponder(on)
 	if err != nil {
-		s.log.Warn("dashboard: imessage responder", "on", on, "err", err)
+		ActionFailed.Log(r.Context(), "action", "imessage responder", "target", on, "err", err)
 		redirectAccess(w, r, "", "Couldn't change the responder: "+err.Error())
 		return
 	}
@@ -206,7 +206,7 @@ func (s *Server) handleIMessagePermissionForm(w http.ResponseWriter, r *http.Req
 	cat := strings.TrimSpace(r.FormValue("category"))
 	mode := strings.TrimSpace(r.FormValue("mode"))
 	if _, err := s.access.SetIMessagePermission(cat, mode); err != nil {
-		s.log.Warn("dashboard: imessage permission", "cat", cat, "err", err)
+		ActionFailed.Log(r.Context(), "action", "imessage permission", "target", cat, "err", err)
 		redirectAccess(w, r, "", "Couldn't update that permission: "+err.Error())
 		return
 	}
@@ -222,7 +222,7 @@ func (s *Server) handleRelayEnableForm(w http.ResponseWriter, r *http.Request) {
 	}
 	on := formOn(r)
 	if err := s.access.SetRelayEnabled(on); err != nil {
-		s.log.Warn("dashboard: relay enable", "on", on, "err", err)
+		ActionFailed.Log(r.Context(), "action", "relay enable", "target", on, "err", err)
 		redirectAccess(w, r, "", "Couldn't change the relay: "+err.Error())
 		return
 	}
@@ -239,7 +239,7 @@ func (s *Server) handleRelayOperatorForm(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.access.SetRelayOperator(strings.TrimSpace(r.FormValue("operator"))); err != nil {
-		s.log.Warn("dashboard: relay operator", "err", err)
+		ActionFailed.Log(r.Context(), "action", "relay operator", "err", err)
 		redirectAccess(w, r, "", "Couldn't set the operator: "+err.Error())
 		return
 	}
@@ -253,7 +253,7 @@ func (s *Server) handleRelayExecForm(w http.ResponseWriter, r *http.Request) {
 	}
 	on := formOn(r)
 	if err := s.access.SetRelayExec(on); err != nil {
-		s.log.Warn("dashboard: relay exec", "on", on, "err", err)
+		ActionFailed.Log(r.Context(), "action", "relay exec", "target", on, "err", err)
 		redirectAccess(w, r, "", "Couldn't change exec mode: "+err.Error())
 		return
 	}
@@ -272,7 +272,7 @@ func (s *Server) handleRelayPermissionForm(w http.ResponseWriter, r *http.Reques
 	cat := strings.TrimSpace(r.FormValue("category"))
 	mode := strings.TrimSpace(r.FormValue("mode"))
 	if _, err := s.access.SetRelayPermission(cat, mode); err != nil {
-		s.log.Warn("dashboard: relay permission", "cat", cat, "err", err)
+		ActionFailed.Log(r.Context(), "action", "relay permission", "target", cat, "err", err)
 		redirectAccess(w, r, "", "Couldn't update that permission: "+err.Error())
 		return
 	}

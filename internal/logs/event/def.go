@@ -43,17 +43,34 @@ var (
 	regMu     sync.Mutex
 	providers = map[string]*Provider{}
 
-	// nameRe is a provider's or a log's name. A log name is also a folder
-	// name, so this is logs.ValidSource's shape.
+	// nameRe is the shape of a provider's or a log's name (ValidName).
 	nameRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
 	fieldRe = regexp.MustCompile(`^[A-Za-z0-9_.]+$`)
 	holeRe  = regexp.MustCompile(`\{([A-Za-z0-9_.]+)\}`)
 )
 
+// ValidName reports whether s can name a provider or a log. A log name is
+// also a folder name on Windows, Linux and macOS, so beyond nameRe's shape a
+// Windows device name (con, prn, aux, nul, com0–com9, lpt0–lpt9, with or
+// without an extension) and a name ending in a dot are refused.
+func ValidName(s string) bool {
+	if !nameRe.MatchString(s) || strings.HasSuffix(s, ".") {
+		return false
+	}
+	base, _, _ := strings.Cut(s, ".")
+	switch {
+	case base == "con", base == "prn", base == "aux", base == "nul":
+		return false
+	case len(base) == 4 && (base[:3] == "com" || base[:3] == "lpt") && base[3] >= '0' && base[3] <= '9':
+		return false
+	}
+	return true
+}
+
 // NewProvider registers a provider writing into log. A bad name, or a name
 // registered twice, panics: providers are declared at package init.
 func NewProvider(name, log string) *Provider {
-	if !nameRe.MatchString(name) || !nameRe.MatchString(log) {
+	if !ValidName(name) || !ValidName(log) {
 		panic(fmt.Sprintf("event: bad provider name %q or log name %q", name, log))
 	}
 	regMu.Lock()

@@ -380,7 +380,7 @@ type logKey string // a provider's name
 // land in subagents, a cron job's in cron. Other providers' events are
 // unaffected, and a bad log name is ignored.
 func WithLog(ctx context.Context, p *Provider, log string) context.Context {
-	if !nameRe.MatchString(log) {
+	if !ValidName(log) {
 		return ctx
 	}
 	return context.WithValue(ctx, logKey(p.Name), log)
@@ -412,9 +412,10 @@ func Start(ctx context.Context, d *Def, kv ...any) (context.Context, *Activity) 
 }
 
 // End emits the activity's stop event, with its duration; or, when *errp
-// holds an error, its fail event, with the error too, at Error or worse.
-func (a *Activity) End(errp *error) {
-	kv := append(a.kv[:len(a.kv):len(a.kv)], "duration", time.Since(a.start))
+// holds an error, its fail event, with the error too, at Error or worse. kv
+// adds the fields only the end knows, such as a request's status.
+func (a *Activity) End(errp *error, kv ...any) {
+	kv = append(append(a.kv[:len(a.kv):len(a.kv)], kv...), "duration", time.Since(a.start))
 	op := OpStop
 	var err error
 	if errp != nil {

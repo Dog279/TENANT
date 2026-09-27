@@ -179,7 +179,7 @@ func (s *Server) handleLogWrite(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "fields: keys are 1-64 chars with no spaces, quotes or '='")
 			return
 		}
-		if k == "ev" {
+		if k == "ev" || k == "event" { // only Tenant files turn and catalogued events
 			continue
 		}
 		e.Fields = append(e.Fields, logs.Field{Key: k, Value: req.Fields[k]})

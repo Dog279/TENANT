@@ -14,13 +14,13 @@ func (s *Server) handleToolToggleForm(w http.ResponseWriter, r *http.Request) {
 	if s.tools != nil {
 		// r.FormValue reads the ?enabled= query param too (ParseForm merges them).
 		if _, _, err := s.tools.SetEnabled(name, r.FormValue("enabled") == "true"); err != nil {
-			s.log.Warn("dashboard: ssr tool toggle", "tool", name, "err", err)
+			ActionFailed.Log(r.Context(), "action", "tool toggle", "target", name, "err", err)
 		}
 	}
 	if r.Header.Get("Datastar-Request") != "" {
 		if row, err := s.renderToolRow(s.findTool(name)); err == nil {
 			if perr := writeDatastarPatch(w, row); perr != nil {
-				s.log.Warn("dashboard: ssr tool toggle patch", "tool", name, "err", perr)
+				s.log.Debug("dashboard: ssr tool toggle patch not sent", "tool", name, "err", perr) // the page went away
 			}
 			return
 		}
@@ -32,7 +32,7 @@ func (s *Server) handlePluginToggleForm(w http.ResponseWriter, r *http.Request) 
 	if s.tools != nil {
 		label := r.PathValue("label")
 		if _, _, err := s.tools.SetPluginEnabled(label, r.FormValue("enabled") == "true"); err != nil {
-			s.log.Warn("dashboard: ssr plugin toggle", "plugin", label, "err", err)
+			ActionFailed.Log(r.Context(), "action", "plugin toggle", "target", label, "err", err)
 		}
 	}
 	http.Redirect(w, r, "/tools", http.StatusSeeOther)
@@ -48,7 +48,7 @@ func (s *Server) handlePostureForm(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if _, _, err := s.tools.SetEnabled(t.Name, allow); err != nil {
-				s.log.Warn("dashboard: ssr posture", "tool", t.Name, "err", err)
+				ActionFailed.Log(r.Context(), "action", "posture", "target", t.Name, "err", err)
 			}
 		}
 	}

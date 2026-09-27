@@ -2641,6 +2641,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// three days while the brief's Jira section quietly emptied): feed line AND
 	// a direct DM to the operator, who is usually remote exactly when it matters.
 	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(pushSys, relayMgr.NotifyOperator))
+	setWitnessDM(relayMgr.NotifyOperator) // a "discord" Security log witness
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		return relayMgr.askOperator(cctx, req.Action, req.Detail)
 	})
@@ -2878,7 +2879,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// force-fire an off eval.
 		evalSched = newEvalSchedule(evalDue, evalDesc)
 		seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
-		sched.RegisterDue(newEvalNightlyJob(c, pf, log, nil, nil), evalSched.DueFunc(), seed)
+		sched.RegisterDue(newEvalNightlyJob(c, pf, nil, nil), evalSched.DueFunc(), seed)
 		if evalDue != nil {
 			log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 		}

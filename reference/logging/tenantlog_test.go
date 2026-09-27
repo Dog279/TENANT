@@ -34,6 +34,7 @@ func TestLineMatchesHubByteForByte(t *testing.T) {
 		{Error, "tool result web_search\tfailed\nhard", []field{{"args", `{"q":"a b"}`}, {"empty", ""}, {"eq", "a=b"}, {"uni", "héllo → wörld"}, {"multi", "l1\nl2"}}},
 		{Warn, "no fields", nil},
 		{Debug, "custom level buckets", []field{{"k", "v"}}},
+		{Warn, "ansi \x1b[31mred\x1b[0m bell\a csi\u009b bad\xff\r\nend", []field{{"esc", "\x1b]0;title\a"}, {"c1", "a\u009bb"}, {"bad", "x\xffy"}}},
 	}
 	for _, c := range cases {
 		e := entry{at: at, level: c.level, msg: c.msg, fields: c.fields}
@@ -53,7 +54,8 @@ func TestLineMatchesHubByteForByte(t *testing.T) {
 }
 
 func TestNormalizeSourceMatchesHub(t *testing.T) {
-	for _, in := range []string{"deploy", "My Sidecar!", "  Sub Agents ", "..", "", ".hidden", "a/b", "UPPER_case.1", strings.Repeat("x", 60), "-x", "9lives"} {
+	for _, in := range []string{"deploy", "My Sidecar!", "  Sub Agents ", "..", "", ".hidden", "a/b", "UPPER_case.1", strings.Repeat("x", 60), "-x", "9lives",
+		"con", "NUL.txt", "com1", "LPT9.log", "aux.x.y", "prn-x", "com10", "consul", "a."} {
 		if got, want := NormalizeSource(in), logs.NormalizeSource(in); got != want {
 			t.Errorf("NormalizeSource(%q) = %q, hub says %q", in, got, want)
 		}

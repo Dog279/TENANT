@@ -49,7 +49,7 @@ func TestLazyFetcher_HoldsPortOnlyDuringSignIn(t *testing.T) {
 		}()
 		return nil
 	}
-	fetch := newLazyCodeFetcher(addr, open)
+	fetch := newLazyCodeFetcher(addr, open, "")
 	if !portFree(addr) {
 		t.Fatal("building the fetcher must not bind the port")
 	}
@@ -88,7 +88,7 @@ func TestLazyFetcher_SerializesConcurrentSignIns(t *testing.T) {
 		}()
 		return nil
 	}
-	fetch := newLazyCodeFetcher(addr, open)
+	fetch := newLazyCodeFetcher(addr, open, "")
 	var wg sync.WaitGroup
 	errs := make(chan error, 3)
 	for i := 0; i < 3; i++ {
@@ -119,7 +119,7 @@ func TestLazyFetcher_CancelledBeforeBind(t *testing.T) {
 	addr := freePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := newLazyCodeFetcher(addr, nil)(ctx, &auth.AuthorizationArgs{}); err == nil {
+	if _, err := newLazyCodeFetcher(addr, nil, "")(ctx, &auth.AuthorizationArgs{}); err == nil {
 		t.Fatal("expected ctx error")
 	}
 	if !portFree(addr) {
@@ -144,7 +144,7 @@ func TestLazyFetcher_LogsTheURLWhenNoBrowserOpens(t *testing.T) {
 		}()
 		return errors.New("no browser here")
 	}
-	if _, err := newLazyCodeFetcher(addr, open)(context.Background(), &auth.AuthorizationArgs{URL: "https://as.example/authorize?state=s"}); err != nil {
+	if _, err := newLazyCodeFetcher(addr, open, "")(context.Background(), &auth.AuthorizationArgs{URL: "https://as.example/authorize?state=s"}); err != nil {
 		t.Fatal(err)
 	}
 	if out := buf.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "https://as.example/authorize?state=s") {

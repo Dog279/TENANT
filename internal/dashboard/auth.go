@@ -33,25 +33,39 @@ import (
 // requests are allowed. No permissive Access-Control-Allow-Origin is emitted.
 func (s *Server) secure(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, route := r.Context(), s.route(r)
 		if !s.checkHost(r.Host) {
+			HostRejected.Log(ctx, "host", r.Host, "method", r.Method, "route", route, "remote", r.RemoteAddr)
 			writeError(w, http.StatusForbidden, "unrecognized dashboard host")
 			return
 		}
 		if !s.checkOrigin(r) {
+			OriginRejected.Log(ctx, "origin", r.Header.Get("Origin"), "method", r.Method, "route", route, "remote", r.RemoteAddr)
 			writeError(w, http.StatusForbidden, "cross-origin request rejected")
 			return
 		}
 		if !s.checkAuth(r) {
+			AuthRejected.Log(ctx, "method", r.Method, "route", route, "remote", r.RemoteAddr, "credential", credential(r))
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
 		}
 		if !s.checkCSRF(r) {
+			CSRFRejected.Log(ctx, "method", r.Method, "route", route, "remote", r.RemoteAddr)
 			writeError(w, http.StatusForbidden, "CSRF validation failed")
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// credential says whether a rejected request carried a credential at all
+// ("invalid") or none ("missing"), never what it was.
+func credential(r *http.Request) string {
+	if _, err := r.Cookie(dashCookieName); err == nil || r.Header.Get("Authorization") != "" || r.URL.Query().Has("token") {
+		return "invalid"
+	}
+	return "missing"
 }
 
 // checkAuth reports whether r is authorized. The exempt liveness probe and

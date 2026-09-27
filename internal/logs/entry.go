@@ -19,11 +19,13 @@ package logs
 
 import (
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
+
+	"tenant/internal/logs/event"
 )
 
 // Field is one key=value pair carried by an Entry. Values are plain strings;
@@ -115,8 +117,10 @@ func ParseLevel(s string) (slog.Level, bool) {
 
 // Line renders the entry as one on-disk line (no trailing newline). Message
 // and values are flattened to a single line: newlines and tabs in the message
-// become spaces; values that need it are strconv-quoted (which escapes \n, \t
-// and quotes), so one entry is always exactly one line and `grep` stays exact.
+// become spaces and its other control characters are escaped; values that
+// need it are strconv-quoted (which escapes \n, \t, quotes and control
+// characters), so one entry is always exactly one line, `grep` stays exact,
+// and nothing in a line can drive the terminal of a `tail -f`.
 func (e Entry) Line() string {
 	var b strings.Builder
 	b.Grow(96 + len(e.Msg))
@@ -150,13 +154,39 @@ func (e Entry) Line() string {
 }
 
 // flattenMsg collapses a message onto one line. Tabs are the message/field
-// separator on disk, so they must not survive inside the message.
+// separator on disk, so they must not survive inside the message. Every
+// other control character (ESC, DEL, the C1 set) and any byte that isn't
+// UTF-8 is escaped as Go would quote it (\x1b, \u009b), so v1 parsers still
+// read the line and a terminal showing it runs no escape sequence.
 func flattenMsg(s string) string {
-	if !strings.ContainsAny(s, "\n\r\t") {
+	clean := true
+	for _, r := range s {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			clean = false
+			break
+		}
+	}
+	if clean {
 		return s
 	}
-	r := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
-	return r.Replace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case strings.HasPrefix(s[i:], "\r\n"):
+			b.WriteByte(' ')
+			n = 2
+		case r == '\r' || r == '\n' || r == '\t':
+			b.WriteByte(' ')
+		case unicode.IsControl(r) || r == utf8.RuneError && n == 1:
+			q := strconv.Quote(s[i : i+n])
+			b.WriteString(q[1 : len(q)-1])
+		default:
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 // quoteValue writes a field value bare when it is boring, quoted otherwise.
@@ -165,7 +195,7 @@ func quoteValue(v string) string {
 		return `""`
 	}
 	for _, r := range v {
-		if r <= ' ' || r == '"' || r == '\\' || r == '=' || r == 0x7f {
+		if r <= ' ' || r == '"' || r == '\\' || r == '=' || unicode.IsControl(r) || r == utf8.RuneError {
 			return strconv.Quote(v)
 		}
 	}
@@ -269,13 +299,11 @@ func parseFields(s string) []Field {
 	return out
 }
 
-// sourceRe is the shape every source (folder / tab) name must have: it is a
-// path segment we create under the log root, so it can never be "..", carry a
-// separator, or start with a dot.
-var sourceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
-
-// ValidSource reports whether name is an acceptable source name as-is.
-func ValidSource(name string) bool { return sourceRe.MatchString(name) }
+// ValidSource reports whether name is an acceptable source name as-is. It
+// is a path segment we create under the log root, so it can never be "..",
+// carry a separator, start with a dot, end with one, or be a Windows device
+// name: it is a log name (event.ValidName).
+func ValidSource(name string) bool { return event.ValidName(name) }
 
 // NormalizeSource coerces a free-form label into a valid source name: lowercase,
 // spaces and other punctuation → '-', trimmed to 40 chars. Returns "" when
@@ -295,7 +323,7 @@ func NormalizeSource(name string) string {
 	if len(s) > 40 {
 		s = strings.Trim(s[:40], "-._")
 	}
-	if !sourceRe.MatchString(s) {
+	if !ValidSource(s) {
 		return ""
 	}
 	return s

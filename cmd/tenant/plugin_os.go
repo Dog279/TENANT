@@ -255,7 +255,7 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 	if cfgDir != "" {
 		settings := settingsPath(cfgDir, "*")
 		peerCert, _ := peering.CertPaths(cfgDir)
-		add(&protect, settings, settings+".tmp", soul.SoulDir(cfgDir), peerCert)
+		add(&protect, settings, settings+".tmp", soul.SoulDir(cfgDir), peerCert, chainAnchorPath(cfgDir))
 		// The mcp dir as a whole also covers caches created after this list.
 		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
 	}

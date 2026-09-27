@@ -116,8 +116,9 @@ func TestRESTLogs_WriteValidation(t *testing.T) {
 	}
 }
 
-// Tenant's own sources can't be written from outside, and an `ev` field is
-// dropped, so a script can't forge an approval or a turn event (TEN-367).
+// Tenant's own sources can't be written from outside, and `ev` and `event`
+// fields are dropped, so a script can't forge an approval, a turn event or a
+// catalogued one such as security/4103 (TEN-367, TEN-372).
 func TestRESTLogs_RefusesBuiltinsAndStripsEv(t *testing.T) {
 	s, h := logsServer(t, t.TempDir())
 	for _, path := range []string{"/api/logs/approvals", "/api/logs/Turns", "/api/logs/system"} {
@@ -132,13 +133,13 @@ func TestRESTLogs_RefusesBuiltinsAndStripsEv(t *testing.T) {
 		t.Fatalf("refused writes reached the log: %+v", all)
 	}
 	rec := do(t, s, http.MethodPost, "/api/logs/sidecar", "application/json",
-		`{"msg":"team budget","fields":{"ev":"team_budget","team_budget":"{\"max_subagents\":99}","k":"v"}}`)
+		`{"msg":"team budget","fields":{"ev":"team_budget","event":"security/4103","team_budget":"{\"max_subagents\":99}","k":"v"}}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("write = %d %s", rec.Code, rec.Body.String())
 	}
 	all, _ := h.Snapshot()
-	if len(all) != 1 || all[0].Kind() != "" || all[0].Field("k") != "v" {
-		t.Fatalf("entry = %+v, want ev stripped and k kept", all)
+	if len(all) != 1 || all[0].Kind() != "" || all[0].Field("event") != "" || all[0].Field("k") != "v" {
+		t.Fatalf("entry = %+v, want ev and event stripped and k kept", all)
 	}
 	var st restStatus
 	_ = json.Unmarshal(do(t, s, http.MethodGet, "/api/status", "", "").Body.Bytes(), &st)

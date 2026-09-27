@@ -97,6 +97,12 @@ var catalogued = map[string]int{
 	"internal/lifecycle": 0, "internal/tui": 0, "internal/config": 0, "internal/secrets": 0,
 	"internal/fsperm": 0, "internal/datalock": 0, "internal/version": 0, "internal/cmdreg": 0,
 	"internal/control": 0, "internal/httplimits": 0, "internal/runtrace": 0,
+	// dashboard (TEN-391) and eval (TEN-395)
+	"internal/dashboard": 0,
+	"internal/eval":      0, "internal/eval/compaction": 0,
+	// mcp.* (TEN-387) and sandbox (TEN-388)
+	"internal/plugins/mcpremote": 0, "internal/mcpserver": 0, "internal/mcp": 0, "internal/mcp/transport": 0,
+	"internal/sandbox": 0, "internal/sandbox/escapecore": 0, "internal/sandbox/escapetest": 0, "internal/sandbox/redteamllm": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

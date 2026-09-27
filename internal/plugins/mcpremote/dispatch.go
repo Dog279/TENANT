@@ -55,6 +55,7 @@ type Dispatcher struct {
 	policy  Policy
 	auth    *persistentHandler // nil for peers / static servers (no OAuth)
 	trust   atomic.Value       // string: TrustAsk / TrustAllow / TrustDeny ("" ⇒ ask)
+	ownLog  bool               // a connector's or local server's: its failed calls go to its log (a peer's are peering's)
 }
 
 // Label is the connector's tool-group label in the mux.
@@ -189,7 +190,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	res, err := d.session.CallTool(ctx, &mcp.CallToolParams{Name: call.Name, Arguments: args})
 	if err != nil {
 		if d.AuthHealth().NeedsReauth {
-			return d.reauthText(), true, nil
+			return d.reauthText(), true, nil // its death is logged once (NeedsReauth), not per call
+		}
+		if d.ownLog {
+			CallFailed.Log(WithServerLog(ctx, d.label), "server", d.label, "tool", call.Name, "err", err)
 		}
 		return "remote tool call failed: " + err.Error(), true, nil
 	}

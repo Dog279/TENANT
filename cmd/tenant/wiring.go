@@ -426,11 +426,21 @@ func openLogHub(c *commonFlags, tee slog.Handler) (*logs.Hub, *slog.Logger, erro
 	}
 	logs.Install(h)
 	if err == nil && (c.lc == nil || c.lc.Logs.Store == nil || *c.lc.Logs.Store) {
-		st, serr := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID()})
+		var key []byte // the Security log's chain key (TEN-396); without it security records are refused
+		if c.cfgDir != "" {
+			var kerr error
+			if key, kerr = chainKey(c.cfgDir); kerr != nil {
+				h.Logf("logbook", logs.LevelCritical, "logbook: no Security log key; security records can't be written", "err", kerr)
+			}
+		}
+		st, serr := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID(), ChainKey: key})
 		if serr != nil {
 			h.Logf("logbook", slog.LevelWarn, "logbook: the store did not open; logging to the text files only", "err", serr)
 		} else {
 			h.AttachStore(st)
+			if c.cfgDir != "" {
+				h.Housekeep("anchor", 0, anchorChain(h, st, c.cfgDir))
+			}
 		}
 	}
 	log := slog.New(h.Handler(tee))

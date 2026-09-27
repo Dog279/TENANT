@@ -150,7 +150,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
 | `internal/logs/query` | `internal/logs/event` | the filter language; the store plans it into SQL |
 | `internal/logs/store` | `internal/logs/event`, `internal/logs/query`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
-| `internal/logs` | `internal/logs/event`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
+| `internal/logs` | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
 | `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
 | `internal/logs/capture` | `internal/logs/event`, `internal/runtrace`, `internal/lifecycle` | child-process capture; every internal package may import it; a running child is a lifecycle component |
 | `internal/research` | `internal/fsperm` |  |

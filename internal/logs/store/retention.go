@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -68,10 +69,16 @@ func (s *Store) Retain(ctx context.Context, b Budget, now time.Time) (Report, er
 		return rep, err
 	}
 	for _, l := range logs {
-		if l.MaxAge > 0 {
-			if _, err := r.sweep(ctx, l.archive(), -1, "log_id = ? AND time_ns < ?", l.id, now.Add(-l.MaxAge).UnixNano()); err != nil {
-				return rep, err
-			}
+		if l.MaxAge <= 0 {
+			continue
+		}
+		where, args := "log_id = ? AND time_ns < ?", []any{l.id, now.Add(-l.MaxAge).UnixNano()}
+		if l.name == SecurityLog { // a prefix of the chain: up to its first record still young
+			where = "log_id = ? AND rec < coalesce((SELECT min(rec) FROM events WHERE log_id = ? AND time_ns >= ?), 1 << 62)"
+			args = []any{l.id, l.id, now.Add(-l.MaxAge).UnixNano()}
+		}
+		if _, err := r.sweep(ctx, l.archive(), -1, where, args...); err != nil {
+			return rep, err
 		}
 	}
 	if age := b.Diagnostic.MaxAge; age > 0 {
@@ -223,7 +230,10 @@ func (r *retention) deleted() (n int64) {
 // file before any of them is deleted. It returns the payload bytes deleted.
 func (r *retention) sweep(ctx context.Context, archive string, want int64, where string, args ...any) (int64, error) {
 	pick := `SELECT e.seq, e.bytes FROM events e WHERE ` + where + ` ORDER BY e.time_ns, e.seq LIMIT ?`
-	if archive != "" {
+	switch {
+	case archive == SecurityLog: // in chain order, so the archives and the database stay contiguous; rows are picked before any is rendered
+		pick = archiveSelect + ` WHERE e.seq IN (SELECT seq FROM events WHERE ` + where + ` ORDER BY rec LIMIT ?) ORDER BY e.rec`
+	case archive != "":
 		pick = archiveSelect + ` WHERE ` + where + ` ORDER BY e.time_ns, e.seq LIMIT ?`
 	}
 	args = append(args, stepRows)
@@ -448,11 +458,11 @@ func (s *Store) file(ctx context.Context) (string, error) {
 }
 
 // archiveSelect reads events as archive lines, one JSON object each: every
-// column, names resolved, IDs as hex, and data as the exact text it was
-// stored (and, for security, hashed) as.
+// column, names resolved, IDs as hex, and data and keywords as the exact text
+// they were stored (and, for security, hashed) as.
 var archiveSelect = `SELECT e.seq, e.bytes, json_object('seq', e.seq, 'time_ns', e.time_ns,
   'log', l.name, 'provider', p.name, 'event_id', e.event_id, 'version', e.version,
-  'level', e.level, 'channel', e.channel, 'task', t.name, 'opcode', o.name, 'keywords', json(e.keywords),
+  'level', e.level, 'channel', e.channel, 'task', t.name, 'opcode', o.name, 'keywords', e.keywords,
   'msg', e.msg, 'data', e.data, 'dtypes', e.dtypes,
   'trace_id', ` + hexID("e.trace_id") + `, 'activity_id', ` + hexID("e.activity_id") + `, 'related_id', ` + hexID("e.related_id") + `,
   'session_id', e.session_id, 'approval_id', e.approval_id, 'tool_call_id', e.tool_call_id,
@@ -476,9 +486,21 @@ func hexID(col string) string {
 
 // archive writes one step's events to <archive dir>/<log>-<first seq>-<last
 // seq>.ndjson.gz before they are deleted. Writing the same events again (a
-// pass that died before its deletes) replaces the file.
+// pass that died before its deletes) replaces the file. The Security log's
+// are named by record number instead, and end with a closing line holding
+// the last record's (rec, hash), so verification continues across files.
 func (r *retention) archive(log string, seqs []int64, lines [][]byte) error {
-	name := fmt.Sprintf("%s-%d-%d.ndjson.gz", log, seqs[0], seqs[len(seqs)-1])
+	first, last := seqs[0], seqs[len(seqs)-1]
+	if log == SecurityLog {
+		var a, z line
+		if err := errors.Join(json.Unmarshal(lines[0], &a), json.Unmarshal(lines[len(lines)-1], &z)); err != nil {
+			return fmt.Errorf("store: archive: %w", err)
+		}
+		first, last = a.rec(), z.rec()
+		closing, _ := json.Marshal(Head{Rec: last, Hash: z.Hash})
+		lines = append(lines[:len(lines):len(lines)], closing)
+	}
+	name := fmt.Sprintf("%s-%d-%d.ndjson.gz", log, first, last)
 	if err := writeArchive(filepath.Join(r.archiveDir, name), lines); err != nil {
 		return fmt.Errorf("store: archive: %w", err)
 	}
