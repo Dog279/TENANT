@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -60,7 +60,7 @@ func (f *fakeMultiDisp) Dispatch(_ context.Context, call model.ToolCall) (string
 	return r, false, nil
 }
 
-func dispatchTool(t *testing.T, m *toolMux, name string) (string, bool, error) {
+func dispatchTool(t *testing.T, m *Mux, name string) (string, bool, error) {
 	t.Helper()
 	return m.Dispatch(context.Background(), model.ToolCall{
 		Name:      name,
@@ -69,8 +69,8 @@ func dispatchTool(t *testing.T, m *toolMux, name string) (string, bool, error) {
 }
 
 func TestFederate_WikiSearchFansOut(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "## Local notes\n- foo"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "## Local notes\n- foo"})
 	peer := &fakeDisp{tool: "peer_wiki_search", result: "## Wiki results from mac (2)\n- bar"}
 	m.adoptPeer("mac", peer, nil)
 
@@ -108,8 +108,8 @@ func TestFederate_SkipsDenialErrorAndEmpty(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newToolMux()
-			m.add("wiki", &fakeDisp{tool: "wiki_search", result: "## Local notes\n- foo"})
+			m := New()
+			m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "## Local notes\n- foo"})
 			m.adoptPeer("mac", tc.peer, nil)
 
 			out, _, _ := dispatchTool(t, m, "wiki_search")
@@ -124,8 +124,8 @@ func TestFederate_SkipsDenialErrorAndEmpty(t *testing.T) {
 }
 
 func TestFederate_NoPeersPassthrough(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "local only"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "local only"})
 
 	out, isErr, err := dispatchTool(t, m, "wiki_search")
 	if err != nil || isErr {
@@ -137,9 +137,9 @@ func TestFederate_NoPeersPassthrough(t *testing.T) {
 }
 
 func TestFederate_LocalErrorNotFederated(t *testing.T) {
-	m := newToolMux()
+	m := New()
 	// Local search itself errors → we must NOT staple peer data onto an error.
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "wiki index unavailable", isErr: true})
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "wiki index unavailable", isErr: true})
 	peer := &fakeDisp{tool: "peer_wiki_search", result: "## Wiki results from mac (2)\n- bar"}
 	m.adoptPeer("mac", peer, nil)
 
@@ -153,8 +153,8 @@ func TestFederate_LocalErrorNotFederated(t *testing.T) {
 }
 
 func TestFederate_NonFederatableUnaffected(t *testing.T) {
-	m := newToolMux()
-	m.add("os", &fakeDisp{tool: "os_read", result: "file contents"})
+	m := New()
+	m.Add("os", &fakeDisp{tool: "os_read", result: "file contents"})
 	peer := &fakeDisp{tool: "peer_wiki_search", result: "## Wiki results from mac (3)\n- x"}
 	m.adoptPeer("mac", peer, nil)
 
@@ -168,8 +168,8 @@ func TestFederate_NonFederatableUnaffected(t *testing.T) {
 }
 
 func TestFederate_AwarenessDescription(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "x"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "x"})
 	base := m.byName["wiki_search"].spec.Description
 	if strings.Contains(base, "peer") {
 		t.Fatalf("base description should not mention peers: %q", base)
@@ -193,9 +193,9 @@ func TestFederate_AwarenessDescription(t *testing.T) {
 }
 
 func TestAdoptPeer_ExposesNonFederatedHidesFederated(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "local notes"})
-	m.add("memory", &fakeDisp{tool: "memory_search", result: "## Memory from me\n### Facts (1)\n- local mem"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "local notes"})
+	m.Add("memory", &fakeDisp{tool: "memory_search", result: "## Memory from me\n### Facts (1)\n- local mem"})
 	m.SetEnabled("memory_search", false) // ships disabled until a peer appears
 	peer := &fakeMultiDisp{
 		tools: []string{"peer_wiki_search", "peer_memory_search", "peer_hello"},
@@ -236,9 +236,9 @@ func TestAdoptPeer_ExposesNonFederatedHidesFederated(t *testing.T) {
 func TestFederate_MemorySearchTwoCountFormat(t *testing.T) {
 	// The memory format has TWO counts ("### Facts (2)\n### Episodes (0)"); a
 	// naive "(0)" check would wrongly drop a peer that has facts but no episodes.
-	m := newToolMux()
+	m := New()
 	local := &fakeDisp{tool: "memory_search", result: "## Memory from me\n### Facts (1)\n- local fact"}
-	m.add("memory", local)
+	m.Add("memory", local)
 	m.SetEnabled("memory_search", false) // ships disabled
 	peer := &fakeMultiDisp{
 		tools: []string{"peer_wiki_search", "peer_memory_search"},
@@ -282,8 +282,8 @@ func TestPeerResultHasContent(t *testing.T) {
 }
 
 func TestFederationStats_RecordsOutcomes(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "local"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "local"})
 	// hitter returns content; denier errors; quiet returns empty.
 	m.adoptPeer("hitter", &fakeDisp{tool: "peer_wiki_search", result: "## Wiki results from hitter (1)\n1. [a]\n   x"}, nil)
 	m.adoptPeer("denier", &fakeDisp{tool: "peer_wiki_search", result: "denied", isErr: true}, nil)
@@ -311,15 +311,15 @@ func TestFederationStats_RecordsOutcomes(t *testing.T) {
 	}
 }
 
-func dispatchRead(t *testing.T, m *toolMux, file string) (string, bool, error) {
+func dispatchRead(t *testing.T, m *Mux, file string) (string, bool, error) {
 	t.Helper()
 	args, _ := json.Marshal(map[string]any{"file": file})
 	return m.Dispatch(context.Background(), model.ToolCall{Name: "wiki_read", Arguments: args})
 }
 
 func TestWikiRead_PeerFallbackOnLocalMiss(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "milk.md" not found`, isErr: true}) // local MISS
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "milk.md" not found`, isErr: true}) // local MISS
 	peer := &fakeMultiDisp{
 		tools:   []string{"peer_wiki_search", "peer_wiki_read", "peer_memory_search"},
 		results: map[string]string{"peer_wiki_read": "# Milk\nFull article body about milk types."},
@@ -346,8 +346,8 @@ func TestWikiRead_PeerFallbackOnLocalMiss(t *testing.T) {
 }
 
 func TestWikiRead_LocalHitSkipsPeers(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_read", result: "local note body"}) // local HIT (no isErr)
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_read", result: "local note body"}) // local HIT (no isErr)
 	peer := &fakeMultiDisp{
 		tools:   []string{"peer_wiki_read"},
 		results: map[string]string{"peer_wiki_read": "peer body"},
@@ -367,8 +367,8 @@ func TestWikiRead_LocalHitSkipsPeers(t *testing.T) {
 }
 
 func TestWikiRead_MissWithNoPeerHavingItKeepsLocalError(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "ghost.md" not found`, isErr: true})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "ghost.md" not found`, isErr: true})
 	// Peer is connected but doesn't have the note (empty result → skipped).
 	peer := &fakeMultiDisp{
 		tools:   []string{"peer_wiki_read"},
@@ -386,8 +386,8 @@ func TestWikiRead_MissWithNoPeerHavingItKeepsLocalError(t *testing.T) {
 }
 
 func TestWikiRead_NoPeersPassthrough(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "x.md" not found`, isErr: true})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "x.md" not found`, isErr: true})
 	out, isErr, _ := dispatchRead(t, m, "x.md")
 	if !isErr || out != `wiki: "x.md" not found` {
 		t.Errorf("with no peers a local miss is unchanged: isErr=%v out=%q", isErr, out)
@@ -395,8 +395,8 @@ func TestWikiRead_NoPeersPassthrough(t *testing.T) {
 }
 
 func TestWikiRead_AwarenessDescription(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_read", result: "x"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_read", result: "x"})
 	base := m.byName["wiki_read"].spec.Description
 	m.adoptPeer("mac", &fakeMultiDisp{tools: []string{"peer_wiki_read"}}, nil)
 	desc := m.byName["wiki_read"].spec.Description
@@ -431,8 +431,8 @@ func TestPeerReadHasContent(t *testing.T) {
 func TestWikiRead_AllHeadersNoteIsReturned(t *testing.T) {
 	// Regression for the read-emptiness fix: a peer note whose body is entirely
 	// markdown headings must NOT be classified empty (the search heuristic would).
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "outline.md" not found`, isErr: true})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_read", result: `wiki: "outline.md" not found`, isErr: true})
 	peer := &fakeMultiDisp{
 		tools:   []string{"peer_wiki_read"},
 		results: map[string]string{"peer_wiki_read": "# Outline\n## A\n## B\n## C"},
@@ -449,8 +449,8 @@ func TestWikiRead_AllHeadersNoteIsReturned(t *testing.T) {
 }
 
 func TestAdoptPeer_IdempotentDropsDuplicate(t *testing.T) {
-	m := newToolMux()
-	m.add("wiki", &fakeDisp{tool: "wiki_search", result: "x"})
+	m := New()
+	m.Add("wiki", &fakeDisp{tool: "wiki_search", result: "x"})
 	m.adoptPeer("mac", &fakeDisp{tool: "peer_wiki_search"}, nil)
 
 	cleaned := make(chan struct{})

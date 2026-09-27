@@ -1,7 +1,7 @@
 # Change: the composition root, split and held to its dependency rules (ARC-002)
 
 **Branch:** `refactor/ten-314-composition-root` (on top of
-`feat/ten-297-provenance-inspector`) · **Status:** in progress. Slices 0 and 1
+`feat/ten-297-provenance-inspector`) · **Status:** in progress. Slices 0–2
 are done and tested on Windows; later slices extend this record.
 **Ticket:** ARC-002 / TEN-314.
 
@@ -52,6 +52,43 @@ are done and tested on Windows; later slices extend this record.
   paths from the pre-move types, dumped from a worktree of the previous commit,
   are identical.
 
+### Slice 2: the tool mux moves to `internal/toolmux`
+- `toolmux.Mux`, the agent's tool registry and dispatcher, leaves
+  `package main` with its federation and dispatch-count code. Its
+  responsibilities:
+  - enable/disable with persisted curation;
+  - lazy activation of stubbed plugins;
+  - relevance ranking;
+  - federated peer search;
+  - remote-MCP adoption and trust.
+
+  It builds no plugin: what to register stays in
+  `cmd/tenant/toolmux_build.go`, which is split out of the old `toolmux.go`.
+- A new leaf, `internal/control`, holds the plain data types the runtime, the
+  terminal UI and the dashboard share. It starts with `ToolInfo`, which
+  `internal/tui` now aliases, so the mux can list tools without importing the
+  UI.
+- **The API main uses was exported first, in place, before anything moved.**
+  The compiler then located every call site: 193 method calls and 7 struct
+  keys.
+  - `Add`, `Restore`, `SetOnChange`, `RegisterActivator` and
+    `RegisterMCPRemote` are now exported, among others. So are the `Stub` and
+    `MCPDeps` fields.
+  - Setting the MCP deps and reading their approval gate go through
+    `SetMCPDeps` and `MCPConfirm`, instead of main writing into the struct.
+  - `Owner(name)` reports which dispatcher serves a tool.
+- `cmd/tenant/toolmux_compat.go` keeps main's names (`toolMux`, `plugin`,
+  `stubPlugin`, `newToolMux`, …).
+- The tests that exercise the mux's internals move with it: 69 tests, among
+  them ranking, federation, peer boost, restore and curation, activation,
+  auth state, labels and dispatch counts. `TestSearchPolicyPrompt_Content`
+  stays in main, beside the prompt it tests.
+- `archtest` gains both rules: `toolmux` may import `agent`, `model`,
+  `memory/cosine`, `plugins/mcpremote`, `peering` and `control`.
+- `docs/PLUGINS.md` and its drift guard point at `internal/toolmux/mux.go`.
+  The DATAFLOW rows that cited `cmd/tenant/toolmux.go` by line numbers,
+  which had already drifted, cite the builder by function.
+
 ## Why
 All configuration, runtime lifecycle, control plane and plugin registry code
 lived in `package main`, with dependency directions nobody wrote down or
@@ -59,7 +96,8 @@ checked. ARC-002 asks for these to move into internal packages behind
 enforced rules, so `cmd/tenant` becomes thin command adapters.
 
 ## Evidence
-- `go vet ./...` is clean, and `go test ./...` passes (65 packages).
+- `go vet ./...` is clean, and `go test ./...` passes (66 packages after
+  slice 2).
 - The smoke eval passes 5/5 against its baseline.
 - Mutation testing:
   - archtest: 7 mutations of the rules and checker, all caught;

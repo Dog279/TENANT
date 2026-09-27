@@ -139,6 +139,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/cron` | nothing in the module | leaf |
 | `internal/mcp/transport` | nothing in the module | leaf |
 | `internal/model/profiles` | nothing in the module | leaf |
+| `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs` | `internal/fsperm` | any package may log through it |
@@ -158,7 +159,8 @@ generated from `internal/archtest/rules.go`, and
 | `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |
 | `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
 | `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
-| `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/fsperm`, `internal/model` | never the dashboard |
+| `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
+| `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
 | `internal/dashboard` | `internal/agent`, `internal/httplimits`, `internal/logs`, `internal/orchestra` | never the terminal UI |
 <!-- /archtest:rules -->
 
@@ -1264,6 +1266,20 @@ the copies together. Moved out of `package main` in TEN-314;
 `cmd/tenant/config_compat.go` keeps main's names (`launchConfig`,
 `loadLaunchConfig`, …) as aliases and one-line wrappers.
 
+### 5.13d `internal/toolmux` + `internal/control` — Tool mux, shared data types
+
+`toolmux.Mux` merges the plugins' tools into one registry and dispatcher for
+the agent: runtime enable/disable with persisted curation (`Restore`,
+`SetOnChange`), lazy activation of stubbed plugins (`RegisterActivator`,
+`Stub`), relevance ranking of a large catalog (`SetEmbedder`, `Search`),
+federated knowledge search across paired peers, remote-MCP adoption and trust
+(`RegisterMCPRemote`, `SetMCPTrust`, `RemoteMCPList`), and per-tool dispatch
+counts (`Stats`). It builds no plugin itself: `cmd/tenant/toolmux_build.go`
+decides what to register. `internal/control` is a leaf of plain data types the
+runtime, the terminal UI and the dashboard share (`ToolInfo` so far), so none
+of them imports another. Moved out of `package main` in TEN-314;
+`cmd/tenant/toolmux_compat.go` keeps main's names.
+
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on
@@ -1425,11 +1441,13 @@ a command means adding it to its feature's list; adding a feature is one line in
 Bubble Tea model drains it via a re-issued `listen` command and renders
 live. A turn runs off the UI goroutine (returns `turnDoneMsg`). Token
 events append to the in-flight assistant bubble; everything else lands
-in the feed. `internal/tui` depends only on `internal/agent` (the
-command wires router/stores/dispatcher), so the UI stays decoupled.
+in the feed. `internal/tui` depends on `internal/agent` and the shared data types in
+`internal/control` (the command wires router/stores/dispatcher), so the UI
+stays decoupled; §2 has its full rule.
 
 **Scope:** memory-backed streaming chat + the live feed, **plus
-optional tool plugins** via a `toolMux` (`cmd/tenant/toolmux.go`) that
+optional tool plugins** via the tool mux (`internal/toolmux`, built by
+`cmd/tenant/toolmux_build.go`) that
 merges any enabled plugins' specs and routes `Dispatch` by tool name
 (distinct prefixes ⇒ no collision; first-registrant-wins on dup).
 Enable per-plugin with flags — `--wiki-dir`, `--sql-db`, `--web`,
@@ -1441,7 +1459,7 @@ operator opts in. Tool calls + results then stream into the feed live.
 with `/` is a command, not a message. `/tools` lists every tool and its
 on/off state grouped by plugin; `/enable <tool|plugin>` and `/disable
 <tool|plugin>` toggle a single tool or a whole plugin **live**.
-Mechanism: the `toolMux` (`cmd/tenant/toolmux.go`) is the agent's
+Mechanism: the tool mux (`internal/toolmux`) is the agent's
 ToolRegistry *and* Dispatcher, with a per-tool `enabled` flag behind a
 RWMutex. Disabling drops the tool from `Search` (so it leaves the
 assembled prompt entirely — zero context + compute) and from `Get` (so

@@ -19,7 +19,7 @@ file:line in the codebase so it can be verified.
 ## 1. The contract
 
 ```go
-// cmd/tenant/toolmux.go:29
+// internal/toolmux/mux.go
 type plugin interface {
     agent.ToolDispatcher
     Tools() []model.ToolSpec
@@ -91,21 +91,21 @@ authenticates) shouldn't run their setup until someone actually
 enables them.
 
 ```go
-// cmd/tenant/toolmux.go:57
+// internal/toolmux/mux.go
 activators map[string]func() (plugin, func(), error)
 activated  map[string]bool
 ```
 
-An activator is registered via `mux.registerActivator(label, fn)`
-(toolmux.go:151). It runs at most once, on first `/enable <label>`:
+An activator is registered via `mux.RegisterActivator(label, fn)`
+(internal/toolmux/mux.go). It runs at most once, on first `/enable <label>`:
 
 ```go
-// cmd/tenant/toolmux.go:314 — maybeActivate
+// internal/toolmux/mux.go — maybeActivate
 //   1. Read m.activated[label] under the lock; if true, return.
 //   2. Mark activated, snapshot the activator fn, drop the lock.
 //   3. Run fn() — possibly slow (Chrome spawn, OAuth).
 //   4. Re-take the lock; if someone else's activation won the race,
-//      discard ours via `go cleanup()` (toolmux.go:334).
+//      discard ours via `go cleanup()` (internal/toolmux/mux.go).
 //   5. Otherwise install the built plugin + register its cleanup.
 ```
 
@@ -139,20 +139,20 @@ absent. Operators discover what's available via `/tools`; absent
 plugins are invisible.
 
 ```go
-// cmd/tenant/toolmux.go:254
-type stubPlugin struct {
+// internal/toolmux/mux.go
+type Stub struct { // toolmux.Stub; stubPlugin in package main
     specs []model.ToolSpec
     hint  string
 }
 
-func (s stubPlugin) Dispatch(context.Context, model.ToolCall) (string, bool, error) {
+func (s Stub) Dispatch(context.Context, model.ToolCall) (string, bool, error) {
     return "this plugin is not configured — " + s.hint, true, nil
     // ^ isError=true: the model sees the message and won't loop
 }
 ```
 
 Stubs are registered disabled (`mux.SetEnabled(label, false)`,
-toolmux.go:558) so:
+internal/toolmux/mux.go) so:
 
 - `/tools` shows them in the catalog with a disabled marker
 - Calling them returns the `hint` text so the model + operator both
@@ -170,14 +170,14 @@ it actionable: name the flag, file, or command to fix it.
 `/enable foo` and `/disable foo` (TUI commands) call
 `mux.SetEnabled(label, on)`. The mux:
 
-1. Updates internal state under its lock (toolmux.go:274).
+1. Updates internal state under its lock (internal/toolmux/mux.go).
 2. **Snapshots the enabled map** while still under the lock
-   (toolmux.go:300).
-3. **Releases the lock** (toolmux.go:303) — the next step does I/O.
+   (internal/toolmux/mux.go).
+3. **Releases the lock** (internal/toolmux/mux.go) — the next step does I/O.
 4. Calls the registered `onChange` hook with the snapshot
-   (toolmux.go:304).
+   (internal/toolmux/mux.go).
 
-The `onChange` hook (registered via `mux.setOnChange(fn)`) is set in
+The `onChange` hook (registered via `mux.SetOnChange(fn)`) is set in
 two places at startup:
 
 - `cmd/tenant/commands.go:343 / :1646` — persists the new state to
@@ -223,7 +223,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 ### Step 2 — wire into `buildToolMux`
 
 ```go
-// cmd/tenant/toolmux.go:444
+// internal/toolmux/mux.go
 if pf.wikiDir != "" {
     ix, err := buildWikiIndex(ctx, c, router, pf.wikiDir, log)
     if err != nil { return fail(err) }
@@ -231,13 +231,13 @@ if pf.wikiDir != "" {
 }
 ```
 
-For a heavy plugin you'd use `registerActivator` instead, with the
+For a heavy plugin you'd use `RegisterActivator` instead, with the
 build inside the closure.
 
 ### Step 3 — register the stub for unconfigured runs
 
 ```go
-// cmd/tenant/toolmux.go:534 — the stub catalog
+// internal/toolmux/mux.go — the stub catalog
 {label: "wiki", specs: wiki.NewDispatcher(nil).Tools(),
  hint:  "relaunch with --wiki-dir <dir>"},
 ```
@@ -253,16 +253,16 @@ hidden coupling.
 
 ## 6. Hard rules learned the hard way
 
-These are non-negotiable. Comments in `toolmux.go` flag each one.
+These are non-negotiable. Comments in `internal/toolmux/mux.go` flag each one.
 
-### 6.1 — `restore()` must not trigger `onChange`
+### 6.1 — `Restore()` must not trigger `onChange`
 
 The mux loads its persisted enabled-state at startup. If that load
 called `onChange`, the just-loaded state would be re-saved
 immediately, creating noise and a race with the file-writer.
 
-Implementation: `restore()` directly mutates `m.enabled` without
-going through `SetEnabled`, bypassing the hook (toolmux.go:62
+Implementation: `Restore()` directly mutates `m.enabled` without
+going through `SetEnabled`, bypassing the hook (internal/toolmux/mux.go
 comment).
 
 ### 6.2 — Snapshot under the lock, then unlock BEFORE I/O
@@ -272,7 +272,7 @@ notifications. Both are I/O. Holding the mux lock during I/O blocks
 every concurrent tool call.
 
 Pattern: take lock → mutate `m.enabled` → make a defensive copy of
-the map → unlock → call hook with the copy (toolmux.go:297).
+the map → unlock → call hook with the copy (internal/toolmux/mux.go).
 
 ### 6.3 — Activator race: cleanup the loser
 
@@ -282,7 +282,7 @@ discard its build with `go cleanup()` (non-blocking) so its Chrome
 process is killed.
 
 Implementation: `maybeActivate` re-checks under the lock after the
-build (toolmux.go:334).
+build (internal/toolmux/mux.go).
 
 ### 6.4 — `Dispatch` `isError` vs. `err` is a real distinction
 

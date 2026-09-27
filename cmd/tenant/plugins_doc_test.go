@@ -29,20 +29,21 @@ func TestPluginsDoc_ReferencesStillExist(t *testing.T) {
 	doc := string(docBytes)
 
 	// Identifiers the doc relies on, mapped to where they should exist.
+	muxSrc := filepath.Join("..", "..", "internal", "toolmux", "mux.go")
 	// The relative path is from cmd/tenant/ where the test runs.
 	cases := []struct {
 		identifier string
 		searchDir  string
 		hint       string
 	}{
-		{"plugin", "toolmux.go", "the core plugin interface"},
+		{"Plugin", muxSrc, "the core plugin interface"},
 		{"ToolDispatcher", filepath.Join("..", "..", "internal", "agent", "tools.go"), "the dispatcher interface"},
 		{"ToolSpec", filepath.Join("..", "..", "internal", "model", "llm.go"), "the tool-spec struct"},
-		{"registerActivator", "toolmux.go", "the activator registration entry point"},
-		{"stubPlugin", "toolmux.go", "the unconfigured-plugin stub"},
-		{"maybeActivate", "toolmux.go", "the lazy-activation core"},
-		{"SetEnabled", "toolmux.go", "runtime enable/disable"},
-		{"setOnChange", "toolmux.go", "the persistence + MCP notification hook"},
+		{"RegisterActivator", muxSrc, "the activator registration entry point"},
+		{"Stub", muxSrc, "the unconfigured-plugin stub"},
+		{"maybeActivate", muxSrc, "the lazy-activation core"},
+		{"SetEnabled", muxSrc, "runtime enable/disable"},
+		{"SetOnChange", muxSrc, "the persistence + MCP notification hook"},
 		{"NotifyToolsChanged", filepath.Join("..", "..", "internal", "mcpserver", "server.go"), "MCP-side notification"},
 	}
 

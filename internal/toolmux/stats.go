@@ -1,8 +1,8 @@
-package main
+package toolmux
 
 // toolstats.go — the per-tool dispatch counter (Quality v2, Phase 1).
 //
-// Every tool call in the system funnels through toolMux.Dispatch (agent turns,
+// Every tool call in the system funnels through Mux.Dispatch (agent turns,
 // cron jobs via their restricted views, the MCP bridge via mcpserver), so ONE
 // counter site yields honest usage and error rates for every surface. Before
 // this, no per-tool counter existed anywhere: usage questions were answered by
@@ -88,7 +88,7 @@ type toolStatsFile struct {
 }
 
 // toolStats is the live counter set. Safe for concurrent Dispatch callers.
-type toolStats struct {
+type Stats struct {
 	mu    sync.Mutex
 	tools map[string]*toolStat
 
@@ -102,8 +102,8 @@ type toolStats struct {
 	now  func() time.Time
 }
 
-func newToolStats(dataDir, role string) *toolStats {
-	s := &toolStats{
+func NewStats(dataDir, role string) *Stats {
+	s := &Stats{
 		tools: map[string]*toolStat{},
 		role:  role,
 		path:  filepath.Join(dataDir, fmt.Sprintf("toolstats-%s-%d.json", role, os.Getpid())),
@@ -116,7 +116,7 @@ func newToolStats(dataDir, role string) *toolStats {
 // absorbAbandoned folds dead same-role files (and the legacy un-pidded file
 // from the first schema) into this process's counts, then deletes them —
 // summed exactly once, so restarts keep history without double-counting.
-func (s *toolStats) absorbAbandoned(dataDir string) {
+func (s *Stats) absorbAbandoned(dataDir string) {
 	matches, _ := filepath.Glob(filepath.Join(dataDir, "toolstats-"+s.role+"*.json"))
 	for _, m := range matches {
 		data, err := os.ReadFile(m)
@@ -182,7 +182,7 @@ func classifyDispatch(out string, isErr bool, err error) string {
 	return statErr
 }
 
-func (s *toolStats) record(name, outcome string) {
+func (s *Stats) record(name, outcome string) {
 	if s == nil {
 		return
 	}
@@ -216,7 +216,7 @@ func (s *toolStats) record(name, outcome string) {
 
 // noteError attaches the last error text (truncated) — split from record so
 // the mutex isn't held while callers format.
-func (s *toolStats) noteError(name, msg string) {
+func (s *Stats) noteError(name, msg string) {
 	if s == nil {
 		return
 	}
@@ -234,7 +234,7 @@ func (s *toolStats) noteError(name, msg string) {
 // flush writes the current snapshot unconditionally — the write doubles as
 // the liveness heartbeat absorbAbandoned relies on, and always-write means a
 // failed write never strands unsaved state behind a cleared dirty flag.
-func (s *toolStats) flush() {
+func (s *Stats) flush() {
 	if s == nil {
 		return
 	}
@@ -264,9 +264,9 @@ func (s *toolStats) flush() {
 	}
 }
 
-// startPersist flushes on a ticker until the returned stop func runs (which
+// StartPersist flushes on a ticker until the returned stop func runs (which
 // flushes one final time).
-func (s *toolStats) startPersist(every time.Duration) func() {
+func (s *Stats) StartPersist(every time.Duration) func() {
 	if s == nil {
 		return func() {}
 	}

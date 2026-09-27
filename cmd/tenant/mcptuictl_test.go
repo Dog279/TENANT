@@ -4,7 +4,7 @@ import "testing"
 
 func TestRegisterAndForgetMCPRemote(t *testing.T) {
 	m := newToolMux()
-	label := m.registerMCPRemote("https://mcp.atlassian.com/v1/mcp")
+	label := m.RegisterMCPRemote("https://mcp.atlassian.com/v1/mcp")
 	if label != "mcp:mcp.atlassian.com" {
 		t.Fatalf("label = %q", label)
 	}
@@ -16,16 +16,16 @@ func TestRegisterAndForgetMCPRemote(t *testing.T) {
 		t.Errorf("a registered-but-unconnected server should be disabled with 0 tools: %+v", list[0])
 	}
 	// Idempotent: re-registering the same URL doesn't duplicate.
-	m.registerMCPRemote("https://mcp.atlassian.com/v1/mcp")
+	m.RegisterMCPRemote("https://mcp.atlassian.com/v1/mcp")
 	if len(m.RemoteMCPList()) != 1 {
 		t.Errorf("re-register duplicated the server")
 	}
 	// Forget removes it entirely.
-	m.forgetPlugin(label)
+	m.ForgetPlugin(label)
 	if len(m.RemoteMCPList()) != 0 {
 		t.Errorf("forgetPlugin left the server registered")
 	}
-	if m.hasPlugin(label) {
+	if m.HasPlugin(label) {
 		t.Errorf("forgetPlugin left the plugin registered")
 	}
 }
@@ -49,7 +49,7 @@ func TestMCPControl_Persist(t *testing.T) {
 
 func TestMCPControl_Resolve(t *testing.T) {
 	m := newToolMux()
-	m.registerMCPRemote("https://mcp.atlassian.com/v1/mcp")
+	m.RegisterMCPRemote("https://mcp.atlassian.com/v1/mcp")
 	a := newMCPControl(m, t.TempDir(), nil)
 
 	if l, _ := a.resolve("mcp:mcp.atlassian.com"); l == "" {

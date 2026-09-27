@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -47,7 +47,7 @@ func TestToolMuxSearch_FloorBeatsTinyCap(t *testing.T) {
 func TestToolMuxSearch_CoreSetNeverRankedOut(t *testing.T) {
 	const n = 25
 	m := newRankMux(t, n)
-	m.add("osplug", &rankFakePlugin{specs: []model.ToolSpec{{
+	m.Add("osplug", &rankFakePlugin{specs: []model.ToolSpec{{
 		Name: "os_exec", Description: "COLD core", Parameters: json.RawMessage(`{"type":"object"}`),
 	}}})
 	// All tool_NN are HOT (sim 1); os_exec is orthogonal (sim 0) → ranks dead last.
@@ -73,7 +73,7 @@ func TestToolMuxSearch_CoreSetNeverRankedOut(t *testing.T) {
 // dimension than the cached tool embeddings must fall back to the full enabled
 // set with a visible reason, not rank on all-zero cosines (alphabetical garbage).
 func TestToolMuxSearch_DimMismatchFallsBack(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	m.SetEmbedder("test-emb", &rankFakeEmbedder{}) // cache vectors are 4-d
 	// Prime + rank with a matching 4-d query.
@@ -96,7 +96,7 @@ func TestToolMuxSearch_DimMismatchFallsBack(t *testing.T) {
 // cache so the new tools get real embeddings, not the neutral sim=0.5 that would
 // let them crowd out relevant local tools.
 func TestToolMuxSearch_AdoptLiveMCPInvalidatesCache(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{}
 	m.SetEmbedder("test-emb", emb)
@@ -116,7 +116,7 @@ func TestToolMuxSearch_AdoptLiveMCPInvalidatesCache(t *testing.T) {
 	}
 }
 
-func mustSearch(t *testing.T, m *toolMux, q []float32, maxTools int) []model.ToolSpec {
+func mustSearch(t *testing.T, m *Mux, q []float32, maxTools int) []model.ToolSpec {
 	t.Helper()
 	got, err := m.Search(context.Background(), q, maxTools)
 	if err != nil {

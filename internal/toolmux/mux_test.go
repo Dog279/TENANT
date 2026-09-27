@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -26,9 +26,9 @@ func (f fakePlugin) Dispatch(_ context.Context, c model.ToolCall) (string, bool,
 
 func TestToolMux_MergesAndRoutes(t *testing.T) {
 	var hit string
-	mux := newToolMux()
-	mux.add("a", fakePlugin{name: "a", lastHit: &hit})
-	mux.add("b", fakePlugin{name: "b", lastHit: &hit})
+	mux := New()
+	mux.Add("a", fakePlugin{name: "a", lastHit: &hit})
+	mux.Add("b", fakePlugin{name: "b", lastHit: &hit})
 
 	if len(mux.All()) != 2 {
 		t.Fatalf("All() = %d, want 2", len(mux.All()))
@@ -48,9 +48,9 @@ func TestToolMux_MergesAndRoutes(t *testing.T) {
 
 func TestToolMux_DuplicateNameFirstWins(t *testing.T) {
 	var h1, h2 string
-	mux := newToolMux()
-	mux.add("a", fakePlugin{name: "a", lastHit: &h1})
-	mux.add("a", fakePlugin{name: "a", lastHit: &h2}) // same tool name "a_do"
+	mux := New()
+	mux.Add("a", fakePlugin{name: "a", lastHit: &h1})
+	mux.Add("a", fakePlugin{name: "a", lastHit: &h2}) // same tool name "a_do"
 
 	if len(mux.All()) != 1 {
 		t.Fatalf("duplicate tool name should not double-register: got %d specs", len(mux.All()))
@@ -66,9 +66,9 @@ func TestToolMux_DuplicateNameFirstWins(t *testing.T) {
 // restores it.
 func TestToolMux_RuntimeToggle(t *testing.T) {
 	var hit string
-	mux := newToolMux()
-	mux.add("wiki", fakePlugin{name: "wiki", lastHit: &hit}) // tool "wiki_do"
-	mux.add("os", fakePlugin{name: "os", lastHit: &hit})     // tool "os_do"
+	mux := New()
+	mux.Add("wiki", fakePlugin{name: "wiki", lastHit: &hit}) // tool "wiki_do"
+	mux.Add("os", fakePlugin{name: "os", lastHit: &hit})     // tool "os_do"
 	ctx := context.Background()
 
 	// Disable a single tool by exact name.
@@ -112,9 +112,9 @@ func TestToolMux_RuntimeToggle(t *testing.T) {
 // give a clean "no skill named X" error on typos.
 func TestToolMux_SetPluginEnabled_PluginScopeOnly(t *testing.T) {
 	var hit string
-	mux := newToolMux()
-	mux.add("wiki", fakePlugin{name: "wiki", lastHit: &hit})
-	mux.add("os", fakePlugin{name: "os", lastHit: &hit})
+	mux := New()
+	mux.Add("wiki", fakePlugin{name: "wiki", lastHit: &hit})
+	mux.Add("os", fakePlugin{name: "os", lastHit: &hit})
 
 	// Plugin sweep — toggles both tools at the label, returns (N, "plugin", nil).
 	if n, scope, err := mux.SetPluginEnabled("os", false); err != nil || n != 1 || scope != "plugin" {
@@ -134,11 +134,11 @@ func TestToolMux_SetPluginEnabled_PluginScopeOnly(t *testing.T) {
 // the "did you mean" hint when `/enable skill <typo>` finds nothing.
 func TestToolMux_Plugins_SortedAndDeduped(t *testing.T) {
 	var hit string
-	mux := newToolMux()
+	mux := New()
 	// Register in non-alphabetical order to verify sorting.
-	mux.add("wiki", fakePlugin{name: "wiki", lastHit: &hit})
-	mux.add("os", fakePlugin{name: "os", lastHit: &hit})
-	mux.add("sql", fakePlugin{name: "sql", lastHit: &hit})
+	mux.Add("wiki", fakePlugin{name: "wiki", lastHit: &hit})
+	mux.Add("os", fakePlugin{name: "os", lastHit: &hit})
+	mux.Add("sql", fakePlugin{name: "sql", lastHit: &hit})
 
 	got := mux.Plugins()
 	want := []string{"os", "sql", "wiki"}
@@ -158,14 +158,14 @@ func TestToolMux_Plugins_SortedAndDeduped(t *testing.T) {
 // and `/enable web` (registered later) never reached the prompt, so the
 // model truthfully said it had no browser.
 func TestToolMux_SearchReturnsAllEnabledIgnoringCap(t *testing.T) {
-	mux := newToolMux()
+	mux := New()
 	// 13 tools registered before "web", mirroring sql(3)+wiki(5)+os(5).
 	for i := 0; i < 13; i++ {
 		var hit string
-		mux.add("early", fakePlugin{name: "early" + strconv.Itoa(i), lastHit: &hit})
+		mux.Add("early", fakePlugin{name: "early" + strconv.Itoa(i), lastHit: &hit})
 	}
 	var hit string
-	mux.add("web", fakePlugin{name: "web", lastHit: &hit}) // 14th tool
+	mux.Add("web", fakePlugin{name: "web", lastHit: &hit}) // 14th tool
 
 	// Old code truncated to k=12 by order; web_do would be dropped.
 	got, _ := mux.Search(context.Background(), nil, 12)
@@ -189,15 +189,15 @@ func TestToolMux_SearchReturnsAllEnabledIgnoringCap(t *testing.T) {
 // instead of forcing a relaunch with --web.
 func TestToolMux_LazyActivation(t *testing.T) {
 	ctx := context.Background()
-	mux := newToolMux()
+	mux := New()
 	// Stub stands in for the unconfigured plugin: advertises the spec but
 	// returns a "needs setup" status until activated.
-	mux.add("web", stubPlugin{specs: []model.ToolSpec{{Name: "web_do", Parameters: json.RawMessage(`{}`)}}, hint: "stubbed"})
+	mux.Add("web", Stub{Specs: []model.ToolSpec{{Name: "web_do", Parameters: json.RawMessage(`{}`)}}, Hint: "stubbed"})
 	mux.SetEnabled("web", false)
 
 	var hit string
 	var builds, cleanups int
-	mux.registerActivator("web", func() (plugin, func(), error) {
+	mux.RegisterActivator("web", func() (Plugin, func(), error) {
 		builds++
 		return fakePlugin{name: "web", lastHit: &hit}, func() { cleanups++ }, nil
 	})
@@ -234,10 +234,10 @@ func TestToolMux_LazyActivation(t *testing.T) {
 // A failed lazy activation (e.g. Chrome won't launch) surfaces the error
 // and leaves the tool disabled rather than half-enabling it.
 func TestToolMux_LazyActivationError(t *testing.T) {
-	mux := newToolMux()
-	mux.add("web", stubPlugin{specs: []model.ToolSpec{{Name: "web_do", Parameters: json.RawMessage(`{}`)}}, hint: "stubbed"})
+	mux := New()
+	mux.Add("web", Stub{Specs: []model.ToolSpec{{Name: "web_do", Parameters: json.RawMessage(`{}`)}}, Hint: "stubbed"})
 	mux.SetEnabled("web", false)
-	mux.registerActivator("web", func() (plugin, func(), error) {
+	mux.RegisterActivator("web", func() (Plugin, func(), error) {
 		return nil, nil, context.DeadlineExceeded // stand-in for "Chrome not found"
 	})
 
@@ -261,26 +261,26 @@ func TestToolMux_LazyActivationError(t *testing.T) {
 // config.json produced nine identical "unknown auth" lines at every launch,
 // one per enabled gsuite tool.
 func TestToolMux_RestoreDedupesPluginActivationFailure(t *testing.T) {
-	m := newToolMux()
+	m := New()
 	// gsuite-like: one stub advertising several tools, all owned by the
 	// "gsuite" label, behind an activator that fails (unsupported auth).
-	m.add("gsuite", stubPlugin{specs: []model.ToolSpec{
+	m.Add("gsuite", Stub{Specs: []model.ToolSpec{
 		{Name: "gmail_send", Parameters: json.RawMessage(`{}`)},
 		{Name: "drive_read", Parameters: json.RawMessage(`{}`)},
 		{Name: "calendar_create", Parameters: json.RawMessage(`{}`)},
-	}, hint: "stub"})
+	}, Hint: "stub"})
 	m.SetEnabled("gsuite", false)
 	// A working sibling proves restore still applies other plugins.
 	var hit string
-	m.add("os", fakePlugin{name: "os", lastHit: &hit}) // os_do
+	m.Add("os", fakePlugin{name: "os", lastHit: &hit}) // os_do
 
 	builds := 0
-	m.registerActivator("gsuite", func() (plugin, func(), error) {
+	m.RegisterActivator("gsuite", func() (Plugin, func(), error) {
 		builds++
 		return nil, nil, fmt.Errorf("gsuite plugin: auth %q isn't supported in this build", "composio")
 	})
 
-	notes := m.restore(map[string]bool{
+	notes := m.Restore(map[string]bool{
 		"gmail_send": true, "drive_read": true, "calendar_create": true,
 		"os_do": true,
 	})
@@ -314,22 +314,22 @@ func TestToolMux_RestoreDedupesPluginActivationFailure(t *testing.T) {
 // until I set up SA" path. Contrast TestToolMux_RestoreDedupesPluginActivationFailure,
 // where a genuine failure still gets one note.
 func TestToolMux_RestoreSilentWhenNotConfigured(t *testing.T) {
-	m := newToolMux()
-	m.add("gsuite", stubPlugin{specs: []model.ToolSpec{
+	m := New()
+	m.Add("gsuite", Stub{Specs: []model.ToolSpec{
 		{Name: "gmail_send", Parameters: json.RawMessage(`{}`)},
 		{Name: "drive_read", Parameters: json.RawMessage(`{}`)},
 		{Name: "calendar_create", Parameters: json.RawMessage(`{}`)},
-	}, hint: "stub"})
+	}, Hint: "stub"})
 	m.SetEnabled("gsuite", false)
 
 	builds := 0
-	m.registerActivator("gsuite", func() (plugin, func(), error) {
+	m.RegisterActivator("gsuite", func() (Plugin, func(), error) {
 		builds++
 		// Mirror the production activator's wrap: clean message, sentinel cause.
-		return nil, nil, fmt.Errorf("gsuite plugin: %w yet — run `/configure gsuite`", errNotConfigured)
+		return nil, nil, fmt.Errorf("gsuite plugin: %w yet — run `/configure gsuite`", ErrNotConfigured)
 	})
 
-	notes := m.restore(map[string]bool{
+	notes := m.Restore(map[string]bool{
 		"gmail_send": true, "drive_read": true, "calendar_create": true,
 	})
 
@@ -353,9 +353,9 @@ func TestToolMux_RankingStatus_Diagnostic(t *testing.T) {
 	ctx := context.Background()
 
 	// Below the ranking threshold → inactive, with a clear reason.
-	small := newToolMux()
+	small := New()
 	for i := 0; i < 5; i++ {
-		small.add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
+		small.Add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
 	}
 	if _, err := small.Search(ctx, []float32{1, 0}, 12); err != nil {
 		t.Fatalf("Search: %v", err)
@@ -376,9 +376,9 @@ func TestToolMux_RankingStatus_Diagnostic(t *testing.T) {
 
 	// Above threshold but NO embedder installed → full catalog surfaced, and the
 	// reason names the root cause (the operator's most likely case).
-	big := newToolMux()
+	big := New()
 	for i := 0; i < 25; i++ {
-		big.add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
+		big.Add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
 	}
 	if _, err := big.Search(ctx, []float32{1, 0}, 12); err != nil {
 		t.Fatalf("Search: %v", err)

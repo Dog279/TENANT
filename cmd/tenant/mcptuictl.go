@@ -140,7 +140,7 @@ func (a mcpTUIControl) Remove(target string) (bool, error) {
 		return false, nil
 	}
 	a.mux.SetEnabled(label, false)
-	a.mux.forgetPlugin(label)
+	a.mux.ForgetPlugin(label)
 	a.persist(url, false)
 	a.persistTrust(url, "")
 	mcpAudit.Info("mcp: connector removed", "label", label, "url", url)

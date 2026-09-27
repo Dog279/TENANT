@@ -26,13 +26,13 @@ func TestTeamRuntime_WebReaderActivityUsesAgentEventing(t *testing.T) {
 	})
 	local := newToolMux()
 	rt.addWebTool(local, "researcher-1")
-	entry := local.byName["web_read"]
-	if entry == nil {
+	owner, ok := local.Owner("web_read")
+	if !ok {
 		t.Fatal("per-agent web tool was not registered")
 	}
-	lw, ok := entry.owner.(*lazyWeb)
+	lw, ok := owner.(*lazyWeb)
 	if !ok || lw.cfg.ReaderObserver == nil {
-		t.Fatalf("web owner lacks reader activity wiring: %#v", entry.owner)
+		t.Fatalf("web owner lacks reader activity wiring: %#v", owner)
 	}
 	lw.cfg.ReaderObserver(web.ReaderActivity{Provider: "r.jina.ai", TargetHost: "example.com"})
 	if gotID != "researcher-1" || gotEvent.Tool != "web_reader_remote" || !strings.Contains(gotEvent.Args, "example.com") {
@@ -147,7 +147,7 @@ func TestComposite_PerAgentWebNotDuplicated(t *testing.T) {
 	defer cleanup()
 
 	local := newToolMux()
-	local.add("web", newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil, nil))
+	local.Add("web", newLazyWeb(web.Config{}, web.Policy{}, "", nil, nil, nil))
 	comp := composite{shared: shared, local: local}
 
 	count := 0
@@ -334,7 +334,7 @@ func TestOrchestratorPrompt_KeepWorkingAndDefaults(t *testing.T) {
 func TestComposite_RankingStatus_DelegatesToShared(t *testing.T) {
 	shared := newToolMux()
 	for i := 0; i < 25; i++ { // above rankActivateThreshold, no embedder → fallback
-		shared.add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
+		shared.Add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
 	}
 	c := composite{shared: shared, local: newToolMux()}
 

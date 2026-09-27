@@ -497,14 +497,14 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 			AgentProfiles: effectiveAgents(c.lc),
 		})
 		defer rt.Close()
-		mux.add("orchestrator", spawnTool{rt: rt})
-		mux.add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
+		mux.Add("orchestrator", spawnTool{rt: rt})
+		mux.Add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
 
 		// Count bridge dispatches under their own role file - the bridge is a
 		// separate process; readers merge toolstats-*.json.
 		bridgeStats := newToolStats(c.dataDir, "bridge")
-		mux.enableStats(bridgeStats)
-		defer bridgeStats.startPersist(time.Minute)()
+		mux.EnableStats(bridgeStats)
+		defer bridgeStats.StartPersist(time.Minute)()
 
 		// Apply the operator's saved tool curation, the same snapshot serve and the
 		// TUI restore at boot. Without it the bridge shows a DIFFERENT toolset than
@@ -516,7 +516,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		if stg, serr := loadSettings(c.cfgDir, c.agent); serr != nil {
 			log.Warn("mcp-memory: could not load saved tool states", "err", serr)
 		} else {
-			for _, note := range mux.restore(stg.Tools) {
+			for _, note := range mux.Restore(stg.Tools) {
 				log.Info("mcp-memory settings", "note", note)
 			}
 		}
@@ -529,7 +529,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		return err
 	}
 	if mux != nil {
-		mux.setOnChange(func(map[string]bool) { srv.NotifyToolsChanged(ctx) })
+		mux.SetOnChange(func(map[string]bool) { srv.NotifyToolsChanged(ctx) })
 	}
 
 	// --sse-addr: serve over HTTP+SSE for clients that connect over the
@@ -1696,10 +1696,10 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// memory + skills + its own lazy browser (full workability, same as the
 	// sub-agents it spawns).
 	olocal := newToolMux()
-	olocal.add("orchestrator", spawnTool{rt: rt, timeout: *awaitTimeout})
-	olocal.add("team", orchestra.CommsTool{Bus: bus, Self: orchID})
-	olocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: orchID})
-	olocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: orchID})
+	olocal.Add("orchestrator", spawnTool{rt: rt, timeout: *awaitTimeout})
+	olocal.Add("team", orchestra.CommsTool{Bus: bus, Self: orchID})
+	olocal.Add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: orchID})
+	olocal.Add("skills", skillTool{st: skillStore, emb: skEmb, agentID: orchID})
 	rt.addWebTool(olocal, orchID)
 	otools := composite{shared: shared, local: olocal, budget: rt.budget, agentID: orchID}
 
@@ -2019,11 +2019,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 
 	// Restore the operator's tool curation over the flag defaults, THEN
 	// install the save hook (restore must not re-save what it just loaded).
-	for _, note := range mux.restore(stg.Tools) {
+	for _, note := range mux.Restore(stg.Tools) {
 		pushSys("settings: " + note)
 	}
 	pushSys("settings: " + settingsPath(c.cfgDir, c.agent))
-	mux.setOnChange(func(snap map[string]bool) {
+	mux.SetOnChange(func(snap map[string]bool) {
 		stgMu.Lock()
 		stg.Tools = snap
 		stgMu.Unlock()
@@ -2154,22 +2154,22 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// composited over the shared plugins. This is what makes the always-on
 	// agent able to spin up sub-agents on the fly.
 	mainLocal := newToolMux()
-	mainLocal.add("orchestrator", spawnTool{rt: rt})
-	mainLocal.add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
-	mainLocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
-	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
+	mainLocal.Add("orchestrator", spawnTool{rt: rt})
+	mainLocal.Add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
+	mainLocal.Add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
+	mainLocal.Add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
 	// memory_recall (TEN-103): optional "paging" augmentation, capability-gated
 	// to strong planners (Profile.AllowsTool). Main agent only — sub-agents are
 	// ephemeral/task-scoped, so an unbounded recall there widens blast radius for
 	// little benefit.
-	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
+	mainLocal.Add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
 	rt.addWebTool(mainLocal, c.agent)
 	// Same dispatch counting as serve - the TUI is the operator's daily
 	// surface and its usage is exactly the signal the utilization report needs.
 	tstats := newToolStats(c.dataDir, "tui")
-	mux.enableStats(tstats)
-	mainLocal.enableStats(tstats)
-	defer tstats.startPersist(time.Minute)()
+	mux.EnableStats(tstats)
+	mainLocal.EnableStats(tstats)
+	defer tstats.StartPersist(time.Minute)()
 	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Live bus view → feed (lossless cursor over the retained log).
@@ -2432,7 +2432,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.AllowExec = on })
 		})
 		// cron_* tools for the MAIN agent (cut from the cron runners above).
-		mainLocal.add("cron", cronplugin.NewDispatcher(cronMgr))
+		mainLocal.Add("cron", cronplugin.NewDispatcher(cronMgr))
 		tuiCronCtl = tuiCron{cronMgr}
 		dashCronCtl = dashCron{cronMgr}
 		if serr := cronEngine.Start(ctx); serr != nil {
@@ -2445,7 +2445,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// follow its live trust mode (ask / allow / deny). The same control backs
 	// /mcp, the dashboard's Remote services page and /configure atlassian.
 	mcpCtl := newMCPControl(mux, c.cfgDir, c.lc)
-	mainLocal.add("connectors", newMCPToolPlugin(mcpCtl, mux.mcpDeps.confirm))
+	mainLocal.Add("connectors", newMCPToolPlugin(mcpCtl, mux.MCPConfirm()))
 
 	// Web control panel (TEN-86): auto-launches with the TUI by default; the
 	// operator toggles it live via /dashboard, and the choice persists. The
@@ -2480,7 +2480,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
-		mux.precomputeEmbeddings(ctx) // warm now so the first post-swap turn isn't blocked
+		mux.PrecomputeEmbeddings(ctx) // warm now so the first post-swap turn isn't blocked
 	}
 	// Live key rotation (no restart): watch credentials.json for external edits
 	// and hot-swap the active provider's key. (Web-search keys resolve lazily;
@@ -3105,7 +3105,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Cron:            tuiCronCtl,
 		MCP:             mcpCtl,
 		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
-		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.reconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
+		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.ReconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
 		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
 		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},
 		Models:          modelCtl,

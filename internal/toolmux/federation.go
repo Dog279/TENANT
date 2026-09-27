@@ -1,10 +1,10 @@
-package main
+package toolmux
 
 // federation.go (TEN-243): federated knowledge search. When paired peers are
 // connected, the agent's OWN search tools (wiki_search; memory_search later)
 // transparently extend to those peers — local results first, peer results
 // appended and flagged "trust but verify". The per-peer peer_*_search tools are
-// NOT exposed to the agent (folded in): the toolMux holds the peer dispatchers
+// NOT exposed to the agent (folded in): the Mux holds the peer dispatchers
 // and fans out on a local search call. No peers ⇒ plain local search.
 
 import (
@@ -42,7 +42,7 @@ var peerReadByMiss = map[string]string{
 // listener actually serves: the values of federatableTools + peerReadByMiss
 // (peer_wiki_search / peer_memory_search / peer_wiki_read) plus the built-in
 // peer_hello handshake. A NEW federation tool MUST be added here to be ungated.
-var peerFederationTools = map[string]bool{
+var PeerFederationTools = map[string]bool{
 	"peer_wiki_search":   true,
 	"peer_memory_search": true,
 	"peer_wiki_read":     true,
@@ -52,7 +52,7 @@ var peerFederationTools = map[string]bool{
 // namedDisp pairs a peer's local label with its dispatcher (for fan-out).
 type namedDisp struct {
 	name string
-	disp plugin
+	disp Plugin
 }
 
 // isFederatedCounterpart reports whether a PEER tool name is folded into a local
@@ -84,11 +84,11 @@ func isFederatedCounterpart(name string) bool {
 // advertises is gated and routes through the confirm broker. If a peer is
 // compromised, an operator removes it with `/peer remove <name>`; there is no
 // silent re-trust beyond the federation allowlist.
-func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
+func (m *Mux) adoptPeer(name string, disp Plugin, cleanup func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.peerDisp == nil {
-		m.peerDisp = map[string]plugin{}
+		m.peerDisp = map[string]Plugin{}
 	}
 	if _, exists := m.peerDisp[name]; exists {
 		if cleanup != nil {
@@ -115,7 +115,7 @@ func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 			continue // first-registrant-wins (can't shadow a local tool)
 		}
 		m.order = append(m.order, spec.Name)
-		m.byName[spec.Name] = &toolEntry{spec: spec, owner: disp, plugin: label, enabled: true}
+		m.byName[spec.Name] = &toolEntry{spec: spec, owner: disp, Plugin: label, enabled: true}
 	}
 	// Invalidate the ranking cache so any newly-exposed peer tool gets a real
 	// description embedding on the next Search instead of the neutral sim=0.5.
@@ -133,7 +133,7 @@ func (m *toolMux) adoptPeer(name string, disp plugin, cleanup func()) {
 // is registered. No-op when it's already enabled (wiki_search) or absent (no
 // local memory store). Caller holds m.mu. Invalidates the ranking cache so the
 // newly-live tool is embedded for the next Search.
-func (m *toolMux) enableFederatedLocalLocked(counterpart string) {
+func (m *Mux) enableFederatedLocalLocked(counterpart string) {
 	for local, peerTool := range federatableTools {
 		if peerTool != counterpart {
 			continue
@@ -147,7 +147,7 @@ func (m *toolMux) enableFederatedLocalLocked(counterpart string) {
 }
 
 // hasPeer reports whether a peer is already adopted (so reconnect skips it).
-func (m *toolMux) hasPeer(name string) bool {
+func (m *Mux) hasPeer(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.peerDisp[name]
@@ -156,7 +156,7 @@ func (m *toolMux) hasPeer(name string) bool {
 
 // refreshFederationDescLocked rewrites each federated tool's description to name
 // the connected peers (the LLM-facing awareness signal). Caller holds m.mu.
-func (m *toolMux) refreshFederationDescLocked() {
+func (m *Mux) refreshFederationDescLocked() {
 	names := make([]string, 0, len(m.peerDisp))
 	for n := range m.peerDisp {
 		names = append(names, n)
@@ -203,7 +203,7 @@ func (m *toolMux) refreshFederationDescLocked() {
 // local result, flagged trust-but-verify. Denials / offline / empty peers are
 // skipped silently so the agent only sees real cross-instance knowledge. Every
 // fan-out outcome is recorded for drift tracking (see /peer stats).
-func (m *toolMux) federate(ctx context.Context, localOut, counterpart string, args json.RawMessage, peers []namedDisp) string {
+func (m *Mux) federate(ctx context.Context, localOut, counterpart string, args json.RawMessage, peers []namedDisp) string {
 	var b strings.Builder
 	b.WriteString(localOut)
 	for _, p := range peers {
@@ -221,8 +221,8 @@ func (m *toolMux) federate(ctx context.Context, localOut, counterpart string, ar
 			m.recordFed(p.name, fedHit, len(res))
 		}
 	}
-	if m.mcpDeps.log != nil {
-		m.mcpDeps.log.Debug("federation: fan-out complete", "tool", counterpart, "peers", len(peers))
+	if m.mcpDeps.Log != nil {
+		m.mcpDeps.Log.Debug("federation: fan-out complete", "tool", counterpart, "peers", len(peers))
 	}
 	return b.String()
 }
@@ -303,7 +303,7 @@ type PeerFedStat struct {
 
 // recordFed tallies one fan-out outcome for a peer. Thread-safe (its own mutex,
 // independent of m.mu so it never contends with dispatch/registration).
-func (m *toolMux) recordFed(peer string, outcome fedOutcome, bytes int) {
+func (m *Mux) recordFed(peer string, outcome fedOutcome, bytes int) {
 	m.fedMu.Lock()
 	defer m.fedMu.Unlock()
 	if m.fedStats == nil {
@@ -329,7 +329,7 @@ func (m *toolMux) recordFed(peer string, outcome fedOutcome, bytes int) {
 }
 
 // FederationStats returns a name-sorted snapshot of every peer's fan-out tally.
-func (m *toolMux) FederationStats() []PeerFedStat {
+func (m *Mux) FederationStats() []PeerFedStat {
 	m.fedMu.Lock()
 	defer m.fedMu.Unlock()
 	out := make([]PeerFedStat, 0, len(m.fedStats))
@@ -345,7 +345,7 @@ func (m *toolMux) FederationStats() []PeerFedStat {
 
 // peersForFederation snapshots the peer dispatchers (name-sorted) for a federated
 // tool call. Returns nil for non-federatable tools or when no peers are connected.
-func (m *toolMux) peersForFederation(toolName string) (counterpart string, peers []namedDisp) {
+func (m *Mux) peersForFederation(toolName string) (counterpart string, peers []namedDisp) {
 	counterpart = federatableTools[toolName]
 	if counterpart == "" || len(m.peerDisp) == 0 {
 		return "", nil
@@ -359,7 +359,7 @@ func (m *toolMux) peersForFederation(toolName string) (counterpart string, peers
 
 // peersForReadFallback snapshots peers (name-sorted) for a read-on-miss tool.
 // Returns nil for non-read-fallback tools or when no peers are connected.
-func (m *toolMux) peersForReadFallback(toolName string) (counterpart string, peers []namedDisp) {
+func (m *Mux) peersForReadFallback(toolName string) (counterpart string, peers []namedDisp) {
 	counterpart = peerReadByMiss[toolName]
 	if counterpart == "" || len(m.peerDisp) == 0 {
 		return "", nil
@@ -375,7 +375,7 @@ func (m *toolMux) peersForReadFallback(toolName string) (counterpart string, pee
 // lookup missed, returning the FIRST that has it — flagged trust-but-verify.
 // Denials / offline / empty peers are skipped and recorded for drift tracking.
 // Returns ok=false when no peer has it (caller keeps the local miss result).
-func (m *toolMux) peerReadFallback(ctx context.Context, counterpart string, args json.RawMessage, peers []namedDisp) (string, bool) {
+func (m *Mux) peerReadFallback(ctx context.Context, counterpart string, args json.RawMessage, peers []namedDisp) (string, bool) {
 	for _, p := range peers {
 		res, isErr, err := p.disp.Dispatch(ctx, model.ToolCall{Name: counterpart, Arguments: args})
 		switch {

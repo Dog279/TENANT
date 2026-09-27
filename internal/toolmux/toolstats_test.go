@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -17,10 +17,10 @@ import (
 // the health pillar treats each differently.
 func TestToolStats_CountsThroughDispatch(t *testing.T) {
 	dir := t.TempDir()
-	mux := newToolMux()
-	mux.add("t", stubDispPlugin{})
-	stats := newToolStats(dir, "test")
-	mux.enableStats(stats)
+	mux := New()
+	mux.Add("t", stubDispPlugin{})
+	stats := NewStats(dir, "test")
+	mux.EnableStats(stats)
 
 	ctx := context.Background()
 	mux.Dispatch(ctx, model.ToolCall{Name: "ok_tool"})
@@ -70,12 +70,12 @@ func TestToolStats_CountsThroughDispatch(t *testing.T) {
 // answer "used in the last 30 days".
 func TestToolStats_PersistAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
-	s1 := newToolStats(dir, "test")
+	s1 := NewStats(dir, "test")
 	s1.record("a_tool", statOK)
 	s1.record("a_tool", statErr)
 	s1.flush()
 
-	s2 := newToolStats(dir, "test")
+	s2 := NewStats(dir, "test")
 	s2.record("a_tool", statOK)
 	s2.flush()
 
@@ -94,11 +94,11 @@ func TestToolStats_PersistAcrossRestart(t *testing.T) {
 
 // A nil stats set is a no-op - the eval harness relies on that.
 func TestToolStats_NilIsOff(t *testing.T) {
-	var s *toolStats
+	var s *Stats
 	s.record("x", statOK) // must not panic
 	s.noteError("x", "boom")
 	s.flush()
-	stop := s.startPersist(time.Minute)
+	stop := s.StartPersist(time.Minute)
 	stop()
 }
 
@@ -136,7 +136,7 @@ func TestToolStats_AbsorbsDeadSiblings(t *testing.T) {
 	freshData, _ := json.Marshal(fresh)
 	os.WriteFile(filepath.Join(dir, "toolstats-test-88888.json"), freshData, 0o644)
 
-	s := newToolStats(dir, "test")
+	s := NewStats(dir, "test")
 	s.record("a_tool", statOK)
 	s.flush()
 
@@ -165,7 +165,7 @@ func TestClassifyDispatch_CanceledIsNotError(t *testing.T) {
 	if got := classifyDispatch("", true, context.Canceled); got != statCanceled {
 		t.Fatalf("classify(context.Canceled) = %q, want canceled", got)
 	}
-	s := newToolStats(t.TempDir(), "test")
+	s := NewStats(t.TempDir(), "test")
 	s.record("slow_tool", statCanceled)
 	s.mu.Lock()
 	st := s.tools["slow_tool"]

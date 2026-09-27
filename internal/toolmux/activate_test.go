@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -20,16 +20,16 @@ func (f fakeActivatedPlugin) Dispatch(_ context.Context, call model.ToolCall) (s
 // HIGH the security review caught: a zero-spec stub's discovered tools must
 // become reachable + enabled on /enable, while never shadowing a local tool.
 func TestMaybeActivate_ZeroSpecStubBecomesReachable(t *testing.T) {
-	m := newToolMux()
+	m := New()
 
 	// A pre-registered local tool that the remote must NOT be able to shadow.
-	m.add("local", fakeActivatedPlugin{specs: []model.ToolSpec{{Name: "shared_tool"}}})
+	m.Add("local", fakeActivatedPlugin{specs: []model.ToolSpec{{Name: "shared_tool"}}})
 
 	// A zero-spec remote stub + an activator that "connects" and reveals tools,
 	// including one whose name collides with the local tool.
-	m.add("mcp:test", stubPlugin{hint: "enable to connect"})
+	m.Add("mcp:test", Stub{Hint: "enable to connect"})
 	m.SetEnabled("mcp:test", false)
-	m.registerActivator("mcp:test", func() (plugin, func(), error) {
+	m.RegisterActivator("mcp:test", func() (Plugin, func(), error) {
 		return fakeActivatedPlugin{specs: []model.ToolSpec{
 			{Name: "remote_read"},
 			{Name: "remote_write", Gated: true},
@@ -54,14 +54,14 @@ func TestMaybeActivate_ZeroSpecStubBecomesReachable(t *testing.T) {
 		if !e.enabled {
 			t.Errorf("%q should be enabled after /enable", name)
 		}
-		if e.plugin != "mcp:test" {
-			t.Errorf("%q owned by %q, want mcp:test", name, e.plugin)
+		if e.Plugin != "mcp:test" {
+			t.Errorf("%q owned by %q, want mcp:test", name, e.Plugin)
 		}
 	}
 
 	// Shadow protection: shared_tool still belongs to the local plugin.
-	if e := m.byName["shared_tool"]; e.plugin != "local" {
-		t.Errorf("remote shadowed a local tool: shared_tool owned by %q, want local", e.plugin)
+	if e := m.byName["shared_tool"]; e.Plugin != "local" {
+		t.Errorf("remote shadowed a local tool: shared_tool owned by %q, want local", e.Plugin)
 	}
 
 	// Dispatch routes to the activated remote dispatcher.

@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -13,17 +13,17 @@ import (
 // persist-across-restart contract.
 func TestToolMux_PersistAndRestore(t *testing.T) {
 	var hit string
-	build := func() *toolMux {
-		m := newToolMux()
-		m.add("wiki", fakePlugin{name: "wiki", lastHit: &hit}) // wiki_do
-		m.add("os", fakePlugin{name: "os", lastHit: &hit})     // os_do
+	build := func() *Mux {
+		m := New()
+		m.Add("wiki", fakePlugin{name: "wiki", lastHit: &hit}) // wiki_do
+		m.Add("os", fakePlugin{name: "os", lastHit: &hit})     // os_do
 		return m
 	}
 
 	// Session 1: capture saves, disable os_do.
 	m1 := build()
 	var saved map[string]bool
-	m1.setOnChange(func(snap map[string]bool) { saved = snap })
+	m1.SetOnChange(func(snap map[string]bool) { saved = snap })
 	if _, _, err := m1.SetEnabled("os_do", false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestToolMux_PersistAndRestore(t *testing.T) {
 	if _, ok := m2.Get("os_do"); !ok {
 		t.Fatal("os_do should start enabled by default")
 	}
-	notes := m2.restore(saved)
+	notes := m2.Restore(saved)
 	if _, ok := m2.Get("os_do"); ok {
 		t.Fatalf("os_do should be disabled after restore; notes=%v", notes)
 	}
@@ -49,15 +49,15 @@ func TestToolMux_PersistAndRestore(t *testing.T) {
 // activate it for real, so a persisted `/enable web` comes back live —
 // not stuck as a "needs setup" stub.
 func TestToolMux_RestoreActivatesStub(t *testing.T) {
-	m := newToolMux()
-	m.add("web", stubPlugin{specs: []model.ToolSpec{{Name: "web_do", Parameters: json.RawMessage(`{}`)}}, hint: "stub"})
+	m := New()
+	m.Add("web", Stub{Specs: []model.ToolSpec{{Name: "web_do", Parameters: json.RawMessage(`{}`)}}, Hint: "stub"})
 	m.SetEnabled("web", false)
 	var hit string
-	m.registerActivator("web", func() (plugin, func(), error) {
+	m.RegisterActivator("web", func() (Plugin, func(), error) {
 		return fakePlugin{name: "web", lastHit: &hit}, nil, nil
 	})
 
-	m.restore(map[string]bool{"web_do": true})
+	m.Restore(map[string]bool{"web_do": true})
 
 	if _, ok := m.Get("web_do"); !ok {
 		t.Fatal("web_do should be enabled after restore")
@@ -70,16 +70,16 @@ func TestToolMux_RestoreActivatesStub(t *testing.T) {
 // restore must not save during startup, and must ignore stale tool names.
 func TestToolMux_RestoreIsSilentAndIgnoresUnknown(t *testing.T) {
 	var hit string
-	m := newToolMux()
-	m.add("os", fakePlugin{name: "os", lastHit: &hit})
+	m := New()
+	m.Add("os", fakePlugin{name: "os", lastHit: &hit})
 	saveCount := 0
-	m.setOnChange(func(map[string]bool) { saveCount++ })
+	m.SetOnChange(func(map[string]bool) { saveCount++ })
 
 	// onChange IS set here (unlike production order) to prove restore's
 	// own SetEnabled calls still notify — production avoids re-saving by
 	// setting the hook AFTER restore. We just assert unknown names are
 	// skipped and known ones apply.
-	notes := m.restore(map[string]bool{"os_do": false, "ghost_do": true})
+	notes := m.Restore(map[string]bool{"os_do": false, "ghost_do": true})
 	if _, ok := m.Get("os_do"); ok {
 		t.Fatal("os_do should be disabled")
 	}
@@ -95,16 +95,16 @@ func TestToolMux_RestoreIsSilentAndIgnoresUnknown(t *testing.T) {
 // restart while settings.main.json still read false.
 func TestToolMux_RestoreSurvivesLateRegistration(t *testing.T) {
 	var hit string
-	m := newToolMux()
+	m := New()
 
 	// Operator disabled it last session; this session it isn't registered yet.
-	notes := m.restore(map[string]bool{"remote_do": false})
+	notes := m.Restore(map[string]bool{"remote_do": false})
 	if _, ok := m.Get("remote_do"); ok {
 		t.Fatalf("remote_do should not be registered yet; notes=%v", notes)
 	}
 
 	// The activator finally registers it, long after restore ran.
-	m.add("mcp:remote", fakePlugin{name: "remote", lastHit: &hit})
+	m.Add("mcp:remote", fakePlugin{name: "remote", lastHit: &hit})
 
 	if _, ok := m.Get("remote_do"); ok {
 		t.Fatal("late-registered tool must honor the restored disable, not add()'s enabled default")
@@ -117,9 +117,9 @@ func TestToolMux_RestoreSurvivesLateRegistration(t *testing.T) {
 // came back on every single bounce even though settings.json still read false.
 func TestToolMux_AdoptLiveMCPHonorsRestoredCuration(t *testing.T) {
 	var hit string
-	m := newToolMux()
+	m := New()
 
-	m.restore(map[string]bool{"remote_do": false})
+	m.Restore(map[string]bool{"remote_do": false})
 
 	// Reconnect goroutine adopts the live server well after restore ran.
 	m.adoptLiveMCP("mcp:remote", fakePlugin{name: "remote", lastHit: &hit}, nil)
@@ -134,12 +134,12 @@ func TestToolMux_AdoptLiveMCPHonorsRestoredCuration(t *testing.T) {
 // for them is erased from settings and cannot come back.
 func TestToolMux_SnapshotKeepsUnregisteredCuration(t *testing.T) {
 	var hit string
-	m := newToolMux()
-	m.add("os", fakePlugin{name: "os", lastHit: &hit})
-	m.restore(map[string]bool{"os_do": true, "remote_do": false})
+	m := New()
+	m.Add("os", fakePlugin{name: "os", lastHit: &hit})
+	m.Restore(map[string]bool{"os_do": true, "remote_do": false})
 
 	var saved map[string]bool
-	m.setOnChange(func(snap map[string]bool) { saved = snap })
+	m.SetOnChange(func(snap map[string]bool) { saved = snap })
 	if _, _, err := m.SetEnabled("os_do", false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
