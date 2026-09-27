@@ -169,12 +169,15 @@ func (m *model) handleSkills(arg string) (string, string) {
 	if len(fields) == 0 { // bare /skills → list
 		list := m.cfg.Skills.SkillList()
 		if len(list) == 0 {
-			return "no skills yet — the agent saves them via skill_save, or `/skills add <name> | <desc> | <recipe>`", ""
+			return "no skills yet — the agent saves them via skill_save, or `/skills add <name> | <desc> | <recipe>`, or `/skills import <dir>`", ""
 		}
-		on := 0
+		on, untrusted := 0, 0
 		for _, s := range list {
 			if s.Enabled {
 				on++
+			}
+			if !s.Trusted {
+				untrusted++
 			}
 		}
 		var p, st strings.Builder
@@ -186,12 +189,20 @@ func (m *model) handleSkills(arg string) (string, string) {
 			if s.Status != "live" {
 				status = " [" + s.Status + "]"
 			}
+			if !s.Trusted {
+				status += " [untrusted" + originNote(s.Origin) + "]"
+			}
 			p.WriteString(fmt.Sprintf("  %s %s%s — %s\n", mark(s.Enabled), s.Name, status, s.Description))
 			name := cName.Render(s.Name)
 			if !s.Enabled {
 				name = cDim.Render(s.Name)
 			}
 			st.WriteString("  " + markStyled(s.Enabled) + " " + name + cSys.Render(status) + cDim.Render(" — "+s.Description) + "\n")
+		}
+		if untrusted > 0 {
+			note := fmt.Sprintf("%d untrusted: not offered to the agent until you review and trust them (/skills show <name>, /skills trust <name>)", untrusted)
+			p.WriteString(note + "\n")
+			st.WriteString(cDim.Render(note) + "\n")
 		}
 		return strings.TrimRight(p.String(), "\n"), strings.TrimRight(st.String(), "\n")
 	}
@@ -370,9 +381,139 @@ func (m *model) handleSkills(arg string) (string, string) {
 			return "revert error: " + err.Error(), ""
 		}
 		return fmt.Sprintf("reverted %q to v%d (current state saved as new history entry)", name, version), ""
+	case "import":
+		// /skills import <dir|SKILL.md> [--trust] — an Agent Skills package
+		// (TEN-298). Untrusted unless --trust: not offered until trusted.
+		ifields := strings.Fields(rest)
+		trust := false
+		var path []string
+		for _, f := range ifields {
+			if f == "--trust" {
+				trust = true
+				continue
+			}
+			path = append(path, f)
+		}
+		if len(path) == 0 {
+			return "usage: /skills import <package dir or SKILL.md> [--trust]", ""
+		}
+		out, err := m.cfg.Skills.ImportSkill(strings.Join(path, " "), trust)
+		if err != nil {
+			return "import failed: " + err.Error(), ""
+		}
+		return out, ""
+	case "export":
+		// /skills export <name> <dir> — writes <dir>/<name>/SKILL.md.
+		efields := strings.Fields(rest)
+		if len(efields) < 2 {
+			return "usage: /skills export <name> <dir>   (writes <dir>/<name>/SKILL.md)", ""
+		}
+		dir, err := m.cfg.Skills.ExportSkill(efields[0], strings.Join(efields[1:], " "))
+		if err != nil {
+			return "export failed: " + err.Error(), ""
+		}
+		return "exported skill " + efields[0] + " to " + dir, ""
+	case "trust", "untrust", "distrust":
+		if rest == "" {
+			return "usage: /skills " + sub + " <name>", ""
+		}
+		trusted := sub == "trust"
+		ok, err := m.cfg.Skills.SetSkillTrust(rest, trusted)
+		if err != nil {
+			return "error: " + err.Error(), ""
+		}
+		if !ok {
+			return "no skill named " + rest, ""
+		}
+		if trusted {
+			return "trusted skill " + rest + ": the agent is offered it when it is relevant", ""
+		}
+		return "skill " + rest + " is untrusted: the agent is not offered it", ""
+	case "show":
+		if rest == "" {
+			return "usage: /skills show <name>", ""
+		}
+		d, err := m.cfg.Skills.SkillDetail(rest)
+		if err != nil {
+			return "error: " + err.Error(), ""
+		}
+		if d == nil {
+			return "no skill named " + rest, ""
+		}
+		return RenderSkillDetail(d), ""
 	default:
-		return "unknown /skills subcommand " + sub + " (add/enable/disable/forget/accept/seed/history/diff/revert)", ""
+		return "unknown /skills subcommand " + sub + " (add/enable/disable/forget/accept/seed/history/diff/revert/import/export/trust/untrust/show)", ""
 	}
+}
+
+// originNote names who wrote an untrusted skill, for the list.
+func originNote(origin string) string {
+	switch origin {
+	case "agent":
+		return ", saved by the agent"
+	case "import":
+		return ", imported"
+	case "":
+		return ""
+	}
+	return ", " + origin
+}
+
+// RenderSkillDetail is /skills show (and `tenant skills show`): everything the
+// operator needs to decide whether to trust a skill, instructions last.
+func RenderSkillDetail(d *SkillDetail) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "skill %s — %s\n", d.Name, d.Description)
+	trust := "untrusted"
+	if d.Trusted {
+		trust = "trusted"
+	}
+	on := "off"
+	if d.Enabled {
+		on = "on"
+	}
+	origin := d.Origin
+	if origin == "" {
+		origin = "unrecorded"
+	}
+	fmt.Fprintf(&b, "  trust: %s · status: %s · %s · origin: %s", trust, d.Status, on, origin)
+	if d.Version != "" {
+		fmt.Fprintf(&b, " · version %s", d.Version)
+	}
+	b.WriteString("\n")
+	if d.NotOffered != "" {
+		fmt.Fprintf(&b, "  not offered to the agent: %s\n", d.NotOffered)
+	} else {
+		b.WriteString("  offered to the agent when relevant\n")
+	}
+	if len(d.RequiresTools) > 0 {
+		fmt.Fprintf(&b, "  expects tools: %s (offered only where they are enabled; approves nothing)\n", strings.Join(d.RequiresTools, ", "))
+	}
+	if d.Source != "" {
+		fmt.Fprintf(&b, "  imported from %s", d.Source)
+		if !d.ImportedAt.IsZero() {
+			fmt.Fprintf(&b, " on %s", d.ImportedAt.Local().Format("2006-01-02 15:04"))
+		}
+		b.WriteString("\n")
+		if d.Digest != "" {
+			fmt.Fprintf(&b, "  SKILL.md sha256 %s\n", d.Digest)
+		}
+		if d.License != "" {
+			fmt.Fprintf(&b, "  license: %s\n", d.License)
+		}
+		if d.Compatibility != "" {
+			fmt.Fprintf(&b, "  compatibility: %s\n", d.Compatibility)
+		}
+		if len(d.Files) > 0 {
+			fmt.Fprintf(&b, "  not installed: %s\n", strings.Join(d.Files, ", "))
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(strings.TrimRight(d.Recipe, "\n"))
+	if !d.Trusted {
+		fmt.Fprintf(&b, "\n\n(review the instructions above; /skills trust %s to let the agent use them)", d.Name)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // parseSkillVersion accepts "N" or "vN" (case-insensitive) so the operator
@@ -555,7 +696,7 @@ func skillCommands() []*slashCommand {
 				{Syntax: "/skill clear <id> <field>", Desc: "remove a stored credential (auto-disables if required field cleared)"},
 			}},
 		{Names: []string{"/skills"}, Section: "skills", Run: slashSkills,
-			Summary: "the T4 skill library: list, add, manage, history, diff, revert, auto-accept",
+			Summary: "the T4 skill library: list, add, manage, trust, import/export, history, diff, revert, auto-accept",
 			Rows: []cmdreg.Row{
 				{Syntax: "/skills", Desc: "list reusable skill recipes"},
 				{Syntax: "/skills add <name> | <desc> | <recipe>", Desc: "save a skill"},
@@ -565,6 +706,10 @@ func skillCommands() []*slashCommand {
 				{Syntax: "/skills revert <name> vN", Desc: "restore a prior version (current state saved as new history entry)"},
 				{Syntax: "/skills auto [off|on|trusted]", Desc: "auto-accept induced skills (trusted = only while feedback is healthy)"},
 				{Syntax: "/skills seed gstack", Desc: "install Garry Tan's CEO/founder-mode skill bundle (5 skills)"},
+				{Syntax: "/skills show <name>", Desc: "one skill in full: trust, origin, package, required tools, instructions"},
+				{Syntax: "/skills trust|untrust <name>", Desc: "only a trusted skill is offered to the agent (what it saves, and imports, start untrusted)"},
+				{Syntax: "/skills import <dir|SKILL.md> [--trust]", Desc: "import an Agent Skills package (untrusted unless --trust)"},
+				{Syntax: "/skills export <name> <dir>", Desc: "write the skill as <dir>/<name>/SKILL.md"},
 			}},
 	}
 }

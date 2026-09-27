@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-09-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 78 |
-| Go files | 877 |
-| Test files | 420 |
-| Production Go LOC | 118,229 |
-| Test Go LOC | 80,194 |
+| Go packages | 79 |
+| Go files | 885 |
+| Test files | 424 |
+| Production Go LOC | 119,505 |
+| Test Go LOC | 81,227 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -142,6 +142,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
 | `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes |
 | `internal/lifecycle` | nothing in the module | leaf: the staged shutdown of a long-running command |
+| `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs` | `internal/fsperm` | any package may log through it |
@@ -604,28 +605,58 @@ TODO). **17 tests.** Now also runs `SkillInductionJob` (T4 — see below).
 ### 5.11a `internal/memory/skills` — T4 skill library (retrieved recipes)
 
 **Purpose:** the Voyager/Hermes procedural tier. A **skill** is a named,
-reusable *recipe* (description + steps) with an intent embedding. The
-agent retrieves the top-K relevant enabled skills by query similarity
-and they're injected into the system prompt (`agent.Config.Skills`,
-`SkillRetriever`), so the agent *follows* them with its existing tools
-— skills are knowledge, not separate executors. Storage: own SQLite
-(`skills.db`), brute-force cosine (small set), JSON embedding; no decay
-(skills earn their place via `success_count`). Lifecycle: `live` /
-`proposed` / `tombstoned`, plus an `enabled` flag (toggled via
-`/skills` in the TUI).
+reusable *recipe* (description + steps) with an intent embedding. The agent
+retrieves the top-K relevant skills by query similarity, and they are
+injected into the system prompt (`agent.Config.Skills`, `SkillRetriever`).
+The agent then *follows* them with its existing tools: skills are knowledge,
+not separate executors. Storage: its own SQLite (`skills.db`), brute-force
+cosine over a float32 BLOB (the legacy JSON column is kept in sync), no
+decay. Lifecycle: `live` / `proposed` / `tombstoned`, an `enabled` flag, and
+an append-only history that `/skills history`, `diff` and `revert` read.
 
-**Created two ways** (operator's call): **manually** — the agent saves
-one it worked out via the `skill_save` tool, or a human via `/skills
-add`; and by **induction** — `improve.SkillInductionJob` scans recent
-episodes for tool-call sequences that recurred across ≥N *successful*
-turns and proposes them (`status=proposed`, disabled) for human review
-(`/skills accept`). The review gate keeps the heuristic honest.
+**Trust (TEN-298).** A skill is injected under the operating rules of every
+later turn, so only an **eligible** skill is offered (`Skill.Eligible`): live,
+enabled and **trusted**, and, where the agent's registry is known, with every
+tool it requires enabled. Each skill records:
+- its trust (`trusted` / `untrusted`);
+- its origin: operator, agent, induction, seed or import;
+- a declared version;
+- its required tools;
+- for an import, its package provenance (source, SKILL.md digest, license,
+  compatibility, metadata, and the bundled files that were not installed).
 
-**Verified:** store CRUD + cosine ranking + enable/disable hides from
-retrieval + proposed→accept→tombstone lifecycle; induction proposes a
-repeated sequence + ignores single-tool/failed turns + is idempotent.
-8 tests. **Status:** T4 recipes + heuristic induction shipped; macro
-skills + success-weighted retrieval + LLM-named induction are v1.1.
+Trust changes are history entries (`trust` / `distrust`), and a revert
+restores the trust and required tools the version had. A write that widens
+a skill's required tools, without an explicit trust decision, makes it
+untrusted.
+
+**Created four ways:**
+- **By the operator:** `/skills add`. Trusted.
+- **By the agent:** the `skill_save` tool. Always **untrusted** until the
+  operator reviews and trusts it, including an edit of a trusted skill. The
+  agent may be writing what a page, an email or a relayed message told it to.
+- **By induction:** `improve.SkillInductionJob` proposes recurring successful
+  tool sequences (`status=proposed`) for `/skills accept`, or auto-accepts
+  them per `/skills auto`.
+- **By import:** an Agent Skills package (`SKILL.md`, `internal/skillpkg`)
+  with `/skills import` or `tenant skills import`. Untrusted unless `--trust`.
+
+A package's `allowed-tools` become the skill's required tools. They decide
+only where it is offered: nothing in the approval path reads them. Export
+(`/skills export`, `tenant skills export`) writes a standard package, with
+Tenant's version and origin in `metadata` and never the trust. The seeds
+(`/skills seed gstack`) are recorded as seeds.
+
+**Operator surfaces:** `/skills show|trust|untrust|import|export`, `tenant
+skills list|show|trust|untrust|import|export`, and the dashboard's Skills
+page, where untrusted skills wait for review with their instructions.
+
+**Verified:** store CRUD, ranking, enable/disable, lifecycle, history and
+revert; trust, widening, eligibility and the pre-TEN-298 migration; the
+package format against the specification; import, export, re-import and
+`skill_save` trust; retrieval's tool check; and a guard that no approval code
+reads a skill. **Status:** shipped. Macro skills, success-weighted retrieval
+and LLM-named induction are v1.1.
 
 ### 5.12 `internal/mcpserver` — MCP memory server
 

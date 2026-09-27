@@ -13,14 +13,27 @@ func (d dashSkill) Skills() []dashboard.SkillView {
 	in := d.c.SkillList()
 	out := make([]dashboard.SkillView, 0, len(in))
 	for _, sk := range in {
-		out = append(out, dashboard.SkillView{
+		v := dashboard.SkillView{
 			Name:        sk.Name,
 			Description: sk.Description,
 			Status:      sk.Status,
 			Enabled:     sk.Enabled,
-		})
+			Untrusted:   !sk.Trusted,
+			Origin:      sk.Origin,
+		}
+		// An untrusted skill waits for review: show what it would add.
+		if v.Untrusted {
+			if det, err := d.c.SkillDetail(sk.Name); err == nil && det != nil {
+				v.Recipe, v.Source, v.RequiresTools = det.Recipe, det.Source, det.RequiresTools
+			}
+		}
+		out = append(out, v)
 	}
 	return out
+}
+
+func (d dashSkill) SetTrust(name string, trusted bool) (bool, error) {
+	return d.c.SetSkillTrust(name, trusted)
 }
 
 func (d dashSkill) Accept(name string) (bool, error) { return d.c.AcceptSkill(name) }

@@ -467,7 +467,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		RouteActive:            routeRT.Active,
 		RouteSticky:            routeRT.Sticky,
 		LazyToolLoad:           c.lc.LazyTools,
-		Skills:                 skillRetriever{st: skillStore, agentID: c.agent},
+		Skills:                 skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:           sysPrompt,
 		Compactor:              compressor,
 		UserProfile:            prof,

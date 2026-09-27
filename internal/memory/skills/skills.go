@@ -52,6 +52,27 @@ type Skill struct {
 	Embedding    []float32
 	SourceRunIDs []string // provenance for induced proposals
 	CreatedAt    time.Time
+
+	// Trust, provenance and requirements (TEN-298; trust.go).
+
+	// Trust is TrustTrusted or TrustUntrusted: only a trusted skill is ever
+	// offered to the agent. On write, "" keeps the stored value, and a new
+	// skill is trusted, unless the write widens RequiresTools (see Upsert).
+	Trust string
+	// Origin is how the skill came to be: operator, agent, induction, seed or
+	// import. "" for a skill saved before TEN-298. On write, "" keeps it.
+	Origin string
+	// Version is the version an imported package declares; "" otherwise. On
+	// write, "" keeps it.
+	Version string
+	// RequiresTools lists the tools the skill expects to use: an imported
+	// package's allowed-tools. It decides only whether the skill is eligible
+	// where those tools are available; it never approves or enables a tool.
+	// On write, nil keeps the stored list.
+	RequiresTools []string
+	// Package is an imported skill's provenance; nil for a native skill. On
+	// write, nil keeps it.
+	Package *PackageInfo
 }
 
 const schema = `
@@ -68,7 +89,12 @@ CREATE TABLE IF NOT EXISTS skills (
     embedding     TEXT,
     embedding_blob BLOB,
     source_run_ids TEXT,
-    created_at    INTEGER NOT NULL
+    created_at    INTEGER NOT NULL,
+    trust         TEXT NOT NULL DEFAULT 'trusted',
+    origin        TEXT NOT NULL DEFAULT '',
+    version       TEXT NOT NULL DEFAULT '',
+    requires_tools TEXT,
+    package       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_skills_agent ON skills(agent_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_name ON skills(agent_id, name);
@@ -96,7 +122,9 @@ CREATE TABLE IF NOT EXISTS skill_history (
     prior_recipe       TEXT NOT NULL,
     prior_status       TEXT NOT NULL,
     change_source      TEXT NOT NULL DEFAULT 'operator',
-    changed_at         INTEGER NOT NULL
+    changed_at         INTEGER NOT NULL,
+    prior_trust        TEXT NOT NULL DEFAULT '',
+    prior_requires_tools TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_skill_history_skill ON skill_history(skill_id, version DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_history_lookup ON skill_history(agent_id, name, version DESC);`
@@ -143,6 +171,22 @@ func open(path string, prepare bool) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("skills: migrate source_run_ids: %w", err)
 	}
+	// TEN-298: trust, provenance and requirements. Rows from before it are
+	// trusted, as they always were.
+	for _, col := range []struct{ table, name, def string }{
+		{"skills", "trust", "TEXT NOT NULL DEFAULT 'trusted'"},
+		{"skills", "origin", "TEXT NOT NULL DEFAULT ''"},
+		{"skills", "version", "TEXT NOT NULL DEFAULT ''"},
+		{"skills", "requires_tools", "TEXT"},
+		{"skills", "package", "TEXT"},
+		{"skill_history", "prior_trust", "TEXT NOT NULL DEFAULT ''"},
+		{"skill_history", "prior_requires_tools", "TEXT"},
+	} {
+		if err := ensureColumn(db, col.table, col.name, col.def); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("skills: migrate %s.%s: %w", col.table, col.name, err)
+		}
+	}
 	// Idempotent upgrade for PRE-EXISTING DBs created before the BLOB column
 	// (TEN-283): CREATE TABLE IF NOT EXISTS won't add a column to an already-
 	// existing table.
@@ -154,7 +198,11 @@ func open(path string, prepare bool) (*Store, error) {
 }
 
 func ensureSkillColumn(db *sql.DB, column, definition string) error {
-	rows, err := db.Query(`PRAGMA table_info(skills)`)
+	return ensureColumn(db, "skills", column, definition)
+}
+
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return err
 	}
@@ -174,7 +222,7 @@ func ensureSkillColumn(db *sql.DB, column, definition string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = db.Exec(`ALTER TABLE skills ADD COLUMN ` + column + ` ` + definition)
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
 	return err
 }
 
@@ -237,15 +285,27 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 	// CURRENT row's id + content + the next version number. New skills
 	// (no prior row) skip this step — there's nothing to record.
 	var (
-		priorID   int64
-		priorDesc string
-		priorRcp  string
-		priorStat string
+		priorID    int64
+		priorDesc  string
+		priorRcp   string
+		priorStat  string
+		priorTrust string
+		priorReqs  sql.NullString
 	)
+	trust := sk.Trust
 	row := tx.QueryRowContext(ctx,
-		`SELECT id, description, recipe, status FROM skills WHERE agent_id=? AND name=?`,
+		`SELECT id, description, recipe, status, trust, requires_tools FROM skills WHERE agent_id=? AND name=?`,
 		sk.AgentID, sk.Name)
-	if scanErr := row.Scan(&priorID, &priorDesc, &priorRcp, &priorStat); scanErr == nil {
+	if scanErr := row.Scan(&priorID, &priorDesc, &priorRcp, &priorStat, &priorTrust, &priorReqs); scanErr == nil {
+		// A write that widens what the skill expects to use, with no explicit
+		// trust decision, makes it untrusted: a skill never gains reach
+		// without the operator seeing it (TEN-298).
+		if trust == "" {
+			trust = priorTrust
+			if sk.RequiresTools != nil && widens(decodeTools(priorReqs), sk.RequiresTools) {
+				trust = TrustUntrusted
+			}
+		}
 		// Existing skill — version = (max(skill_history.version) for this skill) + 1.
 		// COALESCE handles "no prior history" (first edit).
 		var nextVersion int
@@ -254,11 +314,16 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 			priorID).Scan(&nextVersion)
 		if _, herr := tx.ExecContext(ctx, `
             INSERT INTO skill_history
-                (skill_id, agent_id, name, version, prior_description, prior_recipe, prior_status, change_source, changed_at)
-            VALUES (?,?,?,?,?,?,?,?,?)`,
-			priorID, sk.AgentID, sk.Name, nextVersion, priorDesc, priorRcp, priorStat, changeSource, time.Now().UTC().Unix()); herr != nil {
+                (skill_id, agent_id, name, version, prior_description, prior_recipe, prior_status, change_source, changed_at, prior_trust, prior_requires_tools)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			priorID, sk.AgentID, sk.Name, nextVersion, priorDesc, priorRcp, priorStat, changeSource, time.Now().UTC().Unix(), priorTrust, priorReqs); herr != nil {
 			return 0, fmt.Errorf("skills: history snapshot: %w", herr)
 		}
+	} else if trust == "" {
+		trust = TrustTrusted
+	}
+	if trust != TrustTrusted && trust != TrustUntrusted {
+		return 0, fmt.Errorf("skills: unknown trust %q", trust)
 	}
 
 	// Write BOTH the new float32 BLOB (the going-forward canonical form,
@@ -267,15 +332,23 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 	// still sees current vectors — backward- AND forward-compatible.
 	emb, _ := json.Marshal(sk.Embedding)
 	sourceRuns, _ := json.Marshal(sk.SourceRunIDs)
+	requires, _ := json.Marshal(sk.RequiresTools)
+	pkg, _ := json.Marshal(sk.Package)
 	res, err := tx.ExecContext(ctx, `
-        INSERT INTO skills (agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,embedding_blob,source_run_ids,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO skills (agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,embedding_blob,source_run_ids,created_at,trust,origin,version,requires_tools,package)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(agent_id,name) DO UPDATE SET
             description=excluded.description, recipe=excluded.recipe, status=excluded.status,
             embedder_id=excluded.embedder_id, embedding=excluded.embedding, embedding_blob=excluded.embedding_blob,
-            source_run_ids=CASE WHEN excluded.source_run_ids='null' THEN skills.source_run_ids ELSE excluded.source_run_ids END`,
+            source_run_ids=CASE WHEN excluded.source_run_ids='null' THEN skills.source_run_ids ELSE excluded.source_run_ids END,
+            trust=excluded.trust,
+            origin=CASE WHEN excluded.origin='' THEN skills.origin ELSE excluded.origin END,
+            version=CASE WHEN excluded.version='' THEN skills.version ELSE excluded.version END,
+            requires_tools=CASE WHEN excluded.requires_tools='null' THEN skills.requires_tools ELSE excluded.requires_tools END,
+            package=CASE WHEN excluded.package='null' THEN skills.package ELSE excluded.package END`,
 		sk.AgentID, sk.Name, sk.Description, sk.Recipe, sk.Status, boolToInt(sk.Enabled || sk.Status == StatusLive),
-		sk.SuccessCount, sk.EmbedderID, string(emb), encodeEmbedding(sk.Embedding), string(sourceRuns), sk.CreatedAt.Unix())
+		sk.SuccessCount, sk.EmbedderID, string(emb), encodeEmbedding(sk.Embedding), string(sourceRuns), sk.CreatedAt.Unix(),
+		trust, sk.Origin, sk.Version, string(requires), string(pkg))
 	if err != nil {
 		return 0, fmt.Errorf("skills: upsert: %w", err)
 	}
@@ -293,15 +366,16 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 	if priorID == 0 && changeSource == "auto-accept" {
 		if _, herr := tx.ExecContext(ctx, `
             INSERT INTO skill_history
-                (skill_id, agent_id, name, version, prior_description, prior_recipe, prior_status, change_source, changed_at)
-            VALUES (?,?,?,?,?,?,?,?,?)`,
-			id, sk.AgentID, sk.Name, 1, sk.Description, sk.Recipe, sk.Status, changeSource, time.Now().UTC().Unix()); herr != nil {
+                (skill_id, agent_id, name, version, prior_description, prior_recipe, prior_status, change_source, changed_at, prior_trust, prior_requires_tools)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			id, sk.AgentID, sk.Name, 1, sk.Description, sk.Recipe, sk.Status, changeSource, time.Now().UTC().Unix(), trust, string(requires)); herr != nil {
 			return 0, fmt.Errorf("skills: genesis history: %w", herr)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("skills: commit: %w", err)
 	}
+	sk.Trust = trust
 	return id, nil
 }
 
@@ -406,11 +480,15 @@ type Query struct {
 	Embedding []float32
 	Keywords  []string
 	K         int
+	// Available, when set, reports whether a tool a skill requires is
+	// available here; a skill that needs a missing one is not returned.
+	Available func(tool string) bool
 }
 
-// Search returns the top-K enabled, live skills by cosine similarity to
-// the query embedding, with a small lexical boost. Brute force — fine
-// at skill-library scale.
+// Search returns the top-K eligible skills (live, enabled and trusted, with
+// their required tools available; see Skill.Eligible) by cosine similarity to
+// the query embedding, with a small lexical boost. Brute force — fine at
+// skill-library scale.
 func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 	if q.K <= 0 {
 		q.K = 3
@@ -422,6 +500,9 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 	kw := strings.ToLower(strings.Join(q.Keywords, " "))
 	hits := make([]Hit, 0, len(all))
 	for _, sk := range all {
+		if ok, _ := sk.Eligible(q.Available); !ok {
+			continue // an untrusted skill never reaches the prompt (TEN-298)
+		}
 		score := cosine.Similarity(q.Embedding, sk.Embedding)
 		if kw != "" && (strings.Contains(strings.ToLower(sk.Name), kw) || strings.Contains(strings.ToLower(sk.Description), kw)) {
 			score += 0.05
@@ -502,7 +583,7 @@ func (s *Store) UpdateEmbedding(ctx context.Context, id int64, vec []float32, em
 
 // --- internals ---
 
-const selectCols = `SELECT id,agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,embedding_blob,source_run_ids,created_at FROM skills`
+const selectCols = `SELECT id,agent_id,name,description,recipe,status,enabled,success_count,embedder_id,embedding,embedding_blob,source_run_ids,created_at,trust,origin,version,requires_tools,package FROM skills`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -511,10 +592,11 @@ type rowScanner interface {
 func scan(row rowScanner) (*Skill, error) {
 	var sk Skill
 	var enabled, created int64
-	var embJSON, embID, sourceRuns sql.NullString
+	var embJSON, embID, sourceRuns, requires, pkg sql.NullString
 	var embBlob []byte
 	if err := row.Scan(&sk.ID, &sk.AgentID, &sk.Name, &sk.Description, &sk.Recipe, &sk.Status,
-		&enabled, &sk.SuccessCount, &embID, &embJSON, &embBlob, &sourceRuns, &created); err != nil {
+		&enabled, &sk.SuccessCount, &embID, &embJSON, &embBlob, &sourceRuns, &created,
+		&sk.Trust, &sk.Origin, &sk.Version, &requires, &pkg); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("skills: not found")
 		}
@@ -534,6 +616,13 @@ func scan(row rowScanner) (*Skill, error) {
 	}
 	if sourceRuns.Valid && sourceRuns.String != "" {
 		_ = json.Unmarshal([]byte(sourceRuns.String), &sk.SourceRunIDs)
+	}
+	sk.RequiresTools = decodeTools(requires)
+	if pkg.Valid && pkg.String != "" && pkg.String != "null" {
+		var info PackageInfo
+		if json.Unmarshal([]byte(pkg.String), &info) == nil {
+			sk.Package = &info
+		}
 	}
 	return &sk, nil
 }
@@ -588,8 +677,12 @@ type HistoryEntry struct {
 	PriorDescription string
 	PriorRecipe      string
 	PriorStatus      string
-	ChangeSource     string    // "operator" | "induction" | "revert" | "seed"
+	ChangeSource     string    // "operator" | "induction" | "revert" | "seed" | "import" | "trust" | "distrust"
 	ChangedAt        time.Time // when the OVERWRITE happened
+	// PriorTrust and PriorRequiresTools are the trust and required tools the
+	// snapshot had; "" and nil for a snapshot taken before TEN-298.
+	PriorTrust         string
+	PriorRequiresTools []string
 }
 
 // History returns every snapshot of (agent, name), newest first. Returns
@@ -597,7 +690,7 @@ type HistoryEntry struct {
 // edited, or an unknown name).
 func (s *Store) History(ctx context.Context, agentID, name string) ([]HistoryEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT version, prior_description, prior_recipe, prior_status, change_source, changed_at
+        SELECT version, prior_description, prior_recipe, prior_status, change_source, changed_at, prior_trust, prior_requires_tools
         FROM skill_history
         WHERE agent_id=? AND name=?
         ORDER BY version DESC`, agentID, name)
@@ -608,13 +701,15 @@ func (s *Store) History(ctx context.Context, agentID, name string) ([]HistoryEnt
 	var out []HistoryEntry
 	for rows.Next() {
 		var (
-			h  HistoryEntry
-			ts int64
+			h    HistoryEntry
+			ts   int64
+			reqs sql.NullString
 		)
-		if err := rows.Scan(&h.Version, &h.PriorDescription, &h.PriorRecipe, &h.PriorStatus, &h.ChangeSource, &ts); err != nil {
+		if err := rows.Scan(&h.Version, &h.PriorDescription, &h.PriorRecipe, &h.PriorStatus, &h.ChangeSource, &ts, &h.PriorTrust, &reqs); err != nil {
 			return nil, fmt.Errorf("skills: history scan: %w", err)
 		}
 		h.ChangedAt = time.Unix(ts, 0).UTC()
+		h.PriorRequiresTools = decodeTools(reqs)
 		out = append(out, h)
 	}
 	return out, rows.Err()
@@ -625,20 +720,22 @@ func (s *Store) History(ctx context.Context, agentID, name string) ([]HistoryEnt
 // /skills revert reads from). Returns (nil, nil) when not found.
 func (s *Store) GetHistoryEntry(ctx context.Context, agentID, name string, version int) (*HistoryEntry, error) {
 	row := s.db.QueryRowContext(ctx, `
-        SELECT version, prior_description, prior_recipe, prior_status, change_source, changed_at
+        SELECT version, prior_description, prior_recipe, prior_status, change_source, changed_at, prior_trust, prior_requires_tools
         FROM skill_history
         WHERE agent_id=? AND name=? AND version=?`, agentID, name, version)
 	var (
-		h  HistoryEntry
-		ts int64
+		h    HistoryEntry
+		ts   int64
+		reqs sql.NullString
 	)
-	if err := row.Scan(&h.Version, &h.PriorDescription, &h.PriorRecipe, &h.PriorStatus, &h.ChangeSource, &ts); err != nil {
+	if err := row.Scan(&h.Version, &h.PriorDescription, &h.PriorRecipe, &h.PriorStatus, &h.ChangeSource, &ts, &h.PriorTrust, &reqs); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("skills: get history: %w", err)
 	}
 	h.ChangedAt = time.Unix(ts, 0).UTC()
+	h.PriorRequiresTools = decodeTools(reqs)
 	return &h, nil
 }
 
@@ -671,6 +768,15 @@ func (s *Store) RevertTo(ctx context.Context, agentID, name string, version int)
 	cur.Description = entry.PriorDescription
 	cur.Recipe = entry.PriorRecipe
 	cur.Status = entry.PriorStatus
+	// The version comes back with the trust and required tools it had, so a
+	// restored package is exactly what the operator trusted (or did not).
+	// Snapshots from before TEN-298 carry neither: the current ones stay.
+	if entry.PriorTrust != "" {
+		cur.Trust = entry.PriorTrust
+	}
+	if entry.PriorRequiresTools != nil {
+		cur.RequiresTools = entry.PriorRequiresTools
+	}
 	if _, err := s.UpsertWithSource(ctx, cur, "revert"); err != nil {
 		return nil, err
 	}

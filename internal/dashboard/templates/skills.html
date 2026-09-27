@@ -29,6 +29,32 @@
 </div>
 {{end}}
 
+{{if .Untrusted}}
+<div class="card">
+  <div class="card-head">Waiting for your review ({{len .Untrusted}})</div>
+  <div class="dim" style="margin-bottom:12px">Your agent won't use these until you trust them. Something it read could have told it to save one, and a skill becomes part of the rules it follows, so read the instructions first.</div>
+  {{range .Untrusted}}
+  <div class="soul-row" id="skill-{{.Name}}">
+    <div>
+      <div class="nm">{{.Name}} <span class="dim">({{if eq .Origin "agent"}}saved by your agent{{else if eq .Origin "import"}}imported{{if .Source}} from {{.Source}}{{end}}{{else if .Origin}}{{.Origin}}{{else}}changed{{end}})</span></div>
+      <div class="dim">{{.Description}}</div>
+      {{if .RequiresTools}}<div class="dim">Expects tools: {{range $i, $t := .RequiresTools}}{{if $i}}, {{end}}{{$t}}{{end}} — used only where they're on; this approves nothing.</div>{{end}}
+      <details><summary class="dim">Instructions</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:.5rem 0 0">{{.Recipe}}</pre></details>
+    </div>
+    <div class="cronactions">
+      <form method="POST" action="/skills/{{.Name}}/trust" class="inline">
+        <input type="hidden" name="trusted" value="true">
+        <button type="submit" class="btn on sm">Trust</button>
+      </form>
+      <form method="POST" action="/skills/{{.Name}}/forget" class="inline">
+        <button type="submit" class="btn sm danger">Remove</button>
+      </form>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 <div class="card">
   <div class="card-head">What my agent has learned ({{len .Live}})</div>
   {{range .Live}}
@@ -42,13 +68,17 @@
         <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
         <button type="submit" class="btn sm">{{if .Enabled}}Turn off{{else}}Turn on{{end}}</button>
       </form>
+      <form method="POST" action="/skills/{{.Name}}/trust" class="inline">
+        <input type="hidden" name="trusted" value="false">
+        <button type="submit" class="btn sm">Stop trusting</button>
+      </form>
       <form method="POST" action="/skills/{{.Name}}/forget" class="inline">
         <button type="submit" class="btn sm danger">Remove</button>
       </form>
     </div>
   </div>
   {{else}}
-  <div class="dim">No learned skills yet. As your agent works, it proposes skills here for you to accept.</div>
+  <div class="dim">No learned skills yet. As your agent works, it proposes skills here for you to accept.
   {{end}}
 </div>
 

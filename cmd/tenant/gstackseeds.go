@@ -12,18 +12,22 @@ import (
 	"tenant/internal/model"
 )
 
-// cmdSkills dispatches `tenant skills [seed|auto]`.
+const skillsUsage = "usage: tenant skills <list | show <name> | import <dir> [--trust] | export <name> <dir> | trust <name> | untrust <name> | seed <bundle> | auto [off|on|trusted]>"
+
+// cmdSkills dispatches `tenant skills <subcommand>`.
 func cmdSkills(ctx context.Context, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: tenant skills <seed <bundle> | auto [off|on|trusted]>")
+		return fmt.Errorf("%s", skillsUsage)
 	}
-	switch strings.ToLower(args[0]) {
+	switch sub := strings.ToLower(args[0]); sub {
 	case "seed":
 		return cmdSkillsSeed(ctx, args[1:])
 	case "auto":
 		return cmdSkillsAuto(ctx, args[1:])
+	case "list", "show", "import", "export", "trust", "untrust":
+		return cmdSkillsLibrary(ctx, sub, args[1:])
 	default:
-		return fmt.Errorf("usage: tenant skills <seed <bundle> | auto [off|on|trusted]>")
+		return fmt.Errorf("%s", skillsUsage)
 	}
 }
 
@@ -116,7 +120,7 @@ func cmdSkillsSeed(ctx context.Context, args []string) error {
 	emb, _, _ := router.EmbedderForRole(ctx, model.RoleEmbedder)
 
 	sc := skillControl{st: st, emb: emb, agentID: c.agent}
-	n, err := installSkillSeeds(bundle, sc)
+	n, err := installSkillSeeds(bundle, seedAdder{sc})
 	if err != nil {
 		// Partial success is real here — keep going past per-skill errors.
 		fmt.Printf("seeded %d skill(s) from %q (with errors: %v)\n", n, bundle, err)
@@ -131,6 +135,14 @@ func cmdSkillsSeed(ctx context.Context, args []string) error {
 // stub satisfy it without dragging the full SkillControl surface.
 type skillAdder interface {
 	AddSkill(name, description, recipe string) error
+}
+
+// seedAdder installs through skillControl but records each skill as a seed
+// (origin and history "seed"), not as one the operator wrote (TEN-298).
+type seedAdder struct{ c skillControl }
+
+func (a seedAdder) AddSkill(name, description, recipe string) error {
+	return a.c.addSkill(name, description, recipe, skills.OriginSeed)
 }
 
 // installSkillSeeds is the bundle installer behind `/skills seed <bundle>`
