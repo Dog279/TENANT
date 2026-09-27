@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -138,6 +139,9 @@ func (g *Group) run(stage Stage, s step) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%s/%s: panic: %v", stage, s.name, r)
+			if g.log != nil {
+				g.log.Error("shutdown step panicked", "stage", stage.String(), "step", s.name, "panic", r, "stack", string(debug.Stack()))
+			}
 		}
 		if g.log != nil {
 			if err != nil {

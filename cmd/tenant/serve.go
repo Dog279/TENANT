@@ -104,6 +104,10 @@ func cmdServe(ctx context.Context, args []string) error {
 	// built; an early return runs whatever is registered so far.
 	life := lifecycle.New(log.With("source", "shutdown"))
 	defer life.Shutdown()
+	// Crash capture and the boot record (TEN-365): its clean stop is the
+	// first Release step registered, so it runs last.
+	onPanic := startBootRecord(hub, life, "serve")
+	defer onPanic()
 
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) {

@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/skills"
 	"tenant/internal/memory/soul"
@@ -263,6 +265,7 @@ func (r *TeamRuntime) routerForProfile(role string) (*model.Router, *agentProfil
 func spawnRoleSafely(fn func(string) (model.Role, bool), task string) (role model.Role, ok bool) {
 	defer func() {
 		if v := recover(); v != nil {
+			logs.For("subagents").Error("team: spawn classifier panicked; using the planner role", "panic", v, "stack", string(debug.Stack()))
 			role, ok = "", false
 		}
 	}()

@@ -20,7 +20,8 @@ one folder is one tab.
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
 ├── route/ memory/ mcp/ peering/ dashboard/
 ├── sandbox/                      ← the execution sandbox: confined runs, refusals, escalations, dry-run would-be refusals
-├── system/                       ← setup, health, settings, the status feed lines (was tui.log)
+├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
+├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
 ```
 
@@ -95,6 +96,43 @@ Some things are recorded elsewhere or not at all:
   a command ends up in this log.
 - On Linux and Windows the backends do not attribute refusals yet. A denied
   access there shows as `ran in the sandbox` with a non-zero `exit`.
+
+## Crashes and unexpected exits
+
+Serve and the TUI (never a one-shot command, so a Ctrl-C is never a crash)
+keep two folders under the root. They hold records, not logs, so they never
+become tabs, and backups leave them out:
+
+- `boots/<boot_id>.lock` and `boots/<boot_id>.json`: the process's boot lock,
+  held for its lifetime, and its record (pid, role, version, host, start time).
+  An orderly stop marks the record clean.
+- `crash/<boot_id>.txt`: the Go runtime's fatal output with every goroutine's
+  stack (`debug.SetCrashOutput`, `SetTraceback("all")`). It still goes to
+  stderr as well, but stderr is lost under the Windows task and drawn over the
+  TUI's screen. An orderly stop deletes the file if it is empty.
+
+At start, a record whose lock can be taken belongs to a process that has
+exited. If it was not marked clean, it is filed once as a critical `system`
+event and its files are cleared:
+
+| Message | When |
+|---|---|
+| `the previous run crashed: <first line of the dump>` | the runtime left its fatal output. The dump moves to `system/crash-<boot_id>.txt` (listed with the tab's files). The event carries its path in `file` and its head in `stack` |
+| `the previous run ended unexpectedly` | no dump: the process was killed, lost power or called `os.Exit` |
+
+Both carry `boot`, `pid`, `role`, `version`, `host` and `started`. v1 files
+have no CRITICAL level, so these lines read `ERROR` and carry
+`severity=critical`. Only the lock decides, never how old a record is, so a
+live process is never reported (for example after a laptop wakes). The check
+runs at start only: a serve crash while the TUI is open is reported when either
+starts next.
+
+A panic that a guard contains is logged with its stack. A tool that panics
+fails only its own call: the model gets an error result, and the log book a
+critical `agent: tool panicked` record. The other guards (routing, the spawn
+classifier, shutdown steps) log at ERROR. The `route` and `eval` guards log
+through slog's default logger, which reaches stderr until serve and the TUI
+point it at the log book.
 
 ## The dashboard
 

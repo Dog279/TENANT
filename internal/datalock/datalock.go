@@ -31,14 +31,18 @@ func Path(dataDir string) string { return filepath.Join(dataDir, FileName) }
 
 // Shared takes the lock that ordinary Tenant processes hold. It fails with
 // ErrBusy only while a restore holds the lock exclusively.
-func Shared(dataDir string) (*Lock, error) { return acquire(dataDir, false) }
+func Shared(dataDir string) (*Lock, error) { return acquire(Path(dataDir), false) }
 
 // Exclusive takes the lock a restore needs. It fails with ErrBusy while any
 // other Tenant process holds it, shared or exclusive.
-func Exclusive(dataDir string) (*Lock, error) { return acquire(dataDir, true) }
+func Exclusive(dataDir string) (*Lock, error) { return acquire(Path(dataDir), true) }
 
-func acquire(dataDir string, exclusive bool) (*Lock, error) {
-	path := Path(dataDir)
+// ExclusiveFile takes an exclusive lock on the file at path, creating it. Serve
+// and the TUI each hold one as their boot lock (TEN-365): a boot lock that can
+// be taken belongs to a process that has exited.
+func ExclusiveFile(path string) (*Lock, error) { return acquire(path, true) }
+
+func acquire(path string, exclusive bool) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("datalock: %w", err)
 	}

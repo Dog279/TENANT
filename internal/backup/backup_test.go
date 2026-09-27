@@ -462,3 +462,17 @@ func TestCreateWhileAStoreIsOpenForWriting(t *testing.T) {
 		t.Fatalf("live store broken by the backup: %v", err)
 	}
 }
+
+// Boot records and crash files belong to the processes running at backup
+// time: restored, they would read as processes that died (TEN-365). A crash
+// dump already filed into the system folder is an ordinary log.
+func TestBootRecordsAreNotBackedUp(t *testing.T) {
+	for _, rel := range []string{"logs/boots/b1.json", "logs/boots/b1.lock", "logs/crash/b1.txt"} {
+		if _, skip := builtinSkip(RootData, rel, filepath.Base(rel)); !skip {
+			t.Errorf("%s is backed up", rel)
+		}
+	}
+	if _, skip := builtinSkip(RootData, "logs/system/crash-b1.txt", "crash-b1.txt"); skip {
+		t.Error("a filed crash dump is left out of the backup")
+	}
+}

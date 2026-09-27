@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -1045,7 +1046,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		for _, call := range validCalls {
 			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, Args: string(call.Arguments)})
 		}
-		batchResults := dispatchBatch(ctx, validCalls, callFlows, parallel, a.cfg.Dispatcher)
+		batchResults := dispatchBatch(ctx, validCalls, callFlows, parallel, a.cfg.Dispatcher, a.log)
 		for _, br := range batchResults {
 			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
 				br.Labels = append([]model.InfoFlowLabel(nil), spec.ResultLabels...)
@@ -1846,7 +1847,7 @@ func (a *Agent) routeActive(req RouteRequest) (active bool) {
 	}
 	defer func() {
 		if v := recover(); v != nil {
-			a.log.Warn("agent: route active gate panicked; using shadow", "agent", a.cfg.AgentID, "panic", v)
+			a.log.Error("agent: route active gate panicked; using shadow", "agent", a.cfg.AgentID, "panic", v, "stack", string(debug.Stack()))
 			active = false
 		}
 	}()
@@ -1859,7 +1860,7 @@ func (a *Agent) routeSticky(req RouteRequest) (sticky bool) {
 	}
 	defer func() {
 		if v := recover(); v != nil {
-			a.log.Warn("agent: route sticky gate panicked; not pinning", "agent", a.cfg.AgentID, "panic", v)
+			a.log.Error("agent: route sticky gate panicked; not pinning", "agent", a.cfg.AgentID, "panic", v, "stack", string(debug.Stack()))
 			sticky = false
 		}
 	}()
@@ -1927,7 +1928,8 @@ func resolveRoutedRole(parent context.Context, router *model.Router, obs RouteOb
 		got := routedRoleResult{}
 		defer func() {
 			if v := recover(); v != nil {
-				got.err = fmt.Errorf("routed role resolution panic: %v", v)
+				// The caller only logs this error, so it carries the stack.
+				got.err = fmt.Errorf("routed role resolution panic: %v\n%s", v, debug.Stack())
 			}
 			got.at = time.Now()
 			result <- got
@@ -1974,7 +1976,7 @@ func (a *Agent) runRouteHook(ctx context.Context, req RouteRequest, state *turnR
 	var obs RouteObservation
 	defer func() {
 		if v := recover(); v != nil {
-			a.log.Warn("agent: route hook panicked; ignored", "agent", a.cfg.AgentID, "panic", v)
+			a.log.Error("agent: route hook panicked; ignored", "agent", a.cfg.AgentID, "panic", v, "stack", string(debug.Stack()))
 		}
 		state.publish(obs)
 		if strings.TrimSpace(obs.Text) != "" {

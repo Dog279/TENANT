@@ -329,6 +329,10 @@ func builtinSkip(root, rel string, name string) (string, bool) {
 	switch {
 	case root == RootData && rel == datalock.FileName:
 		return "", true
+	case root == RootData && (path.Dir(rel) == "logs/boots" || path.Dir(rel) == "logs/crash"):
+		// Boot records and crash files of the processes running at backup
+		// time: restored, they would read as processes that died (TEN-365).
+		return "", true
 	case strings.HasPrefix(name, stagingPrefix):
 		return "", true
 	case strings.HasSuffix(name, ".tmp"), strings.HasSuffix(name, ".partial"),
