@@ -366,9 +366,9 @@ have no CRITICAL level, so these lines read `ERROR` and carry
 live process is never reported (for example after a laptop wakes), and a
 crash file is read only once its process's lock is free. The check runs at
 start and every minute in whichever process does the housekeeping, so a serve
-crash while the TUI is open is reported within a minute. With the store off
-(`"store": false`) or unavailable there are no boot records: an unexpected
-exit is not reported, and a crash dump goes to stderr only.
+crash while the TUI is open is reported within a minute. With the store
+unavailable there are no boot records: an unexpected exit is not reported,
+and a crash dump goes to stderr only.
 
 A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
@@ -535,8 +535,8 @@ defer act.End(&err)                               // End(&err, "status", code) a
   written as `ERROR` with `severity=critical`, and a sensitive field as
   `«sensitive»`, never its value. The store keeps the typed values.
 - `Audit` is for records that must not be lost: it returns once the record is
-  committed to `logbook.db`, with the commit's error. With the store off it
-  returns once the line is written.
+  committed to `logbook.db`, with the commit's error. Without the store (it
+  did not open) it returns once the line is written.
 - **Plugins** each write their own log, `plugin.<id>`, under Integrations ›
   Plugins: started or could not start, the operator's enable and disable,
   token refreshes, and their API's rate limits, refused credentials and
