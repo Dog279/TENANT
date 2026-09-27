@@ -63,6 +63,42 @@ func (seatbelt) Probe(context.Context) Capabilities {
 	}
 }
 
+// Start runs argv under the same Seatbelt profile as Run, its memory and CPU
+// capped by the shell that execs it (posixLimitArgv). It leads its own
+// process group, reaped once it exits.
+func (seatbelt) Start(ctx context.Context, argv []string, pol Policy) (*Process, error) {
+	scratch, err := os.MkdirTemp("", "tenant-sbx-")
+	if err != nil {
+		return nil, err
+	}
+	profPath := filepath.Join(scratch, "profile.sb")
+	if err := os.WriteFile(profPath, []byte(seatbeltProfile(pol, scratch)), 0o600); err != nil {
+		os.RemoveAll(scratch)
+		return nil, err
+	}
+	argv = posixLimitArgv(argv, pol.Limits)
+	c := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", append([]string{"-f", profPath}, argv...)...)
+	if pol.WorkDir != "" {
+		c.Dir = pol.WorkDir
+	}
+	env := pol.Env.materialize(os.Environ())
+	if envScoped(pol.Env) && pol.WorkDir != "" {
+		env = setEnv(env, "HOME", pol.WorkDir)
+		env = setEnv(env, "TMPDIR", pol.WorkDir)
+	}
+	c.Env = env
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
+	var pid int
+	release := func() {
+		if pid != 0 {
+			reapGroup(pid)
+		}
+		os.RemoveAll(scratch)
+	}
+	return startProcess(c, func(p int) error { pid = p; return nil }, release)
+}
+
 func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
 	if pol.Limits.Wall > 0 {
 		var cancel context.CancelFunc

@@ -1,0 +1,261 @@
+package main
+
+// mcpstdio.go runs the local MCP servers config.json lists under mcp_servers
+// (TEN-318). A server is third-party code, so it never runs in Tenant's
+// process: it runs out of process under the execution sandbox — the
+// restricted backend unless the operator names another — and speaks MCP over
+// its stdin and stdout. Its tools are gated like a remote connector's (trust,
+// tool rules, the approval gate), and `tenant permissions effective` shows
+// where it runs and what bounds it.
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"tenant/internal/config"
+	"tenant/internal/plugins/mcpremote"
+	"tenant/internal/sandbox"
+	"tenant/internal/toolmux"
+)
+
+// mcpServerNames are the names a local server may have: its connector label
+// is mcp:<name>.
+var mcpServerNames = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// mcpServerBackends are the sandbox backends a local server may run under.
+var mcpServerBackends = []string{"restricted", "jobobject", "host"}
+
+// mcpServerPlan is a validated local server: its backend and its boundary.
+type mcpServerPlan struct {
+	Server  config.MCPServer
+	Label   string
+	Backend string
+	Policy  sandbox.Policy
+}
+
+// planMCPServer validates a server and builds its sandbox policy. The
+// defaults are those of a confined process:
+//   - the restricted backend;
+//   - no network;
+//   - a work dir of its own, <data>/mcp/<name>;
+//   - Tenant's config and data dirs, its binary and (confined) the local
+//     credential stores denied;
+//   - a scrubbed environment plus what env_pass and env_set add.
+func planMCPServer(s config.MCPServer, cfgDir, dataDir string) (mcpServerPlan, error) {
+	if !mcpServerNames.MatchString(s.Name) {
+		return mcpServerPlan{}, fmt.Errorf("mcp_servers: name %q must be letters, digits, '-' or '_' (at most 64)", s.Name)
+	}
+	where := "mcp_servers." + s.Name
+	if len(s.Command) == 0 || strings.TrimSpace(s.Command[0]) == "" {
+		return mcpServerPlan{}, fmt.Errorf("%s: command is required", where)
+	}
+	backend := s.Sandbox
+	if backend == "" {
+		backend = "restricted"
+	}
+	if !containsString(mcpServerBackends, backend) {
+		return mcpServerPlan{}, fmt.Errorf("%s: unknown sandbox %q (want %s)", where, s.Sandbox, strings.Join(mcpServerBackends, ", "))
+	}
+	netName := s.Network
+	if netName == "" {
+		netName = "none"
+	}
+	network, ok := sandbox.ParseNetworkMode(netName)
+	if !ok || network == sandbox.NetAllowlist {
+		return mcpServerPlan{}, fmt.Errorf("%s: network %q (want none, full or inherit; no backend enforces an allowlist yet)", where, s.Network)
+	}
+	if s.CPUSeconds < 0 || s.MemoryMB < 0 || s.MaxPIDs < 0 {
+		return mcpServerPlan{}, fmt.Errorf("%s: limits must not be negative", where)
+	}
+	for _, group := range [][]string{s.ReadRoots, s.WriteRoots, s.DenyRoots, {s.WorkDir}} {
+		for _, r := range group {
+			if r != "" && !filepath.IsAbs(expandHome(r)) && !strings.HasPrefix(r, "/") {
+				return mcpServerPlan{}, fmt.Errorf("%s: path %q must be absolute (or start with ~)", where, r)
+			}
+		}
+	}
+	workDir := expandHome(s.WorkDir)
+	if workDir == "" {
+		workDir = filepath.Join(dataDir, "mcp", s.Name)
+	}
+	env := scrubbedEnvPolicy()
+	env.Pass = append(env.Pass, s.EnvPass...)
+	env.Set = s.EnvSet
+	pol := sandbox.Policy{
+		WorkDir:    workDir,
+		ReadRoots:  expandRoots(s.ReadRoots),
+		WriteRoots: expandRoots(s.WriteRoots),
+		DenyRoots:  dedupeNonEmpty(append([]string{cfgDir, dataDir, exePath()}, expandRoots(s.DenyRoots)...)...),
+		Network:    network,
+		Env:        env,
+		Limits: sandbox.Limits{
+			CPU:         time.Duration(s.CPUSeconds) * time.Second,
+			MemoryBytes: int64(s.MemoryMB) << 20,
+			MaxPIDs:     s.MaxPIDs,
+		},
+		Enforce: true,
+	}
+	if backend != "host" {
+		pol.DenyRoots = dedupeNonEmpty(append(pol.DenyRoots, credentialStoreRoots()...)...)
+	}
+	return mcpServerPlan{Server: s, Label: "mcp:" + s.Name, Backend: backend, Policy: pol}, nil
+}
+
+// mcpStdioOpener starts plan's server under its sandbox and connects to it.
+// The process lives as long as the context the mux passes (the command's).
+func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
+	return func(ctx context.Context, trustAnnotations bool, policy mcpremote.Policy) (plugin, func(), error) {
+		b, err := sandbox.For(plan.Backend)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: its %s sandbox is not available here (%v); install it, or set \"sandbox\" for this server in mcp_servers", plan.Label, plan.Backend, err)
+		}
+		if err := os.MkdirAll(plan.Policy.WorkDir, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("%s: work dir: %w", plan.Label, err)
+		}
+		var proc *sandbox.Process
+		d, cleanup, err := mcpremote.OpenStdio(ctx, mcpremote.StdioConfig{
+			Label: plan.Label,
+			Connect: func(ctx context.Context) (io.ReadCloser, io.WriteCloser, error) {
+				p, err := sandbox.Start(ctx, b, plan.Server.Command, plan.Policy)
+				if err != nil {
+					return nil, nil, err
+				}
+				proc = p
+				return p.Stdout(), processStdin{p}, nil
+			},
+		}, trustAnnotations, policy)
+		if err != nil {
+			if proc != nil {
+				if tail := strings.TrimSpace(proc.Stderr()); tail != "" {
+					err = fmt.Errorf("%w; the server wrote: %s", err, clipLog(tail))
+				}
+			}
+			return nil, nil, err
+		}
+		if log != nil {
+			log.Info("mcp: local server started", "connector", plan.Label, "sandbox", plan.Backend,
+				"isolation", b.Isolation().String(), "command", strings.Join(plan.Server.Command, " "))
+		}
+		return d, cleanup, nil
+	}
+}
+
+// processStdin is a server's stdin whose Close ends it the way the stdio
+// transport says to: close its input, wait, then kill it.
+type processStdin struct{ p *sandbox.Process }
+
+func (s processStdin) Write(b []byte) (int, error) { return s.p.Stdin().Write(b) }
+func (s processStdin) Close() error                { return s.p.Close(5 * time.Second) }
+
+// registerMCPServers registers every configured local server as a connector
+// and starts it in the background, as remote connectors reconnect at launch.
+// A server whose config is invalid is skipped with a warning.
+func registerMCPServers(mux *toolMux, lc *launchConfig, cfgDir, dataDir string, log *slog.Logger) {
+	if lc == nil {
+		return
+	}
+	for _, s := range lc.MCPServers {
+		plan, err := planMCPServer(s, cfgDir, dataDir)
+		if err != nil {
+			log.Warn("mcp: local server skipped", "err", err.Error())
+			continue
+		}
+		open := mcpStdioOpener(plan, log)
+		hint := fmt.Sprintf("`/enable %s` starts `%s` under the %s sandbox", plan.Label, strings.Join(s.Command, " "), plan.Backend)
+		label, err := mux.RegisterMCPStdio(s.Name, hint, open)
+		if err != nil {
+			log.Warn("mcp: local server skipped", "server", s.Name, "err", err.Error())
+			continue
+		}
+		go mux.StartMCPStdioSilently(label, open)
+	}
+}
+
+// effectiveIntegration is one integration and where its code runs (TEN-318):
+// a first-party plugin in Tenant's process; an MCP server out of it, remote
+// over HTTP or local under the sandbox, with what that sandbox enforces here.
+type effectiveIntegration struct {
+	Name       string   `json:"name"`
+	Kind       string   `json:"kind"` // first-party | remote-mcp | local-mcp
+	Runs       string   `json:"runs"` // in-process | remote | sandboxed | unconfined
+	Backend    string   `json:"backend,omitempty"`
+	Isolation  string   `json:"isolation,omitempty"`
+	Filesystem string   `json:"filesystem,omitempty"` // enforced | partial | none
+	Network    string   `json:"network,omitempty"`
+	NetPolicy  string   `json:"network_policy,omitempty"`
+	Env        string   `json:"env,omitempty"`
+	Limits     []string `json:"limits,omitempty"` // the requested caps this backend applies
+	Problem    string   `json:"problem,omitempty"`
+}
+
+// effectiveIntegrations lists the configured integrations: the first-party
+// plugins among tools, then remote and local MCP servers.
+func effectiveIntegrations(tools []string, lc *launchConfig, remotes []string, cfgDir, dataDir string) []effectiveIntegration {
+	var out []effectiveIntegration
+	for _, d := range plugins().All() {
+		if containsString(tools, d.ID) {
+			out = append(out, effectiveIntegration{Name: d.ID, Kind: "first-party", Runs: "in-process"})
+		}
+	}
+	for _, url := range remotes {
+		out = append(out, effectiveIntegration{Name: mcpLabel(url), Kind: "remote-mcp", Runs: "remote", Isolation: "separate host"})
+	}
+	if lc == nil {
+		return out
+	}
+	for _, s := range lc.MCPServers {
+		in := effectiveIntegration{Name: "mcp:" + s.Name, Kind: "local-mcp", Runs: "sandboxed"}
+		plan, err := planMCPServer(s, cfgDir, dataDir)
+		if err != nil {
+			in.Problem = err.Error()
+			out = append(out, in)
+			continue
+		}
+		in.Backend, in.NetPolicy = plan.Backend, plan.Policy.Network.String()
+		b, err := sandbox.For(plan.Backend)
+		if err != nil {
+			in.Problem = "sandbox unavailable: " + err.Error()
+			out = append(out, in)
+			continue
+		}
+		caps := b.Probe(context.Background())
+		in.Isolation, in.Filesystem, in.Network, in.Env = caps.Isolation.String(), caps.Filesystem.String(), caps.Network.String(), caps.Env.String()
+		if caps.Filesystem == sandbox.EnforceNone && caps.Network == sandbox.EnforceNone {
+			in.Runs = "unconfined"
+		}
+		requested := map[string]bool{"memory": s.MemoryMB > 0, "cpu": s.CPUSeconds > 0, "processes": s.MaxPIDs > 0}
+		for _, l := range sandbox.StartLimits(b) {
+			if requested[l] {
+				in.Limits = append(in.Limits, l)
+			}
+		}
+		out = append(out, in)
+	}
+	return out
+}
+
+// integrationLine is one integration in `tenant permissions effective`.
+func integrationLine(in effectiveIntegration) string {
+	switch in.Kind {
+	case "first-party":
+		return fmt.Sprintf("%s — first-party, in Tenant's process", in.Name)
+	case "remote-mcp":
+		return fmt.Sprintf("%s — remote MCP server, out of process on another host", in.Name)
+	}
+	if in.Problem != "" {
+		return fmt.Sprintf("%s — local MCP server: %s", in.Name, in.Problem)
+	}
+	limits := "none"
+	if len(in.Limits) > 0 {
+		limits = strings.Join(in.Limits, ", ")
+	}
+	return fmt.Sprintf("%s — local MCP server, out of process under %s (isolation %s): filesystem confinement %s; network %s, enforcement %s; env allowlist %s; caps: %s",
+		in.Name, in.Backend, in.Isolation, in.Filesystem, in.NetPolicy, in.Network, in.Env, limits)
+}

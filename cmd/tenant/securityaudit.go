@@ -299,6 +299,21 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 			"remote MCP server annotations are trusted to classify tools as read-only",
 			"leave --mcp-trust-annotations off unless every configured server is trusted")
 	}
+	for _, in := range report.Permissions.Integrations {
+		if in.Kind != "local-mcp" {
+			continue
+		}
+		switch {
+		case in.Problem != "":
+			add("mcp.local."+in.Name, "integrations", auditWarning,
+				"local MCP server "+in.Name+" cannot start: "+in.Problem,
+				"fix its mcp_servers entry, or install its sandbox backend")
+		case in.Runs == "unconfined":
+			add("mcp.local."+in.Name, "integrations", auditWarning,
+				"local MCP server "+in.Name+" runs third-party code with no filesystem or network confinement (sandbox "+in.Backend+")",
+				"run it under the restricted sandbox, or accept that it can read and send anything Tenant's user can")
+		}
+	}
 	if report.RemoteMCP.AllowWrite && len(report.RemoteMCP.Servers) > 0 {
 		add("mcp.write-bypass", "remote_mcp", auditCritical,
 			"remote MCP write tools may run without per-action approval",

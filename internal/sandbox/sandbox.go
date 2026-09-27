@@ -14,7 +14,8 @@
 //     Object. Registered per-OS via registerRestricted in a
 //     build-tagged file, so this package compiles and runs with only
 //     the host backend on any platform.
-//   - container  an ephemeral container per run (TEN-318; not yet implemented).
+//   - container  an ephemeral container per run (not implemented; third-party
+//     MCP servers run out of process under the backends above, TEN-318).
 //
 // The vocabulary (allow/deny read+write roots, allowed domains, resolved-address
 // blocking) mirrors Anthropic's sandbox-runtime so profiles are portable and
@@ -280,6 +281,12 @@ type Backend interface {
 	Run(ctx context.Context, cmd Command, pol Policy) (Result, error)
 }
 
+// jobObjectFactory is installed on Windows: the Job Object backend, which caps
+// resources and scopes the environment but confines no filesystem or network.
+var jobObjectFactory func() Backend
+
+func registerJobObject(f func() Backend) { jobObjectFactory = f }
+
 // restrictedFactory is installed by an OS-specific file's init() when this
 // platform/build has a restricted backend. nil ⇒ none available here.
 var restrictedFactory func() (Backend, error)
@@ -296,17 +303,22 @@ func Restricted() (Backend, error) {
 	return restrictedFactory()
 }
 
-// For resolves a backend by profile name: "" / "host", "restricted", or
-// "container" (not yet implemented). An unknown or unavailable backend is an
-// error the caller surfaces.
+// For resolves a backend by profile name: "" / "host", "restricted",
+// "jobobject" (Windows only), or "container" (not yet implemented). An
+// unknown or unavailable backend is an error the caller surfaces.
 func For(name string) (Backend, error) {
 	switch name {
 	case "", "host":
 		return Host(), nil
 	case "restricted":
 		return Restricted()
+	case "jobobject":
+		if jobObjectFactory == nil {
+			return nil, fmt.Errorf("sandbox: the jobobject backend exists only on Windows")
+		}
+		return jobObjectFactory(), nil
 	case "container":
-		return nil, fmt.Errorf("sandbox: container backend not yet implemented (TEN-318)")
+		return nil, fmt.Errorf("sandbox: the container backend is not implemented")
 	default:
 		return nil, fmt.Errorf("sandbox: unknown backend %q", name)
 	}

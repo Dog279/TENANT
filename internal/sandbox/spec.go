@@ -6,13 +6,18 @@ package sandbox
 // build tags, NO golang.org/x/sys types. That is what lets these builders be
 // unit-tested on any host (see spec_test.go) even though the backends that
 // consume them (restricted_linux.go, restricted_windows.go) only build and run
-// on their own OS. The one exception is bwrapMask's os.Stat: whether a deny root
-// is a directory, a file, or absent decides how bubblewrap can hide it.
+// on their own OS. The one exception is bwrapMask's stat: whether a deny root
+// is a directory, a file, or absent decides how bubblewrap can hide it. A
+// backend that translates paths (WSL) passes a stat that looks at the path it
+// translated from, since the translated one does not exist where Tenant runs.
 
 import (
 	"os"
 	"strings"
 )
+
+// statFunc reports what a path is, as the confining side sees it.
+type statFunc func(string) (os.FileInfo, error)
 
 // ---------------------------------------------------------------------------
 // Linux: bubblewrap (bwrap) argument-vector builder.
@@ -39,6 +44,26 @@ import (
 // A host-filtered network allowlist is not implemented: NetAllowlist fails
 // closed (the network is unshared). TODO(TEN-346): Landlock, rlimits.
 func bwrapArgs(pol Policy, shell string, args []string) []string {
+	return bwrapArgsOpts(pol, bwrapOpts{stat: os.Stat}, shell, args)
+}
+
+// bwrapOpts are what a backend that runs bubblewrap somewhere other than
+// where Tenant runs (WSL) must say about that place.
+type bwrapOpts struct {
+	// stat classifies each deny root for bwrapMask.
+	stat statFunc
+	// hide lists trees to hide when the host is readable (empty ReadRoots):
+	// bound back only where the work dir and the write roots are. WSL hides
+	// the Windows drives, whose case-insensitive names defeat a deny mask.
+	hide []string
+}
+
+// bwrapArgsOpts is bwrapArgs for a backend with bwrapOpts.
+func bwrapArgsOpts(pol Policy, opts bwrapOpts, shell string, args []string) []string {
+	stat := opts.stat
+	if stat == nil {
+		stat = os.Stat
+	}
 	a := make([]string, 0, 32+2*(len(pol.WriteRoots)+len(pol.DenyRoots))+len(args))
 
 	// 1. Base isolation.
@@ -63,6 +88,9 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 	// --ro-bind-try skips a source this distribution does not have.
 	if len(pol.ReadRoots) == 0 {
 		a = append(a, "--ro-bind", "/", "/")
+		for _, h := range opts.hide {
+			a = append(a, "--tmpfs", h)
+		}
 	} else {
 		for _, p := range linuxSystemReadRoots {
 			a = append(a, "--ro-bind-try", p, p)
@@ -91,7 +119,7 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 	// tmpfs mask makes the host path an empty, ephemeral dir: its real contents
 	// are neither readable nor (persistently) writable.
 	for _, dr := range pol.DenyRoots {
-		a = append(a, bwrapMask(dr)...)
+		a = append(a, bwrapMask(dr, stat)...)
 	}
 
 	// 5. WorkDir carve-out (Policy precedence rule 3): bound AFTER the deny masks,
@@ -103,7 +131,7 @@ func bwrapArgs(pol Policy, shell string, args []string) []string {
 		a = append(a, "--bind", pol.WorkDir, pol.WorkDir)
 		for _, dr := range pol.DenyRoots {
 			if within(dr, pol.WorkDir) {
-				a = append(a, bwrapMask(dr)...)
+				a = append(a, bwrapMask(dr, stat)...)
 			}
 		}
 	}
@@ -170,11 +198,11 @@ func jobLimitsFrom(l Limits) jobLimits {
 // anyway, and bwrap cannot create the mount point under the read-only root, so
 // masking it would fail the whole run (the credential-store deny list is mostly
 // paths that are absent on any given host).
-func bwrapMask(path string) []string {
+func bwrapMask(path string, stat statFunc) []string {
 	if path == "" {
 		return nil
 	}
-	fi, err := os.Stat(path)
+	fi, err := stat(path)
 	switch {
 	case err != nil:
 		return nil

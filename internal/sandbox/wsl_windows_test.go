@@ -189,3 +189,79 @@ func TestWSL_ContainsNetwork(t *testing.T) {
 		t.Fatalf("network must be cut under NetNone, but a connection succeeded: out=%q", res.Output)
 	}
 }
+
+// A deny root is hidden even while the rest of the host is readable. Each
+// translated root used to be skipped, since it was stat'ed at its Linux path
+// from Windows (TEN-318). The same directory reached with other letter case
+// must stay hidden too: WSL's Windows drives resolve names case-insensitively.
+func TestWSL_MasksDenyRootsWhenHostReadable(t *testing.T) {
+	wb := wslBackendOrSkip(t)
+	const sentinel = "CANARY-318-deny-root"
+	secretDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secretDir, "token.txt"), []byte(sentinel+"-dir\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretFile := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(secretFile, []byte(sentinel+"-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inDir := wb.toLinuxPath(filepath.Join(secretDir, "token.txt"))
+	pol := Policy{DenyRoots: []string{secretDir, secretFile}, Limits: Limits{Wall: 60 * time.Second}}
+	for name, path := range map[string]string{
+		"dir":        inDir,
+		"file":       wb.toLinuxPath(secretFile),
+		"lower-case": strings.ToLower(inDir),
+		"upper-case": strings.ToUpper(inDir[:len("/mnt/c")]) + inDir[len("/mnt/c"):],
+	} {
+		res, err := wb.Run(context.Background(), Command{Shell: "cat " + sq(path) + " 2>&1"}, pol)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(res.Output, sentinel) {
+			t.Errorf("%s: the deny root leaked through %s: %q", name, path, res.Output)
+		}
+	}
+}
+
+func TestWindowsDriveMounts(t *testing.T) {
+	if got := windowsDriveMounts("/mnt", []string{"C", "D"}); strings.Join(got, ",") != "/mnt" {
+		t.Errorf("/mnt root: %v", got)
+	}
+	if got := windowsDriveMounts("/", []string{"C", "D"}); strings.Join(got, ",") != "/c,/d" {
+		t.Errorf("/ root: %v; hiding / would hide the whole distro", got)
+	}
+	if got := existingDrives(); len(got) == 0 {
+		t.Error("no drive letters found on a Windows host")
+	}
+}
+
+// A deny root inside a root the policy grants is masked at its own path.
+// (Reached with other letter case it is not: WSL resolves Windows names
+// case-insensitively, which is why the drives are hidden unless granted.)
+func TestWSL_MasksDenyRootInsideAGrantedRoot(t *testing.T) {
+	wb := wslBackendOrSkip(t)
+	const sentinel = "CANARY-318-granted"
+	granted := t.TempDir()
+	secretDir := filepath.Join(granted, "secret")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "token.txt"), []byte(sentinel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(granted, "ok.txt"), []byte("granted-ok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pol := Policy{WriteRoots: []string{granted}, DenyRoots: []string{secretDir}, Limits: Limits{Wall: 60 * time.Second}}
+	line := "cat " + sq(wb.toLinuxPath(filepath.Join(granted, "ok.txt"))) + "; cat " + sq(wb.toLinuxPath(filepath.Join(secretDir, "token.txt"))) + " 2>&1"
+	res, err := wb.Run(context.Background(), Command{Shell: line}, pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Output, "granted-ok") {
+		t.Errorf("the granted root is not readable: %q", res.Output)
+	}
+	if strings.Contains(res.Output, sentinel) {
+		t.Errorf("a deny root inside a granted root leaked: %q", res.Output)
+	}
+}

@@ -37,6 +37,17 @@ func (hostBackend) Probe(context.Context) Capabilities {
 	}
 }
 
+// Start runs argv on the host, unconfined, in the policy's work dir with its
+// environment allowlist. It applies no resource caps.
+func (hostBackend) Start(ctx context.Context, argv []string, pol Policy) (*Process, error) {
+	c := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if pol.WorkDir != "" {
+		c.Dir = pol.WorkDir
+	}
+	c.Env = pol.Env.materialize(os.Environ())
+	return startProcess(c, nil, nil)
+}
+
 func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
 	if pol.Limits.Wall > 0 {
 		var cancel context.CancelFunc

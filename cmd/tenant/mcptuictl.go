@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"tenant/internal/logs"
 	"tenant/internal/plugins/mcpremote"
@@ -138,6 +139,11 @@ func (a mcpTUIControl) Remove(target string) (bool, error) {
 	label, url := a.resolve(target)
 	if label == "" {
 		return false, nil
+	}
+	if strings.HasPrefix(url, "stdio:") {
+		// A local server is the operator's config.json entry (TEN-318):
+		// forgetting it here would last only until the next launch.
+		return false, fmt.Errorf("%s is a local MCP server configured in config.json (mcp_servers): remove it there; /mcp trust %s deny stops its tools now", label, label)
 	}
 	a.mux.SetEnabled(label, false)
 	a.mux.ForgetPlugin(label)

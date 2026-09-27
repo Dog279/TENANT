@@ -33,16 +33,19 @@ type effectiveRemoteMCP struct {
 }
 
 type effectivePermissions struct {
-	Agent            string                       `json:"agent"`
-	Surface          string                       `json:"surface"`
-	Preset           string                       `json:"preset,omitempty"`
-	Categories       map[string]effectiveCategory `json:"categories"`
-	ToolRules        map[string]string            `json:"tool_rules"`
-	ConfiguredTools  []string                     `json:"configured_tool_groups"`
-	ToolOverrides    map[string]bool              `json:"tool_overrides"`
-	Execution        effectiveExecution           `json:"execution"`
-	RemoteMCP        effectiveRemoteMCP           `json:"remote_mcp"`
-	AvailablePresets []string                     `json:"available_presets"`
+	Agent           string                       `json:"agent"`
+	Surface         string                       `json:"surface"`
+	Preset          string                       `json:"preset,omitempty"`
+	Categories      map[string]effectiveCategory `json:"categories"`
+	ToolRules       map[string]string            `json:"tool_rules"`
+	ConfiguredTools []string                     `json:"configured_tool_groups"`
+	ToolOverrides   map[string]bool              `json:"tool_overrides"`
+	Execution       effectiveExecution           `json:"execution"`
+	RemoteMCP       effectiveRemoteMCP           `json:"remote_mcp"`
+	// Integrations says where each integration's code runs (TEN-318): the
+	// first-party plugins in Tenant's process, MCP servers out of it.
+	Integrations     []effectiveIntegration `json:"integrations"`
+	AvailablePresets []string               `json:"available_presets"`
 }
 
 var permissionPresets = map[string]map[string]string{
@@ -193,6 +196,7 @@ func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string
 			Servers: len(lc.MCPRemotes) + len(pf.mcpRemotes), TrustAnnotations: pf.mcpTrustAnnotations,
 			AllowWrite: pf.mcpAllowWrite,
 		},
+		Integrations:     effectiveIntegrations(tools, lc, append(append([]string{}, lc.MCPRemotes...), pf.mcpRemotes...), c.cfgDir, c.dataDir),
 		AvailablePresets: []string{"safe", "balanced", "full"},
 	}
 	report.Preset = matchingPermissionPreset(categories)
@@ -460,4 +464,10 @@ func printEffectivePermissions(report effectivePermissions) {
 	fmt.Printf("  execution: %s (isolated=%t, enabled=%t)\n", report.Execution.Backend, report.Execution.Isolated, report.Execution.Enabled)
 	fmt.Printf("  remote MCP: %d server(s), trust_annotations=%t, allow_write=%t\n",
 		report.RemoteMCP.Servers, report.RemoteMCP.TrustAnnotations, report.RemoteMCP.AllowWrite)
+	if len(report.Integrations) > 0 {
+		fmt.Println("  integrations (where their code runs):")
+		for _, in := range report.Integrations {
+			fmt.Println("    " + integrationLine(in))
+		}
+	}
 }

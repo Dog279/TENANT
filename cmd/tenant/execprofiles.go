@@ -169,7 +169,7 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 	switch p.Backend {
 	case "", "host", "restricted":
 	case "container":
-		return fmt.Errorf("exec_profiles.%s: the container backend is not implemented yet (TEN-318)", surface)
+		return fmt.Errorf("exec_profiles.%s: the container backend is not implemented", surface)
 	default:
 		return fmt.Errorf("exec_profiles.%s: unknown backend %q (want host or restricted)", surface, p.Backend)
 	}

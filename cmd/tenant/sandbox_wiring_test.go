@@ -87,7 +87,7 @@ func TestExecProfileStore_LoadValidates(t *testing.T) {
 	if n != 2 || len(skipped) != 5 {
 		t.Fatalf("applied %d, skipped %v; want 2 applied, 5 skipped", n, skipped)
 	}
-	for _, want := range []string{"unknown surface", "not implemented yet (TEN-318)", "unknown network", "must be absolute", "must not be negative"} {
+	for _, want := range []string{"unknown surface", "container backend is not implemented", "unknown network", "must be absolute", "must not be negative"} {
 		if !strings.Contains(strings.Join(skipped, "\n"), want) {
 			t.Errorf("skip messages should mention %q: %v", want, skipped)
 		}
