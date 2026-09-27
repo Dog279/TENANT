@@ -153,7 +153,6 @@
   <div class="card"><div class="card-head">Top event IDs · warnings and worse, last 24 hours</div>
     {{if .Top}}<table class="ovtable">{{range .Top}}<tr><td><a class="linkbtn" href="{{.Href}}">{{.Provider}} {{.ID}}</a></td><td>{{.N}}</td><td class="dim">{{.Template}}</td></tr>{{end}}</table>{{else}}<div class="dim">None.</div>{{end}}
   </div>
-  <div class="dim lg-note">Read from the rollups in {{.Took}}.</div>
 </div>{{end}}
 
 {{define "lgcomponents"}}<div class="lg-main lg-scroll">

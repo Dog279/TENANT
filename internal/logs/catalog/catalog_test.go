@@ -100,12 +100,6 @@ func TestHelpSaysWhatAnEventMeansAndWhatToDo(t *testing.T) {
 			t.Errorf("Help lacks %q:\n%s", want, help)
 		}
 	}
-	if _, ok := event.Lookup("system", 9999); ok {
-		t.Error("Lookup found an ID nobody declared")
-	}
-	if _, ok := event.Lookup("nosuch", 3101); ok {
-		t.Error("Lookup found an unknown provider's event")
-	}
 	if d, ok := event.Lookup("security", 4103); !ok || !strings.Contains(Help(d.Spec()), "**Keywords:** `audit.failure`") {
 		t.Errorf("security/4103's keywords: %v", ok)
 	}

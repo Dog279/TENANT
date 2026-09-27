@@ -144,9 +144,7 @@ func (s *Server) renderLogs(w http.ResponseWriter, r *http.Request, mode string,
 	}
 	d.Open = true
 	ctx := r.Context()
-	started := time.Now()
-	sum, err := h.Summary(ctx, started)
-	took := time.Since(started)
+	sum, err := h.Summary(ctx, time.Now())
 	if err != nil {
 		d.Err = "The summary could not be read: " + err.Error()
 	}
@@ -173,7 +171,7 @@ func (s *Server) renderLogs(w http.ResponseWriter, r *http.Request, mode string,
 
 	switch mode {
 	case "summary":
-		d.Summary = summaryView(sum, took)
+		d.Summary = summaryView(sum)
 	case "components":
 		d.Components = s.componentsView(ctx)
 	default:
@@ -977,7 +975,6 @@ type logsTop struct {
 }
 
 type logsSummary struct {
-	Took                    string
 	Cards                   []logsCard
 	Logs                    []logsSumRow
 	Top                     []logsTop
@@ -986,8 +983,8 @@ type logsSummary struct {
 
 // summaryView is the Summary page: what has gone wrong recently, from the
 // rollups (Hub.Summary).
-func summaryView(sum store.Summary, took time.Duration) *logsSummary {
-	out := &logsSummary{Took: took.Round(100 * time.Microsecond).String()}
+func summaryView(sum store.Summary) *logsSummary {
+	out := &logsSummary{}
 	var day store.Levels
 	var lost int64
 	for _, l := range sum.Logs {

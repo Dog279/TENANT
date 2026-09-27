@@ -546,7 +546,7 @@ func TestLogsSummary(t *testing.T) {
 	page := get(t, s, "/logs").Body.String()
 	for _, want := range []string{`<div class="stat-label">Errors · 24 h</div><div class="stat-value lg-bad">3</div>`, "Unexpected exits · 7 d",
 		"tenant serve exited unexpectedly", "job y failed", `<svg class="lg-spark bad"`, " of 1.0 MB", "7d · overwrite when full",
-		`href="/logs?q=provider%3Acron&#43;id%3A3001&#43;since%3A24h">cron 3001</a></td><td>2</td>`, "Read from the rollups in"} {
+		`href="/logs?q=provider%3Acron&#43;id%3A3001&#43;since%3A24h">cron 3001</a></td><td>2</td>`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the Summary lacks %q", want)
 		}
