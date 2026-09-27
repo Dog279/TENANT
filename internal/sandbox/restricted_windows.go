@@ -141,7 +141,7 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 	}
 
 	werr := c.Wait()
-	res := Result{Output: clip(buf.String(), pol.Limits.MaxOutputBytes)}
+	res := Result{Output: clip(buf.String(), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
 	var ee *exec.ExitError
 	if errors.As(werr, &ee) {
 		res.ExitCode = ee.ExitCode()
@@ -204,7 +204,7 @@ func (b *windowsRestricted) Start(ctx context.Context, argv []string, pol Policy
 	}
 	c.Env = pol.Env.materialize(os.Environ())
 	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
-	return startProcess(c, func(pid int) error { return assignAndResume(job, pid) },
+	return startProcess(c, pol.Stderr, func(pid int) error { return assignAndResume(job, pid) },
 		func() { windows.CloseHandle(job) }) // kill-on-close ends anything the server left behind
 }
 

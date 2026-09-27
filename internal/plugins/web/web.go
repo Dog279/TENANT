@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/capture"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/emulation"
@@ -424,6 +425,10 @@ func validateNoSandboxMode(requested bool, outerDetected bool) error {
 	return nil
 }
 
+// errChromeExit is Chrome's exit as its exit line reports it: chromedp waits
+// on the process and drops the status.
+var errChromeExit = errors.New("exit status unknown (chromedp keeps it)")
+
 const noSandboxWarning = "SECURITY WARNING: Chrome process sandbox disabled by browser_no_sandbox; use only inside the detected outer sandbox"
 
 func emitNoSandboxWarning(cfg Config, outerKind string) {
@@ -491,13 +496,21 @@ func NewSession(cfg Config) (*Session, error) {
 		return nil, err
 	}
 	opts := execAllocatorOptions(chromePath, cfg, proxy.Address())
+	// Chrome's output is filed in the browser log, line by line, so its crash
+	// text survives it (logging v2 §8.4). chromedp owns the process and keeps
+	// its exit status: the exit line says when Chrome ended, and whether
+	// Tenant ended it (life is cancelled first), not with what code.
+	life, stop := context.WithCancel(context.Background())
+	chrome := capture.New(life, "browser", "child", "chrome")
+	opts = append(opts, chromedp.CombinedOutput(chrome))
 	// UA is set via CDP after launch (applyStealth) so the UA string and
 	// the sec-ch-ua client hints are derived from the SAME real version —
 	// no static-UA-vs-client-hint mismatch.
 	// DefaultExecAllocatorOptions sets --headless=true; override it. "new"
 	// headless renders like full Chrome and is far harder to fingerprint
 	// than the legacy headless shell.
-	allocCtx, cancelA := chromedp.NewExecAllocator(context.Background(), opts...)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(life, opts...)
+	cancelA := func() { stop(); cancelAlloc() }
 	// Filter chromedp's noisy "unhandled node event *dom.EventXxx" stream —
 	// newer Chrome versions emit DOM events (EventAdRelatedStateUpdated,
 	// EventScrollableFlagUpdated, etc.) that cdproto doesn't recognize yet,
@@ -516,8 +529,18 @@ func NewSession(cfg Config) (*Session, error) {
 		cancelT()
 		cancelA()
 		_ = proxy.Close()
+		chrome.Exited(err)
 		return nil, fmt.Errorf("web: start chrome: %w", err)
 	}
+	pid := 0
+	if p := chromedp.FromContext(tabCtx).Browser.Process(); p != nil {
+		pid = p.Pid
+	}
+	chrome.Started("pid", pid, "headless", cfg.Headless)
+	go func() {
+		chromedp.FromContext(allocCtx).Allocator.Wait()
+		chrome.Exited(errChromeExit)
+	}()
 	return &Session{
 		cfg: cfg, proxy: proxy, allocCtx: allocCtx, cancelA: cancelA,
 		tabCtx: tabCtx, cancelT: cancelT,

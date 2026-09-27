@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/logs/capture"
+
 	_ "modernc.org/sqlite" // pure-Go, CGO-free SQLite driver
 )
 
@@ -183,7 +185,7 @@ func runOsascript(ctx context.Context, script string, argv []string) error {
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := capture.New(cctx, "imessage", "child", "osascript").Run(cmd); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()

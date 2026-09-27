@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"tenant/internal/logs/capture"
 )
 
 const (
@@ -63,7 +65,7 @@ func (s *Service) realRunner(ctx context.Context, name string, args []string) ([
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := capture.New(cctx, "plugin.crm", "child", "crm-tool", "subcommand", name).Run(cmd)
 	if cctx.Err() == context.DeadlineExceeded {
 		return stdout.Bytes(), fmt.Errorf("crm-tool %s timed out after %s", name, s.timeout)
 	}

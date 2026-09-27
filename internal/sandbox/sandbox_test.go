@@ -28,6 +28,9 @@ func TestHostRun_BasicAndExit(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit = %d, want 0", res.ExitCode)
 	}
+	if res.PID == 0 {
+		t.Fatal("the run's pid is not reported")
+	}
 
 	res, err = h.Run(context.Background(), Command{Shell: "exit 3"}, Policy{})
 	if err != nil {
@@ -116,6 +119,24 @@ func TestMaterialize_InheritVsScope(t *testing.T) {
 	got := (EnvPolicy{Isolate: true, Pass: []string{"KEEP"}}).materialize(parent)
 	if len(got) != 1 || got[0] != "KEEP=1" {
 		t.Fatalf("scoped policy = %v, want [KEEP=1]", got)
+	}
+	// Add joins either mode and never scopes the environment.
+	add := []string{"TENANT_TRACE_ID=abc"}
+	if got := (EnvPolicy{Add: add}).materialize(parent); len(got) != 4 || got[3] != add[0] {
+		t.Fatalf("inherit + Add = %v", got)
+	}
+	if got := (EnvPolicy{Isolate: true, Pass: []string{"KEEP"}, Add: add}).materialize(parent); len(got) != 2 || got[1] != add[0] {
+		t.Fatalf("scoped + Add = %v", got)
+	}
+}
+
+func TestLimitsString(t *testing.T) {
+	if got := (Limits{}).String(); got != "none" {
+		t.Errorf("no caps = %q", got)
+	}
+	l := Limits{Wall: time.Minute, CPU: 30 * time.Second, MemoryBytes: 256 << 20, MaxPIDs: 16, MaxOutputBytes: 100}
+	if got := l.String(); got != "wall=1m0s cpu=30s memory=256MB pids=16 output=100B" {
+		t.Errorf("caps = %q", got)
 	}
 }
 

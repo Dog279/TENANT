@@ -19,7 +19,7 @@ one folder is one tab.
 ├── improve/                      ← distill / reflect / consolidate / soul jobs
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
 ├── route/ memory/ mcp/ peering/ dashboard/
-├── sandbox/                      ← the execution sandbox: confined runs, refusals, escalations, dry-run would-be refusals
+├── sandbox/                      ← the execution sandbox: every run's start and exit, refusals, escalations, dry-run would-be refusals
 ├── privacy/ shutdown/            ← the daily retention sweep; the staged shutdown's steps
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
@@ -91,7 +91,7 @@ arguments and results in `turns` too.
   `"api_key"` fields; and any field whose key ends in one of those words.
 
 ```
-2026-09-27 14:05:10.412 INFO  [sandbox] ran in the sandbox	surface=discord backend=restricted exit=0 timed_out=false command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com"
+2026-09-27 14:05:10.412 INFO  [sandbox] process started	surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
 ```
 
 Lines read back from disk into the feed (the tail re-read at start, folders
@@ -111,39 +111,80 @@ again. The old files then hold a dead token.
 
 ## The `sandbox` source
 
-The execution sandbox (`docs/changes/sandbox-seam.md`) writes one line per
-`os_exec` command or cron shell job it runs on a confining backend, and one per
-refusal:
+The execution sandbox (`docs/changes/sandbox-seam.md`) files every `os_exec`
+command and cron shell job it runs, on every backend, the host included, as a
+child process (see [Child processes](#child-processes)): a `process started`
+line with `command` and `limits`, and a `process exited` line with `pid`,
+`exit`, `duration`, `timed_out`, `violations` when there are any, and `tail`,
+the last 512 bytes of the output (stdout and stderr together, as the model
+sees them). Both carry `surface` and `backend`. What the boundary did gets a
+line of its own:
 
 | Level | Message | When |
 |---|---|---|
-| INFO | `ran in the sandbox` | ran on a confining backend and nothing was refused. On macOS, a timeout or a reaped background process still shows in `violations` |
 | WARN | `refused by the sandbox` | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
 | WARN | `refused, then approved to re-run outside the sandbox` | an approved `os_exec_unsandboxed` re-ran it on the host |
 | WARN | `dry-run: the sandbox would have refused this; it ran on the host` | `"enforce": false`: what enforcing would have refused |
 | ERROR | `sandbox could not start the command` | the backend could not start the command (`err=`) |
 
-The fields are `surface`, `backend`, `exit`, `timed_out`, `command`,
+Their fields are `surface`, `backend`, `exit`, `timed_out`, `command`,
 `violations` when there are any, and `err` on a start failure. `command` holds
 the first 300 characters of the command. For an escalation or a dry-run,
-`exit` and `timed_out` describe the host re-run.
+`exit` and `timed_out` describe the host re-run, and the exit line is the
+host re-run's.
 
 ```
 2026-09-22 14:05:10.412 WARN  [sandbox] refused by the sandbox	surface=discord backend=restricted exit=1 timed_out=false command="cat ~/.ssh/id_ed25519" violations="filesystem: sandbox blocked access outside the policy's read/write roots"
 ```
 
 Some things are recorded elsewhere or not at all:
-- A command on the `host` backend with nothing refused is the pre-seam path and
-  is **not logged** here (a `host` command that cannot even start still is). The
-  folder and its tab appear once a surface runs on a confining backend.
 - A surface whose backend is unavailable fails closed before anything runs. That
   error goes back to the turn or cron job, not to this folder.
 - On surfaces with an approval broker (TUI and dashboard, Discord, iMessage), the
   escalation prompt itself is an `approvals` line (`action=os_exec_unsandboxed`).
-- The `command` field is the command text, scrubbed (see [Secrets](#secrets))
-  before the 300-character cut, so a secret typed inline does not reach the log.
+- `command` and `tail` are scrubbed (see [Secrets](#secrets)) before they are
+  cut, so a secret typed inline does not reach the log.
 - On Linux and Windows the backends do not attribute refusals yet. A denied
-  access there shows as `ran in the sandbox` with a non-zero `exit`.
+  access there shows only as a non-zero `exit`.
+- `tenant sandbox run`, the operator's trial run, prints its result and files
+  nothing.
+
+## Child processes
+
+A process Tenant starts is filed by Tenant, in the log of the subsystem that
+started it (`internal/logs/capture`): a `process started` line with its `pid`,
+a `process exited` line with `exit` (the code, when Tenant knows it),
+`duration`, and the OS's words for a failure (`exit status 3`,
+`signal: killed`) in the message. A failure is a warning, unless Tenant
+stopped the child (`cancelled=true`: a shutdown, a cancelled turn).
+
+| Child | Log | Tagged | Also filed |
+|---|---|---|---|
+| a local MCP server (`mcp_servers`) | `mcp` | `server=<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed |
+| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | see [The `sandbox` source](#the-sandbox-source) |
+| `claude -p` (the claudecode backend) | `model` | `child=claude` | its stderr, line by line, whether the call failed or not |
+| Chrome (the web plugin) | `browser` | `child=chrome` | its output, line by line, so its crash text survives it. chromedp keeps Chrome's exit status, so the exit line says when it ended, not with what code |
+| `tailscale` | `system` | `child=tailscale`, `args` | |
+| the crm tool, `gcloud`, `ps`/`tasklist` | `plugin.crm`, `plugin.gsuite`, `plugin.os` | `child=<name>` | |
+| `osascript` | `imessage` | `child=osascript` | |
+
+**Output lines are data.** Each one is the message of a line whose log and
+tags Tenant chose, marked `stream=stderr`, so a child can't write into another
+log, or pass for one of Tenant's own lines, by printing something shaped like
+one. A child's lines are rate-limited: a burst of 200, then 2 a second. What
+the limit drops is filed as `suppressed N lines of stderr (rate limit)` when
+lines flow again, and at exit. A line longer than 16 KiB is cut there and the
+rest of it dropped.
+
+**A local MCP server** also keeps the last 8 KiB of its stderr, which explains
+a server that fails to start in the error `/enable` shows.
+
+**Correlation.** A child's environment gets `TENANT_TRACE_ID` and
+`TENANT_ACTIVITY_ID` when the work that started it has them (a turn's
+`os_exec`, say), and its lines carry the same trace and activity. A script
+that logs through `POST /api/logs` or `tenant log` joins them by passing them
+on as its `trace` and `activity` fields
+(`tenant log deploy "done" trace=$TENANT_TRACE_ID`).
 
 ## Errors are not dropped
 

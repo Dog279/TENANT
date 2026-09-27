@@ -102,6 +102,57 @@ func TestStartHostServesAndCloses(t *testing.T) {
 	}
 }
 
+// Policy.Stderr gets the process's stderr as it is written, beside the tail;
+// EnvPolicy.Add joins the environment; a process that exits on its own was
+// not killed.
+func TestStartCopiesStderrAndAddsEnv(t *testing.T) {
+	var stderr syncBuffer
+	pol := helperPolicy("echo")
+	pol.Stderr = &stderr
+	p, err := Start(context.Background(), Host(), helperArgv(), pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Wait()
+	if !strings.Contains(stderr.String(), "helper ready") || !strings.Contains(p.Stderr(), "helper ready") {
+		t.Errorf("stderr copy = %q, tail = %q", stderr.String(), p.Stderr())
+	}
+	if p.Killed() {
+		t.Error("a process that exited on EOF reports a kill")
+	}
+
+	pol = helperPolicy("env")
+	pol.Env.Add = []string{"FOO_318=added"}
+	p, err = Start(context.Background(), Host(), helperArgv(), pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readLine(t, p); got != "added|" {
+		t.Errorf("child env = %q", got)
+	}
+	_ = p.Close(5 * time.Second)
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 // The environment is the policy's allowlist: a parent secret does not pass.
 func TestStartScopesTheEnvironment(t *testing.T) {
 	t.Setenv("SECRET_318", "hunter2")
@@ -131,6 +182,9 @@ func TestCloseKillsAStuckProcess(t *testing.T) {
 	case <-p.Done():
 	default:
 		t.Fatal("Close returned with the process still running")
+	}
+	if !p.Killed() {
+		t.Error("a process killed after its grace does not say so")
 	}
 	if p.Wait() == nil {
 		t.Error("a killed process reported a clean exit")

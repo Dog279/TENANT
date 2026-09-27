@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -90,5 +91,16 @@ func TestWSLEnvSharesOnlyTheAllowlist(t *testing.T) {
 	joined := strings.Join(got, "\n")
 	if !strings.Contains(joined, "FOO=bar") || strings.Contains(joined, "WSLENV=OLD") {
 		t.Errorf("env = %q", got)
+	}
+
+	// Add crosses in either mode; unscoped, beside Tenant's own WSLENV.
+	add := []string{"TENANT_TRACE_ID=abc"}
+	got = wslEnv(parent, EnvPolicy{Add: add})
+	if want := []string{"PATH=C:\\bin", "SECRET_318=x", "KEEP=1", "TENANT_TRACE_ID=abc", "WSLENV=OLD:TENANT_TRACE_ID/u"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("unscoped + Add = %q", got)
+	}
+	got = wslEnv(parent, EnvPolicy{Pass: []string{"KEEP"}, Add: add})
+	if !slices.Contains(got, "TENANT_TRACE_ID=abc") || !slices.Contains(got, "WSLENV=KEEP/u:TENANT_TRACE_ID/u") {
+		t.Errorf("scoped + Add = %q", got)
 	}
 }
