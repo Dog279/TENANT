@@ -73,9 +73,6 @@ func auditSecrets(ctx context.Context, before, after map[string]string, surface 
 // TUI, so the command's records reach logbook.db and the chain, not only the
 // text files. A verify (auditOnly) creates no key.
 func attachCommandStore(h *logs.Hub, c *commonFlags) {
-	if c.lc != nil && c.lc.Logs.Store != nil && !*c.lc.Logs.Store {
-		return
-	}
 	readKey := chainKey
 	if c.auditOnly {
 		readKey = readChainKey

@@ -31,7 +31,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,7 +38,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
@@ -190,7 +188,7 @@ func runLogs(ctx context.Context, args []string, w io.Writer) error {
 		return out.stats(st, top)
 	case "export":
 		format := o.format
-		if !flagSet(fs, "format") {
+		if !fsVisited(fs, "format") {
 			format = logapi.NDJSON
 		}
 		return logsExport(ctx, lb, o, strings.Join(pos, " "), format, w)
@@ -298,11 +296,6 @@ func runLogs(ctx context.Context, args []string, w io.Writer) error {
 		return logsAlerts(ctx, lb, out, o, pos)
 	}
 	return nil
-}
-
-func flagSet(fs *flag.FlagSet, name string) (set bool) {
-	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
-	return set
 }
 
 // logsQuery prints the newest limit events matching q, oldest first (newest
@@ -582,12 +575,7 @@ func servingBoot(path, root string) (string, time.Time) {
 	boots, _ := st.Unfinished(context.Background(), runtrace.BootID())
 	var best store.Boot
 	for _, b := range boots {
-		if !bootIDRe.MatchString(b.ID) { // it names a file
-			continue
-		}
-		lock, err := datalock.ExclusiveFile(filepath.Join(root, "boots", b.ID+".lock"))
-		if err == nil { // its process is gone
-			_ = lock.Release()
+		if !logs.BootAlive(root, b.ID) {
 			continue
 		}
 		if best.ID == "" || b.Role == "serve" && best.Role != "serve" || b.Role == best.Role && b.Started.After(best.Started) {
@@ -596,8 +584,6 @@ func servingBoot(path, root string) (string, time.Time) {
 	}
 	return best.ID, best.Started
 }
-
-var bootIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // runningComponents lists what the running serve (or TUI) runs, through its
 // dashboard: only that process knows.
@@ -1097,17 +1083,10 @@ func (o logsOut) verify(v logapi.Verify) error {
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func sizeText(n int64) string {
-	switch {
-	case n == 0:
+	if n == 0 {
 		return "-"
-	case n >= 1<<30:
-		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
 	}
-	return fmt.Sprintf("%d B", n)
+	return humanBytes(n)
 }
 
 func ageText(s int64) string {
@@ -1121,10 +1100,4 @@ func ageText(s int64) string {
 	}
 }
 
-func trendText(t [7]int64) string {
-	parts := make([]string, len(t))
-	for i, n := range t {
-		parts[i] = itoa(n)
-	}
-	return strings.Join(parts, " ")
-}
+func trendText(t [7]int64) string { return strings.Trim(fmt.Sprint(t), "[]") }

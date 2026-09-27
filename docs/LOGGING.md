@@ -443,8 +443,7 @@ It POSTs to the running hub (the line shows up live in open dashboards; the
 TUI's feed does not show it); when no hub is reachable (or with `--file`) it
 leaves the line in the spool, which the next Tenant process to run files into
 the log book, tagged `external` (see [Intake](#intake-v1-history-foreign-folders-and-the-spool)).
-With `"logs": {"store": false}` it appends to the day's file instead. The token is
-`dashboard.auth` when config.json sets one, else the generated
+The token is `dashboard.auth` when config.json sets one, else the generated
 `<config>/dashboard-auth-token` a default install uses (`--token` overrides).
 Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
 `system`, …) are refused, hub up or not.

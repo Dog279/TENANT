@@ -632,7 +632,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		// dashboardManager, so anything wired only in cmdTUI is silently absent
 		// here — which is exactly how this section came up empty the first time.
 		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
-		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceDashboard},
 		skills:      dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models:      dashModel{mc: modelCtl},
 		approvals:   broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203

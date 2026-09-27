@@ -472,7 +472,8 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	// makes every live-tail cursor restart instead of skipping what comes next.
 	// Its Security log gets a re-anchor record (the restored head, the head it
 	// replaced, the backup), so the restore verifies as one, not as tampering.
-	if lb := filepath.Join(c.logsRoot(), "logbook.db"); statOK(lb) {
+	lb := filepath.Join(c.logsRoot(), "logbook.db")
+	if _, err := os.Stat(lb); err == nil {
 		if err := store.Reidentify(lb); err != nil {
 			fmt.Fprintf(out, "  warning: the log book was restored but not re-identified (%v); viewers left open may miss new events until they reload\n", err)
 		}
@@ -755,10 +756,4 @@ func quoteArg(p string) string {
 		return `"` + p + `"`
 	}
 	return p
-}
-
-// statOK reports whether path exists.
-func statOK(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }

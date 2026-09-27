@@ -708,19 +708,8 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			}
 		}
 		// Mirror this task agent's actions to the dashboard feed (serve's
-		// nightly/manual runs; nil for CLI runs). Same kind filter as the
-		// sub-agent mirror: actions and outcomes only.
-		var obs func(agent.Event)
-		if events != nil {
-			id := agentID
-			obs = func(e agent.Event) {
-				switch e.Kind {
-				case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-					e.Agent, e.Source = id, "eval"
-					events(e)
-				}
-			}
-		}
+		// nightly/manual runs; nil for CLI runs).
+		obs := mirrorObserver(events, agentID, "eval")
 		ag, aerr := agent.New(agent.Config{
 			AgentID:    agentID,
 			Router:     router,

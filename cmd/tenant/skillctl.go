@@ -129,16 +129,9 @@ type skillCfgControl struct {
 	onDiscordConfigured func(token, operatorID string) error
 
 	// surface is where this control's changes are made, for the Security
-	// records of the secrets they store: the TUI's sets it, "" is the
-	// dashboard's.
+	// records of the secrets they store: the dashboard's unless the TUI's
+	// sets its own.
 	surface string
-}
-
-func (sc *skillCfgControl) from() string {
-	if sc.surface != "" {
-		return sc.surface
-	}
-	return surfaceDashboard
 }
 
 // newSkillControl wires a skill control over the operator's config
@@ -162,7 +155,7 @@ func newSkillCfgControl(cfgDir string, kinds map[string]skillKind, setPluginEnab
 			kinds[d.ID] = d.AdaptConfigure(k, configureHost{cfgDir: cfgDir, mcpConnect: connect})
 		}
 	}
-	return &skillCfgControl{cfgDir: cfgDir, kinds: kinds, setPluginEnabled: setPluginEnabled}
+	return &skillCfgControl{cfgDir: cfgDir, kinds: kinds, setPluginEnabled: setPluginEnabled, surface: surfaceDashboard}
 }
 
 // SkillList returns every skill known to this control. It surfaces BOTH the
@@ -371,7 +364,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 	lc.Skills[id] = sk
 
 	// --- Phase 3: write credentials.json FIRST (audit P0).
-	if err := saveCredentials(sc.cfgDir, creds, sc.from()); err != nil {
+	if err := saveCredentials(sc.cfgDir, creds, sc.surface); err != nil {
 		return "", fmt.Errorf("save credentials.json: %w", err)
 	}
 
@@ -511,7 +504,7 @@ func (sc *skillCfgControl) SkillClear(id, fieldKey string) (string, error) {
 	}
 
 	// Write order matches Configure: creds first, then config.
-	if err := saveCredentials(sc.cfgDir, creds, sc.from()); err != nil {
+	if err := saveCredentials(sc.cfgDir, creds, sc.surface); err != nil {
 		return "", fmt.Errorf("save credentials.json: %w", err)
 	}
 	if err := lc.Save(sc.cfgDir); err != nil {
@@ -551,7 +544,7 @@ func (sc *skillCfgControl) runProbeWithSave(k skillKind, creds *credentials, set
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	save := func() error { return saveCredentials(sc.cfgDir, creds, sc.from()) }
+	save := func() error { return saveCredentials(sc.cfgDir, creds, sc.surface) }
 	done := make(chan struct {
 		identity string
 		err      error

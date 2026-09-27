@@ -106,28 +106,31 @@ func notCron(name string) bool {
 	return strings.HasPrefix(name, "cron_") || strings.HasPrefix(name, "mcp_")
 }
 
+// mirrorObserver mirrors an agent's actions and outcomes to the dashboard
+// feed events, as agent id from source; nil when there is no feed. Same kind
+// filter as serve's sub-agent mirror: the feed wants actions and outcomes,
+// not every internal event.
+func mirrorObserver(events func(agent.Event), id, source string) func(agent.Event) {
+	if events == nil {
+		return nil
+	}
+	return func(e agent.Event) {
+		switch e.Kind {
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+			e.Agent, e.Source = id, source
+			events(e)
+		}
+	}
+}
+
 // buildCronRunner constructs the safe + exec runner agents and returns a Runner
 // that dispatches each job to the right path.
 func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
-	// Same kind filter as serve's sub-agent mirror: the feed wants actions
-	// and outcomes, not every internal event.
-	observe := func(id string) func(agent.Event) {
-		if d.events == nil {
-			return nil
-		}
-		return func(e agent.Event) {
-			switch e.Kind {
-			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent, e.Source = id, "cron"
-				d.events(e)
-			}
-		}
-	}
 	safeReg, safeDisp := restrictReadComms(d.fullReg, d.fullDisp, "scheduled cron jobs", notCron)
 	safeAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills, Runs: d.runs,
-		Observer:  observe("tenant-cron"),
+		Observer:  mirrorObserver(d.events, "tenant-cron", "cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
@@ -139,7 +142,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	execAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron-exec", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills, Runs: d.runs,
-		Observer:  observe("tenant-cron-exec"),
+		Observer:  mirrorObserver(d.events, "tenant-cron-exec", "cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})

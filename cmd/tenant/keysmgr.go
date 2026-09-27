@@ -26,14 +26,7 @@ const credsWatchInterval = 20 * time.Second
 type dashKeys struct {
 	cfgDir  string
 	mc      *modelControl
-	surface string // where the change is made, for its Security record: "" is the dashboard
-}
-
-func (k dashKeys) from() string {
-	if k.surface != "" {
-		return k.surface
-	}
-	return surfaceDashboard
+	surface string // where the change is made, for its Security record
 }
 
 var _ dashboard.SecretsControl = dashKeys{}
@@ -94,7 +87,7 @@ func (k dashKeys) SetSecret(credID, value string) error {
 	case keyProvider:
 		// AddCloudModel registers the provider (Auth.Stored=true) + stores the
 		// key in protected credentials.json. Idempotent: re-set overwrites the key.
-		if _, err := k.mc.addCloudModel(spec.CredID, value, k.from()); err != nil {
+		if _, err := k.mc.addCloudModel(spec.CredID, value, k.surface); err != nil {
 			return err
 		}
 		k.maybeReloadProvider(spec.CredID) // hot-swap it live if it's the active provider
@@ -105,7 +98,7 @@ func (k dashKeys) SetSecret(credID, value string) error {
 			return err
 		}
 		creds.Set(spec.CredID, value)
-		return saveCredentials(k.cfgDir, creds, k.from())
+		return saveCredentials(k.cfgDir, creds, k.surface)
 	}
 }
 
@@ -116,7 +109,7 @@ func (k dashKeys) RemoveSecret(credID string) error {
 	}
 	switch spec.Kind {
 	case keyProvider:
-		if err := forgetProviderSecret(k.cfgDir, spec.CredID, k.from()); err != nil { // delete the cred entry
+		if err := forgetProviderSecret(k.cfgDir, spec.CredID, k.surface); err != nil { // delete the cred entry
 			return err
 		}
 		// forgetProviderSecret does NOT clear Auth.Stored, which would leave
@@ -133,7 +126,7 @@ func (k dashKeys) RemoveSecret(credID string) error {
 			return err
 		}
 		delete(creds.Secrets, spec.CredID)
-		return saveCredentials(k.cfgDir, creds, k.from())
+		return saveCredentials(k.cfgDir, creds, k.surface)
 	}
 }
 

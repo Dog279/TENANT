@@ -96,16 +96,6 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 	reg, restDisp := restrictForDiscord(d.fullTools, d.fullDisp)
 	disp := &discordRoutingDispatcher{discord: ddisc, rest: restDisp}
 
-	var obs func(agent.Event)
-	if d.events != nil {
-		obs = func(e agent.Event) {
-			switch e.Kind {
-			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent, e.Source = "tenant-discord", "discord"
-				d.events(e)
-			}
-		}
-	}
 	ag, err := agent.New(agent.Config{
 		AgentID:    "tenant-discord",
 		Router:     d.router,
@@ -126,7 +116,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		Compactor:              d.compactor,
 		UserProfile:            d.userProfile,
 		SystemPrompt:           d.sysPrompt + discordSysSuffix,
-		Observer:               obs,
+		Observer:               mirrorObserver(d.events, "tenant-discord", "discord"),
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,
 		RouteSticky:            d.routeSticky,

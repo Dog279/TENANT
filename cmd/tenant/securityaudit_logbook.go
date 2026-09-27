@@ -264,12 +264,7 @@ func verifyLogbook(ctx context.Context, cfgDir string, st *store.Store, stErr, k
 	case keyErr != nil:
 		return verifyAudit{Result: "unverified", Error: keyErr.Error()}
 	}
-	var opts store.VerifyOptions
-	anchor, err := readChainHead(chainAnchorPath(cfgDir))
-	opts.Anchor = anchor
-	if err == nil && w.Kind == "file" && w.Problem == "" {
-		opts.Witness, err = readChainHead(w.Target)
-	}
+	opts, err := chainVerifyOptions(cfgDir, w)
 	if err != nil {
 		return verifyAudit{Result: "unverified", Error: err.Error()}
 	}
@@ -284,7 +279,7 @@ func verifyLogbook(ctx context.Context, cfgDir string, st *store.Store, stErr, k
 	return a
 }
 
-// witnessOf reads logs.security.witness as witnessChain does.
+// witnessOf reads logs.security.witness, for witnessChain and the audit.
 func witnessOf(lc *launchConfig) witnessAudit {
 	w := ""
 	if lc != nil {

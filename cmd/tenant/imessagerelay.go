@@ -373,16 +373,6 @@ func (m *imessageResponderManager) Stop() (string, error) {
 // buildIMessageAgent constructs the dedicated iMessage agent over the live tool
 // surface (gating enforced per-turn via the responder's offsite-confirm).
 func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
-	var obs func(agent.Event)
-	if d.events != nil {
-		obs = func(e agent.Event) {
-			switch e.Kind {
-			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent, e.Source = "tenant-imessage", "imessage"
-				d.events(e)
-			}
-		}
-	}
 	return agent.New(agent.Config{
 		AgentID:    "tenant-imessage",
 		Router:     d.router,
@@ -404,7 +394,7 @@ func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 		Compactor:              d.compactor,
 		UserProfile:            d.userProfile,
 		SystemPrompt:           d.sysPrompt + imessageSysSuffix,
-		Observer:               obs,
+		Observer:               mirrorObserver(d.events, "tenant-imessage", "imessage"),
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,
 		RouteSticky:            d.routeSticky,

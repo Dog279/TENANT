@@ -46,7 +46,7 @@ func buildPeerToolDeps(ctx context.Context, c *commonFlags, wikiDir string) (pee
 			deps.embedder = emb
 		}
 		if wikiDir != "" {
-			if ix, werr := buildWikiIndex(ctx, c, router, wikiDir, newLogger()); werr == nil {
+			if ix, werr := buildWikiIndex(ctx, c, router, wikiDir); werr == nil {
 				deps.wiki = ix
 			}
 		}
