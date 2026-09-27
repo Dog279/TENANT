@@ -73,15 +73,15 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	}
 
 	discordBroker := newDiscordApprovalBroker(d.log.With("source", "approvals"))
-	discordBroker.reg.emit = d.emit // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
-	discordBroker.persist = func(snap map[string]string) {
+	discordBroker.SetEvents(d.emit) // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
+	discordBroker.SetPersist(func(snap map[string]string) {
 		if c.lc == nil {
 			return
 		}
 		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
-	}
+	})
 	if c.lc != nil {
-		discordBroker.loadModes(c.lc.Relay.Permissions)
+		discordBroker.LoadModes(c.lc.Relay.Permissions)
 	}
 
 	deps := discordAgentDeps{
@@ -137,13 +137,13 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	}
 	// Feed line + operator DM when a remote connector's sign-in dies / recovers.
 	d.tools.SetMCPAuthNotifier(mcpAuthNotifier(d.notify, relayMgr.NotifyOperator))
-	discordBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
 			return tui.ApproveOnce
 		}
 		return tui.DenyOnce
-	}
-	discordBroker.locked = relayMgr.execLocked // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
+	})
+	discordBroker.SetLock(relayMgr.execLocked) // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
 		relayMgr.operatorID = c.lc.Relay.OperatorID
 		relayMgr.allowExec = c.lc.Relay.AllowExec // restored with or without a bot token, as in cmdTUI
@@ -203,14 +203,14 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// broker's request channel, so an "ask" lands in the same queue the headless
 	// drain surfaces on the dashboard.
 	imsgBroker := newOffsiteApprovalBroker(d.log.With("source", "approvals"), d.broker)
-	imsgBroker.persist = func(snap map[string]string) {
+	imsgBroker.SetPersist(func(snap map[string]string) {
 		if c.lc == nil {
 			return
 		}
 		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
-	}
+	})
 	if c.lc != nil {
-		imsgBroker.loadModes(c.lc.IMessage.Permissions)
+		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
 	}
 	allowMgr.setPerms(imsgBroker)
 
@@ -280,12 +280,12 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			// approver is nil ⇒ Phase-1 deny-all is unchanged.
 			if approver := newIMessageApprover(responder, imsgOperator, d.log); approver != nil {
 				responder.approver = approver
-				imsgBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+				imsgBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 					if approver.Confirm(cctx, req.Action, req.Detail) {
 						return tui.ApproveOnce
 					}
 					return tui.DenyOnce
-				}
+				})
 			}
 			return responder, func() { _ = nat.Close() }, nil
 		},

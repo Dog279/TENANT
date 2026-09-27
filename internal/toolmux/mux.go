@@ -310,7 +310,7 @@ type MCPDeps struct {
 	TrustAnnotations bool
 	AllowWrite       bool
 	Confirm          func(context.Context, string, string) bool
-	Rule             func(action string) string // per-tool permission rule lookup (toolrules.go); nil ⇒ none
+	Rule             func(action string) string // per-tool permission rule lookup (approval.Rules); nil ⇒ none
 	CacheDir         string                     // 0600 OAuth token cache dir (persistence across restarts)
 	Log              *slog.Logger               // connect/refresh failure logging (TEN-166)
 	Trust            map[string]string          // persisted per-connector trust by URL (config mcp_trust); applied on register

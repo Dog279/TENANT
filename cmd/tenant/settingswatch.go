@@ -11,10 +11,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/approval"
 )
 
 const settingsWatchInterval = 3 * time.Second
@@ -62,7 +65,7 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	var parts []string
 	// Compare the file's USABLE rules to the live set, so an invalid entry
 	// (skipped on load) doesn't read as a change on every tick.
-	if wanted, _ := normalizeRules(fresh.ToolRules); rules != nil && !rulesEqual(wanted, rules.Snapshot()) {
+	if wanted, _ := approval.NormalizeRules(fresh.ToolRules); rules != nil && !maps.Equal(wanted, rules.Snapshot()) {
 		n, skipped := rules.Load(fresh.ToolRules)
 		mu.Lock()
 		stg.ToolRules = rules.Snapshot()
@@ -74,7 +77,7 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 		parts = append(parts, s)
 	}
 	if broker != nil && len(fresh.Permissions) > 0 {
-		live := broker.modesPublic()
+		live := broker.Modes()
 		diff := 0
 		for cat, mode := range fresh.Permissions {
 			if pm, ok := parseMode(mode); ok && live[cat] != "" && live[cat] != pm.String() {
@@ -82,9 +85,9 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 			}
 		}
 		if diff > 0 {
-			broker.loadModes(fresh.Permissions)
+			broker.LoadModes(fresh.Permissions)
 			mu.Lock()
-			stg.Permissions = broker.modesPublic()
+			stg.Permissions = broker.Modes()
 			mu.Unlock()
 			parts = append(parts, fmt.Sprintf("%d category mode(s)", diff))
 		}

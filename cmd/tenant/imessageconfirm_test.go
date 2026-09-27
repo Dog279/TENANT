@@ -537,12 +537,12 @@ func TestIMessageApprover_BrokerDenyByDefault(t *testing.T) {
 
 	host := newApprovalBroker(nil)
 	br := newOffsiteApprovalBroker(nil, host) // all categories default DENY
-	br.ask = func(ctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+	br.SetAsk(func(ctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		if ap.Confirm(ctx, req.Action, req.Detail) {
 			return tui.ApproveOnce
 		}
 		return tui.DenyOnce
-	}
+	})
 
 	// catExec defaults to deny offsite ⇒ refused without reaching the approver.
 	if br.Confirm(context.Background(), "os_exec", "rm -rf /") {
@@ -648,25 +648,5 @@ func TestIMessageResponder_ApprovalReplyReleasesBlockedTurn(t *testing.T) {
 	r.mu.Unlock()
 	if active {
 		t.Error("responder must be idle after the turn")
-	}
-}
-
-// The host mirror of an iMessage-origin approval is labeled "imessage", not
-// "discord" (the origin literal was hardcoded).
-func TestOffsiteBroker_MirrorCarriesOwnOrigin(t *testing.T) {
-	host := newApprovalBroker(nil)
-	b := newOffsiteApprovalBroker(nil, host)
-	var ids []string
-	b.reg.emit = func(e agent.Event) {
-		if e.Approval != nil {
-			ids = append(ids, e.Approval.ID+"/"+e.Approval.Origin)
-		}
-	}
-	b.ask = func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.DenyOnce }
-	if d := b.askDecision(context.Background(), catExec, "run", "d"); d != tui.DenyOnce {
-		t.Fatalf("askDecision = %v", d)
-	}
-	if len(ids) != 2 || ids[0] != "beside-imessage/imessage" || ids[1] != "beside-imessage/imessage" {
-		t.Fatalf("mirror events must carry the broker's own origin, got %v", ids)
 	}
 }

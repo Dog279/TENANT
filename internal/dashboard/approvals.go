@@ -9,6 +9,8 @@ package dashboard
 
 import (
 	"net/http"
+
+	"tenant/internal/control"
 )
 
 // ApprovalControl is the dashboard's view onto the headless approval queue.
@@ -25,13 +27,7 @@ type ApprovalControl interface {
 // PendingApproval is one awaiting dangerous-action request as the REST API
 // renders it. AgeSecs lets the UI (and the doctor probe) flag a request that
 // has been waiting too long — the classic headless wedge symptom.
-type PendingApproval struct {
-	ID       string `json:"id"`
-	Category string `json:"category"`
-	Action   string `json:"action"`
-	Detail   string `json:"detail"`
-	AgeSecs  int    `json:"age_secs"`
-}
+type PendingApproval = control.PendingApproval
 
 // SetApprovals installs the headless approval surface after construction
 // (mirrors SetCron). Safe to leave nil for the interactive TUI.

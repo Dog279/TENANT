@@ -1,8 +1,10 @@
 # Change: the composition root, split and held to its dependency rules (ARC-002)
 
-**Branch:** `refactor/ten-314-composition-root` (on top of
-`feat/ten-297-provenance-inspector`) · **Status:** in progress. Slices 0–2
-are done and tested on Windows; later slices extend this record.
+**Branch:** `refactor/ten-314-composition-root` (slices 0–2, on top of
+`feat/ten-297-provenance-inspector`) and `refactor/ten-314-control-plane`
+(slices 3–4, on top of `feat/ten-321-plugin-registry`) · **Status:** slices
+0–4 are implemented and tested on Windows; not yet deployed. What is left of
+the ticket is under "Still open".
 **Ticket:** ARC-002 / TEN-314.
 
 ## What changed
@@ -89,6 +91,77 @@ are done and tested on Windows; later slices extend this record.
   The DATAFLOW rows that cited `cmd/tenant/toolmux.go` by line numbers,
   which had already drifted, cite the builder by function.
 
+### Slice 3: the approval broker moves to `internal/approval`
+- `approval.Broker`, the decision point for every dangerous action, leaves
+  `package main` with its pending-approval registry and the per-tool rule set.
+  `Confirm` resolves an action's category, then applies, in order:
+  - the surface's lock (the Discord relay's exec mode);
+  - the operator's per-tool rules;
+  - the category's mode (ask, allow or deny) and session grants.
+
+  For "ask" it raises a request that any surface can resolve by id, or hands it
+  to a channel's own backend (Discord buttons, iMessage replies). It fails
+  closed when no surface can reach the operator.
+- **It knows no plugin and no surface.** The command injects:
+  - which category an action belongs to: `cmd/tenant/approval.go`'s
+    `categorize` reads the host's table, then the plugin registry's;
+  - how modes and rules persist (`SetPersist`);
+  - the event stream (`SetEvents`);
+  - a channel's ask backend (`SetAsk`) and the surface's lock (`SetLock`).
+
+  Main used to assign the broker's unexported fields directly. Those
+  assignments are now setters, and `Locked(action)` reports a surface's lock.
+- **The fail-closed default moves with it.** `approval.Categorize` files an
+  action no table knows under destructive, which always asks unless the
+  operator opened it.
+- **The approval types the surfaces share move to `internal/control`:**
+  `ApprovalRequest`, `ApprovalDecision`, `PendingApproval`, `PermissionInfo`
+  and `ToolRuleInfo`. `internal/tui` and `internal/dashboard` alias them, so
+  their callers read as before, and the broker imports neither UI.
+- **What stays in main** is what depends on the command: the host's action
+  table, `categorize`, the launch flags' grants (`seedFromFlags`), and aliases
+  for the broker's old names.
+- **The tests move with the code:** 22 tests covering the registry fan-out,
+  decisions, persistence, the Discord and iMessage brokers, and tool rules.
+  They use a small stand-in for the command's action tables. `TestCategorize`
+  and the flag seeding stay in main, beside the tables. A new test pins each
+  broker's defaults: the host and Discord ask, and the offsite broker denies.
+- `archtest` gains the rule: `approval` may import `agent`, `control`, `logs`
+  and `runtrace`. `dashboard` may now import `control`.
+
+### Slice 4: one staged shutdown for serve and the TUI
+- **`internal/lifecycle` orders a long-running command's teardown.** A
+  component registers how to stop it, and at which stage, where it is built.
+  `Shutdown` then runs the stages in order:
+  1. **Unblock:** deny pending approvals, so no gated turn stays blocked.
+  2. **Intake:** stop the peer listener, the Discord relay and the dashboard,
+     so nothing starts a turn or a job mid-teardown.
+  3. **Drain:** let cron and self-improvement finish their running jobs.
+  4. **Release:** close the tool stats, the team runtime and bus, the stores
+     and the rest, last opened first, like the deferred calls they replace.
+
+  A failing or panicking stop is logged and reported, and the rest still run.
+  `Shutdown` runs once, so a command both defers it (for an early return) and
+  calls it at the end. A stop registered after teardown began runs at once.
+- **`serve` keeps its order (TEN-194).** It is now declared where each
+  component is built, instead of in a block at the end plus a stack of
+  defers. The only change is within the drain stage: self-improvement now
+  drains before cron. Both still finish before anything is released.
+- **The TUI now tears down like `serve`.** It used to drain cron and
+  self-improvement and then close its stores. It never:
+  - denied pending approvals;
+  - stopped its peer listener, its relay or its dashboard.
+
+  So a background turn could arrive, or sit blocked on an approval, while the
+  stores closed. The relay and the dashboard stop with `Shutdown`, which
+  persists nothing. Their enabled setting survives the exit, as it does in
+  `serve`.
+- **Only process-level resources stay deferred:** the log hub closes after
+  the teardown, and the signal context is released with the process.
+- **Not stopped at exit in either command:** the iMessage responder, whose
+  `Stop` persists "off". It ends with the context, as before.
+- `archtest` gains the rule: `lifecycle` is a leaf.
+
 ## Why
 All configuration, runtime lifecycle, control plane and plugin registry code
 lived in `package main`, with dependency directions nobody wrote down or
@@ -97,13 +170,40 @@ enforced rules, so `cmd/tenant` becomes thin command adapters.
 
 ## Evidence
 - `go vet ./...` is clean, and `go test ./...` passes (66 packages after
-  slice 2).
+  slice 2, 68 after slice 3, 69 after slice 4).
 - The smoke eval passes 5/5 against its baseline.
 - Mutation testing:
   - archtest: 7 mutations of the rules and checker, all caught;
   - config: a renamed `config.json` tag and a renamed `settings.json` tag, both
-    caught by the format test.
+    caught by the format test;
+  - approval: 12 mutants of the broker and its wiring, all caught by failing
+    tests. They cover the fall-through category, the shared registry, the lock,
+    the ask backend, rules, persistence, flag seeding, events and the offsite
+    default. Two first compiled only with dead code left in, and were rerun as
+    mutants that build;
+  - lifecycle and the teardown wiring: 9 mutants, all caught. They cover stage
+    order, order within a stage, running once, a late stop, a panic, reported
+    errors, a TUI step missing, a serve step in the wrong stage, and a bare
+    defer.
+- **Serve and the TUI** are held to the same teardown by
+  `TestServeAndTUITearDownAlike`. It reads both commands' source and checks
+  that each registers the shared hub's stops at the same stages. It also
+  checks that neither closes anything through a bare `defer`.
+
+## Still open
+- **`cmd/tenant` is not yet a set of thin command adapters.** It still holds
+  about 40,000 lines in 133 files. The hub's construction is written out
+  twice: in `cmdServe`, and in `cmdTUI` with the TUI's controls interleaved.
+  It covers the router, stores, approval broker, tool mux, team runtime,
+  cron, relay, dashboard and peers. The next step is one `buildHub` that both
+  commands call. Then the hub, and the control adapters (`*ctl.go`) that
+  serve the TUI and the dashboard, can move behind internal packages.
+- **The plugin descriptors stay in `package main`** (`plugin_<id>.go`). Their
+  hooks are adapters over the command's flags and controls. The registry's
+  rules and indexes are `internal/pluginreg` (TEN-321).
 
 ## Operator notes
-- No behavior change. `config.json`, `credentials.json` and
+- No change to files: `config.json`, `credentials.json` and
   `settings.<agent>.json` read and write exactly as before.
+- On exit, the TUI now denies approvals still pending and stops its peer
+  listener, relay and dashboard before closing its stores, as `serve` does.

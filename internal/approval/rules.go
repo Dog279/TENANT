@@ -1,11 +1,11 @@
-package main
+package approval
 
-// toolrules.go: per-tool permission rules — the operator's answer to tools the
-// category table cannot know in advance: every tool a newly adopted MCP server
-// brings, a plugin's unusual action id, a peer's tool. A rule maps a PATTERN to
-// a mode and is consulted BEFORE the category logic on every broker (host,
-// Discord relay, iMessage) and inside the connector gate, so it applies
-// whichever surface a turn came from and whatever the connector's trust is:
+// Per-tool permission rules: the operator's answer to tools the category table
+// cannot know in advance: every tool a newly adopted MCP server brings, a
+// plugin's unusual action id, a peer's tool. A rule maps a PATTERN to a mode
+// and is consulted BEFORE the category logic on every broker (host, Discord
+// relay, iMessage) and inside the connector gate, so it applies whichever
+// surface a turn came from and whatever the connector's trust is:
 //
 //	allow  the tool runs without a prompt (even if its category is ask, or destructive)
 //	deny   the tool is refused without a prompt (even under a trusted connector)
@@ -18,11 +18,11 @@ package main
 //	glob               mcp:127.0.0.1:9000:*   delete_*   *:search_*   (* = any run, ? = one char)
 //
 // Rules persist in settings.<agent>.json under "tool_rules". Edit that file by
-// hand and the running hub applies it within seconds (settingswatch.go), or
-// manage them live with /permissions add|rm and the dashboard's Tools page.
+// hand and the running hub applies it within seconds (the settings watcher),
+// or manage them live with /permissions add|rm and the dashboard's Tools page.
 // There is deliberately NO agent tool for rules: the model must not be able to
-// grant itself permissions. The file tools refuse the settings file outright
-// (fileToolGuards), so write access does not open a way round that.
+// grant itself permissions. The file tools refuse the settings file outright,
+// so write access does not open a way round that.
 
 import (
 	"fmt"
@@ -32,24 +32,33 @@ import (
 	"sync"
 	"unicode"
 
+	"tenant/internal/control"
 	"tenant/internal/logs"
-	"tenant/internal/tui"
 )
 
-type toolRules struct {
+// Rules is a set of per-tool rules, safe for concurrent use.
+type Rules struct {
 	mu      sync.RWMutex
 	rules   map[string]string // pattern → allow | deny | ask
 	persist func(map[string]string)
 	log     *slog.Logger
 }
 
-func newToolRules() *toolRules {
-	return &toolRules{rules: map[string]string{}, log: logs.For("approvals")}
+// NewRules returns an empty rule set.
+func NewRules() *Rules {
+	return &Rules{rules: map[string]string{}, log: logs.For("approvals")}
 }
 
-// defaultToolRules is the process-wide rule set every broker and every
-// connector consults. serve/tui load it from settings and set its persist hook.
-var defaultToolRules = newToolRules()
+// DefaultRules is the process-wide rule set every broker and every connector
+// consults. serve and the TUI load it from settings and set its persist hook.
+var DefaultRules = NewRules()
+
+// SetPersist installs the hook that saves the set after Set and Remove.
+func (r *Rules) SetPersist(persist func(rules map[string]string)) {
+	r.mu.Lock()
+	r.persist = persist
+	r.mu.Unlock()
+}
 
 // ruleKind classifies a pattern: exact id, bare tool name, or glob.
 func ruleKind(pattern string) string {
@@ -140,7 +149,7 @@ func matchRank(pattern, action string) (int, bool) {
 }
 
 // Lookup returns the winning rule for an action id, if any.
-func (r *toolRules) Lookup(action string) (mode, pattern string, ok bool) {
+func (r *Rules) Lookup(action string) (mode, pattern string, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	bestRank, bestLen := 99, -1
@@ -158,7 +167,7 @@ func (r *toolRules) Lookup(action string) (mode, pattern string, ok bool) {
 }
 
 // Mode is Lookup for the connector gate's Policy.Rule: "" when no rule applies.
-func (r *toolRules) Mode(action string) string {
+func (r *Rules) Mode(action string) string {
 	m, _, ok := r.Lookup(action)
 	if !ok {
 		return ""
@@ -167,51 +176,53 @@ func (r *toolRules) Mode(action string) string {
 }
 
 // Set adds or replaces a rule and persists the set.
-func (r *toolRules) Set(pattern, mode string) error {
+func (r *Rules) Set(pattern, mode string) error {
 	pattern = strings.TrimSpace(pattern)
 	if err := validRulePattern(pattern); err != nil {
 		return err
 	}
-	pm, ok := parseMode(mode)
+	pm, ok := ParseMode(mode)
 	if !ok {
 		return fmt.Errorf("mode must be ask|allow|deny")
 	}
 	r.mu.Lock()
 	r.rules[pattern] = pm.String()
 	snap := r.snapshotLocked()
+	persist := r.persist
 	r.mu.Unlock()
 	r.log.Info("approval rule set", "rule", pattern, "mode", pm.String(), "kind", ruleKind(pattern))
-	if r.persist != nil {
-		r.persist(snap)
+	if persist != nil {
+		persist(snap)
 	}
 	return nil
 }
 
 // Remove deletes a rule; false when there was none.
-func (r *toolRules) Remove(pattern string) bool {
+func (r *Rules) Remove(pattern string) bool {
 	pattern = strings.TrimSpace(pattern)
 	r.mu.Lock()
 	_, had := r.rules[pattern]
 	delete(r.rules, pattern)
 	snap := r.snapshotLocked()
+	persist := r.persist
 	r.mu.Unlock()
 	if !had {
 		return false
 	}
 	r.log.Info("approval rule removed", "rule", pattern)
-	if r.persist != nil {
-		r.persist(snap)
+	if persist != nil {
+		persist(snap)
 	}
 	return true
 }
 
-// normalizeRules trims and validates a raw pattern → mode map (as read from a
+// NormalizeRules trims and validates a raw pattern → mode map (as read from a
 // file), returning the usable entries and how many were skipped.
-func normalizeRules(rules map[string]string) (map[string]string, int) {
+func NormalizeRules(rules map[string]string) (map[string]string, int) {
 	next := map[string]string{}
 	skipped := 0
 	for p, m := range rules {
-		pm, ok := parseMode(m)
+		pm, ok := ParseMode(m)
 		if validRulePattern(strings.TrimSpace(p)) != nil || !ok {
 			skipped++
 			continue
@@ -223,15 +234,15 @@ func normalizeRules(rules map[string]string) (map[string]string, int) {
 
 // Load replaces the whole set WITHOUT persisting (settings load, the file
 // watcher). Invalid entries are skipped and counted in the return.
-func (r *toolRules) Load(rules map[string]string) (loaded, skipped int) {
-	next, skipped := normalizeRules(rules)
+func (r *Rules) Load(rules map[string]string) (loaded, skipped int) {
+	next, skipped := NormalizeRules(rules)
 	r.mu.Lock()
 	r.rules = next
 	r.mu.Unlock()
 	return len(next), skipped
 }
 
-func (r *toolRules) snapshotLocked() map[string]string {
+func (r *Rules) snapshotLocked() map[string]string {
 	out := make(map[string]string, len(r.rules))
 	for p, m := range r.rules {
 		out[p] = m
@@ -240,7 +251,7 @@ func (r *toolRules) snapshotLocked() map[string]string {
 }
 
 // Snapshot copies the rule set (pattern → mode).
-func (r *toolRules) Snapshot() map[string]string {
+func (r *Rules) Snapshot() map[string]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.snapshotLocked()
@@ -248,11 +259,11 @@ func (r *toolRules) Snapshot() map[string]string {
 
 // Rules lists the set in precedence order (exact, then names, then globs;
 // longer literals first) — the order a reader should think about them in.
-func (r *toolRules) Rules() []tui.ToolRuleInfo {
+func (r *Rules) Rules() []control.ToolRuleInfo {
 	snap := r.Snapshot()
-	out := make([]tui.ToolRuleInfo, 0, len(snap))
+	out := make([]control.ToolRuleInfo, 0, len(snap))
 	for p, m := range snap {
-		out = append(out, tui.ToolRuleInfo{Pattern: p, Mode: m, Kind: ruleKind(p)})
+		out = append(out, control.ToolRuleInfo{Pattern: p, Mode: m, Kind: ruleKind(p)})
 	}
 	rank := map[string]int{"exact": 0, "name": 1, "glob": 2}
 	sort.Slice(out, func(i, j int) bool {
@@ -266,16 +277,4 @@ func (r *toolRules) Rules() []tui.ToolRuleInfo {
 		return out[i].Pattern < out[j].Pattern
 	})
 	return out
-}
-
-func rulesEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }

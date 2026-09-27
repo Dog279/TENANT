@@ -359,33 +359,21 @@ type toolRankingReporter interface {
 // ApprovalDecision is the user's answer to a dangerous-action prompt,
 // modeled on the three-tier approve flow (once / session / always) plus
 // an explicit deny.
-type ApprovalDecision int
+type ApprovalDecision = control.ApprovalDecision
 
 const (
-	DenyOnce ApprovalDecision = iota
-	ApproveOnce
-	ApproveSession
-	ApproveAlways
+	DenyOnce       = control.DenyOnce
+	ApproveOnce    = control.ApproveOnce
+	ApproveSession = control.ApproveSession
+	ApproveAlways  = control.ApproveAlways
 )
 
-// ApprovalRequest is a dangerous action paused awaiting the user. The
-// broker that raised it blocks on Reply until the TUI sends a decision
-// (or the turn's context is cancelled).
-type ApprovalRequest struct {
-	ID       string // broker-assigned id (TEN-203) — the key passed to ResolveApproval
-	Category string // safety category (exec, destructive, web, send)
-	Action   string // specific action id (os_exec, web_transact, …)
-	Detail   string // human-readable description of exactly what will run
-	Reply    chan ApprovalDecision
-}
+// ApprovalRequest is a dangerous action paused awaiting the user; the TUI
+// answers on its Reply channel.
+type ApprovalRequest = control.ApprovalRequest
 
-// ToolRuleInfo is one per-tool permission rule (pattern → mode): the layer the
-// operator fills in for tools the categories cannot know in advance.
-type ToolRuleInfo struct {
-	Pattern string // exact action id, bare tool name, or glob
-	Mode    string // ask | allow | deny
-	Kind    string // exact | name | glob
-}
+// ToolRuleInfo is one per-tool permission rule (pattern → mode).
+type ToolRuleInfo = control.ToolRuleInfo
 
 // ToolRuleControl is the optional per-tool rule surface a PermissionControl
 // may also offer (/permissions add|rm). The rule set is shared by every
@@ -397,11 +385,7 @@ type ToolRuleControl interface {
 }
 
 // PermissionInfo is one safety category's current mode, for /permissions.
-type PermissionInfo struct {
-	Category string
-	Mode     string // ask | allow | deny
-	Desc     string
-}
+type PermissionInfo = control.PermissionInfo
 
 // PermissionControl powers /permissions: view and set per-category safety
 // so the operator can turn approval on/off by command type.

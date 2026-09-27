@@ -40,6 +40,7 @@ var rules = []rule{
 	{Pkg: "internal/model/profiles", Notes: "leaf"},
 	{Pkg: "internal/control", Notes: "leaf: the data types the runtime, the TUI and the dashboard share"},
 	{Pkg: "internal/pluginreg", Notes: "leaf: the plugin registry's invariants and indexes"},
+	{Pkg: "internal/lifecycle", Notes: "leaf: the staged shutdown of a long-running command"},
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
 
@@ -60,9 +61,10 @@ var rules = []rule{
 	{Pkg: "internal/privacy", May: []string{"internal/memory/**", "internal/fsperm"}},
 	{Pkg: "internal/mcpserver", May: []string{"internal/mcp/**", "internal/memory/**", "internal/model"}},
 	{Pkg: "internal/agent", May: []string{"internal/logs", "internal/memory/**", "internal/model/**", "internal/orchestra", "internal/runtrace"}, Notes: "the turn loop; knows no plugin and no surface"},
+	{Pkg: "internal/approval", May: []string{"internal/agent", "internal/control", "internal/logs", "internal/runtrace"}, Notes: "the approval decision point; knows no plugin and no surface"},
 	{Pkg: "internal/toolmux", May: []string{"internal/agent", "internal/model", "internal/memory/cosine", "internal/plugins/mcpremote", "internal/peering", "internal/control"}, Notes: "the tool registry and dispatcher; builds no plugin itself"},
 	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/model"}, Notes: "never the dashboard"},
-	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/httplimits", "internal/logs", "internal/orchestra"}, Notes: "never the terminal UI"},
+	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/orchestra"}, Notes: "never the terminal UI"},
 }
 
 // match reports whether module-relative package path pkg matches pattern.
