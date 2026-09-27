@@ -74,6 +74,11 @@ var catalogued = map[string]int{
 	"internal/memory/usage":       0,
 	"internal/memory/userprofile": 0,
 	"internal/memory/working":     0,
+	// backup, privacy and skills (TEN-394)
+	"internal/backup":        0,
+	"internal/privacy":       0,
+	"internal/memory/skills": 0,
+	"internal/skillpkg":      0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

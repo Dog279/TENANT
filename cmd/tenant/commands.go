@@ -1809,7 +1809,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	defer hub.Close()
 	hub.Start(ctx)
 	log := slog.New(hub.Handler(nil))
-	startRetention(ctx, c, log.With("source", "privacy"))
+	startRetention(ctx, c)
 
 	// Teardown runs in the same stages as serve (internal/lifecycle, TEN-314):
 	// deny pending approvals, stop the peer listener, the relay and the

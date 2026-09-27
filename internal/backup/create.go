@@ -19,6 +19,7 @@ import (
 
 	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/event"
 	"tenant/internal/secrets"
 	"tenant/internal/version"
 )
@@ -68,7 +69,9 @@ const stagingPrefix = ".backup-staging-"
 // refer to, and the archive, which everything else points back to, is
 // captured last: a reference in the backup always finds its target. The
 // file is written under a temporary name and renamed into place, owner-only.
-func Create(ctx context.Context, out string, opts Options) (*Result, error) {
+func Create(ctx context.Context, out string, opts Options) (_ *Result, err error) {
+	ctx, act := event.Start(ctx, CreateRun, "path", out)
+	defer act.End(&err)
 	cfg, data, err := cleanRoots(opts.ConfigDir, opts.DataDir)
 	if err != nil {
 		return nil, err
@@ -183,6 +186,11 @@ func Create(ctx context.Context, out string, opts Options) (*Result, error) {
 	info, err := os.Stat(absOut)
 	if err != nil {
 		return nil, err
+	}
+	Written.Log(ctx, "path", absOut, "bytes", info.Size(), "files", len(m.Entries), "databases", m.Count(KindSQLite),
+		"logs", m.Count(KindLog), "secrets", m.Count(KindSecret), "skipped", len(m.Skipped), "encrypted", encrypted, "version", m.TenantVersion)
+	for _, w := range warnings {
+		CreateWarning.Log(ctx, "path", absOut, "warning", w)
 	}
 	return &Result{Path: absOut, Manifest: m, Bytes: info.Size(), Warnings: warnings}, nil
 }

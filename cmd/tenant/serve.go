@@ -94,7 +94,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hub.Start(ctx)
-	startRetention(ctx, c, log.With("source", "privacy"))
+	startRetention(ctx, c)
 
 	// Graceful, ordered teardown (TEN-194), in stages (internal/lifecycle):
 	// deny pending approvals so no gated turn stays blocked; STOP ACCEPTING NEW

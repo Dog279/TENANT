@@ -90,7 +90,9 @@ func TestPrivacyRetentionSetLogsAppliesLive(t *testing.T) {
 	if err := cmdPrivacyRetention(context.Background(), append([]string{"set", "logs", "7"}, privacyArgs(cfg, data)...), io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	runRetention(context.Background(), &commonFlags{cfgDir: cfg, dataDir: data}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := runRetention(context.Background(), &commonFlags{cfgDir: cfg, dataDir: data}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Error("the running hub should prune with the 7 days just set")
 	}
@@ -156,6 +158,11 @@ func TestPrivacyForgetAsksThenForgets(t *testing.T) {
 	}
 	if countEps() != 0 {
 		t.Fatalf("forget --yes left the episode:\n%s", out.String())
+	}
+	// The deletion is filed in the install's privacy log, with its counts.
+	plog, _ := os.ReadFile(filepath.Join(data, "logs", "privacy", time.Now().Format("2006-01-02")+".log"))
+	if !strings.Contains(string(plog), "Privacy deletion (forget)") || !strings.Contains(string(plog), "delete 1 episodes (conversation turns)") {
+		t.Fatalf("privacy log:\n%s", plog)
 	}
 	out.Reset()
 	if err := cmdPrivacyForget(ctx, privacyArgs(cfg, data, "--match", "prefer go", "--yes"), strings.NewReader(""), &out); err != nil {
@@ -252,19 +259,52 @@ func TestRunRetentionAppliesConfiguredPeriods(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &commonFlags{cfgDir: cfg, dataDir: data}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	runRetention(context.Background(), c, log) // nothing configured: nothing pruned
+	if err := runRetention(context.Background(), c); err != nil { // nothing configured: nothing pruned
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); err != nil {
 		t.Fatal("retention ran with no period configured")
 	}
 	if err := os.WriteFile(launchConfigPath(cfg), []byte(`{"schema_version":2,"privacy":{"retention_days":{"screenshots":7}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runRetention(context.Background(), c, log)
+	h := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(h)
+	defer logs.Install(prev)
+	if err := runRetention(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatal("an old screenshot survived its retention")
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Fatal("a recent screenshot was pruned")
+	}
+
+	// The sweep is an activity in the privacy log; the deletion it runs is
+	// one too, under it, and counts what it removed.
+	entries, _ := h.Snapshot()
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Field("event")+" "+e.Field("opcode")+" "+e.Msg)
+	}
+	want := []string{
+		"privacy/1001 start Retention sweep", "privacy/1002 start Privacy deletion (retention)",
+		"privacy/1003  delete 1 screenshots", "privacy/1002 stop Privacy deletion (retention)", "privacy/1001 stop Retention sweep",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("privacy log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if sweep, del := entries[0], entries[1]; del.Field("related") != sweep.Field("activity") || entries[2].Field("activity") != del.Field("activity") {
+		t.Errorf("the deletion is not under the sweep: %v", entries)
+	}
+
+	// A config.json that cannot be read fails the sweep, where it was skipped silently.
+	if err := os.WriteFile(launchConfigPath(cfg), []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRetention(context.Background(), c); err == nil || !strings.Contains(err.Error(), "config.json is unreadable") {
+		t.Fatalf("an unreadable config.json: %v", err)
 	}
 }

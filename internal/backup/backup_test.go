@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +13,16 @@ import (
 	"time"
 
 	"tenant/internal/datalock"
+	"tenant/internal/logs/event"
 )
+
+type recorder struct{ events []*event.Event }
+
+func (r *recorder) Emit(_ context.Context, e *event.Event) { r.events = append(r.events, e) }
+func (r *recorder) Audit(ctx context.Context, e *event.Event) error {
+	r.Emit(ctx, e)
+	return nil
+}
 
 // tree is a small Tenant install: a config dir and a data dir with one of
 // everything a backup has to handle.
@@ -327,6 +337,9 @@ func TestDryRunAndDamageChangeNothing(t *testing.T) {
 	data[len(data)/2] ^= 0xff
 	damaged := filepath.Join(tr.root, "damaged.tar.gz")
 	write(t, damaged, string(data))
+	rec := &recorder{}
+	event.Install(rec)
+	defer event.Install(nil)
 	rep, err := Verify(ctx, damaged, Keys{}, Checks{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -336,6 +349,15 @@ func TestDryRunAndDamageChangeNothing(t *testing.T) {
 	}
 	if _, err := Restore(ctx, damaged, tr.restoreOpts(Keys{})); err == nil {
 		t.Fatal("restored a damaged backup")
+	}
+	// Each run is an activity; the damage is an error event, and the restore
+	// it stopped fails.
+	var got []string
+	for _, e := range rec.events {
+		got = append(got, fmt.Sprintf("%d %s %s", e.ID, e.Opcode, e.Level))
+	}
+	if want := "[1003 start info 3001  error 1003 stop info 1005 start info 3001  error 1005 fail error]"; fmt.Sprint(got) != want {
+		t.Fatalf("events %v, want %s", got, want)
 	}
 	if b, _ := os.ReadFile(filepath.Join(tr.cfg, "config.json")); string(b) != `{"live":true}` {
 		t.Fatal("a failed restore changed the live config")

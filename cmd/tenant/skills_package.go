@@ -89,6 +89,7 @@ func importSkillPackage(ctx context.Context, st *skills.Store, emb model.Embedde
 				}
 			}
 			res.Trusted = trust || cur.Trust == skills.TrustTrusted
+			skills.Imported.Log(ctx, "skill", p.Name, "from", p.Dir, "digest", p.Digest, "trusted", res.Trusted, "unchanged", true)
 			return res, nil
 		}
 	}
@@ -112,6 +113,7 @@ func importSkillPackage(ctx context.Context, st *skills.Store, emb model.Embedde
 		return res, err
 	}
 	res.Trusted = trust
+	skills.Imported.Log(ctx, "skill", p.Name, "from", p.Dir, "digest", p.Digest, "trusted", trust, "unchanged", false)
 	return res, nil
 }
 
@@ -150,7 +152,11 @@ func exportSkillPackage(ctx context.Context, st *skills.Store, agentID, name, pa
 	if len(p.Metadata) == 0 {
 		p.Metadata = nil
 	}
-	return p.Write(parent)
+	dir, err := p.Write(parent)
+	if err == nil {
+		skills.Exported.Log(ctx, "skill", sk.Name, "dir", dir)
+	}
+	return dir, err
 }
 
 // embedSkill embeds "name: description", the text retrieval compares a turn

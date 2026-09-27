@@ -18,6 +18,7 @@ import (
 
 	"tenant/internal/backup"
 	"tenant/internal/improve"
+	"tenant/internal/logs"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
@@ -232,6 +233,7 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	lc, _ := loadLaunchConfig(c.cfgDir)
 	c.lc = lc
+	defer fileEvents(c)()
 	keys, err := k.encryptKeys(out)
 	if err != nil {
 		return err
@@ -305,6 +307,7 @@ func printSkipped(out io.Writer, skipped []backup.Skipped) {
 
 func cmdBackupVerify(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("backup verify", flag.ContinueOnError)
+	c := bindCommon(fs) // whose log book records the verify
 	var k keyFlags
 	k.bindDecrypt(fs)
 	asJSON := fs.Bool("json", false, "print the report as JSON")
@@ -312,6 +315,11 @@ func cmdBackupVerify(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	c.auditOnly = true // verifying creates and locks nothing
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	defer fileEvents(c)()
 	keys, err := k.decryptKeys()
 	if err != nil {
 		return err
@@ -389,6 +397,7 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	defer fileEvents(c)() // into the restored log book
 	if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
 		if addr, up := hubAnswering(ctx, lc); up {
 			return fmt.Errorf("a Tenant hub answers at %s; stop it (and the TUI) before restoring", addr)
@@ -446,6 +455,38 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	}
 	fmt.Fprintln(out, "  this install now carries the backed-up identity (instance id, peer key, Discord relay); don't run it alongside the machine the backup came from")
 	return nil
+}
+
+// fileEvents gives a one-shot command's events (a backup's, a deletion's) a
+// place in the log book, which only serve and the TUI keep open: they are held
+// in memory while the command runs and appended when it ends, so the command
+// never holds a log file open, not even in a data dir a restore swaps out.
+// Call the func it returns when the command ends.
+//
+// ponytail: a crash mid-command loses its events; drop the buffer once every
+// process writes logbook.db as it goes (TEN-370).
+func fileEvents(c *commonFlags) func() {
+	prev := logs.Default()
+	mem := logs.NewMemory(0)
+	logs.Install(mem)
+	return func() {
+		logs.Install(prev)
+		entries, _ := mem.Snapshot()
+		if _, err := os.Stat(c.dataDir); err != nil || len(entries) == 0 {
+			return // no install here, as for a backup verified on another machine
+		}
+		if c.lc == nil {
+			c.lc, _ = loadLaunchConfig(c.cfgDir) // after a restore, the restored one
+		}
+		h, err := logs.Open(c.logsRoot(), c.logsOptions())
+		if err != nil {
+			return
+		}
+		defer h.Close()
+		for _, e := range entries {
+			h.Log(e)
+		}
+	}
 }
 
 // hubAnswering reports whether a Tenant dashboard answers at the configured

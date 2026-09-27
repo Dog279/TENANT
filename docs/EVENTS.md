@@ -13,6 +13,133 @@ here, marked retired. They are assigned in blocks: 1–999 lifecycle, 1000s
 operations, 2000s warnings, 3000s errors, 4000s security and audit, 5000s
 configuration, 9000s diagnostics.
 
+## backup
+
+Writes the `backup` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#backup-1001) | info | Backup | `Back up to {path}` |
+| [1002](#backup-1002) | info | Backup | `Backup written to {path}: {files} files, {bytes} bytes` |
+| [1003](#backup-1003) | info | Verify | `Verify backup {path}` |
+| [1004](#backup-1004) | info | Verify | `Backup {path} checks out: {files} files, made {created} by Tenant {version}` |
+| [1005](#backup-1005) | info | Restore | `Restore backup {path}` |
+| [1006](#backup-1006) | info | Restore | `Restored backup {path}` |
+| [2001](#backup-2001) | warning | Backup | `Backup {path}: {warning}` |
+| [3001](#backup-3001) | error | Verify | `Backup {path} failed verification with {count} problems, the first: {problem}` |
+
+### backup 1001
+
+`Back up to {path}`
+
+- **Level:** info · **Channel:** operational · **Task:** Backup · **Log:** backup
+- **Fields:** `path`
+- **Find it:** `provider:backup id:1001`
+
+**What it means.** A backup of the config and data directories: its start, then its stop with the duration, or its failure with the error.
+
+**Why it happens.** The operator ran tenant backup create.
+
+**What to do.** None when it stops. On a failure, read the error; nothing is left at the path.
+
+### backup 1002
+
+`Backup written to {path}: {files} files, {bytes} bytes`
+
+- **Level:** info · **Channel:** operational · **Task:** Backup · **Log:** backup
+- **Fields:** `path`, `bytes`, `files`, `databases`, `logs`, `secrets`, `skipped`, `encrypted`, `version`
+- **Find it:** `provider:backup id:1002`
+
+**What it means.** A backup file was written. skipped counts what was left out, such as credentials in an unencrypted backup.
+
+**Why it happens.** A backup finished.
+
+**What to do.** Check it now and then with tenant backup verify, and keep it somewhere other than this machine.
+
+### backup 1003
+
+`Verify backup {path}`
+
+- **Level:** info · **Channel:** operational · **Task:** Verify · **Log:** backup
+- **Fields:** `path`
+- **Find it:** `provider:backup id:1003`
+
+**What it means.** A backup file was checked: its start, then its stop with the duration, or its failure with the error. Its findings follow as their own event.
+
+**Why it happens.** The operator ran tenant backup verify.
+
+**What to do.** None when it stops. A failure means the file could not be read at all: a wrong path, or a missing or wrong passphrase or key.
+
+### backup 1004
+
+`Backup {path} checks out: {files} files, made {created} by Tenant {version}`
+
+- **Level:** info · **Channel:** operational · **Task:** Verify · **Log:** backup
+- **Fields:** `path`, `files`, `created`, `version`, `encrypted`, `newer`, `notes`
+- **Find it:** `provider:backup id:1004`
+
+**What it means.** Every checksum in the backup matches, every database passes its integrity check and every log parses. newer counts schema from a newer Tenant, which a restore refuses unless forced.
+
+**Why it happens.** A verify or a restore read the backup.
+
+**What to do.** None.
+
+### backup 1005
+
+`Restore backup {path}`
+
+- **Level:** info · **Channel:** operational · **Task:** Restore · **Log:** backup
+- **Fields:** `path`, `dry_run`
+- **Find it:** `provider:backup id:1005`
+
+**What it means.** A restore of a backup over the config and data directories: its start, then its stop with the duration, or its failure with the error. A dry run only verifies.
+
+**Why it happens.** The operator ran tenant backup restore.
+
+**What to do.** None when it stops. On a failure nothing was changed; read the error.
+
+### backup 1006
+
+`Restored backup {path}`
+
+- **Level:** info · **Channel:** operational · **Task:** Restore · **Log:** backup
+- **Fields:** `path`, `aside`, `kept_secrets`
+- **Find it:** `provider:backup id:1006`
+
+**What it means.** The backup replaced the config and data directories. aside names where the previous ones are kept.
+
+**Why it happens.** A restore finished.
+
+**What to do.** Start Tenant and check it; delete the directories named in aside once you are happy. Don't run this install alongside the machine the backup came from.
+
+### backup 2001
+
+`Backup {path}: {warning}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Backup · **Log:** backup
+- **Fields:** `path`, `warning`
+- **Find it:** `provider:backup id:2001`
+
+**What it means.** A backup was written, but something about it needs attention.
+
+**Why it happens.** Usually the destination cannot restrict access to the file (a FAT or exFAT drive), and the backup is not encrypted.
+
+**What to do.** Keep the file somewhere private, or back up again with --encrypt.
+
+### backup 3001
+
+`Backup {path} failed verification with {count} problems, the first: {problem}`
+
+- **Level:** error · **Channel:** operational · **Task:** Verify · **Log:** backup
+- **Fields:** `path`, `count`, `problem`, `problems`
+- **Find it:** `provider:backup id:3001`
+
+**What it means.** The backup is damaged: a checksum does not match, the file is cut short, a database fails its integrity check or a log does not parse. It cannot be restored.
+
+**Why it happens.** The file was changed or cut short after it was written, or the disk or the copy damaged it.
+
+**What to do.** Use another backup, and make a fresh one with tenant backup create.
+
 ## improve
 
 Writes the `improve` log.
@@ -297,6 +424,73 @@ Writes the `memory` log.
 
 **What to do.** None; on an err, check the memory databases with tenant doctor.
 
+## privacy
+
+Writes the `privacy` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#privacy-1001) | info | Retention | `Retention sweep` |
+| [1002](#privacy-1002) | info | Deletion | `Privacy deletion ({reason})` |
+| [1003](#privacy-1003) | info | Deletion | `{action} {count} {data}` |
+| [2001](#privacy-2001) | warning | Deletion | `A privacy deletion did not fully finish: {warning}` |
+
+### privacy 1001
+
+`Retention sweep`
+
+- **Level:** info · **Channel:** operational · **Task:** Retention · **Log:** privacy
+- **Fields:** `classes`
+- **Find it:** `provider:privacy id:1001`
+
+**What it means.** The daily retention sweep of a running Tenant: its start, then its stop with the duration, or its failure with the error. classes counts the data classes that have a retention period; a sweep with none removes nothing.
+
+**Why it happens.** Serve and the TUI sweep a few minutes after they start, then daily.
+
+**What to do.** None when it stops. On a failure, read the error: usually config.json could not be read, and nothing was removed.
+
+### privacy 1002
+
+`Privacy deletion ({reason})`
+
+- **Level:** info · **Channel:** operational · **Task:** Deletion · **Log:** privacy
+- **Fields:** `reason`
+- **Find it:** `provider:privacy id:1002`
+
+**What it means.** Data was deleted for good: its start, the counts removed, then its stop with the duration, or its failure with the error. reason is forget (the operator asked) or retention (a class aged out).
+
+**Why it happens.** tenant privacy forget or prune, or the retention sweep.
+
+**What to do.** None when it stops. After a failure, the stores done before it stay deleted and the rest are unchanged; run the command again.
+
+### privacy 1003
+
+`{action} {count} {data}`
+
+- **Level:** info · **Channel:** operational · **Task:** Deletion · **Log:** privacy
+- **Fields:** `data`, `action`, `count`, `reason`
+- **Find it:** `provider:privacy id:1003`
+
+**What it means.** One kind of data a deletion changed: rows or files deleted, archive files rewritten, or records unlinked from what was removed.
+
+**Why it happens.** A privacy deletion ran.
+
+**What to do.** None.
+
+### privacy 2001
+
+`A privacy deletion did not fully finish: {warning}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Deletion · **Log:** privacy
+- **Fields:** `warning`, `reason`
+- **Find it:** `provider:privacy id:2001`
+
+**What it means.** The data was deleted, but a clean-up step after it did not finish, so copies may linger until later.
+
+**Why it happens.** A running Tenant was reading the store, so its WAL still holds old pages, or its search index could not be compacted.
+
+**What to do.** None usually: the store's next checkpoint clears its WAL. A deletion run while Tenant is stopped leaves no copies.
+
 ## security
 
 Writes the `security` log.
@@ -334,6 +528,118 @@ Writes the `security` log.
 **Why it happens.** The operator denied it, or Tenant denied it while shutting down.
 
 **What to do.** None when intended; otherwise check the category's approval mode.
+
+## skills
+
+Writes the `skills` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#skills-1001) | info | Skill | `Skill {skill} saved ({source})` |
+| [1002](#skills-1002) | info | Skill | `Skill {skill} is now {trust} (was {prior})` |
+| [1003](#skills-1003) | info | Skill | `Skill {skill} accepted` |
+| [1004](#skills-1004) | info | Skill | `Skill {skill} {state}` |
+| [1005](#skills-1005) | info | Skill | `Skill {skill} removed` |
+| [1006](#skills-1006) | info | Package | `Skill {skill} imported from {from}` |
+| [1007](#skills-1007) | info | Package | `Skill {skill} exported to {dir}` |
+
+### skills 1001
+
+`Skill {skill} saved ({source})`
+
+- **Level:** info · **Channel:** operational · **Task:** Skill · **Log:** skills
+- **Fields:** `skill`, `skill_id`, `source`, `status`, `trust`, `source_runs`
+- **Find it:** `provider:skills id:1001`
+
+**What it means.** A skill was added or changed. source says how: operator, induction, auto-accept, import, seed or revert. Its earlier version is in its history (/skills history).
+
+**Why it happens.** The operator or the agent saved it, the skill-induction job proposed it, a package was imported, or a version was restored.
+
+**What to do.** None. /skills show names what it does; /skills diff compares it with its earlier version.
+
+### skills 1002
+
+`Skill {skill} is now {trust} (was {prior})`
+
+- **Level:** info · **Channel:** operational · **Task:** Skill · **Log:** skills
+- **Fields:** `skill`, `skill_id`, `trust`, `prior`, `source`
+- **Find it:** `provider:skills id:1002`
+
+**What it means.** A skill's trust changed. An untrusted skill is not offered to the agent.
+
+**Why it happens.** The operator trusted or distrusted it, or a change widened the tools it expects to use, which makes it untrusted until reviewed.
+
+**What to do.** If it became untrusted by a change, review it (/skills show) and trust it again if it is fine.
+
+### skills 1003
+
+`Skill {skill} accepted`
+
+- **Level:** info · **Channel:** operational · **Task:** Skill · **Log:** skills
+- **Fields:** `skill`, `skill_id`
+- **Find it:** `provider:skills id:1003`
+
+**What it means.** A proposed skill went live: it is enabled and offered to the agent.
+
+**Why it happens.** The operator accepted a skill the skill-induction job proposed.
+
+**What to do.** None.
+
+### skills 1004
+
+`Skill {skill} {state}`
+
+- **Level:** info · **Channel:** operational · **Task:** Skill · **Log:** skills
+- **Fields:** `skill`, `skill_id`, `state`
+- **Find it:** `provider:skills id:1004`
+
+**What it means.** A skill was enabled or disabled. A disabled skill is not offered to the agent.
+
+**Why it happens.** The operator switched it on or off.
+
+**What to do.** None.
+
+### skills 1005
+
+`Skill {skill} removed`
+
+- **Level:** info · **Channel:** operational · **Task:** Skill · **Log:** skills
+- **Fields:** `skill`, `skill_id`
+- **Find it:** `provider:skills id:1005`
+
+**What it means.** A skill was forgotten: it is disabled and hidden, and its row and history stay until a privacy forget deletes them.
+
+**Why it happens.** The operator or the agent forgot it.
+
+**What to do.** None. Saving a skill of the same name brings it back.
+
+### skills 1006
+
+`Skill {skill} imported from {from}`
+
+- **Level:** info · **Channel:** operational · **Task:** Package · **Log:** skills
+- **Fields:** `skill`, `from`, `digest`, `trusted`, `unchanged`
+- **Find it:** `provider:skills id:1006`
+
+**What it means.** An Agent Skills package (SKILL.md) was imported as a skill. It is untrusted unless the import said otherwise.
+
+**Why it happens.** The operator ran tenant skills import or /skills import.
+
+**What to do.** Review it (/skills show) and trust it (/skills trust) before the agent may use it.
+
+### skills 1007
+
+`Skill {skill} exported to {dir}`
+
+- **Level:** info · **Channel:** operational · **Task:** Package · **Log:** skills
+- **Fields:** `skill`, `dir`
+- **Find it:** `provider:skills id:1007`
+
+**What it means.** A skill was written out as an Agent Skills package (SKILL.md).
+
+**Why it happens.** The operator ran tenant skills export or /skills export.
+
+**What to do.** None.
 
 ## system
 

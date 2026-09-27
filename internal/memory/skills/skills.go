@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -376,6 +377,16 @@ func (s *Store) UpsertWithSource(ctx context.Context, sk *Skill, changeSource st
 		return 0, fmt.Errorf("skills: commit: %w", err)
 	}
 	sk.Trust = trust
+	if changeSource != "trust" && changeSource != "distrust" { // SetTrust: the trust change is the news
+		kv := []any{"skill", sk.Name, "skill_id", id, "source", changeSource, "status", sk.Status, "trust", trust}
+		if len(sk.SourceRunIDs) > 0 {
+			kv = append(kv, "source_runs", sk.SourceRunIDs)
+		}
+		Saved.Log(ctx, kv...)
+	}
+	if priorID != 0 && priorTrust != trust {
+		TrustChanged.Log(ctx, "skill", sk.Name, "skill_id", id, "trust", trust, "prior", priorTrust, "source", changeSource)
+	}
 	return id, nil
 }
 
@@ -527,30 +538,80 @@ func (s *Store) Search(ctx context.Context, q Query) ([]Hit, error) {
 
 // SetEnabled toggles a skill by id.
 func (s *Store) SetEnabled(ctx context.Context, id int64, on bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE skills SET enabled=? WHERE id=?`, boolToInt(on), id)
+	source, state := "disable", "disabled"
+	if on {
+		source, state = "enable", "enabled"
+	}
+	name, err := s.change(ctx, id, source, `enabled=?`, boolToInt(on))
+	if name != "" {
+		Toggled.Log(ctx, "skill", name, "skill_id", id, "state", state)
+	}
 	return err
 }
 
 // SetEnabledByName toggles by (agent,name); returns whether it matched.
 func (s *Store) SetEnabledByName(ctx context.Context, agentID, name string, on bool) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE skills SET enabled=? WHERE agent_id=? AND name=?`, boolToInt(on), agentID, name)
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM skills WHERE agent_id=? AND name=?`, agentID, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	return true, s.SetEnabled(ctx, id, on)
 }
 
 // Accept promotes a proposed skill to live+enabled.
 func (s *Store) Accept(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE skills SET status=?, enabled=1 WHERE id=?`, StatusLive, id)
+	name, err := s.change(ctx, id, "accept", `status=?, enabled=1`, StatusLive)
+	if name != "" {
+		Accepted.Log(ctx, "skill", name, "skill_id", id)
+	}
 	return err
 }
 
 // Tombstone soft-deletes a skill.
 func (s *Store) Tombstone(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE skills SET status=?, enabled=0 WHERE id=?`, StatusTombstoned, id)
+	name, err := s.change(ctx, id, "tombstone", `status=?, enabled=0`, StatusTombstoned)
+	if name != "" {
+		Tombstoned.Log(ctx, "skill", name, "skill_id", id)
+	}
 	return err
+}
+
+// change sets columns (set, with args) on skill id, snapshotting the row it
+// replaces into skill_history as changeSource, in one transaction. It returns
+// the skill's name once the change is committed; "" and no error when there
+// is no such skill.
+func (s *Store) change(ctx context.Context, id int64, changeSource, set string, args ...any) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("skills: begin tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+	var name string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM skills WHERE id=?`, id).Scan(&name); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `
+        INSERT INTO skill_history
+            (skill_id, agent_id, name, version, prior_description, prior_recipe, prior_status, change_source, changed_at, prior_trust, prior_requires_tools)
+        SELECT id, agent_id, name, (SELECT COALESCE(MAX(version), 0) + 1 FROM skill_history WHERE skill_id=?),
+            description, recipe, status, ?, ?, trust, requires_tools
+        FROM skills WHERE id=?`, id, changeSource, time.Now().UTC().Unix(), id); err != nil {
+		return "", fmt.Errorf("skills: history snapshot: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE skills SET `+set+` WHERE id=?`, append(args, id)...); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("skills: commit: %w", err)
+	}
+	return name, nil
 }
 
 // IncSuccess bumps a skill's success counter (used after a turn that
@@ -677,7 +738,7 @@ type HistoryEntry struct {
 	PriorDescription string
 	PriorRecipe      string
 	PriorStatus      string
-	ChangeSource     string    // "operator" | "induction" | "revert" | "seed" | "import" | "trust" | "distrust"
+	ChangeSource     string    // "operator" | "induction" | "revert" | "seed" | "import" | "trust" | "distrust" | "accept" | "enable" | "disable" | "tombstone"
 	ChangedAt        time.Time // when the OVERWRITE happened
 	// PriorTrust and PriorRequiresTools are the trust and required tools the
 	// snapshot had; "" and nil for a snapshot taken before TEN-298.

@@ -8,15 +8,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 	"tenant/internal/privacy"
 	"tenant/internal/version"
 )
@@ -348,6 +347,7 @@ func cmdPrivacyPrune(ctx context.Context, args []string, in io.Reader, out io.Wr
 	if err != nil {
 		return err
 	}
+	defer fileEvents(c)()
 	r := retentionFromConfig(lc)
 	plan, err := privacy.Prune(ctx, d, r)
 	if err != nil {
@@ -425,6 +425,7 @@ func cmdPrivacyForget(ctx context.Context, args []string, in io.Reader, out io.W
 	if err != nil {
 		return err
 	}
+	defer fileEvents(c)()
 	sel := privacy.Selector{Sessions: sessions, Episodes: episodes, Facts: facts, Skills: skillNames,
 		Match: *match, ArchiveMonths: months, Agent: *agent}
 	if *before != "" {
@@ -541,7 +542,7 @@ func cmdPrivacyExport(ctx context.Context, args []string, out io.Writer) error {
 // startRetention prunes by the configured retention in a live process: once
 // a few minutes after start, then daily. Classes without a retention period
 // are never touched.
-func startRetention(ctx context.Context, c *commonFlags, log *slog.Logger) {
+func startRetention(ctx context.Context, c *commonFlags) {
 	go func() {
 		t := time.NewTimer(3 * time.Minute)
 		defer t.Stop()
@@ -551,47 +552,34 @@ func startRetention(ctx context.Context, c *commonFlags, log *slog.Logger) {
 				return
 			case <-t.C:
 			}
-			runRetention(ctx, c, log)
+			_ = runRetention(ctx, c) // the sweep's activity records a failure
 			t.Reset(24 * time.Hour)
 		}
 	}()
 }
 
-func runRetention(ctx context.Context, c *commonFlags, log *slog.Logger) {
+// runRetention is one sweep, an activity in the privacy log; the deletion it
+// runs counts what it removed.
+func runRetention(ctx context.Context, c *commonFlags) (err error) {
 	lc, err := loadLaunchConfig(c.cfgDir)
+	r := retentionFromConfig(lc)
+	ctx, act := event.Start(ctx, privacy.Sweep, "classes", len(r))
+	defer act.End(&err)
 	if err != nil {
-		log.Warn("privacy: retention skipped; config.json unreadable", "err", err)
-		return
+		return fmt.Errorf("skipped: config.json is unreadable: %w", err)
 	}
 	// The log book prunes itself; hand it the retention in force now, so
 	// `tenant privacy retention set logs` reaches a running Tenant.
 	if h := logs.Default(); h != nil {
 		h.SetRetention(logsRetention(lc.Logs))
 	}
-	r := retentionFromConfig(lc)
 	if len(r) == 0 {
-		return
+		return nil
 	}
 	plan, err := privacy.Prune(ctx, privacy.Data{DataDir: c.dataDir, ConfigDir: c.cfgDir}, r)
-	if err != nil {
-		log.Warn("privacy: retention prune failed", "err", err)
-		return
+	if err != nil || plan.Empty() {
+		return err
 	}
-	if plan.Empty() {
-		return
-	}
-	res, err := plan.Apply(ctx)
-	if err != nil {
-		log.Warn("privacy: retention prune failed", "err", err)
-		return
-	}
-	var parts []string
-	for _, it := range res.Items {
-		parts = append(parts, fmt.Sprintf("%s %d %s", it.Action, it.Count, it.What))
-	}
-	sort.Strings(parts)
-	log.Info("privacy: retention pruned", "changes", strings.Join(parts, "; "))
-	for _, w := range res.Warnings {
-		log.Warn("privacy: " + w)
-	}
+	_, err = plan.Apply(ctx)
+	return err
 }

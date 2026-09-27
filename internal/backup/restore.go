@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tenant/internal/datalock"
+	"tenant/internal/logs/event"
 	"tenant/internal/secrets"
 )
 
@@ -62,7 +63,9 @@ var ErrNewer = errors.New("backup: the backup was made by a newer Tenant; upgrad
 // as <dir>.pre-restore-<time>, and the restored ones renamed into place; if
 // a rename fails, whatever already moved is put back. Restore refuses while
 // any Tenant process holds the data dir.
-func Restore(ctx context.Context, path string, opts RestoreOptions) (*RestoreResult, error) {
+func Restore(ctx context.Context, path string, opts RestoreOptions) (_ *RestoreResult, err error) {
+	ctx, act := event.Start(ctx, RestoreRun, "path", path, "dry_run", opts.DryRun)
+	defer act.End(&err)
 	cfg, data, err := cleanRoots(opts.ConfigDir, opts.DataDir)
 	if err != nil {
 		return nil, err
@@ -113,6 +116,7 @@ func Restore(ctx context.Context, path string, opts RestoreOptions) (*RestoreRes
 	if err != nil {
 		return nil, err
 	}
+	logReport(ctx, path, rep)
 	res := &RestoreResult{Report: rep}
 	if !rep.OK() {
 		return res, fmt.Errorf("backup: the backup failed verification; nothing was changed")
@@ -164,6 +168,7 @@ func Restore(ctx context.Context, path string, opts RestoreOptions) (*RestoreRes
 			res.Aside = append(res.Aside, s.aside)
 		}
 	}
+	Restored.Log(ctx, "path", path, "aside", strings.Join(res.Aside, ", "), "kept_secrets", len(res.KeptSecrets))
 	return res, nil
 }
 
