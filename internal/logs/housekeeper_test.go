@@ -122,6 +122,7 @@ func TestLowDiskSheds(t *testing.T) {
 				p.enqueue(ctx, &e)
 			}
 			dropped := h.Dropped()["x"]
+			h.report(ctx, h.store(), time.Minute) // the minute's loss report
 			_ = h.Close()
 			if got := msgs(t, st, "x"); !slices.Equal(got, c.want) {
 				t.Errorf("wrote %v, want %v", got, c.want)
@@ -135,6 +136,11 @@ func TestLowDiskSheds(t *testing.T) {
 			warned := slices.ContainsFunc(msgs(t, st, "logbook"), func(m string) bool { return strings.Contains(strings.ToLower(m), "low disk") })
 			if warned != (len(c.want) < 3) {
 				t.Errorf("low-disk warning written: %v", warned)
+			}
+			// Shedding is what the low-disk event announced: it is counted,
+			// but never repeated as a drop warning every minute.
+			if slices.ContainsFunc(msgs(t, st, "logbook"), func(m string) bool { return strings.HasPrefix(m, "Dropped") }) {
+				t.Errorf("shed events were reported as drops: %v", msgs(t, st, "logbook"))
 			}
 		})
 	}

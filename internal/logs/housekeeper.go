@@ -232,7 +232,7 @@ func (p *pipeline) admit(e *event.Event) bool {
 		return false
 	}
 	if g.shed > 0 && (e.Channel == event.Diagnostic || g.shed > 1 && e.Level > event.Warning) {
-		p.drop(e)
+		p.shedOne(e)
 		return false
 	}
 	return true

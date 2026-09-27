@@ -43,6 +43,7 @@ type pipeline struct {
 	dmu     sync.Mutex
 	dropped map[string]uint64  // per log: events the full queue had no room for
 	recent  map[lossKey]uint64 // the same, per log and provider, since the last report (logbook.go)
+	shed    map[string]uint64  // per log: events low disk kept out since the last report
 	hwm     atomic.Int64       // the queue's deepest since the last report
 
 	out outage         // a failing store (logbook.go; writer goroutine only)
@@ -71,7 +72,7 @@ func newPipeline(h *Hub, st *store.Store) *pipeline {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &pipeline{h: h, st: st, q: make(chan *event.Event, queueCap), urgent: make(chan auditReq),
 		stop: make(chan struct{}), done: make(chan struct{}), ctx: ctx, cancel: cancel,
-		dropped: map[string]uint64{}, recent: map[lossKey]uint64{}}
+		dropped: map[string]uint64{}, recent: map[lossKey]uint64{}, shed: map[string]uint64{}}
 }
 
 // Dropped counts, per log, the events the pipeline had no room for: a full

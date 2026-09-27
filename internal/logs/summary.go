@@ -44,5 +44,8 @@ func (h *Hub) unreportedDrops() map[string]uint64 {
 	for k, n := range p.recent {
 		out[k.log] += n
 	}
+	for log, n := range p.shed {
+		out[log] += n
+	}
 	return out
 }

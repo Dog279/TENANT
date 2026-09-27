@@ -289,7 +289,18 @@ func (p *pipeline) mirrored(err string) {
 	}
 }
 
-// drop counts e as dropped: a full queue, or low disk.
+// shedOne counts e as kept out by low disk: in its log's dropped total, but
+// not in the minute's drop warnings, since the low-disk event already says
+// what is shed and why.
+func (p *pipeline) shedOne(e *event.Event) {
+	log := cleanSource(e.Log)
+	p.dmu.Lock()
+	p.dropped[log]++
+	p.shed[log]++
+	p.dmu.Unlock()
+}
+
+// drop counts e as dropped: the queue was full.
 func (p *pipeline) drop(e *event.Event) {
 	log := cleanSource(e.Log)
 	p.dmu.Lock()
@@ -337,10 +348,15 @@ func (h *Hub) report(ctx context.Context, st *store.Store, window time.Duration)
 		return
 	}
 	p.dmu.Lock()
-	drops := p.recent
-	p.recent = map[lossKey]uint64{}
+	drops, shed := p.recent, p.shed
+	p.recent, p.shed = map[lossKey]uint64{}, map[string]uint64{}
 	p.dmu.Unlock()
 	lost := map[string]store.Lost{}
+	for log, n := range shed {
+		l := lost[log]
+		l.Dropped += int64(n)
+		lost[log] = l
+	}
 	for k, n := range drops {
 		l := lost[k.log]
 		l.Dropped += int64(n)
