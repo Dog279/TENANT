@@ -212,7 +212,7 @@ func (m *discordRelayManager) NotifyOperator(text string) error {
 // realStart wires a fresh relay (bound to operatorID) + gateway and runs the
 // gateway under ctx. Returns once started (the gateway connects asynchronously).
 func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) error {
-	rl := newRelay(m.runner, m.sender, operatorID, m.log)
+	rl := newRelay(m.runner, m.sender, operatorID)
 	rl.approver = m.approver
 	if m.approver != nil {
 		// A prompt that degrades to text surfaces on the operator feed, and the
@@ -233,7 +233,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 	if m.dataDir != "" {
 		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
 		// and the turn text carries the saved-path manifest.
-		rl.files = newAttachmentIngestor(m.dataDir, m.log)
+		rl.files = newAttachmentIngestor(m.dataDir)
 		rl.files.keep = m.inboxKeep
 		// External-automation approvals: ext-approve button verdicts land under
 		// <dataDir>/approvals/<ns> (extapprove.go).
@@ -246,20 +246,15 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		OnMessage:     rl.handleInbound,
 		OnInteraction: rl.handleInteraction,
 		OnReady:       rl.setBotID,
-		Log:           m.log,
 		OnFatal: func(e error) {
 			if m.notify != nil {
 				m.notify("discord relay stopped: " + e.Error())
 			}
 		},
 	}
-	go func() {
-		// Run returns nil once ctx ends; an error is a fatal close, which
-		// OnFatal already told the operator. It is logged here too.
-		if err := gw.Run(ctx); err != nil && m.log != nil {
-			m.log.Error("discord relay: gateway stopped", "err", err)
-		}
-	}()
+	// Run returns nil once ctx ends; an error is a fatal close, which OnFatal
+	// already told the operator and Run's Connection activity records as failed.
+	go gw.Run(ctx)
 	if m.notify != nil {
 		m.notify("discord relay: connecting (operator " + operatorID + ")")
 	}

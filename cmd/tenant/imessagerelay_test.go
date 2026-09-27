@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs/event"
 	"tenant/internal/plugins/imessage"
 )
 
@@ -86,6 +88,54 @@ func TestIMessageResponder_DrivesTurnAndReplies(t *testing.T) {
 	// Phase-1 gating: the turn ran with a deny-all offsite-confirm.
 	if !r.gatedDenied {
 		t.Error("turn ctx must carry a deny-all offsite-confirm (gated tools refused)")
+	}
+}
+
+// A text is recorded with its handle, chat and text masked; a failed turn fails
+// its Turn activity, and the apology is a Delivery.
+func TestIMessageResponder_RecordsTurnAndDelivery(t *testing.T) {
+	c := captureChannelEvents(t)
+	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "call mom")}}
+	resp := &imessageResponder{poller: p, sender: &fakeIMsgSender{}, runner: &fakeIMsgRunner{err: errors.New("model down")}, confirm: denyAllConfirm}
+
+	resp.drain(context.Background())
+	resp.waitIdle()
+
+	in, fail, sent := c.wait(imessage.Received, ""), c.wait(imessage.Turn, event.OpFail), c.wait(imessage.Delivery, event.OpStop)
+	if in == nil || fail == nil || sent == nil {
+		t.Fatalf("want the message, the failed turn and the apology's delivery; got %v %v %v", in, fail, sent)
+	}
+	for _, f := range []event.Field{eventField(in, "text"), eventField(in, "chat"), eventField(fail, "chat"), eventField(sent, "chat")} {
+		if !f.Sensitive || f.Text() == "" {
+			t.Errorf("%s must be kept, sensitive: %+v", f.Key, f)
+		}
+	}
+	if strings.Contains(in.Msg+fail.Msg+sent.Msg, "guid1") || strings.Contains(in.Msg, "call mom") {
+		t.Errorf("a message names personal content: %q / %q / %q", in.Msg, fail.Msg, sent.Msg)
+	}
+}
+
+// errPoller fails every poll with err.
+type errPoller struct{ err error }
+
+func (p *errPoller) Poll(context.Context, int) ([]imessage.InboundMessage, error) { return nil, p.err }
+func (p *errPoller) RecordSent(string, string)                                    {}
+
+// Every failed poll fails its (diagnostic) Poll activity, but the warning is
+// written once per error: again only when the error changes.
+func TestIMessageResponder_PollFailureRecordedOncePerError(t *testing.T) {
+	c := captureChannelEvents(t)
+	p := &errPoller{err: errors.New("unable to open chat.db")}
+	resp := &imessageResponder{poller: p}
+	resp.drain(context.Background())
+	resp.drain(context.Background())
+	p.err = errors.New("database is locked")
+	resp.drain(context.Background())
+	if n := len(c.matching(imessage.PollFailed, "")); n != 2 {
+		t.Errorf("poll warnings = %d, want 2 (one per distinct error)", n)
+	}
+	if n := len(c.matching(imessage.Poll, event.OpFail)); n != 3 {
+		t.Errorf("failed poll activities = %d, want 3", n)
 	}
 }
 

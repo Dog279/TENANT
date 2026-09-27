@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,7 +76,6 @@ type savedAttachment struct {
 type attachmentIngestor struct {
 	dir       string
 	client    *http.Client
-	log       *slog.Logger
 	anyHost   bool // tests only: permit non-Discord-CDN URLs (httptest)
 	sweepOnce sync.Once
 	// keep is the configured retention (privacy.retention_days.relay_inbox,
@@ -85,14 +83,10 @@ type attachmentIngestor struct {
 	keep func() time.Duration
 }
 
-func newAttachmentIngestor(dataDir string, log *slog.Logger) *attachmentIngestor {
-	if log == nil {
-		log = slog.Default()
-	}
+func newAttachmentIngestor(dataDir string) *attachmentIngestor {
 	return &attachmentIngestor{
 		dir:    filepath.Join(dataDir, relayInboxDirName),
 		client: &http.Client{}, // per-call deadline via ctx
-		log:    log,
 	}
 }
 
@@ -111,7 +105,7 @@ func (ai *attachmentIngestor) Ingest(ctx context.Context, atts []discord.Attachm
 		}
 		sa, err := ai.download(ctx, a)
 		if err != nil {
-			ai.log.Warn("relay attachment download failed", "file", a.Filename, "err", err)
+			discord.AttachmentFailed.Log(ctx, "file", a.Filename, "err", err)
 			rejected = append(rejected, fmt.Sprintf("%s — download failed", displayFilename(a.Filename)))
 			continue
 		}
@@ -253,7 +247,7 @@ func (ai *attachmentIngestor) sweep() {
 	days, err := os.ReadDir(ai.dir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			ai.log.Warn("discord relay: inbox retention sweep skipped", "dir", ai.dir, "err", err)
+			discord.InboxSweepIncomplete.Log(context.Background(), "dir", ai.dir, "err", err)
 		}
 		return
 	}
@@ -296,7 +290,7 @@ func (ai *attachmentIngestor) sweep() {
 		}
 	}
 	if failed > 0 {
-		ai.log.Warn("discord relay: inbox retention sweep could not delete everything past retention", "failures", failed, "err", firstErr)
+		discord.InboxSweepIncomplete.Log(context.Background(), "dir", ai.dir, "failures", failed, "err", firstErr)
 	}
 }
 

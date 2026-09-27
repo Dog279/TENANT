@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -72,6 +73,8 @@ type imessageResponder struct {
 	// each turn's prompt-chat is pinned so a gated tool texts the right chat.
 	approver *imessageApprover
 
+	pollErr string // the last poll error, so a failing poll is recorded once, not every few seconds; Run's goroutine only
+
 	mu     sync.Mutex
 	active bool           // one turn at a time — a second text mid-turn gets a "busy" reply
 	wg     sync.WaitGroup // in-flight turns (waitIdle, for tests)
@@ -82,12 +85,14 @@ type imessageResponder struct {
 // the Phase-2 text-confirm handshake lands.
 func denyAllConfirm(context.Context, string, string) bool { return false }
 
-// Run polls on a ticker until ctx is cancelled.
+// Run polls on a ticker until ctx is cancelled: one Responder activity.
 func (r *imessageResponder) Run(ctx context.Context) {
 	iv := r.interval
 	if iv <= 0 {
 		iv = 3 * time.Second
 	}
+	ctx, act := event.Start(ctx, imessage.Responder, "interval", iv)
+	defer act.End(nil)
 	t := time.NewTicker(iv)
 	defer t.Stop()
 	for {
@@ -106,11 +111,17 @@ func (r *imessageResponder) drain(ctx context.Context) {
 	if limit <= 0 {
 		limit = 20
 	}
-	msgs, err := r.poller.Poll(ctx, limit)
+	pctx, act := event.Start(ctx, imessage.Poll)
+	msgs, err := r.poller.Poll(pctx, limit)
+	act.End(&err)
 	if err != nil {
-		r.logger().Warn("imessage responder: poll failed", "err", err)
+		if err.Error() != r.pollErr {
+			imessage.PollFailed.Log(ctx, "err", err)
+		}
+		r.pollErr = err.Error()
 		return
 	}
+	r.pollErr = ""
 	for _, m := range msgs {
 		if ctx.Err() != nil {
 			return
@@ -129,6 +140,7 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if text == "" || strings.TrimSpace(m.ChatGUID) == "" {
 		return // nothing actionable (attachment-only, empty, or unknown chat)
 	}
+	imessage.Received.Log(ctx, "row", m.RowID, "bytes", len(text), "from", m.From, "chat", m.ChatGUID, "text", text)
 	// Phase-2 (TEN-267): an approval reply ("Y <nonce>" from the OPERATOR handle)
 	// resolves a pending gated action and is CONSUMED here — it must never drive a
 	// new agent turn. OnReply enforces the operator-handle gate itself; it echoes
@@ -176,16 +188,20 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	}()
 }
 
-// turn drives one agent turn and replies. The turn ctx carries the
-// offsite-confirm: Phase-1 deny-all, or (Phase-2) the per-category broker whose
-// "ask" texts the operator the nonce handshake.
+// turn drives one agent turn, a Turn activity, and replies. The turn ctx
+// carries the offsite-confirm: Phase-1 deny-all, or (Phase-2) the per-category
+// broker whose "ask" texts the operator the nonce handshake.
 func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
-	turnCtx := withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage)
+	turnCtx, act := event.Start(withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage), imessage.Turn, "chat", chatGUID)
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
 		UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
 	})
+	failed := err
+	if ctx.Err() != nil {
+		failed = nil // the responder stopped: not a failure
+	}
+	act.End(&failed)
 	if err != nil {
-		r.logger().Warn("imessage responder: turn failed", "chat", chatGUID, "err", err)
 		r.send(ctx, chatGUID, "sorry — I hit an error handling that. Try again.")
 		return
 	}
@@ -204,8 +220,10 @@ func (r *imessageResponder) waitIdle() { r.wg.Wait() }
 // approver's prompts (it is the approver's sender) — serialized, since the
 // approver prompts from the turn goroutine while the poll loop may be sending
 // a "busy" reply, and recorded so the watcher's echo cache drops the text if
-// Apple surfaces it back (anti-loop).
-func (r *imessageResponder) SendText(ctx context.Context, chatGUID, text string) (string, error) {
+// Apple surfaces it back (anti-loop). Each send is a Delivery activity.
+func (r *imessageResponder) SendText(ctx context.Context, chatGUID, text string) (_ string, err error) {
+	ctx, act := event.Start(ctx, imessage.Delivery, "bytes", len(text), "chat", chatGUID)
+	defer act.End(&err)
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
 	id, err := r.sender.SendText(ctx, chatGUID, text)
@@ -215,17 +233,9 @@ func (r *imessageResponder) SendText(ctx context.Context, chatGUID, text string)
 	return id, err
 }
 
+// send replies best-effort; SendText's Delivery activity records a failure.
 func (r *imessageResponder) send(ctx context.Context, chatGUID, text string) {
-	if _, err := r.SendText(ctx, chatGUID, text); err != nil {
-		r.logger().Warn("imessage responder: send failed", "chat", chatGUID, "err", err)
-	}
-}
-
-func (r *imessageResponder) logger() *slog.Logger {
-	if r.log != nil {
-		return r.log
-	}
-	return slog.Default()
+	_, _ = r.SendText(ctx, chatGUID, text)
 }
 
 // imessageAgentDeps are the shared ingredients for the dedicated iMessage agent

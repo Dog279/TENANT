@@ -211,7 +211,7 @@ func TestRelay_InteractionOperatorGate(t *testing.T) {
 	fs := &fakeSender{}
 	a := newDiscordApprover(fs, nil)
 	a.setChannel("dm1")
-	r := newRelay(&fakeRunner{}, fs, op, nil)
+	r := newRelay(&fakeRunner{}, fs, op)
 	r.approver = a
 
 	// A non-operator click never acts — but it IS answered privately, so the
