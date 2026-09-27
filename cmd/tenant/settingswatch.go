@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"tenant/internal/approval"
+	"tenant/internal/lifecycle"
 )
 
 const settingsWatchInterval = 3 * time.Second
@@ -47,6 +48,8 @@ func saveSettingsOrTell(stg *settings, cfgDir, agentID string, tell func(string)
 // watchSettings runs until ctx is done. stg + mu are the live settings object
 // the process saves from (kept in sync so a later save doesn't undo the edit).
 func watchSettings(ctx context.Context, cfgDir, agentID string, broker *approvalBroker, rules *toolRules, mu *sync.Mutex, stg *settings, notify func(string)) {
+	comp := lifecycle.Track(ctx, "settings watcher", lifecycle.Subsystem, "system", lifecycle.Running, nil)
+	defer comp.Set(lifecycle.Stopped, nil)
 	path := settingsPath(cfgDir, agentID)
 	last := settingsModTime(path)
 	t := time.NewTicker(settingsWatchInterval)

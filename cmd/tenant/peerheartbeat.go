@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/model"
 	"tenant/internal/peering"
 	"tenant/internal/plugins/mcpremote"
@@ -218,6 +219,8 @@ type peerHealthMonitor struct {
 }
 
 func (m *peerHealthMonitor) run(ctx context.Context) {
+	comp := lifecycle.Track(ctx, "peer heartbeat", lifecycle.Subsystem, "peering", lifecycle.Running, nil)
+	defer comp.Set(lifecycle.Stopped, nil)
 	t := time.NewTicker(peerProbeInterval)
 	defer t.Stop()
 	m.probeAll(ctx) // probe once immediately so /peer is useful right away
@@ -236,9 +239,13 @@ func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 	if err != nil {
 		if err.Error() != m.loadErr {
 			peering.HeartbeatStopped.Log(ctx, "err", err)
+			lifecycle.Track(ctx, "peer heartbeat", lifecycle.Subsystem, "peering", lifecycle.Degraded, err)
 		}
 		m.loadErr = err.Error()
 		return
+	}
+	if m.loadErr != "" {
+		lifecycle.Track(ctx, "peer heartbeat", lifecycle.Subsystem, "peering", lifecycle.Running, nil) // peers.json reads again
 	}
 	m.loadErr = ""
 	var wg sync.WaitGroup

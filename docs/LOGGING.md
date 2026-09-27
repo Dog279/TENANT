@@ -276,6 +276,11 @@ that logs through `POST /api/logs` or `tenant log` joins them by passing them
 on as its `trace` and `activity` fields
 (`tenant log deploy "done" trace=$TENANT_TRACE_ID`).
 
+**While it runs, a child is a component** (see
+[What is running](#what-is-running-components-and-the-summary)), named by its
+first tag (`server`, `child` or the sandbox's `surface`); it leaves the list
+when it exits.
+
 ## The `model` and `route` logs
 
 Both are catalogued ([EVENTS.md](EVENTS.md#model)) and sit in the viewer's
@@ -826,6 +831,43 @@ trend. On 1M events (`TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run
 TestQueryBudgets -v`) a page takes well under the budgets: 200 ms on indexed
 fields, 1 s for `data.<key>` and full text. `Count` over a field without an
 index reads every row it can't rule out, so it can take longer.
+
+### What is running: components and the Summary
+
+**Components** (`internal/lifecycle`) are what a serve or TUI process runs:
+each with a name, a kind (`subsystem`, `connector`, `server`, `child`, `job`),
+its log, a state (`starting`, `running`, `degraded`, `stopped`, `failed`),
+since when, when this run started (its uptime) and its last error. They are
+tracked where they start: `Group.Start` registers a stop that also tracks
+(cron, the improve scheduler); `lifecycle.Track` covers the rest (the
+dashboard, the Discord relay, the iMessage responder, degraded while chat.db
+can't be polled; the peer listener; the peer heartbeat, degraded while
+`peers.json` can't be read; the settings and credentials watchers; the turn
+gate); and `internal/logs/capture` tracks each child while it runs.
+`lifecycle.Components()` lists them, JSON-ready, for the Components view and
+`GET /api/logbook/components`.
+
+Every state change is a `system` event: `system/101` starting, `102`
+running, `103` stopped, `2101` degraded, `3101` failed, and `2102` for a
+child that failed (a warning, as its exit line is: a command's non-zero exit
+is often its answer). Each run of a component is one activity, so
+`activity:<id>` is its history, and
+`provider:system task:Component data.component:"discord relay"` every run's.
+
+**The Summary** (`store.Summary`; `Hub.Summary` adds the retention settings
+in force and the events this process's queue dropped) is, per log, the
+counts by level over the last hour, 24 hours and 7 days, exact to the minute,
+with a sparkline of the week's 168 hours; its size against its limit, its
+retention and what happens when it is full, its dropped and suppressed
+counts and its newest event. Then the 10 event IDs most frequent among
+warnings and worse over the last 24 hours (in whole hours), and the latest 10
+critical events, errors and unexpected exits (the `system` log's critical
+events) of the week. It reads per-hour rollups: `rollup_hour` (log and
+level) and `rollup_id` (event ID, warnings and worse), which each commit keeps
+beside the per-minute ones, retention prunes with them and a privacy forget
+takes its events out of. On 1M events it takes 14–20 ms (p95; the budget is 50;
+`TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run TestSummaryBudget -v`),
+where a week from the per-minute rollups alone took 135 ms.
 
 ### Event IDs, the reference and coverage
 

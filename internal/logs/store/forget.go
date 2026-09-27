@@ -182,11 +182,18 @@ func (s *Store) forgetChunk(ctx context.Context, hs []hit, res *ForgetResult) er
 			}
 			tombstoned++
 		} else {
+			if err == nil && h.level <= int64(event.Warning) {
+				err = exec(`UPDATE rollup_id SET n = n - 1 WHERE (hour, provider_id, event_id) =
+					(SELECT time_ns / 3600000000000, provider_id, event_id FROM events WHERE seq = ?)`, h.seq)
+			}
 			if err == nil {
 				err = exec(`DELETE FROM events WHERE seq = ?`, h.seq)
 			}
 			if err == nil {
 				err = exec(`UPDATE rollup SET n = n - 1 WHERE minute = ? AND log_id = ? AND level = ?`, h.timeNS/int64(time.Minute), h.logID, h.level)
+			}
+			if err == nil {
+				err = exec(`UPDATE rollup_hour SET n = n - 1 WHERE hour = ? AND log_id = ? AND level = ?`, h.timeNS/int64(time.Hour), h.logID, h.level)
 			}
 			if err == nil {
 				err = exec(`UPDATE logs SET bytes = bytes - ? WHERE log_id = ?`, h.bytes, h.logID)
@@ -198,6 +205,12 @@ func (s *Store) forgetChunk(ctx context.Context, hs []hit, res *ForgetResult) er
 		}
 	}
 	if err := exec(`DELETE FROM rollup WHERE n <= 0`); err != nil {
+		return err
+	}
+	if err := exec(`DELETE FROM rollup_hour WHERE n <= 0`); err != nil {
+		return err
+	}
+	if err := exec(`DELETE FROM rollup_id WHERE n <= 0`); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

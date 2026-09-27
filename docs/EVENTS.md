@@ -4602,10 +4602,15 @@ Writes the `system` log.
 | [10](#system-10) | info | Lifecycle | `Start-up of {role}` |
 | [20](#system-20) | info | Shutdown | `Shutdown of {steps} steps` |
 | [21](#system-21) | info | Shutdown | `Shutdown stage {stage}: {steps} steps` |
+| [101](#system-101) | info | Component | `{component} is starting` |
+| [102](#system-102) | info | Component | `{component} is running` |
+| [103](#system-103) | info | Component | `{component} stopped` |
 | [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
 | [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
 | [2001](#system-2001) | warning | Clock | `The wall clock moved {delta} against the monotonic clock` |
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
+| [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
+| [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
 | [2201](#system-2201) | warning | Storage | `{what} was not saved: {err}` |
 | [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
@@ -4719,6 +4724,48 @@ Writes the `system` log.
 
 **What to do.** None when it stops. A slow drain is a job or turn still running; a failure names the steps that failed.
 
+### system 101
+
+`{component} is starting`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`
+- **Find it:** `provider:system id:101`
+
+**What it means.** A component began to start.
+
+**Why it happens.** Tenant started it, or the operator turned it on.
+
+**What to do.** None; a running or failed event follows.
+
+### system 102
+
+`{component} is running`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`
+- **Find it:** `provider:system id:102`
+
+**What it means.** A component is running, or has recovered from a degraded state.
+
+**Why it happens.** It started, or what it depends on works again.
+
+**What to do.** None.
+
+### system 103
+
+`{component} stopped`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`, `uptime`
+- **Find it:** `provider:system id:103`
+
+**What it means.** A component stopped in order.
+
+**Why it happens.** Tenant is shutting down, the operator turned it off, or a child process finished.
+
+**What to do.** None.
+
 ### system 1301
 
 `Publish the dashboard to the tailnet`
@@ -4772,6 +4819,34 @@ Writes the `system` log.
 **Why it happens.** Closing it returned an error: a store that could not flush, a listener already gone, a timeout.
 
 **What to do.** Read the error. A store that failed to close may have lost its last writes; tenant doctor checks the databases.
+
+### system 2101
+
+`{component} is degraded: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`, `err`
+- **Find it:** `provider:system id:2101`
+
+**What it means.** A component still runs, but not as it should.
+
+**Why it happens.** Something it depends on failed: a file it reads, a connection, a poll.
+
+**What to do.** Open the component's log for the cause; a running event follows when it recovers.
+
+### system 2102
+
+`Child process {component} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `kind`, `log`, `err`, `uptime`
+- **Find it:** `provider:system id:2102`
+
+**What it means.** A child process exited with an error, or did not start.
+
+**Why it happens.** Its command failed, it crashed, or it could not be run. A command's non-zero exit is often its answer, not a fault.
+
+**What to do.** Its exit line in its own log has the code and the last lines it wrote.
 
 ### system 2110
 
@@ -4835,7 +4910,7 @@ Writes the `system` log.
 `{component} failed: {err}`
 
 - **Level:** error · **Channel:** operational · **Task:** Component · **Log:** system
-- **Fields:** `component`, `err`
+- **Fields:** `component`, `err`, `kind`, `log`, `uptime`
 - **Find it:** `provider:system id:3101`
 
 **What it means.** A subsystem stopped with an error.

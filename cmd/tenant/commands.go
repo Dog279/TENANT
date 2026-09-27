@@ -2440,7 +2440,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
 		}
-		life.AddFunc(lifecycle.Drain, "cron", cronEngine.Stop) // cancel any in-flight cron run + drain the loop
+		life.StartFunc(lifecycle.Drain, "cron", lifecycle.Subsystem, "cron", cronEngine.Stop) // cancel any in-flight cron run + drain the loop
 	}
 
 	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
@@ -2785,7 +2785,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	var evalSched *evalSchedule
 	if *selfImprove {
 		sched = improve.NewScheduler(0)
-		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop)
+		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop)
 		// While the model is degraded to echo, suspend ALL self-improvement:
 		// consolidation/profile jobs would persist echo-derived garbage and the
 		// distill cursor would skip episodes never really processed.

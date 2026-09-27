@@ -3,7 +3,7 @@
 // writer connection (docs/design/logging-v2.md §5, §6.1).
 //
 // Commit files a batch in one transaction: the events, their full-text rows,
-// the per-minute rollups and each log's byte count. Commit order is sequence
+// the per-minute and per-hour rollups and each log's byte count. Commit order is sequence
 // order, so a reader holding a Cursor (the store's ID plus a seq) never
 // misses a row: Since returns everything after it. A cursor from another
 // store (a rebuilt or restored database) restarts from the beginning.
@@ -129,6 +129,16 @@ CREATE TABLE views (name TEXT PRIMARY KEY, filter TEXT NOT NULL, builtin INTEGER
 	// 2: retention (TEN-371) sums and sheds the diagnostic channel's bytes
 	// without scanning every event.
 	`CREATE INDEX events_diag ON events(time_ns, bytes) WHERE channel = 1;`,
+	// 3: the Summary page (TEN-380) reads per-hour rollups, which Commit
+	// keeps beside the minutes (addHourRollups): by log and level, and by
+	// event ID for warnings and worse. Filled here from what the store holds.
+	`CREATE TABLE rollup_hour (hour INTEGER, log_id INTEGER, level INTEGER, n INTEGER,
+  PRIMARY KEY (hour, log_id, level)) WITHOUT ROWID;
+CREATE TABLE rollup_id (hour INTEGER, provider_id INTEGER, event_id INTEGER, n INTEGER,
+  PRIMARY KEY (hour, provider_id, event_id)) WITHOUT ROWID;
+INSERT INTO rollup_hour (hour, log_id, level, n) SELECT minute / 60, log_id, level, sum(n) FROM rollup GROUP BY 1, 2, 3;
+INSERT INTO rollup_id (hour, provider_id, event_id, n)
+  SELECT time_ns / 3600000000000, provider_id, event_id, count(*) FROM events WHERE level <= 3 GROUP BY 1, 2, 3;`,
 }
 
 // Options configures a Store.
@@ -384,6 +394,9 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 			ON CONFLICT (minute, log_id, level) DO UPDATE SET n = n + excluded.n`, k.minute, k.log, k.level, n); err != nil {
 			return fmt.Errorf("store: commit: %w", err)
 		}
+	}
+	if err := addHourRollups(ctx, tx, seqs[0], seqs[len(seqs)-1]); err != nil {
+		return fmt.Errorf("store: commit: %w", err)
 	}
 	for id, b := range bytesByLog {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO logs (log_id, bytes) VALUES (?, ?)
