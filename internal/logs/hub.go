@@ -50,6 +50,10 @@ type Options struct {
 	// RateLimit returns each provider and event ID's rate limit, read the
 	// same way (nil or 0 ⇒ 100 a second in bursts of 500; <0 ⇒ none).
 	RateLimit func() (perSecond float64, burst int)
+	// AuditDeny reports whether logs.security.on_failure is deny. It is read
+	// each time a Security record fails to commit, so an edit applies at
+	// once (nil ⇒ continue). audit.go.
+	AuditDeny func() bool
 }
 
 // SourceInfo describes one source (= one folder = one dashboard tab).
@@ -94,6 +98,8 @@ type Hub struct {
 	hk   housekeeper              // housekeeper.go
 	in   intakeState              // intake.go
 	lb   logbook                  // logbook.go
+
+	auditFails atomic.Int64 // Security records not written since the last one that was (audit.go)
 }
 
 type source struct {

@@ -389,7 +389,7 @@ func TestLogsChangeAndClear(t *testing.T) {
 		return slices.ContainsFunc(evs, func(e event.Event) bool { return e.ID == 4901 && e.Msg == "Log discord cleared: 2 events" }) &&
 			slices.ContainsFunc(evs, func(e event.Event) bool {
 				return e.ID == 4902 && strings.HasPrefix(e.Msg, "Log discord reconfigured: max_bytes 1048576, max_age_s 2592000, on_full keep, min_level warning") &&
-					e.Data[2].Value == "operator" && e.Data[3].Value == "dashboard"
+					e.Actor == "operator" && e.Surface == "dashboard"
 			})
 	})
 }

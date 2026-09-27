@@ -36,6 +36,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/approval"
 	"tenant/internal/control"
 	"tenant/internal/plugins/discord"
 )
@@ -77,13 +78,20 @@ type discordIO interface {
 // pendingApproval is one outstanding prompt: the waiting Confirm's reply
 // channel plus everything needed to rewrite its card later.
 type pendingApproval struct {
-	reply    chan bool
+	reply    chan cardVerdict
 	channel  string
 	msgID    string // "" when no card posted (plain-text fallback) — nothing to edit; guarded by the approver's mu
 	v2       bool   // layout the card was posted with; edits must match it; guarded by the approver's mu
 	action   string
 	detail   string
 	postedAt time.Time
+}
+
+// cardVerdict is a resolution handed to the waiting decide: the answer, and
+// the Discord user who gave it, for the approval's Security record.
+type cardVerdict struct {
+	ok bool
+	by string
 }
 
 // discordApprover satisfies a plugin Policy.Confirm: func(ctx, action, detail) bool.
@@ -175,7 +183,7 @@ func (a *discordApprover) decide(ctx context.Context, action, detail string) con
 		return control.DenyOnce
 	}
 	nonce := genNonce()
-	p := &pendingApproval{reply: make(chan bool, 1), channel: channel, action: action, detail: detail, postedAt: a.now()}
+	p := &pendingApproval{reply: make(chan cardVerdict, 1), channel: channel, action: action, detail: detail, postedAt: a.now()}
 	a.mu.Lock()
 	a.pending[nonce] = p
 	a.mu.Unlock()
@@ -190,13 +198,15 @@ func (a *discordApprover) decide(ctx context.Context, action, detail string) con
 	tctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 	select {
-	case ok := <-p.reply: // the resolver already rewrote the card
-		if ok {
+	case v := <-p.reply: // the resolver already rewrote the card
+		approval.DecidedBy(ctx, "discord:"+v.by, "nonce", nonce)
+		if v.ok {
 			return control.ApproveOnce
 		}
 		return control.DenyOnce
 	case <-tctx.Done():
 		a.expire(nonce, p)
+		approval.DecidedBy(ctx, "", "nonce", nonce)
 		return control.Expired
 	}
 }
@@ -296,7 +306,7 @@ func (a *discordApprover) tryConsume(in discord.Inbound) bool {
 		}
 		var denied []hit
 		for nonce, p := range a.pending {
-			trySignal(p.reply, false)
+			signalCard(p.reply, cardVerdict{false, in.AuthorID})
 			denied = append(denied, hit{nonce, p})
 		}
 		a.mu.Unlock()
@@ -311,7 +321,7 @@ func (a *discordApprover) tryConsume(in discord.Inbound) bool {
 	for nonce, p := range a.pending {
 		n := strings.ToLower(nonce)
 		if text == "approve-"+n || text == n {
-			trySignal(p.reply, true)
+			signalCard(p.reply, cardVerdict{true, in.AuthorID})
 			a.mu.Unlock()
 			a.freeze(nonce, p, "approved", in.AuthorID)
 			a.logInfo("discord approval resolved", "outcome", "approved", "via", "text", "by", in.AuthorID,
@@ -355,7 +365,7 @@ func (a *discordApprover) tryInteraction(in discord.Interaction) bool {
 	if err := a.io.RespondUpdate(ctx, in.ID, in.Token, verdictText(p, verdict, in.UserID, a.now()), approvalButtons(nonce, true), v2); err != nil {
 		discord.AckFailed.Log(ctx, "click", verdict, "err", err)
 	}
-	trySignal(p.reply, approve)
+	signalCard(p.reply, cardVerdict{approve, in.UserID})
 	a.logInfo("discord approval resolved", "outcome", verdict, "via", "button", "by", in.UserID,
 		"channel", p.channel, "action", p.action, "latency", a.now().Sub(p.postedAt).Round(time.Millisecond))
 	return true
@@ -403,6 +413,13 @@ func (a *discordApprover) logInfo(msg string, kv ...any) {
 }
 
 func trySignal(ch chan bool, v bool) {
+	select {
+	case ch <- v:
+	default:
+	}
+}
+
+func signalCard(ch chan cardVerdict, v cardVerdict) {
 	select {
 	case ch <- v:
 	default:

@@ -58,7 +58,8 @@ func TestAuditLogAdminFilesTheAction(t *testing.T) {
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("records:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
 	}
-	if d := got[0].Data; len(d) != 4 || d[2].Key != "actor" || d[2].Text() != "operator" || d[3].Key != "surface" || d[3].Text() != "dashboard" {
-		t.Errorf("fields %+v", d)
+	// actor and surface are the record's own attributes, not data.
+	if e := got[0]; len(e.Data) != 2 || e.Actor != "operator" || e.Surface != "dashboard" {
+		t.Errorf("fields %+v, actor %q, surface %q", e.Data, e.Actor, e.Surface)
 	}
 }

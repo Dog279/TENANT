@@ -39,13 +39,13 @@ func (em hubEmitter) Emit(ctx context.Context, e *event.Event) {
 }
 
 // Audit returns once the record is committed to the store, with the commit's
-// error. ponytail: with no store attached it returns once the hub has the
+// error, which it reports (audited). ponytail: with no store attached it returns once the hub has the
 // line, as Emit does, and can't report a failed write.
 func (em hubEmitter) Audit(ctx context.Context, e *event.Event) error {
 	enrich(ctx, e)
 	if p := em.h.pipe.Load(); p != nil {
 		if err := p.audit(ctx, e); !errors.Is(err, errClosed) {
-			return err
+			return em.h.audited(ctx, e, err)
 		}
 	}
 	em.h.Log(EntryFromEvent(*e))

@@ -337,7 +337,8 @@ func (d *Def) build(ctx context.Context, op string, kv []any) *Event {
 		e.Data = append(e.Data, Field{Key: key, Value: value(kv[1]), Sensitive: slices.Contains(s.Sensitive, key)})
 		kv = kv[2:]
 	}
-	e.Msg = d.render(e.Data)
+	attribute(ctx, e)
+	e.Msg = d.render(e)
 	return e
 }
 

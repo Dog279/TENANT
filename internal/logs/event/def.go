@@ -236,9 +236,10 @@ func must(err error) {
 	}
 }
 
-// render fills the template's placeholders from data. One with no value
-// stays as written, so a missing field shows.
-func (d *Def) render(data []Field) string {
+// render fills the template's placeholders from e's data, or its actor and
+// surface (attribution.go). One with no value stays as written, so a missing
+// field shows.
+func (d *Def) render(e *Event) string {
 	t := d.spec.Template
 	if len(d.holes) == 0 {
 		return t
@@ -249,9 +250,14 @@ func (d *Def) render(data []Field) string {
 		b.WriteString(t[last:h[0]])
 		last = h[1]
 		key := t[h[2]:h[3]]
-		if i := slices.IndexFunc(data, func(f Field) bool { return f.Key == key }); i >= 0 {
-			b.WriteString(data[i].Text())
-		} else {
+		switch i := slices.IndexFunc(e.Data, func(f Field) bool { return f.Key == key }); {
+		case i >= 0:
+			b.WriteString(e.Data[i].Text())
+		case key == "actor" && e.Actor != "":
+			b.WriteString(e.Actor)
+		case key == "surface" && e.Surface != "":
+			b.WriteString(e.Surface)
+		default:
 			b.WriteString(t[h[0]:h[1]])
 		}
 	}

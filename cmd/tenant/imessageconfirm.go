@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/approval"
 	"tenant/internal/control"
 	"tenant/internal/plugins/imessage"
 )
@@ -149,6 +150,9 @@ func (a *imessageApprover) decide(ctx context.Context, action, detail string) co
 	defer cancel()
 	select {
 	case ok := <-reply: // OnReply already texted the operator the outcome
+		// Only the operator's handle can answer (OnReply); the record keeps
+		// the handle out of the log.
+		approval.DecidedBy(ctx, "operator", "nonce", nonce)
 		if ok {
 			return control.ApproveOnce
 		}
@@ -159,6 +163,7 @@ func (a *imessageApprover) decide(ctx context.Context, action, detail string) co
 		if ctx.Err() == nil {
 			a.post(chat, fmt.Sprintf("⌛ approval %s expired — denied.", nonce))
 		}
+		approval.DecidedBy(ctx, "", "nonce", nonce)
 		return control.Expired
 	}
 }

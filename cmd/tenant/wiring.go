@@ -358,6 +358,7 @@ func (c *commonFlags) logsOptions() logs.Options {
 	if logLevel() == slog.LevelDebug {
 		opts.MinLevel = slog.LevelDebug
 	}
+	opts.AuditDeny = auditDenies(c.cfgDir, cfg) // logs.security.on_failure (securitylog.go)
 	return opts
 }
 

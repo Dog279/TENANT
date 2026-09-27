@@ -34,6 +34,7 @@ type pendingReq struct {
 	at     time.Time
 	reply  chan control.ApprovalDecision
 	span   *runtrace.Span
+	by     string // the surface that resolved it; written before the reply is sent
 }
 
 func newRegistry() *registry {
@@ -50,10 +51,10 @@ func nextID() string {
 	return fmt.Sprintf("%.8s-%d", runtrace.BootID(), seq.Add(1))
 }
 
-// register inserts a new pending request and emits EventApprovalPending. Returns
-// the assigned id + the buffered reply chan the caller blocks on.
-func (r *registry) register(ctx context.Context, req control.ApprovalRequest, origin string) (string, chan control.ApprovalDecision) {
-	id := "ap-" + nextID() // atomic — no lock needed for the id
+// register inserts a new pending request under id ("ap-" + nextID()) and
+// emits EventApprovalPending. It returns the entry, whose buffered reply chan
+// the caller blocks on.
+func (r *registry) register(ctx context.Context, id string, req control.ApprovalRequest, origin string) *pendingReq {
 	reply := make(chan control.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
@@ -63,13 +64,14 @@ func (r *registry) register(ctx context.Context, req control.ApprovalRequest, or
 	r.mu.Unlock()
 	r.emitEvent(agent.EventApprovalPending, p, "")
 	p.recordApproval("pending")
-	return id, reply
+	return p
 }
 
-// Resolve fires the decision for id — first-resolver-wins. Returns false (clean
-// no-op) for an unknown / already-resolved id, so the loser of a TUI/dashboard
-// race is harmless. The reply send is buffered + outside the lock.
-func (r *registry) Resolve(id string, d control.ApprovalDecision) bool {
+// Resolve fires the decision for id, made on surface — first-resolver-wins.
+// Returns false (clean no-op) for an unknown / already-resolved id, so the
+// loser of a TUI/dashboard race is harmless. The reply send is buffered +
+// outside the lock.
+func (r *registry) Resolve(id string, d control.ApprovalDecision, surface string) bool {
 	r.mu.Lock()
 	p := r.pending[id]
 	if p != nil {
@@ -79,6 +81,7 @@ func (r *registry) Resolve(id string, d control.ApprovalDecision) bool {
 	if p == nil {
 		return false
 	}
+	p.by = surface
 	p.reply <- d // cap-1 buffer ⇒ never blocks, fires exactly once (delete-under-lock gated)
 	r.emitEvent(agent.EventApprovalResolved, p, outcomeOf(d))
 	p.recordApproval(outcomeOf(d))

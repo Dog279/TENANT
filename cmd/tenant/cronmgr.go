@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/approval"
 	croneng "tenant/internal/cron"
 	"tenant/internal/dashboard"
 	"tenant/internal/datalock"
@@ -226,9 +227,11 @@ func withAuthBanner(summary string, probs []string) string {
 // yes: it hard-denies the irreversible/destructive category (so a catastrophic
 // command/DDL/web-purchase still can't run unattended) and denies writes into
 // the config/data dirs (so an exec job can't rewrite Tenant's own cron defs to
-// self-replicate). The Gated cron_add approval pre-authorizes the rest.
+// self-replicate). The Gated cron_add approval pre-authorizes the rest. It
+// asks nobody, so each verdict is its own Security record (and, under
+// logs.security.on_failure: deny, a grant it can't record is a denial).
 func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
-	return func(_ context.Context, action, detail string) bool {
+	allows := func(action, detail string) bool {
 		switch categorize(action) {
 		case catSandbox:
 			// Unattended: a sandbox refusal is final. Re-running outside the
@@ -251,6 +254,9 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 			}
 		}
 		return true
+	}
+	return func(ctx context.Context, action, detail string) bool {
+		return approval.Verdict(ctx, categorize(action), action, detail, "cron", "cron", allows(action, detail))
 	}
 }
 

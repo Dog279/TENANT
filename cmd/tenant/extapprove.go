@@ -6,7 +6,8 @@ package main
 // action row whose buttons use custom_ids "ext-approve:<ns>:<id>" /
 // "ext-deny:<ns>:<id>". When the operator clicks one, the relay ACKs within
 // Discord's 3-second window by editing the message (buttons removed) and
-// records the verdict as a marker file:
+// records the verdict as a marker file, whose line names the clicker (so does
+// the verdict's Security record):
 //
 //	<dataDir>/approvals/<ns>/<id>.approve   (or .deny)
 //
@@ -29,6 +30,8 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
 	"tenant/internal/plugins/discord"
 )
 
@@ -62,8 +65,20 @@ func (r *relay) handleExtApprove(in discord.Interaction) {
 		ack("⚠️ " + id + ": couldn't record the verdict (" + ns + " dir unavailable).")
 		return
 	}
+	// The verdict's Security record names the clicker, and comes before the
+	// marker the automation acts on: under logs.security.on_failure: deny, an
+	// approval that can't be recorded is not given.
+	ctx := event.WithApproval(context.Background(), "ext:"+ns+":"+id)
+	kv := []any{"category", "external", "action", ns + "/" + id, "origin", "discord", "via", "operator",
+		"actor", "discord:" + in.UserID, "surface", "discord"}
+	if verdict != "approve" {
+		_ = catalog.ApprovalNo.Audit(ctx, kv...)
+	} else if catalog.ApprovalYes.Gate(ctx, append(kv, "grant", "once")...) != nil {
+		ack("⚠️ " + id + ": the Security log can't be written, so the approval was not given.")
+		return
+	}
 	marker := filepath.Join(dir, id+"."+verdict)
-	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+" via button\n"), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+" via button by "+in.UserID+"\n"), 0o644); err != nil {
 		ack("⚠️ " + id + ": couldn't record the verdict.")
 		return
 	}

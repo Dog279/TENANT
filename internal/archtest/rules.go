@@ -76,13 +76,13 @@ var rules = []rule{
 }
 
 // everyone is one allowance on top of the rule that governs each internal
-// package: the event model, so an event is written where the action happens,
-// and child capture, so a child is filed where it is started, without
-// widening the rules for the heavy logs packages. Both import only light
-// packages: leaves, and lifecycle and the catalog, which import the event
-// model alone.
+// package: the event model and the built-in providers (catalog), so an event
+// or an audit record is written where the action happens, and child capture,
+// so a child is filed where it is started, without widening the rules for the
+// heavy logs packages. All three import only light packages: leaves, and
+// lifecycle and the catalog, which import the event model alone.
 // reference/** and scripts/** stay out of it: they must build on their own.
-var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event", "internal/logs/capture"}, Notes: "on top of its own row: the event model and child capture, so an event is written, and a child filed, where the action happens"}
+var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event", "internal/logs/catalog", "internal/logs/capture"}, Notes: "on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens"}
 
 // match reports whether module-relative package path pkg matches pattern.
 func match(pattern, pkg string) bool {

@@ -103,7 +103,7 @@ func (a dashAccess) SetIMessagePermission(cat, mode string) (bool, error) {
 	if p == nil {
 		return false, errIMessageUnavailable
 	}
-	return p.SetPermission(cat, mode)
+	return setPermissionFromDashboard(p, cat, mode)
 }
 
 func (a dashAccess) SetRelayEnabled(on bool) error {
@@ -125,7 +125,7 @@ func (a dashAccess) SetRelayExec(on bool) error {
 	if a.relay == nil {
 		return errDiscordUnavailable
 	}
-	return a.relay.SetExec(on)
+	return a.relay.setExecFrom(on, "dashboard")
 }
 
 func (a dashAccess) SetRelayPermission(cat, mode string) (bool, error) {
@@ -135,6 +135,15 @@ func (a dashAccess) SetRelayPermission(cat, mode string) (bool, error) {
 	p := a.relay.Perms()
 	if p == nil {
 		return false, errDiscordUnavailable
+	}
+	return setPermissionFromDashboard(p, cat, mode)
+}
+
+// setPermissionFromDashboard sets a category's mode, naming the dashboard in
+// the change's Security record when p is a broker.
+func setPermissionFromDashboard(p tui.PermissionControl, cat, mode string) (bool, error) {
+	if b, ok := p.(*approvalBroker); ok {
+		return b.SetPermissionFrom("dashboard", cat, mode)
 	}
 	return p.SetPermission(cat, mode)
 }

@@ -517,6 +517,7 @@ func execute(ctx context.Context, be sandbox.Backend, cmd sandbox.Command, pol s
 		sandbox.Exited.Log(ctx, kv...)
 	}
 	logSandboxRun(ctx, cmd.Surface, be.Name(), pol.Enforce, cmd, res)
+	auditExec(ctx, be.Name(), cmd, pol.Enforce, res, err) // the Security log's record (securitylog.go)
 	return res, err
 }
 

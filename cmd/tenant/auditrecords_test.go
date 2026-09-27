@@ -24,12 +24,15 @@ import (
 )
 
 // fields renders an event's record as the tests read it: its ID, then its
-// data as key=value.
+// data as key=value, then its actor and surface (attributes, not data).
 func fields(e *event.Event) string {
 	var b strings.Builder
 	b.WriteString(e.Provider + "/" + strconv.FormatUint(uint64(e.ID), 10))
 	for _, f := range e.Data {
 		b.WriteString(" " + f.Key + "=" + f.Text())
+	}
+	if e.Actor != "" || e.Surface != "" {
+		b.WriteString(" actor=" + e.Actor + " surface=" + e.Surface)
 	}
 	return b.String()
 }
@@ -198,7 +201,7 @@ func TestDiscoveryQuestion6WhoWhereAndWithWhoseApproval(t *testing.T) {
 		t.Fatalf("the turn's security records: %v, %v", evs, err)
 	}
 	r := &evs[0]
-	who, where := eventField(r, "actor").Text(), eventField(r, "surface").Text()
+	who, where := r.Actor, r.Surface
 	if r.ID != 4701 || who != actorAgent || where != surfaceDiscord || r.Corr.TraceID != trace || r.Corr.ApprovalID != "" {
 		t.Errorf("who %q, from %q, turn %q, approval %q: %s", who, where, r.Corr.TraceID, r.Corr.ApprovalID, fields(r))
 	}
