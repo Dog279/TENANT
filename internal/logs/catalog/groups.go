@@ -29,7 +29,7 @@ var (
 	backupPriv = []string{"Subsystems", "Backup and Privacy"}
 
 	groups = map[string][]string{
-		"system": tenant, "security": tenant, "turns": tenant, "subagents": tenant,
+		"system": tenant, "security": tenant, "turns": tenant, "subagents": tenant, "alerts": tenant,
 		"approvals": tenant, // v1's folder; its records move into security (LOG-062)
 		"logbook":   tenant,
 		"discord":   channels, "imessage": channels,

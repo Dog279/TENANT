@@ -13,6 +13,58 @@ here, marked retired. They are assigned in blocks: 1–999 lifecycle, 1000s
 operations, 2000s warnings, 3000s errors, 4000s security and audit, 5000s
 configuration, 9000s diagnostics.
 
+## alerts
+
+Writes the `alerts` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#alerts-1001) | warning | Alert | `Alert {rule}: {source} {source_level}: {message}` |
+| [3001](#alerts-3001) | error | Alert | `Alert {rule} was not sent by {action}: {err}` |
+| [3002](#alerts-3002) | error | Rule | `Alert rule {rule} is skipped: {err}` |
+
+### alerts 1001
+
+`Alert {rule}: {source} {source_level}: {message}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Alert · **Log:** alerts
+- **Fields:** `rule`, `action`, `seq`, `source`, `source_level`, `message`, `count`
+- **Find it:** `provider:alerts id:1001`
+
+**What it means.** An alert rule matched an event and fired: its banner went to the status feed, and a discord, imessage or cron action was sent (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.
+
+**Why it happens.** The event matched the rule's filter, as often as its threshold asks, and the rule had not fired within its throttle window.
+
+**What to do.** Open the event on the dashboard (/logs/event/<seq>): its Help tab says what it means. If the rule is noise, change or disable it in logs.alerts.
+
+### alerts 3001
+
+`Alert {rule} was not sent by {action}: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Alert · **Log:** alerts
+- **Fields:** `rule`, `action`, `seq`, `err`
+- **Find it:** `provider:alerts id:3001`
+
+**What it means.** An alert fired, but its Discord, iMessage or cron action failed. The alert itself is still in the alerts log.
+
+**Why it happens.** The Discord relay has no bot or operator, imessage.operator is unset or Messages can't send from this process, or no cron scheduler runs in the process that evaluates the rules.
+
+**What to do.** Fix what the error names, or point the rule at another action in logs.alerts.
+
+### alerts 3002
+
+`Alert rule {rule} is skipped: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Rule · **Log:** alerts
+- **Fields:** `rule`, `err`
+- **Find it:** `provider:alerts id:3002`
+
+**What it means.** An entry of logs.alerts could not be used, so it never fires. The other rules still run.
+
+**Why it happens.** Its filter does not parse, a duration or the action is not valid, or two entries share a name.
+
+**What to do.** Correct the entry in logs.alerts in config.json; the next evaluation picks it up.
+
 ## backup
 
 Writes the `backup` log.

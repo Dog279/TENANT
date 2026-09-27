@@ -465,6 +465,16 @@ func (e *Engine) RunNow(ctx context.Context, id string) (RunRecord, error) {
 	return e.execute(ctx, job), nil
 }
 
+// RunOnce runs def now, once, without adding it to the jobs: a one-off
+// prompt, such as an alert rule's cron action (TEN-399). It is serialized
+// with the other runs and kept in the history like them.
+func (e *Engine) RunOnce(ctx context.Context, def JobDef) RunRecord {
+	if def.ID == "" {
+		def.ID = newID()
+	}
+	return e.execute(ctx, Job{JobDef: def})
+}
+
 // runDue runs every enabled job whose NextRun has passed as of `now`. NextRun is
 // advanced BEFORE the (possibly long) run so a slow job is never re-selected by
 // the next tick (no double-fire).

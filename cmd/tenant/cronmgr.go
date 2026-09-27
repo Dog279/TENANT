@@ -504,6 +504,7 @@ type cronManager struct {
 }
 
 func newCronManager(base context.Context, engine *croneng.Engine, gate *execGate, persistExec func(bool) error) *cronManager {
+	setAlertCron(base, engine) // an alert rule's cron action runs through this scheduler (logalerts.go)
 	return &cronManager{base: base, engine: engine, execGate: gate, persistExec: persistExec}
 }
 

@@ -84,6 +84,17 @@ config.json: improve.trust_window
 config.json: instance_id
 config.json: lazy_tools
 config.json: logs
+config.json: logs.alerts
+config.json: logs.alerts[].action
+config.json: logs.alerts[].action.kind
+config.json: logs.alerts[].action.target
+config.json: logs.alerts[].disabled
+config.json: logs.alerts[].filter
+config.json: logs.alerts[].name
+config.json: logs.alerts[].threshold
+config.json: logs.alerts[].threshold.count
+config.json: logs.alerts[].threshold.window
+config.json: logs.alerts[].throttle
 config.json: logs.budget_mb
 config.json: logs.diagnostic
 config.json: logs.diagnostic.max_age_days

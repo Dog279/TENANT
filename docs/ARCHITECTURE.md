@@ -168,6 +168,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
 | `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
 | `internal/privacy` | `internal/memory/**`, `internal/fsperm`, `internal/logs`, `internal/logs/store` |  |
+| `internal/logs/alerts` | `internal/logs`, `internal/logs/event`, `internal/logs/query`, `internal/logs/store` | alert rules, evaluated in the housekeeper-lease holder; the composition root sends the actions |
 | `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
 | `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
