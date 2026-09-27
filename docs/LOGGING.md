@@ -359,6 +359,15 @@ its recorded number of warning or error call sites without an ID. Adding one
 fails the test: log it through a catalogued event instead. When the number
 drops, the test fails too, and says what to lower it to.
 
+**Catalogued so far:**
+
+- `cron` (`internal/cron/events.go`): each job run is an activity, `cron/1001`:
+  start, then stop with its duration or fail with its error. A prompt job's run
+  carries its turn's `trace` and links to it (`related` on the start). A shell
+  job's output is `cron/9001`, diagnostic and masked. Loading, missed runs
+  (caught up, or skipped and why) and jobs added, switched and removed are
+  logged too. The one-line run summary still goes to the status feed.
+
 ## Records that lead back to a run
 
 A turn's trace ID (`trace_id` in `runs.db`) is also written on the records the

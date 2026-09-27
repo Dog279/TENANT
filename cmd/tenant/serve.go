@@ -553,7 +553,7 @@ func cmdServe(ctx context.Context, args []string) error {
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
-		}, log.With("source", "cron"))
+		})
 		cronEngine.SetPaused(degraded.Degraded)
 		cronEngine.Prime(cron.PrimeOptions{
 			Location: cronLoc,

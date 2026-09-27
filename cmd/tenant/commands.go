@@ -2386,6 +2386,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		routeHook:    routeRT.Hook(),
 		routeActive:  routeRT.Active,
 		routeSticky:  routeRT.Sticky,
+		events:       emit, // the cron log; the TUI feed skips attributed events
 		cfgDir:       c.cfgDir,
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
@@ -2414,7 +2415,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
-		}, log.With("source", "cron"))
+		})
 		// While degraded (echo), defer ALL cron runs and force catch-up off — a
 		// scheduled agent turn would act on a fake plan, and an exec/shell job
 		// could run real side effects. Set BEFORE Prime so catch-up honors it.

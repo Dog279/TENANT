@@ -13,6 +13,193 @@ here, marked retired. They are assigned in blocks: 1–999 lifecycle, 1000s
 operations, 2000s warnings, 3000s errors, 4000s security and audit, 5000s
 configuration, 9000s diagnostics.
 
+## cron
+
+Writes the `cron` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#cron-1) | info | Scheduler | `Scheduler started with {jobs} jobs, {enabled} enabled` |
+| [1001](#cron-1001) | info | Job run | `Run of job {job}` |
+| [1002](#cron-1002) | info | Schedule | `Job {job} missed its run at {due}; it runs once now` |
+| [2001](#cron-2001) | warning | Schedule | `Job {job} can't be scheduled and stays disabled: {err}` |
+| [2002](#cron-2002) | warning | Schedule | `Job {job} missed its run at {due}: {reason}` |
+| [2003](#cron-2003) | warning | Run history | `The run of job {job} was not saved to the run history: {err}` |
+| [2004](#cron-2004) | warning | Run history | `The run history could not be read, so missed runs aren't caught up: {err}` |
+| [5001](#cron-5001) | info | Job | `Job {job} added: {spec}` |
+| [5002](#cron-5002) | info | Job | `Job {job} {state}` |
+| [5003](#cron-5003) | info | Job | `Job {job} removed` |
+| [5004](#cron-5004) | info | Job | `cron-exec turned {state}` |
+| [9001](#cron-9001) | verbose | Job run | `Job {job} printed {bytes} bytes` |
+
+### cron 1
+
+`Scheduler started with {jobs} jobs, {enabled} enabled`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduler · **Log:** cron
+- **Fields:** `jobs`, `enabled`, `tz`, `catchup`
+- **Find it:** `provider:cron id:1`
+
+**What it means.** The cron scheduler loaded its jobs and started checking for due runs.
+
+**Why it happens.** Serve or the TUI started with cron available.
+
+**What to do.** None. A job that can't be scheduled is reported on its own (cron/2001).
+
+### cron 1001
+
+`Run of job {job}`
+
+- **Level:** info · **Channel:** operational · **Task:** Job run · **Log:** cron
+- **Fields:** `job`, `id`, `kind`, `exec`
+- **Find it:** `provider:cron id:1001`
+
+**What it means.** A scheduled job ran: start, then stop with its duration, or fail with its error.
+
+**Why it happens.** Its schedule came due, catch-up fired it, or someone ran it now (cron_run, /cron run, the dashboard).
+
+**What to do.** On a failure, read the error; for a prompt job, open its turn (the trace) to see what it did.
+
+### cron 1002
+
+`Job {job} missed its run at {due}; it runs once now`
+
+- **Level:** info · **Channel:** operational · **Task:** Schedule · **Log:** cron
+- **Fields:** `job`, `id`, `due`
+- **Find it:** `provider:cron id:1002`
+
+**What it means.** A job's run came due while Tenant was down or the job was disabled, and catch-up runs it once.
+
+**Why it happens.** cron.catchup is on, and the job is a prompt job without exec.
+
+**What to do.** None. Turn cron.catchup off to skip missed runs instead.
+
+### cron 2001
+
+`Job {job} can't be scheduled and stays disabled: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Schedule · **Log:** cron
+- **Fields:** `job`, `id`, `err`
+- **Find it:** `provider:cron id:2001`
+
+**What it means.** A saved job has a schedule or timezone that no longer parses, so it is kept but never runs.
+
+**Why it happens.** config.json was edited by hand, or the timezone database changed.
+
+**What to do.** Fix the job's spec or tz (/cron, the dashboard), or remove it.
+
+### cron 2002
+
+`Job {job} missed its run at {due}: {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Schedule · **Log:** cron
+- **Fields:** `job`, `id`, `due`, `reason`
+- **Find it:** `provider:cron id:2002`
+
+**What it means.** A job's run came due while Tenant was down or the job was disabled, and it was skipped.
+
+**Why it happens.** Catch-up is off (it is held off while the model is degraded at start-up), or the job is a shell or exec job, which never catch up so a destructive job can't fire unexpectedly.
+
+**What to do.** Run it now if the missed run matters (/cron run). Turn cron.catchup on to catch up prompt jobs.
+
+### cron 2003
+
+`The run of job {job} was not saved to the run history: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Run history · **Log:** cron
+- **Fields:** `job`, `id`, `err`
+- **Find it:** `provider:cron id:2003`
+
+**What it means.** A job ran, but its record did not reach cron-history.json.
+
+**Why it happens.** The data directory is full, unwritable or locked.
+
+**What to do.** Check the data directory's disk space and permissions. The run's events in this log still hold its outcome.
+
+### cron 2004
+
+`The run history could not be read, so missed runs aren't caught up: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Run history · **Log:** cron
+- **Fields:** `err`
+- **Find it:** `provider:cron id:2004`
+
+**What it means.** cron-history.json could not be read at start-up, so no job knows when it last ran.
+
+**Why it happens.** The file is unreadable or locked by another process.
+
+**What to do.** Check the file's permissions in the data directory; the next run writes a new record.
+
+### cron 5001
+
+`Job {job} added: {spec}`
+
+- **Level:** info · **Channel:** operational · **Task:** Job · **Log:** cron
+- **Fields:** `job`, `id`, `spec`, `kind`, `exec`, `tz`, `enabled`
+- **Find it:** `provider:cron id:5001`
+
+**What it means.** A cron job was created.
+
+**Why it happens.** The agent (cron_add), /cron add or the dashboard added it.
+
+**What to do.** None.
+
+### cron 5002
+
+`Job {job} {state}`
+
+- **Level:** info · **Channel:** operational · **Task:** Job · **Log:** cron
+- **Fields:** `job`, `id`, `state`
+- **Find it:** `provider:cron id:5002`
+
+**What it means.** A cron job was enabled or disabled.
+
+**Why it happens.** The agent, /cron or the dashboard changed it.
+
+**What to do.** None.
+
+### cron 5003
+
+`Job {job} removed`
+
+- **Level:** info · **Channel:** operational · **Task:** Job · **Log:** cron
+- **Fields:** `job`, `id`
+- **Find it:** `provider:cron id:5003`
+
+**What it means.** A cron job was deleted.
+
+**Why it happens.** The agent, /cron remove or the dashboard removed it.
+
+**What to do.** None.
+
+### cron 5004
+
+`cron-exec turned {state}`
+
+- **Level:** info · **Channel:** operational · **Task:** Job · **Log:** cron
+- **Fields:** `state`
+- **Find it:** `provider:cron id:5004`
+
+**What it means.** The global cron-exec switch changed: while off, shell jobs and exec prompt jobs fail instead of running.
+
+**Why it happens.** /cron exec or the dashboard flipped it.
+
+**What to do.** None when intended.
+
+### cron 9001
+
+`Job {job} printed {bytes} bytes`
+
+- **Level:** verbose · **Channel:** diagnostic · **Task:** Job run · **Log:** cron
+- **Fields:** `job`, `bytes`, `output` (sensitive, masked: `output`)
+- **Find it:** `provider:cron id:9001`
+
+**What it means.** The output of a shell job's command.
+
+**Why it happens.** A shell job ran.
+
+**What to do.** None. The output is masked in viewers; it can hold anything the command printed.
+
 ## security
 
 Writes the `security` log.

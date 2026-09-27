@@ -27,7 +27,7 @@ func (c *fakeClock) set(t time.Time) {
 
 func newTestEngine(runner Runner, persist func([]JobDef) error) (*Engine, *fakeClock) {
 	clk := &fakeClock{t: time.Date(2026, 6, 7, 10, 0, 0, 0, time.Local)}
-	e := NewEngine(nil, runner, persist, nil)
+	e := NewEngine(nil, runner, persist)
 	e.now = clk.now
 	return e, clk
 }
@@ -251,7 +251,7 @@ func TestEngineSeedFromDefs(t *testing.T) {
 		{ID: "2", Name: "broken", Spec: "nonsense", Prompt: "p", Enabled: true},
 		{ID: "3", Name: "badtz", Spec: "0 9 * * *", Prompt: "p", Enabled: true, TZ: "Mars/Phobos"},
 	}
-	e := NewEngine(defs, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil, nil)
+	e := NewEngine(defs, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	for _, j := range e.List() {
 		switch j.Name {
 		case "good":
@@ -276,7 +276,7 @@ func TestEnginePrimeCatchupAndHistorySeed(t *testing.T) {
 		{ID: "safe", Spec: "@every 1h", Prompt: "p", Enabled: true},
 		{ID: "execj", Spec: "@every 1h", Prompt: "p", Enabled: true, Exec: true},
 	}
-	e := NewEngine(defs, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil, nil)
+	e := NewEngine(defs, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.now = func() time.Time { return now }
 	// Both last ran 2h ago → both are overdue by the interval.
 	hist := []RunRecord{
@@ -304,7 +304,7 @@ func TestEnginePrimeCatchupAndHistorySeed(t *testing.T) {
 func TestEnginePrimeNeverRunNoCatchup(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.Local)
 	e := NewEngine([]JobDef{{ID: "x", Spec: "@every 1h", Prompt: "p", Enabled: true}},
-		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil, nil)
+		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.now = func() time.Time { return now }
 	e.Prime(PrimeOptions{Catchup: true}) // no history
 	if got := e.List()[0].NextRun; !got.After(now) {
@@ -362,7 +362,7 @@ func TestEnginePausedDefers(t *testing.T) {
 func TestEnginePrimeCatchupOffWhilePaused(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.Local)
 	e := NewEngine([]JobDef{{ID: "x", Spec: "@every 1h", Prompt: "p", Enabled: true}},
-		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil, nil)
+		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.now = func() time.Time { return now }
 	e.SetPaused(func() bool { return true })
 	hist := []RunRecord{{JobID: "x", StartedAt: now.Add(-2 * time.Hour), OK: true}}
@@ -379,7 +379,7 @@ func TestEngineTimezone(t *testing.T) {
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
-	e := NewEngine(nil, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil, nil)
+	e := NewEngine(nil, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	base := time.Date(2026, 6, 7, 0, 0, 0, 0, ny) // midnight in NY
 	e.now = func() time.Time { return base }
 	job, err := e.Add(AddSpec{Spec: "0 9 * * *", Prompt: "p", TZ: "America/New_York", Enabled: true})
@@ -407,7 +407,7 @@ func TestEnginePerRunOverride(t *testing.T) {
 		}
 		return "ok", "", nil
 	}
-	e := NewEngine(nil, runner, func([]JobDef) error { return nil }, nil)
+	e := NewEngine(nil, runner, func([]JobDef) error { return nil })
 	e.Prime(PrimeOptions{PerRun: 15 * time.Minute})
 	j, err := e.Add(AddSpec{Name: "t", Spec: "0 0 1 1 *", Prompt: "p", Enabled: true})
 	if err != nil {
@@ -431,7 +431,7 @@ func TestEnginePerRunOverride(t *testing.T) {
 
 // Zero PerRun keeps the built-in default rather than disabling the ceiling.
 func TestEnginePerRunZeroKeepsDefault(t *testing.T) {
-	e := NewEngine(nil, func(context.Context, Job) (string, string, error) { return "", "", nil }, nil, nil)
+	e := NewEngine(nil, func(context.Context, Job) (string, string, error) { return "", "", nil }, nil)
 	e.Prime(PrimeOptions{})
 	if e.perRun != defaultPerRun {
 		t.Fatalf("perRun = %v, want default %v", e.perRun, defaultPerRun)

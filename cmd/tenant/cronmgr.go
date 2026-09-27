@@ -32,6 +32,7 @@ import (
 	"tenant/internal/dashboard"
 	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/memory/working"
@@ -144,13 +145,28 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 
 	execOn := func() bool { return d.allowExec != nil && d.allowExec.enabled() }
 
-	return func(ctx context.Context, job croneng.Job) (string, string, error) {
+	return func(ctx context.Context, job croneng.Job) (summary, trace string, err error) {
+		// A prompt job's turn trace is minted here, before the run starts, so
+		// the history entry names the turn's runs.db record even when the turn
+		// fails without a result, and the run's events carry it: the JobRun
+		// activity links to the turn it drives (related). A job run from a turn
+		// (cron_run) files its turn under that one.
+		parent := runtrace.IDFromContext(ctx)
+		if job.KindOf() == croneng.KindPrompt {
+			trace = runtrace.NewID()
+			ctx = runtrace.WithSpan(ctx, runtrace.NewSpan(trace))
+		}
+		ctx, act := event.Start(ctx, croneng.JobRun, "job", job.Label(), "id", job.ID, "kind", job.KindOf(), "exec", job.Exec)
+		defer act.End(&err)
 		if job.KindOf() == croneng.KindShell {
 			if !execOn() {
 				return "", "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run shell jobs")
 			}
-			out, err := runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
-			return out, "", err
+			summary, err = runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
+			if summary != "" {
+				croneng.JobOutput.Log(ctx, "job", job.Label(), "bytes", len(summary), "output", summary)
+			}
+			return summary, "", err
 		}
 		// prompt job
 		ag := safeAg
@@ -176,11 +192,9 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		// the operator's lever.
 		runCtx = withExecSurface(runCtx, surfaceCronExec) // picks the cron-exec exec profile
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
-		// Minted here so the history entry names the turn's runs.db record even
-		// when the turn fails without a result.
-		trace := runtrace.NewID()
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
-			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override, TraceID: trace,
+			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
+			TraceID: trace, ParentTraceID: parent,
 		})
 		if err != nil {
 			return "", trace, err
@@ -188,7 +202,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		if res == nil {
 			return "", trace, nil
 		}
-		summary := strings.TrimSpace(res.Response)
+		summary = strings.TrimSpace(res.Response)
 		if d.authProblems != nil {
 			summary = withAuthBanner(summary, d.authProblems())
 		}
@@ -359,11 +373,15 @@ func loadCronHistory(dataDir string) []croneng.RunRecord {
 	path := cronHistoryPath(dataDir)
 	lock, err := datalock.File(path, false)
 	if err != nil {
+		croneng.HistoryNotLoaded.Log(context.Background(), "err", err)
 		return nil
 	}
 	h, legacy, err := readCronHistory(path)
 	lock.Release()
 	if err != nil {
+		if !os.IsNotExist(err) {
+			croneng.HistoryNotLoaded.Log(context.Background(), "err", err)
+		}
 		return nil
 	}
 	if legacy {
@@ -502,6 +520,11 @@ func (m *cronManager) SetExec(on bool) error {
 			return err
 		}
 	}
+	state := "off"
+	if on {
+		state = "on"
+	}
+	croneng.ExecSwitched.Log(m.base, "state", state)
 	return nil
 }
 
