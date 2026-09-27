@@ -84,8 +84,10 @@ func TestBackupCarriesTheOpenLogbook(t *testing.T) {
 	runBackup(t, func() error {
 		return cmdBackupRestore(ctx, []string{files[0], "--config", cfg, "--data", data, "--yes"}, strings.NewReader(""), &out)
 	})
-	if got, msgs := logbookMsgs(t, path); got != id || !slices.Equal(msgs, []string{"before the backup"}) {
-		t.Errorf("restored log book: store ID %x (was %x), events %q", got, id, msgs)
+	// The events come back; the store ID does not, so live-tail cursors from
+	// before the restore start over instead of skipping new rows.
+	if got, msgs := logbookMsgs(t, path); got == id || !slices.Equal(msgs, []string{"before the backup"}) {
+		t.Errorf("restored log book: store ID %x (was %x, want a new one), events %q", got, id, msgs)
 	}
 	if _, err := os.Stat(mirror); !os.IsNotExist(err) {
 		t.Errorf("the text mirror came back from a backup that left it out: %v", err)

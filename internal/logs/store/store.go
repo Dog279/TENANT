@@ -500,3 +500,19 @@ func (s *Store) TryLease(ctx context.Context, name string, ttl time.Duration) (b
 	}
 	return true, nil
 }
+
+// Reidentify gives the database at path a new store ID. A restore calls it:
+// the restored file's seq counter is back where the backup left it, so a
+// cursor from before the restore could skip the rows committed after it,
+// unless every cursor restarts.
+func Reidentify(path string) error {
+	s, err := Open(path, Options{})
+	if err != nil {
+		return err
+	}
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	id := hex.EncodeToString(b[:])
+	_, err = s.w.Exec(`UPDATE meta SET value = ? WHERE key = 'store_id'`, id)
+	return errors.Join(err, s.Close())
+}

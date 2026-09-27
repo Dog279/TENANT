@@ -463,10 +463,16 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 		fmt.Fprintln(out, "dry run: the backup restores cleanly; nothing was changed")
 		return nil
 	}
-	// TEN-396: the Security log's re-anchor record goes here: the restored
-	// logbook.db keeps its store ID and its chain, so write the restored head,
-	// the head it replaced and the backup it came from, and a restore reads
-	// as a restore rather than as tampering.
+	// The restored logbook.db's seq counter went back with it: a new store ID
+	// makes every live-tail cursor restart instead of skipping what comes next.
+	if lb := filepath.Join(c.logsRoot(), "logbook.db"); statOK(lb) {
+		if err := store.Reidentify(lb); err != nil {
+			fmt.Fprintf(out, "  warning: the log book was restored but not re-identified (%v); viewers left open may miss new events until they reload\n", err)
+		}
+	}
+	// TEN-396: the Security log's re-anchor record goes here: write the
+	// restored head, the head it replaced and the backup it came from, so a
+	// restore reads as a restore rather than as tampering.
 	fmt.Fprintln(out, "restored.")
 	for _, a := range res.Aside {
 		fmt.Fprintf(out, "  the previous directory is kept at %s; delete it once you are happy\n", a)
@@ -734,4 +740,10 @@ func quoteArg(p string) string {
 		return `"` + p + `"`
 	}
 	return p
+}
+
+// statOK reports whether path exists.
+func statOK(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

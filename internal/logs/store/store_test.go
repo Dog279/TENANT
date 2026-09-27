@@ -372,3 +372,29 @@ func TestLease(t *testing.T) {
 		t.Error("TryLease without a boot ID succeeded")
 	}
 }
+
+// A restored store gets a new ID, so a cursor from before the restore
+// restarts instead of skipping the rows committed after it.
+func TestReidentifyRestartsCursors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logbook.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := s.StoreID()
+	_ = s.Close()
+	if err := Reidentify(path); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.StoreID() == old {
+		t.Fatal("the store kept its ID")
+	}
+	if _, _, restarted, err := s.Since(context.Background(), Cursor{StoreID: old, Seq: 5}, 10); err != nil || !restarted {
+		t.Fatalf("a pre-restore cursor: restarted=%v err=%v", restarted, err)
+	}
+}
