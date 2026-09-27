@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"log/slog"
+	"tenant/internal/logs/event"
 )
 
 // Cadence-policy defaults for the background self-improvement loop
@@ -41,11 +41,15 @@ type JobResult struct {
 	Summary string         // one-line human-readable outcome
 	Changed bool           // did this run alter durable state?
 	Details map[string]any // structured detail for diagnostics
+	// SourceRuns are the runs (runs.db trace ids) the job learned from; the
+	// log book links the job's run to them.
+	SourceRuns []string
 }
 
 // JobRunRecord is one entry in the scheduler's run history. Hermes
 // surfaces "what self-improvement did lately" to the user; we keep a
-// bounded ring of these so the agent / a CLI can show it.
+// bounded ring of these so the agent / a CLI can show it. The durable
+// history is the improve log: every run is a JobRun activity there.
 type JobRunRecord struct {
 	JobName   string
 	StartedAt time.Time
@@ -77,7 +81,6 @@ type Scheduler struct {
 	jobs    []*scheduledJob
 	history []JobRunRecord
 	histCap int
-	log     *slog.Logger
 
 	stop    chan struct{}
 	doneWG  sync.WaitGroup
@@ -109,14 +112,11 @@ func (s *Scheduler) paused() bool { return s.Paused != nil && s.Paused() }
 
 // NewScheduler returns an empty scheduler. historyCap bounds the
 // in-memory run-history ring (<=0 → default 64).
-func NewScheduler(log *slog.Logger, historyCap int) *Scheduler {
-	if log == nil {
-		log = slog.Default()
-	}
+func NewScheduler(historyCap int) *Scheduler {
 	if historyCap <= 0 {
 		historyCap = 64
 	}
-	return &Scheduler{log: log, histCap: historyCap}
+	return &Scheduler{histCap: historyCap}
 }
 
 // Register adds a job to run at most once per interval. interval <= 0
@@ -271,6 +271,7 @@ func (s *Scheduler) runOne(ctx context.Context, job Job) JobRunRecord {
 		s.OnStart(job.Name())
 	}
 	start := time.Now()
+	ctx, act := event.Start(ctx, JobRun, "job", job.Name())
 	res, err := job.Run(ctx)
 	rec := JobRunRecord{
 		JobName:   job.Name(),
@@ -279,13 +280,14 @@ func (s *Scheduler) runOne(ctx context.Context, job Job) JobRunRecord {
 		Result:    res,
 		Err:       err,
 	}
-	if err != nil {
-		s.log.Warn("improve: job failed", "job", job.Name(), "err", err)
-	} else if res.Changed {
-		s.log.Info("improve: job made changes", "job", job.Name(), "summary", res.Summary)
-	} else {
-		s.log.Debug("improve: job ran, no changes", "job", job.Name())
+	if err == nil {
+		kv := []any{"job", job.Name(), "summary", res.Summary, "changed", res.Changed}
+		if len(res.SourceRuns) > 0 {
+			kv = append(kv, "source_runs", res.SourceRuns)
+		}
+		JobOutcome.Log(ctx, kv...)
 	}
+	act.End(&err)
 	s.appendHistory(rec)
 	if s.OnRun != nil {
 		s.OnRun(rec)

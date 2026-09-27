@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"tenant/internal/memory/episodic"
@@ -53,16 +52,11 @@ type SoulNudgeJob struct {
 	Scorer   SoulScorer // nil ⇒ can't gate ⇒ never proposes (deny-by-default)
 	MinAcks  int        // evidence bar: need ≥ this many acks in the window (0 ⇒ 3)
 	Scan     int        // recent episodes to inspect (0 ⇒ 100)
-	Logger   *slog.Logger
 }
 
 func (j *SoulNudgeJob) Name() string { return "soul-nudge" }
 
 func (j *SoulNudgeJob) Run(ctx context.Context) (JobResult, error) {
-	log := j.Logger
-	if log == nil {
-		log = slog.Default()
-	}
 	if j.Episodic == nil || j.Proposer == nil {
 		return JobResult{}, fmt.Errorf("soul-nudge: Episodic and Proposer required")
 	}
@@ -118,7 +112,7 @@ func (j *SoulNudgeJob) Run(ctx context.Context) (JobResult, error) {
 	}
 	regressed, delta, serr := j.Scorer.Score(ctx, &cand)
 	if serr != nil {
-		log.Warn("soul-nudge: scoring failed; not proposing", "agent", j.AgentID, "err", serr)
+		SoulScoreFailed.Log(ctx, "err", serr)
 		return JobResult{Summary: "soul-nudge: scoring unavailable — not proposing (" + serr.Error() + ")"}, nil
 	}
 	if regressed {

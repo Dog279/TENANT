@@ -56,7 +56,25 @@ var providers = []struct {
 // A coverage ticket adds its packages with their counts. A count only goes
 // down: give a new call site a catalogued event, and lower the number when
 // the test says so.
-var catalogued = map[string]int{}
+var catalogued = map[string]int{
+	// memory and improve (TEN-390)
+	"internal/improve":            0,
+	"internal/memory":             0,
+	"internal/memory/archive":     0,
+	"internal/memory/assemble":    0,
+	"internal/memory/compress":    0,
+	"internal/memory/cosine":      0,
+	"internal/memory/distill":     0,
+	"internal/memory/episodic":    0,
+	"internal/memory/ftsutil":     0,
+	"internal/memory/mdimport":    0,
+	"internal/memory/semantic":    0,
+	"internal/memory/sme":         0,
+	"internal/memory/soul":        0,
+	"internal/memory/usage":       0,
+	"internal/memory/userprofile": 0,
+	"internal/memory/working":     0,
+}
 
 // providerOf names the provider file (module-relative) counts toward, or ""
 // for code outside Tenant's runtime (reference, scripts, these tests).

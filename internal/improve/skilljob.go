@@ -3,6 +3,7 @@ package improve
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -131,6 +132,7 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 	}
 
 	proposed, accepted := 0, 0
+	var sourceRuns []string
 	for sig, g := range sigs {
 		if g.count < min {
 			continue
@@ -156,6 +158,7 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 			AgentID: j.AgentID, Name: name, Description: desc, Recipe: recipe,
 			Status: status, Enabled: enabled, Embedding: embed, SourceRunIDs: sourceRunIDs,
 		}, source); err == nil {
+			sourceRuns = append(sourceRuns, sourceRunIDs...)
 			if autoAccept {
 				accepted++
 			} else {
@@ -169,10 +172,12 @@ func (j *SkillInductionJob) Run(ctx context.Context) (JobResult, error) {
 	} else {
 		summary = fmt.Sprintf("scanned %d episode(s), proposed %d new skill(s) for review", len(eps), proposed)
 	}
+	sort.Strings(sourceRuns)
 	return JobResult{
-		Summary: summary,
-		Changed: proposed+accepted > 0,
-		Details: map[string]any{"scanned": len(eps), "proposed": proposed, "auto_accepted": accepted, "auto_accept_mode": mode},
+		Summary:    summary,
+		Changed:    proposed+accepted > 0,
+		SourceRuns: slices.Compact(sourceRuns),
+		Details:    map[string]any{"scanned": len(eps), "proposed": proposed, "auto_accepted": accepted, "auto_accept_mode": mode},
 	}, nil
 }
 

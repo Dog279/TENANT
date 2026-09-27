@@ -290,7 +290,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return merr
 	}
 	life.Add(lifecycle.Release, "improve meta", meta.Close)
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	soulLive := soul.NewLive(st.soul)
@@ -309,7 +309,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
+	compressor := &compress.Compressor{Router: router}
 
 	// Event broker + the log book. emit fans every event to BOTH the live
 	// broker (dashboard chat/feed) AND the hub, which files it under its source

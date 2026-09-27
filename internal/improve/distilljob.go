@@ -81,8 +81,9 @@ func (j *DistillJob) Run(ctx context.Context) (JobResult, error) {
 		len(res.BatchErrors), cursor, res.LastEpisodeID,
 	)
 	return JobResult{
-		Summary: summary,
-		Changed: changed,
+		Summary:    summary,
+		Changed:    changed,
+		SourceRuns: res.SourceRunIDs,
 		Details: map[string]any{
 			"episodes_processed": res.EpisodesProcessed,
 			"facts_extracted":    res.FactsExtracted,

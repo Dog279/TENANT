@@ -3,8 +3,10 @@ package improve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"tenant/internal/memory/cosine"
@@ -73,10 +75,6 @@ func (j *ConsolidationJob) Name() string { return "consolidate" }
 // Holistic, by a meaning-based LLM pass), merge each group into one canonical
 // fact, and supersede the originals.
 func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
-	log := j.Logger
-	if log == nil {
-		log = slog.Default()
-	}
 	if j.Semantic == nil {
 		return JobResult{}, fmt.Errorf("consolidate: nil Semantic store")
 	}
@@ -97,7 +95,7 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 	// safer: it only REMOVES facts from candidacy. Fails open (no filter)
 	// on a signals-load error so consolidation never silently stops.
 	totalFacts := len(facts)
-	facts, protectedExcluded := j.filterMergeProtected(ctx, facts, log)
+	facts, protectedExcluded := j.filterMergeProtected(ctx, facts)
 	if len(facts) < 2 {
 		return JobResult{Summary: fmt.Sprintf("consolidate: %d fact(s) after %d protected excluded, nothing to merge", len(facts), protectedExcluded)}, nil
 	}
@@ -140,7 +138,7 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 			}
 			text, ok, merr := j.mergeCluster(ctx, summarizer, cluster)
 			if merr != nil {
-				log.Warn("consolidate: merge failed", "agent", j.AgentID, "size", len(cluster), "err", merr)
+				StepFailed.Log(ctx, "job", j.Name(), "step", "merge", "size", len(cluster), "err", merr)
 				continue
 			}
 			if !ok {
@@ -155,6 +153,7 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 
 	// Apply the merges (or just count them in dry-run).
 	var mergedGroups, factsSuperseded int
+	var sourceRuns []string
 	previews := make([]string, 0, len(groups))
 	for _, g := range groups {
 		if err := ctx.Err(); err != nil {
@@ -168,14 +167,19 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 		}
 		vecs, eerr := embedder.Embed(ctx, []string{g.text})
 		if eerr != nil || len(vecs) == 0 {
-			log.Warn("consolidate: embed merged fact failed", "err", eerr)
+			if eerr == nil {
+				eerr = errors.New("the embedder returned no vector")
+			}
+			StepFailed.Log(ctx, "job", j.Name(), "step", "embed the merged fact", "size", len(g.members), "err", eerr)
 			continue
 		}
+		runs := unionRuns(g.members)
 		newID, ierr := j.Semantic.Insert(ctx, &semantic.Fact{
 			AgentID:        j.AgentID,
 			Visibility:     g.members[0].Visibility,
 			Fact:           g.text,
 			SourceEpisodes: unionSources(g.members),
+			SourceRunIDs:   runs,
 			Confidence:     maxConfidence(g.members),
 			EmbedderID:     string(embProfile.ID),
 			Embedding:      vecs[0],
@@ -183,12 +187,13 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 			OriginModel:    sumProf.Model,
 		})
 		if ierr != nil {
-			log.Warn("consolidate: insert merged fact failed", "err", ierr)
+			StepFailed.Log(ctx, "job", j.Name(), "step", "insert the merged fact", "size", len(g.members), "err", ierr)
 			continue
 		}
+		sourceRuns = append(sourceRuns, runs...)
 		for _, f := range g.members {
 			if serr := j.Semantic.Supersede(ctx, f.ID, newID); serr != nil {
-				log.Warn("consolidate: supersede failed", "old", f.ID, "new", newID, "err", serr)
+				StepFailed.Log(ctx, "job", j.Name(), "step", fmt.Sprintf("supersede by fact %d", newID), "fact_id", f.ID, "err", serr)
 				continue
 			}
 			factsSuperseded++
@@ -202,7 +207,7 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 	// gated behind the optional reflection job (review finding 4). Best-effort.
 	if !j.DryRun {
 		if derr := j.Semantic.DampenHeat(ctx, j.AgentID, heatDampenTopN); derr != nil {
-			log.Warn("consolidate: dampen heat failed", "agent", j.AgentID, "err", derr)
+			StepFailed.Log(ctx, "job", j.Name(), "step", "dampen heat", "err", derr)
 		}
 	}
 
@@ -212,9 +217,11 @@ func (j *ConsolidationJob) Run(ctx context.Context) (JobResult, error) {
 	if j.DryRun {
 		summary = "[dry-run] " + summary
 	}
+	slices.Sort(sourceRuns)
 	return JobResult{
-		Summary: summary,
-		Changed: !j.DryRun && mergedGroups > 0,
+		Summary:    summary,
+		Changed:    !j.DryRun && mergedGroups > 0,
+		SourceRuns: slices.Compact(sourceRuns),
 		Details: map[string]any{
 			"merged_groups":      mergedGroups,
 			"facts_superseded":   factsSuperseded,
@@ -237,7 +244,7 @@ const heatDampenTopN = 20
 // list, returning the survivors and the count excluded. Fails open: on a
 // signals-load error it logs and returns the input unchanged (today's
 // behavior) rather than silently halting consolidation.
-func (j *ConsolidationJob) filterMergeProtected(ctx context.Context, facts []*semantic.Fact, log *slog.Logger) ([]*semantic.Fact, int) {
+func (j *ConsolidationJob) filterMergeProtected(ctx context.Context, facts []*semantic.Fact) ([]*semantic.Fact, int) {
 	if len(facts) == 0 {
 		return facts, 0
 	}
@@ -247,7 +254,7 @@ func (j *ConsolidationJob) filterMergeProtected(ctx context.Context, facts []*se
 	}
 	sigs, err := j.Semantic.SignalsBatch(ctx, ids)
 	if err != nil {
-		log.Warn("consolidate: signals load failed; not filtering protected", "agent", j.AgentID, "err", err)
+		MergeUnprotected.Log(ctx, "facts", len(facts), "err", err)
 		return facts, 0
 	}
 	kept := make([]*semantic.Fact, 0, len(facts))
@@ -447,6 +454,19 @@ func unionSources(cluster []*semantic.Fact) []int64 {
 			if !seen[s] {
 				seen[s] = true
 				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// unionRuns lists the runs a cluster's facts came from, each once.
+func unionRuns(cluster []*semantic.Fact) []string {
+	var out []string
+	for _, f := range cluster {
+		for _, r := range f.SourceRunIDs {
+			if !slices.Contains(out, r) {
+				out = append(out, r)
 			}
 		}
 	}

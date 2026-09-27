@@ -16,9 +16,10 @@ one folder is one tab.
 ├── imessage/
 ├── cron/                         ← scheduled-job runner agents + the engine
 ├── eval/                         ← nightly/manual eval task agents
-├── improve/                      ← distill / reflect / consolidate / soul jobs
+├── improve/                      ← every self-improvement job run (distill, skills, consolidate, reflect, soul, profile, eval), serve's and the TUI's
+├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
-├── route/ memory/ mcp/ peering/ dashboard/
+├── route/ mcp/ peering/ dashboard/
 ├── sandbox/                      ← the execution sandbox: confined runs, refusals, escalations, dry-run would-be refusals
 ├── privacy/ shutdown/            ← the daily retention sweep; the staged shutdown's steps
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps

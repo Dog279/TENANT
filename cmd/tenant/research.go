@@ -1340,7 +1340,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	}
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
-		Embedder: skEmb, EmbedderID: string(embProfile.ID), Compressor: &compress.Compressor{Router: router, Logger: log},
+		Embedder: skEmb, EmbedderID: string(embProfile.ID), Compressor: &compress.Compressor{Router: router},
 		Profile: prof, OrchID: c.agent, Log: log, Observe: observe, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),

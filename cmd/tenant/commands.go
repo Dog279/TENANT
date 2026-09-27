@@ -204,7 +204,7 @@ func cmdDistill(ctx context.Context, args []string) error {
 
 	d := &distill.Distiller{
 		Router: router, Episodic: st.episodic, Semantic: st.semantic,
-		AgentID: c.agent, Logger: log,
+		AgentID: c.agent,
 	}
 	job := improve.NewDistillJob(d, meta, c.agent)
 	res, err := job.Run(ctx)
@@ -1631,7 +1631,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// hit Search's no-embedder fallback and ship the FULL enabled catalog every
 	// turn. Lazy precompute on first ranked Search; nil embedder ⇒ unranked floor.
 	shared.SetEmbedder(embedderID, skEmb)
-	compressor := &compress.Compressor{Router: router, Logger: log}
+	compressor := &compress.Compressor{Router: router}
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 
 	budgets := configuredBudgets(c.lc)
@@ -2042,7 +2042,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return merr
 	}
 	life.Add(lifecycle.Release, "improve meta", meta.Close)
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	// One live-soul holder shared by the agent (reads it each turn) and the
@@ -2075,7 +2075,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
+	compressor := &compress.Compressor{Router: router}
 
 	// Sub-agent activity flows to the TUI as structured TeamEvents — shown
 	// in the feed AND summed into the separate team token counter. Only the
@@ -2784,7 +2784,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// changes for the next launch instead of re-arming a running scheduler.
 	var evalSched *evalSchedule
 	if *selfImprove {
-		sched = improve.NewScheduler(log, 0)
+		sched = improve.NewScheduler(0)
 		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop)
 		// While the model is degraded to echo, suspend ALL self-improvement:
 		// consolidation/profile jobs would persist echo-derived garbage and the
@@ -2859,7 +2859,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// real use. Promote-only (never auto-unprotects), no LLM, cheap; runs on
 		// the distill cadence right after new facts land.
 		sched.Register(&improve.FeedbackProtectionJob{
-			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent, Logger: log,
+			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent,
 		}, *distillEvery)
 		// Profile re-synthesis runs on its OWN cadence (--profile-every,
 		// default 15m). Distillation is cheap and benefits from being
@@ -2908,7 +2908,6 @@ func cmdTUI(ctx context.Context, args []string) error {
 				// model than the one it will actually run under.
 				Proposer: improve.NewLLMSoulProposer(proposerRouter),
 				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: log},
-				Logger:   log,
 			}, soulCadence)
 		}
 		// Reflection / SME synthesis (TEN-255 Phase 3): config-gated, OFF by

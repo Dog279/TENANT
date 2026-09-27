@@ -243,7 +243,7 @@ func runCompactionEval(ctx context.Context, c *commonFlags, jsonOut bool) error 
 	if err != nil {
 		return fmt.Errorf("eval: build router: %w", err)
 	}
-	comp := &compress.Compressor{Router: router, Logger: log}
+	comp := &compress.Compressor{Router: router}
 	// Prefer the planner model's own token counter so tokens-saved matches what
 	// the agent actually budgets; fall back to the char/4 estimate if it can't
 	// be resolved (e.g. model offline).

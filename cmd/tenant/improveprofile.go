@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 
+	"tenant/internal/improve"
 	"tenant/internal/model"
 )
 
@@ -33,8 +35,7 @@ func improveProposerRouter(profile string, main *model.Router, agents map[string
 		return main, "" // not configured ⇒ today's behavior
 	}
 	if lc == nil || agents == nil {
-		log.Warn("improve: profile configured but no launch config available; reflection jobs stay on the main router",
-			"profile", profile)
+		improve.ProposerFallback.Log(context.Background(), "profile", profile, "reason", "no launch config is available")
 		return main, ""
 	}
 
@@ -49,8 +50,7 @@ func improveProposerRouter(profile string, main *model.Router, agents map[string
 		}
 	}
 	if ap == nil {
-		log.Warn("improve: configured profile not found; reflection jobs stay on the main router",
-			"profile", profile)
+		improve.ProposerFallback.Log(context.Background(), "profile", profile, "reason", "no agent profile has that name")
 		return main, ""
 	}
 	// A profile with no pinned provider IS the main router (its value is a soul,
@@ -62,8 +62,7 @@ func improveProposerRouter(profile string, main *model.Router, agents map[string
 
 	pinned, err := buildProfileRouter(profile, ap, lc, cfgDir, sharedEmbed, log)
 	if err != nil || pinned == nil {
-		log.Warn("improve: failed to build pinned proposer router; reflection jobs stay on the main router",
-			"profile", profile, "err", err)
+		improve.ProposerFallback.Log(context.Background(), "profile", profile, "reason", "its model could not be set up", "err", err)
 		return main, ""
 	}
 

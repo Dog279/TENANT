@@ -112,7 +112,7 @@ func (j *ReflectionJob) Run(ctx context.Context) (JobResult, error) {
 	sections, err := j.synthesize(ctx, summarizer, facts, episodes)
 	if err != nil {
 		// Fail closed: a bad proposer response writes nothing.
-		log.Warn("reflect: synthesis failed; wrote nothing", "agent", j.AgentID, "err", err)
+		ReflectFailed.Log(ctx, "err", err)
 		return JobResult{Summary: "reflect: synthesis produced no usable sections"}, nil
 	}
 	if len(sections) == 0 {
@@ -135,7 +135,7 @@ func (j *ReflectionJob) Run(ctx context.Context) (JobResult, error) {
 		// lives in the writer, NOT the reader — the system block isn't truncated).
 		if est := estimateTokens(body); est > capTok {
 			body = clipToTokens(body, capTok)
-			log.Warn("reflect: section over cap, truncated", "section", s.Section, "est_tokens", est, "cap", capTok)
+			SectionTruncated.Log(ctx, "section", s.Section, "tokens", est, "cap", capTok)
 		}
 		ids := mapCitedFactIDs(s.Members, facts)
 		ver, werr := j.SME.UpsertSection(ctx, sme.Section{
@@ -147,7 +147,7 @@ func (j *ReflectionJob) Run(ctx context.Context) (JobResult, error) {
 			TokenEstimate: estimateTokens(body),
 		})
 		if werr != nil {
-			log.Warn("reflect: write section failed", "section", s.Section, "err", werr)
+			StepFailed.Log(ctx, "job", j.Name(), "step", "write section", "section", s.Section, "err", werr)
 			continue
 		}
 		written++
@@ -170,7 +170,7 @@ func (j *ReflectionJob) Run(ctx context.Context) (JobResult, error) {
 		if rendered, rerr := j.SME.RenderActive(ctx, j.ProjectID, j.AgentID); rerr == nil {
 			j.Live.Set(rendered)
 		} else {
-			log.Warn("reflect: render for live cache failed", "err", rerr)
+			StepFailed.Log(ctx, "job", j.Name(), "step", "refresh the live SME document", "err", rerr)
 		}
 	}
 

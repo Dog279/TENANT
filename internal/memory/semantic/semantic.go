@@ -151,6 +151,10 @@ var ErrNotFound = errors.New("semantic: fact not found")
 // Store wraps the SQLite connection for the facts tier.
 type Store struct {
 	db *sql.DB
+	// quiet stores (":memory:", the eval harness's and tests') write no fact
+	// events: their fact ids would point the log book at facts.db rows that
+	// are not theirs.
+	quiet bool
 }
 
 // Open returns a Store backed by SQLite at path. Use ":memory:" for tests.
@@ -216,7 +220,7 @@ func open(path string, prepare bool) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("semantic: init provenance schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, quiet: path == ":memory:"}, nil
 }
 
 func ensureFactColumn(db *sql.DB, column, definition string) error {
