@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -118,7 +119,7 @@ func TestLogBookScrubsEveryConfiguredSecret(t *testing.T) {
 			}
 		}
 		// Straddles the sandbox command's 300-character clip.
-		logSandboxRun("discord", "restricted", true, sandbox.Command{Shell: strings.Repeat("x", 299-leak) + " " + v}, sandbox.Result{ExitCode: 1, Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "denied"}}}, nil)
+		logSandboxRun(context.Background(), "discord", "restricted", true, sandbox.Command{Shell: strings.Repeat("x", 299-leak) + " " + v}, sandbox.Result{ExitCode: 1, Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "denied"}}})
 	}
 
 	leaks := func(where, text string) {

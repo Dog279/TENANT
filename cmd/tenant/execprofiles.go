@@ -50,6 +50,7 @@ import (
 
 	"tenant/internal/logs"
 	"tenant/internal/logs/capture"
+	"tenant/internal/logs/event"
 	"tenant/internal/sandbox"
 )
 
@@ -357,8 +358,7 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 	return func(ctx context.Context, command string, timeout time.Duration) (string, error) {
 		be, err := sandbox.For(p.Backend)
 		if err != nil {
-			sandboxLog.Error("exec profile backend unavailable; command not run (fail closed)",
-				"surface", surface, "backend", p.Backend, "err", err.Error())
+			sandbox.BackendUnavailable.Log(ctx, "surface", surface, "backend", p.Backend, "err", err)
 			return "", fmt.Errorf("sandbox: the %s exec profile's backend %q is unavailable, so the command was not run (fail closed): %w",
 				surface, p.Backend, err)
 		}
@@ -415,8 +415,7 @@ func execEscalator(confirm confirmFunc) sandbox.Escalator {
 func runSandboxShell(ctx context.Context, command string, p execProfile) (string, error) {
 	be, err := sandbox.For(p.Backend)
 	if err != nil {
-		sandboxLog.Error("exec profile backend unavailable; job not run (fail closed)",
-			"surface", surfaceCronShell, "backend", p.Backend, "err", err.Error())
+		sandbox.BackendUnavailable.Log(ctx, "surface", surfaceCronShell, "backend", p.Backend, "err", err)
 		return "", fmt.Errorf("sandbox: the cron-shell exec profile's backend %q is unavailable, so the job was not run (fail closed): %w",
 			p.Backend, err)
 	}
@@ -481,45 +480,37 @@ func envScoped(e sandbox.EnvPolicy) bool {
 
 // --- reporting ---
 
-var sandboxLog = logs.For("sandbox")
-
-// execute runs cmd through the seam, filed in the sandbox log as a child
-// (logging v2 §8.4) on every backend, the host included: a start line with
-// the command, scrubbed, and the limits, and an exit line with the pid, the
-// exit code, the duration and the tail of the output. The child's
-// environment gets the trace and activity ctx carries. What the boundary did
-// gets its own line (logSandboxRun).
-func execute(ctx context.Context, be sandbox.Backend, cmd sandbox.Command, pol sandbox.Policy, esc sandbox.Escalator) (sandbox.Result, error) {
-	ch := capture.New(ctx, "sandbox", "surface", cmd.Surface, "backend", be.Name())
-	pol.Env.Add = ch.Env()
-	ch.Started("command", clipLog(commandText(cmd)), "limits", pol.Limits.String())
-	res, err := sandbox.Execute(ctx, be, cmd, pol, esc)
-	exit := err
-	if exit == nil && (res.ExitCode != 0 || res.TimedOut) {
-		exit = runExit{res}
+// execute runs cmd through the seam as a sandbox Run activity (logging v2
+// §8.4), on every backend, the host included: its start, with the command,
+// scrubbed, and the limits; its exit (sandbox 1001), with the pid, the exit
+// code and the tail of the output; what the boundary did (logSandboxRun);
+// then its stop, or its fail when the backend could not start it. The run is
+// related to the turn or job in ctx, and the child's environment gets the
+// trace and the run's activity.
+func execute(ctx context.Context, be sandbox.Backend, cmd sandbox.Command, pol sandbox.Policy, esc sandbox.Escalator) (res sandbox.Result, err error) {
+	ctx, act := event.Start(ctx, sandbox.Run, "surface", cmd.Surface, "backend", be.Name(),
+		"command", clipLog(commandText(cmd)), "limits", pol.Limits.String())
+	defer act.End(&err)
+	pol.Env.Add = capture.New(ctx, "sandbox").Env()
+	res, err = sandbox.Execute(ctx, be, cmd, pol, esc)
+	if err == nil {
+		kv := []any{"surface", cmd.Surface, "backend", be.Name(), "pid", res.PID, "exit", res.ExitCode, "status", exitText(res), "timed_out", res.TimedOut}
+		if len(res.Violations) > 0 {
+			kv = append(kv, "violations", describeViolations(res))
+		}
+		if tail := outputTail(res.Output); tail != "" {
+			kv = append(kv, "tail", tail)
+		}
+		sandbox.Exited.Log(ctx, kv...)
 	}
-	kv := []any{"pid", res.PID, "timed_out", res.TimedOut}
-	if len(res.Violations) > 0 {
-		kv = append(kv, "violations", describeViolations(res))
-	}
-	if tail := outputTail(res.Output); tail != "" {
-		kv = append(kv, "tail", tail)
-	}
-	ch.Exited(exit, kv...)
-	logSandboxRun(cmd.Surface, be.Name(), pol.Enforce, cmd, res, err)
+	logSandboxRun(ctx, cmd.Surface, be.Name(), pol.Enforce, cmd, res)
 	return res, err
 }
 
-// runExit is a run's failure as capture reads it: the exit code, and the
-// OS's words for it.
-type runExit struct{ res sandbox.Result }
-
-func (r runExit) Error() string { return exitText(r.res) }
-func (r runExit) ExitCode() int { return r.res.ExitCode }
-
-// outputTail is the end of a run's output for its exit line, scrubbed before
-// it is cut so no secret is left half-cut (TEN-361). Run merges stdout and
-// stderr on one pipe, so it is the tail of both, as the model sees them.
+// outputTail is the end of a run's output for its exit event, scrubbed
+// before it is cut so no secret is left half-cut (TEN-361). Run merges
+// stdout and stderr on one pipe, so it is the tail of both, as the model sees
+// them.
 func outputTail(s string) string {
 	const n = 512
 	if len(s) > n+8<<10 {
@@ -536,23 +527,22 @@ func outputTail(s string) string {
 	return "…" + s[i:]
 }
 
-// logSandboxRun records what the boundary did to a run: a backend that could
-// not start it, a refusal, an escalation. The run itself is execute's.
-func logSandboxRun(surface, backend string, enforce bool, cmd sandbox.Command, res sandbox.Result, err error) {
-	attrs := []any{"surface", surface, "backend", backend, "exit", res.ExitCode, "timed_out", res.TimedOut,
-		"command", clipLog(commandText(cmd))}
-	if len(res.Violations) > 0 {
-		attrs = append(attrs, "violations", describeViolations(res))
+// logSandboxRun records what the boundary did to a run, one event per
+// outcome: refused, escalated, or refused in a dry run. violations names what
+// it refused, as the backend attributes it.
+func logSandboxRun(ctx context.Context, surface, backend string, enforce bool, cmd sandbox.Command, res sandbox.Result) {
+	if !res.Escalated && !res.Refused() {
+		return
 	}
+	kv := []any{"surface", surface, "backend", backend, "command", clipLog(commandText(cmd)), "exit", res.ExitCode,
+		"violations", describeViolations(res)}
 	switch {
-	case err != nil:
-		sandboxLog.Error("sandbox could not start the command", append(attrs, "err", err.Error())...)
 	case res.Escalated && !enforce:
-		sandboxLog.Warn("dry-run: the sandbox would have refused this; it ran on the host", attrs...)
+		sandbox.WouldRefuse.Log(ctx, kv...)
 	case res.Escalated:
-		sandboxLog.Warn("refused, then approved to re-run outside the sandbox", attrs...)
-	case res.Refused():
-		sandboxLog.Warn("refused by the sandbox", attrs...)
+		sandbox.Escalated.Log(ctx, kv...)
+	default:
+		sandbox.Refused.Log(ctx, kv...)
 	}
 }
 

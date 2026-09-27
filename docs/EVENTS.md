@@ -2975,6 +2975,103 @@ Writes the `route` log.
 
 **What to do.** None when intended; otherwise switch /route to another mode, which clears the force.
 
+## sandbox
+
+Writes the `sandbox` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#sandbox-1) | info | Run | `Command on {backend} for {surface}` |
+| [1001](#sandbox-1001) | info | Run | `Command exited: {status}` |
+| [2001](#sandbox-2001) | warning | Refusal | `The sandbox refused a command: {violations}` |
+| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran on the host: {violations}` |
+| [2003](#sandbox-2003) | warning | Refusal | `A command the sandbox refused was approved to run outside it: {violations}` |
+| [3001](#sandbox-3001) | error | Backend | `The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}` |
+
+### sandbox 1
+
+`Command on {backend} for {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `limits`
+- **Find it:** `provider:sandbox id:1`
+
+**What it means.** A command ran through the sandbox: start, then stop with its duration; fail when the backend could not start it. Its exit is sandbox 1001, and anything the boundary refused is a 2000s event in between. command is scrubbed and cut at 300 characters.
+
+**Why it happens.** The agent called os_exec, or a cron shell job came due.
+
+**What to do.** On a fail, read the error: the backend's launcher (sandbox-exec, bubblewrap, the WSL distro) is missing or broken. `tenant sandbox probe` checks it.
+
+### sandbox 1001
+
+`Command exited: {status}`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `pid`, `exit`, `status`, `timed_out`, `violations`, `tail`
+- **Find it:** `provider:sandbox id:1001`
+
+**What it means.** A command run through the sandbox exited. tail is the last 512 bytes of its output (stdout and stderr together, as the model got it), scrubbed; violations lists what the boundary refused or cut short. For an escalated or dry-run command it describes the host re-run.
+
+**Why it happens.** The command finished, failed, or hit its wall-clock limit (timed_out).
+
+**What to do.** None. A non-zero exit is the command's own result, which the model sees.
+
+### sandbox 2001
+
+`The sandbox refused a command: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2001`
+
+**What it means.** The boundary refused a file or network access, and the command was not run again: its failure went back to the model or the cron job.
+
+**Why it happens.** The command reached outside the profile's roots or network. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
+
+**What to do.** None if the refusal was right. If the command needs that access, widen the surface's exec_profiles entry (read_roots, write_roots, network), or approve the escalation next time.
+
+### sandbox 2002
+
+`Dry run: the sandbox would have refused a command, which ran on the host: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2002`
+
+**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again on the host, unconfined, so the refusal is only reported.
+
+**Why it happens.** The command reached outside the profile's roots or network while the surface's exec_profiles entry has enforce off.
+
+**What to do.** Widen the profile for the accesses that are legitimate, then turn enforce on. Until then the sandbox confines nothing on this surface.
+
+### sandbox 2003
+
+`A command the sandbox refused was approved to run outside it: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2003`
+
+**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again on the host, unconfined. The approval itself is in the Security log.
+
+**Why it happens.** The command needed an access outside the profile, and the operator allowed it once.
+
+**What to do.** If the same escalation keeps being approved, widen the surface's exec_profiles entry instead, so the access stays confined to what it needs.
+
+### sandbox 3001
+
+`The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Backend · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `err`
+- **Find it:** `provider:sandbox id:3001`
+
+**What it means.** A command was not run because the sandbox backend its profile names does not work here. The sandbox fails closed: it never falls back to the host.
+
+**Why it happens.** The profile names a backend this OS or build lacks (jobobject off Windows, restricted without bubblewrap or WSL), or its launcher is missing.
+
+**What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles.
+
 ## security
 
 Writes the `security` log.

@@ -139,7 +139,7 @@ arguments and results in `turns` too.
   `"api_key"` fields; and any field whose key ends in one of those words.
 
 ```
-2026-09-27 14:05:10.412 INFO  [sandbox] process started	surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
+2026-09-27 14:05:10.412 INFO  [sandbox] Command on restricted for discord	event=sandbox/1 task=Run opcode=start surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
 ```
 
 Lines read back from disk into the feed (the tail re-read at start, folders
@@ -160,40 +160,39 @@ again. The old files then hold a dead token.
 ## The `sandbox` source
 
 The execution sandbox (`docs/changes/sandbox-seam.md`) files every `os_exec`
-command and cron shell job it runs, on every backend, the host included, as a
-child process (see [Child processes](#child-processes)): a `process started`
-line with `command` and `limits`, and a `process exited` line with `pid`,
-`exit`, `duration`, `timed_out`, `violations` when there are any, and `tail`,
-the last 512 bytes of the output (stdout and stderr together, as the model
-sees them). Both carry `surface` and `backend`. What the boundary did gets a
-line of its own:
+command and cron shell job it runs, on every backend, the host included. It
+is catalogued ([EVENTS.md](EVENTS.md#sandbox)) and sits in the viewer's
+Sandbox group. Each run is an activity (`sandbox 1`): its start carries
+`command` and `limits` and is related to the turn or cron job that ran it
+(`related`); its stop has the `duration`, and it fails when the backend could
+not start the command (`error`). The command's environment gets the run's
+activity (`TENANT_ACTIVITY_ID`). In between:
 
-| Level | Message | When |
+| Event | Level | When |
 |---|---|---|
-| WARN | `refused by the sandbox` | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
-| WARN | `refused, then approved to re-run outside the sandbox` | an approved `os_exec_unsandboxed` re-ran it on the host |
-| WARN | `dry-run: the sandbox would have refused this; it ran on the host` | `"enforce": false`: what enforcing would have refused |
-| ERROR | `sandbox could not start the command` | the backend could not start the command (`err=`) |
+| `sandbox 1001` | INFO | the command exited: `pid`, `exit`, `status`, `timed_out`, `violations` when there are any, and `tail`, the last 512 bytes of the output (stdout and stderr together, as the model sees them) |
+| `sandbox 2001` | WARN | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
+| `sandbox 2002` | WARN | `"enforce": false` (dry run): what enforcing would have refused; the command ran on the host |
+| `sandbox 2003` | WARN | an approved `os_exec_unsandboxed` re-ran the refused command on the host |
+| `sandbox 3001` | ERROR | the surface's backend is unavailable, so nothing ran (the sandbox fails closed) |
 
-Their fields are `surface`, `backend`, `exit`, `timed_out`, `command`,
-`violations` when there are any, and `err` on a start failure. `command` holds
-the first 300 characters of the command. For an escalation or a dry-run,
-`exit` and `timed_out` describe the host re-run, and the exit line is the
-host re-run's.
+Every event carries `surface` and `backend`; a refusal also `command`,
+`exit` and `violations`, what the boundary refused as the backend attributes
+it (`filesystem: …`, `network: …`). `command` holds the first 300 characters
+of the command. For an escalation or a dry run, `exit` and the exit event
+describe the host re-run.
 
 ```
-2026-09-22 14:05:10.412 WARN  [sandbox] refused by the sandbox	surface=discord backend=restricted exit=1 timed_out=false command="cat ~/.ssh/id_ed25519" violations="filesystem: sandbox blocked access outside the policy's read/write roots"
+2026-09-22 14:05:10.412 WARN  [sandbox] The sandbox refused a command: filesystem: sandbox blocked access outside the policy's read/write roots	event=sandbox/2001 task=Refusal trace=… activity=… surface=discord backend=restricted command="cat ~/.ssh/id_ed25519" exit=1 violations="filesystem: sandbox blocked access outside the policy's read/write roots"
 ```
 
-Some things are recorded elsewhere or not at all:
-- A surface whose backend is unavailable fails closed before anything runs. That
-  error goes back to the turn or cron job, not to this folder.
 - On surfaces with an approval broker (TUI and dashboard, Discord, iMessage), the
   escalation prompt itself is an `approvals` line (`action=os_exec_unsandboxed`).
 - `command` and `tail` are scrubbed (see [Secrets](#secrets)) before they are
   cut, so a secret typed inline does not reach the log.
-- On Linux and Windows the backends do not attribute refusals yet. A denied
-  access there shows only as a non-zero `exit`.
+- On Linux and Windows the backends attribute refusals only as far as the
+  command's output shows them (a read-only file system, an unreachable
+  network). An unattributed denial shows only as a non-zero `exit`.
 - `tenant sandbox run`, the operator's trial run, prints its result and files
   nothing.
 
@@ -209,7 +208,7 @@ stopped the child (`cancelled=true`: a shutdown, a cancelled turn).
 | Child | Log | Tagged | Also filed |
 |---|---|---|---|
 | a local MCP server (`mcp_servers`) | `mcp` | `server=<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed |
-| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | see [The `sandbox` source](#the-sandbox-source) |
+| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | catalogued events instead of these lines: see [The `sandbox` source](#the-sandbox-source) |
 | `claude -p` (the claudecode backend) | `model` | `child=claude` | its stderr, line by line, whether the call failed or not |
 | Chrome (the web plugin) | `browser` | `child=chrome` | its output, line by line, so its crash text survives it. chromedp keeps Chrome's exit status, so the exit line says when it ended, not with what code |
 | `tailscale` | `system` | `child=tailscale`, `args` | |
@@ -658,6 +657,8 @@ drops, the test fails too, and says what to lower it to.
   both ways, is logged; so are rejected tokens, and peers going up or down
   (once per change, not every heartbeat). Each peer session and each tool a
   peer calls is a verbose activity, so only a failure shows by default.
+- `sandbox` (`internal/sandbox/events.go`): see
+  [The `sandbox` source](#the-sandbox-source).
 
 ## Records that lead back to a run
 
