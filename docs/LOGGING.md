@@ -551,7 +551,9 @@ through its own connection, so both can share a data directory.
   fresh connection, never by opening the raw file (on POSIX that would drop
   the locks the backing-up process holds on it), plus `archive/`. The text
   files hold the same events and are left out unless `--include-mirror` is
-  given. A restore brings `logbook.db` back with a new store ID, so live-tail cursors start over. A log book
+  given. A restore brings `logbook.db` back with a new store ID, so live-tail
+  cursors start over, and writes a re-anchor record into its Security log (see
+  "The Security log's chain"). A log book
   moved outside the data dir by `logs.dir` is not in the backup, and `create`
   says so.
 - **Privacy** (`tenant privacy forget --session …`, or any forget that removes
@@ -619,7 +621,7 @@ full, a minimum level and an enabled switch. The defaults, by class:
 "logs": {
   "retention_days": 30, "budget_mb": 2048,
   "diagnostic": { "max_mb": 256, "max_age_days": 7 },
-  "security":   { "max_mb": 256, "max_age_days": 365 },
+  "security":   { "max_mb": 256, "max_age_days": 365, "witness": "" },
   "per_log": { "mcp.github": { "max_mb": 32, "max_age_days": 14, "min_level": "warning", "on_full": "overwrite" } }
 }
 ```
@@ -634,7 +636,10 @@ full, a minimum level and an enabled switch. The defaults, by class:
   apportioned by its events' summed payload.
 - **When full:** *overwrite* deletes the oldest events; *archive* first moves
   them to `<logs root>/archive/<log>-<first seq>-<last seq>.ndjson.gz`
-  (gzip, one JSON object per line, every column, `data` as its stored text);
+  (gzip, one JSON object per line, every column, `data` and `keywords` as
+  their stored text;
+  the Security log's are named by record number, taken oldest record first,
+  and end with a `{"rec":…,"hash":…}` line);
   *keep* deletes nothing and writes one `logbook` warning each time the log
   passes its limit. The Security log is always written in full and never
   overwritten: its records are archived before any is deleted, the whole-book
@@ -654,6 +659,61 @@ full, a minimum level and an enabled switch. The defaults, by class:
   always writes. Shed events count as dropped (`Hub.Dropped`), and crossing
   either line writes a `logbook` warning.
 - `runs.db` keeps its own retention (`runs.max_age_days`, `runs.max_count`).
+
+#### The Security log's chain
+
+Every `security` record is linked, in the transaction that commits it, into a
+keyed hash chain (design §10.2):
+
+- **The columns.** `rec` is the record number, the chain head's (in `meta`)
+  plus one, with no gaps; `salt` is 16 random bytes; `data_hash` is
+  `SHA-256(salt ‖ str(msg) ‖ str(data) ‖ str(dtypes))`; `hash` is
+  `HMAC-SHA256(key, previous hash ‖ header ‖ data_hash)`, where record 1's
+  previous hash is 32 zero bytes. `str(s)` is a 4-byte big-endian length and
+  the bytes, a number is 8 bytes big-endian, and the header is `rec, time_ns,
+  log, provider, event_id, version, level, channel, task, opcode, keywords,
+  trace_id, activity_id, related_id, session_id, approval_id, tool_call_id,
+  actor, surface, pid, role, boot_id, host, proc_version`, in that order, as
+  stored (the `internal/logs/store` package doc has it exactly). Only `seq`
+  and `bytes` are left out.
+- **The key** is `<config>/logbook.key`: 32 random bytes, created once
+  (owner-only; a current-user ACL on Windows, where it is also sealed with
+  DPAPI). It is a managed secret: doctor audits it, the file tools won't read
+  it, and only an encrypted backup carries it. Without the key a batch holding
+  a security record is refused (`store.ErrNoChainKey`), and `Audit` returns
+  the error; a key that can't be read or created is a critical `logbook`
+  event at start.
+- **The anchor.** Every 1,000 records, or every hour when the head has moved,
+  the housekeeper writes the head to `<config>/logbook.anchor`
+  (`{"rec":…,"hash":…,"time":…}`, atomic, owner-only), outside the data dir a
+  rollback would replace. It moves the anchor on only from a head the chain
+  still holds; if the chain has lost it (truncated, or an older copy put
+  back), the anchor stays and one critical `logbook` event says so. The key
+  and the anchor are deny roots of every sandbox.
+- **The witness** (`logs.security.witness`) also gets the head at each
+  anchor: `"discord"` DMs it to the operator, and an absolute path gets the
+  anchor's JSON (best a file on another machine). `""` is none, the default;
+  `peer:<name>` is not supported yet. Only a witness catches a rewrite by
+  something holding the operator's own privileges.
+- **A restore** (`tenant backup restore`) writes a re-anchor record
+  (`logbook/4001`: the restored head, the anchor it replaced, the backup's
+  name) and moves the anchor and the witness to it, so it verifies as a
+  restore, not as tampering.
+- **Verification** (`store.Verify`, for `tenant logs verify security`) walks
+  the archives, oldest first, then the database, then checks the anchor and a
+  file witness, and reports the first break by record number: an edited,
+  deleted, reordered or forged record, a record never chained, an archive cut
+  short, or a chain that ends before (or forks from) the anchor. A privacy
+  tombstone verifies (its `data_hash` stays; its message can't change), and
+  a witness still naming the head a re-anchor record replaced is a restore
+  (the anchor itself moves with the restore). The whole walk is one read
+  snapshot.
+- **An audit export bundle** (`store.ExportSecurity`) is the log with its
+  chain, optionally a time window: a header line (format, schema, Tenant
+  version, time, host, store ID, filter, the head before the first record,
+  the anchor), the records as archive lines (sensitive fields included: the
+  data hash commits to them), and a closing `(rec, hash)` line.
+  `store.VerifyBundle` checks it offline with the key.
 
 ### Turns, sub-agents and research
 

@@ -202,9 +202,10 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 // exec_profiles overrides.
 //
 // The built-in default is the "host" backend with Enforce on, so a routed spawn
-// behaves exactly as before. DenyRoots ALWAYS include the config dir, the data
-// dir and the running executable FILE (its directory may be shared, e.g.
-// /usr/local/bin, and denying it would break every tool installed beside Tenant).
+// behaves exactly as before. DenyRoots ALWAYS include tenantDenyRoots: the
+// config dir, the data dir, the Security log's key and anchor, and the running
+// executable FILE (its directory may be shared, e.g. /usr/local/bin, and
+// denying it would break every tool installed beside Tenant).
 // A confining backend additionally denies the well-known credential stores
 // (credentialStoreRoots) and, unless the operator set an env allowlist, runs with
 // cron's scrubbed environment rather than inheriting all of Tenant's.
@@ -213,7 +214,7 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 		Backend: "host",
 		Policy: sandbox.Policy{
 			WorkDir:   workDir,
-			DenyRoots: dedupeNonEmpty(cfgDir, dataDir, exePath()),
+			DenyRoots: tenantDenyRoots(cfgDir, dataDir),
 			Enforce:   true,
 		},
 	}
@@ -244,6 +245,18 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 		applyConfinedDefaults(&p)
 	}
 	return p
+}
+
+// tenantDenyRoots is what no sandboxed command, MCP server or plugin child may
+// read or write: Tenant's config and data dirs, the Security log's key and
+// anchor (TEN-396; inside the config dir, and named too so no change to that
+// entry can expose them), and the running executable.
+func tenantDenyRoots(cfgDir, dataDir string, more ...string) []string {
+	roots := []string{cfgDir, dataDir, exePath()}
+	if cfgDir != "" {
+		roots = append(roots, chainKeyPath(cfgDir), chainAnchorPath(cfgDir))
+	}
+	return dedupeNonEmpty(append(roots, more...)...)
 }
 
 // withBackend returns p moved onto backend, with the defaults every confining

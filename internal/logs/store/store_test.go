@@ -19,9 +19,12 @@ import (
 
 var ctx = context.Background()
 
+// testKey is the chain key the tests' stores are opened with.
+var testKey = []byte("0123456789abcdef0123456789abcdef")
+
 func open(t testing.TB, path, boot string) *Store {
 	t.Helper()
-	s, err := Open(path, Options{BootID: boot})
+	s, err := Open(path, Options{BootID: boot, ChainKey: testKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,8 +243,10 @@ func TestCommitRoundTrip(t *testing.T) {
 	if err := s.r.QueryRow(`SELECT json_extract(?, '$.approval') = 'ap-1' AND json_extract(?, '$.payload.a[1]') = 2`, data, data).Scan(&n); err != nil || n != 1 {
 		t.Errorf("json_extract over data %s: %d, %v", data, n, err)
 	}
-	if rec != nil || salt != nil || hash != nil {
-		t.Errorf("security chain columns are set before TEN-396: %v %v %v", rec, salt, hash)
+	b1, _ := salt.([]byte)
+	b2, _ := hash.([]byte)
+	if rec != int64(1) || len(b1) != 16 || len(b2) != 32 {
+		t.Errorf("security chain columns: rec %v, salt %v, hash %v; want record 1, 16 and 32 bytes", rec, salt, hash)
 	}
 
 	var hit uint64

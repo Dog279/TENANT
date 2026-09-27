@@ -161,17 +161,22 @@ func TestWhenFull(t *testing.T) {
 				}
 				return
 			}
-			// Each step archives to its own file, named for its first and last seq.
+			// Each step archives to its own file, named for its first and last
+			// record, and closed by the last one's (rec, hash).
 			var lines [][]byte
 			for _, name := range rep.Archived {
 				got := readArchive(t, filepath.Join(filepath.Dir(path), "archive", name))
-				var a, z struct{ Seq int64 }
-				_ = json.Unmarshal(got[0], &a)
-				_ = json.Unmarshal(got[len(got)-1], &z)
-				if want := fmt.Sprintf("security-%d-%d.ndjson.gz", a.Seq, z.Seq); name != want {
-					t.Errorf("archive %s holds %s", name, want)
+				var a, z, end struct {
+					Rec  int64
+					Hash string
 				}
-				lines = append(lines, got...)
+				_ = json.Unmarshal(got[0], &a)
+				_ = json.Unmarshal(got[len(got)-2], &z)
+				_ = json.Unmarshal(got[len(got)-1], &end)
+				if want := fmt.Sprintf("security-%d-%d.ndjson.gz", a.Rec, z.Rec); name != want || end != z || z.Hash == "" {
+					t.Errorf("archive %s holds %s, closed by %+v after %+v", name, want, end, z)
+				}
+				lines = append(lines, got[:len(got)-1]...)
 			}
 			if int64(len(lines)) != rep.Deleted[log] {
 				t.Fatalf("the archives have %d lines for %d deleted events", len(lines), rep.Deleted[log])
