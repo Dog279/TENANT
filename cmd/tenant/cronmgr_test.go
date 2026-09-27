@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/agent"
 	croneng "tenant/internal/cron"
+	"tenant/internal/logs"
 	"tenant/internal/memory/soul"
 	"tenant/internal/plugins/discord"
 	"tenant/internal/runtrace"
@@ -192,6 +193,10 @@ func TestCronRunner_EmitsActivityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build runner: %v", err)
 	}
+	hub := logs.NewMemory(0)
+	prev := logs.Default()
+	logs.Install(hub)
+	defer logs.Install(prev)
 	_, trace, err := runner(context.Background(), croneng.Job{JobDef: croneng.JobDef{ID: "j1", Name: "test", Prompt: "say hi"}})
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -199,6 +204,27 @@ func TestCronRunner_EmitsActivityEvents(t *testing.T) {
 	// The trace the history entry carries is the turn's runs.db record (TEN-368).
 	if _, err := runs.Get(context.Background(), trace); err != nil {
 		t.Fatalf("run trace %q has no runs.db record: %v", trace, err)
+	}
+	// The run is an activity in the cron log, linked to the turn it drove.
+	var ops []string
+	es, _ := hub.Snapshot()
+	for _, e := range es {
+		if e.Field("event") != "cron/1001" {
+			continue
+		}
+		ops = append(ops, e.Field("opcode"))
+		if e.Source != "cron" || e.Field("trace") != trace || e.Field("activity") == "" {
+			t.Errorf("job run event %+v: want the cron log, trace %s and an activity", e, trace)
+		}
+		if e.Field("opcode") == "start" && e.Field("related") != trace {
+			t.Errorf("the run's start links to %q, want its turn %s", e.Field("related"), trace)
+		}
+		if e.Field("opcode") == "stop" && e.Field("duration") == "" {
+			t.Error("the run's stop has no duration")
+		}
+	}
+	if strings.Join(ops, ",") != "start,stop" {
+		t.Errorf("job run opcodes = %v, want start,stop", ops)
 	}
 
 	mu.Lock()

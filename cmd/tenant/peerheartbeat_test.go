@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
 	"tenant/internal/tui"
 )
 
@@ -116,6 +115,24 @@ func TestRecordProbe_KeepsLastCapsOnFailure(t *testing.T) {
 	}
 }
 
+// A probe reports a change of state only: the first probe, or alive ↔ dead,
+// so a peer that stays down is logged once, not every round.
+func TestRecordProbe_ReportsUpAndDown(t *testing.T) {
+	r := newPeerHealthRegistry()
+	down := errors.New("connection refused")
+	for i, c := range []struct {
+		alive, changed bool
+	}{{false, true}, {false, false}, {true, true}, {true, false}, {false, true}} {
+		var err error
+		if !c.alive {
+			err = down
+		}
+		if got := r.recordProbe("p", c.alive, time.Millisecond, nil, err); got != c.changed {
+			t.Errorf("probe %d (alive=%v): changed = %v, want %v", i, c.alive, got, c.changed)
+		}
+	}
+}
+
 // TestMarkInboundGrant: an announced grant (TEN-253) populates the acceptor-side
 // "them → we" even with no outbound probe; oversized announces are refused.
 func TestMarkInboundGrant(t *testing.T) {
@@ -190,11 +207,15 @@ func TestPeerHealthMonitor_LogsUnreadablePeersOnce(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "peers.json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var buf bytes.Buffer
-	m := &peerHealthMonitor{cfgDir: dir, reg: newPeerHealthRegistry(), log: slog.New(slog.NewTextHandler(&buf, nil))}
+	hub := logs.NewMemory(0)
+	prev := logs.Default()
+	logs.Install(hub)
+	defer logs.Install(prev)
+	m := &peerHealthMonitor{cfgDir: dir, reg: newPeerHealthRegistry()}
 	m.probeAll(context.Background())
 	m.probeAll(context.Background())
-	if n := strings.Count(buf.String(), "peers.json unreadable"); n != 1 {
-		t.Errorf("logged %d times over two rounds, want once: %q", n, buf.String())
+	es, _ := hub.Snapshot()
+	if len(es) != 1 || es[0].Field("event") != "peering/2202" || es[0].Source != "peering" {
+		t.Errorf("want one peering/2202 over two rounds, got %+v", es)
 	}
 }

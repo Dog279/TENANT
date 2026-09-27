@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/logs/event"
 )
 
 // TEN-239: push-invite pairing. Instead of exchanging an out-of-band secret
@@ -120,6 +122,7 @@ func (l *Listener) handlePair(w http.ResponseWriter, r *http.Request) {
 		srcKey = host // one pending pairing per source host
 	}
 	if !l.pairLimiter.acquire(srcKey) {
+		PairThrottled.Log(r.Context(), "remote", r.RemoteAddr)
 		http.Error(w, "too many pending pairing requests — try again shortly", http.StatusTooManyRequests)
 		return
 	}
@@ -148,12 +151,14 @@ func (l *Listener) handlePair(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	if !l.pairApprover(ctx, prompt) {
+		PairDenied.Log(ctx, "name", req.Name, "instance", req.InstanceID, "remote", r.RemoteAddr)
 		http.Error(w, "pairing denied", http.StatusForbidden)
 		return
 	}
 
 	secret, err := newSecret()
 	if err != nil {
+		PairFailed.Log(ctx, "name", req.Name, "remote", r.RemoteAddr, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -170,9 +175,11 @@ func (l *Listener) handlePair(w http.ResponseWriter, r *http.Request) {
 		Token:      secret,
 		CreatedAt:  nowRFC3339(),
 	}); err != nil {
+		PairFailed.Log(ctx, "name", req.Name, "remote", r.RemoteAddr, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	Paired.Log(ctx, "name", req.Name, "instance", req.InstanceID, "remote", r.RemoteAddr, "peer", name)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(PairResponse{
@@ -219,7 +226,9 @@ func isSixDigits(s string) bool {
 // lie can't substitute a different cert. The operator-confirmed PIN is the
 // trust anchor. overlay ⇒ plain HTTP (no TLS). The supplied ctx should carry a
 // generous timeout (approval is interactive).
-func RequestPair(ctx context.Context, baseURL string, req PairRequest, overlay bool) (*PairResponse, error) {
+func RequestPair(ctx context.Context, baseURL string, req PairRequest, overlay bool) (_ *PairResponse, err error) {
+	ctx, act := event.Start(ctx, PairInvite, "url", baseURL)
+	defer act.End(&err)
 	var capturedFP string
 	tr := &http.Transport{}
 	if !overlay && strings.HasPrefix(strings.ToLower(baseURL), "https://") {

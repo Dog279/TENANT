@@ -3,6 +3,7 @@ package peering
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"tenant/internal/httplimits"
+	"tenant/internal/logs/event"
 )
 
 // PeerProtocolVersion is the federation capability/envelope version exchanged
@@ -80,7 +82,6 @@ type Listener struct {
 	onAuth       func(peerName string)                         // TEN-250: inbound liveness; nil ⇒ no-op
 	onGrant      func(peerName string, grant []string)         // TEN-253: caller-announced grant; nil ⇒ no-op
 	pairLimiter  *pairLimiter
-	log          func(format string, args ...any)
 
 	srv *http.Server
 }
@@ -107,17 +108,12 @@ type ListenerConfig struct {
 	// (TEN-253), so an acceptor can display "this peer grants us X". Cheap +
 	// non-blocking; nil ⇒ no-op.
 	OnGrant func(peerName string, grant []string)
-	Logger  func(string, ...any)
 }
 
 // NewListener builds a Listener. It does not bind until Serve.
 func NewListener(cfg ListenerConfig) (*Listener, error) {
 	if cfg.Store == nil {
 		return nil, fmt.Errorf("peering: listener requires a peer store")
-	}
-	log := cfg.Logger
-	if log == nil {
-		log = func(string, ...any) {}
 	}
 	ver := cfg.SelfVersion
 	if ver == "" {
@@ -136,7 +132,6 @@ func NewListener(cfg ListenerConfig) (*Listener, error) {
 		onAuth:       cfg.OnAuth,
 		onGrant:      cfg.OnGrant,
 		pairLimiter:  &pairLimiter{max: 3},
-		log:          log,
 	}, nil
 }
 
@@ -170,15 +165,18 @@ func (l *Listener) Handler() http.Handler {
 // constant-time-matches the bearer, advances pairing lifecycle (mark-used /
 // confirm-rotation), and returns a TokenInfo carrying the peer identity +
 // share policy for the per-peer scoped server.
-func (l *Listener) verify(ctx context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+func (l *Listener) verify(ctx context.Context, token string, r *http.Request) (*auth.TokenInfo, error) {
 	if err := l.store.ReloadIfChanged(); err != nil {
-		l.log("peer listener: peers.json reload failed: %v", err)
+		ReloadFailed.Log(ctx, "err", err)
 		// fall through with the in-memory view rather than failing closed-open;
 		// a stale-but-present token still authenticates, revoke still lands once
 		// the reload succeeds. (A hard reload error is rare — disk issue.)
 	}
 	p, matchedPending, ok := l.store.VerifyToken(token)
 	if !ok {
+		// ponytail: one event per refused request, so a client hammering the
+		// port with bad tokens fills the log; count per source if that shows up.
+		TokenRejected.Log(ctx, "remote", r.RemoteAddr)
 		return nil, auth.ErrInvalidToken
 	}
 	// First successful auth retires the unused-invite bound; a pending-token
@@ -187,11 +185,11 @@ func (l *Listener) verify(ctx context.Context, token string, _ *http.Request) (*
 	// A failed save leaves the invite bound or the staged rotation on disk: the
 	// call still authenticates, and the next one retries.
 	if err := l.store.MarkAuthenticated(p.Name); err != nil {
-		l.log("peer listener: %s authenticated, but peers.json was not updated: %v", p.Name, err)
+		StoreNotUpdated.Log(ctx, "peer", p.Name, "change", "first use", "err", err)
 	}
 	if matchedPending {
 		if err := l.store.ConfirmRotation(p.Name); err != nil {
-			l.log("peer listener: %s token rotation not confirmed in peers.json: %v", p.Name, err)
+			StoreNotUpdated.Log(ctx, "peer", p.Name, "change", "rotation confirmed", "err", err)
 		}
 	}
 	if l.onAuth != nil {
@@ -223,11 +221,55 @@ func (l *Listener) getServer(req *http.Request) *mcp.Server {
 		return s // no identity → no tools
 	}
 	pc.store = l.store // enable CurrentShare() live re-check inside handlers
+	s.AddReceivingMiddleware(observe(pc.Name))
 	l.registerHello(s, pc)
 	if l.registrar != nil {
 		l.registrar(s, pc)
 	}
 	return s
+}
+
+// observe records a peer's session (from its initialize until it closes) and
+// each tool it calls as activities.
+func observe(peer string) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			switch method {
+			case "initialize":
+				if ss, ok := req.GetSession().(*mcp.ServerSession); ok {
+					_, act := event.Start(ctx, Connection, "peer", peer)
+					go func() {
+						_ = ss.Wait() // the peer closing its session is not a failure
+						act.End(nil)
+					}()
+				}
+			case "tools/call":
+				tool := ""
+				if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
+					tool = p.Name
+				}
+				ctx, act := event.Start(ctx, RPC, "peer", peer, "tool", tool)
+				res, err := next(ctx, method, req)
+				failed := err
+				if r, ok := res.(*mcp.CallToolResult); ok && r.IsError && failed == nil {
+					failed = errors.New(resultText(r)) // a denial or a handler's error, told to the peer
+				}
+				act.End(&failed)
+				return res, err
+			}
+			return next(ctx, method, req)
+		}
+	}
+}
+
+// resultText is a tool result's first text (the log book caps its length).
+func resultText(r *mcp.CallToolResult) string {
+	for _, c := range r.Content {
+		if t, ok := c.(*mcp.TextContent); ok {
+			return t.Text
+		}
+	}
+	return "the tool returned an error"
 }
 
 // peerContextFrom reconstructs the PeerContext from the auth TokenInfo the
@@ -388,9 +430,10 @@ func (l *Listener) Secure() bool { return l.tlsCert != nil }
 
 // Serve serves on an existing listener until ctx is cancelled, then shuts down
 // gracefully.
-func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
+func (l *Listener) Serve(ctx context.Context, ln net.Listener) (err error) {
+	ctx, act := event.Start(ctx, Listening, "addr", ln.Addr().String(), "tls", l.tlsCert != nil)
+	defer act.End(&err)
 	l.srv = newPeerHTTPServer(l.Handler())
-	l.log("peer listener: serving on %s", ln.Addr())
 	srvDone := make(chan struct{})
 	go func() {
 		select {
@@ -403,7 +446,7 @@ func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
 			// rather than parking on ctx for the rest of the process lifetime.
 		}
 	}()
-	err := l.srv.Serve(ln)
+	err = l.srv.Serve(ln)
 	close(srvDone)
 	if err != nil && !isClosed(err) {
 		return err
