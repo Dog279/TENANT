@@ -585,7 +585,7 @@ shutdown's own last events.
   `logbook/3004`).
 - **When the queue is full,** an operational event waits up to 1 ms and a
   diagnostic one not at all, then it is dropped and counted per log
-  (`Hub.Dropped`). A `security` event is never queued: it forces its batch to
+  (`Hub.Summary`). A `security` event is never queued: it forces its batch to
   commit.
 - **Rate limits.** Each provider and event ID may write 100 events a second,
   in bursts of 500; the rest are suppressed. An uncatalogued line (ID 0) is
@@ -719,7 +719,7 @@ full, a minimum level and an enabled switch. The defaults, by class:
   `logbook/1007` and `1008`.
 - **Low disk.** Below 1 GB or 5% free on the data volume, diagnostic events
   are not written; below 256 MB, only warnings and worse. The Security log
-  always writes. Shed events count as dropped (`Hub.Dropped`), and crossing
+  always writes. Shed events count as dropped (`Hub.Summary`), and crossing
   either line writes a `logbook` warning.
 - **The timed debug switch.** Each log has one (`logs.debug_until_ns`, set
   by `tenant logs debug` or the API's `debug_for`, at most a day). While it is
