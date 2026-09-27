@@ -252,10 +252,11 @@ func (b *Broker) modesSnapshot() map[string]string {
 // logInfo is the broker's persistent audit line. Approval events otherwise live
 // only in the in-memory event ring, which every restart wipes — after which
 // "did that prompt ever fire, where, and how did it end?" cannot be answered.
-// One line per decision (auto-decided or prompted) makes the log the record.
-func (b *Broker) logInfo(msg string, kv ...any) {
+// One line per decision (auto-decided or prompted) makes the log the record,
+// joined to the turn that asked by ctx's trace.
+func (b *Broker) logInfo(ctx context.Context, msg string, kv ...any) {
 	if b.log != nil {
-		b.log.Info(msg, kv...)
+		b.log.InfoContext(ctx, msg, kv...)
 	}
 }
 
@@ -271,7 +272,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	// The surface's lock (the Discord exec mode) outranks every setting below:
 	// a tool rule or a category allow must not reopen what it closed.
 	if locked != nil && locked(action, cat) {
-		b.logInfo("approval refused: locked on this surface", "origin", b.origin, "category", cat, "action", action)
+		b.logInfo(ctx, "approval refused: locked on this surface", "origin", b.origin, "category", cat, "action", action)
 		return verdict(ctx, cat, action, detail, b.origin, "lock", "denied_policy", control.DenyOnce)
 	}
 
@@ -282,13 +283,13 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 		if rmode, pat, ok := b.rules.Lookup(action); ok {
 			switch rmode {
 			case "allow":
-				b.logInfo("approval allowed by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
+				b.logInfo(ctx, "approval allowed by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
 				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.ApproveAlways)
 			case "deny":
-				b.logInfo("approval denied by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
+				b.logInfo(ctx, "approval denied by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
 				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.DenyOnce)
 			}
-			b.logInfo("approval prompt forced by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
+			b.logInfo(ctx, "approval prompt forced by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
 			switch b.askDecision(ctx, "agent", cat, action, detail) {
 			case control.ApproveAlways:
 				// "Always" on a rule-forced prompt means THIS tool, not its category.
@@ -312,14 +313,14 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 
 	switch mode {
 	case ModeAllow:
-		b.logInfo("approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
+		b.logInfo(ctx, "approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
 		return verdict(ctx, cat, action, detail, b.origin, "mode", "approved_always", control.ApproveAlways)
 	case ModeDeny:
-		b.logInfo("approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
+		b.logInfo(ctx, "approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
 		return verdict(ctx, cat, action, detail, b.origin, "mode", "denied_policy", control.DenyOnce)
 	}
 	if sess {
-		b.logInfo("approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
+		b.logInfo(ctx, "approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
 		return verdict(ctx, cat, action, detail, b.origin, "session", "approved_session", control.ApproveSession)
 	}
 
@@ -387,9 +388,9 @@ func (b *Broker) AskPairing(ctx context.Context, detail string) bool {
 func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string) control.ApprovalDecision {
 	req := control.ApprovalRequest{Category: cat, Action: action, Detail: detail}
 	start := time.Now()
-	b.logInfo("approval pending", "origin", b.origin, "category", cat, "action", action)
+	b.logInfo(ctx, "approval pending", "origin", b.origin, "category", cat, "action", action)
 	logOutcome := func(outcome, via string) {
-		b.logInfo("approval resolved", "origin", b.origin, "category", cat, "action", action,
+		b.logInfo(ctx, "approval resolved", "origin", b.origin, "category", cat, "action", action,
 			"outcome", outcome, "via", via, "latency", time.Since(start).Round(time.Millisecond))
 	}
 
