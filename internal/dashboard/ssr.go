@@ -9,6 +9,7 @@ package dashboard
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"html/template"
 	"net/http"
@@ -170,7 +171,7 @@ func (s *Server) findTool(name string) ToolInfo {
 func (s *Server) render(w http.ResponseWriter, t *template.Template, data any) {
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout.html", data); err != nil {
-		s.log.Error("dashboard: ssr render", "err", err)
+		RenderFailed.Log(context.Background(), "page", t.Name(), "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

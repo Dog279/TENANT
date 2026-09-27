@@ -89,7 +89,7 @@ func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 	}
 	go func(u string) {
 		if err := s.mcp.Connect(u); err != nil {
-			s.log.Warn("dashboard: mcp connect", "url", u, "err", err)
+			ConnectorNotAdded.Log(r.Context(), "url", u, "err", err)
 		}
 	}(rawURL)
 	redirectMCP(w, r, "Connecting… A local service with no sign-in appears here in a moment (refresh); one that requires sign-in opens a window on the computer running Tenant — approve it there first.", "")

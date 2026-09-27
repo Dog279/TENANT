@@ -233,7 +233,7 @@ func (s *Server) handleIntegrationTestForm(w http.ResponseWriter, r *http.Reques
 	id := r.PathValue("id")
 	go func() {
 		if _, err := s.integrations.Probe(id); err != nil {
-			s.log.Warn("dashboard: integration probe", "id", id, "err", err)
+			ProbeFailed.Log(r.Context(), "integration", id, "err", err)
 		}
 	}()
 	redirectIntegrations(w, r, "Testing "+id+" — if it needs sign-in, a window opens on the computer running Tenant. Refresh to see the result.", "")

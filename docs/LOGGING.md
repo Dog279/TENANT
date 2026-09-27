@@ -21,7 +21,8 @@ one folder is one tab.
 ├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
 ├── skills/                       ← skills saved, accepted, enabled/disabled, trusted, removed, imported, exported
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
-├── route/ mcp/ peering/ dashboard/
+├── route/ mcp/ peering/
+├── dashboard/                    ← the web server's start/stop and errors, live streams, rejected requests
 ├── sandbox/                      ← the execution sandbox: every run's start and exit, refusals, escalations, dry-run would-be refusals
 ├── backup/                       ← each backup, verify and restore, with its counts and result
 ├── privacy/                      ← each retention sweep and deletion, with what it removed
@@ -458,7 +459,7 @@ var JobFailed = Cron.Event(3001, event.Error, "Job run", "Job {job} failed: {err
 
 JobFailed.Log(ctx, "job", name, "err", err)       // never blocks
 ctx, act := event.Start(ctx, JobRun, "job", name) // start … stop (with duration) or fail
-defer act.End(&err)
+defer act.End(&err)                               // End(&err, "status", code) adds what only the end knows
 ```
 
 - **Definitions** are checked when they register (at package init): an ID is
@@ -658,6 +659,16 @@ drops, the test fails too, and says what to lower it to.
   both ways, is logged; so are rejected tokens, and peers going up or down
   (once per change, not every heartbeat). Each peer session and each tool a
   peer calls is a verbose activity, so only a failure shows by default.
+- `dashboard` (`internal/dashboard/events.go`): the web server is an activity
+  (`dashboard/1`), and its HTTP error log (TLS handshake failures, handler
+  panics) is `dashboard/2001`. Each live stream (SSE or WebSocket) is an
+  activity from connect to disconnect (`dashboard/1001`); one that fell behind
+  and missed events is `dashboard/2002`. Rejected requests (unknown host,
+  cross-origin, no or wrong token, CSRF, a wrong sign-in token) are
+  `dashboard/2101`–`2105`: the operational side, while the Security log keeps
+  the audit records. Every request is a diagnostic activity (`dashboard/9001`)
+  with its method, route pattern, status and duration, never its path, query,
+  body or token.
 
 ## Records that lead back to a run
 

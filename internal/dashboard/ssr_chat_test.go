@@ -1,11 +1,8 @@
 package dashboard
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,11 +37,11 @@ func (failRunner) Interject(string) {}
 // A turn that fails before it emits anything is logged and shown in the chat
 // the operator sent it from, instead of vanishing.
 func TestSSR_ChatSend_TurnFailureReachesChatAndLog(t *testing.T) {
-	var logBuf bytes.Buffer
+	c := installCapture(t)
 	broker := agent.NewBroker(0)
 	ch, unsub := broker.Subscribe()
 	defer unsub()
-	s := New(Config{}, failRunner{}, &fakeTools{}, nil, broker, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	s := New(Config{}, failRunner{}, &fakeTools{}, nil, broker, nil)
 	r := httptest.NewRequest("POST", "/chat/send", strings.NewReader(`{"text":"hello"}`))
 	r.Header.Set("Content-Type", "application/json")
 	s.Handler().ServeHTTP(httptest.NewRecorder(), r)
@@ -59,9 +56,9 @@ func TestSSR_ChatSend_TurnFailureReachesChatAndLog(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a failed turn posted nothing to the chat")
 	}
-	// The log line is written before the event is published.
-	if got := logBuf.String(); !strings.Contains(got, "chat turn failed") || !strings.Contains(got, "queue full") {
-		t.Errorf("not logged: %q", got)
+	// The event is written before the chat's is published.
+	if !c.has("2206 ", "Chat turn failed", "queue full") {
+		t.Errorf("not logged: %q", c.lines())
 	}
 }
 
@@ -70,7 +67,7 @@ func TestChatTurnStoppedIsNotReported(t *testing.T) {
 	broker := agent.NewBroker(0)
 	ch, unsub := broker.Subscribe()
 	defer unsub()
-	co := newWSCoordinator(failRunner{}, broker, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	co := newWSCoordinator(failRunner{}, broker)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	co.runTurn(ctx, "hello")
