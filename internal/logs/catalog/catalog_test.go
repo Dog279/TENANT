@@ -118,3 +118,16 @@ func TestMarkdownKeepsATemplateInItsCell(t *testing.T) {
 		t.Fatalf("the index row:\n%s", md)
 	}
 }
+
+func TestGroupPlacesEveryKindOfLog(t *testing.T) {
+	for log, want := range map[string]string{
+		"system": "Tenant", "turns": "Tenant", "discord": "Subsystems/Channels", "cron": "Subsystems/Scheduler",
+		"mcp.github": "Subsystems/Integrations/MCP", "plugin.web": "Subsystems/Integrations/Plugins",
+		"route": "Subsystems/Model", "improve": "Subsystems/Memory", "privacy": "Subsystems/Backup and Privacy",
+		"ext.deploy": "External", "myfeature": "Subsystems",
+	} {
+		if got := strings.Join(Group(log), "/"); got != want {
+			t.Errorf("Group(%q) = %q, want %q", log, got, want)
+		}
+	}
+}
