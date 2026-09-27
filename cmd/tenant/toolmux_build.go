@@ -152,7 +152,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	}
 	// TEN-318: local MCP servers, out of process under the execution sandbox,
 	// started in the background like the remote connectors above.
-	registerMCPServers(mux, c.lc, c.cfgDir, c.dataDir, log)
+	registerMCPServers(mux, c.lc, c.cfgDir, c.dataDir)
 	// TEN-186: bring paired peers' shared knowledge tools live for the agent,
 	// same silent/non-blocking pattern.
 	mux.ReconnectPeersSilently(c.cfgDir)

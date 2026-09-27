@@ -21,7 +21,9 @@ one folder is one tab.
 ├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
 ├── skills/                       ← skills saved, accepted, enabled/disabled, trusted, removed, imported, exported
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
-├── route/ mcp/ peering/ dashboard/
+├── route/ peering/ dashboard/
+├── mcp.<name>/                   ← one per MCP connector and local server: its connections, sign-in, failed calls, a server's process and stderr
+├── mcp/                          ← MCP lines that belong to no one server (`tenant mcp-memory`)
 ├── sandbox/                      ← the execution sandbox: every run's start and exit, refusals, escalations, dry-run would-be refusals
 ├── backup/                       ← each backup, verify and restore, with its counts and result
 ├── privacy/                      ← each retention sweep and deletion, with what it removed
@@ -196,6 +198,39 @@ describe the host re-run.
 - `tenant sandbox run`, the operator's trial run, prints its result and files
   nothing.
 
+## The MCP logs
+
+Each MCP connector and local server writes its own log, `mcp.<name>`, named
+after its label (`mcp:github` → `mcp.github`, `mcp:mcp.atlassian.com` →
+`mcp.mcp.atlassian.com`: lowercased, other characters as `-`, cut to fit).
+The viewer groups them under Integrations › MCP. They are catalogued
+([EVENTS.md](EVENTS.md#mcp)):
+
+- **A connection** is an activity (`mcp 1`): it fails when the server can't be
+  reached, refuses the sign-in or the MCP handshake, and stops when Tenant
+  closes the session. A connector reconnecting at launch has
+  `interactive=false`; one with no saved sign-in stops with `mcp 1003`, not a
+  failure. `mcp 1001` lists the tools it came up with; `mcp 1002` is a server
+  announcing that its tools changed. A call that could not reach the server
+  is `mcp 3001`.
+- **Sign-in:** a refresh (`mcp 1102`), an early refresh that failed while the
+  token still works (`mcp 2101`), the sign-in dying, once, with the fix
+  (`mcp 3101`), and coming back (`mcp 1103`). A URL no browser opened is
+  `mcp 2001`. The feed line and operator DM for a dead sign-in still come;
+  a DM that failed is `mcp 2103`.
+- **A local server's process** is an activity too (`mcp 2`): its start names
+  the sandbox backend and limits, and its connection, its own lines
+  (`process started` with the pid, its stderr, `process exited`) and its
+  environment (`TENANT_ACTIVITY_ID`) belong to it. It fails when the server
+  could not start or exited on its own; one killed after ignoring its stdin
+  closing is `mcp 2201`. An `mcp_servers` entry that was skipped is `mcp 2202`.
+- **Changes:** a connector added (`mcp 5001`), removed (`mcp 5002`) or given a
+  new trust (`mcp 5003`; `mcp 5004`, a warning, for `allow`). The audit
+  records of these are the Security log's.
+
+`tenant mcp-memory`, Tenant serving its own memory over MCP, writes the `mcp`
+log (`mcpserver/…`).
+
 ## Child processes
 
 A process Tenant starts is filed by Tenant, in the log of the subsystem that
@@ -207,7 +242,7 @@ stopped the child (`cancelled=true`: a shutdown, a cancelled turn).
 
 | Child | Log | Tagged | Also filed |
 |---|---|---|---|
-| a local MCP server (`mcp_servers`) | `mcp` | `server=<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed |
+| a local MCP server (`mcp_servers`) | `mcp.<name>` | `server=mcp:<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed. See [The MCP logs](#the-mcp-logs) |
 | `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | catalogued events instead of these lines: see [The `sandbox` source](#the-sandbox-source) |
 | `claude -p` (the claudecode backend) | `model` | `child=claude` | its stderr, line by line, whether the call failed or not |
 | Chrome (the web plugin) | `browser` | `child=chrome` | its output, line by line, so its crash text survives it. chromedp keeps Chrome's exit status, so the exit line says when it ended, not with what code |
@@ -475,9 +510,9 @@ defer act.End(&err)
   Plugins: started or could not start, the operator's enable and disable,
   token refreshes, and their API's rate limits, refused credentials and
   failed calls. The catalog comes with the plugin's descriptor
-  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (connectors and
-  peers that did not come back at launch, unsaved tool stats) are the
-  `toolmux` log's.
+  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (peers that did
+  not come back at launch, unsaved tool stats) are the `toolmux` log's; an
+  MCP connector's are its own log's ([The MCP logs](#the-mcp-logs)).
 
 ### The store: `logbook.db`
 
@@ -657,7 +692,8 @@ drops, the test fails too, and says what to lower it to.
   both ways, is logged; so are rejected tokens, and peers going up or down
   (once per change, not every heartbeat). Each peer session and each tool a
   peer calls is a verbose activity, so only a failure shows by default.
-- `sandbox` (`internal/sandbox/events.go`): see
+- `mcp` (`internal/plugins/mcpremote/events.go`) and `sandbox`
+  (`internal/sandbox/events.go`): see [The MCP logs](#the-mcp-logs) and
   [The `sandbox` source](#the-sandbox-source).
 
 ## Records that lead back to a run

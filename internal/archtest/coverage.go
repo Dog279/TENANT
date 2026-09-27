@@ -93,7 +93,8 @@ var catalogued = map[string]int{
 	"internal/memory/skills": 0,
 	"internal/skillpkg":      0,
 	"internal/agent":         0, "internal/orchestra": 0, "internal/research": 0,
-	// sandbox (TEN-388)
+	// mcp.* (TEN-387) and sandbox (TEN-388)
+	"internal/plugins/mcpremote": 0, "internal/mcpserver": 0, "internal/mcp": 0, "internal/mcp/transport": 0,
 	"internal/sandbox": 0, "internal/sandbox/escapecore": 0, "internal/sandbox/escapetest": 0, "internal/sandbox/redteamllm": 0,
 }
 
