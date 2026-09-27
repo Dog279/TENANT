@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -406,10 +407,38 @@ func TestReconnectPeersSilently_LogsUnreadablePeers(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
+	prev := slog.Default() // no emitter is installed: the event falls back to it
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
 	mux := New()
-	mux.SetMCPDeps(MCPDeps{Ctx: context.Background(), Log: slog.New(slog.NewTextHandler(&buf, nil))})
+	mux.SetMCPDeps(MCPDeps{Ctx: context.Background()})
 	mux.ReconnectPeersSilently(dir)
 	if got := buf.String(); !strings.Contains(got, "peers.json unreadable") || !strings.Contains(got, "level=WARN") {
 		t.Errorf("want a warning about peers.json, got %q", got)
+	}
+}
+
+// The toggle hook hears the operator's changes, the plugin's and a tool's,
+// once the persistence hook is installed; not the launch's or restore's.
+func TestSetOnToggleHearsTheOperatorsChanges(t *testing.T) {
+	mux := New()
+	mux.Add("gh", Stub{Specs: []model.ToolSpec{{Name: "gh_search"}, {Name: "gh_pr"}}})
+	var got []string
+	mux.SetOnToggle(func(label, target string, on bool, tools int) {
+		got = append(got, fmt.Sprintf("%s %s %v %d", label, target, on, tools))
+	})
+	mux.SetEnabled("gh", false) // the launch's: no persistence hook yet
+	mux.Restore(map[string]bool{"gh_pr": true})
+	if len(got) != 0 {
+		t.Fatalf("launch and restore were told: %q", got)
+	}
+	mux.SetOnChange(func(map[string]bool) {})
+	mux.SetEnabled("gh", true)
+	mux.SetEnabled("gh_pr", false)
+	mux.SetPluginEnabled("gh", false)
+	mux.SetEnabled("nope", true) // matches nothing
+	want := []string{"gh gh true 2", "gh gh_pr false 1", "gh gh false 2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("toggles = %q, want %q", got, want)
 	}
 }

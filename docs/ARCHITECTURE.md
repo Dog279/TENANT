@@ -142,7 +142,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/mcp/transport` | nothing in the module | leaf |
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
-| `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes |
+| `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes, and the events every plugin has |
 | `internal/lifecycle` | nothing in the module | leaf: the staged shutdown of a long-running command |
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
@@ -161,7 +161,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
 | `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra` | the persisted configuration; knows no runtime |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
-| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
+| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine`, `internal/pluginreg` | capabilities never import each other; each declares its events through pluginreg |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
 | `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
 | `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |

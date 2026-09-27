@@ -14,6 +14,7 @@ import (
 func githubPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:            "github",
+		Events:        githubp.Events,
 		Connector:     true,
 		Forget:        func(cfg, _ string) []string { return []string{githubp.TokenPath(cfg)} },
 		ConfigSecrets: func(cfg string) []string { return []string{githubp.TokenPath(cfg)} },

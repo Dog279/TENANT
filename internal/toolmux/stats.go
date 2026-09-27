@@ -24,9 +24,9 @@ package toolmux
 // night would drown the real usage signal.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,7 +267,7 @@ func (s *Stats) flush() {
 	}
 	// The next tick retries, so a streak of failures is logged once.
 	if err != nil && !s.failing {
-		slog.Default().Warn("toolmux: tool stats not saved; retrying every flush", "source", "system", "path", s.path, "err", err)
+		StatsNotSaved.Log(context.Background(), "path", s.path, "err", err)
 	}
 	s.failing = err != nil
 }

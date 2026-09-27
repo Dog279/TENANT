@@ -188,11 +188,12 @@ func Open(cfg Config) (*Service, error) {
 		return nil, errors.New("github: no token configured - set it via `/configure github`, the dashboard keys page, or $GITHUB_TOKEN")
 	}
 
-	hc := cfg.HTTPClient
-	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
+	hc := http.Client{Timeout: 30 * time.Second}
+	if cfg.HTTPClient != nil {
+		hc = *cfg.HTTPClient
 	}
-	client := gh.NewClient(hc).WithAuthToken(tok)
+	hc.Transport = Events.Observe(hc.Transport) // API failures reach the plugin's log
+	client := gh.NewClient(&hc).WithAuthToken(tok)
 	if base := strings.TrimSpace(cfg.APIBase); base != "" {
 		if !strings.HasSuffix(base, "/") {
 			base += "/"

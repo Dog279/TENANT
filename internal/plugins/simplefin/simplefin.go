@@ -82,7 +82,7 @@ func Open(cfg Config) (*Service, error) {
 	base.User = nil
 	h := cfg.HTTP
 	if h == nil {
-		h = http.DefaultClient
+		h = &http.Client{Transport: Events.Observe(nil)} // bridge failures reach the plugin's log
 	}
 	clock := cfg.Clock
 	if clock == nil {

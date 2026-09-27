@@ -67,7 +67,7 @@ func Open(cfg Config) (*Service, error) {
 	}
 	// A bare oauth2.Transport (not oauth2.NewClient) so we don't get a
 	// second ReuseTokenSource cache layered on top of cachedSource.
-	rt := &oauth2.Transport{Source: bearerShim{ts: ts}, Base: base}
+	rt := &oauth2.Transport{Source: bearerShim{ts: ts}, Base: Events.Observe(base)}
 	return newService(&http.Client{Transport: rt})
 }
 

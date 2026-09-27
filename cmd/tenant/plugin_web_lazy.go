@@ -169,6 +169,7 @@ func (l *lazyWeb) ensure() (*web.Dispatcher, error) {
 	sess, err := web.NewSession(l.cfg)
 	if err != nil {
 		release()
+		web.Events.StartFailed.Log(context.Background(), "err", err)
 		l.failed, l.err = true, err
 		return nil, err
 	}
