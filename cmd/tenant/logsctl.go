@@ -63,6 +63,9 @@ type logsOpts struct {
 	reset                bool
 	export, debugFor     string
 	id                   uint64
+	count                int // alerts add
+	window, action       string
+	target, throttle     string
 }
 
 func cmdLogs(ctx context.Context, args []string) error { return runLogs(ctx, args, os.Stdout) }
@@ -106,6 +109,12 @@ func runLogs(ctx context.Context, args []string, w io.Writer) error {
 		fs.StringVar(&o.debugFor, "for", "30m", "how long, at most 24h; 0 turns it off")
 	case "catalog":
 		fs.Uint64Var(&o.id, "id", 0, "one event ID")
+	case "alerts":
+		fs.IntVar(&o.count, "count", 0, "add: fire once this many match within --window")
+		fs.StringVar(&o.window, "window", "", "add: the threshold's window: 10m, 1h")
+		fs.StringVar(&o.action, "action", "", "add: dashboard (default), discord, imessage or cron")
+		fs.StringVar(&o.target, "target", "", "add: the cron action's prompt")
+		fs.StringVar(&o.throttle, "throttle", "", "add: fire at most once per this long (default 15m)")
 	case "list", "show", "trace", "components", "recover":
 	default:
 		return fmt.Errorf("logs: no subcommand %q; `tenant help logs` lists them", sub)
@@ -285,6 +294,8 @@ func runLogs(ctx context.Context, args []string, w io.Writer) error {
 			return err
 		}
 		return out.components(cs.Components)
+	case "alerts":
+		return logsAlerts(ctx, lb, out, o, pos)
 	}
 	return nil
 }
@@ -532,7 +543,7 @@ func openLocalLogbook(c *commonFlags) (*logbook, error) {
 	}
 	h.AttachStore(st)
 	api := &logapi.API{Hub: func() *logs.Hub { return h }, BootStart: started, Security: securityLogAPI(c), Runs: localRuns(c),
-		Components: runningComponents(c), Surface: surfaceCLI}
+		Components: runningComponents(c), Surface: surfaceCLI, Alerts: alertRulesAPI(c)}
 	return &logbook{base: "http://logbook", http: &http.Client{Transport: inProcess{api.Handler()}}, local: path,
 		close: func() { _ = h.Close() }}, nil
 }

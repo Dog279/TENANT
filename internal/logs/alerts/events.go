@@ -10,7 +10,7 @@ import "tenant/internal/logs/event"
 var Events = event.NewProvider("alerts", "alerts")
 
 var Fired = Events.Event(1001, event.Warning, "Alert", "Alert {rule}: {source} {source_level}: {message}", "rule", "action", "seq", "source", "source_level", "message", "count").
-	Doc("An alert rule matched an event and fired: its banner went to the status feed, and a discord, imessage or cron action was sent (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.",
+	Doc("An alert rule matched an event and fired: its banner went to the status feed, the dashboard's Overview counts it for a day, and a discord, imessage or cron action was sent (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.",
 		"The event matched the rule's filter, as often as its threshold asks, and the rule had not fired within its throttle window.",
 		"Open the event on the dashboard (/logs/event/<seq>): its Help tab says what it means. If the rule is noise, change or disable it in logs.alerts.")
 
@@ -22,4 +22,4 @@ var ActionFailed = Events.Event(3001, event.Error, "Alert", "Alert {rule} was no
 var RuleInvalid = Events.Event(3002, event.Error, "Rule", "Alert rule {rule} is skipped: {err}", "rule", "err").
 	Doc("An entry of logs.alerts could not be used, so it never fires. The other rules still run.",
 		"Its filter does not parse, a duration or the action is not valid, or two entries share a name.",
-		"Correct the entry in logs.alerts in config.json; the next evaluation picks it up.")
+		"Correct the entry in logs.alerts (tenant logs alerts add, or config.json); the next evaluation picks it up.")

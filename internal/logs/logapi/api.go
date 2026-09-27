@@ -23,6 +23,7 @@
 //	GET    /api/logbook/verify[?log=security]              the integrity check, and the Security log's chain
 //	GET    /api/logbook/audit?since=&until=                the Security log's audit export bundle
 //	POST   /api/logbook/recover                            salvage a quarantined logbook.db into the store
+//	GET    /api/logbook/alerts                             the alert rules (alerts.go); POST, PATCH and DELETE change them
 //
 // Cursors are <store ID>.<seq>; one from another store starts over and says
 // so. A read with sensitive=1 returns sensitive values. A reveal, an export,
@@ -80,6 +81,8 @@ type API struct {
 	// Surface is where requests come from, as the Security records of the
 	// actions taken through the API name it: dashboard (when empty) or cli.
 	Surface string
+	// Alerts manages the alert rules in config.json (alerts.go).
+	Alerts AlertConfig
 }
 
 // RunLookup finds the run record of a trace.
@@ -131,6 +134,10 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/logbook/verify", a.verify)
 	mux.HandleFunc("GET /api/logbook/audit", a.auditBundle)
 	mux.HandleFunc("POST /api/logbook/recover", a.recoverFile)
+	mux.HandleFunc("GET /api/logbook/alerts", a.answerAlerts)
+	mux.HandleFunc("POST /api/logbook/alerts", a.putAlertRule)
+	mux.HandleFunc("PATCH /api/logbook/alerts/{name}", a.disableAlertRule)
+	mux.HandleFunc("DELETE /api/logbook/alerts/{name}", a.removeAlertRule)
 }
 
 // Handler is the routes on a mux of their own.

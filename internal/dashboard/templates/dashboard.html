@@ -1,9 +1,16 @@
 {{define "content"}}
 <div class="cards">
+  {{if .Alerts}}
+  <a href="/activity?source=alerts" class="card stat linkcard" title="{{.AlertLatest}}">
+    <div class="stat-label">Agent</div>
+    <div class="stat-value"><span class="trend-down">⚠</span> {{.Alerts}} alert{{if ne .Alerts 1}}s{{end}}</div>
+  </a>
+  {{else}}
   <div class="card stat">
     <div class="stat-label">Agent</div>
     <div class="stat-value"><span class="trend-up">●</span> healthy</div>
   </div>
+  {{end}}
   {{if .ActiveModel}}
   <a href="/models" class="card stat linkcard">
     <div class="stat-label">Model</div>

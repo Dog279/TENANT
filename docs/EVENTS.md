@@ -31,7 +31,7 @@ Writes the `alerts` log.
 - **Fields:** `rule`, `action`, `seq`, `source`, `source_level`, `message`, `count`
 - **Find it:** `provider:alerts id:1001`
 
-**What it means.** An alert rule matched an event and fired: its banner went to the status feed, and a discord, imessage or cron action was sent (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.
+**What it means.** An alert rule matched an event and fired: its banner went to the status feed, the dashboard's Overview counts it for a day, and a discord, imessage or cron action was sent (alerts 3001 when it could not be). seq is the event's number, source its provider and ID; count is how many matched within a threshold's window.
 
 **Why it happens.** The event matched the rule's filter, as often as its threshold asks, and the rule had not fired within its throttle window.
 
@@ -63,7 +63,7 @@ Writes the `alerts` log.
 
 **Why it happens.** Its filter does not parse, a duration or the action is not valid, or two entries share a name.
 
-**What to do.** Correct the entry in logs.alerts in config.json; the next evaluation picks it up.
+**What to do.** Correct the entry in logs.alerts (tenant logs alerts add, or config.json); the next evaluation picks it up.
 
 ## backup
 
