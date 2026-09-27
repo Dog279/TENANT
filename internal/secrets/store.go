@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 )
 
 const (
@@ -59,6 +60,27 @@ func Peek(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// onWrite is the hook OnWrite registers.
+var onWrite atomic.Pointer[func(path string)]
+
+// OnWrite registers fn to run after each secret file this process writes or
+// creates here, so a copy of the values kept elsewhere (the log scrubber's)
+// is refreshed the moment a credential or OAuth token changes. It runs on the
+// writer's goroutine; a later call replaces it, and nil removes it.
+func OnWrite(fn func(path string)) {
+	if fn == nil {
+		onWrite.Store(nil)
+		return
+	}
+	onWrite.Store(&fn)
+}
+
+func wrote(path string) {
+	if fn := onWrite.Load(); fn != nil {
+		(*fn)(path)
+	}
+}
+
 // WriteFile atomically replaces path and verifies owner-only protection on the
 // file and its direct parent directory before returning.
 func WriteFile(path string, data []byte) error {
@@ -84,6 +106,7 @@ func WriteFile(path string, data []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
+	defer wrote(path)
 	if err := protectPath(path, false); err != nil {
 		return fmt.Errorf("secrets: protect %s: %w", path, err)
 	}
@@ -136,6 +159,7 @@ func CreateExclusive(path string, data []byte) (created bool, err error) {
 			return created, err
 		}
 	}
+	defer wrote(path)
 	report := Probe(path)
 	if !report.Protected {
 		if report.Detail == "" {

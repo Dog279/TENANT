@@ -47,7 +47,8 @@ Turn events carry their kind in `ev=`; plain records have no `ev`.
 - **Level floor:** INFO by default. `"logs": {"level": "debug"}` or
   `TENANT_LOG=debug` lowers it (the files then hold the backend internals too).
 - **Value cap:** one value (a tool result, an argument blob) is cut at 4 KB with
-  a `…(+N bytes)` marker (`"logs": {"max_field_bytes": N}`; `-1` = unlimited).
+  a `…(+N bytes)` marker (`"logs": {"max_field_bytes": N}`; `-1` = unlimited),
+  after secrets are scrubbed from it (see [Secrets](#secrets)).
 
 Where lines land: a turn-event's source is decided by the emitter (`cron`,
 `discord`, `eval`, …) or derived (`subagents` when a sub-agent is attributed,
@@ -61,6 +62,34 @@ supervisor (launchd/systemd) — the hub tees to it. The TUI writes nothing to
 stderr; `<data>/tui.log` no longer exists.
 
 ## Secrets
+
+Every entry is scrubbed before the value cap, the Activity feed and the files:
+the message and every field, so the `sandbox` folder's `command` and the tool
+arguments and results in `turns` too.
+
+- **Credentials Tenant holds** become `«secret:<name>»` wherever they appear:
+  raw, JSON-escaped, URL-encoded or base64-encoded (also inside a longer value,
+  such as a Basic credential). They are the values in Tenant's secret files
+  (credentials.json, the dashboard token, OAuth token caches, peer tokens and
+  keys), `dashboard.auth`, MCP `env_set` values, and API keys given with
+  `--api-key` or in the environment. Values under 8 characters are ignored.
+  The set is re-read whenever Tenant writes a secret file, and every 20 seconds
+  for changes made by hand or by another Tenant process.
+- **Text shaped like a credential** loses the secret and keeps its label:
+  bearer tokens and JWTs; `sk-`, `sk_live_`/`rk_live_`, `ghp_`/`github_pat_`,
+  `xox?-`, `AIza…`, `tskey-` and AWS keys; Discord bot tokens and webhook URLs;
+  PEM private keys; the password in a `user:pass@` URL; `password=` and
+  `token=` style parameters; JSON `"password"`, `"secret"`, `"token"` and
+  `"api_key"` fields; and any field whose key ends in one of those words.
+
+```
+2026-09-27 14:05:10.412 INFO  [sandbox] ran in the sandbox	surface=discord backend=restricted exit=0 timed_out=false command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com"
+```
+
+Lines read back from disk into the feed (the tail re-read at start, folders
+other processes write) are scrubbed on the way in; the files themselves are
+not rewritten. The copies of log lines `serve` prints to stdout and stderr
+are scrubbed too.
 
 The dashboard's auth token never goes to the log book. The `system` line
 written when the dashboard starts says where the token lives
@@ -103,8 +132,8 @@ Some things are recorded elsewhere or not at all:
   error goes back to the turn or cron job, not to this folder.
 - On surfaces with an approval broker (TUI and dashboard, Discord, iMessage), the
   escalation prompt itself is an `approvals` line (`action=os_exec_unsandboxed`).
-- The `command` field is the literal command text, so a secret typed inline into
-  a command ends up in this log.
+- The `command` field is the command text, scrubbed (see [Secrets](#secrets))
+  before the 300-character cut, so a secret typed inline does not reach the log.
 - On Linux and Windows the backends do not attribute refusals yet. A denied
   access there shows as `ran in the sandbox` with a non-zero `exit`.
 

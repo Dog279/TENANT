@@ -149,7 +149,9 @@ func (k dashKeys) maybeReloadProvider(credID string) {
 // without a restart. Web-search keys are resolved lazily and need no trigger.
 // While degraded to echo it SKIPS: an unrelated creds change must not swap echo
 // for a possibly-down real provider (degraded recovery is driven by the settings
-// page / reconnect monitor / `/model use`). Runs until ctx is cancelled.
+// page / reconnect monitor / `/model use`). Every tick also refreshes the log
+// scrubber's copy of the secrets, which another process may have changed
+// (TEN-361). Runs until ctx is cancelled.
 func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degraded *degradedState, notify func(string)) {
 	if mc == nil {
 		return
@@ -163,6 +165,7 @@ func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degr
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			refreshLogSecrets()
 			cur := credsModTime(path)
 			if cur == last {
 				continue

@@ -1806,6 +1806,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if herr != nil {
 		hub = logs.NewMemory(0)
 	}
+	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
 	hub.Start(ctx)
 	log := slog.New(hub.Handler(nil))
