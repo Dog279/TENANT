@@ -165,6 +165,24 @@ func TestRESTActivity_FiltersAndLogKind(t *testing.T) {
 	}
 }
 
+// ?trace= keeps one turn's lines: the trace field joins them to the run (TEN-362).
+func TestRESTActivity_TraceFilter(t *testing.T) {
+	s, h := logsServer(t, t.TempDir())
+	logEvent(h, agent.Event{Kind: agent.EventToolCall, Tool: "web_search", TraceID: "t1"})
+	logEvent(h, agent.Event{Kind: agent.EventToolCall, Tool: "wiki_read", TraceID: "t2"})
+	h.Logf("turns", slog.LevelInfo, "untraced")
+	rec := do(t, s, http.MethodGet, "/api/activity?trace=t2", "", "")
+	var resp restActivityResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.Events) != 1 || resp.Events[0].Tool != "wiki_read" || resp.Events[0].Fields["trace"] != "t2" {
+		t.Errorf("trace projection = %+v", resp.Events)
+	}
+	// The page keeps the trace for its backlog and for its live stream.
+	if body := get(t, s, "/activity?trace=t2").Body.String(); !strings.Contains(body, "wiki_read") || strings.Contains(body, "web_search") || !strings.Contains(body, "trace=t2") {
+		t.Errorf("trace page:\n%s", body)
+	}
+}
+
 // Files: list + raw view through both the page route and the API; traversal
 // and foreign names are rejected.
 func TestRESTLogs_FilesAndRawView(t *testing.T) {

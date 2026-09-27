@@ -95,11 +95,14 @@ func SpanFromContext(ctx context.Context) *Span {
 	return span
 }
 
-func IDFromContext(ctx context.Context) string {
-	if span := SpanFromContext(ctx); span != nil {
-		return span.traceID
+func IDFromContext(ctx context.Context) string { return SpanFromContext(ctx).TraceID() }
+
+// TraceID is the span's trace ID ("" for a nil span).
+func (s *Span) TraceID() string {
+	if s == nil {
+		return ""
 	}
-	return ""
+	return s.traceID
 }
 
 func (s *Span) SetModel(model, provider string) {

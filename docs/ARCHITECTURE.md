@@ -145,7 +145,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
-| `internal/logs` | `internal/fsperm` | any package may log through it |
+| `internal/logs` | `internal/fsperm`, `internal/runtrace` | any package may log through it |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
@@ -545,8 +545,8 @@ persisted at end of turn (one row/pair, query embedding). **17 tests**
 
 **Purpose:** the single sink every subsystem logs through. One source = one
 folder of plain-text daily files (`<data>/logs/<source>/YYYY-MM-DD.log`) = one
-dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
-`logs.For("name")` without plumbing. Full guide: `docs/LOGGING.md`.
+dashboard tab. It imports only the leaves `fsperm` and `runtrace`, so any
+package can `logs.For("name")` without plumbing. Full guide: `docs/LOGGING.md`.
 
 **Public API:**
 - `logs.Open(root, Options) (*Hub, error)` / `logs.NewMemory(cap)`; `Hub.Start(ctx)`
@@ -564,13 +564,15 @@ dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
 - `Hub.Handler(tee) slog.Handler` / `Hub.Logger(source)`; package-level
   `logs.Install(hub)` + `logs.For(source)` (resolves the hub lazily, stderr-at-WARN
   until one is installed). Routing: fixed source → `source` attr → the message's
-  `tag:` prefix table → `system`.
+  `tag:` prefix table → `system`. A `…Context` call inside a turn gains a
+  `trace` field from the context's `runtrace` span.
 - `Entry.Line()` / `logs.ParseLine` — the round-trippable on-disk format:
   `<date> <time.ms> <LEVEL> [<source>] <msg>\t<k=v …>`; values quoted when needed
   so one entry is always one line.
 - `agent.EntryFor(Event) (logs.Entry, bool)` (in `internal/agent`) renders a turn
   event into an entry (denylists token/usage/assistant/memory noise); `Event.Source`
-  lets an observer name the folder (`cron`, `discord`, `eval`, …).
+  lets an observer name the folder (`cron`, `discord`, `eval`, …). Every event a
+  turn raises carries its trace ID, written as `trace` (the `runs.db` trace_id).
 
 **Invariants:** never blocks a producer on a reader; a file that cannot be
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -63,6 +64,7 @@ func cmdAttach(ctx context.Context, args []string) error {
 	interval := fs.Duration("interval", time.Second, "poll interval when --follow")
 	source := fs.String("source", "", "only this log source / folder (e.g. discord, cron, turns); default all")
 	level := fs.String("level", "", "only lines at or above this level: warn|error; default all")
+	trace := fs.String("trace", "", "only one turn's lines: its trace ID (runs.db trace_id, the lines' trace= field)")
 	c := bindCommon(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -104,6 +106,9 @@ func cmdAttach(ctx context.Context, args []string) error {
 	}
 	if *level != "" {
 		filter += "&level=" + *level
+	}
+	if *trace != "" {
+		filter += "&trace=" + url.QueryEscape(*trace)
 	}
 	cursor := *since
 	for {
@@ -178,7 +183,8 @@ func attachFetchActivity(ctx context.Context, httpc *http.Client, base, token st
 }
 
 // attachFetchActivityFiltered reads one page of the projection; filter is an
-// optional "&source=…&level=…" narrowing (the log-book folder / level floor).
+// optional "&source=…&level=…&trace=…" narrowing (the log-book folder, level
+// floor, one turn).
 func attachFetchActivityFiltered(ctx context.Context, httpc *http.Client, base, token string, since uint64, filter string) ([]attachEvent, uint64, error) {
 	var resp attachActivityResp
 	url := fmt.Sprintf("%s/api/activity?since=%d%s", base, since, filter)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tenant/internal/model"
+	"tenant/internal/runtrace"
 )
 
 // fakeDispatcher returns canned outcomes per-call in sequence so a test
@@ -80,7 +81,8 @@ func TestRetryDecorator_RetriesWrappedStringError(t *testing.T) {
 		Backoff: time.Millisecond, MaxRetries: 1,
 		Observer: func(e Event) { events = append(events, e) },
 	}
-	result, isErr, err := rd.Dispatch(context.Background(), model.ToolCall{Name: "web_navigate"})
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("4f2a"))
+	result, isErr, err := rd.Dispatch(ctx, model.ToolCall{Name: "web_navigate"})
 	if err != nil || isErr || result != "<page text>" {
 		t.Errorf("retry didn't recover: result=%q isErr=%v err=%v", result, isErr, err)
 	}
@@ -92,6 +94,9 @@ func TestRetryDecorator_RetriesWrappedStringError(t *testing.T) {
 	}
 	if !strings.Contains(events[0].Text, "attempt 1/1") || !strings.Contains(events[0].Text, "deadline exceeded") {
 		t.Errorf("event text should name attempt and reason, got %q", events[0].Text)
+	}
+	if events[0].TraceID != "4f2a" {
+		t.Errorf("the retry line should carry the turn's trace (TEN-362), got %q", events[0].TraceID)
 	}
 }
 

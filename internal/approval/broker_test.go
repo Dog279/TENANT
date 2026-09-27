@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/control"
+	"tenant/internal/runtrace"
 )
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -244,6 +247,33 @@ func TestBroker_ResolveUnblocksOnce(t *testing.T) {
 	}
 	if p := b.Pending(); len(p) != 0 {
 		t.Errorf("pending should be empty after resolve, got %d", len(p))
+	}
+}
+
+// Approval events raised inside a turn carry its trace ID, so the approvals
+// lines join the run record (TEN-362).
+func TestBroker_ApprovalEventsCarryTrace(t *testing.T) {
+	b := newTestBroker(testLog())
+	var mu sync.Mutex
+	var got []string
+	b.SetEvents(func(e agent.Event) { mu.Lock(); got = append(got, string(e.Kind)+"/"+e.TraceID); mu.Unlock() })
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("4f2a"))
+	id, done := confirmAsync(t, b, ctx, "os_exec")
+	b.Resolve(id, control.ApproveOnce)
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if s := strings.Join(got, ","); s != "approval_pending/4f2a,approval_resolved/4f2a" {
+		t.Fatalf("events = %s", s)
+	}
+	// A Discord-button approval's mirror lines too.
+	d := newTestDiscordBroker(testLog())
+	var beside []string
+	d.SetEvents(func(e agent.Event) { beside = append(beside, e.TraceID) })
+	d.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.ApproveOnce })
+	d.askDecision(ctx, CatExec, "os_exec", "x")
+	if s := strings.Join(beside, ","); s != "4f2a,4f2a" {
+		t.Fatalf("beside traces = %s", s)
 	}
 }
 

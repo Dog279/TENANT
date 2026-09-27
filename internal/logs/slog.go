@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"tenant/internal/runtrace"
 )
 
 // defaultHub is the process-wide hub For() loggers resolve at write time, so a
@@ -104,6 +106,10 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		addAttr(&fields, &src, h.source == "", a, h.prefix)
 		return true
 	})
+	// A …Context call inside a turn joins the line to its run record.
+	if id := runtrace.IDFromContext(ctx); id != "" {
+		fields = append(fields, Field{Key: "trace", Value: id})
+	}
 	if src == "" {
 		src = prefixSource(r.Message)
 	}

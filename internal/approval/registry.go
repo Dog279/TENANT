@@ -142,8 +142,9 @@ func (r *registry) emitEvent(kind agent.EventKind, p *pendingReq, outcome string
 		return
 	}
 	r.emit(agent.Event{
-		Kind: kind,
-		Text: fmt.Sprintf("%s: %s", p.req.Action, p.req.Detail),
+		Kind:    kind,
+		TraceID: p.span.TraceID(),
+		Text:    fmt.Sprintf("%s: %s", p.req.Action, p.req.Detail),
 		Approval: &agent.ApprovalEvent{
 			ID: p.id, Category: p.req.Category, Action: p.req.Action,
 			Detail: p.req.Detail, Origin: p.origin, Outcome: outcome,
@@ -155,13 +156,14 @@ func (r *registry) emitEvent(kind agent.EventKind, p *pendingReq, outcome string
 // REPLACEMENT backend (the Discord button approver) that is NOT in the
 // resolvable registry — observers SEE it (Origin=discord) but can't resolve it
 // from the dashboard, because that path owns its own resolution (see askDecision).
-func (r *registry) emitBeside(kind agent.EventKind, req control.ApprovalRequest, origin, outcome string) {
+func (r *registry) emitBeside(ctx context.Context, kind agent.EventKind, req control.ApprovalRequest, origin, outcome string) {
 	if r == nil || r.emit == nil {
 		return
 	}
 	r.emit(agent.Event{
-		Kind: kind,
-		Text: fmt.Sprintf("%s: %s", req.Action, req.Detail),
+		Kind:    kind,
+		TraceID: runtrace.IDFromContext(ctx),
+		Text:    fmt.Sprintf("%s: %s", req.Action, req.Detail),
 		Approval: &agent.ApprovalEvent{
 			ID: "beside-" + origin, Category: req.Category, Action: req.Action,
 			Detail: req.Detail, Origin: origin, Outcome: outcome,

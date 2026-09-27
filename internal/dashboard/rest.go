@@ -238,9 +238,9 @@ func restEntry(e logs.Entry) restActivityEvent {
 	return out
 }
 
-// handleActivity — GET /api/activity?since=<seq>[&source=x][&level=error]: the
-// structured replay of the retained log. Returns entries with Seq > since plus
-// the new head cursor. Empty (not an error) when no hub is wired.
+// handleActivity — GET /api/activity?since=<seq>[&source=x][&level=error][&trace=id]:
+// the structured replay of the retained log. Returns entries with Seq > since
+// plus the new head cursor. Empty (not an error) when no hub is wired.
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	resp := restActivityResponse{Events: []restActivityEvent{}}
 	if s.logs == nil {

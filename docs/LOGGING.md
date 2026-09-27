@@ -31,16 +31,19 @@ Override the root with `--log-dir DIR` or `"logs": {"dir": "…"}` in config.jso
 One entry is exactly one line, readable in `tail -f` and exact under `grep`:
 
 ```
-2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	ev=tool_call iter=2 args="{\"q\":\"hn top\"}"
-2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	ev=tool_result iter=2 result="timeout after 30s"
-2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3	ev=approval_resolved category=exec action=os_exec origin=discord outcome=denied
+2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	ev=tool_call iter=2 args="{\"q\":\"hn top\"}" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
+2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	ev=tool_result iter=2 result="timeout after 30s" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
+2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3	ev=approval_resolved category=exec action=os_exec origin=local outcome=denied trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
 2026-09-22 14:04:02.000 INFO  [discord] relay attachment saved	chat=general path=/…/relay-inbox/img.png
 ```
 
 `<local date> <time.ms> <LEVEL> [<source>] <message>` then a **tab** and
 `key=value` fields. Values with spaces, quotes or newlines are quoted (Go
 `strconv.Quote` escaping), so a multi-line tool result still occupies one line.
-Turn events carry their kind in `ev=`; plain records have no `ev`.
+Turn events carry their kind in `ev=`; plain records have no `ev`. Every
+event a turn raises, and the approvals it asks for, carries `trace=`: the
+turn's trace ID, the `trace_id` of its record in `runs.db`. A slog line logged
+with a `…Context` call inside a turn carries it too.
 
 - **Retention:** files older than 30 days are deleted (`"logs": {"retention_days": N}`;
   `-1` keeps forever). A day's file rolls to `<day>.1.log` past 64 MB.
@@ -104,8 +107,9 @@ custom ones after, `system` last), with a retained-line count, an
 with a raw plain-text view / download. History from before the current run is
 there too: at start the hub re-reads the tail of every folder's newest file.
 
-`tenant attach --follow [--source discord] [--level error]` is the terminal
-equivalent, over `GET /api/activity`.
+`tenant attach --follow [--source discord] [--level error] [--trace ID]` is
+the terminal equivalent, over `GET /api/activity`; `--trace` keeps one turn's
+lines.
 
 ## Adding a source (no rebuild)
 
@@ -176,7 +180,7 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8770/api/logs/watcher" `
 | `GET` | `/api/logs/{source}` | `{"source", "files": [{name, size, mod_time}]}` |
 | `GET` | `/api/logs/{source}/{file}` | the raw file (`text/plain`) |
 | `POST` | `/api/logs/{source}` | `{"level", "msg", "fields"}` — or a `text/plain` body (`?level=`) |
-| `GET` | `/api/activity?since=&source=&level=` | the retained lines as JSON (cursor replay) |
+| `GET` | `/api/activity?since=&source=&level=&trace=` | the retained lines as JSON (cursor replay) |
 | `POST` | `/api/addon/event` | legacy add-on line (`{"source","text","level"}`) — files under the add-on's name |
 
 **A process that only writes files** — drop a folder under the root and append

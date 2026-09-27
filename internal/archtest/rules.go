@@ -45,7 +45,7 @@ var rules = []rule{
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
 
-	{Pkg: "internal/logs", May: []string{"internal/fsperm"}, Notes: "any package may log through it"},
+	{Pkg: "internal/logs", May: []string{"internal/fsperm", "internal/runtrace"}, Notes: "any package may log through it"},
 	{Pkg: "internal/research", May: []string{"internal/fsperm"}},
 	{Pkg: "internal/backup", May: []string{"internal/datalock", "internal/fsperm", "internal/secrets", "internal/version"}},
 	{Pkg: "internal/peering", May: []string{"internal/httplimits", "internal/secrets"}},

@@ -76,6 +76,31 @@ func TestAttach_FetchActivityCursorPaging(t *testing.T) {
 	}
 }
 
+// --trace narrows the tail to one turn's lines (TEN-362).
+func TestAttach_TraceFilter(t *testing.T) {
+	sent := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(attachStatus{Status: "ok"})
+	})
+	mux.HandleFunc("/api/activity", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case sent <- r.URL.Query().Get("trace"):
+		default:
+		}
+		_ = json.NewEncoder(w).Encode(attachActivityResp{Events: []attachEvent{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := cmdAttach(context.Background(), []string{"--config", dir, "--data", dir, "--token", "x", "--trace", "4f2a", srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-sent; got != "4f2a" {
+		t.Fatalf("trace sent = %q, want 4f2a", got)
+	}
+}
+
 func TestAttach_BearerTokenEnforced(t *testing.T) {
 	ctx := context.Background()
 	srv := fakeHub(t, "sekret", []attachEvent{{Seq: 1, At: "2026-06-18T10:00:00Z", Kind: "final"}})

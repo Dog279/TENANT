@@ -92,10 +92,11 @@ func (r *RetryDecorator) Dispatch(ctx context.Context, call model.ToolCall) (str
 				reason = result
 			}
 			r.Observer(Event{
-				Kind:  EventRetry,
-				Tool:  call.Name,
-				Text:  fmt.Sprintf("attempt %d/%d: %s", attempt+1, r.MaxRetries, reason),
-				IsErr: true,
+				Kind:    EventRetry,
+				TraceID: runtrace.IDFromContext(ctx),
+				Tool:    call.Name,
+				Text:    fmt.Sprintf("attempt %d/%d: %s", attempt+1, r.MaxRetries, reason),
+				IsErr:   true,
 			})
 		}
 		if span := runtrace.SpanFromContext(ctx); span != nil {

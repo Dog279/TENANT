@@ -92,6 +92,9 @@ type Event struct {
 
 func (a *Agent) emit(e Event) {
 	if a.cfg.Observer != nil {
+		if t := a.turnTrace.Load(); t != nil && e.TraceID == "" {
+			e.TraceID = *t
+		}
 		a.cfg.Observer(e)
 	}
 }

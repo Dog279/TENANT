@@ -52,21 +52,24 @@ type activityPageData struct {
 	Cursor     uint64        // head Seq the live stream tails from
 	Source     string        // active source filter ("" = all)
 	Level      string        // "error" = errors only; "" = everything
+	Trace      string        // one turn's lines only ("" = every line)
 	Tabs       []activityTab
 	Files      []activityFileView // the active source's files on disk
 	Empty      bool
 }
 
-// activityFilter is the (source, level) selection shared by the page, the SSE
-// tail and the REST projection.
+// activityFilter is the (source, level, trace) selection shared by the page,
+// the SSE tail and the REST projection. Trace keeps one turn's lines: the
+// `trace` field that joins a line to its runs.db record.
 type activityFilter struct {
 	Source string
 	Level  string
+	Trace  string
 }
 
 func activityFilterFrom(r *http.Request) activityFilter {
 	q := r.URL.Query()
-	f := activityFilter{Source: strings.TrimSpace(q.Get("source")), Level: strings.ToLower(strings.TrimSpace(q.Get("level")))}
+	f := activityFilter{Source: strings.TrimSpace(q.Get("source")), Level: strings.ToLower(strings.TrimSpace(q.Get("level"))), Trace: strings.TrimSpace(q.Get("trace"))}
 	if f.Source != "" && !logs.ValidSource(f.Source) {
 		f.Source = logs.NormalizeSource(f.Source)
 	}
@@ -78,6 +81,9 @@ func activityFilterFrom(r *http.Request) activityFilter {
 
 func (f activityFilter) match(e logs.Entry) bool {
 	if f.Source != "" && e.Source != f.Source {
+		return false
+	}
+	if f.Trace != "" && e.Field("trace") != f.Trace {
 		return false
 	}
 	switch f.Level {
@@ -94,7 +100,7 @@ func (f activityFilter) match(e logs.Entry) bool {
 // cursor with the same filter.
 func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 	f := activityFilterFrom(r)
-	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level}
+	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level, Trace: f.Trace}
 	if s.logs == nil {
 		s.render(w, s.tmpl.activity, d)
 		return
