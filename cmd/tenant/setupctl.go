@@ -126,7 +126,7 @@ func (s setupControl) SetKey(value string) (string, error) {
 		return "", err
 	}
 	creds.Set(lc.Provider, value)
-	if err := creds.Save(s.cfgDir); err != nil {
+	if err := saveCredentials(s.cfgDir, creds, surfaceTUI); err != nil {
 		return "", err
 	}
 	pc.Auth = authCfg{Mode: "apikey", Stored: true}

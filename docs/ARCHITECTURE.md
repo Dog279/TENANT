@@ -161,7 +161,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
 | `internal/orchestra` | `internal/model` |  |
 | `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
-| `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra` | the persisted configuration; knows no runtime |
+| `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra`, `internal/logs/catalog` | the persisted configuration; knows no runtime; files each change in the Security log |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
 | `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/httplimits`, `internal/memory/cosine`, `internal/pluginreg` | capabilities never import each other; each declares its events through pluginreg |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |

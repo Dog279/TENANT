@@ -3914,6 +3914,24 @@ Writes the `security` log.
 |---|---|---|---|
 | [4101](#security-4101) | info | Approval | `Approval {approval} requested: {action}` |
 | [4103](#security-4103) | warning | Approval | `Approval {approval} denied: {action}` |
+| [4501](#security-4501) | info | Configuration | `{file} changed: {changes} settings` |
+| [4601](#security-4601) | info | Secret | `Secret {secret} stored from {surface}` |
+| [4602](#security-4602) | info | Secret | `Secret {secret} changed from {surface}` |
+| [4603](#security-4603) | info | Secret | `Secret {secret} deleted from {surface}` |
+| [4701](#security-4701) | info | Scheduled job | `Scheduled job {job} added by the {actor} from {surface}` |
+| [4702](#security-4702) | info | Scheduled job | `Scheduled job {job} {state} by the {actor} from {surface}` |
+| [4703](#security-4703) | info | Scheduled job | `Scheduled job {id} removed by the {actor} from {surface}` |
+| [4704](#security-4704) | info | Scheduled job | `cron-exec turned {state} from {surface}` |
+| [4801](#security-4801) | info | Data lifecycle | `Privacy deletion ({reason}) by the {actor}: {removed}` |
+| [4802](#security-4802) | info | Data lifecycle | `Personal data exported to {dir}: {files} files` |
+| [4803](#security-4803) | info | Data lifecycle | `Backup written to {path}` |
+| [4804](#security-4804) | info | Data lifecycle | `Backup {path} restored over this install` |
+| [4901](#security-4901) | info | Log book | `Log {log} cleared: {details}` |
+| [4902](#security-4902) | info | Log book | `Log {log} reconfigured: {details}` |
+| [4903](#security-4903) | info | Log book | `Log {log} exported: {details}` |
+| [4904](#security-4904) | info | Log book | `Sensitive field revealed in {log}: {details}` |
+| [4905](#security-4905) | info | Log book | `Log {log} verified: {details}` |
+| [4906](#security-4906) | error | Log book | `Log {log} failed verification: {details}` |
 
 ### security 4101
 
@@ -3943,6 +3961,276 @@ Writes the `security` log.
 **Why it happens.** The operator denied it, or Tenant denied it while shutting down.
 
 **What to do.** None when intended; otherwise check the category's approval mode.
+
+### security 4501
+
+`{file} changed: {changes} settings`
+
+- **Level:** info · **Channel:** operational · **Task:** Configuration · **Log:** security
+- **Fields:** `file`, `changes`, `diff`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4501`
+
+**What it means.** A configuration file was saved with changes. diff lists each setting that changed, old → new, with every secret value replaced by its name.
+
+**Why it happens.** The operator changed a setting (the TUI, the dashboard, a tenant command), the agent changed one through a tool, or Tenant saved one it manages.
+
+**What to do.** None when expected. Otherwise read diff, and the process that wrote it, to see what changed and who ran it.
+
+### security 4601
+
+`Secret {secret} stored from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secret · **Log:** security
+- **Fields:** `secret`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4601`
+
+**What it means.** A secret (an API key, a token, a password) was stored under an ID that had none. The record names the ID, never the value.
+
+**Why it happens.** The operator entered a key: the dashboard's Keys page, /configure, /model add-cloud, a skill's configure, or tenant setup.
+
+**What to do.** None when expected. Otherwise rotate the secret at its service and remove it (the Keys page, or /skill clear).
+
+### security 4602
+
+`Secret {secret} changed from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secret · **Log:** security
+- **Fields:** `secret`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4602`
+
+**What it means.** A stored secret was replaced with a new value. The record names the ID, never the value.
+
+**Why it happens.** The operator re-entered a key, or a skill's configure or probe stored a fresh token.
+
+**What to do.** None when expected. Otherwise rotate the secret at its service.
+
+### security 4603
+
+`Secret {secret} deleted from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secret · **Log:** security
+- **Fields:** `secret`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4603`
+
+**What it means.** A stored secret was removed. The record names the ID, never the value.
+
+**Why it happens.** The operator removed a key or a model, cleared a skill field, or forgot a connected service (tenant privacy forget --connector).
+
+**What to do.** None when expected. The integration that used it stops working until a new one is stored.
+
+### security 4701
+
+`Scheduled job {job} added by the {actor} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `job`, `id`, `spec`, `kind`, `exec`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4701`
+
+**What it means.** A cron job was created. A job runs unattended: a prompt job as a turn of the agent, a shell job as a command.
+
+**Why it happens.** The operator added it (/cron add, the dashboard), or the agent did with cron_add, which asks nobody (audit item D4).
+
+**What to do.** None when expected. Otherwise remove it (/cron remove, the dashboard), and read the turn that added it (its trace).
+
+### security 4702
+
+`Scheduled job {job} {state} by the {actor} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `job`, `id`, `state`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4702`
+
+**What it means.** A cron job was enabled or disabled.
+
+**Why it happens.** The operator changed it (/cron, the dashboard), or the agent did with cron_set_enabled.
+
+**What to do.** None when expected.
+
+### security 4703
+
+`Scheduled job {id} removed by the {actor} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `id`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4703`
+
+**What it means.** A cron job was deleted. The cron log's job events name it.
+
+**Why it happens.** The operator removed it (/cron remove, the dashboard), or the agent did with cron_remove.
+
+**What to do.** None when expected.
+
+### security 4704
+
+`cron-exec turned {state} from {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Scheduled job · **Log:** security
+- **Fields:** `state`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4704`
+
+**What it means.** The global cron-exec switch changed. While it is on, shell jobs and exec prompt jobs run commands unattended.
+
+**Why it happens.** The operator flipped it: /cron exec, or the dashboard.
+
+**What to do.** None when expected. Turn it off if nobody meant to.
+
+### security 4801
+
+`Privacy deletion ({reason}) by the {actor}: {removed}`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `reason`, `removed`, `actor`, `surface`, `err`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4801`
+
+**What it means.** Personal data was deleted for good. removed counts what went, kind by kind; err is set when the deletion stopped part way, after what removed lists.
+
+**Why it happens.** The operator ran tenant privacy forget or prune, or the daily retention sweep aged a class out (actor tenant).
+
+**What to do.** None when expected. Deleted data can only come back from a backup made before it.
+
+### security 4802
+
+`Personal data exported to {dir}: {files} files`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `dir`, `files`, `bytes`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4802`
+
+**What it means.** Everything Tenant remembers was written out, in plaintext, to a directory.
+
+**Why it happens.** The operator ran tenant privacy export.
+
+**What to do.** None when expected. The export is plaintext: keep it private, and delete it when done.
+
+### security 4803
+
+`Backup written to {path}`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `path`, `bytes`, `encrypted`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4803`
+
+**What it means.** A backup of the configuration and data directories was written. An unencrypted one leaves the credentials out.
+
+**Why it happens.** The operator ran tenant backup create.
+
+**What to do.** None when expected. Keep the file private: it holds everything Tenant remembers.
+
+### security 4804
+
+`Backup {path} restored over this install`
+
+- **Level:** info · **Channel:** operational · **Task:** Data lifecycle · **Log:** security
+- **Fields:** `path`, `created`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4804`
+
+**What it means.** The configuration and data directories were replaced by a backup's. The previous ones are kept beside them.
+
+**Why it happens.** The operator ran tenant backup restore.
+
+**What to do.** None when expected. The Security log's re-anchor record, next to this one, says which head the restore replaced.
+
+### security 4901
+
+`Log {log} cleared: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4901`
+
+**What it means.** Every event of a log was deleted.
+
+**Why it happens.** The operator cleared it: tenant logs clear, or the Logs page.
+
+**What to do.** None when expected. The events can only come back from a backup.
+
+### security 4902
+
+`Log {log} reconfigured: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`, `config`
+- **Find it:** `provider:security id:4902`
+
+**What it means.** A log's retention, size limit, level or debug switch changed.
+
+**Why it happens.** The operator changed it: tenant logs config, or the log's Properties.
+
+**What to do.** None when expected.
+
+### security 4903
+
+`Log {log} exported: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4903`
+
+**What it means.** Events were exported from the log book.
+
+**Why it happens.** The operator exported them: tenant logs export, or the Logs page.
+
+**What to do.** None when expected. An export holds whatever the events held: keep it private.
+
+### security 4904
+
+`Sensitive field revealed in {log}: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4904`
+
+**What it means.** A viewer showed the value of a field the log book masks as sensitive.
+
+**Why it happens.** The operator chose to reveal it on the Logs page.
+
+**What to do.** None when expected.
+
+### security 4905
+
+`Log {log} verified: {details}`
+
+- **Level:** info · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.success`
+- **Find it:** `provider:security id:4905`
+
+**What it means.** An integrity check of the log passed.
+
+**Why it happens.** The operator ran tenant logs verify, or the log book checked itself.
+
+**What to do.** None.
+
+### security 4906
+
+`Log {log} failed verification: {details}`
+
+- **Level:** error · **Channel:** operational · **Task:** Log book · **Log:** security
+- **Fields:** `log`, `details`, `actor`, `surface`
+- **Keywords:** `audit.failure`
+- **Find it:** `provider:security id:4906`
+
+**What it means.** An integrity check of the log failed: a record was changed, removed or forged, or the log was cut short.
+
+**Why it happens.** Something edited logbook.db or its archives, or restored an older copy outside tenant backup restore; or the disk corrupted it.
+
+**What to do.** Keep the database and its archives as they are, and read details: it names the first bad record.
 
 ## skills
 
