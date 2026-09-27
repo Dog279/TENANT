@@ -635,6 +635,10 @@ func (m *Mux) adoptLiveMCP(label string, p Plugin, cleanup func()) {
 func (m *Mux) ReconnectPeersSilently(cfgDir string) {
 	store, err := peering.LoadStore(cfgDir)
 	if err != nil {
+		// An unreadable peers.json turns federation off: say so.
+		if m.mcpDeps.Log != nil {
+			m.mcpDeps.Log.Warn("peer: peers.json unreadable; no peer is reconnected", "err", err.Error())
+		}
 		return
 	}
 	for _, peer := range store.List() {

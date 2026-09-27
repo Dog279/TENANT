@@ -75,10 +75,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	discordBroker := newDiscordApprovalBroker(d.log.With("source", "approvals"))
 	discordBroker.SetEvents(d.emit) // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
 	discordBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, d.notify, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
 	})
 	if c.lc != nil {
 		discordBroker.LoadModes(c.lc.Relay.Permissions)
@@ -204,10 +201,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// drain surfaces on the dashboard.
 	imsgBroker := newOffsiteApprovalBroker(d.log.With("source", "approvals"), d.broker)
 	imsgBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, d.notify, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
 	})
 	if c.lc != nil {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
@@ -231,7 +225,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	}
 
 	resp := &imessageResponderManager{
-		base: ctx, log: d.log,
+		base:      ctx,
 		allowFrom: allowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {

@@ -107,7 +107,9 @@ func (k dashKeys) RemoveSecret(credID string) error {
 	}
 	switch spec.Kind {
 	case keyProvider:
-		forgetProviderSecret(k.cfgDir, spec.CredID) // delete the cred entry
+		if err := forgetProviderSecret(k.cfgDir, spec.CredID); err != nil { // delete the cred entry
+			return err
+		}
 		// forgetProviderSecret does NOT clear Auth.Stored, which would leave
 		// resolveSecret returning "" for a Stored:true provider with no secret —
 		// finish the job so the provider goes cleanly keyless.
@@ -140,7 +142,11 @@ func (k dashKeys) maybeReloadProvider(credID string) {
 	if err != nil || lc.Provider != credID {
 		return
 	}
-	go func() { _, _ = k.mc.ReloadKeys() }()
+	go func() {
+		if _, err := k.mc.ReloadKeys(); err != nil && k.mc.log != nil {
+			k.mc.log.Warn("model: the new key did not reload into the live provider", "provider", credID, "err", err)
+		}
+	}()
 }
 
 // watchCredentials polls credentials.json and, when it changes, hot-reloads the

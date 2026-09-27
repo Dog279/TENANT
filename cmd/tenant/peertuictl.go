@@ -168,7 +168,10 @@ func (p peerTUIControl) Invite(label, url string) (string, func(context.Context)
 			return "", nil, err
 		}
 		lc.InstanceID = id
-		_ = lc.Save(p.cfgDir)
+		// Unsaved, the next invite would mint a different identity.
+		if err := lc.Save(p.cfgDir); err != nil {
+			return "", nil, fmt.Errorf("save instance id: %w", err)
+		}
 	}
 	overlay := lc.Peer.Transport == "overlay"
 	selfName, _ := os.Hostname()

@@ -96,6 +96,35 @@ Some things are recorded elsewhere or not at all:
 - On Linux and Windows the backends do not attribute refusals yet. A denied
   access there shows as `ran in the sandbox` with a non-zero `exit`.
 
+## Errors are not dropped
+
+A background failure is logged where it happens (TEN-366). The ones that change
+what the operator believes reach the operator too:
+
+- **A choice that was not saved.** A permission change, an "approve always", a
+  tool switched on or off, a relay, iMessage, peer, Tailscale or connector
+  setting applies at once. When `settings.<agent>.json` or `config.json` cannot
+  be written, the failure is logged (`config: save failed`, `settings save
+  failed`) and the operator is told "… applies now but was not saved, so a
+  restart will undo it": in the status feed, or as the command's own error
+  where it has one.
+- **A dashboard chat turn that failed** (a full turn queue, a model that will
+  not resolve) is logged under `dashboard` and shown in the chat as
+  `⚠ turn failed: …`. A turn you stopped is not a failure.
+- **The Discord gateway** logs how each session ended and how it reconnects: a
+  drop, a failed RESUME or IDENTIFY, an invalidated session or a missed
+  heartbeat at WARN, a reconnect Discord asked for at INFO. Undecodable
+  messages and a fatal stop are logged too.
+- **Stores and files:** tool stats, the nightly eval artifact, rotated OAuth
+  tokens, the relay-inbox retention sweep and `peers.json` reads are logged; a
+  research run record that could not be written is reported on the research
+  progress. A failure that repeats on a timer (tool stats every minute, peer
+  probes every 30 s) is logged once per streak.
+
+Packages that may not import the log book (plugins, toolmux) log through
+`slog.Default()` with a `source` attribute; those lines reach stderr until the
+default logger is pointed at the hub (LOG-002).
+
 ## The dashboard
 
 The **Activity** tab reads the hub: every source is a tab (built-ins first,

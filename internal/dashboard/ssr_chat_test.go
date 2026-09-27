@@ -1,7 +1,11 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +24,62 @@ func (f *chatRunner) Turn(_ context.Context, req agent.TurnRequest) (*agent.Turn
 	return &agent.TurnResult{}, nil
 }
 func (f *chatRunner) Interject(string) {}
+
+// failRunner fails every turn the way the serve turn gate rejects one: no
+// event, only the returned error.
+type failRunner struct{}
+
+func (failRunner) Turn(ctx context.Context, _ agent.TurnRequest) (*agent.TurnResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("turn scheduler queue full (depth 32)")
+}
+func (failRunner) Interject(string) {}
+
+// A turn that fails before it emits anything is logged and shown in the chat
+// the operator sent it from, instead of vanishing.
+func TestSSR_ChatSend_TurnFailureReachesChatAndLog(t *testing.T) {
+	var logBuf bytes.Buffer
+	broker := agent.NewBroker(0)
+	ch, unsub := broker.Subscribe()
+	defer unsub()
+	s := New(Config{}, failRunner{}, &fakeTools{}, nil, broker, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	r := httptest.NewRequest("POST", "/chat/send", strings.NewReader(`{"text":"hello"}`))
+	r.Header.Set("Content-Type", "application/json")
+	s.Handler().ServeHTTP(httptest.NewRecorder(), r)
+	select {
+	case ev := <-ch:
+		if ev.Kind != agent.EventError || !strings.Contains(ev.Text, "queue full") {
+			t.Fatalf("event = %+v, want an error event carrying the turn's failure", ev)
+		}
+		if b := chatBubble(ev); !strings.Contains(b, "queue full") {
+			t.Errorf("the chat does not show it: %q", b)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a failed turn posted nothing to the chat")
+	}
+	// The log line is written before the event is published.
+	if got := logBuf.String(); !strings.Contains(got, "chat turn failed") || !strings.Contains(got, "queue full") {
+		t.Errorf("not logged: %q", got)
+	}
+}
+
+// A turn the operator stopped did not fail: nothing is posted.
+func TestChatTurnStoppedIsNotReported(t *testing.T) {
+	broker := agent.NewBroker(0)
+	ch, unsub := broker.Subscribe()
+	defer unsub()
+	co := newWSCoordinator(failRunner{}, broker, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	co.runTurn(ctx, "hello")
+	select {
+	case ev := <-ch:
+		t.Fatalf("a stopped turn was reported: %+v", ev)
+	default:
+	}
+}
 
 func TestSSR_ChatPage(t *testing.T) {
 	rec := get(t, mustServer(), "/chat")

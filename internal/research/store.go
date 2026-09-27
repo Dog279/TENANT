@@ -263,10 +263,9 @@ func (r *Run) AppendFinding(f Finding) error {
 }
 
 // AppendEvent appends one observability record to events.jsonl. Lazily opens
-// the file on first call — many runs in tests don't emit events. Errors are
-// swallowed except for the very first open (so the caller knows storage is
-// broken); subsequent write errors are dropped — debug logs must never break
-// the parent run.
+// the file on first call — many runs in tests don't emit events. An open or
+// write error is returned for the caller to report; it must not stop the
+// parent run — debug logs must never break it.
 func (r *Run) AppendEvent(e Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -288,7 +287,9 @@ func (r *Run) AppendEvent(e Event) error {
 	if err != nil {
 		return nil // unmarshalable event = log noise, ignore
 	}
-	_, _ = r.eventsFh.Write(append(b, '\n'))
+	if _, err := r.eventsFh.Write(append(b, '\n')); err != nil {
+		return fmt.Errorf("research: write events.jsonl: %w", err)
+	}
 	return nil
 }
 
@@ -348,15 +349,16 @@ func (r *Run) Close() {
 }
 
 // SetCycles updates the cycles-completed count (called by deepResearch
-// between reflection cycles). Cheap, frequent — uses the manifest lock.
-func (r *Run) SetCycles(n int) {
+// between reflection cycles). Cheap, frequent — uses the manifest lock. A
+// failed manifest write is returned for the caller to report.
+func (r *Run) SetCycles(n int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.finalized {
-		return
+		return nil
 	}
 	r.manifest.Cycles = n
-	_ = r.writeManifestLocked()
+	return r.writeManifestLocked()
 }
 
 // Manifest returns a snapshot of the current manifest (safe to inspect from

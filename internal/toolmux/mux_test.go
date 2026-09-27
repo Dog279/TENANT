@@ -1,9 +1,13 @@
 package toolmux
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -392,5 +396,20 @@ func TestToolMux_RankingStatus_Diagnostic(t *testing.T) {
 	}
 	if !strings.Contains(reason, "embedder") {
 		t.Errorf("reason should cite the missing embedder, got %q", reason)
+	}
+}
+
+// An unreadable peers.json turns federation off; that is logged, not silent.
+func TestReconnectPeersSilently_LogsUnreadablePeers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "peers.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	mux := New()
+	mux.SetMCPDeps(MCPDeps{Ctx: context.Background(), Log: slog.New(slog.NewTextHandler(&buf, nil))})
+	mux.ReconnectPeersSilently(dir)
+	if got := buf.String(); !strings.Contains(got, "peers.json unreadable") || !strings.Contains(got, "level=WARN") {
+		t.Errorf("want a warning about peers.json, got %q", got)
 	}
 }

@@ -414,6 +414,8 @@ func (m *cronManager) runAsync(id string) error {
 	if !m.engine.Has(id) {
 		return fmt.Errorf("no job with id %q", id)
 	}
+	// Nothing is lost: the run reports through the notify sink, and RunNow's
+	// only error, an unknown id, was checked above.
 	go func() { _, _ = m.engine.RunNow(m.base, id) }()
 	return nil
 }

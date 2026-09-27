@@ -253,7 +253,13 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 			}
 		},
 	}
-	go func() { _ = gw.Run(ctx) }()
+	go func() {
+		// Run returns nil once ctx ends; an error is a fatal close, which
+		// OnFatal already told the operator. It is logged here too.
+		if err := gw.Run(ctx); err != nil && m.log != nil {
+			m.log.Error("discord relay: gateway stopped", "err", err)
+		}
+	}()
 	if m.notify != nil {
 		m.notify("discord relay: connecting (operator " + operatorID + ")")
 	}
@@ -286,7 +292,9 @@ func (m *discordRelayManager) Enable() error {
 	m.running = true
 	m.cancel = cancel
 	if m.persist != nil {
-		_ = m.persist(true, m.operatorID, m.allowExec)
+		if err := m.persist(true, m.operatorID, m.allowExec); err != nil {
+			return errNotSaved("relay: turning the relay on", err)
+		}
 	}
 	return nil
 }

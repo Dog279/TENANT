@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -176,4 +181,20 @@ func TestPeerHealthRegistry_Concurrent(t *testing.T) {
 		_ = r.tuiHealth()
 	}
 	<-done
+}
+
+// An unreadable peers.json stops every health probe: that is logged once, not
+// every 30-second round.
+func TestPeerHealthMonitor_LogsUnreadablePeersOnce(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "peers.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	m := &peerHealthMonitor{cfgDir: dir, reg: newPeerHealthRegistry(), log: slog.New(slog.NewTextHandler(&buf, nil))}
+	m.probeAll(context.Background())
+	m.probeAll(context.Background())
+	if n := strings.Count(buf.String(), "peers.json unreadable"); n != 1 {
+		t.Errorf("logged %d times over two rounds, want once: %q", n, buf.String())
+	}
 }

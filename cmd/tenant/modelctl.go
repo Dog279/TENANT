@@ -349,9 +349,13 @@ func (mc *modelControl) SetLoopCeiling(n int) (string, error) {
 		return "", fmt.Errorf("no active router")
 	}
 	updated := r.SetPlanLoopCeiling(n)
-	if lc, err := loadLaunchConfig(mc.cfgDir); err == nil {
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err == nil {
 		lc.PlanLoopCeiling = n
-		_ = lc.Save(mc.cfgDir) // best-effort persistence
+		err = lc.Save(mc.cfgDir)
+	}
+	if err != nil {
+		return "", errNotSaved(fmt.Sprintf("loop ceiling %d", n), err)
 	}
 	return fmt.Sprintf("loop ceiling → %d (updated %d role(s); applies next turn, incl. newly spawned sub-agents)", n, updated), nil
 }
@@ -708,7 +712,9 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 		return "", fmt.Errorf("%q is the active model — `/model use <other>` first, then remove it", name)
 	}
 	delete(lc.Providers, name)
-	forgetProviderSecret(mc.cfgDir, name)
+	if err := forgetProviderSecret(mc.cfgDir, name); err != nil {
+		return "", err
+	}
 	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
@@ -716,15 +722,21 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 }
 
 // forgetProviderSecret drops any stored API key keyed by the provider name.
-func forgetProviderSecret(cfgDir, name string) {
+// An error means the key is still on disk, which the operator removing it
+// must hear about.
+func forgetProviderSecret(cfgDir, name string) error {
 	creds, err := loadCredentials(cfgDir)
 	if err != nil {
-		return
+		return fmt.Errorf("forget the %s key: %w", name, err)
 	}
-	if _, ok := creds.Secrets[name]; ok {
-		delete(creds.Secrets, name)
-		_ = creds.Save(cfgDir)
+	if _, ok := creds.Secrets[name]; !ok {
+		return nil
 	}
+	delete(creds.Secrets, name)
+	if err := creds.Save(cfgDir); err != nil {
+		return fmt.Errorf("forget the %s key: %w", name, err)
+	}
+	return nil
 }
 
 // cmdModel is the `tenant model` CLI: manage model backends in config.json.
@@ -928,7 +940,9 @@ func cmdModel(_ context.Context, args []string) error {
 			return fmt.Errorf("%q is the active model — `tenant model use <other>` first, then remove it", name)
 		}
 		delete(lc.Providers, name)
-		forgetProviderSecret(c.cfgDir, name)
+		if err := forgetProviderSecret(c.cfgDir, name); err != nil {
+			return err
+		}
 		if err := lc.Save(c.cfgDir); err != nil {
 			return err
 		}

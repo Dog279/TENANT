@@ -1,10 +1,15 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeConn scripts server→client frames and records client→client writes, so
@@ -207,5 +212,70 @@ func TestWithGatewayQuery(t *testing.T) {
 	}
 	if got := withGatewayQuery("wss://x/?foo=1"); got != "wss://x/?foo=1&v=10&encoding=json" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// logSink is a goroutine-safe log capture: Run logs from its own goroutine.
+type logSink struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logSink) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// A dropped connection is logged with its cause before Run reconnects, so the
+// relay never goes quiet without a trace.
+func TestGateway_RunLogsSessionDrop(t *testing.T) {
+	var sink logSink
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := &Gateway{
+		Token:  "tok",
+		GetURL: func(context.Context) (string, error) { return "wss://gateway.test", nil },
+		Log:    slog.New(slog.NewTextHandler(&sink, nil)),
+		dial: func(context.Context, string) (gwConn, error) {
+			return newFakeConn(
+				srv(opHello, `{"heartbeat_interval":60000}`, nil, ""),
+				srv(opDispatch, `{"session_id":"s1","resume_gateway_url":"wss://resume.test"}`, intp(1), "READY"),
+				readResult{err: errors.New("connection reset by peer")},
+			), nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- g.Run(ctx) }()
+	for deadline := time.Now().Add(3 * time.Second); !strings.Contains(sink.String(), "connection reset by peer"); {
+		if time.Now().After(deadline) {
+			t.Fatalf("the drop was not logged: %q", sink.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sink.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "session ended; resuming") {
+		t.Errorf("want a warning that says the session resumes, got %q", got)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+// An operator message Discord sent but we could not decode is logged, not lost
+// without a word.
+func TestGateway_UndecodableMessageLogged(t *testing.T) {
+	var sink logSink
+	g := &Gateway{Log: slog.New(slog.NewTextHandler(&sink, nil)), seen: newSeenSet(8),
+		OnMessage: func(Inbound) { t.Error("an undecodable message was delivered") }}
+	g.dispatchMessage(json.RawMessage(`{"id": 12}`))
+	if !strings.Contains(sink.String(), "undecodable MESSAGE_CREATE") {
+		t.Errorf("not logged: %q", sink.String())
 	}
 }

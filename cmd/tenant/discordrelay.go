@@ -329,6 +329,9 @@ func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnRe
 		return // stopped/cancelled
 	}
 	if err != nil {
+		if r.log != nil {
+			r.log.Warn("discord relay: turn failed", "channel", channelID, "err", err)
+		}
 		r.reply(channelID, "the turn failed: "+err.Error())
 		return
 	}

@@ -292,7 +292,11 @@ func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, re
 			h.cache.ClientID = reg.ClientID
 			h.cache.ClientSecret = reg.ClientSecret
 		}
-		_ = saveTokenCache(h.cachePath, h.cache) // creds+endpoints; token persisted below
+		// creds+endpoints; the token is persisted below. A failure here only
+		// costs a fresh client registration if this sign-in is abandoned.
+		if err := saveTokenCache(h.cachePath, h.cache); err != nil {
+			h.logger.Warn("mcp: failed to persist client registration", "server", h.serverURL, "err", err.Error())
+		}
 	}
 
 	// Delegate the browser auth-code/PKCE/exchange to the SDK handler using OUR
