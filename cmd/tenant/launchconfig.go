@@ -133,6 +133,8 @@ type launchConfig struct {
 	Logs logsConfig `json:"logs,omitempty"`
 	// Runs configures durable operational turn records.
 	Runs runTraceConfig `json:"runs,omitempty"`
+	// Privacy holds per-class retention (TEN-309); see `tenant privacy`.
+	Privacy privacyConfig `json:"privacy,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`
@@ -157,6 +159,15 @@ type logsConfig struct {
 	// MaxFieldBytes caps one value (a tool result, an argument blob) per line
 	// (0 ⇒ 4096; -1 ⇒ unlimited).
 	MaxFieldBytes int `json:"max_field_bytes,omitempty"`
+}
+
+// privacyConfig is per-class retention (TEN-309).
+type privacyConfig struct {
+	// RetentionDays keeps each data class (episodes, facts, archive, usage,
+	// research, screenshots, relay_inbox, eval_artifacts) this many days.
+	// Absent or 0 keeps it forever, except relay_inbox, whose default is 30
+	// days and which -1 keeps forever.
+	RetentionDays map[string]int `json:"retention_days,omitempty"`
 }
 
 type runTraceConfig struct {

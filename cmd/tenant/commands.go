@@ -1814,6 +1814,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	defer hub.Close()
 	hub.Start(ctx)
 	log := slog.New(hub.Handler(nil))
+	startRetention(ctx, c, log.With("source", "privacy"))
 
 	// First-run installer + connectivity check; results seed the feed (and
 	// the system log).
@@ -2593,6 +2594,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		base: ctx, runner: relayRunnerAg, svc: relaySvc, approver: relayApprover,
 		sender: relaySender, broker: discordBroker, token: discordToken,
 		dataDir: c.dataDir, log: log.With("source", "discord"), notify: pushSys,
+		inboxKeep:       func() time.Duration { return relayInboxKeep(c.cfgDir) },
 		approvalTimeout: relayApprovalTimeout(c.lc), cardStyle: relayCardStyle(c.lc),
 		persistTimeout: func(d time.Duration) error {
 			if c.lc == nil {

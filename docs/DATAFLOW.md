@@ -131,7 +131,7 @@ user account. SQLite also creates adjacent `-wal` and `-shm` files while open.
 | Store / path | Contents | State | Code evidence |
 | --- | --- | --- | --- |
 | `<data>/episodes.db` | Conversation episodes, summaries, feedback, tags, and embeddings | **Default-on** for normal agent operation | `cmd/tenant/wiring.go:897-920`; `cmd/tenant/commands.go:159` |
-| `<data>/facts.db` | Semantic facts, provenance/signals, and embeddings | **Default-on** for normal agent operation | `cmd/tenant/wiring.go:905-919`; `internal/memory/semantic/semantic.go:146-156` |
+| `<data>/facts.db` | Semantic facts, provenance/signals, removed-source records (`fact_source_tombstones`), and embeddings | **Default-on** for normal agent operation | `cmd/tenant/wiring.go:905-919`; `internal/memory/semantic/semantic.go:146-156` |
 | `<data>/archive/YYYY-MM/<session>.jsonl` | Append-only raw session events, including messages, tool calls, tool results, and errors | **Default-on** where the agent archive writer is wired | `internal/memory/archive/archive.go:97-123`; `internal/memory/archive/archive.go:150-164`; `cmd/tenant/wiring.go:919` |
 | `<data>/skills.db` | Learned skill text/metadata and embeddings | **Default-on in TUI/serve/research** | `cmd/tenant/commands.go:1719`; `cmd/tenant/serve.go:181`; `internal/memory/skills/skills.go:99-109` |
 | `<data>/usage.db` | Model token/cost usage accounting | **Default-on in TUI/serve; absent in simpler commands** | `cmd/tenant/commands.go:1659`; `cmd/tenant/serve.go:136`; `internal/memory/usage/usage.go:39-49` |
@@ -150,6 +150,7 @@ user account. SQLite also creates adjacent `-wal` and `-shm` files while open.
 | `<data>/eval-artifacts/` (`eval-*.json`, trend files) | Evaluation prompts/results, tool traces, scores, and trends | **Explicit eval or configured cadence; default-off cadence** | `cmd/tenant/eval_job.go:59-69`; `cmd/tenant/eval_job.go:128-139`; `cmd/tenant/eval_trend.go:44-64` |
 | `<data>/.tenant.lock` | Empty lock file; every Tenant process holds it shared, `backup restore` exclusively | **Default-on** | `internal/datalock/datalock.go`; `cmd/tenant/datalock.go` |
 | Backup file (operator-chosen path) and `<data>/.backup-staging-*` | Every file in the config and data dirs; credential and key files only when age-encrypted; staging holds the snapshots while a backup is written and is removed after | **Explicit `tenant backup`; default-off** | `internal/backup/create.go`; `cmd/tenant/backupctl.go` |
+| `tenant privacy export --out DIR` (operator-chosen path) | Every store table as JSON Lines (no embeddings), profiles, souls, research runs, the raw archive unless `--no-archive`, and connector names | **Explicit; default-off** | `internal/privacy/export.go`; `cmd/tenant/privacyctl.go` |
 | `<dir>.restore-<time>` and `<dir>.pre-restore-<time>` beside the config and data dirs | A backup being restored (removed on failure), and the directories a restore replaced (kept for the operator to delete) | **Explicit `tenant backup restore`** | `internal/backup/restore.go` |
 
 OS file tools and wiki/research output flags can read or write additional
