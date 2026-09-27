@@ -93,6 +93,10 @@ var catalogued = map[string]int{
 	"internal/memory/skills": 0,
 	"internal/skillpkg":      0,
 	"internal/agent":         0, "internal/orchestra": 0, "internal/research": 0,
+	// system (TEN-383); cmd/tenant is shared with the providers still to come
+	"internal/lifecycle": 0, "internal/tui": 0, "internal/config": 0, "internal/secrets": 0,
+	"internal/fsperm": 0, "internal/datalock": 0, "internal/version": 0, "internal/cmdreg": 0,
+	"internal/control": 0, "internal/httplimits": 0, "internal/runtrace": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

@@ -423,7 +423,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		tick = reflectCadence
 	}
 	if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
-		d.log.Warn("self-improve scheduler did not start", "err", err)
+		sysUnavailable.Log(ctx, "component", "self-improve scheduler", "effect", "no background self-improvement", "err", err)
 		return nil, evalSched
 	}
 	return sched, evalSched

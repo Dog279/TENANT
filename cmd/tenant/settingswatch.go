@@ -11,9 +11,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,9 +36,10 @@ func settingsModTime(path string) int64 {
 // rules, an "approve always", a tool switched on or off — so a failure is
 // logged and told to the operator: the change is live, but a restart would
 // undo it without a word.
-func saveSettingsOrTell(stg *settings, cfgDir, agentID string, log *slog.Logger, tell func(string)) {
+func saveSettingsOrTell(stg *settings, cfgDir, agentID string, tell func(string)) {
 	if err := stg.Save(cfgDir, agentID); err != nil {
-		log.Warn("settings save failed", "err", err)
+		path := settingsPath(cfgDir, agentID)
+		sysNotSaved.Log(context.Background(), "what", filepath.Base(path), "path", path, "err", err)
 		tell(errNotSaved("settings: the change", err).Error())
 	}
 }
@@ -61,7 +62,7 @@ func watchSettings(ctx context.Context, cfgDir, agentID string, broker *approval
 			}
 			last = cur
 			if changed := applySettingsFile(cfgDir, agentID, broker, rules, mu, stg); changed != "" && notify != nil {
-				notify("permissions: " + strings.TrimSuffix(path[strings.LastIndex(path, string(os.PathSeparator))+1:], "") + " edited — " + changed)
+				notify("permissions: " + filepath.Base(path) + " edited — " + changed)
 			}
 		}
 	}
@@ -69,10 +70,13 @@ func watchSettings(ctx context.Context, cfgDir, agentID string, broker *approval
 
 // applySettingsFile re-reads the file and applies the tool rules + category
 // modes that differ from the live state. Returns a summary of what changed
-// ("" when nothing did, or the file could not be read).
+// ("" when nothing did), or why the file was not applied. Both are filed in
+// the system log.
 func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *toolRules, mu *sync.Mutex, stg *settings) string {
+	path := settingsPath(cfgDir, agentID)
 	fresh, err := loadSettings(cfgDir, agentID)
 	if err != nil {
+		sysConfigNotLoaded.Log(context.Background(), "path", path, "fallback", "the live settings stay as they were", "err", err)
 		return "not applied: " + err.Error()
 	}
 	var parts []string
@@ -119,5 +123,9 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 		}
 		parts = append(parts, s)
 	}
-	return strings.Join(parts, ", ")
+	changed := strings.Join(parts, ", ")
+	if changed != "" {
+		sysSettingsApplied.Log(context.Background(), "path", path, "changed", changed)
+	}
+	return changed
 }

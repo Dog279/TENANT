@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"tenant/internal/config"
-	"tenant/internal/logs"
 	"tenant/internal/orchestra"
 )
 
@@ -73,13 +73,12 @@ func launchConfigPath(cfgDir string) string { return config.Path(cfgDir) }
 
 func loadLaunchConfig(cfgDir string) (*launchConfig, error) { return config.Load(cfgDir) }
 
-// configLog files every failed config.json save, whoever made it.
-var configLog = logs.For("system")
-
+// persistLaunchConfig is config.Persist, with every failed save filed,
+// whoever made it.
 func persistLaunchConfig(cfgDir string, mem *launchConfig, fn func(*launchConfig)) error {
 	err := config.Persist(cfgDir, mem, fn)
 	if err != nil {
-		configLog.Warn("config: save failed", "path", config.Path(cfgDir), "err", err)
+		sysNotSaved.Log(context.Background(), "what", "config.json", "path", config.Path(cfgDir), "err", err)
 	}
 	return err
 }

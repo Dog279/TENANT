@@ -76,7 +76,7 @@ func TestApproveAlways_SaveFailureTellsOperator(t *testing.T) {
 	rules.Load(map[string]string{"write_note": "ask"})
 	rules.SetPersist(func(r map[string]string) {
 		stg.ToolRules = r
-		saveSettingsOrTell(stg, cfgDir, "main", testLog(), func(s string) { told = append(told, s) })
+		saveSettingsOrTell(stg, cfgDir, "main", func(s string) { told = append(told, s) })
 	})
 	broker := newApprovalBroker(nil)
 	broker.SetRules(rules)

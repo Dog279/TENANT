@@ -85,7 +85,7 @@ func TestDashboardManager_TailscaleServeHostReachesDashboard(t *testing.T) {
 		"serve --bg " + portOf(addr): "",
 		"serve reset":                "",
 	}}
-	ts := newTailscaleManager(context.Background(), mgr, nil)
+	ts := newTailscaleManager(context.Background(), mgr)
 	ts.bin, ts.run = "tailscale", f.run
 
 	const tailnet = "host.tailnet-name.ts.net"
