@@ -89,12 +89,7 @@ func attach(t *testing.T, h *Hub) *store.Store {
 		t.Fatal(err)
 	}
 	h.AttachStore(st)
-	r, err := store.Open(path, store.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = r.Close() })
-	return r
+	return readerAt(t, h.Root())
 }
 
 func all(t *testing.T, st *store.Store) []event.Event {
@@ -301,12 +296,8 @@ func TestQueueFullDrops(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	p.enqueue(ctx, &event.Event{Log: "security", Level: event.Info})
-	if p.dropped["x"] != 2 || p.dropped["security"] != 0 {
-		t.Errorf("dropped = %v, want x: 2 and no security", p.dropped)
-	}
-	h.pipe.Store(nil)
-	if h.Dropped() != nil {
-		t.Error("Dropped with no store attached is not nil")
+	if p.recent[lossKey{log: "x"}] != 2 || len(p.recent) != 1 {
+		t.Errorf("dropped = %v, want x: 2 and no security", p.recent)
 	}
 }
 

@@ -15,29 +15,25 @@ import (
 // so the command's Security records reach logbook.db and the chain as
 // serve's do, and returns once the record is committed.
 func AuditEmitter(h *Hub, open func() (*store.Store, error)) event.Emitter {
-	return &auditEmitter{h: h, open: open}
+	return &auditEmitter{h: h, attach: sync.OnceValue(func() error {
+		st, err := open()
+		if err == nil {
+			h.AttachStore(st)
+		}
+		return err
+	})}
 }
 
 type auditEmitter struct {
-	h    *Hub
-	open func() (*store.Store, error)
-	once sync.Once
-	err  error
+	h      *Hub
+	attach func() error // opens and attaches the store once; a failed open is kept
 }
 
 func (a *auditEmitter) Emit(ctx context.Context, e *event.Event) { event.Fallback(ctx, e) }
 
 func (a *auditEmitter) Audit(ctx context.Context, e *event.Event) error {
-	a.once.Do(func() {
-		st, err := a.open()
-		if err != nil {
-			a.err = err
-			return
-		}
-		a.h.AttachStore(st)
-	})
-	if a.err != nil {
-		return a.err
+	if err := a.attach(); err != nil {
+		return err
 	}
-	return hubEmitter{a.h}.Audit(ctx, e)
+	return a.h.Audit(ctx, e)
 }

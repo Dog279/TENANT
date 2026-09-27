@@ -88,7 +88,7 @@ func MirrorOnlyProcesses(root string) ([]MirrorOnly, error) {
 	var out []MirrorOnly
 	for _, e := range ents {
 		id, ok := strings.CutSuffix(e.Name(), mirrorOnlyExt)
-		if !ok || !bootID(id) || !e.Type().IsRegular() {
+		if !ok || !ValidID(id) || !e.Type().IsRegular() {
 			continue
 		}
 		var m MirrorOnly
@@ -107,7 +107,7 @@ func MirrorOnlyProcesses(root string) ([]MirrorOnly, error) {
 // there is no process; a lock it can take it releases at once, and leaves
 // the file for CheckBoots.
 func BootAlive(root, id string) bool {
-	if !bootID(id) {
+	if !ValidID(id) {
 		return false
 	}
 	path := filepath.Join(root, "boots", id+".lock")

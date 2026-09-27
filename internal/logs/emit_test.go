@@ -83,8 +83,7 @@ func TestEventsFileIntoTheInstalledHub(t *testing.T) {
 
 	// The emitter fills in the process.
 	var got event.Event
-	em := hubEmitter{h}
-	em.Emit(ctx, &got)
+	h.Emit(ctx, &got)
 	host, _ := os.Hostname()
 	if got.Proc.PID != os.Getpid() || got.Proc.BootID != runtrace.BootID() || got.Proc.Host != host || got.Proc.Version == "" {
 		t.Errorf("Proc = %+v", got.Proc)

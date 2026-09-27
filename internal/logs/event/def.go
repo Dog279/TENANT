@@ -1,11 +1,12 @@
 package event
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -87,12 +88,7 @@ func NewProvider(name, log string) *Provider {
 func Providers() []*Provider {
 	regMu.Lock()
 	defer regMu.Unlock()
-	out := make([]*Provider, 0, len(providers))
-	for _, p := range providers {
-		out = append(out, p)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	return slices.SortedFunc(maps.Values(providers), func(a, b *Provider) int { return strings.Compare(a.Name, b.Name) })
 }
 
 // Lookup finds definition id of provider.
@@ -110,12 +106,7 @@ func Lookup(provider string, id uint32) (*Def, bool) {
 func (p *Provider) Defs() []*Def {
 	regMu.Lock()
 	defer regMu.Unlock()
-	out := make([]*Def, 0, len(p.defs))
-	for _, d := range p.defs {
-		out = append(out, d)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].spec.ID < out[j].spec.ID })
-	return out
+	return slices.SortedFunc(maps.Values(p.defs), func(a, b *Def) int { return cmp.Compare(a.spec.ID, b.spec.ID) })
 }
 
 // Event registers event id of p. tmpl is its message, naming fields as

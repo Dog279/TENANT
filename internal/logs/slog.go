@@ -48,7 +48,11 @@ func fallbackHandler() slog.Handler {
 // once at startup, right after Open.
 func Install(h *Hub) {
 	defaultHub.Store(h)
-	installEmitter(h)
+	if h == nil {
+		event.Install(nil) // not a nil *Hub, which would pass for an emitter
+		return
+	}
+	event.Install(h)
 }
 
 // Default returns the installed hub, or nil before Install.

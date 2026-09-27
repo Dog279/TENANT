@@ -65,7 +65,6 @@ func (h *Hub) drainSpool(ctx context.Context, st *store.Store) error {
 	if err != nil {
 		return err
 	}
-	names := tenantNames()
 	var errs []error
 	for _, e := range ents {
 		path := filepath.Join(dir, e.Name())
@@ -80,7 +79,7 @@ func (h *Hub) drainSpool(ctx context.Context, st *store.Store) error {
 		default:
 			continue
 		}
-		if err := h.fileSpool(ctx, st, path, names); err != nil {
+		if err := h.fileSpool(ctx, st, path); err != nil {
 			errs = append(errs, err)
 			continue
 		}
@@ -91,7 +90,7 @@ func (h *Hub) drainSpool(ctx context.Context, st *store.Store) error {
 
 // fileSpool files one claimed spool file. What it can't file is dropped,
 // counted and reported.
-func (h *Hub) fileSpool(ctx context.Context, st *store.Store, path string, names map[string]bool) error {
+func (h *Hub) fileSpool(ctx context.Context, st *store.Store, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -110,7 +109,7 @@ func (h *Hub) fileSpool(ctx context.Context, st *store.Store, path string, names
 			if strings.TrimSpace(ln) == "" {
 				continue
 			}
-			e, err := h.spoolEvent(ln, fi.ModTime(), names)
+			e, err := h.spoolEvent(ln, fi.ModTime())
 			if err != nil {
 				if bad++; why == "" {
 					why = err.Error()
@@ -131,7 +130,7 @@ func (h *Hub) fileSpool(ctx context.Context, st *store.Store, path string, names
 // spoolEvent reads one spool line: an event in its wire form, filed as
 // External keeps it, as POST /api/events does. It can't name a log or a
 // provider only Tenant writes; with no time it takes its file's.
-func (h *Hub) spoolEvent(line string, at time.Time, names map[string]bool) (event.Event, error) {
+func (h *Hub) spoolEvent(line string, at time.Time) (event.Event, error) {
 	var e event.Event
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
 		return e, err
@@ -142,7 +141,7 @@ func (h *Hub) spoolEvent(line string, at time.Time, names map[string]bool) (even
 	switch {
 	case !ValidSource(e.Log) || !event.ValidName(e.Provider):
 		return e, fmt.Errorf("log %q or provider %q is not a valid name", e.Log, e.Provider)
-	case reserved(names, e.Log) || reserved(names, e.Provider):
+	case Reserved(e.Log) || Reserved(e.Provider):
 		return e, fmt.Errorf("log %q or provider %q is Tenant's own", e.Log, e.Provider)
 	}
 	if e.Time.IsZero() {

@@ -558,10 +558,7 @@ func (a *API) ingest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, Accepted{Accepted: len(evs)})
 }
 
-var (
-	idRe  = regexp.MustCompile(`^[0-9a-f]{32}$`)
-	keyRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
-)
+var keyRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 // attrKeys are the names the text mirror gives an event's own attributes
 // (logs.EntryFromEvent); a data field under one would pass for the attribute.
@@ -580,7 +577,7 @@ func decodeExternal(raw []byte) (event.Event, int, string) {
 		return e, http.StatusBadRequest, "msg required"
 	}
 	for _, name := range []string{e.Log, e.Provider} {
-		if name != "" && Reserved(name) {
+		if name != "" && logs.Reserved(name) {
 			return e, http.StatusForbidden, fmt.Sprintf("%q is one of Tenant's own logs or providers; write under a name of your own (it is filed as ext.<name>)", name)
 		}
 	}
@@ -590,7 +587,7 @@ func decodeExternal(raw []byte) (event.Event, int, string) {
 	}
 	e.Log = log
 	for _, id := range []string{e.Corr.TraceID, e.Corr.ActivityID} {
-		if id != "" && !idRe.MatchString(id) {
+		if id != "" && !logs.ValidID(id) {
 			return e, http.StatusBadRequest, "trace and activity: 32 lowercase hex characters (TENANT_TRACE_ID, TENANT_ACTIVITY_ID)"
 		}
 	}
@@ -615,28 +612,12 @@ func decodeExternal(raw []byte) (event.Event, int, string) {
 	return e, 0, ""
 }
 
-// Reserved reports whether name is Tenant's own, so no outside writer may use
-// it: the Security log, anything under tenant., a v1 built-in source, and
-// every registered provider and its log.
-func Reserved(name string) bool {
-	n := logs.NormalizeSource(name)
-	if n == store.SecurityLog || n == "tenant" || strings.HasPrefix(n, "tenant.") || logs.Builtin(n) {
-		return true
-	}
-	for _, p := range event.Providers() {
-		if p.Name == n || p.Log == n {
-			return true
-		}
-	}
-	return false
-}
-
 // ExternalLog is the log an outside writer's name is filed under: the name
 // normalized as a log name, under ext. ("deploy" is ext.deploy).
 func ExternalLog(name string) (string, bool) {
 	n := logs.NormalizeSource(name)
-	if n != "" && !strings.HasPrefix(n, "ext.") {
-		n = logs.NormalizeSource("ext." + n)
+	if n != "" {
+		n = logs.ExtLog(n)
 	}
 	return n, n != ""
 }

@@ -17,11 +17,11 @@ func (h *Hub) Summary(ctx context.Context, now time.Time) (store.Summary, error)
 	if st == nil {
 		return store.Summary{}, errors.New("logs: the log book has no store")
 	}
-	b := store.DefaultBudget()
+	var b store.Budget
 	if g := h.hk.gate.Load(); g != nil {
 		b = g.budget
-	} else if h.opts.Budget != nil {
-		b = h.opts.Budget()
+	} else {
+		b = h.Budget()
 	}
 	sum, err := st.Summary(ctx, b, now)
 	pending := h.unreportedDrops()

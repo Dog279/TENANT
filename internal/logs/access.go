@@ -34,14 +34,6 @@ func (h *Hub) Reload(ctx context.Context) {
 	}
 }
 
-// Emit files e as the event emitter does: into the pipeline once a store is
-// attached, else as a v1 line.
-func (h *Hub) Emit(ctx context.Context, e *event.Event) { hubEmitter{h}.Emit(ctx, e) }
-
-// Audit files e as the event emitter's Audit does: it returns once the
-// record is committed, with the commit's error.
-func (h *Hub) Audit(ctx context.Context, e *event.Event) error { return hubEmitter{h}.Audit(ctx, e) }
-
 // External keeps only what a writer outside the binary may set
 // (docs/design/logging-v2.md §10.4): the log, message, level, time and data,
 // and the trace and activity it runs under, which it has from its
@@ -50,12 +42,19 @@ func (h *Hub) Audit(ctx context.Context, e *event.Event) error { return hubEmitt
 // session, approval or tool call it belongs to, an actor, a surface, a
 // channel, a process) is dropped: nothing can vouch for it.
 func External(e *event.Event) {
-	log := e.Log
-	if !strings.HasPrefix(log, "ext.") {
-		log = NormalizeSource("ext." + log) // External, in the viewer's tree (§3, §6.4)
-	}
+	log := ExtLog(e.Log)
 	*e = event.Event{Log: log, Provider: log, Time: e.Time, Level: e.Level, Msg: e.Msg, Data: e.Data,
 		Keywords: []string{KeywordExternal}, Corr: event.Correlation{TraceID: e.Corr.TraceID, ActivityID: e.Corr.ActivityID}}
+}
+
+// ExtLog is the log an outside writer's log name is filed under: ext.<name>
+// (External, in the viewer's tree: §3, §6.4), unless it is under ext.
+// already.
+func ExtLog(name string) string {
+	if strings.HasPrefix(name, "ext.") {
+		return name
+	}
+	return NormalizeSource("ext." + name)
 }
 
 // LogExternal is Log for a line from outside the binary (the v1 logging API,
