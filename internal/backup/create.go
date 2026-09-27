@@ -353,6 +353,10 @@ func builtinSkip(root, rel string, name string) (string, bool) {
 		return "temporary file", true
 	case strings.Contains(name, ".corrupted-"):
 		return "damaged database kept by doctor --fix", true
+	case strings.Contains(name, ".corrupt-"):
+		return "damaged log book moved aside at open", true
+	case name == "logbook.lock": // held by every process with the log book open
+		return "", true
 	case root == RootData && path.Dir(rel) == "wiki" && wikiIndex.MatchString(name):
 		return "wiki search index; rebuilt on next use", true
 	}

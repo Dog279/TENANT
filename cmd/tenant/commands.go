@@ -1814,8 +1814,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	defer life.Shutdown()
 	run := beginRun(ctx, "tui") // the system log's start-up and stop (TEN-383)
 	defer run.failed(&err)
-	// Crash capture and the boot record (TEN-365): its clean stop is the
-	// first Release step registered, so it runs last.
+	// The log book's final flush, then the boot record and crash capture
+	// (TEN-373): the first Release steps registered, so they run last.
 	onPanic := startBootRecord(hub, life, "tui")
 	defer onPanic()
 
@@ -1825,6 +1825,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	pushTo := func(source, s string) { feedLine(hub, sysCh, source, s) }
 	pushSys := func(s string) { pushTo("system", s) }
 	signInNotice = pushSys // a sign-in URL must not draw over the TUI
+	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	if herr != nil {
 		sysUnavailable.Log(ctx, "component", "the log folder", "effect", "logging to memory only", "err", herr)
 		pushSys("logs: " + herr.Error() + " — logging to memory only")

@@ -31,6 +31,7 @@ const (
 // Report is what a retention pass did.
 type Report struct {
 	Deleted  map[string]int64 // events removed, by log
+	Full     map[string]int64 // of those, removed because their log was past its MaxBytes
 	Archived []string         // archive files written
 	Kept     []string         // logs past their MaxBytes that keep every record
 	Over     bool             // the book is over its budget with nothing left it may delete
@@ -58,7 +59,7 @@ type Report struct {
 // measured again, so the files end within the budget. Only the housekeeper
 // runs it.
 func (s *Store) Retain(ctx context.Context, b Budget, now time.Time) (Report, error) {
-	rep := Report{Deleted: map[string]int64{}}
+	rep := Report{Deleted: map[string]int64{}, Full: map[string]int64{}}
 	path, err := s.file(ctx)
 	if err != nil {
 		return rep, err
@@ -179,7 +180,9 @@ func (r *retention) fit(ctx context.Context) (int64, error) {
 			r.rep.Kept = append(r.rep.Kept, l.name)
 			continue
 		}
+		was := r.rep.Deleted[l.name]
 		n, err := r.sweep(ctx, l.archive(), l.bytes-payload(l.MaxBytes), "log_id = ?", l.id)
+		r.rep.Full[l.name] += r.rep.Deleted[l.name] - was
 		if err != nil {
 			return 0, err
 		}

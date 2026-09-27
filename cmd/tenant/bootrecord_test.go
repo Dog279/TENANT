@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,11 +16,14 @@ import (
 
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/store"
 	"tenant/internal/model"
 )
 
 // TestMain doubles as the Tenant processes the boot-record tests start
-// (TEN-365): the test binary re-runs itself in a helper mode.
+// (TEN-365, TEN-373): the test binary re-runs itself in a helper mode.
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("TENANT_BOOT_HELPER"); mode != "" {
 		bootHelper(mode, os.Getenv("TENANT_BOOT_ROOT"))
@@ -31,6 +35,9 @@ func TestMain(m *testing.M) {
 func bootHelper(mode, root string) {
 	hub, err := logs.Open(root, logs.Options{})
 	if err != nil {
+		panic(err)
+	}
+	if _, err := hub.OpenStore(nil); err != nil {
 		panic(err)
 	}
 	life := lifecycle.New(nil)
@@ -58,10 +65,15 @@ func bootHelperCmd(mode, root string) *exec.Cmd {
 	return cmd
 }
 
+// openBootTestHub opens the log book at root with its store, as the next
+// start of serve or the TUI would.
 func openBootTestHub(t *testing.T, root string) *logs.Hub {
 	t.Helper()
 	hub, err := logs.Open(root, logs.Options{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.OpenStore(nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = hub.Close() })
@@ -79,14 +91,16 @@ func criticalEntries(hub *logs.Hub) []logs.Entry {
 	return out
 }
 
-// awaitDeadBootReport runs the start-up check until it files the dead helper:
-// Windows may free a dead process's lock a moment after it exits.
+// awaitDeadBootReport runs the dead-process check until it files the dead
+// helper (Windows may free a dead process's lock a moment after it exits),
+// then waits for the writer to hand the event to the ring.
 func awaitDeadBootReport(t *testing.T, hub *logs.Hub) logs.Entry {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; {
-		reportDeadBoots(hub, "")
+		_ = hub.CheckBoots(context.Background())
 		if got := criticalEntries(hub); len(got) > 0 {
-			reportDeadBoots(hub, "") // and never twice
+			_ = hub.CheckBoots(context.Background()) // and never twice
+			time.Sleep(300 * time.Millisecond)       // past a batch, for a second report to show
 			if got = criticalEntries(hub); len(got) != 1 {
 				t.Fatalf("filed %d times: %+v", len(got), got)
 			}
@@ -136,7 +150,7 @@ func TestBootRecordFilesACrash(t *testing.T) {
 				}
 			}
 			e := awaitDeadBootReport(t, hub)
-			if e.Source != "system" || !strings.HasPrefix(e.Msg, "the previous run crashed: panic: boot helper: boom") ||
+			if e.Source != "system" || e.Field("event") != "system/4" || !strings.HasPrefix(e.Msg, "The previous run crashed: panic: boot helper: boom") ||
 				e.Field("severity") != "critical" || e.Field("pid") != strconv.Itoa(cmd.Process.Pid) || e.Field("role") != "helper" {
 				t.Fatalf("crash event = %+v", e)
 			}
@@ -156,7 +170,7 @@ func TestBootRecordFilesACrash(t *testing.T) {
 					disk = append(disk, b...)
 				}
 			}
-			if !strings.Contains(string(disk), "ERROR [system] the previous run crashed") || !strings.Contains(string(disk), "severity=critical") {
+			if !strings.Contains(string(disk), "ERROR [system] The previous run crashed") || !strings.Contains(string(disk), "severity=critical") {
 				t.Fatalf("system log:\n%s", disk)
 			}
 			assertEmptyDir(t, filepath.Join(root, "crash"))
@@ -165,9 +179,10 @@ func TestBootRecordFilesACrash(t *testing.T) {
 	}
 }
 
-// A live process is never reported dead, however old its record looks (a
-// laptop waking from sleep). Killed, its lock is free and its record, with no
-// clean stop, reads as an unexpected end.
+// A live process is never reported dead, however old its heartbeat looks (a
+// laptop waking from sleep). Killed, its lock is free and its row, with no
+// clean stop, reads as an unexpected end, carrying the time of its last
+// event.
 func TestBootRecordReportsAKilledProcessButNeverALiveOne(t *testing.T) {
 	root := t.TempDir()
 	cmd := bootHelperCmd("live", root)
@@ -186,25 +201,26 @@ func TestBootRecordReportsAKilledProcessButNeverALiveOne(t *testing.T) {
 	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || strings.TrimSpace(line) != "ready" {
 		t.Fatalf("helper did not come up: %q %v", line, err)
 	}
-	var rec string
 	ents, _ := os.ReadDir(filepath.Join(root, "boots"))
-	for _, e := range ents {
-		if strings.HasSuffix(e.Name(), ".json") {
-			rec = filepath.Join(root, "boots", e.Name())
-		}
+	if len(ents) != 1 {
+		t.Fatalf("boots/ = %v, want the helper's lock", ents)
 	}
-	lastYear := time.Now().AddDate(-1, 0, 0)
-	if err := os.Chtimes(rec, lastYear, lastYear); err != nil {
-		t.Fatal(err)
-	}
+	id := strings.TrimSuffix(ents[0].Name(), ".lock")
 
 	hub := openBootTestHub(t, root)
-	reportDeadBoots(hub, "")
+	st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	lastYear := time.Now().AddDate(-1, 0, 0)
+	if err := st.Heartbeat(context.Background(), id, lastYear); err != nil {
+		t.Fatal(err)
+	}
+	_ = hub.CheckBoots(context.Background())
+	time.Sleep(300 * time.Millisecond)
 	if got := criticalEntries(hub); len(got) != 0 {
 		t.Fatalf("a live process was reported dead: %+v", got)
-	}
-	if _, err := os.Stat(rec); err != nil {
-		t.Fatalf("a live process's record was cleared: %v", err)
 	}
 
 	if err := cmd.Process.Kill(); err != nil {
@@ -212,8 +228,10 @@ func TestBootRecordReportsAKilledProcessButNeverALiveOne(t *testing.T) {
 	}
 	_ = cmd.Wait()
 	e := awaitDeadBootReport(t, hub)
-	if e.Msg != "the previous run ended unexpectedly" || e.Field("severity") != "critical" ||
-		e.Field("pid") != strconv.Itoa(cmd.Process.Pid) || e.Field("role") != "helper" || e.Field("stack") != "" {
+	last, _ := time.Parse(time.RFC3339Nano, e.Field("last"))
+	if !strings.HasPrefix(e.Msg, "The previous run ended unexpectedly") || e.Field("event") != "system/3" || e.Field("severity") != "critical" ||
+		e.Field("pid") != strconv.Itoa(cmd.Process.Pid) || e.Field("role") != "helper" || e.Field("stack") != "" || e.Field("boot") != id ||
+		time.Since(last) > time.Minute {
 		t.Fatalf("unexpected-end event = %+v", e)
 	}
 	assertEmptyDir(t, filepath.Join(root, "crash"))
@@ -221,19 +239,70 @@ func TestBootRecordReportsAKilledProcessButNeverALiveOne(t *testing.T) {
 }
 
 // An orderly stop turns the crash output off, removes its empty crash file
-// and marks its record clean, so the next start files nothing.
+// and its lock, and marks its row clean, so the next start files nothing.
 func TestBootRecordCleanStopIsNotReported(t *testing.T) {
 	root := t.TempDir()
 	if out, err := bootHelperCmd("clean", root).CombinedOutput(); err != nil {
 		t.Fatalf("helper: %v\n%s", err, out)
 	}
 	assertEmptyDir(t, filepath.Join(root, "crash"))
+	assertEmptyDir(t, filepath.Join(root, "boots"))
 	hub := openBootTestHub(t, root)
-	reportDeadBoots(hub, "")
+	_ = hub.CheckBoots(context.Background())
+	time.Sleep(300 * time.Millisecond)
 	if got := criticalEntries(hub); len(got) != 0 {
 		t.Fatalf("a clean stop was reported: %+v", got)
 	}
-	assertEmptyDir(t, filepath.Join(root, "boots"))
+}
+
+// The log book is the last thing released: its final flush is the last
+// Release step, after the boot record's clean stop, and the store stays open
+// for the shutdown's own last events, so the shutdown activity's end and
+// StoppedOK land in logbook.db when the deferred Close runs.
+func TestBootRecordLogBookReleasedLast(t *testing.T) {
+	root := t.TempDir()
+	hub := openBootTestHub(t, root)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+	life := lifecycle.New(nil)
+	defer startBootRecord(hub, life, "tui")() // right after the group is made, as serve and the TUI do
+	life.AddFunc(lifecycle.Release, "stores", func() {})
+	life.AddFunc(lifecycle.Release, "tool mux", func() {})
+	steps := life.Steps()
+	if want := []string{"release/tool mux", "release/stores", "release/boot record", "release/log book"}; !slices.Equal(steps[len(steps)-4:], want) {
+		t.Fatalf("steps = %v, want them to end %v", steps, want)
+	}
+	_ = life.Shutdown()
+	catalog.StoppedOK.Log(context.Background(), "uptime", time.Second) // as run.stopped does
+	_ = hub.Close()
+
+	st, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var shutdownEnded, stopped bool
+	for cur := (store.Cursor{}); ; {
+		evs, next, _, err := st.Since(context.Background(), cur, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(evs) == 0 {
+			break
+		}
+		for _, e := range evs {
+			shutdownEnded = shutdownEnded || e.Provider == "system" && e.ID == 20 && e.Opcode == event.OpStop
+			stopped = stopped || e.Provider == "system" && e.ID == catalog.StoppedOK.Spec().ID
+		}
+		cur = next
+	}
+	if !shutdownEnded || !stopped {
+		t.Errorf("logbook.db lacks the shutdown's end (%v) or StoppedOK (%v)", shutdownEnded, stopped)
+	}
+	if open, _ := st.Unfinished(context.Background(), ""); len(open) != 0 {
+		t.Errorf("the boot record was not marked clean: %+v", open)
+	}
 }
 
 // The spawn classifier's guard used to swallow a panic; it now logs it with
