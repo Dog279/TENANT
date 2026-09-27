@@ -24,6 +24,7 @@ import (
 	"tenant/internal/dashboard"
 	"tenant/internal/httplimits"
 	"tenant/internal/improve"
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
@@ -1810,6 +1811,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 	log := slog.New(hub.Handler(nil))
 	startRetention(ctx, c, log.With("source", "privacy"))
 
+	// Teardown runs in the same stages as serve (internal/lifecycle, TEN-314):
+	// deny pending approvals, stop the peer listener, the relay and the
+	// dashboard, drain cron and self-improvement, then close what they used,
+	// last opened first. Each component registers its stop where it is built.
+	life := lifecycle.New(log.With("source", "shutdown"))
+	defer life.Shutdown()
+
 	// First-run installer + connectivity check; results seed the feed (and
 	// the system log).
 	sysCh := make(chan string, 64)
@@ -1851,7 +1859,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer closeStores()
+	life.AddFunc(lifecycle.Release, "stores", closeStores)
 	routeRT, err := newRouteRuntime(c.lc, c.cfgDir, c.dataDir, router, log.With("source", "route"))
 	if err != nil {
 		return err
@@ -1865,7 +1873,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if uerr != nil {
 		log.Warn("usage ledger unavailable", "err", uerr)
 	} else {
-		defer func() { _ = usageStore.Close() }()
+		life.Add(lifecycle.Release, "usage ledger", usageStore.Close)
 	}
 
 	// Approval broker: the single decision point for dangerous actions
@@ -1873,6 +1881,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// then overridden by persisted per-category modes; wired into every
 	// plugin gate via buildToolMux's confirm hook.
 	broker := newApprovalBroker(log.With("source", "approvals"))
+	life.AddFunc(lifecycle.Unblock, "pending approvals", broker.DenyAll)
 	seedFromFlags(broker, pf)
 
 	// Persisted settings hold BOTH the tool curation and the permission
@@ -1941,14 +1950,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer cleanupMux()
+	life.AddFunc(lifecycle.Release, "tool mux", cleanupMux)
 
 	// T4 skills: library + agent retrieval + author tool + /skills control.
 	skillStore, serr := skills.Open(filepath.Join(c.dataDir, "skills.db"))
 	if serr != nil {
 		return serr
 	}
-	defer skillStore.Close()
+	life.Add(lifecycle.Release, "skills store", skillStore.Close)
 
 	// User profile: a synthesized always-on model of the user, distinct
 	// from the hand-curated soul. Loaded once; a background job + the
@@ -2030,7 +2039,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if merr != nil {
 		return merr
 	}
-	defer meta.Close()
+	life.Add(lifecycle.Release, "improve meta", meta.Close)
 	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
@@ -2062,7 +2071,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// can spin up sub-agents on demand, live (no restart). ---
 	budgets := configuredBudgets(c.lc)
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
-	defer bus.Close()
+	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
 	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
 
@@ -2141,7 +2150,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		LocalRestore:  stg.Tools, // same map the shared mux restored from
 		LocalOnChange: localSave,
 	})
-	defer rt.Close() // close any per-agent browser sessions
+	life.AddFunc(lifecycle.Release, "team runtime", rt.Close) // close any per-agent browser sessions
 
 	// The main agent's LOCAL tools: orchestration (spawn/await) + comms +
 	// its own memory (note→profile) + skills + its own lazy browser, all
@@ -2163,7 +2172,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	tstats := newToolStats(c.dataDir, "tui")
 	mux.EnableStats(tstats)
 	mainLocal.EnableStats(tstats)
-	defer tstats.StartPersist(time.Minute)()
+	life.AddFunc(lifecycle.Release, "tool stats", tstats.StartPersist(time.Minute))
 	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Live bus view → feed (lossless cursor over the retained log).
@@ -2432,6 +2441,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
 		}
+		life.AddFunc(lifecycle.Drain, "cron", cronEngine.Stop) // cancel any in-flight cron run + drain the loop
 	}
 
 	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
@@ -2511,6 +2521,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Dashboard.Enabled = &enabled })
 		},
 	}
+	// Shutdown, not Disable: stopping at exit must not persist an "off" choice.
+	life.Add(lifecycle.Intake, "dashboard", dashMgr.Shutdown)
 	// tailscaleManager (TEN-233) powers /tailscale: publish the loopback
 	// dashboard onto the operator's tailnet via `tailscale serve`. It reads the
 	// dashboard's port + running state from dashMgr.Status, and persists the serve
@@ -2625,6 +2637,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			})
 		},
 	}
+	life.AddFunc(lifecycle.Intake, "discord relay", relayMgr.Shutdown) // stop Discord ingest; persists nothing
 	// Wire the broker's "ask" backend now that the manager exists: an ask-tier
 	// category raises the Discord button approval via the live approver. A button
 	// tap is per-action ("once"); to stop being prompted the operator sets the
@@ -2784,6 +2797,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	var evalSched *evalSchedule
 	if *selfImprove {
 		sched = improve.NewScheduler(log, 0)
+		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop)
 		// While the model is degraded to echo, suspend ALL self-improvement:
 		// consolidation/profile jobs would persist echo-derived garbage and the
 		// distill cursor would skip episodes never really processed.
@@ -3005,6 +3019,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 	}
 	var peerSrvMu sync.Mutex
 	var peerSrvStop func()
+	life.AddFunc(lifecycle.Intake, "peer listener", func() { // stop inbound peer turns
+		peerSrvMu.Lock()
+		defer peerSrvMu.Unlock()
+		if peerSrvStop != nil {
+			peerSrvStop()
+			peerSrvStop = nil
+		}
+	})
 	peerServeFn := func(addr string) (string, error) {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -3142,12 +3164,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			}
 		},
 	})
-	if sched != nil {
-		sched.Stop() // drain before stores close (deferred)
-	}
-	if cronEngine != nil {
-		cronEngine.Stop() // cancel any in-flight cron run + drain the loop
-	}
+	life.Shutdown() // each failed step is logged
 	return err
 }
 

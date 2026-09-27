@@ -18,6 +18,7 @@ import (
 	"tenant/internal/cron"
 	"tenant/internal/dashboard"
 	"tenant/internal/improve"
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/distill"
@@ -95,6 +96,15 @@ func cmdServe(ctx context.Context, args []string) error {
 	hub.Start(ctx)
 	startRetention(ctx, c, log.With("source", "privacy"))
 
+	// Graceful, ordered teardown (TEN-194), in stages (internal/lifecycle):
+	// deny pending approvals so no gated turn stays blocked; STOP ACCEPTING NEW
+	// WORK so nothing starts a turn or a job mid-teardown; drain in-flight
+	// work; then close what it used, last opened first — no goroutine may
+	// write to a closed store. Each component registers its stop where it is
+	// built; an early return runs whatever is registered so far.
+	life := lifecycle.New(log.With("source", "shutdown"))
+	defer life.Shutdown()
+
 	sysCh := make(chan string, 64)
 	pushSys := func(s string) {
 		select {
@@ -143,13 +153,13 @@ func cmdServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer closeStores()
+	life.AddFunc(lifecycle.Release, "stores", closeStores)
 
 	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
 	if uerr != nil {
 		log.Warn("usage ledger unavailable", "err", uerr)
 	} else {
-		defer func() { _ = usageStore.Close() }()
+		life.Add(lifecycle.Release, "usage ledger", usageStore.Close)
 	}
 
 	// Approval broker: the single decision point for dangerous actions. Seeded
@@ -157,6 +167,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	// there is no TUI to prompt, so a headless drain (below) routes "ask"-mode
 	// requests to the dashboard.
 	broker := newApprovalBroker(log.With("source", "approvals"))
+	// Deny every still-pending approval first, so no gated turn goroutine
+	// stays blocked on its reply during teardown (TEN-203).
+	life.AddFunc(lifecycle.Unblock, "pending approvals", broker.DenyAll)
 	seedFromFlags(broker, pf)
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
@@ -211,13 +224,13 @@ func cmdServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer cleanupMux()
+	life.AddFunc(lifecycle.Release, "tool mux", cleanupMux)
 
 	skillStore, serr := skills.Open(filepath.Join(c.dataDir, "skills.db"))
 	if serr != nil {
 		return serr
 	}
-	defer skillStore.Close()
+	life.Add(lifecycle.Release, "skills store", skillStore.Close)
 
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 	profSynth := &userprofile.Synthesizer{Router: router, Semantic: st.semantic, AgentID: c.agent}
@@ -274,7 +287,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	if merr != nil {
 		return merr
 	}
-	defer meta.Close()
+	life.Add(lifecycle.Release, "improve meta", meta.Close)
 	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
@@ -292,7 +305,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	budgets := configuredBudgets(c.lc)
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
-	defer bus.Close()
+	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
 	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
 
@@ -362,7 +375,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		LocalRestore:  stg.Tools,
 		LocalOnChange: localSave,
 	})
-	defer rt.Close()
+	life.AddFunc(lifecycle.Release, "team runtime", rt.Close)
 
 	mainLocal := newToolMux()
 	mainLocal.Add("orchestrator", spawnTool{rt: rt})
@@ -377,8 +390,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	stats := newToolStats(c.dataDir, "serve")
 	mux.EnableStats(stats)
 	mainLocal.EnableStats(stats)
-	stopStats := stats.StartPersist(time.Minute)
-	defer stopStats()
+	life.AddFunc(lifecycle.Release, "tool stats", stats.StartPersist(time.Minute))
 	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
 	// Bus traffic → dashboard feed (lossless cursor over the retained log).
@@ -562,6 +574,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
 		}
+		life.AddFunc(lifecycle.Drain, "cron", cronEngine.Stop) // drains any in-flight cron run
 	}
 
 	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
@@ -588,8 +601,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	// registry and IS the dashboard.ApprovalControl. Point its event emitter at
 	// the live stream so pending/resolved fan out to the dashboard (and any
 	// attach client); no drain goroutine is needed now that the requests channel
-	// is a non-blocking notifier. Still-pending requests are denied on shutdown
-	// (DenyAll below) so no gated turn stays blocked.
+	// is a non-blocking notifier. Still-pending requests are denied first on
+	// shutdown (the Unblock stage) so no gated turn stays blocked.
 	broker.SetEvents(emit)
 
 	dcfg, _ := resolveDashboardConfig(c.lc, true, *dashboardOn, *dashboardAddr)
@@ -624,6 +637,11 @@ func cmdServe(ctx context.Context, args []string) error {
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Dashboard.Enabled = &enabled })
 		},
 	}
+	// Shutdown (not Disable) for the dashboard and the relay: stop WITHOUT
+	// persisting an "off" choice, so the operator's enabled=true survives a
+	// restart (a SIGTERM is not a /relay off or /dashboard off). Disable
+	// persisting on every serve teardown was the bug — twice.
+	life.Add(lifecycle.Intake, "dashboard", dashMgr.Shutdown)
 
 	// Discord relay (TEN-114): opt-in, off by default; drives a DEDICATED relay
 	// agent (own working set, shared memory) so it never touches the shared
@@ -634,6 +652,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		emit: emit, notify: pushSys, degraded: degraded, log: log.With("source", "discord"), routeHook: routeRT.Hook(),
 		routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 	})
+	if relayMgr != nil {
+		life.AddFunc(lifecycle.Intake, "discord relay", relayMgr.Shutdown) // stop Discord ingest
+	}
 
 	// Native iMessage responder (TEN-230): the away-from-desk drive surface a Mac
 	// hub answers texts on. Auto-starts when left enabled; needs Full Disk Access
@@ -656,6 +677,9 @@ func cmdServe(ctx context.Context, args []string) error {
 		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log.With("source", "improve"),
 		events: emit, evalProg: evalProg,
 	})
+	if sched != nil {
+		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop) // drains any in-flight improve job
+	}
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: mcpCtl}
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
@@ -703,13 +727,12 @@ func cmdServe(ctx context.Context, args []string) error {
 		onAuth:   peerHealth.markInbound,
 		onGrant:  peerHealth.markInboundGrant,
 	}
-	var peerSrvStop func()
 	if c.lc != nil && c.lc.Peer.Listen != "" {
 		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen, log.With("source", "peering"))
 		if perr != nil {
 			pushSys("peer: listener not started — " + perr.Error())
 		} else {
-			peerSrvStop = stopFn
+			life.AddFunc(lifecycle.Intake, "peer listener", stopFn) // stop inbound peer turns
 			pushSys("peer: federation listener on " + bound)
 		}
 	}
@@ -728,36 +751,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 
 	<-ctx.Done()
-
-	// Graceful, ordered shutdown (TEN-194). STOP ACCEPTING NEW WORK FIRST so
-	// nothing starts a turn or a job mid-teardown, drain in-flight work, then
-	// close stores LAST (no goroutine may write to a closed store).
 	fmt.Println("\nshutting down…")
-	// Deny every still-pending approval so no gated turn goroutine stays blocked
-	// on its reply during teardown (TEN-203, replaces the old drain's deny-all).
-	broker.DenyAll()
-	if peerSrvStop != nil {
-		peerSrvStop() // stop inbound peer turns
-	}
-	// Shutdown (not Disable) for BOTH managers: stop WITHOUT persisting an
-	// "off" choice, so the operator's enabled=true survives a restart (a
-	// SIGTERM is not a /relay off or /dashboard off). Disable persisting on
-	// every serve teardown was the bug — twice.
-	if relayMgr != nil {
-		relayMgr.Shutdown() // stop Discord ingest
-	}
-	if err := dashMgr.Shutdown(); err != nil {
-		log.Warn("dashboard shutdown", "err", err)
-	}
-	if cronEngine != nil {
-		cronEngine.Stop() // drains any in-flight cron run
-	}
-	if sched != nil {
-		sched.Stop() // drains any in-flight improve job
-	}
-	// The approval drain + bus/credential goroutines exit on ctx cancel (already
-	// fired). closeStores/meta/skills/usage close via the deferred stack AFTER
-	// this returns — all writers above are now quiesced.
+	life.Shutdown() // each failed step is logged
 	return nil
 }
 

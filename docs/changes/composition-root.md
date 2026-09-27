@@ -2,9 +2,9 @@
 
 **Branch:** `refactor/ten-314-composition-root` (slices 0–2, on top of
 `feat/ten-297-provenance-inspector`) and `refactor/ten-314-control-plane`
-(slices 3–4, on top of `feat/ten-321-plugin-registry`) · **Status:** in
-progress. Slices 0–3 are done and tested on Windows; later slices extend this
-record.
+(slices 3–4, on top of `feat/ten-321-plugin-registry`) · **Status:** slices
+0–4 are implemented and tested on Windows; not yet deployed. What is left of
+the ticket is under "Still open".
 **Ticket:** ARC-002 / TEN-314.
 
 ## What changed
@@ -129,6 +129,39 @@ record.
 - `archtest` gains the rule: `approval` may import `agent`, `control`, `logs`
   and `runtrace`. `dashboard` may now import `control`.
 
+### Slice 4: one staged shutdown for serve and the TUI
+- **`internal/lifecycle` orders a long-running command's teardown.** A
+  component registers how to stop it, and at which stage, where it is built.
+  `Shutdown` then runs the stages in order:
+  1. **Unblock:** deny pending approvals, so no gated turn stays blocked.
+  2. **Intake:** stop the peer listener, the Discord relay and the dashboard,
+     so nothing starts a turn or a job mid-teardown.
+  3. **Drain:** let cron and self-improvement finish their running jobs.
+  4. **Release:** close the tool stats, the team runtime and bus, the stores
+     and the rest, last opened first, like the deferred calls they replace.
+
+  A failing or panicking stop is logged and reported, and the rest still run.
+  `Shutdown` runs once, so a command both defers it (for an early return) and
+  calls it at the end. A stop registered after teardown began runs at once.
+- **`serve` keeps its order (TEN-194).** It is now declared where each
+  component is built, instead of in a block at the end plus a stack of
+  defers. The only change is within the drain stage: self-improvement now
+  drains before cron. Both still finish before anything is released.
+- **The TUI now tears down like `serve`.** It used to drain cron and
+  self-improvement and then close its stores. It never:
+  - denied pending approvals;
+  - stopped its peer listener, its relay or its dashboard.
+
+  So a background turn could arrive, or sit blocked on an approval, while the
+  stores closed. The relay and the dashboard stop with `Shutdown`, which
+  persists nothing. Their enabled setting survives the exit, as it does in
+  `serve`.
+- **Only process-level resources stay deferred:** the log hub closes after
+  the teardown, and the signal context is released with the process.
+- **Not stopped at exit in either command:** the iMessage responder, whose
+  `Stop` persists "off". It ends with the context, as before.
+- `archtest` gains the rule: `lifecycle` is a leaf.
+
 ## Why
 All configuration, runtime lifecycle, control plane and plugin registry code
 lived in `package main`, with dependency directions nobody wrote down or
@@ -137,7 +170,7 @@ enforced rules, so `cmd/tenant` becomes thin command adapters.
 
 ## Evidence
 - `go vet ./...` is clean, and `go test ./...` passes (66 packages after
-  slice 2, 68 after slice 3).
+  slice 2, 68 after slice 3, 69 after slice 4).
 - The smoke eval passes 5/5 against its baseline.
 - Mutation testing:
   - archtest: 7 mutations of the rules and checker, all caught;
@@ -147,8 +180,30 @@ enforced rules, so `cmd/tenant` becomes thin command adapters.
     tests. They cover the fall-through category, the shared registry, the lock,
     the ask backend, rules, persistence, flag seeding, events and the offsite
     default. Two first compiled only with dead code left in, and were rerun as
-    mutants that build.
+    mutants that build;
+  - lifecycle and the teardown wiring: 9 mutants, all caught. They cover stage
+    order, order within a stage, running once, a late stop, a panic, reported
+    errors, a TUI step missing, a serve step in the wrong stage, and a bare
+    defer.
+- **Serve and the TUI** are held to the same teardown by
+  `TestServeAndTUITearDownAlike`. It reads both commands' source and checks
+  that each registers the shared hub's stops at the same stages. It also
+  checks that neither closes anything through a bare `defer`.
+
+## Still open
+- **`cmd/tenant` is not yet a set of thin command adapters.** It still holds
+  about 40,000 lines in 133 files. The hub's construction is written out
+  twice: in `cmdServe`, and in `cmdTUI` with the TUI's controls interleaved.
+  It covers the router, stores, approval broker, tool mux, team runtime,
+  cron, relay, dashboard and peers. The next step is one `buildHub` that both
+  commands call. Then the hub, and the control adapters (`*ctl.go`) that
+  serve the TUI and the dashboard, can move behind internal packages.
+- **The plugin descriptors stay in `package main`** (`plugin_<id>.go`). Their
+  hooks are adapters over the command's flags and controls. The registry's
+  rules and indexes are `internal/pluginreg` (TEN-321).
 
 ## Operator notes
-- No behavior change. `config.json`, `credentials.json` and
+- No change to files: `config.json`, `credentials.json` and
   `settings.<agent>.json` read and write exactly as before.
+- On exit, the TUI now denies approvals still pending and stops its peer
+  listener, relay and dashboard before closing its stores, as `serve` does.

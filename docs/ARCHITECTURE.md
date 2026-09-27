@@ -141,6 +141,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
 | `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes |
+| `internal/lifecycle` | nothing in the module | leaf: the staged shutdown of a long-running command |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs` | `internal/fsperm` | any package may log through it |
@@ -1331,7 +1332,10 @@ registry type (§5.14).
   - the peer listener when federation is on;
   - the Discord relay when enabled.
 
-  SIGINT/SIGTERM shuts down in order.
+  SIGINT/SIGTERM shuts down in stages (`internal/lifecycle`, TEN-314): pending
+  approvals are denied, the peer listener, the relay and the dashboard stop
+  taking work, cron and self-improvement drain, then the runtime and stores
+  close, last opened first. The TUI tears down the same way when it exits.
 - `tenant os "<task>" [--allow-exec]` — agent inspects the machine
   (sysinfo/read/list/processes) + runs shell commands (gated; off
   unless `--allow-exec`, destructive commands hard-denied). §5.12g.
