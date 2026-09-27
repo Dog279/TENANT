@@ -53,17 +53,18 @@ func nextID() string {
 
 // register inserts a new pending request under id ("ap-" + nextID()) and
 // emits EventApprovalPending. It returns the entry, whose buffered reply chan
-// the caller blocks on.
+// the caller blocks on. The run record says pending before any surface can
+// see the request, so a quick decision is never overwritten by it.
 func (r *registry) register(ctx context.Context, id string, req control.ApprovalRequest, origin string) *pendingReq {
 	reply := make(chan control.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
 	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply, span: runtrace.SpanFromContext(ctx)}
+	p.recordApproval("pending")
 	r.mu.Lock()
 	r.pending[id] = p
 	r.mu.Unlock()
 	r.emitEvent(agent.EventApprovalPending, p, "")
-	p.recordApproval("pending")
 	return p
 }
 
