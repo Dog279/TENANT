@@ -55,3 +55,49 @@ func TestReadFileRejectsSymlink(t *testing.T) {
 		t.Fatal("ReadFile accepted a symlink")
 	}
 }
+
+func TestProtectFileLeavesParentAlone(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "backup.tar.gz")
+	if err := os.WriteFile(path, []byte("archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirOKBefore, _, dirBefore, err := probePath(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ProtectFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, detail, err := probePath(path, false); err != nil || !ok {
+		t.Fatalf("file not protected: ok=%v detail=%q err=%v", ok, detail, err)
+	}
+	dirOKAfter, _, dirAfter, err := probePath(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirOKBefore != dirOKAfter || dirBefore != dirAfter {
+		t.Fatalf("parent protection changed: %v %q -> %v %q", dirOKBefore, dirBefore, dirOKAfter, dirAfter)
+	}
+}
+
+func TestProtectFileRejectsSymlinkAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := ProtectFile(dir); err == nil {
+		t.Fatal("ProtectFile accepted a directory")
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := ProtectFile(link); err == nil {
+		t.Fatal("ProtectFile accepted a symlink")
+	}
+}

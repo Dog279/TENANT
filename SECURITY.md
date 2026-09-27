@@ -86,6 +86,16 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
   not encryption; database, transcript, report, and credential contents remain
   plaintext to the owning account and to any process or administrator that can
   read that account. Use OS full-disk encryption for at-rest protection.
+- **Backups** (`tenant backup`, TEN-305) are one file holding the config and
+  data dirs. An encrypted backup (`--encrypt` passphrase via age's scrypt, or
+  `--recipient` X25519 public keys) carries the credential and key files; an
+  unencrypted one leaves every managed secret out, but still holds your memory,
+  archive and `config.json` in plaintext. The file is written owner-only.
+  Restore verifies checksums, database integrity and schema before it replaces
+  anything, keeps the replaced directories, and refuses while a Tenant process
+  holds the data-dir lock (`<data>/.tenant.lock`) or a dashboard answers.
+  A restore also brings back the instance identity (peer key, paired peers,
+  dashboard token, relay setup).
 - Outbound reads also disclose data: model calls send prompt/tool context;
   search sends queries; browser/Jina reads send URLs; integrations send resource
   identifiers and credentials. The complete flows are in `docs/DATAFLOW.md`.

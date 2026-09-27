@@ -72,6 +72,9 @@ type commonFlags struct {
 	// Plain `tenant doctor` sets it so its audit changes nothing it reports
 	// on (TEN-333).
 	auditOnly bool
+	// skipDataLock leaves the data-dir lock alone. `tenant backup restore`
+	// sets it because it takes that lock exclusively itself (TEN-305).
+	skipDataLock bool
 }
 
 // credentialsLoader is how this command reads credentials.json: hardening it
@@ -129,6 +132,11 @@ func (c *commonFlags) resolveDirs() error {
 	}
 	if err := fsperm.MkdirAll(c.dataDir); err != nil {
 		return fmt.Errorf("mkdir data dir: %w", err)
+	}
+	if !c.skipDataLock {
+		if err := holdDataDir(c.dataDir); err != nil {
+			return err
+		}
 	}
 	return nil
 }

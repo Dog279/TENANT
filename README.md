@@ -100,6 +100,12 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
   (or `/model` inside the TUI).
 - Memory, the archive, transcripts, and the wiki live in your OS **data dir**
   (gitignored). Nothing personal is ever committed.
+- `tenant backup` copies the config and data dirs into one file, consistently
+  even while Tenant runs; `tenant backup verify` checks every checksum, database
+  and log in it, and `tenant backup restore` puts it back after checking it.
+  Encrypt it (`--encrypt`, or `--recipient` with an [age](https://age-encryption.org)
+  public key) and it carries your credentials too. See
+  [docs/changes/backup-restore.md](docs/changes/backup-restore.md).
 - Every subsystem logs to **`<data>/logs/<source>/YYYY-MM-DD.log`** — one folder
   per subsystem (turns, sub-agents, approvals, discord, cron, …), plain text, and
   the same lines feed the dashboard's Activity tab (one tab per folder). Adding a
@@ -150,6 +156,7 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `chat` | headless agent loop (one stdin line = one turn) |
 | `serve` | background self-improvement (distillation) on a cadence |
 | `doctor [--fix]` | diagnose (and repair) the setup |
+| `backup [create\|verify\|restore]` | one-file backup of every store, the archive and your config (`--encrypt` or `--recipient age1…` also carries credentials); `verify` checks it end to end; `restore` swaps it in and keeps the old directories |
 | `security audit` | report what each live surface (local, Discord relay, iMessage) may do without approval, the Chrome process sandbox, listeners and secret-file protection; exits non-zero on a critical finding |
 | `web` / `sql` / `wiki` / `gsuite` / `x` / `imessage` / `os` | one-shot agent turn scoped to one plugin (read-by-default; `--allow-*` to act) |
 | `orchestrate "<task>"` | multi-agent team over a live bus |

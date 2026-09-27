@@ -205,6 +205,35 @@ func Harden(path string) error {
 	return nil
 }
 
+// ProtectFile applies and verifies owner-only protection on one existing
+// regular file and leaves its parent directory alone. It is for private files
+// Tenant writes outside its own directories, such as a backup archive in a
+// folder the operator chose (TEN-305), where re-protecting the parent would
+// change access to everything else in it.
+func ProtectFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("secrets: refusing symlink %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("secrets: %s is not a regular file", path)
+	}
+	if err := protectPath(path, false); err != nil {
+		return err
+	}
+	ok, _, detail, err := probePath(path, false)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("secrets: %s: %s", path, detail)
+	}
+	return nil
+}
+
 // Probe reports the effective protection of path without changing it. A
 // missing file is not an error and is reported with Exists=false.
 func Probe(path string) Protection {

@@ -34,6 +34,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	holdDataDir = lockDataDirForProcess
 
 	var err error
 	switch os.Args[1] {
@@ -114,6 +115,8 @@ func main() {
 		err = cmdFeedback(ctx, os.Args[2:], "undo")
 	case "doctor":
 		err = cmdDoctor(ctx, os.Args[2:])
+	case "backup":
+		err = cmdBackup(ctx, os.Args[2:])
 	case "security":
 		err = cmdSecurity(ctx, os.Args[2:])
 	case "permissions":
@@ -175,6 +178,9 @@ COMMANDS
   research "<question>"    deep research: plan → parallel web-researchers → cited report (--out FILE)
   review <plan.md>         cascading CEO/Eng/Designer review appended to a plan file
   doctor                   diagnose (and --fix) the setup when things break
+  backup [create|verify|restore]
+                           one-file backup of the config + data dirs (--encrypt carries secrets);
+                           verify checks it end to end; restore swaps it in, keeping the old dirs
   security audit           inspect effective security posture (human or --json)
   permissions effective    show composed authority by agent and surface
   permissions preset       apply safe, balanced, or full category permissions
