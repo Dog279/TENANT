@@ -16,10 +16,7 @@ func (s *Server) SetAlertRules(ac logapi.AlertConfig) { s.logbook.Alerts = ac }
 // last day (alerts 1001, whichever process evaluated them) and the newest
 // one's message.
 func (s *Server) recentAlerts(ctx context.Context) (int, string) {
-	var st *store.Store
-	if s.logs != nil {
-		st = s.logs.Store()
-	}
+	_, st := s.logbookStore()
 	if st == nil {
 		return 0, ""
 	}

@@ -7,46 +7,19 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"tenant/internal/agent"
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
 	"tenant/internal/logs/store"
 )
 
-// storeServer is logsServer with logbook.db attached, and a second handle
-// on it for the test.
-func storeServer(t *testing.T) (*Server, *logs.Hub, *store.Store) {
-	t.Helper()
-	root := t.TempDir()
-	h, err := logs.Open(root, logs.Options{RingCap: 100})
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(root, "logbook.db")
-	own, err := store.Open(path, store.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.AttachStore(own)
-	st, err := store.Open(path, store.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = h.Close(); _ = st.Close() })
-	s := New(Config{Addr: "example.com", Auth: "tok"}, nil, &restFakeTools{}, nil, agent.NewBroker(0), nil)
-	s.SetLogs(h)
-	return s, h, st
-}
-
 // The log book's API sits behind the dashboard's bearer auth.
 func TestLogbookAPIRequiresAuth(t *testing.T) {
-	s, _, _ := storeServer(t)
+	s, _, _ := logsBook(t)
 	h := s.secure(s.Handler())
 	for _, c := range []struct{ method, path, body string }{
 		{"GET", "/api/events", ""}, {"GET", "/api/events/stream", ""}, {"POST", "/api/events", `{"log":"x","msg":"m"}`},
@@ -76,7 +49,7 @@ func TestLogbookAPIRequiresAuth(t *testing.T) {
 // cursor survives a restart; diagnostic events stay out, as they are out of
 // the text files.
 func TestActivityShimOverTheStore(t *testing.T) {
-	s, _, st := storeServer(t)
+	s, _, st := logsBook(t)
 	ctx := context.Background()
 	trace := "0123456789abcdef0123456789abcdef"
 	evs := []event.Event{
@@ -127,7 +100,7 @@ func TestActivityShimOverTheStore(t *testing.T) {
 
 // v1 writes through a hub with a store are filed as external.
 func TestV1WritesAreExternal(t *testing.T) {
-	s, _, st := storeServer(t)
+	s, _, st := logsBook(t)
 	if rec := do(t, s, http.MethodPost, "/api/logs/sidecar", "application/json", `{"msg":"hello","fields":{"event":"system/3101","k":"v"}}`); rec.Code != http.StatusAccepted {
 		t.Fatalf("v1 write = %d %s", rec.Code, rec.Body.String())
 	}

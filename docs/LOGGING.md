@@ -1320,7 +1320,7 @@ go test ./cmd/tenant -run TestEventsDoc -update
 
 The same test fails when the file is stale, when a definition breaks the
 conventions above, or when an ID the file lists is no longer declared. The
-event Help text (`catalog.Help`, looked up with `catalog.Lookup(provider, id)`)
+event Help text (`catalog.Help`, looked up with `event.Lookup(provider, id)`)
 is the same entry, so the dashboard and `tenant logs` show what the file says.
 
 **Coverage.** `go test ./internal/archtest -run Coverage -v` prints, per

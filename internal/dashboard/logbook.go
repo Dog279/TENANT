@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"tenant/internal/logs"
 	"tenant/internal/logs/logapi"
@@ -39,10 +38,7 @@ const activityBacklog = 10000
 // activityBacklog events. The Activity feed holds the text mirror's lines,
 // so diagnostic events are left out. Without a store, the ring answers.
 func (s *Server) handleActivityStore(w http.ResponseWriter, r *http.Request) {
-	var st *store.Store
-	if s.logs != nil {
-		st = s.logs.Store()
-	}
+	_, st := s.logbookStore()
 	if st == nil {
 		s.handleActivity(w, r)
 		return
@@ -98,7 +94,7 @@ func activityQuery(f activityFilter) string {
 		q += " level>=warning"
 	}
 	if f.Trace != "" {
-		q += ` trace:"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(f.Trace) + `"`
+		q += " " + filterTerm("trace", f.Trace)
 	}
 	return q
 }

@@ -189,9 +189,9 @@ func (s *Store) stats(ctx context.Context, f query.Filter, bucket time.Duration,
 
 // IDCount is how many times one event ID occurred.
 type IDCount struct {
-	Provider string
-	ID       uint32
-	N        int64
+	Provider string `json:"provider"`
+	ID       uint32 `json:"id"`
+	N        int64  `json:"n"`
 }
 
 // TopIDs is the n event IDs (10 when n <= 0) that occur most among the

@@ -5,6 +5,7 @@ import (
 
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/store"
 	"tenant/internal/runtrace"
 )
 
@@ -76,11 +77,7 @@ type Top struct {
 }
 
 // IDCount is how many times one event ID occurred.
-type IDCount struct {
-	Provider string `json:"provider"`
-	ID       uint32 `json:"id"`
-	N        int64  `json:"n"`
-}
+type IDCount = store.IDCount
 
 // Timeline is GET /api/events/timeline/{id}: the pivot (§7), and the run
 // record of a trace when this process can read runs.db. RunNote says why
