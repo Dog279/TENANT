@@ -27,7 +27,7 @@ func TestHubSummary(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return len(all(t, r)) == 1 })
 	p := h.pipe.Load()
 	p.dmu.Lock()
-	p.dropped["x"] = 3
+	p.recent[lossKey{log: "x", provider: "x"}] = 3 // dropped since the last report
 	p.dmu.Unlock()
 
 	sum, err := h.Summary(context.Background(), base.Add(time.Minute))

@@ -10,7 +10,8 @@ import (
 
 // Summary is the log book's Summary page (store.Summary) as of now, under the
 // retention settings in force, with the events this process's full queue
-// dropped added to their logs' counts: they never reached the store.
+// dropped since its last report added to their logs' counts: the report
+// (once a minute) moves them into the store's counters.
 func (h *Hub) Summary(ctx context.Context, now time.Time) (store.Summary, error) {
 	st := h.store()
 	if st == nil {
@@ -23,9 +24,25 @@ func (h *Hub) Summary(ctx context.Context, now time.Time) (store.Summary, error)
 		b = h.opts.Budget()
 	}
 	sum, err := st.Summary(ctx, b, now)
-	dropped := h.Dropped()
+	pending := h.unreportedDrops()
 	for i := range sum.Logs {
-		sum.Logs[i].Dropped += int64(dropped[sum.Logs[i].Log])
+		sum.Logs[i].Dropped += int64(pending[sum.Logs[i].Log])
 	}
 	return sum, err
+}
+
+// unreportedDrops is, per log, what the queue dropped since the last report
+// put the counts into the store.
+func (h *Hub) unreportedDrops() map[string]uint64 {
+	p := h.pipe.Load()
+	if p == nil {
+		return nil
+	}
+	p.dmu.Lock()
+	defer p.dmu.Unlock()
+	out := map[string]uint64{}
+	for k, n := range p.recent {
+		out[k.log] += n
+	}
+	return out
 }
