@@ -66,6 +66,7 @@ type gate struct {
 	budget store.Budget
 	logs   map[string]store.Policy // the store's logs; any other follows budget
 	shed   int                     // 0: none; 1: diagnostic events; 2: those and operational ones below warning
+	debug  map[string]time.Time    // logs whose timed debug switch is on, until when
 }
 
 func (g *gate) policy(log string) store.Policy {
@@ -188,6 +189,9 @@ func (h *Hub) refresh(ctx context.Context, st *store.Store) {
 	if g.logs, err = st.Policies(ctx, g.budget); err != nil && old != nil {
 		g.logs = old.logs // keep the last ones read
 	}
+	if g.debug, err = st.Debugging(ctx); err != nil && old != nil {
+		g.debug = old.debug
+	}
 	free, total, err := h.hk.space(h.root)
 	switch {
 	case err != nil:
@@ -226,7 +230,7 @@ func (p *pipeline) admit(e *event.Event) bool {
 	if g == nil {
 		return true
 	}
-	if pol := g.policy(e.Log); pol.Disabled || pol.MinLevel != 0 && e.Level > pol.MinLevel {
+	if pol := g.policy(e.Log); pol.Disabled || pol.MinLevel != 0 && e.Level > pol.MinLevel && !g.debugging(e.Log) {
 		return false
 	}
 	if g.shed > 0 && (e.Channel == event.Diagnostic || g.shed > 1 && e.Level > event.Warning) {

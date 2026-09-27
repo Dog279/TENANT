@@ -129,24 +129,31 @@ func TestCmdLog_TokenFileAndBuiltinSources(t *testing.T) {
 	}
 }
 
-// serve and the TUI attach <logs root>/logbook.db unless logs.store is false.
+// serve and the TUI always attach <logs root>/logbook.db: logs.store: false
+// is ignored since TEN-378, with a warning.
 func TestOpenLogHub_AttachesTheStore(t *testing.T) {
 	defer logs.Install(nil)
 	defer slog.SetDefault(slog.Default())
 	off := false
-	for _, tc := range []struct {
-		store *bool
-		want  bool
-	}{{nil, true}, {&off, false}} {
-		c := &commonFlags{dataDir: t.TempDir(), lc: &launchConfig{Logs: logsConfig{Store: tc.store}}}
+	for _, store := range []*bool{nil, &off} {
+		c := &commonFlags{dataDir: t.TempDir(), lc: &launchConfig{Logs: logsConfig{Store: store}}}
 		h, _, err := openLogHub(c, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, statErr := os.Stat(filepath.Join(c.dataDir, "logs", "logbook.db"))
-		if attached := h.Dropped() != nil; attached != tc.want || (statErr == nil) != tc.want {
-			t.Errorf("logs.store %v: attached %v (logbook.db: %v), want %v", tc.store, attached, statErr, tc.want)
+		if h.Store() == nil || statErr != nil {
+			t.Errorf("logs.store %v: attached %v (logbook.db: %v)", store, h.Store() != nil, statErr)
 		}
 		_ = h.Close()
+		files, _ := filepath.Glob(filepath.Join(c.dataDir, "logs", "logbook", "*.log"))
+		var warned bool
+		for _, f := range files {
+			b, _ := os.ReadFile(f)
+			warned = warned || strings.Contains(string(b), `"store": false} is ignored`)
+		}
+		if warned != (store != nil) {
+			t.Errorf("logs.store %v: warned %v", store, warned)
+		}
 	}
 }

@@ -397,13 +397,21 @@ func (s *Store) Get(ctx context.Context, seq uint64) (event.Event, error) {
 
 // LogInfo is one log the store holds.
 type LogInfo struct {
-	Name  string
-	Bytes int64 // the summed payload of its events: its share of the budget
+	Name                string
+	Events              int64     // how many it holds
+	Bytes               int64     // the summed payload of its events: its share of the budget
+	LastWrite           time.Time // its newest event's time; zero when it has none
+	Dropped, Suppressed int64     // events its writers had to drop or suppress
+	DebugUntil          time.Time // its timed debug switch is on until then (SetDebug); zero when never set
+	Cleared             time.Time // when it was last cleared; zero when never
 }
 
-// Logs lists every log that has events, by name.
+// Logs lists every log that has events or settings, by name.
 func (s *Store) Logs(ctx context.Context) ([]LogInfo, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT n.name, coalesce(l.bytes, 0) FROM logs l JOIN names n ON n.id = l.log_id ORDER BY n.name`)
+	rows, err := s.r.QueryContext(ctx, `SELECT n.name, (SELECT count(*) FROM events e WHERE e.log_id = l.log_id), coalesce(l.bytes, 0),
+		(SELECT max(e.time_ns) FROM events e WHERE e.log_id = l.log_id),
+		coalesce(l.dropped, 0), coalesce(l.suppressed, 0), l.debug_until_ns, l.cleared_ns
+		FROM logs l JOIN names n ON n.id = l.log_id ORDER BY n.name`)
 	if err != nil {
 		return nil, fmt.Errorf("store: logs: %w", err)
 	}
@@ -411,12 +419,22 @@ func (s *Store) Logs(ctx context.Context) ([]LogInfo, error) {
 	var out []LogInfo
 	for rows.Next() {
 		var li LogInfo
-		if err := rows.Scan(&li.Name, &li.Bytes); err != nil {
+		var last, debug, cleared sql.NullInt64
+		if err := rows.Scan(&li.Name, &li.Events, &li.Bytes, &last, &li.Dropped, &li.Suppressed, &debug, &cleared); err != nil {
 			return nil, fmt.Errorf("store: logs: %w", err)
 		}
+		li.LastWrite, li.DebugUntil, li.Cleared = nsTime(last), nsTime(debug), nsTime(cleared)
 		out = append(out, li)
 	}
 	return out, rows.Err()
+}
+
+// nsTime is a nanosecond column as a UTC time; zero when NULL.
+func nsTime(ns sql.NullInt64) time.Time {
+	if !ns.Valid {
+		return time.Time{}
+	}
+	return time.Unix(0, ns.Int64).UTC()
 }
 
 // Subscribe returns a channel of its own that is woken after every commit:

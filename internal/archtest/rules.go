@@ -50,6 +50,7 @@ var rules = []rule{
 	{Pkg: "internal/logs/store", May: []string{"internal/logs/event", "internal/logs/query", "internal/fsperm", "internal/datalock"}, Notes: "logbook.db, the system of record"},
 	{Pkg: "internal/logs", May: []string{"internal/logs/event", "internal/logs/store", "internal/fsperm", "internal/runtrace", "internal/datalock", "internal/version"}, Notes: "any package may log through it; never secrets: the composition root hands the store its key"},
 	{Pkg: "internal/logs/catalog", May: []string{"internal/logs/event"}, Notes: "the built-in event definitions"},
+	{Pkg: "internal/logs/logapi", May: []string{"internal/logs", "internal/logs/event", "internal/logs/store", "internal/logs/query", "internal/logs/catalog", "internal/runtrace", "internal/version"}, Notes: "the log book's HTTP API: the dashboard serves it, tenant logs runs it in process"},
 	{Pkg: "internal/logs/capture", May: []string{"internal/logs/event", "internal/runtrace"}, Notes: "child-process capture; every internal package may import it"},
 	{Pkg: "internal/research", May: []string{"internal/fsperm"}},
 	{Pkg: "internal/backup", May: []string{"internal/datalock", "internal/fsperm", "internal/secrets", "internal/version"}},
@@ -70,7 +71,7 @@ var rules = []rule{
 	{Pkg: "internal/approval", May: []string{"internal/agent", "internal/control", "internal/logs", "internal/runtrace"}, Notes: "the approval decision point; knows no plugin and no surface"},
 	{Pkg: "internal/toolmux", May: []string{"internal/agent", "internal/model", "internal/memory/cosine", "internal/plugins/mcpremote", "internal/peering", "internal/control"}, Notes: "the tool registry and dispatcher; builds no plugin itself"},
 	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/model"}, Notes: "never the dashboard"},
-	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/orchestra"}, Notes: "never the terminal UI"},
+	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/orchestra"}, Notes: "never the terminal UI"},
 }
 
 // everyone is one allowance on top of the rule that governs each internal

@@ -632,6 +632,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		rules:       dashRules{defaultToolRules},
 		broker:      evBroker,
 		logs:        hub,
+		runs:        st.runs,
 		log:         log.With("source", "dashboard"),
 		notify:      pushSys,
 		persist: func(enabled bool) error {

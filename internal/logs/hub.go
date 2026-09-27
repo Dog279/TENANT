@@ -247,7 +247,7 @@ func (h *Hub) now() time.Time { return h.opts.Now() }
 // reader and never panics: a file that cannot be written is noted on the
 // source (SourceInfo.Err) and the entry still reaches the ring.
 func (h *Hub) Log(e Entry) {
-	if e.Level < h.opts.MinLevel {
+	if e.Level < h.opts.MinLevel && !h.debugging(e.Source) {
 		return
 	}
 	if p := h.pipe.Load(); p != nil && p.logEntry(e) {

@@ -28,7 +28,7 @@ func installEmitter(h *Hub) {
 }
 
 func (em hubEmitter) Emit(ctx context.Context, e *event.Event) {
-	if e.Level.Slog() < em.h.opts.MinLevel {
+	if e.Level.Slog() < em.h.opts.MinLevel && !em.h.debugging(e.Log) {
 		return
 	}
 	enrich(ctx, e)

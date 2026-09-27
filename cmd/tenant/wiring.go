@@ -412,9 +412,10 @@ func limits(p store.Policy, maxMB, maxAgeDays int) store.Policy {
 // anywhere in the binary starts filing. The returned logger (the hub, teeing
 // to tee when non-nil) becomes slog.Default, which also carries the log
 // package: nothing a library prints that way reaches the terminal behind
-// the surface's back. Unless logs.store is false it also attaches
-// <logs root>/logbook.db, the system of record; a store that won't open
-// leaves a warning and the text files carrying on alone. When the book
+// the surface's back. It also attaches <logs root>/logbook.db, the system
+// of record, which the log book's API and tenant logs read: logs.store is
+// ignored since TEN-378, with a warning when it is false. A store that
+// won't open leaves a warning and the text files carrying on alone. When the book
 // cannot be opened, a memory hub stands in and err says why; the caller
 // shows it. The caller Starts the hub (discovery, tailing, retention) once
 // it has a lifetime context, and Closes it on exit, which flushes and closes
@@ -425,7 +426,10 @@ func openLogHub(c *commonFlags, tee slog.Handler) (*logs.Hub, *slog.Logger, erro
 		h = logs.NewMemory(0)
 	}
 	logs.Install(h)
-	if err == nil && (c.lc == nil || c.lc.Logs.Store == nil || *c.lc.Logs.Store) {
+	if err == nil && c.lc != nil && c.lc.Logs.Store != nil && !*c.lc.Logs.Store {
+		h.Logf("logbook", slog.LevelWarn, `logbook: "logs": {"store": false} is ignored; the log book always keeps logbook.db now (remove the key)`)
+	}
+	if err == nil {
 		st, serr := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID()})
 		if serr != nil {
 			h.Logf("logbook", slog.LevelWarn, "logbook: the store did not open; logging to the text files only", "err", serr)

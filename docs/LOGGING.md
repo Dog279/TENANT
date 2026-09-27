@@ -422,11 +422,15 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8770/api/logs/watcher" `
 | `POST` | `/api/addon/event` | legacy add-on line (`{"source","text","level"}`) — files under the add-on's name (not one of Tenant's own) |
 
 `/api/activity` returns `{"events", "cursor", "epoch"}`. Pass `cursor` back as
-`since` and `epoch` as `epoch` for a gap-free tail. Sequence numbers start at 1
-again when Tenant restarts, under a new epoch; a `since` from another epoch
-replays everything the hub kept, and a `since` with no `epoch` keeps its old
-meaning. With `limit=N`, at most N events come back and `cursor` is the last
-one's, so the next call continues after it.
+`since` and `epoch` as `epoch` for a gap-free tail. With `logbook.db` open,
+the cursor is the store's seq and the epoch its ID, so a cursor survives a
+restart; a `since` from another epoch (or none) replays the newest 10,000
+events. Without the store, sequence numbers start at 1 again when Tenant
+restarts, under a new epoch, and a `since` from another epoch replays
+everything the hub kept. A `since` with no `epoch` keeps its old meaning.
+With `limit=N`, at most N events come back and `cursor` is the last one's, so
+the next call continues after it. The log book's own API is in
+[The API](#the-api).
 
 **A process that only writes files** — drop a folder under the root and append
 to a `.log` file in it (`<root>/mytool/2026-09-22.log`). The hub discovers new
@@ -485,8 +489,9 @@ defer act.End(&err)
 `serve` and the TUI also keep every event in `<logs root>/logbook.db`, one
 SQLite database (WAL, `synchronous=FULL`, `fullfsync` on macOS). Each writes
 through its own connection, so both can share a data directory.
-`"logs": {"store": false}` turns it off (read at start); if it can't open, a
-`logbook` warning says so and the text files carry on alone.
+The store is always on: `"logs": {"store": false}`, v1's rollback switch, is
+ignored since TEN-378 and draws one `logbook` warning at start. If the store
+can't open, a `logbook` warning says so and the text files carry on alone.
 
 - **The write path.** An event joins one queue (64k events); one writer
   goroutine takes a batch every 100 ms or 512 events, scrubs it, caps its
@@ -577,6 +582,13 @@ full, a minimum level and an enabled switch. The defaults, by class:
   are not written; below 256 MB, only warnings and worse. The Security log
   always writes. Shed events count as dropped (`Hub.Dropped`), and crossing
   either line writes a `logbook` warning.
+- **The timed debug switch.** Each log has one (`logs.debug_until_ns`, set
+  by `tenant logs debug` or the API's `debug_for`, at most a day). While it is
+  on, the log's verbose events are written past the `logs.level` floor and
+  past the log's own minimum level; when it ends they stop again. Every
+  process reads it at its next housekeeper tick (the one that set it, at
+  once). With `logs.level: debug` every log's verbose events are written
+  anyway.
 - `runs.db` keeps its own retention (`runs.max_age_days`, `runs.max_count`).
 
 ### Turns, sub-agents and research
@@ -643,6 +655,56 @@ trend. On 1M events (`TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run
 TestQueryBudgets -v`) a page takes well under the budgets: 200 ms on indexed
 fields, 1 s for `data.<key>` and full text. `Count` over a field without an
 index reads every row it can't rule out, so it can take longer.
+
+### The API
+
+The dashboard serves the log book over HTTP (`internal/logs/logapi`), behind
+its bearer token and request limits. `tenant logs` runs the same handlers in
+its own process when it can open `logbook.db`, so the two have the same
+features.
+
+| Method | Path | What |
+|---|---|---|
+| `GET` | `/api/events?q=&cursor=&limit=&reverse=&count=` | `{"events", "next", "restarted", "count"}`: up to `limit` (100, at most 1000) matches after `cursor`, oldest first, or before it newest first with `reverse=1`; `count=1` adds how many match in all |
+| `GET` | `/api/events/{seq}` | `{"event", "spec", "help", "stats"}`: the event, its catalog entry and Help (Markdown), and `{count, first, last, trend}` |
+| `GET` | `/api/events/stream?q=` | Server-sent events: each message's `id` is the event's cursor and its data the event. It resumes after `Last-Event-ID` (or `?cursor=`) with no missed row; with neither it starts at the newest event. A cursor from another store sends `event: restart` and starts over. A comment line every 15 s keeps it open. |
+| `GET` | `/api/events/stats?q=&bucket=` | `{"buckets": [{start, log, level, n}]}`; `bucket` is a duration (`15m`, `1h`, `1d`), none counts all time |
+| `GET` | `/api/events/top?q=&n=` | `{"top": [{provider, id, n}]}`: the most frequent event IDs |
+| `GET` | `/api/events/timeline/{id}?depth=` | `{"id", "events", "run", "run_note"}`: a trace's or activity's timeline across every log, with the trace's `runs.db` record, or why there is none |
+| `GET` | `/api/events/export?q=&format=ndjson\|csv\|text` | every match, oldest first, after a header record (below) |
+| `POST` | `/api/events` | one event (JSON) or a batch (NDJSON, `Content-Type: application/x-ndjson`) from outside: `{"accepted": n}` |
+| `GET` | `/api/logbook/logs[/{log}]` | `{"logs": [{name, group, events, bytes, policy, last_write, dropped, suppressed, debug_until, cleared}]}`, or one log |
+| `PATCH` | `/api/logbook/logs/{log}` | `{max_bytes, max_age_s, on_full, min_level, enabled, debug_for, reset}`, each optional: the log's own policy (it wins over `config.json`; `reset` returns to it) and its debug switch (`"30m"`; `"0"` turns it off). `{log}` may name a provider. Answers the log. |
+| `POST` | `/api/logbook/logs/{log}/clear` | `{"log", "cleared": n}`; the Security log is never cleared (403) |
+| `GET` `POST` `DELETE` | `/api/logbook/views[/{name}]` | `{"views": [{name, filter, builtin}]}`: the built-ins (Administrative Events `level>=warning`, Security failures `log:security tag:audit.failure`, This run `boot:current`, Since last start) and the saved ones; `POST {name, filter}` saves one |
+| `GET` | `/api/logbook/catalog[/{provider}][?id=N]` | `{"version", "specs", "markdown"}`: the event reference |
+| `GET` | `/api/logbook/components` | `{"components": [{name, kind, log, state, since, last_error}]}`: what is running (empty until the component registry, TEN-380) |
+| `GET` | `/api/logbook/verify[?log=security]` | `{"ok", "problems", "note"}`: SQLite's integrity check; the Security log's chain check arrives with TEN-396 |
+
+- **Cursors** are `<store ID>.<seq>`. A restored or rebuilt `logbook.db` has
+  a new store ID, so a cursor from before it starts over, and `restarted`
+  (or the stream's `restart` message) says so.
+- **Sensitive values** are `«sensitive»` unless the request adds
+  `sensitive=1`; a reveal, an export, a clear and a settings change each
+  write a `logbook` event (TEN-398 moves them into `security`).
+- **Events from outside** (`POST /api/events`, the v1 `POST /api/logs/{source}`
+  and `/api/addon/event`, `tenant log`) are marked with keyword `external`.
+  They keep their log, message, level, time and data, and the `trace` and
+  `activity` a program Tenant started finds in `TENANT_TRACE_ID` and
+  `TENANT_ACTIVITY_ID`; an event ID, task, session, approval, tool call,
+  actor or surface is dropped, and so is a data field named like one of
+  them. `POST /api/events` files an event under `ext.` (`deploy` is
+  `ext.deploy`), and refuses (403) a log or provider that is Tenant's own:
+  `security`, anything under `tenant.`, a v1 source and every registered
+  provider and its log. A batch is taken or refused whole.
+- **Exports** start with a header record, the first NDJSON line
+  `{"export": {schema, catalog, tenant, filter, exported, host, sensitive}}`
+  (a `# tenant logbook export: …` line in CSV and text), so a file still makes
+  sense on another machine a year later.
+- **v1 routes** stay: `GET /api/activity` reads `logbook.db` when it is
+  open (its cursor is the store's seq and its epoch the store ID, so it
+  survives a restart; foreign folders reach it once they are filed into the
+  store), and the `/api/logs` routes list and serve the text files.
 
 ### Event IDs, the reference and coverage
 
