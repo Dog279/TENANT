@@ -46,7 +46,8 @@ var rules = []rule{
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
 	{Pkg: "internal/logs/event", Notes: "leaf: the event model; every internal package may import it"},
 
-	{Pkg: "internal/logs/store", May: []string{"internal/logs/event", "internal/fsperm", "internal/datalock"}, Notes: "logbook.db, the system of record"},
+	{Pkg: "internal/logs/query", May: []string{"internal/logs/event"}, Notes: "the filter language; the store plans it into SQL"},
+	{Pkg: "internal/logs/store", May: []string{"internal/logs/event", "internal/logs/query", "internal/fsperm", "internal/datalock"}, Notes: "logbook.db, the system of record"},
 	{Pkg: "internal/logs", May: []string{"internal/logs/event", "internal/logs/store", "internal/fsperm", "internal/runtrace", "internal/datalock", "internal/version"}, Notes: "any package may log through it; never secrets: the composition root hands the store its key"},
 	{Pkg: "internal/logs/catalog", May: []string{"internal/logs/event"}, Notes: "the built-in event definitions"},
 	{Pkg: "internal/logs/capture", May: []string{"internal/logs/event", "internal/runtrace"}, Notes: "child-process capture; every internal package may import it"},
