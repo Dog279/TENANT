@@ -137,7 +137,7 @@ func TestCorruptStoreQuarantined(t *testing.T) {
 			t.Fatalf("degraded %q, store %v", h.Degraded(), st)
 		}
 		id := st.StoreID()
-		r := attachReader(t, root)
+		r := readerAt(t, root)
 		waitFor(t, 5*time.Second, func() bool { return has(t, r, catalog.Quarantined) && has(t, r, catalog.LogbookOpened) })
 		for _, e := range all(t, r) {
 			if e.ID == catalog.Quarantined.Spec().ID && e.Provider == "logbook" &&
@@ -168,18 +168,6 @@ func TestCorruptStoreQuarantined(t *testing.T) {
 			t.Errorf("logbook file:\n%s", f)
 		}
 	})
-}
-
-// attachReader opens a second handle on <root>/logbook.db for the test to
-// read.
-func attachReader(t *testing.T, root string) *store.Store {
-	t.Helper()
-	r, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = r.Close() })
-	return r
 }
 
 // Each provider and event ID has its own bucket; an uncatalogued line's is
@@ -335,7 +323,7 @@ func TestDeadProcessReportedWhileAnotherRuns(t *testing.T) {
 	defer cancel()
 	tui.Start(ctx)
 	time.Sleep(10 * leaseEvery)
-	r := attachReader(t, root)
+	r := readerAt(t, root)
 	if has(t, r, catalog.Unexpected) {
 		t.Fatal("a live process was reported dead")
 	}

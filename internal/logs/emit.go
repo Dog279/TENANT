@@ -14,41 +14,32 @@ import (
 	"tenant/internal/version"
 )
 
-// hubEmitter files catalogued events (internal/logs/event) through a hub:
-// into its pipeline once a store is attached (pipeline.go), else as v1 lines.
-type hubEmitter struct{ h *Hub }
-
-// installEmitter makes h the event emitter; a nil hub uninstalls it.
-func installEmitter(h *Hub) {
-	if h == nil {
-		event.Install(nil)
-		return
-	}
-	event.Install(hubEmitter{h})
-}
-
-func (em hubEmitter) Emit(ctx context.Context, e *event.Event) {
-	if e.Level.Slog() < em.h.opts.MinLevel && !em.h.debugging(e.Log) {
+// Emit files e, a catalogued event (internal/logs/event), as the emitter
+// Install makes h: into its pipeline once a store is attached (pipeline.go),
+// else as a v1 line.
+func (h *Hub) Emit(ctx context.Context, e *event.Event) {
+	if e.Level.Slog() < h.opts.MinLevel && !h.debugging(e.Log) {
 		return
 	}
 	enrich(ctx, e)
-	if p := em.h.pipe.Load(); p != nil && p.enqueue(ctx, e) {
+	if p := h.pipe.Load(); p != nil && p.enqueue(ctx, e) {
 		return
 	}
-	em.h.Log(EntryFromEvent(*e))
+	h.Log(EntryFromEvent(*e))
 }
 
-// Audit returns once the record is committed to the store, with the commit's
-// error, which it reports (audited). ponytail: with no store attached it returns once the hub has the
-// line, as Emit does, and can't report a failed write.
-func (em hubEmitter) Audit(ctx context.Context, e *event.Event) error {
+// Audit files e as the event emitter's Audit: it returns once the record is
+// committed to the store, with the commit's error, which it reports
+// (audited). ponytail: with no store attached it returns once the hub has
+// the line, as Emit does, and can't report a failed write.
+func (h *Hub) Audit(ctx context.Context, e *event.Event) error {
 	enrich(ctx, e)
-	if p := em.h.pipe.Load(); p != nil {
+	if p := h.pipe.Load(); p != nil {
 		if err := p.audit(ctx, e); !errors.Is(err, errClosed) {
-			return em.h.audited(ctx, e, err)
+			return h.audited(ctx, e, err)
 		}
 	}
-	em.h.Log(EntryFromEvent(*e))
+	h.Log(EntryFromEvent(*e))
 	return nil
 }
 

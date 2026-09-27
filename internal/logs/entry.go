@@ -159,15 +159,8 @@ func (e Entry) Line() string {
 // UTF-8 is escaped as Go would quote it (\x1b, \u009b), so v1 parsers still
 // read the line and a terminal showing it runs no escape sequence.
 func flattenMsg(s string) string {
-	clean := true
-	for _, r := range s {
-		if unicode.IsControl(r) || r == utf8.RuneError {
-			clean = false
-			break
-		}
-	}
-	if clean {
-		return s
+	if strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || r == utf8.RuneError }) < 0 {
+		return s // already clean
 	}
 	var b strings.Builder
 	for i := 0; i < len(s); {

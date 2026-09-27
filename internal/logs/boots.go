@@ -126,7 +126,7 @@ func (h *Hub) CheckBoots(ctx context.Context) error {
 		return err
 	}
 	for _, b := range boots {
-		if !bootID(b.ID) { // it names files: never a path
+		if !ValidID(b.ID) { // it names files: never a path
 			continue
 		}
 		lockPath := filepath.Join(h.root, "boots", b.ID+".lock")
@@ -164,8 +164,9 @@ func (h *Hub) reportDead(ctx context.Context, st *store.Store, b store.Boot) {
 	h.emit(catalog.Unexpected, kv...)
 }
 
-// bootID reports whether id is in runtrace's form: 32 lowercase hex characters.
-func bootID(id string) bool {
+// ValidID reports whether id is in runtrace's form (a boot, trace or
+// activity ID): 32 lowercase hex characters.
+func ValidID(id string) bool {
 	b, err := hex.DecodeString(id)
 	return err == nil && len(b) == 16 && hex.EncodeToString(b) == id
 }

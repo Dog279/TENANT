@@ -19,7 +19,7 @@ func (h *Hub) audited(ctx context.Context, e *event.Event, err error) error {
 	if err == nil {
 		if n := h.auditFails.Swap(0); n > 0 {
 			catalog.AuditRecovered.Log(ctx, "failed", n)
-			h.notice(fmt.Sprintf("✅ security log: records are written again (%d were not; the text mirror has them)", n))
+			h.Notify(fmt.Sprintf("✅ security log: records are written again (%d were not; the text mirror has them)", n))
 		}
 		return nil
 	}
@@ -34,20 +34,10 @@ func (h *Hub) audited(ctx context.Context, e *event.Event, err error) error {
 		if deny {
 			effect = "gated actions are refused until records are written again"
 		}
-		h.notice(fmt.Sprintf("⚠ security log: an audit record could not be written (%v); %s (logs.security.on_failure: %s)", err, effect, policy))
+		h.Notify(fmt.Sprintf("⚠ security log: an audit record could not be written (%v); %s (logs.security.on_failure: %s)", err, effect, policy))
 	}
 	if deny {
 		return fmt.Errorf("%w: %w", event.ErrRefused, err)
 	}
 	return err
-}
-
-// notice gives the operator's status feed (OnAlert) a line.
-func (h *Hub) notice(s string) {
-	h.lb.mu.Lock()
-	fn := h.lb.alert
-	h.lb.mu.Unlock()
-	if fn != nil {
-		fn(s)
-	}
 }

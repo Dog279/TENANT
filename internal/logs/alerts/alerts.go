@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -96,7 +97,7 @@ type Rule struct {
 func Merge(specs []Spec) []Spec {
 	out := append([]Spec(nil), Builtin...)
 	for _, s := range specs {
-		i := indexOf(out[:len(Builtin)], s.Name)
+		i := slices.IndexFunc(out[:len(Builtin)], func(b Spec) bool { return b.Name == s.Name })
 		if i < 0 {
 			out = append(out, s)
 			continue
@@ -120,44 +121,29 @@ func Merge(specs []Spec) []Spec {
 }
 
 // IsBuiltin reports whether name is a built-in rule's.
-func IsBuiltin(name string) bool { return indexOf(Builtin, name) >= 0 }
-
-func indexOf(specs []Spec, name string) int {
-	for i, s := range specs {
-		if s.Name == name {
-			return i
-		}
-	}
-	return -1
+func IsBuiltin(name string) bool {
+	return slices.ContainsFunc(Builtin, func(s Spec) bool { return s.Name == name })
 }
 
 // Rules merges specs over Builtin and compiles the enabled rules. A rule
 // that doesn't compile is left out, and bad says why, by name.
 func Rules(specs []Spec) (rules []Rule, bad map[string]error) {
-	seen := map[string]bool{}
+	bad, seen := map[string]error{}, map[string]bool{}
 	for _, s := range Merge(specs) {
 		if seen[s.Name] {
-			bad = put(bad, s.Name, errors.New("two rules have this name"))
+			bad[s.Name] = errors.New("two rules have this name")
 			continue
 		}
 		seen[s.Name] = true
 		r, err := Compile(s)
 		switch {
 		case err != nil:
-			bad = put(bad, s.Name, err)
+			bad[s.Name] = err
 		case !s.Disabled:
 			rules = append(rules, r)
 		}
 	}
 	return rules, bad
-}
-
-func put(m map[string]error, k string, err error) map[string]error {
-	if m == nil {
-		m = map[string]error{}
-	}
-	m[k] = err
-	return m
 }
 
 // Compile checks s and compiles it.

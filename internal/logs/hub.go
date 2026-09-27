@@ -96,8 +96,9 @@ type Hub struct {
 
 	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
 	hk   housekeeper              // housekeeper.go
-	in   intakeState              // intake.go
 	lb   logbook                  // logbook.go
+
+	foreignSizes map[string]int64 // each foreign file's size at the intake's last run (intake.go)
 
 	auditFails atomic.Int64 // Security records not written since the last one that was (audit.go)
 }
@@ -270,13 +271,7 @@ func (h *Hub) Log(e Entry) {
 	if p := h.pipe.Load(); p != nil && p.logEntry(e) {
 		return // the pipeline scrubs, caps, mirrors and commits it
 	}
-	if !ValidSource(e.Source) {
-		if n := NormalizeSource(e.Source); n != "" {
-			e.Source = n
-		} else {
-			e.Source = DefaultSource
-		}
-	}
+	e.Source = cleanSource(e.Source)
 	if e.At.IsZero() {
 		e.At = h.now()
 	}

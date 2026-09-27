@@ -183,10 +183,7 @@ func (h *Hub) runChores(ctx context.Context) {
 // each log's policy, the rate limit and the free disk space. A crossing into
 // or out of low disk is logged.
 func (h *Hub) refresh(ctx context.Context, st *store.Store) {
-	g := &gate{budget: store.DefaultBudget()}
-	if h.opts.Budget != nil {
-		g.budget = h.opts.Budget()
-	}
+	g := &gate{budget: h.Budget()}
 	if h.opts.RateLimit != nil {
 		h.lb.lim.set(h.opts.RateLimit())
 	}

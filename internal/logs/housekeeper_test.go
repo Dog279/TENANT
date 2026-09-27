@@ -121,7 +121,7 @@ func TestLowDiskSheds(t *testing.T) {
 			} {
 				p.enqueue(ctx, &e)
 			}
-			dropped := h.Dropped()["x"]
+			dropped := h.unreportedDrops()["x"]
 			h.report(ctx, h.store(), time.Minute) // the minute's loss report
 			_ = h.Close()
 			if got := msgs(t, st, "x"); !slices.Equal(got, c.want) {

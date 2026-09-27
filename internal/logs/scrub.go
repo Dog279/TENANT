@@ -184,24 +184,15 @@ func inLower(words ...string) func(string, string) bool {
 }
 
 func containsAny(s string, words []string) bool {
-	for _, w := range words {
-		if strings.Contains(s, w) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(words, func(w string) bool { return strings.Contains(s, w) })
 }
 
 // secretField reports whether a field key names a credential (secretKey's
 // words, at its end): its value is replaced whole, whatever it looks like.
 func secretField(key string) bool {
 	k := strings.ToLower(key)
-	for _, w := range []string{"password", "passwd", "secret", "token", "apikey", "api_key", "api-key"} {
-		if strings.HasSuffix(k, w) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc([]string{"password", "passwd", "secret", "token", "apikey", "api_key", "api-key"},
+		func(w string) bool { return strings.HasSuffix(k, w) })
 }
 
 // discordShape is the Discord bot token hint: three dot-separated parts, the

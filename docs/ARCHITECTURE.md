@@ -598,7 +598,7 @@ guide: `docs/LOGGING.md`.
   `Commit(ctx, []event.Event)`, `Since(ctx, Cursor, limit)`, `Get`, `Logs`,
   `Subscribe`, `TryLease`. `Hub.AttachStore(st)` routes `Log` and the
   emitter through the pipeline (queue → writer: scrub, cap, text files,
-  commit, ring); `Hub.Dropped()` counts what a full queue dropped.
+  commit, ring); what a full queue drops is counted per log (`Hub.Summary`).
 - `internal/logs/query` is the filter language (`query.Parse`,
   `Filter.String`, `*SyntaxError` with the position); the store plans a
   filter into SQL and FTS5 and runs it: `Query` (cursor pages over seq, either

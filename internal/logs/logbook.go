@@ -86,7 +86,7 @@ type lossKey struct{ log, provider string }
 // hub is installed.
 func (h *Hub) emit(d *event.Def, kv ...any) {
 	ctx := context.Background()
-	hubEmitter{h}.Emit(ctx, d.Build(ctx, kv...))
+	h.Emit(ctx, d.Build(ctx, kv...))
 }
 
 // OpenStore opens <root>/logbook.db, the system of record, with the Security
@@ -295,7 +295,6 @@ func (p *pipeline) mirrored(err string) {
 func (p *pipeline) shedOne(e *event.Event) {
 	log := cleanSource(e.Log)
 	p.dmu.Lock()
-	p.dropped[log]++
 	p.shed[log]++
 	p.dmu.Unlock()
 }
@@ -304,7 +303,6 @@ func (p *pipeline) shedOne(e *event.Event) {
 func (p *pipeline) drop(e *event.Event) {
 	log := cleanSource(e.Log)
 	p.dmu.Lock()
-	p.dropped[log]++
 	p.recent[lossKey{log, e.Provider}]++
 	p.dmu.Unlock()
 }

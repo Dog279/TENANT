@@ -2,9 +2,7 @@ package logs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,11 +38,10 @@ type pipeline struct {
 	ctx        context.Context // the writer's; cancelled when the final flush runs out of time
 	cancel     context.CancelFunc
 
-	dmu     sync.Mutex
-	dropped map[string]uint64  // per log: events the full queue had no room for
-	recent  map[lossKey]uint64 // the same, per log and provider, since the last report (logbook.go)
-	shed    map[string]uint64  // per log: events low disk kept out since the last report
-	hwm     atomic.Int64       // the queue's deepest since the last report
+	dmu    sync.Mutex
+	recent map[lossKey]uint64 // per log and provider: events the full queue dropped since the last report (logbook.go)
+	shed   map[string]uint64  // per log: events low disk kept out since the last report
+	hwm    atomic.Int64       // the queue's deepest since the last report
 
 	out outage         // a failing store (logbook.go; writer goroutine only)
 	bg  sync.WaitGroup // an outage's import
@@ -72,19 +69,7 @@ func newPipeline(h *Hub, st *store.Store) *pipeline {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &pipeline{h: h, st: st, q: make(chan *event.Event, queueCap), urgent: make(chan auditReq),
 		stop: make(chan struct{}), done: make(chan struct{}), ctx: ctx, cancel: cancel,
-		dropped: map[string]uint64{}, recent: map[lossKey]uint64{}, shed: map[string]uint64{}}
-}
-
-// Dropped counts, per log, the events the pipeline had no room for: a full
-// queue, or low disk (housekeeper.go). Nil when no store is attached.
-func (h *Hub) Dropped() map[string]uint64 {
-	p := h.pipe.Load()
-	if p == nil {
-		return nil
-	}
-	p.dmu.Lock()
-	defer p.dmu.Unlock()
-	return maps.Clone(p.dropped)
+		recent: map[lossKey]uint64{}, shed: map[string]uint64{}}
 }
 
 // logEntry is Log for a hub with a store attached: the entry, cleaned as Log
@@ -215,25 +200,11 @@ func (p *pipeline) flush(batch []event.Event) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	scrub, max := &p.h.scrub, p.h.opts.MaxFieldBytes
 	entries := make([]Entry, 0, len(batch))
 	for i := range batch {
 		e := &batch[i]
-		e.Msg = scrub.ScrubCap(e.Msg, max) // 1, 2: scrub, then cap
-		for _, a := range attrs(e) {
-			*a.val = scrub.Field(a.key, *a.val, max)
-		}
-		for j, f := range e.Data {
-			switch v := f.Value.(type) {
-			case string:
-				e.Data[j].Value = scrub.Field(f.Key, v, max)
-			case json.RawMessage: // the store keeps it as text if this breaks its JSON
-				if s := scrub.Field(f.Key, string(v), max); s != string(v) {
-					e.Data[j].Value = json.RawMessage(s)
-				}
-			}
-		}
-		e.Log = cleanSource(e.Log) // it names a folder
+		p.h.scrubEvent(e, p.h.opts.MaxFieldBytes) // 1, 2: scrub, then cap
+		e.Log = cleanSource(e.Log)                // it names a folder
 		if e.Proc.PID == 0 {
 			e.Proc = process()
 		}

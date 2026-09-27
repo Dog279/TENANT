@@ -41,12 +41,6 @@ const (
 	foreignKey  = "intake.ext." // + the folder: its files' offsets
 )
 
-// intakeState is what the intake keeps between the runs of the process
-// holding the lease.
-type intakeState struct {
-	sizes map[string]int64 // each foreign file's size at the last run
-}
-
 // intake is the housekeeping task. The history is planned first, once the
 // store holds its first event, so nothing the intake files can move the
 // line between v1's history and what the store has.
@@ -66,22 +60,16 @@ func (h *Hub) intake(ctx context.Context) error {
 	return errors.Join(err, h.drainSpool(ctx, st), h.readForeign(ctx, st, own))
 }
 
-// tenantNames are the names only code inside the binary writes: the
-// Security log, the built-in sources, and every registered provider's name
-// and log. Anything under tenant. is reserved too (reserved).
-func tenantNames() map[string]bool {
-	names := map[string]bool{store.SecurityLog: true}
-	for n := range preferredOrder {
-		names[n] = true
+// Reserved reports whether name is Tenant's own, so no outside writer may use
+// it: the Security log, anything under tenant., a v1 built-in source, and
+// every registered provider and its log. name is normalized as a log name
+// first.
+func Reserved(name string) bool {
+	n := NormalizeSource(name)
+	if n == store.SecurityLog || n == "tenant" || strings.HasPrefix(n, "tenant.") || Builtin(n) {
+		return true
 	}
-	for _, p := range event.Providers() {
-		names[p.Name], names[p.Log] = true, true
-	}
-	return names
-}
-
-func reserved(names map[string]bool, name string) bool {
-	return names[name] || strings.HasPrefix(name, "tenant.")
+	return slices.ContainsFunc(event.Providers(), func(p *event.Provider) bool { return p.Name == n || p.Log == n })
 }
 
 // sealed logs are never filed from text: the Security log and tenant.*.
@@ -89,11 +77,18 @@ func sealed(name string) bool {
 	return name == store.SecurityLog || strings.HasPrefix(name, "tenant.")
 }
 
-// ownLogs are the logs whose folders are Tenant's mirror: tenantNames, every
-// log the store holds, and every log this process writes. The rest of the
+// ownLogs are the logs whose folders are Tenant's mirror: the Security log,
+// the built-in sources, every registered provider's name and log, every log
+// the store holds, and every log this process writes. The rest of the
 // folders are foreign.
 func (h *Hub) ownLogs(ctx context.Context, st *store.Store) (map[string]bool, error) {
-	own := tenantNames()
+	own := map[string]bool{store.SecurityLog: true}
+	for n := range preferredOrder {
+		own[n] = true
+	}
+	for _, p := range event.Providers() {
+		own[p.Name], own[p.Log] = true, true
+	}
 	held, err := st.Logs(ctx)
 	if err != nil {
 		return nil, err
@@ -252,7 +247,7 @@ func (h *Hub) importFile(ctx context.Context, st *store.Store, hs *history, key 
 // not be filed as another process's external log.
 func (h *Hub) readForeign(ctx context.Context, st *store.Store, own map[string]bool) error {
 	sizes := map[string]int64{}
-	defer func() { h.in.sizes = sizes }()
+	defer func() { h.foreignSizes = sizes }()
 	var errs []error
 	for _, dir := range h.folders() {
 		if log := NormalizeSource("ext." + dir); !own[dir] && !sealed(dir) && log != "" {
@@ -282,7 +277,7 @@ func (h *Hub) readFolder(ctx context.Context, st *store.Store, dir, log string, 
 			continue
 		}
 		sizes[path] = fi.Size()
-		limit, seen := h.in.sizes[path]
+		limit, seen := h.foreignSizes[path]
 		off := offs[name]
 		if off > fi.Size() {
 			off = 0 // cut short or rewritten: from the top, as the tail does
@@ -454,7 +449,8 @@ func (h *Hub) lineEvent(line, log, kw string, at time.Time, max int, recovered b
 }
 
 // scrubEvent scrubs e's message, attributes and text data, and cuts each at
-// max (<= 0: no cut), as the pipeline's flush does for what Tenant writes.
+// max (<= 0: no cut): the pipeline's flush, for what Tenant writes, and the
+// intake, for what it files.
 func (h *Hub) scrubEvent(e *event.Event, max int) {
 	sc := &h.scrub
 	e.Msg = sc.ScrubCap(e.Msg, max)
@@ -465,7 +461,7 @@ func (h *Hub) scrubEvent(e *event.Event, max int) {
 		switch v := f.Value.(type) {
 		case string:
 			e.Data[j].Value = sc.Field(f.Key, v, max)
-		case json.RawMessage:
+		case json.RawMessage: // the store keeps it as text if this breaks its JSON
 			if s := sc.Field(f.Key, string(v), max); s != string(v) {
 				e.Data[j].Value = json.RawMessage(s)
 			}
