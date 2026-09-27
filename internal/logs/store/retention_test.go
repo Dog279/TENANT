@@ -95,13 +95,13 @@ func TestRetainPrunesRollups(t *testing.T) {
 	if _, err := s.Retain(ctx, DefaultBudget(), time.Now().Add(31*day)); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, s, `SELECT count(*) FROM rollup`); n == 0 {
+	if n := count(t, s, `SELECT count(*) FROM rollup`) * count(t, s, `SELECT count(*) FROM rollup_hour`); n == 0 {
 		t.Error("rollups went before system's 90 days")
 	}
 	if _, err := s.Retain(ctx, DefaultBudget(), time.Now().Add(91*day)); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, s, `SELECT count(*) FROM rollup`); n != 0 {
+	if n := count(t, s, `SELECT (SELECT count(*) FROM rollup) + (SELECT count(*) FROM rollup_hour) + (SELECT count(*) FROM rollup_id)`); n != 0 {
 		t.Errorf("%d rollups left past every log's retention", n)
 	}
 }

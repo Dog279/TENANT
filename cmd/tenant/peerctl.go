@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/mcp"
 	"tenant/internal/model"
 	"tenant/internal/peering"
@@ -556,6 +557,7 @@ func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps,
 	defer func() {
 		if err != nil {
 			peering.ListenerNotStarted.Log(ctx, "addr", addr, "err", err)
+			lifecycle.Track(ctx, "peer listener", lifecycle.Server, "peering", lifecycle.Failed, err)
 		}
 	}()
 	store, err := peering.LoadStore(c.cfgDir)
@@ -593,8 +595,13 @@ func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps,
 		return "", nil, err
 	}
 	cctx, cancel := context.WithCancel(ctx)
-	go func() { _ = ln.Serve(cctx, netLn) }() // Serve logs how it stopped
-	return netLn.Addr().String(), cancel, nil
+	comp := lifecycle.Track(ctx, "peer listener", lifecycle.Server, "peering", lifecycle.Running, nil)
+	go func() { // Serve logs how it stopped
+		if err := ln.Serve(cctx, netLn); err != nil && cctx.Err() == nil {
+			comp.Set(lifecycle.Failed, err)
+		}
+	}()
+	return netLn.Addr().String(), func() { cancel(); comp.Set(lifecycle.Stopped, nil) }, nil
 }
 
 // peerQuery dials a paired peer and runs one knowledge query against it

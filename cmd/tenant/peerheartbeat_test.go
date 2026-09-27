@@ -214,8 +214,19 @@ func TestPeerHealthMonitor_LogsUnreadablePeersOnce(t *testing.T) {
 	m := &peerHealthMonitor{cfgDir: dir, reg: newPeerHealthRegistry()}
 	m.probeAll(context.Background())
 	m.probeAll(context.Background())
-	es, _ := hub.Snapshot()
+	all, _ := hub.Snapshot()
+	var es, sys []logs.Entry
+	for _, e := range all {
+		if e.Source == "system" {
+			sys = append(sys, e) // the heartbeat's component, degraded
+		} else {
+			es = append(es, e)
+		}
+	}
 	if len(es) != 1 || es[0].Field("event") != "peering/2202" || es[0].Source != "peering" {
 		t.Errorf("want one peering/2202 over two rounds, got %+v", es)
+	}
+	if len(sys) != 1 || sys[0].Field("event") != "system/2101" {
+		t.Errorf("want the heartbeat degraded once, got %+v", sys)
 	}
 }

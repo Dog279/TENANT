@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
@@ -117,9 +118,13 @@ func (r *imessageResponder) drain(ctx context.Context) {
 	if err != nil {
 		if err.Error() != r.pollErr {
 			imessage.PollFailed.Log(ctx, "err", err)
+			trackIMessage(ctx, lifecycle.Degraded, err)
 		}
 		r.pollErr = err.Error()
 		return
+	}
+	if r.pollErr != "" {
+		trackIMessage(ctx, lifecycle.Running, nil) // polls work again
 	}
 	r.pollErr = ""
 	for _, m := range msgs {
@@ -297,6 +302,12 @@ type imessageResponderManager struct {
 	cleanup func()
 }
 
+// trackIMessage files the responder's state in the Components view
+// (lifecycle): running, degraded while chat.db can't be polled, stopped.
+func trackIMessage(ctx context.Context, st lifecycle.State, err error) {
+	lifecycle.Track(ctx, "imessage responder", lifecycle.Connector, "imessage", st, err)
+}
+
 // On reports whether the responder loop is currently running.
 func (m *imessageResponderManager) On() bool {
 	m.mu.Lock()
@@ -317,6 +328,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 	}
 	r, cleanup, err := m.buildFn(allow)
 	if err != nil {
+		trackIMessage(m.base, lifecycle.Failed, err)
 		return "", err
 	}
 	base := m.base
@@ -325,6 +337,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 	}
 	ctx, cancel := context.WithCancel(base)
 	m.cancel, m.cleanup, m.running = cancel, cleanup, true
+	trackIMessage(base, lifecycle.Running, nil)
 	go r.Run(ctx)
 	if m.persist != nil {
 		if perr := m.persist(true); perr != nil {
@@ -348,6 +361,7 @@ func (m *imessageResponderManager) Stop() (string, error) {
 		m.cleanup()
 	}
 	m.cancel, m.cleanup, m.running = nil, nil, false
+	trackIMessage(m.base, lifecycle.Stopped, nil)
 	if m.persist != nil {
 		if perr := m.persist(false); perr != nil {
 			return "", errNotSaved("imessage responder OFF", perr)

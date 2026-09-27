@@ -143,7 +143,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
 | `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes, and the events every plugin has |
-| `internal/lifecycle` | `internal/logs/catalog` | the staged shutdown of a long-running command, filed in the system log |
+| `internal/lifecycle` | `internal/logs/catalog` | the staged shutdown of a long-running command, filed in the system log, and the registry of what is running |
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
@@ -152,7 +152,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/logs/store` | `internal/logs/event`, `internal/logs/query`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
 | `internal/logs` | `internal/logs/event`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
 | `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
-| `internal/logs/capture` | `internal/logs/event`, `internal/runtrace` | child-process capture; every internal package may import it |
+| `internal/logs/capture` | `internal/logs/event`, `internal/runtrace`, `internal/lifecycle` | child-process capture; every internal package may import it; a running child is a lifecycle component |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
@@ -601,7 +601,13 @@ guide: `docs/LOGGING.md`.
   `Filter.String`, `*SyntaxError` with the position); the store plans a
   filter into SQL and FTS5 and runs it: `Query` (cursor pages over seq, either
   way), `Count`, `Stats` (from the rollups when the filter allows), `TopIDs`,
-  `Timeline` (the trace/activity pivot) and `EventStats`.
+  `Timeline` (the trace/activity pivot) and `EventStats`. `Summary(ctx,
+  budget, now)` is the Summary page, from the per-hour rollups
+  (`Hub.Summary(ctx, now)` with the budget in force).
+- `internal/lifecycle` also keeps what is running: `Track(ctx, name, kind,
+  log, state, err)`, `Group.Start`/`StartFunc` (a stop that tracks),
+  `Comp.Set` and the snapshot `Components()`; each state change is a
+  `system` event (TEN-380).
 
 **Invariants:** never blocks a producer on a reader; a file that cannot be
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches

@@ -15,6 +15,9 @@
 // sandbox backend, fed through the sandbox's hooks (EnvPolicy.Add takes
 // Env, Policy.Stderr takes the Child), so every backend is captured the same
 // way.
+//
+// While it runs, a child is a component (internal/lifecycle): the Components
+// view lists it, and its start and end are system events.
 package capture
 
 import (
@@ -29,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
 	"tenant/internal/runtrace"
 )
@@ -67,6 +71,7 @@ type Child struct {
 	tokens  float64
 	refill  time.Time
 	dropped int
+	comp    *lifecycle.Comp // while it runs
 }
 
 // New describes a child about to start. Its lines go into log, each tagged
@@ -93,10 +98,22 @@ func (c *Child) Env() []string {
 // Started files the start line, with kv (pid, backend, limits…), and starts
 // the clock the exit line's duration is measured by.
 func (c *Child) Started(kv ...any) {
+	comp := lifecycle.Track(c.ctx, c.name(), lifecycle.Child, c.log, lifecycle.Running, nil)
 	c.mu.Lock()
-	c.started, c.running = time.Now(), true
+	c.started, c.running, c.comp = time.Now(), true, comp
 	c.mu.Unlock()
 	c.file(event.Info, "process started", kv)
+}
+
+// name is the child's name in the Components view: its first tag's value
+// (the server's or the child's name, or the sandbox's surface), else its log.
+func (c *Child) name() string {
+	if len(c.tags) > 1 {
+		if s, ok := c.tags[1].(string); ok && s != "" {
+			return s
+		}
+	}
+	return c.log
 }
 
 // Write files each line of what the child writes to stderr.
@@ -176,7 +193,7 @@ func (c *Child) Exited(err error, kv ...any) {
 	}
 	c.partial, c.cut = nil, false
 	c.flushDropped()
-	running, took := c.running, time.Since(c.started)
+	running, took, comp := c.running, time.Since(c.started), c.comp
 	c.mu.Unlock()
 
 	lvl, msg := event.Info, "process exited"
@@ -202,6 +219,16 @@ func (c *Child) Exited(err error, kv ...any) {
 		fields = append(fields, "duration", took)
 	}
 	c.file(lvl, msg, append(fields, kv...))
+	st := lifecycle.Stopped
+	if lvl == event.Warning {
+		st = lifecycle.Failed
+	}
+	switch {
+	case comp != nil:
+		comp.Set(st, err)
+	case st == lifecycle.Failed: // it never ran: filed, never listed
+		lifecycle.Track(c.ctx, c.name(), lifecycle.Child, c.log, st, err)
+	}
 }
 
 // Run runs cmd as this child: its environment gets Env, and its start and
