@@ -126,8 +126,8 @@ func TestEveryLinkIsKeyed(t *testing.T) {
 	wantBreak(t, v, 1, "logbook.db", "hash does not match")
 }
 
-// Without the key no security record is written: the whole batch is
-// refused, and the Audit caller gets ErrNoChainKey. Other logs still commit.
+// Without the key no security record is written, and the Audit caller gets
+// ErrNoChainKey; the batch's other events still commit.
 func TestNoKeyNoSecurityRecord(t *testing.T) {
 	s, err := Open(tempDB(t), Options{})
 	if err != nil {
@@ -137,8 +137,8 @@ func TestNoKeyNoSecurityRecord(t *testing.T) {
 	if err := s.Commit(ctx, []event.Event{ev("turns", "a"), ev(SecurityLog, "b")}); !errors.Is(err, ErrNoChainKey) {
 		t.Fatalf("commit without a key = %v, want ErrNoChainKey", err)
 	}
-	if n := count(t, s, `SELECT count(*) FROM events`); n != 0 {
-		t.Errorf("the refused batch left %d rows", n)
+	if n := count(t, s, `SELECT count(*) FROM events`); n != 1 {
+		t.Errorf("the batch left %d rows, want only its turns event", n)
 	}
 	if err := s.Commit(ctx, []event.Event{ev("turns", "c")}); err != nil {
 		t.Errorf("a batch with no security record: %v", err)

@@ -234,6 +234,12 @@ func (p *pipeline) flush(batch []event.Event) error {
 	}
 	p.h.mirror(entries)
 	err := p.st.Commit(p.ctx, batch)
+	if errors.Is(err, store.ErrNoChainKey) {
+		// Only the batch's security records were refused, and their callers
+		// hear it; the store itself is working.
+		p.h.feed(entries)
+		return err
+	}
 	if err != nil && !p.failing {
 		warn := Entry{At: p.h.now(), Source: "logbook", Level: slog.LevelWarn,
 			Msg: "logbook: the store could not commit; the text files still have these events", Fields: []Field{{Key: "err", Value: err.Error()}}}

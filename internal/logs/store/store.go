@@ -68,6 +68,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -304,6 +305,9 @@ func (s *Store) Close() error {
 func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 	if len(batch) == 0 {
 		return nil
+	}
+	if len(s.key) == 0 && slices.ContainsFunc(batch, func(e event.Event) bool { return e.Log == SecurityLog }) {
+		return s.commitWithoutSecurity(ctx, batch)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -548,4 +552,25 @@ func Reidentify(path string) error {
 	id := hex.EncodeToString(b[:])
 	_, err = s.w.Exec(`UPDATE meta SET value = ? WHERE key = 'store_id'`, id)
 	return errors.Join(err, s.Close())
+}
+
+// commitWithoutSecurity commits a batch's other events when the store has no
+// chain key: an unchained security record is never written, but it must not
+// cost the rest of the batch their place. It returns ErrNoChainKey, so an
+// Audit caller learns its record was refused; the text mirror has it.
+func (s *Store) commitWithoutSecurity(ctx context.Context, batch []event.Event) error {
+	var keep []event.Event
+	var at []int
+	for i := range batch {
+		if batch[i].Log != SecurityLog {
+			keep, at = append(keep, batch[i]), append(at, i)
+		}
+	}
+	if err := s.Commit(ctx, keep); err != nil {
+		return err
+	}
+	for j, i := range at {
+		batch[i].Seq, batch[i].Time = keep[j].Seq, keep[j].Time
+	}
+	return ErrNoChainKey
 }
