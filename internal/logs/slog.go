@@ -20,8 +20,12 @@ var defaultHub atomic.Pointer[Hub]
 var fallback slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})
 
 // Install makes h the hub that For loggers (and anything else asking for
-// Default) write to. Call once at startup, right after Open.
-func Install(h *Hub) { defaultHub.Store(h) }
+// Default) write to, and the emitter of catalogued events (emit.go). Call
+// once at startup, right after Open.
+func Install(h *Hub) {
+	defaultHub.Store(h)
+	installEmitter(h)
+}
 
 // Default returns the installed hub, or nil before Install.
 func Default() *Hub { return defaultHub.Load() }

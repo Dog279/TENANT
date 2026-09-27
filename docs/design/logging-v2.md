@@ -273,7 +273,7 @@ type Event struct {
 }
 
 func NewProvider(name, log string) *Provider
-func (p *Provider) Event(id uint32, lvl Level, task, tmpl string, fields ...string) *Def // chain .Sensitive(), .Doc(), .Keywords()
+func (p *Provider) Event(id uint32, lvl Level, task, tmpl string, fields ...string) *Def // chain .Sensitive(), .Doc(meaning, cause, action), .Keywords(), .Diagnostic(), .Retired()
 func (d *Def) Log(ctx context.Context, kv ...any)          // queued; never blocks
 func (d *Def) Audit(ctx context.Context, kv ...any) error  // security: returns after the commit
 func Start(ctx context.Context, d *Def, kv ...any) (context.Context, *Activity)
@@ -496,7 +496,7 @@ The operational channel of every Tenant log is also written, in the v1 line form
   - `trace_id` is minted for each turn (TEN-300);
   - `activity_id` is minted for each non-turn operation;
   - `boot_id` is minted for each process start.
-- **The context carries them.** The slog handler reads the trace from `runtrace.IDFromContext(ctx)` and the activity from `logs.ActivityFromContext(ctx)`, so any `log.InfoContext(ctx, …)` line is correlated with no extra arguments. A lint rule prefers the `…Context` calls in any function that has a `ctx`.
+- **The context carries them.** The slog handler reads the trace from `runtrace.IDFromContext(ctx)` and the activity from `event.ActivityFromContext(ctx)`, so any `log.InfoContext(ctx, …)` line is correlated with no extra arguments. A lint rule prefers the `…Context` calls in any function that has a `ctx`.
 - **Activities** wrap operations that are not turns: a cron job run, a Discord delivery, an MCP server's lifetime, a backup, a privacy sweep, a dashboard request or a peer RPC. One line of code starts one:
 
   ```go
@@ -1081,7 +1081,7 @@ LOG-006 goes first. LOG-002 and LOG-003 start persisting new output (OAuth print
 
 | ID | Ticket | Acceptance criteria | Size |
 |---|---|---|---|
-| LOG-040 | Catalog tooling | <ul><li>The definition API.</li><li>A generator for `docs/EVENTS.md`, with a drift test.</li><li>A coverage figure per provider: the share of *static* warning-and-above call sites that carry an ID, counted by a test that parses each package.</li><li>An archtest ratchet.</li><li>Discovery questions 5 and 7 pass.</li></ul> | M |
+| LOG-040 | Catalog tooling | <ul><li>The definition API (in place since LOG-010): every definition documented with `Doc(meaning, cause, action)`, all three required.</li><li>A generator for `docs/EVENTS.md`, with a drift test.</li><li>A coverage figure per provider: the share of *static* warning-and-above call sites that carry an ID, counted by a test that parses each package.</li><li>An archtest ratchet.</li><li>Discovery questions 5 and 7 pass.</li></ul> | M |
 | LOG-041 … LOG-053 | One ticket per provider group:<ul><li>system and lifecycle;</li><li>turns and sub-agents, including the bus;</li><li>Discord and iMessage;</li><li>cron;</li><li>MCP, remote and local;</li><li>sandbox and exec;</li><li>model and router;</li><li>memory and improve;</li><li>dashboard requests and auth;</li><li>peering;</li><li>plugins, through an `Events` field on the TEN-321 descriptor;</li><li>backup, privacy and skills;</li><li>eval.</li></ul> | For each provider: <ul><li>its main operations are wrapped in activities;</li><li>at least 90% of its static warning-and-above call sites carry a catalogued ID, each with a meaning, a cause and an action;</li><li>its log shows up in the right tree group.</li></ul> | S–M each |
 
 ### Phase 5: the Security log (M5)
@@ -1266,7 +1266,9 @@ var (
     StoppedOK   = System.Event(2,    event.Info,     "Lifecycle", "Tenant stopped cleanly after {uptime}", "uptime")
     Unexpected  = System.Event(3,    event.Critical, "Lifecycle", "The previous run ended unexpectedly; its last event was at {last}", "last", "boot")
     CompFailed  = System.Event(3101, event.Error,   "Component", "{component} failed: {err}", "component", "err").
-        Doc("A subsystem stopped with an error.", "Open the component's log; the event before this one usually names the cause.")
+        Doc("A subsystem stopped with an error.",                                           // what it means
+            "Something it depends on failed: a connection, a file or its configuration.",   // why it happens
+            "Open the component's log; the event before this one usually names the cause.") // what to do
 
     ApprovalAsk = Security.Event(4101, event.Info,    "Approval", "Approval {approval} requested: {action}", "approval", "category", "action", "surface")
     ApprovalNo  = Security.Event(4103, event.Warning, "Approval", "Approval {approval} denied: {action}", "approval", "action", "surface", "actor").

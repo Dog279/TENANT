@@ -44,8 +44,10 @@ var rules = []rule{
 	{Pkg: "internal/skillpkg", Notes: "leaf: the Agent Skills package format (SKILL.md)"},
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
+	{Pkg: "internal/logs/event", Notes: "leaf: the event model; every internal package may import it"},
 
-	{Pkg: "internal/logs", May: []string{"internal/fsperm"}, Notes: "any package may log through it"},
+	{Pkg: "internal/logs", May: []string{"internal/logs/event", "internal/fsperm", "internal/runtrace", "internal/datalock", "internal/version"}, Notes: "any package may log through it; never secrets: the composition root hands the store its key"},
+	{Pkg: "internal/logs/catalog", May: []string{"internal/logs/event"}, Notes: "the built-in event definitions"},
 	{Pkg: "internal/research", May: []string{"internal/fsperm"}},
 	{Pkg: "internal/backup", May: []string{"internal/datalock", "internal/fsperm", "internal/secrets", "internal/version"}},
 	{Pkg: "internal/peering", May: []string{"internal/httplimits", "internal/secrets"}},
@@ -67,6 +69,12 @@ var rules = []rule{
 	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/model"}, Notes: "never the dashboard"},
 	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/orchestra"}, Notes: "never the terminal UI"},
 }
+
+// everyone is one allowance on top of the rule that governs each internal
+// package: the event model, so an event is written where the action happens
+// without widening the rules for the heavy logs packages. reference/** and
+// scripts/** stay out of it: they must build on their own.
+var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event"}, Notes: "on top of its own row: the event model, so an event is written where the action happens"}
 
 // match reports whether module-relative package path pkg matches pattern.
 func match(pattern, pkg string) bool {
@@ -110,14 +118,7 @@ func violations(graph map[string][]string, rs []rule) []string {
 			continue
 		}
 		for _, imp := range graph[p] {
-			allowed := false
-			for _, m := range r.May {
-				if match(m, imp) {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
+			if !allows(r, imp) && !(match(everyone.Pkg, p) && allows(everyone, imp)) {
 				out = append(out, fmt.Sprintf("%s imports %s, which its rule (%s) does not allow", p, imp, r.Pkg))
 			}
 		}
@@ -125,11 +126,22 @@ func violations(graph map[string][]string, rs []rule) []string {
 	return out
 }
 
-// table renders rs as the markdown table in docs/ARCHITECTURE.md §2.
+// allows reports whether r lets its packages import imp.
+func allows(r rule, imp string) bool {
+	for _, m := range r.May {
+		if match(m, imp) {
+			return true
+		}
+	}
+	return false
+}
+
+// table renders everyone, then rs, as the markdown table in
+// docs/ARCHITECTURE.md §2.
 func table(rs []rule) string {
 	var b strings.Builder
 	b.WriteString("| Package | May import | Note |\n|---|---|---|\n")
-	for _, r := range rs {
+	for i, r := range append([]rule{everyone}, rs...) {
 		may := "nothing in the module"
 		switch {
 		case len(r.May) == 1 && r.May[0] == "**":
@@ -141,7 +153,11 @@ func table(rs []rule) string {
 			}
 			may = strings.Join(parts, ", ")
 		}
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", r.Pkg, may, r.Notes)
+		pkg := "`" + r.Pkg + "`"
+		if i == 0 {
+			pkg = "every `" + r.Pkg + "` package"
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s |\n", pkg, may, r.Notes)
 	}
 	return b.String()
 }

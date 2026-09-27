@@ -196,6 +196,33 @@ obs := func(e agent.Event) {
 }
 ```
 
+## Catalogued events (logging v2, in progress)
+
+Logging v2 (`docs/design/logging-v2.md`) gives every event an ID, documented
+once in a catalog. The event model, `internal/logs/event`, imports nothing
+else from Tenant, so any internal package can emit where the action happens:
+
+```go
+var Cron = event.NewProvider("cron", "cron") // a provider writes one log
+var JobFailed = Cron.Event(3001, event.Error, "Job run", "Job {job} failed: {err}", "job", "err").
+    Doc("A scheduled job failed.", "Its command or prompt returned an error.", "Open the job's run in the cron log.")
+
+JobFailed.Log(ctx, "job", name, "err", err)       // never blocks
+ctx, act := event.Start(ctx, JobRun, "job", name) // start … stop (with duration) or fail
+defer act.End(&err)
+```
+
+- **Definitions** are checked when they register (at package init): an ID is
+  unique in its provider, and the template names only declared fields that
+  aren't sensitive. The built-in ones are in `internal/logs/catalog`.
+- **Until the store lands,** events are written to the same folders as v1
+  lines. The log is the folder. The event's ID, task, opcode and correlation
+  IDs come first among the fields: `event=cron/3001 task="Job run" trace=… activity=…`.
+  A critical event is written as `ERROR` with `severity=critical`, and a
+  sensitive field as `«sensitive»`, never its value.
+- `Audit` is for records that must not be lost. For now it returns once the
+  line is written; the Security log's store will make it wait for its commit.
+
 ## Reading it back programmatically
 
 `logs.ParseLine` inverts the format, so another tool (or an AI pulling logs)
