@@ -143,7 +143,7 @@ func TestV1WritesAreExternal(t *testing.T) {
 					t.Errorf("%s: %+v", e.Log, e)
 				}
 			}
-			if evs[1].Log != "sentinel" || !slices.ContainsFunc(evs[1].Data, func(f event.Field) bool { return f.Key == "ev" && f.Value == "addon" }) {
+			if evs[1].Log != "ext.sentinel" || !slices.ContainsFunc(evs[1].Data, func(f event.Field) bool { return f.Key == "ev" && f.Value == "addon" }) {
 				t.Errorf("addon event = %+v", evs[1])
 			}
 			return

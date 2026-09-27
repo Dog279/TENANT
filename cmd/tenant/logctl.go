@@ -84,9 +84,13 @@ func cmdLog(ctx context.Context, args []string) error {
 		fields[k] = v
 	}
 
+	filed := source // the log it lands in: outside writers file under ext.
+	if !strings.HasPrefix(filed, "ext.") {
+		filed = logs.NormalizeSource("ext." + filed)
+	}
 	if !*direct {
 		if err := logPost(ctx, httpc, base, tok, source, lvl, msg, fields); err == nil {
-			fmt.Printf("logged to %s via %s\n", source, base)
+			fmt.Printf("logged to %s via %s\n", filed, base)
 			return nil
 		} else if !isConnErr(err) {
 			return fmt.Errorf("log: hub rejected the line: %w", err)
@@ -108,7 +112,7 @@ func cmdLog(ctx context.Context, args []string) error {
 		if err := logs.Spool(c.logsRoot(), ev); err != nil {
 			return fmt.Errorf("log: %w", err)
 		}
-		fmt.Printf("spooled to %s (no hub reachable; Tenant files it from %s when it runs)\n", source, c.logsRoot())
+		fmt.Printf("spooled to %s (no hub reachable; Tenant files it from %s when it runs)\n", filed, c.logsRoot())
 		return nil
 	}
 	h, err := logs.Open(c.logsRoot(), c.logsOptions())

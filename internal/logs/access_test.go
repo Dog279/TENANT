@@ -66,7 +66,7 @@ func TestLogExternal(t *testing.T) {
 		t.Fatalf("got %d events", len(evs))
 	}
 	e := evs[0]
-	if e.Log != "deploy" || e.Provider != "deploy" || e.ID != 0 || e.Corr.ApprovalID != "" || e.Actor != "" ||
+	if e.Log != "ext.deploy" || e.Provider != "ext.deploy" || e.ID != 0 || e.Corr.ApprovalID != "" || e.Actor != "" ||
 		e.Corr.TraceID != "0123456789abcdef0123456789abcdef" || !slices.Equal(e.Keywords, []string{"external"}) ||
 		len(e.Data) != 1 || e.Data[0].Key != "host" || e.Level != event.Warning {
 		t.Errorf("event = %+v", e)

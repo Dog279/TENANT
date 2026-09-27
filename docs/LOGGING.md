@@ -1096,13 +1096,15 @@ features.
   operator and the surface: `dashboard`, or `cli` for `tenant logs` reading
   locally.
 - **Events from outside** (`POST /api/events`, the v1 `POST /api/logs/{source}`
-  and `/api/addon/event`, `tenant log`) are marked with keyword `external`.
-  They keep their log, message, level, time and data, and the `trace` and
-  `activity` a program Tenant started finds in `TENANT_TRACE_ID` and
-  `TENANT_ACTIVITY_ID`; an event ID, task, session, approval, tool call,
-  actor or surface is dropped, and so is a data field named like one of
-  them. `POST /api/events` files an event under `ext.` (`deploy` is
-  `ext.deploy`), and refuses (403) a log or provider that is Tenant's own:
+  and `/api/addon/event`, `tenant log`, the spool, other programs' folders)
+  are marked with keyword `external` and filed under `ext.`: `deploy` is
+  `ext.deploy`, in the viewer's External group and the `ext.deploy/` folder,
+  whichever way it arrived. They keep their message, level, time and data,
+  and the `trace` and `activity` a program Tenant started finds in
+  `TENANT_TRACE_ID` and `TENANT_ACTIVITY_ID`; an event ID, task, session,
+  approval, tool call, actor or surface is dropped, and so is a data field
+  named like one of them. `POST /api/events` refuses (403) a log or provider
+  that is Tenant's own:
   `security`, anything under `tenant.`, a v1 source and every registered
   provider and its log. A batch is taken or refused whole.
 - **Exports** start with a header record, the first NDJSON line

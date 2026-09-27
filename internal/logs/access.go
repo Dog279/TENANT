@@ -2,6 +2,7 @@ package logs
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"tenant/internal/logs/event"
@@ -45,11 +46,15 @@ func (h *Hub) Audit(ctx context.Context, e *event.Event) error { return hubEmitt
 // (docs/design/logging-v2.md §10.4): the log, message, level, time and data,
 // and the trace and activity it runs under, which it has from its
 // environment. It becomes an uncatalogued event of its log's own provider,
-// with keyword external. Whatever else it claimed (an event ID, a task, the
+// with keyword external, under ext.<log>. Whatever else it claimed (an event ID, a task, the
 // session, approval or tool call it belongs to, an actor, a surface, a
 // channel, a process) is dropped: nothing can vouch for it.
 func External(e *event.Event) {
-	*e = event.Event{Log: e.Log, Provider: e.Log, Time: e.Time, Level: e.Level, Msg: e.Msg, Data: e.Data,
+	log := e.Log
+	if !strings.HasPrefix(log, "ext.") {
+		log = NormalizeSource("ext." + log) // External, in the viewer's tree (§3, §6.4)
+	}
+	*e = event.Event{Log: log, Provider: log, Time: e.Time, Level: e.Level, Msg: e.Msg, Data: e.Data,
 		Keywords: []string{KeywordExternal}, Corr: event.Correlation{TraceID: e.Corr.TraceID, ActivityID: e.Corr.ActivityID}}
 }
 

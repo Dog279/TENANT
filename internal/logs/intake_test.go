@@ -228,7 +228,7 @@ func TestSpoolIsClaimedFiledAndDeleted(t *testing.T) {
 	}
 	dir := filepath.Join(root, spoolDir)
 	writeFile(t, filepath.Join(dir, "w.tmp"), `{"log":"deploy","msg":"half`)
-	held := event.Event{Time: at, Log: "deploy", Level: event.Info, Msg: "filed before the stop", Keywords: []string{KeywordExternal}}
+	held := event.Event{Time: at, Log: "ext.deploy", Provider: "ext.deploy", Level: event.Info, Msg: "filed before the stop", Keywords: []string{KeywordExternal}}
 	if err := h.store().Commit(ctx, []event.Event{held}); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestSpoolIsClaimedFiledAndDeleted(t *testing.T) {
 	}
 
 	evs := waitLogs(t, st, "logbook")
-	deploy := inLog(evs, "deploy")
+	deploy := inLog(evs, "ext.deploy") // outside writers file under ext.
 	if len(deploy) != 3 {
 		t.Fatalf("deploy = %+v, want three events", deploy)
 	}
@@ -268,14 +268,14 @@ func TestSpoolIsClaimedFiledAndDeleted(t *testing.T) {
 	if err := h.drainSpool(ctx, h.store()); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(inLog(all(t, st), "deploy")); n != 3 {
+	if n := len(inLog(all(t, st), "ext.deploy")); n != 3 {
 		t.Fatalf("a file that could not be claimed was filed: %d events", n)
 	}
 	unblock()
 	if err := h.drainSpool(ctx, h.store()); err != nil {
 		t.Fatal(err)
 	}
-	if got := inLog(all(t, st), "deploy"); len(got) != 4 || got[3].Msg != "later" {
+	if got := inLog(all(t, st), "ext.deploy"); len(got) != 4 || got[3].Msg != "later" {
 		t.Errorf("the claim was not retried: %+v", got)
 	}
 }
