@@ -14,8 +14,10 @@
 // dashboard. Nothing in tenant has to be rebuilt or registered.
 //
 // Zero config on a Tenant box: the hub address and bearer token are read from
-// Tenant's own config.json, the data dir is Tenant's OS data dir. Override any
-// of it with Config, or with the env vars TENANT_URL, TENANT_TOKEN, TENANT_DATA.
+// Tenant's own config dir (config.json, else the dashboard-auth-token file a
+// default install keeps the token in), the data dir is Tenant's OS data dir.
+// Override any of it with Config, or with the env vars TENANT_URL,
+// TENANT_TOKEN, TENANT_DATA.
 //
 //	log := tenantlog.New("deploy")                         // folder + tab: "deploy"
 //	log.Info("build started", "host", "build-box", "commit", sha)
@@ -61,7 +63,7 @@ const (
 type Config struct {
 	Source   string            // folder / tab name: [a-z0-9][a-z0-9._-]{0,39} (free text is normalized)
 	URL      string            // hub base URL (default: config.json dashboard.addr, else http://127.0.0.1:8770)
-	Token    string            // dashboard bearer token (default: config.json dashboard.auth)
+	Token    string            // dashboard bearer token (default: config.json dashboard.auth, else Tenant's dashboard-auth-token file)
 	DataDir  string            // Tenant data dir, for the file fallback (default: Tenant's OS data dir)
 	LogDir   string            // log root override (default <DataDir>/logs)
 	FileOnly bool              // never try the hub — always append to the file (cron scripts, hub known down)
@@ -150,10 +152,12 @@ func (l *Logger) Info(msg string, kv ...any)  { _ = l.Log(Info, msg, kvFields(kv
 func (l *Logger) Warn(msg string, kv ...any)  { _ = l.Log(Warn, msg, kvFields(kv)) }
 func (l *Logger) Error(msg string, kv ...any) { _ = l.Log(Error, msg, kvFields(kv)) }
 
-// Event files a line the dashboard styles like a turn event: kind becomes
-// the row's badge (tool_call, tool_result, final, error, …) and is kept in
-// the `ev` field on disk. Known field keys get special placement: tool
-// (shown in mono), agent (a chip), text / args / result (the snippet).
+// Event files a line with a kind, kept in the `ev` field; a kind named
+// "error" or ending in "_failed" is filed at ERROR. A hub drops `ev` from
+// lines it receives over the API (only Tenant files turn events), so there
+// the row shows its level; the kind stays in a line appended to the file
+// directly. Known field keys get special placement: tool (shown in mono),
+// agent (a chip).
 func (l *Logger) Event(kind, msg string, fields map[string]string) error {
 	f := map[string]string{}
 	for k, v := range fields {
@@ -211,7 +215,7 @@ func (l *Logger) Ping() error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("hub at %s is up but rejected the token (set Config.Token / TENANT_TOKEN to config.json dashboard.auth)", l.cfg.URL)
+		return fmt.Errorf("hub at %s is up but rejected the token (set Config.Token / TENANT_TOKEN to the hub's dashboard.auth or dashboard-auth-token)", l.cfg.URL)
 	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("hub at %s answered HTTP %d", l.cfg.URL, resp.StatusCode)
@@ -491,13 +495,15 @@ func valueString(v any) string {
 type discovered struct{ url, token, dataDir string }
 
 // discover reads TENANT_URL / TENANT_TOKEN / TENANT_DATA, then Tenant's
-// config.json (dashboard.addr, dashboard.auth), then the OS defaults Tenant
-// itself uses. Never fails: worst case is loopback :8770, no token, OS data dir.
+// config.json (dashboard.addr, dashboard.auth) and its dashboard-auth-token
+// file, then the OS defaults Tenant itself uses. Never fails: worst case is
+// loopback :8770, no token, OS data dir.
 func discover() discovered {
 	d := discovered{url: os.Getenv("TENANT_URL"), token: os.Getenv("TENANT_TOKEN"), dataDir: os.Getenv("TENANT_DATA")}
 	if d.url == "" || d.token == "" {
 		if cfgDir, err := os.UserConfigDir(); err == nil {
-			if b, err := os.ReadFile(filepath.Join(cfgDir, "tenant", "config.json")); err == nil {
+			cfgDir = filepath.Join(cfgDir, "tenant")
+			if b, err := os.ReadFile(filepath.Join(cfgDir, "config.json")); err == nil {
 				var cfg struct {
 					Dashboard struct {
 						Addr string `json:"addr"`
@@ -511,6 +517,11 @@ func discover() discovered {
 					if d.token == "" {
 						d.token = cfg.Dashboard.Auth
 					}
+				}
+			}
+			if d.token == "" { // a default install keeps the token in its own file
+				if b, err := os.ReadFile(filepath.Join(cfgDir, "dashboard-auth-token")); err == nil {
+					d.token = strings.TrimSpace(string(b))
 				}
 			}
 		}

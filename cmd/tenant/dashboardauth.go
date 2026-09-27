@@ -44,6 +44,28 @@ func resolveDashboardAuth(cfgDir, configured string) (string, error) {
 	return token, nil
 }
 
+// dashboardClientToken is the token a local client (`tenant log`, doctor)
+// presents to the hub: config dashboard.auth when set, else the generated
+// token file a default install serves with; "" when neither exists yet. A
+// read-only audit (plain doctor) peeks at the file rather than hardening it.
+func dashboardClientToken(cfgDir string, lc *launchConfig, audit bool) (string, error) {
+	if lc != nil && lc.Dashboard.Auth != "" {
+		return lc.Dashboard.Auth, nil
+	}
+	read := secrets.ReadFile
+	if audit {
+		read = secrets.Peek
+	}
+	b, err := read(dashboardAuthTokenPath(cfgDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read dashboard auth token: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
 // readDashboardAuthToken reads a persisted token. A present but empty file is
 // re-read for up to a second: without hard links, secrets.CreateExclusive
 // claims the name before it writes the token.

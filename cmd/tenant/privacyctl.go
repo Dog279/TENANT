@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/logs"
 	"tenant/internal/privacy"
 	"tenant/internal/version"
 )
@@ -309,7 +310,11 @@ func cmdPrivacyRetention(ctx context.Context, args []string, out io.Writer) erro
 	if err := persistLaunchConfig(c.cfgDir, nil, set); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "%s: kept %s. A running Tenant applies it at its next daily prune; `tenant privacy prune` applies it now.\n", class, keptFor(max(days, 0)))
+	also := "; `tenant privacy prune` applies it now."
+	if class == classLogs { // the log book prunes itself; that command doesn't reach it
+		also = "."
+	}
+	fmt.Fprintf(out, "%s: kept %s. A running Tenant applies it at its next daily prune%s\n", class, keptFor(max(days, 0)), also)
 	return nil
 }
 
@@ -557,6 +562,11 @@ func runRetention(ctx context.Context, c *commonFlags, log *slog.Logger) {
 	if err != nil {
 		log.Warn("privacy: retention skipped; config.json unreadable", "err", err)
 		return
+	}
+	// The log book prunes itself; hand it the retention in force now, so
+	// `tenant privacy retention set logs` reaches a running Tenant.
+	if h := logs.Default(); h != nil {
+		h.SetRetention(logsRetention(lc.Logs))
 	}
 	r := retentionFromConfig(lc)
 	if len(r) == 0 {

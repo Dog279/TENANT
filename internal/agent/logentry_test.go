@@ -63,3 +63,15 @@ func TestEntryFor_SourcesAndLevels(t *testing.T) {
 		t.Error("add-on entries must not carry an agent field")
 	}
 }
+
+// The trace ID is written as `trace`, joining the line to its runs.db record;
+// an event from outside a turn has none.
+func TestEntryFor_WritesTrace(t *testing.T) {
+	e, _ := EntryFor(Event{Kind: EventToolResult, Tool: "web_read", Result: "ok", TraceID: "4f2a"})
+	if got := e.Field("trace"); got != "4f2a" {
+		t.Errorf("trace field = %q, want 4f2a", got)
+	}
+	if e, _ := EntryFor(Event{Kind: EventBus, Agent: "a", Text: "x"}); e.Field("trace") != "" {
+		t.Errorf("an event with no trace must not carry one: %+v", e.Fields)
+	}
+}

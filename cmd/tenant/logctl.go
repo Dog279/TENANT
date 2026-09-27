@@ -33,7 +33,7 @@ func cmdLog(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	level := fs.String("level", "info", "debug|info|warn|error")
 	urlFlag := fs.String("url", "", "hub dashboard URL (default: config.json dashboard address)")
-	token := fs.String("token", "", "dashboard auth bearer token (default: config.json dashboard.auth)")
+	token := fs.String("token", "", "dashboard auth bearer token (default: config.json dashboard.auth, else the dashboard-auth-token file)")
 	list := fs.Bool("list", false, "list the log book's sources (folders) and exit")
 	direct := fs.Bool("file", false, "append straight to the day's file without trying the running hub")
 	c := bindCommon(fs)
@@ -46,8 +46,10 @@ func cmdLog(ctx context.Context, args []string) error {
 	}
 	base := attachBaseURL(strings.TrimSpace(*urlFlag), c.lc)
 	tok := *token
-	if tok == "" && c.lc != nil {
-		tok = c.lc.Dashboard.Auth
+	if tok == "" && (*list || !*direct) {
+		if tok, err = dashboardClientToken(c.cfgDir, c.lc, false); err != nil {
+			return fmt.Errorf("log: %w", err)
+		}
 	}
 	httpc := &http.Client{Timeout: 5 * time.Second}
 
@@ -60,6 +62,9 @@ func cmdLog(ctx context.Context, args []string) error {
 	source := logs.NormalizeSource(pos[0])
 	if source == "" {
 		return fmt.Errorf("log: %q is not a usable source name (letters, digits, . _ -)", pos[0])
+	}
+	if logs.Builtin(source) { // the hub refuses these too; the file path must not differ
+		return fmt.Errorf("log: %q is one of Tenant's own logs; pick another source name", source)
 	}
 	msg := strings.TrimSpace(pos[1])
 	if msg == "" {
@@ -151,7 +156,7 @@ func logPost(ctx context.Context, httpc *http.Client, base, token, source string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("401 unauthorized — wrong/missing --token (the hub's dashboard.auth)")
+		return fmt.Errorf("401 unauthorized — wrong/missing --token (the hub's dashboard.auth or dashboard-auth-token)")
 	}
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

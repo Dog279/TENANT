@@ -309,6 +309,10 @@ type Agent struct {
 	// once at the top, so a swap applies to the NEXT turn — no mid-turn races.
 	router atomic.Pointer[model.Router]
 
+	// turnTrace is the running turn's trace ID; emit stamps it on every event
+	// the turn raises, so each log line joins its runs.db record (TEN-362).
+	turnTrace atomic.Pointer[string]
+
 	// warnedGates dedupes the unrecognized-capability-gate warning (one per
 	// gate per agent lifetime). Mutated only from Turn (turns are serialized
 	// per agent), like the compaction state below.
@@ -530,6 +534,8 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	if traceID == "" {
 		traceID = runtrace.NewID()
 	}
+	a.turnTrace.Store(&traceID)
+	defer a.turnTrace.Store(nil)
 	span := runtrace.NewSpan(traceID)
 	span.SetModel(string(a.plannerRole), "unresolved")
 	ctx = runtrace.WithSpan(ctx, span)
@@ -1991,7 +1997,8 @@ func (a *Agent) runRouteHook(ctx context.Context, req RouteRequest, state *turnR
 		}
 		state.publish(obs)
 		if strings.TrimSpace(obs.Text) != "" {
-			a.emit(Event{Kind: EventRoute, Text: obs.Text})
+			// Named explicitly: the hook can finish after its turn has ended.
+			a.emit(Event{Kind: EventRoute, TraceID: runtrace.IDFromContext(ctx), Text: obs.Text})
 		}
 	}()
 	obs = a.cfg.RouteHook(ctx, req)

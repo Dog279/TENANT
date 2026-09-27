@@ -1340,11 +1340,16 @@ func checkServe(ctx context.Context, e *doctorEnv) checkResult {
 	if dc.TLSCert != "" {
 		scheme = "https"
 	}
+	// A default install keeps the token in its file, not in dashboard.auth.
+	tok, err := dashboardClientToken(e.c.cfgDir, e.lc, e.c.auditOnly)
+	if err != nil {
+		return checkResult{Status: statusWarn, Detail: "cannot read the dashboard token: " + err.Error()}
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s://%s/api/status", scheme, addr), nil)
-	if dc.Auth != "" {
-		req.Header.Set("Authorization", "Bearer "+dc.Auth)
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	httpc := e.httpc
 	if httpc == nil {

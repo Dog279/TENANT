@@ -332,19 +332,29 @@ func (c *commonFlags) logsOptions() logs.Options {
 	if c.lc != nil {
 		cfg = c.lc.Logs
 	}
-	switch {
-	case cfg.RetentionDays < 0:
-		opts.Retention = -1
-	case cfg.RetentionDays > 0:
-		opts.Retention = time.Duration(cfg.RetentionDays) * 24 * time.Hour
-	}
+	opts.Retention = logsRetention(cfg)
 	if cfg.MaxFieldBytes != 0 {
 		opts.MaxFieldBytes = cfg.MaxFieldBytes
 	}
-	if strings.EqualFold(cfg.Level, "debug") || logLevel() == slog.LevelDebug {
+	if lvl, ok := logs.ParseLevel(cfg.Level); ok { // debug|info|warn|error; anything else keeps INFO
+		opts.MinLevel = lvl
+	}
+	if logLevel() == slog.LevelDebug {
 		opts.MinLevel = slog.LevelDebug
 	}
 	return opts
+}
+
+// logsRetention maps logs.retention_days onto the hub's retention (0 ⇒ its
+// 30-day default, <0 ⇒ never).
+func logsRetention(cfg logsConfig) time.Duration {
+	switch {
+	case cfg.RetentionDays < 0:
+		return -1
+	case cfg.RetentionDays > 0:
+		return time.Duration(cfg.RetentionDays) * 24 * time.Hour
+	}
+	return 0
 }
 
 // openLogHub opens the unified log book for a long-running surface (serve,

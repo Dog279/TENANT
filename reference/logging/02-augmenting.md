@@ -38,11 +38,11 @@ Have an older `log.Printf` program? Point it at the handler too:
 log.SetOutput(&lineWriter{l})   // write a 6-line io.Writer that calls l.Info(strings.TrimSpace(string(p)))
 ```
 
-## Make the dashboard style a line like a turn event
+## Event kinds and placed fields
 
-The feed styles rows by the `ev` field (the kind badge) and places a few keys
-specially — `tool` in mono, `agent` as a chip, `text` / `args` / `result` as
-the snippet. `Event` sets that up:
+The feed places a few keys specially on any row — `tool` in mono, `agent` as
+a chip — and shows the other fields as `key=value`. `Event` files a line with
+a kind:
 
 ```go
 _ = log.Event("tool_call",   "tool call disk_check", map[string]string{"tool": "disk_check", "args": `{"path":"/"}`})
@@ -50,10 +50,12 @@ _ = log.Event("tool_result", "tool result disk_check", map[string]string{"tool":
 _ = log.Event("error",       "watcher crashed", map[string]string{"text": err.Error()})   // red row
 ```
 
-Any kind is allowed; the built-ins the dashboard already knows are
-`turn_start tool_call tool_result validation retry final truncated error
-compact interject ingest bus approval approval_pending approval_resolved addon`.
-A kind named `error` or ending in `_failed` is filed at ERROR level.
+A kind named `error` or ending in `_failed` is filed at ERROR level. The kind
+itself travels in the `ev` field, and a hub drops `ev` from every line it
+receives over the API: only Tenant files turn events, so an outside line can
+never pass for a tool call or an approval. Such a row shows its level instead
+of the kind. The kind stays only in a line appended to the file directly
+(file-only mode, or while no hub was reachable).
 
 ## Several folders from one program
 
@@ -103,9 +105,9 @@ data dir rule matches `tenant.exe` (`%LOCALAPPDATA%\tenant`). Lines end with
   folder compare them byte-for-byte. Edit anything else freely.
 - Keep the file free of imports outside the standard library, or the copy
   stops being a copy.
-- Do not reuse a built-in source name (`turns`, `subagents`, `approvals`,
-  `discord`, `imessage`, `cron`, `eval`, `improve`, `model`, `route`,
-  `memory`, `mcp`, `peering`, `dashboard`, `system`) unless you mean to write
-  into that subsystem's folder.
+- Do not use one of Tenant's own source names (`turns`, `subagents`,
+  `approvals`, `discord`, `imessage`, `cron`, `eval`, `improve`, `model`,
+  `route`, `memory`, `mcp`, `peering`, `dashboard`, `sandbox`, `privacy`,
+  `shutdown`, `system`): the hub refuses them with HTTP 403.
 
 Next: [03 · hot-patch playbook](03-hotpatch-playbook.md).

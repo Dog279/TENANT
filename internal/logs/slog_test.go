@@ -2,10 +2,13 @@ package logs
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"tenant/internal/runtrace"
 )
 
 func TestHandler_FixedSourceAndFields(t *testing.T) {
@@ -18,6 +21,23 @@ func TestHandler_FixedSourceAndFields(t *testing.T) {
 	}
 	if all[0].Field("guild") != "g1" || all[0].Field("n") != "3" || all[0].Field("err") != "nope" {
 		t.Errorf("fields = %+v", all[0].Fields)
+	}
+}
+
+// A …Context call inside a turn files the turn's trace ID (TEN-362); a call
+// outside one files none.
+func TestHandler_TraceFromContext(t *testing.T) {
+	h := NewMemory(10)
+	l := h.Logger("turns")
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("4f2a"))
+	l.InfoContext(ctx, "in a turn", "k", "v")
+	l.InfoContext(context.Background(), "no turn")
+	all, _ := h.Snapshot()
+	if all[0].Field("trace") != "4f2a" || all[0].Field("k") != "v" {
+		t.Errorf("in-turn fields = %+v", all[0].Fields)
+	}
+	if all[1].Field("trace") != "" {
+		t.Errorf("out-of-turn fields = %+v", all[1].Fields)
 	}
 }
 

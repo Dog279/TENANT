@@ -76,6 +76,41 @@ func TestAgent_TurnPersistsRunAndEpisodeLineage(t *testing.T) {
 	}
 }
 
+// Every event a turn raises carries the turn's trace ID, not just turn_start,
+// so each log line joins its runs.db record (TEN-362).
+func TestAgent_TurnEventsCarryTraceID(t *testing.T) {
+	tools := []model.ToolSpec{{Name: "search", Parameters: json.RawMessage(`{}`)}}
+	var mu sync.Mutex
+	var events []agent.Event
+	a, fake, _, _ := buildAgentFull(t, model.Profile{}, tools, dispatchOK("hit"), nil, nil, func(c *agent.Config) {
+		c.Observer = func(e agent.Event) { mu.Lock(); events = append(events, e); mu.Unlock() }
+	})
+	fake.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		if len(fake.Generated) == 1 {
+			return &model.GenerateResponse{ToolCalls: []model.ToolCall{{ID: "c1", Name: "search", Arguments: json.RawMessage(`{}`)}}, FinishReason: "tool_calls"}, nil
+		}
+		return &model.GenerateResponse{Text: "done", FinishReason: "stop"}, nil
+	}
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "find it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	kinds := map[agent.EventKind]bool{}
+	for _, e := range events {
+		kinds[e.Kind] = true
+		if e.TraceID != res.TraceID {
+			t.Errorf("%s event trace = %q, want the turn's %q", e.Kind, e.TraceID, res.TraceID)
+		}
+	}
+	for _, k := range []agent.EventKind{agent.EventTurnStart, agent.EventToolCall, agent.EventToolResult, agent.EventFinal} {
+		if !kinds[k] {
+			t.Errorf("no %s event observed (got %v)", k, kinds)
+		}
+	}
+}
+
 // A mid-turn Interject must cancel the in-flight planner call, fold the
 // message into the working set, and let the loop re-plan and finish — without
 // failing the turn or burning the loop budget.
@@ -624,11 +659,13 @@ func TestAgent_RouteHookIsAsyncAndLateTagsReachEpisode(t *testing.T) {
 	if hookReq.AgentID != "route-agent" || hookReq.SessionID != "route-session" || hookReq.UserQuery != "typed prompt" {
 		t.Fatalf("route request = %+v", hookReq)
 	}
+	var turnTrace string
 	select {
 	case got := <-done:
 		if got.err != nil || got.res == nil || got.res.Response != "unchanged answer" {
 			t.Fatalf("Turn while hook blocked: res=%+v err=%v", got.res, got.err)
 		}
+		turnTrace = got.res.TraceID
 	case <-time.After(2 * time.Second):
 		t.Fatal("Turn waited for the route hook")
 	}
@@ -658,6 +695,10 @@ func TestAgent_RouteHookIsAsyncAndLateTagsReachEpisode(t *testing.T) {
 		case e := <-events:
 			if e.Kind == agent.EventRoute {
 				foundRoute = e.Text == "shadow · big · complexity 4"
+				// Late, but still the turn's own line (TEN-362).
+				if e.TraceID != turnTrace {
+					t.Errorf("late EventRoute trace = %q, want %q", e.TraceID, turnTrace)
+				}
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("EventRoute was not emitted")

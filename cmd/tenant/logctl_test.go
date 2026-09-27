@@ -95,3 +95,33 @@ func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 		t.Error("a non key=value extra arg must error")
 	}
 }
+
+// With no dashboard.auth the CLI presents the generated token file a default
+// install serves with, and it never writes into one of Tenant's own logs, hub
+// up or not (TEN-367).
+func TestCmdLog_TokenFileAndBuiltinSources(t *testing.T) {
+	auth := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ts.Close()
+	cfg, data := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(dashboardAuthTokenPath(cfg), []byte("filetok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLog(context.Background(), []string{"--url", ts.URL, "--config", cfg, "--data", data, "sidecar", "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-auth; got != "Bearer filetok" {
+		t.Errorf("Authorization = %q, want the token file's", got)
+	}
+	for _, args := range [][]string{{"approvals", "approval approved ap-9", "--file"}, {"--url", ts.URL, "Turns", "x"}} {
+		if err := cmdLog(context.Background(), append([]string{"--config", cfg, "--data", data}, args...)); err == nil || !strings.Contains(err.Error(), "Tenant's own") {
+			t.Errorf("tenant log %v = %v, want a refusal", args, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(data, "logs", "approvals")); err == nil {
+		t.Error("a refused line must not reach the folder")
+	}
+}

@@ -410,10 +410,10 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 			origin = "discord"
 		}
 		id := policyID(cat, action) // one prompt, one record: pending, then its outcome
-		b.reg.emitBeside(agent.EventApprovalPending, req, origin, "")
+		b.reg.emitBeside(ctx, agent.EventApprovalPending, req, origin, "")
 		recordPolicyApproval(ctx, id, cat, action, detail, origin, "pending")
 		d := ask(ctx, req)
-		b.reg.emitBeside(agent.EventApprovalResolved, req, origin, outcomeOf(d))
+		b.reg.emitBeside(ctx, agent.EventApprovalResolved, req, origin, outcomeOf(d))
 		recordPolicyApproval(ctx, id, cat, action, detail, origin, outcomeOf(d))
 		logOutcome(outcomeOf(d), "custom backend")
 		return d

@@ -20,6 +20,7 @@ one folder is one tab.
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
 ├── route/ memory/ mcp/ peering/ dashboard/
 ├── sandbox/                      ← the execution sandbox: confined runs, refusals, escalations, dry-run would-be refusals
+├── privacy/ shutdown/            ← the daily retention sweep; the staged shutdown's steps
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
@@ -32,21 +33,27 @@ Override the root with `--log-dir DIR` or `"logs": {"dir": "…"}` in config.jso
 One entry is exactly one line, readable in `tail -f` and exact under `grep`:
 
 ```
-2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	ev=tool_call iter=2 args="{\"q\":\"hn top\"}"
-2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	ev=tool_result iter=2 result="timeout after 30s"
-2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3f9c2a1b-3	ev=approval_resolved category=exec action=os_exec origin=local outcome=denied
+2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	ev=tool_call iter=2 args="{\"q\":\"hn top\"}" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
+2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	ev=tool_result iter=2 result="timeout after 30s" trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
+2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3f9c2a1b-3	ev=approval_resolved category=exec action=os_exec origin=local outcome=denied trace=9c1e6f0a2b7d4e35a8f1c0d2e3b4a5c6
 2026-09-22 14:04:02.000 INFO  [discord] relay attachment saved	chat=general path=/…/relay-inbox/img.png
 ```
 
 `<local date> <time.ms> <LEVEL> [<source>] <message>` then a **tab** and
 `key=value` fields. Values with spaces, quotes or newlines are quoted (Go
 `strconv.Quote` escaping), so a multi-line tool result still occupies one line.
-Turn events carry their kind in `ev=`; plain records have no `ev`.
+Turn events carry their kind in `ev=`; plain records have no `ev`. Every
+event a turn raises, and the approvals it asks for, carries `trace=`: the
+turn's trace ID, the `trace_id` of its record in `runs.db`. A slog line logged
+with a `…Context` call inside a turn carries it too.
 
 - **Retention:** files older than 30 days are deleted (`"logs": {"retention_days": N}`;
-  `-1` keeps forever). A day's file rolls to `<day>.1.log` past 64 MB.
-- **Level floor:** INFO by default. `"logs": {"level": "debug"}` or
-  `TENANT_LOG=debug` lowers it (the files then hold the backend internals too).
+  `-1` keeps forever, or `tenant privacy retention set logs N|forever`). A
+  running Tenant applies a change at its next daily privacy sweep, with no
+  restart. A day's file rolls to `<day>.1.log` past 64 MB.
+- **Level floor:** INFO by default. `"logs": {"level": "warn"}` (or `"error"`)
+  raises it for the files and the feed; `"debug"` or `TENANT_LOG=debug` lowers
+  it (the files then hold the backend internals too).
 - **Value cap:** one value (a tool result, an argument blob) is cut at 4 KB with
   a `…(+N bytes)` marker (`"logs": {"max_field_bytes": N}`; `-1` = unlimited).
 
@@ -170,9 +177,14 @@ custom ones after, `system` last), with a retained-line count, an
 **⚠ errors only** toggle, and — when a source is selected — its files on disk
 with a raw plain-text view / download. History from before the current run is
 there too: at start the hub re-reads the tail of every folder's newest file.
+Every open tab updates live. After Tenant restarts, an open tab redraws itself
+from the new process's lines when it reconnects. A source's tab stays until
+Tenant restarts, even if its folder is deleted.
 
-`tenant attach --follow [--source discord] [--level error]` is the terminal
-equivalent, over `GET /api/activity`.
+`tenant attach [URL] --follow [--source discord] [--level error] [--trace ID]`
+is the terminal equivalent, over `GET /api/activity`; `--trace` keeps one
+turn's lines. Flags may come before or after the URL. After a Tenant restart
+`--follow` says so and replays what the new process kept.
 
 ## Adding a source (no rebuild)
 
@@ -214,12 +226,18 @@ tenant log deploy "build failed" --level error step=link
 tenant log --list
 ```
 
-It POSTs to the running hub (the line shows up live in open dashboards and
-TUI feeds); when no hub is reachable it appends straight to the day's file, and
-a hub that starts later picks the folder up.
+It POSTs to the running hub (the line shows up live in open dashboards; the
+TUI's feed does not show it); when no hub is reachable it appends straight to
+the day's file, and a hub that starts later picks the folder up. The token is
+`dashboard.auth` when config.json sets one, else the generated
+`<config>/dashboard-auth-token` a default install uses (`--token` overrides).
+Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
+`system`, …) are refused, hub up or not.
 
 **Anything that speaks HTTP** — the live logging API (same Bearer token as the
-rest of the dashboard):
+rest of the dashboard). It refuses Tenant's own sources with HTTP 403 and drops
+an `ev` field: only Tenant files turn events, so an outside line can never pass
+for an approval or a tool call.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8770/api/logs/watcher \
@@ -243,8 +261,15 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8770/api/logs/watcher" `
 | `GET` | `/api/logs/{source}` | `{"source", "files": [{name, size, mod_time}]}` |
 | `GET` | `/api/logs/{source}/{file}` | the raw file (`text/plain`) |
 | `POST` | `/api/logs/{source}` | `{"level", "msg", "fields"}` — or a `text/plain` body (`?level=`) |
-| `GET` | `/api/activity?since=&source=&level=` | the retained lines as JSON (cursor replay) |
-| `POST` | `/api/addon/event` | legacy add-on line (`{"source","text","level"}`) — files under the add-on's name |
+| `GET` | `/api/activity?since=&epoch=&limit=&source=&level=&trace=` | the retained lines as JSON (cursor replay), see below |
+| `POST` | `/api/addon/event` | legacy add-on line (`{"source","text","level"}`) — files under the add-on's name (not one of Tenant's own) |
+
+`/api/activity` returns `{"events", "cursor", "epoch"}`. Pass `cursor` back as
+`since` and `epoch` as `epoch` for a gap-free tail. Sequence numbers start at 1
+again when Tenant restarts, under a new epoch; a `since` from another epoch
+replays everything the hub kept, and a `since` with no `epoch` keeps its old
+meaning. With `limit=N`, at most N events come back and `cursor` is the last
+one's, so the next call continues after it.
 
 **A process that only writes files** — drop a folder under the root and append
 to a `.log` file in it (`<root>/mytool/2026-09-22.log`). The hub discovers new

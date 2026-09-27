@@ -55,8 +55,9 @@ ag, err := agent.New(agent.Config{ /* … */, Observer: obs })
 
 `agent.EntryFor` renders the event as a readable line with the kind in the
 `ev` field, so the dashboard styles the row (tool in mono, agent chip, error
-rows red). Without `Source`, a sub-agent's events file under `subagents` and
-the primary agent's under `turns`.
+rows red), and the turn's trace ID in `trace`, which joins the line to its
+`runs.db` record. Without `Source`, a sub-agent's events file under
+`subagents` and the primary agent's under `turns`.
 
 ## Writing entries directly
 
@@ -78,6 +79,13 @@ if h := logs.Default(); h != nil {
   (see `internal/agent/logentry_test.go`).
 - Nothing on the dashboard side: `TestActivity_TabsFollowSources` already
   proves a new source becomes a tab.
+
+## Making it one of Tenant's own sources
+
+Add the name to `preferredOrder` in `internal/logs/hub.go`. That pins its
+tab's place in the row, and the logging API then refuses the name to
+outside writers, so a script can't write lines that look like your
+subsystem's.
 
 ## What you never have to do
 

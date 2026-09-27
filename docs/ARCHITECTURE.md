@@ -562,22 +562,27 @@ guide: `docs/LOGGING.md`.
 - `Hub.Log(Entry)` / `Hub.Logf(source, level, msg, kv…)` — writes the line to the
   source's day file (created on first use) and appends it to a bounded ring
   keyed by a monotonic `Seq` (eviction never invalidates a cursor).
-- `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Notify()` — the lossless
-  replay + coalescing wake the dashboard's Activity SSE tails (same pattern as
-  `orchestra.Bus`).
+- `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Subscribe()` — the lossless
+  replay + a coalescing wake-up per subscriber that the dashboard's Activity SSE
+  tails (one per open tab). `Hub.Epoch()` names the Seq numbering, which starts
+  at 1 on every open; a client holding another epoch's cursor re-syncs.
 - `Hub.Sources() []SourceInfo` (display order: built-ins, custom, `system` last;
   counts; native vs discovered), `Hub.Files(source)`, `Hub.OpenFile(source, name)`
   (names validated to strict shapes — never a path outside the folder).
+  `logs.Builtin(name)`: Tenant's own sources, which the logging API refuses.
+  `Hub.SetRetention(d)` changes a running hub's retention.
 - `Hub.Handler(tee) slog.Handler` / `Hub.Logger(source)`; package-level
   `logs.Install(hub)` + `logs.For(source)` (resolves the hub lazily, stderr-at-WARN
   until one is installed). Routing: fixed source → `source` attr → the message's
-  `tag:` prefix table → `system`.
+  `tag:` prefix table → `system`. A `…Context` call inside a turn gains a
+  `trace` field from the context's `runtrace` span.
 - `Entry.Line()` / `logs.ParseLine` — the round-trippable on-disk format:
   `<date> <time.ms> <LEVEL> [<source>] <msg>\t<k=v …>`; values quoted when needed
   so one entry is always one line.
 - `agent.EntryFor(Event) (logs.Entry, bool)` (in `internal/agent`) renders a turn
   event into an entry (denylists token/usage/assistant/memory noise); `Event.Source`
-  lets an observer name the folder (`cron`, `discord`, `eval`, …).
+  lets an observer name the folder (`cron`, `discord`, `eval`, …). Every event a
+  turn raises carries its trace ID, written as `trace` (the `runs.db` trace_id).
 - Logging v2 (TEN-359): `internal/logs/event` is the event model (levels
   critical to verbose, typed fields, correlation, providers and catalogued
   definitions, activities) and `internal/logs/catalog` the built-in
@@ -589,8 +594,9 @@ guide: `docs/LOGGING.md`.
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches
 the ring; a folder tailed as foreign is drained before this process starts
 writing it (no re-reading our own lines); daily files roll at 64 MB; retention
-30 days (config `logs.retention_days`, `-1` = never); INFO floor
-(`logs.level: debug` / `TENANT_LOG=debug` lowers it).
+30 days (config `logs.retention_days`, `-1` = never; the daily privacy sweep
+applies a change live); INFO floor (`logs.level` sets `debug`, `warn` or
+`error`; `TENANT_LOG=debug` lowers it).
 
 ### 5.11 `internal/improve` — Self-improvement scheduler
 

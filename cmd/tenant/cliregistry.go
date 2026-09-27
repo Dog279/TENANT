@@ -103,7 +103,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "", Desc: "runs self-improvement (distill, consolidate, profile, skills; nightly eval with --eval-every), cron jobs, retention, MCP connectors, the peer listener when federation is on, and the Discord relay when enabled"},
 				{Syntax: "serve --dashboard-addr ADDR", Desc: "listen elsewhere than 127.0.0.1:8770; --dashboard=false runs without the panel"},
 			}},
-		{Names: []string{"attach"}, Section: "run", Run: cmdAttach, Flags: []string{"--follow", "--token", "--since", "--interval", "--source", "--level"},
+		{Names: []string{"attach"}, Section: "run", Run: cmdAttach, Flags: []string{"--follow", "--token", "--since", "--interval", "--source", "--level", "--trace"},
 			Summary: "watch a running hub's activity feed",
 			Rows:    []cmdreg.Row{{Syntax: "attach [URL] [--follow] [--source discord]", Desc: "watch a running hub's activity feed"}}},
 		{Names: []string{"orchestrate", "team"}, Section: "run", Run: cmdOrchestrate,

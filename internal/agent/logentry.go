@@ -25,7 +25,8 @@ func Retained(ev Event) bool {
 // EntryFor renders a live turn event as one log-book line: a readable message
 // ("tool call web_search", "final response", "approval denied ap-3"), the kind
 // preserved in the `ev` field so the dashboard can style the row after a
-// restart re-reads it from disk, and the event's payload as fields. ok is
+// restart re-reads it from disk, the event's payload as fields, and its trace
+// ID as `trace`, which joins the line to its runs.db record. ok is
 // false for noise (see Retained). The folder is ev.Source when the emitter
 // set one, else "subagents" for a sub-agent's activity, "approvals" for the
 // approval kinds, the channel for an inbound message, the add-on's own name
@@ -185,6 +186,9 @@ func EntryFor(ev Event) (logs.Entry, bool) {
 		if ev.IsErr {
 			e.Level = slog.LevelError
 		}
+	}
+	if ev.TraceID != "" {
+		e.Fields = append(e.Fields, logs.Field{Key: "trace", Value: ev.TraceID})
 	}
 	if e.Source == "" {
 		if ev.Agent != "" {
