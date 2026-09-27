@@ -248,8 +248,8 @@ const (
 
 type outcome struct {
 	action   action
-	gotReady bool // a READY/RESUMED happened this connection (→ reset backoff)
-	err      error
+	gotReady bool  // a READY/RESUMED happened this connection (→ reset backoff)
+	err      error // why it ended; nil for a stop or a reconnect the server asked for
 }
 
 // Run drives the gateway until ctx is cancelled (returns nil) or a fatal close
@@ -310,10 +310,29 @@ func (g *Gateway) Run(ctx context.Context) error {
 		case actResume:
 			resume = st.sessionID != ""
 		}
+		g.logEnd(o, resume)
 		if !bo.wait(ctx) {
 			return nil
 		}
 	}
+}
+
+// logEnd records why a session ended and how Run reconnects. A drop, a failed
+// RESUME/IDENTIFY or an invalidated session is a warning; a reconnect the
+// server asked for (op 7) is routine.
+func (g *Gateway) logEnd(o outcome, resume bool) {
+	if g.Log == nil {
+		return
+	}
+	next := "re-identifying"
+	if resume {
+		next = "resuming"
+	}
+	if o.err != nil {
+		g.Log.Warn("gateway: session ended; "+next, "err", o.err)
+		return
+	}
+	g.Log.Info("gateway: server asked to reconnect; " + next)
 }
 
 // session runs exactly one connection: read Hello, start the heartbeat,
@@ -324,13 +343,15 @@ func (g *Gateway) session(ctx context.Context, conn gwConn, st *sessionState, re
 	if err != nil {
 		return classifyReadErr(ctx, err)
 	}
-	if first.Op != opHello {
-		return outcome{action: actIdentify} // protocol desync → fresh identify
+	if first.Op != opHello { // protocol desync → fresh identify
+		return outcome{action: actIdentify, err: fmt.Errorf("gateway: expected Hello, got op %d", first.Op)}
 	}
 	var hello struct {
 		HeartbeatInterval int `json:"heartbeat_interval"`
 	}
-	_ = json.Unmarshal(first.D, &hello)
+	if err := json.Unmarshal(first.D, &hello); err != nil {
+		g.logf("gateway: undecodable Hello (heartbeating every second): %v", err)
+	}
 	interval := time.Duration(maxInt(hello.HeartbeatInterval, 1000)) * time.Millisecond
 
 	sessCtx, cancel := context.WithCancel(ctx)
@@ -339,11 +360,11 @@ func (g *Gateway) session(ctx context.Context, conn gwConn, st *sessionState, re
 	hb := &heart{seqv: st.seq()}
 	if resume && st.sessionID != "" {
 		if err := conn.Write(resumePayload(g.Token, st.sessionID, st.seq())); err != nil {
-			return outcome{action: actResume}
+			return outcome{action: actResume, err: fmt.Errorf("gateway: send RESUME: %w", err)}
 		}
 	} else {
 		if err := conn.Write(identifyPayload(g.Token)); err != nil {
-			return outcome{action: actResume}
+			return outcome{action: actResume, err: fmt.Errorf("gateway: send IDENTIFY: %w", err)}
 		}
 	}
 	go g.heartbeatLoop(sessCtx, conn, interval, hb, cancel)
@@ -362,18 +383,22 @@ func (g *Gateway) session(ctx context.Context, conn gwConn, st *sessionState, re
 		}
 		switch p.Op {
 		case opHeartbeat:
-			_ = conn.Write(heartbeatPayload(hb.getSeq()))
+			if err := conn.Write(heartbeatPayload(hb.getSeq())); err != nil {
+				g.logf("gateway: heartbeat reply failed: %v", err)
+			}
 		case opHeartbeatACK:
 			hb.ack()
 		case opReconnect:
 			return outcome{action: actResume, gotReady: gotReady}
 		case opInvalidSession:
 			var resumable bool
-			_ = json.Unmarshal(p.D, &resumable)
-			if resumable {
-				return outcome{action: actResume, gotReady: gotReady}
+			if err := json.Unmarshal(p.D, &resumable); err != nil {
+				g.logf("gateway: undecodable invalid-session payload (treated as not resumable): %v", err)
 			}
-			return outcome{action: actIdentify, gotReady: gotReady}
+			if resumable {
+				return outcome{action: actResume, gotReady: gotReady, err: errors.New("gateway: session invalidated (resumable)")}
+			}
+			return outcome{action: actIdentify, gotReady: gotReady, err: errors.New("gateway: session invalidated")}
 		case opDispatch:
 			switch p.T {
 			case "READY":
@@ -384,7 +409,9 @@ func (g *Gateway) session(ctx context.Context, conn gwConn, st *sessionState, re
 						ID string `json:"id"`
 					} `json:"user"`
 				}
-				_ = json.Unmarshal(p.D, &rd)
+				if err := json.Unmarshal(p.D, &rd); err != nil {
+					g.logf("gateway: undecodable READY (the session cannot resume): %v", err)
+				}
 				st.sessionID = rd.SessionID
 				st.resumeURL = rd.ResumeGatewayURL
 				if rd.User.ID != "" {
@@ -428,7 +455,11 @@ func (g *Gateway) dispatchMessage(d json.RawMessage) {
 			URL         string `json:"url"`
 		} `json:"attachments"`
 	}
-	if err := json.Unmarshal(d, &m); err != nil || m.ID == "" {
+	if err := json.Unmarshal(d, &m); err != nil {
+		g.logf("gateway: undecodable MESSAGE_CREATE dropped: %v", err)
+		return
+	}
+	if m.ID == "" {
 		return
 	}
 	if !g.seen.add(m.ID) {
@@ -473,7 +504,11 @@ func (g *Gateway) dispatchInteraction(d json.RawMessage) {
 			} `json:"user"`
 		} `json:"member"`
 	}
-	if err := json.Unmarshal(d, &iv); err != nil || iv.Type != 3 || iv.Data.CustomID == "" {
+	if err := json.Unmarshal(d, &iv); err != nil {
+		g.logf("gateway: undecodable INTERACTION_CREATE dropped: %v", err)
+		return
+	}
+	if iv.Type != 3 || iv.Data.CustomID == "" {
 		return // only button (component) interactions
 	}
 	uid := iv.User.ID
@@ -502,11 +537,13 @@ func (g *Gateway) heartbeatLoop(ctx context.Context, conn gwConn, interval time.
 		case <-timer.C:
 		}
 		if hb.pending() { // previous heartbeat never ACKed → zombie
+			g.logf("gateway: heartbeat not acknowledged; dropping the connection")
 			cancel()
 			_ = conn.Close()
 			return
 		}
 		if err := conn.Write(heartbeatPayload(hb.getSeq())); err != nil {
+			g.logf("gateway: heartbeat failed; dropping the connection: %v", err)
 			cancel()
 			_ = conn.Close()
 			return
@@ -525,9 +562,13 @@ func classifyReadErr(ctx context.Context, err error) outcome {
 	}
 	var ce *gwClose
 	if errors.As(err, &ce) {
-		return decideClose(ce.code)
+		o := decideClose(ce.code)
+		if o.err == nil {
+			o.err = err // a resumable close: keep its code for the log
+		}
+		return o
 	}
-	return outcome{action: actResume} // abnormal drop → resume
+	return outcome{action: actResume, err: err} // abnormal drop → resume
 }
 
 // decideClose is the close-code FSM. Fatal (auth/intents/shard/version) →

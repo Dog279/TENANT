@@ -184,9 +184,15 @@ func (l *Listener) verify(ctx context.Context, token string, _ *http.Request) (*
 	// First successful auth retires the unused-invite bound; a pending-token
 	// presentation confirms the staged rotation. Both are no-ops after the
 	// transition, so this is cheap per-request.
-	_ = l.store.MarkAuthenticated(p.Name)
+	// A failed save leaves the invite bound or the staged rotation on disk: the
+	// call still authenticates, and the next one retries.
+	if err := l.store.MarkAuthenticated(p.Name); err != nil {
+		l.log("peer listener: %s authenticated, but peers.json was not updated: %v", p.Name, err)
+	}
 	if matchedPending {
-		_ = l.store.ConfirmRotation(p.Name)
+		if err := l.store.ConfirmRotation(p.Name); err != nil {
+			l.log("peer listener: %s token rotation not confirmed in peers.json: %v", p.Name, err)
+		}
 	}
 	if l.onAuth != nil {
 		l.onAuth(p.Name) // TEN-250: inbound last-seen (cheap, non-blocking)

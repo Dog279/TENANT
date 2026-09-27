@@ -334,7 +334,9 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 		})
 		mine = append(mine, runResearchWaves(ctx, rt, question, wave, opts.parallel, opts.awaitTimeout, say, emit, cycle, depth)...)
 		if run != nil {
-			run.SetCycles(cycle)
+			if err := run.SetCycles(cycle); err != nil {
+				say("⚠ couldn't save the run's progress: %v", err)
+			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -410,11 +412,13 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 		// the model actually emitted). The collapse step drops the bad ones
 		// for the synthesis input, but they're invaluable for /research show.
 		if run != nil {
-			_ = run.AppendFinding(research.Finding{
+			if err := run.AppendFinding(research.Finding{
 				AgentID: r.ID, Role: r.Role, Task: r.Task,
 				Status: r.Status, Result: r.Result,
 				Finished: time.Now().UTC(),
-			})
+			}); err != nil {
+				say("⚠ couldn't save %s's finding to the run record: %v", r.ID, err)
+			}
 		}
 	}
 	// C5: embedding-based rerank + near-duplicate drop. Best-effort —

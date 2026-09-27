@@ -209,9 +209,10 @@ func shortErr(s string) string {
 // picked up live. Liveness is independent of the model, so it runs even while
 // degraded.
 type peerHealthMonitor struct {
-	cfgDir string
-	reg    *peerHealthRegistry
-	log    *slog.Logger
+	cfgDir  string
+	reg     *peerHealthRegistry
+	log     *slog.Logger
+	loadErr string // the last peers.json read error, so it is logged once, not every round
 }
 
 func (m *peerHealthMonitor) run(ctx context.Context) {
@@ -231,8 +232,13 @@ func (m *peerHealthMonitor) run(ctx context.Context) {
 func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 	store, err := peering.LoadStore(m.cfgDir)
 	if err != nil {
+		if err.Error() != m.loadErr && m.log != nil {
+			m.log.Warn("peer: health probes stopped; peers.json unreadable", "err", err)
+		}
+		m.loadErr = err.Error()
 		return
 	}
+	m.loadErr = ""
 	var wg sync.WaitGroup
 	for _, p := range store.List() {
 		// Only peers WE dial can be probed outbound; a peer that only dials us is

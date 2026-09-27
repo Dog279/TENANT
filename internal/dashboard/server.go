@@ -125,7 +125,7 @@ func New(cfg Config, runner AgentRunner, tools ToolControl, mem MemoryControl, b
 		mux:    http.NewServeMux(),
 		log:    log,
 	}
-	s.coord = newWSCoordinator(runner)
+	s.coord = newWSCoordinator(runner, broker, log)
 	s.tmpl = parseSSR()
 	s.routes()
 	return s

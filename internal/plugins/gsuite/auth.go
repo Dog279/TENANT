@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -328,10 +329,15 @@ func (o *oauthSource) mint(ctx context.Context) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("gsuite: oauth refresh: %w", err)
 	}
 	// oauth2's TokenSource may have rotated the refresh token. Persist
-	// the rotated copy so disk stays in sync.
+	// the rotated copy so disk stays in sync. The refresh itself succeeded, so
+	// a failed save only costs a sign-in after a restart: logged, and retried
+	// on the next mint.
 	if o.save != nil && tok != nil && tok.RefreshToken != "" {
 		if o.saved == nil || tok.RefreshToken != o.saved.RefreshToken {
-			_ = o.save(tok) // best-effort: refresh succeeded, disk save is bonus
+			if err := o.save(tok); err != nil {
+				slog.Default().Warn("gsuite: rotated OAuth token not saved; a restart may need a new sign-in", "source", "plugin.gsuite", "err", err)
+				return tok.AccessToken, tok.Expiry, nil
+			}
 		}
 		o.saved = tok
 	}

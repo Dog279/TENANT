@@ -180,9 +180,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		if err := stg.Save(c.cfgDir, c.agent); err != nil {
-			log.Warn("settings save failed", "err", err)
-		}
+		saveSettingsOrTell(stg, c.cfgDir, c.agent, log, pushSys)
 	}
 	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
@@ -590,6 +588,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
+			modelCtl.log.Warn("model: embedder not re-resolved after the swap; tool ranking keeps the old one", "err", err)
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)

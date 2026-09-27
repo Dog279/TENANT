@@ -46,8 +46,11 @@ func (r *relay) handleExtApprove(in discord.Interaction) {
 		return
 	}
 	ack := func(msg string) {
-		if r.approver != nil && r.approver.io != nil {
-			_ = r.approver.io.RespondInteraction(context.Background(), in.ID, in.Token, msg)
+		if r.approver == nil || r.approver.io == nil {
+			return
+		}
+		if err := r.approver.io.RespondInteraction(context.Background(), in.ID, in.Token, msg); err != nil && r.log != nil {
+			r.log.Warn("discord relay: ext-approve ACK failed (the tap shows as failed)", "id", id, "err", err)
 		}
 	}
 	if r.dataDir == "" {

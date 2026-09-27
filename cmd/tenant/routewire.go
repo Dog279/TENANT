@@ -49,7 +49,8 @@ type routeRuntime struct {
 // reload) swaps a freshly built Supra in here instead — atomically, without
 // blocking an in-flight classify or touching the Engine's locking.
 type swappableClassifier struct {
-	p atomic.Pointer[route.Supra]
+	p   atomic.Pointer[route.Supra]
+	log *slog.Logger // warm-up failures (nil: not logged)
 }
 
 func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
@@ -66,12 +67,16 @@ func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
 	// /route status health probe — do not pay the cold GGUF load cost under the
 	// tight per-turn timeout and report "unhealthy (context deadline exceeded)".
 	// Best-effort; keep_alive then holds the model resident. Fires on the initial
-	// build and whenever a config change rebuilds the classifier.
+	// build and whenever a config change rebuilds the classifier. A failure
+	// matters only while routing is on (a dormant runtime warms for a later
+	// enable), and then it names why the classifier is cold or down.
 	if cfg.Endpoint != "" {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			_ = sup.Warm(ctx)
+			if err := sup.Warm(ctx); err != nil && cfg.Enabled && s.log != nil {
+				s.log.Warn("route: classifier warm-up failed", "endpoint", safeDisplayEndpoint(cfg.Endpoint), "model", cfg.Model, "err", err)
+			}
 		}()
 	}
 }
@@ -116,7 +121,7 @@ func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Rou
 	if log == nil {
 		log = slog.Default()
 	}
-	classifier := &swappableClassifier{}
+	classifier := &swappableClassifier{log: log}
 	classifier.store(cfg)
 	rt := &routeRuntime{
 		cfg: cfg, cfgDir: cfgDir, dataDir: dataDir, router: router, log: log,
@@ -1002,7 +1007,9 @@ func (r *routeRuntime) Force(profileID string) (string, error) {
 	}
 	if err := r.bindForce(canonical); err != nil {
 		lc.Route.Enabled, lc.Route.Mode, lc.Route.ForceProfile = oldEnabled, oldMode, oldForce
-		_ = lc.Save(r.cfgDir)
+		if serr := lc.Save(r.cfgDir); serr != nil {
+			return "", fmt.Errorf("%w; and config.json still forces %s (rollback not saved: %v)", err, canonical, serr)
+		}
 		return "", err
 	}
 	cfg, err := resolveRouteConfig(lc)

@@ -276,7 +276,6 @@ type imessageResponderManager struct {
 	buildFn   func(allowFrom []string) (responderRunnable, func(), error)
 	allowFrom func() []string
 	persist   func(enabled bool) error
-	log       *slog.Logger
 
 	mu      sync.Mutex
 	running bool
@@ -314,8 +313,8 @@ func (m *imessageResponderManager) Start() (string, error) {
 	m.cancel, m.cleanup, m.running = cancel, cleanup, true
 	go r.Run(ctx)
 	if m.persist != nil {
-		if perr := m.persist(true); perr != nil && m.log != nil {
-			m.log.Warn("imessage responder: persist enabled failed", "err", perr)
+		if perr := m.persist(true); perr != nil {
+			return "", errNotSaved("imessage responder ON", perr)
 		}
 	}
 	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools follow /imessage permissions (\"ask\" texts the operator a Y <nonce> prompt when imessage.operator is set)", len(allow)), nil
@@ -336,8 +335,8 @@ func (m *imessageResponderManager) Stop() (string, error) {
 	}
 	m.cancel, m.cleanup, m.running = nil, nil, false
 	if m.persist != nil {
-		if perr := m.persist(false); perr != nil && m.log != nil {
-			m.log.Warn("imessage responder: persist disabled failed", "err", perr)
+		if perr := m.persist(false); perr != nil {
+			return "", errNotSaved("imessage responder OFF", perr)
 		}
 	}
 	return "imessage responder OFF", nil

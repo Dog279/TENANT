@@ -330,7 +330,9 @@ func (a *discordApprover) tryInteraction(in discord.Interaction) bool {
 	if p == nil {
 		// Stale click (already resolved / expired): tell only the clicker and
 		// leave the card exactly as its resolution left it.
-		_ = a.io.RespondEphemeral(ctx, in.ID, in.Token, "⌛ This approval already resolved or expired.")
+		if err := a.io.RespondEphemeral(ctx, in.ID, in.Token, "⌛ This approval already resolved or expired."); err != nil {
+			a.logWarn("discord approval: stale-click ACK failed (the tap shows as failed)", "err", err)
+		}
 		return true
 	}
 	verdict := "approved"
@@ -355,7 +357,9 @@ func (a *discordApprover) ackEphemeral(in discord.Interaction, text string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ackTimeout)
 	defer cancel()
-	_ = a.io.RespondEphemeral(ctx, in.ID, in.Token, text)
+	if err := a.io.RespondEphemeral(ctx, in.ID, in.Token, text); err != nil {
+		a.logWarn("discord approval: click ACK failed (the tap shows as failed)", "err", err)
+	}
 }
 
 // parseButtonID splits "approve:<nonce>" / "deny:<nonce>".

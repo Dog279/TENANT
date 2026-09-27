@@ -158,8 +158,15 @@ func writeEvalArtifact(dir string, rep *eval.Report, log *slog.Logger) string {
 		log.Warn("eval: artifact write failed", "err", err)
 		return ""
 	}
-	defer f.Close()
-	_ = eval.WriteJSON(f, rep)
+	err = eval.WriteJSON(f, rep)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		log.Warn("eval: artifact write failed", "path", path, "err", err)
+		_ = os.Remove(path) // a torn report must not pass for a real one
+		return ""
+	}
 	return path
 }
 

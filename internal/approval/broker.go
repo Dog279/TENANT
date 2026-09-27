@@ -290,7 +290,10 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 			switch b.askDecision(ctx, cat, action, detail) {
 			case control.ApproveAlways:
 				// "Always" on a rule-forced prompt means THIS tool, not its category.
-				_ = b.rules.Set(pat, "allow")
+				// A failed save is told to the operator by the settings persist hook.
+				if err := b.rules.Set(pat, "allow"); err != nil && b.log != nil {
+					b.log.Warn("approval: always-allow rule not set", "origin", b.origin, "rule", pat, "err", err)
+				}
 				return true
 			case control.ApproveSession, control.ApproveOnce:
 				return true // a rule that says ask keeps asking: session = this time

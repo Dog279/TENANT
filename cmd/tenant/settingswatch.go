@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"strings"
@@ -28,6 +29,18 @@ func settingsModTime(path string) int64 {
 		return 0
 	}
 	return fi.ModTime().UnixNano()
+}
+
+// saveSettingsOrTell saves settings.<agent>.json; the caller holds its mutex.
+// Every permission change is saved through it — /permissions, the dashboard's
+// rules, an "approve always", a tool switched on or off — so a failure is
+// logged and told to the operator: the change is live, but a restart would
+// undo it without a word.
+func saveSettingsOrTell(stg *settings, cfgDir, agentID string, log *slog.Logger, tell func(string)) {
+	if err := stg.Save(cfgDir, agentID); err != nil {
+		log.Warn("settings save failed", "err", err)
+		tell(errNotSaved("settings: the change", err).Error())
+	}
 }
 
 // watchSettings runs until ctx is done. stg + mu are the live settings object

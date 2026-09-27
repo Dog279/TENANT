@@ -555,6 +555,7 @@ func startRetention(ctx context.Context, c *commonFlags, log *slog.Logger) {
 func runRetention(ctx context.Context, c *commonFlags, log *slog.Logger) {
 	lc, err := loadLaunchConfig(c.cfgDir)
 	if err != nil {
+		log.Warn("privacy: retention skipped; config.json unreadable", "err", err)
 		return
 	}
 	r := retentionFromConfig(lc)

@@ -1896,9 +1896,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		if err := stg.Save(c.cfgDir, c.agent); err != nil {
-			log.Warn("settings save failed", "err", err)
-		}
+		saveSettingsOrTell(stg, c.cfgDir, c.agent, log, pushSys)
 	}
 	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
@@ -2481,6 +2479,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
+			modelCtl.log.Warn("model: embedder not re-resolved after the swap; tool ranking keeps the old one", "err", err)
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
@@ -2529,10 +2528,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// choice so it is re-asserted at next launch (below, after dashMgr.Enable).
 	tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
 	tsMgr.persist = func(serve bool) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Tailscale.Serve = serve })
+		persistChoice(c.cfgDir, c.lc, pushSys, "tailscale: the serve choice", func(lc *launchConfig) { lc.Tailscale.Serve = serve })
 	}
 
 	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
@@ -2571,10 +2567,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
 	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
 	discordBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
 	})
 	if c.lc != nil {
 		discordBroker.LoadModes(c.lc.Relay.Permissions)
@@ -2689,10 +2682,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log.With("source", "approvals"), broker)
 	imsgBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, pushSys, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
 	})
 	if c.lc != nil {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
@@ -2716,7 +2706,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// prompts the operator at this TUI). enabled is persisted so it auto-starts
 	// next launch. Best-effort: a setup failure is a feed note, never fatal.
 	imsgResp := &imessageResponderManager{
-		base: ctx, log: log.With("source", "imessage"),
+		base:      ctx,
 		allowFrom: imsgAllowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -3043,9 +3033,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 			return "", err
 		}
 		peerSrvStop = stop
-		if c.lc != nil { // persist so it restarts on the next launch
-			_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Peer.Listen = addr })
-		}
+		// persist so it restarts on the next launch
+		persistChoice(c.cfgDir, c.lc, pushSys, "peer: the listen address", func(lc *launchConfig) { lc.Peer.Listen = addr })
 		return bound, nil
 	}
 	if c.lc != nil && c.lc.Peer.Listen != "" {
