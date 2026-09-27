@@ -9,14 +9,15 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"tenant/internal/eval"
 	"tenant/internal/fsperm"
 )
 
@@ -55,29 +56,33 @@ func evalTrendPath(artifactDir string) string {
 // one O_APPEND syscall is atomic in practice on macOS/Linux/Windows, so the
 // rare nightly-vs-manual interleave can't tear a line. All failures are logged,
 // never fatal — the run's value is the score, not this index.
-func appendEvalTrend(artifactDir string, e evalTrendEntry, log *slog.Logger) {
-	if log == nil {
-		log = slog.Default()
+func appendEvalTrend(ctx context.Context, artifactDir string, e evalTrendEntry) {
+	path := evalTrendPath(artifactDir)
+	err := writeEvalTrend(artifactDir, path, e)
+	if err != nil {
+		eval.NotSaved.Log(ctx, "record", "trend line", "path", path, "err", err)
+		return
 	}
+	eval.TrendUpdated.Log(ctx, "subset", e.Subset, "overall", e.Overall, "passed", e.Passed, "total", e.Total,
+		"regressed", e.Regressed, "delta", e.Delta, "artifact", e.Artifact)
+}
+
+func writeEvalTrend(artifactDir, path string, e evalTrendEntry) error {
 	// Owner-only, tightening an existing trend file too (TEN-333).
 	if err := fsperm.MkdirAll(artifactDir); err != nil {
-		log.Warn("eval-trend: mkdir", "err", err)
-		return
+		return err
 	}
 	line, err := json.Marshal(e)
 	if err != nil {
-		log.Warn("eval-trend: marshal", "err", err)
-		return
+		return err
 	}
-	f, err := fsperm.OpenFile(evalTrendPath(artifactDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY)
+	f, err := fsperm.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
-		log.Warn("eval-trend: open", "err", err)
-		return
+		return err
 	}
 	defer f.Close()
-	if _, err := f.Write(append(line, '\n')); err != nil { // one syscall, one line
-		log.Warn("eval-trend: write", "err", err)
-	}
+	_, err = f.Write(append(line, '\n')) // one syscall, one line
+	return err
 }
 
 // latestTrendTime returns the newest entry timestamp in trend.jsonl, or the

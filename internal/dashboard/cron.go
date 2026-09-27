@@ -117,7 +117,7 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.cron.Add(CronAddSpec{Name: name, Spec: spec, Prompt: prompt, Kind: kind, Exec: exec, TZ: tz}); err != nil {
-		s.log.Warn("dashboard: cron add", "err", err)
+		ActionFailed.Log(r.Context(), "action", "cron add", "err", err)
 		redirectCron(w, r, "", "Couldn't schedule that job: "+err.Error())
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	on := r.FormValue("enabled") == "true"
 	if err := s.cron.SetEnabled(id, on); err != nil {
-		s.log.Warn("dashboard: cron set-enabled", "id", id, "err", err)
+		ActionFailed.Log(r.Context(), "action", "cron set-enabled", "target", id, "err", err)
 		redirectCron(w, r, "", "Couldn't update that job: "+err.Error())
 		return
 	}
@@ -166,7 +166,7 @@ func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.cron.Remove(id); err != nil {
-		s.log.Warn("dashboard: cron remove", "id", id, "err", err)
+		ActionFailed.Log(r.Context(), "action", "cron remove", "target", id, "err", err)
 		redirectCron(w, r, "", "Couldn't remove that job: "+err.Error())
 		return
 	}
@@ -180,7 +180,7 @@ func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.cron.RunNow(id); err != nil {
-		s.log.Warn("dashboard: cron run", "id", id, "err", err)
+		ActionFailed.Log(r.Context(), "action", "cron run", "target", id, "err", err)
 		redirectCron(w, r, "", "Couldn't run that job: "+err.Error())
 		return
 	}

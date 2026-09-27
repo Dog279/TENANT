@@ -2878,7 +2878,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// force-fire an off eval.
 		evalSched = newEvalSchedule(evalDue, evalDesc)
 		seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
-		sched.RegisterDue(newEvalNightlyJob(c, pf, log, nil, nil), evalSched.DueFunc(), seed)
+		sched.RegisterDue(newEvalNightlyJob(c, pf, nil, nil), evalSched.DueFunc(), seed)
 		if evalDue != nil {
 			log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 		}

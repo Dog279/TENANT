@@ -97,6 +97,9 @@ var catalogued = map[string]int{
 	"internal/lifecycle": 0, "internal/tui": 0, "internal/config": 0, "internal/secrets": 0,
 	"internal/fsperm": 0, "internal/datalock": 0, "internal/version": 0, "internal/cmdreg": 0,
 	"internal/control": 0, "internal/httplimits": 0, "internal/runtrace": 0,
+	// dashboard (TEN-391) and eval (TEN-395)
+	"internal/dashboard": 0,
+	"internal/eval":      0, "internal/eval/compaction": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

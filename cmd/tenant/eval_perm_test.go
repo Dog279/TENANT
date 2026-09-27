@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 
 func TestEvalReportWriterIsPrivate(t *testing.T) {
 	dir := looseArtifactDir(t)
-	artifact := writeEvalArtifact(dir, smokeReport(), nil)
+	artifact := writeEvalArtifact(context.Background(), dir, smokeReport())
 	if artifact == "" {
 		t.Fatal("writeEvalArtifact failed")
 	}
@@ -29,7 +30,7 @@ func TestEvalTrendWriterTightensExistingFile(t *testing.T) {
 	dir := looseArtifactDir(t)
 	trend := evalTrendPath(dir)
 	writeLoose(t, trend)
-	appendEvalTrend(dir, trendEntryFor(smokeReport(), "", "", nil), nil)
+	appendEvalTrend(context.Background(), dir, trendEntryFor(context.Background(), smokeReport(), "", ""))
 	assertPermIs(t, dir, 0o700)
 	assertPermIs(t, trend, 0o600)
 	if entries, err := readEvalTrend(dir); err != nil || len(entries) != 1 {
@@ -39,7 +40,7 @@ func TestEvalTrendWriterTightensExistingFile(t *testing.T) {
 
 func TestBaselineFromArtifactIsPrivate(t *testing.T) {
 	src := t.TempDir()
-	artifact := writeEvalArtifact(src, smokeReport(), nil)
+	artifact := writeEvalArtifact(context.Background(), src, smokeReport())
 	if artifact == "" {
 		t.Fatal("writeEvalArtifact failed")
 	}

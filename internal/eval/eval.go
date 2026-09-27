@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/logs/event"
 	"tenant/internal/route"
 )
 
@@ -193,6 +195,7 @@ func (h *Harness) RunWith(ctx context.Context, sub Subset, factory AgentFactory,
 func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 	start := time.Now()
 	tasks := h.FilterSubset(sub)
+	ctx, act := event.Start(ctx, Run, "subset", sub, "tasks", len(tasks))
 	rep := &Report{
 		SchemaVersion: SchemaVersion,
 		RanAt:         start,
@@ -251,6 +254,9 @@ func (h *Harness) runLocked(ctx context.Context, sub Subset) (*Report, error) {
 	}
 
 	rep.Aggregates = aggregate(rep.Results, time.Since(start).Milliseconds())
+	ag := rep.Aggregates
+	err := ctx.Err() // a cancelled run is cut short: the caller still gets what ran
+	act.End(&err, "overall", ag.Overall, "passed", ag.PassCount, "failed", ag.FailCount, "ungraded", ag.UngradedCount, "skipped", ag.SkippedCount)
 	return rep, nil
 }
 
@@ -323,7 +329,19 @@ func (h *Harness) runOne(ctx context.Context, t *Task) TaskResult {
 // Passed is strict (every graded rollout passed) and Rollouts/RolloutsPassed
 // carry the fraction. This is the τ-Bench reliability signal — a flaky task
 // that passes 4/5 is meaningfully different from a clean 5/5.
-func (h *Harness) runTask(ctx context.Context, t *Task) TaskResult {
+func (h *Harness) runTask(ctx context.Context, t *Task) (res TaskResult) {
+	ctx, act := event.Start(ctx, TaskRun, "task", t.ID, "category", t.Category, "mode", t.Mode)
+	defer func() {
+		if res.Ungraded {
+			reason := ""
+			if len(res.Failures) > 0 {
+				reason = res.Failures[0]
+			}
+			TaskUngraded.Log(ctx, "task", t.ID, "class", cmp.Or(res.ErrorClass, "judge"), "reason", reason)
+		}
+		// A task that didn't pass is a result, not a failure of the activity.
+		act.End(nil, "result", res.outcome(), "score", res.Score)
+	}()
 	k := t.Rollouts
 	if k <= 1 {
 		return h.runOne(ctx, t) // default path: byte-identical to before TEN-286
@@ -336,6 +354,19 @@ func (h *Harness) runTask(ctx context.Context, t *Task) TaskResult {
 		rollouts = append(rollouts, h.runOne(ctx, t))
 	}
 	return aggregateRollouts(t, rollouts)
+}
+
+// outcome is the result's verdict in one word, for the task's stop event.
+func (r TaskResult) outcome() string {
+	switch {
+	case r.Skipped:
+		return "skipped"
+	case r.Ungraded:
+		return "ungraded"
+	case r.Passed:
+		return "pass"
+	}
+	return "fail"
 }
 
 // aggregateRollouts folds k rollouts of one task into a single pass^k result.

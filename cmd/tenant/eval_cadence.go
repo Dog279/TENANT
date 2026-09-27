@@ -11,6 +11,7 @@ package main
 // wall-clock anchor has passed since the last recorded run" (eval_at).
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/eval"
 	"tenant/internal/improve"
 )
 
@@ -155,7 +157,7 @@ func resolveEvalDue(flagSet bool, flagVal time.Duration, cfgEvery, cfgAt string,
 			return evalAtDue(hh, mm), 0, fmt.Sprintf("daily at %02d:%02d", hh, mm)
 		}
 		if log != nil {
-			log.Warn("ignoring malformed improve.eval_at; falling back to improve.eval_every", "value", at)
+			eval.ScheduleIgnored.Log(context.Background(), "value", at, "effect", "improve.eval_every applies instead")
 		}
 	}
 	if d := resolveEvalCadence(false, 0, cfgEvery, log); d > 0 {

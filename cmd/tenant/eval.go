@@ -171,8 +171,8 @@ func cmdEval(ctx context.Context, args []string) error {
 			// never resolves under a service cwd (the dead-gate scar).
 			bp = resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), string(sub))
 		}
-		artifact := writeEvalArtifact(artifactDir, rep, nil)
-		appendEvalTrend(artifactDir, trendEntryFor(rep, bp, artifact, nil), nil)
+		artifact := writeEvalArtifact(ctx, artifactDir, rep)
+		appendEvalTrend(ctx, artifactDir, trendEntryFor(ctx, rep, bp, artifact))
 		fmt.Fprintf(os.Stderr, "eval: trend line appended → %s\n", evalTrendPath(artifactDir))
 	}
 

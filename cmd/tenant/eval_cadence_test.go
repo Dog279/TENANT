@@ -6,6 +6,7 @@ package main
 // relaunches on a dev day must not fire 30 evals.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -141,9 +142,9 @@ func TestLatestTrendTime(t *testing.T) {
 	// Entries out of order + one malformed line: max valid TS wins.
 	older := time.Date(2026, 6, 10, 3, 0, 0, 0, time.UTC)
 	newer := time.Date(2026, 6, 11, 3, 0, 0, 0, time.UTC)
-	appendEvalTrend(tmp, evalTrendEntry{TS: newer.Format(time.RFC3339), Subset: "full"}, nil)
-	appendEvalTrend(tmp, evalTrendEntry{TS: older.Format(time.RFC3339), Subset: "full"}, nil)
-	appendEvalTrend(tmp, evalTrendEntry{TS: "not-a-timestamp", Subset: "full"}, nil)
+	appendEvalTrend(context.Background(), tmp, evalTrendEntry{TS: newer.Format(time.RFC3339), Subset: "full"})
+	appendEvalTrend(context.Background(), tmp, evalTrendEntry{TS: older.Format(time.RFC3339), Subset: "full"})
+	appendEvalTrend(context.Background(), tmp, evalTrendEntry{TS: "not-a-timestamp", Subset: "full"})
 	if got := latestTrendTime(tmp); !got.Equal(newer) {
 		t.Fatalf("latestTrendTime = %v, want %v (max across entries)", got, newer)
 	}
@@ -157,7 +158,7 @@ func TestTrendEntryFor(t *testing.T) {
 		Subset:     eval.SubsetSmoke,
 		Aggregates: eval.Aggregates{Overall: 87.5, PassCount: 7, FailCount: 1},
 	}
-	e := trendEntryFor(rep, filepath.Join(t.TempDir(), "missing.json"), "", nil)
+	e := trendEntryFor(context.Background(), rep, filepath.Join(t.TempDir(), "missing.json"), "")
 	if e.HasBaseline || e.Regressed {
 		t.Error("missing baseline must yield HasBaseline=false, Regressed=false")
 	}
@@ -171,7 +172,7 @@ func TestTrendEntryFor(t *testing.T) {
 		t.Errorf("TS not RFC3339: %q", e.TS)
 	}
 	// With an artifact path, only the base name is recorded.
-	e = trendEntryFor(rep, "", filepath.Join("some", "dir", "eval-x.json"), nil)
+	e = trendEntryFor(context.Background(), rep, "", filepath.Join("some", "dir", "eval-x.json"))
 	if e.Artifact != "eval-x.json" {
 		t.Errorf("Artifact = %q, want base name", e.Artifact)
 	}
@@ -183,14 +184,14 @@ func TestTrendEntryFor(t *testing.T) {
 func TestManualAppendAdvancesClock(t *testing.T) {
 	tmp := t.TempDir()
 	rep := &eval.Report{Subset: eval.SubsetSmoke, Aggregates: eval.Aggregates{Overall: 100, PassCount: 8}}
-	artifact := writeEvalArtifact(tmp, rep, nil)
+	artifact := writeEvalArtifact(context.Background(), tmp, rep)
 	if artifact == "" {
 		t.Fatal("writeEvalArtifact failed")
 	}
 	if _, err := os.Stat(artifact); err != nil {
 		t.Fatalf("artifact not on disk: %v", err)
 	}
-	appendEvalTrend(tmp, trendEntryFor(rep, "", artifact, nil), nil)
+	appendEvalTrend(context.Background(), tmp, trendEntryFor(context.Background(), rep, "", artifact))
 
 	seed := latestTrendTime(tmp)
 	if seed.IsZero() {

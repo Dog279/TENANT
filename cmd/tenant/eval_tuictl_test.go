@@ -7,6 +7,7 @@ package main
 // relaunch via config.json.
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -145,10 +146,10 @@ func TestEvalTUIControl_RunNow(t *testing.T) {
 // Status surfaces the last recorded run from the trend log.
 func TestEvalTUIControl_StatusShowsLastRun(t *testing.T) {
 	tmp := t.TempDir()
-	appendEvalTrend(tmp+"/eval-artifacts", evalTrendEntry{
+	appendEvalTrend(context.Background(), tmp+"/eval-artifacts", evalTrendEntry{
 		TS: time.Now().UTC().Format(time.RFC3339), Subset: "full",
 		Overall: 91.5, Passed: 11, Total: 12, HasBaseline: true, Regressed: false,
-	}, nil)
+	})
 	ctl := evalTUIControl{sched: newEvalSchedule(nil, "off"), cfgDir: tmp, dataDir: tmp}
 	st := ctl.Status()
 	if !strings.Contains(st, "full 91.5 (11/12)") || !strings.Contains(st, "ok") {

@@ -14,7 +14,6 @@ package dashboard
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"tenant/internal/agent"
@@ -27,7 +26,6 @@ import (
 type wsCoordinator struct {
 	runner AgentRunner
 	broker *agent.Broker // the chat stream a failed turn is reported on
-	log    *slog.Logger
 
 	mu     sync.Mutex
 	active bool               // a Turn is currently running on the agent
@@ -39,8 +37,8 @@ type wsCoordinator struct {
 // newWSCoordinator builds the coordinator over the shared agent runner. The
 // runner may be nil (bare health-only server); startTurn handles that by
 // declining with a notice rather than calling a nil agent.
-func newWSCoordinator(runner AgentRunner, broker *agent.Broker, log *slog.Logger) *wsCoordinator {
-	return &wsCoordinator{runner: runner, broker: broker, log: log}
+func newWSCoordinator(runner AgentRunner, broker *agent.Broker) *wsCoordinator {
+	return &wsCoordinator{runner: runner, broker: broker}
 }
 
 // startTurn launches a turn on behalf of conn unless one is already running
@@ -88,7 +86,7 @@ func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
 	if err == nil || ctx.Err() != nil {
 		return
 	}
-	co.log.Warn("dashboard: chat turn failed", "err", err)
+	ChatTurnFailed.Log(ctx, "err", err)
 	co.broker.Publish(agent.Event{Kind: agent.EventError, Text: "turn failed: " + err.Error()})
 }
 

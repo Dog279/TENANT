@@ -365,6 +365,283 @@ Writes the `cron` log.
 
 **What to do.** None. The output is masked in viewers; it can hold anything the command printed.
 
+## dashboard
+
+Writes the `dashboard` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#dashboard-1) | info | Server | `Dashboard on {addr}` |
+| [1001](#dashboard-1001) | info | Stream | `Live {stream} stream to {remote}` |
+| [2001](#dashboard-2001) | warning | Server | `HTTP server: {err}` |
+| [2002](#dashboard-2002) | warning | Stream | `Live {stream} stream to {remote} fell behind` |
+| [2003](#dashboard-2003) | warning | Stream | `WebSocket handshake from {remote} failed: {err}` |
+| [2101](#dashboard-2101) | warning | Access | `Request for unrecognized host {host} rejected: {method} {route}` |
+| [2102](#dashboard-2102) | warning | Access | `Cross-origin request from {origin} rejected: {method} {route}` |
+| [2103](#dashboard-2103) | warning | Access | `Request without a valid token rejected: {method} {route}` |
+| [2104](#dashboard-2104) | warning | Access | `Browser change without a matching Origin rejected: {method} {route}` |
+| [2105](#dashboard-2105) | warning | Access | `Sign-in with a wrong token from {remote}` |
+| [2201](#dashboard-2201) | warning | Action | `Dashboard action {action} failed: {err}` |
+| [2202](#dashboard-2202) | warning | Action | `API key {cred} was not {op}` |
+| [2203](#dashboard-2203) | warning | Action | `API key {cred} was sent in the URL and refused` |
+| [2204](#dashboard-2204) | warning | Action | `Integration {integration} test failed: {err}` |
+| [2205](#dashboard-2205) | warning | Action | `MCP connector {url} was not added: {err}` |
+| [2206](#dashboard-2206) | warning | Chat | `Chat turn failed: {err}` |
+| [3001](#dashboard-3001) | error | Page | `Page {page} could not be rendered: {err}` |
+| [9001](#dashboard-9001) | info | Request | `{method} {route}` |
+
+### dashboard 1
+
+`Dashboard on {addr}`
+
+- **Level:** info · **Channel:** operational · **Task:** Server · **Log:** dashboard
+- **Fields:** `addr`, `tls`
+- **Find it:** `provider:dashboard id:1`
+
+**What it means.** The dashboard's web server: start, then stop with its uptime, or fail with the error that stopped it.
+
+**Why it happens.** dashboard.enabled is on, or /dashboard on started it; it stops at shutdown or on /dashboard off.
+
+**What to do.** On a failure, read the error: usually the address is taken or the TLS certificate can't be read. /dashboard on starts it again.
+
+### dashboard 1001
+
+`Live {stream} stream to {remote}`
+
+- **Level:** info · **Channel:** operational · **Task:** Stream · **Log:** dashboard
+- **Fields:** `stream`, `remote`
+- **Find it:** `provider:dashboard id:1001`
+
+**What it means.** A browser page subscribed to a live feed (chat and activity events, or the log book): start when it connects, stop when it leaves.
+
+**Why it happens.** A dashboard page with a live feed was opened, reloaded or closed.
+
+**What to do.** None.
+
+### dashboard 2001
+
+`HTTP server: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** dashboard
+- **Fields:** `err`, `stack`
+- **Find it:** `provider:dashboard id:2001`
+
+**What it means.** Go's HTTP server reported a problem it handled on its own, such as a failed TLS handshake or a handler that panicked.
+
+**Why it happens.** A client that doesn't speak TLS (or doesn't trust the certificate), a scanner, a dropped connection, or a bug in a page's handler.
+
+**What to do.** A handshake error from an unknown address is usually noise. A panic is a bug: report it with its stack.
+
+### dashboard 2002
+
+`Live {stream} stream to {remote} fell behind`
+
+- **Level:** warning · **Channel:** operational · **Task:** Stream · **Log:** dashboard
+- **Fields:** `stream`, `remote`, `missed`
+- **Find it:** `provider:dashboard id:2002`
+
+**What it means.** A page read its live feed more slowly than events arrived, and its buffer filled, so events were dropped for it (missed counts them where known): the page no longer shows all of them.
+
+**Why it happens.** A slow or suspended browser tab, a slow network, or a burst of events (a long tool run streams many).
+
+**What to do.** Reload the page to redraw it. The events themselves are still in the log book.
+
+### dashboard 2003
+
+`WebSocket handshake from {remote} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Stream · **Log:** dashboard
+- **Fields:** `remote`, `err`
+- **Find it:** `provider:dashboard id:2003`
+
+**What it means.** A client asked for the chat WebSocket, but its handshake was malformed; it got an HTTP error instead.
+
+**Why it happens.** A client or proxy that doesn't speak WebSocket, or a proxy that strips the Upgrade headers.
+
+**What to do.** Use the dashboard in a browser directly, or make the proxy pass WebSocket upgrades through.
+
+### dashboard 2101
+
+`Request for unrecognized host {host} rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `host`, `method`, `route`, `remote`
+- **Find it:** `provider:dashboard id:2101`
+
+**What it means.** A request named a Host the dashboard doesn't answer to, and got 403.
+
+**Why it happens.** The dashboard was reached under a name or address it doesn't know (a reverse proxy, a LAN name, a new tailnet name), or a DNS-rebinding attempt.
+
+**What to do.** If the name is yours, add it to dashboard.allowed_hosts. Otherwise nothing: the request was refused.
+
+### dashboard 2102
+
+`Cross-origin request from {origin} rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `origin`, `method`, `route`, `remote`
+- **Find it:** `provider:dashboard id:2102`
+
+**What it means.** A browser request came from a page on another site, and got 403.
+
+**Why it happens.** A web page on another origin tried to call the dashboard, or the dashboard is open under two different addresses.
+
+**What to do.** Open the dashboard at one address. If you don't recognize the origin, a site you visited tried to reach it; it was refused.
+
+### dashboard 2103
+
+`Request without a valid token rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `method`, `route`, `remote`, `credential`
+- **Find it:** `provider:dashboard id:2103`
+
+**What it means.** A request carried no dashboard token, or a wrong one (credential says which), and got 401.
+
+**Why it happens.** A browser that hasn't signed in, a token that changed since sign-in, a script with an old token, or someone guessing.
+
+**What to do.** Sign in at /settings with the token in <config>/dashboard-auth-token. Many wrong tokens from an address you don't know mean someone is guessing: keep the dashboard off public networks.
+
+### dashboard 2104
+
+`Browser change without a matching Origin rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `method`, `route`, `remote`
+- **Find it:** `provider:dashboard id:2104`
+
+**What it means.** A change (a POST) authenticated by the sign-in cookie didn't prove it came from a dashboard page, and got 403.
+
+**Why it happens.** A page on another site submitted a form to the dashboard, or an old browser or extension stripped the Origin header.
+
+**What to do.** Make the change from the dashboard page itself, or call the API with an Authorization: Bearer token.
+
+### dashboard 2105
+
+`Sign-in with a wrong token from {remote}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `remote`
+- **Find it:** `provider:dashboard id:2105`
+
+**What it means.** The sign-in form was sent a token that doesn't match the dashboard's, and got 403.
+
+**Why it happens.** A typo, a token from before it changed, or someone guessing.
+
+**What to do.** Use the token in <config>/dashboard-auth-token (or dashboard.auth). Many failures from an address you don't know mean someone is guessing.
+
+### dashboard 2201
+
+`Dashboard action {action} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `action`, `target`, `err`
+- **Find it:** `provider:dashboard id:2201`
+
+**What it means.** A change or command made on a dashboard page didn't apply. The page showed the operator the same error.
+
+**Why it happens.** The value was refused (an unknown category or mode, a bad schedule, a job or fact that no longer exists), or the change couldn't be saved: config.json or a store is unwritable or locked, or the subsystem isn't running.
+
+**What to do.** Read the error. Fix the value and try again; if saving failed, check the data directory's permissions and free space.
+
+### dashboard 2202
+
+`API key {cred} was not {op}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `cred`, `op`, `err` (sensitive, masked: `err`)
+- **Find it:** `provider:dashboard id:2202`
+
+**What it means.** Storing or removing an API key from the Keys page failed. The page said so without the reason, which can quote the key.
+
+**Why it happens.** The credential store is unwritable or locked, or the key's ID is unknown.
+
+**What to do.** Check the config directory's permissions, then try again. The reason is kept, masked, in this event.
+
+### dashboard 2203
+
+`API key {cred} was sent in the URL and refused`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `cred`
+- **Find it:** `provider:dashboard id:2203`
+
+**What it means.** A request tried to store an API key through the URL's query string, where browser history and proxy logs keep it. It was refused.
+
+**Why it happens.** A script or bookmark that puts value= in the URL instead of the form's body.
+
+**What to do.** Rotate that key: it may now sit in a history or a log. Submit keys through the Keys page's form.
+
+### dashboard 2204
+
+`Integration {integration} test failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `integration`, `err`
+- **Find it:** `provider:dashboard id:2204`
+
+**What it means.** The Test button's check of an integration ran in the background and failed; the page shows the result on refresh.
+
+**Why it happens.** The integration's credentials are missing or expired, its sign-in on the computer running Tenant wasn't finished, or its service is unreachable.
+
+**What to do.** Finish any sign-in on the computer running Tenant, fix the integration's settings, and test again.
+
+### dashboard 2205
+
+`MCP connector {url} was not added: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `url`, `err`
+- **Find it:** `provider:dashboard id:2205`
+
+**What it means.** Connecting a remote MCP service from the MCP page ran in the background and failed.
+
+**Why it happens.** The URL isn't an MCP endpoint, the service is unreachable, or its sign-in on the computer running Tenant wasn't approved.
+
+**What to do.** Check the URL, approve the sign-in window on the computer running Tenant, and connect again. The mcp log has the details.
+
+### dashboard 2206
+
+`Chat turn failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Chat · **Log:** dashboard
+- **Fields:** `err`
+- **Find it:** `provider:dashboard id:2206`
+
+**What it means.** A message sent from the Chat page didn't get an answer; the chat shows the error.
+
+**Why it happens.** The turn gate refused it, the model is unreachable, or the agent failed before its loop started.
+
+**What to do.** Read the error. For the model, see the model log; then send the message again.
+
+### dashboard 3001
+
+`Page {page} could not be rendered: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Page · **Log:** dashboard
+- **Fields:** `page`, `err`
+- **Find it:** `provider:dashboard id:3001`
+
+**What it means.** A dashboard page's template failed, and the browser got a 500.
+
+**Why it happens.** A bug: the page's data doesn't fit its template.
+
+**What to do.** Report it with the error. Other pages keep working.
+
+### dashboard 9001
+
+`{method} {route}`
+
+- **Level:** info · **Channel:** diagnostic · **Task:** Request · **Log:** dashboard
+- **Fields:** `method`, `route`, `status`
+- **Find it:** `provider:dashboard id:9001`
+
+**What it means.** One request to the dashboard: start, then stop with its status and duration, or fail on a 5xx.
+
+**Why it happens.** A browser page, the dashboard API or a live stream.
+
+**What to do.** None. For slow or failing pages, compare durations and statuses by route.
+
 ## discord
 
 Writes the `discord` log.
@@ -669,6 +946,163 @@ Writes the `discord` log.
 **Why it happens.** The acknowledgement missed Discord's 3-second window (a slow network or a busy host), or Discord rejected it.
 
 **What to do.** None when it is rare. Check the card or the relay's reply to see what was decided.
+
+## eval
+
+Writes the `eval` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#eval-1001) | info | Run | `Eval run of {subset}, {tasks} tasks` |
+| [1002](#eval-1002) | info | Task | `Eval task {task}` |
+| [1003](#eval-1003) | info | Trend | `Eval trend: {subset} scored {overall}, {passed}/{total} passed` |
+| [2001](#eval-2001) | warning | Task | `Eval task {task} was not graded ({class}): {reason}` |
+| [2002](#eval-2002) | warning | Regression | `No eval baseline at {path}: regressions are not checked` |
+| [2003](#eval-2003) | warning | Regression | `Eval {subset} regressed against its baseline: Δ {delta}, 95% CI upper bound {ci_high}` |
+| [2004](#eval-2004) | warning | Regression | `Eval baseline {path} could not be read: {err}` |
+| [2005](#eval-2005) | warning | Run | `Eval {record} was not saved: {err}` |
+| [2006](#eval-2006) | warning | Schedule | `Schedule {value} is malformed and ignored: {effect}` |
+| [3001](#eval-3001) | error | Task | `The route classifier panicked in an eval task: {panic}` |
+
+### eval 1001
+
+`Eval run of {subset}, {tasks} tasks`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** eval
+- **Fields:** `subset`, `tasks`, `overall`, `passed`, `failed`, `ungraded`, `skipped`
+- **Find it:** `provider:eval id:1001`
+
+**What it means.** An eval run: start, then stop with its overall score and counts, or fail when it was cancelled.
+
+**Why it happens.** The nightly schedule (improve.eval_every or eval_at) came due, someone ran it now (the dashboard, /eval), `tenant eval` ran, or the soul nudge scored a candidate.
+
+**What to do.** None. Compare overall across runs in the trend (`tenant eval --trend`); a regression is reported on its own (eval/2003).
+
+### eval 1002
+
+`Eval task {task}`
+
+- **Level:** info · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `task`, `category`, `mode`, `result`, `score`
+- **Find it:** `provider:eval id:1002`
+
+**What it means.** One task of an eval run: start, then stop with its result (pass, fail, ungraded or skipped) and score.
+
+**Why it happens.** Its run reached it.
+
+**What to do.** For a failing task, open its report in <data>/eval-artifacts, or run `tenant eval --baseline-diff` for the movers.
+
+### eval 1003
+
+`Eval trend: {subset} scored {overall}, {passed}/{total} passed`
+
+- **Level:** info · **Channel:** operational · **Task:** Trend · **Log:** eval
+- **Fields:** `subset`, `overall`, `passed`, `total`, `regressed`, `delta`, `artifact`
+- **Find it:** `provider:eval id:1003`
+
+**What it means.** A finished run's line was added to the trend (trend.jsonl), with its verdict against the baseline.
+
+**Why it happens.** A nightly run finished, or `tenant eval --append-trend` ran.
+
+**What to do.** None. `tenant eval --trend` shows the series.
+
+### eval 2001
+
+`Eval task {task} was not graded ({class}): {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `task`, `class`, `reason`
+- **Find it:** `provider:eval id:2001`
+
+**What it means.** A task was left out of the score because the harness, the model provider or the judge failed, not the agent.
+
+**Why it happens.** class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the grader was unusable after its retry).
+
+**What to do.** Fix the named piece (a provider's quota or endpoint, the judge model) and run again. Many ungraded tasks make a run's score unreliable.
+
+### eval 2002
+
+`No eval baseline at {path}: regressions are not checked`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `path`
+- **Find it:** `provider:eval id:2002`
+
+**What it means.** A run finished with no baseline to compare against, so the regression gate is off.
+
+**Why it happens.** No baseline was ever captured, or it lives somewhere the run doesn't look.
+
+**What to do.** Capture one from a good run: `tenant eval --baseline-from <data>/eval-artifacts/eval-<time>.json`.
+
+### eval 2003
+
+`Eval {subset} regressed against its baseline: Δ {delta}, 95% CI upper bound {ci_high}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `subset`, `delta`, `ci_high`, `overall`, `artifact`
+- **Find it:** `provider:eval id:2003`
+
+**What it means.** A run scored worse than its baseline, beyond chance (the paired bootstrap's 95% interval is below zero).
+
+**Why it happens.** A change to the prompt, the model, routing, the tools or memory made the agent worse, or the environment lost something tasks need.
+
+**What to do.** Run `tenant eval --baseline-diff` to see which tasks moved and why; fix the cause, or capture a new baseline if the change is intended.
+
+### eval 2004
+
+`Eval baseline {path} could not be read: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `path`, `err`
+- **Find it:** `provider:eval id:2004`
+
+**What it means.** The baseline exists but doesn't parse, so this run has no regression verdict.
+
+**Why it happens.** The file was edited by hand, truncated, or written by an incompatible version.
+
+**What to do.** Capture it again: `tenant eval --baseline-from <a good artifact>`.
+
+### eval 2005
+
+`Eval {record} was not saved: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Run · **Log:** eval
+- **Fields:** `record`, `path`, `err`
+- **Find it:** `provider:eval id:2005`
+
+**What it means.** A run finished, but its report artifact or its trend line didn't reach <data>/eval-artifacts.
+
+**Why it happens.** The data directory is full, unwritable or locked.
+
+**What to do.** Check the data directory's free space and permissions. The run's scores are still in this log (eval/1001).
+
+### eval 2006
+
+`Schedule {value} is malformed and ignored: {effect}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Schedule · **Log:** eval
+- **Fields:** `value`, `effect`, `err`
+- **Find it:** `provider:eval id:2006`
+
+**What it means.** An eval cadence setting didn't parse, so it was ignored rather than guessed at.
+
+**Why it happens.** improve.eval_at is not HH:MM, or an improve.*_every duration is not like 24h.
+
+**What to do.** Set it again with /eval every <duration> or /eval at HH:MM (applies live), or fix it in config.json.
+
+### eval 3001
+
+`The route classifier panicked in an eval task: {panic}`
+
+- **Level:** error · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `panic`, `stack`
+- **Find it:** `provider:eval id:3001`
+
+**What it means.** A bug in the route classifier was caught while a route task measured it; that sample counts as a failed classification.
+
+**Why it happens.** A programming error in the classifier.
+
+**What to do.** Report it with the stack. The rest of the run goes on.
 
 ## imessage
 
