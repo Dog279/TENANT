@@ -3097,7 +3097,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		MCP:             mcpCtl,
 		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
 		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.ReconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
-		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
+		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceTUI}},
 		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},
 		Models:          modelCtl,
 		// TEN-64: `/skill` (singular) integration-config surface. Bridges
@@ -3109,6 +3109,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		SkillConfig: func() *skillCfgControl {
 			sc := newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled, atlassianMCP)
 			sc.onDiscordConfigured = relayMgr.ReconfigureAndStart
+			sc.surface = surfaceTUI
 			return sc
 		}(),
 		Research: &researchControl{

@@ -19,6 +19,7 @@ import (
 	"tenant/internal/backup"
 	"tenant/internal/improve"
 	"tenant/internal/logs"
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/store"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -274,6 +275,7 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	if err := privacy.NoteBackup(privacy.Data{DataDir: c.dataDir}, res.Path, res.Manifest.CreatedAt); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("could not record this backup for `tenant privacy status`: %v", err))
 	}
+	_ = catalog.BackupWritten.Audit(ctx, "path", res.Path, "bytes", res.Bytes, "encrypted", res.Manifest.Encrypted, "actor", actorOperator, "surface", surfaceCLI)
 	if *asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
@@ -478,6 +480,11 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 			fmt.Fprintf(out, "  warning: the Security log's restore was not fully recorded (%v); `tenant logs verify security` may report it as a break\n", err)
 		}
 	}
+	var made time.Time
+	if res.Report != nil && res.Report.Manifest != nil {
+		made = res.Report.Manifest.CreatedAt
+	}
+	_ = catalog.BackupRestored.Audit(ctx, "path", file, "created", made, "actor", actorOperator, "surface", surfaceCLI)
 	fmt.Fprintln(out, "restored.")
 	for _, a := range res.Aside {
 		fmt.Fprintf(out, "  the previous directory is kept at %s; delete it once you are happy\n", a)
@@ -512,6 +519,7 @@ func fileEvents(c *commonFlags) func() {
 			return
 		}
 		defer h.Close()
+		attachCommandStore(h, c)
 		for _, e := range entries {
 			h.Log(e)
 		}

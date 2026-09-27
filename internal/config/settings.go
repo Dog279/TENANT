@@ -83,7 +83,8 @@ func LoadSettings(cfgDir, agentID string) (*Settings, error) {
 }
 
 // Save writes the settings atomically (temp + rename) so a crash mid-write
-// can't leave a truncated file that fails to parse next launch.
+// can't leave a truncated file that fails to parse next launch, and files the
+// change in the Security log.
 func (s *Settings) Save(cfgDir, agentID string) error {
 	if s.Tools == nil {
 		s.Tools = map[string]bool{}
@@ -96,9 +97,11 @@ func (s *Settings) Save(cfgDir, agentID string) error {
 	if err := fsperm.MkdirAll(filepath.Dir(p)); err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := fsperm.WriteFile(tmp, b); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p)
+	return saveAudited(p, b, func(p string, b []byte) error {
+		tmp := p + ".tmp"
+		if err := fsperm.WriteFile(tmp, b); err != nil {
+			return err
+		}
+		return os.Rename(tmp, p)
+	})
 }

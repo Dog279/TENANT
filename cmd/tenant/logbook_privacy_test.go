@@ -85,9 +85,11 @@ func TestBackupCarriesTheOpenLogbook(t *testing.T) {
 		return cmdBackupRestore(ctx, []string{files[0], "--config", cfg, "--data", data, "--yes"}, strings.NewReader(""), &out)
 	})
 	// The events come back, and the Security log's re-anchor record joins
-	// them (TEN-396); the store ID does not, so live-tail cursors from before
+	// them (TEN-396), then the restore's own events, its Security record
+	// last (TEN-398); the store ID does not, so live-tail cursors from before
 	// the restore start over instead of skipping new rows.
-	if got, msgs := logbookMsgs(t, path); got == id || len(msgs) != 2 || msgs[0] != "before the backup" || !strings.HasPrefix(msgs[1], "The Security log was restored") {
+	if got, msgs := logbookMsgs(t, path); got == id || len(msgs) < 3 || msgs[0] != "before the backup" || !strings.HasPrefix(msgs[1], "The Security log was restored") ||
+		!strings.HasSuffix(msgs[len(msgs)-1], "restored over this install") {
 		t.Errorf("restored log book: store ID %x (was %x, want a new one), events %q", got, id, msgs)
 	}
 	if _, err := os.Stat(mirror); !os.IsNotExist(err) {
@@ -140,7 +142,10 @@ func TestForgetReachesARelocatedLogbookAndStatusCountsBackups(t *testing.T) {
 	if !strings.Contains(out.String(), "log book events in turns") || !strings.Contains(out.String(), "log book security records") {
 		t.Errorf("forget output does not list the log book:\n%s", out.String())
 	}
-	if _, msgs := logbookMsgs(t, path); !slices.Equal(msgs, []string{store.Tombstone, "unrelated"}) {
+	// The backup's and the forget's own events follow, the forget's Security
+	// record last (TEN-398).
+	if _, msgs := logbookMsgs(t, path); len(msgs) < 3 || !slices.Equal(msgs[:2], []string{store.Tombstone, "unrelated"}) ||
+		!strings.HasPrefix(msgs[len(msgs)-1], "Privacy deletion (forget) by the operator: delete 1 episodes") {
 		t.Errorf("relocated log book after the forget: %q", msgs)
 	}
 	out.Reset()

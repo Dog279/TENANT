@@ -127,6 +127,18 @@ type skillCfgControl struct {
 	// AND auto-start the relay bound to the operator's Discord user ID.
 	// Nil-safe; only relevant for the "discord" skill.
 	onDiscordConfigured func(token, operatorID string) error
+
+	// surface is where this control's changes are made, for the Security
+	// records of the secrets they store: the TUI's sets it, "" is the
+	// dashboard's.
+	surface string
+}
+
+func (sc *skillCfgControl) from() string {
+	if sc.surface != "" {
+		return sc.surface
+	}
+	return surfaceDashboard
 }
 
 // newSkillControl wires a skill control over the operator's config
@@ -359,7 +371,7 @@ func (sc *skillCfgControl) SkillConfigure(args []string, noEnable bool) (string,
 	lc.Skills[id] = sk
 
 	// --- Phase 3: write credentials.json FIRST (audit P0).
-	if err := creds.Save(sc.cfgDir); err != nil {
+	if err := saveCredentials(sc.cfgDir, creds, sc.from()); err != nil {
 		return "", fmt.Errorf("save credentials.json: %w", err)
 	}
 
@@ -499,7 +511,7 @@ func (sc *skillCfgControl) SkillClear(id, fieldKey string) (string, error) {
 	}
 
 	// Write order matches Configure: creds first, then config.
-	if err := creds.Save(sc.cfgDir); err != nil {
+	if err := saveCredentials(sc.cfgDir, creds, sc.from()); err != nil {
 		return "", fmt.Errorf("save credentials.json: %w", err)
 	}
 	if err := lc.Save(sc.cfgDir); err != nil {
@@ -539,7 +551,7 @@ func (sc *skillCfgControl) runProbeWithSave(k skillKind, creds *credentials, set
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	save := func() error { return creds.Save(sc.cfgDir) }
+	save := func() error { return saveCredentials(sc.cfgDir, creds, sc.from()) }
 	done := make(chan struct {
 		identity string
 		err      error
