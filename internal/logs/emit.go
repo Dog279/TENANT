@@ -2,6 +2,7 @@ package logs
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strconv"
@@ -13,8 +14,8 @@ import (
 	"tenant/internal/version"
 )
 
-// hubEmitter files catalogued events (internal/logs/event) into a hub as v1
-// lines, until the store (TEN-370) takes over as the emitter.
+// hubEmitter files catalogued events (internal/logs/event) through a hub:
+// into its pipeline once a store is attached (pipeline.go), else as v1 lines.
 type hubEmitter struct{ h *Hub }
 
 // installEmitter makes h the event emitter; a nil hub uninstalls it.
@@ -27,15 +28,27 @@ func installEmitter(h *Hub) {
 }
 
 func (em hubEmitter) Emit(ctx context.Context, e *event.Event) {
+	if e.Level.Slog() < em.h.opts.MinLevel {
+		return
+	}
 	enrich(ctx, e)
+	if p := em.h.pipe.Load(); p != nil && p.enqueue(ctx, e) {
+		return
+	}
 	em.h.Log(EntryFromEvent(*e))
 }
 
-// ponytail: returns once the hub has the line, as Emit does, not after a
-// durable commit; the Security log's store (TEN-396) makes Audit wait for
-// its commit and return its error.
+// Audit returns once the record is committed to the store, with the commit's
+// error. ponytail: with no store attached it returns once the hub has the
+// line, as Emit does, and can't report a failed write.
 func (em hubEmitter) Audit(ctx context.Context, e *event.Event) error {
-	em.Emit(ctx, e)
+	enrich(ctx, e)
+	if p := em.h.pipe.Load(); p != nil {
+		if err := p.audit(ctx, e); !errors.Is(err, errClosed) {
+			return err
+		}
+	}
+	em.h.Log(EntryFromEvent(*e))
 	return nil
 }
 

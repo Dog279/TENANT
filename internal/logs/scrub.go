@@ -262,10 +262,7 @@ func (s *Scrubber) Entry(e Entry, max int) Entry {
 	e.Msg = s.ScrubCap(e.Msg, max)
 	copied := false
 	for i, f := range e.Fields {
-		v := s.ScrubCap(f.Value, max)
-		if v != "" && secretField(f.Key) && !strings.HasPrefix(v, "«secret:") {
-			v = "«secret:" + f.Key + "»"
-		}
+		v := s.Field(f.Key, f.Value, max)
 		if v != f.Value {
 			if !copied {
 				e.Fields, copied = slices.Clone(e.Fields), true
@@ -274,6 +271,16 @@ func (s *Scrubber) Entry(e Entry, max int) Entry {
 		}
 	}
 	return e
+}
+
+// Field is ScrubCap for the value of a field named key: a key that names a
+// credential (password, token, secret, api_key) loses its whole value.
+func (s *Scrubber) Field(key, v string, max int) string {
+	v = s.ScrubCap(v, max)
+	if v != "" && secretField(key) && !strings.HasPrefix(v, "«secret:") {
+		v = "«secret:" + key + "»"
+	}
+	return v
 }
 
 // SetSecrets hands the hub the values its scrubber replaces wherever they

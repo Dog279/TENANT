@@ -23,6 +23,7 @@ one folder is one tab.
 ├── privacy/ shutdown/            ← the daily retention sweep; the staged shutdown's steps
 ├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
+├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
 ```
 
@@ -348,13 +349,39 @@ defer act.End(&err)
 - **Definitions** are checked when they register (at package init): an ID is
   unique in its provider, and the template names only declared fields that
   aren't sensitive. The built-in ones are in `internal/logs/catalog`.
-- **Until the store lands,** events are written to the same folders as v1
-  lines. The log is the folder. The event's ID, task, opcode and correlation
-  IDs come first among the fields: `event=cron/3001 task="Job run" trace=… activity=…`.
-  A critical event is written as `ERROR` with `severity=critical`, and a
-  sensitive field as `«sensitive»`, never its value.
-- `Audit` is for records that must not be lost. For now it returns once the
-  line is written; the Security log's store will make it wait for its commit.
+- **In the text files,** an event is a v1 line in its log's folder. The
+  event's ID, task, opcode and correlation IDs come first among the fields:
+  `event=cron/3001 task="Job run" trace=… activity=…`. A critical event is
+  written as `ERROR` with `severity=critical`, and a sensitive field as
+  `«sensitive»`, never its value. The store keeps the typed values.
+- `Audit` is for records that must not be lost: it returns once the record is
+  committed to `logbook.db`, with the commit's error. With the store off it
+  returns once the line is written.
+
+### The store: `logbook.db`
+
+`serve` and the TUI also keep every event in `<logs root>/logbook.db`, one
+SQLite database (WAL, `synchronous=FULL`, `fullfsync` on macOS). Each writes
+through its own connection, so both can share a data directory.
+`"logs": {"store": false}` turns it off (read at start); if it can't open, a
+`logbook` warning says so and the text files carry on alone.
+
+- **The write path.** An event joins one queue (64k events); one writer
+  goroutine takes a batch every 100 ms or 512 events, scrubs it, caps its
+  values, appends its operational events to the text files, then commits the
+  batch, and only then feeds the Activity tab. The text files are written
+  first, so a batch the store loses (a crash mid-commit, a failed write) is
+  still in them; a failed commit leaves one `logbook` warning.
+- **When the queue is full,** an operational event waits up to 1 ms and a
+  diagnostic one not at all, then it is dropped and counted per log
+  (`Hub.Dropped`). A `security` event is never queued: it forces its batch to
+  commit.
+- **Diagnostic events** (`.Diagnostic()` definitions) go to the store only.
+- **Reading it.** `store.Since(cursor)` returns every event after a cursor,
+  `<store ID>.<seq>`, in commit order, so a tail never misses a row. A cursor
+  from another database (restored or rebuilt) starts again from the beginning.
+- The file is owner-only. Retention, the v1 history import, the viewer and
+  the query language arrive with the next logging v2 tickets.
 
 ### Event IDs, the reference and coverage
 

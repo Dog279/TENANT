@@ -159,6 +159,9 @@ type Logs struct {
 	// MaxFieldBytes caps one value (a tool result, an argument blob) per line
 	// (0 ⇒ 4096; -1 ⇒ unlimited).
 	MaxFieldBytes int `json:"max_field_bytes,omitempty"`
+	// Store keeps every event in <logs root>/logbook.db as well as the text
+	// files (nil ⇒ on; false ⇒ the text files only). Read at start.
+	Store *bool `json:"store,omitempty"`
 }
 
 // Privacy is per-class retention (TEN-309).

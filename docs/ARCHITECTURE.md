@@ -148,7 +148,8 @@ generated from `internal/archtest/rules.go`, and
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
-| `internal/logs` | `internal/logs/event`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
+| `internal/logs/store` | `internal/logs/event`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
+| `internal/logs` | `internal/logs/event`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
 | `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
@@ -552,7 +553,7 @@ persisted at end of turn (one row/pair, query embedding). **17 tests**
 **Purpose:** the single sink every subsystem logs through. One source = one
 folder of plain-text daily files (`<data>/logs/<source>/YYYY-MM-DD.log`) = one
 dashboard tab. It imports only leaves (`fsperm`, `runtrace`, `version` and its
-own `event`), so any package can `logs.For("name")` without plumbing. Full
+own `event` and `store`), so any package can `logs.For("name")` without plumbing. Full
 guide: `docs/LOGGING.md`.
 
 **Public API:**
@@ -586,9 +587,14 @@ guide: `docs/LOGGING.md`.
 - Logging v2 (TEN-359): `internal/logs/event` is the event model (levels
   critical to verbose, typed fields, correlation, providers and catalogued
   definitions, activities) and `internal/logs/catalog` the built-in
-  definitions. `logs.Install` makes the hub their emitter until the store
-  lands; `logs.EntryFromEvent` / `logs.EventFromEntry` map v2 events and v1
+  definitions. `logs.Install` makes the hub their emitter;
+  `logs.EntryFromEvent` / `logs.EventFromEntry` map v2 events and v1
   entries onto each other.
+- `internal/logs/store` is `logbook.db`: `store.Open(path, Options)`,
+  `Commit(ctx, []event.Event)`, `Since(ctx, Cursor, limit)`, `Get`, `Logs`,
+  `Subscribe`, `TryLease`. `Hub.AttachStore(st)` routes `Log` and the
+  emitter through the pipeline (queue → writer: scrub, cap, text files,
+  commit, ring); `Hub.Dropped()` counts what a full queue dropped.
 
 **Invariants:** never blocks a producer on a reader; a file that cannot be
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches

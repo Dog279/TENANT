@@ -14,6 +14,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/logs"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -359,14 +360,25 @@ func logsRetention(cfg logsConfig) time.Duration {
 
 // openLogHub opens the unified log book for a long-running surface (serve,
 // tui) and installs it as the process default, so every logs.For(...) logger
-// anywhere in the binary starts filing. The caller Starts it (discovery,
-// tailing, retention) once it has a lifetime context, and Closes it on exit.
+// anywhere in the binary starts filing. Unless logs.store is false it also
+// attaches <logs root>/logbook.db, the system of record; a store that won't
+// open leaves a warning and the text files carrying on alone. The caller
+// Starts it (discovery, tailing, retention) once it has a lifetime context,
+// and Closes it on exit, which flushes and closes the store.
 func openLogHub(c *commonFlags) (*logs.Hub, error) {
 	h, err := logs.Open(c.logsRoot(), c.logsOptions())
 	if err != nil {
 		return nil, err
 	}
 	logs.Install(h)
+	if c.lc == nil || c.lc.Logs.Store == nil || *c.lc.Logs.Store {
+		st, err := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID()})
+		if err != nil {
+			h.Logf("logbook", slog.LevelWarn, "logbook: the store did not open; logging to the text files only", "err", err)
+		} else {
+			h.AttachStore(st)
+		}
+	}
 	return h, nil
 }
 
