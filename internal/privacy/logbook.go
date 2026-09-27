@@ -2,6 +2,7 @@ package privacy
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -31,12 +32,7 @@ const (
 	logbookArchTombs  = "archived log book security records (message and data cleared)"
 )
 
-func (d Data) logsDir() string {
-	if d.LogsDir != "" {
-		return d.LogsDir
-	}
-	return d.path("logs")
-}
+func (d Data) logsDir() string { return cmp.Or(d.LogsDir, d.path("logs")) }
 
 // withLogbook opens logbook.db and runs fn; a log book that does not exist is
 // skipped, never created.
@@ -162,15 +158,8 @@ func exportLogbook(ctx context.Context, d Data, agent, dst string) (int, error) 
 		return 0, err
 	}
 	w := bufio.NewWriter(f)
-	write := func(e event.Event) error {
-		b, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		n++
-		w.Write(b)
-		return w.WriteByte('\n')
-	}
+	enc := json.NewEncoder(w)
+	write := func(e event.Event) error { n++; return enc.Encode(e) }
 	err = withLogbook(d, func(st *store.Store) error {
 		if agent != "" {
 			m, err := agentMatch(ctx, d, agent)

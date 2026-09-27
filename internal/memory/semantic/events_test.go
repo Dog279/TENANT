@@ -6,24 +6,14 @@ import (
 	"fmt"
 	"testing"
 
-	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 	"tenant/internal/memory/semantic"
 )
-
-type recorder struct{ events []*event.Event }
-
-func (r *recorder) Emit(_ context.Context, e *event.Event) { r.events = append(r.events, e) }
-func (r *recorder) Audit(ctx context.Context, e *event.Event) error {
-	r.Emit(ctx, e)
-	return nil
-}
 
 // Every change to a fact is a memory event carrying its fact_id; the text is
 // kept only as a sensitive field. An in-memory store writes none.
 func TestFactChangesAreEvents(t *testing.T) {
-	r := &recorder{}
-	event.Install(r)
-	t.Cleanup(func() { event.Install(nil) })
+	r := eventtest.Capture(t)
 	ctx := context.Background()
 	s := mkStore(t)
 	add := func(text string) int64 {
@@ -50,7 +40,8 @@ func TestFactChangesAreEvents(t *testing.T) {
 	}
 
 	var got []string
-	for _, e := range r.events {
+	evs := r.Events()
+	for _, e := range evs {
 		got = append(got, e.Msg)
 	}
 	want := []string{
@@ -62,7 +53,7 @@ func TestFactChangesAreEvents(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("events:\n got %q\nwant %q", got, want)
 	}
-	for _, f := range r.events[0].Data {
+	for _, f := range evs[0].Data {
 		switch f.Key {
 		case "fact":
 			if !f.Sensitive || f.Value != "user lives in Lisbon" {
@@ -75,7 +66,7 @@ func TestFactChangesAreEvents(t *testing.T) {
 		}
 	}
 
-	r.events = nil
+	r = eventtest.Capture(t)
 	quiet, err := semantic.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +75,7 @@ func TestFactChangesAreEvents(t *testing.T) {
 	if _, err := quiet.Insert(ctx, &semantic.Fact{AgentID: "a", Fact: "x", EmbedderID: "e", Embedding: []float32{1}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.events) != 0 {
-		t.Fatalf("an in-memory store wrote %d events", len(r.events))
+	if n := len(r.Events()); n != 0 {
+		t.Fatalf("an in-memory store wrote %d events", n)
 	}
 }

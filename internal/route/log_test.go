@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 	"tenant/internal/route"
 	"tenant/internal/runtrace"
 )
@@ -94,28 +94,16 @@ func TestEngineRecordsClassifierFailure(t *testing.T) {
 	}
 }
 
-// capture keeps the catalogued events written while it is installed, with
-// the trace of the context each was written under.
-type capture struct {
-	mu     sync.Mutex
-	events []*event.Event
+// installCapture captures the events for the test, each with the trace of
+// the context it was written under.
+func installCapture(t *testing.T) *eventtest.Recorder {
+	return eventtest.Capture(t, func(ctx context.Context, e *event.Event) { e.Corr.TraceID = runtrace.IDFromContext(ctx) })
 }
-
-func (c *capture) Emit(ctx context.Context, e *event.Event) {
-	e.Corr.TraceID = runtrace.IDFromContext(ctx)
-	c.mu.Lock()
-	c.events = append(c.events, e)
-	c.mu.Unlock()
-}
-
-func (c *capture) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
 
 // of returns the events of d, each as its data by key.
-func (c *capture) of(d *event.Def) []map[string]any {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func of(c *eventtest.Recorder, d *event.Def) []map[string]any {
 	var out []map[string]any
-	for _, e := range c.events {
+	for _, e := range c.Events() {
 		if s := d.Spec(); e.Provider == s.Provider && e.ID == s.ID {
 			m := map[string]any{"trace": e.Corr.TraceID}
 			for _, f := range e.Data {
@@ -125,15 +113,6 @@ func (c *capture) of(d *event.Def) []map[string]any {
 		}
 	}
 	return out
-}
-
-// installCapture makes a capture the event emitter for the test. Not for
-// parallel tests: the emitter is process-wide.
-func installCapture(t *testing.T) *capture {
-	c := &capture{}
-	event.Install(c)
-	t.Cleanup(func() { event.Install(nil) })
-	return c
 }
 
 // Every decision writes a route event carrying its decision_id and the turn's
@@ -156,11 +135,11 @@ func TestEngineDecisionEventsAndLogFailure(t *testing.T) {
 	if got := engine.Recent(1); len(got) != 1 || got[0] != d {
 		t.Fatalf("history = %+v", got)
 	}
-	decided := c.of(route.Decided)
+	decided := of(c, route.Decided)
 	if len(decided) != 1 || decided[0]["decision_id"] != d.ID || decided[0]["trace"] != "trace-9" {
 		t.Fatalf("decision events = %v, want one with decision_id %s and trace trace-9", decided, d.ID)
 	}
-	if failed := c.of(route.RecordFailed); len(failed) != 1 || failed[0]["decision_id"] != d.ID {
+	if failed := of(c, route.RecordFailed); len(failed) != 1 || failed[0]["decision_id"] != d.ID {
 		t.Fatalf("the failed write was not reported: %v", failed)
 	}
 }
@@ -172,9 +151,9 @@ func TestEngineClassifierFailureIsAWarning(t *testing.T) {
 		return route.Signal{}, errors.New("endpoint down")
 	}), t.TempDir(), 10)
 	d := engine.Decide(context.Background(), "main", "sess", "hello", route.ModeShadow)
-	failed := c.of(route.DecideFailed)
-	if len(failed) != 1 || failed[0]["decision_id"] != d.ID || failed[0]["err"] != "endpoint down" || len(c.of(route.Decided)) != 0 {
-		t.Fatalf("events = %v / %v", failed, c.of(route.Decided))
+	failed := of(c, route.DecideFailed)
+	if len(failed) != 1 || failed[0]["decision_id"] != d.ID || failed[0]["err"] != "endpoint down" || len(of(c, route.Decided)) != 0 {
+		t.Fatalf("events = %v / %v", failed, of(c, route.Decided))
 	}
 }
 

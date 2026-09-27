@@ -68,8 +68,7 @@ var catalogued = map[string]int{
 	"internal/pluginreg": 0, "internal/toolmux": 0,
 	"internal/plugins/atlassian": 0, "internal/plugins/crm": 0, "internal/plugins/github": 0,
 	"internal/plugins/gsuite": 0, "internal/plugins/osys": 0, "internal/plugins/simplefin": 0,
-	"internal/plugins/sql": 0, "internal/plugins/wiki": 0, "internal/plugins/x": 0,
-	"internal/plugins/web": 1, // cfg.Warn, the NoSandbox callback a host may install
+	"internal/plugins/sql": 0, "internal/plugins/web": 0, "internal/plugins/wiki": 0, "internal/plugins/x": 0,
 	// memory and improve (TEN-390)
 	"internal/improve":            0,
 	"internal/memory":             0,

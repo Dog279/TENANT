@@ -127,25 +127,16 @@ func quotaSpent(resp *http.Response) bool {
 }
 
 // checkEvents holds a plugin's catalog to its own provider, plugin.<id>,
-// writing the log of the same name: every event it names must be that
-// provider's. The event package already refuses, at registration, an ID
-// declared twice and a template naming a field it does not declare.
+// writing the log of the same name, so a descriptor can't be wired to
+// another plugin's catalog. NewEvents builds the rest; the event package
+// already refuses, at registration, an ID declared twice and a template
+// naming a field it does not declare.
 func checkEvents(id string, ev *Events) error {
 	if ev == nil {
 		return nil
 	}
-	want := "plugin." + id
-	if ev.Provider == nil || ev.Provider.Name != want || ev.Provider.Log != want {
+	if want := "plugin." + id; ev.Provider == nil || ev.Provider.Name != want {
 		return fmt.Errorf("pluginreg: plugin %q must log through its own provider and log, %q", id, want)
-	}
-	for _, d := range []*event.Def{ev.Started, ev.Enabled, ev.Disabled, ev.StartFailed, ev.RateLimited, ev.AuthRejected, ev.APIFailed} {
-		if d != nil && d.Spec().Provider != want {
-			s := d.Spec()
-			return fmt.Errorf("pluginreg: plugin %q names event %s/%d, which is not its provider's", id, s.Provider, s.ID)
-		}
-	}
-	if ev.Started == nil || ev.Enabled == nil || ev.Disabled == nil || ev.StartFailed == nil {
-		return fmt.Errorf("pluginreg: plugin %q's catalog lacks a lifecycle event; build it with NewEvents", id)
 	}
 	return nil
 }

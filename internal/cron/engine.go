@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -53,12 +54,7 @@ func (d JobDef) KindOf() string {
 }
 
 // Label names a job for the log: its name, else its ID.
-func (d JobDef) Label() string {
-	if d.Name != "" {
-		return d.Name
-	}
-	return d.ID
-}
+func (d JobDef) Label() string { return cmp.Or(d.Name, d.ID) }
 
 // Job is a job's full state: its definition plus runtime fields. Values returned
 // by List/Add are copies — mutating them does not affect the engine.

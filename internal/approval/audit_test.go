@@ -12,6 +12,7 @@ import (
 	"tenant/internal/control"
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 	"tenant/internal/logs/store"
 	"tenant/internal/runtrace"
 )
@@ -229,34 +230,16 @@ func TestSecurityRecordsChannelBackend(t *testing.T) {
 		"4105 tenant@discord action=os_exec")
 	if len(got) == 4 {
 		// A record written after the gate, under the action's context, carries its approval.
-		var c capture
-		event.Install(&c)
-		defer event.Install(nil)
+		c := eventtest.Capture(t)
 		_ = ApprovalProbe.Audit(slot)
-		if c.last().Corr.ApprovalID != got[1].Corr.ApprovalID || got[0].Corr.ApprovalID != got[1].Corr.ApprovalID {
-			t.Errorf("the action's slot holds %q; the card's records %q/%q", c.last().Corr.ApprovalID, got[0].Corr.ApprovalID, got[1].Corr.ApprovalID)
+		evs := c.Events()
+		if last := evs[len(evs)-1]; last.Corr.ApprovalID != got[1].Corr.ApprovalID || got[0].Corr.ApprovalID != got[1].Corr.ApprovalID {
+			t.Errorf("the action's slot holds %q; the card's records %q/%q", last.Corr.ApprovalID, got[0].Corr.ApprovalID, got[1].Corr.ApprovalID)
 		}
 	}
 }
 
 var ApprovalProbe = event.NewProvider("approvaltest", "approvaltest").Event(1, event.Info, "Probe", "probe")
-
-type capture struct {
-	mu     sync.Mutex
-	events []*event.Event
-}
-
-func (c *capture) Emit(_ context.Context, e *event.Event) {
-	c.mu.Lock()
-	c.events = append(c.events, e)
-	c.mu.Unlock()
-}
-func (c *capture) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
-func (c *capture) last() *event.Event {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.events[len(c.events)-1]
-}
 
 // Changing a category's mode is recorded with the surface it was changed on.
 func TestSecurityRecordsModeChange(t *testing.T) {

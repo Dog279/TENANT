@@ -4,33 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
 
 	"tenant/internal/improve"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
-
-// recorder is an event emitter that keeps what it is given.
-type recorder struct {
-	mu     sync.Mutex
-	events []*event.Event
-}
-
-func (r *recorder) Emit(_ context.Context, e *event.Event) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, e)
-}
-
-func (r *recorder) Audit(ctx context.Context, e *event.Event) error { r.Emit(ctx, e); return nil }
-
-func record(t *testing.T) *recorder {
-	r := &recorder{}
-	event.Install(r)
-	t.Cleanup(func() { event.Install(nil) })
-	return r
-}
 
 func field(e *event.Event, key string) any {
 	for _, f := range e.Data {
@@ -45,7 +24,7 @@ func field(e *event.Event, key string) any {
 // from, and stop; what the job logs belongs to it; a failed run is a fail
 // event at error.
 func TestJobRunsAreActivities(t *testing.T) {
-	r := record(t)
+	r := eventtest.Capture(t)
 	s := improve.NewScheduler(0)
 	s.Register(&fakeJob{name: "learn", fn: func(ctx context.Context) (improve.JobResult, error) {
 		improve.StepFailed.Log(ctx, "job", "learn", "step", "write", "err", "busy")
@@ -56,10 +35,11 @@ func TestJobRunsAreActivities(t *testing.T) {
 	}}, 0)
 	s.RunAll(context.Background())
 
-	if len(r.events) != 6 {
-		t.Fatalf("got %d events, want 6 (start, warning, outcome, stop; start, fail)", len(r.events))
+	evs := r.Events()
+	if len(evs) != 6 {
+		t.Fatalf("got %d events, want 6 (start, warning, outcome, stop; start, fail)", len(evs))
 	}
-	start, warn, outcome, stop, bStart, bFail := r.events[0], r.events[1], r.events[2], r.events[3], r.events[4], r.events[5]
+	start, warn, outcome, stop, bStart, bFail := evs[0], evs[1], evs[2], evs[3], evs[4], evs[5]
 	act := start.Corr.ActivityID
 	for _, e := range []*event.Event{start, warn, outcome, stop} {
 		if e.Provider != "improve" || e.Corr.ActivityID != act || act == "" {

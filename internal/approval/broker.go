@@ -9,6 +9,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/control"
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
 	"tenant/internal/runtrace"
 )
@@ -561,7 +562,8 @@ func (b *Broker) SetPermissionFrom(surface, category, mode string) (bool, error)
 		return false, nil
 	}
 	b.setMode(category, m)
-	b.modeChanged(category, was, m, surface)
+	_ = catalog.ModeChanged.Audit(context.Background(), "broker", b.origin, "category", category, "mode", m.String(), "was", was.String(),
+		"actor", "operator", "surface", surface)
 	// Reconfiguring a category clears any prior "session" grant — the
 	// explicit setting is now the source of truth.
 	b.mu.Lock()

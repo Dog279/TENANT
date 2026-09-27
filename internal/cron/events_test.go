@@ -4,39 +4,16 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
-	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
 
-// captured keeps the events written while it is installed.
-type captured struct {
-	mu     sync.Mutex
-	events []*event.Event
-}
-
-func (c *captured) Emit(_ context.Context, e *event.Event) {
-	c.mu.Lock()
-	c.events = append(c.events, e)
-	c.mu.Unlock()
-}
-func (c *captured) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
-
-func capture(t *testing.T) *captured {
-	c := &captured{}
-	event.Install(c)
-	t.Cleanup(func() { event.Install(nil) })
-	return c
-}
-
 // logged lists the messages of the cron events written, in order.
-func (c *captured) logged() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func logged(c *eventtest.Recorder) []string {
 	var out []string
-	for _, e := range c.events {
+	for _, e := range c.Events() {
 		if e.Provider == "cron" {
 			out = append(out, e.Msg)
 		}
@@ -58,7 +35,7 @@ func TestEngineLogsMissedRunsAndBadSchedules(t *testing.T) {
 	}
 	hist := []RunRecord{{JobID: "safe", StartedAt: now.Add(-2 * time.Hour)}, {JobID: "execj", StartedAt: now.Add(-2 * time.Hour)}}
 	for _, catchup := range []bool{true, false} {
-		c := capture(t)
+		c := eventtest.Capture(t)
 		e := NewEngine(defs, nil, nil)
 		e.now = func() time.Time { return now }
 		e.Prime(PrimeOptions{Catchup: catchup, History: hist})
@@ -70,7 +47,7 @@ func TestEngineLogsMissedRunsAndBadSchedules(t *testing.T) {
 			want = append(want, "Job safe missed its run at "+due+": catch-up is off",
 				"Job deploy missed its run at "+due+": catch-up is off")
 		}
-		if got := c.logged(); !slices.Equal(got, want) {
+		if got := logged(c); !slices.Equal(got, want) {
 			t.Errorf("catchup=%v:\n got %q\nwant %q", catchup, got, want)
 		}
 	}
@@ -79,7 +56,7 @@ func TestEngineLogsMissedRunsAndBadSchedules(t *testing.T) {
 // Adding, switching and removing a job are logged, and so is a run whose
 // history could not be saved.
 func TestEngineLogsJobChanges(t *testing.T) {
-	c := capture(t)
+	c := eventtest.Capture(t)
 	e, _ := newTestEngine(func(context.Context, Job) (string, string, error) { return "ok", "", nil }, nil)
 	e.historyPersist = func(RunRecord) error { return errors.New("disk full") }
 	j, err := e.Add(AddSpec{Name: "brief", Spec: "@daily", Prompt: "p", Enabled: true})
@@ -97,7 +74,7 @@ func TestEngineLogsJobChanges(t *testing.T) {
 	}
 	want := []string{"Job brief added: @daily", "Job brief disabled",
 		"The run of job brief was not saved to the run history: disk full", "Job brief removed"}
-	if got := c.logged(); !slices.Equal(got, want) {
+	if got := logged(c); !slices.Equal(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }

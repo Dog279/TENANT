@@ -8,21 +8,20 @@ import (
 	"testing"
 
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
 
-// recordComponents installs a recorder and empties the registry for the test.
-func recordComponents(t *testing.T) *recorder {
+// recordComponents captures the events and empties the registry for the test.
+func recordComponents(t *testing.T) *eventtest.Recorder {
 	t.Helper()
-	rec := &recorder{}
-	event.Install(rec)
 	reset := func() {
 		reg.Lock()
 		reg.m = map[string]*Comp{}
 		reg.Unlock()
 	}
 	reset()
-	t.Cleanup(func() { event.Install(nil); reset() })
-	return rec
+	t.Cleanup(reset)
+	return eventtest.Capture(t)
 }
 
 func state(name string) (Component, bool) {
@@ -55,7 +54,8 @@ func TestComponentStateChangesAreSystemEvents(t *testing.T) {
 	c.Set(Failed, errors.New("token revoked"))
 
 	var got []string
-	for _, e := range rec.events {
+	evs := rec.Events()
+	for _, e := range evs {
 		if e.Log != "system" || e.Provider != "system" || field(e, "component") != "discord relay" || field(e, "log") != "discord" {
 			t.Errorf("event %d: log %s provider %s data %v", e.ID, e.Log, e.Provider, e.Data)
 		}
@@ -65,8 +65,8 @@ func TestComponentStateChangesAreSystemEvents(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("events %v, want %v", got, want)
 	}
-	first, second := rec.events[0].Corr.ActivityID, rec.events[5].Corr.ActivityID
-	for i, e := range rec.events {
+	first, second := evs[0].Corr.ActivityID, evs[5].Corr.ActivityID
+	for i, e := range evs {
 		want := first
 		if i >= 5 {
 			want = second
@@ -97,18 +97,19 @@ func TestChildComponentsComeAndGo(t *testing.T) {
 	if cs := Components(); len(cs) != 0 {
 		t.Fatalf("children left: %+v", cs)
 	}
-	if e := rec.events[len(rec.events)-1]; e.ID != 2102 || e.Level != event.Warning {
+	evs := rec.Events()
+	if e := evs[len(evs)-1]; e.ID != 2102 || e.Level != event.Warning {
 		t.Errorf("child failure filed as %d at %v", e.ID, e.Level)
 	}
 }
 
-// Group.Start is Add for a component: it is running once added, and its stop
-// marks it stopped, or failed with the stop's error.
+// Group.StartFunc is AddFunc for a component: it is running once added, and
+// its stop marks it stopped.
 func TestGroupStartTracksAComponent(t *testing.T) {
 	recordComponents(t)
 	g := New(nil)
 	g.StartFunc(Drain, "cron", Subsystem, "cron", func() {})
-	g.Start(Intake, "dashboard", Server, "dashboard", func() error { return errors.New("listener gone") })
+	g.StartFunc(Intake, "dashboard", Server, "dashboard", func() {})
 	if c, _ := state("cron"); c.State != Running || c.Kind != Subsystem || c.Log != "cron" {
 		t.Fatalf("cron: %+v", c)
 	}
@@ -116,10 +117,9 @@ func TestGroupStartTracksAComponent(t *testing.T) {
 		t.Errorf("Steps = %v", steps)
 	}
 	_ = g.Shutdown()
-	if c, _ := state("cron"); c.State != Stopped {
-		t.Errorf("cron after shutdown: %s", c.State)
-	}
-	if c, _ := state("dashboard"); c.State != Failed || c.Error != "listener gone" {
-		t.Errorf("dashboard after shutdown: %+v", c)
+	for _, name := range []string{"cron", "dashboard"} {
+		if c, _ := state(name); c.State != Stopped {
+			t.Errorf("%s after shutdown: %s", name, c.State)
+		}
 	}
 }

@@ -1,7 +1,6 @@
 package lifecycle
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -11,6 +10,7 @@ import (
 
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
 
 // Stages run in order, and within a stage the last added stops first.
@@ -118,25 +118,11 @@ func TestNilStopsAreIgnored(t *testing.T) {
 	}
 }
 
-type recorder struct {
-	mu     sync.Mutex
-	events []*event.Event
-}
-
-func (r *recorder) Emit(_ context.Context, e *event.Event) {
-	r.mu.Lock()
-	r.events = append(r.events, e)
-	r.mu.Unlock()
-}
-func (r *recorder) Audit(ctx context.Context, e *event.Event) error { r.Emit(ctx, e); return nil }
-
 // The shutdown and each stage with a stop are activities in the system log
 // (TEN-383): a start, then a stop or a fail with the duration. A failed or
 // panicking stop is an event under its stage's activity.
 func TestShutdownIsFiledAsActivities(t *testing.T) {
-	rec := &recorder{}
-	event.Install(rec)
-	t.Cleanup(func() { event.Install(nil) })
+	rec := eventtest.Capture(t)
 
 	g := New(nil)
 	g.AddFunc(Unblock, "approvals", func() {})
@@ -146,7 +132,8 @@ func TestShutdownIsFiledAsActivities(t *testing.T) {
 
 	var got []string
 	acts := map[string]string{} // "id/stage" of each start → its activity
-	for _, e := range rec.events {
+	evs := rec.Events()
+	for _, e := range evs {
 		if e.Log != "system" || e.Provider != "system" || strings.Join(catalog.Group(e.Log), "/") != "Tenant" {
 			t.Errorf("event %d filed in %s/%s", e.ID, e.Provider, e.Log)
 		}
@@ -170,13 +157,13 @@ func TestShutdownIsFiledAsActivities(t *testing.T) {
 		t.Fatalf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	// A stage belongs to the shutdown, a failed step to its stage.
-	if e := rec.events[1]; e.Corr.RelatedID != acts["20"] {
+	if e := evs[1]; e.Corr.RelatedID != acts["20"] {
 		t.Errorf("stage related = %q, want the shutdown's %q", e.Corr.RelatedID, acts["20"])
 	}
-	if e := rec.events[4]; e.Corr.ActivityID != acts["21intake"] || field(e, "step") != "relay" {
+	if e := evs[4]; e.Corr.ActivityID != acts["21intake"] || field(e, "step") != "relay" {
 		t.Errorf("step failure: activity %q step %v", e.Corr.ActivityID, field(e, "step"))
 	}
-	if e := rec.events[7]; e.Level != event.Error || !strings.Contains(fmt.Sprint(field(e, "stack")), "lifecycle") {
+	if e := evs[7]; e.Level != event.Error || !strings.Contains(fmt.Sprint(field(e, "stack")), "lifecycle") {
 		t.Errorf("panic event: level %v, stack %.80v", e.Level, field(e, "stack"))
 	}
 }

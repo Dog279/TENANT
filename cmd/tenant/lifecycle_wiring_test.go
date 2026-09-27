@@ -32,7 +32,7 @@ func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, stra
 					return true
 				}
 				switch sel.Sel.Name {
-				case "Add", "AddFunc", "Start", "StartFunc": // Start: a component, tracked while it runs
+				case "Add", "AddFunc", "StartFunc": // StartFunc: a component, tracked while it runs
 				default:
 					return true
 				}
