@@ -193,7 +193,7 @@ func TestWhenFull(t *testing.T) {
 			if rec.Seq != first || rec.Log != SecurityLog || rec.Msg != e.Msg || rec.BootID != e.Proc.BootID {
 				t.Errorf("first archived record %s", lines[0])
 			}
-			if data, _ := encodeData(e.Data); rec.Data != data {
+			if data, _ := event.EncodeData(e.Data); rec.Data != data {
 				t.Errorf("archived data %q, stored as %q", rec.Data, data)
 			}
 		})

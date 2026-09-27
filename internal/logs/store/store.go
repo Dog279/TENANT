@@ -79,6 +79,7 @@ import (
 	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/query"
 
 	_ "modernc.org/sqlite"
 )
@@ -131,7 +132,7 @@ CREATE TABLE views (name TEXT PRIMARY KEY, filter TEXT NOT NULL, builtin INTEGER
 	// without scanning every event.
 	`CREATE INDEX events_diag ON events(time_ns, bytes) WHERE channel = 1;`,
 	// 3: the Summary page (TEN-380) reads per-hour rollups, which Commit
-	// keeps beside the minutes (addHourRollups): by log and level, and by
+	// keeps beside the minutes (addRollups): by log and level, and by
 	// event ID for warnings and worse. Filled here from what the store holds.
 	`CREATE TABLE rollup_hour (hour INTEGER, log_id INTEGER, level INTEGER, n INTEGER,
   PRIMARY KEY (hour, log_id, level)) WITHOUT ROWID;
@@ -192,14 +193,27 @@ func ParseCursor(s string) (Cursor, error) {
 	var c Cursor
 	id, seq, ok := strings.Cut(s, ".")
 	n, err := strconv.ParseUint(seq, 10, 64)
-	if !ok || len(id) != 32 || err != nil {
-		return c, fmt.Errorf("store: bad cursor %q", s)
-	}
-	if _, err := hex.Decode(c.StoreID[:], []byte(id)); err != nil {
+	if !ok || err != nil || !parseID(&c.StoreID, id) {
 		return c, fmt.Errorf("store: bad cursor %q", s)
 	}
 	c.Seq = n
 	return c, nil
+}
+
+// parseID reads a store ID's 32 hex characters into id.
+func parseID(id *[16]byte, s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	_, err := hex.Decode(id[:], []byte(s))
+	return err == nil
+}
+
+// newID mints a store ID.
+func newID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:]) // crypto/rand never fails (Go 1.24+)
+	return hex.EncodeToString(b[:])
 }
 
 // ErrNotFound is Get's error for a seq the store doesn't hold.
@@ -301,9 +315,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if id == "" {
-		var b [16]byte
-		_, _ = rand.Read(b[:]) // crypto/rand never fails (Go 1.24+)
-		id = hex.EncodeToString(b[:])
+		id = newID()
 	}
 	if err := s.setID(id); err != nil {
 		return err
@@ -316,19 +328,14 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 // meta reads the schema version and the store ID ("" when absent).
-func meta(ctx context.Context, q interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}) (version, id string) {
+func meta(ctx context.Context, q queryer) (version, id string) {
 	_ = q.QueryRowContext(ctx, `SELECT coalesce((SELECT value FROM meta WHERE key = 'schema_version'), ''),
 		coalesce((SELECT value FROM meta WHERE key = 'store_id'), '')`).Scan(&version, &id)
 	return version, id
 }
 
 func (s *Store) setID(id string) error {
-	if len(id) != 32 {
-		return fmt.Errorf("store: bad store_id %q in meta", id)
-	}
-	if _, err := hex.Decode(s.id[:], []byte(id)); err != nil {
+	if !parseID(&s.id, id) {
 		return fmt.Errorf("store: bad store_id %q in meta", id)
 	}
 	return nil
@@ -374,9 +381,6 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 		return fmt.Errorf("store: commit: %w", err)
 	}
 	in := interner{s: s, tx: tx, ctx: ctx, added: map[string]int64{}}
-	type rollKey struct{ minute, log, level int64 }
-	rolls := map[rollKey]int64{}
-	bytesByLog := map[int64]int64{}
 	seqs := make([]uint64, len(batch))
 	for i := range batch {
 		e := &batch[i]
@@ -399,28 +403,14 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 			return fmt.Errorf("store: commit: %w", err)
 		}
 		if e.Log == SecurityLog {
-			if err := s.chain(ctx, tx, seq, r); err != nil {
+			if err := s.chain(ctx, tx, seq); err != nil {
 				return fmt.Errorf("store: commit: %w", err)
 			}
 		}
 		seqs[i] = uint64(seq)
-		rolls[rollKey{r.timeNS / int64(time.Minute), r.logID, int64(e.Level)}]++
-		bytesByLog[r.logID] += r.bytes
 	}
-	for k, n := range rolls {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO rollup (minute, log_id, level, n) VALUES (?, ?, ?, ?)
-			ON CONFLICT (minute, log_id, level) DO UPDATE SET n = n + excluded.n`, k.minute, k.log, k.level, n); err != nil {
-			return fmt.Errorf("store: commit: %w", err)
-		}
-	}
-	if err := addHourRollups(ctx, tx, seqs[0], seqs[len(seqs)-1]); err != nil {
+	if err := addRollups(ctx, tx, seqs[0], seqs[len(seqs)-1]); err != nil {
 		return fmt.Errorf("store: commit: %w", err)
-	}
-	for id, b := range bytesByLog {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO logs (log_id, bytes) VALUES (?, ?)
-			ON CONFLICT (log_id) DO UPDATE SET bytes = coalesce(bytes, 0) + excluded.bytes`, id, b); err != nil {
-			return fmt.Errorf("store: commit: %w", err)
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit: %w", err)
@@ -436,36 +426,12 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 	return nil
 }
 
-// Since returns up to limit events after from, oldest first (limit <= 0 means
-// 1000), and the cursor to pass next time. A cursor from another store
-// restarts from the beginning, and restarted says so; the zero Cursor is the
-// beginning.
+// Since is Query with no filter: up to limit events after from, oldest first
+// (limit <= 0 means 1000), and the cursor to pass next time. A cursor from
+// another store restarts from the beginning, and restarted says so; the zero
+// Cursor is the beginning.
 func (s *Store) Since(ctx context.Context, from Cursor, limit int) (evs []event.Event, next Cursor, restarted bool, err error) {
-	if from.StoreID != s.id {
-		restarted = from != Cursor{}
-		from = Cursor{StoreID: s.id}
-	}
-	if limit <= 0 {
-		limit = 1000
-	}
-	rows, err := s.r.QueryContext(ctx, selectEvents+` WHERE e.seq > ? ORDER BY e.seq LIMIT ?`, from.Seq, limit)
-	if err != nil {
-		return nil, from, restarted, fmt.Errorf("store: since: %w", err)
-	}
-	defer rows.Close()
-	next = from
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, from, restarted, fmt.Errorf("store: since: %w", err)
-		}
-		evs = append(evs, e)
-		next.Seq = e.Seq
-	}
-	if err := rows.Err(); err != nil {
-		return nil, from, restarted, fmt.Errorf("store: since: %w", err)
-	}
-	return evs, next, restarted, nil
+	return s.Query(ctx, query.Filter{}, from, limit, false)
 }
 
 // Get returns the event with the given seq, or ErrNotFound.
@@ -626,10 +592,7 @@ func Reidentify(path string) error {
 	if err != nil {
 		return err
 	}
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	id := hex.EncodeToString(b[:])
-	_, err = s.w.Exec(`UPDATE meta SET value = ? WHERE key = 'store_id'`, id)
+	_, err = s.w.Exec(`UPDATE meta SET value = ? WHERE key = 'store_id'`, newID())
 	if err == nil {
 		_, err = s.w.Exec(`UPDATE boots SET reported = 1 WHERE coalesce(clean, 0) = 0`)
 	}

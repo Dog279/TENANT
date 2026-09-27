@@ -167,7 +167,7 @@ func prevHash(h Head) ([]byte, error) {
 // chain links the security record at seq into the chain, inside the
 // transaction that commits it: its record number from the head in meta, a
 // fresh salt, its data hash and its HMAC; then the head moves to it.
-func (s *Store) chain(ctx context.Context, tx *sql.Tx, seq int64, _ *row) error {
+func (s *Store) chain(ctx context.Context, tx *sql.Tx, seq int64) error {
 	if len(s.key) == 0 {
 		return ErrNoChainKey
 	}
@@ -255,10 +255,10 @@ func (s *Store) Contains(ctx context.Context, h Head) (bool, error) {
 		if f.first > h.Rec || h.Rec > f.last {
 			continue
 		}
-		err := readLines(f.path, func(l *line) error {
+		err := readLines(f.path, parsed(func(l *line) error {
 			found = found || l.Log != "" && l.rec() == h.Rec && l.Hash == h.Hash
 			return nil
-		})
+		}))
 		if err != nil {
 			return false, fmt.Errorf("store: %s: %w", f.path, err)
 		}

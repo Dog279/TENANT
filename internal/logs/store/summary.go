@@ -250,36 +250,36 @@ func (s *Store) latest(ctx context.Context, hours []hourCount, level event.Level
 	if log != 0 {
 		q, args = q+` AND e.log_id = ?`, append(args, log)
 	}
-	rows, err := s.r.QueryContext(ctx, selectEvents+` WHERE e.seq IN (`+q+` ORDER BY e.time_ns DESC LIMIT ?) ORDER BY e.time_ns DESC, e.seq DESC`,
+	evs, err := queryEvents(ctx, s.r, selectEvents+` WHERE e.seq IN (`+q+` ORDER BY e.time_ns DESC LIMIT ?) ORDER BY e.time_ns DESC, e.seq DESC`,
 		append(args, summaryLatest)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: summary: %w", err)
 	}
-	defer rows.Close()
-	var out []event.Event
-	for rows.Next() {
-		e, err := scanEvent(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: summary: %w", err)
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return evs, nil
 }
 
-// addHourRollups adds the events seqs from to to, which the transaction just
-// inserted, to the per-hour rollups: by log and level, and by event ID for
-// warnings and worse. Commit calls it.
-func addHourRollups(ctx context.Context, tx *sql.Tx, from, to uint64) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO rollup_hour (hour, log_id, level, n)
+// addRollups adds the events seqs from to to, which the transaction just
+// inserted, to the rollups: per minute and per hour by log and level, and per
+// hour by event ID for warnings and worse; and to their logs' bytes. Commit
+// calls it.
+func addRollups(ctx context.Context, tx *sql.Tx, from, to uint64) error {
+	for _, q := range []string{`INSERT INTO rollup (minute, log_id, level, n)
+		SELECT time_ns / 60000000000, log_id, level, count(*) FROM events WHERE seq BETWEEN ? AND ? GROUP BY 1, 2, 3
+		ON CONFLICT (minute, log_id, level) DO UPDATE SET n = n + excluded.n`,
+		`INSERT INTO rollup_hour (hour, log_id, level, n)
 		SELECT time_ns / 3600000000000, log_id, level, count(*) FROM events WHERE seq BETWEEN ? AND ? GROUP BY 1, 2, 3
-		ON CONFLICT (hour, log_id, level) DO UPDATE SET n = n + excluded.n`, from, to); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO rollup_id (hour, provider_id, event_id, n)
+		ON CONFLICT (hour, log_id, level) DO UPDATE SET n = n + excluded.n`,
+		`INSERT INTO rollup_id (hour, provider_id, event_id, n)
 		SELECT time_ns / 3600000000000, provider_id, event_id, count(*) FROM events WHERE seq BETWEEN ? AND ? AND level <= 3 GROUP BY 1, 2, 3
-		ON CONFLICT (hour, provider_id, event_id) DO UPDATE SET n = n + excluded.n`, from, to)
-	return err
+		ON CONFLICT (hour, provider_id, event_id) DO UPDATE SET n = n + excluded.n`,
+		`INSERT INTO logs (log_id, bytes)
+		SELECT log_id, sum(bytes) FROM events WHERE seq BETWEEN ? AND ? GROUP BY 1
+		ON CONFLICT (log_id) DO UPDATE SET bytes = coalesce(bytes, 0) + excluded.bytes`} {
+		if _, err := tx.ExecContext(ctx, q, from, to); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // topIDs is the summaryTop event IDs most frequent among warnings and worse

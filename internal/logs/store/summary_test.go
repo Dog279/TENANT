@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -173,7 +174,7 @@ func TestSummaryBudget(t *testing.T) {
 		week += l.Week.Critical + l.Week.Error + l.Week.Warning + l.Week.Info + l.Week.Verbose
 	}
 	t.Logf("%d events, %d logs, %d in the week; %d critical, %d errors, %d exits listed; p95 %.1f ms, worst %.1f ms",
-		n, len(sum.Logs), week, len(sum.Critical), len(sum.Errors), len(sum.Exits), ms(p95(ds)), ms(slicesMax(ds)))
+		n, len(sum.Logs), week, len(sum.Critical), len(sum.Errors), len(sum.Exits), ms(p95(ds)), ms(slices.Max(ds)))
 	// The fixture's oldest minutes leave the week while it is built.
 	if week < int64(n)*999/1000 || len(sum.Top) != summaryTop || len(sum.Critical) != summaryLatest || len(sum.Errors) != summaryLatest {
 		t.Errorf("the summary is incomplete")
@@ -181,11 +182,4 @@ func TestSummaryBudget(t *testing.T) {
 	if p := p95(ds); p > 50*time.Millisecond {
 		t.Errorf("Summary p95 %v, over the 50 ms budget", p)
 	}
-}
-
-func slicesMax(ds []time.Duration) (m time.Duration) {
-	for _, d := range ds {
-		m = max(m, d)
-	}
-	return m
 }

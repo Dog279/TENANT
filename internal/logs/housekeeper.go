@@ -301,5 +301,6 @@ func (h *Hub) checkpointWAL(ctx context.Context) error {
 		return err
 	}
 	h.emit(catalog.WALCheckpoint, "wal_mb", wal>>20)
-	return st.Checkpoint(ctx)
+	_, err = st.Checkpoint(ctx)
+	return err
 }
