@@ -85,10 +85,7 @@ func cmdLog(ctx context.Context, args []string) error {
 		fields[k] = v
 	}
 
-	filed := source // the log it lands in: outside writers file under ext.
-	if !strings.HasPrefix(filed, "ext.") {
-		filed = logs.NormalizeSource("ext." + filed)
-	}
+	filed := logs.ExtLog(source) // the log it lands in: outside writers file under ext.
 	if !*direct {
 		if err := logPost(ctx, httpc, base, tok, source, lvl, msg, fields); err == nil {
 			fmt.Printf("logged to %s via %s\n", filed, base)
