@@ -148,7 +148,8 @@ generated from `internal/archtest/rules.go`, and
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
-| `internal/logs/store` | `internal/logs/event`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
+| `internal/logs/query` | `internal/logs/event` | the filter language; the store plans it into SQL |
+| `internal/logs/store` | `internal/logs/event`, `internal/logs/query`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
 | `internal/logs` | `internal/logs/event`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
 | `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
 | `internal/research` | `internal/fsperm` |  |
@@ -595,6 +596,11 @@ guide: `docs/LOGGING.md`.
   `Subscribe`, `TryLease`. `Hub.AttachStore(st)` routes `Log` and the
   emitter through the pipeline (queue → writer: scrub, cap, text files,
   commit, ring); `Hub.Dropped()` counts what a full queue dropped.
+- `internal/logs/query` is the filter language (`query.Parse`,
+  `Filter.String`, `*SyntaxError` with the position); the store plans a
+  filter into SQL and FTS5 and runs it: `Query` (cursor pages over seq, either
+  way), `Count`, `Stats` (from the rollups when the filter allows), `TopIDs`,
+  `Timeline` (the trace/activity pivot) and `EventStats`.
 
 **Invariants:** never blocks a producer on a reader; a file that cannot be
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches

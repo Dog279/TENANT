@@ -380,8 +380,51 @@ through its own connection, so both can share a data directory.
 - **Reading it.** `store.Since(cursor)` returns every event after a cursor,
   `<store ID>.<seq>`, in commit order, so a tail never misses a row. A cursor
   from another database (restored or rebuilt) starts again from the beginning.
-- The file is owner-only. Retention, the v1 history import, the viewer and
-  the query language arrive with the next logging v2 tickets.
+- The file is owner-only. Retention, the v1 history import and the viewer
+  arrive with the next logging v2 tickets.
+
+### Finding events: the filter language
+
+Every viewer takes the same filter (`internal/logs/query`). Terms are
+separated by spaces and must all hold; values in a list are alternatives;
+a leading `-` negates a term:
+
+```
+level>=warning log:discord id:2001-2999 -id:2005 since:24h "reset"
+provider:mcp.* level>=error          every MCP server's errors
+data.tool:os_exec "permission denied"
+since:14:00 until:14:10              a time slice across every log
+boot:current level>=warning          this run's problems
+```
+
+| Field | Values |
+|---|---|
+| `log` `provider` `task` `opcode` `tag` `session` `approval` `tool_call` `actor` `surface` | a name, or a glob with `*` and `?` |
+| `trace` `activity` `related` `boot` | a whole ID; `boot:current` is the run of the process reading the store (serve, for the dashboard) |
+| `id` `pid` | numbers, ranges (`2001-2999`) and comparisons (`id>=3000`) |
+| `level` | `critical` > `error` > `warning` > `info` > `verbose`: `level>=warning` is warning, error and critical |
+| `channel` | `operational` or `diagnostic` |
+| `since` `until` | a duration back from now (`15m`, `2h`, `7d`, `2w`) or a local time (`14:03`, `today`, `yesterday`, `2026-09-27`) or RFC 3339. `until` is exclusive. |
+| `data.<key>` | a field of the event's data: text, a glob, or a number, which also compares (`data.iter>=3`). A dotted key is a flat field (`data.req.method`) or a path into embedded JSON. A sensitive field never matches, so a filter can't read a masked value. |
+
+Operators are `:` `=` `!=` `>=` `<=` `>` `<` (`:` and `=` are the same;
+comparisons are for `id`, `pid`, `level` and `data.<key>`). A bare word or a
+`"quoted phrase"` searches the message (full text, case-insensitive; the data
+isn't searched, so a masked field stays masked). A word shaped like `name:`
+must be quoted. Inside quotes, `\"` is a quote and `\\` a backslash. A filter
+that doesn't parse says where and what was expected (`*query.SyntaxError`).
+
+The store runs a filter: `Query` returns a page and the cursor for the next,
+oldest first or newest first; `Count`; `Stats` counts by time, log and level,
+from the per-minute rollups when the filter is only log, level and time
+(a bound inside a minute counts that whole minute); `TopIDs`; `Timeline`
+returns everything of one trace or activity across all logs, following the
+activities it started (`related`) down a few levels; `EventStats` answers
+"has this happened before?" with the count, first and last seen and a 7-day
+trend. On 1M events (`TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run
+TestQueryBudgets -v`) a page takes well under the budgets: 200 ms on indexed
+fields, 1 s for `data.<key>` and full text. `Count` over a field without an
+index reads every row it can't rule out, so it can take longer.
 
 ### Event IDs, the reference and coverage
 
