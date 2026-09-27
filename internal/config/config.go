@@ -76,6 +76,12 @@ type Launch struct {
 	// /mcp trust and the dashboard; re-applied when the connector reconnects at
 	// launch.
 	MCPTrust map[string]string `json:"mcp_trust,omitempty"`
+	// MCPServers are local MCP servers Tenant starts itself and talks to over
+	// stdio (TEN-318). A server is third-party code, so it runs out of process
+	// under the execution sandbox: the restricted backend unless the operator
+	// chooses otherwise. Each appears as connector mcp:<name>, a stub until
+	// /enable; its trust is under "stdio:<name>" in MCPTrust.
+	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 	// Improve holds self-improvement settings (TEN-152): the auto-accept policy
 	// for machine-induced skills. Deny-by-default (empty = off).
 	Improve Improve `json:"improve,omitempty"`

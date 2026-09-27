@@ -582,10 +582,10 @@ func TestRedteam_ResourceLimits_WallEnforced_Disclosed(t *testing.T) {
 
 // KNOWN GAP — no MaxPIDs / memory cap on macOS. Recorded and skipped (the wall
 // timeout is the only Limits dimension the Seatbelt backend can enforce; a real
-// PID/RSS cap needs the container backend, TEN-318). Body left as the regression
+// PID/RSS cap for Run is TEN-346). Body left as the regression
 // to run once a cap exists.
 func TestRedteam_MaxPIDsNotEnforced(t *testing.T) {
-	t.Skip("KNOWN GAP: the macOS backend enforces no MaxPIDs/memory cap (Probe reports Limits=partial, wall-only); a PID/RSS cap needs the container backend (TEN-318)")
+	t.Skip("KNOWN GAP: the macOS backend enforces no MaxPIDs/memory cap (Probe reports Limits=partial, wall-only); a PID/RSS cap for Run is TEN-346")
 
 	b := restricted(t)
 	e := newRTEnv(t)

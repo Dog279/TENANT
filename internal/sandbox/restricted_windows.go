@@ -102,26 +102,11 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 	}
 
 	// --- Job Object: the live confinement. ---
-	job, err := windows.CreateJobObject(nil, nil)
+	job, err := newLimitedJob(pol.Limits)
 	if err != nil {
-		return Result{}, fmt.Errorf("sandbox: CreateJobObject: %w", err)
+		return Result{}, err
 	}
 	defer windows.CloseHandle(job) // KILL_ON_JOB_CLOSE reaps any straggler on close
-
-	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	jl := jobLimitsFrom(pol.Limits)
-	info.BasicLimitInformation.LimitFlags = jl.Flags
-	info.BasicLimitInformation.ActiveProcessLimit = jl.ActiveProcessLimit
-	info.BasicLimitInformation.PerProcessUserTimeLimit = jl.PerProcessUserTime100ns
-	info.JobMemoryLimit = uintptr(jl.JobMemoryLimit)
-	if _, err := windows.SetInformationJobObject(
-		job,
-		uint32(windows.JobObjectExtendedLimitInformation),
-		uintptr(unsafe.Pointer(&info)),
-		uint32(unsafe.Sizeof(info)),
-	); err != nil {
-		return Result{}, fmt.Errorf("sandbox: SetInformationJobObject: %w", err)
-	}
 
 	// --- Launch the child SUSPENDED so we can assign it to the job before it
 	// executes a single instruction, then resume its main thread. ---
@@ -177,6 +162,53 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 	}
 	return res, nil
 }
+
+// newLimitedJob creates a Job Object carrying the policy's limits and
+// kill-on-close.
+func newLimitedJob(l Limits) (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("sandbox: CreateJobObject: %w", err)
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	jl := jobLimitsFrom(l)
+	info.BasicLimitInformation.LimitFlags = jl.Flags
+	info.BasicLimitInformation.ActiveProcessLimit = jl.ActiveProcessLimit
+	info.BasicLimitInformation.PerProcessUserTimeLimit = jl.PerProcessUserTime100ns
+	info.JobMemoryLimit = uintptr(jl.JobMemoryLimit)
+	if _, err := windows.SetInformationJobObject(
+		job,
+		uint32(windows.JobObjectExtendedLimitInformation),
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+	); err != nil {
+		windows.CloseHandle(job)
+		return 0, fmt.Errorf("sandbox: SetInformationJobObject: %w", err)
+	}
+	return job, nil
+}
+
+// Start runs argv as a Windows program inside a Job Object: its memory, CPU
+// time and process count are capped, with kill-on-close, and its environment
+// is the policy's allowlist. Like Run, it confines no filesystem root or
+// network (TEN-346). The child starts suspended and is assigned to the job
+// before it runs.
+func (b *windowsRestricted) Start(ctx context.Context, argv []string, pol Policy) (*Process, error) {
+	job, err := newLimitedJob(pol.Limits)
+	if err != nil {
+		return nil, err
+	}
+	c := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if pol.WorkDir != "" {
+		c.Dir = pol.WorkDir
+	}
+	c.Env = pol.Env.materialize(os.Environ())
+	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
+	return startProcess(c, func(pid int) error { return assignAndResume(job, pid) },
+		func() { windows.CloseHandle(job) }) // kill-on-close ends anything the server left behind
+}
+
+func init() { registerJobObject(newJobObjectBackend) }
 
 // assignAndResume attaches the suspended child (pid) to the job, then resumes
 // its main thread. The child was created CREATE_SUSPENDED, so it has run no code

@@ -1130,7 +1130,17 @@ boundary. Operator guide and change record:
   - `restricted` → `Restricted()`, which each OS registers from a
     build-tagged file; it is an error where none exists, and callers
     then fail closed;
-  - `container` → an error (TEN-318).
+  - `jobobject` → the Windows Job Object: resource caps and the environment
+    allowlist, no filesystem or network confinement (Windows only);
+  - `container` → an error (not implemented).
+- `Start(ctx, b, argv, pol)` runs a long-lived process with open pipes under
+  the same boundary as `Run`: a local MCP server over stdio (TEN-318). Every
+  backend is a `Starter`. Bubblewrap, Seatbelt and WSL cap its memory and CPU
+  with `ulimit` before it runs, failing the start if they cannot; the Job
+  Object caps memory, CPU and processes; `StartLimits` names which. Under WSL
+  the Windows drives are hidden unless granted (a deny mask cannot guard a
+  case-insensitive Windows path), and the environment allowlist crosses by
+  `WSLENV`, never on a command line.
 - `Policy{WorkDir, ReadRoots, WriteRoots, DenyRoots, Network, Allow,
   Env, Limits, Enforce}`:
   - `Network` is `inherit` | `none` | `allowlist` | `full`. Nothing enforces a
@@ -1307,7 +1317,8 @@ the agent: runtime enable/disable with persisted curation (`Restore`,
 `SetOnChange`), lazy activation of stubbed plugins (`RegisterActivator`,
 `Stub`), relevance ranking of a large catalog (`SetEmbedder`, `Search`),
 federated knowledge search across paired peers, remote-MCP adoption and trust
-(`RegisterMCPRemote`, `SetMCPTrust`, `RemoteMCPList`), and per-tool dispatch
+(`RegisterMCPRemote`, `SetMCPTrust`, `RemoteMCPList`), local MCP servers run out
+of process under the sandbox (`RegisterMCPStdio`, TEN-318), and per-tool dispatch
 counts (`Stats`). It builds no plugin itself: `cmd/tenant/toolmux_build.go`
 decides what to register, from the plugin registry. Each first-party plugin is
 declared once, by a descriptor in `cmd/tenant/plugin_<id>.go` (TEN-321):

@@ -404,6 +404,6 @@ every entry that should be confined.
   Refusals of reads inside a masked deny root are not attributed (see the table).
 - **Windows:** see [Enforcement by OS](#enforcement-by-os). The restricted backend enforces
   resource limits only.
-- **Container backend:** an ephemeral container per run, with real memory and PID caps and
-  stdio MCP servers inside it, is TEN-318. `"backend": "container"` is rejected at load until
-  then.
+- **Container backend:** not implemented. `"backend": "container"` is rejected at load.
+  TEN-318 runs third-party stdio MCP servers out of process under the backends above
+  (docs/changes/isolated-mcp-servers.md).

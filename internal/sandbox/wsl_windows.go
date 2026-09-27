@@ -38,6 +38,7 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -266,7 +267,9 @@ func (b *wslBackend) Probe(context.Context) Capabilities {
 		Shell:      "sh",           // commands run as POSIX sh inside WSL, even though the host is Windows
 		Detail: "Windows via WSL2 bubblewrap (" + distro + "): filesystem read/write/deny roots and " +
 			"network-none are enforced by bubblewrap; Windows paths are translated to their WSL mount " +
-			"(" + b.info.mountPrefix + "); commands run as Linux sh, not PowerShell; wall-clock timeout only " +
+			"(" + b.info.mountPrefix + "), which is hidden except at the work dir and granted roots (WSL resolves " +
+			"Windows names case-insensitively, so a deny root inside a granted Windows root is best-effort); " +
+			"commands run as Linux sh, not PowerShell; wall-clock timeout only " +
 			"(no memory/CPU/PID caps through the WSL boundary); env is WSL's default, not a strict allowlist yet",
 	}
 }
@@ -278,9 +281,9 @@ func (b *wslBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, 
 		defer cancel()
 	}
 
-	tpol := b.translatePolicy(pol)
+	tpol, opts := b.translatePolicy(pol)
 	line := commandLine(cmd)
-	bwrapArgv := bwrapArgs(tpol, "sh", []string{"-c", line})
+	bwrapArgv := bwrapArgsOpts(tpol, opts, "sh", []string{"-c", line})
 	argv := wslArgv(b.info.distro, append([]string{b.info.bwrap}, bwrapArgv...)...)
 
 	c := exec.CommandContext(ctx, b.info.wslExe, argv...)
@@ -315,16 +318,113 @@ func (b *wslBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, 
 	return res, nil // a non-zero exit is signal, not an infra error
 }
 
+// Start runs argv inside the distro under bubblewrap with the same
+// confinement as Run: a Linux program, at a Linux path or a Windows path
+// translated to its mount. Memory and CPU are capped by the shell that execs
+// it (posixLimitArgv). The environment allowlist reaches the distro through
+// WSLENV (wslEnv), never on a command line.
+func (b *wslBackend) Start(ctx context.Context, argv []string, pol Policy) (*Process, error) {
+	tpol, opts := b.translatePolicy(pol)
+	targv := append([]string{b.toLinuxPath(argv[0])}, argv[1:]...)
+	targv = posixLimitArgv(targv, pol.Limits)
+	bwrapArgv := bwrapArgsOpts(tpol, opts, targv[0], targv[1:])
+	c := exec.CommandContext(ctx, b.info.wslExe, wslArgv(b.info.distro, append([]string{b.info.bwrap}, bwrapArgv...)...)...)
+	c.Env = wslEnv(os.Environ(), pol.Env)
+	return startProcess(c, nil, nil)
+}
+
+// wslEnv is wsl.exe's environment for a policy. A scoped policy shares
+// exactly its allowed variables with the distro: WSLENV names them (/u:
+// Windows to Linux only), so their values cross without appearing on a
+// command line, and Tenant's own WSLENV is replaced. The distro's login
+// environment (PATH, HOME, …) is still present inside. An unscoped policy
+// leaves the environment as it is.
+func wslEnv(parent []string, e EnvPolicy) []string {
+	if !e.Isolate && len(e.Pass) == 0 && len(e.Set) == 0 {
+		return parent
+	}
+	scoped := e.materialize(parent)
+	var names []string
+	for _, kv := range scoped {
+		if name, _, ok := cut(kv, '='); ok {
+			names = append(names, name+"/u")
+		}
+	}
+	out := make([]string, 0, len(parent)+len(e.Set)+1)
+	for _, kv := range parent {
+		name, _, _ := cut(kv, '=')
+		if strings.EqualFold(name, "WSLENV") {
+			continue
+		}
+		if _, set := e.Set[name]; set {
+			continue
+		}
+		out = append(out, kv)
+	}
+	for k, v := range e.Set {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(names)
+	return append(out, "WSLENV="+strings.Join(names, ":"))
+}
+
 // translatePolicy rewrites the Windows paths in a Policy to their WSL locations
 // so bubblewrap binds/masks the right places inside the distro. Roots already in
 // Linux form pass through, so an operator can write either.
-func (b *wslBackend) translatePolicy(pol Policy) Policy {
+//
+// It also returns how bubblewrap must treat the Windows side (TEN-318):
+//   - A translated deny root is stat'ed at the Windows path it came from.
+//     Stat'ing the translated path from Windows always failed, which skipped
+//     every translated deny root, so Tenant's own dirs and the credential
+//     stores were readable in the sandbox whenever the host was. A root given
+//     in Linux form cannot be seen from Windows and is still skipped.
+//   - With the host readable (empty ReadRoots), the Windows drives are hidden
+//     and bound back only at the work dir and the write roots. WSL resolves
+//     Windows names case-insensitively, so /mnt/c/users/… reaches what a mask
+//     on /mnt/c/Users/… hides: a mask cannot guard a Windows path. A deny root
+//     inside a root the operator grants is best-effort for the same reason.
+func (b *wslBackend) translatePolicy(pol Policy) (Policy, bwrapOpts) {
 	tp := pol
 	tp.WorkDir = b.toLinuxPath(pol.WorkDir)
 	tp.ReadRoots = b.toLinuxPaths(pol.ReadRoots)
 	tp.WriteRoots = b.toLinuxPaths(pol.WriteRoots)
 	tp.DenyRoots = b.toLinuxPaths(pol.DenyRoots)
-	return tp
+	orig := make(map[string]string, len(pol.DenyRoots))
+	for i, p := range pol.DenyRoots {
+		orig[tp.DenyRoots[i]] = p
+	}
+	stat := func(p string) (os.FileInfo, error) {
+		if o, ok := orig[p]; ok {
+			return os.Stat(o)
+		}
+		return os.Stat(p)
+	}
+	return tp, bwrapOpts{stat: stat, hide: windowsDriveMounts(b.info.mountPrefix, existingDrives())}
+}
+
+// windowsDriveMounts is where the Windows drives appear in the distro: the
+// automount root itself, unless that is "/" (drives at /c, /d, …), when each
+// drive's directory is hidden instead of the whole filesystem.
+func windowsDriveMounts(prefix string, drives []string) []string {
+	if prefix != "" && prefix != "/" {
+		return []string{prefix}
+	}
+	out := make([]string, 0, len(drives))
+	for _, d := range drives {
+		out = append(out, "/"+strings.ToLower(d))
+	}
+	return out
+}
+
+// existingDrives lists the drive letters present on this host.
+func existingDrives() []string {
+	var out []string
+	for c := 'A'; c <= 'Z'; c++ {
+		if _, err := os.Stat(string(c) + `:\`); err == nil {
+			out = append(out, string(c))
+		}
+	}
+	return out
 }
 
 func (b *wslBackend) toLinuxPaths(ps []string) []string {

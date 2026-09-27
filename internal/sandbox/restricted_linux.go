@@ -51,6 +51,15 @@ func (*linuxRestricted) Probe(context.Context) Capabilities {
 	}
 }
 
+// Start runs argv under bubblewrap with the same confinement as Run, its
+// memory and CPU capped by the shell that execs it (posixLimitArgv).
+func (b *linuxRestricted) Start(ctx context.Context, argv []string, pol Policy) (*Process, error) {
+	argv = posixLimitArgv(argv, pol.Limits)
+	c := exec.CommandContext(ctx, b.bwrap, bwrapArgs(pol, argv[0], argv[1:])...)
+	c.Env = pol.Env.materialize(os.Environ())
+	return startProcess(c, nil, nil)
+}
+
 func (b *linuxRestricted) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
 	if pol.Limits.Wall > 0 {
 		var cancel context.CancelFunc

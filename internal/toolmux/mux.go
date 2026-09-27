@@ -390,6 +390,61 @@ func (m *Mux) RegisterMCPRemote(url string) string {
 	return label
 }
 
+// StdioOpener starts a local MCP server and connects to it (TEN-318). The
+// command layer supplies it, since the mux knows no sandbox; it receives the
+// approval policy every connector is built with.
+type StdioOpener func(ctx context.Context, trustAnnotations bool, policy mcpremote.Policy) (Plugin, func(), error)
+
+// RegisterMCPStdio registers a local MCP server as connector mcp:<name>: a
+// stub until /enable, when open starts it. "stdio:<name>" stands in for its
+// URL wherever connectors are keyed (persisted trust, the connector list). A
+// label another connector or plugin holds is refused.
+func (m *Mux) RegisterMCPStdio(name, hint string, open StdioOpener) (string, error) {
+	label, key := "mcp:"+name, "stdio:"+name
+	m.mu.RLock()
+	holder, taken := m.mcpServers[label]
+	m.mu.RUnlock()
+	if taken {
+		if holder == key {
+			return label, nil
+		}
+		return "", fmt.Errorf("toolmux: connector label %s is already %s", label, holder)
+	}
+	if m.HasPlugin(label) {
+		return "", fmt.Errorf("toolmux: %s is already a plugin", label)
+	}
+	d := m.mcpDeps
+	m.Add(label, Stub{Hint: hint})
+	m.SetEnabled(label, false)
+	m.RegisterActivator(label, func() (Plugin, func(), error) {
+		return open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule})
+	})
+	m.mu.Lock()
+	m.mcpServers[label] = key
+	if t, ok := mcpremote.ParseTrust(d.Trust[key]); ok && t != mcpremote.TrustAsk {
+		m.mcpTrust[label] = t
+	}
+	m.mu.Unlock()
+	return label, nil
+}
+
+// StartMCPStdioSilently starts a registered local server at launch and brings
+// its tools live the way a reconnected remote connector's come (adoptLiveMCP):
+// enabled, except those the operator disabled, and hidden for a denied
+// connector. A failure is logged and leaves the stub for /enable. Safe to run
+// in a goroutine.
+func (m *Mux) StartMCPStdioSilently(label string, open StdioOpener) {
+	d := m.mcpDeps
+	disp, cleanup, err := open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule})
+	if err != nil {
+		if d.Log != nil {
+			d.Log.Warn("mcp: local server did not start", "connector", label, "err", err.Error())
+		}
+		return
+	}
+	m.adoptLiveMCP(label, disp, cleanup)
+}
+
 // labelFor derives a connector's mux label from its URL, keeping the label of
 // an already-registered URL stable and never letting two different URLs share
 // one label: the base is "mcp:<host[:port]>" (the port matters — an operator

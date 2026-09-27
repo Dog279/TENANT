@@ -236,7 +236,7 @@ func (d *Dispatcher) gate(ctx context.Context, name string) error {
 	if d.policy.AllowWrite {
 		return nil
 	}
-	detail := fmt.Sprintf("remote MCP tool %q (%s) — may modify external state", name, d.label)
+	detail := fmt.Sprintf("MCP tool %q (%s) — may modify external state", name, d.label)
 	if d.policy.Confirm != nil && d.policy.Confirm(ctx, d.label+":"+name, detail) {
 		return nil
 	}
