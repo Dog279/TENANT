@@ -501,7 +501,7 @@ through its own connection, so both can share a data directory.
   fresh connection, never by opening the raw file (on POSIX that would drop
   the locks the backing-up process holds on it), plus `archive/`. The text
   files hold the same events and are left out unless `--include-mirror` is
-  given. A restore brings `logbook.db` back with its store ID. A log book
+  given. A restore brings `logbook.db` back with a new store ID, so live-tail cursors start over. A log book
   moved outside the data dir by `logs.dir` is not in the backup, and `create`
   says so.
 - **Privacy** (`tenant privacy forget --session …`, or any forget that removes
