@@ -13,6 +13,9 @@ package main
 //
 // Auth reuses the dashboard's bearer token: --token, else an explicit
 // config.json dashboard.auth, else the generated config-dir token.
+//
+// With no URL and logbook.db readable by this account, it reads the log book
+// directly instead, as tenant logs query does (logsctl.go).
 
 import (
 	"context"
@@ -25,6 +28,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"tenant/internal/logs"
 )
 
 // attachEvent mirrors the dashboard's restActivityEvent JSON (stable since
@@ -78,6 +83,14 @@ func cmdAttach(ctx context.Context, args []string) error {
 	var arg string
 	if len(pos) > 0 {
 		arg = strings.TrimSpace(pos[0])
+	}
+	// With no URL and logbook.db readable here, attach is tenant logs query
+	// over it (TEN-377); the URL form reaches a hub elsewhere.
+	if arg == "" {
+		if lb, err := openLocalLogbook(c); err == nil {
+			defer lb.close()
+			return logsQuery(ctx, lb, logsOut{w: os.Stdout, format: "text", loc: time.Local}, attachFilter(*source, *level, *trace), 100, false, *follow)
+		}
 	}
 	base := attachBaseURL(arg, c.lc)
 	tok := *token
@@ -142,6 +155,25 @@ func cmdAttach(ctx context.Context, args []string) error {
 		case <-time.After(*interval):
 		}
 	}
+}
+
+// attachFilter is attach's --source, --level and --trace in the filter
+// language, over what the Activity feed shows.
+func attachFilter(source, level, trace string) string {
+	q := "channel:operational"
+	if s := logs.NormalizeSource(source); s != "" {
+		q += " log:" + s
+	}
+	switch strings.ToLower(level) {
+	case "error":
+		q += " level>=error"
+	case "warn", "warning":
+		q += " level>=warning"
+	}
+	if trace != "" {
+		q += ` trace:"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(trace) + `"`
+	}
+	return q
 }
 
 // attachBaseURL resolves the hub URL: an explicit arg wins (a bare host:port is

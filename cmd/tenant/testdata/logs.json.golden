@@ -1,0 +1,201 @@
+== logs ==
+{
+  "logs": [
+    {
+      "name": "discord",
+      "group": [
+        "Subsystems",
+        "Channels"
+      ],
+      "events": 1234,
+      "bytes": 3145728,
+      "policy": {
+        "max_bytes": 67108864,
+        "max_age_s": 2592000,
+        "on_full": "overwrite",
+        "min_level": "",
+        "enabled": true
+      },
+      "last_write": "2026-09-27T14:03:11.123Z",
+      "dropped": 2,
+      "suppressed": 0,
+      "debug_until": "2026-09-27T14:03:11.123Z"
+    },
+    {
+      "name": "security",
+      "group": [
+        "Tenant"
+      ],
+      "events": 7,
+      "bytes": 2048,
+      "policy": {
+        "max_bytes": 268435456,
+        "max_age_s": 31536000,
+        "on_full": "archive",
+        "min_level": "",
+        "enabled": true
+      },
+      "dropped": 0,
+      "suppressed": 0,
+      "cleared": "2026-09-26T14:03:11.123Z"
+    }
+  ]
+}
+== query ==
+{"seq":41,"time":"2026-09-27T14:03:11.123Z","log":"discord","provider":"discord","id":2001,"level":"warning","task":"Connection","opcode":"fail","msg":"Relay disconnected: gateway reset","data":{"reason":"reset","retry":5000000000},"dtypes":"sd","activity":"5d2a0000000000000000000000000000","pid":4412,"boot":"7c1e0000000000000000000000000000","host":"box"}
+{"seq":42,"time":"2026-09-27T14:03:12.123Z","log":"ext.deploy","provider":"ext.deploy","level":"info","keywords":["external"],"msg":"build started","data":{"commit":"abc123","token":"«sensitive»"},"dtypes":"sS"}
+== show ==
+{
+  "event": {
+    "seq": 41,
+    "time": "2026-09-27T14:03:11.123Z",
+    "log": "discord",
+    "provider": "discord",
+    "id": 2001,
+    "level": "warning",
+    "task": "Connection",
+    "opcode": "fail",
+    "msg": "Relay disconnected: gateway reset",
+    "data": {
+      "reason": "reset",
+      "retry": 5000000000
+    },
+    "dtypes": "sd",
+    "activity": "5d2a0000000000000000000000000000",
+    "pid": 4412,
+    "boot": "7c1e0000000000000000000000000000",
+    "host": "box"
+  },
+  "help": "### discord 2001\n\n**What to do.** Nothing; it retries.\n",
+  "stats": {
+    "count": 14,
+    "first": "2026-09-26T14:03:11.123Z",
+    "last": "2026-09-27T14:03:11.123Z",
+    "trend": [
+      0,
+      0,
+      1,
+      2,
+      3,
+      4,
+      4
+    ]
+  }
+}
+== trace ==
+{
+  "id": "3f2a0000000000000000000000000000",
+  "events": [
+    {
+      "seq": 41,
+      "time": "2026-09-27T14:03:11.123Z",
+      "log": "discord",
+      "provider": "discord",
+      "id": 2001,
+      "level": "warning",
+      "task": "Connection",
+      "opcode": "fail",
+      "msg": "Relay disconnected: gateway reset",
+      "data": {
+        "reason": "reset",
+        "retry": 5000000000
+      },
+      "dtypes": "sd",
+      "activity": "5d2a0000000000000000000000000000",
+      "pid": 4412,
+      "boot": "7c1e0000000000000000000000000000",
+      "host": "box"
+    }
+  ],
+  "run": {
+    "trace_id": "3f2a0000000000000000000000000000",
+    "source": "discord",
+    "started_at": "0001-01-01T00:00:00Z",
+    "model": "m",
+    "provider": "p",
+    "latency_ms": 900,
+    "prompt_tokens": 10,
+    "completion_tokens": 5,
+    "retries": 0,
+    "fallbacks": null,
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "outcome": "ok"
+      }
+    ],
+    "approvals": null,
+    "outcome": "ok"
+  }
+}
+== stats ==
+{
+  "buckets": [
+    {
+      "start": "2026-09-26T14:03:11.123Z",
+      "log": "discord",
+      "level": "warning",
+      "n": 3
+    },
+    {
+      "start": "2026-09-27T14:03:11.123Z",
+      "log": "discord",
+      "level": "error",
+      "n": 1
+    }
+  ],
+  "top": [
+    {
+      "provider": "discord",
+      "id": 2001,
+      "n": 3
+    }
+  ]
+}
+== catalog ==
+{
+  "version": "abc123def456",
+  "specs": [
+    {
+      "provider": "system",
+      "log": "system",
+      "id": 3101,
+      "level": "error",
+      "channel": "operational",
+      "task": "Component",
+      "template": "{component} failed: {err}",
+      "filter": "provider:system id:3101"
+    }
+  ],
+  "markdown": "### system 3101\n\n`{component} failed: {err}`\n"
+}
+== components ==
+{
+  "components": [
+    {
+      "name": "discord relay",
+      "kind": "connector",
+      "log": "discord",
+      "state": "degraded",
+      "since": "2026-09-27T14:03:11.123Z",
+      "started": "2026-09-26T14:03:11.123Z",
+      "error": "gateway reset"
+    }
+  ]
+}
+== verify ==
+{
+  "log": "security",
+  "ok": false,
+  "chain": {
+    "records": 9,
+    "head": 9,
+    "archives": 1,
+    "tombstones": 0,
+    "restores": 0,
+    "notes": [
+      "no witness"
+    ],
+    "break": "record 7 (logbook.db): hash mismatch"
+  }
+}

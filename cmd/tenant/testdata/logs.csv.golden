@@ -1,0 +1,60 @@
+== logs ==
+name,group,events,bytes,max_bytes,max_age_s,on_full,min_level,enabled,last_write,dropped,suppressed,debug_until,cleared
+discord,Subsystems/Channels,1234,3145728,67108864,2592000,overwrite,,true,2026-09-27T14:03:11Z,2,0,2026-09-27T14:03:11Z,
+security,Tenant,7,2048,268435456,31536000,archive,,true,,0,0,,2026-09-26T14:03:11Z
+== query ==
+seq,time,level,log,provider,id,task,opcode,keywords,msg,data,trace,activity,related,session,approval,tool_call,actor,surface,pid,boot,host
+41,2026-09-27T14:03:11.123Z,warning,discord,discord,2001,Connection,fail,,Relay disconnected: gateway reset,"{""reason"":""reset"",""retry"":5000000000}",,5d2a0000000000000000000000000000,,,,,,,4412,7c1e0000000000000000000000000000,box
+42,2026-09-27T14:03:12.123Z,info,ext.deploy,ext.deploy,,,,external,build started,"{""commit"":""abc123"",""token"":""«sensitive»""}",,,,,,,,,,,
+== show ==
+field,value
+seq,41
+time,2026-09-27T14:03:11Z
+level,warning
+log,discord
+provider,discord
+id,2001
+task,Connection
+opcode,fail
+keywords,
+msg,Relay disconnected: gateway reset
+trace,
+activity,5d2a0000000000000000000000000000
+related,
+session,
+approval,
+tool_call,
+actor,
+surface,
+pid,4412
+boot,7c1e0000000000000000000000000000
+host,box
+version,
+data.reason,reset
+data.retry,5s
+seen,14
+first_seen,2026-09-26T14:03:11Z
+last_seen,2026-09-27T14:03:11Z
+trend_7d,0 0 1 2 3 4 4
+help,"### discord 2001
+
+**What to do.** Nothing; it retries.
+"
+== trace ==
+seq,time,level,log,provider,id,task,opcode,keywords,msg,data,trace,activity,related,session,approval,tool_call,actor,surface,pid,boot,host
+41,2026-09-27T14:03:11.123Z,warning,discord,discord,2001,Connection,fail,,Relay disconnected: gateway reset,"{""reason"":""reset"",""retry"":5000000000}",,5d2a0000000000000000000000000000,,,,,,,4412,7c1e0000000000000000000000000000,box
+== stats ==
+kind,start,log,level,provider,id,n
+count,2026-09-26T14:03:11Z,discord,warning,,,3
+count,2026-09-27T14:03:11Z,discord,error,,,1
+top,,,,discord,2001,3
+== catalog ==
+provider,id,level,channel,task,template,log,retired
+system,3101,error,operational,Component,{component} failed: {err},system,false
+== components ==
+name,kind,state,since,started,log,error,activity
+discord relay,connector,degraded,2026-09-27T14:03:11Z,2026-09-26T14:03:11Z,discord,gateway reset,
+== verify ==
+check,ok,detail
+integrity,true,
+chain,false,9 records up to 9; 1 archives; 0 tombstones; 0 restores; note: no witness; breaks at record 7 (logbook.db): hash mismatch

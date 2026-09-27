@@ -390,7 +390,9 @@ Tenant restarts, even if its folder is deleted.
 `tenant attach [URL] --follow [--source discord] [--level error] [--trace ID]`
 is the terminal equivalent, over `GET /api/activity`; `--trace` keeps one
 turn's lines. Flags may come before or after the URL. After a Tenant restart
-`--follow` says so and replays what the new process kept.
+`--follow` says so and replays what the new process kept. With no URL, when
+this account can open `logbook.db`, it reads the log book itself, as
+`tenant logs query --follow` does ([below](#the-command-line-tenant-logs)).
 
 ## Adding a source (no rebuild)
 
@@ -932,6 +934,48 @@ features.
   open (its cursor is the store's seq and its epoch the store ID, so it
   survives a restart; foreign folders reach it once they are filed into the
   store), and the `/api/logs` routes list and serve the text files.
+
+### The command line: `tenant logs`
+
+```
+tenant logs                                 the logs: events, size, limit, how long they are kept, last write
+tenant logs query [FILTER] [--follow] [--limit N] [--reverse]
+tenant logs show <seq>                      one event in full, with its catalog help and statistics
+tenant logs trace <trace|activity>          the timeline across every log, with the run record
+tenant logs stats [FILTER] [--bucket 1h]    counts by log and level, over time, and the top event IDs
+tenant logs export [FILTER] --out FILE [--include-sensitive] [--format csv|text]
+tenant logs export --audit --out FILE [--since 30d] [--until …]   the Security log's audit bundle
+tenant logs verify [security] [--bundle FILE]
+tenant logs config <log> [--max-size 64MB] [--max-age 30d] [--on-full keep] [--min-level warning] [--enabled false] [--reset]
+tenant logs clear <log> [--export FILE]
+tenant logs debug <provider|log> --for 30m
+tenant logs catalog [provider] [--id N]
+tenant logs components
+tenant logs recover [FILE]                  salvage a quarantined logbook.db.corrupt-<time>
+```
+
+- **Local or through the dashboard.** Each command is a client of the API
+  above. When this account can open `<logs root>/logbook.db`, the API's own
+  handlers run in the command's process over it; otherwise, or with
+  `--url URL`, it goes through the dashboard (the token as `tenant log`
+  finds it, or `--token`): a serve running as another account, such as the
+  Windows server's SYSTEM service, or on another machine. Both paths answer
+  the same way. `components` asks the running serve's dashboard even when
+  reading locally, since only that process knows what it runs; `verify
+  --bundle` checks an audit bundle offline with this install's key.
+- **`boot:current`** names the run of the process that answers: through the
+  dashboard, serve's own; read locally, the running serve's (else the
+  running TUI's), found from the boots table and the boot locks, never the
+  command's own.
+- **Output.** Reads take `--format text|json|csv`. Text is the text mirror's
+  line after each event's seq (local time); `json` is one event per line for
+  events (NDJSON, UTC) and one document otherwise; `csv` has a column row.
+  `query` shows the newest `--limit` (100) oldest first; `--follow` then
+  prints each new event, resuming after the last one it printed if the
+  stream drops.
+- **Exports** are NDJSON unless `--format` says otherwise, start with the
+  header record, are owner-only files, and are recorded. `clear --export`
+  exports the log first.
 
 ### Event IDs, the reference and coverage
 

@@ -1043,9 +1043,9 @@ func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 		out.Note = "the Security log's chain can't be checked from this process"
 	default:
 		v, err := a.Security.Verify(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+		if err != nil { // it could not look, which is not a break
+			out.Note = "the Security log's chain was not checked: " + err.Error()
+			break
 		}
 		c := &Chain{Records: v.Records, Head: v.Head.Rec, Archives: v.Archives, Tombstones: v.Tombstones, Restores: len(v.Restores), Notes: v.Notes}
 		if v.Break != nil {

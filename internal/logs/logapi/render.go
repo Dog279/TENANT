@@ -97,10 +97,14 @@ func (ew *Writer) Write(e event.Event) error {
 	return err
 }
 
-// Flush writes out what the CSV writer holds.
+// Flush writes out what the CSV writer holds: at least its column row.
 func (ew *Writer) Flush() error {
 	if ew.csv == nil {
 		return nil
+	}
+	if !ew.cols {
+		ew.cols = true
+		_ = ew.csv.Write(csvColumns)
 	}
 	ew.csv.Flush()
 	return ew.csv.Error()

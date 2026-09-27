@@ -1,0 +1,51 @@
+== logs ==
+LOG       GROUP                  EVENTS  SIZE    LIMIT     KEPT  WHEN FULL  LEVEL  LAST WRITE           NOTES
+discord   Subsystems › Channels  1234    3.0 MB  64.0 MB   30d   overwrite  all    2026-09-27 14:03:11  debug until 14:03; 2 dropped, 0 suppressed
+security  Tenant                 7       2.0 KB  256.0 MB  365d  archive    all    -                    cleared 2026-09-26 14:03:11
+== query ==
+41 2026-09-27 14:03:11.123 WARN  [discord] Relay disconnected: gateway reset	event=discord/2001 task=Connection opcode=fail activity=5d2a0000000000000000000000000000 reason=reset retry=5s
+42 2026-09-27 14:03:12.123 INFO  [ext.deploy] build started	commit=abc123 token=«sensitive»
+== show ==
+Event 41 · warning · discord/2001
+  time         2026-09-27 14:03:11
+  log          discord
+  provider     discord
+  id           2001
+  task         Connection
+  opcode       fail
+  msg          Relay disconnected: gateway reset
+  activity     5d2a0000000000000000000000000000
+  pid          4412
+  boot         7c1e0000000000000000000000000000
+  host         box
+  data.reason  reset
+  data.retry   5s
+
+Seen 14 times: first 2026-09-26 14:03:11, last 2026-09-27 14:03:11; per day over the last 7: 0 0 1 2 3 4 4
+
+### discord 2001
+
+**What to do.** Nothing; it retries.
+== trace ==
+Run 3f2a0000000000000000000000000000: ok · discord · p m · 900 ms · 10+5 tokens · 1 tool calls · 0 approvals
+41 2026-09-27 14:03:11.123 WARN  [discord] Relay disconnected: gateway reset	event=discord/2001 task=Connection opcode=fail activity=5d2a0000000000000000000000000000 reason=reset retry=5s
+== stats ==
+FROM                 LOG      LEVEL    EVENTS
+2026-09-26 14:03:11  discord  warning  3
+2026-09-27 14:03:11  discord  error    1
+
+Most frequent event IDs:
+EVENT         TIMES
+discord/2001  3
+== catalog ==
+### system 3101
+
+`{component} failed: {err}`
+== components ==
+NAME           KIND       STATE     SINCE                LOG      LAST ERROR
+discord relay  connector  degraded  2026-09-27 14:03:11  discord  gateway reset
+== verify ==
+logbook.db: the integrity check passed
+security: 9 records verified up to record 9, 1 archives, 0 tombstones, 0 restores
+  note: no witness
+security: the chain breaks at record 7 (logbook.db): hash mismatch
