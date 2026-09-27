@@ -1,8 +1,10 @@
 # Change: the composition root, split and held to its dependency rules (ARC-002)
 
-**Branch:** `refactor/ten-314-composition-root` (on top of
-`feat/ten-297-provenance-inspector`) · **Status:** in progress. Slices 0–2
-are done and tested on Windows; later slices extend this record.
+**Branch:** `refactor/ten-314-composition-root` (slices 0–2, on top of
+`feat/ten-297-provenance-inspector`) and `refactor/ten-314-control-plane`
+(slices 3–4, on top of `feat/ten-321-plugin-registry`) · **Status:** in
+progress. Slices 0–3 are done and tested on Windows; later slices extend this
+record.
 **Ticket:** ARC-002 / TEN-314.
 
 ## What changed
@@ -89,6 +91,44 @@ are done and tested on Windows; later slices extend this record.
   The DATAFLOW rows that cited `cmd/tenant/toolmux.go` by line numbers,
   which had already drifted, cite the builder by function.
 
+### Slice 3: the approval broker moves to `internal/approval`
+- `approval.Broker`, the decision point for every dangerous action, leaves
+  `package main` with its pending-approval registry and the per-tool rule set.
+  `Confirm` resolves an action's category, then applies, in order:
+  - the surface's lock (the Discord relay's exec mode);
+  - the operator's per-tool rules;
+  - the category's mode (ask, allow or deny) and session grants.
+
+  For "ask" it raises a request that any surface can resolve by id, or hands it
+  to a channel's own backend (Discord buttons, iMessage replies). It fails
+  closed when no surface can reach the operator.
+- **It knows no plugin and no surface.** The command injects:
+  - which category an action belongs to: `cmd/tenant/approval.go`'s
+    `categorize` reads the host's table, then the plugin registry's;
+  - how modes and rules persist (`SetPersist`);
+  - the event stream (`SetEvents`);
+  - a channel's ask backend (`SetAsk`) and the surface's lock (`SetLock`).
+
+  Main used to assign the broker's unexported fields directly. Those
+  assignments are now setters, and `Locked(action)` reports a surface's lock.
+- **The fail-closed default moves with it.** `approval.Categorize` files an
+  action no table knows under destructive, which always asks unless the
+  operator opened it.
+- **The approval types the surfaces share move to `internal/control`:**
+  `ApprovalRequest`, `ApprovalDecision`, `PendingApproval`, `PermissionInfo`
+  and `ToolRuleInfo`. `internal/tui` and `internal/dashboard` alias them, so
+  their callers read as before, and the broker imports neither UI.
+- **What stays in main** is what depends on the command: the host's action
+  table, `categorize`, the launch flags' grants (`seedFromFlags`), and aliases
+  for the broker's old names.
+- **The tests move with the code:** 22 tests covering the registry fan-out,
+  decisions, persistence, the Discord and iMessage brokers, and tool rules.
+  They use a small stand-in for the command's action tables. `TestCategorize`
+  and the flag seeding stay in main, beside the tables. A new test pins each
+  broker's defaults: the host and Discord ask, and the offsite broker denies.
+- `archtest` gains the rule: `approval` may import `agent`, `control`, `logs`
+  and `runtrace`. `dashboard` may now import `control`.
+
 ## Why
 All configuration, runtime lifecycle, control plane and plugin registry code
 lived in `package main`, with dependency directions nobody wrote down or
@@ -97,12 +137,17 @@ enforced rules, so `cmd/tenant` becomes thin command adapters.
 
 ## Evidence
 - `go vet ./...` is clean, and `go test ./...` passes (66 packages after
-  slice 2).
+  slice 2, 68 after slice 3).
 - The smoke eval passes 5/5 against its baseline.
 - Mutation testing:
   - archtest: 7 mutations of the rules and checker, all caught;
   - config: a renamed `config.json` tag and a renamed `settings.json` tag, both
-    caught by the format test.
+    caught by the format test;
+  - approval: 12 mutants of the broker and its wiring, all caught by failing
+    tests. They cover the fall-through category, the shared registry, the lock,
+    the ask backend, rules, persistence, flag seeding, events and the offsite
+    default. Two first compiled only with dead code left in, and were rerun as
+    mutants that build.
 
 ## Operator notes
 - No behavior change. `config.json`, `credentials.json` and

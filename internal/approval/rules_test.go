@@ -1,12 +1,13 @@
-package main
+package approval
 
 import (
+	"maps"
 	"strings"
 	"testing"
 )
 
 func TestToolRules_MatchingAndPrecedence(t *testing.T) {
-	r := newToolRules()
+	r := NewRules()
 	must := func(p, m string) {
 		t.Helper()
 		if err := r.Set(p, m); err != nil {
@@ -47,7 +48,7 @@ func TestToolRules_MatchingAndPrecedence(t *testing.T) {
 
 // Two globs matching the same action: the one with more literal characters wins.
 func TestToolRules_GlobSpecificity(t *testing.T) {
-	r := newToolRules()
+	r := NewRules()
 	_ = r.Set("mcp:127.0.0.1:9001:*", "allow")
 	_ = r.Set("mcp:127.0.0.1:9001:delete_*", "deny")
 	if m, pat, _ := r.Lookup("mcp:127.0.0.1:9001:delete_all"); m != "deny" || pat != "mcp:127.0.0.1:9001:delete_*" {
@@ -74,7 +75,7 @@ func TestGlobMatch(t *testing.T) {
 }
 
 func TestToolRules_ValidationPersistLoadAndOrder(t *testing.T) {
-	r := newToolRules()
+	r := NewRules()
 	var persisted []map[string]string
 	r.persist = func(m map[string]string) { persisted = append(persisted, m) }
 
@@ -113,7 +114,7 @@ func TestToolRules_ValidationPersistLoadAndOrder(t *testing.T) {
 	if snap["c"] != "ask" || snap["a_*"] != "deny" || len(snap) != 2 {
 		t.Errorf("after Load: %v", snap)
 	}
-	if !rulesEqual(snap, map[string]string{"c": "ask", "a_*": "deny"}) || rulesEqual(snap, map[string]string{"c": "ask"}) {
+	if !maps.Equal(snap, map[string]string{"c": "ask", "a_*": "deny"}) || maps.Equal(snap, map[string]string{"c": "ask"}) {
 		t.Error("rulesEqual")
 	}
 }

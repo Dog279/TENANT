@@ -149,7 +149,7 @@ func TestRelayManager_ExecToggle(t *testing.T) {
 			return nil
 		},
 	}
-	br.locked = m.execLocked
+	br.SetLock(m.execLocked)
 	if ok, err := br.SetPermission(catExec, "allow"); err != nil || !ok {
 		t.Fatalf("SetPermission: ok=%v err=%v", ok, err)
 	}

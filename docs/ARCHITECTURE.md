@@ -160,9 +160,10 @@ generated from `internal/archtest/rules.go`, and
 | `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |
 | `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
 | `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
+| `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
 | `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
 | `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
-| `internal/dashboard` | `internal/agent`, `internal/httplimits`, `internal/logs`, `internal/orchestra` | never the terminal UI |
+| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/orchestra` | never the terminal UI |
 <!-- /archtest:rules -->
 
 In short:
@@ -1283,9 +1284,22 @@ and lifecycle hooks. `cmd/tenant/plugindesc.go` builds the registry, which
 `internal/pluginreg` checks and indexes; the launch, the stub catalog,
 approvals, `/configure`, doctor, the CLI, privacy, backup and the keys page
 read it (`docs/PLUGINS.md` §5). `internal/control` is a leaf of plain data types the
-runtime, the terminal UI and the dashboard share (`ToolInfo` so far), so none
-of them imports another. Moved out of `package main` in TEN-314;
+runtime, the terminal UI and the dashboard share (`ToolInfo`, and the approval
+request, decision, pending, permission and tool-rule types), so none of them
+imports another. Moved out of `package main` in TEN-314;
 `cmd/tenant/toolmux_compat.go` keeps main's names.
+
+**The approval broker** (`internal/approval`, TEN-314) is the decision point for
+every dangerous action. `Broker.Confirm` resolves the action's category, then
+applies, in order: the surface's lock, the operator's per-tool rules
+(`approval.Rules`), the category's mode (ask, allow or deny) and session grants.
+For "ask" it raises a request that any surface can resolve by id, or hands it to
+a channel's own backend (Discord buttons, iMessage replies), and it fails closed
+when no surface can reach the operator. It knows no plugin and no surface:
+`cmd/tenant/approval.go` supplies `categorize` (the host's action table, then the
+plugin registry's; an action neither knows is destructive) and the launch flags'
+grants, and the commands wire in persistence, the event stream and each
+channel's backend.
 
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 

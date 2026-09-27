@@ -157,12 +157,12 @@ func cmdServe(ctx context.Context, args []string) error {
 	// there is no TUI to prompt, so a headless drain (below) routes "ask"-mode
 	// requests to the dashboard.
 	broker := newApprovalBroker(log.With("source", "approvals"))
-	broker.seedFromFlags(pf)
+	seedFromFlags(broker, pf)
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
-	broker.loadModes(stg.Permissions)
+	broker.LoadModes(stg.Permissions)
 	var stgMu sync.Mutex
 	saveSettings := func() {
 		stgMu.Lock()
@@ -171,25 +171,25 @@ func cmdServe(ctx context.Context, args []string) error {
 			log.Warn("settings save failed", "err", err)
 		}
 	}
-	broker.persist = func(modes map[string]string) {
+	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
 		stg.Permissions = modes
 		stgMu.Unlock()
 		saveSettings()
-	}
-	// Per-tool permission rules (toolrules.go): loaded from the same file,
+	})
+	// Per-tool permission rules (internal/approval): loaded from the same file,
 	// persisted on every /permissions add|rm, and re-read when the file is
 	// edited by hand — so a rule for a tool nobody programmed for is one line
 	// in settings.<agent>.json away, with no restart.
 	if n, skipped := defaultToolRules.Load(stg.ToolRules); skipped > 0 {
 		pushSys(fmt.Sprintf("permissions: %d tool rule(s) loaded, %d invalid skipped", n, skipped))
 	}
-	defaultToolRules.persist = func(rules map[string]string) {
+	defaultToolRules.SetPersist(func(rules map[string]string) {
 		stgMu.Lock()
 		stg.ToolRules = rules
 		stgMu.Unlock()
 		saveSettings()
-	}
+	})
 	// Execution-sandbox profiles (execprofiles.go): same file, re-read on edit.
 	if n, skipped := defaultExecProfiles.Load(stg.ExecProfiles); n > 0 || len(skipped) > 0 {
 		msg := fmt.Sprintf("sandbox: %d exec profile(s) active", n)
@@ -590,7 +590,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// attach client); no drain goroutine is needed now that the requests channel
 	// is a non-blocking notifier. Still-pending requests are denied on shutdown
 	// (DenyAll below) so no gated turn stays blocked.
-	broker.reg.emit = emit
+	broker.SetEvents(emit)
 
 	dcfg, _ := resolveDashboardConfig(c.lc, true, *dashboardOn, *dashboardAddr)
 	dcfg.Auth, err = resolveDashboardAuth(c.cfgDir, dcfg.Auth)

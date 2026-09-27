@@ -200,7 +200,7 @@ func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string
 }
 
 // surfaceModes builds the surface's broker the way the runtime does (its
-// constructor, seedFromFlags on the local surface, then loadModes) and names
+// constructor, seedFromFlags on the local surface, then LoadModes) and names
 // the layer that set each category's mode.
 func surfaceModes(surface string, pf *pluginFlags, stg *settings, lc *launchConfig) map[string]effectiveCategory {
 	var (
@@ -220,10 +220,10 @@ func surfaceModes(surface string, pf *pluginFlags, stg *settings, lc *launchConf
 		b, base = newApprovalBroker(nil), "local default"
 		saved, savedSource = stg.Permissions, "settings permissions"
 		flags = launchFlagGrants(pf)
-		b.seedFromFlags(pf)
+		seedFromFlags(b, pf)
 	}
-	b.loadModes(saved)
-	modes, persisted := b.modesPublic(), savedModes(saved)
+	b.LoadModes(saved)
+	modes, persisted := b.Modes(), savedModes(saved)
 	out := make(map[string]effectiveCategory, len(catOrder))
 	for _, cat := range catOrder {
 		source := base

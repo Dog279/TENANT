@@ -238,13 +238,13 @@ func TestCategorize_ExecUnsandboxedHasItsOwnCategory(t *testing.T) {
 // escalations. Filed under destructive, it granted every irreversible action.
 func TestBroker_SessionGrantOnEscalationDoesNotGrantDestructive(t *testing.T) {
 	b := newApprovalBroker(nil)
-	b.rules = nil // no per-tool rules: exercise the category logic alone
-	b.ask = func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.ApproveSession }
+	b.SetRules(nil) // no per-tool rules: exercise the category logic alone
+	b.SetAsk(func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.ApproveSession })
 	if !b.Confirm(context.Background(), actionExecUnsandboxed, "cat x  [SANDBOX REFUSED: ...]") {
 		t.Fatal("the escalation itself was approved for the session")
 	}
 	asked := false
-	b.ask = func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { asked = true; return tui.DenyOnce }
+	b.SetAsk(func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { asked = true; return tui.DenyOnce })
 	if b.Confirm(context.Background(), "os_exec_dangerous", "rm -rf /  [DANGER]") || !asked {
 		t.Fatalf("a session grant on a sandbox escalation must not pre-approve destructive actions (asked=%v)", asked)
 	}
@@ -276,7 +276,7 @@ func TestApplySettingsFile_ReloadsExecProfiles(t *testing.T) {
 	cfg := t.TempDir()
 	rules := newToolRules()
 	broker := newApprovalBroker(nil)
-	broker.rules = rules
+	broker.SetRules(rules)
 	var mu sync.Mutex
 	stg := &settings{Tools: map[string]bool{}}
 

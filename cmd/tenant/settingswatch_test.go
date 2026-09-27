@@ -13,7 +13,7 @@ func TestApplySettingsFile_HandEditsApplyLive(t *testing.T) {
 	cfg := t.TempDir()
 	rules := newToolRules()
 	broker := newApprovalBroker(nil)
-	broker.rules = rules
+	broker.SetRules(rules)
 	var mu sync.Mutex
 	stg := &settings{Tools: map[string]bool{}}
 
@@ -33,7 +33,7 @@ func TestApplySettingsFile_HandEditsApplyLive(t *testing.T) {
 	if m, _, _ := rules.Lookup("mcp:h:1:delete_x"); m != "deny" {
 		t.Error("rule from the file should be live")
 	}
-	if broker.modesPublic()["exec"] != "allow" {
+	if broker.Modes()["exec"] != "allow" {
 		t.Error("category mode from the file should be live")
 	}
 	if stg.ToolRules["write_note"] != "allow" || stg.Permissions["exec"] != "allow" {

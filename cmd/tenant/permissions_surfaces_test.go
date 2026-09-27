@@ -277,15 +277,15 @@ func TestComposeMatchesConfirm(t *testing.T) {
 			b := runtimeBroker(surface, pf, stg, lc)
 			rules := newToolRules()
 			rules.Load(ruleSet)
-			b.rules = rules
+			b.SetRules(rules)
 			if surface == permissionSurfaceDiscord {
-				b.locked = func(action, cat string) bool { return !lc.Relay.AllowExec && relayExecLocks(action, cat) }
+				b.SetLock(func(action, cat string) bool { return !lc.Relay.AllowExec && relayExecLocks(action, cat) })
 			}
 			asked := false
-			b.ask = func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision {
+			b.SetAsk(func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision {
 				asked = true
 				return tui.DenyOnce
-			}
+			})
 			for cat, actions := range probes {
 				best := -1
 				for _, action := range actions {
@@ -312,16 +312,16 @@ func runtimeBroker(surface string, pf *pluginFlags, stg *settings, lc *launchCon
 	switch surface {
 	case permissionSurfaceDiscord:
 		b := newDiscordApprovalBroker(testLog())
-		b.loadModes(lc.Relay.Permissions)
+		b.LoadModes(lc.Relay.Permissions)
 		return b
 	case permissionSurfaceIMessage:
 		b := newOffsiteApprovalBroker(testLog(), newApprovalBroker(testLog()))
-		b.loadModes(lc.IMessage.Permissions)
+		b.LoadModes(lc.IMessage.Permissions)
 		return b
 	}
 	b := newApprovalBroker(testLog())
-	b.seedFromFlags(pf)
-	b.loadModes(stg.Permissions)
+	seedFromFlags(b, pf)
+	b.LoadModes(stg.Permissions)
 	return b
 }
 
@@ -332,10 +332,10 @@ func TestDiscordExecLockOutranksRulesAndModes(t *testing.T) {
 	b := newDiscordApprovalBroker(testLog())
 	rules := newToolRules()
 	rules.Load(map[string]string{"os_exec": "allow"})
-	b.rules = rules
-	b.loadModes(map[string]string{catSend: "allow", catWrite: "allow"})
+	b.SetRules(rules)
+	b.LoadModes(map[string]string{catSend: "allow", catWrite: "allow"})
 	execOn := false
-	b.locked = func(action, cat string) bool { return !execOn && relayExecLocks(action, cat) }
+	b.SetLock(func(action, cat string) bool { return !execOn && relayExecLocks(action, cat) })
 	ctx := context.Background()
 
 	if b.Confirm(ctx, "os_exec", "ls") {
@@ -373,10 +373,7 @@ func TestServeRelayWiresExecLock(t *testing.T) {
 		if m.ExecOn() != allowExec {
 			t.Errorf("allow_exec=%t restored as %t without a token", allowExec, m.ExecOn())
 		}
-		if m.broker.locked == nil {
-			t.Fatal("the Discord broker has no exec-mode lock")
-		}
-		if got := m.broker.locked("os_exec", catExec); got == allowExec {
+		if got := m.broker.Locked("os_exec"); got == allowExec {
 			t.Errorf("allow_exec=%t: lock on os_exec = %t", allowExec, got)
 		}
 	}

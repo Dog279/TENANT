@@ -1873,7 +1873,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// then overridden by persisted per-category modes; wired into every
 	// plugin gate via buildToolMux's confirm hook.
 	broker := newApprovalBroker(log.With("source", "approvals"))
-	broker.seedFromFlags(pf)
+	seedFromFlags(broker, pf)
 
 	// Persisted settings hold BOTH the tool curation and the permission
 	// modes. Saves are serialized: the broker persists "approve always"
@@ -1882,7 +1882,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if serr != nil {
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
-	broker.loadModes(stg.Permissions)
+	broker.LoadModes(stg.Permissions)
 	var stgMu sync.Mutex
 	saveSettings := func() {
 		stgMu.Lock()
@@ -1891,25 +1891,25 @@ func cmdTUI(ctx context.Context, args []string) error {
 			log.Warn("settings save failed", "err", err)
 		}
 	}
-	broker.persist = func(modes map[string]string) {
+	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
 		stg.Permissions = modes
 		stgMu.Unlock()
 		saveSettings()
-	}
-	// Per-tool permission rules (toolrules.go): loaded from the same file,
+	})
+	// Per-tool permission rules (internal/approval): loaded from the same file,
 	// persisted on every /permissions add|rm, and re-read when the file is
 	// edited by hand — so a rule for a tool nobody programmed for is one line
 	// in settings.<agent>.json away, with no restart.
 	if n, skipped := defaultToolRules.Load(stg.ToolRules); skipped > 0 {
 		pushSys(fmt.Sprintf("permissions: %d tool rule(s) loaded, %d invalid skipped", n, skipped))
 	}
-	defaultToolRules.persist = func(rules map[string]string) {
+	defaultToolRules.SetPersist(func(rules map[string]string) {
 		stgMu.Lock()
 		stg.ToolRules = rules
 		stgMu.Unlock()
 		saveSettings()
-	}
+	})
 	// Execution-sandbox profiles (execprofiles.go): same file, re-read on edit.
 	if n, skipped := defaultExecProfiles.Load(stg.ExecProfiles); n > 0 || len(skipped) > 0 {
 		msg := fmt.Sprintf("sandbox: %d exec profile(s) active", n)
@@ -2252,7 +2252,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Approval fan-out (TEN-203): route the broker's pending/resolved events onto
 	// the live stream so the TUI prunes resolved cards live AND the dashboard
 	// (when open alongside the TUI) shows the same queue.
-	broker.reg.emit = emit
+	broker.SetEvents(emit)
 	// Now that the broker exists, point the cross-agent mirror at it (TEN-234):
 	// sub-agent activity (set in subObserve) + bus traffic (the existing bus
 	// observer above) flow to the dashboard feed. Bus → dashboard is emitted from
@@ -2557,15 +2557,15 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// modes persist to relay.permissions. Its "ask" backend (the live button
 	// approver) is wired below, once the relay manager exists.
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
-	discordBroker.reg.emit = emit // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
-	discordBroker.persist = func(snap map[string]string) {
+	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
+	discordBroker.SetPersist(func(snap map[string]string) {
 		if c.lc == nil {
 			return
 		}
 		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
-	}
+	})
 	if c.lc != nil {
-		discordBroker.loadModes(c.lc.Relay.Permissions)
+		discordBroker.LoadModes(c.lc.Relay.Permissions)
 	}
 	discordToken := discordRelayToken(c.cfgDir)
 	if strings.TrimSpace(discordToken) != "" {
@@ -2633,13 +2633,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// three days while the brief's Jira section quietly emptied): feed line AND
 	// a direct DM to the operator, who is usually remote exactly when it matters.
 	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(pushSys, relayMgr.NotifyOperator))
-	discordBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
 			return tui.ApproveOnce
 		}
 		return tui.DenyOnce
-	}
-	discordBroker.locked = relayMgr.execLocked // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
+	})
+	discordBroker.SetLock(relayMgr.execLocked) // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
 		relayMgr.operatorID = c.lc.Relay.OperatorID
 		// Restore the persisted exec mode before any auto-start, so an enabled
@@ -2675,14 +2675,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log.With("source", "approvals"), broker)
-	imsgBroker.persist = func(snap map[string]string) {
+	imsgBroker.SetPersist(func(snap map[string]string) {
 		if c.lc == nil {
 			return
 		}
 		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
-	}
+	})
 	if c.lc != nil {
-		imsgBroker.loadModes(c.lc.IMessage.Permissions)
+		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
 
@@ -2754,12 +2754,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 			// deny-all offsite).
 			if approver := newIMessageApprover(resp, imsgOperator, log.With("source", "imessage")); approver != nil {
 				resp.approver = approver
-				imsgBroker.ask = func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
+				imsgBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 					if approver.Confirm(cctx, req.Action, req.Detail) {
 						return tui.ApproveOnce
 					}
 					return tui.DenyOnce
-				}
+				})
 			}
 			return resp, func() { _ = nat.Close() }, nil
 		},
