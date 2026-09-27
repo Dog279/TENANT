@@ -18,6 +18,7 @@ func TestClearLatestAndLogs(t *testing.T) {
 		t.Fatalf("empty Latest = %v, %v", h, err)
 	}
 	batch := []event.Event{ev("a", "one"), ev("a", "two"), ev("b", "three"), ev(SecurityLog, "four")}
+	batch[1].Level, batch[1].ID = event.Error, 3001 // counted by event ID too
 	if err := s.Commit(ctx, batch); err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +40,12 @@ func TestClearLatestAndLogs(t *testing.T) {
 	}
 	if bs, _ := s.Stats(ctx, query.Filter{}, 0); len(bs) != 2 || bs[0].Log != "b" {
 		t.Errorf("rollups after clear = %+v", bs)
+	}
+	var hours, ids int
+	_ = s.r.QueryRow(`SELECT (SELECT count(*) FROM rollup_hour r JOIN names n ON n.id = r.log_id WHERE n.name = 'a'),
+		(SELECT count(*) FROM rollup_id r JOIN names n ON n.id = r.provider_id WHERE n.name = 'a')`).Scan(&hours, &ids)
+	if hours != 0 || ids != 0 {
+		t.Errorf("after clear: %d hour rollups and %d event-ID rollups of a are left", hours, ids)
 	}
 	logs, err := s.Logs(ctx)
 	if err != nil || len(logs) != 3 {
@@ -78,7 +85,7 @@ func TestDebugSwitch(t *testing.T) {
 	}
 }
 
-func TestViewsAndIntegrityCheck(t *testing.T) {
+func TestViews(t *testing.T) {
 	ctx := context.Background()
 	s := open(t, tempDB(t), "")
 	if err := s.SaveView(ctx, "Discord errors", "log:discord level>=error"); err != nil {
@@ -96,8 +103,5 @@ func TestViewsAndIntegrityCheck(t *testing.T) {
 	}
 	if ok, _ := s.DeleteView(ctx, "Discord errors"); ok {
 		t.Error("deleted a view twice")
-	}
-	if problems, err := s.IntegrityCheck(ctx); err != nil || problems != nil {
-		t.Errorf("IntegrityCheck = %v, %v", problems, err)
 	}
 }

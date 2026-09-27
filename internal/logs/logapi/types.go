@@ -3,6 +3,7 @@ package logapi
 import (
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
 	"tenant/internal/runtrace"
 )
@@ -159,15 +160,9 @@ type Catalog struct {
 	Markdown string `json:"markdown"`
 }
 
-// Component is one thing running now (docs/design/logging-v2.md §8.7).
-type Component struct {
-	Name      string     `json:"name"`
-	Kind      string     `json:"kind"` // subsystem, connector, server, child or job
-	Log       string     `json:"log"`
-	State     string     `json:"state"` // starting, running, degraded, stopped or failed
-	Since     *time.Time `json:"since,omitempty"`
-	LastError string     `json:"last_error,omitempty"`
-}
+// Component is one thing running now (docs/design/logging-v2.md §8.7):
+// the component registry's.
+type Component = lifecycle.Component
 
 // Components is GET /api/logbook/components.
 type Components struct {
@@ -193,6 +188,14 @@ type Chain struct {
 	Restores   int      `json:"restores"`
 	Notes      []string `json:"notes,omitempty"`
 	Break      string   `json:"break,omitempty"` // the first break, by record number; empty when it verifies
+}
+
+// Recovered is POST /api/logbook/recover: what could still be read of a
+// quarantined logbook.db, copied into the store.
+type Recovered struct {
+	File      string `json:"file"`
+	Recovered int    `json:"recovered"`
+	Problems  string `json:"problems,omitempty"` // the stretches it could not read
 }
 
 // Accepted is POST /api/events.

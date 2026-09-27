@@ -9,11 +9,8 @@ import (
 )
 
 // What the API and tenant logs administer (docs/design/logging-v2.md §9.4,
-// §9.5): the newest cursor, clearing a log, the timed debug switch, saved
-// views and the integrity check.
-
-// SchemaVersion is the schema this build writes. Exports name it.
-func SchemaVersion() int { return len(migrations) }
+// §9.5): the newest cursor, clearing a log, the timed debug switch and saved
+// views.
 
 // Latest is the cursor of the newest event: Seq 0 when the store is empty.
 func (s *Store) Latest(ctx context.Context) (Cursor, error) {
@@ -33,6 +30,10 @@ var ErrProtected = errors.New("store: the Security log can't be cleared")
 // Clear deletes every event of log, in retention's short transactions, with
 // its rollups, and notes when it was cleared. It returns how many events it
 // deleted. Events committed while it runs may survive it.
+//
+// ponytail: the event-ID rollups are taken down before the deletes, so one
+// committed in between is deleted but still counted there; do both in each
+// delete's transaction if the Summary's top IDs ever need to be exact.
 func (s *Store) Clear(ctx context.Context, log string) (int64, error) {
 	if log == SecurityLog {
 		return 0, ErrProtected
@@ -44,15 +45,28 @@ func (s *Store) Clear(ctx context.Context, log string) (int64, error) {
 	case err != nil:
 		return 0, fmt.Errorf("store: clear: %w", err)
 	}
+	if _, err := s.w.ExecContext(ctx, `UPDATE rollup_id SET n = rollup_id.n - c.k FROM
+		(SELECT time_ns / 3600000000000 AS hour, provider_id, event_id, count(*) AS k FROM events
+		 WHERE log_id = ? AND level <= 3 GROUP BY 1, 2, 3) AS c
+		WHERE rollup_id.hour = c.hour AND rollup_id.provider_id = c.provider_id AND rollup_id.event_id = c.event_id`, id); err != nil {
+		return 0, fmt.Errorf("store: clear: %w", err)
+	}
 	rep := Report{Deleted: map[string]int64{}}
 	r := &retention{s: s, rep: &rep, names: map[int64]string{id: log}}
 	if _, err := r.sweep(ctx, "", -1, "log_id = ?", id); err != nil {
 		return rep.Deleted[log], err
 	}
-	if _, err := s.w.ExecContext(ctx, `DELETE FROM rollup WHERE log_id = ?`, id); err != nil {
-		return rep.Deleted[log], fmt.Errorf("store: clear: %w", err)
+	_, err := s.w.ExecContext(ctx, `DELETE FROM rollup WHERE log_id = ?`, id)
+	if err == nil {
+		_, err = s.w.ExecContext(ctx, `DELETE FROM rollup_hour WHERE log_id = ?`, id)
 	}
-	if _, err := s.w.ExecContext(ctx, `UPDATE logs SET bytes = 0, cleared_ns = ? WHERE log_id = ?`, time.Now().UnixNano(), id); err != nil {
+	if err == nil {
+		_, err = s.w.ExecContext(ctx, `DELETE FROM rollup_id WHERE n <= 0`)
+	}
+	if err == nil {
+		_, err = s.w.ExecContext(ctx, `UPDATE logs SET bytes = 0, cleared_ns = ? WHERE log_id = ?`, time.Now().UnixNano(), id)
+	}
+	if err != nil {
 		return rep.Deleted[log], fmt.Errorf("store: clear: %w", err)
 	}
 	return rep.Deleted[log], nil
@@ -153,25 +167,4 @@ func (s *Store) DeleteView(ctx context.Context, name string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
-}
-
-// IntegrityCheck runs SQLite's integrity check over the whole database and
-// returns what it found wrong: nil when nothing.
-func (s *Store) IntegrityCheck(ctx context.Context) ([]string, error) {
-	rows, err := s.r.QueryContext(ctx, `PRAGMA integrity_check`)
-	if err != nil {
-		return nil, fmt.Errorf("store: integrity check: %w", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			return nil, fmt.Errorf("store: integrity check: %w", err)
-		}
-		if line != "ok" {
-			out = append(out, line)
-		}
-	}
-	return out, rows.Err()
 }

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/logs/event"
@@ -41,12 +41,15 @@ type pipeline struct {
 	cancel     context.CancelFunc
 
 	dmu     sync.Mutex
-	dropped map[string]uint64 // per log: events the full queue had no room for
+	dropped map[string]uint64  // per log: events the full queue had no room for
+	recent  map[lossKey]uint64 // the same, per log and provider, since the last report (logbook.go)
+	hwm     atomic.Int64       // the queue's deepest since the last report
 
-	failing bool // the last commit failed (writer goroutine only)
+	out outage         // a failing store (logbook.go; writer goroutine only)
+	bg  sync.WaitGroup // an outage's import
 }
 
-// auditReq is a Security record waiting for its commit.
+// auditReq is a Security record waiting for its commit (nil: a flush).
 type auditReq struct {
 	e    *event.Event
 	done chan error
@@ -67,7 +70,8 @@ func (h *Hub) AttachStore(st *store.Store) {
 func newPipeline(h *Hub, st *store.Store) *pipeline {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &pipeline{h: h, st: st, q: make(chan *event.Event, queueCap), urgent: make(chan auditReq),
-		stop: make(chan struct{}), done: make(chan struct{}), ctx: ctx, cancel: cancel, dropped: map[string]uint64{}}
+		stop: make(chan struct{}), done: make(chan struct{}), ctx: ctx, cancel: cancel,
+		dropped: map[string]uint64{}, recent: map[lossKey]uint64{}}
 }
 
 // Dropped counts, per log, the events the pipeline had no room for: a full
@@ -104,15 +108,16 @@ func cleanSource(s string) string {
 }
 
 // enqueue hands e to the writer, unless its log's policy or low disk keeps
-// it out (admit). When the queue is full, an operational event waits up to a
-// millisecond and a diagnostic one not at all, then it is dropped and
-// counted. A Security record is never queued or kept out: it forces a
-// commit. False only once the pipeline is closed.
+// it out (admit), or its rate limit does. When the queue is full, an
+// operational event waits up to a millisecond and a diagnostic one not at
+// all, then it is dropped and counted. A Security record is never queued,
+// limited or kept out: it forces a commit. False only once the pipeline is
+// closed.
 func (p *pipeline) enqueue(ctx context.Context, e *event.Event) bool {
 	if e.Log == store.SecurityLog {
 		return !errors.Is(p.audit(ctx, e), errClosed)
 	}
-	if !p.admit(e) {
+	if !p.admit(e) || !p.h.lb.lim.allow(e) {
 		return true
 	}
 	p.mu.RLock()
@@ -122,6 +127,7 @@ func (p *pipeline) enqueue(ctx context.Context, e *event.Event) bool {
 	}
 	select {
 	case p.q <- e:
+		p.high()
 		return true
 	default:
 	}
@@ -130,13 +136,12 @@ func (p *pipeline) enqueue(ctx context.Context, e *event.Event) bool {
 		defer t.Stop()
 		select {
 		case p.q <- e:
+			p.high()
 			return true
 		case <-t.C:
 		}
 	}
-	p.dmu.Lock()
-	p.dropped[e.Log]++
-	p.dmu.Unlock()
+	p.drop(e)
 	return true
 }
 
@@ -177,7 +182,9 @@ func (p *pipeline) run() {
 				continue
 			}
 		case r := <-p.urgent:
-			batch = append(p.take(batch), *r.e) // what was queued before it goes first
+			if batch = p.take(batch); r.e != nil { // what was queued before it goes first
+				batch = append(batch, *r.e)
+			}
 			r.done <- p.flush(batch)
 			batch = batch[:0]
 			continue
@@ -201,7 +208,8 @@ func (p *pipeline) take(batch []event.Event) []event.Event {
 
 // flush runs one batch through the pipeline and returns the commit's error.
 // The mirror is written before the commit, so a batch the store loses is
-// still in the text files.
+// still in the text files; commit retries it, and runs on the mirror alone
+// while the store keeps failing (logbook.go).
 func (p *pipeline) flush(batch []event.Event) error {
 	if len(batch) == 0 {
 		return nil
@@ -232,21 +240,8 @@ func (p *pipeline) flush(batch []event.Event) error {
 			entries = append(entries, EntryFromEvent(*e))
 		}
 	}
-	p.h.mirror(entries)
-	err := p.st.Commit(p.ctx, batch)
-	if errors.Is(err, store.ErrNoChainKey) {
-		// Only the batch's security records were refused, and their callers
-		// hear it; the store itself is working.
-		p.h.feed(entries)
-		return err
-	}
-	if err != nil && !p.failing {
-		warn := Entry{At: p.h.now(), Source: "logbook", Level: slog.LevelWarn,
-			Msg: "logbook: the store could not commit; the text files still have these events", Fields: []Field{{Key: "err", Value: err.Error()}}}
-		p.h.mirror([]Entry{warn})
-		entries = append(entries, warn)
-	}
-	p.failing = err != nil
+	p.mirrored(p.h.mirror(entries))
+	err := p.commit(batch)
 	p.h.feed(entries)
 	return err
 }
@@ -266,22 +261,27 @@ func (p *pipeline) close() {
 		<-p.done
 	}
 	p.cancel()
+	p.bg.Wait()
 	_ = p.st.Close()
 }
 
-// mirror appends entries to their sources' day files, under one lock.
-func (h *Hub) mirror(entries []Entry) {
+// mirror appends entries to their sources' day files, under one lock, and
+// returns the first write's error ("" when every line was written).
+func (h *Hub) mirror(entries []Entry) (err string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
-		return
+		return ""
 	}
 	for _, en := range entries {
 		s := h.sourceLocked(en.Source, true)
 		if h.root != "" {
-			h.writeLocked(s, en.At, en.Line())
+			if h.writeLocked(s, en.At, en.Line()); err == "" {
+				err = s.err
+			}
 		}
 	}
+	return err
 }
 
 // feed appends committed entries to the ring and wakes its readers, as Log

@@ -28,10 +28,6 @@ func (s *Server) SetRunRecords(fn logapi.RunLookup) { s.logbook.Runs = fn }
 // whose key, anchor and witness the composition root holds.
 func (s *Server) SetSecurityLog(sl logapi.SecurityLog) { s.logbook.Security = sl }
 
-// SetComponents feeds GET /api/logbook/components: what is running now
-// (the component registry, TEN-380).
-func (s *Server) SetComponents(fn func() []logapi.Component) { s.logbook.Components = fn }
-
 // activityBacklog is how far back a v1 client replays when its cursor is
 // not this store's: the v1 ring's size.
 const activityBacklog = 10000

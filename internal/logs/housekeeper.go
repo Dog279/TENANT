@@ -2,14 +2,15 @@ package logs
 
 import (
 	"context"
-	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
 	"tenant/internal/logs/store"
+	"tenant/internal/runtrace"
 )
 
 // The housekeeper (docs/design/logging-v2.md §5): work that must run in
@@ -51,6 +52,7 @@ type housekeeper struct {
 	// running tasks' goroutine only).
 	full map[string]bool
 	over bool
+	fill map[string]int // 80 or 95: the fill level last reported, by log
 }
 
 type chore struct {
@@ -117,19 +119,20 @@ func (h *Hub) housekeep(ctx context.Context) {
 	for {
 		if st := h.store(); st != nil {
 			h.refresh(ctx, st)
+			h.watch(ctx, st)
 			ok, err := st.TryLease(ctx, leaseName, leaseTTL)
 			if ok = ok && err == nil; ok != held {
 				held = ok
 				if held {
-					h.Logf("logbook", slog.LevelInfo, "logbook: this process now does the log book's housekeeping")
+					h.emit(catalog.LeaseTaken, "boot", runtrace.BootID())
 				} else {
 					term.end()
 					term.ctx, term.end = context.WithCancel(ctx)
-					var kv []any
+					kv := []any{"boot", runtrace.BootID()}
 					if err != nil {
 						kv = append(kv, "err", err)
 					}
-					h.Logf("logbook", slog.LevelInfo, "logbook: this process no longer holds the housekeeping lease", kv...)
+					h.emit(catalog.LeaseLost, kv...)
 				}
 			}
 			if held {
@@ -171,18 +174,21 @@ func (h *Hub) runChores(ctx context.Context) {
 		}
 		c.next = now.Add(c.every)
 		if err := c.fn(ctx); err != nil && ctx.Err() == nil {
-			h.Logf("logbook", slog.LevelError, "logbook: housekeeping task "+c.name+" failed", "err", err)
+			h.emit(catalog.ChoreFailed, "task", c.name, "err", err)
 		}
 	}
 }
 
 // refresh reloads what this process's writes obey: the retention settings,
-// each log's policy and the free disk space. A crossing into or out of low
-// disk is logged.
+// each log's policy, the rate limit and the free disk space. A crossing into
+// or out of low disk is logged.
 func (h *Hub) refresh(ctx context.Context, st *store.Store) {
 	g := &gate{budget: store.DefaultBudget()}
 	if h.opts.Budget != nil {
 		g.budget = h.opts.Budget()
+	}
+	if h.opts.RateLimit != nil {
+		h.lb.lim.set(h.opts.RateLimit())
 	}
 	old := h.hk.gate.Load()
 	var err error
@@ -204,15 +210,7 @@ func (h *Hub) refresh(ctx context.Context, st *store.Store) {
 	if old == nil && g.shed == 0 || old != nil && old.shed == g.shed {
 		return
 	}
-	mb := free >> 20
-	switch g.shed {
-	case 0:
-		h.Logf("logbook", slog.LevelInfo, "logbook: disk space recovered; every event is written again", "free_mb", mb)
-	case 1:
-		h.Logf("logbook", slog.LevelWarn, "logbook: low disk space; diagnostic events are not written until space is freed", "free_mb", mb)
-	case 2:
-		h.Logf("logbook", slog.LevelWarn, "logbook: very low disk space; only warnings, errors and the security log are written until space is freed", "free_mb", mb)
-	}
+	h.emit([]*event.Def{catalog.DiskRecovered, catalog.LowDisk, catalog.VeryLowDisk}[g.shed], "free_mb", free>>20)
 }
 
 func (hk *housekeeper) space(path string) (free, total uint64, err error) {
@@ -234,16 +232,16 @@ func (p *pipeline) admit(e *event.Event) bool {
 		return false
 	}
 	if g.shed > 0 && (e.Channel == event.Diagnostic || g.shed > 1 && e.Level > event.Warning) {
-		p.dmu.Lock()
-		p.dropped[e.Log]++
-		p.dmu.Unlock()
+		p.drop(e)
 		return false
 	}
 	return true
 }
 
-// retain is the retention task: one pass under the settings in force, then
-// the alerts the operator needs, each once per crossing.
+// retain is the retention task: one pass under the settings in force, what
+// it did to logs that were full, then the alerts the operator needs, each
+// once per crossing: a log at 80% or 95% of its limit, one past it that
+// keeps every record, and a book over its budget.
 func (h *Hub) retain(ctx context.Context) error {
 	st, g := h.store(), h.hk.gate.Load()
 	if st == nil || g == nil {
@@ -251,19 +249,44 @@ func (h *Hub) retain(ctx context.Context) error {
 	}
 	rep, err := st.Retain(ctx, g.budget, time.Now())
 	for _, f := range rep.Archived {
-		h.Logf("logbook", slog.LevelInfo, "logbook: archived the oldest records", "file", f)
+		h.emit(catalog.Archived, "file", f)
+	}
+	for log, n := range rep.Full {
+		if n > 0 && g.policy(log).OnFull == store.Overwrite {
+			h.emit(catalog.Overwritten, "log", log, "count", n)
+		}
 	}
 	full := map[string]bool{}
 	for _, name := range rep.Kept {
 		full[name] = true
 		if !h.hk.full[name] {
-			h.Logf("logbook", slog.LevelWarn, "logbook: log "+name+" is past its size limit; its policy keeps every record, so nothing is deleted", "log", name)
+			h.emit(catalog.KeptFull, "log", name)
 		}
 	}
 	h.hk.full = full
+	if fill, ferr := st.Fill(ctx, g.budget); ferr == nil {
+		levels := map[string]int{}
+		for log, f := range fill {
+			lvl := 0
+			switch {
+			case full[log]:
+			case f >= 0.95:
+				lvl = 95
+			case f >= 0.80:
+				lvl = 80
+			}
+			if lvl == 0 {
+				continue
+			}
+			levels[log] = lvl
+			if lvl > h.hk.fill[log] {
+				h.emit(catalog.NearFull, "log", log, "percent", int(f*100), "limit_mb", g.policy(log).MaxBytes>>20)
+			}
+		}
+		h.hk.fill = levels
+	}
 	if rep.Over && !h.hk.over {
-		h.Logf("logbook", LevelCritical, "logbook: the log book is over its disk budget, and only records retention may not delete are left (security, archived and kept logs)",
-			"size_mb", rep.Size>>20, "budget_mb", g.budget.TotalBytes>>20)
+		h.emit(catalog.OverBudget, "size_mb", rep.Size>>20, "budget_mb", g.budget.TotalBytes>>20)
 	}
 	h.hk.over = rep.Over
 	return err
@@ -280,6 +303,6 @@ func (h *Hub) checkpointWAL(ctx context.Context) error {
 	if err != nil || wal <= walLimit {
 		return err
 	}
-	h.Logf("logbook", slog.LevelInfo, "logbook: the WAL passed its checkpoint threshold; checkpointing", "wal_mb", wal>>20)
+	h.emit(catalog.WALCheckpoint, "wal_mb", wal>>20)
 	return st.Checkpoint(ctx)
 }

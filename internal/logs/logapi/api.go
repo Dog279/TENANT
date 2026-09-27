@@ -22,6 +22,7 @@
 //	GET    /api/logbook/components                         what is running
 //	GET    /api/logbook/verify[?log=security]              the integrity check, and the Security log's chain
 //	GET    /api/logbook/audit?since=&until=                the Security log's audit export bundle
+//	POST   /api/logbook/recover                            salvage a quarantined logbook.db into the store
 //
 // Cursors are <store ID>.<seq>; one from another store starts over and says
 // so. A read with sensitive=1 returns sensitive values, and the reveal is
@@ -41,11 +42,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
@@ -63,9 +67,9 @@ type API struct {
 	// Runs finds a trace's run record in runs.db; nil when this process
 	// can't read it.
 	Runs RunLookup
-	// Components lists what is running (the component registry, TEN-380);
-	// nil lists nothing.
-	Components func() []Component
+	// Components lists what is running; nil is this process's component
+	// registry (lifecycle.Components), which is serve's in the dashboard.
+	Components func(ctx context.Context) ([]Component, error)
 	// BootStart is when the process boot:current names started, for the
 	// Since last start view; zero means this process.
 	BootStart time.Time
@@ -122,6 +126,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/logbook/components", a.components)
 	mux.HandleFunc("GET /api/logbook/verify", a.verify)
 	mux.HandleFunc("GET /api/logbook/audit", a.audit)
+	mux.HandleFunc("POST /api/logbook/recover", a.recoverFile)
 }
 
 // Handler is the routes on a mux of their own.
@@ -960,15 +965,57 @@ func specView(s event.Spec) Spec {
 		Meaning: s.Meaning, Cause: s.Cause, Action: s.Action, Retired: s.Retired, Filter: catalog.Filter(s)}
 }
 
-func (a *API) components(w http.ResponseWriter, _ *http.Request) {
-	out := Components{Components: []Component{}}
+func (a *API) components(w http.ResponseWriter, r *http.Request) {
+	list := func(context.Context) ([]Component, error) { return lifecycle.Components(), nil }
 	if a.Components != nil {
-		out.Components = append(out.Components, a.Components()...)
+		list = a.Components
 	}
+	cs, err := list(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, Components{Components: append([]Component{}, cs...)})
+}
+
+// recoverFile copies what can still be read of a logbook.db that was moved
+// aside as corrupt (store.Quarantine: logbook.db.corrupt-<time>) into the
+// store, each event with keyword recovered: the newest such file, or the
+// one {"file"} names.
+func (a *API) recoverFile(w http.ResponseWriter, r *http.Request) {
+	h, st, ok := a.book(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		File string `json:"file"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	found, _ := filepath.Glob(filepath.Join(h.Root(), "logbook.db.corrupt-*"))
+	found = slices.DeleteFunc(found, func(p string) bool { return strings.HasSuffix(p, "-wal") || strings.HasSuffix(p, "-shm") })
+	if req.File != "" {
+		found = slices.DeleteFunc(found, func(p string) bool { return filepath.Base(p) != req.File })
+	}
+	if len(found) == 0 {
+		writeError(w, http.StatusNotFound, "no quarantined logbook.db (logbook.db.corrupt-<time>) to recover from")
+		return
+	}
+	slices.Sort(found) // by the time in the name
+	path := found[len(found)-1]
+	n, err := store.Salvage(r.Context(), path, st)
+	out := Recovered{File: filepath.Base(path), Recovered: n}
+	if err != nil {
+		out.Problems = err.Error()
+	}
+	h.Logf("logbook", slog.LevelInfo, "logbook: recovered events from "+out.File, "events", n, "problems", out.Problems)
 	writeJSON(w, http.StatusOK, out)
 }
 
-// verify checks the database's integrity and, for log=security, walks the
+// verify checks the database's integrity (SQLite's quick_check) and, for
+// log=security, walks the
 // Security log's chain against its key, anchor and witness. The check is
 // recorded in the logbook log; TEN-398 makes it a Security record.
 func (a *API) verify(w http.ResponseWriter, r *http.Request) {
@@ -981,8 +1028,11 @@ func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "log: only security has a check of its own")
 		return
 	}
-	problems, err := st.IntegrityCheck(r.Context())
-	if err != nil {
+	var problems []string
+	switch err := st.Check(r.Context()); {
+	case errors.Is(err, store.ErrCorrupt):
+		problems = []string{err.Error()}
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

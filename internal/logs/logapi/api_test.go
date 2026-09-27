@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
@@ -477,14 +478,18 @@ func TestAggregatesTimelineCatalogComponentsVerify(t *testing.T) {
 		}
 	}
 
-	if cs := decode[Components](t, b.do(t, "GET", "/api/logbook/components", "", ""), 200); cs.Components == nil || len(cs.Components) != 0 {
-		t.Errorf("components before the registry = %+v", cs)
+	if cs := decode[Components](t, b.do(t, "GET", "/api/logbook/components", "", ""), 200); cs.Components == nil {
+		t.Errorf("this process's components = %+v", cs)
 	}
-	b.api.Components = func() []Component {
-		return []Component{{Name: "discord", Kind: "connector", Log: "discord", State: "running"}}
+	b.api.Components = func(context.Context) ([]Component, error) {
+		return []Component{{Name: "discord relay", Kind: lifecycle.Connector, Log: "discord", State: lifecycle.Running}}, nil
 	}
-	if cs := decode[Components](t, b.do(t, "GET", "/api/logbook/components", "", ""), 200); len(cs.Components) != 1 {
+	if cs := decode[Components](t, b.do(t, "GET", "/api/logbook/components", "", ""), 200); len(cs.Components) != 1 || cs.Components[0].State != lifecycle.Running {
 		t.Errorf("components = %+v", cs)
+	}
+	b.api.Components = func(context.Context) ([]Component, error) { return nil, errors.New("serve isn't reachable") }
+	if rec := b.do(t, "GET", "/api/logbook/components", "", ""); rec.Code != 503 || !strings.Contains(rec.Body.String(), "reachable") {
+		t.Errorf("components that can't be listed = %d %s", rec.Code, rec.Body.String())
 	}
 
 	if v := decode[Verify](t, b.do(t, "GET", "/api/logbook/verify", "", ""), 200); !v.OK || v.Chain != nil || v.Note != "" {
@@ -609,5 +614,31 @@ func TestExternalLogAndDuration(t *testing.T) {
 	}
 	if _, err := Duration("xd"); err == nil {
 		t.Error("Duration(xd) should fail")
+	}
+}
+
+// recover salvages the newest quarantined logbook.db into the store, its
+// events marked recovered.
+func TestRecover(t *testing.T) {
+	b := newBook(t)
+	if rec := b.do(t, "POST", "/api/logbook/recover", "", ""); rec.Code != 404 {
+		t.Errorf("nothing to recover = %d", rec.Code)
+	}
+	old, err := store.Open(filepath.Join(b.h.Root(), "logbook.db.corrupt-20260101-000000"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Commit(context.Background(), []event.Event{{Log: "cron", Provider: "cron", Level: event.Info, Msg: "old one"},
+		{Log: "cron", Provider: "cron", Level: event.Info, Msg: "old two"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = old.Close()
+	r := decode[Recovered](t, b.do(t, "POST", "/api/logbook/recover", "application/json", `{"file":"logbook.db.corrupt-20260101-000000"}`), 200)
+	if r.Recovered != 2 || r.File != "logbook.db.corrupt-20260101-000000" || r.Problems != "" {
+		t.Fatalf("recover = %+v", r)
+	}
+	evs := b.waitFor(t, "cron", func(evs []event.Event) bool { return len(evs) == 2 })
+	if !slices.Contains(evs[0].Keywords, "recovered") || evs[0].Msg != "old one" {
+		t.Errorf("recovered = %+v", evs[0])
 	}
 }

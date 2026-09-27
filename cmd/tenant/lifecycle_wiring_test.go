@@ -31,7 +31,12 @@ func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, stra
 				if !ok || len(n.Args) < 2 {
 					return true
 				}
-				if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "life" || (sel.Sel.Name != "Add" && sel.Sel.Name != "AddFunc") {
+				switch sel.Sel.Name {
+				case "Add", "AddFunc", "Start", "StartFunc": // Start: a component, tracked while it runs
+				default:
+					return true
+				}
+				if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "life" {
 					return true
 				}
 				stage, ok := n.Args[0].(*ast.SelectorExpr)

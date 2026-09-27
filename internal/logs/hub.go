@@ -47,6 +47,9 @@ type Options struct {
 	// reads it every tick, so a changed config.json applies without a
 	// restart (nil ⇒ store.DefaultBudget).
 	Budget func() store.Budget
+	// RateLimit returns each provider and event ID's rate limit, read the
+	// same way (nil or 0 ⇒ 100 a second in bursts of 500; <0 ⇒ none).
+	RateLimit func() (perSecond float64, burst int)
 }
 
 // SourceInfo describes one source (= one folder = one dashboard tab).
@@ -90,6 +93,7 @@ type Hub struct {
 	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
 	hk   housekeeper              // housekeeper.go
 	in   intakeState              // intake.go
+	lb   logbook                  // logbook.go
 }
 
 type source struct {
@@ -188,6 +192,8 @@ func (h *Hub) Start(ctx context.Context) {
 		h.Housekeep("retention", retainEvery, h.retain)
 		h.Housekeep("checkpoint", 0, h.checkpointWAL)
 		h.Housekeep("intake", 0, h.intake)
+		h.Housekeep("dead processes", bootsEvery, h.CheckBoots)
+		h.Housekeep("integrity", integrityEvery, h.checkIntegrity)
 		h.wg.Add(1)
 		go h.housekeep(ctx)
 	}

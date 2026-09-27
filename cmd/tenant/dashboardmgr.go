@@ -8,6 +8,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
 	"tenant/internal/logs/logapi"
 	"tenant/internal/runtrace"
@@ -69,6 +70,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	ln, err := net.Listen("tcp", m.cfg.Addr)
 	if err != nil {
+		m.track(lifecycle.Failed, err)
 		return m.cfg.Addr, err
 	}
 	srv := dashboard.New(m.cfg, m.runner, m.tools, m.mem, m.broker, m.log)
@@ -128,6 +130,9 @@ func (m *dashboardManager) Enable() (string, error) {
 				m.srv = nil
 			}
 			m.mu.Unlock()
+			if current {
+				m.track(lifecycle.Failed, err)
+			}
 			if current && m.notify != nil {
 				m.notify("dashboard: stopped: " + err.Error())
 			}
@@ -138,6 +143,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	m.done = done
 	m.srv = srv
 	m.addr = ln.Addr().String()
+	m.track(lifecycle.Running, nil)
 	if m.persist != nil {
 		if err := m.persist(true); err != nil {
 			return m.addr, err
@@ -180,7 +186,13 @@ func (m *dashboardManager) stopLocked() {
 		m.cancel = nil
 		m.done = nil
 		m.srv = nil
+		m.track(lifecycle.Stopped, nil)
 	}
+}
+
+// track files the dashboard's state in the Components view (lifecycle).
+func (m *dashboardManager) track(st lifecycle.State, err error) {
+	lifecycle.Track(m.base, "dashboard", lifecycle.Server, "dashboard", st, err)
 }
 
 // SetTailnetHost trusts the tailnet DNS name `tailscale serve` publishes the

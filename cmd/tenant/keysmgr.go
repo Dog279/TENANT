@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tenant/internal/dashboard"
+	"tenant/internal/lifecycle"
 	"tenant/internal/tui"
 )
 
@@ -162,6 +163,8 @@ func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degr
 	if mc == nil {
 		return
 	}
+	comp := lifecycle.Track(ctx, "credentials watcher", lifecycle.Subsystem, "system", lifecycle.Running, nil)
+	defer comp.Set(lifecycle.Stopped, nil)
 	path := credentialsPath(cfgDir)
 	last := credsModTime(path)
 	t := time.NewTicker(credsWatchInterval)
