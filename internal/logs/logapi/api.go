@@ -25,8 +25,9 @@
 //	POST   /api/logbook/recover                            salvage a quarantined logbook.db into the store
 //
 // Cursors are <store ID>.<seq>; one from another store starts over and says
-// so. A read with sensitive=1 returns sensitive values, and the reveal is
-// recorded.
+// so. A read with sensitive=1 returns sensitive values. A reveal, an export,
+// a clear, a change of a log's settings and a check each file a Security
+// record (catalog.LogCleared … LogVerifyFailed, TEN-398).
 package logapi
 
 import (
@@ -76,6 +77,9 @@ type API struct {
 	// Security verifies and exports the Security log's chain, which needs
 	// its key, anchor and witness: the composition root holds them.
 	Security SecurityLog
+	// Surface is where requests come from, as the Security records of the
+	// actions taken through the API name it: dashboard (when empty) or cli.
+	Surface string
 }
 
 // RunLookup finds the run record of a trace.
@@ -125,7 +129,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/logbook/catalog/{provider}", a.catalog)
 	mux.HandleFunc("GET /api/logbook/components", a.components)
 	mux.HandleFunc("GET /api/logbook/verify", a.verify)
-	mux.HandleFunc("GET /api/logbook/audit", a.audit)
+	mux.HandleFunc("GET /api/logbook/audit", a.auditBundle)
 	mux.HandleFunc("POST /api/logbook/recover", a.recoverFile)
 }
 
@@ -199,7 +203,7 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 		}
 		page.Count = &n
 	}
-	reveal(r, h, page.Events)
+	a.reveal(r, h, f, page.Events)
 	writeJSON(w, http.StatusOK, page)
 }
 
@@ -223,7 +227,7 @@ func (a *API) event(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	evs := []event.Event{e}
-	reveal(r, h, evs)
+	a.reveal(r, h, query.Filter{}, evs)
 	d := EventDetail{Event: evs[0]}
 	if e.ID != 0 {
 		if s, ok := catalog.Lookup(e.Provider, e.ID); ok {
@@ -276,7 +280,7 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	sensitive := flag(v, "sensitive")
 	if sensitive {
-		h.Logf("logbook", slog.LevelInfo, "logbook: sensitive fields revealed in a live tail", "filter", v.Get("q"))
+		a.record(ctx, h, catalog.FieldRevealed, filterLog(f), "a live tail's sensitive fields, filter "+strconv.Quote(v.Get("q")))
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -399,7 +403,7 @@ func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := Timeline{ID: id, Events: nonNil(evs)}
-	reveal(r, h, out.Events)
+	a.reveal(r, h, query.Filter{}, out.Events)
 	if a.Runs == nil {
 		out.RunNote = "run records (runs.db) can't be read from this process"
 	} else if run, err := a.Runs(r.Context(), id); err != nil {
@@ -412,8 +416,7 @@ func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
 
 // export writes every event matching q, oldest first, up to the newest one
 // when it starts, after a header record, as NDJSON (the default), CSV or
-// text. The export is recorded in the logbook log; TEN-398 makes it a
-// Security record.
+// text, and files the export's Security record.
 func (a *API) export(w http.ResponseWriter, r *http.Request) {
 	h, st, ok := a.book(w)
 	if !ok {
@@ -475,12 +478,15 @@ func (a *API) export(w http.ResponseWriter, r *http.Request) {
 	if ferr := ew.Flush(); err == nil {
 		err = ferr
 	}
-	kv := []any{"events", n, "filter", q, "format", format, "sensitive", sensitive}
 	if err != nil {
-		h.Logf("logbook", slog.LevelWarn, "logbook: an export stopped before its end", append(kv, "err", err)...)
+		h.Logf("logbook", slog.LevelWarn, "logbook: an export stopped before its end", "events", n, "filter", q, "err", err)
 		return
 	}
-	h.Logf("logbook", slog.LevelInfo, "logbook: exported events", kv...)
+	details := fmt.Sprintf("%s, %d events, filter %q", format, n, q)
+	if sensitive {
+		details += ", with sensitive values"
+	}
+	a.record(ctx, h, catalog.LogExported, filterLog(f), details)
 }
 
 // ingest is POST /api/events: an event from outside the binary, as JSON, or
@@ -765,7 +771,11 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(kv) > 2 {
 		h.Reload(ctx)
-		h.Logf("logbook", slog.LevelInfo, "logbook: log "+name+" settings changed", kv...)
+		var details []string
+		for i := 2; i+1 < len(kv); i += 2 {
+			details = append(details, fmt.Sprint(kv[i], " ", kv[i+1]))
+		}
+		a.record(ctx, h, catalog.LogReconfigured, name, strings.Join(details, ", "))
 	}
 	a.writeLog(w, r, h, st, name)
 }
@@ -796,7 +806,7 @@ func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.Logf("logbook", slog.LevelInfo, "logbook: log "+name+" cleared", "log", name, "events", n)
+	a.record(r.Context(), h, catalog.LogCleared, name, fmt.Sprintf("%d events", n))
 	writeJSON(w, http.StatusOK, Cleared{Log: name, Cleared: n})
 }
 
@@ -1014,10 +1024,9 @@ func (a *API) recoverFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// verify checks the database's integrity (SQLite's quick_check) and, for
-// log=security, walks the
-// Security log's chain against its key, anchor and witness. The check is
-// recorded in the logbook log; TEN-398 makes it a Security record.
+// verify checks the database's integrity (SQLite's quick_check), and for
+// log=security walks the Security log's chain against its key, anchor and
+// witness. Each check files its Security record.
 func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 	h, st, ok := a.book(w)
 	if !ok {
@@ -1053,22 +1062,20 @@ func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Chain = c
 	}
-	kv := []any{"log", log}
-	if out.OK {
-		h.Logf("logbook", slog.LevelInfo, "logbook: the integrity check passed", kv...)
+	// The chain's result is recorded by Security.Verify; this is the database's.
+	if len(problems) == 0 {
+		a.record(r.Context(), h, catalog.LogVerified, "*", "logbook.db passed SQLite's quick check")
 	} else {
-		if out.Chain != nil && out.Chain.Break != "" {
-			problems = append(problems, out.Chain.Break)
-		}
-		h.Logf("logbook", slog.LevelError, "logbook: the integrity check failed", append(kv, "problems", strings.Join(problems, "; "))...)
+		a.record(r.Context(), h, catalog.LogVerifyFailed, "*", "logbook.db: "+strings.Join(problems, "; "))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// audit writes the Security log's audit export bundle: its records from
-// since to until (a duration back from now, or a time, as in a filter),
-// with their chain, verifiable offline with the key. The export is recorded.
-func (a *API) audit(w http.ResponseWriter, r *http.Request) {
+// auditBundle writes the Security log's audit export bundle: its records
+// from since to until (a duration back from now, or a time, as in a
+// filter), with their chain, verifiable offline with the key. The exporter
+// records the export.
+func (a *API) auditBundle(w http.ResponseWriter, r *http.Request) {
 	h, ok := a.hub(w)
 	if !ok {
 		return
@@ -1098,30 +1105,65 @@ func (a *API) audit(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		h.Logf("logbook", slog.LevelWarn, "logbook: an audit export stopped before its end", append(kv, "err", err)...)
-		return
 	}
-	h.Logf("logbook", slog.LevelInfo, "logbook: exported the Security log's audit bundle", kv...)
 }
 
 // reveal masks the sensitive values of evs, unless the request asks for
-// them with sensitive=1. A reveal is recorded in the logbook log; TEN-398
-// makes it a Security record.
-func reveal(r *http.Request, h *logs.Hub, evs []event.Event) {
+// them with sensitive=1: then it files the reveal's Security record.
+func (a *API) reveal(r *http.Request, h *logs.Hub, f query.Filter, evs []event.Event) {
 	if !flag(r.URL.Query(), "sensitive") {
 		mask(evs)
 		return
 	}
-	n := 0
+	n, log := 0, filterLog(f)
 	for _, e := range evs {
-		for _, f := range e.Data {
-			if f.Sensitive {
+		for _, fd := range e.Data {
+			if fd.Sensitive {
 				n++
+				if len(evs) == 1 {
+					log = e.Log
+				}
 			}
 		}
 	}
 	if n > 0 {
-		h.Logf("logbook", slog.LevelInfo, "logbook: sensitive fields revealed", "fields", n, "path", r.URL.Path, "filter", r.URL.Query().Get("q"))
+		details := fmt.Sprintf("%d sensitive fields, %s", n, r.URL.Path)
+		if q := r.URL.Query().Get("q"); q != "" {
+			details += " " + strconv.Quote(q)
+		}
+		a.record(r.Context(), h, catalog.FieldRevealed, log, details)
 	}
+}
+
+// record files the Security record of an action taken through the API on the
+// log book (as catalog.AuditLogAdmin does, through this hub). The action
+// stands if the record fails; the failure is logged.
+func (a *API) record(ctx context.Context, h *logs.Hub, d *event.Def, log, details string) {
+	surface := a.Surface
+	if surface == "" {
+		surface = "dashboard"
+	}
+	if err := h.Audit(ctx, d.Build(ctx, "log", log, "details", details, "actor", "operator", "surface", surface)); err != nil {
+		h.Logf("logbook", slog.LevelWarn, "logbook: the Security record of an action on the log book was not written",
+			"log", log, "details", details, "err", err)
+	}
+}
+
+// filterLog is the one log a filter names, or * for any other filter.
+func filterLog(f query.Filter) string {
+	var log string
+	for _, t := range f.Terms {
+		if t.Field == "log" {
+			if log != "" || t.Not || len(t.Values) != 1 || t.Values[0].Glob || t.Op != query.Match && t.Op != query.Eq {
+				return "*"
+			}
+			log = t.Values[0].Text
+		}
+	}
+	if log == "" {
+		return "*"
+	}
+	return log
 }
 
 func mask(evs []event.Event) {

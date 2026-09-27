@@ -177,8 +177,10 @@ func TestEventDetail(t *testing.T) {
 	if d.Event.Data[1].Value != "hunter2" {
 		t.Errorf("revealed data = %+v", d.Event.Data)
 	}
-	b.waitFor(t, "logbook", func(evs []event.Event) bool {
-		return slices.ContainsFunc(evs, func(e event.Event) bool { return strings.Contains(e.Msg, "revealed") })
+	b.waitFor(t, "security", func(recs []event.Event) bool {
+		return slices.ContainsFunc(recs, func(e event.Event) bool {
+			return e.ID == 4904 && e.Msg == "Sensitive field revealed in system: 1 sensitive fields, /api/events/"+strconv.FormatUint(evs[0].Seq, 10)
+		})
 	})
 	if rec := b.do(t, "GET", "/api/events/999", "", ""); rec.Code != 404 {
 		t.Errorf("missing event = %d", rec.Code)
@@ -383,9 +385,12 @@ func TestLogsChangeAndClear(t *testing.T) {
 	if rec := b.do(t, "GET", "/api/logbook/logs/nosuch", "", ""); rec.Code != 404 {
 		t.Errorf("unknown log = %d", rec.Code)
 	}
-	b.waitFor(t, "logbook", func(evs []event.Event) bool {
-		return slices.ContainsFunc(evs, func(e event.Event) bool { return strings.Contains(e.Msg, "discord cleared") }) &&
-			slices.ContainsFunc(evs, func(e event.Event) bool { return strings.Contains(e.Msg, "discord settings changed") })
+	b.waitFor(t, "security", func(evs []event.Event) bool {
+		return slices.ContainsFunc(evs, func(e event.Event) bool { return e.ID == 4901 && e.Msg == "Log discord cleared: 2 events" }) &&
+			slices.ContainsFunc(evs, func(e event.Event) bool {
+				return e.ID == 4902 && strings.HasPrefix(e.Msg, "Log discord reconfigured: max_bytes 1048576, max_age_s 2592000, on_full keep, min_level warning") &&
+					e.Data[2].Value == "operator" && e.Data[3].Value == "dashboard"
+			})
 	})
 }
 
@@ -507,8 +512,10 @@ func TestAggregatesTimelineCatalogComponentsVerify(t *testing.T) {
 	if rec := b.do(t, "GET", "/api/logbook/verify?log=discord", "", ""); rec.Code != 400 {
 		t.Errorf("verify discord = %d", rec.Code)
 	}
-	b.waitFor(t, "logbook", func(evs []event.Event) bool {
-		return slices.ContainsFunc(evs, func(e event.Event) bool { return e.Msg == "logbook: the integrity check failed" })
+	b.waitFor(t, "security", func(evs []event.Event) bool {
+		return slices.ContainsFunc(evs, func(e event.Event) bool {
+			return e.ID == 4905 && e.Msg == "Log * verified: logbook.db passed SQLite's quick check"
+		})
 	})
 }
 
@@ -566,8 +573,10 @@ func TestExport(t *testing.T) {
 	if rec := b.do(t, "GET", "/api/events/export?format=xml", "", ""); rec.Code != 400 {
 		t.Errorf("format xml = %d", rec.Code)
 	}
-	b.waitFor(t, "logbook", func(evs []event.Event) bool {
-		return slices.ContainsFunc(evs, func(e event.Event) bool { return e.Msg == "logbook: exported events" })
+	b.waitFor(t, "security", func(evs []event.Event) bool {
+		return slices.ContainsFunc(evs, func(e event.Event) bool {
+			return e.ID == 4903 && e.Msg == `Log a exported: ndjson, 2 events, filter "log:a"`
+		})
 	})
 }
 

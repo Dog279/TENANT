@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
 	"tenant/internal/privacy"
 	"tenant/internal/version"
@@ -314,6 +315,7 @@ func cmdPrivacyRetention(ctx context.Context, args []string, out io.Writer) erro
 			}
 		}
 	}
+	defer fileEvents(c)() // config.json's change record
 	if err := persistLaunchConfig(c.cfgDir, nil, set); err != nil {
 		return err
 	}
@@ -372,11 +374,30 @@ func cmdPrivacyPrune(ctx context.Context, args []string, in io.Reader, out io.Wr
 		return err
 	}
 	res, err := plan.Apply(ctx)
+	auditDeletion(ctx, plan.Reason, res, err, actorOperator, surfaceCLI)
 	if err != nil {
 		return err
 	}
 	printResult(out, res)
 	return nil
+}
+
+// auditDeletion files the Security record of a privacy deletion: what it
+// removed, kind by kind, even when it stopped part way. One that removed
+// nothing files nothing.
+func auditDeletion(ctx context.Context, reason privacy.Reason, res *privacy.Result, err error, actor, surface string) {
+	if res == nil || len(res.Items) == 0 {
+		return
+	}
+	removed := make([]string, len(res.Items))
+	for i, it := range res.Items {
+		removed[i] = fmt.Sprintf("%s %d %s", it.Action, it.Count, it.What)
+	}
+	var failed string
+	if err != nil {
+		failed = err.Error()
+	}
+	_ = catalog.DataDeleted.Audit(ctx, "reason", reason, "removed", strings.Join(removed, ", "), "actor", actor, "surface", surface, "err", failed)
 }
 
 func printResult(out io.Writer, res *privacy.Result) {
@@ -482,6 +503,7 @@ func cmdPrivacyForget(ctx context.Context, args []string, in io.Reader, out io.W
 	}
 	if plan != nil {
 		res, err := plan.Apply(ctx)
+		auditDeletion(ctx, plan.Reason, res, err, actorOperator, surfaceCLI)
 		if err != nil {
 			return err
 		}
@@ -532,6 +554,7 @@ func cmdPrivacyExport(ctx context.Context, args []string, out io.Writer) error {
 	if *dir == "" {
 		return fmt.Errorf("--out DIR is required\n%s", privacyUsage)
 	}
+	defer fileEvents(c)()
 	res, err := privacy.Export(ctx, d, privacy.ExportOptions{
 		Out: expandPath(*dir), NoArchive: *noArchive, Agent: *agent,
 		Connectors: storedConnectors(c.cfgDir, c.dataDir), TenantVersion: version.Version,
@@ -539,6 +562,7 @@ func cmdPrivacyExport(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	_ = catalog.DataExported.Audit(ctx, "dir", res.Dir, "files", res.Files, "bytes", res.Bytes, "actor", actorOperator, "surface", surfaceCLI)
 	fmt.Fprintf(out, "Exported %d files (%s) to %s\n", res.Files, humanBytes(res.Bytes), res.Dir)
 	for _, f := range res.RowFiles() {
 		fmt.Fprintf(out, "  %-28s %d rows\n", f, res.Rows[f])
@@ -588,6 +612,7 @@ func runRetention(ctx context.Context, c *commonFlags) (err error) {
 	if err != nil || plan.Empty() {
 		return err
 	}
-	_, err = plan.Apply(ctx)
+	res, err := plan.Apply(ctx)
+	auditDeletion(ctx, plan.Reason, res, err, actorTenant, "retention")
 	return err
 }

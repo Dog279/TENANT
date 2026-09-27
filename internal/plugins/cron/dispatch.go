@@ -45,12 +45,13 @@ type AddSpec struct {
 }
 
 // Manager is the slice of the cron engine the tools drive. cmd/tenant's
-// cronManager implements it over *cron.Engine.
+// cronManager implements it over *cron.Engine. ctx is the agent's turn, which
+// the Security record of each change names.
 type Manager interface {
 	ListJobs() []JobView
-	AddJob(AddSpec) (JobView, error)
-	RemoveJob(id string) (removed bool, err error)
-	SetJobEnabled(id string, on bool) (view JobView, changed bool, err error)
+	AddJob(ctx context.Context, s AddSpec) (JobView, error)
+	RemoveJob(ctx context.Context, id string) (removed bool, err error)
+	SetJobEnabled(ctx context.Context, id string, on bool) (view JobView, changed bool, err error)
 	RunJobNow(ctx context.Context, id string) (summary string, err error)
 }
 
@@ -114,11 +115,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	case "cron_list":
 		return d.list()
 	case "cron_add":
-		return d.add(call.Arguments)
+		return d.add(ctx, call.Arguments)
 	case "cron_remove":
-		return d.remove(call.Arguments)
+		return d.remove(ctx, call.Arguments)
 	case "cron_set_enabled":
-		return d.setEnabled(call.Arguments)
+		return d.setEnabled(ctx, call.Arguments)
 	case "cron_run_now":
 		return d.runNow(ctx, call.Arguments)
 	default:
@@ -160,7 +161,7 @@ func (d *Dispatcher) list() (string, bool, error) {
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }
 
-func (d *Dispatcher) add(args json.RawMessage) (string, bool, error) {
+func (d *Dispatcher) add(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
 		Spec    string `json:"spec"`
 		Prompt  string `json:"prompt"`
@@ -187,7 +188,7 @@ func (d *Dispatcher) add(args json.RawMessage) (string, bool, error) {
 	if a.Exec != nil {
 		exec = *a.Exec
 	}
-	j, err := d.mgr.AddJob(AddSpec{
+	j, err := d.mgr.AddJob(ctx, AddSpec{
 		Name: a.Name, Spec: a.Spec, Prompt: a.Prompt, Kind: a.Kind, TZ: a.TZ, Enabled: enabled, Exec: exec,
 	})
 	if err != nil {
@@ -200,7 +201,7 @@ func (d *Dispatcher) add(args json.RawMessage) (string, bool, error) {
 	return fmt.Sprintf("scheduled %s job %s (next run: %s)", mode, j.ID, orDash(j.NextRun)), false, nil
 }
 
-func (d *Dispatcher) remove(args json.RawMessage) (string, bool, error) {
+func (d *Dispatcher) remove(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
 		ID string `json:"id"`
 	}
@@ -210,7 +211,7 @@ func (d *Dispatcher) remove(args json.RawMessage) (string, bool, error) {
 	if strings.TrimSpace(a.ID) == "" {
 		return "id is required", true, nil
 	}
-	removed, err := d.mgr.RemoveJob(a.ID)
+	removed, err := d.mgr.RemoveJob(ctx, a.ID)
 	if err != nil {
 		return "could not remove job: " + err.Error(), true, nil
 	}
@@ -220,7 +221,7 @@ func (d *Dispatcher) remove(args json.RawMessage) (string, bool, error) {
 	return "removed job " + a.ID, false, nil
 }
 
-func (d *Dispatcher) setEnabled(args json.RawMessage) (string, bool, error) {
+func (d *Dispatcher) setEnabled(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
 		ID      string `json:"id"`
 		Enabled *bool  `json:"enabled"`
@@ -234,7 +235,7 @@ func (d *Dispatcher) setEnabled(args json.RawMessage) (string, bool, error) {
 	if a.Enabled == nil {
 		return "enabled is required (true or false)", true, nil
 	}
-	j, changed, err := d.mgr.SetJobEnabled(a.ID, *a.Enabled)
+	j, changed, err := d.mgr.SetJobEnabled(ctx, a.ID, *a.Enabled)
 	if err != nil {
 		return "could not update job: " + err.Error(), true, nil
 	}

@@ -532,7 +532,7 @@ func openLocalLogbook(c *commonFlags) (*logbook, error) {
 	}
 	h.AttachStore(st)
 	api := &logapi.API{Hub: func() *logs.Hub { return h }, BootStart: started, Security: securityLogAPI(c), Runs: localRuns(c),
-		Components: runningComponents(c)}
+		Components: runningComponents(c), Surface: surfaceCLI}
 	return &logbook{base: "http://logbook", http: &http.Client{Transport: inProcess{api.Handler()}}, local: path,
 		close: func() { _ = h.Close() }}, nil
 }

@@ -12,7 +12,7 @@ one folder is one tab.
 │   └── 2026-09-22.log
 ├── subagents/                    ← orchestrated sub-agents (Programmer, Researcher, …), their own warnings, the bus, the team budget
 ├── research/                     ← /research passes and their record failures
-├── approvals/                    ← every gated-action decision: pending / approved / denied / expired
+├── approvals/                    ← every gated-action decision: pending / approved / denied / expired (kept this release; they move into security)
 ├── discord/                      ← the relay: inbound messages, the relay agent's actions, relay logs
 ├── imessage/
 ├── cron/                         ← scheduled-job runner agents + the engine
@@ -781,6 +781,48 @@ keyed hash chain (design §10.2):
   data hash commits to them), and a closing `(rec, hash)` line.
   `store.VerifyBundle` checks it offline with the key.
 
+#### What the Security log records: changes
+
+Each record below is written through `Def.Audit` by the code that makes the
+change, before it returns (design §10.1; `docs/EVENTS.md` has each ID). It
+names who made the change, `actor` (`operator`, `agent`, or `tenant` for a
+scheduled sweep), and from where, `surface` (`tui`, `dashboard`, `cli`, or,
+for the agent, its turn's surface: `local`, `discord`, `imessage`,
+`cron-exec`); an agent's change also carries its turn's `trace_id`.
+
+- **Configuration** (`security/4501`): every save of `config.json` or
+  `settings.<agent>.json` that changes something, whoever saves it (the
+  record is filed by `internal/config`'s `Save`). `diff` has one line per
+  changed setting, `path: old → new`; a secret value (`dashboard.auth`, a key
+  ending in password, secret, token or api_key, every `env_set` value) is
+  shown as `«secret:<path>»`.
+- **Secrets** (`4601` stored, `4602` changed, `4603` deleted), by ID, never
+  the value, where the operator's action is handled: the Keys page,
+  `/configure`, `/model add-cloud` and `remove` (and the Model page),
+  `/skill configure` and `clear`, `tenant setup`, `tenant model add|remove`,
+  `tenant privacy forget --connector`. `internal/secrets` doesn't log; token
+  refreshes a plugin makes on its own aren't recorded.
+- **Scheduled jobs** (`4701` added, `4702` enabled or disabled, `4703`
+  removed, `4704` the cron-exec switch): from `/cron`, the dashboard, and the
+  agent's `cron_*` tools, which ask nobody (audit item D4).
+- **Data lifecycle**: `4801` a privacy deletion (forget, prune, and the
+  retention sweep as `tenant`), with what it removed; `4802` a privacy
+  export; `4803` a backup written; `4804` a backup restored, after the
+  re-anchor record.
+- **The log book**: `4901` cleared, `4902` reconfigured, `4903` exported,
+  `4904` a sensitive field revealed, `4905`/`4906` a verify passed or failed.
+  Verifying the Security log and its audit export bundle write theirs;
+  `catalog.AuditLogAdmin` is the call for the rest.
+
+A one-shot command (`tenant backup`, `tenant privacy`, `tenant setup`,
+`tenant model`) files its events into `logbook.db` when it ends, so its
+records join the chain. Other one-shot commands have no log book to take a
+record yet: a config change made by one (`tenant route`, `tenant peer`, …)
+is not recorded.
+
+The v1 `approvals` folder keeps being written through this release while
+approvals move into `security`; it goes in the next.
+
 ### Turns, sub-agents and research
 
 - **Turn-event lines** (the ones with `ev=`) name their catalogued event:
@@ -914,8 +956,10 @@ features.
   a new store ID, so a cursor from before it starts over, and `restarted`
   (or the stream's `restart` message) says so.
 - **Sensitive values** are `«sensitive»` unless the request adds
-  `sensitive=1`; a reveal, an export, a clear and a settings change each
-  write a `logbook` event (TEN-398 moves them into `security`).
+  `sensitive=1`. A reveal, an export, a clear, a change of a log's settings
+  and a check each file a Security record (`security/4901`–`4906`), naming the
+  operator and the surface: `dashboard`, or `cli` for `tenant logs` reading
+  locally.
 - **Events from outside** (`POST /api/events`, the v1 `POST /api/logs/{source}`
   and `/api/addon/event`, `tenant log`) are marked with keyword `external`.
   They keep their log, message, level, time and data, and the `trace` and
@@ -974,7 +1018,7 @@ tenant logs recover [FILE]                  salvage a quarantined logbook.db.cor
   prints each new event, resuming after the last one it printed if the
   stream drops.
 - **Exports** are NDJSON unless `--format` says otherwise, start with the
-  header record, are owner-only files, and are recorded. `clear --export`
+  header record, are owner-only files, and file a Security record. `clear --export`
   exports the log first.
 
 ### Event IDs, the reference and coverage

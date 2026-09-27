@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/logapi"
 	"tenant/internal/logs/store"
 	"tenant/internal/secrets"
@@ -275,7 +276,15 @@ func verifySecurityLog(ctx context.Context, c *commonFlags) (store.Verification,
 			}
 		}
 	}
-	return st.Verify(ctx, opts)
+	v, err := st.Verify(ctx, opts)
+	if err == nil {
+		d, details := catalog.LogVerified, fmt.Sprintf("%d records, %d archives, %d restores", v.Records, v.Archives, len(v.Restores))
+		if v.Break != nil {
+			d, details = catalog.LogVerifyFailed, v.Break.Error()
+		}
+		_ = catalog.AuditLogAdmin(ctx, d, store.SecurityLog, details, actorOperator, surfaceCLI) // tenant logs verify
+	}
+	return v, err
 }
 
 // exportSecurityLog writes the install's audit export bundle to w: the
@@ -292,7 +301,18 @@ func exportSecurityLog(ctx context.Context, c *commonFlags, w io.Writer, since, 
 		return err
 	}
 	host, _ := os.Hostname()
-	return st.ExportSecurity(ctx, w, store.ExportOptions{Since: since, Until: until, Host: host, Version: version.String(), Anchor: anchor})
+	if err := st.ExportSecurity(ctx, w, store.ExportOptions{Since: since, Until: until, Host: host, Version: version.String(), Anchor: anchor}); err != nil {
+		return err
+	}
+	details := "audit bundle"
+	if !since.IsZero() {
+		details += ", since " + since.UTC().Format(time.RFC3339)
+	}
+	if !until.IsZero() {
+		details += ", until " + until.UTC().Format(time.RFC3339)
+	}
+	_ = catalog.AuditLogAdmin(ctx, catalog.LogExported, store.SecurityLog, details, actorOperator, surfaceCLI) // tenant logs export
+	return nil
 }
 
 // verifySecurityBundle checks an audit export bundle with this install's key.

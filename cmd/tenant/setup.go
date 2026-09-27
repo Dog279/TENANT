@@ -49,6 +49,7 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	defer fileEvents(c)() // the Security records of what setup changes
 
 	lc, err := loadLaunchConfig(c.cfgDir)
 	if err != nil {
@@ -197,7 +198,7 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	}
 
 	// --- save ---
-	if err := creds.Save(c.cfgDir); err != nil {
+	if err := saveCredentials(c.cfgDir, creds, surfaceCLI); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
 	if err := lc.Save(c.cfgDir); err != nil {

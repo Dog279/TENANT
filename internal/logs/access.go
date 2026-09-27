@@ -37,6 +37,10 @@ func (h *Hub) Reload(ctx context.Context) {
 // attached, else as a v1 line.
 func (h *Hub) Emit(ctx context.Context, e *event.Event) { hubEmitter{h}.Emit(ctx, e) }
 
+// Audit files e as the event emitter's Audit does: it returns once the
+// record is committed, with the commit's error.
+func (h *Hub) Audit(ctx context.Context, e *event.Event) error { return hubEmitter{h}.Audit(ctx, e) }
+
 // External keeps only what a writer outside the binary may set
 // (docs/design/logging-v2.md §10.4): the log, message, level, time and data,
 // and the trace and activity it runs under, which it has from its
