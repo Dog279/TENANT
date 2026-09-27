@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
@@ -42,7 +40,10 @@ type persistentHandler struct {
 	fetcher     auth.AuthorizationCodeFetcher // nil ⇒ non-interactive (no browser)
 	httpClient  *http.Client
 
-	logger *slog.Logger
+	// ctx is the connection's: its events go to the connector's log, under
+	// its Connection activity. label names the connector in them.
+	ctx   context.Context
+	label string
 
 	// onAuthChange fires on the healthy↔needs-re-auth transitions (not on every
 	// failing call), so the operator is told once when a connector dies and
@@ -75,12 +76,16 @@ func (h *persistentHandler) markReauth(errText string) {
 	if transition {
 		h.cache.ReauthNeeded, h.cache.ReauthError, h.cache.ReauthSince = true, errText, time.Now().Unix()
 		if err := saveTokenCache(h.cachePath, h.cache); err != nil {
-			h.logger.Warn("mcp: failed to persist re-auth state", "server", h.serverURL, "err", err.Error())
+			StateNotSaved.Log(h.ctx, "server", h.label, "what", "the re-auth state", "err", err)
 		}
 	}
 	cb := h.onAuthChange
 	h.mu.Unlock()
-	if transition && cb != nil {
+	if !transition {
+		return
+	}
+	NeedsReauth.Log(h.ctx, "server", h.label, "url", h.serverURL, "err", errText, "fix", "tenant mcp connect "+h.serverURL)
+	if cb != nil {
 		cb(true, errText)
 	}
 }
@@ -96,23 +101,31 @@ func (h *persistentHandler) clearReauth() {
 	}
 	h.cache.ReauthNeeded, h.cache.ReauthError, h.cache.ReauthSince = false, "", 0
 	if err := saveTokenCache(h.cachePath, h.cache); err != nil {
-		h.logger.Warn("mcp: failed to persist re-auth clear", "server", h.serverURL, "err", err.Error())
+		StateNotSaved.Log(h.ctx, "server", h.label, "what", "the re-auth state", "err", err)
 	}
 	cb := h.onAuthChange
 	h.mu.Unlock()
+	h.reauthorized(cb)
+}
+
+// reauthorized reports a connector whose sign-in works again.
+func (h *persistentHandler) reauthorized(cb func(bool, string)) {
+	Reauthorized.Log(h.ctx, "server", h.label)
 	if cb != nil {
 		cb(false, "")
 	}
 }
 
-func newPersistentHandler(serverURL, redirect, clientName, cachePath string, interactive bool, fetcher auth.AuthorizationCodeFetcher, httpClient *http.Client, logger *slog.Logger) *persistentHandler {
-	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+// newPersistentHandler builds the handler for serverURL. ctx is the
+// connection's, for its events (nil: the mcp log).
+func newPersistentHandler(serverURL, redirect, clientName, cachePath string, interactive bool, fetcher auth.AuthorizationCodeFetcher, httpClient *http.Client, ctx context.Context) *persistentHandler {
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return &persistentHandler{
 		serverURL: serverURL, redirect: redirect, clientName: clientName,
 		cachePath: cachePath, interactive: interactive, fetcher: fetcher, httpClient: httpClient,
-		logger: logger,
+		ctx: ctx,
 	}
 }
 
@@ -196,13 +209,10 @@ func (s *refreshingSource) Token() (*oauth2.Token, error) {
 	if err != nil {
 		// Fail safe: a still-valid current token beats a hard failure.
 		if s.cur.Valid() {
-			s.h.logger.Warn("mcp: proactive token refresh failed; using still-valid token",
-				"server", s.h.serverURL, "err", err.Error())
+			RefreshFailed.Log(s.h.ctx, "server", s.h.label, "err", err)
 			return s.cur, nil
 		}
-		s.h.logger.Warn("mcp: token refresh failed (re-auth needed)",
-			"server", s.h.serverURL, "err", err.Error())
-		s.h.markReauth(err.Error()) // persisted + announced once; every surface reads it
+		s.h.markReauth(err.Error()) // persisted + logged and announced once; every surface reads it
 		return nil, err
 	}
 	s.cur = refreshed
@@ -218,14 +228,14 @@ func (s *refreshingSource) Token() (*oauth2.Token, error) {
 			recovered = true
 		}
 		if err := saveTokenCache(s.h.cachePath, s.h.cache); err != nil {
-			s.h.logger.Warn("mcp: failed to persist refreshed token",
-				"server", s.h.serverURL, "err", err.Error())
+			TokenNotSaved.Log(s.h.ctx, "server", s.h.label, "err", err)
 		}
 	}
 	cb := s.h.onAuthChange
 	s.h.mu.Unlock()
-	if recovered && cb != nil {
-		cb(false, "")
+	TokenRefreshed.Log(s.h.ctx, "server", s.h.label, "expires", refreshed.Expiry)
+	if recovered {
+		s.h.reauthorized(cb)
 	}
 	return refreshed, nil
 }
@@ -295,7 +305,7 @@ func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, re
 		// creds+endpoints; the token is persisted below. A failure here only
 		// costs a fresh client registration if this sign-in is abandoned.
 		if err := saveTokenCache(h.cachePath, h.cache); err != nil {
-			h.logger.Warn("mcp: failed to persist client registration", "server", h.serverURL, "err", err.Error())
+			StateNotSaved.Log(WithServerLog(ctx, h.label), "server", h.label, "what", "the client registration", "err", err)
 		}
 	}
 
@@ -333,6 +343,7 @@ func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, re
 	if err := saveTokenCache(h.cachePath, h.cache); err != nil {
 		return fmt.Errorf("persist token: %w", err)
 	}
+	SignedIn.Log(WithServerLog(ctx, h.label), "server", h.label)
 	return nil
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -37,15 +36,16 @@ var signInMu sync.Mutex
 // connector's whole lifetime, so a hub that had added one connector could not
 // add a second without a restart ("bind callback 127.0.0.1:8765: address
 // already in use"). A server that never answers 401 never triggers a sign-in
-// and never touches the port at all.
-func newLazyCodeFetcher(addr string, open func(string) error) auth.AuthorizationCodeFetcher {
+// and never touches the port at all. label is the connector a URL that no
+// browser opened is logged for.
+func newLazyCodeFetcher(addr string, open func(string) error, label string) auth.AuthorizationCodeFetcher {
 	return func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 		signInMu.Lock()
 		defer signInMu.Unlock()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		fetch, stop, err := newCodeFetcher(addr, open)
+		fetch, stop, err := newCodeFetcher(addr, open, label)
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +59,7 @@ func newLazyCodeFetcher(addr string, open func(string) error) auth.Authorization
 // the FRESHEST authorization code matching the request's state (see awaitCode).
 // The returned stop() shuts the server down. This is the only hand-rolled OAuth
 // piece — the SDK handles DCR/PKCE/exchange/refresh.
-func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCodeFetcher, func(), error) {
+func newCodeFetcher(addr string, open func(string) error, label string) (auth.AuthorizationCodeFetcher, func(), error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcpremote: bind callback %s: %w (is the port free?)", addr, err)
@@ -92,9 +92,9 @@ func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCod
 		want := stateFromURL(args.URL)
 		// The opener shows the operator the URL where they will see it (the
 		// TUI feed, the terminal) and opens the browser. Without one, or when
-		// it fails, the URL goes to the log instead.
+		// it fails, the URL goes to the connector's log instead.
 		if open == nil || open(args.URL) != nil {
-			slog.Default().Warn("mcpremote: open this URL in a browser to sign in", "source", "mcp", "url", args.URL)
+			SignInURL.Log(WithServerLog(ctx, label), "server", label, "url", args.URL)
 		}
 		res, err := awaitCode(ctx, results, want, codeDebounce)
 		if err != nil {

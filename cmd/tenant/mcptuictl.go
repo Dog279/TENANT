@@ -5,20 +5,22 @@ package main
 // in the TUI and persists the server list to launchConfig (survives restart).
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
-	"tenant/internal/logs"
 	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/tui"
 )
 
-// mcpAudit is the log-book line for every connector change, whichever surface
-// (TUI, dashboard, the agent's mcp_* tools, /configure atlassian) drove it —
-// so "when did that server get trusted?" is answerable from <data>/logs/mcp/.
-var mcpAudit = logs.For("mcp")
+// connectorLog is where a connector's changes are filed, whichever surface
+// (TUI, dashboard, the agent's mcp_* tools, /configure atlassian) drove them:
+// its own log, mcp.<name>, so "when did that server get trusted?" is
+// answerable from <data>/logs/mcp.<name>/.
+func connectorLog(label string) context.Context {
+	return mcpremote.WithServerLog(context.Background(), label)
+}
 
 // mcpAuthNotifier builds the mux's auth-change callback: a feed line every
 // time, plus a direct operator DM (best-effort, a failed one is logged) — the
@@ -30,7 +32,7 @@ func mcpAuthNotifier(feed func(string), dm func(string) error) func(label, url s
 			return
 		}
 		if derr := dm(msg); derr != nil {
-			mcpAudit.Warn("mcp: operator DM about a connector's sign-in failed", "label", label, "err", derr)
+			mcpremote.NotifyFailed.Log(connectorLog(label), "server", label, "err", derr)
 		}
 	}
 	return func(label, url string, needsReauth bool, err string) {
@@ -86,18 +88,18 @@ func (a mcpTUIControl) List() []tui.MCPServerInfo {
 // Add connects + activates the server (browser OAuth if the server asks for
 // one — a local no-auth server connects instantly) and persists it. A new
 // connector starts in trust mode "ask". A failed save is returned: the
-// connector is live, but would not come back after a restart.
+// connector is live, but would not come back after a restart. A failed
+// connection is in the connector's log already (its Connection fails).
 func (a mcpTUIControl) Add(url string) (tui.MCPServerInfo, error) {
 	label, n, err := a.mux.AddRemoteMCP(url)
 	if err != nil {
-		mcpAudit.Warn("mcp: connector add failed", "url", url, "err", err.Error())
 		return tui.MCPServerInfo{}, err
 	}
 	if err := a.persist(url, true); err != nil {
 		return tui.MCPServerInfo{}, errNotSaved("mcp: adding "+label, err)
 	}
 	trust := a.mux.MCPTrust(label)
-	mcpAudit.Info("mcp: connector added", "label", label, "url", url, "tools", n, "trust", trust)
+	mcpremote.ConnectorAdded.Log(connectorLog(label), "server", label, "url", url, "tools", n, "trust", trust)
 	return tui.MCPServerInfo{Label: label, URL: url, Enabled: true, ToolCount: n, Trust: trust}, nil
 }
 
@@ -119,11 +121,11 @@ func (a mcpTUIControl) SetTrust(target, mode string) (tui.MCPServerInfo, error) 
 	if err := a.persistTrust(url, m); err != nil {
 		return tui.MCPServerInfo{}, errNotSaved("mcp: trust "+m+" for "+label, err)
 	}
-	lvl := slog.LevelInfo
 	if m == mcpremote.TrustAllow {
-		lvl = slog.LevelWarn // a trust grant is the line an auditor looks for
+		mcpremote.TrustAllowed.Log(connectorLog(label), "server", label, "url", url) // a grant is a warning
+	} else {
+		mcpremote.TrustChanged.Log(connectorLog(label), "server", label, "url", url, "trust", m)
 	}
-	mcpAudit.Log(nil, lvl, "mcp: connector trust set", "label", label, "url", url, "trust", m)
 	for _, s := range a.List() {
 		if s.Label == label {
 			return s, nil
@@ -161,7 +163,7 @@ func (a mcpTUIControl) Remove(target string) (bool, error) {
 	if err := errors.Join(a.persist(url, false), a.persistTrust(url, "")); err != nil {
 		return true, errNotSaved("mcp: removing "+label, err)
 	}
-	mcpAudit.Info("mcp: connector removed", "label", label, "url", url)
+	mcpremote.ConnectorRemoved.Log(connectorLog(label), "server", label, "url", url)
 	return true, nil
 }
 

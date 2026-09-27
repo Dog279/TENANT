@@ -1327,6 +1327,369 @@ Writes the `improve` log.
 
 **What to do.** Fix the profile's entry in config.json, or clear improve.profile.
 
+## mcp
+
+Writes the `mcp` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#mcp-1) | info | Connection | `Connection to {server}` |
+| [2](#mcp-2) | info | Server | `Local server {server} under the {backend} sandbox` |
+| [1001](#mcp-1001) | info | Connection | `Connected to {server}: {tools} tools` |
+| [1002](#mcp-1002) | info | Connection | `{server} changed its tool list; Tenant keeps the list it read at connect` |
+| [1003](#mcp-1003) | info | Connection | `{server} has no saved sign-in; it stays off until /enable signs in` |
+| [1101](#mcp-1101) | info | Sign-in | `Signed in to {server}` |
+| [1102](#mcp-1102) | info | Sign-in | `Token for {server} refreshed` |
+| [1103](#mcp-1103) | info | Sign-in | `{server} is authorized again` |
+| [2001](#mcp-2001) | warning | Sign-in | `Open this URL in a browser to sign in to {server}: {url}` |
+| [2101](#mcp-2101) | warning | Sign-in | `Token refresh for {server} failed; the current token is still valid: {err}` |
+| [2102](#mcp-2102) | warning | Sign-in | `Could not save {what} for {server}: {err}` |
+| [2103](#mcp-2103) | warning | Sign-in | `The operator was not told about {server}'s sign-in: {err}` |
+| [2201](#mcp-2201) | warning | Server | `Local server {server} did not exit when asked, and was killed after {grace}` |
+| [2202](#mcp-2202) | warning | Server | `Local server {server} skipped: {err}` |
+| [2301](#mcp-2301) | warning | Connector | `Connector {server} stays at trust ask; setting {trust} failed: {err}` |
+| [3001](#mcp-3001) | error | Tool call | `Tool {tool} on {server} failed: {err}` |
+| [3101](#mcp-3101) | error | Sign-in | `{server} needs re-authorization: its token could not be refreshed: {err}` |
+| [3102](#mcp-3102) | error | Sign-in | `The refreshed token for {server} was not saved: {err}` |
+| [5001](#mcp-5001) | info | Connector | `Connector {server} added: {url}` |
+| [5002](#mcp-5002) | info | Connector | `Connector {server} removed` |
+| [5003](#mcp-5003) | info | Connector | `Connector {server} trust set to {trust}` |
+| [5004](#mcp-5004) | warning | Connector | `Connector {server} trusted: its tools run without per-call approval` |
+
+### mcp 1
+
+`Connection to {server}`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`, `url`, `interactive`
+- **Find it:** `provider:mcp id:1`
+
+**What it means.** A session with an MCP server: start when Tenant connects, stop when it closes the session (a shutdown, a dropped duplicate), with its duration; fail when it could not connect. A remote connector reconnecting at launch from its saved sign-in has interactive=false.
+
+**Why it happens.** A connector was enabled or added, reconnected at launch, or a local server started.
+
+**What to do.** On a fail, read the error: the server is down or unreachable, refused the sign-in, or did not answer the MCP handshake. Its tools stay a stub until `/enable <label>` connects again.
+
+### mcp 2
+
+`Local server {server} under the {backend} sandbox`
+
+- **Level:** info · **Channel:** operational · **Task:** Server · **Log:** mcp
+- **Fields:** `server`, `backend`, `limits`, `command`
+- **Find it:** `provider:mcp id:2`
+
+**What it means.** A local MCP server's process: start when Tenant starts it, with its sandbox backend and limits; stop when it exits after Tenant closed it, or at shutdown; fail when it could not start, or exited on its own.
+
+**Why it happens.** The server is configured in mcp_servers, and Tenant started or /enable started it.
+
+**What to do.** On a fail, read the error and the server's stderr lines before it: a missing command, a sandbox that refused what it needs, or a crash. Fix it in config.json (mcp_servers); /enable retries a server that never started, and a restart of Tenant one that exited.
+
+### mcp 1001
+
+`Connected to {server}: {tools} tools`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`, `tools`, `names`
+- **Find it:** `provider:mcp id:1001`
+
+**What it means.** A session is up and the server's tools are listed (names). They come live gated by the connector's trust.
+
+**Why it happens.** A connection succeeded.
+
+**What to do.** None. A tool missing from names is missing on the server's side.
+
+### mcp 1002
+
+`{server} changed its tool list; Tenant keeps the list it read at connect`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`
+- **Find it:** `provider:mcp id:1002`
+
+**What it means.** The server announced that its tools changed. Tenant lists a server's tools once, when it connects, so the agent still sees the old list.
+
+**Why it happens.** The server was updated, or it enables tools at run time.
+
+**What to do.** Restart Tenant, or remove and add the connector again, to pick up the new tools.
+
+### mcp 1003
+
+`{server} has no saved sign-in; it stays off until /enable signs in`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Find it:** `provider:mcp id:1003`
+
+**What it means.** A connector could not reconnect at launch because it needs a browser sign-in, which launch never opens.
+
+**Why it happens.** It was never signed in from this config directory, or its saved sign-in was removed.
+
+**What to do.** `/enable <label>`, or the dashboard's Remote services page, signs in.
+
+### mcp 1101
+
+`Signed in to {server}`
+
+- **Level:** info · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`
+- **Find it:** `provider:mcp id:1101`
+
+**What it means.** A browser sign-in to a remote connector finished, and its token is saved, so it reconnects after a restart without a browser.
+
+**Why it happens.** The server asked for a sign-in when it was added or enabled.
+
+**What to do.** None.
+
+### mcp 1102
+
+`Token for {server} refreshed`
+
+- **Level:** info · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `expires`
+- **Find it:** `provider:mcp id:1102`
+
+**What it means.** A remote connector's access token was renewed from its refresh token, ahead of its expiry, and saved.
+
+**Why it happens.** The token was within 5 minutes of expiring when a request needed it.
+
+**What to do.** None.
+
+### mcp 1103
+
+`{server} is authorized again`
+
+- **Level:** info · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`
+- **Find it:** `provider:mcp id:1103`
+
+**What it means.** A connector that had lost its sign-in has a working token again, and its tools run.
+
+**Why it happens.** The operator reconnected it (`tenant mcp connect`, the dashboard), or its token refreshed after all.
+
+**What to do.** None.
+
+### mcp 2001
+
+`Open this URL in a browser to sign in to {server}: {url}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Find it:** `provider:mcp id:2001`
+
+**What it means.** A remote connector needs a browser sign-in, and no browser could be opened for it.
+
+**Why it happens.** Tenant runs headless (a server, SSH), or opening the browser failed.
+
+**What to do.** Open the URL in a browser on this machine: the sign-in returns to a callback on localhost. Elsewhere, run `tenant mcp connect <url>` at the host.
+
+### mcp 2101
+
+`Token refresh for {server} failed; the current token is still valid: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2101`
+
+**What it means.** An early token refresh failed, so the connector keeps using its current token, and tries again on its next request.
+
+**Why it happens.** The authorization server was unreachable or refused the refresh.
+
+**What to do.** None if a later refresh succeeds (mcp 1102). If the token expires first, the connector needs re-authorization (mcp 3101).
+
+### mcp 2102
+
+`Could not save {what} for {server}: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `what`, `err`
+- **Find it:** `provider:mcp id:2102`
+
+**What it means.** Part of a connector's saved sign-in could not be written: its client registration, or whether it needs re-authorization. It applies now, but not after a restart.
+
+**Why it happens.** The config directory's mcp folder can't be written: permissions, a full disk, or the secret store is locked.
+
+**What to do.** Fix what the error names. A registration that was not saved is only redone at the next sign-in.
+
+### mcp 2103
+
+`The operator was not told about {server}'s sign-in: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2103`
+
+**What it means.** A connector's sign-in died or came back, and the direct message to the operator could not be sent. The status feed, the status pages and tenant doctor still show it.
+
+**Why it happens.** The Discord relay is down, or has no operator to message.
+
+**What to do.** Check the relay in the discord log.
+
+### mcp 2201
+
+`Local server {server} did not exit when asked, and was killed after {grace}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** mcp
+- **Fields:** `server`, `pid`, `grace`
+- **Find it:** `provider:mcp id:2201`
+
+**What it means.** Tenant closed a local server's stdin to stop it, and it was still running after the grace period, so it was killed.
+
+**Why it happens.** The server ignores its stdin closing, or was busy with a call.
+
+**What to do.** Nothing is lost for Tenant. If it happens every time, report it to the server's authors: MCP servers should exit when their input closes.
+
+### mcp 2202
+
+`Local server {server} skipped: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2202`
+
+**What it means.** A local server in mcp_servers was not registered, so it has no tools.
+
+**Why it happens.** Its entry is invalid (a bad name, no command, an unknown sandbox or network, a relative path), or its name is taken by another connector or plugin.
+
+**What to do.** Fix the entry in config.json (mcp_servers) as the error says, then restart Tenant.
+
+### mcp 2301
+
+`Connector {server} stays at trust ask; setting {trust} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `trust`, `err`
+- **Find it:** `provider:mcp id:2301`
+
+**What it means.** The agent added a connector and the operator approved trusting it, but the trust change failed, so its tools still ask for each gated call.
+
+**Why it happens.** The trust could not be saved to config.json, or the connector went away in between.
+
+**What to do.** Set it again with /mcp trust <label> allow, or on the dashboard's Remote services page, once the error is fixed.
+
+### mcp 3001
+
+`Tool {tool} on {server} failed: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Tool call · **Log:** mcp
+- **Fields:** `server`, `tool`, `err`
+- **Find it:** `provider:mcp id:3001`
+
+**What it means.** A call to one of the server's tools did not complete: the model got the error. A tool that ran and reported an error is not this event; it is the tool's result.
+
+**Why it happens.** The server is down or unreachable, it dropped the session, or a local server exited.
+
+**What to do.** Check the server (its log here, or its status page). A local server that exited starts again when Tenant restarts.
+
+### mcp 3101
+
+`{server} needs re-authorization: its token could not be refreshed: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `url`, `err`, `fix`
+- **Find it:** `provider:mcp id:3101`
+
+**What it means.** A remote connector's sign-in died: its token expired and the refresh failed, so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.
+
+**Why it happens.** The server revoked the refresh token, it expired unused, or a rotated one was lost.
+
+**What to do.** Run the command in fix (`tenant mcp connect <url>`) at the host, or use the dashboard's Remote services page.
+
+### mcp 3102
+
+`The refreshed token for {server} was not saved: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:3102`
+
+**What it means.** A connector's token was refreshed, but the new one was not written. The server may have retired the old refresh token, so after a restart the connector can need a new sign-in.
+
+**Why it happens.** The config directory's mcp folder can't be written: permissions, a full disk, or the secret store is locked.
+
+**What to do.** Fix what the error names; the next refresh saves again. If the connector needs re-authorization after a restart, sign in again.
+
+### mcp 5001
+
+`Connector {server} added: {url}`
+
+- **Level:** info · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`, `tools`, `trust`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5001`
+
+**What it means.** A remote connector was added and saved, so it reconnects after a restart.
+
+**Why it happens.** /mcp add, the dashboard's Remote services page, or the agent's mcp_add, which the operator approved.
+
+**What to do.** None.
+
+### mcp 5002
+
+`Connector {server} removed`
+
+- **Level:** info · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5002`
+
+**What it means.** A remote connector was removed: its tools are gone and it no longer reconnects.
+
+**Why it happens.** /mcp remove, the dashboard, or the agent's mcp_remove, which the operator approved.
+
+**What to do.** None.
+
+### mcp 5003
+
+`Connector {server} trust set to {trust}`
+
+- **Level:** info · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`, `trust`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5003`
+
+**What it means.** A connector's trust changed, live: ask prompts for each gated call, deny refuses its calls and hides its tools.
+
+**Why it happens.** /mcp trust, the dashboard, or the agent's mcp_trust, which the operator approved.
+
+**What to do.** None.
+
+### mcp 5004
+
+`Connector {server} trusted: its tools run without per-call approval`
+
+- **Level:** warning · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5004`
+
+**What it means.** A connector's trust was set to allow: from now on its tools run without asking anyone.
+
+**Why it happens.** /mcp trust <label> allow, the dashboard, or the agent's mcp_add or mcp_trust, which the operator approved.
+
+**What to do.** Make sure the server deserves it; /mcp trust <label> ask takes it back.
+
+## mcpserver
+
+Writes the `mcp` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [2001](#mcpserver-2001) | warning | Memory search | `Query embedding failed; memory_search matches keywords only: {err}` |
+
+### mcpserver 2001
+
+`Query embedding failed; memory_search matches keywords only: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Memory search · **Log:** mcp
+- **Fields:** `err`
+- **Find it:** `provider:mcpserver id:2001`
+
+**What it means.** A memory_search call from an MCP client could not embed its query, so it matched facts and episodes by keyword alone.
+
+**Why it happens.** The embedder role's model (often Ollama) is down, unreachable or not loaded.
+
+**What to do.** Check the embedder's backend (tenant doctor, the model log). Searches work again, in full, once it answers.
+
 ## memory
 
 Writes the `memory` log.
@@ -3409,6 +3772,103 @@ Writes the `route` log.
 
 **What to do.** None when intended; otherwise switch /route to another mode, which clears the force.
 
+## sandbox
+
+Writes the `sandbox` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#sandbox-1) | info | Run | `Command on {backend} for {surface}` |
+| [1001](#sandbox-1001) | info | Run | `Command exited: {status}` |
+| [2001](#sandbox-2001) | warning | Refusal | `The sandbox refused a command: {violations}` |
+| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran on the host: {violations}` |
+| [2003](#sandbox-2003) | warning | Refusal | `A command the sandbox refused was approved to run outside it: {violations}` |
+| [3001](#sandbox-3001) | error | Backend | `The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}` |
+
+### sandbox 1
+
+`Command on {backend} for {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `limits`
+- **Find it:** `provider:sandbox id:1`
+
+**What it means.** A command ran through the sandbox: start, then stop with its duration; fail when the backend could not start it. Its exit is sandbox 1001, and anything the boundary refused is a 2000s event in between. command is scrubbed and cut at 300 characters.
+
+**Why it happens.** The agent called os_exec, or a cron shell job came due.
+
+**What to do.** On a fail, read the error: the backend's launcher (sandbox-exec, bubblewrap, the WSL distro) is missing or broken. `tenant sandbox probe` checks it.
+
+### sandbox 1001
+
+`Command exited: {status}`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `pid`, `exit`, `status`, `timed_out`, `violations`, `tail`
+- **Find it:** `provider:sandbox id:1001`
+
+**What it means.** A command run through the sandbox exited. tail is the last 512 bytes of its output (stdout and stderr together, as the model got it), scrubbed; violations lists what the boundary refused or cut short. For an escalated or dry-run command it describes the host re-run.
+
+**Why it happens.** The command finished, failed, or hit its wall-clock limit (timed_out).
+
+**What to do.** None. A non-zero exit is the command's own result, which the model sees.
+
+### sandbox 2001
+
+`The sandbox refused a command: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2001`
+
+**What it means.** The boundary refused a file or network access, and the command was not run again: its failure went back to the model or the cron job.
+
+**Why it happens.** The command reached outside the profile's roots or network. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
+
+**What to do.** None if the refusal was right. If the command needs that access, widen the surface's exec_profiles entry (read_roots, write_roots, network), or approve the escalation next time.
+
+### sandbox 2002
+
+`Dry run: the sandbox would have refused a command, which ran on the host: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2002`
+
+**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again on the host, unconfined, so the refusal is only reported.
+
+**Why it happens.** The command reached outside the profile's roots or network while the surface's exec_profiles entry has enforce off.
+
+**What to do.** Widen the profile for the accesses that are legitimate, then turn enforce on. Until then the sandbox confines nothing on this surface.
+
+### sandbox 2003
+
+`A command the sandbox refused was approved to run outside it: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2003`
+
+**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again on the host, unconfined. The approval itself is in the Security log.
+
+**Why it happens.** The command needed an access outside the profile, and the operator allowed it once.
+
+**What to do.** If the same escalation keeps being approved, widen the surface's exec_profiles entry instead, so the access stays confined to what it needs.
+
+### sandbox 3001
+
+`The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Backend · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `err`
+- **Find it:** `provider:sandbox id:3001`
+
+**What it means.** A command was not run because the sandbox backend its profile names does not work here. The sandbox fails closed: it never falls back to the host.
+
+**Why it happens.** The profile names a backend this OS or build lacks (jobobject off Windows, restricted without bubblewrap or WSL), or its launcher is missing.
+
+**What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles.
+
 ## security
 
 Writes the `security` log.
@@ -4006,10 +4466,10 @@ Writes the `toolmux` log.
 
 | ID | Level | Task | Message |
 |---|---|---|---|
-| [1001](#toolmux-1001) | info | Connectors | `MCP connector {server} re-authorized` |
-| [2001](#toolmux-2001) | warning | Connectors | `Local MCP server {connector} did not start: {err}` |
-| [2002](#toolmux-2002) | warning | Connectors | `Remote MCP connector {server} did not reconnect: {err}` |
-| [2003](#toolmux-2003) | warning | Connectors | `MCP connector {server} needs re-authorization: {err}` |
+| [1001](#toolmux-1001) | info (retired) | Connectors | `MCP connector {server} re-authorized` |
+| [2001](#toolmux-2001) | warning (retired) | Connectors | `Local MCP server {connector} did not start: {err}` |
+| [2002](#toolmux-2002) | warning (retired) | Connectors | `Remote MCP connector {server} did not reconnect: {err}` |
+| [2003](#toolmux-2003) | warning (retired) | Connectors | `MCP connector {server} needs re-authorization: {err}` |
 | [2004](#toolmux-2004) | warning | Peers | `peers.json unreadable; no peer is reconnected: {err}` |
 | [2005](#toolmux-2005) | warning | Peers | `Peer {peer} did not reconnect: {err}` |
 | [2006](#toolmux-2006) | warning | Stats | `Tool stats not saved to {path}; retrying every flush: {err}` |
@@ -4017,6 +4477,8 @@ Writes the `toolmux` log.
 ### toolmux 1001
 
 `MCP connector {server} re-authorized`
+
+**Retired:** no longer written. The ID stays reserved.
 
 - **Level:** info · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `server`
@@ -4032,6 +4494,8 @@ Writes the `toolmux` log.
 
 `Local MCP server {connector} did not start: {err}`
 
+**Retired:** no longer written. The ID stays reserved.
+
 - **Level:** warning · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `connector`, `err`
 - **Find it:** `provider:toolmux id:2001`
@@ -4046,6 +4510,8 @@ Writes the `toolmux` log.
 
 `Remote MCP connector {server} did not reconnect: {err}`
 
+**Retired:** no longer written. The ID stays reserved.
+
 - **Level:** warning · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `server`, `err`
 - **Find it:** `provider:toolmux id:2002`
@@ -4059,6 +4525,8 @@ Writes the `toolmux` log.
 ### toolmux 2003
 
 `MCP connector {server} needs re-authorization: {err}`
+
+**Retired:** no longer written. The ID stays reserved.
 
 - **Level:** warning · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `server`, `url`, `err`, `fix`

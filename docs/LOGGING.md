@@ -21,8 +21,10 @@ one folder is one tab.
 ├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
 ├── skills/                       ← skills saved, accepted, enabled/disabled, trusted, removed, imported, exported
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
-├── route/ mcp/ peering/
+├── route/ peering/
 ├── dashboard/                    ← the web server's start/stop and errors, live streams, rejected requests
+├── mcp.<name>/                   ← one per MCP connector and local server: its connections, sign-in, failed calls, a server's process and stderr
+├── mcp/                          ← MCP lines that belong to no one server (`tenant mcp-memory`)
 ├── sandbox/                      ← the execution sandbox: every run's start and exit, refusals, escalations, dry-run would-be refusals
 ├── backup/                       ← each backup, verify and restore, with its counts and result
 ├── privacy/                      ← each retention sweep and deletion, with what it removed
@@ -140,7 +142,7 @@ arguments and results in `turns` too.
   `"api_key"` fields; and any field whose key ends in one of those words.
 
 ```
-2026-09-27 14:05:10.412 INFO  [sandbox] process started	surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
+2026-09-27 14:05:10.412 INFO  [sandbox] Command on restricted for discord	event=sandbox/1 task=Run opcode=start surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
 ```
 
 Lines read back from disk into the feed (the tail re-read at start, folders
@@ -161,42 +163,74 @@ again. The old files then hold a dead token.
 ## The `sandbox` source
 
 The execution sandbox (`docs/changes/sandbox-seam.md`) files every `os_exec`
-command and cron shell job it runs, on every backend, the host included, as a
-child process (see [Child processes](#child-processes)): a `process started`
-line with `command` and `limits`, and a `process exited` line with `pid`,
-`exit`, `duration`, `timed_out`, `violations` when there are any, and `tail`,
-the last 512 bytes of the output (stdout and stderr together, as the model
-sees them). Both carry `surface` and `backend`. What the boundary did gets a
-line of its own:
+command and cron shell job it runs, on every backend, the host included. It
+is catalogued ([EVENTS.md](EVENTS.md#sandbox)) and sits in the viewer's
+Sandbox group. Each run is an activity (`sandbox 1`): its start carries
+`command` and `limits` and is related to the turn or cron job that ran it
+(`related`); its stop has the `duration`, and it fails when the backend could
+not start the command (`error`). The command's environment gets the run's
+activity (`TENANT_ACTIVITY_ID`). In between:
 
-| Level | Message | When |
+| Event | Level | When |
 |---|---|---|
-| WARN | `refused by the sandbox` | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
-| WARN | `refused, then approved to re-run outside the sandbox` | an approved `os_exec_unsandboxed` re-ran it on the host |
-| WARN | `dry-run: the sandbox would have refused this; it ran on the host` | `"enforce": false`: what enforcing would have refused |
-| ERROR | `sandbox could not start the command` | the backend could not start the command (`err=`) |
+| `sandbox 1001` | INFO | the command exited: `pid`, `exit`, `status`, `timed_out`, `violations` when there are any, and `tail`, the last 512 bytes of the output (stdout and stderr together, as the model sees them) |
+| `sandbox 2001` | WARN | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
+| `sandbox 2002` | WARN | `"enforce": false` (dry run): what enforcing would have refused; the command ran on the host |
+| `sandbox 2003` | WARN | an approved `os_exec_unsandboxed` re-ran the refused command on the host |
+| `sandbox 3001` | ERROR | the surface's backend is unavailable, so nothing ran (the sandbox fails closed) |
 
-Their fields are `surface`, `backend`, `exit`, `timed_out`, `command`,
-`violations` when there are any, and `err` on a start failure. `command` holds
-the first 300 characters of the command. For an escalation or a dry-run,
-`exit` and `timed_out` describe the host re-run, and the exit line is the
-host re-run's.
+Every event carries `surface` and `backend`; a refusal also `command`,
+`exit` and `violations`, what the boundary refused as the backend attributes
+it (`filesystem: …`, `network: …`). `command` holds the first 300 characters
+of the command. For an escalation or a dry run, `exit` and the exit event
+describe the host re-run.
 
 ```
-2026-09-22 14:05:10.412 WARN  [sandbox] refused by the sandbox	surface=discord backend=restricted exit=1 timed_out=false command="cat ~/.ssh/id_ed25519" violations="filesystem: sandbox blocked access outside the policy's read/write roots"
+2026-09-22 14:05:10.412 WARN  [sandbox] The sandbox refused a command: filesystem: sandbox blocked access outside the policy's read/write roots	event=sandbox/2001 task=Refusal trace=… activity=… surface=discord backend=restricted command="cat ~/.ssh/id_ed25519" exit=1 violations="filesystem: sandbox blocked access outside the policy's read/write roots"
 ```
 
-Some things are recorded elsewhere or not at all:
-- A surface whose backend is unavailable fails closed before anything runs. That
-  error goes back to the turn or cron job, not to this folder.
 - On surfaces with an approval broker (TUI and dashboard, Discord, iMessage), the
   escalation prompt itself is an `approvals` line (`action=os_exec_unsandboxed`).
 - `command` and `tail` are scrubbed (see [Secrets](#secrets)) before they are
   cut, so a secret typed inline does not reach the log.
-- On Linux and Windows the backends do not attribute refusals yet. A denied
-  access there shows only as a non-zero `exit`.
+- On Linux and Windows the backends attribute refusals only as far as the
+  command's output shows them (a read-only file system, an unreachable
+  network). An unattributed denial shows only as a non-zero `exit`.
 - `tenant sandbox run`, the operator's trial run, prints its result and files
   nothing.
+
+## The MCP logs
+
+Each MCP connector and local server writes its own log, `mcp.<name>`, named
+after its label (`mcp:github` → `mcp.github`, `mcp:mcp.atlassian.com` →
+`mcp.mcp.atlassian.com`: lowercased, other characters as `-`, cut to fit).
+The viewer groups them under Integrations › MCP. They are catalogued
+([EVENTS.md](EVENTS.md#mcp)):
+
+- **A connection** is an activity (`mcp 1`): it fails when the server can't be
+  reached, refuses the sign-in or the MCP handshake, and stops when Tenant
+  closes the session. A connector reconnecting at launch has
+  `interactive=false`; one with no saved sign-in stops with `mcp 1003`, not a
+  failure. `mcp 1001` lists the tools it came up with; `mcp 1002` is a server
+  announcing that its tools changed. A call that could not reach the server
+  is `mcp 3001`.
+- **Sign-in:** a refresh (`mcp 1102`), an early refresh that failed while the
+  token still works (`mcp 2101`), the sign-in dying, once, with the fix
+  (`mcp 3101`), and coming back (`mcp 1103`). A URL no browser opened is
+  `mcp 2001`. The feed line and operator DM for a dead sign-in still come;
+  a DM that failed is `mcp 2103`.
+- **A local server's process** is an activity too (`mcp 2`): its start names
+  the sandbox backend and limits, and its connection, its own lines
+  (`process started` with the pid, its stderr, `process exited`) and its
+  environment (`TENANT_ACTIVITY_ID`) belong to it. It fails when the server
+  could not start or exited on its own; one killed after ignoring its stdin
+  closing is `mcp 2201`. An `mcp_servers` entry that was skipped is `mcp 2202`.
+- **Changes:** a connector added (`mcp 5001`), removed (`mcp 5002`) or given a
+  new trust (`mcp 5003`; `mcp 5004`, a warning, for `allow`). The audit
+  records of these are the Security log's.
+
+`tenant mcp-memory`, Tenant serving its own memory over MCP, writes the `mcp`
+log (`mcpserver/…`).
 
 ## Child processes
 
@@ -209,8 +243,8 @@ stopped the child (`cancelled=true`: a shutdown, a cancelled turn).
 
 | Child | Log | Tagged | Also filed |
 |---|---|---|---|
-| a local MCP server (`mcp_servers`) | `mcp` | `server=<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed |
-| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | see [The `sandbox` source](#the-sandbox-source) |
+| a local MCP server (`mcp_servers`) | `mcp.<name>` | `server=mcp:<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed. See [The MCP logs](#the-mcp-logs) |
+| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | catalogued events instead of these lines: see [The `sandbox` source](#the-sandbox-source) |
 | `claude -p` (the claudecode backend) | `model` | `child=claude` | its stderr, line by line, whether the call failed or not |
 | Chrome (the web plugin) | `browser` | `child=chrome` | its output, line by line, so its crash text survives it. chromedp keeps Chrome's exit status, so the exit line says when it ended, not with what code |
 | `tailscale` | `system` | `child=tailscale`, `args` | |
@@ -476,9 +510,9 @@ defer act.End(&err)                               // End(&err, "status", code) a
   Plugins: started or could not start, the operator's enable and disable,
   token refreshes, and their API's rate limits, refused credentials and
   failed calls. The catalog comes with the plugin's descriptor
-  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (connectors and
-  peers that did not come back at launch, unsaved tool stats) are the
-  `toolmux` log's.
+  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (peers that did
+  not come back at launch, unsaved tool stats) are the `toolmux` log's; an
+  MCP connector's are its own log's ([The MCP logs](#the-mcp-logs)).
 
 ### The store: `logbook.db`
 
@@ -718,6 +752,9 @@ drops, the test fails too, and says what to lower it to.
   its class. A missing baseline (`2002`), a regression against it (`2003`), an
   unreadable one (`2004`), a report or trend line not saved (`2005`) and a
   trend update (`1003`) are logged too.
+- `mcp` (`internal/plugins/mcpremote/events.go`) and `sandbox`
+  (`internal/sandbox/events.go`): see [The MCP logs](#the-mcp-logs) and
+  [The `sandbox` source](#the-sandbox-source).
 
 ## Records that lead back to a run
 
