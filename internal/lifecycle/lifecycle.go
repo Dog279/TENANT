@@ -56,11 +56,12 @@ type Group struct {
 	mu      sync.Mutex
 	stages  [numStages][]step
 	stopped bool
+	done    chan struct{} // closed when the first Shutdown has run every stop
 	log     *slog.Logger
 }
 
 // New returns an empty group that logs each stop to log (nil: no logging).
-func New(log *slog.Logger) *Group { return &Group{log: log} }
+func New(log *slog.Logger) *Group { return &Group{log: log, done: make(chan struct{})} }
 
 // Add registers stop to run at stage. Within a stage, stops run in reverse
 // order of Add: a component added later may depend on one added earlier. A
@@ -94,17 +95,20 @@ func (g *Group) AddFunc(stage Stage, name string, stop func()) {
 // Shutdown runs every registered stop, stage by stage, and returns their
 // errors joined. A stop that panics is reported as an error and the rest
 // still run. Only the first call does anything, so a command can both defer
-// it (for an early return) and call it at the end.
+// it (for an early return) and call it at the end; a later call waits until
+// the first has finished, so nobody proceeds while stores are still closing.
 func (g *Group) Shutdown() error {
 	g.mu.Lock()
 	if g.stopped {
 		g.mu.Unlock()
+		<-g.done
 		return nil
 	}
 	g.stopped = true
 	stages := g.stages
 	g.stages = [numStages][]step{}
 	g.mu.Unlock()
+	defer close(g.done)
 
 	var errs []error
 	for stage := Stage(0); stage < numStages; stage++ {
