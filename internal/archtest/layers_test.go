@@ -220,18 +220,21 @@ func TestMatch(t *testing.T) {
 }
 
 // The checker itself: a layering break, a package without a rule, and a
-// plugin importing another plugin are all reported.
+// plugin importing another plugin are all reported. Any internal package may
+// import the event model, and nothing else may.
 func TestViolationsReportsWhatTheRulesForbid(t *testing.T) {
 	got := violations(map[string][]string{
-		"internal/model":       {"internal/agent"},
+		"internal/model":       {"internal/agent", "internal/logs/event"},
 		"internal/newthing":    nil,
-		"internal/plugins/web": {"internal/plugins/wiki", "internal/model"},
+		"internal/plugins/web": {"internal/plugins/wiki", "internal/model", "internal/logs/event"},
 		"internal/agent":       {"internal/memory/semantic", "internal/model/toolfmt"},
+		"reference/logging":    {"internal/logs/event"},
 	}, rules)
 	want := []string{
 		"internal/model imports internal/agent, which its rule (internal/model) does not allow",
 		"internal/newthing: no dependency rule covers it; add one to rules in internal/archtest/rules.go",
 		"internal/plugins/web imports internal/plugins/wiki, which its rule (internal/plugins/*) does not allow",
+		"reference/logging imports internal/logs/event, which its rule (reference/**) does not allow",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("violations =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

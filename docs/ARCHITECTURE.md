@@ -118,13 +118,15 @@ Every module package has a dependency rule: the module packages it may import.
 `internal/archtest` checks the source tree against these rules on every
 `go test ./...` (TEN-314). A package that no rule covers fails, and so does an
 import its rule doesn't allow, or Bubble Tea anywhere but `internal/tui` and
-`cmd/tenant`. The first row that matches a package governs it. The table is
+`cmd/tenant`. The first row adds one import to every internal package; below
+it, the first row that matches a package governs it. The table is
 generated from `internal/archtest/rules.go`, and
 `go test ./internal/archtest -update` rewrites it.
 
 <!-- archtest:rules -->
 | Package | May import | Note |
 |---|---|---|
+| every `internal/**` package | `internal/logs/event` | on top of its own row: the event model, so an event is written where the action happens |
 | `cmd/**` | anything | the composition root and command adapters |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
@@ -145,7 +147,9 @@ generated from `internal/archtest/rules.go`, and
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
-| `internal/logs` | `internal/fsperm` | any package may log through it |
+| `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
+| `internal/logs` | `internal/logs/event`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
+| `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
@@ -171,6 +175,8 @@ generated from `internal/archtest/rules.go`, and
 In short:
 - The leaves (file permissions, secrets, locks, limits, version, run traces)
   import nothing.
+- Any internal package may import `internal/logs/event`, the event model, so
+  an event is written where the action happens.
 - `model` knows no memory, agent or plugin.
 - The memory tiers compose only through `assemble`, `distill` and `compress`.
 - Plugins never import each other.
@@ -545,8 +551,9 @@ persisted at end of turn (one row/pair, query embedding). **17 tests**
 
 **Purpose:** the single sink every subsystem logs through. One source = one
 folder of plain-text daily files (`<data>/logs/<source>/YYYY-MM-DD.log`) = one
-dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
-`logs.For("name")` without plumbing. Full guide: `docs/LOGGING.md`.
+dashboard tab. It imports only leaves (`fsperm`, `runtrace`, `version` and its
+own `event`), so any package can `logs.For("name")` without plumbing. Full
+guide: `docs/LOGGING.md`.
 
 **Public API:**
 - `logs.Open(root, Options) (*Hub, error)` / `logs.NewMemory(cap)`; `Hub.Start(ctx)`
@@ -571,6 +578,12 @@ dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
 - `agent.EntryFor(Event) (logs.Entry, bool)` (in `internal/agent`) renders a turn
   event into an entry (denylists token/usage/assistant/memory noise); `Event.Source`
   lets an observer name the folder (`cron`, `discord`, `eval`, …).
+- Logging v2 (TEN-359): `internal/logs/event` is the event model (levels
+  critical to verbose, typed fields, correlation, providers and catalogued
+  definitions, activities) and `internal/logs/catalog` the built-in
+  definitions. `logs.Install` makes the hub their emitter until the store
+  lands; `logs.EntryFromEvent` / `logs.EventFromEntry` map v2 events and v1
+  entries onto each other.
 
 **Invariants:** never blocks a producer on a reader; a file that cannot be
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches
