@@ -250,7 +250,8 @@ func Detail(ctx context.Context, st *store.Store, e event.Event) (EventDetail, e
 	if e.ID == 0 {
 		return d, nil
 	}
-	if s, ok := catalog.Lookup(e.Provider, e.ID); ok {
+	if def, ok := event.Lookup(e.Provider, e.ID); ok {
+		s := def.Spec()
 		v := specView(s)
 		d.Spec, d.Help = &v, catalog.Help(s)
 	}
@@ -286,8 +287,6 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	wake, cancel := st.Subscribe() // before the first read, so no commit falls between
-	defer cancel()
 	if last == "" {
 		head, err := st.Latest(ctx)
 		if err != nil {
@@ -298,12 +297,41 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	sensitive := flag(v, "sensitive")
 	if sensitive {
-		a.record(ctx, h, catalog.FieldRevealed, filterLog(f), "a live tail's sensitive fields, filter "+strconv.Quote(v.Get("q")))
+		a.Record(ctx, h, catalog.FieldRevealed, FilterLog(f), "a live tail's sensitive fields, filter "+strconv.Quote(v.Get("q")))
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	Tail(ctx, w, st, f, from, func(evs []event.Event, next store.Cursor, restarted bool) error {
+		if restarted {
+			if _, err := fmt.Fprintf(w, "event: restart\ndata: {\"store\":%q}\n\n", hex.EncodeToString(next.StoreID[:])); err != nil {
+				return err
+			}
+		}
+		if !sensitive {
+			Mask(evs)
+		}
+		for _, e := range evs {
+			b, _ := json.Marshal(e)
+			if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", store.Cursor{StoreID: next.StoreID, Seq: e.Seq}, b); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Tail is the live tail's loop, which GET /api/events/stream and the
+// dashboard's Logs page share: the events matching f after from, handed to
+// emit a page at a time with the cursor after them (restarted: from was
+// another store's, so they start over), then each new page as it is
+// committed, with a keepalive comment on w every 15 s. It returns when ctx
+// is done or a read or a write fails; the client reconnects from its last
+// id.
+func Tail(ctx context.Context, w http.ResponseWriter, st *store.Store, f query.Filter, from store.Cursor, emit func(evs []event.Event, next store.Cursor, restarted bool) error) {
+	wake, cancel := st.Subscribe() // before the first read, so no commit falls between
+	defer cancel()
 	flush := func() {
 		if fl, ok := w.(http.Flusher); ok {
 			fl.Flush()
@@ -315,25 +343,11 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	for {
 		head, err := st.Latest(ctx)
 		if err != nil {
-			return // the client reconnects from its last id
-		}
-		evs, next, restarted, err := st.Query(ctx, f, from, streamPage, false)
-		if err != nil {
 			return
 		}
-		if restarted {
-			if _, err := fmt.Fprintf(w, "event: restart\ndata: {\"store\":%q}\n\n", hex.EncodeToString(next.StoreID[:])); err != nil {
-				return
-			}
-		}
-		if !sensitive {
-			mask(evs)
-		}
-		for _, e := range evs {
-			b, _ := json.Marshal(e)
-			if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", store.Cursor{StoreID: next.StoreID, Seq: e.Seq}, b); err != nil {
-				return
-			}
+		evs, next, restarted, err := st.Query(ctx, f, from, streamPage, false)
+		if err != nil || emit(evs, next, restarted) != nil {
+			return
 		}
 		from = next
 		if len(evs) == streamPage {
@@ -402,11 +416,7 @@ func (a *API) top(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	out := Top{Top: []IDCount{}}
-	for _, c := range ids {
-		out.Top = append(out.Top, IDCount{Provider: c.Provider, ID: c.ID, N: c.N})
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, Top{Top: append([]IDCount{}, ids...)})
 }
 
 func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
@@ -484,7 +494,7 @@ func (a *API) export(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if !sensitive {
-			mask(evs)
+			Mask(evs)
 		}
 		for _, e := range evs {
 			if e.Seq > head.Seq {
@@ -510,7 +520,7 @@ func (a *API) export(w http.ResponseWriter, r *http.Request) {
 	if sensitive {
 		details += ", with sensitive values"
 	}
-	a.record(ctx, h, catalog.LogExported, filterLog(f), details)
+	a.Record(ctx, h, catalog.LogExported, FilterLog(f), details)
 }
 
 // ingest is POST /api/events: an event from outside the binary, as JSON, or
@@ -646,7 +656,7 @@ func (a *API) logs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ls, err := logViews(r.Context(), h, st, "")
+	ls, err := LogViews(r.Context(), h, st, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -663,7 +673,7 @@ func (a *API) log(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) writeLog(w http.ResponseWriter, r *http.Request, h *logs.Hub, st *store.Store, name string) {
-	ls, err := logViews(r.Context(), h, st, name)
+	ls, err := LogViews(r.Context(), h, st, name)
 	switch {
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -674,8 +684,8 @@ func (a *API) writeLog(w http.ResponseWriter, r *http.Request, h *logs.Hub, st *
 	}
 }
 
-// logViews lists the store's logs, or only the one named.
-func logViews(ctx context.Context, h *logs.Hub, st *store.Store, only string) ([]Log, error) {
+// LogViews lists the store's logs, or only the one named.
+func LogViews(ctx context.Context, h *logs.Hub, st *store.Store, only string) ([]Log, error) {
 	infos, err := st.Logs(ctx)
 	if err != nil {
 		return nil, err
@@ -743,13 +753,13 @@ func (a *API) Change(ctx context.Context, h *logs.Hub, st *store.Store, log stri
 	if !logs.ValidSource(name) {
 		return name, refuse(http.StatusBadRequest, "log: [a-z0-9][a-z0-9._-]{0,39}")
 	}
-	kv := []any{"log", name}
+	var details []string
 	switch {
 	case c.Reset:
 		if err := st.SetPolicy(ctx, name, store.Policy{}); err != nil {
 			return name, refuse(http.StatusBadRequest, "%s", err)
 		}
-		kv = append(kv, "policy", "config.json's")
+		details = append(details, "policy config.json's")
 	case c.MaxBytes != nil || c.MaxAgeS != nil || c.OnFull != nil || c.MinLevel != nil || c.Enabled != nil:
 		p, err := st.Policy(ctx, h.Budget(), name)
 		if err != nil {
@@ -780,7 +790,7 @@ func (a *API) Change(ctx context.Context, h *logs.Hub, st *store.Store, log stri
 			return name, refuse(http.StatusBadRequest, "%s", err)
 		}
 		v := policyView(p)
-		kv = append(kv, "max_bytes", v.MaxBytes, "max_age_s", v.MaxAgeS, "on_full", v.OnFull, "min_level", v.MinLevel, "enabled", v.Enabled)
+		details = append(details, fmt.Sprintf("max_bytes %d, max_age_s %d, on_full %s, min_level %s, enabled %t", v.MaxBytes, v.MaxAgeS, v.OnFull, v.MinLevel, v.Enabled))
 	}
 	if c.DebugFor != nil {
 		d, err := Duration(*c.DebugFor)
@@ -794,15 +804,11 @@ func (a *API) Change(ctx context.Context, h *logs.Hub, st *store.Store, log stri
 		if err := st.SetDebug(ctx, name, until); err != nil {
 			return name, err
 		}
-		kv = append(kv, "debug_for", d.String())
+		details = append(details, "debug_for "+d.String())
 	}
-	if len(kv) > 2 {
+	if len(details) > 0 {
 		h.Reload(ctx)
-		var details []string
-		for i := 2; i+1 < len(kv); i += 2 {
-			details = append(details, fmt.Sprint(kv[i], " ", kv[i+1]))
-		}
-		a.record(ctx, h, catalog.LogReconfigured, name, strings.Join(details, ", "))
+		a.Record(ctx, h, catalog.LogReconfigured, name, strings.Join(details, ", "))
 	}
 	return name, nil
 }
@@ -842,7 +848,7 @@ func (a *API) Clear(ctx context.Context, h *logs.Hub, st *store.Store, log strin
 	if err != nil {
 		return 0, err
 	}
-	a.record(ctx, h, catalog.LogCleared, log, fmt.Sprintf("%d events", n))
+	a.Record(ctx, h, catalog.LogCleared, log, fmt.Sprintf("%d events", n))
 	return n, nil
 }
 
@@ -906,12 +912,7 @@ func (a *API) view(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) builtin(name string) bool {
-	for _, v := range a.builtins() {
-		if strings.EqualFold(v.Name, name) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(a.builtins(), func(v View) bool { return strings.EqualFold(v.Name, name) })
 }
 
 func (a *API) saveView(w http.ResponseWriter, r *http.Request) {
@@ -1113,9 +1114,9 @@ func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 	}
 	// The chain's result is recorded by Security.Verify; this is the database's.
 	if len(problems) == 0 {
-		a.record(r.Context(), h, catalog.LogVerified, "*", "logbook.db passed SQLite's quick check")
+		a.Record(r.Context(), h, catalog.LogVerified, "*", "logbook.db passed SQLite's quick check")
 	} else {
-		a.record(r.Context(), h, catalog.LogVerifyFailed, "*", "logbook.db: "+strings.Join(problems, "; "))
+		a.Record(r.Context(), h, catalog.LogVerifyFailed, "*", "logbook.db: "+strings.Join(problems, "; "))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1161,10 +1162,10 @@ func (a *API) auditBundle(w http.ResponseWriter, r *http.Request) {
 // them with sensitive=1: then it files the reveal's Security record.
 func (a *API) reveal(r *http.Request, h *logs.Hub, f query.Filter, evs []event.Event) {
 	if !flag(r.URL.Query(), "sensitive") {
-		mask(evs)
+		Mask(evs)
 		return
 	}
-	n, log := 0, filterLog(f)
+	n, log := 0, FilterLog(f)
 	for _, e := range evs {
 		for _, fd := range e.Data {
 			if fd.Sensitive {
@@ -1180,14 +1181,15 @@ func (a *API) reveal(r *http.Request, h *logs.Hub, f query.Filter, evs []event.E
 		if q := r.URL.Query().Get("q"); q != "" {
 			details += " " + strconv.Quote(q)
 		}
-		a.record(r.Context(), h, catalog.FieldRevealed, log, details)
+		a.Record(r.Context(), h, catalog.FieldRevealed, log, details)
 	}
 }
 
-// record files the Security record of an action taken through the API on the
-// log book (as catalog.AuditLogAdmin does, through this hub). The action
-// stands if the record fails; the failure is logged.
-func (a *API) record(ctx context.Context, h *logs.Hub, d *event.Def, log, details string) {
+// Record files the Security record of an action taken through the API, or
+// the dashboard's Logs page, on the log book (as catalog.AuditLogAdmin does,
+// through this hub). The action stands if the record fails; the failure is
+// logged.
+func (a *API) Record(ctx context.Context, h *logs.Hub, d *event.Def, log, details string) {
 	surface := a.Surface
 	if surface == "" {
 		surface = "dashboard"
@@ -1198,8 +1200,8 @@ func (a *API) record(ctx context.Context, h *logs.Hub, d *event.Def, log, detail
 	}
 }
 
-// filterLog is the one log a filter names, or * for any other filter.
-func filterLog(f query.Filter) string {
+// FilterLog is the one log a filter names, or * for any other filter.
+func FilterLog(f query.Filter) string {
 	var log string
 	for _, t := range f.Terms {
 		if t.Field == "log" {
@@ -1215,7 +1217,8 @@ func filterLog(f query.Filter) string {
 	return log
 }
 
-func mask(evs []event.Event) {
+// Mask replaces the value of every sensitive field of evs with event.Masked.
+func Mask(evs []event.Event) {
 	for i := range evs {
 		for j := range evs[i].Data {
 			if f := &evs[i].Data[j]; f.Sensitive {
@@ -1297,26 +1300,6 @@ func (c *counter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n += int64(n)
 	return n, err
-}
-
-// What the dashboard's Logs page shares with the handlers, beside Detail,
-// Run, Change, Clear, Views, SaveView, DeleteView and ListComponents.
-
-// Record files the Security record of an action on the log book taken from
-// the Logs page (a reveal), as the API files its own.
-func (a *API) Record(ctx context.Context, h *logs.Hub, d *event.Def, log, details string) {
-	a.record(ctx, h, d, log, details)
-}
-
-// Mask replaces the value of every sensitive field of evs with event.Masked.
-func Mask(evs []event.Event) { mask(evs) }
-
-// FilterLog is the one log a filter names, or * for any other filter.
-func FilterLog(f query.Filter) string { return filterLog(f) }
-
-// LogViews lists the store's logs, or only the one named.
-func LogViews(ctx context.Context, h *logs.Hub, st *store.Store, only string) ([]Log, error) {
-	return logViews(ctx, h, st, only)
 }
 
 // Error is a request the API refuses, with the status it answers: what the

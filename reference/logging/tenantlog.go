@@ -147,9 +147,6 @@ func NewWithConfig(cfg Config) (*Logger, error) {
 // Source is the normalized source name.
 func (l *Logger) Source() string { return l.source }
 
-// LogName is the log the lines are filed in: ext.<source>.
-func (l *Logger) LogName() string { return l.log }
-
 // LogName is the log the hub files a source's lines in: the source under
 // ext. ("deploy" is ext.deploy), cut to a log name's 40 characters.
 func LogName(source string) string {

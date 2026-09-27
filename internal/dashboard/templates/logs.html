@@ -90,7 +90,7 @@
 <div class="lg-dhead"><span class="lg-lv lv-{{.Row.Level}}">{{.Row.Lv}}</span><span class="nm">{{.Row.Provider}}{{if .Row.ID}} {{.Row.ID}}{{end}}</span><span class="dim">{{.Local}}</span><span class="sp"></span><a class="linkbtn" href="{{.Permalink}}">permalink</a><button type="button" class="btn sm" data-on:click="navigator.clipboard.writeText(location.origin + '{{.Permalink}}')">copy link</button></div>
 <nav class="memtabs lg-dtabs">{{range .Tabs}}<a href="{{.Href}}" class="{{if .On}}on{{end}}" data-on:click__prevent="@get('{{.Get}}')">{{.Label}}</a>{{end}}</nav>
 {{if eq .Tab "general"}}
-<div class="lg-msgfull">{{.Msg}}</div>
+<div class="lg-msgfull">{{.Row.Msg}}</div>
 <table class="ovtable lg-facts">
   <tr><th>Time</th><td>{{.Local}} <span class="dim">local</span> · {{.UTC}} <span class="dim">UTC</span></td></tr>
   {{range .Facts}}<tr><th>{{.Label}}</th><td>{{if .Href}}<a class="linkbtn" href="{{.Href}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}</td></tr>{{end}}

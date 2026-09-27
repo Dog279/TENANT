@@ -130,7 +130,7 @@ func (a *API) changeAlerts(w http.ResponseWriter, r *http.Request, available boo
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.record(r.Context(), h, catalog.LogReconfigured, "alerts", details)
+	a.Record(r.Context(), h, catalog.LogReconfigured, "alerts", details)
 	a.answerAlerts(w, r)
 }
 

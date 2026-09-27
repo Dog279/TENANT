@@ -29,16 +29,6 @@ func Specs(provider string) []event.Spec {
 	return out
 }
 
-// Lookup finds the definition of event id of provider.
-func Lookup(provider string, id uint32) (event.Spec, bool) {
-	for _, s := range Specs(provider) {
-		if s.ID == id {
-			return s, true
-		}
-	}
-	return event.Spec{}, false
-}
-
 // Check holds specs to the catalog's conventions (docs/design/logging-v2.md,
 // Appendix B). Every definition is documented. A live one's ID sits in a
 // block, the 2000s are warnings, the 3000s errors, and the 9000s, and only

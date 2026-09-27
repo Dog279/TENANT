@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -37,7 +36,6 @@ import (
 const (
 	logsPageSize    = 100 // rows per page of the grid: the first, and each scroll
 	logsTimelineMax = 500 // rows of the Correlated tab; the rest are a filter away
-	logsTailBatch   = 500
 )
 
 // logsTmpl is parsed here rather than in parseSSR, so the page stays in its
@@ -52,7 +50,7 @@ func (s *Server) mountLogsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /logs/count", s.handleLogsCount)
 	mux.HandleFunc("GET /logs/tail", s.handleLogsTail)
 	mux.HandleFunc("GET /logs/detail/{seq}", s.handleLogsDetail)
-	mux.HandleFunc("POST /logs/detail/{seq}/reveal", s.handleLogsReveal)
+	mux.HandleFunc("POST /logs/detail/{seq}/reveal", s.handleLogsDetail)
 	mux.HandleFunc("POST /logs/views", s.handleLogsSaveView)
 	mux.HandleFunc("POST /logs/views/delete", s.handleLogsDeleteView)
 	mux.HandleFunc("POST /logs/log/{log}/properties", s.handleLogsProperties)
@@ -99,15 +97,6 @@ type logsData struct {
 type logsLink struct {
 	Label, Href, Get string
 	On               bool
-}
-
-// logsBase is what every grid request carries: the filter, and the view it
-// came from.
-func logsBase(q, view string) url.Values {
-	if view != "" {
-		return url.Values{"view": {view}}
-	}
-	return url.Values{"q": {q}}
 }
 
 func logsQS(q string) string { return url.Values{"q": {q}}.Encode() }
@@ -220,7 +209,10 @@ func (s *Server) gridView(ctx context.Context, h *logs.Hub, st *store.Store, d *
 	}
 	d.CountURL = "/logs/count?" + logsQS(d.Q)
 	d.Live = v.Get("live") == "1"
-	live := logsBase(d.Q, d.View)
+	live := url.Values{"q": {d.Q}} // the filter, or the view it came from
+	if d.View != "" {
+		live = url.Values{"view": {d.View}}
+	}
 	if d.Live {
 		if head, err := st.Latest(ctx); err == nil {
 			d.TailURL = "/logs/tail?" + url.Values{"q": {d.Q}, "cursor": {head.String()}}.Encode()
@@ -521,8 +513,6 @@ func (s *Server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, act := event.Start(r.Context(), Stream, "stream", "logbook", "remote", r.RemoteAddr)
 	defer act.End(nil)
-	wake, cancel := st.Subscribe() // before the first read, so no commit falls between
-	defer cancel()
 	head, err := st.Latest(ctx)
 	if err != nil {
 		return
@@ -532,49 +522,21 @@ func (s *Server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
 		from = head // another store's cursor would replay all of it: tail from now
 	}
 	setSSEHeaders(w)
-	flush(w)
-	tick := time.NewTicker(15 * time.Second)
-	defer tick.Stop()
-	for {
-		if head, err = st.Latest(ctx); err != nil {
-			return
+	logapi.Tail(ctx, w, st, f, from, func(evs []event.Event, next store.Cursor, _ bool) error {
+		if len(evs) == 0 {
+			return nil
 		}
-		evs, next, _, err := st.Query(ctx, f, from, logsTailBatch, false)
+		var g logsGrid
+		for i := len(evs) - 1; i >= 0; i-- { // newest on top
+			g.Rows = append(g.Rows, logsRowOf(evs[i], q, true))
+		}
+		rows, err := logsPart("lgrows", g)
 		if err != nil {
-			return
+			return err
 		}
-		if len(evs) > 0 {
-			var g logsGrid
-			for i := len(evs) - 1; i >= 0; i-- { // newest on top
-				g.Rows = append(g.Rows, logsRowOf(evs[i], q, true))
-			}
-			rows, err := logsPart("lgrows", g)
-			if err != nil {
-				return
-			}
-			if _, err := fmt.Fprintf(w, "id: %s\n%s", next, patchElements("#lg-rows", "prepend", rows)); err != nil {
-				return
-			}
-		}
-		from = next
-		if len(evs) == logsTailBatch {
-			continue
-		}
-		if head.StoreID == from.StoreID && head.Seq > from.Seq {
-			from.Seq = head.Seq // nothing else up to the head matched
-		}
-		flush(w)
-		select {
-		case <-ctx.Done():
-			return
-		case <-wake:
-		case <-tick.C:
-			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
-				return
-			}
-			flush(w)
-		}
-	}
+		_, err = fmt.Fprintf(w, "id: %s\n%s", next, patchElements("#lg-rows", "prepend", rows))
+		return err
+	})
 }
 
 // logsPart renders one of logs.html's parts.
@@ -604,12 +566,10 @@ type logsField struct {
 }
 
 type logsDetail struct {
-	Seq       uint64
 	Tab       string
 	Tabs      []logsLink
 	Missing   string // why there is no event to show
 	Row       logsRow
-	Msg       string
 	Local     string
 	UTC       string
 	Facts     []logsFact
@@ -639,13 +599,13 @@ type logsDetail struct {
 var logsTabs = []struct{ key, label string }{{"general", "General"}, {"details", "Details"}, {"correlated", "Correlated"}, {"help", "Help"}}
 
 // logsDetailView is the detail pane of event seq on tab, under the grid's
-// filter q. With reveal, sensitive values are shown: the caller has filed the
-// reveal's Security record.
+// filter q. With reveal, sensitive values are shown, after filing the
+// reveal's Security record (catalog.FieldRevealed, as the API files it).
 func (s *Server) logsDetailView(ctx context.Context, h *logs.Hub, st *store.Store, seq uint64, tab, q string, reveal bool) *logsDetail {
 	if !slices.ContainsFunc(logsTabs, func(t struct{ key, label string }) bool { return t.key == tab }) {
 		tab = "general"
 	}
-	d := &logsDetail{Seq: seq, Tab: tab}
+	d := &logsDetail{Tab: tab}
 	e, err := st.Get(ctx, seq)
 	if errors.Is(err, store.ErrNotFound) {
 		d.Missing = fmt.Sprintf("There is no event %d: it was cleared, or is past its log's retention.", seq)
@@ -665,14 +625,20 @@ func (s *Server) logsDetailView(ctx context.Context, h *logs.Hub, st *store.Stor
 			Href: "/logs/event/" + sq + "?" + v.Encode(), Get: "/logs/detail/" + sq + "?" + v.Encode()})
 	}
 	d.Row = logsRowOf(e, q, false)
-	d.Msg, d.Permalink = e.Msg, "/logs/event/"+sq
+	d.Permalink = "/logs/event/" + sq
 	d.Local = e.Time.In(time.Local).Format("2006-01-02 15:04:05.000 MST")
 	d.UTC = e.Time.UTC().Format("2006-01-02 15:04:05.000")
+	var keys []string
 	for _, f := range e.Data {
-		d.Masked = d.Masked || f.Sensitive && !reveal
+		if f.Sensitive {
+			keys = append(keys, f.Key)
+		}
 	}
+	d.Masked = len(keys) > 0 && !reveal
 	if !reveal {
 		logapi.Mask([]event.Event{e}) // e's Data is its own copy
+	} else if len(keys) > 0 {
+		s.logbook.Record(ctx, h, catalog.FieldRevealed, e.Log, fmt.Sprintf("event %d, fields %s", seq, strings.Join(keys, ", ")))
 	}
 
 	switch tab {
@@ -819,43 +785,24 @@ func trendBars(days [7]int64) template.HTML {
 }
 
 // handleLogsDetail is the detail pane as a patch, for a click on a row or a
-// tab.
+// tab; POSTed to …/reveal, its Details tab with the sensitive values shown.
 func (s *Server) handleLogsDetail(w http.ResponseWriter, r *http.Request) {
-	s.writeDetail(w, r, false)
-}
-
-// handleLogsReveal shows an event's sensitive values, after filing the
-// reveal's Security record (catalog.FieldRevealed, as the API files it).
-func (s *Server) handleLogsReveal(w http.ResponseWriter, r *http.Request) {
-	s.writeDetail(w, r, true)
-}
-
-func (s *Server) writeDetail(w http.ResponseWriter, r *http.Request, reveal bool) {
 	h, st := s.logbookStore()
 	seq, err := strconv.ParseUint(r.PathValue("seq"), 10, 64)
 	if st == nil || err != nil {
 		http.Error(w, "no such event", http.StatusNotFound)
 		return
 	}
-	ctx, tab := r.Context(), r.URL.Query().Get("tab")
+	reveal, tab := r.Method == http.MethodPost, r.URL.Query().Get("tab")
 	if reveal {
 		tab = "details"
-		e, err := st.Get(ctx, seq)
-		if err != nil {
-			http.Error(w, "no such event", http.StatusNotFound)
-			return
-		}
-		var keys []string
-		for _, f := range e.Data {
-			if f.Sensitive {
-				keys = append(keys, f.Key)
-			}
-		}
-		if len(keys) > 0 {
-			s.logbook.Record(ctx, h, catalog.FieldRevealed, e.Log, fmt.Sprintf("event %d, fields %s", seq, strings.Join(keys, ", ")))
-		}
 	}
-	part, err := logsPart("lgdetail", s.logsDetailView(ctx, h, st, seq, tab, r.URL.Query().Get("q"), reveal))
+	d := s.logsDetailView(r.Context(), h, st, seq, tab, r.URL.Query().Get("q"), reveal)
+	if reveal && d.Missing != "" {
+		http.Error(w, "no such event", http.StatusNotFound)
+		return
+	}
+	part, err := logsPart("lgdetail", d)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -938,9 +885,9 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 	case "reset":
 		c.Reset = true
 	case "debug":
-		c.DebugFor = ptr("30m")
+		c.DebugFor = new("30m")
 	case "nodebug":
-		c.DebugFor = ptr("0")
+		c.DebugFor = new("0")
 	default:
 		mb, err1 := strconv.ParseFloat(strings.TrimSpace(r.FormValue("max_mb")), 64)
 		days, err2 := strconv.ParseFloat(strings.TrimSpace(r.FormValue("max_days")), 64)
@@ -948,16 +895,14 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 			logsBack(w, r, back, "", errors.New("max size and max age: numbers, 0 for no limit"))
 			return
 		}
-		c.MaxBytes, c.MaxAgeS = ptr(int64(mb*(1<<20))), ptr(int64(days*86400))
-		c.OnFull, c.MinLevel = ptr(r.FormValue("on_full")), ptr(r.FormValue("min_level"))
-		c.Enabled = ptr(r.FormValue("enabled") != "")
+		c.MaxBytes, c.MaxAgeS = new(int64(mb*(1<<20))), new(int64(days*86400))
+		c.OnFull, c.MinLevel = new(r.FormValue("on_full")), new(r.FormValue("min_level"))
+		c.Enabled = new(r.FormValue("enabled") != "")
 	}
 	name, err := s.logbook.Change(r.Context(), h, st, log, c)
 	back.Set("q", "log:"+name)
 	logsBack(w, r, back, "Log "+name+" changed.", err)
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // handleLogsClear clears a log through what the API's clear calls; the page
 // offers an export first. The Security log is never cleared.
@@ -1077,8 +1022,8 @@ func summaryView(sum store.Summary, took time.Duration) *logsSummary {
 	for _, c := range sum.Top {
 		t := logsTop{Provider: c.Provider, ID: strconv.FormatUint(uint64(c.ID), 10), N: thousands(c.N),
 			Href: logsHref(fmt.Sprintf("provider:%s id:%d since:24h", c.Provider, c.ID))}
-		if s, ok := catalog.Lookup(c.Provider, c.ID); ok {
-			t.Template = s.Template
+		if d, ok := event.Lookup(c.Provider, c.ID); ok {
+			t.Template = d.Spec().Template
 		}
 		out.Top = append(out.Top, t)
 	}

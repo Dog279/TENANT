@@ -84,11 +84,11 @@ func TestCheckRefusesADroppedID(t *testing.T) {
 // gives question 7 ("Has this happened before?") the filter the store's
 // statistics are read with.
 func TestHelpSaysWhatAnEventMeansAndWhatToDo(t *testing.T) {
-	s, ok := Lookup("system", 3101)
+	d, ok := event.Lookup("system", 3101)
 	if !ok {
 		t.Fatal("system/3101 not found")
 	}
-	help := Help(s)
+	help := Help(d.Spec())
 	for _, want := range []string{
 		"### system 3101", "`{component} failed: {err}`", "**Level:** error", "**Log:** system",
 		"**What it means.** A subsystem stopped with an error.",
@@ -100,14 +100,14 @@ func TestHelpSaysWhatAnEventMeansAndWhatToDo(t *testing.T) {
 			t.Errorf("Help lacks %q:\n%s", want, help)
 		}
 	}
-	if _, ok := Lookup("system", 9999); ok {
+	if _, ok := event.Lookup("system", 9999); ok {
 		t.Error("Lookup found an ID nobody declared")
 	}
-	if _, ok := Lookup("nosuch", 3101); ok {
+	if _, ok := event.Lookup("nosuch", 3101); ok {
 		t.Error("Lookup found an unknown provider's event")
 	}
-	if s, _ := Lookup("security", 4103); !strings.Contains(Help(s), "**Keywords:** `audit.failure`") {
-		t.Errorf("security/4103's keywords:\n%s", Help(s))
+	if d, ok := event.Lookup("security", 4103); !ok || !strings.Contains(Help(d.Spec()), "**Keywords:** `audit.failure`") {
+		t.Errorf("security/4103's keywords: %v", ok)
 	}
 }
 
