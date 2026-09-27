@@ -220,8 +220,8 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) o
 //
 // Protected, because Tenant applies an edit without asking, or runs it:
 //   - settings.<agent>.json, for every agent sharing the config dir, and its
-//     fixed-name temp file: permission modes, tool rules and exec profiles,
-//     re-read within seconds (settingswatch.go);
+//     temp files: permission modes, tool rules and exec profiles, re-read
+//     within seconds (settingswatch.go);
 //   - soul/: the persona in every prompt, which is the operator's alone;
 //   - peer-cert.pem: this instance's peer identity;
 //   - the claudecode spend ledger: the weekly budget rail;
@@ -255,7 +255,7 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 	if cfgDir != "" {
 		settings := settingsPath(cfgDir, "*")
 		peerCert, _ := peering.CertPaths(cfgDir)
-		add(&protect, settings, settings+".tmp", soul.SoulDir(cfgDir), peerCert, chainAnchorPath(cfgDir))
+		add(&protect, settings, settings+".*.tmp", soul.SoulDir(cfgDir), peerCert, chainAnchorPath(cfgDir))
 		// The mcp dir as a whole also covers caches created after this list.
 		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
 	}

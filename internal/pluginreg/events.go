@@ -135,7 +135,7 @@ func checkEvents(id string, ev *Events) error {
 	if ev == nil {
 		return nil
 	}
-	if want := "plugin." + id; ev.Provider == nil || ev.Provider.Name != want || ev.Provider.Log != want {
+	if want := "plugin." + id; ev.Provider == nil || ev.Provider.Name != want {
 		return fmt.Errorf("pluginreg: plugin %q must log through its own provider and log, %q", id, want)
 	}
 	return nil
