@@ -82,6 +82,9 @@ type Config struct {
 	IMessage IMessageControl
 	// Cron, if set, powers /cron: manage recurring agent-prompt jobs.
 	Cron CronControl
+	// Logs, if set, powers /logs: the log book's events, an event's detail
+	// and its correlated timeline (TEN-381).
+	Logs control.LogsControl
 	// MCP, if set, powers /mcp: connect/list/remove remote MCP connector
 	// servers at runtime (OAuth browser sign-in), tools gated deny-by-default.
 	MCP MCPControl
@@ -1266,6 +1269,9 @@ type model struct {
 	// Enter (select) or Esc (cancel). Render shows the items above the
 	// input area; the input area is hidden while picker is active.
 	picker *listPicker
+	// logs, if non-nil, is the /logs pane: it takes the chat pane's place and
+	// every key until esc or q closes it (cmd_logs.go).
+	logs *logsPane
 	// researchTimeline is the live state for /research progress, fed by
 	// ResearchTimeline updates from the orchestrator + TeamEvents from the
 	// spawned sub-agents. Non-nil only while a research run is in flight;
@@ -1479,6 +1485,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+		if m.logs != nil {
+			return m, m.logsKey(msg)
+		}
 		switch msg.String() {
 		case "ctrl+s":
 			// Toggle SELECT MODE: drop mouse capture so a plain click-drag
@@ -1578,13 +1587,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollChat(-1)
 		case "shift+down":
 			m.scrollChat(1)
+		case "alt+up":
+			m.scrollFeed(-1)
+		case "alt+down":
+			m.scrollFeed(1)
+		case "alt+pgup", "ctrl+pgup":
+			m.scrollFeed(-m.pageStep())
+		case "alt+pgdown", "ctrl+pgdown":
+			m.scrollFeed(m.pageStep())
 		}
 	case tea.MouseMsg:
 		// Wheel scrolls the pane under the cursor (chat left, feed right).
 		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
 			const step = 3
 			up := msg.Button == tea.MouseButtonWheelUp
-			if msg.X < m.chat.Width {
+			if m.logs != nil && msg.X < m.chat.Width {
+				m.logsWheel(up)
+			} else if msg.X < m.chat.Width {
 				if up {
 					m.chat.LineUp(step)
 				} else {
@@ -1600,6 +1619,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.feedFollow = m.feed.AtBottom()
 			}
 		}
+	case logsMsg:
+		cmds = append(cmds, msg.apply(m))
 	case eventMsg:
 		m.applyEvent(agent.Event(msg))
 		cmds = append(cmds, m.listen()) // keep listening
@@ -2556,6 +2577,17 @@ func (m *model) scrollChat(lines int) {
 	m.chatFollow = m.chat.AtBottom()
 }
 
+// scrollFeed is scrollChat for the activity feed: the keyboard's way to
+// scroll it, mouse capture or not (TEN-381).
+func (m *model) scrollFeed(lines int) {
+	if lines < 0 {
+		m.feed.LineUp(-lines)
+	} else {
+		m.feed.LineDown(lines)
+	}
+	m.feedFollow = m.feed.AtBottom()
+}
+
 // pageStep is a near-full page (leave one line of overlap for context).
 func (m *model) pageStep() int {
 	if s := m.chat.Height - 1; s > 1 {
@@ -2836,7 +2868,11 @@ func (m *model) View() string {
 	if !m.ready {
 		return "starting tenant…"
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, chatPad.Render(m.chat.View()), paneBorder.Render(""), m.feed.View())
+	left := m.chat.View()
+	if m.logs != nil {
+		left = m.renderLogs()
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, chatPad.Render(left), paneBorder.Render(""), m.feed.View())
 	// Footer: help (left) + context gauge (bottom-right), width-aligned,
 	// sharing the chat's left gutter.
 	help := strings.Repeat(" ", chatGutter) + "Enter send · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit"
@@ -2867,6 +2903,8 @@ func (m *model) View() string {
 	}
 	if m.picker != nil {
 		inputArea = m.renderPicker()
+	} else if m.logs != nil {
+		inputArea = m.logsHint()
 	}
 	return m.statusBar() + "\n" + body + "\n" + chatPad.Render(inputArea) + "\n" + footer
 }

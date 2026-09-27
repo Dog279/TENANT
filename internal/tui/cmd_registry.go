@@ -37,6 +37,7 @@ func slashFeatures() []func() []*slashCommand {
 		peerCommands,
 		approvalCommands,
 		cronCommands,
+		logsCommands,
 		sessionCommands,
 	}
 }
@@ -63,6 +64,9 @@ var slashSections = []cmdreg.Section{
 		Tagline: "per-category permission modes; approve/deny paused actions"},
 	{ID: "automation", Title: "Automation (cron)", Aliases: []string{"cron"},
 		Tagline: "recurring agent-prompt jobs on a crontab/@every schedule (read/comms-safe)"},
+	{ID: "logs", Title: "Logs", Aliases: []string{"log"},
+		Tagline: "the log book: find events, tail them live, open one's detail and correlated timeline",
+		Keys:    []cmdreg.Row{{Syntax: "enter / c / esc, q", Desc: "in /logs: an event's detail / its correlated timeline / back"}}},
 	{ID: "goal", Title: "Goal (autonomous loop)",
 		Tagline: "set a stop condition; judge LLM auto-continues turns until met",
 		Keys:    []cmdreg.Row{{Syntax: "Esc / Ctrl-C", Desc: "interrupt the in-flight turn and CLEAR the goal"}}},
@@ -77,6 +81,7 @@ var slashSections = []cmdreg.Section{
 			{Syntax: "Esc / Ctrl-C", Desc: "hard-stop the running turn (a stuck/looping agent); never closes the app"},
 			{Syntax: "Ctrl-Y", Desc: "copy the transcript to clipboard + file"},
 			{Syntax: "PgUp/PgDn, Shift+↑/↓", Desc: "scroll the chat pane (works with or without mouse capture)"},
+			{Syntax: "Alt+PgUp/PgDn, Alt+↑/↓", Desc: "scroll the activity feed (Ctrl+PgUp/PgDn too; with or without mouse capture)"},
 		}},
 }
 
