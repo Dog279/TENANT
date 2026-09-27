@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -130,8 +129,8 @@ func (h *Hub) fileSpool(ctx context.Context, st *store.Store, path string, names
 }
 
 // spoolEvent reads one spool line: an event in its wire form, filed as
-// external. It is never catalogued and can't name a log or a provider only
-// Tenant writes; with no time it takes its file's.
+// External keeps it, as POST /api/events does. It can't name a log or a
+// provider only Tenant writes; with no time it takes its file's.
 func (h *Hub) spoolEvent(line string, at time.Time, names map[string]bool) (event.Event, error) {
 	var e event.Event
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
@@ -149,8 +148,8 @@ func (h *Hub) spoolEvent(line string, at time.Time, names map[string]bool) (even
 	if e.Time.IsZero() {
 		e.Time = at
 	}
-	e.Time, e.Seq, e.ID, e.Version = e.Time.UTC(), 0, 0, 0
+	e.Time = e.Time.UTC()
+	External(&e)
 	h.scrubEvent(&e, h.opts.MaxFieldBytes)
-	e.Keywords = append(slices.Clip(e.Keywords), KeywordExternal)
 	return e, nil
 }

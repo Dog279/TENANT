@@ -390,7 +390,9 @@ Tenant restarts, even if its folder is deleted.
 `tenant attach [URL] --follow [--source discord] [--level error] [--trace ID]`
 is the terminal equivalent, over `GET /api/activity`; `--trace` keeps one
 turn's lines. Flags may come before or after the URL. After a Tenant restart
-`--follow` says so and replays what the new process kept.
+`--follow` says so and replays what the new process kept. With no URL, when
+this account can open `logbook.db`, it reads the log book itself, as
+`tenant logs query --follow` does ([below](#the-command-line-tenant-logs)).
 
 ## Adding a source (no rebuild)
 
@@ -475,11 +477,15 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8770/api/logs/watcher" `
 | `POST` | `/api/addon/event` | legacy add-on line (`{"source","text","level"}`) — files under the add-on's name (not one of Tenant's own) |
 
 `/api/activity` returns `{"events", "cursor", "epoch"}`. Pass `cursor` back as
-`since` and `epoch` as `epoch` for a gap-free tail. Sequence numbers start at 1
-again when Tenant restarts, under a new epoch; a `since` from another epoch
-replays everything the hub kept, and a `since` with no `epoch` keeps its old
-meaning. With `limit=N`, at most N events come back and `cursor` is the last
-one's, so the next call continues after it.
+`since` and `epoch` as `epoch` for a gap-free tail. With `logbook.db` open,
+the cursor is the store's seq and the epoch its ID, so a cursor survives a
+restart; a `since` from another epoch (or none) replays the newest 10,000
+events. Without the store, sequence numbers start at 1 again when Tenant
+restarts, under a new epoch, and a `since` from another epoch replays
+everything the hub kept. A `since` with no `epoch` keeps its old meaning.
+With `limit=N`, at most N events come back and `cursor` is the last one's, so
+the next call continues after it. The log book's own API is in
+[The API](#the-api).
 
 **A process that only writes files** — drop a folder under the root and append
 to a `.log` file in it (`<root>/mytool/2026-09-22.log`). The hub discovers new
@@ -541,8 +547,9 @@ defer act.End(&err)                               // End(&err, "status", code) a
 `serve` and the TUI also keep every event in `<logs root>/logbook.db`, one
 SQLite database (WAL, `synchronous=FULL`, `fullfsync` on macOS). Each writes
 through its own connection, so both can share a data directory.
-`"logs": {"store": false}` turns it off (read at start). The log book is the
-first thing a process opens and the last it releases: its final flush
+The store is always on: `"logs": {"store": false}`, v1's rollback switch, is
+ignored since TEN-378 and draws one `logbook` warning at start. The log book
+is the first thing a process opens and the last it releases: its final flush
 (bounded at 2 s) is the last shutdown step, and the store closes after the
 shutdown's own last events.
 
@@ -710,6 +717,13 @@ full, a minimum level and an enabled switch. The defaults, by class:
   are not written; below 256 MB, only warnings and worse. The Security log
   always writes. Shed events count as dropped (`Hub.Dropped`), and crossing
   either line writes a `logbook` warning.
+- **The timed debug switch.** Each log has one (`logs.debug_until_ns`, set
+  by `tenant logs debug` or the API's `debug_for`, at most a day). While it is
+  on, the log's verbose events are written past the `logs.level` floor and
+  past the log's own minimum level; when it ends they stop again. Every
+  process reads it at its next housekeeper tick (the one that set it, at
+  once). With `logs.level: debug` every log's verbose events are written
+  anyway.
 - `runs.db` keeps its own retention (`runs.max_age_days`, `runs.max_count`).
 
 #### The Security log's chain
@@ -850,9 +864,9 @@ for the agent, its turn's surface: `local`, `discord`, `imessage`,
 
 A one-shot command (`tenant backup`, `tenant privacy`, `tenant setup`,
 `tenant model`) files its events into `logbook.db` when it ends, so its
-records join the chain. Other one-shot commands have no log book to take a
-record yet: a config change made by one (`tenant route`, `tenant peer`, …)
-is not recorded.
+records join the chain. Any other one-shot command attaches the store for
+its Security records alone (`logs.AuditEmitter`), so a change made by one
+(`tenant route`, `tenant peer`, …) is recorded too.
 
 The v1 `approvals` folder keeps being written through this release while
 approvals move into `security`; it goes in the next.
@@ -958,6 +972,102 @@ beside the per-minute ones, retention prunes with them and a privacy forget
 takes its events out of. On 1M events it takes 14–20 ms (p95; the budget is 50;
 `TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run TestSummaryBudget -v`),
 where a week from the per-minute rollups alone took 135 ms.
+
+### The API
+
+The dashboard serves the log book over HTTP (`internal/logs/logapi`), behind
+its bearer token and request limits. `tenant logs` runs the same handlers in
+its own process when it can open `logbook.db`, so the two have the same
+features.
+
+| Method | Path | What |
+|---|---|---|
+| `GET` | `/api/events?q=&cursor=&limit=&reverse=&count=` | `{"events", "next", "restarted", "count"}`: up to `limit` (100, at most 1000) matches after `cursor`, oldest first, or before it newest first with `reverse=1`; `count=1` adds how many match in all |
+| `GET` | `/api/events/{seq}` | `{"event", "spec", "help", "stats"}`: the event, its catalog entry and Help (Markdown), and `{count, first, last, trend}` |
+| `GET` | `/api/events/stream?q=` | Server-sent events: each message's `id` is the event's cursor and its data the event. It resumes after `Last-Event-ID` (or `?cursor=`) with no missed row; with neither it starts at the newest event. A cursor from another store sends `event: restart` and starts over. A comment line every 15 s keeps it open. |
+| `GET` | `/api/events/stats?q=&bucket=` | `{"buckets": [{start, log, level, n}]}`; `bucket` is a duration (`15m`, `1h`, `1d`), none counts all time |
+| `GET` | `/api/events/top?q=&n=` | `{"top": [{provider, id, n}]}`: the most frequent event IDs |
+| `GET` | `/api/events/timeline/{id}?depth=` | `{"id", "events", "run", "run_note"}`: a trace's or activity's timeline across every log, with the trace's `runs.db` record, or why there is none |
+| `GET` | `/api/events/export?q=&format=ndjson\|csv\|text` | every match, oldest first, after a header record (below) |
+| `POST` | `/api/events` | one event (JSON) or a batch (NDJSON, `Content-Type: application/x-ndjson`) from outside: `{"accepted": n}` |
+| `GET` | `/api/logbook/logs[/{log}]` | `{"logs": [{name, group, events, bytes, policy, last_write, dropped, suppressed, debug_until, cleared}]}`, or one log |
+| `PATCH` | `/api/logbook/logs/{log}` | `{max_bytes, max_age_s, on_full, min_level, enabled, debug_for, reset}`, each optional: the log's own policy (it wins over `config.json`; `reset` returns to it) and its debug switch (`"30m"`; `"0"` turns it off). `{log}` may name a provider. Answers the log. |
+| `POST` | `/api/logbook/logs/{log}/clear` | `{"log", "cleared": n}`; the Security log is never cleared (403) |
+| `GET` `POST` `DELETE` | `/api/logbook/views[/{name}]` | `{"views": [{name, filter, builtin}]}`: the built-ins (Administrative Events `level>=warning`, Security failures `log:security tag:audit.failure`, This run `boot:current`, Since last start) and the saved ones; `POST {name, filter}` saves one |
+| `GET` | `/api/logbook/catalog[/{provider}][?id=N]` | `{"version", "specs", "markdown"}`: the event reference |
+| `GET` | `/api/logbook/components` | `{"components": [{name, kind, log, state, since, started, error, activity}]}`: what the answering process runs (`lifecycle.Components`) |
+| `GET` | `/api/logbook/verify[?log=security]` | `{"ok", "problems", "chain", "note"}`: SQLite's quick check, and with `log=security` the chain (`{records, head, archives, tombstones, restores, notes, break}`), checked against the key, the anchor and a file witness |
+| `GET` | `/api/logbook/audit?since=&until=` | the Security log's audit export bundle (NDJSON), verifiable offline with the key |
+| `POST` | `/api/logbook/recover` | `{"file", "recovered", "problems"}`: copies what can still be read of a quarantined `logbook.db.corrupt-<time>` (the newest, or `{"file"}`) into the store, each event marked `recovered` |
+
+- **Cursors** are `<store ID>.<seq>`. A restored or rebuilt `logbook.db` has
+  a new store ID, so a cursor from before it starts over, and `restarted`
+  (or the stream's `restart` message) says so.
+- **Sensitive values** are `«sensitive»` unless the request adds
+  `sensitive=1`. A reveal, an export, a clear, a change of a log's settings
+  and a check each file a Security record (`security/4901`–`4906`), naming the
+  operator and the surface: `dashboard`, or `cli` for `tenant logs` reading
+  locally.
+- **Events from outside** (`POST /api/events`, the v1 `POST /api/logs/{source}`
+  and `/api/addon/event`, `tenant log`) are marked with keyword `external`.
+  They keep their log, message, level, time and data, and the `trace` and
+  `activity` a program Tenant started finds in `TENANT_TRACE_ID` and
+  `TENANT_ACTIVITY_ID`; an event ID, task, session, approval, tool call,
+  actor or surface is dropped, and so is a data field named like one of
+  them. `POST /api/events` files an event under `ext.` (`deploy` is
+  `ext.deploy`), and refuses (403) a log or provider that is Tenant's own:
+  `security`, anything under `tenant.`, a v1 source and every registered
+  provider and its log. A batch is taken or refused whole.
+- **Exports** start with a header record, the first NDJSON line
+  `{"export": {schema, catalog, tenant, filter, exported, host, sensitive}}`
+  (a `# tenant logbook export: …` line in CSV and text), so a file still makes
+  sense on another machine a year later.
+- **v1 routes** stay: `GET /api/activity` reads `logbook.db` when it is
+  open (its cursor is the store's seq and its epoch the store ID, so it
+  survives a restart; foreign folders reach it once they are filed into the
+  store), and the `/api/logs` routes list and serve the text files.
+
+### The command line: `tenant logs`
+
+```
+tenant logs                                 the logs: events, size, limit, how long they are kept, last write
+tenant logs query [FILTER] [--follow] [--limit N] [--reverse]
+tenant logs show <seq>                      one event in full, with its catalog help and statistics
+tenant logs trace <trace|activity>          the timeline across every log, with the run record
+tenant logs stats [FILTER] [--bucket 1h]    counts by log and level, over time, and the top event IDs
+tenant logs export [FILTER] --out FILE [--include-sensitive] [--format csv|text]
+tenant logs export --audit --out FILE [--since 30d] [--until …]   the Security log's audit bundle
+tenant logs verify [security] [--bundle FILE]
+tenant logs config <log> [--max-size 64MB] [--max-age 30d] [--on-full keep] [--min-level warning] [--enabled false] [--reset]
+tenant logs clear <log> [--export FILE]
+tenant logs debug <provider|log> --for 30m
+tenant logs catalog [provider] [--id N]
+tenant logs components
+tenant logs recover [FILE]                  salvage a quarantined logbook.db.corrupt-<time>
+```
+
+- **Local or through the dashboard.** Each command is a client of the API
+  above. When this account can open `<logs root>/logbook.db`, the API's own
+  handlers run in the command's process over it; otherwise, or with
+  `--url URL`, it goes through the dashboard (the token as `tenant log`
+  finds it, or `--token`): a serve running as another account, such as the
+  Windows server's SYSTEM service, or on another machine. Both paths answer
+  the same way. `components` asks the running serve's dashboard even when
+  reading locally, since only that process knows what it runs; `verify
+  --bundle` checks an audit bundle offline with this install's key.
+- **`boot:current`** names the run of the process that answers: through the
+  dashboard, serve's own; read locally, the running serve's (else the
+  running TUI's), found from the boots table and the boot locks, never the
+  command's own.
+- **Output.** Reads take `--format text|json|csv`. Text is the text mirror's
+  line after each event's seq (local time); `json` is one event per line for
+  events (NDJSON, UTC) and one document otherwise; `csv` has a column row.
+  `query` shows the newest `--limit` (100) oldest first; `--follow` then
+  prints each new event, resuming after the last one it printed if the
+  stream drops.
+- **Exports** are NDJSON unless `--format` says otherwise, start with the
+  header record, are owner-only files, and file a Security record. `clear --export`
+  exports the log first.
 
 ### Event IDs, the reference and coverage
 

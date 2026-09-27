@@ -146,7 +146,7 @@ func TestAddLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []LogInfo{{Name: "x", Bytes: logs[0].Bytes, Dropped: 4, Suppressed: 10}, {Name: "y", Suppressed: 2}}
+	want := []LogInfo{{Name: "x", Events: 1, Bytes: logs[0].Bytes, LastWrite: logs[0].LastWrite, Dropped: 4, Suppressed: 10}, {Name: "y", Suppressed: 2}}
 	if !slices.Equal(logs, want) || logs[0].Bytes == 0 {
 		t.Errorf("Logs = %+v, want %+v", logs, want)
 	}

@@ -19,6 +19,7 @@ import (
 
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/logapi"
 	"tenant/internal/logs/store"
 	"tenant/internal/secrets"
 	"tenant/internal/version"
@@ -321,4 +322,16 @@ func verifySecurityBundle(c *commonFlags, r io.Reader) (store.BundleHeader, stor
 		return store.BundleHeader{}, store.Verification{}, err
 	}
 	return store.VerifyBundle(r, key)
+}
+
+// securityLogAPI hands the log book's API (internal/logs/logapi) the
+// Security log's verify and audit export, which need this install's key,
+// anchor and witness.
+func securityLogAPI(c *commonFlags) logapi.SecurityLog {
+	return logapi.SecurityLog{
+		Verify: func(ctx context.Context) (store.Verification, error) { return verifySecurityLog(ctx, c) },
+		Export: func(ctx context.Context, w io.Writer, since, until time.Time) error {
+			return exportSecurityLog(ctx, c, w, since, until)
+		},
+	}
 }

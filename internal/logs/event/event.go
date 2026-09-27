@@ -349,6 +349,14 @@ func emit(ctx context.Context, e *Event) {
 		(*em).Emit(ctx, e)
 		return
 	}
+	Fallback(ctx, e)
+}
+
+// Fallback is where an event goes with no emitter installed: warnings and
+// worse to slog.Default, sensitive values masked; the rest is dropped. An
+// emitter that files only some events (a one-shot command's) sends the
+// others here.
+func Fallback(ctx context.Context, e *Event) {
 	if e.Level > Warning {
 		return
 	}

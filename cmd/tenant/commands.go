@@ -2512,6 +2512,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		rules:     dashRules{defaultToolRules},
 		broker:    evBroker,
 		logs:      hub, // the log book: Activity backfill + replay + the folders on disk
+		runs:      st.runs,
+		security:  securityLogAPI(c),
 		log:       log.With("source", "dashboard"),
 		notify:    pushSys,
 		persist: func(enabled bool) error {

@@ -82,10 +82,12 @@ if h := logs.Default(); h != nil {
 
 ## Making it one of Tenant's own sources
 
-Add the name to `preferredOrder` in `internal/logs/hub.go`. That pins its
-tab's place in the row, and the logging API then refuses the name to
-outside writers, so a script can't write lines that look like your
-subsystem's.
+Declare a provider for it (`event.NewProvider("myrelay", "myrelay")`, see
+`docs/LOGGING.md`): a registered provider's name and log are Tenant's own,
+and the logging API refuses them to outside writers, so a script can't write
+events that look like your subsystem's. Adding the name to `preferredOrder`
+in `internal/logs/hub.go` does the same for a v1 source, and pins its tab's
+place in the Activity row.
 
 ## What you never have to do
 
