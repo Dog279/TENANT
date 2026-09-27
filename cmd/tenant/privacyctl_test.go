@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/episodic"
 	xp "tenant/internal/plugins/x"
 	"tenant/internal/secrets"
@@ -110,6 +112,44 @@ func TestLogsOptionsLevel(t *testing.T) {
 	t.Setenv("TENANT_LOG", "debug")
 	if got := (&commonFlags{lc: &launchConfig{Logs: logsConfig{Level: "error"}}}).logsOptions().MinLevel; got != slog.LevelDebug {
 		t.Errorf("TENANT_LOG=debug should still lower the floor, got %v", got)
+	}
+}
+
+// config.json's logs block becomes the store's budget: §6.2's defaults where
+// a key is unset, -1 lifting a limit, per_log over its class; the hub re-reads
+// it every housekeeper tick, so an edit applies with no restart (TEN-371).
+func TestLogsBudgetFromConfig(t *testing.T) {
+	cfg := t.TempDir()
+	write := func(logs string) {
+		if err := os.WriteFile(filepath.Join(cfg, "config.json"), []byte(`{"logs": `+logs+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"retention_days": 14, "budget_mb": -1, "diagnostic": {"max_mb": 64},
+		"security": {"max_age_days": 730},
+		"per_log": {"mcp.github": {"max_mb": 32, "min_level": "warning", "on_full": "keep"},
+		            "system": {"max_age_days": -1}, "x": {"min_level": "loud", "on_full": "rotate"}}}`)
+	budget := (&commonFlags{cfgDir: cfg}).logsOptions().Budget
+	b := budget()
+	day := 24 * time.Hour
+	want := map[string]store.Policy{
+		"mcp.github":      {MaxBytes: 32 << 20, MaxAge: 14 * day, OnFull: store.Keep, MinLevel: event.Warning},
+		"system":          {MaxBytes: 128 << 20, OnFull: store.Overwrite},
+		"x":               {MaxBytes: 64 << 20, MaxAge: 14 * day, OnFull: store.Overwrite},
+		store.SecurityLog: {MaxBytes: 256 << 20, MaxAge: 730 * day, OnFull: store.Archive},
+		"turns":           {MaxBytes: 64 << 20, MaxAge: 14 * day, OnFull: store.Overwrite},
+	}
+	for log, p := range want {
+		if got := b.For(log); got != p {
+			t.Errorf("%s: %+v, want %+v", log, got, p)
+		}
+	}
+	if b.TotalBytes != 0 || b.Diagnostic.MaxBytes != 64<<20 || b.Diagnostic.MaxAge != 7*day {
+		t.Errorf("budget %d, diagnostic %+v", b.TotalBytes, b.Diagnostic)
+	}
+	write(`{"per_log": {"turns": {"max_mb": 8}}}`)
+	if b := budget(); b.For("turns").MaxBytes != 8<<20 || b.TotalBytes != 2<<30 || b.Operational.MaxAge != 30*day {
+		t.Errorf("after an edit: turns %+v, budget %d", b.For("turns"), b.TotalBytes)
 	}
 }
 

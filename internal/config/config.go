@@ -162,6 +162,34 @@ type Logs struct {
 	// Store keeps every event in <logs root>/logbook.db as well as the text
 	// files (nil ⇒ on; false ⇒ the text files only). Read at start.
 	Store *bool `json:"store,omitempty"`
+	// The store's retention (docs/LOGGING.md), applied live. RetentionDays
+	// above is every operational log's max age there too.
+	// BudgetMB caps logbook.db and its WAL together (0 ⇒ 2048; -1 ⇒ no cap).
+	BudgetMB int `json:"budget_mb,omitempty"`
+	// Diagnostic limits every log's diagnostic events together (256 MB, 7 days).
+	Diagnostic LogLimits `json:"diagnostic,omitzero"`
+	// Security limits the Security log (256 MB, 365 days); its oldest records
+	// are archived, never just deleted.
+	Security LogLimits `json:"security,omitzero"`
+	// PerLog sets one log's policy, by log name, over its class default
+	// (system: 128 MB, 90 days; any other: 64 MB, retention_days).
+	PerLog map[string]LogPolicy `json:"per_log,omitempty"`
+}
+
+// LogLimits bounds records by size and age: 0 keeps the default, -1 lifts
+// the limit.
+type LogLimits struct {
+	MaxMB      int `json:"max_mb,omitempty"`
+	MaxAgeDays int `json:"max_age_days,omitempty"`
+}
+
+// LogPolicy is one log's entry in logs.per_log; a key left out keeps the
+// default.
+type LogPolicy struct {
+	MaxMB      int    `json:"max_mb,omitempty"`       // -1 ⇒ no size limit
+	MaxAgeDays int    `json:"max_age_days,omitempty"` // -1 ⇒ kept forever
+	MinLevel   string `json:"min_level,omitempty"`    // critical, error, warning, info or verbose: less severe events are not written
+	OnFull     string `json:"on_full,omitempty"`      // overwrite, archive or keep
 }
 
 // Privacy is per-class retention (TEN-309).

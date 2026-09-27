@@ -123,7 +123,7 @@ func TestForgetSessionFollowsTheRecipe(t *testing.T) {
 	}
 }
 
-func writeArchive(t *testing.T, path string, lines ...string) {
+func writeTestArchive(t *testing.T, path string, lines ...string) {
 	t.Helper()
 	var b bytes.Buffer
 	zw := gzip.NewWriter(&b)
@@ -136,7 +136,7 @@ func writeArchive(t *testing.T, path string, lines ...string) {
 	}
 }
 
-func readArchive(t *testing.T, path string) string {
+func readArchiveText(t *testing.T, path string) string {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
@@ -162,32 +162,32 @@ func TestForgetArchivedRewritesTheArchives(t *testing.T) {
 	turns := filepath.Join(dir, "turns-1-3.ndjson.gz")
 	security := filepath.Join(dir, "security-1-2.ndjson.gz")
 	only := filepath.Join(dir, "model-5-5.ndjson.gz")
-	writeArchive(t, turns,
+	writeTestArchive(t, turns,
 		`{"seq":1,"session_id":"sess_a","msg":"`+secretWord+`"}`,
 		`{"seq":2,"session_id":"sess_b","msg":"keep"}`,
 		`{"seq":3,"trace_id":"run-1","msg":"`+secretWord+` again"}`)
-	writeArchive(t, security,
+	writeTestArchive(t, security,
 		`{"rec":1,"session_id":"sess_a","msg":"`+secretWord+`","data":{"d":"`+secretWord+`"},"dtypes":"s","salt":"c2FsdA==","data_hash":"aGFzaA==","hash":"aA=="}`,
 		`{"rec":2,"session_id":"sess_b","msg":"other"}`,
 		`{"last_rec":2,"last_hash":"aA=="}`)
-	writeArchive(t, only, `{"seq":5,"trace_id":"run-1","msg":"x"}`)
+	writeTestArchive(t, only, `{"seq":5,"trace_id":"run-1","msg":"x"}`)
 	m := Match{Sessions: map[string]bool{"sess_a": true}, Traces: map[string]bool{"run-1": true}}
 
-	before := readArchive(t, turns)
+	before := readArchiveText(t, turns)
 	d, tb, err := ForgetArchived(dir, m, false)
 	if err != nil || d != 3 || tb != 1 {
 		t.Fatalf("dry run = %d dropped, %d tombstoned, %v; want 3, 1", d, tb, err)
 	}
-	if readArchive(t, turns) != before {
+	if readArchiveText(t, turns) != before {
 		t.Fatal("a dry run changed an archive")
 	}
 	if d, tb, err = ForgetArchived(dir, m, true); err != nil || d != 3 || tb != 1 {
 		t.Fatalf("apply = %d dropped, %d tombstoned, %v", d, tb, err)
 	}
-	if got := readArchive(t, turns); got != `{"seq":2,"session_id":"sess_b","msg":"keep"}`+"\n" {
+	if got := readArchiveText(t, turns); got != `{"seq":2,"session_id":"sess_b","msg":"keep"}`+"\n" {
 		t.Errorf("turns archive after the forget:\n%s", got)
 	}
-	sec := strings.Split(strings.TrimSpace(readArchive(t, security)), "\n")
+	sec := strings.Split(strings.TrimSpace(readArchiveText(t, security)), "\n")
 	var rec map[string]any
 	if len(sec) != 3 || json.Unmarshal([]byte(sec[0]), &rec) != nil {
 		t.Fatalf("security archive after the forget:\n%s", strings.Join(sec, "\n"))

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -57,7 +58,7 @@ func TestSchemaAndPragmas(t *testing.T) {
 		}
 	}
 	var v string
-	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&v); err != nil || v != "1" {
+	if err := s.r.QueryRow(`SELECT value FROM meta WHERE key = 'schema_version'`).Scan(&v); err != nil || v != strconv.Itoa(len(migrations)) {
 		t.Errorf("schema_version = %q (%v)", v, err)
 	}
 	if runtime.GOOS != "windows" {
@@ -114,7 +115,7 @@ func TestStoreIDPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE meta SET value = '1' WHERE key = 'schema_version'`); err != nil {
+	if _, err := db.Exec(`UPDATE meta SET value = ? WHERE key = 'schema_version'`, len(migrations)); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()

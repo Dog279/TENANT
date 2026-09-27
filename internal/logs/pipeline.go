@@ -70,8 +70,8 @@ func newPipeline(h *Hub, st *store.Store) *pipeline {
 		stop: make(chan struct{}), done: make(chan struct{}), ctx: ctx, cancel: cancel, dropped: map[string]uint64{}}
 }
 
-// Dropped counts, per log, the events the pipeline's full queue had no room
-// for. Nil when no store is attached.
+// Dropped counts, per log, the events the pipeline had no room for: a full
+// queue, or low disk (housekeeper.go). Nil when no store is attached.
 func (h *Hub) Dropped() map[string]uint64 {
 	p := h.pipe.Load()
 	if p == nil {
@@ -103,13 +103,17 @@ func cleanSource(s string) string {
 	return DefaultSource
 }
 
-// enqueue hands e to the writer. When the queue is full, an operational
-// event waits up to a millisecond and a diagnostic one not at all, then it is
-// dropped and counted. A Security record is never queued: it forces a
+// enqueue hands e to the writer, unless its log's policy or low disk keeps
+// it out (admit). When the queue is full, an operational event waits up to a
+// millisecond and a diagnostic one not at all, then it is dropped and
+// counted. A Security record is never queued or kept out: it forces a
 // commit. False only once the pipeline is closed.
 func (p *pipeline) enqueue(ctx context.Context, e *event.Event) bool {
 	if e.Log == store.SecurityLog {
 		return !errors.Is(p.audit(ctx, e), errClosed)
+	}
+	if !p.admit(e) {
+		return true
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
