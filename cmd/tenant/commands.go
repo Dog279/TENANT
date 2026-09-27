@@ -3144,12 +3144,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 		TeamEvents:       teamCh,
 		ResearchTimeline: timelineCh,
 		// TEN-167: persist each MAIN-agent LLM call's token usage for
-		// long-term cost audit. Non-fatal — closure swallows errors so a
-		// ledger issue never blocks the UI.
+		// long-term cost audit. Non-fatal: a failed write is logged (model
+		// 3002), so a ledger issue never blocks the UI.
 		RecordUsage: func(in, out int, traceID string) {
-			if usageStore != nil {
-				_ = usageStore.Record(ctx, c.agent, modelName, in, out, traceID)
-			}
+			recordUsage(ctx, usageStore, c, in, out, traceID)
 		},
 	})
 	life.Shutdown() // each failed step is logged

@@ -59,6 +59,9 @@ var providers = []struct {
 var catalogued = map[string]int{
 	"internal/plugins/discord":  0,
 	"internal/plugins/imessage": 0,
+	"internal/model":            0, "internal/model/backend/anthropic": 0, "internal/model/backend/claudecode": 0,
+	"internal/model/backend/echo": 0, "internal/model/backend/vllm": 0, "internal/model/toolfmt": 0,
+	"internal/route": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

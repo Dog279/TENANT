@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 
 	"tenant/internal/model"
+	"tenant/internal/route"
 )
 
 // fallback.go (TEN-246): wires launchConfig.Fallbacks into the router's
@@ -90,9 +92,7 @@ func installRouteBigRole(r *model.Router, cfgDir string, lc *launchConfig, planC
 		// warning instead of breaking startup or /model swaps. With routing
 		// enabled the bind stays load-bearing and the error propagates.
 		if !rc.Enabled {
-			if log != nil {
-				log.Warn("route: planner-big unavailable while routing is off; continuing", "err", err.Error())
-			}
+			route.BigRoleIdle.Log(context.Background(), "provider", providerName, "err", err)
 			return nil
 		}
 		return err
@@ -140,7 +140,7 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 	r.SetHealthGating(health)
 	if len(lc.Fallbacks) == 0 {
 		if health.SlowThreshold > 0 {
-			log.Warn("fallback: health_gating is set but no fallbacks are configured; it has nothing to move to")
+			model.GatingIdle.Log(context.Background())
 		}
 		return
 	}
@@ -153,19 +153,19 @@ func installFallbackChain(r *model.Router, cfgDir string, lc *launchConfig, plan
 		}
 		seen[name] = true
 		if lc.Providers[name] == nil {
-			log.Warn("fallback: unknown provider; skipping", "name", name)
+			model.ProviderSkipped.Log(context.Background(), "provider", name, "err", "not a configured provider")
 			continue
 		}
 		gen, factories, err := providerGenProfiles(cfgDir, lc, name, planCeiling)
 		if err != nil {
-			log.Warn("fallback: provider unbuildable; skipping", "name", name, "err", err.Error())
+			model.ProviderSkipped.Log(context.Background(), "provider", name, "err", err)
 			continue
 		}
 		for kind, f := range factories {
 			r.RegisterBackend(kind, f)
 		}
 		if err := r.AddFallbackProfiles(gen...); err != nil {
-			log.Warn("fallback: register profiles failed; skipping", "name", name, "err", err.Error())
+			model.ProviderSkipped.Log(context.Background(), "provider", name, "err", err)
 			continue
 		}
 		for _, p := range gen {

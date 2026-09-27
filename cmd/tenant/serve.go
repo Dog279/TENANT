@@ -445,6 +445,12 @@ func cmdServe(ctx context.Context, args []string) error {
 	if err := routeRT.BindConfiguredForce(); err != nil {
 		return err
 	}
+	observeMain := func(e agent.Event) {
+		if e.Kind == agent.EventUsage { // the usage ledger, as the TUI keeps it
+			recordUsage(ctx, usageStore, c, e.PromptTokens, e.CompletionTokens, e.TraceID)
+		}
+		rt.ObserveMain(e, emit)
+	}
 	ag, err := agent.New(agent.Config{
 		AgentID:  c.agent,
 		Router:   router,
@@ -465,7 +471,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		ConfirmSensitiveEgress: egressConfirm,
 		Logger:                 log.With("source", "turns"),
 		Stream:                 true,
-		Observer:               func(e agent.Event) { rt.ObserveMain(e, emit) },
+		Observer:               observeMain,
 		RouteHook:              routeRT.Hook(),
 		RouteActive:            routeRT.Active,
 		RouteSticky:            routeRT.Sticky,

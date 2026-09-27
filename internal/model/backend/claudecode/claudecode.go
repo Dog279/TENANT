@@ -103,7 +103,7 @@ func New(_ context.Context, p model.Profile, log *slog.Logger) (any, error) {
 	return &Backend{
 		profile: p,
 		log:     log,
-		ledger:  openLedger(log),
+		ledger:  openLedger(),
 	}, nil
 }
 

@@ -146,6 +146,27 @@ Some things are recorded elsewhere or not at all:
 - On Linux and Windows the backends do not attribute refusals yet. A denied
   access there shows as `ran in the sandbox` with a non-zero `exit`.
 
+## The `model` and `route` logs
+
+Both are catalogued ([EVENTS.md](EVENTS.md#model)) and sit in the viewer's
+Model group.
+
+- **`model`** is one log for every backend. Each event names its `profile`,
+  `backend` and `model`, so `data.backend:vllm` picks one out. Every model
+  call made through the router is an activity under its turn (`model 9001`:
+  start, then stop with its duration, or fail), with its tokens in
+  `model 9002`; both are diagnostic events. Operational events cover the rest:
+  - a provider that can't serve a call (3001);
+  - a failover (2001), which also stays in the status feed;
+  - a slow model skipped by health gating (2002);
+  - a `/model use` switch (5001), and a switched model that isn't ready (2007).
+- **`route`** writes one event per routing decision, carrying the
+  `decision_id` of its row in `route-decisions.jsonl` (1001, or 2001 when the
+  turn fell back to the planner). `/route why` shows the recent ones in full.
+  The privacy override is `route 4001` (armed) and `4002` (used).
+- **Token usage.** Serve records the main agent's calls in `usage.db`, as the
+  TUI does. A failed write is `model 3002`.
+
 ## Errors are not dropped
 
 A background failure is logged where it happens (TEN-366). The ones that change
@@ -213,9 +234,9 @@ starts next.
 A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
 critical `agent: tool panicked` record. The other guards (routing, the spawn
-classifier, shutdown steps) log at ERROR. The `route` and `eval` guards log
-through slog's default logger, which reaches stderr until serve and the TUI
-point it at the log book.
+classifier, shutdown steps) log at ERROR. The `route` guards write `route
+3003`. The `eval` guards log through slog's default logger, which reaches
+stderr until serve and the TUI point it at the log book.
 
 ## The dashboard
 

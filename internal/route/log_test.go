@@ -5,15 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"tenant/internal/logs/event"
 	"tenant/internal/route"
+	"tenant/internal/runtrace"
 )
 
 type classifierFunc func(context.Context, string) (route.Signal, error)
@@ -92,8 +94,52 @@ func TestEngineRecordsClassifierFailure(t *testing.T) {
 	}
 }
 
-func TestEngineLogFailureStaysInMemory(t *testing.T) {
-	t.Parallel()
+// capture keeps the catalogued events written while it is installed, with
+// the trace of the context each was written under.
+type capture struct {
+	mu     sync.Mutex
+	events []*event.Event
+}
+
+func (c *capture) Emit(ctx context.Context, e *event.Event) {
+	e.Corr.TraceID = runtrace.IDFromContext(ctx)
+	c.mu.Lock()
+	c.events = append(c.events, e)
+	c.mu.Unlock()
+}
+
+func (c *capture) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
+
+// of returns the events of d, each as its data by key.
+func (c *capture) of(d *event.Def) []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, e := range c.events {
+		if s := d.Spec(); e.Provider == s.Provider && e.ID == s.ID {
+			m := map[string]any{"trace": e.Corr.TraceID}
+			for _, f := range e.Data {
+				m[f.Key] = f.Value
+			}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// installCapture makes a capture the event emitter for the test. Not for
+// parallel tests: the emitter is process-wide.
+func installCapture(t *testing.T) *capture {
+	c := &capture{}
+	event.Install(c)
+	t.Cleanup(func() { event.Install(nil) })
+	return c
+}
+
+// Every decision writes a route event carrying its decision_id and the turn's
+// trace; a decision the log file can't take is kept in memory and reported.
+func TestEngineDecisionEventsAndLogFailure(t *testing.T) {
+	c := installCapture(t)
 	classifier := classifierFunc(func(context.Context, string) (route.Signal, error) {
 		return route.Signal{Domain: "General", Complexity: 1, Label: "small"}, nil
 	})
@@ -102,17 +148,33 @@ func TestEngineLogFailureStaysInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := route.NewEngine(classifier, filepath.Join(blocker, "child"), 10)
-	var logged bytes.Buffer
-	engine.SetLog(slog.New(slog.NewTextHandler(&logged, nil)))
-	d := engine.Decide(context.Background(), "main", "sess", "hello", route.ModeShadow)
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("trace-9"))
+	d := engine.Decide(ctx, "main", "sess", "hello", route.ModeShadow)
 	if d.Status != route.StatusOK || d.Error != "" {
 		t.Fatalf("decision = %+v", d)
 	}
 	if got := engine.Recent(1); len(got) != 1 || got[0] != d {
 		t.Fatalf("history = %+v", got)
 	}
-	if !strings.Contains(logged.String(), "decision log append failed") {
-		t.Fatalf("the failed write was not reported: %q", logged.String())
+	decided := c.of(route.Decided)
+	if len(decided) != 1 || decided[0]["decision_id"] != d.ID || decided[0]["trace"] != "trace-9" {
+		t.Fatalf("decision events = %v, want one with decision_id %s and trace trace-9", decided, d.ID)
+	}
+	if failed := c.of(route.RecordFailed); len(failed) != 1 || failed[0]["decision_id"] != d.ID {
+		t.Fatalf("the failed write was not reported: %v", failed)
+	}
+}
+
+// A classifier failure is a warning that the turn fell back to the planner.
+func TestEngineClassifierFailureIsAWarning(t *testing.T) {
+	c := installCapture(t)
+	engine := route.NewEngine(classifierFunc(func(context.Context, string) (route.Signal, error) {
+		return route.Signal{}, errors.New("endpoint down")
+	}), t.TempDir(), 10)
+	d := engine.Decide(context.Background(), "main", "sess", "hello", route.ModeShadow)
+	failed := c.of(route.DecideFailed)
+	if len(failed) != 1 || failed[0]["decision_id"] != d.ID || failed[0]["err"] != "endpoint down" || len(c.of(route.Decided)) != 0 {
+		t.Fatalf("events = %v / %v", failed, c.of(route.Decided))
 	}
 }
 

@@ -49,8 +49,7 @@ type routeRuntime struct {
 // reload) swaps a freshly built Supra in here instead — atomically, without
 // blocking an in-flight classify or touching the Engine's locking.
 type swappableClassifier struct {
-	p   atomic.Pointer[route.Supra]
-	log *slog.Logger // warm-up failures (nil: not logged)
+	p atomic.Pointer[route.Supra]
 }
 
 func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
@@ -74,8 +73,8 @@ func (s *swappableClassifier) store(cfg resolvedRouteConfig) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			if err := sup.Warm(ctx); err != nil && cfg.Enabled && s.log != nil {
-				s.log.Warn("route: classifier warm-up failed", "endpoint", safeDisplayEndpoint(cfg.Endpoint), "model", cfg.Model, "err", err)
+			if err := sup.Warm(ctx); err != nil && cfg.Enabled {
+				route.WarmFailed.Log(ctx, "endpoint", safeDisplayEndpoint(cfg.Endpoint), "model", cfg.Model, "err", err)
 			}
 		}()
 	}
@@ -121,7 +120,7 @@ func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Rou
 	if log == nil {
 		log = slog.Default()
 	}
-	classifier := &swappableClassifier{log: log}
+	classifier := &swappableClassifier{}
 	classifier.store(cfg)
 	rt := &routeRuntime{
 		cfg: cfg, cfgDir: cfgDir, dataDir: dataDir, router: router, log: log,
@@ -141,10 +140,9 @@ func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Rou
 	// live tenant is appending to; maintaining it is the live process's job
 	// (the file lock keeps either from losing the other's rows).
 	rt.engine.SetRetention(cfg.LogRetentionDays)
-	rt.engine.SetLog(log)
 	if router != nil {
 		if _, dropped, err := rt.engine.Prune(); err != nil {
-			log.Warn("route: startup retention prune failed", "err", err)
+			route.PruneFailed.Log(context.Background(), "err", err)
 		} else if dropped > 0 {
 			log.Info("route: retention pruned decision log", "dropped", dropped, "retention_days", cfg.LogRetentionDays)
 		}
@@ -166,19 +164,20 @@ func (r *routeRuntime) warnRuleCapabilities() {
 		if r.router == nil {
 			break
 		}
+		ctx := context.Background()
 		p, err := r.router.ForRole(rule.Role)
 		if err != nil {
-			r.log.Warn("route: rule role has no bound profile; rule degrades to the tier decision",
-				"rule", i, "role", string(rule.Role), "err", err)
+			route.RuleWeak.Log(ctx, "rule", i, "role", string(rule.Role),
+				"problem", "no bound profile, so it degrades to the tier decision ("+err.Error()+")")
 			continue
 		}
 		if rule.When.Code != nil && *rule.When.Code && !capabilityAtLeastMedium(p.Capabilities, "code_quality") {
-			r.log.Warn("route: rule sends code turns to a profile with low code_quality",
-				"rule", i, "role", string(rule.Role), "profile", p.ID)
+			route.RuleWeak.Log(ctx, "rule", i, "role", string(rule.Role), "profile", p.ID,
+				"problem", "it sends code turns to "+p.ID+", whose code_quality is low")
 		}
 		if rule.When.Math != nil && *rule.When.Math && !capabilityAtLeastMedium(p.Capabilities, "math_quality") {
-			r.log.Warn("route: rule sends math turns to a profile with low math_quality",
-				"rule", i, "role", string(rule.Role), "profile", p.ID)
+			route.RuleWeak.Log(ctx, "rule", i, "role", string(rule.Role), "profile", p.ID,
+				"problem", "it sends math turns to "+p.ID+", whose math_quality is low")
 		}
 	}
 }
@@ -306,7 +305,7 @@ func (r *routeRuntime) Hook() agent.RouteHook {
 			role := model.Role(d.SelectedRole)
 			allowed, primary, constraintErr := r.profileConstraints(role, cfg, d)
 			if constraintErr != nil {
-				r.log.Warn("route: selected binding changed; using planner", "role", role, "err", constraintErr)
+				route.RoleUnavailable.Log(ctx, "decision_id", d.ID, "role", role, "fallback", "the planner", "err", constraintErr)
 			} else {
 				obs.Role = role
 				obs.Applied = true
@@ -323,8 +322,7 @@ func (r *routeRuntime) Hook() agent.RouteHook {
 		if obs.Applied && d.RuleRole != "" && d.RuleRole != string(obs.Role) {
 			ruleRole := model.Role(d.RuleRole)
 			if allowed, primary, ruleErr := r.ruleConstraints(ruleRole, cfg, d); ruleErr != nil {
-				r.log.Warn("route: rule role unavailable; keeping tier decision",
-					"role", ruleRole, "err", ruleErr)
+				route.RoleUnavailable.Log(ctx, "decision_id", d.ID, "role", ruleRole, "fallback", "the tier decision", "err", ruleErr)
 			} else {
 				obs.Role = ruleRole
 				obs.AllowedProfiles = allowed
@@ -353,8 +351,7 @@ func (r *routeRuntime) Hook() agent.RouteHook {
 			obs.Text = "router would send this big — prefix the next prompt with !big to accept"
 		}
 		if d.PrivacyPierced {
-			r.log.Warn("ROUTE PRIVACY OVERRIDE: forced profile selected",
-				"agent", req.AgentID, "profile", d.SelectedProfileID, "role", d.SelectedRole)
+			route.ForceUsed.Log(ctx, "decision_id", d.ID, "agent", req.AgentID, "profile", d.SelectedProfileID, "role", d.SelectedRole)
 		}
 		return obs
 	}
@@ -384,9 +381,7 @@ func (r *routeRuntime) confirmPendingSuggestion(agentID, sessionID string) {
 	if id != "" {
 		go func() {
 			if err := r.engine.Confirm(id); err != nil {
-				if r.log != nil {
-					r.log.Warn("route: persist assisted gold label", "decision", id, "err", err)
-				}
+				route.ConfirmFailed.Log(context.Background(), "decision_id", id, "err", err)
 			}
 		}()
 	}
@@ -654,7 +649,7 @@ func (r *routeRuntime) bindForce(profileID string) error {
 	if err := r.router.PinRole(routeForceRole, p.ID); err != nil {
 		return fmt.Errorf("pin forced profile: %w", err)
 	}
-	r.log.Warn("ROUTE PRIVACY OVERRIDE ARMED", "profile", profileID, "binding", p.ID)
+	route.ForceArmed.Log(context.Background(), "profile", profileID, "binding", p.ID)
 	return nil
 }
 

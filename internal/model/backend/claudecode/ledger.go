@@ -1,13 +1,15 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
+
+	"tenant/internal/model"
 )
 
 // ledger is the rolling-7-day token guard for the subscription. It exists so
@@ -25,7 +27,6 @@ type ledger struct {
 	mu     sync.Mutex
 	path   string
 	budget int64
-	log    *slog.Logger
 }
 
 type ledgerEntry struct {
@@ -41,19 +42,18 @@ const ledgerWindow = 7 * 24 * time.Hour
 
 // openLedger builds the ledger; budget 0 (unset/invalid env) disables the
 // pre-call refusal but spend is still tracked for observability.
-func openLedger(log *slog.Logger) *ledger {
+func openLedger() *ledger {
 	var budget int64
 	if v := os.Getenv(budgetEnv); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			budget = n
-		} else if log != nil {
-			log.Warn("ignoring invalid weekly budget", "env", budgetEnv, "value", v)
+		} else {
+			model.BudgetInvalid.Log(context.Background(), "env", budgetEnv, "value", v)
 		}
 	}
 	return &ledger{
 		path:   LedgerPath(),
 		budget: budget,
-		log:    log,
 	}
 }
 
@@ -106,8 +106,8 @@ func (l *ledger) add(tokens int) {
 		}
 	}
 	lf.Entries = append(pruned, ledgerEntry{TS: time.Now(), Tokens: int64(tokens)})
-	if err := l.save(lf); err != nil && l.log != nil {
-		l.log.Warn("claudecode usage ledger write failed", "path", l.path, "err", err)
+	if err := l.save(lf); err != nil {
+		model.BudgetUnsaved.Log(context.Background(), "path", l.path, "err", err)
 	}
 }
 
