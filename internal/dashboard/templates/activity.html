@@ -1,5 +1,5 @@
 {{define "content"}}
-<div class="card-head">Activity <span class="dim">· every subsystem, one feed · full history + live tail</span></div>
+<div class="card-head">Activity <span class="dim">· every subsystem, one feed · full history + live tail ·</span> <a class="linkbtn" href="/logs{{if .Source}}?q=log:{{.Source}}{{end}}">investigate in Logs</a></div>
 {{if not .Configured}}<div class="card"><div class="dim">Activity log unavailable in this session.</div></div>{{else}}
 <nav class="memtabs">
   <a href="/activity{{if .Level}}?level={{.Level}}{{end}}" class="{{if not .Source}}on{{end}}">All</a>

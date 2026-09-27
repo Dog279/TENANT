@@ -235,20 +235,31 @@ func (a *API) event(w http.ResponseWriter, r *http.Request) {
 	}
 	evs := []event.Event{e}
 	a.reveal(r, h, query.Filter{}, evs)
-	d := EventDetail{Event: evs[0]}
-	if e.ID != 0 {
-		if s, ok := catalog.Lookup(e.Provider, e.ID); ok {
-			v := specView(s)
-			d.Spec, d.Help = &v, catalog.Help(s)
-		}
-		is, err := st.EventStats(r.Context(), e.Provider, e.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		d.Stats = &IDStats{Count: is.Count, First: when(is.First), Last: when(is.Last), Trend: is.Trend}
+	d, err := Detail(r.Context(), st, evs[0])
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// Detail is e with its catalog entry, its Help and how often its ID has
+// occurred, when it is catalogued.
+func Detail(ctx context.Context, st *store.Store, e event.Event) (EventDetail, error) {
+	d := EventDetail{Event: e}
+	if e.ID == 0 {
+		return d, nil
+	}
+	if s, ok := catalog.Lookup(e.Provider, e.ID); ok {
+		v := specView(s)
+		d.Spec, d.Help = &v, catalog.Help(s)
+	}
+	is, err := st.EventStats(ctx, e.Provider, e.ID)
+	if err != nil {
+		return d, err
+	}
+	d.Stats = &IDStats{Count: is.Count, First: when(is.First), Last: when(is.Last), Trend: is.Trend}
+	return d, nil
 }
 
 // stream is the live tail: every event matching q after the cursor in
@@ -411,14 +422,20 @@ func (a *API) timeline(w http.ResponseWriter, r *http.Request) {
 	}
 	out := Timeline{ID: id, Events: nonNil(evs)}
 	a.reveal(r, h, query.Filter{}, out.Events)
-	if a.Runs == nil {
-		out.RunNote = "run records (runs.db) can't be read from this process"
-	} else if run, err := a.Runs(r.Context(), id); err != nil {
-		out.RunNote = "no run record: " + err.Error()
-	} else {
-		out.Run = &run
-	}
+	out.Run, out.RunNote = a.Run(r.Context(), id)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// Run is trace id's run record from runs.db, or why there is none.
+func (a *API) Run(ctx context.Context, id string) (*runtrace.Run, string) {
+	if a.Runs == nil {
+		return nil, "run records (runs.db) can't be read from this process"
+	}
+	run, err := a.Runs(ctx, id)
+	if err != nil {
+		return nil, "no run record: " + err.Error()
+	}
+	return &run, ""
 }
 
 // export writes every event matching q, oldest first, up to the newest one
@@ -704,11 +721,6 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := logOf(r.PathValue("log"))
-	if !logs.ValidSource(name) {
-		writeError(w, http.StatusBadRequest, "log: [a-z0-9][a-z0-9._-]{0,39}")
-		return
-	}
 	var c PolicyChange
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	dec.DisallowUnknownFields()
@@ -716,20 +728,32 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	ctx := r.Context()
+	name, err := a.Change(r.Context(), h, st, r.PathValue("log"), c)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	a.writeLog(w, r, h, st, name)
+}
+
+// Change applies c to the log named (or a provider's log), and files the
+// Security record of the change; it returns the log's name.
+func (a *API) Change(ctx context.Context, h *logs.Hub, st *store.Store, log string, c PolicyChange) (string, error) {
+	name := logOf(log)
+	if !logs.ValidSource(name) {
+		return name, refuse(http.StatusBadRequest, "log: [a-z0-9][a-z0-9._-]{0,39}")
+	}
 	kv := []any{"log", name}
 	switch {
 	case c.Reset:
 		if err := st.SetPolicy(ctx, name, store.Policy{}); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return name, refuse(http.StatusBadRequest, "%s", err)
 		}
 		kv = append(kv, "policy", "config.json's")
 	case c.MaxBytes != nil || c.MaxAgeS != nil || c.OnFull != nil || c.MinLevel != nil || c.Enabled != nil:
 		p, err := st.Policy(ctx, h.Budget(), name)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return name, err
 		}
 		if c.MaxBytes != nil {
 			p.MaxBytes = *c.MaxBytes
@@ -744,8 +768,7 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 			if p.MinLevel = 0; *c.MinLevel != "" && *c.MinLevel != "all" {
 				lvl, ok := event.ParseLevel(*c.MinLevel)
 				if !ok {
-					writeError(w, http.StatusBadRequest, "min_level: critical, error, warning, info, verbose or all")
-					return
+					return name, refuse(http.StatusBadRequest, "min_level: critical, error, warning, info, verbose or all")
 				}
 				p.MinLevel = lvl
 			}
@@ -754,8 +777,7 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 			p.Disabled = !*c.Enabled
 		}
 		if err := st.SetPolicy(ctx, name, p); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+			return name, refuse(http.StatusBadRequest, "%s", err)
 		}
 		v := policyView(p)
 		kv = append(kv, "max_bytes", v.MaxBytes, "max_age_s", v.MaxAgeS, "on_full", v.OnFull, "min_level", v.MinLevel, "enabled", v.Enabled)
@@ -763,16 +785,14 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 	if c.DebugFor != nil {
 		d, err := Duration(*c.DebugFor)
 		if err != nil || d < 0 || d > maxDebug {
-			writeError(w, http.StatusBadRequest, "debug_for: a duration up to 24h, such as 30m; 0 turns it off")
-			return
+			return name, refuse(http.StatusBadRequest, "debug_for: a duration up to 24h, such as 30m; 0 turns it off")
 		}
 		var until time.Time
 		if d > 0 {
 			until = time.Now().Add(d)
 		}
 		if err := st.SetDebug(ctx, name, until); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return name, err
 		}
 		kv = append(kv, "debug_for", d.String())
 	}
@@ -784,7 +804,7 @@ func (a *API) change(w http.ResponseWriter, r *http.Request) {
 		}
 		a.record(ctx, h, catalog.LogReconfigured, name, strings.Join(details, ", "))
 	}
-	a.writeLog(w, r, h, st, name)
+	return name, nil
 }
 
 // logOf is the log a name stands for: a registered provider's log, else the
@@ -804,17 +824,26 @@ func (a *API) clear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("log")
-	n, err := st.Clear(r.Context(), name)
-	if errors.Is(err, store.ErrProtected) {
-		writeError(w, http.StatusForbidden, "the Security log is never cleared")
+	n, err := a.Clear(r.Context(), h, st, name)
+	if err != nil {
+		fail(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, Cleared{Log: name, Cleared: n})
+}
+
+// Clear deletes every event of log, and files the Security record of it. The
+// Security log is never cleared.
+func (a *API) Clear(ctx context.Context, h *logs.Hub, st *store.Store, log string) (int64, error) {
+	n, err := st.Clear(ctx, log)
+	if errors.Is(err, store.ErrProtected) {
+		return 0, refuse(http.StatusForbidden, "the Security log is never cleared")
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return 0, err
 	}
-	a.record(r.Context(), h, catalog.LogCleared, name, fmt.Sprintf("%d events", n))
-	writeJSON(w, http.StatusOK, Cleared{Log: name, Cleared: n})
+	a.record(ctx, h, catalog.LogCleared, log, fmt.Sprintf("%d events", n))
+	return n, nil
 }
 
 // builtins are the views every log book has (§9.2).
@@ -831,7 +860,8 @@ func (a *API) builtins() []View {
 	}
 }
 
-func (a *API) allViews(ctx context.Context, st *store.Store) ([]View, error) {
+// Views is the built-in views, then the saved ones.
+func (a *API) Views(ctx context.Context, st *store.Store) ([]View, error) {
 	saved, err := st.Views(ctx)
 	if err != nil {
 		return nil, err
@@ -848,7 +878,7 @@ func (a *API) views(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	vs, err := a.allViews(r.Context(), st)
+	vs, err := a.Views(r.Context(), st)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -861,7 +891,7 @@ func (a *API) view(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	vs, err := a.allViews(r.Context(), st)
+	vs, err := a.Views(r.Context(), st)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -894,23 +924,27 @@ func (a *API) saveView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	v.Name = strings.TrimSpace(v.Name)
-	if v.Name == "" || len(v.Name) > 64 || strings.IndexFunc(v.Name, func(r rune) bool { return r < ' ' || r == 0x7f }) >= 0 {
-		writeError(w, http.StatusBadRequest, "name: 1-64 printable characters")
+	v, err := a.SaveView(r.Context(), st, v)
+	if err != nil {
+		fail(w, err)
 		return
+	}
+	writeJSON(w, http.StatusCreated, v)
+}
+
+// SaveView saves v, a view of the operator's own, under its name.
+func (a *API) SaveView(ctx context.Context, st *store.Store, v View) (View, error) {
+	v = View{Name: strings.TrimSpace(v.Name), Filter: v.Filter}
+	if v.Name == "" || len(v.Name) > 64 || strings.IndexFunc(v.Name, func(r rune) bool { return r < ' ' || r == 0x7f }) >= 0 {
+		return v, refuse(http.StatusBadRequest, "name: 1-64 printable characters")
 	}
 	if a.builtin(v.Name) {
-		writeError(w, http.StatusForbidden, fmt.Sprintf("%q is a built-in view", v.Name))
-		return
+		return v, refuse(http.StatusForbidden, "%q is a built-in view", v.Name)
 	}
-	if _, ok := filter(w, v.Filter); !ok {
-		return
+	if _, err := query.Parse(v.Filter); err != nil {
+		return v, refuse(http.StatusBadRequest, "%s", err)
 	}
-	if err := st.SaveView(r.Context(), v.Name, v.Filter); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusCreated, View{Name: v.Name, Filter: v.Filter})
+	return v, st.SaveView(ctx, v.Name, v.Filter)
 }
 
 func (a *API) deleteView(w http.ResponseWriter, r *http.Request) {
@@ -918,20 +952,23 @@ func (a *API) deleteView(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	name := r.PathValue("name")
-	if a.builtin(name) {
-		writeError(w, http.StatusForbidden, fmt.Sprintf("%q is a built-in view", name))
+	if err := a.DeleteView(r.Context(), st, r.PathValue("name")); err != nil {
+		fail(w, err)
 		return
 	}
-	found, err := st.DeleteView(r.Context(), name)
-	switch {
-	case err != nil:
-		writeError(w, http.StatusInternalServerError, err.Error())
-	case !found:
-		writeError(w, http.StatusNotFound, fmt.Sprintf("no view %q", name))
-	default:
-		w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteView deletes the operator's view name. A built-in one stays.
+func (a *API) DeleteView(ctx context.Context, st *store.Store, name string) error {
+	if a.builtin(name) {
+		return refuse(http.StatusForbidden, "%q is a built-in view", name)
 	}
+	found, err := st.DeleteView(ctx, name)
+	if err == nil && !found {
+		err = refuse(http.StatusNotFound, "no view %q", name)
+	}
+	return err
 }
 
 func (a *API) catalog(w http.ResponseWriter, r *http.Request) {
@@ -983,16 +1020,21 @@ func specView(s event.Spec) Spec {
 }
 
 func (a *API) components(w http.ResponseWriter, r *http.Request) {
-	list := func(context.Context) ([]Component, error) { return lifecycle.Components(), nil }
-	if a.Components != nil {
-		list = a.Components
-	}
-	cs, err := list(r.Context())
+	cs, err := a.ListComponents(r.Context())
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Components{Components: append([]Component{}, cs...)})
+}
+
+// ListComponents is what is running: the Components hook's, or this
+// process's registry.
+func (a *API) ListComponents(ctx context.Context) ([]Component, error) {
+	if a.Components != nil {
+		return a.Components(ctx)
+	}
+	return lifecycle.Components(), nil
 }
 
 // recoverFile copies what can still be read of a logbook.db that was moved
@@ -1255,6 +1297,49 @@ func (c *counter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.n += int64(n)
 	return n, err
+}
+
+// What the dashboard's Logs page shares with the handlers, beside Detail,
+// Run, Change, Clear, Views, SaveView, DeleteView and ListComponents.
+
+// Record files the Security record of an action on the log book taken from
+// the Logs page (a reveal), as the API files its own.
+func (a *API) Record(ctx context.Context, h *logs.Hub, d *event.Def, log, details string) {
+	a.record(ctx, h, d, log, details)
+}
+
+// Mask replaces the value of every sensitive field of evs with event.Masked.
+func Mask(evs []event.Event) { mask(evs) }
+
+// FilterLog is the one log a filter names, or * for any other filter.
+func FilterLog(f query.Filter) string { return filterLog(f) }
+
+// LogViews lists the store's logs, or only the one named.
+func LogViews(ctx context.Context, h *logs.Hub, st *store.Store, only string) ([]Log, error) {
+	return logViews(ctx, h, st, only)
+}
+
+// Error is a request the API refuses, with the status it answers: what the
+// functions the handlers share with the dashboard's Logs page return.
+type Error struct {
+	Status int
+	Msg    string
+}
+
+func (e *Error) Error() string { return e.Msg }
+
+func refuse(status int, format string, args ...any) error {
+	return &Error{Status: status, Msg: fmt.Sprintf(format, args...)}
+}
+
+// fail writes err: an *Error with its status, anything else as a 500.
+func fail(w http.ResponseWriter, err error) {
+	var e *Error
+	if errors.As(err, &e) {
+		writeError(w, e.Status, e.Msg)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

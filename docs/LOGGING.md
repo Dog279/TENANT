@@ -387,6 +387,10 @@ Every open tab updates live. After Tenant restarts, an open tab redraws itself
 from the new process's lines when it reconnects. A source's tab stays until
 Tenant restarts, even if its folder is deleted.
 
+The **Logs** page (`/logs`) is where to investigate: the log book itself,
+laid out like Event Viewer ([below](#the-logs-page)). The Activity tab links to
+it, filtered to the source it shows.
+
 `tenant attach [URL] --follow [--source discord] [--level error] [--trace ID]`
 is the terminal equivalent, over `GET /api/activity`; `--trace` keeps one
 turn's lines. Flags may come before or after the URL. After a Tenant restart
@@ -1011,6 +1015,49 @@ beside the per-minute ones, retention prunes with them and a privacy forget
 takes its events out of. On 1M events it takes 14–20 ms (p95; the budget is 50;
 `TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run TestSummaryBudget -v`),
 where a week from the per-minute rollups alone took 135 ms.
+
+### The Logs page
+
+The dashboard's **Logs** page (`internal/dashboard/ssr_logs.go`) reads the
+store through the functions the API's handlers call, and renders on the
+server like every page; the grid's next pages, an event's detail, the match
+count and the live tail arrive as Datastar patches.
+
+- **The tree:** Summary at its root; Custom Views (the four built-ins and the
+  saved ones); Tenant's logs (System, Security, Turns, Sub-agents, …); the
+  subsystems where `catalog.Group` puts them (Channels, Scheduler,
+  Integrations › MCP and Plugins, one entry per server or plugin, Model,
+  Memory, Sandbox, …); External; and Components. A log appears once it is
+  written to, with its warnings and worse of the last 24 hours.
+- **The grid:** level, time, log, provider, event ID, task and message, newest
+  first, 100 rows a page; scrolling to the bottom fetches the next page by
+  cursor. The count ("12,345 events; 231 match") is fetched after the page.
+  **live** tails the filter: each new match is added at the top, from the
+  page's own subscription to the store, and a reconnect resumes from the last
+  row it got.
+- **An event's detail** (click a row; `/logs/event/{seq}` is its permalink,
+  and opens the page with it selected in its log): **General**, the message,
+  the time in local time and UTC, its facts, and every correlation ID as a
+  link to the events that share it; **Details**, every field and the raw JSON,
+  sensitive values masked until **Reveal**, which files a Security record
+  (`security/4904`); **Correlated**, the timeline of its turn (or activity)
+  across every log, with the turn's run record from `runs.db` (its tool calls
+  and approvals); **Help**, the catalog entry and how often the ID was seen.
+- **Actions:** the filter (a parse error shows beside it, with its column);
+  Find, which adds quoted text to the filter; save the filter as a view;
+  export what it matches (NDJSON, CSV or text, through
+  `/api/events/export`, without sensitive values); and, when the filter names
+  one log, its Properties (maximum size and age, when full, minimum level,
+  enabled, reset, debug for 30 minutes) and Clear, which offers the export
+  first. Each change and each clear files its Security record; the Security
+  log is never cleared.
+- **Summary** and **Components** show what the two sections above describe.
+
+The discovery questions of the design (§9.1: what is running, what went
+wrong recently, what happened at 14:03, why did this fail and what else did
+that run do) are handler tests, each answered in at most three requests
+(`TestLogsDiscoveryDrill`), and `TestLogsPageInChrome` drives the page in
+Chrome when it is installed.
 
 ### The API
 
