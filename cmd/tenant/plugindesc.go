@@ -12,7 +12,9 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"tenant/internal/model"
@@ -85,6 +87,44 @@ type pluginDescriptor struct {
 	// Activate builds the plugin from saved config on its first /enable. Nil:
 	// enabling it needs a relaunch with the plugin's flags.
 	Activate func(ctx context.Context, e *pluginEnv) (plugin, func(), error)
+
+	// AdaptConfigure adjusts the plugin's config schema to this install
+	// (embedded OAuth credentials, a cache dir, a connector), for /configure
+	// and `tenant setup` alike.
+	AdaptConfigure func(k skillKind, h configureHost) skillKind
+	// SelfEnables reports that a configure with these settings already
+	// brought the plugin's tools live some other way, so /configure must not
+	// auto-enable the plugin itself.
+	SelfEnables func(settings map[string]string) bool
+	// OnConfigured runs after a configure whose probe passed; what it writes
+	// to out is shown to the operator.
+	OnConfigured func(sc *skillCfgControl, lc *launchConfig, creds *credentials, out *strings.Builder)
+
+	// Connector marks a plugin that stores credentials or files for a
+	// connected service: `tenant privacy forget --connector <id>` removes its
+	// skill:<id>:* credentials and its Forget files, and privacy status and
+	// export list it.
+	Connector bool
+	// Forget lists the files, besides its credentials, that forgetting the
+	// connector deletes: token caches and the plugin's own data.
+	Forget func(cfgDir, dataDir string) []string
+	// ConfigSecrets and DataSecrets list the plugin's at-rest secret files in
+	// the config and data dirs (token caches, an OAuth client). doctor audits
+	// and repairs their protection, the file tools refuse them, and backup
+	// files them under their directory.
+	ConfigSecrets func(cfgDir string) []string
+	DataSecrets   func(dataDir string) []string
+	// PointedSecrets lists secret files the operator pointed the plugin at (a
+	// service-account key, an OAuth client), by flag or saved setting: the
+	// file tools refuse them.
+	PointedSecrets func(pf *pluginFlags, settings map[string]string) []string
+	// External names what the plugin uses outside Tenant's directories (a
+	// wiki vault, a database), path to what it is, from its saved settings,
+	// so backup can say it does not reach it.
+	External func(settings map[string]string) map[string]string
+	// Keys are the plugin's rows on the keys page: credentials an operator
+	// pastes in.
+	Keys []keySpec
 
 	// Doctor lists the plugin's health checks, in the order doctor runs them.
 	Doctor []doctorCheck
@@ -271,4 +311,44 @@ func expandPluginPaths(pf *pluginFlags) {
 			d.ExpandPaths(pf)
 		}
 	}
+}
+
+// pluginConfigSecrets and pluginDataSecrets list every plugin's at-rest
+// secret files in the config and data dirs.
+func pluginConfigSecrets(cfgDir string) []string {
+	var out []string
+	for _, d := range plugins().All() {
+		if d.ConfigSecrets != nil {
+			out = append(out, d.ConfigSecrets(cfgDir)...)
+		}
+	}
+	return out
+}
+
+func pluginDataSecrets(dataDir string) []string {
+	var out []string
+	for _, d := range plugins().All() {
+		if d.DataSecrets != nil {
+			out = append(out, d.DataSecrets(dataDir)...)
+		}
+	}
+	return out
+}
+
+// pluginSecretName reports whether name is the file name of a plugin secret
+// that list places directly in its directory.
+func pluginSecretName(list func(dir string) []string, name string) bool {
+	const dir = "dir"
+	for _, p := range list(dir) {
+		if filepath.Dir(p) == dir && filepath.Base(p) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// configureHost is what AdaptConfigure may use from the configure surface.
+type configureHost struct {
+	cfgDir     string
+	mcpConnect atlassianMCPConnector // nil where no MCP connector is wired
 }

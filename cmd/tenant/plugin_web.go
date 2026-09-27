@@ -16,7 +16,15 @@ import (
 // per agent (team.go addWebTool), never in the shared stub catalog.
 func webPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:          "web",
+		ID:        "web",
+		Connector: true,
+		// The search backends (optional; a key just upgrades the backend). env
+		// wins at runtime, so EnvVars reflect resolution order.
+		Keys: []keySpec{
+			{CredID: "tavily", Name: "Tavily Search", Category: "Web search", EnvVars: []string{"TAVILY_API_KEY", "TAVILY_KEY"}, Kind: keyDirect},
+			{CredID: "brave_search", Name: "Brave Search", Category: "Web search", EnvVars: []string{"BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"}, Kind: keyDirect},
+			{CredID: "jina", Name: "Jina Reader", Category: "Web search", EnvVars: []string{"JINA_API_KEY", "JINA_KEY"}, Kind: keyDirect},
+		},
 		Flags:       bindWebFlags,
 		On:          func(pf *pluginFlags) bool { return webFlagsOf(pf).on },
 		ApplyConfig: applyWebConfig,
@@ -114,4 +122,29 @@ func evalWeb(pf *pluginFlags, _ *commonFlags, explicit map[string]bool) bool {
 	}
 	f.on = true
 	return true
+}
+
+// checkChrome — only meaningful when the web plugin is configured/enabled.
+// detectChrome probes the well-known OS install paths; missing Chrome
+// silently breaks web_navigate at first use, hence the upfront warning.
+func checkChrome(_ context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil || e.lc.Skills == nil {
+		return checkResult{Status: statusSkip, Detail: "web plugin not configured"}
+	}
+	wcfg := e.lc.Skills["web"]
+	if wcfg == nil || !wcfg.Enabled {
+		return checkResult{Status: statusSkip, Detail: "web plugin not enabled"}
+	}
+	// Optional override path from the web plugin config.
+	overridePath := ""
+	if wcfg.Settings != nil {
+		overridePath = wcfg.Settings["chrome_path"]
+	}
+	path, err := web.DetectChrome(overridePath)
+	if err != nil {
+		return checkResult{Status: statusFail,
+			Detail: "no Chrome/Chromium/Edge found on this system",
+			Fix:    "install Chrome, OR set web.settings.chrome_path in config.json"}
+	}
+	return checkResult{Status: statusOK, Detail: "chrome at " + path}
 }

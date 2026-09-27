@@ -13,18 +13,28 @@ import (
 // atlassianPlugin declares Atlassian: Jira search, read and board writes.
 func atlassianPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:        "atlassian",
-		Flags:     bindAtlassianFlags,
-		On:        func(pf *pluginFlags) bool { return atlassianFlagsOf(pf).on },
-		Launch:    launchAtlassian,
-		Eval:      evalAtlassian,
-		Title:     "Atlassian (Jira)",
-		Version:   1,
-		Tools:     func() []model.ToolSpec { return atlassian.NewDispatcher(nil, atlassian.Policy{}).Tools() },
-		Configure: atlassianSkillKind,
-		Actions:   map[string]string{"jira_write": catDestructive}, // create, comment, transition
-		StubHint:  "run `/configure atlassian` (OAuth sign-in or API token), then `/enable atlassian`",
-		Activate:  activateAtlassian,
+		ID: "atlassian",
+		AdaptConfigure: func(k skillKind, h configureHost) skillKind {
+			return adaptAtlassianForCfgDir(k, h.cfgDir, h.mcpConnect) // TEN-160/164
+		},
+		// "mcp" mode is self-enabling: the probe connected via the remote MCP
+		// connector, which already brought its tools live under the mcp:<host>
+		// label; the native plugin has no site in that mode.
+		SelfEnables:   func(settings map[string]string) bool { return settings["auth"] == "mcp" },
+		Connector:     true,
+		Forget:        func(cfg, _ string) []string { return []string{atlassianTokenPath(cfg)} },
+		ConfigSecrets: func(cfg string) []string { return []string{atlassianTokenPath(cfg)} },
+		Flags:         bindAtlassianFlags,
+		On:            func(pf *pluginFlags) bool { return atlassianFlagsOf(pf).on },
+		Launch:        launchAtlassian,
+		Eval:          evalAtlassian,
+		Title:         "Atlassian (Jira)",
+		Version:       1,
+		Tools:         func() []model.ToolSpec { return atlassian.NewDispatcher(nil, atlassian.Policy{}).Tools() },
+		Configure:     atlassianSkillKind,
+		Actions:       map[string]string{"jira_write": catDestructive}, // create, comment, transition
+		StubHint:      "run `/configure atlassian` (OAuth sign-in or API token), then `/enable atlassian`",
+		Activate:      activateAtlassian,
 		CLI: []*cliCommand{
 			{Names: []string{"atlassian"}, Section: "connect", Run: cmdAtlassian, Sub: []string{"login"}, Flags: []string{"--site", "--client-id", "--oauth-callback"},
 				Summary: "sign in to Atlassian (Jira, Confluence)",

@@ -13,11 +13,11 @@ import (
 // /configure itself uses, so the wizard and /configure cannot drift; a
 // setup-only plugin (wiki, sql, imessage, os) brings its own schema.
 //
-// gsuite is adapted for cfgDir exactly as newSkillCfgControl adapts the TUI
-// copy (adaptGSuiteForCfgDir): the global skillKinds["gsuite"] is the raw,
-// cfgDir-less entry, so without this the wizard's oauth branch would always
-// take the slow-path abort and the opt-in probe would lack the embedded-creds
-// reader.
+// Each schema is adapted to this install exactly as newSkillCfgControl adapts
+// /configure's copy (the descriptor's AdaptConfigure): the global skillKinds
+// entries are the raw, cfgDir-less ones, so without this gsuite's oauth branch
+// would always take the slow-path abort and its opt-in probe would lack the
+// embedded-creds reader.
 func wizardCatalog(cfgDir string) []skillKind {
 	var out []skillKind
 	for _, d := range setupPlugins() {
@@ -25,8 +25,8 @@ func wizardCatalog(cfgDir string) []skillKind {
 		if !ok {
 			k = d.Configure()
 		}
-		if d.ID == "gsuite" {
-			k = adaptGSuiteForCfgDir(k, cfgDir)
+		if d.AdaptConfigure != nil {
+			k = d.AdaptConfigure(k, configureHost{cfgDir: cfgDir})
 		}
 		out = append(out, k)
 	}

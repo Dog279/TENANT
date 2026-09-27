@@ -14,7 +14,15 @@ import (
 // gsuitePlugin declares Google Workspace: Gmail, Calendar and Drive.
 func gsuitePlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:          "gsuite",
+		ID:             "gsuite",
+		AdaptConfigure: func(k skillKind, h configureHost) skillKind { return adaptGSuiteForCfgDir(k, h.cfgDir) },
+		Connector:      true,
+		ConfigSecrets:  func(cfg string) []string { return []string{gsuite.EmbeddedOAuthPath(cfg)} },
+		// The service-account key and the OAuth client JSON the operator named;
+		// the client JSON holds a client secret.
+		PointedSecrets: func(pf *pluginFlags, settings map[string]string) []string {
+			return []string{gsuiteFlagsOf(pf).saJSON, settings["sa_json"], settings["oauth_creds_json"]}
+		},
 		Flags:       bindGSuiteFlags,
 		On:          func(pf *pluginFlags) bool { return gsuiteFlagsOf(pf).on },
 		ApplyConfig: applyGSuiteConfig,
@@ -171,4 +179,88 @@ func launchGSuite(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
 	}
 	return []plugin{gsuite.NewDispatcher(svc, gsuite.Policy{AllowSend: e.gateAllow(f.allowSend), Confirm: e.confirm})}, nil, nil
+}
+
+// checkGSuite verifies the gsuite plugin's stored auth config can mint
+// a token against Google. TEN-65: mirrors checkDiscord's tier shape.
+//
+//	skip   — gsuite not configured / not enabled
+//	FAIL   — config invalid (auth mode unknown, sa_json missing/invalid,
+//	         subject missing for sa mode)
+//	WARN   — config valid but probe couldn't reach Google (offline tolerant)
+//	OK     — Gmail.Search returns successfully (token mints + Gmail responds)
+//
+// Reuses probeGSuite from skillctl_gsuite.go so the doctor check and
+// the `/skill probe gsuite` command share a code path. 5s timeout
+// enforced via runProbe.
+func checkGSuite(_ context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil || e.lc.Skills == nil {
+		return checkResult{Status: statusSkip, Detail: "gsuite plugin not configured"}
+	}
+	gcfg := e.lc.Skills["gsuite"]
+	if gcfg == nil || !gcfg.Enabled {
+		return checkResult{Status: statusSkip, Detail: "gsuite plugin not enabled"}
+	}
+	settings := gcfg.Settings
+	if settings == nil {
+		settings = map[string]string{}
+	}
+	// Don't load credentials separately — gsuite has no credentials.json
+	// secrets (auth/sa_json/subject are all non-secret settings).
+	creds, _ := e.readCredentials()
+
+	auth := settings["auth"]
+	if auth == "" {
+		auth = "sa" // catalog default — business via SA + DWD is primary
+	}
+	switch auth {
+	case "gcloud", "sa", "oauth":
+		// fall through
+	default:
+		return checkResult{Status: statusFail,
+			Detail: fmt.Sprintf("gsuite auth mode %q invalid (expected oauth, gcloud, or sa)", auth),
+			Fix:    "run `/configure gsuite` and pick a sign-in method"}
+	}
+	if auth == "sa" {
+		if settings["sa_json"] == "" || settings["subject"] == "" {
+			return checkResult{Status: statusFail,
+				Detail: "gsuite auth=sa requires sa_json + subject",
+				Fix:    "run `/configure gsuite auth=sa sa_json=/path/to/key.json subject=user@example.com`"}
+		}
+		// Operator note (DWD scopes): write posture (--allow-send) now needs
+		// gmail.modify+gmail.send, full calendar, and full drive. The
+		// domain-wide-delegation client in the Admin console pins an explicit
+		// scope allow-list — if it only lists the readonly scopes, every
+		// write call fails with "unauthorized_client". Admin must add the
+		// write scopes there. We can't detect that here without a live write.
+	}
+	if auth == "oauth" {
+		// Need EITHER an operator-supplied creds path OR embedded creds
+		// available (via go:embed compiled-in, or runtime file under
+		// cfgDir from `tenant oauth-setup gsuite ...`). Caught here so
+		// the probe doesn't fail with a confusing "no OAuth creds" later.
+		hasOperatorCreds := settings["oauth_creds_json"] != ""
+		hasEmbedded := gsuite.HasEmbeddedOAuth(e.c.cfgDir)
+		if !hasOperatorCreds && !hasEmbedded {
+			return checkResult{Status: statusFail,
+				Detail: "gsuite auth=oauth needs an OAuth client (none configured)",
+				Fix: "if you maintain this build: run `tenant oauth-setup gsuite <path-to-client.json>` (see docs/SETUP-GSUITE-OAUTH.md). " +
+					"Otherwise: run `/configure gsuite` and provide an OAuth client JSON path, OR pick a different auth mode."}
+		}
+		// Operator note (scope migration): wiring in the official clients
+		// broadened scopes (Drive read/write, gmail.modify, full calendar).
+		// A token minted BEFORE the upgrade lacks them, so those calls fail
+		// with "Insufficient Permission" until the user re-consents (the
+		// browser flow re-runs once the cached token is cleared). We don't
+		// detect this here (would need a tokeninfo round-trip per run).
+	}
+
+	// runProbe enforces the 5s timeout + goroutine-safe wrapping.
+	identity, err := runProbe(skillKinds["gsuite"], creds, settings)
+	if err != nil {
+		return checkResult{Status: statusWarn,
+			Detail: "gsuite config looks valid but probe failed: " + err.Error(),
+			Fix:    "if intentional offline, ignore; else verify auth setup with `/skill probe gsuite`"}
+	}
+	return checkResult{Status: statusOK, Detail: "gsuite reachable — " + identity}
 }

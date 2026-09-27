@@ -101,7 +101,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		relayApprover *discordApprover
 		relaySender   messageSender
 	)
-	discordToken := resolveSecret(c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
+	discordToken := discordRelayToken(c.cfgDir)
 	if strings.TrimSpace(discordToken) != "" {
 		if r, svc, appr, snd, derr := buildDiscordAgent(discordToken, deps); derr != nil {
 			d.notify("discord relay: " + derr.Error())

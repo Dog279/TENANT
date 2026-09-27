@@ -5,6 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
+	"strings"
 	"tenant/internal/cmdreg"
 	"tenant/internal/model"
 	"tenant/internal/plugins/imessage"
@@ -15,6 +18,7 @@ import (
 func imessagePlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:          "imessage",
+		Connector:   true,
 		Flags:       bindIMessageFlags,
 		On:          func(pf *pluginFlags) bool { return imessageFlagsOf(pf).on },
 		ApplyConfig: applyIMessageConfig,
@@ -121,4 +125,58 @@ func launchIMessage(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		return nil, nil, fmt.Errorf("imessage plugin: %w", err)
 	}
 	return []plugin{imessage.NewDispatcher(nat, pol)}, func() { _ = nat.Close() }, nil
+}
+
+// checkIMessage verifies the iMessage transport is usable (TEN-68). The
+// native macOS transport reads ~/Library/Messages/chat.db (requires Full
+// Disk Access) and sends via osascript (Automation access, prompted on
+// first send). Tiers:
+//
+//	skip — imessage not configured; or native on a non-macOS host; nothing
+//	       to probe locally without a BlueBubbles URL
+//	OK   — BlueBubbles URL configured (server bridge), OR native chat.db is
+//	       readable (FDA granted)
+//	WARN — native selected but chat.db can't be read yet (FDA not granted)
+//	       or osascript is missing — both come with an actionable fix
+//
+// The FDA probe opens chat.db read-only, which forces a real read, so a
+// macOS TCC denial surfaces here rather than at first use. It's a WARN
+// (not FAIL) because a present-but-unconfigured skill shouldn't flip the
+// doctor exit code; the fix text is explicit.
+func checkIMessage(_ context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil || e.lc.Skills == nil {
+		return checkResult{Status: statusSkip, Detail: "imessage not configured"}
+	}
+	icfg := e.lc.Skills["imessage"]
+	if icfg == nil {
+		return checkResult{Status: statusSkip, Detail: "imessage not configured"}
+	}
+	// Backend selection mirrors toolmux/cmdIMessage: a BlueBubbles URL
+	// (env wins over settings) opts into the server bridge; else native.
+	url := os.Getenv("BLUEBUBBLES_URL")
+	if url == "" && icfg.Settings != nil {
+		url = strings.TrimSpace(icfg.Settings["url"])
+	}
+	if url != "" {
+		return checkResult{Status: statusOK, Detail: "BlueBubbles transport configured (url=" + url + ")"}
+	}
+	// Native transport is macOS-only.
+	if runtime.GOOS != "darwin" {
+		return checkResult{Status: statusSkip,
+			Detail: "native iMessage is macOS-only; set a BlueBubbles --bb-url to use iMessage on this host"}
+	}
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return checkResult{Status: statusWarn,
+			Detail: "osascript not found — iMessage sends will fail",
+			Fix:    "osascript ships with macOS at /usr/bin/osascript; verify your PATH / system integrity"}
+	}
+	nat, err := imessage.OpenNative(imessage.NativeConfig{})
+	if err != nil {
+		return checkResult{Status: statusWarn,
+			Detail: "native transport selected but Messages chat.db is unreadable: " + err.Error(),
+			Fix:    "grant Full Disk Access to your terminal (or the tenant binary) in System Settings → Privacy & Security → Full Disk Access, then rerun"}
+	}
+	_ = nat.Close()
+	return checkResult{Status: statusOK,
+		Detail: "native chat.db readable (Full Disk Access granted); Automation is prompted on first send"}
 }

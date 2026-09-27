@@ -192,11 +192,24 @@ truth; clients never cache.
 
 ---
 
-## 5. Worked example — wiring a new plugin
+## 5. Worked example — adding a plugin
 
-Take `wiki` as the simplest example. Three steps:
+A first-party plugin is two things: its package under `internal/plugins/<id>/`,
+and one **descriptor** in `cmd/tenant/plugin_<id>.go` that declares everything
+the host needs to know about it (TEN-321). The registry
+(`internal/pluginreg`, built in `cmd/tenant/plugindesc.go`) checks the
+descriptors against each other and indexes them. Every surface reads it:
+- the launch path and the stub catalog with its activators;
+- the approval categories;
+- `/configure`, the dashboard's Integrations page and `tenant setup`;
+- doctor and the CLI;
+- `permissions effective` and the security audit;
+- privacy's connectors and the keys page;
+- the file-tool guards and backup.
 
-### Step 1 — define the dispatcher
+Take `wiki` as the example.
+
+### Step 1 — the dispatcher
 
 ```go
 // internal/plugins/wiki/dispatch.go
@@ -220,36 +233,76 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 }
 ```
 
-### Step 2 — wire into `buildToolMux`
+`Tools()` must work on a nil service: the stub and the registry list the
+specs without configuring anything.
+
+### Step 2 — the descriptor
 
 ```go
-// internal/toolmux/mux.go
-if pf.wikiDir != "" {
-    ix, err := buildWikiIndex(ctx, c, router, pf.wikiDir, log)
-    if err != nil { return fail(err) }
-    mux.add("wiki", wiki.NewDispatcher(ix))
+// cmd/tenant/plugin_wiki.go
+func wikiPlugin() *pluginDescriptor {
+    return &pluginDescriptor{
+        ID: "wiki", Title: "Wiki (markdown knowledge base)", Version: 1,
+        Flags:       bindWikiFlags,   // --wiki-dir, into the plugin's own wikiFlags
+        On:          func(pf *pluginFlags) bool { return wikiFlagsOf(pf).dir != "" },
+        ApplyConfig: applyWikiConfig, // skills.wiki.settings → flags the operator did not pass
+        ExpandPaths: expandWikiPaths,
+        Launch:      launchWiki,      // builds the plugin when its flags configure it
+        Prepare:     prepareWiki,     // first run: the vault and a starter note
+        Tools:       func() []model.ToolSpec { return ... },
+        Configure:   func() skillKind { return ... }, // settings and secret fields, probe
+        SetupOnly:   true, SetupOrder: 1,
+        Actions:     map[string]string{"wiki_save": catDestructive}, // permission classes
+        StubHint:    "relaunch with --wiki-dir <dir>",
+        External:    ...,             // the vault, for backup's "not covered" list
+        Doctor:      []doctorCheck{{"wiki dir (if configured)", checkWikiDir}, ...},
+        CLI:         []*cliCommand{{Names: []string{"wiki"}, Section: "plugins", Run: cmdWiki, ...}},
+    }
 }
 ```
 
-For a heavy plugin you'd use `RegisterActivator` instead, with the
-build inside the closure.
+The descriptor's fields, by concern:
+- **Identity:** `ID` (the mux label, the key under `skills` in `config.json`,
+  and the `<id>` of `skill:<id>:<field>` in `credentials.json`), `Title`, and
+  `Version` of the saved settings shape.
+- **Tools:** `Tools`, plus `PerAgent` for a plugin every agent gets its own
+  copy of (web).
+- **Config schema:** `Configure` (settings and secret fields, validators, the
+  liveness probe, the setup hint), `SetupOnly`, `SetupOrder`,
+  `AdaptConfigure`, `SelfEnables` and `OnConfigured`.
+- **Permission classes:** `Actions` (every approval action id the plugin
+  raises, with its category) and `Grants` (the categories its allow-flags
+  pre-approve).
+- **Lifecycle:** `Flags`, `On`, `ApplyConfig`, `ExpandPaths`, `Launch`,
+  `Activate` (built on first `/enable` from saved config), `StubHint`,
+  `Prepare` and `Eval`.
+- **Health:** `Doctor` checks, and the probe in `Configure`.
+- **Files and keys:** `ConfigSecrets` and `DataSecrets` (doctor audits them,
+  the file tools refuse them), `PointedSecrets` (files the operator points it
+  at), `Connector` and `Forget` (what `tenant privacy forget --connector`
+  removes), `External` (for backup), and `Keys` (keys-page rows).
+- **Surfaces:** `CLI`.
 
-### Step 3 — register the stub for unconfigured runs
+A plugin fills in only the fields it needs.
+
+### Step 3 — name it in the registry
 
 ```go
-// internal/toolmux/mux.go — the stub catalog
-{label: "wiki", specs: wiki.NewDispatcher(nil).Tools(),
- hint:  "relaunch with --wiki-dir <dir>"},
+// cmd/tenant/plugindesc.go — plugins()
+pluginreg.MustNew(rules, sqlPlugin(), wikiPlugin(), ...)
 ```
 
-The stub is built from `NewDispatcher(nil)` — the dispatcher must be
-nil-tolerant for `Tools()` (just return the static spec list). It
-won't be called for `Dispatch()` since the stub overrides that.
-
-That's it. No central registry to update, no init() side effects, no
-hidden coupling.
-
----
+The position is the plugin's place in the launch order, the stub catalog,
+doctor and the CLI. That's it: there is no switchboard to edit, and tests
+keep it that way.
+- `TestEveryPluginDeclaresItself` checks that a plugin declares identity,
+  version, tools, the permission class of every gated tool, and a stub hint.
+- The registry refuses a tool or an action two plugins declare, an unknown
+  category, and a reserved host label.
+- `TestPluginsAreNamedOnlyInTheirOwnFiles` fails when a plugin's settings or
+  secrets are named outside its own files.
+- `TestTheSwitchboardsImportNoPlugin` fails when a surface imports a plugin
+  package instead of reading the registry.
 
 ## 6. Hard rules learned the hard way
 
@@ -304,26 +357,29 @@ result and keep using it.
 
 ## 7. Quick reference — every plugin in the repo
 
-| Plugin    | File                                  | Heavy? | Activator? |
-| --------- | ------------------------------------- | ------ | ---------- |
-| `web`     | `internal/plugins/web/`               | Yes (Chrome) | Yes |
-| `sql`     | `internal/plugins/sql/`               | Yes (DB handle) | Yes |
-| `wiki`    | `internal/plugins/wiki/`              | No     | No (immediate) |
-| `gsuite`  | `internal/plugins/gsuite/`            | Yes (OAuth) | Yes |
-| `imessage`| `internal/plugins/imessage/`          | Yes (BlueBubbles WS) | Yes |
-| `discord` | `internal/plugins/discord/`           | No (REST-only Surface A) | No (immediate when --discord) |
-| `x`       | `internal/plugins/x/`                 | Yes (login) | Yes |
-| `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | Yes |
-| `mcpremote`| `internal/plugins/mcpremote/`        | Only if the server asks (OAuth2.1 + DCR, browser; a local no-auth server connects instantly) | Yes — per-connector trust `ask` / `allow` / `deny`, live (`/mcp trust`, dashboard, `mcp_trust`); under `ask` every unannotated tool prompts |
-| `osys`    | `internal/plugins/osys/`              | No. `os_exec` runs through the execution-sandbox seam (`internal/sandbox`): the default `host` backend confines nothing, and an operator `exec_profiles` entry moves a surface to the OS `restricted` backend (`docs/changes/sandbox-seam.md`). The file tools run in-process, outside it | No (immediate, always on) |
-| `github`  | `internal/plugins/github/`            | No (REST control plane; code I/O stays on the local os_* tools) | Yes |
-| `crm`     | `internal/plugins/crm/`               | No (wraps the external `crm-tool` binary) | No (registered when `--crm-tool-path`/`$CRM_TOOL_PATH` is set; stub otherwise) |
-| `simplefin`| `internal/plugins/simplefin/`        | No (one HTTPS GET; read-only by protocol) | Yes |
-| `cron`    | `internal/plugins/cron/`              | No     | No (wired live in the TUI, not the stub catalog) |
+| Plugin    | File                                  | Heavy? | Built |
+| --------- | ------------------------------------- | ------ | ----- |
+| `web`     | `internal/plugins/web/`               | Yes (Chrome) | Per agent, each agent's own browser on first use; a shared session only with `--web` on commands without agents |
+| `sql`     | `internal/plugins/sql/`               | Yes (DB handle) | At launch with `--sql-db`; stub otherwise |
+| `wiki`    | `internal/plugins/wiki/`              | No     | At launch with `--wiki-dir`; stub otherwise |
+| `gsuite`  | `internal/plugins/gsuite/`            | Yes (OAuth) | At launch with `--gsuite`, or by its activator from `/configure` |
+| `imessage`| `internal/plugins/imessage/`          | Yes (BlueBubbles WS) | At launch with `--imessage`; stub otherwise |
+| `discord` | `internal/plugins/discord/`           | No (REST-only Surface A) | At launch with `--discord`; stub otherwise |
+| `x`       | `internal/plugins/x/`                 | Yes (login) | At launch with `--x`, or by its activator |
+| `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | At launch with `--atlassian`, or by its activator |
+| `mcpremote`| `internal/plugins/mcpremote/`        | Only if the server asks (OAuth2.1 + DCR, browser; a local no-auth server connects instantly) | The remote-MCP family, not a descriptor: one stub and activator per connector; per-connector trust `ask` / `allow` / `deny`, live (`/mcp trust`, dashboard, `mcp_trust`); under `ask` every unannotated tool prompts |
+| `osys`    | `internal/plugins/osys/`              | No. `os_exec` runs through the execution-sandbox seam (`internal/sandbox`): the default `host` backend confines nothing, and an operator `exec_profiles` entry moves a surface to the OS `restricted` backend (`docs/changes/sandbox-seam.md`). The file tools run in-process, outside it | Always at launch, enabled only with `--os` |
+| `github`  | `internal/plugins/github/`            | No (REST control plane; code I/O stays on the local os_* tools) | At launch with `--github`, or by its activator |
+| `crm`     | `internal/plugins/crm/`               | No (wraps the external `crm-tool` binary) | At launch when `--crm-tool-path`/`$CRM_TOOL_PATH` is set; stub otherwise |
+| `simplefin`| `internal/plugins/simplefin/`        | No (one HTTPS GET; read-only by protocol) | By its activator from `/configure` |
+| `cron`    | `internal/plugins/cron/`              | No     | A host tool, wired live in the TUI and serve, not a descriptor |
 
-`osys` is the "always-on" outlier — it's zero-config and registers
-immediately every launch. Use it as the template for any future
-zero-config plugin.
+Every first-party plugin above except `mcpremote` and `cron` is declared in
+`cmd/tenant/plugin_<id>.go` (`osys` as `os`).
+
+`osys` is the "always-on" outlier: zero-config, built every launch and
+registered disabled until `--os` (its `Launch` always builds; its `On`
+decides). Use it as the template for any future zero-config plugin.
 
 ---
 
@@ -338,6 +394,6 @@ when it is local (EXT-003 / TEN-318). Know-how, as opposed to a tool, is an **Ag
 would put untrusted code inside the approval, egress and sandbox boundaries.
 
 Still open:
-- **Per-plugin health checks**: `mux.Health()` returning per-plugin liveness, so
-  `tenant doctor` surfaces a degraded plugin without needing a tool call to find it. The
-  plugin descriptor registry (ARC-003 / TEN-321) is where a plugin declares its probe.
+- **Runtime health**: each plugin declares its doctor checks and its liveness probe in its
+  descriptor (ARC-003 / TEN-321), but there is no `mux.Health()` yet that reports a running
+  plugin's liveness without a tool call.

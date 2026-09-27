@@ -14,6 +14,13 @@ import (
 func simplefinPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:        "simplefin",
+		Connector: true,
+		Forget:    func(_, data string) []string { return []string{filepath.Join(data, "simplefin")} },
+		// SimpleFIN accepts either the one-time setup token or the claimed
+		// access URL — a pasted setup token is claimed (and the credential
+		// rewritten to the access URL) on first use by
+		// resolveSimpleFINAccessURL.
+		Keys:      []keySpec{{CredID: "skill:simplefin:access_url", Name: "SimpleFIN setup token / access URL", Category: "Integration", Kind: keyDirect}},
 		Title:     "SimpleFIN (bank balances and transactions, read-only)",
 		Version:   1,
 		Tools:     func() []model.ToolSpec { return simplefin.NewDispatcher(nil, nil).Tools() },

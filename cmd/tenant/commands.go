@@ -2567,7 +2567,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	if c.lc != nil {
 		discordBroker.loadModes(c.lc.Relay.Permissions)
 	}
-	discordToken := resolveSecret(c.cfgDir, skillSecretID("discord", "token"), authCfg{Stored: true})
+	discordToken := discordRelayToken(c.cfgDir)
 	if strings.TrimSpace(discordToken) != "" {
 		if r, svc, appr, snd, derr := buildDiscordAgent(discordToken, discordAgentDeps{
 			router: router, soulLive: soulLive, archive: st.archive,

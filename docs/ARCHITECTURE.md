@@ -1276,7 +1276,13 @@ the agent: runtime enable/disable with persisted curation (`Restore`,
 federated knowledge search across paired peers, remote-MCP adoption and trust
 (`RegisterMCPRemote`, `SetMCPTrust`, `RemoteMCPList`), and per-tool dispatch
 counts (`Stats`). It builds no plugin itself: `cmd/tenant/toolmux_build.go`
-decides what to register. `internal/control` is a leaf of plain data types the
+decides what to register, from the plugin registry. Each first-party plugin is
+declared once, by a descriptor in `cmd/tenant/plugin_<id>.go` (TEN-321):
+identity, tools, config schema and secrets, permission classes, health checks
+and lifecycle hooks. `cmd/tenant/plugindesc.go` builds the registry, which
+`internal/pluginreg` checks and indexes; the launch, the stub catalog,
+approvals, `/configure`, doctor, the CLI, privacy, backup and the keys page
+read it (`docs/PLUGINS.md` §5). `internal/control` is a leaf of plain data types the
 runtime, the terminal UI and the dashboard share (`ToolInfo` so far), so none
 of them imports another. Moved out of `package main` in TEN-314;
 `cmd/tenant/toolmux_compat.go` keeps main's names.

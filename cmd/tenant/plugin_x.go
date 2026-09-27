@@ -4,6 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
+	"os"
+	"time"
 
 	"tenant/internal/cmdreg"
 	"tenant/internal/model"
@@ -14,6 +17,9 @@ import (
 func xPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:          "x",
+		Connector:   true,
+		Forget:      func(_, data string) []string { return []string{xp.TokenPath(data)} },
+		DataSecrets: func(data string) []string { return []string{xp.TokenPath(data)} },
 		Flags:       bindXFlags,
 		On:          func(pf *pluginFlags) bool { return xFlagsOf(pf).on },
 		ApplyConfig: applyXConfig,
@@ -101,4 +107,56 @@ func launchX(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		return nil, nil, fmt.Errorf("x plugin: %w", err)
 	}
 	return []plugin{xp.NewDispatcher(svc, xp.Policy{AllowPost: e.gateAllow(f.allowPost), Confirm: e.confirm})}, nil, nil
+}
+
+// checkX verifies the X / Twitter plugin can talk to api.x.com when it's
+// enabled (TEN-67). Tiers mirror checkDiscord:
+//
+//	skip — plugin not configured / not enabled
+//	FAIL — bearer unresolvable (env empty, secret missing) or 401 (revoked)
+//	WARN — bearer present but network unreachable, or a non-401 4xx/5xx
+//	OK   — /2/users/me returns the account identity
+//
+// Best-effort and offline-tolerant: a network error degrades to WARN (the
+// bearer resolved; we just can't confirm x.com is reachable).
+func checkX(ctx context.Context, e *doctorEnv) checkResult {
+	if e.lc == nil || e.lc.Skills == nil {
+		return checkResult{Status: statusSkip, Detail: "x plugin not configured"}
+	}
+	xcfg := e.lc.Skills["x"]
+	if xcfg == nil || !xcfg.Enabled {
+		return checkResult{Status: statusSkip, Detail: "x plugin not enabled"}
+	}
+	// Resolve bearer. Env wins over stored secret (matches toolmux.go).
+	bearer := os.Getenv("X_BEARER_TOKEN")
+	if bearer == "" {
+		bearer = e.resolveSecret(skillSecretID("x", "bearer"), authCfg{Stored: true})
+	}
+	if bearer == "" {
+		return checkResult{Status: statusFail,
+			Detail: "x enabled but bearer token is missing",
+			Fix:    "set $X_BEARER_TOKEN, or run `/configure x <bearer>`"}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(probeCtx, "GET", "https://api.x.com/2/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return checkResult{Status: statusWarn,
+			Detail: "bearer present but could not reach api.x.com: " + err.Error(),
+			Fix:    "if intentional offline, ignore; else check network / firewall"}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 401 {
+		return checkResult{Status: statusFail,
+			Detail: "x returned 401 Unauthorized — bearer token is invalid or revoked",
+			Fix:    "regenerate the bearer at https://developer.x.com and run `/configure x <bearer>`"}
+	}
+	if resp.StatusCode >= 400 {
+		return checkResult{Status: statusWarn,
+			Detail: fmt.Sprintf("x /2/users/me returned HTTP %d", resp.StatusCode),
+			Fix:    "check the app's status / permissions at https://developer.x.com"}
+	}
+	return checkResult{Status: statusOK, Detail: "bearer valid; api.x.com reachable"}
 }

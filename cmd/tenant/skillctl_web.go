@@ -5,7 +5,7 @@ package main
 // to DuckDuckGo); a key just upgrades the backend. This is the first skill with
 // an all-optional field set, so `/skill configure web` with no args is a valid
 // no-op that simply (re)enables the always-on web plugin. The key is stored at
-// skill:web:brave_key; braveKey() (lazyweb.go) reads BOTH that and the
+// skill:web:brave_key; braveKey() (plugin_web_lazy.go) reads BOTH that and the
 // brave_search credential, so a key set via either surface upgrades web_search.
 
 import (

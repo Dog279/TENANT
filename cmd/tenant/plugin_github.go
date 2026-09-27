@@ -13,7 +13,14 @@ import (
 // issues, CI) over a fine-grained PAT.
 func githubPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:          "github",
+		ID:            "github",
+		Connector:     true,
+		Forget:        func(cfg, _ string) []string { return []string{githubp.TokenPath(cfg)} },
+		ConfigSecrets: func(cfg string) []string { return []string{githubp.TokenPath(cfg)} },
+		// GitHub is a paste-a-token service like Discord. The repo it is scoped
+		// to lives in config (skills.github.settings.repo); only the PAT is a
+		// secret.
+		Keys:        []keySpec{{CredID: "skill:github:token", Name: "GitHub fine-grained PAT", Category: "Integration", Kind: keyDirect}},
 		Flags:       bindGitHubFlags,
 		On:          func(pf *pluginFlags) bool { return githubFlagsOf(pf).on },
 		ApplyConfig: applyGitHubConfig,
