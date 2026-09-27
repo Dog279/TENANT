@@ -367,6 +367,11 @@ drops, the test fails too, and says what to lower it to.
   job's output is `cron/9001`, diagnostic and masked. Loading, missed runs
   (caught up, or skipped and why) and jobs added, switched and removed are
   logged too. The one-line run summary still goes to the status feed.
+- `peering` (`internal/peering/events.go`): the listener's lifetime is an
+  activity (`peering/1`), and a start that fails is `peering/3001`. Pairing,
+  both ways, is logged; so are rejected tokens, and peers going up or down
+  (once per change, not every heartbeat). Each peer session and each tool a
+  peer calls is a verbose activity, so only a failure shows by default.
 
 ## Records that lead back to a run
 

@@ -58,6 +58,7 @@ var providers = []struct {
 // the test says so.
 var catalogued = map[string]int{
 	"internal/cron": 0, "internal/plugins/cron": 0,
+	"internal/peering": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

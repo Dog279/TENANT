@@ -2996,7 +2996,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Peer liveness heartbeat (TEN-250): the registry is fed by the listener's
 	// inbound OnAuth hook + a background outbound prober, and read by /peer.
 	peerHealth := newPeerHealthRegistry()
-	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log.With("source", "peering")}).run(ctx)
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
@@ -3027,7 +3027,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			peerSrvStop()
 			peerSrvStop = nil
 		}
-		bound, stop, err := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, addr, log.With("source", "peering"))
+		bound, stop, err := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, addr)
 		if err != nil {
 			return "", err
 		}

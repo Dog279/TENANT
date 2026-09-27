@@ -161,6 +161,7 @@ func registerPeerWikiSearch(s *mcp.Server, pc peering.PeerContext, deps peerTool
 			}
 			hits, err := deps.wiki.Search(ctx, q, clampK(a.K))
 			if err != nil {
+				peering.SearchFailed.Log(ctx, "peer", pc.Name, "tool", "peer_wiki_search", "store", "the wiki", "err", err)
 				return peerText("wiki search failed: " + err.Error()), nil, nil
 			}
 			var b strings.Builder
@@ -209,7 +210,9 @@ func registerPeerMemorySearch(s *mcp.Server, pc peering.PeerContext, deps peerTo
 					K:          k,
 					Visibility: peerSharedVisibility, // shared/public ONLY — never private
 				})
-				if err == nil {
+				if err != nil {
+					peering.SearchFailed.Log(ctx, "peer", pc.Name, "tool", "peer_memory_search", "store", "facts", "err", err)
+				} else {
 					fmt.Fprintf(&b, "### Facts (%d)\n", len(hits))
 					for _, h := range hits {
 						fmt.Fprintf(&b, "- %s (%s, confidence %.2f)\n", capSnippet(h.Fact.Fact), h.Fact.Visibility, h.Fact.Confidence)
@@ -223,7 +226,9 @@ func registerPeerMemorySearch(s *mcp.Server, pc peering.PeerContext, deps peerTo
 					K:          k,
 					Visibility: peerSharedVisibility,
 				})
-				if err == nil {
+				if err != nil {
+					peering.SearchFailed.Log(ctx, "peer", pc.Name, "tool", "peer_memory_search", "store", "episodes", "err", err)
+				} else {
 					fmt.Fprintf(&b, "### Episodes (%d)\n", len(hits))
 					for _, h := range hits {
 						e := h.Episode

@@ -720,7 +720,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// Peer liveness heartbeat (TEN-250): inbound OnAuth + background outbound
 	// prober. Tracked headless too (the dashboard peer surface can read it later).
 	peerHealth := newPeerHealthRegistry()
-	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log.With("source", "peering")}).run(ctx)
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
@@ -731,7 +731,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		onGrant:  peerHealth.markInboundGrant,
 	}
 	if c.lc != nil && c.lc.Peer.Listen != "" {
-		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen, log.With("source", "peering"))
+		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen)
 		if perr != nil {
 			pushSys("peer: listener not started — " + perr.Error())
 		} else {

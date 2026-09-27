@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -157,7 +156,6 @@ func peerServe(ctx context.Context, args []string) error {
 		// No OnAuth here (TEN-250): the standalone `tenant peer serve` CLI has no
 		// /peer reader in-process, so there's nothing to surface liveness to. The
 		// full hub (`tenant serve`) and the TUI wire it.
-		Logger: func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
 	})
 	if err != nil {
 		return err
@@ -552,8 +550,14 @@ func dash(s string) string {
 // conflict surfaces immediately), serves in a goroutine, and returns the bound
 // address + a stop func that shuts it down — so the TUI's `/peer serve` can
 // (re)start it live. PairApprover routes inbound invites to the operator
-// (broker prompt in the TUI; TEN-239).
-func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps, pairApprove func(context.Context, string) bool, addr string, log *slog.Logger) (string, func(), error) {
+// (broker prompt in the TUI; TEN-239). The listener logs its own lifetime
+// (peering.Listening); a start that fails is logged here.
+func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps, pairApprove func(context.Context, string) bool, addr string) (_ string, _ func(), err error) {
+	defer func() {
+		if err != nil {
+			peering.ListenerNotStarted.Log(ctx, "addr", addr, "err", err)
+		}
+	}()
 	store, err := peering.LoadStore(c.cfgDir)
 	if err != nil {
 		return "", nil, err
@@ -580,11 +584,6 @@ func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps,
 		PairApprover: pairApprove,                  // TEN-239 push-invite Approve/Deny
 		OnAuth:       deps.onAuth,                  // TEN-250 inbound liveness
 		OnGrant:      deps.onGrant,                 // TEN-253 caller-announced grant
-		Logger: func(f string, a ...any) {
-			if log != nil {
-				log.Info(fmt.Sprintf(f, a...))
-			}
-		},
 	})
 	if err != nil {
 		return "", nil, err
@@ -594,11 +593,7 @@ func startPeerListenerAt(ctx context.Context, c *commonFlags, deps peerToolDeps,
 		return "", nil, err
 	}
 	cctx, cancel := context.WithCancel(ctx)
-	go func() {
-		if serr := ln.Serve(cctx, netLn); serr != nil && log != nil {
-			log.Warn("peer listener stopped", "err", serr.Error())
-		}
-	}()
+	go func() { _ = ln.Serve(cctx, netLn) }() // Serve logs how it stopped
 	return netLn.Addr().String(), cancel, nil
 }
 
