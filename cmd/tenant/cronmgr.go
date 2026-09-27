@@ -15,6 +15,7 @@ package main
 // and a sandbox working dir.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"tenant/internal/agent"
 	croneng "tenant/internal/cron"
 	"tenant/internal/dashboard"
+	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/userprofile"
@@ -142,19 +144,20 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 
 	execOn := func() bool { return d.allowExec != nil && d.allowExec.enabled() }
 
-	return func(ctx context.Context, job croneng.Job) (string, error) {
+	return func(ctx context.Context, job croneng.Job) (string, string, error) {
 		if job.KindOf() == croneng.KindShell {
 			if !execOn() {
-				return "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run shell jobs")
+				return "", "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run shell jobs")
 			}
-			return runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
+			out, err := runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
+			return out, "", err
 		}
 		// prompt job
 		ag := safeAg
 		runCtx := ctx
 		if job.Exec {
 			if !execOn() {
-				return "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run exec jobs")
+				return "", "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run exec jobs")
 			}
 			ag = execAg
 			runCtx = withOffsiteConfirm(ctx, approver)
@@ -173,20 +176,23 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		// the operator's lever.
 		runCtx = withExecSurface(runCtx, surfaceCronExec) // picks the cron-exec exec profile
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
+		// Minted here so the history entry names the turn's runs.db record even
+		// when the turn fails without a result.
+		trace := runtrace.NewID()
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
-			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
+			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override, TraceID: trace,
 		})
 		if err != nil {
-			return "", err
+			return "", trace, err
 		}
 		if res == nil {
-			return "", nil
+			return "", trace, nil
 		}
 		summary := strings.TrimSpace(res.Response)
 		if d.authProblems != nil {
 			summary = withAuthBanner(summary, d.authProblems())
 		}
-		return summary, res.Error
+		return summary, trace, res.Error
 	}, nil
 }
 
@@ -331,31 +337,129 @@ func cronSandboxDir(dataDir string) string {
 	return dir
 }
 
-// cronHistoryPath is where the bounded run-history ring is persisted across
-// restarts (separate from config.json, which stays definitions-only). 0600
-// because run summaries can contain job output.
+// cronHistoryPath is where run history is persisted across restarts (separate
+// from config.json, which stays definitions-only). 0600 because run summaries
+// can contain job output. It holds one JSON record per line: every process
+// that runs cron (serve and the TUI can share a data dir) appends its own runs
+// under the file's shared lock, and a compaction trims it under the exclusive
+// one, so no process loses another's rows.
 func cronHistoryPath(dataDir string) string {
 	return filepath.Join(dataDir, "cron-history.json")
 }
 
+const (
+	cronHistoryKeep      = 64      // what a compaction keeps: the engine's ring
+	cronHistoryCompactAt = 1 << 20 // bytes past which an append compacts
+)
+
+// loadCronHistory returns the persisted history, oldest first. A file still in
+// the old format (one JSON array, rewritten whole by each process) becomes
+// lines once, here.
 func loadCronHistory(dataDir string) []croneng.RunRecord {
-	b, err := os.ReadFile(cronHistoryPath(dataDir))
+	path := cronHistoryPath(dataDir)
+	lock, err := datalock.File(path, false)
 	if err != nil {
 		return nil
 	}
-	var h []croneng.RunRecord
-	if json.Unmarshal(b, &h) != nil {
+	h, legacy, err := readCronHistory(path)
+	lock.Release()
+	if err != nil {
 		return nil
+	}
+	if legacy {
+		_ = compactCronHistory(path) // on failure the old line still reads next time
 	}
 	return h
 }
 
-func saveCronHistory(dataDir string, h []croneng.RunRecord) error {
-	b, err := json.Marshal(h)
+// readCronHistory parses the file, skipping what doesn't parse (a torn last
+// line). A line may hold the old array format, alone or with a record
+// appended to it before the migration succeeded.
+func readCronHistory(path string) (h []croneng.RunRecord, legacy bool, err error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		dec := json.NewDecoder(bytes.NewReader(line))
+		for {
+			var v json.RawMessage
+			if dec.Decode(&v) != nil {
+				break
+			}
+			var r croneng.RunRecord
+			var ring []croneng.RunRecord
+			switch {
+			case v[0] == '[' && json.Unmarshal(v, &ring) == nil:
+				h, legacy = append(h, ring...), true
+			case json.Unmarshal(v, &r) == nil:
+				h = append(h, r)
+			}
+		}
+	}
+	return h, legacy, nil
+}
+
+// appendCronHistory adds one run to the history, then compacts once the file
+// has grown past cronHistoryCompactAt.
+func appendCronHistory(dataDir string, r croneng.RunRecord) error {
+	line, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	return atomicWrite(cronHistoryPath(dataDir), b)
+	path := cronHistoryPath(dataDir)
+	lock, err := datalock.File(path, false)
+	if err != nil {
+		return err
+	}
+	f, err := fsperm.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
+	if err != nil {
+		lock.Release()
+		return err
+	}
+	_, err = f.Write(append(line, '\n'))
+	info, serr := f.Stat()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	lock.Release()
+	if err != nil || serr != nil || info.Size() <= cronHistoryCompactAt {
+		return err
+	}
+	if err := compactCronHistory(path); err != nil {
+		return fmt.Errorf("record kept, compaction failed: %w", err)
+	}
+	return nil
+}
+
+// compactCronHistory rewrites the file as its newest cronHistoryKeep records,
+// one per line, holding the lock exclusively so no append lands in the copy
+// the rename replaces. A failed rename (Windows, while something outside
+// Tenant holds the file open) leaves the file as it was, for the next try.
+func compactCronHistory(path string) error {
+	lock, err := datalock.File(path, true)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	h, _, err := readCronHistory(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err // never rewrite from a file that could not be read
+	}
+	if len(h) > cronHistoryKeep {
+		h = h[len(h)-cronHistoryKeep:]
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	for _, r := range h {
+		if err := enc.Encode(r); err != nil {
+			return err
+		}
+	}
+	return atomicWrite(path, b.Bytes())
 }
 
 // execGate is the live on/off switch behind cron-exec (cron.allow_exec,

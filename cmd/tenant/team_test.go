@@ -13,6 +13,7 @@ import (
 	"tenant/internal/memory/soul"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
+	"tenant/internal/runtrace"
 )
 
 func TestTeamRuntime_WebReaderActivityUsesAgentEventing(t *testing.T) {
@@ -95,7 +96,8 @@ func TestTeamRuntime_SpawnAndAwait(t *testing.T) {
 		Bus: bus, Router: router, Stores: st, Shared: newToolMux(), OrchID: "main", Log: log,
 	})
 
-	ctx := context.Background()
+	// The spawning turn's trace becomes each sub-agent run's parent (TEN-368).
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("orchestrator-turn"))
 	id1, err := rt.Spawn(ctx, "researcher", "find the answer")
 	if err != nil {
 		t.Fatalf("spawn 1: %v", err)
@@ -127,6 +129,19 @@ func TestTeamRuntime_SpawnAndAwait(t *testing.T) {
 			if !strings.HasPrefix(m.Content, "DONE") {
 				t.Fatalf("completion message malformed: %q", m.Content)
 			}
+		}
+	}
+
+	runs, err := st.runs.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("sub-agent run records = %d, want 2", len(runs))
+	}
+	for _, r := range runs {
+		if r.ParentTraceID != "orchestrator-turn" {
+			t.Fatalf("sub-agent run %s parent = %q, want the spawning turn's trace", r.AgentID, r.ParentTraceID)
 		}
 	}
 }

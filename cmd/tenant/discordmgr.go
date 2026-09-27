@@ -472,16 +472,17 @@ func (m *discordRelayManager) Perms() tui.PermissionControl {
 
 // askOperator is the broker's "ask"-mode backend: it raises a per-action button
 // approval to the operator in Discord via the LIVE approver (re-read under the
-// lock so a Reconfigure token swap is picked up). Returns false (deny) when the
-// relay isn't built or the operator can't be reached — fail closed.
-func (m *discordRelayManager) askOperator(ctx context.Context, action, detail string) bool {
+// lock so a Reconfigure token swap is picked up). It denies when the relay
+// isn't built or the operator can't be reached — fail closed — and says
+// Expired when the card timed out, so the record isn't an operator's deny.
+func (m *discordRelayManager) askOperator(ctx context.Context, action, detail string) tui.ApprovalDecision {
 	m.mu.Lock()
 	appr := m.approver
 	m.mu.Unlock()
 	if appr == nil {
-		return false
+		return tui.DenyOnce
 	}
-	return appr.Confirm(ctx, action, detail)
+	return appr.decide(ctx, action, detail)
 }
 
 // Configured reports whether a relay agent is built (a bot token is set) — the

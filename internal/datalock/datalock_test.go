@@ -2,7 +2,9 @@ package datalock
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSharedHoldersCoexist(t *testing.T) {
@@ -56,4 +58,35 @@ func TestExclusiveExcludesEveryone(t *testing.T) {
 		t.Fatalf("shared after exclusive released: %v", err)
 	}
 	s2.Release()
+}
+
+// A record-file lock waits out a short conflicting hold, and gives up with
+// ErrBusy once fileWait has passed.
+func TestFileWaitsForTheHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	a, err := File(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := File(path, false)
+	if err != nil {
+		t.Fatalf("second shared record lock: %v", err)
+	}
+	b.Release()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		a.Release()
+	}()
+	x, err := File(path, true)
+	if err != nil {
+		t.Fatalf("exclusive after the shared holder let go: %v", err)
+	}
+	defer x.Release()
+
+	saved := fileWait
+	fileWait = 20 * time.Millisecond
+	defer func() { fileWait = saved }()
+	if _, err := File(path, false); !errors.Is(err, ErrBusy) {
+		t.Fatalf("shared while exclusive held: err = %v, want ErrBusy", err)
+	}
 }

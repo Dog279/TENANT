@@ -269,7 +269,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	// a tool rule or a category allow must not reopen what it closed.
 	if locked != nil && locked(action, cat) {
 		b.logInfo("approval refused: locked on this surface", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_policy")
+		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "denied_policy")
 		return false
 	}
 
@@ -311,16 +311,16 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	switch mode {
 	case ModeAllow:
 		b.logInfo("approval auto-allowed by category mode", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, cat, action, detail, b.origin, "approved_always")
+		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "approved_always")
 		return true
 	case ModeDeny:
 		b.logInfo("approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_policy")
+		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "denied_policy")
 		return false
 	}
 	if sess {
 		b.logInfo("approval allowed by session grant", "origin", b.origin, "category", cat, "action", action)
-		recordPolicyApproval(ctx, cat, action, detail, b.origin, "approved_session")
+		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "approved_session")
 		return true
 	}
 
@@ -409,11 +409,12 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 		if origin == "" {
 			origin = "discord"
 		}
+		id := policyID(cat, action) // one prompt, one record: pending, then its outcome
 		b.reg.emitBeside(agent.EventApprovalPending, req, origin, "")
-		recordPolicyApproval(ctx, cat, action, detail, origin, "pending")
+		recordPolicyApproval(ctx, id, cat, action, detail, origin, "pending")
 		d := ask(ctx, req)
 		b.reg.emitBeside(agent.EventApprovalResolved, req, origin, outcomeOf(d))
-		recordPolicyApproval(ctx, cat, action, detail, origin, outcomeOf(d))
+		recordPolicyApproval(ctx, id, cat, action, detail, origin, outcomeOf(d))
 		logOutcome(outcomeOf(d), "custom backend")
 		return d
 	}
@@ -424,7 +425,7 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 	// storage; it is not an observer.)
 	if b.requests == nil {
 		logOutcome("denied", "no operator surface")
-		recordPolicyApproval(ctx, cat, action, detail, b.origin, "denied_no_surface")
+		recordPolicyApproval(ctx, policyID(cat, action), cat, action, detail, b.origin, "denied_no_surface")
 		return control.DenyOnce
 	}
 
@@ -456,10 +457,17 @@ func (b *Broker) askDecision(ctx context.Context, cat, action, detail string) co
 	}
 }
 
-func recordPolicyApproval(ctx context.Context, category, action, detail, origin, outcome string) {
+// policyID names one approval the registry never holds (a policy verdict, or a
+// prompt a channel backend answers). The per-prompt suffix keeps two prompts
+// for the same action in one turn two records.
+func policyID(category, action string) string {
+	return "policy:" + category + ":" + action + ":" + nextID()
+}
+
+func recordPolicyApproval(ctx context.Context, id, category, action, detail, origin, outcome string) {
 	if span := runtrace.SpanFromContext(ctx); span != nil {
 		span.AddApproval(runtrace.Approval{
-			ID: "policy:" + category + ":" + action, Category: category,
+			ID: id, Category: category,
 			Action: action, Detail: detail, Origin: origin, Outcome: outcome,
 		})
 	}

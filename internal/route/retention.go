@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"tenant/internal/datalock"
 )
 
 // Decision-log retention (TEN-292). The JSONL log grows one row per turn
@@ -22,11 +24,17 @@ const pruneInterval = 24 * time.Hour
 // PruneDecisionLog drops rows older than cutoff, rewriting the file
 // atomically. Malformed rows are RETAINED: a corrupt tail is an audit
 // artifact, and retention must not silently destroy evidence. A missing file
-// prunes nothing.
+// prunes nothing. It holds the log's lock exclusively, so an append from
+// another process waits instead of landing in the replaced copy.
 func PruneDecisionLog(path string, cutoff time.Time) (kept, dropped int, err error) {
 	if path == "" {
 		return 0, 0, nil
 	}
+	lock, err := datalock.File(path, true)
+	if err != nil {
+		return 0, 0, fmt.Errorf("route: prune: lock decision log: %w", err)
+	}
+	defer lock.Release()
 	raw, err := readDecisionLogForPrune(path)
 	if os.IsNotExist(err) {
 		return 0, 0, nil

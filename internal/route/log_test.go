@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,12 +102,17 @@ func TestEngineLogFailureStaysInMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := route.NewEngine(classifier, filepath.Join(blocker, "child"), 10)
+	var logged bytes.Buffer
+	engine.SetLog(slog.New(slog.NewTextHandler(&logged, nil)))
 	d := engine.Decide(context.Background(), "main", "sess", "hello", route.ModeShadow)
 	if d.Status != route.StatusOK || d.Error != "" {
 		t.Fatalf("decision = %+v", d)
 	}
 	if got := engine.Recent(1); len(got) != 1 || got[0] != d {
 		t.Fatalf("history = %+v", got)
+	}
+	if !strings.Contains(logged.String(), "decision log append failed") {
+		t.Fatalf("the failed write was not reported: %q", logged.String())
 	}
 }
 

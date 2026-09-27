@@ -34,7 +34,7 @@ One entry is exactly one line, readable in `tail -f` and exact under `grep`:
 ```
 2026-09-22 14:03:11.123 INFO  [turns] tool call web_search	ev=tool_call iter=2 args="{\"q\":\"hn top\"}"
 2026-09-22 14:03:12.001 ERROR [turns] tool result web_search failed	ev=tool_result iter=2 result="timeout after 30s"
-2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3	ev=approval_resolved category=exec action=os_exec origin=discord outcome=denied
+2026-09-22 14:03:40.250 WARN  [approvals] approval denied ap-3f9c2a1b-3	ev=approval_resolved category=exec action=os_exec origin=local outcome=denied
 2026-09-22 14:04:02.000 INFO  [discord] relay attachment saved	chat=general path=/…/relay-inbox/img.png
 ```
 
@@ -289,6 +289,36 @@ defer act.End(&err)
   sensitive field as `«sensitive»`, never its value.
 - `Audit` is for records that must not be lost. For now it returns once the
   line is written; the Security log's store will make it wait for its commit.
+
+## Records that lead back to a run
+
+A turn's trace ID (`trace_id` in `runs.db`) is also written on the records the
+other stores keep, so each of them leads back to the run that made it:
+
+| Record | Where | Field |
+|---|---|---|
+| Run traces | `runs.db` | `trace_id`; a sub-agent's run also has `parent_trace_id`, the turn that spawned it |
+| Route decisions | `route-decisions.jsonl` | `trace_id` (a spawn-time decision carries the spawning turn's) |
+| Cron history | `cron-history.json` | `trace_id` of the job's turn (none for a shell job) |
+| Archive | `archive/<month>/<session>.jsonl` | `trace_id` |
+| Token usage | `usage.db`, table `token_usage` | `trace_id` |
+
+- `runs.db` re-applies its age and count bounds every hour while serve or the
+  TUI runs, not only when it opens. Eval turns keep no run records.
+- Approval IDs are `ap-<boot>-<n>`: the first 8 hex digits of the process's
+  boot ID and a counter, so serve and the TUI never mint the same one. An
+  approval the broker decides alone (a category mode, a session grant, a
+  Discord or iMessage prompt) is `policy:<category>:<action>:<boot>-<n>`, one
+  record per prompt.
+- An outcome names its cause: `denied` is the operator's, `denied_shutdown`
+  means the process stopped while it waited, and `expired` means nobody
+  answered in time (a Discord or iMessage prompt's timeout, or the turn ended).
+- `route-decisions.jsonl` and `cron-history.json` hold one record per line.
+  Appends take a shared lock on a sibling `<file>.lock`; a rewrite (route
+  retention, confirming an assisted suggestion, trimming cron history to its
+  newest 64) takes it exclusively. Serve and the TUI therefore never lose each
+  other's rows. A `cron-history.json` in the old format (one JSON array)
+  becomes lines on its first load.
 
 ## Reading it back programmatically
 

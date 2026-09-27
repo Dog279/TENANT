@@ -243,7 +243,7 @@ func TestSpawnRoleSafelyLogsThePanic(t *testing.T) {
 	prev := logs.Default()
 	logs.Install(hub)
 	t.Cleanup(func() { logs.Install(prev) })
-	role, ok := spawnRoleSafely(func(string) (model.Role, bool) { panic("classifier bug") }, "task")
+	role, ok := spawnRoleSafely(context.Background(), func(context.Context, string) (model.Role, bool) { panic("classifier bug") }, "task")
 	es, _ := hub.Snapshot()
 	if role != "" || ok || len(es) != 1 || es[0].Field("panic") != "classifier bug" || !strings.Contains(es[0].Field("stack"), "spawnRoleSafely") {
 		t.Fatalf("role=%q ok=%v entries=%+v", role, ok, es)

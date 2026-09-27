@@ -12,6 +12,7 @@ import (
 // Run is the stable JSONL export shape for one turn.
 type Run struct {
 	TraceID          string     `json:"trace_id"`
+	ParentTraceID    string     `json:"parent_trace_id,omitempty"` // the turn that spawned this one (a sub-agent's)
 	AgentID          string     `json:"agent_id,omitempty"`
 	SessionID        string     `json:"session_id,omitempty"`
 	Source           string     `json:"source"`

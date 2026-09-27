@@ -139,10 +139,11 @@ type Config struct {
 	TeamEvents <-chan TeamEvent
 
 	// RecordUsage, if set, persists each MAIN-agent LLM call's token usage
-	// (input, output) to the long-term cost-audit ledger. The cmd layer
-	// binds this to the usage store with agentID + model closed over, and
-	// swallows persistence errors so the UI never blocks (TEN-167).
-	RecordUsage func(in, out int)
+	// (input, output, and the turn's trace) to the long-term cost-audit
+	// ledger. The cmd layer binds this to the usage store with agentID + model
+	// closed over, and swallows persistence errors so the UI never blocks
+	// (TEN-167).
+	RecordUsage func(in, out int, traceID string)
 
 	// ResearchTimeline, if set, carries structured updates from /research
 	// (plan ready, wave dispatched, agent status, reflection done, synth
@@ -2169,7 +2170,7 @@ func (m *model) applyEvent(e agent.Event) {
 		// recorded here — see TEN-167). Non-fatal: a recorder error must
 		// never block the UI, so it's swallowed by the closure in wiring.
 		if m.cfg.RecordUsage != nil {
-			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens)
+			m.cfg.RecordUsage(e.PromptTokens, e.CompletionTokens, e.TraceID)
 		}
 	case agent.EventTeamBudget:
 		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {

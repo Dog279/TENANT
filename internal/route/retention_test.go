@@ -2,9 +2,11 @@ package route
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -172,5 +174,71 @@ func readLogRetry(t *testing.T, path string, deadline time.Time) []byte {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Two engines on one data dir stand in for serve and the TUI: while one keeps
+// rewriting the log (a confirm replaces the file), every row the other appends
+// must survive. The rewrite holds the log's lock exclusively; appends hold it
+// shared (TEN-368).
+func TestRewritesLoseNoConcurrentAppends(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DecisionLogName)
+	now := time.Now().UTC()
+	writeDecisionLines(t, path, []Decision{{ID: "gold", Timestamp: now, AssistedSuggestion: true}})
+	serve, tui := NewEngine(nil, dir, 0), NewEngine(nil, dir, 0)
+
+	stop := make(chan struct{})
+	rewrites := make(chan error, 1)
+	go func() {
+		n := 0
+		for {
+			select {
+			case <-stop:
+				if n == 0 {
+					rewrites <- fmt.Errorf("no rewrite ran while the appends did")
+				}
+				close(rewrites)
+				return
+			default:
+			}
+			if err := serve.Confirm("gold"); err != nil {
+				rewrites <- err
+				close(rewrites)
+				return
+			}
+			n++
+		}
+	}()
+	var wg sync.WaitGroup
+	for name, e := range map[string]*Engine{"serve": serve, "tui": tui} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 100 {
+				e.record(Decision{ID: fmt.Sprintf("%s-%d", name, i), Timestamp: now})
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	if err := <-rewrites; err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var d Decision
+		if err := json.Unmarshal([]byte(line), &d); err != nil {
+			t.Fatalf("torn row %q: %v", line, err)
+		}
+		seen[d.ID] = true
+	}
+	if len(seen) != 201 {
+		t.Fatalf("rows after concurrent rewrites = %d, want 201 (gold + 2×100)", len(seen))
 	}
 }

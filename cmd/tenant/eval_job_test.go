@@ -10,6 +10,7 @@ import (
 
 	"tenant/internal/eval"
 	"tenant/internal/model"
+	"tenant/internal/runtrace"
 )
 
 // TestEvalNightlyJob_SmokeArtifact runs the nightly job against the smoke
@@ -110,5 +111,33 @@ func TestEvalSurfaceIsReadCommsSafe(t *testing.T) {
 	}
 	if !strings.Contains(out, "read/research-only") {
 		t.Errorf("refusal should explain the surface, got: %s", out)
+	}
+}
+
+// Eval turns keep no run records: the operator's runs.db is for real turns,
+// and a nightly eval of 48 tasks would otherwise crowd them out (TEN-368).
+func TestEvalTurnsStayOutOfRunsDB(t *testing.T) {
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	h := &eval.Harness{}
+	cleanup, err := wireLiveHarness(context.Background(), h, c, &pluginFlags{}, eval.SubsetSmoke, evalJudgeOpts{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	runner, done, err := h.AgentFactory(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if _, _, err := runner.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := runtrace.Open(filepath.Join(c.dataDir, "runs.db"), runtrace.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if runs, err := st.List(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("eval turns in the operator's runs.db: %d (err = %v), want none", len(runs), err)
 	}
 }

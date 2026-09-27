@@ -59,18 +59,30 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("usage: init schema: %w", err)
 	}
+	// The turn's trace links a row to its runs.db record (TEN-368). CREATE
+	// TABLE IF NOT EXISTS never alters an older ledger, so add the column.
+	var n int
+	err = db.QueryRow(`SELECT count(*) FROM pragma_table_info('token_usage') WHERE name = 'trace_id'`).Scan(&n)
+	if err == nil && n == 0 {
+		_, err = db.Exec(`ALTER TABLE token_usage ADD COLUMN trace_id TEXT`)
+	}
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("usage: migrate trace_id: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
-// Record appends one LLM call's token usage. The timestamp is set to the
-// current time in RFC3339. Append-only single INSERT.
-func (s *Store) Record(ctx context.Context, agentID, model string, in, out int) error {
+// Record appends one LLM call's token usage, with the trace of the turn that
+// made it ("" when unknown). The timestamp is set to the current time in
+// RFC3339. Append-only single INSERT.
+func (s *Store) Record(ctx context.Context, agentID, model string, in, out int, traceID string) error {
 	if s == nil || s.db == nil {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO token_usage (ts, agent_id, model, tokens_in, tokens_out) VALUES (?, ?, ?, ?, ?)`,
-		time.Now().UTC().Format(time.RFC3339), agentID, model, in, out)
+		`INSERT INTO token_usage (ts, agent_id, model, tokens_in, tokens_out, trace_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		time.Now().UTC().Format(time.RFC3339), agentID, model, in, out, traceID)
 	if err != nil {
 		return fmt.Errorf("usage: record: %w", err)
 	}

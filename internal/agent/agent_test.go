@@ -29,11 +29,12 @@ func TestAgent_TurnPersistsRunAndEpisodeLineage(t *testing.T) {
 	}
 	defer runs.Close()
 	noop := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil })
-	a, fake, _, episodes := buildAgentWithRuns(t, model.Profile{}, nil, noop, runs)
+	arcDir := t.TempDir()
+	a, fake, _, episodes := buildAgentFull(t, model.Profile{}, nil, noop, nil, runs, func(c *agent.Config) { c.Archive = archive.NewWriter(arcDir) })
 	fake.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
 		return &model.GenerateResponse{Text: "done", Usage: model.Usage{PromptTokens: 9, CompletionTokens: 3}}, nil
 	}
-	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "trace this", RouteSurface: agent.RouteSurfaceTUI})
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "trace this", RouteSurface: agent.RouteSurfaceTUI, ParentTraceID: "spawner"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +47,22 @@ func TestAgent_TurnPersistsRunAndEpisodeLineage(t *testing.T) {
 	}
 	if run.Outcome != "success" || run.Source != "tui" || run.PromptTokens != 9 || run.CompletionTokens != 3 {
 		t.Fatalf("run = %+v", run)
+	}
+	if run.ParentTraceID != "spawner" {
+		t.Fatalf("run parent = %q, want the spawning turn's trace", run.ParentTraceID)
+	}
+	archived := 0
+	for ev, err := range archive.NewReader(arcDir).Stream(archive.Filter{}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.TraceID != res.TraceID {
+			t.Fatalf("archive event %s trace = %q, want %q", ev.Role, ev.TraceID, res.TraceID)
+		}
+		archived++
+	}
+	if archived == 0 {
+		t.Fatal("turn archived nothing")
 	}
 	if run.Model == "" || run.Provider == "" || run.CompletedAt == nil {
 		t.Fatalf("run missing model/provider/completion: %+v", run)

@@ -2,8 +2,13 @@ package route
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"tenant/internal/runtrace"
 )
 
 type phase4Classifier struct {
@@ -91,6 +96,29 @@ func TestDecisionSurfaceIsRecorded(t *testing.T) {
 		if d.Surface != surface {
 			t.Fatalf("Surface = %q, want %q", d.Surface, surface)
 		}
+	}
+}
+
+// The turn's trace rides the ctx onto the decision and its durable row, so a
+// decision joins its runs.db record (TEN-368).
+func TestDecisionCarriesTheTurnTrace(t *testing.T) {
+	dir := t.TempDir()
+	sig := Signal{Domain: "chat", Complexity: 1, Label: "small", Justification: "j", Raw: "raw"}
+	e := NewEngine(phase4Classifier{sig: sig}, dir, 0)
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("trace-7"))
+	d, err := e.DecideWithPolicy(ctx, PolicyDecisionRequest{AgentID: "a", Prompt: "hi", Mode: ModeShadow, Input: phase4Input()})
+	if err != nil || d.TraceID != "trace-7" {
+		t.Fatalf("DecideWithPolicy: trace = %q, err = %v; want trace-7", d.TraceID, err)
+	}
+	if d := e.Decide(ctx, "a", "s", "hi", ModeShadow); d.TraceID != "trace-7" {
+		t.Fatalf("Decide: trace = %q, want trace-7", d.TraceID)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, DecisionLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), `"trace_id":"trace-7"`); got != 2 {
+		t.Fatalf("durable rows with the trace = %d, want 2:\n%s", got, raw)
 	}
 }
 
