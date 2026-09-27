@@ -32,7 +32,7 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
 <body>
   <form class="card" method="POST" action="/auth/login">
     <h1>Authenticate</h1>
-    <p>Paste the dashboard auth token printed in your terminal.</p>
+    <p>Paste the dashboard auth token. <code>tenant serve</code> says where it is kept (the <code>dashboard-auth-token</code> file in the config directory); it prints the token itself only on a terminal.</p>
     <input type="password" name="token" placeholder="auth token" autocomplete="off" autofocus>
     <button type="submit">Unlock</button>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
@@ -74,7 +74,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		refused(r, "sign_in", "/auth/login")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
-		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the value printed in your terminal."})
+		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the dashboard-auth-token file in the config directory."})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
