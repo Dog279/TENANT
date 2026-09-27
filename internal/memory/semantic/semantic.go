@@ -66,6 +66,11 @@ type Fact struct {
 	EmbedderID     string
 	Embedding      []float32
 	Tombstoned     bool
+	// OriginJob and OriginModel say what created the fact (TEN-297). Insert
+	// records them in fact_origin when OriginJob is set; Origin reads them
+	// back. They are not loaded by Get, List or Search.
+	OriginJob   string
+	OriginModel string
 }
 
 // Decay model constants. Linear from grace to full decay; base

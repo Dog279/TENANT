@@ -134,7 +134,7 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 	// 2. Resolve the two LLMs we need: summarizer (text generation) — off the
 	//    pinned proposer router when set (TEN-195) — and embedder, which ALWAYS
 	//    comes off the main Router so the embedding space stays consistent.
-	summarizer, _, err := d.summarizerRouter().LLMForRole(ctx, d.summarizerRole())
+	summarizer, sumProfile, err := d.summarizerRouter().LLMForRole(ctx, d.summarizerRole())
 	if err != nil {
 		return nil, fmt.Errorf("distill: resolve summarizer: %w", err)
 	}
@@ -169,7 +169,7 @@ func (d *Distiller) Run(ctx context.Context, sinceEpisodeID int64) (*RunResult, 
 		result.FactsExtracted += len(extracted)
 
 		// 4. Embed all extracted facts in one call (cheaper than per-fact).
-		ins, reaff, sup, err := d.persistFacts(ctx, summarizer, embedder, string(embProfile.ID), extracted, threshold)
+		ins, reaff, sup, err := d.persistFacts(ctx, summarizer, sumProfile.Model, embedder, string(embProfile.ID), extracted, threshold)
 		if err != nil {
 			log.Warn("distill: persist failed", "agent", d.AgentID, "batch_start", start, "err", err)
 			result.BatchErrors = append(result.BatchErrors, fmt.Errorf("persist for batch starting at episode %d: %w", batch[0].ID, err))
@@ -330,7 +330,7 @@ func (d *Distiller) extractBatch(ctx context.Context, llm model.LLM, batch []*ep
 // and either reaffirms (clear/borderline-same match), supersedes-as-transition
 // (borderline contradiction), or inserts (distinct). Returns (inserted,
 // reaffirmed, superseded, error).
-func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embedder model.Embedder, embedderID string, facts []extractedFact, threshold float64) (int, int, int, error) {
+func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, summarizerModel string, embedder model.Embedder, embedderID string, facts []extractedFact, threshold float64) (int, int, int, error) {
 	if len(facts) == 0 {
 		return 0, 0, 0, nil
 	}
@@ -400,6 +400,8 @@ func (d *Distiller) persistFacts(ctx context.Context, summarizer model.LLM, embe
 			Confidence:     f.Confidence,
 			EmbedderID:     embedderID,
 			Embedding:      vectors[i],
+			OriginJob:      "distill",
+			OriginModel:    summarizerModel,
 		})
 		if err != nil {
 			return inserted, reaffirmed, superseded, fmt.Errorf("insert fact: %w", err)

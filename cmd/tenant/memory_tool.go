@@ -70,6 +70,7 @@ func (t memoryTool) Dispatch(ctx context.Context, call model.ToolCall) (string, 
 		Confidence: 0.95, // explicit user directive ⇒ high confidence
 		EmbedderID: t.embedderID,
 		Embedding:  vecs[0],
+		OriginJob:  "remember",
 	})
 	if err != nil {
 		return "memory write failed: " + err.Error(), true, nil

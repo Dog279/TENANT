@@ -86,6 +86,9 @@ func TestImportClaims_InsertsFactsAndSkipsScaffolding(t *testing.T) {
 		if len(f.Embedding) != 8 || f.EmbedderID != "embedder" {
 			t.Errorf("fact %q: dim=%d id=%q (want 8/embedder)", f.Fact, len(f.Embedding), f.EmbedderID)
 		}
+		if o, ok, err := ss.Origin(ctx, f.ID); err != nil || !ok || o.Job != "import" {
+			t.Errorf("fact %q origin = %+v %v %v, want import", f.Fact, o, ok, err)
+		}
 		// Markdown syntax must be stripped in the stored claim text.
 		for _, bad := range []string{"**", "[docs]", "(https"} {
 			if strings.Contains(f.Fact, bad) {

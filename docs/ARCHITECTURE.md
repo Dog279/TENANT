@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 71 |
-| Go files | 818 |
-| Test files | 398 |
-| Production Go LOC | 114,914 |
-| Test Go LOC | 77,758 |
+| Go files | 831 |
+| Test files | 404 |
+| Production Go LOC | 116,147 |
+| Test Go LOC | 78,800 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -374,11 +374,24 @@ time-decayed confidence.
   `.Search(ctx, Query) ([]Hit, error)`
 - `Fact.EffectiveConfidence(now)` — linear decay: 30-day grace → 0 at 365d
 - Search score = RRF × effectiveConfidence; decayed-to-zero facts drop out
+- Versions and origins (TEN-297): `.Origin(id)` is what made a fact (job,
+  model, when), recorded by `Insert` from `Fact.OriginJob`/`OriginModel`;
+  `.Versions(id)` walks the `superseded_by` links both ways, oldest first;
+  `.Edit(id, text, job, …)` saves a new version that supersedes the current
+  one, carrying sources, confidence and signals over (the access count starts
+  again); `.RestoreVersion(id, …)` makes an earlier version's text current as
+  a new version.
 
 **Storage:** SQLite `facts.db` — table `facts` (+ `superseded_by` FK,
-`confidence`, `first_seen`, `last_confirmed`) + `facts_fts` + triggers.
+`confidence`, `first_seen`, `last_confirmed`) + `facts_fts` + triggers;
+`fact_signals`; `fact_origin` (TEN-297: job, model, when); and
+`fact_source_tombstones` (TEN-309).
 **Invariants:** Search filters tombstoned AND superseded; supersede keeps
 the chain for audit; Supersede-on-contradiction is v1.1 (LLM judge — TODO).
+A fact and its origin are inserted in one transaction. Edits only add
+versions, and an edit runs in one transaction that supersedes the old
+version only while it is still current, so two edits of one version cannot
+both win.
 **21 tests.**
 
 ### 5.7 `internal/memory/archive` — T5 Archive
@@ -390,8 +403,11 @@ the chain for audit; Supersede-on-contradiction is v1.1 (LLM judge — TODO).
 `archive.NewWriterWithOptions(baseDir, WriterOptions)` and `Writer.Flush()` for
 batched syncing. `archive.NewReader(baseDir) *Reader`;
 `Reader.Stream(Filter) iter.Seq2[Event,error]` (Go 1.23 iterator,
-chronological). `Event{Timestamp, AgentID, SessionID, Role, Content,
-ToolCalls, ToolResult, Metadata}`.
+chronological). `Reader.Turn(sessionID, prompt, at)` returns one turn's events
+(the user message through the reply, tool calls and results included), which
+the provenance inspector uses to rebuild a fact's source turns (TEN-297).
+`Event{Timestamp, AgentID, SessionID, Role, Content, ToolCalls, ToolResult,
+Metadata}`.
 **Storage:** JSONL at `archive/YYYY-MM/{session}.jsonl`, one Event/line,
 owner-only (`fsperm`).
 **Invariants:** append-only (deletion = tombstone in higher tiers, never

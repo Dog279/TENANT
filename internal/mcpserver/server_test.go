@@ -292,10 +292,17 @@ func TestToolsCall_FactAddSucceedsWritable(t *testing.T) {
 	if !strings.Contains(res.Content[0].Text, "added fact #") {
 		t.Errorf("unexpected fact_add result: %q", res.Content[0].Text)
 	}
-	// Verify it actually landed.
+	// Verify it actually landed, recorded as made over MCP (TEN-297).
 	n, _ := f.sstore.Count(context.Background(), false, false)
 	if n != 1 {
 		t.Errorf("semantic store has %d facts, want 1", n)
+	}
+	facts, err := f.sstore.List(context.Background(), semantic.ListFilter{})
+	if err != nil || len(facts) != 1 {
+		t.Fatalf("list = %v %v", facts, err)
+	}
+	if o, ok, err := f.sstore.Origin(context.Background(), facts[0].ID); err != nil || !ok || o.Job != "mcp" {
+		t.Errorf("MCP fact origin = %+v %v %v, want mcp", o, ok, err)
 	}
 }
 

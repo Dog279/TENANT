@@ -206,6 +206,7 @@ func (s *Server) routes() {
 	// constructed without a MemoryControl serves without the memory routes.
 	if s.mem != nil {
 		s.mountMemoryREST(s.mux)
+		s.mountFactInspectorREST(s.mux)
 	}
 
 	// Auth entry points (TEN-106): PSK→cookie so browser navigation works without

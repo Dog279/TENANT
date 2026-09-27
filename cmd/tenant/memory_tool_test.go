@@ -59,6 +59,9 @@ func TestMemoryTool_RemembersRetrievableFact(t *testing.T) {
 	if hits[0].Fact.Confidence < 0.9 {
 		t.Fatalf("directive fact should be high-confidence, got %.2f", hits[0].Fact.Confidence)
 	}
+	if o, ok, err := ss.Origin(ctx, hits[0].Fact.ID); err != nil || !ok || o.Job != "remember" {
+		t.Fatalf("remembered fact origin = %+v %v %v, want remember", o, ok, err)
+	}
 }
 
 // A successful remember must also fire the note callback so the always-on

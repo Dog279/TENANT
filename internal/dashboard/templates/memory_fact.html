@@ -1,0 +1,117 @@
+{{define "content"}}
+{{template "memnav" .}}
+{{if not .Configured}}
+<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{else if not .Supported}}
+<div class="card"><div class="dim pad">This server's memory can't explain individual facts.</div></div>
+{{else}}
+{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+{{if .Notice}}<div class="banner undo"><span>{{.Notice}}</span></div>{{end}}
+{{if .ID}}
+<div class="card">
+  <div class="pad">
+    <div class="fact-top">
+      <div class="fact-text"><strong>{{.Text}}</strong></div>
+      <span class="fact-conf dim">#{{.ID}} · {{.StatusText}} · {{.Conf}} (now {{.EffConf}})</span>
+    </div>
+    {{if .ValidTo}}<div class="dim">No longer true since {{.ValidTo}}.</div>{{end}}
+    {{if .Editing}}
+    <form method="POST" action="{{.EditAction}}" style="margin-top:.5rem">
+      <textarea class="box" name="text" rows="3" style="width:100%">{{.Text}}</textarea>
+      <button type="submit" class="btn sm">Save as a new version</button>
+      <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
+    </form>
+    {{else}}
+    <div class="postbar">
+      {{if eq .Status "live"}}
+      <a class="btn sm" href="{{.EditHref}}">Edit</a>
+      {{if .ValidTo}}
+      <form class="inline" method="POST" action="{{.RevalidateAction}}"><button type="submit" class="btn sm">It's true again</button></form>
+      {{else}}
+      <form class="inline" method="POST" action="{{.InvalidateAction}}"><button type="submit" class="btn sm">No longer true</button></form>
+      {{end}}
+      <a class="btn sm" href="{{.ConflictHref}}">It contradicts another fact</a>
+      <form class="inline" method="POST" action="{{.DeleteAction}}"><button type="submit" class="btn sm">Remove</button></form>
+      {{else if eq .Status "tombstoned"}}
+      <form class="inline" method="POST" action="{{.RestoreAction}}"><input type="hidden" name="back" value="/memory/facts/{{.ID}}"><button type="submit" class="btn sm">Restore</button></form>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+</div>
+
+<div class="card">
+  <div class="pad"><strong>Where it came from</strong></div>
+  <div class="pad dim">How it got here: {{.Origin}}</div>
+  <div class="pad dim">Learned {{.Learned}} · last confirmed {{.Checked}}</div>
+  {{if not .Sources}}<div class="pad dim">No source conversations are recorded for this fact.</div>{{end}}
+  <div class="factlist">
+  {{range .Sources}}
+  <div class="fact">
+    {{if .Missing}}
+    <div class="fact-text dim">Conversation #{{.ID}} is no longer in memory.</div>
+    {{else}}
+    <div class="fact-top">
+      <div class="fact-text"><span class="dim">You:</span> {{.Prompt}}<br><span class="dim">Agent:</span> {{.Response}}</div>
+      <span class="fact-conf dim">{{.When}}</span>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+  </div>
+  {{range .Removed}}<div class="pad dim">A source was deleted: {{.}}</div>{{end}}
+  {{if .Sources}}
+  {{if not .ShowTurns}}<div class="pad"><a class="linkbtn" href="{{.TurnsHref}}">Show the full conversations from the archive</a></div>{{end}}
+  {{end}}
+  {{if .ShowTurns}}
+  {{range .Turns}}
+  <div class="pad"><strong>Conversation #{{.Episode}}</strong>
+    {{if .Missing}}<span class="dim"> — {{.Why}}</span>{{end}}
+  </div>
+  <div class="factlist">
+    {{range .Events}}
+    <div class="fact"><div class="fact-top"><div class="fact-text"><span class="dim">[{{.Role}}]</span> {{.Content}}</div><span class="fact-conf dim">{{.When}}</span></div></div>
+    {{end}}
+  </div>
+  {{end}}
+  {{end}}
+</div>
+
+<div class="card">
+  <div class="pad"><strong>Signals</strong></div>
+  {{range .Signals}}<div class="pad dim">{{.K}}: {{.V}}</div>{{end}}
+  <div class="pad dim">Used: {{.Uses}}</div>
+  {{if .SME}}<div class="pad dim">Cited by the expert notes: {{range $i, $s := .SME}}{{if $i}}, {{end}}{{$s}}{{end}}</div>{{end}}
+</div>
+
+<div class="card">
+  <div class="pad"><strong>Versions and conflicts</strong></div>
+  {{if .ByNewer}}<div class="pad">Replaced by <a href="{{.ByNewer.Href}}">#{{.ByNewer.ID}}</a>{{if .ByNewer.Job}} ({{.ByNewer.Job}}){{end}}: {{.ByNewer.Text}}</div>{{end}}
+  {{range .Replaced}}<div class="pad dim">Replaced <a href="{{.Href}}">#{{.ID}}</a>{{if .Job}} ({{.Job}}){{end}}: {{.Text}}</div>{{end}}
+  <div class="factlist">
+  {{range .Versions}}
+  <div class="fact">
+    <div class="fact-top">
+      <div class="fact-text">{{if .Current}}<strong>{{.Text}}</strong>{{else}}<a href="{{.Href}}">{{.Text}}</a>{{end}}</div>
+      <span class="fact-conf dim">#{{.ID}} · {{.When}} · {{.StatusText}}{{if .Job}} · {{.Job}}{{end}}</span>
+    </div>
+    {{if .CompareHref}}
+    <div class="postbar">
+      <a class="linkbtn" href="{{.CompareHref}}">Compare</a>
+      {{if .RestoreForm}}
+      <form class="inline" method="POST" action="{{.RestoreForm}}"><input type="hidden" name="version" value="{{.ID}}"><button type="submit" class="linkbtn">Make this current again</button></form>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+  </div>
+  {{with .Compare}}
+  <div class="pad"><strong>#{{.A}} → #{{.B}}</strong>
+    <div style="margin-top:.4rem">{{range .Parts}}{{if eq .Op "del"}}<del>{{.Text}}</del> {{else if eq .Op "ins"}}<ins>{{.Text}}</ins> {{else}}{{.Text}} {{end}}{{end}}</div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+{{end}}

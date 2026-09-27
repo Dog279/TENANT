@@ -285,6 +285,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	memCtl := memControl{
 		episodic: st.episodic, semantic: st.semantic, skills: skillStore,
 		embedder: skEmb, distill: distillJob, cfgDir: c.cfgDir, agentID: c.agent,
+		dataDir: c.dataDir, embedderID: embedderID,
 		soulLive:       soulLive,
 		profile:        prof,
 		profileRefresh: refreshProfile,

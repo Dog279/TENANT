@@ -32,6 +32,10 @@ type memControl struct {
 	distill  *improve.DistillJob
 	cfgDir   string
 	agentID  string
+	// dataDir finds the archive, for the inspector's source turns, and
+	// embedderID tags a fact version saved from the dashboard (TEN-297).
+	dataDir    string
+	embedderID string
 	// soulLive is the SAME live-soul holder the agent reads each turn.
 	// Soul edits swap in a fresh *soul.Soul (pointer swap, not in-place
 	// mutation) so they take effect next turn without a restart and

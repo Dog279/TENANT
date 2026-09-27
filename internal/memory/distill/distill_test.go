@@ -182,6 +182,18 @@ func TestRun_ExtractsFactsFromEpisodes(t *testing.T) {
 	if len(facts) != 2 || len(facts[0].SourceRunIDs) != 1 || len(facts[1].SourceRunIDs) != 1 {
 		t.Fatalf("fact source-run lineage missing: %+v", facts)
 	}
+	// TEN-297: each fact records that distillation made it, and with which
+	// summarizer model.
+	_, sumProf, err := s.router.LLMForRole(context.Background(), distill.DefaultSummarizerRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range facts {
+		o, ok, err := s.sstore.Origin(context.Background(), f.ID)
+		if err != nil || !ok || o.Job != "distill" || o.Model == "" || o.Model != sumProf.Model {
+			t.Fatalf("fact %d origin = %+v, %v, %v; want distill by %q", f.ID, o, ok, err, sumProf.Model)
+		}
+	}
 }
 
 func TestRun_ReaffirmsExistingFactOnHighSimilarity(t *testing.T) {

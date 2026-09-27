@@ -142,6 +142,32 @@ func TestConsolidationJob_MergesDuplicateCluster(t *testing.T) {
 	if !res.Changed {
 		t.Fatalf("expected Changed=true; summary=%q", res.Summary)
 	}
+	// The merged fact records that consolidation made it, and with which
+	// model (TEN-297).
+	live, err := ss.List(ctx, semantic.ListFilter{AgentIDs: []string{"main"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sumProf, err := router.LLMForRole(ctx, job.summarizerRole())
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := 0
+	for _, f := range live {
+		o, ok, err := ss.Origin(ctx, f.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			merged++
+			if o.Job != "consolidate" || o.Model != sumProf.Model || o.Model == "" {
+				t.Fatalf("merged fact origin = %+v, want consolidate by %q", o, sumProf.Model)
+			}
+		}
+	}
+	if merged != 1 {
+		t.Fatalf("%d live facts carry an origin, want the 1 merged fact", merged)
+	}
 
 	// Idempotent: a second run finds nothing left to merge.
 	res2, err := job.Run(ctx)
