@@ -316,42 +316,13 @@ func probeGSuiteWith(ctx context.Context, creds *credentials, settings map[strin
 		return fmt.Sprintf("%s (impersonated)", subject), nil
 
 	case "oauth":
-		// TEN-71: browser-based OAuth code-grant flow.
-		// Resolution order:
-		//   1. operator-supplied oauth_creds_json (their own OAuth client)
-		//   2. maintainer-owned embedded creds under cfgDir (zero-Cloud
-		//      path for end users)
-		//   3. error
-		var oauthCredsBytes []byte
-		credsPath := settings["oauth_creds_json"]
-		if credsPath != "" {
-			b, err := os.ReadFile(credsPath)
-			if err != nil {
-				return "", fmt.Errorf("read oauth_creds_json %q: %v", credsPath, err)
-			}
-			oauthCredsBytes = b
-		} else if deps.GetEmbeddedOAuth != nil {
-			b, err := deps.GetEmbeddedOAuth()
-			if err != nil {
-				return "", fmt.Errorf("read embedded oauth creds: %v", err)
-			}
-			oauthCredsBytes = b
+		// TEN-71: browser-based OAuth code-grant flow, with the client and the
+		// cached token the running plugin also uses (gsuiteRuntimeOAuth).
+		oauthCredsBytes, err := gsuiteOAuthClient(settings, deps.GetEmbeddedOAuth)
+		if err != nil {
+			return "", err
 		}
-		if len(oauthCredsBytes) == 0 {
-			return "", errors.New("auth=oauth needs either oauth_creds_json setting OR a maintainer-installed OAuth client (run `tenant oauth-setup gsuite <path>` to install one)")
-		}
-		// Pull cached token from credentials.json (if any). We persist
-		// the full *oauth2.Token JSON in one slot so refresh rotations
-		// are atomic — wins over splitting into refresh_token /
-		// access_token / expiry separately.
-		var cachedTok *oauth2.Token
-		if raw := creds.Get(skillSecretID("gsuite", "oauth_token")); raw != "" {
-			var t oauth2.Token
-			if err := json.Unmarshal([]byte(raw), &t); err == nil {
-				cachedTok = &t
-			}
-			// If parse fails, treat as no cache; flow re-prompts browser.
-		}
+		cachedTok := gsuiteCachedToken(creds)
 		// Save callback writes the new/rotated token back into creds
 		// AND persists creds to disk (so a crash mid-probe doesn't
 		// strand the operator with a token they can't reuse).
@@ -395,6 +366,47 @@ func probeGSuiteWith(ctx context.Context, creds *credentials, settings map[strin
 		// phase; the case branch exists as defense-in-depth.
 		return "", fmt.Errorf("unknown auth mode %q (expected sa, gcloud, or oauth)", auth)
 	}
+}
+
+// gsuiteOAuthClient is the OAuth client JSON gsuite signs in with:
+//  1. the operator's own client (oauth_creds_json);
+//  2. else the maintainer-owned client installed under the config dir
+//     (embedded; the zero-Cloud path for end users);
+//  3. else an error.
+func gsuiteOAuthClient(settings map[string]string, embedded func() ([]byte, error)) ([]byte, error) {
+	if path := settings["oauth_creds_json"]; path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read oauth_creds_json %q: %v", path, err)
+		}
+		return b, nil
+	}
+	if embedded != nil {
+		b, err := embedded()
+		if err != nil {
+			return nil, fmt.Errorf("read embedded oauth creds: %v", err)
+		}
+		if len(b) > 0 {
+			return b, nil
+		}
+	}
+	return nil, errors.New("auth=oauth needs either oauth_creds_json setting OR a maintainer-installed OAuth client (run `tenant oauth-setup gsuite <path>` to install one)")
+}
+
+// gsuiteCachedToken is the OAuth token /configure cached in credentials.json,
+// or nil. The whole *oauth2.Token is one secret, so a refresh rotation
+// replaces it atomically. An unreadable one counts as no token: the next
+// sign-in replaces it.
+func gsuiteCachedToken(creds *credentials) *oauth2.Token {
+	raw := creds.Get(skillSecretID("gsuite", "oauth_token"))
+	if raw == "" {
+		return nil
+	}
+	var t oauth2.Token
+	if err := json.Unmarshal([]byte(raw), &t); err != nil {
+		return nil
+	}
+	return &t
 }
 
 // makeGsuiteAuthNote builds the post-pick guidance closure for the

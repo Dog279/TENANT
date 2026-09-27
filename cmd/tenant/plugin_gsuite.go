@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+
+	"golang.org/x/oauth2"
 
 	"tenant/internal/cmdreg"
 	"tenant/internal/model"
@@ -85,15 +88,9 @@ func activateGSuite(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 	case "gcloud":
 		// nothing extra — Open() shells out to gcloud.
 	case "oauth":
-		credsPath := sk.Settings["oauth_creds_json"]
-		if credsPath == "" {
-			return nil, nil, fmt.Errorf("gsuite plugin: auth=oauth needs oauth_creds_json — re-run `/configure gsuite`")
+		if err := gsuiteRuntimeOAuth(&gcfg, e.c.cfgDir, sk.Settings); err != nil {
+			return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
 		}
-		oauthCredsBytes, err := os.ReadFile(credsPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("gsuite plugin: read oauth creds: %w", err)
-		}
-		gcfg.OAuthCreds = oauthCredsBytes
 	default:
 		// Reached when config.json carries an auth this build doesn't
 		// implement (e.g. a stale "composio"). Make it actionable rather
@@ -174,11 +171,52 @@ func launchGSuite(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		}
 		gcfg.SAJSON = b
 	}
+	if f.auth == "oauth" {
+		// OAuth has no launch flags of its own: it signs in with what
+		// /configure saved, as the activator does.
+		var settings map[string]string
+		if lc, err := loadLaunchConfig(e.c.cfgDir); err == nil && lc.Skills["gsuite"] != nil {
+			settings = lc.Skills["gsuite"].Settings
+		}
+		if err := gsuiteRuntimeOAuth(&gcfg, e.c.cfgDir, settings); err != nil {
+			return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
+		}
+	}
 	svc, err := gsuite.Open(gcfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("gsuite plugin: %w", err)
 	}
 	return []plugin{gsuite.NewDispatcher(svc, gsuite.Policy{AllowSend: e.gateAllow(f.allowSend), Confirm: e.confirm})}, nil, nil
+}
+
+// gsuiteRuntimeOAuth fills cfg for a running plugin signed in with OAuth. It
+// uses the same client and cached token as the probe. A refreshed token is
+// saved back to credentials.json, which is re-read first so a secret stored
+// since the plugin started survives. Before this, the launch had no OAuth
+// branch, so a saved OAuth setup failed the launch. The activator read only
+// oauth_creds_json: /enable failed with the installed client, and every
+// sign-in ignored the cached token (D1).
+func gsuiteRuntimeOAuth(cfg *gsuite.Config, cfgDir string, settings map[string]string) error {
+	client, err := gsuiteOAuthClient(settings, func() ([]byte, error) { return gsuite.LoadEmbeddedOAuth(cfgDir) })
+	if err != nil {
+		return err
+	}
+	creds, _ := loadCredentials(cfgDir)
+	cfg.OAuthCreds = client
+	cfg.OAuthToken = gsuiteCachedToken(creds)
+	cfg.OAuthSave = func(t *oauth2.Token) error {
+		b, err := json.Marshal(t)
+		if err != nil {
+			return err
+		}
+		c, err := loadCredentials(cfgDir)
+		if err != nil {
+			return err
+		}
+		c.Set(skillSecretID("gsuite", "oauth_token"), string(b))
+		return c.Save(cfgDir)
+	}
+	return nil
 }
 
 // checkGSuite verifies the gsuite plugin's stored auth config can mint

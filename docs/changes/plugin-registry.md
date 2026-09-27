@@ -84,6 +84,17 @@ and those copies disagreed too.
   the token; it copied a `client_id` secret that does not exist. Without `$ATLASSIAN_TOKEN`
   the whole eval failed to build its tools. The launch now reads the stored API token or
   client secret, as the activator does.
+- **Google Workspace OAuth (D1).** The probe, the launch and the activator each built gsuite
+  differently, and only the probe handled OAuth fully:
+  - the launch had no OAuth branch, so a saved OAuth setup failed the launch;
+  - the activator read only `oauth_creds_json`, so `/enable gsuite` failed with the
+    installed OAuth client, which is the path for a personal Gmail account;
+  - the activator also ignored the token `/configure` cached, so the first call signed in
+    again, and never saved a refreshed token.
+
+  All three now use the same client and cached token. The running plugin saves a refreshed
+  token back to `credentials.json`, re-reading it first so a secret stored meanwhile
+  survives.
 - **Approval table.** `jira_write`, `github_write`, `wiki_save` and the crm actions reached
   "destructive" only because unknown actions default to it. They are now declared, with
   the same category. The `web_` prefix guess is gone.

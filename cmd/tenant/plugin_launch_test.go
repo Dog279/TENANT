@@ -2,7 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"golang.org/x/oauth2"
+
+	"tenant/internal/plugins/gsuite"
 )
 
 // saveTestSecrets stores secrets in dir's credentials.json.
@@ -84,5 +93,90 @@ func TestEvalLaunchesAConfiguredJira(t *testing.T) {
 	built, _, err := launchAtlassian(context.Background(), &pluginEnv{c: c, pf: pf})
 	if err != nil || len(built) != 1 {
 		t.Fatalf("launch: built %d, err %v", len(built), err)
+	}
+}
+
+const testOAuthClient = `{"installed":{"client_id":"fake.apps.googleusercontent.com","client_secret":"fake",` +
+	`"auth_uri":"https://accounts.google.com/o/oauth2/v2/auth","token_uri":"https://oauth2.googleapis.com/token",` +
+	`"redirect_uris":["http://localhost"]}}`
+
+// installTestOAuthClient installs an OAuth client under dir, as
+// `tenant oauth-setup gsuite` does.
+func installTestOAuthClient(t *testing.T, dir string) {
+	t.Helper()
+	src := filepath.Join(t.TempDir(), "client.json")
+	if err := os.WriteFile(src, []byte(testOAuthClient), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installGSuiteOAuthSilent(dir, src); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Google Workspace signed in with OAuth through /configure or `tenant setup`
+// runs at launch and on /enable with the client it signed in with and the
+// token /configure cached. The launch had no OAuth at all, so a saved OAuth
+// setup failed the launch; the activator read only oauth_creds_json, so the
+// installed client failed /enable and the cached token was ignored (D1).
+func TestGSuiteOAuthRunsWithTheConfiguredSignIn(t *testing.T) {
+	dir := t.TempDir()
+	installTestOAuthClient(t, dir)
+	saveTestSkill(t, dir, "gsuite", map[string]string{"auth": "oauth"})
+	tok, _ := json.Marshal(&oauth2.Token{AccessToken: "at", RefreshToken: "rt", Expiry: time.Now().Add(time.Hour)})
+	saveTestSecrets(t, dir, map[string]string{skillSecretID("gsuite", "oauth_token"): string(tok)})
+
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	c := bindCommon(fs)
+	pf := bindPluginFlags(fs)
+	if err := fs.Parse([]string{"--config", dir, "--data", filepath.Join(dir, "data")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.resolve(); err != nil {
+		t.Fatal(err)
+	}
+	applyPluginConfig(c, pf)
+	if f := gsuiteFlagsOf(pf); !f.on || f.auth != "oauth" {
+		t.Fatalf("saved config applied as on=%v auth=%q", f.on, f.auth)
+	}
+	built, _, err := launchGSuite(context.Background(), &pluginEnv{c: c, pf: pf})
+	if err != nil || len(built) != 1 {
+		t.Fatalf("launch: built %d, err %v", len(built), err)
+	}
+	if _, _, err := activateGSuite(context.Background(), &pluginEnv{c: c, pf: testPluginFlags()}); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+}
+
+// The running plugin signs in with the token /configure cached, and saves a
+// refreshed one back without losing a secret stored since it started.
+func TestGSuiteRuntimeOAuthKeepsTheToken(t *testing.T) {
+	dir := t.TempDir()
+	installTestOAuthClient(t, dir)
+	tok, _ := json.Marshal(&oauth2.Token{AccessToken: "at", RefreshToken: "rt"})
+	saveTestSecrets(t, dir, map[string]string{skillSecretID("gsuite", "oauth_token"): string(tok)})
+	var cfg gsuite.Config
+	if err := gsuiteRuntimeOAuth(&cfg, dir, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.OAuthCreds) == 0 {
+		t.Error("no OAuth client: the installed one was not used")
+	}
+	if cfg.OAuthToken == nil || cfg.OAuthToken.RefreshToken != "rt" {
+		t.Fatalf("token = %+v, want the cached one", cfg.OAuthToken)
+	}
+	saveTestSecrets(t, dir, map[string]string{"skill:x:bearer": "stored-later"})
+	if err := cfg.OAuthSave(&oauth2.Token{AccessToken: "at2", RefreshToken: "rt2"}); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := loadCredentials(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved oauth2.Token
+	if err := json.Unmarshal([]byte(creds.Get(skillSecretID("gsuite", "oauth_token"))), &saved); err != nil || saved.RefreshToken != "rt2" {
+		t.Errorf("saved token = %+v, %v", saved, err)
+	}
+	if creds.Get("skill:x:bearer") != "stored-later" {
+		t.Error("saving the refreshed token lost a secret stored after the plugin started")
 	}
 }
