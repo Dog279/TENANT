@@ -80,7 +80,7 @@ func (s setupControl) SetModel(model string) (string, error) {
 		return "", err
 	}
 	pc.Model = strings.TrimSpace(model)
-	if err := lc.save(s.cfgDir); err != nil {
+	if err := lc.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	return "model updated — " + s.reload(), nil
@@ -92,7 +92,7 @@ func (s setupControl) SetEndpoint(url string) (string, error) {
 		return "", err
 	}
 	pc.Endpoint = strings.TrimRight(strings.TrimSpace(url), "/")
-	if err := lc.save(s.cfgDir); err != nil {
+	if err := lc.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	return "endpoint set — " + s.reload(), nil
@@ -104,7 +104,7 @@ func (s setupControl) SetToolFormat(format string) (string, error) {
 		return "", err
 	}
 	pc.ToolFmt = strings.TrimSpace(format)
-	if err := lc.save(s.cfgDir); err != nil {
+	if err := lc.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	return "tool format set to " + pc.ToolFmt + " — " + s.reload(), nil
@@ -125,12 +125,12 @@ func (s setupControl) SetKey(value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	creds.set(lc.Provider, value)
-	if err := creds.save(s.cfgDir); err != nil {
+	creds.Set(lc.Provider, value)
+	if err := creds.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	pc.Auth = authCfg{Mode: "apikey", Stored: true}
-	if err := lc.save(s.cfgDir); err != nil {
+	if err := lc.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	return "API key stored with owner-only protection — " + s.reload(), nil
@@ -155,7 +155,7 @@ func (s setupControl) SetEmbeddings(endpoint, model string) (string, error) {
 		emb.EmbedDim = defaultEmbedDim
 	}
 	lc.Embed = emb
-	if err := lc.save(s.cfgDir); err != nil {
+	if err := lc.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	return "embeddings set (applies on restart)", nil
@@ -171,7 +171,7 @@ func (s setupControl) SetGateway(mode, addr string) (string, error) {
 		gw.SSEAddr = firstNonEmpty(strings.TrimSpace(addr), lc.Gateway.SSEAddr, "127.0.0.1:8765")
 	}
 	lc.Gateway = gw
-	if err := lc.save(s.cfgDir); err != nil {
+	if err := lc.Save(s.cfgDir); err != nil {
 		return "", err
 	}
 	return "mcp gateway set to " + mode + " (applies on mcp-memory restart)", nil

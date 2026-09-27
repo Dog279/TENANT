@@ -11,7 +11,7 @@ func seedSetupConfig(t *testing.T) (string, setupControl) {
 			"zai": {Kind: "zai", Endpoint: "https://old", Model: "glm-4.6", ToolFmt: "openai"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	return dir, setupControl{cfgDir: dir} // mc nil → reload() returns "saved"
@@ -61,8 +61,8 @@ func TestSetupControl_SetKey(t *testing.T) {
 	if _, err := s.SetKey("sk-zai-key"); err != nil {
 		t.Fatal(err)
 	}
-	if creds, _ := loadCredentials(dir); creds.get("zai") != "sk-zai-key" {
-		t.Fatalf("key not stored: %q", creds.get("zai"))
+	if creds, _ := loadCredentials(dir); creds.Get("zai") != "sk-zai-key" {
+		t.Fatalf("key not stored: %q", creds.Get("zai"))
 	}
 	lc, _ := loadLaunchConfig(dir)
 	if !lc.Providers["zai"].Auth.Stored {

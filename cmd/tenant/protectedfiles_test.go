@@ -34,7 +34,7 @@ func controlFilesFixture(t *testing.T) (cfgDir, dataDir string, orig map[string]
 		}
 	}
 	stg := &settings{Permissions: map[string]string{catWrite: "allow", catDestructive: "ask"}}
-	if err := stg.save(cfgDir, "main"); err != nil {
+	if err := stg.Save(cfgDir, "main"); err != nil {
 		t.Fatal(err)
 	}
 	for p, body := range map[string]string{
@@ -153,7 +153,7 @@ func TestFileToolsCannotRewriteControlFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	stg.Permissions[catWrite] = "ask"
-	if err := stg.save(cfgDir, "main"); err != nil {
+	if err := stg.Save(cfgDir, "main"); err != nil {
 		t.Fatalf("Tenant's own settings save must still work: %v", err)
 	}
 	if got, _ := loadSettings(cfgDir, "main"); got.Permissions[catWrite] != "ask" {

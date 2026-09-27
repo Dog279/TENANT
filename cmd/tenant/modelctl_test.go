@@ -44,7 +44,7 @@ func TestPlanLoopCeiling_Configurable(t *testing.T) {
 		Providers: map[string]*providerConfig{"v": {Kind: "vllm", Endpoint: "http://127.0.0.1:1", Model: "m", ToolFmt: "qwen"}},
 		Embed:     &providerConfig{Kind: "ollama", Endpoint: "http://127.0.0.1:1", Model: "e"},
 	}
-	if err := cfg.save(dir); err != nil {
+	if err := cfg.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func TestPlanLoopCeiling_Configurable(t *testing.T) {
 	}
 	// Config override → 40.
 	cfg.PlanLoopCeiling = 40
-	if err := cfg.save(dir); err != nil {
+	if err := cfg.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	if p := build(nil); p.PlanLoopCeiling != 40 {
@@ -94,7 +94,7 @@ func TestModelControl_ListUseAdd(t *testing.T) {
 			"b": {Kind: "echo"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,8 +155,8 @@ func TestModelControl_ListUseAdd(t *testing.T) {
 
 	// Remove a non-active backend (and its stored credential).
 	creds, _ := loadCredentials(dir)
-	creds.set("gpu", "sk-x")
-	_ = creds.save(dir)
+	creds.Set("gpu", "sk-x")
+	_ = creds.Save(dir)
 	if _, err := mc.RemoveModel("gpu"); err != nil {
 		t.Fatalf("RemoveModel(gpu): %v", err)
 	}
@@ -181,7 +181,7 @@ func TestModelControl_ListUseAdd(t *testing.T) {
 func TestModelControl_AddCloudModel(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Provider: "a", Providers: map[string]*providerConfig{"a": {Kind: "echo"}}}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -228,7 +228,7 @@ func TestModelControl_AddCloudModel(t *testing.T) {
 	}
 	// Key stored in credentials.json, NOT in providers (separation of concerns).
 	creds, _ := loadCredentials(dir)
-	if got := creds.get("zai"); got != "sk-zai-test-key" {
+	if got := creds.Get("zai"); got != "sk-zai-test-key" {
 		t.Errorf("key not stored: %q", got)
 	}
 
@@ -240,7 +240,7 @@ func TestModelControl_AddCloudModel(t *testing.T) {
 	// Re-running with a new key for the same provider OVERWRITES the secret
 	// but preserves any custom model override.
 	got.Providers["zai"].Model = "glm-4.5-air"
-	_ = got.save(dir)
+	_ = got.Save(dir)
 	if _, err := mc.AddCloudModel("zai", "sk-zai-newkey"); err != nil {
 		t.Fatalf("AddCloudModel re-run: %v", err)
 	}
@@ -249,8 +249,8 @@ func TestModelControl_AddCloudModel(t *testing.T) {
 		t.Errorf("custom Model override clobbered on re-add: %q", got2.Providers["zai"].Model)
 	}
 	creds2, _ := loadCredentials(dir)
-	if creds2.get("zai") != "sk-zai-newkey" {
-		t.Errorf("key not updated on re-add: %q", creds2.get("zai"))
+	if creds2.Get("zai") != "sk-zai-newkey" {
+		t.Errorf("key not updated on re-add: %q", creds2.Get("zai"))
 	}
 }
 
@@ -258,7 +258,7 @@ func TestModelControl_AddCloudModel(t *testing.T) {
 // them to the user instead of silently no-op'ing.
 func TestModelControl_AddCloudModel_Rejects(t *testing.T) {
 	dir := t.TempDir()
-	(&launchConfig{}).save(dir)
+	(&launchConfig{}).Save(dir)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ag := newEchoAgent(t, log)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag, log: log}
@@ -351,7 +351,7 @@ func TestSetReasoningEffort(t *testing.T) {
 			"openai": {Kind: "openai", Endpoint: "https://api.openai.com", Model: "gpt-4o", ToolFmt: "openai"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: newEchoAg(t),
@@ -385,7 +385,7 @@ func TestSetReasoningEffort(t *testing.T) {
 
 	// A provider whose kind doesn't support reasoning is refused (would 400).
 	lc.Provider = "openai"
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mc.SetReasoningEffort("high"); err == nil {

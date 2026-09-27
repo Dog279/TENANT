@@ -166,7 +166,7 @@ func TestSecurityAuditCriticalExit(t *testing.T) {
 		BrowserNoSandbox: true,
 		Skills:           map[string]*skillConfig{"web": {Enabled: true, Settings: map[string]string{"jina_reader": "on"}}},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	out, err := captureTenantStdout(t, func() error {

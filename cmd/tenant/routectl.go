@@ -120,7 +120,7 @@ func cmdRoute(ctx context.Context, args []string) error {
 		lc.Route.ForceProfile = canonical
 		// save re-runs resolveRouteConfig, deliberately retaining the actionable
 		// active-without-big_role rejection rather than writing an inert force.
-		if err := lc.save(c.cfgDir); err != nil {
+		if err := lc.Save(c.cfgDir); err != nil {
 			return err
 		}
 		fmt.Printf("WARNING: route forced to profile %q; this explicitly pierces never_cloud and will be audit-logged\n", canonical)

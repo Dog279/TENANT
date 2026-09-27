@@ -32,8 +32,8 @@ func TestResolveXBearer(t *testing.T) {
 	t.Setenv("X_BEARER_TOKEN", "env-tok")
 	dir := t.TempDir()
 	c, _ := loadCredentials(dir)
-	c.set(skillSecretID("x", "bearer"), "creds-tok")
-	if err := c.save(dir); err != nil {
+	c.Set(skillSecretID("x", "bearer"), "creds-tok")
+	if err := c.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveXBearer(dir, "  flag-tok  "); got != "flag-tok" {
@@ -58,7 +58,7 @@ func TestProbeX(t *testing.T) {
 	ctx := context.Background()
 	withBearer := func() *credentials {
 		c, _ := loadCredentials(t.TempDir())
-		c.set(skillSecretID("x", "bearer"), strings.Repeat("A", 90))
+		c.Set(skillSecretID("x", "bearer"), strings.Repeat("A", 90))
 		return c
 	}
 

@@ -79,7 +79,7 @@ func TestSanitizeEndpoints_BlankBadEndpoint(t *testing.T) {
 			},
 		},
 	}
-	lc.sanitizeEndpoints()
+	lc.SanitizeEndpoints()
 	if lc.Providers["good"].Endpoint != "http://localhost:8000" {
 		t.Errorf("good endpoint mutated: %q", lc.Providers["good"].Endpoint)
 	}
@@ -111,7 +111,7 @@ func TestLoadLaunchConfig_SanitizesOnLoad(t *testing.T) {
 			},
 		},
 	}
-	if err := bad.save(dir); err != nil {
+	if err := bad.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := loadLaunchConfig(dir)
@@ -159,7 +159,7 @@ func TestEndToEnd_NoSecretLeaksThroughDisplay(t *testing.T) {
 		Provider:  "zai",
 		Providers: map[string]*providerConfig{"zai": {Kind: "vllm", Endpoint: secret}},
 	}
-	_ = bad.save(dir)
+	_ = bad.Save(dir)
 	loaded, err := loadLaunchConfig(filepath.Clean(dir))
 	if err != nil {
 		t.Fatal(err)

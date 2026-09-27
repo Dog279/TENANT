@@ -43,20 +43,24 @@ func startToolServer(t *testing.T, name, prefix string) *httptest.Server {
 	return ts
 }
 
-func liveMux(t *testing.T) (*toolMux, *[]string) {
+func liveMux(t *testing.T) (*toolMux, *[]string) { return liveMuxTrust(t, nil) }
+
+// liveMuxTrust is liveMux with persisted connector trust by URL.
+func liveMuxTrust(t *testing.T, trust map[string]string) (*toolMux, *[]string) {
 	t.Helper()
 	asked := &[]string{}
 	mux := newToolMux()
-	mux.mcpDeps = mcpRuntimeDeps{
-		ctx:      context.Background(),
-		callback: "127.0.0.1:0", // never bound on this path — no server here answers 401
-		cacheDir: t.TempDir(),
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		confirm: func(_ context.Context, action, detail string) bool {
+	mux.SetMCPDeps(mcpRuntimeDeps{
+		Ctx:      context.Background(),
+		Callback: "127.0.0.1:0", // never bound on this path — no server here answers 401
+		CacheDir: t.TempDir(),
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Confirm: func(_ context.Context, action, detail string) bool {
 			*asked = append(*asked, action)
 			return true
 		},
-	}
+		Trust: trust,
+	})
 	t.Cleanup(mux.Close)
 	return mux, asked
 }
@@ -148,10 +152,9 @@ func TestToolMux_AdoptsLocalServerLive(t *testing.T) {
 // Persisted trust is applied when a connector reconnects at launch.
 func TestToolMux_TrustAppliedOnSilentReconnect(t *testing.T) {
 	ts := startToolServer(t, "watcher", "")
-	mux, asked := liveMux(t)
-	mux.mcpDeps.trust = map[string]string{ts.URL: "allow"}
-	label := mux.registerMCPRemote(ts.URL)
-	mux.reconnectMCPSilently(ts.URL) // no cached token, no 401 → connects, adopts live
+	mux, asked := liveMuxTrust(t, map[string]string{ts.URL: "allow"})
+	label := mux.RegisterMCPRemote(ts.URL)
+	mux.ReconnectMCPSilently(ts.URL) // no cached token, no 401 → connects, adopts live
 	args, _ := json.Marshal(echoIn{Text: "x"})
 	out, isErr, _ := mux.Dispatch(context.Background(), model.ToolCall{Name: "write_note", Arguments: args})
 	if isErr || out != "wrote:x" || len(*asked) != 0 {
@@ -159,24 +162,6 @@ func TestToolMux_TrustAppliedOnSilentReconnect(t *testing.T) {
 	}
 	if mux.MCPTrust(label) != "allow" {
 		t.Errorf("MCPTrust = %q", mux.MCPTrust(label))
-	}
-}
-
-func TestMCPLabel_KeepsPortAndDisambiguates(t *testing.T) {
-	if got := mcpLabel("https://mcp.atlassian.com/v1/mcp"); got != "mcp:mcp.atlassian.com" {
-		t.Errorf("hosted label changed: %q", got)
-	}
-	if got := mcpLabel("http://127.0.0.1:9000/mcp"); got != "mcp:127.0.0.1:9000" {
-		t.Errorf("local label should keep the port: %q", got)
-	}
-	m := newToolMux()
-	a := m.registerMCPRemote("http://127.0.0.1:9000/a")
-	b := m.registerMCPRemote("http://127.0.0.1:9000/b")
-	if a != "mcp:127.0.0.1:9000" || b != "mcp:127.0.0.1:9000/b" {
-		t.Errorf("collision labels = %q, %q", a, b)
-	}
-	if again := m.labelFor("http://127.0.0.1:9000/b"); again != b {
-		t.Errorf("a registered URL must keep its label: %q", again)
 	}
 }
 

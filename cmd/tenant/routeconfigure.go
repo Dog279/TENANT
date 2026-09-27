@@ -127,14 +127,14 @@ func (r *routeRuntime) SetBig(providerName, modelID string) (string, error) {
 	// Save BEFORE touching the live router (Force's ordering): a failed bind
 	// rolls the file back, so disk, r.cfg, and the router can't be left
 	// disagreeing in either failure order.
-	if err := lc.save(r.cfgDir); err != nil {
+	if err := lc.Save(r.cfgDir); err != nil {
 		return "", err
 	}
 	if r.router != nil {
 		if err := installRouteBigRole(r.router, r.cfgDir, lc, lc.PlanLoopCeiling, r.log); err != nil {
 			lc.Route.BigRole = oldBigRole
 			pc.Model = oldModel
-			if rerr := lc.save(r.cfgDir); rerr != nil {
+			if rerr := lc.Save(r.cfgDir); rerr != nil {
 				return "", fmt.Errorf("route: install planner-big binding: %v (rolling back config.json also failed: %v)", err, rerr)
 			}
 			return "", fmt.Errorf("route: install planner-big binding: %w", err)
@@ -219,7 +219,7 @@ func (r *routeRuntime) SetPolicy(field, value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := lc.save(r.cfgDir); err != nil {
+	if err := lc.Save(r.cfgDir); err != nil {
 		return "", err
 	}
 	r.mu.Lock()

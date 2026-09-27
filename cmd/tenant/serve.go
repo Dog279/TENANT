@@ -169,7 +169,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		if err := stg.save(c.cfgDir, c.agent); err != nil {
+		if err := stg.Save(c.cfgDir, c.agent); err != nil {
 			log.Warn("settings save failed", "err", err)
 		}
 	}
@@ -262,10 +262,10 @@ func cmdServe(ctx context.Context, args []string) error {
 		pushSys(msg)
 	})
 
-	for _, note := range mux.restore(stg.Tools) {
+	for _, note := range mux.Restore(stg.Tools) {
 		pushSys("settings: " + note)
 	}
-	mux.setOnChange(func(snap map[string]bool) {
+	mux.SetOnChange(func(snap map[string]bool) {
 		stgMu.Lock()
 		stg.Tools = snap
 		stgMu.Unlock()
@@ -367,19 +367,19 @@ func cmdServe(ctx context.Context, args []string) error {
 	defer rt.Close()
 
 	mainLocal := newToolMux()
-	mainLocal.add("orchestrator", spawnTool{rt: rt})
-	mainLocal.add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
-	mainLocal.add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
-	mainLocal.add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
-	mainLocal.add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
+	mainLocal.Add("orchestrator", spawnTool{rt: rt})
+	mainLocal.Add("team", orchestra.CommsTool{Bus: bus, Self: c.agent})
+	mainLocal.Add("memory", memoryTool{sem: st.semantic, emb: skEmb, embedderID: embedderID, agentID: c.agent, note: noteProfile})
+	mainLocal.Add("skills", skillTool{st: skillStore, emb: skEmb, agentID: c.agent})
+	mainLocal.Add("recall", &recallTool{episodic: st.episodic, semantic: st.semantic, archive: st.archive.Reader(), emb: skEmb, embedderID: embedderID, agentID: c.agent})
 	rt.addWebTool(mainLocal, c.agent)
 	// Quality v2 Phase 1: count every dispatch. One shared stats set across
 	// the shared mux and the main agent's local mux; cron's restricted views
 	// and sub-agent shared-tool calls funnel through these same instances.
 	stats := newToolStats(c.dataDir, "serve")
-	mux.enableStats(stats)
-	mainLocal.enableStats(stats)
-	stopStats := stats.startPersist(time.Minute)
+	mux.EnableStats(stats)
+	mainLocal.EnableStats(stats)
+	stopStats := stats.StartPersist(time.Minute)
 	defer stopStats()
 	mainTools := composite{shared: mux, local: mainLocal, budget: rt.budget, agentID: c.agent}
 
@@ -559,7 +559,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.AllowExec = on })
 		})
-		mainLocal.add("cron", cronplugin.NewDispatcher(cronMgr))
+		mainLocal.Add("cron", cronplugin.NewDispatcher(cronMgr))
 		dashCronCtl = dashCron{cronMgr}
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
@@ -571,7 +571,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// follow its live trust mode (ask / allow / deny). Same control the TUI /mcp
 	// and the dashboard's Remote services page drive.
 	mcpCtl := newMCPControl(mux, c.cfgDir, c.lc)
-	mainLocal.add("connectors", newMCPToolPlugin(mcpCtl, mux.mcpDeps.confirm))
+	mainLocal.Add("connectors", newMCPToolPlugin(mcpCtl, mux.MCPConfirm()))
 
 	// modelControl powers the dashboard model + key pages and re-points
 	// tool-ranking at a new embedder after a /model swap.
@@ -582,7 +582,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
-		mux.precomputeEmbeddings(ctx)
+		mux.PrecomputeEmbeddings(ctx)
 	}
 	go watchCredentials(ctx, c.cfgDir, modelCtl, degraded, pushSys)
 

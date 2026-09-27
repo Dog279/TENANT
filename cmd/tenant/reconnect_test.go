@@ -22,7 +22,7 @@ func TestReconnectMonitor_ReportsReconnect(t *testing.T) {
 		Provider:  "vllm",
 		Providers: map[string]*providerConfig{"vllm": {Kind: "vllm", Endpoint: srv.URL, Model: "m"}},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +56,7 @@ func TestReconnectMonitor_ReportsReconnect(t *testing.T) {
 // spinning forever.
 func TestReconnectMonitor_NoActiveProvider(t *testing.T) {
 	dir := t.TempDir()
-	(&launchConfig{}).save(dir) // empty config: no active provider
+	(&launchConfig{}).Save(dir) // empty config: no active provider
 	feed := make(chan string, 16)
 	rm := &reconnectMonitor{cfgDir: dir, feed: feed, ctx: context.Background(), fastEvery: 5 * time.Millisecond}
 	rm.OnGenerationDown()

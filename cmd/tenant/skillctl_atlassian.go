@@ -115,7 +115,7 @@ func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[st
 	switch auth {
 	case "token":
 		email := settings["email"]
-		token := creds.get(skillSecretID("atlassian", "api_token"))
+		token := creds.Get(skillSecretID("atlassian", "api_token"))
 		if email == "" || token == "" {
 			return "", errors.New("token mode needs email + api_token")
 		}
@@ -130,7 +130,7 @@ func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[st
 
 	case "oauth":
 		clientID := settings["client_id"]
-		secret := creds.get(skillSecretID("atlassian", "client_secret"))
+		secret := creds.Get(skillSecretID("atlassian", "client_secret"))
 		if clientID == "" || secret == "" {
 			return "", errors.New("oauth mode needs client_id + client_secret (from your Developer Console app)")
 		}

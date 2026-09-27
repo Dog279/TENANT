@@ -1,10 +1,9 @@
-package main
+package toolmux
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"tenant/internal/model"
@@ -13,13 +12,13 @@ import (
 // buildKnowledgeMux makes a ranked-size catalog containing wiki_search,
 // memory_search, web_search + filler, with an embedder mapping each tool's
 // description to the given vector. Query is fixed at {1,0,0,0}.
-func buildKnowledgeMux(t *testing.T, vecByDesc map[string][]float32) *toolMux {
+func buildKnowledgeMux(t *testing.T, vecByDesc map[string][]float32) *Mux {
 	t.Helper()
-	m := &toolMux{
+	m := &Mux{
 		byName:     map[string]*toolEntry{},
-		activators: map[string]func() (plugin, func(), error){},
+		activators: map[string]func() (Plugin, func(), error){},
 		activated:  map[string]bool{},
-		peerDisp:   map[string]plugin{},
+		peerDisp:   map[string]Plugin{},
 	}
 	specs := []model.ToolSpec{
 		{Name: "wiki_search", Description: "wiki", Parameters: json.RawMessage(`{"type":"object"}`)},
@@ -31,7 +30,7 @@ func buildKnowledgeMux(t *testing.T, vecByDesc map[string][]float32) *toolMux {
 			Name: fmt.Sprintf("tool_%02d", i), Description: "filler", Parameters: json.RawMessage(`{"type":"object"}`),
 		})
 	}
-	m.add("p", &rankFakePlugin{specs: specs})
+	m.Add("p", &rankFakePlugin{specs: specs})
 	m.SetEmbedder("e", &rankFakeEmbedder{byDesc: vecByDesc})
 	return m
 }
@@ -111,11 +110,11 @@ func TestPeerBoost_DoesNotStarveWebOnWebQuery(t *testing.T) {
 func TestPeerBoost_CoreUnionStillSurfacesWhenRankedOut(t *testing.T) {
 	// 60 filler tools all highly relevant; knowledge tools deliberately
 	// irrelevant so even +boost can't lift them into the (capped) keep set.
-	m := &toolMux{
+	m := &Mux{
 		byName:     map[string]*toolEntry{},
-		activators: map[string]func() (plugin, func(), error){},
+		activators: map[string]func() (Plugin, func(), error){},
 		activated:  map[string]bool{},
-		peerDisp:   map[string]plugin{"alice": &rankFakePlugin{}},
+		peerDisp:   map[string]Plugin{"alice": &rankFakePlugin{}},
 	}
 	specs := []model.ToolSpec{
 		{Name: "wiki_search", Description: "irrelevant", Parameters: json.RawMessage(`{"type":"object"}`)},
@@ -125,7 +124,7 @@ func TestPeerBoost_CoreUnionStillSurfacesWhenRankedOut(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		specs = append(specs, model.ToolSpec{Name: fmt.Sprintf("tool_%02d", i), Description: "hot", Parameters: json.RawMessage(`{"type":"object"}`)})
 	}
-	m.add("p", &rankFakePlugin{specs: specs})
+	m.Add("p", &rankFakePlugin{specs: specs})
 	m.SetEmbedder("e", &rankFakeEmbedder{byDesc: map[string][]float32{
 		"hot":        {1, 0, 0, 0}, // cosine 1.0 — fills the keep set
 		"irrelevant": {0, 1, 0, 0}, // cosine 0.0 — even +0.25 stays at the bottom
@@ -165,17 +164,6 @@ func TestCoreToolNames_KnowledgeTier(t *testing.T) {
 	for _, n := range []string{"memory_search", "wiki_search"} {
 		if !coreToolNames[n] {
 			t.Errorf("%s must be in coreToolNames (always surfaced)", n)
-		}
-	}
-}
-
-// TestSearchPolicyPrompt_Content: the policy names the knowledge tier, the web
-// tool, and the trust-but-verify/peer language.
-func TestSearchPolicyPrompt_Content(t *testing.T) {
-	p := searchPolicyPrompt()
-	for _, want := range []string{"memory_search", "wiki_search", "web_search", "trust but verify", "peers"} {
-		if !strings.Contains(p, want) {
-			t.Errorf("searchPolicyPrompt missing %q", want)
 		}
 	}
 }

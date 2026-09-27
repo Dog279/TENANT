@@ -34,7 +34,7 @@ func TestPermissionsEffectiveHonorsLaunchFlags(t *testing.T) {
 
 	// Saved modes load after the flags, as they do at launch.
 	stg := &settings{Permissions: map[string]string{catExec: "ask"}}
-	if err := stg.save(cfgDir, "main"); err != nil {
+	if err := stg.Save(cfgDir, "main"); err != nil {
 		t.Fatal(err)
 	}
 	report = runPermissionsEffectiveJSON(t, "--config", cfgDir, "--data", dataDir, "--os", "--os-allow-exec")
@@ -66,7 +66,7 @@ func TestSecurityAuditEvaluatesDiscordSurface(t *testing.T) {
 	}}
 	saveConfig := func() {
 		t.Helper()
-		if err := lc.save(cfgDir); err != nil {
+		if err := lc.Save(cfgDir); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -196,7 +196,7 @@ func TestAuthoritySurfaces(t *testing.T) {
 func TestComposeFoldsToolRules(t *testing.T) {
 	cfgDir := t.TempDir()
 	stg := &settings{ToolRules: map[string]string{"os_exec": "allow", "os_write": "deny"}}
-	if err := stg.save(cfgDir, "main"); err != nil {
+	if err := stg.Save(cfgDir, "main"); err != nil {
 		t.Fatal(err)
 	}
 	c := &commonFlags{agent: "main", cfgDir: cfgDir, lc: &launchConfig{}}
@@ -233,7 +233,7 @@ func TestComposeFoldsToolRules(t *testing.T) {
 
 	// An ask rule forces a prompt past a category allow.
 	stg.ToolRules = map[string]string{"os_exec": "ask"}
-	if err := stg.save(cfgDir, "main"); err != nil {
+	if err := stg.Save(cfgDir, "main"); err != nil {
 		t.Fatal(err)
 	}
 	if e := compose(&pluginFlags{osAllowExec: true}, permissionSurfaceLocal).Categories[catExec]; e.Mode != "ask" || e.Source != "tool rule os_exec" {
@@ -266,7 +266,7 @@ func TestComposeMatchesConfirm(t *testing.T) {
 		for _, surface := range []string{permissionSurfaceLocal, permissionSurfaceDiscord, permissionSurfaceIMessage} {
 			cfgDir := t.TempDir()
 			stg := &settings{Permissions: saved, ToolRules: ruleSet}
-			if err := stg.save(cfgDir, "main"); err != nil {
+			if err := stg.Save(cfgDir, "main"); err != nil {
 				t.Fatal(err)
 			}
 			report, err := composeEffectivePermissions(&commonFlags{agent: "main", cfgDir: cfgDir, lc: lc}, pf, surface)

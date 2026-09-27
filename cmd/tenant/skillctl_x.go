@@ -30,7 +30,7 @@ func resolveXBearer(cfgDir, flagBearer string) string {
 		return b
 	}
 	if creds, err := loadCredentials(cfgDir); err == nil {
-		return strings.TrimSpace(creds.get(skillSecretID("x", "bearer")))
+		return strings.TrimSpace(creds.Get(skillSecretID("x", "bearer")))
 	}
 	return ""
 }
@@ -82,7 +82,7 @@ func probeX(ctx context.Context, creds *credentials, _ map[string]string, _ func
 }
 
 func probeXWith(ctx context.Context, creds *credentials, deps xProbeDeps) (string, error) {
-	bearer := strings.TrimSpace(creds.get(skillSecretID("x", "bearer")))
+	bearer := strings.TrimSpace(creds.Get(skillSecretID("x", "bearer")))
 	if bearer == "" {
 		return "", fmt.Errorf("X bearer token is missing — run `/skill configure x <bearer>`")
 	}

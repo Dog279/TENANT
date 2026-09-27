@@ -489,7 +489,7 @@ func checkHealthGating(_ context.Context, e *doctorEnv) checkResult {
 	if e.lc == nil {
 		return checkResult{Status: statusSkip, Detail: "launch config unavailable (see launch config check)"}
 	}
-	cfg := e.lc.HealthGating.modelConfig()
+	cfg := e.lc.HealthGating.ModelConfig()
 	if cfg.SlowThreshold <= 0 {
 		return checkResult{Status: statusSkip,
 			Detail: "off (set health_gating.slow_threshold_ms in config.json to skip a slow model in the fallback chain)"}
@@ -507,7 +507,7 @@ func checkHealthGating(_ context.Context, e *doctorEnv) checkResult {
 			Detail: desc + ", but no fallback provider is configured, so there is nothing to move to",
 			Fix:    "`/model fallback <provider...>` or set \"fallbacks\" in config.json"}
 	}
-	if problems := e.lc.HealthGating.problems(); len(problems) > 0 {
+	if problems := e.lc.HealthGating.Problems(); len(problems) > 0 {
 		return checkResult{Status: statusWarn,
 			Detail: desc + "; " + strings.Join(problems, "; "),
 			Fix:    "correct health_gating in config.json"}
@@ -1035,7 +1035,7 @@ func checkCredentials(_ context.Context, e *doctorEnv) checkResult {
 			continue
 		}
 		// Stored: check the secret actually lives in creds.
-		if creds.get(name) == "" {
+		if creds.Get(name) == "" {
 			missing = append(missing, fmt.Sprintf("%s (stored secret missing)", name))
 		}
 	}
@@ -1716,7 +1716,7 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 	dc := e.lc.Dashboard
 	// Tri-state Enabled (TEN-86): nil/&true ⇒ on (default). Only an explicit
 	// &false with no addr counts as "not configured" → skip the probe.
-	if !dc.dashboardEnabled() && dc.Addr == "" {
+	if !dc.IsEnabled() && dc.Addr == "" {
 		return checkResult{Status: statusSkip, Detail: "dashboard disabled"}
 	}
 	addr := dc.Addr
@@ -1791,7 +1791,7 @@ func checkServe(ctx context.Context, e *doctorEnv) checkResult {
 		return checkResult{Status: statusSkip, Detail: "no launch config"}
 	}
 	dc := e.lc.Dashboard
-	if !dc.dashboardEnabled() && dc.Addr == "" {
+	if !dc.IsEnabled() && dc.Addr == "" {
 		return checkResult{Status: statusSkip, Detail: "dashboard disabled — no hub to probe"}
 	}
 	addr := dc.Addr

@@ -81,7 +81,7 @@ func TestRouteRuntimeLiveConfigChangeRebuildsClassifier(t *testing.T) {
 		Providers: map[string]*providerConfig{"small": {Kind: "echo"}},
 		Embed:     &providerConfig{Kind: "ollama", Endpoint: srv1.URL},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	rt, err := newRouteRuntime(lc, cfgDir, t.TempDir(), nil, nil)
@@ -105,7 +105,7 @@ func TestRouteRuntimeLiveConfigChangeRebuildsClassifier(t *testing.T) {
 		t.Fatal(err)
 	}
 	lc2.Route = &routeConfig{Provider: &routeProviderConfig{Endpoint: srv2.URL}}
-	if err := lc2.save(cfgDir); err != nil {
+	if err := lc2.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rt.SetPolicy("sticky_session", "true"); err != nil {
@@ -133,7 +133,7 @@ func TestRouteConfigureInfoInventoriesProviders(t *testing.T) {
 		},
 		Route: &routeConfig{Enabled: true, Mode: route.ModeShadow, BigRole: "cloud2"},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	rt, err := newRouteRuntime(lc, cfgDir, t.TempDir(), nil, nil)
@@ -175,7 +175,7 @@ func TestRouteRuntimeSetBigPersistsAndBindsLive(t *testing.T) {
 		},
 		Route: &routeConfig{Enabled: true, Mode: route.ModeShadow},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	reg := model.NewEmptyRegistry()
@@ -232,7 +232,7 @@ func TestRouteRuntimeSetBigRollsBackOnBindFailure(t *testing.T) {
 		},
 		Route: &routeConfig{Enabled: true, Mode: route.ModeShadow},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	reg := model.NewEmptyRegistry()

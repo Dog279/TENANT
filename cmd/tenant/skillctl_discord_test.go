@@ -88,7 +88,7 @@ func TestProbeDiscordWith_200OK(t *testing.T) {
 	defer srv.Close()
 
 	creds, _ := loadCredentials(t.TempDir())
-	creds.set(skillSecretID("discord", "token"), "tok-test-token")
+	creds.Set(skillSecretID("discord", "token"), "tok-test-token")
 
 	id, err := probeDiscordWith(context.Background(), creds, nil, discordProbeDeps{
 		HTTP:    srv.Client(),
@@ -114,7 +114,7 @@ func TestProbeDiscordWith_200_WithDiscriminator(t *testing.T) {
 	defer srv.Close()
 
 	creds, _ := loadCredentials(t.TempDir())
-	creds.set(skillSecretID("discord", "token"), "tok-test-token")
+	creds.Set(skillSecretID("discord", "token"), "tok-test-token")
 
 	id, err := probeDiscordWith(context.Background(), creds, nil, discordProbeDeps{
 		HTTP:    srv.Client(),
@@ -135,7 +135,7 @@ func TestProbeDiscordWith_401(t *testing.T) {
 	defer srv.Close()
 
 	creds, _ := loadCredentials(t.TempDir())
-	creds.set(skillSecretID("discord", "token"), "revoked-token")
+	creds.Set(skillSecretID("discord", "token"), "revoked-token")
 
 	_, err := probeDiscordWith(context.Background(), creds, nil, discordProbeDeps{
 		HTTP:    srv.Client(),
@@ -159,7 +159,7 @@ func TestProbeDiscordWith_429(t *testing.T) {
 	defer srv.Close()
 
 	creds, _ := loadCredentials(t.TempDir())
-	creds.set(skillSecretID("discord", "token"), "tok-test-token")
+	creds.Set(skillSecretID("discord", "token"), "tok-test-token")
 
 	_, err := probeDiscordWith(context.Background(), creds, nil, discordProbeDeps{
 		HTTP:    srv.Client(),
@@ -180,7 +180,7 @@ func TestProbeDiscordWith_500(t *testing.T) {
 	defer srv.Close()
 
 	creds, _ := loadCredentials(t.TempDir())
-	creds.set(skillSecretID("discord", "token"), "tok-test-token")
+	creds.Set(skillSecretID("discord", "token"), "tok-test-token")
 
 	_, err := probeDiscordWith(context.Background(), creds, nil, discordProbeDeps{
 		HTTP:    srv.Client(),

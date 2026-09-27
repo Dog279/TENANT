@@ -64,7 +64,7 @@ func cmdSkillsAuto(ctx context.Context, args []string) error {
 		mode = "" // store empty = default-off
 	}
 	lc.Improve.AutoAccept = mode
-	if err := lc.save(c.cfgDir); err != nil {
+	if err := lc.Save(c.cfgDir); err != nil {
 		return err
 	}
 	shown := mode

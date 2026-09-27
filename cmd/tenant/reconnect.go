@@ -89,7 +89,7 @@ func (rm *reconnectMonitor) activeEndpoint() (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	p := lc.active()
+	p := lc.Active()
 	if p == nil {
 		return "", false
 	}

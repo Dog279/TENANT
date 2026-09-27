@@ -304,7 +304,7 @@ func (r *TeamRuntime) addWebTool(local *toolMux, agentID string) {
 		}
 		r.emit(agentID, readerActivityEvent(a))
 	}
-	local.add("web", newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, r.addCleanup, r.budget.AcquireBrowser, r.cfg.Log))
+	local.Add("web", newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, r.addCleanup, r.budget.AcquireBrowser, r.cfg.Log))
 }
 
 // composite merges a shared tool set (plugins) with an agent's local tools
@@ -670,10 +670,10 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 // plugins (wiki/sql/web/os/…) are shared.
 func (r *TeamRuntime) agentTools(id string) (composite, func()) {
 	local := newToolMux()
-	local.add("team", orchestra.CommsTool{Bus: r.cfg.Bus, Self: id})
-	local.add("memory", memoryTool{sem: r.cfg.Stores.semantic, emb: r.cfg.Embedder, embedderID: r.cfg.EmbedderID, agentID: id})
+	local.Add("team", orchestra.CommsTool{Bus: r.cfg.Bus, Self: id})
+	local.Add("memory", memoryTool{sem: r.cfg.Stores.semantic, emb: r.cfg.Embedder, embedderID: r.cfg.EmbedderID, agentID: id})
 	if r.cfg.Skills != nil {
-		local.add("skills", skillTool{st: r.cfg.Skills, emb: r.cfg.Embedder, agentID: id})
+		local.Add("skills", skillTool{st: r.cfg.Skills, emb: r.cfg.Embedder, agentID: id})
 	}
 	// This agent's OWN lazy browser session, with the per-agent reader-audit
 	// observer (TEN-319) and the browser-instance budget (TEN-326). Cleanup is
@@ -689,7 +689,7 @@ func (r *TeamRuntime) agentTools(id string) (composite, func()) {
 			r.emit(id, readerActivityEvent(a))
 		}
 		lw := newLazyWeb(cfg, r.cfg.WebPolicy, r.cfg.Shots, nil, r.budget.AcquireBrowser, r.cfg.Log)
-		local.add("web", lw)
+		local.Add("web", lw)
 		closeTools = lw.Close
 	}
 	// Orchestrator only: restore persisted local enable/disable state
@@ -698,10 +698,10 @@ func (r *TeamRuntime) agentTools(id string) (composite, func()) {
 	// persisted by design.
 	if id == r.cfg.OrchID {
 		if len(r.cfg.LocalRestore) > 0 {
-			_ = local.restore(r.cfg.LocalRestore) // notes ignored — same set already in shared's restore log
+			_ = local.Restore(r.cfg.LocalRestore) // notes ignored — same set already in shared's restore log
 		}
 		if r.cfg.LocalOnChange != nil {
-			local.setOnChange(r.cfg.LocalOnChange)
+			local.SetOnChange(r.cfg.LocalOnChange)
 		}
 	}
 	return composite{shared: r.cfg.Shared, local: local, budget: r.budget, agentID: id}, closeTools

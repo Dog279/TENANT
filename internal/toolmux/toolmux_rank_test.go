@@ -1,4 +1,4 @@
-package main
+package toolmux
 
 import (
 	"context"
@@ -66,11 +66,11 @@ func (p *rankFakePlugin) Dispatch(_ context.Context, _ model.ToolCall) (string, 
 // "tool-i: <desc>" (i = registration index). When desc is "" the test
 // just wants count; the rank-tests below override specific descriptions
 // to control cosine ordering.
-func newRankMux(t *testing.T, n int) *toolMux {
+func newRankMux(t *testing.T, n int) *Mux {
 	t.Helper()
-	m := &toolMux{
+	m := &Mux{
 		byName:     map[string]*toolEntry{},
-		activators: map[string]func() (plugin, func(), error){},
+		activators: map[string]func() (Plugin, func(), error){},
 		activated:  map[string]bool{},
 	}
 	specs := make([]model.ToolSpec, n)
@@ -81,7 +81,7 @@ func newRankMux(t *testing.T, n int) *toolMux {
 			Parameters:  json.RawMessage(`{"type":"object"}`),
 		}
 	}
-	m.add("test", &rankFakePlugin{specs: specs})
+	m.Add("test", &rankFakePlugin{specs: specs})
 	return m
 }
 
@@ -96,20 +96,20 @@ func toolNames(specs []model.ToolSpec) []string {
 // --- ranking activation thresholds ---
 
 // TestToolMuxSearch_BelowThresholdPassesThrough — drift guard against
-// the original Search() comment (toolmux.go:183-190). When the catalog
+// the original Search() comment in mux.go. When the catalog
 // is small, the unranked path MUST be used regardless of embedder or
 // query embedding. Operators rely on /enable curation being honored
 // verbatim at small scale.
 func TestToolMuxSearch_BelowThresholdPassesThrough(t *testing.T) {
-	m := newRankMux(t, rankActivateThreshold-1) // one below threshold
+	m := newRankMux(t, RankActivateThreshold-1) // one below threshold
 	m.SetEmbedder("test-emb", &rankFakeEmbedder{})
 	got, err := m.Search(context.Background(), []float32{1, 0, 0, 0}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != rankActivateThreshold-1 {
+	if len(got) != RankActivateThreshold-1 {
 		t.Errorf("below threshold should return all enabled; got %d want %d",
-			len(got), rankActivateThreshold-1)
+			len(got), RankActivateThreshold-1)
 	}
 }
 
@@ -117,10 +117,10 @@ func TestToolMuxSearch_BelowThresholdPassesThrough(t *testing.T) {
 // keeps today's behavior even at scale. Critical for the
 // echo-backend / no-embedder install path.
 func TestToolMuxSearch_NilEmbedderPassesThrough(t *testing.T) {
-	m := newRankMux(t, rankActivateThreshold+10)
+	m := newRankMux(t, RankActivateThreshold+10)
 	// No SetEmbedder call — embedder stays nil.
 	got, _ := m.Search(context.Background(), []float32{1, 0, 0, 0}, 0)
-	if len(got) != rankActivateThreshold+10 {
+	if len(got) != RankActivateThreshold+10 {
 		t.Errorf("nil embedder should return all enabled; got %d", len(got))
 	}
 }
@@ -129,10 +129,10 @@ func TestToolMuxSearch_NilEmbedderPassesThrough(t *testing.T) {
 // no embedder at turn-time and passes nil, we MUST NOT rank (we'd be
 // scoring against a zero vector and corrupting ordering).
 func TestToolMuxSearch_NilQueryEmbeddingPassesThrough(t *testing.T) {
-	m := newRankMux(t, rankActivateThreshold+10)
+	m := newRankMux(t, RankActivateThreshold+10)
 	m.SetEmbedder("test-emb", &rankFakeEmbedder{})
 	got, _ := m.Search(context.Background(), nil, 0)
-	if len(got) != rankActivateThreshold+10 {
+	if len(got) != RankActivateThreshold+10 {
 		t.Errorf("nil query emb should return all enabled; got %d", len(got))
 	}
 }
@@ -190,8 +190,8 @@ func TestToolMuxSearch_FloorPreserved(t *testing.T) {
 	// max(12, 15) = 15. So at threshold we DO drop. Pick smaller above-
 	// threshold: catalog=floor+2=14; drop=3; keep=11; floor wins -> 12.
 	const n = rankMinKeepFloor + 2
-	if n < rankActivateThreshold {
-		t.Skipf("need catalog above threshold to exercise ranking; threshold=%d", rankActivateThreshold)
+	if n < RankActivateThreshold {
+		t.Skipf("need catalog above threshold to exercise ranking; threshold=%d", RankActivateThreshold)
 	}
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{}
@@ -207,7 +207,7 @@ func TestToolMuxSearch_FloorPreserved(t *testing.T) {
 // this: a non-deterministic tie-break would shift the rendered tool
 // list between adjacent runs of the same query.
 func TestToolMuxSearch_StableTieBreak(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	// All tools embed to the SAME vector → all have sim=1.0 to query.
 	emb := &rankFakeEmbedder{byDesc: map[string][]float32{}}
@@ -248,7 +248,7 @@ func sortedEqual(a, b []string) bool {
 // errors during precompute, the cache stays empty and Search MUST
 // degrade to the unranked path. No panic, no error to the caller.
 func TestToolMuxSearch_EmbedErrorFallsBackToUnranked(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{err: errors.New("embedder down")}
 	m.SetEmbedder("test-emb", emb)
@@ -265,7 +265,7 @@ func TestToolMuxSearch_EmbedErrorFallsBackToUnranked(t *testing.T) {
 // once cached, subsequent Search calls MUST NOT re-embed. Verifies the
 // lazy + cached contract.
 func TestToolMuxSearch_PrecomputeRunsOnce(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{}
 	m.SetEmbedder("test-emb", emb)
@@ -283,7 +283,7 @@ func TestToolMuxSearch_PrecomputeRunsOnce(t *testing.T) {
 // guard against `/model use ...` swap producing stale embeddings of a
 // different dimension. New fingerprint MUST trigger re-precompute.
 func TestToolMuxSearch_FingerprintChangeInvalidatesCache(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb1 := &rankFakeEmbedder{}
 	m.SetEmbedder("emb-v1", emb1)
@@ -306,7 +306,7 @@ func TestToolMuxSearch_FingerprintChangeInvalidatesCache(t *testing.T) {
 // the new tool would always score sim=0.5 (the neutral default) and
 // silently rank below relevant matches.
 func TestToolMuxSearch_AddInvalidatesCache(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{}
 	m.SetEmbedder("test-emb", emb)
@@ -315,7 +315,7 @@ func TestToolMuxSearch_AddInvalidatesCache(t *testing.T) {
 		t.Fatalf("first Search should precompute; calls=%d", emb.calls)
 	}
 	// Add a new tool — simulates activator firing.
-	m.add("late", &rankFakePlugin{specs: []model.ToolSpec{{
+	m.Add("late", &rankFakePlugin{specs: []model.ToolSpec{{
 		Name:        "late_tool",
 		Description: "added after initial precompute",
 		Parameters:  json.RawMessage(`{"type":"object"}`),
@@ -334,7 +334,7 @@ func TestToolMuxSearch_AddInvalidatesCache(t *testing.T) {
 // TestToolMuxSearch_DisabledToolsAbsent — disabled tools MUST never
 // reach the ranked output. /disable is a hard mute, not a rank penalty.
 func TestToolMuxSearch_DisabledToolsAbsent(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{}
 	m.SetEmbedder("test-emb", emb)
@@ -355,7 +355,7 @@ func TestToolMuxSearch_DisabledToolsAbsent(t *testing.T) {
 // used as an agent.ToolRegistry; after adding Search-side complexity
 // we MUST still satisfy the interface (Get + Search + All).
 func TestToolMux_StillSatisfiesToolRegistry(t *testing.T) {
-	var _ agent.ToolRegistry = (*toolMux)(nil) // compile-time guard
+	var _ agent.ToolRegistry = (*Mux)(nil) // compile-time guard
 	m := newRankMux(t, 3)
 	if _, ok := m.Get("tool_00"); !ok {
 		t.Error("Get broken for known tool")
@@ -369,7 +369,7 @@ func TestToolMux_StillSatisfiesToolRegistry(t *testing.T) {
 // SetEmbedder MUST disable ranking (back to unranked) AND invalidate
 // any previously cached embeddings.
 func TestToolMuxSearch_SetEmbedderNilDisablesRanking(t *testing.T) {
-	const n = rankActivateThreshold + 5
+	const n = RankActivateThreshold + 5
 	m := newRankMux(t, n)
 	emb := &rankFakeEmbedder{}
 	m.SetEmbedder("test-emb", emb)
@@ -393,9 +393,9 @@ func TestRankConstants_AreSensible(t *testing.T) {
 	if rankMinKeepFloor <= 0 {
 		t.Errorf("rankMinKeepFloor must be > 0; got %d", rankMinKeepFloor)
 	}
-	if rankActivateThreshold <= rankMinKeepFloor {
+	if RankActivateThreshold <= rankMinKeepFloor {
 		t.Errorf("rankActivateThreshold (%d) should exceed rankMinKeepFloor (%d) or ranking activates with nothing to drop",
-			rankActivateThreshold, rankMinKeepFloor)
+			RankActivateThreshold, rankMinKeepFloor)
 	}
 	if rankDropFraction < 2 {
 		t.Errorf("rankDropFraction=%d would drop ≥50%% of catalog — too aggressive", rankDropFraction)
@@ -407,14 +407,14 @@ func TestRankConstants_AreSensible(t *testing.T) {
 // failed when cap filled first") MUST stay in the source for future
 // readers. If a future refactor strips it, this test breaks.
 func TestRankingDoc_MentionsTheScar(t *testing.T) {
-	body, err := readFile("toolmux.go")
+	body, err := readFile("mux.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The scar is the failure-mode citation. Specifically references
 	// the registration-order failure shape.
 	if !strings.Contains(body, "registration order") {
-		t.Error("toolmux.go Search() docs must keep the 'registration order' scar reference for future readers")
+		t.Error("mux.go Search() docs must keep the 'registration order' scar reference for future readers")
 	}
 	if !strings.Contains(body, "TestToolMux_SearchReturnsAllEnabledIgnoringCap") {
 		// The reference to the historical drift guard. Don't strip it.

@@ -148,5 +148,5 @@ func (e evalTUIControl) persist(mut func(*improveConfig)) error {
 		return err
 	}
 	mut(&lc.Improve)
-	return lc.save(e.cfgDir)
+	return lc.Save(e.cfgDir)
 }

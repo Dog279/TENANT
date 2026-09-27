@@ -22,6 +22,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"tenant/internal/agent"
+	"tenant/internal/control"
 	"tenant/internal/fsperm"
 	modelpkg "tenant/internal/model"
 )
@@ -267,12 +268,7 @@ type SkillSnapshot struct {
 // ToolInfo is one tool's runtime state for the /tools listing. Gated
 // carries the plugin's authoritative send/destructive gate class so the
 // dashboard can flag it (vs. guessing from the tool name).
-type ToolInfo struct {
-	Name    string
-	Plugin  string
-	Enabled bool
-	Gated   bool
-}
+type ToolInfo = control.ToolInfo
 
 // SkillInfo (new — for /skill, the integration-config surface) describes
 // one configurable integration's state. Distinct from the existing

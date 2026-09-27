@@ -85,7 +85,7 @@ func (j judgeCtl) Set(kind, mdl, endpoint string) (string, error) {
 	lc.Improve.JudgeKind = kind
 	lc.Improve.JudgeEndpoint = endpoint
 	lc.Improve.JudgeKeyEnv = pk.KeyEnv // catalog default; "" for local/no-key kinds
-	if err := lc.save(j.cfgDir); err != nil {
+	if err := lc.Save(j.cfgDir); err != nil {
 		return "", err
 	}
 	msg := fmt.Sprintf("judge set → %s model %q.", kind, mdl)
@@ -104,5 +104,5 @@ func (j judgeCtl) Clear() error {
 	lc.Improve.JudgeKind = ""
 	lc.Improve.JudgeEndpoint = ""
 	lc.Improve.JudgeKeyEnv = ""
-	return lc.save(j.cfgDir)
+	return lc.Save(j.cfgDir)
 }

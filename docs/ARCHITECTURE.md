@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-09-26; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-09-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 71 |
-| Go files | 831 |
-| Test files | 404 |
-| Production Go LOC | 116,147 |
-| Test Go LOC | 78,800 |
+| Go packages | 75 |
+| Go files | 854 |
+| Test files | 415 |
+| Production Go LOC | 116,590 |
+| Test Go LOC | 79,252 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -114,32 +114,66 @@ option while allowing operators to opt into cloud inference.
 
 ## 2. Package dependency graph
 
-```
-cmd/tenant  (wiring + demo)
-   │
-   ├──────────────┬───────────────┬──────────────┐
-   ▼              ▼               ▼              ▼
-internal/agent  internal/improve  (memory tiers) internal/model
-   │                │                              │
-   │                ▼                              │
-   │          memory/distill ──────────────────────┤
-   │                │                              │
-   ▼                ▼                              ▼
-memory/assemble  memory/episodic  memory/semantic  model/backend/vllm
-   │              memory/archive   memory/soul      model/toolfmt
-   ▼              memory/working                    model/testllm
-internal/mcp ── mcp/transport                       model/profiles (go:embed)
+Every module package has a dependency rule: the module packages it may import.
+`internal/archtest` checks the source tree against these rules on every
+`go test ./...` (TEN-314). A package that no rule covers fails, and so does an
+import its rule doesn't allow, or Bubble Tea anywhere but `internal/tui` and
+`cmd/tenant`. The first row that matches a package governs it. The table is
+generated from `internal/archtest/rules.go`, and
+`go test ./internal/archtest -update` rewrites it.
 
-internal/logs  (leaf: the unified log book — every package above may import it;
-                agent renders its events into it, dashboard reads it)
+<!-- archtest:rules -->
+| Package | May import | Note |
+|---|---|---|
+| `cmd/**` | anything | the composition root and command adapters |
+| `scripts/**` | nothing in the module | build tools stand alone |
+| `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
+| `internal/archtest` | nothing in the module | these tests |
+| `internal/fsperm` | nothing in the module | leaf |
+| `internal/secrets` | nothing in the module | leaf |
+| `internal/datalock` | nothing in the module | leaf |
+| `internal/httplimits` | nothing in the module | leaf |
+| `internal/version` | nothing in the module | leaf |
+| `internal/runtrace` | nothing in the module | leaf |
+| `internal/cmdreg` | nothing in the module | leaf |
+| `internal/cron` | nothing in the module | leaf |
+| `internal/mcp/transport` | nothing in the module | leaf |
+| `internal/model/profiles` | nothing in the module | leaf |
+| `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
+| `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
+| `internal/sandbox/**` | `internal/sandbox/**` |  |
+| `internal/logs` | `internal/fsperm` | any package may log through it |
+| `internal/research` | `internal/fsperm` |  |
+| `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
+| `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
+| `internal/mcp` | `internal/mcp/transport` | wire protocol only, no LLM knowledge |
+| `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
+| `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
+| `internal/orchestra` | `internal/model` |  |
+| `internal/route` | `internal/model`, `internal/fsperm` |  |
+| `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra` | the persisted configuration; knows no runtime |
+| `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
+| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
+| `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
+| `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
+| `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |
+| `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
+| `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
+| `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
+| `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
+| `internal/dashboard` | `internal/agent`, `internal/httplimits`, `internal/logs`, `internal/orchestra` | never the terminal UI |
+<!-- /archtest:rules -->
 
-Rule of thumb: model has NO deps on memory/agent. memory tiers are
-independent of each other (assemble + distill compose them). agent sits
-on top of everything. improve sits beside agent (scheduled jobs).
-mcp is standalone (wire protocol only, no LLM knowledge).
-mcpserver sits beside agent: mcp.Handler over stdio, reads soul +
-episodic + semantic, exposes them to external MCP clients.
-```
+In short:
+- The leaves (file permissions, secrets, locks, limits, version, run traces)
+  import nothing.
+- `model` knows no memory, agent or plugin.
+- The memory tiers compose only through `assemble`, `distill` and `compress`.
+- Plugins never import each other.
+- `agent` sits on top of memory and models, and knows no plugin and no surface.
+- The terminal UI and the dashboard both sit on the agent, and never import each
+  other.
+- Only `cmd/tenant`, the composition root, may import anything.
 
 ---
 
@@ -1218,6 +1252,34 @@ table as JSON Lines (no embeddings) plus profiles, souls, research and the archi
 `cmd/tenant` adds connector forgetting (`credentials.json` `skill:<name>:*` entries plus each
 service's token and data files), the status view, and the daily prune in `serve` and the TUI.
 
+### 5.13c `internal/config` — Persisted configuration
+
+The types, defaults and validation of `config.json` (`Launch` and its blocks,
+the provider catalog, route resolution), the owner-only `credentials.json`
+(`Credentials`, `ResolveSecret`) and the per-agent `settings.<agent>.json`
+(`Settings`, `ExecProfile`), with the only safe ways to read and write them
+(`Load`, `Launch.Save`, `Persist` for long-lived holders, `AtomicWrite`,
+`LoadCredentials`/`PeekCredentials`, `LoadSettings`). It imports `fsperm`,
+`secrets`, `model`, `route` and `orchestra`, and no runtime package; the
+claudecode discovery sentinel is copied rather than imported, and a test holds
+the copies together. Moved out of `package main` in TEN-314;
+`cmd/tenant/config_compat.go` keeps main's names (`launchConfig`,
+`loadLaunchConfig`, …) as aliases and one-line wrappers.
+
+### 5.13d `internal/toolmux` + `internal/control` — Tool mux, shared data types
+
+`toolmux.Mux` merges the plugins' tools into one registry and dispatcher for
+the agent: runtime enable/disable with persisted curation (`Restore`,
+`SetOnChange`), lazy activation of stubbed plugins (`RegisterActivator`,
+`Stub`), relevance ranking of a large catalog (`SetEmbedder`, `Search`),
+federated knowledge search across paired peers, remote-MCP adoption and trust
+(`RegisterMCPRemote`, `SetMCPTrust`, `RemoteMCPList`), and per-tool dispatch
+counts (`Stats`). It builds no plugin itself: `cmd/tenant/toolmux_build.go`
+decides what to register. `internal/control` is a leaf of plain data types the
+runtime, the terminal UI and the dashboard share (`ToolInfo` so far), so none
+of them imports another. Moved out of `package main` in TEN-314;
+`cmd/tenant/toolmux_compat.go` keeps main's names.
+
 ### 5.13 `cmd/tenant` — CLI (main.go + wiring.go + commands.go)
 
 A real subcommand CLI (stdlib `flag`, no cobra). Runs fully offline on
@@ -1379,11 +1441,13 @@ a command means adding it to its feature's list; adding a feature is one line in
 Bubble Tea model drains it via a re-issued `listen` command and renders
 live. A turn runs off the UI goroutine (returns `turnDoneMsg`). Token
 events append to the in-flight assistant bubble; everything else lands
-in the feed. `internal/tui` depends only on `internal/agent` (the
-command wires router/stores/dispatcher), so the UI stays decoupled.
+in the feed. `internal/tui` depends on `internal/agent` and the shared data types in
+`internal/control` (the command wires router/stores/dispatcher), so the UI
+stays decoupled; §2 has its full rule.
 
 **Scope:** memory-backed streaming chat + the live feed, **plus
-optional tool plugins** via a `toolMux` (`cmd/tenant/toolmux.go`) that
+optional tool plugins** via the tool mux (`internal/toolmux`, built by
+`cmd/tenant/toolmux_build.go`) that
 merges any enabled plugins' specs and routes `Dispatch` by tool name
 (distinct prefixes ⇒ no collision; first-registrant-wins on dup).
 Enable per-plugin with flags — `--wiki-dir`, `--sql-db`, `--web`,
@@ -1395,7 +1459,7 @@ operator opts in. Tool calls + results then stream into the feed live.
 with `/` is a command, not a message. `/tools` lists every tool and its
 on/off state grouped by plugin; `/enable <tool|plugin>` and `/disable
 <tool|plugin>` toggle a single tool or a whole plugin **live**.
-Mechanism: the `toolMux` (`cmd/tenant/toolmux.go`) is the agent's
+Mechanism: the tool mux (`internal/toolmux`) is the agent's
 ToolRegistry *and* Dispatcher, with a per-tool `enabled` flag behind a
 RWMutex. Disabling drops the tool from `Search` (so it leaves the
 assembled prompt entirely — zero context + compute) and from `Get` (so

@@ -133,8 +133,8 @@ func TestPrivacyForgetConnector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds.set(skillSecretID("x", "bearer"), "bearer-value")
-	if err := creds.save(cfg); err != nil {
+	creds.Set(skillSecretID("x", "bearer"), "bearer-value")
+	if err := creds.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := secrets.WriteFile(xp.TokenPath(data), []byte(`{"access_token":"t"}`)); err != nil {
@@ -160,7 +160,7 @@ func TestPrivacyForgetConnector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.get(skillSecretID("x", "bearer")) != "" || after.get("openai") != "sk-original" {
+	if after.Get(skillSecretID("x", "bearer")) != "" || after.Get("openai") != "sk-original" {
 		t.Fatalf("credentials after forgetting x: %v", after.Secrets)
 	}
 	if err := cmdPrivacyForget(ctx, privacyArgs(cfg, data, "--connector", "myspace"), strings.NewReader(""), io.Discard); err == nil {

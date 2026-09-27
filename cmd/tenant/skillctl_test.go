@@ -224,8 +224,8 @@ func TestSkillShow_MasksSecrets(t *testing.T) {
 	dir := t.TempDir()
 	// Seed a known secret on disk.
 	creds, _ := loadCredentials(dir)
-	creds.set(skillSecretID("fake", "token"), "supersecretvalue123")
-	if err := creds.save(dir); err != nil {
+	creds.Set(skillSecretID("fake", "token"), "supersecretvalue123")
+	if err := creds.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,7 +277,7 @@ func TestSkillConfigure_PositionalSingleField(t *testing.T) {
 	}
 	// Secret should be on disk under the namespaced key.
 	creds, _ := loadCredentials(dir)
-	if got := creds.get(skillSecretID("fake", "token")); got != "validtoken" {
+	if got := creds.Get(skillSecretID("fake", "token")); got != "validtoken" {
 		t.Errorf("secret not persisted under skill:fake:token; got %q", got)
 	}
 }
@@ -295,7 +295,7 @@ func TestSkillConfigure_ValidationError_NoWrite(t *testing.T) {
 	}
 	// Nothing should have been written.
 	creds, _ := loadCredentials(dir)
-	if creds.get(skillSecretID("fake", "token")) != "" {
+	if creds.Get(skillSecretID("fake", "token")) != "" {
 		t.Error("failed validation must not write the secret (audit P0: atomic write)")
 	}
 	lc, _ := loadLaunchConfig(dir)
@@ -319,7 +319,7 @@ func TestSkillConfigure_ProbeFailure_StoresAndWarns_NoEnable(t *testing.T) {
 	}
 	// Credentials must be stored (probe failure is WARN, not rollback).
 	creds, _ := loadCredentials(dir)
-	if got := creds.get(skillSecretID("fake", "token")); got != "validtoken" {
+	if got := creds.Get(skillSecretID("fake", "token")); got != "validtoken" {
 		t.Error("probe failure should still persist credentials")
 	}
 	// Auto-enable must NOT fire on probe failure.
@@ -377,7 +377,7 @@ func TestSkillConfigure_MultiField_KeyValue(t *testing.T) {
 		t.Errorf("non-secret field not in settings: %v", lc.Skills["multi"].Settings)
 	}
 	creds, _ := loadCredentials(dir)
-	if creds.get(skillSecretID("multi", "pass")) != "secret123" {
+	if creds.Get(skillSecretID("multi", "pass")) != "secret123" {
 		t.Error("secret field not in credentials")
 	}
 }
@@ -466,7 +466,7 @@ func TestSkillClear_RequiredField_DisablesSkill(t *testing.T) {
 	// pre-set Enabled=true to simulate the live state.
 	lc, _ := loadLaunchConfig(dir)
 	lc.Skills["fake"].Enabled = true
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 
 	out, err := sc.SkillClear("fake", "token")
 	if err != nil {
@@ -493,7 +493,7 @@ func TestSkillClear_OptionalField_KeepsEnabled(t *testing.T) {
 		lc.Skills = map[string]*skillConfig{"opt": {Settings: map[string]string{}}}
 	}
 	lc.Skills["opt"].Enabled = true
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 
 	out, err := sc.SkillClear("opt", "k")
 	if err != nil {

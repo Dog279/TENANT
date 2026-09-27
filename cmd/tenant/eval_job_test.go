@@ -73,15 +73,15 @@ func TestEvalNightlyJob_SmokeArtifact(t *testing.T) {
 // internal/model/profile.go in the production source tree.
 func TestEvalSurfaceIsReadCommsSafe(t *testing.T) {
 	mux := newToolMux()
-	mux.add("os", stubPlugin{specs: []model.ToolSpec{
+	mux.Add("os", stubPlugin{Specs: []model.ToolSpec{
 		{Name: "os_read_file"},
 		{Name: "os_write_file", Gated: true},
 		{Name: "os_exec", Gated: true},
 	}})
-	mux.add("discord", stubPlugin{specs: []model.ToolSpec{
+	mux.Add("discord", stubPlugin{Specs: []model.ToolSpec{
 		{Name: "discord_send_message", Gated: true},
 	}})
-	mux.add("team", stubPlugin{specs: []model.ToolSpec{
+	mux.Add("team", stubPlugin{Specs: []model.ToolSpec{
 		{Name: "spawn_agent"},
 		{Name: "team_await"},
 	}})

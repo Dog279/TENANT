@@ -1,6 +1,8 @@
-package main
+package config
 
-import "testing"
+import (
+	"testing"
+)
 
 // The lost-update regression (found live 2026-08-12): a component holding the
 // BOOT-TIME *launchConfig persisted a field change by saving that stale copy,
@@ -11,25 +13,25 @@ func TestPersistLaunchConfigPreservesConcurrentWrites(t *testing.T) {
 	dir := t.TempDir()
 
 	// Boot: a component captures the config as it looked at launch.
-	boot := &launchConfig{}
-	if err := boot.save(dir); err != nil {
+	boot := &Launch{}
+	if err := boot.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 
 	// Later, ANOTHER writer (skill configure, model add) saves new state via
 	// the fresh-load discipline.
-	fresh, err := loadLaunchConfig(dir)
+	fresh, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fresh.Provider = "zai"
 	fresh.MCPRemotes = []string{"https://example.com/mcp"}
-	if err := fresh.save(dir); err != nil {
+	if err := fresh.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 
 	// The stale-copy holder now persists its own field the SAFE way.
-	if err := persistLaunchConfig(dir, boot, func(lc *launchConfig) {
+	if err := Persist(dir, boot, func(lc *Launch) {
 		lc.Relay.Enabled = true
 		lc.Relay.OperatorID = "op1"
 	}); err != nil {
@@ -37,7 +39,7 @@ func TestPersistLaunchConfigPreservesConcurrentWrites(t *testing.T) {
 	}
 
 	// Both writers' fields must survive.
-	got, err := loadLaunchConfig(dir)
+	got, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,7 +47,7 @@ func TestFeedbackControl_PersistsAckUndo(t *testing.T) {
 
 func TestSkillControl_AutoAcceptPersist(t *testing.T) {
 	dir := t.TempDir()
-	if err := (&launchConfig{Provider: "echo"}).save(dir); err != nil {
+	if err := (&launchConfig{Provider: "echo"}).Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	sc := skillControl{cfgDir: dir}

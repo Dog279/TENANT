@@ -455,7 +455,7 @@ func TestRouteRuntimeSetModeInstallsLiveBigBinding(t *testing.T) {
 		},
 		Route: &routeConfig{Enabled: true, Mode: route.ModeShadow, BigRole: "big"},
 	}
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	reg := model.NewEmptyRegistry()
@@ -573,7 +573,7 @@ func TestRouteRuntimeNamedForcePiercesPrivacyAndLogs(t *testing.T) {
 func TestRouteRuntimeForcePersistsStableProviderBindingAcrossSwap(t *testing.T) {
 	cfgDir := t.TempDir()
 	lc := routeCLITestConfig()
-	if err := lc.save(cfgDir); err != nil {
+	if err := lc.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	reg := model.NewEmptyRegistry()
@@ -603,7 +603,7 @@ func TestRouteRuntimeForcePersistsStableProviderBindingAcrossSwap(t *testing.T) 
 	// Startup reconstructs the explicitly named provider/profile, not whatever
 	// the generic vllm-planner ID happens to mean after the swap.
 	persisted.Provider = "big"
-	if err := persisted.save(cfgDir); err != nil {
+	if err := persisted.Save(cfgDir); err != nil {
 		t.Fatal(err)
 	}
 	restartedRouter := model.NewRouter(model.NewEmptyRegistry(), nil)

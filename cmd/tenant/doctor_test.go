@@ -82,7 +82,7 @@ func TestDoctor_CheckLaunchConfig(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
 			if c.setupLC != nil {
-				if err := c.setupLC.save(dir); err != nil {
+				if err := c.setupLC.Save(dir); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -302,7 +302,7 @@ func TestDoctor_CheckCredentials(t *testing.T) {
 				"zai": {Kind: "zai", Endpoint: "https://api.z.ai", Auth: authCfg{Mode: "apikey", Stored: true}},
 			},
 		}
-		_ = lc.save(dir)
+		_ = lc.Save(dir)
 		// No credentials.json — Stored=true but secret missing.
 		e := &doctorEnv{c: &commonFlags{cfgDir: dir}, lc: lc}
 		r := checkCredentials(context.Background(), e)
@@ -323,7 +323,7 @@ func TestDoctor_CheckCredentials(t *testing.T) {
 				"fake": {Kind: "zai", Auth: authCfg{Mode: "apikey", KeyEnv: "FAKE_TEST_API_KEY_NOT_SET"}},
 			},
 		}
-		_ = lc.save(dir)
+		_ = lc.Save(dir)
 		e := &doctorEnv{c: &commonFlags{cfgDir: dir}, lc: lc}
 		r := checkCredentials(context.Background(), e)
 		if r.Status != statusWarn {
@@ -342,9 +342,9 @@ func TestDoctor_CheckCredentials(t *testing.T) {
 				"zai": {Kind: "zai", Auth: authCfg{Mode: "apikey", Stored: true}},
 			},
 		}
-		_ = lc.save(dir)
+		_ = lc.Save(dir)
 		creds := &credentials{Secrets: map[string]string{"zai": "sk-real"}}
-		_ = creds.save(dir)
+		_ = creds.Save(dir)
 		e := &doctorEnv{c: &commonFlags{cfgDir: dir}, lc: lc}
 		r := checkCredentials(context.Background(), e)
 		if r.Status != statusOK {
@@ -371,7 +371,7 @@ func TestDoctor_CheckAgentProfiles(t *testing.T) {
 			"unresolvable-mdl": {Provider: "no-model"},
 		},
 	}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	e := &doctorEnv{c: &commonFlags{cfgDir: dir}, lc: lc}
 	r := checkAgentProfiles(context.Background(), e)
 	if r.Status != statusFail {
@@ -395,7 +395,7 @@ func TestDoctor_CheckAgentProfiles(t *testing.T) {
 func TestDoctor_CheckAgentProfiles_NoAgents(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Providers: map[string]*providerConfig{"x": {Kind: "vllm"}}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	e := &doctorEnv{c: &commonFlags{cfgDir: dir}, lc: lc}
 	r := checkAgentProfiles(context.Background(), e)
 	if r.Status != statusSkip {

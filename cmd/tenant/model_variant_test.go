@@ -44,7 +44,7 @@ func TestUseModel_PinsModelVariant(t *testing.T) {
 			"zai":  {Kind: "zai-coding", Endpoint: "https://api.z.ai/api/coding/paas/v4", Model: "glm-4.6", ToolFmt: "openai"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	ag := newEchoAg(t)
@@ -76,7 +76,7 @@ func TestUseModel_EmptyModelPreservesSaved(t *testing.T) {
 			"zai":  {Kind: "zai-coding", Endpoint: "https://api.z.ai/api/coding/paas/v4", Model: "glm-5.1", ToolFmt: "openai"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	ag := newEchoAg(t)
@@ -99,7 +99,7 @@ func TestUseModel_WhitespaceOverrideAlsoPreserves(t *testing.T) {
 		Provider:  "echo",
 		Providers: map[string]*providerConfig{"echo": {Kind: "echo"}, "zai": {Kind: "zai-coding", Model: "glm-5.1"}},
 	}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ag := newEchoAg(t)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -135,7 +135,7 @@ func TestListProviderModels_LiveFetch(t *testing.T) {
 		Provider:  "echo",
 		Providers: map[string]*providerConfig{"echo": {Kind: "echo"}, "zai": {Kind: "vllm", Endpoint: srv.URL}},
 	}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ag := newEchoAg(t)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -180,7 +180,7 @@ func TestListProviderModels_FallbackTo_NoV1(t *testing.T) {
 		Provider:  "echo",
 		Providers: map[string]*providerConfig{"echo": {Kind: "echo"}, "zai": {Kind: "vllm", Endpoint: srv.URL}},
 	}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ag := newEchoAg(t)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -208,7 +208,7 @@ func TestListProviderModels_EmptyNameUsesActive(t *testing.T) {
 		Provider:  "active",
 		Providers: map[string]*providerConfig{"active": {Kind: "vllm", Endpoint: srv.URL}},
 	}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ag := newEchoAg(t)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -225,7 +225,7 @@ func TestListProviderModels_EmptyNameUsesActive(t *testing.T) {
 func TestListProviderModels_UnknownProvider(t *testing.T) {
 	dir := t.TempDir()
 	lc := &launchConfig{Provider: "echo", Providers: map[string]*providerConfig{"echo": {Kind: "echo"}}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ag := newEchoAg(t)
 	mc := &modelControl{cfgDir: dir, dataDir: filepath.Join(dir, "data"), agentID: "main", ag: ag,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}

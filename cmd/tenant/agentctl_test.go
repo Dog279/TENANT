@@ -33,7 +33,7 @@ func TestAgentControl_AddListShowRemove(t *testing.T) {
 			"zai": {Kind: "zai", Endpoint: "https://api.z.ai/api/paas/v4", Model: "glm-4.6"},
 		},
 	}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	ac := &agentControl{cfgDir: dir}
@@ -102,7 +102,7 @@ func TestAgentControl_Add_Rejects(t *testing.T) {
 	lc := &launchConfig{Providers: map[string]*providerConfig{
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
-	if err := lc.save(dir); err != nil {
+	if err := lc.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	ac := &agentControl{cfgDir: dir}
@@ -133,7 +133,7 @@ func TestAgentControl_SetSoul(t *testing.T) {
 	lc := &launchConfig{Providers: map[string]*providerConfig{
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 	_, _ = ac.Add("researcher", "gpu", "", "", "")
 
@@ -172,7 +172,7 @@ func TestAgentControl_Add_PreservesPriorSoulOnPartialUpdate(t *testing.T) {
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m1"},
 		"zai": {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 
 	_, _ = ac.Add("researcher", "gpu", "", "old desc", "")
@@ -200,7 +200,7 @@ func TestAgentControl_Rename(t *testing.T) {
 	lc := &launchConfig{Providers: map[string]*providerConfig{
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 	_, _ = ac.Add("researcher", "gpu", "", "deep web", "")
 	_, _ = ac.SetSoul("researcher", "be thorough")
@@ -234,7 +234,7 @@ func TestAgentControl_Rename_Rejects(t *testing.T) {
 	lc := &launchConfig{Providers: map[string]*providerConfig{
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 	_, _ = ac.Add("a", "gpu", "", "", "")
 	_, _ = ac.Add("b", "gpu", "", "", "")
@@ -266,7 +266,7 @@ func TestAgentControl_SetModel(t *testing.T) {
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "old-model"},
 		"zai": {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 	_, _ = ac.Add("researcher", "gpu", "", "the role", "")
 	_, _ = ac.SetSoul("researcher", "stay focused")
@@ -311,7 +311,7 @@ func TestAgentControl_SetModel_MaterializesBuiltin(t *testing.T) {
 	lc := &launchConfig{Providers: map[string]*providerConfig{
 		"gpu": {Kind: "vllm", Endpoint: "http://x", Model: "qwen-coder"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 
 	// Lowercase input must resolve the canonically-cased built-in.
@@ -352,7 +352,7 @@ func TestAgentControl_SetModel_MaterializesBuiltin(t *testing.T) {
 // shipped specialist work without a prior /agents add.
 func TestAgentControl_SetSoul_MaterializesBuiltin(t *testing.T) {
 	dir := t.TempDir()
-	_ = (&launchConfig{}).save(dir)
+	_ = (&launchConfig{}).Save(dir)
 	ac := &agentControl{cfgDir: dir}
 	if _, err := ac.SetSoul("QA", "be ruthless"); err != nil {
 		t.Fatalf("SetSoul on built-in should succeed: %v", err)
@@ -370,7 +370,7 @@ func TestAgentControl_SetModel_Rejects(t *testing.T) {
 		"gpu":         {Kind: "vllm", Endpoint: "http://x", Model: "m"},
 		"vllm-no-mdl": {Kind: "vllm", Endpoint: "http://x"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 	ac := &agentControl{cfgDir: dir}
 	_, _ = ac.Add("researcher", "gpu", "", "", "")
 
@@ -487,7 +487,7 @@ func TestBuildProfileRouter_RejectsMisconfig(t *testing.T) {
 		"zai-no-key":  {Kind: "zai", Endpoint: "https://api.z.ai", Model: "glm-4.6", Auth: authCfg{Mode: "apikey", Stored: true}},
 		"vllm-no-mdl": {Kind: "vllm", Endpoint: "http://x"},
 	}}
-	_ = lc.save(dir)
+	_ = lc.Save(dir)
 
 	cases := []struct {
 		name, profile, want string
@@ -528,7 +528,7 @@ func TestLaunchConfig_AgentsRoundTrip(t *testing.T) {
 			"writer":     {Provider: "gpu"},
 		},
 	}
-	if err := in.save(dir); err != nil {
+	if err := in.Save(dir); err != nil {
 		t.Fatal(err)
 	}
 	out, err := loadLaunchConfig(dir)

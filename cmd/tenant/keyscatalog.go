@@ -42,7 +42,7 @@ type keySpec struct {
 }
 
 // keyCatalog is ordered for display: LLM providers, then web search, then
-// integrations. Source of truth verified 2026-06-08 against launchconfig.go
+// integrations. Source of truth verified 2026-06-08 against internal/config/providers.go
 // (providerKinds), lazyweb.go (credKey), and the skill secret reads.
 var keyCatalog = []keySpec{
 	// LLM providers (CredID == provider kind id; all NeedsKey + Wired).

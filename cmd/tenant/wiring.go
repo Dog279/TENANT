@@ -189,7 +189,7 @@ func (c *commonFlags) applyLaunchConfig() error {
 	c.lc = lc
 	set := c.flagSet()
 
-	if p := lc.active(); p != nil {
+	if p := lc.Active(); p != nil {
 		pk := providerKinds[p.Kind]
 		c.genKind = p.Kind
 		if !set["backend"] && pk.Backend != "" {

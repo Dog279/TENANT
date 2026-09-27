@@ -441,7 +441,7 @@ func autoEnableEvalPlugins(pf *pluginFlags, c *commonFlags, explicitFlags map[st
 					if sk.Settings["auth"] == "token" {
 						pf.atlassianEmail = sk.Settings["email"]
 						if creds, cerr := loadCredentials(c.cfgDir); cerr == nil {
-							pf.atlassianClientID = creds.get(skillSecretID("atlassian", "client_id"))
+							pf.atlassianClientID = creds.Get(skillSecretID("atlassian", "client_id"))
 						}
 					} else {
 						// OAuth path: needs client_id from config.
