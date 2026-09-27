@@ -108,14 +108,26 @@ func launchAtlassian(ctx context.Context, e *pluginEnv) ([]plugin, func(), error
 	if !f.on {
 		return nil, nil, nil
 	}
-	svc, err := atlassian.Open(ctx, atlassian.Config{
+	cfg := atlassian.Config{
 		SiteURL:       f.site,
 		Email:         f.email,
 		Project:       f.project,
 		ClientID:      f.clientID,
 		TokenPath:     atlassianTokenPath(e.c.cfgDir),
 		OAuthCallback: f.callback,
-	})
+	}
+	// The secrets are never flags. As in the activator, each is the one
+	// /configure stored, else $ATLASSIAN_TOKEN or $ATLASSIAN_CLIENT_SECRET
+	// (atlassian.Open reads those). The launch used to read only the
+	// environment, so eval's auto-enable failed the whole eval (D14).
+	creds, _ := loadCredentials(e.c.cfgDir)
+	if f.email != "" {
+		cfg.APIToken = creds.Get(skillSecretID("atlassian", "api_token"))
+	}
+	if f.clientID != "" {
+		cfg.ClientSecret = creds.Get(skillSecretID("atlassian", "client_secret"))
+	}
+	svc, err := atlassian.Open(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("atlassian plugin: %w", err)
 	}
@@ -141,14 +153,11 @@ func evalAtlassian(pf *pluginFlags, c *commonFlags, explicit map[string]bool) bo
 	f.site = sk.Settings["site"]
 	f.project = sk.Settings["project"]
 	f.allowWrite = true
+	// The launch adds the stored secret for the mode: the API token with an
+	// email, the client secret with a client id.
 	if sk.Settings["auth"] == "token" {
-		// Token auth: load email + api_token from config/credentials.
 		f.email = sk.Settings["email"]
-		if creds, cerr := loadCredentials(c.cfgDir); cerr == nil {
-			f.clientID = creds.Get(skillSecretID("atlassian", "client_id"))
-		}
 	} else {
-		// OAuth path: needs client_id from config.
 		f.clientID = sk.Settings["client_id"]
 	}
 	return true

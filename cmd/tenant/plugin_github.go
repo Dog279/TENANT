@@ -47,8 +47,7 @@ func activateGitHub(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 	if !ok || sk.Settings == nil || sk.Settings["repo"] == "" {
 		return nil, nil, fmt.Errorf("github plugin: %w yet - run `/configure github`", errNotConfigured)
 	}
-	creds, _ := loadCredentials(e.c.cfgDir)
-	tok := githubp.ResolveToken(creds.Get(skillSecretID("github", "token")), e.c.cfgDir)
+	tok := githubToken(e.c.cfgDir)
 	if tok == "" {
 		return nil, nil, fmt.Errorf("github plugin: %w yet - no token; run `/configure github`", errNotConfigured)
 	}
@@ -73,6 +72,15 @@ func activateGitHub(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 	// to relaunch with a flag to keep them.
 	allowWrite := githubFlagsOf(e.pf).allowWrite || sk.Settings["allow_write"] == "true"
 	return githubp.NewDispatcher(svc, githubp.Policy{AllowWrite: e.gateAllow(allowWrite), Confirm: e.confirm}), func() {}, nil
+}
+
+// githubToken is the PAT the plugin runs with, whether the launch or the
+// activator builds it: the one /configure and the keys page store, else
+// $GITHUB_TOKEN, $GITHUB_PAT or the token cache. The launch used to skip the
+// stored one, so a GitHub that `tenant setup` enabled failed the launch (D2).
+func githubToken(cfgDir string) string {
+	creds, _ := loadCredentials(cfgDir)
+	return githubp.ResolveToken(creds.Get(skillSecretID("github", "token")), cfgDir)
 }
 
 // githubFlags are GitHub's launch flags. Deliberately there is NO
@@ -125,7 +133,7 @@ func launchGitHub(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	}
 	svc, err := githubp.Open(githubp.Config{
 		Repos:   repos,
-		Token:   githubp.ResolveToken("", e.c.cfgDir),
+		Token:   githubToken(e.c.cfgDir),
 		APIBase: f.apiBase,
 	})
 	if err != nil {

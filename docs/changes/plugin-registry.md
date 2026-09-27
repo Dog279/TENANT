@@ -75,6 +75,15 @@ and those copies disagreed too.
   The list now comes from the descriptors.
 - **File guards (D10).** The file tools did not refuse gsuite's OAuth client JSON, which
   holds a client secret. They do now.
+- **GitHub's launch (D2).** A GitHub turned on at launch, by `tenant setup` or saved config,
+  ignored the token that `/configure` and the keys page store. It looked only at
+  `$GITHUB_TOKEN`, `$GITHUB_PAT` and a token cache that nothing writes, so the launch failed.
+  The launch and the activator now share one resolver: the stored token, then the
+  environment, then the cache.
+- **Eval's Jira (D14).** Eval turned on a Jira set up with an API token but never supplied
+  the token; it copied a `client_id` secret that does not exist. Without `$ATLASSIAN_TOKEN`
+  the whole eval failed to build its tools. The launch now reads the stored API token or
+  client secret, as the activator does.
 - **Approval table.** `jira_write`, `github_write`, `wiki_save` and the crm actions reached
   "destructive" only because unknown actions default to it. They are now declared, with
   the same category. The `web_` prefix guess is gone.
@@ -95,6 +104,8 @@ and those copies disagreed too.
   keys page's plugin rows. Some entries moved relative to one another, and none was added
   or dropped except as noted here.
 - **Memory tools register first.** The host's memory tools register before any plugin.
+- **Stored secrets win at launch.** A GitHub or Jira with both a stored secret and an
+  environment variable now launches with the stored one, as its activator already did.
 - **Unchanged:**
   - `tenant tui -h`, `tenant serve -h` and `tenant eval -h` are byte-identical before and
     after.
