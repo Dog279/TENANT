@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-09-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 73 |
-| Go files | 847 |
-| Test files | 411 |
-| Production Go LOC | 116,499 |
-| Test Go LOC | 79,209 |
+| Go packages | 75 |
+| Go files | 854 |
+| Test files | 415 |
+| Production Go LOC | 116,590 |
+| Test Go LOC | 79,252 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
