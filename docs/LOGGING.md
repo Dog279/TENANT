@@ -818,7 +818,7 @@ critical events, errors and unexpected exits (the `system` log's critical
 events) of the week. It reads per-hour rollups: `rollup_hour` (log and
 level) and `rollup_id` (event ID, warnings and worse), which each commit keeps
 beside the per-minute ones, retention prunes with them and a privacy forget
-takes its events out of. On 1M events it takes 14 ms (p95; the budget is 50;
+takes its events out of. On 1M events it takes 14–20 ms (p95; the budget is 50;
 `TENANT_LOGBOOK_PERF=1 go test ./internal/logs/store -run TestSummaryBudget -v`),
 where a week from the per-minute rollups alone took 135 ms.
 
