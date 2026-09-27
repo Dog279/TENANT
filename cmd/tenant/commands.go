@@ -2423,8 +2423,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 			Catchup:  cronCatchup,
 			PerRun:   cronPerRun(c.lc),
 			History:  loadCronHistory(c.dataDir),
-			HistoryPersist: func(h []cron.RunRecord) error {
-				return saveCronHistory(c.dataDir, h)
+			HistoryPersist: func(r cron.RunRecord) error {
+				return appendCronHistory(c.dataDir, r)
 			},
 		})
 		cronEngine.SetNotify(pushSys)
@@ -2647,10 +2647,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// a direct DM to the operator, who is usually remote exactly when it matters.
 	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(pushSys, relayMgr.NotifyOperator))
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
-			return tui.ApproveOnce
-		}
-		return tui.DenyOnce
+		return relayMgr.askOperator(cctx, req.Action, req.Detail)
 	})
 	discordBroker.SetLock(relayMgr.execLocked) // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
@@ -2768,10 +2765,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			if approver := newIMessageApprover(resp, imsgOperator, log.With("source", "imessage")); approver != nil {
 				resp.approver = approver
 				imsgBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-					if approver.Confirm(cctx, req.Action, req.Detail) {
-						return tui.ApproveOnce
-					}
-					return tui.DenyOnce
+					return approver.decide(cctx, req.Action, req.Detail)
 				})
 			}
 			return resp, func() { _ = nat.Close() }, nil
@@ -3158,9 +3152,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// TEN-167: persist each MAIN-agent LLM call's token usage for
 		// long-term cost audit. Non-fatal — closure swallows errors so a
 		// ledger issue never blocks the UI.
-		RecordUsage: func(in, out int) {
+		RecordUsage: func(in, out int, traceID string) {
 			if usageStore != nil {
-				_ = usageStore.Record(ctx, c.agent, modelName, in, out)
+				_ = usageStore.Record(ctx, c.agent, modelName, in, out, traceID)
 			}
 		},
 	})

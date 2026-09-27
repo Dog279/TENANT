@@ -20,6 +20,10 @@ const (
 	ApproveOnce
 	ApproveSession
 	ApproveAlways
+	// Expired and DenyShutdown refuse exactly like DenyOnce; they record why
+	// no operator decided: the prompt timed out, or the process shut down.
+	Expired
+	DenyShutdown
 )
 
 // ApprovalRequest is a dangerous action paused awaiting the operator. The

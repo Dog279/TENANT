@@ -81,15 +81,17 @@ type AddSpec struct {
 }
 
 // Runner executes one job (an agent turn, or a shell command) and returns a
-// short human-readable summary. A nil Runner makes the engine inert (runs report
-// an error instead of panicking).
-type Runner func(ctx context.Context, job Job) (summary string, err error)
+// short human-readable summary and, for a turn, its trace ID (the runs.db
+// record). A nil Runner makes the engine inert (runs report an error instead of
+// panicking).
+type Runner func(ctx context.Context, job Job) (summary, trace string, err error)
 
 // RunRecord is one entry in the engine's bounded run history (persisted across
 // restarts when a history store is wired via Prime).
 type RunRecord struct {
 	JobID     string    `json:"job_id"`
 	Name      string    `json:"name,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"` // the turn the job ran; "" for a shell job
 	StartedAt time.Time `json:"started_at"`
 	Duration  int64     `json:"duration_ms"`
 	Summary   string    `json:"summary,omitempty"`
@@ -99,12 +101,14 @@ type RunRecord struct {
 
 // PrimeOptions configures the engine once after construction, before Start:
 // the default timezone, missed-run catch-up, and the persisted history seed +
-// sink. Prime recomputes every job's NextRun in one pass.
+// sink. Prime recomputes every job's NextRun in one pass. HistoryPersist saves
+// one new record: other processes append to the same history, so a sink must
+// never rewrite it from this engine's ring.
 type PrimeOptions struct {
 	Location       *time.Location
 	Catchup        bool
 	History        []RunRecord
-	HistoryPersist func([]RunRecord) error
+	HistoryPersist func(RunRecord) error
 	// PerRun overrides the wall-clock ceiling on one job run. Zero keeps the
 	// default. The ceiling exists to stop HUNG runs, not to race real work:
 	// a multi-tool brief through a local 27B (or a claudecode escalation,
@@ -125,7 +129,7 @@ type Engine struct {
 
 	runner         Runner
 	persist        func([]JobDef) error
-	historyPersist func([]RunRecord) error
+	historyPersist func(RunRecord) error
 	now            func() time.Time
 	log            *slog.Logger
 	notify         func(string) // optional feed sink for run results (non-blocking)
@@ -490,7 +494,7 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 		if e.perRun > 0 {
 			runCtx, cancel = context.WithTimeout(ctx, e.perRun)
 		}
-		summary, err = e.runner(runCtx, job)
+		summary, rec.TraceID, err = e.runner(runCtx, job)
 		if cancel != nil {
 			cancel()
 		}
@@ -523,14 +527,10 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 	}
 	notify := e.notify
 	persist := e.historyPersist
-	var snapshot []RunRecord
-	if persist != nil {
-		snapshot = append([]RunRecord(nil), e.history...)
-	}
 	e.mu.Unlock()
 
 	if persist != nil {
-		if perr := persist(snapshot); perr != nil {
+		if perr := persist(rec); perr != nil {
 			e.log.Warn("cron: persist history", "err", perr)
 		}
 	}

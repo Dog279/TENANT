@@ -19,6 +19,7 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
+	"tenant/internal/runtrace"
 	"tenant/internal/tui"
 )
 
@@ -92,7 +93,7 @@ type TeamConfig struct {
 	// suggests a planner role for UNPINNED spawns only — spawns matching a
 	// pinned AgentProfile always bypass routing. Best-effort: (_, false)
 	// keeps today's exact spawn behavior.
-	SpawnRole func(task string) (model.Role, bool)
+	SpawnRole func(ctx context.Context, task string) (model.Role, bool)
 	// CfgDir is needed when (lazily) building a per-profile router so we can
 	// resolve provider config + secrets. Required if AgentProfiles is set.
 	CfgDir string
@@ -260,13 +261,13 @@ func (r *TeamRuntime) routerForProfile(role string) (*model.Router, *agentProfil
 
 // spawnRoleSafely guards the spawn classifier with the same panic isolation
 // the turn hook gets: a broken classifier must never kill a spawn.
-func spawnRoleSafely(fn func(string) (model.Role, bool), task string) (role model.Role, ok bool) {
+func spawnRoleSafely(ctx context.Context, fn func(context.Context, string) (model.Role, bool), task string) (role model.Role, ok bool) {
 	defer func() {
 		if v := recover(); v != nil {
 			role, ok = "", false
 		}
 	}()
-	return fn(task)
+	return fn(ctx, task)
 }
 
 // addCleanup registers a teardown (e.g. a per-agent browser session) to run
@@ -580,7 +581,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	// this spawn will use; anything else keeps today's planner role exactly.
 	plannerRole := model.Role("")
 	if r.cfg.SpawnRole != nil && (profile == nil || profile.Provider == "") {
-		if suggested, ok := spawnRoleSafely(r.cfg.SpawnRole, task); ok && suggested != "" {
+		if suggested, ok := spawnRoleSafely(ctx, r.cfg.SpawnRole, task); ok && suggested != "" {
 			if _, err := router.ForRole(suggested); err == nil {
 				plannerRole = suggested
 				if r.cfg.Log != nil {
@@ -629,11 +630,12 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		return "", err
 	}
 
+	parentTrace := runtrace.IDFromContext(ctx) // the spawning turn: this run's parent
 	go func() {
 		defer cancel() // release the ctx when this agent finishes naturally
 		defer releaseAgent()
 		defer closeTools()
-		res, terr := ag.Turn(agCtx, agent.TurnRequest{UserQuery: task})
+		res, terr := ag.Turn(agCtx, agent.TurnRequest{UserQuery: task, ParentTraceID: parentTrace})
 		var status, result string
 		switch {
 		case context.Cause(agCtx) != nil && r.budget.Status().TerminationReason != "":

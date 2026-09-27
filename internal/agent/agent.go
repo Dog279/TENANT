@@ -462,6 +462,13 @@ type TurnRequest struct {
 	// cap). Used by /goal runs so a long autonomous loop can iterate freely
 	// without raising the global ceiling every normal turn shares (TEN-216).
 	LoopCeiling int
+	// ParentTraceID links this turn's run record to the turn that caused it:
+	// a sub-agent's, to the turn that spawned it (TEN-368).
+	ParentTraceID string
+	// TraceID, when set, is this turn's trace instead of a fresh one: a caller
+	// that files the turn elsewhere (a cron run's history) mints it first, so
+	// the link holds even when Turn fails without a result.
+	TraceID string
 }
 
 // TurnQueueEntry is the observable, content-free view of one request waiting
@@ -518,7 +525,10 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	if req.UserQuery == "" {
 		return nil, errors.New("agent: TurnRequest.UserQuery required")
 	}
-	traceID := runtrace.NewID()
+	traceID := req.TraceID
+	if traceID == "" {
+		traceID = runtrace.NewID()
+	}
 	span := runtrace.NewSpan(traceID)
 	span.SetModel(string(a.plannerRole), "unresolved")
 	ctx = runtrace.WithSpan(ctx, span)
@@ -529,7 +539,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		source = "headless"
 	}
 	run := runtrace.Run{
-		TraceID: traceID, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
+		TraceID: traceID, ParentTraceID: req.ParentTraceID, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
 		Source: source, StartedAt: started,
 	}
 	if a.cfg.Runs != nil {
@@ -1686,10 +1696,11 @@ func (a *Agent) archiveAssistant(ctx context.Context, resp *model.GenerateRespon
 	a.archiveEvent(ctx, ev)
 }
 
-func (a *Agent) archiveEvent(_ context.Context, e archive.Event) {
+func (a *Agent) archiveEvent(ctx context.Context, e archive.Event) {
 	if a.cfg.Archive == nil {
 		return
 	}
+	e.TraceID = runtrace.IDFromContext(ctx)
 	if err := a.cfg.Archive.Append(e); err != nil {
 		a.log.Warn("agent: archive append failed", "err", err)
 	}

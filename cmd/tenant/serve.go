@@ -364,11 +364,11 @@ func cmdServe(ctx context.Context, args []string) error {
 		Web:                    teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
-		SpawnRole: func(task string) (model.Role, bool) { // TEN-292
+		SpawnRole: func(ctx context.Context, task string) (model.Role, bool) { // TEN-292
 			if routeRT == nil {
 				return "", false
 			}
-			return routeRT.SpawnRole(task)
+			return routeRT.SpawnRole(ctx, task)
 		},
 		CfgDir:        c.cfgDir,
 		EmbedProfile:  embProf,
@@ -558,8 +558,8 @@ func cmdServe(ctx context.Context, args []string) error {
 			Catchup:  cronCatchup,
 			PerRun:   cronPerRun(c.lc),
 			History:  loadCronHistory(c.dataDir),
-			HistoryPersist: func(h []cron.RunRecord) error {
-				return saveCronHistory(c.dataDir, h)
+			HistoryPersist: func(r cron.RunRecord) error {
+				return appendCronHistory(c.dataDir, r)
 			},
 		})
 		cronEngine.SetNotify(pushSys)

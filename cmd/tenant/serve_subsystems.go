@@ -138,10 +138,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	// Feed line + operator DM when a remote connector's sign-in dies / recovers.
 	d.tools.SetMCPAuthNotifier(mcpAuthNotifier(d.notify, relayMgr.NotifyOperator))
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
-			return tui.ApproveOnce
-		}
-		return tui.DenyOnce
+		return relayMgr.askOperator(cctx, req.Action, req.Detail)
 	})
 	discordBroker.SetLock(relayMgr.execLocked) // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
@@ -281,10 +278,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			if approver := newIMessageApprover(responder, imsgOperator, d.log); approver != nil {
 				responder.approver = approver
 				imsgBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-					if approver.Confirm(cctx, req.Action, req.Detail) {
-						return tui.ApproveOnce
-					}
-					return tui.DenyOnce
+					return approver.decide(cctx, req.Action, req.Detail)
 				})
 			}
 			return responder, func() { _ = nat.Close() }, nil

@@ -22,7 +22,6 @@ import (
 type registry struct {
 	mu      sync.Mutex
 	pending map[string]*pendingReq
-	seq     atomic.Uint64
 	// emit publishes pending/resolved events to the live event stream so both
 	// observers refresh. Set once at wiring (nil ⇒ no event surfacing — fail-safe).
 	emit func(agent.Event)
@@ -41,10 +40,20 @@ func newRegistry() *registry {
 	return &registry{pending: map[string]*pendingReq{}}
 }
 
+// seq numbers this process's approvals, across every registry and broker.
+var seq atomic.Uint64
+
+// nextID is "<boot>-<n>": the first 8 hex digits of this process's boot ID and
+// a counter, so serve and the TUI (which share runs.db and the log book) never
+// mint the same approval ID, while it stays short enough to read and type.
+func nextID() string {
+	return fmt.Sprintf("%.8s-%d", runtrace.BootID(), seq.Add(1))
+}
+
 // register inserts a new pending request and emits EventApprovalPending. Returns
 // the assigned id + the buffered reply chan the caller blocks on.
 func (r *registry) register(ctx context.Context, req control.ApprovalRequest, origin string) (string, chan control.ApprovalDecision) {
-	id := fmt.Sprintf("ap-%d", r.seq.Add(1)) // atomic — no lock needed for the id
+	id := "ap-" + nextID() // atomic — no lock needed for the id
 	reply := make(chan control.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
@@ -93,7 +102,8 @@ func (r *registry) removeIfPending(id string) {
 }
 
 // DenyAll denies every still-pending request (process/serve teardown), so no
-// agent goroutine stays blocked. Buffered, non-blocking sends.
+// agent goroutine stays blocked. Buffered, non-blocking sends. The outcome says
+// shutdown, so no one reads it as the operator's deny.
 func (r *registry) DenyAll() {
 	r.mu.Lock()
 	pend := r.pending
@@ -101,11 +111,11 @@ func (r *registry) DenyAll() {
 	r.mu.Unlock()
 	for _, p := range pend {
 		select {
-		case p.reply <- control.DenyOnce:
+		case p.reply <- control.DenyShutdown:
 		default:
 		}
-		r.emitEvent(agent.EventApprovalResolved, p, "denied")
-		p.recordApproval("denied")
+		r.emitEvent(agent.EventApprovalResolved, p, outcomeOf(control.DenyShutdown))
+		p.recordApproval(outcomeOf(control.DenyShutdown))
 	}
 }
 
@@ -177,6 +187,10 @@ func outcomeOf(d control.ApprovalDecision) string {
 		return "approved_session"
 	case control.ApproveAlways:
 		return "approved_always"
+	case control.Expired:
+		return "expired"
+	case control.DenyShutdown:
+		return "denied_shutdown"
 	default:
 		return "denied"
 	}

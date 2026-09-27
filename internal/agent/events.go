@@ -48,12 +48,12 @@ const (
 // ApprovalEvent is the payload for EventApprovalPending / EventApprovalResolved
 // (TEN-203). Self-documenting so observers read fields instead of parsing Text.
 type ApprovalEvent struct {
-	ID       string // broker-assigned id ("ap-N") — the key for Resolve
+	ID       string // broker-assigned id ("ap-<boot>-<n>") — the key for Resolve
 	Category string // safety category (exec|write|destructive|web|send|pairing)
 	Action   string // the gated action id
 	Detail   string // human-readable detail
 	Origin   string // "local" | "imessage" | "discord" — which surface raised it
-	Outcome  string // "" while pending; approved|approved_session|approved_always|denied|expired when resolved
+	Outcome  string // "" while pending; approved|approved_session|approved_always|denied|denied_shutdown|expired when resolved
 }
 
 // Event is one live update during a turn. Only the fields relevant to

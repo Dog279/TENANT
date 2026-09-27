@@ -26,7 +26,6 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/plugins/wiki"
 	"tenant/internal/route"
-	"tenant/internal/runtrace"
 )
 
 // cmdEval is the `tenant eval` subcommand.
@@ -624,22 +623,16 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 		sl = s
 	}
 	// One throwaway archive dir for the whole run — eval turns must not
-	// pollute the operator's real event log under <data>.
+	// pollute the operator's real event log under <data>. For the same reason
+	// they keep no run records: the operator's runs.db is for real turns.
 	arcDir, err := os.MkdirTemp("", "tenant-eval-*")
 	if err != nil {
 		closeTools()
 		return nil, fmt.Errorf("eval: temp archive dir: %w", err)
 	}
 	arc := archive.NewWriter(arcDir)
-	runStore, err := runtrace.Open(filepath.Join(c.dataDir, "runs.db"), effectiveRunTraceConfig(c.lc))
-	if err != nil {
-		closeTools()
-		_ = os.RemoveAll(arcDir)
-		return nil, fmt.Errorf("eval: run traces: %w", err)
-	}
 	cleanup := func() {
 		closeTools()
-		_ = runStore.Close()
 		_ = os.RemoveAll(arcDir)
 	}
 
@@ -734,7 +727,6 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			Archive:    arc,
 			Episodic:   es,
 			Semantic:   ss,
-			Runs:       runStore,
 			Tools:      tools,
 			Dispatcher: gate,
 			Logger:     log,

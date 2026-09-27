@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -19,7 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/runtrace"
 )
 
 const (
@@ -44,6 +47,7 @@ type Decision struct {
 	Timestamp     time.Time `json:"ts"`
 	AgentID       string    `json:"agent_id"`
 	SessionID     string    `json:"session_id"`
+	TraceID       string    `json:"trace_id,omitempty"` // the turn that asked (runs.db)
 	PromptHash    string    `json:"prompt_hash"`
 	EstTokens     int       `json:"est_tokens"`
 	Domain        string    `json:"domain"`
@@ -143,6 +147,7 @@ type Engine struct {
 	limit      int
 	breaker    *Breaker
 	now        func() time.Time
+	log        *slog.Logger // nil: log-file failures go unreported (tests)
 
 	mu      sync.Mutex
 	history []Decision // chronological internally; Recent reverses a copy
@@ -154,7 +159,7 @@ type Engine struct {
 }
 
 // NewEngine creates a shadow decision engine. It performs no filesystem I/O;
-// a broken log path is silently ignored and never fails or changes a decision.
+// a broken log path never fails or changes a decision (SetLog reports it).
 func NewEngine(classifier Classifier, dataDir string, historyLimit int) *Engine {
 	if historyLimit <= 0 {
 		historyLimit = defaultHistoryLimit
@@ -180,6 +185,7 @@ func (e *Engine) Decide(ctx context.Context, agentID, sessionID, prompt, mode st
 		Timestamp:   time.Now().UTC(),
 		AgentID:     agentID,
 		SessionID:   sessionID,
+		TraceID:     runtrace.IDFromContext(ctx),
 		PromptHash:  HashPrompt(prompt),
 		EstTokens:   EstimateTokens(prompt),
 		Mode:        mode,
@@ -271,6 +277,7 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 		Timestamp:   time.Now().UTC(),
 		AgentID:     req.AgentID,
 		SessionID:   req.SessionID,
+		TraceID:     runtrace.IDFromContext(ctx),
 		PromptHash:  HashPrompt(req.Prompt),
 		EstTokens:   in.EstTokens,
 		Mode:        req.Mode,
@@ -640,6 +647,13 @@ func (e *Engine) Confirm(id string) error {
 
 	e.logMu.Lock()
 	defer e.logMu.Unlock()
+	// Exclusive across processes: a row another process appends while this
+	// rewrite runs would land in the copy the rename replaces.
+	lock, err := datalock.File(e.path, true)
+	if err != nil {
+		return fmt.Errorf("route: confirm: lock decision log: %w", err)
+	}
+	defer lock.Release()
 	raw, err := os.ReadFile(e.path)
 	if err != nil {
 		return fmt.Errorf("route: confirm: read decision log: %w", err)
@@ -783,21 +797,40 @@ func (e *Engine) record(d Decision) Decision {
 	}
 	e.mu.Unlock()
 	e.logMu.Lock()
-	_ = appendDecision(e.path, d) // telemetry must never fail or alter a decision
+	err := appendDecision(e.path, d) // telemetry must never fail or alter a decision
 	pruneDue := e.pruneDueLocked()
 	e.logMu.Unlock()
+	if err != nil {
+		e.warn("route: decision log append failed", "err", err)
+	}
 	if pruneDue {
 		// The whole-file retention rewrite runs OFF the record path: a caller
 		// tripping the daily gate must not pay the rewrite inside its turn or
-		// spawn. Prune re-takes logMu itself; errors are telemetry-only.
-		go func() { _, _, _ = e.Prune() }()
+		// spawn. Prune re-takes logMu itself; errors are logged, never returned.
+		go func() {
+			if _, _, err := e.Prune(); err != nil {
+				e.warn("route: decision log prune failed", "err", err)
+			}
+		}()
 	}
 	return d
 }
 
+// SetLog names the logger for decision-log write and prune failures. Call it
+// while wiring, before the engine is in use.
+func (e *Engine) SetLog(log *slog.Logger) { e.log = log }
+
+func (e *Engine) warn(msg string, kv ...any) {
+	if e.log != nil {
+		e.log.Warn(msg, kv...)
+	}
+}
+
+// appendDecision adds one line under the log's shared lock, so a compaction in
+// any process (which holds it exclusively) never loses the row.
 func appendDecision(path string, d Decision) error {
 	if path == "" {
-		return errors.New("route: decision log data dir required")
+		return nil // no data dir: the history stays in memory only
 	}
 	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("route: create decision log dir: %w", err)
@@ -806,6 +839,11 @@ func appendDecision(path string, d Decision) error {
 	if err != nil {
 		return fmt.Errorf("route: marshal decision: %w", err)
 	}
+	lock, err := datalock.File(path, false)
+	if err != nil {
+		return fmt.Errorf("route: lock decision log: %w", err)
+	}
+	defer lock.Release()
 	f, err := fsperm.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
 	if err != nil {
 		return fmt.Errorf("route: open decision log: %w", err)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/control"
 	"tenant/internal/plugins/discord"
 )
 
@@ -99,8 +100,10 @@ func TestApprover_TimeoutDenies(t *testing.T) {
 	a := newDiscordApprover(&fakeSender{}, nil)
 	a.timeout = 80 * time.Millisecond
 	a.setChannel("dm1")
-	if a.Confirm(context.Background(), "act", "d") {
-		t.Error("an un-answered approval must DENY (fail closed)")
+	// Expired denies (fail closed) and is recorded as expiry, not as the
+	// operator's deny (TEN-368).
+	if d := a.decide(context.Background(), "act", "d"); d != control.Expired {
+		t.Errorf("an un-answered approval = %v, want Expired (a deny)", d)
 	}
 }
 

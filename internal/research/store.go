@@ -60,7 +60,8 @@ type Finding struct {
 type Event struct {
 	Timestamp time.Time `json:"ts"`
 	AgentID   string    `json:"agent"`
-	Kind      string    `json:"kind"` // "tool_call" | "tool_result" | "error" | "final" | "truncated"
+	TraceID   string    `json:"trace_id,omitempty"` // the agent turn's run record (runs.db)
+	Kind      string    `json:"kind"`               // "tool_call" | "tool_result" | "error" | "final" | "truncated"
 	Tool      string    `json:"tool,omitempty"`
 	Args      string    `json:"args,omitempty"`
 	Result    string    `json:"result,omitempty"`

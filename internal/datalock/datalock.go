@@ -6,6 +6,9 @@
 // exclusively. Shared holders never block each other, and neither side waits:
 // whoever cannot get the lock is told why at once. The operating system drops
 // a lock when its process exits, so a crash never leaves a stale one behind.
+//
+// File applies the same locks to one record file that several processes
+// append to, so a compaction never drops another process's rows.
 package datalock
 
 import (
@@ -13,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ErrBusy is returned when the lock is held in a conflicting mode.
@@ -31,14 +35,35 @@ func Path(dataDir string) string { return filepath.Join(dataDir, FileName) }
 
 // Shared takes the lock that ordinary Tenant processes hold. It fails with
 // ErrBusy only while a restore holds the lock exclusively.
-func Shared(dataDir string) (*Lock, error) { return acquire(dataDir, false) }
+func Shared(dataDir string) (*Lock, error) { return acquire(Path(dataDir), false) }
 
 // Exclusive takes the lock a restore needs. It fails with ErrBusy while any
 // other Tenant process holds it, shared or exclusive.
-func Exclusive(dataDir string) (*Lock, error) { return acquire(dataDir, true) }
+func Exclusive(dataDir string) (*Lock, error) { return acquire(Path(dataDir), true) }
 
-func acquire(dataDir string, exclusive bool) (*Lock, error) {
-	path := Path(dataDir)
+// fileWait bounds how long File waits out a conflicting holder: each hold is
+// one append or one compaction.
+var fileWait = 10 * time.Second
+
+// File locks the record file at path (a log that serve and the TUI both append
+// to) through the sibling path+".lock", which is never replaced. Appenders take
+// it shared; a compaction that rewrites the file takes it exclusively, so no
+// append lands in a copy the rewrite is about to replace. Unlike the data-dir
+// lock it waits, up to fileWait, and then fails with ErrBusy.
+func File(path string, exclusive bool) (*Lock, error) {
+	deadline := time.Now().Add(fileWait)
+	for {
+		l, err := acquire(path+".lock", exclusive)
+		if !errors.Is(err, ErrBusy) || time.Now().After(deadline) {
+			return l, err
+		}
+		// ponytail: polls, so a waiter wakes up to 5ms late; a blocking OS wait
+		// (with a deadline) if record-file contention ever gets hot.
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func acquire(path string, exclusive bool) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("datalock: %w", err)
 	}

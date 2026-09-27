@@ -3,7 +3,9 @@ package runtrace
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -143,5 +145,96 @@ func TestRedactionDropsToolBodies(t *testing.T) {
 	}
 	if got.ToolCalls[0].Name != "secret" || got.ToolCalls[0].Outcome != "success" {
 		t.Fatalf("tool metadata lost: %+v", got.ToolCalls[0])
+	}
+}
+
+// A sub-agent's run names the turn that spawned it, and a runs.db from before
+// the column existed gains it on open (TEN-368).
+func TestParentTraceSurvivesAndMigrates(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runs.db")
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(schema, "CREATE TABLE IF NOT EXISTS runs", "CREATE TABLE runs", 1)
+	if _, err := old.Exec(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`INSERT INTO runs (trace_id,agent_id,session_id,source,started_at) VALUES ('before','main','','tui','2026-07-17T12:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	s, err := Open(path, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if r, err := s.Get(ctx, "before"); err != nil || r.ParentTraceID != "" {
+		t.Fatalf("legacy row = %+v, err = %v", r, err)
+	}
+	if err := s.Start(ctx, Run{TraceID: "child", ParentTraceID: "before", Source: "headless"}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.Get(ctx, "child"); err != nil || r.ParentTraceID != "before" {
+		t.Fatalf("child = %+v, err = %v; want parent_trace_id before", r, err)
+	}
+}
+
+// An open store prunes on its timer, not only when it opens, and the timer
+// stops with the store.
+func TestOpenStorePrunesOnATimer(t *testing.T) {
+	saved := pruneEvery
+	pruneEvery = 10 * time.Millisecond
+	defer func() { pruneEvery = saved }()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "runs.db"), Config{MaxCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		if err := s.Start(ctx, Run{TraceID: id, Source: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		runs, err := s.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runs = %d after the prune timer, want 1", len(runs))
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// _txlock=immediate: a transaction holds the write lock from BEGIN, so another
+// connection's write is refused (busy) rather than interleaved.
+func TestTransactionsTakeTheWriteLockAtBegin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.db")
+	s, err := Open(path, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	other, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if _, err := other.Exec(`INSERT INTO runs (trace_id,source,started_at) VALUES ('x','test','2026-07-17T12:00:00Z')`); err == nil {
+		t.Fatal("a write went through while an open transaction should hold the write lock")
 	}
 }

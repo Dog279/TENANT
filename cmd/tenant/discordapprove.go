@@ -35,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/control"
 	"tenant/internal/plugins/discord"
 )
 
@@ -160,10 +161,17 @@ func verdictText(p *pendingApproval, verdict, by string, at time.Time) string {
 // approve-ONCE (the bool is "proceed with THIS action"); ctx/timeout/no-channel
 // all DENY (fail closed). Holds no mode/session state.
 func (a *discordApprover) Confirm(ctx context.Context, action, detail string) bool {
+	return a.decide(ctx, action, detail) == control.ApproveOnce
+}
+
+// decide is Confirm with the cause of a no kept, for the approval record:
+// DenyOnce when the operator denied (or there is no channel to ask in),
+// Expired when nobody answered before the timeout or the turn ended.
+func (a *discordApprover) decide(ctx context.Context, action, detail string) control.ApprovalDecision {
 	channel := a.curChannel()
 	if channel == "" || a.io == nil {
 		a.logWarn("discord approval: no operator channel — denied", "action", action)
-		return false
+		return control.DenyOnce
 	}
 	nonce := genNonce()
 	p := &pendingApproval{reply: make(chan bool, 1), channel: channel, action: action, detail: detail, postedAt: a.now()}
@@ -181,11 +189,14 @@ func (a *discordApprover) Confirm(ctx context.Context, action, detail string) bo
 	tctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 	select {
-	case ok := <-p.reply:
-		return ok // the resolver already rewrote the card
+	case ok := <-p.reply: // the resolver already rewrote the card
+		if ok {
+			return control.ApproveOnce
+		}
+		return control.DenyOnce
 	case <-tctx.Done():
 		a.expire(nonce, p)
-		return false
+		return control.Expired
 	}
 }
 

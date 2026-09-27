@@ -133,9 +133,10 @@ func newRouteRuntime(lc *launchConfig, cfgDir, dataDir string, router *model.Rou
 	// Retention (TEN-292): arm daily pruning, and apply it once at wiring
 	// time — but only in the LIVE process (router != nil). Headless CLI
 	// invocations (status/stats) construct a runtime against the same JSONL a
-	// live tenant is appending to; a cross-process read-filter-rename there
-	// would silently drop concurrently appended rows.
+	// live tenant is appending to; maintaining it is the live process's job
+	// (the file lock keeps either from losing the other's rows).
 	rt.engine.SetRetention(cfg.LogRetentionDays)
+	rt.engine.SetLog(log)
 	if router != nil {
 		if _, dropped, err := rt.engine.Prune(); err != nil {
 			log.Warn("route: startup retention prune failed", "err", err)
@@ -465,8 +466,9 @@ func (r *routeRuntime) profileConstraints(role model.Role, cfg resolvedRouteConf
 // suggests an N-way rule role. Spawn is not a turn, so the classifier's own
 // bounded timeout is the only latency added, and every failure returns
 // (_, false) — the spawn then behaves exactly as before this feature.
-// The decision is recorded shadow-mode with surface "spawn" for telemetry.
-func (r *routeRuntime) SpawnRole(task string) (model.Role, bool) {
+// The decision is recorded shadow-mode with surface "spawn" for telemetry,
+// under the spawning turn's trace (ctx's values, not its cancellation).
+func (r *routeRuntime) SpawnRole(ctx context.Context, task string) (model.Role, bool) {
 	if r == nil || r.engine == nil {
 		return "", false
 	}
@@ -487,7 +489,7 @@ func (r *routeRuntime) SpawnRole(task string) (model.Role, bool) {
 	// can therefore never gain cloud access through a rule-routed sub-agent.
 	cfg.NeverCloud = true
 	small, big, force := r.targets(cfg, model.RolePlanner)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutMS)*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	d, err := r.engine.DecideWithPolicy(ctx, route.PolicyDecisionRequest{
 		AgentID: "team-spawn", Prompt: task,

@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/control"
 	"tenant/internal/plugins/imessage"
 )
 
@@ -112,11 +113,18 @@ func (a *imessageApprover) curChat() string {
 // with THIS action only"); no operator / no send path / ctx-cancel / timeout /
 // nonce-deny all DENY (fail closed). Holds no mode/session state.
 func (a *imessageApprover) Confirm(ctx context.Context, action, detail string) bool {
+	return a.decide(ctx, action, detail) == control.ApproveOnce
+}
+
+// decide is Confirm with the cause of a no kept, for the approval record:
+// DenyOnce when the operator denied (or cannot be reached), Expired when
+// nobody answered before the timeout or the turn ended.
+func (a *imessageApprover) decide(ctx context.Context, action, detail string) control.ApprovalDecision {
 	chat := a.curChat()
 	// No operator handle, no send path, or no chat to prompt into ⇒ we cannot
 	// reach the operator ⇒ deny BEFORE registering anything (fail closed).
 	if a.operator == "" || a.sender == nil || chat == "" {
-		return false
+		return control.DenyOnce
 	}
 
 	nonce := genNonce()
@@ -140,15 +148,18 @@ func (a *imessageApprover) Confirm(ctx context.Context, action, detail string) b
 	tctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 	select {
-	case ok := <-reply:
-		return ok // OnReply already texted the operator the outcome
+	case ok := <-reply: // OnReply already texted the operator the outcome
+		if ok {
+			return control.ApproveOnce
+		}
+		return control.DenyOnce
 	case <-tctx.Done():
 		// Timed out OR the turn's ctx was cancelled ⇒ deny. We text the operator
 		// only on a real timeout, not on a parent-ctx cancel (process teardown).
 		if ctx.Err() == nil {
 			a.post(chat, fmt.Sprintf("⌛ approval %s expired — denied.", nonce))
 		}
-		return false
+		return control.Expired
 	}
 }
 
