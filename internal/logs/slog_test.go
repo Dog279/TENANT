@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"tenant/internal/logs/event"
 	"testing"
 
 	"tenant/internal/runtrace"
@@ -39,6 +40,24 @@ func TestHandler_TraceFromContext(t *testing.T) {
 	if all[1].Field("trace") != "" {
 		t.Errorf("out-of-turn fields = %+v", all[1].Fields)
 	}
+}
+
+// …inside an activity, the line names it too, so the pivot reaches it.
+func TestHandler_ActivityFromContext(t *testing.T) {
+	h := NewMemory(10)
+	prev := Default()
+	defer Install(prev)
+	Install(h)
+	def := event.NewProvider("slogact", "slogact").Event(1, event.Info, "Run", "run")
+	ctx, act := event.Start(context.Background(), def)
+	h.Logger("turns").InfoContext(ctx, "inside")
+	act.End(nil)
+	for _, e := range func() []Entry { es, _ := h.Snapshot(); return es }() {
+		if e.Msg == "inside" && e.Field("activity") == event.ActivityFromContext(ctx) && e.Field("activity") != "" {
+			return
+		}
+	}
+	t.Error("the slog line in an activity does not name it")
 }
 
 func TestHandler_RoutesByAttrThenPrefixThenDefault(t *testing.T) {

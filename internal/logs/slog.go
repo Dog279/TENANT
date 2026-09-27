@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/logs/event"
 	"tenant/internal/runtrace"
 )
 
@@ -153,9 +154,13 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		addAttr(&fields, &src, h.source == "", a, h.prefix)
 		return true
 	})
-	// A …Context call inside a turn joins the line to its run record.
+	// A …Context call inside a turn joins the line to its run record, and
+	// inside an activity (a job run, a connection) to that operation.
 	if id := runtrace.IDFromContext(ctx); id != "" {
 		fields = append(fields, Field{Key: "trace", Value: id})
+	}
+	if id := event.ActivityFromContext(ctx); id != "" {
+		fields = append(fields, Field{Key: "activity", Value: id})
 	}
 	if src == "" {
 		src = prefixSource(r.Message)
