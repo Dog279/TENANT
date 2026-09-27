@@ -947,6 +947,163 @@ Writes the `discord` log.
 
 **What to do.** None when it is rare. Check the card or the relay's reply to see what was decided.
 
+## eval
+
+Writes the `eval` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#eval-1001) | info | Run | `Eval run of {subset}, {tasks} tasks` |
+| [1002](#eval-1002) | info | Task | `Eval task {task}` |
+| [1003](#eval-1003) | info | Trend | `Eval trend: {subset} scored {overall}, {passed}/{total} passed` |
+| [2001](#eval-2001) | warning | Task | `Eval task {task} was not graded ({class}): {reason}` |
+| [2002](#eval-2002) | warning | Regression | `No eval baseline at {path}: regressions are not checked` |
+| [2003](#eval-2003) | warning | Regression | `Eval {subset} regressed against its baseline: Δ {delta}, 95% CI upper bound {ci_high}` |
+| [2004](#eval-2004) | warning | Regression | `Eval baseline {path} could not be read: {err}` |
+| [2005](#eval-2005) | warning | Run | `Eval {record} was not saved: {err}` |
+| [2006](#eval-2006) | warning | Schedule | `Schedule {value} is malformed and ignored: {effect}` |
+| [3001](#eval-3001) | error | Task | `The route classifier panicked in an eval task: {panic}` |
+
+### eval 1001
+
+`Eval run of {subset}, {tasks} tasks`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** eval
+- **Fields:** `subset`, `tasks`, `overall`, `passed`, `failed`, `ungraded`, `skipped`
+- **Find it:** `provider:eval id:1001`
+
+**What it means.** An eval run: start, then stop with its overall score and counts, or fail when it was cancelled.
+
+**Why it happens.** The nightly schedule (improve.eval_every or eval_at) came due, someone ran it now (the dashboard, /eval), `tenant eval` ran, or the soul nudge scored a candidate.
+
+**What to do.** None. Compare overall across runs in the trend (`tenant eval --trend`); a regression is reported on its own (eval/2003).
+
+### eval 1002
+
+`Eval task {task}`
+
+- **Level:** info · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `task`, `category`, `mode`, `result`, `score`
+- **Find it:** `provider:eval id:1002`
+
+**What it means.** One task of an eval run: start, then stop with its result (pass, fail, ungraded or skipped) and score.
+
+**Why it happens.** Its run reached it.
+
+**What to do.** For a failing task, open its report in <data>/eval-artifacts, or run `tenant eval --baseline-diff` for the movers.
+
+### eval 1003
+
+`Eval trend: {subset} scored {overall}, {passed}/{total} passed`
+
+- **Level:** info · **Channel:** operational · **Task:** Trend · **Log:** eval
+- **Fields:** `subset`, `overall`, `passed`, `total`, `regressed`, `delta`, `artifact`
+- **Find it:** `provider:eval id:1003`
+
+**What it means.** A finished run's line was added to the trend (trend.jsonl), with its verdict against the baseline.
+
+**Why it happens.** A nightly run finished, or `tenant eval --append-trend` ran.
+
+**What to do.** None. `tenant eval --trend` shows the series.
+
+### eval 2001
+
+`Eval task {task} was not graded ({class}): {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `task`, `class`, `reason`
+- **Find it:** `provider:eval id:2001`
+
+**What it means.** A task was left out of the score because the harness, the model provider or the judge failed, not the agent.
+
+**Why it happens.** class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the grader was unusable after its retry).
+
+**What to do.** Fix the named piece (a provider's quota or endpoint, the judge model) and run again. Many ungraded tasks make a run's score unreliable.
+
+### eval 2002
+
+`No eval baseline at {path}: regressions are not checked`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `path`
+- **Find it:** `provider:eval id:2002`
+
+**What it means.** A run finished with no baseline to compare against, so the regression gate is off.
+
+**Why it happens.** No baseline was ever captured, or it lives somewhere the run doesn't look.
+
+**What to do.** Capture one from a good run: `tenant eval --baseline-from <data>/eval-artifacts/eval-<time>.json`.
+
+### eval 2003
+
+`Eval {subset} regressed against its baseline: Δ {delta}, 95% CI upper bound {ci_high}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `subset`, `delta`, `ci_high`, `overall`, `artifact`
+- **Find it:** `provider:eval id:2003`
+
+**What it means.** A run scored worse than its baseline, beyond chance (the paired bootstrap's 95% interval is below zero).
+
+**Why it happens.** A change to the prompt, the model, routing, the tools or memory made the agent worse, or the environment lost something tasks need.
+
+**What to do.** Run `tenant eval --baseline-diff` to see which tasks moved and why; fix the cause, or capture a new baseline if the change is intended.
+
+### eval 2004
+
+`Eval baseline {path} could not be read: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `path`, `err`
+- **Find it:** `provider:eval id:2004`
+
+**What it means.** The baseline exists but doesn't parse, so this run has no regression verdict.
+
+**Why it happens.** The file was edited by hand, truncated, or written by an incompatible version.
+
+**What to do.** Capture it again: `tenant eval --baseline-from <a good artifact>`.
+
+### eval 2005
+
+`Eval {record} was not saved: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Run · **Log:** eval
+- **Fields:** `record`, `path`, `err`
+- **Find it:** `provider:eval id:2005`
+
+**What it means.** A run finished, but its report artifact or its trend line didn't reach <data>/eval-artifacts.
+
+**Why it happens.** The data directory is full, unwritable or locked.
+
+**What to do.** Check the data directory's free space and permissions. The run's scores are still in this log (eval/1001).
+
+### eval 2006
+
+`Schedule {value} is malformed and ignored: {effect}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Schedule · **Log:** eval
+- **Fields:** `value`, `effect`, `err`
+- **Find it:** `provider:eval id:2006`
+
+**What it means.** An eval cadence setting didn't parse, so it was ignored rather than guessed at.
+
+**Why it happens.** improve.eval_at is not HH:MM, or an improve.*_every duration is not like 24h.
+
+**What to do.** Set it again with /eval every <duration> or /eval at HH:MM (applies live), or fix it in config.json.
+
+### eval 3001
+
+`The route classifier panicked in an eval task: {panic}`
+
+- **Level:** error · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `panic`, `stack`
+- **Find it:** `provider:eval id:3001`
+
+**What it means.** A bug in the route classifier was caught while a route task measured it; that sample counts as a failed classification.
+
+**Why it happens.** A programming error in the classifier.
+
+**What to do.** Report it with the stack. The rest of the run goes on.
+
 ## imessage
 
 Writes the `imessage` log.

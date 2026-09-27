@@ -93,8 +93,9 @@ var catalogued = map[string]int{
 	"internal/memory/skills": 0,
 	"internal/skillpkg":      0,
 	"internal/agent":         0, "internal/orchestra": 0, "internal/research": 0,
-	// dashboard (TEN-391)
+	// dashboard (TEN-391) and eval (TEN-395)
 	"internal/dashboard": 0,
+	"internal/eval":      0, "internal/eval/compaction": 0,
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""

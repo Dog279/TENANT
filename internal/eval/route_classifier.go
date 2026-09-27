@@ -3,7 +3,6 @@ package eval
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"runtime/debug"
 	"sort"
@@ -116,7 +115,7 @@ func (h *Harness) runRouteClassifier(ctx context.Context, t *Task) TaskResult {
 func classifyRouteSafely(classifier route.Classifier, ctx context.Context, prompt string) (sig route.Signal, err error) {
 	defer func() {
 		if v := recover(); v != nil {
-			slog.Error("eval: route classifier panicked", "panic", v, "stack", string(debug.Stack()))
+			ClassifierPanicked.Log(ctx, "panic", v, "stack", string(debug.Stack()))
 			err = fmt.Errorf("route classifier panic: %v", v)
 		}
 	}()

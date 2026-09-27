@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
 	"tenant/internal/model"
 )
 
@@ -82,5 +84,46 @@ func TestAggregate_UngradedByClass(t *testing.T) {
 	}
 	if ag.UngradedByClass["quota"] != 2 || ag.UngradedByClass["judge"] != 1 {
 		t.Fatalf("UngradedByClass = %v, want quota:2 judge:1", ag.UngradedByClass)
+	}
+}
+
+// eventSink keeps the eval events written while it is installed.
+type eventSink struct{ events []*event.Event }
+
+func (s *eventSink) Emit(_ context.Context, e *event.Event) {
+	if e.Provider == Events.Name {
+		s.events = append(s.events, e)
+	}
+}
+func (s *eventSink) Audit(ctx context.Context, e *event.Event) error { s.Emit(ctx, e); return nil }
+
+// A harness error (the task's agent could not be built) is catalogued with
+// its class, and its task still ends as an activity with its result.
+func TestHarnessErrorIsCatalogued(t *testing.T) {
+	if g := strings.Join(catalog.Group(Events.Log), "/"); g != "Subsystems/Eval" {
+		t.Errorf("the eval log sits in %q of the viewer's tree", g)
+	}
+	s := &eventSink{}
+	event.Install(s)
+	defer event.Install(nil)
+	h := &Harness{Tasks: []*Task{{ID: "t1", Mode: ModeLive}}, AgentFactory: func(context.Context, string) (AgentRunner, func() error, error) {
+		return nil, nil, errors.New("no model")
+	}}
+	if _, err := h.Run(context.Background(), SubsetFull); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range s.events {
+		got = append(got, fmt.Sprintf("%d %s %s", e.ID, e.Opcode, e.Msg))
+	}
+	want := []string{
+		"1001 start Eval run of full, 1 tasks",
+		"1002 start Eval task t1",
+		"2001  Eval task t1 was not graded (harness): UNGRADED (harness) - agent factory error: no model",
+		"1002 stop Eval task t1",
+		"1001 stop Eval run of full, 1 tasks",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

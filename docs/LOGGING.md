@@ -16,7 +16,7 @@ one folder is one tab.
 ├── discord/                      ← the relay: inbound messages, the relay agent's actions, relay logs
 ├── imessage/
 ├── cron/                         ← scheduled-job runner agents + the engine
-├── eval/                         ← nightly/manual eval task agents
+├── eval/                         ← each eval run and its tasks, regressions, trend updates, harness errors; the task agents' turns
 ├── improve/                      ← every self-improvement job run (distill, skills, consolidate, reflect, soul, profile, eval), serve's and the TUI's
 ├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
 ├── skills/                       ← skills saved, accepted, enabled/disabled, trusted, removed, imported, exported
@@ -110,7 +110,8 @@ A one-shot command (and `tenant mcp-memory`) files its warnings and errors in
 the log book too, under the same sources, while still printing them on stderr
 at the TENANT_LOG level. Its hub runs no background loops and opens a day
 file only when the first warning comes. The nightly eval harness's notes go to
-`eval` under serve and the TUI, and to stderr from `tenant eval`.
+`eval` under serve and the TUI, and to stderr from `tenant eval`, whose table
+and summary stay the command's output.
 
 A new `fmt.Fprint*(os.Stderr, …)` or `log.Print*` call in `cmd/tenant` or an
 internal package fails `go test ./internal/archtest`: the files that had one
@@ -324,8 +325,7 @@ A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
 critical `agent: tool panicked` record. The other guards (routing, the spawn
 classifier, shutdown steps) log at ERROR. The `route` guards write `route
-3003`. The `eval` guards log through slog's default logger, which serve and
-the TUI point at the log book.
+3003`, and the `eval` route-task guard `eval/3001`.
 
 ## The dashboard
 
@@ -669,6 +669,13 @@ drops, the test fails too, and says what to lower it to.
   the audit records. Every request is a diagnostic activity (`dashboard/9001`)
   with its method, route pattern, status and duration, never its path, query,
   body or token.
+- `eval` (`internal/eval/events.go`): each eval run, nightly or manual, is an
+  activity (`eval/1001`) that stops with its overall score and counts, and each
+  task is a child activity (`eval/1002`) that stops with its result. A task
+  left ungraded by a harness, provider or judge failure is `eval/2001`, with
+  its class. A missing baseline (`2002`), a regression against it (`2003`), an
+  unreadable one (`2004`), a report or trend line not saved (`2005`) and a
+  trend update (`1003`) are logged too.
 
 ## Records that lead back to a run
 
