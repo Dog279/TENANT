@@ -1,6 +1,6 @@
 # Tenant Logs v2: an Event Viewer–class log book
 
-**Status:** Proposed plan, 2026-09-27
+**Status:** Implemented on `feat/logging-v2` (TEN-360 to TEN-400), 2026-09-27; see [the change note](../changes/logging-v2.md). Planned 2026-09-27.
 **Builds on:** the log book v1 (TEN-352, [LOGGING.md](../LOGGING.md)) and durable run records (TEN-300, `internal/runtrace`)
 **Platforms:** Windows, Linux and macOS, with one design and no per-OS parts in the core
 **Jira:** workstream [TEN-359](https://findtime.atlassian.net/browse/TEN-359), tasks TEN-360 to TEN-400 (the mapping is at the end of §13)
