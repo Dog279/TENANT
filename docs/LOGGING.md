@@ -1021,6 +1021,23 @@ tenant logs recover [FILE]                  salvage a quarantined logbook.db.cor
   header record, are owner-only files, and file a Security record. `clear --export`
   exports the log first.
 
+### The terminal UI: `/logs`
+
+`/logs [FILTER]` shows the newest 200 events the filter matches in the chat
+pane's place, newest at the bottom; `/logs follow [FILTER]` then adds each new
+one as it is written. A filter that doesn't parse says why in the chat.
+`↑`/`↓`, `PgUp`/`PgDn` and `g`/`G` move; `enter` opens the selected event's
+detail (its fields with sensitive values masked, how often it has occurred,
+its catalog Help); `c` opens its correlated timeline (its trace's, else its
+activity's, with the run record in brief), where `enter` and `c` work again;
+`esc` or `q` goes back, and from the list closes the pane. It reads through
+the API above, run in the TUI's process (`control.LogsControl`,
+`cmd/tenant/logstui.go`), and strips escape sequences from log text before
+showing it (any other control character is shown as a space). The
+full-screen viewer is the dashboard's (decision D12). The activity feed
+scrolls from the keyboard too, with or without mouse capture: `Alt+PgUp`/
+`Alt+PgDn` (or `Ctrl+PgUp`/`Ctrl+PgDn`) a page, `Alt+↑`/`Alt+↓` a line.
+
 ### Alert rules
 
 An alert rule (`internal/logs/alerts`) is a filter, an optional threshold

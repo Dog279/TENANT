@@ -3096,6 +3096,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Relay:           relayMgr,
 		IMessage:        imsgAllowMgr,
 		Cron:            tuiCronCtl,
+		Logs:            newTUILogs(hub, st.runs),
 		MCP:             mcpCtl,
 		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
 		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.ReconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},

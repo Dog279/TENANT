@@ -295,19 +295,16 @@ func flagSet(fs *flag.FlagSet, name string) (set bool) {
 }
 
 // logsQuery prints the newest limit events matching q, oldest first (newest
-// first with reverse), then with follow every new one as it is written,
-// resuming after the last one printed whenever the stream drops.
+// first with reverse), then with follow every new one as it is written.
 func logsQuery(ctx context.Context, lb *logbook, out logsOut, q string, limit int, reverse, follow bool) error {
 	if follow && reverse {
 		return errors.New("logs query: --follow prints oldest first; drop --reverse")
 	}
-	var page logapi.EventsPage
-	v := url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}, "reverse": {"1"}}
-	if err := lb.do(ctx, http.MethodGet, "/api/events?"+v.Encode(), nil, &page); err != nil {
+	evs, cursor, err := logsNewest(ctx, lb, q, limit)
+	if err != nil {
 		return err
 	}
-	evs := page.Events
-	if !reverse {
+	if reverse {
 		slices.Reverse(evs)
 	}
 	ew, err := out.events()
@@ -322,14 +319,38 @@ func logsQuery(ctx context.Context, lb *logbook, out logsOut, q string, limit in
 	if err := ew.Flush(); err != nil || !follow {
 		return err
 	}
+	return logsFollow(ctx, lb, q, cursor, func(e event.Event) error {
+		if err := ew.Write(e); err != nil {
+			return err
+		}
+		return ew.Flush()
+	})
+}
+
+// logsNewest is the newest limit events matching q, oldest first, and the
+// cursor a live tail resumes from after them.
+func logsNewest(ctx context.Context, lb *logbook, q string, limit int) ([]event.Event, string, error) {
+	var page logapi.EventsPage
+	v := url.Values{"q": {q}, "limit": {strconv.Itoa(limit)}, "reverse": {"1"}}
+	if err := lb.do(ctx, http.MethodGet, "/api/events?"+v.Encode(), nil, &page); err != nil {
+		return nil, "", err
+	}
+	evs := page.Events
+	slices.Reverse(evs)
 	last, err := store.ParseCursor(page.Next)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	if len(evs) > 0 {
 		last.Seq = evs[len(evs)-1].Seq
 	}
-	cursor := last.String()
+	return evs, last.String(), nil
+}
+
+// logsFollow hands fn each event matching q written after cursor, resuming
+// after the last one it took whenever the stream drops, until ctx is done
+// (nil) or fn fails.
+func logsFollow(ctx context.Context, lb *logbook, q, cursor string, fn func(event.Event) error) error {
 	for {
 		err := lb.stream(ctx, "/api/events/stream?"+url.Values{"q": {q}}.Encode(), cursor, func(m sseMessage) error {
 			if m.event == "restart" {
@@ -340,11 +361,11 @@ func logsQuery(ctx context.Context, lb *logbook, out logsOut, q string, limit in
 			if err := json.Unmarshal([]byte(m.data), &e); err != nil {
 				return err
 			}
-			if err := ew.Write(e); err != nil {
+			if err := fn(e); err != nil {
 				return err
 			}
 			cursor = m.id
-			return ew.Flush()
+			return nil
 		})
 		if ctx.Err() != nil {
 			return nil
@@ -917,12 +938,7 @@ func (o logsOut) timeline(tl logapi.Timeline) error {
 		return o.json(tl)
 	}
 	if o.format == "text" {
-		if r := tl.Run; r != nil {
-			fmt.Fprintf(o.w, "Run %s: %s · %s · %s %s · %d ms · %d+%d tokens · %d tool calls · %d approvals\n", r.TraceID, r.Outcome, r.Source,
-				r.Provider, r.Model, r.LatencyMS, r.PromptTokens, r.CompletionTokens, len(r.ToolCalls), len(r.Approvals))
-		} else {
-			fmt.Fprintf(o.w, "%s: %s\n", tl.ID, tl.RunNote)
-		}
+		fmt.Fprintln(o.w, timelineHead(tl))
 	}
 	ew, err := o.events()
 	if err != nil {
@@ -934,6 +950,15 @@ func (o logsOut) timeline(tl logapi.Timeline) error {
 		}
 	}
 	return ew.Flush()
+}
+
+// timelineHead is a timeline's run record in brief, or why there is none.
+func timelineHead(tl logapi.Timeline) string {
+	if r := tl.Run; r != nil {
+		return fmt.Sprintf("Run %s: %s · %s · %s %s · %d ms · %d+%d tokens · %d tool calls · %d approvals", r.TraceID, r.Outcome, r.Source,
+			r.Provider, r.Model, r.LatencyMS, r.PromptTokens, r.CompletionTokens, len(r.ToolCalls), len(r.Approvals))
+	}
+	return tl.ID + ": " + tl.RunNote
 }
 
 func (o logsOut) stats(st logapi.Stats, top logapi.Top) error {
