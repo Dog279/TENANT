@@ -44,6 +44,7 @@ type dashboardManager struct {
 	logs         *logs.Hub          // the unified log book: Activity feed + folders (nil-safe)
 	runs         *runtrace.Store    // run records, for the log book's timelines (nil-safe)
 	security     logapi.SecurityLog // the Security log's verify and audit export
+	alerts       logapi.AlertConfig // the alert rules in config.json
 	log          *slog.Logger
 	notify       func(string)             // feed sink (pushSys) for async status
 	persist      func(enabled bool) error // record the on/off choice to config
@@ -114,6 +115,7 @@ func (m *dashboardManager) Enable() (string, error) {
 		srv.SetRunRecords(m.runs.Get)
 	}
 	srv.SetSecurityLog(m.security)
+	srv.SetAlertRules(m.alerts)
 	srv.SetTrustedHosts(m.trustedHostsLocked())
 	dctx, cancel := context.WithCancel(m.base)
 	done := make(chan struct{})

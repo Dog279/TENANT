@@ -2514,6 +2514,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		logs:      hub, // the log book: Activity backfill + replay + the folders on disk
 		runs:      st.runs,
 		security:  securityLogAPI(c),
+		alerts:    alertRulesAPI(c), // the alert rules in config.json (TEN-399)
 		log:       log.With("source", "dashboard"),
 		notify:    pushSys,
 		persist: func(enabled bool) error {

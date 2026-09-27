@@ -951,6 +951,7 @@ features.
 | `GET` | `/api/logbook/verify[?log=security]` | `{"ok", "problems", "chain", "note"}`: SQLite's quick check, and with `log=security` the chain (`{records, head, archives, tombstones, restores, notes, break}`), checked against the key, the anchor and a file witness |
 | `GET` | `/api/logbook/audit?since=&until=` | the Security log's audit export bundle (NDJSON), verifiable offline with the key |
 | `POST` | `/api/logbook/recover` | `{"file", "recovered", "problems"}`: copies what can still be read of a quarantined `logbook.db.corrupt-<time>` (the newest, or `{"file"}`) into the store, each event marked `recovered` |
+| `GET` `POST` `PATCH` `DELETE` | `/api/logbook/alerts[/{name}]` | `{"rules": [{name, filter, threshold, action, throttle, disabled, builtin, error}]}`: the alert rules in force; `POST` a `logs.alerts` entry adds or replaces one (400 if it doesn't compile), `PATCH {"disabled": bool}`, `DELETE` removes the entry (404 for none). Every answer is the rules. |
 
 - **Cursors** are `<store ID>.<seq>`. A restored or rebuilt `logbook.db` has
   a new store ID, so a cursor from before it starts over, and `restarted`
@@ -996,6 +997,8 @@ tenant logs debug <provider|log> --for 30m
 tenant logs catalog [provider] [--id N]
 tenant logs components
 tenant logs recover [FILE]                  salvage a quarantined logbook.db.corrupt-<time>
+tenant logs alerts [list|enable|disable|remove <rule>]
+tenant logs alerts add <rule> FILTER [--count N --window 10m] [--action discord|imessage|cron] [--target PROMPT] [--throttle 1h]
 ```
 
 - **Local or through the dashboard.** Each command is a client of the API
@@ -1040,7 +1043,9 @@ Every firing is an event, `alerts/1001` (warning), so `log:alerts` finds
 them; `alerts/3001` is an action that failed and `alerts/3002` a rule that
 doesn't compile. A firing also puts a banner, `⚠ alert <rule>: <message>`,
 on the evaluating process's status feed (the TUI's, or serve's terminal and
-`system` log). The actions:
+`system` log), and the dashboard's Overview turns its Agent card from
+healthy to `⚠ N alerts` while any fired in the last 24 hours, whichever
+process evaluated them. The actions:
 
 | `action.kind` | Does |
 |---|---|
@@ -1069,7 +1074,14 @@ disables them:
 
 `logs.alerts` in `config.json` is read at every evaluation, so an edit
 applies without a restart. An entry named like a built-in rule overrides
-the fields it sets:
+the fields it sets. `tenant logs alerts` lists the rules in force and
+changes them (`add <rule> FILTER [--count N --window 10m] [--action …]
+[--target PROMPT] [--throttle 1h]`, `enable`, `disable`, `remove`, which
+puts a built-in rule back to its defaults), here or through the dashboard
+like every `tenant logs` command: `GET/POST /api/logbook/alerts`,
+`PATCH` (`{"disabled": true}`) and `DELETE /api/logbook/alerts/{name}`.
+Each change is a Security record (`security/4902`, log `alerts`), besides
+config.json's own (`4501`):
 
 ```json
 "logs": { "alerts": [
