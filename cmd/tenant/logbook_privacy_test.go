@@ -84,9 +84,10 @@ func TestBackupCarriesTheOpenLogbook(t *testing.T) {
 	runBackup(t, func() error {
 		return cmdBackupRestore(ctx, []string{files[0], "--config", cfg, "--data", data, "--yes"}, strings.NewReader(""), &out)
 	})
-	// The events come back; the store ID does not, so live-tail cursors from
-	// before the restore start over instead of skipping new rows.
-	if got, msgs := logbookMsgs(t, path); got == id || !slices.Equal(msgs, []string{"before the backup"}) {
+	// The events come back, and the Security log's re-anchor record joins
+	// them (TEN-396); the store ID does not, so live-tail cursors from before
+	// the restore start over instead of skipping new rows.
+	if got, msgs := logbookMsgs(t, path); got == id || len(msgs) != 2 || msgs[0] != "before the backup" || !strings.HasPrefix(msgs[1], "The Security log was restored") {
 		t.Errorf("restored log book: store ID %x (was %x, want a new one), events %q", got, id, msgs)
 	}
 	if _, err := os.Stat(mirror); !os.IsNotExist(err) {
@@ -112,7 +113,7 @@ func TestForgetReachesARelocatedLogbookAndStatusCountsBackups(t *testing.T) {
 	}
 	ep.Close()
 	path := filepath.Join(logsDir, "logbook.db")
-	st, err := store.Open(path, store.Options{})
+	st, err := store.Open(path, store.Options{ChainKey: []byte("test chain key")})
 	if err != nil {
 		t.Fatal(err)
 	}

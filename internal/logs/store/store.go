@@ -28,6 +28,36 @@
 // interned in the names table. Trace, activity, related and boot IDs in
 // runtrace's form (32 lowercase hex characters) are kept as 16-byte BLOBs;
 // any other ID is kept as its text.
+//
+// # The Security log's chain
+//
+// Every security record is linked, in the transaction that commits it, into
+// a keyed hash chain (docs/design/logging-v2.md §10.2, TEN-396). Its columns:
+//
+//	rec        the record number: the chain head's (meta 'chain_head') plus one; no gaps
+//	salt       16 random bytes
+//	data_hash  SHA-256(salt ‖ str(msg) ‖ str(data) ‖ str(dtypes))
+//	hash       HMAC-SHA256(key, previous hash ‖ header ‖ data_hash)
+//
+// The previous hash of record 1 is 32 zero bytes. str(s) is s's length as
+// a 4-byte big-endian integer, then its bytes; num(n) is n as an 8-byte
+// big-endian two's-complement integer; an absent value is "" or 0. msg, data,
+// dtypes and keywords are the columns' exact text (keywords a JSON array),
+// names are their text, and IDs their text form (lowercase hex for a 16-byte
+// ID). The header is, in this order:
+//
+//	num(rec) num(time_ns) str(log) str(provider) num(event_id) num(version)
+//	num(level) num(channel) str(task) str(opcode) str(keywords)
+//	str(trace_id) str(activity_id) str(related_id)
+//	str(session_id) str(approval_id) str(tool_call_id) str(actor) str(surface)
+//	num(pid) str(role) str(boot_id) str(host) str(proc_version)
+//
+// seq and bytes are left out: the chain survives a restore, and the chain
+// columns themselves are what it produces. The values are read back from
+// the committed row as an archive line holds them (archiveSelect), so the
+// database, the archives and an export bundle all hash alike. A privacy
+// tombstone clears msg, data, dtypes and salt and keeps data_hash, so the
+// chain still verifies.
 package store
 
 import (
@@ -38,6 +68,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +134,9 @@ CREATE TABLE views (name TEXT PRIMARY KEY, filter TEXT NOT NULL, builtin INTEGER
 type Options struct {
 	// BootID names this process in the leases it takes: runtrace.BootID().
 	BootID string
+	// ChainKey is the Security log's HMAC key. Without it a commit holding a
+	// security record is refused (ErrNoChainKey).
+	ChainKey []byte
 }
 
 // Store is an open logbook.db. Safe for concurrent use.
@@ -111,6 +145,7 @@ type Store struct {
 	r    *sql.DB // readers
 	id   [16]byte
 	boot []byte
+	key  []byte // the chain key; nil refuses security records
 
 	mu    sync.Mutex       // one Commit at a time; guards names
 	names map[string]int64 // kind "\x00" name → names.id, committed ones only
@@ -183,7 +218,7 @@ func Open(path string, opts Options) (*Store, error) {
 		_ = w.Close()
 		return nil, fmt.Errorf("store: open: %w", err)
 	}
-	s := &Store{w: w, r: r, boot: idBytes(opts.BootID), names: map[string]int64{},
+	s := &Store{w: w, r: r, boot: idBytes(opts.BootID), key: opts.ChainKey, names: map[string]int64{},
 		subs: map[chan struct{}]struct{}{}, stop: make(chan struct{})}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = s.Close()
@@ -271,6 +306,9 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 	if len(batch) == 0 {
 		return nil
 	}
+	if len(s.key) == 0 && slices.ContainsFunc(batch, func(e event.Event) bool { return e.Log == SecurityLog }) {
+		return s.commitWithoutSecurity(ctx, batch)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.w.BeginTx(ctx, nil)
@@ -345,11 +383,6 @@ func (s *Store) Commit(ctx context.Context, batch []event.Event) error {
 	s.wake()
 	return nil
 }
-
-// chain links a security record into the Security log's hash chain, inside
-// the transaction that commits it: its record number, salt, data hash and
-// HMAC (§10.2). Until TEN-396 fills it in, those columns stay NULL.
-func (s *Store) chain(ctx context.Context, tx *sql.Tx, seq int64, r *row) error { return nil }
 
 // Since returns up to limit events after from, oldest first (limit <= 0 means
 // 1000), and the cursor to pass next time. A cursor from another store
@@ -537,4 +570,25 @@ func Reidentify(path string) error {
 	id := hex.EncodeToString(b[:])
 	_, err = s.w.Exec(`UPDATE meta SET value = ? WHERE key = 'store_id'`, id)
 	return errors.Join(err, s.Close())
+}
+
+// commitWithoutSecurity commits a batch's other events when the store has no
+// chain key: an unchained security record is never written, but it must not
+// cost the rest of the batch their place. It returns ErrNoChainKey, so an
+// Audit caller learns its record was refused; the text mirror has it.
+func (s *Store) commitWithoutSecurity(ctx context.Context, batch []event.Event) error {
+	var keep []event.Event
+	var at []int
+	for i := range batch {
+		if batch[i].Log != SecurityLog {
+			keep, at = append(keep, batch[i]), append(at, i)
+		}
+	}
+	if err := s.Commit(ctx, keep); err != nil {
+		return err
+	}
+	for j, i := range at {
+		batch[i].Seq, batch[i].Time = keep[j].Seq, keep[j].Time
+	}
+	return ErrNoChainKey
 }

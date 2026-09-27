@@ -143,14 +143,14 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
 | `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes, and the events every plugin has |
-| `internal/lifecycle` | nothing in the module | leaf: the staged shutdown of a long-running command |
+| `internal/lifecycle` | `internal/logs/catalog` | the staged shutdown of a long-running command, filed in the system log |
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
 | `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
 | `internal/logs/query` | `internal/logs/event` | the filter language; the store plans it into SQL |
 | `internal/logs/store` | `internal/logs/event`, `internal/logs/query`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
-| `internal/logs` | `internal/logs/event`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
+| `internal/logs` | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
 | `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
 | `internal/logs/logapi` | `internal/logs`, `internal/logs/event`, `internal/logs/store`, `internal/logs/query`, `internal/logs/catalog`, `internal/runtrace`, `internal/version` | the log book's HTTP API: the dashboard serves it, tenant logs runs it in process |
 | `internal/logs/capture` | `internal/logs/event`, `internal/runtrace` | child-process capture; every internal package may import it |

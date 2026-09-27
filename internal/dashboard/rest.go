@@ -374,8 +374,7 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, _, err := s.tools.SetEnabled(t.Name, req.AllowSend); err != nil {
 			skipped++
-			s.log.Warn("dashboard: posture skipped gated tool",
-				"tool", t.Name, "allow_send", req.AllowSend, "err", err)
+			ActionFailed.Log(r.Context(), "action", "posture", "target", t.Name, "err", err, "allow_send", req.AllowSend)
 			continue
 		}
 		changed++

@@ -16,20 +16,23 @@ one folder is one tab.
 ├── discord/                      ← the relay: inbound messages, the relay agent's actions, relay logs
 ├── imessage/
 ├── cron/                         ← scheduled-job runner agents + the engine
-├── eval/                         ← nightly/manual eval task agents
+├── eval/                         ← each eval run and its tasks, regressions, trend updates, harness errors; the task agents' turns
 ├── improve/                      ← every self-improvement job run (distill, skills, consolidate, reflect, soul, profile, eval), serve's and the TUI's
 ├── memory/                       ← facts added, superseded, removed (fact_id=); compaction; retrieval diagnostics
 ├── skills/                       ← skills saved, accepted, enabled/disabled, trusted, removed, imported, exported
 ├── model/                        ← router, backends (llama.cpp/vLLM, Anthropic, …), fallbacks
-├── route/ mcp/ peering/ dashboard/
+├── route/ peering/
+├── dashboard/                    ← the web server's start/stop and errors, live streams, rejected requests
+├── mcp.<name>/                   ← one per MCP connector and local server: its connections, sign-in, failed calls, a server's process and stderr
+├── mcp/                          ← MCP lines that belong to no one server (`tenant mcp-memory`)
 ├── sandbox/                      ← the execution sandbox: every run's start and exit, refusals, escalations, dry-run would-be refusals
 ├── backup/                       ← each backup, verify and restore, with its counts and result
 ├── privacy/                      ← each retention sweep and deletion, with what it removed
-├── shutdown/                     ← the staged shutdown's steps
-├── system/                       ← setup, health, settings, the status feed lines (was tui.log), crash dumps
+├── system/                       ← start-up and shutdown (each shutdown stage an activity; was shutdown/), settings and credentials reloads, Tailscale, setup, health, the status feed lines (was tui.log), crash dumps
 ├── boots/ crash/                 ← records, not sources: see "Crashes and unexpected exits"
 ├── logbook.db                    ← the store: every event, indexed (see "The store: logbook.db")
 ├── archive/                      ← the store's archived records (security-<first>-<last>.ndjson.gz)
+├── spool/                        ← events left by writers while no Tenant process was up (see "Intake")
 └── <anything-you-add>/           ← a script, a sidecar, a new Go package — see "Adding a source"
 ```
 
@@ -47,8 +50,12 @@ One entry is exactly one line, readable in `tail -f` and exact under `grep`:
 ```
 
 `<local date> <time.ms> <LEVEL> [<source>] <message>` then a **tab** and
-`key=value` fields. Values with spaces, quotes or newlines are quoted (Go
-`strconv.Quote` escaping), so a multi-line tool result still occupies one line.
+`key=value` fields. Values with spaces, quotes, newlines or other control
+characters are quoted (Go `strconv.Quote` escaping), so a multi-line tool
+result still occupies one line. In the message, newlines and tabs become
+spaces and every other control character (ESC, DEL, the C1 set, a byte that
+isn't UTF-8) is escaped the same way (`\x1b`), so a line can't drive the
+terminal of a `tail -f`.
 Turn events carry their kind in `ev=`; plain records have no `ev`. Every
 event a turn raises, and the approvals it asks for, carries `trace=`: the
 turn's trace ID, the `trace_id` of its record in `runs.db`. A slog line logged
@@ -109,7 +116,8 @@ A one-shot command (and `tenant mcp-memory`) files its warnings and errors in
 the log book too, under the same sources, while still printing them on stderr
 at the TENANT_LOG level. Its hub runs no background loops and opens a day
 file only when the first warning comes. The nightly eval harness's notes go to
-`eval` under serve and the TUI, and to stderr from `tenant eval`.
+`eval` under serve and the TUI, and to stderr from `tenant eval`, whose table
+and summary stay the command's output.
 
 A new `fmt.Fprint*(os.Stderr, …)` or `log.Print*` call in `cmd/tenant` or an
 internal package fails `go test ./internal/archtest`: the files that had one
@@ -139,7 +147,7 @@ arguments and results in `turns` too.
   `"api_key"` fields; and any field whose key ends in one of those words.
 
 ```
-2026-09-27 14:05:10.412 INFO  [sandbox] process started	surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
+2026-09-27 14:05:10.412 INFO  [sandbox] Command on restricted for discord	event=sandbox/1 task=Run opcode=start surface=discord backend=restricted command="curl -H 'Authorization: Bearer «secret:bearer»' https://api.example.com" limits="wall=1m0s"
 ```
 
 Lines read back from disk into the feed (the tail re-read at start, folders
@@ -160,42 +168,74 @@ again. The old files then hold a dead token.
 ## The `sandbox` source
 
 The execution sandbox (`docs/changes/sandbox-seam.md`) files every `os_exec`
-command and cron shell job it runs, on every backend, the host included, as a
-child process (see [Child processes](#child-processes)): a `process started`
-line with `command` and `limits`, and a `process exited` line with `pid`,
-`exit`, `duration`, `timed_out`, `violations` when there are any, and `tail`,
-the last 512 bytes of the output (stdout and stderr together, as the model
-sees them). Both carry `surface` and `backend`. What the boundary did gets a
-line of its own:
+command and cron shell job it runs, on every backend, the host included. It
+is catalogued ([EVENTS.md](EVENTS.md#sandbox)) and sits in the viewer's
+Sandbox group. Each run is an activity (`sandbox 1`): its start carries
+`command` and `limits` and is related to the turn or cron job that ran it
+(`related`); its stop has the `duration`, and it fails when the backend could
+not start the command (`error`). The command's environment gets the run's
+activity (`TENANT_ACTIVITY_ID`). In between:
 
-| Level | Message | When |
+| Event | Level | When |
 |---|---|---|
-| WARN | `refused by the sandbox` | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
-| WARN | `refused, then approved to re-run outside the sandbox` | an approved `os_exec_unsandboxed` re-ran it on the host |
-| WARN | `dry-run: the sandbox would have refused this; it ran on the host` | `"enforce": false`: what enforcing would have refused |
-| ERROR | `sandbox could not start the command` | the backend could not start the command (`err=`) |
+| `sandbox 1001` | INFO | the command exited: `pid`, `exit`, `status`, `timed_out`, `violations` when there are any, and `tail`, the last 512 bytes of the output (stdout and stderr together, as the model sees them) |
+| `sandbox 2001` | WARN | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
+| `sandbox 2002` | WARN | `"enforce": false` (dry run): what enforcing would have refused; the command ran on the host |
+| `sandbox 2003` | WARN | an approved `os_exec_unsandboxed` re-ran the refused command on the host |
+| `sandbox 3001` | ERROR | the surface's backend is unavailable, so nothing ran (the sandbox fails closed) |
 
-Their fields are `surface`, `backend`, `exit`, `timed_out`, `command`,
-`violations` when there are any, and `err` on a start failure. `command` holds
-the first 300 characters of the command. For an escalation or a dry-run,
-`exit` and `timed_out` describe the host re-run, and the exit line is the
-host re-run's.
+Every event carries `surface` and `backend`; a refusal also `command`,
+`exit` and `violations`, what the boundary refused as the backend attributes
+it (`filesystem: …`, `network: …`). `command` holds the first 300 characters
+of the command. For an escalation or a dry run, `exit` and the exit event
+describe the host re-run.
 
 ```
-2026-09-22 14:05:10.412 WARN  [sandbox] refused by the sandbox	surface=discord backend=restricted exit=1 timed_out=false command="cat ~/.ssh/id_ed25519" violations="filesystem: sandbox blocked access outside the policy's read/write roots"
+2026-09-22 14:05:10.412 WARN  [sandbox] The sandbox refused a command: filesystem: sandbox blocked access outside the policy's read/write roots	event=sandbox/2001 task=Refusal trace=… activity=… surface=discord backend=restricted command="cat ~/.ssh/id_ed25519" exit=1 violations="filesystem: sandbox blocked access outside the policy's read/write roots"
 ```
 
-Some things are recorded elsewhere or not at all:
-- A surface whose backend is unavailable fails closed before anything runs. That
-  error goes back to the turn or cron job, not to this folder.
 - On surfaces with an approval broker (TUI and dashboard, Discord, iMessage), the
   escalation prompt itself is an `approvals` line (`action=os_exec_unsandboxed`).
 - `command` and `tail` are scrubbed (see [Secrets](#secrets)) before they are
   cut, so a secret typed inline does not reach the log.
-- On Linux and Windows the backends do not attribute refusals yet. A denied
-  access there shows only as a non-zero `exit`.
+- On Linux and Windows the backends attribute refusals only as far as the
+  command's output shows them (a read-only file system, an unreachable
+  network). An unattributed denial shows only as a non-zero `exit`.
 - `tenant sandbox run`, the operator's trial run, prints its result and files
   nothing.
+
+## The MCP logs
+
+Each MCP connector and local server writes its own log, `mcp.<name>`, named
+after its label (`mcp:github` → `mcp.github`, `mcp:mcp.atlassian.com` →
+`mcp.mcp.atlassian.com`: lowercased, other characters as `-`, cut to fit).
+The viewer groups them under Integrations › MCP. They are catalogued
+([EVENTS.md](EVENTS.md#mcp)):
+
+- **A connection** is an activity (`mcp 1`): it fails when the server can't be
+  reached, refuses the sign-in or the MCP handshake, and stops when Tenant
+  closes the session. A connector reconnecting at launch has
+  `interactive=false`; one with no saved sign-in stops with `mcp 1003`, not a
+  failure. `mcp 1001` lists the tools it came up with; `mcp 1002` is a server
+  announcing that its tools changed. A call that could not reach the server
+  is `mcp 3001`.
+- **Sign-in:** a refresh (`mcp 1102`), an early refresh that failed while the
+  token still works (`mcp 2101`), the sign-in dying, once, with the fix
+  (`mcp 3101`), and coming back (`mcp 1103`). A URL no browser opened is
+  `mcp 2001`. The feed line and operator DM for a dead sign-in still come;
+  a DM that failed is `mcp 2103`.
+- **A local server's process** is an activity too (`mcp 2`): its start names
+  the sandbox backend and limits, and its connection, its own lines
+  (`process started` with the pid, its stderr, `process exited`) and its
+  environment (`TENANT_ACTIVITY_ID`) belong to it. It fails when the server
+  could not start or exited on its own; one killed after ignoring its stdin
+  closing is `mcp 2201`. An `mcp_servers` entry that was skipped is `mcp 2202`.
+- **Changes:** a connector added (`mcp 5001`), removed (`mcp 5002`) or given a
+  new trust (`mcp 5003`; `mcp 5004`, a warning, for `allow`). The audit
+  records of these are the Security log's.
+
+`tenant mcp-memory`, Tenant serving its own memory over MCP, writes the `mcp`
+log (`mcpserver/…`).
 
 ## Child processes
 
@@ -208,8 +248,8 @@ stopped the child (`cancelled=true`: a shutdown, a cancelled turn).
 
 | Child | Log | Tagged | Also filed |
 |---|---|---|---|
-| a local MCP server (`mcp_servers`) | `mcp` | `server=<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed |
-| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | see [The `sandbox` source](#the-sandbox-source) |
+| a local MCP server (`mcp_servers`) | `mcp.<name>` | `server=mcp:<name>` | `backend`, `limits`, `command` at start; its stderr, line by line; `killed="after the grace period"` when it ignored its stdin closing and was killed. See [The MCP logs](#the-mcp-logs) |
+| `os_exec`, a cron shell job | `sandbox` | `surface`, `backend` | catalogued events instead of these lines: see [The `sandbox` source](#the-sandbox-source) |
 | `claude -p` (the claudecode backend) | `model` | `child=claude` | its stderr, line by line, whether the call failed or not |
 | Chrome (the web plugin) | `browser` | `child=chrome` | its output, line by line, so its crash text survives it. chromedp keeps Chrome's exit status, so the exit line says when it ended, not with what code |
 | `tailscale` | `system` | `child=tailscale`, `args` | |
@@ -322,9 +362,8 @@ starts next.
 A panic that a guard contains is logged with its stack. A tool that panics
 fails only its own call: the model gets an error result, and the log book a
 critical `agent: tool panicked` record. The other guards (routing, the spawn
-classifier, shutdown steps) log at ERROR. The `route` guards write `route
-3003`. The `eval` guards log through slog's default logger, which serve and
-the TUI point at the log book.
+classifier) log at ERROR, and a shutdown step writes `system 3020`. The
+`route` guards write `route 3003`, and the `eval` route-task guard `eval/3001`.
 
 ## The dashboard
 
@@ -384,8 +423,10 @@ tenant log --list
 ```
 
 It POSTs to the running hub (the line shows up live in open dashboards; the
-TUI's feed does not show it); when no hub is reachable it appends straight to
-the day's file, and a hub that starts later picks the folder up. The token is
+TUI's feed does not show it); when no hub is reachable (or with `--file`) it
+leaves the line in the spool, which the next Tenant process to run files into
+the log book, tagged `external` (see [Intake](#intake-v1-history-foreign-folders-and-the-spool)).
+With `"logs": {"store": false}` it appends to the day's file instead. The token is
 `dashboard.auth` when config.json sets one, else the generated
 `<config>/dashboard-auth-token` a default install uses (`--token` overrides).
 Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
@@ -393,8 +434,9 @@ Tenant's own sources (the folders in the tree above: `turns`, `approvals`,
 
 **Anything that speaks HTTP** — the live logging API (same Bearer token as the
 rest of the dashboard). It refuses Tenant's own sources with HTTP 403 and drops
-an `ev` field: only Tenant files turn events, so an outside line can never pass
-for an approval or a tool call.
+`ev` and `event` fields: only Tenant files turn events and catalogued events,
+so an outside line can never pass for an approval, a tool call or a
+`security` record.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8770/api/logs/watcher \
@@ -437,7 +479,10 @@ to a `.log` file in it (`<root>/mytool/2026-09-22.log`). The hub discovers new
 folders within ~5 s, seeds the tab from the file's tail, and follows it live.
 Lines in the format above keep their level and fields; any other text is kept
 verbatim as an INFO line. The folder name is the source name
-(`[a-z0-9][a-z0-9._-]{0,39}`).
+(`[a-z0-9][a-z0-9._-]{0,39}`, not ending in a dot and not a Windows device
+name such as `con`, `nul`, `com1` or `lpt1.log`, since it is a folder on every
+OS). With the store on, the housekeeper also files the folder's lines into
+`logbook.db` as the log `ext.<folder>` (see [Intake](#intake-v1-history-foreign-folders-and-the-spool)).
 
 **A turn event from a new agent surface** — set `Source` on the events you
 mirror into the feed, as the cron / Discord / eval observers do:
@@ -462,7 +507,7 @@ var JobFailed = Cron.Event(3001, event.Error, "Job run", "Job {job} failed: {err
 
 JobFailed.Log(ctx, "job", name, "err", err)       // never blocks
 ctx, act := event.Start(ctx, JobRun, "job", name) // start … stop (with duration) or fail
-defer act.End(&err)
+defer act.End(&err)                               // End(&err, "status", code) adds what only the end knows
 ```
 
 - **Definitions** are checked when they register (at package init): an ID is
@@ -480,9 +525,9 @@ defer act.End(&err)
   Plugins: started or could not start, the operator's enable and disable,
   token refreshes, and their API's rate limits, refused credentials and
   failed calls. The catalog comes with the plugin's descriptor
-  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (connectors and
-  peers that did not come back at launch, unsaved tool stats) are the
-  `toolmux` log's.
+  ([PLUGINS.md](PLUGINS.md) §5). The tool mux's own events (peers that did
+  not come back at launch, unsaved tool stats) are the `toolmux` log's; an
+  MCP connector's are its own log's ([The MCP logs](#the-mcp-logs)).
 
 ### The store: `logbook.db`
 
@@ -511,7 +556,9 @@ can't open, a `logbook` warning says so and the text files carry on alone.
   fresh connection, never by opening the raw file (on POSIX that would drop
   the locks the backing-up process holds on it), plus `archive/`. The text
   files hold the same events and are left out unless `--include-mirror` is
-  given. A restore brings `logbook.db` back with a new store ID, so live-tail cursors start over. A log book
+  given. A restore brings `logbook.db` back with a new store ID, so live-tail
+  cursors start over, and writes a re-anchor record into its Security log (see
+  "The Security log's chain"). A log book
   moved outside the data dir by `logs.dir` is not in the backup, and `create`
   says so.
 - **Privacy** (`tenant privacy forget --session …`, or any forget that removes
@@ -528,8 +575,39 @@ can't open, a `logbook` warning says so and the text files carry on alone.
   counts the backups made before the last forget that still hold what it
   removed. A running Tenant's Activity tab keeps what it already read until
   it scrolls past.
-- The file is owner-only. The v1 history import and the viewer arrive with
-  the next logging v2 tickets.
+- The file is owner-only. The viewer arrives with the next logging v2
+  tickets.
+
+#### Intake: v1 history, foreign folders and the spool
+
+The housekeeper (whichever process holds its lease) files, every tick, what
+no Tenant process wrote through its pipeline. Nothing it files is mirrored.
+It never reads a folder into `security` or a log under `tenant.*`.
+
+- **v1 history, once.** The lines of Tenant's own folders written before the
+  store's first event are imported as events of their log, tagged `imported`
+  and scrubbed on the way in (v1's `system` files hold the dashboard token).
+  An `event=` claim is dropped. Progress is kept in the store's `meta`
+  table, so a run cut short resumes and files nothing twice; `logbook/1101`
+  says when it is done.
+- **Foreign folders.** A folder is foreign only when no Tenant log has its
+  name: not in the store, not a built-in or registered provider, not written
+  by the running process. Its lines become events of `ext.<folder>`, tagged
+  `external`, with any `event=` dropped. Each file's offset is kept in `meta`.
+  A byte is read only once it was there at the previous tick: a process
+  mirrors a line before it commits it, so another process's new log could
+  look foreign for that moment, and is never filed as external.
+- **The spool,** `<logs root>/spool/`, for writers when no Tenant process is
+  up. A writer creates `<name>.tmp`, writes one event per line in the event's
+  JSON form (`{"time":…,"log":"deploy","level":"warning","msg":"…","data":{…}}`;
+  `logs.Spool` in Go), closes it and renames it `<name>.ndjson`. The
+  housekeeper claims a file by renaming it `<name>.ingesting`, files it and
+  deletes it. A rename that fails (on Windows, while another process has the
+  file open) is retried at the next tick, and a `.tmp` is never read. What it
+  files is tagged `external` and never catalogued (its `id` is dropped). An
+  event for `security`, a log or provider under `tenant.*`, a built-in or a
+  registered provider is refused, and so is a malformed line; `logbook/1102`
+  counts them per file.
 
 #### Retention and disk budgets
 
@@ -548,7 +626,7 @@ full, a minimum level and an enabled switch. The defaults, by class:
 "logs": {
   "retention_days": 30, "budget_mb": 2048,
   "diagnostic": { "max_mb": 256, "max_age_days": 7 },
-  "security":   { "max_mb": 256, "max_age_days": 365 },
+  "security":   { "max_mb": 256, "max_age_days": 365, "witness": "" },
   "per_log": { "mcp.github": { "max_mb": 32, "max_age_days": 14, "min_level": "warning", "on_full": "overwrite" } }
 }
 ```
@@ -563,7 +641,10 @@ full, a minimum level and an enabled switch. The defaults, by class:
   apportioned by its events' summed payload.
 - **When full:** *overwrite* deletes the oldest events; *archive* first moves
   them to `<logs root>/archive/<log>-<first seq>-<last seq>.ndjson.gz`
-  (gzip, one JSON object per line, every column, `data` as its stored text);
+  (gzip, one JSON object per line, every column, `data` and `keywords` as
+  their stored text;
+  the Security log's are named by record number, taken oldest record first,
+  and end with a `{"rec":…,"hash":…}` line);
   *keep* deletes nothing and writes one `logbook` warning each time the log
   passes its limit. The Security log is always written in full and never
   overwritten: its records are archived before any is deleted, the whole-book
@@ -590,6 +671,61 @@ full, a minimum level and an enabled switch. The defaults, by class:
   once). With `logs.level: debug` every log's verbose events are written
   anyway.
 - `runs.db` keeps its own retention (`runs.max_age_days`, `runs.max_count`).
+
+#### The Security log's chain
+
+Every `security` record is linked, in the transaction that commits it, into a
+keyed hash chain (design §10.2):
+
+- **The columns.** `rec` is the record number, the chain head's (in `meta`)
+  plus one, with no gaps; `salt` is 16 random bytes; `data_hash` is
+  `SHA-256(salt ‖ str(msg) ‖ str(data) ‖ str(dtypes))`; `hash` is
+  `HMAC-SHA256(key, previous hash ‖ header ‖ data_hash)`, where record 1's
+  previous hash is 32 zero bytes. `str(s)` is a 4-byte big-endian length and
+  the bytes, a number is 8 bytes big-endian, and the header is `rec, time_ns,
+  log, provider, event_id, version, level, channel, task, opcode, keywords,
+  trace_id, activity_id, related_id, session_id, approval_id, tool_call_id,
+  actor, surface, pid, role, boot_id, host, proc_version`, in that order, as
+  stored (the `internal/logs/store` package doc has it exactly). Only `seq`
+  and `bytes` are left out.
+- **The key** is `<config>/logbook.key`: 32 random bytes, created once
+  (owner-only; a current-user ACL on Windows, where it is also sealed with
+  DPAPI). It is a managed secret: doctor audits it, the file tools won't read
+  it, and only an encrypted backup carries it. Without the key a batch holding
+  a security record is refused (`store.ErrNoChainKey`), and `Audit` returns
+  the error; a key that can't be read or created is a critical `logbook`
+  event at start.
+- **The anchor.** Every 1,000 records, or every hour when the head has moved,
+  the housekeeper writes the head to `<config>/logbook.anchor`
+  (`{"rec":…,"hash":…,"time":…}`, atomic, owner-only), outside the data dir a
+  rollback would replace. It moves the anchor on only from a head the chain
+  still holds; if the chain has lost it (truncated, or an older copy put
+  back), the anchor stays and one critical `logbook` event says so. The key
+  and the anchor are deny roots of every sandbox.
+- **The witness** (`logs.security.witness`) also gets the head at each
+  anchor: `"discord"` DMs it to the operator, and an absolute path gets the
+  anchor's JSON (best a file on another machine). `""` is none, the default;
+  `peer:<name>` is not supported yet. Only a witness catches a rewrite by
+  something holding the operator's own privileges.
+- **A restore** (`tenant backup restore`) writes a re-anchor record
+  (`logbook/4001`: the restored head, the anchor it replaced, the backup's
+  name) and moves the anchor and the witness to it, so it verifies as a
+  restore, not as tampering.
+- **Verification** (`store.Verify`, for `tenant logs verify security`) walks
+  the archives, oldest first, then the database, then checks the anchor and a
+  file witness, and reports the first break by record number: an edited,
+  deleted, reordered or forged record, a record never chained, an archive cut
+  short, or a chain that ends before (or forks from) the anchor. A privacy
+  tombstone verifies (its `data_hash` stays; its message can't change), and
+  a witness still naming the head a re-anchor record replaced is a restore
+  (the anchor itself moves with the restore). The whole walk is one read
+  snapshot.
+- **An audit export bundle** (`store.ExportSecurity`) is the log with its
+  chain, optionally a time window: a header line (format, schema, Tenant
+  version, time, host, store ID, filter, the head before the first record,
+  the anchor), the records as archive lines (sensitive fields included: the
+  data hash commits to them), and a closing `(rec, hash)` line.
+  `store.VerifyBundle` checks it offline with the key.
 
 ### Turns, sub-agents and research
 
@@ -679,7 +815,8 @@ features.
 | `GET` `POST` `DELETE` | `/api/logbook/views[/{name}]` | `{"views": [{name, filter, builtin}]}`: the built-ins (Administrative Events `level>=warning`, Security failures `log:security tag:audit.failure`, This run `boot:current`, Since last start) and the saved ones; `POST {name, filter}` saves one |
 | `GET` | `/api/logbook/catalog[/{provider}][?id=N]` | `{"version", "specs", "markdown"}`: the event reference |
 | `GET` | `/api/logbook/components` | `{"components": [{name, kind, log, state, since, last_error}]}`: what is running (empty until the component registry, TEN-380) |
-| `GET` | `/api/logbook/verify[?log=security]` | `{"ok", "problems", "note"}`: SQLite's integrity check; the Security log's chain check arrives with TEN-396 |
+| `GET` | `/api/logbook/verify[?log=security]` | `{"ok", "problems", "chain", "note"}`: SQLite's integrity check, and with `log=security` the chain (`{records, head, archives, tombstones, restores, notes, break}`), checked against the key, the anchor and a file witness |
+| `GET` | `/api/logbook/audit?since=&until=` | the Security log's audit export bundle (NDJSON), verifiable offline with the key |
 
 - **Cursors** are `<store ID>.<seq>`. A restored or rebuilt `logbook.db` has
   a new store ID, so a cursor from before it starts over, and `restarted`
@@ -763,6 +900,26 @@ drops, the test fails too, and says what to lower it to.
   both ways, is logged; so are rejected tokens, and peers going up or down
   (once per change, not every heartbeat). Each peer session and each tool a
   peer calls is a verbose activity, so only a failure shows by default.
+- `dashboard` (`internal/dashboard/events.go`): the web server is an activity
+  (`dashboard/1`), and its HTTP error log (TLS handshake failures, handler
+  panics) is `dashboard/2001`. Each live stream (SSE or WebSocket) is an
+  activity from connect to disconnect (`dashboard/1001`); one that fell behind
+  and missed events is `dashboard/2002`. Rejected requests (unknown host,
+  cross-origin, no or wrong token, CSRF, a wrong sign-in token) are
+  `dashboard/2101`–`2105`: the operational side, while the Security log keeps
+  the audit records. Every request is a diagnostic activity (`dashboard/9001`)
+  with its method, route pattern, status and duration, never its path, query,
+  body or token.
+- `eval` (`internal/eval/events.go`): each eval run, nightly or manual, is an
+  activity (`eval/1001`) that stops with its overall score and counts, and each
+  task is a child activity (`eval/1002`) that stops with its result. A task
+  left ungraded by a harness, provider or judge failure is `eval/2001`, with
+  its class. A missing baseline (`2002`), a regression against it (`2003`), an
+  unreadable one (`2004`), a report or trend line not saved (`2005`) and a
+  trend update (`1003`) are logged too.
+- `mcp` (`internal/plugins/mcpremote/events.go`) and `sandbox`
+  (`internal/sandbox/events.go`): see [The MCP logs](#the-mcp-logs) and
+  [The `sandbox` source](#the-sandbox-source).
 
 ## Records that lead back to a run
 

@@ -239,7 +239,7 @@ func (h *handler) callSearch(ctx context.Context, args json.RawMessage) (json.Ra
 		if vecs, err := h.cfg.Embedder.Embed(ctx, []string{a.Query}); err == nil && len(vecs) == 1 {
 			embedding = vecs[0]
 		} else if err != nil {
-			h.log.Warn("mcpserver: embed query failed, keyword-only", "err", err)
+			EmbedFailed.Log(ctx, "err", err)
 		}
 	}
 

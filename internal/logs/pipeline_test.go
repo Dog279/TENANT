@@ -49,7 +49,7 @@ func TestMain(m *testing.M) {
 func attach(t *testing.T, h *Hub) *store.Store {
 	t.Helper()
 	path := filepath.Join(h.Root(), "logbook.db")
-	st, err := store.Open(path, store.Options{})
+	st, err := store.Open(path, store.Options{ChainKey: []byte("test chain key")})
 	if err != nil {
 		t.Fatal(err)
 	}

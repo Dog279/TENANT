@@ -100,6 +100,7 @@ config.json: logs.retention_days
 config.json: logs.security
 config.json: logs.security.max_age_days
 config.json: logs.security.max_mb
+config.json: logs.security.witness
 config.json: logs.store
 config.json: mcp_remotes
 config.json: mcp_servers

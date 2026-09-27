@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,18 +46,18 @@ func TestEvalTrend_AppendReadRender(t *testing.T) {
 		t.Error("empty render should explain how to start the series")
 	}
 
-	appendEvalTrend(dir, evalTrendEntry{
+	appendEvalTrend(context.Background(), dir, evalTrendEntry{
 		TS: "2026-06-09T10:00:00Z", Subset: "full", Overall: 88.0, Passed: 44, Total: 50,
 		HasBaseline: true, Regressed: false, Delta: 1.2, CIHigh: 2.0, Artifact: "eval-1.json",
-	}, nil)
-	appendEvalTrend(dir, evalTrendEntry{
+	})
+	appendEvalTrend(context.Background(), dir, evalTrendEntry{
 		TS: "2026-06-10T10:00:00Z", Subset: "full", Overall: 80.0, Passed: 40, Total: 50,
 		HasBaseline: true, Regressed: true, Delta: -8.0, CIHigh: -3.0, Artifact: "eval-2.json",
-	}, nil)
-	appendEvalTrend(dir, evalTrendEntry{
+	})
+	appendEvalTrend(context.Background(), dir, evalTrendEntry{
 		TS: "2026-06-11T10:00:00Z", Subset: "smoke", Overall: 100.0, Passed: 5, Total: 5,
 		HasBaseline: false,
-	}, nil)
+	})
 
 	entries, err := readEvalTrend(dir)
 	if err != nil {

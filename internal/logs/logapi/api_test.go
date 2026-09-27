@@ -40,12 +40,13 @@ func newBook(t *testing.T) *book {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "logbook.db")
-	own, err := store.Open(path, store.Options{BootID: runtrace.BootID()})
+	key := []byte("0123456789abcdef0123456789abcdef") // the Security log's chain key
+	own, err := store.Open(path, store.Options{BootID: runtrace.BootID(), ChainKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.AttachStore(own)
-	st, err := store.Open(path, store.Options{})
+	st, err := store.Open(path, store.Options{ChainKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,12 +487,49 @@ func TestAggregatesTimelineCatalogComponentsVerify(t *testing.T) {
 		t.Errorf("components = %+v", cs)
 	}
 
-	v := decode[Verify](t, b.do(t, "GET", "/api/logbook/verify?log=security", "", ""), 200)
-	if !v.OK || !strings.Contains(v.Note, "TEN-396") {
+	if v := decode[Verify](t, b.do(t, "GET", "/api/logbook/verify", "", ""), 200); !v.OK || v.Chain != nil || v.Note != "" {
 		t.Errorf("verify = %+v", v)
+	}
+	if v := decode[Verify](t, b.do(t, "GET", "/api/logbook/verify?log=security", "", ""), 200); !v.OK || v.Chain != nil || !strings.Contains(v.Note, "can't be checked") {
+		t.Errorf("verify security without the key = %+v", v)
+	}
+	b.api.Security.Verify = func(context.Context) (store.Verification, error) {
+		return store.Verification{Records: 9, Head: store.Head{Rec: 9}, Break: &store.Break{Rec: 7, Where: "logbook.db", Reason: "hash mismatch"}}, nil
+	}
+	if v := decode[Verify](t, b.do(t, "GET", "/api/logbook/verify?log=security", "", ""), 200); v.OK || v.Chain == nil || v.Chain.Records != 9 || !strings.Contains(v.Chain.Break, "record 7") {
+		t.Errorf("verify a broken chain = %+v", v)
 	}
 	if rec := b.do(t, "GET", "/api/logbook/verify?log=discord", "", ""); rec.Code != 400 {
 		t.Errorf("verify discord = %d", rec.Code)
+	}
+	b.waitFor(t, "logbook", func(evs []event.Event) bool {
+		return slices.ContainsFunc(evs, func(e event.Event) bool { return e.Msg == "logbook: the integrity check failed" })
+	})
+}
+
+// The audit bundle comes from the composition root's exporter, bounded by
+// since and until; an exporter that fails at once says why.
+func TestAuditExport(t *testing.T) {
+	b := newBook(t)
+	if rec := b.do(t, "GET", "/api/logbook/audit", "", ""); rec.Code != 503 {
+		t.Errorf("no exporter = %d", rec.Code)
+	}
+	var since, until time.Time
+	b.api.Security.Export = func(_ context.Context, w io.Writer, s, u time.Time) error {
+		since, until = s, u
+		_, err := io.WriteString(w, `{"format":"tenant.security-log.bundle/1"}`+"\n")
+		return err
+	}
+	rec := b.do(t, "GET", "/api/logbook/audit?since=2026-09-01T00:00:00Z&until=1h", "", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "bundle/1") || !since.Equal(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)) || time.Since(until) < 59*time.Minute {
+		t.Errorf("audit = %d %q since=%v until=%v", rec.Code, rec.Body.String(), since, until)
+	}
+	if rec := b.do(t, "GET", "/api/logbook/audit?since=soon", "", ""); rec.Code != 400 {
+		t.Errorf("bad since = %d", rec.Code)
+	}
+	b.api.Security.Export = func(context.Context, io.Writer, time.Time, time.Time) error { return errors.New("no Security log key") }
+	if rec := b.do(t, "GET", "/api/logbook/audit", "", ""); rec.Code != 500 || !strings.Contains(rec.Body.String(), "no Security log key") {
+		t.Errorf("failed exporter = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

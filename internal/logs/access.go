@@ -46,7 +46,7 @@ func (h *Hub) Emit(ctx context.Context, e *event.Event) { hubEmitter{h}.Emit(ctx
 // channel, a process) is dropped: nothing can vouch for it.
 func External(e *event.Event) {
 	*e = event.Event{Log: e.Log, Provider: e.Log, Time: e.Time, Level: e.Level, Msg: e.Msg, Data: e.Data,
-		Keywords: []string{"external"}, Corr: event.Correlation{TraceID: e.Corr.TraceID, ActivityID: e.Corr.ActivityID}}
+		Keywords: []string{KeywordExternal}, Corr: event.Correlation{TraceID: e.Corr.TraceID, ActivityID: e.Corr.ActivityID}}
 }
 
 // LogExternal is Log for a line from outside the binary (the v1 logging API,

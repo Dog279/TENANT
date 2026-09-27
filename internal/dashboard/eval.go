@@ -168,7 +168,7 @@ func (s *Server) handleEvalJudgeForm(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := s.eval.SetJudge(kind, mdl, endpoint)
 	if err != nil {
-		s.log.Warn("dashboard: set judge", "kind", kind, "err", err)
+		ActionFailed.Log(r.Context(), "action", "set judge", "target", kind, "err", err)
 		redirectEval(w, r, "", "Couldn't set the judge: "+err.Error())
 		return
 	}
@@ -182,7 +182,7 @@ func (s *Server) handleEvalJudgeClearForm(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.eval.ClearJudge(); err != nil {
-		s.log.Warn("dashboard: clear judge", "err", err)
+		ActionFailed.Log(r.Context(), "action", "clear judge", "err", err)
 		redirectEval(w, r, "", "Couldn't clear the judge: "+err.Error())
 		return
 	}

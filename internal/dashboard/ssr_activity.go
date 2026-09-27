@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 )
 
 // SetLogs installs the log hub after construction (mirrors SetCron). nil ⇒ the
@@ -160,6 +161,8 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	if s.logs == nil {
 		return
 	}
+	ctx, act := event.Start(r.Context(), Stream, "stream", "activity", "remote", r.RemoteAddr)
+	defer act.End(nil)
 	wake, unsubscribe := s.logs.Subscribe()
 	defer unsubscribe()
 	f := activityFilterFrom(r)
@@ -168,7 +171,14 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	if restarted {
 		cursor = 0
 	}
+	// lagged reports entries the ring dropped before this page read them.
+	lagged := func(prev uint64, got []logs.Entry) {
+		if prev > 0 && len(got) > 0 && got[0].Seq > prev+1 {
+			StreamLagging.Log(ctx, "stream", "activity", "remote", r.RemoteAddr, "missed", got[0].Seq-prev-1)
+		}
+	}
 	missed, head := s.logs.Since(cursor)
+	lagged(cursor, missed) // a restart's cursor is 0: nothing to have missed
 	if restarted {
 		var b strings.Builder
 		for _, e := range missed {
@@ -195,8 +205,10 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-wake:
+			prev := head
 			var entries []logs.Entry
 			entries, head = s.logs.Since(head)
+			lagged(prev, entries)
 			for _, e := range entries {
 				if !f.match(e) {
 					continue

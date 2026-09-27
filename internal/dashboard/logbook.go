@@ -24,6 +24,10 @@ func (s *Server) mountLogbook(mux *http.ServeMux) {
 // SetRunRecords lets a timeline show its trace's run record from runs.db.
 func (s *Server) SetRunRecords(fn logapi.RunLookup) { s.logbook.Runs = fn }
 
+// SetSecurityLog lets the API verify and export the Security log's chain,
+// whose key, anchor and witness the composition root holds.
+func (s *Server) SetSecurityLog(sl logapi.SecurityLog) { s.logbook.Security = sl }
+
 // SetComponents feeds GET /api/logbook/components: what is running now
 // (the component registry, TEN-380).
 func (s *Server) SetComponents(fn func() []logapi.Component) { s.logbook.Components = fn }
@@ -48,7 +52,7 @@ func (s *Server) handleActivityStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, q := r.Context(), r.URL.Query()
-	head, err := st.Head(ctx)
+	head, err := st.Latest(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

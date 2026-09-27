@@ -9,18 +9,18 @@ import (
 )
 
 // What the API and tenant logs administer (docs/design/logging-v2.md §9.4,
-// §9.5): the head cursor, clearing a log, the timed debug switch, saved
+// §9.5): the newest cursor, clearing a log, the timed debug switch, saved
 // views and the integrity check.
 
 // SchemaVersion is the schema this build writes. Exports name it.
 func SchemaVersion() int { return len(migrations) }
 
-// Head is the cursor of the newest event: Seq 0 when the store is empty.
-func (s *Store) Head(ctx context.Context) (Cursor, error) {
+// Latest is the cursor of the newest event: Seq 0 when the store is empty.
+func (s *Store) Latest(ctx context.Context) (Cursor, error) {
 	c := Cursor{StoreID: s.id}
 	var seq int64
 	if err := s.r.QueryRowContext(ctx, `SELECT coalesce(max(seq), 0) FROM events`).Scan(&seq); err != nil {
-		return c, fmt.Errorf("store: head: %w", err)
+		return c, fmt.Errorf("store: latest: %w", err)
 	}
 	c.Seq = uint64(seq)
 	return c, nil

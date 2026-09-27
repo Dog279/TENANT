@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 )
 
 func TestParseInterspersed_FlagsAfterPositionals(t *testing.T) {
@@ -64,11 +65,30 @@ func TestCmdLog_PostsToRunningHub(t *testing.T) {
 	}
 }
 
-// With no hub reachable, the line is appended straight to the day's file in
-// the log-book format, under <data>/logs/<source>/.
+// With no hub reachable, the line is left in the spool as one event, for
+// the next Tenant process to file; with the store off, nothing reads the
+// spool, so it is appended straight to the day's file in the log-book
+// format, under <data>/logs/<source>/.
 func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 	data := t.TempDir()
 	err := cmdLog(context.Background(), []string{"--url", "http://127.0.0.1:1", "--data", data, "--config", data,
+		"sidecar", "hello from a script", "k=v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spooled, _ := filepath.Glob(filepath.Join(data, "logs", "spool", "*.ndjson"))
+	if len(spooled) != 1 {
+		t.Fatalf("expected one spool file, got %v", spooled)
+	}
+	var ev event.Event
+	if b, _ := os.ReadFile(spooled[0]); json.Unmarshal(b, &ev) != nil || ev.Log != "sidecar" || ev.Msg != "hello from a script" ||
+		len(ev.Data) != 1 || ev.Data[0].Key != "k" || ev.Data[0].Value != "v" || ev.Level != event.Info {
+		t.Fatalf("spooled %+v", ev)
+	}
+	if err := os.WriteFile(filepath.Join(data, "config.json"), []byte(`{"logs":{"store":false}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = cmdLog(context.Background(), []string{"--url", "http://127.0.0.1:1", "--data", data, "--config", data,
 		"sidecar", "hello from a script", "k=v"})
 	if err != nil {
 		t.Fatal(err)

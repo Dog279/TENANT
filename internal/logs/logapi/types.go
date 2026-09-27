@@ -174,12 +174,25 @@ type Components struct {
 	Components []Component `json:"components"`
 }
 
-// Verify is GET /api/logbook/verify[?log=security].
+// Verify is GET /api/logbook/verify[?log=security]: SQLite's integrity
+// check, and with log=security the Security log's chain.
 type Verify struct {
 	Log      string   `json:"log,omitempty"`
 	OK       bool     `json:"ok"`
-	Problems []string `json:"problems,omitempty"`
+	Problems []string `json:"problems,omitempty"` // what the integrity check found
+	Chain    *Chain   `json:"chain,omitempty"`
 	Note     string   `json:"note,omitempty"`
+}
+
+// Chain is what a walk of the Security log's chain found (store.Verify).
+type Chain struct {
+	Records    int64    `json:"records"`
+	Head       int64    `json:"head"` // the last record verified
+	Archives   int      `json:"archives"`
+	Tombstones int64    `json:"tombstones"`
+	Restores   int      `json:"restores"`
+	Notes      []string `json:"notes,omitempty"`
+	Break      string   `json:"break,omitempty"` // the first break, by record number; empty when it verifies
 }
 
 // Accepted is POST /api/events.

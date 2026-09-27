@@ -68,6 +68,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token := r.FormValue("token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Auth)) != 1 {
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
 		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the value printed in your terminal."})

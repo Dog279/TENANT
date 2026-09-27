@@ -233,6 +233,9 @@ func TestBadDefinitionsPanicWhenTheyRegister(t *testing.T) {
 		"a doc missing its cause":   func() { p.Event(7, event.Info, "T", "x").Doc("m", "", "a") },
 		"a provider named twice":    func() { event.NewProvider("eventtest.bad", "x") },
 		"a bad log name":            func() { event.NewProvider("eventtest.log", "Bad Log") },
+		"a Windows device log name": func() { event.NewProvider("eventtest.dev", "nul.txt") },
+		"a device provider name":    func() { event.NewProvider("com1", "eventtest.dev") },
+		"a log name ending in dot":  func() { event.NewProvider("eventtest.dot", "x.") },
 	} {
 		if !panics(f) {
 			t.Errorf("%s did not panic", name)

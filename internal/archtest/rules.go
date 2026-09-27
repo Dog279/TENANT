@@ -40,7 +40,7 @@ var rules = []rule{
 	{Pkg: "internal/model/profiles", Notes: "leaf"},
 	{Pkg: "internal/control", Notes: "leaf: the data types the runtime, the TUI and the dashboard share"},
 	{Pkg: "internal/pluginreg", Notes: "leaf: the plugin registry's invariants and indexes, and the events every plugin has"},
-	{Pkg: "internal/lifecycle", Notes: "leaf: the staged shutdown of a long-running command"},
+	{Pkg: "internal/lifecycle", May: []string{"internal/logs/catalog"}, Notes: "the staged shutdown of a long-running command, filed in the system log"},
 	{Pkg: "internal/skillpkg", Notes: "leaf: the Agent Skills package format (SKILL.md)"},
 	{Pkg: "internal/sandbox", Notes: "leaf: the exec-backend seam"},
 	{Pkg: "internal/sandbox/**", May: []string{"internal/sandbox/**"}},
@@ -48,7 +48,7 @@ var rules = []rule{
 
 	{Pkg: "internal/logs/query", May: []string{"internal/logs/event"}, Notes: "the filter language; the store plans it into SQL"},
 	{Pkg: "internal/logs/store", May: []string{"internal/logs/event", "internal/logs/query", "internal/fsperm", "internal/datalock"}, Notes: "logbook.db, the system of record"},
-	{Pkg: "internal/logs", May: []string{"internal/logs/event", "internal/logs/store", "internal/fsperm", "internal/runtrace", "internal/datalock", "internal/version"}, Notes: "any package may log through it; never secrets: the composition root hands the store its key"},
+	{Pkg: "internal/logs", May: []string{"internal/logs/event", "internal/logs/catalog", "internal/logs/store", "internal/fsperm", "internal/runtrace", "internal/datalock", "internal/version"}, Notes: "any package may log through it; never secrets: the composition root hands the store its key"},
 	{Pkg: "internal/logs/catalog", May: []string{"internal/logs/event"}, Notes: "the built-in event definitions"},
 	{Pkg: "internal/logs/logapi", May: []string{"internal/logs", "internal/logs/event", "internal/logs/store", "internal/logs/query", "internal/logs/catalog", "internal/runtrace", "internal/version"}, Notes: "the log book's HTTP API: the dashboard serves it, tenant logs runs it in process"},
 	{Pkg: "internal/logs/capture", May: []string{"internal/logs/event", "internal/runtrace"}, Notes: "child-process capture; every internal package may import it"},

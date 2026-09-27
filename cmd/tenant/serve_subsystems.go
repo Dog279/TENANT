@@ -134,6 +134,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	}
 	// Feed line + operator DM when a remote connector's sign-in dies / recovers.
 	d.tools.SetMCPAuthNotifier(mcpAuthNotifier(d.notify, relayMgr.NotifyOperator))
+	setWitnessDM(relayMgr.NotifyOperator) // a "discord" Security log witness
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		return relayMgr.askOperator(cctx, req.Action, req.Detail)
 	})
@@ -384,7 +385,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	evalCadence := evalTick
 	evalSched := newEvalSchedule(evalDue, evalDesc)
 	seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
-	sched.RegisterDue(newEvalNightlyJob(c, d.pf, d.log, d.events, d.evalProg), evalSched.DueFunc(), seed)
+	sched.RegisterDue(newEvalNightlyJob(c, d.pf, d.events, d.evalProg), evalSched.DueFunc(), seed)
 	if evalDue != nil {
 		d.log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 	}
@@ -423,7 +424,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		tick = reflectCadence
 	}
 	if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
-		d.log.Warn("self-improve scheduler did not start", "err", err)
+		sysUnavailable.Log(ctx, "component", "self-improve scheduler", "effect", "no background self-improvement", "err", err)
 		return nil, evalSched
 	}
 	return sched, evalSched

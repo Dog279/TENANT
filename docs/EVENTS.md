@@ -365,6 +365,283 @@ Writes the `cron` log.
 
 **What to do.** None. The output is masked in viewers; it can hold anything the command printed.
 
+## dashboard
+
+Writes the `dashboard` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#dashboard-1) | info | Server | `Dashboard on {addr}` |
+| [1001](#dashboard-1001) | info | Stream | `Live {stream} stream to {remote}` |
+| [2001](#dashboard-2001) | warning | Server | `HTTP server: {err}` |
+| [2002](#dashboard-2002) | warning | Stream | `Live {stream} stream to {remote} fell behind` |
+| [2003](#dashboard-2003) | warning | Stream | `WebSocket handshake from {remote} failed: {err}` |
+| [2101](#dashboard-2101) | warning | Access | `Request for unrecognized host {host} rejected: {method} {route}` |
+| [2102](#dashboard-2102) | warning | Access | `Cross-origin request from {origin} rejected: {method} {route}` |
+| [2103](#dashboard-2103) | warning | Access | `Request without a valid token rejected: {method} {route}` |
+| [2104](#dashboard-2104) | warning | Access | `Browser change without a matching Origin rejected: {method} {route}` |
+| [2105](#dashboard-2105) | warning | Access | `Sign-in with a wrong token from {remote}` |
+| [2201](#dashboard-2201) | warning | Action | `Dashboard action {action} failed: {err}` |
+| [2202](#dashboard-2202) | warning | Action | `API key {cred} was not {op}` |
+| [2203](#dashboard-2203) | warning | Action | `API key {cred} was sent in the URL and refused` |
+| [2204](#dashboard-2204) | warning | Action | `Integration {integration} test failed: {err}` |
+| [2205](#dashboard-2205) | warning | Action | `MCP connector {url} was not added: {err}` |
+| [2206](#dashboard-2206) | warning | Chat | `Chat turn failed: {err}` |
+| [3001](#dashboard-3001) | error | Page | `Page {page} could not be rendered: {err}` |
+| [9001](#dashboard-9001) | info | Request | `{method} {route}` |
+
+### dashboard 1
+
+`Dashboard on {addr}`
+
+- **Level:** info · **Channel:** operational · **Task:** Server · **Log:** dashboard
+- **Fields:** `addr`, `tls`
+- **Find it:** `provider:dashboard id:1`
+
+**What it means.** The dashboard's web server: start, then stop with its uptime, or fail with the error that stopped it.
+
+**Why it happens.** dashboard.enabled is on, or /dashboard on started it; it stops at shutdown or on /dashboard off.
+
+**What to do.** On a failure, read the error: usually the address is taken or the TLS certificate can't be read. /dashboard on starts it again.
+
+### dashboard 1001
+
+`Live {stream} stream to {remote}`
+
+- **Level:** info · **Channel:** operational · **Task:** Stream · **Log:** dashboard
+- **Fields:** `stream`, `remote`
+- **Find it:** `provider:dashboard id:1001`
+
+**What it means.** A browser page subscribed to a live feed (chat and activity events, or the log book): start when it connects, stop when it leaves.
+
+**Why it happens.** A dashboard page with a live feed was opened, reloaded or closed.
+
+**What to do.** None.
+
+### dashboard 2001
+
+`HTTP server: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** dashboard
+- **Fields:** `err`, `stack`
+- **Find it:** `provider:dashboard id:2001`
+
+**What it means.** Go's HTTP server reported a problem it handled on its own, such as a failed TLS handshake or a handler that panicked.
+
+**Why it happens.** A client that doesn't speak TLS (or doesn't trust the certificate), a scanner, a dropped connection, or a bug in a page's handler.
+
+**What to do.** A handshake error from an unknown address is usually noise. A panic is a bug: report it with its stack.
+
+### dashboard 2002
+
+`Live {stream} stream to {remote} fell behind`
+
+- **Level:** warning · **Channel:** operational · **Task:** Stream · **Log:** dashboard
+- **Fields:** `stream`, `remote`, `missed`
+- **Find it:** `provider:dashboard id:2002`
+
+**What it means.** A page read its live feed more slowly than events arrived, and its buffer filled, so events were dropped for it (missed counts them where known): the page no longer shows all of them.
+
+**Why it happens.** A slow or suspended browser tab, a slow network, or a burst of events (a long tool run streams many).
+
+**What to do.** Reload the page to redraw it. The events themselves are still in the log book.
+
+### dashboard 2003
+
+`WebSocket handshake from {remote} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Stream · **Log:** dashboard
+- **Fields:** `remote`, `err`
+- **Find it:** `provider:dashboard id:2003`
+
+**What it means.** A client asked for the chat WebSocket, but its handshake was malformed; it got an HTTP error instead.
+
+**Why it happens.** A client or proxy that doesn't speak WebSocket, or a proxy that strips the Upgrade headers.
+
+**What to do.** Use the dashboard in a browser directly, or make the proxy pass WebSocket upgrades through.
+
+### dashboard 2101
+
+`Request for unrecognized host {host} rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `host`, `method`, `route`, `remote`
+- **Find it:** `provider:dashboard id:2101`
+
+**What it means.** A request named a Host the dashboard doesn't answer to, and got 403.
+
+**Why it happens.** The dashboard was reached under a name or address it doesn't know (a reverse proxy, a LAN name, a new tailnet name), or a DNS-rebinding attempt.
+
+**What to do.** If the name is yours, add it to dashboard.allowed_hosts. Otherwise nothing: the request was refused.
+
+### dashboard 2102
+
+`Cross-origin request from {origin} rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `origin`, `method`, `route`, `remote`
+- **Find it:** `provider:dashboard id:2102`
+
+**What it means.** A browser request came from a page on another site, and got 403.
+
+**Why it happens.** A web page on another origin tried to call the dashboard, or the dashboard is open under two different addresses.
+
+**What to do.** Open the dashboard at one address. If you don't recognize the origin, a site you visited tried to reach it; it was refused.
+
+### dashboard 2103
+
+`Request without a valid token rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `method`, `route`, `remote`, `credential`
+- **Find it:** `provider:dashboard id:2103`
+
+**What it means.** A request carried no dashboard token, or a wrong one (credential says which), and got 401.
+
+**Why it happens.** A browser that hasn't signed in, a token that changed since sign-in, a script with an old token, or someone guessing.
+
+**What to do.** Sign in at /settings with the token in <config>/dashboard-auth-token. Many wrong tokens from an address you don't know mean someone is guessing: keep the dashboard off public networks.
+
+### dashboard 2104
+
+`Browser change without a matching Origin rejected: {method} {route}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `method`, `route`, `remote`
+- **Find it:** `provider:dashboard id:2104`
+
+**What it means.** A change (a POST) authenticated by the sign-in cookie didn't prove it came from a dashboard page, and got 403.
+
+**Why it happens.** A page on another site submitted a form to the dashboard, or an old browser or extension stripped the Origin header.
+
+**What to do.** Make the change from the dashboard page itself, or call the API with an Authorization: Bearer token.
+
+### dashboard 2105
+
+`Sign-in with a wrong token from {remote}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Access · **Log:** dashboard
+- **Fields:** `remote`
+- **Find it:** `provider:dashboard id:2105`
+
+**What it means.** The sign-in form was sent a token that doesn't match the dashboard's, and got 403.
+
+**Why it happens.** A typo, a token from before it changed, or someone guessing.
+
+**What to do.** Use the token in <config>/dashboard-auth-token (or dashboard.auth). Many failures from an address you don't know mean someone is guessing.
+
+### dashboard 2201
+
+`Dashboard action {action} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `action`, `target`, `err`
+- **Find it:** `provider:dashboard id:2201`
+
+**What it means.** A change or command made on a dashboard page didn't apply. The page showed the operator the same error.
+
+**Why it happens.** The value was refused (an unknown category or mode, a bad schedule, a job or fact that no longer exists), or the change couldn't be saved: config.json or a store is unwritable or locked, or the subsystem isn't running.
+
+**What to do.** Read the error. Fix the value and try again; if saving failed, check the data directory's permissions and free space.
+
+### dashboard 2202
+
+`API key {cred} was not {op}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `cred`, `op`, `err` (sensitive, masked: `err`)
+- **Find it:** `provider:dashboard id:2202`
+
+**What it means.** Storing or removing an API key from the Keys page failed. The page said so without the reason, which can quote the key.
+
+**Why it happens.** The credential store is unwritable or locked, or the key's ID is unknown.
+
+**What to do.** Check the config directory's permissions, then try again. The reason is kept, masked, in this event.
+
+### dashboard 2203
+
+`API key {cred} was sent in the URL and refused`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `cred`
+- **Find it:** `provider:dashboard id:2203`
+
+**What it means.** A request tried to store an API key through the URL's query string, where browser history and proxy logs keep it. It was refused.
+
+**Why it happens.** A script or bookmark that puts value= in the URL instead of the form's body.
+
+**What to do.** Rotate that key: it may now sit in a history or a log. Submit keys through the Keys page's form.
+
+### dashboard 2204
+
+`Integration {integration} test failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `integration`, `err`
+- **Find it:** `provider:dashboard id:2204`
+
+**What it means.** The Test button's check of an integration ran in the background and failed; the page shows the result on refresh.
+
+**Why it happens.** The integration's credentials are missing or expired, its sign-in on the computer running Tenant wasn't finished, or its service is unreachable.
+
+**What to do.** Finish any sign-in on the computer running Tenant, fix the integration's settings, and test again.
+
+### dashboard 2205
+
+`MCP connector {url} was not added: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
+- **Fields:** `url`, `err`
+- **Find it:** `provider:dashboard id:2205`
+
+**What it means.** Connecting a remote MCP service from the MCP page ran in the background and failed.
+
+**Why it happens.** The URL isn't an MCP endpoint, the service is unreachable, or its sign-in on the computer running Tenant wasn't approved.
+
+**What to do.** Check the URL, approve the sign-in window on the computer running Tenant, and connect again. The mcp log has the details.
+
+### dashboard 2206
+
+`Chat turn failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Chat · **Log:** dashboard
+- **Fields:** `err`
+- **Find it:** `provider:dashboard id:2206`
+
+**What it means.** A message sent from the Chat page didn't get an answer; the chat shows the error.
+
+**Why it happens.** The turn gate refused it, the model is unreachable, or the agent failed before its loop started.
+
+**What to do.** Read the error. For the model, see the model log; then send the message again.
+
+### dashboard 3001
+
+`Page {page} could not be rendered: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Page · **Log:** dashboard
+- **Fields:** `page`, `err`
+- **Find it:** `provider:dashboard id:3001`
+
+**What it means.** A dashboard page's template failed, and the browser got a 500.
+
+**Why it happens.** A bug: the page's data doesn't fit its template.
+
+**What to do.** Report it with the error. Other pages keep working.
+
+### dashboard 9001
+
+`{method} {route}`
+
+- **Level:** info · **Channel:** diagnostic · **Task:** Request · **Log:** dashboard
+- **Fields:** `method`, `route`, `status`
+- **Find it:** `provider:dashboard id:9001`
+
+**What it means.** One request to the dashboard: start, then stop with its status and duration, or fail on a 5xx.
+
+**Why it happens.** A browser page, the dashboard API or a live stream.
+
+**What to do.** None. For slow or failing pages, compare durations and statuses by route.
+
 ## discord
 
 Writes the `discord` log.
@@ -670,6 +947,163 @@ Writes the `discord` log.
 
 **What to do.** None when it is rare. Check the card or the relay's reply to see what was decided.
 
+## eval
+
+Writes the `eval` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1001](#eval-1001) | info | Run | `Eval run of {subset}, {tasks} tasks` |
+| [1002](#eval-1002) | info | Task | `Eval task {task}` |
+| [1003](#eval-1003) | info | Trend | `Eval trend: {subset} scored {overall}, {passed}/{total} passed` |
+| [2001](#eval-2001) | warning | Task | `Eval task {task} was not graded ({class}): {reason}` |
+| [2002](#eval-2002) | warning | Regression | `No eval baseline at {path}: regressions are not checked` |
+| [2003](#eval-2003) | warning | Regression | `Eval {subset} regressed against its baseline: Δ {delta}, 95% CI upper bound {ci_high}` |
+| [2004](#eval-2004) | warning | Regression | `Eval baseline {path} could not be read: {err}` |
+| [2005](#eval-2005) | warning | Run | `Eval {record} was not saved: {err}` |
+| [2006](#eval-2006) | warning | Schedule | `Schedule {value} is malformed and ignored: {effect}` |
+| [3001](#eval-3001) | error | Task | `The route classifier panicked in an eval task: {panic}` |
+
+### eval 1001
+
+`Eval run of {subset}, {tasks} tasks`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** eval
+- **Fields:** `subset`, `tasks`, `overall`, `passed`, `failed`, `ungraded`, `skipped`
+- **Find it:** `provider:eval id:1001`
+
+**What it means.** An eval run: start, then stop with its overall score and counts, or fail when it was cancelled.
+
+**Why it happens.** The nightly schedule (improve.eval_every or eval_at) came due, someone ran it now (the dashboard, /eval), `tenant eval` ran, or the soul nudge scored a candidate.
+
+**What to do.** None. Compare overall across runs in the trend (`tenant eval --trend`); a regression is reported on its own (eval/2003).
+
+### eval 1002
+
+`Eval task {task}`
+
+- **Level:** info · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `task`, `category`, `mode`, `result`, `score`
+- **Find it:** `provider:eval id:1002`
+
+**What it means.** One task of an eval run: start, then stop with its result (pass, fail, ungraded or skipped) and score.
+
+**Why it happens.** Its run reached it.
+
+**What to do.** For a failing task, open its report in <data>/eval-artifacts, or run `tenant eval --baseline-diff` for the movers.
+
+### eval 1003
+
+`Eval trend: {subset} scored {overall}, {passed}/{total} passed`
+
+- **Level:** info · **Channel:** operational · **Task:** Trend · **Log:** eval
+- **Fields:** `subset`, `overall`, `passed`, `total`, `regressed`, `delta`, `artifact`
+- **Find it:** `provider:eval id:1003`
+
+**What it means.** A finished run's line was added to the trend (trend.jsonl), with its verdict against the baseline.
+
+**Why it happens.** A nightly run finished, or `tenant eval --append-trend` ran.
+
+**What to do.** None. `tenant eval --trend` shows the series.
+
+### eval 2001
+
+`Eval task {task} was not graded ({class}): {reason}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `task`, `class`, `reason`
+- **Find it:** `provider:eval id:2001`
+
+**What it means.** A task was left out of the score because the harness, the model provider or the judge failed, not the agent.
+
+**Why it happens.** class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the grader was unusable after its retry).
+
+**What to do.** Fix the named piece (a provider's quota or endpoint, the judge model) and run again. Many ungraded tasks make a run's score unreliable.
+
+### eval 2002
+
+`No eval baseline at {path}: regressions are not checked`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `path`
+- **Find it:** `provider:eval id:2002`
+
+**What it means.** A run finished with no baseline to compare against, so the regression gate is off.
+
+**Why it happens.** No baseline was ever captured, or it lives somewhere the run doesn't look.
+
+**What to do.** Capture one from a good run: `tenant eval --baseline-from <data>/eval-artifacts/eval-<time>.json`.
+
+### eval 2003
+
+`Eval {subset} regressed against its baseline: Δ {delta}, 95% CI upper bound {ci_high}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `subset`, `delta`, `ci_high`, `overall`, `artifact`
+- **Find it:** `provider:eval id:2003`
+
+**What it means.** A run scored worse than its baseline, beyond chance (the paired bootstrap's 95% interval is below zero).
+
+**Why it happens.** A change to the prompt, the model, routing, the tools or memory made the agent worse, or the environment lost something tasks need.
+
+**What to do.** Run `tenant eval --baseline-diff` to see which tasks moved and why; fix the cause, or capture a new baseline if the change is intended.
+
+### eval 2004
+
+`Eval baseline {path} could not be read: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Regression · **Log:** eval
+- **Fields:** `path`, `err`
+- **Find it:** `provider:eval id:2004`
+
+**What it means.** The baseline exists but doesn't parse, so this run has no regression verdict.
+
+**Why it happens.** The file was edited by hand, truncated, or written by an incompatible version.
+
+**What to do.** Capture it again: `tenant eval --baseline-from <a good artifact>`.
+
+### eval 2005
+
+`Eval {record} was not saved: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Run · **Log:** eval
+- **Fields:** `record`, `path`, `err`
+- **Find it:** `provider:eval id:2005`
+
+**What it means.** A run finished, but its report artifact or its trend line didn't reach <data>/eval-artifacts.
+
+**Why it happens.** The data directory is full, unwritable or locked.
+
+**What to do.** Check the data directory's free space and permissions. The run's scores are still in this log (eval/1001).
+
+### eval 2006
+
+`Schedule {value} is malformed and ignored: {effect}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Schedule · **Log:** eval
+- **Fields:** `value`, `effect`, `err`
+- **Find it:** `provider:eval id:2006`
+
+**What it means.** An eval cadence setting didn't parse, so it was ignored rather than guessed at.
+
+**Why it happens.** improve.eval_at is not HH:MM, or an improve.*_every duration is not like 24h.
+
+**What to do.** Set it again with /eval every <duration> or /eval at HH:MM (applies live), or fix it in config.json.
+
+### eval 3001
+
+`The route classifier panicked in an eval task: {panic}`
+
+- **Level:** error · **Channel:** operational · **Task:** Task · **Log:** eval
+- **Fields:** `panic`, `stack`
+- **Find it:** `provider:eval id:3001`
+
+**What it means.** A bug in the route classifier was caught while a route task measured it; that sample counts as a failed classification.
+
+**Why it happens.** A programming error in the classifier.
+
+**What to do.** Report it with the stack. The rest of the run goes on.
+
 ## imessage
 
 Writes the `imessage` log.
@@ -892,6 +1326,406 @@ Writes the `improve` log.
 **Why it happens.** The profile is not in config.json, or its model could not be set up.
 
 **What to do.** Fix the profile's entry in config.json, or clear improve.profile.
+
+## logbook
+
+Writes the `logbook` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1101](#logbook-1101) | info | Intake | `Imported {lines} lines of v1 history from {files} files` |
+| [1102](#logbook-1102) | warning | Intake | `{lines} lines of spool file {file} were not filed: {err}` |
+
+### logbook 1101
+
+`Imported {lines} lines of v1 history from {files} files`
+
+- **Level:** info · **Channel:** operational · **Task:** Intake · **Log:** logbook
+- **Fields:** `lines`, `files`
+- **Find it:** `provider:logbook id:1101`
+
+**What it means.** The log book filed the text files Tenant wrote before it kept logbook.db, once; the lines are tagged imported.
+
+**Why it happens.** The first run with the store found v1 log files in the logs folders.
+
+**What to do.** None. The text files are left as they were.
+
+### logbook 1102
+
+`{lines} lines of spool file {file} were not filed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Intake · **Log:** logbook
+- **Fields:** `file`, `lines`, `err`
+- **Find it:** `provider:logbook id:1102`
+
+**What it means.** Lines of a spool file were dropped: they were not an event, or they named one of Tenant's own logs or providers.
+
+**Why it happens.** A writer outside Tenant spooled a malformed line, or one claiming a log only Tenant writes (security, tenant.*, a built-in).
+
+**What to do.** Fix the writer: one JSON event per line, into a log of its own.
+
+## mcp
+
+Writes the `mcp` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#mcp-1) | info | Connection | `Connection to {server}` |
+| [2](#mcp-2) | info | Server | `Local server {server} under the {backend} sandbox` |
+| [1001](#mcp-1001) | info | Connection | `Connected to {server}: {tools} tools` |
+| [1002](#mcp-1002) | info | Connection | `{server} changed its tool list; Tenant keeps the list it read at connect` |
+| [1003](#mcp-1003) | info | Connection | `{server} has no saved sign-in; it stays off until /enable signs in` |
+| [1101](#mcp-1101) | info | Sign-in | `Signed in to {server}` |
+| [1102](#mcp-1102) | info | Sign-in | `Token for {server} refreshed` |
+| [1103](#mcp-1103) | info | Sign-in | `{server} is authorized again` |
+| [2001](#mcp-2001) | warning | Sign-in | `Open this URL in a browser to sign in to {server}: {url}` |
+| [2101](#mcp-2101) | warning | Sign-in | `Token refresh for {server} failed; the current token is still valid: {err}` |
+| [2102](#mcp-2102) | warning | Sign-in | `Could not save {what} for {server}: {err}` |
+| [2103](#mcp-2103) | warning | Sign-in | `The operator was not told about {server}'s sign-in: {err}` |
+| [2201](#mcp-2201) | warning | Server | `Local server {server} did not exit when asked, and was killed after {grace}` |
+| [2202](#mcp-2202) | warning | Server | `Local server {server} skipped: {err}` |
+| [2301](#mcp-2301) | warning | Connector | `Connector {server} stays at trust ask; setting {trust} failed: {err}` |
+| [3001](#mcp-3001) | error | Tool call | `Tool {tool} on {server} failed: {err}` |
+| [3101](#mcp-3101) | error | Sign-in | `{server} needs re-authorization: its token could not be refreshed: {err}` |
+| [3102](#mcp-3102) | error | Sign-in | `The refreshed token for {server} was not saved: {err}` |
+| [5001](#mcp-5001) | info | Connector | `Connector {server} added: {url}` |
+| [5002](#mcp-5002) | info | Connector | `Connector {server} removed` |
+| [5003](#mcp-5003) | info | Connector | `Connector {server} trust set to {trust}` |
+| [5004](#mcp-5004) | warning | Connector | `Connector {server} trusted: its tools run without per-call approval` |
+
+### mcp 1
+
+`Connection to {server}`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`, `url`, `interactive`
+- **Find it:** `provider:mcp id:1`
+
+**What it means.** A session with an MCP server: start when Tenant connects, stop when it closes the session (a shutdown, a dropped duplicate), with its duration; fail when it could not connect. A remote connector reconnecting at launch from its saved sign-in has interactive=false.
+
+**Why it happens.** A connector was enabled or added, reconnected at launch, or a local server started.
+
+**What to do.** On a fail, read the error: the server is down or unreachable, refused the sign-in, or did not answer the MCP handshake. Its tools stay a stub until `/enable <label>` connects again.
+
+### mcp 2
+
+`Local server {server} under the {backend} sandbox`
+
+- **Level:** info · **Channel:** operational · **Task:** Server · **Log:** mcp
+- **Fields:** `server`, `backend`, `limits`, `command`
+- **Find it:** `provider:mcp id:2`
+
+**What it means.** A local MCP server's process: start when Tenant starts it, with its sandbox backend and limits; stop when it exits after Tenant closed it, or at shutdown; fail when it could not start, or exited on its own.
+
+**Why it happens.** The server is configured in mcp_servers, and Tenant started or /enable started it.
+
+**What to do.** On a fail, read the error and the server's stderr lines before it: a missing command, a sandbox that refused what it needs, or a crash. Fix it in config.json (mcp_servers); /enable retries a server that never started, and a restart of Tenant one that exited.
+
+### mcp 1001
+
+`Connected to {server}: {tools} tools`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`, `tools`, `names`
+- **Find it:** `provider:mcp id:1001`
+
+**What it means.** A session is up and the server's tools are listed (names). They come live gated by the connector's trust.
+
+**Why it happens.** A connection succeeded.
+
+**What to do.** None. A tool missing from names is missing on the server's side.
+
+### mcp 1002
+
+`{server} changed its tool list; Tenant keeps the list it read at connect`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`
+- **Find it:** `provider:mcp id:1002`
+
+**What it means.** The server announced that its tools changed. Tenant lists a server's tools once, when it connects, so the agent still sees the old list.
+
+**Why it happens.** The server was updated, or it enables tools at run time.
+
+**What to do.** Restart Tenant, or remove and add the connector again, to pick up the new tools.
+
+### mcp 1003
+
+`{server} has no saved sign-in; it stays off until /enable signs in`
+
+- **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Find it:** `provider:mcp id:1003`
+
+**What it means.** A connector could not reconnect at launch because it needs a browser sign-in, which launch never opens.
+
+**Why it happens.** It was never signed in from this config directory, or its saved sign-in was removed.
+
+**What to do.** `/enable <label>`, or the dashboard's Remote services page, signs in.
+
+### mcp 1101
+
+`Signed in to {server}`
+
+- **Level:** info · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`
+- **Find it:** `provider:mcp id:1101`
+
+**What it means.** A browser sign-in to a remote connector finished, and its token is saved, so it reconnects after a restart without a browser.
+
+**Why it happens.** The server asked for a sign-in when it was added or enabled.
+
+**What to do.** None.
+
+### mcp 1102
+
+`Token for {server} refreshed`
+
+- **Level:** info · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `expires`
+- **Find it:** `provider:mcp id:1102`
+
+**What it means.** A remote connector's access token was renewed from its refresh token, ahead of its expiry, and saved.
+
+**Why it happens.** The token was within 5 minutes of expiring when a request needed it.
+
+**What to do.** None.
+
+### mcp 1103
+
+`{server} is authorized again`
+
+- **Level:** info · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`
+- **Find it:** `provider:mcp id:1103`
+
+**What it means.** A connector that had lost its sign-in has a working token again, and its tools run.
+
+**Why it happens.** The operator reconnected it (`tenant mcp connect`, the dashboard), or its token refreshed after all.
+
+**What to do.** None.
+
+### mcp 2001
+
+`Open this URL in a browser to sign in to {server}: {url}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Find it:** `provider:mcp id:2001`
+
+**What it means.** A remote connector needs a browser sign-in, and no browser could be opened for it.
+
+**Why it happens.** Tenant runs headless (a server, SSH), or opening the browser failed.
+
+**What to do.** Open the URL in a browser on this machine: the sign-in returns to a callback on localhost. Elsewhere, run `tenant mcp connect <url>` at the host.
+
+### mcp 2101
+
+`Token refresh for {server} failed; the current token is still valid: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2101`
+
+**What it means.** An early token refresh failed, so the connector keeps using its current token, and tries again on its next request.
+
+**Why it happens.** The authorization server was unreachable or refused the refresh.
+
+**What to do.** None if a later refresh succeeds (mcp 1102). If the token expires first, the connector needs re-authorization (mcp 3101).
+
+### mcp 2102
+
+`Could not save {what} for {server}: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `what`, `err`
+- **Find it:** `provider:mcp id:2102`
+
+**What it means.** Part of a connector's saved sign-in could not be written: its client registration, or whether it needs re-authorization. It applies now, but not after a restart.
+
+**Why it happens.** The config directory's mcp folder can't be written: permissions, a full disk, or the secret store is locked.
+
+**What to do.** Fix what the error names. A registration that was not saved is only redone at the next sign-in.
+
+### mcp 2103
+
+`The operator was not told about {server}'s sign-in: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2103`
+
+**What it means.** A connector's sign-in died or came back, and the direct message to the operator could not be sent. The status feed, the status pages and tenant doctor still show it.
+
+**Why it happens.** The Discord relay is down, or has no operator to message.
+
+**What to do.** Check the relay in the discord log.
+
+### mcp 2201
+
+`Local server {server} did not exit when asked, and was killed after {grace}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** mcp
+- **Fields:** `server`, `pid`, `grace`
+- **Find it:** `provider:mcp id:2201`
+
+**What it means.** Tenant closed a local server's stdin to stop it, and it was still running after the grace period, so it was killed.
+
+**Why it happens.** The server ignores its stdin closing, or was busy with a call.
+
+**What to do.** Nothing is lost for Tenant. If it happens every time, report it to the server's authors: MCP servers should exit when their input closes.
+
+### mcp 2202
+
+`Local server {server} skipped: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2202`
+
+**What it means.** A local server in mcp_servers was not registered, so it has no tools.
+
+**Why it happens.** Its entry is invalid (a bad name, no command, an unknown sandbox or network, a relative path), or its name is taken by another connector or plugin.
+
+**What to do.** Fix the entry in config.json (mcp_servers) as the error says, then restart Tenant.
+
+### mcp 2301
+
+`Connector {server} stays at trust ask; setting {trust} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `trust`, `err`
+- **Find it:** `provider:mcp id:2301`
+
+**What it means.** The agent added a connector and the operator approved trusting it, but the trust change failed, so its tools still ask for each gated call.
+
+**Why it happens.** The trust could not be saved to config.json, or the connector went away in between.
+
+**What to do.** Set it again with /mcp trust <label> allow, or on the dashboard's Remote services page, once the error is fixed.
+
+### mcp 3001
+
+`Tool {tool} on {server} failed: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Tool call · **Log:** mcp
+- **Fields:** `server`, `tool`, `err`
+- **Find it:** `provider:mcp id:3001`
+
+**What it means.** A call to one of the server's tools did not complete: the model got the error. A tool that ran and reported an error is not this event; it is the tool's result.
+
+**Why it happens.** The server is down or unreachable, it dropped the session, or a local server exited.
+
+**What to do.** Check the server (its log here, or its status page). A local server that exited starts again when Tenant restarts.
+
+### mcp 3101
+
+`{server} needs re-authorization: its token could not be refreshed: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `url`, `err`, `fix`
+- **Find it:** `provider:mcp id:3101`
+
+**What it means.** A remote connector's sign-in died: its token expired and the refresh failed, so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.
+
+**Why it happens.** The server revoked the refresh token, it expired unused, or a rotated one was lost.
+
+**What to do.** Run the command in fix (`tenant mcp connect <url>`) at the host, or use the dashboard's Remote services page.
+
+### mcp 3102
+
+`The refreshed token for {server} was not saved: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:3102`
+
+**What it means.** A connector's token was refreshed, but the new one was not written. The server may have retired the old refresh token, so after a restart the connector can need a new sign-in.
+
+**Why it happens.** The config directory's mcp folder can't be written: permissions, a full disk, or the secret store is locked.
+
+**What to do.** Fix what the error names; the next refresh saves again. If the connector needs re-authorization after a restart, sign in again.
+
+### mcp 5001
+
+`Connector {server} added: {url}`
+
+- **Level:** info · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`, `tools`, `trust`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5001`
+
+**What it means.** A remote connector was added and saved, so it reconnects after a restart.
+
+**Why it happens.** /mcp add, the dashboard's Remote services page, or the agent's mcp_add, which the operator approved.
+
+**What to do.** None.
+
+### mcp 5002
+
+`Connector {server} removed`
+
+- **Level:** info · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5002`
+
+**What it means.** A remote connector was removed: its tools are gone and it no longer reconnects.
+
+**Why it happens.** /mcp remove, the dashboard, or the agent's mcp_remove, which the operator approved.
+
+**What to do.** None.
+
+### mcp 5003
+
+`Connector {server} trust set to {trust}`
+
+- **Level:** info · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`, `trust`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5003`
+
+**What it means.** A connector's trust changed, live: ask prompts for each gated call, deny refuses its calls and hides its tools.
+
+**Why it happens.** /mcp trust, the dashboard, or the agent's mcp_trust, which the operator approved.
+
+**What to do.** None.
+
+### mcp 5004
+
+`Connector {server} trusted: its tools run without per-call approval`
+
+- **Level:** warning · **Channel:** operational · **Task:** Connector · **Log:** mcp
+- **Fields:** `server`, `url`
+- **Keywords:** `config`
+- **Find it:** `provider:mcp id:5004`
+
+**What it means.** A connector's trust was set to allow: from now on its tools run without asking anyone.
+
+**Why it happens.** /mcp trust <label> allow, the dashboard, or the agent's mcp_add or mcp_trust, which the operator approved.
+
+**What to do.** Make sure the server deserves it; /mcp trust <label> ask takes it back.
+
+## mcpserver
+
+Writes the `mcp` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [2001](#mcpserver-2001) | warning | Memory search | `Query embedding failed; memory_search matches keywords only: {err}` |
+
+### mcpserver 2001
+
+`Query embedding failed; memory_search matches keywords only: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Memory search · **Log:** mcp
+- **Fields:** `err`
+- **Find it:** `provider:mcpserver id:2001`
+
+**What it means.** A memory_search call from an MCP client could not embed its query, so it matched facts and episodes by keyword alone.
+
+**Why it happens.** The embedder role's model (often Ollama) is down, unreachable or not loaded.
+
+**What to do.** Check the embedder's backend (tenant doctor, the model log). Searches work again, in full, once it answers.
 
 ## memory
 
@@ -2975,6 +3809,103 @@ Writes the `route` log.
 
 **What to do.** None when intended; otherwise switch /route to another mode, which clears the force.
 
+## sandbox
+
+Writes the `sandbox` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#sandbox-1) | info | Run | `Command on {backend} for {surface}` |
+| [1001](#sandbox-1001) | info | Run | `Command exited: {status}` |
+| [2001](#sandbox-2001) | warning | Refusal | `The sandbox refused a command: {violations}` |
+| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran on the host: {violations}` |
+| [2003](#sandbox-2003) | warning | Refusal | `A command the sandbox refused was approved to run outside it: {violations}` |
+| [3001](#sandbox-3001) | error | Backend | `The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}` |
+
+### sandbox 1
+
+`Command on {backend} for {surface}`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `limits`
+- **Find it:** `provider:sandbox id:1`
+
+**What it means.** A command ran through the sandbox: start, then stop with its duration; fail when the backend could not start it. Its exit is sandbox 1001, and anything the boundary refused is a 2000s event in between. command is scrubbed and cut at 300 characters.
+
+**Why it happens.** The agent called os_exec, or a cron shell job came due.
+
+**What to do.** On a fail, read the error: the backend's launcher (sandbox-exec, bubblewrap, the WSL distro) is missing or broken. `tenant sandbox probe` checks it.
+
+### sandbox 1001
+
+`Command exited: {status}`
+
+- **Level:** info · **Channel:** operational · **Task:** Run · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `pid`, `exit`, `status`, `timed_out`, `violations`, `tail`
+- **Find it:** `provider:sandbox id:1001`
+
+**What it means.** A command run through the sandbox exited. tail is the last 512 bytes of its output (stdout and stderr together, as the model got it), scrubbed; violations lists what the boundary refused or cut short. For an escalated or dry-run command it describes the host re-run.
+
+**Why it happens.** The command finished, failed, or hit its wall-clock limit (timed_out).
+
+**What to do.** None. A non-zero exit is the command's own result, which the model sees.
+
+### sandbox 2001
+
+`The sandbox refused a command: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2001`
+
+**What it means.** The boundary refused a file or network access, and the command was not run again: its failure went back to the model or the cron job.
+
+**Why it happens.** The command reached outside the profile's roots or network. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
+
+**What to do.** None if the refusal was right. If the command needs that access, widen the surface's exec_profiles entry (read_roots, write_roots, network), or approve the escalation next time.
+
+### sandbox 2002
+
+`Dry run: the sandbox would have refused a command, which ran on the host: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2002`
+
+**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again on the host, unconfined, so the refusal is only reported.
+
+**Why it happens.** The command reached outside the profile's roots or network while the surface's exec_profiles entry has enforce off.
+
+**What to do.** Widen the profile for the accesses that are legitimate, then turn enforce on. Until then the sandbox confines nothing on this surface.
+
+### sandbox 2003
+
+`A command the sandbox refused was approved to run outside it: {violations}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
+- **Find it:** `provider:sandbox id:2003`
+
+**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again on the host, unconfined. The approval itself is in the Security log.
+
+**Why it happens.** The command needed an access outside the profile, and the operator allowed it once.
+
+**What to do.** If the same escalation keeps being approved, widen the surface's exec_profiles entry instead, so the access stays confined to what it needs.
+
+### sandbox 3001
+
+`The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Backend · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `err`
+- **Find it:** `provider:sandbox id:3001`
+
+**What it means.** A command was not run because the sandbox backend its profile names does not work here. The sandbox fails closed: it never falls back to the host.
+
+**Why it happens.** The profile names a backend this OS or build lacks (jobobject off Windows, restricted without bubblewrap or WSL), or its launcher is missing.
+
+**What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles.
+
 ## security
 
 Writes the `security` log.
@@ -3261,7 +4192,23 @@ Writes the `system` log.
 | [1](#system-1) | info | Lifecycle | `Tenant {version} started as {role}` |
 | [2](#system-2) | info | Lifecycle | `Tenant stopped cleanly after {uptime}` |
 | [3](#system-3) | critical | Lifecycle | `The previous run ended unexpectedly; its last event was at {last}` |
+| [10](#system-10) | info | Lifecycle | `Start-up of {role}` |
+| [20](#system-20) | info | Shutdown | `Shutdown of {steps} steps` |
+| [21](#system-21) | info | Shutdown | `Shutdown stage {stage}: {steps} steps` |
+| [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
+| [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
+| [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
+| [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
+| [2201](#system-2201) | warning | Storage | `{what} was not saved: {err}` |
+| [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
+| [3020](#system-3020) | error | Shutdown | `Shutdown step {stage}/{step} panicked: {panic}` |
 | [3101](#system-3101) | error | Component | `{component} failed: {err}` |
+| [5001](#system-5001) | info | Configuration | `{path} was edited; applied {changed}` |
+| [5002](#system-5002) | warning | Configuration | `{path} did not load, so {fallback}: {err}` |
+| [5003](#system-5003) | info | Configuration | `credentials.json changed; the active model provider's key was reloaded` |
+| [5004](#system-5004) | warning | Configuration | `A changed key did not reload into the live model provider: {err}` |
+| [5010](#system-5010) | warning | Agent profile | `Agent profile {profile}: model {configured} is served as {served}; using that` |
+| [5011](#system-5011) | warning | Agent profile | `Agent profile {profile}: the endpoint does not serve model {configured}; its calls may fail` |
 
 ### system 1
 
@@ -3305,6 +4252,148 @@ Writes the `system` log.
 
 **What to do.** Read the events before its last one, and any crash file filed at this start.
 
+### system 10
+
+`Start-up of {role}`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `role`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:10`
+
+**What it means.** serve or the TUI starting up: its start, then its stop with the duration once it is ready, or its failure with the error.
+
+**Why it happens.** The operator or a service manager started Tenant.
+
+**What to do.** None when it stops. On a failure Tenant did not start: read the error, fix its cause and start it again.
+
+### system 20
+
+`Shutdown of {steps} steps`
+
+- **Level:** info · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `steps`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:20`
+
+**What it means.** Tenant shutting down, stage by stage: its start, then its stop with the duration, or its failure naming every step that failed.
+
+**Why it happens.** serve or the TUI was asked to stop (Ctrl-C, the service manager, an update), or it is leaving after an error.
+
+**What to do.** None when it stops. On a failure, read the steps' events under it; the shutdown still ran every other step.
+
+### system 21
+
+`Shutdown stage {stage}: {steps} steps`
+
+- **Level:** info · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `steps`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:21`
+
+**What it means.** One stage of the shutdown: unblock (deny pending approvals), intake (stop taking new work), drain (let running work finish) or release (close stores). Its start, then its stop with the duration, or its failure.
+
+**Why it happens.** The shutdown reached the stage.
+
+**What to do.** None when it stops. A slow drain is a job or turn still running; a failure names the steps that failed.
+
+### system 1301
+
+`Publish the dashboard to the tailnet`
+
+- **Level:** info · **Channel:** operational · **Task:** Tailscale · **Log:** system
+- **Find it:** `provider:system id:1301`
+
+**What it means.** tailscale serve publishing the loopback dashboard to the operator's tailnet: its start, then its stop with the duration, or its failure with the error.
+
+**Why it happens.** The operator ran /tailscale serve, or Tenant re-applied that choice at start.
+
+**What to do.** None when it stops. On a failure, install Tailscale or run tailscale up, then try again.
+
+### system 1302
+
+`Withdraw the dashboard from the tailnet`
+
+- **Level:** info · **Channel:** operational · **Task:** Tailscale · **Log:** system
+- **Find it:** `provider:system id:1302`
+
+**What it means.** tailscale serve reset withdrawing the dashboard from the tailnet: its start, then its stop with the duration, or its failure with the error.
+
+**Why it happens.** The operator ran /tailscale unserve.
+
+**What to do.** None when it stops. On a failure, check tailscale serve status and reset it by hand.
+
+### system 2020
+
+`Shutdown step {stage}/{step} failed: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `step`, `err`, `took`
+- **Find it:** `provider:system id:2020`
+
+**What it means.** A component did not stop cleanly. The shutdown went on with the other steps.
+
+**Why it happens.** Closing it returned an error: a store that could not flush, a listener already gone, a timeout.
+
+**What to do.** Read the error. A store that failed to close may have lost its last writes; tenant doctor checks the databases.
+
+### system 2110
+
+`{component} unavailable ({effect}): {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `component`, `effect`, `err`
+- **Find it:** `provider:system id:2110`
+
+**What it means.** A part of Tenant did not come up, or could not be refreshed, so Tenant runs without it. effect says what is missing.
+
+**Why it happens.** Its store or file could not be opened (permissions, a full disk, a database another process holds), or what it depends on failed.
+
+**What to do.** Read the error and fix its cause, then restart Tenant, or for the embedder switch the model again.
+
+### system 2201
+
+`{what} was not saved: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Storage · **Log:** system
+- **Fields:** `what`, `path`, `err`
+- **Find it:** `provider:system id:2201`
+
+**What it means.** A change applies in the running process but was not written to disk, so a restart will undo it.
+
+**Why it happens.** The file could not be written: permissions, a full disk, or a read-only config or data directory.
+
+**What to do.** Fix the path's permissions or free space, then make the change again so it is saved.
+
+### system 3010
+
+`{role} stopped with an error: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Lifecycle · **Log:** system
+- **Fields:** `role`, `err`
+- **Keywords:** `lifecycle`
+- **Find it:** `provider:system id:3010`
+
+**What it means.** Tenant ran, then stopped because of an error rather than being asked to. Its shutdown still ran.
+
+**Why it happens.** The terminal UI failed: the terminal went away or could not be driven.
+
+**What to do.** Read the error, then start Tenant again. If it repeats, run it in another terminal.
+
+### system 3020
+
+`Shutdown step {stage}/{step} panicked: {panic}`
+
+- **Level:** error · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `step`, `panic`, `stack`, `took`
+- **Find it:** `provider:system id:3020`
+
+**What it means.** A component's stop crashed. The panic was contained and the shutdown went on with the other steps.
+
+**Why it happens.** A bug in that component's stop.
+
+**What to do.** Report it with the stack. The component may not have released what it held; check its store with tenant doctor.
+
 ### system 3101
 
 `{component} failed: {err}`
@@ -3319,16 +4408,105 @@ Writes the `system` log.
 
 **What to do.** Open the component's log; the event before this one usually names the cause.
 
+### system 5001
+
+`{path} was edited; applied {changed}`
+
+- **Level:** info · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `path`, `changed`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5001`
+
+**What it means.** The settings file changed on disk, and the running Tenant applied what differs, with no restart: tool rules, category approval modes or exec profiles.
+
+**Why it happens.** Someone edited the file by hand or from another window, or a script pushed it.
+
+**What to do.** None. Check that changed lists what you meant to change.
+
+### system 5002
+
+`{path} did not load, so {fallback}: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `path`, `fallback`, `err`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5002`
+
+**What it means.** A configuration file could not be read or parsed, so Tenant goes on without it; fallback says what it uses instead.
+
+**Why it happens.** The file has a JSON error, or it cannot be read.
+
+**What to do.** Fix the file (tenant doctor points at a JSON error); an edit is picked up without a restart.
+
+### system 5003
+
+`credentials.json changed; the active model provider's key was reloaded`
+
+- **Level:** info · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5003`
+
+**What it means.** A key was rotated outside the settings page, and the running Tenant now uses it, with no restart. The model log records the swap.
+
+**Why it happens.** A secrets manager or a hand edit changed credentials.json.
+
+**What to do.** None.
+
+### system 5004
+
+`A changed key did not reload into the live model provider: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Configuration · **Log:** system
+- **Fields:** `provider`, `source`, `err`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5004`
+
+**What it means.** A model provider's key changed, but the running Tenant still uses the old one. source says where the change came from.
+
+**Why it happens.** The provider's configuration could not be read, or the provider could not be rebuilt with the new key.
+
+**What to do.** Read the error, then switch to the provider again with /model use or the dashboard's model page.
+
+### system 5010
+
+`Agent profile {profile}: model {configured} is served as {served}; using that`
+
+- **Level:** warning · **Channel:** operational · **Task:** Agent profile · **Log:** system
+- **Fields:** `profile`, `configured`, `served`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5010`
+
+**What it means.** An agent profile names its model in a different letter case than the endpoint serves it, so Tenant uses the served name.
+
+**Why it happens.** A typo in the profile's model name. The endpoint's model lookup is case-sensitive.
+
+**What to do.** Correct the model name in the agent profile.
+
+### system 5011
+
+`Agent profile {profile}: the endpoint does not serve model {configured}; its calls may fail`
+
+- **Level:** warning · **Channel:** operational · **Task:** Agent profile · **Log:** system
+- **Fields:** `profile`, `configured`, `served`
+- **Keywords:** `config`
+- **Find it:** `provider:system id:5011`
+
+**What it means.** An agent profile names a model its endpoint does not list, so the sub-agents that use it may fail every call.
+
+**Why it happens.** The model name is wrong, or the server loaded another model.
+
+**What to do.** Set the profile's model to one of served, or load the model on the server.
+
 ## toolmux
 
 Writes the `toolmux` log.
 
 | ID | Level | Task | Message |
 |---|---|---|---|
-| [1001](#toolmux-1001) | info | Connectors | `MCP connector {server} re-authorized` |
-| [2001](#toolmux-2001) | warning | Connectors | `Local MCP server {connector} did not start: {err}` |
-| [2002](#toolmux-2002) | warning | Connectors | `Remote MCP connector {server} did not reconnect: {err}` |
-| [2003](#toolmux-2003) | warning | Connectors | `MCP connector {server} needs re-authorization: {err}` |
+| [1001](#toolmux-1001) | info (retired) | Connectors | `MCP connector {server} re-authorized` |
+| [2001](#toolmux-2001) | warning (retired) | Connectors | `Local MCP server {connector} did not start: {err}` |
+| [2002](#toolmux-2002) | warning (retired) | Connectors | `Remote MCP connector {server} did not reconnect: {err}` |
+| [2003](#toolmux-2003) | warning (retired) | Connectors | `MCP connector {server} needs re-authorization: {err}` |
 | [2004](#toolmux-2004) | warning | Peers | `peers.json unreadable; no peer is reconnected: {err}` |
 | [2005](#toolmux-2005) | warning | Peers | `Peer {peer} did not reconnect: {err}` |
 | [2006](#toolmux-2006) | warning | Stats | `Tool stats not saved to {path}; retrying every flush: {err}` |
@@ -3336,6 +4514,8 @@ Writes the `toolmux` log.
 ### toolmux 1001
 
 `MCP connector {server} re-authorized`
+
+**Retired:** no longer written. The ID stays reserved.
 
 - **Level:** info · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `server`
@@ -3351,6 +4531,8 @@ Writes the `toolmux` log.
 
 `Local MCP server {connector} did not start: {err}`
 
+**Retired:** no longer written. The ID stays reserved.
+
 - **Level:** warning · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `connector`, `err`
 - **Find it:** `provider:toolmux id:2001`
@@ -3365,6 +4547,8 @@ Writes the `toolmux` log.
 
 `Remote MCP connector {server} did not reconnect: {err}`
 
+**Retired:** no longer written. The ID stays reserved.
+
 - **Level:** warning · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `server`, `err`
 - **Find it:** `provider:toolmux id:2002`
@@ -3378,6 +4562,8 @@ Writes the `toolmux` log.
 ### toolmux 2003
 
 `MCP connector {server} needs re-authorization: {err}`
+
+**Retired:** no longer written. The ID stays reserved.
 
 - **Level:** warning · **Channel:** operational · **Task:** Connectors · **Log:** toolmux
 - **Fields:** `server`, `url`, `err`, `fix`

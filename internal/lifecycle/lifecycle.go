@@ -10,16 +10,20 @@
 //     first, like deferred calls.
 //
 // So no goroutine starts a turn mid-teardown, and none writes to a store that
-// is already closed.
+// is already closed. The shutdown and each stage are activities in the system
+// log (events.go), and a stop that fails or panics is an event under its stage.
 package lifecycle
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"tenant/internal/logs/event"
 )
 
 // Stage is when a stop runs during Shutdown.
@@ -61,7 +65,8 @@ type Group struct {
 	log     *slog.Logger
 }
 
-// New returns an empty group that logs each stop to log (nil: no logging).
+// New returns an empty group. log gets a debug line for each stop that
+// succeeds (nil: none); the rest is filed as events.
 func New(log *slog.Logger) *Group { return &Group{log: log, done: make(chan struct{})} }
 
 // Add registers stop to run at stage. Within a stage, stops run in reverse
@@ -78,7 +83,7 @@ func (g *Group) Add(stage Stage, name string, stop func() error) {
 	g.mu.Lock()
 	if g.stopped {
 		g.mu.Unlock()
-		g.run(stage, step{name, stop})
+		g.run(context.Background(), stage, step{name, stop})
 		return
 	}
 	g.stages[stage] = append(g.stages[stage], step{name, stop})
@@ -98,7 +103,7 @@ func (g *Group) AddFunc(stage Stage, name string, stop func()) {
 // still run. Only the first call does anything, so a command can both defer
 // it (for an early return) and call it at the end; a later call waits until
 // the first has finished, so nobody proceeds while stores are still closing.
-func (g *Group) Shutdown() error {
+func (g *Group) Shutdown() (err error) {
 	g.mu.Lock()
 	if g.stopped {
 		g.mu.Unlock()
@@ -111,14 +116,28 @@ func (g *Group) Shutdown() error {
 	g.mu.Unlock()
 	defer close(g.done)
 
+	n := 0
+	for _, steps := range stages {
+		n += len(steps)
+	}
+	ctx, act := event.Start(context.Background(), shutdownRun, "steps", n)
+	defer act.End(&err)
 	var errs []error
 	for stage := Stage(0); stage < numStages; stage++ {
-		steps := stages[stage]
-		for i := len(steps) - 1; i >= 0; i-- {
-			if err := g.run(stage, steps[i]); err != nil {
-				errs = append(errs, err)
-			}
+		if steps := stages[stage]; len(steps) > 0 {
+			errs = append(errs, g.runStage(ctx, stage, steps))
 		}
+	}
+	return errors.Join(errs...)
+}
+
+// runStage runs one stage's stops, last added first, as an activity.
+func (g *Group) runStage(ctx context.Context, stage Stage, steps []step) (err error) {
+	ctx, act := event.Start(ctx, stageRun, "stage", stage.String(), "steps", len(steps))
+	defer act.End(&err)
+	var errs []error
+	for i := len(steps) - 1; i >= 0; i-- {
+		errs = append(errs, g.run(ctx, stage, steps[i]))
 	}
 	return errors.Join(errs...)
 }
@@ -138,25 +157,23 @@ func (g *Group) Steps() []string {
 	return out
 }
 
-func (g *Group) run(stage Stage, s step) (err error) {
+func (g *Group) run(ctx context.Context, stage Stage, s step) (err error) {
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%s/%s: panic: %v", stage, s.name, r)
-			if g.log != nil {
-				g.log.Error("shutdown step panicked", "stage", stage.String(), "step", s.name, "panic", r, "stack", string(debug.Stack()))
-			}
-		}
-		if g.log != nil {
-			if err != nil {
-				g.log.Warn("shutdown step failed", "stage", stage.String(), "step", s.name, "err", err, "took", time.Since(start).Round(time.Millisecond))
-			} else {
-				g.log.Debug("shutdown step done", "stage", stage.String(), "step", s.name, "took", time.Since(start).Round(time.Millisecond))
-			}
+			stepPanicked.Log(ctx, "stage", stage.String(), "step", s.name, "panic", r, "stack", string(debug.Stack()),
+				"took", time.Since(start).Round(time.Millisecond))
 		}
 	}()
-	if e := s.stop(); e != nil {
+	e := s.stop()
+	took := time.Since(start).Round(time.Millisecond)
+	if e != nil {
+		stepFailed.Log(ctx, "stage", stage.String(), "step", s.name, "err", e, "took", took)
 		return fmt.Errorf("%s/%s: %w", stage, s.name, e)
+	}
+	if g.log != nil {
+		g.log.Debug("shutdown step done", "stage", stage.String(), "step", s.name, "took", took)
 	}
 	return nil
 }

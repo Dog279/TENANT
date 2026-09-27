@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +20,7 @@ import (
 
 	"tenant/internal/config"
 	"tenant/internal/logs/capture"
+	"tenant/internal/logs/event"
 	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/sandbox"
 	"tenant/internal/toolmux"
@@ -93,7 +93,7 @@ func planMCPServer(s config.MCPServer, cfgDir, dataDir string) (mcpServerPlan, e
 		WorkDir:    workDir,
 		ReadRoots:  expandRoots(s.ReadRoots),
 		WriteRoots: expandRoots(s.WriteRoots),
-		DenyRoots:  dedupeNonEmpty(append([]string{cfgDir, dataDir, exePath()}, expandRoots(s.DenyRoots)...)...),
+		DenyRoots:  tenantDenyRoots(cfgDir, dataDir, expandRoots(s.DenyRoots)...),
 		Network:    network,
 		Env:        env,
 		Limits: sandbox.Limits{
@@ -111,11 +111,21 @@ func planMCPServer(s config.MCPServer, cfgDir, dataDir string) (mcpServerPlan, e
 
 // mcpStdioOpener starts plan's server under its sandbox and connects to it.
 // The process lives as long as the context the mux passes (the command's).
-// Its start, its stderr, line by line, and its exit are filed in the mcp log
-// with server=<name> (logging v2 §8.4); the stderr tail it keeps still
-// explains a server that fails to start.
-func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
-	return func(ctx context.Context, trustAnnotations bool, policy mcpremote.Policy) (plugin, func(), error) {
+// Its lifetime is a Server activity in its log, mcp.<name> (logging v2
+// §8.4): the process's own lines (its start with the pid, its stderr, line
+// by line, its exit) and the Connection over its stdio belong to it, and its
+// environment carries it. The stderr tail it keeps still explains a server
+// that fails to start.
+func mcpStdioOpener(plan mcpServerPlan) toolmux.StdioOpener {
+	return func(ctx context.Context, trustAnnotations bool, policy mcpremote.Policy) (_ plugin, _ func(), err error) {
+		ctx, act := event.Start(mcpremote.WithServerLog(ctx, plan.Label), mcpremote.Server, "server", plan.Label,
+			"backend", plan.Backend, "limits", plan.Policy.Limits.String(), "command", clipLog(strings.Join(plan.Server.Command, " ")))
+		var proc *sandbox.Process
+		defer func() {
+			if proc == nil {
+				act.End(&err) // it never ran; once it has, its exit ends the activity
+			}
+		}()
 		b, err := sandbox.For(plan.Backend)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: its %s sandbox is not available here (%v); install it, or set \"sandbox\" for this server in mcp_servers", plan.Label, plan.Backend, err)
@@ -123,11 +133,10 @@ func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
 		if err := os.MkdirAll(plan.Policy.WorkDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("%s: work dir: %w", plan.Label, err)
 		}
-		var proc *sandbox.Process
 		d, cleanup, err := mcpremote.OpenStdio(ctx, mcpremote.StdioConfig{
 			Label: plan.Label,
 			Connect: func(ctx context.Context) (io.ReadCloser, io.WriteCloser, error) {
-				ch := capture.New(ctx, "mcp", "server", plan.Server.Name)
+				ch := capture.New(ctx, mcpremote.ServerLog(plan.Label), "server", plan.Label)
 				pol := plan.Policy
 				pol.Env.Add, pol.Stderr = ch.Env(), ch
 				p, err := sandbox.Start(ctx, b, plan.Server.Command, pol)
@@ -144,6 +153,14 @@ func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
 						kv = append(kv, "killed", "after the grace period")
 					}
 					ch.Exited(err, kv...)
+					switch {
+					case p.Killed():
+						mcpremote.ServerKilled.Log(ctx, "server", plan.Label, "pid", p.Pid(), "grace", serverGrace)
+						err = nil // Tenant stopped it
+					case ctx.Err() != nil:
+						err = nil // Tenant stopped it: a shutdown
+					}
+					act.End(&err)
 				}()
 				proc = p
 				return p.Stdout(), processStdin{p}, nil
@@ -157,39 +174,39 @@ func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
 			}
 			return nil, nil, err
 		}
-		if log != nil {
-			log.Info("mcp: local server started", "connector", plan.Label, "sandbox", plan.Backend,
-				"isolation", b.Isolation().String(), "command", strings.Join(plan.Server.Command, " "))
-		}
 		return d, cleanup, nil
 	}
 }
+
+// serverGrace is how long a local server has to exit once its stdin closes.
+const serverGrace = 5 * time.Second
 
 // processStdin is a server's stdin whose Close ends it the way the stdio
 // transport says to: close its input, wait, then kill it.
 type processStdin struct{ p *sandbox.Process }
 
 func (s processStdin) Write(b []byte) (int, error) { return s.p.Stdin().Write(b) }
-func (s processStdin) Close() error                { return s.p.Close(5 * time.Second) }
+func (s processStdin) Close() error                { return s.p.Close(serverGrace) }
 
 // registerMCPServers registers every configured local server as a connector
 // and starts it in the background, as remote connectors reconnect at launch.
-// A server whose config is invalid is skipped with a warning.
-func registerMCPServers(mux *toolMux, lc *launchConfig, cfgDir, dataDir string, log *slog.Logger) {
+// A server whose config is invalid is skipped with a warning in its log.
+func registerMCPServers(mux *toolMux, lc *launchConfig, cfgDir, dataDir string) {
 	if lc == nil {
 		return
 	}
 	for _, s := range lc.MCPServers {
+		label := "mcp:" + s.Name
 		plan, err := planMCPServer(s, cfgDir, dataDir)
 		if err != nil {
-			log.Warn("mcp: local server skipped", "err", err.Error())
+			mcpremote.ServerSkipped.Log(mcpremote.WithServerLog(context.Background(), label), "server", label, "err", err)
 			continue
 		}
-		open := mcpStdioOpener(plan, log)
+		open := mcpStdioOpener(plan)
 		hint := fmt.Sprintf("`/enable %s` starts `%s` under the %s sandbox", plan.Label, strings.Join(s.Command, " "), plan.Backend)
-		label, err := mux.RegisterMCPStdio(s.Name, hint, open)
+		label, err = mux.RegisterMCPStdio(s.Name, hint, open)
 		if err != nil {
-			log.Warn("mcp: local server skipped", "server", s.Name, "err", err.Error())
+			mcpremote.ServerSkipped.Log(mcpremote.WithServerLog(context.Background(), plan.Label), "server", plan.Label, "err", err)
 			continue
 		}
 		go mux.StartMCPStdioSilently(label, open)

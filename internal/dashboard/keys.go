@@ -106,7 +106,7 @@ func (s *Server) handleKeysSetForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Has("value") {
-		s.log.Warn("dashboard: key set rejected query value", "credID", id)
+		KeyInURL.Log(r.Context(), "cred", id)
 		redirectKeys(w, r, "", "Submit the key in the form, not the URL.")
 		return
 	}
@@ -118,7 +118,7 @@ func (s *Server) handleKeysSetForm(w http.ResponseWriter, r *http.Request) {
 	if err := s.secrets.SetSecret(id, value); err != nil {
 		// Never reflect err.Error() into the flash (it can carry key fragments);
 		// log it server-side with the credID only.
-		s.log.Warn("dashboard: key set", "credID", id, "err", err)
+		KeyNotSaved.Log(r.Context(), "cred", id, "op", "stored", "err", err)
 		redirectKeys(w, r, "", "Couldn't store that key.")
 		return
 	}
@@ -132,7 +132,7 @@ func (s *Server) handleKeysRemoveForm(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.secrets.RemoveSecret(id); err != nil {
-		s.log.Warn("dashboard: key remove", "credID", id, "err", err)
+		KeyNotSaved.Log(r.Context(), "cred", id, "op", "removed", "err", err)
 		redirectKeys(w, r, "", "Couldn't remove that key.")
 		return
 	}

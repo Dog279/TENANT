@@ -10,19 +10,19 @@ import (
 )
 
 // Clear empties one log (events, full text, rollups, bytes), notes when, and
-// leaves the others and the Security log alone; Head is the newest seq.
-func TestClearHeadAndLogs(t *testing.T) {
+// leaves the others and the Security log alone; Latest is the newest seq.
+func TestClearLatestAndLogs(t *testing.T) {
 	ctx := context.Background()
 	s := open(t, tempDB(t), "")
-	if h, err := s.Head(ctx); err != nil || h.Seq != 0 || h.StoreID != s.StoreID() {
-		t.Fatalf("empty Head = %v, %v", h, err)
+	if h, err := s.Latest(ctx); err != nil || h.Seq != 0 || h.StoreID != s.StoreID() {
+		t.Fatalf("empty Latest = %v, %v", h, err)
 	}
 	batch := []event.Event{ev("a", "one"), ev("a", "two"), ev("b", "three"), ev(SecurityLog, "four")}
 	if err := s.Commit(ctx, batch); err != nil {
 		t.Fatal(err)
 	}
-	if h, _ := s.Head(ctx); h.Seq != batch[3].Seq {
-		t.Fatalf("Head = %d, want %d", h.Seq, batch[3].Seq)
+	if h, _ := s.Latest(ctx); h.Seq != batch[3].Seq {
+		t.Fatalf("Latest = %d, want %d", h.Seq, batch[3].Seq)
 	}
 	if n, err := s.Clear(ctx, "a"); err != nil || n != 2 {
 		t.Fatalf("Clear(a) = %d, %v", n, err)

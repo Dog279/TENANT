@@ -11,7 +11,7 @@ import (
 // shutdownSteps parses fn in file and returns the stops it registers with the
 // lifecycle group (step name → stage), plus any deferred call that is not a
 // mutex unlock, the log hub's close, the signal context's stop, the boot
-// record's onPanic or the group's own Shutdown.
+// record's onPanic, the group's own Shutdown or the run's failed start-up.
 func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, strayDefers []string) {
 	t.Helper()
 	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
@@ -56,7 +56,9 @@ func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, stra
 				case *ast.SelectorExpr:
 					if x, ok := fun.X.(*ast.Ident); ok {
 						call := x.Name + "." + fun.Sel.Name
-						if fun.Sel.Name == "Unlock" || call == "hub.Close" || call == "life.Shutdown" {
+						// run.failed files a failed start-up ahead of the
+						// shutdown it causes, and stops nothing (TEN-383).
+						if fun.Sel.Name == "Unlock" || call == "hub.Close" || call == "life.Shutdown" || call == "run.failed" {
 							return true
 						}
 						strayDefers = append(strayDefers, call)

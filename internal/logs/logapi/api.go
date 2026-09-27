@@ -20,7 +20,8 @@
 //	DELETE /api/logbook/views/{name}                       delete one
 //	GET    /api/logbook/catalog[/{provider}][?id=N]        the event reference
 //	GET    /api/logbook/components                         what is running
-//	GET    /api/logbook/verify[?log=security]              the integrity check
+//	GET    /api/logbook/verify[?log=security]              the integrity check, and the Security log's chain
+//	GET    /api/logbook/audit?since=&until=                the Security log's audit export bundle
 //
 // Cursors are <store ID>.<seq>; one from another store starts over and says
 // so. A read with sensitive=1 returns sensitive values, and the reveal is
@@ -68,10 +69,22 @@ type API struct {
 	// BootStart is when the process boot:current names started, for the
 	// Since last start view; zero means this process.
 	BootStart time.Time
+	// Security verifies and exports the Security log's chain, which needs
+	// its key, anchor and witness: the composition root holds them.
+	Security SecurityLog
 }
 
 // RunLookup finds the run record of a trace.
 type RunLookup func(ctx context.Context, traceID string) (runtrace.Run, error)
+
+// SecurityLog is the Security log's chain tools (TEN-396). A nil func is
+// not available in this process.
+type SecurityLog struct {
+	Verify func(ctx context.Context) (store.Verification, error)
+	// Export writes the audit export bundle of the records from since to
+	// until (zero: unbounded).
+	Export func(ctx context.Context, w io.Writer, since, until time.Time) error
+}
 
 // started is when this process started, near enough.
 var started = time.Now()
@@ -108,6 +121,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/logbook/catalog/{provider}", a.catalog)
 	mux.HandleFunc("GET /api/logbook/components", a.components)
 	mux.HandleFunc("GET /api/logbook/verify", a.verify)
+	mux.HandleFunc("GET /api/logbook/audit", a.audit)
 }
 
 // Handler is the routes on a mux of their own.
@@ -120,7 +134,11 @@ func (a *API) Handler() http.Handler {
 // Streaming reports whether r is a long response, which the dashboard
 // exempts from its write timeout.
 func Streaming(r *http.Request) bool {
-	return r.Method == http.MethodGet && (r.URL.Path == "/api/events/stream" || r.URL.Path == "/api/events/export")
+	switch r.URL.Path {
+	case "/api/events/stream", "/api/events/export", "/api/logbook/audit":
+		return r.Method == http.MethodGet
+	}
+	return false
 }
 
 func (a *API) hub(w http.ResponseWriter) (*logs.Hub, bool) {
@@ -244,7 +262,7 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	wake, cancel := st.Subscribe() // before the first read, so no commit falls between
 	defer cancel()
 	if last == "" {
-		head, err := st.Head(ctx)
+		head, err := st.Latest(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -268,7 +286,7 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	tick := time.NewTicker(keepAlive)
 	defer tick.Stop()
 	for {
-		head, err := st.Head(ctx)
+		head, err := st.Latest(ctx)
 		if err != nil {
 			return // the client reconnects from its last id
 		}
@@ -407,7 +425,7 @@ func (a *API) export(w http.ResponseWriter, r *http.Request) {
 		format = NDJSON
 	}
 	ctx := r.Context()
-	head, err := st.Head(ctx)
+	head, err := st.Latest(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -950,8 +968,9 @@ func (a *API) components(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// verify checks the database's integrity. For the Security log it will walk
-// the hash chain and the archives too, once TEN-396 lands.
+// verify checks the database's integrity and, for log=security, walks the
+// Security log's chain against its key, anchor and witness. The check is
+// recorded in the logbook log; TEN-398 makes it a Security record.
 func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 	h, st, ok := a.book(w)
 	if !ok {
@@ -968,15 +987,70 @@ func (a *API) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := Verify{Log: log, OK: len(problems) == 0, Problems: problems}
-	if log == store.SecurityLog {
-		out.Note = "only the database's integrity was checked; the Security log's chain and archive check arrives with TEN-396"
+	switch {
+	case log == "":
+	case a.Security.Verify == nil:
+		out.Note = "the Security log's chain can't be checked from this process"
+	default:
+		v, err := a.Security.Verify(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		c := &Chain{Records: v.Records, Head: v.Head.Rec, Archives: v.Archives, Tombstones: v.Tombstones, Restores: len(v.Restores), Notes: v.Notes}
+		if v.Break != nil {
+			c.Break, out.OK = v.Break.Error(), false
+		}
+		out.Chain = c
 	}
+	kv := []any{"log", log}
 	if out.OK {
-		h.Logf("logbook", slog.LevelInfo, "logbook: the integrity check passed", "log", log)
+		h.Logf("logbook", slog.LevelInfo, "logbook: the integrity check passed", kv...)
 	} else {
-		h.Logf("logbook", slog.LevelError, "logbook: the integrity check failed", "log", log, "problems", strings.Join(problems, "; "))
+		if out.Chain != nil && out.Chain.Break != "" {
+			problems = append(problems, out.Chain.Break)
+		}
+		h.Logf("logbook", slog.LevelError, "logbook: the integrity check failed", append(kv, "problems", strings.Join(problems, "; "))...)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// audit writes the Security log's audit export bundle: its records from
+// since to until (a duration back from now, or a time, as in a filter),
+// with their chain, verifiable offline with the key. The export is recorded.
+func (a *API) audit(w http.ResponseWriter, r *http.Request) {
+	h, ok := a.hub(w)
+	if !ok {
+		return
+	}
+	if a.Security.Export == nil {
+		writeError(w, http.StatusServiceUnavailable, "the Security log can't be exported from this process")
+		return
+	}
+	v := r.URL.Query()
+	var bounds [2]time.Time
+	for i, k := range []string{"since", "until"} {
+		if s := v.Get(k); s != "" {
+			f, err := query.Parse(k + ":" + s)
+			if err != nil || len(f.Terms) != 1 {
+				writeError(w, http.StatusBadRequest, k+": a duration (7d) or a time (RFC 3339, 2026-09-27)")
+				return
+			}
+			bounds[i] = f.Terms[0].Values[0].Time
+		}
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", "attachment; filename=security-"+time.Now().UTC().Format("20060102-150405")+".ndjson")
+	kv := []any{"since", v.Get("since"), "until", v.Get("until")}
+	cw := &counter{w: w}
+	if err := a.Security.Export(r.Context(), cw, bounds[0], bounds[1]); err != nil {
+		if cw.n == 0 { // nothing is out yet: say why
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		h.Logf("logbook", slog.LevelWarn, "logbook: an audit export stopped before its end", append(kv, "err", err)...)
+		return
+	}
+	h.Logf("logbook", slog.LevelInfo, "logbook: exported the Security log's audit bundle", kv...)
 }
 
 // reveal masks the sensitive values of evs, unless the request asks for
@@ -1070,6 +1144,18 @@ func nonNil(evs []event.Event) []event.Event {
 		return []event.Event{}
 	}
 	return evs
+}
+
+// counter counts what goes through to w.
+type counter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *counter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

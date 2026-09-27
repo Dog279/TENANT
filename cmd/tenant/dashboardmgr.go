@@ -9,6 +9,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
 	"tenant/internal/logs"
+	"tenant/internal/logs/logapi"
 	"tenant/internal/runtrace"
 )
 
@@ -39,8 +40,9 @@ type dashboardManager struct {
 	approvals    dashboard.ApprovalControl     // TEN-194: headless approval queue surface (serve mode; nil-safe)
 	rules        dashboard.RuleControl         // per-tool permission rules card on the Tools page (nil-safe)
 	broker       *agent.Broker
-	logs         *logs.Hub       // the unified log book: Activity feed + folders (nil-safe)
-	runs         *runtrace.Store // run records, for the log book's timelines (nil-safe)
+	logs         *logs.Hub          // the unified log book: Activity feed + folders (nil-safe)
+	runs         *runtrace.Store    // run records, for the log book's timelines (nil-safe)
+	security     logapi.SecurityLog // the Security log's verify and audit export
 	log          *slog.Logger
 	notify       func(string)             // feed sink (pushSys) for async status
 	persist      func(enabled bool) error // record the on/off choice to config
@@ -109,6 +111,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	if m.runs != nil {
 		srv.SetRunRecords(m.runs.Get)
 	}
+	srv.SetSecurityLog(m.security)
 	srv.SetTrustedHosts(m.trustedHostsLocked())
 	dctx, cancel := context.WithCancel(m.base)
 	done := make(chan struct{})

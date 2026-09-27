@@ -77,10 +77,43 @@ func TestNormalizeSource(t *testing.T) {
 			t.Errorf("NormalizeSource(%q) = %q, want %q", in, got, want)
 		}
 	}
-	for _, bad := range []string{"..", "a/b", "A", "-x", ".x", "", strings.Repeat("x", 41)} {
+	// A source is a folder on Windows too: no device names, no trailing dot.
+	for _, bad := range []string{"..", "a/b", "A", "-x", ".x", "", strings.Repeat("x", 41),
+		"con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9", "nul.txt", "con.x.y", "com1.log", "x."} {
 		if ValidSource(bad) {
 			t.Errorf("ValidSource(%q) should be false", bad)
 		}
+	}
+	for _, in := range []string{"CON", "Nul.txt", "LPT1"} {
+		if got := NormalizeSource(in); got != "" {
+			t.Errorf("NormalizeSource(%q) = %q, want refused", in, got)
+		}
+	}
+	for _, ok := range []string{"console", "com10", "lpt", "auxiliary", "nul-x", "a.b"} {
+		if !ValidSource(ok) {
+			t.Errorf("ValidSource(%q) should be true", ok)
+		}
+	}
+}
+
+// The mirror escapes every control character in a message, so a line can't
+// drive the terminal of a `tail -f`; CR, LF and TAB still become spaces, as
+// v1 wrote them, and the line still parses. Values are quoted and escaped.
+func TestLineEscapesControlCharacters(t *testing.T) {
+	e := Entry{At: time.Date(2026, 9, 27, 9, 0, 0, 0, time.Local), Source: "x", Level: slog.LevelInfo,
+		Msg: "a\x1b[31mred\x07 c1\u009b del\x7f bad\xff é\ttab\r\nnl", Fields: []Field{{Key: "k", Value: "v\x1b]0;t\x07"}, {Key: "c", Value: "a\u0085b"}}}
+	line := e.Line()
+	for _, r := range line {
+		if r != '\t' && (r < ' ' || r == 0x7f || r >= 0x80 && r <= 0x9f) {
+			t.Fatalf("control character %U reached the line %q", r, line)
+		}
+	}
+	if !strings.Contains(line, `] a\x1b[31mred\a c1\u009b del\x7f bad\xff é tab nl`+"\t") {
+		t.Errorf("message = %q", line)
+	}
+	got, ok := ParseLine(line)
+	if !ok || got.Field("k") != "v\x1b]0;t\x07" || got.Field("c") != "a\u0085b" {
+		t.Errorf("ParseLine(%q) = %+v, %v", line, got, ok)
 	}
 }
 

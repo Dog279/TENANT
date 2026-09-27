@@ -143,8 +143,8 @@ func (k dashKeys) maybeReloadProvider(credID string) {
 		return
 	}
 	go func() {
-		if _, err := k.mc.ReloadKeys(); err != nil && k.mc.log != nil {
-			k.mc.log.Warn("model: the new key did not reload into the live provider", "provider", credID, "err", err)
+		if _, err := k.mc.ReloadKeys(); err != nil {
+			sysKeyNotReloaded.Log(context.Background(), "provider", credID, "source", "the settings page", "err", err)
 		}
 	}()
 }
@@ -182,12 +182,17 @@ func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degr
 			}
 			status, err := mc.ReloadKeys()
 			if err != nil {
+				sysKeyNotReloaded.Log(ctx, "source", "credentials.json", "err", err)
 				if notify != nil {
 					notify("keys: reload after credentials change failed: " + err.Error())
 				}
 				continue
 			}
-			if status != "" && notify != nil {
+			if status == "" {
+				continue // no provider is active
+			}
+			sysKeysReloaded.Log(ctx)
+			if notify != nil {
 				notify("keys: credentials.json changed — " + status)
 			}
 		}

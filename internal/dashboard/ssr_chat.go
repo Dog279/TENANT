@@ -9,6 +9,7 @@ package dashboard
 // driving the Server-wide turn coordinator (session.go).
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -16,6 +17,7 @@ import (
 	"strings"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs/event"
 )
 
 func (s *Server) handleChatPage(w http.ResponseWriter, _ *http.Request) {
@@ -30,8 +32,11 @@ func (s *Server) handleChatPage(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	setSSEHeaders(w)
 	flush(w) // open the stream immediately
+	ctx, act := event.Start(r.Context(), Stream, "stream", "events", "remote", r.RemoteAddr)
+	defer act.End(nil)
 	ch, unsub := s.broker.Subscribe()
 	defer unsub()
+	lagged := false
 	for {
 		select {
 		case <-r.Context().Done():
@@ -40,6 +45,7 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			behind(ctx, ch, "events", r.RemoteAddr, &lagged)
 			// Activity feed = meaningful activity only (tool calls, lifecycle,
 			// cross-agent + bus). Token deltas and other per-token noise are
 			// filtered out so the feed isn't a token-by-token flood (TEN-234).
@@ -55,6 +61,18 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			flush(w)
 		}
+	}
+}
+
+// behind reports, once per stream, a broker subscriber that fell behind: its
+// buffer filled, and the broker drops events for a full subscriber rather
+// than stall the turn.
+// ponytail: a full buffer, not a count of what was dropped; count drops in
+// agent.Broker if the figure matters.
+func behind(ctx context.Context, ch <-chan agent.Event, stream, remote string, reported *bool) {
+	if !*reported && len(ch) >= cap(ch)-1 {
+		*reported = true
+		StreamLagging.Log(ctx, "stream", stream, "remote", remote)
 	}
 }
 

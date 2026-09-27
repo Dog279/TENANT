@@ -16,13 +16,14 @@ package main
 //
 // Tailscale persists the serve config in tailscaled across reboots, so Tenant
 // holds no state here — this is a thin, testable convenience wrapper over the CLI.
+// Each serve and reset is an activity in the system log, and the CLI runs under
+// it (child=tailscale).
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"tenant/internal/logs/capture"
+	"tenant/internal/logs/event"
 	"tenant/internal/tui"
 )
 
@@ -56,20 +58,18 @@ type tailscaleManager struct {
 	// tailnet DNS name after a successful serve, "" after unserve (TEN-332).
 	// Without it the published URL answers 403. nil ⇒ no-op.
 	trustHost func(host string)
-	log       *slog.Logger
 }
 
 // newTailscaleManager wires the manager to the dashboard it publishes. Taking
 // the dashboard manager, not loose callbacks, keeps the /tailscale path and
 // the launch-time reassert path from wiring the Host trust differently.
-func newTailscaleManager(base context.Context, dash *dashboardManager, log *slog.Logger) *tailscaleManager {
+func newTailscaleManager(base context.Context, dash *dashboardManager) *tailscaleManager {
 	return &tailscaleManager{
 		base:      base,
 		bin:       resolveTailscaleBin(),
 		dashInfo:  dash.Status,
 		run:       execTailscale,
 		trustHost: dash.SetTailnetHost,
-		log:       log,
 	}
 }
 
@@ -107,15 +107,19 @@ func execTailscale(ctx context.Context, bin string, args ...string) (string, err
 // a reachable-but-unhappy CLI — it reports the condition via the struct so the
 // TUI can guide the operator. (The error return is reserved for future use.)
 func (m *tailscaleManager) Status() (tui.TailscaleStatus, error) {
+	return m.status(m.base), nil
+}
+
+func (m *tailscaleManager) status(ctx context.Context) tui.TailscaleStatus {
 	if m.bin == "" {
-		return tui.TailscaleStatus{Installed: false, Detail: "tailscale CLI not found"}, nil
+		return tui.TailscaleStatus{Installed: false, Detail: "tailscale CLI not found"}
 	}
 	st := tui.TailscaleStatus{Installed: true}
 
-	out, err := m.run(m.base, m.bin, "status", "--json")
+	out, err := m.run(ctx, m.bin, "status", "--json")
 	if err != nil {
 		st.Detail = "tailscale status failed: " + firstLine(out, err)
-		return st, nil
+		return st
 	}
 	var js struct {
 		BackendState string
@@ -126,7 +130,7 @@ func (m *tailscaleManager) Status() (tui.TailscaleStatus, error) {
 	}
 	if jerr := json.Unmarshal([]byte(out), &js); jerr != nil {
 		st.Detail = "could not parse `tailscale status --json`"
-		return st, nil
+		return st
 	}
 	st.State = js.BackendState
 	st.LoggedIn = js.BackendState == "Running"
@@ -136,17 +140,19 @@ func (m *tailscaleManager) Status() (tui.TailscaleStatus, error) {
 	}
 
 	// serve active? `tailscale serve status` prints "No serve config" when off.
-	if so, serr := m.run(m.base, m.bin, "serve", "status"); serr == nil {
+	if so, serr := m.run(ctx, m.bin, "serve", "status"); serr == nil {
 		st.Serving = strings.Contains(so, "https://")
 	}
-	return st, nil
+	return st
 }
 
 // Serve publishes the dashboard's loopback port onto the tailnet via
 // `tailscale serve --bg <port>`. Fails closed on a missing CLI or a
 // disconnected backend, with operator-actionable guidance.
-func (m *tailscaleManager) Serve() (string, error) {
-	st, _ := m.Status()
+func (m *tailscaleManager) Serve() (_ string, err error) {
+	ctx, act := event.Start(m.base, sysTailnetServe)
+	defer act.End(&err)
+	st := m.status(ctx)
 	if !st.Installed {
 		return "", fmt.Errorf("tailscale CLI not found — install Tailscale, or on macOS symlink the GUI app's CLI (%s) into your PATH, then retry", macOSTailscaleBundle)
 	}
@@ -158,7 +164,7 @@ func (m *tailscaleManager) Serve() (string, error) {
 	if port == "" {
 		return "", fmt.Errorf("could not determine the dashboard port from %q", addr)
 	}
-	if out, err := m.run(m.base, m.bin, "serve", "--bg", port); err != nil {
+	if out, err := m.run(ctx, m.bin, "serve", "--bg", port); err != nil {
 		return "", fmt.Errorf("`tailscale serve --bg %s` failed: %s", port, firstLine(out, err))
 	}
 	if m.trustHost != nil && st.DNSName != "" {
@@ -175,11 +181,13 @@ func (m *tailscaleManager) Serve() (string, error) {
 }
 
 // Unserve tears down the tailnet serve config (`tailscale serve reset`).
-func (m *tailscaleManager) Unserve() error {
+func (m *tailscaleManager) Unserve() (err error) {
+	ctx, act := event.Start(m.base, sysTailnetReset)
+	defer act.End(&err)
 	if m.bin == "" {
 		return fmt.Errorf("tailscale CLI not found")
 	}
-	if out, err := m.run(m.base, m.bin, "serve", "reset"); err != nil {
+	if out, err := m.run(ctx, m.bin, "serve", "reset"); err != nil {
 		return fmt.Errorf("`tailscale serve reset` failed: %s", firstLine(out, err))
 	}
 	if m.trustHost != nil {
