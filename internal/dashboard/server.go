@@ -153,7 +153,7 @@ func isDashboardStream(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/events", "/activity/events", "/ws":
+	case "/events", "/activity/events", "/logs/tail", "/ws":
 		return true
 	default:
 		return logapi.Streaming(r)
@@ -286,6 +286,7 @@ func (s *Server) routes() {
 	s.mountREST(s.mux)
 	s.mountWS(s.mux)
 	s.mountLogbook(s.mux) // the log book's API v2 (logbook.go)
+	s.mountLogsSSR(s.mux) // its Logs page (ssr_logs.go)
 
 	// Memory Curator REST surface (TEN-89, memory_rest.go). Nil-safe: a server
 	// constructed without a MemoryControl serves without the memory routes.
