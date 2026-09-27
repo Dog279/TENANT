@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -421,7 +423,9 @@ func annotateSafely(annotate func(*Decision), d *Decision) {
 	tier, role, profileID := d.SelectedTier, d.SelectedRole, d.SelectedProfileID
 	reason, clamped, pierced := d.PolicyReason, d.PolicyClamped, d.PrivacyPierced
 	defer func() {
-		_ = recover()
+		if v := recover(); v != nil {
+			slog.Error("route: decision annotator panicked; annotation dropped", "panic", v, "stack", string(debug.Stack()))
+		}
 		d.SelectedTier, d.SelectedRole, d.SelectedProfileID = tier, role, profileID
 		d.PolicyReason, d.PolicyClamped, d.PrivacyPierced = reason, clamped, pierced
 	}()
@@ -440,6 +444,7 @@ func markAssistedSuggestion(d *Decision, req PolicyDecisionRequest) {
 func classifySafely(classifier Classifier, ctx context.Context, prompt string) (sig Signal, err error) {
 	defer func() {
 		if v := recover(); v != nil {
+			slog.Error("route: classifier panicked", "panic", v, "stack", string(debug.Stack()))
 			err = fmt.Errorf("route: classifier panic: %v", v)
 		}
 	}()
@@ -452,6 +457,7 @@ func refreshPolicyInput(refresh func(*PolicyInput), in *PolicyInput) (err error)
 	}
 	defer func() {
 		if v := recover(); v != nil {
+			slog.Error("route: policy input refresh panicked", "panic", v, "stack", string(debug.Stack()))
 			err = fmt.Errorf("route: refresh policy input: %v", v)
 		}
 	}()

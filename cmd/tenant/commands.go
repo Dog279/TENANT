@@ -1817,6 +1817,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// last opened first. Each component registers its stop where it is built.
 	life := lifecycle.New(log.With("source", "shutdown"))
 	defer life.Shutdown()
+	// Crash capture and the boot record (TEN-365): its clean stop is the
+	// first Release step registered, so it runs last.
+	onPanic := startBootRecord(hub, life, "tui")
+	defer onPanic()
 
 	// First-run installer + connectivity check; results seed the feed (and
 	// the system log).

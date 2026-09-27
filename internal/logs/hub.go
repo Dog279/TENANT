@@ -578,6 +578,11 @@ func (h *Hub) OpenFile(source, name string) (io.ReadCloser, FileInfo, error) {
 
 // --- discovery + tailing ------------------------------------------------------
 
+// recordDirs hold records, not logs: serve's and the TUI's boot records, and
+// crash dumps waiting to be filed (TEN-365). Tailed as sources, a dump would
+// flood the feed one stack line at a time.
+var recordDirs = map[string]bool{"boots": true, "crash": true}
+
 // scanLocked registers every valid folder under root not yet known as a
 // FOREIGN source (some other process writes it) and returns the new ones.
 func (h *Hub) scanLocked() []*source {
@@ -588,7 +593,7 @@ func (h *Hub) scanLocked() []*source {
 	}
 	var added []*source
 	for _, e := range ents {
-		if !e.IsDir() || !ValidSource(e.Name()) {
+		if !e.IsDir() || !ValidSource(e.Name()) || recordDirs[e.Name()] {
 			continue
 		}
 		if _, known := h.sources[e.Name()]; known {
