@@ -284,6 +284,17 @@ var ErrNoEmitter = errors.New("event: no emitter installed; the record was not w
 // blocks. A key d does not declare is kept, but never rendered into Msg.
 func (d *Def) Log(ctx context.Context, kv ...any) { emit(ctx, d.build(ctx, "", kv)) }
 
+// Line writes an event no definition describes (ID 0) into log, with msg as
+// its message and kv as its fields, as Log takes them: text Tenant files but
+// did not write, such as a line a child process printed, which its parent
+// files under the child's log (internal/logs/capture). It never blocks.
+func Line(ctx context.Context, log string, lvl Level, msg string, kv ...any) {
+	d := Def{spec: Spec{Provider: log, Log: log, Level: lvl}}
+	e := d.build(ctx, "", kv)
+	e.Msg = msg
+	emit(ctx, e)
+}
+
 // Audit writes the event like Log, but returns only once its record is
 // committed, or with the error that stopped it: for records that must not be
 // lost, such as the Security log's.

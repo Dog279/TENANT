@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"tenant/internal/config"
+	"tenant/internal/logs/capture"
 	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/sandbox"
 	"tenant/internal/toolmux"
@@ -110,6 +111,9 @@ func planMCPServer(s config.MCPServer, cfgDir, dataDir string) (mcpServerPlan, e
 
 // mcpStdioOpener starts plan's server under its sandbox and connects to it.
 // The process lives as long as the context the mux passes (the command's).
+// Its start, its stderr, line by line, and its exit are filed in the mcp log
+// with server=<name> (logging v2 §8.4); the stderr tail it keeps still
+// explains a server that fails to start.
 func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
 	return func(ctx context.Context, trustAnnotations bool, policy mcpremote.Policy) (plugin, func(), error) {
 		b, err := sandbox.For(plan.Backend)
@@ -123,10 +127,24 @@ func mcpStdioOpener(plan mcpServerPlan, log *slog.Logger) toolmux.StdioOpener {
 		d, cleanup, err := mcpremote.OpenStdio(ctx, mcpremote.StdioConfig{
 			Label: plan.Label,
 			Connect: func(ctx context.Context) (io.ReadCloser, io.WriteCloser, error) {
-				p, err := sandbox.Start(ctx, b, plan.Server.Command, plan.Policy)
+				ch := capture.New(ctx, "mcp", "server", plan.Server.Name)
+				pol := plan.Policy
+				pol.Env.Add, pol.Stderr = ch.Env(), ch
+				p, err := sandbox.Start(ctx, b, plan.Server.Command, pol)
 				if err != nil {
+					ch.Exited(err, "backend", plan.Backend)
 					return nil, nil, err
 				}
+				ch.Started("pid", p.Pid(), "backend", plan.Backend, "limits", pol.Limits.String(),
+					"command", clipLog(strings.Join(plan.Server.Command, " ")))
+				go func() {
+					err := p.Wait()
+					kv := []any{"pid", p.Pid(), "backend", plan.Backend}
+					if p.Killed() {
+						kv = append(kv, "killed", "after the grace period")
+					}
+					ch.Exited(err, kv...)
+				}()
 				proc = p
 				return p.Stdout(), processStdin{p}, nil
 			},

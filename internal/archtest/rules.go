@@ -49,6 +49,7 @@ var rules = []rule{
 	{Pkg: "internal/logs/store", May: []string{"internal/logs/event", "internal/fsperm", "internal/datalock"}, Notes: "logbook.db, the system of record"},
 	{Pkg: "internal/logs", May: []string{"internal/logs/event", "internal/logs/store", "internal/fsperm", "internal/runtrace", "internal/datalock", "internal/version"}, Notes: "any package may log through it; never secrets: the composition root hands the store its key"},
 	{Pkg: "internal/logs/catalog", May: []string{"internal/logs/event"}, Notes: "the built-in event definitions"},
+	{Pkg: "internal/logs/capture", May: []string{"internal/logs/event", "internal/runtrace"}, Notes: "child-process capture; every internal package may import it"},
 	{Pkg: "internal/research", May: []string{"internal/fsperm"}},
 	{Pkg: "internal/backup", May: []string{"internal/datalock", "internal/fsperm", "internal/secrets", "internal/version"}},
 	{Pkg: "internal/peering", May: []string{"internal/httplimits", "internal/secrets"}},
@@ -72,10 +73,11 @@ var rules = []rule{
 }
 
 // everyone is one allowance on top of the rule that governs each internal
-// package: the event model, so an event is written where the action happens
-// without widening the rules for the heavy logs packages. reference/** and
-// scripts/** stay out of it: they must build on their own.
-var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event"}, Notes: "on top of its own row: the event model, so an event is written where the action happens"}
+// package: the event model, so an event is written where the action happens,
+// and child capture, so a child is filed where it is started, without
+// widening the rules for the heavy logs packages. Both import only leaves.
+// reference/** and scripts/** stay out of it: they must build on their own.
+var everyone = rule{Pkg: "internal/**", May: []string{"internal/logs/event", "internal/logs/capture"}, Notes: "on top of its own row: the event model and child capture, so an event is written, and a child filed, where the action happens"}
 
 // match reports whether module-relative package path pkg matches pattern.
 func match(pattern, pkg string) bool {

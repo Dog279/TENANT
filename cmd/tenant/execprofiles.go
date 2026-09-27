@@ -31,7 +31,8 @@ package main
 // the turn's approver for "os_exec_unsandboxed" — a person on an attended
 // surface, while the cron exec approver denies it — and re-runs on the host only
 // if approved. Enforce false is dry-run: re-run on the host and log the refusal.
-// Every confined run and every refusal is written to the "sandbox" log source.
+// Every run, on every backend, and every refusal is written to the "sandbox" log
+// source.
 
 import (
 	"context"
@@ -45,8 +46,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"tenant/internal/logs"
+	"tenant/internal/logs/capture"
 	"tenant/internal/sandbox"
 )
 
@@ -362,8 +365,7 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 		pol := p.Policy
 		pol.Limits.Wall = timeout
 		cmd := sandbox.Command{Shell: command, Surface: surface}
-		res, err := sandbox.Execute(ctx, be, cmd, pol, execEscalator(confirm))
-		logSandboxRun(surface, be.Name(), pol.Enforce, cmd, res, err)
+		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm))
 		if err != nil {
 			if be.Isolation() == sandbox.IsolationNone {
 				return res.Output, err // host: realRunner returned the start error unwrapped
@@ -423,8 +425,7 @@ func runSandboxShell(ctx context.Context, command string, p execProfile) (string
 		pol.Env = scrubbedEnvPolicy() // the legacy scrubbedEnv default
 	}
 	cmd := sandbox.Command{Args: cronShellArgv(command), Surface: surfaceCronShell}
-	res, err := sandbox.Execute(ctx, be, cmd, pol, nil) // unattended: never escalate to a person
-	logSandboxRun(surfaceCronShell, be.Name(), pol.Enforce, cmd, res, err)
+	res, err := execute(ctx, be, cmd, pol, nil) // unattended: never escalate to a person
 	s := strings.TrimSpace(res.Output)
 	if len(s) > cronShellOutputCap {
 		s = s[:cronShellOutputCap] + "\n…[truncated]"
@@ -482,12 +483,62 @@ func envScoped(e sandbox.EnvPolicy) bool {
 
 var sandboxLog = logs.For("sandbox")
 
-// logSandboxRun records every confined run and every refusal. Plain host runs
-// with nothing refused are the pre-seam path and are not logged here.
-func logSandboxRun(surface, backend string, enforce bool, cmd sandbox.Command, res sandbox.Result, err error) {
-	if backend == "host" && err == nil && len(res.Violations) == 0 {
-		return
+// execute runs cmd through the seam, filed in the sandbox log as a child
+// (logging v2 §8.4) on every backend, the host included: a start line with
+// the command, scrubbed, and the limits, and an exit line with the pid, the
+// exit code, the duration and the tail of the output. The child's
+// environment gets the trace and activity ctx carries. What the boundary did
+// gets its own line (logSandboxRun).
+func execute(ctx context.Context, be sandbox.Backend, cmd sandbox.Command, pol sandbox.Policy, esc sandbox.Escalator) (sandbox.Result, error) {
+	ch := capture.New(ctx, "sandbox", "surface", cmd.Surface, "backend", be.Name())
+	pol.Env.Add = ch.Env()
+	ch.Started("command", clipLog(commandText(cmd)), "limits", pol.Limits.String())
+	res, err := sandbox.Execute(ctx, be, cmd, pol, esc)
+	exit := err
+	if exit == nil && (res.ExitCode != 0 || res.TimedOut) {
+		exit = runExit{res}
 	}
+	kv := []any{"pid", res.PID, "timed_out", res.TimedOut}
+	if len(res.Violations) > 0 {
+		kv = append(kv, "violations", describeViolations(res))
+	}
+	if tail := outputTail(res.Output); tail != "" {
+		kv = append(kv, "tail", tail)
+	}
+	ch.Exited(exit, kv...)
+	logSandboxRun(cmd.Surface, be.Name(), pol.Enforce, cmd, res, err)
+	return res, err
+}
+
+// runExit is a run's failure as capture reads it: the exit code, and the
+// OS's words for it.
+type runExit struct{ res sandbox.Result }
+
+func (r runExit) Error() string { return exitText(r.res) }
+func (r runExit) ExitCode() int { return r.res.ExitCode }
+
+// outputTail is the end of a run's output for its exit line, scrubbed before
+// it is cut so no secret is left half-cut (TEN-361). Run merges stdout and
+// stderr on one pipe, so it is the tail of both, as the model sees them.
+func outputTail(s string) string {
+	const n = 512
+	if len(s) > n+8<<10 {
+		s = s[len(s)-(n+8<<10):] // the scrubber sees whole any secret shorter than 8 KiB that crosses the cut
+	}
+	s = strings.TrimSpace(logs.Scrub(s))
+	if len(s) <= n {
+		return s
+	}
+	i := len(s) - n
+	for !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return "…" + s[i:]
+}
+
+// logSandboxRun records what the boundary did to a run: a backend that could
+// not start it, a refusal, an escalation. The run itself is execute's.
+func logSandboxRun(surface, backend string, enforce bool, cmd sandbox.Command, res sandbox.Result, err error) {
 	attrs := []any{"surface", surface, "backend", backend, "exit", res.ExitCode, "timed_out", res.TimedOut,
 		"command", clipLog(commandText(cmd))}
 	if len(res.Violations) > 0 {
@@ -502,8 +553,6 @@ func logSandboxRun(surface, backend string, enforce bool, cmd sandbox.Command, r
 		sandboxLog.Warn("refused, then approved to re-run outside the sandbox", attrs...)
 	case res.Refused():
 		sandboxLog.Warn("refused by the sandbox", attrs...)
-	default:
-		sandboxLog.Info("ran in the sandbox", attrs...)
 	}
 }
 

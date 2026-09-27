@@ -126,7 +126,7 @@ generated from `internal/archtest/rules.go`, and
 <!-- archtest:rules -->
 | Package | May import | Note |
 |---|---|---|
-| every `internal/**` package | `internal/logs/event` | on top of its own row: the event model, so an event is written where the action happens |
+| every `internal/**` package | `internal/logs/event`, `internal/logs/capture` | on top of its own row: the event model and child capture, so an event is written, and a child filed, where the action happens |
 | `cmd/**` | anything | the composition root and command adapters |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
@@ -151,6 +151,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/logs/store` | `internal/logs/event`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
 | `internal/logs` | `internal/logs/event`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
 | `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
+| `internal/logs/capture` | `internal/logs/event`, `internal/runtrace` | child-process capture; every internal package may import it |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |

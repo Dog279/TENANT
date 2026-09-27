@@ -96,7 +96,7 @@ func (seatbelt) Start(ctx context.Context, argv []string, pol Policy) (*Process,
 		}
 		os.RemoveAll(scratch)
 	}
-	return startProcess(c, func(p int) error { pid = p; return nil }, release)
+	return startProcess(c, pol.Stderr, func(p int) error { pid = p; return nil }, release)
 }
 
 func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
@@ -147,7 +147,7 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 	c.WaitDelay = 500 * time.Millisecond
 
 	out, err := c.CombinedOutput()
-	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
+	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
 	if c.Process != nil && reapGroup(c.Process.Pid) {
 		res.Violations = append(res.Violations, Violation{Kind: "limit",
 			Detail: "terminated background process(es) that outlived the command"})

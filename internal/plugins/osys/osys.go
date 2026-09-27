@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"tenant/internal/logs/capture"
 )
 
 const (
@@ -348,11 +350,12 @@ func (s *Service) Processes(ctx context.Context) (string, error) {
 	} else {
 		cmd = exec.CommandContext(cctx, "ps", "aux")
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := capture.New(cctx, "plugin.os", "child", cmd.Args[0]).Run(cmd); err != nil {
 		return "", fmt.Errorf("osys: list processes: %w", err)
 	}
-	return clip(string(out), maxOutputBytes), nil
+	return clip(out.String(), maxOutputBytes), nil
 }
 
 func clip(s string, n int) string {

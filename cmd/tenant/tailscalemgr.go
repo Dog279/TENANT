@@ -18,6 +18,7 @@ package main
 // holds no state here — this is a thin, testable convenience wrapper over the CLI.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/logs/capture"
 	"tenant/internal/tui"
 )
 
@@ -87,14 +89,18 @@ func resolveTailscaleBin() string {
 }
 
 // execTailscale runs the CLI with a bounded timeout, returning combined output.
+// Its start and exit are filed in the system log, child=tailscale.
 func execTailscale(ctx context.Context, bin string, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, bin, args...).CombinedOutput()
-	return string(out), err
+	var out bytes.Buffer
+	cmd := exec.CommandContext(cctx, bin, args...)
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := capture.New(cctx, "system", "child", "tailscale", "args", strings.Join(args, " ")).Run(cmd)
+	return out.String(), err
 }
 
 // Status queries the CLI for install/connection/serve state. It never errors on

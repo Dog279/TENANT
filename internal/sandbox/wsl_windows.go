@@ -290,9 +290,10 @@ func (b *wslBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, 
 	if strings.TrimSpace(cmd.Stdin) != "" {
 		c.Stdin = strings.NewReader(cmd.Stdin)
 	}
+	c.Env = wslEnv(os.Environ(), EnvPolicy{Add: pol.Env.Add}) // the IDs only: Run keeps WSL's default environment
 
 	out, err := c.CombinedOutput()
-	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
+	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
 
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
@@ -330,7 +331,7 @@ func (b *wslBackend) Start(ctx context.Context, argv []string, pol Policy) (*Pro
 	bwrapArgv := bwrapArgsOpts(tpol, opts, targv[0], targv[1:])
 	c := exec.CommandContext(ctx, b.info.wslExe, wslArgv(b.info.distro, append([]string{b.info.bwrap}, bwrapArgv...)...)...)
 	c.Env = wslEnv(os.Environ(), pol.Env)
-	return startProcess(c, nil, nil)
+	return startProcess(c, pol.Stderr, nil, nil)
 }
 
 // wslEnv is wsl.exe's environment for a policy. A scoped policy shares
@@ -338,22 +339,31 @@ func (b *wslBackend) Start(ctx context.Context, argv []string, pol Policy) (*Pro
 // Windows to Linux only), so their values cross without appearing on a
 // command line, and Tenant's own WSLENV is replaced. The distro's login
 // environment (PATH, HOME, …) is still present inside. An unscoped policy
-// leaves the environment as it is.
+// leaves the environment as it is, but for Add, shared beside whatever
+// Tenant's own WSLENV shares.
 func wslEnv(parent []string, e EnvPolicy) []string {
-	if !e.Isolate && len(e.Pass) == 0 && len(e.Set) == 0 {
+	unscoped := !e.Isolate && len(e.Pass) == 0 && len(e.Set) == 0
+	if unscoped && len(e.Add) == 0 {
 		return parent
 	}
-	scoped := e.materialize(parent)
+	shared := e.Add
+	if !unscoped {
+		shared = e.materialize(parent)
+	}
 	var names []string
-	for _, kv := range scoped {
+	for _, kv := range shared {
 		if name, _, ok := cut(kv, '='); ok {
 			names = append(names, name+"/u")
 		}
 	}
-	out := make([]string, 0, len(parent)+len(e.Set)+1)
+	sort.Strings(names)
+	out := make([]string, 0, len(parent)+len(e.Set)+len(e.Add)+1)
 	for _, kv := range parent {
-		name, _, _ := cut(kv, '=')
+		name, val, _ := cut(kv, '=')
 		if strings.EqualFold(name, "WSLENV") {
+			if unscoped && val != "" {
+				names = append([]string{val}, names...)
+			}
 			continue
 		}
 		if _, set := e.Set[name]; set {
@@ -364,7 +374,7 @@ func wslEnv(parent []string, e EnvPolicy) []string {
 	for k, v := range e.Set {
 		out = append(out, k+"="+v)
 	}
-	sort.Strings(names)
+	out = append(out, e.Add...)
 	return append(out, "WSLENV="+strings.Join(names, ":"))
 }
 

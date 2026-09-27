@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
+	"tenant/internal/logs/capture"
+	"tenant/internal/runtrace"
 	"tenant/internal/sandbox"
 )
 
@@ -27,6 +31,52 @@ func TestSandboxRunnerRunsShellCommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "hello-sandbox") {
 		t.Fatalf("output %q does not contain the echoed text", out)
+	}
+}
+
+// os_exec on the host backend is filed in the sandbox log (TEN-364): a start
+// line with the command, scrubbed, and the limits, and an exit line with the
+// pid, the exit code, the duration and the output's tail. The command sees
+// the trace it runs under.
+func TestHostRunIsFiledInTheSandboxLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell $VAR expansion assumes sh; skipping on windows")
+	}
+	hub := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+	trace := runtrace.NewID()
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan(trace))
+	token := "ghp_" + strings.Repeat("a", 36)
+
+	run := profileRunner(resolveExecProfile(surfaceLocal, "", "", ""), surfaceLocal, nil)
+	out, err := run(ctx, "echo trace=$"+capture.EnvTrace+"; exit 3 # "+token, 30*time.Second)
+	if err == nil || !strings.Contains(out, "trace="+trace) {
+		t.Fatalf("out = %q, err = %v; want exit 3 and the trace", out, err)
+	}
+	all, _ := hub.Snapshot()
+	var lines []string
+	for _, e := range all {
+		if e.Source != "sandbox" || e.Field("backend") != "host" || e.Field("surface") != surfaceLocal {
+			continue
+		}
+		lines = append(lines, e.Line())
+		switch e.Msg {
+		case "process started":
+			if cmd := e.Field("command"); strings.Contains(cmd, token) || !strings.Contains(cmd, "«secret:") || e.Field("limits") != "wall=30s" {
+				t.Errorf("start line = %s", e.Line())
+			}
+		case "process exited: exit status 3":
+			if e.Field("exit") != "3" || e.Field("pid") == "0" || e.Field("duration") == "" || e.Field("tail") != "trace="+trace || e.Level != slog.LevelWarn {
+				t.Errorf("exit line = %s", e.Line())
+			}
+		default:
+			t.Errorf("unexpected line %s", e.Line())
+		}
+	}
+	if len(lines) != 2 {
+		t.Errorf("want a start and an exit line, got %q", lines)
 	}
 }
 

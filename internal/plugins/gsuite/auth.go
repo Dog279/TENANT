@@ -16,6 +16,7 @@
 package gsuite
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -32,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/logs/capture"
 
 	"golang.org/x/oauth2"
 )
@@ -216,12 +219,14 @@ func parseRSAKey(pemStr string) (*rsa.PrivateKey, error) {
 type runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 func execRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, name, args...).Output()
-	if err != nil {
+	var out bytes.Buffer // the token: never logged
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = &out
+	if err := capture.New(ctx, "plugin.gsuite", "child", name).Run(cmd); err != nil {
 		return nil, fmt.Errorf("gsuite: `%s %s` failed: %w (is gcloud installed & `gcloud auth application-default login` done?)",
 			name, strings.Join(args, " "), err)
 	}
-	return out, nil
+	return out.Bytes(), nil
 }
 
 // gcloudTTL: print-access-token doesn't report expiry; ADC tokens last
