@@ -1214,7 +1214,7 @@ The Recommended column holds the default this plan proceeds on, unless you decid
 **Open questions** (none of them blocks phase 0 or phase 1):
 
 - **Q1.** Should the Components view also show host resource snapshots (the process's memory, goroutines and open files; free space on the data volume)? The suggestion: a low-rate diagnostic event every 60 seconds, left out of phase 3.
-- **Q2.** Should an alert be allowed to start an agent investigation that is given the correlated events? It would stand out among log viewers, but it needs a budget and an approval story (phase 6).
+- **Q2.** Should an alert be allowed to start an agent investigation that is given the correlated events? It would stand out among log viewers, but it needs a budget and an approval story (phase 6). **Decided yes** by the operator (TEN-400): each investigation is approved, budgeted and read-only, its input labelled untrusted (docs/LOGGING.md, "Investigating an alert with the agent").
 - **Q3.** Should you be able to view a federated peer's logs through the Logs page? The suggestion: after TEN-189/190, as a read-only remote provider.
 - **Q4.** When serve runs as another account (the Windows server runs it as SYSTEM), is reading through the API enough? The alternative is for the service to keep its log book where the operator's account can read it. The suggestion: the API, which is already the remote path.
 - **Q5.** Which witness should the Security log use, if any: a federated peer, the operator's Discord DM, or a file on another machine? The suggestion: the Discord DM, because the relay already exists. It's opt-in, because without one the log is tamper-evident only against things that can't read the key (§10.2).

@@ -5,8 +5,8 @@ package main
 // logs.alerts, read at every evaluation, so an edit applies without a
 // restart. Actions go out through what already reaches the operator: the
 // Discord relay's operator DM (witnessDM, set where the relay is built), an
-// iMessage to imessage.operator, and a one-off prompt through the cron
-// scheduler.
+// iMessage to imessage.operator, a one-off prompt through the cron
+// scheduler, and an agent investigation (loginvestigate.go).
 
 import (
 	"context"
@@ -48,7 +48,12 @@ func alertEvaluator(cfgDir string, st *store.Store, notify func(string)) *alerts
 			}
 			return alertSpecs(lc.Logs.Alerts)
 		},
-		Act: func(ctx context.Context, a alerts.Alert) error { return sendAlert(ctx, cfgDir, a) },
+		Act: func(ctx context.Context, a alerts.Alert) error {
+			if a.Action == alerts.Investigate {
+				return investigateAlert(ctx, cfgDir, st, a, notify) // TEN-400
+			}
+			return sendAlert(ctx, cfgDir, a)
+		},
 	}
 }
 

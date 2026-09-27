@@ -1042,13 +1042,13 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			var flow Flow
 			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Outbound {
 				if label, matched := a.infoFlow.match(call.Arguments); matched {
-					detail := fmt.Sprintf("%s arguments contain sensitive data from %s; allow this outbound flow?", call.Name, label.Provenance)
+					detail := fmt.Sprintf("%s arguments contain %s data from %s; allow this outbound flow?", call.Name, label.Sensitivity, label.Provenance)
 					approved := a.cfg.ConfirmSensitiveEgress != nil &&
 						a.cfg.ConfirmSensitiveEgress(ctx, "sensitive_egress", detail)
 					if !approved {
 						a.feedToolResult(ctx, ToolCallResult{
 							Call: call, IsError: true,
-							Result: fmt.Sprintf("blocked: %s arguments contain sensitive data from %s and outbound egress was not approved", call.Name, label.Provenance),
+							Result: fmt.Sprintf("blocked: %s arguments contain %s data from %s and outbound egress was not approved", call.Name, label.Sensitivity, label.Provenance),
 						}, profile.ToolResultCap())
 						continue
 					}
@@ -1686,7 +1686,7 @@ func contextView(content string, maxTokens int, sensitive bool) (body, note stri
 
 func hasSensitiveLabel(labels []model.InfoFlowLabel) bool {
 	for _, label := range labels {
-		if label.Sensitivity == model.SensitivitySensitive {
+		if label.Tracked() {
 			return true
 		}
 	}

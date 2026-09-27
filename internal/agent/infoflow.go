@@ -39,7 +39,7 @@ func newInfoFlowTracker() *infoFlowTracker { return &infoFlowTracker{} }
 func (t *infoFlowTracker) record(labels []model.InfoFlowLabel, content string) {
 	var sensitive *model.InfoFlowLabel
 	for i := range labels {
-		if labels[i].Sensitivity == model.SensitivitySensitive {
+		if labels[i].Tracked() {
 			label := labels[i]
 			sensitive = &label
 			break
@@ -272,6 +272,17 @@ func normalizeFlowText(s string) string { return strings.ToLower(strings.TrimSpa
 // its own sensitive reads, so its egress of that data asks for approval too.
 // The zero value carries nothing.
 type Flow struct{ results []sensitiveFlowResult }
+
+// NewFlow is provenance for text that reaches an agent other than as a tool
+// result, such as the log events attached to an alert's investigation
+// (TEN-400). Seeded as Config.InboundFlow, the text is tracked like a
+// labelled result: an outbound call quoting it asks first, and FlowFor finds
+// it in what the agent writes.
+func NewFlow(label model.InfoFlowLabel, content string) Flow {
+	var t infoFlowTracker
+	t.record([]model.InfoFlowLabel{label}, content)
+	return Flow{results: t.recent}
+}
 
 // Empty reports whether f carries no sensitive provenance.
 func (f Flow) Empty() bool { return len(f.results) == 0 }

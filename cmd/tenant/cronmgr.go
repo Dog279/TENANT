@@ -93,6 +93,10 @@ type cronAgentDeps struct {
 	cfgDir    string    // protected from exec-job writes
 	dataDir   string    // protected from exec-job writes; holds the shell sandbox
 	allowExec *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
+
+	// ask is the approval broker's Ask: an alert's investigation, which runs
+	// on this stack, starts only once the operator approves it (TEN-400).
+	ask func(ctx context.Context, category, action, detail string) bool
 }
 
 // notCron cuts the cron_* tools from a cron runner (no self-scheduling) and the
@@ -144,6 +148,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	}
 
 	approver := cronExecApprover(d.cfgDir, d.dataDir)
+	setAlertInvestigator(d) // alert rules' investigate action (loginvestigate.go)
 
 	execOn := func() bool { return d.allowExec != nil && d.allowExec.enabled() }
 

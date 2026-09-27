@@ -536,6 +536,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
 		authProblems: mcpAuthProblemsFn(mainTools), // banner on every summary while a connector's sign-in is dead
+		ask:          broker.Ask,                   // an alert's investigation asks first (TEN-400)
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {
