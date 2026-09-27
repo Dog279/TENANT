@@ -13,6 +13,44 @@ here, marked retired. They are assigned in blocks: 1–999 lifecycle, 1000s
 operations, 2000s warnings, 3000s errors, 4000s security and audit, 5000s
 configuration, 9000s diagnostics.
 
+## browser
+
+Writes the `browser` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [2001](#browser-2001) | warning | Sandbox | `Chrome's process sandbox is disabled ({outer})` |
+| [3001](#browser-3001) | error | DevTools | `chromedp: {err}` |
+
+### browser 2001
+
+`Chrome's process sandbox is disabled ({outer})`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sandbox · **Log:** browser
+- **Fields:** `outer`
+- **Keywords:** `security`
+- **Find it:** `provider:browser id:2001`
+
+**What it means.** Chrome runs without its own process sandbox, because browser_no_sandbox is set.
+
+**Why it happens.** The operator turned it off for an environment where Chrome's sandbox can't start; Tenant detected the named outer sandbox.
+
+**What to do.** Keep it only inside that outer sandbox; turn browser_no_sandbox off anywhere else.
+
+### browser 3001
+
+`chromedp: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** DevTools · **Log:** browser
+- **Fields:** `err`
+- **Find it:** `provider:browser id:3001`
+
+**What it means.** The browser automation library reported an error talking to Chrome.
+
+**Why it happens.** Chrome sent something chromedp could not handle, or the tab went away mid-command.
+
+**What to do.** Usually harmless once; if it repeats, check the browser plugin's recent tool results and restart the browser with /disable web then /enable web.
+
 ## cron
 
 Writes the `cron` log.
@@ -1077,6 +1115,7 @@ Writes the `plugin.atlassian` log.
 | [1101](#pluginatlassian-1101) | info | Auth | `Jira OAuth token refreshed` |
 | [2001](#pluginatlassian-2001) | warning | API | `Jira rate limit reached on {op}: HTTP {status}` |
 | [2101](#pluginatlassian-2101) | warning | Auth | `Jira's rotated refresh token not saved: {err}` |
+| [2102](#pluginatlassian-2102) | warning | Auth | `Open the sign-in URL to authorize Tenant's Jira access` |
 | [3001](#pluginatlassian-3001) | error | Lifecycle | `Jira could not start: {err}` |
 | [3002](#pluginatlassian-3002) | error | API | `Jira refused the credentials on {op}: HTTP {status}` |
 | [3003](#pluginatlassian-3003) | error | API | `Jira API call {op} failed: {err}` |
@@ -1163,6 +1202,20 @@ Writes the `plugin.atlassian` log.
 **Why it happens.** The token cache or its directory can't be written: permissions or a full disk.
 
 **What to do.** Fix what the error names. If Jira calls then fail to refresh, sign in again with `tenant atlassian login`.
+
+### plugin.atlassian 2102
+
+`Open the sign-in URL to authorize Tenant's Jira access`
+
+- **Level:** warning · **Channel:** operational · **Task:** Auth · **Log:** plugin.atlassian
+- **Fields:** `url`
+- **Find it:** `provider:plugin.atlassian id:2102`
+
+**What it means.** Signing in to Jira needs the operator's browser, and it could not be opened for them.
+
+**Why it happens.** No browser opener in this process (a service, a remote shell), or opening it failed.
+
+**What to do.** Open the logged url in a browser on this machine and approve access; the sign-in completes by itself.
 
 ### plugin.atlassian 3001
 
@@ -1424,6 +1477,7 @@ Writes the `plugin.gsuite` log.
 | [1101](#plugingsuite-1101) | info | Auth | `Google access token refreshed; valid until {expires}` |
 | [2001](#plugingsuite-2001) | warning | API | `Google Workspace rate limit reached on {op}: HTTP {status}` |
 | [2101](#plugingsuite-2101) | warning | Auth | `Rotated Google OAuth token not saved; a restart may need a new sign-in: {err}` |
+| [2102](#plugingsuite-2102) | warning | Auth | `Could not open a browser; open the sign-in URL to authorize Google: {err}` |
 | [3001](#plugingsuite-3001) | error | Lifecycle | `Google Workspace could not start: {err}` |
 | [3002](#plugingsuite-3002) | error | API | `Google Workspace refused the credentials on {op}: HTTP {status}` |
 | [3003](#plugingsuite-3003) | error | API | `Google Workspace API call {op} failed: {err}` |
@@ -1511,6 +1565,20 @@ Writes the `plugin.gsuite` log.
 **Why it happens.** The credentials file or its directory can't be written: permissions, a full disk, or a lock another process holds.
 
 **What to do.** Fix what the error names; the save is retried on the next refresh. After a restart that finds the old token refused, run /configure gsuite again.
+
+### plugin.gsuite 2102
+
+`Could not open a browser; open the sign-in URL to authorize Google: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Auth · **Log:** plugin.gsuite
+- **Fields:** `url`, `err`
+- **Find it:** `provider:plugin.gsuite id:2102`
+
+**What it means.** Signing in to Google needs the operator's browser, and it could not be opened for them.
+
+**Why it happens.** No browser opener in this process (a service, a remote shell), or opening it failed.
+
+**What to do.** Open the logged url in a browser on this machine and approve access; the sign-in completes by itself.
 
 ### plugin.gsuite 3001
 

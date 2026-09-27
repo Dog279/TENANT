@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,7 +24,6 @@ import (
 	"tenant/internal/httplimits"
 	"tenant/internal/improve"
 	"tenant/internal/lifecycle"
-	"tenant/internal/logs"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
 	"tenant/internal/mcpserver"
@@ -1631,7 +1629,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// hit Search's no-embedder fallback and ship the FULL enabled catalog every
 	// turn. Lazy precompute on first ranked Search; nil embedder ⇒ unranked floor.
 	shared.SetEmbedder(embedderID, skEmb)
-	compressor := &compress.Compressor{Router: router, Logger: log}
+	compressor := &compress.Compressor{Router: router}
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 
 	budgets := configuredBudgets(c.lc)
@@ -1802,14 +1800,10 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// The unified log book replaces <data>/tui.log: every subsystem's lines are
 	// filed under <data>/logs/<source>/<day>.log and retained for the dashboard
 	// feed. Nothing goes to stderr — the alt-screen must stay clean.
-	hub, herr := openLogHub(c)
-	if herr != nil {
-		hub = logs.NewMemory(0)
-	}
+	hub, log, herr := openLogHub(c, nil)
 	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
 	hub.Start(ctx)
-	log := slog.New(hub.Handler(nil))
 	startRetention(ctx, c, log.With("source", "privacy"))
 
 	// Teardown runs in the same stages as serve (internal/lifecycle, TEN-314):
@@ -1826,13 +1820,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// First-run installer + connectivity check; results seed the feed (and
 	// the system log).
 	sysCh := make(chan string, 64)
-	pushSys := func(s string) {
-		hub.Logf("system", slog.LevelInfo, s)
-		select {
-		case sysCh <- s:
-		default:
-		}
-	}
+	pushTo := func(source, s string) { feedLine(hub, sysCh, source, s) }
+	pushSys := func(s string) { pushTo("system", s) }
+	signInNotice = pushSys // a sign-in URL must not draw over the TUI
 	if herr != nil {
 		pushSys("logs: " + herr.Error() + " — logging to memory only")
 	}
@@ -2076,7 +2066,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
+	compressor := &compress.Compressor{Router: router}
 
 	// Sub-agent activity flows to the TUI as structured TeamEvents — shown
 	// in the feed AND summed into the separate team token counter. Only the
@@ -2588,6 +2578,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			compactor: compressor, userProfile: prof,
 			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 			sysPrompt: sysPrompt, log: log.With("source", "discord"), gateConfirm: discordBroker.Confirm,
+			events:      emit,
 			routeHook:   routeRT.Hook(),
 			routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 		}); derr != nil {
@@ -2631,6 +2622,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 				sysPrompt: sysPrompt, log: log.With("source", "discord"), gateConfirm: discordBroker.Confirm,
+				events:      emit,
 				routeHook:   routeRT.Hook(),
 				routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 			})
@@ -2737,7 +2729,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 				sysPrompt: sysPrompt, log: log.With("source", "imessage"), routeHook: routeRT.Hook(),
-				routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
+				routeActive: routeRT.Active, routeSticky: routeRT.Sticky, events: emit,
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -2793,13 +2785,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// distill cursor would skip episodes never really processed.
 		sched.Paused = degraded.Degraded
 		sched.OnRun = func(rec improve.JobRunRecord) {
-			line, ok := formatSelfImproveFeedLine(rec)
-			if !ok {
-				return
-			}
-			select {
-			case sysCh <- line:
-			default: // never block a job on a slow UI
+			if line, ok := formatSelfImproveFeedLine(rec); ok {
+				pushTo("improve", line) // never blocks a job on a slow UI
 			}
 		}
 		// Start lines ONLY for the eval: it runs for minutes, so without an
@@ -2807,12 +2794,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// result. The frequent cheap jobs (distill every 30m) would spam the
 		// feed with start lines for runs that finish in seconds.
 		sched.OnStart = func(name string) {
-			if name != "eval-nightly" {
-				return
-			}
-			select {
-			case sysCh <- "improve: eval-nightly started — full live suite on its own router+tools; takes minutes, the result lands here and in trend.jsonl":
-			default: // never block a job on a slow UI
+			if name == "eval-nightly" {
+				pushTo("improve", "improve: eval-nightly started — full live suite on its own router+tools; takes minutes, the result lands here and in trend.jsonl")
 			}
 		}
 		sched.Register(distillJob, *distillEvery)
@@ -3053,10 +3036,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// sub-agent tool activity already flows via teamCh. The report returns to
 	// the chat pane. Reuses the same TeamRuntime as the orchestrator.
 	researchSay := func(format string, a ...any) {
-		select {
-		case sysCh <- "research: " + fmt.Sprintf(format, a...):
-		default:
-		}
+		pushTo("research", "research: "+fmt.Sprintf(format, a...))
 	}
 	// C3: open the persistent research store under <data>/research. Failure
 	// degrades gracefully — runWithPersistence handles a nil store, /research

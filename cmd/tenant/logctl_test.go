@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -131,13 +132,14 @@ func TestCmdLog_TokenFileAndBuiltinSources(t *testing.T) {
 // serve and the TUI attach <logs root>/logbook.db unless logs.store is false.
 func TestOpenLogHub_AttachesTheStore(t *testing.T) {
 	defer logs.Install(nil)
+	defer slog.SetDefault(slog.Default())
 	off := false
 	for _, tc := range []struct {
 		store *bool
 		want  bool
 	}{{nil, true}, {&off, false}} {
 		c := &commonFlags{dataDir: t.TempDir(), lc: &launchConfig{Logs: logsConfig{Store: tc.store}}}
-		h, err := openLogHub(c)
+		h, _, err := openLogHub(c, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

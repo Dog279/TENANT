@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,6 +26,7 @@ import (
 	v2 "github.com/ctreminiom/go-atlassian/v2/jira/v2"
 	"github.com/ctreminiom/go-atlassian/v2/pkg/infra/oauth2"
 	"github.com/ctreminiom/go-atlassian/v2/service/common"
+	"tenant/internal/httplimits"
 	"tenant/internal/secrets"
 )
 
@@ -265,12 +267,16 @@ func awaitCallbackCode(ctx context.Context, addr, state, authURL string, open fu
 		done <- result{code: code}
 	})
 	srv := &http.Server{Handler: mux}
+	httplimits.Configure(srv)
 	go srv.Serve(ln)
 	defer srv.Close()
 
-	fmt.Fprintf(os.Stderr, "\nOpen this URL to authorize Tenant's Atlassian access:\n\n  %s\n\nWaiting for the callback on http://%s/callback …\n", authURL, addr)
-	if open != nil {
-		_ = open(authURL) // best-effort auto-open; the printed URL is the fallback
+	// The opener shows the operator the URL where they will see it (the TUI
+	// feed, the terminal) and opens the browser. Without one, or when it
+	// fails, the URL goes to the log instead.
+	slog.Default().Info("atlassian: waiting for the sign-in callback", "source", "plugin.atlassian", "callback", "http://"+addr+"/callback")
+	if open == nil || open(authURL) != nil {
+		SignInURL.Log(ctx, "url", authURL)
 	}
 
 	select {

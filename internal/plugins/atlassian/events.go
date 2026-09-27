@@ -27,3 +27,8 @@ var TokenRefreshFailed = Events.Provider.Event(3101, event.Error, "Auth", "Jira 
 	Doc("The access token could not be renewed, so Jira calls fail.",
 		"The refresh token was revoked, expired after 90 days unused, or the OAuth app's secret changed.",
 		"Sign in again with `tenant atlassian login`, then /enable atlassian.")
+
+var SignInURL = Events.Provider.Event(2102, event.Warning, "Auth", "Open the sign-in URL to authorize Tenant's Jira access", "url").
+	Doc("Signing in to Jira needs the operator's browser, and it could not be opened for them.",
+		"No browser opener in this process (a service, a remote shell), or opening it failed.",
+		"Open the logged url in a browser on this machine and approve access; the sign-in completes by itself.")

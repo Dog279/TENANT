@@ -1,9 +1,14 @@
 package mcpremote
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -119,5 +124,30 @@ func TestLazyFetcher_CancelledBeforeBind(t *testing.T) {
 	}
 	if !portFree(addr) {
 		t.Fatal("nothing should be bound")
+	}
+}
+
+// The opener shows the operator the consent URL; when it fails the URL goes to
+// the process logger (the log book, a one-shot command's terminal), never
+// straight to stderr over the TUI.
+func TestLazyFetcher_LogsTheURLWhenNoBrowserOpens(t *testing.T) {
+	var buf bytes.Buffer
+	prev, prevW, prevF := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev); log.SetOutput(prevW); log.SetFlags(prevF) })
+
+	addr := freePort(t)
+	open := func(u string) error {
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_, _ = http.Get("http://" + addr + "/callback?code=c&state=s")
+		}()
+		return errors.New("no browser here")
+	}
+	if _, err := newLazyCodeFetcher(addr, open)(context.Background(), &auth.AuthorizationArgs{URL: "https://as.example/authorize?state=s"}); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "https://as.example/authorize?state=s") {
+		t.Fatalf("the consent URL was not logged:\n%s", out)
 	}
 }

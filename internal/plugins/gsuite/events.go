@@ -23,3 +23,8 @@ var TokenRefreshFailed = Events.Provider.Event(3101, event.Error, "Auth", "Googl
 	Doc("No access token could be minted, so every Gmail, Calendar and Drive call fails.",
 		"The OAuth refresh token was revoked or expired, the service account's key or delegation changed, or gcloud is signed out.",
 		"Sign in again with /configure gsuite (for gcloud mode, `gcloud auth login`); `tenant doctor` checks the setup.")
+
+var SignInURL = Events.Provider.Event(2102, event.Warning, "Auth", "Could not open a browser; open the sign-in URL to authorize Google: {err}", "url", "err").
+	Doc("Signing in to Google needs the operator's browser, and it could not be opened for them.",
+		"No browser opener in this process (a service, a remote shell), or opening it failed.",
+		"Open the logged url in a browser on this machine and approve access; the sign-in completes by itself.")

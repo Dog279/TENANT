@@ -139,6 +139,9 @@ func (c *commonFlags) resolveDirs() error {
 			return err
 		}
 	}
+	if openCommandLog != nil {
+		openCommandLog(c)
+	}
 	return nil
 }
 
@@ -289,18 +292,16 @@ func (c *commonFlags) autodetectModel() {
 
 // logger goes to STDERR always. Stdout is reserved: for mcp-memory it
 // is the JSON-RPC channel; for chat it is the conversation. Logs must
-// never contaminate it.
+// never contaminate it. Once the process has a log book (serve, the TUI,
+// a one-shot command with a data directory) it is the process logger,
+// which files into the book and prints only where that surface prints.
 func newLogger() *slog.Logger {
+	if _, ok := slog.Default().Handler().(*logs.Handler); ok {
+		return slog.Default()
+	}
 	// TENANT_LOG=debug|info surfaces the agent/backend internals —
 	// essential for diagnosing model tool-format adherence in the field.
-	lvl := slog.LevelWarn
-	switch strings.ToLower(os.Getenv("TENANT_LOG")) {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "info":
-		lvl = slog.LevelInfo
-	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 }
 
 // logLevel resolves the TENANT_LOG level (default WARN).
@@ -360,26 +361,83 @@ func logsRetention(cfg logsConfig) time.Duration {
 
 // openLogHub opens the unified log book for a long-running surface (serve,
 // tui) and installs it as the process default, so every logs.For(...) logger
-// anywhere in the binary starts filing. Unless logs.store is false it also
-// attaches <logs root>/logbook.db, the system of record; a store that won't
-// open leaves a warning and the text files carrying on alone. The caller
-// Starts it (discovery, tailing, retention) once it has a lifetime context,
-// and Closes it on exit, which flushes and closes the store.
-func openLogHub(c *commonFlags) (*logs.Hub, error) {
+// anywhere in the binary starts filing. The returned logger (the hub, teeing
+// to tee when non-nil) becomes slog.Default, which also carries the log
+// package: nothing a library prints that way reaches the terminal behind
+// the surface's back. Unless logs.store is false it also attaches
+// <logs root>/logbook.db, the system of record; a store that won't open
+// leaves a warning and the text files carrying on alone. When the book
+// cannot be opened, a memory hub stands in and err says why; the caller
+// shows it. The caller Starts the hub (discovery, tailing, retention) once
+// it has a lifetime context, and Closes it on exit, which flushes and closes
+// the store.
+func openLogHub(c *commonFlags, tee slog.Handler) (*logs.Hub, *slog.Logger, error) {
 	h, err := logs.Open(c.logsRoot(), c.logsOptions())
 	if err != nil {
-		return nil, err
+		h = logs.NewMemory(0)
 	}
 	logs.Install(h)
-	if c.lc == nil || c.lc.Logs.Store == nil || *c.lc.Logs.Store {
-		st, err := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID()})
-		if err != nil {
-			h.Logf("logbook", slog.LevelWarn, "logbook: the store did not open; logging to the text files only", "err", err)
+	if err == nil && (c.lc == nil || c.lc.Logs.Store == nil || *c.lc.Logs.Store) {
+		st, serr := store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID()})
+		if serr != nil {
+			h.Logf("logbook", slog.LevelWarn, "logbook: the store did not open; logging to the text files only", "err", serr)
 		} else {
 			h.AttachStore(st)
 		}
 	}
-	return h, nil
+	log := slog.New(h.Handler(tee))
+	slog.SetDefault(log) // also points log.Print* at the hub
+	return h, log, err
+}
+
+// feedLine files a status line under source, then offers it to the status
+// feed without blocking: a full channel (a slow UI or stdout) costs only the
+// feed's copy, never the log line.
+func feedLine(hub *logs.Hub, feed chan<- string, source, s string) {
+	hub.Logf(source, slog.LevelInfo, s)
+	select {
+	case feed <- s:
+	default:
+	}
+}
+
+// openCommandLog, installed by main for one-shot commands, gives the command
+// a log book once resolveDirs knows its data directory. Tests leave it nil.
+var openCommandLog func(c *commonFlags)
+
+// commandLog is the one-shot command's log book; main closes it on exit.
+var commandLog *logs.Hub
+
+// openOneShotLog files a one-shot command's warnings and errors into the log
+// book as well as printing them on stderr at the TENANT_LOG level: a hub with
+// no background loops, whose day file opens on the first warning. A book
+// that cannot be opened leaves stderr as it was.
+func openOneShotLog(c *commonFlags) {
+	if commandLog != nil {
+		return
+	}
+	cc := *c
+	if cc.lc == nil { // resolve loads config.json after the dirs; logs.* is needed now
+		cc.lc, _ = loadLaunchConfig(c.cfgDir)
+	}
+	opts := cc.logsOptions()
+	opts.MinLevel = max(opts.MinLevel, slog.LevelWarn)
+	h, err := logs.Open(cc.logsRoot(), opts)
+	if err != nil {
+		return
+	}
+	scrubLogSecrets(h, &cc) // TEN-361: credentials never reach a log line
+	handler := h.Handler(slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()}))
+	slog.SetDefault(slog.New(handler))
+	logs.SetFallback(handler) // logs.For loggers: no hub is installed, so no feed or emitter either
+	commandLog = h
+}
+
+// closeCommandLog closes the one-shot command's log book, if it has one.
+func closeCommandLog() {
+	if commandLog != nil {
+		_ = commandLog.Close()
+	}
 }
 
 // buildRouter constructs a model.Router for the chosen backend.

@@ -26,7 +26,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -231,7 +230,7 @@ type Config struct {
 	// a container or user namespace around the process. The default is false.
 	NoSandbox bool
 	// Warn receives security warnings such as activation of NoSandbox. When
-	// nil, warnings are emitted through slog.Default().
+	// nil, warnings are logged as browser events.
 	Warn func(string)
 	// Headless runs Chrome without a window (default true). Set false
 	// to watch the agent drive a visible browser (useful for trust /
@@ -432,7 +431,7 @@ func emitNoSandboxWarning(cfg Config, outerKind string) {
 		cfg.Warn(message)
 		return
 	}
-	slog.Default().Warn(message)
+	NoSandbox.Log(context.Background(), "outer", outerKind)
 }
 
 // execAllocatorOptions is the single source of truth for Chrome's effective
@@ -818,12 +817,13 @@ func (b *cdpBrowser) Close() error { return nil } // session owns Chrome lifecyc
 // floodgate closed. cdproto trails Chrome's protocol surface (new DOM event
 // types ship in every Chrome release before cdproto adds them), so chromedp
 // emits ERROR for each unknown event — hundreds per page on commercial
-// sites. Everything else still goes to stderr unchanged.
+// sites. Everything else goes to the browser log (the process logger, which
+// serve and the TUI point at the log book).
 func filteredErrorf(format string, args ...any) {
 	if strings.Contains(format, "unhandled") && strings.Contains(format, "event") {
 		return
 	}
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	DevToolsError.Log(context.Background(), "err", fmt.Sprintf(format, args...))
 }
 
 // the chrome tab ctx is done. chromedp.Run must run on the tab ctx;

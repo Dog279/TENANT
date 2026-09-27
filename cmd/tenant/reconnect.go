@@ -100,9 +100,13 @@ func (rm *reconnectMonitor) activeEndpoint() (string, bool) {
 	return ep, true
 }
 
-// emit sends a feed line, dropping nothing under normal load (the System
-// channel is buffered) but never blocking past app shutdown.
+// emit files a feed line in the log book, then sends it to the feed,
+// dropping nothing under normal load (the System channel is buffered) but
+// never blocking past app shutdown.
 func (rm *reconnectMonitor) emit(s string) {
+	if rm.log != nil {
+		rm.log.Info("reconnect: " + s)
+	}
 	select {
 	case rm.feed <- s:
 	case <-rm.ctx.Done():

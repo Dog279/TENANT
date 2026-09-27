@@ -69,7 +69,7 @@ var catalogued = map[string]int{
 	"internal/plugins/atlassian": 0, "internal/plugins/crm": 0, "internal/plugins/github": 0,
 	"internal/plugins/gsuite": 0, "internal/plugins/osys": 0, "internal/plugins/simplefin": 0,
 	"internal/plugins/sql": 0, "internal/plugins/wiki": 0, "internal/plugins/x": 0,
-	"internal/plugins/web": 2, // the NoSandbox warning, which TEN-363 reroutes
+	"internal/plugins/web": 1, // cfg.Warn, the NoSandbox callback a host may install
 }
 
 // providerOf names the provider file (module-relative) counts toward, or ""
@@ -109,34 +109,7 @@ type tally struct{ ID, NoID int }
 // a field is not recognised. Load go/types if the figures drift from a
 // reader's count.
 func countSites(root, mod string) (map[string]tally, error) {
-	type file struct {
-		rel string
-		ast *ast.File
-	}
-	var files []file
-	fset := token.NewFileSet()
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if p != root && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "vendor") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			return nil
-		}
-		f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		files = append(files, file{filepath.ToSlash(rel), f})
-		return err
-	})
+	files, err := parseTree(root)
 	if err != nil {
 		return nil, err
 	}
@@ -186,15 +159,7 @@ func countSites(root, mod string) (map[string]tally, error) {
 
 	out := make(map[string]tally, len(files))
 	for _, f := range files {
-		imports := map[string]string{} // the name a file uses → the import path
-		for _, im := range f.ast.Imports {
-			p, _ := strconv.Unquote(im.Path.Value)
-			name := path.Base(p)
-			if im.Name != nil {
-				name = im.Name.Name
-			}
-			imports[name] = p
-		}
+		imports := importNames(f.ast)
 		// def resolves x, a Def, pkg.Def or v.Field, to whether it is a
 		// warning or worse.
 		def := func(x ast.Expr) (warn, ok bool) {
@@ -253,6 +218,56 @@ func countSites(root, mod string) (map[string]tally, error) {
 		out[f.rel] = t
 	}
 	return out, nil
+}
+
+// srcFile is a parsed Go file and its path relative to the tree's root.
+type srcFile struct {
+	rel string
+	ast *ast.File
+}
+
+// parseTree parses the non-test Go files under root, skipping testdata,
+// vendor and hidden directories.
+func parseTree(root string) ([]srcFile, error) {
+	var files []srcFile
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if p != root && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		files = append(files, srcFile{filepath.ToSlash(rel), f})
+		return err
+	})
+	return files, err
+}
+
+// importNames maps the name each import is used by in f to its path.
+func importNames(f *ast.File) map[string]string {
+	imports := map[string]string{}
+	for _, im := range f.Imports {
+		p, _ := strconv.Unquote(im.Path.Value)
+		name := path.Base(p)
+		if im.Name != nil {
+			name = im.Name.Name
+		}
+		imports[name] = p
+	}
+	return imports
 }
 
 // defLevel reports whether e declares a Def (P.Event(id, level, task,

@@ -38,7 +38,12 @@ func main() {
 		writeBeginnerHelp(os.Stderr)
 		os.Exit(2)
 	}
-	if err := c.Run(ctx, os.Args[2:]); err != nil {
+	if n := c.Names[0]; n != "serve" && n != "tui" { // those open the full log book themselves
+		openCommandLog = openOneShotLog
+	}
+	err := c.Run(ctx, os.Args[2:])
+	closeCommandLog()
+	if err != nil {
 		// `tenant <command> --help`: the flag package has already printed
 		// the command's flags.
 		if errors.Is(err, flag.ErrHelp) {

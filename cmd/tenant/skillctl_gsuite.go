@@ -338,10 +338,11 @@ func probeGSuiteWith(ctx context.Context, creds *credentials, settings map[strin
 			return nil
 		}
 		cfg := gsuite.Config{
-			Auth:       "oauth",
-			OAuthCreds: oauthCredsBytes,
-			OAuthToken: cachedTok,
-			OAuthSave:  saveTok,
+			Auth:             "oauth",
+			OAuthCreds:       oauthCredsBytes,
+			OAuthToken:       cachedTok,
+			OAuthSave:        saveTok,
+			OAuthOpenBrowser: openBrowser,
 		}
 		if deps.HTTP != nil {
 			cfg.HTTP = deps.HTTP
@@ -494,11 +495,17 @@ func gsuiteAuthNoteFor(value, cfgDir string) (string, bool) {
 	return "", false
 }
 
-// openBrowser opens a URL in the system default browser. Best-effort:
-// failure is silent (the NoteAfter message already gives the operator
-// a copy-pasteable command, so a browser-open failure doesn't break
-// the flow).
+// signInNotice shows the operator a sign-in URL where they will see it: a
+// one-shot command's terminal, or the status feed, which serve and the TUI
+// point it at (the TUI owns the terminal).
+var signInNotice = func(s string) { fmt.Fprintln(os.Stderr, s) }
+
+// openBrowser shows the operator an OAuth consent URL, then opens it in the
+// system default browser. Every sign-in flow opens its URL through here, so
+// the shown URL is the fallback when no browser opens (a headless host, an
+// SSH session).
 func openBrowser(rawURL string) error {
+	signInNotice("sign-in: open this URL to authorize Tenant, if no browser opened: " + rawURL)
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
