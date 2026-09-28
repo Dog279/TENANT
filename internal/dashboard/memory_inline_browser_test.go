@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 )
 
@@ -18,12 +19,15 @@ import (
 // the long ones) shows its toast, keeps the rows around it where they were
 // and the page (a marker set before it survives), and the row shows the
 // change. Facts: Remove through its step,
-// then the Undo, which stays in view. Recently removed: a double tap on one
-// Restore restores one fact, though the second tap lands on the same form
-// holding the next one. Personality: an Edit, and an Add whose box is empty
+// then the Undo, which stays in view; and a finger's double tap at the edge
+// of "Yes, remove" doesn't land on the Undo that takes its place. Recently
+// removed: a double tap on the last Restore, at the bottom of the page,
+// restores one fact; its row stays, so the next one's Restore doesn't come
+// under the finger. Personality: an Edit, and an Add whose box is empty
 // when it opens again. A fact's page: a double tap on "No longer true"
 // marks it once, and doesn't mark it true again with the button that takes
-// its place. TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
+// its place; the same for Remove and Restore, and the second tap on Restore
+// doesn't open the editor. TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
 func TestMemoryInlineFormsInChrome(t *testing.T) {
 	lm := newLiveMem()
 	for i := range 12 {
@@ -97,6 +101,25 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 			}),
 		}
 	}
+	// finger taps twice at xy, a quarter second apart, the way a finger
+	// does: a touch with a radius, which Chrome moves onto a button near it
+	// when there's none under its middle.
+	finger := func(xy *[]float64) chromedp.Action {
+		return chromedp.ActionFunc(func(ctx context.Context) error {
+			for range 2 {
+				pt := []*input.TouchPoint{{X: (*xy)[0], Y: (*xy)[1], RadiusX: 20, RadiusY: 20, Force: 1}}
+				if err := input.DispatchTouchEvent(input.TouchStart, pt).Do(ctx); err != nil {
+					return err
+				}
+				time.Sleep(40 * time.Millisecond)
+				if err := input.DispatchTouchEvent(input.TouchEnd, []*input.TouchPoint{}).Do(ctx); err != nil {
+					return err
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			return nil
+		})
+	}
 	var before, after []float64
 	var marker string
 	var bad []string
@@ -142,28 +165,47 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 		t.Errorf("Undo: %v; the fact is back and the banner gone %v, marker %q", err, back, marker)
 	}
 
-	// Recently removed: a double tap on one Restore, halfway down the list.
-	removed := func(id int) string {
-		return fmt.Sprintf(`#mem-removed-body .fact:has(input[name="fact"][value="%d"])`, id)
-	}
+	// A finger's double tap near the right edge of "Yes, remove" in the
+	// phone sheet: the second tap must not land on the Undo that replaces
+	// the sheet.
 	n := len(lm.calls())
+	row = fact(16)
+	var yes []float64
+	err = chromedp.Run(ctx,
+		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
+		chromedp.WaitVisible(row+` details[open] .confirm-box button`, chromedp.ByQuery),
+		chromedp.Evaluate(`(r => [r.right - 6, r.bottom - 10])(document.querySelector(`+q(row+` details[open] .confirm-box button`)+`).getBoundingClientRect())`, &yes),
+		finger(&yes),
+		toastSays("Fact removed."),
+		chromedp.Sleep(300*time.Millisecond),
+	)
+	if got := lm.calls()[n:]; err != nil || fmt.Sprint(got) != "[delete 16]" {
+		t.Errorf("a double tap at the edge of Yes, remove: %v; sent %v, want only the delete", err, got)
+	}
+	_ = lm.RestoreFact(16)
+
+	// Recently removed: a double tap on the last Restore, at the bottom of
+	// the page.
+	n = len(lm.calls())
 	var left int
+	var says string
 	err = chromedp.Run(ctx, open("/memory/facts/removed"),
-		markAt(removed(41), removed(40), &before),
-		doubleTap(removed(41)+` button`),
+		markAt("#removed-53", "#removed-52", &before),
+		doubleTap("#removed-53 button"),
 		toastSays("Fact restored."),
 		chromedp.Sleep(300*time.Millisecond), // room for a second post to land
 		shot("restored"),
-		chromedp.Evaluate(where(removed(40)), &after),
+		chromedp.Evaluate(where("#removed-52"), &after),
 		chromedp.Evaluate(mark, &marker),
+		chromedp.Text("#removed-53 .fact-actions", &says, chromedp.ByQuery),
 		chromedp.Evaluate(`document.querySelectorAll('#mem-removed-body form[action="/memory/facts/restore"]').length`, &left),
 	)
 	if err != nil {
-		t.Fatalf("Restore: %v", err)
+		t.Fatalf("Restore: %v; sent %v", err, lm.calls()[n:])
 	}
 	kept("Restore", before, after, marker)
-	if got := lm.calls()[n:]; fmt.Sprint(got) != "[restore 41]" || left != 23 {
-		t.Errorf("a double tap on Restore sent %v and left %d Restore buttons, want one restore and 23", got, left)
+	if got := lm.calls()[n:]; fmt.Sprint(got) != "[restore 53]" || left != 23 || says != "Restored." {
+		t.Errorf("a double tap on the last Restore sent %v, left %d Restore buttons, and the row says %q; want one restore, 23 and Restored.", got, left, says)
 	}
 
 	// Personality: Edit a line about you halfway down, then Add an
@@ -235,5 +277,27 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	}
 	for _, b := range bad {
 		t.Errorf("the fact's page: %s", b)
+	}
+
+	// Then a double tap on Remove, and a finger's double tap near the right
+	// edge of Restore, which takes Remove's place as the same form. The
+	// second tap on Restore doesn't open the editor.
+	n = len(lm.calls())
+	removal := `form[action="/memory/facts/removal"] button`
+	var edge []float64
+	var loc string
+	err = chromedp.Run(ctx,
+		doubleTap(removal),
+		toastSays("Fact removed."),
+		chromedp.Sleep(1200*time.Millisecond), // past the form's throttle
+		chromedp.Evaluate(`(r => [r.right - 4, r.top + r.height / 2])(document.querySelector(`+q(removal)+`).getBoundingClientRect())`, &edge),
+		finger(&edge),
+		toastSays("Fact restored."),
+		chromedp.Sleep(300*time.Millisecond),
+		chromedp.Location(&loc),
+		chromedp.Evaluate(mark, &marker),
+	)
+	if got := lm.calls()[n:]; err != nil || fmt.Sprint(got) != "[delete 1 restore 1]" || loc != srv.URL+"/memory/facts/1" || marker != "kept" {
+		t.Errorf("double taps on Remove, then Restore: %v; sent %v, want one of each; at %s, marker %q", err, got, loc, marker)
 	}
 }

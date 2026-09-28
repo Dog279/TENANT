@@ -309,6 +309,7 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /memory/facts/resolve":              noStep,
 	"POST /memory/facts/delete":               noStep,
 	"POST /memory/facts/restore":              noStep,
+	"POST /memory/facts/removal":              noStep,
 	"POST /memory/facts/{id}/edit":            noStep,
 	"POST /memory/facts/valid":                noStep,
 	"POST /memory/facts/{id}/restore-version": noStep,

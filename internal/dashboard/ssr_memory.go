@@ -31,6 +31,8 @@ const (
 	memBase     = "/memory"
 	memSoulURL  = "/memory/soul"
 	memFactsURL = "/memory/facts"
+
+	memRemovedURL = memFactsURL + "/removed"
 )
 
 // --- shared helpers --------------------------------------------------------
@@ -247,7 +249,7 @@ func (s *Server) memFactsView(ctx context.Context, q url.Values) factsData {
 	d := factsData{
 		layoutData:      layoutData{Title: "Memory · Facts", Page: "memory", Sub: "facts"},
 		ResolveAction:   memFactsURL + "/resolve",
-		RemovedNavHref:  memFactsURL + "/removed",
+		RemovedNavHref:  memRemovedURL,
 		TemporalNavHref: memFactsURL + "/temporal",
 	}
 	if s.mem == nil {
@@ -270,7 +272,7 @@ func (s *Server) memFactsView(ctx context.Context, q url.Values) factsData {
 	if removed > 0 {
 		d.ShowUndo = true
 		d.UndoID = removed
-		d.RemovedHref = memFactsURL + "/removed"
+		d.RemovedHref = memRemovedURL
 	}
 
 	facts, next, err := s.mem.Facts(query, 25, cursor)
@@ -362,9 +364,10 @@ func episodeRows(eps []EpisodeView) []episodeRow {
 // --- recently removed ------------------------------------------------------
 
 type removedRow struct {
-	ID   int64
-	Text string
-	Conf string
+	ID       int64
+	Text     string
+	Conf     string
+	Restored bool // the answer to its Restore (restoredRow)
 }
 
 type removedData struct {

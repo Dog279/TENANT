@@ -9,7 +9,9 @@
      is a full page load (handleMemoryResolveForm says why). A removal's
      Undo banner stands in for the flash. It comes last, held at the bottom
      of the screen (sticky), so it's in view wherever the Remove was, and
-     nothing above the rows moves when it appears. */}}
+     nothing above the rows moves when it appears. Undo sits at its right
+     end, away from where the phone sheet's "Yes, remove" was: a double
+     tap's second tap must not land on it. */}}
 {{define "mem-facts-body"}}<div id="mem-facts-body">
 {{if not .Configured}}
 {{template "ui-off" "Memory isn't available on this Tenant."}}
@@ -106,13 +108,13 @@
 {{if .ShowUndo}}
 <div class="banner undo">
   <span>Fact removed.</span>
+  <span class="sp"></span>
+  <a class="linkbtn" href="{{.RemovedHref}}">Recently removed</a>
   <form class="inline" method="POST" action="/memory/facts/restore" data-on:submit__prevent__throttle.1s="@post('/memory/facts/restore', {contentType:'form', retryMaxCount:0})">
     <input type="hidden" name="fact" value="{{.UndoID}}">
     <input type="hidden" name="back" value="{{.Self}}">
     <button type="submit" class="linkbtn">Undo</button>
   </form>
-  <span class="sp"></span>
-  <a class="linkbtn" href="{{.RemovedHref}}">Recently removed</a>
 </div>
 {{end}}
 {{end}}

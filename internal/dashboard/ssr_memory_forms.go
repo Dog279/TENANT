@@ -86,12 +86,50 @@ func (s *Server) handleMemoryFactRestoreForm(w http.ResponseWriter, r *http.Requ
 		s.formDone(w, r, back, "", "", region)
 		return
 	}
+	if back == memRemovedURL {
+		region = s.restoredRow(r.Context(), id) // read now, while it's still on the list
+	}
 	if err := s.mem.RestoreFact(id); err != nil {
 		s.formDone(w, r, back, "", s.flashFor(r.Context(), "fact restore", err, "Couldn't restore that fact."), region)
 		return
 	}
 	s.log.Info("dashboard: ssr fact restored", "id", id)
 	s.formDone(w, r, back, "Fact restored.", "", region)
+}
+
+// handleMemoryFactRemovalForm is Remove and Restore on a fact's page:
+// POST memFactsURL/removal {fact, removed=true|false, back}. One route for
+// both, like /memory/facts/valid, so after the morph the button that takes
+// the other's place is the same form, and its throttle drops a double tap's
+// second post, which would undo the first.
+func (s *Server) handleMemoryFactRemovalForm(w http.ResponseWriter, r *http.Request) {
+	switch r.FormValue("removed") {
+	case "true":
+		s.handleMemoryFactDeleteForm(w, r)
+	case "false":
+		s.handleMemoryFactRestoreForm(w, r)
+	default:
+		writeError(w, http.StatusBadRequest, "removed must be true or false")
+	}
+}
+
+// restoredRow answers a Restore on Recently removed with that fact's row
+// alone, left in place and saying it's restored, with no form. Nothing below
+// it moves, so a double tap's second tap can't land on the next row's
+// Restore (at the bottom of a list that got shorter, it would). A fact that
+// isn't on the list gets the whole list.
+func (s *Server) restoredRow(ctx context.Context, id int64) func() (string, error) {
+	for _, row := range s.memRemovedView(ctx, nil).Rows {
+		if row.ID == id {
+			row.Restored = true
+			return func() (string, error) {
+				var buf bytes.Buffer
+				err := s.tmpl.memRemoved.ExecuteTemplate(&buf, "mem-removed-row", row)
+				return buf.String(), err
+			}
+		}
+	}
+	return s.memRegion(ctx, memRemovedURL)
 }
 
 // handleMemoryResolveForm records a conflict resolution: keep_id stays, the
@@ -162,7 +200,7 @@ func (s *Server) memRegion(ctx context.Context, back string) func() (string, err
 		switch {
 		case u.Path == memSoulURL:
 			err = s.tmpl.memSoul.ExecuteTemplate(&buf, "mem-soul-body", s.memSoulView(ctx, q))
-		case u.Path == memFactsURL+"/removed":
+		case u.Path == memRemovedURL:
 			err = s.tmpl.memRemoved.ExecuteTemplate(&buf, "mem-removed-body", s.memRemovedView(ctx, q))
 		case fact:
 			err = s.tmpl.memFact.ExecuteTemplate(&buf, "mem-fact-body", s.memFactView(ctx, id, q))

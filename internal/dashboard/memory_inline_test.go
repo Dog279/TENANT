@@ -127,10 +127,10 @@ type memInline struct {
 var memInlineForms = []memInline{
 	{"/memory/soul/edit", url.Values{"section": {"user_fact"}, "action": {"edit"}, "item": {"uf-1"}, "text": {"Prefers imperial units."}}, "mem-soul-body"},
 	{"/memory/facts/delete", url.Values{"fact": {"3"}, "back": {"/memory/facts?q=lives"}}, "mem-facts-body"},
-	{"/memory/facts/delete", url.Values{"fact": {"1"}, "back": {"/memory/facts/1"}}, "mem-fact-body"},
-	{"/memory/facts/restore", url.Values{"fact": {"1"}, "back": {"/memory/facts/removed"}}, "mem-removed-body"},
+	{"/memory/facts/removal", url.Values{"fact": {"1"}, "removed": {"true"}, "back": {"/memory/facts/1"}}, "mem-fact-body"},
+	{"/memory/facts/restore", url.Values{"fact": {"1"}, "back": {"/memory/facts/removed"}}, "mem-removed-body"}, // not on the list: all of it
 	{"/memory/facts/restore", url.Values{"fact": {"1"}, "back": {"/memory/facts"}}, "mem-facts-body"},
-	{"/memory/facts/restore", url.Values{"fact": {"1"}, "back": {"/memory/facts/1"}}, "mem-fact-body"},
+	{"/memory/facts/removal", url.Values{"fact": {"1"}, "removed": {"false"}, "back": {"/memory/facts/1"}}, "mem-fact-body"},
 	{"/memory/facts/valid", url.Values{"fact": {"1"}, "valid": {"false"}, "back": {"/memory/facts/1?turns=1"}}, "mem-fact-body"},
 	{"/memory/facts/valid", url.Values{"fact": {"1"}, "valid": {"true"}}, "mem-fact-body"},
 }
@@ -193,16 +193,19 @@ func TestMemory_InlineChanges(t *testing.T) {
 			[]string{"User lives in Berlin.", "Project deadline"}},
 		{"/memory/facts/restore", url.Values{"fact": {"1"}, "back": {"/memory/facts?q=lives"}},
 			[]string{toast("Fact restored."), "User lives in Berlin."}, []string{"banner undo"}},
-		// On the fact's own page: it shows removed, with Restore.
-		{"/memory/facts/delete", url.Values{"fact": {"3"}, "back": {"/memory/facts/3"}},
-			[]string{toast("Fact removed."), "#3 · removed", `action="/memory/facts/restore"`}, []string{"No longer true"}},
-		{"/memory/facts/restore", url.Values{"fact": {"3"}, "back": {"/memory/facts/3"}},
-			[]string{toast("Fact restored."), "#3 · current", "No longer true"}, nil},
+		// On the fact's own page: it shows removed, with Restore, which is
+		// the same form as Remove.
+		{"/memory/facts/removal", url.Values{"fact": {"3"}, "removed": {"true"}, "back": {"/memory/facts/3"}},
+			[]string{toast("Fact removed."), "#3 · removed", `<input type="hidden" name="removed" value="false"><input type="hidden" name="back" value="/memory/facts/3"><button type="submit" class="btn sm">Restore</button>`}, []string{"No longer true", "Edit"}},
+		{"/memory/facts/removal", url.Values{"fact": {"3"}, "removed": {"false"}, "back": {"/memory/facts/3"}},
+			[]string{toast("Fact restored."), "#3 · current", "No longer true", `<input type="hidden" name="removed" value="true">`}, nil},
 		{"/memory/facts/valid", url.Values{"fact": {"3"}, "valid": {"false"}, "back": {"/memory/facts/3"}},
 			[]string{toast("Marked no longer true."), "It's true again", `<input type="hidden" name="valid" value="true">`, "No longer true since"}, nil},
 		{"/memory/facts/delete", url.Values{"fact": {"2"}, "back": {"/memory/facts"}}, []string{toast("Fact removed.")}, nil},
+		// On Recently removed: the row alone, in place, with no Restore.
 		{"/memory/facts/restore", url.Values{"fact": {"2"}, "back": {"/memory/facts/removed"}},
-			[]string{toast("Fact restored."), "Nothing here."}, []string{"User lives in Munich."}},
+			[]string{toast("Fact restored."), `data: elements <div id="removed-2" class="fact">`, "User lives in Munich.", `<span class="dim">Restored.</span>`},
+			[]string{"mem-removed-body", "<form"}},
 	} {
 		body := post(tc.path, tc.form)
 		for _, w := range tc.want {
@@ -234,10 +237,11 @@ func TestMemory_InlineChanges(t *testing.T) {
 
 	// A plain post: the 303 and its flash, on the view it came from.
 	for path, want := range map[string]string{
-		"/memory/facts/delete?fact=1&back=%2Fmemory%2Ffacts%3Fq%3Dlives": "/memory/facts?q=lives&removed=1&msg=Fact+removed.",
-		"/memory/facts/restore?fact=1&back=%2Fmemory%2Ffacts%2F1":        "/memory/facts/1?msg=Fact+restored.",
-		"/memory/facts/valid?fact=1&valid=false":                         "/memory/facts/1?msg=Marked+no+longer+true.",
-		"/memory/facts/delete?fact=1&back=https%3A%2F%2Fevil.example":    "/memory/facts?removed=1&msg=Fact+removed.",
+		"/memory/facts/delete?fact=1&back=%2Fmemory%2Ffacts%3Fq%3Dlives":        "/memory/facts?q=lives&removed=1&msg=Fact+removed.",
+		"/memory/facts/restore?fact=1&back=%2Fmemory%2Ffacts%2F1":               "/memory/facts/1?msg=Fact+restored.",
+		"/memory/facts/removal?fact=1&removed=false&back=%2Fmemory%2Ffacts%2F1": "/memory/facts/1?msg=Fact+restored.",
+		"/memory/facts/valid?fact=1&valid=false":                                "/memory/facts/1?msg=Marked+no+longer+true.",
+		"/memory/facts/delete?fact=1&back=https%3A%2F%2Fevil.example":           "/memory/facts?removed=1&msg=Fact+removed.",
 	} {
 		if loc := sendForm(s.Handler(), http.MethodPost, path, nil, nil).Header().Get("Location"); loc != want {
 			t.Errorf("a plain %s went to %q, want %q", path, loc, want)
@@ -245,5 +249,10 @@ func TestMemory_InlineChanges(t *testing.T) {
 	}
 	if rec := sendForm(s.Handler(), http.MethodPost, "/memory/facts/delete", url.Values{"fact": {"x"}}, datastar); rec.Code != http.StatusBadRequest {
 		t.Errorf("a malformed id: %d, want 400", rec.Code)
+	}
+	for _, v := range []string{"", "yes", "TRUE"} {
+		if rec := sendForm(s.Handler(), http.MethodPost, "/memory/facts/removal", url.Values{"fact": {"1"}, "removed": {v}}, datastar); rec.Code != http.StatusBadRequest {
+			t.Errorf("removed=%q: %d, want 400", v, rec.Code)
+		}
 	}
 }

@@ -231,6 +231,7 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /memory/facts/resolve", s.handleMemoryResolveForm)
 	mux.HandleFunc("POST /memory/facts/delete", s.handleMemoryFactDeleteForm)
 	mux.HandleFunc("POST /memory/facts/restore", s.handleMemoryFactRestoreForm)
+	mux.HandleFunc("POST /memory/facts/removal", s.handleMemoryFactRemovalForm) // a fact page's Remove or Restore
 	mux.HandleFunc("POST /memory/facts/{id}/edit", s.handleMemoryFactEditForm)
 	mux.HandleFunc("POST /memory/facts/valid", s.handleMemoryFactValidForm) // no longer true, or true again
 	mux.HandleFunc("POST /memory/facts/{id}/restore-version", s.handleMemoryFactRestoreVersionForm)

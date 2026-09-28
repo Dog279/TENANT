@@ -3,9 +3,9 @@
 {{template "mem-removed-body" .}}
 {{end}}
 
-{{/* mem-removed-body is the region a Restore re-renders in place
-     (formDone): it posts through Datastar to its literal URL with the
-     fact's id as a field. */}}
+{{/* mem-removed-body lists the removed facts. A Restore posts through
+     Datastar to its literal URL with the fact's id as a field, and the
+     answer is its row alone (restoredRow), left in place saying so. */}}
 {{define "mem-removed-body"}}<div id="mem-removed-body">
 {{if not .Configured}}
 {{template "ui-off" "Memory isn't available on this Tenant."}}
@@ -16,22 +16,23 @@
 {{template "ui-empty" "Nothing here. Facts you remove show up here so you can restore them."}}
 {{else}}
 <div class="factlist">
-{{range .Rows}}
-<div class="fact">
+{{range .Rows}}{{template "mem-removed-row" .}}{{end}}
+</div>
+{{end}}
+{{end}}
+</div>{{end}}
+
+{{define "mem-removed-row"}}<div id="removed-{{.ID}}" class="fact">
   <div class="fact-top">
     <div class="fact-text">{{visibleText .Text}}</div>
     <span class="fact-conf dim">{{.Conf}}</span>
   </div>
   <div class="fact-actions">
+    {{if .Restored}}<span class="dim">Restored.</span>{{else}}
     <form class="inline" method="POST" action="/memory/facts/restore" data-on:submit__prevent__throttle.1s="@post('/memory/facts/restore', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="fact" value="{{.ID}}">
       <input type="hidden" name="back" value="/memory/facts/removed">
       <button type="submit" class="linkbtn">Restore</button>
-    </form>
+    </form>{{end}}
   </div>
-</div>
-{{end}}
-</div>
-{{end}}
-{{end}}
 </div>{{end}}
