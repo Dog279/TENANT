@@ -151,17 +151,33 @@ func TestSafetyQueueInChrome(t *testing.T) {
 		t.Errorf("/chat with a request at 390px: %s", b)
 	}
 
-	// The server stops: the page says live updates paused.
+	// The stream drops: the page says live updates paused, and the stream's
+	// snapshot on reconnect clears it.
+	const paused = `getComputedStyle(document.querySelector('.live-off')).display !== 'none'`
 	err = chromedp.Run(ctx,
 		chromedp.Navigate(srv.URL+"/safety"),
 		chromedp.WaitVisible(`#q-ap-2`, chromedp.ByQuery),
 		chromedp.ActionFunc(func(context.Context) error {
 			awaitStream(3)
+			srv.CloseClientConnections()
+			return nil
+		}),
+		chromedp.Poll(paused, nil, chromedp.WithPollingTimeout(3*time.Second)),
+		chromedp.Poll(`!(`+paused+`)`, nil, chromedp.WithPollingTimeout(10*time.Second)),
+	)
+	if err != nil {
+		t.Fatalf("the paused banner across a reconnect: %v", err)
+	}
+
+	// The server stops: the banner stays.
+	err = chromedp.Run(ctx,
+		chromedp.ActionFunc(func(context.Context) error {
+			awaitStream(4)
 			srv.Listener.Close()
 			srv.CloseClientConnections()
 			return nil
 		}),
-		chromedp.Poll(`getComputedStyle(document.querySelector('.live-off')).display !== 'none'`, nil, chromedp.WithPollingTimeout(3*time.Second)),
+		chromedp.Poll(paused, nil, chromedp.WithPollingTimeout(3*time.Second)),
 	)
 	if err != nil {
 		t.Fatalf("the paused banner after the server stopped: %v", err)

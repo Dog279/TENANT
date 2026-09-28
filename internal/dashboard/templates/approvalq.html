@@ -16,6 +16,8 @@
   <pre class="q-detail">{{visibleText .Detail}}</pre>
   {{- if gt .Lines 8}}
   <p class="q-long">This request is {{.Lines}} lines long. Read all of it before you allow it.</p>
+  {{- else if gt (len .Detail) 400}}
+  <p class="q-long">This request is long. Read all of it before you allow it.</p>
   {{- end}}
   {{- if .Actionable}}
   <div class="q-actions">

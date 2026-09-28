@@ -37,7 +37,13 @@ const safetyDashToken = "safety-dash-test-token"
 
 func newSafetyDash(t *testing.T) *safetyDash {
 	t.Helper()
-	d := &safetyDash{t: t, ev: captureChannelEvents(t), cfgDir: t.TempDir(), broker: newApprovalBroker(nil)}
+	return newSafetyDashIn(t, t.TempDir())
+}
+
+// newSafetyDashIn is newSafetyDash on the settings already in cfgDir.
+func newSafetyDashIn(t *testing.T, cfgDir string) *safetyDash {
+	t.Helper()
+	d := &safetyDash{t: t, ev: captureChannelEvents(t), cfgDir: cfgDir, broker: newApprovalBroker(nil)}
 	stg, err := loadSettings(d.cfgDir, "main")
 	if err != nil {
 		t.Fatal(err)
@@ -305,6 +311,41 @@ func TestSafetyDash_ModePersistsAndApplies(t *testing.T) {
 	}
 	if !recorded {
 		t.Errorf("no ModeChanged record from the dashboard: %q", d.ev.audited())
+	}
+}
+
+// After an update (TEN-343): a save from before it knows five categories, so
+// the other three are New until "Keep them at Ask" saves the marker; a
+// broker loaded from the file afterwards has nothing New.
+func TestSafetyDash_KeepNewSavesMarker(t *testing.T) {
+	cfg := t.TempDir()
+	old := `{"permissions":{"exec":"ask","write":"ask","destructive":"ask","web":"ask","send":"ask"}}`
+	if err := os.WriteFile(settingsPath(cfg, "main"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := newSafetyDashIn(t, cfg)
+	if p := d.page(); strings.Count(p, `<span class="tag-new">New</span>`) != 3 || !strings.Contains(p, "An update added 3 new safety checks.") {
+		t.Fatalf("an older save: no New checks on the page:\n%s", p)
+	}
+	if msg, e := d.post("/safety/new", nil); msg != "Kept at Ask: Share private data, Connect remote services, Leave the sandbox. Your agent asks you first." || e != "" {
+		t.Fatalf("Keep them at Ask: msg %q err %q", msg, e)
+	}
+	stg, err := loadSettings(cfg, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{catEgress, catMCP, catSandbox} {
+		if !slices.Contains(stg.KnownCategories, c) || stg.Permissions[c] != "ask" {
+			t.Errorf("%s not saved as chosen: known %q, modes %v", c, stg.KnownCategories, stg.Permissions)
+		}
+	}
+	fresh := newApprovalBroker(nil)
+	fresh.LoadModes(stg.Permissions, stg.KnownCategories)
+	if n := fresh.NewCategories(); len(n) != 0 {
+		t.Errorf("after a restart, still New: %q", n)
+	}
+	if p := d.page(); strings.Contains(p, "tag-new") || strings.Contains(p, "/safety/new") {
+		t.Error("the New banner or tags outlived the choice")
 	}
 }
 

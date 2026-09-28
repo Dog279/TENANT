@@ -251,7 +251,8 @@ func TestSafety_RendersModes(t *testing.T) {
 	page := get(t, s, "/safety").Body.String()
 	body := html.UnescapeString(page)
 	for _, want := range []string{
-		"These settings cover chat on this page, scheduled jobs, alerts and research. Discord and iMessage conversations have their own settings on the",
+		"These settings cover chat on this page, alerts, research and scheduled jobs that don't run commands. Discord and iMessage conversations have their own settings on the",
+		"Scheduled jobs that don't run commands wait for your OK here when they need one of these.",
 		"Allowed without asking until Tenant restarts.",
 		"Can create and change files on this computer without asking you.",
 		"Can't do things that can't be undone, like deleting files, dropping database tables or buying something. It won't ask.",
@@ -320,7 +321,22 @@ func TestSafety_AllowConsequenceFromFacts(t *testing.T) {
 			if web := rows[3].Allow; web != "Let your agent click, type and submit forms on websites without asking you?" {
 				t.Errorf("Act on websites: %q", web)
 			}
+			// exec's session grant says the same as its Allow step.
+			if got := rows[0].Consequence; !strings.HasPrefix(got, "Allowed without asking until Tenant restarts.") || strings.Contains(got, self) != tc.execHasSelf {
+				t.Errorf("Run commands, granted: %q", got)
+			}
 		})
+	}
+	// Sandboxed, but Leave the sandbox allowed: a command the box refuses
+	// re-runs outside it unasked, so exec is as good as unsandboxed.
+	perms := safetyPerms()
+	perms[7].Mode = "allow"
+	rows := safetyServer(&fakeSafety{perms: perms}, nil, SafetyFacts{Account: "dylan", Sandboxed: true}).modeRows()
+	if exec := rows[0].Allow; strings.Contains(exec, "inside the sandbox") || !strings.Contains(exec, "Commands run as dylan") {
+		t.Errorf("Run commands, the sandbox allowed: %q", exec)
+	}
+	if sbox := rows[7].Consequence; !strings.HasSuffix(sbox, "without asking you. Commands run as dylan, with everything that account can do. "+self) {
+		t.Errorf("Leave the sandbox, allowed: %q", sbox)
 	}
 	page := html.UnescapeString(get(t, safetyServer(&fakeSafety{perms: safetyPerms()}, nil, SafetyFacts{System: true}), "/safety").Body.String())
 	if !strings.Contains(page, "<p>Let your agent run commands and programs on this computer without asking you? Commands run as SYSTEM") {
@@ -425,7 +441,8 @@ func TestSafety_QueueRender(t *testing.T) {
 	fq := &fakeQueue{}
 	fq.add(queueItems("line\n<script>alert(1)</script>")...)
 	fq.add(PendingApproval{ID: `ap-"x`, Category: "exec", Action: "os_exec", Detail: "quoted", AgeSecs: 1, Origin: "local", SessionOK: true},
-		PendingApproval{ID: "ap-long", Category: "web", Action: "web_click", Detail: strings.Repeat("x\n", 9), AgeSecs: 2, Origin: "local"})
+		PendingApproval{ID: "ap-long", Category: "web", Action: "web_click", Detail: strings.Repeat("x\n", 9), AgeSecs: 2, Origin: "local"},
+		PendingApproval{ID: "ap-wide", Category: "exec", Action: "os_exec", Detail: "curl " + strings.Repeat("q", 500) + "; rm -rf ~/Documents", AgeSecs: 3, Origin: "local"})
 	s := safetyServer(&fakeSafety{perms: safetyPerms()}, fq, SafetyFacts{Account: "dylan"})
 	page := get(t, s, "/safety").Body.String()
 
@@ -433,7 +450,7 @@ func TestSafety_QueueRender(t *testing.T) {
 	for _, m := range regexp.MustCompile(`id="q-([^"]+)"`).FindAllStringSubmatch(page, -1) {
 		order = append(order, html.UnescapeString(m[1]))
 	}
-	if want := []string{"ap-alert", "ap-write", "ap-exec", "ap-rule", "ap-imsg", "ap-pair", "ap-long", `ap-"x`}; !slices.Equal(order, want) {
+	if want := []string{"ap-alert", "ap-write", "ap-exec", "ap-rule", "ap-imsg", "ap-pair", "ap-wide", "ap-long", `ap-"x`}; !slices.Equal(order, want) {
 		t.Errorf("order %q, want oldest first %q", order, want)
 	}
 	for id, want := range map[string]string{
@@ -457,6 +474,13 @@ func TestSafety_QueueRender(t *testing.T) {
 	}
 	if it := item(t, page, "ap-long"); !strings.Contains(it, "This request is 10 lines long. Read all of it before you allow it.") {
 		t.Errorf("no long-request note:\n%s", it)
+	}
+	// One long line scrolls its tail out of sight just the same.
+	if it := item(t, page, "ap-wide"); !strings.Contains(it, "This request is long. Read all of it before you allow it.") {
+		t.Errorf("no note on a long one-line request:\n%s", it)
+	}
+	if strings.Contains(item(t, page, "ap-exec"), "q-long") {
+		t.Error("a short request has the long-request note")
 	}
 	// Session step: write (local, asked by its mode) only. Not exec (not
 	// sandboxed), not a rule-forced prompt, not iMessage, not pairing or an
@@ -482,10 +506,31 @@ func TestSafety_QueueRender(t *testing.T) {
 		!strings.Contains(html.UnescapeString(p), "Only allow if the person pairing told you the same PIN") {
 		t.Errorf("pairing's Allow once isn't a confirm step:\n%s", p)
 	}
-	// Sandboxed, exec gets the step too.
-	page = get(t, safetyServer(&fakeSafety{perms: safetyPerms()}, fq, SafetyFacts{Sandboxed: true}), "/safety").Body.String()
+	// Sandboxed, exec gets the step too, but Leave the sandbox never does:
+	// its grant re-runs every refused command outside the box, unasked.
+	fq.add(PendingApproval{ID: "ap-sbox", Category: "sandbox", Action: "os_exec_unsandboxed", Detail: "cat ~/.ssh/id_ed25519", AgeSecs: 1, Origin: "local", SessionOK: true})
+	s = safetyServer(&fakeSafety{perms: safetyPerms()}, fq, SafetyFacts{Sandboxed: true})
+	page = get(t, s, "/safety").Body.String()
 	if !strings.Contains(item(t, page, "ap-exec"), "Allow for the rest of this session") {
 		t.Error("sandboxed exec has no session step")
+	}
+	if strings.Contains(item(t, page, "ap-sbox"), "Allow for the rest of this session") {
+		t.Error("Leave the sandbox offers the session step")
+	}
+	if _, e := flash(t, safetyPost(t, s, "/safety/approvals/ap-sbox?confirm=yes&decision=approve_session", nil, false)); e != notAvailable || len(fq.calls()) != 0 {
+		t.Errorf("a session grant for Leave the sandbox: err %q calls %q", e, fq.calls())
+	}
+	// Leave the sandbox allowed makes exec unsandboxed: no step.
+	perms := safetyPerms()
+	perms[7].Mode = "allow"
+	page = get(t, safetyServer(&fakeSafety{perms: perms}, fq, SafetyFacts{Sandboxed: true}), "/safety").Body.String()
+	if strings.Contains(item(t, page, "ap-exec"), "Allow for the rest of this session") {
+		t.Error("exec offers the session step with Leave the sandbox allowed")
+	}
+	// No modes card, no step: the grant couldn't be seen or ended here.
+	page = get(t, safetyServer(nil, fq, SafetyFacts{Sandboxed: true}), "/safety").Body.String()
+	if strings.Contains(page, "Allow for the rest of this session") {
+		t.Error("a session step with no modes card to end it")
 	}
 }
 

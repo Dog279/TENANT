@@ -7,13 +7,13 @@
 
 <h2>What your agent may do on its own</h2>
 {{if not .HasModes}}{{template "ui-off" "Safety settings aren't available on this Tenant."}}{{else}}
-<p class="dim">These settings cover chat on this page, scheduled jobs, alerts and research. Discord and iMessage conversations have their own settings on the <a href="/access">Access</a> page.</p>
+<p class="dim">These settings cover chat on this page, alerts, research and scheduled jobs that don't run commands. Discord and iMessage conversations have their own settings on the <a href="/access">Access</a> page.</p>
 {{if .New}}
 <div class="card perm-new">
   <b>{{.NewHead}}</b>
   <ul>{{range .New}}<li><b>{{.Title}}</b>: asks before it can {{.Can}}.</li>{{end}}</ul>
   <p class="dim">Each check is its own question: a tool you let run still asks here before it does one of these.</p>
-  <p class="dim">Scheduled jobs that need one of these wait for your OK here. If nobody answers, the request is turned down after a while.</p>
+  <p class="dim">Scheduled jobs that don't run commands wait for your OK here when they need one of these. If nobody answers, the request is turned down after a while.</p>
   <div class="actions"><form method="POST" action="/safety/new"><button type="submit" class="btn on">Keep them at Ask</button></form><span class="dim">or choose for each one below.</span></div>
 </div>
 {{end}}

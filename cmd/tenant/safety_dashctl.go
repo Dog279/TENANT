@@ -21,9 +21,9 @@ func newSafetyFacts() func() dashboard.SafetyFacts {
 }
 
 // execSandboxed reports whether commands the main broker asks about run in
-// the sandbox: the dashboard's, the terminal's and serve's chat, and
-// scheduled jobs without exec, all run under the "local" exec profile (or
-// "default"; lookup falls back as the resolver does). Sandboxed means the
+// the sandbox: the dashboard's, the terminal's and serve's chat all run
+// under the "local" exec profile (or "default"; lookup falls back as the
+// resolver does). Scheduled jobs without exec have no command tool. Sandboxed means the
 // restricted backend with enforce on, so a refused command asks before it
 // leaves the box instead of re-running outside it.
 func execSandboxed() bool {

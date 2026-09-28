@@ -43,8 +43,8 @@ type ApprovalItem struct {
 	From                                string // "" = this computer, "iMessage"; none for pairing
 	Waited                              string // waited(AgeSecs)
 	Can                                 string
-	Lines                               int  // Detail line count; > 8 adds "This request is N lines long. Read all of it before you allow it."
-	Standing                            bool // SessionOK && Origin=="local" && !(cat ∈ {exec,sandbox} && !facts.Sandboxed)
+	Lines                               int  // Detail line count; > 8 adds "This request is N lines long. Read all of it before you allow it." (over 400 bytes on fewer lines: "This request is long.")
+	Standing                            bool // modes wired && SessionOK && Origin=="local" && cat != sandbox && !(cat == exec && !sandboxed(…))
 	Pairing                             bool
 	Actionable                          bool // ID matches ^[A-Za-z0-9-]+$
 }
@@ -140,13 +140,14 @@ func (s *Server) queue() approvalQueue {
 	if s.approvals == nil {
 		return q
 	}
-	can := map[string]string{}
+	can, boxed := map[string]string{}, false
 	if s.safety != nil {
-		for _, p := range s.safety.Permissions() {
+		perms := s.safety.Permissions()
+		for _, p := range perms {
 			can[p.Category] = p.Can
 		}
+		boxed = sandboxed(s.facts(), perms)
 	}
-	facts := s.facts()
 	pending := slices.Clone(s.approvals.Pending())
 	slices.SortFunc(pending, func(a, b PendingApproval) int {
 		return cmp.Or(cmp.Compare(b.AgeSecs, a.AgeSecs), strings.Compare(a.ID, b.ID))
@@ -160,10 +161,12 @@ func (s *Server) queue() approvalQueue {
 			Actionable: safeID.MatchString(p.ID),
 		}
 		// A grant lives on the broker that asked: only the main one's shows
-		// (and can be revoked) on this page. Unsandboxed commands get no
-		// session step: with it, the agent could answer its own requests.
-		it.Standing = p.SessionOK && p.Origin == "local" &&
-			!((p.Category == "exec" || p.Category == "sandbox") && !facts.Sandboxed)
+		// (and can be revoked) on the modes card. Unsandboxed commands get
+		// no session step: with it, the agent could answer its own requests.
+		// Nor does Leave the sandbox: its grant re-runs every command the box
+		// refuses on the computer itself, unasked, which is the same thing.
+		it.Standing = s.safety != nil && p.SessionOK && p.Origin == "local" &&
+			p.Category != "sandbox" && (p.Category != "exec" || boxed)
 		switch {
 		case it.Pairing:
 			it.Title = "Another computer wants to pair with this one"
@@ -180,6 +183,15 @@ func (s *Server) queue() approvalQueue {
 		q.Items = append(q.Items, it)
 	}
 	return q
+}
+
+// sandboxed reports whether commands really stay in the sandbox: the facts
+// say they run in it and Leave the sandbox still asks or denies. Allowed, or
+// granted for the session, a command the box refuses re-runs outside it
+// unasked. Fail-closed: no sandbox category, not sandboxed.
+func sandboxed(facts SafetyFacts, perms []control.PermissionInfo) bool {
+	i := slices.IndexFunc(perms, func(p control.PermissionInfo) bool { return p.Category == "sandbox" })
+	return facts.Sandboxed && i >= 0 && perms[i].Mode != "allow" && !perms[i].Session
 }
 
 func (s *Server) facts() SafetyFacts {
@@ -269,27 +281,31 @@ func (s *Server) modeRows() []ModeRow {
 			}
 		}
 	}
-	facts := s.facts()
+	facts, perms := s.facts(), s.safety.Permissions()
+	boxed := sandboxed(facts, perms)
 	var rows []ModeRow
-	for _, p := range s.safety.Permissions() {
+	for _, p := range perms {
 		row := ModeRow{Category: p.Category, Title: p.Title, Can: p.Can, Mode: p.Mode, New: p.New, Session: p.Session, Discord: discord[p.Category]}
+		// Outside the sandbox a command can reach Tenant's own files (F9):
+		// said on Allow, and on a grant or Allow already on (the backend can
+		// change under it while Tenant runs).
+		risk := ""
+		if p.Category == "sandbox" || p.Category == "exec" && !boxed {
+			risk = " Commands run as " + facts.runsAs() + ". With this on, your agent could also change its own settings and answer its own requests on this page."
+		}
 		switch {
 		case p.Session:
-			row.Consequence = "Allowed without asking until Tenant restarts."
+			row.Consequence = "Allowed without asking until Tenant restarts." + risk
 		case p.Mode == "allow":
-			row.Consequence = "Can " + p.Can + " without asking you."
+			row.Consequence = "Can " + p.Can + " without asking you." + risk
 		case p.Mode == "deny":
 			row.Consequence = "Can't " + p.Can + ". It won't ask."
 		default:
 			row.Consequence = "Asks you before it can " + p.Can + "."
 		}
-		row.Allow = "Let your agent " + p.Can + " without asking you?"
-		switch {
-		case p.Category == "exec" && facts.Sandboxed:
+		row.Allow = "Let your agent " + p.Can + " without asking you?" + risk
+		if p.Category == "exec" && boxed {
 			row.Allow += " Commands run inside the sandbox."
-		case p.Category == "exec", p.Category == "sandbox":
-			// Outside the sandbox a command can reach Tenant's own files (F9).
-			row.Allow += " Commands run as " + facts.runsAs() + ". With this on, your agent could also change its own settings and answer its own requests on this page."
 		}
 		rows = append(rows, row)
 	}

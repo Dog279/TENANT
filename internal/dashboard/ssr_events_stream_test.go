@@ -137,16 +137,18 @@ func TestEvents_ApprovalQueueLive(t *testing.T) {
 			strings.Contains(out, "Nothing is waiting for you.")
 	}, nil)
 
+	// One event each: the snapshot came after Subscribe, so none is missed,
+	// and no Pending left queued can stand in for the Resolved one.
 	fq.add(PendingApproval{ID: "ap-7", Category: "exec", Action: "os_exec", Detail: "uname -a", Origin: "local"})
-	streamed(t, rec, "the new request", func(out string) bool { return strings.Contains(out, `id="q-ap-7"`) },
-		func() { broker.Publish(agent.Event{Kind: agent.EventApprovalPending}) })
+	broker.Publish(agent.Event{Kind: agent.EventApprovalPending})
+	streamed(t, rec, "the new request", func(out string) bool { return strings.Contains(out, `id="q-ap-7"`) }, nil)
 
 	if err := fq.Decide("ap-7", "deny"); err != nil {
 		t.Fatal(err)
 	}
 	at := len(rec.String())
-	streamed(t, rec, "the empty queue", func(out string) bool { return strings.Contains(out[at:], "Nothing is waiting for you.") },
-		func() { broker.Publish(agent.Event{Kind: agent.EventApprovalResolved}) })
+	broker.Publish(agent.Event{Kind: agent.EventApprovalResolved})
+	streamed(t, rec, "the empty queue", func(out string) bool { return strings.Contains(out[at:], "Nothing is waiting for you.") }, nil)
 }
 
 // With no event at all, the queue still catches up every queueResync: the
