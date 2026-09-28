@@ -86,3 +86,61 @@ func TestRules_RemoveConfirmFollowsTheRule(t *testing.T) {
 		t.Errorf("removing the Block rule, confirmed: %d, removes %v", rec.Code, fr.removes)
 	}
 }
+
+// The posture and rule forms answer a Datastar post in place, with controls
+// or without; the Tools page shows the change; a failure is an alert that
+// leaves the page alone; a plain post still gets its 303; Don't ask is still
+// a 428 without its step. "Turn on all" is still a plain post.
+func TestTools_InlinePostureAndRules(t *testing.T) {
+	forms := []struct {
+		path string
+		form url.Values
+	}{
+		{"/posture", url.Values{"allow_send": {"true"}, "confirm": {"yes"}}},
+		{"/tools/rules/add", url.Values{"pattern": {"delete_*"}, "mode": {"deny"}}},
+		{"/tools/rules/remove", url.Values{"pattern": {"write_note"}, "confirm": {"yes"}}},
+	}
+	bare := New(Config{}, nil, nil, nil, nil, nil)
+	for _, f := range forms {
+		body := inlineAnswer(t, bare, f.path, f.form, "tools-body")
+		if !strings.Contains(body, "No tools yet.") {
+			t.Errorf("%s with no controls: the region doesn't say so:\n%s", f.path, body)
+		}
+	}
+
+	s, _ := ssrServer()
+	fr := &fakeRules{rows: []ToolRuleRow{{Pattern: "write_note", Mode: "allow", Kind: "name"}}}
+	s.SetRules(fr)
+	for i, want := range [][2]string{
+		{`<span class="toast-text">Tools that change things are on. Your safety settings still decide which of them ask you first.</span>`, `<span class="btn on">All on</span>`},
+		{`<span class="toast-text">Rule added: delete_* is blocked.</span>`, "Tool rules"},
+		{`<span class="toast-text">Rule removed: write_note.</span>`, "Tool rules"},
+	} {
+		body := inlineAnswer(t, s, forms[i].path, forms[i].form, "tools-body")
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s: the answer is missing %q:\n%s", forms[i].path, w, body)
+			}
+		}
+	}
+	body := inlineAnswer(t, s, "/posture", url.Values{"allow_send": {"false"}}, "tools-body")
+	if !strings.Contains(body, `<span class="toast-text">Tools that change things are off.</span>`) || !strings.Contains(body, `class="btn on">All off</button>`) {
+		t.Errorf("All off:\n%s", body)
+	}
+
+	fr.setErr = errors.New("pattern must be one word")
+	inlineError(t, s, "/tools/rules/add", url.Values{"pattern": {"bad"}, "mode": {"deny"}}, "tools-body", "Couldn't add that rule. Check the tool name or pattern.")
+	inlineError(t, s, "/tools/rules/add", url.Values{"pattern": {""}, "mode": {"deny"}}, "tools-body", "A rule needs a tool name or pattern, and Ask first, Don't ask or Block.")
+	fr.setErr = nil
+
+	if rec := sendForm(s.Handler(), http.MethodPost, "/tools/rules/add", url.Values{"pattern": {"x"}, "mode": {"ask"}}, nil); rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/tools?msg=") {
+		t.Errorf("a plain post: %d to %q, want 303 to /tools with its flash", rec.Code, rec.Header().Get("Location"))
+	}
+	sets := len(fr.sets)
+	if rec := sendForm(s.Handler(), http.MethodPost, "/tools/rules/add", url.Values{"pattern": {"x"}, "mode": {"allow"}}, datastar); rec.Code != http.StatusPreconditionRequired || len(fr.sets) != sets {
+		t.Errorf("Don't ask without its confirm step over Datastar: %d, sets %v; want 428 and nothing added", rec.Code, fr.sets)
+	}
+	if page := get(t, s, "/tools").Body.String(); !strings.Contains(page, `<form method="POST" action="/plugins/web/toggle" class="inline">`) {
+		t.Errorf("Turn on all isn't a plain post:\n%s", page)
+	}
+}

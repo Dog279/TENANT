@@ -51,20 +51,20 @@ var ruleWords = map[string]string{
 
 func (s *Server) handleRuleAddForm(w http.ResponseWriter, r *http.Request) {
 	if s.rules == nil {
-		http.Redirect(w, r, "/tools", http.StatusSeeOther)
+		s.toolsDone(w, r, "", "")
 		return
 	}
 	pattern := strings.TrimSpace(r.FormValue("pattern"))
 	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
 	if pattern == "" || ruleWords[mode] == "" {
-		redirectFlash(w, r, "/tools", "", "A rule needs a tool name or pattern, and Ask first, Don't ask or Block.")
+		s.toolsDone(w, r, "", "A rule needs a tool name or pattern, and Ask first, Don't ask or Block.")
 		return
 	}
 	if err := s.rules.SetRule(pattern, mode); err != nil {
-		redirectFlash(w, r, "/tools", "", s.flashFor(r.Context(), "tool rule add", err, "Couldn't add that rule. Check the tool name or pattern."))
+		s.toolsDone(w, r, "", s.flashFor(r.Context(), "tool rule add", err, "Couldn't add that rule. Check the tool name or pattern."))
 		return
 	}
-	redirectFlash(w, r, "/tools", "Rule added: "+ToolRuleRow{Pattern: pattern}.Plain()+" "+ruleWords[mode]+".", "")
+	s.toolsDone(w, r, "Rule added: "+ToolRuleRow{Pattern: pattern}.Plain()+" "+ruleWords[mode]+".", "")
 }
 
 // ruleMode is the mode of the rule for pattern, "" with none. Removing a rule
@@ -83,17 +83,17 @@ func (s *Server) ruleMode(pattern string) string {
 
 func (s *Server) handleRuleRemoveForm(w http.ResponseWriter, r *http.Request) {
 	if s.rules == nil {
-		http.Redirect(w, r, "/tools", http.StatusSeeOther)
+		s.toolsDone(w, r, "", "")
 		return
 	}
 	pattern := strings.TrimSpace(r.FormValue("pattern"))
 	removed, err := s.rules.RemoveRule(pattern)
 	switch {
 	case err != nil:
-		redirectFlash(w, r, "/tools", "", s.flashFor(r.Context(), "tool rule remove", err, "Couldn't remove that rule."))
+		s.toolsDone(w, r, "", s.flashFor(r.Context(), "tool rule remove", err, "Couldn't remove that rule."))
 	case !removed:
-		redirectFlash(w, r, "/tools", "", "There's no rule for "+pattern+".")
+		s.toolsDone(w, r, "", "There's no rule for "+pattern+".")
 	default:
-		redirectFlash(w, r, "/tools", "Rule removed: "+ToolRuleRow{Pattern: pattern}.Plain()+".", "")
+		s.toolsDone(w, r, "Rule removed: "+ToolRuleRow{Pattern: pattern}.Plain()+".", "")
 	}
 }

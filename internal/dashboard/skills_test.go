@@ -2,7 +2,9 @@ package dashboard
 
 import (
 	"fmt"
+	"html"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -86,15 +88,15 @@ func TestSkills_GroupsProposedAndLive_HidesTombstoned(t *testing.T) {
 func TestSkills_AcceptEnableForget(t *testing.T) {
 	fc := &fakeSkillCtl{}
 	s := skillServer(fc)
-	submitForm(t, s, "/skills/triage-bug/accept", "")
+	submitForm(t, s, "/skills/accept", "name=triage-bug")
 	if len(fc.acceptCalls) != 1 || fc.acceptCalls[0] != "triage-bug" {
 		t.Errorf("accept calls = %v", fc.acceptCalls)
 	}
-	submitForm(t, s, "/skills/summarize-pr/enable", "enabled=false")
+	submitForm(t, s, "/skills/enable", "name=summarize-pr&enabled=false")
 	if len(fc.enableCalls) != 1 || fc.enableCalls[0] != "summarize-pr:false" {
 		t.Errorf("enable calls = %v", fc.enableCalls)
 	}
-	submitForm(t, s, "/skills/old/forget", "confirm=yes")
+	submitForm(t, s, "/skills/forget", "name=old&confirm=yes")
 	if len(fc.forgetCalls) != 1 {
 		t.Errorf("forget calls = %v", fc.forgetCalls)
 	}
@@ -113,8 +115,8 @@ func TestSkills_AutoAcceptForm(t *testing.T) {
 
 func TestSkills_MutationsNilSafe(t *testing.T) {
 	s := skillServer(nil)
-	for _, p := range []string{"/skills/x/accept", "/skills/x/enable", "/skills/x/forget", "/skills/auto"} {
-		if rec := submitForm(t, s, p, "mode=on&enabled=true&confirm=yes"); rec.Code != http.StatusSeeOther {
+	for _, p := range []string{"/skills/accept", "/skills/enable", "/skills/forget", "/skills/trust", "/skills/auto"} {
+		if rec := submitForm(t, s, p, "name=x&mode=on&enabled=true&trusted=true&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}
 	}
@@ -133,7 +135,7 @@ func TestSkills_UntrustedWaitForReview(t *testing.T) {
 	body := get(t, skillServer(fc), "/skills").Body.String()
 	review := body[strings.Index(body, "Waiting for your review"):strings.Index(body, "What my agent has learned")]
 	for _, want := range []string{"Waiting for your review (2)", "saved by your agent", "imported from /pkgs/pdf-forms",
-		"Expects tools: Bash(pdftk:*), Read", `action="/skills/exfil/trust"><input type="hidden" name="trusted" value="true"><input type="hidden" name="confirm" value="yes">`,
+		"Expects tools: Bash(pdftk:*), Read", inlineForm("/skills/trust") + `<input type="hidden" name="name" value="exfil"><input type="hidden" name="trusted" value="true"><input type="hidden" name="confirm" value="yes">`,
 		"&lt;b&gt;x@example.com&lt;/b&gt;"} {
 		if !strings.Contains(review, want) {
 			t.Errorf("review group lacks %q:\n%s", want, review)
@@ -151,23 +153,92 @@ func TestSkills_UntrustedWaitForReview(t *testing.T) {
 func TestSkills_TrustForm(t *testing.T) {
 	fc := &fakeSkillCtl{}
 	s := skillServer(fc)
-	rec := submitForm(t, s, "/skills/exfil/trust", "trusted=true&confirm=yes")
+	rec := submitForm(t, s, "/skills/trust", "name=exfil&trusted=true&confirm=yes")
 	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "msg=") {
 		t.Errorf("trust: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
-	submitForm(t, s, "/skills/summarize-pr/trust", "trusted=false")
+	submitForm(t, s, "/skills/trust", "name=summarize-pr&trusted=false")
 	if strings.Join(fc.trustCalls, ",") != "exfil:true,summarize-pr:false" {
 		t.Errorf("trust calls = %v", fc.trustCalls)
 	}
 	// Anything but trusted=true distrusts: a mangled form never trusts.
-	submitForm(t, s, "/skills/x/trust", "trusted=yes&confirm=yes")
+	submitForm(t, s, "/skills/trust", "name=x&trusted=yes&confirm=yes")
 	if fc.trustCalls[2] != "x:false" {
 		t.Errorf("a mangled form trusted: %v", fc.trustCalls)
 	}
-	if rec := submitForm(t, s, "/skills/missing/trust", "trusted=true&confirm=yes"); !strings.Contains(rec.Header().Get("Location"), "err=") {
+	if rec := submitForm(t, s, "/skills/trust", "name=missing&trusted=true&confirm=yes"); !strings.Contains(rec.Header().Get("Location"), "err=") {
 		t.Errorf("an unknown skill should report an error: %s", rec.Header().Get("Location"))
 	}
-	if rec := submitForm(t, skillServer(nil), "/skills/x/trust", "trusted=true&confirm=yes"); rec.Code != http.StatusSeeOther {
+	if rec := submitForm(t, skillServer(nil), "/skills/trust", "name=x&trusted=true&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil control: %d", rec.Code)
+	}
+}
+
+// inlineAnswer posts form to path the way Datastar does and checks the
+// in-place answer (formDone): a 200 stream with the toast, the status strip
+// and the page's region, never a 303 the fetch would follow.
+func inlineAnswer(t *testing.T, s *Server, path string, form url.Values, region string) string {
+	t.Helper()
+	rec := sendForm(s.Handler(), http.MethodPost, path, form, datastar)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || rec.Header().Get("Location") != "" {
+		t.Errorf("%s %v: %d %q to %q, want 200 text/event-stream", path, form, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Location"))
+	}
+	for _, want := range []string{"data: mode replace\ndata: elements <div id=\"toast\"", `data: elements <div id="ui-status"`, `data: elements <div id="` + region + `">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("%s %v is missing %q:\n%s", path, form, want, body)
+		}
+	}
+	return body
+}
+
+// inlineError posts form to path the way Datastar does and checks the answer
+// is an alert saying msg, with the region left as it was: an open step
+// keeps what was typed in it.
+func inlineError(t *testing.T, s *Server, path string, form url.Values, region, msg string) {
+	t.Helper()
+	body := sendForm(s.Handler(), http.MethodPost, path, form, datastar).Body.String()
+	if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">`+html.EscapeString(msg)+`</span>`) {
+		t.Errorf("%s %v: want the alert %q:\n%s", path, form, msg, body)
+	}
+	if strings.Contains(body, `id="`+region+`"`) {
+		t.Errorf("%s %v: a failure re-rendered #%s:\n%s", path, form, region, body)
+	}
+}
+
+// Every Skills form answers a Datastar post in place, with a control or
+// without one; a failure is an alert that leaves the page alone; a plain
+// post still gets its 303 and flash; a confirm step is still a 428.
+func TestSkills_InlineAnswersEveryForm(t *testing.T) {
+	forms := map[string]url.Values{
+		"/skills/accept": {"name": {"triage-bug"}},
+		"/skills/enable": {"name": {"summarize-pr"}, "enabled": {"false"}},
+		"/skills/forget": {"name": {"old"}},
+		"/skills/trust":  {"name": {"exfil"}, "trusted": {"true"}},
+		"/skills/auto":   {"mode": {"on"}},
+	}
+	fc := &fakeSkillCtl{skills: []SkillView{{Name: "summarize-pr", Status: "live", Enabled: true}}}
+	for path, f := range forms {
+		for _, c := range []SkillControl{fc, nil} {
+			body := inlineAnswer(t, skillServer(c), path, withField(f, "confirm", "yes"), "skills-body")
+			if c == nil && !strings.Contains(body, "Skills aren&#39;t available on this Tenant.") {
+				t.Errorf("%s with no control: the region doesn't say so:\n%s", path, body)
+			}
+		}
+	}
+	s := skillServer(fc)
+	body := inlineAnswer(t, s, "/skills/enable", forms["/skills/enable"], "skills-body")
+	if !strings.Contains(body, `<span class="toast-text">Skill turned off: your agent won&#39;t use it until you turn it on.</span>`) {
+		t.Errorf("Turn off's toast:\n%s", body)
+	}
+	inlineError(t, s, "/skills/trust", url.Values{"name": {"missing"}, "trusted": {"true"}, "confirm": {"yes"}}, "skills-body", "There's no skill named missing.")
+	inlineError(t, s, "/skills/auto", url.Values{"mode": {"sometimes"}, "confirm": {"yes"}}, "skills-body", "Pick Off, Trusted or On.")
+
+	if rec := sendForm(s.Handler(), http.MethodPost, "/skills/accept", forms["/skills/accept"], nil); rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/skills?msg=") {
+		t.Errorf("a plain post: %d to %q, want 303 to /skills with its flash", rec.Code, rec.Header().Get("Location"))
+	}
+	forgets := len(fc.forgetCalls)
+	if rec := sendForm(s.Handler(), http.MethodPost, "/skills/forget", forms["/skills/forget"], datastar); rec.Code != http.StatusPreconditionRequired || len(fc.forgetCalls) != forgets {
+		t.Errorf("Remove without its confirm step over Datastar: %d, forget calls %v; want 428 and nothing removed", rec.Code, fc.forgetCalls)
 	}
 }
