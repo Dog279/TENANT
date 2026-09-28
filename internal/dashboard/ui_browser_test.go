@@ -186,8 +186,8 @@ func TestUIShellInChrome(t *testing.T) {
 		chromedp.Evaluate(fitsJS, &boxBad),
 		shoot("models-confirm"),
 		chromedp.Click(row+` details[open] .confirm-box button`, chromedp.ByQuery),
-		chromedp.WaitVisible(`.page .ok`, chromedp.ByQuery),
-		chromedp.Text(`.page .ok`, &flash, chromedp.ByQuery),
+		chromedp.WaitVisible(`#toast.ok`, chromedp.ByQuery), // in place (formDone)
+		chromedp.Text(`#toast`, &flash, chromedp.ByQuery),
 	)
 	if err != nil {
 		t.Fatalf("Models Remove: %v", err)

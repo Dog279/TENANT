@@ -401,3 +401,6 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* a Logs part that answers a form in place keeps its section's column */
 .lg-part{display:flex;flex-direction:column;gap:7px}
 /* == end WP-activity == */
+/* == WP-inline-models == */
+.tap-guard{position:fixed;inset:0;z-index:9}
+/* == end WP-inline-models == */
