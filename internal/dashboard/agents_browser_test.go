@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -20,9 +19,9 @@ func TestAgentsRemoveInChrome(t *testing.T) {
 	row := `#agent-` + name
 	var boxBad, editBad []string
 	var before, flash string
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		chromedp.WaitVisible(row, chromedp.ByQuery),
-		chromedp.Poll(`document.getElementById('ui-status').textContent.includes('waiting for your OK')`, nil, chromedp.WithPollingTimeout(6*time.Second)), // Datastar is up
+		datastarUp,
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
 		tapsOpen, // a step just opened
 		chromedp.WaitVisible(row+` details[open] .confirm-box`, chromedp.ByQuery),

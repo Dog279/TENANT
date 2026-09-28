@@ -68,7 +68,7 @@ func TestSafetyQueueInChrome(t *testing.T) {
 	fq.add(PendingApproval{ID: "ap-1", Category: "exec", Action: "os_exec", Detail: longDetail(), AgeSecs: 5, Origin: "local", SessionOK: true})
 	start := time.Now()
 	var bad []string
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		publish(agent.EventApprovalPending),
 		chromedp.Poll(`document.querySelector('#q-ap-1') !== null`, nil, chromedp.WithPollingTimeout(time.Second), chromedp.WithPollingInterval(20*time.Millisecond)),
 		chromedp.Evaluate(fitsJS, &bad),
@@ -86,7 +86,7 @@ func TestSafetyQueueInChrome(t *testing.T) {
 	// it (a second request arriving).
 	var open bool
 	fq.add(PendingApproval{ID: "ap-2", Category: "web", Action: "web_click", Detail: "click Buy", AgeSecs: 1, Origin: "local", SessionOK: true})
-	err = chromedp.Run(ctx,
+	err = run(ctx,
 		chromedp.Click(`#q-ap-1 .q-session > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#q-ap-1 .q-session[open] .confirm-box`, chromedp.ByQuery),
 		shot("session-step"),
@@ -104,12 +104,12 @@ func TestSafetyQueueInChrome(t *testing.T) {
 
 	// A double tap on Allow once answers once; the item goes and the note says so.
 	var note string
-	err = chromedp.Run(ctx, tapsOpen,
+	err = run(ctx, tapsOpen,
 		chromedp.Evaluate(`(() => { const b = document.querySelector('#q-ap-1 .q-actions .btn.on'); b.click(); b.click(); return true })()`, nil),
 		chromedp.WaitNotPresent(`#q-ap-1`, chromedp.ByQuery),
 		chromedp.Text(`#approval-note`, &note, chromedp.ByQuery),
 		publish(agent.EventApprovalResolved),
-		chromedp.Sleep(300*time.Millisecond),
+		tapsOpen, // and any second post is answered
 	)
 	if err != nil {
 		t.Fatalf("Allow once: %v", err)
@@ -134,7 +134,7 @@ func TestSafetyQueueInChrome(t *testing.T) {
 
 	// Chat shows the same queue above its composer.
 	var above bool
-	err = chromedp.Run(ctx,
+	err = run(ctx,
 		chromedp.Navigate(srv.URL+"/chat"),
 		chromedp.WaitVisible(`.chat-q #q-ap-2`, chromedp.ByQuery),
 		chromedp.Evaluate(`document.querySelector('.chat-q').compareDocumentPosition(document.querySelector('.composer')) === Node.DOCUMENT_POSITION_FOLLOWING`, &above),
@@ -154,7 +154,7 @@ func TestSafetyQueueInChrome(t *testing.T) {
 	// The stream drops: the page says live updates paused, and the stream's
 	// snapshot on reconnect clears it.
 	const paused = `getComputedStyle(document.querySelector('.live-off')).display !== 'none'`
-	err = chromedp.Run(ctx,
+	err = run(ctx,
 		chromedp.Navigate(srv.URL+"/safety"),
 		chromedp.WaitVisible(`#q-ap-2`, chromedp.ByQuery),
 		chromedp.ActionFunc(func(context.Context) error {
@@ -170,7 +170,7 @@ func TestSafetyQueueInChrome(t *testing.T) {
 	}
 
 	// The server stops: the banner stays.
-	err = chromedp.Run(ctx,
+	err = run(ctx,
 		chromedp.ActionFunc(func(context.Context) error {
 			awaitStream(4)
 			srv.Listener.Close()

@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -25,22 +23,15 @@ type inlineChrome struct {
 func newInlineChrome(t *testing.T, s *Server, page, name string) inlineChrome {
 	ctx, _ := chromeSignedIn(t, s, 390, 844, page)
 	c := inlineChrome{t, ctx, name}
-	// Datastar is up once the status strip's first GET has come back.
-	c.run("waiting for Datastar", chromedp.Poll(`performance.getEntriesByType('resource').some(e => e.name.includes('/ui/status'))`, nil, chromedp.WithPollingTimeout(6*time.Second)))
+	c.run("waiting for Datastar", datastarUp)
 	return c
 }
 
 func (c inlineChrome) run(step string, actions ...chromedp.Action) {
 	c.t.Helper()
-	if err := chromedp.Run(c.ctx, actions...); err != nil {
+	if err := run(c.ctx, actions...); err != nil {
 		c.t.Fatalf("%s: %v", step, err)
 	}
-}
-
-// toast waits for the toast of kind ok or err to say text.
-func (inlineChrome) toast(kind, text string) chromedp.Action {
-	q := strconv.Quote // a Go-quoted ASCII string is a JS string literal
-	return chromedp.Poll(`(t => t.classList.contains(`+q(kind)+`) && t.textContent.includes(`+q(text)+`))(document.getElementById('toast'))`, nil, chromedp.WithPollingTimeout(6*time.Second))
 }
 
 // shot keeps a screenshot when TENANT_UI_SCREENSHOT=<dir>.
@@ -58,45 +49,14 @@ func (c inlineChrome) shot(name string) chromedp.Action {
 	})
 }
 
-// doubleTap taps the middle of sel twice at one spot, 120ms apart.
-func doubleTap(sel string) chromedp.Action {
-	return chromedp.ActionFunc(func(ctx context.Context) error {
-		var xy []float64
-		if err := chromedp.Evaluate(`(r => [r.left + r.width / 2, r.top + r.height / 2])(document.querySelector(`+strconv.Quote(sel)+`).getBoundingClientRect())`, &xy).Do(ctx); err != nil {
-			return err
-		}
-		if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil {
-			return err
-		}
-		time.Sleep(120 * time.Millisecond)
-		return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
-	})
-}
-
-// inPlace waits out the tap guard, scrolls sel to the middle of the screen, marks
-// the page, runs act and then checks the scroll and the page are what they
-// were, and that the page fits.
+// inPlace waits out the tap guard, puts sel in the middle of the screen,
+// runs act and checks the page stayed there.
 func (c inlineChrome) inPlace(step, sel string, act ...chromedp.Action) {
 	c.t.Helper()
-	const where = `[document.querySelector('.page').scrollTop, scrollY]`
-	var before, after []float64
-	var kept string
-	var bad []string
-	c.run(step, tapsOpen, chromedp.Evaluate(`document.querySelector(`+strconv.Quote(sel)+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+where, &before))
+	var at []float64
+	c.run(step, tapsOpen, markPlace(sel, sel, &at))
 	c.run(step, act...)
-	c.run(step, chromedp.Evaluate(where, &after), chromedp.Evaluate(`String(window.inlineMark)`, &kept), chromedp.Evaluate(fitsJS, &bad))
-	if len(before) != 2 || before[0] < 100 {
-		c.t.Fatalf("%s: the page scrolled to %v before, want well down it", step, before)
-	}
-	if fmt.Sprint(after) != fmt.Sprint(before) {
-		c.t.Errorf("%s: the scroll moved from %v to %v", step, before, after)
-	}
-	if kept != "kept" {
-		c.t.Errorf("%s: the page reloaded: the marker is %q", step, kept)
-	}
-	for _, b := range bad {
-		c.t.Errorf("%s: %s", step, b)
-	}
+	c.run(step, stayed(c.t, step, sel, &at))
 }
 
 // Scheduled jobs answer in place on a phone (DESIGN.md "Forms that don't
@@ -123,8 +83,8 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	var stepOpen bool
 	c.run("a double tap on the exec switch's Turn off",
 		doubleTap(`form[action="/cron/exec"] button`),
-		c.toast("ok", "Scheduled jobs can't make changes now."),
-		chromedp.Sleep(300*time.Millisecond),
+		toastSays("ok", "Scheduled jobs can't make changes now."),
+		tapsOpen,
 		chromedp.Evaluate(`document.querySelector('.page details[open]') !== null`, &stepOpen),
 		c.shot("exec-off"),
 	)
@@ -137,7 +97,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	var head, btn string
 	c.inPlace("Turn off", "#cron-j6",
 		chromedp.Click(`#cron-j6 form[action="/cron/enable"] button`, chromedp.ByQuery),
-		c.toast("ok", "job 6 is off."),
+		toastSays("ok", "job 6 is off."),
 		c.shot("turn-off"),
 		chromedp.Text(`#cron-j6 .ghead`, &head, chromedp.ByQuery),
 		chromedp.Text(`#cron-j6 form[action="/cron/enable"] button`, &btn, chromedp.ByQuery),
@@ -150,8 +110,8 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	// whose throttle drops the second.
 	c.inPlace("a double tap on Run now", "#cron-j6",
 		doubleTap(`#cron-j6 form[action="/cron/run"] button`),
-		c.toast("ok", "job 6 is running now."),
-		chromedp.Sleep(300*time.Millisecond), // room for a second post to land
+		toastSays("ok", "job 6 is running now."),
+		tapsOpen,
 	)
 	fc.set(func() {
 		if fmt.Sprint(fc.runCalls) != "[j6]" {
@@ -161,26 +121,26 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 
 	// On a phone Delete's Yes sits at the foot of the screen, and once j4's
 	// card goes, j6's Run now is under it: the page, not the form, drops the
-	// second tap. (Not scroll-checked: a card near the end shortens the page.)
+	// second tap. The card above, j3, stays put.
 	var gone bool
-	var kept string
+	var at []float64
 	c.run("a double tap on Delete's Yes",
 		tapsOpen,
-		chromedp.Evaluate(`document.getElementById('cron-j4').scrollIntoView({block: 'center'})`, nil),
+		markPlace(`#cron-j4`, `#cron-j3`, &at),
 		chromedp.Click(`#cron-j4 details.confirm-step > summary`, chromedp.ByQuery),
 		tapsOpen, // a step just opened
 		chromedp.WaitVisible(`#cron-j4 details[open] .confirm-box button`, chromedp.ByQuery),
 		doubleTap(`#cron-j4 details[open] .confirm-box button`),
-		c.toast("ok", "job 4 is deleted."),
+		toastSays("ok", "job 4 is deleted."),
 		c.shot("delete"),
-		chromedp.Sleep(300*time.Millisecond),
+		tapsOpen,
 		chromedp.Evaluate(`document.getElementById('cron-j4') === null && document.querySelector('.page details[open]') === null`, &gone),
-		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		stayed(t, "a double tap on Delete's Yes", `#cron-j3`, &at),
 		chromedp.Click(`#toast .toast-x`, chromedp.ByQuery),
 	)
 	fc.set(func() {
-		if !gone || kept != "kept" || fmt.Sprint(fc.removeCalls) != "[j4]" || fmt.Sprint(fc.runCalls) != "[j6]" {
-			t.Errorf("a double tap on Delete's Yes: card gone and step closed %v, marker %q, removed %v, ran %v; want j4 removed and nothing run", gone, kept, fc.removeCalls, fc.runCalls)
+		if !gone || fmt.Sprint(fc.removeCalls) != "[j4]" || fmt.Sprint(fc.runCalls) != "[j6]" {
+			t.Errorf("a double tap on Delete's Yes: card gone and step closed %v, removed %v, ran %v; want j4 removed and nothing run", gone, fc.removeCalls, fc.runCalls)
 		}
 	})
 
@@ -190,17 +150,18 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	var listed bool
 	c.run("Add",
 		tapsOpen,
+		markPlace(`#jobs-add`, `#jobs-add`, &at),
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "@weekly", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Send the weekly report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
-		c.toast("ok", "Job scheduled."),
+		toastSays("ok", "Job scheduled."),
 		c.shot("add"),
 		chromedp.Evaluate(typed, &left),
 		chromedp.Evaluate(`document.getElementById('cron-new1') !== null`, &listed),
-		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		stayed(t, "Add", `#jobs-add`, &at),
 	)
-	if left != "|||" || !listed || kept != "kept" {
-		t.Errorf("Add: the boxes hold %q (want empty), the job listed %v, marker %q", left, listed, kept)
+	if left != "|||" || !listed {
+		t.Errorf("Add: the boxes hold %q (want empty), the job listed %v", left, listed)
 	}
 
 	fc.set(func() { fc.addErr = errors.New("bad schedule") })
@@ -209,7 +170,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "every tuesday", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
-		c.toast("err", "Couldn't schedule that job."),
+		toastSays("err", "Couldn't schedule that job."),
 		c.shot("add-error"),
 		chromedp.Evaluate(typed, &left),
 	)
@@ -240,7 +201,7 @@ func TestEvalInlineFormsInChrome(t *testing.T) {
 	)
 	c.inPlace("Save schedule", `form[action="/eval/schedule"] button`,
 		chromedp.Click(`form[action="/eval/schedule"] button`, chromedp.ByQuery),
-		c.toast("ok", "Schedule saved."),
+		toastSays("ok", "Schedule saved."),
 		c.shot("schedule"),
 		chromedp.Evaluate(`document.querySelector('.card:has(> form[action="/eval/schedule"]) .mb').textContent`, &now),
 		chromedp.Evaluate(`document.querySelector('input[name=mode][value=at]').checked`, &at),
@@ -258,7 +219,7 @@ func TestEvalInlineFormsInChrome(t *testing.T) {
 	)
 	c.inPlace("Set the grader", `form[action="/eval/judge"] button`,
 		chromedp.Click(`form[action="/eval/judge"] button`, chromedp.ByQuery),
-		c.toast("ok", "Saved: glm-4.6 from zai grades the checks now."),
+		toastSays("ok", "Saved: glm-4.6 from zai grades the checks now."),
 		chromedp.Evaluate(`document.querySelector('details.advanced').open`, &open),
 		chromedp.Text(`details.advanced > .dim`, &judge, chromedp.ByQuery),
 	)
@@ -266,17 +227,20 @@ func TestEvalInlineFormsInChrome(t *testing.T) {
 		t.Errorf("Set the grader: the section open %v, it says %q", open, judge)
 	}
 
-	// Last: the check in progress reloads the page every 20s.
+	// Last: the check in progress reloads the page every 20s. It goes in
+	// under the Schedule figure, on the screen, pushing Run now down.
 	var loading string
-	var kept string
+	var place []float64
+	const figure = `.card.stat:has(.stat-value.small)`
 	c.run("Run now", tapsOpen,
+		markPlace(`form[action="/eval/run"] button`, figure, &place),
 		chromedp.Click(`form[action="/eval/run"] button`, chromedp.ByQuery),
-		c.toast("ok", "Quality check queued."),
+		toastSays("ok", "Quality check queued."),
 		chromedp.Evaluate(`document.querySelector('.loading').textContent`, &loading),
 		c.shot("run"),
-		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		stayed(t, "Run now", figure, &place),
 	)
-	if loading != "Check in progress" || kept != "kept" {
-		t.Errorf("Run now: the page shows %q (want the check in progress), marker %q", loading, kept)
+	if loading != "Check in progress" {
+		t.Errorf("Run now: the page shows %q, want the check in progress", loading)
 	}
 }

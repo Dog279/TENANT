@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -121,36 +120,21 @@ func TestSkillsMCPToolsInlineInChrome(t *testing.T) {
 	ctx, srv := chromeSignedIn(t, s, 390, 844, "/skills")
 
 	q := strconv.Quote // a Go-quoted ASCII string is a JS string literal
-	wait := chromedp.WithPollingTimeout(6 * time.Second)
-	// tap clicks *at (read when it runs), twice 120ms apart when double.
-	tap := func(at *[]float64, double bool) chromedp.Action {
-		return chromedp.ActionFunc(func(ctx context.Context) error {
-			xy := *at
-			if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil || !double {
-				return err
-			}
-			time.Sleep(120 * time.Millisecond)
-			return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
-		})
-	}
 	const opened = `document.querySelectorAll('details.confirm-step[open]').length`
-	// inPlace taps sel's button in the middle of the screen, twice at one
-	// spot when double, and checks the toast says toast, the scroll and the
-	// page stayed, no confirm step opened, and the page fits.
-	inPlace := func(page, sel string, double bool, toast string) {
+	// inPlace double-taps sel's button in the middle of the screen and checks
+	// the toast says toast, the page stayed with ref where it was (sel's, or
+	// a neighbour's when the answer takes sel away), and no confirm step
+	// opened.
+	inPlace := func(page, sel, ref, toast string) {
 		t.Helper()
-		var xy, before, after []float64
-		var kept string
-		var bad []string
+		var at []float64
 		var open int
-		const where = `[document.querySelector('.page').scrollTop, scrollY]`
-		err := chromedp.Run(ctx,
+		err := run(ctx,
 			chromedp.Navigate(srv.URL+page),
-			chromedp.Evaluate(`(b => (b.scrollIntoView({block: 'center'}), window.inlineMark = 'kept', (r => [r.left + r.width / 2, r.top + r.height / 2])(b.getBoundingClientRect())))(document.querySelector(`+q(sel)+`))`, &xy),
-			chromedp.Evaluate(where, &before),
-			tap(&xy, double),
-			chromedp.Poll(`(t => t.classList.contains('ok') && t.textContent.includes(`+q(toast)+`))(document.getElementById('toast'))`, nil, wait),
-			chromedp.Sleep(300*time.Millisecond), // room for a second post to land
+			markPlace(sel, ref, &at),
+			doubleTap(sel),
+			toastSays("ok", toast),
+			tapsOpen,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				dir := os.Getenv("TENANT_UI_SCREENSHOT")
 				if dir == "" {
@@ -162,44 +146,30 @@ func TestSkillsMCPToolsInlineInChrome(t *testing.T) {
 				}
 				return os.WriteFile(filepath.Join(dir, "inline-390"+strings.ReplaceAll(page, "/", "-")+".png"), png, 0o644)
 			}),
-			chromedp.Evaluate(where, &after),
-			chromedp.Evaluate(`String(window.inlineMark)`, &kept),
-			chromedp.Evaluate(fitsJS, &bad),
+			stayed(t, page, ref, &at),
 			chromedp.Evaluate(opened, &open),
 		)
 		if err != nil {
 			t.Fatalf("%s: %v", page, err)
 		}
-		if len(before) != 2 || before[0] < 100 {
-			t.Errorf("%s scrolled to %v before the tap, want well down it", page, before)
-		}
-		if fmt.Sprint(after) != fmt.Sprint(before) {
-			t.Errorf("%s: the scroll moved from %v to %v", page, before, after)
-		}
-		if kept != "kept" {
-			t.Errorf("%s reloaded: the marker is %q", page, kept)
-		}
 		if open != 0 {
 			t.Errorf("%s: the tap opened %d confirm step(s)", page, open)
-		}
-		for _, b := range bad {
-			t.Errorf("%s with the toast: %s", page, b)
 		}
 	}
 	count := func(sel string) (n int) {
 		t.Helper()
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.querySelectorAll(`+q(sel)+`).length`, &n)); err != nil {
+		if err := run(ctx, chromedp.Evaluate(`document.querySelectorAll(`+q(sel)+`).length`, &n)); err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
 
-	inPlace("/skills", `form[action="/skills/accept"]:has(input[value="proposed-05"]) button`, true, "Skill accepted: it's live now.")
+	inPlace("/skills", `form[action="/skills/accept"]:has(input[value="proposed-05"]) button`, `form[action="/skills/accept"]:has(input[value="proposed-04"]) button`, "Skill accepted: it's live now.")
 	sk.mu.Lock()
 	accepted := slices.Clone(sk.acceptCalls)
 	sk.mu.Unlock()
 	var learned string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(`document.querySelector('.card:has(form[action="/skills/enable"]) .card-head').textContent`, &learned)); err != nil {
+	if err := run(ctx, chromedp.Evaluate(`document.querySelector('.card:has(form[action="/skills/enable"]) .card-head').textContent`, &learned)); err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(accepted) != "[proposed-05]" || count(`form[action="/skills/accept"]`) != 7 || learned != "What my agent has learned (7)" {
@@ -215,14 +185,12 @@ func TestSkillsMCPToolsInlineInChrome(t *testing.T) {
 	}
 	sk.acceptCalls = nil
 	sk.mu.Unlock()
-	var xy []float64
 	var open int
-	if err := chromedp.Run(ctx,
+	if err := run(ctx,
 		chromedp.Navigate(srv.URL+"/skills"),
-		chromedp.Evaluate(`(r => [r.left + r.width / 2, r.top + r.height / 2])(document.querySelector('form[action="/skills/accept"] button').getBoundingClientRect())`, &xy),
-		tap(&xy, true),
-		chromedp.Poll(`document.getElementById('toast').classList.contains('ok')`, nil, wait),
-		chromedp.Sleep(300*time.Millisecond),
+		doubleTap(`form[action="/skills/accept"] button`),
+		toastSays("ok", ""),
+		tapsOpen,
 		chromedp.Evaluate(opened, &open),
 	); err != nil {
 		t.Fatal(err)
@@ -234,9 +202,9 @@ func TestSkillsMCPToolsInlineInChrome(t *testing.T) {
 		t.Errorf("a double tap on the only Accept sent %v and opened %d confirm step(s), want one post and none", accepted, open)
 	}
 
-	inPlace("/mcp", `form[action="/mcp/trust"]:has(input[value="mcp:svc10"]):has(input[value="deny"]) button`, true, "mcp:svc10: your agent now can't use its tools.")
+	inPlace("/mcp", `form[action="/mcp/trust"]:has(input[value="mcp:svc10"]):has(input[value="deny"]) button`, `.soul-row:has(input[value="mcp:svc10"])`, "mcp:svc10: your agent now can't use its tools.")
 	var row string
-	if err := chromedp.Run(ctx, chromedp.Text(`.soul-row:has(input[value="mcp:svc10"])`, &row, chromedp.ByQuery)); err != nil {
+	if err := run(ctx, chromedp.Text(`.soul-row:has(input[value="mcp:svc10"])`, &row, chromedp.ByQuery)); err != nil {
 		t.Fatal(err)
 	}
 	mc.mu.Lock()
@@ -246,7 +214,7 @@ func TestSkillsMCPToolsInlineInChrome(t *testing.T) {
 		t.Errorf("a double tap on Block sent %v and the row says %q, want one post and blocked with Ask first", trusted, row)
 	}
 
-	inPlace("/tools", `form[action="/tools/rules/remove"]:has(input[value="tool_08"]) button`, true, "Rule removed: tool_08.")
+	inPlace("/tools", `form[action="/tools/rules/remove"]:has(input[value="tool_08"]) button`, `form[action="/tools/rules/remove"]:has(input[value="tool_07"]) button`, "Rule removed: tool_08.")
 	ru.mu.Lock()
 	removed := slices.Clone(ru.removes)
 	ru.mu.Unlock()

@@ -3,7 +3,6 @@ package dashboard
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -17,9 +16,9 @@ func TestGoalStopInChrome(t *testing.T) {
 	g := s.goal.(*fakeGoal)
 	var before, after []string
 	var flash string
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		chromedp.WaitVisible(`.page .busy`, chromedp.ByQuery),
-		chromedp.Poll(`document.getElementById('ui-status').textContent.includes('waiting for your OK')`, nil, chromedp.WithPollingTimeout(6*time.Second)), // Datastar is up
+		datastarUp,
 		chromedp.Evaluate(fitsJS, &before),
 		chromedp.Click(`form[action="/goal/stop"] button`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#toast.ok`, chromedp.ByQuery),

@@ -2,7 +2,7 @@ package dashboard
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -48,7 +48,7 @@ func TestLogsPageInChrome(t *testing.T) {
 	var first, paged int
 	var count, msg, loc string
 	var shot []byte
-	err = chromedp.Run(ctx,
+	err = run(ctx,
 		chromedp.Navigate(srv.URL+"/logs?q=log:bulk"),
 		chromedp.WaitVisible("#lg-rows .lg-row", chromedp.ByQuery),
 		chromedp.Evaluate(rows, &first),
@@ -90,7 +90,7 @@ func TestLogsPagePhoneInChrome(t *testing.T) {
 	commit(t, st, event.Event{Log: "bulk", Level: event.Warning, Task: "Batch", Msg: "bulk 1"}, event.Event{Log: "bulk", Level: event.Info, Msg: "bulk 2"})
 	ctx, _ := chromeSignedIn(t, s, 390, 844, "/logs?q=log%3Abulk")
 	var bad []string
-	if err := chromedp.Run(ctx,
+	if err := run(ctx,
 		chromedp.WaitVisible("#lg-rows .lg-row", chromedp.ByQuery),
 		chromedp.Click(`#lg-rows .lg-row`, chromedp.ByQuery),
 		chromedp.WaitVisible("#lg-detail .lg-msgfull", chromedp.ByQuery),
@@ -114,7 +114,7 @@ func TestLogsPageDesktopTreeInChrome(t *testing.T) {
 	}
 	ctx, _ := chromeSignedIn(t, s, 1470, 830, "/logs?q=log%3Abulk0")
 	var short []string
-	if err := chromedp.Run(ctx,
+	if err := run(ctx,
 		chromedp.WaitVisible("#lg-rows .lg-row", chromedp.ByQuery),
 		chromedp.Click(`#lg-rows .lg-row`, chromedp.ByQuery),
 		chromedp.WaitVisible("#lg-detail .lg-msgfull", chromedp.ByQuery),
@@ -160,50 +160,27 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 		})
 	}
 	wait := chromedp.WithPollingTimeout(6 * time.Second)
-	toastSays := func(text string) chromedp.Action {
-		return chromedp.Poll(`(t => t.classList.contains('ok') && t.textContent.includes(`+strconv.Quote(text)+`))(document.getElementById('toast'))`, nil, wait)
-	}
-	const where = `[document.querySelector('.page').scrollTop, scrollY]`
 	const saveBtn = `#lg-props button[value="save"]`
 
-	var before, after, xy []float64
-	var kept, props string
+	var at []float64
+	var props string
 	var open bool
-	var bad []string
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		chromedp.Poll(`document.getElementById('lg-count').textContent.includes('match')`, nil, wait), // Datastar is up
 		chromedp.Click(`//summary[contains(., "Properties")]`, chromedp.BySearch),
 		chromedp.WaitVisible(saveBtn, chromedp.ByQuery),
 		chromedp.SetValue(`#lg-props input[name=max_mb]`, "5", chromedp.ByQuery),
-		chromedp.Evaluate(`(b => (b.scrollIntoView({block: 'center'}), window.inlineMark = 'kept', (r => [r.left + r.width / 2, r.top + r.height / 2])(b.getBoundingClientRect())))(document.querySelector(`+strconv.Quote(saveBtn)+`))`, &xy),
-		chromedp.Evaluate(where, &before),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil {
-				return err
-			}
-			time.Sleep(120 * time.Millisecond)
-			return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
-		}),
-		toastSays("Log cron changed."),
-		chromedp.Sleep(300*time.Millisecond), // room for a second post to land
+		markPlace(saveBtn, saveBtn, &at),
+		doubleTap(saveBtn),
+		toastSays("ok", "Log cron changed."),
+		tapsOpen,
 		shot("save"),
-		chromedp.Evaluate(where, &after),
-		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		stayed(t, "Save", saveBtn, &at),
 		chromedp.Text(`#lg-props`, &props, chromedp.ByQuery),
 		chromedp.Evaluate(`document.querySelector('#lg-props').closest('details').open`, &open),
-		chromedp.Evaluate(fitsJS, &bad),
 	)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
-	}
-	if len(before) != 2 || before[0]+before[1] < 100 {
-		t.Fatalf("the page scrolled to %v before the tap, want well down it", before)
-	}
-	if fmt.Sprint(after) != fmt.Sprint(before) {
-		t.Errorf("the scroll moved from %v to %v", before, after)
-	}
-	if kept != "kept" {
-		t.Errorf("the page reloaded: the marker is %q", kept)
 	}
 	if !strings.Contains(props, "of 5.0 MB") || !open {
 		t.Errorf("the Properties section (open %v) doesn't show the new limit: %q", open, props)
@@ -211,13 +188,10 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 	if n := len(security(t, st, 4902)); n != 1 {
 		t.Errorf("a double tap on Save filed %d changes, want one post", n)
 	}
-	for _, b := range bad {
-		t.Errorf("with the toast at 390px: %s", b)
-	}
 
 	// Debug as soon as the tap guard lets it through after Save, well inside
 	// Save's 1s throttle: a throttle shared with Save would drop it.
-	err = chromedp.Run(ctx,
+	err = run(ctx,
 		chromedp.Sleep(1100*time.Millisecond), // the double tap's throttle is over
 		chromedp.Click(saveBtn, chromedp.ByQuery),
 		tapsOpen,
@@ -232,20 +206,20 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 	var rows int
 	var count string
 	var closed bool
-	err = chromedp.Run(ctx, tapsOpen,
+	err = run(ctx, tapsOpen,
 		chromedp.Evaluate(`document.querySelector('#lg-tree .lg-group').open = false`, nil),
 		chromedp.Click(`//summary[contains(., "Clear log")]`, chromedp.BySearch),
+		markPlace(`#lg-clear`, `#lg-clear`, &at),
 		chromedp.Click(`#lg-clear details.confirm-step > summary`, chromedp.ByQuery),
 		tapsOpen, // a step just opened
 		chromedp.WaitVisible(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Click(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
-		toastSays("Cleared 40 events from cron."),
+		toastSays("ok", "Cleared 40 events from cron."),
 		shot("clear"),
 		chromedp.Evaluate(`document.querySelectorAll('#lg-rows .lg-row').length`, &rows),
 		chromedp.Text(`#lg-count`, &count, chromedp.ByQuery),
-		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
 		chromedp.Evaluate(`!document.querySelector('#lg-tree .lg-group').open`, &closed),
-		chromedp.Evaluate(fitsJS, &bad),
+		stayed(t, "Clear", `#lg-clear`, &at),
 	)
 	if err != nil {
 		t.Fatalf("Clear: %v", err)
@@ -253,11 +227,8 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 	if !closed {
 		t.Error("the redrawn tree opened a group the operator closed")
 	}
-	if rows != 0 || !strings.HasSuffix(count, "; 0 match") || kept != "kept" {
-		t.Errorf("after a clear: %d rows, count %q, marker %q; want no rows, 0 match and the same page", rows, count, kept)
-	}
-	for _, b := range bad {
-		t.Errorf("after a clear at 390px: %s", b)
+	if rows != 0 || !strings.HasSuffix(count, "; 0 match") {
+		t.Errorf("after a clear: %d rows, count %q; want no rows and 0 match", rows, count)
 	}
 }
 
@@ -280,12 +251,20 @@ func TestLogsTailNotScriptInChrome(t *testing.T) {
 	const shown2 = `document.getElementById('lg-rows').textContent.includes('after-cr-marker')`
 	var xss, xss2 string
 	var marker bool
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		chromedp.WaitReady("#lg-tail", chromedp.ByID),
-		chromedp.Sleep(500*time.Millisecond), // the tail has subscribed
-		chromedp.ActionFunc(func(context.Context) error { commit(t, st, traced("after-load-marker")); return nil }),
-		// Datastar has run the tail's data-init once either shows.
-		chromedp.Poll(`window.__xss !== undefined || `+shown, nil, chromedp.WithPollingTimeout(10*time.Second)),
+		// Datastar has run the tail's data-init once either shows. The tail
+		// starts at the newest line when it subscribes, so a marker line
+		// goes in each half second until one shows.
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			for try := 1; ; try++ {
+				commit(t, st, traced("after-load-marker"))
+				err := chromedp.Poll(`window.__xss !== undefined || `+shown, nil, chromedp.WithPollingTimeout(500*time.Millisecond)).Do(ctx)
+				if !errors.Is(err, chromedp.ErrPollingTimeout) || try == 20 {
+					return err
+				}
+			}
+		}),
 		chromedp.Evaluate(`typeof window.__xss`, &xss),
 		chromedp.Evaluate(shown, &marker),
 		chromedp.ActionFunc(func(context.Context) error {

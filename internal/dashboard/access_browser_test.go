@@ -52,52 +52,31 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 			row := func(cat string) string {
 				return `.perm:has(form[action="/access/discord/permission"] input[value="` + cat + `"])`
 			}
-			q := strconv.Quote // a Go-quoted ASCII string is a JS string literal
 			wait := chromedp.WithPollingTimeout(6 * time.Second)
-			toastSays := func(kind, text string) chromedp.Action { // kind is ok or err
-				return chromedp.Poll(`(t => t.classList.contains(`+q(kind)+`) && t.textContent.includes(`+q(text)+`))(document.getElementById('toast'))`, nil, wait)
-			}
-			const where = `[document.querySelector('.page').scrollTop, scrollY]`
-			const mark = `String(window.inlineMark)`
 
 			// One click far down the page: Block on the last Discord row.
-			var before, after, place []float64
-			var kept, sandbox, strip string
-			var bad []string
-			err := chromedp.Run(ctx,
-				chromedp.Poll(`document.getElementById('ui-status').textContent.includes('3 new safety checks')`, nil, wait), // Datastar is up
-				chromedp.Evaluate(`document.querySelector(`+q(row("sandbox"))+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+where, &before),
+			var at, place []float64
+			var sandbox, strip string
+			err := run(ctx,
+				datastarUp,
+				markPlace(row("sandbox"), row("sandbox"), &at),
 				chromedp.Click(row("sandbox")+` form:has(input[value="deny"]) button`, chromedp.ByQuery),
 				toastSays("ok", "Discord conversations: Leave the sandbox is blocked."),
 				shot("block"),
-				chromedp.Evaluate(where, &after),
-				chromedp.Evaluate(mark, &kept),
+				stayed(t, "Block", row("sandbox"), &at),
 				chromedp.Text(row("sandbox"), &sandbox, chromedp.ByQuery),
 				chromedp.Text(`#ui-status`, &strip, chromedp.ByQuery),
 				chromedp.Evaluate(`(r => [r.left, innerWidth - r.right, r.top, innerHeight - r.bottom, document.querySelector('.menu-btn').getBoundingClientRect().left - r.right])(document.getElementById('toast').getBoundingClientRect())`, &place),
-				chromedp.Evaluate(fitsJS, &bad),
 				chromedp.Poll(`getComputedStyle(document.getElementById('toast')).visibility === 'hidden'`, nil, wait), // it fades
 			)
 			if err != nil {
 				t.Fatalf("Block: %v", err)
-			}
-			if len(before) != 2 || before[0] < 100 {
-				t.Fatalf("the page scrolled to %v before the click, want well down it", before)
-			}
-			if fmt.Sprint(after) != fmt.Sprint(before) {
-				t.Errorf("the scroll moved from %v to %v", before, after)
-			}
-			if kept != "kept" {
-				t.Errorf("the page reloaded: the marker is %q", kept)
 			}
 			if !strings.Contains(sandbox, "Can't run a command outside the safety box") || strings.Contains(sandbox, "New") {
 				t.Errorf("the row doesn't show its new setting: %q", sandbox)
 			}
 			if !strings.Contains(strip, "2 new safety checks") {
 				t.Errorf("the status strip wasn't updated: %q", strip)
-			}
-			for _, b := range bad {
-				t.Errorf("with the toast at %dpx: %s", size[0], b)
 			}
 			if len(place) != 5 || slices.Min(place[:4]) < 0 {
 				t.Fatalf("the toast isn't all on the screen: left, right, top, bottom gaps %v", place)
@@ -112,7 +91,8 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 			// A confirm step: Allow opens it, Yes closes it and says so.
 			var open bool
 			var mcp string
-			err = chromedp.Run(ctx,
+			err = run(ctx,
+				markPlace(row("mcp"), row("mcp"), &at),
 				chromedp.Click(row("mcp")+` details.confirm-step > summary`, chromedp.ByQuery),
 				chromedp.WaitVisible(row("mcp")+` details[open] .confirm-box button`, chromedp.ByQuery),
 				shot("allow-step"),
@@ -121,56 +101,48 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 				toastSays("ok", "Discord conversations: Connect remote services is allowed without asking."),
 				chromedp.Evaluate(`document.querySelector('.page details[open]') !== null`, &open),
 				chromedp.Text(row("mcp"), &mcp, chromedp.ByQuery),
-				chromedp.Evaluate(mark, &kept),
+				stayed(t, "Allow", row("mcp"), &at),
 				chromedp.Click(`#toast .toast-x`, chromedp.ByQuery),
 				chromedp.Poll(`document.getElementById('toast').getClientRects().length === 0`, nil, wait),
 			)
 			if err != nil {
 				t.Fatalf("Allow: %v", err)
 			}
-			if open || kept != "kept" || !strings.Contains(mcp, "Can connect new remote services and trust their tools without asking you.") {
-				t.Errorf("after Yes: a step still open %v, marker %q, row %q", open, kept, mcp)
+			if open || !strings.Contains(mcp, "Can connect new remote services and trust their tools without asking you.") {
+				t.Errorf("after Yes: a step still open %v, row %q", open, mcp)
 			}
 
 			// A failure: an alert that doesn't fade, and the row as it was.
 			var anim, egress string
-			err = chromedp.Run(ctx, tapsOpen,
+			err = run(ctx, tapsOpen,
 				chromedp.ActionFunc(func(context.Context) error { fa.setFail(true); return nil }),
+				markPlace(row("egress"), row("egress"), &at),
 				chromedp.Click(row("egress")+` form:has(input[value="deny"]) button`, chromedp.ByQuery),
 				toastSays("err", "Couldn't change that safety setting."),
 				shot("error"),
 				chromedp.Evaluate(`getComputedStyle(document.getElementById('toast')).animationName`, &anim),
 				chromedp.Text(row("egress"), &egress, chromedp.ByQuery),
-				chromedp.Evaluate(fitsJS, &bad),
+				stayed(t, "With the alert", row("egress"), &at),
 				chromedp.Click(`#toast .toast-x`, chromedp.ByQuery),
 				chromedp.Poll(`document.getElementById('toast').getClientRects().length === 0`, nil, wait),
-				chromedp.Evaluate(mark, &kept),
 			)
 			if err != nil {
 				t.Fatalf("a failure: %v", err)
 			}
-			if anim != "none" || kept != "kept" || !strings.Contains(egress, "Asks you before it can send private information") {
-				t.Errorf("the alert: animation %q (want none), marker %q, row %q", anim, kept, egress)
-			}
-			for _, b := range bad {
-				t.Errorf("with the alert at %dpx: %s", size[0], b)
+			if anim != "none" || !strings.Contains(egress, "Asks you before it can send private information") {
+				t.Errorf("the alert: animation %q (want none), row %q", anim, egress)
 			}
 
 			// A double tap on the first Remove, 120ms apart at one spot.
-			var xy []float64
+			const remove = `form[action="/access/imessage/deny"] button`
 			var left int
-			err = chromedp.Run(ctx, tapsOpen,
-				chromedp.Evaluate(`(b => (b.scrollIntoView({block: 'center'}), (r => [r.left + r.width / 2, r.top + r.height / 2])(b.getBoundingClientRect())))(document.querySelector('form[action="/access/imessage/deny"] button'))`, &xy),
-				chromedp.ActionFunc(func(ctx context.Context) error {
-					if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil {
-						return err
-					}
-					time.Sleep(120 * time.Millisecond)
-					return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
-				}),
+			err = run(ctx, tapsOpen,
+				markPlace(remove, remove, &at),
+				doubleTap(remove),
 				toastSays("ok", "+15551230001 can no longer message your agent."),
-				chromedp.Sleep(300*time.Millisecond), // room for a second post to land
+				tapsOpen,
 				chromedp.Evaluate(`document.querySelectorAll('form[action="/access/imessage/deny"]').length`, &left),
+				stayed(t, "A double tap on Remove", remove, &at),
 			)
 			if err != nil {
 				t.Fatalf("a double tap: %v", err)
@@ -189,27 +161,27 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 			fa.mu.Unlock()
 			fa.setFail(false)
 			const failShown = `getComputedStyle(document.getElementById('toast-fail')).display !== 'none'`
+			const third = `form:has(input[value="+15551230003"]) button`
 			var shown bool
-			err = chromedp.Run(ctx, tapsOpen,
-				chromedp.Click(`form:has(input[value="+15551230003"]) button`, chromedp.ByQuery),
+			err = run(ctx, tapsOpen,
+				markPlace(third, third, &at),
+				chromedp.Click(third, chromedp.ByQuery),
 				chromedp.Poll(failShown, nil, wait),
 				shot("stale"),
 				chromedp.Evaluate(`document.querySelectorAll('form[action="/access/imessage/deny"]').length`, &left),
-				chromedp.Evaluate(fitsJS, &bad),
+				stayed(t, "With #toast-fail", third, &at),
 				tapsOpen,
+				markPlace(row("sandbox"), row("sandbox"), &at),
 				chromedp.Click(row("sandbox")+` form:has(input[value="ask"]) button`, chromedp.ByQuery), // a form not used in the last second
 				toastSays("ok", "Discord conversations: Leave the sandbox asks you first."),
 				chromedp.Evaluate(failShown, &shown),
-				chromedp.Evaluate(mark, &kept),
+				stayed(t, "After a stale page", row("sandbox"), &at),
 			)
 			if err != nil {
 				t.Fatalf("a stale page: %v", err)
 			}
-			if left != 2 || shown || kept != "kept" {
-				t.Errorf("a stale page: %d Remove buttons (want 2), #toast-fail still shown %v, marker %q", left, shown, kept)
-			}
-			for _, b := range bad {
-				t.Errorf("with #toast-fail at %dpx: %s", size[0], b)
+			if left != 2 || shown {
+				t.Errorf("a stale page: %d Remove buttons (want 2), #toast-fail still shown %v", left, shown)
 			}
 		})
 	}
@@ -240,7 +212,6 @@ func TestTapGuardInChrome(t *testing.T) {
 	s.SetAccess(fa)
 	ctx, srv := chromeSignedIn(t, s, 390, 844, "/access")
 	wait := chromedp.WithPollingTimeout(6 * time.Second)
-	const datastarUp = `performance.getEntriesByType('resource').some(e => e.name.includes('/ui/status'))`
 	row := func(cat string) string {
 		return `.perm:has(input[name=category][value="` + cat + `"]):has(form[action="/access/discord/permission"])`
 	}
@@ -267,9 +238,9 @@ func TestTapGuardInChrome(t *testing.T) {
 	// the top of the screen and the rows below it under the phone's sheet.
 	var at []float64
 	var opened int
-	err := chromedp.Run(ctx,
-		chromedp.Poll(datastarUp, nil, wait),
-		chromedp.Evaluate(`document.querySelector(`+strconv.Quote(row("exec"))+`).scrollIntoView({block: 'start'}); window.inlineMark = 'kept'`, nil),
+	err := run(ctx,
+		datastarUp,
+		chromedp.Evaluate(`document.querySelector(`+strconv.Quote(row("exec"))+`).scrollIntoView({block: 'start'})`, nil),
 		chromedp.Click(row("exec")+` details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(row("exec")+` details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Evaluate(under, &at),
@@ -277,16 +248,10 @@ func TestTapGuardInChrome(t *testing.T) {
 	if err != nil || len(at) != 2 {
 		t.Fatalf("opening Allow and finding a spot on Yes over another row: %v, spot %v", err, at)
 	}
-	err = chromedp.Run(ctx, tapsOpen,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := chromedp.MouseClickXY(at[0], at[1]).Do(ctx); err != nil {
-				return err
-			}
-			time.Sleep(120 * time.Millisecond)
-			return chromedp.MouseClickXY(at[0], at[1]).Do(ctx)
-		}),
+	err = run(ctx, tapsOpen,
+		tapTwice(fmt.Sprintf("[%g, %g]", at[0], at[1])),
 		chromedp.Poll(`document.getElementById('toast').textContent.includes('Run commands is allowed')`, nil, wait),
-		chromedp.Sleep(300*time.Millisecond), // room for a second post to land
+		tapsOpen,
 		chromedp.Evaluate(`document.querySelectorAll('.page details[open]').length`, &opened),
 	)
 	if got := calls(); err != nil || fmt.Sprint(got) != "[exec=allow]" || opened != 0 {
@@ -308,19 +273,13 @@ func TestTapGuardInChrome(t *testing.T) {
 		}
 		return null;
 	})()`
-	err = chromedp.Run(ctx, tapsOpen, chromedp.Evaluate(low, &at))
+	err = run(ctx, tapsOpen, chromedp.Evaluate(low, &at))
 	if err != nil || len(at) != 2 {
 		t.Fatalf("finding a step's button under where its sheet's Yes will be: %v, spot %v", err, at)
 	}
-	err = chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := chromedp.MouseClickXY(at[0], at[1]).Do(ctx); err != nil {
-				return err
-			}
-			time.Sleep(120 * time.Millisecond)
-			return chromedp.MouseClickXY(at[0], at[1]).Do(ctx)
-		}),
-		chromedp.Sleep(300*time.Millisecond), // room for a post to land
+	err = run(ctx,
+		tapTwice(fmt.Sprintf("[%g, %g]", at[0], at[1])),
+		tapsOpen, // the step opened; a post would hold the guard up until answered
 		chromedp.Evaluate(`document.querySelectorAll('.page details[open]').length`, &opened),
 		chromedp.Evaluate(`document.querySelector('.page details[open] > summary')?.click()`, nil), // Cancel
 	)
@@ -331,7 +290,7 @@ func TestTapGuardInChrome(t *testing.T) {
 	// The page's last step, open and scrolled to the end: its Cancel sits
 	// above its sheet.
 	var clear bool
-	err = chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+	err = run(ctx, chromedp.Evaluate(`(() => {
 		const sum = [...document.querySelectorAll('.page .confirm-step > summary')].pop(), page = document.querySelector('.page');
 		sum.parentElement.open = true;
 		page.scrollTop = page.scrollHeight;
@@ -348,7 +307,7 @@ func TestTapGuardInChrome(t *testing.T) {
 	fa.setFail(true)
 	var taps string
 	var open, toast bool
-	err = chromedp.Run(ctx, tapsOpen,
+	err = run(ctx, tapsOpen,
 		chromedp.Click(row("web")+` details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(row("web")+` details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Evaluate(`window.taps = []; addEventListener('click', e => taps.push(e.target.closest('summary, button').tagName + ':' + (performance.now() < document.querySelector('.app').tapUntil)), true)`, nil),
@@ -370,14 +329,14 @@ func TestTapGuardInChrome(t *testing.T) {
 	// which posts without one): #toast-fail shows, and the guard ends at
 	// once, as no post is sent again.
 	fa.setFail(false)
-	err = chromedp.Run(ctx, chromedp.Navigate(srv.URL+"/tools"), chromedp.Poll(datastarUp, nil, wait))
+	err = run(ctx, visit(srv.URL+"/tools"))
 	if err != nil {
 		t.Fatalf("opening Tools: %v", err)
 	}
 	srv.Close()
 	const failShown = `getComputedStyle(document.getElementById('toast-fail')).display !== 'none'`
 	for _, tap := range []string{`#tool-web_read button`, `form[action="/posture"] button`} {
-		err = chromedp.Run(ctx,
+		err = run(ctx,
 			chromedp.Click(tap, chromedp.ByQuery),
 			chromedp.Poll(failShown, nil, wait),
 			tapsOpen,

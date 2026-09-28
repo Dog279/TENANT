@@ -26,7 +26,7 @@ func TestAssetsCachedInChrome(t *testing.T) {
 	}
 	var first, second []entry
 	var doc int
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		chromedp.Poll(`document.readyState === 'complete'`, nil),
 		chromedp.Evaluate(assetEntriesJS, &first),
 		chromedp.Navigate(srv.URL+"/tools"),
