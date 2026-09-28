@@ -332,6 +332,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* == end WP-agents == */
 
 /* == WP-goal == */
+.goal-text{white-space:pre-wrap}
+.busy + .goal-card{margin-top:14px}
 /* == end WP-goal == */
 
 /* == WP-research == */

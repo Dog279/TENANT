@@ -447,7 +447,17 @@ func extractNotMetReason(text string) string {
 // let me..."). A hard "DO it now, don't explain it" gets actual tool calls
 // + artifacts. Live trigger: user reported the agent narrating instead of
 // doing across multiple turns on a /goal research-and-propose task.
+//
+// Once the goal is cleared (a dashboard Stop or /goal clear landing while the
+// judge ran) it returns "", and the TUI's submit of an empty box starts
+// nothing: no extra step after a Stop (D17).
 func (gc *goalControl) Continue(reason string) string {
+	gc.mu.Lock()
+	cleared := gc.condition == ""
+	gc.mu.Unlock()
+	if cleared {
+		return ""
+	}
 	if strings.TrimSpace(reason) == "" {
 		return "[Goal — keep going]\n\nDO the next thing toward the goal NOW. Use tools to produce real output. Forbidden: meta-commentary, outlines, 'I should' / 'I will' / 'let me' sentences. End with the artifact."
 	}
