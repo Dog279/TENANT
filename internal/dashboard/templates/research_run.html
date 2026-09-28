@@ -1,0 +1,7 @@
+{{define "content"}}
+{{template "ui-flash" .}}
+{{if not .Configured}}{{template "ui-off" "Research isn't available on this Tenant."}}{{else}}
+{{template "research-report" .}}
+{{template "ui-empty" "This page is being built."}}
+{{end}}
+{{end}}

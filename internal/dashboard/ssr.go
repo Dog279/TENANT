@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 )
 
@@ -61,11 +62,21 @@ type ssrTemplates struct {
 	mcp           *template.Template // remote MCP connectors page (TEN-205)
 	integrations  *template.Template // integration-config page (TEN-206)
 	access        *template.Template // iMessage + Discord access page (TEN-208)
+	ui            *template.Template // ui.html alone: the shared partials patched over SSE (TEN-211)
+	safety        *template.Template // approvals & safety page (TEN-207)
+	approvalQ     *template.Template // the approval queue partial, patched over /events
+	agents        *template.Template // helpers page (TEN-209)
+	goal          *template.Template // autopilot page (TEN-212)
+	research      *template.Template // research page (TEN-210)
+	researchRun   *template.Template // one past research run
+	researchParts *template.Template // the research partials, patched over /research/live
 }
 
+// parseSSR parses every set with the ui.html partials and their funcs
+// (TEN-211), so any page can use ui-confirm, ui-flash and the rest.
 func parseSSR() *ssrTemplates {
 	must := func(files ...string) *template.Template {
-		return template.Must(template.ParseFS(ssrFS, files...))
+		return template.Must(template.New(path.Base(files[0])).Funcs(uiFuncs).ParseFS(ssrFS, append(files, "templates/ui.html")...))
 	}
 	return &ssrTemplates{
 		dashboard:     must("templates/layout.html", "templates/dashboard.html"),
@@ -88,6 +99,14 @@ func parseSSR() *ssrTemplates {
 		mcp:           must("templates/layout.html", "templates/mcp.html"),
 		integrations:  must("templates/layout.html", "templates/integrations.html"),
 		access:        must("templates/layout.html", "templates/access.html"),
+		ui:            template.Must(template.New("ui.html").Funcs(uiFuncs).ParseFS(ssrFS, "templates/ui.html")),
+		safety:        must("templates/layout.html", "templates/safety.html", "templates/approvalq.html"),
+		approvalQ:     must("templates/approvalq.html"),
+		agents:        must("templates/layout.html", "templates/agents.html"),
+		goal:          must("templates/layout.html", "templates/goal.html"),
+		research:      must("templates/layout.html", "templates/research.html", "templates/research_parts.html"),
+		researchRun:   must("templates/layout.html", "templates/research_run.html", "templates/research_parts.html"),
+		researchParts: must("templates/research_parts.html"),
 	}
 }
 
@@ -101,6 +120,7 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tools", s.handleToolsPage)
 	mux.HandleFunc("GET /activity", s.handleActivityPage)
 	mux.HandleFunc("GET /chat", s.handleChatPage)
+	mux.HandleFunc("GET /ui/status", s.handleUIStatus) // the status strip every page polls (TEN-211)
 
 	// Real-time event stream (chat transcript + activity feed) — TEN-109.
 	mux.HandleFunc("GET /events", s.handleEventsSSE)

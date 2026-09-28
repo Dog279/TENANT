@@ -1,0 +1,9 @@
+{{define "content"}}
+{{template "ui-flash" .}}
+{{if not .Configured}}{{template "ui-off" "Research isn't available on this Tenant."}}{{else}}
+<div class="research-wrap" data-indicator:_live data-init="@get('/research/live', {retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})">{{template "research-live" .}}</div>
+<p class="banner warn live-off" data-show="$_live === false">Live updates paused. Reload the page to see the latest progress.</p>
+{{template "research-history" .}}
+{{template "ui-empty" "This page is being built."}}
+{{end}}
+{{end}}

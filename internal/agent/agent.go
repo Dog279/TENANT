@@ -494,10 +494,13 @@ type TurnQueueEntry struct {
 
 // TurnQueueStatus is a point-in-time snapshot of shared-turn ingress. Depth
 // excludes the currently active turn. OldestAge is zero for an empty queue.
+// ActiveSource is the RouteSurface of the running turn ("" when idle), so the
+// dashboard can say what the agent is busy with.
 type TurnQueueStatus struct {
-	Depth     int
-	OldestAge time.Duration
-	Entries   []TurnQueueEntry
+	Depth        int
+	OldestAge    time.Duration
+	Entries      []TurnQueueEntry
+	ActiveSource string
 }
 
 // TurnResult summarizes what happened during the turn.

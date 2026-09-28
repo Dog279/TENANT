@@ -61,6 +61,8 @@ func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 		"templates/activity.html": "@get('{{.StreamURL}}'", // /activity/events, query-escaped (F1)
 		"templates/chat.html":     "@get('/events'",
 		"templates/logs.html":     "@get('{{.TailURL}}'", // the Logs page's live tail
+		"templates/safety.html":   "@get('/events?only=approvals'",
+		"templates/research.html": "@get('/research/live'",
 	}
 	for name, ep := range openers {
 		b, err := ssrFS.ReadFile(name)
@@ -78,8 +80,18 @@ func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 	// TEN-238: the activity feed must also keep streaming while the tab is hidden
 	// (the macOS background-tab bug) — Datastar aborts the SSE on visibilitychange
 	// unless openWhenHidden is set.
-	b, _ := ssrFS.ReadFile("templates/activity.html")
-	if !strings.Contains(string(b), "openWhenHidden:true") {
-		t.Error("activity.html must set openWhenHidden:true so the feed keeps updating in a backgrounded tab")
+	for _, name := range []string{"templates/activity.html", "templates/research.html"} {
+		b, _ := ssrFS.ReadFile(name)
+		if !strings.Contains(string(b), "openWhenHidden:true") {
+			t.Errorf("%s must set openWhenHidden:true so it keeps updating in a backgrounded tab", name)
+		}
+	}
+	// The new openers say when they're down (§2.7): the stream's indicator
+	// drives the "Live updates paused" banner.
+	for _, name := range []string{"templates/safety.html", "templates/research.html"} {
+		b, _ := ssrFS.ReadFile(name)
+		if !strings.Contains(string(b), "data-indicator:_live") || !strings.Contains(string(b), `data-show="$_live === false"`) {
+			t.Errorf("%s: the opener needs data-indicator:_live and the paused banner", name)
+		}
 	}
 }

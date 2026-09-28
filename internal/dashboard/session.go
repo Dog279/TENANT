@@ -15,6 +15,7 @@ package dashboard
 import (
 	"context"
 	"sync"
+	"time"
 
 	"tenant/internal/agent"
 )
@@ -27,11 +28,12 @@ type wsCoordinator struct {
 	runner AgentRunner
 	broker *agent.Broker // the chat stream a failed turn is reported on
 
-	mu     sync.Mutex
-	active bool               // a Turn is currently running on the agent
-	owner  *wsConn            // the connection that started the active turn
-	cancel context.CancelFunc // cancels the active turn's context
-	id     uint64             // monotonic id of the active turn (and counter)
+	mu      sync.Mutex
+	active  bool               // a Turn is currently running on the agent
+	started time.Time          // when the active turn started (the busy strip's age)
+	owner   *wsConn            // the connection that started the active turn
+	cancel  context.CancelFunc // cancels the active turn's context
+	id      uint64             // monotonic id of the active turn (and counter)
 }
 
 // newWSCoordinator builds the coordinator over the shared agent runner. The
@@ -63,6 +65,7 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 	co.id++
 	turnID := co.id
 	co.active = true
+	co.started = time.Now()
 	co.owner = conn
 	co.cancel = cancel
 	co.mu.Unlock()
@@ -153,6 +156,7 @@ func (co *wsCoordinator) startBackground(query string) bool {
 	co.id++
 	turnID := co.id
 	co.active = true
+	co.started = time.Now()
 	co.owner = nil // connection-less
 	co.cancel = cancel
 	co.mu.Unlock()
@@ -173,4 +177,15 @@ func (co *wsCoordinator) stopActive() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// busy reports whether a turn this dashboard started is running, and for how
+// long (the status strip, TEN-211).
+func (co *wsCoordinator) busy() (bool, time.Duration) {
+	co.mu.Lock()
+	defer co.mu.Unlock()
+	if !co.active {
+		return false, 0
+	}
+	return true, time.Since(co.started)
 }

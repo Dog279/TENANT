@@ -9,6 +9,8 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
+	"strings"
+	"unicode"
 
 	"tenant/internal/logs/catalog"
 )
@@ -34,12 +36,25 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
     <h1>Authenticate</h1>
     <p>Paste the dashboard auth token. <code>tenant serve</code> says where it is kept (the <code>dashboard-auth-token</code> file in the config directory); it prints the token itself only on a terminal.</p>
     <input type="password" name="token" placeholder="auth token" autocomplete="off" autofocus>
+    {{if .Next}}<input type="hidden" name="next" value="{{.Next}}">{{end}}
     <button type="submit">Unlock</button>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   </form>
 </body></html>`))
 
-type settingsData struct{ Error string }
+type settingsData struct{ Error, Next string }
+
+// safeNext is where sign-in returns to: next when it is a path on this
+// dashboard, else "/". "//host" and "/\host" are other sites to a browser,
+// and a control character can turn into one, so those go home too.
+func safeNext(next string) string {
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsFunc(next, func(r rune) bool {
+		return r == '\\' || unicode.IsControl(r)
+	}) {
+		return "/"
+	}
+	return next
+}
 
 // validCookie reports whether r carries a session cookie matching the PSK.
 func (s *Server) validCookie(r *http.Request) bool {
@@ -58,7 +73,7 @@ func (s *Server) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = settingsTmpl.Execute(w, settingsData{})
+	_ = settingsTmpl.Execute(w, settingsData{Next: r.URL.Query().Get("next")})
 }
 
 // handleLogin validates the posted PSK in constant time, drops a session cookie,
@@ -74,7 +89,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		refused(r, "sign_in", "/auth/login")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
-		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the dashboard-auth-token file in the config directory."})
+		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the dashboard-auth-token file in the config directory.", Next: r.FormValue("next")})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -87,7 +102,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Secure: s.cfg.TLSCert != "" && s.cfg.TLSKey != "",
 	})
 	_ = catalog.SignedIn.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, safeNext(r.FormValue("next")), http.StatusSeeOther)
 }
 
 // handleLogout clears the session cookie and returns to the settings page.
