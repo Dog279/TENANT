@@ -307,11 +307,11 @@ var reviewedMutations = map[string]confirmGate{
 	// Memory: a removed fact comes back from Recently removed.
 	"POST /memory/soul/edit":                  noStep,
 	"POST /memory/facts/resolve":              noStep,
-	"POST /memory/facts/{id}/delete":          noStep,
-	"POST /memory/facts/{id}/restore":         noStep,
+	"POST /memory/facts/delete":               noStep,
+	"POST /memory/facts/restore":              noStep,
+	"POST /memory/facts/removal":              noStep,
 	"POST /memory/facts/{id}/edit":            noStep,
-	"POST /memory/facts/{id}/invalidate":      noStep,
-	"POST /memory/facts/{id}/revalidate":      noStep,
+	"POST /memory/facts/valid":                noStep,
 	"POST /memory/facts/{id}/restore-version": noStep,
 	// Logs: a reveal is recorded; the Security log refuses to be cleared or
 	// weakened (logs/store/policy.go).

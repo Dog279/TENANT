@@ -12,8 +12,8 @@ yet deployed.
     ?compare=A,B                          a word diff of two versions
     ?edit=1                               the editor
 POST /memory/facts/{id}/edit              save new text as a new version
-POST /memory/facts/{id}/invalidate        no longer true (kept for as-of recall)
-POST /memory/facts/{id}/revalidate        true again
+POST /memory/facts/valid                  no longer true (valid=false, kept for as-of recall)
+                                          or true again (valid=true); fact=<id>
 POST /memory/facts/{id}/restore-version   make an earlier version current again (version=N)
 
 GET  /api/memory/facts/{id}               the same data as JSON

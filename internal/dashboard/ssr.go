@@ -220,14 +220,16 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /chat/interject", s.handleChatInterject)
 	mux.HandleFunc("POST /chat/stop", s.handleChatStop)
 
-	// Memory mutations (form/303) — TEN-111.
+	// Memory mutations — TEN-111. Those that answer in place are literal
+	// routes with the fact's id as a field (F1); edit and restore-version go
+	// to the new version's page.
 	mux.HandleFunc("POST /memory/soul/edit", s.handleMemorySoulEditForm)
 	mux.HandleFunc("POST /memory/facts/resolve", s.handleMemoryResolveForm)
-	mux.HandleFunc("POST /memory/facts/{id}/delete", s.handleMemoryFactDeleteForm)
-	mux.HandleFunc("POST /memory/facts/{id}/restore", s.handleMemoryFactRestoreForm)
+	mux.HandleFunc("POST /memory/facts/delete", s.handleMemoryFactDeleteForm)
+	mux.HandleFunc("POST /memory/facts/restore", s.handleMemoryFactRestoreForm)
+	mux.HandleFunc("POST /memory/facts/removal", s.handleMemoryFactRemovalForm) // a fact page's Remove or Restore
 	mux.HandleFunc("POST /memory/facts/{id}/edit", s.handleMemoryFactEditForm)
-	mux.HandleFunc("POST /memory/facts/{id}/invalidate", s.handleMemoryFactInvalidateForm)
-	mux.HandleFunc("POST /memory/facts/{id}/revalidate", s.handleMemoryFactRevalidateForm)
+	mux.HandleFunc("POST /memory/facts/valid", s.handleMemoryFactValidForm) // no longer true, or true again
 	mux.HandleFunc("POST /memory/facts/{id}/restore-version", s.handleMemoryFactRestoreVersionForm)
 }
 

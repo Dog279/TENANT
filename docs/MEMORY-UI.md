@@ -178,13 +178,16 @@ Each panel × {loading, empty, error, partial} → what renders, in the existing
 One fact, fully explained, at `/memory/facts/{id}`. Every row of the Facts list
 links to it (`Everything about it`) when the server's memory can explain facts.
 A plain GET page; its states are query params (`?turns=1`, `?compare=A,B`,
-`?edit=1`), its actions are forms that redirect back. The same data is JSON at
-`/api/memory/facts/{id}` for scripts.
+`?edit=1`). Remove / Restore and No longer true / It's true again answer in
+place with a toast (`POST /memory/facts/removal` and `/memory/facts/valid`,
+the fact's id as the `fact` field); each pair is one form, so a double tap
+acts once. Edit and "Make this current again" go to the new version's page.
+The same data is JSON at `/api/memory/facts/{id}` for scripts.
 
 ```
 ┌─ Memory · Fact ──────────────────────────────────────────────────────────┐
 │ User lives in Munich.                        #7 · current · 0.90 (now 0.88)│
-│ [Edit] [No longer true] [It contradicts another fact] [Remove]           │
+│ [Remove] [Edit] [No longer true] [It contradicts another fact]           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ Where it came from                                                        │
 │ How it got here: learned from a conversation · glm-5 · 2026-09-26 12:00   │

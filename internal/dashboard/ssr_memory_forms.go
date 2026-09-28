@@ -2,85 +2,142 @@ package dashboard
 
 // ssr_memory_forms.go is TEN-111: the mutation handlers behind the Memory
 // curator pages. Each is a POST that drives the SAME MemoryControl methods the
-// JSON REST layer uses (memory_rest.go), then 303-redirects (POST/redirect/GET)
-// so a browser refresh can't replay the mutation. Values come from r.FormValue.
-// Errors surface by redirecting back with an ?err= the target page renders.
+// JSON REST layer uses (memory_rest.go), then answers with formDone (DESIGN.md
+// "Forms that don't reload"): a Datastar post gets a toast and the page's
+// region re-rendered in place (memRegion); a plain post still gets the 303
+// (POST/redirect/GET) with its flash, so a browser refresh can't replay the
+// mutation. Values come from r.FormValue. An in-place form posts to a literal
+// URL (F1), so the fact it acts on is its fact field (memFormID), and the view
+// it was on is its back field.
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 )
 
+// soulDone is the toast for each soul edit.
+var soulDone = map[string]string{SoulActionAdd: "Added.", SoulActionEdit: "Saved.", SoulActionRemove: "Removed."}
+
 // handleMemorySoulEditForm applies one add/edit/remove to a soul list:
-// POST memSoulURL/edit {section,action,id,text} -> SoulEdit -> 303 back to the
-// soul page. A bad op (unknown section/action, missing target) round-trips as
-// an ?err banner rather than a dead 400.
+// POST memSoulURL/edit {section,action,item,text} -> SoulEdit (item, not id:
+// see memFormID). A bad op (unknown section/action, missing target) is an
+// error toast (or ?err banner) rather than a dead 400.
 func (s *Server) handleMemorySoulEditForm(w http.ResponseWriter, r *http.Request) {
+	region := s.memRegion(r.Context(), memSoulURL)
 	if s.mem == nil {
-		http.Redirect(w, r, memSoulURL, http.StatusSeeOther)
+		s.formDone(w, r, memSoulURL, "", "", region)
 		return
 	}
 	op := SoulEditOp{
 		Section: r.FormValue("section"),
 		Action:  r.FormValue("action"),
-		ID:      r.FormValue("id"),
+		ID:      r.FormValue("item"),
 		Text:    strings.TrimSpace(r.FormValue("text")),
 	}
 	if err := s.mem.SoulEdit(op); err != nil {
-		http.Redirect(w, r, addErr(memSoulURL, s.flashFor(r.Context(), "personality "+op.Action, err, "Couldn't save that change.")), http.StatusSeeOther)
+		s.formDone(w, r, memSoulURL, "", s.flashFor(r.Context(), "personality "+op.Action, err, "Couldn't save that change."), region)
 		return
 	}
 	s.log.Info("dashboard: ssr soul edited", "section", op.Section, "action", op.Action, "id", op.ID)
-	http.Redirect(w, r, memSoulURL, http.StatusSeeOther)
+	s.formDone(w, r, memSoulURL, soulDone[op.Action], "", region)
 }
 
 // handleMemoryFactDeleteForm tombstones a fact (recoverable):
-// POST memFactsURL/{id}/delete -> DeleteFact -> 303 to the list with ?removed=
-// (which renders the Undo banner) preserving the active search.
+// POST memFactsURL/delete {fact, back} -> DeleteFact. back is the view the
+// Remove was on (the list, with its search, or the fact's page); it comes
+// back with ?removed=, which on the list is the Undo banner.
 func (s *Server) handleMemoryFactDeleteForm(w http.ResponseWriter, r *http.Request) {
 	id, ok := memFormID(w, r)
 	if !ok {
 		return
 	}
-	q := strings.TrimSpace(r.FormValue("q"))
-	if s.mem != nil {
-		if err := s.mem.DeleteFact(id); err != nil {
-			http.Redirect(w, r, urlWith(memFactsURL, "q", q, "err",
-				s.flashFor(r.Context(), "fact delete", err, "Couldn't remove that fact.")), http.StatusSeeOther)
-			return
-		}
-		s.log.Info("dashboard: ssr fact removed", "id", id)
+	back := memReturn(r, memFactsURL)
+	region := s.memRegion(r.Context(), back)
+	if s.mem == nil {
+		s.formDone(w, r, back, "", "", region)
+		return
 	}
-	http.Redirect(w, r, urlWith(memFactsURL, "q", q, "removed", i64(id)), http.StatusSeeOther)
+	if err := s.mem.DeleteFact(id); err != nil {
+		s.formDone(w, r, back, "", s.flashFor(r.Context(), "fact delete", err, "Couldn't remove that fact."), region)
+		return
+	}
+	s.log.Info("dashboard: ssr fact removed", "id", id)
+	page := addParam(back, "removed", i64(id))
+	s.formDone(w, r, page, "Fact removed.", "", s.memRegion(r.Context(), page))
 }
 
 // handleMemoryFactRestoreForm un-tombstones a fact:
-// POST memFactsURL/{id}/restore -> RestoreFact -> 303 back to wherever the
-// restore was triggered (the Undo banner on the facts list, or the Recently
-// removed page), defaulting to the facts list. The return path is validated to
-// our own surface to avoid an open redirect.
+// POST memFactsURL/restore {fact, back} -> RestoreFact, answered on the view
+// the restore was on (the Undo banner on the facts list, the Recently
+// removed page or the fact's page), defaulting to the facts list. The return
+// path is validated to our own surface to avoid an open redirect.
 func (s *Server) handleMemoryFactRestoreForm(w http.ResponseWriter, r *http.Request) {
 	id, ok := memFormID(w, r)
 	if !ok {
 		return
 	}
 	back := memReturn(r, memFactsURL)
-	if s.mem != nil {
-		if err := s.mem.RestoreFact(id); err != nil {
-			http.Redirect(w, r, addErr(back, s.flashFor(r.Context(), "fact restore", err, "Couldn't restore that fact.")), http.StatusSeeOther)
-			return
-		}
-		s.log.Info("dashboard: ssr fact restored", "id", id)
+	region := s.memRegion(r.Context(), back)
+	if s.mem == nil {
+		s.formDone(w, r, back, "", "", region)
+		return
 	}
-	http.Redirect(w, r, back, http.StatusSeeOther)
+	if back == memRemovedURL {
+		region = s.restoredRow(r.Context(), id) // read now, while it's still on the list
+	}
+	if err := s.mem.RestoreFact(id); err != nil {
+		s.formDone(w, r, back, "", s.flashFor(r.Context(), "fact restore", err, "Couldn't restore that fact."), region)
+		return
+	}
+	s.log.Info("dashboard: ssr fact restored", "id", id)
+	s.formDone(w, r, back, "Fact restored.", "", region)
+}
+
+// handleMemoryFactRemovalForm is Remove and Restore on a fact's page:
+// POST memFactsURL/removal {fact, removed=true|false, back}. One route for
+// both, like /memory/facts/valid, so after the morph the button that takes
+// the other's place is the same form, and its throttle drops a double tap's
+// second post, which would undo the first.
+func (s *Server) handleMemoryFactRemovalForm(w http.ResponseWriter, r *http.Request) {
+	switch r.FormValue("removed") {
+	case "true":
+		s.handleMemoryFactDeleteForm(w, r)
+	case "false":
+		s.handleMemoryFactRestoreForm(w, r)
+	default:
+		writeError(w, http.StatusBadRequest, "removed must be true or false")
+	}
+}
+
+// restoredRow answers a Restore on Recently removed with that fact's row
+// alone, left in place and saying it's restored, with no form. Nothing below
+// it moves, so a double tap's second tap can't land on the next row's
+// Restore (at the bottom of a list that got shorter, it would). A fact that
+// isn't on the list gets the whole list.
+func (s *Server) restoredRow(ctx context.Context, id int64) func() (string, error) {
+	for _, row := range s.memRemovedView(ctx, nil).Rows {
+		if row.ID == id {
+			row.Restored = true
+			return func() (string, error) {
+				var buf bytes.Buffer
+				err := s.tmpl.memRemoved.ExecuteTemplate(&buf, "mem-removed-row", row)
+				return buf.String(), err
+			}
+		}
+	}
+	return s.memRegion(ctx, memRemovedURL)
 }
 
 // handleMemoryResolveForm records a conflict resolution: keep_id stays, the
 // other is tombstoned (ResolveFacts). POST memFactsURL/resolve
 // {keep_id,discard_id,q} -> 303 to the list preserving search. NEVER automatic
-// — the operator chose which to keep.
+// — the operator chose which to keep. It stays a full page load: the picker's
+// state is in the URL (?resolve=&with=), which the answer must clear, and the
+// card sits at the top of the page, where the load lands.
 func (s *Server) handleMemoryResolveForm(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.FormValue("q"))
 	if s.mem == nil {
@@ -100,10 +157,22 @@ func (s *Server) handleMemoryResolveForm(w http.ResponseWriter, r *http.Request)
 
 // --- form helpers ----------------------------------------------------------
 
-// memFormID parses the {id} path value, writing a 400 on a malformed id so a
-// non-numeric path is a client error, not a store call with a zero id.
+// memFormID is the fact a form acts on: the {id} in its path, or its fact
+// field on a literal route. A malformed id is a 400, not a store call with a
+// zero id. The field isn't named "id": an input named id hides the form's own
+// id (form.id is the input), so Datastar's morph can't match the form with
+// its new copy and replaces it, which resets its throttle.
 func memFormID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	return memPathID(w, r) // reuse memory_rest.go's parser (same {id} pattern)
+	raw := r.PathValue("id")
+	if raw == "" {
+		raw = r.FormValue("fact")
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid fact id: "+raw)
+		return 0, false
+	}
+	return id, true
 }
 
 // memReturn returns a safe in-surface redirect target from the "back" form
@@ -116,13 +185,39 @@ func memReturn(r *http.Request, fallback string) string {
 	return fallback
 }
 
-// addErr appends an ?err / &err to a same-origin path.
-func addErr(path, msg string) string {
+// memRegion renders, for an in-place answer, the region of the memory page
+// at back (a path from memReturn, with its view's query): what the page
+// would show if loaded there now.
+func (s *Server) memRegion(ctx context.Context, back string) func() (string, error) {
+	return func() (string, error) {
+		u, err := url.Parse(back)
+		if err != nil {
+			return "", err
+		}
+		q := u.Query()
+		var buf bytes.Buffer
+		id, fact := strings.CutPrefix(u.Path, memFactsURL+"/")
+		switch {
+		case u.Path == memSoulURL:
+			err = s.tmpl.memSoul.ExecuteTemplate(&buf, "mem-soul-body", s.memSoulView(ctx, q))
+		case u.Path == memRemovedURL:
+			err = s.tmpl.memRemoved.ExecuteTemplate(&buf, "mem-removed-body", s.memRemovedView(ctx, q))
+		case fact:
+			err = s.tmpl.memFact.ExecuteTemplate(&buf, "mem-fact-body", s.memFactView(ctx, id, q))
+		default:
+			err = s.tmpl.memFacts.ExecuteTemplate(&buf, "mem-facts-body", s.memFactsView(ctx, q))
+		}
+		return buf.String(), err
+	}
+}
+
+// addParam appends key=value to a same-origin path's query.
+func addParam(path, key, value string) string {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	return path + sep + "err=" + url.QueryEscape(msg)
+	return path + sep + key + "=" + url.QueryEscape(value)
 }
 
 // i64 formats an int64 as a decimal string (urlWith handles URL-encoding).

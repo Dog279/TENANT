@@ -225,14 +225,19 @@ func TestSSR_MemorySoulRenders(t *testing.T) {
 			t.Errorf("soul page missing %q", want)
 		}
 	}
-	// The edit endpoint only appears inside a form; opening the add affordance
-	// (?add=) should render that form posting to soul/edit with action=add.
-	add := get(t, s, "/memory/soul?add=user_fact").Body.String()
-	for _, want := range []string{`action="/memory/soul/edit"`, `name="action" value="add"`, `value="user_fact"`} {
-		if !strings.Contains(add, want) {
-			t.Errorf("soul add form missing %q", want)
+	// Add, Edit and Remove open on the page and post in place to soul/edit.
+	for _, want := range []string{`action="/memory/soul/edit" ` + inlinePost("/memory/soul/edit"), `name="action" value="add"`, `value="user_fact"`,
+		`name="action" value="edit"`, `<input type="hidden" name="item" value="uf-1">`, inlineForm("/memory/soul/edit") + `<input type="hidden" name="section" value="user_fact"><input type="hidden" name="action" value="remove">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("soul page missing %q", want)
 		}
 	}
+}
+
+// inlinePost is the in-place post of a form whose action is a literal in its
+// template (formDone).
+func inlinePost(action string) string {
+	return `data-on:submit__prevent__throttle.1s="@post('` + action + `', {contentType:'form', retryMaxCount:0})"`
 }
 
 func TestSSR_MemoryFactsRenders(t *testing.T) {
@@ -291,8 +296,8 @@ func TestSSR_MemorySoulAdd(t *testing.T) {
 	rec := ssrPost(t, s, "/memory/soul/edit", url.Values{
 		"section": {"user_fact"}, "action": {"add"}, "text": {"Likes dark mode."},
 	})
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/memory/soul" {
-		t.Fatalf("soul add should 303 to /memory/soul, got %d %q", rec.Code, rec.Header().Get("Location"))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/memory/soul?msg=Added." {
+		t.Fatalf("soul add should 303 to /memory/soul with its flash, got %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 	if len(fm.userFacts) != 2 || fm.userFacts[1].Text != "Likes dark mode." {
 		t.Fatalf("soul add did not change state: %+v", fm.userFacts)
@@ -305,7 +310,7 @@ func TestSSR_MemorySoulAdd(t *testing.T) {
 func TestSSR_MemorySoulRemove(t *testing.T) {
 	s, fm := memServer()
 	rec := ssrPost(t, s, "/memory/soul/edit", url.Values{
-		"section": {"instruction"}, "action": {"remove"}, "id": {"in-1"},
+		"section": {"instruction"}, "action": {"remove"}, "item": {"in-1"},
 	})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("soul remove should 303, got %d", rec.Code)
@@ -328,9 +333,15 @@ func TestSSR_MemorySoulEditBadSection(t *testing.T) {
 
 func TestSSR_MemoryFactDeleteThenRestore(t *testing.T) {
 	s, fm := memServer()
-	rec := ssrPost(t, s, "/memory/facts/1/delete", url.Values{})
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/memory/facts?removed=1" {
+	rec := ssrPost(t, s, "/memory/facts/delete", url.Values{"fact": {"1"}})
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/memory/facts?removed=1&msg=Fact+removed." {
 		t.Fatalf("delete should 303 to ?removed=1, got %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	// The Undo banner stands in for the flash, and keeps the search.
+	undo := get(t, s, "/memory/facts?q=lives&removed=1&msg=Fact+removed.").Body.String()
+	if !strings.Contains(undo, `<span>Fact removed.</span>`) || strings.Contains(undo, `role="status">Fact removed.`) ||
+		!strings.Contains(undo, `<input type="hidden" name="back" value="/memory/facts?q=lives">`) {
+		t.Errorf("the Undo banner:\n%s", undo)
 	}
 	if !fm.tombstoned[1] {
 		t.Fatal("delete did not tombstone fact 1")
@@ -342,8 +353,8 @@ func TestSSR_MemoryFactDeleteThenRestore(t *testing.T) {
 		t.Error("tombstoned fact should appear under Recently removed")
 	}
 	// Restore via the removed page.
-	rrec := ssrPost(t, s, "/memory/facts/1/restore", url.Values{"back": {"/memory/facts/removed"}})
-	if rrec.Code != http.StatusSeeOther || rrec.Header().Get("Location") != "/memory/facts/removed" {
+	rrec := ssrPost(t, s, "/memory/facts/restore", url.Values{"fact": {"1"}, "back": {"/memory/facts/removed"}})
+	if rrec.Code != http.StatusSeeOther || rrec.Header().Get("Location") != "/memory/facts/removed?msg=Fact+restored." {
 		t.Fatalf("restore should 303 back to removed, got %d %q", rrec.Code, rrec.Header().Get("Location"))
 	}
 	if fm.tombstoned[1] {
@@ -397,7 +408,7 @@ func TestSSR_MemoryNilSafe(t *testing.T) {
 		}
 	}
 	// Mutations must not panic with a nil store; they just 303.
-	if rec := ssrPost(t, s, "/memory/facts/1/delete", url.Values{}); rec.Code != http.StatusSeeOther {
+	if rec := ssrPost(t, s, "/memory/facts/delete", url.Values{"fact": {"1"}}); rec.Code != http.StatusSeeOther {
 		t.Errorf("delete on nil mem should 303, got %d", rec.Code)
 	}
 }

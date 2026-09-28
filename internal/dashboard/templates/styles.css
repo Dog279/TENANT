@@ -404,3 +404,12 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* == WP-inline-models == */
 .tap-guard{position:fixed;inset:0;z-index:9}
 /* == end WP-inline-models == */
+/* == WP-inline-memory == */
+/* Personality: an open Edit, Add or Remove step takes its own line */
+#mem-soul-body .ghead2,#mem-soul-body .soul-row{flex-wrap:wrap}
+#mem-soul-body .confirm-step[open]{order:1}
+#mem-soul-body .confirm-box .soul-edit{padding:0;border:0}
+/* Facts: the Undo after a Remove comes last and stays in view at the
+   bottom of the screen while the list scrolls */
+#mem-facts-body>.banner.undo{position:sticky;bottom:0;z-index:5;margin:14px 0 0;background:linear-gradient(rgba(52,211,153,.07),rgba(52,211,153,.07)),var(--card2);box-shadow:0 -8px 24px rgba(0,0,0,.45)}
+/* == end WP-inline-memory == */
