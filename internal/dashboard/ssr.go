@@ -92,14 +92,14 @@ func (a *asset) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // acceptsGzip reports whether an Accept-Encoding value names gzip, and not
-// with q=0.
+// with q=0 (or Q=0).
 func acceptsGzip(ae string) bool {
 	for part := range strings.SplitSeq(ae, ",") {
 		name, params, _ := strings.Cut(part, ";")
 		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
 			continue
 		}
-		q, ok := strings.CutPrefix(strings.TrimSpace(params), "q=")
+		q, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(params)), "q=")
 		if !ok {
 			return true
 		}

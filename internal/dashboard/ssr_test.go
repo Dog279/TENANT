@@ -160,9 +160,9 @@ func TestSSR_AssetCaching(t *testing.T) {
 	}
 	for _, a := range []*asset{ssrCSS, datastarJS} {
 		plain := sendForm(h, http.MethodGet, a.url, nil, nil)
-		refused := sendForm(h, http.MethodGet, a.url, nil, with("Accept-Encoding", "br, gzip;q=0"))
+		refused := sendForm(h, http.MethodGet, a.url, nil, with("Accept-Encoding", "br, gzip;Q=0"))
 		gz := sendForm(h, http.MethodGet, a.url, nil, with("Accept-Encoding", "gzip, deflate, br, zstd"))
-		for name, rec := range map[string]*httptest.ResponseRecorder{"identity": plain, "gzip;q=0": refused, "gzip": gz} {
+		for name, rec := range map[string]*httptest.ResponseRecorder{"identity": plain, "gzip;Q=0": refused, "gzip": gz} {
 			hd := rec.Header()
 			if rec.Code != http.StatusOK || hd.Get("Cache-Control") != "private, max-age=31536000, immutable" || hd.Get("Vary") != "Accept-Encoding" || hd.Get("ETag") == "" {
 				t.Errorf("%s %s: %d %v, want 200, immutable, Vary and an ETag", a.url, name, rec.Code, hd)
