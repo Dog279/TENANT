@@ -1,4 +1,14 @@
 {{define "content"}}
+{{template "keys-body" .}}
+{{end}}
+
+{{/* keys-body is the region a Provider keys form re-renders in place
+     (formDone). Every form posts through Datastar to its own static URL, the
+     key's id in the "service" field: a field named "id" would hide the form's
+     own id from the morph, which then replaces the form and loses its
+     throttle. A key form empties itself when its answer arrives, so a key
+     never stays in the page. */}}
+{{define "keys-body"}}<div id="keys-body">
 {{template "ui-flash" .}}
 
 {{if not .Configured}}
@@ -22,13 +32,14 @@
       {{if .EnvDetected}}<span class="dim">· also set in the environment ({{.EnvVar}})</span>{{end}}
     </div>
     <div class="kactions">
-      <form method="POST" action="/settings/keys/{{.CredID}}/set" autocomplete="off" class="inline">
+      <form method="POST" action="/settings/keys/set" autocomplete="off" class="inline" data-on:submit__prevent__throttle.1s="@post('/settings/keys/set', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.reset()">
+        <input type="hidden" name="service" value="{{.CredID}}">
         <input type="password" name="value" autocomplete="new-password"
                placeholder="{{if .Set}}replace key{{else}}paste key{{end}}" class="cinput">
         <button type="submit" class="btn sm">{{if .Set}}Replace{{else}}Add{{end}}</button>
       </form>
       {{if .Set}}
-      {{template "ui-confirm" (confirm (printf "/settings/keys/%s/remove" .CredID) "Remove" (printf "Tenant can no longer use %s after it restarts. To use it again you paste the key again." .Name))}}
+      {{template "ui-confirm" (inline (confirm "/settings/keys/remove" "Remove" (printf "Tenant can no longer use %s after it restarts. To use it again you paste the key again." .Name) "service" .CredID))}}
       {{end}}
     </div>
   </div>
@@ -39,4 +50,4 @@
 {{end}}
 
 {{end}}
-{{end}}
+</div>{{end}}

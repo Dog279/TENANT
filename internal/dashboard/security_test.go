@@ -248,8 +248,8 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /cron/{id}/run":    noStep,
 	"POST /cron/exec":        unless("enabled", "", "false"),
 	// Provider keys: storing one is typed; removing it loses it.
-	"POST /settings/keys/{id}/set":    noStep,
-	"POST /settings/keys/{id}/remove": always,
+	"POST /settings/keys/set":    noStep,
+	"POST /settings/keys/remove": always,
 	// Quality.
 	"POST /eval/schedule":    noStep,
 	"POST /eval/run":         noStep,
@@ -262,9 +262,9 @@ var reviewedMutations = map[string]confirmGate{
 	// Autopilot (TEN-212): Stop is the safe direction.
 	"POST /goal/stop": noStep,
 	// Integrations: a repository starts watch-only; write asks first.
-	"POST /integrations/{id}/save":           noStep,
-	"POST /integrations/{id}/test":           noStep,
-	"POST /integrations/{id}/disconnect":     always,
+	"POST /integrations/save":                noStep,
+	"POST /integrations/test":                noStep,
+	"POST /integrations/disconnect":          always,
 	"POST /integrations/github/repos/add":    unless("mode", "", "read"),
 	"POST /integrations/github/repos/mode":   unless("mode", "read"),
 	"POST /integrations/github/repos/remove": noStep,
@@ -745,9 +745,9 @@ func TestSecretsNeverFromQuery(t *testing.T) {
 		form               url.Values
 		calls              func() []string
 	}{
-		{"/settings/keys/openai/set", "/settings/keys", "value", url.Values{}, func() []string { return keys.setCalls }},
+		{"/settings/keys/set", "/settings/keys", "value", url.Values{"service": {"openai"}}, func() []string { return keys.setCalls }},
 		{"/models/add", "/models", "key", url.Values{"kind": {"anthropic"}}, func() []string { return models.addCalls }},
-		{"/integrations/brave/save", "/integrations", "api_key", url.Values{}, func() []string { return integ.configCalls }},
+		{"/integrations/save", "/integrations", "api_key", url.Values{"integration": {"brave"}}, func() []string { return integ.configCalls }},
 	}
 	for _, in := range intakes {
 		rec := sendForm(h, http.MethodPost, in.route+"?"+in.field+"="+secret, withField(in.form, in.field, secret), page)

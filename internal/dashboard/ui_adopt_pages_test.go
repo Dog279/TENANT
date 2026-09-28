@@ -31,8 +31,8 @@ var adoptedConfirms = []struct {
 }{
 	{route: "/skills/x/forget"},
 	{route: "/mcp/remove", form: url.Values{"target": {"svc"}}},
-	{route: "/integrations/gsuite/disconnect"},
-	{route: "/settings/keys/openai/remove"},
+	{route: "/integrations/disconnect", form: url.Values{"integration": {"gsuite"}}},
+	{route: "/settings/keys/remove", form: url.Values{"service": {"openai"}}},
 	{route: "/cron/j1/delete"},
 	{route: "/access/imessage/clear"},
 	{route: "/logs/log/cron/clear"},
@@ -168,9 +168,9 @@ func TestAdopt_SecretsRefusedFromQuery(t *testing.T) {
 	s.SetModels(models)
 	s.SetIntegrations(integ)
 	for _, p := range []struct{ route, body string }{
-		{"/settings/keys/openai/set?value=sk-leak", "value=sk-leak"},
+		{"/settings/keys/set?value=sk-leak", "service=openai&value=sk-leak"},
 		{"/models/add?key=sk-leak", "kind=anthropic&key=sk-leak"},
-		{"/integrations/brave/save?api_key=sk-leak", "api_key=sk-leak"},
+		{"/integrations/save?api_key=sk-leak", "integration=brave&api_key=sk-leak"},
 	} {
 		rec := submitForm(t, s, p.route, p.body)
 		loc, _ := url.QueryUnescape(rec.Header().Get("Location"))
@@ -203,7 +203,7 @@ func TestAdopt_SecretErrorsStayOutOfURLs(t *testing.T) {
 	s.SetIntegrations(integ)
 	for _, p := range []struct{ route, body string }{
 		{"/models/add", "kind=anthropic&key=sk-leak"},
-		{"/integrations/brave/save", "api_key=sk-leak"},
+		{"/integrations/save", "integration=brave&api_key=sk-leak"},
 	} {
 		loc, _ := url.QueryUnescape(submitForm(t, s, p.route, p.body).Header().Get("Location"))
 		if !strings.Contains(loc, "err=Couldn't") || strings.Contains(loc, "sk-leak") || strings.Contains(loc, "bad key") {

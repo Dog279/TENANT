@@ -1,4 +1,12 @@
 {{define "content"}}
+{{template "integrations-body" .}}
+{{end}}
+
+{{/* integrations-body is the region an Integrations form re-renders in place
+     (formDone). Every form posts through Datastar to its own static URL, the
+     integration's id or the repository in a field. A settings form empties
+     itself when its answer arrives, so a secret never stays in the page. */}}
+{{define "integrations-body"}}<div id="integrations-body">
 {{template "ui-flash" .}}
 
 {{if not .Configured}}
@@ -15,7 +23,8 @@
     {{if and .Configured (not .Enabled)}}<span class="dim">· off</span>{{end}}
   </div>
   {{if .SetupHint}}<div class="dim mb">{{.SetupHint}}</div>{{end}}
-  <form method="POST" action="/integrations/{{.ID}}/save" class="evalsched">
+  <form method="POST" action="/integrations/save" class="evalsched" data-on:submit__prevent__throttle.1s="@post('/integrations/save', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.reset()">
+    <input type="hidden" name="integration" value="{{.ID}}">
     {{range .Fields}}
     <label>{{.Prompt}}
       {{if .Options}}
@@ -34,11 +43,12 @@
     </div>
   </form>
   <div class="cronactions mt">
-    <form method="POST" action="/integrations/{{.ID}}/test" class="inline">
+    <form method="POST" action="/integrations/test" class="inline" data-on:submit__prevent__throttle.1s="@post('/integrations/test', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="integration" value="{{.ID}}">
       <button type="submit" class="btn sm">Test connection</button>
     </form>
     {{if .Configured}}
-    {{template "ui-confirm" (confirm (printf "/integrations/%s/disconnect" .ID) "Disconnect" (printf "Your agent can no longer use %s, and its saved sign-in is deleted. To use it again you enter its settings again." .Label))}}
+    {{template "ui-confirm" (inline (confirm "/integrations/disconnect" "Disconnect" (printf "Your agent can no longer use %s, and its saved sign-in is deleted. To use it again you enter its settings again." .Label) "integration" .ID))}}
     {{end}}
   </div>
 </div>
@@ -67,15 +77,15 @@
     </div>
     <div class="cronactions">
       {{if .Write}}
-      <form method="POST" action="/integrations/github/repos/mode" class="inline">
+      <form method="POST" action="/integrations/github/repos/mode" class="inline" data-on:submit__prevent__throttle.1s="@post('/integrations/github/repos/mode', {contentType:'form', retryMaxCount:0})">
         <input type="hidden" name="repo" value="{{.Slug}}">
         <input type="hidden" name="mode" value="read">
         <button type="submit" class="btn sm">Make watch-only</button>
       </form>
       {{else}}
-      {{template "ui-confirm" (confirmGo "/integrations/github/repos/mode" "Allow changes" (printf "Your agent may change %s. It still asks you before each change." .Slug) "repo" .Slug "mode" "write")}}
+      {{template "ui-confirm" (inline (confirmGo "/integrations/github/repos/mode" "Allow changes" (printf "Your agent may change %s. It still asks you before each change." .Slug) "repo" .Slug "mode" "write"))}}
       {{end}}
-      <form method="POST" action="/integrations/github/repos/remove" class="inline">
+      <form method="POST" action="/integrations/github/repos/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/integrations/github/repos/remove', {contentType:'form', retryMaxCount:0})">
         <input type="hidden" name="repo" value="{{.Slug}}">
         <button type="submit" class="btn sm">Stop watching</button>
       </form>
@@ -85,7 +95,7 @@
   {{template "ui-empty" "No repositories watched yet. Add one below as owner/name."}}
   {{end}}
 
-  <form method="POST" action="/integrations/github/repos/add" class="cronadd mt">
+  <form method="POST" action="/integrations/github/repos/add" class="cronadd mt" data-on:submit__prevent__throttle.1s="@post('/integrations/github/repos/add', {contentType:'form', retryMaxCount:0})">
     <div class="crow">
       <input type="text" name="repo" placeholder="owner/name" class="cinput" required>
       <button type="submit" class="btn">Watch</button>
@@ -94,4 +104,4 @@
   </form>
 </div>
 {{end}}
-{{end}}
+</div>{{end}}
