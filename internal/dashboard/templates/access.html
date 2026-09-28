@@ -13,7 +13,7 @@
 <div class="card">
   {{if .View.ResponderAvailable}}
   <div class="row">
-    <div><span class="nm">Your agent answers iMessages</span> {{if .View.ResponderOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
+    <div><strong>Your agent answers iMessages</strong> {{if .View.ResponderOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
     {{if .View.ResponderOn}}
     <form method="POST" action="/access/imessage/responder" class="inline">
       <input type="hidden" name="on" value="false">
@@ -57,7 +57,7 @@
   <div class="dim">Ask first asks you on the Mac running Tenant.</div>
   {{range .View.IMessagePerms}}
   <div class="perm">
-    <div><span class="nm">{{or .Title .Category}}</span>{{if .New}} <span class="tag-new">New</span>{{end}}
+    <div><strong>{{or .Title .Category}}</strong>{{if .New}} <span class="tag-new">New</span>{{end}}
       <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
     <div class="cronactions">
       {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/imessage/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
@@ -77,7 +77,7 @@
 {{else}}
 <div class="card">
   <div class="row">
-    <div><span class="nm">Discord relay</span> {{if .View.RelayRunning}}<span class="on-tag">running</span>{{else}}<span class="dim">stopped</span>{{end}}</div>
+    <div><strong>Discord relay</strong> {{if .View.RelayRunning}}<span class="on-tag">running</span>{{else}}<span class="dim">stopped</span>{{end}}</div>
     {{if .View.RelayRunning}}
     <form method="POST" action="/access/discord/enable" class="inline">
       <input type="hidden" name="on" value="false">
@@ -88,7 +88,7 @@
     {{end}}
   </div>
   <div class="row">
-    <div><span class="nm">Let Discord messages make changes</span> {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
+    <div><strong>Let Discord messages make changes</strong> {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
     {{if .View.ExecOn}}
     <form method="POST" action="/access/discord/exec" class="inline">
       <input type="hidden" name="on" value="false">
@@ -103,7 +103,7 @@
 
 <div class="card">
   <div class="row">
-    <div><span class="nm">Your Discord user ID</span> <span class="dim">{{if .View.OperatorID}}{{.View.OperatorID}}{{else}}not set{{end}}</span></div>
+    <div><strong>Your Discord user ID</strong> <span class="dim">{{if .View.OperatorID}}{{.View.OperatorID}}{{else}}not set{{end}}</span></div>
     <details class="confirm-step go"><summary class="btn sm"><span class="c-open">{{if .View.OperatorID}}Change{{else}}Set it{{end}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Your Discord user ID"><p>Only this Discord account will be able to approve your agent's risky actions from Discord.</p><form method="POST" action="/access/discord/operator"><input type="text" name="operator" value="{{.View.OperatorID}}" placeholder="your numeric Discord user ID" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, save it</button></form></div></details>
   </div>
   {{if not .View.OperatorSet}}<div class="dim risk">No Discord user ID set: the relay won't start until you set one.</div>{{end}}
@@ -114,7 +114,7 @@
   <div class="dim">Ask first shows buttons on the Discord card for you to answer.</div>
   {{range .View.DiscordPerms}}
   <div class="perm">
-    <div><span class="nm">{{or .Title .Category}}</span>{{if .New}} <span class="tag-new">New</span>{{end}}
+    <div><strong>{{or .Title .Category}}</strong>{{if .New}} <span class="tag-new">New</span>{{end}}
       <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
     <div class="cronactions">
       {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/discord/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}

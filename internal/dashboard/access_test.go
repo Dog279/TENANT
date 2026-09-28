@@ -172,10 +172,10 @@ func TestAccess_PermissionRowsShowTitlesAndNew(t *testing.T) {
 	}}
 	body := accessGet(t, accessServer(fa), "/access").Body.String()
 	for _, want := range []string{
-		`<span class="nm">Share private data</span> <span class="tag-new">New</span>`,
+		`<strong>Share private data</strong> <span class="tag-new">New</span>`,
 		"Asks you before it can send private information it has read to an outside service.",
 		`>Keep asking</button>`,
-		`<span class="nm">Run commands</span>`, "Can't run commands and programs on this computer. It won't ask.",
+		`<strong>Run commands</strong>`, "Can't run commands and programs on this computer. It won't ask.",
 		"Discord conversations can run commands and programs on this computer without asking you.",
 	} {
 		if !strings.Contains(body, want) {
