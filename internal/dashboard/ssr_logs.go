@@ -54,7 +54,7 @@ func (s *Server) mountLogsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /logs/views", s.handleLogsSaveView)
 	mux.HandleFunc("POST /logs/views/delete", s.handleLogsDeleteView)
 	mux.HandleFunc("POST /logs/log/{log}/properties", s.handleLogsProperties)
-	mux.HandleFunc("POST /logs/log/{log}/clear", s.handleLogsClear)
+	mux.HandleFunc("POST /logs/log/{log}/clear", needConfirm(nil, s.handleLogsClear)) // the events are gone for good (TEN-211)
 }
 
 // logbookStore is the hub and its store; the store is nil when logbook.db

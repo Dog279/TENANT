@@ -11,8 +11,8 @@ package dashboard
 // and redirects immediately; the new server appears in the list on refresh.
 
 import (
+	"context"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -48,8 +48,10 @@ func (s *Server) SetMCP(c MCPControl) { s.mcp = c }
 func (s *Server) mountMCPSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /mcp", s.handleMCPPage)
 	mux.HandleFunc("POST /mcp/connect", s.handleMCPConnectForm)
-	mux.HandleFunc("POST /mcp/remove", s.handleMCPRemoveForm)
-	mux.HandleFunc("POST /mcp/trust", s.handleMCPTrustForm)
+	// Disconnecting loses its sign-in, and allow lets its tools run without
+	// asking: both confirm (TEN-211). Ask and deny don't.
+	mux.HandleFunc("POST /mcp/remove", needConfirm(nil, s.handleMCPRemoveForm))
+	mux.HandleFunc("POST /mcp/trust", needConfirm(confirmUnless("mode", "ask", "deny"), s.handleMCPTrustForm))
 }
 
 type mcpPageData struct {
@@ -76,7 +78,9 @@ func (s *Server) handleMCPPage(w http.ResponseWriter, r *http.Request) {
 // handleMCPConnectForm kicks off the connect ASYNC — AddRemoteMCP opens a
 // browser on the host and blocks for the OAuth flow, which must not wedge the
 // HTTP request. The operator does this step at the host machine (hybrid model);
-// the connected server shows up in the list on refresh.
+// the connected server shows up in the list on refresh. The connect outlives
+// the request, so its log record keeps the request's values without its
+// cancellation (F7).
 func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 	if s.mcp == nil {
 		http.Redirect(w, r, "/mcp", http.StatusSeeOther)
@@ -84,15 +88,16 @@ func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 	}
 	rawURL := strings.TrimSpace(r.FormValue("url"))
 	if rawURL == "" {
-		redirectMCP(w, r, "", "Enter the service's MCP URL.")
+		redirectFlash(w, r, "/mcp", "", "Enter the service's address.")
 		return
 	}
+	ctx := context.WithoutCancel(r.Context())
 	go func(u string) {
 		if err := s.mcp.Connect(u); err != nil {
-			ConnectorNotAdded.Log(r.Context(), "url", u, "err", err)
+			ConnectorNotAdded.Log(ctx, "url", u, "err", err)
 		}
 	}(rawURL)
-	redirectMCP(w, r, "Connecting… A local service with no sign-in appears here in a moment (refresh); one that requires sign-in opens a window on the computer running Tenant — approve it there first.", "")
+	redirectFlash(w, r, "/mcp", "Connecting. A local service with no sign-in appears here in a moment (refresh); one that needs a sign-in opens a window on the computer running Tenant: approve it there first.", "")
 }
 
 func (s *Server) handleMCPRemoveForm(w http.ResponseWriter, r *http.Request) {
@@ -102,10 +107,17 @@ func (s *Server) handleMCPRemoveForm(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	if _, err := s.mcp.Remove(target); err != nil {
-		redirectMCP(w, r, "", "Couldn't disconnect that service: "+err.Error())
+		redirectFlash(w, r, "/mcp", "", s.flashFor(r.Context(), "mcp remove", err, "Couldn't disconnect that service."))
 		return
 	}
-	redirectMCP(w, r, "Service disconnected.", "")
+	redirectFlash(w, r, "/mcp", "Service disconnected.", "")
+}
+
+// trustWords says what each trust mode means for a service's tools.
+var trustWords = map[string]string{
+	"ask":   "asks you before it uses a tool that can change things",
+	"allow": "uses its tools without asking you",
+	"deny":  "can't use its tools",
 }
 
 // handleMCPTrustForm sets a connector's live trust mode (ask | allow | deny).
@@ -116,24 +128,13 @@ func (s *Server) handleMCPTrustForm(w http.ResponseWriter, r *http.Request) {
 	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
-	if target == "" || (mode != "ask" && mode != "allow" && mode != "deny") {
-		redirectMCP(w, r, "", "Pick ask, allow or deny for a connected service.")
+	if target == "" || trustWords[mode] == "" {
+		redirectFlash(w, r, "/mcp", "", "Pick Ask first, Don't ask or Block for a connected service.")
 		return
 	}
 	if err := s.mcp.SetTrust(target, mode); err != nil {
-		redirectMCP(w, r, "", "Couldn't change that service's trust: "+err.Error())
+		redirectFlash(w, r, "/mcp", "", s.flashFor(r.Context(), "mcp trust", err, "Couldn't change how your agent uses that service."))
 		return
 	}
-	redirectMCP(w, r, "Trust for "+target+" is now "+mode+".", "")
-}
-
-func redirectMCP(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/mcp"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectFlash(w, r, "/mcp", target+": your agent now "+trustWords[mode]+".", "")
 }

@@ -12,7 +12,6 @@ package dashboard
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -51,7 +50,7 @@ func (s *Server) SetSecrets(c SecretsControl) { s.secrets = c }
 func (s *Server) mountSecretsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /settings/keys", s.handleKeysPage)
 	mux.HandleFunc("POST /settings/keys/{id}/set", s.handleKeysSetForm)
-	mux.HandleFunc("POST /settings/keys/{id}/remove", s.handleKeysRemoveForm)
+	mux.HandleFunc("POST /settings/keys/{id}/remove", needConfirm(nil, s.handleKeysRemoveForm))
 }
 
 type keysPageData struct {
@@ -80,7 +79,7 @@ func groupByCategory(views []ServiceKeyView) []ServiceKeyGroup {
 }
 
 func (s *Server) handleKeysPage(w http.ResponseWriter, r *http.Request) {
-	d := keysPageData{layoutData: layoutData{Title: "Keys", Page: "keys"}}
+	d := keysPageData{layoutData: layoutData{Title: "Provider keys", Page: "keys"}}
 	d.Msg = r.URL.Query().Get("msg")
 	d.Err = r.URL.Query().Get("err")
 	if s.secrets == nil {
@@ -98,31 +97,24 @@ func (s *Server) handleKeysSetForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	// Body-only intake: parse the form and read PostForm (NOT r.FormValue, which
-	// merges the query string) so a secret can never land in a URL/log. Reject a
-	// request that tries to smuggle the value through the query string.
-	if err := r.ParseForm(); err != nil {
-		redirectKeys(w, r, "", "Couldn't read that request.")
-		return
-	}
-	if r.URL.Query().Has("value") {
+	value, ok := bodyOnly(r, "value")
+	if !ok {
 		KeyInURL.Log(r.Context(), "cred", id)
-		redirectKeys(w, r, "", "Submit the key in the form, not the URL.")
+		redirectFlash(w, r, "/settings/keys", "", secretInURL)
 		return
 	}
-	value := r.PostForm.Get("value")
 	if strings.TrimSpace(value) == "" {
-		redirectKeys(w, r, "", "Paste a key first.")
+		redirectFlash(w, r, "/settings/keys", "", "Paste a key first.")
 		return
 	}
 	if err := s.secrets.SetSecret(id, value); err != nil {
 		// Never reflect err.Error() into the flash (it can carry key fragments);
 		// log it server-side with the credID only.
 		KeyNotSaved.Log(r.Context(), "cred", id, "op", "stored", "err", err)
-		redirectKeys(w, r, "", "Couldn't store that key.")
+		redirectFlash(w, r, "/settings/keys", "", "Couldn't store that key.")
 		return
 	}
-	redirectKeys(w, r, "Key stored. Restart the agent to apply it.", "")
+	redirectFlash(w, r, "/settings/keys", "Key stored. Restart the agent to apply it.", "")
 }
 
 func (s *Server) handleKeysRemoveForm(w http.ResponseWriter, r *http.Request) {
@@ -133,21 +125,22 @@ func (s *Server) handleKeysRemoveForm(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.secrets.RemoveSecret(id); err != nil {
 		KeyNotSaved.Log(r.Context(), "cred", id, "op", "removed", "err", err)
-		redirectKeys(w, r, "", "Couldn't remove that key.")
+		redirectFlash(w, r, "/settings/keys", "", "Couldn't remove that key.")
 		return
 	}
-	redirectKeys(w, r, "Key removed from disk. The running agent keeps the old key in memory until restart.", "")
+	redirectFlash(w, r, "/settings/keys", "Key removed from disk. The running agent keeps the old key in memory until restart.", "")
 }
 
-// redirectKeys 303s back with a server-generated flash. It NEVER carries
-// err.Error() or any submitted value — only the fixed strings above.
-func redirectKeys(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/settings/keys"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
+// secretInURL is the flash for a secret sent in the query string (F2).
+const secretInURL = "Nothing was saved: submit it in the form, not the URL."
+
+// bodyOnly is form field key from the request body; ok is false when the
+// query string carries key too, so a secret never rides in a URL, where
+// history and proxy logs keep it (TEN-145, F2). The caller refuses the
+// request and never calls its control.
+func bodyOnly(r *http.Request, key string) (v string, ok bool) {
+	if r.URL.Query().Has(key) {
+		return "", false
 	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	return r.PostFormValue(key), true
 }

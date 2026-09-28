@@ -1,9 +1,8 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">Remote services aren't configured in this session.</div></div>
+{{template "ui-off" "Remote services aren't available on this Tenant."}}
 {{else}}
 
 <div class="card">
@@ -11,42 +10,39 @@
   {{range .Servers}}
   <div class="soul-row" id="mcp-{{.Label}}">
     <div>
-      <div class="nm">{{.Label}} {{if .NeedsReauth}}<span style="color:#e5484d;font-weight:600">⚠ needs re-authorization{{if .AuthSince}} since {{.AuthSince}}{{end}}</span>{{else if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
-      <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}} · trust: <strong>{{if .Trust}}{{.Trust}}{{else}}ask{{end}}</strong></div>
-      {{if .NeedsReauth}}<div class="dim" style="margin-top:4px">Its sign-in expired and could not be refreshed{{if .AuthErr}} ({{.AuthErr}}){{end}}. Its tools fail until you reconnect — Reconnect opens a sign-in window <strong>on the computer running Tenant</strong>.</div>{{end}}
+      <div class="nm">{{.Label}} {{if .NeedsReauth}}<span class="act-errtag">needs signing in again{{if .AuthSince}} since {{.AuthSince}}{{end}}</span>{{else if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
+      <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}} · {{if eq .Trust "allow"}}uses its tools without asking{{else if eq .Trust "deny"}}blocked{{else}}asks you first{{end}}</div>
+      {{if .NeedsReauth}}<div class="dim mt">Its sign-in expired and couldn't be renewed{{if .AuthErr}} ({{.AuthErr}}){{end}}. Its tools fail until you reconnect. Reconnect opens a sign-in window <strong>on the computer running Tenant</strong>.</div>{{end}}
     </div>
     <div class="cronactions">
-      <form method="POST" action="/mcp/trust" class="inline" title="ask: each gated call prompts · allow: its tools run without prompts · deny: refused and hidden">
-        <input type="hidden" name="target" value="{{.Label}}">
-        <select name="mode" class="cinput">
-          <option value="ask" {{if or (eq .Trust "ask") (eq .Trust "")}}selected{{end}}>ask</option>
-          <option value="allow" {{if eq .Trust "allow"}}selected{{end}}>allow</option>
-          <option value="deny" {{if eq .Trust "deny"}}selected{{end}}>deny</option>
-        </select>
-        <button type="submit" class="btn sm">Set trust</button>
-      </form>
+      {{if ne .Trust "ask"}}{{if .Trust}}<form method="POST" action="/mcp/trust" class="inline">
+        <input type="hidden" name="target" value="{{.Label}}"><input type="hidden" name="mode" value="ask">
+        <button type="submit" class="btn sm">Ask first</button>
+      </form>{{end}}{{end}}
+      {{if ne .Trust "allow"}}{{template "ui-confirm" (confirmGo "/mcp/trust" "Don't ask" (printf "Your agent can use every tool of %s without asking you first, including tools that change things." .Label) "target" .Label "mode" "allow")}}{{end}}
+      {{if ne .Trust "deny"}}<form method="POST" action="/mcp/trust" class="inline">
+        <input type="hidden" name="target" value="{{.Label}}"><input type="hidden" name="mode" value="deny">
+        <button type="submit" class="btn sm">Block</button>
+      </form>{{end}}
       {{if .NeedsReauth}}<form method="POST" action="/mcp/connect" class="inline">
         <input type="hidden" name="url" value="{{.URL}}">
         <button type="submit" class="btn sm">Reconnect</button>
       </form>{{end}}
-      <form method="POST" action="/mcp/remove" class="inline">
-        <input type="hidden" name="target" value="{{.Label}}">
-        <button type="submit" class="btn sm danger">Disconnect</button>
-      </form>
+      {{template "ui-confirm" (confirm "/mcp/remove" "Disconnect" (printf "Your agent can no longer use %s. To use it again you connect it again, and sign in again if it needs one." .Label) "target" .Label)}}
     </div>
   </div>
   {{else}}
-  <div class="dim">No remote services connected yet.</div>
+  {{template "ui-empty" "No remote services connected yet. Connect one below."}}
   {{end}}
 </div>
 
 <div class="card">
   <div class="card-head">Connect a service</div>
   <form method="POST" action="/mcp/connect" class="inline">
-    <input type="text" name="url" class="cinput wide" placeholder="https://mcp.example.com/v1/mcp" required>
+    <input type="text" name="url" class="cinput wide" placeholder="https://tools.example.com/v1" required>
     <button type="submit" class="btn">Connect</button>
   </form>
-  <div class="dim" style="margin-top:9px">A service that requires sign-in opens a window <strong>on the computer running Tenant</strong> — do that step at that machine; a local service with no sign-in connects at once. A new service starts with trust <strong>ask</strong>: each of its gated tools prompts you before running. Set it to <strong>allow</strong> once you trust it, or <strong>deny</strong> to shut it off. Your agent can also adopt a server itself with its <code>mcp_add</code> tool — you approve the adoption (permission category <code>mcp</code>) and then decide its trust.</div>
+  <div class="dim mt">A service that needs a sign-in opens a window <strong>on the computer running Tenant</strong>: do that step there. A local service with no sign-in connects at once. A new service starts at <strong>Ask first</strong>: its tools that can change things ask you before they run. Choose <strong>Don't ask</strong> once you trust it, or <strong>Block</strong> to shut it off. Your agent can also ask to connect a service itself; you approve that first, then choose how it's used.</div>
 </div>
 
 {{end}}

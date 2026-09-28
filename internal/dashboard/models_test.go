@@ -46,7 +46,7 @@ func modelServer(fc ModelControl) *Server {
 
 func TestModels_PageNotConfigured(t *testing.T) {
 	rec := get(t, modelServer(nil), "/models")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "aren't configured") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Model settings aren&#39;t available on this Tenant.") {
 		t.Errorf("nil models should render not-configured; got %d:\n%s", rec.Code, rec.Body.String())
 	}
 }

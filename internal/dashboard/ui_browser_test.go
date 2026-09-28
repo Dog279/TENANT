@@ -168,7 +168,7 @@ func TestUIShellInChrome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models Remove: %v", err)
 	}
-	if !slices.Equal(models.removeCalls, []string{name}) || !strings.Contains(flash, "removed "+name) {
+	if !slices.Equal(models.removeCalls, []string{name}) || !strings.Contains(flash, "Removed "+name) {
 		t.Errorf("Remove calls %q, flash %q; want one call for %s", models.removeCalls, flash, name)
 	}
 	for _, b := range boxBad {

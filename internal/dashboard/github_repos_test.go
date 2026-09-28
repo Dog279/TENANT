@@ -76,11 +76,13 @@ func TestGitHubRepos_PageRendersCurrentMode(t *testing.T) {
 	if !strings.Contains(body, "Dog279/TENANT") || !strings.Contains(body, "Dog279/bitematch") {
 		t.Fatalf("watched repos missing from the page:\n%s", body)
 	}
-	if !strings.Contains(body, `value="write" selected`) {
-		t.Error("the writable repo should render write as the selected option")
+	// The writable one offers "Make watch-only" (one click); the watch-only
+	// one offers "Allow changes" behind its confirm step.
+	if !strings.Contains(body, `<span class="risk">may change it</span>`) || !strings.Contains(body, ">Make watch-only</button>") {
+		t.Error("the writable repo should say so and offer Make watch-only")
 	}
-	if !strings.Contains(body, `value="read" selected`) {
-		t.Error("the watch-only repo should render read as the selected option")
+	if !strings.Contains(body, `<span class="dim">watch-only</span>`) || !strings.Contains(body, `<input type="hidden" name="repo" value="Dog279/bitematch"><input type="hidden" name="mode" value="write"><input type="hidden" name="confirm" value="yes">`) {
+		t.Error("the watch-only repo should say so and offer Allow changes through its confirm step")
 	}
 }
 
@@ -90,7 +92,7 @@ func TestGitHubRepos_ModeFormReachesControl(t *testing.T) {
 	f := &fakeGitHubRepos{rows: []GitHubRepoRow{{Slug: "Dog279/bitematch"}}}
 	s := ghServer(f)
 
-	if rec := ghPost(t, s, "/integrations/github/repos/mode", "repo=Dog279/bitematch&mode=write"); rec.Code != http.StatusSeeOther {
+	if rec := ghPost(t, s, "/integrations/github/repos/mode", "repo=Dog279/bitematch&mode=write&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("mode: status = %d, want 303", rec.Code)
 	}
 	if len(f.setCalls) != 1 || f.setCalls[0] != "Dog279/bitematch:write" {
@@ -104,7 +106,7 @@ func TestGitHubRepos_UnknownModeFailsSafe(t *testing.T) {
 	for _, mode := range []string{"", "readonly", "WRITE-ISH", "true", "yes"} {
 		f := &fakeGitHubRepos{rows: []GitHubRepoRow{{Slug: "a/b"}}}
 		s := ghServer(f)
-		ghPost(t, s, "/integrations/github/repos/mode", "repo=a/b&mode="+mode)
+		ghPost(t, s, "/integrations/github/repos/mode", "repo=a/b&confirm=yes&mode="+mode)
 		if len(f.setCalls) != 1 {
 			t.Fatalf("mode %q: expected one call, got %v", mode, f.setCalls)
 		}
@@ -118,7 +120,7 @@ func TestGitHubRepos_UnknownModeFailsSafe(t *testing.T) {
 	// Only the exact value grants write.
 	f := &fakeGitHubRepos{rows: []GitHubRepoRow{{Slug: "a/b"}}}
 	s := ghServer(f)
-	ghPost(t, s, "/integrations/github/repos/mode", "repo=a/b&mode=write")
+	ghPost(t, s, "/integrations/github/repos/mode", "repo=a/b&mode=write&confirm=yes")
 	if f.setCalls[0] != "a/b:write" {
 		t.Errorf(`exact "write" should grant write, got %q`, f.setCalls[0])
 	}
@@ -161,7 +163,7 @@ func TestGitHubRepos_NilControlIsSafe(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "watched repositories") {
 		t.Error("the section should be hidden when no control is installed")
 	}
-	if rec := ghPost(t, s, "/integrations/github/repos/mode", "repo=a/b&mode=write"); rec.Code != http.StatusSeeOther {
+	if rec := ghPost(t, s, "/integrations/github/repos/mode", "repo=a/b&mode=write&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil control should redirect, got %d", rec.Code)
 	}
 }

@@ -63,7 +63,7 @@ func TestSSR_DashboardPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Home was renamed Dashboard→Overview and turned into a status board (TEN-200).
-	for _, want := range []string{"Overview", "Tools enabled", "web", "Read-only"} {
+	for _, want := range []string{"Overview", "Tools enabled", "web", "Look only"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard page missing %q", want)
 		}
@@ -78,7 +78,7 @@ func TestSSR_ToolsPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// The toggle URL is JS-escaped inside data-on:click ("/" → "\/").
-	for _, want := range []string{"web_read", "sql_exec", "destructive", `\/tools\/web_read\/toggle`} {
+	for _, want := range []string{"web_read", "sql_exec", "can change things", `\/tools\/web_read\/toggle`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("tools page missing %q", want)
 		}
@@ -200,7 +200,7 @@ func TestSSR_ToolToggle_DatastarPatch(t *testing.T) {
 
 func TestSSR_PostureForm(t *testing.T) {
 	s, ft := ssrServer()
-	rec := ssrPost(t, s, "/posture", url.Values{"allow_send": {"true"}})
+	rec := ssrPost(t, s, "/posture", url.Values{"allow_send": {"true"}, "confirm": {"yes"}})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("posture should 303, got %d", rec.Code)
 	}

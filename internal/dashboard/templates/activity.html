@@ -1,15 +1,15 @@
 {{define "content"}}
-<div class="card-head">Activity <span class="dim">· every subsystem, one feed · full history + live tail ·</span> <a class="linkbtn" href="/logs{{if .Source}}?q=log:{{.Source}}{{end}}">investigate in Logs</a></div>
-{{if not .Configured}}<div class="card"><div class="dim">Activity log unavailable in this session.</div></div>{{else}}
+<div class="card-head">Everything your agent and Tenant do, newest first, as it happens <span class="dim">·</span> <a class="linkbtn" href="/logs{{if .Source}}?q=log:{{.Source}}{{end}}">look into it in Logs</a></div>
+{{if not .Configured}}{{template "ui-off" "The Activity feed isn't available on this Tenant."}}{{else}}
 <nav class="memtabs">
   <a href="/activity{{if .Level}}?level={{.Level}}{{end}}" class="{{if not .Source}}on{{end}}">All</a>
   {{range .Tabs}}<a href="/activity?source={{.Key}}{{if $.Level}}&amp;level={{$.Level}}{{end}}" class="{{if .On}}on{{end}}{{if .Err}} tab-err{{end}}" title="{{.Title}}">{{.Label}}{{if .Count}} <span class="cnt">{{.Count}}</span>{{end}}</a>{{end}}
-  <a href="/activity?{{if .Source}}source={{.Source}}{{if not .Level}}&amp;{{end}}{{end}}{{if not .Level}}level=error{{end}}" class="errtoggle {{if .Level}}on{{end}}" title="show only errors (click again for everything)">⚠ errors only</a>
+  <a href="/activity?{{if .Source}}source={{.Source}}{{if not .Level}}&amp;{{end}}{{end}}{{if not .Level}}level=error{{end}}" class="errtoggle {{if .Level}}on{{end}}" title="show only errors (click again for everything)">Errors only</a>
 </nav>
 {{if .Source}}<div class="card act-files"><span class="dim">Files on disk for <span class="nm">{{.Source}}</span>{{if .Root}} · {{.Root}}{{end}}:</span>
   {{if .Files}}{{range .Files}} <a class="chip" href="{{.Href}}" title="{{.Size}} · updated {{.When}}">{{.Name}}</a>{{end}}{{else}} <span class="dim">none yet</span>{{end}}</div>{{end}}
 <div class="act" id="activity-feed"
      data-init="@get('{{.StreamURL}}', {retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})">{{.Backlog}}</div>
-{{if .Empty}}<div class="card"><div class="dim">No activity yet for this view — every subsystem's actions, tool calls, cross-agent messages and errors appear here as they happen.</div></div>{{end}}
+{{if .Empty}}{{template "ui-empty" "Nothing here yet for this view. What your agent does, the tools it uses, messages between helpers and errors appear here as they happen."}}{{end}}
 {{end}}
 {{end}}

@@ -75,7 +75,7 @@ func TestCron_PageNotConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "isn't configured") {
+	if !strings.Contains(rec.Body.String(), "Scheduled jobs aren&#39;t available on this Tenant.") {
 		t.Errorf("nil cron should render a not-configured notice; got:\n%s", rec.Body.String())
 	}
 }
@@ -88,7 +88,7 @@ func TestCron_PageListsJobs(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/cron", nil))
 	body := rec.Body.String()
-	for _, want := range []string{"nightly", "0 9 * * *", "run the tests", "abc", "Disable", "Run now"} {
+	for _, want := range []string{"nightly", "0 9 * * *", "run the tests", "abc", "Turn off", "Run now"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("cron page missing %q in body", want)
 		}
@@ -171,7 +171,7 @@ func TestCron_EnableDeleteRunForms(t *testing.T) {
 	if len(fc.runCalls) != 1 || fc.runCalls[0] != "abc" {
 		t.Errorf("run calls = %v", fc.runCalls)
 	}
-	if rec := cronPostForm(t, s, "/cron/abc/delete", ""); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/abc/delete", "confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("delete: want 303, got %d", rec.Code)
 	}
 	if len(fc.removeCalls) != 1 || fc.removeCalls[0] != "abc" {
@@ -195,7 +195,7 @@ func TestCron_ExecToggleFromDashboard(t *testing.T) {
 	f := &fakeCronCtl{}
 	s := cronServer(f)
 
-	if rec := cronPostForm(t, s, "/cron/exec", "enabled=true"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/exec", "enabled=true&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("enable: status = %d, want 303", rec.Code)
 	}
 	if !f.execOn || len(f.execCalls) != 1 || f.execCalls[0] != true {
@@ -215,7 +215,7 @@ func TestCron_ExecToggleFromDashboard(t *testing.T) {
 	req := httptest.NewRequest("GET", "/cron", nil)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), "Global cron-exec") {
+	if !strings.Contains(rec.Body.String(), `<strong>Scheduled jobs may make changes:</strong> <span class="on-tag">on</span>`) {
 		t.Fatal("cron page does not render the cron-exec state")
 	}
 }

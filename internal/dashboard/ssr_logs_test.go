@@ -477,7 +477,7 @@ func TestLogsActions(t *testing.T) {
 		t.Errorf("reconfiguring should file a Security record each time: %+v", security(t, st, 4902))
 	}
 
-	u = form("/logs/log/cron/clear", nil)
+	u = form("/logs/log/cron/clear", url.Values{"confirm": {"yes"}})
 	if !strings.Contains(u.Query().Get("msg"), "Cleared 2 events") {
 		t.Errorf("clear → %s", u)
 	}
@@ -487,7 +487,7 @@ func TestLogsActions(t *testing.T) {
 	if len(security(t, st, 4901)) != 1 {
 		t.Error("clearing should file a Security record")
 	}
-	if u := form("/logs/log/security/clear", nil); !strings.Contains(u.Query().Get("err"), "never cleared") {
+	if u := form("/logs/log/security/clear", url.Values{"confirm": {"yes"}}); !strings.Contains(u.Query().Get("err"), "never cleared") {
 		t.Errorf("clearing the Security log → %s", u)
 	}
 	if page := get(t, s, "/logs?q=log:security").Body.String(); !strings.Contains(page, "never cleared, only archived") || strings.Contains(page, `action="/logs/log/security/clear"`) {

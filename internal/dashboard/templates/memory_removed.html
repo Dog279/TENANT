@@ -1,12 +1,12 @@
 {{define "content"}}
 {{template "memnav" .}}
 {{if not .Configured}}
-<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else}}
-{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
 <div class="postbar"><span class="dim">Removed facts stay here so you can restore them.</span><span class="sp"></span><a class="btn sm" href="{{.BackHref}}">Back to facts</a></div>
 {{if .Empty}}
-<div class="card"><div class="dim pad">Nothing here. Removed facts show up so you can restore them.</div></div>
+{{template "ui-empty" "Nothing here. Facts you remove show up here so you can restore them."}}
 {{else}}
 <div class="factlist">
 {{range .Rows}}

@@ -14,6 +14,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -81,7 +82,9 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 // pump relays them and the buffered result is dropped. Its error is not: a
 // turn-gate rejection or a failure before the loop starts reaches no event at
 // all, so a failed turn is logged and posted to the chat, as the TUI does —
-// the operator sent that message. A turn the operator stopped did not fail.
+// the operator sent that message. The chat says so plainly and the log keeps
+// the error, unless it is a PlainError (D21). A turn the operator stopped did
+// not fail.
 func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
 	_, err := co.runner.Turn(ctx, agent.TurnRequest{
 		UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
@@ -90,7 +93,12 @@ func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
 		return
 	}
 	ChatTurnFailed.Log(ctx, "err", err)
-	co.broker.Publish(agent.Event{Kind: agent.EventError, Text: "turn failed: " + err.Error()})
+	msg := "Your agent couldn't answer that message. The Logs page has the reason."
+	var pe PlainError
+	if errors.As(err, &pe) {
+		msg = "Your agent couldn't answer: " + string(pe)
+	}
+	co.broker.Publish(agent.Event{Kind: agent.EventError, Text: msg})
 }
 
 // finish clears the active-turn state after a turn goroutine returns. It only

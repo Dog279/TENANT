@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"path"
 	"strconv"
+	"strings"
 )
 
 //go:embed templates
@@ -140,9 +141,13 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /tools/{name}/toggle", s.handleToolToggleForm)
 	mux.HandleFunc("POST /plugins/{label}/toggle", s.handlePluginToggleForm)
-	mux.HandleFunc("POST /posture", s.handlePostureForm)
-	mux.HandleFunc("POST /tools/rules/add", s.handleRuleAddForm)
-	mux.HandleFunc("POST /tools/rules/remove", s.handleRuleRemoveForm)
+	// Giving the agent its tools that change things, a rule that lets a tool
+	// run without asking, and removing a rule that made one ask or blocked
+	// it all confirm (TEN-211). The remove form posts the rule's current
+	// mode, so a missing one confirms too.
+	mux.HandleFunc("POST /posture", needConfirm(confirmUnless("allow_send", "", "false"), s.handlePostureForm))
+	mux.HandleFunc("POST /tools/rules/add", needConfirm(confirmUnless("mode", "ask", "deny"), s.handleRuleAddForm))
+	mux.HandleFunc("POST /tools/rules/remove", needConfirm(confirmUnless("mode", "allow"), s.handleRuleRemoveForm))
 	mux.HandleFunc("POST /chat/send", s.handleChatSend)
 	mux.HandleFunc("POST /chat/interject", s.handleChatInterject)
 	mux.HandleFunc("POST /chat/stop", s.handleChatStop)
@@ -176,6 +181,18 @@ func (s *Server) renderToolRow(t ToolInfo) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// Label is the tool's name as the page shows it. A remote service's tool is
+// named "mcp:<service>:<tool>"; its group already names the service, so the
+// row shows only the tool.
+func (t ToolInfo) Label() string {
+	if rest, ok := strings.CutPrefix(t.Name, "mcp:"); ok {
+		if i := strings.LastIndexByte(rest, ':'); i >= 0 && i < len(rest)-1 {
+			return rest[i+1:]
+		}
+	}
+	return t.Name
 }
 
 // ToggleURL is the row's toggle target. A remote tool server names its own
@@ -246,6 +263,9 @@ type dashboardData struct {
 	// Alerts fired in the last day (TEN-399), and the newest one's message.
 	Alerts      int
 	AlertLatest string
+	// Waiting is how many actions wait for the operator's OK (D13): the
+	// card answers "is anything waiting?" even when the answer is no.
+	Waiting int
 }
 
 func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +278,9 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	var plugins []string
 	if s.tools != nil {
-		plugins = s.tools.Plugins()
+		for _, p := range s.tools.Plugins() {
+			plugins = append(plugins, groupLabel(p))
+		}
 	}
 	d := dashboardData{
 		layoutData:   layoutData{Title: "Overview", Page: "dashboard"},
@@ -303,14 +325,30 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.Alerts, d.AlertLatest = s.recentAlerts(r.Context())
+	d.Waiting = s.statusView().Approvals
 	s.render(w, s.tmpl.dashboard, d)
 }
 
 type toolGroup struct {
-	Plugin string
+	Plugin string // "" for tools no plugin owns
+	Label  string // the group's heading
 	AllOn  bool
 	Tools  []ToolInfo
 }
+
+// groupLabel is a tool group's heading: a remote service's plugin
+// ("mcp:<service>") is named as one, and tools no plugin owns are "Other
+// tools".
+func groupLabel(plugin string) string {
+	if plugin == "" {
+		return "Other tools"
+	}
+	if svc, ok := strings.CutPrefix(plugin, "mcp:"); ok {
+		return svc + " (remote service)"
+	}
+	return plugin
+}
+
 type toolsData struct {
 	layoutData
 	Groups    []toolGroup
@@ -327,12 +365,9 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
 	groups := map[string]*toolGroup{}
 	for _, t := range tools {
 		p := t.Plugin
-		if p == "" {
-			p = "(ungrouped)"
-		}
 		g, ok := groups[p]
 		if !ok {
-			g = &toolGroup{Plugin: p, AllOn: true}
+			g = &toolGroup{Plugin: p, Label: groupLabel(p), AllOn: true}
 			groups[p] = g
 			order = append(order, p)
 		}

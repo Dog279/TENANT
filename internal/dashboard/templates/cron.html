@@ -1,58 +1,63 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">Cron scheduling isn't configured in this session.</div></div>
+{{template "ui-off" "Scheduled jobs aren't available on this Tenant."}}
 {{else}}
 
 <div class="card">
   <form method="POST" action="/cron/add" class="cronadd">
     <div class="crow">
       <input type="text" name="name" placeholder="name (optional)" class="cinput">
-      <input type="text" name="spec" placeholder="schedule — e.g. 0 9 * * 1-5  or  @every 30m" class="cinput" required>
-      <input type="text" name="tz" placeholder="timezone (optional, e.g. America/New_York)" class="cinput">
+      <input type="text" name="spec" placeholder="when: for example 0 9 * * 1-5, or @every 30m" class="cinput" required>
+      <input type="text" name="tz" placeholder="time zone (optional, for example America/New_York)" class="cinput">
     </div>
     <div class="crow">
-      <input type="text" name="prompt" placeholder="prompt (or shell command, for kind=shell)" class="cinput wide" required>
+      <input type="text" name="prompt" placeholder="what to ask your agent, or the command to run" class="cinput wide" required>
       <button type="submit" class="btn">Schedule</button>
     </div>
     <div class="crow">
-      <label class="dim">kind
+      <label class="dim">What it does
         <select name="kind">
-          <option value="prompt">prompt (safe agent turn)</option>
-          <option value="shell">shell command (DANGEROUS)</option>
+          <option value="prompt">Ask your agent (safe)</option>
+          <option value="shell">Run a command on the computer running Tenant (risky)</option>
         </select>
       </label>
-      <label class="dim"><input type="checkbox" name="exec" value="true"> exec — give a prompt job dangerous tools (DANGEROUS)</label>
+      <label class="dim"><input type="checkbox" name="exec" value="true"> Let this job make changes (risky)</label>
     </div>
-    <div class="dim">Default jobs run unattended and read/comms-safe (read/research/report only). shell jobs and exec opt-in run dangerous actions unattended and require cron-exec to be enabled globally.</div>
+    <div class="dim">By default a job runs without you and can only look things up, research and report. A job that runs a command, or that you let make changes, can change things without asking you, and only while scheduled jobs may make changes (below).</div>
   </form>
 </div>
 
 <div class="card">
-  <div><strong>Global cron-exec:</strong> {{if .ExecOn}}ON{{else}}OFF{{end}}</div>
-  <div class="dim">Shell jobs and exec-opted-in prompt jobs only get their dangerous tools when this is ON. While it is OFF an exec job still runs, but read/comms-safe &mdash; gated tools such as discord_send_message are silently unavailable to it, so delivery steps fail without an obvious error.</div>
-  <div class="cronactions">
-    <form method="POST" action="/cron/exec" class="inline">
-      <input type="hidden" name="enabled" value="{{if .ExecOn}}false{{else}}true{{end}}">
-      <button type="submit" class="btn">{{if .ExecOn}}Disable cron-exec{{else}}Enable cron-exec{{end}}</button>
-    </form>
+  <div class="row">
+    <div><strong>Scheduled jobs may make changes:</strong> {{if .ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
+    <div class="cronactions">
+      {{if .ExecOn}}
+      <form method="POST" action="/cron/exec" class="inline">
+        <input type="hidden" name="enabled" value="false">
+        <button type="submit" class="btn">Turn off</button>
+      </form>
+      {{else}}
+      {{template "ui-confirm" (confirmGo "/cron/exec" "Turn on" "Jobs that run a command, or that you let make changes, can then change things without asking you, even while nobody is watching." "enabled" "true")}}
+      {{end}}
+    </div>
   </div>
+  <div class="dim">While this is off, a job that runs a command or that you let make changes still runs, but can only look things up: its steps that change things or send messages (a Discord post, for example) fail without an obvious error.</div>
 </div>
 
 {{range .Jobs}}
 <div class="card cronjob" id="cron-{{.ID}}">
   <div class="ghead">
     <span class="nm">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</span>
-    {{if .Enabled}}<span class="on-tag">enabled</span>{{else}}<span class="dim">disabled</span>{{end}}
+    {{if .Enabled}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
     <span class="sp"></span>
     <code class="spec">{{.Spec}}</code>
-    {{if eq .Kind "shell"}}<span class="risk">shell</span>{{end}}
-    {{if .Exec}}<span class="risk">exec</span>{{end}}
+    {{if eq .Kind "shell"}}<span class="risk">runs a command</span>{{end}}
+    {{if .Exec}}<span class="risk">makes changes</span>{{end}}
     {{if .TZ}}<span class="dim">{{.TZ}}</span>{{end}}
   </div>
-  <div class="dim">id {{.ID}} · next {{if .NextRun}}{{.NextRun}}{{else}}—{{end}}{{if .LastStatus}} · last {{.LastStatus}}{{if .LastRun}} @ {{.LastRun}}{{end}}{{end}}</div>
+  <div class="dim">id {{.ID}} · next {{if .NextRun}}{{.NextRun}}{{else}}—{{end}}{{if .LastStatus}} · last {{.LastStatus}}{{if .LastRun}} at {{.LastRun}}{{end}}{{end}}</div>
   <div class="prompt">{{.Prompt}}</div>
   <div class="cronactions">
     <form method="POST" action="/cron/{{.ID}}/run" class="inline">
@@ -60,15 +65,13 @@
     </form>
     <form method="POST" action="/cron/{{.ID}}/enable" class="inline">
       <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
-      <button type="submit" class="btn sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+      <button type="submit" class="btn sm">{{if .Enabled}}Turn off{{else}}Turn on{{end}}</button>
     </form>
-    <form method="POST" action="/cron/{{.ID}}/delete" class="inline">
-      <button type="submit" class="btn sm danger">Delete</button>
-    </form>
+    {{template "ui-confirm" (confirm (printf "/cron/%s/delete" .ID) "Delete" "This job is deleted and won't run again. To bring it back you add it again.")}}
   </div>
 </div>
 {{else}}
-<div class="card"><div class="dim">No scheduled jobs yet. Add one above.</div></div>
+{{template "ui-empty" "No scheduled jobs yet. Add one above: it runs on its schedule without you."}}
 {{end}}
 
 {{end}}

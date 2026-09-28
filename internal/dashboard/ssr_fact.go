@@ -117,7 +117,7 @@ func (s *Server) handleMemoryFactPage(w http.ResponseWriter, r *http.Request) {
 	d.Notice = r.URL.Query().Get("notice")
 	det, err := ins.FactDetail(id)
 	if err != nil {
-		d.Err = "Couldn't load that fact: " + err.Error() + "."
+		d.Err = s.flashFor(r.Context(), "fact read", err, "Couldn't load that fact. It may have been removed; the Logs page has the reason.")
 		s.render(w, s.tmpl.memFact, d)
 		return
 	}
@@ -196,7 +196,7 @@ func (s *Server) handleMemoryFactPage(w http.ResponseWriter, r *http.Request) {
 		d.ShowTurns = true
 		turns, err := ins.FactTurns(id)
 		if err != nil {
-			d.Err = "Couldn't rebuild the conversations: " + err.Error() + "."
+			d.Err = s.flashFor(r.Context(), "fact conversations read", err, "Couldn't read those conversations back from the archive.")
 		}
 		for _, t := range turns {
 			vm := factTurnVM{Episode: t.EpisodeID, Missing: t.Missing, Why: t.Why}
@@ -340,7 +340,7 @@ func (s *Server) handleMemoryFactEditForm(w http.ResponseWriter, r *http.Request
 	}
 	newID, err := ins.EditFact(id, text)
 	if err != nil {
-		http.Redirect(w, r, urlWith(base, "edit", "1", "err", "Couldn't save that: "+err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, urlWith(base, "edit", "1", "err", s.flashFor(r.Context(), "fact edit", err, "Couldn't save that.")), http.StatusSeeOther)
 		return
 	}
 	s.log.Info("dashboard: fact edited", "id", id, "new", newID)
@@ -366,7 +366,7 @@ func (s *Server) factFlag(w http.ResponseWriter, r *http.Request, done, failed, 
 	}
 	base := memFactsURL + "/" + i64(id)
 	if err := fn(ins, id); err != nil {
-		http.Redirect(w, r, urlWith(base, "err", failed+": "+err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, urlWith(base, "err", s.flashFor(r.Context(), "fact "+done, err, failed+".")), http.StatusSeeOther)
 		return
 	}
 	s.log.Info("dashboard: fact "+done, "id", id)
@@ -388,7 +388,7 @@ func (s *Server) handleMemoryFactRestoreVersionForm(w http.ResponseWriter, r *ht
 	}
 	newID, err := ins.RestoreFactVersion(version)
 	if err != nil {
-		http.Redirect(w, r, urlWith(base, "err", "Couldn't restore that version: "+err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, urlWith(base, "err", s.flashFor(r.Context(), "fact restore version", err, "Couldn't restore that version.")), http.StatusSeeOther)
 		return
 	}
 	s.log.Info("dashboard: fact version restored", "version", version, "new", newID)

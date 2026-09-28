@@ -1,6 +1,6 @@
 {{define "toolrow"}}<div class="trow" id="tool-{{.Name}}">
-  <span class="nm">{{.Name}}</span>
-  {{if .Gated}}<span class="risk">⚠ destructive</span>{{end}}
+  <span class="nm">{{.Label}}</span>
+  {{if .Gated}}<span class="risk">can change things</span>{{end}}
   <span class="sp"></span>
   <button type="button" class="btn sm{{if .Enabled}} on{{end}}"
     data-on:click="@post('{{.ToggleURL}}')">{{if .Enabled}}on{{else}}off{{end}}</button>

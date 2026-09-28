@@ -1,14 +1,13 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">Model settings aren't configured in this session.</div></div>
+{{template "ui-off" "Model settings aren't available on this Tenant."}}
 {{else}}
 
 <div class="card">
   <div class="card-head">Which brain your agent is using</div>
-  <div class="dim" style="margin-bottom:12px">The active model answers every message. Switching takes effect immediately.</div>
+  <div class="dim mb">The active model answers every message. Switching takes effect immediately.</div>
   {{range .Models}}
   <div class="soul-row" id="model-{{.Name}}">
     <div>
@@ -26,7 +25,7 @@
     </div>
   </div>
   {{else}}
-  <div class="dim">No models configured.</div>
+  {{template "ui-empty" "No models yet. Add a cloud model below."}}
   {{end}}
 </div>
 
@@ -46,22 +45,22 @@
     </label>
     <button type="submit" class="btn">Add model</button>
   </form>
-  <div class="dim" style="margin-top:9px">Your key is stored securely and never shown again. It's used only to reach that provider.</div>
+  <div class="dim mt">Your key is stored securely and never shown again. It's used only to reach that provider.</div>
 </div>
 
 <div class="card">
   <div class="card-head">Advanced</div>
-  <form method="POST" action="/models/ceiling" class="inline" style="margin-bottom:10px">
+  <form method="POST" action="/models/ceiling" class="inline mb">
     <label class="dim">Max steps per answer
-      <input type="text" name="ceiling" value="{{.Ceiling}}" class="cinput" style="width:70px">
+      <input type="number" name="ceiling" value="{{.Ceiling}}" min="1" max="200" class="cinput num">
     </label>
     <button type="submit" class="btn sm">Save</button>
   </form>
-  <div class="dim" style="margin-bottom:10px">How many tool steps the agent may take before it must answer. Higher = more thorough, slower.</div>
+  <div class="dim mb">How many tool steps the agent may take before it must answer. Higher = more thorough, slower.</div>
   <form method="POST" action="/models/reload" class="inline">
     <button type="submit" class="btn sm">Reload API keys</button>
   </form>
-  <div class="dim" style="margin-top:6px">Re-read keys after you've rotated one, without restarting.</div>
+  <div class="dim mt">Re-read keys after you've rotated one, without restarting.</div>
 </div>
 
 {{end}}
