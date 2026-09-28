@@ -24,6 +24,7 @@ func TestAgentsRemoveInChrome(t *testing.T) {
 		chromedp.WaitVisible(row, chromedp.ByQuery),
 		chromedp.Poll(`document.getElementById('ui-status').textContent.includes('waiting for your OK')`, nil, chromedp.WithPollingTimeout(6*time.Second)), // Datastar is up
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(row+` details[open] .confirm-box`, chromedp.ByQuery),
 		chromedp.Text(row+` details[open] .confirm-box p`, &before, chromedp.ByQuery),
 		chromedp.Evaluate(fitsJS, &boxBad),

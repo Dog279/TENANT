@@ -255,7 +255,7 @@ func TestSSR_ToolToggleURLEscapesName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`data-on:click="@post\('([^']*)'\)"`).FindStringSubmatch(row)
+	m := regexp.MustCompile(`data-on:click="@post\('([^']*)', \{retryMaxCount:0\}\)"`).FindStringSubmatch(row)
 	if m == nil {
 		t.Fatalf("no @post toggle on the row:\n%s", row)
 	}
@@ -357,7 +357,7 @@ func TestSSR_DatastarColonSyntax(t *testing.T) {
 	}{
 		{"/chat", `data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})"`, "data-on-submit"}, // a double tap keeps the first answer
 		{"/chat", `data-bind:text`, "data-bind-text"},
-		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},
+		{"/chat", `data-on:click="@post('/chat/stop', {retryMaxCount:0})"`, "data-on-click"},
 		{"/tools", `data-on:click="@post('\/tools\/`, "data-on-click"}, // JS-escaped ToggleURL
 	}
 	for _, c := range cases {

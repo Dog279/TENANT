@@ -21,15 +21,15 @@
   {{- end}}
   {{- if .Actionable}}
   <div class="q-actions">
-    <button type="button" class="btn" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "deny"}}')">Deny</button>
+    <button type="button" class="btn" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "deny"}}', {retryMaxCount:0})">Deny</button>
     {{- if .Pairing}}
-    <details class="confirm-step go" data-preserve-attr="open"><summary class="btn on"><span class="c-open">Allow once</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Allow once"><p>Only allow if the person pairing told you the same PIN that's shown in this request. They'll be able to ask your agent questions.</p><button type="button" class="btn on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve"}}')">Yes, allow once</button></div></details>
+    <details class="confirm-step go" data-preserve-attr="open"><summary class="btn on"><span class="c-open">Allow once</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Allow once"><p>Only allow if the person pairing told you the same PIN that's shown in this request. They'll be able to ask your agent questions.</p><button type="button" class="btn on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve"}}', {retryMaxCount:0})">Yes, allow once</button></div></details>
     {{- else}}
-    <button type="button" class="btn on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve"}}')">Allow once</button>
+    <button type="button" class="btn on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve"}}', {retryMaxCount:0})">Allow once</button>
     {{- end}}
   </div>
   {{- if .Standing}}
-  <details class="confirm-step go q-session" data-preserve-attr="open"><summary class="btn sm"><span class="c-open">Allow for the rest of this session</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Allow for the rest of this session"><p>Your agent can {{.Can}} without asking again until you turn it off on this page or Tenant restarts.</p><button type="button" class="btn sm on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve_session"}}')">Yes, allow for this session</button></div></details>
+  <details class="confirm-step go q-session" data-preserve-attr="open"><summary class="btn sm"><span class="c-open">Allow for the rest of this session</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Allow for the rest of this session"><p>Your agent can {{.Can}} without asking again until you turn it off on this page or Tenant restarts.</p><button type="button" class="btn sm on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve_session"}}', {retryMaxCount:0})">Yes, allow for this session</button></div></details>
   {{- end}}
   {{- end}}
 </div>

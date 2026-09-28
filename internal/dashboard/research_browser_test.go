@@ -57,6 +57,7 @@ func TestResearchPageInChrome(t *testing.T) {
 				chromedp.Evaluate(fitsJS, &bad),
 				shoot("running"),
 				chromedp.Click(`#research-live details.confirm-step > summary`, chromedp.ByQuery),
+				tapsOpen, // a step just opened
 				chromedp.Click(`#research-live details.research-lines > summary`, chromedp.ByQuery),
 				set(ResearchLiveView{Phase: "writing", Running: true, Question: longName(2), Elapsed: "4 min", Lines: lines}),
 				has("#research-live", "Writing the report"),
@@ -107,6 +108,7 @@ func TestResearchPageInChrome(t *testing.T) {
 			var flash string
 			err = chromedp.Run(ctx,
 				chromedp.Click(`#research-history details.confirm-step > summary`, chromedp.ByQuery),
+				tapsOpen, // a step just opened
 				chromedp.WaitVisible(`#research-history details[open] .confirm-box`, chromedp.ByQuery),
 				chromedp.Evaluate(fitsJS, &bad),
 				shoot("delete"),

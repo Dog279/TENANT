@@ -3,5 +3,5 @@
   {{if .Gated}}<span class="risk">can change things</span>{{end}}
   <span class="sp"></span>
   <button type="button" class="btn sm{{if .Enabled}} on{{end}}"
-    data-on:click="@post('{{.ToggleURL}}')">{{if .Enabled}}on{{else}}off{{end}}</button>
+    data-on:click="@post('{{.ToggleURL}}', {retryMaxCount:0})">{{if .Enabled}}on{{else}}off{{end}}</button>
 </div>{{end}}

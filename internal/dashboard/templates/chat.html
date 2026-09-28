@@ -9,6 +9,6 @@
   <input id="chat-input" class="box" name="text" type="text" autocomplete="off"
          data-bind:text placeholder="Message tenant… (Enter to send)">
   <button type="submit" class="btn on">Send</button>
-  <button type="button" class="btn" data-on:click="@post('/chat/stop')">Stop</button>
+  <button type="button" class="btn" data-on:click="@post('/chat/stop', {retryMaxCount:0})">Stop</button>
 </form>
 {{end}}

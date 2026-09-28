@@ -87,7 +87,7 @@ The partials in `templates/ui.html` are parsed into every page set (`parseSSR` a
 {{template "ui-confirm" (confirmGo "/models/use" "Use this model" (printf "Every answer from now on comes from %s." .Name) "name" .Name)}}  <!-- a "go": not red -->
 ```
 
-`ui-status` is the strip itself; only `/ui/status` renders it. Loading is a class, not a partial: `<span class="loading">Counting</span>`.
+`ui-status` is the strip itself: `/ui/status` renders it, and so do every in-place answer (`formReply`) and Chat's send. Loading is a class, not a partial: `<span class="loading">Counting</span>`.
 
 Text an agent or a request wrote goes through `visibleText` before it is shown (`{{visibleText .Detail}}`): characters that draw nothing or reorder text (controls, bidi and zero-width marks, tag characters, fillers, variation selectors) show as `⟨U+202E⟩`, and 3 or more blank lines as `⟨N blank lines⟩`. `waited` turns seconds into "waiting 3 min".
 
@@ -148,7 +148,7 @@ Secret routes never put a control's error in a URL.
 - Long names and URLs break anywhere (`.page{overflow-wrap:anywhere}`). Only these inner scrollers may be wider than their box, and they scroll inside it: `.table-wrap`, `.lg-grid`, `pre`, `.diff`, `.q-detail`.
 - Wide tables go in `<div class="table-wrap">`; the approval queue and the mode rows are cards.
 - On touch screens buttons, nav links, the menu button and confirm summaries are at least 44px tall.
-- Under 640px an open `.confirm-box` becomes a bottom sheet, 16px from the sides and the bottom.
+- Under 640px an open `.confirm-box` becomes a bottom sheet, 16px from the sides and the bottom. While a step is open the page gets half a screen of room at its end, so the last step's Cancel can be scrolled above its sheet.
 
 ## 8. Datastar
 
@@ -177,14 +177,14 @@ A form post answered with `redirectFlash` reloads the page, which jumps back to 
 - Memory: "Keep which fact?" (the picker's state is in the URL, which the answer has to clear), and Edit a fact and "Make this current again" (each makes a new version, and its page is the next step).
 - Research, on a run's own page: Run again and Delete (both end on `/research`).
 - Remote services: Connect and Reconnect (the connection is made after the reply, the instruction to approve the sign-in on the computer running Tenant has to stay on screen, and the reload clears an address that can hold a key).
-- Not converted yet: Tools' "Turn on all / Turn off all" (its URL names the plugin; it needs a fixed route with the plugin as a field) and the status strip's Stop (`ui-busy`; Autopilot writes its busy line out so its own Stop posts in place).
+- Not converted yet: Tools' "Turn on all / Turn off all" (its URL names the plugin; it needs a fixed route with the plugin as a field), a tool's own on/off (`toolrow.html`, a button whose URL names the tool; it patches its own `#tool-<name>` row and has no throttle, and needs a fixed route with the name and on/off as fields) and the status strip's Stop (`ui-busy`; Autopilot writes its busy line out so its own Stop posts in place).
 - Sign in and Log out.
 
 The rules:
 
 - The form keeps `method="POST" action="…"`, so it still works before Datastar loads, and adds `data-on:submit__prevent__throttle.1s="@post('/access/discord/permission', {contentType:'form', retryMaxCount:0})"`. The URL is a literal (F1), and a row's values are form fields, never part of the expression. Datastar sends the form's fields form-encoded, with the `Origin` header a browser always sends on a POST, so `secure()`'s checks are unchanged. A confirm step opts in with `inline`: `{{template "ui-confirm" (inline (confirmGo "/access/discord/permission" "Allow" …))}}`.
   - `throttle.1s`: the morph reuses a row's form for the row that moves into its place, so without it a double tap on Remove removes two people.
-  - `retryMaxCount:0`: otherwise Datastar sends a post again after a dropped connection, up to 10 times over about 4 minutes, and a change could land minutes after the operator gave up on it.
+  - `retryMaxCount:0`: otherwise Datastar sends a post again after a dropped connection, up to 10 times over about 4 minutes, and a change could land minutes after the operator gave up on it. A button that posts (a tool's on/off, the approval queue's decisions, Chat's Stop) carries it too, or the tap guard would stay up through every retry.
 - **No form field is named `id`.** An input named `id` hides the form's own `id` from Datastar's morph, which then replaces the form and resets its throttle. Scheduled jobs send `job`, Research `run`, Memory `fact` and `item`, keys `service`, integrations `integration` (`TestRendered_NoFieldNamedID`). An integration's fields come from the settings catalog, so none may be named `id` there either.
 - The throttle holds only while the morph keeps the same form under the finger:
   - A row a form changes has no `id` (Skills, Tools), so the morph matches rows by position and the next row reuses the form.
@@ -206,16 +206,16 @@ The rules:
   ```html
   data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })"
   ```
-- **The tap guard.** A double tap's second tap can land on what the answer moved under the finger: the next row, the page under a phone's confirm sheet that just closed, the Turn on step where Turn off was. That is a different form, which its throttle doesn't cover. So `layout.html`'s `.app` carries one guard for every page: from the moment a form with an `action`, or a button, posts (`datastar-fetch` `started`) until its answer is 400ms old (`finished`), a capture-phase click filter drops every tap in `.app`.
+- **The tap guard.** A double tap's second tap can land on what the answer moved under the finger: the next row, the page under a phone's confirm sheet that just closed, the Turn on step where Turn off was. That is a different form, which its throttle doesn't cover. So `layout.html`'s `.app` carries one guard for every page: from the moment a form with an `action`, or a button, posts (`datastar-fetch` `started`) until its answer is 400ms old (`finished`), a capture-phase click filter drops every tap in `.app`. A tap that opens a confirm step starts it for 400ms too: on a phone the sheet opens under the finger, and a double tap would otherwise press its Yes.
   - An open confirm step's Cancel still works, and the toasts, `#toast-fail` included, sit outside `.app`.
-  - Datastar sends `finished` from a `finally` block, so an error, a refusal or a lost connection ends it too.
+  - Datastar sends `finished` from a `finally` block, and no post retries, so an error, a refusal or a lost connection ends it at once.
   - The chat box (a form with no `action`) and the GET streams don't start it. Without JavaScript there is none.
   - The per-form throttle and `retryMaxCount:0` stay as a second line.
-  - A browser test that taps soon after an answer waits it out first (`tapsOpen`).
-- The toast is `ui-toast` in `ui.html`, patched into `#toast` inside `layout.html`'s never-patched `.toast-wrap`, which is `aria-live="polite"`: a screen reader reads a change inside a live region that was already there, not a new element's own `role=status`. Success fades after about 3 seconds (CSS only). An error is `role=alert` and stays until its close button or the next toast. It sits top right on a desktop, and across the top on a phone, clear of the rows the thumb works on.
-- Datastar patches nothing for a reply that isn't 200 (a 403, a 428 from a stale page, a 500) or for a dropped connection. `.toast-wrap` watches its forms' posts and shows `#toast-fail`, a fixed "That didn't go through. Reload the page and try again.", until the next post starts or it's closed. `needConfirm` still answers 428 without `confirm=yes`, so a stale page gets that alert, never the change.
+  - A browser test that taps soon after an answer, or right after it opens a step, waits it out first (`tapsOpen`).
+- The toast is `ui-toast` in `ui.html`, patched into `#toast` inside `layout.html`'s never-patched `.toast-wrap`, which is `aria-live="polite"`: a screen reader reads a change inside a live region that was already there, not a new element's own `role=status`. Success fades after about 3 seconds (CSS only). An error is `role=alert` and stays until its close button or the next toast. It sits top right on a desktop, and across the top on a phone, left of Menu, clear of the rows the thumb works on.
+- Datastar patches nothing for a reply that isn't 200 (a 403, a 428 from a stale page, a 500) or for a dropped connection. `.toast-wrap` watches the posts of forms and buttons and shows `#toast-fail`, a fixed "That didn't go through. Reload the page and try again.", until the next post starts or it's closed. `needConfirm` still answers 428 without `confirm=yes`, so a stale page gets that alert, never the change.
 - The Activity page is gone: the Logs page replaced it. `GET /activity` redirects to Logs with its filter (`?trace=X` becomes `trace:X`, `?source=` `log:`, `?level=error` or `warn` `level>=error` or `level>=warning`). `GET /api/activity` stays, for `tenant attach`.
-- Tests: per page, a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm` and its siblings), and a browser test that the scroll and the page survive and a double tap sends once (`TestAccessInlineFormsInChrome`, which also covers `#toast-fail` on a stale page). `TestTapGuardInChrome` shows the guard alone stops a double tap that crosses rows on Access, and that Cancel and the toast's close still work while it is up. Logs: `TestLogs_InlineForms` and `TestLogsInlineFormsInChrome`.
+- Tests: per page, a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm` and its siblings), and a browser test that the scroll and the page survive and a double tap sends once (`TestAccessInlineFormsInChrome`, which also covers `#toast-fail` on a stale page). `TestTapGuardInChrome` shows the guard alone stops a double tap that crosses rows on Access or presses the Yes of the sheet it opened, that Cancel and the toast's close still work while it is up, and that a lost connection, for a form or a button, shows `#toast-fail` and ends it. Logs: `TestLogs_InlineForms` and `TestLogsInlineFormsInChrome`.
 
 ## 9. A new page
 

@@ -168,6 +168,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		tapsOpen,
 		chromedp.Evaluate(`document.getElementById('cron-j4').scrollIntoView({block: 'center'})`, nil),
 		chromedp.Click(`#cron-j4 details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(`#cron-j4 details[open] .confirm-box button`, chromedp.ByQuery),
 		doubleTap(`#cron-j4 details[open] .confirm-box button`),
 		c.toast("ok", "job 4 is deleted."),

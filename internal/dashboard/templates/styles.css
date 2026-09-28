@@ -234,8 +234,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 @media (prefers-reduced-motion:reduce){.busy-dot,.loading::after{animation:none}.loading::after{width:auto}}
 /* the toast: what an in-place form did (formDone). #toast and #toast-fail
    sit in the never-patched .toast-wrap; top right here, across the top on a
-   phone, clear of the rows the thumb works on. Success fades after about 3s;
-   an error stays. */
+   phone left of Menu, clear of the rows the thumb works on. Success fades
+   after about 3s; an error stays. */
 .toast-wrap{position:fixed;top:12px;right:16px;z-index:10;display:flex;flex-direction:column;gap:8px;max-width:min(640px,calc(100vw - 32px));pointer-events:none}
 #toast:empty{display:none}
 .toast{display:flex;align-items:center;gap:6px;padding:0 0 0 14px;border-radius:11px;border:1px solid rgba(52,211,153,.5);background:linear-gradient(rgba(52,211,153,.10),rgba(52,211,153,.10)),var(--card);box-shadow:0 8px 30px rgba(0,0,0,.6);overflow-wrap:anywhere;pointer-events:auto}
@@ -319,7 +319,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
   .cinput{width:100%}
   .cards{grid-template-columns:1fr 1fr}
   .msg{max-width:100%}
-  .toast-wrap{top:10px;left:16px;right:16px;max-width:none}
+  .toast-wrap{top:10px;left:16px;right:88px;max-width:none} /* clear of Menu */
+  .page:has(.confirm-step[open]){padding-bottom:50vh} /* room to scroll a step's Cancel above its sheet */
   .confirm-step[open] .confirm-box{position:fixed;left:16px;right:16px;bottom:16px;z-index:20;margin:0;background:linear-gradient(rgba(251,113,133,.08),rgba(251,113,133,.08)),var(--card);box-shadow:0 8px 30px rgba(0,0,0,.6)}
 }
 /* touch: 44px targets */

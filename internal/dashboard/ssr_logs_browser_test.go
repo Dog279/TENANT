@@ -236,6 +236,7 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 		chromedp.Evaluate(`document.querySelector('#lg-tree .lg-group').open = false`, nil),
 		chromedp.Click(`//summary[contains(., "Clear log")]`, chromedp.BySearch),
 		chromedp.Click(`#lg-clear details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Click(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
 		toastSays("Cleared 40 events from cron."),

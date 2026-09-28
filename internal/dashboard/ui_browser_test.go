@@ -187,6 +187,7 @@ func TestUIShellInChrome(t *testing.T) {
 		chromedp.Navigate(srv.URL+"/models"),
 		chromedp.WaitVisible(row, chromedp.ByQuery),
 		chromedp.Click(row+` details.confirm-step:last-of-type > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(row+` details[open] .confirm-box`, chromedp.ByQuery),
 		chromedp.Evaluate(fitsJS, &boxBad),
 		shoot("models-confirm"),

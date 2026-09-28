@@ -133,6 +133,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	err := chromedp.Run(ctx, up,
 		markAt(row, fact(14), &before),
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(row+` details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Click(row+` details[open] .confirm-box button`, chromedp.ByQuery),
 		toastSays("Fact removed."),
@@ -173,6 +174,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	var yes []float64
 	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(row+` details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Evaluate(`(r => [r.right - 6, r.bottom - 10])(document.querySelector(`+q(row+` details[open] .confirm-box button`)+`).getBoundingClientRect())`, &yes),
 		finger(&yes),
@@ -216,6 +218,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	err = chromedp.Run(ctx, open("/memory/soul"),
 		markAt(line("uf-15"), line("uf-14"), &before),
 		chromedp.Click(line("uf-15")+` details.go > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(line("uf-15")+` details[open] textarea`, chromedp.ByQuery),
 		shot("soul-edit"),
 		chromedp.SetValue(line("uf-15")+` details[open] textarea`, "Prefers short answers.", chromedp.ByQuery),
@@ -240,6 +243,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	add := `#mem-soul-body .card:has(input[value="instruction"]) .ghead2 details`
 	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Click(add+` > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(add+`[open] textarea`, chromedp.ByQuery),
 		chromedp.SetValue(add+`[open] textarea`, "Answer in German.", chromedp.ByQuery),
 		chromedp.Click(add+`[open] button[type=submit]`, chromedp.ByQuery),
@@ -247,6 +251,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 		chromedp.Evaluate(`document.getElementById('mem-soul-body').textContent.includes('Answer in German.')`, &back),
 		tapsOpen,
 		chromedp.Click(add+` > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(add+`[open] textarea`, chromedp.ByQuery),
 		shot("soul-add-again"),
 		chromedp.Evaluate(`document.querySelector(`+q(add+`[open] textarea`)+`).value === ''`, &empty),

@@ -104,7 +104,7 @@ func TestSafetyQueueInChrome(t *testing.T) {
 
 	// A double tap on Allow once answers once; the item goes and the note says so.
 	var note string
-	err = chromedp.Run(ctx,
+	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Evaluate(`(() => { const b = document.querySelector('#q-ap-1 .q-actions .btn.on'); b.click(); b.click(); return true })()`, nil),
 		chromedp.WaitNotPresent(`#q-ap-1`, chromedp.ByQuery),
 		chromedp.Text(`#approval-note`, &note, chromedp.ByQuery),

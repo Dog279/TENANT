@@ -195,6 +195,7 @@ func TestSettingsInlineFormsInChrome(t *testing.T) {
 		open("/models"),
 		center(`#model-m10`, &use.before),
 		chromedp.Click(`#model-m10 details.go > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(`#model-m10 details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Click(`#model-m10 details[open] .confirm-box button`, chromedp.ByQuery),
 		answered(&use, "Every answer now comes from m10.", `#model-m10`),
@@ -282,6 +283,7 @@ func TestSettingsInlineFormsInChrome(t *testing.T) {
 		open("/integrations"),
 		center(r4, &allow.before),
 		chromedp.Click(r4+` details.go > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.WaitVisible(r4+` details[open] .confirm-box button`, chromedp.ByQuery),
 		tapTwice(under),
 		answered(&allow, "Your agent may now change o/r4.", r4),

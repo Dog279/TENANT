@@ -174,6 +174,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		open("/agents"),
 		center(`#agent-`+name, above, &before),
 		chromedp.Click(`#agent-`+name+` details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		chromedp.Click(`#agent-`+name+` details[open] .confirm-box button`, chromedp.ByQuery),
 		toastSays("Removed "+name+"."),
 		chromedp.WaitNotPresent(`#agent-`+name, chromedp.ByQuery),
@@ -205,6 +206,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		chromedp.WaitVisible(`#research-live .research-run`, chromedp.ByQuery),
 		center(`.research-row:has(input[value="r-6"])`, `.research-row:has(input[value="r-5"])`, &before),
 		chromedp.Click(`.research-row:has(input[value="r-6"]) details.confirm-step > summary`, chromedp.ByQuery),
+		tapsOpen, // a step just opened
 		doubleTap(`.research-row:has(input[value="r-6"]) details[open] .confirm-box button`),
 		toastSays("Deleted from the list."),
 		settle,
