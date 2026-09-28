@@ -46,7 +46,7 @@ func TestRootServesDashboard(t *testing.T) {
 		t.Fatalf("GET / status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"<!doctype html>", `href="/styles.css"`, "<h1>Overview</h1>", `src="/datastar.js"`} {
+	for _, want := range []string{"<!doctype html>", `href="` + ssrCSS.url + `"`, "<h1>Overview</h1>", `src="` + datastarJS.url + `"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard root missing %q", want)
 		}

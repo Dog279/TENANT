@@ -9,14 +9,18 @@ package dashboard
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"html/template"
 	"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 )
 
 //go:embed templates
@@ -35,9 +39,75 @@ func embedAsset(path string) []byte {
 // /datastar.js. Datastar (the vendored, MIT hypermedia runtime) is the ONLY JS
 // shipped — there is no hand-written JS; all logic lives in Go (TEN-108).
 var (
-	ssrCSS     = embedAsset("templates/styles.css")
-	datastarJS = embedAsset("templates/datastar.js")
+	ssrCSS     = newAsset("/styles.css", "text/css; charset=utf-8", embedAsset("templates/styles.css"))
+	datastarJS = newAsset("/datastar.js", "text/javascript; charset=utf-8", embedAsset("templates/datastar.js"))
 )
+
+// assetFuncs give layout.html its asset links, which carry the content hash.
+var assetFuncs = template.FuncMap{
+	"stylesURL":   func() string { return ssrCSS.url },
+	"datastarURL": func() string { return datastarJS.url },
+}
+
+// asset is an embedded file linked by content hash (url is path?v=hash) and
+// gzipped once, here at startup. A new build's bytes get a new hash, so a
+// hashed URL never changes meaning and a browser keeps it for a year without
+// asking again. HTML pages and the streams are never compressed: a page mixes
+// secrets with text a request put there (BREACH), and gzip buffers a stream.
+type asset struct {
+	ctype, hash, url string
+	body, gz         []byte
+}
+
+func newAsset(path, ctype string, body []byte) *asset {
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:8])
+	var gz bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression) // errs only on a bad level
+	_, _ = zw.Write(body)
+	_ = zw.Close()
+	return &asset{ctype: ctype, hash: hash, url: path + "?v=" + hash, body: body, gz: gz.Bytes()}
+}
+
+// serve answers the hashed URL immutable. Any other (no ?v=, or an old one
+// from a page opened before a restart) is revalidated each time: its ETag
+// gets a 304 while the bytes are the same. The assets need the sign-in, so
+// no shared cache keeps them (private); the sign-in page has its own style.
+func (a *asset) serve(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Content-Type", a.ctype)
+	h.Set("Vary", "Accept-Encoding")
+	if r.URL.Query().Get("v") == a.hash {
+		h.Set("Cache-Control", "private, max-age=31536000, immutable")
+	} else {
+		h.Set("Cache-Control", "private, no-cache")
+	}
+	body, etag := a.body, `"`+a.hash+`"`
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		body, etag = a.gz, `"`+a.hash+`-gz"`
+		h.Set("Content-Encoding", "gzip")
+	}
+	h.Set("ETag", etag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(body))
+}
+
+// acceptsGzip reports whether an Accept-Encoding value names gzip, and not
+// with q=0 (or Q=0).
+func acceptsGzip(ae string) bool {
+	for part := range strings.SplitSeq(ae, ",") {
+		name, params, _ := strings.Cut(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
+			continue
+		}
+		q, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(params)), "q=")
+		if !ok {
+			return true
+		}
+		v, err := strconv.ParseFloat(q, 64)
+		return err == nil && v > 0
+	}
+	return false
+}
 
 // ssrTemplates is the set of parsed page templates (each = layout + one page).
 // toolRow is the standalone tool-row partial used both inline (Tools page) and
@@ -77,7 +147,7 @@ type ssrTemplates struct {
 // (TEN-211), so any page can use ui-confirm, ui-flash and the rest.
 func parseSSR() *ssrTemplates {
 	must := func(files ...string) *template.Template {
-		return template.Must(template.New(path.Base(files[0])).Funcs(uiFuncs).ParseFS(ssrFS, append(files, "templates/ui.html")...))
+		return template.Must(template.New(path.Base(files[0])).Funcs(uiFuncs).Funcs(assetFuncs).ParseFS(ssrFS, append(files, "templates/ui.html")...))
 	}
 	return &ssrTemplates{
 		dashboard:     must("templates/layout.html", "templates/dashboard.html"),
@@ -115,8 +185,8 @@ func parseSSR() *ssrTemplates {
 // the root. The TEN-110 cutover moved these off the /page/ migration prefix; the
 // SSR dashboard now owns GET / (GET /{$}) with no JS SPA behind it.
 func (s *Server) mountSSR(mux *http.ServeMux) {
-	mux.HandleFunc("GET /styles.css", s.handleSSRCSS)
-	mux.HandleFunc("GET /datastar.js", s.handleDatastarJS)
+	mux.HandleFunc("GET /styles.css", ssrCSS.serve)
+	mux.HandleFunc("GET /datastar.js", datastarJS.serve)
 	mux.HandleFunc("GET /{$}", s.handleDashboardPage)
 	mux.HandleFunc("GET /tools", s.handleToolsPage)
 	mux.HandleFunc("GET /activity", s.handleActivityPage)
@@ -163,16 +233,6 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /memory/facts/{id}/invalidate", s.handleMemoryFactInvalidateForm)
 	mux.HandleFunc("POST /memory/facts/{id}/revalidate", s.handleMemoryFactRevalidateForm)
 	mux.HandleFunc("POST /memory/facts/{id}/restore-version", s.handleMemoryFactRestoreVersionForm)
-}
-
-func (s *Server) handleSSRCSS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	_, _ = w.Write(ssrCSS)
-}
-
-func (s *Server) handleDatastarJS(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	_, _ = w.Write(datastarJS)
 }
 
 // renderToolRow renders the #tool-<name> fragment for one tool (the unit

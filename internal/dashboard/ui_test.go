@@ -498,7 +498,7 @@ func TestTemplates_NoInlineJS(t *testing.T) {
 	js := regexp.MustCompile(`(?i)<script|\son[a-z]+=`)
 	used := map[string]bool{}
 	walkTemplates(t, func(name, body string) {
-		body = strings.Replace(body, `<script type="module" src="/datastar.js"></script>`, "", 1) // the one script: Datastar
+		body = strings.Replace(body, `<script type="module" src="{{datastarURL}}"></script>`, "", 1) // the one script: Datastar
 		if !js.MatchString(body) {
 			return
 		}

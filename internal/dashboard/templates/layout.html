@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>tenant{{if .Title}} · {{.Title}}{{end}}</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="{{stylesURL}}">
 </head>
 <body>
   <div class="app">
@@ -54,6 +54,6 @@
        inline forms keep their action for the no-JS post, the chat box has
        none. */}}
   <div class="toast-wrap" aria-live="polite" data-signals:_formfail="false" data-on:datastar-fetch="evt.detail.el.matches('form[action]') && ['started', 'error', 'retries-failed'].includes(evt.detail.type) && ($_formfail = evt.detail.type !== 'started')"><div id="toast"></div><div id="toast-fail" class="toast err" role="alert" style="display:none" data-show="$_formfail"><span class="toast-text">That didn't go through. Reload the page and try again.</span><button type="button" class="toast-x" aria-label="Close" data-on:click="$_formfail = false">×</button></div></div>
-  <script type="module" src="/datastar.js"></script>
+  <script type="module" src="{{datastarURL}}"></script>
 </body>
 </html>
