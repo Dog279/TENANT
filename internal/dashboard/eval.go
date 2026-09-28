@@ -13,7 +13,6 @@ package dashboard
 // ssr_memory_svg.go precedent) — no JS.
 
 import (
-	"bytes"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -152,11 +151,7 @@ func (s *Server) handleEvalPage(w http.ResponseWriter, r *http.Request) {
 // with #eval-body re-rendered; a 303 with the flash otherwise.
 func (s *Server) evalDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/eval", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		if err := s.tmpl.eval.ExecuteTemplate(&buf, "eval-body", s.evalData()); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
+		return part(s.tmpl.eval, "eval-body", s.evalData())
 	})
 }
 

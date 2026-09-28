@@ -11,7 +11,6 @@ package dashboard
 // Datastar post, else a 303.
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"strings"
@@ -150,11 +149,7 @@ func (s *Server) handleIntegrationsPage(w http.ResponseWriter, r *http.Request) 
 // re-rendered; a 303 with the flash otherwise.
 func (s *Server) integrationsDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/integrations", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		if err := s.tmpl.integrations.ExecuteTemplate(&buf, "integrations-body", s.integrationsData(r.Context())); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
+		return part(s.tmpl.integrations, "integrations-body", s.integrationsData(r.Context()))
 	})
 }
 

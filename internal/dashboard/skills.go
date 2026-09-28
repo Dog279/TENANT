@@ -13,7 +13,6 @@ package dashboard
 // hostile induced skill name/description cannot inject markup.
 
 import (
-	"bytes"
 	"net/http"
 	"strings"
 )
@@ -115,9 +114,7 @@ func (s *Server) skillsData() skillsPageData {
 // with #skills-body re-rendered; a 303 with the flash otherwise.
 func (s *Server) skillsDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/skills", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		err := s.tmpl.skills.ExecuteTemplate(&buf, "skills-body", s.skillsData())
-		return buf.String(), err
+		return part(s.tmpl.skills, "skills-body", s.skillsData())
 	})
 }
 

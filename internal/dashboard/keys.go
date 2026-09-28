@@ -12,7 +12,6 @@ package dashboard
 // mutations are POST only.
 
 import (
-	"bytes"
 	"net/http"
 	"strings"
 )
@@ -104,11 +103,7 @@ func (s *Server) handleKeysPage(w http.ResponseWriter, r *http.Request) {
 // answer can carry one back.
 func (s *Server) keysDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/settings/keys", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		if err := s.tmpl.keys.ExecuteTemplate(&buf, "keys-body", s.keysData()); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
+		return part(s.tmpl.keys, "keys-body", s.keysData())
 	})
 }
 

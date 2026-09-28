@@ -14,7 +14,6 @@ package dashboard
 // fading toast doesn't. Trust and Disconnect answer in place (mcpDone).
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/url"
@@ -98,9 +97,7 @@ func (s *Server) mcpData() mcpPageData {
 // #mcp-body re-rendered; a 303 with the flash otherwise.
 func (s *Server) mcpDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/mcp", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		err := s.tmpl.mcp.ExecuteTemplate(&buf, "mcp-body", s.mcpData())
-		return buf.String(), err
+		return part(s.tmpl.mcp, "mcp-body", s.mcpData())
 	})
 }
 

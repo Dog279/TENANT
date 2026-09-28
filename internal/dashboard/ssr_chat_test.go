@@ -164,47 +164,15 @@ func TestEventFragments(t *testing.T) {
 	if tc := chatBubble(agent.Event{Kind: agent.EventToolCall, Tool: "web_read", Args: "{}"}); !strings.Contains(tc, "web_read") {
 		t.Errorf("tool_call bubble missing tool name: %q", tc)
 	}
-	if row := activityRow(agent.Event{Kind: agent.EventError, Text: "boom <x>"}); !strings.Contains(row, "error") || !strings.Contains(row, "boom &lt;x&gt;") {
-		t.Errorf("activity row wrong: %q", row)
-	}
-	// TEN-232: offsite ingest gets the inbox tag; the channel prefix rides in Text
-	// and an ingest event renders no chat bubble (activity-feed only).
-	if row := activityRow(agent.Event{Kind: agent.EventIngest, Text: "Discord: hey there"}); !strings.Contains(row, "inbox") || !strings.Contains(row, "Discord: hey there") {
-		t.Errorf("ingest activity row wrong: %q", row)
-	}
+	// TEN-232: an offsite ingest event renders no chat bubble.
 	if chatBubble(agent.Event{Kind: agent.EventIngest, Text: "Discord: hey"}) != "" {
 		t.Error("ingest events should not render a chat bubble")
 	}
 }
 
-// TEN-234: the activity feed shows meaningful activity, NOT token-by-token noise;
-// cross-agent + bus events are attributed and never enter the chat transcript.
-func TestActivityFeed_FiltersNoiseAndAttributesAgents(t *testing.T) {
-	// Token / usage / assistant / memory are filtered OUT of the activity feed.
-	for _, k := range []agent.EventKind{agent.EventToken, agent.EventUsage, agent.EventAssistant, agent.EventMemory} {
-		if activityRelevant(agent.Event{Kind: k}) {
-			t.Errorf("%s must be filtered out of the activity feed", k)
-		}
-	}
-	// Activity-worthy kinds stay (denylist → meaningful + future kinds show).
-	for _, k := range []agent.EventKind{agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventBus, agent.EventIngest, agent.EventTurnStart} {
-		if !activityRelevant(agent.Event{Kind: k}) {
-			t.Errorf("%s must stay in the activity feed", k)
-		}
-	}
-
-	// A bus message renders with the bus tag, the sender attribution, and the routing text.
-	row := activityRow(agent.Event{Kind: agent.EventBus, Agent: "researcher", Text: "→ writer: draft ready"})
-	if !strings.Contains(row, "bus") || !strings.Contains(row, "[researcher]") || !strings.Contains(row, "→ writer: draft ready") {
-		t.Errorf("bus row missing tag/agent/detail: %q", row)
-	}
-
-	// A sub-agent tool call is attributed by agent id in the activity feed...
-	subRow := activityRow(agent.Event{Kind: agent.EventToolCall, Agent: "writer", Tool: "os_write"})
-	if !strings.Contains(subRow, "[writer]") || !strings.Contains(subRow, "os_write") {
-		t.Errorf("sub-agent row should be attributed: %q", subRow)
-	}
-	// ...but cross-agent + bus events never enter the operator's chat transcript.
+// TEN-234: cross-agent and bus events never enter the operator's chat
+// transcript.
+func TestChatBubble_LeavesOutOtherAgents(t *testing.T) {
 	if chatBubble(agent.Event{Kind: agent.EventToolCall, Agent: "writer", Tool: "os_write"}) != "" {
 		t.Error("sub-agent events must not render a chat bubble")
 	}

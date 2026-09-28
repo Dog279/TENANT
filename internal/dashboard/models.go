@@ -13,7 +13,6 @@ package dashboard
 // write-only secret discipline of keys.go: it's never read back or rendered.
 
 import (
-	"bytes"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,11 +82,7 @@ func (s *Server) handleModelsPage(w http.ResponseWriter, r *http.Request) {
 
 // modelsBody renders #models-body, the part a Models form changes.
 func (s *Server) modelsBody() (string, error) {
-	var buf bytes.Buffer
-	if err := s.tmpl.models.ExecuteTemplate(&buf, "models-body", s.modelsData()); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
+	return part(s.tmpl.models, "models-body", s.modelsData())
 }
 
 // modelsDone is every Models form's answer (DESIGN.md "Forms that don't

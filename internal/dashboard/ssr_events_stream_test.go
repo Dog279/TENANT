@@ -5,7 +5,7 @@ package dashboard
 // nothing asserted an actual agent event streams out of GET /events as a patch.
 // TestSSR_Events_ReturnsOnCancel only covers shutdown. This closes that gap:
 // publish a real Event to the broker the dashboard subscribes to, and assert the
-// handler emits a datastar-patch-elements append to #activity-feed.
+// handler emits a datastar-patch-elements append to #chat-log.
 
 import (
 	"bufio"
@@ -69,14 +69,14 @@ func TestSSR_Events_StreamsPublishedEvent(t *testing.T) {
 		broker.Publish(agent.Event{Kind: agent.EventToolCall, Tool: "web_search", Args: "{}"})
 		out := rec.String()
 		if strings.Contains(out, "event: datastar-patch-elements") &&
-			strings.Contains(out, "selector #activity-feed") &&
+			strings.Contains(out, "selector #chat-log") &&
 			strings.Contains(out, "mode append") {
 			streamed = true
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("no #activity-feed patch streamed after publishing events:\n%q", out)
+			t.Fatalf("no #chat-log patch streamed after publishing events:\n%q", out)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
@@ -179,12 +179,12 @@ func TestEvents_OnlyApprovals(t *testing.T) {
 		broker.Publish(agent.Event{Kind: agent.EventToolCall, Tool: "web_search", Args: "{}"})
 		broker.Publish(agent.Event{Kind: agent.EventApprovalPending})
 	}
-	streamed(t, all, "the feed and the queue", func(out string) bool {
-		return strings.Contains(out, "selector #activity-feed") && strings.Contains(out, `id="q-ap-3"`)
+	streamed(t, all, "the chat and the queue", func(out string) bool {
+		return strings.Contains(out, "selector #chat-log") && strings.Contains(out, `id="q-ap-3"`)
 	}, poke)
 	out := streamed(t, only, "the queue", func(out string) bool { return strings.Contains(out, `id="q-ap-3"`) }, poke)
-	if strings.Contains(out, "#activity-feed") || strings.Contains(out, "#chat-log") {
-		t.Errorf("?only=approvals streamed the feed:\n%s", out)
+	if strings.Contains(out, "#chat-log") {
+		t.Errorf("?only=approvals streamed the chat:\n%s", out)
 	}
 }
 
@@ -212,7 +212,7 @@ func TestEvents_OutlivesWriteTimeoutPastSnapshot(t *testing.T) {
 	go func() {
 		sc := bufio.NewScanner(resp.Body)
 		for sc.Scan() {
-			if strings.Contains(sc.Text(), "selector #activity-feed") {
+			if strings.Contains(sc.Text(), "selector #chat-log") {
 				got <- true
 				return
 			}

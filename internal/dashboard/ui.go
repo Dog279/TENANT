@@ -232,6 +232,16 @@ func (s *Server) formReply(w http.ResponseWriter, r *http.Request, page, msg, er
 	flush(w)
 }
 
+// part renders one define of t on its own: a region formDone patches, keyed
+// on the ID of each element at its top.
+func part(t *template.Template, name string, data any) (string, error) {
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 // PlainError is an error whose text is fit for the page (D21): an adapter
 // wraps the failures it can phrase plainly ("A helper named X already
 // exists."). Any other control error stays off the page.

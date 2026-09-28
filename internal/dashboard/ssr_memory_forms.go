@@ -11,7 +11,6 @@ package dashboard
 // it was on is its back field.
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/url"
@@ -122,11 +121,7 @@ func (s *Server) restoredRow(ctx context.Context, id int64) func() (string, erro
 	for _, row := range s.memRemovedView(ctx, nil).Rows {
 		if row.ID == id {
 			row.Restored = true
-			return func() (string, error) {
-				var buf bytes.Buffer
-				err := s.tmpl.memRemoved.ExecuteTemplate(&buf, "mem-removed-row", row)
-				return buf.String(), err
-			}
+			return func() (string, error) { return part(s.tmpl.memRemoved, "mem-removed-row", row) }
 		}
 	}
 	return s.memRegion(ctx, memRemovedURL)
@@ -195,19 +190,16 @@ func (s *Server) memRegion(ctx context.Context, back string) func() (string, err
 			return "", err
 		}
 		q := u.Query()
-		var buf bytes.Buffer
 		id, fact := strings.CutPrefix(u.Path, memFactsURL+"/")
 		switch {
 		case u.Path == memSoulURL:
-			err = s.tmpl.memSoul.ExecuteTemplate(&buf, "mem-soul-body", s.memSoulView(ctx, q))
+			return part(s.tmpl.memSoul, "mem-soul-body", s.memSoulView(ctx, q))
 		case u.Path == memRemovedURL:
-			err = s.tmpl.memRemoved.ExecuteTemplate(&buf, "mem-removed-body", s.memRemovedView(ctx, q))
+			return part(s.tmpl.memRemoved, "mem-removed-body", s.memRemovedView(ctx, q))
 		case fact:
-			err = s.tmpl.memFact.ExecuteTemplate(&buf, "mem-fact-body", s.memFactView(ctx, id, q))
-		default:
-			err = s.tmpl.memFacts.ExecuteTemplate(&buf, "mem-facts-body", s.memFactsView(ctx, q))
+			return part(s.tmpl.memFact, "mem-fact-body", s.memFactView(ctx, id, q))
 		}
-		return buf.String(), err
+		return part(s.tmpl.memFacts, "mem-facts-body", s.memFactsView(ctx, q))
 	}
 }
 

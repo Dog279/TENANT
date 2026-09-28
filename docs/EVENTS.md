@@ -464,7 +464,7 @@ Writes the `dashboard` log.
 - **Fields:** `stream`, `remote`
 - **Find it:** `provider:dashboard id:1001`
 
-**What it means.** A browser page subscribed to a live feed (chat and activity events, or the log book): start when it connects, stop when it leaves.
+**What it means.** A browser page subscribed to a live feed (chat and the approval queue, or the log book): start when it connects, stop when it leaves.
 
 **Why it happens.** A dashboard page with a live feed was opened, reloaded or closed.
 

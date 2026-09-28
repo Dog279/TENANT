@@ -46,7 +46,7 @@ type dashboardManager struct {
 	goal         dashboard.GoalControl         // TEN-212: the goal loop; nil under serve
 	research     dashboard.ResearchControl     // TEN-210: deep research (nil-safe)
 	broker       *agent.Broker
-	logs         *logs.Hub          // the unified log book: Activity feed + folders (nil-safe)
+	logs         *logs.Hub          // the unified log book: its folders and ring (nil-safe)
 	runs         *runtrace.Store    // run records, for the log book's timelines (nil-safe)
 	security     logapi.SecurityLog // the Security log's verify and audit export
 	alerts       logapi.AlertConfig // the alert rules in config.json

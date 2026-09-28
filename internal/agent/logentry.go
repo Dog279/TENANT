@@ -14,8 +14,7 @@ import (
 // Retained reports whether a live event belongs in the retained activity
 // record. It is a DENYLIST of per-token / accounting noise — token deltas (the
 // flood), usage counts, per-iteration assistant prose and the memory-budget
-// report — so every meaningful or future kind is kept by default. Mirrors the
-// dashboard's live-feed filter (activityRelevant).
+// report — so every meaningful or future kind is kept by default.
 func Retained(ev Event) bool {
 	switch ev.Kind {
 	case EventToken, EventUsage, EventAssistant, EventMemory:

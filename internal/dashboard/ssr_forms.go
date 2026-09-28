@@ -6,15 +6,10 @@ package dashboard
 // can't double-submit. Values come from r.FormValue, not JSON. The posture and
 // rule forms answer a Datastar post in place instead (toolsDone).
 
-import (
-	"bytes"
-	"net/http"
-)
+import "net/http"
 
 // toolsView is the Tools page's data: the tools by group, the posture, and
 // the rules card.
-// ponytail: a copy of ssr.go's handleToolsPage, which isn't this change's
-// file; that handler should call this and add Msg and Err.
 func (s *Server) toolsView() toolsData {
 	tools := s.toolList()
 	var order []string
@@ -49,9 +44,7 @@ func (s *Server) toolsView() toolsData {
 // post, with #tools-body re-rendered; a 303 with the flash otherwise.
 func (s *Server) toolsDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/tools", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		err := s.tmpl.tools.ExecuteTemplate(&buf, "tools-body", s.toolsView())
-		return buf.String(), err
+		return part(s.tmpl.tools, "tools-body", s.toolsView())
 	})
 }
 

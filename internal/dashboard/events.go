@@ -22,7 +22,7 @@ var ServerError = Events.Event(2001, event.Warning, "Server", "HTTP server: {err
 // Live streams: an SSE feed or the WebSocket, one per open page.
 
 var Stream = Events.Event(1001, event.Info, "Stream", "Live {stream} stream to {remote}", "stream", "remote").
-	Doc("A browser page subscribed to a live feed (chat and activity events, or the log book): start when it connects, stop when it leaves.",
+	Doc("A browser page subscribed to a live feed (chat and the approval queue, or the log book): start when it connects, stop when it leaves.",
 		"A dashboard page with a live feed was opened, reloaded or closed.",
 		"None.")
 

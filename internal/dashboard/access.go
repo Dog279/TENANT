@@ -14,7 +14,6 @@ package dashboard
 // dashboard's existing auth (Run wraps the mux in secure()); mutations are POST.
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"strings"
@@ -134,11 +133,7 @@ func (s *Server) handleAccessPage(w http.ResponseWriter, r *http.Request) {
 // with #access-body re-rendered; a 303 with the flash otherwise.
 func (s *Server) accessDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
 	s.formDone(w, r, "/access", msg, errMsg, func() (string, error) {
-		var buf bytes.Buffer
-		if err := s.tmpl.access.ExecuteTemplate(&buf, "access-body", s.accessData()); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
+		return part(s.tmpl.access, "access-body", s.accessData())
 	})
 }
 

@@ -452,37 +452,7 @@ type toolsData struct {
 }
 
 func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
-	tools := s.toolList()
-	var order []string
-	groups := map[string]*toolGroup{}
-	for _, t := range tools {
-		p := t.Plugin
-		g, ok := groups[p]
-		if !ok {
-			g = &toolGroup{Plugin: p, Label: groupLabel(p), AllOn: true}
-			groups[p] = g
-			order = append(order, p)
-		}
-		g.Tools = append(g.Tools, t)
-		if !t.Enabled {
-			g.AllOn = false
-		}
-	}
-	out := make([]toolGroup, 0, len(order))
-	for _, p := range order {
-		out = append(out, *groups[p])
-	}
-	d := toolsData{
-		layoutData: layoutData{Title: "Tools", Page: "tools"},
-		Groups:     out,
-		AllowSend:  posture(tools),
-		ActTools:   actTools(tools),
-		Msg:        r.URL.Query().Get("msg"),
-		Err:        r.URL.Query().Get("err"),
-	}
-	if s.rules != nil {
-		d.RulesOn = true
-		d.Rules = s.rules.Rules()
-	}
+	d := s.toolsView()
+	d.Msg, d.Err = r.URL.Query().Get("msg"), r.URL.Query().Get("err")
 	s.render(w, s.tmpl.tools, d)
 }

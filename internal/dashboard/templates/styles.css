@@ -62,11 +62,6 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .bubble{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:10px 14px;white-space:pre-wrap;overflow-wrap:anywhere}
 .msg.user .bubble{background:#0e2336;border-color:#15324a}
 .tool{font-family:ui-monospace,monospace;font-size:12.5px;color:#cfe9f4;background:var(--card2);border:1px solid var(--line2);border-radius:11px;padding:8px 12px;overflow-wrap:anywhere}
-.act-head{flex:none;padding:0 0 12px}
-.act{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:3px}
-.ev{display:flex;gap:9px;align-items:baseline;padding:5px 2px;font-size:12px;border-bottom:1px solid #121d33}
-.ev .tg{font-size:10px;font-weight:700;color:var(--amber);background:rgba(251,191,36,.10);border-radius:10px;padding:2px 8px;white-space:nowrap}
-.ev .detail{color:var(--dim);overflow-wrap:anywhere}
 /* Memory curator (TEN-111) */
 .memtabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:10px}
 .memtabs a{padding:6px 12px;border-radius:9px;color:var(--dim);font-weight:600}
@@ -148,18 +143,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 
 /* mobile: the TEN-211 design system block at the end of this file */
 
-/* Activity feed cards (TEN-238) — themed to match the Memory .ep episode list */
-.act-row{margin-bottom:0}
-.act-rowerr{border-color:rgba(251,113,133,.45);background:rgba(251,113,133,.07)}
+/* a red pill: blocked, failed, needs signing in again */
 .act-errtag{font-size:10px;font-weight:700;color:var(--red);background:rgba(251,113,133,.12);border:1px solid rgba(251,113,133,.35);border-radius:11px;padding:2px 8px}
-/* Unified log book (Activity tab = one tab per source folder) */
-.src{font-family:ui-monospace,monospace;font-size:10.5px;color:#9fb3c8;background:#0c1729;border:1px solid var(--line2);border-radius:9px;padding:1px 6px}
-.kv{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--dim)}
-.cnt{font-size:10px;font-weight:600;color:var(--dim);margin-left:3px}
-.memtabs a.tab-err{color:var(--red)}
-.memtabs a.errtoggle{margin-left:auto;color:var(--dim)}
-.memtabs a.errtoggle.on{color:var(--red);background:rgba(251,113,133,.10)}
-.act-files{margin-bottom:12px;font-size:12.5px;line-height:2}
 /* Logs page (TEN-379): tree | grid over detail | actions */
 .lgv{flex:1;min-height:0;display:grid;grid-template-columns:210px minmax(0,1fr) 230px;grid-template-rows:minmax(0,1fr);gap:14px}
 .lg-tree,.lg-act{overflow:auto;min-height:0;font-size:12.5px}
