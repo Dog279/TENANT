@@ -6,8 +6,12 @@
      Every form posts through Datastar to a fixed URL; the skill's name is a
      form field (F1). The rows have no id, so the morph reuses a row's form
      for the skill that moves into its place and the form's throttle stops a
-     double tap from accepting or removing that one too. */}}
-{{define "skills-body"}}<div id="skills-body">
+     double tap from accepting or removing that one too. A different control
+     can still move under the finger (the card empties and the next one moves
+     up), so the region ignores taps for 1s after one of its posts starts.
+     ponytail: the tap guard is on each region; it belongs in the shared
+     helper (layout.html) so every in-place page gets it. */}}
+{{define "skills-body"}}<div id="skills-body" data-on:datastar-fetch="evt.detail.type === 'started' && el.contains(evt.detail.el) && (el.postedAt = Date.now())" data-on:click__capture="Date.now() - el.postedAt < 1000 && (evt.preventDefault(), evt.stopPropagation())">
 {{template "ui-flash" .}}
 
 {{if not .Configured}}

@@ -184,7 +184,7 @@ func inlineAnswer(t *testing.T, s *Server, path string, form url.Values, region 
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || rec.Header().Get("Location") != "" {
 		t.Errorf("%s %v: %d %q to %q, want 200 text/event-stream", path, form, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Location"))
 	}
-	for _, want := range []string{"data: mode replace\ndata: elements <div id=\"toast\"", `data: elements <div id="ui-status"`, `data: elements <div id="` + region + `">`} {
+	for _, want := range []string{"data: mode replace\ndata: elements <div id=\"toast\"", `data: elements <div id="ui-status"`, `data: elements <div id="` + region + `"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("%s %v is missing %q:\n%s", path, form, want, body)
 		}
