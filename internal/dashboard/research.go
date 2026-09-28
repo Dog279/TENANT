@@ -97,6 +97,12 @@ var tailnetRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10
 // label that is a number means a browser reads the name as an IPv4 address
 // (127.1, 0x7f.0.0.1), so both count as local.
 func publicHost(h string) bool {
+	// A browser folds fullwidth dots and digits to ASCII (127.0.0.1。 and
+	// 127.0.0.１ both reach 127.0.0.1), so a non-ASCII host is never linked;
+	// an international name shows as text, the safe direction.
+	if strings.IndexFunc(h, func(r rune) bool { return r > 0x7f }) >= 0 {
+		return false
+	}
 	h = strings.TrimSuffix(strings.ToLower(h), ".")
 	if ip := net.ParseIP(h); ip != nil {
 		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !tailnetRange.Contains(ip)

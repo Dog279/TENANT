@@ -163,7 +163,7 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* Logs page (TEN-379): tree | grid over detail | actions */
 .lgv{flex:1;min-height:0;display:grid;grid-template-columns:210px minmax(0,1fr) 230px;grid-template-rows:minmax(0,1fr);gap:14px}
 .lg-tree,.lg-act{overflow:auto;min-height:0;font-size:12.5px}
-.lg-tree{display:flex;flex-direction:column;gap:1px}
+.lg-tree{display:flex;flex-direction:column;gap:1px}.lg-tree>*{flex-shrink:0}
 .lg-leaf{display:block;padding:3px 8px;border-radius:7px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lg-leaf:hover{color:var(--fg);background:#0c1729}
 .lg-leaf.on{color:#fff;background:linear-gradient(90deg,rgba(34,211,238,.14),rgba(139,92,246,.10))}

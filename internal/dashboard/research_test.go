@@ -388,7 +388,9 @@ func TestResearchRef_NoLinkIntoThisMachineOrNetwork(t *testing.T) {
 	for _, ref := range []string{"http://127.0.0.1:9999/x", "http://127.1:9999/", "http://0x7f.0.0.1/", "http://2130706433/", "http://localhost:8080/",
 		"http://LOCALHOST./", "http://app.localhost/", "http://[::1]:9/", "http://[::ffff:127.0.0.1]/", "http://0.0.0.0:80/", "http://10.1.2.3/",
 		"http://192.168.1.4/", "http://172.20.0.1/", "http://169.254.169.254/latest/meta-data", "http://[fe80::1]/", "http://100.101.102.103/",
-		"https://node.tailnet-name.ts.net:8443/", "http://printer.local/", "http://nas/", "http://router.lan/", "http://x.home.arpa/", "http://db.internal/"} {
+		"https://node.tailnet-name.ts.net:8443/", "http://printer.local/", "http://nas/", "http://router.lan/", "http://x.home.arpa/", "http://db.internal/",
+		// Chrome folds these to 127.0.0.1: an ideographic or fullwidth dot, a fullwidth digit, and the same percent-encoded.
+		"http://127.0.0.1\u3002:9999/", "http://127.0.0.1\uff0e:9999/", "http://127.0.0.\uff11:9999/", "http://127.0.0.1%E3%80%82:9999/"} {
 		if (ResearchRef{URL: ref}).Web() {
 			t.Errorf("Web(%q) = true, want plain text", ref)
 		}

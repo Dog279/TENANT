@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,5 +98,29 @@ func TestLogsPagePhoneInChrome(t *testing.T) {
 	}
 	if len(bad) > 0 {
 		t.Errorf("at 390px:\n%s", strings.Join(bad, "\n"))
+	}
+}
+
+// On a laptop screen with a row's detail open, the tree's links keep their
+// height: the flex column used to shrink them, squashing Summary and the
+// feeds to a few pixels (TEN-213 UX-1).
+func TestLogsPageDesktopTreeInChrome(t *testing.T) {
+	s, _, st := logsBook(t)
+	s.cfg.Addr, s.cfg.Auth = "127.0.0.1:0", GenerateToken()
+	for i := range 30 {
+		commit(t, st, event.Event{Log: "bulk" + strconv.Itoa(i), Level: event.Info, Msg: "line"})
+	}
+	ctx, _ := chromeSignedIn(t, s, 1470, 830, "/logs?q=log%3Abulk0")
+	var short []string
+	if err := chromedp.Run(ctx,
+		chromedp.WaitVisible("#lg-rows .lg-row", chromedp.ByQuery),
+		chromedp.Click(`#lg-rows .lg-row`, chromedp.ByQuery),
+		chromedp.WaitVisible("#lg-detail .lg-msgfull", chromedp.ByQuery),
+		chromedp.Evaluate(`[...document.querySelectorAll('.lg-tree a')].map(a => [a.textContent.trim(), a.getBoundingClientRect().height]).filter(([, h]) => h < 12).map(([n, h]) => n + ' ' + h + 'px')`, &short),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(short) > 0 {
+		t.Errorf("tree links squashed at 1470px:\n%s", strings.Join(short, "\n"))
 	}
 }
