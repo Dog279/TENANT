@@ -113,16 +113,16 @@ var NotifyFailed = Events.Event(2103, event.Warning, "Sign-in", "The operator wa
 
 var RefreshRetry = Events.Event(2104, event.Warning, "Sign-in", "Token refresh for {server} failed and is tried again on the next call: {err}", "server", "err").
 	Doc("A connector's access token expired and renewing it failed for a reason that can pass, so the call that needed it failed. The sign-in is kept and nobody is asked to re-authorize.",
-		"The authorization server was unreachable, answered with a server error, or took longer than 30 seconds.",
+		"The authorization server was unreachable, answered with a server error, or took longer than 30 seconds; or another Tenant process held the saved sign-in's lock for longer than a refresh can take.",
 		"None if a later refresh succeeds (mcp 1102). If it keeps failing, check the network path to the authorization server.")
 
 var CacheNotLocked = Events.Event(2105, event.Warning, "Sign-in", "Could not lock the saved sign-in for {server}; refreshing without the lock: {err}", "server", "err").
 	Doc("Every Tenant process that uses a connector (serve, the TUI, tenant mcp connect) locks its saved sign-in before renewing the token, so no two spend the same single-use refresh token. This one could not, so it renews unlocked. Written once per connection.",
-		"Another account created the lock file beside the sign-in and this one can't open it (serve running as SYSTEM beside an administrator's session), or another process held the lock longer than a refresh can take.",
+		"Another account created the lock file beside the sign-in and this one can't open it (serve running as SYSTEM beside an administrator's session).",
 		"Run every Tenant that uses the connector as the same account and with the same --config. Two renewals at the same moment without the lock can lose the sign-in (mcp 3101).")
 
 var NeedsReauth = Events.Event(3101, event.Error, "Sign-in", "{server} needs re-authorization: its token could not be refreshed: {err}", "server", "url", "err", "fix").
-	Doc("A remote connector's sign-in died: its token expired and the server refused the refresh (invalid_grant or invalid_client), so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.",
+	Doc("A remote connector's sign-in died: its token expired and the server refused the refresh (invalid_grant, invalid_client, or another 4xx answer), so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.",
 		"The server revoked the refresh token, it expired unused, or a rotated one was lost.",
 		"Run the command in fix (`tenant mcp connect <url> --config <config dir>`) at the host, or use the dashboard's Remote services page.")
 

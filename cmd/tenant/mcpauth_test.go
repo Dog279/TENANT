@@ -18,11 +18,12 @@ import (
 // The feed line names the fix; the DM (best-effort) goes to the operator.
 func TestMCPAuthNotifier_FeedAndDM(t *testing.T) {
 	var feed, dm []string
-	fn := mcpAuthNotifier(`C:\Tenant\config`, func(s string) { feed = append(feed, s) }, func(s string) error { dm = append(dm, s); return nil })
+	cfg := filepath.Join(t.TempDir(), "config")
+	fn := mcpAuthNotifier(cfg, func(s string) { feed = append(feed, s) }, func(s string) error { dm = append(dm, s); return nil })
 	fn("mcp:mcp.atlassian.com", "https://mcp.atlassian.com/v1/mcp", true, "invalid_grant")
 	fn("mcp:mcp.atlassian.com", "https://mcp.atlassian.com/v1/mcp", false, "")
 	// The fix names serve's config dir: an admin's default one is not the cache serve reads.
-	const fix = `tenant mcp connect https://mcp.atlassian.com/v1/mcp --config C:\Tenant\config`
+	fix := "tenant mcp connect https://mcp.atlassian.com/v1/mcp --config " + cfg
 	if len(feed) != 2 || !strings.Contains(feed[0], fix) || !strings.Contains(feed[1], "re-authorized") {
 		t.Errorf("feed = %v", feed)
 	}

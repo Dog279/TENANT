@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
+	"tenant/internal/model"
 )
 
 const grantURL = "https://srv.example/v1/mcp"
@@ -181,7 +184,8 @@ func TestSharedGrant_ProcessesDoNotStrandIt(t *testing.T) {
 }
 
 // markReauth writes only the re-auth fields: a newer token another process
-// saved stays, where the old whole-struct save put the stale one back.
+// saved stays, where the old whole-struct save put the stale one back. A valid
+// one (a sign-in elsewhere since the refusal) is taken on, with no alarm.
 func TestMarkReauth_KeepsNewerDiskToken(t *testing.T) {
 	path := tokenCachePath(t.TempDir(), grantURL)
 	seedGrant(t, path, "https://as.example/token", time.Now().Add(-time.Hour), false)
@@ -190,7 +194,7 @@ func TestMarkReauth_KeepsNewerDiskToken(t *testing.T) {
 	h.Health() // loads the cache as it is now
 
 	newer := onDisk(t, path)
-	newer.Token = &oauth2.Token{AccessToken: "at-9", RefreshToken: "rt-9", Expiry: time.Now().Add(time.Hour)}
+	newer.Token = &oauth2.Token{AccessToken: "at-9", RefreshToken: "rt-9", Expiry: time.Now().Add(-time.Minute)}
 	if err := saveTokenCache(path, newer); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +205,40 @@ func TestMarkReauth_KeepsNewerDiskToken(t *testing.T) {
 	h.clearReauth()
 	if c := onDisk(t, path); c.Token.RefreshToken != "rt-9" || c.ReauthNeeded {
 		t.Fatalf("clearReauth: newer token kept=%v reauth_needed=%v", c.Token.RefreshToken == "rt-9", c.ReauthNeeded)
+	}
+
+	newer.Token = &oauth2.Token{AccessToken: "at-10", RefreshToken: "rt-10", Expiry: time.Now().Add(time.Hour)}
+	if err := saveTokenCache(path, newer); err != nil {
+		t.Fatal(err)
+	}
+	tok := h.markReauth("invalid_grant")
+	if c := onDisk(t, path); tok == nil || tok.RefreshToken != "rt-10" || c.ReauthNeeded || h.Health().NeedsReauth || len(announced) != 2 {
+		t.Fatalf("signed in elsewhere: took it=%v reauth_needed=%v/%v announced=%v", tok != nil && tok.RefreshToken == "rt-10", c.ReauthNeeded, h.Health().NeedsReauth, announced)
+	}
+}
+
+// A refreshed token whose save failed stays this process's: the disk still
+// holds the refresh token it spent, and spending that again revokes the grant
+// on a server that detects reuse.
+func TestRefresh_FailedSaveDoesNotStrand(t *testing.T) {
+	a := newGrantServer(t, true)
+	path := tokenCachePath(t.TempDir(), grantURL)
+	seedGrant(t, path, a.URL, time.Now().Add(-time.Minute), false)
+	stale := onDisk(t, path)
+	var announced []bool
+	s := source(t, process(path, &announced))
+	if _, err := s.Token(); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveTokenCache(path, stale); err != nil { // as if that save had failed
+		t.Fatal(err)
+	}
+	s.cur.Expiry = time.Now().Add(-time.Minute)
+	if _, err := s.Token(); err != nil || a.refreshes.Load() != 2 || len(announced) != 0 {
+		t.Fatalf("second refresh: err=%v refreshes=%d announced=%v", err, a.refreshes.Load(), announced)
+	}
+	if c := onDisk(t, path); !a.live(c.Token.RefreshToken) {
+		t.Fatal("grant stranded: the disk token is dead")
 	}
 }
 
@@ -269,17 +307,39 @@ func TestRefresh_InvalidGrantMarksReauth(t *testing.T) {
 	}
 }
 
+// Only an answer that signing in again cures is a refusal: a refused grant or
+// client, or another 4xx (401 with a text body leaves no error code). A 5xx,
+// a timeout or a rate limit may pass.
+func TestRefused(t *testing.T) {
+	for _, tc := range []struct {
+		code   string
+		status int
+		want   bool
+	}{
+		{"invalid_grant", 400, true}, {"invalid_client", 401, true}, {"", 401, true}, {"unauthorized_client", 400, true},
+		{"", 503, false}, {"", 429, false}, {"", 408, false},
+	} {
+		err := fmt.Errorf("refresh: %w", &oauth2.RetrieveError{ErrorCode: tc.code, Response: &http.Response{StatusCode: tc.status}})
+		if refused(err) != tc.want {
+			t.Errorf("%q %d: refused=%v", tc.code, tc.status, !tc.want)
+		}
+	}
+	if refused(context.DeadlineExceeded) {
+		t.Error("a timeout is not a refusal")
+	}
+}
+
 // mcpAuthServer is an MCP endpoint that always answers 401, with AS metadata,
-// registration and a token endpoint that refuses every grant on the same
-// origin, so an interactive connect can reach the browser step.
-func mcpAuthServer(t *testing.T, registered *atomic.Int32) *httptest.Server {
+// registration and a token endpoint that refuses every refresh with tokenErr
+// on the same origin, so an interactive connect can reach the browser step.
+func mcpAuthServer(t *testing.T, registered *atomic.Int32, tokenErr string) *httptest.Server {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/token":
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": tokenErr})
 		case "/.well-known/oauth-authorization-server":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer": srv.URL, "authorization_endpoint": srv.URL + "/authorize", "token_endpoint": srv.URL + "/token",
@@ -316,12 +376,24 @@ func connectWith(t *testing.T, endpoint string, h *persistentHandler) error {
 // With a dead grant cached, `tenant mcp connect` and /enable used to fail
 // before any request was sent, so the 401 that opens the browser never came.
 // An interactive handler now drops the dead token (flagged already, or refused
-// on this refresh) and reaches the browser, with the client it registered.
+// on this refresh) and reaches the browser, with the client it registered, or
+// a new one when the server refused that client.
 func TestDeadGrant_InteractiveReachesBrowser(t *testing.T) {
-	for _, flagged := range []bool{true, false} {
-		t.Run(fmt.Sprintf("flagged=%v", flagged), func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		flagged    bool
+		tokenErr   string
+		client     string
+		registered int32
+	}{
+		{"flagged", true, "invalid_grant", "cid", 0},
+		{"grant refused", false, "invalid_grant", "cid", 0},
+		{"client refused", false, "invalid_client", "new-cid", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flagged := tc.flagged
 			var registered, fetched atomic.Int32
-			srv := mcpAuthServer(t, &registered)
+			srv := mcpAuthServer(t, &registered, tc.tokenErr)
 			endpoint := srv.URL + "/v1/mcp"
 			path := tokenCachePath(t.TempDir(), endpoint)
 			if err := saveTokenCache(path, &tokenCache{ServerURL: endpoint, ClientID: "cid", TokenURL: srv.URL + "/token", AuthURL: srv.URL + "/authorize",
@@ -341,10 +413,10 @@ func TestDeadGrant_InteractiveReachesBrowser(t *testing.T) {
 			}
 			_ = connectWith(t, endpoint, h)
 			h.mu.Lock()
-			kept := h.cache.ClientID == "cid"
+			client := h.cache.ClientID
 			h.mu.Unlock()
-			if fetched.Load() != 1 || registered.Load() != 0 || !kept {
-				t.Fatalf("browser fetches=%d registrations=%d client kept=%v", fetched.Load(), registered.Load(), kept)
+			if fetched.Load() != 1 || registered.Load() != tc.registered || client != tc.client {
+				t.Fatalf("browser fetches=%d registrations=%d client=%s", fetched.Load(), registered.Load(), client)
 			}
 		})
 	}
@@ -369,5 +441,103 @@ func TestAuthorize_Plain403DoesNotPanic(t *testing.T) {
 	h := newPersistentHandler(endpoint, "http://127.0.0.1:1/callback", "Tenant", path, true, fetcher, srv.Client(), nil)
 	if err := connectWith(t, endpoint, h); err == nil {
 		t.Fatal("a 403 must fail the connect")
+	}
+}
+
+// bearerMCP is an MCP endpoint with one read-only tool, ping, that answers
+// 401 to any access token but the one in live.
+func bearerMCP(t *testing.T, live *atomic.Value) *httptest.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "ping", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, struct{}, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, struct{}{}, nil
+	})
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+live.Load().(string) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ms.Close)
+	return ms
+}
+
+// A connection opened interactively (/enable, the dashboard's Connect) is
+// interactive only while it connects. A sign-in that dies later is flagged and
+// announced like serve's, with no browser; it used to go silent and sign in
+// again from the middle of a task. A sign-in done elsewhere is then taken on
+// with no restart: when this token runs out, and on a 401 while it still
+// looks valid.
+func TestConnectedGrant_DiesLoudAndHealsFromDisk(t *testing.T) {
+	a := newGrantServer(t, true)
+	var live atomic.Value
+	live.Store("at-0")
+	ms := bearerMCP(t, &live)
+	dir := t.TempDir()
+	path := tokenCachePath(dir, ms.URL)
+	save := func(at, rt string, expiry time.Time) {
+		t.Helper()
+		c := &tokenCache{ServerURL: ms.URL, ClientID: "cid", TokenURL: a.URL, AuthURL: a.URL,
+			Token: &oauth2.Token{AccessToken: at, RefreshToken: rt, Expiry: expiry}}
+		if old, err := loadTokenCache(path); err == nil {
+			c.ReauthNeeded, c.ReauthError, c.ReauthSince = old.ReauthNeeded, old.ReauthError, old.ReauthSince
+		}
+		if err := saveTokenCache(path, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("at-0", "rt-0", time.Now().Add(time.Hour))
+	var mu sync.Mutex
+	var announced []bool
+	var opened atomic.Int32
+	d, cleanup, err := Open(context.Background(), Config{
+		ServerURL: ms.URL, Label: "mcp:test", CacheDir: dir, Interactive: true, CallbackAddr: freePort(t),
+		OpenBrowser:  func(string) error { opened.Add(1); return nil },
+		OnAuthChange: func(needs bool, _ string) { mu.Lock(); announced = append(announced, needs); mu.Unlock() },
+	}, true, Policy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	call := func() (string, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		out, isErr, _ := d.Dispatch(ctx, model.ToolCall{Name: "ping"})
+		return out, isErr
+	}
+	got := func() []bool { mu.Lock(); defer mu.Unlock(); return append([]bool(nil), announced...) }
+
+	// The token runs out and the grant is gone.
+	a.mu.Lock()
+	a.revoked = true
+	a.mu.Unlock()
+	save("at-0", "rt-0", time.Now().Add(-time.Minute))
+	d.auth.mu.Lock()
+	d.auth.src.mu.Lock()
+	d.auth.src.cur = &oauth2.Token{AccessToken: "at-0", RefreshToken: "rt-0", Expiry: time.Now().Add(-time.Minute)}
+	d.auth.src.mu.Unlock()
+	d.auth.mu.Unlock()
+	for range 2 {
+		if out, isErr := call(); !isErr || !strings.Contains(out, "NOT AUTHORIZED") {
+			t.Fatalf("a dead grant must fail the call, naming the fix: %q", out)
+		}
+	}
+	if c := onDisk(t, path); !c.ReauthNeeded || !slices.Equal(got(), []bool{true}) || opened.Load() != 0 {
+		t.Fatalf("dead: reauth_needed=%v announced=%v browsers=%d", c.ReauthNeeded, got(), opened.Load())
+	}
+
+	// `tenant mcp connect` signs in again elsewhere.
+	live.Store("at-9")
+	save("at-9", "rt-9", time.Now().Add(time.Hour))
+	if out, isErr := call(); isErr || !slices.Equal(got(), []bool{true, false}) {
+		t.Fatalf("after a sign-in elsewhere: %q announced=%v", out, got())
+	}
+
+	// And again, while this connection's token still looks valid.
+	live.Store("at-10")
+	save("at-10", "rt-10", time.Now().Add(time.Hour))
+	if out, isErr := call(); isErr || opened.Load() != 0 {
+		t.Fatalf("on a 401 with a sign-in elsewhere: %q browsers=%d", out, opened.Load())
 	}
 }

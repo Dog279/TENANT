@@ -93,7 +93,7 @@ try {
     Write-Host "copying binary + config + data ..." -ForegroundColor Cyan
     Copy-Item $repoExe -Destination "$RemoteRoot\tenant.exe" -ToSession $sess -Force
     # Not config\mcp\: the server signs in to MCP connectors on its own, because a copied grant has two holders.
-    Get-ChildItem "$localCfg\*" -Exclude mcp | Copy-Item -Destination "$RemoteRoot\config" -ToSession $sess -Recurse -Force
+    Get-ChildItem "$localCfg\*" -Exclude mcp -Force | Copy-Item -Destination "$RemoteRoot\config" -ToSession $sess -Recurse -Force
     Copy-Item "$localDat\*" -Destination "$RemoteRoot\data" -ToSession $sess -Recurse -Force
 
     # --- claude CLI (subscription escalation leg) -------------------------

@@ -11,6 +11,7 @@ package mcpremote
 // page, announced on transition, and stamped into the tool error the model sees.
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -53,11 +54,15 @@ func ReadHealth(cacheDir, serverURL string) (h Health, ok bool) {
 // FixCommand is the command that signs a connector in again, for the Tenant
 // whose config dir is cfgDir. The --config matters on a server: serve runs as
 // SYSTEM with its own config dir, and an administrator's default one holds a
-// cache serve never reads.
+// cache serve never reads. The dir is made absolute: the command is run from
+// elsewhere, and a trailing backslash would escape the closing quote.
 func FixCommand(cfgDir, serverURL string) string {
 	cmd := "tenant mcp connect " + serverURL
 	if cfgDir == "" {
 		return cmd
+	}
+	if a, err := filepath.Abs(cfgDir); err == nil {
+		cfgDir = a
 	}
 	if strings.ContainsAny(cfgDir, " \t") {
 		cfgDir = `"` + cfgDir + `"`

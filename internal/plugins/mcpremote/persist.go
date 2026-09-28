@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,7 +76,9 @@ func (h *persistentHandler) Health() Health {
 
 // markReauth records that the refresh grant failed with no usable token left —
 // persisted so it survives a restart — and fires onAuthChange on the transition.
-func (h *persistentHandler) markReauth(errText string) {
+// When a sign-in elsewhere has saved a valid token since the refusal, it takes
+// that token on instead and returns it.
+func (h *persistentHandler) markReauth(errText string) *oauth2.Token {
 	h.mu.Lock()
 	h.ensureLoaded()
 	if h.cache == nil {
@@ -88,13 +91,20 @@ func (h *persistentHandler) markReauth(errText string) {
 	cb := h.onAuthChange
 	h.mu.Unlock()
 	if !transition {
-		return
+		return nil
 	}
-	h.saveReauth()
+	if fresh := h.saveReauth(); fresh != nil {
+		h.mu.Lock()
+		fresh.ReauthNeeded, fresh.ReauthError, fresh.ReauthSince = false, "", 0 // never announced here
+		h.cache = fresh
+		h.mu.Unlock()
+		return fresh.Token
+	}
 	NeedsReauth.Log(h.ctx, "server", h.label, "url", h.serverURL, "err", errText, "fix", h.fixCommand())
 	if cb != nil {
 		cb(true, errText)
 	}
+	return nil
 }
 
 // clearReauth records a valid token being seen again (a browser re-auth, or a
@@ -116,14 +126,23 @@ func (h *persistentHandler) clearReauth() {
 // saveReauth writes this handler's re-auth state into the cache on disk, and
 // nothing else, under the cache lock: the token in memory may be older than one
 // another process has saved since, and writing it back would strand the grant.
-func (h *persistentHandler) saveReauth() {
+// A flag is not set over a valid token other than this handler's (a sign-in
+// elsewhere since the refused refresh): that cache is returned instead.
+func (h *persistentHandler) saveReauth() (fresh *tokenCache) {
 	h.mu.Lock()
 	mem := *h.cache
 	h.mu.Unlock()
-	defer h.lockCache()()
-	c, err := loadTokenCache(h.cachePath)
+	unlock, err := h.lockCache()
+	defer unlock()
+	var c *tokenCache
+	if err == nil {
+		c, err = loadTokenCache(h.cachePath)
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		c, err = &mem, nil // nothing newer on disk to keep
+	}
+	if err == nil && mem.ReauthNeeded && c.Token.Valid() && (mem.Token == nil || c.Token.AccessToken != mem.Token.AccessToken) {
+		return c
 	}
 	if err == nil {
 		c.ReauthNeeded, c.ReauthError, c.ReauthSince = mem.ReauthNeeded, mem.ReauthError, mem.ReauthSince
@@ -132,29 +151,34 @@ func (h *persistentHandler) saveReauth() {
 	if err != nil {
 		StateNotSaved.Log(h.ctx, "server", h.label, "what", "the re-auth state", "err", err)
 	}
+	return nil
 }
 
 // lockCache takes the lock beside the cache file and returns its release.
 // serve, the TUI, research, eval and `tenant mcp connect` each hold this
 // sign-in, and its refresh token is single-use, so every refresh and every
 // write of the cache happens under it. The wait outlasts a holder's refresh
-// (datalock.File alone gives up sooner). When the lock can't be taken at all
-// (another account's lock file on Windows), it logs once and goes on unlocked,
-// as before.
-func (h *persistentHandler) lockCache() (release func()) {
+// (datalock.File alone gives up sooner); a holder busy even longer is an
+// error, not something to race. When the lock can't be taken at all (another
+// account's lock file on Windows), it logs once and goes on unlocked, as
+// before. release is never nil.
+func (h *persistentHandler) lockCache() (release func(), err error) {
 	if h.cachePath == "" {
-		return func() {}
+		return func() {}, nil
 	}
 	deadline := time.Now().Add(refreshTimeout + 5*time.Second)
 	l, err := datalock.File(h.cachePath, true)
 	for errors.Is(err, datalock.ErrBusy) && time.Now().Before(deadline) {
 		l, err = datalock.File(h.cachePath, true)
 	}
+	if errors.Is(err, datalock.ErrBusy) {
+		return func() {}, fmt.Errorf("the saved sign-in stayed locked by another process: %w", err)
+	}
 	if err != nil {
 		h.lockWarn.Do(func() { CacheNotLocked.Log(h.ctx, "server", h.label, "err", err) })
-		return func() {}
+		return func() {}, nil
 	}
-	return func() { _ = l.Release() }
+	return func() { _ = l.Release() }, nil
 }
 
 // fixCommand is FixCommand for this connector, whose cache is in <config>/mcp.
@@ -245,10 +269,11 @@ func (h *persistentHandler) TokenSource(ctx context.Context) (oauth2.TokenSource
 // twice. Fails safe: if a proactive refresh fails while the current token is
 // still valid, it logs and returns the current token rather than breaking.
 type refreshingSource struct {
-	mu  sync.Mutex
-	ctx context.Context
-	h   *persistentHandler
-	cur *oauth2.Token
+	mu    sync.Mutex
+	ctx   context.Context
+	h     *persistentHandler
+	cur   *oauth2.Token
+	spent string // the refresh token this source last spent
 }
 
 func (s *refreshingSource) Token() (*oauth2.Token, error) {
@@ -266,29 +291,49 @@ func (s *refreshingSource) Token() (*oauth2.Token, error) {
 		s.h.clearReauth()
 		return tok, nil
 	}
-	// Only a refused grant or client means signing in again. The rest
-	// (unreachable, a 5xx, the timeout) may pass, and raise no alarm.
-	var re *oauth2.RetrieveError
-	refused := errors.As(err, &re) && (re.ErrorCode == "invalid_grant" || re.ErrorCode == "invalid_client")
 	switch {
 	case s.cur.Valid():
 		// Fail safe: a still-valid current token beats a hard failure.
 		RefreshFailed.Log(s.h.ctx, "server", s.h.label, "err", err)
 		return s.cur, nil
-	case !refused:
+	case !refused(err):
 		RefreshRetry.Log(s.h.ctx, "server", s.h.label, "err", err)
 		return nil, err
-	case s.h.interactive && re.ErrorCode == "invalid_grant":
-		// The grant is gone and this handler may open a browser: forget the
-		// token (not the client), so this request goes out without one and its
-		// 401 runs Authorize.
-		s.h.mu.Lock()
-		s.h.cache.Token, s.h.src = nil, nil
-		s.h.mu.Unlock()
-		return nil, nil
 	}
-	s.h.markReauth(err.Error()) // persisted + logged and announced once; every surface reads it
-	return nil, err
+	// Persisted + logged and announced once; every surface reads it.
+	if tok := s.h.markReauth(err.Error()); tok != nil {
+		s.cur = tok // signed in again elsewhere meanwhile
+		return tok, nil
+	}
+	s.h.mu.Lock()
+	defer s.h.mu.Unlock()
+	if !s.h.interactive {
+		return nil, err
+	}
+	// A browser sign-in may run (a connect is under way): forget the token,
+	// not the client, so this request goes out without one and its 401 runs
+	// Authorize.
+	s.h.cache.Token, s.h.src = nil, nil
+	return nil, nil
+}
+
+// refused reports a refresh error that only signing in again cures: the
+// server refused the grant or the client, or answered with a 4xx other than a
+// timeout or a rate limit. The rest (unreachable, a 5xx, the timeout) may
+// pass, and raise no alarm.
+func refused(err error) bool {
+	var re *oauth2.RetrieveError
+	if !errors.As(err, &re) {
+		return false
+	}
+	if re.ErrorCode == "invalid_grant" || re.ErrorCode == "invalid_client" {
+		return true
+	}
+	st := 0
+	if re.Response != nil {
+		st = re.Response.StatusCode
+	}
+	return st >= 400 && st < 500 && st != http.StatusRequestTimeout && st != http.StatusTooManyRequests
 }
 
 // refresh renews the token from the cache on disk, under the cache lock, then
@@ -303,10 +348,18 @@ func (s *refreshingSource) refresh() (*oauth2.Token, error) {
 		return nil, err
 	}
 	s.h.mu.Lock()
-	c.ReauthNeeded, c.ReauthError, c.ReauthSince = s.h.cache.ReauthNeeded, s.h.cache.ReauthError, s.h.cache.ReauthSince
-	s.h.cache = c
+	s.h.adopt(c)
 	s.h.mu.Unlock()
 	return c.Token, nil
+}
+
+// adopt takes on c, read from disk, keeping this handler's re-auth state:
+// that is this process's to announce. h.mu is held.
+func (h *persistentHandler) adopt(c *tokenCache) {
+	if h.cache != nil {
+		c.ReauthNeeded, c.ReauthError, c.ReauthSince = h.cache.ReauthNeeded, h.cache.ReauthError, h.cache.ReauthSince
+	}
+	h.cache = c
 }
 
 // refreshLocked re-reads the cache under its lock: another process may have
@@ -315,11 +368,16 @@ func (s *refreshingSource) refresh() (*oauth2.Token, error) {
 // call, which is also how a long-running serve picks up a re-auth done
 // elsewhere. Otherwise it spends the refresh token on disk, not this process's
 // copy (which may be rotated away already), and saves before unlocking. mem
-// is this process's cache, for when the disk has none.
+// is this process's cache, for when the disk has none, or still holds the
+// refresh token this source spent (its save failed).
 func (s *refreshingSource) refreshLocked(mem *tokenCache) (*tokenCache, error) {
-	defer s.h.lockCache()()
+	unlock, err := s.h.lockCache()
+	defer unlock()
+	if err != nil {
+		return nil, err
+	}
 	c, err := loadTokenCache(s.h.cachePath)
-	if err != nil || c.Token == nil {
+	if err != nil || c.Token == nil || s.spent != "" && c.Token.RefreshToken == s.spent {
 		c = mem
 	}
 	if c.Token.Valid() && (s.cur == nil || c.Token.AccessToken != s.cur.AccessToken) {
@@ -339,6 +397,7 @@ func (s *refreshingSource) refreshLocked(mem *tokenCache) (*tokenCache, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.spent = c.Token.RefreshToken
 	c.Token = refreshed
 	c.ReauthNeeded, c.ReauthError, c.ReauthSince = false, "", 0
 	// Persist the rotated token IMMEDIATELY, before unlocking, so the new
@@ -355,7 +414,8 @@ func (s *refreshingSource) refreshLocked(mem *tokenCache) (*tokenCache, error) {
 // Authorize discovers + dynamically-registers a client (once), runs the browser
 // auth-code flow via the SDK's handler (proven; honors the server's PKCE/resource
 // quirks) with that client, then captures + persists the token. Non-interactive
-// handlers return errNoCachedSession instead of opening a browser.
+// handlers return errNoCachedSession instead of opening a browser, unless a
+// sign-in elsewhere has saved a token they can take on.
 func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -364,10 +424,25 @@ func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, re
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
 		}
+		// Signed in again elsewhere (`tenant mcp connect`) while this token
+		// still looked valid: take that sign-in on, and the request retries.
+		unlock, _ := h.lockCache()
+		c, err := loadTokenCache(h.cachePath)
+		unlock()
+		if err == nil && c.Token.Valid() && (h.cache == nil || h.cache.Token == nil || c.Token.AccessToken != h.cache.Token.AccessToken) {
+			h.adopt(c)
+			h.src = nil
+			return nil
+		}
 		return errNoCachedSession
 	}
 	if h.cache == nil {
 		h.cache = &tokenCache{ServerURL: h.serverURL}
+	}
+	// The server refused the client itself: signing in with it again can't
+	// work, so register a new one.
+	if strings.Contains(h.cache.ReauthError, `"invalid_client"`) {
+		h.cache.ClientID, h.cache.ClientSecret = "", ""
 	}
 
 	// Discover endpoints + register a client ONCE, so a later refresh has the
@@ -455,7 +530,8 @@ func (h *persistentHandler) Authorize(ctx context.Context, req *http.Request, re
 	}
 	h.cache.Token = tok
 	h.src = nil // drop the memoized source so it rebuilds with the fresh token
-	unlock := h.lockCache()
+	// A new sign-in is saved even past a stuck lock holder.
+	unlock, _ := h.lockCache()
 	err = saveTokenCache(h.cachePath, h.cache)
 	unlock()
 	if err != nil {

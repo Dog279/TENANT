@@ -28,9 +28,10 @@ type Config struct {
 	// CacheDir, if set, persists the OAuth token (+ DCR client + endpoints) under
 	// it with owner-only protection so the server reconnects across restarts without a browser.
 	CacheDir string
-	// Interactive permits the browser sign-in flow. When false (launch-time
-	// silent reconnect), a missing/expired cached token fails cleanly instead
-	// of popping a browser.
+	// Interactive permits the browser sign-in flow while connecting. When
+	// false (launch-time silent reconnect), and on every call after the
+	// connect, a missing/expired cached token fails cleanly instead of popping
+	// a browser.
 	Interactive bool
 	// OnAuthChange fires once when the connector's OAuth token dies (the refresh
 	// grant failed with nothing valid left) and once when it is authorized
@@ -100,6 +101,12 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 		OAuthHandler:         handler,
 	}
 	session, err := newClient(ctx, cfg.Label).Connect(ctx, transport, nil)
+	// The browser is for this connect, which someone is waiting on. A sign-in
+	// that dies later is announced and repaired with `tenant mcp connect`, not
+	// signed in again by a browser opened in the middle of a task.
+	handler.mu.Lock()
+	handler.interactive = false
+	handler.mu.Unlock()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.ServerURL, err)
 	}
