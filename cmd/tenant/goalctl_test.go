@@ -77,7 +77,7 @@ func TestGoalControl_SetReplaces(t *testing.T) {
 // "action not narration" pressure (live trigger: agent burned multiple
 // turns meta-commenting instead of producing artifacts).
 func TestGoalControl_Continue(t *testing.T) {
-	gc := &goalControl{}
+	gc := &goalControl{condition: "x"}
 	cases := []struct {
 		reason, mustContain string
 	}{
@@ -341,5 +341,91 @@ func TestGoalControl_JudgeErrorIsWrapped(t *testing.T) {
 	// errors.Is sanity (not exercising real error here).
 	if errors.Is(err, context.Canceled) {
 		t.Error("err should be nil, not canceled")
+	}
+}
+
+// A Stop (dashboard or /goal clear) that lands while the judge runs must not
+// start one more step: Continue returns "", which the TUI submits as nothing
+// (D17).
+func TestGoalControl_ContinueAfterClearIsEmpty(t *testing.T) {
+	gc := &goalControl{maxTurns: 5}
+	_, _, _ = gc.Set(context.Background(), "x")
+	_ = gc.Clear()
+	for _, reason := range []string{"", "the test is missing an assertion"} {
+		if p := gc.Continue(reason); p != "" {
+			t.Errorf("Continue(%q) after Clear = %q, want \"\"", reason, p)
+		}
+	}
+}
+
+// The dashboard adapter shows the live goal, and Stop clears it once with one
+// line to the terminal feed; a second Stop, or one on a met goal, is "not
+// running" and says nothing.
+func TestDashGoal_ShowAndClear(t *testing.T) {
+	if newDashGoal(nil, nil) != nil {
+		t.Fatal("newDashGoal(nil) should be an untyped nil")
+	}
+	gc := &goalControl{maxTurns: 20}
+	var said []string
+	d := newDashGoal(gc, func(s string) { said = append(said, s) })
+	if v := d.Show(); v.Active || v.Met {
+		t.Errorf("fresh goal view = %+v, want idle", v)
+	}
+	if d.Clear() || len(said) != 0 {
+		t.Errorf("Clear with no goal: stopped or said %q", said)
+	}
+
+	_, _, _ = gc.Set(context.Background(), "keep the build green")
+	gc.turns, gc.lastJudge = 3, "the tests still fail"
+	v := d.Show()
+	if !v.Active || v.Met || v.Condition != "keep the build green" || v.Turns != 3 || v.MaxTurns != 20 || v.LastCheck != "the tests still fail" || v.Elapsed == "" {
+		t.Errorf("active view = %+v", v)
+	}
+	if !d.Clear() {
+		t.Fatal("Clear on a running goal should report it stopped")
+	}
+	if len(said) != 1 || !strings.Contains(said[0], "stopped from the dashboard") || !strings.Contains(said[0], "keep the build green") {
+		t.Errorf("notify = %q, want one line naming the goal and the dashboard", said)
+	}
+	if gc.Active() || d.Show().Active {
+		t.Error("the goal is still active after Clear")
+	}
+	if d.Clear() || len(said) != 1 {
+		t.Errorf("a second Clear stopped something or said more: %q", said)
+	}
+
+	_, _, _ = gc.Set(context.Background(), "done already")
+	gc.met = true
+	if v := d.Show(); v.Active || !v.Met || v.Condition != "done already" {
+		t.Errorf("met view = %+v, want Met only", v)
+	}
+	if d.Clear() {
+		t.Error("Clear on a met goal should report nothing running")
+	}
+}
+
+// goalctl's own status texts never reach the page as "Latest check" (D21):
+// an empty judge reply reads plainly, the cap line is dropped, and the
+// judge's own reason passes through.
+func TestDashGoal_LatestCheckIsPlain(t *testing.T) {
+	gc := &goalControl{maxTurns: 2}
+	d := newDashGoal(gc, nil)
+	_, _, _ = gc.Set(context.Background(), "x")
+	_, empty := parseJudgeVerdict("")
+	gc.turns = gc.maxTurns
+	if _, _, atCap, _ := gc.Judge(context.Background(), ""); !atCap {
+		t.Fatal("Judge at the cap should report atCap")
+	}
+	capLine := gc.Show().LastJudge
+	for raw, want := range map[string]string{
+		empty:                            "The check gave no clear answer.",
+		"judge response was unparseable": "The check gave no clear answer.",
+		capLine:                          "",
+		"the tests still fail":           "the tests still fail",
+	} {
+		gc.lastJudge = raw
+		if got := d.Show().LastCheck; got != want {
+			t.Errorf("LastJudge %q shows %q, want %q", raw, got, want)
+		}
 	}
 }

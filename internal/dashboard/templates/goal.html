@@ -1,6 +1,14 @@
 {{define "content"}}
 {{template "ui-flash" .}}
-{{if not .Configured}}{{template "ui-off" "Autopilot isn't available on this Tenant."}}{{else}}
-{{template "ui-empty" "This page is being built."}}
+{{if not .Configured}}{{template "ui-off" "Autopilot isn't available here. It runs inside the terminal app, and this Tenant is running as a background service, so there's nothing to show or stop."}}
+{{else if .Goal.Met}}<div class="card"><div class="card-head">Goal reached</div><p class="goal-text">{{visibleText .Goal.Condition}}</p></div>
+{{else if .Busy}}{{template "ui-busy" .Busy}}
+<div class="card goal-card">
+<div class="card-head">The goal</div>
+<p class="goal-text">{{visibleText .Goal.Condition}}</p>
+<p class="dim">Steps finished: {{.Goal.Turns}} of at most {{.Goal.MaxTurns}}{{with .Goal.Elapsed}} · running for {{.}}{{end}}</p>
+{{with .Goal.LastCheck}}<p class="goal-text"><span class="dim">Latest check:</span> {{visibleText .}}</p>{{end}}
+</div>
+{{else}}{{template "ui-empty" "Autopilot is off. When you give your agent a goal in the terminal app, it keeps working on it by itself, step by step, until it's done, and you can follow it and stop it here."}}
 {{end}}
 {{end}}
