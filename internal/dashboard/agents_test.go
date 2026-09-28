@@ -229,7 +229,7 @@ func post(t *testing.T, s *Server, path string, form url.Values) *httptest.Respo
 	return submitForm(t, s, path, form.Encode())
 }
 
-func flash(t *testing.T, rec *httptest.ResponseRecorder) (page, msg, errMsg string) {
+func agentsFlash(t *testing.T, rec *httptest.ResponseRecorder) (page, msg, errMsg string) {
 	t.Helper()
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status %d, want 303: %s", rec.Code, rec.Body.String())
@@ -266,7 +266,7 @@ func TestAgents_ConfirmGates(t *testing.T) {
 		}
 	}
 	fa := sampleAgents()
-	_, msg, _ := flash(t, post(t, agentsServer(fa, cloudModels...), "/agents/soul", url.Values{"name": {"QA"}, "soul": {"Be thorough."}}))
+	_, msg, _ := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), "/agents/soul", url.Values{"name": {"QA"}, "soul": {"Be thorough."}}))
 	if !slices.Equal(fa.changes(), []string{"SetSoul|QA|Be thorough."}) || msg != "Saved QA's instructions." {
 		t.Errorf("saving instructions: calls %q, msg %q", fa.changes(), msg)
 	}
@@ -292,7 +292,7 @@ func TestAgents_Changes(t *testing.T) {
 		{"/agents/soul", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "SetSoul|QA|", "/agents?QA", "Cleared QA's instructions."},
 	} {
 		fa := sampleAgents()
-		page, msg, errMsg := flash(t, post(t, agentsServer(fa, cloudModels...), tc.path, tc.form))
+		page, msg, errMsg := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), tc.path, tc.form))
 		if !slices.Equal(fa.changes(), []string{tc.call}) || page != tc.page || msg != tc.msg || errMsg != "" {
 			t.Errorf("%s: calls %q, back to %q, msg %q, err %q\nwant %q, %q, %q", tc.path, fa.changes(), page, msg, errMsg, tc.call, tc.page, tc.msg)
 		}
@@ -300,7 +300,7 @@ func TestAgents_Changes(t *testing.T) {
 	// A Windows service says how to restart it.
 	fa := sampleAgents()
 	fa.restart = "Restart the Tenant service (open Services, find Tenant, click Restart)."
-	if _, msg, _ := flash(t, post(t, agentsServer(fa, cloudModels...), "/agents/add", url.Values{"name": {"h"}, "provider": {"cloud"}})); !strings.HasSuffix(msg, "by name in chat. "+fa.restart) {
+	if _, msg, _ := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), "/agents/add", url.Values{"name": {"h"}, "provider": {"cloud"}})); !strings.HasSuffix(msg, "by name in chat. "+fa.restart) {
 		t.Errorf("add on a service: %q", msg)
 	}
 }
@@ -327,7 +327,7 @@ func TestAgents_Validation(t *testing.T) {
 		{"/agents/remove", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "Built-in helpers can't be removed. Reset undoes your changes to one."},
 	} {
 		fa := sampleAgents()
-		_, _, errMsg := flash(t, post(t, agentsServer(fa, cloudModels...), tc.path, tc.form))
+		_, _, errMsg := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), tc.path, tc.form))
 		if errMsg != tc.err || len(fa.changes()) != 0 {
 			t.Errorf("%s %v: err %q, calls %q; want %q and none", tc.path, tc.form, errMsg, fa.changes(), tc.err)
 		}
@@ -352,7 +352,7 @@ func TestAgents_Validation(t *testing.T) {
 func TestAgents_ControlErrors(t *testing.T) {
 	fa := sampleAgents()
 	fa.err = PlainError("A helper named Programmer already exists.")
-	if _, _, e := flash(t, post(t, agentsServer(fa, cloudModels...), "/agents/add", url.Values{"name": {"programmer"}, "provider": {"cloud"}})); e != string(fa.err.(PlainError)) {
+	if _, _, e := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), "/agents/add", url.Values{"name": {"programmer"}, "provider": {"cloud"}})); e != string(fa.err.(PlainError)) {
 		t.Errorf("plain error shown as %q", e)
 	}
 	fa.err = errors.New(rawProviderErr)
@@ -369,7 +369,7 @@ func TestAgents_ControlErrors(t *testing.T) {
 			name = "QA"
 		}
 		rec := post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {name}, "provider": {"cloud"}, "new_name": {"reader"}, "soul": {"x"}, "confirm": {"yes"}})
-		if _, _, e := flash(t, rec); e != want || strings.Contains(rec.Header().Get("Location"), "configured") {
+		if _, _, e := agentsFlash(t, rec); e != want || strings.Contains(rec.Header().Get("Location"), "configured") {
 			t.Errorf("%s: err %q (Location %q), want %q", path, e, rec.Header().Get("Location"), want)
 		}
 	}
@@ -378,7 +378,7 @@ func TestAgents_ControlErrors(t *testing.T) {
 	fa = sampleAgents()
 	fa.loadErr = errors.New(rawStoreClosed)
 	for path, want := range map[string]string{"/agents/remove": "Couldn't remove that helper.", "/agents/reset": "Couldn't reset that helper."} {
-		if _, _, e := flash(t, post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {"QA"}, "confirm": {"yes"}})); e != want || len(fa.changes()) != 0 {
+		if _, _, e := agentsFlash(t, post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {"QA"}, "confirm": {"yes"}})); e != want || len(fa.changes()) != 0 {
 			t.Errorf("%s with the list unreadable: err %q, calls %q", path, e, fa.changes())
 		}
 	}
