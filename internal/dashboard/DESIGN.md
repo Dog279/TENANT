@@ -166,16 +166,30 @@ Secret routes never put a control's error in a URL.
   A dropped connection, a refusal or the stream ending shows it at once, and the stream's next patch hides it. So such a stream sends a patch as soon as it opens (a snapshot); otherwise a reconnect leaves the banner up. `TestLiveBannerInChrome` checks it.
 - A Datastar request answered 401 means the sign-in has gone stale (the key changed, or another Tenant on this host signed the browser in): the status wrapper in `layout.html` sends the page to the sign-in form, which brings it back. One refused request, not one every 20s in the Security log.
 - Buttons that send a decision carry `data-indicator:_sending` and `data-attr:disabled="$_sending"`, so a double tap sends once.
-- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, `#access-body`, and the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`. There are no new event kinds.
+- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`, and the form regions listed under "Forms that don't reload". There are no new event kinds.
 - **F1:** no text from a request or an agent goes into a Datastar attribute other than `data-on:*`, and there only numbers or URLs built with `url.Values.Encode` or `url.PathEscape`. The browser decodes the attribute before Datastar evaluates it, so a quote in it would be script. Untrusted text goes in element content, where html/template escapes it. `template.HTML` is used only through `reportHTML`, which escapes first.
 
 ### Forms that don't reload
 
-A form post answered with `redirectFlash` reloads the page, which jumps back to the top. Where the operator works down a long list one row at a time (Access), the form posts in place instead: the page stays where it was, the row shows its new state, and a toast says what happened. Access and Logs use it; other pages keep `redirectFlash` until they adopt it. A form keeps a full navigation only where going to another page is the point: Logs' "Delete this view" (the page it's on is the view it deletes), and a plain post of "Save as view", which opens the new view.
+A form post answered with `redirectFlash` reloads the page, which jumps back to the top. Every page's forms post in place instead: the page stays where it was, the row shows its new state, and a toast says what happened. A form keeps a full navigation only where going to another page is the point, or where the answer can't be shown in place:
+
+- Logs: "Delete this view" (the page it's on is the view it deletes, so it goes to the Summary), and a plain post of "Save as view", which opens the new view.
+- Memory: "Keep which fact?" (the picker's state is in the URL, which the answer has to clear), and Edit a fact and "Make this current again" (each makes a new version, and its page is the next step).
+- Research, on a run's own page: Run again and Delete (both end on `/research`).
+- Remote services: Connect and Reconnect (the connection is made after the reply, the instruction to approve the sign-in on the computer running Tenant has to stay on screen, and the reload clears an address that can hold a key).
+- Not converted yet: Tools' "Turn on all / Turn off all" (its URL names the plugin; it needs a fixed route with the plugin as a field) and the status strip's Stop (`ui-busy`; Autopilot writes its busy line out so its own Stop posts in place).
+- Sign in and Log out.
+
+The rules:
 
 - The form keeps `method="POST" action="…"`, so it still works before Datastar loads, and adds `data-on:submit__prevent__throttle.1s="@post('/access/discord/permission', {contentType:'form', retryMaxCount:0})"`. The URL is a literal (F1), and a row's values are form fields, never part of the expression. Datastar sends the form's fields form-encoded, with the `Origin` header a browser always sends on a POST, so `secure()`'s checks are unchanged. A confirm step opts in with `inline`: `{{template "ui-confirm" (inline (confirmGo "/access/discord/permission" "Allow" …))}}`.
   - `throttle.1s`: the morph reuses a row's form for the row that moves into its place, so without it a double tap on Remove removes two people.
   - `retryMaxCount:0`: otherwise Datastar sends a post again after a dropped connection, up to 10 times over about 4 minutes, and a change could land minutes after the operator gave up on it.
+- **No form field is named `id`.** An input named `id` hides the form's own `id` from Datastar's morph, which then replaces the form and resets its throttle. Scheduled jobs send `job`, Research `run`, Memory `fact` and `item`, keys `service`, integrations `integration` (`TestRendered_NoFieldNamedID`). An integration's fields come from the settings catalog, so none may be named `id` there either.
+- The throttle holds only while the morph keeps the same form under the finger:
+  - A row a form changes has no `id` (Skills, Tools), so the morph matches rows by position and the next row reuses the form.
+  - A container gets an `id` when something appears above it after a change (a fact's `#fact-actions`), so the morph doesn't match the wrong one.
+  - Two buttons that take turns on one spot are one form on one route (a fact's Remove and Restore, `/memory/facts/removal`; No longer true and It's true again, `/memory/facts/valid`).
 - The handler answers with `formDone` wherever it would call `redirectFlash`:
 
   ```go
@@ -183,17 +197,32 @@ A form post answered with `redirectFlash` reloads the page, which jumps back to 
   ```
 
   A plain POST still gets the 303 and its flash. A Datastar POST gets three patches: `#toast` (mode `replace`, so a new toast starts its fade again), `#ui-status`, and `region()`, the page's changed part rendered from a `{{define}}` with a stable ID (`access-body` renders `#access-body`), which Datastar morphs. The scroll, the focus and text typed in an input stay; an open confirm step closes, because the new HTML has no `open`. An error changed nothing, so it leaves `region()` out: an open step stays open with what was typed in it. Errors still go through `flashFor`. The region holds the page's `ui-flash`, so a banner from a plain post goes with the first in-place answer.
-- A region may be several elements, each with its ID, when a change touches parts that sit apart. Logs: saving a view redraws `#lg-tree`; a log's properties redraw `#lg-props` and `#lg-clear`, which sit inside their `<details>`, so an open section stays open; a clear also redraws `#lg-grid`, `#lg-count` (counted now, not the page's `data-init`) and `#lg-detail`. A form carries what its answer needs to draw them (the log and the grid's filter) as fields. Keep an element that opens a GET on `data-init` out of a region.
+  - `formWarn(w, r, page, warn, region)` is for a change that happened but needs the operator's eye (the model switched, but it can't answer yet): an alert toast, and the region, because it changed.
+  - `createDone` (Helpers' Add, Research's start) replaces the region whole instead of morphing it, so the form comes back empty.
+- The regions, each a `{{define}}` of the same name: Access `#access-body`; Model `#models-body`; Provider keys `#keys-body`; Integrations `#integrations-body`; Skills `#skills-body`; Remote services `#mcp-body`; Tools `#tools-body` (a tool's own toggle patches its `#tool-<name>` row); Scheduled jobs `#jobs-flash`, `#jobs-add` (after an add, with a new form ID so its boxes are empty) and `#jobs-body`; Quality `#eval-body`; Memory `#mem-soul-body`, `#mem-facts-body`, `#mem-removed-body` (a Restore answers with its row alone, `#removed-<id>`, so the list doesn't get shorter under the finger) and `#mem-fact-body`; Approvals & safety `#safety-modes`; Helpers `#agents-body`; Research `#research-ask`, `#research-live` and `#research-history`; Autopilot `#goal-body`; Logs below.
+- A region may be several elements, each with its ID, when a change touches parts that sit apart. Logs: saving a view redraws `#lg-tree`; a log's properties redraw `#lg-props` and `#lg-clear`, which sit inside their `<details>`, so an open section stays open; a clear also redraws `#lg-tree`, `#lg-grid`, `#lg-count` (counted now, not the page's `data-init`) and `#lg-detail`. A form carries what its answer needs to draw them (the log, the view and the grid's filter) as fields. Keep an element that opens a GET on `data-init` out of a region.
+- A form that holds a key (Model's "Add a cloud model", a key's Add or Replace, an integration's Save) empties its key boxes when the reply arrives, after an error too, so a typed key never stays on the page; what else was typed stays. The server never puts a key into an input:
+
+  ```html
+  data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })"
+  ```
+- **The tap guard.** A double tap's second tap can land on what the answer moved under the finger: the next row, the page under a phone's confirm sheet that just closed, the Turn on step where Turn off was. That is a different form, which its throttle doesn't cover. So `layout.html`'s `.app` carries one guard for every page: from the moment a form with an `action`, or a button, posts (`datastar-fetch` `started`) until its answer is 400ms old (`finished`), a capture-phase click filter drops every tap in `.app`.
+  - An open confirm step's Cancel still works, and the toasts, `#toast-fail` included, sit outside `.app`.
+  - Datastar sends `finished` from a `finally` block, so an error, a refusal or a lost connection ends it too.
+  - The chat box (a form with no `action`) and the GET streams don't start it. Without JavaScript there is none.
+  - The per-form throttle and `retryMaxCount:0` stay as a second line.
+  - A browser test that taps soon after an answer waits it out first (`tapsOpen`).
 - The toast is `ui-toast` in `ui.html`, patched into `#toast` inside `layout.html`'s never-patched `.toast-wrap`, which is `aria-live="polite"`: a screen reader reads a change inside a live region that was already there, not a new element's own `role=status`. Success fades after about 3 seconds (CSS only). An error is `role=alert` and stays until its close button or the next toast. It sits top right on a desktop, and across the top on a phone, clear of the rows the thumb works on.
 - Datastar patches nothing for a reply that isn't 200 (a 403, a 428 from a stale page, a 500) or for a dropped connection. `.toast-wrap` watches its forms' posts and shows `#toast-fail`, a fixed "That didn't go through. Reload the page and try again.", until the next post starts or it's closed. `needConfirm` still answers 428 without `confirm=yes`, so a stale page gets that alert, never the change.
-- Tests: a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm`), and a browser test that the scroll and the page survive, a double tap sends once, and a stale page gets `#toast-fail` (`TestAccessInlineFormsInChrome`). Logs: `TestLogs_InlineForms` and `TestLogsInlineFormsInChrome`.
+- The Activity page is gone: the Logs page replaced it. `GET /activity` redirects to Logs with its filter (`?trace=X` becomes `trace:X`, `?source=` `log:`, `?level=error` or `warn` `level>=error` or `level>=warning`). `GET /api/activity` stays, for `tenant attach`.
+- Tests: per page, a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm` and its siblings), and a browser test that the scroll and the page survive and a double tap sends once (`TestAccessInlineFormsInChrome`, which also covers `#toast-fail` on a stale page). `TestTapGuardInChrome` shows the guard alone stops a double tap that crosses rows on Access, and that Cancel and the toast's close still work while it is up. Logs: `TestLogs_InlineForms` and `TestLogsInlineFormsInChrome`.
 
 ## 9. A new page
 
 1. Go: an interface for its control, render-ready view structs, `SetX`, and `mountXSSR` called from `routes()`. Handlers are nil-safe: a nil control renders `ui-off`.
 2. A template with `{{define "content"}}` that uses `ui-flash`, `ui-off`, `ui-empty`, and `ui-confirm` for every action §5 covers.
 3. A nav line in its D15 slot in `layout.html`, a title equal to its label, and a `.Page` key.
-4. Mutations are form POSTs answered with `redirectFlash` (or `formDone`, where they shouldn't reload: §8), each dangerous one wrapped in `needConfirm`, its errors through `flashFor`.
+4. Mutations are form POSTs answered in place with `formDone` (§8; `redirectFlash` only where a full navigation is the point), each dangerous one wrapped in `needConfirm`, its errors through `flashFor`.
 5. Styles only inside the page's marker block at the end of `styles.css`, using the classes above first.
 6. Tests: register a fake from an `init()` (`harnessFakes`, `harnessPages` in `render_all_test.go`), a states table, the confirm rows, and the page passes the plain-language and 390px sweeps unchanged.
 
