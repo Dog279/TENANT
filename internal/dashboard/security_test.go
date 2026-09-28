@@ -154,12 +154,39 @@ type confirmGate struct {
 // asks for more: a route without a step must not grow one, whatever it's sent.
 var everyField = func() url.Values {
 	v := url.Values{}
-	for _, k := range strings.Fields(`action allow_send back category ceiling decision description discard_id enabled
-		endpoint exec filter handle id keep_id key kind max_days max_mb min_level mode model name new_name next on on_full
-		operator pattern prompt provider q repo section skip_questions soul spec target text trusted tz url value version`) {
+	for _, k := range requestFields {
 		v.Set(k, "true")
 	}
 	return v
+}()
+
+// requestFields is every form field and query parameter a handler reads by
+// name, read from the same sources as mountedRoutes, so a new one is swept
+// without anyone listing it.
+var requestFields = func() []string {
+	re := regexp.MustCompile(`(?:FormValue\(|\.Get\(|\.Has\(|bodyOnly\(r, |flag\(\w+, |number\([^,()]+(?:\(\))?, )"([a-z][a-z_]*)"`)
+	var files []string
+	for _, glob := range []string{"*.go", "../logs/logapi/*.go"} {
+		m, err := filepath.Glob(glob)
+		if err != nil {
+			panic(err)
+		}
+		files = append(files, m...)
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			panic(err)
+		}
+		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+			seen[m[1]] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
 }()
 
 var (
@@ -850,11 +877,6 @@ func poison(v reflect.Value, p string, seen map[uintptr]bool) {
 	}
 }
 
-// queryParams is every name a dashboard handler reads from a request: the
-// form fields and the query parameters.
-var queryParams = append(slices.Sorted(maps.Keys(everyField)), strings.Fields(`err msg q cursor limit edit since epoch view
-	until tab live format find bucket with turns trace source removed remove expand compare add level log only notice download token`)...)
-
 // TestNoRawInputInDatastarExpressions is F1's sweep (DESIGN.md §8): no text
 // from a request or an agent reaches a Datastar expression other than
 // data-on*. Every GET route is asked with the injection in every path segment
@@ -882,7 +904,7 @@ func TestNoRawInputInDatastarExpressions(t *testing.T) {
 	}
 
 	all := url.Values{}
-	for _, k := range queryParams {
+	for _, k := range requestFields {
 		all.Set(k, injection)
 	}
 	check := func(s *Server, target string) {
@@ -903,7 +925,7 @@ func TestNoRawInputInDatastarExpressions(t *testing.T) {
 		"/agents?edit="+url.QueryEscape(injection+longName(2)), "/research/"+url.PathEscape(injection+"r-1"))
 	for _, p := range pages {
 		sep := map[bool]string{true: "&", false: "?"}[strings.Contains(p, "?")]
-		for _, k := range queryParams {
+		for _, k := range requestFields {
 			check(poisoned, p+sep+url.Values{k: {injection}}.Encode())
 		}
 		check(bare, p)
