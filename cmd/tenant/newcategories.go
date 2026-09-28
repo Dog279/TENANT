@@ -48,6 +48,13 @@ func announceNewCategories(broker *approvalBroker, stg *settings, mu *sync.Mutex
 	if len(cats) == 0 {
 		return
 	}
-	tell("permissions: " + newCategoryNotice(cats, "Review with /permissions."))
+	// Short lines: the terminal's feed is a third of its width and cuts a
+	// longer line before the names.
+	tell(fmt.Sprintf("permissions: %d new safety check(s)", len(cats)))
+	tell("ask you first until you choose:")
+	for _, c := range cats {
+		tell("  " + approval.CategoryPlain[c].Title + " (" + c + ")")
+	}
+	tell("Review with /permissions.")
 	save()
 }

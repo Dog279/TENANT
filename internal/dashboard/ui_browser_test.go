@@ -75,11 +75,13 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	}
 	var signIn, back string
 	var width int
+	var gaps []float64 // the sign-in card's space on the left and right
 	err = chromedp.Run(ctx,
 		chromedp.EmulateViewport(int64(w), int64(h), phone...),
 		chromedp.Navigate(srv.URL+page),
 		chromedp.WaitVisible(`input[name=token]`, chromedp.ByQuery),
 		chromedp.Location(&signIn),
+		chromedp.Evaluate(`(r => [r.left, innerWidth - r.right])(document.querySelector('form.card').getBoundingClientRect())`, &gaps),
 		chromedp.SendKeys(`input[name=token]`, s.cfg.Auth, chromedp.ByQuery),
 		chromedp.Click(`form button[type=submit]`, chromedp.ByQuery),
 		chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
@@ -94,6 +96,9 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	}
 	if width != w {
 		t.Fatalf("innerWidth = %d, want %d", width, w)
+	}
+	if len(gaps) != 2 || gaps[0] < 8 || gaps[1] < 8 {
+		t.Errorf("the sign-in card at %dpx has %v px left and right, want room on both sides", w, gaps)
 	}
 	return ctx, srv
 }
@@ -277,4 +282,12 @@ func TestStatusStripPhoneInChrome(t *testing.T) {
 	if len(small) > 0 {
 		t.Errorf("strip links under 44px: %q", small)
 	}
+}
+
+// A small phone (360px) signs in with room on both sides of the card: the
+// page's grid track used to size to the card's 360px and push it off the
+// right edge. chromeSignedIn measures the gaps.
+func TestSignInSmallPhoneInChrome(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, nil, nil, nil, agent.NewBroker(0), nil)
+	chromeSignedIn(t, s, 360, 740, "/")
 }

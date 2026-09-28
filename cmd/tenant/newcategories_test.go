@@ -74,8 +74,14 @@ func TestAnnounceNewCategories_OnceAndMarkerSurvivesPersist(t *testing.T) {
 	}
 
 	broker, told := launchTUIPermissions(t, cfg)
-	if len(told) != 1 || !strings.Contains(told[0], "Share private data (egress), Connect remote services (mcp).") || strings.Contains(told[0], "sandbox") {
-		t.Fatalf("first launch told %q, want one notice naming egress and mcp only", told)
+	all := strings.Join(told, "\n")
+	if !strings.Contains(all, "Share private data (egress)") || !strings.Contains(all, "Connect remote services (mcp)") || strings.Contains(all, "sandbox") {
+		t.Fatalf("first launch told %q, want a notice naming egress and mcp only", told)
+	}
+	for _, line := range told {
+		if n := len([]rune("⚙ " + line)); n > 40 { // a third of a 120-column terminal
+			t.Errorf("notice line %q is %d columns; the terminal feed cuts it", line, n)
+		}
 	}
 	// A later choice persists the modes through the same settings object.
 	if _, err := broker.SetPermission(catWeb, "ask"); err != nil {

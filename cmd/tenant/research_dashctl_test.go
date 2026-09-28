@@ -500,8 +500,8 @@ func TestDashResearch_Replay(t *testing.T) {
 	if c := nextCall(t, calls); c != (runCall{"graphiti", orig.ID(), true}) {
 		t.Errorf("Replay ran %+v", c)
 	}
-	if v, _ := d.Watch(); v.ReplayOf != orig.ID() {
-		t.Errorf("ReplayOf = %q", v.ReplayOf)
+	if v, _ := d.Watch(); v.ReplayOf != orig.ID() || v.Phase != "planning" { // a re-run skips the clarifier
+		t.Errorf("ReplayOf = %q, phase = %q", v.ReplayOf, v.Phase)
 	}
 	outs <- runOut{err: errors.New("x")}
 	awaitPhase(t, d, "failed")

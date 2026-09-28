@@ -230,9 +230,13 @@ func (d *dashResearch) launch(q, replayOf string, skip bool) error {
 	}
 	ctx, cancel := context.WithCancel(d.base)
 	d.started, d.cancel = time.Now(), cancel
+	phase := "checking" // the clarifier runs first
+	if skip {
+		phase = "planning" // a re-run, a clarified question, or "exactly what I typed"
+	}
 	d.live = dashboard.ResearchLiveView{
 		SavesToNotes: d.live.SavesToNotes, WebOff: d.live.WebOff, HistoryOn: d.live.HistoryOn, WebOffWhy: d.live.WebOffWhy,
-		Phase: "checking", Running: true, Question: q, ReplayOf: replayOf,
+		Phase: phase, Running: true, Question: q, ReplayOf: replayOf,
 	}
 	d.bump()
 	d.mu.Unlock()
