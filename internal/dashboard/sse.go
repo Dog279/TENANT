@@ -41,8 +41,12 @@ func flush(w http.ResponseWriter) {
 // patchElements builds one datastar-patch-elements SSE event. mode ("" =
 // default outer; "append"/"inner"/... otherwise) and selector ("" = key on the
 // element's id) are optional. The HTML is split into one `data: elements` line
-// per source line, per the Datastar wire format.
+// per source line, per the Datastar wire format. A bare CR ends an SSE line
+// too, so agent or tool-server text carrying one could close this event and
+// open a datastar-patch-signals one, which Datastar evaluates as script; CRs
+// become LFs first (HTML parsing makes that change anyway).
 func patchElements(selector, mode, elements string) []byte {
+	elements = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(elements)
 	var b bytes.Buffer
 	b.WriteString("event: datastar-patch-elements\n")
 	if mode != "" {

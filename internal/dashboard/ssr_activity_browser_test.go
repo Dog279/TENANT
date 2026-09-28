@@ -38,7 +38,8 @@ func TestActivityTraceNotScriptInChrome(t *testing.T) {
 	defer cancel()
 
 	const shown = `document.getElementById('activity-feed').textContent.includes('after-load-marker')`
-	var xss string
+	const shown2 = `document.getElementById('activity-feed').textContent.includes('after-cr-marker')`
+	var xss, xss2 string
 	var marker bool
 	err = chromedp.Run(ctx,
 		chromedp.Navigate(srv.URL+"/activity?trace="+payload),
@@ -51,6 +52,17 @@ func TestActivityTraceNotScriptInChrome(t *testing.T) {
 		chromedp.Poll(`window.__xss !== undefined || `+shown, nil, chromedp.WithPollingTimeout(10*time.Second)),
 		chromedp.Evaluate(`typeof window.__xss`, &xss),
 		chromedp.Evaluate(shown, &marker),
+		// A bare CR ends an SSE line, so a tool name carrying CRs could close
+		// the row's patch and open a datastar-patch-signals event, which
+		// Datastar evaluates. The marker after it shows the stream got past.
+		chromedp.ActionFunc(func(context.Context) error {
+			l.Logf("cron", slog.LevelInfo, "cr", "trace", payload,
+				"tool", "t\r\revent: datastar-patch-signals\rdata: signals (window.__xss2=document.domain)\r\r")
+			l.Logf("cron", slog.LevelInfo, "after-cr-marker", "trace", payload)
+			return nil
+		}),
+		chromedp.Poll(shown2, nil, chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Evaluate(`typeof window.__xss2`, &xss2),
 	)
 	if err != nil {
 		t.Fatalf("in Chrome: %v", err)
@@ -60,5 +72,8 @@ func TestActivityTraceNotScriptInChrome(t *testing.T) {
 	}
 	if !marker {
 		t.Error("the live feed should show the line with this trace")
+	}
+	if xss2 != "undefined" {
+		t.Errorf("a CR in a streamed row ran as script: typeof window.__xss2 = %q", xss2)
 	}
 }
