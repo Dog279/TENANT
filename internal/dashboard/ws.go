@@ -30,6 +30,7 @@ import (
 	"github.com/gobwas/ws/wsutil"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs/event"
 )
 
 // wsWriteTimeout bounds a single frame write. A browser that stops reading
@@ -70,10 +71,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// UpgradeHTTP already wrote an HTTP error response on a bad
 		// handshake; nothing more to send.
-		s.log.Warn("dashboard: ws upgrade failed", "err", err, "remote", r.RemoteAddr)
+		StreamRefused.Log(r.Context(), "remote", r.RemoteAddr, "err", err)
 		return
 	}
-	s.serveWSConn(conn)
+	ctx, act := event.Start(r.Context(), Stream, "stream", "chat", "remote", r.RemoteAddr)
+	defer act.End(nil)
+	s.serveWSConn(ctx, conn, r.RemoteAddr)
 }
 
 // wsConn wraps one upgraded socket with a write mutex so the writer pump and
@@ -90,7 +93,7 @@ type wsConn struct {
 // writer goroutine, and a reader loop that dispatches client commands. It
 // returns only after both goroutines have stopped and the socket is closed,
 // so no goroutine outlives the connection.
-func (s *Server) serveWSConn(raw net.Conn) {
+func (s *Server) serveWSConn(ctx context.Context, raw net.Conn, remote string) {
 	defer raw.Close()
 	c := &wsConn{server: s, raw: raw}
 
@@ -112,6 +115,7 @@ func (s *Server) serveWSConn(raw net.Conn) {
 	go func() {
 		defer wg.Done()
 		defer connCancel() // a writer exit (e.g. broken pipe) ends the reader
+		lagged := false
 		for {
 			select {
 			case <-connCtx.Done():
@@ -120,6 +124,7 @@ func (s *Server) serveWSConn(raw net.Conn) {
 				if !ok {
 					return // subscription canceled
 				}
+				behind(ctx, ch, "chat", remote, &lagged)
 				if err := c.writeEvent(ev); err != nil {
 					return
 				}

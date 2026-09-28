@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs/event"
 	"tenant/internal/plugins/discord"
 )
 
@@ -187,12 +188,127 @@ func recv(ch chan string, d time.Duration) (string, bool) {
 
 const op = "op123"
 
+// channelEvents captures the catalogued events a test causes, from any
+// goroutine.
+type channelEvents struct {
+	mu     sync.Mutex
+	events []*event.Event
+}
+
+func (c *channelEvents) Emit(_ context.Context, e *event.Event) {
+	c.mu.Lock()
+	c.events = append(c.events, e)
+	c.mu.Unlock()
+}
+
+func (c *channelEvents) Audit(ctx context.Context, e *event.Event) error { c.Emit(ctx, e); return nil }
+
+// matching lists the events of d with opcode op ("" for a plain event).
+func (c *channelEvents) matching(d *event.Def, op string) []*event.Event {
+	s := d.Spec()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []*event.Event
+	for _, e := range c.events {
+		if e.Provider == s.Provider && e.ID == s.ID && e.Opcode == op {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// wait returns the first event of d with opcode op, waiting up to 2 s for it.
+func (c *channelEvents) wait(d *event.Def, op string) *event.Event {
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if m := c.matching(d, op); len(m) > 0 {
+			return m[0]
+		}
+	}
+	return nil
+}
+
+func captureChannelEvents(t *testing.T) *channelEvents {
+	t.Helper()
+	c := &channelEvents{}
+	event.Install(c)
+	t.Cleanup(func() { event.Install(nil) })
+	return c
+}
+
+// eventField is e's field key (a zero Field when absent).
+func eventField(e *event.Event, key string) event.Field {
+	for _, f := range e.Data {
+		if f.Key == key {
+			return f
+		}
+	}
+	return event.Field{}
+}
+
+// failRunner's turns fail with err, or, blocking, end when their ctx does.
+type failRunner struct {
+	err   error
+	block bool
+}
+
+func (f failRunner) Turn(ctx context.Context, _ agent.TurnRequest) (*agent.TurnResult, error) {
+	if f.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return nil, f.err
+}
+func (failRunner) Interject(string) {}
+
+// An accepted message is recorded with its text masked; a failed turn fails
+// its RelayTurn activity; a sender over the rate limit is recorded.
+func TestRelay_RecordsMessagesAndTurns(t *testing.T) {
+	c := captureChannelEvents(t)
+	fs := &fakeSender{}
+	r := newRelay(failRunner{err: errors.New("model down")}, fs, op)
+	r.rl = newRateLimiter(1, time.Hour)
+	r.Start(context.Background())
+
+	r.handleInbound(discord.Inbound{MessageID: "m1", AuthorID: op, ChannelID: "dm1", Content: "secret plans"})
+	in := c.wait(discord.Received, "")
+	if in == nil || eventField(in, "message").Text() != "m1" || strings.Contains(in.Msg, "secret") {
+		t.Fatalf("received = %+v", in)
+	}
+	if f := eventField(in, "text"); !f.Sensitive || f.Text() != "secret plans" {
+		t.Errorf("the text must be kept, sensitive: %+v", f)
+	}
+	fail := c.wait(discord.RelayTurn, event.OpFail)
+	if fail == nil || fail.Level != event.Error || !strings.Contains(eventField(fail, "error").Text(), "model down") {
+		t.Fatalf("want the relay turn failed with its error, got %+v", fail)
+	}
+
+	r.handleInbound(discord.Inbound{MessageID: "m2", AuthorID: op, ChannelID: "dm1", Content: "again"})
+	if e := c.wait(discord.Throttled, ""); e == nil || eventField(e, "author").Text() != op {
+		t.Errorf("the throttled message was not recorded: %+v", e)
+	}
+}
+
+// A turn the operator stops ends its RelayTurn activity as stopped, not failed.
+func TestRelay_StoppedTurnIsNotAFailure(t *testing.T) {
+	c := captureChannelEvents(t)
+	r := newRelay(failRunner{block: true}, &fakeSender{}, op)
+	r.Start(context.Background())
+	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "long job"})
+	if c.wait(discord.RelayTurn, event.OpStart) == nil {
+		t.Fatal("the turn never started")
+	}
+	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "stop"})
+	if c.wait(discord.RelayTurn, event.OpStop) == nil {
+		t.Fatalf("a stopped turn must end as stopped; failed: %v", c.matching(discord.RelayTurn, event.OpFail))
+	}
+}
+
 // While the model is degraded to the echo fallback, the relay must REFUSE
 // rather than drive a turn — the remote operator must never get an echo stub.
 func TestRelay_RefusesWhileDegraded(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, op, nil)
+	r := newRelay(fr, fs, op)
 	r.degraded = func() bool { return true }
 	r.Start(context.Background())
 
@@ -214,7 +330,7 @@ func TestRelay_RefusesWhileDegraded(t *testing.T) {
 func TestRelay_OperatorDMDrivesTurn(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, op, nil)
+	r := newRelay(fr, fs, op)
 	r.Start(context.Background())
 
 	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "hello there"})
@@ -236,7 +352,7 @@ func TestRelay_OperatorDMDrivesTurn(t *testing.T) {
 func TestRelay_IngestSurfacesInbound(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, op, nil)
+	r := newRelay(fr, fs, op)
 	r.Start(context.Background())
 	var ingested []string
 	r.ingest = func(t string) { ingested = append(ingested, t) }
@@ -257,7 +373,7 @@ func TestRelay_IngestSurfacesInbound(t *testing.T) {
 func TestRelay_GateDrops(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 4)}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, op, nil)
+	r := newRelay(fr, fs, op)
 	r.Start(context.Background())
 
 	drops := []discord.Inbound{
@@ -280,7 +396,7 @@ func TestRelay_GateDrops(t *testing.T) {
 func TestRelay_StopKeyword(t *testing.T) {
 	fr := &fakeRunner{turns: make(chan string, 1), block: true}
 	fs := &fakeSender{}
-	r := newRelay(fr, fs, op, nil)
+	r := newRelay(fr, fs, op)
 	r.Start(context.Background())
 
 	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "long task"})
@@ -313,7 +429,7 @@ func (c ctxCapRunner) Interject(string) {}
 func TestRelay_StampsOffsiteApprover(t *testing.T) {
 	cr := ctxCapRunner{ch: make(chan context.Context, 1)}
 	fs := &fakeSender{}
-	r := newRelay(cr, fs, op, nil)
+	r := newRelay(cr, fs, op)
 	r.approver = newDiscordApprover(fs, nil)
 	r.Start(context.Background())
 
@@ -332,7 +448,7 @@ func TestRelay_StampsOffsiteApprover(t *testing.T) {
 // stamp is approver-driven, not unconditional.
 func TestRelay_NoApproverNoStamp(t *testing.T) {
 	cr := ctxCapRunner{ch: make(chan context.Context, 1)}
-	r := newRelay(cr, &fakeSender{}, op, nil)
+	r := newRelay(cr, &fakeSender{}, op)
 	r.Start(context.Background())
 
 	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "hi"})

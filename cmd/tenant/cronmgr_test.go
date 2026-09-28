@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -12,8 +14,10 @@ import (
 
 	"tenant/internal/agent"
 	croneng "tenant/internal/cron"
+	"tenant/internal/logs"
 	"tenant/internal/memory/soul"
 	"tenant/internal/plugins/discord"
+	"tenant/internal/runtrace"
 )
 
 // The exec auto-approver must hard-deny irreversible actions and writes into the
@@ -165,9 +169,15 @@ func TestCronRunner_EmitsActivityEvents(t *testing.T) {
 	var mu sync.Mutex
 	var events []agent.Event
 	mux := newToolMux()
+	runs, err := runtrace.Open(":memory:", runtrace.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runs.Close()
 	deps := cronAgentDeps{
 		router:   router,
 		soulLive: live,
+		runs:     runs,
 		fullReg:  mux,
 		fullDisp: mux,
 		log:      log,
@@ -183,8 +193,38 @@ func TestCronRunner_EmitsActivityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build runner: %v", err)
 	}
-	if _, err := runner(context.Background(), croneng.Job{JobDef: croneng.JobDef{ID: "j1", Name: "test", Prompt: "say hi"}}); err != nil {
+	hub := logs.NewMemory(0)
+	prev := logs.Default()
+	logs.Install(hub)
+	defer logs.Install(prev)
+	_, trace, err := runner(context.Background(), croneng.Job{JobDef: croneng.JobDef{ID: "j1", Name: "test", Prompt: "say hi"}})
+	if err != nil {
 		t.Fatalf("run: %v", err)
+	}
+	// The trace the history entry carries is the turn's runs.db record (TEN-368).
+	if _, err := runs.Get(context.Background(), trace); err != nil {
+		t.Fatalf("run trace %q has no runs.db record: %v", trace, err)
+	}
+	// The run is an activity in the cron log, linked to the turn it drove.
+	var ops []string
+	es, _ := hub.Snapshot()
+	for _, e := range es {
+		if e.Field("event") != "cron/1001" {
+			continue
+		}
+		ops = append(ops, e.Field("opcode"))
+		if e.Source != "cron" || e.Field("trace") != trace || e.Field("activity") == "" {
+			t.Errorf("job run event %+v: want the cron log, trace %s and an activity", e, trace)
+		}
+		if e.Field("opcode") == "start" && e.Field("related") != trace {
+			t.Errorf("the run's start links to %q, want its turn %s", e.Field("related"), trace)
+		}
+		if e.Field("opcode") == "stop" && e.Field("duration") == "" {
+			t.Error("the run's stop has no duration")
+		}
+	}
+	if strings.Join(ops, ",") != "start,stop" {
+		t.Errorf("job run opcodes = %v, want start,stop", ops)
 	}
 
 	mu.Lock()
@@ -203,5 +243,79 @@ func TestCronRunner_EmitsActivityEvents(t *testing.T) {
 	}
 	if !sawFinal {
 		t.Error("no EventFinal - the feed never learns the run finished")
+	}
+}
+
+// The old history file was one JSON array that each process rewrote whole. It
+// becomes one record per line on the first load, keeping every entry — even
+// one appended to it before the migration got to run (TEN-368).
+func TestCronHistoryMigratesTheOldRingOnce(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `[{"job_id":"a","started_at":"2026-09-01T09:00:00Z","duration_ms":1,"ok":true},` +
+		`{"job_id":"b","started_at":"2026-09-02T09:00:00Z","duration_ms":1,"ok":false}]` +
+		`{"job_id":"c","started_at":"2026-09-03T09:00:00Z","duration_ms":1,"ok":true}` + "\n"
+	if err := os.WriteFile(cronHistoryPath(dir), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // the second load reads the migrated file: same records, no repeats
+		h := loadCronHistory(dir)
+		if len(h) != 3 || h[0].JobID != "a" || h[1].JobID != "b" || h[2].JobID != "c" {
+			t.Fatalf("history = %+v, want a, b, c", h)
+		}
+	}
+	raw, err := os.ReadFile(cronHistoryPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSpace(string(raw)), "\n"); len(lines) != 3 || lines[0][0] != '{' {
+		t.Fatalf("migrated file is not one record per line:\n%s", raw)
+	}
+}
+
+// serve and the TUI append to one history while compactions rewrite it: no
+// run is lost (TEN-368).
+func TestCronHistoryAppendsSurviveCompaction(t *testing.T) {
+	dir := t.TempDir()
+	stop := make(chan struct{})
+	compacted := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				close(compacted)
+				return
+			default:
+			}
+			if err := compactCronHistory(cronHistoryPath(dir)); err != nil {
+				compacted <- err
+				close(compacted)
+				return
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for _, who := range []string{"serve", "tui"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range cronHistoryKeep / 2 { // together, no more than a compaction keeps
+				if err := appendCronHistory(dir, croneng.RunRecord{JobID: fmt.Sprintf("%s-%d", who, i)}); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	if err := <-compacted; err != nil {
+		t.Fatal(err)
+	}
+	h := loadCronHistory(dir)
+	seen := map[string]bool{}
+	for _, r := range h {
+		seen[r.JobID] = true
+	}
+	if len(h) != cronHistoryKeep || len(seen) != cronHistoryKeep {
+		t.Fatalf("history holds %d records (%d distinct), want %d", len(h), len(seen), cronHistoryKeep)
 	}
 }

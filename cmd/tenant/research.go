@@ -18,6 +18,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/compress"
 	"tenant/internal/memory/cosine"
 	"tenant/internal/memory/skills"
@@ -334,7 +335,9 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 		})
 		mine = append(mine, runResearchWaves(ctx, rt, question, wave, opts.parallel, opts.awaitTimeout, say, emit, cycle, depth)...)
 		if run != nil {
-			run.SetCycles(cycle)
+			if err := run.SetCycles(cycle); err != nil {
+				say("⚠ couldn't save the run's progress: %v", err)
+			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -410,11 +413,14 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 		// the model actually emitted). The collapse step drops the bad ones
 		// for the synthesis input, but they're invaluable for /research show.
 		if run != nil {
-			_ = run.AppendFinding(research.Finding{
+			if err := run.AppendFinding(research.Finding{
 				AgentID: r.ID, Role: r.Role, Task: r.Task,
 				Status: r.Status, Result: r.Result,
 				Finished: time.Now().UTC(),
-			})
+			}); err != nil {
+				say("⚠ couldn't save %s's finding to the run record: %v", r.ID, err)
+				research.RecordFailed.Log(ctx, "run", run.ID(), "op", "save a finding", "err", err)
+			}
 		}
 	}
 	// C5: embedding-based rerank + near-duplicate drop. Best-effort —
@@ -471,6 +477,7 @@ func runWithPersistence(ctx context.Context, planner model.LLM, rt *TeamRuntime,
 		r, oerr := store.Create(mf)
 		if oerr != nil {
 			say("⚠ couldn't open run record: %v — running without audit log", oerr)
+			research.RecordFailed.Log(ctx, "op", "create the run record", "err", oerr)
 		} else {
 			run = r
 			id = r.ID()
@@ -478,6 +485,16 @@ func runWithPersistence(ctx context.Context, planner model.LLM, rt *TeamRuntime,
 		}
 	}
 
+	// The pass is an activity; its sub-agents' activities are related to it.
+	// A clarifying question back to the operator is no failure.
+	ctx, act := event.Start(ctx, research.RunActivity, "run", id, "question", question)
+	defer func() {
+		endErr := err
+		if errors.As(err, new(*ClarifyNeededError)) {
+			endErr = nil
+		}
+		act.End(&endErr)
+	}()
 	report, err = deepResearch(ctx, planner, rt, question, opts, say, run, emit)
 
 	if run != nil {
@@ -496,6 +513,7 @@ func runWithPersistence(ctx context.Context, planner model.LLM, rt *TeamRuntime,
 		refs := parseReferencesURIs(report)
 		if ferr := run.Finalize(report, refs, status, errMsg); ferr != nil {
 			say("⚠ couldn't finalize run record: %v", ferr)
+			research.RecordFailed.Log(ctx, "run", id, "op", "finalize the run record", "err", ferr)
 		}
 	}
 
@@ -1113,6 +1131,7 @@ func (rc *researchControl) runOne(ctx context.Context, question, replayOf string
 	if rc.wikiDir != "" {
 		if path, werr := writeWikiReport(rc.wikiDir, question, report); werr != nil {
 			rc.say("⚠ couldn't save to wiki: %v", werr)
+			research.WikiFailed.Log(ctx, "op", "write the report", "err", werr)
 		} else {
 			rc.say("📄 saved to wiki: %s", path)
 			if rc.wikiIndex != nil {
@@ -1120,6 +1139,7 @@ func (rc *researchControl) runOne(ctx context.Context, question, replayOf string
 					// Non-fatal: file is on disk; next wiki_search still triggers
 					// the lazy reindex path (wiki.go:340-344) as a fallback.
 					rc.say("⚠ wiki indexed file but reindex failed: %v", rerr)
+					research.WikiFailed.Log(ctx, "op", "reindex", "err", rerr)
 				}
 			}
 		}
@@ -1336,7 +1356,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	}
 	rt := newTeamRuntime(TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: shared, Skills: skillStore,
-		Embedder: skEmb, EmbedderID: string(embProfile.ID), Compressor: &compress.Compressor{Router: router, Logger: log},
+		Embedder: skEmb, EmbedderID: string(embProfile.ID), Compressor: &compress.Compressor{Router: router},
 		Profile: prof, OrchID: c.agent, Log: log, Observe: observe, Budgets: budgets,
 		Web: teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
@@ -1356,6 +1376,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 	rstore, serr := research.New(c.dataDir)
 	if serr != nil {
 		say("⚠ couldn't open research store: %v — running without audit log", serr)
+		research.RecordFailed.Log(ctx, "op", "open the store", "err", serr)
 		rstore = nil
 	}
 
@@ -1398,6 +1419,7 @@ func cmdResearch(ctx context.Context, args []string) error {
 		path, werr := writeWikiReport(wikiFlagsOf(pf).dir, question, report)
 		if werr != nil {
 			say("⚠ couldn't write to wiki (%v) — printing instead", werr)
+			research.WikiFailed.Log(ctx, "op", "write the report", "err", werr)
 			fmt.Println(report)
 			return nil
 		}

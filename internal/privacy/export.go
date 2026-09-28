@@ -101,6 +101,14 @@ func Export(ctx context.Context, d Data, opts ExportOptions) (*ExportResult, err
 		res.Rows[t.file] = n
 		readme = append(readme, fmt.Sprintf("- `%s` (%d): %s", t.file, n, t.about))
 	}
+	// The log book, sensitive fields included.
+	if n, err := exportLogbook(ctx, d, opts.Agent, filepath.Join(out, "logbook.jsonl")); err == nil {
+		res.Rows["logbook.jsonl"] = n
+		readme = append(readme, fmt.Sprintf("- `logbook.jsonl` (%d): the log book's events (with --only-agent, those of the agent's sessions and runs), "+
+			"fields marked sensitive included and unmasked; Level runs from 1 critical to 5 verbose", n))
+	} else if !missing(err) {
+		return nil, fmt.Errorf("privacy: export the log book: %w", err)
+	}
 	// Plain files.
 	profiles, _ := filepath.Glob(d.path("profile.*.md"))
 	for _, p := range profiles {
@@ -188,9 +196,10 @@ func writeReadme(out string, d Data, opts ExportOptions, lines []string) error {
 		"the store's own column names. Times named `ts`, `first_seen`, `last_confirmed`,\n" +
 		"`removed_at`, `updated_at`, `created_at` and `changed_at` are Unix seconds;\n" +
 		"text times are RFC 3339. Embedding vectors are left out.\n\n" +
-		"Not included: the log book (`logs/`, operational lines kept for `logs.retention_days`),\n" +
-		"the route decision log (prompt hashes, not text), credentials and keys, and your\n" +
-		"wiki vault, which is your own folder.\n")
+		"Not included: the log book's text files and archives (`logs/`: the same events as\n" +
+		"logbook.jsonl, or older ones kept for their retention), the route decision log\n" +
+		"(prompt hashes, not text), credentials and keys, and your wiki vault, which is\n" +
+		"your own folder.\n")
 	return fsperm.WriteFile(filepath.Join(out, "README.md"), []byte(b.String()))
 }
 

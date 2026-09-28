@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"tenant/internal/agent"
+	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 )
@@ -470,5 +472,36 @@ func TestProviderKinds_KeyedHaveDefaults(t *testing.T) {
 		if pk.KeyEnv == "" {
 			t.Errorf("%s missing KeyEnv — operators rely on env-var refs", id)
 		}
+	}
+}
+
+// recordUsage files a main-agent call under the launch's model (the backend
+// for echo) with its trace, and does nothing without a ledger (TEN-389).
+func TestRecordUsage(t *testing.T) {
+	s, err := usagestore.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	recordUsage(ctx, s, &commonFlags{agent: "main", backend: "vllm", vllmModel: "qwen"}, 3, 4, "t1")
+	recordUsage(ctx, s, &commonFlags{agent: "main", backend: "echo", vllmModel: "qwen"}, 1, 1, "")
+	recordUsage(ctx, nil, &commonFlags{agent: "main", backend: "vllm"}, 1, 1, "")
+	rows, err := s.DB().Query(`SELECT agent_id, model, tokens_in, tokens_out, coalesce(trace_id, '') FROM token_usage ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var agentID, mdl, trace string
+		var in, out int
+		if err := rows.Scan(&agentID, &mdl, &in, &out, &trace); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s %s %d %d %s", agentID, mdl, in, out, trace))
+	}
+	if want := "main qwen 3 4 t1|main echo 1 1 "; strings.Join(got, "|") != want {
+		t.Fatalf("rows = %q, want %q", strings.Join(got, "|"), want)
 	}
 }

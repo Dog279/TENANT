@@ -2,8 +2,13 @@ package route
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"tenant/internal/runtrace"
 )
 
 type phase4Classifier struct {
@@ -94,6 +99,29 @@ func TestDecisionSurfaceIsRecorded(t *testing.T) {
 	}
 }
 
+// The turn's trace rides the ctx onto the decision and its durable row, so a
+// decision joins its runs.db record (TEN-368).
+func TestDecisionCarriesTheTurnTrace(t *testing.T) {
+	dir := t.TempDir()
+	sig := Signal{Domain: "chat", Complexity: 1, Label: "small", Justification: "j", Raw: "raw"}
+	e := NewEngine(phase4Classifier{sig: sig}, dir, 0)
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("trace-7"))
+	d, err := e.DecideWithPolicy(ctx, PolicyDecisionRequest{AgentID: "a", Prompt: "hi", Mode: ModeShadow, Input: phase4Input()})
+	if err != nil || d.TraceID != "trace-7" {
+		t.Fatalf("DecideWithPolicy: trace = %q, err = %v; want trace-7", d.TraceID, err)
+	}
+	if d := e.Decide(ctx, "a", "s", "hi", ModeShadow); d.TraceID != "trace-7" {
+		t.Fatalf("Decide: trace = %q, want trace-7", d.TraceID)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, DecisionLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), `"trace_id":"trace-7"`); got != 2 {
+		t.Fatalf("durable rows with the trace = %d, want 2:\n%s", got, raw)
+	}
+}
+
 // TestRetentionSurvivesConcurrentRecords guards the logMu contract: the
 // append-path prune shares the mutex with appends, so concurrent records
 // during a prune must neither race nor drop fresh rows.
@@ -106,11 +134,11 @@ func TestRetentionSurvivesConcurrentRecords(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 25; i++ {
-			e.record(Decision{ID: "a", Timestamp: now})
+			e.record(context.Background(), Decision{ID: "a", Timestamp: now})
 		}
 	}()
 	for i := 0; i < 25; i++ {
-		e.record(Decision{ID: "b", Timestamp: now})
+		e.record(context.Background(), Decision{ID: "b", Timestamp: now})
 	}
 	<-done
 	if got := len(e.decisionsForStats()); got != 50 {

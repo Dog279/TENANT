@@ -80,6 +80,7 @@ func TestHub_WritesDailyFilePerSource(t *testing.T) {
 
 func TestHub_RingCursorAndEviction(t *testing.T) {
 	h := NewMemory(3)
+	wake, _ := h.Subscribe()
 	for i := 0; i < 5; i++ {
 		h.Logf("a", slog.LevelInfo, "m")
 	}
@@ -100,16 +101,42 @@ func TestHub_RingCursorAndEviction(t *testing.T) {
 	if s := h.Sources(); s[0].Count != 3 {
 		t.Errorf("count after eviction = %d, want 3", s[0].Count)
 	}
-	// Notify coalesces: at most one pending wake.
+	// Wake-ups coalesce: at most one pending.
 	select {
-	case <-h.Notify():
+	case <-wake:
 	default:
 		t.Error("expected a pending wake")
 	}
 	select {
-	case <-h.Notify():
+	case <-wake:
 		t.Error("wake must coalesce")
 	default:
+	}
+}
+
+// Every subscriber gets its own wake-up, so a second open tab never waits for
+// the next write (TEN-367); a cancelled one is no longer woken.
+func TestHub_EverySubscriberWakes(t *testing.T) {
+	h := NewMemory(10)
+	a, _ := h.Subscribe()
+	b, cancelB := h.Subscribe()
+	h.Logf("a", slog.LevelInfo, "m")
+	for name, ch := range map[string]<-chan struct{}{"a": a, "b": b} {
+		select {
+		case <-ch:
+		default:
+			t.Errorf("subscriber %s was not woken", name)
+		}
+	}
+	cancelB()
+	h.Logf("a", slog.LevelInfo, "m")
+	select {
+	case <-b:
+		t.Error("a cancelled subscriber must not be woken")
+	default:
+	}
+	if len(h.subs) != 1 {
+		t.Errorf("subs = %d, want 1 after cancel", len(h.subs))
 	}
 }
 
@@ -309,6 +336,30 @@ func TestHub_RetentionPrunesOldFilesOnly(t *testing.T) {
 	_ = hn.Close()
 }
 
+// SetRetention reaches a running hub and prunes at once: the privacy command's
+// setting needs no restart (TEN-367).
+func TestHub_SetRetentionAppliesLive(t *testing.T) {
+	h, root, _ := openHub(t, Options{Retention: -1})
+	dir := filepath.Join(root, "turns")
+	_ = os.MkdirAll(dir, 0o755)
+	for _, n := range []string{"2026-09-01.log", "2026-09-20.log"} {
+		_ = os.WriteFile(filepath.Join(dir, n), []byte("x\n"), 0o644)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.Start(ctx) // retention -1: nothing pruned
+	if _, err := os.Stat(filepath.Join(dir, "2026-09-01.log")); err != nil {
+		t.Fatal("Retention<0 must keep the file")
+	}
+	h.SetRetention(7 * 24 * time.Hour)
+	if _, err := os.Stat(filepath.Join(dir, "2026-09-01.log")); !os.IsNotExist(err) {
+		t.Error("SetRetention should prune the file past the new window")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "2026-09-20.log")); err != nil {
+		t.Error("a file inside the window must stay")
+	}
+}
+
 func TestHub_SizeRoll(t *testing.T) {
 	h, root, _ := openHub(t, Options{MaxFileBytes: 200})
 	for i := 0; i < 6; i++ {
@@ -371,8 +422,8 @@ func TestHub_FilesAndOpenFileArePathSafe(t *testing.T) {
 }
 
 func TestSourceLess_Order(t *testing.T) {
-	names := []string{"zeta", "system", "discord", "alpha", "turns", "subagents"}
-	want := "turns,subagents,discord,alpha,zeta,system"
+	names := []string{"zeta", "system", "shutdown", "discord", "alpha", "privacy", "turns", "sandbox", "subagents"}
+	want := "turns,subagents,discord,sandbox,privacy,shutdown,alpha,zeta,system"
 	for i := 0; i < len(names); i++ {
 		for j := 0; j < len(names)-1-i; j++ {
 			if SourceLess(names[j+1], names[j]) {
@@ -382,6 +433,19 @@ func TestSourceLess_Order(t *testing.T) {
 	}
 	if got := strings.Join(names, ","); got != want {
 		t.Errorf("order = %s, want %s", got, want)
+	}
+}
+
+func TestBuiltin(t *testing.T) {
+	for _, n := range []string{"turns", "approvals", "system", "sandbox", "privacy", "shutdown"} {
+		if !Builtin(n) {
+			t.Errorf("%s is one of Tenant's own sources", n)
+		}
+	}
+	for _, n := range []string{"deploy", "my-sidecar", ""} {
+		if Builtin(n) {
+			t.Errorf("%q is not built in", n)
+		}
 	}
 }
 

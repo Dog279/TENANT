@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	"tenant/internal/tui"
 )
 
 // A hand edit to settings.<agent>.json is applied to the live rules and the
@@ -47,5 +51,46 @@ func TestApplySettingsFile_HandEditsApplyLive(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(cfg, "settings.main.json"), []byte("{not json"), 0o644)
 	if got := applySettingsFile(cfg, "main", broker, rules, &mu, stg); got == "" || rules.Mode("mcp:h:1:delete_x") != "deny" {
 		t.Errorf("corrupt file: got %q, rules intact=%v", got, rules.Mode("mcp:h:1:delete_x") == "deny")
+	}
+}
+
+// notADir returns a path under which nothing can be written on any OS: a
+// regular file standing where a config directory should be.
+func notADir(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// "Approve always" on a prompt a tool rule forced saves an allow rule. When the
+// settings file cannot be written the operator is told — the rule is live, but a
+// restart would lose it — instead of believing it was saved.
+func TestApproveAlways_SaveFailureTellsOperator(t *testing.T) {
+	cfgDir := notADir(t)
+	var told []string
+	stg := &settings{}
+	rules := newToolRules()
+	rules.Load(map[string]string{"write_note": "ask"})
+	rules.SetPersist(func(r map[string]string) {
+		stg.ToolRules = r
+		saveSettingsOrTell(stg, cfgDir, "main", func(s string) { told = append(told, s) })
+	})
+	broker := newApprovalBroker(nil)
+	broker.SetRules(rules)
+	go func() {
+		req := <-broker.Requests()
+		broker.Resolve(req.ID, tui.ApproveAlways)
+	}()
+	if !broker.Confirm(context.Background(), "write_note", "a note") {
+		t.Fatal("approve always must let the action run")
+	}
+	if len(told) != 1 || !strings.Contains(told[0], "not saved") {
+		t.Fatalf("the operator was told %q, want one not-saved notice", told)
+	}
+	if m, _, _ := rules.Lookup("write_note"); m != "allow" {
+		t.Errorf("the rule is still live until restart, got %q", m)
 	}
 }

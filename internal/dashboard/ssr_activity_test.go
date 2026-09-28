@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs"
@@ -28,20 +30,22 @@ func TestActivity_BackfillAndReplay(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil)
 	s.SetLogs(l)
 
-	// Page render backfills BOTH entries + stamps the head cursor (2) for the tail.
+	// Page render backfills BOTH entries + stamps the head cursor (2, in this
+	// hub's epoch) for the tail.
 	body := get(t, s, "/activity").Body.String()
 	if !strings.Contains(body, "web_search") || !strings.Contains(body, "boom-marker") {
 		t.Errorf("/activity should backfill retained entries; got:\n%s", body)
 	}
-	if !strings.Contains(body, "cursor=2") {
-		t.Errorf("/activity should stamp head cursor=2; got:\n%s", body)
+	if !strings.Contains(body, "cursor="+l.Epoch()+".2") {
+		t.Errorf("/activity should stamp head cursor=<epoch>.2; got:\n%s", body)
 	}
 	if !strings.Contains(body, `class="src">turns</span>`) {
 		t.Errorf("rows should carry the source chip; got:\n%s", body)
 	}
 
-	// SSE from cursor=1 replays ONLY Seq 2 (id: 2), then the tail blocks until we
-	// cancel. The replay runs before the tail loop, so it's written deterministically.
+	// SSE from cursor=1 (a bare seq, as a page from before epochs sends) replays
+	// ONLY Seq 2 (id: <epoch>.2), then the tail blocks until we cancel. The
+	// replay runs before the tail loop, so it's written deterministically.
 	r := httptest.NewRequest("GET", "/activity/events?cursor=1", nil)
 	ctx, cancel := context.WithCancel(r.Context())
 	r = r.WithContext(ctx)
@@ -52,10 +56,10 @@ func TestActivity_BackfillAndReplay(t *testing.T) {
 	<-done
 
 	out := rec.Body.String()
-	if !strings.Contains(out, "id: 2") {
-		t.Errorf("SSE from cursor=1 should replay Seq 2 with id: 2; got:\n%s", out)
+	if !strings.Contains(out, "id: "+l.Epoch()+".2\n") {
+		t.Errorf("SSE from cursor=1 should replay Seq 2 with id: <epoch>.2; got:\n%s", out)
 	}
-	if strings.Contains(out, "id: 1") {
+	if strings.Contains(out, "id: "+l.Epoch()+".1\n") {
 		t.Errorf("SSE from cursor=1 must NOT replay Seq 1 (already-seen); got:\n%s", out)
 	}
 	if !strings.Contains(out, "boom-marker") {
@@ -63,17 +67,81 @@ func TestActivity_BackfillAndReplay(t *testing.T) {
 	}
 }
 
-// Last-Event-ID header wins over ?cursor= (gap-free resume on reconnect).
+// Last-Event-ID header wins over ?cursor= (gap-free resume on reconnect); a
+// cursor carries its epoch, a bare seq (an older page) has none.
 func TestActivity_LastEventIDResumes(t *testing.T) {
 	r := httptest.NewRequest("GET", "/activity/events?cursor=0", nil)
-	r.Header.Set("Last-Event-ID", "7")
-	if got := activityStartCursor(r); got != 7 {
-		t.Fatalf("Last-Event-ID should win over ?cursor; got %d, want 7", got)
+	r.Header.Set("Last-Event-ID", "ab12.7")
+	if ep, got := activityStartCursor(r); ep != "ab12" || got != 7 {
+		t.Fatalf("Last-Event-ID should win over ?cursor; got %q.%d, want ab12.7", ep, got)
 	}
 	r2 := httptest.NewRequest("GET", "/activity/events?cursor=3", nil)
-	if got := activityStartCursor(r2); got != 3 {
-		t.Fatalf("?cursor should be used when no Last-Event-ID; got %d, want 3", got)
+	if ep, got := activityStartCursor(r2); ep != "" || got != 3 {
+		t.Fatalf("?cursor should be used when no Last-Event-ID; got %q.%d, want 3", ep, got)
 	}
+}
+
+// A reconnect with a cursor from another epoch (the hub restarted, numbering
+// from 1 again) redraws the feed from the retained ring instead of going
+// quiet until the new head passes the old cursor (TEN-367).
+func TestActivity_RestartRedrawsFeed(t *testing.T) {
+	l := logs.NewMemory(100)
+	logEvent(l, agent.Event{Kind: agent.EventToolCall, Tool: "web_search"})
+	logEvent(l, agent.Event{Kind: agent.EventError, Text: "boom-marker"})
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetLogs(l)
+
+	r := httptest.NewRequest("GET", "/activity/events", nil)
+	r.Header.Set("Last-Event-ID", "0ld3p0ch.5000")
+	ctx, cancel := context.WithCancel(r.Context())
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { s.handleActivitySSE(rec, r.WithContext(ctx)); close(done) }()
+	cancel()
+	<-done
+
+	out := rec.Body.String()
+	for _, want := range []string{"id: " + l.Epoch() + ".2\n", "data: mode inner", "web_search", "boom-marker"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("restart re-sync should contain %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// Two open Activity tabs each get every new line: each stream has its own
+// wake-up (TEN-367).
+func TestActivity_EveryTabWakes(t *testing.T) {
+	l := logs.NewMemory(100)
+	l.Logf("cron", slog.LevelInfo, "first-line")
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetLogs(l)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+	tabs := []*syncResponse{{}, {}}
+	for _, rec := range tabs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.handleActivitySSE(rec, httptest.NewRequest("GET", "/activity/events?cursor=0", nil).WithContext(ctx))
+		}()
+	}
+	waitAll := func(marker string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for _, rec := range tabs {
+			for !strings.Contains(rec.String(), marker) {
+				if time.Now().After(deadline) {
+					t.Fatalf("a tab never showed %q:\n%s", marker, rec.String())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}
+	waitAll("first-line") // both streams have subscribed and replayed
+	l.Logf("cron", slog.LevelInfo, "second-line")
+	waitAll("second-line")
 }
 
 // Nil hub → page renders "unavailable", stream is a no-op (no panic).

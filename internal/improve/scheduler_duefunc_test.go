@@ -12,7 +12,7 @@ import (
 // predicate (interval semantics) cannot double-fire within the window.
 func TestRegisterDue_PredicateControlsFiring(t *testing.T) {
 	var n int32
-	s := NewScheduler(nil, 0)
+	s := NewScheduler(0)
 	day := 24 * time.Hour
 	s.RegisterDue(countJob{&n}, func(lastRun, now time.Time) bool {
 		return lastRun.IsZero() || now.Sub(lastRun) >= day
@@ -41,7 +41,7 @@ func TestRegisterDue_SeedSurvivesRelaunch(t *testing.T) {
 	// Relaunch with a run already recorded an hour ago: not due. This is the
 	// "30 rebuilds in one dev day" case — launches 2..30 must stay silent.
 	var fresh int32
-	s := NewScheduler(nil, 0)
+	s := NewScheduler(0)
 	s.RegisterDue(countJob{&fresh}, due, time.Now().Add(-time.Hour))
 	s.RunDue(context.Background())
 	s.RunDue(context.Background())
@@ -51,7 +51,7 @@ func TestRegisterDue_SeedSurvivesRelaunch(t *testing.T) {
 
 	// First launch of the next day (seed 25h old): due exactly once.
 	var stale int32
-	s2 := NewScheduler(nil, 0)
+	s2 := NewScheduler(0)
 	s2.RegisterDue(countJob{&stale}, due, time.Now().Add(-25*time.Hour))
 	s2.RunDue(context.Background())
 	s2.RunDue(context.Background())
@@ -64,7 +64,7 @@ func TestRegisterDue_SeedSurvivesRelaunch(t *testing.T) {
 // path must not skip them even when the predicate says not-due.
 func TestRegisterDue_RunAllForcesRun(t *testing.T) {
 	var n int32
-	s := NewScheduler(nil, 0)
+	s := NewScheduler(0)
 	s.RegisterDue(countJob{&n}, func(time.Time, time.Time) bool { return false }, time.Now())
 	s.RunAll(context.Background())
 	if got := atomic.LoadInt32(&n); got != 1 {
@@ -77,7 +77,7 @@ func TestRegisterDue_RunAllForcesRun(t *testing.T) {
 func TestOnStart_FiresBeforeRun(t *testing.T) {
 	var n int32
 	var order []string
-	s := NewScheduler(nil, 0)
+	s := NewScheduler(0)
 	s.OnStart = func(name string) { order = append(order, "start:"+name) }
 	s.OnRun = func(rec JobRunRecord) { order = append(order, "done:"+rec.JobName) }
 	s.Register(countJob{&n}, time.Hour)
@@ -91,7 +91,7 @@ func TestOnStart_FiresBeforeRun(t *testing.T) {
 // lastRun still means due at first check (existing semantics preserved).
 func TestRegister_IntervalSemanticsUnchanged(t *testing.T) {
 	var n int32
-	s := NewScheduler(nil, 0)
+	s := NewScheduler(0)
 	s.Register(countJob{&n}, time.Hour)
 	s.RunDue(context.Background())
 	s.RunDue(context.Background())

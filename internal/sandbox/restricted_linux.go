@@ -57,7 +57,7 @@ func (b *linuxRestricted) Start(ctx context.Context, argv []string, pol Policy) 
 	argv = posixLimitArgv(argv, pol.Limits)
 	c := exec.CommandContext(ctx, b.bwrap, bwrapArgs(pol, argv[0], argv[1:])...)
 	c.Env = pol.Env.materialize(os.Environ())
-	return startProcess(c, nil, nil)
+	return startProcess(c, pol.Stderr, nil, nil)
 }
 
 func (b *linuxRestricted) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
@@ -82,7 +82,7 @@ func (b *linuxRestricted) Run(ctx context.Context, cmd Command, pol Policy) (Res
 	// memory/CPU/PIDs, which is why Probe reports Limits as EnforcePartial.
 
 	out, err := c.CombinedOutput()
-	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
+	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
 
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

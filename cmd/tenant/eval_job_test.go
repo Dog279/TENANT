@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"tenant/internal/eval"
+	"tenant/internal/logs/event"
 	"tenant/internal/model"
+	"tenant/internal/runtrace"
 )
 
 // TestEvalNightlyJob_SmokeArtifact runs the nightly job against the smoke
@@ -17,6 +19,7 @@ import (
 // exercises the Job mechanics: run -> write artifact -> JobResult. Live
 // subsets need a model and are covered by the cmdEval path.
 func TestEvalNightlyJob_SmokeArtifact(t *testing.T) {
+	c := captureChannelEvents(t)
 	tmp := t.TempDir()
 	j := &evalNightlyJob{
 		c:            &commonFlags{dataDir: tmp},
@@ -24,7 +27,6 @@ func TestEvalNightlyJob_SmokeArtifact(t *testing.T) {
 		subset:       eval.SubsetSmoke,
 		artifactDir:  filepath.Join(tmp, "artifacts"),
 		baselinePath: filepath.Join(tmp, "does-not-exist.json"), // no check
-		log:          slog.Default(),
 	}
 
 	res, err := j.Run(context.Background())
@@ -62,6 +64,55 @@ func TestEvalNightlyJob_SmokeArtifact(t *testing.T) {
 	}
 	if !sawTrend {
 		t.Error("nightly run should have appended trend.jsonl (TEN-158)")
+	}
+
+	// The run is an activity with its scores, each task a child activity,
+	// and the dead gate and the trend line are catalogued (TEN-395).
+	run := c.matching(eval.Run, event.OpStop)
+	if len(run) != 1 || eventField(run[0], "overall").Value != 100.0 {
+		t.Fatalf("run stop events = %v, want one with overall 100", run)
+	}
+	tasks := c.matching(eval.TaskRun, event.OpStop)
+	if len(tasks) == 0 || len(tasks) != len(c.matching(eval.TaskRun, event.OpStart)) {
+		t.Fatalf("task activities: %d stopped of %d started", len(tasks), len(c.matching(eval.TaskRun, event.OpStart)))
+	}
+	for _, e := range c.matching(eval.TaskRun, event.OpStart) {
+		if e.Corr.RelatedID != run[0].Corr.ActivityID {
+			t.Fatal("a task is not a child activity of its run")
+		}
+	}
+	for _, e := range tasks {
+		if r := eventField(e, "result").Value; r != "pass" {
+			t.Errorf("task %v result = %v, want pass", eventField(e, "task").Value, r)
+		}
+	}
+	if len(c.matching(eval.BaselineMissing, "")) != 1 || len(c.matching(eval.TrendUpdated, "")) != 1 {
+		t.Error("the missing baseline and the trend update are not both catalogued")
+	}
+}
+
+// A run that regressed against its baseline is catalogued with its delta.
+func TestEvalRegressionIsCatalogued(t *testing.T) {
+	c := captureChannelEvents(t)
+	tmp := t.TempDir()
+	base, now := &eval.Report{Subset: eval.SubsetSmoke}, &eval.Report{Subset: eval.SubsetSmoke}
+	for _, id := range strings.Split("abcdefghij", "") {
+		base.Results = append(base.Results, eval.TaskResult{TaskID: id, Score: 100})
+		now.Results = append(now.Results, eval.TaskResult{TaskID: id, Score: 80})
+	}
+	b, err := json.Marshal(eval.NewBaseline(base, "then", "", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(tmp, "baseline.smoke.json")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if e := trendEntryFor(context.Background(), now, path, ""); !e.Regressed {
+		t.Fatalf("entry = %+v, want a regression", e)
+	}
+	if got := c.matching(eval.Regression, ""); len(got) != 1 || !strings.Contains(got[0].Msg, "regressed against its baseline") {
+		t.Fatalf("regression events = %v", got)
 	}
 }
 
@@ -110,5 +161,33 @@ func TestEvalSurfaceIsReadCommsSafe(t *testing.T) {
 	}
 	if !strings.Contains(out, "read/research-only") {
 		t.Errorf("refusal should explain the surface, got: %s", out)
+	}
+}
+
+// Eval turns keep no run records: the operator's runs.db is for real turns,
+// and a nightly eval of 48 tasks would otherwise crowd them out (TEN-368).
+func TestEvalTurnsStayOutOfRunsDB(t *testing.T) {
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	h := &eval.Harness{}
+	cleanup, err := wireLiveHarness(context.Background(), h, c, &pluginFlags{}, eval.SubsetSmoke, evalJudgeOpts{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	runner, done, err := h.AgentFactory(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if _, _, err := runner.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := runtrace.Open(filepath.Join(c.dataDir, "runs.db"), runtrace.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if runs, err := st.List(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("eval turns in the operator's runs.db: %d (err = %v), want none", len(runs), err)
 	}
 }

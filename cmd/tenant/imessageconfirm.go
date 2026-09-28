@@ -37,6 +37,8 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/approval"
+	"tenant/internal/control"
 	"tenant/internal/plugins/imessage"
 )
 
@@ -112,11 +114,18 @@ func (a *imessageApprover) curChat() string {
 // with THIS action only"); no operator / no send path / ctx-cancel / timeout /
 // nonce-deny all DENY (fail closed). Holds no mode/session state.
 func (a *imessageApprover) Confirm(ctx context.Context, action, detail string) bool {
+	return a.decide(ctx, action, detail) == control.ApproveOnce
+}
+
+// decide is Confirm with the cause of a no kept, for the approval record:
+// DenyOnce when the operator denied (or cannot be reached), Expired when
+// nobody answered before the timeout or the turn ended.
+func (a *imessageApprover) decide(ctx context.Context, action, detail string) control.ApprovalDecision {
 	chat := a.curChat()
 	// No operator handle, no send path, or no chat to prompt into ⇒ we cannot
 	// reach the operator ⇒ deny BEFORE registering anything (fail closed).
 	if a.operator == "" || a.sender == nil || chat == "" {
-		return false
+		return control.DenyOnce
 	}
 
 	nonce := genNonce()
@@ -140,15 +149,22 @@ func (a *imessageApprover) Confirm(ctx context.Context, action, detail string) b
 	tctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 	select {
-	case ok := <-reply:
-		return ok // OnReply already texted the operator the outcome
+	case ok := <-reply: // OnReply already texted the operator the outcome
+		// Only the operator's handle can answer (OnReply); the record keeps
+		// the handle out of the log.
+		approval.DecidedBy(ctx, "operator", "nonce", nonce)
+		if ok {
+			return control.ApproveOnce
+		}
+		return control.DenyOnce
 	case <-tctx.Done():
 		// Timed out OR the turn's ctx was cancelled ⇒ deny. We text the operator
 		// only on a real timeout, not on a parent-ctx cancel (process teardown).
 		if ctx.Err() == nil {
 			a.post(chat, fmt.Sprintf("⌛ approval %s expired — denied.", nonce))
 		}
-		return false
+		approval.DecidedBy(ctx, "", "nonce", nonce)
+		return control.Expired
 	}
 }
 
@@ -214,18 +230,17 @@ func (a *imessageApprover) PendingCount() int {
 	return len(a.pending)
 }
 
-// post sends one iMessage best-effort (the approval prompt / echo). Failures are
-// logged, never fatal: a dropped prompt simply means the operator never approves
-// and the action auto-denies on timeout (fail closed).
+// post sends one iMessage best-effort (the approval prompt / echo). A failure is
+// recorded by the sender, the responder's SendText (its Delivery activity), and
+// is never fatal: a dropped prompt simply means the operator never approves and
+// the action auto-denies on timeout (fail closed).
 func (a *imessageApprover) post(chatGUID, text string) {
 	if a.sender == nil || strings.TrimSpace(chatGUID) == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := a.sender.SendText(ctx, chatGUID, text); err != nil && a.log != nil {
-		a.log.Warn("imessage approver: send failed", "err", err)
-	}
+	_, _ = a.sender.SendText(ctx, chatGUID, text)
 }
 
 // parseIMsgApprovalReply recognizes an approval reply and splits it into a verb

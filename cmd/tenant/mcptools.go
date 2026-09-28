@@ -156,8 +156,7 @@ func (p *mcpToolPlugin) add(ctx context.Context, url, trust, reason string) (str
 		return "not approved: the operator declined connecting " + url + ". Do not retry unless they ask you to.", true, nil
 	}
 	info, err := p.ctl.Add(url)
-	if err != nil {
-		p.log.Warn("mcp: adoption failed", "url", url, "err", err.Error())
+	if err != nil { // the connector's log has it (its Connection fails)
 		return "connect failed: " + err.Error() + " — is the server running and serving Streamable HTTP at that URL?", true, nil
 	}
 	names := p.ctl.ToolNames(info.Label)
@@ -170,7 +169,7 @@ func (p *mcpToolPlugin) add(ctx context.Context, url, trust, reason string) (str
 	}
 	if mode != mcpremote.TrustAsk {
 		if _, err := p.ctl.SetTrust(info.Label, mode); err != nil {
-			p.log.Warn("mcp: trust change failed after adoption", "label", info.Label, "err", err.Error())
+			mcpremote.TrustNotSet.Log(connectorLog(info.Label), "server", info.Label, "trust", mode, "err", err)
 			mode = mcpremote.TrustAsk
 		}
 	}

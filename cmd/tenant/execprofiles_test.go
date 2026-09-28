@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
+	"tenant/internal/logs/capture"
+	"tenant/internal/runtrace"
 	"tenant/internal/sandbox"
 )
 
@@ -27,6 +31,93 @@ func TestSandboxRunnerRunsShellCommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "hello-sandbox") {
 		t.Fatalf("output %q does not contain the echoed text", out)
+	}
+}
+
+// os_exec on the host backend is a sandbox Run activity (TEN-364, TEN-388):
+// its start with the command, scrubbed, and the limits, related to the turn
+// it runs in; its exit with the pid, the exit code and the output's tail;
+// then its stop. The command sees the trace and the run's activity.
+func TestHostRunIsFiledInTheSandboxLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell $VAR expansion assumes sh; skipping on windows")
+	}
+	hub := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+	trace := runtrace.NewID()
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan(trace))
+	token := "ghp_" + strings.Repeat("a", 36)
+
+	run := profileRunner(resolveExecProfile(surfaceLocal, "", "", ""), surfaceLocal, nil)
+	out, err := run(ctx, "echo trace=$"+capture.EnvTrace+" act=$"+capture.EnvActivity+"; exit 3 # "+token, 30*time.Second)
+	if err == nil || !strings.Contains(out, "trace="+trace) {
+		t.Fatalf("out = %q, err = %v; want exit 3 and the trace", out, err)
+	}
+	all, _ := hub.Snapshot()
+	var got []string
+	var act string
+	for _, e := range all {
+		if e.Source != "sandbox" || e.Field("backend") != "host" || e.Field("surface") != surfaceLocal {
+			continue
+		}
+		kind := e.Field("event") + " " + e.Field("opcode")
+		got = append(got, kind)
+		switch kind {
+		case "sandbox/1 start":
+			act = e.Field("activity")
+			if cmd := e.Field("command"); strings.Contains(cmd, token) || !strings.Contains(cmd, "«secret:") || e.Field("limits") != "wall=30s" || e.Field("related") != trace {
+				t.Errorf("start = %s", e.Line())
+			}
+		case "sandbox/1001 ":
+			if e.Field("exit") != "3" || e.Field("pid") == "0" || e.Field("tail") != "trace="+trace+" act="+act || e.Level != slog.LevelInfo {
+				t.Errorf("exit = %s", e.Line())
+			}
+		case "sandbox/1 stop":
+			if e.Field("duration") == "" || e.Field("activity") != act {
+				t.Errorf("stop = %s", e.Line())
+			}
+		}
+	}
+	if want := []string{"sandbox/1 start", "sandbox/1001 ", "sandbox/1 stop"}; !slices.Equal(got, want) || act == "" {
+		t.Errorf("sandbox events = %q, want %q", got, want)
+	}
+}
+
+// Each outcome of a refusal has its own event, carrying what was refused,
+// and a backend that is unavailable is an error before anything runs.
+func TestSandboxRefusalsAndUnavailableBackend(t *testing.T) {
+	hub := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+	fs := []sandbox.Violation{{Kind: "filesystem", Detail: "read denied: ~/.ssh"}}
+	for _, c := range []struct {
+		enforce bool
+		res     sandbox.Result
+	}{
+		{true, sandbox.Result{ExitCode: 1, Violations: fs}},                      // refused
+		{false, sandbox.Result{Violations: fs, Escalated: true}},                 // dry run
+		{true, sandbox.Result{Violations: fs, Escalated: true}},                  // escalated
+		{true, sandbox.Result{ExitCode: 1}},                                      // nothing refused
+		{true, sandbox.Result{Violations: []sandbox.Violation{{Kind: "limit"}}}}, // a limit is not a refusal
+	} {
+		logSandboxRun(context.Background(), surfaceDiscord, "restricted", c.enforce, sandbox.Command{Shell: "cat ~/.ssh/id"}, c.res)
+	}
+	if _, err := profileRunner(execProfile{Backend: "container"}, surfaceDiscord, nil)(context.Background(), "true", time.Second); err == nil {
+		t.Fatal("an unavailable backend ran the command")
+	}
+	all, _ := hub.Snapshot()
+	var got []string
+	for _, e := range all {
+		got = append(got, e.Field("event"))
+		if e.Field("event") != "sandbox/3001" && (e.Field("violations") != "filesystem: read denied: ~/.ssh" || e.Level != slog.LevelWarn) {
+			t.Errorf("refusal = %s", e.Line())
+		}
+	}
+	if want := []string{"sandbox/2001", "sandbox/2002", "sandbox/2003", "sandbox/3001"}; !slices.Equal(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
 	}
 }
 

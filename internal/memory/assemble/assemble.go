@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/memory"
 	"tenant/internal/memory/cosine"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -391,6 +392,19 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 			fmt.Sprintf("episodes: kept %d of %d (was %d tokens, now %d)", len(newEps), len(episodes), episodeTokens, newTokens))
 		episodes = newEps
 		episodeTokens = newTokens
+	}
+
+	if req.SemanticStore != nil || req.EpisodicStore != nil {
+		factIDs := make([]int64, len(facts))
+		for i, f := range facts {
+			factIDs[i] = f.ID
+		}
+		episodeIDs := make([]int64, len(episodes))
+		for i, e := range episodes {
+			episodeIDs[i] = e.ID
+		}
+		memory.Retrieved.Log(ctx, "facts", len(facts), "episodes", len(episodes), "fact_ids", factIDs, "episode_ids", episodeIDs,
+			"truncations", r.BudgetReport.Truncations)
 	}
 
 	// --- 5. Measure user query. ---

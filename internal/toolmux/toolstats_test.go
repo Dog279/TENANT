@@ -1,11 +1,15 @@
 package toolmux
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +104,32 @@ func TestToolStats_NilIsOff(t *testing.T) {
 	s.flush()
 	stop := s.StartPersist(time.Minute)
 	stop()
+}
+
+// A flush that cannot write is logged once per streak of failures (the ticker
+// retries every minute), and again after a recovery.
+func TestToolStats_FlushFailureLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	// SetDefault also redirects the log package; put both back.
+	prev, prevOut, prevFlags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer func() { slog.SetDefault(prev); log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
+
+	dir := t.TempDir()
+	s := NewStats(dir, "test")
+	s.path = filepath.Join(dir, "missing", "toolstats.json") // its dir does not exist
+	s.flush()
+	s.flush()
+	if n := strings.Count(buf.String(), "Tool stats not saved"); n != 1 {
+		t.Fatalf("two failed flushes logged %d times, want once: %q", n, buf.String())
+	}
+	s.path = filepath.Join(dir, "toolstats.json")
+	s.flush() // recovers
+	s.path = filepath.Join(dir, "missing", "toolstats.json")
+	s.flush()
+	if n := strings.Count(buf.String(), "Tool stats not saved"); n != 2 {
+		t.Errorf("a new failure after a recovery must be logged again, got %d lines", n)
+	}
 }
 
 // stubDispPlugin serves three tools with distinct outcomes.

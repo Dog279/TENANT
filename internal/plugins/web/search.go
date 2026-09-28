@@ -45,6 +45,7 @@ func NewSearcher(cfg Config) Searcher {
 		guard = newEgressGuard(cfg)
 	}
 	httpClient := guardedHTTPClient(guard, 15*time.Second)
+	httpClient.Transport = Events.Observe(httpClient.Transport) // API failures reach the plugin's log
 	if k := strings.TrimSpace(cfg.tavilyKey()); k != "" {
 		return &tavilySearcher{key: k, http: httpClient}
 	}

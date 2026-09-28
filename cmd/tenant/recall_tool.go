@@ -21,12 +21,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
 	"sync"
 	"time"
 
+	"tenant/internal/memory"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -125,12 +127,14 @@ func (t *recallTool) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	}
 
 	var episodes, facts, archived []string
+	var searchErrs []error
 
 	if t.episodic != nil {
-		hits, _ := t.episodic.Search(ctx, episodic.Query{
+		hits, err := t.episodic.Search(ctx, episodic.Query{
 			AgentIDs: []string{t.agentID}, Embedding: embedding, Keywords: query,
 			K: maxRecallPerSource, After: after,
 		})
+		searchErrs = append(searchErrs, err)
 		for _, h := range hits {
 			if h.Episode == nil || !t.markNew("ep:"+itoa64(h.Episode.ID)) {
 				continue
@@ -142,10 +146,11 @@ func (t *recallTool) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	}
 
 	if t.semantic != nil {
-		hits, _ := t.semantic.Search(ctx, semantic.Query{
+		hits, err := t.semantic.Search(ctx, semantic.Query{
 			AgentIDs: []string{t.agentID}, Embedding: embedding, Keywords: query,
 			K: maxRecallPerSource, After: after,
 		})
+		searchErrs = append(searchErrs, err)
 		for _, h := range hits {
 			if h.Fact == nil || !t.markNew("fact:"+itoa64(h.Fact.ID)) {
 				continue
@@ -181,6 +186,8 @@ func (t *recallTool) Dispatch(ctx context.Context, call model.ToolCall) (string,
 		}
 	}
 
+	memory.Recalled.Log(ctx, "query", query, "scope", a.Scope, "facts", len(facts), "episodes", len(episodes), "archived", len(archived),
+		"err", errors.Join(searchErrs...))
 	if len(episodes) == 0 && len(facts) == 0 && len(archived) == 0 {
 		return "no new memory found for " + fmt.Sprintf("%q", query) + " (already-recalled matches are skipped).", false, nil
 	}

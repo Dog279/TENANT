@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/control"
 	"tenant/internal/plugins/imessage"
 	"tenant/internal/tui"
 )
@@ -327,8 +328,8 @@ func TestIMessageApprover_TimeoutDenies(t *testing.T) {
 	ap.setChat("chatOP")
 
 	start := time.Now()
-	if ap.Confirm(context.Background(), "os_exec", "x") {
-		t.Fatal("Confirm must DENY when no reply arrives before the timeout")
+	if d := ap.decide(context.Background(), "os_exec", "x"); d != control.Expired {
+		t.Fatalf("no reply before the timeout = %v, want Expired (a deny, recorded as expiry)", d)
 	}
 	if time.Since(start) < 25*time.Millisecond {
 		t.Fatal("Confirm returned before the timeout elapsed")

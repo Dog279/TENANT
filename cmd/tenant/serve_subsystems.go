@@ -75,10 +75,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	discordBroker := newDiscordApprovalBroker(d.log.With("source", "approvals"))
 	discordBroker.SetEvents(d.emit) // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
 	discordBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, d.notify, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
 	})
 	if c.lc != nil {
 		discordBroker.LoadModes(c.lc.Relay.Permissions)
@@ -137,11 +134,9 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	}
 	// Feed line + operator DM when a remote connector's sign-in dies / recovers.
 	d.tools.SetMCPAuthNotifier(mcpAuthNotifier(d.notify, relayMgr.NotifyOperator))
+	setWitnessDM(relayMgr.NotifyOperator) // a "discord" Security log witness
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
-			return tui.ApproveOnce
-		}
-		return tui.DenyOnce
+		return relayMgr.askOperator(cctx, req.Action, req.Detail)
 	})
 	discordBroker.SetLock(relayMgr.execLocked) // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
@@ -204,10 +199,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// drain surfaces on the dashboard.
 	imsgBroker := newOffsiteApprovalBroker(d.log.With("source", "approvals"), d.broker)
 	imsgBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, d.notify, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
 	})
 	if c.lc != nil {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
@@ -231,7 +223,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	}
 
 	resp := &imessageResponderManager{
-		base: ctx, log: d.log,
+		base:      ctx,
 		allowFrom: allowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -259,7 +251,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 				compactor: d.compressor, userProfile: d.profile,
 				fullTools: d.tools, fullDisp: d.tools,
 				sysPrompt: d.sysPrompt, log: d.log, routeHook: d.routeHook,
-				routeActive: d.routeActive, routeSticky: d.routeSticky,
+				routeActive: d.routeActive, routeSticky: d.routeSticky, events: d.emit,
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -281,10 +273,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			if approver := newIMessageApprover(responder, imsgOperator, d.log); approver != nil {
 				responder.approver = approver
 				imsgBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-					if approver.Confirm(cctx, req.Action, req.Detail) {
-						return tui.ApproveOnce
-					}
-					return tui.DenyOnce
+					return approver.decide(cctx, req.Action, req.Detail)
 				})
 			}
 			return responder, func() { _ = nat.Close() }, nil
@@ -337,12 +326,13 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	}
 	c := d.c
 	feed := func(line string) {
+		d.log.Info(line) // filed first: a full feed costs only the stdout copy
 		select {
 		case d.feed <- line:
 		default:
 		}
 	}
-	sched := improve.NewScheduler(d.log, 0)
+	sched := improve.NewScheduler(0)
 	sched.Paused = d.degraded.Degraded
 	sched.OnRun = func(rec improve.JobRunRecord) {
 		if line, ok := formatSelfImproveFeedLine(rec); ok {
@@ -387,7 +377,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	// Feedback-driven protection (TEN-255 Phase 4): ACKed turns → protected
 	// facts. Promote-only, no LLM; mirrors the TUI path.
 	sched.Register(&improve.FeedbackProtectionJob{
-		Semantic: d.stores.semantic, Episodic: d.stores.episodic, AgentID: c.agent, Logger: d.log,
+		Semantic: d.stores.semantic, Episodic: d.stores.episodic, AgentID: c.agent,
 	}, d.distillEvery)
 	sched.Register(profileJob{refresh: d.refreshProfile}, d.profileEvery)
 
@@ -395,7 +385,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 	evalCadence := evalTick
 	evalSched := newEvalSchedule(evalDue, evalDesc)
 	seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
-	sched.RegisterDue(newEvalNightlyJob(c, d.pf, d.log, d.events, d.evalProg), evalSched.DueFunc(), seed)
+	sched.RegisterDue(newEvalNightlyJob(c, d.pf, d.events, d.evalProg), evalSched.DueFunc(), seed)
 	if evalDue != nil {
 		d.log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 	}
@@ -406,7 +396,6 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 			Episodic: d.stores.episodic, AgentID: c.agent, BaseDir: c.cfgDir,
 			Proposer: improve.NewLLMSoulProposer(proposerRouter),
 			Scorer:   evalSoulScorer{c: c, pf: d.pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: d.log},
-			Logger:   d.log,
 		}, soulCadence)
 	}
 
@@ -435,7 +424,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		tick = reflectCadence
 	}
 	if err := sched.Start(ctx, schedulerTick(tick)); err != nil {
-		d.log.Warn("self-improve scheduler did not start", "err", err)
+		sysUnavailable.Log(ctx, "component", "self-improve scheduler", "effect", "no background self-improvement", "err", err)
 		return nil, evalSched
 	}
 	return sched, evalSched

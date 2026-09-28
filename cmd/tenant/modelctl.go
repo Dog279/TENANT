@@ -13,6 +13,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/config"
+	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/model"
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/tui"
@@ -138,6 +139,8 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 	if active == "" {
 		active = name
 	}
+	model.Switched.Log(context.Background(), "provider", name, "model", active, "backend", c2.backend,
+		"endpoint", safeDisplayEndpoint(c2.vllmEndpoint))
 	// Probe the new backend NOW so the operator sees connect success/fail in
 	// the feed immediately, instead of discovering a 404 on the next message.
 	status := probeSwap(name, active, c2)
@@ -247,6 +250,8 @@ func probeSwap(name, active string, c2 *commonFlags) string {
 	defer cancel()
 	ms, err := fetchModels(ctx, c2.vllmEndpoint, c2.genAPIKey)
 	if err != nil {
+		model.SwapUnready.Log(ctx, "provider", name, "model", active, "endpoint", safeDisplayEndpoint(c2.vllmEndpoint),
+			"problem", "its endpoint is unreachable: "+err.Error())
 		return fmt.Sprintf("⚠ switched to %q but the endpoint is UNREACHABLE at %s (%v) — start the server, then send a message to retry",
 			name, c2.vllmEndpoint, err)
 	}
@@ -257,6 +262,8 @@ func probeSwap(name, active string, c2 *commonFlags) string {
 			return fmt.Sprintf("✓ now using %q — connected: %s @ %s (live, no restart)", name, active, c2.vllmEndpoint)
 		}
 	}
+	model.SwapUnready.Log(ctx, "provider", name, "model", active, "endpoint", safeDisplayEndpoint(c2.vllmEndpoint),
+		"problem", "it does not serve "+active+" (it serves: "+strings.Join(served, ", ")+")")
 	return fmt.Sprintf("⚠ now using %q @ %s, but it does not serve model %q (it serves: %s) — calls may 404; fix with `/model` or set model to \"\" for auto-detect",
 		name, c2.vllmEndpoint, active, strings.Join(served, ", "))
 }
@@ -349,9 +356,13 @@ func (mc *modelControl) SetLoopCeiling(n int) (string, error) {
 		return "", fmt.Errorf("no active router")
 	}
 	updated := r.SetPlanLoopCeiling(n)
-	if lc, err := loadLaunchConfig(mc.cfgDir); err == nil {
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err == nil {
 		lc.PlanLoopCeiling = n
-		_ = lc.Save(mc.cfgDir) // best-effort persistence
+		err = lc.Save(mc.cfgDir)
+	}
+	if err != nil {
+		return "", errNotSaved(fmt.Sprintf("loop ceiling %d", n), err)
 	}
 	return fmt.Sprintf("loop ceiling → %d (updated %d role(s); applies next turn, incl. newly spawned sub-agents)", n, updated), nil
 }
@@ -564,7 +575,13 @@ func (mc *modelControl) AddModel(name, endpoint, toolFormat string) (string, err
 // provider gets registered under its kind id as the name (so `zai` is its
 // own bucket, distinct from any vLLM-with-name-zai an operator might add).
 // Idempotent: re-running with a new key overwrites just the secret.
+// AddCloudModel is the TUI's /model add-cloud; the Keys and Model pages call
+// addCloudModel, naming the dashboard.
 func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
+	return mc.addCloudModel(kindID, apiKey, surfaceTUI)
+}
+
+func (mc *modelControl) addCloudModel(kindID, apiKey, surface string) (string, error) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	kindID = strings.TrimSpace(kindID)
@@ -624,7 +641,7 @@ func (mc *modelControl) AddCloudModel(kindID, apiKey string) (string, error) {
 	// Store the key in protected credentials.json.
 	creds, _ := loadCredentials(mc.cfgDir)
 	creds.Set(kindID, apiKey)
-	if err := creds.Save(mc.cfgDir); err != nil {
+	if err := saveCredentials(mc.cfgDir, creds, surface); err != nil {
 		return "", fmt.Errorf("save credentials: %w", err)
 	}
 	return fmt.Sprintf("added %s backend %q → %s (key stored with owner-only protection). Switch with `/model use %s`. "+
@@ -693,8 +710,13 @@ func (mc *modelControl) addKeylessCatalogProvider(kindID string) (string, error)
 }
 
 // RemoveModel deletes a configured backend (and its stored credential).
-// Refuses to remove the currently-active model — switch first.
+// Refuses to remove the currently-active model — switch first. RemoveModel
+// is the TUI's /model remove; the Model page calls removeModel.
 func (mc *modelControl) RemoveModel(name string) (string, error) {
+	return mc.removeModel(name, surfaceTUI)
+}
+
+func (mc *modelControl) removeModel(name, surface string) (string, error) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	lc, err := loadLaunchConfig(mc.cfgDir)
@@ -708,7 +730,9 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 		return "", fmt.Errorf("%q is the active model — `/model use <other>` first, then remove it", name)
 	}
 	delete(lc.Providers, name)
-	forgetProviderSecret(mc.cfgDir, name)
+	if err := forgetProviderSecret(mc.cfgDir, name, surface); err != nil {
+		return "", err
+	}
 	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
@@ -716,15 +740,21 @@ func (mc *modelControl) RemoveModel(name string) (string, error) {
 }
 
 // forgetProviderSecret drops any stored API key keyed by the provider name.
-func forgetProviderSecret(cfgDir, name string) {
+// An error means the key is still on disk, which the operator removing it
+// must hear about.
+func forgetProviderSecret(cfgDir, name, surface string) error {
 	creds, err := loadCredentials(cfgDir)
 	if err != nil {
-		return
+		return fmt.Errorf("forget the %s key: %w", name, err)
 	}
-	if _, ok := creds.Secrets[name]; ok {
-		delete(creds.Secrets, name)
-		_ = creds.Save(cfgDir)
+	if _, ok := creds.Secrets[name]; !ok {
+		return nil
 	}
+	delete(creds.Secrets, name)
+	if err := saveCredentials(cfgDir, creds, surface); err != nil {
+		return fmt.Errorf("forget the %s key: %w", name, err)
+	}
+	return nil
 }
 
 // cmdModel is the `tenant model` CLI: manage model backends in config.json.
@@ -768,6 +798,7 @@ func cmdModel(_ context.Context, args []string) error {
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	defer fileEvents(c)() // the Security records of the change
 	lc, err := loadLaunchConfig(c.cfgDir)
 	if err != nil {
 		return err
@@ -901,7 +932,7 @@ func cmdModel(_ context.Context, args []string) error {
 		if c.genAPIKey != "" {
 			creds, _ := loadCredentials(c.cfgDir)
 			creds.Set(name, c.genAPIKey)
-			if err := creds.Save(c.cfgDir); err != nil {
+			if err := saveCredentials(c.cfgDir, creds, surfaceCLI); err != nil {
 				return err
 			}
 			pc.Auth = authCfg{Mode: "apikey", Stored: true}
@@ -928,7 +959,9 @@ func cmdModel(_ context.Context, args []string) error {
 			return fmt.Errorf("%q is the active model — `tenant model use <other>` first, then remove it", name)
 		}
 		delete(lc.Providers, name)
-		forgetProviderSecret(c.cfgDir, name)
+		if err := forgetProviderSecret(c.cfgDir, name, surfaceCLI); err != nil {
+			return err
+		}
 		if err := lc.Save(c.cfgDir); err != nil {
 			return err
 		}
@@ -955,5 +988,18 @@ func printModelList(lc *launchConfig) {
 			model = "(auto)"
 		}
 		fmt.Printf("%s %-16s %-10s %-22s %s\n", mark, mi.Name, mi.Kind, model, mi.Endpoint)
+	}
+}
+
+// recordUsage files one main-agent model call in the usage ledger (TEN-167),
+// under the launch's model. A failed write is logged, never returned: the
+// ledger must not block a turn. s may be nil (no ledger).
+func recordUsage(ctx context.Context, s *usagestore.Store, c *commonFlags, in, out int, traceID string) {
+	name := c.vllmModel
+	if c.backend == "echo" || name == "" {
+		name = c.backend
+	}
+	if err := s.Record(ctx, c.agent, name, in, out, traceID); err != nil {
+		model.UsageUnrecorded.Log(ctx, "model", name, "err", err)
 	}
 }

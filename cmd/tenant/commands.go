@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,7 +24,6 @@ import (
 	"tenant/internal/httplimits"
 	"tenant/internal/improve"
 	"tenant/internal/lifecycle"
-	"tenant/internal/logs"
 	"tenant/internal/mcp"
 	"tenant/internal/mcp/transport"
 	"tenant/internal/mcpserver"
@@ -204,7 +202,7 @@ func cmdDistill(ctx context.Context, args []string) error {
 
 	d := &distill.Distiller{
 		Router: router, Episodic: st.episodic, Semantic: st.semantic,
-		AgentID: c.agent, Logger: log,
+		AgentID: c.agent,
 	}
 	job := improve.NewDistillJob(d, meta, c.agent)
 	res, err := job.Run(ctx)
@@ -513,7 +511,7 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 		// no setOnChange persistence here, because curation belongs to the
 		// interactive surfaces, not to a bridge process reacting to a remote client.
 		if stg, serr := loadSettings(c.cfgDir, c.agent); serr != nil {
-			log.Warn("mcp-memory: could not load saved tool states", "err", serr)
+			sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the bridge shows every tool's default state", "err", serr)
 		} else {
 			for _, note := range mux.Restore(stg.Tools) {
 				log.Info("mcp-memory settings", "note", note)
@@ -1631,7 +1629,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	// hit Search's no-embedder fallback and ship the FULL enabled catalog every
 	// turn. Lazy precompute on first ranked Search; nil embedder ⇒ unranked floor.
 	shared.SetEmbedder(embedderID, skEmb)
-	compressor := &compress.Compressor{Router: router, Logger: log}
+	compressor := &compress.Compressor{Router: router}
 	prof, _ := userprofile.Load(c.dataDir, c.agent)
 
 	budgets := configuredBudgets(c.lc)
@@ -1767,7 +1765,7 @@ func oneLineStr(s string) string { return strings.Join(strings.Fields(s), " ") }
 // tool dispatcher can be wired in (the agent takes any), but v1 ships
 // the memory-chat experience. Logs go to <data>/tui.log so they don't
 // corrupt the alt-screen.
-func cmdTUI(ctx context.Context, args []string) error {
+func cmdTUI(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs)
@@ -1802,33 +1800,34 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// The unified log book replaces <data>/tui.log: every subsystem's lines are
 	// filed under <data>/logs/<source>/<day>.log and retained for the dashboard
 	// feed. Nothing goes to stderr — the alt-screen must stay clean.
-	hub, herr := openLogHub(c)
-	if herr != nil {
-		hub = logs.NewMemory(0)
-	}
+	hub, log, herr := openLogHub(c, nil)
+	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
 	hub.Start(ctx)
-	log := slog.New(hub.Handler(nil))
-	startRetention(ctx, c, log.With("source", "privacy"))
+	startRetention(ctx, c)
 
 	// Teardown runs in the same stages as serve (internal/lifecycle, TEN-314):
 	// deny pending approvals, stop the peer listener, the relay and the
 	// dashboard, drain cron and self-improvement, then close what they used,
 	// last opened first. Each component registers its stop where it is built.
-	life := lifecycle.New(log.With("source", "shutdown"))
+	life := lifecycle.New(log)
 	defer life.Shutdown()
+	run := beginRun(ctx, "tui") // the system log's start-up and stop (TEN-383)
+	defer run.failed(&err)
+	// The log book's final flush, then the boot record and crash capture
+	// (TEN-373): the first Release steps registered, so they run last.
+	onPanic := startBootRecord(hub, life, "tui")
+	defer onPanic()
 
 	// First-run installer + connectivity check; results seed the feed (and
 	// the system log).
 	sysCh := make(chan string, 64)
-	pushSys := func(s string) {
-		hub.Logf("system", slog.LevelInfo, s)
-		select {
-		case sysCh <- s:
-		default:
-		}
-	}
+	pushTo := func(source, s string) { feedLine(hub, sysCh, source, s) }
+	pushSys := func(s string) { pushTo("system", s) }
+	signInNotice = pushSys // a sign-in URL must not draw over the TUI
+	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	if herr != nil {
+		sysUnavailable.Log(ctx, "component", "the log folder", "effect", "logging to memory only", "err", herr)
 		pushSys("logs: " + herr.Error() + " — logging to memory only")
 	}
 	for _, ln := range ensureSetup(c, pf) {
@@ -1871,7 +1870,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// independent and keeps working).
 	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
 	if uerr != nil {
-		log.Warn("usage ledger unavailable", "err", uerr)
+		sysUnavailable.Log(ctx, "component", "usage ledger", "effect", "token usage is not recorded", "err", uerr)
 	} else {
 		life.Add(lifecycle.Release, "usage ledger", usageStore.Close)
 	}
@@ -1889,6 +1888,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// from the agent goroutine while /enable persists from the UI goroutine.
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
+		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
 	broker.LoadModes(stg.Permissions)
@@ -1896,9 +1896,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		if err := stg.Save(c.cfgDir, c.agent); err != nil {
-			log.Warn("settings save failed", "err", err)
-		}
+		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
 	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
@@ -1984,7 +1982,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		defer profMu.Unlock()
 		prof.AppendRemembered(fact)
 		if err := prof.Save(c.dataDir); err != nil {
-			log.Warn("profile note save failed", "err", err)
+			sysNotSaved.Log(ctx, "what", "the user profile", "err", err)
 		}
 	}
 
@@ -2040,7 +2038,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		return merr
 	}
 	life.Add(lifecycle.Release, "improve meta", meta.Close)
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	// One live-soul holder shared by the agent (reads it each turn) and the
@@ -2073,7 +2071,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
+	compressor := &compress.Compressor{Router: router}
 
 	// Sub-agent activity flows to the TUI as structured TeamEvents — shown
 	// in the feed AND summed into the separate team token counter. Only the
@@ -2283,7 +2281,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				smeLive.Set(rendered)
 			}
 		} else {
-			log.Warn("sme: init failed; project SME disabled", "err", serr.Error())
+			sysUnavailable.Log(ctx, "component", "project SME", "effect", "no project SME in the prompt", "err", serr)
 		}
 	}
 
@@ -2384,10 +2382,12 @@ func cmdTUI(ctx context.Context, args []string) error {
 		routeHook:    routeRT.Hook(),
 		routeActive:  routeRT.Active,
 		routeSticky:  routeRT.Sticky,
+		events:       emit, // the cron log; the TUI feed skips attributed events
 		cfgDir:       c.cfgDir,
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
 		authProblems: mcpAuthProblemsFn(mainTools), // banner on every summary while a connector's sign-in is dead
+		ask:          broker.Ask,                   // an alert's investigation asks first (TEN-400)
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {
@@ -2412,7 +2412,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
-		}, log.With("source", "cron"))
+		})
 		// While degraded (echo), defer ALL cron runs and force catch-up off — a
 		// scheduled agent turn would act on a fake plan, and an exec/shell job
 		// could run real side effects. Set BEFORE Prime so catch-up honors it.
@@ -2423,8 +2423,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 			Catchup:  cronCatchup,
 			PerRun:   cronPerRun(c.lc),
 			History:  loadCronHistory(c.dataDir),
-			HistoryPersist: func(h []cron.RunRecord) error {
-				return saveCronHistory(c.dataDir, h)
+			HistoryPersist: func(r cron.RunRecord) error {
+				return appendCronHistory(c.dataDir, r)
 			},
 		})
 		cronEngine.SetNotify(pushSys)
@@ -2441,7 +2441,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
 		}
-		life.AddFunc(lifecycle.Drain, "cron", cronEngine.Stop) // cancel any in-flight cron run + drain the loop
+		life.StartFunc(lifecycle.Drain, "cron", lifecycle.Subsystem, "cron", cronEngine.Stop) // cancel any in-flight cron run + drain the loop
 	}
 
 	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
@@ -2481,6 +2481,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
+			sysUnavailable.Log(ctx, "component", "the new embedder", "effect", "tool ranking keeps the old one", "err", err)
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
@@ -2500,7 +2501,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// Watched-repo list for the Integrations page; shares storage and
 		// semantics with the TUI /github command via githubTUIControl.
 		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
-		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceDashboard},
 		// Skills page (TEN-202) reuses the same skill store as the TUI /skills.
 		// Models page (TEN-204) reuses modelCtl. Eval (TEN-201) wired below,
 		// after evalSched is built.
@@ -2512,6 +2513,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 		rules:     dashRules{defaultToolRules},
 		broker:    evBroker,
 		logs:      hub, // the log book: Activity backfill + replay + the folders on disk
+		runs:      st.runs,
+		security:  securityLogAPI(c),
+		alerts:    alertRulesAPI(c), // the alert rules in config.json (TEN-399)
 		log:       log.With("source", "dashboard"),
 		notify:    pushSys,
 		persist: func(enabled bool) error {
@@ -2527,12 +2531,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// dashboard onto the operator's tailnet via `tailscale serve`. It reads the
 	// dashboard's port + running state from dashMgr.Status, and persists the serve
 	// choice so it is re-asserted at next launch (below, after dashMgr.Enable).
-	tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
+	tsMgr := newTailscaleManager(ctx, dashMgr)
 	tsMgr.persist = func(serve bool) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Tailscale.Serve = serve })
+		persistChoice(c.cfgDir, c.lc, pushSys, "tailscale: the serve choice", func(lc *launchConfig) { lc.Tailscale.Serve = serve })
 	}
 
 	// NOTE: dashMgr.Enable() is deferred until after the self-improve block
@@ -2571,10 +2572,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
 	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
 	discordBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Relay.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
 	})
 	if c.lc != nil {
 		discordBroker.LoadModes(c.lc.Relay.Permissions)
@@ -2589,6 +2587,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			compactor: compressor, userProfile: prof,
 			fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 			sysPrompt: sysPrompt, log: log.With("source", "discord"), gateConfirm: discordBroker.Confirm,
+			events:      emit,
 			routeHook:   routeRT.Hook(),
 			routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 		}); derr != nil {
@@ -2632,6 +2631,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 				sysPrompt: sysPrompt, log: log.With("source", "discord"), gateConfirm: discordBroker.Confirm,
+				events:      emit,
 				routeHook:   routeRT.Hook(),
 				routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
 			})
@@ -2646,11 +2646,9 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// three days while the brief's Jira section quietly emptied): feed line AND
 	// a direct DM to the operator, who is usually remote exactly when it matters.
 	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(pushSys, relayMgr.NotifyOperator))
+	setWitnessDM(relayMgr.NotifyOperator) // a "discord" Security log witness
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-		if relayMgr.askOperator(cctx, req.Action, req.Detail) {
-			return tui.ApproveOnce
-		}
-		return tui.DenyOnce
+		return relayMgr.askOperator(cctx, req.Action, req.Detail)
 	})
 	discordBroker.SetLock(relayMgr.execLocked) // exec mode off ⇒ exec/write/destructive/sandbox/send refused (TEN-338)
 	if c.lc != nil {
@@ -2689,10 +2687,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log.With("source", "approvals"), broker)
 	imsgBroker.SetPersist(func(snap map[string]string) {
-		if c.lc == nil {
-			return
-		}
-		_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+		persistChoice(c.cfgDir, c.lc, pushSys, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
 	})
 	if c.lc != nil {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
@@ -2716,7 +2711,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// prompts the operator at this TUI). enabled is persisted so it auto-starts
 	// next launch. Best-effort: a setup failure is a feed note, never fatal.
 	imsgResp := &imessageResponderManager{
-		base: ctx, log: log.With("source", "imessage"),
+		base:      ctx,
 		allowFrom: imsgAllowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -2744,7 +2739,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 				compactor: compressor, userProfile: prof,
 				fullTools: mainTools, fullDisp: mainTools, // live registry (TEN-229)
 				sysPrompt: sysPrompt, log: log.With("source", "imessage"), routeHook: routeRT.Hook(),
-				routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
+				routeActive: routeRT.Active, routeSticky: routeRT.Sticky, events: emit,
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -2768,10 +2763,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 			if approver := newIMessageApprover(resp, imsgOperator, log.With("source", "imessage")); approver != nil {
 				resp.approver = approver
 				imsgBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
-					if approver.Confirm(cctx, req.Action, req.Detail) {
-						return tui.ApproveOnce
-					}
-					return tui.DenyOnce
+					return approver.decide(cctx, req.Action, req.Detail)
 				})
 			}
 			return resp, func() { _ = nat.Close() }, nil
@@ -2796,20 +2788,15 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// changes for the next launch instead of re-arming a running scheduler.
 	var evalSched *evalSchedule
 	if *selfImprove {
-		sched = improve.NewScheduler(log, 0)
-		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop)
+		sched = improve.NewScheduler(0)
+		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop)
 		// While the model is degraded to echo, suspend ALL self-improvement:
 		// consolidation/profile jobs would persist echo-derived garbage and the
 		// distill cursor would skip episodes never really processed.
 		sched.Paused = degraded.Degraded
 		sched.OnRun = func(rec improve.JobRunRecord) {
-			line, ok := formatSelfImproveFeedLine(rec)
-			if !ok {
-				return
-			}
-			select {
-			case sysCh <- line:
-			default: // never block a job on a slow UI
+			if line, ok := formatSelfImproveFeedLine(rec); ok {
+				pushTo("improve", line) // never blocks a job on a slow UI
 			}
 		}
 		// Start lines ONLY for the eval: it runs for minutes, so without an
@@ -2817,12 +2804,8 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// result. The frequent cheap jobs (distill every 30m) would spam the
 		// feed with start lines for runs that finish in seconds.
 		sched.OnStart = func(name string) {
-			if name != "eval-nightly" {
-				return
-			}
-			select {
-			case sysCh <- "improve: eval-nightly started — full live suite on its own router+tools; takes minutes, the result lands here and in trend.jsonl":
-			default: // never block a job on a slow UI
+			if name == "eval-nightly" {
+				pushTo("improve", "improve: eval-nightly started — full live suite on its own router+tools; takes minutes, the result lands here and in trend.jsonl")
 			}
 		}
 		sched.Register(distillJob, *distillEvery)
@@ -2871,7 +2854,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// real use. Promote-only (never auto-unprotects), no LLM, cheap; runs on
 		// the distill cadence right after new facts land.
 		sched.Register(&improve.FeedbackProtectionJob{
-			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent, Logger: log,
+			Semantic: st.semantic, Episodic: st.episodic, AgentID: c.agent,
 		}, *distillEvery)
 		// Profile re-synthesis runs on its OWN cadence (--profile-every,
 		// default 15m). Distillation is cheap and benefits from being
@@ -2901,7 +2884,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		// force-fire an off eval.
 		evalSched = newEvalSchedule(evalDue, evalDesc)
 		seed := latestTrendTime(filepath.Join(c.dataDir, "eval-artifacts"))
-		sched.RegisterDue(newEvalNightlyJob(c, pf, log, nil, nil), evalSched.DueFunc(), seed)
+		sched.RegisterDue(newEvalNightlyJob(c, pf, nil, nil), evalSched.DueFunc(), seed)
 		if evalDue != nil {
 			log.Info("nightly eval armed", "schedule", evalDesc, "clock_seed", seed.Format(time.RFC3339))
 		}
@@ -2920,7 +2903,6 @@ func cmdTUI(ctx context.Context, args []string) error {
 				// model than the one it will actually run under.
 				Proposer: improve.NewLLMSoulProposer(proposerRouter),
 				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: log},
-				Logger:   log,
 			}, soulCadence)
 		}
 		// Reflection / SME synthesis (TEN-255 Phase 3): config-gated, OFF by
@@ -2978,7 +2960,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		if addr, derr := dashMgr.Enable(); derr != nil {
 			pushSys("dashboard: " + derr.Error())
 		} else {
-			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
+			pushSys(dashboardServingLine(addr, c.cfgDir, c.lc))
 		}
 	}
 
@@ -3007,7 +2989,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// Peer liveness heartbeat (TEN-250): the registry is fed by the listener's
 	// inbound OnAuth hook + a background outbound prober, and read by /peer.
 	peerHealth := newPeerHealthRegistry()
-	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log.With("source", "peering")}).run(ctx)
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
@@ -3038,14 +3020,13 @@ func cmdTUI(ctx context.Context, args []string) error {
 			peerSrvStop()
 			peerSrvStop = nil
 		}
-		bound, stop, err := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, addr, log.With("source", "peering"))
+		bound, stop, err := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, addr)
 		if err != nil {
 			return "", err
 		}
 		peerSrvStop = stop
-		if c.lc != nil { // persist so it restarts on the next launch
-			_ = persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Peer.Listen = addr })
-		}
+		// persist so it restarts on the next launch
+		persistChoice(c.cfgDir, c.lc, pushSys, "peer: the listen address", func(lc *launchConfig) { lc.Peer.Listen = addr })
 		return bound, nil
 	}
 	if c.lc != nil && c.lc.Peer.Listen != "" {
@@ -3064,17 +3045,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 	// sub-agent tool activity already flows via teamCh. The report returns to
 	// the chat pane. Reuses the same TeamRuntime as the orchestrator.
 	researchSay := func(format string, a ...any) {
-		select {
-		case sysCh <- "research: " + fmt.Sprintf(format, a...):
-		default:
-		}
+		pushTo("research", "research: "+fmt.Sprintf(format, a...))
 	}
 	// C3: open the persistent research store under <data>/research. Failure
 	// degrades gracefully — runWithPersistence handles a nil store, /research
 	// history will surface "unavailable" cleanly.
 	rstore, rerr := research.New(c.dataDir)
 	if rerr != nil {
-		log.Warn("research store unavailable; /research history disabled", "err", rerr)
+		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
 		rstore = nil
 	}
 	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
@@ -3093,6 +3071,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		}
 		return fmt.Sprintf("connected to %s — %d tools live (gated)", info.Label, info.ToolCount), nil
 	}
+	run.ready()
 	err = tui.Run(ctx, tui.Config{
 		Agent: ag, Events: evCh, AgentID: c.agent, Backend: c.backend, Model: modelName, System: sysCh,
 		SavePath: filepath.Join(c.dataDir, "transcript.txt"), Tools: mainTools,
@@ -3119,10 +3098,11 @@ func cmdTUI(ctx context.Context, args []string) error {
 		Relay:           relayMgr,
 		IMessage:        imsgAllowMgr,
 		Cron:            tuiCronCtl,
+		Logs:            newTUILogs(hub, st.runs),
 		MCP:             mcpCtl,
 		GitHub:          githubTUIControl{cfgDir: c.cfgDir, lc: c.lc},
 		Peer:            peerTUIControl{cfgDir: c.cfgDir, serve: peerServeFn, reconnect: func() { mux.ReconnectPeersSilently(c.cfgDir) }, stats: peerFedStatsView(mux), health: peerHealth.tuiHealth},
-		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl}},
+		Secrets:         tuiKeys{dk: dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceTUI}},
 		Setup:           setupControl{cfgDir: c.cfgDir, mc: modelCtl},
 		Models:          modelCtl,
 		// TEN-64: `/skill` (singular) integration-config surface. Bridges
@@ -3134,6 +3114,7 @@ func cmdTUI(ctx context.Context, args []string) error {
 		SkillConfig: func() *skillCfgControl {
 			sc := newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled, atlassianMCP)
 			sc.onDiscordConfigured = relayMgr.ReconfigureAndStart
+			sc.surface = surfaceTUI
 			return sc
 		}(),
 		Research: &researchControl{
@@ -3156,15 +3137,14 @@ func cmdTUI(ctx context.Context, args []string) error {
 		TeamEvents:       teamCh,
 		ResearchTimeline: timelineCh,
 		// TEN-167: persist each MAIN-agent LLM call's token usage for
-		// long-term cost audit. Non-fatal — closure swallows errors so a
-		// ledger issue never blocks the UI.
-		RecordUsage: func(in, out int) {
-			if usageStore != nil {
-				_ = usageStore.Record(ctx, c.agent, modelName, in, out)
-			}
+		// long-term cost audit. Non-fatal: a failed write is logged (model
+		// 3002), so a ledger issue never blocks the UI.
+		RecordUsage: func(in, out int, traceID string) {
+			recordUsage(ctx, usageStore, c, in, out, traceID)
 		},
 	})
 	life.Shutdown() // each failed step is logged
+	run.stopped(ctx, err)
 	return err
 }
 

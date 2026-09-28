@@ -2,10 +2,15 @@ package lifecycle
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/event/eventtest"
 )
 
 // Stages run in order, and within a stage the last added stops first.
@@ -111,4 +116,63 @@ func TestNilStopsAreIgnored(t *testing.T) {
 	if steps := g.Steps(); len(steps) != 0 {
 		t.Fatalf("Steps = %v", steps)
 	}
+}
+
+// The shutdown and each stage with a stop are activities in the system log
+// (TEN-383): a start, then a stop or a fail with the duration. A failed or
+// panicking stop is an event under its stage's activity.
+func TestShutdownIsFiledAsActivities(t *testing.T) {
+	rec := eventtest.Capture(t)
+
+	g := New(nil)
+	g.AddFunc(Unblock, "approvals", func() {})
+	g.Add(Intake, "relay", func() error { return errors.New("boom") })
+	g.AddFunc(Release, "store", func() { panic("oops") })
+	_ = g.Shutdown()
+
+	var got []string
+	acts := map[string]string{} // "id/stage" of each start → its activity
+	evs := rec.Events()
+	for _, e := range evs {
+		if e.Log != "system" || e.Provider != "system" || strings.Join(catalog.Group(e.Log), "/") != "Tenant" {
+			t.Errorf("event %d filed in %s/%s", e.ID, e.Provider, e.Log)
+		}
+		stage, _ := field(e, "stage").(string)
+		got = append(got, strings.TrimSpace(fmt.Sprintf("%d %s %s", e.ID, e.Opcode, stage)))
+		switch {
+		case e.Opcode == event.OpStart:
+			acts[fmt.Sprint(e.ID)+stage] = e.Corr.ActivityID
+		case e.Opcode != "" && field(e, "duration") == nil:
+			t.Errorf("%d %s has no duration", e.ID, e.Opcode)
+		}
+	}
+	want := []string{
+		"20 start",
+		"21 start unblock", "21 stop unblock",
+		"21 start intake", "2020  intake", "21 fail intake",
+		"21 start release", "3020  release", "21 fail release",
+		"20 fail",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// A stage belongs to the shutdown, a failed step to its stage.
+	if e := evs[1]; e.Corr.RelatedID != acts["20"] {
+		t.Errorf("stage related = %q, want the shutdown's %q", e.Corr.RelatedID, acts["20"])
+	}
+	if e := evs[4]; e.Corr.ActivityID != acts["21intake"] || field(e, "step") != "relay" {
+		t.Errorf("step failure: activity %q step %v", e.Corr.ActivityID, field(e, "step"))
+	}
+	if e := evs[7]; e.Level != event.Error || !strings.Contains(fmt.Sprint(field(e, "stack")), "lifecycle") {
+		t.Errorf("panic event: level %v, stack %.80v", e.Level, field(e, "stack"))
+	}
+}
+
+func field(e *event.Event, key string) any {
+	for _, f := range e.Data {
+		if f.Key == key {
+			return f.Value
+		}
+	}
+	return nil
 }

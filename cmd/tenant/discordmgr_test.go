@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"tenant/internal/tui"
 )
 
 // TestRelayManager_PermsAndAskOperator covers the TEN-231 wiring: Perms()
@@ -16,7 +18,7 @@ func TestRelayManager_PermsAndAskOperator(t *testing.T) {
 	if bare.Perms() != nil {
 		t.Fatal("Perms() must be nil with no broker (discord unconfigured)")
 	}
-	if bare.askOperator(context.Background(), "os_exec", "ls") {
+	if bare.askOperator(context.Background(), "os_exec", "ls") != tui.DenyOnce {
 		t.Fatal("askOperator must deny when no approver is built (fail closed)")
 	}
 
@@ -30,7 +32,7 @@ func TestRelayManager_PermsAndAskOperator(t *testing.T) {
 	if ok, err := m.Perms().SetPermission(catExec, "deny"); err != nil || !ok {
 		t.Fatalf("SetPermission via Perms() failed: ok=%v err=%v", ok, err)
 	}
-	if m.askOperator(context.Background(), "os_exec", "ls") {
+	if m.askOperator(context.Background(), "os_exec", "ls") != tui.DenyOnce {
 		t.Fatal("askOperator must deny with a nil approver")
 	}
 }

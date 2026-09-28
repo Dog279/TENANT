@@ -3,39 +3,38 @@
 The situation: `tenant` is running (a server, a Mac, wherever) and you are
 adding a custom element — a sidecar, a quality loop, a watcher, a scheduled
 script — that should join the audited record now, without a `tenant` rebuild
-or restart. The log book makes that a drop-in: **a source registers itself the
-first time it writes.**
+or restart. The log book makes that a drop-in: **a log registers itself the
+first time it is written.**
 
 ## Checklist
 
-1. **Pick the source name** — the folder and the tab. Lowercase, `[a-z0-9._-]`,
-   ≤ 40 chars, not one of the built-ins. One element, one source (use `Sub`
-   for a second folder from the same program).
+1. **Pick the source name.** Lowercase, `[a-z0-9._-]`; the element's lines
+   are filed in the log `ext.<name>`. One element, one log (use `Sub` for a
+   second one from the same program).
 2. **Copy `tenantlog.go` in**, set the source (see [01](01-quickstart.md)).
 3. **Decide how it reaches the hub:**
-   - same box, same user → nothing to do; `config.json` is read for the
-     address and token;
+   - same box, same user → nothing to do; Tenant's config dir is read for
+     the address and token;
    - same box, different user (a system service) → set `TENANT_URL` and
      `TENANT_TOKEN` in the service's environment (the token is
-     `dashboard.auth` in Tenant's `config.json`; treat it like a password);
+     `dashboard.auth` in Tenant's `config.json`, or on a default install the
+     `dashboard-auth-token` file beside it; treat it like a password);
    - another box → `TENANT_URL=https://hub:8770` and the token; the
      dashboard must be exposed with TLS + auth (see `docs/serve-runbook.md`);
    - no network at all (a cron job that must not depend on the hub) →
-     `FileOnly: true`, or just run `tenant log …` from the script.
+     `FileOnly: true`: every line waits in the spool for Tenant.
 4. **Build and start the element.** Nothing on the `tenant` side changes.
 5. **Verify:**
 
    ```bash
-   tenant log --list                            # the source appears, "external" or "tenant"
-   tenant attach --follow --source <name>       # lines arrive live
-   ls "<data>/logs/<name>/"                     # the day's file exists
+   tenant logs                                   # ext.<name> is in the list
+   tenant logs query log:ext.<name> --follow     # lines arrive live
    ```
 
-   and open the dashboard → Activity → the new tab. `Ping()` in the program
-   tells you up front whether lines will go live or to the file.
-6. **Retention is automatic:** the hub deletes files older than
-   `logs.retention_days` (30) from every folder under its root, including
-   yours. Copy a file elsewhere if it must outlive that.
+   and open the dashboard → Logs → External. `Ping()` in the program tells
+   you up front whether lines will go live or to the spool.
+6. **Retention is automatic:** `ext.<name>` keeps the operational default
+   (30 days, 64 MB). Change it with `tenant logs config ext.<name> --max-age 90d`.
 
 ## No code at all: write the files
 
@@ -59,27 +58,29 @@ verbatim as an INFO line stamped when it was read. `tenant log backup
 ## Over HTTP from anything
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8770/api/logs/backup" \
+curl -s -X POST "http://127.0.0.1:8770/api/events" \
   -H "Authorization: Bearer $TENANT_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"level":"info","msg":"snapshot ok","fields":{"size":"12G"}}'
+  -d '{"log":"backup","level":"info","msg":"snapshot ok","data":{"size":"12G"}}'
 ```
 
-`GET /api/logs` lists sources; `GET /api/logs/<name>` lists files;
-`GET /api/logs/<name>/<file>` returns one. The full API table is in
-`docs/LOGGING.md`.
+It is filed in `ext.backup`. A batch is one event per line with
+`Content-Type: application/x-ndjson`. An event may set its log, level, time,
+message, data, and `trace` and `activity` (from `TENANT_TRACE_ID` and
+`TENANT_ACTIVITY_ID`); anything else is dropped, and a log or provider that is
+Tenant's own is refused with HTTP 403. `GET /api/events?q=log:ext.backup`
+reads it back. The full API table is in `docs/LOGGING.md`.
 
 ## Rolling back
 
-Stop the element. Its folder and files stay (they are the record); the tab
-stays as long as the folder exists. Delete the folder to remove the tab —
-the hub notices on its next scan.
+Stop the element. Its log stays (it is the record) until retention ages it
+out, or `tenant logs clear ext.<name>` empties it.
 
 ## Upgrading the copy later
 
 `git pull`, then diff your copy against `reference/logging/tenantlog.go`. The
-format section is the only part that must match the hub; the tests in this
-folder tell you if it drifted. A copy that only changed `Defaults`, `Event`
-kinds or transport settings needs no update at all.
+event JSON and the text format are the only parts that must match the hub;
+the tests in this folder tell you if they drifted. A copy that only changed
+`Defaults`, `Event` kinds or transport settings needs no update at all.
 
 ## When it is more than a sidecar
 
@@ -88,4 +89,4 @@ and let the agent adopt it live with `mcp_add` — see [`reference/mcp/`](../mcp
 If it is really a new Tenant subsystem — it runs inside the binary, drives an
 agent, or wants its lines styled like turns — see
 [04 · inside the binary](04-inside-the-binary.md). That path needs a rebuild,
-but the folder and tab work exactly the same way.
+and its log is its own, not under `ext.`.

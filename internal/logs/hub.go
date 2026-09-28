@@ -13,9 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/store"
+	"tenant/internal/runtrace"
 )
 
 const (
@@ -40,6 +43,17 @@ type Options struct {
 	MaxFileBytes  int64         // a day's file rolls to <day>.N.log past this (0 ⇒ 64 MiB)
 	MinLevel      slog.Level    // records below this are dropped (zero ⇒ INFO; use slog.LevelDebug for everything)
 	Now           func() time.Time
+	// Budget returns the log book's retention settings. The housekeeper
+	// reads it every tick, so a changed config.json applies without a
+	// restart (nil ⇒ store.DefaultBudget).
+	Budget func() store.Budget
+	// RateLimit returns each provider and event ID's rate limit, read the
+	// same way (nil or 0 ⇒ 100 a second in bursts of 500; <0 ⇒ none).
+	RateLimit func() (perSecond float64, burst int)
+	// AuditDeny reports whether logs.security.on_failure is deny. It is read
+	// each time a Security record fails to commit, so an edit applies at
+	// once (nil ⇒ continue). audit.go.
+	AuditDeny func() bool
 }
 
 // SourceInfo describes one source (= one folder = one dashboard tab).
@@ -62,8 +76,12 @@ type FileInfo struct {
 // (Install it for package-level For loggers), Start it in daemons so folders
 // dropped by other processes get discovered and tailed, Close it on exit.
 type Hub struct {
-	root string // "" ⇒ memory-only (ring, no files, no discovery)
-	opts Options
+	root  string // "" ⇒ memory-only (ring, no files, no discovery)
+	opts  Options
+	epoch string // names this hub's Seq numbering, which starts at 1 on every Open
+
+	// scrub runs on every entry before the value cap, the ring and the files.
+	scrub Scrubber
 
 	mu       sync.Mutex
 	ring     []Entry
@@ -71,10 +89,18 @@ type Hub struct {
 	sources  map[string]*source
 	lastScan time.Time
 	closed   bool
-	notify   chan struct{}
+	subs     map[chan struct{}]struct{} // one wake-up channel per Subscribe
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	pipe atomic.Pointer[pipeline] // set once a store is attached (pipeline.go)
+	hk   housekeeper              // housekeeper.go
+	lb   logbook                  // logbook.go
+
+	foreignSizes map[string]int64 // each foreign file's size at the intake's last run (intake.go)
+
+	auditFails atomic.Int64 // Security records not written since the last one that was (audit.go)
 }
 
 type source struct {
@@ -125,9 +151,10 @@ func Open(root string, opts Options) (*Hub, error) {
 	return &Hub{
 		root:    root,
 		opts:    opts,
+		epoch:   runtrace.BootID(), // one hub per process
 		next:    1,
 		sources: map[string]*source{},
-		notify:  make(chan struct{}, 1),
+		subs:    map[chan struct{}]struct{}{},
 		stop:    make(chan struct{}),
 	}, nil
 }
@@ -168,6 +195,15 @@ func (h *Hub) Start(ctx context.Context) {
 	}
 	h.wg.Add(1)
 	go h.run(ctx)
+	if h.pipe.Load() != nil {
+		h.Housekeep("retention", retainEvery, h.retain)
+		h.Housekeep("checkpoint", 0, h.checkpointWAL)
+		h.Housekeep("intake", 0, h.intake)
+		h.Housekeep("dead processes", bootsEvery, h.CheckBoots)
+		h.Housekeep("integrity", integrityEvery, h.checkIntegrity)
+		h.wg.Add(1)
+		go h.housekeep(ctx)
+	}
 }
 
 func (h *Hub) run(ctx context.Context) {
@@ -190,8 +226,11 @@ func (h *Hub) run(ctx context.Context) {
 			h.scanTick()
 		case <-pruneT.C:
 			h.mu.Lock()
-			h.pruneLocked()
+			busy := h.pruneLocked()
 			h.mu.Unlock()
+			if busy > 0 {
+				h.Logf("logbook", slog.LevelInfo, "logbook: old log files another process has open were not deleted; retrying at the next prune", "files", busy)
+			}
 		}
 	}
 }
@@ -199,7 +238,13 @@ func (h *Hub) run(ctx context.Context) {
 // Close stops the loops and closes every open file. Idempotent.
 func (h *Hub) Close() error {
 	h.stopOnce.Do(func() { close(h.stop) })
-	h.wg.Wait()
+	h.wg.Wait() // the housekeeper first: its tasks use the store
+	if p := h.pipe.Swap(nil); p != nil {
+		p.close() // flushes into the files and the store while they are open
+	}
+	if h.Degraded() != "" {
+		h.markMirrorOnly("") // this process no longer runs at all
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closed = true
@@ -220,30 +265,17 @@ func (h *Hub) now() time.Time { return h.opts.Now() }
 // reader and never panics: a file that cannot be written is noted on the
 // source (SourceInfo.Err) and the entry still reaches the ring.
 func (h *Hub) Log(e Entry) {
-	if e.Level < h.opts.MinLevel {
+	if e.Level < h.opts.MinLevel && !h.debugging(e.Source) {
 		return
 	}
-	if !ValidSource(e.Source) {
-		if n := NormalizeSource(e.Source); n != "" {
-			e.Source = n
-		} else {
-			e.Source = DefaultSource
-		}
+	if p := h.pipe.Load(); p != nil && p.logEntry(e) {
+		return // the pipeline scrubs, caps, mirrors and commits it
 	}
+	e.Source = cleanSource(e.Source)
 	if e.At.IsZero() {
 		e.At = h.now()
 	}
-	if max := h.opts.MaxFieldBytes; max > 0 {
-		e.Msg = capValue(e.Msg, max)
-		if len(e.Fields) > 0 {
-			fields := make([]Field, len(e.Fields))
-			copy(fields, e.Fields)
-			for i := range fields {
-				fields[i].Value = capValue(fields[i].Value, max)
-			}
-			e.Fields = fields
-		}
-	}
+	e = h.scrub.Entry(e, h.opts.MaxFieldBytes)
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -311,15 +343,36 @@ func (h *Hub) appendLocked(e Entry) {
 }
 
 func (h *Hub) wake() {
-	select {
-	case h.notify <- struct{}{}:
-	default:
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
-// Notify is a coalescing wake-up: a receive means "new entries exist — call
-// Since". Pair with Since for a gap-free live tail.
-func (h *Hub) Notify() <-chan struct{} { return h.notify }
+// Subscribe returns a wake-up channel of the caller's own and a cancel func
+// that drops it. Every write wakes every subscriber; wake-ups coalesce, so a
+// receive means "new entries exist — call Since". Subscribe before the first
+// Since for a gap-free live tail.
+func (h *Hub) Subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.mu.Lock()
+	h.subs[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.subs, ch)
+		h.mu.Unlock()
+	}
+}
+
+// Epoch names this hub's sequence numbering. Seq starts again at 1 each time
+// a hub opens, so a cursor is only meaningful with the epoch it came from: a
+// client holding another epoch's cursor re-syncs from the start of the ring.
+func (h *Hub) Epoch() string { return h.epoch }
 
 // Since returns every retained entry with Seq > cursor (oldest first) plus the
 // new head cursor to pass next time. A cursor older than the ring returns the
@@ -372,11 +425,21 @@ func (h *Hub) Sources() []SourceInfo {
 }
 
 // preferredOrder pins the built-in subsystems to a stable, meaningful order in
-// the dashboard's tab row; everything else follows alphabetically.
+// the dashboard's tab row; everything else follows alphabetically. Its keys
+// are Tenant's own sources (Builtin).
 var preferredOrder = map[string]int{
 	"turns": 0, "subagents": 1, "approvals": 2, "discord": 3, "imessage": 4, "cron": 5,
 	"eval": 6, "improve": 7, "model": 8, "route": 9, "memory": 10, "mcp": 11,
-	"peering": 12, "dashboard": 13, "system": 99,
+	"peering": 12, "dashboard": 13, "sandbox": 14, "privacy": 15, "shutdown": 16,
+	"system": 99,
+}
+
+// Builtin reports whether name is one of Tenant's own sources. The logging
+// API refuses to write into them, so an outside script can't forge an
+// approval or a turn.
+func Builtin(name string) bool {
+	_, ok := preferredOrder[name]
+	return ok
 }
 
 // SourceLess is the tab/display ordering: built-ins in preferredOrder, then
@@ -578,6 +641,12 @@ func (h *Hub) OpenFile(source, name string) (io.ReadCloser, FileInfo, error) {
 
 // --- discovery + tailing ------------------------------------------------------
 
+// recordDirs hold records, not logs: serve's and the TUI's boot records,
+// crash dumps waiting to be filed (TEN-365), the store's archives (TEN-371)
+// and the spool (spool.go). Tailed as sources, a dump would flood the feed
+// one stack line at a time.
+var recordDirs = map[string]bool{"boots": true, "crash": true, "archive": true, spoolDir: true}
+
 // scanLocked registers every valid folder under root not yet known as a
 // FOREIGN source (some other process writes it) and returns the new ones.
 func (h *Hub) scanLocked() []*source {
@@ -588,7 +657,7 @@ func (h *Hub) scanLocked() []*source {
 	}
 	var added []*source
 	for _, e := range ents {
-		if !e.IsDir() || !ValidSource(e.Name()) {
+		if !e.IsDir() || !ValidSource(e.Name()) || recordDirs[e.Name()] {
 			continue
 		}
 		if _, known := h.sources[e.Name()]; known {
@@ -741,7 +810,10 @@ func (h *Hub) lineEntry(s *source, line string) (Entry, bool) {
 	if e.Level < h.opts.MinLevel {
 		return Entry{}, false
 	}
-	return e, true
+	// Older files and other writers may hold secrets. ponytail: the line is
+	// scrubbed whole under h.mu (at most tailReadMax a tick); window it as Log
+	// does if a flooding foreign writer ever shows up.
+	return h.scrub.Entry(e, 0), true
 }
 
 // newestFile picks the file to follow in a folder: the most recently modified
@@ -812,18 +884,41 @@ func tailLines(path string, n int, maxBytes int64) ([]string, int64) {
 
 // --- retention ----------------------------------------------------------------
 
+// SetRetention changes a running hub's retention (as Options.Retention: 0 ⇒
+// 30 days, <0 ⇒ never) and prunes with it at once, so a new setting needs no
+// restart.
+func (h *Hub) SetRetention(d time.Duration) {
+	if d == 0 {
+		d = defaultRetention
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.opts.Retention = d
+	h.pruneLocked()
+}
+
 var dayPrefixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})`)
 
 // pruneLocked deletes files older than the retention window in every source
-// folder (by the date in the file name when it has one, else by mtime). The
-// file currently being written or tailed is never removed.
-func (h *Hub) pruneLocked() {
-	if h.root == "" || h.opts.Retention < 0 {
-		return
+// folder (by the date in the file name when it has one, else by mtime): with
+// a store attached, its log's MaxAge (§6.3). The file currently being written
+// or tailed is never removed. It returns how many old files it could not
+// delete because another process has them open (Windows); the next prune
+// tries again.
+func (h *Hub) pruneLocked() (busy int) {
+	if h.root == "" {
+		return 0
 	}
 	now := h.now()
+	g := h.hk.gate.Load()
 	for _, s := range h.sources {
-		if s.dir == "" {
+		keep := h.opts.Retention
+		if g != nil {
+			if keep = g.policy(s.name).MaxAge; keep == 0 {
+				keep = -1
+			}
+		}
+		if s.dir == "" || keep < 0 {
 			continue
 		}
 		ents, err := os.ReadDir(s.dir)
@@ -851,9 +946,12 @@ func (h *Hub) pruneLocked() {
 				}
 				stamp = fi.ModTime()
 			}
-			if now.Sub(stamp) > h.opts.Retention {
-				_ = os.Remove(p)
+			if now.Sub(stamp) > keep {
+				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+					busy++
+				}
 			}
 		}
 	}
+	return busy
 }

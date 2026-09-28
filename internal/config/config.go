@@ -153,12 +153,102 @@ type Logs struct {
 	Dir string `json:"dir,omitempty"`
 	// RetentionDays deletes a source's files older than this (0 ⇒ 30; -1 ⇒ never).
 	RetentionDays int `json:"retention_days,omitempty"`
-	// Level is the floor for the files + feed: "info" (default) or "debug".
-	// TENANT_LOG=debug also lowers it for that launch.
+	// Level is the floor for the files + feed: "debug", "info" (default),
+	// "warn" or "error". TENANT_LOG=debug also lowers it for that launch.
 	Level string `json:"level,omitempty"`
 	// MaxFieldBytes caps one value (a tool result, an argument blob) per line
 	// (0 ⇒ 4096; -1 ⇒ unlimited).
 	MaxFieldBytes int `json:"max_field_bytes,omitempty"`
+	// Store is ignored: since TEN-378 the log book always keeps every event
+	// in <logs root>/logbook.db as well as the text files, and false only
+	// draws a warning at start.
+	Store *bool `json:"store,omitempty"`
+	// The store's retention (docs/LOGGING.md), applied live. RetentionDays
+	// above is every operational log's max age there too.
+	// BudgetMB caps logbook.db and its WAL together (0 ⇒ 2048; -1 ⇒ no cap).
+	BudgetMB int `json:"budget_mb,omitempty"`
+	// Diagnostic limits every log's diagnostic events together (256 MB, 7 days).
+	Diagnostic LogLimits `json:"diagnostic,omitzero"`
+	// Security limits the Security log (256 MB, 365 days); its oldest records
+	// are archived, never just deleted. It also names the chain's witness.
+	Security SecurityLog `json:"security,omitzero"`
+	// PerLog sets one log's policy, by log name, over its class default
+	// (system: 128 MB, 90 days; any other: 64 MB, retention_days).
+	PerLog map[string]LogPolicy `json:"per_log,omitempty"`
+	// RateLimit caps how fast one provider may write one event (the
+	// Security log is never limited), applied live.
+	RateLimit LogRate `json:"rate_limit,omitzero"`
+	// Alerts are the alert rules (docs/LOGGING.md), read live. An entry
+	// named like a built-in rule (critical, unexpected-exit, audit-failures,
+	// sandbox-unattended, logbook-full) changes or disables it.
+	Alerts []AlertRule `json:"alerts,omitempty"`
+}
+
+// AlertRule is one entry of logs.alerts: a filter in the filter language,
+// an optional threshold, an action and a throttle.
+type AlertRule struct {
+	Name      string         `json:"name"`
+	Filter    string         `json:"filter,omitempty"`
+	Threshold AlertThreshold `json:"threshold,omitzero"`
+	Action    AlertAction    `json:"action,omitzero"`
+	Throttle  string         `json:"throttle,omitempty"` // fire at most once per this long ("" ⇒ 15m; at least 1m)
+	Disabled  bool           `json:"disabled,omitempty"`
+}
+
+// AlertThreshold fires a rule once Count events match within Window (a
+// duration, 10m); without one, every match fires.
+type AlertThreshold struct {
+	Count  int    `json:"count,omitempty"`
+	Window string `json:"window,omitempty"`
+}
+
+// AlertAction is what a firing does besides filing the alert, which the
+// dashboard shows: Kind is dashboard (the default: nothing more), discord
+// or imessage (a message to the operator), cron (a one-off prompt job,
+// Target its prompt), or investigate (a read-only agent turn over the
+// event, once the operator approves it; Target is "", discord or imessage,
+// where its result also goes).
+type AlertAction struct {
+	Kind   string `json:"kind,omitempty"`
+	Target string `json:"target,omitempty"`
+}
+
+// LogRate is a token bucket: PerSecond events a second (0 ⇒ 100; -1 ⇒ no
+// limit), in bursts of up to Burst (0 ⇒ 500).
+type LogRate struct {
+	PerSecond float64 `json:"per_second,omitempty"`
+	Burst     int     `json:"burst,omitempty"`
+}
+
+// LogLimits bounds records by size and age: 0 keeps the default, -1 lifts
+// the limit.
+type LogLimits struct {
+	MaxMB      int `json:"max_mb,omitempty"`
+	MaxAgeDays int `json:"max_age_days,omitempty"`
+}
+
+// SecurityLog is logs.security: LogLimits, plus the witness the chain's head
+// is also sent to at each anchor (docs/LOGGING.md): "" (none), "discord"
+// (the operator's DM), or the path of a file, best on another machine.
+// "peer:<name>" is reserved; no peer call stores a head yet. OnFailure is
+// what a gated action does when its audit record can't be written: continue
+// (the default: it goes ahead, with a critical event and a banner) or deny
+// (refused until records are written again). Read at each failure, so an
+// edit applies at once.
+type SecurityLog struct {
+	MaxMB      int    `json:"max_mb,omitempty"`
+	MaxAgeDays int    `json:"max_age_days,omitempty"`
+	Witness    string `json:"witness,omitempty"`
+	OnFailure  string `json:"on_failure,omitempty"`
+}
+
+// LogPolicy is one log's entry in logs.per_log; a key left out keeps the
+// default.
+type LogPolicy struct {
+	MaxMB      int    `json:"max_mb,omitempty"`       // -1 ⇒ no size limit
+	MaxAgeDays int    `json:"max_age_days,omitempty"` // -1 ⇒ kept forever
+	MinLevel   string `json:"min_level,omitempty"`    // critical, error, warning, info or verbose: less severe events are not written
+	OnFull     string `json:"on_full,omitempty"`      // overwrite, archive or keep
 }
 
 // Privacy is per-class retention (TEN-309).

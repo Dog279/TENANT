@@ -32,9 +32,11 @@ func (d dashModel) Use(name string) (string, error) {
 }
 
 func (d dashModel) AddCloud(kind, apiKey string) (string, error) {
-	return d.mc.AddCloudModel(kind, apiKey)
+	return d.mc.addCloudModel(kind, apiKey, surfaceDashboard)
 }
-func (d dashModel) Remove(name string) (string, error)   { return d.mc.RemoveModel(name) }
+func (d dashModel) Remove(name string) (string, error) {
+	return d.mc.removeModel(name, surfaceDashboard)
+}
 func (d dashModel) LoopCeiling() int                     { return d.mc.LoopCeiling() }
 func (d dashModel) SetLoopCeiling(n int) (string, error) { return d.mc.SetLoopCeiling(n) }
 func (d dashModel) ReloadKeys() (string, error)          { return d.mc.ReloadKeys() }

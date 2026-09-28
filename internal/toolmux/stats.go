@@ -24,6 +24,7 @@ package toolmux
 // night would drown the real usage signal.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -96,6 +97,7 @@ type Stats struct {
 	// otherwise write the same tmp concurrently, and a torn tmp that wins its
 	// rename resets all history at next load.
 	flushMu sync.Mutex
+	failing bool // under flushMu: the last flush failed (logged once per streak)
 
 	role string
 	path string
@@ -259,9 +261,15 @@ func (s *Stats) flush() {
 	defer s.flushMu.Unlock()
 	// Write-temp-then-rename so a crash mid-write never truncates history.
 	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, data, 0o644) == nil {
-		_ = os.Rename(tmp, s.path)
+	err = os.WriteFile(tmp, data, 0o644)
+	if err == nil {
+		err = os.Rename(tmp, s.path)
 	}
+	// The next tick retries, so a streak of failures is logged once.
+	if err != nil && !s.failing {
+		StatsNotSaved.Log(context.Background(), "path", s.path, "err", err)
+	}
+	s.failing = err != nil
 }
 
 // StartPersist flushes on a ticker until the returned stop func runs (which

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRegisterAndForgetMCPRemote(t *testing.T) {
 	m := newToolMux()
@@ -60,5 +63,20 @@ func TestMCPControl_Resolve(t *testing.T) {
 	}
 	if l, _ := a.resolve("nope"); l != "" {
 		t.Error("resolve matched a nonexistent server")
+	}
+}
+
+// A connector change whose config save fails is still applied live, and the
+// surface that asked is told it will not survive a restart.
+func TestMCPControl_RemoveReportsUnsavedChange(t *testing.T) {
+	m := newToolMux()
+	label := m.RegisterMCPRemote("https://x.test/mcp")
+	a := newMCPControl(m, notADir(t), &launchConfig{})
+	removed, err := a.Remove(label)
+	if !removed || err == nil || !strings.Contains(err.Error(), "not saved") {
+		t.Fatalf("Remove = (%v, %v), want (true, a not-saved error)", removed, err)
+	}
+	if len(m.RemoteMCPList()) != 0 {
+		t.Error("the connector must be gone live even though the save failed")
 	}
 }

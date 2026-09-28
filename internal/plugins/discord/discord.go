@@ -169,6 +169,9 @@ func (a *api) do(ctx context.Context, method, path string, q url.Values, body an
 				ae.RetryAfter = time.Duration(secs * float64(time.Second))
 			}
 		}
+		// The path's first segment only: the rest can hold an interaction token.
+		resource, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+		RateLimited.Log(ctx, "method", method, "resource", resource, "retry_after", ae.RetryAfter)
 	}
 	return ae
 }

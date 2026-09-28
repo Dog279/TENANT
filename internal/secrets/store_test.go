@@ -101,3 +101,23 @@ func TestProtectFileRejectsSymlinkAndDirectory(t *testing.T) {
 		t.Fatal("ProtectFile accepted a symlink")
 	}
 }
+
+// The OnWrite hook sees every secret this process writes or creates, and not
+// a create that lost the race.
+func TestOnWriteSeesWritesAndCreates(t *testing.T) {
+	var got []string
+	OnWrite(func(path string) { got = append(got, filepath.Base(path)) })
+	t.Cleanup(func() { OnWrite(nil) })
+	dir := t.TempDir()
+	if err := WriteFile(filepath.Join(dir, "a.json"), []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := CreateExclusive(filepath.Join(dir, "b"), []byte("2")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] != "a.json" || got[1] != "b" {
+		t.Fatalf("hook saw %v, want [a.json b]", got)
+	}
+}

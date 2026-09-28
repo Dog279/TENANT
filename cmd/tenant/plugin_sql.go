@@ -14,7 +14,8 @@ import (
 // Configured by path (--sql-db, or `tenant setup`).
 func sqlPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID: "sql",
+		ID:     "sql",
+		Events: sqlp.Events,
 		External: func(settings map[string]string) map[string]string {
 			return map[string]string{settings["db"]: "SQL plugin database"}
 		},

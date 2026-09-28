@@ -82,6 +82,16 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	out, isErr, err := d.dispatch(ctx, call)
+	// go-atlassian hands a failed token renewal back as the call's error; the
+	// part before it is the request, whose URL may carry the JQL.
+	if i := strings.Index(out, "failed to refresh token"); isErr && i >= 0 {
+		TokenRefreshFailed.Log(ctx, "err", out[i:])
+	}
+	return out, isErr, err
+}
+
+func (d *Dispatcher) dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
 	switch call.Name {
 	case "jira_search":
 		return d.search(ctx, call.Arguments)

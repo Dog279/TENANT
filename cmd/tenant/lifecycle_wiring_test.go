@@ -10,8 +10,8 @@ import (
 
 // shutdownSteps parses fn in file and returns the stops it registers with the
 // lifecycle group (step name → stage), plus any deferred call that is not a
-// mutex unlock, the log hub's close, the signal context's stop or the
-// group's own Shutdown.
+// mutex unlock, the log hub's close, the signal context's stop, the boot
+// record's onPanic, the group's own Shutdown or the run's failed start-up.
 func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, strayDefers []string) {
 	t.Helper()
 	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
@@ -31,7 +31,12 @@ func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, stra
 				if !ok || len(n.Args) < 2 {
 					return true
 				}
-				if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "life" || (sel.Sel.Name != "Add" && sel.Sel.Name != "AddFunc") {
+				switch sel.Sel.Name {
+				case "Add", "AddFunc", "StartFunc": // StartFunc: a component, tracked while it runs
+				default:
+					return true
+				}
+				if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "life" {
 					return true
 				}
 				stage, ok := n.Args[0].(*ast.SelectorExpr)
@@ -45,7 +50,10 @@ func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, stra
 			case *ast.DeferStmt:
 				switch fun := n.Call.Fun.(type) {
 				case *ast.Ident:
-					if fun.Name == "stop" { // the signal context's, released with the process
+					// stop: the signal context's, released with the process.
+					// onPanic: sees a panic before the group's Shutdown runs,
+					// which no lifecycle stop can (TEN-365).
+					if fun.Name == "stop" || fun.Name == "onPanic" {
 						return true
 					}
 					strayDefers = append(strayDefers, fun.Name)
@@ -53,7 +61,9 @@ func shutdownSteps(t *testing.T, file, fn string) (steps map[string]string, stra
 				case *ast.SelectorExpr:
 					if x, ok := fun.X.(*ast.Ident); ok {
 						call := x.Name + "." + fun.Sel.Name
-						if fun.Sel.Name == "Unlock" || call == "hub.Close" || call == "life.Shutdown" {
+						// run.failed files a failed start-up ahead of the
+						// shutdown it causes, and stops nothing (TEN-383).
+						if fun.Sel.Name == "Unlock" || call == "hub.Close" || call == "life.Shutdown" || call == "run.failed" {
 							return true
 						}
 						strayDefers = append(strayDefers, call)

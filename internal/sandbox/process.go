@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type Process struct {
 	done    chan struct{}
 	err     error  // Wait's result; set before done closes
 	release func() // the backend's cleanup once the process has exited
+	killed  atomic.Bool
 }
 
 // Starter is a backend that can start a long-lived process.
@@ -49,9 +51,10 @@ func Start(ctx context.Context, b Backend, argv []string, pol Policy) (*Process,
 }
 
 // startProcess wires the pipes, starts c, runs afterStart (the Windows job
-// assignment) and waits for the exit in the background. release runs once
-// the process has exited, or at once when it fails to start.
-func startProcess(c *exec.Cmd, afterStart func(pid int) error, release func()) (*Process, error) {
+// assignment) and waits for the exit in the background. stderr, when not
+// nil, also gets what the process writes to stderr (Policy.Stderr). release
+// runs once the process has exited, or at once when it fails to start.
+func startProcess(c *exec.Cmd, stderr io.Writer, afterStart func(pid int) error, release func()) (*Process, error) {
 	cleanup := func() {
 		if release != nil {
 			release()
@@ -69,6 +72,9 @@ func startProcess(c *exec.Cmd, afterStart func(pid int) error, release func()) (
 	}
 	tail := &tailBuffer{max: StderrTail}
 	c.Stderr = tail
+	if stderr != nil {
+		c.Stderr = io.MultiWriter(tail, stderr)
+	}
 	if err := c.Start(); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("sandbox: start %s: %w", c.Path, err)
@@ -111,6 +117,9 @@ func (p *Process) Wait() error {
 	return p.err
 }
 
+// Killed reports whether Close had to kill the process after its grace.
+func (p *Process) Killed() bool { return p.killed.Load() }
+
 // Close ends the process the way the MCP stdio transport says to: close its
 // stdin, give it grace to exit, then kill it. It returns once the process has
 // exited, or an error if even a kill did not end it within grace.
@@ -121,6 +130,7 @@ func (p *Process) Close(grace time.Duration) error {
 		return nil
 	case <-time.After(grace):
 	}
+	p.killed.Store(true)
 	_ = p.cmd.Process.Kill()
 	select {
 	case <-p.done:

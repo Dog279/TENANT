@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"tenant/internal/httplimits"
 )
 
 // egressProxy forces Chrome's HTTP, HTTPS, redirect, and subresource traffic
@@ -30,10 +32,8 @@ func startEgressProxy(guard *egressGuard) (*egressProxy, error) {
 	transport.DialContext = guard.DialContext
 	transport.DialTLSContext = nil
 	p := &egressProxy{listener: listener, transport: transport}
-	p.server = &http.Server{
-		Handler:           p,
-		ReadHeaderTimeout: 15 * time.Second,
-	}
+	p.server = &http.Server{Handler: p}
+	httplimits.Configure(p.server)
 	go func() { _ = p.server.Serve(listener) }()
 	return p, nil
 }

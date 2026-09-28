@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"tenant/internal/logs/event"
 )
 
 // Checks adds Tenant's knowledge of its own stores to Verify and Restore.
@@ -47,7 +49,9 @@ func (r *Report) OK() bool { return len(r.Problems) == 0 }
 // before Verify returns. A damaged backup is reported in Report.Problems; the
 // error is for failures to verify at all, like a missing file or a wrong
 // passphrase.
-func Verify(ctx context.Context, path string, keys Keys, checks Checks, workDir string) (*Report, error) {
+func Verify(ctx context.Context, path string, keys Keys, checks Checks, workDir string) (_ *Report, err error) {
+	ctx, act := event.Start(ctx, VerifyRun, "path", path)
+	defer act.End(&err)
 	scratch, err := os.MkdirTemp(workDir, "tenant-verify-")
 	if err != nil {
 		return nil, fmt.Errorf("backup: scratch dir: %w", err)
@@ -57,7 +61,11 @@ func Verify(ctx context.Context, path string, keys Keys, checks Checks, workDir 
 		RootConfig: filepath.Join(scratch, RootConfig),
 		RootData:   filepath.Join(scratch, RootData),
 	}
-	return readAndCheck(ctx, path, keys, checks, roots)
+	rep, err := readAndCheck(ctx, path, keys, checks, roots)
+	if err == nil {
+		logReport(ctx, path, rep)
+	}
+	return rep, err
 }
 
 // readAndCheck extracts the backup at path into roots and checks the result.

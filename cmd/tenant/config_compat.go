@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"fmt"
+
 	"tenant/internal/config"
 	"tenant/internal/orchestra"
 )
@@ -70,8 +73,32 @@ func launchConfigPath(cfgDir string) string { return config.Path(cfgDir) }
 
 func loadLaunchConfig(cfgDir string) (*launchConfig, error) { return config.Load(cfgDir) }
 
+// persistLaunchConfig is config.Persist, with every failed save filed,
+// whoever made it.
 func persistLaunchConfig(cfgDir string, mem *launchConfig, fn func(*launchConfig)) error {
-	return config.Persist(cfgDir, mem, fn)
+	err := config.Persist(cfgDir, mem, fn)
+	if err != nil {
+		sysNotSaved.Log(context.Background(), "what", "config.json", "path", config.Path(cfgDir), "err", err)
+	}
+	return err
+}
+
+// errNotSaved wraps the failed save of an operator choice that has already
+// taken effect: it is live now, and a restart would silently undo it.
+func errNotSaved(what string, err error) error {
+	return fmt.Errorf("%s applies now but was not saved, so a restart will undo it: %w", what, err)
+}
+
+// persistChoice is persistLaunchConfig for a caller with no error path of its
+// own (a persist hook): a failure goes to tell, the operator's status feed,
+// because the operator believes the choice was saved. lc nil = no persistence.
+func persistChoice(cfgDir string, lc *launchConfig, tell func(string), what string, fn func(*launchConfig)) {
+	if lc == nil {
+		return
+	}
+	if err := persistLaunchConfig(cfgDir, lc, fn); err != nil && tell != nil {
+		tell(errNotSaved(what, err).Error())
+	}
 }
 
 func atomicWrite(path string, data []byte) error { return config.AtomicWrite(path, data) }

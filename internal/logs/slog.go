@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"tenant/internal/logs/event"
+	"tenant/internal/runtrace"
 )
 
 // defaultHub is the process-wide hub For() loggers resolve at write time, so a
@@ -16,12 +19,41 @@ import (
 var defaultHub atomic.Pointer[Hub]
 
 // fallback catches records from For() loggers while no hub is installed
-// (one-shot commands, tests): stderr at WARN, like the historical CLI logger.
-var fallback slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})
+// (one-shot commands, tests): stderr at WARN, like the historical CLI logger,
+// unless SetFallback swapped in another handler.
+var fallback atomic.Pointer[slog.Handler]
+
+var stderrWarn slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})
+
+// SetFallback routes For loggers through h while no hub is installed; nil
+// restores stderr at WARN. A one-shot command hands it a handler that files
+// its warnings in the log book as well as printing them.
+func SetFallback(h slog.Handler) {
+	if h == nil {
+		fallback.Store(nil)
+		return
+	}
+	fallback.Store(&h)
+}
+
+func fallbackHandler() slog.Handler {
+	if p := fallback.Load(); p != nil {
+		return *p
+	}
+	return stderrWarn
+}
 
 // Install makes h the hub that For loggers (and anything else asking for
-// Default) write to. Call once at startup, right after Open.
-func Install(h *Hub) { defaultHub.Store(h) }
+// Default) write to, and the emitter of catalogued events (emit.go). Call
+// once at startup, right after Open.
+func Install(h *Hub) {
+	defaultHub.Store(h)
+	if h == nil {
+		event.Install(nil) // not a nil *Hub, which would pass for an emitter
+		return
+	}
+	event.Install(h)
+}
 
 // Default returns the installed hub, or nil before Install.
 func Default() *Hub { return defaultHub.Load() }
@@ -35,6 +67,25 @@ func Default() *Hub { return defaultHub.Load() }
 // It is safe before Install (records go to stderr at WARN until a hub exists)
 // and needs no plumbing: no handle to pass around, nothing to register.
 func For(source string) *slog.Logger { return slog.New(&Handler{source: source}) }
+
+// SourceOf names the folder l files its records in: its fixed source, or the
+// source it was built With. "" when l doesn't write to the log book, or
+// leaves each record to name its own.
+func SourceOf(l *slog.Logger) string {
+	h, ok := l.Handler().(*Handler)
+	if !ok {
+		return ""
+	}
+	if h.source != "" {
+		return h.source
+	}
+	for i := len(h.attrs) - 1; i >= 0; i-- {
+		if h.attrs[i].Key == "source" {
+			return NormalizeSource(h.attrs[i].Value.String())
+		}
+	}
+	return ""
+}
 
 // Handler is a slog.Handler that files records into a Hub. The source is the
 // handler's fixed source (Hub.Logger / For), else a `source` attribute on the
@@ -72,9 +123,9 @@ func (h *Handler) Enabled(ctx context.Context, l slog.Level) bool {
 	}
 	hub := h.resolve()
 	if hub == nil {
-		return fallback.Enabled(ctx, l)
+		return fallbackHandler().Enabled(ctx, l)
 	}
-	return l >= hub.opts.MinLevel
+	return l >= hub.opts.MinLevel || hub.debugAny()
 }
 
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
@@ -83,16 +134,19 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	}
 	hub := h.resolve()
 	if hub == nil {
-		if fallback.Enabled(ctx, r.Level) {
-			fb := fallback
-			if len(h.attrs) > 0 {
-				fb = fb.WithAttrs(h.attrs)
-			}
-			return fb.Handle(ctx, r)
+		fb := fallbackHandler()
+		if !fb.Enabled(ctx, r.Level) {
+			return nil
 		}
-		return nil
+		if h.source != "" { // the fallback may file it too: keep the folder
+			fb = fb.WithAttrs([]slog.Attr{slog.String("source", h.source)})
+		}
+		if len(h.attrs) > 0 {
+			fb = fb.WithAttrs(h.attrs)
+		}
+		return fb.Handle(ctx, r)
 	}
-	if r.Level < hub.opts.MinLevel {
+	if r.Level < hub.opts.MinLevel && !hub.debugAny() { // hub.Log checks the record's own log
 		return nil
 	}
 	src := h.source
@@ -104,6 +158,14 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		addAttr(&fields, &src, h.source == "", a, h.prefix)
 		return true
 	})
+	// A …Context call inside a turn joins the line to its run record, and
+	// inside an activity (a job run, a connection) to that operation.
+	if id := runtrace.IDFromContext(ctx); id != "" {
+		fields = append(fields, Field{Key: "trace", Value: id})
+	}
+	if id := event.ActivityFromContext(ctx); id != "" {
+		fields = append(fields, Field{Key: "activity", Value: id})
+	}
 	if src == "" {
 		src = prefixSource(r.Message)
 	}

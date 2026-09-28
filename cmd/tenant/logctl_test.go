@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"tenant/internal/logs"
+	"tenant/internal/logs/event"
 )
 
 func TestParseInterspersed_FlagsAfterPositionals(t *testing.T) {
@@ -61,8 +65,8 @@ func TestCmdLog_PostsToRunningHub(t *testing.T) {
 	}
 }
 
-// With no hub reachable, the line is appended straight to the day's file in
-// the log-book format, under <data>/logs/<source>/.
+// With no hub reachable, the line is left in the spool as one event, for
+// the next Tenant process to file.
 func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 	data := t.TempDir()
 	err := cmdLog(context.Background(), []string{"--url", "http://127.0.0.1:1", "--data", data, "--config", data,
@@ -70,13 +74,14 @@ func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, _ := filepath.Glob(filepath.Join(data, "logs", "sidecar", "*.log"))
-	if len(files) != 1 {
-		t.Fatalf("expected one daily file, got %v", files)
+	spooled, _ := filepath.Glob(filepath.Join(data, "logs", "spool", "*.ndjson"))
+	if len(spooled) != 1 {
+		t.Fatalf("expected one spool file, got %v", spooled)
 	}
-	b, _ := os.ReadFile(files[0])
-	if !strings.Contains(string(b), "INFO  [sidecar] hello from a script\tk=v\n") {
-		t.Errorf("file line = %q", string(b))
+	var ev event.Event
+	if b, _ := os.ReadFile(spooled[0]); json.Unmarshal(b, &ev) != nil || ev.Log != "sidecar" || ev.Msg != "hello from a script" ||
+		len(ev.Data) != 1 || ev.Data[0].Key != "k" || ev.Data[0].Value != "v" || ev.Level != event.Info {
+		t.Fatalf("spooled %+v", ev)
 	}
 	// A 4xx from a live hub is an error, not a fallback.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -93,5 +98,64 @@ func TestCmdLog_FallsBackToFileWhenHubIsDown(t *testing.T) {
 	}
 	if err := cmdLog(context.Background(), []string{"--data", data, "--config", data, "x", "y", "notakv"}); err == nil {
 		t.Error("a non key=value extra arg must error")
+	}
+}
+
+// With no dashboard.auth the CLI presents the generated token file a default
+// install serves with, and it never writes into one of Tenant's own logs, hub
+// up or not (TEN-367).
+func TestCmdLog_TokenFileAndBuiltinSources(t *testing.T) {
+	auth := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth <- r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ts.Close()
+	cfg, data := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(dashboardAuthTokenPath(cfg), []byte("filetok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdLog(context.Background(), []string{"--url", ts.URL, "--config", cfg, "--data", data, "sidecar", "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-auth; got != "Bearer filetok" {
+		t.Errorf("Authorization = %q, want the token file's", got)
+	}
+	for _, args := range [][]string{{"approvals", "approval approved ap-9", "--file"}, {"--url", ts.URL, "Turns", "x"}} {
+		if err := cmdLog(context.Background(), append([]string{"--config", cfg, "--data", data}, args...)); err == nil || !strings.Contains(err.Error(), "Tenant's own") {
+			t.Errorf("tenant log %v = %v, want a refusal", args, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(data, "logs", "approvals")); err == nil {
+		t.Error("a refused line must not reach the folder")
+	}
+}
+
+// serve and the TUI always attach <logs root>/logbook.db: logs.store: false
+// is ignored since TEN-378, with a warning.
+func TestOpenLogHub_AttachesTheStore(t *testing.T) {
+	defer logs.Install(nil)
+	defer slog.SetDefault(slog.Default())
+	off := false
+	for _, store := range []*bool{nil, &off} {
+		c := &commonFlags{dataDir: t.TempDir(), lc: &launchConfig{Logs: logsConfig{Store: store}}}
+		h, _, err := openLogHub(c, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, statErr := os.Stat(filepath.Join(c.dataDir, "logs", "logbook.db"))
+		if h.Store() == nil || statErr != nil {
+			t.Errorf("logs.store %v: attached %v (logbook.db: %v)", store, h.Store() != nil, statErr)
+		}
+		_ = h.Close()
+		files, _ := filepath.Glob(filepath.Join(c.dataDir, "logs", "logbook", "*.log"))
+		var warned bool
+		for _, f := range files {
+			b, _ := os.ReadFile(f)
+			warned = warned || strings.Contains(string(b), `"store": false} is ignored`)
+		}
+		if warned != (store != nil) {
+			t.Errorf("logs.store %v: warned %v", store, warned)
+		}
 	}
 }

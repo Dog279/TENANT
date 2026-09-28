@@ -18,6 +18,7 @@ import (
 func gsuitePlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:             "gsuite",
+		Events:         gsuite.Events,
 		AdaptConfigure: func(k skillKind, h configureHost) skillKind { return adaptGSuiteForCfgDir(k, h.cfgDir) },
 		Connector:      true,
 		ConfigSecrets:  func(cfg string) []string { return []string{gsuite.EmbeddedOAuthPath(cfg)} },
@@ -204,6 +205,7 @@ func gsuiteRuntimeOAuth(cfg *gsuite.Config, cfgDir string, settings map[string]s
 	creds, _ := loadCredentials(cfgDir)
 	cfg.OAuthCreds = client
 	cfg.OAuthToken = gsuiteCachedToken(creds)
+	cfg.OAuthOpenBrowser = openBrowser // shows the URL in the feed too
 	cfg.OAuthSave = func(t *oauth2.Token) error {
 		b, err := json.Marshal(t)
 		if err != nil {

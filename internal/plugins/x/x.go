@@ -36,7 +36,7 @@ type Service struct {
 func Open(cfg Config) (*Service, error) {
 	h := cfg.HTTP
 	if h == nil {
-		h = http.DefaultClient
+		h = &http.Client{Transport: Events.Observe(nil)} // API failures reach the plugin's log
 	}
 	var userTS tokenSource
 	if cfg.TokenPath != "" {

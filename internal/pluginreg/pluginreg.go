@@ -26,6 +26,9 @@ type Declared interface {
 	// ActionCategories maps each approval action id the plugin raises to its
 	// category: the plugin's permission classes.
 	ActionCategories() map[string]string
+	// PluginEvents is the plugin's event catalog (NewEvents), or nil when
+	// its events belong to another provider (the channels').
+	PluginEvents() *Events
 }
 
 // Registry holds the declared plugins in registration order.
@@ -47,7 +50,8 @@ type Rules struct {
 
 // New checks the descriptors and indexes them. It refuses an empty or
 // duplicate id, a reserved id, a tool two plugins declare, an action two
-// plugins declare, and an action in an unknown category.
+// plugins declare, an action in an unknown category, and an event catalog
+// that is not the plugin's own (checkEvents).
 func New[D Declared](rules Rules, ds ...D) (*Registry[D], error) {
 	r := &Registry[D]{byID: map[string]D{}, byTool: map[string]string{}, byAction: map[string]string{}}
 	cats := map[string]bool{}
@@ -64,6 +68,9 @@ func New[D Declared](rules Rules, ds ...D) (*Registry[D], error) {
 		}
 		if _, dup := r.byID[id]; dup {
 			return nil, fmt.Errorf("pluginreg: plugin %q is declared twice", id)
+		}
+		if err := checkEvents(id, d.PluginEvents()); err != nil {
+			return nil, err
 		}
 		for _, tool := range d.ToolNames() {
 			if owner, dup := r.byTool[tool]; dup {

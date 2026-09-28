@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
@@ -27,17 +28,37 @@ type Result struct {
 // each in one transaction: facts first (so no fact is left pointing at a
 // source that is already gone), then SME sections, skills, episodes, runs and
 // usage, then the archive, files and the user profile.
-func (p *Plan) Apply(ctx context.Context) (*Result, error) {
+func (p *Plan) Apply(ctx context.Context) (res *Result, err error) {
+	ctx, act := event.Start(ctx, Deletion, "reason", p.Reason)
+	defer func() {
+		if res != nil { // what was done is done, even when a later store failed
+			for _, it := range res.Items {
+				Removed.Log(ctx, "data", it.What, "action", it.Action, "count", it.Count, "reason", p.Reason)
+			}
+			for _, w := range res.Warnings {
+				Unfinished.Log(ctx, "warning", w, "reason", p.Reason)
+			}
+		}
+		act.End(&err)
+	}()
 	s, err := p.build(ctx)
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{}
+	res = &Result{}
 	count := func(what, action string, n int) {
 		if n > 0 {
 			res.Items = append(res.Items, Item{What: what, Action: action, Count: n})
 		}
 	}
+	// Backups made before now keep what a forget removes; status counts them.
+	defer func() {
+		if p.Reason == ReasonForget && len(res.Items) > 0 {
+			if err := appendLedger(p.d, ledgerLine{At: p.d.now().UTC(), Forget: true}); err != nil {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("could not record the deletion for `tenant privacy status`: %v", err))
+			}
+		}
+	}()
 	removedAt := p.d.now().Unix()
 
 	// Stores opened through their own packages first, so their newest
@@ -173,6 +194,12 @@ func (p *Plan) Apply(ctx context.Context) (*Result, error) {
 		return nil
 	}, "episodes_fts")
 	if err != nil {
+		return res, err
+	}
+
+	// The log book, before the runs: their trace IDs pick its events, so a
+	// forget that stops here finds them again when it is run again.
+	if err := forgetLogbook(ctx, p.d, &s, res, count); err != nil {
 		return res, err
 	}
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
@@ -541,8 +542,10 @@ func TestRouteRuntimeNamedForcePiercesPrivacyAndLogs(t *testing.T) {
 	if err := router.PinRole(model.RolePlanner, "small"); err != nil {
 		t.Fatal(err)
 	}
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	hub := logs.NewMemory(0)
+	prev := logs.Default()
+	logs.Install(hub)
+	defer logs.Install(prev)
 	rt := &routeRuntime{
 		cfg: resolvedRouteConfig{
 			Enabled: true, Mode: route.ModeActive, NeverCloud: true, ForceProfile: "cloud",
@@ -550,7 +553,7 @@ func TestRouteRuntimeNamedForcePiercesPrivacyAndLogs(t *testing.T) {
 		engine: route.NewEngine(routeClassifierFunc(func(context.Context, string) (route.Signal, error) {
 			return route.Signal{Label: "small", Complexity: 1}, nil
 		}), t.TempDir(), 10),
-		router: router, log: logger,
+		router: router, log: slog.Default(),
 	}
 	if err := rt.bindForce("cloud"); err != nil {
 		t.Fatal(err)
@@ -565,7 +568,15 @@ func TestRouteRuntimeNamedForcePiercesPrivacyAndLogs(t *testing.T) {
 	if !ok || !d.PrivacyPierced || d.PolicyReason != string(route.ReasonForceProfile) {
 		t.Fatalf("forced decision = %+v", d)
 	}
-	if got := logs.String(); !strings.Contains(got, "PRIVACY OVERRIDE") || !strings.Contains(got, "cloud") {
+	// Arming and each use are audit-tagged route warnings (route 4001, 4002).
+	entries, _ := hub.Snapshot()
+	var got []string
+	for _, e := range entries {
+		if e.Level == slog.LevelWarn && strings.Contains(e.Line(), "event=route/400") && strings.Contains(e.Msg, "cloud") {
+			got = append(got, e.Msg)
+		}
+	}
+	if len(got) != 2 {
 		t.Fatalf("force was not loudly logged: %q", got)
 	}
 }

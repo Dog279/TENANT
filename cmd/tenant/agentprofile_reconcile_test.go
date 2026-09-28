@@ -33,14 +33,14 @@ func TestReconcileServedModel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := reconcileServedModel(srv.URL, "k", tc.in, "Programmer", nil); got != tc.want {
+			if got := reconcileServedModel(srv.URL, "k", tc.in, "Programmer"); got != tc.want {
 				t.Fatalf("reconcile(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
 
 	t.Run("unreachable endpoint keeps configured name", func(t *testing.T) {
-		if got := reconcileServedModel("http://127.0.0.1:1", "", "any-model", "Programmer", nil); got != "any-model" {
+		if got := reconcileServedModel("http://127.0.0.1:1", "", "any-model", "Programmer"); got != "any-model" {
 			t.Fatalf("unreachable reconcile = %q, want any-model", got)
 		}
 	})

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"tenant/internal/memory"
 )
 
 // Origin is what created a fact (TEN-297).
@@ -143,6 +145,9 @@ func (s *Store) Edit(ctx context.Context, id int64, text, job, embedderID string
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("semantic: edit: %w", err)
 	}
+	nf.ID = newID
+	s.logAdded(ctx, nf)
+	s.log(ctx, memory.FactSuperseded, "fact_id", id, "by", newID)
 	return newID, nil
 }
 

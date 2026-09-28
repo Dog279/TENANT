@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/memory"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/assemble"
 	"tenant/internal/memory/working"
@@ -148,6 +149,7 @@ func (c *Compressor) CompactWithArchive(ctx context.Context, msgs []working.Mess
 	out := make([]working.Message, 0, len(tail)+1)
 	out = append(out, summaryMsg)
 	out = append(out, tail...)
+	memory.Compacted.Log(ctx, "session", sessionID, "before", len(msgs), "after", len(out), "origin", origin, "source_messages", srcCount)
 	return out, true, nil
 }
 

@@ -64,6 +64,9 @@ func TestSkillInductionJob_ProposesRepeatedSequence(t *testing.T) {
 	if got := proposed[0].SourceRunIDs; len(got) != 3 || got[0] != "trace-0" || got[2] != "trace-2" {
 		t.Fatalf("proposal source runs = %v", got)
 	}
+	if fmt.Sprint(res.SourceRuns) != fmt.Sprint(proposed[0].SourceRunIDs) {
+		t.Fatalf("the job's source runs = %v, want its proposal's", res.SourceRuns)
+	}
 	// Idempotent: a second run doesn't re-propose the same sequence.
 	if res2, _ := job.Run(ctx); res2.Changed {
 		t.Errorf("second run should not re-propose: %q", res2.Summary)

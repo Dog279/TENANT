@@ -4,20 +4,24 @@
 // custom automation on the box — and it logs into Tenant's unified log book:
 //
 //   - when a hub (`tenant serve` / `tenant tui --dashboard`) is reachable, each
-//     line goes through the live logging API (POST /api/logs/<source>) and shows
-//     up in the dashboard's Activity feed instantly;
-//   - otherwise it is appended to the day's file, <data>/logs/<source>/YYYY-MM-DD.log,
-//     in the exact on-disk format Tenant writes, and a hub that is (or comes) up
-//     discovers the folder and tails it within seconds.
+//     line goes to the log book's API (POST /api/events) as an event and shows
+//     up in the dashboard at once;
+//   - otherwise it is dropped into the log book's spool, <data>/logs/spool/, as
+//     a file of its own (written as <name>.tmp, then renamed <name>.ndjson), and
+//     the next Tenant that runs files it.
 //
-// Either way your program gets its own folder on disk and its own tab on the
-// dashboard. Nothing in tenant has to be rebuilt or registered.
+// Either way your program gets a log of its own, ext.<source>, under External
+// in the dashboard's tree. Nothing in tenant has to be rebuilt or registered.
 //
 // Zero config on a Tenant box: the hub address and bearer token are read from
-// Tenant's own config.json, the data dir is Tenant's OS data dir. Override any
-// of it with Config, or with the env vars TENANT_URL, TENANT_TOKEN, TENANT_DATA.
+// Tenant's own config dir (config.json, else the dashboard-auth-token file a
+// default install keeps the token in), the data dir is Tenant's OS data dir.
+// Override any of it with Config, or with the env vars TENANT_URL,
+// TENANT_TOKEN, TENANT_DATA. A program Tenant starts (a cron job, a script
+// the agent runs) finds TENANT_TRACE_ID and TENANT_ACTIVITY_ID in its
+// environment, and its lines join the turn or the job that started it.
 //
-//	log := tenantlog.New("deploy")                         // folder + tab: "deploy"
+//	log := tenantlog.New("deploy")                         // log: ext.deploy
 //	log.Info("build started", "host", "build-box", "commit", sha)
 //	log.Error("build failed", "step", "link", "err", err)
 //
@@ -25,8 +29,8 @@
 //
 // Rules for the copy: stdlib only, Go 1.21+, and NEVER import anything from
 // tenant/internal here — the file must compile on its own inside your program.
-// The tests beside it (not for copying) pin its format to the hub's, so an
-// updated copy from this folder is always compatible.
+// The tests beside it (not for copying) pin its event JSON and its line format
+// to the hub's, so an updated copy from this folder is always compatible.
 package tenantlog
 
 import (
@@ -45,11 +49,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
-// Levels — the four the log book files. slog's own constants work too.
+// Levels — slog's, which the log book files as verbose, info, warning,
+// error and (above Error) critical.
 const (
 	Debug = slog.LevelDebug
 	Info  = slog.LevelInfo
@@ -59,23 +66,26 @@ const (
 
 // Config tunes a Logger. Every field but Source is optional.
 type Config struct {
-	Source   string            // folder / tab name: [a-z0-9][a-z0-9._-]{0,39} (free text is normalized)
+	Source   string            // your name for the program, filed as log ext.<source>: [a-z0-9][a-z0-9._-] (free text is normalized)
 	URL      string            // hub base URL (default: config.json dashboard.addr, else http://127.0.0.1:8770)
-	Token    string            // dashboard bearer token (default: config.json dashboard.auth)
-	DataDir  string            // Tenant data dir, for the file fallback (default: Tenant's OS data dir)
-	LogDir   string            // log root override (default <DataDir>/logs)
-	FileOnly bool              // never try the hub — always append to the file (cron scripts, hub known down)
+	Token    string            // dashboard bearer token (default: config.json dashboard.auth, else Tenant's dashboard-auth-token file)
+	DataDir  string            // Tenant data dir, for the spool (default: Tenant's OS data dir)
+	LogDir   string            // log root override (default <DataDir>/logs); the spool is <LogDir>/spool
+	FileOnly bool              // never try the hub — always drop lines in the spool (cron scripts, hub known down)
 	Timeout  time.Duration     // per-POST timeout (default 3s)
-	Retry    time.Duration     // after a connection failure, stay on the file this long before retrying the hub (default 30s)
+	Retry    time.Duration     // after a connection failure, stay on the spool this long before retrying the hub (default 30s)
 	Defaults map[string]string // fields stamped on every line (host, version, pid, …)
 	MinLevel slog.Level        // lines below this are dropped by Handler() (default Info); Log/Info/… always send
-	Stderr   io.Writer         // also print each formatted line here (os.Stderr while developing)
+	Stderr   io.Writer         // also print each line here, in the log book's text format (os.Stderr while developing)
+	Trace    string            // the turn this program runs under (default: $TENANT_TRACE_ID)
+	Activity string            // the operation it runs under, such as a cron job's run (default: $TENANT_ACTIVITY_ID)
 }
 
 // Logger files lines under one source. Safe for concurrent use.
 type Logger struct {
 	cfg    Config
 	source string
+	log    string // ext.<source>
 	httpc  *http.Client
 
 	mu     sync.Mutex
@@ -125,14 +135,30 @@ func NewWithConfig(cfg Config) (*Logger, error) {
 	if cfg.MinLevel == 0 {
 		cfg.MinLevel = Info
 	}
-	return &Logger{cfg: cfg, source: src, httpc: &http.Client{Timeout: cfg.Timeout}}, nil
+	if cfg.Trace == "" {
+		cfg.Trace = disc.trace
+	}
+	if cfg.Activity == "" {
+		cfg.Activity = disc.activity
+	}
+	return &Logger{cfg: cfg, source: src, log: LogName(src), httpc: &http.Client{Timeout: cfg.Timeout}}, nil
 }
 
-// Source is the normalized folder / tab name.
+// Source is the normalized source name.
 func (l *Logger) Source() string { return l.source }
 
+// LogName is the log the hub files a source's lines in: the source under
+// ext. ("deploy" is ext.deploy), cut to a log name's 40 characters.
+func LogName(source string) string {
+	s := NormalizeSource(source)
+	if s != "" && !strings.HasPrefix(s, "ext.") {
+		s = NormalizeSource("ext." + s)
+	}
+	return s
+}
+
 // Sub returns a Logger for another source with the same settings — one
-// program, several folders (e.g. "deploy" and "deploy-audit").
+// program, several logs (e.g. "deploy" and "deploy-audit").
 func (l *Logger) Sub(source string) *Logger {
 	cfg := l.cfg
 	cfg.Source = source
@@ -150,16 +176,16 @@ func (l *Logger) Info(msg string, kv ...any)  { _ = l.Log(Info, msg, kvFields(kv
 func (l *Logger) Warn(msg string, kv ...any)  { _ = l.Log(Warn, msg, kvFields(kv)) }
 func (l *Logger) Error(msg string, kv ...any) { _ = l.Log(Error, msg, kvFields(kv)) }
 
-// Event files a line the dashboard styles like a turn event: kind becomes
-// the row's badge (tool_call, tool_result, final, error, …) and is kept in
-// the `ev` field on disk. Known field keys get special placement: tool
-// (shown in mono), agent (a chip), text / args / result (the snippet).
+// Event files a line with a kind, kept in the `kind` field; a kind named
+// "error" or ending in "_failed" is filed at ERROR. (Tenant's own turn
+// events carry theirs in `ev`, which the hub never takes from outside, so an
+// outside line can't pass for a tool call or an approval.)
 func (l *Logger) Event(kind, msg string, fields map[string]string) error {
 	f := map[string]string{}
 	for k, v := range fields {
 		f[k] = v
 	}
-	f["ev"] = kind
+	f["kind"] = kind
 	lvl := Info
 	if kind == "error" || strings.HasSuffix(kind, "_failed") {
 		lvl = Error
@@ -169,15 +195,16 @@ func (l *Logger) Event(kind, msg string, fields map[string]string) error {
 
 // Log files one line at the given level. It never loses a line: the hub is
 // tried first (unless FileOnly or recently unreachable); a connection failure
-// falls back to the day's file silently; a REJECTED line (a 4xx/5xx from a
-// live hub) is written to the file too and the rejection is returned.
+// falls back to the spool silently; a REJECTED line (a 4xx/5xx from a live
+// hub) goes to the spool too and the rejection is returned.
 func (l *Logger) Log(level slog.Level, msg string, fields map[string]string) error {
 	e := l.entry(level, msg, fields)
 	if l.cfg.Stderr != nil {
 		fmt.Fprintln(l.cfg.Stderr, e.line())
 	}
+	body := e.json()
 	if !l.cfg.FileOnly && l.hubOK() {
-		err := l.post(e)
+		err := l.post(body)
 		if err == nil {
 			return nil
 		}
@@ -185,15 +212,15 @@ func (l *Logger) Log(level slog.Level, msg string, fields map[string]string) err
 		if errors.As(err, &ce) {
 			l.markDown()
 		} else {
-			_ = l.appendFile(e)
+			_ = l.spool(body)
 			return err
 		}
 	}
-	return l.appendFile(e)
+	return l.spool(body)
 }
 
 // Ping reports whether a hub is reachable AND accepts our token. nil means
-// lines will go live; otherwise they go to the file (which is fine).
+// lines will go live; otherwise they go to the spool (which is fine).
 func (l *Logger) Ping() error {
 	ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
 	defer cancel()
@@ -203,7 +230,7 @@ func (l *Logger) Ping() error {
 		return fmt.Errorf("no hub at %s: %w", l.cfg.URL, err)
 	}
 	resp.Body.Close()
-	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, l.cfg.URL+"/api/logs", nil)
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, l.cfg.URL+"/api/logbook/views", nil)
 	l.auth(req)
 	resp, err = l.httpc.Do(req)
 	if err != nil {
@@ -211,7 +238,7 @@ func (l *Logger) Ping() error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("hub at %s is up but rejected the token (set Config.Token / TENANT_TOKEN to config.json dashboard.auth)", l.cfg.URL)
+		return fmt.Errorf("hub at %s is up but rejected the token (set Config.Token / TENANT_TOKEN to the hub's dashboard.auth or dashboard-auth-token)", l.cfg.URL)
 	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("hub at %s answered HTTP %d", l.cfg.URL, resp.StatusCode)
@@ -231,11 +258,12 @@ func (l *Logger) Handler() slog.Handler { return &handler{l: l} }
 // --- transport ---------------------------------------------------------------
 
 type entry struct {
-	at     time.Time
-	source string
-	level  slog.Level
-	msg    string
-	fields []field
+	at              time.Time
+	source, log     string
+	level           slog.Level
+	msg             string
+	fields          []field
+	trace, activity string
 }
 
 type field struct{ key, value string }
@@ -255,7 +283,8 @@ func (l *Logger) entry(level slog.Level, msg string, fields map[string]string) e
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	e := entry{at: time.Now(), source: l.source, level: level, msg: capValue(msg, maxFieldBytes)}
+	e := entry{at: time.Now(), source: l.source, log: l.log, level: level, msg: capValue(msg, maxFieldBytes),
+		trace: l.cfg.Trace, activity: l.cfg.Activity}
 	for _, k := range keys {
 		e.fields = append(e.fields, field{key: cleanKey(k), value: capValue(merged[k], maxFieldBytes)})
 	}
@@ -268,15 +297,10 @@ func (l *Logger) auth(req *http.Request) {
 	}
 }
 
-func (l *Logger) post(e entry) error {
-	fields := make(map[string]string, len(e.fields))
-	for _, f := range e.fields {
-		fields[f.key] = f.value
-	}
-	body, _ := json.Marshal(map[string]any{"level": LevelName(e.level), "msg": e.msg, "fields": fields})
+func (l *Logger) post(body []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), l.cfg.Timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.cfg.URL+"/api/logs/"+l.source, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.cfg.URL+"/api/events", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -311,23 +335,99 @@ func (l *Logger) markDown() {
 	l.mu.Unlock()
 }
 
-// appendFile writes the line to <LogDir>/<source>/<YYYY-MM-DD>.log — the same
-// file the hub itself would write, in the same format.
-func (l *Logger) appendFile(e entry) error {
-	dir := filepath.Join(l.cfg.LogDir, l.source)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// spooled numbers this process's spool files, so no two share a name.
+var spooled atomic.Int64
+
+// spool drops the event into <LogDir>/spool as a file of its own: written as
+// <name>.tmp, closed, then renamed <name>.ndjson, so Tenant never reads a
+// file that is still being written. The next Tenant that runs files it.
+// ponytail: a file per line; batch lines into one file if a writer's volume
+// ever calls for it.
+func (l *Logger) spool(body []byte) error {
+	dir := filepath.Join(l.cfg.LogDir, "spool")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, e.at.Format("2006-01-02")+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	name := filepath.Join(dir, fmt.Sprintf("%s-%d-%d-%d", l.source, time.Now().UnixNano(), os.Getpid(), spooled.Add(1)))
+	f, err := os.OpenFile(name+".tmp", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.WriteString(e.line() + "\n")
+	_, err = f.Write(append(body, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(name+".tmp", name+".ndjson")
+	}
+	if err != nil {
+		_ = os.Remove(name + ".tmp")
+	}
 	return err
 }
 
-// --- the on-disk format (kept identical to tenant/internal/logs) ---------------
+// --- the event JSON (kept identical to tenant/internal/logs/event) ------------
+
+// json renders the entry as the log book's event JSON, field for field in the
+// order the hub writes it: time (UTC), log, level, msg, the fields as data
+// with their types (all strings), then the trace and activity.
+func (e entry) json() []byte {
+	var b bytes.Buffer
+	b.WriteString(`{"time":`)
+	b.Write(jsonString(e.at.UTC().Format(time.RFC3339Nano)))
+	b.WriteString(`,"log":`)
+	b.Write(jsonString(e.log))
+	b.WriteString(`,"level":`)
+	b.Write(jsonString(eventLevel(e.level)))
+	b.WriteString(`,"msg":`)
+	b.Write(jsonString(e.msg))
+	if len(e.fields) > 0 {
+		b.WriteString(`,"data":{`)
+		for i, f := range e.fields {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.Write(jsonString(f.key))
+			b.WriteByte(':')
+			b.Write(jsonString(f.value))
+		}
+		b.WriteString(`},"dtypes":`)
+		b.Write(jsonString(strings.Repeat("s", len(e.fields))))
+	}
+	if e.trace != "" {
+		b.WriteString(`,"trace":`)
+		b.Write(jsonString(e.trace))
+	}
+	if e.activity != "" {
+		b.WriteString(`,"activity":`)
+		b.Write(jsonString(e.activity))
+	}
+	b.WriteByte('}')
+	return b.Bytes()
+}
+
+func jsonString(s string) []byte {
+	b, _ := json.Marshal(s) // a string always marshals
+	return b
+}
+
+// eventLevel is the level's name in the log book: slog's levels bucket into
+// verbose, info, warning, error and critical (Error+4 and above).
+func eventLevel(l slog.Level) string {
+	switch {
+	case l >= slog.LevelError+4:
+		return "critical"
+	case l >= slog.LevelError:
+		return "error"
+	case l >= slog.LevelWarn:
+		return "warning"
+	case l >= slog.LevelInfo:
+		return "info"
+	}
+	return "verbose"
+}
+
+// --- the text format (kept identical to tenant/internal/logs), for Stderr -----
 
 const timeLayout = "2006-01-02 15:04:05.000"
 
@@ -377,11 +477,38 @@ func LevelName(l slog.Level) string {
 	}
 }
 
+// flattenMsg puts the message on one line: CR, LF and TAB become spaces, and
+// any other control character (or a byte that isn't UTF-8) is escaped as Go
+// quotes it, so the line can't drive the terminal of a `tail -f`.
 func flattenMsg(s string) string {
-	if !strings.ContainsAny(s, "\n\r\t") {
+	clean := true
+	for _, r := range s {
+		if unicode.IsControl(r) || r == utf8.RuneError {
+			clean = false
+			break
+		}
+	}
+	if clean {
 		return s
 	}
-	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ").Replace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case strings.HasPrefix(s[i:], "\r\n"):
+			b.WriteByte(' ')
+			n = 2
+		case r == '\r' || r == '\n' || r == '\t':
+			b.WriteByte(' ')
+		case unicode.IsControl(r) || r == utf8.RuneError && n == 1:
+			q := strconv.Quote(s[i : i+n])
+			b.WriteString(q[1 : len(q)-1])
+		default:
+			b.WriteString(s[i : i+n])
+		}
+		i += n
+	}
+	return b.String()
 }
 
 func quoteValue(v string) string {
@@ -389,7 +516,7 @@ func quoteValue(v string) string {
 		return `""`
 	}
 	for _, r := range v {
-		if r <= ' ' || r == '"' || r == '\\' || r == '=' || r == 0x7f {
+		if r <= ' ' || r == '"' || r == '\\' || r == '=' || unicode.IsControl(r) || r == utf8.RuneError {
 			return strconv.Quote(v)
 		}
 	}
@@ -407,15 +534,15 @@ func capValue(v string, max int) string {
 	return v[:cut] + "…(+" + strconv.Itoa(len(v)-cut) + " bytes)"
 }
 
-// cleanKey makes a field key the hub accepts: no spaces, quotes or '=', 1-64 chars.
+// cleanKey makes a field key the hub accepts: 1-64 of letters, digits, . _ -.
 func cleanKey(k string) string {
 	var b strings.Builder
 	for _, r := range strings.TrimSpace(k) {
 		switch {
-		case r == ' ', r == '\t', r == '\n', r == '=', r == '"':
-			b.WriteByte('_')
-		default:
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
 			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
 		}
 	}
 	out := b.String()
@@ -430,7 +557,8 @@ func cleanKey(k string) string {
 
 // NormalizeSource coerces a free-form label into a valid source name the way
 // the hub does: lowercase, other punctuation → '-', trimmed to 40 chars, must
-// start with a letter or digit. "" when nothing usable remains.
+// start with a letter or digit. "" when nothing usable remains, or when the
+// name is a Windows device name (con, nul, com1, lpt1.log …): it is a folder.
 func NormalizeSource(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	var b strings.Builder
@@ -447,6 +575,12 @@ func NormalizeSource(name string) string {
 		s = strings.Trim(s[:40], "-._")
 	}
 	if s == "" || !(s[0] >= 'a' && s[0] <= 'z' || s[0] >= '0' && s[0] <= '9') {
+		return ""
+	}
+	switch base, _, _ := strings.Cut(s, "."); {
+	case base == "con", base == "prn", base == "aux", base == "nul":
+		return ""
+	case len(base) == 4 && (base[:3] == "com" || base[:3] == "lpt") && base[3] >= '0' && base[3] <= '9':
 		return ""
 	}
 	return s
@@ -488,16 +622,20 @@ func valueString(v any) string {
 
 // --- discovery: Tenant's own config + data dir ---------------------------------
 
-type discovered struct{ url, token, dataDir string }
+type discovered struct{ url, token, dataDir, trace, activity string }
 
-// discover reads TENANT_URL / TENANT_TOKEN / TENANT_DATA, then Tenant's
-// config.json (dashboard.addr, dashboard.auth), then the OS defaults Tenant
-// itself uses. Never fails: worst case is loopback :8770, no token, OS data dir.
+// discover reads TENANT_URL / TENANT_TOKEN / TENANT_DATA and the correlation
+// Tenant hands the programs it starts (TENANT_TRACE_ID, TENANT_ACTIVITY_ID),
+// then Tenant's config.json (dashboard.addr, dashboard.auth) and its
+// dashboard-auth-token file, then the OS defaults Tenant itself uses. Never
+// fails: worst case is loopback :8770, no token, OS data dir.
 func discover() discovered {
-	d := discovered{url: os.Getenv("TENANT_URL"), token: os.Getenv("TENANT_TOKEN"), dataDir: os.Getenv("TENANT_DATA")}
+	d := discovered{url: os.Getenv("TENANT_URL"), token: os.Getenv("TENANT_TOKEN"), dataDir: os.Getenv("TENANT_DATA"),
+		trace: os.Getenv("TENANT_TRACE_ID"), activity: os.Getenv("TENANT_ACTIVITY_ID")}
 	if d.url == "" || d.token == "" {
 		if cfgDir, err := os.UserConfigDir(); err == nil {
-			if b, err := os.ReadFile(filepath.Join(cfgDir, "tenant", "config.json")); err == nil {
+			cfgDir = filepath.Join(cfgDir, "tenant")
+			if b, err := os.ReadFile(filepath.Join(cfgDir, "config.json")); err == nil {
 				var cfg struct {
 					Dashboard struct {
 						Addr string `json:"addr"`
@@ -511,6 +649,11 @@ func discover() discovered {
 					if d.token == "" {
 						d.token = cfg.Dashboard.Auth
 					}
+				}
+			}
+			if d.token == "" { // a default install keeps the token in its own file
+				if b, err := os.ReadFile(filepath.Join(cfgDir, "dashboard-auth-token")); err == nil {
+					d.token = strings.TrimSpace(string(b))
 				}
 			}
 		}

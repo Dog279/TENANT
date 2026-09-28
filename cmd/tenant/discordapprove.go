@@ -21,9 +21,10 @@ package main
 // THAT card in place: verdict line appended, action/detail kept, buttons
 // disabled. So no live buttons ever linger, the message stays an audit record,
 // and a click is ACKed first (within Discord's 3-second window) before anything
-// else happens. Every post and outcome is logged, because a prompt that quietly
-// failed to post is exactly the failure that left the operator staring at a TUI
-// mirror while the approval expired.
+// else happens. Every post and outcome is logged (the card's delivery as
+// catalogued discord events), because a prompt that quietly failed to post is
+// exactly the failure that left the operator staring at a TUI mirror while the
+// approval expired.
 
 import (
 	"context"
@@ -35,6 +36,8 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/approval"
+	"tenant/internal/control"
 	"tenant/internal/plugins/discord"
 )
 
@@ -75,13 +78,20 @@ type discordIO interface {
 // pendingApproval is one outstanding prompt: the waiting Confirm's reply
 // channel plus everything needed to rewrite its card later.
 type pendingApproval struct {
-	reply    chan bool
+	reply    chan cardVerdict
 	channel  string
 	msgID    string // "" when no card posted (plain-text fallback) — nothing to edit; guarded by the approver's mu
 	v2       bool   // layout the card was posted with; edits must match it; guarded by the approver's mu
 	action   string
 	detail   string
 	postedAt time.Time
+}
+
+// cardVerdict is a resolution handed to the waiting decide: the answer, and
+// the Discord user who gave it, for the approval's Security record.
+type cardVerdict struct {
+	ok bool
+	by string
 }
 
 // discordApprover satisfies a plugin Policy.Confirm: func(ctx, action, detail) bool.
@@ -160,13 +170,20 @@ func verdictText(p *pendingApproval, verdict, by string, at time.Time) string {
 // approve-ONCE (the bool is "proceed with THIS action"); ctx/timeout/no-channel
 // all DENY (fail closed). Holds no mode/session state.
 func (a *discordApprover) Confirm(ctx context.Context, action, detail string) bool {
+	return a.decide(ctx, action, detail) == control.ApproveOnce
+}
+
+// decide is Confirm with the cause of a no kept, for the approval record:
+// DenyOnce when the operator denied (or there is no channel to ask in),
+// Expired when nobody answered before the timeout or the turn ended.
+func (a *discordApprover) decide(ctx context.Context, action, detail string) control.ApprovalDecision {
 	channel := a.curChannel()
 	if channel == "" || a.io == nil {
-		a.logWarn("discord approval: no operator channel — denied", "action", action)
-		return false
+		discord.CardNoChannel.Log(ctx, "action", action)
+		return control.DenyOnce
 	}
 	nonce := genNonce()
-	p := &pendingApproval{reply: make(chan bool, 1), channel: channel, action: action, detail: detail, postedAt: a.now()}
+	p := &pendingApproval{reply: make(chan cardVerdict, 1), channel: channel, action: action, detail: detail, postedAt: a.now()}
 	a.mu.Lock()
 	a.pending[nonce] = p
 	a.mu.Unlock()
@@ -181,11 +198,16 @@ func (a *discordApprover) Confirm(ctx context.Context, action, detail string) bo
 	tctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 	select {
-	case ok := <-p.reply:
-		return ok // the resolver already rewrote the card
+	case v := <-p.reply: // the resolver already rewrote the card
+		approval.DecidedBy(ctx, "discord:"+v.by, "nonce", nonce)
+		if v.ok {
+			return control.ApproveOnce
+		}
+		return control.DenyOnce
 	case <-tctx.Done():
 		a.expire(nonce, p)
-		return false
+		approval.DecidedBy(ctx, "", "nonce", nonce)
+		return control.Expired
 	}
 }
 
@@ -200,18 +222,18 @@ func (a *discordApprover) postCard(ctx context.Context, nonce string, p *pending
 		id, err := a.io.SendCard(ctx, p.channel, content, buttons)
 		if err == nil {
 			a.setCard(p, id, true)
-			a.logInfo("discord approval posted", "layout", "v2", "channel", p.channel, "message", id, "action", p.action)
+			discord.CardPosted.Log(ctx, "message", id, "channel", p.channel, "layout", "v2", "action", p.action)
 			return
 		}
-		a.logWarn("discord approval: v2 card rejected — falling back to legacy buttons", "channel", p.channel, "err", err)
+		discord.CardFallback.Log(ctx, "fallback", "legacy buttons", "channel", p.channel, "err", err)
 	}
 	id, err := a.io.SendComponents(ctx, p.channel, content, buttons)
 	if err == nil {
 		a.setCard(p, id, false)
-		a.logInfo("discord approval posted", "layout", "legacy", "channel", p.channel, "message", id, "action", p.action)
+		discord.CardPosted.Log(ctx, "message", id, "channel", p.channel, "layout", "legacy", "action", p.action)
 		return
 	}
-	a.logWarn("discord approval: buttons failed to post — falling back to a text prompt", "channel", p.channel, "err", err)
+	discord.CardFallback.Log(ctx, "fallback", "a text prompt", "channel", p.channel, "err", err)
 	if a.notify != nil {
 		a.notify("discord approval: buttons failed to post in " + p.channel + " — sent a text prompt instead (reply APPROVE-" + nonce + " / deny)")
 	}
@@ -245,7 +267,7 @@ func (a *discordApprover) expire(nonce string, p *pendingApproval) {
 		if err := a.io.EditMessage(ctx, p.channel, msgID, verdictText(p, "expired", "", a.now()), approvalButtons(nonce, true), v2); err == nil {
 			return
 		} else {
-			a.logWarn("discord approval: expiry edit failed", "message", msgID, "err", err)
+			discord.CardEditFailed.Log(ctx, "message", msgID, "verdict", "expired", "err", err)
 		}
 	}
 	a.post(p.channel, fmt.Sprintf("⌛ approval `%s` expired — denied.", nonce))
@@ -261,7 +283,7 @@ func (a *discordApprover) freeze(nonce string, p *pendingApproval, verdict, by s
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := a.io.EditMessage(ctx, p.channel, msgID, verdictText(p, verdict, by, a.now()), approvalButtons(nonce, true), v2); err != nil {
-		a.logWarn("discord approval: card edit failed", "message", msgID, "err", err)
+		discord.CardEditFailed.Log(ctx, "message", msgID, "verdict", verdict, "err", err)
 	}
 }
 
@@ -284,7 +306,7 @@ func (a *discordApprover) tryConsume(in discord.Inbound) bool {
 		}
 		var denied []hit
 		for nonce, p := range a.pending {
-			trySignal(p.reply, false)
+			trySignal(p.reply, cardVerdict{false, in.AuthorID})
 			denied = append(denied, hit{nonce, p})
 		}
 		a.mu.Unlock()
@@ -299,7 +321,7 @@ func (a *discordApprover) tryConsume(in discord.Inbound) bool {
 	for nonce, p := range a.pending {
 		n := strings.ToLower(nonce)
 		if text == "approve-"+n || text == n {
-			trySignal(p.reply, true)
+			trySignal(p.reply, cardVerdict{true, in.AuthorID})
 			a.mu.Unlock()
 			a.freeze(nonce, p, "approved", in.AuthorID)
 			a.logInfo("discord approval resolved", "outcome", "approved", "via", "text", "by", in.AuthorID,
@@ -330,7 +352,9 @@ func (a *discordApprover) tryInteraction(in discord.Interaction) bool {
 	if p == nil {
 		// Stale click (already resolved / expired): tell only the clicker and
 		// leave the card exactly as its resolution left it.
-		_ = a.io.RespondEphemeral(ctx, in.ID, in.Token, "⌛ This approval already resolved or expired.")
+		if err := a.io.RespondEphemeral(ctx, in.ID, in.Token, "⌛ This approval already resolved or expired."); err != nil {
+			discord.AckFailed.Log(ctx, "click", "stale", "err", err)
+		}
 		return true
 	}
 	verdict := "approved"
@@ -339,9 +363,9 @@ func (a *discordApprover) tryInteraction(in discord.Interaction) bool {
 	}
 	_, v2 := a.card(p)
 	if err := a.io.RespondUpdate(ctx, in.ID, in.Token, verdictText(p, verdict, in.UserID, a.now()), approvalButtons(nonce, true), v2); err != nil {
-		a.logWarn("discord approval: click ACK failed (the tap may show as failed; the verdict still applies)", "err", err)
+		discord.AckFailed.Log(ctx, "click", verdict, "err", err)
 	}
-	trySignal(p.reply, approve)
+	trySignal(p.reply, cardVerdict{approve, in.UserID})
 	a.logInfo("discord approval resolved", "outcome", verdict, "via", "button", "by", in.UserID,
 		"channel", p.channel, "action", p.action, "latency", a.now().Sub(p.postedAt).Round(time.Millisecond))
 	return true
@@ -355,7 +379,9 @@ func (a *discordApprover) ackEphemeral(in discord.Interaction, text string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ackTimeout)
 	defer cancel()
-	_ = a.io.RespondEphemeral(ctx, in.ID, in.Token, text)
+	if err := a.io.RespondEphemeral(ctx, in.ID, in.Token, text); err != nil {
+		discord.AckFailed.Log(ctx, "click", "ignored", "err", err)
+	}
 }
 
 // parseButtonID splits "approve:<nonce>" / "deny:<nonce>".
@@ -369,15 +395,15 @@ func parseButtonID(custom string) (approve bool, nonce string, ok bool) {
 	return false, "", false
 }
 
+// post sends a line best-effort; discord.Service.SendMessage's Delivery
+// activity records a failure.
 func (a *discordApprover) post(channel, content string) {
 	if a.io == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := a.io.Send(ctx, channel, content); err != nil {
-		a.logWarn("discord approver: send failed", "channel", channel, "err", err)
-	}
+	_ = a.io.Send(ctx, channel, content)
 }
 
 func (a *discordApprover) logInfo(msg string, kv ...any) {
@@ -386,13 +412,7 @@ func (a *discordApprover) logInfo(msg string, kv ...any) {
 	}
 }
 
-func (a *discordApprover) logWarn(msg string, kv ...any) {
-	if a.log != nil {
-		a.log.Warn(msg, kv...)
-	}
-}
-
-func trySignal(ch chan bool, v bool) {
+func trySignal[T any](ch chan T, v T) {
 	select {
 	case ch <- v:
 	default:

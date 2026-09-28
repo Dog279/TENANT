@@ -39,6 +39,7 @@ func managedSecrets(cfgDir, dataDir string) ([]managedSecret, error) {
 		for _, path := range []string{
 			credentialsPath(cfgDir),
 			dashboardAuthTokenPath(cfgDir),
+			chainKeyPath(cfgDir),
 		} {
 			add(cfgDir, path)
 		}

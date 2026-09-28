@@ -3147,6 +3147,18 @@ func TestApplyEvent_SkipsCrossAgentAndBus(t *testing.T) {
 	}
 }
 
+// A usage row names the turn that spent the tokens (TEN-368).
+func TestApplyEvent_RecordsUsageWithTheTurnTrace(t *testing.T) {
+	var got string
+	m := newModel(context.Background(), Config{RecordUsage: func(in, out int, traceID string) {
+		got = fmt.Sprintf("%d/%d/%s", in, out, traceID)
+	}})
+	m.applyEvent(agent.Event{Kind: agent.EventUsage, TraceID: "trace-9", PromptTokens: 12, CompletionTokens: 5})
+	if got != "12/5/trace-9" {
+		t.Fatalf("RecordUsage got %q, want 12/5/trace-9", got)
+	}
+}
+
 func TestApplyTeamEvent_ShowsBudgetTermination(t *testing.T) {
 	m := newModel(context.Background(), Config{})
 	st := orchestra.BudgetStatus{RunID: 2, TerminationReason: "wall time limit exceeded"}

@@ -153,12 +153,12 @@ func (g *turnGate) Turn(ctx context.Context, req agent.TurnRequest) (*agent.Turn
 	} else {
 		if len(g.queue) >= g.cfg.depth {
 			g.mu.Unlock()
-			return nil, fmt.Errorf("%w (depth %d)", ErrTurnQueueFull, g.cfg.depth)
+			return nil, refuseTurn(ctx, source, fmt.Errorf("%w (depth %d)", ErrTurnQueueFull, g.cfg.depth))
 		}
 		quota := g.sourceQuota(source)
 		if g.queuedBySrc[source] >= quota {
 			g.mu.Unlock()
-			return nil, fmt.Errorf("%w for %q (quota %d)", ErrTurnSourceQuota, source, quota)
+			return nil, refuseTurn(ctx, source, fmt.Errorf("%w for %q (quota %d)", ErrTurnSourceQuota, source, quota))
 		}
 		sharedCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		entry = &scheduledTurn{
@@ -180,6 +180,12 @@ func (g *turnGate) Turn(ctx context.Context, req agent.TurnRequest) (*agent.Turn
 		g.cancelWaiter(entry, w)
 		return nil, ctx.Err()
 	}
+}
+
+// refuseTurn logs a turn the queue has no room for, and returns why.
+func refuseTurn(ctx context.Context, source agent.RouteSurface, err error) error {
+	agent.TurnRefused.Log(ctx, "source", string(source), "err", err)
+	return err
 }
 
 func (g *turnGate) sourceQuota(source agent.RouteSurface) int {

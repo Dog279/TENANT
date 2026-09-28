@@ -9,11 +9,13 @@ type desc struct {
 	id      string
 	tools   []string
 	actions map[string]string
+	events  *Events
 }
 
 func (d desc) PluginID() string                    { return d.id }
 func (d desc) ToolNames() []string                 { return d.tools }
 func (d desc) ActionCategories() map[string]string { return d.actions }
+func (d desc) PluginEvents() *Events               { return d.events }
 
 var rules = Rules{Categories: []string{"send", "write"}, Reserved: []string{"memory", "mcp:*"}}
 

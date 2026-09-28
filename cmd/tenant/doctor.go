@@ -17,6 +17,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/improve"
+	"tenant/internal/logs/store"
 	"tenant/internal/mcp"
 	"tenant/internal/mcpserver"
 	"tenant/internal/memory/episodic"
@@ -97,6 +98,9 @@ type doctorEnv struct {
 	semantic *semantic.Store
 	skills   *skills.Store
 	lc       *launchConfig // populated by checkLaunchConfig (others reuse)
+
+	logbook    *store.Store // logbook.db, read-only (doctorlogbook.go)
+	logbookErr error
 }
 
 // readCredentials loads credentials.json for a check: as-is in plain doctor,
@@ -154,6 +158,10 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		env.skills = sk
 		defer sk.Close()
 	}
+	// The log book, read-only even under --fix: doctor repairs nothing in it.
+	if env.logbook, env.logbookErr = store.Open(filepath.Join(c.logsRoot(), "logbook.db"), store.Options{ReadOnly: true}); env.logbook != nil {
+		defer env.logbook.Close()
+	}
 
 	// TEN-49: retrieval trace — show what the memory tiers return for a query
 	// instead of running the health checks.
@@ -195,6 +203,13 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// blocking history).
 		{"research store", checkResearchStore},
 		{"soul", checkSoul},
+		// TEN-375: the log book (doctorlogbook.go).
+		{"log book location", checkLogbookLocation},
+		{"log book integrity", checkLogbookIntegrity},
+		{"log book size", checkLogbookSize},
+		{"log book housekeeper", checkLogbookHousekeeper},
+		{"log book mirror-only", checkLogbookMirrorOnly},
+		{"log book losses", checkLogbookLosses},
 	}
 	// Each plugin's own checks (plugin_<id>.go), in registry order.
 	checks = append(checks, pluginDoctorChecks()...)
@@ -311,7 +326,7 @@ func checkPrivatePermissions(_ context.Context, e *doctorEnv) checkResult {
 		}
 	}
 
-	targets, err := privatePermissionTargets(e.c.dataDir, e.c.cfgDir)
+	targets, err := privatePermissionTargets(e.c.dataDir, e.c.cfgDir, e.c.logsRoot())
 	if err != nil {
 		return checkResult{Status: statusFail, Detail: "permission target discovery failed: " + err.Error()}
 	}
@@ -378,13 +393,18 @@ type permissionTarget struct {
 	recursive bool
 }
 
-func privatePermissionTargets(dataDir, cfgDir string) ([]permissionTarget, error) {
+func privatePermissionTargets(dataDir, cfgDir, logsRoot string) ([]permissionTarget, error) {
 	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(cfgDir) == "" {
 		return nil, errors.New("config and data roots must be resolved")
 	}
 	targets := []permissionTarget{{path: dataDir}, {path: cfgDir}}
 	for _, name := range []string{"archive", "research", "wiki", "screenshots", "eval-artifacts", "logs"} {
 		targets = append(targets, permissionTarget{path: filepath.Join(dataDir, name), recursive: true})
+	}
+	// A log book moved by logs.dir (TEN-375), unless its root holds more than
+	// the log book: then it is the operator's to tighten.
+	if logsRoot != "" && filepath.Clean(logsRoot) != filepath.Join(dataDir, "logs") && logsRootTooBroad(logsRoot, dataDir, cfgDir) == "" {
+		targets = append(targets, permissionTarget{path: logsRoot, recursive: true})
 	}
 	for _, name := range []string{"soul", "mcp"} {
 		targets = append(targets, permissionTarget{path: filepath.Join(cfgDir, name), recursive: true})
@@ -430,7 +450,7 @@ func privateConfigRootFile(name string) bool {
 		return true
 	}
 	switch name {
-	case "config.json", "credentials.json", "peers.json", "peer-cert.pem", "peer-key.pem":
+	case "config.json", "credentials.json", "peers.json", "peer-cert.pem", "peer-key.pem", "logbook.key", "logbook.anchor":
 		return true
 	}
 	return pluginSecretName(pluginConfigSecrets, name)
@@ -1340,11 +1360,16 @@ func checkServe(ctx context.Context, e *doctorEnv) checkResult {
 	if dc.TLSCert != "" {
 		scheme = "https"
 	}
+	// A default install keeps the token in its file, not in dashboard.auth.
+	tok, err := dashboardClientToken(e.c.cfgDir, e.lc, e.c.auditOnly)
+	if err != nil {
+		return checkResult{Status: statusWarn, Detail: "cannot read the dashboard token: " + err.Error()}
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(probeCtx, http.MethodGet, fmt.Sprintf("%s://%s/api/status", scheme, addr), nil)
-	if dc.Auth != "" {
-		req.Header.Set("Authorization", "Bearer "+dc.Auth)
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	httpc := e.httpc
 	if httpc == nil {

@@ -22,7 +22,6 @@ import (
 type registry struct {
 	mu      sync.Mutex
 	pending map[string]*pendingReq
-	seq     atomic.Uint64
 	// emit publishes pending/resolved events to the live event stream so both
 	// observers refresh. Set once at wiring (nil ⇒ no event surfacing — fail-safe).
 	emit func(agent.Event)
@@ -35,32 +34,45 @@ type pendingReq struct {
 	at     time.Time
 	reply  chan control.ApprovalDecision
 	span   *runtrace.Span
+	by     string // the surface that resolved it; written before the reply is sent
 }
 
 func newRegistry() *registry {
 	return &registry{pending: map[string]*pendingReq{}}
 }
 
-// register inserts a new pending request and emits EventApprovalPending. Returns
-// the assigned id + the buffered reply chan the caller blocks on.
-func (r *registry) register(ctx context.Context, req control.ApprovalRequest, origin string) (string, chan control.ApprovalDecision) {
-	id := fmt.Sprintf("ap-%d", r.seq.Add(1)) // atomic — no lock needed for the id
+// seq numbers this process's approvals, across every registry and broker.
+var seq atomic.Uint64
+
+// nextID is "<boot>-<n>": the first 8 hex digits of this process's boot ID and
+// a counter, so serve and the TUI (which share runs.db and the log book) never
+// mint the same approval ID, while it stays short enough to read and type.
+func nextID() string {
+	return fmt.Sprintf("%.8s-%d", runtrace.BootID(), seq.Add(1))
+}
+
+// register inserts a new pending request under id ("ap-" + nextID()) and
+// emits EventApprovalPending. It returns the entry, whose buffered reply chan
+// the caller blocks on. The run record says pending before any surface can
+// see the request, so a quick decision is never overwritten by it.
+func (r *registry) register(ctx context.Context, id string, req control.ApprovalRequest, origin string) *pendingReq {
 	reply := make(chan control.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
 	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply, span: runtrace.SpanFromContext(ctx)}
+	p.recordApproval("pending")
 	r.mu.Lock()
 	r.pending[id] = p
 	r.mu.Unlock()
 	r.emitEvent(agent.EventApprovalPending, p, "")
-	p.recordApproval("pending")
-	return id, reply
+	return p
 }
 
-// Resolve fires the decision for id — first-resolver-wins. Returns false (clean
-// no-op) for an unknown / already-resolved id, so the loser of a TUI/dashboard
-// race is harmless. The reply send is buffered + outside the lock.
-func (r *registry) Resolve(id string, d control.ApprovalDecision) bool {
+// Resolve fires the decision for id, made on surface — first-resolver-wins.
+// Returns false (clean no-op) for an unknown / already-resolved id, so the
+// loser of a TUI/dashboard race is harmless. The reply send is buffered +
+// outside the lock.
+func (r *registry) Resolve(id string, d control.ApprovalDecision, surface string) bool {
 	r.mu.Lock()
 	p := r.pending[id]
 	if p != nil {
@@ -70,6 +82,7 @@ func (r *registry) Resolve(id string, d control.ApprovalDecision) bool {
 	if p == nil {
 		return false
 	}
+	p.by = surface
 	p.reply <- d // cap-1 buffer ⇒ never blocks, fires exactly once (delete-under-lock gated)
 	r.emitEvent(agent.EventApprovalResolved, p, outcomeOf(d))
 	p.recordApproval(outcomeOf(d))
@@ -93,7 +106,8 @@ func (r *registry) removeIfPending(id string) {
 }
 
 // DenyAll denies every still-pending request (process/serve teardown), so no
-// agent goroutine stays blocked. Buffered, non-blocking sends.
+// agent goroutine stays blocked. Buffered, non-blocking sends. The outcome says
+// shutdown, so no one reads it as the operator's deny.
 func (r *registry) DenyAll() {
 	r.mu.Lock()
 	pend := r.pending
@@ -101,11 +115,11 @@ func (r *registry) DenyAll() {
 	r.mu.Unlock()
 	for _, p := range pend {
 		select {
-		case p.reply <- control.DenyOnce:
+		case p.reply <- control.DenyShutdown:
 		default:
 		}
-		r.emitEvent(agent.EventApprovalResolved, p, "denied")
-		p.recordApproval("denied")
+		r.emitEvent(agent.EventApprovalResolved, p, outcomeOf(control.DenyShutdown))
+		p.recordApproval(outcomeOf(control.DenyShutdown))
 	}
 }
 
@@ -142,8 +156,9 @@ func (r *registry) emitEvent(kind agent.EventKind, p *pendingReq, outcome string
 		return
 	}
 	r.emit(agent.Event{
-		Kind: kind,
-		Text: fmt.Sprintf("%s: %s", p.req.Action, p.req.Detail),
+		Kind:    kind,
+		TraceID: p.span.TraceID(),
+		Text:    fmt.Sprintf("%s: %s", p.req.Action, p.req.Detail),
 		Approval: &agent.ApprovalEvent{
 			ID: p.id, Category: p.req.Category, Action: p.req.Action,
 			Detail: p.req.Detail, Origin: p.origin, Outcome: outcome,
@@ -155,13 +170,14 @@ func (r *registry) emitEvent(kind agent.EventKind, p *pendingReq, outcome string
 // REPLACEMENT backend (the Discord button approver) that is NOT in the
 // resolvable registry — observers SEE it (Origin=discord) but can't resolve it
 // from the dashboard, because that path owns its own resolution (see askDecision).
-func (r *registry) emitBeside(kind agent.EventKind, req control.ApprovalRequest, origin, outcome string) {
+func (r *registry) emitBeside(ctx context.Context, kind agent.EventKind, req control.ApprovalRequest, origin, outcome string) {
 	if r == nil || r.emit == nil {
 		return
 	}
 	r.emit(agent.Event{
-		Kind: kind,
-		Text: fmt.Sprintf("%s: %s", req.Action, req.Detail),
+		Kind:    kind,
+		TraceID: runtrace.IDFromContext(ctx),
+		Text:    fmt.Sprintf("%s: %s", req.Action, req.Detail),
 		Approval: &agent.ApprovalEvent{
 			ID: "beside-" + origin, Category: req.Category, Action: req.Action,
 			Detail: req.Detail, Origin: origin, Outcome: outcome,
@@ -177,6 +193,10 @@ func outcomeOf(d control.ApprovalDecision) string {
 		return "approved_session"
 	case control.ApproveAlways:
 		return "approved_always"
+	case control.Expired:
+		return "expired"
+	case control.DenyShutdown:
+		return "denied_shutdown"
 	default:
 		return "denied"
 	}

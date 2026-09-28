@@ -257,6 +257,7 @@ func wikiPlugin() *pluginDescriptor {
         External:    ...,             // the vault, for backup's "not covered" list
         Doctor:      []doctorCheck{{"wiki dir (if configured)", checkWikiDir}, ...},
         CLI:         []*cliCommand{{Names: []string{"wiki"}, Section: "plugins", Run: cmdWiki, ...}},
+        Events:      wiki.Events,     // its event catalog, plugin.wiki
     }
 }
 ```
@@ -282,6 +283,16 @@ The descriptor's fields, by concern:
   at), `Connector` and `Forget` (what `tenant privacy forget --connector`
   removes), `External` (for backup), and `Keys` (keys-page rows).
 - **Surfaces:** `CLI`.
+- **Events:** `Events`, the plugin's catalog (TEN-393). The package declares
+  it once, `var Events = pluginreg.NewEvents("<id>", "<Title>")`
+  (`NewAPIEvents` for a plugin that calls a web API), and its own events on
+  `Events.Provider`, from 1100, 2100 and 3100 up. It writes the
+  `plugin.<id>` log, under Integrations › Plugins. The host logs the
+  lifecycle through it: started or could not start (IDs 1 and 3001), and the
+  operator's enable and disable (2 and 3). A web API's client sends its
+  requests through `Events.Observe(transport)`, which logs a rate limit
+  (2001), refused credentials (3002) and a failed call (3003). Only the
+  channels (discord, imessage) have none: theirs are their own providers'.
 
 A plugin fills in only the fields it needs.
 
@@ -298,7 +309,10 @@ keep it that way.
 - `TestEveryPluginDeclaresItself` checks that a plugin declares identity,
   version, tools, the permission class of every gated tool, and a stub hint.
 - The registry refuses a tool or an action two plugins declare, an unknown
-  category, and a reserved host label.
+  category, a reserved host label, and an event catalog that isn't the
+  plugin's own `plugin.<id>` provider.
+- `TestPluginsLogThroughTheirOwnCatalog` checks that every plugin but the
+  channels declares `Events`.
 - `TestPluginsAreNamedOnlyInTheirOwnFiles` fails when a plugin's settings or
   secrets are named outside its own files.
 - `TestTheSwitchboardsImportNoPlugin` fails when a surface imports a plugin

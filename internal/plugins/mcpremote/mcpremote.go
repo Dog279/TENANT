@@ -9,10 +9,13 @@ package mcpremote
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"tenant/internal/logs/event"
 )
 
 // Config configures a remote MCP connection.
@@ -29,8 +32,6 @@ type Config struct {
 	// silent reconnect), a missing/expired cached token fails cleanly instead
 	// of popping a browser.
 	Interactive bool
-	// Logger receives connect/refresh failures (TEN-166). Nil = discard.
-	Logger *slog.Logger
 	// OnAuthChange fires once when the connector's OAuth token dies (the refresh
 	// grant failed with nothing valid left) and once when it is authorized
 	// again — the hook for a feed line / operator notification. Nil = none.
@@ -53,7 +54,8 @@ func (c Config) clientName() string {
 
 // connect authenticates (browser OAuth 2.1 + DCR) and opens an MCP session over
 // Streamable HTTP. Returns the session + a cleanup that closes the session and
-// the callback server.
+// the callback server. ctx is the connection's: the handler files its sign-in
+// events under it.
 func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHandler, func(), error) {
 	if cfg.ServerURL == "" {
 		return nil, nil, nil, fmt.Errorf("mcpremote: ServerURL required")
@@ -72,14 +74,15 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 	// token and never opens a browser.
 	var fetcher auth.AuthorizationCodeFetcher
 	if cfg.Interactive {
-		fetcher = newLazyCodeFetcher(cfg.callbackAddr(), cfg.OpenBrowser)
+		fetcher = newLazyCodeFetcher(cfg.callbackAddr(), cfg.OpenBrowser, cfg.Label)
 	}
 
 	handler := newPersistentHandler(
 		cfg.ServerURL, redirect, cfg.clientName(),
 		tokenCachePath(cfg.CacheDir, cfg.ServerURL),
-		cfg.Interactive, fetcher, httpClient, cfg.Logger,
+		cfg.Interactive, fetcher, httpClient, context.WithoutCancel(ctx), // outlives a bounded dial
 	)
+	handler.label = cfg.Label
 	handler.onAuthChange = cfg.OnAuthChange
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   cfg.ServerURL,
@@ -96,8 +99,7 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 		DisableStandaloneSSE: true,
 		OAuthHandler:         handler,
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "tenant", Version: "0.1"}, nil)
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := newClient(ctx, cfg.Label).Connect(ctx, transport, nil)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.ServerURL, err)
 	}
@@ -107,10 +109,19 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 
 // Open connects and builds a gated Dispatcher over the remote server's tools.
 // trustAnnotations relaxes the deny-by-default gate for tools the server marks
-// read-only; when false, EVERY remote tool is treated as a gated write.
+// read-only; when false, EVERY remote tool is treated as a gated write. The
+// connection is a Connection activity in the connector's log, from here to
+// the cleanup.
 func Open(ctx context.Context, cfg Config, trustAnnotations bool, policy Policy) (*Dispatcher, func(), error) {
+	ctx, act := event.Start(WithServerLog(ctx, cfg.Label), Connection, "server", cfg.Label, "url", cfg.ServerURL, "interactive", cfg.Interactive)
 	session, handler, cleanup, err := connect(ctx, cfg)
 	if err != nil {
+		if strings.Contains(err.Error(), errNoCachedSession.Error()) { // the SDK may not keep it wrapped
+			NoSavedSignIn.Log(ctx, "server", cfg.Label, "url", cfg.ServerURL)
+			act.End(nil) // nothing failed: a launch reconnect just can't sign in
+		} else {
+			act.End(&err)
+		}
 		return nil, nil, err
 	}
 	// nil ungate ⇒ pure annotation rule (TEN-252): the remote-MCP/Atlassian path
@@ -118,8 +129,37 @@ func Open(ctx context.Context, cfg Config, trustAnnotations bool, policy Policy)
 	d, err := newDispatcher(ctx, cfg.Label, session, trustAnnotations, nil, policy)
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("mcpremote: list tools: %w", err)
+		err = fmt.Errorf("mcpremote: list tools: %w", err)
+		act.End(&err)
+		return nil, nil, err
 	}
 	d.auth = handler // lets Dispatch/AuthHealth read the connector's auth state
-	return d, cleanup, nil
+	return d, d.live(ctx, act, cleanup), nil
+}
+
+// newClient is Tenant's MCP client for a connection to label, which files a
+// server's announcement that its tools changed under ctx.
+func newClient(ctx context.Context, label string) *mcp.Client {
+	ctx = context.WithoutCancel(ctx)
+	return mcp.NewClient(&mcp.Implementation{Name: "tenant", Version: "0.1"}, &mcp.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			ToolsChanged.Log(ctx, "server", label)
+		},
+	})
+}
+
+// live finishes a connection that is up: it files Connected with the tools d
+// lists, marks d's calls as its own to log, and returns the cleanup that
+// closes the session and ends act, once.
+func (d *Dispatcher) live(ctx context.Context, act *event.Activity, closeSession func()) func() {
+	names := make([]string, 0, len(d.specs))
+	for _, s := range d.specs {
+		names = append(names, s.Name)
+	}
+	Connected.Log(ctx, "server", d.label, "tools", len(names), "names", strings.Join(names, ","))
+	d.ownLog = true
+	return sync.OnceFunc(func() {
+		closeSession()
+		act.End(nil)
+	})
 }

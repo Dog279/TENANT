@@ -25,8 +25,12 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -127,6 +131,31 @@ type Limits struct {
 	MaxOutputBytes int           // cap on combined output returned to the model
 }
 
+// String lists the caps set, for a log line: "wall=1m0s cpu=30s memory=256MB
+// pids=16 output=16000B", or "none".
+func (l Limits) String() string {
+	var parts []string
+	if l.Wall > 0 {
+		parts = append(parts, "wall="+l.Wall.String())
+	}
+	if l.CPU > 0 {
+		parts = append(parts, "cpu="+l.CPU.String())
+	}
+	if l.MemoryBytes > 0 {
+		parts = append(parts, "memory="+strconv.FormatInt(l.MemoryBytes>>20, 10)+"MB")
+	}
+	if l.MaxPIDs > 0 {
+		parts = append(parts, "pids="+strconv.Itoa(l.MaxPIDs))
+	}
+	if l.MaxOutputBytes > 0 {
+		parts = append(parts, "output="+strconv.Itoa(l.MaxOutputBytes)+"B")
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
+}
+
 // EnvPolicy is an ALLOWLIST for a child's environment (the Hermes
 // docker_forward_env model), replacing the old name-substring denylist that
 // leaked any secret whose variable name lacked KEY/TOKEN/SECRET/PASSWORD.
@@ -140,13 +169,17 @@ type EnvPolicy struct {
 	Isolate bool              // force the allowlist even when Pass and Set are empty
 	Pass    []string          // parent variable NAMES to forward
 	Set     map[string]string // fixed values (added, overriding a forwarded name)
+	// Add is NAME=value pairs added in every mode, inherit-all included: the
+	// IDs that join a child's own logs to the work that started it
+	// (internal/logs/capture). It never scopes the environment.
+	Add []string
 }
 
 // materialize resolves the effective environment for a child given the parent
 // environment (usually os.Environ()).
 func (e EnvPolicy) materialize(parent []string) []string {
 	if !e.Isolate && len(e.Pass) == 0 && len(e.Set) == 0 {
-		return parent // inherit-all: compatibility with pre-sandbox os_exec
+		return append(slices.Clip(parent), e.Add...) // inherit-all: compatibility with pre-sandbox os_exec
 	}
 	want := make(map[string]bool, len(e.Pass))
 	for _, n := range e.Pass {
@@ -166,7 +199,7 @@ func (e EnvPolicy) materialize(parent []string) []string {
 	for k, v := range e.Set {
 		out = append(out, k+"="+v)
 	}
-	return out
+	return append(out, e.Add...)
 }
 
 // Policy is the boundary applied to one run. Filesystem roots use the same
@@ -189,6 +222,11 @@ type Policy struct {
 	Allow      []string    // hosts/CIDRs when Network == NetAllowlist
 	Env        EnvPolicy   //
 	Limits     Limits      //
+	// Stderr, when set, also receives what a long-lived process (Start)
+	// writes to stderr, as it is written: its parent files it
+	// (internal/logs/capture). It observes; it bounds nothing. Run's output
+	// is combined and returned whole.
+	Stderr io.Writer
 	// Enforce selects what Execute does when the boundary refuses something:
 	// true asks the Escalator (attended surface: a person; unattended: deny);
 	// false is dry-run, which re-runs on the host and reports the refusal.
@@ -219,6 +257,7 @@ type Violation struct {
 // start the command).
 type Result struct {
 	Output   string
+	PID      int // the process that ran (the backend's launcher, where it has one); 0 if none started
 	ExitCode int
 	// ExitStatus is the OS's own description of a non-zero exit ("exit status 3",
 	// "signal: killed"), so adapters can reproduce pre-seam error text exactly.
@@ -384,6 +423,14 @@ func shellArgs(cmd Command) (string, []string) {
 		return "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", cmd.Shell}
 	}
 	return "sh", []string{"-c", cmd.Shell}
+}
+
+// pidOf is c's process id, or 0 when it never started.
+func pidOf(c *exec.Cmd) int {
+	if c.Process == nil {
+		return 0
+	}
+	return c.Process.Pid
 }
 
 // clip truncates output to n bytes with a marker. n <= 0 ⇒ no cap.

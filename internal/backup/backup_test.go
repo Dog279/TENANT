@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"tenant/internal/datalock"
+	"tenant/internal/logs/event/eventtest"
 )
 
 // tree is a small Tenant install: a config dir and a data dir with one of
@@ -129,19 +131,19 @@ func TestCreateCapturesTheRightFilesInReferenceOrder(t *testing.T) {
 	}
 	got := entryPaths(res.Manifest)
 	for _, want := range []string{"config/config.json", "config/soul/main.toml", "data/episodes.db", "data/facts.db",
-		"data/archive/2026-09/sess_a.jsonl", "data/logs/tui/2026-09-26.log", "data/research/r1/report.md"} {
+		"data/archive/2026-09/sess_a.jsonl", "data/research/r1/report.md"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("backup is missing %s (has %v)", want, got)
 		}
 	}
 	for _, never := range []string{"config/credentials.json", "data/x-token.json", "data/.tenant.lock",
-		"data/episodes.db-journal", "data/config.json.123.tmp", "data/wiki/a1b2c3d4e5f60718.json"} {
+		"data/episodes.db-journal", "data/config.json.123.tmp", "data/wiki/a1b2c3d4e5f60718.json", "data/logs/tui/2026-09-26.log"} {
 		if slices.Contains(got, never) {
 			t.Errorf("backup carries %s", never)
 		}
 	}
 	skipped := skippedPaths(res.Manifest)
-	for _, want := range []string{"config/credentials.json", "data/x-token.json", "data/wiki/a1b2c3d4e5f60718.json"} {
+	for _, want := range []string{"config/credentials.json", "data/x-token.json", "data/wiki/a1b2c3d4e5f60718.json", "data/logs/*/*.log"} {
 		if !slices.Contains(skipped, want) {
 			t.Errorf("%s is not listed as skipped (%v)", want, skipped)
 		}
@@ -327,6 +329,7 @@ func TestDryRunAndDamageChangeNothing(t *testing.T) {
 	data[len(data)/2] ^= 0xff
 	damaged := filepath.Join(tr.root, "damaged.tar.gz")
 	write(t, damaged, string(data))
+	rec := eventtest.Capture(t)
 	rep, err := Verify(ctx, damaged, Keys{}, Checks{}, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -336,6 +339,15 @@ func TestDryRunAndDamageChangeNothing(t *testing.T) {
 	}
 	if _, err := Restore(ctx, damaged, tr.restoreOpts(Keys{})); err == nil {
 		t.Fatal("restored a damaged backup")
+	}
+	// Each run is an activity; the damage is an error event, and the restore
+	// it stopped fails.
+	var got []string
+	for _, e := range rec.Events() {
+		got = append(got, fmt.Sprintf("%d %s %s", e.ID, e.Opcode, e.Level))
+	}
+	if want := "[1003 start info 3001  error 1003 stop info 1005 start info 3001  error 1005 fail error]"; fmt.Sprint(got) != want {
+		t.Fatalf("events %v, want %s", got, want)
 	}
 	if b, _ := os.ReadFile(filepath.Join(tr.cfg, "config.json")); string(b) != `{"live":true}` {
 		t.Fatal("a failed restore changed the live config")
@@ -460,5 +472,19 @@ func TestCreateWhileAStoreIsOpenForWriting(t *testing.T) {
 	// The live store is still usable by its writer.
 	if _, err := live.Exec(`INSERT INTO episodes (prompt) VALUES ('after')`); err != nil {
 		t.Fatalf("live store broken by the backup: %v", err)
+	}
+}
+
+// Boot records and crash files belong to the processes running at backup
+// time: restored, they would read as processes that died (TEN-365). A crash
+// dump already filed into the system folder is an ordinary log.
+func TestBootRecordsAreNotBackedUp(t *testing.T) {
+	for _, rel := range []string{"logs/boots/b1.json", "logs/boots/b1.lock", "logs/crash/b1.txt", "logs/logbook.lock", "logs/logbook.db.corrupt-20260927-101010"} {
+		if _, skip := builtinSkip(RootData, rel, filepath.Base(rel)); !skip {
+			t.Errorf("%s is backed up", rel)
+		}
+	}
+	if _, skip := builtinSkip(RootData, "logs/system/crash-b1.txt", "crash-b1.txt"); skip {
+		t.Error("a filed crash dump is left out of the backup")
 	}
 }

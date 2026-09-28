@@ -18,6 +18,9 @@ import (
 
 	"tenant/internal/backup"
 	"tenant/internal/improve"
+	"tenant/internal/logs"
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/skills"
@@ -26,19 +29,22 @@ import (
 	usagestore "tenant/internal/memory/usage"
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/peering"
+	"tenant/internal/privacy"
 	"tenant/internal/runtrace"
 )
 
 const backupUsage = `usage:
-  tenant backup [create] [--out FILE|DIR] [--encrypt | --passphrase-file F | --recipient AGE1… | --recipients-file F] [--json]
+  tenant backup [create] [--out FILE|DIR] [--encrypt | --passphrase-file F | --recipient AGE1… | --recipients-file F] [--include-mirror] [--json]
   tenant backup verify FILE [--passphrase-file F | --identity F] [--json]
   tenant backup restore FILE [--dry-run] [--yes] [--force] [--passphrase-file F | --identity F]
 
 A backup is one file holding the config and data dirs: every store, the
-archive, souls, settings and logs. It is age-encrypted when you pass
---encrypt (a passphrase), --passphrase-file, or --recipient (a public key from
-age-keygen); only encrypted backups carry your credentials and keys. The
-passphrase can also come from TENANT_BACKUP_PASSPHRASE.`
+archive, souls, settings and the log book (logbook.db and its archives; its
+text files hold the same events and come along with --include-mirror). It is
+age-encrypted when you pass --encrypt (a passphrase), --passphrase-file, or
+--recipient (a public key from age-keygen); only encrypted backups carry your
+credentials and keys. The passphrase can also come from
+TENANT_BACKUP_PASSPHRASE.`
 
 // passphraseEnv supplies a backup passphrase without a prompt or a file.
 const passphraseEnv = "TENANT_BACKUP_PASSPHRASE"
@@ -221,6 +227,7 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	k.bindEncrypt(fs)
 	outPath := fs.String("out", "", "backup file, or a directory to put it in (default: the current directory)")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
+	mirror := fs.Bool("include-mirror", false, "also take the log book's text files (<logs>/<log>/*.log); logbook.db holds the same events")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -232,6 +239,7 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	lc, _ := loadLaunchConfig(c.cfgDir)
 	c.lc = lc
+	defer fileEvents(c)()
 	keys, err := k.encryptKeys(out)
 	if err != nil {
 		return err
@@ -254,10 +262,20 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 		ConfigFile:  configDirFile,
 		NotIncluded: outsideTenantDirs(c),
 		Keys:        keys,
+		// The log book: logbook.db by VACUUM INTO, its archives, and its
+		// text mirror only when asked for.
+		LogsDir:       c.logsRoot(),
+		IncludeMirror: *mirror,
 	})
 	if err != nil {
 		return err
 	}
+	// So `tenant privacy status` can count the backups a later forget
+	// leaves holding deleted data.
+	if err := privacy.NoteBackup(privacy.Data{DataDir: c.dataDir}, res.Path, res.Manifest.CreatedAt); err != nil {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("could not record this backup for `tenant privacy status`: %v", err))
+	}
+	_ = catalog.BackupWritten.Audit(ctx, "path", res.Path, "bytes", res.Bytes, "encrypted", res.Manifest.Encrypted, "actor", actorOperator, "surface", surfaceCLI)
 	if *asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
@@ -305,6 +323,7 @@ func printSkipped(out io.Writer, skipped []backup.Skipped) {
 
 func cmdBackupVerify(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("backup verify", flag.ContinueOnError)
+	c := bindCommon(fs) // whose log book records the verify
 	var k keyFlags
 	k.bindDecrypt(fs)
 	asJSON := fs.Bool("json", false, "print the report as JSON")
@@ -312,6 +331,11 @@ func cmdBackupVerify(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	c.auditOnly = true // verifying creates and locks nothing
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	defer fileEvents(c)()
 	keys, err := k.decryptKeys()
 	if err != nil {
 		return err
@@ -389,6 +413,7 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	if err := c.resolveDirs(); err != nil {
 		return err
 	}
+	defer fileEvents(c)() // into the restored log book
 	if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
 		if addr, up := hubAnswering(ctx, lc); up {
 			return fmt.Errorf("a Tenant hub answers at %s; stop it (and the TUI) before restoring", addr)
@@ -411,6 +436,9 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 	}
 	defer schemas.Close()
 	managed, _ := managedSecrets(c.cfgDir, c.dataDir)
+	// The Security log's anchor from before the restore, which moves the
+	// config dir aside: the head the re-anchor record says was replaced.
+	replaced, _ := readChainHead(chainAnchorPath(c.cfgDir))
 	opts := backup.RestoreOptions{
 		ConfigDir: c.cfgDir,
 		DataDir:   c.dataDir,
@@ -440,12 +468,63 @@ func cmdBackupRestore(ctx context.Context, args []string, in io.Reader, out io.W
 		fmt.Fprintln(out, "dry run: the backup restores cleanly; nothing was changed")
 		return nil
 	}
+	// The restored logbook.db's seq counter went back with it: a new store ID
+	// makes every live-tail cursor restart instead of skipping what comes next.
+	// Its Security log gets a re-anchor record (the restored head, the head it
+	// replaced, the backup), so the restore verifies as one, not as tampering.
+	lb := filepath.Join(c.logsRoot(), "logbook.db")
+	if _, err := os.Stat(lb); err == nil {
+		if err := store.Reidentify(lb); err != nil {
+			fmt.Fprintf(out, "  warning: the log book was restored but not re-identified (%v); viewers left open may miss new events until they reload\n", err)
+		}
+		if err := reanchorAfterRestore(ctx, c.cfgDir, lb, replaced, file); err != nil {
+			fmt.Fprintf(out, "  warning: the Security log's restore was not fully recorded (%v); `tenant logs verify security` may report it as a break\n", err)
+		}
+	}
+	var made time.Time
+	if res.Report != nil && res.Report.Manifest != nil {
+		made = res.Report.Manifest.CreatedAt
+	}
+	_ = catalog.BackupRestored.Audit(ctx, "path", file, "created", made, "actor", actorOperator, "surface", surfaceCLI)
 	fmt.Fprintln(out, "restored.")
 	for _, a := range res.Aside {
 		fmt.Fprintf(out, "  the previous directory is kept at %s; delete it once you are happy\n", a)
 	}
 	fmt.Fprintln(out, "  this install now carries the backed-up identity (instance id, peer key, Discord relay); don't run it alongside the machine the backup came from")
 	return nil
+}
+
+// fileEvents gives a one-shot command's events (a backup's, a deletion's) a
+// place in the log book, which only serve and the TUI keep open: they are held
+// in memory while the command runs and appended when it ends, so the command
+// never holds a log file open, not even in a data dir a restore swaps out.
+// Call the func it returns when the command ends.
+//
+// ponytail: a crash mid-command loses its events; drop the buffer once every
+// process writes logbook.db as it goes (TEN-370).
+func fileEvents(c *commonFlags) func() {
+	prev := logs.Default()
+	mem := logs.NewMemory(0)
+	logs.Install(mem)
+	return func() {
+		logs.Install(prev)
+		entries, _ := mem.Snapshot()
+		if _, err := os.Stat(c.dataDir); err != nil || len(entries) == 0 {
+			return // no install here, as for a backup verified on another machine
+		}
+		if c.lc == nil {
+			c.lc, _ = loadLaunchConfig(c.cfgDir) // after a restore, the restored one
+		}
+		h, err := logs.Open(c.logsRoot(), c.logsOptions())
+		if err != nil {
+			return
+		}
+		defer h.Close()
+		attachCommandStore(h, c)
+		for _, e := range entries {
+			h.Log(e)
+		}
+	}
 }
 
 // hubAnswering reports whether a Tenant dashboard answers at the configured
@@ -501,6 +580,8 @@ func configDirFile(rel string) bool {
 		launchConfigPath(base),
 		credentialsPath(base),
 		dashboardAuthTokenPath(base),
+		chainKeyPath(base),
+		chainAnchorPath(base),
 		filepath.Join(base, filepath.Base(claudecode.LedgerPath())),
 	}
 	files = append(files, pluginConfigSecrets(base)...)
@@ -649,7 +730,14 @@ func (s *storeSchemas) reference(ctx context.Context, entryPath string) (backup.
 		}
 		closeStore = st.Close
 	default:
-		return nil, false, nil
+		if filepath.Base(entryPath) != "logbook.db" { // wherever logs.dir puts it in the data dir
+			return nil, false, nil
+		}
+		st, err := store.Open(path, store.Options{})
+		if err != nil {
+			return nil, false, err
+		}
+		closeStore = st.Close
 	}
 	if err := closeStore(); err != nil {
 		return nil, false, err

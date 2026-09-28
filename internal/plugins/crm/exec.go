@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"tenant/internal/logs/capture"
 )
 
 const (
@@ -63,9 +65,15 @@ func (s *Service) realRunner(ctx context.Context, name string, args []string) ([
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := capture.New(cctx, "plugin.crm", "child", "crm-tool", "subcommand", name).Run(cmd)
 	if cctx.Err() == context.DeadlineExceeded {
-		return stdout.Bytes(), fmt.Errorf("crm-tool %s timed out after %s", name, s.timeout)
+		err = fmt.Errorf("crm-tool %s timed out after %s", name, s.timeout)
+		ToolFailed.Log(ctx, "subcommand", name, "err", err)
+		return stdout.Bytes(), err
+	}
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) && ctx.Err() == nil { // it never ran
+		ToolFailed.Log(ctx, "subcommand", name, "err", err)
 	}
 	if err != nil {
 		// A non-zero exit is signal, not a transport failure — surface the

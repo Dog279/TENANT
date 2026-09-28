@@ -7,11 +7,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
+
+	"tenant/internal/httplimits"
 )
 
 // codeDebounce is how long awaitCode waits, after the first matching callback,
@@ -35,15 +36,16 @@ var signInMu sync.Mutex
 // connector's whole lifetime, so a hub that had added one connector could not
 // add a second without a restart ("bind callback 127.0.0.1:8765: address
 // already in use"). A server that never answers 401 never triggers a sign-in
-// and never touches the port at all.
-func newLazyCodeFetcher(addr string, open func(string) error) auth.AuthorizationCodeFetcher {
+// and never touches the port at all. label is the connector a URL that no
+// browser opened is logged for.
+func newLazyCodeFetcher(addr string, open func(string) error, label string) auth.AuthorizationCodeFetcher {
 	return func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 		signInMu.Lock()
 		defer signInMu.Unlock()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		fetch, stop, err := newCodeFetcher(addr, open)
+		fetch, stop, err := newCodeFetcher(addr, open, label)
 		if err != nil {
 			return nil, err
 		}
@@ -57,7 +59,7 @@ func newLazyCodeFetcher(addr string, open func(string) error) auth.Authorization
 // the FRESHEST authorization code matching the request's state (see awaitCode).
 // The returned stop() shuts the server down. This is the only hand-rolled OAuth
 // piece — the SDK handles DCR/PKCE/exchange/refresh.
-func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCodeFetcher, func(), error) {
+func newCodeFetcher(addr string, open func(string) error, label string) (auth.AuthorizationCodeFetcher, func(), error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcpremote: bind callback %s: %w (is the port free?)", addr, err)
@@ -79,6 +81,7 @@ func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCod
 		_, _ = w.Write([]byte("Connected. You can close this tab and return to Tenant."))
 	})
 	srv := &http.Server{Handler: mux}
+	httplimits.Configure(srv)
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			_ = err // surfaces as a fetch timeout / ctx cancel
@@ -87,10 +90,11 @@ func newCodeFetcher(addr string, open func(string) error) (auth.AuthorizationCod
 
 	fetcher := func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
 		want := stateFromURL(args.URL)
-		fmt.Fprintf(os.Stderr, "\nAuthorize Tenant's access in your browser:\n\n  %s\n\n"+
-			"(Atlassian shows TWO screens — approve access, then pick a site. Click through once each; don't re-click.)\n", args.URL)
-		if open != nil {
-			_ = open(args.URL) // best-effort auto-open; the printed URL is the fallback
+		// The opener shows the operator the URL where they will see it (the
+		// TUI feed, the terminal) and opens the browser. Without one, or when
+		// it fails, the URL goes to the connector's log instead.
+		if open == nil || open(args.URL) != nil {
+			SignInURL.Log(WithServerLog(ctx, label), "server", label, "url", args.URL)
 		}
 		res, err := awaitCode(ctx, results, want, codeDebounce)
 		if err != nil {

@@ -1,11 +1,11 @@
 package cron
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -53,6 +53,9 @@ func (d JobDef) KindOf() string {
 	return d.Kind
 }
 
+// Label names a job for the log: its name, else its ID.
+func (d JobDef) Label() string { return cmp.Or(d.Name, d.ID) }
+
 // Job is a job's full state: its definition plus runtime fields. Values returned
 // by List/Add are copies — mutating them does not affect the engine.
 type Job struct {
@@ -81,15 +84,17 @@ type AddSpec struct {
 }
 
 // Runner executes one job (an agent turn, or a shell command) and returns a
-// short human-readable summary. A nil Runner makes the engine inert (runs report
-// an error instead of panicking).
-type Runner func(ctx context.Context, job Job) (summary string, err error)
+// short human-readable summary and, for a turn, its trace ID (the runs.db
+// record). A nil Runner makes the engine inert (runs report an error instead of
+// panicking).
+type Runner func(ctx context.Context, job Job) (summary, trace string, err error)
 
 // RunRecord is one entry in the engine's bounded run history (persisted across
 // restarts when a history store is wired via Prime).
 type RunRecord struct {
 	JobID     string    `json:"job_id"`
 	Name      string    `json:"name,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"` // the turn the job ran; "" for a shell job
 	StartedAt time.Time `json:"started_at"`
 	Duration  int64     `json:"duration_ms"`
 	Summary   string    `json:"summary,omitempty"`
@@ -99,12 +104,14 @@ type RunRecord struct {
 
 // PrimeOptions configures the engine once after construction, before Start:
 // the default timezone, missed-run catch-up, and the persisted history seed +
-// sink. Prime recomputes every job's NextRun in one pass.
+// sink. Prime recomputes every job's NextRun in one pass. HistoryPersist saves
+// one new record: other processes append to the same history, so a sink must
+// never rewrite it from this engine's ring.
 type PrimeOptions struct {
 	Location       *time.Location
 	Catchup        bool
 	History        []RunRecord
-	HistoryPersist func([]RunRecord) error
+	HistoryPersist func(RunRecord) error
 	// PerRun overrides the wall-clock ceiling on one job run. Zero keeps the
 	// default. The ceiling exists to stop HUNG runs, not to race real work:
 	// a multi-tool brief through a local 27B (or a claudecode escalation,
@@ -125,9 +132,8 @@ type Engine struct {
 
 	runner         Runner
 	persist        func([]JobDef) error
-	historyPersist func([]RunRecord) error
+	historyPersist func(RunRecord) error
 	now            func() time.Time
-	log            *slog.Logger
 	notify         func(string) // optional feed sink for run results (non-blocking)
 
 	defaultLoc *time.Location // default timezone for jobs without an explicit TZ
@@ -147,14 +153,11 @@ type Engine struct {
 }
 
 // NewEngine builds an engine seeded from persisted defs. persist (may be nil) is
-// called whenever the set of definitions changes. log may be nil. The default
-// timezone is the server local zone until overridden by Prime.
-func NewEngine(defs []JobDef, runner Runner, persist func([]JobDef) error, log *slog.Logger) *Engine {
-	if log == nil {
-		log = slog.Default()
-	}
+// called whenever the set of definitions changes. The default timezone is the
+// server local zone until overridden by Prime.
+func NewEngine(defs []JobDef, runner Runner, persist func([]JobDef) error) *Engine {
 	e := &Engine{
-		runner: runner, persist: persist, now: time.Now, log: log, defaultLoc: time.Local,
+		runner: runner, persist: persist, now: time.Now, defaultLoc: time.Local,
 		tick: defaultTick, perRun: defaultPerRun, maxJobs: defaultMaxJobs, histCap: defaultHistory,
 	}
 	for _, d := range defs {
@@ -176,6 +179,9 @@ func NewEngine(defs []JobDef, runner Runner, persist func([]JobDef) error, log *
 					j.loc = loc
 				}
 			}
+		}
+		if j.LastError != "" {
+			JobUnschedulable.Log(context.Background(), "job", d.Label(), "id", d.ID, "err", j.LastError)
 		}
 		e.jobs = append(e.jobs, j)
 	}
@@ -278,19 +284,28 @@ func (e *Engine) nextFor(j *Job, after time.Time) time.Time {
 	return j.schedule.Next(after.In(e.effLoc(j)))
 }
 
-// scheduleJobLocked (re)computes one job's NextRun, applying catch-up for safe
-// (non-exec, non-shell) jobs that missed a cycle while the process was down.
+// scheduleJobLocked (re)computes one job's NextRun. A previously-run job whose
+// next run came due while the process was down (or the job disabled) missed
+// it: catch-up fires it once for SAFE (non-exec, non-shell) jobs; exec/shell
+// jobs resume forward-from-now so a destructive job never fires unexpectedly
+// on restart. Either way the log says so.
 func (e *Engine) scheduleJobLocked(j *Job, now time.Time) {
 	if !j.Enabled || j.schedule == nil {
 		j.NextRun = time.Time{}
 		return
 	}
-	// Catch-up: only for previously-run SAFE jobs. exec/shell jobs resume
-	// forward-from-now so a destructive job never fires unexpectedly on restart.
-	if e.catchup && !j.LastRun.IsZero() && j.KindOf() == KindPrompt && !j.Exec {
-		if cand := e.nextFor(j, j.LastRun); !cand.IsZero() && !cand.After(now) {
-			j.NextRun = now // due while down → fire once on the next tick
-			return
+	if !j.LastRun.IsZero() {
+		if due := e.nextFor(j, j.LastRun); !due.IsZero() && !due.After(now) {
+			switch {
+			case e.catchup && j.KindOf() == KindPrompt && !j.Exec:
+				JobCatchup.Log(context.Background(), "job", j.Label(), "id", j.ID, "due", due)
+				j.NextRun = now // due while down → fire once on the next tick
+				return
+			case e.catchup:
+				JobMissed.Log(context.Background(), "job", j.Label(), "id", j.ID, "due", due, "reason", "shell and exec jobs never catch up")
+			default:
+				JobMissed.Log(context.Background(), "job", j.Label(), "id", j.ID, "due", due, "reason", "catch-up is off")
+			}
 		}
 	}
 	j.NextRun = e.nextFor(j, now)
@@ -380,6 +395,7 @@ func (e *Engine) Add(spec AddSpec) (Job, error) {
 		e.jobs = e.jobs[:len(e.jobs)-1]
 		return Job{}, err
 	}
+	JobAdded.Log(context.Background(), "job", j.Label(), "id", j.ID, "spec", j.Spec, "kind", kind, "exec", j.Exec, "tz", tz, "enabled", j.Enabled)
 	return *j, nil
 }
 
@@ -399,6 +415,7 @@ func (e *Engine) Remove(id string) (bool, error) {
 		e.jobs[idx] = removed
 		return false, err
 	}
+	JobRemoved.Log(context.Background(), "job", removed.Label(), "id", id)
 	return true, nil
 }
 
@@ -422,6 +439,11 @@ func (e *Engine) SetEnabled(id string, on bool) (Job, bool, error) {
 		j.Enabled, j.NextRun = prevEnabled, prevNext
 		return Job{}, false, err
 	}
+	state := "disabled"
+	if on {
+		state = "enabled"
+	}
+	JobSwitched.Log(context.Background(), "job", j.Label(), "id", j.ID, "state", state)
 	return *j, true, nil
 }
 
@@ -437,6 +459,16 @@ func (e *Engine) RunNow(ctx context.Context, id string) (RunRecord, error) {
 	job := *e.jobs[idx]
 	e.mu.Unlock()
 	return e.execute(ctx, job), nil
+}
+
+// RunOnce runs def now, once, without adding it to the jobs: a one-off
+// prompt, such as an alert rule's cron action (TEN-399). It is serialized
+// with the other runs and kept in the history like them.
+func (e *Engine) RunOnce(ctx context.Context, def JobDef) RunRecord {
+	if def.ID == "" {
+		def.ID = newID()
+	}
+	return e.execute(ctx, Job{JobDef: def})
 }
 
 // runDue runs every enabled job whose NextRun has passed as of `now`. NextRun is
@@ -471,6 +503,7 @@ func (e *Engine) runDue(ctx context.Context, now time.Time) []RunRecord {
 
 // execute runs one job through the serialized runner with the per-run timeout,
 // records the outcome on the live job, appends + persists history, and notifies.
+// The runner logs the run itself, as a JobRun activity: it knows the turn.
 func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
@@ -490,7 +523,7 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 		if e.perRun > 0 {
 			runCtx, cancel = context.WithTimeout(ctx, e.perRun)
 		}
-		summary, err = e.runner(runCtx, job)
+		summary, rec.TraceID, err = e.runner(runCtx, job)
 		if cancel != nil {
 			cancel()
 		}
@@ -523,24 +556,15 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 	}
 	notify := e.notify
 	persist := e.historyPersist
-	var snapshot []RunRecord
-	if persist != nil {
-		snapshot = append([]RunRecord(nil), e.history...)
-	}
 	e.mu.Unlock()
 
 	if persist != nil {
-		if perr := persist(snapshot); perr != nil {
-			e.log.Warn("cron: persist history", "err", perr)
+		if perr := persist(rec); perr != nil {
+			HistoryNotSaved.Log(ctx, "job", job.Label(), "id", job.ID, "err", perr)
 		}
 	}
 	if notify != nil {
 		notify(formatRunLine(rec))
-	}
-	if err != nil {
-		e.log.Warn("cron: job failed", "id", job.ID, "name", job.Name, "err", err)
-	} else {
-		e.log.Debug("cron: job ran", "id", job.ID, "name", job.Name)
 	}
 	return rec
 }
@@ -558,6 +582,13 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.running = true
 	e.loopCancel = cancel
 	tick := e.tick
+	enabled := 0
+	for _, j := range e.jobs {
+		if j.Enabled {
+			enabled++
+		}
+	}
+	SchedulerStarted.Log(ctx, "jobs", len(e.jobs), "enabled", enabled, "tz", e.defaultLoc.String(), "catchup", e.catchup)
 	e.mu.Unlock()
 
 	e.wg.Add(1)

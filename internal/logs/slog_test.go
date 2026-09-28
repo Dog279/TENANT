@@ -2,10 +2,14 @@ package logs
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
+	"tenant/internal/logs/event"
 	"testing"
+
+	"tenant/internal/runtrace"
 )
 
 func TestHandler_FixedSourceAndFields(t *testing.T) {
@@ -19,6 +23,41 @@ func TestHandler_FixedSourceAndFields(t *testing.T) {
 	if all[0].Field("guild") != "g1" || all[0].Field("n") != "3" || all[0].Field("err") != "nope" {
 		t.Errorf("fields = %+v", all[0].Fields)
 	}
+}
+
+// A …Context call inside a turn files the turn's trace ID (TEN-362); a call
+// outside one files none.
+func TestHandler_TraceFromContext(t *testing.T) {
+	h := NewMemory(10)
+	l := h.Logger("turns")
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("4f2a"))
+	l.InfoContext(ctx, "in a turn", "k", "v")
+	l.InfoContext(context.Background(), "no turn")
+	all, _ := h.Snapshot()
+	if all[0].Field("trace") != "4f2a" || all[0].Field("k") != "v" {
+		t.Errorf("in-turn fields = %+v", all[0].Fields)
+	}
+	if all[1].Field("trace") != "" {
+		t.Errorf("out-of-turn fields = %+v", all[1].Fields)
+	}
+}
+
+// …inside an activity, the line names it too, so the pivot reaches it.
+func TestHandler_ActivityFromContext(t *testing.T) {
+	h := NewMemory(10)
+	prev := Default()
+	defer Install(prev)
+	Install(h)
+	def := event.NewProvider("slogact", "slogact").Event(1, event.Info, "Run", "run")
+	ctx, act := event.Start(context.Background(), def)
+	h.Logger("turns").InfoContext(ctx, "inside")
+	act.End(nil)
+	for _, e := range func() []Entry { es, _ := h.Snapshot(); return es }() {
+		if e.Msg == "inside" && e.Field("activity") == event.ActivityFromContext(ctx) && e.Field("activity") != "" {
+			return
+		}
+	}
+	t.Error("the slog line in an activity does not name it")
 }
 
 func TestHandler_RoutesByAttrThenPrefixThenDefault(t *testing.T) {
@@ -106,5 +145,26 @@ func TestFor_ResolvesHubLazily(t *testing.T) {
 	}
 	if Default() != h {
 		t.Error("Default() should be the installed hub")
+	}
+}
+
+// SourceOf reads back the folder a logger files into.
+func TestSourceOf(t *testing.T) {
+	h := NewMemory(10)
+	for _, c := range []struct {
+		l    *slog.Logger
+		want string
+	}{
+		{h.Logger("cron"), "cron"},
+		{For("discord").With("source", "x"), "discord"},
+		{slog.New(h.Handler(nil)).With("source", "subagents"), "subagents"},
+		{slog.New(h.Handler(nil)).With("source", "a").With("source", "Sub Agents"), "sub-agents"},
+		{slog.New(h.Handler(nil)).WithGroup("g").With("source", "x"), ""},
+		{slog.New(h.Handler(nil)), ""},
+		{slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)).With("source", "x"), ""},
+	} {
+		if got := SourceOf(c.l); got != c.want {
+			t.Errorf("SourceOf = %q, want %q", got, c.want)
+		}
 	}
 }

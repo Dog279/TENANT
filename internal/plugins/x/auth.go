@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/httplimits"
 	"tenant/internal/secrets"
 )
 
@@ -142,6 +143,9 @@ func (p *pkceSource) token(ctx context.Context) (string, error) {
 	}
 	tr, err := exchange(ctx, p.http, p.tok, form)
 	if err != nil {
+		if ctx.Err() == nil {
+			TokenRefreshFailed.Log(ctx, "err", err)
+		}
 		return "", err
 	}
 	p.st.Access = tr.AccessToken
@@ -150,8 +154,11 @@ func (p *pkceSource) token(ctx context.Context) (string, error) {
 	}
 	p.st.Expiry = p.clock().Add(time.Duration(tr.ttl()) * time.Second)
 	if err := p.st.save(p.path); err != nil {
-		return "", fmt.Errorf("x: persist refreshed token: %w", err)
+		err = fmt.Errorf("x: persist refreshed token: %w", err)
+		TokenRefreshFailed.Log(ctx, "err", err)
+		return "", err
 	}
+	TokenRefreshed.Log(ctx)
 	return p.st.Access, nil
 }
 
@@ -297,6 +304,7 @@ func loginPKCE(ctx context.Context, h httpDoer, clientID, redirectURI, scopes st
 		codeCh <- r.URL.Query().Get("code")
 	})
 	srv.Handler = mux
+	httplimits.Configure(srv)
 	go func() { _ = srv.ListenAndServe() }()
 	defer srv.Close()
 

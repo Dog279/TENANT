@@ -21,7 +21,12 @@ var (
 	peerFederationTools = toolmux.PeerFederationTools
 )
 
-func newToolMux() *toolMux { return toolmux.New() }
+// newToolMux builds a mux that logs the operator's plugin toggles.
+func newToolMux() *toolMux {
+	m := toolmux.New()
+	m.SetOnToggle(logPluginToggle)
+	return m
+}
 
 func newToolStats(dataDir, role string) *toolStats { return toolmux.NewStats(dataDir, role) }
 

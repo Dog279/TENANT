@@ -2,10 +2,13 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
+
+	"tenant/internal/logs/event"
 )
 
 // BackendFactory constructs an LLM (or Embedder) for a given Profile.
@@ -306,7 +309,7 @@ func (r *Router) LLMForRoleFiltered(ctx context.Context, role Role, allow Profil
 	for _, id := range chain {
 		fp, ok := r.reg.ByID(id)
 		if !ok {
-			r.log.Warn("router: fallback profile not registered; skipping", "id", id, "role", string(role))
+			LinkSkipped.Log(ctx, "profile", id, "role", string(role), "err", "not registered")
 			continue
 		}
 		if allow != nil && !allow(fp) {
@@ -314,7 +317,7 @@ func (r *Router) LLMForRoleFiltered(ctx context.Context, role Role, allow Profil
 		}
 		flm, ferr := r.llmForLocked(ctx, fp)
 		if ferr != nil {
-			r.log.Warn("router: fallback link unbuildable; skipping", "id", id, "err", ferr.Error())
+			LinkSkipped.Log(ctx, "profile", id, "role", string(role), "err", ferr)
 			continue
 		}
 		links = append(links, fbLink{llm: flm, label: id})
@@ -361,8 +364,7 @@ func (r *Router) LLMWithEffort(ctx context.Context, base Profile, baseLLM LLM, e
 	}
 	inst, err := f(ctx, variant, r.log)
 	if err != nil {
-		r.log.Warn("router: effort variant unbuildable; keeping base profile",
-			"profile", base.ID, "effort", effort, "err", err.Error())
+		EffortUnavailable.Log(ctx, "profile", base.ID, "effort", effort, "err", err)
 		return nil, false
 	}
 	llm, isLLM := inst.(LLM)
@@ -372,7 +374,7 @@ func (r *Router) LLMWithEffort(ctx context.Context, base Profile, baseLLM LLM, e
 	// Not health-gated: a higher-effort variant is expected to be slower, and
 	// demoting it for that would quietly drop the effort the turn asked for.
 	return NewFallbackLLM([]fbLink{
-		{llm: llm, label: variant.ID},
+		{llm: &metered{llm, variant}, label: variant.ID},
 		{llm: baseLLM, label: base.ID + " (effort fallback)"},
 	}, obs), true
 }
@@ -414,6 +416,7 @@ func (r *Router) llmForLocked(ctx context.Context, p Profile) (LLM, error) {
 	if !ok {
 		return nil, fmt.Errorf("backend %q for profile %s does not implement LLM", p.Backend, p.ID)
 	}
+	llm = &metered{llm, p} // a pointer: callers compare LLMs, and a Profile is not comparable
 	r.llmsByID[p.ID] = llm
 	r.log.Debug("router: constructed LLM", "profile", p.ID, "backend", p.Backend, "endpoint", p.Endpoint)
 	return llm, nil
@@ -438,4 +441,72 @@ func (r *Router) embedderForLocked(ctx context.Context, p Profile) (Embedder, er
 	r.embsByID[p.ID] = emb
 	r.log.Debug("router: constructed Embedder", "profile", p.ID, "backend", p.Backend, "endpoint", p.Endpoint)
 	return emb, nil
+}
+
+// metered makes each call to one profile's backend an activity (model 9001,
+// diagnostic) under the turn or activity in ctx, with the tokens it used
+// (9002), and an operational error (3001) when the provider couldn't serve it.
+type metered struct {
+	LLM
+	p Profile
+}
+
+func (m metered) Generate(ctx context.Context, req GenerateRequest) (resp *GenerateResponse, err error) {
+	ctx, act := event.Start(ctx, Call, m.kv()...)
+	defer func() { m.end(ctx, act, err) }()
+	resp, err = m.LLM.Generate(ctx, req)
+	if err == nil {
+		m.usage(ctx, resp.Usage)
+	}
+	return resp, err
+}
+
+// GenerateStream relays the stream so the activity ends when it does. Like
+// FallbackLLM's relay it forwards every chunk, the terminal error included;
+// callers drain a stream, so it never blocks for long.
+func (m metered) GenerateStream(ctx context.Context, req GenerateRequest) (<-chan StreamChunk, error) {
+	ctx, act := event.Start(ctx, Call, m.kv()...)
+	in, err := m.LLM.GenerateStream(ctx, req)
+	if err != nil {
+		m.end(ctx, act, err)
+		return nil, err
+	}
+	out := make(chan StreamChunk)
+	go func() {
+		defer close(out)
+		var err error
+		for c := range in {
+			if c.Error != nil {
+				err = c.Error
+			}
+			if c.Usage != nil {
+				m.usage(ctx, *c.Usage)
+			}
+			out <- c
+		}
+		m.end(ctx, act, err)
+	}()
+	return out, nil
+}
+
+func (m metered) kv() []any {
+	return []any{"profile", m.p.ID, "backend", m.p.Backend, "model", m.p.Model}
+}
+
+func (m metered) usage(ctx context.Context, u Usage) {
+	if u.PromptTokens > 0 || u.CompletionTokens > 0 {
+		CallUsage.Log(ctx, append(m.kv(), "prompt_tokens", u.PromptTokens, "completion_tokens", u.CompletionTokens)...)
+	}
+}
+
+// end closes the call's activity. A cancelled call stops rather than fails:
+// the caller gave up, the backend didn't.
+func (m metered) end(ctx context.Context, act *event.Activity, err error) {
+	if errors.Is(err, ErrCancelled) || errors.Is(err, context.Canceled) {
+		err = nil
+	}
+	if FailoverAction(err) {
+		Unavailable.Log(ctx, append(m.kv(), "reason", failoverReason(err), "err", err)...)
+	}
+	act.End(&err)
 }

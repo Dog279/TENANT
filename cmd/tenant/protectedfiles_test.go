@@ -179,7 +179,7 @@ func TestControlFilesProtectedWhateverTheRoots(t *testing.T) {
 		{"explicit write roots", resolveOSRoots(testPluginFlags(func(pf *pluginFlags) { osFlagsOf(pf).writeRoots = cfgDir }), cfgDir, dataDir, nil), settingsFile},
 		{"tenant os (no roots)", oneShot, settingsFile},
 		{"another agent's file", oneShot, settingsPath(cfgDir, "helper")},
-		{"the settings temp file", oneShot, settingsFile + ".tmp"},
+		{"the settings temp file", oneShot, settingsFile + ".123.tmp"},
 		{"the soul", oneShot, soul.Path(cfgDir, "main")},
 		{"the peer cert", oneShot, peerCert},
 		{"the spend ledger", oneShot, claudecode.LedgerPath()},

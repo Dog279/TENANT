@@ -13,13 +13,16 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/runtrace"
 )
 
 const (
@@ -44,6 +47,7 @@ type Decision struct {
 	Timestamp     time.Time `json:"ts"`
 	AgentID       string    `json:"agent_id"`
 	SessionID     string    `json:"session_id"`
+	TraceID       string    `json:"trace_id,omitempty"` // the turn that asked (runs.db)
 	PromptHash    string    `json:"prompt_hash"`
 	EstTokens     int       `json:"est_tokens"`
 	Domain        string    `json:"domain"`
@@ -154,7 +158,7 @@ type Engine struct {
 }
 
 // NewEngine creates a shadow decision engine. It performs no filesystem I/O;
-// a broken log path is silently ignored and never fails or changes a decision.
+// a broken log path never fails or changes a decision (route 3001 reports it).
 func NewEngine(classifier Classifier, dataDir string, historyLimit int) *Engine {
 	if historyLimit <= 0 {
 		historyLimit = defaultHistoryLimit
@@ -180,6 +184,7 @@ func (e *Engine) Decide(ctx context.Context, agentID, sessionID, prompt, mode st
 		Timestamp:   time.Now().UTC(),
 		AgentID:     agentID,
 		SessionID:   sessionID,
+		TraceID:     runtrace.IDFromContext(ctx),
 		PromptHash:  HashPrompt(prompt),
 		EstTokens:   EstimateTokens(prompt),
 		Mode:        mode,
@@ -193,7 +198,7 @@ func (e *Engine) Decide(ctx context.Context, agentID, sessionID, prompt, mode st
 		if e == nil {
 			return d
 		}
-		return e.record(d)
+		return e.record(ctx, d)
 	}
 	if e == nil || e.classifier == nil {
 		d.Status = StatusError
@@ -201,7 +206,7 @@ func (e *Engine) Decide(ctx context.Context, agentID, sessionID, prompt, mode st
 		if e == nil {
 			return d
 		}
-		return e.record(d)
+		return e.record(ctx, d)
 	}
 
 	start := time.Now()
@@ -222,7 +227,7 @@ func (e *Engine) Decide(ctx context.Context, agentID, sessionID, prompt, mode st
 		d.Status = StatusError
 		d.Error = err.Error()
 	}
-	return e.record(d)
+	return e.record(ctx, d)
 }
 
 // PolicyDecisionRequest is the phase-two input to DecideWithPolicy. The
@@ -271,6 +276,7 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 		Timestamp:   time.Now().UTC(),
 		AgentID:     req.AgentID,
 		SessionID:   req.SessionID,
+		TraceID:     runtrace.IDFromContext(ctx),
 		PromptHash:  HashPrompt(req.Prompt),
 		EstTokens:   in.EstTokens,
 		Mode:        req.Mode,
@@ -282,13 +288,13 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 	if e != nil && e.now != nil {
 		d.Timestamp = e.now().UTC()
 	}
-	if err := refreshPolicyInput(req.RefreshInput, &in); err != nil {
+	if err := refreshPolicyInput(ctx, req.RefreshInput, &in); err != nil {
 		d.Status = StatusError
 		d.Error = err.Error()
 		applyPolicyResult(&d, fallbackPolicyResult(in, ReasonClassifierFailure))
 		if e != nil {
 			d.BreakerState = e.breaker.State(d.Timestamp)
-			d = e.record(d)
+			d = e.record(ctx, d)
 		}
 		return d, err
 	}
@@ -306,14 +312,14 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 			d.Error = err.Error()
 			applyPolicyResult(&d, fallbackPolicyResult(in, ReasonClassifierFailure))
 			if e != nil {
-				d = e.record(d)
+				d = e.record(ctx, d)
 			}
 			return d, fmt.Errorf("route: policy decision: %w", err)
 		}
 		applyPolicyResult(&d, result)
 		if e != nil {
 			d.BreakerState = e.breaker.State(d.Timestamp)
-			d = e.record(d)
+			d = e.record(ctx, d)
 		}
 		return d, nil
 	}
@@ -331,7 +337,7 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 		d.Error = "route: classifier circuit breaker open; classification skipped"
 		d.BreakerState = e.breaker.State(d.Timestamp)
 		applyPolicyResult(&d, fallbackPolicyResult(in, ReasonBreakerOpen))
-		return e.record(d), nil
+		return e.record(ctx, d), nil
 	}
 	if e.classifier == nil {
 		err := errors.New("route: classifier unavailable")
@@ -340,7 +346,7 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 		d.BreakerTripped = e.breaker.RecordFailure(permit, d.Timestamp)
 		d.BreakerState = e.breaker.State(d.Timestamp)
 		applyPolicyResult(&d, fallbackPolicyResult(in, ReasonClassifierFailure))
-		return e.record(d), err
+		return e.record(ctx, d), err
 	}
 
 	if ctx == nil {
@@ -372,16 +378,16 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 		d.BreakerTripped = e.breaker.RecordFailure(permit, finished)
 		d.BreakerState = e.breaker.State(finished)
 		applyPolicyResult(&d, fallbackPolicyResult(in, ReasonClassifierFailure))
-		d = e.record(d)
+		d = e.record(ctx, d)
 		return d, fmt.Errorf("route: classify prompt: %w", classifyErr)
 	}
-	if err := refreshPolicyInput(req.RefreshInput, &in); err != nil {
+	if err := refreshPolicyInput(ctx, req.RefreshInput, &in); err != nil {
 		d.Status = StatusError
 		d.Error = err.Error()
 		e.breaker.RecordSuccess(permit) // classifier succeeded; caller metadata failed
 		d.BreakerState = e.breaker.State(e.now())
 		applyPolicyResult(&d, fallbackPolicyResult(in, ReasonClassifierFailure))
-		d = e.record(d)
+		d = e.record(ctx, d)
 		return d, err
 	}
 
@@ -399,29 +405,31 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 		}
 		d.BreakerState = e.breaker.State(e.now())
 		applyPolicyResult(&d, fallbackPolicyResult(in, ReasonClassifierFailure))
-		d = e.record(d)
+		d = e.record(ctx, d)
 		return d, fmt.Errorf("route: apply policy: %w", policyErr)
 	}
 	e.breaker.RecordSuccess(permit)
 	d.BreakerState = e.breaker.State(e.now())
 	applyPolicyResult(&d, result)
 	markAssistedSuggestion(&d, req)
-	annotateSafely(req.AnnotateDecision, &d)
-	return e.record(d), nil
+	annotateSafely(ctx, req.AnnotateDecision, &d)
+	return e.record(ctx, d), nil
 }
 
 // annotateSafely lets the caller stamp advisory metadata (rule role, effort
 // hint) onto the row about to be recorded. The selected target is restored
 // afterwards so a buggy annotator cannot re-route the turn through the back
 // door, and a panic degrades to "no annotation".
-func annotateSafely(annotate func(*Decision), d *Decision) {
+func annotateSafely(ctx context.Context, annotate func(*Decision), d *Decision) {
 	if annotate == nil || d == nil {
 		return
 	}
 	tier, role, profileID := d.SelectedTier, d.SelectedRole, d.SelectedProfileID
 	reason, clamped, pierced := d.PolicyReason, d.PolicyClamped, d.PrivacyPierced
 	defer func() {
-		_ = recover()
+		if v := recover(); v != nil {
+			Panicked.Log(ctx, "stage", "decision annotator", "panic", v, "stack", string(debug.Stack()))
+		}
 		d.SelectedTier, d.SelectedRole, d.SelectedProfileID = tier, role, profileID
 		d.PolicyReason, d.PolicyClamped, d.PrivacyPierced = reason, clamped, pierced
 	}()
@@ -440,18 +448,20 @@ func markAssistedSuggestion(d *Decision, req PolicyDecisionRequest) {
 func classifySafely(classifier Classifier, ctx context.Context, prompt string) (sig Signal, err error) {
 	defer func() {
 		if v := recover(); v != nil {
+			Panicked.Log(ctx, "stage", "classifier", "panic", v, "stack", string(debug.Stack()))
 			err = fmt.Errorf("route: classifier panic: %v", v)
 		}
 	}()
 	return classifier.Classify(ctx, prompt)
 }
 
-func refreshPolicyInput(refresh func(*PolicyInput), in *PolicyInput) (err error) {
+func refreshPolicyInput(ctx context.Context, refresh func(*PolicyInput), in *PolicyInput) (err error) {
 	if refresh == nil {
 		return nil
 	}
 	defer func() {
 		if v := recover(); v != nil {
+			Panicked.Log(ctx, "stage", "policy input refresh", "panic", v, "stack", string(debug.Stack()))
 			err = fmt.Errorf("route: refresh policy input: %v", v)
 		}
 	}()
@@ -640,6 +650,13 @@ func (e *Engine) Confirm(id string) error {
 
 	e.logMu.Lock()
 	defer e.logMu.Unlock()
+	// Exclusive across processes: a row another process appends while this
+	// rewrite runs would land in the copy the rename replaces.
+	lock, err := datalock.File(e.path, true)
+	if err != nil {
+		return fmt.Errorf("route: confirm: lock decision log: %w", err)
+	}
+	defer lock.Release()
 	raw, err := os.ReadFile(e.path)
 	if err != nil {
 		return fmt.Errorf("route: confirm: read decision log: %w", err)
@@ -774,7 +791,9 @@ func nearestRank(sorted []int64, percentile float64) int64 {
 	return sorted[rank]
 }
 
-func (e *Engine) record(d Decision) Decision {
+// record keeps d in the history and the durable log, and writes its event.
+func (e *Engine) record(ctx context.Context, d Decision) Decision {
+	logDecision(ctx, d)
 	e.mu.Lock()
 	e.history = append(e.history, d)
 	if len(e.history) > e.limit {
@@ -783,21 +802,46 @@ func (e *Engine) record(d Decision) Decision {
 	}
 	e.mu.Unlock()
 	e.logMu.Lock()
-	_ = appendDecision(e.path, d) // telemetry must never fail or alter a decision
+	err := appendDecision(e.path, d) // telemetry must never fail or alter a decision
 	pruneDue := e.pruneDueLocked()
 	e.logMu.Unlock()
+	if err != nil {
+		RecordFailed.Log(ctx, "decision_id", d.ID, "err", err)
+	}
 	if pruneDue {
 		// The whole-file retention rewrite runs OFF the record path: a caller
 		// tripping the daily gate must not pay the rewrite inside its turn or
-		// spawn. Prune re-takes logMu itself; errors are telemetry-only.
-		go func() { _, _, _ = e.Prune() }()
+		// spawn. Prune re-takes logMu itself; errors are logged, never returned.
+		go func() {
+			if _, _, err := e.Prune(); err != nil {
+				PruneFailed.Log(context.Background(), "err", err)
+			}
+		}()
 	}
 	return d
 }
 
+// logDecision writes d's event: the decision, or its fallback to the planner,
+// and a tripped breaker.
+func logDecision(ctx context.Context, d Decision) {
+	if d.Status == StatusError {
+		DecideFailed.Log(ctx, "decision_id", d.ID, "summary", d.Summary(), "mode", d.Mode,
+			"agent", d.AgentID, "session", d.SessionID, "err", d.Error)
+	} else {
+		Decided.Log(ctx, "decision_id", d.ID, "summary", d.Summary(), "mode", d.Mode, "status", d.Status,
+			"tier", string(d.SelectedTier), "role", d.SelectedRole, "profile", d.SelectedProfileID,
+			"reason", d.PolicyReason, "agent", d.AgentID, "session", d.SessionID)
+	}
+	if d.BreakerTripped {
+		BreakerOpened.Log(ctx, "decision_id", d.ID)
+	}
+}
+
+// appendDecision adds one line under the log's shared lock, so a compaction in
+// any process (which holds it exclusively) never loses the row.
 func appendDecision(path string, d Decision) error {
 	if path == "" {
-		return errors.New("route: decision log data dir required")
+		return nil // no data dir: the history stays in memory only
 	}
 	if err := fsperm.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("route: create decision log dir: %w", err)
@@ -806,6 +850,11 @@ func appendDecision(path string, d Decision) error {
 	if err != nil {
 		return fmt.Errorf("route: marshal decision: %w", err)
 	}
+	lock, err := datalock.File(path, false)
+	if err != nil {
+		return fmt.Errorf("route: lock decision log: %w", err)
+	}
+	defer lock.Release()
 	f, err := fsperm.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
 	if err != nil {
 		return fmt.Errorf("route: open decision log: %w", err)

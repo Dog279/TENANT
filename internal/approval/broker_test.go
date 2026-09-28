@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/control"
+	"tenant/internal/runtrace"
 )
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -247,6 +250,33 @@ func TestBroker_ResolveUnblocksOnce(t *testing.T) {
 	}
 }
 
+// Approval events raised inside a turn carry its trace ID, so the approvals
+// lines join the run record (TEN-362).
+func TestBroker_ApprovalEventsCarryTrace(t *testing.T) {
+	b := newTestBroker(testLog())
+	var mu sync.Mutex
+	var got []string
+	b.SetEvents(func(e agent.Event) { mu.Lock(); got = append(got, string(e.Kind)+"/"+e.TraceID); mu.Unlock() })
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("4f2a"))
+	id, done := confirmAsync(t, b, ctx, "os_exec")
+	b.Resolve(id, control.ApproveOnce)
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if s := strings.Join(got, ","); s != "approval_pending/4f2a,approval_resolved/4f2a" {
+		t.Fatalf("events = %s", s)
+	}
+	// A Discord-button approval's mirror lines too.
+	d := newTestDiscordBroker(testLog())
+	var beside []string
+	d.SetEvents(func(e agent.Event) { beside = append(beside, e.TraceID) })
+	d.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.ApproveOnce })
+	d.askDecision(ctx, "agent", CatExec, "os_exec", "x")
+	if s := strings.Join(beside, ","); s != "4f2a,4f2a" {
+		t.Fatalf("beside traces = %s", s)
+	}
+}
+
 func TestBroker_FirstResolverWinsRace(t *testing.T) {
 	b := newTestBroker(testLog())
 	id, done := confirmAsync(t, b, context.Background(), "os_exec")
@@ -433,7 +463,7 @@ func TestOffsiteBroker_MirrorCarriesOwnOrigin(t *testing.T) {
 		}
 	})
 	b.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.DenyOnce })
-	if d := b.askDecision(context.Background(), CatExec, "run", "d"); d != control.DenyOnce {
+	if d := b.askDecision(context.Background(), "agent", CatExec, "run", "d"); d != control.DenyOnce {
 		t.Fatalf("askDecision = %v", d)
 	}
 	if len(ids) != 2 || ids[0] != "beside-imessage/imessage" || ids[1] != "beside-imessage/imessage" {
@@ -462,5 +492,71 @@ func TestBrokerDefaults(t *testing.T) {
 				t.Errorf("%s broker: %s = %s, want %s", tc.name, cat, mode, tc.want)
 			}
 		}
+	}
+}
+
+// runApprovals runs fn on a turn span and returns the approvals it recorded.
+func runApprovals(fn func(ctx context.Context)) []runtrace.Approval {
+	span := runtrace.NewSpan("turn")
+	fn(runtrace.WithSpan(context.Background(), span))
+	var r runtrace.Run
+	span.Apply(&r)
+	return r.Approvals
+}
+
+// Approval IDs carry this process's boot ID, so serve and the TUI never mint
+// the same one, and two policy verdicts for one action in one turn stay two
+// records (TEN-368).
+func TestApprovalIDsAreUniqueAcrossProcessesAndPrompts(t *testing.T) {
+	b := newTestBroker(testLog())
+	prefix := "ap-" + runtrace.BootID()[:8] + "-"
+	id1, done := confirmAsync(t, b, context.Background(), "os_exec")
+	b.Resolve(id1, control.DenyOnce)
+	<-done
+	id2, done := confirmAsync(t, b, context.Background(), "os_exec")
+	b.Resolve(id2, control.DenyOnce)
+	<-done
+	if !strings.HasPrefix(id1, prefix) || !strings.HasPrefix(id2, prefix) || id1 == id2 {
+		t.Fatalf("ids = %q, %q; want distinct, prefixed %q", id1, id2, prefix)
+	}
+
+	b.SetPermission(CatExec, "allow")
+	got := runApprovals(func(ctx context.Context) {
+		b.Confirm(ctx, "os_exec", "ls")
+		b.Confirm(ctx, "os_exec", "ls")
+	})
+	if len(got) != 2 || got[0].ID == got[1].ID || !strings.HasPrefix(got[0].ID, "policy:exec:os_exec:") {
+		t.Fatalf("policy approvals = %+v, want two separate records", got)
+	}
+}
+
+// An outcome says why a gated action was refused: a shutdown's DenyAll and an
+// expired channel prompt are not the operator's deny (TEN-368).
+func TestApprovalOutcomesRecordTheirCause(t *testing.T) {
+	b := newTestBroker(testLog())
+	var outcomes []string
+	b.SetEvents(func(e agent.Event) {
+		if e.Kind == agent.EventApprovalResolved && e.Approval != nil {
+			outcomes = append(outcomes, e.Approval.Outcome)
+		}
+	})
+	got := runApprovals(func(ctx context.Context) {
+		_, done := confirmAsync(t, b, ctx, "os_exec")
+		b.DenyAll()
+		<-done
+	})
+	if len(got) != 1 || got[0].Outcome != "denied_shutdown" || len(outcomes) != 1 || outcomes[0] != "denied_shutdown" {
+		t.Fatalf("after DenyAll: records %+v, events %v; want denied_shutdown", got, outcomes)
+	}
+
+	d := newTestDiscordBroker(testLog())
+	d.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.Expired })
+	got = runApprovals(func(ctx context.Context) {
+		if d.Confirm(ctx, "os_exec", "ls") {
+			t.Error("an expired prompt must deny")
+		}
+	})
+	if len(got) != 1 || got[0].Outcome != "expired" {
+		t.Fatalf("after a prompt timed out: records %+v, want one expired", got)
 	}
 }

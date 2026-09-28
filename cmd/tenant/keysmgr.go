@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tenant/internal/dashboard"
+	"tenant/internal/lifecycle"
 	"tenant/internal/tui"
 )
 
@@ -23,8 +24,9 @@ import (
 const credsWatchInterval = 20 * time.Second
 
 type dashKeys struct {
-	cfgDir string
-	mc     *modelControl
+	cfgDir  string
+	mc      *modelControl
+	surface string // where the change is made, for its Security record
 }
 
 var _ dashboard.SecretsControl = dashKeys{}
@@ -85,7 +87,7 @@ func (k dashKeys) SetSecret(credID, value string) error {
 	case keyProvider:
 		// AddCloudModel registers the provider (Auth.Stored=true) + stores the
 		// key in protected credentials.json. Idempotent: re-set overwrites the key.
-		if _, err := k.mc.AddCloudModel(spec.CredID, value); err != nil {
+		if _, err := k.mc.addCloudModel(spec.CredID, value, k.surface); err != nil {
 			return err
 		}
 		k.maybeReloadProvider(spec.CredID) // hot-swap it live if it's the active provider
@@ -96,7 +98,7 @@ func (k dashKeys) SetSecret(credID, value string) error {
 			return err
 		}
 		creds.Set(spec.CredID, value)
-		return creds.Save(k.cfgDir)
+		return saveCredentials(k.cfgDir, creds, k.surface)
 	}
 }
 
@@ -107,7 +109,9 @@ func (k dashKeys) RemoveSecret(credID string) error {
 	}
 	switch spec.Kind {
 	case keyProvider:
-		forgetProviderSecret(k.cfgDir, spec.CredID) // delete the cred entry
+		if err := forgetProviderSecret(k.cfgDir, spec.CredID, k.surface); err != nil { // delete the cred entry
+			return err
+		}
 		// forgetProviderSecret does NOT clear Auth.Stored, which would leave
 		// resolveSecret returning "" for a Stored:true provider with no secret —
 		// finish the job so the provider goes cleanly keyless.
@@ -122,7 +126,7 @@ func (k dashKeys) RemoveSecret(credID string) error {
 			return err
 		}
 		delete(creds.Secrets, spec.CredID)
-		return creds.Save(k.cfgDir)
+		return saveCredentials(k.cfgDir, creds, k.surface)
 	}
 }
 
@@ -140,7 +144,11 @@ func (k dashKeys) maybeReloadProvider(credID string) {
 	if err != nil || lc.Provider != credID {
 		return
 	}
-	go func() { _, _ = k.mc.ReloadKeys() }()
+	go func() {
+		if _, err := k.mc.ReloadKeys(); err != nil {
+			sysKeyNotReloaded.Log(context.Background(), "provider", credID, "source", "the settings page", "err", err)
+		}
+	}()
 }
 
 // watchCredentials polls credentials.json and, when it changes, hot-reloads the
@@ -149,11 +157,15 @@ func (k dashKeys) maybeReloadProvider(credID string) {
 // without a restart. Web-search keys are resolved lazily and need no trigger.
 // While degraded to echo it SKIPS: an unrelated creds change must not swap echo
 // for a possibly-down real provider (degraded recovery is driven by the settings
-// page / reconnect monitor / `/model use`). Runs until ctx is cancelled.
+// page / reconnect monitor / `/model use`). Every tick also refreshes the log
+// scrubber's copy of the secrets, which another process may have changed
+// (TEN-361). Runs until ctx is cancelled.
 func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degraded *degradedState, notify func(string)) {
 	if mc == nil {
 		return
 	}
+	comp := lifecycle.Track(ctx, "credentials watcher", lifecycle.Subsystem, "system", lifecycle.Running, nil)
+	defer comp.Set(lifecycle.Stopped, nil)
 	path := credentialsPath(cfgDir)
 	last := credsModTime(path)
 	t := time.NewTicker(credsWatchInterval)
@@ -163,6 +175,7 @@ func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degr
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			refreshLogSecrets()
 			cur := credsModTime(path)
 			if cur == last {
 				continue
@@ -173,12 +186,17 @@ func watchCredentials(ctx context.Context, cfgDir string, mc *modelControl, degr
 			}
 			status, err := mc.ReloadKeys()
 			if err != nil {
+				sysKeyNotReloaded.Log(ctx, "source", "credentials.json", "err", err)
 				if notify != nil {
 					notify("keys: reload after credentials change failed: " + err.Error())
 				}
 				continue
 			}
-			if status != "" && notify != nil {
+			if status == "" {
+				continue // no provider is active
+			}
+			sysKeysReloaded.Log(ctx)
+			if notify != nil {
 				notify("keys: credentials.json changed — " + status)
 			}
 		}

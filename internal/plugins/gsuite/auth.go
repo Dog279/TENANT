@@ -16,6 +16,7 @@
 package gsuite
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -32,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tenant/internal/logs/capture"
 
 	"golang.org/x/oauth2"
 )
@@ -78,8 +81,12 @@ func (c *cachedSource) token(ctx context.Context) (string, error) {
 	}
 	t, e, err := c.mint(ctx)
 	if err != nil {
+		if ctx.Err() == nil {
+			TokenRefreshFailed.Log(ctx, "err", err)
+		}
 		return "", err
 	}
+	TokenRefreshed.Log(ctx, "expires", e)
 	c.tok, c.exp = t, e
 	return t, nil
 }
@@ -212,12 +219,14 @@ func parseRSAKey(pemStr string) (*rsa.PrivateKey, error) {
 type runner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 func execRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, name, args...).Output()
-	if err != nil {
+	var out bytes.Buffer // the token: never logged
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = &out
+	if err := capture.New(ctx, "plugin.gsuite", "child", name).Run(cmd); err != nil {
 		return nil, fmt.Errorf("gsuite: `%s %s` failed: %w (is gcloud installed & `gcloud auth application-default login` done?)",
 			name, strings.Join(args, " "), err)
 	}
-	return out, nil
+	return out.Bytes(), nil
 }
 
 // gcloudTTL: print-access-token doesn't report expiry; ADC tokens last
@@ -328,10 +337,15 @@ func (o *oauthSource) mint(ctx context.Context) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("gsuite: oauth refresh: %w", err)
 	}
 	// oauth2's TokenSource may have rotated the refresh token. Persist
-	// the rotated copy so disk stays in sync.
+	// the rotated copy so disk stays in sync. The refresh itself succeeded, so
+	// a failed save only costs a sign-in after a restart: logged, and retried
+	// on the next mint.
 	if o.save != nil && tok != nil && tok.RefreshToken != "" {
 		if o.saved == nil || tok.RefreshToken != o.saved.RefreshToken {
-			_ = o.save(tok) // best-effort: refresh succeeded, disk save is bonus
+			if err := o.save(tok); err != nil {
+				TokenNotSaved.Log(ctx, "err", err)
+				return tok.AccessToken, tok.Expiry, nil
+			}
 		}
 		o.saved = tok
 	}

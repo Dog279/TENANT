@@ -45,7 +45,7 @@ func (hostBackend) Start(ctx context.Context, argv []string, pol Policy) (*Proce
 		c.Dir = pol.WorkDir
 	}
 	c.Env = pol.Env.materialize(os.Environ())
-	return startProcess(c, nil, nil)
+	return startProcess(c, pol.Stderr, nil, nil)
 }
 
 func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
@@ -66,7 +66,7 @@ func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, er
 	c.Env = pol.Env.materialize(os.Environ())
 
 	out, err := c.CombinedOutput()
-	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes)}
+	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
 
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

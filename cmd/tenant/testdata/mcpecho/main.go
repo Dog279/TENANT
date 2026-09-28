@@ -2,13 +2,18 @@
 // tests (TEN-318). It speaks MCP over stdio and offers three tools: echo
 // (returns its text), readfile (returns a file's first bytes, or the error)
 // and dial (opens a TCP connection, or returns the error), so a test can see
-// what the sandbox around it allows.
+// what the sandbox around it allows. Three more show what its parent files
+// of it (TEN-364): stderr (writes its text to stderr), getenv (returns an
+// environment variable) and stubborn (from then on it ignores its stdin
+// closing, so it has to be killed).
 package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -56,7 +61,26 @@ func main() {
 			c.Close()
 			return text("connected"), nil, nil
 		})
-	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+	mcp.AddTool(srv, &mcp.Tool{Name: "stderr", Description: "writes its text to stderr"},
+		func(_ context.Context, _ *mcp.CallToolRequest, a textArgs) (*mcp.CallToolResult, any, error) {
+			fmt.Fprintln(os.Stderr, a.Text)
+			return text("written"), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "getenv", Description: "returns an environment variable"},
+		func(_ context.Context, _ *mcp.CallToolRequest, a textArgs) (*mcp.CallToolResult, any, error) {
+			return text(os.Getenv(a.Text)), nil, nil
+		})
+	var stubborn atomic.Bool
+	mcp.AddTool(srv, &mcp.Tool{Name: "stubborn", Description: "ignores its stdin closing from now on"},
+		func(_ context.Context, _ *mcp.CallToolRequest, _ textArgs) (*mcp.CallToolResult, any, error) {
+			stubborn.Store(true)
+			return text("stubborn"), nil, nil
+		})
+	err := srv.Run(context.Background(), &mcp.StdioTransport{})
+	if stubborn.Load() {
+		time.Sleep(time.Hour)
+	}
+	if err != nil {
 		os.Exit(1)
 	}
 }

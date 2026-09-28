@@ -79,6 +79,8 @@ type Mux struct {
 	// snapshot, so the caller can persist the curation. Set AFTER restore
 	// (restore must not re-trigger a save of what it just loaded).
 	onChange func(map[string]bool)
+	// onToggle hears the same changes, one at a time (SetOnToggle).
+	onToggle func(label, target string, on bool, tools int)
 
 	// stats, when set (enableStats), counts every dispatch outcome per tool.
 	// nil = off (the eval harness stays uninstrumented on purpose - synthetic
@@ -191,6 +193,16 @@ var coreToolNames = map[string]bool{
 func (m *Mux) SetOnChange(fn func(map[string]bool)) {
 	m.mu.Lock()
 	m.onChange = fn
+	m.mu.Unlock()
+}
+
+// SetOnToggle installs fn, told of each change the persistence hook hears: the
+// operator turned a plugin (target is its label) or one of its tools (target
+// is the tool) on or off, touching tools tools. Until SetOnChange, the
+// launch's own toggling and restore's are not told (TEN-393).
+func (m *Mux) SetOnToggle(fn func(label, target string, on bool, tools int)) {
+	m.mu.Lock()
+	m.onToggle = fn
 	m.mu.Unlock()
 }
 
@@ -312,7 +324,7 @@ type MCPDeps struct {
 	Confirm          func(context.Context, string, string) bool
 	Rule             func(action string) string // per-tool permission rule lookup (approval.Rules); nil ⇒ none
 	CacheDir         string                     // 0600 OAuth token cache dir (persistence across restarts)
-	Log              *slog.Logger               // connect/refresh failure logging (TEN-166)
+	Log              *slog.Logger               // federation's debug lines (a connector logs through mcpremote's events)
 	Trust            map[string]string          // persisted per-connector trust by URL (config mcp_trust); applied on register
 	// onAuthChange is the only mutable member: installed after the mux is built
 	// (SetMCPAuthNotifier, under the mux lock) once the surfaces that can reach
@@ -373,7 +385,6 @@ func (m *Mux) RegisterMCPRemote(url string) string {
 			OpenBrowser:  d.OpenBrowser,
 			CacheDir:     d.CacheDir,
 			Interactive:  true, // /enable or /mcp add may sign in via browser (cached token ⇒ silent)
-			Logger:       d.Log,
 			OnAuthChange: func(needs bool, err string) { m.fireMCPAuthChange(label, url, needs, err) },
 		}, d.TrustAnnotations, mcpremote.Policy{
 			AllowWrite: d.AllowWrite,
@@ -431,15 +442,12 @@ func (m *Mux) RegisterMCPStdio(name, hint string, open StdioOpener) (string, err
 // StartMCPStdioSilently starts a registered local server at launch and brings
 // its tools live the way a reconnected remote connector's come (adoptLiveMCP):
 // enabled, except those the operator disabled, and hidden for a denied
-// connector. A failure is logged and leaves the stub for /enable. Safe to run
-// in a goroutine.
+// connector. A failure leaves the stub for /enable; the server's log has it
+// (its Server and Connection activities). Safe to run in a goroutine.
 func (m *Mux) StartMCPStdioSilently(label string, open StdioOpener) {
 	d := m.mcpDeps
 	disp, cleanup, err := open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule})
 	if err != nil {
-		if d.Log != nil {
-			d.Log.Warn("mcp: local server did not start", "connector", label, "err", err.Error())
-		}
 		return
 	}
 	m.adoptLiveMCP(label, disp, cleanup)
@@ -554,7 +562,6 @@ func (m *Mux) ReconnectMCPSilently(url string) {
 		CallbackAddr: d.Callback,
 		CacheDir:     d.CacheDir,
 		Interactive:  false, // launch: never pop a browser
-		Logger:       d.Log,
 		OnAuthChange: func(needs bool, err string) { m.fireMCPAuthChange(label, url, needs, err) },
 	}, d.TrustAnnotations, mcpremote.Policy{
 		AllowWrite: d.AllowWrite,
@@ -562,16 +569,8 @@ func (m *Mux) ReconnectMCPSilently(url string) {
 		Rule:       d.Rule,
 	})
 	if err != nil {
-		// Previously swallowed — that's why "check the logs" showed nothing for a
-		// broken MCP server (TEN-166). errNoCachedSession (no token yet) is the
-		// normal first-run case → debug; anything else is a real failure → warn.
-		if d.Log != nil {
-			if strings.Contains(err.Error(), "no usable cached session") {
-				d.Log.Debug("mcp: silent reconnect skipped (no cached session)", "server", url)
-			} else {
-				d.Log.Warn("mcp: silent reconnect failed", "server", url, "err", err.Error())
-			}
-		}
+		// Open logged it in the connector's log (TEN-166, TEN-387): a failed
+		// Connection, or, the normal first-run case, no saved sign-in.
 		return // stays a disabled stub; interactive activator can sign in later
 	}
 	m.adoptLiveMCP(label, disp, cleanup)
@@ -635,6 +634,8 @@ func (m *Mux) adoptLiveMCP(label string, p Plugin, cleanup func()) {
 func (m *Mux) ReconnectPeersSilently(cfgDir string) {
 	store, err := peering.LoadStore(cfgDir)
 	if err != nil {
+		// An unreadable peers.json turns federation off: say so.
+		PeersUnreadable.Log(m.mcpDeps.Ctx, "err", err)
 		return
 	}
 	for _, peer := range store.List() {
@@ -657,9 +658,7 @@ func (m *Mux) ReconnectPeersSilently(cfgDir string) {
 				UngateTools: PeerFederationTools,                          // TEN-252: only the known federation tools ungate
 			}, mcpremote.Policy{Confirm: d.Confirm, Rule: d.Rule})
 			if derr != nil {
-				if d.Log != nil {
-					d.Log.Warn("peer: silent reconnect failed", "peer", p.Name, "err", derr.Error())
-				}
+				PeerReconnectFailed.Log(d.Ctx, "peer", p.Name, "err", derr)
 				return
 			}
 			// Fold the peer in for federated search instead of exposing its
@@ -760,21 +759,12 @@ func (m *Mux) SetMCPAuthNotifier(fn func(label, url string, needsReauth bool, er
 }
 
 // fireMCPAuthChange is what every remote connector's OnAuthChange points at.
-// It logs with the fix spelled out (the log line is the persistent audit) and
-// forwards to the installed notifier, if any.
+// It forwards to the installed notifier, if any; the connector's log already
+// has the change, with the fix spelled out (mcp 3101, 1103).
 func (m *Mux) fireMCPAuthChange(label, url string, needsReauth bool, err string) {
 	m.mu.RLock()
 	fn := m.mcpDeps.onAuthChange
-	log := m.mcpDeps.Log
 	m.mu.RUnlock()
-	if log != nil {
-		if needsReauth {
-			log.Warn("mcp: connector needs re-authorization — its tools fail until reconnected",
-				"server", label, "url", url, "err", err, "fix", "tenant mcp connect "+url)
-		} else {
-			log.Info("mcp: connector re-authorized", "server", label)
-		}
-	}
 	if fn != nil {
 		fn(label, url, needsReauth, err)
 	}
@@ -1282,9 +1272,13 @@ func (m *Mux) SetPluginEnabled(label string, on bool) (int, string, error) {
 	if n > 0 && m.onChange != nil {
 		snap = m.enabledSnapshot()
 	}
+	toggle := m.onToggle
 	m.mu.Unlock()
 	if snap != nil {
 		m.onChange(snap)
+		if toggle != nil {
+			toggle(label, label, on, n)
+		}
 	}
 	scope := ""
 	if n > 0 {
@@ -1324,14 +1318,14 @@ func (m *Mux) SetEnabled(target string, on bool) (int, string, error) {
 		}
 	}
 	m.mu.Lock()
-	n, scope := 0, ""
+	n, scope, label := 0, "", target
 	if m.savedStates == nil {
 		m.savedStates = map[string]bool{}
 	}
 	if e, ok := m.byName[target]; ok {
 		e.enabled = on
 		m.savedStates[target] = on
-		n, scope = 1, "tool"
+		n, scope, label = 1, "tool", e.Plugin
 	} else {
 		for name, e := range m.byName {
 			if e.Plugin == target {
@@ -1350,9 +1344,13 @@ func (m *Mux) SetEnabled(target string, on bool) (int, string, error) {
 	if n > 0 && m.onChange != nil {
 		snap = m.enabledSnapshot()
 	}
+	toggle := m.onToggle
 	m.mu.Unlock()
 	if snap != nil {
 		m.onChange(snap)
+		if toggle != nil {
+			toggle(label, target, on, n)
+		}
 	}
 	return n, scope, nil
 }

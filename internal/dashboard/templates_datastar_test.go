@@ -18,8 +18,10 @@ import (
 func TestTemplates_NoDeadHyphenDatastarAttrs(t *testing.T) {
 	// Match a Datastar plugin attribute written with the dead hyphen separator
 	// (data-on-..., data-bind-..., etc.). The live colon form (data-on:...) and
-	// keyless plugins (data-init, data-bind:text) do not match.
-	dead := regexp.MustCompile(`data-(on|bind|text|show|class|attr|computed)-[a-z]`)
+	// keyless plugins (data-init, data-bind:text) do not match, and neither do
+	// the plugins whose own names are hyphenated (data-on-intersect).
+	dead := regexp.MustCompile(`data-(on|bind|text|show|class|attr|computed)-[a-z]+`)
+	live := map[string]bool{"data-on-intersect": true, "data-on-interval": true, "data-on-signal": true}
 	walked := 0
 	err := fs.WalkDir(ssrFS, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".html") {
@@ -30,7 +32,10 @@ func TestTemplates_NoDeadHyphenDatastarAttrs(t *testing.T) {
 		if rerr != nil {
 			return rerr
 		}
-		if m := dead.FindString(string(b)); m != "" {
+		for _, m := range dead.FindAllString(string(b), -1) {
+			if live[m] {
+				continue
+			}
 			t.Errorf("%s uses dead hyphen-form Datastar attr %q — Datastar v1.0.1 silently ignores it; use the colon form (e.g. data-on:click)", path, m)
 		}
 		return nil
@@ -55,6 +60,7 @@ func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 	openers := map[string]string{
 		"templates/activity.html": "@get('/activity/events",
 		"templates/chat.html":     "@get('/events'",
+		"templates/logs.html":     "@get('{{.TailURL}}'", // the Logs page's live tail
 	}
 	for name, ep := range openers {
 		b, err := ssrFS.ReadFile(name)

@@ -8,7 +8,10 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/dashboard"
+	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
+	"tenant/internal/logs/logapi"
+	"tenant/internal/runtrace"
 )
 
 // dashboardManager owns the lifecycle of the web control panel so the
@@ -38,7 +41,10 @@ type dashboardManager struct {
 	approvals    dashboard.ApprovalControl     // TEN-194: headless approval queue surface (serve mode; nil-safe)
 	rules        dashboard.RuleControl         // per-tool permission rules card on the Tools page (nil-safe)
 	broker       *agent.Broker
-	logs         *logs.Hub // the unified log book: Activity feed + folders (nil-safe)
+	logs         *logs.Hub          // the unified log book: Activity feed + folders (nil-safe)
+	runs         *runtrace.Store    // run records, for the log book's timelines (nil-safe)
+	security     logapi.SecurityLog // the Security log's verify and audit export
+	alerts       logapi.AlertConfig // the alert rules in config.json
 	log          *slog.Logger
 	notify       func(string)             // feed sink (pushSys) for async status
 	persist      func(enabled bool) error // record the on/off choice to config
@@ -65,6 +71,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	ln, err := net.Listen("tcp", m.cfg.Addr)
 	if err != nil {
+		m.track(lifecycle.Failed, err)
 		return m.cfg.Addr, err
 	}
 	srv := dashboard.New(m.cfg, m.runner, m.tools, m.mem, m.broker, m.log)
@@ -104,6 +111,11 @@ func (m *dashboardManager) Enable() (string, error) {
 	if m.logs != nil {
 		srv.SetLogs(m.logs)
 	}
+	if m.runs != nil {
+		srv.SetRunRecords(m.runs.Get)
+	}
+	srv.SetSecurityLog(m.security)
+	srv.SetAlertRules(m.alerts)
 	srv.SetTrustedHosts(m.trustedHostsLocked())
 	dctx, cancel := context.WithCancel(m.base)
 	done := make(chan struct{})
@@ -120,6 +132,9 @@ func (m *dashboardManager) Enable() (string, error) {
 				m.srv = nil
 			}
 			m.mu.Unlock()
+			if current {
+				m.track(lifecycle.Failed, err)
+			}
 			if current && m.notify != nil {
 				m.notify("dashboard: stopped: " + err.Error())
 			}
@@ -130,6 +145,7 @@ func (m *dashboardManager) Enable() (string, error) {
 	m.done = done
 	m.srv = srv
 	m.addr = ln.Addr().String()
+	m.track(lifecycle.Running, nil)
 	if m.persist != nil {
 		if err := m.persist(true); err != nil {
 			return m.addr, err
@@ -172,7 +188,13 @@ func (m *dashboardManager) stopLocked() {
 		m.cancel = nil
 		m.done = nil
 		m.srv = nil
+		m.track(lifecycle.Stopped, nil)
 	}
+}
+
+// track files the dashboard's state in the Components view (lifecycle).
+func (m *dashboardManager) track(st lifecycle.State, err error) {
+	lifecycle.Track(m.base, "dashboard", lifecycle.Server, "dashboard", st, err)
 }
 
 // SetTailnetHost trusts the tailnet DNS name `tailscale serve` publishes the

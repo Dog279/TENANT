@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
+	"tenant/internal/lifecycle"
 	"tenant/internal/model"
 	"tenant/internal/peering"
 	"tenant/internal/plugins/mcpremote"
@@ -96,11 +96,13 @@ func (r *peerHealthRegistry) markInboundGrant(name string, grant []string) {
 
 // recordProbe records an outbound probe result. caps is the peer's grant to us
 // from peer_hello (nil when the probe failed); the last-known grant is retained
-// across a transient failure rather than blanked.
-func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.Duration, caps []string, err error) {
+// across a transient failure rather than blanked. It reports whether the peer
+// went up or down: its first probe, or a change between alive and dead.
+func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.Duration, caps []string, err error) (changed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.entryLocked(name)
+	changed = !s.outProbed || s.outAlive != alive
 	s.outProbed = true
 	s.outAlive = alive
 	s.outLatency = latency
@@ -116,6 +118,7 @@ func (r *peerHealthRegistry) recordProbe(name string, alive bool, latency time.D
 			s.capsKnown = true
 		}
 	}
+	return changed
 }
 
 // tuiHealth derives the displayable liveness view for every peer the registry
@@ -207,14 +210,17 @@ func shortErr(s string) string {
 // peerHealthMonitor probes every dialable peer's peer_hello on a cadence and
 // records the result. Reloads peers.json each round so newly-paired peers are
 // picked up live. Liveness is independent of the model, so it runs even while
-// degraded.
+// degraded. A peer going up or down is logged; a peer that stays down is not
+// logged again every round.
 type peerHealthMonitor struct {
-	cfgDir string
-	reg    *peerHealthRegistry
-	log    *slog.Logger
+	cfgDir  string
+	reg     *peerHealthRegistry
+	loadErr string // the last peers.json read error, so it is logged once, not every round
 }
 
 func (m *peerHealthMonitor) run(ctx context.Context) {
+	comp := lifecycle.Track(ctx, "peer heartbeat", lifecycle.Subsystem, "peering", lifecycle.Running, nil)
+	defer comp.Set(lifecycle.Stopped, nil)
 	t := time.NewTicker(peerProbeInterval)
 	defer t.Stop()
 	m.probeAll(ctx) // probe once immediately so /peer is useful right away
@@ -231,8 +237,17 @@ func (m *peerHealthMonitor) run(ctx context.Context) {
 func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 	store, err := peering.LoadStore(m.cfgDir)
 	if err != nil {
+		if err.Error() != m.loadErr {
+			peering.HeartbeatStopped.Log(ctx, "err", err)
+			lifecycle.Track(ctx, "peer heartbeat", lifecycle.Subsystem, "peering", lifecycle.Degraded, err)
+		}
+		m.loadErr = err.Error()
 		return
 	}
+	if m.loadErr != "" {
+		lifecycle.Track(ctx, "peer heartbeat", lifecycle.Subsystem, "peering", lifecycle.Running, nil) // peers.json reads again
+	}
+	m.loadErr = ""
 	var wg sync.WaitGroup
 	for _, p := range store.List() {
 		// Only peers WE dial can be probed outbound; a peer that only dials us is
@@ -245,7 +260,13 @@ func (m *peerHealthMonitor) probeAll(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			lat, caps, perr := probePeerHello(ctx, p)
-			m.reg.recordProbe(p.Name, perr == nil, lat, caps, perr)
+			if m.reg.recordProbe(p.Name, perr == nil, lat, caps, perr) {
+				if perr != nil {
+					peering.PeerDown.Log(ctx, "peer", p.Name, "url", p.URL, "err", perr)
+				} else {
+					peering.PeerUp.Log(ctx, "peer", p.Name, "url", p.URL, "latency", lat)
+				}
+			}
 		}()
 	}
 	wg.Wait()

@@ -27,7 +27,7 @@ func (c *fakeClock) set(t time.Time) {
 
 func newTestEngine(runner Runner, persist func([]JobDef) error) (*Engine, *fakeClock) {
 	clk := &fakeClock{t: time.Date(2026, 6, 7, 10, 0, 0, 0, time.Local)}
-	e := NewEngine(nil, runner, persist, nil)
+	e := NewEngine(nil, runner, persist)
 	e.now = clk.now
 	return e, clk
 }
@@ -40,7 +40,7 @@ func addJob(e *Engine, name, spec, prompt string) (Job, error) {
 func TestEngineAddValidatesAndPersists(t *testing.T) {
 	var saved [][]JobDef
 	e, _ := newTestEngine(
-		func(ctx context.Context, j Job) (string, error) { return "ok", nil },
+		func(ctx context.Context, j Job) (string, string, error) { return "ok", "", nil },
 		func(defs []JobDef) error { saved = append(saved, defs); return nil },
 	)
 
@@ -73,7 +73,7 @@ func TestEngineAddValidatesAndPersists(t *testing.T) {
 }
 
 func TestEngineJobCap(t *testing.T) {
-	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, error) { return "", nil }, nil)
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.maxJobs = 2
 	if _, err := addJob(e, "a", "@every 5m", "p"); err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestEngineJobCap(t *testing.T) {
 
 func TestEngineAddRollbackOnPersistFailure(t *testing.T) {
 	e, _ := newTestEngine(
-		func(ctx context.Context, j Job) (string, error) { return "", nil },
+		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil },
 		func(defs []JobDef) error { return context.DeadlineExceeded },
 	)
 	if _, err := addJob(e, "a", "@every 5m", "p"); err == nil {
@@ -100,7 +100,7 @@ func TestEngineAddRollbackOnPersistFailure(t *testing.T) {
 }
 
 func TestEngineRemoveAndSetEnabled(t *testing.T) {
-	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, error) { return "", nil }, nil)
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	j, _ := addJob(e, "a", "0 9 * * *", "p")
 
 	got, changed, err := e.SetEnabled(j.ID, false)
@@ -126,7 +126,10 @@ func TestEngineRemoveAndSetEnabled(t *testing.T) {
 func TestEngineRunDueFiresOnce(t *testing.T) {
 	var runs int32
 	e, clk := newTestEngine(
-		func(ctx context.Context, j Job) (string, error) { atomic.AddInt32(&runs, 1); return "done", nil },
+		func(ctx context.Context, j Job) (string, string, error) {
+			atomic.AddInt32(&runs, 1)
+			return "done", "", nil
+		},
 		nil,
 	)
 	j, _ := addJob(e, "a", "@every 5m", "p")
@@ -152,10 +155,10 @@ func TestEngineNoDoubleFireWhileRunning(t *testing.T) {
 	release := make(chan struct{})
 	var runs int32
 	e, clk := newTestEngine(
-		func(ctx context.Context, j Job) (string, error) {
+		func(ctx context.Context, j Job) (string, string, error) {
 			atomic.AddInt32(&runs, 1)
 			<-release
-			return "", nil
+			return "", "", nil
 		},
 		nil,
 	)
@@ -179,10 +182,10 @@ func TestEngineNoDoubleFireWhileRunning(t *testing.T) {
 func TestEngineStartStopCancelsInFlight(t *testing.T) {
 	started := make(chan struct{})
 	e, clk := newTestEngine(
-		func(ctx context.Context, j Job) (string, error) {
+		func(ctx context.Context, j Job) (string, string, error) {
 			close(started)
 			<-ctx.Done()
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		},
 		nil,
 	)
@@ -211,7 +214,7 @@ func TestEngineStartStopCancelsInFlight(t *testing.T) {
 }
 
 func TestEngineStopSafeWithoutStart(t *testing.T) {
-	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, error) { return "", nil }, nil)
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.Stop()
 }
 
@@ -228,7 +231,7 @@ func TestEngineNilRunnerNoPanic(t *testing.T) {
 }
 
 func TestEngineRunNowAndHistory(t *testing.T) {
-	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, error) { return "hi", nil }, nil)
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { return "hi", "", nil }, nil)
 	j, _ := addJob(e, "a", "0 9 * * *", "p")
 	rec, err := e.RunNow(context.Background(), j.ID)
 	if err != nil || !rec.OK || rec.Summary != "hi" {
@@ -242,13 +245,23 @@ func TestEngineRunNowAndHistory(t *testing.T) {
 	}
 }
 
+// RunOnce runs a job that is not one of the engine's, once, into the history.
+func TestEngineRunOnce(t *testing.T) {
+	var got Job
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { got = j; return "done", "", nil }, nil)
+	rec := e.RunOnce(context.Background(), JobDef{Name: "alert critical", Prompt: "look"})
+	if !rec.OK || got.Prompt != "look" || got.ID == "" || len(e.List()) != 0 || len(e.History()) != 1 {
+		t.Fatalf("RunOnce = %+v, ran %+v, jobs %d", rec, got, len(e.List()))
+	}
+}
+
 func TestEngineSeedFromDefs(t *testing.T) {
 	defs := []JobDef{
 		{ID: "1", Name: "good", Spec: "0 9 * * *", Prompt: "p", Enabled: true},
 		{ID: "2", Name: "broken", Spec: "nonsense", Prompt: "p", Enabled: true},
 		{ID: "3", Name: "badtz", Spec: "0 9 * * *", Prompt: "p", Enabled: true, TZ: "Mars/Phobos"},
 	}
-	e := NewEngine(defs, func(ctx context.Context, j Job) (string, error) { return "", nil }, nil, nil)
+	e := NewEngine(defs, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	for _, j := range e.List() {
 		switch j.Name {
 		case "good":
@@ -273,7 +286,7 @@ func TestEnginePrimeCatchupAndHistorySeed(t *testing.T) {
 		{ID: "safe", Spec: "@every 1h", Prompt: "p", Enabled: true},
 		{ID: "execj", Spec: "@every 1h", Prompt: "p", Enabled: true, Exec: true},
 	}
-	e := NewEngine(defs, func(ctx context.Context, j Job) (string, error) { return "", nil }, nil, nil)
+	e := NewEngine(defs, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.now = func() time.Time { return now }
 	// Both last ran 2h ago → both are overdue by the interval.
 	hist := []RunRecord{
@@ -301,7 +314,7 @@ func TestEnginePrimeCatchupAndHistorySeed(t *testing.T) {
 func TestEnginePrimeNeverRunNoCatchup(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.Local)
 	e := NewEngine([]JobDef{{ID: "x", Spec: "@every 1h", Prompt: "p", Enabled: true}},
-		func(ctx context.Context, j Job) (string, error) { return "", nil }, nil, nil)
+		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.now = func() time.Time { return now }
 	e.Prime(PrimeOptions{Catchup: true}) // no history
 	if got := e.List()[0].NextRun; !got.After(now) {
@@ -309,20 +322,21 @@ func TestEnginePrimeNeverRunNoCatchup(t *testing.T) {
 	}
 }
 
-// History is persisted through the Prime-wired sink after each run.
+// Each run's record, with the trace of the turn it ran, is persisted through
+// the Prime-wired sink: one new record, never a rewrite of the ring.
 func TestEngineHistoryPersist(t *testing.T) {
-	var saved [][]RunRecord
-	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, error) { return "ok", nil }, nil)
-	e.Prime(PrimeOptions{HistoryPersist: func(h []RunRecord) error {
-		saved = append(saved, append([]RunRecord(nil), h...))
+	var saved []RunRecord
+	e, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) { return "ok", "trace-1", nil }, nil)
+	e.Prime(PrimeOptions{HistoryPersist: func(r RunRecord) error {
+		saved = append(saved, r)
 		return nil
 	}})
 	j, _ := addJob(e, "a", "0 9 * * *", "p")
 	if _, err := e.RunNow(context.Background(), j.ID); err != nil {
 		t.Fatal(err)
 	}
-	if len(saved) != 1 || len(saved[0]) != 1 || saved[0][0].JobID != j.ID {
-		t.Errorf("history not persisted: %v", saved)
+	if len(saved) != 1 || saved[0].JobID != j.ID || saved[0].TraceID != "trace-1" {
+		t.Errorf("history not persisted: %+v", saved)
 	}
 }
 
@@ -330,7 +344,10 @@ func TestEngineHistoryPersist(t *testing.T) {
 // its NextRun, so jobs simply run once the gate clears.
 func TestEnginePausedDefers(t *testing.T) {
 	var runs int32
-	e, clk := newTestEngine(func(ctx context.Context, j Job) (string, error) { atomic.AddInt32(&runs, 1); return "", nil }, nil)
+	e, clk := newTestEngine(func(ctx context.Context, j Job) (string, string, error) {
+		atomic.AddInt32(&runs, 1)
+		return "", "", nil
+	}, nil)
 	paused := true
 	e.SetPaused(func() bool { return paused })
 	j, _ := addJob(e, "a", "@every 5m", "p")
@@ -355,7 +372,7 @@ func TestEnginePausedDefers(t *testing.T) {
 func TestEnginePrimeCatchupOffWhilePaused(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.Local)
 	e := NewEngine([]JobDef{{ID: "x", Spec: "@every 1h", Prompt: "p", Enabled: true}},
-		func(ctx context.Context, j Job) (string, error) { return "", nil }, nil, nil)
+		func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	e.now = func() time.Time { return now }
 	e.SetPaused(func() bool { return true })
 	hist := []RunRecord{{JobID: "x", StartedAt: now.Add(-2 * time.Hour), OK: true}}
@@ -372,7 +389,7 @@ func TestEngineTimezone(t *testing.T) {
 	if err != nil {
 		t.Skipf("tzdata unavailable: %v", err)
 	}
-	e := NewEngine(nil, func(ctx context.Context, j Job) (string, error) { return "", nil }, nil, nil)
+	e := NewEngine(nil, func(ctx context.Context, j Job) (string, string, error) { return "", "", nil }, nil)
 	base := time.Date(2026, 6, 7, 0, 0, 0, 0, ny) // midnight in NY
 	e.now = func() time.Time { return base }
 	job, err := e.Add(AddSpec{Spec: "0 9 * * *", Prompt: "p", TZ: "America/New_York", Enabled: true})
@@ -391,16 +408,16 @@ func TestEngineTimezone(t *testing.T) {
 // must actually see the longer deadline.
 func TestEnginePerRunOverride(t *testing.T) {
 	got := make(chan time.Duration, 1)
-	runner := func(ctx context.Context, j Job) (string, error) {
+	runner := func(ctx context.Context, j Job) (string, string, error) {
 		dl, ok := ctx.Deadline()
 		if !ok {
 			got <- 0
 		} else {
 			got <- time.Until(dl)
 		}
-		return "ok", nil
+		return "ok", "", nil
 	}
-	e := NewEngine(nil, runner, func([]JobDef) error { return nil }, nil)
+	e := NewEngine(nil, runner, func([]JobDef) error { return nil })
 	e.Prime(PrimeOptions{PerRun: 15 * time.Minute})
 	j, err := e.Add(AddSpec{Name: "t", Spec: "0 0 1 1 *", Prompt: "p", Enabled: true})
 	if err != nil {
@@ -424,7 +441,7 @@ func TestEnginePerRunOverride(t *testing.T) {
 
 // Zero PerRun keeps the built-in default rather than disabling the ceiling.
 func TestEnginePerRunZeroKeepsDefault(t *testing.T) {
-	e := NewEngine(nil, func(context.Context, Job) (string, error) { return "", nil }, nil, nil)
+	e := NewEngine(nil, func(context.Context, Job) (string, string, error) { return "", "", nil }, nil)
 	e.Prime(PrimeOptions{})
 	if e.perRun != defaultPerRun {
 		t.Fatalf("perRun = %v, want default %v", e.perRun, defaultPerRun)

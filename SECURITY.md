@@ -102,9 +102,12 @@ privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
   rows for real, on a `secure_delete` connection, optimizes the full-text
   indexes, truncates the WAL, and rewrites archive files without the removed
   events. It also removes what was derived only from them. Facts that lose one
-  of several sources record the removal in `fact_source_tombstones`. It cannot
-  reach backups already made, the log book before its own retention, or a soul
-  you wrote; its preview says so.
+  of several sources record the removal in `fact_source_tombstones`. The log
+  book loses the events of forgotten sessions and runs (in `security` they are
+  tombstoned, keeping the chain), from `logbook.db`, its text files and its
+  archives (TEN-374). It cannot reach backups already made (`privacy status`
+  counts those that predate the last forget), the log book's other events
+  before their own retention, or a soul you wrote; its preview says so.
 - Outbound reads also disclose data: model calls send prompt/tool context;
   search sends queries; browser/Jina reads send URLs; integrations send resource
   identifiers and credentials. The complete flows are in `docs/DATAFLOW.md`.

@@ -49,7 +49,7 @@ import (
 // and the tailscale re-assert are TUI-resident today and are picked up by the
 // TEN-194a extraction; the Discord relay (opt-in) covers the away-from-desk
 // drive case in v1.
-func cmdServe(ctx context.Context, args []string) error {
+func cmdServe(ctx context.Context, args []string) (err error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs)
@@ -84,17 +84,17 @@ func cmdServe(ctx context.Context, args []string) error {
 	// under <data>/logs/<source>/<day>.log and retained for the dashboard feed;
 	// stderr keeps the TENANT_LOG-filtered stream the supervisor captures,
 	// exactly as before (the hub handler tees to it).
-	hub, herr := openLogHub(c)
+	hub, log, herr := openLogHub(c, slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()}))
 	if herr != nil {
-		hub = logs.NewMemory(0)
-		fmt.Fprintln(os.Stderr, "warning: "+herr.Error()+" — logging to memory only")
+		sysUnavailable.Log(ctx, "component", "the log folder", "effect", "logging to memory only", "err", herr)
+		fmt.Println("• logs: " + herr.Error() + " — logging to memory only") // stdout: the supervisor's log, as the feed
 	}
+	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
-	log := slog.New(hub.Handler(newLogger().Handler()))
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	hub.Start(ctx)
-	startRetention(ctx, c, log.With("source", "privacy"))
+	startRetention(ctx, c)
 
 	// Graceful, ordered teardown (TEN-194), in stages (internal/lifecycle):
 	// deny pending approvals so no gated turn stays blocked; STOP ACCEPTING NEW
@@ -102,27 +102,30 @@ func cmdServe(ctx context.Context, args []string) error {
 	// work; then close what it used, last opened first — no goroutine may
 	// write to a closed store. Each component registers its stop where it is
 	// built; an early return runs whatever is registered so far.
-	life := lifecycle.New(log.With("source", "shutdown"))
+	life := lifecycle.New(log)
 	defer life.Shutdown()
+	run := beginRun(ctx, "serve") // the system log's start-up and stop (TEN-383)
+	defer run.failed(&err)
+	// The log book's final flush, then the boot record and crash capture
+	// (TEN-373): the first Release steps registered, so they run last.
+	onPanic := startBootRecord(hub, life, "serve")
+	defer onPanic()
 
+	// Status feed. Whatever else writes to sysCh (the improve feed, the
+	// reconnect monitor) logs its line itself.
 	sysCh := make(chan string, 64)
-	pushSys := func(s string) {
-		select {
-		case sysCh <- s:
-		default:
-		}
-	}
+	pushSys := func(s string) { feedLine(hub, sysCh, "system", s) }
+	signInNotice = pushSys // a sign-in URL reaches the operator through the feed
+	hub.OnAlert(pushSys)   // logbook.db failing or back: a banner line in the feed
 	// Status feed → stdout (the supervisor's log). A daemon's setup/health/
 	// dashboard/peer/iMessage/fallback/cron lines are the operator's only window
 	// into "is it working", so route them at always-visible level rather than the
-	// WARN-filtered slog (newLogger defaults to WARN). Also mirror to the debug
-	// log for structured capture when TENANT_LOG=info|debug.
+	// WARN-filtered slog (newLogger defaults to WARN).
 	go func() {
 		for {
 			select {
 			case s := <-sysCh:
-				fmt.Println("• " + s)
-				hub.Logf("system", slog.LevelInfo, s)
+				fmt.Println("• " + logs.Scrub(s))
 			case <-ctx.Done():
 				return
 			}
@@ -157,7 +160,7 @@ func cmdServe(ctx context.Context, args []string) error {
 
 	usageStore, uerr := usagestore.Open(filepath.Join(c.dataDir, "usage.db"))
 	if uerr != nil {
-		log.Warn("usage ledger unavailable", "err", uerr)
+		sysUnavailable.Log(ctx, "component", "usage ledger", "effect", "token usage is not recorded", "err", uerr)
 	} else {
 		life.Add(lifecycle.Release, "usage ledger", usageStore.Close)
 	}
@@ -173,6 +176,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	seedFromFlags(broker, pf)
 	stg, serr := loadSettings(c.cfgDir, c.agent)
 	if serr != nil {
+		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
 	broker.LoadModes(stg.Permissions)
@@ -180,9 +184,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
-		if err := stg.Save(c.cfgDir, c.agent); err != nil {
-			log.Warn("settings save failed", "err", err)
-		}
+		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
 	broker.SetPersist(func(modes map[string]string) {
 		stgMu.Lock()
@@ -250,7 +252,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		defer profMu.Unlock()
 		prof.AppendRemembered(fact)
 		if err := prof.Save(c.dataDir); err != nil {
-			log.Warn("profile note save failed", "err", err)
+			sysNotSaved.Log(ctx, "what", "the user profile", "err", err)
 		}
 	}
 
@@ -288,7 +290,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return merr
 	}
 	life.Add(lifecycle.Release, "improve meta", meta.Close)
-	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent, Logger: log.With("source", "improve")}
+	distiller := &distill.Distiller{Router: router, Episodic: st.episodic, Semantic: st.semantic, AgentID: c.agent}
 	distillJob := improve.NewDistillJob(distiller, meta, c.agent)
 
 	soulLive := soul.NewLive(st.soul)
@@ -307,7 +309,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	bus := orchestra.NewBusWithHistoryCap(budgets.BusHistoryCap)
 	life.AddFunc(lifecycle.Release, "team bus", bus.Close)
 	bus.Register(c.agent)
-	compressor := &compress.Compressor{Router: router, Logger: log.With("source", "memory")}
+	compressor := &compress.Compressor{Router: router}
 
 	// Event broker + the log book. emit fans every event to BOTH the live
 	// broker (dashboard chat/feed) AND the hub, which files it under its source
@@ -364,11 +366,11 @@ func cmdServe(ctx context.Context, args []string) error {
 		Web:                    teamWeb, WebConfig: webCfg, WebPolicy: webPolicy,
 		Shots:         filepath.Join(c.dataDir, "screenshots"),
 		AgentProfiles: initialAgentProfiles,
-		SpawnRole: func(task string) (model.Role, bool) { // TEN-292
+		SpawnRole: func(ctx context.Context, task string) (model.Role, bool) { // TEN-292
 			if routeRT == nil {
 				return "", false
 			}
-			return routeRT.SpawnRole(task)
+			return routeRT.SpawnRole(ctx, task)
 		},
 		CfgDir:        c.cfgDir,
 		EmbedProfile:  embProf,
@@ -431,7 +433,7 @@ func cmdServe(ctx context.Context, args []string) error {
 				smeLive.Set(rendered)
 			}
 		} else {
-			log.Warn("sme: init failed; project SME disabled", "err", serr.Error())
+			sysUnavailable.Log(ctx, "component", "project SME", "effect", "no project SME in the prompt", "err", serr)
 		}
 	}
 
@@ -441,6 +443,12 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	if err := routeRT.BindConfiguredForce(); err != nil {
 		return err
+	}
+	observeMain := func(e agent.Event) {
+		if e.Kind == agent.EventUsage { // the usage ledger, as the TUI keeps it
+			recordUsage(ctx, usageStore, c, e.PromptTokens, e.CompletionTokens, e.TraceID)
+		}
+		rt.ObserveMain(e, emit)
 	}
 	ag, err := agent.New(agent.Config{
 		AgentID:  c.agent,
@@ -462,7 +470,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		ConfirmSensitiveEgress: egressConfirm,
 		Logger:                 log.With("source", "turns"),
 		Stream:                 true,
-		Observer:               func(e agent.Event) { rt.ObserveMain(e, emit) },
+		Observer:               observeMain,
 		RouteHook:              routeRT.Hook(),
 		RouteActive:            routeRT.Active,
 		RouteSticky:            routeRT.Sticky,
@@ -487,6 +495,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		turnSchedCfg = c.lc.TurnScheduler
 	}
 	gated := newTurnGateConfigured(ag, turnSchedCfg)
+	lifecycle.Track(ctx, "turn gate", lifecycle.Subsystem, "turns", lifecycle.Running, nil) // lives as long as serve
 
 	// Cron (recurring jobs): dedicated read/comms-safe runner agents on a
 	// schedule; cron_* management tools go to the MAIN agent.
@@ -527,6 +536,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
 		authProblems: mcpAuthProblemsFn(mainTools), // banner on every summary while a connector's sign-in is dead
+		ask:          broker.Ask,                   // an alert's investigation asks first (TEN-400)
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {
@@ -551,15 +561,15 @@ func cmdServe(ctx context.Context, args []string) error {
 				}
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
-		}, log.With("source", "cron"))
+		})
 		cronEngine.SetPaused(degraded.Degraded)
 		cronEngine.Prime(cron.PrimeOptions{
 			Location: cronLoc,
 			Catchup:  cronCatchup,
 			PerRun:   cronPerRun(c.lc),
 			History:  loadCronHistory(c.dataDir),
-			HistoryPersist: func(h []cron.RunRecord) error {
-				return saveCronHistory(c.dataDir, h)
+			HistoryPersist: func(r cron.RunRecord) error {
+				return appendCronHistory(c.dataDir, r)
 			},
 		})
 		cronEngine.SetNotify(pushSys)
@@ -574,7 +584,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		if serr := cronEngine.Start(ctx); serr != nil {
 			pushSys("cron: scheduler did not start (" + serr.Error() + ")")
 		}
-		life.AddFunc(lifecycle.Drain, "cron", cronEngine.Stop) // drains any in-flight cron run
+		life.StartFunc(lifecycle.Drain, "cron", lifecycle.Subsystem, "cron", cronEngine.Stop) // drains any in-flight cron run
 	}
 
 	// Connector tools: the agent can adopt a tool server it built (mcp_add) —
@@ -590,6 +600,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
+			sysUnavailable.Log(ctx, "component", "the new embedder", "effect", "tool ranking keeps the old one", "err", err)
 			return
 		}
 		mux.SetEmbedder(string(prof.ID), emb)
@@ -621,13 +632,16 @@ func cmdServe(ctx context.Context, args []string) error {
 		// dashboardManager, so anything wired only in cmdTUI is silently absent
 		// here — which is exactly how this section came up empty the first time.
 		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
-		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl},
+		secrets:     dashKeys{cfgDir: c.cfgDir, mc: modelCtl, surface: surfaceDashboard},
 		skills:      dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models:      dashModel{mc: modelCtl},
 		approvals:   broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
 		rules:       dashRules{defaultToolRules},
 		broker:      evBroker,
 		logs:        hub,
+		runs:        st.runs,
+		security:    securityLogAPI(c),
+		alerts:      alertRulesAPI(c), // the alert rules in config.json (TEN-399)
 		log:         log.With("source", "dashboard"),
 		notify:      pushSys,
 		persist: func(enabled bool) error {
@@ -678,7 +692,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		events: emit, evalProg: evalProg,
 	})
 	if sched != nil {
-		life.AddFunc(lifecycle.Drain, "improve scheduler", sched.Stop) // drains any in-flight improve job
+		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop) // drains any in-flight improve job
 	}
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: mcpCtl}
@@ -690,7 +704,7 @@ func cmdServe(ctx context.Context, args []string) error {
 			pushSys("dashboard: " + derr.Error())
 		} else {
 			dashAddr = addr
-			pushSys("dashboard: serving on http://" + addr + "\ndashboard auth token: " + dcfg.Auth)
+			pushSys(dashboardServingLine(addr, c.cfgDir, c.lc))
 		}
 	}
 
@@ -698,7 +712,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// is up — publishes the loopback dashboard onto the tailnet so the operator
 	// can reach the hub off-LAN, matching the TUI. Best-effort.
 	if c.lc != nil && c.lc.Tailscale.Serve {
-		tsMgr := newTailscaleManager(ctx, dashMgr, log.With("source", "dashboard"))
+		tsMgr := newTailscaleManager(ctx, dashMgr)
 		if url, terr := tsMgr.reassertOnLaunch(); terr != nil {
 			pushSys("tailscale: serve not restored — " + terr.Error())
 		} else {
@@ -717,7 +731,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	// Peer liveness heartbeat (TEN-250): inbound OnAuth + background outbound
 	// prober. Tracked headless too (the dashboard peer surface can read it later).
 	peerHealth := newPeerHealthRegistry()
-	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth, log: log.With("source", "peering")}).run(ctx)
+	go (&peerHealthMonitor{cfgDir: c.cfgDir, reg: peerHealth}).run(ctx)
 	peerDeps := peerToolDeps{
 		selfName: peerHostName,
 		semantic: st.semantic,
@@ -728,7 +742,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		onGrant:  peerHealth.markInboundGrant,
 	}
 	if c.lc != nil && c.lc.Peer.Listen != "" {
-		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen, log.With("source", "peering"))
+		bound, stopFn, perr := startPeerListenerAt(ctx, c, peerDeps, broker.AskPairing, c.lc.Peer.Listen)
 		if perr != nil {
 			pushSys("peer: listener not started — " + perr.Error())
 		} else {
@@ -746,13 +760,15 @@ func cmdServe(ctx context.Context, args []string) error {
 	fmt.Printf("tenant serve — agent=%s backend=%s; headless hub\n", c.agent, c.backend)
 	if dashAddr != "" {
 		fmt.Printf("dashboard (control + chat + approvals): http://%s\n", dashAddr)
-		fmt.Printf("dashboard auth token: %s\n", dcfg.Auth)
+		fmt.Println(dashboardTokenBanner(dcfg.Auth, c.cfgDir, c.lc, stdoutIsTerminal()))
 	}
 	fmt.Println("running 24/7; Ctrl-C / SIGTERM to stop")
 
+	run.ready()
 	<-ctx.Done()
 	fmt.Println("\nshutting down…")
 	life.Shutdown() // each failed step is logged
+	run.stopped(ctx, nil)
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 
 	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/event"
 	"tenant/internal/secrets"
 	"tenant/internal/version"
 )
@@ -41,7 +43,12 @@ type Options struct {
 	// NotIncluded is recorded in the manifest as skipped: things Tenant uses
 	// that live outside both directories, such as a wiki vault.
 	NotIncluded []Skipped
-	Keys        Keys
+	// LogsDir is the log book's root (logs.dir); empty means <data>/logs.
+	// IncludeMirror also captures its text mirror, which logbook.db
+	// already holds (logbook.go).
+	LogsDir       string
+	IncludeMirror bool
+	Keys          Keys
 	// Now stamps the backup; tests fix it.
 	Now func() time.Time
 }
@@ -68,7 +75,9 @@ const stagingPrefix = ".backup-staging-"
 // refer to, and the archive, which everything else points back to, is
 // captured last: a reference in the backup always finds its target. The
 // file is written under a temporary name and renamed into place, owner-only.
-func Create(ctx context.Context, out string, opts Options) (*Result, error) {
+func Create(ctx context.Context, out string, opts Options) (_ *Result, err error) {
+	ctx, act := event.Start(ctx, CreateRun, "path", out)
+	defer act.End(&err)
 	cfg, data, err := cleanRoots(opts.ConfigDir, opts.DataDir)
 	if err != nil {
 		return nil, err
@@ -183,6 +192,11 @@ func Create(ctx context.Context, out string, opts Options) (*Result, error) {
 	info, err := os.Stat(absOut)
 	if err != nil {
 		return nil, err
+	}
+	Written.Log(ctx, "path", absOut, "bytes", info.Size(), "files", len(m.Entries), "databases", m.Count(KindSQLite),
+		"logs", m.Count(KindLog), "secrets", m.Count(KindSecret), "skipped", len(m.Skipped), "encrypted", encrypted, "version", m.TenantVersion)
+	for _, w := range warnings {
+		CreateWarning.Log(ctx, "path", absOut, "warning", w)
 	}
 	return &Result{Path: absOut, Manifest: m, Bytes: info.Size(), Warnings: warnings}, nil
 }
@@ -329,6 +343,10 @@ func builtinSkip(root, rel string, name string) (string, bool) {
 	switch {
 	case root == RootData && rel == datalock.FileName:
 		return "", true
+	case root == RootData && (path.Dir(rel) == "logs/boots" || path.Dir(rel) == "logs/crash"):
+		// Boot records and crash files of the processes running at backup
+		// time: restored, they would read as processes that died (TEN-365).
+		return "", true
 	case strings.HasPrefix(name, stagingPrefix):
 		return "", true
 	case strings.HasSuffix(name, ".tmp"), strings.HasSuffix(name, ".partial"),
@@ -336,6 +354,10 @@ func builtinSkip(root, rel string, name string) (string, bool) {
 		return "temporary file", true
 	case strings.Contains(name, ".corrupted-"):
 		return "damaged database kept by doctor --fix", true
+	case strings.Contains(name, ".corrupt-"):
+		return "damaged log book moved aside at open", true
+	case name == "logbook.lock": // held by every process with the log book open
+		return "", true
 	case root == RootData && path.Dir(rel) == "wiki" && wikiIndex.MatchString(name):
 		return "wiki search index; rebuilt on next use", true
 	}
@@ -370,6 +392,8 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 	if !shared {
 		roots = append([]walkRoot{{RootConfig, cfg}}, roots...)
 	}
+	logsDir := cmp.Or(opts.LogsDir, filepath.Join(data, "logs"))
+	mirrorLeft := "" // the mirror's files, as a pattern, once one is left out
 	var plan []source
 	var skipped []Skipped
 	for _, r := range roots {
@@ -417,7 +441,13 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 				return nil
 			}
 			kind := KindFile
+			db, mirror := logbookFile(abs, logsDir)
 			switch {
+			case mirror && !opts.IncludeMirror:
+				mirrorLeft = path.Dir(path.Dir(entryPath)) + "/*/*.log"
+				return nil
+			case db:
+				kind = KindSQLite // never opened raw: see logbook.go
 			case secretSet[canonical(abs)]:
 				if !encrypted {
 					skipped = append(skipped, Skipped{Path: entryPath, Reason: "secret; only encrypted backups carry secrets"})
@@ -444,6 +474,9 @@ func planSources(cfg, data string, opts Options, encrypted bool) ([]source, []Sk
 		if err != nil {
 			return nil, nil, fmt.Errorf("backup: walk %s: %w", r.dir, err)
 		}
+	}
+	if mirrorLeft != "" {
+		skipped = append(skipped, Skipped{Path: mirrorLeft, Reason: "the log book's text mirror; logbook.db holds the same events (--include-mirror takes it too)"})
 	}
 	sort.SliceStable(plan, func(i, j int) bool {
 		if plan[i].rank != plan[j].rank {

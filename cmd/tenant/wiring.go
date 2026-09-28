@@ -14,6 +14,8 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -137,6 +139,9 @@ func (c *commonFlags) resolveDirs() error {
 		if err := holdDataDir(c.dataDir); err != nil {
 			return err
 		}
+	}
+	if openCommandLog != nil {
+		openCommandLog(c)
 	}
 	return nil
 }
@@ -288,18 +293,16 @@ func (c *commonFlags) autodetectModel() {
 
 // logger goes to STDERR always. Stdout is reserved: for mcp-memory it
 // is the JSON-RPC channel; for chat it is the conversation. Logs must
-// never contaminate it.
+// never contaminate it. Once the process has a log book (serve, the TUI,
+// a one-shot command with a data directory) it is the process logger,
+// which files into the book and prints only where that surface prints.
 func newLogger() *slog.Logger {
+	if _, ok := slog.Default().Handler().(*logs.Handler); ok {
+		return slog.Default()
+	}
 	// TENANT_LOG=debug|info surfaces the agent/backend internals —
 	// essential for diagnosing model tool-format adherence in the field.
-	lvl := slog.LevelWarn
-	switch strings.ToLower(os.Getenv("TENANT_LOG")) {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "info":
-		lvl = slog.LevelInfo
-	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 }
 
 // logLevel resolves the TENANT_LOG level (default WARN).
@@ -332,32 +335,186 @@ func (c *commonFlags) logsOptions() logs.Options {
 	if c.lc != nil {
 		cfg = c.lc.Logs
 	}
-	switch {
-	case cfg.RetentionDays < 0:
-		opts.Retention = -1
-	case cfg.RetentionDays > 0:
-		opts.Retention = time.Duration(cfg.RetentionDays) * 24 * time.Hour
+	opts.Retention = logsRetention(cfg)
+	opts.Budget = func() store.Budget { // read every housekeeper tick, so an edit applies live
+		if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
+			return logsBudget(lc.Logs)
+		}
+		return logsBudget(cfg)
+	}
+	opts.RateLimit = func() (float64, int) { // the same
+		rl := cfg.RateLimit
+		if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
+			rl = lc.Logs.RateLimit
+		}
+		return rl.PerSecond, rl.Burst
 	}
 	if cfg.MaxFieldBytes != 0 {
 		opts.MaxFieldBytes = cfg.MaxFieldBytes
 	}
-	if strings.EqualFold(cfg.Level, "debug") || logLevel() == slog.LevelDebug {
+	if lvl, ok := logs.ParseLevel(cfg.Level); ok { // debug|info|warn|error; anything else keeps INFO
+		opts.MinLevel = lvl
+	}
+	if logLevel() == slog.LevelDebug {
 		opts.MinLevel = slog.LevelDebug
 	}
+	opts.AuditDeny = auditDenies(c.cfgDir, cfg) // logs.security.on_failure (securitylog.go)
 	return opts
+}
+
+// logsRetention maps logs.retention_days onto the hub's retention (0 ⇒ its
+// 30-day default, <0 ⇒ never).
+func logsRetention(cfg logsConfig) time.Duration {
+	switch {
+	case cfg.RetentionDays < 0:
+		return -1
+	case cfg.RetentionDays > 0:
+		return time.Duration(cfg.RetentionDays) * 24 * time.Hour
+	}
+	return 0
+}
+
+// logsBudget maps config logs.* onto logbook.db's retention: §6.2's defaults
+// (store.DefaultBudget), then retention_days for every operational log,
+// budget_mb, diagnostic, security and per_log. A per_log min_level or on_full
+// the store doesn't know keeps the default.
+func logsBudget(cfg logsConfig) store.Budget {
+	b := store.DefaultBudget()
+	b.Operational = limits(b.Operational, 0, cfg.RetentionDays)
+	b.TotalBytes = limits(store.Policy{MaxBytes: b.TotalBytes}, cfg.BudgetMB, 0).MaxBytes
+	b.Diagnostic = limits(b.Diagnostic, cfg.Diagnostic.MaxMB, cfg.Diagnostic.MaxAgeDays)
+	b.Logs[store.SecurityLog] = limits(b.Logs[store.SecurityLog], cfg.Security.MaxMB, cfg.Security.MaxAgeDays)
+	for name, pl := range cfg.PerLog {
+		p := limits(b.For(name), pl.MaxMB, pl.MaxAgeDays)
+		if lvl, ok := event.ParseLevel(pl.MinLevel); ok {
+			p.MinLevel = lvl
+		}
+		if pl.OnFull == store.Overwrite || pl.OnFull == store.Archive || pl.OnFull == store.Keep {
+			p.OnFull = pl.OnFull
+		}
+		b.Logs[name] = p
+	}
+	return b
+}
+
+// limits applies a config max_mb / max_age_days pair to p: 0 keeps p's, -1
+// lifts the limit.
+func limits(p store.Policy, maxMB, maxAgeDays int) store.Policy {
+	switch {
+	case maxMB < 0:
+		p.MaxBytes = 0
+	case maxMB > 0:
+		p.MaxBytes = int64(maxMB) << 20
+	}
+	switch {
+	case maxAgeDays < 0:
+		p.MaxAge = 0
+	case maxAgeDays > 0:
+		p.MaxAge = time.Duration(maxAgeDays) * 24 * time.Hour
+	}
+	return p
 }
 
 // openLogHub opens the unified log book for a long-running surface (serve,
 // tui) and installs it as the process default, so every logs.For(...) logger
-// anywhere in the binary starts filing. The caller Starts it (discovery,
-// tailing, retention) once it has a lifetime context, and Closes it on exit.
-func openLogHub(c *commonFlags) (*logs.Hub, error) {
+// anywhere in the binary starts filing. The returned logger (the hub, teeing
+// to tee when non-nil) becomes slog.Default, which also carries the log
+// package: nothing a library prints that way reaches the terminal behind
+// the surface's back. It also attaches <logs root>/logbook.db, the system
+// of record (Hub.OpenStore), which the log book's API and tenant logs read:
+// logs.store is ignored since TEN-378, with a warning when it is false. A
+// store that won't open leaves a critical logbook event and the text files
+// carrying on alone. When the book
+// cannot be opened, a memory hub stands in and err says why; the caller
+// shows it. The caller Starts the hub (discovery, tailing, retention) once
+// it has a lifetime context, and Closes it on exit, which flushes and closes
+// the store.
+func openLogHub(c *commonFlags, tee slog.Handler) (*logs.Hub, *slog.Logger, error) {
 	h, err := logs.Open(c.logsRoot(), c.logsOptions())
 	if err != nil {
-		return nil, err
+		h = logs.NewMemory(0)
 	}
 	logs.Install(h)
-	return h, nil
+	if err == nil && c.lc != nil && c.lc.Logs.Store != nil && !*c.lc.Logs.Store {
+		h.Logf("logbook", slog.LevelWarn, `logbook: "logs": {"store": false} is ignored; the log book always keeps logbook.db now (remove the key)`)
+	}
+	if err == nil {
+		var key []byte // the Security log's chain key (TEN-396); without it security records are refused
+		if c.cfgDir != "" {
+			var kerr error
+			if key, kerr = chainKey(c.cfgDir); kerr != nil {
+				h.Logf("logbook", logs.LevelCritical, "logbook: no Security log key; security records can't be written", "err", kerr)
+			}
+		}
+		// A store that won't open is logged, and Degraded says why.
+		if st, serr := h.OpenStore(key); serr == nil && c.cfgDir != "" {
+			h.Housekeep("anchor", 0, anchorChain(h, st, c.cfgDir))
+			h.Housekeep("alerts", 0, alertEvaluator(c.cfgDir, st, h.Notify).Run) // TEN-399: in the lease holder alone
+		}
+	}
+	log := slog.New(h.Handler(tee))
+	slog.SetDefault(log) // also points log.Print* at the hub
+	return h, log, err
+}
+
+// feedLine files a status line under source, then offers it to the status
+// feed without blocking: a full channel (a slow UI or stdout) costs only the
+// feed's copy, never the log line.
+func feedLine(hub *logs.Hub, feed chan<- string, source, s string) {
+	hub.Logf(source, slog.LevelInfo, s)
+	select {
+	case feed <- s:
+	default:
+	}
+}
+
+// openCommandLog, installed by main for one-shot commands, gives the command
+// a log book once resolveDirs knows its data directory. Tests leave it nil.
+var openCommandLog func(c *commonFlags)
+
+// commandLog is the one-shot command's log book; main closes it on exit.
+var commandLog *logs.Hub
+
+// openOneShotLog files a one-shot command's warnings and errors into the log
+// book as well as printing them on stderr at the TENANT_LOG level: a hub with
+// no background loops, whose day file opens on the first warning. A book
+// that cannot be opened leaves stderr as it was.
+func openOneShotLog(c *commonFlags) {
+	if commandLog != nil {
+		return
+	}
+	cc := *c
+	if cc.lc == nil { // resolve loads config.json after the dirs; logs.* is needed now
+		cc.lc, _ = loadLaunchConfig(c.cfgDir)
+	}
+	opts := cc.logsOptions()
+	opts.MinLevel = max(opts.MinLevel, slog.LevelWarn)
+	h, err := logs.Open(cc.logsRoot(), opts)
+	if err != nil {
+		return
+	}
+	scrubLogSecrets(h, &cc) // TEN-361: credentials never reach a log line
+	handler := h.Handler(slog.NewTextHandler(logs.ScrubWriter(os.Stderr), &slog.HandlerOptions{Level: logLevel()}))
+	slog.SetDefault(slog.New(handler))
+	logs.SetFallback(handler) // logs.For loggers: no hub is installed, so no feed either
+	// A command's Security records (a config change, a secret stored, a job
+	// removed) go to logbook.db and the chain, opened only when the first one
+	// is written; its other events keep the path above.
+	event.Install(logs.AuditEmitter(h, func() (*store.Store, error) {
+		key, err := chainKey(cc.cfgDir)
+		if err != nil {
+			return nil, err
+		}
+		return store.Open(filepath.Join(h.Root(), "logbook.db"), store.Options{BootID: runtrace.BootID(), ChainKey: key})
+	}))
+	commandLog = h
+}
+
+// closeCommandLog closes the one-shot command's log book, if it has one.
+func closeCommandLog() {
+	if commandLog != nil {
+		_ = commandLog.Close()
+	}
 }
 
 // buildRouter constructs a model.Router for the chosen backend.

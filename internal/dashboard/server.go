@@ -8,19 +8,24 @@
 package dashboard
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/httplimits"
 	"tenant/internal/logs"
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/logapi"
 )
 
 const maxDashboardRequestBodyBytes = 1 << 20
@@ -87,6 +92,7 @@ type Server struct {
 	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
 	approvals    ApprovalControl     // TEN-194: headless approval surface (serve mode); nil = TUI drains its own prompts
 	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Activity unavailable
+	logbook      *logapi.API         // the log book's API v2 over logs (logbook.go)
 	rules        RuleControl         // per-tool permission rules (Tools page card); nil = card hidden
 	broker       *agent.Broker
 	mux          *http.ServeMux
@@ -125,7 +131,7 @@ func New(cfg Config, runner AgentRunner, tools ToolControl, mem MemoryControl, b
 		mux:    http.NewServeMux(),
 		log:    log,
 	}
-	s.coord = newWSCoordinator(runner)
+	s.coord = newWSCoordinator(runner, broker)
 	s.tmpl = parseSSR()
 	s.routes()
 	return s
@@ -147,10 +153,10 @@ func isDashboardStream(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/events", "/activity/events", "/ws":
+	case "/events", "/activity/events", "/logs/tail", "/ws":
 		return true
 	default:
-		return false
+		return logapi.Streaming(r)
 	}
 }
 
@@ -159,6 +165,84 @@ func newDashboardHTTPServer(addr string, handler http.Handler, tlsCfg *tls.Confi
 	httplimits.Configure(srv)
 	return srv
 }
+
+// serverErrors files the HTTP server's own error log (TLS handshake failures,
+// handler panics) as ServerError, under the server's Serving activity. A
+// panic's stack, after its first line, goes in its own field.
+type serverErrors struct{ ctx context.Context }
+
+func (w serverErrors) Write(p []byte) (int, error) {
+	msg, stack, _ := strings.Cut(strings.TrimSpace(string(p)), "\n")
+	ServerError.Log(w.ctx, "err", msg, "stack", stack)
+	return len(p), nil
+}
+
+// observe records each request as a Request activity in the diagnostic
+// channel: its method, route pattern and status. Never the path, the query
+// or the body, which can carry IDs and tokens.
+func (s *Server) observe(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, act := event.Start(r.Context(), Request, "method", r.Method, "route", s.route(r))
+		sw := &statusWriter{ResponseWriter: w}
+		returned := false
+		defer func() {
+			var err error
+			switch {
+			case !returned: // net/http recovers the panic and logs it (ServerError)
+				sw.status, err = http.StatusInternalServerError, errors.New("the handler panicked")
+			case sw.status == 0:
+				sw.status = http.StatusOK
+			case sw.status >= 500:
+				err = errors.New(http.StatusText(sw.status))
+			}
+			act.End(&err, "status", sw.status)
+		}()
+		h.ServeHTTP(sw, r.WithContext(ctx))
+		returned = true
+	})
+}
+
+// route is r's route pattern as the mux matches it, without the method.
+func (s *Server) route(r *http.Request) string {
+	_, p := s.mux.Handler(r)
+	if _, path, ok := strings.Cut(p, " "); ok {
+		p = strings.TrimSpace(path)
+	}
+	if p == "" {
+		return "(no route)"
+	}
+	return p
+}
+
+// statusWriter keeps a response's status. Flush and Hijack pass through, for
+// the live streams and the WebSocket upgrade.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) Flush() { _ = http.NewResponseController(w.ResponseWriter).Flush() }
+
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.status = http.StatusSwitchingProtocols
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // routes mounts the Wave-1 surface: health + the embedded SPA. Everything
 // else is Wave 2.
@@ -201,6 +285,8 @@ func (s *Server) routes() {
 	// precedence (most-specific pattern wins) routes /api/... and /ws here.
 	s.mountREST(s.mux)
 	s.mountWS(s.mux)
+	s.mountLogbook(s.mux) // the log book's API v2 (logbook.go)
+	s.mountLogsSSR(s.mux) // its Logs page (ssr_logs.go)
 
 	// Memory Curator REST surface (TEN-89, memory_rest.go). Nil-safe: a server
 	// constructed without a MemoryControl serves without the memory routes.
@@ -261,8 +347,10 @@ func (s *Server) Run(ctx context.Context) error {
 // Serve serves on an already-bound listener until ctx is canceled. Accepting
 // the listener separately lets lifecycle owners reserve an ephemeral port
 // synchronously and makes shutdown completion observable without bind races.
-func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+func (s *Server) Serve(ctx context.Context, ln net.Listener) (err error) {
 	defer ln.Close()
+	ctx, act := event.Start(ctx, Serving, "addr", ln.Addr().String(), "tls", s.cfg.TLSCert != "" && s.cfg.TLSKey != "")
+	defer act.End(&err)
 	// Fail-closed: refuse a non-loopback bind without TLS+auth (TEN-79).
 	if err := s.checkBindPolicy(); err != nil {
 		return err
@@ -271,8 +359,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if err != nil {
 		return err
 	}
-	// secure() wraps the routed mux with bearer auth + same-origin CORS.
-	srv := newDashboardHTTPServer(s.cfg.Addr, s.secure(s.Handler()), tlsCfg)
+	// secure() wraps the routed mux with bearer auth + same-origin CORS;
+	// observe() records each request, rejected ones too.
+	srv := newDashboardHTTPServer(s.cfg.Addr, s.observe(s.secure(s.Handler())), tlsCfg)
+	srv.ErrorLog = log.New(serverErrors{ctx}, "", 0)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -284,7 +374,6 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		close(shutdownDone)
 	}()
 
-	s.log.Info("dashboard serving", "addr", ln.Addr().String(), "tls", tlsCfg != nil)
 	if tlsCfg != nil {
 		err = srv.ServeTLS(ln, "", "") // cert+key already in TLSConfig
 	} else {

@@ -25,6 +25,7 @@ import (
 // keep streaming the shared event feed.
 type wsCoordinator struct {
 	runner AgentRunner
+	broker *agent.Broker // the chat stream a failed turn is reported on
 
 	mu     sync.Mutex
 	active bool               // a Turn is currently running on the agent
@@ -36,8 +37,8 @@ type wsCoordinator struct {
 // newWSCoordinator builds the coordinator over the shared agent runner. The
 // runner may be nil (bare health-only server); startTurn handles that by
 // declining with a notice rather than calling a nil agent.
-func newWSCoordinator(runner AgentRunner) *wsCoordinator {
-	return &wsCoordinator{runner: runner}
+func newWSCoordinator(runner AgentRunner, broker *agent.Broker) *wsCoordinator {
+	return &wsCoordinator{runner: runner, broker: broker}
 }
 
 // startTurn launches a turn on behalf of conn unless one is already running
@@ -68,13 +69,25 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 
 	go func() {
 		defer co.finish(turnID, cancel)
-		// Turn streams its own events through the broker (the server's
-		// Observer is broker.Publish), so every client's writer pump relays
-		// them. We only drive the call and drop its buffered result.
-		_, _ = co.runner.Turn(turnCtx, agent.TurnRequest{
-			UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
-		})
+		co.runTurn(turnCtx, query)
 	}()
+}
+
+// runTurn drives one chat turn. Turn streams its own events through the
+// broker (the server's Observer is broker.Publish), so every client's writer
+// pump relays them and the buffered result is dropped. Its error is not: a
+// turn-gate rejection or a failure before the loop starts reaches no event at
+// all, so a failed turn is logged and posted to the chat, as the TUI does —
+// the operator sent that message. A turn the operator stopped did not fail.
+func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
+	_, err := co.runner.Turn(ctx, agent.TurnRequest{
+		UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
+	})
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	ChatTurnFailed.Log(ctx, "err", err)
+	co.broker.Publish(agent.Event{Kind: agent.EventError, Text: "turn failed: " + err.Error()})
 }
 
 // finish clears the active-turn state after a turn goroutine returns. It only
@@ -146,9 +159,7 @@ func (co *wsCoordinator) startBackground(query string) bool {
 
 	go func() {
 		defer co.finish(turnID, cancel)
-		_, _ = co.runner.Turn(turnCtx, agent.TurnRequest{
-			UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
-		})
+		co.runTurn(turnCtx, query)
 	}()
 	return true
 }

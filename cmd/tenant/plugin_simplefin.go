@@ -14,6 +14,7 @@ import (
 func simplefinPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
 		ID:        "simplefin",
+		Events:    simplefin.Events,
 		Connector: true,
 		Forget:    func(_, data string) []string { return []string{filepath.Join(data, "simplefin")} },
 		// SimpleFIN accepts either the one-time setup token or the claimed

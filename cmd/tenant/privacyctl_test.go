@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
+	"tenant/internal/logs/event"
+	"tenant/internal/logs/store"
 	"tenant/internal/memory/episodic"
 	xp "tenant/internal/plugins/x"
 	"tenant/internal/secrets"
@@ -68,6 +71,88 @@ func TestPrivacyRetentionSet(t *testing.T) {
 	}
 }
 
+// `tenant privacy retention set logs` reaches a running Tenant: its daily
+// sweep hands the hub the new retention, and the hub prunes with it (TEN-367).
+func TestPrivacyRetentionSetLogsAppliesLive(t *testing.T) {
+	cfg, data := t.TempDir(), t.TempDir()
+	h, err := logs.Open(filepath.Join(data, "logs"), logs.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	h.Logf("sidecar", slog.LevelInfo, "today")
+	old := filepath.Join(data, "logs", "sidecar", time.Now().AddDate(0, 0, -10).Format("2006-01-02")+".log")
+	if err := os.WriteFile(old, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := logs.Default()
+	logs.Install(h)
+	defer logs.Install(prev)
+
+	if err := cmdPrivacyRetention(context.Background(), append([]string{"set", "logs", "7"}, privacyArgs(cfg, data)...), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRetention(context.Background(), &commonFlags{cfgDir: cfg, dataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("the running hub should prune with the 7 days just set")
+	}
+}
+
+// logs.level raises the floor as well as lowering it (TEN-367).
+func TestLogsOptionsLevel(t *testing.T) {
+	t.Setenv("TENANT_LOG", "")
+	for in, want := range map[string]slog.Level{"": slog.LevelInfo, "debug": slog.LevelDebug, "warn": slog.LevelWarn, "warning": slog.LevelWarn, "ERROR": slog.LevelError, "loud": slog.LevelInfo} {
+		c := &commonFlags{lc: &launchConfig{Logs: logsConfig{Level: in}}}
+		if got := c.logsOptions().MinLevel; got != want {
+			t.Errorf("logs.level %q → %v, want %v", in, got, want)
+		}
+	}
+	t.Setenv("TENANT_LOG", "debug")
+	if got := (&commonFlags{lc: &launchConfig{Logs: logsConfig{Level: "error"}}}).logsOptions().MinLevel; got != slog.LevelDebug {
+		t.Errorf("TENANT_LOG=debug should still lower the floor, got %v", got)
+	}
+}
+
+// config.json's logs block becomes the store's budget: §6.2's defaults where
+// a key is unset, -1 lifting a limit, per_log over its class; the hub re-reads
+// it every housekeeper tick, so an edit applies with no restart (TEN-371).
+func TestLogsBudgetFromConfig(t *testing.T) {
+	cfg := t.TempDir()
+	write := func(logs string) {
+		if err := os.WriteFile(filepath.Join(cfg, "config.json"), []byte(`{"logs": `+logs+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"retention_days": 14, "budget_mb": -1, "diagnostic": {"max_mb": 64},
+		"security": {"max_age_days": 730},
+		"per_log": {"mcp.github": {"max_mb": 32, "min_level": "warning", "on_full": "keep"},
+		            "system": {"max_age_days": -1}, "x": {"min_level": "loud", "on_full": "rotate"}}}`)
+	budget := (&commonFlags{cfgDir: cfg}).logsOptions().Budget
+	b := budget()
+	day := 24 * time.Hour
+	want := map[string]store.Policy{
+		"mcp.github":      {MaxBytes: 32 << 20, MaxAge: 14 * day, OnFull: store.Keep, MinLevel: event.Warning},
+		"system":          {MaxBytes: 128 << 20, OnFull: store.Overwrite},
+		"x":               {MaxBytes: 64 << 20, MaxAge: 14 * day, OnFull: store.Overwrite},
+		store.SecurityLog: {MaxBytes: 256 << 20, MaxAge: 730 * day, OnFull: store.Archive},
+		"turns":           {MaxBytes: 64 << 20, MaxAge: 14 * day, OnFull: store.Overwrite},
+	}
+	for log, p := range want {
+		if got := b.For(log); got != p {
+			t.Errorf("%s: %+v, want %+v", log, got, p)
+		}
+	}
+	if b.TotalBytes != 0 || b.Diagnostic.MaxBytes != 64<<20 || b.Diagnostic.MaxAge != 7*day {
+		t.Errorf("budget %d, diagnostic %+v", b.TotalBytes, b.Diagnostic)
+	}
+	write(`{"per_log": {"turns": {"max_mb": 8}}}`)
+	if b := budget(); b.For("turns").MaxBytes != 8<<20 || b.TotalBytes != 2<<30 || b.Operational.MaxAge != 30*day {
+		t.Errorf("after an edit: turns %+v, budget %d", b.For("turns"), b.TotalBytes)
+	}
+}
+
 func TestRelayInboxKeepDefaults(t *testing.T) {
 	cfg := t.TempDir()
 	if got := relayInboxKeep(cfg); got != relayInboxRetention {
@@ -113,6 +198,11 @@ func TestPrivacyForgetAsksThenForgets(t *testing.T) {
 	}
 	if countEps() != 0 {
 		t.Fatalf("forget --yes left the episode:\n%s", out.String())
+	}
+	// The deletion is filed in the install's privacy log, with its counts.
+	plog, _ := os.ReadFile(filepath.Join(data, "logs", "privacy", time.Now().Format("2006-01-02")+".log"))
+	if !strings.Contains(string(plog), "Privacy deletion (forget)") || !strings.Contains(string(plog), "delete 1 episodes (conversation turns)") {
+		t.Fatalf("privacy log:\n%s", plog)
 	}
 	out.Reset()
 	if err := cmdPrivacyForget(ctx, privacyArgs(cfg, data, "--match", "prefer go", "--yes"), strings.NewReader(""), &out); err != nil {
@@ -209,19 +299,54 @@ func TestRunRetentionAppliesConfiguredPeriods(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &commonFlags{cfgDir: cfg, dataDir: data}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	runRetention(context.Background(), c, log) // nothing configured: nothing pruned
+	if err := runRetention(context.Background(), c); err != nil { // nothing configured: nothing pruned
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); err != nil {
 		t.Fatal("retention ran with no period configured")
 	}
 	if err := os.WriteFile(launchConfigPath(cfg), []byte(`{"schema_version":2,"privacy":{"retention_days":{"screenshots":7}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runRetention(context.Background(), c, log)
+	h := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(h)
+	defer logs.Install(prev)
+	if err := runRetention(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatal("an old screenshot survived its retention")
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Fatal("a recent screenshot was pruned")
+	}
+
+	// The sweep is an activity in the privacy log; the deletion it runs is
+	// one too, under it, and counts what it removed.
+	entries, _ := h.Snapshot()
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Field("event")+" "+e.Field("opcode")+" "+e.Msg)
+	}
+	want := []string{
+		"privacy/1001 start Retention sweep", "privacy/1002 start Privacy deletion (retention)",
+		"privacy/1003  delete 1 screenshots", "privacy/1002 stop Privacy deletion (retention)",
+		"security/4801  Privacy deletion (retention) by the tenant: delete 1 screenshots", // TEN-398
+		"privacy/1001 stop Retention sweep",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("privacy log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if sweep, del := entries[0], entries[1]; del.Field("related") != sweep.Field("activity") || entries[2].Field("activity") != del.Field("activity") {
+		t.Errorf("the deletion is not under the sweep: %v", entries)
+	}
+
+	// A config.json that cannot be read fails the sweep, where it was skipped silently.
+	if err := os.WriteFile(launchConfigPath(cfg), []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRetention(context.Background(), c); err == nil || !strings.Contains(err.Error(), "config.json is unreadable") {
+		t.Fatalf("an unreadable config.json: %v", err)
 	}
 }

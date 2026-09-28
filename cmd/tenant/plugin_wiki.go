@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,7 +19,8 @@ import (
 // approves. Configured by path (--wiki-dir, or `tenant setup`).
 func wikiPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID: "wiki",
+		ID:     "wiki",
+		Events: wiki.Events,
 		External: func(settings map[string]string) map[string]string {
 			return map[string]string{settings["dir"]: "wiki vault"}
 		},
@@ -91,7 +91,7 @@ func launchWiki(ctx context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if f.dir == "" {
 		return nil, nil, nil
 	}
-	ix, err := buildWikiIndex(ctx, e.c, e.router, f.dir, e.log)
+	ix, err := buildWikiIndex(ctx, e.c, e.router, f.dir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -273,7 +273,7 @@ func checkWikiFreshness(_ context.Context, e *doctorEnv) checkResult {
 // auto-reindexes lazily on first use, so it self-heals when the
 // embedder comes back). A search while the embedder is down surfaces a
 // clean tool error in the feed instead of a startup crash.
-func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string, log *slog.Logger) (*wiki.Index, error) {
+func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, dir string) (*wiki.Index, error) {
 	emb, embProfile, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 	if err != nil {
 		return nil, fmt.Errorf("wiki plugin: resolve embedder: %w", err)
@@ -282,8 +282,7 @@ func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, d
 	if probe, perr := emb.Embed(ctx, []string{"wiki embedder fingerprint probe"}); perr == nil && len(probe) == 1 && len(probe[0]) > 0 {
 		dim = len(probe[0])
 	} else {
-		log.Warn("wiki: embedder probe failed; using declared dim, reindex deferred to first search",
-			"declared_dim", dim, "err", perr)
+		wiki.EmbedderProbeFailed.Log(ctx, "declared_dim", dim, "err", perr)
 	}
 	embedID := embProfile.Model + "/" + strconv.Itoa(dim)
 	absVault, _ := filepath.Abs(dir)
@@ -296,7 +295,7 @@ func buildWikiIndex(ctx context.Context, c *commonFlags, router *model.Router, d
 	}
 	if _, _, rerr := ix.Reindex(ctx); rerr != nil {
 		// Embedder down at launch — don't crash; lazy reindex on first search.
-		log.Warn("wiki: initial reindex failed; will reindex on first search", "err", rerr)
+		wiki.ReindexFailed.Log(ctx, "err", rerr)
 	}
 	return ix, nil
 }

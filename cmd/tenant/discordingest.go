@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,7 +76,6 @@ type savedAttachment struct {
 type attachmentIngestor struct {
 	dir       string
 	client    *http.Client
-	log       *slog.Logger
 	anyHost   bool // tests only: permit non-Discord-CDN URLs (httptest)
 	sweepOnce sync.Once
 	// keep is the configured retention (privacy.retention_days.relay_inbox,
@@ -85,14 +83,10 @@ type attachmentIngestor struct {
 	keep func() time.Duration
 }
 
-func newAttachmentIngestor(dataDir string, log *slog.Logger) *attachmentIngestor {
-	if log == nil {
-		log = slog.Default()
-	}
+func newAttachmentIngestor(dataDir string) *attachmentIngestor {
 	return &attachmentIngestor{
 		dir:    filepath.Join(dataDir, relayInboxDirName),
 		client: &http.Client{}, // per-call deadline via ctx
-		log:    log,
 	}
 }
 
@@ -111,7 +105,7 @@ func (ai *attachmentIngestor) Ingest(ctx context.Context, atts []discord.Attachm
 		}
 		sa, err := ai.download(ctx, a)
 		if err != nil {
-			ai.log.Warn("relay attachment download failed", "file", a.Filename, "err", err)
+			discord.AttachmentFailed.Log(ctx, "file", a.Filename, "err", err)
 			rejected = append(rejected, fmt.Sprintf("%s — download failed", displayFilename(a.Filename)))
 			continue
 		}
@@ -239,8 +233,8 @@ func uniquePath(dir, name string) string {
 }
 
 // sweep prunes inbox files older than the retention window and removes
-// emptied date dirs. Best-effort: the inbox filling with stale files is an
-// annoyance, not a failure worth surfacing to the operator.
+// emptied date dirs. Best-effort, but not silent: the retention window is a
+// privacy setting, so what it could not delete is logged (once per sweep).
 func (ai *attachmentIngestor) sweep() {
 	keep := relayInboxRetention
 	if ai.keep != nil {
@@ -252,7 +246,18 @@ func (ai *attachmentIngestor) sweep() {
 	cutoff := time.Now().Add(-keep)
 	days, err := os.ReadDir(ai.dir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			discord.InboxSweepIncomplete.Log(context.Background(), "dir", ai.dir, "err", err)
+		}
 		return
+	}
+	var failed int
+	var firstErr error
+	fail := func(err error) {
+		failed++
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 	for _, d := range days {
 		if !d.IsDir() {
@@ -261,6 +266,7 @@ func (ai *attachmentIngestor) sweep() {
 		dayPath := filepath.Join(ai.dir, d.Name())
 		files, err := os.ReadDir(dayPath)
 		if err != nil {
+			fail(err)
 			continue
 		}
 		remaining := len(files)
@@ -270,14 +276,21 @@ func (ai *attachmentIngestor) sweep() {
 				continue
 			}
 			if info.ModTime().Before(cutoff) {
-				if os.Remove(filepath.Join(dayPath, f.Name())) == nil {
+				if err := os.Remove(filepath.Join(dayPath, f.Name())); err != nil {
+					fail(err)
+				} else {
 					remaining--
 				}
 			}
 		}
 		if remaining == 0 {
-			_ = os.Remove(dayPath)
+			if err := os.Remove(dayPath); err != nil {
+				fail(err)
+			}
 		}
+	}
+	if failed > 0 {
+		discord.InboxSweepIncomplete.Log(context.Background(), "dir", ai.dir, "failures", failed, "err", firstErr)
 	}
 }
 

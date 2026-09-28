@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-09-27; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-09-28; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 79 |
-| Go files | 894 |
-| Test files | 428 |
-| Production Go LOC | 120,421 |
-| Test Go LOC | 82,046 |
+| Go packages | 87 |
+| Go files | 1,104 |
+| Test files | 517 |
+| Production Go LOC | 143,777 |
+| Test Go LOC | 99,670 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -118,13 +118,15 @@ Every module package has a dependency rule: the module packages it may import.
 `internal/archtest` checks the source tree against these rules on every
 `go test ./...` (TEN-314). A package that no rule covers fails, and so does an
 import its rule doesn't allow, or Bubble Tea anywhere but `internal/tui` and
-`cmd/tenant`. The first row that matches a package governs it. The table is
+`cmd/tenant`. The first row adds one import to every internal package; below
+it, the first row that matches a package governs it. The table is
 generated from `internal/archtest/rules.go`, and
 `go test ./internal/archtest -update` rewrites it.
 
 <!-- archtest:rules -->
 | Package | May import | Note |
 |---|---|---|
+| every `internal/**` package | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/capture` | on top of its own row: the event model, the built-in providers (the Security log's records among them) and child capture, so an event is written, and a child filed, where the action happens |
 | `cmd/**` | anything | the composition root and command adapters |
 | `scripts/**` | nothing in the module | build tools stand alone |
 | `reference/**` | `reference/**` | examples for tool builders; never tenant/internal |
@@ -140,12 +142,19 @@ generated from `internal/archtest/rules.go`, and
 | `internal/mcp/transport` | nothing in the module | leaf |
 | `internal/model/profiles` | nothing in the module | leaf |
 | `internal/control` | nothing in the module | leaf: the data types the runtime, the TUI and the dashboard share |
-| `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes |
-| `internal/lifecycle` | nothing in the module | leaf: the staged shutdown of a long-running command |
+| `internal/pluginreg` | nothing in the module | leaf: the plugin registry's invariants and indexes, and the events every plugin has |
+| `internal/lifecycle` | `internal/logs/catalog` | the staged shutdown of a long-running command, filed in the system log, and the registry of what is running |
 | `internal/skillpkg` | nothing in the module | leaf: the Agent Skills package format (SKILL.md) |
 | `internal/sandbox` | nothing in the module | leaf: the exec-backend seam |
 | `internal/sandbox/**` | `internal/sandbox/**` |  |
-| `internal/logs` | `internal/fsperm` | any package may log through it |
+| `internal/logs/event` | nothing in the module | leaf: the event model; every internal package may import it |
+| `internal/logs/event/eventtest` | nothing in the module | tests' event recorder, on the event model alone |
+| `internal/logs/query` | `internal/logs/event` | the filter language; the store plans it into SQL |
+| `internal/logs/store` | `internal/logs/event`, `internal/logs/query`, `internal/fsperm`, `internal/datalock` | logbook.db, the system of record |
+| `internal/logs` | `internal/logs/event`, `internal/logs/catalog`, `internal/logs/store`, `internal/fsperm`, `internal/runtrace`, `internal/datalock`, `internal/version` | any package may log through it; never secrets: the composition root hands the store its key |
+| `internal/logs/catalog` | `internal/logs/event` | the built-in event definitions |
+| `internal/logs/logapi` | `internal/logs`, `internal/logs/event`, `internal/logs/store`, `internal/logs/query`, `internal/logs/catalog`, `internal/lifecycle`, `internal/runtrace`, `internal/version` | the log book's HTTP API: the dashboard serves it, tenant logs runs it in process |
+| `internal/logs/capture` | `internal/logs/event`, `internal/runtrace`, `internal/lifecycle` | child-process capture; every internal package may import it; a running child is a lifecycle component |
 | `internal/research` | `internal/fsperm` |  |
 | `internal/backup` | `internal/datalock`, `internal/fsperm`, `internal/secrets`, `internal/version` |  |
 | `internal/peering` | `internal/httplimits`, `internal/secrets` |  |
@@ -153,24 +162,27 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
 | `internal/orchestra` | `internal/model` |  |
-| `internal/route` | `internal/model`, `internal/fsperm` |  |
-| `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra` | the persisted configuration; knows no runtime |
+| `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
+| `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra`, `internal/logs/catalog` | the persisted configuration; knows no runtime; files each change in the Security log |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
-| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/memory/cosine` | capabilities never import each other |
+| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/httplimits`, `internal/memory/cosine`, `internal/pluginreg` | capabilities never import each other; each declares its events through pluginreg |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
 | `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
-| `internal/privacy` | `internal/memory/**`, `internal/fsperm` |  |
+| `internal/privacy` | `internal/memory/**`, `internal/fsperm`, `internal/logs`, `internal/logs/store` |  |
+| `internal/logs/alerts` | `internal/logs`, `internal/logs/event`, `internal/logs/query`, `internal/logs/store` | alert rules, evaluated in the housekeeper-lease holder; the composition root sends the actions |
 | `internal/mcpserver` | `internal/mcp/**`, `internal/memory/**`, `internal/model` |  |
 | `internal/agent` | `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
 | `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
 | `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
-| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/orchestra` | never the terminal UI |
+| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra` | never the terminal UI |
 <!-- /archtest:rules -->
 
 In short:
 - The leaves (file permissions, secrets, locks, limits, version, run traces)
   import nothing.
+- Any internal package may import `internal/logs/event`, the event model, so
+  an event is written where the action happens.
 - `model` knows no memory, agent or plugin.
 - The memory tiers compose only through `assemble`, `distill` and `compress`.
 - Plugins never import each other.
@@ -545,8 +557,9 @@ persisted at end of turn (one row/pair, query embedding). **17 tests**
 
 **Purpose:** the single sink every subsystem logs through. One source = one
 folder of plain-text daily files (`<data>/logs/<source>/YYYY-MM-DD.log`) = one
-dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
-`logs.For("name")` without plumbing. Full guide: `docs/LOGGING.md`.
+dashboard tab. It imports only leaves (`fsperm`, `runtrace`, `version` and its
+own `event` and `store`), so any package can `logs.For("name")` without plumbing. Full
+guide: `docs/LOGGING.md`.
 
 **Public API:**
 - `logs.Open(root, Options) (*Hub, error)` / `logs.NewMemory(cap)`; `Hub.Start(ctx)`
@@ -555,29 +568,57 @@ dashboard tab. Leaf package (imports nothing of Tenant's), so any package can
 - `Hub.Log(Entry)` / `Hub.Logf(source, level, msg, kv…)` — writes the line to the
   source's day file (created on first use) and appends it to a bounded ring
   keyed by a monotonic `Seq` (eviction never invalidates a cursor).
-- `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Notify()` — the lossless
-  replay + coalescing wake the dashboard's Activity SSE tails (same pattern as
-  `orchestra.Bus`).
+- `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Subscribe()` — the lossless
+  replay + a coalescing wake-up per subscriber that the dashboard's Activity SSE
+  tails (one per open tab). `Hub.Epoch()` names the Seq numbering, which starts
+  at 1 on every open; a client holding another epoch's cursor re-syncs.
 - `Hub.Sources() []SourceInfo` (display order: built-ins, custom, `system` last;
   counts; native vs discovered), `Hub.Files(source)`, `Hub.OpenFile(source, name)`
   (names validated to strict shapes — never a path outside the folder).
+  `logs.Builtin(name)`: Tenant's own sources, which the logging API refuses.
+  `Hub.SetRetention(d)` changes a running hub's retention.
 - `Hub.Handler(tee) slog.Handler` / `Hub.Logger(source)`; package-level
   `logs.Install(hub)` + `logs.For(source)` (resolves the hub lazily, stderr-at-WARN
   until one is installed). Routing: fixed source → `source` attr → the message's
-  `tag:` prefix table → `system`.
+  `tag:` prefix table → `system`. A `…Context` call inside a turn gains a
+  `trace` field from the context's `runtrace` span.
 - `Entry.Line()` / `logs.ParseLine` — the round-trippable on-disk format:
   `<date> <time.ms> <LEVEL> [<source>] <msg>\t<k=v …>`; values quoted when needed
   so one entry is always one line.
 - `agent.EntryFor(Event) (logs.Entry, bool)` (in `internal/agent`) renders a turn
   event into an entry (denylists token/usage/assistant/memory noise); `Event.Source`
-  lets an observer name the folder (`cron`, `discord`, `eval`, …).
+  lets an observer name the folder (`cron`, `discord`, `eval`, …). Every event a
+  turn raises carries its trace ID, written as `trace` (the `runs.db` trace_id).
+- Logging v2 (TEN-359): `internal/logs/event` is the event model (levels
+  critical to verbose, typed fields, correlation, providers and catalogued
+  definitions, activities) and `internal/logs/catalog` the built-in
+  definitions. `logs.Install` makes the hub their emitter;
+  `logs.EntryFromEvent` / `logs.EventFromEntry` map v2 events and v1
+  entries onto each other.
+- `internal/logs/store` is `logbook.db`: `store.Open(path, Options)`,
+  `Commit(ctx, []event.Event)`, `Since(ctx, Cursor, limit)`, `Get`, `Logs`,
+  `Subscribe`, `TryLease`. `Hub.AttachStore(st)` routes `Log` and the
+  emitter through the pipeline (queue → writer: scrub, cap, text files,
+  commit, ring); what a full queue drops is counted per log (`Hub.Summary`).
+- `internal/logs/query` is the filter language (`query.Parse`,
+  `Filter.String`, `*SyntaxError` with the position); the store plans a
+  filter into SQL and FTS5 and runs it: `Query` (cursor pages over seq, either
+  way), `Count`, `Stats` (from the rollups when the filter allows), `TopIDs`,
+  `Timeline` (the trace/activity pivot) and `EventStats`. `Summary(ctx,
+  budget, now)` is the Summary page, from the per-hour rollups
+  (`Hub.Summary(ctx, now)` with the budget in force).
+- `internal/lifecycle` also keeps what is running: `Track(ctx, name, kind,
+  log, state, err)`, `Group.StartFunc` (a stop that tracks),
+  `Comp.Set` and the snapshot `Components()`; each state change is a
+  `system` event (TEN-380).
 
 **Invariants:** never blocks a producer on a reader; a file that cannot be
 written is noted on the source (`SourceInfo.Err`) and the entry still reaches
 the ring; a folder tailed as foreign is drained before this process starts
 writing it (no re-reading our own lines); daily files roll at 64 MB; retention
-30 days (config `logs.retention_days`, `-1` = never); INFO floor
-(`logs.level: debug` / `TENANT_LOG=debug` lowers it).
+30 days (config `logs.retention_days`, `-1` = never; the daily privacy sweep
+applies a change live); INFO floor (`logs.level` sets `debug`, `warn` or
+`error`; `TENANT_LOG=debug` lowers it).
 
 ### 5.11 `internal/improve` — Self-improvement scheduler
 
@@ -1276,7 +1317,9 @@ dir (`cmd/tenant` supplies them): an unknown column means a newer Tenant, which 
 refuses without `--force`. `Restore` unpacks and checks beside the live dirs, then renames
 the live ones aside and the restored ones in, undoing on failure. `internal/datalock` is the
 guard: every command holds `<data>/.tenant.lock` shared (`flock` / `LockFileEx`), `Restore`
-exclusively.
+exclusively. The log book's `logbook.db` is captured by name, never opened raw (on POSIX a raw
+close drops the capturing process's own locks on it), with its archives; its text mirror only
+with `--include-mirror` (TEN-374).
 
 ### 5.13b `internal/privacy` — Retention, forgetting, export
 
@@ -1293,6 +1336,11 @@ store in single transactions, facts first. It works on `secure_delete` connectio
 runs an FTS `optimize` and `wal_checkpoint(TRUNCATE)`. Archive files are rewritten through
 temp + rename, starting over if the live archive appended meanwhile. `Export` writes each
 table as JSON Lines (no embeddings) plus profiles, souls, research and the archive.
+The log book is covered too (`logbook.go`, TEN-374): a forget's sessions and runs pick its
+events, which `store.Forget` deletes (tombstoning `security` records) by the same recipe,
+`logs.ForgetLines` blanks in the text files, and `store.ForgetArchived` rewrites in the
+archives; `Export` adds `logbook.jsonl`. `privacy-ledger.jsonl` records backups and forgets
+so status can count the backups a forget left holding deleted data.
 `cmd/tenant` adds connector forgetting (`credentials.json` `skill:<name>:*` entries plus each
 service's token and data files), the status view, and the daily prune in `serve` and the TUI.
 

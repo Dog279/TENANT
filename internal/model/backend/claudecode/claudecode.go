@@ -36,6 +36,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -47,6 +48,7 @@ import (
 	"sync"
 	"time"
 
+	"tenant/internal/logs/capture"
 	"tenant/internal/model"
 	"tenant/internal/model/toolfmt"
 )
@@ -103,7 +105,7 @@ func New(_ context.Context, p model.Profile, log *slog.Logger) (any, error) {
 	return &Backend{
 		profile: p,
 		log:     log,
-		ledger:  openLedger(log),
+		ledger:  openLedger(),
 	}, nil
 }
 
@@ -155,10 +157,13 @@ func (b *Backend) Generate(ctx context.Context, req model.GenerateRequest) (*mod
 	cmd.Env = scrubbedEnv(os.Environ())
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Its stderr classifies a failure, and is filed in the model log with its
+	// start and exit, failed or not (logging v2 §8.4).
+	child := capture.New(ctx, "model", "child", "claude")
+	cmd.Stderr = io.MultiWriter(&stderr, child)
 
 	start := time.Now()
-	runErr := cmd.Run()
+	runErr := child.Run(cmd)
 	if runErr != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("%w: claude -p: %v", model.ErrCancelled, ctx.Err())

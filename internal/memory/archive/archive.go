@@ -43,7 +43,8 @@ type Event struct {
 	Timestamp  time.Time      `json:"ts"`
 	AgentID    string         `json:"agent_id"`
 	SessionID  string         `json:"session_id"`
-	Role       string         `json:"role"` // user | assistant | tool | system
+	TraceID    string         `json:"trace_id,omitempty"` // the turn's run record (runs.db)
+	Role       string         `json:"role"`               // user | assistant | tool | system
 	Content    string         `json:"content,omitempty"`
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
 	ToolResult *ToolResult    `json:"tool_result,omitempty"`

@@ -105,7 +105,8 @@ func (lc *Launch) Migrate() {
 	lc.EmbedEndpoint, lc.EmbedModel, lc.EmbedDim, lc.SSEAddr = "", "", 0, ""
 }
 
-// Save writes config.json atomically (temp + rename).
+// Save writes config.json atomically (temp + rename), and files the change
+// in the Security log.
 func (lc *Launch) Save(cfgDir string) error {
 	if _, err := ResolveRoute(lc); err != nil {
 		return err
@@ -118,7 +119,7 @@ func (lc *Launch) Save(cfgDir string) error {
 	if err := fsperm.MkdirAll(cfgDir); err != nil {
 		return err
 	}
-	return AtomicWrite(Path(cfgDir), b)
+	return saveAudited(Path(cfgDir), b)
 }
 
 // Active returns the selected generation provider's config (or nil).

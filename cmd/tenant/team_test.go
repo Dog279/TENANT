@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 	"tenant/internal/memory/soul"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
+	"tenant/internal/runtrace"
 )
 
 func TestTeamRuntime_WebReaderActivityUsesAgentEventing(t *testing.T) {
@@ -76,6 +78,10 @@ func TestRoleSoul_StampsIdentityKeepsTeamRules(t *testing.T) {
 // they finish, and each must report DONE back to the orchestrator on the
 // bus. Exercises the real TeamRuntime wiring end-to-end.
 func TestTeamRuntime_SpawnAndAwait(t *testing.T) {
+	hub := logs.NewMemory(500)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
 	router, err := buildRouter(c, log)
@@ -95,7 +101,8 @@ func TestTeamRuntime_SpawnAndAwait(t *testing.T) {
 		Bus: bus, Router: router, Stores: st, Shared: newToolMux(), OrchID: "main", Log: log,
 	})
 
-	ctx := context.Background()
+	// The spawning turn's trace becomes each sub-agent run's parent (TEN-368).
+	ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan("orchestrator-turn"))
 	id1, err := rt.Spawn(ctx, "researcher", "find the answer")
 	if err != nil {
 		t.Fatalf("spawn 1: %v", err)
@@ -128,6 +135,42 @@ func TestTeamRuntime_SpawnAndAwait(t *testing.T) {
 				t.Fatalf("completion message malformed: %q", m.Content)
 			}
 		}
+	}
+
+	runs, err := st.runs.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("sub-agent run records = %d, want 2", len(runs))
+	}
+	for _, r := range runs {
+		if r.ParentTraceID != "orchestrator-turn" {
+			t.Fatalf("sub-agent run %s parent = %q, want the spawning turn's trace", r.AgentID, r.ParentTraceID)
+		}
+	}
+
+	// Each sub-agent's run is an activity in subagents: related to the
+	// spawning turn, naming its own run's trace, stopped with a duration.
+	es, _ := hub.Snapshot()
+	ops := map[string]int{}
+	for _, e := range es {
+		if e.Field("event") != "subagents/1" {
+			continue
+		}
+		ops[e.Field("opcode")]++
+		ran := false
+		for _, r := range runs {
+			ran = ran || r.TraceID == e.Field("run")
+		}
+		start := e.Field("opcode") == "start"
+		if e.Source != "subagents" || e.Field("trace") != "orchestrator-turn" || e.Field("activity") == "" || !ran ||
+			start != (e.Field("related") == "orchestrator-turn") || start != (e.Field("duration") == "") {
+			t.Errorf("sub-agent activity: %s", e.Line())
+		}
+	}
+	if ops["start"] != 2 || ops["stop"] != 2 {
+		t.Errorf("sub-agent activities: %v, want 2 starts and 2 stops", ops)
 	}
 }
 

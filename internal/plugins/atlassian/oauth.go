@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,6 +26,7 @@ import (
 	v2 "github.com/ctreminiom/go-atlassian/v2/jira/v2"
 	"github.com/ctreminiom/go-atlassian/v2/pkg/infra/oauth2"
 	"github.com/ctreminiom/go-atlassian/v2/service/common"
+	"tenant/internal/httplimits"
 	"tenant/internal/secrets"
 )
 
@@ -103,13 +105,20 @@ func (s fileTokenStore) GetRefreshToken(ctx context.Context) (string, error) {
 	return t.RefreshToken, nil
 }
 
+// SetRefreshToken is how go-atlassian's auto-renewal hands back the refresh
+// token it rotated on each renewal, so it logs the refresh.
 func (s fileTokenStore) SetRefreshToken(ctx context.Context, refreshToken string) error {
 	t, err := s.GetToken(ctx)
 	if err != nil || t == nil {
 		t = &common.OAuth2Token{}
 	}
 	t.RefreshToken = refreshToken
-	return s.SetToken(ctx, t)
+	if err := s.SetToken(ctx, t); err != nil {
+		TokenNotSaved.Log(ctx, "err", err)
+		return err
+	}
+	TokenRefreshed.Log(ctx)
+	return nil
 }
 
 // openOAuthClient loads the cached token, refreshes it, resolves the cloudId,
@@ -127,7 +136,7 @@ func openOAuthClient(ctx context.Context, cfg Config) (*v2.Client, string, error
 	config := oauthConfig(cfg)
 
 	// Bootstrap client just to reach the OAuth2 service (refresh + cloudId).
-	boot, err := v2.New(http.DefaultClient, "https://api.atlassian.com", v2.WithOAuth(config))
+	boot, err := v2.New(apiClient, "https://api.atlassian.com", v2.WithOAuth(config))
 	if err != nil {
 		return nil, "", fmt.Errorf("atlassian: oauth bootstrap: %w", err)
 	}
@@ -152,7 +161,7 @@ func openOAuthClient(ctx context.Context, cfg Config) (*v2.Client, string, error
 	// set up, or the library captures a nil store and never writes refreshed/
 	// rotated tokens back to disk (so a restart after rotation forces re-login).
 	// This mirrors go-atlassian's own storage example ordering.
-	c, err := v2.New(http.DefaultClient, site,
+	c, err := v2.New(apiClient, site,
 		v2.WithOAuth(config),
 		v2.WithTokenStore(store),
 		v2.WithAutoRenewalToken(fresh))
@@ -258,12 +267,16 @@ func awaitCallbackCode(ctx context.Context, addr, state, authURL string, open fu
 		done <- result{code: code}
 	})
 	srv := &http.Server{Handler: mux}
+	httplimits.Configure(srv)
 	go srv.Serve(ln)
 	defer srv.Close()
 
-	fmt.Fprintf(os.Stderr, "\nOpen this URL to authorize Tenant's Atlassian access:\n\n  %s\n\nWaiting for the callback on http://%s/callback …\n", authURL, addr)
-	if open != nil {
-		_ = open(authURL) // best-effort auto-open; the printed URL is the fallback
+	// The opener shows the operator the URL where they will see it (the TUI
+	// feed, the terminal) and opens the browser. Without one, or when it
+	// fails, the URL goes to the log instead.
+	slog.Default().Info("atlassian: waiting for the sign-in callback", "source", "plugin.atlassian", "callback", "http://"+addr+"/callback")
+	if open == nil || open(authURL) != nil {
+		SignInURL.Log(ctx, "url", authURL)
 	}
 
 	select {

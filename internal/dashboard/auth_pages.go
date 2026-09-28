@@ -9,6 +9,8 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
+
+	"tenant/internal/logs/catalog"
 )
 
 // settingsTmpl is the standalone PSK-entry page. Dark palette matching the panel.
@@ -30,7 +32,7 @@ var settingsTmpl = template.Must(template.New("settings").Parse(`<!doctype html>
 <body>
   <form class="card" method="POST" action="/auth/login">
     <h1>Authenticate</h1>
-    <p>Paste the dashboard auth token printed in your terminal.</p>
+    <p>Paste the dashboard auth token. <code>tenant serve</code> says where it is kept (the <code>dashboard-auth-token</code> file in the config directory); it prints the token itself only on a terminal.</p>
     <input type="password" name="token" placeholder="auth token" autocomplete="off" autofocus>
     <button type="submit">Unlock</button>
     {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
@@ -68,9 +70,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token := r.FormValue("token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Auth)) != 1 {
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr)
+		refused(r, "sign_in", "/auth/login")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusForbidden)
-		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the value printed in your terminal."})
+		_ = settingsTmpl.Execute(w, settingsData{Error: "Invalid token — check the dashboard-auth-token file in the config directory."})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -82,6 +86,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// Secure only when TLS is configured; loopback HTTP is the common case.
 		Secure: s.cfg.TLSCert != "" && s.cfg.TLSKey != "",
 	})
+	_ = catalog.SignedIn.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -95,5 +100,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
+	_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

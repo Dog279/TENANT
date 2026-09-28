@@ -82,6 +82,7 @@ func TestApprover_ExpiryFreezesOriginalCard(t *testing.T) {
 // prompt is never silent.
 func TestApprover_CardFallbackChain(t *testing.T) {
 	t.Run("v2 to legacy", func(t *testing.T) {
+		c := captureChannelEvents(t)
 		fs := &fakeSender{cardFail: true}
 		a := newDiscordApprover(fs, nil)
 		a.timeout = time.Second
@@ -95,6 +96,10 @@ func TestApprover_CardFallbackChain(t *testing.T) {
 		}
 		if len(fs.buttonsAt(0)) != 2 {
 			t.Errorf("legacy buttons must post instead, got %+v", fs.buttonsAt(0))
+		}
+		fb, posted := c.wait(discord.CardFallback, ""), c.wait(discord.CardPosted, "")
+		if fb == nil || eventField(fb, "fallback").Text() != "legacy buttons" || posted == nil || eventField(posted, "layout").Text() != "legacy" {
+			t.Errorf("want the fallback and the legacy card recorded, got %+v and %+v", fb, posted)
 		}
 	})
 	t.Run("legacy to text", func(t *testing.T) {

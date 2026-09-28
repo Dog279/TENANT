@@ -130,6 +130,10 @@ type InfoFlowLabel struct {
 
 const (
 	SensitivitySensitive = "sensitive"
+	// SensitivityUntrusted marks text anyone can write, such as the log
+	// book's (TEN-400): it may try to steer the agent. The flow rules track it
+	// as they track sensitive data, so an outbound call quoting it asks first.
+	SensitivityUntrusted = "untrusted"
 
 	ProvenanceLocalFile    = "local_file"
 	ProvenanceMemory       = "memory"
@@ -138,7 +142,14 @@ const (
 	ProvenanceService      = "service"
 	ProvenanceRemoteMCP    = "remote_mcp"
 	ProvenancePeer         = "peer"
+	ProvenanceLog          = "log" // the log book: any process, plugin or outside writer (TEN-400)
 )
+
+// Tracked reports whether the flow rules follow data labelled l: sensitive or
+// untrusted.
+func (l InfoFlowLabel) Tracked() bool {
+	return l.Sensitivity == SensitivitySensitive || l.Sensitivity == SensitivityUntrusted
+}
 
 // ToolChoice selects whether and how the model is forced to call a tool.
 type ToolChoice struct {

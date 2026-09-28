@@ -131,7 +131,7 @@ func newFixture(t *testing.T) *fixture {
 
 	u, err := usage.Open(fx.d.path(usageDB))
 	must(err)
-	must(u.Record(ctx, "main", "m", 10, 20))
+	must(u.Record(ctx, "main", "m", 10, 20, ""))
 	u.Close()
 
 	must(os.WriteFile(fx.d.path("profile.main.md"), []byte("# Profile\n\n## Recently Remembered\n- lives at 221B Baker Street\n- likes Go\n"), 0o600))

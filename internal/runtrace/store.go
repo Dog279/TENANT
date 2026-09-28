@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -32,14 +33,22 @@ type Config struct {
 }
 
 type Store struct {
-	db  *sql.DB
-	cfg Config
+	db   *sql.DB
+	cfg  Config
+	stop chan struct{} // closed by Close; ends the prune timer
+	wg   sync.WaitGroup
 }
+
+// pruneEvery is how often an open store re-applies its bounds: serve and the
+// TUI stay up for months, so pruning only at Open would never happen.
+var pruneEvery = time.Hour
 
 func Open(path string, cfg Config) (*Store, error) {
 	dsn := path
 	if path != ":memory:" {
-		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)", path)
+		// _txlock=immediate: a transaction takes the write lock when it begins,
+		// so a second process waits on busy_timeout instead of failing to upgrade.
+		dsn = fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_txlock=immediate", path)
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -52,18 +61,53 @@ func Open(path string, cfg Config) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("runtrace: schema: %w", err)
 	}
-	s := &Store{db: db, cfg: cfg}
+	if err := addColumn(db, "parent_trace_id", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("runtrace: migrate parent_trace_id: %w", err)
+	}
+	s := &Store{db: db, cfg: cfg, stop: make(chan struct{})}
 	if _, err := s.Prune(context.Background(), time.Now().UTC()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	s.wg.Add(1)
+	go s.pruneOnTimer(pruneEvery)
 	return s, nil
+}
+
+// addColumn adds a column an older runs.db lacks: CREATE TABLE IF NOT EXISTS
+// never alters an existing table.
+func addColumn(db *sql.DB, column, definition string) error {
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('runs') WHERE name = ?`, column).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	_, err := db.Exec(`ALTER TABLE runs ADD COLUMN ` + column + ` ` + definition)
+	return err
+}
+
+// pruneOnTimer re-applies the bounds every interval until Close. A failed
+// prune (the database busy past its timeout) is simply retried next tick.
+func (s *Store) pruneOnTimer(interval time.Duration) {
+	defer s.wg.Done()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case now := <-t.C:
+			_, _ = s.Prune(context.Background(), now.UTC())
+		}
+	}
 }
 
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	close(s.stop)
+	s.wg.Wait()
 	err := s.db.Close()
 	s.db = nil
 	return err
@@ -83,8 +127,8 @@ func (s *Store) Start(ctx context.Context, r Run) error {
 		r.Source = "headless"
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO runs
- (trace_id,agent_id,session_id,source,started_at,outcome) VALUES (?,?,?,?,?,?)`,
-		r.TraceID, r.AgentID, r.SessionID, r.Source, r.StartedAt.UTC().Format(time.RFC3339Nano), "running")
+ (trace_id,parent_trace_id,agent_id,session_id,source,started_at,outcome) VALUES (?,?,?,?,?,?,?)`,
+		r.TraceID, r.ParentTraceID, r.AgentID, r.SessionID, r.Source, r.StartedAt.UTC().Format(time.RFC3339Nano), "running")
 	if err != nil {
 		return fmt.Errorf("runtrace: start: %w", err)
 	}
@@ -143,7 +187,7 @@ func (s *Store) Get(ctx context.Context, traceID string) (Run, error) {
 	return r, err
 }
 
-const selectRuns = `SELECT trace_id,agent_id,session_id,source,started_at,completed_at,model,provider,
+const selectRuns = `SELECT trace_id,parent_trace_id,agent_id,session_id,source,started_at,completed_at,model,provider,
  latency_ms,prompt_tokens,completion_tokens,cost_estimate_usd,retries,fallbacks,tool_calls,approvals,outcome,error_class FROM runs`
 
 func (s *Store) List(ctx context.Context) ([]Run, error) {
@@ -168,10 +212,10 @@ type scanner interface{ Scan(...any) error }
 func scanRun(row scanner) (Run, error) {
 	var r Run
 	var started string
-	var completed, model, provider, errClass sql.NullString
+	var parent, completed, model, provider, errClass sql.NullString
 	var cost sql.NullFloat64
 	var fallbacks, tools, approvals string
-	err := row.Scan(&r.TraceID, &r.AgentID, &r.SessionID, &r.Source, &started, &completed, &model, &provider,
+	err := row.Scan(&r.TraceID, &parent, &r.AgentID, &r.SessionID, &r.Source, &started, &completed, &model, &provider,
 		&r.LatencyMS, &r.PromptTokens, &r.CompletionTokens, &cost, &r.Retries, &fallbacks, &tools, &approvals, &r.Outcome, &errClass)
 	if err != nil {
 		return Run{}, err
@@ -187,7 +231,7 @@ func scanRun(row scanner) (Run, error) {
 		}
 		r.CompletedAt = &t
 	}
-	r.Model, r.Provider, r.ErrorClass = model.String, provider.String, errClass.String
+	r.ParentTraceID, r.Model, r.Provider, r.ErrorClass = parent.String, model.String, provider.String, errClass.String
 	if cost.Valid {
 		r.CostEstimateUSD = &cost.Float64
 	}

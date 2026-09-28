@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/lifecycle"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
 	"tenant/internal/memory/semantic"
@@ -95,16 +96,6 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 	reg, restDisp := restrictForDiscord(d.fullTools, d.fullDisp)
 	disp := &discordRoutingDispatcher{discord: ddisc, rest: restDisp}
 
-	var obs func(agent.Event)
-	if d.events != nil {
-		obs = func(e agent.Event) {
-			switch e.Kind {
-			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent, e.Source = "tenant-discord", "discord"
-				d.events(e)
-			}
-		}
-	}
 	ag, err := agent.New(agent.Config{
 		AgentID:    "tenant-discord",
 		Router:     d.router,
@@ -125,7 +116,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		Compactor:              d.compactor,
 		UserProfile:            d.userProfile,
 		SystemPrompt:           d.sysPrompt + discordSysSuffix,
-		Observer:               obs,
+		Observer:               mirrorObserver(d.events, "tenant-discord", "discord"),
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,
 		RouteSticky:            d.routeSticky,
@@ -212,7 +203,7 @@ func (m *discordRelayManager) NotifyOperator(text string) error {
 // realStart wires a fresh relay (bound to operatorID) + gateway and runs the
 // gateway under ctx. Returns once started (the gateway connects asynchronously).
 func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) error {
-	rl := newRelay(m.runner, m.sender, operatorID, m.log)
+	rl := newRelay(m.runner, m.sender, operatorID)
 	rl.approver = m.approver
 	if m.approver != nil {
 		// A prompt that degrades to text surfaces on the operator feed, and the
@@ -233,7 +224,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 	if m.dataDir != "" {
 		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
 		// and the turn text carries the saved-path manifest.
-		rl.files = newAttachmentIngestor(m.dataDir, m.log)
+		rl.files = newAttachmentIngestor(m.dataDir)
 		rl.files.keep = m.inboxKeep
 		// External-automation approvals: ext-approve button verdicts land under
 		// <dataDir>/approvals/<ns> (extapprove.go).
@@ -246,14 +237,16 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		OnMessage:     rl.handleInbound,
 		OnInteraction: rl.handleInteraction,
 		OnReady:       rl.setBotID,
-		Log:           m.log,
 		OnFatal: func(e error) {
+			m.track(lifecycle.Failed, e)
 			if m.notify != nil {
 				m.notify("discord relay stopped: " + e.Error())
 			}
 		},
 	}
-	go func() { _ = gw.Run(ctx) }()
+	// Run returns nil once ctx ends; an error is a fatal close, which OnFatal
+	// already told the operator and Run's Connection activity records as failed.
+	go gw.Run(ctx)
 	if m.notify != nil {
 		m.notify("discord relay: connecting (operator " + operatorID + ")")
 	}
@@ -285,8 +278,11 @@ func (m *discordRelayManager) Enable() error {
 	}
 	m.running = true
 	m.cancel = cancel
+	m.track(lifecycle.Running, nil)
 	if m.persist != nil {
-		_ = m.persist(true, m.operatorID, m.allowExec)
+		if err := m.persist(true, m.operatorID, m.allowExec); err != nil {
+			return errNotSaved("relay: turning the relay on", err)
+		}
 	}
 	return nil
 }
@@ -298,6 +294,7 @@ func (m *discordRelayManager) Disable() error {
 	if m.running {
 		m.cancel()
 		m.running = false
+		m.track(lifecycle.Stopped, nil)
 	}
 	if m.persist != nil {
 		return m.persist(false, m.operatorID, m.allowExec)
@@ -316,7 +313,13 @@ func (m *discordRelayManager) Shutdown() {
 	if m.running {
 		m.cancel()
 		m.running = false
+		m.track(lifecycle.Stopped, nil)
 	}
+}
+
+// track files the relay's state in the Components view (lifecycle).
+func (m *discordRelayManager) track(st lifecycle.State, err error) {
+	lifecycle.Track(m.base, "discord relay", lifecycle.Connector, "discord", st, err)
 }
 
 // ExecOn reports whether offsite exec mode is on.
@@ -345,7 +348,11 @@ func (m *discordRelayManager) Status() (running bool, operatorSet bool, execOn b
 // next gated call, including one in a turn already running: the Discord
 // broker's lock (execLocked) reads the mode on every call. The tools stay
 // visible either way (TEN-229); the broker refuses what exec mode keeps closed.
-func (m *discordRelayManager) SetExec(on bool) error {
+func (m *discordRelayManager) SetExec(on bool) error { return m.setExecFrom(on, "tui") }
+
+// setExecFrom is SetExec from surface (tui or dashboard), which the change's
+// Security record names.
+func (m *discordRelayManager) setExecFrom(on bool, surface string) error {
 	if m.runner == nil {
 		return fmt.Errorf("discord not configured — run `/skill configure discord <bot-token>` first")
 	}
@@ -353,6 +360,7 @@ func (m *discordRelayManager) SetExec(on bool) error {
 	m.allowExec = on
 	running, opID := m.running, m.operatorID
 	m.mu.Unlock()
+	auditRelayExec(on, surface)
 	if m.persist != nil {
 		return m.persist(running, opID, on)
 	}
@@ -464,16 +472,17 @@ func (m *discordRelayManager) Perms() tui.PermissionControl {
 
 // askOperator is the broker's "ask"-mode backend: it raises a per-action button
 // approval to the operator in Discord via the LIVE approver (re-read under the
-// lock so a Reconfigure token swap is picked up). Returns false (deny) when the
-// relay isn't built or the operator can't be reached — fail closed.
-func (m *discordRelayManager) askOperator(ctx context.Context, action, detail string) bool {
+// lock so a Reconfigure token swap is picked up). It denies when the relay
+// isn't built or the operator can't be reached — fail closed — and says
+// Expired when the card timed out, so the record isn't an operator's deny.
+func (m *discordRelayManager) askOperator(ctx context.Context, action, detail string) tui.ApprovalDecision {
 	m.mu.Lock()
 	appr := m.approver
 	m.mu.Unlock()
 	if appr == nil {
-		return false
+		return tui.DenyOnce
 	}
-	return appr.Confirm(ctx, action, detail)
+	return appr.decide(ctx, action, detail)
 }
 
 // Configured reports whether a relay agent is built (a bot token is set) — the

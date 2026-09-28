@@ -15,6 +15,7 @@ package main
 // and a sandbox working dir.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,9 +28,13 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/approval"
 	croneng "tenant/internal/cron"
 	"tenant/internal/dashboard"
+	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs/catalog"
+	"tenant/internal/logs/event"
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/memory/working"
@@ -88,6 +93,10 @@ type cronAgentDeps struct {
 	cfgDir    string    // protected from exec-job writes
 	dataDir   string    // protected from exec-job writes; holds the shell sandbox
 	allowExec *execGate // global kill-switch (LIVE): exec/shell jobs only run when on
+
+	// ask is the approval broker's Ask: an alert's investigation, which runs
+	// on this stack, starts only once the operator approves it (TEN-400).
+	ask func(ctx context.Context, category, action, detail string) bool
 }
 
 // notCron cuts the cron_* tools from a cron runner (no self-scheduling) and the
@@ -97,28 +106,31 @@ func notCron(name string) bool {
 	return strings.HasPrefix(name, "cron_") || strings.HasPrefix(name, "mcp_")
 }
 
+// mirrorObserver mirrors an agent's actions and outcomes to the dashboard
+// feed events, as agent id from source; nil when there is no feed. Same kind
+// filter as serve's sub-agent mirror: the feed wants actions and outcomes,
+// not every internal event.
+func mirrorObserver(events func(agent.Event), id, source string) func(agent.Event) {
+	if events == nil {
+		return nil
+	}
+	return func(e agent.Event) {
+		switch e.Kind {
+		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
+			e.Agent, e.Source = id, source
+			events(e)
+		}
+	}
+}
+
 // buildCronRunner constructs the safe + exec runner agents and returns a Runner
 // that dispatches each job to the right path.
 func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
-	// Same kind filter as serve's sub-agent mirror: the feed wants actions
-	// and outcomes, not every internal event.
-	observe := func(id string) func(agent.Event) {
-		if d.events == nil {
-			return nil
-		}
-		return func(e agent.Event) {
-			switch e.Kind {
-			case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError:
-				e.Agent, e.Source = id, "cron"
-				d.events(e)
-			}
-		}
-	}
 	safeReg, safeDisp := restrictReadComms(d.fullReg, d.fullDisp, "scheduled cron jobs", notCron)
 	safeAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: safeReg, Dispatcher: safeDisp, Logger: d.log, Skills: d.skills, Runs: d.runs,
-		Observer:  observe("tenant-cron"),
+		Observer:  mirrorObserver(d.events, "tenant-cron", "cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
@@ -130,7 +142,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	execAg, err := agent.New(agent.Config{
 		AgentID: "tenant-cron-exec", Router: d.router, SoulLive: d.soulLive, Working: working.New(),
 		Tools: execReg, Dispatcher: execDisp, Logger: d.log, Skills: d.skills, Runs: d.runs,
-		Observer:  observe("tenant-cron-exec"),
+		Observer:  mirrorObserver(d.events, "tenant-cron-exec", "cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
 	})
@@ -139,22 +151,39 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 	}
 
 	approver := cronExecApprover(d.cfgDir, d.dataDir)
+	setAlertInvestigator(d) // alert rules' investigate action (loginvestigate.go)
 
 	execOn := func() bool { return d.allowExec != nil && d.allowExec.enabled() }
 
-	return func(ctx context.Context, job croneng.Job) (string, error) {
+	return func(ctx context.Context, job croneng.Job) (summary, trace string, err error) {
+		// A prompt job's turn trace is minted here, before the run starts, so
+		// the history entry names the turn's runs.db record even when the turn
+		// fails without a result, and the run's events carry it: the JobRun
+		// activity links to the turn it drives (related). A job run from a turn
+		// (cron_run) files its turn under that one.
+		parent := runtrace.IDFromContext(ctx)
+		if job.KindOf() == croneng.KindPrompt {
+			trace = runtrace.NewID()
+			ctx = runtrace.WithSpan(ctx, runtrace.NewSpan(trace))
+		}
+		ctx, act := event.Start(ctx, croneng.JobRun, "job", job.Label(), "id", job.ID, "kind", job.KindOf(), "exec", job.Exec)
+		defer act.End(&err)
 		if job.KindOf() == croneng.KindShell {
 			if !execOn() {
-				return "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run shell jobs")
+				return "", "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run shell jobs")
 			}
-			return runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
+			summary, err = runCronShell(ctx, job.Prompt, d.cfgDir, d.dataDir)
+			if summary != "" {
+				croneng.JobOutput.Log(ctx, "job", job.Label(), "bytes", len(summary), "output", summary)
+			}
+			return summary, "", err
 		}
 		// prompt job
 		ag := safeAg
 		runCtx := ctx
 		if job.Exec {
 			if !execOn() {
-				return "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run exec jobs")
+				return "", "", fmt.Errorf("cron-exec is disabled — enable it (/cron exec on) to run exec jobs")
 			}
 			ag = execAg
 			runCtx = withOffsiteConfirm(ctx, approver)
@@ -175,18 +204,19 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
 			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
+			TraceID: trace, ParentTraceID: parent,
 		})
 		if err != nil {
-			return "", err
+			return "", trace, err
 		}
 		if res == nil {
-			return "", nil
+			return "", trace, nil
 		}
-		summary := strings.TrimSpace(res.Response)
+		summary = strings.TrimSpace(res.Response)
 		if d.authProblems != nil {
 			summary = withAuthBanner(summary, d.authProblems())
 		}
-		return summary, res.Error
+		return summary, trace, res.Error
 	}, nil
 }
 
@@ -205,9 +235,11 @@ func withAuthBanner(summary string, probs []string) string {
 // yes: it hard-denies the irreversible/destructive category (so a catastrophic
 // command/DDL/web-purchase still can't run unattended) and denies writes into
 // the config/data dirs (so an exec job can't rewrite Tenant's own cron defs to
-// self-replicate). The Gated cron_add approval pre-authorizes the rest.
+// self-replicate). The Gated cron_add approval pre-authorizes the rest. It
+// asks nobody, so each verdict is its own Security record (and, under
+// logs.security.on_failure: deny, a grant it can't record is a denial).
 func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
-	return func(_ context.Context, action, detail string) bool {
+	allows := func(action, detail string) bool {
 		switch categorize(action) {
 		case catSandbox:
 			// Unattended: a sandbox refusal is final. Re-running outside the
@@ -230,6 +262,9 @@ func cronExecApprover(cfgDir, dataDir string) offsiteConfirm {
 			}
 		}
 		return true
+	}
+	return func(ctx context.Context, action, detail string) bool {
+		return approval.Verdict(ctx, categorize(action), action, detail, "cron", "cron", allows(action, detail))
 	}
 }
 
@@ -331,31 +366,133 @@ func cronSandboxDir(dataDir string) string {
 	return dir
 }
 
-// cronHistoryPath is where the bounded run-history ring is persisted across
-// restarts (separate from config.json, which stays definitions-only). 0600
-// because run summaries can contain job output.
+// cronHistoryPath is where run history is persisted across restarts (separate
+// from config.json, which stays definitions-only). 0600 because run summaries
+// can contain job output. It holds one JSON record per line: every process
+// that runs cron (serve and the TUI can share a data dir) appends its own runs
+// under the file's shared lock, and a compaction trims it under the exclusive
+// one, so no process loses another's rows.
 func cronHistoryPath(dataDir string) string {
 	return filepath.Join(dataDir, "cron-history.json")
 }
 
+const (
+	cronHistoryKeep      = 64      // what a compaction keeps: the engine's ring
+	cronHistoryCompactAt = 1 << 20 // bytes past which an append compacts
+)
+
+// loadCronHistory returns the persisted history, oldest first. A file still in
+// the old format (one JSON array, rewritten whole by each process) becomes
+// lines once, here.
 func loadCronHistory(dataDir string) []croneng.RunRecord {
-	b, err := os.ReadFile(cronHistoryPath(dataDir))
+	path := cronHistoryPath(dataDir)
+	lock, err := datalock.File(path, false)
 	if err != nil {
+		croneng.HistoryNotLoaded.Log(context.Background(), "err", err)
 		return nil
 	}
-	var h []croneng.RunRecord
-	if json.Unmarshal(b, &h) != nil {
+	h, legacy, err := readCronHistory(path)
+	lock.Release()
+	if err != nil {
+		if !os.IsNotExist(err) {
+			croneng.HistoryNotLoaded.Log(context.Background(), "err", err)
+		}
 		return nil
+	}
+	if legacy {
+		_ = compactCronHistory(path) // on failure the old line still reads next time
 	}
 	return h
 }
 
-func saveCronHistory(dataDir string, h []croneng.RunRecord) error {
-	b, err := json.Marshal(h)
+// readCronHistory parses the file, skipping what doesn't parse (a torn last
+// line). A line may hold the old array format, alone or with a record
+// appended to it before the migration succeeded.
+func readCronHistory(path string) (h []croneng.RunRecord, legacy bool, err error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		dec := json.NewDecoder(bytes.NewReader(line))
+		for {
+			var v json.RawMessage
+			if dec.Decode(&v) != nil {
+				break
+			}
+			var r croneng.RunRecord
+			var ring []croneng.RunRecord
+			switch {
+			case v[0] == '[' && json.Unmarshal(v, &ring) == nil:
+				h, legacy = append(h, ring...), true
+			case json.Unmarshal(v, &r) == nil:
+				h = append(h, r)
+			}
+		}
+	}
+	return h, legacy, nil
+}
+
+// appendCronHistory adds one run to the history, then compacts once the file
+// has grown past cronHistoryCompactAt.
+func appendCronHistory(dataDir string, r croneng.RunRecord) error {
+	line, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	return atomicWrite(cronHistoryPath(dataDir), b)
+	path := cronHistoryPath(dataDir)
+	lock, err := datalock.File(path, false)
+	if err != nil {
+		return err
+	}
+	f, err := fsperm.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND)
+	if err != nil {
+		lock.Release()
+		return err
+	}
+	_, err = f.Write(append(line, '\n'))
+	info, serr := f.Stat()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	lock.Release()
+	if err != nil || serr != nil || info.Size() <= cronHistoryCompactAt {
+		return err
+	}
+	if err := compactCronHistory(path); err != nil {
+		return fmt.Errorf("record kept, compaction failed: %w", err)
+	}
+	return nil
+}
+
+// compactCronHistory rewrites the file as its newest cronHistoryKeep records,
+// one per line, holding the lock exclusively so no append lands in the copy
+// the rename replaces. A failed rename (Windows, while something outside
+// Tenant holds the file open) leaves the file as it was, for the next try.
+func compactCronHistory(path string) error {
+	lock, err := datalock.File(path, true)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	h, _, err := readCronHistory(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err // never rewrite from a file that could not be read
+	}
+	if len(h) > cronHistoryKeep {
+		h = h[len(h)-cronHistoryKeep:]
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	for _, r := range h {
+		if err := enc.Encode(r); err != nil {
+			return err
+		}
+	}
+	return atomicWrite(path, b.Bytes())
 }
 
 // execGate is the live on/off switch behind cron-exec (cron.allow_exec,
@@ -375,6 +512,7 @@ type cronManager struct {
 }
 
 func newCronManager(base context.Context, engine *croneng.Engine, gate *execGate, persistExec func(bool) error) *cronManager {
+	setAlertCron(base, engine) // an alert rule's cron action runs through this scheduler (logalerts.go)
 	return &cronManager{base: base, engine: engine, execGate: gate, persistExec: persistExec}
 }
 
@@ -385,8 +523,8 @@ func (m *cronManager) ExecEnabled() bool {
 
 // SetExec flips the global cron-exec kill-switch (persisting the choice) so
 // shell jobs and exec-opted-in prompt jobs may run. It takes effect live — the
-// runner reads the gate per run.
-func (m *cronManager) SetExec(on bool) error {
+// runner reads the gate per run. surface is where the operator flipped it.
+func (m *cronManager) SetExec(on bool, surface string) error {
 	if m.execGate == nil {
 		return fmt.Errorf("cron-exec control unavailable")
 	}
@@ -398,7 +536,45 @@ func (m *cronManager) SetExec(on bool) error {
 			return err
 		}
 	}
+	state := "off"
+	if on {
+		state = "on"
+	}
+	croneng.ExecSwitched.Log(m.base, "state", state)
+	_ = catalog.CronExecSwitched.Audit(context.Background(), "state", state, "actor", actorOperator, "surface", surface)
 	return nil
+}
+
+// addJob, removeJob and setJobEnabled change a job, then file the change's
+// Security record: the engine files the cron log's events, and these say
+// who made the change and from where (TEN-398). The agent's name its turn.
+func (m *cronManager) addJob(ctx context.Context, s croneng.AddSpec, actor, surface string) (croneng.Job, error) {
+	j, err := m.engine.Add(s)
+	if err == nil {
+		_ = catalog.ScheduledJobAdded.Audit(ctx, "job", j.Label(), "id", j.ID, "spec", j.Spec, "kind", j.KindOf(), "exec", j.Exec,
+			"actor", actor, "surface", surface)
+	}
+	return j, err
+}
+
+func (m *cronManager) removeJob(ctx context.Context, id, actor, surface string) (bool, error) {
+	removed, err := m.engine.Remove(id)
+	if removed {
+		_ = catalog.ScheduledJobRemoved.Audit(ctx, "id", id, "actor", actor, "surface", surface)
+	}
+	return removed, err
+}
+
+func (m *cronManager) setJobEnabled(ctx context.Context, id string, on bool, actor, surface string) (croneng.Job, bool, error) {
+	j, changed, err := m.engine.SetEnabled(id, on)
+	if changed {
+		state := "disabled"
+		if on {
+			state = "enabled"
+		}
+		_ = catalog.ScheduledJobChanged.Audit(ctx, "job", j.Label(), "id", j.ID, "state", state, "actor", actor, "surface", surface)
+	}
+	return j, changed, err
 }
 
 func cronFmtTime(t time.Time) string {
@@ -414,6 +590,8 @@ func (m *cronManager) runAsync(id string) error {
 	if !m.engine.Has(id) {
 		return fmt.Errorf("no job with id %q", id)
 	}
+	// Nothing is lost: the run reports through the notify sink, and RunNow's
+	// only error, an unknown id, was checked above.
 	go func() { _, _ = m.engine.RunNow(m.base, id) }()
 	return nil
 }
@@ -433,10 +611,10 @@ func (m *cronManager) ListJobs() []cronp.JobView {
 	return out
 }
 
-func (m *cronManager) AddJob(s cronp.AddSpec) (cronp.JobView, error) {
-	j, err := m.engine.Add(croneng.AddSpec{
+func (m *cronManager) AddJob(ctx context.Context, s cronp.AddSpec) (cronp.JobView, error) {
+	j, err := m.addJob(ctx, croneng.AddSpec{
 		Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: s.Enabled, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ,
-	})
+	}, actorAgent, execSurfaceFrom(ctx))
 	if err != nil {
 		return cronp.JobView{}, err
 	}
@@ -446,10 +624,12 @@ func (m *cronManager) AddJob(s cronp.AddSpec) (cronp.JobView, error) {
 	}, nil
 }
 
-func (m *cronManager) RemoveJob(id string) (bool, error) { return m.engine.Remove(id) }
+func (m *cronManager) RemoveJob(ctx context.Context, id string) (bool, error) {
+	return m.removeJob(ctx, id, actorAgent, execSurfaceFrom(ctx))
+}
 
-func (m *cronManager) SetJobEnabled(id string, on bool) (cronp.JobView, bool, error) {
-	j, changed, err := m.engine.SetEnabled(id, on)
+func (m *cronManager) SetJobEnabled(ctx context.Context, id string, on bool) (cronp.JobView, bool, error) {
+	j, changed, err := m.setJobEnabled(ctx, id, on, actorAgent, execSurfaceFrom(ctx))
 	if err != nil {
 		return cronp.JobView{}, false, err
 	}
@@ -485,19 +665,21 @@ func (a tuiCron) Jobs() []tui.CronJobView {
 }
 
 func (a tuiCron) Add(s tui.CronAddSpec) (tui.CronJobView, error) {
-	j, err := a.m.engine.Add(croneng.AddSpec{
+	j, err := a.m.addJob(context.Background(), croneng.AddSpec{
 		Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: true, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ,
-	})
+	}, actorOperator, surfaceTUI)
 	if err != nil {
 		return tui.CronJobView{}, err
 	}
 	return tui.CronJobView{ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt, Enabled: j.Enabled, Kind: j.KindOf(), Exec: j.Exec, TZ: j.TZ, NextRun: cronFmtTime(j.NextRun)}, nil
 }
 
-func (a tuiCron) Remove(id string) (bool, error) { return a.m.engine.Remove(id) }
+func (a tuiCron) Remove(id string) (bool, error) {
+	return a.m.removeJob(context.Background(), id, actorOperator, surfaceTUI)
+}
 
 func (a tuiCron) SetEnabled(id string, on bool) (tui.CronJobView, bool, error) {
-	j, changed, err := a.m.engine.SetEnabled(id, on)
+	j, changed, err := a.m.setJobEnabled(context.Background(), id, on, actorOperator, surfaceTUI)
 	if err != nil {
 		return tui.CronJobView{}, false, err
 	}
@@ -506,7 +688,7 @@ func (a tuiCron) SetEnabled(id string, on bool) (tui.CronJobView, bool, error) {
 
 func (a tuiCron) RunNow(id string) error { return a.m.runAsync(id) }
 func (a tuiCron) ExecEnabled() bool      { return a.m.ExecEnabled() }
-func (a tuiCron) SetExec(on bool) error  { return a.m.SetExec(on) }
+func (a tuiCron) SetExec(on bool) error  { return a.m.SetExec(on, surfaceTUI) }
 
 // --- dashboard.CronControl ---
 
@@ -526,20 +708,23 @@ func (a dashCron) Jobs() []dashboard.CronJobView {
 }
 
 func (a dashCron) Add(s dashboard.CronAddSpec) error {
-	_, err := a.m.engine.Add(croneng.AddSpec{
+	_, err := a.m.addJob(context.Background(), croneng.AddSpec{
 		Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: true, Kind: s.Kind, Exec: s.Exec, TZ: s.TZ,
-	})
+	}, actorOperator, surfaceDashboard)
 	return err
 }
-func (a dashCron) Remove(id string) error { _, err := a.m.engine.Remove(id); return err }
+func (a dashCron) Remove(id string) error {
+	_, err := a.m.removeJob(context.Background(), id, actorOperator, surfaceDashboard)
+	return err
+}
 
 // ExecEnabled / SetExec expose the GLOBAL cron-exec kill-switch to the
 // dashboard so it no longer requires the TUI (/cron exec on|off) — the console
 // was the only way to change a setting that gates every unattended job.
 func (a dashCron) ExecEnabled() bool     { return a.m.ExecEnabled() }
-func (a dashCron) SetExec(on bool) error { return a.m.SetExec(on) }
+func (a dashCron) SetExec(on bool) error { return a.m.SetExec(on, surfaceDashboard) }
 func (a dashCron) SetEnabled(id string, on bool) error {
-	_, _, err := a.m.engine.SetEnabled(id, on)
+	_, _, err := a.m.setJobEnabled(context.Background(), id, on, actorOperator, surfaceDashboard)
 	return err
 }
 func (a dashCron) RunNow(id string) error { return a.m.runAsync(id) }

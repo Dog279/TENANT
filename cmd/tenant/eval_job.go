@@ -18,7 +18,8 @@ import (
 // resolveEvalCadence picks the nightly-eval interval (TEN-157): an explicitly-set
 // --eval-every flag wins; else the persisted improve.eval_every (a duration
 // string like "24h"); an empty or MALFORMED config value fails CLOSED to 0 (off)
-// so a config typo can't brick launch or silently mis-arm the gate. log may be nil.
+// so a config typo can't brick launch or silently mis-arm the gate. A nil log
+// keeps a malformed value quiet (a status read); otherwise it is reported.
 func resolveEvalCadence(flagSet bool, flagVal time.Duration, cfgVal string, log *slog.Logger) time.Duration {
 	if flagSet {
 		return flagVal
@@ -30,7 +31,7 @@ func resolveEvalCadence(flagSet bool, flagVal time.Duration, cfgVal string, log 
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {
 		if log != nil {
-			log.Warn("ignoring malformed improve.eval_every; nightly eval stays off", "value", s, "err", err)
+			eval.ScheduleIgnored.Log(context.Background(), "value", s, "effect", "the job stays off", "err", err)
 		}
 		return 0
 	}
@@ -60,16 +61,12 @@ type evalNightlyJob struct {
 	// progress, when set, is the live done/total state the Quality page
 	// renders as a bar while a check is running.
 	progress *evalProgress
-	log      *slog.Logger
 }
 
 // newEvalNightlyJob builds the nightly job from the live command's config:
 // full subset, planner-default judge, artifacts under <data>/eval-artifacts,
 // baseline at baselines/full.json (checked only if present).
-func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger, events func(agent.Event), progress *evalProgress) *evalNightlyJob {
-	if log == nil {
-		log = slog.Default()
-	}
+func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, events func(agent.Event), progress *evalProgress) *evalNightlyJob {
 	return &evalNightlyJob{
 		c:            c,
 		pf:           pf,
@@ -78,7 +75,6 @@ func newEvalNightlyJob(c *commonFlags, pf *pluginFlags, log *slog.Logger, events
 		progress:     progress,
 		artifactDir:  filepath.Join(c.dataDir, "eval-artifacts"),
 		baselinePath: resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), "full"),
-		log:          log,
 	}
 }
 
@@ -94,8 +90,8 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 	}
 	total := rep.Aggregates.PassCount + rep.Aggregates.FailCount
 
-	artifact := writeEvalArtifact(j.artifactDir, rep, j.log)
-	e := trendEntryFor(rep, j.baselinePath, artifact, j.log)
+	artifact := writeEvalArtifact(ctx, j.artifactDir, rep)
+	e := trendEntryFor(ctx, rep, j.baselinePath, artifact)
 
 	summary := fmt.Sprintf("eval-nightly %s: overall %.1f, passed %d/%d",
 		rep.Subset, rep.Aggregates.Overall, rep.Aggregates.PassCount, total)
@@ -123,7 +119,7 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 	// artifacts don't keep. Non-fatal — mirrors the artifact write. It also
 	// doubles as the cadence clock (TEN-196): latestTrendTime seeds the
 	// scheduler so relaunches don't re-fire today's run.
-	appendEvalTrend(j.artifactDir, e, j.log)
+	appendEvalTrend(ctx, j.artifactDir, e)
 
 	return improve.JobResult{
 		Summary: summary,
@@ -141,25 +137,29 @@ func (j *evalNightlyJob) Run(ctx context.Context) (improve.JobResult, error) {
 // writeEvalArtifact writes the timestamped JSON report under dir and returns
 // its path — "" on failure, which is logged and never fatal: the run's value
 // is the score, not the file. Shared by the nightly job and
-// `tenant eval --append-trend` (TEN-196). log may be nil.
-func writeEvalArtifact(dir string, rep *eval.Report, log *slog.Logger) string {
-	if log == nil {
-		log = slog.Default()
-	}
+// `tenant eval --append-trend` (TEN-196).
+func writeEvalArtifact(ctx context.Context, dir string, rep *eval.Report) string {
 	// Owner-only like the rest of the data dir, so a run after `doctor --fix`
 	// does not widen the tree again (TEN-333).
 	if err := fsperm.MkdirAll(dir); err != nil {
-		log.Warn("eval: artifact mkdir failed", "err", err)
+		eval.NotSaved.Log(ctx, "record", "report", "path", dir, "err", err)
 		return ""
 	}
 	path := filepath.Join(dir, "eval-"+time.Now().UTC().Format("20060102-150405")+".json")
 	f, err := fsperm.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
-		log.Warn("eval: artifact write failed", "err", err)
+		eval.NotSaved.Log(ctx, "record", "report", "path", path, "err", err)
 		return ""
 	}
-	defer f.Close()
-	_ = eval.WriteJSON(f, rep)
+	err = eval.WriteJSON(f, rep)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		eval.NotSaved.Log(ctx, "record", "report", "path", path, "err", err)
+		_ = os.Remove(path) // a torn report must not pass for a real one
+		return ""
+	}
 	return path
 }
 
@@ -167,11 +167,8 @@ func writeEvalArtifact(dir string, rep *eval.Report, log *slog.Logger) string {
 // the regression verdict against the baseline at baselinePath. A missing or
 // unreadable baseline is not an error — HasBaseline stays false. Shared by
 // the nightly job and `tenant eval --append-trend` so both produce
-// shape-identical lines (TEN-196). log may be nil.
-func trendEntryFor(rep *eval.Report, baselinePath, artifact string, log *slog.Logger) evalTrendEntry {
-	if log == nil {
-		log = slog.Default()
-	}
+// shape-identical lines (TEN-196).
+func trendEntryFor(ctx context.Context, rep *eval.Report, baselinePath, artifact string) evalTrendEntry {
 	e := evalTrendEntry{
 		TS:            time.Now().UTC().Format(time.RFC3339),
 		Subset:        string(rep.Subset),
@@ -190,15 +187,17 @@ func trendEntryFor(rep *eval.Report, baselinePath, artifact string, log *slog.Lo
 		// The regression gate is DEAD without a baseline - say so every run,
 		// because this exact silence hid an 84.9 -> 10.4 collapse behind a
 		// "steady" arrow for five nights.
-		log.Warn("eval: regression gate INACTIVE - no baseline; capture one with `tenant eval --baseline-from <artifact.json>`",
-			"path", baselinePath)
+		eval.BaselineMissing.Log(ctx, "path", baselinePath)
 	}
 	if rerr == nil {
 		if base, berr := eval.ReadBaseline(data); berr == nil {
 			rr := eval.CompareToBaseline(base, rep, eval.CompareOptions{})
 			e.HasBaseline, e.Regressed, e.Delta, e.CIHigh = true, rr.Regressed, rr.Delta, rr.CIHigh
+			if rr.Regressed {
+				eval.Regression.Log(ctx, "subset", rep.Subset, "delta", rr.Delta, "ci_high", rr.CIHigh, "overall", rep.Aggregates.Overall, "artifact", e.Artifact)
+			}
 		} else {
-			log.Warn("eval: baseline parse failed; trend line carries no verdict", "err", berr)
+			eval.BaselineUnreadable.Log(ctx, "path", baselinePath, "err", berr)
 		}
 	}
 	return e

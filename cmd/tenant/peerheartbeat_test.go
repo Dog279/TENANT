@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"tenant/internal/logs"
 	"tenant/internal/tui"
 )
 
@@ -111,6 +115,24 @@ func TestRecordProbe_KeepsLastCapsOnFailure(t *testing.T) {
 	}
 }
 
+// A probe reports a change of state only: the first probe, or alive ↔ dead,
+// so a peer that stays down is logged once, not every round.
+func TestRecordProbe_ReportsUpAndDown(t *testing.T) {
+	r := newPeerHealthRegistry()
+	down := errors.New("connection refused")
+	for i, c := range []struct {
+		alive, changed bool
+	}{{false, true}, {false, false}, {true, true}, {true, false}, {false, true}} {
+		var err error
+		if !c.alive {
+			err = down
+		}
+		if got := r.recordProbe("p", c.alive, time.Millisecond, nil, err); got != c.changed {
+			t.Errorf("probe %d (alive=%v): changed = %v, want %v", i, c.alive, got, c.changed)
+		}
+	}
+}
+
 // TestMarkInboundGrant: an announced grant (TEN-253) populates the acceptor-side
 // "them → we" even with no outbound probe; oversized announces are refused.
 func TestMarkInboundGrant(t *testing.T) {
@@ -176,4 +198,35 @@ func TestPeerHealthRegistry_Concurrent(t *testing.T) {
 		_ = r.tuiHealth()
 	}
 	<-done
+}
+
+// An unreadable peers.json stops every health probe: that is logged once, not
+// every 30-second round.
+func TestPeerHealthMonitor_LogsUnreadablePeersOnce(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "peers.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hub := logs.NewMemory(0)
+	prev := logs.Default()
+	logs.Install(hub)
+	defer logs.Install(prev)
+	m := &peerHealthMonitor{cfgDir: dir, reg: newPeerHealthRegistry()}
+	m.probeAll(context.Background())
+	m.probeAll(context.Background())
+	all, _ := hub.Snapshot()
+	var es, sys []logs.Entry
+	for _, e := range all {
+		if e.Source == "system" {
+			sys = append(sys, e) // the heartbeat's component, degraded
+		} else {
+			es = append(es, e)
+		}
+	}
+	if len(es) != 1 || es[0].Field("event") != "peering/2202" || es[0].Source != "peering" {
+		t.Errorf("want one peering/2202 over two rounds, got %+v", es)
+	}
+	if len(sys) != 1 || sys[0].Field("event") != "system/2101" {
+		t.Errorf("want the heartbeat degraded once, got %+v", sys)
+	}
 }

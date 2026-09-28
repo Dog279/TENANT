@@ -135,7 +135,7 @@ func (p connectorPlan) apply(cfgDir string) error {
 	for _, k := range p.keys {
 		delete(creds.Secrets, k)
 	}
-	return creds.Save(cfgDir)
+	return saveCredentials(cfgDir, creds, surfaceCLI) // tenant privacy forget --connector
 }
 
 // storedConnectors names each connected service with something stored, and

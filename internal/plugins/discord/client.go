@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"tenant/internal/logs/event"
 )
 
 // Guild is a normalized Discord guild (server) the bot is in.
@@ -132,7 +134,12 @@ func (s *Service) ReadChannel(ctx context.Context, channelID string, limit int) 
 // allowed_mentions defaults to parse=[]: neither @everyone, role pings,
 // nor user mentions will resolve. This is the safety default matching
 // Hermes's `_build_allowed_mentions()` in plugins/platforms/discord/adapter.py.
-func (s *Service) SendMessage(ctx context.Context, channelID, content string) (*SentMessage, error) {
+//
+// Every send is a Delivery activity, so a message that never arrived is
+// recorded with its error whichever path sent it.
+func (s *Service) SendMessage(ctx context.Context, channelID, content string) (_ *SentMessage, err error) {
+	ctx, act := event.Start(ctx, Delivery, "channel", channelID, "bytes", len(content))
+	defer act.End(&err)
 	if strings.TrimSpace(channelID) == "" {
 		return nil, fmt.Errorf("discord: channel id required")
 	}

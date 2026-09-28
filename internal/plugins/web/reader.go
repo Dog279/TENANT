@@ -32,7 +32,7 @@ var readerBase = "https://r.jina.ai/"
 const readerUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 	"(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-var readerHTTPClient = &http.Client{Timeout: 30 * time.Second}
+var readerHTTPClient = &http.Client{Timeout: 30 * time.Second, Transport: Events.Observe(nil)}
 
 // readerLookupIP is a seam for deterministic tests. Production resolves the
 // target locally so hostnames that point at loopback/private space are refused

@@ -3,6 +3,12 @@
 // every side can share them without importing each other.
 package control
 
+import (
+	"context"
+
+	"tenant/internal/logs/event"
+)
+
 // ToolInfo is one tool's state for listings: its name, the plugin that owns
 // it, whether it is enabled, and whether calling it asks for approval.
 type ToolInfo struct {
@@ -20,6 +26,10 @@ const (
 	ApproveOnce
 	ApproveSession
 	ApproveAlways
+	// Expired and DenyShutdown refuse exactly like DenyOnce; they record why
+	// no operator decided: the prompt timed out, or the process shut down.
+	Expired
+	DenyShutdown
 )
 
 // ApprovalRequest is a dangerous action paused awaiting the operator. The
@@ -55,4 +65,23 @@ type ToolRuleInfo struct {
 	Pattern string // exact action id, bare tool name, or glob
 	Mode    string // ask | allow | deny
 	Kind    string // exact | name | glob
+}
+
+// LogsControl is the log book as the terminal UI's /logs reads it (TEN-381).
+// The composition root answers through the log book's API, so a filter is
+// the language every viewer takes and sensitive values arrive masked.
+type LogsControl interface {
+	// Query is the newest limit events the filter matches, oldest first, and
+	// the cursor a live tail resumes from after them. A filter that doesn't
+	// parse is an error that says why.
+	Query(ctx context.Context, filter string, limit int) (evs []event.Event, cursor string, err error)
+	// Follow sends each event the filter matches that is written after
+	// cursor, until ctx is done; then it closes the channel.
+	Follow(ctx context.Context, filter, cursor string) <-chan event.Event
+	// Event is one event in full, as text: its fields, how often it has
+	// occurred and its catalog Help.
+	Event(ctx context.Context, seq uint64) (string, error)
+	// Timeline is the pivot on a trace or activity ID: its events across
+	// every log, oldest first, and a line about its run.
+	Timeline(ctx context.Context, id string) (head string, evs []event.Event, err error)
 }

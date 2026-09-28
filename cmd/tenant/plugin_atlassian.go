@@ -13,7 +13,8 @@ import (
 // atlassianPlugin declares Atlassian: Jira search, read and board writes.
 func atlassianPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID: "atlassian",
+		ID:     "atlassian",
+		Events: atlassian.Events,
 		AdaptConfigure: func(k skillKind, h configureHost) skillKind {
 			return adaptAtlassianForCfgDir(k, h.cfgDir, h.mcpConnect) // TEN-160/164
 		},

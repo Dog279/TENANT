@@ -39,7 +39,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 	}
 	d, cleanup, err := mcpremote.Open(ctx, mcpremote.Config{
 		ServerURL:    url,
-		Label:        "mcp",
+		Label:        mcpLabel(url), // its events go to the log serve's connector writes
 		CallbackAddr: *callback,
 		OpenBrowser:  openBrowser,
 		CacheDir:     filepath.Join(c.cfgDir, "mcp"),

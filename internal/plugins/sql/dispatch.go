@@ -96,6 +96,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 func (d *Dispatcher) schema(ctx context.Context) (string, bool, error) {
 	tables, err := d.st.Schema(ctx)
 	if err != nil {
+		if ctx.Err() == nil {
+			DatabaseFailed.Log(ctx, "err", err)
+		}
 		return "schema introspection failed: " + err.Error(), true, nil
 	}
 	if len(tables) == 0 {
