@@ -67,6 +67,16 @@ func (f *liveRepos) Repos() ([]GitHubRepoRow, error) {
 	return slices.Clone(f.rows), nil
 }
 
+func (f *liveRepos) SetWrite(repo string, write bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setCalls = append(f.setCalls, fmt.Sprintf("%s:%v", repo, write))
+	for i := range f.rows {
+		f.rows[i].Write = f.rows[i].Write || f.rows[i].Slug == repo && write
+	}
+	return nil
+}
+
 func (f *liveRepos) Remove(repo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -82,6 +92,8 @@ func (f *liveRepos) Remove(repo string) error {
 // A key typed into Provider keys is gone from its box once stored, and a
 // double tap on Add stores it once. A double tap on Stop watching stops one
 // repository, though the second tap lands on the same form holding the next.
+// A double tap on Allow changes' Yes, with another repository's control under
+// it once the confirm box closes, allows the one repository and nothing else.
 func TestSettingsInlineFormsInChrome(t *testing.T) {
 	models := &liveModels{fakeModelCtl: fakeModelCtl{ceiling: 30}}
 	keys := &liveKeys{}
@@ -118,12 +130,15 @@ func TestSettingsInlineFormsInChrome(t *testing.T) {
 	center := func(sel string, at *[]float64) chromedp.Action {
 		return chromedp.Evaluate(`document.querySelector(`+q(sel)+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+where, at)
 	}
-	// doubleTap clicks the middle of sel twice at one spot, 120ms apart.
-	doubleTap := func(sel string) chromedp.Action {
+	// tapTwice clicks the spot the JS expression at gives twice, 120ms apart.
+	tapTwice := func(at string) chromedp.Action {
 		return chromedp.ActionFunc(func(ctx context.Context) error {
 			var xy []float64
-			if err := chromedp.Evaluate(`(r => [r.left + r.width / 2, r.top + r.height / 2])(document.querySelector(`+q(sel)+`).getBoundingClientRect())`, &xy).Do(ctx); err != nil {
+			if err := chromedp.Evaluate(at, &xy).Do(ctx); err != nil {
 				return err
+			}
+			if len(xy) != 2 {
+				return fmt.Errorf("no spot to tap: %s", at)
 			}
 			if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil {
 				return err
@@ -131,6 +146,10 @@ func TestSettingsInlineFormsInChrome(t *testing.T) {
 			time.Sleep(120 * time.Millisecond)
 			return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
 		})
+	}
+	// doubleTap taps the middle of sel twice.
+	doubleTap := func(sel string) chromedp.Action {
+		return tapTwice(`(r => [r.left + r.width / 2, r.top + r.height / 2])(document.querySelector(` + q(sel) + `).getBoundingClientRect())`)
 	}
 	toastSays := func(text string) chromedp.Action {
 		return chromedp.Poll(`(t => t.classList.contains('ok') && t.textContent.includes(`+q(text)+`))(document.getElementById('toast'))`, nil, wait)
@@ -237,5 +256,49 @@ func TestSettingsInlineFormsInChrome(t *testing.T) {
 	repos.mu.Unlock()
 	if fmt.Sprint(removed) != "[o/r0]" || len(slugs) != 11 || slugs[0] != "o/r1" {
 		t.Errorf("a double tap on Stop watching removed %v and left %v, want o/r0 alone gone", removed, slugs)
+	}
+
+	// Integrations: a double tap on Allow changes' Yes at a spot where, once
+	// the answer closes the phone's confirm box, another repository's control
+	// lies under the finger.
+	const r4 = `#github-repos .row:has(input[name=repo][value="o/r4"])`
+	// under finds that spot on Yes: one with another row's button beneath
+	// the confirm box, or failing that its Allow changes.
+	const under = `(() => {
+		const yes = document.querySelector('#github-repos details[open] .confirm-box button'), box = yes.closest('.confirm-box'), r = yes.getBoundingClientRect(), y = r.top + r.height / 2;
+		box.style.visibility = 'hidden';
+		let at = null;
+		for (const sel of ['#github-repos .row form button', '#github-repos .row summary']) {
+			for (let x = r.left + 2; x < r.right - 2 && !at; x += 4) {
+				if (document.elementFromPoint(x, y)?.closest(sel)) at = [x, y];
+			}
+		}
+		box.style.visibility = '';
+		return at;
+	})()`
+	var allow view
+	var opened int
+	err = chromedp.Run(ctx,
+		open("/integrations"),
+		center(r4, &allow.before),
+		chromedp.Click(r4+` details.go > summary`, chromedp.ByQuery),
+		chromedp.WaitVisible(r4+` details[open] .confirm-box button`, chromedp.ByQuery),
+		tapTwice(under),
+		answered(&allow, "Your agent may now change o/r4.", r4),
+		chromedp.Evaluate(`document.querySelectorAll('#github-repos details[open]').length`, &opened),
+	)
+	repos.mu.Lock()
+	modes := slices.Clone(repos.setCalls)
+	removed = slices.Clone(repos.rmCalls)
+	repos.mu.Unlock()
+	if err != nil {
+		t.Fatalf("Integrations, Allow changes: %v (set %v, removed %v)", err, modes, removed)
+	}
+	kept("Integrations, Allow changes", allow)
+	if fmt.Sprint(modes) != "[o/r4:true]" || fmt.Sprint(removed) != "[o/r0]" || opened != 0 {
+		t.Errorf("a double tap on Yes, allow changes set %v, removed %v and opened %d confirm steps, want o/r4 allowed and nothing else", modes, removed, opened)
+	}
+	if !strings.Contains(allow.row, "may change it") {
+		t.Errorf("the row doesn't show the change allowed: %q", allow.row)
 	}
 }

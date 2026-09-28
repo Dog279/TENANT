@@ -1,12 +1,17 @@
 {{define "content"}}
 {{template "keys-body" .}}
+{{/* tap-guard covers the page while a form's post runs and for 350ms after,
+     so the second tap of a double tap can't land on the control the answer
+     moved under the finger (a confirm box closing on a phone). It sits under
+     the toast and the confirm box. */}}
+<div class="tap-guard" style="display:none" data-signals:_guard="false" data-show="$_guard" data-on:datastar-fetch="evt.detail.el.matches('form[action]') && (evt.detail.type === 'started' ? ($_guard = true) : evt.detail.type === 'finished' && setTimeout(() => { $_guard = false }, 350))"></div>
 {{end}}
 
 {{/* keys-body is the region a Provider keys form re-renders in place
      (formDone). Every form posts through Datastar to its own static URL, the
      key's id in the "service" field: a field named "id" would hide the form's
      own id from the morph, which then replaces the form and loses its
-     throttle. A key form empties itself when its answer arrives, so a key
+     throttle. A key form empties its key box when its answer arrives, so a key
      never stays in the page. */}}
 {{define "keys-body"}}<div id="keys-body">
 {{template "ui-flash" .}}
@@ -32,7 +37,7 @@
       {{if .EnvDetected}}<span class="dim">· also set in the environment ({{.EnvVar}})</span>{{end}}
     </div>
     <div class="kactions">
-      <form method="POST" action="/settings/keys/set" autocomplete="off" class="inline" data-on:submit__prevent__throttle.1s="@post('/settings/keys/set', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.reset()">
+      <form method="POST" action="/settings/keys/set" autocomplete="off" class="inline" data-on:submit__prevent__throttle.1s="@post('/settings/keys/set', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })">
         <input type="hidden" name="service" value="{{.CredID}}">
         <input type="password" name="value" autocomplete="new-password"
                placeholder="{{if .Set}}replace key{{else}}paste key{{end}}" class="cinput">

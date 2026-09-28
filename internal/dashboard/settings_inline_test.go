@@ -127,13 +127,13 @@ func TestSettingsGroup_ModelSwitchWarnsInPlace(t *testing.T) {
 }
 
 // Every form on these pages posts in place to its own literal URL,
-// throttled and never sent twice, and a form with a key in it empties
-// itself when its answer arrives. The populated pages carry hostile names,
+// throttled and never sent twice, and a form with a key in it empties its
+// key boxes when its answer arrives (and keeps what else was typed). The populated pages carry hostile names,
 // so a row's value in a URL would show here.
 func TestSettingsGroup_EveryFormPostsInPlace(t *testing.T) {
 	s := harnessServer(t, Config{}, populated, nil)
-	form := regexp.MustCompile(`<form method="POST" action="([^"]*)"[^>]*>`)
-	const empties = `data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.reset()"`
+	form := regexp.MustCompile(`<form method="POST" action="([^"]*)"(?:[^>"]|"[^"]*")*>`)
+	const empties = `data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })"`
 	for page, routes := range settingsPages {
 		seen := map[string]bool{}
 		for _, m := range form.FindAllStringSubmatch(get(t, s, page).Body.String(), -1) {
@@ -149,7 +149,7 @@ func TestSettingsGroup_EveryFormPostsInPlace(t *testing.T) {
 				t.Errorf("%s: %s doesn't post in place, throttled and once", page, tag)
 			}
 			if secretForm := action == "/models/add" || action == "/settings/keys/set" || action == "/integrations/save"; secretForm != strings.Contains(tag, empties) {
-				t.Errorf("%s: %s: empties itself %v, want %v", page, tag, !secretForm, secretForm)
+				t.Errorf("%s: %s: empties its key boxes %v, want %v", page, tag, !secretForm, secretForm)
 			}
 		}
 		for _, r := range routes {

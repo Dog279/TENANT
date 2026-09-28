@@ -1,11 +1,16 @@
 {{define "content"}}
 {{template "integrations-body" .}}
+{{/* tap-guard covers the page while a form's post runs and for 350ms after,
+     so the second tap of a double tap can't land on the control the answer
+     moved under the finger (a confirm box closing on a phone). It sits under
+     the toast and the confirm box. */}}
+<div class="tap-guard" style="display:none" data-signals:_guard="false" data-show="$_guard" data-on:datastar-fetch="evt.detail.el.matches('form[action]') && (evt.detail.type === 'started' ? ($_guard = true) : evt.detail.type === 'finished' && setTimeout(() => { $_guard = false }, 350))"></div>
 {{end}}
 
 {{/* integrations-body is the region an Integrations form re-renders in place
      (formDone). Every form posts through Datastar to its own static URL, the
      integration's id or the repository in a field. A settings form empties
-     itself when its answer arrives, so a secret never stays in the page. */}}
+     its secret boxes when its answer arrives, so a secret never stays in the page. */}}
 {{define "integrations-body"}}<div id="integrations-body">
 {{template "ui-flash" .}}
 
@@ -23,7 +28,7 @@
     {{if and .Configured (not .Enabled)}}<span class="dim">· off</span>{{end}}
   </div>
   {{if .SetupHint}}<div class="dim mb">{{.SetupHint}}</div>{{end}}
-  <form method="POST" action="/integrations/save" class="evalsched" data-on:submit__prevent__throttle.1s="@post('/integrations/save', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.reset()">
+  <form method="POST" action="/integrations/save" class="evalsched" data-on:submit__prevent__throttle.1s="@post('/integrations/save', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })">
     <input type="hidden" name="integration" value="{{.ID}}">
     {{range .Fields}}
     <label>{{.Prompt}}
