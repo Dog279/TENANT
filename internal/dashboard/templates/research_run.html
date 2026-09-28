@@ -9,8 +9,8 @@
   <div class="actions">
     {{/* Both go on to /research: the new run's progress shows there, and
          a deleted run has no page. So they post plainly, not in place. */}}
-    <form method="POST" action="/research/replay" class="inline"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn sm">Run again with the current model</button></form>
-    {{template "ui-confirm" (confirm "/research/delete" "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there." "id" .ID)}}
+    <form method="POST" action="/research/replay" class="inline"><input type="hidden" name="run" value="{{.ID}}"><button type="submit" class="btn sm">Run again with the current model</button></form>
+    {{template "ui-confirm" (confirm "/research/delete" "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there." "run" .ID)}}
   </div>
   {{- end}}
 </div>

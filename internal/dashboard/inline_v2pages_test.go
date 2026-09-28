@@ -65,8 +65,8 @@ func TestV2Pages_InlineAnswers(t *testing.T) {
 		// The run's still winding down: Stop's step is there, and closes.
 		{name: "research stop", path: "/research/stop", form: url.Values{"confirm": {"yes"}}, srv: research, toast: "Stopping the research.", region: ask,
 			has: `<details class="confirm-step"><summary class="btn sm danger"><span class="c-open">Stop</span>`},
-		{name: "research replay", path: "/research/replay", form: url.Values{"id": {"r-1"}}, srv: research, toast: "Running it again with the current model.", region: ask},
-		{name: "research delete", path: "/research/delete", form: url.Values{"id": {"r-1"}, "confirm": {"yes"}}, srv: research, toast: "Deleted from the list.", region: ask, lacks: `value="r-1"`},
+		{name: "research replay", path: "/research/replay", form: url.Values{"run": {"r-1"}}, srv: research, toast: "Running it again with the current model.", region: ask},
+		{name: "research delete", path: "/research/delete", form: url.Values{"run": {"r-1"}, "confirm": {"yes"}}, srv: research, toast: "Deleted from the list.", region: ask, lacks: `value="r-1"`},
 		{name: "research refused", path: "/research/start", form: url.Values{"question": {" "}}, srv: research, toast: "Type a question first.", err: true, region: ask},
 
 		{name: "autopilot stop", path: "/goal/stop", srv: goal, toast: "Stopped. The step in progress finishes, then no new step starts.", region: goalRgn, has: "Autopilot is off.", lacks: `class="busy"`},
@@ -119,7 +119,7 @@ func TestV2Pages_InlineAnswers(t *testing.T) {
 		t.Errorf("Allow without its step over Datastar: %d, calls %q; want 428 and none", rec.Code, fs.called())
 	}
 	f := newFakeResearch()
-	if rec := sendForm(researchServer(f).Handler(), http.MethodPost, "/research/delete", url.Values{"id": {"r-1"}}, datastar); rec.Code != http.StatusPreconditionRequired || len(f.called()) != 0 {
+	if rec := sendForm(researchServer(f).Handler(), http.MethodPost, "/research/delete", url.Values{"run": {"r-1"}}, datastar); rec.Code != http.StatusPreconditionRequired || len(f.called()) != 0 {
 		t.Errorf("Delete without its step over Datastar: %d, calls %q; want 428 and none", rec.Code, f.called())
 	}
 }

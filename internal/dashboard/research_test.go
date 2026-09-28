@@ -158,7 +158,7 @@ func TestResearch_NilControl(t *testing.T) {
 		t.Errorf("GET /research/live = %d, want 204", rec.Code)
 	}
 	for _, p := range []string{"/research/start", "/research/clarify", "/research/stop", "/research/replay", "/research/delete"} {
-		if got := flashOf(t, postResearch(t, s, p, url.Values{"question": {"q"}, "id": {"abc"}, "confirm": {"yes"}})); got != "" {
+		if got := flashOf(t, postResearch(t, s, p, url.Values{"question": {"q"}, "run": {"abc"}, "confirm": {"yes"}})); got != "" {
 			t.Errorf("POST %s flashed %q, want a plain redirect", p, got)
 		}
 	}
@@ -219,8 +219,8 @@ func TestResearchPage_States(t *testing.T) {
 			want: []string{`role="alert">History isn&#39;t here.</div>`}},
 		{name: "success", path: "/research?msg=Deleted+from+the+list.", want: []string{`<div class="banner ok" role="status">Deleted from the list.</div>`}},
 		{name: "run page", path: "/research/r-1", set: func(f *fakeResearch, _ *Server) { f.report = *report },
-			want: []string{"What is fakeness?", `href="#ref-1"`, `<form method="POST" action="/research/replay" class="inline"><input type="hidden" name="id" value="r-1">`,
-				`<form method="POST" action="/research/delete"><input type="hidden" name="id" value="r-1">`}},
+			want: []string{"What is fakeness?", `href="#ref-1"`, `<form method="POST" action="/research/replay" class="inline"><input type="hidden" name="run" value="r-1">`,
+				`<form method="POST" action="/research/delete"><input type="hidden" name="run" value="r-1">`}},
 		{name: "run page, still running", path: "/research/r-1", set: func(f *fakeResearch, _ *Server) {
 			f.report = *report
 			f.report.StateText, f.report.Live = "Running from the terminal", true
@@ -262,11 +262,11 @@ func TestResearchPage_States(t *testing.T) {
 // replayOf and deleteOf are the in-place Run again form and Delete step of
 // the listed run id: static URLs, the ID a field.
 func replayOf(id string) string {
-	return `<form method="POST" action="/research/replay" class="inline" data-on:submit__prevent__throttle.1s="@post('/research/replay', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="id" value="` + id + `">`
+	return `<form method="POST" action="/research/replay" class="inline" data-on:submit__prevent__throttle.1s="@post('/research/replay', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="run" value="` + id + `">`
 }
 
 func deleteOf(id string) string {
-	return inlineForm("/research/delete") + `<input type="hidden" name="id" value="` + id + `"><input type="hidden" name="confirm" value="yes">`
+	return inlineForm("/research/delete") + `<input type="hidden" name="run" value="` + id + `"><input type="hidden" name="confirm" value="yes">`
 }
 
 func TestResearchStart_Form(t *testing.T) {
@@ -318,7 +318,7 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 		}
 	}
 	for _, p := range []string{"/research/stop", "/research/delete"} {
-		if rec := postResearch(t, s, p, url.Values{"id": {"r-1"}}); rec.Code != http.StatusPreconditionRequired {
+		if rec := postResearch(t, s, p, url.Values{"run": {"r-1"}}); rec.Code != http.StatusPreconditionRequired {
 			t.Errorf("POST %s without confirm = %d, want 428", p, rec.Code)
 		}
 	}
@@ -332,7 +332,7 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 	if got := flashOf(t, postResearch(t, s, "/research/stop", url.Values{"confirm": {"yes"}})); !strings.HasPrefix(got, "msg: Stopping the research.") {
 		t.Errorf("stop: %q", got)
 	}
-	if got := flashOf(t, postResearch(t, s, "/research/delete", url.Values{"id": {"r-1"}, "confirm": {"yes"}})); got != "msg: Deleted from the list." {
+	if got := flashOf(t, postResearch(t, s, "/research/delete", url.Values{"run": {"r-1"}, "confirm": {"yes"}})); got != "msg: Deleted from the list." {
 		t.Errorf("delete: %q", got)
 	}
 	if c := f.called(); !slices.Equal(c, []string{"stop", "stop", "delete r-1"}) {
@@ -346,7 +346,7 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 func TestResearchReplay(t *testing.T) {
 	f := newFakeResearch()
 	s := researchServer(f)
-	if got := flashOf(t, postResearch(t, s, "/research/replay", url.Values{"id": {"r-1"}})); !strings.HasPrefix(got, "msg: Running it again") {
+	if got := flashOf(t, postResearch(t, s, "/research/replay", url.Values{"run": {"r-1"}})); !strings.HasPrefix(got, "msg: Running it again") {
 		t.Errorf("replay: %q", got)
 	}
 	if c := f.called(); !slices.Equal(c, []string{"replay r-1"}) {

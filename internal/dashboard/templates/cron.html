@@ -73,15 +73,15 @@
   <div class="prompt">{{visibleText .Prompt}}</div>
   <div class="cronactions">
     <form method="POST" action="/cron/run" class="inline" data-on:submit__prevent__throttle.1s="@post('/cron/run', {contentType:'form', retryMaxCount:0})">
-      <input type="hidden" name="id" value="{{.ID}}">
+      <input type="hidden" name="job" value="{{.ID}}">
       <button type="submit" class="btn sm">Run now</button>
     </form>
     <form method="POST" action="/cron/enable" class="inline" data-on:submit__prevent__throttle.1s="@post('/cron/enable', {contentType:'form', retryMaxCount:0})">
-      <input type="hidden" name="id" value="{{.ID}}">
+      <input type="hidden" name="job" value="{{.ID}}">
       <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
       <button type="submit" class="btn sm">{{if .Enabled}}Turn off{{else}}Turn on{{end}}</button>
     </form>
-    {{template "ui-confirm" (inline (confirm "/cron/delete" "Delete" "This job is deleted and won't run again. To bring it back you add it again." "id" .ID))}}
+    {{template "ui-confirm" (inline (confirm "/cron/delete" "Delete" "This job is deleted and won't run again. To bring it back you add it again." "job" .ID))}}
   </div>
 </div>
 {{else}}

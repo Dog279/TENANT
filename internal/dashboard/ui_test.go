@@ -640,3 +640,14 @@ func TestRendered_PlainLanguage(t *testing.T) {
 	}
 	checkStale(t, func(k string) bool { return strings.HasPrefix(k, "/") }, used)
 }
+
+// No form field is named id (DESIGN.md "Forms that don't reload"): an input
+// named id hides the form's own id from Datastar's morph, which then
+// replaces the form and so resets its double-tap throttle.
+func TestRendered_NoFieldNamedID(t *testing.T) {
+	for route, page := range renderAllPages(t, populated) {
+		if strings.Contains(page, ` name="id"`) {
+			t.Errorf("%s has a form field named id", route)
+		}
+	}
+}

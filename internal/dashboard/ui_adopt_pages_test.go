@@ -33,7 +33,7 @@ var adoptedConfirms = []struct {
 	{route: "/mcp/remove", form: url.Values{"target": {"svc"}}},
 	{route: "/integrations/disconnect", form: url.Values{"integration": {"gsuite"}}},
 	{route: "/settings/keys/remove", form: url.Values{"service": {"openai"}}},
-	{route: "/cron/delete", form: url.Values{"id": {"j1"}}},
+	{route: "/cron/delete", form: url.Values{"job": {"j1"}}},
 	{route: "/access/imessage/clear"},
 	{route: "/logs/clear", form: url.Values{"log": {"cron"}}},
 	{route: "/access/discord/operator", form: url.Values{"operator": {"4242"}}},

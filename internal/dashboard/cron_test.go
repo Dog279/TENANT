@@ -205,22 +205,22 @@ func TestCron_EnableDeleteRunForms(t *testing.T) {
 	fc := &fakeCronCtl{jobs: []CronJobView{{ID: "abc"}}}
 	s := cronServer(fc)
 
-	if rec := cronPostForm(t, s, "/cron/enable", "id=abc&enabled=false"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/enable", "job=abc&enabled=false"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("enable: want 303, got %d", rec.Code)
 	}
 	if len(fc.enableCalls) != 1 || fc.enableCalls[0] != "abc:false" {
 		t.Errorf("enable calls = %v", fc.enableCalls)
 	}
-	if rec := cronPostForm(t, s, "/cron/run", "id=abc"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/run", "job=abc"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("run: want 303, got %d", rec.Code)
 	}
 	if len(fc.runCalls) != 1 || fc.runCalls[0] != "abc" {
 		t.Errorf("run calls = %v", fc.runCalls)
 	}
-	if rec := cronPostForm(t, s, "/cron/delete", "id=abc"); rec.Code != http.StatusPreconditionRequired || len(fc.removeCalls) != 0 {
+	if rec := cronPostForm(t, s, "/cron/delete", "job=abc"); rec.Code != http.StatusPreconditionRequired || len(fc.removeCalls) != 0 {
 		t.Fatalf("delete without its confirm step: %d, removed %v; want 428 and nothing removed", rec.Code, fc.removeCalls)
 	}
-	if rec := cronPostForm(t, s, "/cron/delete", "id=abc&confirm=yes"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/delete", "job=abc&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("delete: want 303, got %d", rec.Code)
 	}
 	if len(fc.removeCalls) != 1 || fc.removeCalls[0] != "abc" {
@@ -276,9 +276,9 @@ func TestCron_ExecToggleFromDashboard(t *testing.T) {
 func TestCron_InlineAnswersEveryForm(t *testing.T) {
 	forms := map[string]url.Values{
 		"/cron/add":    {"spec": {"@daily"}, "prompt": {"report"}},
-		"/cron/enable": {"id": {"j1"}, "enabled": {"false"}},
-		"/cron/delete": {"id": {"j1"}},
-		"/cron/run":    {"id": {"j1"}},
+		"/cron/enable": {"job": {"j1"}, "enabled": {"false"}},
+		"/cron/delete": {"job": {"j1"}},
+		"/cron/run":    {"job": {"j1"}},
 		"/cron/exec":   {"enabled": {"true"}},
 	}
 	for path, f := range forms {
@@ -321,7 +321,7 @@ func TestCron_Inline(t *testing.T) {
 		return sendForm(s.Handler(), http.MethodPost, path, f, set).Body.String()
 	}
 
-	body := post("/cron/enable", url.Values{"id": {"j1"}, "enabled": {"false"}}, datastar)
+	body := post("/cron/enable", url.Values{"job": {"j1"}, "enabled": {"false"}}, datastar)
 	_, card, _ := strings.Cut(body, `id="cron-j1"`)
 	card, _, _ = strings.Cut(card, `id="cron-j2"`)
 	if !strings.Contains(body, `<div id="toast" class="toast ok"><span class="toast-text">nightly is off. It won&#39;t run until you turn it on again.</span>`) ||
@@ -355,7 +355,7 @@ func TestCron_Inline(t *testing.T) {
 		t.Errorf("an error re-rendered the page, which would empty what was typed:\n%s", body)
 	}
 
-	rec := sendForm(s.Handler(), http.MethodPost, "/cron/run", url.Values{"id": {"j2"}}, nil)
+	rec := sendForm(s.Handler(), http.MethodPost, "/cron/run", url.Values{"job": {"j2"}}, nil)
 	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/cron?msg=j2+is+running+now.") {
 		t.Errorf("a plain post: %d to %q, want 303 to /cron with its flash", rec.Code, loc)
 	}
@@ -363,7 +363,7 @@ func TestCron_Inline(t *testing.T) {
 	// A stale page: a job deleted elsewhere is named as gone, and nothing
 	// is called or re-rendered, rather than a success the engine didn't do.
 	for _, path := range []string{"/cron/enable", "/cron/run", "/cron/delete"} {
-		body = post(path, url.Values{"id": {"gone"}, "enabled": {"false"}, "confirm": {"yes"}}, datastar)
+		body = post(path, url.Values{"job": {"gone"}, "enabled": {"false"}, "confirm": {"yes"}}, datastar)
 		if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">That job isn&#39;t there any more.`) || strings.Contains(body, `id="jobs-body"`) {
 			t.Errorf("%s for a job that has gone: want the alert and nothing re-rendered:\n%s", path, body)
 		}
@@ -374,7 +374,7 @@ func TestCron_Inline(t *testing.T) {
 		}
 	})
 
-	rec = sendForm(s.Handler(), http.MethodPost, "/cron/delete", url.Values{"id": {"j1"}}, datastar)
+	rec = sendForm(s.Handler(), http.MethodPost, "/cron/delete", url.Values{"job": {"j1"}}, datastar)
 	if rec.Code != http.StatusPreconditionRequired || len(fc.Jobs()) != 4 {
 		t.Errorf("Delete without its confirm step over Datastar: %d with %d jobs left, want 428 and all 4", rec.Code, len(fc.Jobs()))
 	}

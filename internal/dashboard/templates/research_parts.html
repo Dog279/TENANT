@@ -61,8 +61,8 @@
   <div class="actions">
     <a class="btn sm" href="{{.Path}}">Show</a>
     {{- if not .Live}}
-    <form method="POST" action="/research/replay" class="inline" data-on:submit__prevent__throttle.1s="@post('/research/replay', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="btn sm">Run again</button></form>
-    {{template "ui-confirm" (inline (confirm "/research/delete" "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there." "id" .ID))}}
+    <form method="POST" action="/research/replay" class="inline" data-on:submit__prevent__throttle.1s="@post('/research/replay', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="run" value="{{.ID}}"><button type="submit" class="btn sm">Run again</button></form>
+    {{template "ui-confirm" (inline (confirm "/research/delete" "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there." "run" .ID))}}
     {{- end}}
   </div>
 </div>{{end}}{{end}}

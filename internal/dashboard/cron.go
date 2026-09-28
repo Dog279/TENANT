@@ -71,7 +71,9 @@ func (s *Server) SetCron(c CronControl) { s.cron = c }
 
 // mountCronSSR registers the Cron page + its form actions. Mounted
 // unconditionally; handlers nil-guard on s.cron. A job's own actions take its
-// id as a form field, so each form posts to one fixed URL (F1).
+// id in a form field, job, so each form posts to one fixed URL (F1). Not
+// "id": an input named id hides the form's own id from Datastar's morph,
+// which then replaces the form and resets its throttle.
 func (s *Server) mountCronSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /cron", s.handleCronPage)
 	mux.HandleFunc("POST /cron/add", s.handleCronAddForm)
@@ -199,7 +201,7 @@ func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {
 		s.cronDone(w, r, "", "", false)
 		return
 	}
-	id := r.FormValue("id")
+	id := r.FormValue("job")
 	name, ok := s.cronJob(id)
 	if !ok {
 		s.cronDone(w, r, "", cronGone, false)
@@ -222,7 +224,7 @@ func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
 		s.cronDone(w, r, "", "", false)
 		return
 	}
-	id := r.FormValue("id")
+	id := r.FormValue("job")
 	name, ok := s.cronJob(id)
 	if !ok {
 		s.cronDone(w, r, "", cronGone, false)
@@ -240,7 +242,7 @@ func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 		s.cronDone(w, r, "", "", false)
 		return
 	}
-	id := r.FormValue("id")
+	id := r.FormValue("job")
 	name, ok := s.cronJob(id)
 	if !ok {
 		s.cronDone(w, r, "", cronGone, false)

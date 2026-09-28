@@ -148,7 +148,8 @@ func (s *Server) mountResearchSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /research/start", s.handleResearchStart)
 	mux.HandleFunc("POST /research/clarify", s.handleResearchClarify)
 	mux.HandleFunc("POST /research/stop", needConfirm(nil, s.handleResearchStop))
-	// A run's ID is a form field, so the in-place forms post to static URLs.
+	// A run's ID is the form field run, so the in-place forms post to static
+	// URLs. Not "id": it would hide the form's own id from Datastar's morph.
 	mux.HandleFunc("POST /research/replay", s.handleResearchReplay)
 	mux.HandleFunc("POST /research/delete", needConfirm(nil, s.handleResearchDelete))
 }
@@ -430,7 +431,7 @@ func (s *Server) handleResearchReplay(w http.ResponseWriter, r *http.Request) {
 		s.researchDone(w, r, "", "")
 		return
 	}
-	if err := s.research.Replay(r.FormValue("id")); err != nil {
+	if err := s.research.Replay(r.FormValue("run")); err != nil {
 		s.researchDone(w, r, "", s.flashFor(r.Context(), "research replay", err, "Couldn't run that again."))
 		return
 	}
@@ -442,7 +443,7 @@ func (s *Server) handleResearchDelete(w http.ResponseWriter, r *http.Request) {
 		s.researchDone(w, r, "", "")
 		return
 	}
-	if err := s.research.Delete(r.FormValue("id")); err != nil {
+	if err := s.research.Delete(r.FormValue("run")); err != nil {
 		s.researchDone(w, r, "", s.flashFor(r.Context(), "research delete", err, "Couldn't delete that research."))
 		return
 	}
