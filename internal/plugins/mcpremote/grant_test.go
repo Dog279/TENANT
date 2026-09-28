@@ -251,14 +251,14 @@ func TestRefresh_TransientFailureRaisesNoAlarm(t *testing.T) {
 		setup func(*testing.T, *grantServer)
 	}{
 		{"503", func(_ *testing.T, a *grantServer) { a.fail503.Store(1) }},
-		{"timeout", func(t *testing.T, a *grantServer) {
+		{"timeout", func(_ *testing.T, a *grantServer) {
 			a.hang.Store(true)
-			old := refreshTimeout
 			refreshTimeout = 100 * time.Millisecond
-			t.Cleanup(func() { refreshTimeout = old })
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			prev := refreshTimeout
+			t.Cleanup(func() { refreshTimeout = prev })
 			a := newGrantServer(t, true)
 			path := tokenCachePath(t.TempDir(), grantURL)
 			seedGrant(t, path, a.URL, time.Now().Add(-time.Hour), false)
@@ -277,6 +277,10 @@ func TestRefresh_TransientFailureRaisesNoAlarm(t *testing.T) {
 				t.Fatalf("transient failure: reauth_needed=%v token kept=%v announced=%v", c.ReauthNeeded, c.Token.RefreshToken == "rt-0", announced)
 			}
 			a.hang.Store(false)
+			// The recovery gets the normal bound: the short one only makes the
+			// hung call fail fast, and a slow runner's real refresh can take
+			// longer than it (seen on Windows).
+			refreshTimeout = prev
 			if _, err := s.Token(); err != nil || len(announced) != 0 {
 				t.Fatalf("next call: err=%v announced=%v", err, announced)
 			}
