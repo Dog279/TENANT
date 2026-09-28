@@ -218,19 +218,28 @@ func TestFactPageForms(t *testing.T) {
 	if !strings.HasPrefix(rec.Header().Get("Location"), "/memory/facts/100?") {
 		t.Fatalf("restore-version redirect = %s", rec.Header().Get("Location"))
 	}
-	memDoForm(s, "/memory/facts/7/invalidate", nil)
-	if !reflect.DeepEqual(f.invalidated, []int64{7}) {
-		t.Fatalf("invalidated %v", f.invalidated)
+	rec = memDoForm(s, "/memory/facts/valid", url.Values{"fact": {"7"}, "valid": {"false"}})
+	if loc := rec.Header().Get("Location"); !reflect.DeepEqual(f.invalidated, []int64{7}) || loc != "/memory/facts/7?msg=Marked+no+longer+true." {
+		t.Fatalf("invalidated %v, then to %s", f.invalidated, loc)
+	}
+	memDoForm(s, "/memory/facts/valid", url.Values{"fact": {"7"}, "valid": {"true"}})
+	for _, v := range []string{"", "yes", "TRUE"} {
+		if rec := memDoForm(s, "/memory/facts/valid", url.Values{"fact": {"7"}, "valid": {v}}); rec.Code != http.StatusBadRequest {
+			t.Errorf("valid=%q: %d, want 400", v, rec.Code)
+		}
+	}
+	if !reflect.DeepEqual(f.invalidated, []int64{7}) || !reflect.DeepEqual(f.revalidated, []int64{7}) {
+		t.Fatalf("invalidated %v, revalidated %v", f.invalidated, f.revalidated)
 	}
 	f.actErr = errors.New("boom")
-	for form, want := range map[string]string{
-		"invalidate": "Couldn't mark that fact no longer true.",
-		"revalidate": "Couldn't mark that fact true again.",
+	for valid, want := range map[string]string{
+		"false": "Couldn't mark that fact no longer true.",
+		"true":  "Couldn't mark that fact true again.",
 	} {
-		rec := memDoForm(s, "/memory/facts/7/"+form, nil)
+		rec := memDoForm(s, "/memory/facts/valid", url.Values{"fact": {"7"}, "valid": {valid}})
 		// The plain message only: the store's own error stays in the log (D21).
 		if loc, _ := url.QueryUnescape(rec.Header().Get("Location")); !strings.Contains(loc, want) || strings.Contains(loc, "boom") {
-			t.Errorf("failed %s redirect = %s", form, loc)
+			t.Errorf("failed valid=%s redirect = %s", valid, loc)
 		}
 	}
 }

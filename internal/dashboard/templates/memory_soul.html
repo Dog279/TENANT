@@ -1,53 +1,20 @@
+{{/* soulsection is one editable list. Add, Edit and Remove open in place
+     and post through Datastar to the literal /memory/soul/edit, with the
+     section, the action and the item's id as fields. The Add box's id
+     changes with the list's length, so after an add the morph brings a new,
+     empty box instead of keeping what was typed. */}}
 {{define "soulsection"}}
 <div class="card">
   <div class="ghead2"><span class="gname2">{{.Title}}</span><span class="sp"></span>
-    {{if not .Adding}}<a class="btn sm" href="{{.AddHref}}">Add</a>{{end}}
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Add</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Add"><form class="soul-edit" method="POST" action="/memory/soul/edit" data-on:submit__prevent__throttle.1s="@post('/memory/soul/edit', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="section" value="{{.Section}}"><input type="hidden" name="action" value="add"><textarea id="soul-add-{{.Section}}-{{len .Items}}" name="text" class="box" rows="2" placeholder="{{.AddPlaceholder}}" aria-label="New line" required></textarea><div class="soul-edit-actions"><button type="submit" class="btn on sm">Save</button></div></form></div></details>
   </div>
-  {{if .Adding}}
-  <form class="soul-edit" method="POST" action="{{.EditAction}}">
-    <input type="hidden" name="section" value="{{.Section}}">
-    <input type="hidden" name="action" value="add">
-    <textarea name="text" class="box" rows="2" placeholder="{{.AddPlaceholder}}"></textarea>
-    <div class="soul-edit-actions">
-      <button type="submit" class="btn on sm">Save</button>
-      <a class="btn sm" href="{{.CancelAddHref}}">Cancel</a>
-    </div>
-  </form>
-  {{end}}
   {{range .Items}}
-    {{if .Editing}}
-    <form class="soul-edit" method="POST" action="{{$.EditAction}}">
-      <input type="hidden" name="section" value="{{$.Section}}">
-      <input type="hidden" name="action" value="edit">
-      <input type="hidden" name="id" value="{{.ID}}">
-      <textarea name="text" class="box" rows="2">{{.Text}}</textarea>
-      <div class="soul-edit-actions">
-        <button type="submit" class="btn on sm">Save</button>
-        <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
-      </div>
-    </form>
-    {{else if .Removing}}
-    <div class="soul-row confirm">
-      <div class="soul-text">{{visibleText .Text}}</div>
-      <div class="confirm-msg dim">Remove this item? The agent will no longer use it. This can't be undone here.</div>
-      <div class="soul-edit-actions">
-        <form class="inline" method="POST" action="{{$.EditAction}}">
-          <input type="hidden" name="section" value="{{$.Section}}">
-          <input type="hidden" name="action" value="remove">
-          <input type="hidden" name="id" value="{{.ID}}">
-          <button type="submit" class="btn danger sm">Remove</button>
-        </form>
-        <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
-      </div>
-    </div>
-    {{else}}
-    <div class="soul-row">
-      <div class="soul-text">{{visibleText .Text}}</div>
-      <span class="sp"></span>
-      <a class="linkbtn" href="{{.EditHref}}">Edit</a>
-      <a class="linkbtn" href="{{.RemoveHref}}">Remove</a>
-    </div>
-    {{end}}
+  <div class="soul-row">
+    <div class="soul-text">{{visibleText .Text}}</div>
+    <span class="sp"></span>
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Edit</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Edit"><form class="soul-edit" method="POST" action="/memory/soul/edit" data-on:submit__prevent__throttle.1s="@post('/memory/soul/edit', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="section" value="{{$.Section}}"><input type="hidden" name="action" value="edit"><input type="hidden" name="item" value="{{.ID}}"><textarea name="text" class="box" rows="2" aria-label="Edit this line" required>{{.Text}}</textarea><div class="soul-edit-actions"><button type="submit" class="btn on sm">Save</button></div></form></div></details>
+    {{template "ui-confirm" (inline (confirm "/memory/soul/edit" "Remove" "The agent will no longer use it. This can't be undone here." "section" $.Section "action" "remove" "item" .ID))}}
+  </div>
   {{else}}
   {{template "ui-empty" .EmptyMsg}}
   {{end}}
@@ -56,10 +23,15 @@
 
 {{define "content"}}
 {{template "memnav" .}}
+{{template "mem-soul-body" .}}
+{{end}}
+
+{{/* mem-soul-body is the region a soul edit re-renders in place (formDone). */}}
+{{define "mem-soul-body"}}<div id="mem-soul-body">
 {{if not .Configured}}
 {{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else}}
-{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 <div class="card">
   <div class="card-head">Persona</div>
   {{if .HasPersona}}<div class="soul-persona">{{.Persona}}</div>{{else}}<div class="dim">No persona set.</div>{{end}}
@@ -68,4 +40,4 @@
 {{template "soulsection" .UserFacts}}
 {{template "soulsection" .Instructions}}
 {{end}}
-{{end}}
+</div>{{end}}

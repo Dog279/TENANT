@@ -1,21 +1,20 @@
 {{define "content"}}
 {{template "memnav" .}}
+{{template "mem-facts-body" .}}
+{{end}}
+
+{{/* mem-facts-body is the region a Remove or an Undo re-renders in place
+     (formDone). Each posts through Datastar to its own literal URL with the
+     fact's id and this view (.Self, as back) as fields. The keep-which card
+     is a full page load (handleMemoryResolveForm says why). A removal's
+     Undo banner stands in for the flash. It comes last, held at the bottom
+     of the screen (sticky), so it's in view wherever the Remove was, and
+     nothing above the rows moves when it appears. */}}
+{{define "mem-facts-body"}}<div id="mem-facts-body">
 {{if not .Configured}}
 {{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else}}
-{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
-
-{{if .ShowUndo}}
-<div class="banner undo">
-  <span>Fact removed.</span>
-  <form class="inline" method="POST" action="{{.UndoAction}}">
-    <input type="hidden" name="back" value="/memory/facts">
-    <button type="submit" class="linkbtn">Undo</button>
-  </form>
-  <span class="sp"></span>
-  <a class="linkbtn" href="{{.RemovedHref}}">Recently removed</a>
-</div>
-{{end}}
+{{if not .ShowUndo}}{{template "ui-flash" .}}{{end}}
 
 <form class="searchbar" method="GET" action="/memory/facts">
   <input class="box" type="text" name="q" value="{{.Query}}" placeholder="Search facts…" autocomplete="off">
@@ -79,21 +78,9 @@
       {{if .Pinned}}<span class="tag">Selected</span>{{else if .ShowSelect}}<a class="linkbtn" href="{{.SelectHref}}">This conflicts with it</a>{{end}}
     {{else}}
       <a class="linkbtn" href="{{.SelectHref}}">Resolve a conflict</a>
-      <a class="linkbtn danger" href="{{.ConfirmHref}}">Remove</a>
+      {{template "ui-confirm" (inline (confirm "/memory/facts/delete" "Remove" "This removes it from what the agent knows. You can restore it from Recently removed." "fact" (printf "%d" .ID) "back" $.Self))}}
     {{end}}
   </div>
-  {{if .Confirming}}
-  <div class="confirm">
-    <div class="confirm-msg dim">This removes it from what the agent knows. You can restore it from Recently removed.</div>
-    <div class="soul-edit-actions">
-      <form class="inline" method="POST" action="{{.DeleteAction}}">
-        <input type="hidden" name="q" value="{{$.Query}}">
-        <button type="submit" class="btn danger sm">Remove</button>
-      </form>
-      <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
-    </div>
-  </div>
-  {{end}}
   {{if .Expanded}}
   <div class="prov">
     {{if .ProvErr}}<div class="dim">{{.ProvErr}}</div>
@@ -116,5 +103,17 @@
 </div>
 {{if .MoreHref}}<div class="morewrap"><a class="btn sm" href="{{.MoreHref}}">Load more</a></div>{{end}}
 {{end}}
+{{if .ShowUndo}}
+<div class="banner undo">
+  <span>Fact removed.</span>
+  <form class="inline" method="POST" action="/memory/facts/restore" data-on:submit__prevent__throttle.1s="@post('/memory/facts/restore', {contentType:'form', retryMaxCount:0})">
+    <input type="hidden" name="fact" value="{{.UndoID}}">
+    <input type="hidden" name="back" value="{{.Self}}">
+    <button type="submit" class="linkbtn">Undo</button>
+  </form>
+  <span class="sp"></span>
+  <a class="linkbtn" href="{{.RemovedHref}}">Recently removed</a>
+</div>
 {{end}}
 {{end}}
+</div>{{end}}

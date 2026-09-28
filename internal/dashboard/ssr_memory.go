@@ -3,15 +3,18 @@ package dashboard
 // ssr_memory.go is TEN-111: the server-rendered Memory Curator — the SSR
 // counterpart to the memory_rest.go JSON surface, built on the SAME TEN-88
 // MemoryControl interface. Five read views (overview / soul / facts / removed /
-// temporal) render through html/template; every mutation goes through a
-// form/303 handler in ssr_memory_forms.go. No hand-written JS: inline state
-// (expand provenance, confirm delete, the resolve picker) is threaded through
-// query params so each view is a plain GET that httptest can assert on.
+// temporal) render through html/template; every mutation goes through a form
+// handler in ssr_memory_forms.go, which answers in place (DESIGN.md "Forms
+// that don't reload") with the page's region built by the view functions
+// here. No hand-written JS: the other inline state (expand provenance, the
+// resolve picker) is threaded through query params so each view is a plain
+// GET that httptest can assert on.
 //
 // Operator language only (per TEN-90): "conflicting facts", "keep this one",
 // "recently removed" — never supersede/winner/loser jargon.
 
 import (
+	"context"
 	"html/template"
 	"math"
 	"net/http"
@@ -122,27 +125,14 @@ const memReadFailed = "Couldn't read your agent's memory just now. Refresh to tr
 
 // --- soul ------------------------------------------------------------------
 
-type soulItemRow struct {
-	ID         string
-	Text       string
-	Editing    bool   // inline edit textarea open for this item
-	Removing   bool   // inline "remove this item?" confirm open
-	EditHref   string // ?edit=id&section=…
-	RemoveHref string // ?remove=id&section=…
-	CancelHref string // back to the bare soul page
-}
-
+// soulSection is one list the operator edits: each item's Edit and Remove,
+// and Add, open on the page and post in place (mem-soul-body).
 type soulSection struct {
 	Section        string // SoulSectionUserFact | SoulSectionInstruction
 	Title          string
-	Items          []soulItemRow
-	Empty          bool
+	Items          []SoulItem
 	EmptyMsg       string
-	Adding         bool   // inline add textarea open
-	AddHref        string // ?add=section
-	CancelAddHref  string
 	AddPlaceholder string
-	EditAction     string // POST target for this section's add/edit/remove forms
 }
 
 type soulData struct {
@@ -152,76 +142,35 @@ type soulData struct {
 	HasPersona   bool
 	UserFacts    soulSection
 	Instructions soulSection
-	EditAction   string // POST target for every add/edit/remove form
-	Err          string
+	Msg, Err     string
 }
 
 // handleMemorySoulPage renders the soul: read-only persona prose plus the
-// editable user-facts and standing-instructions lists. add/edit/remove open
-// inline via ?add / ?edit / ?remove query params (one affordance at a time);
-// the forms themselves POST to memSoulURL/edit and 303 back here.
+// editable user-facts and standing-instructions lists.
 func (s *Server) handleMemorySoulPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, s.tmpl.memSoul, s.memSoulView(r.Context(), r.URL.Query()))
+}
+
+func (s *Server) memSoulView(ctx context.Context, q url.Values) soulData {
 	d := soulData{
 		layoutData: layoutData{Title: "Memory · Personality", Page: "memory", Sub: "soul"},
-		EditAction: memSoulURL + "/edit",
+		Msg:        q.Get("msg"),
+		Err:        q.Get("err"),
 	}
 	if s.mem == nil {
-		s.render(w, s.tmpl.memSoul, d)
-		return
+		return d
 	}
 	d.Configured = true
 	soul, err := s.mem.Soul()
 	if err != nil {
-		d.Err = s.flashFor(r.Context(), "memory personality read", err, memReadFailed)
-		s.render(w, s.tmpl.memSoul, d)
-		return
+		d.Err = s.flashFor(ctx, "memory personality read", err, memReadFailed)
+		return d
 	}
 	d.Persona = strings.TrimSpace(soul.Persona)
 	d.HasPersona = d.Persona != ""
-
-	q := r.URL.Query()
-	if e := q.Get("err"); e != "" {
-		d.Err = e
-	}
-	addSection := q.Get("add")
-	editID, editSection := q.Get("edit"), q.Get("section")
-	removeID := q.Get("remove")
-
-	d.UserFacts = s.buildSoulSection(SoulSectionUserFact, "Things the agent knows about you",
-		"No facts about you yet.", "e.g. Prefers metric units.",
-		soul.UserFacts, addSection, editID, editSection, removeID)
-	d.Instructions = s.buildSoulSection(SoulSectionInstruction, "Standing instructions",
-		"No standing instructions yet.", "e.g. Always cite sources.",
-		soul.Instructions, addSection, editID, editSection, removeID)
-	s.render(w, s.tmpl.memSoul, d)
-}
-
-func (s *Server) buildSoulSection(section, title, emptyMsg, placeholder string, items []SoulItem,
-	addSection, editID, editSection, removeID string) soulSection {
-	sec := soulSection{
-		Section:        section,
-		Title:          title,
-		EmptyMsg:       emptyMsg,
-		AddPlaceholder: placeholder,
-		Adding:         addSection == section,
-		AddHref:        urlWith(memSoulURL, "add", section),
-		CancelAddHref:  memSoulURL,
-		Empty:          len(items) == 0,
-		EditAction:     memSoulURL + "/edit",
-	}
-	for _, it := range items {
-		row := soulItemRow{
-			ID:         it.ID,
-			Text:       it.Text,
-			Editing:    editID == it.ID && editSection == section,
-			Removing:   removeID == it.ID && editSection == section,
-			EditHref:   urlWith(memSoulURL, "edit", it.ID, "section", section),
-			RemoveHref: urlWith(memSoulURL, "remove", it.ID, "section", section),
-			CancelHref: memSoulURL,
-		}
-		sec.Items = append(sec.Items, row)
-	}
-	return sec
+	d.UserFacts = soulSection{SoulSectionUserFact, "Things the agent knows about you", soul.UserFacts, "No facts about you yet.", "e.g. Prefers metric units."}
+	d.Instructions = soulSection{SoulSectionInstruction, "Standing instructions", soul.Instructions, "No standing instructions yet.", "e.g. Always cite sources."}
+	return d
 }
 
 // --- facts -----------------------------------------------------------------
@@ -248,12 +197,6 @@ type factRow struct {
 	// memory control cannot explain facts.
 	DetailHref string
 
-	// delete (inline confirm → POST → undo banner)
-	Confirming   bool
-	ConfirmHref  string
-	CancelHref   string
-	DeleteAction string
-
 	// resolve-a-conflict picker
 	Pinned     bool // this is the first-picked fact ("A")
 	ShowSelect bool // offer "this conflicts with A"
@@ -269,11 +212,14 @@ type factsData struct {
 	Empty      bool
 	EmptyMsg   string
 	MoreHref   string
-	Err        string
+	Msg, Err   string
+	// Self is this view (search, page of results, the open sources) that an
+	// in-place form sends as back, so its answer re-renders the same view.
+	Self string
 
 	// undo banner after a delete
 	ShowUndo    bool
-	UndoAction  string
+	UndoID      int64
 	RemovedHref string // link to the Recently removed page
 
 	// resolve flow
@@ -290,10 +236,14 @@ type factsData struct {
 }
 
 // handleMemoryFactsPage renders the searchable live-fact list with inline
-// provenance, an inline delete confirm + post-delete undo, and the two-step
-// "resolve a conflict" picker — all driven by query params so the page is a
-// plain GET. limit is fixed at 25 with an opaque-cursor "Load more".
+// provenance, a Remove that answers in place with an undo, and the two-step
+// "resolve a conflict" picker, whose state is in the query. limit is fixed at
+// 25 with an opaque-cursor "Load more".
 func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, s.tmpl.memFacts, s.memFactsView(r.Context(), r.URL.Query()))
+}
+
+func (s *Server) memFactsView(ctx context.Context, q url.Values) factsData {
 	d := factsData{
 		layoutData:      layoutData{Title: "Memory · Facts", Page: "memory", Sub: "facts"},
 		ResolveAction:   memFactsURL + "/resolve",
@@ -301,39 +251,34 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 		TemporalNavHref: memFactsURL + "/temporal",
 	}
 	if s.mem == nil {
-		s.render(w, s.tmpl.memFacts, d)
-		return
+		return d
 	}
 	d.Configured = true
 
-	q := r.URL.Query()
 	query := strings.TrimSpace(q.Get("q"))
 	cursor := q.Get("cursor")
 	expand := atoi64(q.Get("expand"))
-	confirm := atoi64(q.Get("confirm"))
 	removed := atoi64(q.Get("removed"))
 	resolveA := atoi64(q.Get("resolve"))
 	resolveB := atoi64(q.Get("with"))
 
 	d.Query = query
+	d.Self = urlWith(memFactsURL, "q", query, "cursor", cursor, "expand", q.Get("expand"))
 	if query != "" {
 		d.ClearHref = memFactsURL
 	}
 	if removed > 0 {
 		d.ShowUndo = true
-		d.UndoAction = memFactsURL + "/" + strconv.FormatInt(removed, 10) + "/restore"
+		d.UndoID = removed
 		d.RemovedHref = memFactsURL + "/removed"
 	}
 
 	facts, next, err := s.mem.Facts(query, 25, cursor)
 	if err != nil {
-		d.Err = s.flashFor(r.Context(), "memory facts read", err, memReadFailed)
-		s.render(w, s.tmpl.memFacts, d)
-		return
+		d.Err = s.flashFor(ctx, "memory facts read", err, memReadFailed)
+		return d
 	}
-	if e := q.Get("err"); e != "" {
-		d.Err = e
-	}
+	d.Msg, d.Err = q.Get("msg"), q.Get("err")
 
 	d.Resolving = resolveA > 0
 	if d.Resolving {
@@ -356,7 +301,7 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 			row.Expanded = true
 			row.ProvHref = urlWith(memFactsURL, "q", query) // collapse
 			if eps, perr := s.mem.FactProvenance(f.ID); perr != nil {
-				row.ProvErr = s.flashFor(r.Context(), "memory fact sources read", perr, "Couldn't load where this came from. Refresh to try again.")
+				row.ProvErr = s.flashFor(ctx, "memory fact sources read", perr, "Couldn't load where this came from. Refresh to try again.")
 			} else {
 				row.Episodes = episodeRows(eps)
 			}
@@ -366,11 +311,6 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 		if _, ok := s.mem.(FactInspector); ok {
 			row.DetailHref = memFactsURL + "/" + strconv.FormatInt(f.ID, 10)
 		}
-
-		row.Confirming = confirm == f.ID
-		row.ConfirmHref = urlWith(memFactsURL, "q", query, "confirm", strconv.FormatInt(f.ID, 10))
-		row.CancelHref = urlWith(memFactsURL, "q", query)
-		row.DeleteAction = memFactsURL + "/" + strconv.FormatInt(f.ID, 10) + "/delete"
 
 		if d.Resolving {
 			if f.ID == resolveA {
@@ -398,7 +338,7 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 	if next != "" {
 		d.MoreHref = urlWith(memFactsURL, "q", query, "cursor", next)
 	}
-	s.render(w, s.tmpl.memFacts, d)
+	return d
 }
 
 // episodeRows projects provenance episodes for display; a forgotten source
@@ -422,10 +362,9 @@ func episodeRows(eps []EpisodeView) []episodeRow {
 // --- recently removed ------------------------------------------------------
 
 type removedRow struct {
-	ID            int64
-	Text          string
-	Conf          string
-	RestoreAction string
+	ID   int64
+	Text string
+	Conf string
 }
 
 type removedData struct {
@@ -433,38 +372,37 @@ type removedData struct {
 	Configured bool
 	Rows       []removedRow
 	Empty      bool
-	Err        string
+	Msg, Err   string
 	BackHref   string
 }
 
 // handleMemoryRemovedPage lists tombstoned facts so an operator can restore
-// one. Restore is a POST/303 (never a GET link) so a prefetch can't undelete.
+// one. Restore is a POST (never a GET link) so a prefetch can't undelete.
 func (s *Server) handleMemoryRemovedPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, s.tmpl.memRemoved, s.memRemovedView(r.Context(), r.URL.Query()))
+}
+
+func (s *Server) memRemovedView(ctx context.Context, q url.Values) removedData {
 	d := removedData{
 		layoutData: layoutData{Title: "Memory · Recently removed", Page: "memory", Sub: "removed"},
 		BackHref:   memFactsURL,
+		Msg:        q.Get("msg"),
+		Err:        q.Get("err"),
 	}
 	if s.mem == nil {
-		s.render(w, s.tmpl.memRemoved, d)
-		return
+		return d
 	}
 	d.Configured = true
 	facts, err := s.mem.RemovedFacts(50)
 	if err != nil {
-		d.Err = s.flashFor(r.Context(), "memory removed read", err, memReadFailed)
-		s.render(w, s.tmpl.memRemoved, d)
-		return
+		d.Err = s.flashFor(ctx, "memory removed read", err, memReadFailed)
+		return d
 	}
 	for _, f := range facts {
-		d.Rows = append(d.Rows, removedRow{
-			ID:            f.ID,
-			Text:          f.Text,
-			Conf:          fmtConf(f.Confidence),
-			RestoreAction: memFactsURL + "/" + strconv.FormatInt(f.ID, 10) + "/restore",
-		})
+		d.Rows = append(d.Rows, removedRow{ID: f.ID, Text: f.Text, Conf: fmtConf(f.Confidence)})
 	}
 	d.Empty = len(d.Rows) == 0
-	s.render(w, s.tmpl.memRemoved, d)
+	return d
 }
 
 // --- temporal overview -----------------------------------------------------
