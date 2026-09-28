@@ -63,7 +63,7 @@ var rules = []rule{
 	{Pkg: "internal/route", May: []string{"internal/model", "internal/fsperm", "internal/datalock", "internal/runtrace"}},
 	{Pkg: "internal/config", May: []string{"internal/fsperm", "internal/secrets", "internal/model", "internal/route", "internal/orchestra", "internal/logs/catalog"}, Notes: "the persisted configuration; knows no runtime; files each change in the Security log"},
 	{Pkg: "internal/memory/**", May: []string{"internal/memory/**", "internal/model", "internal/fsperm"}, Notes: "tiers compose only through assemble, distill and compress"},
-	{Pkg: "internal/plugins/*", May: []string{"internal/model", "internal/secrets", "internal/fsperm", "internal/httplimits", "internal/memory/cosine", "internal/pluginreg"}, Notes: "capabilities never import each other; each declares its events through pluginreg"},
+	{Pkg: "internal/plugins/*", May: []string{"internal/model", "internal/secrets", "internal/fsperm", "internal/datalock", "internal/httplimits", "internal/memory/cosine", "internal/pluginreg"}, Notes: "capabilities never import each other; each declares its events through pluginreg"},
 	{Pkg: "internal/eval/**", May: []string{"internal/model", "internal/route", "internal/memory/working"}},
 	{Pkg: "internal/improve", May: []string{"internal/memory/**", "internal/model", "internal/fsperm"}},
 	{Pkg: "internal/privacy", May: []string{"internal/memory/**", "internal/fsperm", "internal/logs", "internal/logs/store"}},

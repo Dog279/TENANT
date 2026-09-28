@@ -180,7 +180,7 @@ func TestSignInEvents(t *testing.T) {
 	if got := seen(r); !slices.Equal(got, want) {
 		t.Fatalf("events = %q, want %q", got, want)
 	}
-	if e := find(r, 3101); field(e, "fix") != "tenant mcp connect https://srv.example/v1/mcp" || e.Level != event.Error {
+	if e := find(r, 3101); !strings.HasPrefix(field(e, "fix"), "tenant mcp connect https://srv.example/v1/mcp --config ") || e.Level != event.Error {
 		t.Errorf("needs re-auth = %+v", e)
 	}
 }

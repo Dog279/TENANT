@@ -7,7 +7,12 @@ package atlassian
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"net/http"
+	"slices"
+	"strings"
 
 	v2 "github.com/ctreminiom/go-atlassian/v2/jira/v2"
 	model "github.com/ctreminiom/go-atlassian/v2/pkg/infra/models"
@@ -56,27 +61,57 @@ func toIssue(is *model.IssueSchemeV2) Issue {
 
 const issueFields = "summary,status,issuetype,assignee,description"
 
-// Search runs a JQL query and returns up to max issues (default 25, cap 50).
-func (j *JiraClient) Search(ctx context.Context, jql string, max int) ([]Issue, error) {
+// Search runs a JQL query and returns up to max issues (default 25, cap 50)
+// and the token for the next page ("" on the last). It uses the enhanced
+// search endpoint: Atlassian removed GET /rest/api/2/search in 2025 (TEN-60).
+func (j *JiraClient) Search(ctx context.Context, jql string, max int, pageToken string) ([]Issue, string, error) {
 	if max <= 0 || max > 50 {
 		max = 25
 	}
-	res, _, err := j.c.Issue.Search.Get(ctx, jql, []string{"summary", "status", "issuetype", "assignee"}, nil, 0, max, "")
+	res, resp, err := j.c.Issue.Search.SearchJQL(ctx, jql, []string{"summary", "status", "issuetype", "assignee"}, nil, max, pageToken)
 	if err != nil {
-		return nil, err
+		return nil, "", apiErr(resp, err)
 	}
 	out := make([]Issue, 0, len(res.Issues))
 	for _, is := range res.Issues {
 		out = append(out, toIssue(is))
 	}
-	return out, nil
+	return out, res.NextPageToken, nil
+}
+
+// apiErr adds Atlassian's own reason to err. go-atlassian maps every non-2xx
+// to a bare sentinel ("bad request"), dropping the body's errorMessages and a
+// 429's Retry-After, which an unattended agent needs to recover (TEN-60).
+func apiErr(resp *model.ResponseScheme, err error) error {
+	if err == nil || resp == nil || resp.Response == nil {
+		return err
+	}
+	if resp.Code == http.StatusTooManyRequests {
+		if after := resp.Header.Get("Retry-After"); after != "" {
+			return fmt.Errorf("rate limited by Atlassian (HTTP 429): retry after %s seconds", after)
+		}
+		return fmt.Errorf("rate limited by Atlassian (HTTP 429): retry later")
+	}
+	var body struct {
+		ErrorMessages []string          `json:"errorMessages"`
+		Errors        map[string]string `json:"errors"`
+	}
+	_ = json.Unmarshal(resp.Bytes.Bytes(), &body)
+	msgs := body.ErrorMessages
+	for _, k := range slices.Sorted(maps.Keys(body.Errors)) {
+		msgs = append(msgs, k+": "+body.Errors[k])
+	}
+	if len(msgs) == 0 {
+		return fmt.Errorf("%w (HTTP %d)", err, resp.Code)
+	}
+	return fmt.Errorf("%w (HTTP %d): %s", err, resp.Code, strings.Join(msgs, "; "))
 }
 
 // Get returns one issue by key or id.
 func (j *JiraClient) Get(ctx context.Context, keyOrID string) (Issue, error) {
-	is, _, err := j.c.Issue.Get(ctx, keyOrID, []string{"summary", "status", "issuetype", "assignee", "description"}, nil)
+	is, resp, err := j.c.Issue.Get(ctx, keyOrID, []string{"summary", "status", "issuetype", "assignee", "description"}, nil)
 	if err != nil {
-		return Issue{}, err
+		return Issue{}, apiErr(resp, err)
 	}
 	return toIssue(is), nil
 }
@@ -98,24 +133,24 @@ func (j *JiraClient) Create(ctx context.Context, project, issueType, summary, de
 		Project:     &model.ProjectScheme{Key: project},
 		IssueType:   &model.IssueTypeScheme{Name: issueType},
 	}}
-	resp, _, err := j.c.Issue.Create(ctx, payload, nil)
+	created, resp, err := j.c.Issue.Create(ctx, payload, nil)
 	if err != nil {
-		return "", err
+		return "", apiErr(resp, err)
 	}
-	return resp.Key, nil
+	return created.Key, nil
 }
 
 // Comment adds a plain-text comment to an issue.
 func (j *JiraClient) Comment(ctx context.Context, keyOrID, body string) error {
-	_, _, err := j.c.Issue.Comment.Add(ctx, keyOrID, &model.CommentPayloadSchemeV2{Body: body}, nil)
-	return err
+	_, resp, err := j.c.Issue.Comment.Add(ctx, keyOrID, &model.CommentPayloadSchemeV2{Body: body}, nil)
+	return apiErr(resp, err)
 }
 
 // Transitions lists the workflow transitions currently available on an issue.
 func (j *JiraClient) Transitions(ctx context.Context, keyOrID string) ([]Transition, error) {
-	res, _, err := j.c.Issue.Transitions(ctx, keyOrID)
+	res, resp, err := j.c.Issue.Transitions(ctx, keyOrID)
 	if err != nil {
-		return nil, err
+		return nil, apiErr(resp, err)
 	}
 	out := make([]Transition, 0, len(res.Transitions))
 	for _, t := range res.Transitions {
@@ -130,6 +165,6 @@ func (j *JiraClient) Transitions(ctx context.Context, keyOrID string) ([]Transit
 
 // Transition applies a workflow transition (by transition id) to an issue.
 func (j *JiraClient) Transition(ctx context.Context, keyOrID, transitionID string) error {
-	_, err := j.c.Issue.Move(ctx, keyOrID, transitionID, nil)
-	return err
+	resp, err := j.c.Issue.Move(ctx, keyOrID, transitionID, nil)
+	return apiErr(resp, err)
 }

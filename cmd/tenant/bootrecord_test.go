@@ -222,6 +222,18 @@ func TestBootRecordReportsAKilledProcessButNeverALiveOne(t *testing.T) {
 	if got := criticalEntries(hub); len(got) != 0 {
 		t.Fatalf("a live process was reported dead: %+v", got)
 	}
+	// The report's "last" is the helper's newest event; wait for its start-up
+	// batch to commit before the kill, or a slow disk leaves only the
+	// backdated heartbeat (seen on the Windows runner).
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if last, _ := st.LastEvent(context.Background(), id, time.Time{}); time.Since(last) < time.Minute {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the helper's start-up events never reached the store")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)

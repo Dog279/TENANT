@@ -1893,6 +1893,8 @@ Writes the `mcp` log.
 | [2101](#mcp-2101) | warning | Sign-in | `Token refresh for {server} failed; the current token is still valid: {err}` |
 | [2102](#mcp-2102) | warning | Sign-in | `Could not save {what} for {server}: {err}` |
 | [2103](#mcp-2103) | warning | Sign-in | `The operator was not told about {server}'s sign-in: {err}` |
+| [2104](#mcp-2104) | warning | Sign-in | `Token refresh for {server} failed and is tried again on the next call: {err}` |
+| [2105](#mcp-2105) | warning | Sign-in | `Could not lock the saved sign-in for {server}; refreshing without the lock: {err}` |
 | [2201](#mcp-2201) | warning | Server | `Local server {server} did not exit when asked, and was killed after {grace}` |
 | [2202](#mcp-2202) | warning | Server | `Local server {server} skipped: {err}` |
 | [2301](#mcp-2301) | warning | Connector | `Connector {server} stays at trust ask; setting {trust} failed: {err}` |
@@ -2028,7 +2030,7 @@ Writes the `mcp` log.
 
 **Why it happens.** Tenant runs headless (a server, SSH), or opening the browser failed.
 
-**What to do.** Open the URL in a browser on this machine: the sign-in returns to a callback on localhost. Elsewhere, run `tenant mcp connect <url>` at the host.
+**What to do.** Open the URL in a browser on this machine: the sign-in returns to a callback on localhost. Elsewhere, run `tenant mcp connect <url> --config <config dir>` at the host, with the config dir of the Tenant that uses the connector.
 
 ### mcp 2101
 
@@ -2071,6 +2073,34 @@ Writes the `mcp` log.
 **Why it happens.** The Discord relay is down, or has no operator to message.
 
 **What to do.** Check the relay in the discord log.
+
+### mcp 2104
+
+`Token refresh for {server} failed and is tried again on the next call: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2104`
+
+**What it means.** A connector's access token expired and renewing it failed for a reason that can pass, so the call that needed it failed. The sign-in is kept and nobody is asked to re-authorize.
+
+**Why it happens.** The authorization server was unreachable, answered with a server error, or took longer than 30 seconds; or another Tenant process held the saved sign-in's lock for longer than a refresh can take.
+
+**What to do.** None if a later refresh succeeds (mcp 1102). If it keeps failing, check the network path to the authorization server.
+
+### mcp 2105
+
+`Could not lock the saved sign-in for {server}; refreshing without the lock: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
+- **Fields:** `server`, `err`
+- **Find it:** `provider:mcp id:2105`
+
+**What it means.** Every Tenant process that uses a connector (serve, the TUI, tenant mcp connect) locks its saved sign-in before renewing the token, so no two spend the same single-use refresh token. This one could not, so it renews unlocked. Written once per connection.
+
+**Why it happens.** Another account created the lock file beside the sign-in and this one can't open it (serve running as SYSTEM beside an administrator's session).
+
+**What to do.** Run every Tenant that uses the connector as the same account and with the same --config. Two renewals at the same moment without the lock can lose the sign-in (mcp 3101).
 
 ### mcp 2201
 
@@ -2136,11 +2166,11 @@ Writes the `mcp` log.
 - **Fields:** `server`, `url`, `err`, `fix`
 - **Find it:** `provider:mcp id:3101`
 
-**What it means.** A remote connector's sign-in died: its token expired and the refresh failed, so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.
+**What it means.** A remote connector's sign-in died: its token expired and the server refused the refresh (invalid_grant, invalid_client, or another 4xx answer), so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.
 
 **Why it happens.** The server revoked the refresh token, it expired unused, or a rotated one was lost.
 
-**What to do.** Run the command in fix (`tenant mcp connect <url>`) at the host, or use the dashboard's Remote services page.
+**What to do.** Run the command in fix (`tenant mcp connect <url> --config <config dir>`) at the host, or use the dashboard's Remote services page.
 
 ### mcp 3102
 

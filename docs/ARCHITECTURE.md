@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 1,109 |
-| Test files | 522 |
-| Production Go LOC | 144,071 |
-| Test Go LOC | 100,297 |
+| Go files | 1,110 |
+| Test files | 523 |
+| Production Go LOC | 144,347 |
+| Test Go LOC | 100,903 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -165,7 +165,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
 | `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra`, `internal/logs/catalog` | the persisted configuration; knows no runtime; files each change in the Security log |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |
-| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/httplimits`, `internal/memory/cosine`, `internal/pluginreg` | capabilities never import each other; each declares its events through pluginreg |
+| `internal/plugins/*` | `internal/model`, `internal/secrets`, `internal/fsperm`, `internal/datalock`, `internal/httplimits`, `internal/memory/cosine`, `internal/pluginreg` | capabilities never import each other; each declares its events through pluginreg |
 | `internal/eval/**` | `internal/model`, `internal/route`, `internal/memory/working` |  |
 | `internal/improve` | `internal/memory/**`, `internal/model`, `internal/fsperm` |  |
 | `internal/privacy` | `internal/memory/**`, `internal/fsperm`, `internal/logs`, `internal/logs/store` |  |
