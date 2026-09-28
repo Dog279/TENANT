@@ -294,7 +294,7 @@ func witnessOf(lc *launchConfig) witnessAudit {
 		return witnessAudit{Configured: true, Kind: "peer", Target: w, Problem: "a peer can't be a witness yet, so the head reaches no witness"}
 	}
 	if path := expandPath(w); filepath.IsAbs(path) {
-		return witnessAudit{Configured: true, Kind: "file", Target: path}
+		return witnessAudit{Configured: true, Kind: "file", Target: filepath.Clean(path)}
 	}
 	return witnessAudit{Configured: true, Kind: "file", Target: w, Problem: "the witness file must be an absolute path, so the head reaches no witness"}
 }

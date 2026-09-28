@@ -40,14 +40,15 @@ func helperWriter() error {
 			batch[j] = ev("multi", fmt.Sprintf("writer %d event %d", w, i+j), "w", int64(w), "i", int64(i+j))
 		}
 		// A commit is all or nothing, so a batch that failed (a writer
-		// starved past busy_timeout, as under -race) is simply retried, as the
-		// pipeline's writer will (TEN-373).
-		for tries := 1; ; tries++ {
+		// starved past busy_timeout, as under -race on a 2-core CI runner) is
+		// simply retried, as the pipeline's writer will (TEN-373), for up to a
+		// minute: starvation, not a count of tries, is the failure.
+		for start := time.Now(); ; {
 			err := s.Commit(ctx, batch)
 			if err == nil {
 				break
 			}
-			if tries == 5 {
+			if time.Since(start) > time.Minute {
 				return err
 			}
 		}

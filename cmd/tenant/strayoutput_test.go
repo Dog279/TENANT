@@ -120,6 +120,7 @@ func TestOneShotLogFilesWarningsAndPrintsThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = stderr.Close() }) // before TempDir's RemoveAll: Windows can't remove an open file
 	prevStderr := os.Stderr
 	os.Stderr = stderr
 	defer func() { os.Stderr = prevStderr }()
