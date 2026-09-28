@@ -43,7 +43,7 @@ var harnessFakes = []func(s *Server, mode fakeMode){installExistingFakes}
 // harnessPages are the GET pages renderAllPages visits: every nav page, and
 // the pages under them that a fake makes reachable.
 var harnessPages = []string{
-	"/", "/chat", "/activity", "/goal", "/logs",
+	"/", "/chat", "/goal", "/logs",
 	"/memory", "/memory/soul", "/memory/facts", "/memory/facts/removed", "/memory/facts/temporal", "/memory/provenance", "/memory/facts/1",
 	"/skills", "/eval", "/research",
 	"/tools", "/agents", "/mcp", "/cron",

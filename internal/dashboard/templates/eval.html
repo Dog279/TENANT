@@ -56,7 +56,7 @@
   <form method="POST" action="/eval/run" class="inline" data-on:submit__prevent__throttle.1s="@post('/eval/run', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn on">Run a quality check now</button>
   </form>
-  <div class="dim mt">Takes a few minutes: your agent answers a set of test questions and is graded against the baseline. The result appears here and in the Activity feed.</div>
+  <div class="dim mt">Takes a few minutes: your agent answers a set of test questions and is graded against the baseline. The result appears here and on the Logs page.</div>
   {{else}}
   <button type="button" class="btn" disabled>Run a quality check now</button>
   <div class="dim mt">Quality checks are off on this Tenant, so one can't start from here.</div>

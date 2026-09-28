@@ -569,8 +569,8 @@ guide: `docs/LOGGING.md`.
   source's day file (created on first use) and appends it to a bounded ring
   keyed by a monotonic `Seq` (eviction never invalidates a cursor).
 - `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Subscribe()` — the lossless
-  replay + a coalescing wake-up per subscriber that the dashboard's Activity SSE
-  tails (one per open tab). `Hub.Epoch()` names the Seq numbering, which starts
+  replay (`GET /api/activity` pages through it when there is no log store) + a
+  coalescing wake-up per subscriber. `Hub.Epoch()` names the Seq numbering, which starts
   at 1 on every open; a client holding another epoch's cursor re-syncs.
 - `Hub.Sources() []SourceInfo` (display order: built-ins, custom, `system` last;
   counts; native vs discovered), `Hub.Files(source)`, `Hub.OpenFile(source, name)`

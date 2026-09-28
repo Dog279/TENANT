@@ -252,5 +252,5 @@ func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron run", err, "Couldn't run that job."), false)
 		return
 	}
-	s.cronDone(w, r, name+" is running now. The result appears in the Activity feed.", "", false)
+	s.cronDone(w, r, name+" is running now. The result appears on the Logs page.", "", false)
 }

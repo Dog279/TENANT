@@ -185,7 +185,7 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
   extraction fails, Tenant may send the eligible target URL to Jina for remote
   extraction. Tenant blocks loopback/private targets and URLs with credentials,
   signatures, or token-bearing query parameters before relay, and records every
-  request with the target host in the activity feed.
+  request with the target host in the log book (the dashboard's Logs page).
 - **No telemetry or analytics path is implemented.** Tenant never calls a server
   the user did not configure, but this does not mean every destination is
   individually named: DuckDuckGo and Jina are keyless web fallbacks after the

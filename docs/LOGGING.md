@@ -1281,7 +1281,7 @@ limit is enforced by code, not asked of the model (`cmd/tenant/loginvestigate.go
   quoting them would ask first.
 
 The turn's activity is filed in the `alerts` log, which no rule reads, and
-shows in the dashboard's activity feed as `tenant-investigate`. Its result
+shows on the dashboard's Logs page (`log:alerts`). Its result
 goes to the status feed and to the Security log: `investigate/4001` when it
 starts and `4003` when it ends (outcome, steps, tool calls, tokens, and the
 result as a sensitive field), both with the turn's trace, so `trace:<id>`

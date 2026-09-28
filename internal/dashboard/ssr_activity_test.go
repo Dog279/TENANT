@@ -5,19 +5,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"testing"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs"
 )
-
-// The Activity feed page is gone: /activity redirects, so the page harness
-// (render_all_test.go, frozen) no longer visits it.
-func init() {
-	harnessPages = slices.DeleteFunc(harnessPages, func(p string) bool { return p == "/activity" })
-}
 
 // logEvent files a turn event into a hub the way the serve/TUI wiring does.
 func logEvent(h *logs.Hub, ev agent.Event) {
