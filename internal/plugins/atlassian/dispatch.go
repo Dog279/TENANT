@@ -61,8 +61,8 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
 	tools := []model.ToolSpec{
-		{Name: "jira_search", Description: "Search Jira issues with JQL (e.g. `project = TEN AND statusCategory != Done ORDER BY created DESC`). Returns key/summary/status/type/assignee.",
-			Parameters: obj(`"jql":{"type":"string"},"max":{"type":"integer","description":"max results (default 25, cap 50)"}`, "jql")},
+		{Name: "jira_search", Description: "Search Jira issues with JQL (e.g. `project = TEN AND statusCategory != Done ORDER BY created DESC`). The JQL needs a restriction such as a project; a bare ORDER BY is refused. Returns key/summary/status/type/assignee, and a next_page_token when more match.",
+			Parameters: obj(`"jql":{"type":"string"},"max":{"type":"integer","description":"max results (default 25, cap 50)"},"next_page_token":{"type":"string","description":"from the previous page, to fetch the next"}`, "jql")},
 		{Name: "jira_get", Description: "Get one Jira issue by key or id (e.g. TEN-16). Returns its fields incl. description.",
 			Parameters: obj(`"key":{"type":"string"}`, "key")},
 		{Name: "jira_transitions", Description: "List the workflow transitions currently available on an issue (id + name + target status). Use before jira_transition.",
@@ -119,8 +119,9 @@ func unmarshalArgs(args json.RawMessage, v any) (string, bool) {
 
 func (d *Dispatcher) search(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
-		JQL string `json:"jql"`
-		Max int    `json:"max"`
+		JQL       string `json:"jql"`
+		Max       int    `json:"max"`
+		PageToken string `json:"next_page_token"`
 	}
 	if msg, bad := unmarshalArgs(args, &a); bad {
 		return msg, true, nil
@@ -128,7 +129,7 @@ func (d *Dispatcher) search(ctx context.Context, args json.RawMessage) (string, 
 	if strings.TrimSpace(a.JQL) == "" {
 		return "jql is required", true, nil
 	}
-	issues, err := d.svc.Jira.Search(ctx, a.JQL, a.Max)
+	issues, next, err := d.svc.Jira.Search(ctx, a.JQL, a.Max, a.PageToken)
 	if err != nil {
 		return "jira search failed: " + err.Error(), true, nil
 	}
@@ -139,6 +140,9 @@ func (d *Dispatcher) search(ctx context.Context, args json.RawMessage) (string, 
 	fmt.Fprintf(&b, "%d issue(s):\n", len(issues))
 	for _, is := range issues {
 		fmt.Fprintf(&b, "- %s | %s | %s | %s\n", is.Key, is.Status, is.Type, is.Summary)
+	}
+	if next != "" {
+		fmt.Fprintf(&b, "more match: call jira_search again with next_page_token %q\n", next)
 	}
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }
