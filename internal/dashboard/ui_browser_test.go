@@ -94,6 +94,14 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	if next := "/settings?" + (url.Values{"next": {page}}).Encode(); !strings.HasSuffix(signIn, next) || back != srv.URL+page {
 		t.Fatalf("sign-in went %s → %s, want %s → %s", signIn, back, next, page)
 	}
+	// A cold Chrome on the Windows runner can drop the first viewport
+	// override; set it again before measuring anything.
+	for try := 0; width != w && try < 20; try++ {
+		time.Sleep(100 * time.Millisecond)
+		if err := chromedp.Run(ctx, chromedp.EmulateViewport(int64(w), int64(h), phone...), chromedp.Evaluate(`innerWidth`, &width)); err != nil {
+			t.Fatalf("setting the viewport: %v", err)
+		}
+	}
 	if width != w {
 		t.Fatalf("innerWidth = %d, want %d", width, w)
 	}
