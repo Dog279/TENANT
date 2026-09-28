@@ -1,10 +1,13 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -74,7 +77,8 @@ func TestSSR_ToolsPage(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"web_read", "sql_exec", "destructive", "/tools/web_read/toggle"} {
+	// The toggle URL is JS-escaped inside data-on:click ("/" → "\/").
+	for _, want := range []string{"web_read", "sql_exec", "destructive", `\/tools\/web_read\/toggle`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("tools page missing %q", want)
 		}
@@ -116,6 +120,47 @@ func TestSSR_ToolToggleForm(t *testing.T) {
 	}
 	if len(ft.setCalls) != 1 || ft.setCalls[0] != "web_read=false" {
 		t.Errorf("expected SetEnabled(web_read,false), got %v", ft.setCalls)
+	}
+}
+
+// A remote tool server names its own tools. A name with "../" must stay one
+// path segment, so its rendered toggle button still reaches the toggle route
+// and can't aim at another one, such as a key's remove (F1).
+func TestSSR_ToolToggleURLEscapesName(t *testing.T) {
+	s, ft := ssrServer()
+	name := "../../settings/keys/openai/remove?confirm=yes&x="
+	row, err := s.renderToolRow(ToolInfo{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`data-on:click="@post\('([^']*)'\)"`).FindStringSubmatch(row)
+	if m == nil {
+		t.Fatalf("no @post toggle on the row:\n%s", row)
+	}
+	var u string // the browser's view: HTML-decoded, then the JS string decoded
+	if err := json.Unmarshal([]byte(`"`+html.UnescapeString(m[1])+`"`), &u); err != nil {
+		t.Fatalf("decode %q: %v", m[1], err)
+	}
+	if strings.Contains(u, "../") {
+		t.Fatalf("toggle URL %q lets the name leave its path segment", u)
+	}
+	ssrPost(t, s, u, nil)
+	if len(ft.setCalls) != 1 || ft.setCalls[0] != name+"=true" {
+		t.Errorf("POST %s should toggle the tool itself, got %v", u, ft.setCalls)
+	}
+}
+
+// A bare CR ends an SSE line, so agent text carrying one could close a patch
+// and start a datastar-patch-signals event, which Datastar evaluates.
+func TestPatchElements_NoBareCR(t *testing.T) {
+	got := string(patchElements("#x", "append", "a\rb\r\nc"))
+	if strings.Contains(got, "\r") {
+		t.Fatalf("CR reached the SSE stream: %q", got)
+	}
+	for _, l := range []string{"data: elements a\n", "data: elements b\n", "data: elements c\n"} {
+		if !strings.Contains(got, l) {
+			t.Errorf("want %q in %q", l, got)
+		}
 	}
 }
 
@@ -194,7 +239,7 @@ func TestSSR_DatastarColonSyntax(t *testing.T) {
 		{"/chat", `data-on:submit__prevent="@post('/chat/send')"`, "data-on-submit"},
 		{"/chat", `data-bind:text`, "data-bind-text"},
 		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},
-		{"/tools", `data-on:click="@post('/tools/`, "data-on-click"},
+		{"/tools", `data-on:click="@post('\/tools\/`, "data-on-click"}, // JS-escaped ToggleURL
 	}
 	for _, c := range cases {
 		body := get(t, s, c.path).Body.String()

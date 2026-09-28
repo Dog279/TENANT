@@ -58,7 +58,7 @@ func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 	// Each opener → the SSE endpoint it must keep reconnecting to. Activity moved
 	// to the retained /activity/events stream (TEN-238); chat stays on /events.
 	openers := map[string]string{
-		"templates/activity.html": "@get('/activity/events",
+		"templates/activity.html": "@get('{{.StreamURL}}'", // /activity/events, query-escaped (F1)
 		"templates/chat.html":     "@get('/events'",
 		"templates/logs.html":     "@get('{{.TailURL}}'", // the Logs page's live tail
 	}

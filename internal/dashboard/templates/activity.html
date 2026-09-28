@@ -9,7 +9,7 @@
 {{if .Source}}<div class="card act-files"><span class="dim">Files on disk for <span class="nm">{{.Source}}</span>{{if .Root}} · {{.Root}}{{end}}:</span>
   {{if .Files}}{{range .Files}} <a class="chip" href="{{.Href}}" title="{{.Size}} · updated {{.When}}">{{.Name}}</a>{{end}}{{else}} <span class="dim">none yet</span>{{end}}</div>{{end}}
 <div class="act" id="activity-feed"
-     data-init="@get('/activity/events?cursor={{.Cursor}}&source={{.Source}}&level={{.Level}}&trace={{.Trace}}', {retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})">{{.Backlog}}</div>
+     data-init="@get('{{.StreamURL}}', {retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})">{{.Backlog}}</div>
 {{if .Empty}}<div class="card"><div class="dim">No activity yet for this view — every subsystem's actions, tool calls, cross-agent messages and errors appear here as they happen.</div></div>{{end}}
 {{end}}
 {{end}}

@@ -13,6 +13,8 @@ import (
 	"embed"
 	"html/template"
 	"net/http"
+	"net/url"
+	"strconv"
 )
 
 //go:embed templates
@@ -154,6 +156,13 @@ func (s *Server) renderToolRow(t ToolInfo) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// ToggleURL is the row's toggle target. A remote tool server names its own
+// tools, so the name is path-escaped: a raw "../" in it would aim the button
+// at another dashboard route (F1).
+func (t ToolInfo) ToggleURL() string {
+	return "/tools/" + url.PathEscape(t.Name) + "/toggle?enabled=" + strconv.FormatBool(!t.Enabled)
 }
 
 // findTool returns the current state of the named tool (zero value if gone).
