@@ -229,7 +229,7 @@ func (s *Server) gridView(ctx context.Context, h *logs.Hub, st *store.Store, d *
 		}
 		if ls, err := logapi.LogViews(ctx, h, st, name); err == nil && len(ls) == 1 {
 			d.Props = propsView(ls[0])
-			d.Props.Q = d.Q
+			d.Props.Q, d.Props.View = d.Q, d.View
 		}
 	}
 	if d.Sel != 0 {
@@ -831,7 +831,7 @@ type logsProps struct {
 	Security            bool
 	LastWrite, Cleared  string
 	Exports             []logsLink // the whole log, offered before a clear
-	Q                   string     // the grid's filter, which a clear redraws
+	Q, View             string     // the grid's filter and its view, which a clear redraws
 }
 
 func propsView(l logapi.Log) *logsProps {
@@ -885,19 +885,37 @@ func (s *Server) logsDone(w http.ResponseWriter, r *http.Request, back url.Value
 	s.formDone(w, r, page, msg, errMsg, region)
 }
 
-// logsLogParts is log's Properties and Clear sections as they are now, under
-// the grid's filter q. After a clear it is also what the clear changed: the
-// grid's first page, its count, and the detail pane, whose event may be gone.
-func (s *Server) logsLogParts(ctx context.Context, h *logs.Hub, st *store.Store, log, q string, cleared bool) (string, error) {
+// logsTreePart is the tree as it is now, on the grid of view or filter q.
+func (s *Server) logsTreePart(ctx context.Context, h *logs.Hub, st *store.Store, view, q string) (string, error) {
+	sum, err := h.Summary(ctx, time.Now())
+	if err != nil {
+		return "", err
+	}
+	views, err := s.logbook.Views(ctx, st)
+	if err != nil {
+		return "", err
+	}
+	return logsPart("lgtree", logsData{Mode: "grid", Tree: logsTree(views, sum, view, q, "grid")})
+}
+
+// logsLogParts is log's Properties and Clear sections as they are now, on
+// the grid of view or filter q. After a clear it is also what the clear
+// changed: the tree's counts, the grid's first page, its count, and the
+// detail pane, whose event may be gone.
+func (s *Server) logsLogParts(ctx context.Context, h *logs.Hub, st *store.Store, log, q, view string, cleared bool) (string, error) {
 	ls, err := logapi.LogViews(ctx, h, st, log)
 	if err != nil || len(ls) != 1 {
 		return "", err
 	}
 	p := propsView(ls[0])
-	p.Q = q
+	p.Q, p.View = q, view
 	props, err1 := logsPart("lgprops", p)
 	clr, err2 := logsPart("lgclear", p)
 	parts := []string{props, clr}
+	if cleared {
+		tree, err := s.logsTreePart(ctx, h, st, view, q)
+		parts, err1 = append(parts, tree), errors.Join(err1, err)
+	}
 	if cleared && q != "" {
 		f, err := query.Parse(q)
 		if err != nil {
@@ -925,6 +943,10 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 		s.logsDone(w, r, back, "", PlainError("The log book isn't open here."), nil)
 		return
 	}
+	if log == "" { // only a hand-made post names no log
+		s.logsDone(w, r, nil, "", PlainError("Pick a log first."), nil)
+		return
+	}
 	var c logapi.PolicyChange
 	switch r.FormValue("action") {
 	case "reset":
@@ -947,7 +969,9 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name, err := s.logbook.Change(ctx, h, st, log, c)
 	back.Set("q", "log:"+name)
-	s.logsDone(w, r, back, "Log "+name+" changed.", err, func() (string, error) { return s.logsLogParts(ctx, h, st, name, r.FormValue("q"), false) })
+	s.logsDone(w, r, back, "Log "+name+" changed.", err, func() (string, error) {
+		return s.logsLogParts(ctx, h, st, name, r.FormValue("q"), r.FormValue("view"), false)
+	})
 }
 
 // handleLogsClear clears a log through what the API's clear calls; the page
@@ -961,9 +985,15 @@ func (s *Server) handleLogsClear(w http.ResponseWriter, r *http.Request) {
 		s.logsDone(w, r, back, "", PlainError("The log book isn't open here."), nil)
 		return
 	}
+	if log == "" { // only a hand-made post names no log
+		s.logsDone(w, r, nil, "", PlainError("Pick a log first."), nil)
+		return
+	}
 	ctx := r.Context()
 	n, err := s.logbook.Clear(ctx, h, st, log)
-	s.logsDone(w, r, back, fmt.Sprintf("Cleared %s events from %s.", thousands(n), log), err, func() (string, error) { return s.logsLogParts(ctx, h, st, log, q, true) })
+	s.logsDone(w, r, back, fmt.Sprintf("Cleared %s events from %s.", thousands(n), log), err, func() (string, error) {
+		return s.logsLogParts(ctx, h, st, log, q, r.FormValue("view"), true)
+	})
 }
 
 // handleLogsSaveView saves the grid's filter as a view. In place the page
@@ -982,15 +1012,7 @@ func (s *Server) handleLogsSaveView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logsDone(w, r, url.Values{"view": {v.Name}}, "Saved the view "+v.Name+". It's under Custom Views.", nil, func() (string, error) {
-		sum, err := h.Summary(ctx, time.Now())
-		if err != nil {
-			return "", err
-		}
-		views, err := s.logbook.Views(ctx, st)
-		if err != nil {
-			return "", err
-		}
-		return logsPart("lgtree", logsData{Mode: "grid", Tree: logsTree(views, sum, r.FormValue("view"), filter, "grid")})
+		return s.logsTreePart(ctx, h, st, r.FormValue("view"), filter)
 	})
 }
 

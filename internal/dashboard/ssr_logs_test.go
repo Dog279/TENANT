@@ -540,17 +540,21 @@ func TestLogs_InlineForms(t *testing.T) {
 	has(body, alert, "built-in")
 	lacks(body, "lg-tree")
 
-	body = post("/logs/properties", url.Values{"log": {"cron"}, "q": {"log:cron level>=error"}, "action": {"debug"}})
+	body = post("/logs/properties", url.Values{"log": {"cron"}, "q": {"log:cron level>=error"}, "view": {"Cron errors"}, "action": {"debug"}})
 	has(body, ok+`<span class="toast-text">Log cron changed.</span>`, strip,
 		`data: elements <div id="lg-props" class="lg-part">`, `<span class="tag">debug until`, `data: elements <div id="lg-clear" class="lg-part">`, "Clear 2 events",
-		`<input type="hidden" name="q" value="log:cron level&gt;=error"><input type="hidden" name="confirm" value="yes">`) // the redrawn Clear still redraws the grid
+		`<input type="hidden" name="q" value="log:cron level&gt;=error"><input type="hidden" name="view" value="Cron errors"><input type="hidden" name="confirm" value="yes">`) // the redrawn Clear still redraws the tree and grid
 	lacks(body, "lg-grid")
 	body = post("/logs/properties", url.Values{"log": {"cron"}, "max_mb": {"lots"}, "max_days": {"7"}})
 	has(body, alert+"Max size and max age are numbers; 0 means no limit.</span>")
 	lacks(body, "lg-props", "lg-clear")
 
-	body = post("/logs/clear", url.Values{"log": {"cron"}, "q": {"log:cron level>=error"}, "confirm": {"yes"}})
+	if !strings.Contains(get(t, s, "/logs").Body.String(), `>Cron <span class="lg-n bad">1</span>`) {
+		t.Fatal("the tree should count cron's error before the clear")
+	}
+	body = post("/logs/clear", url.Values{"log": {"cron"}, "q": {"log:cron level>=error"}, "view": {"Cron errors"}, "confirm": {"yes"}})
 	has(body, ok+`<span class="toast-text">Cleared 2 events from cron.</span>`, strip, "Clear 0 events",
+		`data: elements <nav id="lg-tree" class="lg-tree"`, `class="lg-leaf on" title="log:cron level&gt;=error">Cron errors</a>`, `>Cron</a>`,
 		`data: elements <div class="lg-grid" id="lg-grid">`, `<div id="lg-rows"></div>`, "No events match.",
 		`data: elements <span id="lg-count" class="lg-count dim">`, "; 0 match</span>",
 		`data: elements <section id="lg-detail" class="lg-detail"><div class="dim pad">Select an event to see its detail.</div>`)
@@ -559,7 +563,17 @@ func TestLogs_InlineForms(t *testing.T) {
 	}
 	body = post("/logs/clear", url.Values{"log": {"security"}, "q": {"log:security"}, "confirm": {"yes"}})
 	has(body, alert+"the Security log is never cleared")
-	lacks(body, "lg-props", "lg-clear", "lg-grid", "lg-count", "lg-detail")
+	lacks(body, "lg-props", "lg-clear", "lg-tree", "lg-grid", "lg-count", "lg-detail")
+
+	// Only a hand-made post names no log; it changes nothing and says so.
+	for _, path := range []string{"/logs/properties", "/logs/clear"} {
+		body = post(path, url.Values{"log": {""}, "max_mb": {"1"}, "max_days": {"1"}, "confirm": {"yes"}})
+		has(body, alert+"Pick a log first.</span>")
+		lacks(body, "lg-props", "lg-clear", "lg-tree")
+	}
+	if n := len(security(t, st, 4901)); n != 1 {
+		t.Errorf("a clear that names no log filed a record: %d clears, want the one", n)
+	}
 
 	// The confirm step still gates a clear, in place or not.
 	if rec := sendForm(s.Handler(), http.MethodPost, "/logs/clear", url.Values{"log": {"cron"}}, datastar); rec.Code != http.StatusPreconditionRequired {
@@ -571,6 +585,21 @@ func TestLogs_InlineForms(t *testing.T) {
 		rec := sendForm(bare.Handler(), http.MethodPost, path, url.Values{"log": {"cron"}, "confirm": {"yes"}}, datastar)
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), alert+"The log book isn&#39;t open here.</span>") {
 			t.Errorf("POST %s with no log book: %d\n%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// REVSEC-8 on the Logs page, which replaced the Activity feed: hidden
+// characters in a message or a field show as markers in the grid, the
+// detail pane and its raw JSON, never raw.
+func TestLogs_ShowHiddenCharacters(t *testing.T) {
+	s, _, st := logsBook(t)
+	const cmd = "run echo safe \u202e evil \u2066 done"
+	evs := commit(t, st, event.Event{Log: "turns", Msg: cmd, Data: []event.Field{{Key: "args", Value: cmd}}})
+	seq := itoa(int(evs[0].Seq))
+	for _, path := range []string{"/logs?q=log:turns", "/logs/event/" + seq, "/logs/detail/" + seq + "?tab=details"} {
+		if body := get(t, s, path).Body.String(); strings.ContainsAny(body, "\u202e\u2066") || !strings.Contains(body, "⟨U&#43;202E⟩") {
+			t.Errorf("%s shows the raw characters:\n%s", path, body)
 		}
 	}
 }

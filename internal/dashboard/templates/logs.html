@@ -9,18 +9,19 @@
 {{end}}
 
 {{/* The Logs forms post in place (formDone) to static URLs; a log's name
-     and the grid's filter ride in fields. Their answers morph these parts:
-     lgtree after a view is saved; lgprops and lgclear after a log changes;
-     after a clear also lggridbox, the count and the detail pane. */}}
+     and the grid's filter and view ride in fields. Their answers morph these
+     parts: lgtree after a view is saved; lgprops and lgclear after a log
+     changes; after a clear also lgtree, lggridbox, the count and the detail
+     pane. The groups keep their open state across a morph. */}}
 {{define "lgtree"}}<nav id="lg-tree" class="lg-tree" aria-label="Logs">
     <a href="/logs" class="lg-leaf lg-root{{if eq .Mode "summary"}} on{{end}}">Summary</a>
     {{range .Tree}}{{template "lgnode" .}}{{end}}
     <a href="/logs/components" class="lg-leaf lg-root{{if eq .Mode "components"}} on{{end}}">Components</a>
   </nav>{{end}}
 
-{{define "lgnode"}}{{if .Href}}<a href="{{.Href}}" class="lg-leaf{{if .On}} on{{end}}" title="{{.Title}}">{{.Label}}{{if .Count}} <span class="lg-n{{if .Bad}} bad{{end}}">{{.Count}}</span>{{end}}</a>{{else}}<details open class="lg-group"><summary>{{.Label}}{{if .Count}} <span class="lg-n{{if .Bad}} bad{{end}}">{{.Count}}</span>{{end}}</summary>{{range .Kids}}{{template "lgnode" .}}{{end}}</details>{{end}}{{end}}
+{{define "lgnode"}}{{if .Href}}<a href="{{.Href}}" class="lg-leaf{{if .On}} on{{end}}" title="{{.Title}}">{{.Label}}{{if .Count}} <span class="lg-n{{if .Bad}} bad{{end}}">{{.Count}}</span>{{end}}</a>{{else}}<details open class="lg-group" data-preserve-attr="open"><summary>{{.Label}}{{if .Count}} <span class="lg-n{{if .Bad}} bad{{end}}">{{.Count}}</span>{{end}}</summary>{{range .Kids}}{{template "lgnode" .}}{{end}}</details>{{end}}{{end}}
 
-{{define "lgrow"}}<a class="lg-row lv-{{.Level}}" href="{{.Href}}"{{if .Detail}} data-on:click__prevent="$sel = {{.Seq}}; @get('{{.Detail}}')" data-class:sel="$sel == {{.Seq}}"{{end}}><span class="lg-lv">{{.Lv}}</span><span class="lg-t" title="{{.Stamp}}">{{.Time}}</span><span>{{.Log}}</span><span>{{.Provider}}</span><span>{{.ID}}</span><span>{{.Task}}</span><span class="lg-msg">{{.Msg}}</span></a>{{end}}
+{{define "lgrow"}}<a class="lg-row lv-{{.Level}}" href="{{.Href}}"{{if .Detail}} data-on:click__prevent="$sel = {{.Seq}}; @get('{{.Detail}}')" data-class:sel="$sel == {{.Seq}}"{{end}}><span class="lg-lv">{{.Lv}}</span><span class="lg-t" title="{{.Stamp}}">{{.Time}}</span><span>{{.Log}}</span><span>{{.Provider}}</span><span>{{.ID}}</span><span>{{.Task}}</span><span class="lg-msg">{{visibleText .Msg}}</span></a>{{end}}
 
 {{define "lgrows"}}{{range .Rows}}{{template "lgrow" .}}
 {{end}}{{end}}
@@ -78,23 +79,30 @@
 {{define "lgprops"}}<div id="lg-props" class="lg-part">
     <div class="dim lg-note">{{.Events}} events · {{.Size}}{{if .Limit}} of {{.Limit}}{{end}}{{if .LastWrite}} · last write {{.LastWrite}}{{end}}{{if .Cleared}} · cleared {{.Cleared}}{{end}}</div>
     <form method="post" action="/logs/properties" class="lg-props" data-on:submit__prevent__throttle.1s="@post('/logs/properties', {contentType:'form', retryMaxCount:0})">
-      <input type="hidden" name="log" value="{{.Log}}"><input type="hidden" name="q" value="{{.Q}}">
+      {{template "lgkeys" .}}
       <label>Maximum size, MB <input name="max_mb" class="box" inputmode="decimal" value="{{.MaxMB}}"></label>
       <label>Maximum age, days <input name="max_days" class="box" inputmode="decimal" value="{{.MaxDays}}"></label>
       <label>When full <select name="on_full" class="box">{{range .OnFull}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>
       <label>Minimum level <select name="min_level" class="box">{{range .MinLevel}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>
       <label class="lg-check"><input type="checkbox" name="enabled"{{if .Enabled}} checked{{end}}> Enabled</label>
       <div class="dim lg-note">0 is no limit.</div>
-      <div class="lg-btns"><button class="btn sm on" name="action" value="save">Save</button><button class="btn sm" name="action" value="reset" title="follow config.json's logs settings again">Reset</button></div>
-      <div class="lg-btns">{{if .Debug}}<span class="tag">debug until {{.Debug}}</span><button class="btn sm" name="action" value="nodebug">Stop debug</button>{{else}}<button class="btn sm" name="action" value="debug" title="write this log's verbose events for 30 minutes">Debug for 30 min</button>{{end}}</div>
+      <div class="lg-btns"><button class="btn sm on" name="action" value="save">Save</button></div>
     </form>
+    {{/* Reset and Debug are forms of their own, so each has its own throttle
+         and one tapped just after Save still posts. */}}
+    <div class="lg-btns">
+      <form method="post" action="/logs/properties" data-on:submit__prevent__throttle.1s="@post('/logs/properties', {contentType:'form', retryMaxCount:0})">{{template "lgkeys" .}}<button class="btn sm" name="action" value="reset" title="follow config.json's logs settings again">Reset</button></form>
+      <form method="post" action="/logs/properties" class="lg-btns" data-on:submit__prevent__throttle.1s="@post('/logs/properties', {contentType:'form', retryMaxCount:0})">{{template "lgkeys" .}}{{if .Debug}}<span class="tag">debug until {{.Debug}}</span><button class="btn sm" name="action" value="nodebug">Stop debug</button>{{else}}<button class="btn sm" name="action" value="debug" title="write this log's verbose events for 30 minutes">Debug for 30 min</button>{{end}}</form>
+    </div>
   </div>{{end}}
+
+{{define "lgkeys"}}<input type="hidden" name="log" value="{{.Log}}"><input type="hidden" name="q" value="{{.Q}}"><input type="hidden" name="view" value="{{.View}}">{{end}}
 
 {{define "lgclear"}}<div id="lg-clear" class="lg-part">
     {{if .Security}}<div class="dim lg-note">The Security log is never cleared, only archived.</div>{{else}}
     <div class="dim lg-note">Export it first:</div>
     <div class="chips">{{range .Exports}}<a class="chip" href="{{.Href}}" download>{{.Label}}</a>{{end}}</div>
-    <div class="lg-btns">{{template "ui-confirm" (inline (confirm "/logs/clear" (printf "Clear %s events" .Events) "These events are deleted for good. Export them first if you might need them." "log" .Log "q" .Q))}}</div>
+    <div class="lg-btns">{{template "ui-confirm" (inline (confirm "/logs/clear" (printf "Clear %s events" .Events) "These events are deleted for good. Export them first if you might need them." "log" .Log "q" .Q "view" .View))}}</div>
     <div class="dim lg-note">Clearing is recorded in the Security log.</div>{{end}}
   </div>{{end}}
 
@@ -102,7 +110,7 @@
 <div class="lg-dhead"><span class="lg-lv lv-{{.Row.Level}}">{{.Row.Lv}}</span><span class="nm">{{.Row.Provider}}{{if .Row.ID}} {{.Row.ID}}{{end}}</span><span class="dim">{{.Local}}</span><span class="sp"></span><a class="linkbtn" href="{{.Permalink}}">permalink</a><button type="button" class="btn sm" data-on:click="navigator.clipboard.writeText(location.origin + '{{.Permalink}}')">copy link</button></div>
 <nav class="memtabs lg-dtabs">{{range .Tabs}}<a href="{{.Href}}" class="{{if .On}}on{{end}}" data-on:click__prevent="@get('{{.Get}}')">{{.Label}}</a>{{end}}</nav>
 {{if eq .Tab "general"}}
-<div class="lg-msgfull">{{.Row.Msg}}</div>
+<div class="lg-msgfull">{{visibleText .Row.Msg}}</div>
 <table class="ovtable lg-facts">
   <tr><th>Time</th><td>{{.Local}} <span class="dim">local</span> · {{.UTC}} <span class="dim">UTC</span></td></tr>
   {{range .Facts}}<tr><th>{{.Label}}</th><td>{{if .Href}}<a class="linkbtn" href="{{.Href}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}</td></tr>{{end}}
@@ -110,10 +118,10 @@
 </table>
 {{if .Pivots}}<div class="dim lg-note">Each ID opens every event that carries it; the Correlated tab follows the turn or activity across logs.</div>{{end}}
 {{else if eq .Tab "details"}}
-{{if .Fields}}<table class="ovtable lg-facts">{{range .Fields}}<tr><th>{{.Key}}{{if .Sensitive}} <span class="risk">sensitive</span>{{end}}</th><td class="lg-val">{{.Value}}</td></tr>{{end}}</table>{{else}}<div class="dim pad">No data fields.</div>{{end}}
+{{if .Fields}}<table class="ovtable lg-facts">{{range .Fields}}<tr><th>{{.Key}}{{if .Sensitive}} <span class="risk">sensitive</span>{{end}}</th><td class="lg-val">{{visibleText .Value}}</td></tr>{{end}}</table>{{else}}<div class="dim pad">No data fields.</div>{{end}}
 {{if .Masked}}<div class="lg-btns"><button type="button" class="btn sm" data-on:click__throttle.1s="@post('{{.Reveal}}', {retryMaxCount:0})">Reveal sensitive values</button><span class="dim">Each reveal is recorded in the Security log.</span></div>{{end}}
 <div class="card-head lg-sub">Raw JSON</div>
-<pre class="diff lg-json">{{.JSON}}</pre>
+<pre class="diff lg-json">{{visibleText .JSON}}</pre>
 {{else if eq .Tab "correlated"}}
 {{if .Of}}<div class="lg-sub">Timeline of <code>{{.Of}}</code>, across every log · <a class="linkbtn" href="{{.OfHref}}">open as a filter</a></div>
 {{with .Corr.Run}}<table class="ovtable lg-facts lg-run">

@@ -1449,7 +1449,7 @@ func checkServe(ctx context.Context, e *doctorEnv) checkResult {
 	if st.TurnActive && st.TurnAgeSecs >= serveStuckTurnSecs {
 		return checkResult{Status: statusWarn,
 			Detail: fmt.Sprintf("a turn has been active %ds — possibly stuck", st.TurnAgeSecs),
-			Fix:    "check the activity feed; cancel from the dashboard if it's hung"}
+			Fix:    "check the turns log on the dashboard's Logs page; cancel from the dashboard if it's hung"}
 	}
 	state := "idle"
 	if st.TurnActive {

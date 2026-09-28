@@ -133,8 +133,10 @@ func TestLogsPageDesktopTreeInChrome(t *testing.T) {
 // set before it survives) and the open Properties section, which now shows
 // the new limit. A double tap on Save sends one post, though the redrawn
 // section puts Save back under the finger: one change, one Security record.
+// Debug tapped just after Save still posts (its own form, its own throttle).
 // Clearing the log through its confirm step empties the grid and its count
-// in place. TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
+// in place, and a tree group the operator closed stays closed.
+// TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
 func TestLogsInlineFormsInChrome(t *testing.T) {
 	s, _, st := logsBook(t)
 	s.cfg.Addr, s.cfg.Auth = "127.0.0.1:0", GenerateToken()
@@ -213,10 +215,24 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 		t.Errorf("with the toast at 390px: %s", b)
 	}
 
+	// Debug 0.3s after Save: a throttle shared with Save would drop it.
+	err = chromedp.Run(ctx,
+		chromedp.Sleep(1100*time.Millisecond), // the double tap's throttle is over
+		chromedp.Click(saveBtn, chromedp.ByQuery),
+		chromedp.Sleep(300*time.Millisecond),
+		chromedp.Click(`#lg-props button[value="debug"]`, chromedp.ByQuery),
+		chromedp.Poll(`!!document.querySelector('#lg-props .tag')`, nil, wait),
+	)
+	if err != nil {
+		t.Fatalf("Debug just after Save: %v", err)
+	}
+
 	// Clear, through its confirm step: the grid and its count empty in place.
 	var rows int
 	var count string
+	var closed bool
 	err = chromedp.Run(ctx,
+		chromedp.Evaluate(`document.querySelector('#lg-tree .lg-group').open = false`, nil),
 		chromedp.Click(`//summary[contains(., "Clear log")]`, chromedp.BySearch),
 		chromedp.Click(`#lg-clear details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
@@ -226,10 +242,14 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 		chromedp.Evaluate(`document.querySelectorAll('#lg-rows .lg-row').length`, &rows),
 		chromedp.Text(`#lg-count`, &count, chromedp.ByQuery),
 		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		chromedp.Evaluate(`!document.querySelector('#lg-tree .lg-group').open`, &closed),
 		chromedp.Evaluate(fitsJS, &bad),
 	)
 	if err != nil {
 		t.Fatalf("Clear: %v", err)
+	}
+	if !closed {
+		t.Error("the redrawn tree opened a group the operator closed")
 	}
 	if rows != 0 || !strings.HasSuffix(count, "; 0 match") || kept != "kept" {
 		t.Errorf("after a clear: %d rows, count %q, marker %q; want no rows, 0 match and the same page", rows, count, kept)
