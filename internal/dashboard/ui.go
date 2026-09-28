@@ -190,7 +190,9 @@ func redirectFlash(w http.ResponseWriter, r *http.Request, page, msg, errMsg str
 // data-on:submit) is answered in place: #toast with msg or errMsg, replaced
 // so its fade starts over; the status strip; and region, the page's part the
 // action changed, rendered now and morphed so the row shows its new state and
-// the page keeps its scroll. A part that fails to render is left as it was.
+// the page keeps its scroll. An error changed nothing, so region is left out
+// and an open step keeps what was typed in it. A part that fails to render is
+// left as it was.
 func (s *Server) formDone(w http.ResponseWriter, r *http.Request, page, msg, errMsg string, region func() (string, error)) {
 	if r.Header.Get("Datastar-Request") == "" {
 		redirectFlash(w, r, page, msg, errMsg)
@@ -198,7 +200,11 @@ func (s *Server) formDone(w http.ResponseWriter, r *http.Request, page, msg, err
 	}
 	toast, terr := s.uiPart("ui-toast", struct{ Msg, Err string }{msg, errMsg})
 	status, serr := s.uiPart("ui-status", s.statusView())
-	body, berr := region()
+	var body string
+	var berr error
+	if errMsg == "" {
+		body, berr = region()
+	}
 	if err := errors.Join(terr, serr, berr); err != nil {
 		RenderFailed.Log(r.Context(), "page", page, "err", err)
 	}

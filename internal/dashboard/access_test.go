@@ -306,24 +306,39 @@ func TestAccess_NilGuardPostRedirects(t *testing.T) {
 
 // inlineForm is the opening tag of a form that posts in place (formDone).
 func inlineForm(action string) string {
-	return `<form method="POST" action="` + action + `" data-on:submit__prevent="@post('` + strings.ReplaceAll(action, "/", `\/`) + `', {contentType:'form'})">`
+	return `<form method="POST" action="` + action + `" data-on:submit__prevent__throttle.1s="@post('` + strings.ReplaceAll(action, "/", `\/`) + `', {contentType:'form', retryMaxCount:0})">`
 }
 
-// permAccess is fakeAccess whose Discord safety settings change when set, as
-// the real control's do, and fail while fail is set. A browser test's server
-// and the test share it.
+// permAccess is fakeAccess whose Discord safety settings and iMessage list
+// change when set, as the real control's do, and whose settings fail while
+// fail is set. denied lists every Remove it got. A browser test's server and
+// the test share it.
 type permAccess struct {
 	fakeAccess
-	mu   sync.Mutex
-	fail bool
+	mu     sync.Mutex
+	fail   bool
+	denied []string
 }
 
 func (f *permAccess) View() AccessView {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v := f.view
-	v.IMessagePerms, v.DiscordPerms = slices.Clone(v.IMessagePerms), slices.Clone(v.DiscordPerms)
+	v.Handles, v.IMessagePerms, v.DiscordPerms = slices.Clone(v.Handles), slices.Clone(v.IMessagePerms), slices.Clone(v.DiscordPerms)
 	return v
+}
+
+func (f *permAccess) IMessageDeny(h string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.denied = append(f.denied, h)
+	i := slices.Index(f.view.Handles, h)
+	if i < 0 {
+		return h, false, nil
+	}
+	f.view.Handles = slices.Delete(f.view.Handles, i, i+1)
+	f.view.SingleHandle = len(f.view.Handles) == 1
+	return h, true, nil
 }
 
 func (f *permAccess) SetRelayPermission(c, m string) (bool, error) {
@@ -396,7 +411,7 @@ func TestAccess_InlinePermission(t *testing.T) {
 
 	body := post(url.Values{"category": {"exec"}, "mode": {"deny"}}, datastar).Body.String()
 	for _, want := range []string{
-		`<div id="toast" class="toast ok" role="status"><span class="toast-text">Discord conversations: Run commands is blocked.</span>`,
+		`<div id="toast" class="toast ok"><span class="toast-text">Discord conversations: Run commands is blocked.</span>`,
 		"Can't run commands and programs on this computer. It won't ask.",
 	} {
 		if !strings.Contains(body, want) {
@@ -409,6 +424,9 @@ func TestAccess_InlinePermission(t *testing.T) {
 	if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">Couldn&#39;t change that safety setting.</span>`) || strings.Contains(body, "locked") {
 		t.Errorf("a failed change: want the plain alert and not the control's own words:\n%s", body)
 	}
+	if strings.Contains(body, `id="access-body"`) {
+		t.Errorf("a failed change re-rendered the page, which closes an open step:\n%s", body)
+	}
 	if !c.has("2201 ", "action=relay permission") {
 		t.Errorf("the failure isn't logged as ActionFailed: %q", c.lines())
 	}
@@ -417,6 +435,15 @@ func TestAccess_InlinePermission(t *testing.T) {
 	rec := post(url.Values{"category": {"write"}, "mode": {"ask"}}, nil)
 	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/access?msg=") {
 		t.Errorf("a plain post: %d to %q, want 303 to /access with its flash", rec.Code, loc)
+	}
+
+	// The toast is read out: it's replaced inside a live region that was
+	// there first. A post that gets no toast has #toast-fail.
+	page := accessGet(t, s, "/access").Body.String()
+	for _, want := range []string{`<div class="toast-wrap" aria-live="polite"`, `<div id="toast-fail" class="toast err" role="alert" style="display:none" data-show="$_formfail">`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page is missing %q", want)
+		}
 	}
 
 	post(url.Values{"category": {"web"}, "mode": {"deny"}}, datastar)
