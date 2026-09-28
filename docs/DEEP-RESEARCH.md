@@ -1,6 +1,6 @@
 # Deep Research — Go rebuild (Onyx-equivalent)
 
-Status: **Phases A + B SHIPPED** · CLI `tenant research` + TUI `/research` ·
+Status: **Phases A + B SHIPPED** · CLI `tenant research` + TUI `/research` + the dashboard's Research page ·
 Phase C outlined · Date: 2026-05-22
 
 > **Phase A (shipped)** — `cmd/tenant/research.go`: plan → waves of ≤3 concurrent
@@ -246,6 +246,54 @@ it where you actually work:
   with an offer to `os_write_file` it to the wiki.
 - Small delta (the engine exists); this is the highest-leverage B item since the
   product is TUI-first.
+
+### From the dashboard (TEN-210)
+
+The dashboard's **Research** page (`/research`) starts a run, shows it live, and
+lists past runs with Show, Run again and Delete. The adapter is
+`cmd/tenant/research_dashctl.go`; the page is `internal/dashboard/research.go`.
+
+- **Same pipeline.** A dashboard run goes through `researchControl.runOne`, the
+  path `/research` takes: clarify check, plan, rounds of helpers, report, store
+  row, copy in the agent's notes. The "Research exactly what I typed" option
+  (under Advanced) skips the clarify check, like `/research!`. A clarify
+  question shows on the page with an answer box and "Research it as typed"
+  (`EnrichClarified`). "Run again" is `ResearchReplay` in the background.
+- **One run at a time, per process.** `researchControl.busy` is an atomic flag
+  `runOne` takes. The terminal app and its dashboard share it, so a second
+  start from either side is refused with a plain reason ("Research is running
+  from the terminal…" / `errResearchBusy`), never queued: two runs on one
+  runtime would cancel each other's helpers (`Governor.Begin`, `Await`).
+- **Which runtime.** In the terminal app the dashboard uses the shared
+  `TeamRuntime`, as `/research` always has. `tenant serve` builds a
+  research-only runtime from a copy of its `TeamConfig`: its own bus, no
+  tool-switch saving, but serve's tools, approval gate (`ConfirmSensitiveEgress`
+  and the gated shared tools) and web policy. So research's start and end
+  never cancel the helpers of chat, the Discord relay or scheduled jobs, and a
+  helper's risky action still waits on Approvals & safety. Helper profiles are
+  copied from the shared runtime at each start, so the Helpers page applies.
+- **Web browsing on a Windows service (D19).** When serve runs as a built-in
+  service account (by SID; unknown counts as one) and Chrome's sandbox is off
+  (`browser_no_sandbox`), research runs without web browsing and the page says
+  why. An unsandboxed browser with full control of the computer should not read
+  untrusted pages.
+- **Where progress comes from.** The run's own `say` and `emitTimeline` sinks
+  feed an in-memory snapshot (phase, round, questions, elapsed time, a few
+  plain progress lines). `GET /research/live` streams that panel: the whole
+  panel on every connect, then on each change. The run lives under the process,
+  not the request, so closing the tab, a dropped connection or a dashboard
+  restart never stops it; reopening the page re-attaches. The dashboard's copy
+  never feeds the terminal's timeline pane. Nothing writes `events.jsonl`; the
+  log book's `research` log records each run's start and end.
+- **The report.** It is rendered in the page, escaped first: headings become
+  bold and `[n]` markers link to the numbered sources. Only http(s) sources are
+  links; `wiki:`, `memory:` and anything else stay text.
+- **Stop and Delete ask to confirm.** Stop ends the run with no report (what
+  the helpers found stays on the run). Delete removes the run from the list;
+  the copy already saved to the agent's notes stays. A run still going can't be
+  deleted, including one started from the terminal ("Running from the
+  terminal"). A stopped run shows as "Stopped"; after a restart, a run that was
+  cut short shows as "Interrupted".
 
 ## 6c. Phase C — sources + UX (later)
 

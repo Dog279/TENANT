@@ -351,6 +351,18 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* == end WP-goal == */
 
 /* == WP-research == */
+.research-form textarea{resize:vertical;min-height:72px;margin-bottom:8px}
+.research-check{display:flex;gap:8px;align-items:center}
+.research-q{display:block;font-weight:600;margin:0 0 8px}
+.research-qs{margin:8px 0 12px;padding-left:22px}
+.research-run .actions,.research-row .actions{margin-top:10px}
+.research-as-typed{margin-top:8px}
+.research-lines,.research-found{margin:10px 0}
+.research-lines>summary,.research-found>summary{cursor:pointer;color:var(--dim);font-weight:600}
+.research-lines pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+.refs{list-style:none;padding-left:0}
+.refs li{margin:4px 0}
+.research-finding{margin:12px 0}
 /* == end WP-research == */
 
 /* == WP-ux-adopt == */
