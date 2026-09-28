@@ -1,8 +1,45 @@
 {{define "content"}}
 {{template "ui-flash" .}}
 {{if not .Configured}}{{template "ui-off" "Approvals and safety settings aren't available on this Tenant."}}{{else}}
-<div class="queue-wrap" data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))" data-init="@get('/events?only=approvals', {retryMaxCount:1000000, retryMaxWait:5000})">{{template "approvalq" .}}</div>
+<h2>Waiting for your OK</h2>
+<div class="queue-wrap" data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))" data-init="@get('/events?only=approvals', {retryMaxCount:1000000, retryMaxWait:5000})">{{template "approvalq" .Queue}}</div>
 <p class="banner warn live-off" style="display:none" data-show="$_live === false">Live updates paused. Reload the page to see new requests.</p>
-{{template "ui-empty" "This page is being built."}}
+
+<h2>What your agent may do on its own</h2>
+{{if not .HasModes}}{{template "ui-off" "Safety settings aren't available on this Tenant."}}{{else}}
+<p class="dim">These settings cover chat on this page, scheduled jobs, alerts and research. Discord and iMessage conversations have their own settings on the <a href="/access">Access</a> page.</p>
+{{if .New}}
+<div class="card perm-new">
+  <b>{{.NewHead}}</b>
+  <ul>{{range .New}}<li><b>{{.Title}}</b>: asks before it can {{.Can}}.</li>{{end}}</ul>
+  <p class="dim">Each check is its own question: a tool you let run still asks here before it does one of these.</p>
+  <p class="dim">Scheduled jobs that need one of these wait for your OK here. If nobody answers, the request is turned down after a while.</p>
+  <div class="actions"><form method="POST" action="/safety/new"><button type="submit" class="btn on">Keep them at Ask</button></form><span class="dim">or choose for each one below.</span></div>
+</div>
+{{end}}
+<div class="card">
+{{range .Modes}}
+  <div class="perm" id="perm-{{.Category}}">
+    <div class="perm-text">
+      <b>{{.Title}}</b>{{if .New}} <span class="tag-new">New</span>{{end}}
+      <div class="dim">{{.Consequence}}</div>
+      {{with .Discord}}<div class="perm-other">Discord conversations: {{.}}. <a href="/access">Change on Access</a></div>{{end}}
+    </div>
+    {{if .Session}}<form method="POST" action="/safety/mode"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">Ask me again</button></form>{{end}}
+    {{/* The current mode is a pressed, disabled button; Ask and Deny are one
+         tap (tightening); Allow is a confirm step (D3 (c)). */}}
+    <div class="seg" role="group" aria-label="{{.Title}}">
+      {{- if eq .Mode "ask"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Ask</button>
+      {{- else}}<form method="POST" action="/safety/mode"><input type="hidden" name="category" value="{{.Category}}"><button type="submit" name="mode" value="ask" class="btn sm">Ask</button></form>{{end}}
+      {{- if eq .Mode "allow"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Allow</button>
+      {{- else}}{{template "ui-confirm" (confirmGo "/safety/mode" "Allow" .Allow "category" .Category "mode" "allow")}}{{end}}
+      {{- if eq .Mode "deny"}}<button type="button" class="btn sm on" disabled aria-pressed="true">Deny</button>
+      {{- else}}<form method="POST" action="/safety/mode"><input type="hidden" name="category" value="{{.Category}}"><button type="submit" name="mode" value="deny" class="btn sm">Deny</button></form>{{end -}}
+    </div>
+  </div>
+{{end}}
+</div>
+<p class="dim">To let one tool go ahead, or stop it, whatever its check says, add a rule on the <a href="/tools">Tools</a> page.</p>
+{{end}}
 {{end}}
 {{end}}

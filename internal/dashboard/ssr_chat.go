@@ -15,6 +15,7 @@ import (
 	"html"
 	"net/http"
 	"strings"
+	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs/event"
@@ -29,6 +30,12 @@ func (s *Server) handleChatPage(w http.ResponseWriter, _ *http.Request) {
 // activity feed; conversation-relevant kinds also append to the chat transcript.
 // One stream serves both pages — a patch whose selector isn't on the current
 // page is simply a no-op there.
+//
+// It also keeps #approval-queue current (TEN-207): a snapshot as soon as it
+// has subscribed (so nothing falls between the two, a reconnect resyncs, and
+// the paused banner clears), then a re-render from Pending() on every approval
+// event and every queueResync. ?only=approvals sends nothing else: the Safety
+// page on a phone doesn't take the activity stream.
 func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	setSSEHeaders(w)
 	flush(w) // open the stream immediately
@@ -36,16 +43,34 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	defer act.End(nil)
 	ch, unsub := s.broker.Subscribe()
 	defer unsub()
+	onlyApprovals := r.URL.Query().Get("only") == "approvals"
+	if !s.patchApprovals(ctx, w) {
+		return
+	}
+	resync := time.NewTicker(queueResync)
+	defer resync.Stop()
 	lagged := false
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-resync.C:
+			if !s.patchApprovals(ctx, w) {
+				return
+			}
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
 			behind(ctx, ch, "events", r.RemoteAddr, &lagged)
+			if ev.Kind == agent.EventApprovalPending || ev.Kind == agent.EventApprovalResolved {
+				if !s.patchApprovals(ctx, w) {
+					return
+				}
+			}
+			if onlyApprovals {
+				continue
+			}
 			// Activity feed = meaningful activity only (tool calls, lifecycle,
 			// cross-agent + bus). Token deltas and other per-token noise are
 			// filtered out so the feed isn't a token-by-token flood (TEN-234).
