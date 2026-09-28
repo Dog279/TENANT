@@ -1,3 +1,80 @@
-{{define "research-live"}}<div id="research-live"></div>{{end}}
-{{define "research-history"}}<div id="research-history"></div>{{end}}
-{{define "research-report"}}{{end}}
+{{/* research_parts.html: the Research partials (TEN-210), patched over
+     /research/live by id. research-live must never carry a data-init: every
+     patch would open another stream. Question, helper and model text goes
+     through visibleText; the report body only through reportHTML. */}}
+
+{{define "research-live"}}<div id="research-live">
+{{- with .Busy}}{{template "ui-busy" .}}{{end}}
+{{- if .Running}}
+<div class="card research-run">
+  <div class="card-head">{{if .ReplayOf}}Running again{{else}}Researching{{end}}</div>
+  <p class="research-q">{{visibleText .Question}}</p>
+  <p class="loading">{{if eq .Phase "checking"}}Checking your question{{else if eq .Phase "planning"}}Planning what to look into{{else if eq .Phase "researching"}}Round {{.Round}} of {{.Rounds}}: looking into {{len .Questions}} questions{{else if eq .Phase "reflecting"}}Checking what's still missing{{else if eq .Phase "writing"}}Writing the report{{else if eq .Phase "saving"}}Saving the report{{else}}Starting{{end}}</p>
+  {{- if eq .Phase "researching"}}
+  {{if .Progress}}<p class="dim">{{.Progress}}</p>{{end}}
+  <ol class="research-qs">{{range .Questions}}<li>{{visibleText .}}</li>{{end}}</ol>
+  {{- end}}
+  {{if .Waiting}}<div class="banner warn">{{if eq .Waiting 1}}1 action is{{else}}{{.Waiting}} actions are{{end}} waiting for your OK. Research may be paused until you answer. <a href="/safety">Answer it</a></div>{{end}}
+  <div class="actions">{{template "ui-confirm" (confirm "/research/stop" "Stop" "Stop this research? It ends now and no report is written. What the helpers found so far stays in the list.")}}</div>
+</div>
+{{- else if eq .Phase "clarify"}}
+<div class="card research-run">
+  <div class="card-head">A question for you</div>
+  <p class="research-q">{{visibleText .Question}}</p>
+  <p>Your question could mean a few things. Answer below so the research stays on target.</p>
+  <ul class="research-qs">{{range .Clarify}}<li>{{visibleText .}}</li>{{end}}</ul>
+  <form method="POST" action="/research/clarify">
+    <textarea name="answer" class="cinput wide" rows="3" maxlength="2000" aria-label="Your answer" placeholder="Your answer"></textarea>
+    <div class="actions"><button type="submit" class="btn on">Carry on</button></div>
+  </form>
+  <form method="POST" action="/research/clarify" class="research-as-typed"><button type="submit" class="btn sm">Research it as typed</button></form>
+</div>
+{{- else if eq .Phase "failed"}}
+<div class="card research-run">
+  <p class="research-q">{{visibleText .Question}}</p>
+  <div class="banner err" role="alert">{{.Err}}</div>
+</div>
+{{- else if eq .Phase "stopped"}}
+<div class="banner info" role="status">Stopped. No report was written. What was found so far is in the list below.</div>
+{{- else if eq .Phase "done"}}{{with .Done}}
+<div class="card research-run">{{template "research-report" .}}</div>
+{{- end}}{{end}}
+{{- if .Lines}}
+<details class="research-lines"><summary>Details</summary><pre>{{range .Lines}}{{visibleText .}}
+{{end}}</pre><a href="/logs?q=log:research">Full log</a></details>
+{{- end}}
+</div>{{end}}
+
+{{define "research-history"}}<div id="research-history">
+<h2>Past research</h2>
+{{- if .Err}}<div class="banner err" role="alert">{{.Err}}</div>
+{{- else if not .Rows}}{{template "ui-empty" "No research yet. Ask a question above: each one and its report are listed here."}}
+{{- else}}{{range .Rows}}
+<div class="card research-row">
+  <a href="{{.Path}}" class="research-q">{{visibleText .Question}}</a>
+  <div class="dim">{{.StateText}} · {{.When}}{{if .Took}} · took {{.Took}}{{end}}{{if .Sources}} · {{.Sources}} source{{if ne .Sources 1}}s{{end}}{{end}}{{if .ReplayOf}} · a re-run{{end}}</div>
+  <div class="actions">
+    <a class="btn sm" href="{{.Path}}">Show</a>
+    {{- if not .Live}}
+    <form method="POST" action="{{.Path}}/replay" class="inline"><button type="submit" class="btn sm">Run again</button></form>
+    {{template "ui-confirm" (confirm (print .Path "/delete") "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there.")}}
+    {{- end}}
+  </div>
+</div>{{end}}{{end}}
+</div>{{end}}
+
+{{define "research-report"}}<div class="research-report">
+  <h2 class="research-q">{{visibleText .Question}}</h2>
+  <div class="dim">{{.StateText}}{{if .When}} · {{.When}}{{end}}{{if .Took}} · took {{.Took}}{{end}}{{if .Model}} · {{visibleText .Model}}{{end}}{{if .ReplayOf}} · a re-run{{end}}</div>
+  {{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
+  {{if .Body}}<div class="report">{{.BodyHTML}}</div>{{else}}{{template "ui-empty" "No report was written for this question."}}{{end}}
+  {{- if .Refs}}
+  <h3>Sources</h3>
+  <ul class="refs">{{range .Refs}}<li id="ref-{{.N}}">[{{.N}}] {{if .Web}}<a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">{{.URL}}</a>{{else}}{{visibleText .URL}}{{end}}</li>{{end}}</ul>
+  {{- end}}
+  {{- if .Findings}}
+  <details class="research-found"><summary>What each helper found ({{len .Findings}})</summary>
+  {{range .Findings}}<div class="research-finding"><b>{{visibleText .Question}}</b> <span class="dim">{{.State}}</span>{{if .Body}}<pre class="report">{{visibleText .Body}}</pre>{{end}}</div>{{end}}
+  </details>
+  {{- end}}
+</div>{{end}}

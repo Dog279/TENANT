@@ -1,7 +1,15 @@
 {{define "content"}}
 {{template "ui-flash" .}}
 {{if not .Configured}}{{template "ui-off" "Research isn't available on this Tenant."}}{{else}}
-{{template "research-report" .}}
-{{template "ui-empty" "This page is being built."}}
+<p><a href="/research">Back to Research</a></p>
+{{with .Run}}
+<div class="card research-run">
+  {{template "research-report" .}}
+  <div class="actions">
+    <form method="POST" action="{{.Path}}/replay" class="inline"><button type="submit" class="btn sm">Run again with the current model</button></form>
+    {{template "ui-confirm" (confirm (print .Path "/delete") "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there.")}}
+  </div>
+</div>
+{{end}}
 {{end}}
 {{end}}

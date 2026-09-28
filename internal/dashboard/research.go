@@ -2,13 +2,25 @@ package dashboard
 
 // research.go is the "Research" page (TEN-210): start a deep-research run,
 // watch it live (GET /research/live), and read, re-run or delete past runs.
-// The foundation lays the contract (control, views, routes); WP-research
-// builds the page, the stream and reportHTML on it.
+// The run lives in cmd/tenant's adapter under the process lifetime, so a
+// closed tab or a dropped stream never stops it; the stream sends the whole
+// panel on every connect, which is how a tab re-attaches. Changes are form
+// POSTs answered with a redirect; only the live panel streams.
 
 import (
+	"bytes"
+	"context"
+	"html"
+	"html/template"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
+
+	"tenant/internal/logs/event"
 )
 
 // ResearchControl is the research surface. cmd/tenant adapts the terminal
@@ -80,13 +92,53 @@ func (s *Server) mountResearchSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /research", s.handleResearchPage)
 	mux.HandleFunc("GET /research/live", s.handleResearchLive) // wins over {id}
 	mux.HandleFunc("GET /research/{id}", s.handleResearchRunPage)
+	mux.HandleFunc("POST /research/start", s.handleResearchStart)
+	mux.HandleFunc("POST /research/clarify", s.handleResearchClarify)
+	mux.HandleFunc("POST /research/stop", needConfirm(nil, s.handleResearchStop))
+	mux.HandleFunc("POST /research/{id}/replay", s.handleResearchReplay)
+	mux.HandleFunc("POST /research/{id}/delete", needConfirm(nil, s.handleResearchDelete))
 }
 
+// Page data: the views plus what the templates can't build themselves (the
+// busy line, escaped-first report HTML, escaped paths).
 type researchPageData struct {
 	layoutData
 	Configured bool
 	Msg, Err   string
+	Live       researchLiveData
+	History    researchHistoryData
+	Run        *researchReportData // the run page's report
 }
+
+type researchLiveData struct {
+	ResearchLiveView
+	Busy    *BusyView
+	Waiting int                 // approvals pending while a run is going
+	Done    *researchReportData // Report, ready to render
+}
+
+type researchHistoryData struct {
+	Rows []researchRow
+	Err  string
+}
+
+type researchRow struct {
+	ResearchRunRow
+	Path string // /research/<id>, path-escaped
+}
+
+type researchReportData struct {
+	ResearchReportView
+	BodyHTML template.HTML
+	Path     string
+}
+
+// researchHistoryLimit is how many past runs the page lists.
+const researchHistoryLimit = 50
+
+// researchQuestionMax is the longest question or answer the page accepts, in
+// characters.
+const researchQuestionMax = 2000
 
 func (s *Server) researchData(r *http.Request) researchPageData {
 	return researchPageData{
@@ -98,14 +150,214 @@ func (s *Server) researchData(r *http.Request) researchPageData {
 }
 
 func (s *Server) handleResearchPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, s.tmpl.research, s.researchData(r))
+	d := s.researchData(r)
+	if s.research != nil {
+		v, _ := s.research.Watch()
+		d.Live, d.History = s.researchLive(v), s.researchHistory(r.Context())
+	}
+	s.render(w, s.tmpl.research, d)
 }
 
 func (s *Server) handleResearchRunPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, s.tmpl.researchRun, s.researchData(r))
+	d := s.researchData(r)
+	if s.research != nil {
+		if v, err := s.research.Report(r.PathValue("id")); err != nil {
+			d.Err = s.flashFor(r.Context(), "research show", err, "Couldn't open that research.")
+		} else {
+			d.Run = researchReport(&v)
+		}
+	}
+	s.render(w, s.tmpl.researchRun, d)
 }
 
-// handleResearchLive is the live panel's stream; nothing to stream yet.
-func (s *Server) handleResearchLive(w http.ResponseWriter, _ *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
+// researchLive is the live panel's data for v.
+func (s *Server) researchLive(v ResearchLiveView) researchLiveData {
+	d := researchLiveData{ResearchLiveView: v, Done: researchReport(v.Report)}
+	switch {
+	case v.Running:
+		d.Busy = &BusyView{Title: "Research is running", Since: v.Elapsed}
+		if s.approvals != nil {
+			d.Waiting = len(s.approvals.Pending())
+		}
+	case v.Elsewhere:
+		d.Busy = &BusyView{Title: "Research is running from the terminal", Detail: "Start another when it finishes."}
+	}
+	return d
+}
+
+func (s *Server) researchHistory(ctx context.Context) researchHistoryData {
+	rows, err := s.research.History(researchHistoryLimit)
+	if err != nil {
+		return researchHistoryData{Err: s.flashFor(ctx, "research history", err, "Couldn't read the list of past research.")}
+	}
+	var h researchHistoryData
+	for _, row := range rows {
+		h.Rows = append(h.Rows, researchRow{ResearchRunRow: row, Path: "/research/" + url.PathEscape(row.ID)})
+	}
+	return h
+}
+
+func researchReport(v *ResearchReportView) *researchReportData {
+	if v == nil {
+		return nil
+	}
+	return &researchReportData{ResearchReportView: *v, BodyHTML: reportHTML(v.Body), Path: "/research/" + url.PathEscape(v.ID)}
+}
+
+var (
+	reportHead = regexp.MustCompile(`(?m)^#{1,6} +(.+)$\n?`) // the line break too: the heading is a block
+	reportCite = regexp.MustCompile(`\[(\d{1,3})\]`)
+)
+
+// reportHTML is the report body as HTML, and the XSS boundary: the text
+// comes from web pages. It is escaped first (after visibleText); only then
+// do heading lines become bold and [n] markers links to #ref-n, so the only
+// tags in the result are those two fixed ones. The page's pre-wrap keeps the
+// rest of the layout.
+func reportHTML(body string) template.HTML {
+	h := html.EscapeString(visibleText(body))
+	h = reportHead.ReplaceAllString(h, `<strong class="rh">$1</strong>`)
+	h = reportCite.ReplaceAllString(h, `<a href="#ref-$1" class="cite">[$1]</a>`)
+	return template.HTML(h) //nolint:gosec // escaped above
+}
+
+// handleResearchLive streams the live panel: the whole #research-live on
+// open (the paused banner clears only on a patch) and at every change, and
+// #research-history whenever a run starts or ends. While a run is going it
+// also re-renders every 15s so the elapsed time moves; otherwise nothing
+// overwrites an answer being typed into the clarify box.
+func (s *Server) handleResearchLive(w http.ResponseWriter, r *http.Request) {
+	if s.research == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	setSSEHeaders(w)
+	flush(w)
+	ctx, act := event.Start(r.Context(), Stream, "stream", "research", "remote", r.RemoteAddr)
+	defer act.End(nil)
+	tick := time.NewTicker(15 * time.Second)
+	defer tick.Stop()
+	lastHistory := "" // never a real key: the first frame carries the history too
+	for {
+		v, changed := s.research.Watch()
+		out, err := s.researchPart("research-live", s.researchLive(v))
+		// The list changes when a run starts (its row appears once it has
+		// an id) and when it ends.
+		if key := v.RunID + "|" + strconv.FormatBool(v.Running); err == nil && key != lastHistory {
+			lastHistory = key
+			var hist string
+			if hist, err = s.researchPart("research-history", s.researchHistory(ctx)); err == nil {
+				out += "\n" + hist
+			}
+		}
+		if err != nil {
+			RenderFailed.Log(ctx, "page", "research live", "err", err)
+			return
+		}
+		if _, err := w.Write(patchElements("", "", out)); err != nil {
+			return
+		}
+		flush(w)
+		var every <-chan time.Time
+		if v.Running || v.Elsewhere {
+			every = tick.C
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changed:
+		case <-every:
+		}
+	}
+}
+
+// researchPart renders one research partial on its own (an SSE patch).
+func (s *Server) researchPart(name string, data any) (string, error) {
+	var buf bytes.Buffer
+	if err := s.tmpl.researchParts.ExecuteTemplate(&buf, name, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// researchText reads a question or answer field: trimmed, and "" with a
+// reason when it's too long.
+func researchText(r *http.Request, field string) (string, string) {
+	t := strings.TrimSpace(r.FormValue(field))
+	if utf8.RuneCountInString(t) > researchQuestionMax {
+		return "", "That's too long. Keep it to 2,000 characters or fewer."
+	}
+	return t, ""
+}
+
+func (s *Server) handleResearchStart(w http.ResponseWriter, r *http.Request) {
+	if s.research == nil {
+		redirectFlash(w, r, "/research", "", "")
+		return
+	}
+	q, bad := researchText(r, "question")
+	if bad == "" && q == "" {
+		bad = "Type a question first."
+	}
+	if bad != "" {
+		redirectFlash(w, r, "/research", "", bad)
+		return
+	}
+	if err := s.research.Start(q, r.FormValue("skip_questions") != ""); err != nil {
+		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research start", err, "Couldn't start the research."))
+		return
+	}
+	redirectFlash(w, r, "/research", "Research started. Its progress shows below.", "")
+}
+
+func (s *Server) handleResearchClarify(w http.ResponseWriter, r *http.Request) {
+	if s.research == nil {
+		redirectFlash(w, r, "/research", "", "")
+		return
+	}
+	a, bad := researchText(r, "answer")
+	if bad != "" {
+		redirectFlash(w, r, "/research", "", bad)
+		return
+	}
+	if err := s.research.Clarify(a); err != nil {
+		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research clarify", err, "Couldn't carry on with the research."))
+		return
+	}
+	redirectFlash(w, r, "/research", "Research started. Its progress shows below.", "")
+}
+
+func (s *Server) handleResearchStop(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case s.research == nil:
+		redirectFlash(w, r, "/research", "", "")
+	case s.research.Stop():
+		redirectFlash(w, r, "/research", "Stopping the research. What the helpers found so far stays in the list.", "")
+	default:
+		redirectFlash(w, r, "/research", "", "Nothing is running, so there's nothing to stop.")
+	}
+}
+
+func (s *Server) handleResearchReplay(w http.ResponseWriter, r *http.Request) {
+	if s.research == nil {
+		redirectFlash(w, r, "/research", "", "")
+		return
+	}
+	if err := s.research.Replay(r.PathValue("id")); err != nil {
+		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research replay", err, "Couldn't run that again."))
+		return
+	}
+	redirectFlash(w, r, "/research", "Running it again with the current model. Its progress shows below.", "")
+}
+
+func (s *Server) handleResearchDelete(w http.ResponseWriter, r *http.Request) {
+	if s.research == nil {
+		redirectFlash(w, r, "/research", "", "")
+		return
+	}
+	if err := s.research.Delete(r.PathValue("id")); err != nil {
+		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research delete", err, "Couldn't delete that research."))
+		return
+	}
+	redirectFlash(w, r, "/research", "Deleted from the list.", "")
 }
