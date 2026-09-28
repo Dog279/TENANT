@@ -413,3 +413,15 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
    bottom of the screen while the list scrolls */
 #mem-facts-body>.banner.undo{position:sticky;bottom:0;z-index:5;margin:14px 0 0;background:linear-gradient(rgba(52,211,153,.07),rgba(52,211,153,.07)),var(--card2);box-shadow:0 -8px 24px rgba(0,0,0,.45)}
 /* == end WP-inline-memory == */
+/* == WP-inline-v2pages == */
+/* #safety-modes lays out its h2, notes and cards as .page did before it was
+   a region, so their margins still add up rather than collapse */
+#safety-modes{display:flex;flex-direction:column}
+/* the tap guard: for half a second after each in-place answer (#toast is
+   replaced, so it starts over) a clear sheet takes every tap. A double tap's
+   second tap can't reach what moved under the finger, like the Run again
+   below a phone confirm step that just closed. Kept to these pages: the
+   toast's owner can make it global and drop the :has(). */
+body:has(#safety-modes,#agents-body,#research-ask,#goal-body) #toast:not(:empty)::before{content:"";position:fixed;inset:0;animation:tap-guard .5s step-end forwards}
+@keyframes tap-guard{to{visibility:hidden}}
+/* == end WP-inline-v2pages == */

@@ -6,7 +6,8 @@ package dashboard
 // source of truth, on the page, on every approval event and every
 // queueResync over /events (ssr_chat.go), and after a decision; its buttons
 // are Datastar posts, so the same partial works above the Chat composer
-// without a redirect wiping the transcript.
+// without a redirect wiping the transcript. The mode forms answer in place
+// too (safetyDone), re-rendering only #safety-modes.
 
 import (
 	"bytes"
@@ -243,13 +244,17 @@ type safetyPageData struct {
 }
 
 func (s *Server) handleSafetyPage(w http.ResponseWriter, r *http.Request) {
+	d := s.safetyData()
+	d.Queue, d.Msg, d.Err = s.queue(), r.URL.Query().Get("msg"), r.URL.Query().Get("err")
+	s.render(w, s.tmpl.safety, d)
+}
+
+// safetyData is the modes as the broker says now: no queue, no flash.
+func (s *Server) safetyData() safetyPageData {
 	d := safetyPageData{
 		layoutData: layoutData{Title: "Approvals & safety", Page: "safety"},
 		Configured: s.safety != nil || s.approvals != nil,
-		Queue:      s.queue(),
 		HasModes:   s.safety != nil,
-		Msg:        r.URL.Query().Get("msg"),
-		Err:        r.URL.Query().Get("err"),
 	}
 	d.Modes = s.modeRows()
 	for _, m := range d.Modes {
@@ -264,7 +269,15 @@ func (s *Server) handleSafetyPage(w http.ResponseWriter, r *http.Request) {
 	default:
 		d.NewHead = "An update added " + checks(n) + ". Your agent asks you first until you choose."
 	}
-	s.render(w, s.tmpl.safety, d)
+	return d
+}
+
+// safetyDone answers a mode form: in place for a Datastar post, with
+// #safety-modes re-rendered; a 303 with the flash otherwise.
+func (s *Server) safetyDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
+	s.formDone(w, r, "/safety", msg, errMsg, func() (string, error) {
+		return part(s.tmpl.safety, "safety-modes", s.safetyData())
+	})
 }
 
 // modeRows is one row per category of the main broker, with the consequence
@@ -339,21 +352,21 @@ func (s *Server) permission(category string) (control.PermissionInfo, bool) {
 // grant.
 func (s *Server) handleSafetyModeForm(w http.ResponseWriter, r *http.Request) {
 	if s.safety == nil {
-		redirectFlash(w, r, "/safety", "", modesOff)
+		s.safetyDone(w, r, "", modesOff)
 		return
 	}
 	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
 	p, ok := s.permission(r.FormValue("category"))
 	switch {
 	case !ok:
-		redirectFlash(w, r, "/safety", "", "That safety check doesn't exist. Nothing changed.")
+		s.safetyDone(w, r, "", "That safety check doesn't exist. Nothing changed.")
 		return
 	case mode != "ask" && mode != "allow" && mode != "deny":
-		redirectFlash(w, r, "/safety", "", "Choose Ask, Allow or Deny. Nothing changed.")
+		s.safetyDone(w, r, "", "Choose Ask, Allow or Deny. Nothing changed.")
 		return
 	}
 	if _, err := s.safety.SetPermissionFrom("dashboard", p.Category, mode); err != nil {
-		redirectFlash(w, r, "/safety", "", s.flashFor(r.Context(), "safety mode", err, "Couldn't change "+p.Title+". Nothing changed."))
+		s.safetyDone(w, r, "", s.flashFor(r.Context(), "safety mode", err, "Couldn't change "+p.Title+". Nothing changed."))
 		return
 	}
 	msg := map[string]string{
@@ -364,14 +377,14 @@ func (s *Server) handleSafetyModeForm(w http.ResponseWriter, r *http.Request) {
 	if p.Session && mode == "ask" {
 		msg = p.Title + ": your agent asks you again from now on."
 	}
-	redirectFlash(w, r, "/safety", msg, "")
+	s.safetyDone(w, r, msg, "")
 }
 
 // handleSafetyKeepNewForm is POST /safety/new, "Keep them at Ask": an
 // explicit, recorded choice for every New category, which clears the mark.
 func (s *Server) handleSafetyKeepNewForm(w http.ResponseWriter, r *http.Request) {
 	if s.safety == nil {
-		redirectFlash(w, r, "/safety", "", modesOff)
+		s.safetyDone(w, r, "", modesOff)
 		return
 	}
 	var kept []string
@@ -380,16 +393,16 @@ func (s *Server) handleSafetyKeepNewForm(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		if _, err := s.safety.SetPermissionFrom("dashboard", p.Category, "ask"); err != nil {
-			redirectFlash(w, r, "/safety", "", s.flashFor(r.Context(), "safety keep new", err, "Couldn't keep "+p.Title+" at Ask. Try again, or choose it below."))
+			s.safetyDone(w, r, "", s.flashFor(r.Context(), "safety keep new", err, "Couldn't keep "+p.Title+" at Ask. Try again, or choose it below."))
 			return
 		}
 		kept = append(kept, p.Title)
 	}
 	if len(kept) == 0 {
-		redirectFlash(w, r, "/safety", "There are no new safety checks to review.", "")
+		s.safetyDone(w, r, "There are no new safety checks to review.", "")
 		return
 	}
-	redirectFlash(w, r, "/safety", "Kept at Ask: "+strings.Join(kept, ", ")+". Your agent asks you first.", "")
+	s.safetyDone(w, r, "Kept at Ask: "+strings.Join(kept, ", ")+". Your agent asks you first.", "")
 }
 
 // handleSafetyDecide is POST /safety/approvals/{id}?decision=…: one answer to

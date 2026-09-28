@@ -269,11 +269,11 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /integrations/github/repos/mode":   unless("mode", "read"),
 	"POST /integrations/github/repos/remove": noStep,
 	// Research (TEN-210, D20): Stop and Delete lose the run.
-	"POST /research/start":       noStep,
-	"POST /research/clarify":     noStep,
-	"POST /research/stop":        always,
-	"POST /research/{id}/replay": noStep,
-	"POST /research/{id}/delete": always,
+	"POST /research/start":   noStep,
+	"POST /research/clarify": noStep,
+	"POST /research/stop":    always,
+	"POST /research/replay":  noStep,
+	"POST /research/delete":  always,
 	// Model: a switch changes every answer; removing loses the setup.
 	"POST /models/use":     always,
 	"POST /models/add":     noStep,

@@ -111,8 +111,8 @@ func TestResearchPageInChrome(t *testing.T) {
 				chromedp.Evaluate(fitsJS, &bad),
 				shoot("delete"),
 				chromedp.Click(`#research-history details[open] .confirm-box button`, chromedp.ByQuery),
-				chromedp.WaitVisible(`.page .banner.ok`, chromedp.ByQuery),
-				chromedp.Text(`.page .banner.ok`, &flash, chromedp.ByQuery),
+				chromedp.WaitVisible(`#toast.ok`, chromedp.ByQuery),
+				chromedp.Text(`#toast .toast-text`, &flash, chromedp.ByQuery),
 			)
 			if err != nil {
 				t.Fatalf("Delete: %v", err)
