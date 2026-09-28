@@ -1,13 +1,23 @@
 package dashboard
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
+// fakeCronCtl's jobs change as the real control's do (an added job is
+// listed, a removed one goes, a job turned off shows off), under mu, so a
+// browser test's server and the test can share it.
 type fakeCronCtl struct {
+	mu          sync.Mutex
 	jobs        []CronJobView
 	addCalls    int
 	addName     string
@@ -25,30 +35,66 @@ type fakeCronCtl struct {
 	execErr     error
 }
 
-func (f *fakeCronCtl) Jobs() []CronJobView { return f.jobs }
+func (f *fakeCronCtl) Jobs() []CronJobView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.jobs)
+}
 func (f *fakeCronCtl) Add(s CronAddSpec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.addCalls++
 	f.addName, f.addSpec, f.addPrompt, f.addKind, f.addExec, f.addTZ = s.Name, s.Spec, s.Prompt, s.Kind, s.Exec, s.TZ
+	if f.addErr == nil {
+		f.jobs = append(f.jobs, CronJobView{ID: fmt.Sprintf("new%d", f.addCalls), Name: s.Name, Spec: s.Spec, Prompt: s.Prompt, Enabled: true})
+	}
 	return f.addErr
 }
-func (f *fakeCronCtl) Remove(id string) error { f.removeCalls = append(f.removeCalls, id); return nil }
-func (f *fakeCronCtl) SetEnabled(id string, on bool) error {
-	v := "false"
-	if on {
-		v = "true"
-	}
-	f.enableCalls = append(f.enableCalls, id+":"+v)
+func (f *fakeCronCtl) Remove(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeCalls = append(f.removeCalls, id)
+	f.jobs = slices.DeleteFunc(f.jobs, func(j CronJobView) bool { return j.ID == id })
 	return nil
 }
-func (f *fakeCronCtl) RunNow(id string) error { f.runCalls = append(f.runCalls, id); return nil }
-func (f *fakeCronCtl) ExecEnabled() bool      { return f.execOn }
+func (f *fakeCronCtl) SetEnabled(id string, on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enableCalls = append(f.enableCalls, fmt.Sprintf("%s:%t", id, on))
+	for i := range f.jobs {
+		if f.jobs[i].ID == id {
+			f.jobs[i].Enabled = on
+		}
+	}
+	return nil
+}
+func (f *fakeCronCtl) RunNow(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runCalls = append(f.runCalls, id)
+	return nil
+}
+func (f *fakeCronCtl) ExecEnabled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.execOn
+}
 func (f *fakeCronCtl) SetExec(on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.execErr != nil {
 		return f.execErr
 	}
 	f.execCalls = append(f.execCalls, on)
 	f.execOn = on
 	return nil
+}
+
+// set runs change under the lock, for a test sharing f with a server.
+func (f *fakeCronCtl) set(change func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change()
 }
 
 func cronServer(fc CronControl) *Server {
@@ -159,19 +205,22 @@ func TestCron_EnableDeleteRunForms(t *testing.T) {
 	fc := &fakeCronCtl{}
 	s := cronServer(fc)
 
-	if rec := cronPostForm(t, s, "/cron/abc/enable", "enabled=false"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/enable", "id=abc&enabled=false"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("enable: want 303, got %d", rec.Code)
 	}
 	if len(fc.enableCalls) != 1 || fc.enableCalls[0] != "abc:false" {
 		t.Errorf("enable calls = %v", fc.enableCalls)
 	}
-	if rec := cronPostForm(t, s, "/cron/abc/run", ""); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/run", "id=abc"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("run: want 303, got %d", rec.Code)
 	}
 	if len(fc.runCalls) != 1 || fc.runCalls[0] != "abc" {
 		t.Errorf("run calls = %v", fc.runCalls)
 	}
-	if rec := cronPostForm(t, s, "/cron/abc/delete", "confirm=yes"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/cron/delete", "id=abc"); rec.Code != http.StatusPreconditionRequired || len(fc.removeCalls) != 0 {
+		t.Fatalf("delete without its confirm step: %d, removed %v; want 428 and nothing removed", rec.Code, fc.removeCalls)
+	}
+	if rec := cronPostForm(t, s, "/cron/delete", "id=abc&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("delete: want 303, got %d", rec.Code)
 	}
 	if len(fc.removeCalls) != 1 || fc.removeCalls[0] != "abc" {
@@ -217,5 +266,101 @@ func TestCron_ExecToggleFromDashboard(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if !strings.Contains(rec.Body.String(), `<strong>Scheduled jobs may make changes:</strong> <span class="on-tag">on</span>`) {
 		t.Fatal("cron page does not render the cron-exec state")
+	}
+}
+
+// Every Scheduled jobs form answers a Datastar post in place: the toast, the
+// status strip, an emptied #jobs-flash and #jobs-body, never a 303 the fetch
+// would follow. Only a job added sends #jobs-add. With no control the page
+// says so.
+func TestCron_InlineAnswersEveryForm(t *testing.T) {
+	forms := map[string]url.Values{
+		"/cron/add":    {"spec": {"@daily"}, "prompt": {"report"}},
+		"/cron/enable": {"id": {"j1"}, "enabled": {"false"}},
+		"/cron/delete": {"id": {"j1"}},
+		"/cron/run":    {"id": {"j1"}},
+		"/cron/exec":   {"enabled": {"true"}},
+	}
+	for path, f := range forms {
+		for _, on := range []bool{true, false} {
+			var fc CronControl
+			if on {
+				fc = &fakeCronCtl{jobs: []CronJobView{{ID: "j1", Spec: "@daily", Enabled: true}}}
+			}
+			rec := sendForm(cronServer(fc).Handler(), http.MethodPost, path, withField(f, "confirm", "yes"), datastar)
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || rec.Header().Get("Location") != "" {
+				t.Errorf("%s (control %v): %d %q to %q, want 200 text/event-stream", path, on, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Location"))
+			}
+			for _, want := range []string{"data: mode replace\ndata: elements <div id=\"toast\"", `data: elements <div id="ui-status"`, `data: elements <div id="jobs-flash"></div><div id="jobs-body">`} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s (control %v) is missing %q:\n%s", path, on, want, body)
+				}
+			}
+			if added := on && path == "/cron/add"; strings.Contains(body, `id="jobs-add"`) != added {
+				t.Errorf("%s (control %v): #jobs-add sent = %v, want %v:\n%s", path, on, !added, added, body)
+			}
+			if !on && !strings.Contains(body, "Scheduled jobs aren&#39;t available on this Tenant.") {
+				t.Errorf("%s with no control: the page doesn't say so:\n%s", path, body)
+			}
+		}
+	}
+}
+
+// A job changed in place: the toast says so and its card shows it. An added
+// job is listed and the add form comes back under a new id, so its boxes are
+// empty. An error is an alert with the plain message and nothing
+// re-rendered, so what was typed stays. A plain post still gets the 303 and
+// its flash, and Delete without its confirm step is still 428.
+func TestCron_Inline(t *testing.T) {
+	c := installCapture(t)
+	fc := &fakeCronCtl{jobs: []CronJobView{{ID: "j1", Name: "nightly", Spec: "@daily", Enabled: true}, {ID: "j2", Spec: "@hourly", Enabled: true}}}
+	s := cronServer(fc)
+	post := func(path string, f url.Values, set func(*http.Request)) string {
+		return sendForm(s.Handler(), http.MethodPost, path, f, set).Body.String()
+	}
+
+	body := post("/cron/enable", url.Values{"id": {"j1"}, "enabled": {"false"}}, datastar)
+	_, card, _ := strings.Cut(body, `id="cron-j1"`)
+	card, _, _ = strings.Cut(card, `id="cron-j2"`)
+	if !strings.Contains(body, `<div id="toast" class="toast ok"><span class="toast-text">Job turned off. It won&#39;t run until you turn it on again.</span>`) ||
+		!strings.Contains(card, `<span class="dim">off</span>`) || !strings.Contains(card, `<input type="hidden" name="enabled" value="true">`) || !strings.Contains(card, ">Turn on</button>") {
+		t.Errorf("Turn off in place: want the toast and the card showing off:\n%s", body)
+	}
+
+	formID := regexp.MustCompile(`id="jobs-add-form-[A-Z2-7]+"`)
+	var ids []string
+	for _, name := range []string{"weekly", "monthly"} {
+		body = post("/cron/add", url.Values{"name": {name}, "spec": {"@weekly"}, "prompt": {"report"}}, datastar)
+		if !strings.Contains(body, `<span class="toast-text">Job scheduled.</span>`) || !strings.Contains(body, `<span class="nm">`+name+`</span>`) {
+			t.Errorf("Add in place: want the toast and %s listed:\n%s", name, body)
+		}
+		ids = append(ids, formID.FindString(body))
+	}
+	if ids[0] == "" || ids[0] == ids[1] {
+		t.Errorf("each job added gets a new add form id, so the morph replaces the form: %q", ids)
+	}
+
+	fc.set(func() { fc.execErr = errors.New("config file is locked") })
+	body = post("/cron/exec", url.Values{"enabled": {"false"}}, datastar)
+	if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">Couldn&#39;t change whether scheduled jobs may make changes.</span>`) || strings.Contains(body, "locked") {
+		t.Errorf("a failed change: want the plain alert and not the control's own words:\n%s", body)
+	}
+	if !c.has("2201 ", "action=cron exec") {
+		t.Errorf("the failure isn't logged as ActionFailed: %q", c.lines())
+	}
+	body += post("/cron/add", url.Values{"spec": {""}, "prompt": {"report"}}, datastar)
+	if !strings.Contains(body, `<span class="toast-text">A job needs a schedule and something to do.</span>`) || strings.Contains(body, `id="jobs-body"`) || strings.Contains(body, `id="jobs-add"`) {
+		t.Errorf("an error re-rendered the page, which would empty what was typed:\n%s", body)
+	}
+
+	rec := sendForm(s.Handler(), http.MethodPost, "/cron/run", url.Values{"id": {"j2"}}, nil)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/cron?msg=Running+now.") {
+		t.Errorf("a plain post: %d to %q, want 303 to /cron with its flash", rec.Code, loc)
+	}
+
+	rec = sendForm(s.Handler(), http.MethodPost, "/cron/delete", url.Values{"id": {"j1"}}, datastar)
+	if rec.Code != http.StatusPreconditionRequired || len(fc.Jobs()) != 4 {
+		t.Errorf("Delete without its confirm step over Datastar: %d with %d jobs left, want 428 and all 4", rec.Code, len(fc.Jobs()))
 	}
 }

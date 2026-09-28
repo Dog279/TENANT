@@ -242,11 +242,11 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /agents/remove": always,
 	"POST /agents/reset":  always,
 	// Scheduled jobs.
-	"POST /cron/add":         noStep,
-	"POST /cron/{id}/enable": noStep,
-	"POST /cron/{id}/delete": always,
-	"POST /cron/{id}/run":    noStep,
-	"POST /cron/exec":        unless("enabled", "", "false"),
+	"POST /cron/add":    noStep,
+	"POST /cron/enable": noStep,
+	"POST /cron/delete": always,
+	"POST /cron/run":    noStep,
+	"POST /cron/exec":   unless("enabled", "", "false"),
 	// Provider keys: storing one is typed; removing it loses it.
 	"POST /settings/keys/{id}/set":    noStep,
 	"POST /settings/keys/{id}/remove": always,

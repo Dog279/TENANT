@@ -3,16 +3,19 @@ package dashboard
 // cron.go is the server-rendered Cron admin section: list / add / enable /
 // disable / run / delete recurring jobs. It mirrors the Memory curator's
 // shape — a CronControl interface (satisfied in cmd/tenant), unconditional
-// route mounting with nil-guarded handlers, and form/303 mutations so every
-// view is a plain GET that httptest can assert on and a browser refresh can't
-// double-submit. All job fields render through html/template's auto-escaping
-// (no template.HTML), so a hostile job name/prompt cannot inject markup.
+// route mounting with nil-guarded handlers, and form mutations answered by
+// cronDone: in place when Datastar posts them (the page keeps its scroll and
+// a toast says what happened), else a 303 so a refresh can't double-submit.
+// All job fields render through html/template's auto-escaping (no
+// template.HTML), so a hostile job name/prompt cannot inject markup.
 //
 // Every route here is registered on the server mux, which Run() wraps in
 // secure() (auth + same-origin + fail-closed bind policy) — so the whole Cron
 // surface rides the dashboard's existing auth. Mutations are POST only.
 
 import (
+	"bytes"
+	"crypto/rand"
 	"net/http"
 	"strings"
 )
@@ -67,15 +70,16 @@ type CronJobView struct {
 func (s *Server) SetCron(c CronControl) { s.cron = c }
 
 // mountCronSSR registers the Cron page + its form actions. Mounted
-// unconditionally; handlers nil-guard on s.cron.
+// unconditionally; handlers nil-guard on s.cron. A job's own actions take its
+// id as a form field, so each form posts to one fixed URL (F1).
 func (s *Server) mountCronSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /cron", s.handleCronPage)
 	mux.HandleFunc("POST /cron/add", s.handleCronAddForm)
-	mux.HandleFunc("POST /cron/{id}/enable", s.handleCronEnableForm)
+	mux.HandleFunc("POST /cron/enable", s.handleCronEnableForm)
 	// Deleting a job and letting jobs make changes confirm (TEN-211);
 	// turning that off doesn't.
-	mux.HandleFunc("POST /cron/{id}/delete", needConfirm(nil, s.handleCronDeleteForm))
-	mux.HandleFunc("POST /cron/{id}/run", s.handleCronRunForm)
+	mux.HandleFunc("POST /cron/delete", needConfirm(nil, s.handleCronDeleteForm))
+	mux.HandleFunc("POST /cron/run", s.handleCronRunForm)
 	mux.HandleFunc("POST /cron/exec", needConfirm(confirmUnless("enabled", "", "false"), s.handleCronExecForm))
 }
 
@@ -84,27 +88,55 @@ type cronPageData struct {
 	Configured bool
 	ExecOn     bool
 	Jobs       []CronJobView
+	AddKey     string // ends the add form's id; a new one empties its boxes (cronDone)
 	Err        string
 	Msg        string
 }
 
-func (s *Server) handleCronPage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) cronData() cronPageData {
 	d := cronPageData{layoutData: layoutData{Title: "Scheduled jobs", Page: "cron"}}
+	if s.cron != nil {
+		d.Configured = true
+		d.Jobs = s.cron.Jobs()
+		d.ExecOn = s.cron.ExecEnabled()
+	}
+	return d
+}
+
+func (s *Server) handleCronPage(w http.ResponseWriter, r *http.Request) {
+	d := s.cronData()
 	d.Err = r.URL.Query().Get("err")
 	d.Msg = r.URL.Query().Get("msg")
-	if s.cron == nil {
-		s.render(w, s.tmpl.cron, d)
-		return
-	}
-	d.Configured = true
-	d.Jobs = s.cron.Jobs()
-	d.ExecOn = s.cron.ExecEnabled()
 	s.render(w, s.tmpl.cron, d)
+}
+
+// cronDone is every Scheduled jobs form's answer: in place for a Datastar
+// post, a 303 with the flash otherwise. In place it empties #jobs-flash and
+// re-renders #jobs-body. After a job is added it also sends #jobs-add with
+// its form under a new id, which the morph can't match to the old form, so
+// the boxes come back empty rather than ready to add the same job again.
+// Other answers leave #jobs-add, and what is typed in it, alone.
+func (s *Server) cronDone(w http.ResponseWriter, r *http.Request, msg, errMsg string, added bool) {
+	s.formDone(w, r, "/cron", msg, errMsg, func() (string, error) {
+		d := s.cronData()
+		parts := []string{"jobs-flash", "jobs-body"}
+		if added && d.Configured {
+			d.AddKey = "-" + rand.Text()
+			parts = append(parts, "jobs-add")
+		}
+		var buf bytes.Buffer
+		for _, p := range parts {
+			if err := s.tmpl.cron.ExecuteTemplate(&buf, p, d); err != nil {
+				return "", err
+			}
+		}
+		return buf.String(), nil
+	})
 }
 
 func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 	if s.cron == nil {
-		http.Redirect(w, r, "/cron", http.StatusSeeOther)
+		s.cronDone(w, r, "", "", false)
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -114,15 +146,15 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 	tz := strings.TrimSpace(r.FormValue("tz"))
 	exec := r.FormValue("exec") == "true" || r.FormValue("exec") == "on"
 	if spec == "" || prompt == "" {
-		redirectFlash(w, r, "/cron", "", "A job needs a schedule and something to do.")
+		s.cronDone(w, r, "", "A job needs a schedule and something to do.", false)
 		return
 	}
 	if err := s.cron.Add(CronAddSpec{Name: name, Spec: spec, Prompt: prompt, Kind: kind, Exec: exec, TZ: tz}); err != nil {
-		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron add", err,
-			"Couldn't schedule that job. Check the schedule (for example 0 9 * * 1-5, or @every 30m) and the time zone."))
+		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron add", err,
+			"Couldn't schedule that job. Check the schedule (for example 0 9 * * 1-5, or @every 30m) and the time zone."), false)
 		return
 	}
-	redirectFlash(w, r, "/cron", "Job scheduled.", "")
+	s.cronDone(w, r, "Job scheduled.", "", true)
 }
 
 // handleCronExecForm flips the GLOBAL cron-exec kill-switch. Previously this was
@@ -130,57 +162,58 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 // the console for a setting that gates every unattended job.
 func (s *Server) handleCronExecForm(w http.ResponseWriter, r *http.Request) {
 	if s.cron == nil {
-		http.Redirect(w, r, "/cron", http.StatusSeeOther)
+		s.cronDone(w, r, "", "", false)
 		return
 	}
 	on := r.FormValue("enabled") == "true"
 	if err := s.cron.SetExec(on); err != nil {
-		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron exec", err, "Couldn't change whether scheduled jobs may make changes."))
+		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron exec", err, "Couldn't change whether scheduled jobs may make changes."), false)
 		return
 	}
 	if on {
-		redirectFlash(w, r, "/cron", "Scheduled jobs may make changes now: jobs that run a command, or that you let make changes, get the tools that change things.", "")
+		s.cronDone(w, r, "Scheduled jobs may make changes now: jobs that run a command, or that you let make changes, get the tools that change things.", "", false)
 		return
 	}
-	redirectFlash(w, r, "/cron", "Scheduled jobs can't make changes now.", "")
+	s.cronDone(w, r, "Scheduled jobs can't make changes now.", "", false)
 }
 
 func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {
 	if s.cron == nil {
-		http.Redirect(w, r, "/cron", http.StatusSeeOther)
+		s.cronDone(w, r, "", "", false)
 		return
 	}
-	id := r.PathValue("id")
 	on := r.FormValue("enabled") == "true"
-	if err := s.cron.SetEnabled(id, on); err != nil {
-		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron set-enabled", err, "Couldn't update that job."))
+	if err := s.cron.SetEnabled(r.FormValue("id"), on); err != nil {
+		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron set-enabled", err, "Couldn't update that job."), false)
 		return
 	}
-	redirectFlash(w, r, "/cron", "", "")
+	if on {
+		s.cronDone(w, r, "Job turned on. It runs on its schedule.", "", false)
+		return
+	}
+	s.cronDone(w, r, "Job turned off. It won't run until you turn it on again.", "", false)
 }
 
 func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
 	if s.cron == nil {
-		http.Redirect(w, r, "/cron", http.StatusSeeOther)
+		s.cronDone(w, r, "", "", false)
 		return
 	}
-	id := r.PathValue("id")
-	if err := s.cron.Remove(id); err != nil {
-		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron remove", err, "Couldn't delete that job."))
+	if err := s.cron.Remove(r.FormValue("id")); err != nil {
+		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron remove", err, "Couldn't delete that job."), false)
 		return
 	}
-	redirectFlash(w, r, "/cron", "Job deleted.", "")
+	s.cronDone(w, r, "Job deleted.", "", false)
 }
 
 func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 	if s.cron == nil {
-		http.Redirect(w, r, "/cron", http.StatusSeeOther)
+		s.cronDone(w, r, "", "", false)
 		return
 	}
-	id := r.PathValue("id")
-	if err := s.cron.RunNow(id); err != nil {
-		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron run", err, "Couldn't run that job."))
+	if err := s.cron.RunNow(r.FormValue("id")); err != nil {
+		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron run", err, "Couldn't run that job."), false)
 		return
 	}
-	redirectFlash(w, r, "/cron", "Running now. The result appears in the Activity feed.", "")
+	s.cronDone(w, r, "Running now. The result appears in the Activity feed.", "", false)
 }
