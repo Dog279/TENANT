@@ -2,8 +2,11 @@ package dashboard
 
 import (
 	"context"
+	"html"
 	"log/slog"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -147,7 +150,7 @@ func TestActivity_EveryTabWakes(t *testing.T) {
 // Nil hub → page renders "unavailable", stream is a no-op (no panic).
 func TestActivity_NilHubGraceful(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil) // no SetLogs
-	if body := get(t, s, "/activity").Body.String(); !strings.Contains(body, "unavailable") {
+	if body := get(t, s, "/activity").Body.String(); !strings.Contains(body, "The Activity feed isn&#39;t available on this Tenant.") {
 		t.Errorf("nil hub should render an unavailable notice; got:\n%s", body)
 	}
 	r := httptest.NewRequest("GET", "/activity/events", nil)
@@ -231,6 +234,30 @@ func TestActivity_SourceAndLevelFilters(t *testing.T) {
 	}
 }
 
+// F1: the filter lands in the feed's data-init, a Datastar expression the
+// browser HTML-decodes before Datastar evaluates it. html/template's escaping
+// is undone there, so the values must arrive query-escaped: no quote from the
+// request may close the URL string.
+func TestActivity_FilterNotInDatastarExpression(t *testing.T) {
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetLogs(logs.NewMemory(10))
+	const payload = "x'),(window.__xss='fired'),('"
+	p := url.QueryEscape(payload)
+	body := get(t, s, "/activity?trace="+p+"&source="+p+"&level="+p).Body.String()
+	attrs := regexp.MustCompile(`\sdata-([\w:.-]+)="([^"]*)"`).FindAllStringSubmatch(body, -1)
+	if len(attrs) == 0 {
+		t.Fatalf("no Datastar attributes on /activity:\n%s", body)
+	}
+	for _, a := range attrs {
+		if v := html.UnescapeString(a[2]); strings.Contains(v, "x'") || strings.Count(v, "'")%2 != 0 {
+			t.Errorf("data-%s carries request text unescaped: %s", a[1], v)
+		}
+	}
+	if !strings.Contains(body, "trace="+p) {
+		t.Errorf("the stream URL should keep the trace filter, query-escaped; got:\n%s", body)
+	}
+}
+
 // Rows are html-escaped and errors get the error styling; a sub-agent's line
 // carries its agent chip.
 func TestLogRow_EscapesAndStyles(t *testing.T) {
@@ -243,5 +270,37 @@ func TestLogRow_EscapesAndStyles(t *testing.T) {
 	}
 	if !strings.Contains(row, "act-rowerr") || !strings.Contains(row, `class="chip">Programmer</span>`) || !strings.Contains(row, `class="src">subagents</span>`) {
 		t.Errorf("row styling/chips wrong: %s", row)
+	}
+}
+
+// UX-3: the feed is newest first, as its heading says: the backlog renders
+// newest on top and the stream prepends. The dashboard's own live streams
+// opening and closing stay on the dashboard tab, out of All.
+func TestActivity_NewestFirstWithoutStreamNoise(t *testing.T) {
+	l := logs.NewMemory(100)
+	l.Log(logs.Entry{Source: "system", Level: slog.LevelInfo, Msg: "older-marker"})
+	l.Log(logs.Entry{Source: "dashboard", Level: slog.LevelInfo, Msg: "Live events stream to 127.0.0.1:1", Fields: []logs.Field{{Key: "event", Value: "dashboard/1001"}}})
+	l.Log(logs.Entry{Source: "system", Level: slog.LevelInfo, Msg: "newer-marker"})
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetLogs(l)
+	body := get(t, s, "/activity").Body.String()
+	if i, j := strings.Index(body, "newer-marker"), strings.Index(body, "older-marker"); i < 0 || j < 0 || i > j {
+		t.Errorf("the backlog isn't newest first:\n%s", body)
+	}
+	if strings.Contains(body, "Live events stream") {
+		t.Error("All shows the dashboard's own stream noise")
+	}
+	if !strings.Contains(get(t, s, "/activity?source=dashboard").Body.String(), "Live events stream") {
+		t.Error("the dashboard tab should still show its streams")
+	}
+	r := httptest.NewRequest("GET", "/activity/events?cursor="+l.Epoch()+".1", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { s.handleActivitySSE(rec, r.WithContext(ctx)); close(done) }()
+	cancel()
+	<-done
+	if out := rec.Body.String(); !strings.Contains(out, "data: mode prepend") || strings.Contains(out, "mode append") || strings.Contains(out, "Live events stream") {
+		t.Errorf("the stream should prepend, without stream noise:\n%s", out)
 	}
 }

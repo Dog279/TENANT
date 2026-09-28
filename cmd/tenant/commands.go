@@ -1891,19 +1891,15 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
-	broker.LoadModes(stg.Permissions)
+	broker.LoadModes(stg.Permissions, stg.KnownCategories)
 	var stgMu sync.Mutex
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
 		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
-	broker.SetPersist(func(modes map[string]string) {
-		stgMu.Lock()
-		stg.Permissions = modes
-		stgMu.Unlock()
-		saveSettings()
-	})
+	broker.SetPersist(persistModes(stg, &stgMu, c.cfgDir, c.agent, pushSys))
+	announceNewCategories(broker, stg, &stgMu, saveSettings, pushSys)
 	// Per-tool permission rules (internal/approval): loaded from the same file,
 	// persisted on every /permissions add|rm, and re-read when the file is
 	// edited by hand — so a rule for a tool nobody programmed for is one line
@@ -2134,7 +2130,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		stgMu.Unlock()
 		saveSettings()
 	}
-	rt := newTeamRuntime(TeamConfig{
+	// teamCfg is kept: the dashboard's research builds its own runtime from a
+	// copy of it (TEN-210, C-1).
+	teamCfg := TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
 		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
@@ -2147,7 +2145,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		EmbedProfile:  embProf,
 		LocalRestore:  stg.Tools, // same map the shared mux restored from
 		LocalOnChange: localSave,
-	})
+	}
+	rt := newTeamRuntime(teamCfg)
 	life.AddFunc(lifecycle.Release, "team runtime", rt.Close) // close any per-agent browser sessions
 
 	// The main agent's LOCAL tools: orchestration (spawn/await) + comms +
@@ -2571,11 +2570,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// approver) is wired below, once the relay manager exists.
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
 	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
-	discordBroker.SetPersist(func(snap map[string]string) {
-		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
+	discordBroker.SetPersist(func(snap map[string]string, known []string) {
+		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) {
+			lc.Relay.Permissions, lc.Relay.KnownCategories = snap, known
+		})
 	})
 	if c.lc != nil {
-		discordBroker.LoadModes(c.lc.Relay.Permissions)
+		discordBroker.LoadModes(c.lc.Relay.Permissions, c.lc.Relay.KnownCategories)
 	}
 	discordToken := discordRelayToken(c.cfgDir)
 	if strings.TrimSpace(discordToken) != "" {
@@ -2686,11 +2687,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log.With("source", "approvals"), broker)
-	imsgBroker.SetPersist(func(snap map[string]string) {
-		persistChoice(c.cfgDir, c.lc, pushSys, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+	imsgBroker.SetPersist(func(snap map[string]string, known []string) {
+		persistChoice(c.cfgDir, c.lc, pushSys, "imessage: the permission change", func(lc *launchConfig) {
+			lc.IMessage.Permissions, lc.IMessage.KnownCategories = snap, known
+		})
 	})
 	if c.lc != nil {
-		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
+		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
 
@@ -2937,6 +2940,45 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		}
 	}
 
+	// Deep research streams its progress lines to the system feed (sysCh);
+	// sub-agent tool activity already flows via teamCh. The report returns to
+	// the chat pane. Reuses the same TeamRuntime as the orchestrator.
+	researchSay := func(format string, a ...any) {
+		pushTo("research", "research: "+fmt.Sprintf(format, a...))
+	}
+	// C3: open the persistent research store under <data>/research. Failure
+	// degrades gracefully — runWithPersistence handles a nil store, /research
+	// history will surface "unavailable" cleanly.
+	rstore, rerr := research.New(c.dataDir)
+	if rerr != nil {
+		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
+		rstore = nil
+	}
+	researchCtl := &researchControl{
+		ag: ag, rt: rt, say: researchSay, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx,
+		opts: defaultResearchOpts(), store: rstore,
+		emitTimeline: func(u tui.ResearchTimelineUpdate) {
+			// Non-blocking send: a paused/slow TUI must not stall the
+			// orchestrator. The TUI also re-renders from a single
+			// snapshot anyway — a missed mid-update is fine.
+			select {
+			case timelineCh <- u:
+			default:
+			}
+		},
+	}
+	// Helpers and goals: ONE instance each, shared by the terminal app and the
+	// dashboard. A second goalControl would show nothing; a second
+	// agentControl would split the config lock.
+	agentCtl := &agentControl{cfgDir: c.cfgDir, rt: rt}
+	goalCtl := newGoalControl(ag, goalLoopCeilingFromConfig(c.lc))
+	// Dashboard v2 pages (TEN-207/209/210/212): the broker is the safety
+	// control, and the pages drive the same controls the terminal app does.
+	dashMgr.safety = broker
+	dashMgr.safetyFacts = newSafetyFacts()
+	dashMgr.agents = newDashAgents(agentCtl)
+	dashMgr.goal = newDashGoal(goalCtl, pushSys)
+	dashMgr.research = newDashResearch(ctx, life, teamCfg, rt, researchCtl, teamWeb, researchSay)
 	// Wire the dashboard's eval/quality surface (TEN-201) now that evalSched
 	// exists (it's built inside the self-improve block above; nil when
 	// --self-improve=false, which evalTUIControl handles as persist-only), then
@@ -3041,20 +3083,6 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	if c.backend == "echo" || modelName == "" {
 		modelName = c.backend
 	}
-	// Deep research streams its progress lines to the system feed (sysCh);
-	// sub-agent tool activity already flows via teamCh. The report returns to
-	// the chat pane. Reuses the same TeamRuntime as the orchestrator.
-	researchSay := func(format string, a ...any) {
-		pushTo("research", "research: "+fmt.Sprintf(format, a...))
-	}
-	// C3: open the persistent research store under <data>/research. Failure
-	// degrades gracefully — runWithPersistence handles a nil store, /research
-	// history will surface "unavailable" cleanly.
-	rstore, rerr := research.New(c.dataDir)
-	if rerr != nil {
-		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
-		rstore = nil
-	}
 	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
 	// If we launched degraded because the endpoint was UNREACHABLE, start polling
 	// now so the operator sees it recover without first having to send a failing
@@ -3117,21 +3145,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			sc.surface = surfaceTUI
 			return sc
 		}(),
-		Research: &researchControl{
-			ag: ag, rt: rt, say: researchSay, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx,
-			opts: defaultResearchOpts(), store: rstore,
-			emitTimeline: func(u tui.ResearchTimelineUpdate) {
-				// Non-blocking send: a paused/slow TUI must not stall the
-				// orchestrator. The TUI also re-renders from a single
-				// snapshot anyway — a missed mid-update is fine.
-				select {
-				case timelineCh <- u:
-				default:
-				}
-			},
-		},
-		Agents:           &agentControl{cfgDir: c.cfgDir, rt: rt},
-		Goals:            newGoalControl(ag, goalLoopCeilingFromConfig(c.lc)),
+		Research:         researchCtl, // the same controls the dashboard drives
+		Agents:           agentCtl,
+		Goals:            goalCtl,
 		Review:           newReviewControl(ag, rt),
 		Reconnect:        reconnectMon,
 		TeamEvents:       teamCh,

@@ -493,3 +493,37 @@ func TestChunkMessage(t *testing.T) {
 		t.Error("chunks must reassemble to the original")
 	}
 }
+
+// REVSEC-2: the relay stamps its broker's lock beside the approver, so a
+// connector tool that never asks the broker (trusted service, allow rule)
+// still refuses what Discord's exec mode locks; a sub-agent the turn spawns
+// on the team's run window keeps both stamps.
+func TestRelay_StampsTheLockForSubAgentsToo(t *testing.T) {
+	cr := ctxCapRunner{ch: make(chan context.Context, 1)}
+	fs := &fakeSender{}
+	r := newRelay(cr, fs, op)
+	r.approver = newDiscordApprover(fs, nil)
+	b := newDiscordApprovalBroker(nil)
+	b.SetLock(func(action, cat string) bool { return action == "mcp:x:delete" })
+	r.confirm, r.locked = b.Confirm, b.Locked
+	r.Start(context.Background())
+	r.handleInbound(discord.Inbound{AuthorID: op, ChannelID: "dm1", Content: "do a thing"})
+	var turn context.Context
+	select {
+	case turn = <-cr.ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never ran")
+	}
+	sub := inheritExecSurface(context.Background(), turn) // a run window opened by a local turn
+	for name, ctx := range map[string]context.Context{"turn": turn, "sub-agent": sub} {
+		if !offsiteLocked(ctx, "mcp:x:delete") || offsiteLocked(ctx, "mcp:x:search") {
+			t.Errorf("%s: the Discord lock isn't stamped", name)
+		}
+		if offsiteConfirmFrom(ctx) == nil || execSurfaceFrom(ctx) != surfaceDiscord {
+			t.Errorf("%s: lost the Discord approver or surface", name)
+		}
+	}
+	if offsiteLocked(context.Background(), "mcp:x:delete") {
+		t.Error("a local turn has no lock")
+	}
+}

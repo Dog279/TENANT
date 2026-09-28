@@ -14,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,20 @@ func saveSettingsOrTell(stg *settings, cfgDir, agentID string, tell func(string)
 		path := settingsPath(cfgDir, agentID)
 		sysNotSaved.Log(context.Background(), "what", filepath.Base(path), "path", path, "err", err)
 		tell(errNotSaved("settings: the change", err).Error())
+	}
+}
+
+// persistModes is the broker's persist hook: stg and the file change in one
+// hold of mu, so the settings watcher, which reads the file in a hold of its
+// own, never sees one without the other. Split, a watcher tick between them
+// read the older file as someone's edit and reloaded it: "Keep them at Ask"
+// came undone (C-4).
+func persistModes(stg *settings, mu *sync.Mutex, cfgDir, agentID string, tell func(string)) func(map[string]string, []string) {
+	return func(modes map[string]string, known []string) {
+		mu.Lock()
+		defer mu.Unlock()
+		stg.Permissions, stg.KnownCategories = modes, known
+		saveSettingsOrTell(stg, cfgDir, agentID, tell)
 	}
 }
 
@@ -77,7 +92,12 @@ func watchSettings(ctx context.Context, cfgDir, agentID string, broker *approval
 // the system log.
 func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *toolRules, mu *sync.Mutex, stg *settings) string {
 	path := settingsPath(cfgDir, agentID)
+	// The file and the marker it is compared with are read in one hold, so a
+	// save in between can't make the process's own write look like an edit.
+	mu.Lock()
 	fresh, err := loadSettings(cfgDir, agentID)
+	savedKnown := slices.Clone(stg.KnownCategories)
+	mu.Unlock()
 	if err != nil {
 		sysConfigNotLoaded.Log(context.Background(), "path", path, "fallback", "the live settings stay as they were", "err", err)
 		return "not applied: " + err.Error()
@@ -104,12 +124,20 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 				diff++
 			}
 		}
-		if diff > 0 {
-			broker.LoadModes(fresh.Permissions)
+		// The known_categories marker (TEN-343) reloads with the modes; stg
+		// tracks the file's, so the process's own saves compare equal.
+		marker := !slices.Equal(fresh.KnownCategories, savedKnown)
+		if diff > 0 || marker {
+			broker.LoadModes(fresh.Permissions, fresh.KnownCategories)
 			mu.Lock()
-			stg.Permissions = broker.Modes()
+			stg.Permissions, stg.KnownCategories = broker.Modes(), fresh.KnownCategories
 			mu.Unlock()
+		}
+		if diff > 0 {
 			parts = append(parts, fmt.Sprintf("%d category mode(s)", diff))
+		}
+		if marker {
+			parts = append(parts, "the known categories")
 		}
 	}
 	// Exec profiles: keep stg tracking the FILE (invalid entries included) so a

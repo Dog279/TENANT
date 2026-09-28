@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -55,7 +56,7 @@ func mcpServer(fc MCPControl) *Server {
 
 func TestMCP_PageNotConfigured(t *testing.T) {
 	rec := get(t, mcpServer(nil), "/mcp")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "aren't configured") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Remote services aren&#39;t available on this Tenant.") {
 		t.Errorf("nil mcp should render not-configured; got %d", rec.Code)
 	}
 }
@@ -113,7 +114,7 @@ func TestMCP_ConnectRejectsEmpty(t *testing.T) {
 
 func TestMCP_Remove(t *testing.T) {
 	fc := &fakeMCPCtl{}
-	rec := submitForm(t, mcpServer(fc), "/mcp/remove", "target=mcp:x")
+	rec := submitForm(t, mcpServer(fc), "/mcp/remove", "target=mcp:x&confirm=yes")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -125,8 +126,61 @@ func TestMCP_Remove(t *testing.T) {
 func TestMCP_MutationsNilSafe(t *testing.T) {
 	s := mcpServer(nil)
 	for _, p := range []string{"/mcp/connect", "/mcp/remove"} {
-		if rec := submitForm(t, s, p, "url=x&target=y"); rec.Code != http.StatusSeeOther {
+		if rec := submitForm(t, s, p, "url=x&target=y&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}
+	}
+}
+
+// REVSEC-9 and UX-7: the page shows a service's address without the parts
+// that carry a key; Reconnect names the service instead of posting its
+// address; an address in the page's URL is refused; and an address that
+// can't work is refused on the page instead of failing out of sight.
+func TestMCP_AddressStaysOffThePageAndOutOfURLs(t *testing.T) {
+	s, _ := ssrServer()
+	f := &fakeMCPCtl{servers: []MCPServerView{{Label: "mcp:tools", URL: "https://user:pw@tools.example/mcp?api_key=SEKRIT#frag", Enabled: true, NeedsReauth: true}}}
+	s.SetMCP(f)
+	body := get(t, s, "/mcp").Body.String()
+	if strings.Contains(body, "SEKRIT") || strings.Contains(body, "pw@") || !strings.Contains(body, "https://tools.example/mcp") ||
+		!strings.Contains(body, `<input type="hidden" name="target" value="mcp:tools">`) {
+		t.Errorf("the Remote services page shows the key, or Reconnect posts the address:\n%s", body)
+	}
+	connected := func() (n int, u string) {
+		for i := 0; i < 50; i++ {
+			f.mu.Lock()
+			n, u = f.connectCalls, f.connectURL
+			f.mu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return n, u
+	}
+	if rec := ssrPost(t, s, "/mcp/connect", url.Values{"target": {"mcp:tools"}}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reconnect: %d", rec.Code)
+	}
+	if n, u := connected(); n != 1 || !strings.Contains(u, "SEKRIT") {
+		t.Errorf("reconnect by name: %d calls with %q, want the saved address", n, u)
+	}
+	for _, tc := range []struct {
+		target string
+		form   url.Values
+	}{
+		{"/mcp/connect?url=https%3A%2F%2Fx.example%2Fmcp%3Fapi_key%3DQUERYKEY", url.Values{"url": {"https://x.example/mcp"}}},
+		{"/mcp/connect", url.Values{"url": {"not a url"}}},
+		{"/mcp/connect", url.Values{"url": {"file:///etc/passwd"}}},
+		{"/mcp/connect", url.Values{"url": {"https://"}}},
+	} {
+		rec := ssrPost(t, s, tc.target, tc.form)
+		if loc := rec.Header().Get("Location"); !strings.Contains(loc, "err=") || strings.Contains(loc, "QUERYKEY") {
+			t.Errorf("%s %v: %s, want refused on the page", tc.target, tc.form, loc)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.connectCalls != 1 {
+		t.Errorf("a refused address still connected: %d calls, last %q", f.connectCalls, f.connectURL)
 	}
 }

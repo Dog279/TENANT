@@ -94,6 +94,11 @@ type Server struct {
 	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Activity unavailable
 	logbook      *logapi.API         // the log book's API v2 over logs (logbook.go)
 	rules        RuleControl         // per-tool permission rules (Tools page card); nil = card hidden
+	safety       SafetyControl       // TEN-207: the main broker's category modes; nil = "isn't available"
+	safetyFacts  func() SafetyFacts  // who commands run as, and whether sandboxed (nil-safe)
+	agents       AgentControl        // TEN-209: named helpers; nil = "isn't available"
+	goal         GoalControl         // TEN-212: the goal loop; nil under serve
+	research     ResearchControl     // TEN-210: deep research; nil = "isn't available"
 	broker       *agent.Broker
 	mux          *http.ServeMux
 	log          *slog.Logger
@@ -109,6 +114,11 @@ type Server struct {
 	// (TEN-332). Set through SetTrustedHosts.
 	trustedMu sync.RWMutex
 	trusted   []string
+
+	// sessions are the signed-in browsers: the sign-in cookie holds one of
+	// these random ids, never the key (auth_pages.go).
+	sessMu   sync.Mutex
+	sessions map[string]time.Time // id → expiry
 }
 
 // New constructs the dashboard server and builds its routes. A nil logger
@@ -153,7 +163,7 @@ func isDashboardStream(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/events", "/activity/events", "/logs/tail", "/ws":
+	case "/events", "/activity/events", "/logs/tail", "/ws", "/research/live":
 		return true
 	default:
 		return logapi.Streaming(r)
@@ -179,9 +189,14 @@ func (w serverErrors) Write(p []byte) (int, error) {
 
 // observe records each request as a Request activity in the diagnostic
 // channel: its method, route pattern and status. Never the path, the query
-// or the body, which can carry IDs and tokens.
+// or the body, which can carry IDs and tokens. The status strip's poll
+// (every page, every 20s) is left out: it would bury the requests that matter.
 func (s *Server) observe(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ui/status" {
+			h.ServeHTTP(w, r)
+			return
+		}
 		ctx, act := event.Start(r.Context(), Request, "method", r.Method, "route", s.route(r))
 		sw := &statusWriter{ResponseWriter: w}
 		returned := false
@@ -322,6 +337,13 @@ func (s *Server) routes() {
 	s.mountMCPSSR(s.mux)
 	s.mountIntegrationsSSR(s.mux)
 	s.mountAccessSSR(s.mux)
+
+	// Dashboard v2 pages (TEN-207/209/210/212). Same nil-safe pattern; SetSafety
+	// / SetAgents / SetGoal / SetResearch wire after construction.
+	s.mountSafetySSR(s.mux)
+	s.mountAgentsSSR(s.mux)
+	s.mountGoalSSR(s.mux)
+	s.mountResearchSSR(s.mux)
 }
 
 // handleHealthz reports liveness as 200 JSON {"status":"ok"}.
@@ -359,9 +381,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) (err error) {
 	if err != nil {
 		return err
 	}
-	// secure() wraps the routed mux with bearer auth + same-origin CORS;
-	// observe() records each request, rejected ones too.
-	srv := newDashboardHTTPServer(s.cfg.Addr, s.observe(s.secure(s.Handler())), tlsCfg)
+	// served(): secure() wraps the routed mux with bearer auth + same-origin
+	// CORS; observe() records each request, rejected ones too.
+	srv := newDashboardHTTPServer(s.cfg.Addr, s.served(), tlsCfg)
 	srv.ErrorLog = log.New(serverErrors{ctx}, "", 0)
 
 	shutdownDone := make(chan struct{})

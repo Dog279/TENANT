@@ -1,7 +1,6 @@
 {{define "content"}}
-{{if not .Open}}<div class="card"><div class="dim">The log book (logbook.db) isn't open in this process, so there is nothing to investigate here. The <a class="linkbtn" href="/activity">Activity feed</a> still shows the text logs.</div></div>{{else}}
-{{if .Msg}}<div class="banner undo">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+{{if not .Open}}<div class="card state-off">The log book isn't open right now, so there is nothing to look into here. The <a class="linkbtn" href="/activity">Activity feed</a> still shows the text logs.</div>{{else}}
+{{template "ui-flash" .}}
 <div class="lgv" data-signals:sel="{{.Sel}}">
   <nav class="lg-tree" aria-label="Logs">
     <a href="/logs" class="lg-leaf lg-root{{if eq .Mode "summary"}} on{{end}}">Summary</a>
@@ -28,7 +27,7 @@
     <span class="lg-title">{{.Heading}}</span>
     <code class="lg-q">{{if .Q}}{{.Q}}{{else}}every event{{end}}</code>
     <span class="sp"></span>
-    {{if not .FilterErr}}<span id="lg-count" class="lg-count dim" data-init="@get('{{.CountURL}}')">counting…</span>
+    {{if not .FilterErr}}<span id="lg-count" class="lg-count dim loading" data-init="@get('{{.CountURL}}')">Counting</span>
     <a class="btn sm{{if .Live}} on{{end}}" href="{{.LiveHref}}" title="{{if .Live}}new events appear at the top as they are written; click to stop{{else}}show new events as they are written{{end}}">{{if .Live}}● live{{else}}○ live{{end}}</a>{{end}}
   </div>
   <div class="lg-grid" id="lg-grid">
@@ -79,7 +78,7 @@
     {{if .Security}}<div class="dim lg-note">The Security log is never cleared, only archived.</div>{{else}}
     <div class="dim lg-note">Export it first:</div>
     <div class="chips">{{range $.ClearExports}}<a class="chip" href="{{.Href}}" download>{{.Label}}</a>{{end}}</div>
-    <form method="post" action="{{.ClearAction}}"><div class="lg-btns"><button class="btn sm danger" type="submit">Clear {{.Events}} events</button></div></form>
+    <div class="lg-btns">{{template "ui-confirm" (confirm .ClearAction (printf "Clear %s events" .Events) "These events are deleted for good. Export them first if you might need them.")}}</div>
     <div class="dim lg-note">Clearing is recorded in the Security log.</div>{{end}}
   </details>
   {{end}}

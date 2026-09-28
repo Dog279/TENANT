@@ -13,6 +13,10 @@ import (
 	"embed"
 	"html/template"
 	"net/http"
+	"net/url"
+	"path"
+	"strconv"
+	"strings"
 )
 
 //go:embed templates
@@ -59,11 +63,21 @@ type ssrTemplates struct {
 	mcp           *template.Template // remote MCP connectors page (TEN-205)
 	integrations  *template.Template // integration-config page (TEN-206)
 	access        *template.Template // iMessage + Discord access page (TEN-208)
+	ui            *template.Template // ui.html alone: the shared partials patched over SSE (TEN-211)
+	safety        *template.Template // approvals & safety page (TEN-207)
+	approvalQ     *template.Template // the approval queue partial, patched over /events
+	agents        *template.Template // helpers page (TEN-209)
+	goal          *template.Template // autopilot page (TEN-212)
+	research      *template.Template // research page (TEN-210)
+	researchRun   *template.Template // one past research run
+	researchParts *template.Template // the research partials, patched over /research/live
 }
 
+// parseSSR parses every set with the ui.html partials and their funcs
+// (TEN-211), so any page can use ui-confirm, ui-flash and the rest.
 func parseSSR() *ssrTemplates {
 	must := func(files ...string) *template.Template {
-		return template.Must(template.ParseFS(ssrFS, files...))
+		return template.Must(template.New(path.Base(files[0])).Funcs(uiFuncs).ParseFS(ssrFS, append(files, "templates/ui.html")...))
 	}
 	return &ssrTemplates{
 		dashboard:     must("templates/layout.html", "templates/dashboard.html"),
@@ -86,6 +100,14 @@ func parseSSR() *ssrTemplates {
 		mcp:           must("templates/layout.html", "templates/mcp.html"),
 		integrations:  must("templates/layout.html", "templates/integrations.html"),
 		access:        must("templates/layout.html", "templates/access.html"),
+		ui:            template.Must(template.New("ui.html").Funcs(uiFuncs).ParseFS(ssrFS, "templates/ui.html")),
+		safety:        must("templates/layout.html", "templates/safety.html", "templates/approvalq.html"),
+		approvalQ:     must("templates/approvalq.html"),
+		agents:        must("templates/layout.html", "templates/agents.html"),
+		goal:          must("templates/layout.html", "templates/goal.html"),
+		research:      must("templates/layout.html", "templates/research.html", "templates/research_parts.html"),
+		researchRun:   must("templates/layout.html", "templates/research_run.html", "templates/research_parts.html"),
+		researchParts: must("templates/research_parts.html"),
 	}
 }
 
@@ -99,6 +121,7 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /tools", s.handleToolsPage)
 	mux.HandleFunc("GET /activity", s.handleActivityPage)
 	mux.HandleFunc("GET /chat", s.handleChatPage)
+	mux.HandleFunc("GET /ui/status", s.handleUIStatus) // the status strip every page polls (TEN-211)
 
 	// Real-time event stream (chat transcript + activity feed) — TEN-109.
 	mux.HandleFunc("GET /events", s.handleEventsSSE)
@@ -118,9 +141,15 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /tools/{name}/toggle", s.handleToolToggleForm)
 	mux.HandleFunc("POST /plugins/{label}/toggle", s.handlePluginToggleForm)
-	mux.HandleFunc("POST /posture", s.handlePostureForm)
-	mux.HandleFunc("POST /tools/rules/add", s.handleRuleAddForm)
-	mux.HandleFunc("POST /tools/rules/remove", s.handleRuleRemoveForm)
+	// Giving the agent its tools that change things, a rule that lets a tool
+	// run without asking, and removing a rule that made one ask or blocked
+	// it all confirm (TEN-211). The remove form posts the rule's current
+	// mode, so a missing one confirms too.
+	mux.HandleFunc("POST /posture", needConfirm(confirmUnless("allow_send", "", "false"), s.handlePostureForm))
+	mux.HandleFunc("POST /tools/rules/add", needConfirm(confirmUnless("mode", "ask", "deny"), s.handleRuleAddForm))
+	mux.HandleFunc("POST /tools/rules/remove", needConfirm(func(r *http.Request) bool {
+		return s.ruleMode(strings.TrimSpace(r.FormValue("pattern"))) != "allow"
+	}, s.handleRuleRemoveForm))
 	mux.HandleFunc("POST /chat/send", s.handleChatSend)
 	mux.HandleFunc("POST /chat/interject", s.handleChatInterject)
 	mux.HandleFunc("POST /chat/stop", s.handleChatStop)
@@ -154,6 +183,25 @@ func (s *Server) renderToolRow(t ToolInfo) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// Label is the tool's name as the page shows it. A remote service's tool is
+// named "mcp:<service>:<tool>"; its group already names the service, so the
+// row shows only the tool.
+func (t ToolInfo) Label() string {
+	if rest, ok := strings.CutPrefix(t.Name, "mcp:"); ok {
+		if i := strings.LastIndexByte(rest, ':'); i >= 0 && i < len(rest)-1 {
+			return rest[i+1:]
+		}
+	}
+	return t.Name
+}
+
+// ToggleURL is the row's toggle target. A remote tool server names its own
+// tools, so the name is path-escaped: a raw "../" in it would aim the button
+// at another dashboard route (F1).
+func (t ToolInfo) ToggleURL() string {
+	return "/tools/" + url.PathEscape(t.Name) + "/toggle?enabled=" + strconv.FormatBool(!t.Enabled)
 }
 
 // findTool returns the current state of the named tool (zero value if gone).
@@ -194,14 +242,28 @@ func (s *Server) toolList() []ToolInfo {
 	return s.tools.ToolList()
 }
 
+// shortName is an integration's name without the description its label
+// carries: "Web browsing" for "Web browsing (Chrome + optional …)".
+func shortName(label string) string {
+	for _, sep := range []string{" (", " — ", " - "} {
+		if i := strings.Index(label, sep); i > 0 {
+			label = label[:i]
+		}
+	}
+	return label
+}
+
+// navLink is a name that links to its page.
+type navLink struct{ Name, Href string }
+
 type dashboardData struct {
 	layoutData
-	Plugins      []string
+	Plugins      []navLink // the connected services, each to its page
 	ToolsEnabled int
 	ToolsTotal   int
 	WorkingCount int
 	HasMemory    bool
-	AllowSend    bool
+	ActTools     int // the tools that change things that are on (actTools)
 	// Quality (TEN-200): plain status-board summary of the eval gate. HasQuality
 	// is false when no EvalControl is wired or no check has run yet.
 	HasQuality   bool
@@ -217,6 +279,12 @@ type dashboardData struct {
 	// Alerts fired in the last day (TEN-399), and the newest one's message.
 	Alerts      int
 	AlertLatest string
+	// ModelTrouble is how long ago a model call last failed, within the
+	// hour; "" with none.
+	ModelTrouble string
+	// Waiting is how many actions wait for the operator's OK (D13): the
+	// card answers "is anything waiting?" even when the answer is no.
+	Waiting int
 }
 
 func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
@@ -227,16 +295,29 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 			enabled++
 		}
 	}
-	var plugins []string
-	if s.tools != nil {
-		plugins = s.tools.Plugins()
+	// Connected services are the integrations set up and the remote services
+	// connected, by name: not every plugin built in, set up or not (UX-5).
+	var services []navLink
+	if s.integrations != nil {
+		for _, v := range s.integrations.Integrations() {
+			if v.Configured {
+				services = append(services, navLink{shortName(v.Label), "/integrations"})
+			}
+		}
+	}
+	if s.mcp != nil {
+		for _, v := range s.mcp.Servers() {
+			if v.Enabled {
+				services = append(services, navLink{strings.TrimPrefix(v.Label, "mcp:"), "/mcp"})
+			}
+		}
 	}
 	d := dashboardData{
 		layoutData:   layoutData{Title: "Overview", Page: "dashboard"},
-		Plugins:      plugins,
+		Plugins:      services,
 		ToolsEnabled: enabled,
 		ToolsTotal:   len(tools),
-		AllowSend:    posture(tools),
+		ActTools:     actTools(tools),
 	}
 	if s.mem != nil {
 		d.HasMemory = true
@@ -274,18 +355,38 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.Alerts, d.AlertLatest = s.recentAlerts(r.Context())
+	if at := s.modelTrouble(r.Context()); !at.IsZero() {
+		d.ModelTrouble = relAge(at)
+	}
+	d.Waiting = s.statusView().Approvals
 	s.render(w, s.tmpl.dashboard, d)
 }
 
 type toolGroup struct {
-	Plugin string
+	Plugin string // "" for tools no plugin owns
+	Label  string // the group's heading
 	AllOn  bool
 	Tools  []ToolInfo
 }
+
+// groupLabel is a tool group's heading: a remote service's plugin
+// ("mcp:<service>") is named as one, and tools no plugin owns are "Other
+// tools".
+func groupLabel(plugin string) string {
+	if plugin == "" {
+		return "Other tools"
+	}
+	if svc, ok := strings.CutPrefix(plugin, "mcp:"); ok {
+		return svc + " (remote service)"
+	}
+	return plugin
+}
+
 type toolsData struct {
 	layoutData
 	Groups    []toolGroup
-	AllowSend bool
+	AllowSend bool // every tool that changes things is on
+	ActTools  int  // how many of them are on
 	// Per-tool permission rules card (RuleControl); RulesOn=false hides it.
 	RulesOn  bool
 	Rules    []ToolRuleRow
@@ -298,12 +399,9 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
 	groups := map[string]*toolGroup{}
 	for _, t := range tools {
 		p := t.Plugin
-		if p == "" {
-			p = "(ungrouped)"
-		}
 		g, ok := groups[p]
 		if !ok {
-			g = &toolGroup{Plugin: p, AllOn: true}
+			g = &toolGroup{Plugin: p, Label: groupLabel(p), AllOn: true}
 			groups[p] = g
 			order = append(order, p)
 		}
@@ -320,6 +418,7 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
 		layoutData: layoutData{Title: "Tools", Page: "tools"},
 		Groups:     out,
 		AllowSend:  posture(tools),
+		ActTools:   actTools(tools),
 		Msg:        r.URL.Query().Get("msg"),
 		Err:        r.URL.Query().Get("err"),
 	}

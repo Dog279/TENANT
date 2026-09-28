@@ -14,7 +14,9 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"time"
 
 	"tenant/internal/agent"
 )
@@ -27,11 +29,12 @@ type wsCoordinator struct {
 	runner AgentRunner
 	broker *agent.Broker // the chat stream a failed turn is reported on
 
-	mu     sync.Mutex
-	active bool               // a Turn is currently running on the agent
-	owner  *wsConn            // the connection that started the active turn
-	cancel context.CancelFunc // cancels the active turn's context
-	id     uint64             // monotonic id of the active turn (and counter)
+	mu      sync.Mutex
+	active  bool               // a Turn is currently running on the agent
+	started time.Time          // when the active turn started (the busy strip's age)
+	owner   *wsConn            // the connection that started the active turn
+	cancel  context.CancelFunc // cancels the active turn's context
+	id      uint64             // monotonic id of the active turn (and counter)
 }
 
 // newWSCoordinator builds the coordinator over the shared agent runner. The
@@ -63,6 +66,7 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 	co.id++
 	turnID := co.id
 	co.active = true
+	co.started = time.Now()
 	co.owner = conn
 	co.cancel = cancel
 	co.mu.Unlock()
@@ -78,7 +82,9 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 // pump relays them and the buffered result is dropped. Its error is not: a
 // turn-gate rejection or a failure before the loop starts reaches no event at
 // all, so a failed turn is logged and posted to the chat, as the TUI does —
-// the operator sent that message. A turn the operator stopped did not fail.
+// the operator sent that message. The chat says so plainly and the log keeps
+// the error, unless it is a PlainError (D21). A turn the operator stopped did
+// not fail.
 func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
 	_, err := co.runner.Turn(ctx, agent.TurnRequest{
 		UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
@@ -87,7 +93,12 @@ func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
 		return
 	}
 	ChatTurnFailed.Log(ctx, "err", err)
-	co.broker.Publish(agent.Event{Kind: agent.EventError, Text: "turn failed: " + err.Error()})
+	msg := "Your agent couldn't answer that message. The Logs page has the reason."
+	var pe PlainError
+	if errors.As(err, &pe) {
+		msg = "Your agent couldn't answer: " + string(pe)
+	}
+	co.broker.Publish(agent.Event{Kind: agent.EventError, Text: msg})
 }
 
 // finish clears the active-turn state after a turn goroutine returns. It only
@@ -153,6 +164,7 @@ func (co *wsCoordinator) startBackground(query string) bool {
 	co.id++
 	turnID := co.id
 	co.active = true
+	co.started = time.Now()
 	co.owner = nil // connection-less
 	co.cancel = cancel
 	co.mu.Unlock()
@@ -173,4 +185,15 @@ func (co *wsCoordinator) stopActive() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// busy reports whether a turn this dashboard started is running, and for how
+// long (the status strip, TEN-211).
+func (co *wsCoordinator) busy() (bool, time.Duration) {
+	co.mu.Lock()
+	defer co.mu.Unlock()
+	if !co.active {
+		return false, 0
+	}
+	return true, time.Since(co.started)
 }

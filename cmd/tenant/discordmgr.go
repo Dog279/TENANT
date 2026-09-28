@@ -218,6 +218,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 	}
 	if m.broker != nil {
 		rl.confirm = m.broker.Confirm // gated tools route through the per-category broker (TEN-231)
+		rl.locked = m.broker.Locked
 	}
 	rl.ingest = m.ingest // surface inbound DMs in the shared activity feed (TEN-232)
 	rl.degraded = m.degraded

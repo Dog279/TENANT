@@ -49,7 +49,7 @@ func TestBroker_SeedAndLoadModes(t *testing.T) {
 		t.Fatal("destructive must never be flag-seeded to allow")
 	}
 	// Persisted modes override flags.
-	b.LoadModes(map[string]string{"exec": "deny", "web": "allow", "bogus": "allow"})
+	b.LoadModes(map[string]string{"exec": "deny", "web": "allow", "bogus": "allow"}, nil)
 	modes = b.Modes()
 	if modes[catExec] != "deny" || modes[catWeb] != "allow" {
 		t.Fatal("LoadModes should override")

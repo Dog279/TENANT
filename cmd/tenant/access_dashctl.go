@@ -9,7 +9,6 @@ package main
 // imports internal/tui.
 
 import (
-	"fmt"
 	"runtime"
 
 	"tenant/internal/dashboard"
@@ -36,7 +35,7 @@ func toPermRows(p tui.PermissionControl) []dashboard.PermissionRow {
 	in := p.Permissions()
 	out := make([]dashboard.PermissionRow, 0, len(in))
 	for _, pi := range in {
-		out = append(out, dashboard.PermissionRow{Category: pi.Category, Mode: pi.Mode, Desc: pi.Desc})
+		out = append(out, dashboard.PermissionRow{Category: pi.Category, Mode: pi.Mode, Desc: pi.Desc, Title: pi.Title, Can: pi.Can, New: pi.New})
 	}
 	return out
 }
@@ -74,7 +73,11 @@ func (a dashAccess) IMessageAllow(h string) (string, bool, error) {
 	if a.im == nil {
 		return "", false, errIMessageUnavailable
 	}
-	return a.im.Allow(h)
+	norm, added, err := a.im.Allow(h)
+	if err != nil && norm == "" { // it didn't normalize: not a phone number or email
+		return "", false, dashboard.PlainError("That isn't a phone number or an email address.")
+	}
+	return norm, added, err
 }
 func (a dashAccess) IMessageDeny(h string) (string, bool, error) {
 	if a.im == nil {
@@ -148,7 +151,8 @@ func setPermissionFromDashboard(p tui.PermissionControl, cat, mode string) (bool
 	return p.SetPermission(cat, mode)
 }
 
+// The page shows these as they are (D21).
 var (
-	errIMessageUnavailable = fmt.Errorf("imessage permissions unavailable here (native transport is macOS-only)")
-	errDiscordUnavailable  = fmt.Errorf("discord not configured")
+	errIMessageUnavailable = dashboard.PlainError("iMessage isn't available here: it needs Tenant running on a Mac.")
+	errDiscordUnavailable  = dashboard.PlainError("Discord isn't set up yet: add a bot token on the Integrations page first.")
 )

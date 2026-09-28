@@ -74,11 +74,18 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 
 	discordBroker := newDiscordApprovalBroker(d.log.With("source", "approvals"))
 	discordBroker.SetEvents(d.emit) // visibility bridge: surface Discord-routed approvals on the feed (TEN-203)
-	discordBroker.SetPersist(func(snap map[string]string) {
-		persistChoice(c.cfgDir, c.lc, d.notify, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
+	discordBroker.SetPersist(func(snap map[string]string, known []string) {
+		persistChoice(c.cfgDir, c.lc, d.notify, "relay: the permission change", func(lc *launchConfig) {
+			lc.Relay.Permissions, lc.Relay.KnownCategories = snap, known
+		})
 	})
 	if c.lc != nil {
-		discordBroker.LoadModes(c.lc.Relay.Permissions)
+		discordBroker.LoadModes(c.lc.Relay.Permissions, c.lc.Relay.KnownCategories)
+	}
+	// Only a relay with a token can be set up on the Access page (C-3).
+	if n := newCategoryNotice(discordBroker.NewCategories(), "Review on the dashboard's Access page."); n != "" && d.notify != nil &&
+		strings.TrimSpace(discordRelayToken(c.cfgDir)) != "" {
+		d.notify("Discord conversations: " + n)
 	}
 
 	deps := discordAgentDeps{
@@ -198,11 +205,13 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	// broker's request channel, so an "ask" lands in the same queue the headless
 	// drain surfaces on the dashboard.
 	imsgBroker := newOffsiteApprovalBroker(d.log.With("source", "approvals"), d.broker)
-	imsgBroker.SetPersist(func(snap map[string]string) {
-		persistChoice(c.cfgDir, c.lc, d.notify, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+	imsgBroker.SetPersist(func(snap map[string]string, known []string) {
+		persistChoice(c.cfgDir, c.lc, d.notify, "imessage: the permission change", func(lc *launchConfig) {
+			lc.IMessage.Permissions, lc.IMessage.KnownCategories = snap, known
+		})
 	})
 	if c.lc != nil {
-		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
+		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	allowMgr.setPerms(imsgBroker)
 

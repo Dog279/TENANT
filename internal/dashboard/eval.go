@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -60,6 +59,37 @@ type EvalScheduleView struct {
 	RunTask    string // last task to finish
 	RunMins    int    // minutes since the run started
 	RunPercent int    // 0-100, precomputed for the bar width
+}
+
+// Mode is the schedule form's choice that Desc is: "every", "at" or "off"
+// (UX-20: the form showed Every 24h whatever the schedule was).
+func (v EvalScheduleView) Mode() string {
+	switch {
+	case strings.HasPrefix(v.Desc, "every "):
+		return "every"
+	case strings.HasPrefix(v.Desc, "daily at "):
+		return "at"
+	}
+	return "off"
+}
+
+// Spec is the form's value for Mode: "12h" for "every 12h0m0s", "03:15" for
+// "daily at 03:15", "" otherwise.
+func (v EvalScheduleView) Spec() string {
+	switch v.Mode() {
+	case "every":
+		d := strings.TrimPrefix(v.Desc, "every ")
+		if strings.HasSuffix(d, "m0s") {
+			d = strings.TrimSuffix(d, "0s")
+		}
+		if strings.HasSuffix(d, "h0m") {
+			d = strings.TrimSuffix(d, "0m")
+		}
+		return d
+	case "at":
+		return strings.TrimPrefix(v.Desc, "daily at ")
+	}
+	return ""
 }
 
 // EvalTrendPoint is one run on the chart. Score is 0-100.
@@ -118,25 +148,30 @@ func (s *Server) handleEvalScheduleForm(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mode := strings.TrimSpace(r.FormValue("mode"))
-	spec := strings.TrimSpace(r.FormValue("spec"))
-	var status string
+	// Each option has its own box (spec_every, spec_at): with one name for
+	// both, the Every box's 24h was read for Daily at too, which then failed.
+	spec := strings.TrimSpace(r.FormValue("spec_" + mode))
+	if spec == "" {
+		spec = strings.TrimSpace(r.FormValue("spec"))
+	}
 	var err error
 	switch mode {
 	case "every":
-		status, err = s.eval.SetEvery(spec)
+		_, err = s.eval.SetEvery(spec)
 	case "at":
-		status, err = s.eval.SetAt(spec)
+		_, err = s.eval.SetAt(spec)
 	case "off":
-		status, err = s.eval.Off()
+		_, err = s.eval.Off()
 	default:
-		redirectEval(w, r, "", "Pick a schedule option.")
+		redirectFlash(w, r, "/eval", "", "Pick a schedule option.")
 		return
 	}
 	if err != nil {
-		redirectEval(w, r, "", "Couldn't update the schedule: "+err.Error())
+		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "eval schedule", err,
+			"Couldn't update the schedule. Use a length like 24h or 12h, or a time like 03:15."))
 		return
 	}
-	redirectEval(w, r, status, "")
+	redirectFlash(w, r, "/eval", "Schedule saved.", "")
 }
 
 func (s *Server) handleEvalRunForm(w http.ResponseWriter, r *http.Request) {
@@ -146,10 +181,10 @@ func (s *Server) handleEvalRunForm(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := s.eval.RunNow()
 	if err != nil {
-		redirectEval(w, r, "", "Couldn't start a quality check: "+err.Error())
+		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "eval run", err, "Couldn't start a quality check."))
 		return
 	}
-	redirectEval(w, r, status, "")
+	redirectFlash(w, r, "/eval", status, "")
 }
 
 // handleEvalJudgeForm pins the eval LLM-judge model (TEN-91). The API key is
@@ -163,16 +198,14 @@ func (s *Server) handleEvalJudgeForm(w http.ResponseWriter, r *http.Request) {
 	mdl := strings.TrimSpace(r.FormValue("model"))
 	endpoint := strings.TrimSpace(r.FormValue("endpoint"))
 	if kind == "" || mdl == "" {
-		redirectEval(w, r, "", "Pick a provider kind and a model id for the judge.")
+		redirectFlash(w, r, "/eval", "", "Enter a provider and a model name for the grader.")
 		return
 	}
-	status, err := s.eval.SetJudge(kind, mdl, endpoint)
-	if err != nil {
-		ActionFailed.Log(r.Context(), "action", "set judge", "target", kind, "err", err)
-		redirectEval(w, r, "", "Couldn't set the judge: "+err.Error())
+	if _, err := s.eval.SetJudge(kind, mdl, endpoint); err != nil {
+		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "set judge", err, "Couldn't set the grader. Check the provider's name (anthropic, zai, openai…)."))
 		return
 	}
-	redirectEval(w, r, status, "")
+	redirectFlash(w, r, "/eval", "Saved: "+mdl+" from "+kind+" grades the checks now.", "")
 }
 
 // handleEvalJudgeClearForm reverts to the planner-default judge (TEN-91).
@@ -182,22 +215,10 @@ func (s *Server) handleEvalJudgeClearForm(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.eval.ClearJudge(); err != nil {
-		ActionFailed.Log(r.Context(), "action", "clear judge", "err", err)
-		redirectEval(w, r, "", "Couldn't clear the judge: "+err.Error())
+		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "clear judge", err, "Couldn't change the grader."))
 		return
 	}
-	redirectEval(w, r, "Judge reverted to the planner model (self-judging).", "")
-}
-
-func redirectEval(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/eval"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectFlash(w, r, "/eval", "Your main model grades the checks again.", "")
 }
 
 // renderTrendSVG draws the score-over-time line as an inline SVG (0-100 on a
@@ -232,7 +253,7 @@ func renderTrendSVG(points []EvalTrendPoint) string {
 		return float64(padT) + (1-score/scaleHi)*float64(plotH)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" class="trend-svg" role="img" aria-label="quality score over time">`, w, h)
+	fmt.Fprintf(&b, `<svg viewBox="0 0 %d %d" class="trend-svg" role="img" aria-label="Quality score over time">`, w, h)
 	// gridlines at 0/50/100
 	for _, gv := range []float64{0, 50, 100} {
 		gy := y(gv)

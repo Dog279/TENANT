@@ -311,6 +311,9 @@ func (g *turnGate) TurnQueueStatus() agent.TurnQueueStatus {
 		}
 	}
 	status := agent.TurnQueueStatus{Depth: len(ordered)}
+	if g.active != nil {
+		status.ActiveSource = string(g.active.source)
+	}
 	if len(ordered) == 0 {
 		return status
 	}

@@ -32,7 +32,7 @@ func githubSkillKind() skillKind {
 			{
 				Key: "repo", Required: true, Validate: validateGitHubRepos,
 				Prompt: "Repositories to watch - comma separated owner/name. " +
-					"Add :write to one the agent may modify (e.g. Dog279/TENANT:write, Dog279/bitematch)",
+					"Add :write to one the agent may modify (e.g. you/project:write, you/notes)",
 			},
 			{
 				Key: "token", Prompt: "Fine-grained personal access token", Secret: true, Required: true,
@@ -49,7 +49,7 @@ func githubSkillKind() skillKind {
 				OptionLabels: []string{"no - ask before each write (recommended)", "yes - auto-approve writes on :write repos"},
 				Validate:     validateOneOf("false", "true"),
 			},
-			{Key: "api_base", Prompt: "GitHub Enterprise API base (optional, Enter to skip)"},
+			{Key: "api_base", Prompt: "GitHub Enterprise API base (optional)"},
 		},
 		Probe:        probeGitHub,
 		ProbeTimeout: 30 * time.Second,

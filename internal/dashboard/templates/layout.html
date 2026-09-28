@@ -9,38 +9,43 @@
 <body>
   <div class="app">
     <aside class="side">
-      <div class="brand"><span class="logo">t</span> tenant <span class="dim">control</span></div>
-      <nav class="nav">
+      <div class="brand"><span class="logo">t</span> tenant <span class="dim">control</span><button type="button" class="btn menu-btn" popovertarget="nav" aria-label="Open the menu">Menu</button></div>
+      <nav class="nav" id="nav" popover>
         <a href="/" class="{{if eq .Page "dashboard"}}on{{end}}">Overview</a>
 
         <div class="nav-group">Activity</div>
         <a href="/chat" class="{{if eq .Page "chat"}}on{{end}}">Chat</a>
         <a href="/activity" class="{{if eq .Page "activity"}}on{{end}}">Activity feed</a>
+        <a href="/goal" class="{{if eq .Page "goal"}}on{{end}}">Autopilot</a>
         <a href="/logs" class="{{if eq .Page "logs"}}on{{end}}">Logs</a>
 
         <div class="nav-group">Knowledge</div>
         <a href="/memory" class="{{if eq .Page "memory"}}on{{end}}">Memory</a>
         <a href="/skills" class="{{if eq .Page "skills"}}on{{end}}">Skills</a>
         <a href="/eval" class="{{if eq .Page "eval"}}on{{end}}">Quality</a>
+        <a href="/research" class="{{if eq .Page "research"}}on{{end}}">Research</a>
 
         <div class="nav-group">Capabilities</div>
         <a href="/tools" class="{{if eq .Page "tools"}}on{{end}}">Tools</a>
+        <a href="/agents" class="{{if eq .Page "agents"}}on{{end}}">Helpers</a>
         <a href="/mcp" class="{{if eq .Page "mcp"}}on{{end}}">Remote services</a>
         <a href="/cron" class="{{if eq .Page "cron"}}on{{end}}">Scheduled jobs</a>
+
+        <div class="nav-group">Safety</div>
+        <a href="/safety" class="{{if eq .Page "safety"}}on{{end}}">Approvals &amp; safety</a>
+        <a href="/access" class="{{if eq .Page "access"}}on{{end}}">Access</a>
 
         <div class="nav-group">Settings</div>
         <a href="/models" class="{{if eq .Page "models"}}on{{end}}">Model</a>
         <a href="/integrations" class="{{if eq .Page "integrations"}}on{{end}}">Integrations</a>
-        <a href="/access" class="{{if eq .Page "access"}}on{{end}}">Access</a>
         <a href="/settings/keys" class="{{if eq .Page "keys"}}on{{end}}">Provider keys</a>
 
-        <form method="POST" action="/auth/logout" class="logout-form">
-          <button type="submit" class="logout">Log out</button>
-        </form>
+        <form method="POST" action="/auth/logout" class="logout-form"><button type="submit" class="logout">Log out</button></form>
       </nav>
     </aside>
     <main class="main">
       <header class="hdr"><h1>{{.Title}}</h1></header>
+      <div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')" data-on:datastar-fetch="evt.detail.type === 'error' && evt.detail.argsRaw.status === '401' && location.assign('/settings?next=' + encodeURIComponent(location.pathname + location.search))"><div id="ui-status" class="status-strip"></div></div>
       <section class="page">{{block "content" .}}{{end}}</section>
     </main>
   </div>

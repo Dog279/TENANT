@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -50,10 +51,9 @@ type activityPageData struct {
 	Configured bool
 	Root       string        // on-disk log root ("" for a memory-only hub)
 	Backlog    template.HTML // pre-rendered rows (each self-escaped via logRow)
-	Cursor     string        // head cursor (<epoch>.<seq>) the live stream tails from
+	StreamURL  string        // the live tail: head cursor + this filter, query-escaped (F1)
 	Source     string        // active source filter ("" = all)
 	Level      string        // "error" = errors only; "" = everything
-	Trace      string        // one turn's lines only ("" = every line)
 	Tabs       []activityTab
 	Files      []activityFileView // the active source's files on disk
 	Empty      bool
@@ -84,6 +84,11 @@ func (f activityFilter) match(e logs.Entry) bool {
 	if f.Source != "" && e.Source != f.Source {
 		return false
 	}
+	// The dashboard's own live streams opening and closing (Stream, 1001)
+	// were a third of All: they stay on the dashboard tab (UX-3).
+	if f.Source == "" && e.Field("event") == "dashboard/1001" {
+		return false
+	}
 	if f.Trace != "" && e.Field("trace") != f.Trace {
 		return false
 	}
@@ -101,7 +106,7 @@ func (f activityFilter) match(e logs.Entry) bool {
 // cursor with the same filter.
 func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 	f := activityFilterFrom(r)
-	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level, Trace: f.Trace}
+	d := activityPageData{layoutData: layoutData{Title: "Activity feed", Page: "activity"}, Source: f.Source, Level: f.Level}
 	if s.logs == nil {
 		s.render(w, s.tmpl.activity, d)
 		return
@@ -127,15 +132,17 @@ func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 	entries, head := s.logs.Snapshot()
 	var b strings.Builder
 	n := 0
-	for _, e := range entries {
-		if !f.match(e) {
+	for i := len(entries) - 1; i >= 0; i-- { // newest first; the stream prepends
+		if !f.match(entries[i]) {
 			continue
 		}
-		b.WriteString(logRow(e))
+		b.WriteString(logRow(entries[i]))
 		n++
 	}
 	d.Backlog = template.HTML(b.String())
-	d.Cursor = s.activityCursor(head)
+	// The URL sits inside a Datastar expression, which the browser HTML-decodes
+	// before Datastar runs it: a raw ?trace= quote there would be script (F1).
+	d.StreamURL = "/activity/events?" + url.Values{"cursor": {s.activityCursor(head)}, "source": {f.Source}, "level": {f.Level}, "trace": {f.Trace}}.Encode()
 	d.Empty = n == 0
 	if f.Source != "" {
 		if files, err := s.logs.Files(f.Source); err == nil {
@@ -181,9 +188,9 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	lagged(cursor, missed) // a restart's cursor is 0: nothing to have missed
 	if restarted {
 		var b strings.Builder
-		for _, e := range missed {
-			if f.match(e) {
-				b.WriteString(logRow(e))
+		for i := len(missed) - 1; i >= 0; i-- {
+			if f.match(missed[i]) {
+				b.WriteString(logRow(missed[i]))
 			}
 		}
 		if _, err := w.Write(activityPatch(s.activityCursor(head), "inner", b.String())); err != nil {
@@ -195,7 +202,7 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 		if !f.match(e) {
 			continue
 		}
-		if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "append", logRow(e))); err != nil {
+		if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "prepend", logRow(e))); err != nil {
 			return
 		}
 	}
@@ -213,7 +220,7 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 				if !f.match(e) {
 					continue
 				}
-				if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "append", logRow(e))); err != nil {
+				if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "prepend", logRow(e))); err != nil {
 					return
 				}
 			}
@@ -247,6 +254,17 @@ func (s *Server) handleActivityFile(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
+// kindWords names the agent's event kinds in the operator's words (TEN-211);
+// a kind not listed shows as it is.
+var kindWords = map[string]string{
+	"turn_start": "started", "turn_end": "finished", "final": "answered",
+	"tool_call": "using a tool", "tool_result": "tool done", "validation": "tool refused", "retry": "tried again",
+	"approval": "waiting for your OK", "approval_pending": "waiting for your OK", "approval_resolved": "answered",
+	"ingest": "message in", "bus": "between helpers", "addon": "add-on", "compact": "summarized",
+	"interject": "your note", "truncated": "stopped early", "assistant": "wrote", "skills": "used skills",
+	"memory": "remembered", "tool_catalog": "picked tools", "team_budget": "helpers' budget", "usage": "model usage", "route": "routed",
+}
+
 // logRow renders one retained entry as a themed card matching the Memory/Skills
 // idiom: relative timestamp, the source chip, a semantic badge (the event kind
 // for turn events, the level for plain records; red for errors, amber for
@@ -257,6 +275,9 @@ func logRow(e logs.Entry) string {
 	kind := e.Kind()
 	isErr := e.IsErr()
 	badgeClass, label := "tag", kind
+	if plain := kindWords[kind]; plain != "" {
+		label = plain
+	}
 	if kind == "" {
 		label = strings.ToLower(logs.LevelName(e.Level))
 	}
@@ -265,12 +286,6 @@ func logRow(e logs.Entry) string {
 		badgeClass = "act-errtag"
 	case e.Level >= slog.LevelWarn, kind == "validation", kind == "retry":
 		badgeClass = "risk"
-	case kind == "ingest":
-		label = "📥 inbox"
-	case kind == "bus":
-		label = "🔀 bus"
-	case kind == "addon":
-		label = "🧩 add-on"
 	}
 
 	tool := e.Field("tool")

@@ -15,6 +15,8 @@ import (
 	"html"
 	"net/http"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs/event"
@@ -29,6 +31,12 @@ func (s *Server) handleChatPage(w http.ResponseWriter, _ *http.Request) {
 // activity feed; conversation-relevant kinds also append to the chat transcript.
 // One stream serves both pages — a patch whose selector isn't on the current
 // page is simply a no-op there.
+//
+// It also keeps #approval-queue current (TEN-207): a snapshot as soon as it
+// has subscribed (so nothing falls between the two, a reconnect resyncs, and
+// the paused banner clears), then a re-render from Pending() on every approval
+// event and every queueResync. ?only=approvals sends nothing else: the Safety
+// page on a phone doesn't take the activity stream.
 func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	setSSEHeaders(w)
 	flush(w) // open the stream immediately
@@ -36,16 +44,34 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	defer act.End(nil)
 	ch, unsub := s.broker.Subscribe()
 	defer unsub()
+	onlyApprovals := r.URL.Query().Get("only") == "approvals"
+	if !s.patchApprovals(ctx, w) {
+		return
+	}
+	resync := time.NewTicker(queueResync)
+	defer resync.Stop()
 	lagged := false
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-resync.C:
+			if !s.patchApprovals(ctx, w) {
+				return
+			}
 		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
 			behind(ctx, ch, "events", r.RemoteAddr, &lagged)
+			if ev.Kind == agent.EventApprovalPending || ev.Kind == agent.EventApprovalResolved {
+				if !s.patchApprovals(ctx, w) {
+					return
+				}
+			}
+			if onlyApprovals {
+				continue
+			}
 			// Activity feed = meaningful activity only (tool calls, lifecycle,
 			// cross-agent + bus). Token deltas and other per-token noise are
 			// filtered out so the feed isn't a token-by-token flood (TEN-234).
@@ -90,23 +116,45 @@ func chatText(r *http.Request) string {
 	return strings.TrimSpace(r.FormValue("text"))
 }
 
+// clearChatBox empties the composer (its data-bind:text signal) once a message
+// is sent. A fixed event: no request text rides in a signals patch.
+const clearChatBox = "event: datastar-patch-signals\ndata: signals {\"text\":\"\"}\n\n"
+
 // handleChatSend appends the operator's message to the transcript and starts a
-// background turn; the turn's events stream back over /events.
+// background turn; the turn's events stream back over /events. The dashboard
+// runs one chat at a time (TEN-211): a second send is refused with a reason
+// and no bubble, and its text stays in the box. Both answers refresh the
+// status strip.
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	text := chatText(r)
 	if text == "" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	started := s.coord.startBackground(text)
 	setSSEHeaders(w)
-	_, _ = w.Write(patchElements("#chat-log", "append",
-		fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(text))))
-	if !started {
+	switch {
+	case s.agent == nil:
 		_, _ = w.Write(patchElements("#chat-log", "append",
-			`<div class="msg sys"><div class="dim">a turn is already running — try again in a moment</div></div>`))
+			`<div class="msg sys"><div class="dim">Chat isn't available on this Tenant.</div></div>`))
+	case s.coord.startBackground(text):
+		_, _ = w.Write(patchElements("#chat-log", "append",
+			fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(visibleText(text)))))
+		_, _ = w.Write([]byte(clearChatBox))
+		s.writeStatusPatch(w)
+	default:
+		_, _ = w.Write(patchElements("#chat-log", "append",
+			`<div class="msg sys"><div class="dim">Not sent: your agent is still answering. Your message is still in the box — send it again when it's done, or press Stop.</div></div>`))
+		s.writeStatusPatch(w)
 	}
 	flush(w)
+}
+
+// writeStatusPatch adds a #ui-status patch to an SSE answer (none on a render
+// error: the strip's own poll catches up).
+func (s *Server) writeStatusPatch(w http.ResponseWriter) {
+	if part, err := s.uiPart("ui-status", s.statusView()); err == nil {
+		_, _ = w.Write(patchElements("", "", part))
+	}
 }
 
 func (s *Server) handleChatInterject(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +216,7 @@ func chatBubble(ev agent.Event) string {
 			return ""
 		}
 		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="bubble">%s</div></div>`,
-			html.EscapeString(ev.Text))
+			html.EscapeString(visibleText(ev.Text)))
 	case "tool_call":
 		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="tool">⚡ %s <span class="dim">%s</span></div></div>`,
 			html.EscapeString(ev.Tool), html.EscapeString(snippetStr(ev.Args, 120)))
@@ -187,10 +235,18 @@ func chatBubble(ev agent.Event) string {
 	return ""
 }
 
+// snippetStr is s on one line, cut to at most n bytes on a character
+// boundary, with its hidden characters shown (visibleText, F10): every row
+// of the Activity feed and the chat transcript goes through it, so a command
+// can't display reversed there beside its approval card (REVSEC-8).
 func snippetStr(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
+	s = strings.Join(strings.Fields(visibleText(s)), " ")
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

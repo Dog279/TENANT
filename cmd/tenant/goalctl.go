@@ -53,6 +53,10 @@ type goalControl struct {
 	lastJudge string
 	lastEval  time.Time
 	met       bool
+	// gen counts goals: Set and clearLocked bump it. Judge notes the one it
+	// judges (judgedGen) and drops its verdict if another goal replaced it
+	// while the model answered, and Continue then starts no turn (C-5).
+	gen, judgedGen uint64
 
 	// loopCeiling is the per-turn planner↔tool iteration budget applied WHILE
 	// this goal loop is active, decoupled from the global PlanLoopCeiling
@@ -89,6 +93,7 @@ func (gc *goalControl) Set(_ context.Context, condition string) (firstPrompt, st
 	}
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
+	gc.gen++
 	gc.condition = condition
 	gc.startedAt = time.Now()
 	gc.turns = 0
@@ -150,7 +155,25 @@ func (gc *goalControl) Clear() string {
 	if gc.condition == "" {
 		return "no goal is active"
 	}
+	return gc.clearLocked()
+}
+
+// stopIfRunning is the dashboard's Stop: it clears a goal only while it is
+// still running (set, not met), under one lock, so a goal the TUI ends at the
+// same moment (met, cap, judge error) or a second Stop reports false.
+func (gc *goalControl) stopIfRunning() (status string, ok bool) {
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	if gc.condition == "" || gc.met {
+		return "", false
+	}
+	return gc.clearLocked(), true
+}
+
+// clearLocked clears the set goal; gc.mu is held.
+func (gc *goalControl) clearLocked() string {
 	had := gc.condition
+	gc.gen++
 	gc.condition = ""
 	gc.met = false
 	gc.lastJudge = ""
@@ -174,6 +197,8 @@ func (gc *goalControl) Judge(ctx context.Context, lastResponse string) (met bool
 	condition := gc.condition
 	turns := gc.turns
 	max := gc.maxTurns
+	gen := gc.gen
+	gc.judgedGen = gen
 	gc.mu.Unlock()
 	if condition == "" {
 		return true, "", false, nil // no goal → nothing to judge
@@ -227,28 +252,25 @@ Output ONLY the decision line. No preamble. No surrounding text.`, condition, cl
 		// tool-call mode doesn't pollute the judgment.
 		StopSequences: []string{"<tool_call", "<function="},
 	})
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	if gc.gen != gen {
+		// Stopped, or replaced by a new goal, while the model answered: the
+		// verdict (or the failure) was about a goal that is gone.
+		return false, "", false, nil
+	}
 	if gerr != nil {
 		return false, "", false, fmt.Errorf("goal judge: %w", gerr)
 	}
-	text := strings.TrimSpace(resp.Text)
-
-	gc.mu.Lock()
+	met, reason = parseJudgeVerdict(strings.TrimSpace(resp.Text))
 	gc.lastEval = time.Now()
 	gc.turns = turns + 1
-	gc.mu.Unlock()
-
-	met, reason = parseJudgeVerdict(text)
 	if met {
-		gc.mu.Lock()
 		gc.met = true
 		gc.lastJudge = "goal achieved"
-		gc.mu.Unlock()
 		return true, "", false, nil
 	}
-
-	gc.mu.Lock()
 	gc.lastJudge = reason
-	gc.mu.Unlock()
 	// Did this turn put us AT the cap? (turns was incremented above.)
 	if turns+1 >= max {
 		return false, reason, true, nil
@@ -447,7 +469,17 @@ func extractNotMetReason(text string) string {
 // let me..."). A hard "DO it now, don't explain it" gets actual tool calls
 // + artifacts. Live trigger: user reported the agent narrating instead of
 // doing across multiple turns on a /goal research-and-propose task.
+//
+// Once the goal is cleared (a dashboard Stop or /goal clear landing while the
+// judge ran) it returns "", and the TUI's submit of an empty box starts
+// nothing: no extra step after a Stop (D17).
 func (gc *goalControl) Continue(reason string) string {
+	gc.mu.Lock()
+	cleared := gc.condition == "" || gc.gen != gc.judgedGen // stopped, or a new goal started while judging
+	gc.mu.Unlock()
+	if cleared {
+		return ""
+	}
 	if strings.TrimSpace(reason) == "" {
 		return "[Goal — keep going]\n\nDO the next thing toward the goal NOW. Use tools to produce real output. Forbidden: meta-commentary, outlines, 'I should' / 'I will' / 'let me' sentences. End with the artifact."
 	}

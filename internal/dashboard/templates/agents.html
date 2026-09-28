@@ -1,0 +1,93 @@
+{{define "content"}}
+{{template "ui-flash" .}}
+{{if not .Configured}}{{template "ui-off" "Helpers aren't available on this Tenant."}}{{else}}
+{{if .LoadErr}}<div class="banner err" role="alert">{{.LoadErr}}</div>{{end}}
+
+{{with .Edit}}
+<div class="card agent-edit" id="edit">
+  <div class="card-head">Edit {{visibleText .Name}}</div>
+  <h2>Model</h2>
+  <div class="dim">Now: {{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}your main model{{end}}.{{with .SendsTo}} Sends its work to {{.}}.{{end}}</div>
+  {{if $.Providers}}
+  <form method="POST" action="/agents/model" class="agent-form">
+    <input type="hidden" name="name" value="{{.Name}}">
+    <label>Model provider
+      <select name="provider" required>{{range $.Providers}}<option value="{{.Name}}"{{if eq .Name $.Edit.Provider}} selected{{end}}>{{.Name}}{{with .Model}} · {{.}}{{end}}{{with index $.SendsTo .Name}} · sends its work to {{.}}{{end}}</option>{{end}}</select>
+    </label>
+    <label>Model
+      <input type="text" name="model" class="cinput" maxlength="200" placeholder="leave blank for the provider's default">
+    </label>
+    <button type="submit" class="btn">Save model</button>
+  </form>
+  {{else}}{{template "agents-no-models"}}{{end}}
+
+  {{if not (or .Builtin .Customized)}}
+  <h2>Name</h2>
+  <form method="POST" action="/agents/rename" class="agent-form">
+    <input type="hidden" name="name" value="{{.Name}}">
+    <label>New name
+      <input type="text" name="new_name" class="cinput" required maxlength="64" pattern="[A-Za-z0-9_\-]+" placeholder="letters, numbers, dashes and underscores">
+    </label>
+    <button type="submit" class="btn">Rename</button>
+  </form>
+  {{end}}
+
+  <details class="advanced"><summary>Advanced</summary>
+    <h2>Instructions</h2>
+    <div class="dim">What {{visibleText .Name}} is told before every task it takes on. Changes apply from its next task.</div>
+    <form method="POST" action="/agents/soul" class="agent-form">
+      <input type="hidden" name="name" value="{{.Name}}">
+      <textarea name="soul" class="cinput wide" rows="12" required aria-label="Instructions">{{$.EditSoul}}</textarea>
+      <button type="submit" class="btn">Save instructions</button>
+    </form>
+    {{if .HasSoul}}{{template "ui-confirm" (confirm "/agents/soul" "Clear instructions" "Clear this helper's instructions? Its current instructions are deleted and can't be brought back here." "name" .Name)}}{{end}}
+  </details>
+  <a class="btn sm" href="/agents">Close</a>
+</div>
+{{end}}
+
+<div class="card">
+  <div class="card-head">Your helpers</div>
+  <div class="dim">A helper is a specialist your agent can hand work to. Each one uses a specific model and follows its own instructions.</div>
+  {{range .Agents}}
+  <div class="row agent-row" id="agent-{{.Name}}">
+    <div class="agent-info">
+      <div class="nm">{{visibleText .Name}}{{if .Builtin}} <span class="tag">Built in</span>{{else if .Customized}} <span class="tag">Customized</span>{{end}}</div>
+      <div class="dim">{{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}Uses your main model{{end}}</div>
+      {{with .SendsTo}}<div class="dim">Sends its work to {{.}}.</div>{{end}}
+      {{with .Description}}<div class="dim">{{visibleText .}}</div>{{end}}
+      {{if not .Valid}}<span class="risk">Needs attention: its model provider is missing</span>{{end}}
+    </div>
+    <div class="actions">
+      <a class="btn sm" href="/agents?edit={{.Name}}#edit">Edit</a>
+      {{if .Customized}}{{template "ui-confirm" (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." (visibleText .Name)) "name" .Name)}}
+      {{else if not .Builtin}}{{template "ui-confirm" (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." (visibleText .Name)) "name" .Name)}}{{end}}
+    </div>
+  </div>
+  {{else}}{{if not $.LoadErr}}{{template "ui-empty" "No helpers yet. Add one below and your agent can hand it work."}}{{end}}{{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Add a helper</div>
+  {{if .Providers}}
+  <form method="POST" action="/agents/add" class="agent-form">
+    <label>Name
+      <input type="text" name="name" class="cinput" required maxlength="64" pattern="[A-Za-z0-9_\-]+" placeholder="letters, numbers, dashes and underscores">
+    </label>
+    <label>Model provider
+      <select name="provider" required>{{range .Providers}}<option value="{{.Name}}">{{.Name}}{{with .Model}} · {{.}}{{end}}{{with index $.SendsTo .Name}} · sends its work to {{.}}{{end}}</option>{{end}}</select>
+    </label>
+    <label>Model
+      <input type="text" name="model" class="cinput" maxlength="200" placeholder="leave blank for the provider's default">
+    </label>
+    <label>What it's for
+      <input type="text" name="description" class="cinput wide" maxlength="500" placeholder="for example: checks my writing for mistakes">
+    </label>
+    <button type="submit" class="btn">Add helper</button>
+  </form>
+  {{else}}{{template "agents-no-models"}}{{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "agents-no-models"}}<div class="empty">A helper needs a model. Add one on the <a href="/models">Model page</a> first.</div>{{end}}

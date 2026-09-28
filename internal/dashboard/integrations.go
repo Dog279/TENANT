@@ -10,8 +10,8 @@ package dashboard
 // back, mirroring keys.go.
 
 import (
+	"context"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -75,11 +75,14 @@ func (s *Server) mountIntegrationsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /integrations", s.handleIntegrationsPage)
 	mux.HandleFunc("POST /integrations/{id}/save", s.handleIntegrationSaveForm)
 	mux.HandleFunc("POST /integrations/{id}/test", s.handleIntegrationTestForm)
-	mux.HandleFunc("POST /integrations/{id}/disconnect", s.handleIntegrationDisconnectForm)
+	mux.HandleFunc("POST /integrations/{id}/disconnect", needConfirm(nil, s.handleIntegrationDisconnectForm))
 	// The repo travels as a form value, not a path param: an owner/name slug
 	// contains a slash and would not match a {repo} segment.
-	mux.HandleFunc("POST /integrations/github/repos/add", s.handleGitHubRepoAddForm)
-	mux.HandleFunc("POST /integrations/github/repos/mode", s.handleGitHubRepoModeForm)
+	// A new repository starts watch-only; adding one writable confirms, like
+	// Allow changes does.
+	mux.HandleFunc("POST /integrations/github/repos/add", needConfirm(confirmUnless("mode", "", "read"), s.handleGitHubRepoAddForm))
+	// write lets the agent change a repository: it confirms; read doesn't.
+	mux.HandleFunc("POST /integrations/github/repos/mode", needConfirm(confirmUnless("mode", "read"), s.handleGitHubRepoModeForm))
 	mux.HandleFunc("POST /integrations/github/repos/remove", s.handleGitHubRepoRemoveForm)
 }
 
@@ -115,7 +118,7 @@ func (s *Server) handleIntegrationsPage(w http.ResponseWriter, r *http.Request) 
 		} else {
 			// Surface it rather than rendering an empty list, which would read as
 			// "nothing watched" when the config is actually unreadable.
-			d.Err = "Couldn't read the watched repositories: " + err.Error()
+			d.Err = s.flashFor(r.Context(), "github repos list", err, "Couldn't read the watched repositories. The Logs page has the reason.")
 		}
 	}
 	if s.integrations == nil {
@@ -144,19 +147,21 @@ func (s *Server) handleGitHubRepoAddForm(w http.ResponseWriter, r *http.Request)
 	}
 	repo := strings.TrimSpace(r.FormValue("repo"))
 	if repo == "" {
-		redirectIntegrations(w, r, "", "Enter a repository as owner/name.")
+		redirectFlash(w, r, "/integrations", "", "Enter a repository as owner/name.")
+		return
+	}
+	// A ":write" (or ":w", ":rw") suffix would make it writable past the
+	// confirm step; an owner/name never contains a colon.
+	if strings.Contains(repo, ":") {
+		redirectFlash(w, r, "/integrations", "", "Enter the repository as owner/name. It starts watch-only; choose Allow changes on its row to let your agent change it.")
 		return
 	}
 	write := modeWrite(r.FormValue("mode"))
 	if err := s.githubRepos.Add(repo, write); err != nil {
-		redirectIntegrations(w, r, "", "Couldn't watch that repository: "+err.Error())
+		redirectFlash(w, r, "/integrations", "", s.flashFor(r.Context(), "github repo add", err, "Couldn't watch that repository. Check it's written as owner/name."))
 		return
 	}
-	mode := "watch-only"
-	if write {
-		mode = "writable"
-	}
-	redirectIntegrations(w, r, "Watching "+repo+" ("+mode+"). Run /enable github to apply it to the running session.", "")
+	redirectFlash(w, r, "/integrations", "Watching "+repo+". "+restartToApply, "")
 }
 
 func (s *Server) handleGitHubRepoModeForm(w http.ResponseWriter, r *http.Request) {
@@ -167,14 +172,14 @@ func (s *Server) handleGitHubRepoModeForm(w http.ResponseWriter, r *http.Request
 	repo := strings.TrimSpace(r.FormValue("repo"))
 	write := modeWrite(r.FormValue("mode"))
 	if err := s.githubRepos.SetWrite(repo, write); err != nil {
-		redirectIntegrations(w, r, "", "Couldn't change access for "+repo+": "+err.Error())
+		redirectFlash(w, r, "/integrations", "", s.flashFor(r.Context(), "github repo mode", err, "Couldn't change access for "+repo+"."))
 		return
 	}
 	if write {
-		redirectIntegrations(w, r, repo+" is now WRITABLE - the agent may modify it, and each write is still gated.", "")
+		redirectFlash(w, r, "/integrations", "Your agent may now change "+repo+". It still asks you before each change.", "")
 		return
 	}
-	redirectIntegrations(w, r, repo+" is now watch-only - still reported on, writes refused in code.", "")
+	redirectFlash(w, r, "/integrations", repo+" is watch-only now: still reported on, and changes to it are refused.", "")
 }
 
 func (s *Server) handleGitHubRepoRemoveForm(w http.ResponseWriter, r *http.Request) {
@@ -184,15 +189,21 @@ func (s *Server) handleGitHubRepoRemoveForm(w http.ResponseWriter, r *http.Reque
 	}
 	repo := strings.TrimSpace(r.FormValue("repo"))
 	if err := s.githubRepos.Remove(repo); err != nil {
-		redirectIntegrations(w, r, "", "Couldn't stop watching "+repo+": "+err.Error())
+		redirectFlash(w, r, "/integrations", "", s.flashFor(r.Context(), "github repo remove", err, "Couldn't stop watching "+repo+". Is it on the list?"))
 		return
 	}
-	redirectIntegrations(w, r, "Stopped watching "+repo+".", "")
+	redirectFlash(w, r, "/integrations", "Stopped watching "+repo+".", "")
 }
+
+// restartToApply says when a watched-repository change reaches a running
+// Tenant.
+const restartToApply = "The change applies when Tenant next starts."
 
 // handleIntegrationSaveForm stores the submitted field values (synchronous —
 // credential storage is fast and must not auto-probe, which could open a
-// host browser and block the request).
+// host browser and block the request). Every field travels in the body only
+// (F2), and a failure's reason, which can quote a secret, goes to the log
+// masked, never into the redirect URL (F3).
 func (s *Server) handleIntegrationSaveForm(w http.ResponseWriter, r *http.Request) {
 	if s.integrations == nil {
 		http.Redirect(w, r, "/integrations", http.StatusSeeOther)
@@ -201,42 +212,51 @@ func (s *Server) handleIntegrationSaveForm(w http.ResponseWriter, r *http.Reques
 	id := r.PathValue("id")
 	fields, err := s.integrations.Fields(id)
 	if err != nil {
-		redirectIntegrations(w, r, "", "Unknown integration.")
+		redirectFlash(w, r, "/integrations", "", "Unknown integration.")
 		return
 	}
 	values := map[string]string{}
 	for _, f := range fields {
-		if v := strings.TrimSpace(r.FormValue(f.Key)); v != "" {
+		v, ok := bodyOnly(r, f.Key)
+		if !ok {
+			KeyInURL.Log(r.Context(), "cred", id+"."+f.Key)
+			redirectFlash(w, r, "/integrations", "", secretInURL)
+			return
+		}
+		if v = strings.TrimSpace(v); v != "" {
 			values[f.Key] = v
 		}
 	}
 	if len(values) == 0 {
-		redirectIntegrations(w, r, "", "Nothing to save — fill in at least one field.")
+		redirectFlash(w, r, "/integrations", "", "Nothing to save: fill in at least one field.")
 		return
 	}
-	status, cerr := s.integrations.Configure(id, values)
-	if cerr != nil {
-		redirectIntegrations(w, r, "", "Couldn't save "+id+": "+cerr.Error())
+	if _, cerr := s.integrations.Configure(id, values); cerr != nil {
+		KeyNotSaved.Log(r.Context(), "cred", id, "op", "saved", "err", cerr)
+		redirectFlash(w, r, "/integrations", "", "Couldn't save that. The Logs page has the reason.")
 		return
 	}
-	redirectIntegrations(w, r, status+" — use Test to verify the connection.", "")
+	redirectFlash(w, r, "/integrations", "Saved. Use Test connection to check it works.", "")
 }
 
 // handleIntegrationTestForm runs the probe ASYNC: some probes (Atlassian,
 // Google) open a sign-in browser on the host and block for the OAuth flow,
 // which must not wedge the HTTP request (hybrid model — sign in at the host).
+// The probe outlives the request, so its log record keeps the request's
+// values without its cancellation.
 func (s *Server) handleIntegrationTestForm(w http.ResponseWriter, r *http.Request) {
 	if s.integrations == nil {
 		http.Redirect(w, r, "/integrations", http.StatusSeeOther)
 		return
 	}
 	id := r.PathValue("id")
+	ctx := context.WithoutCancel(r.Context())
 	go func() {
 		if _, err := s.integrations.Probe(id); err != nil {
-			ProbeFailed.Log(r.Context(), "integration", id, "err", err)
+			ProbeFailed.Log(ctx, "integration", id, "err", err)
 		}
 	}()
-	redirectIntegrations(w, r, "Testing "+id+" — if it needs sign-in, a window opens on the computer running Tenant. Refresh to see the result.", "")
+	redirectFlash(w, r, "/integrations", "Testing "+id+". If it needs a sign-in, a window opens on the computer running Tenant. Refresh to see the result.", "")
 }
 
 func (s *Server) handleIntegrationDisconnectForm(w http.ResponseWriter, r *http.Request) {
@@ -245,21 +265,9 @@ func (s *Server) handleIntegrationDisconnectForm(w http.ResponseWriter, r *http.
 		return
 	}
 	id := r.PathValue("id")
-	status, err := s.integrations.Disconnect(id)
-	if err != nil {
-		redirectIntegrations(w, r, "", "Couldn't disconnect "+id+": "+err.Error())
+	if _, err := s.integrations.Disconnect(id); err != nil {
+		redirectFlash(w, r, "/integrations", "", s.flashFor(r.Context(), "integration disconnect", err, "Couldn't disconnect "+id+"."))
 		return
 	}
-	redirectIntegrations(w, r, status, "")
-}
-
-func redirectIntegrations(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/integrations"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectFlash(w, r, "/integrations", "Disconnected "+id+". Its saved sign-in is gone.", "")
 }

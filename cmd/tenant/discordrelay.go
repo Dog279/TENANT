@@ -54,6 +54,7 @@ type relay struct {
 	rl         *rateLimiter
 	approver   *discordApprover    // optional; set by the manager (TEN-117/119) — drives the button prompts
 	confirm    offsiteConfirm      // optional; the per-category permission broker (TEN-231) the turn's gated tools route through; nil ⇒ fall back to approver.Confirm
+	locked     func(string) bool   // optional; that broker's lock, stamped for the tools that don't ask it (withOffsiteLock)
 	degraded   func() bool         // optional; when true the model is on the echo fallback
 	ingest     func(text string)   // optional; surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
 	files      *attachmentIngestor // optional; downloads operator attachments into the relay inbox — nil ⇒ attachments ignored
@@ -287,7 +288,7 @@ func (r *relay) start(channelID, text string) bool {
 		turnCtx = withOffsiteConfirm(ctx, r.approver.Confirm)
 		approvals = "approver"
 	}
-	turnCtx = withExecSurface(turnCtx, surfaceDiscord) // picks the discord exec profile
+	turnCtx = withExecSurface(withOffsiteLock(turnCtx, r.locked), surfaceDiscord) // picks the discord exec profile
 
 	go func() {
 		defer r.finish(cancel)

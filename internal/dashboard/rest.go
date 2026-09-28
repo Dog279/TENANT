@@ -123,7 +123,7 @@ func (s *Server) mountREST(mux *http.ServeMux) {
 
 // handleStatus reports plugins and tool counts. Best-effort and extensible.
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	tools := s.tools.ToolList()
+	tools := s.toolList()
 	enabled := 0
 	for _, t := range tools {
 		if t.Enabled {
@@ -131,10 +131,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	st := restStatus{
-		Plugins:      s.tools.Plugins(),
 		ToolsEnabled: enabled,
 		ToolsTotal:   len(tools),
 		Status:       "ok",
+	}
+	if s.tools != nil {
+		st.Plugins = s.tools.Plugins()
 	}
 	// Serve-mode liveness (TEN-194): present only when a turnGate runner +
 	// headless approval drain are wired; zero-valued otherwise.
@@ -282,7 +284,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 // handleTools returns every tool with its authoritative `destructive`
 // flag, sourced from the plugin's gate class (ToolInfo.Gated).
 func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
-	tools := s.tools.ToolList()
+	tools := s.toolList()
 	views := make([]restToolView, 0, len(tools))
 	for _, t := range tools {
 		views = append(views, restToolView{
@@ -297,6 +299,10 @@ func (s *Server) handleTools(w http.ResponseWriter, _ *http.Request) {
 
 // handleSetTool toggles a single tool: POST /api/tools/{name} {"enabled":bool}.
 func (s *Server) handleSetTool(w http.ResponseWriter, r *http.Request) {
+	if s.tools == nil {
+		writeError(w, http.StatusServiceUnavailable, "tools not configured")
+		return
+	}
 	name := r.PathValue("name")
 	req, ok := decodeToggle(w, r)
 	if !ok {
@@ -312,6 +318,10 @@ func (s *Server) handleSetTool(w http.ResponseWriter, r *http.Request) {
 
 // handleSetPlugin toggles a plugin: POST /api/plugins/{label} {"enabled":bool}.
 func (s *Server) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
+	if s.tools == nil {
+		writeError(w, http.StatusServiceUnavailable, "tools not configured")
+		return
+	}
 	label := r.PathValue("label")
 	req, ok := decodeToggle(w, r)
 	if !ok {
@@ -332,7 +342,7 @@ func (s *Server) handleSetPlugin(w http.ResponseWriter, r *http.Request) {
 // "all gated tools enabled" == send mode. With zero gated tools there is
 // nothing to gate, so allow_send is false (Read-only).
 func (s *Server) handleGetPosture(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, restPostureResponse{AllowSend: posture(s.tools.ToolList())})
+	writeJSON(w, http.StatusOK, restPostureResponse{AllowSend: posture(s.toolList())})
 }
 
 // posture computes allow_send from a tool list per the convention documented
@@ -349,6 +359,17 @@ func posture(tools []ToolInfo) bool {
 		}
 	}
 	return gated > 0
+}
+
+// actTools counts the gated tools (the ones that change things) that are on:
+// what the agent may do is "look only" when none is, whatever posture says.
+func actTools(tools []ToolInfo) (n int) {
+	for _, t := range tools {
+		if t.Gated && t.Enabled {
+			n++
+		}
+	}
+	return n
 }
 
 // handleSetPosture drives the posture: POST /api/posture {"allow_send":bool}
@@ -368,7 +389,7 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	changed, skipped := 0, 0
-	for _, t := range s.tools.ToolList() {
+	for _, t := range s.toolList() {
 		if !t.Gated {
 			continue
 		}

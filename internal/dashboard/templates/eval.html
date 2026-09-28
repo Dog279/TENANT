@@ -1,9 +1,8 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">Quality checks aren't configured in this session.</div></div>
+{{template "ui-off" "Quality checks aren't available on this Tenant."}}
 {{else}}
 
 <div class="cards">
@@ -21,51 +20,53 @@
   </div>
   <div class="card stat">
     <div class="stat-label">Schedule</div>
-    <div class="stat-value" style="font-size:16px">{{.Sched.Desc}}</div>
+    <div class="stat-value small">{{.Sched.Desc}}</div>
   </div>
 </div>
 
 {{if .Sched.Running}}
-<div class="card">
-  <div class="card-head">Check in progress</div>
-  <div style="background:var(--line,#333);border-radius:6px;height:14px;overflow:hidden;margin:6px 0">
-    <div style="height:100%;width:{{.Sched.RunPercent}}%;min-width:2px;background:var(--ok,#3aa78f);transition:width .5s"></div>
-  </div>
-  <div class="dim">{{.Sched.RunDone}} of {{.Sched.RunTotal}} tasks · {{.Sched.RunMins}}m elapsed{{if .Sched.RunTask}} · last finished: {{.Sched.RunTask}}{{end}}{{if not .Sched.RunTotal}} · warming up (building tools + router){{end}}</div>
-  <script>setTimeout(function(){location.reload()},20000)</script>
+<div class="card" data-on-interval__duration.20s="window.location.reload()">
+  <div class="card-head"><span class="loading">Check in progress</span></div>
+  <progress class="evalbar" value="{{.Sched.RunDone}}" max="{{if .Sched.RunTotal}}{{.Sched.RunTotal}}{{else}}1{{end}}"></progress>
+  <div class="dim">{{.Sched.RunDone}} of {{.Sched.RunTotal}} checks · {{.Sched.RunMins}}m so far{{if .Sched.RunTask}} · last finished: {{.Sched.RunTask}}{{end}}{{if not .Sched.RunTotal}} · getting ready{{end}}. This page refreshes itself.</div>
 </div>
 {{end}}
 
 {{if .Sched.HasRun}}
-<div class="dim" style="margin:-6px 0 14px">Last checked {{.Sched.LastWhen}}{{if .Sched.Skipped}} · {{.Sched.Skipped}} skipped (tools your agent doesn't have){{end}}{{if .Sched.Ungraded}} · {{.Sched.Ungraded}} couldn't be graded{{end}}</div>
+<div class="dim mb">Last checked {{.Sched.LastWhen}}{{if .Sched.Skipped}} · {{.Sched.Skipped}} skipped (tools your agent doesn't have){{end}}{{if .Sched.Ungraded}} · {{.Sched.Ungraded}} couldn't be graded{{end}}</div>
 {{end}}
 
 <div class="card">
   <div class="card-head">How is my agent doing over time?</div>
-  {{if .Chart}}{{.Chart}}<div class="dim" style="margin-top:8px">Each dot is one quality check. Red dots are checks that scored worse than the saved baseline.</div>
-  {{else}}<div class="dim">Not enough checks yet to draw a trend. Run a couple and they'll plot here.</div>{{end}}
+  {{if .Chart}}{{.Chart}}<div class="dim mt">Each dot is one quality check. Red dots are checks that scored worse than the saved baseline.</div>
+  {{else}}{{template "ui-empty" "Not enough checks yet to draw a trend. Run a couple and they'll plot here."}}{{end}}
 </div>
 
 <div class="card">
   <div class="card-head">Run a check</div>
+  {{if .Sched.Live}}
   <form method="POST" action="/eval/run" class="inline">
     <button type="submit" class="btn on">Run a quality check now</button>
   </form>
-  <div class="dim" style="margin-top:9px">Takes a few minutes — your agent answers a set of test questions and grades itself against the baseline. The result appears here and in the activity feed.</div>
+  <div class="dim mt">Takes a few minutes: your agent answers a set of test questions and is graded against the baseline. The result appears here and in the Activity feed.</div>
+  {{else}}
+  <button type="button" class="btn" disabled>Run a quality check now</button>
+  <div class="dim mt">Quality checks are off on this Tenant, so one can't start from here.</div>
+  {{end}}
 </div>
 
 <div class="card">
   <div class="card-head">Automatic checks</div>
-  <div class="dim" style="margin-bottom:10px">Currently: <strong>{{.Sched.Desc}}</strong>{{if not .Sched.Live}} <span class="dim">(applies next launch)</span>{{end}}</div>
+  <div class="dim mb">Now: <strong>{{.Sched.Desc}}</strong>{{if not .Sched.Live}} <span class="dim">(applies when Tenant next starts)</span>{{end}}</div>
   <form method="POST" action="/eval/schedule" class="evalsched">
-    <label><input type="radio" name="mode" value="every" checked> Every
-      <input type="text" name="spec" value="24h" class="cinput" style="width:90px" placeholder="24h"> (e.g. 24h, 12h)</label>
-    <label><input type="radio" name="mode" value="at"> Daily at
-      <input type="text" name="spec" class="cinput" style="width:90px" placeholder="03:15"> (24-hour clock)</label>
-    <label><input type="radio" name="mode" value="off"> Off — only run checks by hand</label>
+    <label><input type="radio" name="mode" value="every"{{if eq .Sched.Mode "every"}} checked{{end}}> Every
+      <input type="text" name="spec_every" value="{{if eq .Sched.Mode "every"}}{{.Sched.Spec}}{{else}}24h{{end}}" class="cinput short" placeholder="24h"> (for example 24h, 12h)</label>
+    <label><input type="radio" name="mode" value="at"{{if eq .Sched.Mode "at"}} checked{{end}}> Daily at
+      <input type="text" name="spec_at" value="{{if eq .Sched.Mode "at"}}{{.Sched.Spec}}{{end}}" class="cinput short" placeholder="03:15"> (24-hour clock)</label>
+    <label><input type="radio" name="mode" value="off"{{if eq .Sched.Mode "off"}} checked{{end}}> Off: only run checks by hand</label>
     <button type="submit" class="btn">Save schedule</button>
   </form>
-  <div class="dim" style="margin-top:9px">A check runs at most once per period no matter how often you restart, so a busy day won't pile up checks.</div>
+  <div class="dim mt">A check runs at most once per period however often Tenant restarts, so a busy day won't pile up checks.</div>
 </div>
 
 {{if .Diff}}
@@ -76,18 +77,19 @@
 {{end}}
 
 <div class="card">
-  <div class="card-head">Judge</div>
+  <details class="advanced"><summary>Advanced: who grades the checks</summary>
   <div class="dim">{{.Judge}}</div>
-  <form method="POST" action="/eval/judge" class="evalsched" style="margin-top:9px">
-    <input type="text" name="kind" placeholder="kind — anthropic, zai, openai…" class="cinput" style="width:220px" required>
-    <input type="text" name="model" placeholder="model id" class="cinput" style="width:200px" required>
-    <input type="text" name="endpoint" placeholder="endpoint (optional)" class="cinput" style="width:240px">
-    <button type="submit" class="btn">Set judge</button>
+  <form method="POST" action="/eval/judge" class="evalsched mt">
+    <input type="text" name="kind" placeholder="provider: anthropic, zai, openai…" class="cinput" required>
+    <input type="text" name="model" placeholder="model name" class="cinput" required>
+    <input type="text" name="endpoint" placeholder="address (optional)" class="cinput">
+    <button type="submit" class="btn">Set the grader</button>
   </form>
-  <form method="POST" action="/eval/judge/clear" style="margin-top:6px">
-    <button type="submit" class="btn">Use planner default</button>
+  <form method="POST" action="/eval/judge/clear" class="mt">
+    <button type="submit" class="btn">Let the main model grade</button>
   </form>
-  <div class="dim" style="margin-top:9px">The judge grades answer quality. Default = the planner model (self-judging). The API key is read from the provider's env var at eval time — never entered or stored here.</div>
+  <div class="dim mt">The grader scores the quality of each answer. By default your main model grades its own answers, with nothing to set up. A separate grader's API key comes from the environment of the computer running Tenant; it's never entered or stored here.</div>
+  </details>
 </div>
 
 {{end}}

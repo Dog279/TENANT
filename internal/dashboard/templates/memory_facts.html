@@ -1,9 +1,9 @@
 {{define "content"}}
 {{template "memnav" .}}
 {{if not .Configured}}
-<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else}}
-{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
 
 {{if .ShowUndo}}
 <div class="banner undo">
@@ -63,13 +63,13 @@
 {{end}}
 
 {{if .Empty}}
-<div class="card"><div class="dim pad">{{.EmptyMsg}}</div></div>
+{{template "ui-empty" .EmptyMsg}}
 {{else}}
 <div class="factlist">
 {{range .Facts}}
 <div class="fact{{if .Pinned}} pinned{{end}}">
   <div class="fact-top">
-    <div class="fact-text">{{.Text}}</div>
+    <div class="fact-text">{{visibleText .Text}}</div>
     <span class="fact-conf dim">{{.Conf}}</span>
   </div>
   <div class="fact-actions">
@@ -100,15 +100,15 @@
     {{else if .Episodes}}
       {{range .Episodes}}
       <div class="ep">
-        {{if .Missing}}<div class="dim">Source unavailable — this turn has been forgotten.</div>
+        {{if .Missing}}<div class="dim">Source unavailable: that conversation has been forgotten.</div>
         {{else}}
         {{if .When}}<div class="ep-when dim">{{.When}}</div>{{end}}
-        {{if .Prompt}}<div class="ep-line"><span class="dim">you:</span> {{.Prompt}}</div>{{end}}
-        {{if .Response}}<div class="ep-line"><span class="dim">tenant:</span> {{.Response}}</div>{{end}}
+        {{if .Prompt}}<div class="ep-line"><span class="dim">you:</span> {{visibleText .Prompt}}</div>{{end}}
+        {{if .Response}}<div class="ep-line"><span class="dim">tenant:</span> {{visibleText .Response}}</div>{{end}}
         {{end}}
       </div>
       {{end}}
-    {{else}}<div class="dim">No source turns recorded for this fact.</div>{{end}}
+    {{else}}<div class="dim">No source conversations are recorded for this fact.</div>{{end}}
   </div>
   {{end}}
 </div>

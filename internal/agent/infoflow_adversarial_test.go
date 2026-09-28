@@ -123,6 +123,10 @@ func TestSensitiveEgress_OSReadToWebNavigate_DeniedAndApproved(t *testing.T) {
 		if strings.Contains(detail, osSentinel) {
 			t.Fatal("approval detail must identify provenance without echoing the secret")
 		}
+		// The card says this is a second gate, not the tool's own (TEN-343).
+		if !strings.Contains(detail, "separate from web_navigate's own permission") || !strings.Contains(detail, "not whether the tool may run") {
+			t.Fatalf("approval detail lacks the two-gate sentence: %q", detail)
+		}
 	})
 }
 

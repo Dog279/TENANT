@@ -224,11 +224,12 @@ func TestFactPageForms(t *testing.T) {
 	}
 	f.actErr = errors.New("boom")
 	for form, want := range map[string]string{
-		"invalidate": "Couldn't mark that fact no longer true: boom",
-		"revalidate": "Couldn't mark that fact true again: boom",
+		"invalidate": "Couldn't mark that fact no longer true.",
+		"revalidate": "Couldn't mark that fact true again.",
 	} {
 		rec := memDoForm(s, "/memory/facts/7/"+form, nil)
-		if loc, _ := url.QueryUnescape(rec.Header().Get("Location")); !strings.Contains(loc, want) {
+		// The plain message only: the store's own error stays in the log (D21).
+		if loc, _ := url.QueryUnescape(rec.Header().Get("Location")); !strings.Contains(loc, want) || strings.Contains(loc, "boom") {
 			t.Errorf("failed %s redirect = %s", form, loc)
 		}
 	}

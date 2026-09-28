@@ -1,123 +1,126 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">Access control isn't configured in this session.</div></div>
+{{template "ui-off" "Access settings aren't available on this Tenant."}}
 {{else}}
 
 <h2>iMessage</h2>
 {{if not .View.IMessageAvailable}}
-<div class="card"><div class="dim">iMessage access isn't wired in this session.</div></div>
+{{template "ui-off" "iMessage isn't available on this Tenant."}}
 {{else}}
 
 <div class="card">
   {{if .View.ResponderAvailable}}
-  <form method="POST" action="/access/imessage/responder">
-    <input type="hidden" name="on" value="{{if .View.ResponderOn}}false{{else}}true{{end}}">
-    <span class="nm">Responder</span>
-    {{if .View.ResponderOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
-    <span class="sp"></span>
-    <button type="submit" class="btn">{{if .View.ResponderOn}}Turn off{{else}}Turn on{{end}}</button>
-  </form>
-  {{else}}
-  <div class="dim">The autonomous responder is macOS-only (native iMessage transport). The allowlist + permissions below still apply when Tenant runs on a Mac.</div>
-  {{end}}
-</div>
-
-<div class="card">
-  <div class="nm">Drive-allowlist <span class="dim">— handles permitted to drive the agent over iMessage (deny-by-default)</span></div>
-  <form method="POST" action="/access/imessage/allow">
-    <input type="text" name="handle" placeholder="phone or email" class="cinput" required>
-    <button type="submit" class="btn">Allow</button>
-  </form>
-  {{range .View.Handles}}
-  <div class="ghead">
-    <span class="nm">{{.}}</span>
-    <span class="sp"></span>
-    <form method="POST" action="/access/imessage/deny"{{if $.View.SingleHandle}} onsubmit="return confirm('Remove the last allowed handle? Nobody will be able to drive the agent over iMessage until you add one again.')"{{end}}>
-      <input type="hidden" name="handle" value="{{.}}">
-      <button type="submit" class="btn">Deny</button>
+  <div class="row">
+    <div><strong>Your agent answers iMessages</strong> {{if .View.ResponderOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
+    {{if .View.ResponderOn}}
+    <form method="POST" action="/access/imessage/responder" class="inline">
+      <input type="hidden" name="on" value="false">
+      <button type="submit" class="btn">Turn off</button>
     </form>
+    {{else}}
+    {{template "ui-confirm" (confirmGo "/access/imessage/responder" "Turn on" "Your agent reads and answers iMessages from the people listed below, and acts on what they ask as the safety settings below allow." "on" "true")}}
+    {{end}}
   </div>
   {{else}}
-  <div class="dim">No handles allowed — deny-by-default, nobody can drive the agent over iMessage.</div>
-  {{end}}
-  {{if .View.Handles}}
-  <form method="POST" action="/access/imessage/clear" onsubmit="return confirm('Clear the allowlist? Nobody will be able to drive the agent over iMessage until you add a handle again.')">
-    <button type="submit" class="btn">Clear all</button>
-  </form>
+  <div class="dim">Answering iMessages needs a Mac. The list and the safety settings below still apply when Tenant runs on one.</div>
   {{end}}
 </div>
 
 <div class="card">
-  <div class="nm">Permissions <span class="dim">— per-category gating for the responder's tools (ask prompts at the Mac console)</span></div>
-  {{range .View.IMessagePerms}}
-  <div class="ghead">
-    <span class="nm">{{.Category}}</span> <span class="dim">{{.Desc}}</span>
-    <span class="sp"></span>
-    <form method="POST" action="/access/imessage/permission">
-      <input type="hidden" name="category" value="{{.Category}}">
-      <select name="mode">
-        <option value="ask"{{if eq .Mode "ask"}} selected{{end}}>ask</option>
-        <option value="allow"{{if eq .Mode "allow"}} selected{{end}}>allow</option>
-        <option value="deny"{{if eq .Mode "deny"}} selected{{end}}>deny</option>
-      </select>
-      <button type="submit" class="btn">Set</button>
+  <div class="card-head">Who can message your agent on iMessage</div>
+  <div class="dim mb">Phone numbers or emails. Nobody else can.</div>
+  {{range .View.Handles}}
+  <div class="row">
+    <span class="nm">{{.}}</span>
+    {{if $.View.SingleHandle}}
+    {{template "ui-confirm" (confirm "/access/imessage/deny" "Remove" "Nobody will be able to message your agent on iMessage until you add someone again." "handle" .)}}
+    {{else}}
+    <form method="POST" action="/access/imessage/deny" class="inline">
+      <input type="hidden" name="handle" value="{{.}}">
+      <button type="submit" class="btn sm">Remove</button>
     </form>
+    {{end}}
+  </div>
+  {{else}}
+  {{template "ui-empty" "Nobody can message your agent on iMessage yet. Add a phone number or email below."}}
+  {{end}}
+  <div class="cronactions mt">
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Add someone</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Add someone"><p>This person will be able to give your agent instructions by iMessage.</p><form method="POST" action="/access/imessage/allow"><input type="text" name="handle" placeholder="phone number or email" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, allow them</button></form></div></details>
+    {{if .View.Handles}}{{template "ui-confirm" (confirm "/access/imessage/clear" "Remove everyone" "Nobody will be able to message your agent on iMessage until you add someone again.")}}{{end}}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">What iMessage conversations may do</div>
+  <div class="dim">Ask first asks you on the Mac running Tenant.</div>
+  {{range .View.IMessagePerms}}
+  <div class="perm">
+    <div><strong>{{or .Title .Category}}</strong>{{if .New}} <span class="tag-new">New</span>{{end}}
+      <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
+    <div class="cronactions">
+      {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/imessage/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
+      {{if ne .Mode "allow"}}{{template "ui-confirm" (confirmGo "/access/imessage/permission" "Allow" (printf "iMessage conversations can %s without asking you." .Can) "category" .Category "mode" "allow")}}{{end}}
+      {{if ne .Mode "deny"}}<form method="POST" action="/access/imessage/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
+    </div>
   </div>
   {{end}}
 </div>
 {{end}}
 
-<h2>Discord relay</h2>
+<h2>Discord</h2>
 {{if not .View.DiscordAvailable}}
-<div class="card"><div class="dim">Discord access isn't wired in this session.</div></div>
+{{template "ui-off" "Discord isn't available on this Tenant."}}
 {{else if not .View.RelayConfigured}}
-<div class="card"><div class="dim">Discord isn't configured — add a bot token on the <a href="/integrations">Integrations</a> page first.</div></div>
+<div class="empty">Discord isn't set up yet: add a bot token on the <a href="/integrations">Integrations</a> page first.</div>
 {{else}}
 <div class="card">
-  <form method="POST" action="/access/discord/enable">
-    <input type="hidden" name="on" value="{{if .View.RelayRunning}}false{{else}}true{{end}}">
-    <span class="nm">Relay</span>
-    {{if .View.RelayRunning}}<span class="on-tag">running</span>{{else}}<span class="dim">stopped</span>{{end}}
-    <span class="sp"></span>
-    <button type="submit" class="btn">{{if .View.RelayRunning}}Stop{{else}}Start{{end}}</button>
-  </form>
-  <form method="POST" action="/access/discord/exec"{{if not .View.ExecOn}} onsubmit="return confirm('Enable exec mode? Commands, file writes, irreversible actions and outbound sends become reachable over Discord, each following the permissions below (ask = your per-action approval).')"{{end}}>
-    <input type="hidden" name="on" value="{{if .View.ExecOn}}false{{else}}true{{end}}">
-    <span class="dim">exec mode</span>
-    {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
-    <span class="sp"></span>
-    <button type="submit" class="btn">{{if .View.ExecOn}}Disable{{else}}Enable{{end}}</button>
-  </form>
-  {{if not .View.ExecOn}}<div class="dim">Off: exec, write, destructive, sandbox and send are refused over Discord whatever the permissions below say. Discord posts and reactions still follow send.</div>{{end}}
-</div>
-
-<div class="card">
-  <form method="POST" action="/access/discord/operator">
-    <span class="nm">Operator id</span>
-    <input type="text" name="operator" value="{{.View.OperatorID}}" placeholder="numeric Discord user id" class="cinput">
-    <button type="submit" class="btn">Save</button>
-  </form>
-  {{if not .View.OperatorSet}}<div class="dim risk">No operator set — the relay won't start until you set one.</div>{{end}}
-</div>
-
-<div class="card">
-  <div class="nm">Permissions <span class="dim">— per-category gating; "ask" prompts a button in Discord</span></div>
-  {{range .View.DiscordPerms}}
-  <div class="ghead">
-    <span class="nm">{{.Category}}</span> <span class="dim">{{.Desc}}</span>
-    <span class="sp"></span>
-    <form method="POST" action="/access/discord/permission">
-      <input type="hidden" name="category" value="{{.Category}}">
-      <select name="mode">
-        <option value="ask"{{if eq .Mode "ask"}} selected{{end}}>ask</option>
-        <option value="allow"{{if eq .Mode "allow"}} selected{{end}}>allow</option>
-        <option value="deny"{{if eq .Mode "deny"}} selected{{end}}>deny</option>
-      </select>
-      <button type="submit" class="btn">Set</button>
+  <div class="row">
+    <div><strong>Discord relay</strong> {{if .View.RelayRunning}}<span class="on-tag">running</span>{{else}}<span class="dim">stopped</span>{{end}}</div>
+    {{if .View.RelayRunning}}
+    <form method="POST" action="/access/discord/enable" class="inline">
+      <input type="hidden" name="on" value="false">
+      <button type="submit" class="btn">Stop</button>
     </form>
+    {{else}}
+    {{template "ui-confirm" (confirmGo "/access/discord/enable" "Start" "Messages in your Discord conversations reach your agent, and it answers them as the settings below allow." "on" "true")}}
+    {{end}}
+  </div>
+  <div class="row">
+    <div><strong>Let Discord messages make changes</strong> {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
+    {{if .View.ExecOn}}
+    <form method="POST" action="/access/discord/exec" class="inline">
+      <input type="hidden" name="on" value="false">
+      <button type="submit" class="btn">Turn off</button>
+    </form>
+    {{else}}
+    {{template "ui-confirm" (confirmGo "/access/discord/exec" "Turn on" "Discord messages can then ask your agent to run commands, change files, take irreversible actions and send messages, each as its safety setting below says." "on" "true")}}
+    {{end}}
+  </div>
+  {{if not .View.ExecOn}}<div class="dim">While this is off, running commands, changing files, irreversible actions, leaving the sandbox and sending messages are refused over Discord, whatever the settings below say. Discord posts and reactions still follow Send messages.</div>{{end}}
+</div>
+
+<div class="card">
+  <div class="row">
+    <div><strong>Your Discord user ID</strong> <span class="dim">{{if .View.OperatorID}}{{.View.OperatorID}}{{else}}not set{{end}}</span></div>
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">{{if .View.OperatorID}}Change{{else}}Set it{{end}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Your Discord user ID"><p>Only this Discord account will be able to approve your agent's risky actions from Discord.</p><form method="POST" action="/access/discord/operator"><input type="text" name="operator" value="{{.View.OperatorID}}" placeholder="your numeric Discord user ID" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, save it</button></form></div></details>
+  </div>
+  {{if not .View.OperatorSet}}<div class="dim risk">No Discord user ID set: the relay won't start until you set one.</div>{{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">What Discord conversations may do</div>
+  <div class="dim">Ask first shows buttons on the Discord card for you to answer.</div>
+  {{range .View.DiscordPerms}}
+  <div class="perm">
+    <div><strong>{{or .Title .Category}}</strong>{{if .New}} <span class="tag-new">New</span>{{end}}
+      <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
+    <div class="cronactions">
+      {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/discord/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
+      {{if ne .Mode "allow"}}{{template "ui-confirm" (confirmGo "/access/discord/permission" "Allow" (printf "Discord conversations can %s without asking you." .Can) "category" .Category "mode" "allow")}}{{end}}
+      {{if ne .Mode "deny"}}<form method="POST" action="/access/discord/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
+    </div>
   </div>
   {{end}}
 </div>

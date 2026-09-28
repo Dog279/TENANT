@@ -1,10 +1,13 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -60,10 +63,52 @@ func TestSSR_DashboardPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Home was renamed Dashboard→Overview and turned into a status board (TEN-200).
-	for _, want := range []string{"Overview", "Tools enabled", "web", "Read-only"} {
+	for _, want := range []string{"Overview", "Tools enabled", "Look only", "No services connected yet"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard page missing %q", want)
 		}
+	}
+}
+
+// UX-5: Connected services are the integrations set up and the remote
+// services connected, by name, not every built-in plugin.
+func TestSSR_ConnectedServicesAreTheConnectedOnes(t *testing.T) {
+	s, _ := ssrServer()
+	s.SetIntegrations(&fakeIntegrationsCtl{list: []IntegrationView{{ID: "gsuite", Label: "Google (Gmail, Calendar, Drive) — business / SA + DWD", Configured: true}, {ID: "github", Label: "GitHub"}}})
+	s.SetMCP(&fakeMCPCtl{servers: []MCPServerView{{Label: "mcp:atlassian", Enabled: true}, {Label: "mcp:gone"}}})
+	body := get(t, s, "/").Body.String()
+	for _, want := range []string{`<a class="chip" href="/integrations">Google</a>`, `<a class="chip" href="/mcp">atlassian</a>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Overview lacks %q", want)
+		}
+	}
+	for _, not := range []string{">GitHub<", ">gone<", `class="chip">web<`, `class="chip">sql<`} {
+		if strings.Contains(body, not) {
+			t.Errorf("Overview lists %q, which isn't connected", not)
+		}
+	}
+}
+
+// UX-2: with one tool that changes things on and another off, the agent can
+// change things: Overview must not say "Look only", and the Tools page must
+// not show "All off" as the current state.
+func TestSSR_WhatItMayDoFollowsTheToolsOn(t *testing.T) {
+	s, ft := ssrServer()
+	ft.tools = append(ft.tools, ToolInfo{Name: "os_exec", Plugin: "os", Enabled: true, Gated: true})
+	body := get(t, s, "/").Body.String()
+	if strings.Contains(body, "Look only") || !strings.Contains(body, `Change things <span class="dim">· 1 tool</span>`) || !strings.Contains(body, `href="/safety" class="card stat linkcard"`) {
+		t.Errorf("Overview with os_exec on:\n%s", body)
+	}
+	tools := get(t, s, "/tools").Body.String()
+	if strings.Contains(tools, `class="btn on">All off`) || strings.Contains(tools, `<span class="btn on">All on`) {
+		t.Errorf("Tools with some tools that change things on shows all off or all on as current")
+	}
+	ft.tools[len(ft.tools)-1].Enabled = false
+	if body := get(t, s, "/").Body.String(); !strings.Contains(body, "Look only") {
+		t.Errorf("Overview with every tool that changes things off should say Look only")
+	}
+	if tools := get(t, s, "/tools").Body.String(); !strings.Contains(tools, `class="btn on">All off`) {
+		t.Errorf("Tools with every tool that changes things off should show All off as current")
 	}
 }
 
@@ -74,7 +119,8 @@ func TestSSR_ToolsPage(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"web_read", "sql_exec", "destructive", "/tools/web_read/toggle"} {
+	// The toggle URL is JS-escaped inside data-on:click ("/" → "\/").
+	for _, want := range []string{"web_read", "sql_exec", "can change things", `\/tools\/web_read\/toggle`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("tools page missing %q", want)
 		}
@@ -119,6 +165,47 @@ func TestSSR_ToolToggleForm(t *testing.T) {
 	}
 }
 
+// A remote tool server names its own tools. A name with "../" must stay one
+// path segment, so its rendered toggle button still reaches the toggle route
+// and can't aim at another one, such as a key's remove (F1).
+func TestSSR_ToolToggleURLEscapesName(t *testing.T) {
+	s, ft := ssrServer()
+	name := "../../settings/keys/openai/remove?confirm=yes&x="
+	row, err := s.renderToolRow(ToolInfo{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`data-on:click="@post\('([^']*)'\)"`).FindStringSubmatch(row)
+	if m == nil {
+		t.Fatalf("no @post toggle on the row:\n%s", row)
+	}
+	var u string // the browser's view: HTML-decoded, then the JS string decoded
+	if err := json.Unmarshal([]byte(`"`+html.UnescapeString(m[1])+`"`), &u); err != nil {
+		t.Fatalf("decode %q: %v", m[1], err)
+	}
+	if strings.Contains(u, "../") {
+		t.Fatalf("toggle URL %q lets the name leave its path segment", u)
+	}
+	ssrPost(t, s, u, nil)
+	if len(ft.setCalls) != 1 || ft.setCalls[0] != name+"=true" {
+		t.Errorf("POST %s should toggle the tool itself, got %v", u, ft.setCalls)
+	}
+}
+
+// A bare CR ends an SSE line, so agent text carrying one could close a patch
+// and start a datastar-patch-signals event, which Datastar evaluates.
+func TestPatchElements_NoBareCR(t *testing.T) {
+	got := string(patchElements("#x", "append", "a\rb\r\nc"))
+	if strings.Contains(got, "\r") {
+		t.Fatalf("CR reached the SSE stream: %q", got)
+	}
+	for _, l := range []string{"data: elements a\n", "data: elements b\n", "data: elements c\n"} {
+		if !strings.Contains(got, l) {
+			t.Errorf("want %q in %q", l, got)
+		}
+	}
+}
+
 func TestSSR_DatastarServed(t *testing.T) {
 	rec := get(t, mustServer(), "/datastar.js")
 	if rec.Code != http.StatusOK {
@@ -155,7 +242,7 @@ func TestSSR_ToolToggle_DatastarPatch(t *testing.T) {
 
 func TestSSR_PostureForm(t *testing.T) {
 	s, ft := ssrServer()
-	rec := ssrPost(t, s, "/posture", url.Values{"allow_send": {"true"}})
+	rec := ssrPost(t, s, "/posture", url.Values{"allow_send": {"true"}, "confirm": {"yes"}})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("posture should 303, got %d", rec.Code)
 	}
@@ -191,10 +278,10 @@ func TestSSR_DatastarColonSyntax(t *testing.T) {
 	}{
 		{"/activity", `@get('/activity/events`, "data-on-load"},
 		{"/activity", `{retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})`, "data-on-load"},
-		{"/chat", `data-on:submit__prevent="@post('/chat/send')"`, "data-on-submit"},
+		{"/chat", `data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})"`, "data-on-submit"}, // a double tap keeps the first answer
 		{"/chat", `data-bind:text`, "data-bind-text"},
 		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},
-		{"/tools", `data-on:click="@post('/tools/`, "data-on-click"},
+		{"/tools", `data-on:click="@post('\/tools\/`, "data-on-click"}, // JS-escaped ToggleURL
 	}
 	for _, c := range cases {
 		body := get(t, s, c.path).Body.String()

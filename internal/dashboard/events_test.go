@@ -141,7 +141,7 @@ func TestServeRecordsLifecycleRequestsAndErrors(t *testing.T) {
 // catalogued with its reason.
 func TestRejectionsAreCatalogued(t *testing.T) {
 	c := installCapture(t)
-	s := New(Config{Addr: "127.0.0.1:8770", Auth: "tok"}, nil, nil, nil, nil, nil)
+	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "tok"}, nil, nil, nil, nil, nil))
 	h := s.secure(s.Handler())
 	req := func(method, host, path string, hdr ...string) *http.Request {
 		r := httptest.NewRequest(method, "http://"+host+path, nil)
@@ -154,7 +154,7 @@ func TestRejectionsAreCatalogued(t *testing.T) {
 		req("GET", "evil.example", "/tools"),
 		req("GET", "127.0.0.1:8770", "/tools", "Origin", "http://evil.example"),
 		req("GET", "127.0.0.1:8770", "/tools", "Authorization", "Bearer wrong"),
-		req("POST", "127.0.0.1:8770", "/tools/x/toggle", "Cookie", dashCookieName+"=tok"),
+		req("POST", "127.0.0.1:8770", "/tools/x/toggle", "Cookie", dashCookieName+"="+testSession),
 	} {
 		h.ServeHTTP(httptest.NewRecorder(), r)
 	}

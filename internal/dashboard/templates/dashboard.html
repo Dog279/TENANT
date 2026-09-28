@@ -3,7 +3,12 @@
   {{if .Alerts}}
   <a href="/logs?q=log:alerts" class="card stat linkcard" title="{{.AlertLatest}}">
     <div class="stat-label">Agent</div>
-    <div class="stat-value"><span class="trend-down">⚠</span> {{.Alerts}} alert{{if ne .Alerts 1}}s{{end}}</div>
+    <div class="stat-value"><span class="trend-down">{{.Alerts}} alert{{if ne .Alerts 1}}s{{end}}</span></div>
+  </a>
+  {{else if .ModelTrouble}}
+  <a href="/logs?q=log:model" class="card stat linkcard">
+    <div class="stat-label">Agent</div>
+    <div class="stat-value small"><span class="trend-down">Can't reach its model</span> <span class="dim">· failed {{.ModelTrouble}}</span></div>
   </a>
   {{else}}
   <div class="card stat">
@@ -11,10 +16,14 @@
     <div class="stat-value"><span class="trend-up">●</span> healthy</div>
   </div>
   {{end}}
+  <a href="/safety" class="card stat linkcard">
+    <div class="stat-label">Waiting for your OK</div>
+    <div class="stat-value">{{if .Waiting}}<span class="needs">{{.Waiting}}</span>{{else}}<span class="dim">nothing</span>{{end}}</div>
+  </a>
   {{if .ActiveModel}}
   <a href="/models" class="card stat linkcard">
     <div class="stat-label">Model</div>
-    <div class="stat-value" style="font-size:16px">{{.ActiveModel}}{{if .ModelDegraded}} <span class="risk">offline</span>{{end}}</div>
+    <div class="stat-value small">{{.ActiveModel}}{{if .ModelDegraded}} <span class="risk">offline</span>{{end}}</div>
   </a>
   {{end}}
   {{if .HasQuality}}
@@ -41,19 +50,19 @@
     <div class="stat-value">{{.WorkingCount}}</div>
   </a>
   {{end}}
-  <a href="/tools" class="card stat linkcard">
-    <div class="stat-label">Safety</div>
-    <div class="stat-value">{{if .AllowSend}}Can send{{else}}Read-only{{end}}</div>
+  <a href="/safety" class="card stat linkcard">
+    <div class="stat-label">What it may do</div>
+    <div class="stat-value">{{if .ActTools}}Change things <span class="dim">· {{.ActTools}} tool{{if ne .ActTools 1}}s{{end}}</span>{{else}}Look only{{end}}</div>
   </a>
 </div>
 
 {{if .SkillsWaiting}}
-<a href="/skills" class="card ok" style="display:block;text-decoration:none">{{.SkillsWaiting}} new skill{{if ne .SkillsWaiting 1}}s{{end}} your agent learned {{if eq .SkillsWaiting 1}}is{{else}}are{{end}} waiting for your OK →</a>
+<div class="banner info">{{.SkillsWaiting}} new skill{{if ne .SkillsWaiting 1}}s{{end}} your agent learned {{if eq .SkillsWaiting 1}}is{{else}}are{{end}} waiting for your OK. <a href="/skills">Review</a></div>
 {{end}}
 
 <div class="card">
   <div class="card-head">Connected services</div>
-  {{if .Plugins}}<div class="chips">{{range .Plugins}}<span class="chip">{{.}}</span>{{end}}</div>
-  {{else}}<div class="dim">No services connected yet. Add one under Connections &amp; keys.</div>{{end}}
+  {{if .Plugins}}<div class="chips">{{range .Plugins}}<a class="chip" href="{{.Href}}">{{visibleText .Name}}</a>{{end}}</div>
+  {{else}}<div class="empty">No services connected yet. Connect one on the <a href="/integrations">Integrations</a> page.</div>{{end}}
 </div>
 {{end}}

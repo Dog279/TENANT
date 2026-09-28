@@ -46,7 +46,7 @@ func modelServer(fc ModelControl) *Server {
 
 func TestModels_PageNotConfigured(t *testing.T) {
 	rec := get(t, modelServer(nil), "/models")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "aren't configured") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Model settings aren&#39;t available on this Tenant.") {
 		t.Errorf("nil models should render not-configured; got %d:\n%s", rec.Code, rec.Body.String())
 	}
 }
@@ -63,8 +63,9 @@ func TestModels_ListsBackendsAndMarksActive(t *testing.T) {
 		}
 	}
 	// the active model must NOT offer a "Use this model" button or a Remove
-	if strings.Count(body, "Use this model") != 1 {
-		t.Errorf("exactly the one inactive model should offer Use; got %d", strings.Count(body, "Use this model"))
+	const use = `<span class="c-open">Use this model</span>` // its confirm step's first button
+	if strings.Count(body, use) != 1 {
+		t.Errorf("exactly the one inactive model should offer Use; got %d", strings.Count(body, use))
 	}
 }
 
@@ -90,7 +91,7 @@ func TestModels_AddRemoveCeilingReload(t *testing.T) {
 	if len(fc.addCalls) != 1 || fc.addCalls[0] != "anthropic|sk-test" {
 		t.Errorf("add calls = %v", fc.addCalls)
 	}
-	submitForm(t, s, "/models/remove", "name=old")
+	submitForm(t, s, "/models/remove", "name=old&confirm=yes")
 	if len(fc.removeCalls) != 1 || fc.removeCalls[0] != "old" {
 		t.Errorf("remove calls = %v", fc.removeCalls)
 	}

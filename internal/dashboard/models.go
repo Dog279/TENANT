@@ -13,7 +13,6 @@ package dashboard
 
 import (
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 )
@@ -45,9 +44,11 @@ func (s *Server) SetModels(c ModelControl) { s.models = c }
 
 func (s *Server) mountModelsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /models", s.handleModelsPage)
-	mux.HandleFunc("POST /models/use", s.handleModelUseForm)
+	// Switching changes every answer and removing loses the key: both go
+	// through a confirm step (TEN-211, the reference adoption).
+	mux.HandleFunc("POST /models/use", needConfirm(nil, s.handleModelUseForm))
 	mux.HandleFunc("POST /models/add", s.handleModelAddForm)
-	mux.HandleFunc("POST /models/remove", s.handleModelRemoveForm)
+	mux.HandleFunc("POST /models/remove", needConfirm(nil, s.handleModelRemoveForm))
 	mux.HandleFunc("POST /models/ceiling", s.handleModelCeilingForm)
 	mux.HandleFunc("POST /models/reload", s.handleModelReloadForm)
 }
@@ -80,39 +81,47 @@ func (s *Server) handleModelUseForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/models", http.StatusSeeOther)
 		return
 	}
-	// Confirm guard: switching the active model changes every answer, so the
-	// form must carry confirm=yes (the template's two-step). Without it we
-	// bounce back rather than silently swapping.
-	if r.FormValue("confirm") != "yes" {
-		redirectModels(w, r, "", "Switch not confirmed.")
-		return
-	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	status, err := s.models.Use(name)
 	if err != nil {
-		redirectModels(w, r, "", "Couldn't switch model: "+err.Error())
+		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model use", err, "Couldn't switch to that model."))
 		return
 	}
-	redirectModels(w, r, status, "")
+	// A "⚠" status means the switch happened but the model can't answer yet
+	// (its warning is logged as SwapUnready).
+	if strings.HasPrefix(status, "⚠") {
+		redirectFlash(w, r, "/models", "", "Switched to "+name+", but it isn't ready to answer. The Logs page has the reason.")
+		return
+	}
+	redirectFlash(w, r, "/models", "Every answer now comes from "+name+".", "")
 }
 
+// handleModelAddForm adds a cloud model. Its key travels in the body only
+// (F2), and a failure's reason, which can quote the key, goes to the log
+// masked, never into the redirect URL (F3).
 func (s *Server) handleModelAddForm(w http.ResponseWriter, r *http.Request) {
 	if s.models == nil {
 		http.Redirect(w, r, "/models", http.StatusSeeOther)
 		return
 	}
 	kind := strings.TrimSpace(r.FormValue("kind"))
-	key := strings.TrimSpace(r.FormValue("key"))
+	key, ok := bodyOnly(r, "key")
+	if !ok {
+		KeyInURL.Log(r.Context(), "cred", kind)
+		redirectFlash(w, r, "/models", "", secretInURL)
+		return
+	}
+	key = strings.TrimSpace(key)
 	if kind == "" || key == "" {
-		redirectModels(w, r, "", "Pick a provider and paste its API key.")
+		redirectFlash(w, r, "/models", "", "Pick a provider and paste its API key.")
 		return
 	}
-	status, err := s.models.AddCloud(kind, key)
-	if err != nil {
-		redirectModels(w, r, "", "Couldn't add that model: "+err.Error())
+	if _, err := s.models.AddCloud(kind, key); err != nil {
+		KeyNotSaved.Log(r.Context(), "cred", kind, "op", "added", "err", err)
+		redirectFlash(w, r, "/models", "", "Couldn't add that model. The Logs page has the reason.")
 		return
 	}
-	redirectModels(w, r, status, "")
+	redirectFlash(w, r, "/models", "Model added. Choose Use this model to switch your agent to it.", "")
 }
 
 func (s *Server) handleModelRemoveForm(w http.ResponseWriter, r *http.Request) {
@@ -121,12 +130,11 @@ func (s *Server) handleModelRemoveForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
-	status, err := s.models.Remove(name)
-	if err != nil {
-		redirectModels(w, r, "", "Couldn't remove that model: "+err.Error())
+	if _, err := s.models.Remove(name); err != nil {
+		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model remove", err, "Couldn't remove that model."))
 		return
 	}
-	redirectModels(w, r, status, "")
+	redirectFlash(w, r, "/models", "Removed "+name+".", "")
 }
 
 func (s *Server) handleModelCeilingForm(w http.ResponseWriter, r *http.Request) {
@@ -136,15 +144,14 @@ func (s *Server) handleModelCeilingForm(w http.ResponseWriter, r *http.Request) 
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("ceiling")))
 	if err != nil || n <= 0 {
-		redirectModels(w, r, "", "Enter a whole number greater than zero.")
+		redirectFlash(w, r, "/models", "", "Enter a whole number greater than zero.")
 		return
 	}
-	status, serr := s.models.SetLoopCeiling(n)
-	if serr != nil {
-		redirectModels(w, r, "", "Couldn't update the limit: "+serr.Error())
+	if _, serr := s.models.SetLoopCeiling(n); serr != nil {
+		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model step limit", serr, "Couldn't update the limit. Use a number from 1 to 200."))
 		return
 	}
-	redirectModels(w, r, status, "")
+	redirectFlash(w, r, "/models", "Saved: your agent takes at most "+strconv.Itoa(n)+" steps per answer.", "")
 }
 
 func (s *Server) handleModelReloadForm(w http.ResponseWriter, r *http.Request) {
@@ -152,21 +159,9 @@ func (s *Server) handleModelReloadForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/models", http.StatusSeeOther)
 		return
 	}
-	status, err := s.models.ReloadKeys()
-	if err != nil {
-		redirectModels(w, r, "", "Couldn't reload keys: "+err.Error())
+	if _, err := s.models.ReloadKeys(); err != nil {
+		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model reload keys", err, "Couldn't reload the keys."))
 		return
 	}
-	redirectModels(w, r, status, "")
-}
-
-func redirectModels(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/models"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectFlash(w, r, "/models", "Keys reloaded.", "")
 }

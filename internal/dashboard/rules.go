@@ -8,7 +8,6 @@ package dashboard
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -29,6 +28,27 @@ type RuleControl interface {
 // SetRules installs the rule control after construction (mirrors SetCron).
 func (s *Server) SetRules(c RuleControl) { s.rules = c }
 
+// Plain is the rule's pattern as the page shows it: a remote service's tool
+// id ("mcp:<service>:<tool>", "*" for all of them) is named in words.
+func (r ToolRuleRow) Plain() string {
+	rest, ok := strings.CutPrefix(r.Pattern, "mcp:")
+	i := strings.LastIndexByte(rest, ':')
+	if !ok || i <= 0 {
+		return r.Pattern
+	}
+	if tool := rest[i+1:]; tool != "*" {
+		return tool + " on " + rest[:i]
+	}
+	return "every tool on " + rest[:i]
+}
+
+// ruleWords says what a rule's mode does to the tools it matches.
+var ruleWords = map[string]string{
+	"ask":   "asks you first",
+	"allow": "runs without asking",
+	"deny":  "is blocked",
+}
+
 func (s *Server) handleRuleAddForm(w http.ResponseWriter, r *http.Request) {
 	if s.rules == nil {
 		http.Redirect(w, r, "/tools", http.StatusSeeOther)
@@ -36,15 +56,29 @@ func (s *Server) handleRuleAddForm(w http.ResponseWriter, r *http.Request) {
 	}
 	pattern := strings.TrimSpace(r.FormValue("pattern"))
 	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
-	if pattern == "" || (mode != "ask" && mode != "allow" && mode != "deny") {
-		redirectTools(w, r, "", "A rule needs a tool name or pattern and a mode (ask, allow or deny).")
+	if pattern == "" || ruleWords[mode] == "" {
+		redirectFlash(w, r, "/tools", "", "A rule needs a tool name or pattern, and Ask first, Don't ask or Block.")
 		return
 	}
 	if err := s.rules.SetRule(pattern, mode); err != nil {
-		redirectTools(w, r, "", "Couldn't add that rule: "+err.Error())
+		redirectFlash(w, r, "/tools", "", s.flashFor(r.Context(), "tool rule add", err, "Couldn't add that rule. Check the tool name or pattern."))
 		return
 	}
-	redirectTools(w, r, "Rule added: "+pattern+" → "+mode+".", "")
+	redirectFlash(w, r, "/tools", "Rule added: "+ToolRuleRow{Pattern: pattern}.Plain()+" "+ruleWords[mode]+".", "")
+}
+
+// ruleMode is the mode of the rule for pattern, "" with none. Removing a rule
+// asks first unless it let the tool go ahead, and that is decided from the
+// rules themselves, never from what the form says the rule was (REVSEC-1).
+func (s *Server) ruleMode(pattern string) string {
+	if s.rules != nil {
+		for _, rule := range s.rules.Rules() {
+			if rule.Pattern == pattern {
+				return strings.ToLower(rule.Mode)
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleRuleRemoveForm(w http.ResponseWriter, r *http.Request) {
@@ -56,21 +90,10 @@ func (s *Server) handleRuleRemoveForm(w http.ResponseWriter, r *http.Request) {
 	removed, err := s.rules.RemoveRule(pattern)
 	switch {
 	case err != nil:
-		redirectTools(w, r, "", "Couldn't remove that rule: "+err.Error())
+		redirectFlash(w, r, "/tools", "", s.flashFor(r.Context(), "tool rule remove", err, "Couldn't remove that rule."))
 	case !removed:
-		redirectTools(w, r, "", "No rule "+pattern+".")
+		redirectFlash(w, r, "/tools", "", "There's no rule for "+pattern+".")
 	default:
-		redirectTools(w, r, "Rule removed: "+pattern+".", "")
+		redirectFlash(w, r, "/tools", "Rule removed: "+ToolRuleRow{Pattern: pattern}.Plain()+".", "")
 	}
-}
-
-func redirectTools(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/tools"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
 }

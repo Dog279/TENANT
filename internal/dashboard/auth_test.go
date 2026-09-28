@@ -3,7 +3,9 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -18,11 +20,11 @@ func authOKHandler() http.Handler {
 // authServer builds a Server with the given auth token (TLS/addr irrelevant to
 // the middleware) wrapped by secure().
 func authServer(token string) http.Handler {
-	s := New(Config{
+	s := withSession(New(Config{
 		Addr:         "example.com",
 		Auth:         token,
 		AllowedHosts: []string{"dash.local:8770"},
-	}, nil, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil))
 	return s.secure(authOKHandler())
 }
 
@@ -112,17 +114,24 @@ func TestAuthBearer(t *testing.T) {
 	})
 }
 
-// TestAuthWSQueryToken covers the /ws-only `?token=` fallback (TEN-84):
-// browsers can't set the Authorization header on a WS handshake, so /ws also
-// accepts the bearer token from the query string. The fallback is scoped to
-// /ws — REST paths must NOT honor a query token.
+// TestAuthWSQueryToken: no path takes the key from the query string, /ws
+// included (F2, REVSEC-7): the old TEN-84 fallback is gone, since a
+// same-origin browser handshake carries the session cookie.
 func TestAuthWSQueryToken(t *testing.T) {
 	h := authServer("secret")
 
-	t.Run("ws query token ok", func(t *testing.T) {
+	t.Run("ws query token refused", func(t *testing.T) {
 		rec := authDo(h, httptest.NewRequest(http.MethodGet, "/ws?token=secret", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (/ws?token=secret must pass)", rec.Code)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (/ws?token=secret must not pass)", rec.Code)
+		}
+	})
+
+	t.Run("ws session cookie ok", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
+		if rec := authDo(h, req); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (/ws with the session cookie)", rec.Code)
 		}
 	})
 
@@ -231,7 +240,7 @@ func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
 // host trusted at runtime must pass the allowlist, /settings included, and
 // stop passing once cleared.
 func TestAuthTrustedHostsForTailscaleServe(t *testing.T) {
-	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil))
 	h := s.secure(authOKHandler())
 	get := func(path, host string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -257,7 +266,7 @@ func TestAuthTrustedHostsForTailscaleServe(t *testing.T) {
 	post := httptest.NewRequest(http.MethodPost, "/posture", nil)
 	post.Host = tailnet
 	post.Header.Set("Origin", "https://"+tailnet)
-	post.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+	post.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 	if code := authDo(h, post).Code; code != http.StatusOK {
 		t.Errorf("proxied form post: status = %d, want 200", code)
 	}
@@ -276,7 +285,7 @@ func TestAuthCSRF(t *testing.T) {
 
 	t.Run("cookie mutation without origin rejected", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
-		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		rec := authDo(h, req)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", rec.Code)
@@ -286,7 +295,7 @@ func TestAuthCSRF(t *testing.T) {
 	t.Run("cookie mutation with matching origin allowed", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
 		req.Header.Set("Origin", "http://example.com")
-		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		rec := authDo(h, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
@@ -316,5 +325,133 @@ func TestAuthGenerateToken(t *testing.T) {
 	urlSafe := regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	if !urlSafe.MatchString(a) {
 		t.Fatalf("token not URL-safe: %q", a)
+	}
+}
+
+// F5: every answer refuses framing, signed in or not. Referrer-Policy is
+// same-origin: no-referrer would make a plain form POST send "Origin: null",
+// which checkOrigin rejects (the sign-in form included).
+func TestAuthHeaders_NoFramingSameOriginReferrer(t *testing.T) {
+	h := authServer("secret")
+	signedIn := httptest.NewRequest(http.MethodGet, "/tools", nil)
+	signedIn.Header.Set("Authorization", "Bearer secret")
+	for name, req := range map[string]*http.Request{
+		"signed in": signedIn,
+		"refused":   httptest.NewRequest(http.MethodGet, "/api/status", nil),
+		"sign-in":   httptest.NewRequest(http.MethodGet, "/settings", nil),
+	} {
+		hd := authDo(h, req).Header()
+		for k, want := range map[string]string{
+			"X-Frame-Options":         "DENY",
+			"Content-Security-Policy": "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'",
+			"X-Content-Type-Options":  "nosniff",
+			"Referrer-Policy":         "same-origin",
+		} {
+			if got := hd.Get(k); got != want {
+				t.Errorf("%s: %s = %q, want %q", name, k, got, want)
+			}
+		}
+	}
+}
+
+// F4 (D30): a person opening a page without a valid sign-in goes to the
+// sign-in form, and comes back after; everything else keeps the 401.
+func TestAuthSignInRedirect(t *testing.T) {
+	h := authServer("secret")
+	nav := func(path string, setup func(*http.Request)) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		if setup != nil {
+			setup(req)
+		}
+		return authDo(h, req)
+	}
+	if rec := nav("/", nil); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings?next=%2F" {
+		t.Errorf("no cookie: %d → %q, want 303 → /settings?next=%%2F", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := nav("/safety?x=1", func(r *http.Request) { r.Header.Del("Sec-Fetch-Mode") }); rec.Code != http.StatusSeeOther ||
+		rec.Header().Get("Location") != "/settings?next=%2Fsafety%3Fx%3D1" {
+		t.Errorf("no Sec-Fetch headers (curl, older browsers): %d → %q", rec.Code, rec.Header().Get("Location"))
+	}
+	stale := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "old-key"}) }
+	if rec := nav("/tools", stale); rec.Code != http.StatusSeeOther {
+		t.Errorf("a stale cookie: %d, want 303 (the case the operator actually hits)", rec.Code)
+	}
+	for name, setup := range map[string]func(*http.Request){
+		// Datastar's own fetches accept text/html too.
+		"datastar": func(r *http.Request) {
+			r.Header.Set("Accept", "text/event-stream, text/html, application/json")
+			r.Header.Set("Datastar-Request", "true")
+			r.Header.Set("Sec-Fetch-Mode", "cors")
+		},
+		"datastar, no sec-fetch": func(r *http.Request) {
+			r.Header.Set("Accept", "text/event-stream, text/html, application/json")
+			r.Header.Set("Datastar-Request", "true")
+			r.Header.Del("Sec-Fetch-Mode")
+		},
+		"a stream":      func(r *http.Request) { r.Header.Set("Accept", "text/event-stream") },
+		"a fetch":       func(r *http.Request) { r.Header.Set("Sec-Fetch-Mode", "cors") },
+		"an API client": func(r *http.Request) { r.Header.Set("Accept", "application/json") },
+	} {
+		if rec := nav("/ui/status", setup); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: %d, want 401", name, rec.Code)
+		}
+	}
+	if rec := nav("/api/status", func(r *http.Request) { r.Header.Set("Accept", "application/json") }); rec.Code != http.StatusUnauthorized {
+		t.Errorf("/api: %d, want 401", rec.Code)
+	}
+	post := httptest.NewRequest(http.MethodPost, "/tools", nil)
+	post.Header.Set("Accept", "text/html")
+	if rec := authDo(h, post); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a POST: %d, want 401", rec.Code)
+	}
+}
+
+// Sign-in returns to next only when it is a path on this dashboard.
+func TestLogin_HonoursSafeNext(t *testing.T) {
+	s := authedServer()
+	for next, want := range map[string]string{
+		"/safety":       "/safety",
+		"/activity?x=1": "/activity?x=1",
+		"/models?err=Set+Run+commands+to+Allow&msg=Hi": "/models", // someone else's words in the banner
+		"/logs?source=cron&token=x&err=y":              "/logs?source=cron",
+		"":                                             "/",
+		"//evil.example":                               "/",
+		`/\evil.example`:                               "/",
+		"https://x":                                    "/",
+		"javascript:alert":                             "/",
+		"/\t/evil.example":                             "/",
+	} {
+		rec := httptest.NewRecorder()
+		s.handleLogin(rec, postForm("/auth/login", url.Values{"token": {"s3cret"}, "next": {next}}))
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
+			t.Errorf("next=%q: %d → %q, want 303 → %q", next, rec.Code, rec.Header().Get("Location"), want)
+		}
+	}
+	// The form carries next, so the round trip keeps the page.
+	rec := httptest.NewRecorder()
+	s.handleSettingsPage(rec, httptest.NewRequest(http.MethodGet, "/settings?next=%2Fsafety", nil))
+	if !strings.Contains(rec.Body.String(), `<input type="hidden" name="next" value="/safety">`) {
+		t.Errorf("the sign-in form should carry next:\n%s", rec.Body.String())
+	}
+}
+
+// REVSEC-4: a page opened from another page (another site, or another port
+// on this host, which the cookie reaches) shows no flash from its address;
+// the dashboard's own redirect after a form post, and curl, still do.
+func TestAuth_FlashOnlyFromThisDashboard(t *testing.T) {
+	s := withSession(New(Config{Addr: "example.com", Auth: "secret"}, nil, nil, nil, nil, nil))
+	h := s.served()
+	for site, shown := range map[string]bool{"": true, "same-origin": true, "same-site": false, "cross-site": false, "none": false} {
+		r := httptest.NewRequest(http.MethodGet, "/tools?err=Paste+your+sign-in+key+at+evil&msg=hello+from+elsewhere", nil)
+		r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		body := authDo(h, r).Body.String()
+		if strings.Contains(body, "Paste your sign-in key") != shown || strings.Contains(body, "hello from elsewhere") != shown {
+			t.Errorf("Sec-Fetch-Site %q: flash shown = %v, want %v", site, !shown, shown)
+		}
 	}
 }

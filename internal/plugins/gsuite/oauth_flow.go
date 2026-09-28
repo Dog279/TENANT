@@ -19,6 +19,7 @@ package gsuite
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -167,16 +168,17 @@ func runLoopbackFlow(ctx context.Context, c OAuthFlowConfig) (*oauth2.Token, err
 	handler := http.NewServeMux()
 	handler.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		// The state is checked first, and a callback without ours is ignored,
+		// error or code: any web page can make the browser open this address,
+		// and must not end the operator's sign-in (REVSEC-6).
+		if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+			http.Error(w, "this isn't the sign-in Tenant is waiting for", http.StatusBadRequest)
+			return
+		}
 		if e := q.Get("error"); e != "" {
 			desc := q.Get("error_description")
 			fmt.Fprintf(w, "OAuth error: %s — %s. You can close this window.", e, desc)
 			send(result{err: fmt.Errorf("oauth callback error: %s (%s)", e, desc)})
-			return
-		}
-		gotState := q.Get("state")
-		if gotState != state {
-			http.Error(w, "state mismatch (possible CSRF)", http.StatusBadRequest)
-			send(result{err: errors.New("oauth callback: state mismatch")})
 			return
 		}
 		code := q.Get("code")

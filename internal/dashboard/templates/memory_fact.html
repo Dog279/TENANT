@@ -1,23 +1,23 @@
 {{define "content"}}
 {{template "memnav" .}}
 {{if not .Configured}}
-<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else if not .Supported}}
 <div class="card"><div class="dim pad">This server's memory can't explain individual facts.</div></div>
 {{else}}
-{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
-{{if .Notice}}<div class="banner undo"><span>{{.Notice}}</span></div>{{end}}
+{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
+{{if .Notice}}<div class="banner ok" role="status">{{.Notice}}</div>{{end}}
 {{if .ID}}
 <div class="card">
   <div class="pad">
     <div class="fact-top">
-      <div class="fact-text"><strong>{{.Text}}</strong></div>
+      <div class="fact-text"><strong>{{visibleText .Text}}</strong></div>
       <span class="fact-conf dim">#{{.ID}} · {{.StatusText}} · {{.Conf}} (now {{.EffConf}})</span>
     </div>
     {{if .ValidTo}}<div class="dim">No longer true since {{.ValidTo}}.</div>{{end}}
     {{if .Editing}}
-    <form method="POST" action="{{.EditAction}}" style="margin-top:.5rem">
-      <textarea class="box" name="text" rows="3" style="width:100%">{{.Text}}</textarea>
+    <form method="POST" action="{{.EditAction}}" class="mt">
+      <textarea class="box wide" name="text" rows="3">{{.Text}}</textarea>
       <button type="submit" class="btn sm">Save as a new version</button>
       <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
     </form>
@@ -52,7 +52,7 @@
     <div class="fact-text dim">Conversation #{{.ID}} is no longer in memory.</div>
     {{else}}
     <div class="fact-top">
-      <div class="fact-text"><span class="dim">You:</span> {{.Prompt}}<br><span class="dim">Agent:</span> {{.Response}}</div>
+      <div class="fact-text"><span class="dim">You:</span> {{visibleText .Prompt}}<br><span class="dim">Agent:</span> {{visibleText .Response}}</div>
       <span class="fact-conf dim">{{.When}}</span>
     </div>
     {{end}}
@@ -70,7 +70,7 @@
   </div>
   <div class="factlist">
     {{range .Events}}
-    <div class="fact"><div class="fact-top"><div class="fact-text"><span class="dim">[{{.Role}}]</span> {{.Content}}</div><span class="fact-conf dim">{{.When}}</span></div></div>
+    <div class="fact"><div class="fact-top"><div class="fact-text"><span class="dim">[{{.Role}}]</span> {{visibleText .Content}}</div><span class="fact-conf dim">{{.When}}</span></div></div>
     {{end}}
   </div>
   {{end}}
@@ -87,12 +87,12 @@
 <div class="card">
   <div class="pad"><strong>Versions and conflicts</strong></div>
   {{if .ByNewer}}<div class="pad">Replaced by <a href="{{.ByNewer.Href}}">#{{.ByNewer.ID}}</a>{{if .ByNewer.Job}} ({{.ByNewer.Job}}){{end}}: {{.ByNewer.Text}}</div>{{end}}
-  {{range .Replaced}}<div class="pad dim">Replaced <a href="{{.Href}}">#{{.ID}}</a>{{if .Job}} ({{.Job}}){{end}}: {{.Text}}</div>{{end}}
+  {{range .Replaced}}<div class="pad dim">Replaced <a href="{{.Href}}">#{{.ID}}</a>{{if .Job}} ({{.Job}}){{end}}: {{visibleText .Text}}</div>{{end}}
   <div class="factlist">
   {{range .Versions}}
   <div class="fact">
     <div class="fact-top">
-      <div class="fact-text">{{if .Current}}<strong>{{.Text}}</strong>{{else}}<a href="{{.Href}}">{{.Text}}</a>{{end}}</div>
+      <div class="fact-text">{{if .Current}}<strong>{{visibleText .Text}}</strong>{{else}}<a href="{{.Href}}">{{visibleText .Text}}</a>{{end}}</div>
       <span class="fact-conf dim">#{{.ID}} · {{.When}} · {{.StatusText}}{{if .Job}} · {{.Job}}{{end}}</span>
     </div>
     {{if .CompareHref}}
@@ -108,7 +108,7 @@
   </div>
   {{with .Compare}}
   <div class="pad"><strong>#{{.A}} → #{{.B}}</strong>
-    <div style="margin-top:.4rem">{{range .Parts}}{{if eq .Op "del"}}<del>{{.Text}}</del> {{else if eq .Op "ins"}}<ins>{{.Text}}</ins> {{else}}{{.Text}} {{end}}{{end}}</div>
+    <div class="mt">{{range .Parts}}{{if eq .Op "del"}}<del>{{visibleText .Text}}</del> {{else if eq .Op "ins"}}<ins>{{visibleText .Text}}</ins> {{else}}{{visibleText .Text}} {{end}}{{end}}</div>
   </div>
   {{end}}
 </div>

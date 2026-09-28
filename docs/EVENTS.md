@@ -437,7 +437,7 @@ Writes the `dashboard` log.
 | [2202](#dashboard-2202) | warning | Action | `API key {cred} was not {op}` |
 | [2203](#dashboard-2203) | warning | Action | `API key {cred} was sent in the URL and refused` |
 | [2204](#dashboard-2204) | warning | Action | `Integration {integration} test failed: {err}` |
-| [2205](#dashboard-2205) | warning | Action | `MCP connector {url} was not added: {err}` |
+| [2205](#dashboard-2205) | warning | Action | `A remote service was not connected: {err}` |
 | [2206](#dashboard-2206) | warning | Chat | `Chat turn failed: {err}` |
 | [3001](#dashboard-3001) | error | Page | `Page {page} could not be rendered: {err}` |
 | [9001](#dashboard-9001) | info | Request | `{method} {route}` |
@@ -590,7 +590,7 @@ Writes the `dashboard` log.
 - **Fields:** `action`, `target`, `err`
 - **Find it:** `provider:dashboard id:2201`
 
-**What it means.** A change or command made on a dashboard page didn't apply. The page showed the operator the same error.
+**What it means.** A change or command made on a dashboard page didn't apply. The page showed the operator a plain message; this event has the error.
 
 **Why it happens.** The value was refused (an unknown category or mode, a bad schedule, a job or fact that no longer exists), or the change couldn't be saved: config.json or a store is unwritable or locked, or the subsystem isn't running.
 
@@ -618,11 +618,11 @@ Writes the `dashboard` log.
 - **Fields:** `cred`
 - **Find it:** `provider:dashboard id:2203`
 
-**What it means.** A request tried to store an API key through the URL's query string, where browser history and proxy logs keep it. It was refused.
+**What it means.** A request sent an API key, an integration's setting or the dashboard's sign-in key in the URL's query string, where browser history and proxy logs keep it. It was refused before anything used it.
 
-**Why it happens.** A script or bookmark that puts value= in the URL instead of the form's body.
+**Why it happens.** A script or bookmark that puts the key in the URL instead of the form's body.
 
-**What to do.** Rotate that key: it may now sit in a history or a log. Submit keys through the Keys page's form.
+**What to do.** Rotate that key: it may now sit in a history or a log. For the sign-in key, delete the file dashboard-auth-token and restart Tenant. Submit keys through the page's form.
 
 ### dashboard 2204
 
@@ -640,10 +640,10 @@ Writes the `dashboard` log.
 
 ### dashboard 2205
 
-`MCP connector {url} was not added: {err}`
+`A remote service was not connected: {err}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Action · **Log:** dashboard
-- **Fields:** `url`, `err`
+- **Fields:** `url`, `err` (sensitive, masked: `url`)
 - **Find it:** `provider:dashboard id:2205`
 
 **What it means.** Connecting a remote MCP service from the MCP page ran in the background and failed.

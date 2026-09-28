@@ -40,6 +40,11 @@ type dashboardManager struct {
 	access       dashboard.AccessControl       // TEN-208: iMessage + Discord access surface (nil-safe)
 	approvals    dashboard.ApprovalControl     // TEN-194: headless approval queue surface (serve mode; nil-safe)
 	rules        dashboard.RuleControl         // per-tool permission rules card on the Tools page (nil-safe)
+	safety       dashboard.SafetyControl       // TEN-207: the main broker's category modes (nil-safe)
+	safetyFacts  func() dashboard.SafetyFacts  // who commands run as, and whether sandboxed (nil-safe)
+	agents       dashboard.AgentControl        // TEN-209: named helpers (nil-safe)
+	goal         dashboard.GoalControl         // TEN-212: the goal loop; nil under serve
+	research     dashboard.ResearchControl     // TEN-210: deep research (nil-safe)
 	broker       *agent.Broker
 	logs         *logs.Hub          // the unified log book: Activity feed + folders (nil-safe)
 	runs         *runtrace.Store    // run records, for the log book's timelines (nil-safe)
@@ -107,6 +112,18 @@ func (m *dashboardManager) Enable() (string, error) {
 	}
 	if m.rules != nil {
 		srv.SetRules(m.rules)
+	}
+	if m.safety != nil {
+		srv.SetSafety(m.safety, m.safetyFacts)
+	}
+	if m.agents != nil {
+		srv.SetAgents(m.agents)
+	}
+	if m.goal != nil {
+		srv.SetGoal(m.goal)
+	}
+	if m.research != nil {
+		srv.SetResearch(m.research)
 	}
 	if m.logs != nil {
 		srv.SetLogs(m.logs)

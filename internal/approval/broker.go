@@ -24,8 +24,9 @@ type Broker struct {
 	mu       sync.Mutex
 	modes    map[string]Mode
 	session  map[string]bool // per-category "approve session" grants
+	known    map[string]bool // categories the operator had a say in; one that asks and isn't here is New (TEN-343)
 	requests chan control.ApprovalRequest
-	persist  func(map[string]string) // save modes to settings (nil = no persist)
+	persist  func(modes map[string]string, known []string) // save modes + the known marker (nil = no persist)
 	log      *slog.Logger
 	rules    *Rules // per-tool permission rules, shared process-wide; nil in bare tests
 
@@ -62,6 +63,7 @@ func NewBroker(log *slog.Logger, categorize func(action string) string) *Broker 
 	b := &Broker{
 		modes:      map[string]Mode{},
 		session:    map[string]bool{},
+		known:      knownSet(Categories),
 		requests:   make(chan control.ApprovalRequest, 4),
 		reg:        newRegistry(),
 		origin:     "local",
@@ -85,6 +87,7 @@ func NewOffsiteBroker(log *slog.Logger, host *Broker) *Broker {
 	b := &Broker{
 		modes:      map[string]Mode{},
 		session:    map[string]bool{},
+		known:      knownSet(Categories),
 		requests:   host.requests, // share the on-host TUI notify channel
 		reg:        host.reg,      // SHARE the registry so offsite approvals are resolvable by id
 		origin:     "imessage",
@@ -108,6 +111,7 @@ func NewDiscordBroker(log *slog.Logger, categorize func(action string) string) *
 	b := &Broker{
 		modes:      map[string]Mode{},
 		session:    map[string]bool{},
+		known:      knownSet(Categories),
 		reg:        newRegistry(), // own registry; SetEvents may point it at the shared stream for the visibility bridge
 		origin:     "discord",
 		rules:      DefaultRules,
@@ -127,9 +131,10 @@ func categorizeOrDestructive(categorize func(string) string) func(string) string
 	return categorize
 }
 
-// SetPersist installs the hook that saves the category modes whenever the
-// operator changes one (nil: nothing is saved).
-func (b *Broker) SetPersist(persist func(modes map[string]string)) {
+// SetPersist installs the hook that saves the category modes, and the
+// categories the operator has chosen (the known_categories marker), whenever
+// the operator changes one (nil: nothing is saved).
+func (b *Broker) SetPersist(persist func(modes map[string]string, known []string)) {
 	b.mu.Lock()
 	b.persist = persist
 	b.mu.Unlock()
@@ -226,13 +231,42 @@ func (b *Broker) Allow(categories ...string) {
 }
 
 // LoadModes applies persisted per-category modes (override flag defaults),
-// without persisting them again.
-func (b *Broker) LoadModes(saved map[string]string) {
+// without persisting them again, and the known_categories marker saved beside
+// them. Without a marker, a fresh install (nothing saved) knows every
+// category, and an older save knows only OriginalCategories.
+func (b *Broker) LoadModes(saved map[string]string, known []string) {
+	modes := SavedModes(saved)
+	if len(known) == 0 {
+		known = OriginalCategories
+		if len(modes) == 0 {
+			known = Categories
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for cat, m := range SavedModes(saved) {
+	for cat, m := range modes {
 		b.modes[cat] = m
 	}
+	b.known = knownSet(known)
+}
+
+func knownSet(cats []string) map[string]bool {
+	out := make(map[string]bool, len(cats))
+	for _, c := range cats {
+		out[c] = true
+	}
+	return out
+}
+
+// knownList is the known marker as saved: known categories in display order.
+func (b *Broker) knownList() []string {
+	var out []string
+	for _, c := range Categories {
+		if b.known[c] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Modes snapshots the category → mode map.
@@ -291,7 +325,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.DenyOnce)
 			}
 			b.logInfo(ctx, "approval prompt forced by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
-			switch b.askDecision(ctx, "agent", cat, action, detail) {
+			switch b.askDecision(ctx, "agent", cat, action, detail, false) {
 			case control.ApproveAlways:
 				// "Always" on a rule-forced prompt means THIS tool, not its category.
 				// A failed save is told to the operator by the settings persist hook.
@@ -325,7 +359,7 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 		return verdict(ctx, cat, action, detail, b.origin, "session", "approved_session", control.ApproveSession)
 	}
 
-	switch b.askDecision(ctx, "agent", cat, action, detail) {
+	switch b.askDecision(ctx, "agent", cat, action, detail, true) {
 	case control.ApproveAlways:
 		b.setMode(cat, ModeAllow)
 		return true
@@ -384,7 +418,7 @@ func (b *Broker) Ask(ctx context.Context, category, action, detail string) bool 
 
 // askFrom is Ask for a request raised by by (a peer, Tenant).
 func (b *Broker) askFrom(ctx context.Context, by, category, action, detail string) bool {
-	switch b.askDecision(ctx, by, category, action, detail) {
+	switch b.askDecision(ctx, by, category, action, detail, false) {
 	case control.ApproveAlways, control.ApproveSession, control.ApproveOnce:
 		return true
 	default:
@@ -393,14 +427,15 @@ func (b *Broker) askFrom(ctx context.Context, by, category, action, detail strin
 }
 
 // askDecision raises an "ask"-mode prompt from by (the agent, a peer) and
-// returns the operator's decision.
+// returns the operator's decision. sticky says an "approve for this session"
+// becomes a category grant; otherwise it covers only this request.
 // The custom backend (b.ask, e.g. Discord buttons) takes precedence; otherwise
 // the default backend posts to the host request channel and blocks. With
 // NEITHER wired it fails closed (DenyOnce) — a broker with no way to reach the
 // operator must never silently allow. The prompt and its outcome are Security
 // records (audit.go); a prompt whose record can't be written under the deny
 // policy is never raised.
-func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string) control.ApprovalDecision {
+func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string, sticky bool) control.ApprovalDecision {
 	req := control.ApprovalRequest{Category: cat, Action: action, Detail: detail}
 	start := time.Now()
 	b.logInfo(ctx, "approval pending", "origin", b.origin, "category", cat, "action", action)
@@ -469,7 +504,7 @@ func (b *Broker) askDecision(ctx context.Context, by, cat, action, detail string
 	// Register in the shared id-keyed registry (the source of truth) + emit the
 	// pending event. Both observers (TUI + dashboard) now see it and can resolve
 	// by id; the agent goroutine blocks ONLY on its own per-id reply chan.
-	p := b.reg.register(ctx, id, req, b.origin)
+	p := b.reg.register(ctx, id, req, b.origin, sticky)
 	req.ID = id
 	req.Reply = p.reply
 
@@ -521,14 +556,16 @@ func recordPolicyApproval(ctx context.Context, id, category, action, detail, ori
 	}
 }
 
+// setMode is an operator's choice: it also marks the category known.
 func (b *Broker) setMode(cat string, m Mode) {
 	b.mu.Lock()
 	b.modes[cat] = m
-	snap := b.modesSnapshot()
+	b.known[cat] = true
+	snap, known := b.modesSnapshot(), b.knownList()
 	persist := b.persist
 	b.mu.Unlock()
 	if persist != nil {
-		persist(snap)
+		persist(snap, known)
 	}
 }
 
@@ -539,7 +576,25 @@ func (b *Broker) Permissions() []control.PermissionInfo {
 	defer b.mu.Unlock()
 	out := make([]control.PermissionInfo, 0, len(Categories))
 	for _, c := range Categories {
-		out = append(out, control.PermissionInfo{Category: c, Mode: b.modes[c].String(), Desc: CategoryDesc[c]})
+		m := b.modes[c]
+		out = append(out, control.PermissionInfo{
+			Category: c, Mode: m.String(), Desc: CategoryDesc[c],
+			Title: CategoryPlain[c].Title, Can: CategoryPlain[c].Can,
+			New:     m == ModeAsk && !b.known[c],
+			Session: m == ModeAsk && b.session[c], // a grant only skips prompts while the category asks
+		})
+	}
+	return out
+}
+
+// NewCategories lists, in display order, the categories an update added that
+// the operator never chose and that ask (TEN-343).
+func (b *Broker) NewCategories() []string {
+	var out []string
+	for _, in := range b.Permissions() {
+		if in.New {
+			out = append(out, in.Category)
+		}
 	}
 	return out
 }

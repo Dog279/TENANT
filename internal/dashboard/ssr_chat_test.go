@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"tenant/internal/agent"
+	"tenant/internal/logs"
 )
 
 type chatRunner struct{ turns chan string }
@@ -47,10 +49,11 @@ func TestSSR_ChatSend_TurnFailureReachesChatAndLog(t *testing.T) {
 	s.Handler().ServeHTTP(httptest.NewRecorder(), r)
 	select {
 	case ev := <-ch:
-		if ev.Kind != agent.EventError || !strings.Contains(ev.Text, "queue full") {
-			t.Fatalf("event = %+v, want an error event carrying the turn's failure", ev)
+		// The chat says it plainly (D21); the log keeps the reason.
+		if ev.Kind != agent.EventError || ev.Text != "Your agent couldn't answer that message. The Logs page has the reason." {
+			t.Fatalf("event = %+v, want a plain error event", ev)
 		}
-		if b := chatBubble(ev); !strings.Contains(b, "queue full") {
+		if b := chatBubble(ev); !strings.Contains(b, "couldn&#39;t answer") && !strings.Contains(b, "couldn't answer") {
 			t.Errorf("the chat does not show it: %q", b)
 		}
 	case <-time.After(2 * time.Second):
@@ -208,5 +211,26 @@ func TestActivityFeed_FiltersNoiseAndAttributesAgents(t *testing.T) {
 	}
 	if chatBubble(agent.Event{Kind: agent.EventBus, Agent: "researcher", Text: "→ writer: hi"}) != "" {
 		t.Error("bus events must not render a chat bubble")
+	}
+}
+
+// REVSEC-8: hidden characters show as markers in the chat transcript and
+// the Activity feed, as on the approval card, and a cut never splits a
+// character.
+func TestFeedRows_ShowHiddenCharacters(t *testing.T) {
+	cmd := "run echo safe ‮ evil ⁦ done"
+	rows := []string{
+		chatBubble(agent.Event{Kind: agent.EventToolCall, Tool: "os_exec", Args: cmd}),
+		chatBubble(agent.Event{Kind: "final", Text: cmd}),
+		logRow(logs.Entry{Source: "turns", Msg: cmd}),
+	}
+	for _, row := range rows {
+		if strings.ContainsAny(row, "‮⁦") || !strings.Contains(row, "⟨U+202E⟩") {
+			t.Errorf("a row shows the raw characters: %q", row)
+		}
+	}
+	long := strings.Repeat("é", 150) // 2 bytes each: an odd cut lands mid-character
+	if got := snippetStr(long, 201); !utf8.ValidString(got) {
+		t.Errorf("snippetStr cut a character: %q", got)
 	}
 }

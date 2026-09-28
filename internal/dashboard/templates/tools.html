@@ -1,52 +1,54 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
-<form method="POST" action="/posture" class="postbar">
-  <span class="dim">Posture</span>
-  <button name="allow_send" value="false" class="btn{{if not .AllowSend}} on{{end}}">Read-only</button>
-  <button name="allow_send" value="true" class="btn{{if .AllowSend}} on{{end}}">Allow-send</button>
-</form>
+{{template "ui-flash" .}}
+<div class="postbar">
+  <span class="dim">Tools that change things:</span>
+  <form method="POST" action="/posture" class="inline"><input type="hidden" name="allow_send" value="false"><button type="submit" class="btn{{if not .ActTools}} on{{end}}">All off</button></form>
+  {{if .AllowSend}}<span class="btn on">All on</span>{{else}}{{template "ui-confirm" (confirmGo "/posture" "All on" "Your agent gets its tools that change things and send messages. Your safety settings still decide which of them ask you first." "allow_send" "true")}}{{end}}
+</div>
 {{if .RulesOn}}
 <div class="card">
-  <div class="card-head">Tool rules <span class="dim">· per-tool allow / deny / ask, checked before the safety category on every surface — most specific wins</span></div>
+  <div class="card-head">Tool rules <span class="dim">· for one tool, or a group of tools, whatever its safety setting says. The most specific rule wins.</span></div>
   {{range .Rules}}
   <div class="ghead" id="rule-{{.Pattern}}">
-    <span class="nm">{{.Pattern}}</span>
-    <span class="{{if eq .Mode "deny"}}act-errtag{{else if eq .Mode "ask"}}risk{{else}}tag{{end}}">{{.Mode}}</span>
-    <span class="dim">{{.Kind}}</span>
+    <span class="nm">{{.Plain}}</span>
+    <span class="{{if eq .Mode "deny"}}act-errtag{{else if eq .Mode "ask"}}risk{{else}}tag{{end}}">{{if eq .Mode "deny"}}blocked{{else if eq .Mode "ask"}}asks you first{{else}}runs without asking{{end}}</span>
     <span class="sp"></span>
+    {{if eq .Mode "allow"}}
     <form method="POST" action="/tools/rules/remove" class="inline">
       <input type="hidden" name="pattern" value="{{.Pattern}}">
-      <button type="submit" class="btn sm danger">remove</button>
+      <button type="submit" class="btn sm">Remove</button>
     </form>
+    {{else}}
+    {{template "ui-confirm" (confirmGo "/tools/rules/remove" "Remove" (printf "%s then follows its safety setting, which may let your agent use it without asking you." .Plain) "pattern" .Pattern)}}
+    {{end}}
   </div>
   {{else}}
-  <div class="dim">No rules yet. A tool the categories don't know prompts every time; add its name here to allow it, deny it, or always ask.</div>
+  {{template "ui-empty" "No rules yet. A tool your safety settings don't cover asks you every time; add its name here to let it run, block it, or always ask."}}
   {{end}}
-  <form method="POST" action="/tools/rules/add" class="inline" style="margin-top:10px">
-    <input type="text" name="pattern" class="cinput wide" placeholder="write_note · mcp:127.0.0.1:9000:* · delete_*" required>
-    <select name="mode" class="cinput">
-      <option value="allow">allow</option>
-      <option value="deny">deny</option>
-      <option value="ask">ask</option>
-    </select>
-    <button type="submit" class="btn">Add rule</button>
+  <form method="POST" action="/tools/rules/add" class="cronactions mt">
+    <input type="text" name="pattern" class="cinput wide" placeholder="a tool name, for example write_note or delete_*" required>
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit" name="mode" value="ask" class="btn sm">Ask first</button>
+    <button type="submit" name="mode" value="deny" class="btn sm">Block</button>
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Don't ask</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Don't ask"><p>Your agent can use the tools this rule matches without asking you, whatever their safety setting says.</p><button type="submit" name="mode" value="allow" class="btn sm">Yes, don't ask</button></div></details>
   </form>
-  <div class="dim" style="margin-top:8px">A bare name (<code>write_note</code>) matches that tool on any connector or the local tool of that name; an exact id (<code>mcp:127.0.0.1:9000:write_note</code>) one tool on one server; a glob (<code>delete_*</code>, <code>mcp:127.0.0.1:9000:*</code>) many. Rules also live in <code>settings.&lt;agent&gt;.json</code> under <code>tool_rules</code> — edit the file and the running hub picks it up.</div>
+  <details class="advanced"><summary>Advanced</summary>
+    <div class="dim">A plain name (write_note) matches that tool from any service. A remote service's tool can be named exactly as the Logs page shows it, to match that one tool on that one service. A * matches many (delete_*). The rules also live in your agent's settings file on the computer running Tenant; a change made there applies at once.</div>
+  </details>
 </div>
 {{end}}
 {{range .Groups}}
 <div class="tgroup">
   <div class="ghead">
-    <span class="gname">{{.Plugin}}</span>
+    <span class="gname">{{visibleText .Label}}</span>
     <span class="sp"></span>
-    <form method="POST" action="/plugins/{{.Plugin}}/toggle" class="inline">
-      <button name="enabled" value="{{if .AllOn}}false{{else}}true{{end}}" class="btn sm">{{if .AllOn}}disable all{{else}}enable all{{end}}</button>
-    </form>
+    {{if .Plugin}}<form method="POST" action="/plugins/{{.Plugin}}/toggle" class="inline">
+      <button name="enabled" value="{{if .AllOn}}false{{else}}true{{end}}" class="btn sm">{{if .AllOn}}Turn off all{{else}}Turn on all{{end}}</button>
+    </form>{{end}}
   </div>
   {{range .Tools}}{{template "toolrow" .}}{{end}}
 </div>
 {{else}}
-<div class="card"><div class="dim">No tools available.</div></div>
+{{template "ui-empty" "No tools yet. Tools appear here as you connect services and turn features on."}}
 {{end}}
 {{end}}

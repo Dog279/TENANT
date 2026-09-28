@@ -210,7 +210,7 @@ func TestSSR_MemoryOverview(t *testing.T) {
 		t.Fatalf("overview want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"Working memory", "careful, terse", `href="/memory"`, "Live", "Superseded"} {
+	for _, want := range []string{"Working memory", "careful, terse", `href="/memory"`, "Live", "Replaced"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("overview missing %q", want)
 		}
@@ -269,7 +269,7 @@ func TestSSR_MemoryFactsProvenance(t *testing.T) {
 func TestSSR_MemoryTemporal(t *testing.T) {
 	s, _ := memServer()
 	body := get(t, s, "/memory/facts/temporal").Body.String()
-	for _, want := range []string{"<svg", "transaction time only", "First learned", "Project deadline is May 30."} {
+	for _, want := range []string{"<svg", "only when each fact was learned and last confirmed", "First learned", "Project deadline is May 30."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("temporal page missing %q", want)
 		}
@@ -392,7 +392,7 @@ func TestSSR_MemoryNilSafe(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s want 200 on nil mem, got %d", p, rec.Code)
 		}
-		if !strings.Contains(rec.Body.String(), "isn't configured") {
+		if !strings.Contains(rec.Body.String(), "Memory isn&#39;t available on this Tenant.") {
 			t.Errorf("%s should render the not-configured state", p)
 		}
 	}

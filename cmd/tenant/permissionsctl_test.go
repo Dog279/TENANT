@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -82,6 +83,9 @@ func TestPermissionPresetsAvailableAndPersist(t *testing.T) {
 		if stg.Permissions[category] != "deny" {
 			t.Errorf("safe %s = %q, want deny", category, stg.Permissions[category])
 		}
+	}
+	if !slices.Equal(stg.KnownCategories, catOrder) {
+		t.Errorf("a preset chooses every category, got known_categories %v", stg.KnownCategories)
 	}
 }
 

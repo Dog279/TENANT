@@ -35,6 +35,7 @@ type pendingReq struct {
 	reply  chan control.ApprovalDecision
 	span   *runtrace.Span
 	by     string // the surface that resolved it; written before the reply is sent
+	sticky bool   // "approve for this session" grants the category (see askDecision)
 }
 
 func newRegistry() *registry {
@@ -52,14 +53,14 @@ func nextID() string {
 }
 
 // register inserts a new pending request under id ("ap-" + nextID()) and
-// emits EventApprovalPending. It returns the entry, whose buffered reply chan
+// emits EventApprovalPending. sticky is askDecision's. It returns the entry, whose buffered reply chan
 // the caller blocks on. The run record says pending before any surface can
 // see the request, so a quick decision is never overwritten by it.
-func (r *registry) register(ctx context.Context, id string, req control.ApprovalRequest, origin string) *pendingReq {
+func (r *registry) register(ctx context.Context, id string, req control.ApprovalRequest, origin string, sticky bool) *pendingReq {
 	reply := make(chan control.ApprovalDecision, 1)
 	req.ID = id
 	req.Reply = reply
-	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply, span: runtrace.SpanFromContext(ctx)}
+	p := &pendingReq{id: id, req: req, origin: origin, at: time.Now(), reply: reply, span: runtrace.SpanFromContext(ctx), sticky: sticky}
 	p.recordApproval("pending")
 	r.mu.Lock()
 	r.pending[id] = p
@@ -141,11 +142,13 @@ func (r *registry) Pending() []control.PendingApproval {
 	now := time.Now()
 	for _, p := range r.pending {
 		out = append(out, control.PendingApproval{
-			ID:       p.id,
-			Category: p.req.Category,
-			Action:   p.req.Action,
-			Detail:   p.req.Detail,
-			AgeSecs:  int(now.Sub(p.at).Seconds()),
+			ID:        p.id,
+			Category:  p.req.Category,
+			Action:    p.req.Action,
+			Detail:    p.req.Detail,
+			AgeSecs:   int(now.Sub(p.at).Seconds()),
+			Origin:    p.origin,
+			SessionOK: p.sticky,
 		})
 	}
 	return out

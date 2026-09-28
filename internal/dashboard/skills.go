@@ -48,16 +48,26 @@ type SkillView struct {
 	Recipe        string   // the instructions, shown for review
 }
 
+// Action is the POST target for verb on this skill. An agent names the skills
+// it saves, so the name is path-escaped: a "?" or "/" in it can't aim the
+// form, and the confirm=yes its confirm step sends, at another route (F1).
+func (v SkillView) Action(verb string) string {
+	return "/skills/" + url.PathEscape(v.Name) + "/" + verb
+}
+
 // SetSkills installs the skill control after construction (mirrors SetCron).
 func (s *Server) SetSkills(c SkillControl) { s.skills = c }
 
 func (s *Server) mountSkillsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /skills", s.handleSkillsPage)
-	mux.HandleFunc("POST /skills/auto", s.handleSkillsAutoForm)
+	// Accepting skills without you, forgetting one and trusting one confirm
+	// (TEN-211); off and "stop trusting" don't. Both "on" and "trusted"
+	// accept without asking, so only "off" skips the step.
+	mux.HandleFunc("POST /skills/auto", needConfirm(confirmUnless("mode", "off"), s.handleSkillsAutoForm))
 	mux.HandleFunc("POST /skills/{name}/accept", s.handleSkillAcceptForm)
 	mux.HandleFunc("POST /skills/{name}/enable", s.handleSkillEnableForm)
-	mux.HandleFunc("POST /skills/{name}/forget", s.handleSkillForgetForm)
-	mux.HandleFunc("POST /skills/{name}/trust", s.handleSkillTrustForm)
+	mux.HandleFunc("POST /skills/{name}/forget", needConfirm(nil, s.handleSkillForgetForm))
+	mux.HandleFunc("POST /skills/{name}/trust", needConfirm(confirmUnless("trusted", "", "false"), s.handleSkillTrustForm))
 }
 
 type skillsPageData struct {
@@ -101,17 +111,28 @@ func (s *Server) handleSkillsPage(w http.ResponseWriter, r *http.Request) {
 	s.render(w, s.tmpl.skills, d)
 }
 
+// autoWords says what each auto-accept mode does, for its flash.
+var autoWords = map[string]string{
+	"off":     "You accept each new skill yourself.",
+	"trusted": "New skills are accepted without you while your recent feedback says your agent is doing well.",
+	"on":      "New skills are always accepted without you.",
+}
+
 func (s *Server) handleSkillsAutoForm(w http.ResponseWriter, r *http.Request) {
 	if s.skills == nil {
 		http.Redirect(w, r, "/skills", http.StatusSeeOther)
 		return
 	}
-	mode := strings.TrimSpace(r.FormValue("mode"))
-	if err := s.skills.SetAutoAccept(mode); err != nil {
-		redirectSkills(w, r, "", "Couldn't change auto-accept: "+err.Error())
+	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
+	if autoWords[mode] == "" {
+		redirectFlash(w, r, "/skills", "", "Pick Off, Trusted or On.")
 		return
 	}
-	redirectSkills(w, r, "Auto-accept set to "+mode+".", "")
+	if err := s.skills.SetAutoAccept(mode); err != nil {
+		redirectFlash(w, r, "/skills", "", s.flashFor(r.Context(), "skills auto-accept", err, "Couldn't change how new skills are accepted."))
+		return
+	}
+	redirectFlash(w, r, "/skills", autoWords[mode], "")
 }
 
 func (s *Server) handleSkillAcceptForm(w http.ResponseWriter, r *http.Request) {
@@ -121,10 +142,10 @@ func (s *Server) handleSkillAcceptForm(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	if _, err := s.skills.Accept(name); err != nil {
-		redirectSkills(w, r, "", "Couldn't accept that skill: "+err.Error())
+		redirectFlash(w, r, "/skills", "", s.flashFor(r.Context(), "skill accept", err, "Couldn't accept that skill."))
 		return
 	}
-	redirectSkills(w, r, "Skill accepted — it's live now.", "")
+	redirectFlash(w, r, "/skills", "Skill accepted: it's live now.", "")
 }
 
 func (s *Server) handleSkillEnableForm(w http.ResponseWriter, r *http.Request) {
@@ -135,10 +156,10 @@ func (s *Server) handleSkillEnableForm(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	on := r.FormValue("enabled") == "true"
 	if _, err := s.skills.SetEnabled(name, on); err != nil {
-		redirectSkills(w, r, "", "Couldn't update that skill: "+err.Error())
+		redirectFlash(w, r, "/skills", "", s.flashFor(r.Context(), "skill enable", err, "Couldn't update that skill."))
 		return
 	}
-	redirectSkills(w, r, "", "")
+	redirectFlash(w, r, "/skills", "", "")
 }
 
 func (s *Server) handleSkillForgetForm(w http.ResponseWriter, r *http.Request) {
@@ -148,10 +169,10 @@ func (s *Server) handleSkillForgetForm(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	if _, err := s.skills.Forget(name); err != nil {
-		redirectSkills(w, r, "", "Couldn't remove that skill: "+err.Error())
+		redirectFlash(w, r, "/skills", "", s.flashFor(r.Context(), "skill forget", err, "Couldn't remove that skill."))
 		return
 	}
-	redirectSkills(w, r, "Skill removed.", "")
+	redirectFlash(w, r, "/skills", "Skill removed.", "")
 }
 
 func (s *Server) handleSkillTrustForm(w http.ResponseWriter, r *http.Request) {
@@ -164,23 +185,12 @@ func (s *Server) handleSkillTrustForm(w http.ResponseWriter, r *http.Request) {
 	ok, err := s.skills.SetTrust(name, trusted)
 	switch {
 	case err != nil:
-		redirectSkills(w, r, "", "Couldn't change that skill's trust: "+err.Error())
+		redirectFlash(w, r, "/skills", "", s.flashFor(r.Context(), "skill trust", err, "Couldn't change whether your agent uses that skill."))
 	case !ok:
-		redirectSkills(w, r, "", "There's no skill named "+name+".")
+		redirectFlash(w, r, "/skills", "", "There's no skill named "+name+".")
 	case trusted:
-		redirectSkills(w, r, "Skill trusted — your agent can use it now.", "")
+		redirectFlash(w, r, "/skills", "Skill trusted: your agent can use it now.", "")
 	default:
-		redirectSkills(w, r, "Skill untrusted — your agent won't use it until you trust it again.", "")
+		redirectFlash(w, r, "/skills", "Skill untrusted: your agent won't use it until you trust it again.", "")
 	}
-}
-
-func redirectSkills(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/skills"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
 }
