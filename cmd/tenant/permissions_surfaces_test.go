@@ -312,16 +312,16 @@ func runtimeBroker(surface string, pf *pluginFlags, stg *settings, lc *launchCon
 	switch surface {
 	case permissionSurfaceDiscord:
 		b := newDiscordApprovalBroker(testLog())
-		b.LoadModes(lc.Relay.Permissions)
+		b.LoadModes(lc.Relay.Permissions, lc.Relay.KnownCategories)
 		return b
 	case permissionSurfaceIMessage:
 		b := newOffsiteApprovalBroker(testLog(), newApprovalBroker(testLog()))
-		b.LoadModes(lc.IMessage.Permissions)
+		b.LoadModes(lc.IMessage.Permissions, lc.IMessage.KnownCategories)
 		return b
 	}
 	b := newApprovalBroker(testLog())
 	seedFromFlags(b, pf)
-	b.LoadModes(stg.Permissions)
+	b.LoadModes(stg.Permissions, stg.KnownCategories)
 	return b
 }
 
@@ -333,7 +333,7 @@ func TestDiscordExecLockOutranksRulesAndModes(t *testing.T) {
 	rules := newToolRules()
 	rules.Load(map[string]string{"os_exec": "allow"})
 	b.SetRules(rules)
-	b.LoadModes(map[string]string{catSend: "allow", catWrite: "allow"})
+	b.LoadModes(map[string]string{catSend: "allow", catWrite: "allow"}, nil)
 	execOn := false
 	b.SetLock(func(action, cat string) bool { return !execOn && relayExecLocks(action, cat) })
 	ctx := context.Background()

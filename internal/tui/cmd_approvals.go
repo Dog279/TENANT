@@ -353,8 +353,14 @@ func renderPermissionsFor(pc PermissionControl, header, cmd string) (string, str
 	var p, s strings.Builder
 	p.WriteString(header + "  (ask / allow / deny)   ·   " + cmd + " set <category> <mode>\n")
 	s.WriteString(cHeading.Render(header) + cDim.Render("  ask / allow / deny   ·   "+cmd+" set <category> <mode>") + "\n")
+	anyNew := false
 	for _, in := range infos {
-		p.WriteString(fmt.Sprintf("  %-12s %-5s  %s\n", in.Category, in.Mode, in.Desc))
+		mode := in.Mode
+		if in.New { // an update added it and it was never chosen (TEN-343)
+			mode += " (new)"
+			anyNew = true
+		}
+		p.WriteString(fmt.Sprintf("  %-12s %-11s  %s\n", in.Category, mode, in.Desc))
 		ms := cSys // ask = yellow
 		switch in.Mode {
 		case "allow":
@@ -363,7 +369,12 @@ func renderPermissionsFor(pc PermissionControl, header, cmd string) (string, str
 			ms = cErr
 		}
 		s.WriteString("  " + cKey.Render(fmt.Sprintf("%-12s", in.Category)) + " " +
-			ms.Render(fmt.Sprintf("%-5s", in.Mode)) + "  " + cDim.Render(in.Desc) + "\n")
+			ms.Render(fmt.Sprintf("%-11s", mode)) + "  " + cDim.Render(in.Desc) + "\n")
+	}
+	if anyNew {
+		note := "(new) = added by an update and never chosen, so it asks first. " + cmd + " set <category> <mode> to choose."
+		p.WriteString("  " + note + "\n")
+		s.WriteString("  " + cDim.Render(note) + "\n")
 	}
 	// Per-tool rules (shared by every surface) — the layer for tools the
 	// categories don't know: a connector's tools, an unusual action id.

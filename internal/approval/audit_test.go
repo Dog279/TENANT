@@ -93,7 +93,7 @@ func TestSecurityRecordsPolicyVerdicts(t *testing.T) {
 	ctx := context.Background()
 	b := newTestBroker(testLog())
 	b.SetRules(NewRules())
-	b.LoadModes(map[string]string{CatExec: "allow", CatSend: "deny"})
+	b.LoadModes(map[string]string{CatExec: "allow", CatSend: "deny"}, nil)
 	b.Confirm(ctx, "os_exec", "ls")
 	b.Confirm(ctx, "gsuite_send", "mail bob")
 	_ = b.rules.Set("web_interact", "allow")

@@ -14,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -104,12 +105,22 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 				diff++
 			}
 		}
-		if diff > 0 {
-			broker.LoadModes(fresh.Permissions)
+		// The known_categories marker (TEN-343) reloads with the modes; stg
+		// tracks the file's, so the process's own saves compare equal.
+		mu.Lock()
+		marker := !slices.Equal(fresh.KnownCategories, stg.KnownCategories)
+		mu.Unlock()
+		if diff > 0 || marker {
+			broker.LoadModes(fresh.Permissions, fresh.KnownCategories)
 			mu.Lock()
-			stg.Permissions = broker.Modes()
+			stg.Permissions, stg.KnownCategories = broker.Modes(), fresh.KnownCategories
 			mu.Unlock()
+		}
+		if diff > 0 {
 			parts = append(parts, fmt.Sprintf("%d category mode(s)", diff))
+		}
+		if marker {
+			parts = append(parts, "the known categories")
 		}
 	}
 	// Exec profiles: keep stg tracking the FILE (invalid entries included) so a

@@ -68,7 +68,7 @@ func TestFileToolsCannotRewriteControlFiles(t *testing.T) {
 	settingsFile := settingsPath(cfgDir, "main")
 
 	broker := newApprovalBroker(nil)
-	broker.LoadModes(map[string]string{catWrite: "allow"})
+	broker.LoadModes(map[string]string{catWrite: "allow"}, nil)
 	asked := 0
 	confirm := func(ctx context.Context, action, detail string) bool {
 		asked++

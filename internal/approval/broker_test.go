@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -97,7 +98,7 @@ func TestBroker_ApproveSessionSkipsLaterPrompts(t *testing.T) {
 func TestBroker_ApproveAlwaysPersists(t *testing.T) {
 	b := newTestBroker(testLog())
 	var saved map[string]string
-	b.SetPersist(func(m map[string]string) { saved = m })
+	b.SetPersist(func(m map[string]string, _ []string) { saved = m })
 
 	drainOnce(b, control.ApproveAlways)
 	if !b.Confirm(context.Background(), "web_interact", "click X") {
@@ -271,7 +272,7 @@ func TestBroker_ApprovalEventsCarryTrace(t *testing.T) {
 	var beside []string
 	d.SetEvents(func(e agent.Event) { beside = append(beside, e.TraceID) })
 	d.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.ApproveOnce })
-	d.askDecision(ctx, "agent", CatExec, "os_exec", "x")
+	d.askDecision(ctx, "agent", CatExec, "os_exec", "x", true)
 	if s := strings.Join(beside, ","); s != "4f2a,4f2a" {
 		t.Fatalf("beside traces = %s", s)
 	}
@@ -463,7 +464,7 @@ func TestOffsiteBroker_MirrorCarriesOwnOrigin(t *testing.T) {
 		}
 	})
 	b.SetAsk(func(context.Context, control.ApprovalRequest) control.ApprovalDecision { return control.DenyOnce })
-	if d := b.askDecision(context.Background(), "agent", CatExec, "run", "d"); d != control.DenyOnce {
+	if d := b.askDecision(context.Background(), "agent", CatExec, "run", "d", true); d != control.DenyOnce {
 		t.Fatalf("askDecision = %v", d)
 	}
 	if len(ids) != 2 || ids[0] != "beside-imessage/imessage" || ids[1] != "beside-imessage/imessage" {
@@ -558,5 +559,219 @@ func TestApprovalOutcomesRecordTheirCause(t *testing.T) {
 	})
 	if len(got) != 1 || got[0].Outcome != "expired" {
 		t.Fatalf("after a prompt timed out: records %+v, want one expired", got)
+	}
+}
+
+// newCats is b's New categories joined, for comparing.
+func newCats(b *Broker) string { return strings.Join(b.NewCategories(), ",") }
+
+// oldFive is a permissions map saved before egress, mcp and sandbox existed.
+func oldFive(mode string) map[string]string {
+	out := map[string]string{}
+	for _, c := range OriginalCategories {
+		out[c] = mode
+	}
+	return out
+}
+
+// A save from before the marker knows only the original five: the three
+// categories an update added are New while they ask (TEN-343).
+func TestLoadModes_FlagsNewCategories(t *testing.T) {
+	b := newTestBroker(testLog())
+	b.LoadModes(oldFive("allow"), nil)
+	if got := newCats(b); got != "egress,mcp,sandbox" {
+		t.Fatalf("NewCategories = %q, want egress,mcp,sandbox", got)
+	}
+	for _, in := range b.Permissions() {
+		want := in.Category == CatEgress || in.Category == CatMCP || in.Category == CatSandbox
+		if in.New != want {
+			t.Errorf("%s: New = %v, want %v", in.Category, in.New, want)
+		}
+		if in.Title == "" || in.Can == "" {
+			t.Errorf("%s: Title %q Can %q, want both", in.Category, in.Title, in.Can)
+		}
+	}
+}
+
+// Every save since the new categories arrived wrote all eight keys, so a key's
+// presence proves nothing: without the marker, only the mode decides.
+func TestLoadModes_AllKeysNoMarker(t *testing.T) {
+	for _, tc := range []struct{ egress, want string }{
+		{"ask", "egress"},
+		{"allow", ""},
+	} {
+		saved := oldFive("allow")
+		saved[CatEgress], saved[CatMCP], saved[CatSandbox] = tc.egress, "allow", "deny"
+		b := newTestBroker(testLog())
+		b.LoadModes(saved, nil)
+		if got := newCats(b); got != tc.want {
+			t.Errorf("egress=%s: NewCategories = %q, want %q", tc.egress, got, tc.want)
+		}
+	}
+}
+
+// A fresh install has nothing an update could have added behind its back.
+func TestLoadModes_FreshInstallNothingNew(t *testing.T) {
+	for _, saved := range []map[string]string{nil, {}, {"bogus": "allow"}} {
+		b := newTestBroker(testLog())
+		b.LoadModes(saved, nil)
+		if got := newCats(b); got != "" {
+			t.Errorf("saved %v: NewCategories = %q, want none", saved, got)
+		}
+	}
+	if got := newCats(newTestBroker(testLog())); got != "" {
+		t.Errorf("a broker never loaded: NewCategories = %q, want none", got)
+	}
+}
+
+// With the marker, a category is New only when the marker leaves it out: a
+// future category is caught even though every key was saved.
+func TestLoadModes_MarkerDecides(t *testing.T) {
+	saved := oldFive("ask")
+	saved[CatEgress], saved[CatMCP], saved[CatSandbox] = "ask", "ask", "ask"
+	b := newTestBroker(testLog())
+	b.LoadModes(saved, []string{CatExec, CatWrite, CatDestructive, CatWeb, CatSend, CatEgress})
+	if got := newCats(b); got != "mcp,sandbox" {
+		t.Fatalf("NewCategories = %q, want mcp,sandbox", got)
+	}
+}
+
+// A choice marks the category known, and the persist hook saves the marker
+// beside the modes.
+func TestSetMode_MarksKnownAndPersistsMarker(t *testing.T) {
+	b := newTestBroker(testLog())
+	b.LoadModes(oldFive("allow"), nil)
+	var modes map[string]string
+	var known []string
+	b.SetPersist(func(m map[string]string, k []string) { modes, known = m, k })
+
+	if _, err := b.SetPermissionFrom("dashboard", CatEgress, "ask"); err != nil {
+		t.Fatal(err)
+	}
+	if got := newCats(b); got != "mcp,sandbox" {
+		t.Fatalf("after choosing egress: NewCategories = %q, want mcp,sandbox", got)
+	}
+	if len(modes) != len(Categories) || modes[CatEgress] != "ask" {
+		t.Fatalf("persisted modes = %v", modes)
+	}
+	if got := strings.Join(known, ","); got != "exec,write,destructive,web,send,egress" {
+		t.Fatalf("persisted marker = %q", got)
+	}
+	// Reloading what was saved keeps the choice.
+	r := newTestBroker(testLog())
+	r.LoadModes(modes, known)
+	if got := newCats(r); got != "mcp,sandbox" {
+		t.Fatalf("reloaded: NewCategories = %q, want mcp,sandbox", got)
+	}
+}
+
+// "Approve always" is a choice too.
+func TestApproveAlways_MarksKnown(t *testing.T) {
+	b := NewBroker(testLog(), func(string) string { return CatEgress })
+	b.rules = nil
+	b.LoadModes(oldFive("allow"), nil)
+	var known []string
+	b.SetPersist(func(_ map[string]string, k []string) { known = k })
+	drainOnce(b, control.ApproveAlways)
+	if !b.Confirm(context.Background(), "sensitive_egress", "send it") {
+		t.Fatal("approve always should allow")
+	}
+	if got := newCats(b); got != "mcp,sandbox" {
+		t.Fatalf("NewCategories = %q, want mcp,sandbox", got)
+	}
+	if !slices.Contains(known, CatEgress) {
+		t.Fatalf("persisted marker %v lacks egress", known)
+	}
+}
+
+// pendingAsync runs ask on a goroutine, waits for its one pending item, then
+// denies it and waits for ask to return.
+func pendingAsync(t *testing.T, b *Broker, ask func()) control.PendingApproval {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { ask(); close(done) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := b.Pending(); len(p) == 1 {
+			b.Resolve(p[0].ID, control.DenyOnce)
+			<-done
+			return p[0]
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("no pending request appeared")
+	return control.PendingApproval{}
+}
+
+// A pending item says which broker asked and whether "for this session" would
+// stick: only a category-mode prompt grants the category.
+func TestPending_CarriesOriginAndSessionOK(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBroker(testLog())
+	b.rules = NewRules()
+	_ = b.rules.Set("os_write", "ask")
+
+	for _, tc := range []struct {
+		name, origin string
+		sessionOK    bool
+		ask          func()
+	}{
+		{"category ask", "local", true, func() { b.Confirm(ctx, "os_exec", "ls") }},
+		{"rule-forced", "local", false, func() { b.Confirm(ctx, "os_write", "f") }},
+		{"pairing", "local", false, func() { b.AskPairing(ctx, "PIN 1234") }},
+		{"investigate", "local", false, func() { b.Ask(ctx, "investigate", "look", "an alert") }},
+	} {
+		p := pendingAsync(t, b, tc.ask)
+		if p.Origin != tc.origin || p.SessionOK != tc.sessionOK {
+			t.Errorf("%s: origin %q sessionOK %v, want %q %v", tc.name, p.Origin, p.SessionOK, tc.origin, tc.sessionOK)
+		}
+	}
+
+	off := NewOffsiteBroker(testLog(), b)
+	off.rules = nil
+	_, _ = off.SetPermission(CatExec, "ask")
+	if p := pendingAsync(t, b, func() { off.Confirm(ctx, "os_exec", "ls") }); p.Origin != "imessage" || !p.SessionOK {
+		t.Errorf("iMessage: origin %q sessionOK %v, want imessage true", p.Origin, p.SessionOK)
+	}
+}
+
+// A session grant shows on its category until the operator sets the mode.
+func TestPermissions_ReportsSession(t *testing.T) {
+	b := newTestBroker(testLog())
+	b.rules = nil
+	session := func() bool {
+		for _, in := range b.Permissions() {
+			if in.Category == CatExec {
+				return in.Session
+			}
+		}
+		return false
+	}
+	if session() {
+		t.Fatal("no grant yet")
+	}
+	drainOnce(b, control.ApproveSession)
+	if !b.Confirm(context.Background(), "os_exec", "ls") {
+		t.Fatal("approve session should allow")
+	}
+	if !session() {
+		t.Fatal("Permissions must report the session grant")
+	}
+	if _, err := b.SetPermissionFrom("dashboard", CatExec, "ask"); err != nil {
+		t.Fatal(err)
+	}
+	if session() {
+		t.Fatal("setting the mode must clear the grant")
+	}
+}
+
+func TestCategoryPlain_Complete(t *testing.T) {
+	for _, c := range Categories {
+		if CategoryDesc[c] == "" || CategoryPlain[c].Title == "" || CategoryPlain[c].Can == "" {
+			t.Errorf("%s: desc %q plain %+v", c, CategoryDesc[c], CategoryPlain[c])
+		}
+	}
+	if len(CategoryPlain) != len(Categories) {
+		t.Errorf("CategoryPlain has %d entries for %d categories", len(CategoryPlain), len(Categories))
 	}
 }

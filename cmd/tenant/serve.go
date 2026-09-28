@@ -179,19 +179,22 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
-	broker.LoadModes(stg.Permissions)
+	broker.LoadModes(stg.Permissions, stg.KnownCategories)
 	var stgMu sync.Mutex
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
 		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
-	broker.SetPersist(func(modes map[string]string) {
+	broker.SetPersist(func(modes map[string]string, known []string) {
 		stgMu.Lock()
-		stg.Permissions = modes
+		stg.Permissions, stg.KnownCategories = modes, known
 		stgMu.Unlock()
 		saveSettings()
 	})
+	if n := newCategoryNotice(broker.NewCategories(), "Review on the dashboard's Approvals & safety page."); n != "" {
+		pushSys("permissions: " + n) // every start while any is new: nobody is at a terminal to see it once
+	}
 	// Per-tool permission rules (internal/approval): loaded from the same file,
 	// persisted on every /permissions add|rm, and re-read when the file is
 	// edited by hand — so a rule for a tool nobody programmed for is one line

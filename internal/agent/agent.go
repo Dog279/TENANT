@@ -1042,7 +1042,11 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			var flow Flow
 			if spec, ok := a.cfg.Tools.Get(call.Name); ok && spec.Outbound {
 				if label, matched := a.infoFlow.match(call.Arguments); matched {
-					detail := fmt.Sprintf("%s arguments contain %s data from %s; allow this outbound flow?", call.Name, label.Sensitivity, label.Provenance)
+					// Two gates, said on every surface's card (TEN-343): this one asks
+					// whether the data may leave; the tool's own permission, checked
+					// at dispatch, whether it may run.
+					detail := fmt.Sprintf("%s arguments contain %s data from %s. This check is separate from %s's own permission: it asks whether that data may leave, not whether the tool may run.",
+						call.Name, label.Sensitivity, label.Provenance, call.Name)
 					approved := a.cfg.ConfirmSensitiveEgress != nil &&
 						a.cfg.ConfirmSensitiveEgress(ctx, "sensitive_egress", detail)
 					if !approved {

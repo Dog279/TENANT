@@ -3128,6 +3128,34 @@ func (p *fakePerms) SetPermission(cat, mode string) (bool, error) {
 	return true, nil
 }
 
+// rowPerms is a PermissionControl listing fixed rows.
+type rowPerms []PermissionInfo
+
+func (p rowPerms) Permissions() []PermissionInfo            { return p }
+func (rowPerms) SetPermission(string, string) (bool, error) { return false, nil }
+
+// A category an update added and nobody chose reads "ask (new)", with a
+// trailer saying what that means; with none there is no trailer (TEN-343).
+func TestRenderPermissions_MarksNew(t *testing.T) {
+	rows := rowPerms{
+		{Category: "exec", Mode: "allow", Desc: "run commands"},
+		{Category: "egress", Mode: "ask", Desc: "send sensitive results", New: true},
+	}
+	plain, styled := renderPermissionsFor(rows, "Permissions", "/permissions")
+	for _, want := range []string{"egress       ask (new)    send sensitive results", "(new) = added by an update", "/permissions set <category> <mode> to choose"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("plain view lacks %q:\n%s", want, plain)
+		}
+	}
+	if !strings.Contains(styled, "ask (new)") {
+		t.Errorf("styled view lacks the mark:\n%s", styled)
+	}
+	rows[1].New = false
+	if plain, _ = renderPermissionsFor(rows, "Permissions", "/permissions"); strings.Contains(plain, "(new)") {
+		t.Errorf("no new category, yet:\n%s", plain)
+	}
+}
+
 // TEN-234: the TUI skips cross-agent / bus events on its shared channel (they're
 // mirrored there only for the dashboard); sub-agents render via TeamEvents.
 func TestApplyEvent_SkipsCrossAgentAndBus(t *testing.T) {
