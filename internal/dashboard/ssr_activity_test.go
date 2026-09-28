@@ -2,8 +2,11 @@ package dashboard
 
 import (
 	"context"
+	"html"
 	"log/slog"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -228,6 +231,30 @@ func TestActivity_SourceAndLevelFilters(t *testing.T) {
 	out := rec.Body.String()
 	if strings.Contains(out, "web_search") || strings.Contains(out, "relay connected") || !strings.Contains(out, "relay died") {
 		t.Errorf("stream filter wrong; got:\n%s", out)
+	}
+}
+
+// F1: the filter lands in the feed's data-init, a Datastar expression the
+// browser HTML-decodes before Datastar evaluates it. html/template's escaping
+// is undone there, so the values must arrive query-escaped: no quote from the
+// request may close the URL string.
+func TestActivity_FilterNotInDatastarExpression(t *testing.T) {
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetLogs(logs.NewMemory(10))
+	const payload = "x'),(window.__xss='fired'),('"
+	p := url.QueryEscape(payload)
+	body := get(t, s, "/activity?trace="+p+"&source="+p+"&level="+p).Body.String()
+	attrs := regexp.MustCompile(`\sdata-([\w:.-]+)="([^"]*)"`).FindAllStringSubmatch(body, -1)
+	if len(attrs) == 0 {
+		t.Fatalf("no Datastar attributes on /activity:\n%s", body)
+	}
+	for _, a := range attrs {
+		if v := html.UnescapeString(a[2]); strings.Contains(v, "x'") || strings.Count(v, "'")%2 != 0 {
+			t.Errorf("data-%s carries request text unescaped: %s", a[1], v)
+		}
+	}
+	if !strings.Contains(body, "trace="+p) {
+		t.Errorf("the stream URL should keep the trace filter, query-escaped; got:\n%s", body)
 	}
 }
 

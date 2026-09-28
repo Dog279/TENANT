@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -50,10 +51,9 @@ type activityPageData struct {
 	Configured bool
 	Root       string        // on-disk log root ("" for a memory-only hub)
 	Backlog    template.HTML // pre-rendered rows (each self-escaped via logRow)
-	Cursor     string        // head cursor (<epoch>.<seq>) the live stream tails from
+	StreamURL  string        // the live tail: head cursor + this filter, query-escaped (F1)
 	Source     string        // active source filter ("" = all)
 	Level      string        // "error" = errors only; "" = everything
-	Trace      string        // one turn's lines only ("" = every line)
 	Tabs       []activityTab
 	Files      []activityFileView // the active source's files on disk
 	Empty      bool
@@ -101,7 +101,7 @@ func (f activityFilter) match(e logs.Entry) bool {
 // cursor with the same filter.
 func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 	f := activityFilterFrom(r)
-	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level, Trace: f.Trace}
+	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level}
 	if s.logs == nil {
 		s.render(w, s.tmpl.activity, d)
 		return
@@ -135,7 +135,9 @@ func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 		n++
 	}
 	d.Backlog = template.HTML(b.String())
-	d.Cursor = s.activityCursor(head)
+	// The URL sits inside a Datastar expression, which the browser HTML-decodes
+	// before Datastar runs it: a raw ?trace= quote there would be script (F1).
+	d.StreamURL = "/activity/events?" + url.Values{"cursor": {s.activityCursor(head)}, "source": {f.Source}, "level": {f.Level}, "trace": {f.Trace}}.Encode()
 	d.Empty = n == 0
 	if f.Source != "" {
 		if files, err := s.logs.Files(f.Source); err == nil {
