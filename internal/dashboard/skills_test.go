@@ -54,7 +54,7 @@ func skillServer(fc SkillControl) *Server {
 
 func TestSkills_PageNotConfigured(t *testing.T) {
 	rec := get(t, skillServer(nil), "/skills")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "isn't configured") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Skills aren&#39;t available on this Tenant.") {
 		t.Errorf("nil skills should render not-configured; got %d:\n%s", rec.Code, rec.Body.String())
 	}
 }
@@ -78,8 +78,8 @@ func TestSkills_GroupsProposedAndLive_HidesTombstoned(t *testing.T) {
 	if strings.Contains(body, "old-thing") {
 		t.Error("tombstoned skill must not render")
 	}
-	if !strings.Contains(body, `value="trusted" checked`) {
-		t.Error("current auto-accept mode should be pre-selected")
+	if !strings.Contains(body, "Now: <strong>Trusted</strong>") || strings.Contains(body, "Choose Trusted") {
+		t.Error("the current auto-accept mode should be shown, and not offered again")
 	}
 }
 
@@ -94,7 +94,7 @@ func TestSkills_AcceptEnableForget(t *testing.T) {
 	if len(fc.enableCalls) != 1 || fc.enableCalls[0] != "summarize-pr:false" {
 		t.Errorf("enable calls = %v", fc.enableCalls)
 	}
-	submitForm(t, s, "/skills/old/forget", "")
+	submitForm(t, s, "/skills/old/forget", "confirm=yes")
 	if len(fc.forgetCalls) != 1 {
 		t.Errorf("forget calls = %v", fc.forgetCalls)
 	}
@@ -102,7 +102,7 @@ func TestSkills_AcceptEnableForget(t *testing.T) {
 
 func TestSkills_AutoAcceptForm(t *testing.T) {
 	fc := &fakeSkillCtl{}
-	rec := submitForm(t, skillServer(fc), "/skills/auto", "mode=trusted")
+	rec := submitForm(t, skillServer(fc), "/skills/auto", "mode=trusted&confirm=yes")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -114,7 +114,7 @@ func TestSkills_AutoAcceptForm(t *testing.T) {
 func TestSkills_MutationsNilSafe(t *testing.T) {
 	s := skillServer(nil)
 	for _, p := range []string{"/skills/x/accept", "/skills/x/enable", "/skills/x/forget", "/skills/auto"} {
-		if rec := submitForm(t, s, p, "mode=on&enabled=true"); rec.Code != http.StatusSeeOther {
+		if rec := submitForm(t, s, p, "mode=on&enabled=true&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}
 	}
@@ -133,7 +133,7 @@ func TestSkills_UntrustedWaitForReview(t *testing.T) {
 	body := get(t, skillServer(fc), "/skills").Body.String()
 	review := body[strings.Index(body, "Waiting for your review"):strings.Index(body, "What my agent has learned")]
 	for _, want := range []string{"Waiting for your review (2)", "saved by your agent", "imported from /pkgs/pdf-forms",
-		"Expects tools: Bash(pdftk:*), Read", `action="/skills/exfil/trust"`, `value="true"`,
+		"Expects tools: Bash(pdftk:*), Read", `action="/skills/exfil/trust"><input type="hidden" name="trusted" value="true"><input type="hidden" name="confirm" value="yes">`,
 		"&lt;b&gt;x@example.com&lt;/b&gt;"} {
 		if !strings.Contains(review, want) {
 			t.Errorf("review group lacks %q:\n%s", want, review)
@@ -151,7 +151,7 @@ func TestSkills_UntrustedWaitForReview(t *testing.T) {
 func TestSkills_TrustForm(t *testing.T) {
 	fc := &fakeSkillCtl{}
 	s := skillServer(fc)
-	rec := submitForm(t, s, "/skills/exfil/trust", "trusted=true")
+	rec := submitForm(t, s, "/skills/exfil/trust", "trusted=true&confirm=yes")
 	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "msg=") {
 		t.Errorf("trust: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
@@ -160,14 +160,14 @@ func TestSkills_TrustForm(t *testing.T) {
 		t.Errorf("trust calls = %v", fc.trustCalls)
 	}
 	// Anything but trusted=true distrusts: a mangled form never trusts.
-	submitForm(t, s, "/skills/x/trust", "trusted=yes")
+	submitForm(t, s, "/skills/x/trust", "trusted=yes&confirm=yes")
 	if fc.trustCalls[2] != "x:false" {
 		t.Errorf("a mangled form trusted: %v", fc.trustCalls)
 	}
-	if rec := submitForm(t, s, "/skills/missing/trust", "trusted=true"); !strings.Contains(rec.Header().Get("Location"), "err=") {
+	if rec := submitForm(t, s, "/skills/missing/trust", "trusted=true&confirm=yes"); !strings.Contains(rec.Header().Get("Location"), "err=") {
 		t.Errorf("an unknown skill should report an error: %s", rec.Header().Get("Location"))
 	}
-	if rec := submitForm(t, skillServer(nil), "/skills/x/trust", "trusted=true"); rec.Code != http.StatusSeeOther {
+	if rec := submitForm(t, skillServer(nil), "/skills/x/trust", "trusted=true&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil control: %d", rec.Code)
 	}
 }

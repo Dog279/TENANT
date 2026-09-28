@@ -54,7 +54,7 @@ func (s *Server) mountLogsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /logs/views", s.handleLogsSaveView)
 	mux.HandleFunc("POST /logs/views/delete", s.handleLogsDeleteView)
 	mux.HandleFunc("POST /logs/log/{log}/properties", s.handleLogsProperties)
-	mux.HandleFunc("POST /logs/log/{log}/clear", s.handleLogsClear)
+	mux.HandleFunc("POST /logs/log/{log}/clear", needConfirm(nil, s.handleLogsClear)) // the events are gone for good (TEN-211)
 }
 
 // logbookStore is the hub and its store; the store is nil when logbook.db
@@ -146,11 +146,11 @@ func (s *Server) renderLogs(w http.ResponseWriter, r *http.Request, mode string,
 	ctx := r.Context()
 	sum, err := h.Summary(ctx, time.Now())
 	if err != nil {
-		d.Err = "The summary could not be read: " + err.Error()
+		d.Err = s.flashFor(ctx, "logs summary", err, "The summary could not be read. The dashboard log has the reason.")
 	}
 	views, err := s.logbook.Views(ctx, st)
 	if err != nil {
-		d.Err = "The views could not be read: " + err.Error()
+		d.Err = s.flashFor(ctx, "logs views", err, "The views could not be read. The dashboard log has the reason.")
 	}
 	d.View = v.Get("view")
 	d.Q = strings.TrimSpace(v.Get("q"))
@@ -196,7 +196,7 @@ func (s *Server) gridView(ctx context.Context, h *logs.Hub, st *store.Store, d *
 	from := store.Cursor{}
 	if c := v.Get("cursor"); c != "" {
 		if from, err = store.ParseCursor(c); err != nil {
-			d.Err = "cursor: " + err.Error()
+			d.Err = "That link to more events is out of date. Showing the newest."
 		}
 	} else if d.Sel != 0 {
 		from = store.Cursor{StoreID: st.StoreID(), Seq: d.Sel + 1} // the selected event heads the page
@@ -610,7 +610,7 @@ func (s *Server) logsDetailView(ctx context.Context, h *logs.Hub, st *store.Stor
 		return d
 	}
 	if err != nil {
-		d.Missing = "The event could not be read: " + err.Error()
+		d.Missing = s.flashFor(ctx, "logs event", err, "The event could not be read. The dashboard log has the reason.")
 		return d
 	}
 	sq := strconv.FormatUint(seq, 10)
@@ -655,7 +655,7 @@ func (s *Server) logsDetailView(ctx context.Context, h *logs.Hub, st *store.Stor
 	case "help":
 		dt, err := logapi.Detail(ctx, st, e)
 		if err != nil {
-			d.Seen = "Its statistics could not be read: " + err.Error()
+			d.Seen = s.flashFor(ctx, "logs statistics", err, "Its statistics could not be read. The dashboard log has the reason.")
 		}
 		d.Spec = dt.Spec
 		if dt.Stats != nil && dt.Stats.Count > 0 {
@@ -750,7 +750,7 @@ func (s *Server) correlated(ctx context.Context, st *store.Store, e event.Event,
 	d.Of, d.OfHref = field+" "+id, logsHref(filterTerm(field, id))
 	evs, err := st.Timeline(ctx, id, store.MaxTimelineDepth)
 	if err != nil {
-		d.Corr.RunNote = "The timeline could not be read: " + err.Error()
+		d.Corr.RunNote = s.flashFor(ctx, "logs timeline", err, "The timeline could not be read. The dashboard log has the reason.")
 		return
 	}
 	if len(evs) > logsTimelineMax {
@@ -858,10 +858,16 @@ func propsView(l logapi.Log) *logsProps {
 	return p
 }
 
-// logsBack redirects to the grid of q with a message, as the forms do.
-func logsBack(w http.ResponseWriter, r *http.Request, v url.Values, msg string, err error) {
-	if err != nil {
-		v.Set("err", err.Error())
+// logsBack redirects to the grid of q with a message, as the forms do. The
+// log book's own refusals ("the Security log is never cleared", a bad
+// max_size) answer the operator and show as they are; any other error shows
+// a fixed message and goes to the log (D21).
+func (s *Server) logsBack(w http.ResponseWriter, r *http.Request, v url.Values, msg string, err error) {
+	var refusal *logapi.Error
+	if errors.As(err, &refusal) {
+		v.Set("err", refusal.Msg)
+	} else if err != nil {
+		v.Set("err", s.flashFor(r.Context(), "logs change", err, "Couldn't make that change. The dashboard log has the reason."))
 	} else if msg != "" {
 		v.Set("msg", msg)
 	}
@@ -875,7 +881,7 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 	log := r.PathValue("log")
 	back := url.Values{"q": {"log:" + log}}
 	if st == nil {
-		logsBack(w, r, back, "", errors.New("the log book is not open here"))
+		s.logsBack(w, r, back, "", PlainError("The log book isn't open here."))
 		return
 	}
 	var c logapi.PolicyChange
@@ -890,7 +896,7 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 		mb, err1 := strconv.ParseFloat(strings.TrimSpace(r.FormValue("max_mb")), 64)
 		days, err2 := strconv.ParseFloat(strings.TrimSpace(r.FormValue("max_days")), 64)
 		if err := errors.Join(err1, err2); err != nil || mb < 0 || days < 0 || mb > 1<<30 || days > 1e5 {
-			logsBack(w, r, back, "", errors.New("max size and max age: numbers, 0 for no limit"))
+			s.logsBack(w, r, back, "", PlainError("Max size and max age are numbers; 0 means no limit."))
 			return
 		}
 		c.MaxBytes, c.MaxAgeS = new(int64(mb*(1<<20))), new(int64(days*86400))
@@ -899,7 +905,7 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 	}
 	name, err := s.logbook.Change(r.Context(), h, st, log, c)
 	back.Set("q", "log:"+name)
-	logsBack(w, r, back, "Log "+name+" changed.", err)
+	s.logsBack(w, r, back, "Log "+name+" changed.", err)
 }
 
 // handleLogsClear clears a log through what the API's clear calls; the page
@@ -909,37 +915,37 @@ func (s *Server) handleLogsClear(w http.ResponseWriter, r *http.Request) {
 	log := r.PathValue("log")
 	back := url.Values{"q": {"log:" + log}}
 	if st == nil {
-		logsBack(w, r, back, "", errors.New("the log book is not open here"))
+		s.logsBack(w, r, back, "", PlainError("The log book isn't open here."))
 		return
 	}
 	n, err := s.logbook.Clear(r.Context(), h, st, log)
-	logsBack(w, r, back, fmt.Sprintf("Cleared %s events from %s.", thousands(n), log), err)
+	s.logsBack(w, r, back, fmt.Sprintf("Cleared %s events from %s.", thousands(n), log), err)
 }
 
 func (s *Server) handleLogsSaveView(w http.ResponseWriter, r *http.Request) {
 	_, st := s.logbookStore()
 	filter := r.FormValue("filter")
 	if st == nil {
-		logsBack(w, r, url.Values{"q": {filter}}, "", errors.New("the log book is not open here"))
+		s.logsBack(w, r, url.Values{"q": {filter}}, "", PlainError("The log book isn't open here."))
 		return
 	}
 	v, err := s.logbook.SaveView(r.Context(), st, logapi.View{Name: r.FormValue("name"), Filter: filter})
 	if err != nil {
-		logsBack(w, r, url.Values{"q": {filter}}, "", err)
+		s.logsBack(w, r, url.Values{"q": {filter}}, "", err)
 		return
 	}
-	logsBack(w, r, url.Values{"view": {v.Name}}, "Saved the view "+v.Name+".", nil)
+	s.logsBack(w, r, url.Values{"view": {v.Name}}, "Saved the view "+v.Name+".", nil)
 }
 
 func (s *Server) handleLogsDeleteView(w http.ResponseWriter, r *http.Request) {
 	_, st := s.logbookStore()
 	name := r.FormValue("name")
 	if st == nil {
-		logsBack(w, r, url.Values{"view": {name}}, "", errors.New("the log book is not open here"))
+		s.logsBack(w, r, url.Values{"view": {name}}, "", PlainError("The log book isn't open here."))
 		return
 	}
 	if err := s.logbook.DeleteView(r.Context(), st, name); err != nil {
-		logsBack(w, r, url.Values{"view": {name}}, "", err)
+		s.logsBack(w, r, url.Values{"view": {name}}, "", err)
 		return
 	}
 	http.Redirect(w, r, "/logs?"+url.Values{"msg": {"Deleted the view " + name + "."}}.Encode(), http.StatusSeeOther)
@@ -1100,7 +1106,7 @@ func (s *Server) componentsView(ctx context.Context) *logsComps {
 	out := &logsComps{}
 	cs, err := s.logbook.ListComponents(ctx)
 	if err != nil {
-		out.Err = "What is running could not be read: " + err.Error()
+		out.Err = s.flashFor(ctx, "logs components", err, "What is running could not be read. The dashboard log has the reason.")
 	}
 	counts := map[string]int{}
 	for _, c := range cs {

@@ -150,7 +150,7 @@ func TestActivity_EveryTabWakes(t *testing.T) {
 // Nil hub → page renders "unavailable", stream is a no-op (no panic).
 func TestActivity_NilHubGraceful(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil) // no SetLogs
-	if body := get(t, s, "/activity").Body.String(); !strings.Contains(body, "unavailable") {
+	if body := get(t, s, "/activity").Body.String(); !strings.Contains(body, "The Activity feed isn&#39;t available on this Tenant.") {
 		t.Errorf("nil hub should render an unavailable notice; got:\n%s", body)
 	}
 	r := httptest.NewRequest("GET", "/activity/events", nil)

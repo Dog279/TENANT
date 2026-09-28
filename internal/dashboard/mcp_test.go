@@ -55,7 +55,7 @@ func mcpServer(fc MCPControl) *Server {
 
 func TestMCP_PageNotConfigured(t *testing.T) {
 	rec := get(t, mcpServer(nil), "/mcp")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "aren't configured") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Remote services aren&#39;t available on this Tenant.") {
 		t.Errorf("nil mcp should render not-configured; got %d", rec.Code)
 	}
 }
@@ -113,7 +113,7 @@ func TestMCP_ConnectRejectsEmpty(t *testing.T) {
 
 func TestMCP_Remove(t *testing.T) {
 	fc := &fakeMCPCtl{}
-	rec := submitForm(t, mcpServer(fc), "/mcp/remove", "target=mcp:x")
+	rec := submitForm(t, mcpServer(fc), "/mcp/remove", "target=mcp:x&confirm=yes")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -125,7 +125,7 @@ func TestMCP_Remove(t *testing.T) {
 func TestMCP_MutationsNilSafe(t *testing.T) {
 	s := mcpServer(nil)
 	for _, p := range []string{"/mcp/connect", "/mcp/remove"} {
-		if rec := submitForm(t, s, p, "url=x&target=y"); rec.Code != http.StatusSeeOther {
+		if rec := submitForm(t, s, p, "url=x&target=y&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}
 	}

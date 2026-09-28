@@ -7,6 +7,7 @@ package main
 // strings. No business logic forks here — it's presentation mapping only.
 
 import (
+	"os"
 	"path/filepath"
 	"time"
 
@@ -24,7 +25,24 @@ func (d dashEval) artifactDir() string { return filepath.Join(d.ev.dataDir, "eva
 // Judge surface (TEN-91) — delegates to the shared judgeCtl so the web Quality
 // page, the TUI /judge command, `tenant eval`, and the nightly gate all read/
 // write one persisted setting.
-func (d dashEval) JudgeStatus() string { return d.judge.Current() }
+// JudgeStatus says who grades the checks in the Quality page's words; the
+// TUI's Current() names its commands instead.
+func (d dashEval) JudgeStatus() string {
+	lc, err := loadLaunchConfig(d.judge.cfgDir)
+	if err != nil || lc.Improve.Judge == "" {
+		return "Your main model grades the checks."
+	}
+	ic := lc.Improve
+	kind := ic.JudgeKind
+	if kind == "" {
+		kind = "anthropic"
+	}
+	s := ic.Judge + " from " + kind + " grades the checks."
+	if env := resolveJudgeKeyEnv(kind, ic.JudgeKeyEnv); env != "" && os.Getenv(env) == "" {
+		s += " Its API key (" + env + ") isn't set on the computer running Tenant, so grading fails until it is."
+	}
+	return s
+}
 func (d dashEval) SetJudge(kind, model, endpoint string) (string, error) {
 	return d.judge.Set(kind, model, endpoint)
 }
@@ -101,4 +119,16 @@ func (d dashEval) Diff() (string, error)             { return renderBaselineDiff
 func (d dashEval) SetEvery(s string) (string, error) { return d.ev.SetEvery(s) }
 func (d dashEval) SetAt(s string) (string, error)    { return d.ev.SetAt(s) }
 func (d dashEval) Off() (string, error)              { return d.ev.Off() }
-func (d dashEval) RunNow() (string, error)           { return d.ev.RunNow() }
+
+// RunNow queues a check through the TUI's RunNow and says so in the page's
+// words: that status names the feed and trend.jsonl.
+func (d dashEval) RunNow() (string, error) {
+	queued := d.ev.sched != nil && d.ev.sched.Pending()
+	if _, err := d.ev.RunNow(); err != nil {
+		return "", dashboard.PlainError("Quality checks are off on this Tenant, so one can't start from here.")
+	}
+	if queued {
+		return "A quality check is already queued. It starts within a minute; the result appears here.", nil
+	}
+	return "Quality check queued. It starts within a minute; the result appears here.", nil
+}

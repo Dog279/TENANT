@@ -66,7 +66,7 @@ var SignInFailed = Events.Event(2105, event.Warning, "Access", "Sign-in with a w
 // Operator actions on the pages.
 
 var ActionFailed = Events.Event(2201, event.Warning, "Action", "Dashboard action {action} failed: {err}", "action", "target", "err").
-	Doc("A change or command made on a dashboard page didn't apply. The page showed the operator the same error.",
+	Doc("A change or command made on a dashboard page didn't apply. The page showed the operator a plain message; this event has the error.",
 		"The value was refused (an unknown category or mode, a bad schedule, a job or fact that no longer exists), or the change couldn't be saved: config.json or a store is unwritable or locked, or the subsystem isn't running.",
 		"Read the error. Fix the value and try again; if saving failed, check the data directory's permissions and free space.")
 
@@ -77,16 +77,17 @@ var KeyNotSaved = Events.Event(2202, event.Warning, "Action", "API key {cred} wa
 		"Check the config directory's permissions, then try again. The reason is kept, masked, in this event.")
 
 var KeyInURL = Events.Event(2203, event.Warning, "Action", "API key {cred} was sent in the URL and refused", "cred").
-	Doc("A request tried to store an API key through the URL's query string, where browser history and proxy logs keep it. It was refused.",
-		"A script or bookmark that puts value= in the URL instead of the form's body.",
-		"Rotate that key: it may now sit in a history or a log. Submit keys through the Keys page's form.")
+	Doc("A request sent an API key, an integration's setting or the dashboard's sign-in key in the URL's query string, where browser history and proxy logs keep it. It was refused before anything used it.",
+		"A script or bookmark that puts the key in the URL instead of the form's body.",
+		"Rotate that key: it may now sit in a history or a log. For the sign-in key, delete the file dashboard-auth-token and restart Tenant. Submit keys through the page's form.")
 
 var ProbeFailed = Events.Event(2204, event.Warning, "Action", "Integration {integration} test failed: {err}", "integration", "err").
 	Doc("The Test button's check of an integration ran in the background and failed; the page shows the result on refresh.",
 		"The integration's credentials are missing or expired, its sign-in on the computer running Tenant wasn't finished, or its service is unreachable.",
 		"Finish any sign-in on the computer running Tenant, fix the integration's settings, and test again.")
 
-var ConnectorNotAdded = Events.Event(2205, event.Warning, "Action", "MCP connector {url} was not added: {err}", "url", "err").
+var ConnectorNotAdded = Events.Event(2205, event.Warning, "Action", "A remote service was not connected: {err}", "url", "err").
+	Sensitive("url").
 	Doc("Connecting a remote MCP service from the MCP page ran in the background and failed.",
 		"The URL isn't an MCP endpoint, the service is unreachable, or its sign-in on the computer running Tenant wasn't approved.",
 		"Check the URL, approve the sign-in window on the computer running Tenant, and connect again. The mcp log has the details.")

@@ -45,7 +45,7 @@ func TestHomeAlertCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := get(t, s, "/").Body.String()
-	for _, want := range []string{"⚠</span> 2 alerts", `href="/logs?q=log:alerts"`, `title="Alert critical: system/4 critical: the newest"`} {
+	for _, want := range []string{`<span class="trend-down">2 alerts</span>`, `href="/logs?q=log:alerts"`, `title="Alert critical: system/4 critical: the newest"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("home missing %q:\n%s", want, body)
 		}

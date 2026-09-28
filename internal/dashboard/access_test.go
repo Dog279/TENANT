@@ -92,7 +92,7 @@ func TestAccess_NotConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "isn't configured") {
+	if !strings.Contains(rec.Body.String(), `class="card state-off">Access settings aren&#39;t available`) {
 		t.Errorf("nil access should render a not-configured notice; got:\n%s", rec.Body.String())
 	}
 }
@@ -121,32 +121,69 @@ func TestAccess_RenderShowsState(t *testing.T) {
 	}
 }
 
-// TEN-208 acceptance: destructive actions carry a confirm + consequence line —
-// clear-all always; deny only when it's the last handle; exec only when enabling.
+// TEN-208 acceptance, now through the confirm step (TEN-211): removing the
+// last person and removing everyone confirm, and so does letting Discord
+// messages make changes; none of it needs JS.
 func TestAccess_DestructiveConfirms(t *testing.T) {
-	// One handle, exec off → deny confirm + clear confirm + exec-enable confirm present.
+	// One person, exec off: the Remove, Remove everyone and Turn on steps.
 	fa := &fakeAccess{view: AccessView{
 		IMessageAvailable: true, Handles: []string{"+15551230000"}, SingleHandle: true,
 		DiscordAvailable: true, RelayConfigured: true, ExecOn: false,
 	}}
 	body := accessGet(t, accessServer(fa), "/access").Body.String()
-	for _, want := range []string{"Remove the last allowed handle?", "Clear the allowlist?", "Enable exec mode?"} {
+	for _, want := range []string{
+		`<span class="c-open">Remove</span>`, `<form method="POST" action="/access/imessage/deny"><input type="hidden" name="handle"`,
+		`<span class="c-open">Remove everyone</span>`, `<form method="POST" action="/access/imessage/clear"><input type="hidden" name="confirm" value="yes">`,
+		`<form method="POST" action="/access/discord/exec"><input type="hidden" name="on" value="true"><input type="hidden" name="confirm" value="yes">`,
+		"Nobody will be able to message your agent on iMessage until you add someone again.",
+	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("missing destructive confirm %q", want)
+			t.Errorf("missing confirm markup %q", want)
 		}
 	}
+	if strings.Contains(body, "onsubmit") {
+		t.Error("the confirm steps need no JS")
+	}
 
-	// Two handles → no last-handle confirm on the deny buttons; exec ON → no enable confirm.
+	// Two people: removing one is one click; exec on: turning it off is too.
 	fa2 := &fakeAccess{view: AccessView{
 		IMessageAvailable: true, Handles: []string{"a@x.com", "b@x.com"}, SingleHandle: false,
 		DiscordAvailable: true, RelayConfigured: true, ExecOn: true,
 	}}
 	body2 := accessGet(t, accessServer(fa2), "/access").Body.String()
-	if strings.Contains(body2, "Remove the last allowed handle?") {
-		t.Error("multi-handle list must not show the last-handle confirm")
+	if strings.Contains(body2, `<span class="c-open">Remove</span>`) {
+		t.Error("removing one of several people must not need a confirm step")
 	}
-	if strings.Contains(body2, "Enable exec mode?") {
-		t.Error("exec already on must not show the enable confirm")
+	if !strings.Contains(body2, `<input type="hidden" name="on" value="false">`) || strings.Contains(body2, `action="/access/discord/exec"><input type="hidden" name="on" value="true">`) {
+		t.Error("exec already on: Turn off is one click, and there's no Turn on step")
+	}
+}
+
+// Access renders each safety check by its title, tags the ones an update
+// added (D27), and loosening one is a confirm step while asking or blocking
+// is one click.
+func TestAccess_PermissionRowsShowTitlesAndNew(t *testing.T) {
+	fa := &fakeAccess{view: AccessView{
+		DiscordAvailable: true, RelayConfigured: true,
+		DiscordPerms: []PermissionRow{
+			{Category: "egress", Mode: "ask", Title: "Share private data", Can: "send private information it has read to an outside service", New: true},
+			{Category: "exec", Mode: "deny", Title: "Run commands", Can: "run commands and programs on this computer"},
+		},
+	}}
+	body := accessGet(t, accessServer(fa), "/access").Body.String()
+	for _, want := range []string{
+		`<strong>Share private data</strong> <span class="tag-new">New</span>`,
+		"Asks you before it can send private information it has read to an outside service.",
+		`>Keep asking</button>`,
+		`<strong>Run commands</strong>`, "Can't run commands and programs on this computer. It won't ask.",
+		"Discord conversations can run commands and programs on this computer without asking you.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(visibleWords(body, false), "egress") {
+		t.Error("a raw category ID shows on the page")
 	}
 }
 
@@ -154,7 +191,7 @@ func TestAccess_PerChannelDegradation(t *testing.T) {
 	// iMessage available but responder off-platform; Discord present but no token.
 	fa := &fakeAccess{view: AccessView{IMessageAvailable: true, ResponderAvailable: false, DiscordAvailable: true, RelayConfigured: false}}
 	body := accessGet(t, accessServer(fa), "/access").Body.String()
-	if !strings.Contains(body, "macOS-only") {
+	if !strings.Contains(body, "Answering iMessages needs a Mac.") {
 		t.Errorf("responder-unavailable should show the macOS-only note; got:\n%s", body)
 	}
 	if !strings.Contains(body, "add a bot token") {
@@ -164,7 +201,7 @@ func TestAccess_PerChannelDegradation(t *testing.T) {
 
 func TestAccess_AllowForm(t *testing.T) {
 	fa := &fakeAccess{}
-	rec := accessPost(t, accessServer(fa), "/access/imessage/allow", url.Values{"handle": {"+1 555 123 0000"}})
+	rec := accessPost(t, accessServer(fa), "/access/imessage/allow", url.Values{"handle": {"+1 555 123 0000"}, "confirm": {"yes"}})
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/access") {
 		t.Fatalf("want 303 to /access, got %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -175,7 +212,7 @@ func TestAccess_AllowForm(t *testing.T) {
 
 func TestAccess_AllowFormEmptyValidates(t *testing.T) {
 	fa := &fakeAccess{}
-	rec := accessPost(t, accessServer(fa), "/access/imessage/allow", url.Values{"handle": {"  "}})
+	rec := accessPost(t, accessServer(fa), "/access/imessage/allow", url.Values{"handle": {"  "}, "confirm": {"yes"}})
 	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "err=") {
 		t.Fatalf("empty handle should 303 with ?err, got %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -197,9 +234,10 @@ func TestAccess_DenyFormEmptyValidates(t *testing.T) {
 
 func TestAccess_AllowErrorFlashes(t *testing.T) {
 	fa := &fakeAccess{denyAllow: true}
-	rec := accessPost(t, accessServer(fa), "/access/imessage/allow", url.Values{"handle": {"x@y.com"}})
-	if !strings.Contains(rec.Header().Get("Location"), "err=") {
-		t.Errorf("a control error should redirect with ?err, got %q", rec.Header().Get("Location"))
+	rec := accessPost(t, accessServer(fa), "/access/imessage/allow", url.Values{"handle": {"x@y.com"}, "confirm": {"yes"}})
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "err=") || strings.Contains(loc, "nope") {
+		t.Errorf("a control error should redirect with a plain ?err and not its own text (D21), got %q", loc)
 	}
 }
 
@@ -207,7 +245,7 @@ func TestAccess_DenyClear(t *testing.T) {
 	fa := &fakeAccess{}
 	s := accessServer(fa)
 	accessPost(t, s, "/access/imessage/deny", url.Values{"handle": {"bob@x.com"}})
-	accessPost(t, s, "/access/imessage/clear", url.Values{})
+	accessPost(t, s, "/access/imessage/clear", url.Values{"confirm": {"yes"}})
 	if !fa.has("deny=bob@x.com") || !fa.has("clear") {
 		t.Errorf("deny/clear not forwarded: %v", fa.calls)
 	}
@@ -216,10 +254,11 @@ func TestAccess_DenyClear(t *testing.T) {
 func TestAccess_Toggles(t *testing.T) {
 	fa := &fakeAccess{}
 	s := accessServer(fa)
-	accessPost(t, s, "/access/imessage/responder", url.Values{"on": {"true"}})
+	yes := func(v url.Values) url.Values { v.Set("confirm", "yes"); return v }
+	accessPost(t, s, "/access/imessage/responder", yes(url.Values{"on": {"true"}}))
 	accessPost(t, s, "/access/imessage/responder", url.Values{"on": {"false"}})
-	accessPost(t, s, "/access/discord/enable", url.Values{"on": {"true"}})
-	accessPost(t, s, "/access/discord/exec", url.Values{"on": {"true"}})
+	accessPost(t, s, "/access/discord/enable", yes(url.Values{"on": {"true"}}))
+	accessPost(t, s, "/access/discord/exec", yes(url.Values{"on": {"true"}}))
 	for _, want := range []string{"responder=true", "responder=false", "relay-enable=true", "relay-exec=true"} {
 		if !fa.has(want) {
 			t.Errorf("missing %q in %v", want, fa.calls)
@@ -230,9 +269,15 @@ func TestAccess_Toggles(t *testing.T) {
 func TestAccess_OperatorAndPermissions(t *testing.T) {
 	fa := &fakeAccess{}
 	s := accessServer(fa)
-	accessPost(t, s, "/access/discord/operator", url.Values{"operator": {"4242"}})
+	accessPost(t, s, "/access/discord/operator", url.Values{"operator": {"4242"}, "confirm": {"yes"}})
 	accessPost(t, s, "/access/imessage/permission", url.Values{"category": {"write"}, "mode": {"deny"}})
-	accessPost(t, s, "/access/discord/permission", url.Values{"category": {"exec"}, "mode": {"allow"}})
+	accessPost(t, s, "/access/discord/permission", url.Values{"category": {"exec"}, "mode": {"allow"}, "confirm": {"yes"}})
+	// Anything but exactly ask, allow or deny is refused before the control,
+	// even with its confirm step (D2).
+	accessPost(t, s, "/access/discord/permission", url.Values{"category": {"exec"}, "mode": {"always"}, "confirm": {"yes"}})
+	if fa.has("dcperm=exec:always") {
+		t.Errorf("an unknown mode reached the control: %v", fa.calls)
+	}
 	for _, want := range []string{"operator=4242", "imperm=write:deny", "dcperm=exec:allow"} {
 		if !fa.has(want) {
 			t.Errorf("missing %q in %v", want, fa.calls)
@@ -249,7 +294,7 @@ func TestAccess_NilGuardPostRedirects(t *testing.T) {
 		"/access/discord/enable", "/access/discord/operator", "/access/discord/exec",
 		"/access/discord/permission",
 	} {
-		rec := accessPost(t, s, path, url.Values{})
+		rec := accessPost(t, s, path, url.Values{"confirm": {"yes"}})
 		if rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control should 303, got %d", path, rec.Code)
 		}

@@ -28,7 +28,7 @@
     </form>
     {{else if .Removing}}
     <div class="soul-row confirm">
-      <div class="soul-text">{{.Text}}</div>
+      <div class="soul-text">{{visibleText .Text}}</div>
       <div class="confirm-msg dim">Remove this item? The agent will no longer use it. This can't be undone here.</div>
       <div class="soul-edit-actions">
         <form class="inline" method="POST" action="{{$.EditAction}}">
@@ -42,14 +42,14 @@
     </div>
     {{else}}
     <div class="soul-row">
-      <div class="soul-text">{{.Text}}</div>
+      <div class="soul-text">{{visibleText .Text}}</div>
       <span class="sp"></span>
       <a class="linkbtn" href="{{.EditHref}}">Edit</a>
       <a class="linkbtn" href="{{.RemoveHref}}">Remove</a>
     </div>
     {{end}}
   {{else}}
-  <div class="dim pad">{{.EmptyMsg}}</div>
+  {{template "ui-empty" .EmptyMsg}}
   {{end}}
 </div>
 {{end}}
@@ -57,13 +57,13 @@
 {{define "content"}}
 {{template "memnav" .}}
 {{if not .Configured}}
-<div class="card"><div class="dim">Memory isn't configured on this server.</div></div>
+{{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else}}
-{{if .Err}}<div class="banner err">{{.Err}}</div>{{end}}
+{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
 <div class="card">
   <div class="card-head">Persona</div>
   {{if .HasPersona}}<div class="soul-persona">{{.Persona}}</div>{{else}}<div class="dim">No persona set.</div>{{end}}
-  <div class="dim mem-sub">The persona is read-only here — it's shaped by the soul file, not edited per-line.</div>
+  <div class="dim mem-sub">The persona is read-only here: it comes from your agent's personality file, not from lines you edit.</div>
 </div>
 {{template "soulsection" .UserFacts}}
 {{template "soulsection" .Instructions}}

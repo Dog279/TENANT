@@ -83,7 +83,7 @@ func TestLogin_WrongTokenForbidden(t *testing.T) {
 	if len(rec.Result().Cookies()) != 0 {
 		t.Error("no cookie should be set on a bad login")
 	}
-	if !strings.Contains(rec.Body.String(), "Invalid token") {
+	if !strings.Contains(rec.Body.String(), "That key didn&#39;t match.") {
 		t.Error("expected the error re-rendered in the form")
 	}
 }
@@ -106,7 +106,7 @@ func TestSettings_RendersFormWhenUnauthed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "auth token") {
+	if !strings.Contains(rec.Body.String(), "Paste your sign-in key. It's in the file dashboard-auth-token on the computer running Tenant.") {
 		t.Error("expected the PSK entry form")
 	}
 }

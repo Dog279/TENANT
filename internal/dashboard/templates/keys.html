@@ -1,13 +1,12 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">API-key management isn't configured in this session.</div></div>
+{{template "ui-off" "Provider keys aren't available on this Tenant."}}
 {{else}}
 
 <div class="card">
-  <div class="dim">Add or remove the API keys Tenant uses. Keys are <strong>write-only</strong> — once stored they can never be viewed or copied here, only replaced or removed. Stored in <code>credentials.json</code> (0600). Changes apply after the agent restarts.</div>
+  <div class="dim">Add or remove the API keys Tenant uses. Keys are <strong>write-only</strong>: once stored they can never be viewed or copied here, only replaced or removed. They're kept in a private file on the computer running Tenant. Changes apply after the agent restarts.</div>
 </div>
 
 {{range .Groups}}
@@ -20,7 +19,7 @@
       {{if .Set}}<span class="on-tag">stored</span>
       {{else if .Required}}<span class="risk">required</span>
       {{else}}<span class="dim">not set</span>{{end}}
-      {{if .EnvDetected}}<span class="dim">· env {{.EnvVar}} detected</span>{{end}}
+      {{if .EnvDetected}}<span class="dim">· also set in the environment ({{.EnvVar}})</span>{{end}}
     </div>
     <div class="kactions">
       <form method="POST" action="/settings/keys/{{.CredID}}/set" autocomplete="off" class="inline">
@@ -29,16 +28,14 @@
         <button type="submit" class="btn sm">{{if .Set}}Replace{{else}}Add{{end}}</button>
       </form>
       {{if .Set}}
-      <form method="POST" action="/settings/keys/{{.CredID}}/remove" class="inline">
-        <button type="submit" class="btn sm danger">Remove</button>
-      </form>
+      {{template "ui-confirm" (confirm (printf "/settings/keys/%s/remove" .CredID) "Remove" (printf "Tenant can no longer use %s after it restarts. To use it again you paste the key again." .Name))}}
       {{end}}
     </div>
   </div>
   {{end}}
 </div>
 {{else}}
-<div class="card"><div class="dim">No services in the catalog.</div></div>
+{{template "ui-empty" "No services need a key on this Tenant."}}
 {{end}}
 
 {{end}}

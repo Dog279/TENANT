@@ -38,7 +38,7 @@ func TestKeys_PageNotConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "isn't configured") {
+	if !strings.Contains(rec.Body.String(), "Provider keys aren&#39;t available on this Tenant.") {
 		t.Errorf("nil control should render not-configured; got:\n%s", rec.Body.String())
 	}
 }
@@ -136,7 +136,7 @@ func TestKeys_SetErrorNoLeak(t *testing.T) {
 func TestKeys_RemoveForm(t *testing.T) {
 	fs := &fakeSecrets{}
 	s := keysServer(fs)
-	rec := cronPostForm(t, s, "/settings/keys/skill:discord:token/remove", "")
+	rec := cronPostForm(t, s, "/settings/keys/skill:discord:token/remove", "confirm=yes")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -150,7 +150,7 @@ func TestKeys_FormsNilSafe(t *testing.T) {
 	if rec := cronPostForm(t, s, "/settings/keys/openai/set", "value=x"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil set: want 303, got %d", rec.Code)
 	}
-	if rec := cronPostForm(t, s, "/settings/keys/openai/remove", ""); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/settings/keys/openai/remove", "confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil remove: want 303, got %d", rec.Code)
 	}
 }

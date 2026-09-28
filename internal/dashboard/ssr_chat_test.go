@@ -47,10 +47,11 @@ func TestSSR_ChatSend_TurnFailureReachesChatAndLog(t *testing.T) {
 	s.Handler().ServeHTTP(httptest.NewRecorder(), r)
 	select {
 	case ev := <-ch:
-		if ev.Kind != agent.EventError || !strings.Contains(ev.Text, "queue full") {
-			t.Fatalf("event = %+v, want an error event carrying the turn's failure", ev)
+		// The chat says it plainly (D21); the log keeps the reason.
+		if ev.Kind != agent.EventError || ev.Text != "Your agent couldn't answer that message. The Logs page has the reason." {
+			t.Fatalf("event = %+v, want a plain error event", ev)
 		}
-		if b := chatBubble(ev); !strings.Contains(b, "queue full") {
+		if b := chatBubble(ev); !strings.Contains(b, "couldn&#39;t answer") && !strings.Contains(b, "couldn't answer") {
 			t.Errorf("the chat does not show it: %q", b)
 		}
 	case <-time.After(2 * time.Second):

@@ -14,7 +14,6 @@ package dashboard
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -73,9 +72,11 @@ func (s *Server) mountCronSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /cron", s.handleCronPage)
 	mux.HandleFunc("POST /cron/add", s.handleCronAddForm)
 	mux.HandleFunc("POST /cron/{id}/enable", s.handleCronEnableForm)
-	mux.HandleFunc("POST /cron/{id}/delete", s.handleCronDeleteForm)
+	// Deleting a job and letting jobs make changes confirm (TEN-211);
+	// turning that off doesn't.
+	mux.HandleFunc("POST /cron/{id}/delete", needConfirm(nil, s.handleCronDeleteForm))
 	mux.HandleFunc("POST /cron/{id}/run", s.handleCronRunForm)
-	mux.HandleFunc("POST /cron/exec", s.handleCronExecForm)
+	mux.HandleFunc("POST /cron/exec", needConfirm(confirmUnless("enabled", "", "false"), s.handleCronExecForm))
 }
 
 type cronPageData struct {
@@ -88,7 +89,7 @@ type cronPageData struct {
 }
 
 func (s *Server) handleCronPage(w http.ResponseWriter, r *http.Request) {
-	d := cronPageData{layoutData: layoutData{Title: "Cron", Page: "cron"}}
+	d := cronPageData{layoutData: layoutData{Title: "Scheduled jobs", Page: "cron"}}
 	d.Err = r.URL.Query().Get("err")
 	d.Msg = r.URL.Query().Get("msg")
 	if s.cron == nil {
@@ -113,15 +114,15 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 	tz := strings.TrimSpace(r.FormValue("tz"))
 	exec := r.FormValue("exec") == "true" || r.FormValue("exec") == "on"
 	if spec == "" || prompt == "" {
-		redirectCron(w, r, "", "Schedule and prompt are both required.")
+		redirectFlash(w, r, "/cron", "", "A job needs a schedule and something to do.")
 		return
 	}
 	if err := s.cron.Add(CronAddSpec{Name: name, Spec: spec, Prompt: prompt, Kind: kind, Exec: exec, TZ: tz}); err != nil {
-		ActionFailed.Log(r.Context(), "action", "cron add", "err", err)
-		redirectCron(w, r, "", "Couldn't schedule that job: "+err.Error())
+		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron add", err,
+			"Couldn't schedule that job. Check the schedule (for example 0 9 * * 1-5, or @every 30m) and the time zone."))
 		return
 	}
-	redirectCron(w, r, "Job scheduled.", "")
+	redirectFlash(w, r, "/cron", "Job scheduled.", "")
 }
 
 // handleCronExecForm flips the GLOBAL cron-exec kill-switch. Previously this was
@@ -134,14 +135,14 @@ func (s *Server) handleCronExecForm(w http.ResponseWriter, r *http.Request) {
 	}
 	on := r.FormValue("enabled") == "true"
 	if err := s.cron.SetExec(on); err != nil {
-		redirectCron(w, r, "", "Couldn't change cron-exec: "+err.Error())
+		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron exec", err, "Couldn't change whether scheduled jobs may make changes."))
 		return
 	}
 	if on {
-		redirectCron(w, r, "cron-exec ENABLED - shell and exec-opted-in jobs may now use dangerous tools unattended.", "")
+		redirectFlash(w, r, "/cron", "Scheduled jobs may make changes now: jobs that run a command, or that you let make changes, get the tools that change things.", "")
 		return
 	}
-	redirectCron(w, r, "cron-exec disabled - dangerous jobs are inert again.", "")
+	redirectFlash(w, r, "/cron", "Scheduled jobs can't make changes now.", "")
 }
 
 func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {
@@ -152,11 +153,10 @@ func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	on := r.FormValue("enabled") == "true"
 	if err := s.cron.SetEnabled(id, on); err != nil {
-		ActionFailed.Log(r.Context(), "action", "cron set-enabled", "target", id, "err", err)
-		redirectCron(w, r, "", "Couldn't update that job: "+err.Error())
+		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron set-enabled", err, "Couldn't update that job."))
 		return
 	}
-	redirectCron(w, r, "", "")
+	redirectFlash(w, r, "/cron", "", "")
 }
 
 func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
@@ -166,11 +166,10 @@ func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.cron.Remove(id); err != nil {
-		ActionFailed.Log(r.Context(), "action", "cron remove", "target", id, "err", err)
-		redirectCron(w, r, "", "Couldn't remove that job: "+err.Error())
+		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron remove", err, "Couldn't delete that job."))
 		return
 	}
-	redirectCron(w, r, "Job removed.", "")
+	redirectFlash(w, r, "/cron", "Job deleted.", "")
 }
 
 func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
@@ -180,21 +179,8 @@ func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := s.cron.RunNow(id); err != nil {
-		ActionFailed.Log(r.Context(), "action", "cron run", "target", id, "err", err)
-		redirectCron(w, r, "", "Couldn't run that job: "+err.Error())
+		redirectFlash(w, r, "/cron", "", s.flashFor(r.Context(), "cron run", err, "Couldn't run that job."))
 		return
 	}
-	redirectCron(w, r, "Running now — the result will appear in the activity feed.", "")
-}
-
-// redirectCron 303-redirects back to /cron with an optional flash message/error.
-func redirectCron(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
-	target := "/cron"
-	switch {
-	case errMsg != "":
-		target += "?err=" + url.QueryEscape(errMsg)
-	case msg != "":
-		target += "?msg=" + url.QueryEscape(msg)
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	redirectFlash(w, r, "/cron", "Running now. The result appears in the Activity feed.", "")
 }

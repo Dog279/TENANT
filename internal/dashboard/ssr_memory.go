@@ -90,7 +90,7 @@ type memOverviewData struct {
 
 // handleMemoryPage renders the Memory overview: working-set size, the soul
 // persona snippet + list counts, and the live/superseded/removed fact tally.
-func (s *Server) handleMemoryPage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMemoryPage(w http.ResponseWriter, r *http.Request) {
 	d := memOverviewData{layoutData: layoutData{Title: "Memory", Page: "memory", Sub: "overview"}}
 	if s.mem == nil {
 		s.render(w, s.tmpl.memory, d)
@@ -99,7 +99,7 @@ func (s *Server) handleMemoryPage(w http.ResponseWriter, _ *http.Request) {
 	d.Configured = true
 	d.WorkingCount = s.mem.WorkingCount()
 	if soul, err := s.mem.Soul(); err != nil {
-		d.Err = "Couldn't load the soul: " + err.Error()
+		d.Err = s.flashFor(r.Context(), "memory personality read", err, memReadFailed)
 	} else {
 		d.Persona = strings.TrimSpace(soul.Persona)
 		d.HasPersona = d.Persona != ""
@@ -108,13 +108,17 @@ func (s *Server) handleMemoryPage(w http.ResponseWriter, _ *http.Request) {
 	}
 	if _, stats, err := s.mem.TemporalFacts(); err != nil {
 		if d.Err == "" {
-			d.Err = "Couldn't load fact stats: " + err.Error()
+			d.Err = s.flashFor(r.Context(), "memory stats read", err, memReadFailed)
 		}
 	} else {
 		d.Stats = stats
 	}
 	s.render(w, s.tmpl.memory, d)
 }
+
+// memReadFailed is what a memory page shows when its store can't be read
+// (D21): the store's own error goes to the log.
+const memReadFailed = "Couldn't read your agent's memory just now. Refresh to try again; the Logs page has the reason."
 
 // --- soul ------------------------------------------------------------------
 
@@ -158,7 +162,7 @@ type soulData struct {
 // the forms themselves POST to memSoulURL/edit and 303 back here.
 func (s *Server) handleMemorySoulPage(w http.ResponseWriter, r *http.Request) {
 	d := soulData{
-		layoutData: layoutData{Title: "Memory · Soul", Page: "memory", Sub: "soul"},
+		layoutData: layoutData{Title: "Memory · Personality", Page: "memory", Sub: "soul"},
 		EditAction: memSoulURL + "/edit",
 	}
 	if s.mem == nil {
@@ -168,7 +172,7 @@ func (s *Server) handleMemorySoulPage(w http.ResponseWriter, r *http.Request) {
 	d.Configured = true
 	soul, err := s.mem.Soul()
 	if err != nil {
-		d.Err = "Couldn't load the soul: " + err.Error() + "."
+		d.Err = s.flashFor(r.Context(), "memory personality read", err, memReadFailed)
 		s.render(w, s.tmpl.memSoul, d)
 		return
 	}
@@ -323,7 +327,7 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 
 	facts, next, err := s.mem.Facts(query, 25, cursor)
 	if err != nil {
-		d.Err = "Couldn't load facts: " + err.Error() + ". Refresh to retry."
+		d.Err = s.flashFor(r.Context(), "memory facts read", err, memReadFailed)
 		s.render(w, s.tmpl.memFacts, d)
 		return
 	}
@@ -352,7 +356,7 @@ func (s *Server) handleMemoryFactsPage(w http.ResponseWriter, r *http.Request) {
 			row.Expanded = true
 			row.ProvHref = urlWith(memFactsURL, "q", query) // collapse
 			if eps, perr := s.mem.FactProvenance(f.ID); perr != nil {
-				row.ProvErr = "Couldn't load provenance: " + perr.Error() + "."
+				row.ProvErr = s.flashFor(r.Context(), "memory fact sources read", perr, "Couldn't load where this came from. Refresh to try again.")
 			} else {
 				row.Episodes = episodeRows(eps)
 			}
@@ -435,7 +439,7 @@ type removedData struct {
 
 // handleMemoryRemovedPage lists tombstoned facts so an operator can restore
 // one. Restore is a POST/303 (never a GET link) so a prefetch can't undelete.
-func (s *Server) handleMemoryRemovedPage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMemoryRemovedPage(w http.ResponseWriter, r *http.Request) {
 	d := removedData{
 		layoutData: layoutData{Title: "Memory · Recently removed", Page: "memory", Sub: "removed"},
 		BackHref:   memFactsURL,
@@ -447,7 +451,7 @@ func (s *Server) handleMemoryRemovedPage(w http.ResponseWriter, _ *http.Request)
 	d.Configured = true
 	facts, err := s.mem.RemovedFacts(50)
 	if err != nil {
-		d.Err = "Couldn't load recently removed: " + err.Error() + "."
+		d.Err = s.flashFor(r.Context(), "memory removed read", err, memReadFailed)
 		s.render(w, s.tmpl.memRemoved, d)
 		return
 	}
@@ -467,7 +471,7 @@ func (s *Server) handleMemoryRemovedPage(w http.ResponseWriter, _ *http.Request)
 
 type temporalRowVM struct {
 	Text          string
-	Status        string // "Live" | "Superseded" | "Removed"
+	Status        string // "Live" | "Replaced" | "Removed"
 	StatusClass   string // ov class: live | sup | tomb
 	Confidence    string
 	Effective     string
@@ -492,7 +496,7 @@ type temporalData struct {
 // transaction time, so a lifeline ends at last-confirmed — it does NOT claim to
 // know when a fact stopped being true. Confidence is the store's server-side
 // effective (decayed) value as of the request.
-func (s *Server) handleMemoryTemporalPage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMemoryTemporalPage(w http.ResponseWriter, r *http.Request) {
 	d := temporalData{
 		layoutData: layoutData{Title: "Memory · Knowledge time", Page: "memory", Sub: "temporal"},
 		BackHref:   memFactsURL,
@@ -504,7 +508,7 @@ func (s *Server) handleMemoryTemporalPage(w http.ResponseWriter, _ *http.Request
 	d.Configured = true
 	facts, stats, err := s.mem.TemporalFacts()
 	if err != nil {
-		d.Err = "Couldn't load the timeline: " + err.Error() + "."
+		d.Err = s.flashFor(r.Context(), "memory timeline read", err, memReadFailed)
 		s.render(w, s.tmpl.memTemporal, d)
 		return
 	}
@@ -547,8 +551,8 @@ type provenanceRowVM struct {
 // handleMemoryProvenancePage renders the audit view of the latest compaction
 // summary (TEN-104): its source range + the original archived turns it replaced,
 // rehydrated read-only from the archive. "Paged out, not lost."
-func (s *Server) handleMemoryProvenancePage(w http.ResponseWriter, _ *http.Request) {
-	d := provenanceData{layoutData: layoutData{Title: "Memory · Compaction", Page: "memory", Sub: "provenance"}}
+func (s *Server) handleMemoryProvenancePage(w http.ResponseWriter, r *http.Request) {
+	d := provenanceData{layoutData: layoutData{Title: "Memory · Summaries", Page: "memory", Sub: "provenance"}}
 	if s.mem == nil {
 		s.render(w, s.tmpl.memProvenance, d)
 		return
@@ -556,7 +560,7 @@ func (s *Server) handleMemoryProvenancePage(w http.ResponseWriter, _ *http.Reque
 	d.Configured = true
 	prov, err := s.mem.CompactionProvenance()
 	if err != nil {
-		d.Err = "Couldn't load compaction provenance: " + err.Error() + "."
+		d.Err = s.flashFor(r.Context(), "memory summary read", err, memReadFailed)
 		s.render(w, s.tmpl.memProvenance, d)
 		return
 	}
@@ -598,13 +602,14 @@ func clipProv(s string) string {
 }
 
 // temporalStatusLabel maps a fact lifecycle status to operator-facing copy +
-// the SVG/legend CSS class. "Removed" (not "tombstoned") per TEN-90.
+// the SVG/legend CSS class. "Removed" (not "tombstoned") per TEN-90, and
+// "Replaced" (not "superseded") per TEN-211.
 func temporalStatusLabel(status string) (label, class string) {
 	switch status {
 	case FactStatusTombstoned:
 		return "Removed", "tomb"
 	case FactStatusSuperseded:
-		return "Superseded", "sup"
+		return "Replaced", "sup"
 	default:
 		return "Live", "live"
 	}

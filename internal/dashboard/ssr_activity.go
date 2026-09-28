@@ -101,7 +101,7 @@ func (f activityFilter) match(e logs.Entry) bool {
 // cursor with the same filter.
 func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 	f := activityFilterFrom(r)
-	d := activityPageData{layoutData: layoutData{Title: "Activity", Page: "activity"}, Source: f.Source, Level: f.Level}
+	d := activityPageData{layoutData: layoutData{Title: "Activity feed", Page: "activity"}, Source: f.Source, Level: f.Level}
 	if s.logs == nil {
 		s.render(w, s.tmpl.activity, d)
 		return
@@ -249,6 +249,17 @@ func (s *Server) handleActivityFile(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, rc)
 }
 
+// kindWords names the agent's event kinds in the operator's words (TEN-211);
+// a kind not listed shows as it is.
+var kindWords = map[string]string{
+	"turn_start": "started", "turn_end": "finished", "final": "answered",
+	"tool_call": "using a tool", "tool_result": "tool done", "validation": "tool refused", "retry": "tried again",
+	"approval": "waiting for your OK", "approval_pending": "waiting for your OK", "approval_resolved": "answered",
+	"ingest": "message in", "bus": "between helpers", "addon": "add-on", "compact": "summarized",
+	"interject": "your note", "truncated": "stopped early", "assistant": "wrote", "skills": "used skills",
+	"memory": "remembered", "tool_catalog": "picked tools", "team_budget": "helpers' budget", "usage": "model usage", "route": "routed",
+}
+
 // logRow renders one retained entry as a themed card matching the Memory/Skills
 // idiom: relative timestamp, the source chip, a semantic badge (the event kind
 // for turn events, the level for plain records; red for errors, amber for
@@ -259,6 +270,9 @@ func logRow(e logs.Entry) string {
 	kind := e.Kind()
 	isErr := e.IsErr()
 	badgeClass, label := "tag", kind
+	if plain := kindWords[kind]; plain != "" {
+		label = plain
+	}
 	if kind == "" {
 		label = strings.ToLower(logs.LevelName(e.Level))
 	}
@@ -267,12 +281,6 @@ func logRow(e logs.Entry) string {
 		badgeClass = "act-errtag"
 	case e.Level >= slog.LevelWarn, kind == "validation", kind == "retry":
 		badgeClass = "risk"
-	case kind == "ingest":
-		label = "📥 inbox"
-	case kind == "bus":
-		label = "🔀 bus"
-	case kind == "addon":
-		label = "🧩 add-on"
 	}
 
 	tool := e.Field("tool")

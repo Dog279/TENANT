@@ -29,8 +29,7 @@ func (s *Server) handleMemorySoulEditForm(w http.ResponseWriter, r *http.Request
 		Text:    strings.TrimSpace(r.FormValue("text")),
 	}
 	if err := s.mem.SoulEdit(op); err != nil {
-		ActionFailed.Log(r.Context(), "action", "soul "+op.Action, "target", op.Section, "err", err)
-		http.Redirect(w, r, memSoulURL+"?err="+url.QueryEscape("Couldn't save that change: "+err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, addErr(memSoulURL, s.flashFor(r.Context(), "personality "+op.Action, err, "Couldn't save that change.")), http.StatusSeeOther)
 		return
 	}
 	s.log.Info("dashboard: ssr soul edited", "section", op.Section, "action", op.Action, "id", op.ID)
@@ -48,9 +47,8 @@ func (s *Server) handleMemoryFactDeleteForm(w http.ResponseWriter, r *http.Reque
 	q := strings.TrimSpace(r.FormValue("q"))
 	if s.mem != nil {
 		if err := s.mem.DeleteFact(id); err != nil {
-			ActionFailed.Log(r.Context(), "action", "fact delete", "target", id, "err", err)
 			http.Redirect(w, r, urlWith(memFactsURL, "q", q, "err",
-				"Couldn't remove that fact: "+err.Error()), http.StatusSeeOther)
+				s.flashFor(r.Context(), "fact delete", err, "Couldn't remove that fact.")), http.StatusSeeOther)
 			return
 		}
 		s.log.Info("dashboard: ssr fact removed", "id", id)
@@ -71,8 +69,7 @@ func (s *Server) handleMemoryFactRestoreForm(w http.ResponseWriter, r *http.Requ
 	back := memReturn(r, memFactsURL)
 	if s.mem != nil {
 		if err := s.mem.RestoreFact(id); err != nil {
-			ActionFailed.Log(r.Context(), "action", "fact restore", "target", id, "err", err)
-			http.Redirect(w, r, addErr(back, "Couldn't restore that fact: "+err.Error()), http.StatusSeeOther)
+			http.Redirect(w, r, addErr(back, s.flashFor(r.Context(), "fact restore", err, "Couldn't restore that fact.")), http.StatusSeeOther)
 			return
 		}
 		s.log.Info("dashboard: ssr fact restored", "id", id)
@@ -93,9 +90,8 @@ func (s *Server) handleMemoryResolveForm(w http.ResponseWriter, r *http.Request)
 	keep := atoi64(r.FormValue("keep_id"))
 	discard := atoi64(r.FormValue("discard_id"))
 	if err := s.mem.ResolveFacts(keep, discard); err != nil {
-		ActionFailed.Log(r.Context(), "action", "fact resolve", "target", keep, "discard", discard, "err", err)
 		http.Redirect(w, r, urlWith(memFactsURL, "q", q, "err",
-			"Couldn't resolve that: "+err.Error()), http.StatusSeeOther)
+			s.flashFor(r.Context(), "fact resolve", err, "Couldn't resolve that.")), http.StatusSeeOther)
 		return
 	}
 	s.log.Info("dashboard: ssr facts resolved", "keep", keep, "discard", discard)

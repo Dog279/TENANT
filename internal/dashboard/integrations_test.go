@@ -65,7 +65,7 @@ func intgServer(fc IntegrationsControl) *Server {
 
 func TestIntegrations_PageNotConfigured(t *testing.T) {
 	rec := get(t, intgServer(nil), "/integrations")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "aren't configured") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Integrations aren&#39;t available on this Tenant.") {
 		t.Errorf("nil integrations should render not-configured; got %d", rec.Code)
 	}
 }
@@ -88,8 +88,8 @@ func TestIntegrations_ListsWithStatusAndFields(t *testing.T) {
 		}
 	}
 	// Disconnect only on the configured one
-	if strings.Count(body, "Disconnect") != 1 {
-		t.Errorf("exactly the connected integration should offer Disconnect; got %d", strings.Count(body, "Disconnect"))
+	if n := strings.Count(body, `<span class="c-open">Disconnect</span>`); n != 1 {
+		t.Errorf("exactly the connected integration should offer Disconnect; got %d", n)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestIntegrations_TestIsAsync(t *testing.T) {
 
 func TestIntegrations_Disconnect(t *testing.T) {
 	fc := &fakeIntegrationsCtl{}
-	submitForm(t, intgServer(fc), "/integrations/gsuite/disconnect", "")
+	submitForm(t, intgServer(fc), "/integrations/gsuite/disconnect", "confirm=yes")
 	if len(fc.discCalls) != 1 || fc.discCalls[0] != "gsuite" {
 		t.Errorf("disconnect calls = %v", fc.discCalls)
 	}
@@ -149,7 +149,7 @@ func TestIntegrations_Disconnect(t *testing.T) {
 func TestIntegrations_MutationsNilSafe(t *testing.T) {
 	s := intgServer(nil)
 	for _, p := range []string{"/integrations/x/save", "/integrations/x/test", "/integrations/x/disconnect"} {
-		if rec := submitForm(t, s, p, "k=v"); rec.Code != http.StatusSeeOther {
+		if rec := submitForm(t, s, p, "k=v&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}
 	}

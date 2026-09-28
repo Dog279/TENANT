@@ -14,7 +14,7 @@ func TestSSR_CompactionProvenance(t *testing.T) {
 
 	// Nothing compacted yet.
 	body := get(t, s, "/memory/provenance").Body.String()
-	if !strings.Contains(body, "Nothing has been compacted") {
+	if !strings.Contains(body, "Nothing has been summarized yet.") {
 		t.Errorf("empty provenance should say nothing compacted yet:\n%s", body)
 	}
 
@@ -29,7 +29,7 @@ func TestSSR_CompactionProvenance(t *testing.T) {
 		Events:     []ProvenanceEventView{{When: time.Unix(1000, 0), Role: "user", Content: "the original question"}},
 	}
 	body = get(t, s, "/memory/provenance").Body.String()
-	for _, want := range []string{"ship P4.6", "the original question", "3 turns", "Compaction"} {
+	for _, want := range []string{"ship P4.6", "the original question", "3 messages", "Summaries"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("provenance page missing %q:\n%s", want, body)
 		}

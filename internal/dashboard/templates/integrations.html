@@ -1,12 +1,11 @@
 {{define "content"}}
-{{if .Msg}}<div class="card ok">{{.Msg}}</div>{{end}}
-{{if .Err}}<div class="card risk">{{.Err}}</div>{{end}}
+{{template "ui-flash" .}}
 
 {{if not .Configured}}
-<div class="card"><div class="dim">Integrations aren't configured in this session.</div></div>
+{{template "ui-off" "Integrations aren't available on this Tenant."}}
 {{else}}
 
-<div class="dim" style="margin-bottom:14px">Connect your agent to outside tools. Setting up something that needs a sign-in (Google, Atlassian) opens a window <strong>on the computer running Tenant</strong> — do that step there.</div>
+<div class="dim mb">Connect your agent to outside tools. Setting up something that needs a sign-in (Google, Atlassian) opens a window <strong>on the computer running Tenant</strong>: do that step there.</div>
 
 {{range .Cards}}
 <div class="card" id="int-{{.ID}}">
@@ -15,7 +14,7 @@
     {{if .Configured}}<span class="on-tag">connected</span>{{else}}<span class="dim">not connected</span>{{end}}
     {{if and .Configured (not .Enabled)}}<span class="dim">· off</span>{{end}}
   </div>
-  {{if .SetupHint}}<div class="dim" style="margin:4px 0 10px">{{.SetupHint}}</div>{{end}}
+  {{if .SetupHint}}<div class="dim mb">{{.SetupHint}}</div>{{end}}
   <form method="POST" action="/integrations/{{.ID}}/save" class="evalsched">
     {{range .Fields}}
     <label>{{.Prompt}}
@@ -34,69 +33,64 @@
       <button type="submit" class="btn">Save</button>
     </div>
   </form>
-  <div class="cronactions" style="margin-top:10px">
+  <div class="cronactions mt">
     <form method="POST" action="/integrations/{{.ID}}/test" class="inline">
       <button type="submit" class="btn sm">Test connection</button>
     </form>
     {{if .Configured}}
-    <form method="POST" action="/integrations/{{.ID}}/disconnect" class="inline">
-      <button type="submit" class="btn sm danger">Disconnect</button>
-    </form>
+    {{template "ui-confirm" (confirm (printf "/integrations/%s/disconnect" .ID) "Disconnect" (printf "Your agent can no longer use %s, and its saved sign-in is deleted. To use it again you enter its settings again." .Label))}}
     {{end}}
   </div>
 </div>
 {{else}}
-<div class="card"><div class="dim">No integrations available in this build.</div></div>
+{{template "ui-empty" "No integrations are available in this version of Tenant."}}
 {{end}}
-
-
 
 {{end}}
 
 {{if .GitHubConfigured}}
 <div class="card" id="github-repos">
-  <div class="ghead"><span class="nm">GitHub — watched repositories</span></div>
-  <div class="dim" style="margin:4px 0 10px">
-    Every watched repo is <strong>reported on</strong> (daily brief, overnight changes).
-    Only repos set to <strong>write</strong> can be modified, and those writes are still
-    gated per action. A read-only repo refuses writes in code, so approving one action
-    can't spill into a repo you only wanted to watch.
-    The token itself is set on the Provider keys page.
+  <div class="ghead"><span class="nm">GitHub: watched repositories</span></div>
+  <div class="dim mb">
+    Every watched repository is <strong>reported on</strong> (the daily brief, overnight changes).
+    Your agent can change only the ones you allow, and it still asks you before each change.
+    A watch-only repository refuses changes, so allowing one change can't spill into a repository you only wanted to watch.
+    The access token itself is set on the Provider keys page.
   </div>
 
-  {{if .GitHubRepos}}
   {{range .GitHubRepos}}
-  <div class="crow" style="align-items:center">
-    <span class="nm" style="min-width:260px">{{.Slug}}</span>
-    {{if .Primary}}<span class="dim">primary</span>{{end}}
-    <form method="POST" action="/integrations/github/repos/mode" class="inline">
-      <input type="hidden" name="repo" value="{{.Slug}}">
-      <select name="mode">
-        <option value="read"{{if not .Write}} selected{{end}}>read — watch &amp; report only</option>
-        <option value="write"{{if .Write}} selected{{end}}>write — agent may modify (gated)</option>
-      </select>
-      <button type="submit" class="btn sm">Update</button>
-    </form>
-    <form method="POST" action="/integrations/github/repos/remove" class="inline">
-      <input type="hidden" name="repo" value="{{.Slug}}">
-      <button type="submit" class="btn sm danger">Stop watching</button>
-    </form>
+  <div class="row">
+    <div>
+      <span class="nm">{{.Slug}}</span>
+      {{if .Primary}}<span class="dim">default</span>{{end}}
+      {{if .Write}}<span class="risk">may change it</span>{{else}}<span class="dim">watch-only</span>{{end}}
+    </div>
+    <div class="cronactions">
+      {{if .Write}}
+      <form method="POST" action="/integrations/github/repos/mode" class="inline">
+        <input type="hidden" name="repo" value="{{.Slug}}">
+        <input type="hidden" name="mode" value="read">
+        <button type="submit" class="btn sm">Make watch-only</button>
+      </form>
+      {{else}}
+      {{template "ui-confirm" (confirmGo "/integrations/github/repos/mode" "Allow changes" (printf "Your agent may change %s. It still asks you before each change." .Slug) "repo" .Slug "mode" "write")}}
+      {{end}}
+      <form method="POST" action="/integrations/github/repos/remove" class="inline">
+        <input type="hidden" name="repo" value="{{.Slug}}">
+        <button type="submit" class="btn sm">Stop watching</button>
+      </form>
+    </div>
   </div>
-  {{end}}
   {{else}}
-  <div class="dim">No repositories watched yet.</div>
+  {{template "ui-empty" "No repositories watched yet. Add one below as owner/name."}}
   {{end}}
 
-  <form method="POST" action="/integrations/github/repos/add" class="cronadd" style="margin-top:12px">
+  <form method="POST" action="/integrations/github/repos/add" class="cronadd mt">
     <div class="crow">
       <input type="text" name="repo" placeholder="owner/name" class="cinput" required>
-      <select name="mode">
-        <option value="read" selected>read — watch &amp; report only</option>
-        <option value="write">write — agent may modify (gated)</option>
-      </select>
-      <button type="submit" class="btn">Watch repo</button>
+      <button type="submit" class="btn">Watch</button>
     </div>
-    <div class="dim">The access token must cover every repo listed here — add it on Provider keys, then run <code>/enable github</code> to apply changes to the running session.</div>
+    <div class="dim">A new repository starts watch-only; choose Allow changes to let your agent change it. The access token must cover every repository listed here. Changes apply when Tenant next starts.</div>
   </form>
 </div>
 {{end}}

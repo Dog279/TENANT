@@ -43,10 +43,10 @@ func (f *fakeEvalCtl) ClearJudge() error { f.judgeClr++; return nil }
 
 // TEN-91: the Quality page renders the judge status + routes the set/clear forms.
 func TestEval_JudgeControl(t *testing.T) {
-	fc := &fakeEvalCtl{judge: "judge: default — planner self-judging"}
+	fc := &fakeEvalCtl{judge: "Your main model grades the checks."}
 	s := evalServer(fc)
 
-	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "self-judging") || !strings.Contains(body, "Set judge") {
+	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "Your main model grades the checks.") || !strings.Contains(body, "Set the grader") {
 		t.Errorf("Quality page should render the judge status + form; got:\n%s", body)
 	}
 
@@ -94,7 +94,7 @@ func TestEval_PageNotConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "aren't configured") {
+	if !strings.Contains(rec.Body.String(), "Quality checks aren&#39;t available on this Tenant.") {
 		t.Errorf("nil eval should render not-configured; got:\n%s", rec.Body.String())
 	}
 }
