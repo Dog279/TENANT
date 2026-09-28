@@ -344,8 +344,29 @@ func (b *Backend) GenerateStream(ctx context.Context, req model.GenerateRequest)
 
 // ----- LLM.TokenCount -----
 
-// tokenizeRequest carries both server dialects; TokenCount fills only the
-// fields the active provider's /tokenize understands. vLLM reads
+// The /tokenize dialects a self-hosted server can speak.
+const (
+	DialectVLLM     = "vllm"     // {prompt, add_special_tokens} → {"count": N}
+	DialectLlamaCpp = "llamacpp" // {content, add_special} → {"tokens": [ids…]}
+)
+
+// TokenizeDialect is the /tokenize dialect TokenCount uses for a provider of
+// kind: llama.cpp's for "llamacpp" (the kind is estimate-only in the catalog,
+// which keeps guided_json off, but its server does tokenize), none ("") for
+// every other estimate-only kind (Ollama and the hosted APIs have no
+// /tokenize), and vLLM's for the rest, a bare --backend vllm included.
+func TokenizeDialect(kind string, estimateOnly bool) string {
+	switch {
+	case kind == "llamacpp":
+		return DialectLlamaCpp
+	case estimateOnly:
+		return ""
+	}
+	return DialectVLLM
+}
+
+// tokenizeRequest carries both server dialects; Tokenize fills only the
+// fields the dialect's /tokenize understands. vLLM reads
 // {prompt, add_special_tokens}; llama.cpp's server reads {content, add_special}.
 type tokenizeRequest struct {
 	Model            string `json:"model,omitempty"`
@@ -382,24 +403,19 @@ func (r tokenizeResponse) n() int {
 // providers (hosted APIs, Ollama) keep the estimate, and any /tokenize error
 // degrades to the estimate rather than breaking the turn.
 func (b *Backend) TokenCount(ctx context.Context, text string) (int, error) {
-	if b.profile.EstimateTokensOnly && b.profile.ProviderKind != "llamacpp" {
+	dialect := TokenizeDialect(b.profile.ProviderKind, b.profile.EstimateTokensOnly)
+	if dialect == "" {
 		return estimateTokens(text), nil
 	}
-	body := tokenizeRequest{Model: b.profile.Model}
-	if b.profile.ProviderKind == "llamacpp" {
-		body.Content, body.AddSpecial = text, true
-	} else {
-		body.Prompt, body.AddSpecialTokens = text, true
-	}
-	var resp tokenizeResponse
-	if err := b.postJSON(ctx, "/tokenize", body, &resp); err != nil {
+	n, err := b.Tokenize(ctx, dialect, text)
+	if err != nil {
 		// Cancellation is a real failure; an unsupported/erroring endpoint is not.
 		if errors.Is(err, model.ErrCancelled) {
 			return 0, err
 		}
 		return estimateTokens(text), nil
 	}
-	if n := resp.n(); n > 0 {
+	if n > 0 {
 		return n, nil
 	}
 	// A reachable endpoint that returns no count on non-empty text spoke a
@@ -409,6 +425,27 @@ func (b *Backend) TokenCount(ctx context.Context, text string) (int, error) {
 		return estimateTokens(text), nil
 	}
 	return 0, nil
+}
+
+// Tokenize counts text with the server's /tokenize in dialect. Unlike
+// TokenCount it reports a failure instead of estimating, so `tenant doctor`
+// can tell which dialect a server really speaks. A reply without a count,
+// from a server that ignored the dialect's fields, is 0 tokens, not an error.
+func (b *Backend) Tokenize(ctx context.Context, dialect, text string) (int, error) {
+	body := tokenizeRequest{Model: b.profile.Model}
+	switch dialect {
+	case DialectLlamaCpp:
+		body.Content, body.AddSpecial = text, true
+	case DialectVLLM:
+		body.Prompt, body.AddSpecialTokens = text, true
+	default:
+		return 0, fmt.Errorf("%w: unknown /tokenize dialect %q", model.ErrInternal, dialect)
+	}
+	var resp tokenizeResponse
+	if err := b.postJSON(ctx, "/tokenize", body, &resp); err != nil {
+		return 0, err
+	}
+	return resp.n(), nil
 }
 
 // estimateTokens approximates 1 token per 4 characters — the same heuristic
