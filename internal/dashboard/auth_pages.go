@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -46,14 +47,27 @@ type settingsData struct{ Error, Next string }
 
 // safeNext is where sign-in returns to: next when it is a path on this
 // dashboard, else "/". "//host" and "/\host" are other sites to a browser,
-// and a control character can turn into one, so those go home too.
+// and a control character can turn into one, so those go home too. The flash
+// fields (msg, err) and token are dropped: a link someone else wrote must not
+// put its words in the dashboard's own banner once the operator signs in.
 func safeNext(next string) string {
 	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsFunc(next, func(r rune) bool {
 		return r == '\\' || unicode.IsControl(r)
 	}) {
 		return "/"
 	}
-	return next
+	path, query, ok := strings.Cut(next, "?")
+	if !ok {
+		return next
+	}
+	q, _ := url.ParseQuery(query)
+	q.Del("msg")
+	q.Del("err")
+	q.Del("token")
+	if len(q) == 0 {
+		return path
+	}
+	return path + "?" + q.Encode()
 }
 
 // validCookie reports whether r carries a session cookie matching the PSK.

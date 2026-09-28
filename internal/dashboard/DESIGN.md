@@ -84,11 +84,12 @@ The partials in `templates/ui.html` are parsed into every page set (`parseSSR` a
 {{template "ui-empty" "Nothing is waiting for you. When your agent needs your OK, it appears here right away."}}
 {{template "ui-busy" .Busy}}                   <!-- a BusyView: dot, title · since, detail, Stop/Cancel -->
 {{template "ui-confirm" (confirm "/models/remove" "Remove" (printf "Your agent can no longer use %s." .Name) "name" .Name)}}
+{{template "ui-confirm" (confirmGo "/models/use" "Use this model" (printf "Every answer from now on comes from %s." .Name) "name" .Name)}}  <!-- a "go": not red -->
 ```
 
 `ui-status` is the strip itself; only `/ui/status` renders it. Loading is a class, not a partial: `<span class="loading">Counting</span>`.
 
-Text an agent or a request wrote goes through `visibleText` before it is shown (`{{visibleText .Detail}}`): hidden or reordering characters show as `⟨U+202E⟩`, and 3 or more blank lines as `⟨N blank lines⟩`. `waited` turns seconds into "waiting 3 min".
+Text an agent or a request wrote goes through `visibleText` before it is shown (`{{visibleText .Detail}}`): characters that draw nothing or reorder text (controls, bidi and zero-width marks, tag characters, fillers, variation selectors) show as `⟨U+202E⟩`, and 3 or more blank lines as `⟨N blank lines⟩`. `waited` turns seconds into "waiting 3 min".
 
 ## 5. When to confirm
 
@@ -101,7 +102,7 @@ An action gets a confirm step when it:
 
 No confirm on Deny, Stop, "Ask me again", tightening a mode, or "Keep them at Ask": friction goes on "go", never on "stop".
 
-The step is the `ui-confirm` partial: a native `<details>` whose summary is the first button (it flips to Cancel), a consequence sentence, and a form that posts `confirm=yes`. It needs no JavaScript. The server enforces it where the route is mounted:
+The step is the `ui-confirm` partial: a native `<details>` whose summary is the first button (it flips to Cancel), a consequence sentence, and a form that posts `confirm=yes`. It needs no JavaScript. Build it with `confirm` for (a) and (b), which is red (§3), or `confirmGo` for (c) and (d), which isn't. The server enforces it where the route is mounted:
 
 ```go
 mux.HandleFunc("POST /models/remove", needConfirm(nil, s.handleModelRemoveForm))                      // always
@@ -154,7 +155,16 @@ Secret routes never put a control's error in a URL.
 - Datastar (`/datastar.js`) is the only script. No hand-written JS, no inline `<script>`, no `on*=` attributes (`TestTemplates_NoInlineJS`).
 - Use the colon syntax: `data-on:click`, `data-bind:text` (`TestTemplates_NoDeadHyphenDatastarAttrs`).
 - A `data-init` or `data-on-interval` that opens a GET goes only on a wrapper that is never patched; otherwise every patch opens another request. The one exception is the busy strip's own 3s poll, a one-shot GET.
-- Stream openers use `{retryMaxCount:1000000, retryMaxWait:5000}` (Research adds `openWhenHidden:true`) and `data-indicator:_live`, paired with `<p class="banner warn live-off" data-show="$_live === false">Live updates paused. Reload the page to see new requests.</p>`.
+- Stream openers use `{retryMaxCount:1000000, retryMaxWait:5000}` (Research adds `openWhenHidden:true`).
+- A stream whose loss the operator must see (the approval queue, Research) shows the paused banner. The opener's own fetch events drive it, not `data-indicator`, which stays on through every retry of a dropped stream:
+
+  ```html
+  <div data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))" data-init="@get('/events?only=approvals', {…})">…</div>
+  <p class="banner warn live-off" style="display:none" data-show="$_live === false">Live updates paused. Reload the page to see new requests.</p>
+  ```
+
+  A dropped connection, a refusal or the stream ending shows it at once, and the stream's next patch hides it. So such a stream sends a patch as soon as it opens (a snapshot); otherwise a reconnect leaves the banner up. `TestLiveBannerInChrome` checks it.
+- A Datastar request answered 401 means the sign-in has gone stale (the key changed, or another Tenant on this host signed the browser in): the status wrapper in `layout.html` sends the page to the sign-in form, which brings it back. One refused request, not one every 20s in the Security log.
 - Buttons that send a decision carry `data-indicator:_sending` and `data-attr:disabled="$_sending"`, so a double tap sends once.
 - Patches are outer `datastar-patch-elements`, keyed on element IDs. The IDs are a contract: `#ui-status`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`. There are no new event kinds.
 - **F1:** no text from a request or an agent goes into a Datastar attribute other than `data-on:*`, and there only numbers or URLs built with `url.Values.Encode` or `url.PathEscape`. The browser decodes the attribute before Datastar evaluates it, so a quote in it would be script. Untrusted text goes in element content, where html/template escapes it. `template.HTML` is used only through `reportHTML`, which escapes first.

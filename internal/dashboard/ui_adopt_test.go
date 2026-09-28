@@ -48,3 +48,8 @@ var plainLanguageAllow = map[string][]string{
 	"/settings/keys":         {"credentials.json"},
 	"/tools":                 {"posture", "raw category id", "emoji status marker"},
 }
+
+// titleAllow lists the nav pages whose title isn't their nav label yet
+// (DESIGN.md §2: a page's title is its nav label), by route, with the title
+// each shows today.
+var titleAllow = map[string]string{"/activity": "Activity", "/cron": "Cron", "/settings/keys": "Keys"}

@@ -1,8 +1,8 @@
 {{define "content"}}
 {{template "ui-flash" .}}
 {{if not .Configured}}{{template "ui-off" "Approvals and safety settings aren't available on this Tenant."}}{{else}}
-<div class="queue-wrap" data-indicator:_live data-init="@get('/events?only=approvals', {retryMaxCount:1000000, retryMaxWait:5000})">{{template "approvalq" .}}</div>
-<p class="banner warn live-off" data-show="$_live === false">Live updates paused. Reload the page to see new requests.</p>
+<div class="queue-wrap" data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))" data-init="@get('/events?only=approvals', {retryMaxCount:1000000, retryMaxWait:5000})">{{template "approvalq" .}}</div>
+<p class="banner warn live-off" style="display:none" data-show="$_live === false">Live updates paused. Reload the page to see new requests.</p>
 {{template "ui-empty" "This page is being built."}}
 {{end}}
 {{end}}

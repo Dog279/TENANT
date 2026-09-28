@@ -27,7 +27,8 @@ import (
 //
 // Auth: every non-health request must carry
 // `Authorization: Bearer <token>` matching it (constant-time compare); a
-// missing or wrong token yields 401 JSON. GET /healthz is exempt so liveness
+// missing or wrong token yields 401 JSON, except a person opening a page, who
+// is sent to the sign-in form (signInPage). GET /healthz is exempt so liveness
 // probes work unauthenticated. checkBindPolicy refuses to start any listener,
 // including loopback, when s.cfg.Auth is empty.
 //

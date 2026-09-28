@@ -20,7 +20,7 @@ func newDashResearch(base context.Context, rc *researchControl, web bool, next f
 
 // newServeDashResearch builds serve's research: its own runtime from cfg,
 // sharing shared's tools. Web browsing goes off when cfg.WebConfig.NoSandbox
-// and this process runs as a Windows service account (D19).
+// && runAsService(): a Windows service account, or one the OS won't name (D19).
 func newServeDashResearch(base context.Context, life *lifecycle.Group, cfg TeamConfig, shared *TeamRuntime,
 	rc researchControl, dataDir string, web bool) dashboard.ResearchControl {
 	return nil

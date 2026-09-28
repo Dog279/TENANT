@@ -257,6 +257,7 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .confirm-step[open]>summary{color:var(--dim);border-color:var(--line2)}
 .confirm-box{margin-top:8px;padding:10px 12px;border:1px solid rgba(251,113,133,.4);border-radius:10px;background:rgba(251,113,133,.06);overflow-wrap:anywhere}
 .confirm-box p{margin:0 0 8px}
+.confirm-step.go[open] .confirm-box{border-color:var(--line2);background:var(--card)}
 /* classes the templates already used, with no rules until now */
 .table-wrap{overflow-x:auto}
 .on-tag{font-size:10px;font-weight:700;color:var(--green);background:rgba(52,211,153,.10);border:1px solid rgba(52,211,153,.3);border-radius:11px;padding:1px 7px}
@@ -321,6 +322,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 @media (pointer:coarse){
   .btn,.nav a,.menu-btn,.confirm-step>summary,.nav button.logout{min-height:44px;display:inline-flex;align-items:center}
 }
+/* the menu button is .btn too: keep it off wide touch screens */
+@media (min-width:641px){.menu-btn{display:none}}
 
 /* == WP-safety == */
 /* == end WP-safety == */

@@ -404,14 +404,16 @@ func TestAuthSignInRedirect(t *testing.T) {
 func TestLogin_HonoursSafeNext(t *testing.T) {
 	s := authedServer()
 	for next, want := range map[string]string{
-		"/safety":          "/safety",
-		"/activity?x=1":    "/activity?x=1",
-		"":                 "/",
-		"//evil.example":   "/",
-		`/\evil.example`:   "/",
-		"https://x":        "/",
-		"javascript:alert": "/",
-		"/\t/evil.example": "/",
+		"/safety":       "/safety",
+		"/activity?x=1": "/activity?x=1",
+		"/models?err=Set+Run+commands+to+Allow&msg=Hi": "/models", // someone else's words in the banner
+		"/logs?source=cron&token=x&err=y":              "/logs?source=cron",
+		"":                                             "/",
+		"//evil.example":                               "/",
+		`/\evil.example`:                               "/",
+		"https://x":                                    "/",
+		"javascript:alert":                             "/",
+		"/\t/evil.example":                             "/",
 	} {
 		rec := httptest.NewRecorder()
 		s.handleLogin(rec, postForm("/auth/login", url.Values{"token": {"s3cret"}, "next": {next}}))

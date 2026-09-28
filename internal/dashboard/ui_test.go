@@ -59,6 +59,12 @@ func TestUIConfirm_NoJS(t *testing.T) {
 	if regexp.MustCompile(`(?i)<script|\son[a-z]+=`).MatchString(out) {
 		t.Errorf("ui-confirm must work without JS:\n%s", out)
 	}
+	// A "go" step is the same step, not red: red means it can't be undone.
+	g, _ := confirmGo("/models/use", "Use this model", "Every answer changes.", "name", "a")
+	if out, _ = s.uiPart("ui-confirm", g); strings.Contains(out, "danger") ||
+		!strings.Contains(out, `<details class="confirm-step go"><summary class="btn sm">`) || !strings.Contains(out, ">Yes, use this model</button>") {
+		t.Errorf("confirmGo:\n%s", out)
+	}
 }
 
 func TestNeedConfirm(t *testing.T) {
@@ -242,18 +248,19 @@ func TestUIStatus_QueuedBehindGate(t *testing.T) {
 	awaitIdle(t, s)
 }
 
-// fakeSafety is the main broker's category modes.
-type fakeSafety struct{ perms []control.PermissionInfo }
+// stripSafety is the main broker's category modes, as the status strip reads
+// them. It records nothing; WP-safety's page tests bring their own fake.
+type stripSafety struct{ perms []control.PermissionInfo }
 
-func (f *fakeSafety) Permissions() []control.PermissionInfo { return f.perms }
-func (f *fakeSafety) SetPermissionFrom(_, _, _ string) (bool, error) {
+func (f *stripSafety) Permissions() []control.PermissionInfo { return f.perms }
+func (f *stripSafety) SetPermissionFrom(_, _, _ string) (bool, error) {
 	return false, nil
 }
 
 func TestUIStatus_ApprovalsAndNotices(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil)
 	s.SetApprovals(&fakeApprovals{pending: []PendingApproval{{ID: "ap-1"}, {ID: "ap-2"}}})
-	s.SetSafety(&fakeSafety{perms: []control.PermissionInfo{
+	s.SetSafety(&stripSafety{perms: []control.PermissionInfo{
 		{Category: "exec", Mode: "allow", Title: "Run commands"},
 		{Category: "egress", Mode: "ask", Title: "Share private data", New: true},
 		{Category: "mcp", Mode: "ask", Title: "Connect remote services", New: true},
@@ -307,8 +314,10 @@ func TestUIStatus_NotRequestLogged(t *testing.T) {
 func TestLayout_StatusWrapPolls(t *testing.T) {
 	body := get(t, New(Config{}, nil, nil, nil, nil, nil), "/tools").Body.String()
 	// The poll sits on the wrapper, which is never patched; #ui-status itself
-	// carries neither, so a patch can't stack a second poll (§2.7).
-	const want = `<div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')"><div id="ui-status" class="status-strip"></div></div>`
+	// carries neither, so a patch can't stack a second poll (§2.7). A 401 on
+	// any Datastar request sends the page to the sign-in form: one refusal in
+	// the Security log, not one every 20s from a tab with a stale sign-in.
+	const want = `<div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')" data-on:datastar-fetch="evt.detail.type === 'error' && evt.detail.argsRaw.status === '401' && location.assign('/settings?next=' + encodeURIComponent(location.pathname + location.search))"><div id="ui-status" class="status-strip"></div></div>`
 	if !strings.Contains(body, want) {
 		t.Errorf("layout lacks the polled status wrapper %q", want)
 	}
@@ -357,6 +366,10 @@ func TestVisibleText(t *testing.T) {
 		"a\u200Bb\uFEFFc\u2066":     "a⟨U+200B⟩b⟨U+FEFF⟩c⟨U+2066⟩",
 		"bell\x07\x1b[2J":           "bell⟨U+0007⟩⟨U+001B⟩[2J",
 		"a\r\nb\rc":                 "a\nb⟨U+000D⟩c",
+		"ok\U000E0041\U000E0042":    "ok⟨U+E0041⟩⟨U+E0042⟩", // tag characters: text a model reads
+		"x\u3164y\u034Fz\u00ADw":    "x⟨U+3164⟩y⟨U+034F⟩z⟨U+00AD⟩w",
+		"f\u2061g\uFE0Fh\U000E0100": "f⟨U+2061⟩g⟨U+FE0F⟩h⟨U+E0100⟩",
+		"line\u2028sep":             "line⟨U+2028⟩sep",
 		"top\n\n\n\n\nhidden":       "top\n⟨4 blank lines⟩\nhidden",
 		"top\n \n\t\n\nhidden":      "top\n⟨3 blank lines⟩\nhidden",
 		"two\n\n\nblank lines stay": "two\n\n\nblank lines stay",
@@ -405,16 +418,20 @@ func TestPages_ShellAndStates(t *testing.T) {
 	}
 }
 
-// The nav: every page in its group, labelled as D15 says, in order.
+// The nav: every page in its group, labelled as D15 says, in order; and
+// each page's title is its nav label.
 func TestNav_GroupsAndLabels(t *testing.T) {
-	body := get(t, New(Config{}, nil, nil, nil, nil, nil), "/").Body.String()
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	body := get(t, s, "/").Body.String()
 	nav := body[strings.Index(body, `<nav class="nav"`):strings.Index(body, "</nav>")]
 	var got []string
+	labels := map[string]string{} // route → nav label
 	for _, m := range regexp.MustCompile(`<div class="nav-group">([^<]+)</div>|<a href="([^"]+)"[^>]*>([^<]+)</a>`).FindAllStringSubmatch(nav, -1) {
 		if m[1] != "" {
 			got = append(got, "["+m[1]+"]")
 		} else {
-			got = append(got, m[2]+" "+html.UnescapeString(m[3]))
+			labels[m[2]] = html.UnescapeString(m[3])
+			got = append(got, m[2]+" "+labels[m[2]])
 		}
 	}
 	want := []string{"/ Overview",
@@ -427,9 +444,27 @@ func TestNav_GroupsAndLabels(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("nav =\n%q\nwant\n%q", got, want)
 	}
-	for p, title := range map[string]string{"/safety": "Approvals &amp; safety", "/agents": "Helpers", "/goal": "Autopilot", "/research": "Research"} {
-		if b := get(t, New(Config{}, nil, nil, nil, nil, nil), p).Body.String(); !strings.Contains(b, "<h1>"+title+"</h1>") {
-			t.Errorf("%s: the page title should be its nav label %q", p, title)
+	// titleAllow (ui_adopt_test.go) holds today's exceptions, as each page
+	// titles itself now; it fails on an entry that no longer matches.
+	h1 := regexp.MustCompile(`<h1>([^<]*)</h1>`)
+	used := map[string]bool{}
+	for route, label := range labels {
+		title := ""
+		if m := h1.FindStringSubmatch(get(t, s, route).Body.String()); m != nil {
+			title = html.UnescapeString(m[1])
+		}
+		if title == label {
+			continue
+		}
+		if old, ok := titleAllow[route]; ok && old == title {
+			used[route] = true
+			continue
+		}
+		t.Errorf("%s: the page title %q should be its nav label %q", route, title, label)
+	}
+	for route := range titleAllow {
+		if !used[route] {
+			t.Errorf("%s no longer titles itself %q: remove it from titleAllow", route, titleAllow[route])
 		}
 	}
 }

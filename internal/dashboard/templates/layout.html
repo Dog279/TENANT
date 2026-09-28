@@ -45,7 +45,7 @@
     </aside>
     <main class="main">
       <header class="hdr"><h1>{{.Title}}</h1></header>
-      <div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')"><div id="ui-status" class="status-strip"></div></div>
+      <div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')" data-on:datastar-fetch="evt.detail.type === 'error' && evt.detail.argsRaw.status === '401' && location.assign('/settings?next=' + encodeURIComponent(location.pathname + location.search))"><div id="ui-status" class="status-strip"></div></div>
       <section class="page">{{block "content" .}}{{end}}</section>
     </main>
   </div>

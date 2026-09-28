@@ -20,7 +20,7 @@
     </div>
     <div class="cronactions">
       {{if not .Active}}
-      {{template "ui-confirm" (confirm "/models/use" "Use this model" (printf "Every answer from now on comes from %s." .Name) "name" .Name)}}
+      {{template "ui-confirm" (confirmGo "/models/use" "Use this model" (printf "Every answer from now on comes from %s." .Name) "name" .Name)}}
       {{template "ui-confirm" (confirm "/models/remove" "Remove" (printf "Your agent can no longer use %s. To use it again you add it and paste its key again." .Name) "name" .Name)}}
       {{else}}<span class="dim">in use</span>{{end}}
     </div>

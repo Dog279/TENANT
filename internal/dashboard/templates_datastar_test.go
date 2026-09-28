@@ -54,6 +54,9 @@ func TestTemplates_NoDeadHyphenDatastarAttrs(t *testing.T) {
 // across a few `tenant` restarts goes dead ("stops updating") until a manual
 // reload. A self-hosted dashboard the operator restarts often must reconnect
 // indefinitely; this guards that every /events opener raises the cap.
+// liveOpener is what a stream opener with a paused banner carries (§2.7).
+const liveOpener = `data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))"`
+
 func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 	// Each opener → the SSE endpoint it must keep reconnecting to. Activity moved
 	// to the retained /activity/events stream (TEN-238); chat stays on /events.
@@ -86,12 +89,15 @@ func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 			t.Errorf("%s must set openWhenHidden:true so it keeps updating in a backgrounded tab", name)
 		}
 	}
-	// The new openers say when they're down (§2.7): the stream's indicator
-	// drives the "Live updates paused" banner.
+	// The new openers say when they're down (§2.7): the stream's own fetch
+	// events drive the "Live updates paused" banner, which starts hidden. Not
+	// data-indicator: it stays on through every retry of a dropped stream.
 	for _, name := range []string{"templates/safety.html", "templates/research.html"} {
 		b, _ := ssrFS.ReadFile(name)
-		if !strings.Contains(string(b), "data-indicator:_live") || !strings.Contains(string(b), `data-show="$_live === false"`) {
-			t.Errorf("%s: the opener needs data-indicator:_live and the paused banner", name)
+		for _, want := range []string{liveOpener, `<p class="banner warn live-off" style="display:none" data-show="$_live === false">`} {
+			if !strings.Contains(string(b), want) || strings.Contains(string(b), "data-indicator:_live") {
+				t.Errorf("%s: the opener needs %s, and no data-indicator:_live", name, want)
+			}
 		}
 	}
 }

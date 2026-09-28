@@ -26,16 +26,19 @@ import (
 
 // ConfirmView is the ui-confirm partial's input: a dangerous action behind a
 // second click. Yes is "Yes, " + Label with its first letter lowercased.
+// Danger makes the step red, for what can't be undone (DESIGN.md §3):
+// confirm sets it, confirmGo (a "go" that lets the agent do more) doesn't.
 type ConfirmView struct {
 	Action, Label, Yes, Consequence string
 	Hidden                          []HiddenField
+	Danger                          bool
 }
 
 // HiddenField is one form field the confirmed POST carries.
 type HiddenField struct{ Name, Value string }
 
 // uiFuncs is parsed into every template set (parseSSR and logsTmpl).
-var uiFuncs = template.FuncMap{"confirm": confirmStep, "visibleText": visibleText, "waited": waited}
+var uiFuncs = template.FuncMap{"confirm": confirmStep, "confirmGo": confirmGo, "visibleText": visibleText, "waited": waited}
 
 // confirmStep builds a ConfirmView: the action, the first button's label, one
 // plain consequence sentence, then name/value pairs for the hidden fields. An
@@ -44,11 +47,19 @@ func confirmStep(action, label, consequence string, kv ...string) (ConfirmView, 
 	if len(kv)%2 != 0 {
 		return ConfirmView{}, fmt.Errorf("confirm %s: odd number of hidden field arguments", action)
 	}
-	v := ConfirmView{Action: action, Label: label, Consequence: consequence, Yes: "Yes, " + lowerFirst(label)}
+	v := ConfirmView{Action: action, Label: label, Consequence: consequence, Yes: "Yes, " + lowerFirst(label), Danger: true}
 	for i := 0; i < len(kv); i += 2 {
 		v.Hidden = append(v.Hidden, HiddenField{Name: kv[i], Value: kv[i+1]})
 	}
 	return v, nil
+}
+
+// confirmGo is confirmStep for an action that loosens or switches rather
+// than destroys ("Use this model", "Allow"): the same step, not red.
+func confirmGo(action, label, consequence string, kv ...string) (ConfirmView, error) {
+	v, err := confirmStep(action, label, consequence, kv...)
+	v.Danger = false
+	return v, err
 }
 
 func lowerFirst(s string) string {
@@ -56,10 +67,10 @@ func lowerFirst(s string) string {
 	return string(unicode.ToLower(r)) + s[n:]
 }
 
-// visibleText shows what a request really says (F10): bidi and zero-width
-// controls, and other control characters, render as "⟨U+XXXX⟩" so text can't
-// hide or reorder itself, and a run of 3 or more blank lines collapses to one
-// "⟨N blank lines⟩" line so it can't push the rest out of view.
+// visibleText shows what a request really says (F10): invisible characters
+// (hiddenRune) render as "⟨U+XXXX⟩" so text can't hide or reorder itself,
+// and a run of 3 or more blank lines collapses to one "⟨N blank lines⟩" line
+// so it can't push the rest out of view.
 func visibleText(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	var b strings.Builder
@@ -92,18 +103,19 @@ func visibleText(s string) string {
 	return strings.Join(out, "\n")
 }
 
+// hiddenRune reports whether r draws nothing, or moves other text, where a
+// person reads it: controls, format characters (bidi, zero-width, the tag
+// characters that spell text a model reads and a person can't), the other
+// default-ignorables (Hangul fillers, U+034F) and variation selectors (which
+// can carry bytes too), plus the line and paragraph separators.
 func hiddenRune(r rune) bool {
 	switch {
 	case r == '\n' || r == '\t':
 		return false
-	case unicode.IsControl(r), unicode.Is(unicode.Bidi_Control, r):
+	case r == '\u2028' || r == '\u2029':
 		return true
 	}
-	switch r {
-	case '\u200B', '\u200C', '\u200D', '\u2028', '\u2029', '\u2060', '\uFEFF':
-		return true
-	}
-	return false
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
 }
 
 // waited says how long a request has waited, in words.

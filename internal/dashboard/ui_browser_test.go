@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 
+	"tenant/internal/agent"
 	"tenant/internal/plugins/web"
 )
 
@@ -34,30 +37,64 @@ const fitsJS = `(() => {
   return bad;
 })()`
 
-// The dashboard shell on a phone (390x844), through the production handler
-// chain: sign in through the form (a Referrer-Policy or Origin regression
-// breaks this first), then every page fits the screen with the populated
-// fakes, the menu opens and navigates, Models' Remove goes through its
-// confirm step, and the busy strip comes and goes. Skipped without Chrome.
-// TENANT_UI_SCREENSHOT=<dir> keeps a screenshot of each page.
-func TestUIShellInChrome(t *testing.T) {
+// chromeSignedIn starts Chrome at w×h and signs in to s, served through
+// served(), the chain the operator's browser meets: opening page sends the
+// visitor to the sign-in form, which brings them back there (a
+// Referrer-Policy or Origin regression breaks this first). Narrower than
+// 640px it is a phone: mobile and touch emulation, since headless windows are
+// at least 500px wide and touch makes the 44px targets apply. Every browser
+// test starts here (plan §6.2). It skips without Chrome; the browser and then
+// the server close when the test ends.
+func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Context, *httptest.Server) {
+	t.Helper()
 	chrome, err := web.DetectChrome("")
 	if err != nil {
 		t.Skip("no Chrome, Chromium or Edge here: ", err)
 	}
-	tok := GenerateToken()
-	runner := newBlockRunner()
-	s := harnessServer(t, Config{Addr: "127.0.0.1:0", Auth: tok}, populated, runner)
 	srv := httptest.NewServer(s.served())
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(w, h))
+	actx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx, cancelBrowser := chromedp.NewContext(actx)
+	ctx, cancelTimeout := context.WithTimeout(ctx, 3*time.Minute)
+	t.Cleanup(func() { cancelTimeout(); cancelBrowser(); cancelAlloc() })
+	var phone []chromedp.EmulateViewportOption
+	if w < 640 {
+		phone = append(phone, chromedp.EmulateMobile, chromedp.EmulateTouch)
+	}
+	var signIn, back string
+	var width int
+	err = chromedp.Run(ctx,
+		chromedp.EmulateViewport(int64(w), int64(h), phone...),
+		chromedp.Navigate(srv.URL+page),
+		chromedp.WaitVisible(`input[name=token]`, chromedp.ByQuery),
+		chromedp.Location(&signIn),
+		chromedp.SendKeys(`input[name=token]`, s.cfg.Auth, chromedp.ByQuery),
+		chromedp.Click(`form button[type=submit]`, chromedp.ByQuery),
+		chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
+		chromedp.Location(&back),
+		chromedp.Evaluate(`innerWidth`, &width),
+	)
+	if err != nil {
+		t.Fatalf("signing in: %v (at %s)", err, signIn)
+	}
+	if next := "/settings?" + (url.Values{"next": {page}}).Encode(); !strings.HasSuffix(signIn, next) || back != srv.URL+page {
+		t.Fatalf("sign-in went %s → %s, want %s → %s", signIn, back, next, page)
+	}
+	if width != w {
+		t.Fatalf("innerWidth = %d, want %d", width, w)
+	}
+	return ctx, srv
+}
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(390, 844))
-	actx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer cancel()
-	ctx, cancel := chromedp.NewContext(actx)
-	defer cancel()
-	ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
+// The dashboard shell on a phone (390x844), signed in through the form: every
+// page fits the screen with the populated fakes, the menu opens and
+// navigates, Models' Remove goes through its confirm step, and the busy strip
+// comes and goes. TENANT_UI_SCREENSHOT=<dir> keeps a screenshot of each page.
+func TestUIShellInChrome(t *testing.T) {
+	runner := newBlockRunner()
+	s := harnessServer(t, Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, populated, runner)
+	ctx, srv := chromeSignedIn(t, s, 390, 844, "/safety")
 	shots := os.Getenv("TENANT_UI_SCREENSHOT")
 	shoot := func(name string) chromedp.Action {
 		return chromedp.ActionFunc(func(ctx context.Context) error {
@@ -70,32 +107,6 @@ func TestUIShellInChrome(t *testing.T) {
 			}
 			return os.WriteFile(filepath.Join(shots, "ui-"+name+".jpg"), png, 0o644)
 		})
-	}
-
-	// Sign in: /safety sends the visitor to the form, which brings them back.
-	var signIn, back string
-	var width int
-	err = chromedp.Run(ctx,
-		// A phone: headless windows are at least 500px wide, and touch makes
-		// the 44px targets (pointer:coarse) apply.
-		chromedp.EmulateViewport(390, 844, chromedp.EmulateMobile, chromedp.EmulateTouch),
-		chromedp.Navigate(srv.URL+"/safety"),
-		chromedp.WaitVisible(`input[name=token]`, chromedp.ByQuery),
-		chromedp.Location(&signIn),
-		chromedp.SendKeys(`input[name=token]`, tok, chromedp.ByQuery),
-		chromedp.Click(`form button[type=submit]`, chromedp.ByQuery),
-		chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
-		chromedp.Location(&back),
-		chromedp.Evaluate(`innerWidth`, &width),
-	)
-	if err != nil {
-		t.Fatalf("signing in: %v (at %s)", err, signIn)
-	}
-	if !strings.HasSuffix(signIn, "/settings?next=%2Fsafety") || back != srv.URL+"/safety" {
-		t.Fatalf("sign-in went %s → %s, want /settings?next=%%2Fsafety → /safety", signIn, back)
-	}
-	if width != 390 {
-		t.Fatalf("innerWidth = %d, want 390", width)
 	}
 
 	for _, p := range harnessPages {
@@ -114,7 +125,7 @@ func TestUIShellInChrome(t *testing.T) {
 	var hidden, open, logoutShown bool
 	var navBad []string
 	var loc string
-	err = chromedp.Run(ctx,
+	err := chromedp.Run(ctx,
 		chromedp.Navigate(srv.URL+"/"),
 		chromedp.WaitVisible(`.menu-btn`, chromedp.ByQuery),
 		chromedp.Evaluate(`getComputedStyle(document.getElementById('nav')).display === 'none'`, &hidden),
@@ -182,5 +193,46 @@ func TestUIShellInChrome(t *testing.T) {
 	}
 	if !strings.Contains(busy, "Your agent is answering a message") || !strings.Contains(busy, "Stop") {
 		t.Errorf("busy strip = %q", busy)
+	}
+}
+
+// The paused banner and a stale sign-in, in a real browser (§2.7, D30). A
+// live stream keeps the banner hidden; a dropped one shows it at once. Once
+// the sign-in goes stale (a new key), the next Datastar request's 401 sends
+// the page to the sign-in form, rather than the tab polling on, refused, into
+// the Security log.
+func TestLiveBannerInChrome(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, nil, nil, nil, agent.NewBroker(0), nil)
+	s.SetSafety(&stripSafety{}, nil)
+	ctx, srv := chromeSignedIn(t, s, 390, 844, "/safety")
+	const shown = `getComputedStyle(document.querySelector('.live-off')).display !== 'none'`
+	var early bool
+	var loc string
+	err := chromedp.Run(ctx,
+		chromedp.Sleep(time.Second),
+		chromedp.Evaluate(shown, &early),
+		chromedp.ActionFunc(func(context.Context) error { srv.CloseClientConnections(); return nil }),
+		chromedp.Poll(shown, nil, chromedp.WithPollingTimeout(3*time.Second)),
+	)
+	if err != nil {
+		t.Fatalf("the paused banner: %v", err)
+	}
+	if early {
+		t.Error("the paused banner showed while the stream was live")
+	}
+	sctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	err = chromedp.Run(sctx,
+		// The stream retries a second after the drop, now with a stale key;
+		// if it beat the cookie, the strip's 20s poll is the next request.
+		network.SetCookie(dashCookieName, "stale").WithURL(srv.URL).WithPath("/").WithHTTPOnly(true),
+		chromedp.WaitVisible(`input[name=token]`, chromedp.ByQuery),
+		chromedp.Location(&loc),
+	)
+	if err != nil {
+		t.Fatalf("a stale sign-in: %v", err)
+	}
+	if !strings.HasSuffix(loc, "/settings?next=%2Fsafety") {
+		t.Errorf("a stale sign-in went to %s, want the sign-in form with next=/safety", loc)
 	}
 }
