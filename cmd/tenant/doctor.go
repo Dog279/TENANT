@@ -26,6 +26,7 @@ import (
 	"tenant/internal/memory/sme"
 	"tenant/internal/memory/soul"
 	"tenant/internal/model"
+	"tenant/internal/model/backend/vllm"
 	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/research"
 	"tenant/internal/secrets"
@@ -529,20 +530,83 @@ func checkGenEndpoint(ctx context.Context, e *doctorEnv) checkResult {
 		Detail: fmt.Sprintf("%s serving %v", e.c.vllmEndpoint, models)}
 }
 
+// tokenizePlatforms names the server behind each /tokenize dialect.
+var tokenizePlatforms = map[string]string{vllm.DialectVLLM: "vLLM", vllm.DialectLlamaCpp: "llama.cpp"}
+
+// checkTokenize reports how serve counts tokens for the active provider, by
+// platform. vLLM and llama.cpp's server each have a /tokenize, in their own
+// dialects, and serve budgets with it. Ollama (none as of 0.32) and the hosted
+// APIs have no tokenize endpoint and serve estimates ~4 chars/token by design,
+// which is nothing to fix. The probe asks which dialect the server really
+// speaks, so a kind that doesn't match its server is named with the fix: a
+// llama.cpp server declared "vllm" otherwise budgets by estimate without a
+// word, until an under-count sends a prompt the server rejects.
 func checkTokenize(ctx context.Context, e *doctorEnv) checkResult {
 	if e.c.backend != "vllm" || e.c.vllmEndpoint == "" {
-		return checkResult{Status: statusSkip, Detail: "no remote vLLM (TokenCount estimator used)"}
+		return checkResult{Status: statusSkip, Detail: "no OpenAI-compatible provider (TokenCount estimator used)"}
 	}
-	body := map[string]any{"model": e.c.vllmModel, "prompt": "doctor probe", "add_special_tokens": true}
-	var resp struct {
-		Count int `json:"count"`
+	kind := e.c.genKind
+	pk := providerKinds[kind]
+	want := vllm.TokenizeDialect(kind, pk.EstimateTokens)
+	if want == "" && !pk.Local {
+		return checkResult{Status: statusSkip, Detail: pk.Label + " is hosted: serve budgets with a ~4-chars/token estimate"}
 	}
-	if err := e.postJSON(ctx, e.c.vllmEndpoint+"/tokenize", body, &resp); err != nil || resp.Count == 0 {
+	b, _ := vllm.New(ctx, model.Profile{
+		ProviderKind: kind, Endpoint: e.c.vllmEndpoint, Model: e.c.vllmModel,
+		APIKey: e.c.genAPIKey, ForceHTTP11: pk.ForceHTTP1,
+	}, nil)
+	backend, ok := b.(*vllm.Backend)
+	if !ok {
+		return checkResult{Status: statusSkip, Detail: "no vLLM backend to probe"}
+	}
+	// The configured dialect first; the other only to explain a failure.
+	order := []string{vllm.DialectVLLM, vllm.DialectLlamaCpp}
+	if want == vllm.DialectLlamaCpp {
+		order = []string{vllm.DialectLlamaCpp, vllm.DialectVLLM}
+	}
+	var speaks string
+	var n int
+	var wantErr error
+	for _, d := range order {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		got, err := backend.Tokenize(probeCtx, d, "doctor probe")
+		cancel()
+		if err == nil && got > 0 {
+			speaks, n = d, got
+			break
+		}
+		if d == want {
+			wantErr = err // nil: the server answered without a count
+		}
+		if errors.Is(err, model.ErrEndpointDown) || errors.Is(err, model.ErrCancelled) {
+			break // no dialect will answer an unreachable server
+		}
+	}
+	const estimate = "~4-chars/token estimate"
+	switch {
+	case speaks != "" && speaks == want:
+		return checkResult{Status: statusOK, Detail: fmt.Sprintf("/tokenize OK (%s, probe=%d tok)", tokenizePlatforms[speaks], n)}
+	case speaks != "" && want != "":
 		return checkResult{Status: statusWarn,
-			Detail: "/tokenize unavailable — budgeting falls back to a ~4-chars/token estimate",
-			Fix:    "fine for most use; exact budgets need a vLLM build with /tokenize"}
+			Detail: fmt.Sprintf("the server answers %s's /tokenize, not %s's, so serve can't count tokens and budgets with a %s",
+				tokenizePlatforms[speaks], tokenizePlatforms[want], estimate),
+			Fix: fmt.Sprintf("set this provider's kind to %q in config.json", speaks)}
+	case speaks != "":
+		return checkResult{Status: statusWarn,
+			Detail: fmt.Sprintf("the server answers %s's /tokenize, but kind %q budgets with a %s", tokenizePlatforms[speaks], kind, estimate),
+			Fix:    fmt.Sprintf("set this provider's kind to %q in config.json for exact token budgets", speaks)}
+	case want == "":
+		return checkResult{Status: statusSkip, Detail: pk.Label + " has no tokenize endpoint: serve budgets with a " + estimate}
 	}
-	return checkResult{Status: statusOK, Detail: fmt.Sprintf("/tokenize OK (probe=%d tok)", resp.Count)}
+	detail := tokenizePlatforms[want] + "'s /tokenize answered without a count"
+	if wantErr != nil {
+		detail = tokenizePlatforms[want] + "'s /tokenize failed: " + clip(wantErr.Error(), 160)
+	}
+	fix := "fine for most use; exact budgets need a vLLM build with /tokenize"
+	if want == vllm.DialectLlamaCpp {
+		fix = "llama.cpp's server always has /tokenize: check that this endpoint is one"
+	}
+	return checkResult{Status: statusWarn, Detail: detail + "; budgeting falls back to a " + estimate, Fix: fix}
 }
 
 func checkEmbedEndpoint(ctx context.Context, e *doctorEnv) checkResult {
@@ -885,21 +949,6 @@ func (e *doctorEnv) listModels(ctx context.Context, base string) ([]string, erro
 
 func (e *doctorEnv) getJSON(ctx context.Context, url string, out any) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	resp, err := e.httpc.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func (e *doctorEnv) postJSON(ctx context.Context, url string, body, out any) error {
-	b, _ := json.Marshal(body)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(b)))
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.httpc.Do(req)
 	if err != nil {
 		return err
