@@ -29,7 +29,7 @@ var adoptedConfirms = []struct {
 	key   string
 	safe  []string
 }{
-	{route: "/skills/x/forget"},
+	{route: "/skills/forget", form: url.Values{"name": {"x"}}},
 	{route: "/mcp/remove", form: url.Values{"target": {"svc"}}},
 	{route: "/integrations/disconnect", form: url.Values{"integration": {"gsuite"}}},
 	{route: "/settings/keys/remove", form: url.Values{"service": {"openai"}}},
@@ -42,7 +42,7 @@ var adoptedConfirms = []struct {
 	{route: "/models/remove", form: url.Values{"name": {"m"}}},
 	{route: "/tools/rules/remove", form: url.Values{"pattern": {"x"}, "mode": {"allow"}}}, // decided by the rule itself (REVSEC-1)
 
-	{route: "/skills/x/trust", key: "trusted", safe: []string{"", "false"}},
+	{route: "/skills/trust", form: url.Values{"name": {"x"}}, key: "trusted", safe: []string{"", "false"}},
 	{route: "/skills/auto", key: "mode", safe: []string{"off"}},
 	{route: "/mcp/trust", form: url.Values{"target": {"svc"}}, key: "mode", safe: []string{"ask", "deny"}},
 	{route: "/integrations/github/repos/mode", form: url.Values{"repo": {"a/b"}}, key: "mode", safe: []string{"read"}},
@@ -142,7 +142,7 @@ func TestAdoptedRoutes_ControlUntouchedWithoutConfirm(t *testing.T) {
 	s.SetRules(fr)
 	for _, p := range []struct{ route, body string }{
 		{"/cron/j1/delete", ""}, {"/cron/exec", "enabled=true"},
-		{"/skills/x/forget", ""}, {"/skills/x/trust", "trusted=true"}, {"/skills/auto", "mode=on"},
+		{"/skills/forget", "name=x"}, {"/skills/trust", "name=x&trusted=true"}, {"/skills/auto", "mode=on"},
 		{"/tools/rules/add", "pattern=x&mode=allow"}, {"/tools/rules/remove", "pattern=x&mode=deny"},
 	} {
 		if rec := submitForm(t, s, p.route, p.body); rec.Code != http.StatusPreconditionRequired {
@@ -376,8 +376,17 @@ func TestHome_WaitingForYourOK(t *testing.T) {
 // Names from outside (a skill the agent saved, a remote service's tools)
 // are shown in words and can't aim a form elsewhere.
 func TestAdopt_PlainNamesAndSafeActions(t *testing.T) {
-	if got := (SkillView{Name: "../../settings/keys/openai/remove?x="}).Action("forget"); got != "/skills/..%2F..%2Fsettings%2Fkeys%2Fopenai%2Fremove%3Fx=/forget" {
-		t.Errorf("skill action = %q: the name must stay one path segment", got)
+	const evil = "../../settings/keys/openai/remove?x="
+	sk := New(Config{}, nil, nil, nil, nil, nil)
+	sk.SetSkills(&fakeSkillCtl{skills: []SkillView{{Name: evil, Status: "proposed"}, {Name: evil, Status: "live", Untrusted: true}, {Name: evil, Status: "live", Enabled: true}}})
+	page := get(t, sk, "/skills").Body.String()
+	for _, m := range regexp.MustCompile(`action="([^"]*)"`).FindAllStringSubmatch(page, -1) {
+		if strings.Contains(html.UnescapeString(m[1]), "settings") {
+			t.Errorf("a skill's name aims a form: action=%q", m[1])
+		}
+	}
+	if n := strings.Count(page, `<input type="hidden" name="name" value="../../settings/keys/openai/remove?x=">`); n != 7 {
+		t.Errorf("the skill's name is a form field in %d forms, want 7 (accept, dismiss, trust, remove, turn off, stop trusting, remove)", n)
 	}
 	for in, want := range map[string]string{
 		"mcp:127.0.0.1:9000:*":          "every tool on 127.0.0.1:9000",

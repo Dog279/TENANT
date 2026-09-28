@@ -9,8 +9,12 @@ package dashboard
 // Connect must not block the HTTP handler: AddRemoteMCP opens a browser and
 // waits minutes for the OAuth dance. The handler launches it in a goroutine
 // and redirects immediately; the new server appears in the list on refresh.
+// So Connect stays a plain post that reloads the page: its answer is an
+// instruction to act on at another computer, which a banner keeps and a
+// fading toast doesn't. Trust and Disconnect answer in place (mcpDone).
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/url"
@@ -75,16 +79,29 @@ type mcpPageData struct {
 }
 
 func (s *Server) handleMCPPage(w http.ResponseWriter, r *http.Request) {
-	d := mcpPageData{layoutData: layoutData{Title: "Remote services", Page: "mcp"}}
+	d := s.mcpData()
 	d.Err = r.URL.Query().Get("err")
 	d.Msg = r.URL.Query().Get("msg")
-	if s.mcp == nil {
-		s.render(w, s.tmpl.mcp, d)
-		return
-	}
-	d.Configured = true
-	d.Servers = s.mcp.Servers()
 	s.render(w, s.tmpl.mcp, d)
+}
+
+func (s *Server) mcpData() mcpPageData {
+	d := mcpPageData{layoutData: layoutData{Title: "Remote services", Page: "mcp"}}
+	if s.mcp != nil {
+		d.Configured = true
+		d.Servers = s.mcp.Servers()
+	}
+	return d
+}
+
+// mcpDone answers Trust and Disconnect: in place for a Datastar post, with
+// #mcp-body re-rendered; a 303 with the flash otherwise.
+func (s *Server) mcpDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
+	s.formDone(w, r, "/mcp", msg, errMsg, func() (string, error) {
+		var buf bytes.Buffer
+		err := s.tmpl.mcp.ExecuteTemplate(&buf, "mcp-body", s.mcpData())
+		return buf.String(), err
+	})
 }
 
 // handleMCPConnectForm kicks off the connect ASYNC — AddRemoteMCP opens a
@@ -143,15 +160,15 @@ func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMCPRemoveForm(w http.ResponseWriter, r *http.Request) {
 	if s.mcp == nil {
-		http.Redirect(w, r, "/mcp", http.StatusSeeOther)
+		s.mcpDone(w, r, "", "")
 		return
 	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	if _, err := s.mcp.Remove(target); err != nil {
-		redirectFlash(w, r, "/mcp", "", s.flashFor(r.Context(), "mcp remove", err, "Couldn't disconnect that service."))
+		s.mcpDone(w, r, "", s.flashFor(r.Context(), "mcp remove", err, "Couldn't disconnect that service."))
 		return
 	}
-	redirectFlash(w, r, "/mcp", "Service disconnected.", "")
+	s.mcpDone(w, r, "Service disconnected.", "")
 }
 
 // trustWords says what each trust mode means for a service's tools.
@@ -164,18 +181,18 @@ var trustWords = map[string]string{
 // handleMCPTrustForm sets a connector's live trust mode (ask | allow | deny).
 func (s *Server) handleMCPTrustForm(w http.ResponseWriter, r *http.Request) {
 	if s.mcp == nil {
-		http.Redirect(w, r, "/mcp", http.StatusSeeOther)
+		s.mcpDone(w, r, "", "")
 		return
 	}
 	target := strings.TrimSpace(r.FormValue("target"))
 	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
 	if target == "" || trustWords[mode] == "" {
-		redirectFlash(w, r, "/mcp", "", "Pick Ask first, Don't ask or Block for a connected service.")
+		s.mcpDone(w, r, "", "Pick Ask first, Don't ask or Block for a connected service.")
 		return
 	}
 	if err := s.mcp.SetTrust(target, mode); err != nil {
-		redirectFlash(w, r, "/mcp", "", s.flashFor(r.Context(), "mcp trust", err, "Couldn't change how your agent uses that service."))
+		s.mcpDone(w, r, "", s.flashFor(r.Context(), "mcp trust", err, "Couldn't change how your agent uses that service."))
 		return
 	}
-	redirectFlash(w, r, "/mcp", target+": your agent now "+trustWords[mode]+".", "")
+	s.mcpDone(w, r, target+": your agent now "+trustWords[mode]+".", "")
 }

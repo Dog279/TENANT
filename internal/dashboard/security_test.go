@@ -289,11 +289,11 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /auth/login":  noStep,
 	"POST /auth/logout": noStep,
 	// Skills: accepting without you, trusting and forgetting ask first.
-	"POST /skills/auto":          unless("mode", "off"),
-	"POST /skills/{name}/accept": noStep,
-	"POST /skills/{name}/enable": noStep,
-	"POST /skills/{name}/forget": always,
-	"POST /skills/{name}/trust":  unless("trusted", "", "false"),
+	"POST /skills/auto":   unless("mode", "off"),
+	"POST /skills/accept": noStep,
+	"POST /skills/enable": noStep,
+	"POST /skills/forget": always,
+	"POST /skills/trust":  unless("trusted", "", "false"),
 	// Tools. A switched-on tool still asks through its category's check.
 	"POST /tools/{name}/toggle":    noStep,
 	"POST /plugins/{label}/toggle": noStep,

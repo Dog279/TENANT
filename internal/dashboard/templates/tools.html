@@ -1,31 +1,43 @@
 {{define "content"}}
+{{template "tools-body" .}}
+{{end}}
+
+{{/* tools-body is the region the posture and rule forms re-render in place
+     (formDone), posting through Datastar to fixed URLs with the rule in a
+     form field (F1). A rule's row has no id, so the morph reuses its form for
+     the rule that moves up and the throttle stops a double tap removing that
+     one too. The region ignores taps for 1s after one of its posts starts
+     (as skills.html), so a double tap can't open the next rule's confirm step
+     or flip a tool's toggle back. The tool toggles patch their own #tool-
+     row; "Turn on all" is still a plain post: its URL names the plugin. */}}
+{{define "tools-body"}}<div id="tools-body" data-on:datastar-fetch="evt.detail.type === 'started' && el.contains(evt.detail.el) && (el.postedAt = Date.now())" data-on:click__capture="Date.now() - el.postedAt < 1000 && (evt.preventDefault(), evt.stopPropagation())">
 {{template "ui-flash" .}}
 <div class="postbar">
   <span class="dim">Tools that change things:</span>
-  <form method="POST" action="/posture" class="inline"><input type="hidden" name="allow_send" value="false"><button type="submit" class="btn{{if not .ActTools}} on{{end}}">All off</button></form>
-  {{if .AllowSend}}<span class="btn on">All on</span>{{else}}{{template "ui-confirm" (confirmGo "/posture" "All on" "Your agent gets its tools that change things and send messages. Your safety settings still decide which of them ask you first." "allow_send" "true")}}{{end}}
+  <form method="POST" action="/posture" class="inline" data-on:submit__prevent__throttle.1s="@post('/posture', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="allow_send" value="false"><button type="submit" class="btn{{if not .ActTools}} on{{end}}">All off</button></form>
+  {{if .AllowSend}}<span class="btn on">All on</span>{{else}}{{template "ui-confirm" (inline (confirmGo "/posture" "All on" "Your agent gets its tools that change things and send messages. Your safety settings still decide which of them ask you first." "allow_send" "true"))}}{{end}}
 </div>
 {{if .RulesOn}}
 <div class="card">
   <div class="card-head">Tool rules <span class="dim">· for one tool, or a group of tools, whatever its safety setting says. The most specific rule wins.</span></div>
   {{range .Rules}}
-  <div class="ghead" id="rule-{{.Pattern}}">
+  <div class="ghead">
     <span class="nm">{{.Plain}}</span>
     <span class="{{if eq .Mode "deny"}}act-errtag{{else if eq .Mode "ask"}}risk{{else}}tag{{end}}">{{if eq .Mode "deny"}}blocked{{else if eq .Mode "ask"}}asks you first{{else}}runs without asking{{end}}</span>
     <span class="sp"></span>
     {{if eq .Mode "allow"}}
-    <form method="POST" action="/tools/rules/remove" class="inline">
+    <form method="POST" action="/tools/rules/remove" class="inline" data-on:submit__prevent__throttle.1s="@post('/tools/rules/remove', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="pattern" value="{{.Pattern}}">
       <button type="submit" class="btn sm">Remove</button>
     </form>
     {{else}}
-    {{template "ui-confirm" (confirmGo "/tools/rules/remove" "Remove" (printf "%s then follows its safety setting, which may let your agent use it without asking you." .Plain) "pattern" .Pattern)}}
+    {{template "ui-confirm" (inline (confirmGo "/tools/rules/remove" "Remove" (printf "%s then follows its safety setting, which may let your agent use it without asking you." .Plain) "pattern" .Pattern))}}
     {{end}}
   </div>
   {{else}}
   {{template "ui-empty" "No rules yet. A tool your safety settings don't cover asks you every time; add its name here to let it run, block it, or always ask."}}
   {{end}}
-  <form method="POST" action="/tools/rules/add" class="cronactions mt">
+  <form method="POST" action="/tools/rules/add" class="cronactions mt" data-on:submit__prevent__throttle.1s="@post('/tools/rules/add', {contentType:'form', retryMaxCount:0})">
     <input type="text" name="pattern" class="cinput wide" placeholder="a tool name, for example write_note or delete_*" required>
     <input type="hidden" name="confirm" value="yes">
     <button type="submit" name="mode" value="ask" class="btn sm">Ask first</button>
@@ -51,4 +63,4 @@
 {{else}}
 {{template "ui-empty" "No tools yet. Tools appear here as you connect services and turn features on."}}
 {{end}}
-{{end}}
+</div>{{end}}
