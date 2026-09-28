@@ -213,6 +213,8 @@ func TestUIStatus_BusyDuringChat(t *testing.T) {
 	awaitIdle(t, s)
 }
 
+// Future work (C-2): only a fake gate reaches these lines today; serve's
+// other surfaces don't enter the turn gate yet.
 func TestUIStatus_QueuedBehindGate(t *testing.T) {
 	b := newBlockRunner()
 	b.gate, b.age = true, 90*time.Second
@@ -265,12 +267,12 @@ func TestUIStatus_ApprovalsAndNotices(t *testing.T) {
 		{Category: "egress", Mode: "ask", Title: "Share private data", New: true},
 		{Category: "mcp", Mode: "ask", Title: "Connect remote services", New: true},
 	}}, nil)
-	s.SetAccess(&fakeAccess{view: AccessView{DiscordPerms: []PermissionRow{{Category: "sandbox", Mode: "ask", New: true}}}})
+	s.SetAccess(&fakeAccess{view: AccessView{DiscordAvailable: true, RelayConfigured: true, DiscordPerms: []PermissionRow{{Category: "sandbox", Mode: "ask", New: true}}}})
 	got := uiStatus(t, s)
 	for _, want := range []string{
 		`2 actions are waiting for your OK. <a href="/safety">Answer it</a>`,
-		`An update added 2 new safety checks: Share private data, Connect remote services. Your agent asks you first until you choose. <a href="/safety">Review</a>`,
-		`Discord conversations: 1 new safety check asks you first until you choose. <a href="/access">Review</a>`,
+		`An update added 2 new safety checks: Share private data, Connect remote services. Your agent asks you first until you choose.</span> <a href="/safety">Review</a>`,
+		`Discord conversations: 1 new safety check asks you first until you choose.</span> <a href="/access">Review</a>`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("strip missing %q:\n%s", want, got)
@@ -278,6 +280,29 @@ func TestUIStatus_ApprovalsAndNotices(t *testing.T) {
 	}
 	if strings.Contains(got, "data-on-interval") {
 		t.Error("only a busy strip polls itself")
+	}
+}
+
+// C-3/UX-4: a channel's notice shows only where Access offers its New rows:
+// Discord once a bot token is set, iMessage once it is in use. Without them
+// the notice would sit on every page with nothing to choose on Access.
+func TestUIStatus_ChannelNoticesOnlyWhereAccessCanClearThem(t *testing.T) {
+	newRow := []PermissionRow{{Category: "sandbox", Mode: "ask", New: true}}
+	for _, tc := range []struct {
+		view      AccessView
+		want, not string
+	}{
+		{AccessView{DiscordAvailable: true, DiscordPerms: newRow, IMessageAvailable: true, IMessagePerms: newRow}, "", "conversations:"},
+		{AccessView{DiscordAvailable: true, RelayConfigured: true, DiscordPerms: newRow}, "Discord conversations:", "iMessage"},
+		{AccessView{IMessageAvailable: true, Handles: []string{"a@b.c"}, IMessagePerms: newRow}, "iMessage conversations:", "Discord"},
+		{AccessView{IMessageAvailable: true, ResponderOn: true, IMessagePerms: newRow}, "iMessage conversations:", "Discord"},
+	} {
+		s := New(Config{}, nil, nil, nil, nil, nil)
+		s.SetAccess(&fakeAccess{view: tc.view})
+		got := uiStatus(t, s)
+		if (tc.want != "" && !strings.Contains(got, tc.want)) || strings.Contains(got, tc.not) {
+			t.Errorf("%+v: strip %q, want %q and not %q", tc.view, got, tc.want, tc.not)
+		}
 	}
 }
 

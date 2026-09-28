@@ -67,6 +67,20 @@ func (s *Server) handleRuleAddForm(w http.ResponseWriter, r *http.Request) {
 	redirectFlash(w, r, "/tools", "Rule added: "+ToolRuleRow{Pattern: pattern}.Plain()+" "+ruleWords[mode]+".", "")
 }
 
+// ruleMode is the mode of the rule for pattern, "" with none. Removing a rule
+// asks first unless it let the tool go ahead, and that is decided from the
+// rules themselves, never from what the form says the rule was (REVSEC-1).
+func (s *Server) ruleMode(pattern string) string {
+	if s.rules != nil {
+		for _, rule := range s.rules.Rules() {
+			if rule.Pattern == pattern {
+				return strings.ToLower(rule.Mode)
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleRuleRemoveForm(w http.ResponseWriter, r *http.Request) {
 	if s.rules == nil {
 		http.Redirect(w, r, "/tools", http.StatusSeeOther)

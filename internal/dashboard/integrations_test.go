@@ -154,3 +154,18 @@ func TestIntegrations_MutationsNilSafe(t *testing.T) {
 		}
 	}
 }
+
+// UX-10: a choice shows its label, not its stored value ("mcp", "sa").
+func TestIntegrations_ChoicesShowTheirLabels(t *testing.T) {
+	s, _ := ssrServer()
+	s.SetIntegrations(&fakeIntegrationsCtl{list: []IntegrationView{{ID: "atlassian", Label: "Atlassian"}},
+		fields: map[string][]IntegrationField{"atlassian": {{Key: "auth", Prompt: "How?", Options: []string{"mcp", "token", "extra"},
+			OptionLabels: []string{"Sign in with your browser (recommended)", "A personal API token"}}}}})
+	body := get(t, s, "/integrations").Body.String()
+	for _, want := range []string{`<option value="mcp">Sign in with your browser (recommended)</option>`,
+		`<option value="token">A personal API token</option>`, `<option value="extra">extra</option>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the page lacks %q", want)
+		}
+	}
+}

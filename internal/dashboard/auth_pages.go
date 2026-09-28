@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"tenant/internal/logs/catalog"
@@ -46,13 +47,42 @@ func safeNext(next string) string {
 	return path + "?" + q.Encode()
 }
 
-// validCookie reports whether r carries a session cookie matching the PSK.
+// sessionTTL is how long a sign-in lasts. The cookie holds a random session
+// id, never the key: cookies aren't kept apart by port, so every other
+// service on this host (or on the tailnet name) receives it, and what it
+// receives must not be the key that also works as a Bearer credential, must
+// end, and must end on Log out. A restart ends every session.
+const sessionTTL = 7 * 24 * time.Hour
+
+// newSession starts a signed-in browser's session and returns its id.
+func (s *Server) newSession() string {
+	id, now := GenerateToken(), time.Now()
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
+	if s.sessions == nil {
+		s.sessions = map[string]time.Time{}
+	}
+	for k, exp := range s.sessions {
+		if now.After(exp) {
+			delete(s.sessions, k)
+		}
+	}
+	s.sessions[id] = now.Add(sessionTTL)
+	return id
+}
+
+// validSession reports whether id is a live session.
+func (s *Server) validSession(id string) bool {
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
+	exp, ok := s.sessions[id]
+	return ok && time.Now().Before(exp)
+}
+
+// validCookie reports whether r carries a live session cookie.
 func (s *Server) validCookie(r *http.Request) bool {
 	c, err := r.Cookie(dashCookieName)
-	if err != nil {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.cfg.Auth)) == 1
+	return err == nil && s.validSession(c.Value)
 }
 
 // handleSettingsPage renders the PSK entry form. If auth is disabled or the
@@ -73,7 +103,7 @@ func signInFailed(w http.ResponseWriter, r *http.Request, code int, msg string) 
 	_ = settingsTmpl.Execute(w, settingsData{Error: msg, Next: r.FormValue("next")})
 }
 
-// handleLogin validates the posted PSK in constant time, drops a session cookie,
+// handleLogin validates the posted PSK in constant time, starts a session,
 // and redirects to the dashboard. A wrong PSK re-renders the form with a 403.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Auth == "" {
@@ -96,8 +126,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     dashCookieName,
-		Value:    token,
+		Value:    s.newSession(),
 		Path:     "/",
+		MaxAge:   int(sessionTTL / time.Second),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		// Secure only when TLS is configured; loopback HTTP is the common case.
@@ -107,8 +138,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, safeNext(r.FormValue("next")), http.StatusSeeOther)
 }
 
-// handleLogout clears the session cookie and returns to the settings page.
+// handleLogout ends the session, clears its cookie and returns to the
+// settings page.
+// Only a signed-in browser's sign-out is the operator's: the route is open to
+// anyone, and a record naming the operator must not be one anyone can file.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	signedIn := s.validCookie(r)
+	if signedIn {
+		c, _ := r.Cookie(dashCookieName)
+		s.sessMu.Lock()
+		delete(s.sessions, c.Value)
+		s.sessMu.Unlock()
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     dashCookieName,
 		Value:    "",
@@ -117,6 +158,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
+	if signedIn {
+		_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
+	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

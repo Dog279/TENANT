@@ -7,7 +7,6 @@ package main
 // strings. No business logic forks here — it's presentation mapping only.
 
 import (
-	"os"
 	"path/filepath"
 	"time"
 
@@ -28,18 +27,13 @@ func (d dashEval) artifactDir() string { return filepath.Join(d.ev.dataDir, "eva
 // JudgeStatus says who grades the checks in the Quality page's words; the
 // TUI's Current() names its commands instead.
 func (d dashEval) JudgeStatus() string {
-	lc, err := loadLaunchConfig(d.judge.cfgDir)
-	if err != nil || lc.Improve.Judge == "" {
+	js, ok := d.judge.resolved()
+	if !ok {
 		return "Your main model grades the checks."
 	}
-	ic := lc.Improve
-	kind := ic.JudgeKind
-	if kind == "" {
-		kind = "anthropic"
-	}
-	s := ic.Judge + " from " + kind + " grades the checks."
-	if env := resolveJudgeKeyEnv(kind, ic.JudgeKeyEnv); env != "" && os.Getenv(env) == "" {
-		s += " Its API key (" + env + ") isn't set on the computer running Tenant, so grading fails until it is."
+	s := js.model + " from " + js.kind + " grades the checks."
+	if js.keyMissing {
+		s += " Its API key (" + js.keyEnv + ") isn't set on the computer running Tenant, so grading fails until it is."
 	}
 	return s
 }

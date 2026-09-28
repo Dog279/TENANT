@@ -41,6 +41,26 @@ func offsiteConfirmFrom(ctx context.Context) offsiteConfirm {
 	return c
 }
 
+type offsiteLockKey struct{}
+
+// withOffsiteLock stamps ctx with the surface's lock (the Discord broker's
+// Locked). A connector's tool that runs without asking, because its service
+// is trusted or a tool rule allows it, never reaches the broker, so it checks
+// the lock itself (offsiteLocked, REVSEC-2). A nil lock is a no-op.
+func withOffsiteLock(ctx context.Context, locked func(action string) bool) context.Context {
+	if locked == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, offsiteLockKey{}, locked)
+}
+
+// offsiteLocked reports whether the lock stamped on ctx refuses action; an
+// unstamped (local) turn has no lock.
+func offsiteLocked(ctx context.Context, action string) bool {
+	locked, _ := ctx.Value(offsiteLockKey{}).(func(string) bool)
+	return locked != nil && locked(action)
+}
+
 // originConfirm wraps the local broker's Confirm: a turn stamped offsite routes
 // to the ctx approver; an unstamped (local) turn uses the broker as before. This
 // is the function handed to buildToolMux, so EVERY gated plugin honors it.

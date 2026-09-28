@@ -61,6 +61,37 @@ type EvalScheduleView struct {
 	RunPercent int    // 0-100, precomputed for the bar width
 }
 
+// Mode is the schedule form's choice that Desc is: "every", "at" or "off"
+// (UX-20: the form showed Every 24h whatever the schedule was).
+func (v EvalScheduleView) Mode() string {
+	switch {
+	case strings.HasPrefix(v.Desc, "every "):
+		return "every"
+	case strings.HasPrefix(v.Desc, "daily at "):
+		return "at"
+	}
+	return "off"
+}
+
+// Spec is the form's value for Mode: "12h" for "every 12h0m0s", "03:15" for
+// "daily at 03:15", "" otherwise.
+func (v EvalScheduleView) Spec() string {
+	switch v.Mode() {
+	case "every":
+		d := strings.TrimPrefix(v.Desc, "every ")
+		if strings.HasSuffix(d, "m0s") {
+			d = strings.TrimSuffix(d, "0s")
+		}
+		if strings.HasSuffix(d, "h0m") {
+			d = strings.TrimSuffix(d, "0m")
+		}
+		return d
+	case "at":
+		return strings.TrimPrefix(v.Desc, "daily at ")
+	}
+	return ""
+}
+
 // EvalTrendPoint is one run on the chart. Score is 0-100.
 type EvalTrendPoint struct {
 	When      string
@@ -117,7 +148,12 @@ func (s *Server) handleEvalScheduleForm(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	mode := strings.TrimSpace(r.FormValue("mode"))
-	spec := strings.TrimSpace(r.FormValue("spec"))
+	// Each option has its own box (spec_every, spec_at): with one name for
+	// both, the Every box's 24h was read for Daily at too, which then failed.
+	spec := strings.TrimSpace(r.FormValue("spec_" + mode))
+	if spec == "" {
+		spec = strings.TrimSpace(r.FormValue("spec"))
+	}
 	var err error
 	switch mode {
 	case "every":

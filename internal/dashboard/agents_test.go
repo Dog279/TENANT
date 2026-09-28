@@ -403,12 +403,12 @@ func (f *soulFails) Agents() ([]AgentProfileView, error) { return f.rows, nil }
 // same post from the page itself goes through (so the routes are mounted).
 func TestAgents_RefusesCrossSite(t *testing.T) {
 	fa := sampleAgents()
-	s := New(Config{Auth: "secret", Addr: "example.com"}, nil, nil, nil, nil, nil)
+	s := withSession(New(Config{Auth: "secret", Addr: "example.com"}, nil, nil, nil, nil, nil))
 	s.SetAgents(fa)
 	send := func(p, origin string) int {
 		req := httptest.NewRequest("POST", "http://example.com"+p, strings.NewReader("name=researcher&provider=cloud&new_name=x&soul=x&confirm=yes"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}

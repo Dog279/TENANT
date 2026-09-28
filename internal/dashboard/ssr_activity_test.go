@@ -272,3 +272,35 @@ func TestLogRow_EscapesAndStyles(t *testing.T) {
 		t.Errorf("row styling/chips wrong: %s", row)
 	}
 }
+
+// UX-3: the feed is newest first, as its heading says: the backlog renders
+// newest on top and the stream prepends. The dashboard's own live streams
+// opening and closing stay on the dashboard tab, out of All.
+func TestActivity_NewestFirstWithoutStreamNoise(t *testing.T) {
+	l := logs.NewMemory(100)
+	l.Log(logs.Entry{Source: "system", Level: slog.LevelInfo, Msg: "older-marker"})
+	l.Log(logs.Entry{Source: "dashboard", Level: slog.LevelInfo, Msg: "Live events stream to 127.0.0.1:1", Fields: []logs.Field{{Key: "event", Value: "dashboard/1001"}}})
+	l.Log(logs.Entry{Source: "system", Level: slog.LevelInfo, Msg: "newer-marker"})
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetLogs(l)
+	body := get(t, s, "/activity").Body.String()
+	if i, j := strings.Index(body, "newer-marker"), strings.Index(body, "older-marker"); i < 0 || j < 0 || i > j {
+		t.Errorf("the backlog isn't newest first:\n%s", body)
+	}
+	if strings.Contains(body, "Live events stream") {
+		t.Error("All shows the dashboard's own stream noise")
+	}
+	if !strings.Contains(get(t, s, "/activity?source=dashboard").Body.String(), "Live events stream") {
+		t.Error("the dashboard tab should still show its streams")
+	}
+	r := httptest.NewRequest("GET", "/activity/events?cursor="+l.Epoch()+".1", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { s.handleActivitySSE(rec, r.WithContext(ctx)); close(done) }()
+	cancel()
+	<-done
+	if out := rec.Body.String(); !strings.Contains(out, "data: mode prepend") || strings.Contains(out, "mode append") || strings.Contains(out, "Live events stream") {
+		t.Errorf("the stream should prepend, without stream noise:\n%s", out)
+	}
+}

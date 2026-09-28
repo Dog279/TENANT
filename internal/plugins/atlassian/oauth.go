@@ -11,6 +11,7 @@ package atlassian
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -244,27 +245,37 @@ func awaitCallbackCode(ctx context.Context, addr, state, authURL string, open fu
 		err  error
 	}
 	done := make(chan result, 1)
+	// finish hands over the first answer and drops the rest: a second hit
+	// must never block its handler on the full channel.
+	finish := func(res result) {
+		select {
+		case done <- res:
+		default:
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if e := q.Get("error"); e != "" {
-			http.Error(w, "authorization denied: "+e, http.StatusBadRequest)
-			done <- result{err: fmt.Errorf("atlassian: authorization denied: %s", e)}
+		// The state is checked first, and a callback without ours is ignored,
+		// error or code: any web page can make the browser open this address,
+		// and must not end the operator's sign-in (REVSEC-6).
+		if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+			http.Error(w, "this isn't the sign-in Tenant is waiting for", http.StatusBadRequest)
 			return
 		}
-		if q.Get("state") != state {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
-			done <- result{err: errors.New("atlassian: oauth state mismatch (possible CSRF) — retry login")}
+		if e := q.Get("error"); e != "" {
+			http.Error(w, "authorization denied: "+e, http.StatusBadRequest)
+			finish(result{err: fmt.Errorf("atlassian: authorization denied: %s", e)})
 			return
 		}
 		code := q.Get("code")
 		if code == "" {
 			http.Error(w, "missing code", http.StatusBadRequest)
-			done <- result{err: errors.New("atlassian: callback missing authorization code")}
+			finish(result{err: errors.New("atlassian: callback missing authorization code")})
 			return
 		}
 		_, _ = w.Write([]byte("Atlassian connected. You can close this tab and return to Tenant."))
-		done <- result{code: code}
+		finish(result{code: code})
 	})
 	srv := &http.Server{Handler: mux}
 	httplimits.Configure(srv)

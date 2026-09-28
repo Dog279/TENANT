@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs/event"
@@ -137,7 +138,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 			`<div class="msg sys"><div class="dim">Chat isn't available on this Tenant.</div></div>`))
 	case s.coord.startBackground(text):
 		_, _ = w.Write(patchElements("#chat-log", "append",
-			fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(text))))
+			fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(visibleText(text)))))
 		_, _ = w.Write([]byte(clearChatBox))
 		s.writeStatusPatch(w)
 	default:
@@ -215,7 +216,7 @@ func chatBubble(ev agent.Event) string {
 			return ""
 		}
 		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="bubble">%s</div></div>`,
-			html.EscapeString(ev.Text))
+			html.EscapeString(visibleText(ev.Text)))
 	case "tool_call":
 		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="tool">⚡ %s <span class="dim">%s</span></div></div>`,
 			html.EscapeString(ev.Tool), html.EscapeString(snippetStr(ev.Args, 120)))
@@ -234,10 +235,18 @@ func chatBubble(ev agent.Event) string {
 	return ""
 }
 
+// snippetStr is s on one line, cut to at most n bytes on a character
+// boundary, with its hidden characters shown (visibleText, F10): every row
+// of the Activity feed and the chat transcript goes through it, so a command
+// can't display reversed there beside its approval card (REVSEC-8).
 func snippetStr(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
+	s = strings.Join(strings.Fields(visibleText(s)), " ")
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }

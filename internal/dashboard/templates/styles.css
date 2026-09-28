@@ -163,7 +163,7 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* Logs page (TEN-379): tree | grid over detail | actions */
 .lgv{flex:1;min-height:0;display:grid;grid-template-columns:210px minmax(0,1fr) 230px;grid-template-rows:minmax(0,1fr);gap:14px}
 .lg-tree,.lg-act{overflow:auto;min-height:0;font-size:12.5px}
-.lg-tree{display:flex;flex-direction:column;gap:1px}
+.lg-tree{display:flex;flex-direction:column;gap:1px}.lg-tree>*{flex-shrink:0}
 .lg-leaf{display:block;padding:3px 8px;border-radius:7px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lg-leaf:hover{color:var(--fg);background:#0c1729}
 .lg-leaf.on{color:#fff;background:linear-gradient(90deg,rgba(34,211,238,.14),rgba(139,92,246,.10))}
@@ -218,7 +218,7 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .lg-note{font-size:11.5px;line-height:1.5}
 .lg-ferr{margin:0;font-size:12px}
 .lg-sum td:first-child{white-space:nowrap;overflow-wrap:normal} /* a log's name reads whole */
-@media(max-width:1100px){.lgv{grid-template-columns:1fr;grid-template-rows:auto}.lg-tree{max-height:200px}.lg-grid{max-height:60vh}}
+@media(max-width:1100px){.lgv{flex:none;grid-template-columns:1fr;grid-template-rows:auto}.lg-tree{max-height:200px}.lg-tree>*{flex-shrink:0}.lg-grid{max-height:60vh}}
 
 /* TEN-211 design system: tokens, states, the status strip, the confirm step
    and the mobile shell. internal/dashboard/DESIGN.md is the guide. A page's
@@ -302,6 +302,10 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* 390px: one column, the menu drawer, a 16px gutter, the confirm box as a
    bottom sheet. The page never scrolls sideways. */
 @media (max-width:640px){
+  /* the strip stays short on a phone: a notice is one line, its page has the rest (UX-9) */
+  .status-strip{padding:6px 12px;gap:4px}
+  .status-strip .banner{padding:0 12px}
+  .notice .nt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .app{height:100dvh;grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
   .side{border-right:0;border-bottom:1px solid var(--line);overflow:visible}
   .brand{padding:10px 16px;border-bottom:0}
@@ -320,7 +324,7 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 }
 /* touch: 44px targets */
 @media (pointer:coarse){
-  .btn,.nav a,.menu-btn,.confirm-step>summary,.nav button.logout{min-height:44px;display:inline-flex;align-items:center}
+  .btn,.nav a,.menu-btn,.confirm-step>summary,.nav button.logout,.status-strip a{min-height:44px;display:inline-flex;align-items:center}
 }
 /* the menu button is .btn too: keep it off wide touch screens */
 @media (min-width:641px){.menu-btn{display:none}}

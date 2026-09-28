@@ -41,3 +41,20 @@ func TestDashEval_JudgeStatusIsPlain(t *testing.T) {
 		t.Errorf("set grader: %q", got)
 	}
 }
+
+// C-7: the Quality page and the terminal's /judge read one resolved setting
+// (judgeCtl.resolved), so they agree on the kind and on the missing key.
+func TestDashEval_JudgeStatusFollowsTheTerminal(t *testing.T) {
+	d := dashEval{judge: judgeCtl{cfgDir: t.TempDir(), planner: "local"}}
+	if _, err := d.SetJudge("anthropic", "claude-grader", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"", "sk-test"} {
+		t.Setenv("ANTHROPIC_API_KEY", key)
+		page, term := d.JudgeStatus(), d.judge.Current()
+		if missing := key == ""; strings.Contains(page, "isn't set") != missing || strings.Contains(term, "not set") != missing ||
+			!strings.Contains(page, "from anthropic") || !strings.Contains(term, "judge: anthropic") {
+			t.Errorf("key %q: page %q, terminal %q", key, page, term)
+		}
+	}
+}

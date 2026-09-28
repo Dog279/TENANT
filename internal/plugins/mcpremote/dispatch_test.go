@@ -139,3 +139,38 @@ func TestDispatcher_RulesBeforeTrust(t *testing.T) {
 		t.Errorf("connector deny still wins over an allow rule (the operator hid it): %v", err)
 	}
 }
+
+// REVSEC-2: the calling surface's lock (Discord with exec mode off) refuses a
+// gated tool even when the connector is trusted or a rule allows it, the
+// two paths that never ask the broker, which checks its lock first. A
+// read-only tool still runs, and without the lock both paths still skip.
+func TestDispatcher_LockOutranksTrustAndRuleAllow(t *testing.T) {
+	locked := true
+	d := &Dispatcher{label: "mcp:t", gated: map[string]bool{"delete_all": true, "send_mail": true},
+		policy: Policy{
+			Confirm: func(context.Context, string, string) bool { t.Error("the broker was asked"); return false },
+			Rule: func(action string) string {
+				if action == "mcp:t:send_mail" {
+					return "allow"
+				}
+				return ""
+			},
+			Locked: func(_ context.Context, action string) bool { return locked && strings.HasPrefix(action, "mcp:t:") },
+		}}
+	ctx := context.Background()
+	d.SetTrust("allow")
+	for _, tool := range []string{"delete_all", "send_mail"} {
+		if err := d.gateCall(ctx, tool); err == nil || !strings.Contains(err.Error(), "can't make changes now") {
+			t.Errorf("%s under the lock: %v, want refused", tool, err)
+		}
+	}
+	if err := d.gateCall(ctx, "search"); err != nil {
+		t.Errorf("a read-only tool under the lock: %v, want it to run", err)
+	}
+	locked = false
+	for _, tool := range []string{"delete_all", "send_mail"} {
+		if err := d.gateCall(ctx, tool); err != nil {
+			t.Errorf("%s with no lock: %v, want trust/rule allow to run it", tool, err)
+		}
+	}
+}

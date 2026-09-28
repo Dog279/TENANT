@@ -174,13 +174,13 @@ func TestGoal_EscapesAndShowsHidden(t *testing.T) {
 // with no Origin is refused before Clear, and the same-origin one works.
 func TestGoal_StopRefusesCSRF(t *testing.T) {
 	g := &fakeGoal{view: activeGoal()}
-	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil))
 	s.SetGoal(g)
 	post := func(origin string) int {
 		req := httptest.NewRequest(http.MethodPost, "/goal/stop", strings.NewReader(""))
 		req.Host = "127.0.0.1:8770"
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}

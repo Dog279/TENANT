@@ -3,8 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"tenant/internal/agent"
+	"tenant/internal/memory/working"
+	"tenant/internal/model"
+	"tenant/internal/model/testllm"
 )
 
 // Set / Show / Clear lifecycle without invoking the judge (we use a fake
@@ -426,6 +432,62 @@ func TestDashGoal_LatestCheckIsPlain(t *testing.T) {
 		gc.lastJudge = raw
 		if got := d.Show().LastCheck; got != want {
 			t.Errorf("LastJudge %q shows %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// C-5: a Stop on the dashboard while the judge runs, then a new goal set
+// before it answers: the old verdict must not mark the new goal met (or
+// count a step of it), and no extra turn is started for it.
+func TestGoalControl_StaleJudgeLeavesTheNextGoalAlone(t *testing.T) {
+	for _, verdict := range []string{"MET", "NOT_MET: still missing the file"} {
+		reg := model.NewEmptyRegistry()
+		if err := reg.Add(model.Profile{ID: "orch", Role: model.RolePlanner, Backend: "orch", ProviderKind: "vllm", Endpoint: "http://orch", ContextLength: 32000}); err != nil {
+			t.Fatal(err)
+		}
+		router := model.NewRouter(reg, nil)
+		planner := testllm.New()
+		entered, release := make(chan struct{}), make(chan struct{})
+		planner.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+			close(entered)
+			<-release
+			return &model.GenerateResponse{Text: verdict}, nil
+		}
+		router.RegisterBackend("orch", func(context.Context, model.Profile, *slog.Logger) (any, error) { return planner, nil })
+		ag, err := agent.New(agent.Config{AgentID: "main", Router: router, Working: working.New(), Tools: agent.NewStaticRegistry(), Dispatcher: newToolMux()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gc := newGoalControl(ag, 0)
+		if _, _, err := gc.Set(context.Background(), "old goal"); err != nil {
+			t.Fatal(err)
+		}
+		d := newDashGoal(gc, nil)
+		type verdictOut struct {
+			met, atCap bool
+			reason     string
+		}
+		done := make(chan verdictOut)
+		go func() {
+			met, reason, atCap, _ := gc.Judge(context.Background(), "resp")
+			done <- verdictOut{met, atCap, reason}
+		}()
+		<-entered
+		if !d.Clear() { // the dashboard's Stop
+			t.Fatal("stop refused")
+		}
+		if _, _, err := gc.Set(context.Background(), "new goal"); err != nil {
+			t.Fatal(err)
+		}
+		close(release)
+		if v := <-done; v.met || v.atCap {
+			t.Errorf("%s: the stale judge said %+v", verdict, v)
+		}
+		if st := gc.Show(); !gc.Active() || st.Met || st.Turns != 0 || st.LastJudge != "" {
+			t.Errorf("%s: the stopped goal's verdict landed on the new one: %+v", verdict, st)
+		}
+		if p := gc.Continue("still missing the file"); p != "" {
+			t.Errorf("%s: a stale verdict started a turn: %q", verdict, p)
 		}
 	}
 }

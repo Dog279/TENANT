@@ -84,6 +84,11 @@ func (f activityFilter) match(e logs.Entry) bool {
 	if f.Source != "" && e.Source != f.Source {
 		return false
 	}
+	// The dashboard's own live streams opening and closing (Stream, 1001)
+	// were a third of All: they stay on the dashboard tab (UX-3).
+	if f.Source == "" && e.Field("event") == "dashboard/1001" {
+		return false
+	}
 	if f.Trace != "" && e.Field("trace") != f.Trace {
 		return false
 	}
@@ -127,11 +132,11 @@ func (s *Server) handleActivityPage(w http.ResponseWriter, r *http.Request) {
 	entries, head := s.logs.Snapshot()
 	var b strings.Builder
 	n := 0
-	for _, e := range entries {
-		if !f.match(e) {
+	for i := len(entries) - 1; i >= 0; i-- { // newest first; the stream prepends
+		if !f.match(entries[i]) {
 			continue
 		}
-		b.WriteString(logRow(e))
+		b.WriteString(logRow(entries[i]))
 		n++
 	}
 	d.Backlog = template.HTML(b.String())
@@ -183,9 +188,9 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 	lagged(cursor, missed) // a restart's cursor is 0: nothing to have missed
 	if restarted {
 		var b strings.Builder
-		for _, e := range missed {
-			if f.match(e) {
-				b.WriteString(logRow(e))
+		for i := len(missed) - 1; i >= 0; i-- {
+			if f.match(missed[i]) {
+				b.WriteString(logRow(missed[i]))
 			}
 		}
 		if _, err := w.Write(activityPatch(s.activityCursor(head), "inner", b.String())); err != nil {
@@ -197,7 +202,7 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 		if !f.match(e) {
 			continue
 		}
-		if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "append", logRow(e))); err != nil {
+		if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "prepend", logRow(e))); err != nil {
 			return
 		}
 	}
@@ -215,7 +220,7 @@ func (s *Server) handleActivitySSE(w http.ResponseWriter, r *http.Request) {
 				if !f.match(e) {
 					continue
 				}
-				if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "append", logRow(e))); err != nil {
+				if _, err := w.Write(activityPatch(s.activityCursor(e.Seq), "prepend", logRow(e))); err != nil {
 					return
 				}
 			}

@@ -17,7 +17,7 @@ func discordSkillKind() skillKind {
 		ID:        "discord",
 		Label:     "Discord (bot integration)",
 		Wired:     true,
-		SetupHint: "Create the bot at https://discord.com/developers/applications and invite to a server with the `bot` scope.",
+		SetupHint: "Create the bot at https://discord.com/developers/applications, then invite it to a server (on its OAuth2 page, tick bot).",
 		Fields: []skillKindField{
 			{
 				Key:      "token",

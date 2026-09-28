@@ -45,7 +45,7 @@ func logsBook(t *testing.T) (*Server, *logs.Hub, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h.Close(); _ = st.Close() })
-	s := New(Config{Addr: "example.com", Auth: "tok"}, nil, &restFakeTools{}, nil, agent.NewBroker(0), nil)
+	s := withSession(New(Config{Addr: "example.com", Auth: "tok"}, nil, &restFakeTools{}, nil, agent.NewBroker(0), nil))
 	s.SetLogs(h)
 	return s, h, st
 }

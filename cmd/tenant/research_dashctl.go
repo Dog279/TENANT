@@ -1,10 +1,11 @@
 package main
 
-// research_dashctl.go: the dashboard's Research page (TEN-210). The terminal
-// app shares its researchControl; serve gets a research-only runtime copied
-// from its team config. Either way a run goes through researchControl.runOne,
-// the same path /research takes, under the process lifetime (not a request),
-// so closing the tab never stops it.
+// research_dashctl.go: the dashboard's Research page (TEN-210). Serve and
+// the terminal app each give it a research-only runtime copied from their
+// team config; the terminal app's copy shares its researchControl's store and
+// one-run flag. Either way a run goes through researchControl.runOne, the
+// same path /research takes, under the process lifetime (not a request), so
+// closing the tab never stops it.
 
 import (
 	"context"
@@ -25,13 +26,39 @@ import (
 )
 
 // newDashResearch adapts the terminal app's rc; next streams progress lines
-// to its feed. It gives rc the one-run flag the two sides share. nil (an
+// to its feed. It gives rc the one-run flag the two sides share, and the page
+// its own runtime from cfg, as serve's: /research blocks the terminal, so it
+// could share the orchestrator's runtime, but a page run is in the
+// background, and its window would cancel a chat's helpers (C-1). nil (an
 // untyped nil interface) leaves the page showing "isn't available".
-func newDashResearch(base context.Context, rc *researchControl, web bool, next func(string, ...any)) dashboard.ResearchControl {
+func newDashResearch(base context.Context, life *lifecycle.Group, cfg TeamConfig, shared *TeamRuntime,
+	rc *researchControl, web bool, next func(string, ...any)) dashboard.ResearchControl {
 	if rc == nil {
 		return nil
 	}
-	return dashResearchOf(base, rc, web, next)
+	if rc.busy == nil {
+		rc.busy = new(atomic.Bool) // rc is the terminal app's own: its runs share the flag
+	}
+	own := *rc
+	cfg.Web = web
+	own.rt = ownResearchRuntime(life, cfg)
+	d := dashResearchOf(base, &own, web, next)
+	d.before = func() { own.rt.SetAgentProfiles(shared.AgentProfiles()) }
+	return d
+}
+
+// ownResearchRuntime is a runtime for research alone: a research Begin or
+// EndRun on the shared runtime would cancel the helpers of chat, the Discord
+// relay and scheduled jobs, so research gets its own bus and runtime. The
+// tools, the approval gate and the web policy are the shared ones.
+func ownResearchRuntime(life *lifecycle.Group, cfg TeamConfig) *TeamRuntime {
+	cfg.Bus = orchestra.NewBusWithHistoryCap(cfg.Budgets.BusHistoryCap)
+	cfg.Bus.Register(cfg.OrchID)
+	life.AddFunc(lifecycle.Release, "research bus", cfg.Bus.Close)
+	cfg.LocalRestore, cfg.LocalOnChange = nil, nil // the orchestrator's tool switches are its own to save
+	rt := newTeamRuntime(cfg)
+	life.AddFunc(lifecycle.Release, "research team", rt.Close)
+	return rt
 }
 
 // runsAsService is runAsService; a test swaps it to try both accounts.
@@ -42,21 +69,12 @@ var runsAsService = runAsService
 // && runAsService(): a Windows service account, or one the OS won't name (D19).
 func newServeDashResearch(base context.Context, life *lifecycle.Group, cfg TeamConfig, shared *TeamRuntime,
 	rc researchControl, dataDir string, web bool) dashboard.ResearchControl {
-	// A research Begin or EndRun on serve's shared runtime would cancel the
-	// helpers of chat, the Discord relay and scheduled jobs, so research gets
-	// its own bus and runtime. The tools, the approval gate and the web
-	// policy are serve's own.
-	cfg.Bus = orchestra.NewBusWithHistoryCap(cfg.Budgets.BusHistoryCap)
-	cfg.Bus.Register(cfg.OrchID)
-	life.AddFunc(lifecycle.Release, "research bus", cfg.Bus.Close)
-	cfg.LocalRestore, cfg.LocalOnChange = nil, nil // the orchestrator's tool switches are serve's to save
 	why := ""
 	if web && cfg.WebConfig.NoSandbox && runsAsService() {
 		web, why = false, "Web browsing is off for research on this server because the browser would have full control of the computer."
 	}
 	cfg.Web = web
-	rc.rt = newTeamRuntime(cfg)
-	life.AddFunc(lifecycle.Release, "research team", rc.rt.Close)
+	rc.rt = ownResearchRuntime(life, cfg)
 	store, err := research.New(dataDir)
 	if err != nil {
 		sysUnavailable.Log(base, "component", "research store", "effect", "research history is off", "err", err)
@@ -93,7 +111,7 @@ type dashResearch struct {
 
 func dashResearchOf(base context.Context, rc *researchControl, web bool, next func(string, ...any)) *dashResearch {
 	if rc.busy == nil {
-		rc.busy = new(atomic.Bool) // rc is the terminal app's own: its runs share the flag
+		rc.busy = new(atomic.Bool)
 	}
 	d := &dashResearch{rc: *rc, base: base, next: next, since: time.Now(), changed: make(chan struct{})}
 	d.rc.say, d.rc.emitTimeline = d.say, d.timeline

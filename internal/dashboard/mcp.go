@@ -13,6 +13,7 @@ package dashboard
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -40,6 +41,17 @@ type MCPServerView struct {
 	NeedsReauth bool
 	AuthSince   string // rendered, e.g. "2026-09-18 14:02 UTC"; "" when unknown
 	AuthErr     string
+}
+
+// Address is the service's address as the page shows it: without a user,
+// password, query or fragment, which is where an address carries a key (F7).
+func (v MCPServerView) Address() string {
+	u, err := url.Parse(v.URL)
+	if err != nil {
+		return "(an address Tenant can't read)"
+	}
+	u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
+	return u.String()
 }
 
 // SetMCP installs the MCP control after construction (mirrors SetCron).
@@ -86,15 +98,44 @@ func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/mcp", http.StatusSeeOther)
 		return
 	}
-	rawURL := strings.TrimSpace(r.FormValue("url"))
+	// Reconnect names the service: its address, which can carry a key, never
+	// rides through the page; a new address comes in the body only (REVSEC-9).
+	var rawURL string
+	if target := strings.TrimSpace(r.FormValue("target")); target != "" {
+		for _, v := range s.mcp.Servers() {
+			if v.Label == target {
+				rawURL = v.URL
+			}
+		}
+		if rawURL == "" {
+			redirectFlash(w, r, "/mcp", "", "That service isn't on the list any more. Connect it again below.")
+			return
+		}
+	} else {
+		v, ok := bodyOnly(r, "url")
+		if !ok {
+			KeyInURL.Log(r.Context(), "cred", "remote service address")
+			redirectFlash(w, r, "/mcp", "", "Nothing was connected: enter the address in the form, not the page's URL.")
+			return
+		}
+		rawURL = strings.TrimSpace(v)
+	}
 	if rawURL == "" {
 		redirectFlash(w, r, "/mcp", "", "Enter the service's address.")
+		return
+	}
+	// A connect that fails later shows only in the log, so an address that
+	// can't work is refused here, where the page can say so (UX-7).
+	if u, err := url.Parse(rawURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		redirectFlash(w, r, "/mcp", "", "That isn't a service address. It starts with https:// (or http:// for one on this computer), like https://tools.example.com/v1.")
 		return
 	}
 	ctx := context.WithoutCancel(r.Context())
 	go func(u string) {
 		if err := s.mcp.Connect(u); err != nil {
-			ConnectorNotAdded.Log(ctx, "url", u, "err", err)
+			// The error quotes the address, which can carry a key: it stays
+			// in the masked url field only (F7).
+			ConnectorNotAdded.Log(ctx, "url", u, "err", strings.ReplaceAll(err.Error(), u, "(the address)"))
 		}
 	}(rawURL)
 	redirectFlash(w, r, "/mcp", "Connecting. A local service with no sign-in appears here in a moment (refresh); one that needs a sign-in opens a window on the computer running Tenant: approve it there first.", "")

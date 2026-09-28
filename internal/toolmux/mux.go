@@ -322,10 +322,11 @@ type MCPDeps struct {
 	TrustAnnotations bool
 	AllowWrite       bool
 	Confirm          func(context.Context, string, string) bool
-	Rule             func(action string) string // per-tool permission rule lookup (approval.Rules); nil ⇒ none
-	CacheDir         string                     // 0600 OAuth token cache dir (persistence across restarts)
-	Log              *slog.Logger               // federation's debug lines (a connector logs through mcpremote's events)
-	Trust            map[string]string          // persisted per-connector trust by URL (config mcp_trust); applied on register
+	Rule             func(action string) string                    // per-tool permission rule lookup (approval.Rules); nil ⇒ none
+	Locked           func(ctx context.Context, action string) bool // the calling surface's lock (mcpremote.Policy.Locked); nil ⇒ none
+	CacheDir         string                                        // 0600 OAuth token cache dir (persistence across restarts)
+	Log              *slog.Logger                                  // federation's debug lines (a connector logs through mcpremote's events)
+	Trust            map[string]string                             // persisted per-connector trust by URL (config mcp_trust); applied on register
 	// onAuthChange is the only mutable member: installed after the mux is built
 	// (SetMCPAuthNotifier, under the mux lock) once the surfaces that can reach
 	// the operator exist. Activators read it at FIRE time via fireMCPAuthChange,
@@ -390,6 +391,7 @@ func (m *Mux) RegisterMCPRemote(url string) string {
 			AllowWrite: d.AllowWrite,
 			Confirm:    d.Confirm,
 			Rule:       d.Rule,
+			Locked:     d.Locked,
 		})
 	})
 	m.mu.Lock()
@@ -428,7 +430,7 @@ func (m *Mux) RegisterMCPStdio(name, hint string, open StdioOpener) (string, err
 	m.Add(label, Stub{Hint: hint})
 	m.SetEnabled(label, false)
 	m.RegisterActivator(label, func() (Plugin, func(), error) {
-		return open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule})
+		return open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule, Locked: d.Locked})
 	})
 	m.mu.Lock()
 	m.mcpServers[label] = key
@@ -446,7 +448,7 @@ func (m *Mux) RegisterMCPStdio(name, hint string, open StdioOpener) (string, err
 // (its Server and Connection activities). Safe to run in a goroutine.
 func (m *Mux) StartMCPStdioSilently(label string, open StdioOpener) {
 	d := m.mcpDeps
-	disp, cleanup, err := open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule})
+	disp, cleanup, err := open(d.Ctx, d.TrustAnnotations, mcpremote.Policy{AllowWrite: d.AllowWrite, Confirm: d.Confirm, Rule: d.Rule, Locked: d.Locked})
 	if err != nil {
 		return
 	}
@@ -567,6 +569,7 @@ func (m *Mux) ReconnectMCPSilently(url string) {
 		AllowWrite: d.AllowWrite,
 		Confirm:    d.Confirm,
 		Rule:       d.Rule,
+		Locked:     d.Locked,
 	})
 	if err != nil {
 		// Open logged it in the connector's log (TEN-166, TEN-387): a failed
@@ -656,7 +659,7 @@ func (m *Mux) ReconnectPeersSilently(cfgDir string) {
 				Label:       label,
 				TLS:         peering.PinnedTLSClientConfig(p.Fingerprint), // nil ⇒ plain HTTP (overlay)
 				UngateTools: PeerFederationTools,                          // TEN-252: only the known federation tools ungate
-			}, mcpremote.Policy{Confirm: d.Confirm, Rule: d.Rule})
+			}, mcpremote.Policy{Confirm: d.Confirm, Rule: d.Rule, Locked: d.Locked})
 			if derr != nil {
 				PeerReconnectFailed.Log(d.Ctx, "peer", p.Name, "err", derr)
 				return

@@ -120,10 +120,21 @@ func TestServeOffsiteBrokersKeepTheirOwnMarker(t *testing.T) {
 	var told []string
 	notify := func(s string) { told = append(told, s) }
 
-	relay := buildServeRelay(context.Background(), serveRelayDeps{
+	// With no bot token Access has no Discord rows to choose, so serve says
+	// nothing about them (C-3); with one it tells the operator.
+	relayDeps := serveRelayDeps{
 		c: c, stores: &stores{}, log: testLog(), degraded: &degradedState{},
 		emit: func(agent.Event) {}, notify: notify,
-	})
+	}
+	if buildServeRelay(context.Background(), relayDeps); len(told) != 0 {
+		t.Fatalf("with no Discord token serve told %q", told)
+	}
+	creds, _ := loadCredentials(cfg)
+	creds.Set(skillSecretID("discord", "token"), "tok-test-token")
+	if err := creds.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	relay := buildServeRelay(context.Background(), relayDeps)
 	imsg := buildServeIMessage(context.Background(), serveIMessageDeps{
 		c: c, stores: &stores{}, log: testLog(), degraded: &degradedState{}, broker: newApprovalBroker(testLog()),
 		emit: func(agent.Event) {}, notify: notify,
@@ -131,7 +142,8 @@ func TestServeOffsiteBrokersKeepTheirOwnMarker(t *testing.T) {
 	if got := relay.broker.NewCategories(); !slices.Equal(got, []string{catEgress, catMCP, catSandbox}) {
 		t.Fatalf("Discord New = %v, want egress, mcp and sandbox", got)
 	}
-	if len(told) != 1 || !strings.HasPrefix(told[0], "Discord conversations: 3 new safety checks") {
+	if len(told) == 0 || !strings.HasPrefix(told[0], "Discord conversations: 3 new safety checks") ||
+		strings.Count(strings.Join(told, "\n"), "new safety check") != 1 { // the rest: no router to build the relay's agent here
 		t.Fatalf("serve told %q, want the one Discord notice", told)
 	}
 	var imsgNew []string

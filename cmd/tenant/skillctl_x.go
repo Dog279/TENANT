@@ -38,14 +38,14 @@ func resolveXBearer(cfgDir, flagBearer string) string {
 func xSkillKind() skillKind {
 	return skillKind{
 		ID:    "x",
-		Label: "X / Twitter (app bearer token)",
+		Label: "X / Twitter",
 		Wired: true,
-		SetupHint: "Get a bearer token from developer.x.com. No token? Run `tenant x --login` " +
-			"for cookie-based auth instead (out-of-band, not /skill).",
+		SetupHint: "Paste your X app's token from developer.x.com (your app, then Keys and tokens). " +
+			"No app? Signing in with your X account instead is done in the terminal on the computer running Tenant (tenant x --login).",
 		Fields: []skillKindField{
 			{
 				Key:      "bearer",
-				Prompt:   "X app bearer token",
+				Prompt:   "X app token",
 				Secret:   true,
 				Required: true,
 				Validate: validateXBearer,

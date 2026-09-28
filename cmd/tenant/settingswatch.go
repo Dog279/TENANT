@@ -46,6 +46,20 @@ func saveSettingsOrTell(stg *settings, cfgDir, agentID string, tell func(string)
 	}
 }
 
+// persistModes is the broker's persist hook: stg and the file change in one
+// hold of mu, so the settings watcher, which reads the file in a hold of its
+// own, never sees one without the other. Split, a watcher tick between them
+// read the older file as someone's edit and reloaded it: "Keep them at Ask"
+// came undone (C-4).
+func persistModes(stg *settings, mu *sync.Mutex, cfgDir, agentID string, tell func(string)) func(map[string]string, []string) {
+	return func(modes map[string]string, known []string) {
+		mu.Lock()
+		defer mu.Unlock()
+		stg.Permissions, stg.KnownCategories = modes, known
+		saveSettingsOrTell(stg, cfgDir, agentID, tell)
+	}
+}
+
 // watchSettings runs until ctx is done. stg + mu are the live settings object
 // the process saves from (kept in sync so a later save doesn't undo the edit).
 func watchSettings(ctx context.Context, cfgDir, agentID string, broker *approvalBroker, rules *toolRules, mu *sync.Mutex, stg *settings, notify func(string)) {
@@ -78,7 +92,12 @@ func watchSettings(ctx context.Context, cfgDir, agentID string, broker *approval
 // the system log.
 func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *toolRules, mu *sync.Mutex, stg *settings) string {
 	path := settingsPath(cfgDir, agentID)
+	// The file and the marker it is compared with are read in one hold, so a
+	// save in between can't make the process's own write look like an edit.
+	mu.Lock()
 	fresh, err := loadSettings(cfgDir, agentID)
+	savedKnown := slices.Clone(stg.KnownCategories)
+	mu.Unlock()
 	if err != nil {
 		sysConfigNotLoaded.Log(context.Background(), "path", path, "fallback", "the live settings stay as they were", "err", err)
 		return "not applied: " + err.Error()
@@ -107,9 +126,7 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 		}
 		// The known_categories marker (TEN-343) reloads with the modes; stg
 		// tracks the file's, so the process's own saves compare equal.
-		mu.Lock()
-		marker := !slices.Equal(fresh.KnownCategories, stg.KnownCategories)
-		mu.Unlock()
+		marker := !slices.Equal(fresh.KnownCategories, savedKnown)
 		if diff > 0 || marker {
 			broker.LoadModes(fresh.Permissions, fresh.KnownCategories)
 			mu.Lock()

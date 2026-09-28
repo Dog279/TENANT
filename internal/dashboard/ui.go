@@ -236,11 +236,20 @@ func (s *Server) statusView() StatusView {
 		}
 	}
 	if s.access != nil {
+		// A channel's notice shows only where Access offers its rows to
+		// choose from, and only once the channel is in use (C-3, UX-4).
 		av := s.access.View()
 		for _, ch := range []struct {
 			name  string
 			perms []PermissionRow
-		}{{"Discord", av.DiscordPerms}, {"iMessage", av.IMessagePerms}} {
+			inUse bool
+		}{
+			{"Discord", av.DiscordPerms, av.DiscordAvailable && av.RelayConfigured},
+			{"iMessage", av.IMessagePerms, av.IMessageAvailable && (av.ResponderOn || len(av.Handles) > 0)},
+		} {
+			if !ch.inUse {
+				continue
+			}
 			n := 0
 			for _, p := range ch.perms {
 				if p.New {
@@ -272,7 +281,10 @@ func checks(n int) string {
 // busyView is the strip's busy line: this dashboard's own chat, a request
 // queued behind the serve turn gate, or the gate busy with someone else. The
 // gate is read by duck typing, as /api/status does; in the terminal app the
-// runner is the bare agent and only the dashboard's own chat shows.
+// runner is the bare agent and only the dashboard's own chat shows. Future
+// work (C-2): under serve only the dashboard's chat enters the gate today
+// (cron, Discord, iMessage and alert turns run their own agents), so the
+// queued and gate-busy branches can't be reached until every surface does.
 func (s *Server) busyView(approvals bool) *BusyView {
 	mine, age := s.coord.busy()
 	var gate bool

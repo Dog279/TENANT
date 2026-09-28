@@ -180,3 +180,33 @@ func TestEval_MutationsNilSafe(t *testing.T) {
 		}
 	}
 }
+
+// UX-19, UX-20: the form shows the schedule there is, and the page's own
+// form (both boxes sent, as a browser sends them) saves Daily at; with
+// checks off the run button says so up front.
+func TestEval_FormFollowsTheSchedule(t *testing.T) {
+	for desc, want := range map[string][]string{
+		"every 12h0m0s":  {`value="every" checked`, `name="spec_every" value="12h"`},
+		"daily at 03:15": {`value="at" checked`, `name="spec_at" value="03:15"`},
+		"off":            {`value="off" checked`, `name="spec_every" value="24h"`},
+	} {
+		body := get(t, evalServer(&fakeEvalCtl{sched: EvalScheduleView{Desc: desc, Live: true}}), "/eval").Body.String()
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s: the form lacks %q", desc, w)
+			}
+		}
+		if strings.Count(body, " checked") != 1 {
+			t.Errorf("%s: %d options checked", desc, strings.Count(body, " checked"))
+		}
+	}
+	fc := &fakeEvalCtl{}
+	submitForm(t, evalServer(fc), "/eval/schedule", "mode=at&spec_every=24h&spec_at=03:15")
+	if fc.atCall != "03:15" {
+		t.Errorf("Daily at from the page's form: SetAt got %q", fc.atCall)
+	}
+	body := get(t, evalServer(&fakeEvalCtl{sched: EvalScheduleView{Desc: "off"}}), "/eval").Body.String()
+	if !strings.Contains(body, "Quality checks are off on this Tenant") || strings.Contains(body, `action="/eval/run"`) {
+		t.Errorf("checks off: the page should say so and offer no run")
+	}
+}

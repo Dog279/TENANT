@@ -40,6 +40,7 @@ var adoptedConfirms = []struct {
 	{route: "/access/imessage/allow", form: url.Values{"handle": {"a@b.c"}}},
 	{route: "/models/use", form: url.Values{"name": {"m"}}},
 	{route: "/models/remove", form: url.Values{"name": {"m"}}},
+	{route: "/tools/rules/remove", form: url.Values{"pattern": {"x"}, "mode": {"allow"}}}, // decided by the rule itself (REVSEC-1)
 
 	{route: "/skills/x/trust", key: "trusted", safe: []string{"", "false"}},
 	{route: "/skills/auto", key: "mode", safe: []string{"off"}},
@@ -48,7 +49,6 @@ var adoptedConfirms = []struct {
 	{route: "/cron/exec", key: "enabled", safe: []string{"", "false"}},
 	{route: "/posture", key: "allow_send", safe: []string{"", "false"}},
 	{route: "/tools/rules/add", form: url.Values{"pattern": {"x"}}, key: "mode", safe: []string{"ask", "deny"}},
-	{route: "/tools/rules/remove", form: url.Values{"pattern": {"x"}}, key: "mode", safe: []string{"allow"}},
 	{route: "/access/discord/exec", key: "on", safe: []string{"", "false", "off"}},
 	{route: "/access/discord/enable", key: "on", safe: []string{"", "false", "off"}},
 	{route: "/access/imessage/responder", key: "on", safe: []string{"", "false", "off"}},

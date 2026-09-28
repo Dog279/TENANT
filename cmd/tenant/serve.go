@@ -186,12 +186,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		defer stgMu.Unlock()
 		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
-	broker.SetPersist(func(modes map[string]string, known []string) {
-		stgMu.Lock()
-		stg.Permissions, stg.KnownCategories = modes, known
-		stgMu.Unlock()
-		saveSettings()
-	})
+	broker.SetPersist(persistModes(stg, &stgMu, c.cfgDir, c.agent, pushSys))
 	if n := newCategoryNotice(broker.NewCategories(), "Review on the dashboard's Approvals & safety page."); n != "" {
 		pushSys("permissions: " + n) // every start while any is new: nobody is at a terminal to see it once
 	}

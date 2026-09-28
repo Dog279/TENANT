@@ -28,9 +28,11 @@ import (
 type safetyDash struct {
 	t      *testing.T
 	broker *approvalBroker
+	rules  *toolRules // the broker's tool rules, also the Tools page's
 	base   string
 	cfgDir string
 	ev     *channelEvents
+	cookie *http.Cookie // the session the sign-in form started
 }
 
 const safetyDashToken = "safety-dash-test-token"
@@ -43,7 +45,8 @@ func newSafetyDash(t *testing.T) *safetyDash {
 // newSafetyDashIn is newSafetyDash on the settings already in cfgDir.
 func newSafetyDashIn(t *testing.T, cfgDir string) *safetyDash {
 	t.Helper()
-	d := &safetyDash{t: t, ev: captureChannelEvents(t), cfgDir: cfgDir, broker: newApprovalBroker(nil)}
+	d := &safetyDash{t: t, ev: captureChannelEvents(t), cfgDir: cfgDir, broker: newApprovalBroker(nil), rules: newToolRules()}
+	d.broker.SetRules(d.rules)
 	stg, err := loadSettings(d.cfgDir, "main")
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +66,7 @@ func newSafetyDashIn(t *testing.T, cfgDir string) *safetyDash {
 		cfg:         dashboard.Config{Addr: "127.0.0.1:0", Auth: safetyDashToken},
 		broker:      events,
 		approvals:   d.broker,
+		rules:       dashRules{d.rules},
 		safety:      d.broker,
 		safetyFacts: newSafetyFacts(),
 		notify:      func(string) {},
@@ -76,7 +80,30 @@ func newSafetyDashIn(t *testing.T, cfgDir string) *safetyDash {
 		t.Fatal("dashboard did not come up")
 	}
 	d.base = "http://" + addr
+	d.cookie = d.signIn()
 	return d
+}
+
+// signIn posts the key to the sign-in form, as the operator does, and
+// returns the session cookie it sets.
+func (d *safetyDash) signIn() *http.Cookie {
+	d.t.Helper()
+	req, _ := http.NewRequest("POST", d.base+"/auth/login", strings.NewReader(url.Values{"token": {safetyDashToken}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", d.base)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	resp.Body.Close()
+	for _, c := range resp.Cookies() {
+		if c.Name == "tenant-dash" && c.Value != "" {
+			return c
+		}
+	}
+	d.t.Fatalf("sign-in set no session cookie (%d)", resp.StatusCode)
+	return nil
 }
 
 func (d *safetyDash) do(method, path string, form url.Values) *http.Response {
@@ -87,7 +114,7 @@ func (d *safetyDash) do(method, path string, form url.Values) *http.Response {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", d.base)
-	req.AddCookie(&http.Cookie{Name: "tenant-dash", Value: safetyDashToken})
+	req.AddCookie(d.cookie)
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {

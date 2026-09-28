@@ -5,6 +5,11 @@
     <div class="stat-label">Agent</div>
     <div class="stat-value"><span class="trend-down">{{.Alerts}} alert{{if ne .Alerts 1}}s{{end}}</span></div>
   </a>
+  {{else if .ModelTrouble}}
+  <a href="/logs?q=log:model" class="card stat linkcard">
+    <div class="stat-label">Agent</div>
+    <div class="stat-value small"><span class="trend-down">Can't reach its model</span> <span class="dim">· failed {{.ModelTrouble}}</span></div>
+  </a>
   {{else}}
   <div class="card stat">
     <div class="stat-label">Agent</div>
@@ -45,9 +50,9 @@
     <div class="stat-value">{{.WorkingCount}}</div>
   </a>
   {{end}}
-  <a href="/tools" class="card stat linkcard">
+  <a href="/safety" class="card stat linkcard">
     <div class="stat-label">What it may do</div>
-    <div class="stat-value">{{if .AllowSend}}Look and act{{else}}Look only{{end}}</div>
+    <div class="stat-value">{{if .ActTools}}Change things <span class="dim">· {{.ActTools}} tool{{if ne .ActTools 1}}s{{end}}</span>{{else}}Look only{{end}}</div>
   </a>
 </div>
 
@@ -57,7 +62,7 @@
 
 <div class="card">
   <div class="card-head">Connected services</div>
-  {{if .Plugins}}<div class="chips">{{range .Plugins}}<span class="chip">{{visibleText .}}</span>{{end}}</div>
+  {{if .Plugins}}<div class="chips">{{range .Plugins}}<a class="chip" href="{{.Href}}">{{visibleText .Name}}</a>{{end}}</div>
   {{else}}<div class="empty">No services connected yet. Connect one on the <a href="/integrations">Integrations</a> page.</div>{{end}}
 </div>
 {{end}}

@@ -114,6 +114,11 @@ type Server struct {
 	// (TEN-332). Set through SetTrustedHosts.
 	trustedMu sync.RWMutex
 	trusted   []string
+
+	// sessions are the signed-in browsers: the sign-in cookie holds one of
+	// these random ids, never the key (auth_pages.go).
+	sessMu   sync.Mutex
+	sessions map[string]time.Time // id → expiry
 }
 
 // New constructs the dashboard server and builds its routes. A nil logger

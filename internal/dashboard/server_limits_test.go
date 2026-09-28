@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"io"
 	"net"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"tenant/internal/agent"
 	"tenant/internal/httplimits"
 )
 
@@ -99,49 +97,9 @@ func TestDashboardSlowHeaderConnectionDropped(t *testing.T) {
 	}
 }
 
-func TestDashboardSSEOutlivesNonStreamingWriteTimeout(t *testing.T) {
-	broker := agent.NewBroker(0)
-	s := New(Config{}, nil, nil, nil, broker, nil)
-	const testTimeout = 40 * time.Millisecond
-	hs := httptest.NewServer(s.handlerWithWriteTimeout(testTimeout))
-	defer hs.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/events", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("open SSE: %v", err)
-	}
-	defer resp.Body.Close()
-	reader := bufio.NewReader(resp.Body)
-
-	// If the finite-response deadline leaked onto this route, the next write
-	// after this pause would fail and close the stream.
-	time.Sleep(3 * testTimeout)
-	broker.Publish(agent.Event{Kind: agent.EventToolCall, Tool: "web_search", Args: "{}"})
-	linec := make(chan string, 1)
-	errc := make(chan error, 1)
-	go func() {
-		line, readErr := reader.ReadString('\n')
-		linec <- line
-		errc <- readErr
-	}()
-	select {
-	case line := <-linec:
-		if readErr := <-errc; readErr != nil {
-			t.Fatalf("read SSE after timeout: %v", readErr)
-		}
-		if !strings.Contains(line, "event: datastar-patch-elements") {
-			t.Fatalf("first streamed line = %q", line)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("SSE did not remain writable past the non-streaming timeout")
-	}
-}
+// /events outliving the finite-response deadline is
+// TestEvents_OutlivesWriteTimeoutPastSnapshot: its first line is now the
+// queue snapshot, written before any deadline.
 
 func serveHTTPServer(t *testing.T, srv *http.Server) string {
 	t.Helper()

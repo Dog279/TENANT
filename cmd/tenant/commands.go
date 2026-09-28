@@ -1898,12 +1898,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		defer stgMu.Unlock()
 		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
-	broker.SetPersist(func(modes map[string]string, known []string) {
-		stgMu.Lock()
-		stg.Permissions, stg.KnownCategories = modes, known
-		stgMu.Unlock()
-		saveSettings()
-	})
+	broker.SetPersist(persistModes(stg, &stgMu, c.cfgDir, c.agent, pushSys))
 	announceNewCategories(broker, stg, &stgMu, saveSettings, pushSys)
 	// Per-tool permission rules (internal/approval): loaded from the same file,
 	// persisted on every /permissions add|rm, and re-read when the file is
@@ -2135,7 +2130,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		stgMu.Unlock()
 		saveSettings()
 	}
-	rt := newTeamRuntime(TeamConfig{
+	// teamCfg is kept: the dashboard's research builds its own runtime from a
+	// copy of it (TEN-210, C-1).
+	teamCfg := TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
 		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
@@ -2148,7 +2145,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		EmbedProfile:  embProf,
 		LocalRestore:  stg.Tools, // same map the shared mux restored from
 		LocalOnChange: localSave,
-	})
+	}
+	rt := newTeamRuntime(teamCfg)
 	life.AddFunc(lifecycle.Release, "team runtime", rt.Close) // close any per-agent browser sessions
 
 	// The main agent's LOCAL tools: orchestration (spawn/await) + comms +
@@ -2980,7 +2978,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	dashMgr.safetyFacts = newSafetyFacts()
 	dashMgr.agents = newDashAgents(agentCtl)
 	dashMgr.goal = newDashGoal(goalCtl, pushSys)
-	dashMgr.research = newDashResearch(ctx, researchCtl, teamWeb, researchSay)
+	dashMgr.research = newDashResearch(ctx, life, teamCfg, rt, researchCtl, teamWeb, researchSay)
 	// Wire the dashboard's eval/quality surface (TEN-201) now that evalSched
 	// exists (it's built inside the self-improve block above; nil when
 	// --self-improve=false, which evalTUIControl handles as persist-only), then

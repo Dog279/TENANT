@@ -44,21 +44,26 @@
 
 <div class="card">
   <div class="card-head">Run a check</div>
+  {{if .Sched.Live}}
   <form method="POST" action="/eval/run" class="inline">
     <button type="submit" class="btn on">Run a quality check now</button>
   </form>
   <div class="dim mt">Takes a few minutes: your agent answers a set of test questions and is graded against the baseline. The result appears here and in the Activity feed.</div>
+  {{else}}
+  <button type="button" class="btn" disabled>Run a quality check now</button>
+  <div class="dim mt">Quality checks are off on this Tenant, so one can't start from here.</div>
+  {{end}}
 </div>
 
 <div class="card">
   <div class="card-head">Automatic checks</div>
   <div class="dim mb">Now: <strong>{{.Sched.Desc}}</strong>{{if not .Sched.Live}} <span class="dim">(applies when Tenant next starts)</span>{{end}}</div>
   <form method="POST" action="/eval/schedule" class="evalsched">
-    <label><input type="radio" name="mode" value="every" checked> Every
-      <input type="text" name="spec" value="24h" class="cinput short" placeholder="24h"> (for example 24h, 12h)</label>
-    <label><input type="radio" name="mode" value="at"> Daily at
-      <input type="text" name="spec" class="cinput short" placeholder="03:15"> (24-hour clock)</label>
-    <label><input type="radio" name="mode" value="off"> Off: only run checks by hand</label>
+    <label><input type="radio" name="mode" value="every"{{if eq .Sched.Mode "every"}} checked{{end}}> Every
+      <input type="text" name="spec_every" value="{{if eq .Sched.Mode "every"}}{{.Sched.Spec}}{{else}}24h{{end}}" class="cinput short" placeholder="24h"> (for example 24h, 12h)</label>
+    <label><input type="radio" name="mode" value="at"{{if eq .Sched.Mode "at"}} checked{{end}}> Daily at
+      <input type="text" name="spec_at" value="{{if eq .Sched.Mode "at"}}{{.Sched.Spec}}{{end}}" class="cinput short" placeholder="03:15"> (24-hour clock)</label>
+    <label><input type="radio" name="mode" value="off"{{if eq .Sched.Mode "off"}} checked{{end}}> Off: only run checks by hand</label>
     <button type="submit" class="btn">Save schedule</button>
   </form>
   <div class="dim mt">A check runs at most once per period however often Tenant restarts, so a busy day won't pile up checks.</div>

@@ -372,11 +372,37 @@ func TestResearchReport_Escapes(t *testing.T) {
 			t.Errorf("the report page lacks %q", want)
 		}
 	}
-	for ref, web := range map[string]bool{"https://a": true, "HTTPS://a": true, "http://a": true, "javascript:alert(1)": false, " javascript:x": false,
-		"JaVaScRiPt:x": false, "data:text/html,x": false, "wiki:x": false, "//evil.example": false, "": false, "ftp://a": false} {
+	for ref, web := range map[string]bool{"https://a.example": true, "HTTPS://a.example": true, "http://a.example": true, "javascript:alert(1)": false, " javascript:x": false,
+		"JaVaScRiPt:x": false, "data:text/html,x": false, "wiki:x": false, "//evil.example": false, "": false, "ftp://a.example": false,
+		"https://93.184.215.14/p": true, "https://[2606:4700::1]/": true} {
 		if got := (ResearchRef{URL: ref}).Web(); got != web {
 			t.Errorf("Web(%q) = %v, want %v", ref, got, web)
 		}
+	}
+}
+
+// REVSEC-3: cookies aren't kept apart by port, so a source on this machine,
+// its network, the tailnet or a name the dashboard answers to is plain
+// text: a click there would hand the listener the sign-in cookie.
+func TestResearchRef_NoLinkIntoThisMachineOrNetwork(t *testing.T) {
+	for _, ref := range []string{"http://127.0.0.1:9999/x", "http://127.1:9999/", "http://0x7f.0.0.1/", "http://2130706433/", "http://localhost:8080/",
+		"http://LOCALHOST./", "http://app.localhost/", "http://[::1]:9/", "http://[::ffff:127.0.0.1]/", "http://0.0.0.0:80/", "http://10.1.2.3/",
+		"http://192.168.1.4/", "http://172.20.0.1/", "http://169.254.169.254/latest/meta-data", "http://[fe80::1]/", "http://100.101.102.103/",
+		"https://node.tailnet-name.ts.net:8443/", "http://printer.local/", "http://nas/", "http://router.lan/", "http://x.home.arpa/", "http://db.internal/",
+		// Chrome folds these to 127.0.0.1: an ideographic or fullwidth dot, a fullwidth digit, and the same percent-encoded.
+		"http://127.0.0.1\u3002:9999/", "http://127.0.0.1\uff0e:9999/", "http://127.0.0.\uff11:9999/", "http://127.0.0.1%E3%80%82:9999/"} {
+		if (ResearchRef{URL: ref}).Web() {
+			t.Errorf("Web(%q) = true, want plain text", ref)
+		}
+	}
+	f := newFakeResearch()
+	f.report = ResearchReportView{ID: "r-1", Question: "q", StateText: "Finished", Body: "[1] [2]",
+		Refs: []ResearchRef{{N: 1, URL: "https://dash.example.com:9999/steal"}, {N: 2, URL: "https://news.example/a"}}}
+	s := researchServer(f)
+	s.cfg.AllowedHosts = []string{"dash.example.com:443"}
+	body := get(t, s, "/research/r-1").Body.String()
+	if strings.Contains(body, `href="https://dash.example.com`) || !strings.Contains(body, `href="https://news.example/a"`) {
+		t.Errorf("a source on the dashboard's own name must be text, a public one a link:\n%s", body)
 	}
 }
 
