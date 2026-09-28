@@ -5,10 +5,12 @@
 {{with .Run}}
 <div class="card research-run">
   {{template "research-report" .}}
+  {{- if not .Live}}
   <div class="actions">
     <form method="POST" action="{{.Path}}/replay" class="inline"><button type="submit" class="btn sm">Run again with the current model</button></form>
     {{template "ui-confirm" (confirm (print .Path "/delete") "Delete" "Delete this research from the list? This can't be undone. A copy already saved to your agent's notes stays there.")}}
   </div>
+  {{- end}}
 </div>
 {{end}}
 {{end}}

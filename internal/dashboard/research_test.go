@@ -175,7 +175,7 @@ func TestResearchPage_States(t *testing.T) {
 		not  []string
 	}{
 		{name: "off", path: "/research", set: nil, want: []string{`class="card state-off"`}},
-		{name: "empty", path: "/research", want: []string{`class="empty"`, "No research yet", `id="research-live">`, "The report is kept in the list below."},
+		{name: "empty", path: "/research", want: []string{`class="empty"`, "No research yet", `id="research-live">`, "The report is kept in the list below.", `<details class="advanced">`},
 			not: []string{`class="busy"`}},
 		{name: "saves to notes", path: "/research", set: func(f *fakeResearch, _ *Server) { f.live.SavesToNotes = true },
 			want: []string{"saved to your agent's notes so it can use what it learned later"}},
@@ -220,6 +220,11 @@ func TestResearchPage_States(t *testing.T) {
 		{name: "success", path: "/research?msg=Deleted+from+the+list.", want: []string{`<div class="banner ok" role="status">Deleted from the list.</div>`}},
 		{name: "run page", path: "/research/r-1", set: func(f *fakeResearch, _ *Server) { f.report = *report },
 			want: []string{"What is fakeness?", `href="#ref-1"`, `action="/research/r-1/replay"`, `action="/research/r-1/delete"`}},
+		{name: "run page, still running", path: "/research/r-1", set: func(f *fakeResearch, _ *Server) {
+			f.report = *report
+			f.report.StateText, f.report.Live = "Running from the terminal", true
+		},
+			want: []string{"Running from the terminal"}, not: []string{`action="/research/r-1/replay"`, `action="/research/r-1/delete"`}},
 		{name: "run page, gone", path: "/research/r-9", set: func(f *fakeResearch, _ *Server) { f.err = PlainError("That research isn't in the list any more.") },
 			want: []string{`role="alert">That research isn&#39;t in the list any more.`}},
 	}
@@ -293,8 +298,8 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 	s := researchServer(f)
 	body := get(t, s, "/research").Body.String()
 	for _, want := range []string{
-		`<details class="confirm-step"><summary class="btn sm danger"><span class="c-open">Stop</span>`,
-		`It ends now and no report is written.`, `<form method="POST" action="/research/stop">`,
+		`<details class="confirm-step" data-preserve-attr="open"><summary class="btn sm danger"><span class="c-open">Stop</span>`,
+		`It ends now and no report is written.`, `<form method="POST" action="/research/stop"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm danger">Yes, stop</button>`,
 		`<form method="POST" action="/research/r-1/delete">`, `A copy already saved to your agent&#39;s notes stays there.`,
 	} {
 		if !strings.Contains(body, want) {
@@ -347,9 +352,10 @@ func TestResearchReport_Escapes(t *testing.T) {
 		Refs: []ResearchRef{
 			{N: 1, URL: "https://ex.com/a?b=<c>"}, {N: 2, URL: "javascript:alert(1)"}, {N: 3, URL: "JaVaScRiPt:alert(1)"},
 			{N: 4, URL: "data:text/html,<script>alert(1)</script>"}, {N: 5, URL: "wiki:notes/x.md"}, {N: 6, URL: "HTTP://ex.com/b"},
+			{N: 7, URL: "https://evil.example/\u202emoc.elgoog"},
 		}}
 	body := get(t, researchServer(f), "/research/r-1").Body.String()
-	for _, bad := range []string{"<script>alert", "<b>not bold", "<i>q", `href="javascript`, `href="JaVaScRiPt`, `href="data:`, `href="wiki:`, `href="#ZgotmplZ"`} {
+	for _, bad := range []string{"<script>alert", "<b>not bold", "<i>q", `href="javascript`, `href="JaVaScRiPt`, `href="data:`, `href="wiki:`, `href="#ZgotmplZ"`, "\u202e"} {
 		if strings.Contains(body, bad) {
 			t.Errorf("the report page has %q", bad)
 		}
@@ -360,6 +366,7 @@ func TestResearchReport_Escapes(t *testing.T) {
 		`<a href="https://ex.com/a?b=%3cc%3e" rel="noopener noreferrer nofollow" target="_blank">`,
 		`<a href="HTTP://ex.com/b" rel="noopener noreferrer nofollow"`,
 		`<li id="ref-2">[2] javascript:alert(1)</li>`, `<li id="ref-3">[3] JaVaScRiPt:alert(1)</li>`, `<li id="ref-5">[5] wiki:notes/x.md</li>`,
+		`target="_blank">https://evil.example/⟨U&#43;202E⟩moc.elgoog</a>`, // a link's text can't be reordered to fake where it goes
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the report page lacks %q", want)
@@ -413,6 +420,8 @@ func TestResearchLive_StreamsPhasesThenReport(t *testing.T) {
 	if n := strings.Count(rec.String(), "event: datastar-patch-elements"); n != 4 {
 		t.Errorf("%d patches, want 4 (snapshot, researching, writing, done): the writing step re-sent the history?\n%s", n, rec.String())
 	}
+	f.set(ResearchLiveView{Phase: "done", RunID: "r-1", Elsewhere: true})
+	waitFor(t, rec, `data: elements <div id="research-history">`, 4) // a terminal run started
 	cancel()
 	select {
 	case <-done:

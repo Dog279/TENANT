@@ -125,6 +125,25 @@ func TestDashResearch_Timeline(t *testing.T) {
 	}
 }
 
+// The terminal app's control keeps its own progress sinks: a dashboard run
+// never opens the terminal's timeline pane. Its feed gets the lines.
+func TestDashResearch_KeepsTheTerminalTimeline(t *testing.T) {
+	var timeline, said, fed int
+	rc := &researchControl{say: func(string, ...any) { said++ }, emitTimeline: func(tui.ResearchTimelineUpdate) { timeline++ }}
+	d := newDashResearch(context.Background(), rc, true, func(string, ...any) { fed++ }).(*dashResearch)
+	d.rc.emitTimeline(tui.ResearchTimelineUpdate{Kind: "started"})
+	d.rc.say("plan: %d sub-question(s)", 3)
+	if timeline != 0 || said != 0 || fed != 1 {
+		t.Errorf("terminal timeline %d, terminal say %d, feed %d; want 0, 0, 1", timeline, said, fed)
+	}
+	if v, _ := d.Watch(); v.Phase != "planning" {
+		t.Errorf("the page's phase = %q", v.Phase)
+	}
+	if rc.busy == nil || rc.busy != d.rc.busy {
+		t.Error("the two sides don't share the one-run flag")
+	}
+}
+
 // One run at a time, shared with the terminal app.
 func TestDashResearch_StartAndBusy(t *testing.T) {
 	d, rc, calls, outs := stubbedDash(t, false)
@@ -319,7 +338,7 @@ func TestDashResearch_RunIDLinesAndDelete(t *testing.T) {
 func TestDashResearch_HistoryLabels(t *testing.T) {
 	d, rc, _, _ := stubbedDash(t, true)
 	mk := func(q string, status research.Status, errMsg string) string {
-		r, err := rc.store.Create(research.Manifest{Question: q, Model: "fake"})
+		r, err := rc.store.Create(research.Manifest{Question: q, Model: "fake", Started: d.since.Add(-time.Minute)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -335,6 +354,7 @@ func TestDashResearch_HistoryLabels(t *testing.T) {
 	mk("error", research.StatusError, "research: plan: down")
 	mk("clarify", research.StatusError, "research: clarification needed (1 question)")
 	mk("interrupted", research.StatusRunning, "")
+	stopped := mk("stopped", research.StatusError, "research: plan: context canceled")
 	rows, err := d.History(10)
 	if err != nil {
 		t.Fatal(err)
@@ -346,11 +366,38 @@ func TestDashResearch_HistoryLabels(t *testing.T) {
 			t.Errorf("row %+v", r)
 		}
 	}
-	want := map[string]string{"done": "Finished", "partial": "Partly finished", "error": "Didn't finish", "clarify": "Asked for more detail", "interrupted": "Interrupted (Tenant restarted)"}
+	want := map[string]string{"done": "Finished", "partial": "Partly finished", "error": "Didn't finish", "clarify": "Asked for more detail",
+		"interrupted": "Interrupted (Tenant restarted)", "stopped": "Stopped"}
 	for q, w := range want {
 		if got[q] != w {
 			t.Errorf("%s: %q, want %q", q, got[q], w)
 		}
+	}
+	if v, err := d.Report(stopped); err != nil || v.StateText != "Stopped" || v.Err != "" {
+		t.Errorf("a stopped run's page: %+v, %v (no error banner)", v, err)
+	}
+
+	// A run the terminal app is doing: live, never "interrupted", and it
+	// can't be deleted from under it. The older "running" row stays
+	// interrupted.
+	term, _ := rc.store.Create(research.Manifest{Question: "terminal"})
+	rc.busy.Store(true)
+	rows, _ = d.History(10)
+	for _, r := range rows {
+		if (r.Question == "terminal") != r.Live || r.Question == "terminal" && r.StateText != "Running from the terminal" || r.Question == "interrupted" && r.StateText != want["interrupted"] {
+			t.Errorf("while the terminal runs: %+v", r)
+		}
+	}
+	if v, _ := d.Report(term.ID()); !v.Live {
+		t.Errorf("the terminal run's page offers Delete: %+v", v)
+	}
+	var pe dashboard.PlainError
+	if err := d.Delete(term.ID()); !errors.As(err, &pe) {
+		t.Errorf("Delete of the terminal's run = %v", err)
+	}
+	rc.busy.Store(false)
+	if rows, _ := d.History(10); rows[0].Question != "terminal" || rows[0].Live || rows[0].StateText != want["interrupted"] {
+		t.Errorf("after the terminal run: %+v", rows[0])
 	}
 	// No store: plain errors, never the raw ones.
 	d2, _, _, _ := stubbedDash(t, false)
@@ -359,7 +406,6 @@ func TestDashResearch_HistoryLabels(t *testing.T) {
 			t.Errorf("%s without a store = %v", name, err)
 		}
 	}
-	var pe dashboard.PlainError
 	if _, err := d.Report("missing"); !errors.As(err, &pe) {
 		t.Errorf("Report of a missing run = %v", err)
 	}
@@ -503,29 +549,32 @@ func TestServeDashResearch_KeepsGates(t *testing.T) {
 	serveRT := newTeamRuntime(cfg)
 	life := lifecycle.New(log)
 	t.Cleanup(func() { _ = life.Shutdown() })
-	build := func(service, web bool) *dashResearch {
+	build := func(service, web, noSandbox bool) *dashResearch {
 		prev := runsAsService
 		runsAsService = func() bool { return service }
 		defer func() { runsAsService = prev }()
-		return newServeDashResearch(context.Background(), life, cfg, serveRT, researchControl{}, t.TempDir(), web).(*dashResearch)
+		c := cfg
+		c.WebConfig.NoSandbox = noSandbox
+		return newServeDashResearch(context.Background(), life, c, serveRT, researchControl{}, t.TempDir(), web).(*dashResearch)
 	}
 
 	for _, tc := range []struct {
-		service, web, webOn bool
-		why                 string
+		service, web, noSandbox, webOn bool
+		why                            string
 	}{
-		{service: true, web: true, webOn: false, why: "the browser would have full control of the computer"},
-		{service: false, web: true, webOn: true},
-		{service: false, web: false, webOn: false},
+		{service: true, web: true, noSandbox: true, webOn: false, why: "the browser would have full control of the computer"},
+		{service: true, web: true, noSandbox: false, webOn: true}, // Chrome's sandbox holds
+		{service: false, web: true, noSandbox: true, webOn: true},
+		{service: false, web: false, noSandbox: true, webOn: false},
 	} {
-		d := build(tc.service, tc.web)
+		d := build(tc.service, tc.web, tc.noSandbox)
 		v, _ := d.Watch()
 		if d.rc.rt.cfg.Web != tc.webOn || v.WebOff == tc.webOn || !strings.Contains(v.WebOffWhy, tc.why) || (tc.why == "") != (v.WebOffWhy == "") {
-			t.Errorf("service %v, web %v: runtime web %v, page %+v", tc.service, tc.web, d.rc.rt.cfg.Web, v)
+			t.Errorf("service %v, web %v, no sandbox %v: runtime web %v, page %+v", tc.service, tc.web, tc.noSandbox, d.rc.rt.cfg.Web, v)
 		}
 	}
 
-	d := build(false, true)
+	d := build(false, true, true)
 	rt := d.rc.rt
 	switch {
 	case rt == serveRT || rt.cfg.Bus == serveBus:

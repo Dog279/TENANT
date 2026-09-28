@@ -291,7 +291,9 @@ lists past runs with Show, Run again and Delete. The adapter is
 - **Stop and Delete ask to confirm.** Stop ends the run with no report (what
   the helpers found stays on the run). Delete removes the run from the list;
   the copy already saved to the agent's notes stays. A run still going can't be
-  deleted. After a restart, a run that was cut short shows as "Interrupted".
+  deleted, including one started from the terminal ("Running from the
+  terminal"). A stopped run shows as "Stopped"; after a restart, a run that was
+  cut short shows as "Interrupted".
 
 ## 6c. Phase C — sources + UX (later)
 

@@ -82,6 +82,8 @@ type dashResearch struct {
 	before func()               // serve: sync helper profiles before a run
 	run    func(ctx context.Context, q, replayOf string, skip bool) (id, report string, err error)
 
+	since time.Time // when this process's runs began: an older "running" row is one a restart cut short
+
 	mu      sync.Mutex
 	live    dashboard.ResearchLiveView
 	started time.Time
@@ -93,7 +95,7 @@ func dashResearchOf(base context.Context, rc *researchControl, web bool, next fu
 	if rc.busy == nil {
 		rc.busy = new(atomic.Bool) // rc is the terminal app's own: its runs share the flag
 	}
-	d := &dashResearch{rc: *rc, base: base, next: next, changed: make(chan struct{})}
+	d := &dashResearch{rc: *rc, base: base, next: next, since: time.Now(), changed: make(chan struct{})}
 	d.rc.say, d.rc.emitTimeline = d.say, d.timeline
 	d.run = d.rc.runOne
 	d.live = dashboard.ResearchLiveView{SavesToNotes: rc.wikiDir != "", WebOff: !web, HistoryOn: rc.store != nil}
@@ -330,14 +332,11 @@ func (d *dashResearch) History(limit int) ([]dashboard.ResearchRunRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	d.mu.Lock()
-	liveID, running := d.live.RunID, d.live.Running
-	d.mu.Unlock()
 	rows := make([]dashboard.ResearchRunRow, 0, len(ms))
 	for _, m := range ms {
-		live := running && m.ID == liveID && m.Status == research.StatusRunning
+		text, live := d.stateOf(m)
 		rows = append(rows, dashboard.ResearchRunRow{
-			ID: m.ID, Question: m.Question, State: string(m.Status), StateText: stateText(m, live),
+			ID: m.ID, Question: m.Question, State: string(m.Status), StateText: text,
 			When: m.Started.Local().Format("Jan 2, 15:04"), Took: tookOf(m), Model: m.Model, ReplayOf: m.ReplayOf,
 			Sources: len(m.References), Live: live,
 		})
@@ -345,22 +344,34 @@ func (d *dashResearch) History(limit int) ([]dashboard.ResearchRunRow, error) {
 	return rows, nil
 }
 
-// stateText is a run's state in plain words. A stored "running" is this
-// process's live run, or one a restart cut short.
-func stateText(m research.Manifest, live bool) string {
+// stateOf is a stored run's state in plain words, and whether it is going
+// now. A stored "running" is the page's live run, the terminal app's (it
+// holds the shared flag, and this process made the row), or one a restart
+// cut short.
+func (d *dashResearch) stateOf(m research.Manifest) (text string, live bool) {
 	switch {
-	case m.Status == research.StatusRunning && live:
-		return "Running now"
 	case m.Status == research.StatusRunning:
-		return "Interrupted (Tenant restarted)"
+		d.mu.Lock()
+		mine := d.live.Running && m.ID == d.live.RunID
+		terminal := !d.live.Running && d.rc.busy.Load() && !m.Started.Before(d.since)
+		d.mu.Unlock()
+		switch {
+		case mine:
+			return "Running now", true
+		case terminal:
+			return "Running from the terminal", true
+		}
+		return "Interrupted (Tenant restarted)", false
 	case m.Status == research.StatusDone:
-		return "Finished"
+		return "Finished", false
 	case m.Status == research.StatusPartial:
-		return "Partly finished"
+		return "Partly finished", false
 	case strings.HasPrefix(m.ErrorMessage, "research: clarification needed"):
-		return "Asked for more detail"
+		return "Asked for more detail", false
+	case strings.Contains(m.ErrorMessage, context.Canceled.Error()):
+		return "Stopped", false
 	}
-	return "Didn't finish"
+	return "Didn't finish", false
 }
 
 func tookOf(m research.Manifest) string {
@@ -378,15 +389,13 @@ func (d *dashResearch) Report(id string) (dashboard.ResearchReportView, error) {
 	if err != nil {
 		return dashboard.ResearchReportView{}, notInList(err)
 	}
-	d.mu.Lock()
-	live := d.live.Running && d.live.RunID == id
-	d.mu.Unlock()
 	v := dashboard.ResearchReportView{
-		ID: m.ID, Question: m.Question, StateText: stateText(m, live),
+		ID: m.ID, Question: m.Question,
 		When: m.Started.Local().Format("Jan 2, 15:04"), Took: tookOf(m), Model: m.Model, ReplayOf: m.ReplayOf,
 		Body: reportBody(body), Refs: researchRefs(m.References),
 	}
-	if (m.Status == research.StatusError || m.Status == research.StatusPartial) && v.StateText != "Asked for more detail" {
+	v.StateText, v.Live = d.stateOf(m)
+	if v.StateText == "Didn't finish" || v.StateText == "Partly finished" { // not a question back, and not a stop
 		v.Err = plainResearchErr(m.ErrorMessage)
 	}
 	for _, f := range m.Findings {
@@ -405,11 +414,10 @@ func (d *dashResearch) Delete(id string) error {
 	if d.rc.store == nil {
 		return errNoResearchHistory
 	}
-	d.mu.Lock()
-	live := d.live.Running && d.live.RunID == id
-	d.mu.Unlock()
-	if live {
-		return dashboard.PlainError("That research is still running. Stop it first, then delete it.")
+	if m, _, err := d.rc.store.Get(id); err == nil {
+		if _, live := d.stateOf(m); live { // its folder is still being written
+			return dashboard.PlainError("That research is still running. Stop it first, then delete it.")
+		}
 	}
 	return d.rc.ResearchDelete(id)
 }

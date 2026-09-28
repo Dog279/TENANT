@@ -15,8 +15,8 @@ import (
 
 // Research in a real browser, on a phone and on a desktop: the phases and
 // then the report stream in with no reload, the report's links are only the
-// web ones, nothing scrolls sideways, and Delete goes through its confirm
-// step. TENANT_UI_SCREENSHOT=<dir> keeps the screenshots.
+// web ones, nothing scrolls sideways, a re-render leaves an open Stop step
+// or Details open, and Delete goes through its confirm step. TENANT_UI_SCREENSHOT=<dir> keeps the screenshots.
 func TestResearchPageInChrome(t *testing.T) {
 	for _, w := range []int{390, 1440} {
 		t.Run(fmt.Sprint(w), func(t *testing.T) {
@@ -44,19 +44,23 @@ func TestResearchPageInChrome(t *testing.T) {
 			has := func(sel, text string) chromedp.Action {
 				return chromedp.Poll(fmt.Sprintf(`(document.querySelector(%q) || {textContent: ''}).textContent.includes(%q)`, sel, text), nil, chromedp.WithPollingTimeout(5*time.Second))
 			}
-			var mark int
+			var mark, open int
 			var jsLinks int
 			var boldTag bool
 			var bad []string
+			lines := []string{"A helper finished: " + longURL(4)}
 			err := chromedp.Run(ctx,
 				chromedp.Evaluate(`window.__mark = 1`, nil),
 				set(ResearchLiveView{Phase: "researching", Running: true, Question: longName(2), Round: 1, Rounds: 2,
-					Questions: []string{"What is A?", longURL(3)}, Progress: "Questions 1-2 are in progress.", Elapsed: "less than a minute"}),
+					Questions: []string{"What is A?", longURL(3)}, Progress: "Questions 1-2 are in progress.", Elapsed: "less than a minute", Lines: lines}),
 				has("#research-live", "Round 1 of 2"),
 				chromedp.Evaluate(fitsJS, &bad),
 				shoot("running"),
-				set(ResearchLiveView{Phase: "writing", Running: true, Question: longName(2)}),
+				chromedp.Click(`#research-live details.confirm-step > summary`, chromedp.ByQuery),
+				chromedp.Click(`#research-live details.research-lines > summary`, chromedp.ByQuery),
+				set(ResearchLiveView{Phase: "writing", Running: true, Question: longName(2), Elapsed: "4 min", Lines: lines}),
 				has("#research-live", "Writing the report"),
+				chromedp.Evaluate(`document.querySelectorAll('#research-live details[open]').length`, &open),
 				set(ResearchLiveView{Phase: "done", RunID: "r-2", Report: &ResearchReportView{ID: "r-2", Question: longName(2), StateText: "Finished",
 					Body: "# Fake report\nAnswer [1]. <b>not bold</b> [x](javascript:alert(1)) " + strings.Repeat("z", 200) + " [2] [3]",
 					Refs: []ResearchRef{{N: 1, URL: longURL(1)}, {N: 2, URL: "JaVaScRiPt:alert(1)"}, {N: 3, URL: "data:text/html,<script>alert(1)</script>"}}}}),
@@ -73,6 +77,9 @@ func TestResearchPageInChrome(t *testing.T) {
 			}
 			if mark != 1 {
 				t.Error("the page reloaded: the report must stream in")
+			}
+			if open != 2 {
+				t.Errorf("%d of Stop's step and Details open after a re-render, want 2", open)
 			}
 			if jsLinks != 0 || !boldTag {
 				t.Errorf("%d javascript: or data: links; <b> shown as text: %v", jsLinks, boldTag)

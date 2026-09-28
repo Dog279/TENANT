@@ -66,6 +66,7 @@ type ResearchReportView struct {
 	Body                                                      string
 	Refs                                                      []ResearchRef
 	Findings                                                  []ResearchFinding
+	Live                                                      bool // still going: no Delete or Run again
 }
 
 // ResearchRef is one numbered source of a report.
@@ -242,8 +243,8 @@ func (s *Server) handleResearchLive(w http.ResponseWriter, r *http.Request) {
 		v, changed := s.research.Watch()
 		out, err := s.researchPart("research-live", s.researchLive(v))
 		// The list changes when a run starts (its row appears once it has
-		// an id) and when it ends.
-		if key := v.RunID + "|" + strconv.FormatBool(v.Running); err == nil && key != lastHistory {
+		// an id) and when it ends, here or in the terminal.
+		if key := v.RunID + "|" + strconv.FormatBool(v.Running) + "|" + strconv.FormatBool(v.Elsewhere); err == nil && key != lastHistory {
 			lastHistory = key
 			var hist string
 			if hist, err = s.researchPart("research-history", s.researchHistory(ctx)); err == nil {

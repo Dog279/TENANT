@@ -1,7 +1,10 @@
 {{/* research_parts.html: the Research partials (TEN-210), patched over
      /research/live by id. research-live must never carry a data-init: every
-     patch would open another stream. Question, helper and model text goes
-     through visibleText; the report body only through reportHTML. */}}
+     patch would open another stream. A <details> in it carries
+     data-preserve-attr="open", or each re-render (every 15s while a run is
+     going) would close it; Stop's confirm step is written out here for that
+     reason. Question, helper, source and model text goes through
+     visibleText; the report body only through reportHTML. */}}
 
 {{define "research-live"}}<div id="research-live">
 {{- with .Busy}}{{template "ui-busy" .}}{{end}}
@@ -15,7 +18,7 @@
   <ol class="research-qs">{{range .Questions}}<li>{{visibleText .}}</li>{{end}}</ol>
   {{- end}}
   {{if .Waiting}}<div class="banner warn">{{if eq .Waiting 1}}1 action is{{else}}{{.Waiting}} actions are{{end}} waiting for your OK. Research may be paused until you answer. <a href="/safety">Answer it</a></div>{{end}}
-  <div class="actions">{{template "ui-confirm" (confirm "/research/stop" "Stop" "Stop this research? It ends now and no report is written. What the helpers found so far stays in the list.")}}</div>
+  <div class="actions"><details class="confirm-step" data-preserve-attr="open"><summary class="btn sm danger"><span class="c-open">Stop</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Stop"><p>Stop this research? It ends now and no report is written. What the helpers found so far stays in the list.</p><form method="POST" action="/research/stop"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm danger">Yes, stop</button></form></div></details></div>
 </div>
 {{- else if eq .Phase "clarify"}}
 <div class="card research-run">
@@ -40,7 +43,7 @@
 <div class="card research-run">{{template "research-report" .}}</div>
 {{- end}}{{end}}
 {{- if .Lines}}
-<details class="research-lines"><summary>Details</summary><pre>{{range .Lines}}{{visibleText .}}
+<details class="research-lines" data-preserve-attr="open"><summary>Details</summary><pre>{{range .Lines}}{{visibleText .}}
 {{end}}</pre><a href="/logs?q=log:research">Full log</a></details>
 {{- end}}
 </div>{{end}}
@@ -70,10 +73,10 @@
   {{if .Body}}<div class="report">{{.BodyHTML}}</div>{{else}}{{template "ui-empty" "No report was written for this question."}}{{end}}
   {{- if .Refs}}
   <h3>Sources</h3>
-  <ul class="refs">{{range .Refs}}<li id="ref-{{.N}}">[{{.N}}] {{if .Web}}<a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">{{.URL}}</a>{{else}}{{visibleText .URL}}{{end}}</li>{{end}}</ul>
+  <ul class="refs">{{range .Refs}}<li id="ref-{{.N}}">[{{.N}}] {{if .Web}}<a href="{{.URL}}" rel="noopener noreferrer nofollow" target="_blank">{{visibleText .URL}}</a>{{else}}{{visibleText .URL}}{{end}}</li>{{end}}</ul>
   {{- end}}
   {{- if .Findings}}
-  <details class="research-found"><summary>What each helper found ({{len .Findings}})</summary>
+  <details class="research-found" data-preserve-attr="open"><summary>What each helper found ({{len .Findings}})</summary>
   {{range .Findings}}<div class="research-finding"><b>{{visibleText .Question}}</b> <span class="dim">{{.State}}</span>{{if .Body}}<pre class="report">{{visibleText .Body}}</pre>{{end}}</div>{{end}}
   </details>
   {{- end}}
