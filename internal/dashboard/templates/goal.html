@@ -4,7 +4,8 @@
 
 {{/* goal-body is the region Stop re-renders in place (formDone). The busy
      line is ui-busy written out, so its Stop can post through Datastar to
-     its static URL; ui-busy's own Stop takes its URL from the view. */}}
+     its static URL; ui-busy's own Stop takes its URL from the view. Go back
+     to ui-busy once its Stop posts in place. */}}
 {{define "goal-body"}}<div id="goal-body">
 {{template "ui-flash" .}}
 {{if not .Configured}}{{template "ui-off" "Autopilot isn't available here. It runs inside the terminal app, and this Tenant is running as a background service, so there's nothing to show or stop."}}

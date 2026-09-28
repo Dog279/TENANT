@@ -52,7 +52,9 @@ func (f *shrinkingAgents) changes() []string {
 // long pages. Far down each page a change keeps the scroll and the page (a
 // marker set before it survives), its toast says what happened, and the row
 // shows it. A double tap at one spot posts once where a second post would
-// do something: Deny, Add helper, Run again and Stop. On Research the live
+// do something: Deny, Add helper, Run again, Stop, and a Delete step's Yes,
+// whose sheet closes under the finger (the tap guard keeps the second tap
+// off the Run again below it). On Research the live
 // panel still streams afterward, and a started question leaves the box
 // empty. TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
 func TestV2PagesInlineInChrome(t *testing.T) {
@@ -94,18 +96,22 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		return chromedp.Evaluate(`document.querySelector(`+q(sel)+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+
 			`[document.querySelector(`+q(keep)+`).getBoundingClientRect().top, document.querySelector('.page').scrollTop]`, at)
 	}
-	// doubleTap taps the middle of sel's element twice, 120ms apart, at one
-	// spot.
+	// unguarded waits out the tap guard a toast puts over the page, so the
+	// next tap reaches the page.
+	unguarded := chromedp.Poll(`(t => !t.firstChild || getComputedStyle(t, '::before').visibility === 'hidden')(document.getElementById('toast'))`, nil, wait)
+	// doubleTap taps sel's element twice, 150ms apart, at one spot 10px in
+	// from its right end.
 	doubleTap := func(sel string) chromedp.Action {
 		return chromedp.ActionFunc(func(ctx context.Context) error {
 			var xy []float64
-			if err := chromedp.Evaluate(`(r => [r.left + r.width / 2, r.top + r.height / 2])(document.querySelector(`+q(sel)+`).getBoundingClientRect())`, &xy).Do(ctx); err != nil {
+			if err := chromedp.Run(ctx, unguarded,
+				chromedp.Evaluate(`(r => [r.right - 10, r.top + r.height / 2])(document.querySelector(`+q(sel)+`).getBoundingClientRect())`, &xy)); err != nil {
 				return err
 			}
 			if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil {
 				return err
 			}
-			time.Sleep(120 * time.Millisecond)
+			time.Sleep(150 * time.Millisecond)
 			return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
 		})
 	}
@@ -191,17 +197,19 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		t.Errorf("calls %q and %q left in the name box; want one Remove, one Add and an empty box", c, typed)
 	}
 
-	// Research: Delete in the middle of the list, through its confirm step;
-	// Run again, double-tapped, runs once; the live panel still streams; a
-	// started question leaves the box empty.
+	// Research: Delete in the middle of the list, its confirm step's Yes
+	// double-tapped, deletes once and runs nothing; Run again, double-tapped,
+	// runs once; the live panel still streams; a started question leaves the
+	// box empty.
 	var question string
 	err = chromedp.Run(ctx,
 		open("/research"),
 		chromedp.WaitVisible(`#research-live .research-run`, chromedp.ByQuery),
 		center(`.research-row:has(input[value="r-6"])`, `.research-row:has(input[value="r-5"])`, &before),
 		chromedp.Click(`.research-row:has(input[value="r-6"]) details.confirm-step > summary`, chromedp.ByQuery),
-		chromedp.Click(`.research-row:has(input[value="r-6"]) details[open] .confirm-box button`, chromedp.ByQuery),
+		doubleTap(`.research-row:has(input[value="r-6"]) details[open] .confirm-box button`),
 		toastSays("Deleted from the list."),
+		settle,
 		chromedp.WaitNotPresent(`input[value="r-6"]`, chromedp.ByQuery),
 		shot("research"),
 		stayed("/research", `.research-row:has(input[value="r-5"])`, &before),
@@ -214,6 +222,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		}),
 		chromedp.Poll(`document.getElementById('research-live').textContent.includes('Writing the report')`, nil, wait),
 		chromedp.SendKeys(`textarea[name=question]`, "What is new?", chromedp.ByQuery),
+		unguarded,
 		chromedp.Click(`form[action="/research/start"] button`, chromedp.ByQuery),
 		toastSays("Research started."),
 		chromedp.Value(`textarea[name=question]`, &question, chromedp.ByQuery),
