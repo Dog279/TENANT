@@ -176,7 +176,8 @@ func TestAgents_List(t *testing.T) {
 // a confirm step.
 func TestAgents_EditPanelAdvanced(t *testing.T) {
 	fa := sampleAgents()
-	body := get(t, agentsServer(fa, cloudModels...), "/agents?edit=Programmer").Body.String()
+	// A Windows checkout gives the templates CRLF line ends.
+	body := strings.ReplaceAll(get(t, agentsServer(fa, cloudModels...), "/agents?edit=Programmer").Body.String(), "\r\n", "\n")
 	if !slices.Contains(fa.calls, "Soul|Programmer") {
 		t.Errorf("Soul not read for the editor: %q", fa.calls)
 	}
