@@ -104,8 +104,10 @@ func (c inlineChrome) inPlace(step, sel string, act ...chromedp.Action) {
 }
 
 // Scheduled jobs answer in place on a phone (DESIGN.md "Forms that don't
-// reload"): turning off a job far down the page keeps the scroll and the
-// page, and its card says off; a double tap on Run now runs it once; a
+// reload"): a double tap on the exec switch's Turn off turns it off once
+// and doesn't open the Turn on step that moves under it; turning off a job
+// far down the page keeps the scroll and the page, and its card says off; a
+// double tap on Run now runs it once; a
 // double tap on Delete's Yes removes the card, closes the step and runs
 // nothing; a job added is listed and the add form comes back empty; a
 // failed add keeps what was typed.
@@ -115,15 +117,31 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		jobs = append(jobs, CronJobView{ID: fmt.Sprintf("j%d", i), Name: fmt.Sprintf("job %d", i), Spec: "0 9 * * 1-5",
 			Prompt: "Read the day's messages and post a short summary to Discord.", Enabled: true, NextRun: "2026-09-29 09:00"})
 	}
-	fc := &fakeCronCtl{jobs: jobs}
+	fc := &fakeCronCtl{jobs: jobs, execOn: true}
 	s := New(Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, nil, nil, nil, nil, nil)
 	s.SetCron(fc)
 	c := newInlineChrome(t, s, "/cron", "cron")
 
+	// After Turn off, the Turn on step's button is where Turn off was: the
+	// page doesn't let the second tap open it.
+	var stepOpen bool
+	c.run("a double tap on the exec switch's Turn off",
+		doubleTap(`form[action="/cron/exec"] button`),
+		c.toast("ok", "Scheduled jobs can't make changes now."),
+		chromedp.Sleep(300*time.Millisecond),
+		chromedp.Evaluate(`document.querySelector('.page details[open]') !== null`, &stepOpen),
+		c.shot("exec-off"),
+	)
+	fc.set(func() {
+		if stepOpen || fmt.Sprint(fc.execCalls) != "[false]" {
+			t.Errorf("a double tap on Turn off: a confirm step open %v, exec calls %v; want none open and one call to turn it off", stepOpen, fc.execCalls)
+		}
+	})
+
 	var head, btn string
 	c.inPlace("Turn off", "#cron-j6",
 		chromedp.Click(`#cron-j6 form[action="/cron/enable"] button`, chromedp.ByQuery),
-		c.toast("ok", "Job turned off."),
+		c.toast("ok", "job 6 is off."),
 		c.shot("turn-off"),
 		chromedp.Text(`#cron-j6 .ghead`, &head, chromedp.ByQuery),
 		chromedp.Text(`#cron-j6 form[action="/cron/enable"] button`, &btn, chromedp.ByQuery),
@@ -136,7 +154,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	// whose throttle drops the second.
 	c.inPlace("a double tap on Run now", "#cron-j6",
 		doubleTap(`#cron-j6 form[action="/cron/run"] button`),
-		c.toast("ok", "Running now."),
+		c.toast("ok", "job 6 is running now."),
 		chromedp.Sleep(300*time.Millisecond), // room for a second post to land
 	)
 	fc.set(func() {
@@ -156,7 +174,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 		chromedp.Click(`#cron-j4 details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#cron-j4 details[open] .confirm-box button`, chromedp.ByQuery),
 		doubleTap(`#cron-j4 details[open] .confirm-box button`),
-		c.toast("ok", "Job deleted."),
+		c.toast("ok", "job 4 is deleted."),
 		c.shot("delete"),
 		chromedp.Sleep(300*time.Millisecond),
 		chromedp.Evaluate(`document.getElementById('cron-j4') === null && document.querySelector('.page details[open]') === null`, &gone),

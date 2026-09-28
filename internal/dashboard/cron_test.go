@@ -202,7 +202,7 @@ func TestCron_AddFormRequiresFields(t *testing.T) {
 }
 
 func TestCron_EnableDeleteRunForms(t *testing.T) {
-	fc := &fakeCronCtl{}
+	fc := &fakeCronCtl{jobs: []CronJobView{{ID: "abc"}}}
 	s := cronServer(fc)
 
 	if rec := cronPostForm(t, s, "/cron/enable", "id=abc&enabled=false"); rec.Code != http.StatusSeeOther {
@@ -311,7 +311,8 @@ func TestCron_InlineAnswersEveryForm(t *testing.T) {
 // job is listed and the add form comes back under a new id, so its boxes are
 // empty. An error is an alert with the plain message and nothing
 // re-rendered, so what was typed stays. A plain post still gets the 303 and
-// its flash, and Delete without its confirm step is still 428.
+// its flash, and Delete without its confirm step is still 428. A job that
+// has gone since the page was drawn is an alert, not a false success.
 func TestCron_Inline(t *testing.T) {
 	c := installCapture(t)
 	fc := &fakeCronCtl{jobs: []CronJobView{{ID: "j1", Name: "nightly", Spec: "@daily", Enabled: true}, {ID: "j2", Spec: "@hourly", Enabled: true}}}
@@ -323,7 +324,7 @@ func TestCron_Inline(t *testing.T) {
 	body := post("/cron/enable", url.Values{"id": {"j1"}, "enabled": {"false"}}, datastar)
 	_, card, _ := strings.Cut(body, `id="cron-j1"`)
 	card, _, _ = strings.Cut(card, `id="cron-j2"`)
-	if !strings.Contains(body, `<div id="toast" class="toast ok"><span class="toast-text">Job turned off. It won&#39;t run until you turn it on again.</span>`) ||
+	if !strings.Contains(body, `<div id="toast" class="toast ok"><span class="toast-text">nightly is off. It won&#39;t run until you turn it on again.</span>`) ||
 		!strings.Contains(card, `<span class="dim">off</span>`) || !strings.Contains(card, `<input type="hidden" name="enabled" value="true">`) || !strings.Contains(card, ">Turn on</button>") {
 		t.Errorf("Turn off in place: want the toast and the card showing off:\n%s", body)
 	}
@@ -355,9 +356,23 @@ func TestCron_Inline(t *testing.T) {
 	}
 
 	rec := sendForm(s.Handler(), http.MethodPost, "/cron/run", url.Values{"id": {"j2"}}, nil)
-	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/cron?msg=Running+now.") {
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/cron?msg=j2+is+running+now.") {
 		t.Errorf("a plain post: %d to %q, want 303 to /cron with its flash", rec.Code, loc)
 	}
+
+	// A stale page: a job deleted elsewhere is named as gone, and nothing
+	// is called or re-rendered, rather than a success the engine didn't do.
+	for _, path := range []string{"/cron/enable", "/cron/run", "/cron/delete"} {
+		body = post(path, url.Values{"id": {"gone"}, "enabled": {"false"}, "confirm": {"yes"}}, datastar)
+		if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">That job isn&#39;t there any more.`) || strings.Contains(body, `id="jobs-body"`) {
+			t.Errorf("%s for a job that has gone: want the alert and nothing re-rendered:\n%s", path, body)
+		}
+	}
+	fc.set(func() {
+		if slices.Contains(fc.enableCalls, "gone:false") || slices.Contains(fc.runCalls, "gone") || slices.Contains(fc.removeCalls, "gone") {
+			t.Errorf("a job that has gone reached the control: %v %v %v", fc.enableCalls, fc.runCalls, fc.removeCalls)
+		}
+	})
 
 	rec = sendForm(s.Handler(), http.MethodPost, "/cron/delete", url.Values{"id": {"j1"}}, datastar)
 	if rec.Code != http.StatusPreconditionRequired || len(fc.Jobs()) != 4 {

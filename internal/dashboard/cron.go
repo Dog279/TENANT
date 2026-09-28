@@ -177,21 +177,44 @@ func (s *Server) handleCronExecForm(w http.ResponseWriter, r *http.Request) {
 	s.cronDone(w, r, "Scheduled jobs can't make changes now.", "", false)
 }
 
+// cronJob is how a job's toast names it, as its card does, so a tap that
+// went to another job, or was dropped, shows. ok is false when the page was
+// stale and the job has gone (the engine would quietly do nothing).
+func (s *Server) cronJob(id string) (name string, ok bool) {
+	for _, j := range s.cron.Jobs() {
+		if j.ID == id {
+			if j.Name != "" {
+				return visibleText(j.Name), true
+			}
+			return j.ID, true
+		}
+	}
+	return "", false
+}
+
+const cronGone = "That job isn't there any more. Reload the page to see your jobs as they are now."
+
 func (s *Server) handleCronEnableForm(w http.ResponseWriter, r *http.Request) {
 	if s.cron == nil {
 		s.cronDone(w, r, "", "", false)
 		return
 	}
+	id := r.FormValue("id")
+	name, ok := s.cronJob(id)
+	if !ok {
+		s.cronDone(w, r, "", cronGone, false)
+		return
+	}
 	on := r.FormValue("enabled") == "true"
-	if err := s.cron.SetEnabled(r.FormValue("id"), on); err != nil {
+	if err := s.cron.SetEnabled(id, on); err != nil {
 		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron set-enabled", err, "Couldn't update that job."), false)
 		return
 	}
 	if on {
-		s.cronDone(w, r, "Job turned on. It runs on its schedule.", "", false)
+		s.cronDone(w, r, name+" is on. It runs on its schedule.", "", false)
 		return
 	}
-	s.cronDone(w, r, "Job turned off. It won't run until you turn it on again.", "", false)
+	s.cronDone(w, r, name+" is off. It won't run until you turn it on again.", "", false)
 }
 
 func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
@@ -199,11 +222,17 @@ func (s *Server) handleCronDeleteForm(w http.ResponseWriter, r *http.Request) {
 		s.cronDone(w, r, "", "", false)
 		return
 	}
-	if err := s.cron.Remove(r.FormValue("id")); err != nil {
+	id := r.FormValue("id")
+	name, ok := s.cronJob(id)
+	if !ok {
+		s.cronDone(w, r, "", cronGone, false)
+		return
+	}
+	if err := s.cron.Remove(id); err != nil {
 		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron remove", err, "Couldn't delete that job."), false)
 		return
 	}
-	s.cronDone(w, r, "Job deleted.", "", false)
+	s.cronDone(w, r, name+" is deleted.", "", false)
 }
 
 func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
@@ -211,9 +240,15 @@ func (s *Server) handleCronRunForm(w http.ResponseWriter, r *http.Request) {
 		s.cronDone(w, r, "", "", false)
 		return
 	}
-	if err := s.cron.RunNow(r.FormValue("id")); err != nil {
+	id := r.FormValue("id")
+	name, ok := s.cronJob(id)
+	if !ok {
+		s.cronDone(w, r, "", cronGone, false)
+		return
+	}
+	if err := s.cron.RunNow(id); err != nil {
 		s.cronDone(w, r, "", s.flashFor(r.Context(), "cron run", err, "Couldn't run that job."), false)
 		return
 	}
-	s.cronDone(w, r, "Running now. The result appears in the Activity feed.", "", false)
+	s.cronDone(w, r, name+" is running now. The result appears in the Activity feed.", "", false)
 }
