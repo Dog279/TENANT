@@ -1,6 +1,12 @@
 {{define "content"}}
-{{template "ui-flash" .}}
+{{template "access-body" .}}
+{{end}}
 
+{{/* access-body is the region an Access form re-renders in place (formDone).
+     Every form here posts through Datastar to its own static URL. The flash
+     is inside it, so a banner from a plain post goes once a toast replies. */}}
+{{define "access-body"}}<div id="access-body">
+{{template "ui-flash" .}}
 {{if not .Configured}}
 {{template "ui-off" "Access settings aren't available on this Tenant."}}
 {{else}}
@@ -15,12 +21,12 @@
   <div class="row">
     <div><strong>Your agent answers iMessages</strong> {{if .View.ResponderOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
     {{if .View.ResponderOn}}
-    <form method="POST" action="/access/imessage/responder" class="inline">
+    <form method="POST" action="/access/imessage/responder" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/imessage/responder', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="on" value="false">
       <button type="submit" class="btn">Turn off</button>
     </form>
     {{else}}
-    {{template "ui-confirm" (confirmGo "/access/imessage/responder" "Turn on" "Your agent reads and answers iMessages from the people listed below, and acts on what they ask as the safety settings below allow." "on" "true")}}
+    {{template "ui-confirm" (inline (confirmGo "/access/imessage/responder" "Turn on" "Your agent reads and answers iMessages from the people listed below, and acts on what they ask as the safety settings below allow." "on" "true"))}}
     {{end}}
   </div>
   {{else}}
@@ -35,9 +41,9 @@
   <div class="row">
     <span class="nm">{{.}}</span>
     {{if $.View.SingleHandle}}
-    {{template "ui-confirm" (confirm "/access/imessage/deny" "Remove" "Nobody will be able to message your agent on iMessage until you add someone again." "handle" .)}}
+    {{template "ui-confirm" (inline (confirm "/access/imessage/deny" "Remove" "Nobody will be able to message your agent on iMessage until you add someone again." "handle" .))}}
     {{else}}
-    <form method="POST" action="/access/imessage/deny" class="inline">
+    <form method="POST" action="/access/imessage/deny" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/imessage/deny', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="handle" value="{{.}}">
       <button type="submit" class="btn sm">Remove</button>
     </form>
@@ -47,8 +53,8 @@
   {{template "ui-empty" "Nobody can message your agent on iMessage yet. Add a phone number or email below."}}
   {{end}}
   <div class="cronactions mt">
-    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Add someone</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Add someone"><p>This person will be able to give your agent instructions by iMessage.</p><form method="POST" action="/access/imessage/allow"><input type="text" name="handle" placeholder="phone number or email" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, allow them</button></form></div></details>
-    {{if .View.Handles}}{{template "ui-confirm" (confirm "/access/imessage/clear" "Remove everyone" "Nobody will be able to message your agent on iMessage until you add someone again.")}}{{end}}
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">Add someone</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Add someone"><p>This person will be able to give your agent instructions by iMessage.</p><form method="POST" action="/access/imessage/allow" data-on:submit__prevent__throttle.1s="@post('/access/imessage/allow', {contentType:'form', retryMaxCount:0})"><input type="text" name="handle" placeholder="phone number or email" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, allow them</button></form></div></details>
+    {{if .View.Handles}}{{template "ui-confirm" (inline (confirm "/access/imessage/clear" "Remove everyone" "Nobody will be able to message your agent on iMessage until you add someone again."))}}{{end}}
   </div>
 </div>
 
@@ -60,9 +66,9 @@
     <div><strong>{{or .Title .Category}}</strong>{{if .New}} <span class="tag-new">New</span>{{end}}
       <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
     <div class="cronactions">
-      {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/imessage/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
-      {{if ne .Mode "allow"}}{{template "ui-confirm" (confirmGo "/access/imessage/permission" "Allow" (printf "iMessage conversations can %s without asking you." .Can) "category" .Category "mode" "allow")}}{{end}}
-      {{if ne .Mode "deny"}}<form method="POST" action="/access/imessage/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
+      {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/imessage/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/imessage/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
+      {{if ne .Mode "allow"}}{{template "ui-confirm" (inline (confirmGo "/access/imessage/permission" "Allow" (printf "iMessage conversations can %s without asking you." .Can) "category" .Category "mode" "allow"))}}{{end}}
+      {{if ne .Mode "deny"}}<form method="POST" action="/access/imessage/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/imessage/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
     </div>
   </div>
   {{end}}
@@ -79,23 +85,23 @@
   <div class="row">
     <div><strong>Discord relay</strong> {{if .View.RelayRunning}}<span class="on-tag">running</span>{{else}}<span class="dim">stopped</span>{{end}}</div>
     {{if .View.RelayRunning}}
-    <form method="POST" action="/access/discord/enable" class="inline">
+    <form method="POST" action="/access/discord/enable" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/discord/enable', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="on" value="false">
       <button type="submit" class="btn">Stop</button>
     </form>
     {{else}}
-    {{template "ui-confirm" (confirmGo "/access/discord/enable" "Start" "Messages in your Discord conversations reach your agent, and it answers them as the settings below allow." "on" "true")}}
+    {{template "ui-confirm" (inline (confirmGo "/access/discord/enable" "Start" "Messages in your Discord conversations reach your agent, and it answers them as the settings below allow." "on" "true"))}}
     {{end}}
   </div>
   <div class="row">
     <div><strong>Let Discord messages make changes</strong> {{if .View.ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
     {{if .View.ExecOn}}
-    <form method="POST" action="/access/discord/exec" class="inline">
+    <form method="POST" action="/access/discord/exec" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/discord/exec', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="on" value="false">
       <button type="submit" class="btn">Turn off</button>
     </form>
     {{else}}
-    {{template "ui-confirm" (confirmGo "/access/discord/exec" "Turn on" "Discord messages can then ask your agent to run commands, change files, take irreversible actions and send messages, each as its safety setting below says." "on" "true")}}
+    {{template "ui-confirm" (inline (confirmGo "/access/discord/exec" "Turn on" "Discord messages can then ask your agent to run commands, change files, take irreversible actions and send messages, each as its safety setting below says." "on" "true"))}}
     {{end}}
   </div>
   {{if not .View.ExecOn}}<div class="dim">While this is off, running commands, changing files, irreversible actions, leaving the sandbox and sending messages are refused over Discord, whatever the settings below say. Discord posts and reactions still follow Send messages.</div>{{end}}
@@ -104,7 +110,7 @@
 <div class="card">
   <div class="row">
     <div><strong>Your Discord user ID</strong> <span class="dim">{{if .View.OperatorID}}{{.View.OperatorID}}{{else}}not set{{end}}</span></div>
-    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">{{if .View.OperatorID}}Change{{else}}Set it{{end}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Your Discord user ID"><p>Only this Discord account will be able to approve your agent's risky actions from Discord.</p><form method="POST" action="/access/discord/operator"><input type="text" name="operator" value="{{.View.OperatorID}}" placeholder="your numeric Discord user ID" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, save it</button></form></div></details>
+    <details class="confirm-step go"><summary class="btn sm"><span class="c-open">{{if .View.OperatorID}}Change{{else}}Set it{{end}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Your Discord user ID"><p>Only this Discord account will be able to approve your agent's risky actions from Discord.</p><form method="POST" action="/access/discord/operator" data-on:submit__prevent__throttle.1s="@post('/access/discord/operator', {contentType:'form', retryMaxCount:0})"><input type="text" name="operator" value="{{.View.OperatorID}}" placeholder="your numeric Discord user ID" class="cinput" required><input type="hidden" name="confirm" value="yes"> <button type="submit" class="btn sm">Yes, save it</button></form></div></details>
   </div>
   {{if not .View.OperatorSet}}<div class="dim risk">No Discord user ID set: the relay won't start until you set one.</div>{{end}}
 </div>
@@ -117,9 +123,9 @@
     <div><strong>{{or .Title .Category}}</strong>{{if .New}} <span class="tag-new">New</span>{{end}}
       <div class="dim">{{if eq .Mode "allow"}}Can {{.Can}} without asking you.{{else if eq .Mode "deny"}}Can't {{.Can}}. It won't ask.{{else}}Asks you before it can {{.Can}}.{{end}}</div></div>
     <div class="cronactions">
-      {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/discord/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
-      {{if ne .Mode "allow"}}{{template "ui-confirm" (confirmGo "/access/discord/permission" "Allow" (printf "Discord conversations can %s without asking you." .Can) "category" .Category "mode" "allow")}}{{end}}
-      {{if ne .Mode "deny"}}<form method="POST" action="/access/discord/permission" class="inline"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
+      {{if or .New (ne .Mode "ask")}}<form method="POST" action="/access/discord/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/discord/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="ask"><button type="submit" class="btn sm">{{if .New}}Keep asking{{else}}Ask first{{end}}</button></form>{{end}}
+      {{if ne .Mode "allow"}}{{template "ui-confirm" (inline (confirmGo "/access/discord/permission" "Allow" (printf "Discord conversations can %s without asking you." .Can) "category" .Category "mode" "allow"))}}{{end}}
+      {{if ne .Mode "deny"}}<form method="POST" action="/access/discord/permission" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/discord/permission', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="category" value="{{.Category}}"><input type="hidden" name="mode" value="deny"><button type="submit" class="btn sm">Block</button></form>{{end}}
     </div>
   </div>
   {{end}}
@@ -127,4 +133,4 @@
 {{end}}
 
 {{end}}
-{{end}}
+</div>{{end}}

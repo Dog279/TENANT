@@ -125,8 +125,8 @@ Every page shows each of these that can happen to it, and a page test covers eac
 | off | the control is nil: `ui-off`, "<Feature> isn't available on this Tenant." |
 | empty | `ui-empty`: what will appear here, and how to make it appear |
 | loading | `.loading`, only where a result arrives after the page: the Quality check run, Research, and connecting or testing a remote service. Every other page renders complete. |
-| error | `ui-flash` with `?err=` (`role=alert`) |
-| success | `ui-flash` with `?msg=` (`role=status`) |
+| error | `ui-flash` with `?err=` (`role=alert`); on a page whose forms don't reload (§8), an error toast |
+| success | `ui-flash` with `?msg=` (`role=status`); on a page whose forms don't reload (§8), a toast |
 | busy | the status strip on every page, and `ui-busy` where a page has its own work (Research) |
 
 **Errors (D21).** A handler shows a control's error only when it is a `PlainError`, which an adapter returns for the failures it can phrase ("A helper named X already exists."). Anything else shows the action's fixed plain message, and the raw error goes to the log:
@@ -166,14 +166,32 @@ Secret routes never put a control's error in a URL.
   A dropped connection, a refusal or the stream ending shows it at once, and the stream's next patch hides it. So such a stream sends a patch as soon as it opens (a snapshot); otherwise a reconnect leaves the banner up. `TestLiveBannerInChrome` checks it.
 - A Datastar request answered 401 means the sign-in has gone stale (the key changed, or another Tenant on this host signed the browser in): the status wrapper in `layout.html` sends the page to the sign-in form, which brings it back. One refused request, not one every 20s in the Security log.
 - Buttons that send a decision carry `data-indicator:_sending` and `data-attr:disabled="$_sending"`, so a double tap sends once.
-- Patches are outer `datastar-patch-elements`, keyed on element IDs. The IDs are a contract: `#ui-status`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`. There are no new event kinds.
+- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, `#access-body`. There are no new event kinds.
 - **F1:** no text from a request or an agent goes into a Datastar attribute other than `data-on:*`, and there only numbers or URLs built with `url.Values.Encode` or `url.PathEscape`. The browser decodes the attribute before Datastar evaluates it, so a quote in it would be script. Untrusted text goes in element content, where html/template escapes it. `template.HTML` is used only through `reportHTML`, which escapes first.
+
+### Forms that don't reload
+
+A form post answered with `redirectFlash` reloads the page, which jumps back to the top. Where the operator works down a long list one row at a time (Access), the form posts in place instead: the page stays where it was, the row shows its new state, and a toast says what happened. Access uses it on every form; other pages keep `redirectFlash` until they adopt it.
+
+- The form keeps `method="POST" action="…"`, so it still works before Datastar loads, and adds `data-on:submit__prevent__throttle.1s="@post('/access/discord/permission', {contentType:'form', retryMaxCount:0})"`. The URL is a literal (F1), and a row's values are form fields, never part of the expression. Datastar sends the form's fields form-encoded, with the `Origin` header a browser always sends on a POST, so `secure()`'s checks are unchanged. A confirm step opts in with `inline`: `{{template "ui-confirm" (inline (confirmGo "/access/discord/permission" "Allow" …))}}`.
+  - `throttle.1s`: the morph reuses a row's form for the row that moves into its place, so without it a double tap on Remove removes two people.
+  - `retryMaxCount:0`: otherwise Datastar sends a post again after a dropped connection, up to 10 times over about 4 minutes, and a change could land minutes after the operator gave up on it.
+- The handler answers with `formDone` wherever it would call `redirectFlash`:
+
+  ```go
+  func (s *Server) formDone(w http.ResponseWriter, r *http.Request, page, msg, errMsg string, region func() (string, error))
+  ```
+
+  A plain POST still gets the 303 and its flash. A Datastar POST gets three patches: `#toast` (mode `replace`, so a new toast starts its fade again), `#ui-status`, and `region()`, the page's changed part rendered from a `{{define}}` with a stable ID (`access-body` renders `#access-body`), which Datastar morphs. The scroll, the focus and text typed in an input stay; an open confirm step closes, because the new HTML has no `open`. An error changed nothing, so it leaves `region()` out: an open step stays open with what was typed in it. Errors still go through `flashFor`. The region holds the page's `ui-flash`, so a banner from a plain post goes with the first in-place answer.
+- The toast is `ui-toast` in `ui.html`, patched into `#toast` inside `layout.html`'s never-patched `.toast-wrap`, which is `aria-live="polite"`: a screen reader reads a change inside a live region that was already there, not a new element's own `role=status`. Success fades after about 3 seconds (CSS only). An error is `role=alert` and stays until its close button or the next toast. It sits top right on a desktop, and across the top on a phone, clear of the rows the thumb works on.
+- Datastar patches nothing for a reply that isn't 200 (a 403, a 428 from a stale page, a 500) or for a dropped connection. `.toast-wrap` watches its forms' posts and shows `#toast-fail`, a fixed "That didn't go through. Reload the page and try again.", until the next post starts or it's closed. `needConfirm` still answers 428 without `confirm=yes`, so a stale page gets that alert, never the change.
+- Tests: a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm`), and a browser test that the scroll and the page survive, a double tap sends once, and a stale page gets `#toast-fail` (`TestAccessInlineFormsInChrome`).
 
 ## 9. A new page
 
 1. Go: an interface for its control, render-ready view structs, `SetX`, and `mountXSSR` called from `routes()`. Handlers are nil-safe: a nil control renders `ui-off`.
 2. A template with `{{define "content"}}` that uses `ui-flash`, `ui-off`, `ui-empty`, and `ui-confirm` for every action §5 covers.
 3. A nav line in its D15 slot in `layout.html`, a title equal to its label, and a `.Page` key.
-4. Mutations are form POSTs answered with `redirectFlash`, each dangerous one wrapped in `needConfirm`, its errors through `flashFor`.
+4. Mutations are form POSTs answered with `redirectFlash` (or `formDone`, where they shouldn't reload: §8), each dangerous one wrapped in `needConfirm`, its errors through `flashFor`.
 5. Styles only inside the page's marker block at the end of `styles.css`, using the classes above first.
 6. Tests: register a fake from an `init()` (`harnessFakes`, `harnessPages` in `render_all_test.go`), a states table, the confirm rows, and the page passes the plain-language and 390px sweeps unchanged.

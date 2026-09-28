@@ -28,7 +28,7 @@ func TestHomeAlertCard(t *testing.T) {
 	t.Cleanup(func() { _ = h.Close() })
 	s := New(Config{}, nil, nil, nil, nil, nil)
 	s.SetLogs(h)
-	if body := get(t, s, "/").Body.String(); !strings.Contains(body, "healthy") || strings.Contains(body, "alert") {
+	if body := get(t, s, "/").Body.String(); !strings.Contains(body, "healthy") || strings.Contains(body, "log:alerts") { // every page has role="alert" (#toast-fail)
 		t.Fatalf("no alerts:\n%s", body)
 	}
 	other, err := store.Open(filepath.Join(root, "logbook.db"), store.Options{}) // another process's

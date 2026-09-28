@@ -148,30 +148,33 @@ func (failingMem) CompactionProvenance() (*CompactionProvenanceView, error) {
 	return nil, errors.New(rawStoreClosed)
 }
 
+// harnessPerms is every safety check, allowed; with newOnes the three an
+// update added ask and are tagged New.
+func harnessPerms(newOnes bool) []PermissionRow {
+	var out []PermissionRow
+	for _, c := range []struct{ cat, title, can string }{
+		{"exec", "Run commands", "run commands and programs on this computer"},
+		{"write", "Change files", "create and change files on this computer"},
+		{"destructive", "Irreversible actions", "do things that can't be undone"},
+		{"web", "Act on websites", "click, type and submit forms on websites"},
+		{"send", "Send messages", "send email, texts and posts in your name"},
+		{"egress", "Share private data", "send private information it has read to an outside service"},
+		{"mcp", "Connect remote services", "connect new remote services and trust their tools"},
+		{"sandbox", "Leave the sandbox", "run a command outside the safety box after the box stopped it"},
+	} {
+		isNew := newOnes && (c.cat == "egress" || c.cat == "mcp" || c.cat == "sandbox")
+		mode := "allow"
+		if isNew {
+			mode = "ask"
+		}
+		out = append(out, PermissionRow{Category: c.cat, Mode: mode, Desc: c.can, Title: c.title, Can: c.can, New: isNew})
+	}
+	return out
+}
+
 // installExistingFakes wires a fake for every control that existed before
 // Dashboard v2. Only the GitHub repo list and memory have reads that fail.
 func installExistingFakes(s *Server, mode fakeMode) {
-	perms := func(newOnes bool) []PermissionRow {
-		var out []PermissionRow
-		for _, c := range []struct{ cat, title, can string }{
-			{"exec", "Run commands", "run commands and programs on this computer"},
-			{"write", "Change files", "create and change files on this computer"},
-			{"destructive", "Irreversible actions", "do things that can't be undone"},
-			{"web", "Act on websites", "click, type and submit forms on websites"},
-			{"send", "Send messages", "send email, texts and posts in your name"},
-			{"egress", "Share private data", "send private information it has read to an outside service"},
-			{"mcp", "Connect remote services", "connect new remote services and trust their tools"},
-			{"sandbox", "Leave the sandbox", "run a command outside the safety box after the box stopped it"},
-		} {
-			isNew := newOnes && (c.cat == "egress" || c.cat == "mcp" || c.cat == "sandbox")
-			mode := "allow"
-			if isNew {
-				mode = "ask"
-			}
-			out = append(out, PermissionRow{Category: c.cat, Mode: mode, Desc: c.can, Title: c.title, Can: c.can, New: isNew})
-		}
-		return out
-	}
 	var (
 		jobs     []CronJobView
 		keys     []ServiceKeyView
@@ -212,8 +215,8 @@ func installExistingFakes(s *Server, mode fakeMode) {
 	s.SetMCP(&fakeMCPCtl{servers: servers})
 	s.SetIntegrations(&fakeIntegrationsCtl{list: integ})
 	s.SetAccess(&fakeAccess{view: AccessView{
-		IMessageAvailable: true, ResponderAvailable: true, ResponderOn: true, Handles: handles, IMessagePerms: perms(false),
-		DiscordAvailable: true, RelayConfigured: true, RelayRunning: true, OperatorSet: true, OperatorID: strings.Repeat("9", 60), ExecOn: true, DiscordPerms: perms(true),
+		IMessageAvailable: true, ResponderAvailable: true, ResponderOn: true, Handles: handles, IMessagePerms: harnessPerms(false),
+		DiscordAvailable: true, RelayConfigured: true, RelayRunning: true, OperatorSet: true, OperatorID: strings.Repeat("9", 60), ExecOn: true, DiscordPerms: harnessPerms(true),
 	}})
 	s.SetApprovals(&fakeApprovals{pending: approval})
 	s.SetRules(&fakeRules{rows: rules})
