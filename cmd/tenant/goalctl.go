@@ -150,6 +150,23 @@ func (gc *goalControl) Clear() string {
 	if gc.condition == "" {
 		return "no goal is active"
 	}
+	return gc.clearLocked()
+}
+
+// stopIfRunning is the dashboard's Stop: it clears a goal only while it is
+// still running (set, not met), under one lock, so a goal the TUI ends at the
+// same moment (met, cap, judge error) or a second Stop reports false.
+func (gc *goalControl) stopIfRunning() (status string, ok bool) {
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	if gc.condition == "" || gc.met {
+		return "", false
+	}
+	return gc.clearLocked(), true
+}
+
+// clearLocked clears the set goal; gc.mu is held.
+func (gc *goalControl) clearLocked() string {
 	had := gc.condition
 	gc.condition = ""
 	gc.met = false

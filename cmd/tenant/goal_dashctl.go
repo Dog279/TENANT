@@ -4,7 +4,11 @@ package main
 // goalControl (TEN-212). It is the same goalControl the TUI drives (D16), so
 // the page shows the real loop, and a Stop there is the TUI's /goal clear.
 
-import "tenant/internal/dashboard"
+import (
+	"strings"
+
+	"tenant/internal/dashboard"
+)
 
 // dashGoal adapts goalControl to dashboard.GoalControl.
 type dashGoal struct {
@@ -32,7 +36,7 @@ func (d dashGoal) Show() dashboard.GoalStatusView {
 		Turns:     st.Turns,
 		MaxTurns:  st.MaxTurns,
 		Elapsed:   st.ElapsedFmt,
-		LastCheck: st.LastJudge,
+		LastCheck: plainCheck(st.LastJudge),
 	}
 }
 
@@ -40,12 +44,21 @@ func (d dashGoal) Show() dashboard.GoalStatusView {
 // returns "" once cleared, so the TUI starts nothing more. The TUI feed hears
 // about it, since the operator there didn't do it.
 func (d dashGoal) Clear() bool {
-	if !d.gc.Active() {
-		return false
-	}
-	s := d.gc.Clear()
-	if d.notify != nil {
+	s, ok := d.gc.stopIfRunning()
+	if ok && d.notify != nil {
 		d.notify(s + " (stopped from the dashboard)")
 	}
-	return true
+	return ok
+}
+
+// plainCheck keeps goalctl's own status texts off the page (D21); the judge's
+// reason, the model's words, passes through for visibleText.
+func plainCheck(s string) string {
+	switch {
+	case s == "judge returned empty response", s == "judge response was unparseable":
+		return "The check gave no clear answer."
+	case s == "goal achieved", strings.HasPrefix(s, "turn cap reached"):
+		return "" // the loop is ending; the page says so on its next load
+	}
+	return s
 }

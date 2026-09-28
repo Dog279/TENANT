@@ -403,3 +403,29 @@ func TestDashGoal_ShowAndClear(t *testing.T) {
 		t.Error("Clear on a met goal should report nothing running")
 	}
 }
+
+// goalctl's own status texts never reach the page as "Latest check" (D21):
+// an empty judge reply reads plainly, the cap line is dropped, and the
+// judge's own reason passes through.
+func TestDashGoal_LatestCheckIsPlain(t *testing.T) {
+	gc := &goalControl{maxTurns: 2}
+	d := newDashGoal(gc, nil)
+	_, _, _ = gc.Set(context.Background(), "x")
+	_, empty := parseJudgeVerdict("")
+	gc.turns = gc.maxTurns
+	if _, _, atCap, _ := gc.Judge(context.Background(), ""); !atCap {
+		t.Fatal("Judge at the cap should report atCap")
+	}
+	capLine := gc.Show().LastJudge
+	for raw, want := range map[string]string{
+		empty:                            "The check gave no clear answer.",
+		"judge response was unparseable": "The check gave no clear answer.",
+		capLine:                          "",
+		"the tests still fail":           "the tests still fail",
+	} {
+		gc.lastJudge = raw
+		if got := d.Show().LastCheck; got != want {
+			t.Errorf("LastJudge %q shows %q, want %q", raw, got, want)
+		}
+	}
+}

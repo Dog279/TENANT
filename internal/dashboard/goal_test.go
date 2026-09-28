@@ -147,16 +147,25 @@ func TestGoal_Stop(t *testing.T) {
 }
 
 // The condition and the latest check are escaped, and their hidden
-// characters show (F10): the check is the model's own words.
+// characters show (F10), on the running card and the "Goal reached" one.
 func TestGoal_EscapesAndShowsHidden(t *testing.T) {
-	body := get(t, goalServer(&fakeGoal{view: GoalStatusView{Active: true, MaxTurns: 20,
-		Condition: "<script>alert(1)</script>", LastCheck: "fine‮<b>x</b>"}}), "/goal").Body.String()
-	if strings.Contains(body, "<script>alert") || strings.Contains(body, "<b>x") {
-		t.Error("the condition or the check reached the page unescaped")
-	}
-	for _, w := range []string{"&lt;script&gt;alert(1)&lt;/script&gt;", "fine⟨U&#43;202E⟩&lt;b&gt;x&lt;/b&gt;"} {
-		if !strings.Contains(body, w) {
-			t.Errorf("missing %q in:\n%s", w, body[strings.Index(body, `<section class="page"`):])
+	cond := "<script>alert(1)</script>go\u202Eal"
+	for name, v := range map[string]GoalStatusView{
+		"running": {Active: true, MaxTurns: 20, Condition: cond, LastCheck: "fine\u202E<b>x</b>"},
+		"reached": {Active: true, Met: true, Condition: cond},
+	} {
+		body := get(t, goalServer(&fakeGoal{view: v}), "/goal").Body.String()
+		if strings.Contains(body, "<script>alert") || strings.Contains(body, "<b>x") || strings.Contains(body, "\u202E") {
+			t.Errorf("%s: the condition or the check reached the page unescaped or hidden", name)
+		}
+		want := []string{"&lt;script&gt;alert(1)&lt;/script&gt;go⟨U&#43;202E⟩al"}
+		if v.LastCheck != "" {
+			want = append(want, "fine⟨U&#43;202E⟩&lt;b&gt;x&lt;/b&gt;")
+		}
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s: missing %q in:\n%s", name, w, body[strings.Index(body, `<section class="page"`):])
+			}
 		}
 	}
 }
