@@ -115,7 +115,6 @@ func acceptsGzip(ae string) bool {
 type ssrTemplates struct {
 	dashboard     *template.Template
 	tools         *template.Template
-	activity      *template.Template
 	chat          *template.Template
 	toolRow       *template.Template
 	memory        *template.Template // Memory overview (TEN-111)
@@ -152,7 +151,6 @@ func parseSSR() *ssrTemplates {
 	return &ssrTemplates{
 		dashboard:     must("templates/layout.html", "templates/dashboard.html"),
 		tools:         must("templates/layout.html", "templates/tools.html", "templates/toolrow.html"),
-		activity:      must("templates/layout.html", "templates/activity.html"),
 		chat:          must("templates/layout.html", "templates/chat.html"),
 		toolRow:       must("templates/toolrow.html"),
 		memory:        must("templates/layout.html", "templates/memnav.html", "templates/memory.html"),
@@ -189,14 +187,12 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /datastar.js", datastarJS.serve)
 	mux.HandleFunc("GET /{$}", s.handleDashboardPage)
 	mux.HandleFunc("GET /tools", s.handleToolsPage)
-	mux.HandleFunc("GET /activity", s.handleActivityPage)
+	mux.HandleFunc("GET /activity", s.handleActivityMoved) // the Activity feed is now the Logs page
 	mux.HandleFunc("GET /chat", s.handleChatPage)
 	mux.HandleFunc("GET /ui/status", s.handleUIStatus) // the status strip every page polls (TEN-211)
 
-	// Real-time event stream (chat transcript + activity feed) — TEN-109.
+	// Real-time event stream (chat transcript + approval queue) — TEN-109.
 	mux.HandleFunc("GET /events", s.handleEventsSSE)
-	mux.HandleFunc("GET /activity/events", s.handleActivitySSE)                 // log-hub backfill + replay stream
-	mux.HandleFunc("GET /activity/files/{source}/{name}", s.handleActivityFile) // one on-disk log file, plain text
 
 	// Memory curator pages (TEN-111). Mounted unconditionally and nil-guarded:
 	// a server without a MemoryControl renders an "isn't configured" state
@@ -488,5 +484,3 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, s.tmpl.tools, d)
 }
-
-// handleActivityPage + the activity SSE live in ssr_activity.go (TEN-238).

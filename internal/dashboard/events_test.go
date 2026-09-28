@@ -3,7 +3,6 @@ package dashboard
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"tenant/internal/logs"
+	"tenant/internal/agent"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
 )
@@ -179,33 +178,37 @@ func TestRejectionsAreCatalogued(t *testing.T) {
 	}
 }
 
-// A live stream is an activity from connect to disconnect, and a page that
-// fell behind the ring is reported with what it missed.
+// A live stream is an activity from connect to disconnect (the Logs page's
+// tail), and a page that fell behind the broker is reported once.
 func TestStreamsConnectDisconnectAndLag(t *testing.T) {
 	c := installCapture(t)
-	l := logs.NewMemory(2)
-	for i := range 5 {
-		l.Logf("cron", slog.LevelInfo, "line", "i", i)
-	}
-	s := New(Config{}, nil, nil, nil, nil, nil)
-	s.SetLogs(l)
-	r := httptest.NewRequest("GET", "/activity/events?cursor=1", nil)
+	s, _, _ := logsBook(t)
+	r := httptest.NewRequest("GET", "/logs/tail", nil)
 	ctx, cancel := context.WithCancel(r.Context())
 	done := make(chan struct{})
-	go func() { s.handleActivitySSE(httptest.NewRecorder(), r.WithContext(ctx)); close(done) }()
+	go func() { s.handleLogsTail(httptest.NewRecorder(), r.WithContext(ctx)); close(done) }()
 	deadline := time.Now().Add(2 * time.Second)
-	for !c.has("2002 ") && time.Now().Before(deadline) {
+	for !c.has("1001 start") && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	cancel()
 	<-done
+	full := make(chan agent.Event, 2)
+	full <- agent.Event{}
+	var reported bool
+	for range 2 {
+		behind(context.Background(), full, "events", "192.0.2.1:9", &reported)
+	}
 	for _, want := range [][]string{
-		{"1001 start Live activity stream"},
-		{"2002  Live activity stream", "fell behind", "missed=2"},
-		{"1001 stop Live activity stream"},
+		{"1001 start Live logbook stream"},
+		{"2002  Live events stream", "fell behind"},
+		{"1001 stop Live logbook stream"},
 	} {
 		if !c.has(want...) {
 			t.Errorf("no event with %q in:\n%s", want, strings.Join(c.lines(), "\n"))
 		}
+	}
+	if n := strings.Count(strings.Join(c.lines(), "\n"), "2002 "); n != 1 {
+		t.Errorf("a stream that fell behind was reported %d times, want once", n)
 	}
 }

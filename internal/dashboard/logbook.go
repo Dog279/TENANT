@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"tenant/internal/logs"
 	"tenant/internal/logs/logapi"
@@ -35,8 +36,8 @@ const activityBacklog = 10000
 // projection, filters and paging as the ring's (handleActivity), whose
 // cursor is now the store's seq and whose epoch is the store's ID. A cursor
 // survives a restart; one from another store (or none) replays the newest
-// activityBacklog events. The Activity feed holds the text mirror's lines,
-// so diagnostic events are left out. Without a store, the ring answers.
+// activityBacklog events. v1 served the text mirror's lines, so diagnostic
+// events are left out. Without a store, the ring answers.
 func (s *Server) handleActivityStore(w http.ResponseWriter, r *http.Request) {
 	_, st := s.logbookStore()
 	if st == nil {
@@ -81,20 +82,7 @@ func (s *Server) handleActivityStore(w http.ResponseWriter, r *http.Request) {
 }
 
 // activityQuery is v1's source, level and trace filter in the filter
-// language.
+// language, over the text mirror's lines.
 func activityQuery(f activityFilter) string {
-	q := "channel:operational"
-	if f.Source != "" {
-		q += " log:" + f.Source // a valid source is a bare word
-	}
-	switch f.Level {
-	case "error":
-		q += " level>=error"
-	case "warn":
-		q += " level>=warning"
-	}
-	if f.Trace != "" {
-		q += " " + filterTerm("trace", f.Trace)
-	}
-	return q
+	return strings.TrimSpace("channel:operational " + f.logsQuery())
 }

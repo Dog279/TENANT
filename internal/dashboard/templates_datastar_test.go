@@ -58,10 +58,8 @@ func TestTemplates_NoDeadHyphenDatastarAttrs(t *testing.T) {
 const liveOpener = `data-signals:_live="true" data-on:datastar-fetch="evt.detail.el === el && ($_live = !['error', 'retrying', 'retries-failed', 'finished'].includes(evt.detail.type))"`
 
 func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
-	// Each opener → the SSE endpoint it must keep reconnecting to. Activity moved
-	// to the retained /activity/events stream (TEN-238); chat stays on /events.
+	// Each opener → the SSE endpoint it must keep reconnecting to.
 	openers := map[string]string{
-		"templates/activity.html": "@get('{{.StreamURL}}'", // /activity/events, query-escaped (F1)
 		"templates/chat.html":     "@get('/events'",
 		"templates/logs.html":     "@get('{{.TailURL}}'", // the Logs page's live tail
 		"templates/safety.html":   "@get('/events?only=approvals'",
@@ -80,10 +78,10 @@ func TestTemplates_SSEReconnectsIndefinitely(t *testing.T) {
 			t.Errorf("%s opens an SSE without an unbounded reconnect cap — a dropped SSE (e.g. after a server restart) will stop updating permanently:\n%s", name, body)
 		}
 	}
-	// TEN-238: the activity feed must also keep streaming while the tab is hidden
+	// TEN-238: Research must also keep streaming while the tab is hidden
 	// (the macOS background-tab bug) — Datastar aborts the SSE on visibilitychange
 	// unless openWhenHidden is set.
-	for _, name := range []string{"templates/activity.html", "templates/research.html"} {
+	for _, name := range []string{"templates/research.html"} {
 		b, _ := ssrFS.ReadFile(name)
 		if !strings.Contains(string(b), "openWhenHidden:true") {
 			t.Errorf("%s must set openWhenHidden:true so it keeps updating in a backgrounded tab", name)

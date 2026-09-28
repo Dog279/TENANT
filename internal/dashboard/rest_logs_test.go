@@ -37,8 +37,8 @@ func do(t *testing.T, s *Server, method, path, ctype, body string) *httptest.Res
 	return rec
 }
 
-// POST /api/logs/{source} creates the source (folder + tab) on first write and
-// files the line; the sources list and the Activity page see it at once.
+// POST /api/logs/{source} creates the source (its folder) on first write and
+// files the line; the sources list sees it at once.
 func TestRESTLogs_WriteCreatesSource(t *testing.T) {
 	root := t.TempDir()
 	s, h := logsServer(t, root)
@@ -76,15 +76,12 @@ func TestRESTLogs_WriteCreatesSource(t *testing.T) {
 		t.Errorf("text entry = %+v", all[1])
 	}
 
-	// Sources + tab.
+	// Sources.
 	rec = do(t, s, http.MethodGet, "/api/logs", "", "")
 	var srcs restLogSourcesResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &srcs)
 	if srcs.Root != root || len(srcs.Sources) != 1 || srcs.Sources[0].Name != "my-sidecar" || !srcs.Sources[0].Native || srcs.Sources[0].Count != 2 {
 		t.Errorf("sources = %+v", srcs)
-	}
-	if body := get(t, s, "/activity").Body.String(); !strings.Contains(body, `href="/activity?source=my-sidecar"`) {
-		t.Error("the new source should have a tab")
 	}
 	// The live broker saw it too (open TUI feeds).
 }
@@ -246,14 +243,10 @@ func TestRESTActivity_TraceFilter(t *testing.T) {
 	if len(resp.Events) != 1 || resp.Events[0].Tool != "wiki_read" || resp.Events[0].Fields["trace"] != "t2" {
 		t.Errorf("trace projection = %+v", resp.Events)
 	}
-	// The page keeps the trace for its backlog and for its live stream.
-	if body := get(t, s, "/activity?trace=t2").Body.String(); !strings.Contains(body, "wiki_read") || strings.Contains(body, "web_search") || !strings.Contains(body, "trace=t2") {
-		t.Errorf("trace page:\n%s", body)
-	}
 }
 
-// Files: list + raw view through both the page route and the API; traversal
-// and foreign names are rejected.
+// Files: list + raw view through the API; traversal and foreign names are
+// rejected.
 func TestRESTLogs_FilesAndRawView(t *testing.T) {
 	root := t.TempDir()
 	s, h := logsServer(t, root)
@@ -267,17 +260,18 @@ func TestRESTLogs_FilesAndRawView(t *testing.T) {
 		t.Fatalf("files = %+v", files)
 	}
 	name := files.Files[0].Name
-	for _, p := range []string{"/activity/files/turns/" + name, "/api/logs/turns/" + name} {
-		rec = get(t, s, p)
-		if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || !strings.Contains(rec.Body.String(), "[turns] hello file") {
-			t.Errorf("%s → %d %q %q", p, rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
-		}
+	rec = get(t, s, "/api/logs/turns/"+name)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || !strings.Contains(rec.Body.String(), "[turns] hello file") {
+		t.Errorf("the raw view → %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
-	rec = get(t, s, "/activity/files/turns/"+name+"?download=1")
+	rec = get(t, s, "/api/logs/turns/"+name+"?download=1")
 	if !strings.HasPrefix(rec.Header().Get("Content-Disposition"), "attachment") {
 		t.Error("?download should attach")
 	}
-	for _, p := range []string{"/activity/files/turns/..%2Fsecret.txt", "/api/logs/turns/secret.txt", "/api/logs/..%2F/secret.txt", "/activity/files/turns/.hidden.log"} {
+	if rec = get(t, New(Config{}, nil, nil, nil, nil, nil), "/api/logs/turns/"+name); rec.Code != http.StatusNotFound {
+		t.Errorf("the raw view without a hub = %d, want 404", rec.Code)
+	}
+	for _, p := range []string{"/api/logs/turns/..%2Fsecret.txt", "/api/logs/turns/secret.txt", "/api/logs/..%2F/secret.txt", "/api/logs/turns/.hidden.log"} {
 		if rec = get(t, s, p); rec.Code == http.StatusOK && strings.Contains(rec.Body.String(), "nope") {
 			t.Errorf("%s leaked a file outside the folder", p)
 		}

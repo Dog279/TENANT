@@ -315,11 +315,11 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /memory/facts/{id}/restore-version": noStep,
 	// Logs: a reveal is recorded; the Security log refuses to be cleared or
 	// weakened (logs/store/policy.go).
-	"POST /logs/detail/{seq}/reveal":  noStep,
-	"POST /logs/views":                noStep,
-	"POST /logs/views/delete":         noStep,
-	"POST /logs/log/{log}/properties": noStep,
-	"POST /logs/log/{log}/clear":      always,
+	"POST /logs/detail/{seq}/reveal": noStep,
+	"POST /logs/views":               noStep,
+	"POST /logs/views/delete":        noStep,
+	"POST /logs/properties":          noStep,
+	"POST /logs/clear":               always,
 	// The JSON API.
 	"POST /api/memory/soul":                       noStep,
 	"POST /api/memory/facts/resolve":              noStep,

@@ -1,17 +1,22 @@
 {{define "content"}}
-{{if not .Open}}<div class="card state-off">The log book isn't open right now, so there is nothing to look into here. The <a class="linkbtn" href="/activity">Activity feed</a> still shows the text logs.</div>{{else}}
+{{if not .Open}}<div class="card state-off">The log book isn't open right now, so there is nothing to look into here. The text logs are still in the logs folder in Tenant's data folder.</div>{{else}}
 {{template "ui-flash" .}}
 <div class="lgv" data-signals:sel="{{.Sel}}">
-  <nav class="lg-tree" aria-label="Logs">
-    <a href="/logs" class="lg-leaf lg-root{{if eq .Mode "summary"}} on{{end}}">Summary</a>
-    {{range .Tree}}{{template "lgnode" .}}{{end}}
-    <a href="/logs/components" class="lg-leaf lg-root{{if eq .Mode "components"}} on{{end}}">Components</a>
-    <a href="/activity" class="lg-leaf lg-root dim" title="the live, friendly feed">Activity feed ↗</a>
-  </nav>
+  {{template "lgtree" .}}
   {{if eq .Mode "summary"}}{{template "lgsummary" .Summary}}{{else if eq .Mode "components"}}{{template "lgcomponents" .Components}}{{else}}{{template "lggrid" .}}{{end}}
 </div>
 {{end}}
 {{end}}
+
+{{/* The Logs forms post in place (formDone) to static URLs; a log's name
+     and the grid's filter ride in fields. Their answers morph these parts:
+     lgtree after a view is saved; lgprops and lgclear after a log changes;
+     after a clear also lggridbox, the count and the detail pane. */}}
+{{define "lgtree"}}<nav id="lg-tree" class="lg-tree" aria-label="Logs">
+    <a href="/logs" class="lg-leaf lg-root{{if eq .Mode "summary"}} on{{end}}">Summary</a>
+    {{range .Tree}}{{template "lgnode" .}}{{end}}
+    <a href="/logs/components" class="lg-leaf lg-root{{if eq .Mode "components"}} on{{end}}">Components</a>
+  </nav>{{end}}
 
 {{define "lgnode"}}{{if .Href}}<a href="{{.Href}}" class="lg-leaf{{if .On}} on{{end}}" title="{{.Title}}">{{.Label}}{{if .Count}} <span class="lg-n{{if .Bad}} bad{{end}}">{{.Count}}</span>{{end}}</a>{{else}}<details open class="lg-group"><summary>{{.Label}}{{if .Count}} <span class="lg-n{{if .Bad}} bad{{end}}">{{.Count}}</span>{{end}}</summary>{{range .Kids}}{{template "lgnode" .}}{{end}}</details>{{end}}{{end}}
 
@@ -22,6 +27,13 @@
 
 {{define "lgmore"}}{{if .More}}<div id="lg-more" class="lg-more" data-on-intersect="@get('{{.More}}')"><a class="linkbtn" href="{{.MoreHref}}">Load older events</a></div>{{else}}<div id="lg-more" class="lg-more dim">{{if .Rows}}The oldest match.{{end}}</div>{{end}}{{end}}
 
+{{define "lggridbox"}}<div class="lg-grid" id="lg-grid">
+    <div class="lg-row lg-head"><span>Level</span><span>Time</span><span>Log</span><span>Provider</span><span>ID</span><span>Task</span><span>Message</span></div>
+    <div id="lg-rows">{{template "lgrows" .Grid}}</div>
+    {{template "lgmore" .Grid}}
+    {{if .FilterErr}}<div class="dim pad">Fix the filter to see events.</div>{{else if not .Grid.Rows}}<div class="dim pad">No events match{{if .Live}} yet; new ones appear here as they are written{{end}}.</div>{{end}}
+  </div>{{end}}
+
 {{define "lggrid"}}<div class="lg-main">
   <div class="lg-bar">
     <span class="lg-title">{{.Heading}}</span>
@@ -30,12 +42,7 @@
     {{if not .FilterErr}}<span id="lg-count" class="lg-count dim loading" data-init="@get('{{.CountURL}}')">Counting</span>
     <a class="btn sm{{if .Live}} on{{end}}" href="{{.LiveHref}}" title="{{if .Live}}new events appear at the top as they are written; click to stop{{else}}show new events as they are written{{end}}">{{if .Live}}● live{{else}}○ live{{end}}</a>{{end}}
   </div>
-  <div class="lg-grid" id="lg-grid">
-    <div class="lg-row lg-head"><span>Level</span><span>Time</span><span>Log</span><span>Provider</span><span>ID</span><span>Task</span><span>Message</span></div>
-    <div id="lg-rows">{{template "lgrows" .Grid}}</div>
-    {{template "lgmore" .Grid}}
-    {{if .FilterErr}}<div class="dim pad">Fix the filter to see events.</div>{{else if not .Grid.Rows}}<div class="dim pad">No events match{{if .Live}} yet; new ones appear here as they are written{{end}}.</div>{{end}}
-  </div>
+  {{template "lggridbox" .}}
   {{if .TailURL}}<div id="lg-tail" hidden data-init="@get('{{.TailURL}}', {retryMaxCount:1000000, retryMaxWait:5000})"></div>{{end}}
   {{template "lgdetail" .Detail}}
 </div>
@@ -52,8 +59,9 @@
     <input id="lg-find" name="find" class="box" placeholder="text in messages and fields">
   </form>
   <details class="lg-form"><summary class="card-head">Save as view</summary>
-    <form method="post" action="/logs/views">
+    <form method="post" action="/logs/views" data-on:submit__prevent__throttle.1s="@post('/logs/views', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="filter" value="{{.Q}}">
+      <input type="hidden" name="view" value="{{.View}}">
       <input name="name" class="box" placeholder="name" required maxlength="64">
       <div class="lg-btns"><button class="btn sm" type="submit">Save view</button></div>
     </form>
@@ -61,9 +69,16 @@
   {{if .Saved}}<form method="post" action="/logs/views/delete" class="lg-form"><input type="hidden" name="name" value="{{.View}}"><button class="linkbtn danger" type="submit">Delete this view</button></form>{{end}}
   {{if not .FilterErr}}<div class="lg-form"><div class="card-head">Export</div><div class="chips">{{range .Exports}}<a class="chip" href="{{.Href}}" download>{{.Label}}</a>{{end}}</div><div class="dim lg-note">What the filter matches. Sensitive values are left out.</div></div>{{end}}
   {{with .Props}}
-  <details class="lg-form"><summary class="card-head">Properties · {{.Log}}</summary>
+  <details class="lg-form"><summary class="card-head">Properties · {{.Log}}</summary>{{template "lgprops" .}}</details>
+  <details class="lg-form"><summary class="card-head">Clear log</summary>{{template "lgclear" .}}</details>
+  {{end}}
+  <div class="dim lg-note">The filter language: <code>level>=warning</code> <code>log:discord</code> <code>id:2001-2999</code> <code>since:14:00 until:14:10</code> <code>trace:…</code> <code>"quoted text"</code>. See docs/LOGGING.md.</div>
+</aside>{{end}}
+
+{{define "lgprops"}}<div id="lg-props" class="lg-part">
     <div class="dim lg-note">{{.Events}} events · {{.Size}}{{if .Limit}} of {{.Limit}}{{end}}{{if .LastWrite}} · last write {{.LastWrite}}{{end}}{{if .Cleared}} · cleared {{.Cleared}}{{end}}</div>
-    <form method="post" action="{{.Action}}" class="lg-props">
+    <form method="post" action="/logs/properties" class="lg-props" data-on:submit__prevent__throttle.1s="@post('/logs/properties', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="log" value="{{.Log}}"><input type="hidden" name="q" value="{{.Q}}">
       <label>Maximum size, MB <input name="max_mb" class="box" inputmode="decimal" value="{{.MaxMB}}"></label>
       <label>Maximum age, days <input name="max_days" class="box" inputmode="decimal" value="{{.MaxDays}}"></label>
       <label>When full <select name="on_full" class="box">{{range .OnFull}}<option value="{{.Value}}"{{if .On}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>
@@ -73,17 +88,15 @@
       <div class="lg-btns"><button class="btn sm on" name="action" value="save">Save</button><button class="btn sm" name="action" value="reset" title="follow config.json's logs settings again">Reset</button></div>
       <div class="lg-btns">{{if .Debug}}<span class="tag">debug until {{.Debug}}</span><button class="btn sm" name="action" value="nodebug">Stop debug</button>{{else}}<button class="btn sm" name="action" value="debug" title="write this log's verbose events for 30 minutes">Debug for 30 min</button>{{end}}</div>
     </form>
-  </details>
-  <details class="lg-form"><summary class="card-head">Clear log</summary>
+  </div>{{end}}
+
+{{define "lgclear"}}<div id="lg-clear" class="lg-part">
     {{if .Security}}<div class="dim lg-note">The Security log is never cleared, only archived.</div>{{else}}
     <div class="dim lg-note">Export it first:</div>
-    <div class="chips">{{range $.ClearExports}}<a class="chip" href="{{.Href}}" download>{{.Label}}</a>{{end}}</div>
-    <div class="lg-btns">{{template "ui-confirm" (confirm .ClearAction (printf "Clear %s events" .Events) "These events are deleted for good. Export them first if you might need them.")}}</div>
+    <div class="chips">{{range .Exports}}<a class="chip" href="{{.Href}}" download>{{.Label}}</a>{{end}}</div>
+    <div class="lg-btns">{{template "ui-confirm" (inline (confirm "/logs/clear" (printf "Clear %s events" .Events) "These events are deleted for good. Export them first if you might need them." "log" .Log "q" .Q))}}</div>
     <div class="dim lg-note">Clearing is recorded in the Security log.</div>{{end}}
-  </details>
-  {{end}}
-  <div class="dim lg-note">The filter language: <code>level>=warning</code> <code>log:discord</code> <code>id:2001-2999</code> <code>since:14:00 until:14:10</code> <code>trace:…</code> <code>"quoted text"</code>. See docs/LOGGING.md.</div>
-</aside>{{end}}
+  </div>{{end}}
 
 {{define "lgdetail"}}<section id="lg-detail" class="lg-detail">{{if not .}}<div class="dim pad">Select an event to see its detail.</div>{{else if .Missing}}<div class="dim pad">{{.Missing}}</div>{{else}}
 <div class="lg-dhead"><span class="lg-lv lv-{{.Row.Level}}">{{.Row.Lv}}</span><span class="nm">{{.Row.Provider}}{{if .Row.ID}} {{.Row.ID}}{{end}}</span><span class="dim">{{.Local}}</span><span class="sp"></span><a class="linkbtn" href="{{.Permalink}}">permalink</a><button type="button" class="btn sm" data-on:click="navigator.clipboard.writeText(location.origin + '{{.Permalink}}')">copy link</button></div>
@@ -98,7 +111,7 @@
 {{if .Pivots}}<div class="dim lg-note">Each ID opens every event that carries it; the Correlated tab follows the turn or activity across logs.</div>{{end}}
 {{else if eq .Tab "details"}}
 {{if .Fields}}<table class="ovtable lg-facts">{{range .Fields}}<tr><th>{{.Key}}{{if .Sensitive}} <span class="risk">sensitive</span>{{end}}</th><td class="lg-val">{{.Value}}</td></tr>{{end}}</table>{{else}}<div class="dim pad">No data fields.</div>{{end}}
-{{if .Masked}}<div class="lg-btns"><button type="button" class="btn sm" data-on:click="@post('{{.Reveal}}')">Reveal sensitive values</button><span class="dim">Each reveal is recorded in the Security log.</span></div>{{end}}
+{{if .Masked}}<div class="lg-btns"><button type="button" class="btn sm" data-on:click__throttle.1s="@post('{{.Reveal}}', {retryMaxCount:0})">Reveal sensitive values</button><span class="dim">Each reveal is recorded in the Security log.</span></div>{{end}}
 <div class="card-head lg-sub">Raw JSON</div>
 <pre class="diff lg-json">{{.JSON}}</pre>
 {{else if eq .Tab "correlated"}}
