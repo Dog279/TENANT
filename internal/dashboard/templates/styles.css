@@ -401,9 +401,6 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* a Logs part that answers a form in place keeps its section's column */
 .lg-part{display:flex;flex-direction:column;gap:7px}
 /* == end WP-activity == */
-/* == WP-inline-models == */
-.tap-guard{position:fixed;inset:0;z-index:9}
-/* == end WP-inline-models == */
 /* == WP-inline-memory == */
 /* Personality: an open Edit, Add or Remove step takes its own line */
 #mem-soul-body .ghead2,#mem-soul-body .soul-row{flex-wrap:wrap}
@@ -417,11 +414,4 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* #safety-modes lays out its h2, notes and cards as .page did before it was
    a region, so their margins still add up rather than collapse */
 #safety-modes{display:flex;flex-direction:column}
-/* the tap guard: for half a second after each in-place answer (#toast is
-   replaced, so it starts over) a clear sheet takes every tap. A double tap's
-   second tap can't reach what moved under the finger, like the Run again
-   below a phone confirm step that just closed. Kept to these pages: the
-   toast's owner can make it global and drop the :has(). */
-body:has(#safety-modes,#agents-body,#research-ask,#goal-body) #toast:not(:empty)::before{content:"";position:fixed;inset:0;animation:tap-guard .5s step-end forwards}
-@keyframes tap-guard{to{visibility:hidden}}
 /* == end WP-inline-v2pages == */

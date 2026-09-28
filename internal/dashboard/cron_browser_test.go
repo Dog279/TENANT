@@ -58,10 +58,6 @@ func (c inlineChrome) shot(name string) chromedp.Action {
 	})
 }
 
-// settle is longer than the half second after a post in which the
-// Scheduled jobs page drops another.
-const settle = 600 * time.Millisecond
-
 // doubleTap taps the middle of sel twice at one spot, 120ms apart.
 func doubleTap(sel string) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
@@ -77,7 +73,7 @@ func doubleTap(sel string) chromedp.Action {
 	})
 }
 
-// inPlace waits out settle, scrolls sel to the middle of the screen, marks
+// inPlace waits out the tap guard, scrolls sel to the middle of the screen, marks
 // the page, runs act and then checks the scroll and the page are what they
 // were, and that the page fits.
 func (c inlineChrome) inPlace(step, sel string, act ...chromedp.Action) {
@@ -86,7 +82,7 @@ func (c inlineChrome) inPlace(step, sel string, act ...chromedp.Action) {
 	var before, after []float64
 	var kept string
 	var bad []string
-	c.run(step, chromedp.Sleep(settle), chromedp.Evaluate(`document.querySelector(`+strconv.Quote(sel)+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+where, &before))
+	c.run(step, tapsOpen, chromedp.Evaluate(`document.querySelector(`+strconv.Quote(sel)+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+where, &before))
 	c.run(step, act...)
 	c.run(step, chromedp.Evaluate(where, &after), chromedp.Evaluate(`String(window.inlineMark)`, &kept), chromedp.Evaluate(fitsJS, &bad))
 	if len(before) != 2 || before[0] < 100 {
@@ -169,7 +165,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	var gone bool
 	var kept string
 	c.run("a double tap on Delete's Yes",
-		chromedp.Sleep(settle),
+		tapsOpen,
 		chromedp.Evaluate(`document.getElementById('cron-j4').scrollIntoView({block: 'center'})`, nil),
 		chromedp.Click(`#cron-j4 details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#cron-j4 details[open] .confirm-box button`, chromedp.ByQuery),
@@ -192,7 +188,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 	var left string
 	var listed bool
 	c.run("Add",
-		chromedp.Sleep(settle),
+		tapsOpen,
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "@weekly", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Send the weekly report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
@@ -208,7 +204,7 @@ func TestCronInlineFormsInChrome(t *testing.T) {
 
 	fc.set(func() { fc.addErr = errors.New("bad schedule") })
 	c.run("a failed add",
-		chromedp.Sleep(settle),
+		tapsOpen,
 		chromedp.SendKeys(`#jobs-add input[name=spec]`, "every tuesday", chromedp.ByQuery),
 		chromedp.SendKeys(`#jobs-add input[name=prompt]`, "Report.", chromedp.ByQuery),
 		chromedp.Click(`#jobs-add button[type=submit]`, chromedp.ByQuery),
@@ -254,7 +250,7 @@ func TestEvalInlineFormsInChrome(t *testing.T) {
 
 	var open bool
 	var judge string
-	c.run("typing a grader",
+	c.run("typing a grader", tapsOpen,
 		chromedp.Click(`details.advanced > summary`, chromedp.ByQuery),
 		chromedp.SendKeys(`form[action="/eval/judge"] input[name=kind]`, "zai", chromedp.ByQuery),
 		chromedp.SendKeys(`form[action="/eval/judge"] input[name=model]`, "glm-4.6", chromedp.ByQuery),
@@ -272,7 +268,7 @@ func TestEvalInlineFormsInChrome(t *testing.T) {
 	// Last: the check in progress reloads the page every 20s.
 	var loading string
 	var kept string
-	c.run("Run now",
+	c.run("Run now", tapsOpen,
 		chromedp.Click(`form[action="/eval/run"] button`, chromedp.ByQuery),
 		c.toast("ok", "Quality check queued."),
 		chromedp.Evaluate(`document.querySelector('.loading').textContent`, &loading),

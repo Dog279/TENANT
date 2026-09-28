@@ -53,8 +53,8 @@ func (f *shrinkingAgents) changes() []string {
 // marker set before it survives), its toast says what happened, and the row
 // shows it. A double tap at one spot posts once where a second post would
 // do something: Deny, Add helper, Run again, Stop, and a Delete step's Yes,
-// whose sheet closes under the finger (the tap guard keeps the second tap
-// off the Run again below it). On Research the live
+// whose sheet closes under the finger (layout.html's tap guard keeps the
+// second tap off the Run again below it). On Research the live
 // panel still streams afterward, and a started question leaves the box
 // empty. TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
 func TestV2PagesInlineInChrome(t *testing.T) {
@@ -96,15 +96,12 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		return chromedp.Evaluate(`document.querySelector(`+q(sel)+`).scrollIntoView({block: 'center'}); window.inlineMark = 'kept'; `+
 			`[document.querySelector(`+q(keep)+`).getBoundingClientRect().top, document.querySelector('.page').scrollTop]`, at)
 	}
-	// unguarded waits out the tap guard a toast puts over the page, so the
-	// next tap reaches the page.
-	unguarded := chromedp.Poll(`(t => !t.firstChild || getComputedStyle(t, '::before').visibility === 'hidden')(document.getElementById('toast'))`, nil, wait)
 	// doubleTap taps sel's element twice, 150ms apart, at one spot 10px in
 	// from its right end.
 	doubleTap := func(sel string) chromedp.Action {
 		return chromedp.ActionFunc(func(ctx context.Context) error {
 			var xy []float64
-			if err := chromedp.Run(ctx, unguarded,
+			if err := chromedp.Run(ctx, tapsOpen,
 				chromedp.Evaluate(`(r => [r.right - 10, r.top + r.height / 2])(document.querySelector(`+q(sel)+`).getBoundingClientRect())`, &xy)); err != nil {
 				return err
 			}
@@ -202,6 +199,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 	// runs once; the live panel still streams; a started question leaves the
 	// box empty.
 	var question string
+	var afterDelete []string
 	err = chromedp.Run(ctx,
 		open("/research"),
 		chromedp.WaitVisible(`#research-live .research-run`, chromedp.ByQuery),
@@ -210,6 +208,7 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		doubleTap(`.research-row:has(input[value="r-6"]) details[open] .confirm-box button`),
 		toastSays("Deleted from the list."),
 		settle,
+		chromedp.ActionFunc(func(context.Context) error { afterDelete = fr.called(); return nil }),
 		chromedp.WaitNotPresent(`input[value="r-6"]`, chromedp.ByQuery),
 		shot("research"),
 		stayed("/research", `.research-row:has(input[value="r-5"])`, &before),
@@ -222,13 +221,16 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 		}),
 		chromedp.Poll(`document.getElementById('research-live').textContent.includes('Writing the report')`, nil, wait),
 		chromedp.SendKeys(`textarea[name=question]`, "What is new?", chromedp.ByQuery),
-		unguarded,
+		tapsOpen,
 		chromedp.Click(`form[action="/research/start"] button`, chromedp.ByQuery),
 		toastSays("Research started."),
 		chromedp.Value(`textarea[name=question]`, &question, chromedp.ByQuery),
 	)
 	if err != nil {
 		t.Fatalf("Research: %v", err)
+	}
+	if !slices.Equal(afterDelete, []string{"delete r-6"}) {
+		t.Errorf("a double tap on Yes, delete sent %q, want the delete alone", afterDelete)
 	}
 	if c := fr.called(); !slices.Equal(c, []string{"delete r-6", "replay r-8", `start "What is new?" false`}) || question != "" {
 		t.Errorf("calls %q and %q left in the question box; want one each and an empty box", c, question)

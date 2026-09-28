@@ -1,15 +1,7 @@
 {{define "content"}}
-{{/* This wrapper is never patched. It drops a post that comes within half a
-     second of the last one from anywhere on the page, not only from the same
-     form: once a card goes, a double tap's second tap lands on what moved
-     under it (on a phone, Delete's Yes sits over the next card's Run now).
-     In that half second a tap can't open a confirm step either: after Turn
-     off, the Turn on step's button sits where Turn off was. */}}
-<div data-on:submit__capture="evt.timeStamp - (el.postedAt ?? -1e4) < 500 ? (evt.preventDefault(), evt.stopImmediatePropagation()) : (el.postedAt = evt.timeStamp)" data-on:click__capture="evt.target.closest('details:not([open]) > summary') && evt.timeStamp - (el.postedAt ?? -1e4) < 500 && (evt.preventDefault(), evt.stopImmediatePropagation())">
 {{template "jobs-flash" .}}
 {{if .Configured}}{{template "jobs-add" .}}{{end}}
 {{template "jobs-body" .}}
-</div>
 {{end}}
 
 {{/* The parts a Scheduled jobs form re-renders in place (cronDone). Every

@@ -48,6 +48,11 @@ const fitsJS = `(() => {
   return bad;
 })()`
 
+// tapsOpen waits out layout.html's tap guard: once a form or a button
+// posts, the page takes no tap until the answer is 400ms old. A step that
+// taps soon after an answer waits here first.
+var tapsOpen = chromedp.Poll(`!(performance.now() < document.querySelector('.app').tapUntil)`, nil, chromedp.WithPollingTimeout(6*time.Second))
+
 // chromeSignedIn starts Chrome at w×h and signs in to s, served through
 // served(), the chain the operator's browser meets: opening page sends the
 // visitor to the sign-in form, which brings them back there (a

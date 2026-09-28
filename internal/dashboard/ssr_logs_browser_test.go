@@ -215,11 +215,12 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 		t.Errorf("with the toast at 390px: %s", b)
 	}
 
-	// Debug 0.3s after Save: a throttle shared with Save would drop it.
+	// Debug as soon as the tap guard lets it through after Save, well inside
+	// Save's 1s throttle: a throttle shared with Save would drop it.
 	err = chromedp.Run(ctx,
 		chromedp.Sleep(1100*time.Millisecond), // the double tap's throttle is over
 		chromedp.Click(saveBtn, chromedp.ByQuery),
-		chromedp.Sleep(300*time.Millisecond),
+		tapsOpen,
 		chromedp.Click(`#lg-props button[value="debug"]`, chromedp.ByQuery),
 		chromedp.Poll(`!!document.querySelector('#lg-props .tag')`, nil, wait),
 	)
@@ -231,7 +232,7 @@ func TestLogsInlineFormsInChrome(t *testing.T) {
 	var rows int
 	var count string
 	var closed bool
-	err = chromedp.Run(ctx,
+	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Evaluate(`document.querySelector('#lg-tree .lg-group').open = false`, nil),
 		chromedp.Click(`//summary[contains(., "Clear log")]`, chromedp.BySearch),
 		chromedp.Click(`#lg-clear details.confirm-step > summary`, chromedp.ByQuery),

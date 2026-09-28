@@ -7,7 +7,17 @@
   <link rel="stylesheet" href="{{stylesURL}}">
 </head>
 <body>
-  <div class="app">
+  {{/* The tap guard (DESIGN.md "Forms that don't reload"): from the moment a
+       form or a button posts until its answer is 400ms old, a tap anywhere
+       in .app does nothing. So the second tap of a double tap can't land on
+       what the answer moved under the finger: the next row, the page under a
+       phone's confirm sheet that just closed, the Turn on step where Turn off
+       was. An open confirm step's Cancel still works, and the toasts sit
+       outside .app. Datastar sends finished from a finally block, so an
+       error or a lost connection ends it too; without JavaScript there is
+       no guard. The chat box (a form with no action) and the GET streams
+       don't start it. */}}
+  <div class="app" data-on:datastar-fetch="evt.detail.el.matches('form[action], button') && (evt.detail.type === 'started' ? (el.tapUntil = Infinity) : evt.detail.type === 'finished' && (el.tapUntil = performance.now() + 400))" data-on:click__capture="performance.now() < el.tapUntil && !evt.target.closest('.confirm-step[open] > summary') && (evt.preventDefault(), evt.stopPropagation())">
     <aside class="side">
       <div class="brand"><span class="logo">t</span> tenant <span class="dim">control</span><button type="button" class="btn menu-btn" popovertarget="nav" aria-label="Open the menu">Menu</button></div>
       <nav class="nav" id="nav" popover>

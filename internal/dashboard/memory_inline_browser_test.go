@@ -155,7 +155,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 		t.Errorf("Facts after Remove: %s", b)
 	}
 	var back bool
-	err = chromedp.Run(ctx,
+	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Click(`#mem-facts-body > .banner.undo button`, chromedp.ByQuery),
 		toastSays("Fact restored."),
 		chromedp.Evaluate(`document.querySelector(`+q(row)+`) !== null && document.querySelector('.banner.undo') === null`, &back),
@@ -171,7 +171,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	n := len(lm.calls())
 	row = fact(16)
 	var yes []float64
-	err = chromedp.Run(ctx,
+	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(row+` details[open] .confirm-box button`, chromedp.ByQuery),
 		chromedp.Evaluate(`(r => [r.right - 6, r.bottom - 10])(document.querySelector(`+q(row+` details[open] .confirm-box button`)+`).getBoundingClientRect())`, &yes),
@@ -238,13 +238,14 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 		t.Errorf("Personality after Edit: %s", b)
 	}
 	add := `#mem-soul-body .card:has(input[value="instruction"]) .ghead2 details`
-	err = chromedp.Run(ctx,
+	err = chromedp.Run(ctx, tapsOpen,
 		chromedp.Click(add+` > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(add+`[open] textarea`, chromedp.ByQuery),
 		chromedp.SetValue(add+`[open] textarea`, "Answer in German.", chromedp.ByQuery),
 		chromedp.Click(add+`[open] button[type=submit]`, chromedp.ByQuery),
 		toastSays("Added."),
 		chromedp.Evaluate(`document.getElementById('mem-soul-body').textContent.includes('Answer in German.')`, &back),
+		tapsOpen,
 		chromedp.Click(add+` > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(add+`[open] textarea`, chromedp.ByQuery),
 		shot("soul-add-again"),
@@ -286,7 +287,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	removal := `form[action="/memory/facts/removal"] button`
 	var edge []float64
 	var loc string
-	err = chromedp.Run(ctx,
+	err = chromedp.Run(ctx, tapsOpen,
 		doubleTap(removal),
 		toastSays("Fact removed."),
 		chromedp.Sleep(1200*time.Millisecond), // past the form's throttle

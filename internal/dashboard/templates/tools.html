@@ -6,11 +6,11 @@
      (formDone), posting through Datastar to fixed URLs with the rule in a
      form field (F1). A rule's row has no id, so the morph reuses its form for
      the rule that moves up and the throttle stops a double tap removing that
-     one too. The region ignores taps for 1s after one of its posts starts
-     (as skills.html), so a double tap can't open the next rule's confirm step
-     or flip a tool's toggle back. The tool toggles patch their own #tool-
-     row; "Turn on all" is still a plain post: its URL names the plugin. */}}
-{{define "tools-body"}}<div id="tools-body" data-on:datastar-fetch="evt.detail.type === 'started' && el.contains(evt.detail.el) && (el.postedAt = Date.now())" data-on:click__capture="Date.now() - el.postedAt < 1000 && (evt.preventDefault(), evt.stopPropagation())">
+     one too, and layout.html's tap guard stops one opening the next rule's
+     confirm step or flipping a tool's toggle back. The tool toggles patch
+     their own #tool- row; "Turn on all" is still a plain post: its URL names
+     the plugin. */}}
+{{define "tools-body"}}<div id="tools-body">
 {{template "ui-flash" .}}
 <div class="postbar">
   <span class="dim">Tools that change things:</span>

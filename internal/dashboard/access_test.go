@@ -311,13 +311,14 @@ func inlineForm(action string) string {
 
 // permAccess is fakeAccess whose Discord safety settings and iMessage list
 // change when set, as the real control's do, and whose settings fail while
-// fail is set. denied lists every Remove it got. A browser test's server and
-// the test share it.
+// fail is set. denied lists every Remove it got, set every safety setting
+// ("category=mode"). A browser test's server and the test share it.
 type permAccess struct {
 	fakeAccess
 	mu     sync.Mutex
 	fail   bool
 	denied []string
+	set    []string
 }
 
 func (f *permAccess) View() AccessView {
@@ -344,6 +345,7 @@ func (f *permAccess) IMessageDeny(h string) (string, bool, error) {
 func (f *permAccess) SetRelayPermission(c, m string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.set = append(f.set, c+"="+m)
 	if f.fail {
 		return false, errors.New("settings file is locked")
 	}

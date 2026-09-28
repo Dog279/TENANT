@@ -1,10 +1,5 @@
 {{define "content"}}
 {{template "integrations-body" .}}
-{{/* tap-guard covers the page while a form's post runs and for 350ms after,
-     so the second tap of a double tap can't land on the control the answer
-     moved under the finger (a confirm box closing on a phone). It sits under
-     the toast and the confirm box. */}}
-<div class="tap-guard" style="display:none" data-signals:_guard="false" data-show="$_guard" data-on:datastar-fetch="evt.detail.el.matches('form[action]') && (evt.detail.type === 'started' ? ($_guard = true) : evt.detail.type === 'finished' && setTimeout(() => { $_guard = false }, 350))"></div>
 {{end}}
 
 {{/* integrations-body is the region an Integrations form re-renders in place

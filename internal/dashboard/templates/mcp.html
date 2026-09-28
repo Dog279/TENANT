@@ -7,9 +7,9 @@
      form field (F1). Connect and Reconnect are plain posts that reload the
      page: their answer, approve the sign-in on the computer running Tenant
      and refresh, is a banner that stays (mcp.go). The buttons change with
-     the trust, so the region ignores taps for 1s after one of its posts
-     starts (as skills.html): a double tap on Block can't open Don't ask. */}}
-{{define "mcp-body"}}<div id="mcp-body" data-on:datastar-fetch="evt.detail.type === 'started' && el.contains(evt.detail.el) && (el.postedAt = Date.now())" data-on:click__capture="Date.now() - el.postedAt < 1000 && (evt.preventDefault(), evt.stopPropagation())">
+     the trust; layout.html's tap guard stops a double tap on Block opening
+     Don't ask. */}}
+{{define "mcp-body"}}<div id="mcp-body">
 {{template "ui-flash" .}}
 
 {{if not .Configured}}
