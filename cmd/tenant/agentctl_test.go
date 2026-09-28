@@ -548,3 +548,27 @@ func TestLaunchConfig_AgentsRoundTrip(t *testing.T) {
 	}
 	_ = filepath.Join // keep import live for portability
 }
+
+// A built-in whose instructions were customized has no provider, like the
+// shipped one: it still uses the main model and is still valid, not a
+// helper "missing its provider" with an empty model.
+func TestAgentControl_List_CustomizedBuiltinStaysValid(t *testing.T) {
+	ac := &agentControl{cfgDir: t.TempDir()}
+	if _, err := ac.SetSoul("QA", "Try harder to break it."); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ac.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name != "QA" {
+			continue
+		}
+		if r.Builtin || r.Provider != "" || !r.Valid || r.Model != "(your model)" || !r.HasSoul {
+			t.Errorf("customized QA = %+v; want not Builtin, no provider, valid, (your model), with instructions", r)
+		}
+		return
+	}
+	t.Fatal("QA missing from the list")
+}

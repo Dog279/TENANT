@@ -337,6 +337,12 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 /* == end WP-safety == */
 
 /* == WP-agents == */
+.agent-form{display:flex;flex-direction:column;gap:9px;margin:8px 0 14px}
+.agent-form label{display:flex;flex-direction:column;gap:4px;color:var(--fg)}
+.agent-form .btn{align-self:flex-start}
+.agent-info{flex:1 1 240px;min-width:0}
+.agent-info .tag{white-space:nowrap}
+.agent-edit textarea{resize:vertical;font-family:ui-monospace,monospace;font-size:12.5px}
 /* == end WP-agents == */
 
 /* == WP-goal == */
