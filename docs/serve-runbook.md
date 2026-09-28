@@ -18,7 +18,7 @@ tenant serve --self-improve=false # disable background distill/consolidate/profi
 |---|---|---|
 | Agent + full tool surface | on | memory, skills, recall, sub-agent orchestration |
 | Web dashboard | **on** | the only control surface — chat, tools, approvals, models, memory |
-| Headless approval drain | on | gated "ask" actions surface at `/api/approvals` (no TUI to prompt) |
+| Headless approval drain | on | gated "ask" actions wait on the dashboard's Approvals & safety page and at `/api/approvals` (no TUI to prompt) |
 | Self-improvement scheduler | on | distill / skill-induction / consolidate / profile; `--self-improve=false` to disable |
 | Cron jobs | on | recurring agent prompts; honors `cron.allow_exec` + timezone |
 | Federation peer listener | if `peer.listen` set | paired peers reach this instance |
@@ -39,19 +39,28 @@ traffic can never race the working set. `GET /api/status` reports `turn_active`,
 
 ## Approvals (important for unattended runs)
 
-There is no terminal to approve a dangerous action. A gated **ask**-mode tool call is
-held in a queue and surfaced in the activity feed; resolve it from the dashboard or via
-REST:
+There is no terminal to approve a dangerous action. A gated **ask**-mode call waits in
+a queue: answer it on the dashboard's **Approvals & safety** page (it appears within a
+second, with what the agent wants to do and why) or via REST. Requests raised in a
+Discord conversation are answered with the buttons on the Discord card; the page only
+says they are there. See [dashboard-runbook.md](dashboard-runbook.md) §4.
 
 ```
 GET  /api/approvals                      # list pending: [{id, category, action, detail, age_secs}]
 POST /api/approvals/<id>  {"decision":"approve"}          # or approve_session | approve_always | deny
 ```
 
-To run truly hands-off, pre-approve the categories you trust with `--allow-exec` /
-`--allow-write` / `--allow-send` (or set per-category modes from the dashboard). Anything
-left in **ask** mode will wait for a decision rather than proceed — fail-closed by design.
-On shutdown, every still-pending request is denied so no work hangs.
+The page offers Allow once and Deny, and "for the rest of this session" behind a
+confirm step where that grant is safe to show. `approve_always` is REST-only: a
+permanent change is a category's mode.
+
+To run hands-off, set the categories you trust to **Allow** on the Approvals & safety
+page, or at launch with the plugins' allow flags (`--os-allow-exec`, `--os-allow-write`,
+`--gsuite-allow-send`, `--imessage-allow-send`, `--discord-allow-send`,
+`--web-allow-interact`, …); a mode saved on the page wins over a flag. Anything left in
+**ask** waits for a decision (fail-closed). Waiting never approves: a request is refused
+when the job that asked ends (a scheduled job's run is capped at 15 minutes,
+`cron.per_run_minutes`), and every pending one is denied on shutdown.
 
 ## Network exposure
 
@@ -64,7 +73,8 @@ from a TUI session, persisted) rather than binding a public interface.
 ## The dashboard token
 
 Every dashboard request needs the bearer token in `<config>/dashboard-auth-token`
-(created on first start), or `dashboard.auth` in config.json when you set one.
+(created on first start), or `dashboard.auth` in config.json when you set one. Only
+`GET /healthz` is open, for monitors; `HEAD /healthz` needs the token too.
 `tenant serve` prints the token at start-up only when stdout is a terminal. Under
 launchd or systemd, stdout goes to a file, so the start-up banner and the `system`
 log line say where the token lives instead: `cat` that file to see it.
@@ -74,6 +84,17 @@ Builds before TEN-360 printed the token to stdout (launchd keeps it in `serve.lo
 which nothing rotates) and wrote it into `<data>/logs/system/*.log`. If you ran one,
 rotate the token: stop serve, delete `<config>/dashboard-auth-token` (or change
 `dashboard.auth`), and start serve again. Browsers then sign in with the new token.
+
+**Windows service.** Under a service account `<config>` is that account's
+`%AppData%\tenant`: `C:\Windows\System32\config\systemprofile\AppData\Roaming\tenant`
+for SYSTEM, `C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\tenant` for LOCAL
+SERVICE, unless the service passes `--config`. An administrator reads the token from an
+elevated PowerShell with `Get-Content -LiteralPath "<config>\dashboard-auth-token"` on
+builds that share a service's secrets with Administrators (September 2026); older
+builds lock administrators out of the token and config.json alike. The steps, and
+checking the folder with `icacls`, are in [dashboard-runbook.md](dashboard-runbook.md)
+§2. A service has no screen, so a remote service's or an integration's browser sign-in
+is finished in a browser on the server itself (dashboard-runbook.md §7).
 
 ## Graceful shutdown
 
