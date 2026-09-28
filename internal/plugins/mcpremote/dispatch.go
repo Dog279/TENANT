@@ -130,7 +130,7 @@ func (d *Dispatcher) reauthText() string {
 	if !h.Since.IsZero() {
 		since = " since " + h.Since.Format("2006-01-02 15:04 UTC")
 	}
-	return d.label + " is NOT AUTHORIZED" + since + ": its sign-in expired and could not be refreshed, so its tools are unavailable until the operator reconnects it at the host (`tenant mcp connect " + d.auth.serverURL + "`, or the dashboard's Remote services page). Report this plainly in your summary; do not retry."
+	return d.label + " is NOT AUTHORIZED" + since + ": its sign-in expired and could not be refreshed, so its tools are unavailable until the operator reconnects it at the host (`" + d.auth.fixCommand() + "`, or the dashboard's Remote services page). Report this plainly in your summary; do not retry."
 }
 
 // newDispatcher lists the remote tools and caches their specs + gate status.

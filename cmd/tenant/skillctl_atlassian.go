@@ -96,6 +96,10 @@ func probeAtlassian(ctx context.Context, creds *credentials, settings map[string
 	return probeAtlassianWith(ctx, creds, settings, "", openBrowser, nil)
 }
 
+// probeJQL is the connect check's one-issue search. The enhanced search
+// endpoint refuses a JQL with no restriction ("unbounded"), so it has one.
+const probeJQL = "created >= -3650d ORDER BY created DESC"
+
 func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[string]string, cfgDir string, openBrowser func(string) error, mcpConnect atlassianMCPConnector) (string, error) {
 	auth := settings["auth"]
 	if auth == "" {
@@ -123,7 +127,7 @@ func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[st
 		if err != nil {
 			return "", err
 		}
-		if _, err := svc.Jira.Search(ctx, "ORDER BY created DESC", 1); err != nil {
+		if _, _, err := svc.Jira.Search(ctx, probeJQL, 1, ""); err != nil {
 			return "", fmt.Errorf("Jira probe failed (check site/email/token): %w", err)
 		}
 		return fmt.Sprintf("%s @ %s", email, site), nil
@@ -142,7 +146,7 @@ func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[st
 		}
 		// Reuse a cached token if it still works (no browser re-prompt).
 		if svc, err := atlassian.Open(ctx, cfg); err == nil {
-			if _, serr := svc.Jira.Search(ctx, "ORDER BY created DESC", 1); serr == nil {
+			if _, _, serr := svc.Jira.Search(ctx, probeJQL, 1, ""); serr == nil {
 				return fmt.Sprintf("connected (cached token) @ %s", site), nil
 			}
 		}
@@ -155,7 +159,7 @@ func probeAtlassianWith(ctx context.Context, creds *credentials, settings map[st
 		if err != nil {
 			return "", fmt.Errorf("post-login open: %w", err)
 		}
-		if _, err := svc.Jira.Search(ctx, "ORDER BY created DESC", 1); err != nil {
+		if _, _, err := svc.Jira.Search(ctx, probeJQL, 1, ""); err != nil {
 			return "", fmt.Errorf("Jira probe failed after sign-in: %w", err)
 		}
 		return fmt.Sprintf("OAuth connected — %s", resolved), nil

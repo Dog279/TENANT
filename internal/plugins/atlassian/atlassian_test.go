@@ -54,8 +54,21 @@ func TestJira_WireContract_PathA(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/search"):
+			// The enhanced endpoint: GET /rest/api/2/search was removed in 2025.
+			if r.Method != http.MethodPost || r.URL.Path != "/rest/api/2/search/jql" {
+				http.Error(w, `{"errorMessages":["removed endpoint"]}`, http.StatusGone)
+				return
+			}
+			var q struct {
+				NextPageToken string `json:"nextPageToken"`
+			}
+			json.NewDecoder(r.Body).Decode(&q)
+			next := "page2"
+			if q.NextPageToken == "page2" {
+				next = ""
+			}
 			json.NewEncoder(w).Encode(map[string]any{
-				"total": 1,
+				"nextPageToken": next,
 				"issues": []map[string]any{{
 					"key": "TEN-1",
 					"fields": map[string]any{
@@ -89,8 +102,12 @@ func TestJira_WireContract_PathA(t *testing.T) {
 	d := NewDispatcher(svc, Policy{})
 
 	out, isErr, _ := d.Dispatch(ctx, model.ToolCall{Name: "jira_search", Arguments: json.RawMessage(`{"jql":"project=TEN"}`)})
-	if isErr || !strings.Contains(out, "TEN-1") || !strings.Contains(out, "first issue") {
+	if isErr || !strings.Contains(out, "TEN-1") || !strings.Contains(out, "first issue") || !strings.Contains(out, `next_page_token "page2"`) {
 		t.Fatalf("search: isErr=%v out=%q", isErr, out)
+	}
+	out, isErr, _ = d.Dispatch(ctx, model.ToolCall{Name: "jira_search", Arguments: json.RawMessage(`{"jql":"project=TEN","next_page_token":"page2"}`)})
+	if isErr || !strings.Contains(out, "TEN-1") || strings.Contains(out, "next_page_token") {
+		t.Fatalf("last page: isErr=%v out=%q", isErr, out)
 	}
 	if !strings.HasPrefix(authSeen, "Basic ") {
 		t.Errorf("Path A must send Basic auth, got %q", authSeen)
@@ -175,5 +192,35 @@ func TestFileTokenStore_RoundTripAndProtection(t *testing.T) {
 	}
 	if report := secrets.Probe(path); !report.Protected {
 		t.Errorf("token cache is not protected: %+v", report)
+	}
+}
+
+// A failed call carries Atlassian's reason: the body's errorMessages and
+// errors, or a 429's Retry-After, not go-atlassian's bare "bad request".
+func TestJira_ErrorsCarryAtlassianReason(t *testing.T) {
+	status := http.StatusBadRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "30")
+		}
+		w.WriteHeader(status)
+		w.Write([]byte(`{"errorMessages":["Unbounded JQL queries are not allowed here."],"errors":{"jql":"add a restriction"}}`))
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	svc, err := Open(ctx, Config{SiteURL: srv.URL, Email: "e@x.com", APIToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDispatcher(svc, Policy{})
+
+	out, isErr, _ := d.Dispatch(ctx, model.ToolCall{Name: "jira_search", Arguments: json.RawMessage(`{"jql":"ORDER BY created"}`)})
+	if !isErr || !strings.Contains(out, "HTTP 400") || !strings.Contains(out, "Unbounded JQL") || !strings.Contains(out, "jql: add a restriction") {
+		t.Errorf("400: isErr=%v out=%q", isErr, out)
+	}
+	status = http.StatusTooManyRequests
+	out, isErr, _ = d.Dispatch(ctx, model.ToolCall{Name: "jira_get", Arguments: json.RawMessage(`{"key":"TEN-1"}`)})
+	if !isErr || !strings.Contains(out, "rate limited") || !strings.Contains(out, "retry after 30 seconds") {
+		t.Errorf("429: isErr=%v out=%q", isErr, out)
 	}
 }

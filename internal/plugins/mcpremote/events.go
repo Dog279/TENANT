@@ -94,7 +94,7 @@ var Reauthorized = Events.Event(1103, event.Info, "Sign-in", "{server} is author
 var SignInURL = Events.Event(2001, event.Warning, "Sign-in", "Open this URL in a browser to sign in to {server}: {url}", "server", "url").
 	Doc("A remote connector needs a browser sign-in, and no browser could be opened for it.",
 		"Tenant runs headless (a server, SSH), or opening the browser failed.",
-		"Open the URL in a browser on this machine: the sign-in returns to a callback on localhost. Elsewhere, run `tenant mcp connect <url>` at the host.")
+		"Open the URL in a browser on this machine: the sign-in returns to a callback on localhost. Elsewhere, run `tenant mcp connect <url> --config <config dir>` at the host, with the config dir of the Tenant that uses the connector.")
 
 var RefreshFailed = Events.Event(2101, event.Warning, "Sign-in", "Token refresh for {server} failed; the current token is still valid: {err}", "server", "err").
 	Doc("An early token refresh failed, so the connector keeps using its current token, and tries again on its next request.",
@@ -111,10 +111,20 @@ var NotifyFailed = Events.Event(2103, event.Warning, "Sign-in", "The operator wa
 		"The Discord relay is down, or has no operator to message.",
 		"Check the relay in the discord log.")
 
+var RefreshRetry = Events.Event(2104, event.Warning, "Sign-in", "Token refresh for {server} failed and is tried again on the next call: {err}", "server", "err").
+	Doc("A connector's access token expired and renewing it failed for a reason that can pass, so the call that needed it failed. The sign-in is kept and nobody is asked to re-authorize.",
+		"The authorization server was unreachable, answered with a server error, or took longer than 30 seconds; or another Tenant process held the saved sign-in's lock for longer than a refresh can take.",
+		"None if a later refresh succeeds (mcp 1102). If it keeps failing, check the network path to the authorization server.")
+
+var CacheNotLocked = Events.Event(2105, event.Warning, "Sign-in", "Could not lock the saved sign-in for {server}; refreshing without the lock: {err}", "server", "err").
+	Doc("Every Tenant process that uses a connector (serve, the TUI, tenant mcp connect) locks its saved sign-in before renewing the token, so no two spend the same single-use refresh token. This one could not, so it renews unlocked. Written once per connection.",
+		"Another account created the lock file beside the sign-in and this one can't open it (serve running as SYSTEM beside an administrator's session).",
+		"Run every Tenant that uses the connector as the same account and with the same --config. Two renewals at the same moment without the lock can lose the sign-in (mcp 3101).")
+
 var NeedsReauth = Events.Event(3101, event.Error, "Sign-in", "{server} needs re-authorization: its token could not be refreshed: {err}", "server", "url", "err", "fix").
-	Doc("A remote connector's sign-in died: its token expired and the refresh failed, so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.",
+	Doc("A remote connector's sign-in died: its token expired and the server refused the refresh (invalid_grant, invalid_client, or another 4xx answer), so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.",
 		"The server revoked the refresh token, it expired unused, or a rotated one was lost.",
-		"Run the command in fix (`tenant mcp connect <url>`) at the host, or use the dashboard's Remote services page.")
+		"Run the command in fix (`tenant mcp connect <url> --config <config dir>`) at the host, or use the dashboard's Remote services page.")
 
 var TokenNotSaved = Events.Event(3102, event.Error, "Sign-in", "The refreshed token for {server} was not saved: {err}", "server", "err").
 	Doc("A connector's token was refreshed, but the new one was not written. The server may have retired the old refresh token, so after a restart the connector can need a new sign-in.",

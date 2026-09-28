@@ -25,6 +25,7 @@ func rotatingTokenServer(t *testing.T, count *int32, failAll bool) *httptest.Ser
 			return
 		}
 		if failAll {
+			w.Header().Set("Content-Type", "application/json") // as a real server does: oauth2 reads the error code by it
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 			return
