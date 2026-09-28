@@ -119,7 +119,7 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
   [docs/changes/privacy-controls.md](docs/changes/privacy-controls.md).
 - Every subsystem logs to **`<data>/logs/<source>/YYYY-MM-DD.log`** — one folder
   per subsystem (turns, sub-agents, approvals, discord, cron, …), plain text, and
-  the same lines feed the dashboard's Activity tab (one tab per folder). Adding a
+  the same lines feed the dashboard's Logs page (one log per folder). Adding a
   source is one line of Go, one `tenant log` call, or one `POST /api/logs/<name>`
   — see [docs/LOGGING.md](docs/LOGGING.md). For a program outside the binary,
   copy the one-file client in [reference/logging/](reference/logging/).

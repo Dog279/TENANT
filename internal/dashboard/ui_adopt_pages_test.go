@@ -35,7 +35,7 @@ var adoptedConfirms = []struct {
 	{route: "/settings/keys/openai/remove"},
 	{route: "/cron/j1/delete"},
 	{route: "/access/imessage/clear"},
-	{route: "/logs/log/cron/clear"},
+	{route: "/logs/clear", form: url.Values{"log": {"cron"}}},
 	{route: "/access/discord/operator", form: url.Values{"operator": {"4242"}}},
 	{route: "/access/imessage/allow", form: url.Values{"handle": {"a@b.c"}}},
 	{route: "/models/use", form: url.Values{"name": {"m"}}},
@@ -279,7 +279,6 @@ func TestExistingPages_States(t *testing.T) {
 		errOK bool            // ?err= only (the page has no success flash)
 	}{
 		{route: "/", empty: func(*Server) {}},
-		{route: "/activity", off: true, empty: func(s *Server) { _, hub, _ := logsBook(t); s.SetLogs(hub) }},
 		{route: "/logs", off: true, flash: true},
 		{route: "/memory", off: true},
 		{route: "/memory/soul", off: true, empty: func(*Server) {}, errOK: true},
@@ -463,7 +462,7 @@ func TestAdopt_LogsChangeErrorsArePlain(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil)
 	back := func(err error) string {
 		rec := httptest.NewRecorder()
-		s.logsBack(rec, httptest.NewRequest(http.MethodPost, "/logs/log/cron/clear", nil), url.Values{}, "", err)
+		s.logsDone(rec, httptest.NewRequest(http.MethodPost, "/logs/clear", nil), url.Values{}, "", err, nil)
 		u, _ := url.Parse(rec.Header().Get("Location"))
 		return u.Query().Get("err")
 	}

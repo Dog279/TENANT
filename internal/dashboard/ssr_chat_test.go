@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"tenant/internal/agent"
-	"tenant/internal/logs"
 )
 
 type chatRunner struct{ turns chan string }
@@ -214,15 +213,13 @@ func TestActivityFeed_FiltersNoiseAndAttributesAgents(t *testing.T) {
 	}
 }
 
-// REVSEC-8: hidden characters show as markers in the chat transcript and
-// the Activity feed, as on the approval card, and a cut never splits a
-// character.
+// REVSEC-8: hidden characters show as markers in the chat transcript, as on
+// the approval card, and a cut never splits a character.
 func TestFeedRows_ShowHiddenCharacters(t *testing.T) {
 	cmd := "run echo safe ‮ evil ⁦ done"
 	rows := []string{
 		chatBubble(agent.Event{Kind: agent.EventToolCall, Tool: "os_exec", Args: cmd}),
 		chatBubble(agent.Event{Kind: "final", Text: cmd}),
-		logRow(logs.Entry{Source: "turns", Msg: cmd}),
 	}
 	for _, row := range rows {
 		if strings.ContainsAny(row, "‮⁦") || !strings.Contains(row, "⟨U+202E⟩") {

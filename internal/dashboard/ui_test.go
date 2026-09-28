@@ -460,7 +460,7 @@ func TestNav_GroupsAndLabels(t *testing.T) {
 		}
 	}
 	want := []string{"/ Overview",
-		"[Activity]", "/chat Chat", "/activity Activity feed", "/goal Autopilot", "/logs Logs",
+		"[Activity]", "/chat Chat", "/goal Autopilot", "/logs Logs",
 		"[Knowledge]", "/memory Memory", "/skills Skills", "/eval Quality", "/research Research",
 		"[Capabilities]", "/tools Tools", "/agents Helpers", "/mcp Remote services", "/cron Scheduled jobs",
 		"[Safety]", "/safety Approvals & safety", "/access Access",

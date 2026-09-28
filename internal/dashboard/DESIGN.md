@@ -8,7 +8,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 
 | Question | Where it's answered |
 |---|---|
-| Is my agent healthy? | Overview; the status strip (busy, waiting) |
+| Is my agent healthy? | Overview, Logs; the status strip (busy, waiting) |
 | What has it learned, and is it getting better? | Memory, Skills, Quality, Research |
 | What can it do, and who can reach it? | Tools, Helpers, Remote services, Integrations, Access |
 | Is anything waiting for my OK? | Approvals & safety; the strip's "N actions are waiting for your OK" on every page |
@@ -23,7 +23,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 - A page's title is its nav label.
 - No uppercase warnings, no emoji status markers. Use a pill (`.risk`, `.on-tag`, `.tag-new`) instead.
 
-**Banned on pages** (checked on templates and on rendered pages by `TestTemplates_PlainLanguage` and `TestRendered_PlainLanguage`; the Logs page's filter language is exempt, and so are the log records the Activity feed and Logs show as written, "Sub-agent …" and "cron-exec turned on" included: they are the record, not the page's words. The page's own labels around them follow this list):
+**Banned on pages** (checked on templates and on rendered pages by `TestTemplates_PlainLanguage` and `TestRendered_PlainLanguage`; the Logs page's filter language is exempt, and so are the log records it shows as written, "Sub-agent …" and "cron-exec turned on" included: they are the record, not the page's words. The page's own labels around them follow this list):
 
 | Don't say | Say |
 |---|---|
@@ -166,12 +166,12 @@ Secret routes never put a control's error in a URL.
   A dropped connection, a refusal or the stream ending shows it at once, and the stream's next patch hides it. So such a stream sends a patch as soon as it opens (a snapshot); otherwise a reconnect leaves the banner up. `TestLiveBannerInChrome` checks it.
 - A Datastar request answered 401 means the sign-in has gone stale (the key changed, or another Tenant on this host signed the browser in): the status wrapper in `layout.html` sends the page to the sign-in form, which brings it back. One refused request, not one every 20s in the Security log.
 - Buttons that send a decision carry `data-indicator:_sending` and `data-attr:disabled="$_sending"`, so a double tap sends once.
-- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, `#access-body`. There are no new event kinds.
+- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, `#access-body`, and the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`. There are no new event kinds.
 - **F1:** no text from a request or an agent goes into a Datastar attribute other than `data-on:*`, and there only numbers or URLs built with `url.Values.Encode` or `url.PathEscape`. The browser decodes the attribute before Datastar evaluates it, so a quote in it would be script. Untrusted text goes in element content, where html/template escapes it. `template.HTML` is used only through `reportHTML`, which escapes first.
 
 ### Forms that don't reload
 
-A form post answered with `redirectFlash` reloads the page, which jumps back to the top. Where the operator works down a long list one row at a time (Access), the form posts in place instead: the page stays where it was, the row shows its new state, and a toast says what happened. Access uses it on every form; other pages keep `redirectFlash` until they adopt it.
+A form post answered with `redirectFlash` reloads the page, which jumps back to the top. Where the operator works down a long list one row at a time (Access), the form posts in place instead: the page stays where it was, the row shows its new state, and a toast says what happened. Access and Logs use it; other pages keep `redirectFlash` until they adopt it. A form keeps a full navigation only where going to another page is the point: Logs' "Delete this view" (the page it's on is the view it deletes), and a plain post of "Save as view", which opens the new view.
 
 - The form keeps `method="POST" action="…"`, so it still works before Datastar loads, and adds `data-on:submit__prevent__throttle.1s="@post('/access/discord/permission', {contentType:'form', retryMaxCount:0})"`. The URL is a literal (F1), and a row's values are form fields, never part of the expression. Datastar sends the form's fields form-encoded, with the `Origin` header a browser always sends on a POST, so `secure()`'s checks are unchanged. A confirm step opts in with `inline`: `{{template "ui-confirm" (inline (confirmGo "/access/discord/permission" "Allow" …))}}`.
   - `throttle.1s`: the morph reuses a row's form for the row that moves into its place, so without it a double tap on Remove removes two people.
@@ -183,9 +183,10 @@ A form post answered with `redirectFlash` reloads the page, which jumps back to 
   ```
 
   A plain POST still gets the 303 and its flash. A Datastar POST gets three patches: `#toast` (mode `replace`, so a new toast starts its fade again), `#ui-status`, and `region()`, the page's changed part rendered from a `{{define}}` with a stable ID (`access-body` renders `#access-body`), which Datastar morphs. The scroll, the focus and text typed in an input stay; an open confirm step closes, because the new HTML has no `open`. An error changed nothing, so it leaves `region()` out: an open step stays open with what was typed in it. Errors still go through `flashFor`. The region holds the page's `ui-flash`, so a banner from a plain post goes with the first in-place answer.
+- A region may be several elements, each with its ID, when a change touches parts that sit apart. Logs: saving a view redraws `#lg-tree`; a log's properties redraw `#lg-props` and `#lg-clear`, which sit inside their `<details>`, so an open section stays open; a clear also redraws `#lg-grid`, `#lg-count` (counted now, not the page's `data-init`) and `#lg-detail`. A form carries what its answer needs to draw them (the log and the grid's filter) as fields. Keep an element that opens a GET on `data-init` out of a region.
 - The toast is `ui-toast` in `ui.html`, patched into `#toast` inside `layout.html`'s never-patched `.toast-wrap`, which is `aria-live="polite"`: a screen reader reads a change inside a live region that was already there, not a new element's own `role=status`. Success fades after about 3 seconds (CSS only). An error is `role=alert` and stays until its close button or the next toast. It sits top right on a desktop, and across the top on a phone, clear of the rows the thumb works on.
 - Datastar patches nothing for a reply that isn't 200 (a 403, a 428 from a stale page, a 500) or for a dropped connection. `.toast-wrap` watches its forms' posts and shows `#toast-fail`, a fixed "That didn't go through. Reload the page and try again.", until the next post starts or it's closed. `needConfirm` still answers 428 without `confirm=yes`, so a stale page gets that alert, never the change.
-- Tests: a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm`), and a browser test that the scroll and the page survive, a double tap sends once, and a stale page gets `#toast-fail` (`TestAccessInlineFormsInChrome`).
+- Tests: a handler test that a Datastar POST gets the three patches and a plain one the 303 (`TestAccess_InlineAnswersEveryForm`), and a browser test that the scroll and the page survive, a double tap sends once, and a stale page gets `#toast-fail` (`TestAccessInlineFormsInChrome`). Logs: `TestLogs_InlineForms` and `TestLogsInlineFormsInChrome`.
 
 ## 9. A new page
 

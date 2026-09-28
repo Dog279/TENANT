@@ -13,8 +13,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"tenant/internal/logs"
 )
 
 // fakeTools is a minimal ToolControl for the SSR page tests.
@@ -127,12 +125,6 @@ func TestSSR_ToolsPage(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("tools page missing %q", want)
 		}
-	}
-}
-
-func TestSSR_ActivityPage(t *testing.T) {
-	if rec := get(t, mustServer(), "/activity"); rec.Code != http.StatusOK {
-		t.Fatalf("activity want 200, got %d", rec.Code)
 	}
 }
 
@@ -360,12 +352,9 @@ func TestSSR_PluginToggleForm(t *testing.T) {
 // tests can check, uses the colon syntax and none of the dead hyphen forms.
 func TestSSR_DatastarColonSyntax(t *testing.T) {
 	s := mustServer()
-	s.SetLogs(logs.NewMemory(10)) // the activity feed renders only when a log hub is wired
 	cases := []struct {
 		path, want, reject string
 	}{
-		{"/activity", `@get('/activity/events`, "data-on-load"},
-		{"/activity", `{retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})`, "data-on-load"},
 		{"/chat", `data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})"`, "data-on-submit"}, // a double tap keeps the first answer
 		{"/chat", `data-bind:text`, "data-bind-text"},
 		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},

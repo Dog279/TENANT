@@ -2,8 +2,9 @@
 
 Every subsystem in Tenant writes through **one log book** (`internal/logs`).
 It files each line under a per-source folder of plain-text daily files and
-keeps the same lines in memory for the dashboard's Activity tab. One source is
-one folder is one tab.
+keeps the same lines in memory for `GET /api/activity`, which `tenant attach`
+reads. One source is one folder. The dashboard's Logs page reads the log
+book's store ([below](#the-dashboard)).
 
 ```
 <data>/logs/                      ← the root (macOS: ~/Library/Application Support/tenant/logs)
@@ -129,7 +130,7 @@ internal package fails `go test ./internal/archtest`: the files that had one
 
 ## Secrets
 
-Every entry is scrubbed before the value cap, the Activity feed and the files:
+Every entry is scrubbed before the value cap, the memory ring and the files:
 the message and every field, so the `sandbox` folder's `command` and the tool
 arguments and results in `turns` too.
 
@@ -378,18 +379,12 @@ classifier) log at ERROR, and a shutdown step writes `system 3020`. The
 
 ## The dashboard
 
-The **Activity** tab reads the hub: every source is a tab (built-ins first,
-custom ones after, `system` last), with a retained-line count, an
-**⚠ errors only** toggle, and — when a source is selected — its files on disk
-with a raw plain-text view / download. History from before the current run is
-there too: at start the hub re-reads the tail of every folder's newest file.
-Every open tab updates live. After Tenant restarts, an open tab redraws itself
-from the new process's lines when it reconnects. A source's tab stays until
-Tenant restarts, even if its folder is deleted.
-
-The **Logs** page (`/logs`) is where to investigate: the log book itself,
-laid out like Event Viewer ([below](#the-logs-page)). The Activity tab links to
-it, filtered to the source it shows.
+The **Logs** page (`/logs`) is where to watch and investigate: the log book
+itself, laid out like Event Viewer ([below](#the-logs-page)), with **live**
+adding each new event at the top as it is written. It replaced the Activity
+tab: an old `/activity` link opens it with the same filter (`?source=` as
+`log:`, `?level=error` as `level>=error`, `?trace=` as `trace:`). A folder's
+raw files are at `GET /api/logs/{source}/{name}` (`?download=1` to save one).
 
 `tenant attach [URL] --follow [--source discord] [--level error] [--trace ID]`
 is the terminal equivalent, over `GET /api/activity`; `--trace` keeps one
@@ -559,7 +554,7 @@ shutdown's own last events.
 - **The write path.** An event joins one queue (64k events); one writer
   goroutine takes a batch every 100 ms or 512 events, scrubs it, caps its
   values, appends its operational events to the text files, then commits the
-  batch, and only then feeds the Activity tab. The text files are written
+  batch, and only then feeds the memory ring. The text files are written
   first, so a batch the store loses (a crash mid-commit, a failed write) is
   still in them.
 - **When a commit fails** (a full disk, a lock held past its timeout, an I/O
@@ -627,8 +622,8 @@ shutdown's own last events.
   lists what goes per log, with samples. `tenant privacy export` writes every
   event to `logbook.jsonl`, sensitive fields included. `tenant privacy status`
   counts the backups made before the last forget that still hold what it
-  removed. A running Tenant's Activity tab keeps what it already read until
-  it scrolls past.
+  removed. A running Tenant's memory ring (`/api/activity`) keeps what it
+  already read until newer lines push it out.
 - The file is owner-only. The viewer arrives with the next logging v2
   tickets.
 
@@ -924,7 +919,7 @@ holding it up.
   ends it. Its correlation is its `trace`.
 - **Tool calls:** the `tool call` and `tool result` lines are the payload
   records (diagnostic channel, `args` and `result` sensitive; until the store
-  lands, these files and the Activity tab still show them in full). Each call
+  lands, these files and `/api/activity` still show them in full). Each call
   also writes an operational `Tool <name> finished in <d>` or `failed after <d>`.
 - **Where an agent's events land:** in its surface's folder, as its logger
   names it (`logs.SourceOf`): a sub-agent's in `subagents`, a cron job's in
@@ -1049,14 +1044,20 @@ count and the live tail arrive as Datastar patches.
   one log, its Properties (maximum size and age, when full, minimum level,
   enabled, reset, debug for 30 minutes) and Clear, which offers the export
   first. Each change and each clear files its Security record; the Security
-  log is never cleared.
+  log is never cleared. Saving a view, a log's properties and a clear answer
+  on the page with a toast, and the page keeps its scroll: a saved view
+  appears in the tree, the Properties section shows the new settings, and a
+  clear also redraws the grid and its count. Deleting a view goes to the
+  Summary.
 - **Summary** and **Components** show what the two sections above describe.
 
 The discovery questions of the design (§9.1: what is running, what went
 wrong recently, what happened at 14:03, why did this fail and what else did
 that run do) are handler tests, each answered in at most three requests
 (`TestLogsDiscoveryDrill`), and `TestLogsPageInChrome` drives the page in
-Chrome when it is installed.
+Chrome when it is installed (`TestLogsInlineFormsInChrome` its forms, and
+`TestLogsTailNotScriptInChrome` the live tail against script in a filter or
+a CR in a message).
 
 ### The API
 

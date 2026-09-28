@@ -8,8 +8,9 @@ package dashboard
 // older pages, the detail pane, the match count and the live tail arrive as
 // Datastar SSE patches. It calls what the log book's API handlers call
 // (logapi and the store), never the API over HTTP. Log text is untrusted:
-// html/template escapes every value, and the Activity feed stays the live,
-// friendly view.
+// html/template escapes every value. Its forms answer in place (formDone):
+// the page keeps its scroll, a toast says what happened, and the parts the
+// change touched are rendered again.
 
 import (
 	"bytes"
@@ -53,8 +54,10 @@ func (s *Server) mountLogsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /logs/detail/{seq}/reveal", s.handleLogsDetail)
 	mux.HandleFunc("POST /logs/views", s.handleLogsSaveView)
 	mux.HandleFunc("POST /logs/views/delete", s.handleLogsDeleteView)
-	mux.HandleFunc("POST /logs/log/{log}/properties", s.handleLogsProperties)
-	mux.HandleFunc("POST /logs/log/{log}/clear", needConfirm(nil, s.handleLogsClear)) // the events are gone for good (TEN-211)
+	// The log is a form field, not in the path: an in-place form posts to a
+	// static URL (DESIGN.md §8, F1).
+	mux.HandleFunc("POST /logs/properties", s.handleLogsProperties)
+	mux.HandleFunc("POST /logs/clear", needConfirm(nil, s.handleLogsClear)) // the events are gone for good (TEN-211)
 }
 
 // logbookStore is the hub and its store; the store is nil when logbook.db
@@ -75,20 +78,19 @@ type logsData struct {
 	Msg, Err string
 
 	// The grid.
-	Heading      string
-	Q            string // the filter in force
-	View         string // the view it came from
-	Saved        bool   // that view is the operator's own
-	FilterErr    string
-	Grid         logsGrid
-	CountURL     string
-	Live         bool
-	LiveHref     string
-	TailURL      string
-	Exports      []logsLink
-	Props        *logsProps // the one log the filter names: its Properties and Clear
-	ClearExports []logsLink
-	Detail       *logsDetail
+	Heading   string
+	Q         string // the filter in force
+	View      string // the view it came from
+	Saved     bool   // that view is the operator's own
+	FilterErr string
+	Grid      logsGrid
+	CountURL  string
+	Live      bool
+	LiveHref  string
+	TailURL   string
+	Exports   []logsLink
+	Props     *logsProps // the one log the filter names: its Properties and Clear
+	Detail    *logsDetail
 
 	Summary    *logsSummary
 	Components *logsComps
@@ -227,7 +229,7 @@ func (s *Server) gridView(ctx context.Context, h *logs.Hub, st *store.Store, d *
 		}
 		if ls, err := logapi.LogViews(ctx, h, st, name); err == nil && len(ls) == 1 {
 			d.Props = propsView(ls[0])
-			d.ClearExports = exportLinks("log:" + name)
+			d.Props.Q, d.Props.View = d.Q, d.View
 		}
 	}
 	if d.Sel != 0 {
@@ -475,7 +477,11 @@ func (s *Server) handleLogsCount(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	ctx := r.Context()
+	_ = writeDatastarPatch(w, logsCount(r.Context(), st, f))
+}
+
+// logsCount is #lg-count for filter f, counted now.
+func logsCount(ctx context.Context, st *store.Store, f query.Filter) string {
 	total, err := st.Count(ctx, query.Filter{})
 	n := total
 	if err == nil && len(f.Terms) > 0 {
@@ -485,7 +491,7 @@ func (s *Server) handleLogsCount(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		text = "can't count: " + err.Error()
 	}
-	_ = writeDatastarPatch(w, `<span id="lg-count" class="lg-count dim">`+template.HTMLEscapeString(text)+`</span>`)
+	return `<span id="lg-count" class="lg-count dim">` + template.HTMLEscapeString(text) + `</span>`
 }
 
 // handleLogsTail is the live tail: each event matching q after the cursor in
@@ -823,16 +829,16 @@ type logsProps struct {
 	Enabled             bool
 	Debug               string // the debug switch is on until then
 	Security            bool
-	Action, ClearAction string
 	LastWrite, Cleared  string
+	Exports             []logsLink // the whole log, offered before a clear
+	Q, View             string     // the grid's filter and its view, which a clear redraws
 }
 
 func propsView(l logapi.Log) *logsProps {
 	p := &logsProps{Log: l.Name, Events: thousands(l.Events), Size: humanBytes(l.Bytes), Enabled: l.Policy.Enabled,
 		MaxMB:    strconv.FormatFloat(float64(l.Policy.MaxBytes)/(1<<20), 'f', -1, 64),
 		MaxDays:  strconv.FormatFloat(float64(l.Policy.MaxAgeS)/86400, 'f', -1, 64),
-		Security: l.Name == store.SecurityLog,
-		Action:   "/logs/log/" + url.PathEscape(l.Name) + "/properties", ClearAction: "/logs/log/" + url.PathEscape(l.Name) + "/clear"}
+		Security: l.Name == store.SecurityLog, Exports: exportLinks("log:" + l.Name)}
 	if l.Policy.MaxBytes > 0 {
 		p.Limit = humanBytes(l.Policy.MaxBytes)
 	}
@@ -858,30 +864,87 @@ func propsView(l logapi.Log) *logsProps {
 	return p
 }
 
-// logsBack redirects to the grid of q with a message, as the forms do. The
-// log book's own refusals ("the Security log is never cleared", a bad
+// logsDone answers a Logs form (formDone): in place for a Datastar post, with
+// region rendered again; otherwise a 303 to the page of back with the flash.
+// The log book's own refusals ("the Security log is never cleared", a bad
 // max_size) answer the operator and show as they are; any other error shows
-// a fixed message and goes to the log (D21).
-func (s *Server) logsBack(w http.ResponseWriter, r *http.Request, v url.Values, msg string, err error) {
+// a fixed message and goes to the log (D21). region runs only on success,
+// so an error may pass nil.
+func (s *Server) logsDone(w http.ResponseWriter, r *http.Request, back url.Values, msg string, err error, region func() (string, error)) {
+	errMsg := ""
 	var refusal *logapi.Error
 	if errors.As(err, &refusal) {
-		v.Set("err", refusal.Msg)
+		errMsg = refusal.Msg
 	} else if err != nil {
-		v.Set("err", s.flashFor(r.Context(), "logs change", err, "Couldn't make that change. The dashboard log has the reason."))
-	} else if msg != "" {
-		v.Set("msg", msg)
+		errMsg = s.flashFor(r.Context(), "logs change", err, "Couldn't make that change. The dashboard log has the reason.")
 	}
-	http.Redirect(w, r, "/logs?"+v.Encode(), http.StatusSeeOther)
+	page := "/logs"
+	if len(back) > 0 {
+		page += "?" + back.Encode()
+	}
+	s.formDone(w, r, page, msg, errMsg, region)
+}
+
+// logsTreePart is the tree as it is now, on the grid of view or filter q.
+func (s *Server) logsTreePart(ctx context.Context, h *logs.Hub, st *store.Store, view, q string) (string, error) {
+	sum, err := h.Summary(ctx, time.Now())
+	if err != nil {
+		return "", err
+	}
+	views, err := s.logbook.Views(ctx, st)
+	if err != nil {
+		return "", err
+	}
+	return logsPart("lgtree", logsData{Mode: "grid", Tree: logsTree(views, sum, view, q, "grid")})
+}
+
+// logsLogParts is log's Properties and Clear sections as they are now, on
+// the grid of view or filter q. After a clear it is also what the clear
+// changed: the tree's counts, the grid's first page, its count, and the
+// detail pane, whose event may be gone.
+func (s *Server) logsLogParts(ctx context.Context, h *logs.Hub, st *store.Store, log, q, view string, cleared bool) (string, error) {
+	ls, err := logapi.LogViews(ctx, h, st, log)
+	if err != nil || len(ls) != 1 {
+		return "", err
+	}
+	p := propsView(ls[0])
+	p.Q, p.View = q, view
+	props, err1 := logsPart("lgprops", p)
+	clr, err2 := logsPart("lgclear", p)
+	parts := []string{props, clr}
+	if cleared {
+		tree, err := s.logsTreePart(ctx, h, st, view, q)
+		parts, err1 = append(parts, tree), errors.Join(err1, err)
+	}
+	if cleared && q != "" {
+		f, err := query.Parse(q)
+		if err != nil {
+			return "", err
+		}
+		g, err := logsGridPage(ctx, st, f, q, store.Cursor{})
+		if err != nil {
+			return "", err
+		}
+		grid, err3 := logsPart("lggridbox", logsData{Grid: g})
+		detail, err4 := logsPart("lgdetail", (*logsDetail)(nil))
+		parts = append(parts, grid, logsCount(ctx, st, f), detail)
+		err1 = errors.Join(err1, err3, err4)
+	}
+	return strings.Join(parts, "\n"), errors.Join(err1, err2)
 }
 
 // handleLogsProperties changes a log's policy or its debug switch through
 // what PATCH /api/logbook/logs/{log} calls, which files the Security record.
 func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 	h, st := s.logbookStore()
-	log := r.PathValue("log")
+	log := r.FormValue("log")
 	back := url.Values{"q": {"log:" + log}}
 	if st == nil {
-		s.logsBack(w, r, back, "", PlainError("The log book isn't open here."))
+		s.logsDone(w, r, back, "", PlainError("The log book isn't open here."), nil)
+		return
+	}
+	if log == "" { // only a hand-made post names no log
+		s.logsDone(w, r, nil, "", PlainError("Pick a log first."), nil)
 		return
 	}
 	var c logapi.PolicyChange
@@ -896,56 +959,74 @@ func (s *Server) handleLogsProperties(w http.ResponseWriter, r *http.Request) {
 		mb, err1 := strconv.ParseFloat(strings.TrimSpace(r.FormValue("max_mb")), 64)
 		days, err2 := strconv.ParseFloat(strings.TrimSpace(r.FormValue("max_days")), 64)
 		if err := errors.Join(err1, err2); err != nil || mb < 0 || days < 0 || mb > 1<<30 || days > 1e5 {
-			s.logsBack(w, r, back, "", PlainError("Max size and max age are numbers; 0 means no limit."))
+			s.logsDone(w, r, back, "", PlainError("Max size and max age are numbers; 0 means no limit."), nil)
 			return
 		}
 		c.MaxBytes, c.MaxAgeS = new(int64(mb*(1<<20))), new(int64(days*86400))
 		c.OnFull, c.MinLevel = new(r.FormValue("on_full")), new(r.FormValue("min_level"))
 		c.Enabled = new(r.FormValue("enabled") != "")
 	}
-	name, err := s.logbook.Change(r.Context(), h, st, log, c)
+	ctx := r.Context()
+	name, err := s.logbook.Change(ctx, h, st, log, c)
 	back.Set("q", "log:"+name)
-	s.logsBack(w, r, back, "Log "+name+" changed.", err)
+	s.logsDone(w, r, back, "Log "+name+" changed.", err, func() (string, error) {
+		return s.logsLogParts(ctx, h, st, name, r.FormValue("q"), r.FormValue("view"), false)
+	})
 }
 
 // handleLogsClear clears a log through what the API's clear calls; the page
-// offers an export first. The Security log is never cleared.
+// offers an export first. The Security log is never cleared. q is the
+// grid's filter, which names only this log, so the grid is drawn again.
 func (s *Server) handleLogsClear(w http.ResponseWriter, r *http.Request) {
 	h, st := s.logbookStore()
-	log := r.PathValue("log")
+	log, q := r.FormValue("log"), r.FormValue("q")
 	back := url.Values{"q": {"log:" + log}}
 	if st == nil {
-		s.logsBack(w, r, back, "", PlainError("The log book isn't open here."))
+		s.logsDone(w, r, back, "", PlainError("The log book isn't open here."), nil)
 		return
 	}
-	n, err := s.logbook.Clear(r.Context(), h, st, log)
-	s.logsBack(w, r, back, fmt.Sprintf("Cleared %s events from %s.", thousands(n), log), err)
+	if log == "" { // only a hand-made post names no log
+		s.logsDone(w, r, nil, "", PlainError("Pick a log first."), nil)
+		return
+	}
+	ctx := r.Context()
+	n, err := s.logbook.Clear(ctx, h, st, log)
+	s.logsDone(w, r, back, fmt.Sprintf("Cleared %s events from %s.", thousands(n), log), err, func() (string, error) {
+		return s.logsLogParts(ctx, h, st, log, q, r.FormValue("view"), true)
+	})
 }
 
+// handleLogsSaveView saves the grid's filter as a view. In place the page
+// stays on its grid and the tree shows the new view; a plain post opens it.
 func (s *Server) handleLogsSaveView(w http.ResponseWriter, r *http.Request) {
-	_, st := s.logbookStore()
+	h, st := s.logbookStore()
 	filter := r.FormValue("filter")
 	if st == nil {
-		s.logsBack(w, r, url.Values{"q": {filter}}, "", PlainError("The log book isn't open here."))
+		s.logsDone(w, r, url.Values{"q": {filter}}, "", PlainError("The log book isn't open here."), nil)
 		return
 	}
-	v, err := s.logbook.SaveView(r.Context(), st, logapi.View{Name: r.FormValue("name"), Filter: filter})
+	ctx := r.Context()
+	v, err := s.logbook.SaveView(ctx, st, logapi.View{Name: r.FormValue("name"), Filter: filter})
 	if err != nil {
-		s.logsBack(w, r, url.Values{"q": {filter}}, "", err)
+		s.logsDone(w, r, url.Values{"q": {filter}}, "", err, nil)
 		return
 	}
-	s.logsBack(w, r, url.Values{"view": {v.Name}}, "Saved the view "+v.Name+".", nil)
+	s.logsDone(w, r, url.Values{"view": {v.Name}}, "Saved the view "+v.Name+". It's under Custom Views.", nil, func() (string, error) {
+		return s.logsTreePart(ctx, h, st, r.FormValue("view"), filter)
+	})
 }
 
+// handleLogsDeleteView is a plain post: the page it's on is the view it
+// deletes, so it goes to the Summary.
 func (s *Server) handleLogsDeleteView(w http.ResponseWriter, r *http.Request) {
 	_, st := s.logbookStore()
 	name := r.FormValue("name")
 	if st == nil {
-		s.logsBack(w, r, url.Values{"view": {name}}, "", PlainError("The log book isn't open here."))
+		s.logsDone(w, r, url.Values{"view": {name}}, "", PlainError("The log book isn't open here."), nil)
 		return
 	}
 	if err := s.logbook.DeleteView(r.Context(), st, name); err != nil {
-		s.logsBack(w, r, url.Values{"view": {name}}, "", err)
+		s.logsDone(w, r, url.Values{"view": {name}}, "", err, nil)
 		return
 	}
 	http.Redirect(w, r, "/logs?"+url.Values{"msg": {"Deleted the view " + name + "."}}.Encode(), http.StatusSeeOther)

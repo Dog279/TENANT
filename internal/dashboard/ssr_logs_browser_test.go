@@ -2,7 +2,9 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -122,5 +124,189 @@ func TestLogsPageDesktopTreeInChrome(t *testing.T) {
 	}
 	if len(short) > 0 {
 		t.Errorf("tree links squashed at 1470px:\n%s", strings.Join(short, "\n"))
+	}
+}
+
+// The Logs forms answer in place on a phone (DESIGN.md "Forms that don't
+// reload"), signed in through the form. A new maximum size saved at the
+// bottom of the page shows its toast, keeps the scroll, the page (a marker
+// set before it survives) and the open Properties section, which now shows
+// the new limit. A double tap on Save sends one post, though the redrawn
+// section puts Save back under the finger: one change, one Security record.
+// Debug tapped just after Save still posts (its own form, its own throttle).
+// Clearing the log through its confirm step empties the grid and its count
+// in place, and a tree group the operator closed stays closed.
+// TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
+func TestLogsInlineFormsInChrome(t *testing.T) {
+	s, _, st := logsBook(t)
+	s.cfg.Addr, s.cfg.Auth = "127.0.0.1:0", GenerateToken()
+	var evs []event.Event
+	for i := range 40 {
+		evs = append(evs, event.Event{Log: "cron", Task: "Run", Msg: "job " + itoa(i)})
+	}
+	commit(t, st, evs...)
+	ctx, _ := chromeSignedIn(t, s, 390, 844, "/logs?q=log%3Acron")
+	shot := func(name string) chromedp.Action {
+		return chromedp.ActionFunc(func(ctx context.Context) error {
+			dir := os.Getenv("TENANT_UI_SCREENSHOT")
+			if dir == "" {
+				return nil
+			}
+			var png []byte
+			if err := chromedp.CaptureScreenshot(&png).Do(ctx); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "logs-390-"+name+".png"), png, 0o644)
+		})
+	}
+	wait := chromedp.WithPollingTimeout(6 * time.Second)
+	toastSays := func(text string) chromedp.Action {
+		return chromedp.Poll(`(t => t.classList.contains('ok') && t.textContent.includes(`+strconv.Quote(text)+`))(document.getElementById('toast'))`, nil, wait)
+	}
+	const where = `[document.querySelector('.page').scrollTop, scrollY]`
+	const saveBtn = `#lg-props button[value="save"]`
+
+	var before, after, xy []float64
+	var kept, props string
+	var open bool
+	var bad []string
+	err := chromedp.Run(ctx,
+		chromedp.Poll(`document.getElementById('lg-count').textContent.includes('match')`, nil, wait), // Datastar is up
+		chromedp.Click(`//summary[contains(., "Properties")]`, chromedp.BySearch),
+		chromedp.WaitVisible(saveBtn, chromedp.ByQuery),
+		chromedp.SetValue(`#lg-props input[name=max_mb]`, "5", chromedp.ByQuery),
+		chromedp.Evaluate(`(b => (b.scrollIntoView({block: 'center'}), window.inlineMark = 'kept', (r => [r.left + r.width / 2, r.top + r.height / 2])(b.getBoundingClientRect())))(document.querySelector(`+strconv.Quote(saveBtn)+`))`, &xy),
+		chromedp.Evaluate(where, &before),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if err := chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx); err != nil {
+				return err
+			}
+			time.Sleep(120 * time.Millisecond)
+			return chromedp.MouseClickXY(xy[0], xy[1]).Do(ctx)
+		}),
+		toastSays("Log cron changed."),
+		chromedp.Sleep(300*time.Millisecond), // room for a second post to land
+		shot("save"),
+		chromedp.Evaluate(where, &after),
+		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		chromedp.Text(`#lg-props`, &props, chromedp.ByQuery),
+		chromedp.Evaluate(`document.querySelector('#lg-props').closest('details').open`, &open),
+		chromedp.Evaluate(fitsJS, &bad),
+	)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if len(before) != 2 || before[0]+before[1] < 100 {
+		t.Fatalf("the page scrolled to %v before the tap, want well down it", before)
+	}
+	if fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Errorf("the scroll moved from %v to %v", before, after)
+	}
+	if kept != "kept" {
+		t.Errorf("the page reloaded: the marker is %q", kept)
+	}
+	if !strings.Contains(props, "of 5.0 MB") || !open {
+		t.Errorf("the Properties section (open %v) doesn't show the new limit: %q", open, props)
+	}
+	if n := len(security(t, st, 4902)); n != 1 {
+		t.Errorf("a double tap on Save filed %d changes, want one post", n)
+	}
+	for _, b := range bad {
+		t.Errorf("with the toast at 390px: %s", b)
+	}
+
+	// Debug 0.3s after Save: a throttle shared with Save would drop it.
+	err = chromedp.Run(ctx,
+		chromedp.Sleep(1100*time.Millisecond), // the double tap's throttle is over
+		chromedp.Click(saveBtn, chromedp.ByQuery),
+		chromedp.Sleep(300*time.Millisecond),
+		chromedp.Click(`#lg-props button[value="debug"]`, chromedp.ByQuery),
+		chromedp.Poll(`!!document.querySelector('#lg-props .tag')`, nil, wait),
+	)
+	if err != nil {
+		t.Fatalf("Debug just after Save: %v", err)
+	}
+
+	// Clear, through its confirm step: the grid and its count empty in place.
+	var rows int
+	var count string
+	var closed bool
+	err = chromedp.Run(ctx,
+		chromedp.Evaluate(`document.querySelector('#lg-tree .lg-group').open = false`, nil),
+		chromedp.Click(`//summary[contains(., "Clear log")]`, chromedp.BySearch),
+		chromedp.Click(`#lg-clear details.confirm-step > summary`, chromedp.ByQuery),
+		chromedp.WaitVisible(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
+		chromedp.Click(`#lg-clear details[open] .confirm-box button`, chromedp.ByQuery),
+		toastSays("Cleared 40 events from cron."),
+		shot("clear"),
+		chromedp.Evaluate(`document.querySelectorAll('#lg-rows .lg-row').length`, &rows),
+		chromedp.Text(`#lg-count`, &count, chromedp.ByQuery),
+		chromedp.Evaluate(`String(window.inlineMark)`, &kept),
+		chromedp.Evaluate(`!document.querySelector('#lg-tree .lg-group').open`, &closed),
+		chromedp.Evaluate(fitsJS, &bad),
+	)
+	if err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if !closed {
+		t.Error("the redrawn tree opened a group the operator closed")
+	}
+	if rows != 0 || !strings.HasSuffix(count, "; 0 match") || kept != "kept" {
+		t.Errorf("after a clear: %d rows, count %q, marker %q; want no rows, 0 match and the same page", rows, count, kept)
+	}
+	for _, b := range bad {
+		t.Errorf("after a clear at 390px: %s", b)
+	}
+}
+
+// F1 in a real browser, on the Logs page's live tail: a trace filter built to
+// close the tail's URL string stays a filter value, never script, and the
+// tail still shows a line with that trace. A bare CR ends an SSE line, so a
+// message carrying CRs could close its row's patch and open a
+// datastar-patch-signals event, which Datastar evaluates; the marker after
+// it shows the stream got past it as text. (The Activity feed's test, moved
+// here with the page.)
+func TestLogsTailNotScriptInChrome(t *testing.T) {
+	const payload = "x'),(window.__xss='fired'),('"
+	s, _, st := logsBook(t)
+	s.cfg.Addr, s.cfg.Auth = "127.0.0.1:0", GenerateToken()
+	ctx, _ := chromeSignedIn(t, s, 390, 844, "/logs?"+url.Values{"q": {filterTerm("trace", payload)}, "live": {"1"}}.Encode())
+	traced := func(msg string) event.Event {
+		return event.Event{Log: "cron", Msg: msg, Corr: event.Correlation{TraceID: payload}}
+	}
+	const shown = `document.getElementById('lg-rows').textContent.includes('after-load-marker')`
+	const shown2 = `document.getElementById('lg-rows').textContent.includes('after-cr-marker')`
+	var xss, xss2 string
+	var marker bool
+	err := chromedp.Run(ctx,
+		chromedp.WaitReady("#lg-tail", chromedp.ByID),
+		chromedp.Sleep(500*time.Millisecond), // the tail has subscribed
+		chromedp.ActionFunc(func(context.Context) error { commit(t, st, traced("after-load-marker")); return nil }),
+		// Datastar has run the tail's data-init once either shows.
+		chromedp.Poll(`window.__xss !== undefined || `+shown, nil, chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Evaluate(`typeof window.__xss`, &xss),
+		chromedp.Evaluate(shown, &marker),
+		chromedp.ActionFunc(func(context.Context) error {
+			cr := commit(t, st, traced("t\r\revent: datastar-patch-signals\rdata: signals (window.__xss2=document.domain)\r\r"))
+			if e, err := st.Get(context.Background(), cr[0].Seq); err != nil || !strings.Contains(e.Msg, "\r") {
+				t.Errorf("the store didn't keep the CRs, so this checks nothing: %q %v", e.Msg, err)
+			}
+			commit(t, st, traced("after-cr-marker"))
+			return nil
+		}),
+		chromedp.Poll(shown2, nil, chromedp.WithPollingTimeout(10*time.Second)),
+		chromedp.Evaluate(`typeof window.__xss2`, &xss2),
+	)
+	if err != nil {
+		t.Fatalf("in Chrome: %v", err)
+	}
+	if xss != "undefined" {
+		t.Errorf("the trace filter ran as script: typeof window.__xss = %q", xss)
+	}
+	if !marker {
+		t.Error("the live tail should show the line with this trace")
+	}
+	if xss2 != "undefined" {
+		t.Errorf("a CR in a streamed row ran as script: typeof window.__xss2 = %q", xss2)
 	}
 }
