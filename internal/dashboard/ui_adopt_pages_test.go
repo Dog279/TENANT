@@ -33,7 +33,7 @@ var adoptedConfirms = []struct {
 	{route: "/mcp/remove", form: url.Values{"target": {"svc"}}},
 	{route: "/integrations/disconnect", form: url.Values{"integration": {"gsuite"}}},
 	{route: "/settings/keys/remove", form: url.Values{"service": {"openai"}}},
-	{route: "/cron/j1/delete"},
+	{route: "/cron/delete", form: url.Values{"id": {"j1"}}},
 	{route: "/access/imessage/clear"},
 	{route: "/logs/clear", form: url.Values{"log": {"cron"}}},
 	{route: "/access/discord/operator", form: url.Values{"operator": {"4242"}}},
@@ -141,7 +141,7 @@ func TestAdoptedRoutes_ControlUntouchedWithoutConfirm(t *testing.T) {
 	s.SetSkills(fs)
 	s.SetRules(fr)
 	for _, p := range []struct{ route, body string }{
-		{"/cron/j1/delete", ""}, {"/cron/exec", "enabled=true"},
+		{"/cron/delete", "id=j1"}, {"/cron/exec", "enabled=true"},
 		{"/skills/forget", "name=x"}, {"/skills/trust", "name=x&trusted=true"}, {"/skills/auto", "mode=on"},
 		{"/tools/rules/add", "pattern=x&mode=allow"}, {"/tools/rules/remove", "pattern=x&mode=deny"},
 	} {

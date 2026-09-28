@@ -1,12 +1,27 @@
 {{define "content"}}
-{{template "ui-flash" .}}
+{{/* This wrapper is never patched. It drops a post that comes within half a
+     second of the last one from anywhere on the page, not only from the same
+     form: once a card goes, a double tap's second tap lands on what moved
+     under it (on a phone, Delete's Yes sits over the next card's Run now).
+     In that half second a tap can't open a confirm step either: after Turn
+     off, the Turn on step's button sits where Turn off was. */}}
+<div data-on:submit__capture="evt.timeStamp - (el.postedAt ?? -1e4) < 500 ? (evt.preventDefault(), evt.stopImmediatePropagation()) : (el.postedAt = evt.timeStamp)" data-on:click__capture="evt.target.closest('details:not([open]) > summary') && evt.timeStamp - (el.postedAt ?? -1e4) < 500 && (evt.preventDefault(), evt.stopImmediatePropagation())">
+{{template "jobs-flash" .}}
+{{if .Configured}}{{template "jobs-add" .}}{{end}}
+{{template "jobs-body" .}}
+</div>
+{{end}}
 
-{{if not .Configured}}
-{{template "ui-off" "Scheduled jobs aren't available on this Tenant."}}
-{{else}}
+{{/* The parts a Scheduled jobs form re-renders in place (cronDone). Every
+     form posts through Datastar to its own fixed URL; a job's id is a form
+     field (F1). #jobs-flash empties with the first in-place answer, #jobs-body
+     shows every change, and #jobs-add comes back only after a job is added,
+     with a new form id so its boxes are empty again. The ids aren't
+     cron-<id>, which a job's card uses. */}}
+{{define "jobs-flash"}}<div id="jobs-flash">{{template "ui-flash" .}}</div>{{end}}
 
-<div class="card">
-  <form method="POST" action="/cron/add" class="cronadd">
+{{define "jobs-add"}}<div class="card" id="jobs-add">
+  <form method="POST" action="/cron/add" class="cronadd" id="jobs-add-form{{.AddKey}}" data-on:submit__prevent__throttle.1s="@post('/cron/add', {contentType:'form', retryMaxCount:0})">
     <div class="crow">
       <input type="text" name="name" placeholder="name (optional)" class="cinput">
       <input type="text" name="spec" placeholder="when: for example 0 9 * * 1-5, or @every 30m" class="cinput" required>
@@ -27,19 +42,24 @@
     </div>
     <div class="dim">By default a job runs without you and can only look things up, research and report. A job that runs a command, or that you let make changes, can change things without asking you, and only while scheduled jobs may make changes (below).</div>
   </form>
-</div>
+</div>{{end}}
+
+{{define "jobs-body"}}<div id="jobs-body">
+{{if not .Configured}}
+{{template "ui-off" "Scheduled jobs aren't available on this Tenant."}}
+{{else}}
 
 <div class="card">
   <div class="row">
     <div><strong>Scheduled jobs may make changes:</strong> {{if .ExecOn}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}</div>
     <div class="cronactions">
       {{if .ExecOn}}
-      <form method="POST" action="/cron/exec" class="inline">
+      <form method="POST" action="/cron/exec" class="inline" data-on:submit__prevent__throttle.1s="@post('/cron/exec', {contentType:'form', retryMaxCount:0})">
         <input type="hidden" name="enabled" value="false">
         <button type="submit" class="btn">Turn off</button>
       </form>
       {{else}}
-      {{template "ui-confirm" (confirmGo "/cron/exec" "Turn on" "Jobs that run a command, or that you let make changes, can then change things without asking you, even while nobody is watching." "enabled" "true")}}
+      {{template "ui-confirm" (inline (confirmGo "/cron/exec" "Turn on" "Jobs that run a command, or that you let make changes, can then change things without asking you, even while nobody is watching." "enabled" "true"))}}
       {{end}}
     </div>
   </div>
@@ -60,14 +80,16 @@
   <div class="dim">id {{.ID}} · next {{if .NextRun}}{{.NextRun}}{{else}}—{{end}}{{if .LastStatus}} · last {{.LastStatus}}{{if .LastRun}} at {{.LastRun}}{{end}}{{end}}</div>
   <div class="prompt">{{visibleText .Prompt}}</div>
   <div class="cronactions">
-    <form method="POST" action="/cron/{{.ID}}/run" class="inline">
+    <form method="POST" action="/cron/run" class="inline" data-on:submit__prevent__throttle.1s="@post('/cron/run', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="id" value="{{.ID}}">
       <button type="submit" class="btn sm">Run now</button>
     </form>
-    <form method="POST" action="/cron/{{.ID}}/enable" class="inline">
+    <form method="POST" action="/cron/enable" class="inline" data-on:submit__prevent__throttle.1s="@post('/cron/enable', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="id" value="{{.ID}}">
       <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
       <button type="submit" class="btn sm">{{if .Enabled}}Turn off{{else}}Turn on{{end}}</button>
     </form>
-    {{template "ui-confirm" (confirm (printf "/cron/%s/delete" .ID) "Delete" "This job is deleted and won't run again. To bring it back you add it again.")}}
+    {{template "ui-confirm" (inline (confirm "/cron/delete" "Delete" "This job is deleted and won't run again. To bring it back you add it again." "id" .ID))}}
   </div>
 </div>
 {{else}}
@@ -75,4 +97,4 @@
 {{end}}
 
 {{end}}
-{{end}}
+</div>{{end}}
