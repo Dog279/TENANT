@@ -2386,8 +2386,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		cfgDir:       c.cfgDir,
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
-		authProblems: mcpAuthProblemsFn(mainTools), // banner on every summary while a connector's sign-in is dead
-		ask:          broker.Ask,                   // an alert's investigation asks first (TEN-400)
+		authProblems: mcpAuthProblemsFn(c.cfgDir, mainTools), // banner on every summary while a connector's sign-in is dead
+		ask:          broker.Ask,                             // an alert's investigation asks first (TEN-400)
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {
@@ -2645,7 +2645,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// A remote connector whose sign-in dies (the Atlassian bridge went dark for
 	// three days while the brief's Jira section quietly emptied): feed line AND
 	// a direct DM to the operator, who is usually remote exactly when it matters.
-	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(pushSys, relayMgr.NotifyOperator))
+	mainTools.SetMCPAuthNotifier(mcpAuthNotifier(c.cfgDir, pushSys, relayMgr.NotifyOperator))
 	setWitnessDM(relayMgr.NotifyOperator) // a "discord" Security log witness
 	discordBroker.SetAsk(func(cctx context.Context, req tui.ApprovalRequest) tui.ApprovalDecision {
 		return relayMgr.askOperator(cctx, req.Action, req.Detail)

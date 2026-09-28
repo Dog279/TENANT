@@ -18,17 +18,19 @@ import (
 // The feed line names the fix; the DM (best-effort) goes to the operator.
 func TestMCPAuthNotifier_FeedAndDM(t *testing.T) {
 	var feed, dm []string
-	fn := mcpAuthNotifier(func(s string) { feed = append(feed, s) }, func(s string) error { dm = append(dm, s); return nil })
+	fn := mcpAuthNotifier(`C:\Tenant\config`, func(s string) { feed = append(feed, s) }, func(s string) error { dm = append(dm, s); return nil })
 	fn("mcp:mcp.atlassian.com", "https://mcp.atlassian.com/v1/mcp", true, "invalid_grant")
 	fn("mcp:mcp.atlassian.com", "https://mcp.atlassian.com/v1/mcp", false, "")
-	if len(feed) != 2 || !strings.Contains(feed[0], "tenant mcp connect https://mcp.atlassian.com/v1/mcp") || !strings.Contains(feed[1], "re-authorized") {
+	// The fix names serve's config dir: an admin's default one is not the cache serve reads.
+	const fix = `tenant mcp connect https://mcp.atlassian.com/v1/mcp --config C:\Tenant\config`
+	if len(feed) != 2 || !strings.Contains(feed[0], fix) || !strings.Contains(feed[1], "re-authorized") {
 		t.Errorf("feed = %v", feed)
 	}
-	if len(dm) != 2 || !strings.Contains(dm[0], "invalid_grant") || !strings.Contains(dm[0], "tenant mcp connect") || !strings.Contains(dm[1], "re-authorized") {
+	if len(dm) != 2 || !strings.Contains(dm[0], "invalid_grant") || !strings.Contains(dm[0], fix) || !strings.Contains(dm[1], "re-authorized") {
 		t.Errorf("dm = %v", dm)
 	}
 	// nil hooks are fine.
-	mcpAuthNotifier(nil, nil)("x", "u", true, "e")
+	mcpAuthNotifier("", nil, nil)("x", "u", true, "e")
 }
 
 func TestWithAuthBanner(t *testing.T) {
@@ -66,7 +68,7 @@ func TestDoctor_RemoteMCPAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := checkRemoteMCPAuth(ctx, env())
-	if r.Status != statusFail || !strings.Contains(r.Detail, "tenant mcp connect "+url) || !strings.Contains(r.Detail, "2023-11-14") {
+	if r.Status != statusFail || !strings.Contains(r.Detail, "tenant mcp connect "+url+" --config "+dir) || !strings.Contains(r.Detail, "2023-11-14") {
 		t.Fatalf("dead sign-in ⇒ FAIL with the reconnect command + since, got %+v", r)
 	}
 

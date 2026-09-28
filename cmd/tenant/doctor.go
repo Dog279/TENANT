@@ -881,7 +881,7 @@ func checkRemoteMCPAuth(_ context.Context, e *doctorEnv) checkResult {
 			if !h.Since.IsZero() {
 				when = h.Since.Format("2006-01-02 15:04 UTC")
 			}
-			dead = append(dead, fmt.Sprintf("%s (since %s) — fix: tenant mcp connect %s", u, when, u))
+			dead = append(dead, fmt.Sprintf("%s (since %s) — fix: %s", u, when, mcpremote.FixCommand(e.c.cfgDir, u)))
 		}
 	}
 	switch {

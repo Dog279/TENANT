@@ -25,8 +25,8 @@ func connectorLog(label string) context.Context {
 // mcpAuthNotifier builds the mux's auth-change callback: a feed line every
 // time, plus a direct operator DM (best-effort, a failed one is logged) — the
 // operator is usually remote when a connector dies, and the feed is not where
-// they are looking.
-func mcpAuthNotifier(feed func(string), dm func(string) error) func(label, url string, needsReauth bool, err string) {
+// they are looking. cfgDir is this process's config dir, for the fix command.
+func mcpAuthNotifier(cfgDir string, feed func(string), dm func(string) error) func(label, url string, needsReauth bool, err string) {
 	send := func(label, msg string) {
 		if dm == nil {
 			return
@@ -37,10 +37,11 @@ func mcpAuthNotifier(feed func(string), dm func(string) error) func(label, url s
 	}
 	return func(label, url string, needsReauth bool, err string) {
 		if needsReauth {
+			fix := mcpremote.FixCommand(cfgDir, url)
 			if feed != nil {
-				feed("⚠ " + label + " needs re-authorization — its tools fail until you reconnect at the host:  tenant mcp connect " + url)
+				feed("⚠ " + label + " needs re-authorization — its tools fail until you reconnect at the host:  " + fix)
 			}
-			send(label, "⚠ **"+label+"** needs re-authorization (its sign-in expired and could not be refreshed: "+err+"). Its tools — Jira/Confluence if this is Atlassian — fail until you reconnect at the host:\n`tenant mcp connect "+url+"`\nor the dashboard's Remote services page.")
+			send(label, "⚠ **"+label+"** needs re-authorization (its sign-in expired and could not be refreshed: "+err+"). Its tools — Jira/Confluence if this is Atlassian — fail until you reconnect at the host:\n`"+fix+"`\nor the dashboard's Remote services page.")
 			return
 		}
 		if feed != nil {
@@ -51,13 +52,13 @@ func mcpAuthNotifier(feed func(string), dm func(string) error) func(label, url s
 }
 
 // mcpAuthProblemsFn adapts a registry's dead-connector list to the cron
-// runner's banner input ("label (fix: tenant mcp connect url)"). Interface-typed
-// so the composite registry and a bare mux both fit.
-func mcpAuthProblemsFn(m interface{ RemoteMCPAuthProblems() []mcpServerStatus }) func() []string {
+// runner's banner input ("label (fix: tenant mcp connect url --config dir)").
+// Interface-typed so the composite registry and a bare mux both fit.
+func mcpAuthProblemsFn(cfgDir string, m interface{ RemoteMCPAuthProblems() []mcpServerStatus }) func() []string {
 	return func() []string {
 		var out []string
 		for _, s := range m.RemoteMCPAuthProblems() {
-			out = append(out, s.Label+" (fix: tenant mcp connect "+s.URL+")")
+			out = append(out, s.Label+" (fix: "+mcpremote.FixCommand(cfgDir, s.URL)+")")
 		}
 		return out
 	}
