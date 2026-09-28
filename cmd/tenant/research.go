@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -481,7 +482,7 @@ func runWithPersistence(ctx context.Context, planner model.LLM, rt *TeamRuntime,
 		} else {
 			run = r
 			id = r.ID()
-			say("📋 run id: %s", id)
+			say(sayRunID, id)
 		}
 	}
 
@@ -1066,6 +1067,14 @@ func splitSources(report string) (body string, srcs map[int]string) {
 
 // --- TUI control ---
 
+// sayRunID is the progress line naming a new run's id; the dashboard's
+// adapter reads the id from it (research_dashctl.go).
+const sayRunID = "📋 run id: %s"
+
+// errResearchBusy refuses a second run while one is going: two runs on one
+// runtime would cancel each other's helpers (Governor.Begin, Await).
+var errResearchBusy = errors.New("another research run is already in progress")
+
 // researchControl implements tui.ResearchControl: runs the Phase-A pipeline
 // against the TUI's live agent + shared TeamRuntime, streaming progress to the
 // system feed. The final report comes back to the chat pane. C3: the optional
@@ -1088,10 +1097,14 @@ type researchControl struct {
 	// fire (the 2026-05-26 lost-context bug, TEN-44). nil = no auto-
 	// reindex (legacy / CLI without wired index).
 	wikiIndex *wiki.Index
+	// busy, if set, allows one run at a time across everything sharing it
+	// (the terminal app and the dashboard). nil = no limit (the CLI).
+	busy *atomic.Bool
 }
 
 func (rc *researchControl) Research(ctx context.Context, question string) (string, error) {
-	return rc.runOne(ctx, question, "", false)
+	_, report, err := rc.runOne(ctx, question, "", false)
+	return report, err
 }
 
 // ResearchAfterClarify continues a research pass after the user answered the
@@ -1101,7 +1114,8 @@ func (rc *researchControl) Research(ctx context.Context, question string) (strin
 // EnrichClarified. Used by the TUI's pending-clarification state machine
 // and the CLI's stdin-answer path.
 func (rc *researchControl) ResearchAfterClarify(ctx context.Context, enrichedQuestion string) (string, error) {
-	return rc.runOne(ctx, enrichedQuestion, "", true)
+	_, report, err := rc.runOne(ctx, enrichedQuestion, "", true)
+	return report, err
 }
 
 // runOne is the shared internal driver used by Research + Replay +
@@ -1109,19 +1123,26 @@ func (rc *researchControl) ResearchAfterClarify(ctx context.Context, enrichedQue
 // empty so /research history can show the chain ("replay of <prior-id>").
 // skipClarify=true bypasses the C2 vague-question gate (the second pass of
 // a clarify round-trip, or a replay where the question is already known).
-func (rc *researchControl) runOne(ctx context.Context, question, replayOf string, skipClarify bool) (string, error) {
+// It returns the run's id ("" without a store) with the report.
+func (rc *researchControl) runOne(ctx context.Context, question, replayOf string, skipClarify bool) (id, report string, err error) {
+	if rc.busy != nil {
+		if !rc.busy.CompareAndSwap(false, true) {
+			return "", "", errResearchBusy
+		}
+		defer rc.busy.Store(false)
+	}
 	planner, profile, err := rc.ag.Router().LLMForRole(ctx, model.RolePlanner)
 	if err != nil {
-		return "", fmt.Errorf("resolve planner: %w", err)
+		return "", "", fmt.Errorf("resolve planner: %w", err)
 	}
 	opts := rc.opts
 	if skipClarify {
 		opts.noClarify = true
 	}
-	_, report, err := runWithPersistence(ctx, planner, rc.rt, rc.store,
+	id, report, err = runWithPersistence(ctx, planner, rc.rt, rc.store,
 		question, opts, profile.Model, profile.Backend, replayOf, rc.say, rc.emitTimeline)
 	if err != nil {
-		return "", err
+		return id, "", err
 	}
 	// Auto-deposit into the wiki when configured. TEN-44: force an
 	// immediate reindex so the just-written file is searchable on the
@@ -1144,7 +1165,7 @@ func (rc *researchControl) runOne(ctx context.Context, question, replayOf string
 			}
 		}
 	}
-	return report, nil
+	return id, report, nil
 }
 
 // --- C3: history / show / replay / delete ---
@@ -1232,7 +1253,8 @@ func (rc *researchControl) ResearchReplay(ctx context.Context, id string) (strin
 	// Replays skip the C2 clarifier — the question already produced findings
 	// once (good or bad). Re-asking would surprise the user expecting an
 	// identical re-run for diffing.
-	return rc.runOne(ctx, m.Question, id, true)
+	_, report, err := rc.runOne(ctx, m.Question, id, true)
+	return report, err
 }
 
 // ResearchDelete purges a past run from disk.
