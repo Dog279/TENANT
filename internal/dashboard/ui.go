@@ -28,17 +28,19 @@ import (
 // second click. Yes is "Yes, " + Label with its first letter lowercased.
 // Danger makes the step red, for what can't be undone (DESIGN.md §3):
 // confirm sets it, confirmGo (a "go" that lets the agent do more) doesn't.
+// Inline posts it through Datastar, for a page whose handler answers with
+// formDone (the inline template func sets it).
 type ConfirmView struct {
 	Action, Label, Yes, Consequence string
 	Hidden                          []HiddenField
-	Danger                          bool
+	Danger, Inline                  bool
 }
 
 // HiddenField is one form field the confirmed POST carries.
 type HiddenField struct{ Name, Value string }
 
 // uiFuncs is parsed into every template set (parseSSR and logsTmpl).
-var uiFuncs = template.FuncMap{"confirm": confirmStep, "confirmGo": confirmGo, "visibleText": visibleText, "waited": waited}
+var uiFuncs = template.FuncMap{"confirm": confirmStep, "confirmGo": confirmGo, "inline": inlineStep, "visibleText": visibleText, "waited": waited}
 
 // confirmStep builds a ConfirmView: the action, the first button's label, one
 // plain consequence sentence, then name/value pairs for the hidden fields. An
@@ -60,6 +62,13 @@ func confirmGo(action, label, consequence string, kv ...string) (ConfirmView, er
 	v, err := confirmStep(action, label, consequence, kv...)
 	v.Danger = false
 	return v, err
+}
+
+// inlineStep makes a confirm step post in place (DESIGN.md "Forms that don't
+// reload"). Its action must be a literal URL in the template (F1).
+func inlineStep(v ConfirmView) ConfirmView {
+	v.Inline = true
+	return v
 }
 
 func lowerFirst(s string) string {
@@ -174,6 +183,32 @@ func redirectFlash(w http.ResponseWriter, r *http.Request, page, msg, errMsg str
 		page += sep + "msg=" + url.QueryEscape(msg)
 	}
 	http.Redirect(w, r, page, http.StatusSeeOther)
+}
+
+// formDone answers a form post (DESIGN.md "Forms that don't reload"). A plain
+// post gets redirectFlash to page. A Datastar post (the form's
+// data-on:submit) is answered in place: #toast with msg or errMsg, replaced
+// so its fade starts over; the status strip; and region, the page's part the
+// action changed, rendered now and morphed so the row shows its new state and
+// the page keeps its scroll. A part that fails to render is left as it was.
+func (s *Server) formDone(w http.ResponseWriter, r *http.Request, page, msg, errMsg string, region func() (string, error)) {
+	if r.Header.Get("Datastar-Request") == "" {
+		redirectFlash(w, r, page, msg, errMsg)
+		return
+	}
+	toast, terr := s.uiPart("ui-toast", struct{ Msg, Err string }{msg, errMsg})
+	status, serr := s.uiPart("ui-status", s.statusView())
+	body, berr := region()
+	if err := errors.Join(terr, serr, berr); err != nil {
+		RenderFailed.Log(r.Context(), "page", page, "err", err)
+	}
+	setSSEHeaders(w)
+	for _, p := range []struct{ mode, html string }{{"replace", toast}, {"", status}, {"", body}} {
+		if p.html != "" {
+			_, _ = w.Write(patchElements("", p.mode, p.html))
+		}
+	}
+	flush(w)
 }
 
 // PlainError is an error whose text is fit for the page (D21): an adapter

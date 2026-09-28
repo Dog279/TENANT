@@ -1,11 +1,14 @@
 package dashboard
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -132,9 +135,9 @@ func TestAccess_DestructiveConfirms(t *testing.T) {
 	}}
 	body := accessGet(t, accessServer(fa), "/access").Body.String()
 	for _, want := range []string{
-		`<span class="c-open">Remove</span>`, `<form method="POST" action="/access/imessage/deny"><input type="hidden" name="handle"`,
-		`<span class="c-open">Remove everyone</span>`, `<form method="POST" action="/access/imessage/clear"><input type="hidden" name="confirm" value="yes">`,
-		`<form method="POST" action="/access/discord/exec"><input type="hidden" name="on" value="true"><input type="hidden" name="confirm" value="yes">`,
+		`<span class="c-open">Remove</span>`, inlineForm("/access/imessage/deny") + `<input type="hidden" name="handle"`,
+		`<span class="c-open">Remove everyone</span>`, inlineForm("/access/imessage/clear") + `<input type="hidden" name="confirm" value="yes">`,
+		inlineForm("/access/discord/exec") + `<input type="hidden" name="on" value="true"><input type="hidden" name="confirm" value="yes">`,
 		"Nobody will be able to message your agent on iMessage until you add someone again.",
 	} {
 		if !strings.Contains(body, want) {
@@ -142,7 +145,7 @@ func TestAccess_DestructiveConfirms(t *testing.T) {
 		}
 	}
 	if strings.Contains(body, "onsubmit") {
-		t.Error("the confirm steps need no JS")
+		t.Error("the confirm steps need no hand-written JS")
 	}
 
 	// Two people: removing one is one click; exec on: turning it off is too.
@@ -298,5 +301,127 @@ func TestAccess_NilGuardPostRedirects(t *testing.T) {
 		if rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control should 303, got %d", path, rec.Code)
 		}
+	}
+}
+
+// inlineForm is the opening tag of a form that posts in place (formDone).
+func inlineForm(action string) string {
+	return `<form method="POST" action="` + action + `" data-on:submit__prevent="@post('` + strings.ReplaceAll(action, "/", `\/`) + `', {contentType:'form'})">`
+}
+
+// permAccess is fakeAccess whose Discord safety settings change when set, as
+// the real control's do, and fail while fail is set. A browser test's server
+// and the test share it.
+type permAccess struct {
+	fakeAccess
+	mu   sync.Mutex
+	fail bool
+}
+
+func (f *permAccess) View() AccessView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v := f.view
+	v.IMessagePerms, v.DiscordPerms = slices.Clone(v.IMessagePerms), slices.Clone(v.DiscordPerms)
+	return v
+}
+
+func (f *permAccess) SetRelayPermission(c, m string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return false, errors.New("settings file is locked")
+	}
+	for i, p := range f.view.DiscordPerms {
+		if p.Category == c {
+			f.view.DiscordPerms[i].Mode, f.view.DiscordPerms[i].New = m, false
+		}
+	}
+	return true, nil
+}
+
+func (f *permAccess) setFail(on bool) {
+	f.mu.Lock()
+	f.fail = on
+	f.mu.Unlock()
+}
+
+func datastar(r *http.Request) { r.Header.Set("Datastar-Request", "true") }
+
+// Every Access form answers a Datastar post in place: the toast, the status
+// strip and #access-body, never a 303 the fetch would follow. With no control
+// the region says so.
+func TestAccess_InlineAnswersEveryForm(t *testing.T) {
+	forms := map[string]url.Values{
+		"/access/imessage/allow":      {"handle": {"a@b.c"}},
+		"/access/imessage/deny":       {"handle": {"a@b.c"}},
+		"/access/imessage/clear":      {},
+		"/access/imessage/responder":  {"on": {"true"}},
+		"/access/imessage/permission": {"category": {"exec"}, "mode": {"deny"}},
+		"/access/discord/enable":      {"on": {"true"}},
+		"/access/discord/operator":    {"operator": {"4242"}},
+		"/access/discord/exec":        {"on": {"true"}},
+		"/access/discord/permission":  {"category": {"exec"}, "mode": {"allow"}},
+	}
+	full := &permAccess{fakeAccess: fakeAccess{view: AccessView{IMessageAvailable: true, DiscordAvailable: true, RelayConfigured: true, DiscordPerms: harnessPerms(false)}}}
+	for path, f := range forms {
+		for _, fa := range []AccessControl{full, nil} {
+			rec := sendForm(accessServer(fa).Handler(), http.MethodPost, path, withField(f, "confirm", "yes"), datastar)
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || rec.Header().Get("Location") != "" {
+				t.Errorf("%s (control %v): %d %q to %q, want 200 text/event-stream", path, fa != nil, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Location"))
+			}
+			for _, want := range []string{"data: mode replace\ndata: elements <div id=\"toast\"", `data: elements <div id="ui-status"`, `data: elements <div id="access-body">`} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s (control %v) is missing %q:\n%s", path, fa != nil, want, body)
+				}
+			}
+			if fa == nil && !strings.Contains(body, "Access settings aren&#39;t available") {
+				t.Errorf("%s with no control: the region doesn't say so:\n%s", path, body)
+			}
+		}
+	}
+}
+
+// A setting changed in place: the toast says what changed and the row shows
+// it; an error is an alert with the plain message; a plain post still gets
+// the 303 and its flash; a loosening without its confirm step is still 428.
+func TestAccess_InlinePermission(t *testing.T) {
+	c := installCapture(t)
+	fa := &permAccess{fakeAccess: fakeAccess{view: AccessView{DiscordAvailable: true, RelayConfigured: true, DiscordPerms: harnessPerms(false)}}}
+	s := accessServer(fa)
+	post := func(f url.Values, set func(*http.Request)) *httptest.ResponseRecorder {
+		return sendForm(s.Handler(), http.MethodPost, "/access/discord/permission", f, set)
+	}
+
+	body := post(url.Values{"category": {"exec"}, "mode": {"deny"}}, datastar).Body.String()
+	for _, want := range []string{
+		`<div id="toast" class="toast ok" role="status"><span class="toast-text">Discord conversations: Run commands is blocked.</span>`,
+		"Can't run commands and programs on this computer. It won't ask.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the in-place answer is missing %q:\n%s", want, body)
+		}
+	}
+
+	fa.setFail(true)
+	body = post(url.Values{"category": {"write"}, "mode": {"deny"}}, datastar).Body.String()
+	if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">Couldn&#39;t change that safety setting.</span>`) || strings.Contains(body, "locked") {
+		t.Errorf("a failed change: want the plain alert and not the control's own words:\n%s", body)
+	}
+	if !c.has("2201 ", "action=relay permission") {
+		t.Errorf("the failure isn't logged as ActionFailed: %q", c.lines())
+	}
+	fa.setFail(false)
+
+	rec := post(url.Values{"category": {"write"}, "mode": {"ask"}}, nil)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/access?msg=") {
+		t.Errorf("a plain post: %d to %q, want 303 to /access with its flash", rec.Code, loc)
+	}
+
+	post(url.Values{"category": {"web"}, "mode": {"deny"}}, datastar)
+	rec = post(url.Values{"category": {"web"}, "mode": {"allow"}}, datastar)
+	if web := fa.View().DiscordPerms[3]; rec.Code != http.StatusPreconditionRequired || web.Mode != "deny" {
+		t.Errorf("Allow without its confirm step over Datastar: %d and %s is %s, want 428 and nothing changed", rec.Code, web.Category, web.Mode)
 	}
 }

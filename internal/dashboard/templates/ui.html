@@ -5,6 +5,8 @@
 
 {{define "ui-flash"}}{{if .Msg}}<div class="banner ok" role="status">{{.Msg}}</div>{{end}}{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}{{end}}
 
+{{define "ui-toast"}}<div id="toast"{{if .Err}} class="toast err" role="alert"{{else if .Msg}} class="toast ok" role="status"{{end}}>{{with or .Err .Msg}}<span class="toast-text">{{.}}</span><button type="button" class="toast-x" aria-label="Close" data-on:click="el.parentElement.replaceChildren()">×</button>{{end}}</div>{{end}}
+
 {{define "ui-off"}}<div class="card state-off">{{.}}</div>{{end}}
 
 {{define "ui-empty"}}<div class="empty">{{.}}</div>{{end}}
@@ -17,4 +19,4 @@
 {{- range .Notices}}<div class="banner info notice"><span class="nt" title="{{.Text}}">{{.Text}}</span>{{if .Href}} <a href="{{.Href}}">{{.Link}}</a>{{end}}</div>{{end -}}
 </div>{{end}}
 
-{{define "ui-confirm"}}<details class="confirm-step{{if not .Danger}} go{{end}}"><summary class="btn sm{{if .Danger}} danger{{end}}"><span class="c-open">{{.Label}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="{{.Label}}"><p>{{.Consequence}}</p><form method="POST" action="{{.Action}}">{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm{{if .Danger}} danger{{end}}">{{.Yes}}</button></form></div></details>{{end}}
+{{define "ui-confirm"}}<details class="confirm-step{{if not .Danger}} go{{end}}"><summary class="btn sm{{if .Danger}} danger{{end}}"><span class="c-open">{{.Label}}</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="{{.Label}}"><p>{{.Consequence}}</p><form method="POST" action="{{.Action}}"{{if .Inline}} data-on:submit__prevent="@post('{{.Action}}', {contentType:'form'})"{{end}}>{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm{{if .Danger}} danger{{end}}">{{.Yes}}</button></form></div></details>{{end}}
