@@ -186,6 +186,13 @@ func (c *commonFlags) applyLaunchConfig() error {
 		if errors.As(err, &routeErr) {
 			return err
 		}
+		// A config.json this account may not read is no config at all to
+		// the flag defaults below: the echo backend, no relay, no cron. Fail
+		// instead of starting as that. On Windows another account protected
+		// the config directory (internal/secrets).
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("config.json is unreadable by this account, refusing to start on defaults: %w", err)
+		}
 		// Corrupt file: warn on stderr, keep flag defaults rather than
 		// silently honoring a broken config.
 		fmt.Fprintf(os.Stderr, "warning: %v (ignoring config.json)\n", err)

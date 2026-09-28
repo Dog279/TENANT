@@ -42,9 +42,11 @@ func chainKeyPath(cfgDir string) string    { return filepath.Join(cfgDir, "logbo
 func chainAnchorPath(cfgDir string) string { return filepath.Join(cfgDir, "logbook.anchor") }
 
 // chainKey reads the Security log's key, creating it on first use: 32
-// random bytes, written once with secrets.CreateExclusive (owner-only, a
-// current-user ACL on Windows) and sealed with the user protector (DPAPI)
-// where the platform has one. Racing processes agree on the first key.
+// random bytes, written once with secrets.CreateExclusive (owner-only; on a
+// Windows service install also the machine's Administrators) and sealed with
+// the user protector (DPAPI, machine-scoped on such an install, so serve and
+// its operator both open it) where the platform has one. Racing processes
+// agree on the first key.
 func chainKey(cfgDir string) ([]byte, error) {
 	for range 10 {
 		key, err := readChainKey(cfgDir)

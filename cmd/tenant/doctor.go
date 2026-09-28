@@ -954,8 +954,9 @@ func checkLaunchConfig(_ context.Context, e *doctorEnv) checkResult {
 // checkSecretProtection audits the effective platform protection for every
 // at-rest secret file on the authoritative managedSecrets list, config and
 // data dirs both (TEN-337). POSIX reports verified 0600/0700 modes; Windows
-// reports the protected current-user-only DACL. It only probes: nothing is
-// tightened here.
+// reports the protected DACL (current user only, or on a machine install also
+// Administrators and the built-in service accounts). It only probes: nothing
+// is tightened here.
 func checkSecretProtection(_ context.Context, e *doctorEnv) checkResult {
 	paths, err := managedSecrets(e.c.cfgDir, e.c.dataDir)
 	if err != nil {
