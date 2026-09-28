@@ -177,3 +177,11 @@ Secret routes never put a control's error in a URL.
 4. Mutations are form POSTs answered with `redirectFlash`, each dangerous one wrapped in `needConfirm`, its errors through `flashFor`.
 5. Styles only inside the page's marker block at the end of `styles.css`, using the classes above first.
 6. Tests: register a fake from an `init()` (`harnessFakes`, `harnessPages` in `render_all_test.go`), a states table, the confirm rows, and the page passes the plain-language and 390px sweeps unchanged.
+
+## 10. Assets and caching
+
+- `layout.html` links the stylesheet and Datastar by content hash, `{{stylesURL}}` and `{{datastarURL}}` (`/styles.css?v=<16 hex of SHA-256>`), computed once at startup (`newAsset` in `ssr.go`). The hashed URL is `Cache-Control: private, max-age=31536000, immutable`, so a browser fetches each once per build: the second page takes 0 bytes of them (`TestAssetsCachedInChrome`). A new build's bytes get a new hash.
+- Any other URL (no `?v=`, or an old one from a page opened before a restart) is `private, no-cache` and revalidates: its `ETag` gets a 304 while the bytes are the same.
+- `private`: the assets need the sign-in. The sign-in page links neither; it carries its own `<style>`.
+- Each asset is gzipped once at startup and sent with `Content-Encoding: gzip` and `Vary: Accept-Encoding` to a client that takes gzip, as is otherwise. The two have different ETags.
+- Nothing else is compressed. A page mixes the operator's secrets with text a request put there, so compressing it leaks the secrets by size (BREACH), and gzip would buffer the streams.

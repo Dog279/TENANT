@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>tenant{{if .Title}} · {{.Title}}{{end}}</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="{{stylesURL}}">
 </head>
 <body>
   <div class="app">
@@ -49,6 +49,6 @@
       <section class="page">{{block "content" .}}{{end}}</section>
     </main>
   </div>
-  <script type="module" src="/datastar.js"></script>
+  <script type="module" src="{{datastarURL}}"></script>
 </body>
 </html>
