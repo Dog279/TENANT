@@ -396,3 +396,9 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .recipe{white-space:pre-wrap;overflow-wrap:anywhere;margin:.5rem 0 0}
 .evalbar{display:block;width:100%;height:14px;margin:6px 0;accent-color:var(--green)}
 /* == end WP-ux-adopt == */
+
+/* == WP-inline-v2pages == */
+/* #safety-modes lays out its h2, notes and cards as .page did before it was
+   a region, so their margins still add up rather than collapse */
+#safety-modes{display:flex;flex-direction:column}
+/* == end WP-inline-v2pages == */

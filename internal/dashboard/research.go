@@ -5,7 +5,8 @@ package dashboard
 // The run lives in cmd/tenant's adapter under the process lifetime, so a
 // closed tab or a dropped stream never stops it; the stream sends the whole
 // panel on every connect, which is how a tab re-attaches. Changes are form
-// POSTs answered with a redirect; only the live panel streams.
+// POSTs answered in place (researchDone), or with a redirect when posted
+// without Datastar; only the live panel streams.
 
 import (
 	"bytes"
@@ -147,8 +148,9 @@ func (s *Server) mountResearchSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /research/start", s.handleResearchStart)
 	mux.HandleFunc("POST /research/clarify", s.handleResearchClarify)
 	mux.HandleFunc("POST /research/stop", needConfirm(nil, s.handleResearchStop))
-	mux.HandleFunc("POST /research/{id}/replay", s.handleResearchReplay)
-	mux.HandleFunc("POST /research/{id}/delete", needConfirm(nil, s.handleResearchDelete))
+	// A run's ID is a form field, so the in-place forms post to static URLs.
+	mux.HandleFunc("POST /research/replay", s.handleResearchReplay)
+	mux.HandleFunc("POST /research/delete", needConfirm(nil, s.handleResearchDelete))
 }
 
 // Page data: the views plus what the templates can't build themselves (the
@@ -164,9 +166,10 @@ type researchPageData struct {
 
 type researchLiveData struct {
 	ResearchLiveView
-	Busy    *BusyView
-	Waiting int                 // approvals pending while a run is going
-	Done    *researchReportData // Report, ready to render
+	Busy      *BusyView
+	Waiting   int                 // approvals pending while a run is going
+	Done      *researchReportData // Report, ready to render
+	CloseStop bool                // an in-place answer: an open Stop step closes, where a re-render keeps it open
 }
 
 type researchHistoryData struct {
@@ -201,13 +204,38 @@ func (s *Server) researchData(r *http.Request) researchPageData {
 	}
 }
 
-func (s *Server) handleResearchPage(w http.ResponseWriter, r *http.Request) {
+// researchPage is the Research page's data: the live panel and the list.
+func (s *Server) researchPage(r *http.Request) researchPageData {
 	d := s.researchData(r)
 	if s.research != nil {
 		v, _ := s.research.Watch()
 		d.Live, d.History = s.researchLive(v), s.researchHistory(r.Context())
 	}
-	s.render(w, s.tmpl.research, d)
+	return d
+}
+
+func (s *Server) handleResearchPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, s.tmpl.research, s.researchPage(r))
+}
+
+// researchRegion renders the question box, the live panel and the list, as
+// they are now; nothing when there is no control (its page never changes).
+func (s *Server) researchRegion(r *http.Request) func() (string, error) {
+	return func() (string, error) {
+		if s.research == nil {
+			return "", nil
+		}
+		d := s.researchPage(r)
+		d.Msg, d.Err, d.Live.CloseStop = "", "", true
+		return part(s.tmpl.research, "research-region", d)
+	}
+}
+
+// researchDone answers a Research form: in place for a Datastar post, with
+// the question box, the live panel and the list re-rendered; a 303 to the
+// page with the flash otherwise.
+func (s *Server) researchDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
+	s.formDone(w, r, "/research", msg, errMsg, s.researchRegion(r))
 }
 
 func (s *Server) handleResearchRunPage(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +379,7 @@ func researchText(r *http.Request, field string) (string, string) {
 
 func (s *Server) handleResearchStart(w http.ResponseWriter, r *http.Request) {
 	if s.research == nil {
-		redirectFlash(w, r, "/research", "", "")
+		s.researchDone(w, r, "", "")
 		return
 	}
 	q, bad := researchText(r, "question")
@@ -359,64 +387,64 @@ func (s *Server) handleResearchStart(w http.ResponseWriter, r *http.Request) {
 		bad = "Type a question first."
 	}
 	if bad != "" {
-		redirectFlash(w, r, "/research", "", bad)
+		s.researchDone(w, r, "", bad)
 		return
 	}
 	if err := s.research.Start(q, r.FormValue("skip_questions") != ""); err != nil {
-		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research start", err, "Couldn't start the research."))
+		s.researchDone(w, r, "", s.flashFor(r.Context(), "research start", err, "Couldn't start the research."))
 		return
 	}
-	redirectFlash(w, r, "/research", "Research started. Its progress shows below.", "")
+	s.createDone(w, r, "/research", "Research started. Its progress shows below.", s.researchRegion(r))
 }
 
 func (s *Server) handleResearchClarify(w http.ResponseWriter, r *http.Request) {
 	if s.research == nil {
-		redirectFlash(w, r, "/research", "", "")
+		s.researchDone(w, r, "", "")
 		return
 	}
 	a, bad := researchText(r, "answer")
 	if bad != "" {
-		redirectFlash(w, r, "/research", "", bad)
+		s.researchDone(w, r, "", bad)
 		return
 	}
 	if err := s.research.Clarify(a); err != nil {
-		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research clarify", err, "Couldn't carry on with the research."))
+		s.researchDone(w, r, "", s.flashFor(r.Context(), "research clarify", err, "Couldn't carry on with the research."))
 		return
 	}
-	redirectFlash(w, r, "/research", "Research started. Its progress shows below.", "")
+	s.researchDone(w, r, "Research started. Its progress shows below.", "")
 }
 
 func (s *Server) handleResearchStop(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case s.research == nil:
-		redirectFlash(w, r, "/research", "", "")
+		s.researchDone(w, r, "", "")
 	case s.research.Stop():
-		redirectFlash(w, r, "/research", "Stopping the research. What the helpers found so far stays in the list.", "")
+		s.researchDone(w, r, "Stopping the research. What the helpers found so far stays in the list.", "")
 	default:
-		redirectFlash(w, r, "/research", "", "Nothing is running, so there's nothing to stop.")
+		s.researchDone(w, r, "", "Nothing is running, so there's nothing to stop.")
 	}
 }
 
 func (s *Server) handleResearchReplay(w http.ResponseWriter, r *http.Request) {
 	if s.research == nil {
-		redirectFlash(w, r, "/research", "", "")
+		s.researchDone(w, r, "", "")
 		return
 	}
-	if err := s.research.Replay(r.PathValue("id")); err != nil {
-		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research replay", err, "Couldn't run that again."))
+	if err := s.research.Replay(r.FormValue("id")); err != nil {
+		s.researchDone(w, r, "", s.flashFor(r.Context(), "research replay", err, "Couldn't run that again."))
 		return
 	}
-	redirectFlash(w, r, "/research", "Running it again with the current model. Its progress shows below.", "")
+	s.researchDone(w, r, "Running it again with the current model. Its progress shows below.", "")
 }
 
 func (s *Server) handleResearchDelete(w http.ResponseWriter, r *http.Request) {
 	if s.research == nil {
-		redirectFlash(w, r, "/research", "", "")
+		s.researchDone(w, r, "", "")
 		return
 	}
-	if err := s.research.Delete(r.PathValue("id")); err != nil {
-		redirectFlash(w, r, "/research", "", s.flashFor(r.Context(), "research delete", err, "Couldn't delete that research."))
+	if err := s.research.Delete(r.FormValue("id")); err != nil {
+		s.researchDone(w, r, "", s.flashFor(r.Context(), "research delete", err, "Couldn't delete that research."))
 		return
 	}
-	redirectFlash(w, r, "/research", "Deleted from the list.", "")
+	s.researchDone(w, r, "Deleted from the list.", "")
 }

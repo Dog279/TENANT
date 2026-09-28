@@ -259,7 +259,7 @@ func TestSafety_RendersModes(t *testing.T) {
 		"Asks you before it can click, type and submit forms on websites.",
 		"An update added 3 new safety checks. Your agent asks you first until you choose.",
 		"<b>Share private data</b>: asks before it can send private information it has read (mail, files, tickets) to an outside service.",
-		`<form method="POST" action="/safety/new"><button type="submit" class="btn on">Keep them at Ask</button></form>`,
+		`<form method="POST" action="/safety/new" data-on:submit__prevent__throttle.1s="@post('/safety/new', {contentType:'form', retryMaxCount:0})"><button type="submit" class="btn on">Keep them at Ask</button></form>`,
 		"If nobody answers, the request is turned down after a while.",
 	} {
 		if !strings.Contains(body, want) {

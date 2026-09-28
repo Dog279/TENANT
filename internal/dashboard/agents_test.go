@@ -181,7 +181,7 @@ func TestAgents_EditPanelAdvanced(t *testing.T) {
 	if !slices.Contains(fa.calls, "Soul|Programmer") {
 		t.Errorf("Soul not read for the editor: %q", fa.calls)
 	}
-	adv := body[strings.Index(body, `<details class="advanced"><summary>Advanced</summary>`):]
+	adv := body[strings.Index(body, `<details class="advanced" data-preserve-attr="open"><summary>Advanced</summary>`):]
 	adv = adv[:strings.Index(adv, "</details>\n")]
 	for _, want := range []string{`<textarea name="soul"`, "Smallest diff first.</textarea>", `action="/agents/soul"`, `class="confirm-step"`,
 		"Clear this helper&#39;s instructions? Its current instructions are deleted and can&#39;t be brought back here."} {

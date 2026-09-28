@@ -157,8 +157,8 @@ func TestResearch_NilControl(t *testing.T) {
 	if rec := get(t, s, "/research/live"); rec.Code != http.StatusNoContent {
 		t.Errorf("GET /research/live = %d, want 204", rec.Code)
 	}
-	for _, p := range []string{"/research/start", "/research/clarify", "/research/stop", "/research/abc/replay", "/research/abc/delete"} {
-		if got := flashOf(t, postResearch(t, s, p, url.Values{"question": {"q"}, "confirm": {"yes"}})); got != "" {
+	for _, p := range []string{"/research/start", "/research/clarify", "/research/stop", "/research/replay", "/research/delete"} {
+		if got := flashOf(t, postResearch(t, s, p, url.Values{"question": {"q"}, "id": {"abc"}, "confirm": {"yes"}})); got != "" {
 			t.Errorf("POST %s flashed %q, want a plain redirect", p, got)
 		}
 	}
@@ -175,7 +175,7 @@ func TestResearchPage_States(t *testing.T) {
 		not  []string
 	}{
 		{name: "off", path: "/research", set: nil, want: []string{`class="card state-off"`}},
-		{name: "empty", path: "/research", want: []string{`class="empty"`, "No research yet", `id="research-live">`, "The report is kept in the list below.", `<details class="advanced">`},
+		{name: "empty", path: "/research", want: []string{`class="empty"`, "No research yet", `id="research-live">`, "The report is kept in the list below.", `<details class="advanced" data-preserve-attr="open">`},
 			not: []string{`class="busy"`}},
 		{name: "saves to notes", path: "/research", set: func(f *fakeResearch, _ *Server) { f.live.SavesToNotes = true },
 			want: []string{"saved to your agent's notes so it can use what it learned later"}},
@@ -211,20 +211,21 @@ func TestResearchPage_States(t *testing.T) {
 		}, want: []string{`<a href="#ref-1" class="cite">[1]</a>`, `<li id="ref-1">`, "<summary>Details</summary>", `href="/logs?q=log:research"`}},
 		{name: "history", path: "/research", set: func(f *fakeResearch, _ *Server) {
 			f.rows = []ResearchRunRow{{ID: "r-1", Question: "What is fakeness?", StateText: "Finished", When: "Sep 27, 14:05", Took: "4 min", Sources: 1}, {ID: "r-2", Question: "Now", StateText: "Running now", Live: true}}
-		}, want: []string{`href="/research/r-1"`, "Finished · Sep 27, 14:05 · took 4 min · 1 source<", `action="/research/r-1/replay"`, `action="/research/r-1/delete"`, "Running now"},
-			not: []string{`action="/research/r-2/delete"`, `action="/research/r-2/replay"`}},
+		}, want: []string{`href="/research/r-1"`, "Finished · Sep 27, 14:05 · took 4 min · 1 source<", replayOf("r-1"), deleteOf("r-1"), "Running now"},
+			not: []string{`value="r-2"`}},
 		{name: "error", path: "/research", set: func(f *fakeResearch, _ *Server) { f.err = errors.New(rawNoHistory) },
 			want: []string{`<div class="banner err" role="alert">Couldn&#39;t read the list of past research.</div>`}, not: []string{rawNoHistory}},
 		{name: "error, plain", path: "/research", set: func(f *fakeResearch, _ *Server) { f.err = PlainError("History isn't here.") },
 			want: []string{`role="alert">History isn&#39;t here.</div>`}},
 		{name: "success", path: "/research?msg=Deleted+from+the+list.", want: []string{`<div class="banner ok" role="status">Deleted from the list.</div>`}},
 		{name: "run page", path: "/research/r-1", set: func(f *fakeResearch, _ *Server) { f.report = *report },
-			want: []string{"What is fakeness?", `href="#ref-1"`, `action="/research/r-1/replay"`, `action="/research/r-1/delete"`}},
+			want: []string{"What is fakeness?", `href="#ref-1"`, `<form method="POST" action="/research/replay" class="inline"><input type="hidden" name="id" value="r-1">`,
+				`<form method="POST" action="/research/delete"><input type="hidden" name="id" value="r-1">`}},
 		{name: "run page, still running", path: "/research/r-1", set: func(f *fakeResearch, _ *Server) {
 			f.report = *report
 			f.report.StateText, f.report.Live = "Running from the terminal", true
 		},
-			want: []string{"Running from the terminal"}, not: []string{`action="/research/r-1/replay"`, `action="/research/r-1/delete"`}},
+			want: []string{"Running from the terminal"}, not: []string{`action="/research/replay"`, `action="/research/delete"`}},
 		{name: "run page, gone", path: "/research/r-9", set: func(f *fakeResearch, _ *Server) { f.err = PlainError("That research isn't in the list any more.") },
 			want: []string{`role="alert">That research isn&#39;t in the list any more.`}},
 	}
@@ -256,6 +257,16 @@ func TestResearchPage_States(t *testing.T) {
 			checkPlain(t, "research "+c.name, visibleWords(body, false), map[string]bool{})
 		})
 	}
+}
+
+// replayOf and deleteOf are the in-place Run again form and Delete step of
+// the listed run id: static URLs, the ID a field.
+func replayOf(id string) string {
+	return `<form method="POST" action="/research/replay" class="inline" data-on:submit__prevent__throttle.1s="@post('/research/replay', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="id" value="` + id + `">`
+}
+
+func deleteOf(id string) string {
+	return inlineForm("/research/delete") + `<input type="hidden" name="id" value="` + id + `"><input type="hidden" name="confirm" value="yes">`
 }
 
 func TestResearchStart_Form(t *testing.T) {
@@ -299,15 +310,15 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 	body := get(t, s, "/research").Body.String()
 	for _, want := range []string{
 		`<details class="confirm-step" data-preserve-attr="open"><summary class="btn sm danger"><span class="c-open">Stop</span>`,
-		`It ends now and no report is written.`, `<form method="POST" action="/research/stop"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm danger">Yes, stop</button>`,
-		`<form method="POST" action="/research/r-1/delete">`, `A copy already saved to your agent&#39;s notes stays there.`,
+		`It ends now and no report is written.`, `<form method="POST" action="/research/stop" data-on:submit__prevent__throttle.1s="@post('/research/stop', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="confirm" value="yes"><button type="submit" class="btn sm danger">Yes, stop</button>`,
+		deleteOf("r-1"), `A copy already saved to your agent&#39;s notes stays there.`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page lacks %q", want)
 		}
 	}
-	for _, p := range []string{"/research/stop", "/research/r-1/delete"} {
-		if rec := postResearch(t, s, p, nil); rec.Code != http.StatusPreconditionRequired {
+	for _, p := range []string{"/research/stop", "/research/delete"} {
+		if rec := postResearch(t, s, p, url.Values{"id": {"r-1"}}); rec.Code != http.StatusPreconditionRequired {
 			t.Errorf("POST %s without confirm = %d, want 428", p, rec.Code)
 		}
 	}
@@ -321,7 +332,7 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 	if got := flashOf(t, postResearch(t, s, "/research/stop", url.Values{"confirm": {"yes"}})); !strings.HasPrefix(got, "msg: Stopping the research.") {
 		t.Errorf("stop: %q", got)
 	}
-	if got := flashOf(t, postResearch(t, s, "/research/r-1/delete", url.Values{"confirm": {"yes"}})); got != "msg: Deleted from the list." {
+	if got := flashOf(t, postResearch(t, s, "/research/delete", url.Values{"id": {"r-1"}, "confirm": {"yes"}})); got != "msg: Deleted from the list." {
 		t.Errorf("delete: %q", got)
 	}
 	if c := f.called(); !slices.Equal(c, []string{"stop", "stop", "delete r-1"}) {
@@ -335,7 +346,7 @@ func TestResearchDeleteAndStop_Confirm(t *testing.T) {
 func TestResearchReplay(t *testing.T) {
 	f := newFakeResearch()
 	s := researchServer(f)
-	if got := flashOf(t, postResearch(t, s, "/research/r-1/replay", nil)); !strings.HasPrefix(got, "msg: Running it again") {
+	if got := flashOf(t, postResearch(t, s, "/research/replay", url.Values{"id": {"r-1"}})); !strings.HasPrefix(got, "msg: Running it again") {
 		t.Errorf("replay: %q", got)
 	}
 	if c := f.called(); !slices.Equal(c, []string{"replay r-1"}) {
