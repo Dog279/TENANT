@@ -36,6 +36,12 @@ func (f *fakeAgents) SetSoul(n, s string) error     { return f.record("SetSoul",
 func (f *fakeAgents) Rename(from, to string) error  { return f.record("Rename", from, to) }
 func (f *fakeAgents) Remove(n string) error         { return f.record("Remove", n) }
 func (f *fakeAgents) RestartNote() string           { return f.restart }
+func (f *fakeAgents) SendsTo(kind string) string {
+	if kind == "openai" {
+		return "OpenAI"
+	}
+	return ""
+}
 func (f *fakeAgents) changes() []string {
 	return slices.DeleteFunc(slices.Clone(f.calls), func(c string) bool { return strings.HasPrefix(c, "Soul|") })
 }
@@ -185,13 +191,17 @@ func TestAgents_EditPanelAdvanced(t *testing.T) {
 	if strings.Contains(body, `action="/agents/rename"`) {
 		t.Error("a built-in's panel offers Rename")
 	}
-	if !strings.Contains(body, `<option value="cloud">cloud · gpt-4o</option>`) {
-		t.Error("the model choices are missing")
+	// A hosted provider says where the work goes before it's picked (D18).
+	if !strings.Contains(body, `<option value="cloud">cloud · gpt-4o · sends its work to OpenAI</option>`) || !strings.Contains(body, `<option value="gpu">gpu · aeon</option>`) {
+		t.Error("the model choices are missing, or don't say which send work away")
 	}
 
 	body = get(t, agentsServer(sampleAgents(), cloudModels...), "/agents?edit=researcher").Body.String()
 	if !strings.Contains(body, `action="/agents/rename"`) || !strings.Contains(body, `<option value="cloud" selected>`) {
 		t.Error("the operator's own helper lacks Rename, or its provider isn't selected")
+	}
+	if !strings.Contains(body, "Now: cloud · gpt-4o. Sends its work to OpenAI.") {
+		t.Error("the current model doesn't say where the work goes")
 	}
 	if strings.Contains(body, "Clear instructions") {
 		t.Error("Clear is offered for a helper with no instructions")
@@ -308,6 +318,13 @@ func TestAgents_Validation(t *testing.T) {
 		{"/agents/model", url.Values{"name": {"QA"}}, "Pick a model provider for the helper."},
 		{"/agents/rename", url.Values{"name": {"researcher"}, "new_name": {"  "}}, "Type the helper's new name."},
 		{"/agents/rename", url.Values{"name": {"researcher"}, "new_name": {strings.Repeat("n", 65)}}, "Keep the name to 64 characters or fewer."},
+		{"/agents/add", url.Values{"name": {"h"}, "provider": {"cloud"}, "model": {strings.Repeat("m", 201)}}, "Keep the model name to 200 characters or fewer."},
+		{"/agents/model", url.Values{"name": {"QA"}, "provider": {"cloud"}, "model": {strings.Repeat("m", 201)}}, "Keep the model name to 200 characters or fewer."},
+		// Reset and Remove both end in the control's Remove: each acts only
+		// on its own kind of helper.
+		{"/agents/reset", url.Values{"name": {"researcher"}, "confirm": {"yes"}}, "Only a changed built-in helper can be reset."},
+		{"/agents/reset", url.Values{"name": {"Programmer"}, "confirm": {"yes"}}, "Only a changed built-in helper can be reset."},
+		{"/agents/remove", url.Values{"name": {"QA"}, "confirm": {"yes"}}, "Built-in helpers can't be removed. Reset undoes your changes to one."},
 	} {
 		fa := sampleAgents()
 		_, _, errMsg := flash(t, post(t, agentsServer(fa, cloudModels...), tc.path, tc.form))
@@ -347,9 +364,22 @@ func TestAgents_ControlErrors(t *testing.T) {
 		"/agents/remove": "Couldn't remove that helper.",
 		"/agents/reset":  "Couldn't reset that helper.",
 	} {
-		rec := post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {"researcher"}, "provider": {"cloud"}, "new_name": {"reader"}, "soul": {"x"}, "confirm": {"yes"}})
+		name := "researcher"
+		if path == "/agents/reset" {
+			name = "QA"
+		}
+		rec := post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {name}, "provider": {"cloud"}, "new_name": {"reader"}, "soul": {"x"}, "confirm": {"yes"}})
 		if _, _, e := flash(t, rec); e != want || strings.Contains(rec.Header().Get("Location"), "configured") {
 			t.Errorf("%s: err %q (Location %q), want %q", path, e, rec.Header().Get("Location"), want)
+		}
+	}
+	// Remove and Reset check the list first; when it can't be read, neither
+	// goes ahead.
+	fa = sampleAgents()
+	fa.loadErr = errors.New(rawStoreClosed)
+	for path, want := range map[string]string{"/agents/remove": "Couldn't remove that helper.", "/agents/reset": "Couldn't reset that helper."} {
+		if _, _, e := flash(t, post(t, agentsServer(fa, cloudModels...), path, url.Values{"name": {"QA"}, "confirm": {"yes"}})); e != want || len(fa.changes()) != 0 {
+			t.Errorf("%s with the list unreadable: err %q, calls %q", path, e, fa.changes())
 		}
 	}
 	// A failed instructions read opens no editor that could save over them.
@@ -369,22 +399,32 @@ type soulFails struct{ *fakeAgents }
 func (f *soulFails) Agents() ([]AgentProfileView, error) { return f.rows, nil }
 
 // Every change goes through the security envelope: a browser post with the
-// sign-in cookie but no Origin is refused before the control sees it.
+// sign-in cookie but no Origin is refused before the control sees it, and the
+// same post from the page itself goes through (so the routes are mounted).
 func TestAgents_RefusesCrossSite(t *testing.T) {
 	fa := sampleAgents()
 	s := New(Config{Auth: "secret", Addr: "example.com"}, nil, nil, nil, nil, nil)
 	s.SetAgents(fa)
-	for _, p := range []string{"/agents/add", "/agents/model", "/agents/soul", "/agents/rename", "/agents/remove", "/agents/reset"} {
+	send := func(p, origin string) int {
 		req := httptest.NewRequest("POST", "http://example.com"+p, strings.NewReader("name=researcher&provider=cloud&new_name=x&soul=x&confirm=yes"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
 		rec := httptest.NewRecorder()
 		s.served().ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("%s without an Origin = %d, want 403", p, rec.Code)
+		return rec.Code
+	}
+	for _, p := range []string{"/agents/add", "/agents/model", "/agents/soul", "/agents/rename", "/agents/remove", "/agents/reset"} {
+		if code := send(p, ""); code != http.StatusForbidden {
+			t.Errorf("%s without an Origin = %d, want 403", p, code)
 		}
 	}
 	if len(fa.changes()) != 0 {
 		t.Errorf("the control was called: %q", fa.changes())
+	}
+	if code := send("/agents/remove", "http://example.com"); code != http.StatusSeeOther || !slices.Equal(fa.changes(), []string{"Remove|researcher"}) {
+		t.Errorf("the page's own remove = %d, calls %q; want 303 and one Remove", code, fa.changes())
 	}
 }

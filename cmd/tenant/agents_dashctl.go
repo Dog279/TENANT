@@ -75,6 +75,9 @@ func sendsTo(kind string) string {
 	return name
 }
 
+// SendsTo answers the page's model choices, which carry only the kind.
+func (d dashAgents) SendsTo(kind string) string { return sendsTo(kind) }
+
 func (d dashAgents) Soul(name string) (string, error) {
 	det, err := d.ac.Show(name)
 	return det.Soul, err
@@ -155,6 +158,7 @@ var plainAgentErrs = []struct{ has, say string }{
 	{"has no Model", "That model provider has no default model. Type the model's name."},
 	{"built-in specialist", "Built-in helpers can't be removed."},
 	{"already exists", "A helper with that name already exists."},
+	{"names are the same", "That's already its name."},
 }
 
 func plainAgentErr(err error) error {

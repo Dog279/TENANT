@@ -25,8 +25,9 @@ type AgentControl interface {
 	SetModel(name, provider, model string) error // instructions and description kept
 	SetSoul(name, soul string) error             // "" clears
 	Rename(oldName, newName string) error
-	Remove(name string) error // a customized built-in goes back to its shipped settings
-	RestartNote() string      // how to restart Tenant here (a Windows service); "" = nothing to add
+	Remove(name string) error   // a customized built-in goes back to its shipped settings
+	RestartNote() string        // how to restart Tenant here (a Windows service); "" = nothing to add
+	SendsTo(kind string) string // who a provider of this kind sends a helper's work to; "" = self-hosted
 }
 
 // AgentProfileView is one helper, render-ready.
@@ -61,6 +62,7 @@ type agentsPageData struct {
 	Configured bool
 	Agents     []AgentProfileView
 	Providers  []ModelView       // the Model page's providers, which a helper can use
+	SendsTo    map[string]string // provider name → who its work goes to, hosted ones only (D18)
 	Edit       *AgentProfileView // ?edit=: the helper whose panel is open
 	EditSoul   string
 	LoadErr    string
@@ -81,6 +83,12 @@ func (s *Server) handleAgentsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.models != nil {
 		d.Providers = s.models.Models()
+		d.SendsTo = map[string]string{}
+		for _, p := range d.Providers {
+			if to := s.agents.SendsTo(p.Kind); to != "" {
+				d.SendsTo[p.Name] = to
+			}
+		}
 	}
 	agents, err := s.agents.Agents()
 	if err != nil {
@@ -123,12 +131,23 @@ func (s *Server) learnsOnRestart(name string) string {
 	return msg
 }
 
+func tooLongModel(model string) bool { return utf8.RuneCountInString(model) > 200 }
+
+// isCustomized reports whether name is a customized built-in. Reset acts only
+// on those and Remove never does: both end in the control's Remove, which
+// would otherwise delete a helper you added, or reset one under "Removed".
+func (s *Server) isCustomized(name string) (bool, error) {
+	rows, err := s.agents.Agents()
+	return slices.ContainsFunc(rows, func(a AgentProfileView) bool { return a.Name == name && a.Customized }), err
+}
+
 func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 	name, ok := s.agentsForm(w, r)
 	if !ok {
 		return
 	}
 	provider := strings.TrimSpace(r.FormValue("provider"))
+	model := strings.TrimSpace(r.FormValue("model"))
 	desc := strings.TrimSpace(r.FormValue("description"))
 	switch {
 	case provider == "":
@@ -140,8 +159,11 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 	case utf8.RuneCountInString(desc) > 500:
 		redirectFlash(w, r, "/agents", "", "Keep what it's for to 500 characters or fewer.")
 		return
+	case tooLongModel(model):
+		redirectFlash(w, r, "/agents", "", "Keep the model name to 200 characters or fewer.")
+		return
 	}
-	if err := s.agents.Add(name, provider, strings.TrimSpace(r.FormValue("model")), desc); err != nil {
+	if err := s.agents.Add(name, provider, model, desc); err != nil {
 		redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper add", err, "Couldn't add that helper."))
 		return
 	}
@@ -155,8 +177,12 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	}
 	provider := strings.TrimSpace(r.FormValue("provider"))
 	model := strings.TrimSpace(r.FormValue("model"))
-	if provider == "" {
+	switch {
+	case provider == "":
 		redirectFlash(w, r, editPage(name), "", "Pick a model provider for the helper.")
+		return
+	case tooLongModel(model):
+		redirectFlash(w, r, editPage(name), "", "Keep the model name to 200 characters or fewer.")
 		return
 	}
 	if err := s.agents.SetModel(name, provider, model); err != nil {
@@ -213,7 +239,15 @@ func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.agents.Remove(name); err != nil {
+	custom, err := s.isCustomized(name)
+	if err == nil && custom {
+		redirectFlash(w, r, "/agents", "", "Built-in helpers can't be removed. Reset undoes your changes to one.")
+		return
+	}
+	if err == nil {
+		err = s.agents.Remove(name)
+	}
+	if err != nil {
 		redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper remove", err, "Couldn't remove that helper."))
 		return
 	}
@@ -227,7 +261,15 @@ func (s *Server) handleAgentReset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.agents.Remove(name); err != nil {
+	custom, err := s.isCustomized(name)
+	if err == nil && !custom {
+		redirectFlash(w, r, "/agents", "", "Only a changed built-in helper can be reset.")
+		return
+	}
+	if err == nil {
+		err = s.agents.Remove(name)
+	}
+	if err != nil {
 		redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper reset", err, "Couldn't reset that helper."))
 		return
 	}

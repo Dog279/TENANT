@@ -7,12 +7,12 @@
 <div class="card agent-edit" id="edit">
   <div class="card-head">Edit {{visibleText .Name}}</div>
   <h2>Model</h2>
-  <div class="dim">Now: {{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}your main model{{end}}.</div>
+  <div class="dim">Now: {{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}your main model{{end}}.{{with .SendsTo}} Sends its work to {{.}}.{{end}}</div>
   {{if $.Providers}}
   <form method="POST" action="/agents/model" class="agent-form">
     <input type="hidden" name="name" value="{{.Name}}">
     <label>Model provider
-      <select name="provider" required>{{range $.Providers}}<option value="{{.Name}}"{{if eq .Name $.Edit.Provider}} selected{{end}}>{{.Name}}{{with .Model}} · {{.}}{{end}}</option>{{end}}</select>
+      <select name="provider" required>{{range $.Providers}}<option value="{{.Name}}"{{if eq .Name $.Edit.Provider}} selected{{end}}>{{.Name}}{{with .Model}} · {{.}}{{end}}{{with index $.SendsTo .Name}} · sends its work to {{.}}{{end}}</option>{{end}}</select>
     </label>
     <label>Model
       <input type="text" name="model" class="cinput" maxlength="200" placeholder="leave blank for the provider's default">
@@ -60,8 +60,8 @@
     </div>
     <div class="actions">
       <a class="btn sm" href="/agents?edit={{.Name}}#edit">Edit</a>
-      {{if .Customized}}{{template "ui-confirm" (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." .Name) "name" .Name)}}
-      {{else if not .Builtin}}{{template "ui-confirm" (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." .Name) "name" .Name)}}{{end}}
+      {{if .Customized}}{{template "ui-confirm" (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." (visibleText .Name)) "name" .Name)}}
+      {{else if not .Builtin}}{{template "ui-confirm" (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." (visibleText .Name)) "name" .Name)}}{{end}}
     </div>
   </div>
   {{else}}{{if not $.LoadErr}}{{template "ui-empty" "No helpers yet. Add one below and your agent can hand it work."}}{{end}}{{end}}
@@ -75,7 +75,7 @@
       <input type="text" name="name" class="cinput" required maxlength="64" pattern="[A-Za-z0-9_\-]+" placeholder="letters, numbers, dashes and underscores">
     </label>
     <label>Model provider
-      <select name="provider" required>{{range .Providers}}<option value="{{.Name}}">{{.Name}}{{with .Model}} · {{.}}{{end}}</option>{{end}}</select>
+      <select name="provider" required>{{range .Providers}}<option value="{{.Name}}">{{.Name}}{{with .Model}} · {{.}}{{end}}{{with index $.SendsTo .Name}} · sends its work to {{.}}{{end}}</option>{{end}}</select>
     </label>
     <label>Model
       <input type="text" name="model" class="cinput" maxlength="200" placeholder="leave blank for the provider's default">

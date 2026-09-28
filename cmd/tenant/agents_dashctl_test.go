@@ -139,6 +139,7 @@ func TestDashAgents_PlainErrors(t *testing.T) {
 		{"rename a built-in", d.Rename("programmer", "coder"), "Built-in helpers can't be renamed."},
 		{"rename onto a built-in", d.Rename("mine", "qa"), "A helper named QA already exists."},
 		{"remove a built-in", d.Remove("Writer"), "Built-in helpers can't be removed."},
+		{"rename to its own name", d.Rename("mine", "mine"), "That's already its name."},
 	} {
 		var pe dashboard.PlainError
 		if !errors.As(tc.err, &pe) || string(pe) != tc.want {
