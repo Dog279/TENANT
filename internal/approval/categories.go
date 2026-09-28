@@ -48,6 +48,25 @@ var CategoryDesc = map[string]string{
 	CatSandbox:     "re-run a command outside the execution sandbox after it refused it",
 }
 
+// CategoryPlain names each category in plain words for the dashboard and the
+// new-category notices: Title is its name, Can what Allow lets the agent do.
+var CategoryPlain = map[string]struct{ Title, Can string }{
+	CatExec:        {"Run commands", "run commands and programs on this computer"},
+	CatWrite:       {"Change files", "create and change files on this computer"},
+	CatDestructive: {"Irreversible actions", "do things that can't be undone, like deleting files, dropping database tables or buying something"},
+	CatWeb:         {"Act on websites", "click, type and submit forms on websites"},
+	CatSend:        {"Send messages", "send email, texts and posts in your name"},
+	CatEgress:      {"Share private data", "send private information it has read (mail, files, tickets) to an outside service"},
+	CatMCP:         {"Connect remote services", "connect new remote services and trust their tools"},
+	CatSandbox:     {"Leave the sandbox", "run a command outside the safety box after the box stopped it"},
+}
+
+// OriginalCategories are the categories that predate the known_categories
+// marker (TEN-343). A saved permissions map without the marker counts only
+// these as chosen: every save since the other three arrived wrote all eight,
+// so a key's presence can't say whether the operator ever chose it.
+var OriginalCategories = []string{CatExec, CatWrite, CatDestructive, CatWeb, CatSend}
+
 // Categorize maps an action id to its category through the given tables, in
 // order. An action no table knows is destructive: the safest default, since
 // destructive always asks unless the operator opened it.

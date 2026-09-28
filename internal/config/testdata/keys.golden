@@ -66,6 +66,7 @@ config.json: health_gating.slow_threshold_ms
 config.json: imessage
 config.json: imessage.allow_from
 config.json: imessage.enabled
+config.json: imessage.known_categories
 config.json: imessage.operator
 config.json: imessage.permissions
 config.json: improve
@@ -156,6 +157,7 @@ config.json: relay.allow_exec
 config.json: relay.approval_timeout
 config.json: relay.card_style
 config.json: relay.enabled
+config.json: relay.known_categories
 config.json: relay.operator_id
 config.json: relay.permissions
 config.json: route
@@ -200,6 +202,7 @@ config.json: vllm_endpoint
 config.json: vllm_model
 config.json: vllm_tool_format
 credentials.json: secrets
+settings.json: announced_categories
 settings.json: exec_profiles
 settings.json: exec_profiles.*.allow
 settings.json: exec_profiles.*.backend
@@ -213,6 +216,7 @@ settings.json: exec_profiles.*.memory_mb
 settings.json: exec_profiles.*.network
 settings.json: exec_profiles.*.read_roots
 settings.json: exec_profiles.*.write_roots
+settings.json: known_categories
 settings.json: permissions
 settings.json: tool_rules
 settings.json: tools

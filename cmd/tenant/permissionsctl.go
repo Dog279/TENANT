@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -211,22 +212,23 @@ func surfaceModes(surface string, pf *pluginFlags, stg *settings, lc *launchConf
 		b                 *approvalBroker
 		base, savedSource string
 		saved             map[string]string
+		known             []string
 		flags             map[string]string
 	)
 	switch surface {
 	case permissionSurfaceDiscord:
 		b, base = newDiscordApprovalBroker(nil), "discord default"
-		saved, savedSource = lc.Relay.Permissions, "relay.permissions"
+		saved, known, savedSource = lc.Relay.Permissions, lc.Relay.KnownCategories, "relay.permissions"
 	case permissionSurfaceIMessage:
 		b, base = newOffsiteApprovalBroker(nil, newApprovalBroker(nil)), "imessage deny-by-default"
-		saved, savedSource = lc.IMessage.Permissions, "imessage.permissions"
+		saved, known, savedSource = lc.IMessage.Permissions, lc.IMessage.KnownCategories, "imessage.permissions"
 	default:
 		b, base = newApprovalBroker(nil), "local default"
-		saved, savedSource = stg.Permissions, "settings permissions"
+		saved, known, savedSource = stg.Permissions, stg.KnownCategories, "settings permissions"
 		flags = launchFlagGrants(pf)
 		seedFromFlags(b, pf)
 	}
-	b.LoadModes(saved)
+	b.LoadModes(saved, known)
 	modes, persisted := b.Modes(), savedModes(saved)
 	out := make(map[string]effectiveCategory, len(catOrder))
 	for _, cat := range catOrder {
@@ -362,21 +364,23 @@ func normalizePermissionSurface(surface string) (string, error) {
 	}
 }
 
+// applyPermissionPreset saves a preset's modes. A preset chooses every
+// category, so all of them are known (TEN-343): none is marked new after it.
 func applyPermissionPreset(c *commonFlags, surface, name string, modes map[string]string) error {
-	copyModes := cloneStringMap(modes)
+	copyModes, known := cloneStringMap(modes), slices.Clone(catOrder)
 	switch surface {
 	case permissionSurfaceLocal:
 		stg, err := loadSettings(c.cfgDir, c.agent)
 		if err != nil {
 			return err
 		}
-		stg.Permissions = copyModes
+		stg.Permissions, stg.KnownCategories = copyModes, known
 		return stg.Save(c.cfgDir, c.agent)
 	case permissionSurfaceDiscord:
-		c.lc.Relay.Permissions = copyModes
+		c.lc.Relay.Permissions, c.lc.Relay.KnownCategories = copyModes, known
 		c.lc.Relay.AllowExec = name != "safe"
 	case permissionSurfaceIMessage:
-		c.lc.IMessage.Permissions = copyModes
+		c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories = copyModes, known
 	}
 	return c.lc.Save(c.cfgDir)
 }

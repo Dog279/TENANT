@@ -54,6 +54,53 @@ func TestApplySettingsFile_HandEditsApplyLive(t *testing.T) {
 	}
 }
 
+// A hand edit reloads the known_categories marker with the modes, and the
+// live settings keep the file's marker and the announced one (TEN-343).
+func TestApplySettingsFile_ReloadKeepsKnownMarker(t *testing.T) {
+	cfg := t.TempDir()
+	write := func(exec, known string) {
+		t.Helper()
+		body := `{"permissions":{"exec":"` + exec + `","write":"ask","destructive":"ask","web":"ask","send":"ask","egress":"ask","mcp":"ask","sandbox":"ask"},` +
+			`"known_categories":[` + known + `],"announced_categories":["egress","mcp","sandbox"]}`
+		if err := os.WriteFile(filepath.Join(cfg, "settings.main.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	six := `"exec","write","destructive","web","send","egress"`
+	write("ask", six)
+	stg, err := loadSettings(cfg, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := newApprovalBroker(nil)
+	broker.LoadModes(stg.Permissions, stg.KnownCategories)
+	var mu sync.Mutex
+
+	// A mode edit keeps the marker: egress stays chosen.
+	write("allow", six)
+	if got := applySettingsFile(cfg, "main", broker, nil, &mu, stg); got != "1 category mode(s)" {
+		t.Fatalf("summary = %q", got)
+	}
+	if got := strings.Join(broker.NewCategories(), ","); got != "mcp,sandbox" {
+		t.Fatalf("NewCategories = %q, want mcp,sandbox", got)
+	}
+	if len(stg.KnownCategories) != 6 || len(stg.AnnouncedCategories) != 3 {
+		t.Fatalf("live settings lost a marker: known %v announced %v", stg.KnownCategories, stg.AnnouncedCategories)
+	}
+
+	// A marker-only edit reloads too.
+	write("allow", six+`,"mcp"`)
+	if got := applySettingsFile(cfg, "main", broker, nil, &mu, stg); got != "the known categories" {
+		t.Fatalf("summary = %q", got)
+	}
+	if got := strings.Join(broker.NewCategories(), ","); got != "sandbox" {
+		t.Fatalf("NewCategories = %q, want sandbox", got)
+	}
+	if got := applySettingsFile(cfg, "main", broker, nil, &mu, stg); got != "" {
+		t.Errorf("unchanged file should be a no-op, got %q", got)
+	}
+}
+
 // notADir returns a path under which nothing can be written on any OS: a
 // regular file standing where a config directory should be.
 func notADir(t *testing.T) string {

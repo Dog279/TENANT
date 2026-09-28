@@ -50,6 +50,11 @@ type PendingApproval struct {
 	Action   string `json:"action"`
 	Detail   string `json:"detail"`
 	AgeSecs  int    `json:"age_secs"`
+	Origin   string `json:"origin,omitempty"` // the broker that asked: local | imessage
+	// SessionOK: approving "for this session" grants the category until
+	// restart. False where it only covers this request (a tool rule forced
+	// the prompt, or a pairing or an alert asked).
+	SessionOK bool `json:"session_ok,omitempty"`
 }
 
 // PermissionInfo is one safety category's mode, as /permissions lists it.
@@ -57,6 +62,10 @@ type PermissionInfo struct {
 	Category string
 	Mode     string // ask | allow | deny
 	Desc     string
+	Title    string // plain name: "Run commands"
+	Can      string // what Allow lets the agent do: "run commands and programs on this computer"
+	New      bool   // an update added it and the operator never chose it, so it asks (TEN-343)
+	Session  bool   // an "approve for this session" grant skips its prompts until restart
 }
 
 // ToolRuleInfo is one per-tool permission rule (pattern → mode): the layer the

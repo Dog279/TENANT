@@ -474,6 +474,9 @@ type Relay struct {
 	// (every dangerous action prompts a button). Categories: exec/write/
 	// destructive/web/send/egress/mcp/sandbox; AllowExec gates five of them.
 	Permissions map[string]string `json:"permissions,omitempty"`
+	// KnownCategories is the Discord broker's chosen-categories marker, as
+	// Settings.KnownCategories is the host's.
+	KnownCategories []string `json:"known_categories,omitempty"`
 	// ApprovalTimeout is how long an approval card waits for the operator before
 	// auto-denying (a Go duration, e.g. "10m"). Empty ⇒ 10m. /relay timeout.
 	ApprovalTimeout string `json:"approval_timeout,omitempty"`
@@ -508,6 +511,9 @@ type IMessage struct {
 	// set via /imessage permissions. Empty ⇒ deny-by-default (offsite). Category
 	// keys: exec | write | destructive | web | send.
 	Permissions map[string]string `json:"permissions,omitempty"`
+	// KnownCategories is the responder broker's chosen-categories marker, as
+	// Settings.KnownCategories is the host's.
+	KnownCategories []string `json:"known_categories,omitempty"`
 }
 
 // Improve governs the self-improvement loop's auto-acceptance of induced

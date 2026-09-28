@@ -23,6 +23,15 @@ type Settings struct {
 	// mode (ask/allow/deny). Persists "/approve always" and "/permissions
 	// set" so the operator's safety choices survive restarts.
 	Permissions map[string]string `json:"permissions,omitempty"`
+	// KnownCategories lists the categories the operator has chosen a mode
+	// for, saved with every permission change (TEN-343). One that asks and
+	// isn't listed arrived with an update and is marked new. Absent beside
+	// saved modes (a file from before the marker): only the original five
+	// count as chosen.
+	KnownCategories []string `json:"known_categories,omitempty"`
+	// AnnouncedCategories are the new categories the terminal UI has already
+	// told the operator about, so its launch notice shows once.
+	AnnouncedCategories []string `json:"announced_categories,omitempty"`
 	// ToolRules maps a tool pattern (an exact action id, a bare tool name, or
 	// a glob) to a mode (ask/allow/deny) — the per-tool layer checked before
 	// the category. Editable by hand: the running hub reloads this file when

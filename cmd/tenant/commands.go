@@ -1891,19 +1891,20 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		sysConfigNotLoaded.Log(ctx, "path", settingsPath(c.cfgDir, c.agent), "fallback", "the defaults apply", "err", serr)
 		pushSys("settings: " + serr.Error() + " — using defaults")
 	}
-	broker.LoadModes(stg.Permissions)
+	broker.LoadModes(stg.Permissions, stg.KnownCategories)
 	var stgMu sync.Mutex
 	saveSettings := func() {
 		stgMu.Lock()
 		defer stgMu.Unlock()
 		saveSettingsOrTell(stg, c.cfgDir, c.agent, pushSys)
 	}
-	broker.SetPersist(func(modes map[string]string) {
+	broker.SetPersist(func(modes map[string]string, known []string) {
 		stgMu.Lock()
-		stg.Permissions = modes
+		stg.Permissions, stg.KnownCategories = modes, known
 		stgMu.Unlock()
 		saveSettings()
 	})
+	announceNewCategories(broker, stg, &stgMu, saveSettings, pushSys)
 	// Per-tool permission rules (internal/approval): loaded from the same file,
 	// persisted on every /permissions add|rm, and re-read when the file is
 	// edited by hand — so a rule for a tool nobody programmed for is one line
@@ -2571,11 +2572,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// approver) is wired below, once the relay manager exists.
 	discordBroker := newDiscordApprovalBroker(log.With("source", "approvals"))
 	discordBroker.SetEvents(emit) // visibility bridge: Discord-routed approvals surface on the feed (TEN-203)
-	discordBroker.SetPersist(func(snap map[string]string) {
-		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) { lc.Relay.Permissions = snap })
+	discordBroker.SetPersist(func(snap map[string]string, known []string) {
+		persistChoice(c.cfgDir, c.lc, pushSys, "relay: the permission change", func(lc *launchConfig) {
+			lc.Relay.Permissions, lc.Relay.KnownCategories = snap, known
+		})
 	})
 	if c.lc != nil {
-		discordBroker.LoadModes(c.lc.Relay.Permissions)
+		discordBroker.LoadModes(c.lc.Relay.Permissions, c.lc.Relay.KnownCategories)
 	}
 	discordToken := discordRelayToken(c.cfgDir)
 	if strings.TrimSpace(discordToken) != "" {
@@ -2686,11 +2689,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// "ask" prompts the operator at THIS TUI, exactly like /permissions. Driven
 	// by /imessage permissions; persisted to config.
 	imsgBroker := newOffsiteApprovalBroker(log.With("source", "approvals"), broker)
-	imsgBroker.SetPersist(func(snap map[string]string) {
-		persistChoice(c.cfgDir, c.lc, pushSys, "imessage: the permission change", func(lc *launchConfig) { lc.IMessage.Permissions = snap })
+	imsgBroker.SetPersist(func(snap map[string]string, known []string) {
+		persistChoice(c.cfgDir, c.lc, pushSys, "imessage: the permission change", func(lc *launchConfig) {
+			lc.IMessage.Permissions, lc.IMessage.KnownCategories = snap, known
+		})
 	})
 	if c.lc != nil {
-		imsgBroker.LoadModes(c.lc.IMessage.Permissions)
+		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
 
