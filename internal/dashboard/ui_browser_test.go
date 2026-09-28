@@ -3,6 +3,7 @@ package dashboard
 import (
 	"cmp"
 	"context"
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -70,10 +71,6 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	srv := httptest.NewServer(s.served())
 	t.Cleanup(srv.Close)
 	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(w, h))
-	actx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, cancelBrowser := chromedp.NewContext(actx)
-	ctx, cancelTimeout := context.WithTimeout(ctx, 3*time.Minute)
-	t.Cleanup(func() { cancelTimeout(); cancelBrowser(); cancelAlloc() })
 	var phone []chromedp.EmulateViewportOption
 	if w < 640 {
 		phone = append(phone, chromedp.EmulateMobile, chromedp.EmulateTouch)
@@ -81,20 +78,53 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	var signIn, back string
 	var width int
 	var gaps []float64 // the sign-in card's space on the left and right
-	err = chromedp.Run(ctx,
-		chromedp.EmulateViewport(int64(w), int64(h), phone...),
-		chromedp.Navigate(srv.URL+page),
-		chromedp.WaitVisible(`input[name=token]`, chromedp.ByQuery),
-		chromedp.Location(&signIn),
-		chromedp.Evaluate(`(r => [r.left, innerWidth - r.right])(document.querySelector('form.card').getBoundingClientRect())`, &gaps),
-		chromedp.SendKeys(`input[name=token]`, s.cfg.Auth, chromedp.ByQuery),
-		chromedp.Click(`form button[type=submit]`, chromedp.ByQuery),
-		chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
-		chromedp.Location(&back),
-		chromedp.Evaluate(`innerWidth`, &width),
-	)
-	if err != nil {
-		t.Fatalf("signing in: %v (at %s)", err, signIn)
+	var ctx context.Context
+	// A CI runner's Chrome now and then hangs before the first page loads
+	// (seen on macOS): the sign-in gets a minute, then one fresh browser.
+	// An app bug fails both tries.
+	for try := 1; ; try++ {
+		actx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+		bctx, cancelBrowser := chromedp.NewContext(actx)
+		tctx, cancelTimeout := context.WithTimeout(bctx, 3*time.Minute)
+		stop := func() { cancelTimeout(); cancelBrowser(); cancelAlloc() }
+		signIn, back, width, gaps = "", "", 0, nil
+		// The first Run starts the browser and ties it to tctx, so the minute
+		// is a timer that stops this browser, not a child context (whose end
+		// would close the browser after a good sign-in too).
+		done := make(chan error, 1)
+		go func() {
+			done <- chromedp.Run(tctx,
+				chromedp.EmulateViewport(int64(w), int64(h), phone...),
+				chromedp.Navigate(srv.URL+page),
+				chromedp.WaitVisible(`input[name=token]`, chromedp.ByQuery),
+				chromedp.Location(&signIn),
+				chromedp.Evaluate(`(r => [r.left, innerWidth - r.right])(document.querySelector('form.card').getBoundingClientRect())`, &gaps),
+				chromedp.SendKeys(`input[name=token]`, s.cfg.Auth, chromedp.ByQuery),
+				chromedp.Click(`form button[type=submit]`, chromedp.ByQuery),
+				chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
+				chromedp.Location(&back),
+				chromedp.Evaluate(`innerWidth`, &width),
+			)
+		}()
+		select {
+		case err = <-done:
+		case <-time.After(time.Minute):
+			// Kill the hung Chrome first: the browser context's cancel
+			// waits for its process to exit, which only the allocator does.
+			cancelAlloc()
+			<-done
+			err = errors.New("no sign-in within a minute")
+		}
+		if err == nil {
+			ctx = tctx
+			t.Cleanup(stop)
+			break
+		}
+		stop()
+		if try == 2 {
+			t.Fatalf("signing in: %v (at %s)", err, signIn)
+		}
+		t.Logf("signing in: %v (at %s); starting Chrome again", err, signIn)
 	}
 	if next := "/settings?" + (url.Values{"next": {page}}).Encode(); !strings.HasSuffix(signIn, next) || back != srv.URL+page {
 		t.Fatalf("sign-in went %s → %s, want %s → %s", signIn, back, next, page)
