@@ -361,7 +361,9 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// team only spawns once serve is running, so the late bind is safe. A nil
 	// runtime degrades to today's exact spawn behavior.
 	var routeRT *routeRuntime
-	rt := newTeamRuntime(TeamConfig{
+	// teamCfg is kept: the dashboard's research builds its own runtime from a
+	// copy of it (TEN-210).
+	teamCfg := TeamConfig{
 		Bus: bus, Router: router, Stores: st, Shared: mux, Skills: skillStore,
 		Embedder: skEmb, EmbedderID: embedderID, Compressor: compressor, Profile: prof,
 		OrchID: c.agent, Log: log, Observe: subObserve, Budgets: budgets,
@@ -379,7 +381,8 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		EmbedProfile:  embProf,
 		LocalRestore:  stg.Tools,
 		LocalOnChange: localSave,
-	})
+	}
+	rt := newTeamRuntime(teamCfg)
 	life.AddFunc(lifecycle.Release, "team runtime", rt.Close)
 
 	mainLocal := newToolMux()
@@ -639,6 +642,8 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		skills:      dashSkill{c: skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir}},
 		models:      dashModel{mc: modelCtl},
 		approvals:   broker, // the broker is the ApprovalControl (Pending/Decide) — TEN-203
+		safety:      broker, // and the SafetyControl (Permissions/SetPermissionFrom) — TEN-207
+		safetyFacts: newSafetyFacts(),
 		rules:       dashRules{defaultToolRules},
 		broker:      evBroker,
 		logs:        hub,
@@ -700,6 +705,11 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: mcpCtl}
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
+	// Helpers (TEN-209) and research (TEN-210). Only the terminal app runs
+	// goals, so serve's Autopilot page stays nil.
+	dashMgr.agents = newDashAgents(&agentControl{cfgDir: c.cfgDir, rt: rt})
+	dashMgr.research = newServeDashResearch(ctx, life, teamCfg, rt,
+		researchControl{ag: ag, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx, opts: defaultResearchOpts()}, c.dataDir, teamWeb)
 
 	dashAddr := ""
 	if *dashboardOn {

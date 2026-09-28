@@ -109,6 +109,9 @@ func TestTurnGate_PriorityOrdering(t *testing.T) {
 
 	active := startGateTurn(g, context.Background(), "active", agent.RouteSurfaceCron)
 	awaitStarted(t, r, "active")
+	if src := g.TurnQueueStatus().ActiveSource; src != "cron" {
+		t.Errorf("ActiveSource = %q, want the running turn's source (cron)", src) // the dashboard strip names it
+	}
 	cron := startGateTurn(g, context.Background(), "cron", agent.RouteSurfaceCron)
 	waitFor(t, func() bool { return g.TurnQueueStatus().Depth == 1 })
 	relay := startGateTurn(g, context.Background(), "relay", agent.RouteSurfaceRelay)

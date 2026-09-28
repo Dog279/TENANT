@@ -2942,6 +2942,45 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		}
 	}
 
+	// Deep research streams its progress lines to the system feed (sysCh);
+	// sub-agent tool activity already flows via teamCh. The report returns to
+	// the chat pane. Reuses the same TeamRuntime as the orchestrator.
+	researchSay := func(format string, a ...any) {
+		pushTo("research", "research: "+fmt.Sprintf(format, a...))
+	}
+	// C3: open the persistent research store under <data>/research. Failure
+	// degrades gracefully — runWithPersistence handles a nil store, /research
+	// history will surface "unavailable" cleanly.
+	rstore, rerr := research.New(c.dataDir)
+	if rerr != nil {
+		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
+		rstore = nil
+	}
+	researchCtl := &researchControl{
+		ag: ag, rt: rt, say: researchSay, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx,
+		opts: defaultResearchOpts(), store: rstore,
+		emitTimeline: func(u tui.ResearchTimelineUpdate) {
+			// Non-blocking send: a paused/slow TUI must not stall the
+			// orchestrator. The TUI also re-renders from a single
+			// snapshot anyway — a missed mid-update is fine.
+			select {
+			case timelineCh <- u:
+			default:
+			}
+		},
+	}
+	// Helpers and goals: ONE instance each, shared by the terminal app and the
+	// dashboard. A second goalControl would show nothing; a second
+	// agentControl would split the config lock.
+	agentCtl := &agentControl{cfgDir: c.cfgDir, rt: rt}
+	goalCtl := newGoalControl(ag, goalLoopCeilingFromConfig(c.lc))
+	// Dashboard v2 pages (TEN-207/209/210/212): the broker is the safety
+	// control, and the pages drive the same controls the terminal app does.
+	dashMgr.safety = broker
+	dashMgr.safetyFacts = newSafetyFacts()
+	dashMgr.agents = newDashAgents(agentCtl)
+	dashMgr.goal = newDashGoal(goalCtl, pushSys)
+	dashMgr.research = newDashResearch(ctx, researchCtl, teamWeb, researchSay)
 	// Wire the dashboard's eval/quality surface (TEN-201) now that evalSched
 	// exists (it's built inside the self-improve block above; nil when
 	// --self-improve=false, which evalTUIControl handles as persist-only), then
@@ -3046,20 +3085,6 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	if c.backend == "echo" || modelName == "" {
 		modelName = c.backend
 	}
-	// Deep research streams its progress lines to the system feed (sysCh);
-	// sub-agent tool activity already flows via teamCh. The report returns to
-	// the chat pane. Reuses the same TeamRuntime as the orchestrator.
-	researchSay := func(format string, a ...any) {
-		pushTo("research", "research: "+fmt.Sprintf(format, a...))
-	}
-	// C3: open the persistent research store under <data>/research. Failure
-	// degrades gracefully — runWithPersistence handles a nil store, /research
-	// history will surface "unavailable" cleanly.
-	rstore, rerr := research.New(c.dataDir)
-	if rerr != nil {
-		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
-		rstore = nil
-	}
 	reconnectMon := &reconnectMonitor{cfgDir: c.cfgDir, feed: sysCh, ctx: ctx, log: log.With("source", "model")}
 	// If we launched degraded because the endpoint was UNREACHABLE, start polling
 	// now so the operator sees it recover without first having to send a failing
@@ -3122,21 +3147,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			sc.surface = surfaceTUI
 			return sc
 		}(),
-		Research: &researchControl{
-			ag: ag, rt: rt, say: researchSay, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx,
-			opts: defaultResearchOpts(), store: rstore,
-			emitTimeline: func(u tui.ResearchTimelineUpdate) {
-				// Non-blocking send: a paused/slow TUI must not stall the
-				// orchestrator. The TUI also re-renders from a single
-				// snapshot anyway — a missed mid-update is fine.
-				select {
-				case timelineCh <- u:
-				default:
-				}
-			},
-		},
-		Agents:           &agentControl{cfgDir: c.cfgDir, rt: rt},
-		Goals:            newGoalControl(ag, goalLoopCeilingFromConfig(c.lc)),
+		Research:         researchCtl, // the same controls the dashboard drives
+		Agents:           agentCtl,
+		Goals:            goalCtl,
 		Review:           newReviewControl(ag, rt),
 		Reconnect:        reconnectMon,
 		TeamEvents:       teamCh,
