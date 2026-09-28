@@ -1,13 +1,23 @@
 package dashboard
 
 // agents.go is the "Helpers" page (TEN-209): the named specialists the agent
-// hands work to, each with its own model and instructions. The foundation
-// lays the contract; WP-agents builds the page on it.
+// hands work to, each with its own model and instructions. It mirrors the
+// terminal app's /agents through the same control: list, add, change the
+// model (the instructions stay), set or clear the instructions, rename,
+// remove, and Reset a customized built-in. Built-ins can be edited but never
+// renamed or removed. Plain form posts answered with a redirect; no stream.
 
-import "net/http"
+import (
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
 
 // AgentControl is the named-helper surface. cmd/tenant adapts the terminal
 // app's agentControl (dashAgents); nil renders the "isn't available" state.
+// Errors worth showing come back as PlainError (D21).
 type AgentControl interface {
 	Agents() ([]AgentProfileView, error)
 	Soul(name string) (string, error) // full instructions, for the edit panel only
@@ -15,7 +25,8 @@ type AgentControl interface {
 	SetModel(name, provider, model string) error // instructions and description kept
 	SetSoul(name, soul string) error             // "" clears
 	Rename(oldName, newName string) error
-	Remove(name string) error
+	Remove(name string) error // a customized built-in goes back to its shipped settings
+	RestartNote() string      // how to restart Tenant here (a Windows service); "" = nothing to add
 }
 
 // AgentProfileView is one helper, render-ready.
@@ -33,19 +44,192 @@ func (s *Server) SetAgents(c AgentControl) { s.agents = c }
 
 func (s *Server) mountAgentsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents", s.handleAgentsPage)
+	mux.HandleFunc("POST /agents/add", s.handleAgentAdd)
+	mux.HandleFunc("POST /agents/model", s.handleAgentModel)
+	mux.HandleFunc("POST /agents/rename", s.handleAgentRename)
+	// Clearing the instructions, removing a helper and resetting a built-in
+	// each lose something the page can't bring back (DESIGN.md §5 (a)).
+	mux.HandleFunc("POST /agents/soul", needConfirm(func(r *http.Request) bool {
+		return strings.TrimSpace(r.FormValue("soul")) == ""
+	}, s.handleAgentSoul))
+	mux.HandleFunc("POST /agents/remove", needConfirm(nil, s.handleAgentRemove))
+	mux.HandleFunc("POST /agents/reset", needConfirm(nil, s.handleAgentReset))
 }
 
 type agentsPageData struct {
 	layoutData
 	Configured bool
+	Agents     []AgentProfileView
+	Providers  []ModelView       // the Model page's providers, which a helper can use
+	Edit       *AgentProfileView // ?edit=: the helper whose panel is open
+	EditSoul   string
+	LoadErr    string
 	Msg, Err   string
 }
 
 func (s *Server) handleAgentsPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, s.tmpl.agents, agentsPageData{
+	q := r.URL.Query()
+	d := agentsPageData{
 		layoutData: layoutData{Title: "Helpers", Page: "agents"},
 		Configured: s.agents != nil,
-		Msg:        r.URL.Query().Get("msg"),
-		Err:        r.URL.Query().Get("err"),
-	})
+		Msg:        q.Get("msg"),
+		Err:        q.Get("err"),
+	}
+	if s.agents == nil {
+		s.render(w, s.tmpl.agents, d)
+		return
+	}
+	if s.models != nil {
+		d.Providers = s.models.Models()
+	}
+	agents, err := s.agents.Agents()
+	if err != nil {
+		d.LoadErr = s.flashFor(r.Context(), "helpers list", err, "Couldn't read your helpers. Reload the page to try again.")
+	}
+	d.Agents = agents
+	if i := slices.IndexFunc(agents, func(a AgentProfileView) bool { return a.Name == q.Get("edit") }); i >= 0 {
+		// Without its current instructions the editor would offer an empty
+		// box, and saving that would lose them: no panel instead.
+		if soul, err := s.agents.Soul(agents[i].Name); err != nil {
+			d.LoadErr = s.flashFor(r.Context(), "helper instructions", err, "Couldn't read this helper's instructions. Reload the page to try again.")
+		} else {
+			d.Edit, d.EditSoul = &agents[i], soul
+		}
+	}
+	s.render(w, s.tmpl.agents, d)
+}
+
+// agentsForm reads a helper form's trimmed name, or answers the post itself:
+// back to the page when the control is nil or the name is missing.
+func (s *Server) agentsForm(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name := strings.TrimSpace(r.FormValue("name"))
+	if s.agents == nil || name == "" {
+		http.Redirect(w, r, "/agents", http.StatusSeeOther)
+		return "", false
+	}
+	return name, true
+}
+
+// editPage is the helper's own panel, where model and instruction saves land.
+func editPage(name string) string { return "/agents?" + url.Values{"edit": {name}}.Encode() }
+
+// learnsOnRestart is the note after an add or a rename: the main agent's list
+// of helpers is written at launch (the terminal app behaves the same).
+func (s *Server) learnsOnRestart(name string) string {
+	msg := "Your main agent learns about new and renamed helpers when Tenant restarts; until then, ask for " + name + " by name in chat."
+	if how := s.agents.RestartNote(); how != "" {
+		msg += " " + how
+	}
+	return msg
+}
+
+func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.agentsForm(w, r)
+	if !ok {
+		return
+	}
+	provider := strings.TrimSpace(r.FormValue("provider"))
+	desc := strings.TrimSpace(r.FormValue("description"))
+	switch {
+	case provider == "":
+		redirectFlash(w, r, "/agents", "", "Pick a model provider for the helper.")
+		return
+	case utf8.RuneCountInString(name) > 64:
+		redirectFlash(w, r, "/agents", "", "Keep the name to 64 characters or fewer.")
+		return
+	case utf8.RuneCountInString(desc) > 500:
+		redirectFlash(w, r, "/agents", "", "Keep what it's for to 500 characters or fewer.")
+		return
+	}
+	if err := s.agents.Add(name, provider, strings.TrimSpace(r.FormValue("model")), desc); err != nil {
+		redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper add", err, "Couldn't add that helper."))
+		return
+	}
+	redirectFlash(w, r, "/agents", "Added "+name+". "+s.learnsOnRestart(name), "")
+}
+
+func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.agentsForm(w, r)
+	if !ok {
+		return
+	}
+	provider := strings.TrimSpace(r.FormValue("provider"))
+	model := strings.TrimSpace(r.FormValue("model"))
+	if provider == "" {
+		redirectFlash(w, r, editPage(name), "", "Pick a model provider for the helper.")
+		return
+	}
+	if err := s.agents.SetModel(name, provider, model); err != nil {
+		redirectFlash(w, r, editPage(name), "", s.flashFor(r.Context(), "helper model", err, "Couldn't change that helper's model."))
+		return
+	}
+	uses := provider
+	if model != "" {
+		uses += " · " + model
+	}
+	redirectFlash(w, r, editPage(name), name+" will use "+uses+" from its next task.", "")
+}
+
+func (s *Server) handleAgentSoul(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.agentsForm(w, r)
+	if !ok {
+		return
+	}
+	soul := r.FormValue("soul")
+	if err := s.agents.SetSoul(name, soul); err != nil {
+		redirectFlash(w, r, editPage(name), "", s.flashFor(r.Context(), "helper instructions", err, "Couldn't save the instructions."))
+		return
+	}
+	msg := "Saved " + name + "'s instructions."
+	if strings.TrimSpace(soul) == "" {
+		msg = "Cleared " + name + "'s instructions."
+	}
+	redirectFlash(w, r, editPage(name), msg, "")
+}
+
+func (s *Server) handleAgentRename(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.agentsForm(w, r)
+	if !ok {
+		return
+	}
+	to := strings.TrimSpace(r.FormValue("new_name"))
+	switch {
+	case to == "":
+		redirectFlash(w, r, editPage(name), "", "Type the helper's new name.")
+		return
+	case utf8.RuneCountInString(to) > 64:
+		redirectFlash(w, r, editPage(name), "", "Keep the name to 64 characters or fewer.")
+		return
+	}
+	if err := s.agents.Rename(name, to); err != nil {
+		redirectFlash(w, r, editPage(name), "", s.flashFor(r.Context(), "helper rename", err, "Couldn't rename that helper."))
+		return
+	}
+	redirectFlash(w, r, "/agents", "Renamed "+name+" to "+to+". "+s.learnsOnRestart(to), "")
+}
+
+func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.agentsForm(w, r)
+	if !ok {
+		return
+	}
+	if err := s.agents.Remove(name); err != nil {
+		redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper remove", err, "Couldn't remove that helper."))
+		return
+	}
+	redirectFlash(w, r, "/agents", "Removed "+name+".", "")
+}
+
+// handleAgentReset undoes the changes to a customized built-in: the control's
+// Remove deletes the override, so the shipped helper is back.
+func (s *Server) handleAgentReset(w http.ResponseWriter, r *http.Request) {
+	name, ok := s.agentsForm(w, r)
+	if !ok {
+		return
+	}
+	if err := s.agents.Remove(name); err != nil {
+		redirectFlash(w, r, "/agents", "", s.flashFor(r.Context(), "helper reset", err, "Couldn't reset that helper."))
+		return
+	}
+	redirectFlash(w, r, "/agents", name+" is back to its built-in model and instructions.", "")
 }

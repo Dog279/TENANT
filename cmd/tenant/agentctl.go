@@ -49,7 +49,9 @@ func (ac *agentControl) List() ([]tui.AgentInfo, error) {
 				modelLabel = pk.DefaultModel
 			}
 		}
-		if ap.Builtin {
+		// No pinned provider = the primary model (team.go routerForProfile):
+		// a built-in, or a built-in whose instructions were customized.
+		if ap.Provider == "" {
 			modelLabel = "(your model)"
 		}
 		out = append(out, tui.AgentInfo{
@@ -59,9 +61,9 @@ func (ac *agentControl) List() ([]tui.AgentInfo, error) {
 			Description: ap.Description,
 			HasSoul:     strings.TrimSpace(ap.Soul) != "",
 			Builtin:     ap.Builtin,
-			// Built-ins are always valid (they inherit the primary); else the
-			// provider must exist and a model must resolve.
-			Valid: ap.Builtin || (pc != nil && modelLabel != ""),
+			// A profile without a provider inherits the primary, so it's
+			// always valid; else the provider must exist and a model resolve.
+			Valid: ap.Provider == "" || (pc != nil && modelLabel != ""),
 		})
 	}
 	return out, nil
