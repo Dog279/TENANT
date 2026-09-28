@@ -28,7 +28,7 @@
     </form>
     {{else if .Removing}}
     <div class="soul-row confirm">
-      <div class="soul-text">{{.Text}}</div>
+      <div class="soul-text">{{visibleText .Text}}</div>
       <div class="confirm-msg dim">Remove this item? The agent will no longer use it. This can't be undone here.</div>
       <div class="soul-edit-actions">
         <form class="inline" method="POST" action="{{$.EditAction}}">
@@ -42,7 +42,7 @@
     </div>
     {{else}}
     <div class="soul-row">
-      <div class="soul-text">{{.Text}}</div>
+      <div class="soul-text">{{visibleText .Text}}</div>
       <span class="sp"></span>
       <a class="linkbtn" href="{{.EditHref}}">Edit</a>
       <a class="linkbtn" href="{{.RemoveHref}}">Remove</a>

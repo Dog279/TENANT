@@ -69,7 +69,7 @@
 {{range .Facts}}
 <div class="fact{{if .Pinned}} pinned{{end}}">
   <div class="fact-top">
-    <div class="fact-text">{{.Text}}</div>
+    <div class="fact-text">{{visibleText .Text}}</div>
     <span class="fact-conf dim">{{.Conf}}</span>
   </div>
   <div class="fact-actions">
@@ -103,8 +103,8 @@
         {{if .Missing}}<div class="dim">Source unavailable: that conversation has been forgotten.</div>
         {{else}}
         {{if .When}}<div class="ep-when dim">{{.When}}</div>{{end}}
-        {{if .Prompt}}<div class="ep-line"><span class="dim">you:</span> {{.Prompt}}</div>{{end}}
-        {{if .Response}}<div class="ep-line"><span class="dim">tenant:</span> {{.Response}}</div>{{end}}
+        {{if .Prompt}}<div class="ep-line"><span class="dim">you:</span> {{visibleText .Prompt}}</div>{{end}}
+        {{if .Response}}<div class="ep-line"><span class="dim">tenant:</span> {{visibleText .Response}}</div>{{end}}
         {{end}}
       </div>
       {{end}}

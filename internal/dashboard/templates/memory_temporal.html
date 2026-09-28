@@ -29,7 +29,7 @@
     <tbody>
     {{range .Rows}}
     <tr>
-      <td>{{.Text}}</td>
+      <td>{{visibleText .Text}}</td>
       <td><span class="lg {{.StatusClass}}">{{.Status}}</span></td>
       <td>{{.Confidence}}</td>
       <td>{{.Effective}}</td>

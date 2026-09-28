@@ -78,7 +78,9 @@ func (s *Server) mountIntegrationsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /integrations/{id}/disconnect", needConfirm(nil, s.handleIntegrationDisconnectForm))
 	// The repo travels as a form value, not a path param: an owner/name slug
 	// contains a slash and would not match a {repo} segment.
-	mux.HandleFunc("POST /integrations/github/repos/add", s.handleGitHubRepoAddForm)
+	// A new repository starts watch-only; adding one writable confirms, like
+	// Allow changes does.
+	mux.HandleFunc("POST /integrations/github/repos/add", needConfirm(confirmUnless("mode", "", "read"), s.handleGitHubRepoAddForm))
 	// write lets the agent change a repository: it confirms; read doesn't.
 	mux.HandleFunc("POST /integrations/github/repos/mode", needConfirm(confirmUnless("mode", "read"), s.handleGitHubRepoModeForm))
 	mux.HandleFunc("POST /integrations/github/repos/remove", s.handleGitHubRepoRemoveForm)
@@ -146,6 +148,12 @@ func (s *Server) handleGitHubRepoAddForm(w http.ResponseWriter, r *http.Request)
 	repo := strings.TrimSpace(r.FormValue("repo"))
 	if repo == "" {
 		redirectFlash(w, r, "/integrations", "", "Enter a repository as owner/name.")
+		return
+	}
+	// A ":write" (or ":w", ":rw") suffix would make it writable past the
+	// confirm step; an owner/name never contains a colon.
+	if strings.Contains(repo, ":") {
+		redirectFlash(w, r, "/integrations", "", "Enter the repository as owner/name. It starts watch-only; choose Allow changes on its row to let your agent change it.")
 		return
 	}
 	write := modeWrite(r.FormValue("mode"))

@@ -10,7 +10,7 @@
 <div class="postbar"><span class="dim">Latest summary · {{.MsgCount}} messages · {{.Range}} · from: {{.Origin}}</span></div>
 <div class="card">
   <div class="pad"><strong>Summary</strong> <span class="dim">: what your agent sees now in place of the messages below</span>
-    <pre class="recipe">{{.Summary}}</pre>
+    <pre class="recipe">{{visibleText .Summary}}</pre>
   </div>
 </div>
 <div class="card">
@@ -22,7 +22,7 @@
   {{range .Rows}}
   <div class="fact">
     <div class="fact-top">
-      <div class="fact-text"><span class="dim">[{{.Role}}]</span> {{.Content}}</div>
+      <div class="fact-text"><span class="dim">[{{.Role}}]</span> {{visibleText .Content}}</div>
       <span class="fact-conf dim">{{.When}}</span>
     </div>
   </div>

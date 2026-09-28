@@ -57,7 +57,7 @@
 
 <div class="card">
   <div class="card-head">Connected services</div>
-  {{if .Plugins}}<div class="chips">{{range .Plugins}}<span class="chip">{{.}}</span>{{end}}</div>
+  {{if .Plugins}}<div class="chips">{{range .Plugins}}<span class="chip">{{visibleText .}}</span>{{end}}</div>
   {{else}}<div class="empty">No services connected yet. Connect one on the <a href="/integrations">Integrations</a> page.</div>{{end}}
 </div>
 {{end}}

@@ -12,7 +12,7 @@
     <div>
       <div class="nm">{{.Label}} {{if .NeedsReauth}}<span class="act-errtag">needs signing in again{{if .AuthSince}} since {{.AuthSince}}{{end}}</span>{{else if not .Enabled}}<span class="dim">(disconnected)</span>{{end}}</div>
       <div class="dim">{{.URL}} · {{.ToolCount}} tool{{if ne .ToolCount 1}}s{{end}} · {{if eq .Trust "allow"}}uses its tools without asking{{else if eq .Trust "deny"}}blocked{{else}}asks you first{{end}}</div>
-      {{if .NeedsReauth}}<div class="dim mt">Its sign-in expired and couldn't be renewed{{if .AuthErr}} ({{.AuthErr}}){{end}}. Its tools fail until you reconnect. Reconnect opens a sign-in window <strong>on the computer running Tenant</strong>.</div>{{end}}
+      {{if .NeedsReauth}}<div class="dim mt">Its sign-in expired and couldn't be renewed. The Logs page has the reason. Its tools fail until you reconnect. Reconnect opens a sign-in window <strong>on the computer running Tenant</strong>.</div>{{end}}
     </div>
     <div class="cronactions">
       {{if ne .Trust "ask"}}{{if .Trust}}<form method="POST" action="/mcp/trust" class="inline">

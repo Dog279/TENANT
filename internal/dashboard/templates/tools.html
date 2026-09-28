@@ -40,7 +40,7 @@
 {{range .Groups}}
 <div class="tgroup">
   <div class="ghead">
-    <span class="gname">{{.Label}}</span>
+    <span class="gname">{{visibleText .Label}}</span>
     <span class="sp"></span>
     {{if .Plugin}}<form method="POST" action="/plugins/{{.Plugin}}/toggle" class="inline">
       <button name="enabled" value="{{if .AllOn}}false{{else}}true{{end}}" class="btn sm">{{if .AllOn}}Turn off all{{else}}Turn on all{{end}}</button>

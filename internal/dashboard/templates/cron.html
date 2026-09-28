@@ -49,7 +49,7 @@
 {{range .Jobs}}
 <div class="card cronjob" id="cron-{{.ID}}">
   <div class="ghead">
-    <span class="nm">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</span>
+    <span class="nm">{{if .Name}}{{visibleText .Name}}{{else}}{{.ID}}{{end}}</span>
     {{if .Enabled}}<span class="on-tag">on</span>{{else}}<span class="dim">off</span>{{end}}
     <span class="sp"></span>
     <code class="spec">{{.Spec}}</code>
@@ -58,7 +58,7 @@
     {{if .TZ}}<span class="dim">{{.TZ}}</span>{{end}}
   </div>
   <div class="dim">id {{.ID}} · next {{if .NextRun}}{{.NextRun}}{{else}}—{{end}}{{if .LastStatus}} · last {{.LastStatus}}{{if .LastRun}} at {{.LastRun}}{{end}}{{end}}</div>
-  <div class="prompt">{{.Prompt}}</div>
+  <div class="prompt">{{visibleText .Prompt}}</div>
   <div class="cronactions">
     <form method="POST" action="/cron/{{.ID}}/run" class="inline">
       <button type="submit" class="btn sm">Run now</button>

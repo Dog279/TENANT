@@ -47,7 +47,6 @@ func (s *Server) handleMemoryFactDeleteForm(w http.ResponseWriter, r *http.Reque
 	q := strings.TrimSpace(r.FormValue("q"))
 	if s.mem != nil {
 		if err := s.mem.DeleteFact(id); err != nil {
-			ActionFailed.Log(r.Context(), "action", "fact delete", "target", id, "err", err)
 			http.Redirect(w, r, urlWith(memFactsURL, "q", q, "err",
 				s.flashFor(r.Context(), "fact delete", err, "Couldn't remove that fact.")), http.StatusSeeOther)
 			return
@@ -70,7 +69,6 @@ func (s *Server) handleMemoryFactRestoreForm(w http.ResponseWriter, r *http.Requ
 	back := memReturn(r, memFactsURL)
 	if s.mem != nil {
 		if err := s.mem.RestoreFact(id); err != nil {
-			ActionFailed.Log(r.Context(), "action", "fact restore", "target", id, "err", err)
 			http.Redirect(w, r, addErr(back, s.flashFor(r.Context(), "fact restore", err, "Couldn't restore that fact.")), http.StatusSeeOther)
 			return
 		}
@@ -92,7 +90,6 @@ func (s *Server) handleMemoryResolveForm(w http.ResponseWriter, r *http.Request)
 	keep := atoi64(r.FormValue("keep_id"))
 	discard := atoi64(r.FormValue("discard_id"))
 	if err := s.mem.ResolveFacts(keep, discard); err != nil {
-		ActionFailed.Log(r.Context(), "action", "fact resolve", "target", keep, "discard", discard, "err", err)
 		http.Redirect(w, r, urlWith(memFactsURL, "q", q, "err",
 			s.flashFor(r.Context(), "fact resolve", err, "Couldn't resolve that.")), http.StatusSeeOther)
 		return

@@ -33,9 +33,9 @@
   {{range .Untrusted}}
   <div class="soul-row" id="skill-{{.Name}}">
     <div>
-      <div class="nm">{{visibleText .Name}} <span class="dim">({{if eq .Origin "agent"}}saved by your agent{{else if eq .Origin "import"}}imported{{if .Source}} from {{.Source}}{{end}}{{else if .Origin}}{{.Origin}}{{else}}changed{{end}})</span></div>
+      <div class="nm">{{visibleText .Name}} <span class="dim">({{if eq .Origin "agent"}}saved by your agent{{else if eq .Origin "import"}}imported{{if .Source}} from {{visibleText .Source}}{{end}}{{else if .Origin}}{{visibleText .Origin}}{{else}}changed{{end}})</span></div>
       <div class="dim">{{visibleText .Description}}</div>
-      {{if .RequiresTools}}<div class="dim">Expects tools: {{range $i, $t := .RequiresTools}}{{if $i}}, {{end}}{{$t}}{{end}}. Used only where they're on; this approves nothing.</div>{{end}}
+      {{if .RequiresTools}}<div class="dim">Expects tools: {{range $i, $t := .RequiresTools}}{{if $i}}, {{end}}{{visibleText $t}}{{end}}. Used only where they're on; this approves nothing.</div>{{end}}
       <details><summary class="dim">Instructions</summary><pre class="recipe">{{visibleText .Recipe}}</pre></details>
     </div>
     <div class="cronactions">

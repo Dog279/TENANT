@@ -1,5 +1,5 @@
 {{define "toolrow"}}<div class="trow" id="tool-{{.Name}}">
-  <span class="nm">{{.Label}}</span>
+  <span class="nm">{{visibleText .Label}}</span>
   {{if .Gated}}<span class="risk">can change things</span>{{end}}
   <span class="sp"></span>
   <button type="button" class="btn sm{{if .Enabled}} on{{end}}"

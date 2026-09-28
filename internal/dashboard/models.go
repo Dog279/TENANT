@@ -82,8 +82,15 @@ func (s *Server) handleModelUseForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
-	if _, err := s.models.Use(name); err != nil {
+	status, err := s.models.Use(name)
+	if err != nil {
 		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model use", err, "Couldn't switch to that model."))
+		return
+	}
+	// A "⚠" status means the switch happened but the model can't answer yet
+	// (its warning is logged as SwapUnready).
+	if strings.HasPrefix(status, "⚠") {
+		redirectFlash(w, r, "/models", "", "Switched to "+name+", but it isn't ready to answer. The Logs page has the reason.")
 		return
 	}
 	redirectFlash(w, r, "/models", "Every answer now comes from "+name+".", "")

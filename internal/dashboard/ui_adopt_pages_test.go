@@ -15,6 +15,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"tenant/internal/agent"
+	"tenant/internal/logs/logapi"
 )
 
 // adoptedConfirms is plan §2.1's list for the existing routes: the form a
@@ -261,11 +264,12 @@ func TestExistingPages_States(t *testing.T) {
 		return s
 	}
 	const (
-		off     = `class="card state-off"`
-		empty   = `class="empty"`
-		errBar  = `<div class="banner err" role="alert">Nope.</div>`
-		okBar   = `<div class="banner ok" role="status">Saved.</div>`
-		busyBar = `<div id="ui-status" class="status-strip"></div>`
+		off    = `class="card state-off"`
+		empty  = `class="empty"`
+		errBar = `<div class="banner err" role="alert">Nope.</div>`
+		okBar  = `<div class="banner ok" role="status">Saved.</div>`
+		// The strip starts idle and fills from /ui/status (busy, below).
+		statusWrap = `data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')"`
 	)
 	for _, c := range []struct {
 		route string
@@ -280,6 +284,7 @@ func TestExistingPages_States(t *testing.T) {
 		{route: "/memory", off: true},
 		{route: "/memory/soul", off: true, empty: func(*Server) {}, errOK: true},
 		{route: "/memory/facts", off: true, empty: func(*Server) {}, errOK: true},
+		{route: "/memory/facts/1", off: true, errOK: true},
 		{route: "/memory/facts/removed", off: true, empty: func(*Server) {}},
 		{route: "/memory/facts/temporal", off: true, empty: func(*Server) {}},
 		{route: "/memory/provenance", off: true, empty: func(*Server) {}},
@@ -296,7 +301,7 @@ func TestExistingPages_States(t *testing.T) {
 		nilServer := New(Config{}, nil, nil, nil, nil, nil)
 		if body := get(t, nilServer, c.route).Body.String(); c.off != strings.Contains(body, off) {
 			t.Errorf("%s with a nil control: ui-off shown = %v, want %v", c.route, !c.off, c.off)
-		} else if !strings.Contains(body, busyBar) {
+		} else if !strings.Contains(body, statusWrap) {
 			t.Errorf("%s lacks the status strip", c.route)
 		}
 		if c.empty != nil {
@@ -306,14 +311,24 @@ func TestExistingPages_States(t *testing.T) {
 		}
 		if c.flash || c.errOK {
 			s := withEmpty(c.empty)
-			if c.route == "/logs" {
+			switch c.route {
+			case "/logs":
 				s = harnessServer(t, Config{}, populated, nil)
+			case "/memory/facts/1":
+				s = New(Config{}, nil, nil, &inspFake{detail: sampleDetail()}, nil, nil)
 			}
 			body := get(t, s, c.route+"?msg=Saved.&err=Nope.").Body.String()
 			if !strings.Contains(body, errBar) || (c.flash && !strings.Contains(body, okBar)) {
 				t.Errorf("%s: the flash doesn't show with its roles", c.route)
 			}
 		}
+	}
+
+	// busy: the strip every page loads says what the agent is busy with.
+	gate := newBlockRunner()
+	gate.gate, gate.queue = true, agent.TurnQueueStatus{ActiveSource: "cron"}
+	if got := uiStatus(t, New(Config{}, gate, nil, nil, nil, nil)); !strings.Contains(got, "Your agent is busy with a scheduled job or an alert") {
+		t.Errorf("the busy strip: %s", got)
 	}
 
 	// loading: a quality check in progress, and the Logs count.
@@ -335,10 +350,12 @@ func TestExistingPages_States(t *testing.T) {
 // No control's own error text reaches any page (D21), even when every read
 // that can fail does.
 func TestRendered_NoRawControlErrors(t *testing.T) {
-	for route, page := range renderAllPages(t, failing) {
-		for _, raw := range []string{rawStoreClosed, rawProviderErr, rawNoGoal, rawGoalCleared, rawNoHistory, rawSavedToWiki} {
-			if strings.Contains(page, raw) {
-				t.Errorf("%s shows the raw error %q", route, raw)
+	for _, mode := range []fakeMode{populated, failing} {
+		for route, page := range renderAllPages(t, mode) {
+			for _, raw := range []string{rawStoreClosed, rawProviderErr, rawNoGoal, rawGoalCleared, rawNoHistory, rawSavedToWiki, "invalid_grant"} {
+				if strings.Contains(page, raw) {
+					t.Errorf("%s shows the raw error %q", route, raw)
+				}
 			}
 		}
 	}
@@ -380,5 +397,80 @@ func TestAdopt_PlainNamesAndSafeActions(t *testing.T) {
 		if got := groupLabel(in); got != want {
 			t.Errorf("groupLabel(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A new repository can't be made writable past the confirm step, whether
+// by mode=write or a ":write" suffix the control would read as write.
+func TestAdopt_GitHubAddWriteConfirms(t *testing.T) {
+	gh := &fakeGitHubRepos{}
+	s := ghServer(gh)
+	if rec := ghPost(t, s, "/integrations/github/repos/add", "repo=a/b&mode=write"); rec.Code != http.StatusPreconditionRequired {
+		t.Errorf("add with mode=write and no confirm = %d, want 428", rec.Code)
+	}
+	for _, repo := range []string{"a/b:w", "a/b:write", "a/b:RW", "a/b:w&confirm=yes"} {
+		loc, _ := url.QueryUnescape(ghPost(t, s, "/integrations/github/repos/add", "repo="+strings.Replace(url.QueryEscape(repo), "%26confirm%3Dyes", "&confirm=yes", 1)).Header().Get("Location"))
+		if !strings.Contains(loc, "err=Enter the repository as owner/name.") {
+			t.Errorf("add %q → %q, want it refused", repo, loc)
+		}
+	}
+	if len(gh.addCalls) != 0 {
+		t.Fatalf("Add ran without the confirm step: %v", gh.addCalls)
+	}
+	ghPost(t, s, "/integrations/github/repos/add", "repo=a/b&mode=write&confirm=yes")
+	ghPost(t, s, "/integrations/github/repos/add", "repo=c/d")
+	if strings.Join(gh.addCalls, " ") != "a/b:write c/d:read" {
+		t.Errorf("Add calls = %v, want a/b writable (confirmed) and c/d watch-only", gh.addCalls)
+	}
+}
+
+// Removing the last iMessage contact cuts everyone off, so the server
+// confirms it; removing one of several doesn't.
+func TestAdopt_LastIMessageContactConfirms(t *testing.T) {
+	fa := &fakeAccess{view: AccessView{IMessageAvailable: true, Handles: []string{"a@b.c"}, SingleHandle: true}}
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetAccess(fa)
+	if rec := submitForm(t, s, "/access/imessage/deny", "handle=a@b.c"); rec.Code != http.StatusPreconditionRequired || len(fa.calls) != 0 {
+		t.Errorf("removing the last contact without confirm = %d, calls %v", rec.Code, fa.calls)
+	}
+	submitForm(t, s, "/access/imessage/deny", "handle=a@b.c&confirm=yes")
+	fa.view.SingleHandle = false
+	submitForm(t, s, "/access/imessage/deny", "handle=a@b.c")
+	if strings.Join(fa.calls, " ") != "deny=a@b.c deny=a@b.c" {
+		t.Errorf("calls = %v", fa.calls)
+	}
+}
+
+// A switch to a model that can't answer yet says so, plainly.
+func TestAdopt_ModelSwitchWarns(t *testing.T) {
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	s.SetModels(&warnModelCtl{})
+	loc, _ := url.QueryUnescape(submitForm(t, s, "/models/use", "name=m&confirm=yes").Header().Get("Location"))
+	if !strings.Contains(loc, "err=Switched to m, but it isn't ready to answer.") || strings.Contains(loc, "UNREACHABLE") {
+		t.Errorf("switch to an unreachable model → %q", loc)
+	}
+}
+
+type warnModelCtl struct{ fakeModelCtl }
+
+func (*warnModelCtl) Use(string) (string, error) {
+	return `⚠ switched to "m" but the endpoint is UNREACHABLE at http://x (refused)`, nil
+}
+
+// The Logs page's forms show the log book's own refusals as they are, and
+// a fixed message for anything else (D21).
+func TestAdopt_LogsChangeErrorsArePlain(t *testing.T) {
+	s := New(Config{}, nil, nil, nil, nil, nil)
+	back := func(err error) string {
+		rec := httptest.NewRecorder()
+		s.logsBack(rec, httptest.NewRequest(http.MethodPost, "/logs/log/cron/clear", nil), url.Values{}, "", err)
+		u, _ := url.Parse(rec.Header().Get("Location"))
+		return u.Query().Get("err")
+	}
+	if got := back(&logapi.Error{Status: http.StatusForbidden, Msg: "the Security log is never cleared"}); got != "the Security log is never cleared" {
+		t.Errorf("a refusal → %q", got)
+	}
+	if got := back(errors.New(rawStoreClosed)); strings.Contains(got, rawStoreClosed) || !strings.HasPrefix(got, "Couldn't make that change.") {
+		t.Errorf("a store error → %q", got)
 	}
 }

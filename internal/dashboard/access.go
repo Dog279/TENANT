@@ -86,12 +86,14 @@ func (s *Server) mountAccessSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /access", s.handleAccessPage)
 	// Letting someone in, cutting everyone off, and loosening what a channel
 	// may do all confirm (TEN-211); turning things off and asking or
-	// blocking don't. Removing one person is the page's own step.
+	// blocking don't. Removing one person confirms only when they're the
+	// last, which cuts everyone off.
 	on := confirmUnless("on", "", "false", "off")
 	loosens := confirmUnless("mode", "ask", "deny")
+	lastHandle := func(*http.Request) bool { return s.access != nil && s.access.View().SingleHandle }
 	// iMessage
 	mux.HandleFunc("POST /access/imessage/allow", needConfirm(nil, s.handleIMessageAllowForm))
-	mux.HandleFunc("POST /access/imessage/deny", s.handleIMessageDenyForm)
+	mux.HandleFunc("POST /access/imessage/deny", needConfirm(lastHandle, s.handleIMessageDenyForm))
 	mux.HandleFunc("POST /access/imessage/clear", needConfirm(nil, s.handleIMessageClearForm))
 	mux.HandleFunc("POST /access/imessage/responder", needConfirm(on, s.handleIMessageResponderForm))
 	mux.HandleFunc("POST /access/imessage/permission", needConfirm(loosens, s.handleIMessagePermissionForm))
@@ -135,7 +137,7 @@ func (s *Server) handleIMessageAllowForm(w http.ResponseWriter, r *http.Request)
 	}
 	norm, added, err := s.access.IMessageAllow(handle)
 	if err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "imessage allow", err, "Couldn't allow "+handle+". Enter a phone number or an email address."))
+		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "imessage allow", err, "Couldn't save that. The Logs page has the reason."))
 		return
 	}
 	if !added {

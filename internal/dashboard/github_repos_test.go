@@ -130,7 +130,7 @@ func TestGitHubRepos_AddAndRemove(t *testing.T) {
 	f := &fakeGitHubRepos{}
 	s := ghServer(f)
 
-	if rec := ghPost(t, s, "/integrations/github/repos/add", "repo=Dog279/nebula&mode=write"); rec.Code != http.StatusSeeOther {
+	if rec := ghPost(t, s, "/integrations/github/repos/add", "repo=Dog279/nebula&mode=write&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Fatalf("add: status = %d", rec.Code)
 	}
 	if len(f.addCalls) != 1 || f.addCalls[0] != "Dog279/nebula:write" {
