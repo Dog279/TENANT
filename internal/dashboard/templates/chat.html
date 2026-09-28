@@ -1,5 +1,8 @@
 {{define "content"}}
 <div class="chat" id="chat-log" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"></div>
+{{/* The approval queue (TEN-207): /events fills it, so a message that
+     pauses for your OK shows its buttons here, without leaving the page. */}}
+<div class="chat-q"><div id="approval-queue"></div><div id="approval-note"></div></div>
 {{/* requestCancellation off: a second tap must not throw away the answer
      (bubble, cleared box) of a message that already started. */}}
 <form class="composer" data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})">

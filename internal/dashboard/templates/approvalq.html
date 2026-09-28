@@ -1,1 +1,43 @@
-{{define "approvalq"}}<div id="approval-queue"></div><div id="approval-note"></div>{{end}}
+{{/* approvalq.html: the approval queue (TEN-207), on Approvals & safety and
+     above the Chat composer. /events patches "approval-queue" whole; a
+     decision patches "approvalq", the queue and its #approval-note. Buttons
+     are Datastar posts (a redirect would wipe the Chat transcript), shown
+     only for IDs safe in an expression; a step that must stay open across a
+     re-render carries data-preserve-attr="open". */}}
+{{define "approvalq"}}{{template "approval-queue" .}}<div id="approval-note">{{template "ui-flash" .}}</div>{{end}}
+
+{{define "approval-queue"}}<div id="approval-queue">
+{{- if not .Configured}}<div class="q-empty">{{template "ui-off" "Approvals aren't available on this Tenant."}}</div>
+{{- else}}
+{{- range .Items}}
+<div class="q-item" id="q-{{.ID}}">
+  <b>{{.Title}}</b>
+  <div class="dim">{{visibleText .Action}}{{if .From}} · from {{.From}}{{end}} · {{.Waited}}</div>
+  <pre class="q-detail">{{visibleText .Detail}}</pre>
+  {{- if gt .Lines 8}}
+  <p class="q-long">This request is {{.Lines}} lines long. Read all of it before you allow it.</p>
+  {{- else if gt (len .Detail) 400}}
+  <p class="q-long">This request is long. Read all of it before you allow it.</p>
+  {{- end}}
+  {{- if .Actionable}}
+  <div class="q-actions">
+    <button type="button" class="btn" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "deny"}}')">Deny</button>
+    {{- if .Pairing}}
+    <details class="confirm-step go" data-preserve-attr="open"><summary class="btn on"><span class="c-open">Allow once</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Allow once"><p>Only allow if the person pairing told you the same PIN that's shown in this request. They'll be able to ask your agent questions.</p><button type="button" class="btn on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve"}}')">Yes, allow once</button></div></details>
+    {{- else}}
+    <button type="button" class="btn on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve"}}')">Allow once</button>
+    {{- end}}
+  </div>
+  {{- if .Standing}}
+  <details class="confirm-step go q-session" data-preserve-attr="open"><summary class="btn sm"><span class="c-open">Allow for the rest of this session</span><span class="c-cancel">Cancel</span></summary><div class="confirm-box" role="group" aria-label="Allow for the rest of this session"><p>Your agent can {{.Can}} without asking again until you turn it off on this page or Tenant restarts.</p><button type="button" class="btn sm on" data-indicator:_sending data-attr:disabled="$_sending" data-on:click="@post('{{.DecideURL "approve_session"}}')">Yes, allow for this session</button></div></details>
+  {{- end}}
+  {{- end}}
+</div>
+{{- else}}
+<div class="q-empty">{{template "ui-empty" "Nothing is waiting for you. When your agent needs your OK, it appears here right away."}}</div>
+{{- end}}
+{{- if .Relay}}
+<p class="dim q-discord">Requests raised in a Discord conversation are answered with the buttons on the Discord card.</p>
+{{- end}}
+{{- end}}
+</div>{{end}}
