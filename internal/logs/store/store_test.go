@@ -325,10 +325,12 @@ func TestSubscribersWake(t *testing.T) {
 }
 
 // Exactly one process holds a lease; renewing keeps it; once it expires
-// another takes over.
+// another takes over. The TTL outlasts any commit (a short one let a loser
+// starved in the busy handler take over, as on slow Windows disks), and the
+// expiry is written, not slept for.
 func TestLease(t *testing.T) {
 	path := tempDB(t)
-	const ttl = 300 * time.Millisecond
+	const ttl = time.Minute
 	stores := make([]*Store, 6)
 	for i := range stores {
 		stores[i] = open(t, path, "0000000000000000000000000000000"+string(rune('a'+i)))
@@ -369,7 +371,7 @@ func TestLease(t *testing.T) {
 	if ok, _ := next.TryLease(ctx, "other", ttl); !ok {
 		t.Error("leases are not independent by name")
 	}
-	time.Sleep(ttl + 50*time.Millisecond)
+	run(t, next, "UPDATE leases SET expires_ns = 1 WHERE name = 'housekeeper'") // the holder's lease runs out
 	if ok, _ := next.TryLease(ctx, "housekeeper", ttl); !ok {
 		t.Error("an expired lease was not taken over")
 	}

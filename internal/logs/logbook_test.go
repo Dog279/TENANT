@@ -252,6 +252,9 @@ func TestClockJump(t *testing.T) {
 // The housekeeper reports a log at 80% and at 95% of its size limit, once
 // per crossing, and says what it did when one filled.
 func TestNearFullOncePerCrossing(t *testing.T) {
+	prev := batchEvery
+	batchEvery = time.Hour // a report committed between the passes grows the WAL, and the second pass sees ~98%
+	t.Cleanup(func() { batchEvery = prev })
 	var mu sync.Mutex
 	b := store.DefaultBudget()
 	h, _, _ := openHub(t, Options{Budget: func() store.Budget { mu.Lock(); defer mu.Unlock(); return b }})

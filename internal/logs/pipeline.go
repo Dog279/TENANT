@@ -17,8 +17,12 @@ import (
 // through the pipeline: scrub, truncate, mirror to the v1 text files, commit
 // to logbook.db, then feed the v1 ring and wake its readers.
 const (
-	queueCap   = 64 << 10
-	batchMax   = 512
+	queueCap = 64 << 10
+	batchMax = 512
+)
+
+// Vars so a test can push them past what a slow CI runner takes.
+var (
 	batchEvery = 100 * time.Millisecond
 	closeWait  = 2 * time.Second // the final flush's bound
 )

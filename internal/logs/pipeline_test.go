@@ -227,24 +227,25 @@ func TestPipelineScrubsBeforeFilesAndStore(t *testing.T) {
 }
 
 // Audit forces its batch to commit, after what was queued before it, and
-// returns once it is committed, or with the commit's error; the text file
-// has the record either way. A Security event through Log is never queued.
+// returns once it is committed. With the batch timer an hour away, an Audit
+// that returns at all forced its commit (a wall-clock bound flaked on slow CI
+// disks). A Security event through Log is never queued either.
 func TestAuditForcesCommit(t *testing.T) {
-	h, root, _ := openHub(t, Options{})
+	prev := batchEvery
+	batchEvery = time.Hour
+	t.Cleanup(func() { batchEvery = prev }) // after the hub's Close, registered below
+	h, _, _ := openHub(t, Options{})
 	st := attach(t, h)
 	Install(h)
 	defer Install(nil)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	testOp.Log(ctx, "name", "before")
-	start := time.Now()
 	for i := range 5 {
 		if err := testOp.Audit(ctx, "name", "audit"+strconv.Itoa(i)); err != nil {
-			t.Fatal(err)
+			t.Fatalf("audit %d: %v (it waited for the batch timer instead of forcing a commit)", i, err)
 		}
-	}
-	if d := time.Since(start); d >= 4*batchEvery {
-		t.Errorf("5 audits took %v: they wait for the batch timer instead of forcing a commit", d)
 	}
 	evs := all(t, st)
 	if len(evs) != 6 || evs[0].Msg != "Sync before" || evs[5].Msg != "Sync audit4" {
@@ -258,6 +259,16 @@ func TestAuditForcesCommit(t *testing.T) {
 	if evs := all(t, st); evs[len(evs)-1].Msg != "sec" {
 		t.Errorf("a security event was queued, not committed: last is %q", evs[len(evs)-1].Msg)
 	}
+}
+
+// Audit returns the commit's error when the store fails; the text file has
+// the record either way, and the writer files the failure with its next batch.
+func TestAuditReportsAFailedCommit(t *testing.T) {
+	h, root, _ := openHub(t, Options{})
+	attach(t, h)
+	Install(h)
+	defer Install(nil)
+	ctx := context.Background()
 
 	_ = h.pipe.Load().st.Close() // the store fails
 	if err := testOp.Audit(ctx, "name", "lost"); err == nil {
@@ -304,6 +315,9 @@ func TestQueueFullDrops(t *testing.T) {
 // Close flushes the queue into the files and the store, then the hub
 // behaves as a closed hub: nothing panics and nothing reaches the store.
 func TestCloseFlushes(t *testing.T) {
+	prev := closeWait
+	closeWait = time.Minute // 2,000 events under -race on a 2-core runner come close to 2 s
+	t.Cleanup(func() { closeWait = prev })
 	h, root, _ := openHub(t, Options{})
 	st := attach(t, h)
 	Install(h)

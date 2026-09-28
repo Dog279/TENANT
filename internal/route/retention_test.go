@@ -209,6 +209,7 @@ func TestRewritesLoseNoConcurrentAppends(t *testing.T) {
 				return
 			}
 			n++
+			time.Sleep(10 * time.Millisecond) // > datalock.File's 5 ms poll, so a waiting appender gets in
 		}
 	}()
 	var wg sync.WaitGroup
