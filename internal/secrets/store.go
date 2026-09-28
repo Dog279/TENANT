@@ -216,8 +216,14 @@ func Harden(path string) error {
 	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	if err := protectPath(path, false); err != nil {
-		return err
+	// Like ensurePrivateDir, leave a file that already probes private alone:
+	// on a Windows machine install the service and the operator accept each
+	// other's entries but would each write their own, so protecting on every
+	// read would flip the file between them.
+	if ok, _, _, err := probePath(path, false); err != nil || !ok {
+		if err := protectPath(path, false); err != nil {
+			return err
+		}
 	}
 	report := Probe(path)
 	if !report.Protected {

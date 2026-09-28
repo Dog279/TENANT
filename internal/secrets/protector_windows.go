@@ -9,21 +9,41 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type dpapiProtector struct{}
+// dpapiProtector seals to the current user, or to the machine on a machine
+// install (permissions_windows.go): there the service and the operator are
+// two accounts that must open each other's blobs, and the file's DACL, which
+// names both, is what keeps everyone else out.
+type dpapiProtector struct{ machine bool }
 
-func newUserProtector() (Protector, error) { return dpapiProtector{}, nil }
-
-func (dpapiProtector) Name() string { return "Windows DPAPI (current user)" }
-
-func (dpapiProtector) Protect(plaintext []byte) ([]byte, error) {
-	return cryptData(plaintext, true)
+func newUserProtector() (Protector, error) {
+	id, err := currentIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return dpapiProtector{machine: id.machine()}, nil
 }
 
+func (p dpapiProtector) Name() string {
+	if p.machine {
+		return "Windows DPAPI (local machine)"
+	}
+	return "Windows DPAPI (current user)"
+}
+
+func (p dpapiProtector) Protect(plaintext []byte) ([]byte, error) {
+	flags := uint32(windows.CRYPTPROTECT_UI_FORBIDDEN)
+	if p.machine {
+		flags |= windows.CRYPTPROTECT_LOCAL_MACHINE
+	}
+	return cryptData(plaintext, true, flags)
+}
+
+// Unprotect opens a blob of either scope: the blob records its own.
 func (dpapiProtector) Unprotect(ciphertext []byte) ([]byte, error) {
-	return cryptData(ciphertext, false)
+	return cryptData(ciphertext, false, windows.CRYPTPROTECT_UI_FORBIDDEN)
 }
 
-func cryptData(data []byte, protect bool) ([]byte, error) {
+func cryptData(data []byte, protect bool, flags uint32) ([]byte, error) {
 	in := windows.DataBlob{Size: uint32(len(data))}
 	if len(data) > 0 {
 		in.Data = &data[0]
@@ -31,9 +51,9 @@ func cryptData(data []byte, protect bool) ([]byte, error) {
 	var out windows.DataBlob
 	var err error
 	if protect {
-		err = windows.CryptProtectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out)
+		err = windows.CryptProtectData(&in, nil, nil, 0, nil, flags, &out)
 	} else {
-		err = windows.CryptUnprotectData(&in, nil, nil, 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out)
+		err = windows.CryptUnprotectData(&in, nil, nil, 0, nil, flags, &out)
 	}
 	runtime.KeepAlive(data)
 	if err != nil {
