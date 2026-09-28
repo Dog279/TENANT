@@ -12,6 +12,7 @@ import (
 	"context"
 	"html"
 	"html/template"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -73,14 +74,58 @@ type ResearchReportView struct {
 type ResearchRef struct {
 	N   int
 	URL string
+	own bool // on a name this dashboard answers to (Server.researchReport)
 }
 
 // Web reports whether the source may be a link: only an http or https URL,
-// in any letter case. A report's sources come from web pages, so anything
-// else (javascript:, data:, a note path) renders as plain text.
+// in any letter case, to a public host. A report's sources come from web
+// pages, so anything else (javascript:, data:, a note path) renders as plain
+// text, and so does an address on this machine, its network or the tailnet:
+// cookies aren't kept apart by port, so a click there would hand whatever
+// listens (a server the agent started, say) the dashboard's sign-in cookie.
 func (r ResearchRef) Web() bool {
 	u, err := url.Parse(r.URL)
-	return err == nil && (strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https"))
+	return err == nil && (strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")) &&
+		!r.own && publicHost(u.Hostname())
+}
+
+// tailnetRange is Tailscale's address range (100.64.0.0/10, CGNAT).
+var tailnetRange = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// publicHost reports whether h is an internet host, not this machine, its
+// network or the tailnet. A name without a dot is a local one, and a last
+// label that is a number means a browser reads the name as an IPv4 address
+// (127.1, 0x7f.0.0.1), so both count as local.
+func publicHost(h string) bool {
+	h = strings.TrimSuffix(strings.ToLower(h), ".")
+	if ip := net.ParseIP(h); ip != nil {
+		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !tailnetRange.Contains(ip)
+	}
+	dot := strings.LastIndex(h, ".")
+	if last := h[dot+1:]; dot < 0 || strings.TrimLeft(last, "0123456789") == "" || strings.HasPrefix(last, "0x") {
+		return false
+	}
+	for _, local := range []string{".localhost", ".local", ".internal", ".lan", ".home.arpa", ".ts.net"} {
+		if strings.HasSuffix(h, local) {
+			return false
+		}
+	}
+	return true
+}
+
+// ownHost reports whether h is a host name this dashboard answers to, on
+// any port.
+func (s *Server) ownHost(h string) bool {
+	h = strings.TrimSuffix(strings.ToLower(h), ".")
+	s.trustedMu.RLock()
+	names := append(append([]string{s.cfg.Addr}, s.cfg.AllowedHosts...), s.trusted...)
+	s.trustedMu.RUnlock()
+	for _, a := range names {
+		if ah, _, ok := splitAuthority(a); ok && ah == h {
+			return true
+		}
+	}
+	return false
 }
 
 // ResearchFinding is one helper's finding under a report.
@@ -165,7 +210,7 @@ func (s *Server) handleResearchRunPage(w http.ResponseWriter, r *http.Request) {
 		if v, err := s.research.Report(r.PathValue("id")); err != nil {
 			d.Err = s.flashFor(r.Context(), "research show", err, "Couldn't open that research.")
 		} else {
-			d.Run = researchReport(&v)
+			d.Run = s.researchReport(&v)
 		}
 	}
 	s.render(w, s.tmpl.researchRun, d)
@@ -173,7 +218,7 @@ func (s *Server) handleResearchRunPage(w http.ResponseWriter, r *http.Request) {
 
 // researchLive is the live panel's data for v.
 func (s *Server) researchLive(v ResearchLiveView) researchLiveData {
-	d := researchLiveData{ResearchLiveView: v, Done: researchReport(v.Report)}
+	d := researchLiveData{ResearchLiveView: v, Done: s.researchReport(v.Report)}
 	switch {
 	case v.Running:
 		d.Busy = &BusyView{Title: "Research is running", Since: v.Elapsed}
@@ -198,11 +243,18 @@ func (s *Server) researchHistory(ctx context.Context) researchHistoryData {
 	return h
 }
 
-func researchReport(v *ResearchReportView) *researchReportData {
+func (s *Server) researchReport(v *ResearchReportView) *researchReportData {
 	if v == nil {
 		return nil
 	}
-	return &researchReportData{ResearchReportView: *v, BodyHTML: reportHTML(v.Body), Path: "/research/" + url.PathEscape(v.ID)}
+	d := &researchReportData{ResearchReportView: *v, BodyHTML: reportHTML(v.Body), Path: "/research/" + url.PathEscape(v.ID)}
+	d.Refs = append([]ResearchRef(nil), v.Refs...)
+	for i, ref := range d.Refs {
+		if u, err := url.Parse(ref.URL); err == nil {
+			d.Refs[i].own = s.ownHost(u.Hostname())
+		}
+	}
+	return d
 }
 
 var (

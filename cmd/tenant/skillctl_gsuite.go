@@ -38,7 +38,7 @@ func gsuiteSkillKind() skillKind {
 		Wired: true,
 		SetupHint: "tenant targets BUSINESS Google Workspace deployments. Three auth modes, in order of fit:\n" +
 			"  • sa     — service-account JSON + Domain-Wide Delegation. The canonical pattern: IT admin creates an SA, authorizes DWD once in admin.google.com, tenant impersonates per-user subjects. (Recommended for ANY production / multi-user setup.)\n" +
-			"  • gcloud — reuses an existing `gcloud auth application-default login` session. Dev-machine only.\n" +
+			"  • gcloud — reuses a Google Cloud sign-in already made on this computer. A developer's own machine only.\n" +
 			"  • oauth  — operator-supplied Desktop App OAuth client (advanced; for personal @gmail accounts where the operator owns a Cloud project).",
 		Fields: []skillKindField{
 			{

@@ -77,3 +77,25 @@ func TestLogsPageInChrome(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(dir, "logs-page.jpg"), shot, 0o644)
 	}
 }
+
+// UX-1: at phone width the Logs panes stack instead of overlapping, and the
+// tree's links (Summary, Components) keep their height, with a row's detail
+// open.
+func TestLogsPagePhoneInChrome(t *testing.T) {
+	s, _, st := logsBook(t)
+	s.cfg.Addr, s.cfg.Auth = "127.0.0.1:0", GenerateToken()
+	commit(t, st, event.Event{Log: "bulk", Level: event.Warning, Task: "Batch", Msg: "bulk 1"}, event.Event{Log: "bulk", Level: event.Info, Msg: "bulk 2"})
+	ctx, _ := chromeSignedIn(t, s, 390, 844, "/logs?q=log%3Abulk")
+	var bad []string
+	if err := chromedp.Run(ctx,
+		chromedp.WaitVisible("#lg-rows .lg-row", chromedp.ByQuery),
+		chromedp.Click(`#lg-rows .lg-row`, chromedp.ByQuery),
+		chromedp.WaitVisible("#lg-detail .lg-msgfull", chromedp.ByQuery),
+		chromedp.Evaluate(fitsJS, &bad),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) > 0 {
+		t.Errorf("at 390px:\n%s", strings.Join(bad, "\n"))
+	}
+}

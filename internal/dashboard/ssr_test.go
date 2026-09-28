@@ -63,10 +63,52 @@ func TestSSR_DashboardPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Home was renamed Dashboard→Overview and turned into a status board (TEN-200).
-	for _, want := range []string{"Overview", "Tools enabled", "web", "Look only"} {
+	for _, want := range []string{"Overview", "Tools enabled", "Look only", "No services connected yet"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard page missing %q", want)
 		}
+	}
+}
+
+// UX-5: Connected services are the integrations set up and the remote
+// services connected, by name, not every built-in plugin.
+func TestSSR_ConnectedServicesAreTheConnectedOnes(t *testing.T) {
+	s, _ := ssrServer()
+	s.SetIntegrations(&fakeIntegrationsCtl{list: []IntegrationView{{ID: "gsuite", Label: "Google (Gmail, Calendar, Drive) — business / SA + DWD", Configured: true}, {ID: "github", Label: "GitHub"}}})
+	s.SetMCP(&fakeMCPCtl{servers: []MCPServerView{{Label: "mcp:atlassian", Enabled: true}, {Label: "mcp:gone"}}})
+	body := get(t, s, "/").Body.String()
+	for _, want := range []string{`<a class="chip" href="/integrations">Google</a>`, `<a class="chip" href="/mcp">atlassian</a>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Overview lacks %q", want)
+		}
+	}
+	for _, not := range []string{">GitHub<", ">gone<", `class="chip">web<`, `class="chip">sql<`} {
+		if strings.Contains(body, not) {
+			t.Errorf("Overview lists %q, which isn't connected", not)
+		}
+	}
+}
+
+// UX-2: with one tool that changes things on and another off, the agent can
+// change things: Overview must not say "Look only", and the Tools page must
+// not show "All off" as the current state.
+func TestSSR_WhatItMayDoFollowsTheToolsOn(t *testing.T) {
+	s, ft := ssrServer()
+	ft.tools = append(ft.tools, ToolInfo{Name: "os_exec", Plugin: "os", Enabled: true, Gated: true})
+	body := get(t, s, "/").Body.String()
+	if strings.Contains(body, "Look only") || !strings.Contains(body, `Change things <span class="dim">· 1 tool</span>`) || !strings.Contains(body, `href="/safety" class="card stat linkcard"`) {
+		t.Errorf("Overview with os_exec on:\n%s", body)
+	}
+	tools := get(t, s, "/tools").Body.String()
+	if strings.Contains(tools, `class="btn on">All off`) || strings.Contains(tools, `<span class="btn on">All on`) {
+		t.Errorf("Tools with some tools that change things on shows all off or all on as current")
+	}
+	ft.tools[len(ft.tools)-1].Enabled = false
+	if body := get(t, s, "/").Body.String(); !strings.Contains(body, "Look only") {
+		t.Errorf("Overview with every tool that changes things off should say Look only")
+	}
+	if tools := get(t, s, "/tools").Body.String(); !strings.Contains(tools, `class="btn on">All off`) {
+		t.Errorf("Tools with every tool that changes things off should show All off as current")
 	}
 }
 

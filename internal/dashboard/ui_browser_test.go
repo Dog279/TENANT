@@ -16,11 +16,13 @@ import (
 	"github.com/chromedp/chromedp"
 
 	"tenant/internal/agent"
+	"tenant/internal/control"
 	"tenant/internal/plugins/web"
 )
 
 // fitsJS lists what doesn't fit a phone: the page, the sidebar or the menu
-// scrolling sideways, or a visible control ending past the screen's edge.
+// scrolling sideways, a visible control ending past the screen's edge or
+// squeezed too short to read, or the Logs panes drawn over each other.
 // Only the inner scrollers (DESIGN.md) may be wider than the screen.
 const fitsJS = `(() => {
   const bad = [];
@@ -32,7 +34,16 @@ const fitsJS = `(() => {
     if (e.closest('.table-wrap, .lg-grid, pre, .diff, .q-detail') || e.type === 'hidden') continue;
     const r = e.getBoundingClientRect();
     if (!r.width && !r.height) continue;
-    if (r.right > innerWidth + 1) bad.push(e.tagName.toLowerCase() + ' "' + (e.textContent || e.name || '').trim().slice(0, 40) + '" ends at ' + Math.round(r.right) + 'px');
+    const name = e.tagName.toLowerCase() + ' "' + (e.textContent || e.name || '').trim().slice(0, 40) + '"';
+    if (r.right > innerWidth + 1) bad.push(name + ' ends at ' + Math.round(r.right) + 'px');
+    if (r.height < 12 && e.textContent.trim()) bad.push(name + ' is squeezed to ' + Math.round(r.height) + 'px tall');
+  }
+  for (const g of document.querySelectorAll('.lgv')) {
+    const panes = [...g.children].map(k => k.getBoundingClientRect()).filter(r => r.width && r.height);
+    for (let i = 0; i < panes.length; i++) for (let j = i + 1; j < panes.length; j++) {
+      const a = panes[i], b = panes[j];
+      if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) bad.push('Logs panes ' + i + ' and ' + j + ' overlap');
+    }
   }
   return bad;
 })()`
@@ -234,5 +245,36 @@ func TestLiveBannerInChrome(t *testing.T) {
 	}
 	if !strings.HasSuffix(loc, "/settings?next=%2Fsafety") {
 		t.Errorf("a stale sign-in went to %s, want the sign-in form with next=/safety", loc)
+	}
+}
+
+// UX-9: on a phone the status strip stays short with two notices and a
+// waiting request (each notice is one line), and its links are 44px targets.
+func TestStatusStripPhoneInChrome(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, nil, nil, nil, nil, nil)
+	s.SetApprovals(&fakeApprovals{pending: []PendingApproval{{ID: "ap-1"}}})
+	s.SetSafety(&stripSafety{perms: []control.PermissionInfo{
+		{Category: "egress", Mode: "ask", Title: "Share private data", New: true},
+		{Category: "mcp", Mode: "ask", Title: "Connect remote services", New: true},
+		{Category: "sandbox", Mode: "ask", Title: "Leave the sandbox", New: true},
+	}}, nil)
+	s.SetAccess(&fakeAccess{view: AccessView{DiscordAvailable: true, RelayConfigured: true,
+		DiscordPerms: []PermissionRow{{Category: "egress", New: true}, {Category: "mcp", New: true}, {Category: "sandbox", New: true}}}})
+	ctx, _ := chromeSignedIn(t, s, 390, 844, "/")
+	var strip float64
+	var small []string
+	if err := chromedp.Run(ctx,
+		chromedp.WaitVisible("#ui-status .notice", chromedp.ByQuery),
+		chromedp.Evaluate(`document.getElementById('ui-status').getBoundingClientRect().height`, &strip),
+		chromedp.Evaluate(`[...document.querySelectorAll('#ui-status a')].filter(a => a.getBoundingClientRect().height < 44).map(a => a.textContent + ' ' + Math.round(a.getBoundingClientRect().height) + 'px')`, &small),
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("strip %.0fpx", strip)
+	if strip > 200 {
+		t.Errorf("the strip takes %.0fpx of an 844px screen", strip)
+	}
+	if len(small) > 0 {
+		t.Errorf("strip links under 44px: %q", small)
 	}
 }

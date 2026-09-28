@@ -82,7 +82,9 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 	if c.lc != nil {
 		discordBroker.LoadModes(c.lc.Relay.Permissions, c.lc.Relay.KnownCategories)
 	}
-	if n := newCategoryNotice(discordBroker.NewCategories(), "Review on the dashboard's Access page."); n != "" && d.notify != nil {
+	// Only a relay with a token can be set up on the Access page (C-3).
+	if n := newCategoryNotice(discordBroker.NewCategories(), "Review on the dashboard's Access page."); n != "" && d.notify != nil &&
+		strings.TrimSpace(discordRelayToken(c.cfgDir)) != "" {
 		d.notify("Discord conversations: " + n)
 	}
 

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"time"
 
 	"tenant/internal/logs/logapi"
 	"tenant/internal/logs/query"
@@ -30,4 +31,20 @@ func (s *Server) recentAlerts(ctx context.Context) (int, string) {
 		n = 1
 	}
 	return int(n), evs[0].Msg
+}
+
+// modelTrouble is when a model call last failed (model 3001, a provider that
+// couldn't serve it) in the last hour, zero with none: the Agent card can't
+// say "healthy" while its model is unreachable, alert or no alert (UX-8).
+func (s *Server) modelTrouble(ctx context.Context) time.Time {
+	_, st := s.logbookStore()
+	if st == nil {
+		return time.Time{}
+	}
+	f, _ := query.Parse("provider:model id:3001 since:1h")
+	evs, _, _, err := st.Query(ctx, f, store.Cursor{}, 1, true)
+	if err != nil || len(evs) == 0 {
+		return time.Time{}
+	}
+	return evs[0].Time
 }

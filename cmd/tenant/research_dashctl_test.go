@@ -130,7 +130,9 @@ func TestDashResearch_Timeline(t *testing.T) {
 func TestDashResearch_KeepsTheTerminalTimeline(t *testing.T) {
 	var timeline, said, fed int
 	rc := &researchControl{say: func(string, ...any) { said++ }, emitTimeline: func(tui.ResearchTimelineUpdate) { timeline++ }}
-	d := newDashResearch(context.Background(), rc, true, func(string, ...any) { fed++ }).(*dashResearch)
+	life := lifecycle.New(testLog())
+	t.Cleanup(func() { _ = life.Shutdown() })
+	d := newDashResearch(context.Background(), life, TeamConfig{}, newTeamRuntime(TeamConfig{}), rc, true, func(string, ...any) { fed++ }).(*dashResearch)
 	d.rc.emitTimeline(tui.ResearchTimelineUpdate{Kind: "started"})
 	d.rc.say("plan: %d sub-question(s)", 3)
 	if timeline != 0 || said != 0 || fed != 1 {
@@ -141,6 +143,51 @@ func TestDashResearch_KeepsTheTerminalTimeline(t *testing.T) {
 	}
 	if rc.busy == nil || rc.busy != d.rc.busy {
 		t.Error("the two sides don't share the one-run flag")
+	}
+}
+
+// C-1: in the terminal app the page's research has its own runtime, as
+// serve's does. On the orchestrator's, a run's new window cancelled the
+// helpers a chat turn had spawned; a run from the page is in the background,
+// so the two overlap.
+func TestDashResearch_TerminalRunLeavesChatHelpersAlone(t *testing.T) {
+	reg := model.NewEmptyRegistry()
+	if err := reg.Add(model.Profile{ID: "orch", Role: model.RolePlanner, Backend: "orch", ProviderKind: "vllm", Endpoint: "http://orch", ContextLength: 32000}); err != nil {
+		t.Fatal(err)
+	}
+	router := model.NewRouter(reg, nil)
+	planner := testllm.New()
+	planner.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+		return nil, errors.New("planner down")
+	}
+	router.RegisterBackend("orch", func(context.Context, model.Profile, *slog.Logger) (any, error) { return planner, nil })
+	ag, err := agent.New(agent.Config{AgentID: "main", Router: router, Working: working.New(), Tools: agent.NewStaticRegistry(), Dispatcher: newToolMux()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := TeamConfig{Bus: orchestra.NewBus(), OrchID: "main"}
+	rt := newTeamRuntime(cfg) // cmdTUI's: the orchestrator's and /research's
+	rt.budget.Ensure(context.Background())
+	helperCtx, release, err := rt.budget.AcquireAgent() // a chat turn's spawn_agent
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	life := lifecycle.New(testLog())
+	t.Cleanup(func() { _ = life.Shutdown() })
+	s, _ := research.New(t.TempDir())
+	rc := &researchControl{ag: ag, rt: rt, store: s, opts: defaultResearchOpts()}
+	d := newDashResearch(context.Background(), life, cfg, rt, rc, true, nil).(*dashResearch)
+	if d.rc.rt == rt || rc.busy == nil || d.rc.busy != rc.busy {
+		t.Fatal("the page's research must have its own runtime and share the terminal's one-run flag")
+	}
+	if err := d.Start("what is fakeness?", true); err != nil {
+		t.Fatal(err)
+	}
+	awaitPhase(t, d, "failed")
+	if helperCtx.Err() != nil {
+		t.Fatalf("the chat's helper was cancelled by a dashboard research start: %v", context.Cause(helperCtx))
 	}
 }
 

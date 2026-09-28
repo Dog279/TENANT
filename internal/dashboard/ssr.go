@@ -147,7 +147,9 @@ func (s *Server) mountSSR(mux *http.ServeMux) {
 	// mode, so a missing one confirms too.
 	mux.HandleFunc("POST /posture", needConfirm(confirmUnless("allow_send", "", "false"), s.handlePostureForm))
 	mux.HandleFunc("POST /tools/rules/add", needConfirm(confirmUnless("mode", "ask", "deny"), s.handleRuleAddForm))
-	mux.HandleFunc("POST /tools/rules/remove", needConfirm(confirmUnless("mode", "allow"), s.handleRuleRemoveForm))
+	mux.HandleFunc("POST /tools/rules/remove", needConfirm(func(r *http.Request) bool {
+		return s.ruleMode(strings.TrimSpace(r.FormValue("pattern"))) != "allow"
+	}, s.handleRuleRemoveForm))
 	mux.HandleFunc("POST /chat/send", s.handleChatSend)
 	mux.HandleFunc("POST /chat/interject", s.handleChatInterject)
 	mux.HandleFunc("POST /chat/stop", s.handleChatStop)
@@ -240,14 +242,28 @@ func (s *Server) toolList() []ToolInfo {
 	return s.tools.ToolList()
 }
 
+// shortName is an integration's name without the description its label
+// carries: "Web browsing" for "Web browsing (Chrome + optional …)".
+func shortName(label string) string {
+	for _, sep := range []string{" (", " — ", " - "} {
+		if i := strings.Index(label, sep); i > 0 {
+			label = label[:i]
+		}
+	}
+	return label
+}
+
+// navLink is a name that links to its page.
+type navLink struct{ Name, Href string }
+
 type dashboardData struct {
 	layoutData
-	Plugins      []string
+	Plugins      []navLink // the connected services, each to its page
 	ToolsEnabled int
 	ToolsTotal   int
 	WorkingCount int
 	HasMemory    bool
-	AllowSend    bool
+	ActTools     int // the tools that change things that are on (actTools)
 	// Quality (TEN-200): plain status-board summary of the eval gate. HasQuality
 	// is false when no EvalControl is wired or no check has run yet.
 	HasQuality   bool
@@ -263,6 +279,9 @@ type dashboardData struct {
 	// Alerts fired in the last day (TEN-399), and the newest one's message.
 	Alerts      int
 	AlertLatest string
+	// ModelTrouble is how long ago a model call last failed, within the
+	// hour; "" with none.
+	ModelTrouble string
 	// Waiting is how many actions wait for the operator's OK (D13): the
 	// card answers "is anything waiting?" even when the answer is no.
 	Waiting int
@@ -276,18 +295,29 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 			enabled++
 		}
 	}
-	var plugins []string
-	if s.tools != nil {
-		for _, p := range s.tools.Plugins() {
-			plugins = append(plugins, groupLabel(p))
+	// Connected services are the integrations set up and the remote services
+	// connected, by name: not every plugin built in, set up or not (UX-5).
+	var services []navLink
+	if s.integrations != nil {
+		for _, v := range s.integrations.Integrations() {
+			if v.Configured {
+				services = append(services, navLink{shortName(v.Label), "/integrations"})
+			}
+		}
+	}
+	if s.mcp != nil {
+		for _, v := range s.mcp.Servers() {
+			if v.Enabled {
+				services = append(services, navLink{strings.TrimPrefix(v.Label, "mcp:"), "/mcp"})
+			}
 		}
 	}
 	d := dashboardData{
 		layoutData:   layoutData{Title: "Overview", Page: "dashboard"},
-		Plugins:      plugins,
+		Plugins:      services,
 		ToolsEnabled: enabled,
 		ToolsTotal:   len(tools),
-		AllowSend:    posture(tools),
+		ActTools:     actTools(tools),
 	}
 	if s.mem != nil {
 		d.HasMemory = true
@@ -325,6 +355,9 @@ func (s *Server) handleDashboardPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.Alerts, d.AlertLatest = s.recentAlerts(r.Context())
+	if at := s.modelTrouble(r.Context()); !at.IsZero() {
+		d.ModelTrouble = relAge(at)
+	}
 	d.Waiting = s.statusView().Approvals
 	s.render(w, s.tmpl.dashboard, d)
 }
@@ -352,7 +385,8 @@ func groupLabel(plugin string) string {
 type toolsData struct {
 	layoutData
 	Groups    []toolGroup
-	AllowSend bool
+	AllowSend bool // every tool that changes things is on
+	ActTools  int  // how many of them are on
 	// Per-tool permission rules card (RuleControl); RulesOn=false hides it.
 	RulesOn  bool
 	Rules    []ToolRuleRow
@@ -384,6 +418,7 @@ func (s *Server) handleToolsPage(w http.ResponseWriter, r *http.Request) {
 		layoutData: layoutData{Title: "Tools", Page: "tools"},
 		Groups:     out,
 		AllowSend:  posture(tools),
+		ActTools:   actTools(tools),
 		Msg:        r.URL.Query().Get("msg"),
 		Err:        r.URL.Query().Get("err"),
 	}

@@ -361,6 +361,17 @@ func posture(tools []ToolInfo) bool {
 	return gated > 0
 }
 
+// actTools counts the gated tools (the ones that change things) that are on:
+// what the agent may do is "look only" when none is, whatever posture says.
+func actTools(tools []ToolInfo) (n int) {
+	for _, t := range tools {
+		if t.Gated && t.Enabled {
+			n++
+		}
+	}
+	return n
+}
+
 // handleSetPosture drives the posture: POST /api/posture {"allow_send":bool}
 // flips every gated tool to allow_send via SetEnabled. Per-tool failures are
 // best-effort — e.g. enabling a gated tool of an unconfigured plugin can error

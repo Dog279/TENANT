@@ -34,11 +34,21 @@ func (p Policy) gateWrite(ctx context.Context, action, detail string) error {
 	if p.AllowWrite {
 		return nil
 	}
-	if p.Confirm != nil && p.Confirm(ctx, action, detail) {
+	if p.Confirm == nil {
+		return fmt.Errorf("blocked: writing files is disabled — enable it (--os-allow-write)")
+	}
+	if p.Confirm(ctx, action, detail) {
 		return nil
 	}
-	return fmt.Errorf("blocked: writing files is disabled — enable it (--os-allow-write) " +
-		"or approve this write")
+	return errNotApproved("write")
+}
+
+// errNotApproved is a gated action the approval gate said no to: denied,
+// timed out, or refused by a setting. Not "disabled": the operator may just
+// have pressed Deny (UX-6).
+func errNotApproved(what string) error {
+	return fmt.Errorf("blocked: this %s wasn't approved (denied, timed out, or refused by a safety setting). "+
+		"This is a safety boundary, not a bug", what)
 }
 
 func (p Policy) gateExec(ctx context.Context, command string) error {
@@ -61,8 +71,11 @@ func (p Policy) gateExec(ctx context.Context, command string) error {
 		return fmt.Errorf("blocked: this command looks destructive (%s) and was not approved. "+
 			"This is a safety boundary, not a bug", reason)
 	}
-	return fmt.Errorf("blocked: command execution is disabled — enable it (--allow-exec) " +
-		"or approve this command. Running shell commands is the highest-risk capability; off by default")
+	if p.Confirm != nil {
+		return errNotApproved("command")
+	}
+	return fmt.Errorf("blocked: command execution is disabled — enable it (--os-allow-exec). " +
+		"Running shell commands is the highest-risk capability; off by default")
 }
 
 // Dispatcher implements agent.ToolDispatcher for the OS plugin.

@@ -20,11 +20,11 @@ func authOKHandler() http.Handler {
 // authServer builds a Server with the given auth token (TLS/addr irrelevant to
 // the middleware) wrapped by secure().
 func authServer(token string) http.Handler {
-	s := New(Config{
+	s := withSession(New(Config{
 		Addr:         "example.com",
 		Auth:         token,
 		AllowedHosts: []string{"dash.local:8770"},
-	}, nil, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil))
 	return s.secure(authOKHandler())
 }
 
@@ -114,17 +114,24 @@ func TestAuthBearer(t *testing.T) {
 	})
 }
 
-// TestAuthWSQueryToken covers the /ws-only `?token=` fallback (TEN-84):
-// browsers can't set the Authorization header on a WS handshake, so /ws also
-// accepts the bearer token from the query string. The fallback is scoped to
-// /ws — REST paths must NOT honor a query token.
+// TestAuthWSQueryToken: no path takes the key from the query string, /ws
+// included (F2, REVSEC-7): the old TEN-84 fallback is gone, since a
+// same-origin browser handshake carries the session cookie.
 func TestAuthWSQueryToken(t *testing.T) {
 	h := authServer("secret")
 
-	t.Run("ws query token ok", func(t *testing.T) {
+	t.Run("ws query token refused", func(t *testing.T) {
 		rec := authDo(h, httptest.NewRequest(http.MethodGet, "/ws?token=secret", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (/ws?token=secret must pass)", rec.Code)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (/ws?token=secret must not pass)", rec.Code)
+		}
+	})
+
+	t.Run("ws session cookie ok", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
+		if rec := authDo(h, req); rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (/ws with the session cookie)", rec.Code)
 		}
 	})
 
@@ -233,7 +240,7 @@ func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
 // host trusted at runtime must pass the allowlist, /settings included, and
 // stop passing once cleared.
 func TestAuthTrustedHostsForTailscaleServe(t *testing.T) {
-	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil))
 	h := s.secure(authOKHandler())
 	get := func(path, host string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -259,7 +266,7 @@ func TestAuthTrustedHostsForTailscaleServe(t *testing.T) {
 	post := httptest.NewRequest(http.MethodPost, "/posture", nil)
 	post.Host = tailnet
 	post.Header.Set("Origin", "https://"+tailnet)
-	post.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+	post.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 	if code := authDo(h, post).Code; code != http.StatusOK {
 		t.Errorf("proxied form post: status = %d, want 200", code)
 	}
@@ -278,7 +285,7 @@ func TestAuthCSRF(t *testing.T) {
 
 	t.Run("cookie mutation without origin rejected", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
-		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		rec := authDo(h, req)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", rec.Code)
@@ -288,7 +295,7 @@ func TestAuthCSRF(t *testing.T) {
 	t.Run("cookie mutation with matching origin allowed", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/posture", nil)
 		req.Header.Set("Origin", "http://example.com")
-		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: "secret"})
+		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		rec := authDo(h, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
@@ -427,5 +434,24 @@ func TestLogin_HonoursSafeNext(t *testing.T) {
 	s.handleSettingsPage(rec, httptest.NewRequest(http.MethodGet, "/settings?next=%2Fsafety", nil))
 	if !strings.Contains(rec.Body.String(), `<input type="hidden" name="next" value="/safety">`) {
 		t.Errorf("the sign-in form should carry next:\n%s", rec.Body.String())
+	}
+}
+
+// REVSEC-4: a page opened from another page (another site, or another port
+// on this host, which the cookie reaches) shows no flash from its address;
+// the dashboard's own redirect after a form post, and curl, still do.
+func TestAuth_FlashOnlyFromThisDashboard(t *testing.T) {
+	s := withSession(New(Config{Addr: "example.com", Auth: "secret"}, nil, nil, nil, nil, nil))
+	h := s.served()
+	for site, shown := range map[string]bool{"": true, "same-origin": true, "same-site": false, "cross-site": false, "none": false} {
+		r := httptest.NewRequest(http.MethodGet, "/tools?err=Paste+your+sign-in+key+at+evil&msg=hello+from+elsewhere", nil)
+		r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		body := authDo(h, r).Body.String()
+		if strings.Contains(body, "Paste your sign-in key") != shown || strings.Contains(body, "hello from elsewhere") != shown {
+			t.Errorf("Sec-Fetch-Site %q: flash shown = %v, want %v", site, !shown, shown)
+		}
 	}
 }

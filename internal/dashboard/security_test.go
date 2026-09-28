@@ -57,7 +57,7 @@ func TestAccessSecurityRecords(t *testing.T) {
 	req("GET", "/tools", func(r *http.Request) { r.Header.Set("Authorization", "Bearer wrong") })
 	req("GET", "/tools", func(r *http.Request) { r.Host = "evil.example" })
 	req("GET", "/tools", func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") })
-	req("POST", "/tools", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "s3cret"}) })
+	req("POST", "/tools", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession}) })
 
 	s := authedServer()
 	for _, tok := range []string{"nope", "s3cret"} {
@@ -65,7 +65,7 @@ func TestAccessSecurityRecords(t *testing.T) {
 		r.RemoteAddr = "10.0.0.9:5555"
 		s.handleLogin(httptest.NewRecorder(), r)
 	}
-	for _, cookie := range []string{"", "stale", "s3cret"} { // only the signed-in one is the operator's
+	for _, cookie := range []string{"", "stale", "s3cret", testSession} { // only the signed-in one is the operator's
 		r := httptest.NewRequest("POST", "/auth/logout", nil)
 		r.RemoteAddr = "10.0.0.9:5555"
 		if cookie != "" {
@@ -299,7 +299,7 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /plugins/{label}/toggle": noStep,
 	"POST /posture":                unless("allow_send", "", "false"),
 	"POST /tools/rules/add":        unless("mode", "ask", "deny"),
-	"POST /tools/rules/remove":     unless("mode", "allow"),
+	"POST /tools/rules/remove":     always, // unless the rule itself is allow (ruleMode); the harness has none
 	// Chat.
 	"POST /chat/send":      noStep,
 	"POST /chat/interject": noStep,
@@ -361,7 +361,9 @@ func pairingRequest(s *Server) url.Values {
 
 // inventoryServer has every route mounted and no controls: the confirm step
 // belongs to the route, whatever its control.
-func inventoryServer(cfg Config) *Server { return New(cfg, nil, nil, newFakeMem(), nil, nil) }
+func inventoryServer(cfg Config) *Server {
+	return withSession(New(cfg, nil, nil, newFakeMem(), nil, nil))
+}
 
 // sendForm serves one form request on h, the way a page posts it. A stream
 // ends with its 200ms context.
@@ -459,7 +461,7 @@ func envelope(rec *httptest.ResponseRecorder) string {
 	return ""
 }
 
-func signedIn(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "s3cret"}) }
+func signedIn(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession}) }
 
 // from is a signed-in browser's request sent by a page at origin.
 func from(origin string) func(*http.Request) {
@@ -486,6 +488,7 @@ func TestEveryMutationRefusesCSRF(t *testing.T) {
 		if method == http.MethodGet {
 			continue
 		}
+		withSession(s) // this page's own /auth/logout ends it
 		path := routePath(pattern, "x")
 		for _, tc := range []struct {
 			name   string
@@ -652,12 +655,12 @@ func TestLogsRevealNeedsSignInAndThisPage(t *testing.T) {
 	seq := itoa(int(evs[0].Seq))
 	h := s.served()
 	ours := func(r *http.Request) {
-		r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "tok"})
+		r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		r.Header.Set("Origin", "http://example.com")
 	}
 	theirs := func(origin string) func(*http.Request) {
 		return func(r *http.Request) {
-			r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "tok"})
+			r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 			r.Header.Set("Origin", origin)
 		}
 	}
@@ -676,7 +679,7 @@ func TestLogsRevealNeedsSignInAndThisPage(t *testing.T) {
 	reads := []string{"/api/events?sensitive=1&q=log%3Adashboard", "/api/events/" + seq + "?sensitive=1", "/api/events/export?sensitive=1&q=log%3Adashboard"}
 	for name, set := range map[string]func(*http.Request){
 		"signed out":   nil,
-		"no Origin":    func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "tok"}) },
+		"no Origin":    func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession}) },
 		"another port": theirs("http://example.com:1"),
 		"another site": theirs("http://evil.example"),
 		"a wrong key":  bearer("nope"),
@@ -728,7 +731,7 @@ func TestSecretsNeverFromQuery(t *testing.T) {
 	models := &fakeModelCtl{}
 	brave := map[string][]IntegrationField{"brave": {{Key: "api_key", Secret: true}}}
 	integ := &fakeIntegrationsCtl{list: []IntegrationView{{ID: "brave", Label: "Brave"}}, fields: brave}
-	s := New(Config{Addr: "example.com", Auth: "s3cret"}, nil, nil, nil, nil, nil)
+	s := withSession(New(Config{Addr: "example.com", Auth: "s3cret"}, nil, nil, nil, nil, nil))
 	s.SetSecrets(keys)
 	s.SetModels(models)
 	s.SetIntegrations(integ)

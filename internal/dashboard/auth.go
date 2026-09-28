@@ -80,8 +80,30 @@ func (s *Server) secure(h http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "CSRF validation failed")
 			return
 		}
+		dropForeignFlash(r)
 		h.ServeHTTP(w, r)
 	})
+}
+
+// dropForeignFlash takes the flash (?msg=, ?err=) off a page a browser opened
+// from anywhere but this dashboard. A flash is the dashboard's own words after
+// a form post (a same-origin redirect); from a link on another page, even one
+// on this host's other ports (which the cookie reaches), it would put someone
+// else's words in the dashboard's banner (REVSEC-4). A request without
+// Sec-Fetch-Site (curl, an older browser) keeps it.
+func dropForeignFlash(r *http.Request) {
+	site := r.Header.Get("Sec-Fetch-Site")
+	if site == "" || site == "same-origin" || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return
+	}
+	q := r.URL.Query()
+	if !q.Has("msg") && !q.Has("err") {
+		return
+	}
+	q.Del("msg")
+	q.Del("err")
+	r.URL.RawQuery = q.Encode()
+	r.Form = nil
 }
 
 // contentSecurityPolicy is D31: no page may be framed, and the only script
@@ -128,15 +150,12 @@ func credential(r *http.Request) string {
 // authentication entry points remain reachable without credentials; all other
 // requests require the configured token. Run refuses to start with no token.
 //
-// The token normally comes from `Authorization: Bearer <token>`. For the WS
-// endpoint (GET /ws) ONLY, it may instead come from a `?token=<token>` query
-// param: browsers cannot set the Authorization header on a WebSocket
-// handshake, so the query param is the sole way a browser can authenticate the
-// upgrade (TEN-84). The query fallback is deliberately scoped to /ws — REST
-// paths (/api/*) honor the header only, to limit token-in-URL exposure.
-// dashCookieName carries the PSK after a successful /auth/login, so browser
-// page navigations (which can't set an Authorization header) authenticate
-// automatically. HttpOnly + SameSite=Strict; see auth_pages.go (TEN-106).
+// The token comes from `Authorization: Bearer <token>`, never from the URL
+// (F2): the /ws `?token=` fallback is gone, since a same-origin browser
+// handshake carries the cookie. dashCookieName carries a session id (not the
+// key) after a successful /auth/login, so browser page navigations (which
+// can't set an Authorization header) authenticate automatically. HttpOnly +
+// SameSite=Strict; see auth_pages.go (TEN-106).
 const dashCookieName = "tenant-dash"
 
 func (s *Server) checkAuth(r *http.Request) bool {
@@ -151,23 +170,13 @@ func (s *Server) checkAuth(r *http.Request) bool {
 	if s.cfg.Auth == "" {
 		return false
 	}
-	// 1. Cookie — SSR page loads + form submissions (browser sends it on same-origin).
-	if c, err := r.Cookie(dashCookieName); err == nil {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.cfg.Auth)) == 1 {
-			return true
-		}
+	// 1. Session cookie — SSR page loads, form submissions and the browser's
+	// WebSocket handshake (browser sends it on same-origin).
+	if s.validCookie(r) {
+		return true
 	}
 	// 2. Bearer header — API clients, curl (unchanged).
-	if got := bearerToken(r.Header.Get("Authorization")); got != "" {
-		return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Auth)) == 1
-	}
-	// 3. Query param — WS upgrade only; browsers can't set headers on a WS handshake.
-	if r.URL.Path == "/ws" {
-		if t := r.URL.Query().Get("token"); t != "" {
-			return subtle.ConstantTimeCompare([]byte(t), []byte(s.cfg.Auth)) == 1
-		}
-	}
-	return false
+	return s.hasValidBearer(r)
 }
 
 // hasValidBearer reports whether the request explicitly authenticates with the

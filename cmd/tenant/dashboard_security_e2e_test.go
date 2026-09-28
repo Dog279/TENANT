@@ -65,13 +65,11 @@ func (d *safetyDash) send(method, path, ctype, body string, set func(*http.Reque
 
 const formType = "application/x-www-form-urlencoded"
 
-func signedInCookie(r *http.Request) {
-	r.AddCookie(&http.Cookie{Name: "tenant-dash", Value: safetyDashToken})
-}
+func (d *safetyDash) signedInCookie(r *http.Request) { r.AddCookie(d.cookie) }
 
 // sentFrom is the signed-in browser's request, sent by a page at origin.
-func sentFrom(origin string) func(*http.Request) {
-	return func(r *http.Request) { signedInCookie(r); r.Header.Set("Origin", origin) }
+func (d *safetyDash) sentFrom(origin string) func(*http.Request) {
+	return func(r *http.Request) { d.signedInCookie(r); r.Header.Set("Origin", origin) }
 }
 
 func withKey(key string) func(*http.Request) {
@@ -128,10 +126,10 @@ func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 	}{
 		{"no credential", nil, http.StatusUnauthorized},
 		{"a wrong key", withKey("nope"), http.StatusUnauthorized},
-		{"the cookie without an Origin", signedInCookie, http.StatusForbidden},
-		{"another port", sentFrom("http://127.0.0.1:1"), http.StatusForbidden},
-		{"another site", sentFrom("http://evil.example"), http.StatusForbidden},
-		{"a rebinding host", func(r *http.Request) { sentFrom("http://evil.example")(r); r.Host = "evil.example" }, http.StatusForbidden},
+		{"the cookie without an Origin", d.signedInCookie, http.StatusForbidden},
+		{"another port", d.sentFrom("http://127.0.0.1:1"), http.StatusForbidden},
+		{"another site", d.sentFrom("http://evil.example"), http.StatusForbidden},
+		{"a rebinding host", func(r *http.Request) { d.sentFrom("http://evil.example")(r); r.Host = "evil.example" }, http.StatusForbidden},
 	} {
 		if a := d.send("POST", pagePath(id, "approve"), formType, "", tc.set); a.code != tc.code {
 			t.Errorf("page, %s: %d, want %d", tc.name, a.code, tc.code)
@@ -141,7 +139,7 @@ func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 		}
 		d.stillWaiting(id, res, tc.name)
 	}
-	ours := sentFrom(d.base)
+	ours := d.sentFrom(d.base)
 	// Signed in, from this page, confirmed, with an answer the page doesn't offer.
 	for _, decision := range []string{"yes", "", "APPROVE", "approve_always", "always", "session", "approve_once"} {
 		if a := d.send("POST", pagePath(id, decision)+"&confirm=yes", formType, "", ours); a.code != http.StatusSeeOther || !strings.Contains(a.errMsg, "Nothing was allowed") {
@@ -185,7 +183,7 @@ func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 func TestE2E_NoDoubleApprove(t *testing.T) {
 	d := newSafetyDash(t)
 	id, res := d.ask("os_exec", "echo race")
-	ours := sentFrom(d.base)
+	ours := d.sentFrom(d.base)
 	start := make(chan struct{})
 	answers := make(chan e2eAnswer, 16)
 	var wg sync.WaitGroup
@@ -281,7 +279,7 @@ func TestE2E_DenyOnTimeout(t *testing.T) {
 	if len(d.ev.matching(catalog.ApprovalExpired, "")) != 1 {
 		t.Errorf("ApprovalExpired records: %v", d.ev.audited())
 	}
-	if a := d.send("POST", pagePath(id, "approve"), formType, "", sentFrom(d.base)); a.code != http.StatusSeeOther || !strings.Contains(a.errMsg, "already answered") {
+	if a := d.send("POST", pagePath(id, "approve"), formType, "", d.sentFrom(d.base)); a.code != http.StatusSeeOther || !strings.Contains(a.errMsg, "already answered") {
 		t.Errorf("a late Allow: %d %q, want the no-longer-waiting message", a.code, a.errMsg)
 	}
 
@@ -313,17 +311,17 @@ func TestE2E_CSRFModeChangeRefused(t *testing.T) {
 	}
 	allow := url.Values{"category": {"exec"}, "mode": {"allow"}, "confirm": {"yes"}}
 	for name, set := range map[string]func(*http.Request){
-		"another port":     sentFrom("http://127.0.0.1:1"),
-		"another site":     sentFrom("http://evil.example"),
-		"no Origin":        signedInCookie,
-		"a rebinding host": func(r *http.Request) { sentFrom("http://evil.example")(r); r.Host = "evil.example" },
+		"another port":     d.sentFrom("http://127.0.0.1:1"),
+		"another site":     d.sentFrom("http://evil.example"),
+		"no Origin":        d.signedInCookie,
+		"a rebinding host": func(r *http.Request) { d.sentFrom("http://evil.example")(r); r.Host = "evil.example" },
 	} {
 		if a := d.send("POST", "/safety/mode", formType, allow.Encode(), set); a.code != http.StatusForbidden {
 			t.Errorf("%s: %d, want 403", name, a.code)
 		}
 	}
 	unconfirmed := url.Values{"category": {"exec"}, "mode": {"allow"}}
-	if a := d.send("POST", "/safety/mode", formType, unconfirmed.Encode(), sentFrom(d.base)); a.code != http.StatusPreconditionRequired {
+	if a := d.send("POST", "/safety/mode", formType, unconfirmed.Encode(), d.sentFrom(d.base)); a.code != http.StatusPreconditionRequired {
 		t.Errorf("from this page without its confirm step: %d, want 428", a.code)
 	}
 	if m := d.broker.Modes()["exec"]; m != "ask" || len(d.ev.matching(catalog.ModeChanged, "")) != 0 {
@@ -378,6 +376,10 @@ func dashboardRoutes(t *testing.T) []string {
 // page's mode and a Tools rule. Every other route that changes something is
 // posted signed in from this page, and with the key, confirmed, every field
 // asking for more; afterwards every category still refuses without asking.
+// Not covered here (REVSEC-2): a remote service set to Don't ask (POST
+// /mcp/trust mode=allow, behind its confirm step) runs its own tools past a
+// Deny too, as a Tools rule does; this harness wires no remote services.
+// Discord's lock outranks both (mcpremote.Policy.Locked).
 func TestE2E_NoWebBypass(t *testing.T) {
 	d := newSafetyDash(t)
 	for _, c := range catOrder {
@@ -404,17 +406,20 @@ func TestE2E_NoWebBypass(t *testing.T) {
 		}
 		path := fill.ReplaceAllString(pattern, "exec")
 		for _, a := range []e2eAnswer{
-			d.send(method, path+"?"+more.Encode(), formType, more.Encode(), sentFrom(d.base)),
+			d.send(method, path+"?"+more.Encode(), formType, more.Encode(), d.sentFrom(d.base)),
 			d.send(method, path, "application/json", jsonMore, withKey(safetyDashToken)),
 		} {
-			if a.transportErr != nil || a.code == http.StatusInternalServerError { // 503: its control isn't wired here
+			if a.transportErr != nil || a.code == http.StatusInternalServerError || a.code == http.StatusUnauthorized { // 503: its control isn't wired here
 				t.Errorf("%s: %d %v", route, a.code, a.transportErr)
 			}
+		}
+		if route == "POST /auth/logout" {
+			d.cookie = d.signIn() // it ended the session; the sweep stays signed in
 		}
 	}
 	for _, route := range []string{"/safety/mode", "/tools/rules/add"} {
 		f := url.Values{"category": {"exec"}, "pattern": {"os_exec"}, "mode": {"allow"}}
-		if a := d.send("POST", route, formType, f.Encode(), sentFrom(d.base)); a.code != http.StatusPreconditionRequired {
+		if a := d.send("POST", route, formType, f.Encode(), d.sentFrom(d.base)); a.code != http.StatusPreconditionRequired {
 			t.Errorf("%s allow without its confirm step: %d, want 428", route, a.code)
 		}
 	}

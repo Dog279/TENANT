@@ -53,6 +53,10 @@ type goalControl struct {
 	lastJudge string
 	lastEval  time.Time
 	met       bool
+	// gen counts goals: Set and clearLocked bump it. Judge notes the one it
+	// judges (judgedGen) and drops its verdict if another goal replaced it
+	// while the model answered, and Continue then starts no turn (C-5).
+	gen, judgedGen uint64
 
 	// loopCeiling is the per-turn planner↔tool iteration budget applied WHILE
 	// this goal loop is active, decoupled from the global PlanLoopCeiling
@@ -89,6 +93,7 @@ func (gc *goalControl) Set(_ context.Context, condition string) (firstPrompt, st
 	}
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
+	gc.gen++
 	gc.condition = condition
 	gc.startedAt = time.Now()
 	gc.turns = 0
@@ -168,6 +173,7 @@ func (gc *goalControl) stopIfRunning() (status string, ok bool) {
 // clearLocked clears the set goal; gc.mu is held.
 func (gc *goalControl) clearLocked() string {
 	had := gc.condition
+	gc.gen++
 	gc.condition = ""
 	gc.met = false
 	gc.lastJudge = ""
@@ -191,6 +197,8 @@ func (gc *goalControl) Judge(ctx context.Context, lastResponse string) (met bool
 	condition := gc.condition
 	turns := gc.turns
 	max := gc.maxTurns
+	gen := gc.gen
+	gc.judgedGen = gen
 	gc.mu.Unlock()
 	if condition == "" {
 		return true, "", false, nil // no goal → nothing to judge
@@ -244,28 +252,25 @@ Output ONLY the decision line. No preamble. No surrounding text.`, condition, cl
 		// tool-call mode doesn't pollute the judgment.
 		StopSequences: []string{"<tool_call", "<function="},
 	})
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	if gc.gen != gen {
+		// Stopped, or replaced by a new goal, while the model answered: the
+		// verdict (or the failure) was about a goal that is gone.
+		return false, "", false, nil
+	}
 	if gerr != nil {
 		return false, "", false, fmt.Errorf("goal judge: %w", gerr)
 	}
-	text := strings.TrimSpace(resp.Text)
-
-	gc.mu.Lock()
+	met, reason = parseJudgeVerdict(strings.TrimSpace(resp.Text))
 	gc.lastEval = time.Now()
 	gc.turns = turns + 1
-	gc.mu.Unlock()
-
-	met, reason = parseJudgeVerdict(text)
 	if met {
-		gc.mu.Lock()
 		gc.met = true
 		gc.lastJudge = "goal achieved"
-		gc.mu.Unlock()
 		return true, "", false, nil
 	}
-
-	gc.mu.Lock()
 	gc.lastJudge = reason
-	gc.mu.Unlock()
 	// Did this turn put us AT the cap? (turns was incremented above.)
 	if turns+1 >= max {
 		return false, reason, true, nil
@@ -470,7 +475,7 @@ func extractNotMetReason(text string) string {
 // nothing: no extra step after a Stop (D17).
 func (gc *goalControl) Continue(reason string) string {
 	gc.mu.Lock()
-	cleared := gc.condition == ""
+	cleared := gc.condition == "" || gc.gen != gc.judgedGen // stopped, or a new goal started while judging
 	gc.mu.Unlock()
 	if cleared {
 		return ""

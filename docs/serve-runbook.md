@@ -79,6 +79,10 @@ Every dashboard request needs the bearer token in `<config>/dashboard-auth-token
 launchd or systemd, stdout goes to a file, so the start-up banner and the `system`
 log line say where the token lives instead: `cat` that file to see it.
 `tenant attach` and `tenant logs` read it themselves.
+A browser presents the token once, on the sign-in form, and gets a random session id
+in its cookie, never the token: the session lasts 7 days, ends on Log out, and every
+session ends when serve restarts. Only the `Authorization: Bearer` header takes the
+token itself; no path takes it from the URL (`/ws` included).
 
 Builds before TEN-360 printed the token to stdout (launchd keeps it in `serve.log`,
 which nothing rotates) and wrote it into `<data>/logs/system/*.log`. If you ran one,

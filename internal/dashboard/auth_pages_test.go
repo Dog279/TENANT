@@ -6,10 +6,22 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
+// testSession is the sign-in cookie a signed-in browser sends in these
+// tests; withSession starts it on s.
+const testSession = "a-signed-in-browser"
+
+func withSession(s *Server) *Server {
+	s.sessMu.Lock()
+	s.sessions = map[string]time.Time{testSession: time.Now().Add(time.Hour)}
+	s.sessMu.Unlock()
+	return s
+}
+
 func authedServer() *Server {
-	return New(Config{Addr: "example.com", Auth: "s3cret"}, nil, nil, nil, nil, nil)
+	return withSession(New(Config{Addr: "example.com", Auth: "s3cret"}, nil, nil, nil, nil, nil))
 }
 
 func TestCheckAuth_CookieAndExemptions(t *testing.T) {
@@ -19,8 +31,11 @@ func TestCheckAuth_CookieAndExemptions(t *testing.T) {
 		setup(r)
 		return s.checkAuth(r)
 	}
-	if !check(func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "s3cret"}) }) {
+	if !check(func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession}) }) {
 		t.Error("valid cookie should authenticate")
+	}
+	if check(func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "s3cret"}) }) {
+		t.Error("the key itself as the cookie must NOT authenticate: the cookie is a session id")
 	}
 	if check(func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "wrong"}) }) {
 		t.Error("invalid cookie must NOT authenticate")
@@ -36,8 +51,8 @@ func TestCheckAuth_CookieAndExemptions(t *testing.T) {
 			t.Errorf("%s should be auth-exempt", p)
 		}
 	}
-	if r := httptest.NewRequest("GET", "/ws?token=s3cret", nil); !s.checkAuth(r) {
-		t.Error("ws ?token= fallback should still authenticate")
+	if r := httptest.NewRequest("GET", "/ws?token=s3cret", nil); s.checkAuth(r) {
+		t.Error("a key in the URL must not authenticate, /ws included (F2)")
 	}
 }
 
@@ -65,8 +80,8 @@ func TestLogin_SetsCookieAndRedirects(t *testing.T) {
 		t.Errorf("want redirect to /, got %q", loc)
 	}
 	cs := rec.Result().Cookies()
-	if len(cs) == 0 || cs[0].Name != dashCookieName || cs[0].Value != "s3cret" {
-		t.Fatalf("expected %s cookie set, got %+v", dashCookieName, cs)
+	if len(cs) == 0 || cs[0].Name != dashCookieName || cs[0].Value == "" || cs[0].Value == "s3cret" || cs[0].MaxAge <= 0 {
+		t.Fatalf("expected a %s session cookie (not the key) with an expiry, got %+v", dashCookieName, cs)
 	}
 	if !cs[0].HttpOnly || cs[0].SameSite != http.SameSiteStrictMode {
 		t.Error("cookie must be HttpOnly + SameSite=Strict")
@@ -91,7 +106,7 @@ func TestLogin_WrongTokenForbidden(t *testing.T) {
 func TestSettings_RedirectsWhenAuthed(t *testing.T) {
 	s := authedServer()
 	r := httptest.NewRequest("GET", "/settings", nil)
-	r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "s3cret"})
+	r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 	rec := httptest.NewRecorder()
 	s.handleSettingsPage(rec, r)
 	if rec.Code != http.StatusSeeOther {
@@ -121,5 +136,42 @@ func TestLogout_ClearsCookie(t *testing.T) {
 	cs := rec.Result().Cookies()
 	if len(cs) == 0 || cs[0].MaxAge >= 0 {
 		t.Error("logout must expire the cookie (MaxAge < 0)")
+	}
+}
+
+// REVSEC-3: the cookie other services on this host receive is a session id,
+// not the key: it isn't a Bearer credential, it expires, and Log out ends it.
+func TestSession_CookieIsNotTheKey(t *testing.T) {
+	s := New(Config{Addr: "example.com", Auth: "s3cret"}, nil, nil, nil, nil, nil)
+	rec := httptest.NewRecorder()
+	s.handleLogin(rec, postForm("/auth/login", url.Values{"token": {"s3cret"}}))
+	cs := rec.Result().Cookies()
+	if len(cs) != 1 || cs[0].Value == "s3cret" || cs[0].MaxAge != int(sessionTTL/time.Second) {
+		t.Fatalf("sign-in cookie = %+v, want a session id with an expiry", cs)
+	}
+	with := func(set func(*http.Request)) bool {
+		r := httptest.NewRequest("GET", "/tools", nil)
+		set(r)
+		return s.checkAuth(r)
+	}
+	cookie := func(r *http.Request) { r.AddCookie(cs[0]) }
+	if !with(cookie) {
+		t.Fatal("the session cookie should sign the browser in")
+	}
+	if with(func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+cs[0].Value) }) {
+		t.Error("the session id must not work as a Bearer key")
+	}
+	r := httptest.NewRequest("POST", "/auth/logout", nil)
+	r.AddCookie(cs[0])
+	s.handleLogout(httptest.NewRecorder(), r)
+	if with(cookie) {
+		t.Error("Log out must end the session")
+	}
+	id := s.newSession()
+	s.sessMu.Lock()
+	s.sessions[id] = time.Now().Add(-time.Second)
+	s.sessMu.Unlock()
+	if with(func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: id}) }) {
+		t.Error("an expired session must not sign in")
 	}
 }

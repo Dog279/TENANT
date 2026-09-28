@@ -141,3 +141,49 @@ func TestApproveAlways_SaveFailureTellsOperator(t *testing.T) {
 		t.Errorf("the rule is still live until restart, got %q", m)
 	}
 }
+
+// C-4: "Keep them at Ask" saves three times in a row while the settings
+// watcher may tick at any moment. The persist hook changes stg and the file
+// in one hold, and the watcher reads the file in one, so it never mistakes
+// the process's own save for an edit and puts a kept category back to New.
+func TestSettingsWatcher_KeepsTheMarkerAcrossSaves(t *testing.T) {
+	for round := range 30 {
+		cfg := t.TempDir()
+		body := `{"permissions":{"exec":"ask","write":"ask","destructive":"ask","web":"ask","send":"ask","egress":"ask","mcp":"ask","sandbox":"ask"}}`
+		if err := os.WriteFile(filepath.Join(cfg, "settings.main.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stg, err := loadSettings(cfg, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		broker := newApprovalBroker(nil)
+		broker.LoadModes(stg.Permissions, stg.KnownCategories)
+		var mu sync.Mutex
+		broker.SetPersist(persistModes(stg, &mu, cfg, "main", func(msg string) { t.Error(msg) }))
+		stop, watched := make(chan struct{}), make(chan struct{})
+		go func() { // a watcher ticking as fast as it can
+			defer close(watched)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					applySettingsFile(cfg, "main", broker, nil, &mu, stg)
+				}
+			}
+		}()
+		for _, c := range []string{"egress", "mcp", "sandbox"} { // POST /safety/new
+			if _, err := broker.SetPermissionFrom("dashboard", c, "ask"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		close(stop)
+		<-watched
+		applySettingsFile(cfg, "main", broker, nil, &mu, stg)
+		if got := broker.NewCategories(); len(got) != 0 {
+			fresh, _ := loadSettings(cfg, "main")
+			t.Fatalf("round %d: after Keep them at Ask, New = %v; the file's known categories = %v", round, got, fresh.KnownCategories)
+		}
+	}
+}

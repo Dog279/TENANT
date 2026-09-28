@@ -1,9 +1,9 @@
 {{define "content"}}
 {{template "ui-flash" .}}
 <div class="postbar">
-  <span class="dim">What your agent may do:</span>
-  <form method="POST" action="/posture" class="inline"><input type="hidden" name="allow_send" value="false"><button type="submit" class="btn{{if not .AllowSend}} on{{end}}">Look only</button></form>
-  {{if .AllowSend}}<span class="btn on">Look and act</span>{{else}}{{template "ui-confirm" (confirmGo "/posture" "Look and act" "Your agent gets its tools that change things and send messages. Your safety settings still decide which of them ask you first." "allow_send" "true")}}{{end}}
+  <span class="dim">Tools that change things:</span>
+  <form method="POST" action="/posture" class="inline"><input type="hidden" name="allow_send" value="false"><button type="submit" class="btn{{if not .ActTools}} on{{end}}">All off</button></form>
+  {{if .AllowSend}}<span class="btn on">All on</span>{{else}}{{template "ui-confirm" (confirmGo "/posture" "All on" "Your agent gets its tools that change things and send messages. Your safety settings still decide which of them ask you first." "allow_send" "true")}}{{end}}
 </div>
 {{if .RulesOn}}
 <div class="card">
@@ -15,11 +15,11 @@
     <span class="sp"></span>
     {{if eq .Mode "allow"}}
     <form method="POST" action="/tools/rules/remove" class="inline">
-      <input type="hidden" name="pattern" value="{{.Pattern}}"><input type="hidden" name="mode" value="allow">
+      <input type="hidden" name="pattern" value="{{.Pattern}}">
       <button type="submit" class="btn sm">Remove</button>
     </form>
     {{else}}
-    {{template "ui-confirm" (confirmGo "/tools/rules/remove" "Remove" (printf "%s then follows its safety setting, which may let your agent use it without asking you." .Plain) "pattern" .Pattern "mode" .Mode)}}
+    {{template "ui-confirm" (confirmGo "/tools/rules/remove" "Remove" (printf "%s then follows its safety setting, which may let your agent use it without asking you." .Plain) "pattern" .Pattern)}}
     {{end}}
   </div>
   {{else}}

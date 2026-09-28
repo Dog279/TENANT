@@ -127,6 +127,7 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 		AllowWrite:       e.gateAllow(pf.mcpAllowWrite),
 		Confirm:          confirm,
 		Rule:             defaultToolRules.Mode,
+		Locked:           offsiteLocked,
 		CacheDir:         filepath.Join(c.cfgDir, "mcp"),
 		Log:              log,
 	}

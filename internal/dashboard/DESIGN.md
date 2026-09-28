@@ -8,7 +8,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 
 | Question | Where it's answered |
 |---|---|
-| Is my agent healthy? | Overview; the status strip (busy, queued, waiting) |
+| Is my agent healthy? | Overview; the status strip (busy, waiting) |
 | What has it learned, and is it getting better? | Memory, Skills, Quality, Research |
 | What can it do, and who can reach it? | Tools, Helpers, Remote services, Integrations, Access |
 | Is anything waiting for my OK? | Approvals & safety; the strip's "N actions are waiting for your OK" on every page |
@@ -23,7 +23,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 - A page's title is its nav label.
 - No uppercase warnings, no emoji status markers. Use a pill (`.risk`, `.on-tag`, `.tag-new`) instead.
 
-**Banned on pages** (checked on templates and on rendered pages by `TestTemplates_PlainLanguage` and `TestRendered_PlainLanguage`; the Logs page's filter language is exempt):
+**Banned on pages** (checked on templates and on rendered pages by `TestTemplates_PlainLanguage` and `TestRendered_PlainLanguage`; the Logs page's filter language is exempt, and so are the log records the Activity feed and Logs show as written, "Sub-agent …" and "cron-exec turned on" included: they are the record, not the page's words. The page's own labels around them follow this list):
 
 | Don't say | Say |
 |---|---|
@@ -31,7 +31,7 @@ The operator is not a developer. They run Tenant on a home computer or a Windows
 | compaction, working set | summaries |
 | superseded | replaced |
 | turn | message, conversation, step |
-| posture, Read-only / Allow-send | What your agent may do: Look only / Look and act |
+| posture, Read-only / Allow-send | Tools that change things: All off / All on (Overview: What it may do: Look only / Change things) |
 | gated | asks you first |
 | cron, cron-exec | scheduled jobs; "Scheduled jobs may make changes" |
 | allowlist, handles | who can message your agent; phone numbers or emails |
@@ -112,7 +112,7 @@ mux.HandleFunc("POST /safety/mode", needConfirm(confirmUnless("mode", "ask", "de
 - Without `confirm=yes` (read with `r.FormValue`), the answer is 428 "Nothing changed: that needs a second click to confirm." and the handler never runs.
 - `confirmUnless(key, safe…)` is fail-closed: the step is skipped only when the trimmed, lowercased value is one of the safe values. `ALLOW`, `" allow"`, `on`, `always`, `yes`, `1` or a missing field all confirm. A handler that sets a mode still rejects anything outside exactly ask, allow and deny.
 - The gate runs before the handler's own checks, so with no model control wired, `POST /models/use` without `confirm=yes` is now 428 where it used to be a 303 to the page.
-- Confirm is friction, not security. The session cookie, `checkOrigin` and `checkCSRF` are the boundary. `/api/*` isn't gated: a JSON client acts deliberately.
+- Confirm is friction, not security. The session cookie (a random session id with a 7-day life that Log out ends, never the key: cookies reach every port on the host), `checkOrigin` and `checkCSRF` are the boundary. `/api/*` isn't gated: a JSON client acts deliberately.
 
 Every route that changes something is in `reviewedMutations` (security_test.go), the TEN-213 ledger, with when it confirms; `TestRouteInventory` posts each one on the real mux, every spelling of "more" included, and fails on a route nobody classified.
 
@@ -139,7 +139,7 @@ Secret routes never put a control's error in a URL.
 
 **Logging (D29).** New dashboard code never calls `s.log.Warn` or `s.log.Error` and adds no events: it reuses `ActionFailed` (2201, through `flashFor`) and `RenderFailed` (3001).
 
-**The status strip.** `layout.html` holds `<div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')">`, which is never patched, around `#ui-status`. `statusView` fills it from the controls on each request: this dashboard's chat (Stop), a message queued behind the serve turn gate (Cancel, its place in line), what the gate is busy with, the approval count, and the new-safety-check notices. While busy the strip polls itself every 3s; idle, it is exactly `<div id="ui-status" class="status-strip"></div>` and CSS hides it. The poll is left out of request logging.
+**The status strip.** `layout.html` holds `<div class="status-wrap" data-init="@get('/ui/status')" data-on-interval__duration.20s="@get('/ui/status')">`, which is never patched, around `#ui-status`. `statusView` fills it from the controls on each request: this dashboard's chat (Stop), the approval count, and the new-safety-check notices. The queued ("#N in line", Cancel) and "busy with" lines read serve's turn gate, but today only the dashboard's own chat enters it: scheduled jobs, Discord, iMessage and alert investigations run their own agents alongside and never block Chat, and the terminal app has no gate. Those two lines are future work (ticket: one turn gate for every surface); until then only "Your agent is answering a message" can show. While busy the strip polls itself every 3s; idle, it is exactly `<div id="ui-status" class="status-strip"></div>` and CSS hides it. The poll is left out of request logging.
 
 ## 7. Mobile
 

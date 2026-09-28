@@ -36,25 +36,41 @@ func resolveJudgeKeyEnv(kind, persisted string) string {
 	return ""
 }
 
-func (j judgeCtl) Current() string {
+// judgeSetting is the persisted judge, resolved as every reader shows it:
+// the kind defaulted, and the key variable it reads with whether it is set.
+// ok is false when no separate judge is set (the planner grades).
+type judgeSetting struct {
+	kind, model, endpoint, keyEnv string
+	keyMissing                    bool
+}
+
+func (j judgeCtl) resolved() (js judgeSetting, ok bool) {
 	lc, err := loadLaunchConfig(j.cfgDir)
-	if err == nil && lc.Improve.Judge != "" {
-		ic := lc.Improve
-		kind := ic.JudgeKind
-		if kind == "" {
-			kind = "anthropic"
-		}
-		keyEnv := resolveJudgeKeyEnv(kind, ic.JudgeKeyEnv)
+	if err != nil || lc.Improve.Judge == "" {
+		return js, false
+	}
+	ic := lc.Improve
+	js = judgeSetting{kind: ic.JudgeKind, model: ic.Judge, endpoint: ic.JudgeEndpoint}
+	if js.kind == "" {
+		js.kind = "anthropic"
+	}
+	js.keyEnv = resolveJudgeKeyEnv(js.kind, ic.JudgeKeyEnv)
+	js.keyMissing = js.keyEnv != "" && os.Getenv(js.keyEnv) == ""
+	return js, true
+}
+
+func (j judgeCtl) Current() string {
+	if js, ok := j.resolved(); ok {
 		keyState := "key ready"
-		if keyEnv != "" && os.Getenv(keyEnv) == "" {
-			keyState = "⚠ $" + keyEnv + " not set"
+		if js.keyMissing {
+			keyState = "⚠ $" + js.keyEnv + " not set"
 		}
-		ep := ic.JudgeEndpoint
+		ep := js.endpoint
 		if ep == "" {
 			ep = "default endpoint"
 		}
 		return fmt.Sprintf("judge: %s · %q (%s · %s) — applies to `tenant eval` + the nightly gate. /judge clear for the planner default.",
-			kind, ic.Judge, ep, keyState)
+			js.kind, js.model, ep, keyState)
 	}
 	pm := j.planner
 	if pm == "" {

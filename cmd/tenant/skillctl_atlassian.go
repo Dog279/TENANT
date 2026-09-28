@@ -49,7 +49,7 @@ func atlassianSkillKind() skillKind {
 				NoteAfter: atlassianAuthNote,
 			},
 			{Key: "site", Prompt: "Atlassian site URL (e.g. https://you.atlassian.net)", Required: true, Validate: validateAtlassianSite, ShowIf: notMCP},
-			{Key: "project", Prompt: "Default Jira project key (e.g. TEN) — optional, Enter to skip", ShowIf: notMCP},
+			{Key: "project", Prompt: "Default Jira project key (e.g. TEN) — optional", ShowIf: notMCP},
 			{Key: "client_id", Prompt: "OAuth app Client ID (Developer Console)", Required: true, ShowIf: showIf("oauth")},
 			{Key: "client_secret", Prompt: "OAuth app Client Secret", Secret: true, Required: true, ShowIf: showIf("oauth")},
 			{Key: "email", Prompt: "Your Atlassian account email", Required: true, Validate: validateEmailRFC5322, ShowIf: showIf("token")},

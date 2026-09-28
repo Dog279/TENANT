@@ -20,6 +20,11 @@ type Policy struct {
 	// before the connector's trust: deny refuses even a trusted connector, ask
 	// prompts even under trust allow, allow skips the gate even under trust ask.
 	Rule func(action string) string
+	// Locked, when set, reports whether the surface the call comes from locks
+	// action (the Discord broker's lock while its exec mode is off). It
+	// outranks a rule allow and trust allow, as it does in the broker, which
+	// they never ask.
+	Locked func(ctx context.Context, action string) bool
 }
 
 // Trust modes — the operator's LIVE, per-connector decision about a server's
@@ -77,10 +82,14 @@ func (d *Dispatcher) Trust() string {
 }
 
 // gateCall is the per-call decision: the connector's trust mode first (deny
-// refuses, allow skips), then — under ask — the deny-by-default annotation gate.
+// refuses), the surface's lock on a gated tool, a tool rule, trust allow
+// (skips), then — under ask — the deny-by-default annotation gate.
 func (d *Dispatcher) gateCall(ctx context.Context, name string) error {
 	if d.Trust() == TrustDeny {
 		return fmt.Errorf("blocked: connector %s is set to deny — its tools cannot run until an operator sets it to ask or allow (/mcp trust %s allow, or the dashboard's Remote services page)", d.label, d.label)
+	}
+	if d.gated[name] && d.policy.Locked != nil && d.policy.Locked(ctx, d.label+":"+name) {
+		return fmt.Errorf("blocked: %s:%s can change things, and this conversation can't make changes now (for Discord, exec mode is off: /relay exec on at the machine, or the dashboard's Access page)", d.label, name)
 	}
 	if d.policy.Rule != nil {
 		action := d.label + ":" + name

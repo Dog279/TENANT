@@ -20,7 +20,7 @@
     <label>{{.Prompt}}
       {{if .Options}}
       <select name="{{.Key}}">
-        {{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}
+        {{$labels := .OptionLabels}}{{range $i, $o := .Options}}<option value="{{$o}}">{{if lt $i (len $labels)}}{{index $labels $i}}{{else}}{{$o}}{{end}}</option>{{end}}
       </select>
       {{else if .Secret}}
       <input type="password" name="{{.Key}}" class="cinput" autocomplete="off" placeholder="{{if .Required}}required{{else}}optional{{end}}">

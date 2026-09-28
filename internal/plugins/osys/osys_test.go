@@ -454,6 +454,21 @@ func TestExecGate(t *testing.T) {
 	if _, isErr, _ := d.Dispatch(ctx, call("os_exec", map[string]any{"command": "echo hi"})); isErr || len(rr.calls) != 1 {
 		t.Fatalf("per-command confirm should allow the run: isErr=%v", isErr)
 	}
+
+	// 6. UX-6: the operator pressed Deny. The agent is told it wasn't
+	// approved, not that exec is "disabled" behind a flag serve lacks.
+	no := Policy{Confirm: func(context.Context, string, string) bool { return false }}
+	d, _ = newDisp(t, no, "")
+	out, _, _ = d.Dispatch(ctx, call("os_exec", map[string]any{"command": "whoami"}))
+	if !strings.Contains(out, "wasn't approved") || strings.Contains(out, "disabled") || strings.Contains(out, "--allow-exec") {
+		t.Errorf("a denied command says %q", out)
+	}
+	if err := no.gateWrite(ctx, "os_write_file", "x"); err == nil || !strings.Contains(err.Error(), "wasn't approved") || strings.Contains(err.Error(), "disabled") {
+		t.Errorf("a denied write says %v", err)
+	}
+	if err := (Policy{}).gateExec(ctx, "whoami"); err == nil || !strings.Contains(err.Error(), "--os-allow-exec") {
+		t.Errorf("with no gate at all, the flag named is the real one: %v", err)
+	}
 }
 
 func TestReads(t *testing.T) {

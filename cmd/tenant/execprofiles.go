@@ -88,11 +88,19 @@ func execSurfaceFrom(ctx context.Context) string {
 	return surfaceLocal
 }
 
-// inheritExecSurface carries the exec surface stamped on from onto to. A team
-// runtime with a BaseCtx starts sub-agents on that long-lived context instead of
-// the spawning turn's, which would otherwise drop the stamp and run a sub-agent's
-// os_exec under the local profile: a way around a stricter per-surface boundary.
+// inheritExecSurface carries the exec surface stamped on from onto to, with
+// the offsite approver and lock stamped beside it. A team runtime starts
+// sub-agents on its run window's context (a BaseCtx, or the turn that opened
+// the window) instead of the spawning turn's, which would otherwise drop the
+// stamps: a sub-agent's os_exec would run under the local profile, and a
+// Discord turn's sub-agent would ask the local broker, past Discord's lock.
 func inheritExecSurface(to, from context.Context) context.Context {
+	if c := offsiteConfirmFrom(from); c != nil {
+		to = withOffsiteConfirm(to, c)
+	}
+	if l, _ := from.Value(offsiteLockKey{}).(func(string) bool); l != nil {
+		to = withOffsiteLock(to, l)
+	}
 	if s, _ := from.Value(execSurfaceKey{}).(string); s != "" {
 		return withExecSurface(to, s)
 	}

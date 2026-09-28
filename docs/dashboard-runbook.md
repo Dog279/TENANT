@@ -2,7 +2,7 @@
 
 The dashboard is your agent's control panel in a web browser. From it you see what your agent is doing, answer its requests, and change what it may do on its own.
 
-This guide is for the person who runs Tenant day to day. You don't need a terminal for anything here except finding the sign-in key the first time. [serve-runbook.md](serve-runbook.md) covers the technical side: running Tenant as a background service, and the JSON API.
+This guide is for the person who runs Tenant day to day. You don't need a terminal for anything here except finding the sign-in key the first time and the setup steps in sections 2 and 3. [serve-runbook.md](serve-runbook.md) covers the technical side: running Tenant as a background service, and the JSON API.
 
 ## 1. Turn it on
 
@@ -59,9 +59,14 @@ If you'd rather use a key you already know, set `dashboard.auth` in config.json 
 
 ### Signing out, and changing the key
 
-- **Log out** (at the bottom of the menu) signs out that browser only.
-- To sign out every browser, for example after losing a phone or laptop that was signed in, change the key: stop Tenant, delete `dashboard-auth-token` (or change `dashboard.auth`), and start Tenant. It makes a new key. On a Windows service: delete the file from an administrator window, then restart the Tenant service (open Services, find Tenant, click Restart). Every browser then has to sign in again with the new key.
-- A tab left open after the key changes goes to the sign-in form by itself the next time it checks for news.
+- **Log out** (at the bottom of the menu) ends that browser's sign-in. The browser keeps no copy of the key: it holds a sign-in that lasts 7 days, after which it asks for the key again.
+- Restarting Tenant signs out every browser.
+- If the key itself may have got out (you pasted it somewhere, or a lost laptop had it saved), change it: stop Tenant, delete `dashboard-auth-token` (or change `dashboard.auth`), and start Tenant. It makes a new key. On a Windows service: delete the file from an administrator window, then restart the Tenant service (open Services, find Tenant, click Restart). Every browser then has to sign in again with the new key.
+- A tab left open after a restart or a key change goes to the sign-in form by itself the next time it checks for news.
+
+### Other web pages on this computer
+
+Browsers don't keep a sign-in apart by port: every other web service on this computer's address (127.0.0.1, or your Tailscale name) receives the dashboard's sign-in when this browser opens it, and could use it until it ends. So in the browser you use for the dashboard, don't open links to other services on 127.0.0.1 or your Tailscale name, above all ones your agent suggests. The dashboard itself never links there: a research source on this computer, your network or your tailnet shows as plain text. If you did open one, press **Log out** (or restart Tenant) to end that sign-in.
 
 ### Monitoring
 
@@ -92,7 +97,7 @@ Some things your agent wants to do wait for you first: running a command, changi
 
 - on **Approvals & safety**, under "Waiting for your OK";
 - above the message box on **Chat**, when you are there;
-- on every page, in the line under the page title: "1 action is waiting for your OK", with an **Answer it** link;
+- on every page, in the line under the page title: "1 action is waiting for your OK", with an **Answer it** link. While your Chat message is the one waiting, that line reads "Your agent is answering a message · It's paused until you answer a request. Answer it";
 - on **Overview**, in the "Waiting for your OK" count.
 
 Each request says what your agent wants to do, in which area, which of its tools asked, how long it has waited, and the full text of what it wants to run or send. Special characters that could hide text show as markers like ⟨U+202E⟩. A long request says so ("This request is 41 lines long. Read all of it before you allow it."): scroll through it before you answer.
@@ -135,8 +140,8 @@ There is no "always" button here. To stop being asked about a whole area, change
 | Leave the sandbox | run a command outside the safety box after the box stopped it | Ask |
 
 - **Ask:** it asks you first, every time (section 4). One tap.
-- **Allow:** it goes ahead without asking. This asks first, and tells you what it means before you choose.
-- **Deny:** it can't, and doesn't ask. One tap.
+- **Allow:** it goes ahead without asking. Choosing Allow opens a second step that explains it before anything changes.
+- **Deny:** it can't, and doesn't ask. One tap. Two settings are stronger than Deny, for their own tools only: a tool rule on **Tools** that lets a tool go ahead (**Don't ask**), and a remote service set to **Don't ask** on **Remote services**. Both ask first when you set them. Discord's lock (**Access**, Discord may not run commands) holds even over those.
 
 **New.** An area an update added, which you haven't chosen for yet, is marked **New**. It asks you first until you choose. A notice on every page links here, and **Keep them at Ask** chooses Ask for all of them at once.
 
@@ -154,7 +159,7 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 
 | Page | What it's for | Asks first |
 |---|---|---|
-| **Overview** | How your agent is: model, quality score, what's waiting for you, what it may do. | Nothing. |
+| **Overview** | How your agent is (an alert, or a model it can't reach), what's waiting for you, what it may do, and the services it's connected to. Its model and quality score show once they have data. | Nothing. |
 | **Chat** | Talk to your agent. Its requests for your OK appear above the message box. | Nothing. **Stop** is immediate. |
 | **Activity feed** | Everything your agent and Tenant do, newest first, as it happens. | Nothing. |
 | **Autopilot** | A goal your agent is working toward on its own, started from the terminal app. A background service has no Autopilot, and says so. | Nothing: **Stop after this step** is immediate; the step in progress finishes. |
@@ -162,18 +167,18 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 | **Memory** | What your agent knows about you and remembers. | Nothing: a removed fact goes to **Recently removed**, where you can restore it. |
 | **Skills** | Things your agent figured out, waiting for you to accept or dismiss, and skills to trust. | **Dismiss** or **Remove** a skill, **Trust** one, and **Choose On** or **Choose Trusted** (accepting new skills without you). |
 | **Quality** | How well your agent answers a set of test questions over time. | Nothing. A check takes a few minutes. |
-| **Research** | Ask a question your agent researches for a few minutes and writes up. The report is saved to your agent's notes. | **Stop** a run (no report is written) and **Delete** one. |
-| **Tools** | Which tools your agent has, **Look only** or **Look and act**, and tool rules. | **Look and act**, a rule that lets a tool go ahead (**Don't ask**), and removing a rule that made a tool ask or blocked it. |
+| **Research** | Ask a question your agent researches for a few minutes and writes up. The report is saved to your agent's notes. A source on this computer or your own network shows as plain text, not a link (section 2). | **Stop** a run (no report is written) and **Delete** one. |
+| **Tools** | Which tools your agent has, **All on** or **All off** for the tools that change things, and tool rules. | **All on**, a rule that lets a tool go ahead (**Don't ask**), and removing a rule that made a tool ask or blocked it. |
 | **Helpers** | Specialists your agent hands work to, each with its own model and instructions. A helper on a hosted model says "Sends its work to <provider>". | **Remove**, **Reset** and **Clear instructions**. |
-| **Remote services** | Outside services your agent can use. Connecting one that needs a sign-in opens a sign-in page on the computer running Tenant (section 7). | **Disconnect**, and **Don't ask** (its tools go ahead without asking). **Ask first** and **Block** are one tap. |
+| **Remote services** | Outside services your agent can use. Connecting one that needs a sign-in opens a sign-in page on the computer running Tenant (section 7). An address that can't work is refused on the page; a connection that fails later is in **Logs** (`log:mcp*`). | **Disconnect**, and **Don't ask** (its tools go ahead without asking, even in an area set to Deny). **Ask first** and **Block** are one tap. |
 | **Scheduled jobs** | Jobs your agent runs on a timetable. | **Delete** a job, and turning on **Scheduled jobs may make changes**. |
 | **Approvals & safety** | What's waiting for your OK (section 4), and what your agent may do on its own (section 5). | **Allow** for an area, **Allow for the rest of this session**, and a pairing request's **Allow once**. |
 | **Access** | Who may message your agent on iMessage and Discord, and what those conversations may make it do. | **Add someone**, **Remove everyone**, removing the last person, turning on answering (**Turn on**, **Start**), changing the Discord account that approves requests, letting Discord run commands, and **Allow** for an area. |
 | **Model** | Which model answers, and cloud models to add. | **Use this model** and **Remove**. |
 | **Integrations** | Connect your agent to outside tools (Google, Atlassian, GitHub and others). | **Disconnect**, and **Allow changes** on a GitHub repository. |
-| **Provider keys** | The API keys Tenant uses. A key you paste is never shown again, only replaced or removed. Changes apply after Tenant restarts. | **Remove**. |
+| **Provider keys** | The API keys Tenant uses. A key you paste is never shown again, only replaced or removed. A new key for the model in use applies when you press **Reload API keys** on **Model**; other changes apply after Tenant restarts. | **Remove**. |
 
-**Busy.** While your agent is working, the line under the page title says so: "Your agent is answering a message", "Your agent is busy with a scheduled job or an alert", "Your message is #2 in line". A message you send while it is busy waits its turn, or tells you it wasn't sent and stays in the box. Nothing is lost.
+**Busy.** While your agent is answering a Chat message, the line under the page title says "Your agent is answering a message", with **Stop**. Scheduled jobs, Discord and iMessage conversations and alert checks run alongside and never hold up Chat; the **Activity feed** shows what they are doing. A second message you send while it is answering tells you it wasn't sent and stays in the box. Nothing is lost.
 
 ## 7. Signing in to a remote service or an integration
 
@@ -192,9 +197,9 @@ The link is only good for that one sign-in. If it expired, press **Connect** or 
 ## 8. When something goes wrong
 
 - **The sign-in page says the key didn't match.** Copy the key again (section 2). If the key file changed, Tenant was restarted with a new key.
-- **A tab went to the sign-in form by itself.** The key changed, or another Tenant on this computer signed this browser in (they share the browser's sign-in). Sign in again.
+- **A tab went to the sign-in form by itself.** Tenant restarted, the key changed, the 7-day sign-in ended, or another Tenant on this computer signed this browser in (they share the browser's sign-in). Sign in again.
 - **"config.json is unreadable by this account" (Tenant won't start).** The settings folder's permissions are wrong. On Windows, from an administrator window, check the folder with `icacls` and run `tenant doctor` (section 2).
-- **Nothing appears under "Waiting for your OK", but your agent is stuck.** Look at the Discord card: requests from Discord conversations are answered there. Check the line under the page title for what your agent is busy with.
+- **Nothing appears under "Waiting for your OK", but your agent is stuck.** Look at the Discord card: requests from Discord conversations are answered there. The **Activity feed** shows what your agent and its jobs are doing.
 - **A remote service's sign-in never finishes.** See section 7.
 - **"Live updates paused".** Reload the page.
 

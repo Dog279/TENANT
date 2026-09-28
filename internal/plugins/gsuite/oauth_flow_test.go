@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -330,5 +331,46 @@ func TestRunLoopbackFlow_HappyPath(t *testing.T) {
 	}
 	if tok.RefreshToken != "fresh-refresh-token" {
 		t.Errorf("refresh_token wrong: %q", tok.RefreshToken)
+	}
+}
+
+// REVSEC-6: a callback without the sign-in's state is ignored, even an
+// ?error= one: any web page can make the browser open the loopback address,
+// and must not end the operator's sign-in. The real one still does.
+func TestLoopbackFlow_IgnoresForeignCallback(t *testing.T) {
+	opened := make(chan string, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runLoopbackFlow(ctx, OAuthFlowConfig{
+			Config:      &oauth2.Config{ClientID: "c", Endpoint: oauth2.Endpoint{AuthURL: "https://auth.example/o", TokenURL: "https://auth.example/t"}},
+			OpenBrowser: func(u string) error { opened <- u; return nil },
+			WaitTimeout: 5 * time.Second,
+		})
+		done <- err
+	}()
+	auth, err := url.Parse(<-opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, state := auth.Query().Get("redirect_uri"), auth.Query().Get("state")
+	get := func(q string) {
+		resp, err := http.Get(cb + "?" + q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	get("error=access_denied")
+	get("state=forged&error=access_denied")
+	select {
+	case err := <-done:
+		t.Fatalf("a forged callback ended the sign-in: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	get("state=" + url.QueryEscape(state) + "&error=access_denied")
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("the real denial: %v", err)
 	}
 }
