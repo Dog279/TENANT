@@ -194,6 +194,21 @@ func redirectFlash(w http.ResponseWriter, r *http.Request, page, msg, errMsg str
 // and an open step keeps what was typed in it. A part that fails to render is
 // left as it was.
 func (s *Server) formDone(w http.ResponseWriter, r *http.Request, page, msg, errMsg string, region func() (string, error)) {
+	if errMsg != "" {
+		region = nil
+	}
+	s.formReply(w, r, page, msg, errMsg, region)
+}
+
+// formWarn is formDone for a change that happened but needs the operator's
+// eye (the model switched, but it can't answer yet): the toast is an alert,
+// and region comes too, because it changed.
+func (s *Server) formWarn(w http.ResponseWriter, r *http.Request, page, warn string, region func() (string, error)) {
+	s.formReply(w, r, page, "", warn, region)
+}
+
+// formReply is formDone's answer; a nil region is left out.
+func (s *Server) formReply(w http.ResponseWriter, r *http.Request, page, msg, errMsg string, region func() (string, error)) {
 	if r.Header.Get("Datastar-Request") == "" {
 		redirectFlash(w, r, page, msg, errMsg)
 		return
@@ -202,7 +217,7 @@ func (s *Server) formDone(w http.ResponseWriter, r *http.Request, page, msg, err
 	status, serr := s.uiPart("ui-status", s.statusView())
 	var body string
 	var berr error
-	if errMsg == "" {
+	if region != nil {
 		body, berr = region()
 	}
 	if err := errors.Join(terr, serr, berr); err != nil {

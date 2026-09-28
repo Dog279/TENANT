@@ -121,8 +121,15 @@ func TestSettingsGroup_ModelSwitchWarnsInPlace(t *testing.T) {
 			t.Errorf("the answer is missing %q:\n%s", want, body)
 		}
 	}
+	if n := strings.Count(body, `<div id="models-body">`); n != 1 {
+		t.Errorf("the rows came %d times, want once:\n%s", n, body)
+	}
 	if strings.Contains(body, "UNREACHABLE") {
 		t.Errorf("the control's own words reached the page:\n%s", body)
+	}
+	rec := sendForm(s.Handler(), http.MethodPost, "/models/use", url.Values{"name": {"m"}, "confirm": {"yes"}}, nil)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/models?err=Switched+to+m") {
+		t.Errorf("a plain post = %d to %q, want a 303 with the warning", rec.Code, loc)
 	}
 }
 

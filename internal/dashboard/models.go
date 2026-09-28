@@ -108,19 +108,10 @@ func (s *Server) handleModelUseForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A "⚠" status means the switch happened but the model can't answer yet
-	// (its warning is logged as SwapUnready). formDone leaves the rows out
-	// after an error, but these changed, so an in-place answer gets them too.
+	// (its warning is logged as SwapUnready): an alert, and the rows, which
+	// changed.
 	if strings.HasPrefix(status, "⚠") {
-		s.modelsDone(w, r, "", "Switched to "+name+", but it isn't ready to answer. The Logs page has the reason.")
-		if r.Header.Get("Datastar-Request") != "" {
-			body, err := s.modelsBody()
-			if err != nil {
-				RenderFailed.Log(r.Context(), "page", "/models", "err", err)
-				return
-			}
-			_, _ = w.Write(patchElements("", "", body))
-			flush(w)
-		}
+		s.formWarn(w, r, "/models", "Switched to "+name+", but it isn't ready to answer. The Logs page has the reason.", s.modelsBody)
 		return
 	}
 	s.modelsDone(w, r, "Every answer now comes from "+name+".", "")
