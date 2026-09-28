@@ -94,7 +94,9 @@ func (s *Server) handleMCPConnectForm(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	go func(u string) {
 		if err := s.mcp.Connect(u); err != nil {
-			ConnectorNotAdded.Log(ctx, "url", u, "err", err)
+			// The error quotes the address, which can carry a key: it stays
+			// in the masked url field only (F7).
+			ConnectorNotAdded.Log(ctx, "url", u, "err", strings.ReplaceAll(err.Error(), u, "(the address)"))
 		}
 	}(rawURL)
 	redirectFlash(w, r, "/mcp", "Connecting. A local service with no sign-in appears here in a moment (refresh); one that needs a sign-in opens a window on the computer running Tenant: approve it there first.", "")

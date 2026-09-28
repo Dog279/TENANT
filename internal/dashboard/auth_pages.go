@@ -108,7 +108,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLogout clears the session cookie and returns to the settings page.
+// Only a signed-in browser's sign-out is the operator's: the route is open to
+// anyone, and a record naming the operator must not be one anyone can file.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	signedIn := s.validCookie(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     dashCookieName,
 		Value:    "",
@@ -117,6 +120,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
-	_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
+	if signedIn {
+		_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
+	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

@@ -36,15 +36,17 @@ import (
 // is rejected 403; same-origin and Origin-less (curl, native WebSocket)
 // requests are allowed. No permissive Access-Control-Allow-Origin is emitted.
 //
-// Every answer refuses framing (F5). Referrer-Policy is same-origin, not
+// Every answer refuses framing (F5) and runs no script but the dashboard's
+// own (contentSecurityPolicy). Referrer-Policy is same-origin, not
 // no-referrer: with no-referrer a browser sends "Origin: null" on a plain form
 // POST, which checkOrigin rejects (the sign-in form included).
 func (s *Server) secure(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hd := w.Header()
 		hd.Set("X-Frame-Options", "DENY")
-		hd.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		hd.Set("Content-Security-Policy", contentSecurityPolicy)
 		hd.Set("Referrer-Policy", "same-origin")
+		hd.Set("X-Content-Type-Options", "nosniff")
 		ctx, route := r.Context(), s.route(r)
 		if !s.checkHost(r.Host) {
 			HostRejected.Log(ctx, "host", r.Host, "method", r.Method, "route", route, "remote", r.RemoteAddr)
@@ -81,6 +83,14 @@ func (s *Server) secure(h http.Handler) http.Handler {
 		h.ServeHTTP(w, r)
 	})
 }
+
+// contentSecurityPolicy is D31: no page may be framed, and the only script
+// that runs is /datastar.js from this dashboard, which evaluates its data-*
+// expressions (unsafe-eval). The pages carry no inline script (the
+// TestTemplates_NoInlineJS sweep), so script injected into a page, a
+// javascript: link or an on*= handler never runs; nosniff keeps a log file
+// or a JSON answer from being loaded as script.
+const contentSecurityPolicy = "frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'"
 
 // signInPage reports whether an unauthorized request is a person opening a
 // page, who is better sent to the sign-in form than shown JSON (F4, D30): a

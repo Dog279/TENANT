@@ -100,7 +100,7 @@ An action gets a confirm step when it:
 - (c) lets the agent, or another person, do more without asking;
 - (d) changes every answer.
 
-No confirm on Deny, Stop, "Ask me again", tightening a mode, or "Keep them at Ask": friction goes on "go", never on "stop".
+No confirm on Deny, Chat's Stop, Autopilot's Stop, "Ask me again", tightening a mode, or "Keep them at Ask": friction goes on "go", never on "stop". Research's Stop is the exception: it throws the run away (a), so it confirms (D20).
 
 The step is the `ui-confirm` partial: a native `<details>` whose summary is the first button (it flips to Cancel), a consequence sentence, and a form that posts `confirm=yes`. It needs no JavaScript. Build it with `confirm` for (a) and (b), which is red (§3), or `confirmGo` for (c) and (d), which isn't. The server enforces it where the route is mounted:
 
@@ -114,7 +114,7 @@ mux.HandleFunc("POST /safety/mode", needConfirm(confirmUnless("mode", "ask", "de
 - The gate runs before the handler's own checks, so with no model control wired, `POST /models/use` without `confirm=yes` is now 428 where it used to be a 303 to the page.
 - Confirm is friction, not security. The session cookie, `checkOrigin` and `checkCSRF` are the boundary. `/api/*` isn't gated: a JSON client acts deliberately.
 
-Every confirmed route is listed in plan §2.1 and checked by `TestNeedConfirm` and the route inventory.
+Every route that changes something is in `reviewedMutations` (security_test.go), the TEN-213 ledger, with when it confirms; `TestRouteInventory` posts each one on the real mux, every spelling of "more" included, and fails on a route nobody classified.
 
 ## 6. States
 
@@ -152,7 +152,7 @@ Secret routes never put a control's error in a URL.
 
 ## 8. Datastar
 
-- Datastar (`/datastar.js`) is the only script. No hand-written JS, no inline `<script>`, no `on*=` attributes (`TestTemplates_NoInlineJS`).
+- Datastar (`/datastar.js`) is the only script. No hand-written JS, no inline `<script>`, no `on*=` attributes (`TestTemplates_NoInlineJS`). The browser enforces it: every answer carries `Content-Security-Policy: frame-ancestors 'none'; script-src 'self' 'unsafe-eval'; object-src 'none'; base-uri 'none'` (D31; Datastar evaluates its attributes, hence `unsafe-eval`) and `X-Content-Type-Options: nosniff`. An inline script, an `on*=` handler or a `javascript:` link doesn't run (`TestCSPInChrome`).
 - Use the colon syntax: `data-on:click`, `data-bind:text` (`TestTemplates_NoDeadHyphenDatastarAttrs`).
 - A `data-init` or `data-on-interval` that opens a GET goes only on a wrapper that is never patched; otherwise every patch opens another request. The one exception is the busy strip's own 3s poll, a one-shot GET.
 - Stream openers use `{retryMaxCount:1000000, retryMaxWait:5000}` (Research adds `openWhenHidden:true`).

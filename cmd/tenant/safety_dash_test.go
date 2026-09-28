@@ -28,6 +28,7 @@ import (
 type safetyDash struct {
 	t      *testing.T
 	broker *approvalBroker
+	rules  *toolRules // the broker's tool rules, also the Tools page's
 	base   string
 	cfgDir string
 	ev     *channelEvents
@@ -43,7 +44,8 @@ func newSafetyDash(t *testing.T) *safetyDash {
 // newSafetyDashIn is newSafetyDash on the settings already in cfgDir.
 func newSafetyDashIn(t *testing.T, cfgDir string) *safetyDash {
 	t.Helper()
-	d := &safetyDash{t: t, ev: captureChannelEvents(t), cfgDir: cfgDir, broker: newApprovalBroker(nil)}
+	d := &safetyDash{t: t, ev: captureChannelEvents(t), cfgDir: cfgDir, broker: newApprovalBroker(nil), rules: newToolRules()}
+	d.broker.SetRules(d.rules)
 	stg, err := loadSettings(d.cfgDir, "main")
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +65,7 @@ func newSafetyDashIn(t *testing.T, cfgDir string) *safetyDash {
 		cfg:         dashboard.Config{Addr: "127.0.0.1:0", Auth: safetyDashToken},
 		broker:      events,
 		approvals:   d.broker,
+		rules:       dashRules{d.rules},
 		safety:      d.broker,
 		safetyFacts: newSafetyFacts(),
 		notify:      func(string) {},
