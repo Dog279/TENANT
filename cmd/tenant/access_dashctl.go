@@ -36,7 +36,7 @@ func toPermRows(p tui.PermissionControl) []dashboard.PermissionRow {
 	in := p.Permissions()
 	out := make([]dashboard.PermissionRow, 0, len(in))
 	for _, pi := range in {
-		out = append(out, dashboard.PermissionRow{Category: pi.Category, Mode: pi.Mode, Desc: pi.Desc})
+		out = append(out, dashboard.PermissionRow{Category: pi.Category, Mode: pi.Mode, Desc: pi.Desc, Title: pi.Title, Can: pi.Can, New: pi.New})
 	}
 	return out
 }

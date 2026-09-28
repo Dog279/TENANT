@@ -27,15 +27,24 @@ import (
 //
 // Auth: every non-health request must carry
 // `Authorization: Bearer <token>` matching it (constant-time compare); a
-// missing or wrong token yields 401 JSON. GET /healthz is exempt so liveness
+// missing or wrong token yields 401 JSON, except a person opening a page, who
+// is sent to the sign-in form (signInPage). GET /healthz is exempt so liveness
 // probes work unauthenticated. checkBindPolicy refuses to start any listener,
 // including loopback, when s.cfg.Auth is empty.
 //
 // CORS: same-origin only. A cross-origin request (Origin host != request Host)
 // is rejected 403; same-origin and Origin-less (curl, native WebSocket)
 // requests are allowed. No permissive Access-Control-Allow-Origin is emitted.
+//
+// Every answer refuses framing (F5). Referrer-Policy is same-origin, not
+// no-referrer: with no-referrer a browser sends "Origin: null" on a plain form
+// POST, which checkOrigin rejects (the sign-in form included).
 func (s *Server) secure(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hd := w.Header()
+		hd.Set("X-Frame-Options", "DENY")
+		hd.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		hd.Set("Referrer-Policy", "same-origin")
 		ctx, route := r.Context(), s.route(r)
 		if !s.checkHost(r.Host) {
 			HostRejected.Log(ctx, "host", r.Host, "method", r.Method, "route", route, "remote", r.RemoteAddr)
@@ -55,6 +64,10 @@ func (s *Server) secure(h http.Handler) http.Handler {
 			if cred == "invalid" { // a failed token; none at all is only a visitor who hasn't signed in
 				refused(r, "token", route)
 			}
+			if signInPage(r) {
+				http.Redirect(w, r, "/settings?"+url.Values{"next": {r.URL.RequestURI()}}.Encode(), http.StatusSeeOther)
+				return
+			}
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "missing or invalid bearer token")
 			return
@@ -67,6 +80,17 @@ func (s *Server) secure(h http.Handler) http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// signInPage reports whether an unauthorized request is a person opening a
+// page, who is better sent to the sign-in form than shown JSON (F4, D30): a
+// GET navigation that accepts HTML. Datastar's own fetches say text/html too,
+// so they are told apart by their Datastar-Request header (and Sec-Fetch-Mode
+// where the browser sends it); they, the API and the streams keep the 401.
+func signInPage(r *http.Request) bool {
+	mode := r.Header.Get("Sec-Fetch-Mode")
+	return r.Method == http.MethodGet && r.Header.Get("Datastar-Request") == "" &&
+		(mode == "" || mode == "navigate") && strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 // refused writes a refused request's Security record (4303), attributed to

@@ -146,16 +146,7 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .soul-row:last-child{border-bottom:none}
 .soul-row .nm{font-weight:600}
 
-/* mobile: collapse the sidebar to a top strip, reflow cards (TEN-211 lays the
-   full system; this keeps every P1 page usable at 390px now) */
-@media (max-width:640px){
-  .app{grid-template-columns:1fr}
-  .side{flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid var(--line);align-items:center}
-  .nav{flex-direction:row;flex-wrap:wrap;gap:4px}
-  .nav-group{display:none}
-  .nav .logout-form{margin-top:0}
-  .cards{grid-template-columns:1fr 1fr}
-}
+/* mobile: the TEN-211 design system block at the end of this file */
 
 /* Activity feed cards (TEN-238) — themed to match the Memory .ep episode list */
 .act-row{margin-bottom:0}
@@ -228,3 +219,123 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .lg-ferr{margin:0;font-size:12px}
 .lg-sum td:first-child{white-space:nowrap;overflow-wrap:normal} /* a log's name reads whole */
 @media(max-width:1100px){.lgv{grid-template-columns:1fr;grid-template-rows:auto}.lg-tree{max-height:200px}.lg-grid{max-height:60vh}}
+
+/* TEN-211 design system: tokens, states, the status strip, the confirm step
+   and the mobile shell. internal/dashboard/DESIGN.md is the guide. A page's
+   own rules go in its marker block at the end of this file. */
+:root{--label:#7788a6} /* small labels: 4.84:1 on --card, 5.04:1 on --card2 (AA) */
+.card-head,.stat-label,.nav-group,.ovtable th,.lg-head{color:var(--label)}
+.banner.ok{border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.07)}
+.banner.info{border-color:rgba(34,211,238,.35);background:rgba(34,211,238,.06)}
+.banner.warn{border-color:rgba(251,191,36,.4);background:rgba(251,191,36,.08);color:#fde68a}
+.banner{flex-wrap:wrap;overflow-wrap:anywhere}
+.banner a,.busy a{color:var(--cyan);font-weight:600;text-decoration:underline}
+.empty{padding:16px 18px;border:1px dashed var(--line2);border-radius:13px;color:var(--dim);margin-bottom:14px}
+.state-off{color:var(--dim)}
+.loading::after{content:"…";display:inline-block;width:0;overflow:hidden;vertical-align:bottom;animation:ui-dots 1.2s steps(4,end) infinite}
+@keyframes ui-dots{to{width:1.2em}}
+.advanced{margin:10px 0}
+.advanced>summary{cursor:pointer;color:var(--dim);font-weight:600}
+.advanced[open]>summary{margin-bottom:10px}
+/* the status strip: #ui-status inside the never-patched .status-wrap */
+.status-wrap{flex:none}
+.status-strip{display:flex;flex-direction:column;gap:6px;padding:8px 20px;border-bottom:1px solid var(--line)}
+.status-strip:empty{display:none}
+.status-strip .banner{margin:0}
+.busy{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;border-radius:11px;border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.06)}
+.busy-dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--amber);animation:ui-pulse 1.4s ease-in-out infinite}
+.busy-text{flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
+@keyframes ui-pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.busy-dot,.loading::after{animation:none}.loading::after{width:auto}}
+/* the confirm step: the summary is the first button and flips to Cancel */
+.confirm-step{display:inline-block;max-width:100%}
+.confirm-step>summary{display:inline-flex;align-items:center;list-style:none}
+.confirm-step>summary::-webkit-details-marker{display:none}
+.confirm-step .c-cancel,.confirm-step[open] .c-open{display:none}
+.confirm-step[open] .c-cancel{display:inline}
+.confirm-step[open]{display:block;flex-basis:100%;width:100%}
+.confirm-step[open]>summary{color:var(--dim);border-color:var(--line2)}
+.confirm-box{margin-top:8px;padding:10px 12px;border:1px solid rgba(251,113,133,.4);border-radius:10px;background:rgba(251,113,133,.06);overflow-wrap:anywhere}
+.confirm-box p{margin:0 0 8px}
+.confirm-step.go[open] .confirm-box{border-color:var(--line2);background:var(--card)}
+/* classes the templates already used, with no rules until now */
+.table-wrap{overflow-x:auto}
+.on-tag{font-size:10px;font-weight:700;color:var(--green);background:rgba(52,211,153,.10);border:1px solid rgba(52,211,153,.3);border-radius:11px;padding:1px 7px}
+.actions,.cronactions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.cinput,select{max-width:100%;border:1px solid var(--line2);border-radius:8px;padding:6px 9px;color:var(--fg);background:#0a1322;font:inherit}
+.cinput.wide{width:100%}
+.row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid #121d33}
+.row:last-child{border-bottom:none}
+.page h2{font-size:14px;font-weight:650;margin:18px 0 10px}
+/* stopgap until WP-ux-adopt swaps them for ui-flash */
+.card.ok{border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.07)}
+.card.risk{font-size:inherit;font-weight:inherit;color:#fecdd3;padding:16px 18px;border-radius:13px;border-color:rgba(251,113,133,.4);background:rgba(251,113,133,.08)}
+/* the menu: a plain list on wide screens, a popover drawer under 640px */
+.menu-btn{display:none}
+.nav[popover]{position:static;inset:auto;margin:0;padding:10px;border:0;background:none;color:inherit;width:auto;height:auto;overflow:visible;display:flex}
+/* page classes (TEN-207, TEN-210, TEN-343) */
+.q-item{background:var(--card);border:1px solid var(--line2);border-radius:13px;padding:14px 16px;margin-bottom:12px;overflow-wrap:anywhere}
+.q-actions{display:flex;justify-content:space-between;gap:12px;margin-top:10px}
+.q-actions .btn{min-height:44px;min-width:44px}
+.q-detail{white-space:pre-wrap;overflow-wrap:anywhere;max-height:14em;overflow:auto;margin:8px 0;padding:10px 12px;background:#0c1729;border:1px solid var(--line);border-radius:9px;font-family:ui-monospace,monospace;font-size:12px}
+.q-long{color:var(--amber);font-size:12.5px}
+.q-empty{color:var(--dim)}
+.chat-q .q-empty{display:none}
+#approval-note:empty{display:none}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line2);border-radius:9px;overflow:hidden}
+.seg .btn{border:0;border-radius:0}
+.tag-new{font-size:10px;font-weight:700;color:var(--amber);background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.35);border-radius:11px;padding:1px 7px}
+.perm{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:10px 0;border-bottom:1px solid #121d33}
+.perm:last-child{border-bottom:none}
+.perm-other{font-size:12.5px;color:var(--dim)}
+.report{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
+.cite{color:var(--cyan);font-size:11px;vertical-align:super}
+.rh{display:block;font-size:14px;margin:12px 0 4px}
+.refs a{color:var(--cyan);overflow-wrap:anywhere}
+.live-off{margin-top:8px}
+/* Long names, URLs and IDs break anywhere rather than widen the page; only
+   the inner scrollers (.table-wrap, .lg-grid, pre, .diff, .q-detail) may be
+   wider than their box, and they scroll inside it. */
+.page{overflow-wrap:anywhere}
+.page pre{max-width:100%;overflow:auto}
+.cards>*{min-width:0}
+/* 390px: one column, the menu drawer, a 16px gutter, the confirm box as a
+   bottom sheet. The page never scrolls sideways. */
+@media (max-width:640px){
+  .app{height:100dvh;grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
+  .side{border-right:0;border-bottom:1px solid var(--line);overflow:visible}
+  .brand{padding:10px 16px;border-bottom:0}
+  .menu-btn{display:inline-flex;margin-left:auto}
+  .nav[popover]:not(:popover-open){display:none}
+  .nav[popover]:popover-open{position:fixed;inset:0 0 0 auto;width:min(86vw,300px);height:100dvh;overflow:auto;flex-direction:column;padding:12px;background:var(--card2);border-left:1px solid var(--line)}
+  .nav:popover-open::backdrop{background:rgba(0,0,0,.5)}
+  .page{padding:16px}
+  .hdr,.status-strip{padding:10px 16px}
+  .soul-row,.row,.ghead,.trow,.postbar,.fact-top,.searchbar,.memtabs{flex-wrap:wrap}
+  .resolve-pair{grid-template-columns:1fr}
+  .cinput{width:100%}
+  .cards{grid-template-columns:1fr 1fr}
+  .msg{max-width:100%}
+  .confirm-step[open] .confirm-box{position:fixed;left:16px;right:16px;bottom:16px;z-index:20;margin:0;background:linear-gradient(rgba(251,113,133,.08),rgba(251,113,133,.08)),var(--card);box-shadow:0 8px 30px rgba(0,0,0,.6)}
+}
+/* touch: 44px targets */
+@media (pointer:coarse){
+  .btn,.nav a,.menu-btn,.confirm-step>summary,.nav button.logout{min-height:44px;display:inline-flex;align-items:center}
+}
+/* the menu button is .btn too: keep it off wide touch screens */
+@media (min-width:641px){.menu-btn{display:none}}
+
+/* == WP-safety == */
+/* == end WP-safety == */
+
+/* == WP-agents == */
+/* == end WP-agents == */
+
+/* == WP-goal == */
+/* == end WP-goal == */
+
+/* == WP-research == */
+/* == end WP-research == */
+
+/* == WP-ux-adopt == */
+/* == end WP-ux-adopt == */

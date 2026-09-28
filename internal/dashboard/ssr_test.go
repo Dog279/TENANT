@@ -236,7 +236,7 @@ func TestSSR_DatastarColonSyntax(t *testing.T) {
 	}{
 		{"/activity", `@get('/activity/events`, "data-on-load"},
 		{"/activity", `{retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})`, "data-on-load"},
-		{"/chat", `data-on:submit__prevent="@post('/chat/send')"`, "data-on-submit"},
+		{"/chat", `data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})"`, "data-on-submit"}, // a double tap keeps the first answer
 		{"/chat", `data-bind:text`, "data-bind-text"},
 		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},
 		{"/tools", `data-on:click="@post('\/tools\/`, "data-on-click"}, // JS-escaped ToggleURL

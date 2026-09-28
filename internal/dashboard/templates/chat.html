@@ -1,6 +1,8 @@
 {{define "content"}}
 <div class="chat" id="chat-log" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"></div>
-<form class="composer" data-on:submit__prevent="@post('/chat/send')">
+{{/* requestCancellation off: a second tap must not throw away the answer
+     (bubble, cleared box) of a message that already started. */}}
+<form class="composer" data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})">
   <input id="chat-input" class="box" name="text" type="text" autocomplete="off"
          data-bind:text placeholder="Message tenant… (Enter to send)">
   <button type="submit" class="btn on">Send</button>

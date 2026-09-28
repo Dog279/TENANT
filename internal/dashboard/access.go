@@ -50,6 +50,9 @@ type PermissionRow struct {
 	Category string
 	Mode     string // "ask" | "allow" | "deny"
 	Desc     string
+	Title    string // plain name: "Run commands"
+	Can      string // what Allow lets the agent do
+	New      bool   // an update added it and nobody chose it, so it asks (TEN-343)
 }
 
 // AccessView is the whole page in one struct. The *Available / *Configured

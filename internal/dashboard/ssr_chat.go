@@ -90,23 +90,45 @@ func chatText(r *http.Request) string {
 	return strings.TrimSpace(r.FormValue("text"))
 }
 
+// clearChatBox empties the composer (its data-bind:text signal) once a message
+// is sent. A fixed event: no request text rides in a signals patch.
+const clearChatBox = "event: datastar-patch-signals\ndata: signals {\"text\":\"\"}\n\n"
+
 // handleChatSend appends the operator's message to the transcript and starts a
-// background turn; the turn's events stream back over /events.
+// background turn; the turn's events stream back over /events. The dashboard
+// runs one chat at a time (TEN-211): a second send is refused with a reason
+// and no bubble, and its text stays in the box. Both answers refresh the
+// status strip.
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	text := chatText(r)
 	if text == "" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	started := s.coord.startBackground(text)
 	setSSEHeaders(w)
-	_, _ = w.Write(patchElements("#chat-log", "append",
-		fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(text))))
-	if !started {
+	switch {
+	case s.agent == nil:
 		_, _ = w.Write(patchElements("#chat-log", "append",
-			`<div class="msg sys"><div class="dim">a turn is already running — try again in a moment</div></div>`))
+			`<div class="msg sys"><div class="dim">Chat isn't available on this Tenant.</div></div>`))
+	case s.coord.startBackground(text):
+		_, _ = w.Write(patchElements("#chat-log", "append",
+			fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(text))))
+		_, _ = w.Write([]byte(clearChatBox))
+		s.writeStatusPatch(w)
+	default:
+		_, _ = w.Write(patchElements("#chat-log", "append",
+			`<div class="msg sys"><div class="dim">Not sent: your agent is still answering. Your message is still in the box — send it again when it's done, or press Stop.</div></div>`))
+		s.writeStatusPatch(w)
 	}
 	flush(w)
+}
+
+// writeStatusPatch adds a #ui-status patch to an SSE answer (none on a render
+// error: the strip's own poll catches up).
+func (s *Server) writeStatusPatch(w http.ResponseWriter) {
+	if part, err := s.uiPart("ui-status", s.statusView()); err == nil {
+		_, _ = w.Write(patchElements("", "", part))
+	}
 }
 
 func (s *Server) handleChatInterject(w http.ResponseWriter, r *http.Request) {

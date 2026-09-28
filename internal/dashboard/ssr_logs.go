@@ -39,8 +39,8 @@ const (
 )
 
 // logsTmpl is parsed here rather than in parseSSR, so the page stays in its
-// own files.
-var logsTmpl = template.Must(template.ParseFS(ssrFS, "templates/layout.html", "templates/logs.html"))
+// own files. It takes the ui.html partials like every other set (TEN-211).
+var logsTmpl = template.Must(template.New("layout.html").Funcs(uiFuncs).ParseFS(ssrFS, "templates/layout.html", "templates/logs.html", "templates/ui.html"))
 
 func (s *Server) mountLogsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /logs", s.handleLogsPage)

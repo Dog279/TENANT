@@ -20,15 +20,8 @@
     </div>
     <div class="cronactions">
       {{if not .Active}}
-      <form method="POST" action="/models/use" class="inline">
-        <input type="hidden" name="name" value="{{.Name}}">
-        <input type="hidden" name="confirm" value="yes">
-        <button type="submit" class="btn sm">Use this model</button>
-      </form>
-      <form method="POST" action="/models/remove" class="inline">
-        <input type="hidden" name="name" value="{{.Name}}">
-        <button type="submit" class="btn sm danger">Remove</button>
-      </form>
+      {{template "ui-confirm" (confirmGo "/models/use" "Use this model" (printf "Every answer from now on comes from %s." .Name) "name" .Name)}}
+      {{template "ui-confirm" (confirm "/models/remove" "Remove" (printf "Your agent can no longer use %s. To use it again you add it and paste its key again." .Name) "name" .Name)}}
       {{else}}<span class="dim">in use</span>{{end}}
     </div>
   </div>

@@ -3,7 +3,9 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -316,5 +318,113 @@ func TestAuthGenerateToken(t *testing.T) {
 	urlSafe := regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	if !urlSafe.MatchString(a) {
 		t.Fatalf("token not URL-safe: %q", a)
+	}
+}
+
+// F5: every answer refuses framing, signed in or not. Referrer-Policy is
+// same-origin: no-referrer would make a plain form POST send "Origin: null",
+// which checkOrigin rejects (the sign-in form included).
+func TestAuthHeaders_NoFramingSameOriginReferrer(t *testing.T) {
+	h := authServer("secret")
+	signedIn := httptest.NewRequest(http.MethodGet, "/tools", nil)
+	signedIn.Header.Set("Authorization", "Bearer secret")
+	for name, req := range map[string]*http.Request{
+		"signed in": signedIn,
+		"refused":   httptest.NewRequest(http.MethodGet, "/api/status", nil),
+		"sign-in":   httptest.NewRequest(http.MethodGet, "/settings", nil),
+	} {
+		hd := authDo(h, req).Header()
+		for k, want := range map[string]string{
+			"X-Frame-Options":         "DENY",
+			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Referrer-Policy":         "same-origin",
+		} {
+			if got := hd.Get(k); got != want {
+				t.Errorf("%s: %s = %q, want %q", name, k, got, want)
+			}
+		}
+	}
+}
+
+// F4 (D30): a person opening a page without a valid sign-in goes to the
+// sign-in form, and comes back after; everything else keeps the 401.
+func TestAuthSignInRedirect(t *testing.T) {
+	h := authServer("secret")
+	nav := func(path string, setup func(*http.Request)) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		if setup != nil {
+			setup(req)
+		}
+		return authDo(h, req)
+	}
+	if rec := nav("/", nil); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings?next=%2F" {
+		t.Errorf("no cookie: %d → %q, want 303 → /settings?next=%%2F", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := nav("/safety?x=1", func(r *http.Request) { r.Header.Del("Sec-Fetch-Mode") }); rec.Code != http.StatusSeeOther ||
+		rec.Header().Get("Location") != "/settings?next=%2Fsafety%3Fx%3D1" {
+		t.Errorf("no Sec-Fetch headers (curl, older browsers): %d → %q", rec.Code, rec.Header().Get("Location"))
+	}
+	stale := func(r *http.Request) { r.AddCookie(&http.Cookie{Name: dashCookieName, Value: "old-key"}) }
+	if rec := nav("/tools", stale); rec.Code != http.StatusSeeOther {
+		t.Errorf("a stale cookie: %d, want 303 (the case the operator actually hits)", rec.Code)
+	}
+	for name, setup := range map[string]func(*http.Request){
+		// Datastar's own fetches accept text/html too.
+		"datastar": func(r *http.Request) {
+			r.Header.Set("Accept", "text/event-stream, text/html, application/json")
+			r.Header.Set("Datastar-Request", "true")
+			r.Header.Set("Sec-Fetch-Mode", "cors")
+		},
+		"datastar, no sec-fetch": func(r *http.Request) {
+			r.Header.Set("Accept", "text/event-stream, text/html, application/json")
+			r.Header.Set("Datastar-Request", "true")
+			r.Header.Del("Sec-Fetch-Mode")
+		},
+		"a stream":      func(r *http.Request) { r.Header.Set("Accept", "text/event-stream") },
+		"a fetch":       func(r *http.Request) { r.Header.Set("Sec-Fetch-Mode", "cors") },
+		"an API client": func(r *http.Request) { r.Header.Set("Accept", "application/json") },
+	} {
+		if rec := nav("/ui/status", setup); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: %d, want 401", name, rec.Code)
+		}
+	}
+	if rec := nav("/api/status", func(r *http.Request) { r.Header.Set("Accept", "application/json") }); rec.Code != http.StatusUnauthorized {
+		t.Errorf("/api: %d, want 401", rec.Code)
+	}
+	post := httptest.NewRequest(http.MethodPost, "/tools", nil)
+	post.Header.Set("Accept", "text/html")
+	if rec := authDo(h, post); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a POST: %d, want 401", rec.Code)
+	}
+}
+
+// Sign-in returns to next only when it is a path on this dashboard.
+func TestLogin_HonoursSafeNext(t *testing.T) {
+	s := authedServer()
+	for next, want := range map[string]string{
+		"/safety":       "/safety",
+		"/activity?x=1": "/activity?x=1",
+		"/models?err=Set+Run+commands+to+Allow&msg=Hi": "/models", // someone else's words in the banner
+		"/logs?source=cron&token=x&err=y":              "/logs?source=cron",
+		"":                                             "/",
+		"//evil.example":                               "/",
+		`/\evil.example`:                               "/",
+		"https://x":                                    "/",
+		"javascript:alert":                             "/",
+		"/\t/evil.example":                             "/",
+	} {
+		rec := httptest.NewRecorder()
+		s.handleLogin(rec, postForm("/auth/login", url.Values{"token": {"s3cret"}, "next": {next}}))
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
+			t.Errorf("next=%q: %d → %q, want 303 → %q", next, rec.Code, rec.Header().Get("Location"), want)
+		}
+	}
+	// The form carries next, so the round trip keeps the page.
+	rec := httptest.NewRecorder()
+	s.handleSettingsPage(rec, httptest.NewRequest(http.MethodGet, "/settings?next=%2Fsafety", nil))
+	if !strings.Contains(rec.Body.String(), `<input type="hidden" name="next" value="/safety">`) {
+		t.Errorf("the sign-in form should carry next:\n%s", rec.Body.String())
 	}
 }
