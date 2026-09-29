@@ -369,23 +369,25 @@ func inventoryServer(cfg Config) *Server {
 
 // sendForm serves one form request on h, the way a page posts it. A stream
 // that ends only with its context gets 200ms. Any other answer ends by
-// itself, so it gets no deadline: the log book's forms, reads and exports
-// write and query logbook.db, and on a loaded CI runner that outran 200ms,
-// so the store call failed on the test's deadline, not on what it tests.
+// itself: its 10s is only a guard, so a hung handler fails the test rather
+// than the package's timeout. The log book's forms, reads and exports write
+// and query logbook.db, and on a loaded CI runner that outran 200ms, so the
+// store call failed on the test's deadline, not on what it tests.
 func sendForm(h http.Handler, method, target string, form url.Values, set func(*http.Request)) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, target, strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if set != nil {
 		set(r)
 	}
+	deadline := 10 * time.Second
 	// isDashboardStream also lists the exports, which are long but finite.
 	if isDashboardStream(r) && r.URL.Path != "/api/events/export" && r.URL.Path != "/api/logbook/audit" {
-		ctx, cancel := context.WithTimeout(r.Context(), 200*time.Millisecond)
-		defer cancel()
-		r = r.WithContext(ctx)
+		deadline = 200 * time.Millisecond
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), deadline)
+	defer cancel()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, r)
+	h.ServeHTTP(rec, r.WithContext(ctx))
 	return rec
 }
 
