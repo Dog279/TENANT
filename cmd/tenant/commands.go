@@ -1915,7 +1915,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	})
 	// Execution-sandbox profiles and exceptions (execprofiles.go): same file,
 	// re-read on edit; an approved exception is saved through stg.
-	loadExecSettings(stg, &stgMu, c.cfgDir, c.agent, pushSys)
+	loadExecSettings(c, stg, &stgMu, pushSys)
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is PER-AGENT (each agent gets its own browser so concurrent
@@ -3282,7 +3282,7 @@ func cmdOS(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: invalid exec profiles skipped: %s\n", strings.Join(skipped, "; "))
 	}
 	// No approver here, so a sandbox refusal is final (no escalation).
-	svc, err := osys.Open(osys.Config{Runner: sandboxRunner(c.cfgDir, c.dataDir, nil)})
+	svc, err := osys.Open(osExecConfig(c.cfgDir, c.dataDir, nil))
 	if err != nil {
 		return err
 	}

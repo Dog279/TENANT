@@ -213,12 +213,21 @@ func errText(err error) string {
 	return err.Error()
 }
 
-func TestCronShellArgv_KeepsCmdOnWindows(t *testing.T) {
-	if got := cronShellArgvFor("windows", "dir"); !stdreflect.DeepEqual(got, []string{"cmd", "/C", "dir"}) {
-		t.Errorf("windows cron shell must stay cmd /C (existing jobs are cmd syntax), got %v", got)
-	}
-	if got := cronShellArgvFor("linux", "ls"); !stdreflect.DeepEqual(got, []string{"sh", "-c", "ls"}) {
-		t.Errorf("unix cron shell must stay sh -c, got %v", got)
+// A cron job keeps cmd /C only on the Windows host (a surface pinned there);
+// in the WSL sandbox it runs as sh, as everywhere else.
+func TestCronShellArgv_CmdOnlyOnTheWindowsHost(t *testing.T) {
+	for _, tc := range []struct {
+		goos, backend string
+		want          []string
+	}{
+		{"windows", "host", []string{"cmd", "/C", "dir"}},
+		{"windows", "restricted", []string{"sh", "-c", "dir"}},
+		{"linux", "host", []string{"sh", "-c", "dir"}},
+		{"darwin", "restricted", []string{"sh", "-c", "dir"}},
+	} {
+		if got := cronShellArgvFor(tc.goos, tc.backend, "dir"); !stdreflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s/%s: %v, want %v", tc.goos, tc.backend, got, tc.want)
+		}
 	}
 }
 

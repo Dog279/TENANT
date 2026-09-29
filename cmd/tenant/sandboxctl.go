@@ -284,6 +284,15 @@ func probeSurface(ctx context.Context, name, cfgDir, dataDir string) surfaceProb
 // its backend is unavailable and it enforces. A dry run runs them on the host.
 func (s surfaceProbe) failsClosed() bool { return s.Error != "" && s.Mode == refusalMode(true) }
 
+// runsOn is the backend the surface's commands run on: its own, or the host in
+// a dry run whose backend is unavailable (profileBackend).
+func (s surfaceProbe) runsOn() string {
+	if s.Error != "" && !s.failsClosed() {
+		return "host"
+	}
+	return s.Backend
+}
+
 // unconfined reports whether the surface's commands run on the host with no
 // boundary: its backend confines nothing, or it is unavailable in a dry run.
 func (s surfaceProbe) unconfined() bool {
@@ -1018,7 +1027,7 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 
 	cmd := sandbox.Command{Shell: o.command, Surface: o.surface, Origin: "sandbox-run"}
 	if o.surface == surfaceCronShell {
-		cmd = sandbox.Command{Args: cronShellArgv(o.command), Surface: o.surface, Origin: "sandbox-run"} // cmd /C on Windows, as cron runs it
+		cmd = sandbox.Command{Args: cronShellArgv(be.Name(), o.command), Surface: o.surface, Origin: "sandbox-run"} // as cron runs it: cmd /C on the Windows host
 	}
 	res, err := be.Run(ctx, cmd, pol)
 	if cerr := ctx.Err(); cerr != nil {

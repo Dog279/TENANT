@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -311,7 +312,16 @@ func checkExecSandbox(ctx context.Context, e *doctorEnv) checkResult {
 			r.Fix = "commands run unconfined until a restricted backend can run here; `tenant sandbox probe` has the detail"
 		}
 	}
-	r.Detail = strings.Join(append(notes, execProfileLines(probes)...), "\n       ")
+	lines := append(notes, execProfileLines(probes)...)
+	if e.c.lc != nil { // execSurfaces ends with cron-shell
+		if sh := cronShNotice(cronJobsInSh(runtime.GOOS, probes[len(probes)-1].runsOn(), e.c.lc.Cron.Jobs)); len(sh) > 0 {
+			lines = append(lines, sh...)
+			if r.Status == statusOK {
+				r.Status, r.Fix = statusWarn, "rewrite those cron jobs for sh, or pin cron-shell to the host"
+			}
+		}
+	}
+	r.Detail = strings.Join(lines, "\n       ")
 	return r
 }
 
