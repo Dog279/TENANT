@@ -10,7 +10,8 @@
 // Scope is a CONFIGURED SET of repos, not "whatever the model names". Every
 // call resolves its target through that allowlist, so the blast radius is the
 // operator's list rather than the token's full reach. Writes are additionally
-// gated in dispatch.go, and a few actions are refused in Go regardless.
+// gated in dispatch.go, a few are refused in Go regardless, and a merge passes the
+// merge gate in merge.go.
 package github
 
 import (
@@ -46,6 +47,10 @@ type Config struct {
 
 	// HTTPClient overrides the transport (tests inject an httptest client).
 	HTTPClient *http.Client
+
+	// MergeConfigPath is github-merge.json, the per-repo merge rules
+	// (MergeConfigPath(cfgDir)). Empty: merging is not configured.
+	MergeConfigPath string
 }
 
 // RepoRef is one resolved repository plus the operator's decision about
@@ -68,6 +73,9 @@ type Service struct {
 	client  *gh.Client
 	primary RepoRef
 	allowed []RepoRef
+
+	mergeConfigPath string
+	enterprise      bool // GitHub Enterprise: app ids differ from github.com's
 }
 
 // Primary is the default repo for tools that omit a target.
@@ -204,7 +212,8 @@ func Open(cfg Config) (*Service, error) {
 			return nil, fmt.Errorf("github: enterprise base %q: %w", base, err)
 		}
 	}
-	return &Service{client: client, primary: allowed[0], allowed: allowed}, nil
+	return &Service{client: client, primary: allowed[0], allowed: allowed,
+		mergeConfigPath: cfg.MergeConfigPath, enterprise: strings.TrimSpace(cfg.APIBase) != ""}, nil
 }
 
 // Validate confirms the token works and returns the authenticated login. Any

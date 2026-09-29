@@ -256,6 +256,12 @@ func fileToolGuards(cfgDir, dataDir string, pf *pluginFlags, lc *launchConfig) (
 		settings := settingsPath(cfgDir, "*")
 		peerCert, _ := peering.CertPaths(cfgDir)
 		add(&protect, settings, settings+".*.tmp", soul.SoulDir(cfgDir), peerCert, chainAnchorPath(cfgDir))
+		// Plugin settings that decide what the agent may do (the GitHub merge
+		// rules, TEN-432) are trust roots like the approval settings: the agent
+		// must not loosen a gate it passes through.
+		for _, f := range pluginConfigFiles(cfgDir) {
+			add(&protect, f, f+".*")
+		}
 		// The mcp dir as a whole also covers caches created after this list.
 		add(&secret, launchConfigPath(cfgDir), mcpCacheDir(cfgDir))
 	}

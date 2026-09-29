@@ -585,6 +585,7 @@ func configDirFile(rel string) bool {
 		filepath.Join(base, filepath.Base(claudecode.LedgerPath())),
 	}
 	files = append(files, pluginConfigSecrets(base)...)
+	files = append(files, pluginConfigFiles(base)...)
 	files = append(files, peering.AtRestPaths(base)...)
 	for _, f := range files {
 		if r, err := filepath.Rel(base, f); err == nil && filepath.ToSlash(r) == rel {

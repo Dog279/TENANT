@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 
+	"tenant/internal/approval"
 	"tenant/internal/model"
 	githubp "tenant/internal/plugins/github"
 )
@@ -13,11 +14,14 @@ import (
 // issues, CI) over a fine-grained PAT.
 func githubPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:            "github",
-		Events:        githubp.Events,
-		Connector:     true,
-		Forget:        func(cfg, _ string) []string { return []string{githubp.TokenPath(cfg)} },
+		ID:        "github",
+		Events:    githubp.Events,
+		Connector: true,
+		// The merge rules go with the connector: they name the repos and what the
+		// agent may merge there.
+		Forget:        func(cfg, _ string) []string { return []string{githubp.TokenPath(cfg), githubp.MergeConfigPath(cfg)} },
 		ConfigSecrets: func(cfg string) []string { return []string{githubp.TokenPath(cfg)} },
+		ConfigFiles:   func(cfg string) []string { return []string{githubp.MergeConfigPath(cfg)} },
 		// GitHub is a paste-a-token service like Discord. The repo it is scoped
 		// to lives in config (skills.github.settings.repo); only the PAT is a
 		// secret.
@@ -31,11 +35,19 @@ func githubPlugin() *pluginDescriptor {
 		Tools:       func() []model.ToolSpec { return githubp.NewDispatcher(nil, githubp.Policy{}).Tools() },
 		Configure:   githubSkillKind,
 		SetupOrder:  7,
-		Actions:     map[string]string{"github_write": catDestructive}, // branch, issue, comment, PR writes
-		StubHint:    "run `/configure github` (fine-grained PAT), then `/enable github`",
-		Activate:    activateGitHub,
+		Actions: map[string]string{
+			"github_write":      catDestructive, // branch, issue, comment, PR writes
+			githubp.ActionMerge: catDestructive, // explicit-only (init below): a rule or a live yes
+		},
+		StubHint: "run `/configure github` (fine-grained PAT), then `/enable github`",
+		Activate: activateGitHub,
 	}
 }
+
+// A merge is approved only by an exact github_merge tool rule or a live
+// decision, never by a destructive-category allow or a session grant given
+// for something else (TEN-432).
+func init() { approval.RequireExplicit(githubp.ActionMerge) }
 
 // activateGitHub builds the real GitHub plugin from /configure-saved settings
 // (TEN-176), so enabling it mid-session needs no relaunch.
@@ -61,9 +73,10 @@ func activateGitHub(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 		return nil, nil, fmt.Errorf("github plugin: %w", rerr)
 	}
 	svc, err := githubp.Open(githubp.Config{
-		Repos:   repos,
-		Token:   tok,
-		APIBase: sk.Settings["api_base"],
+		Repos:           repos,
+		Token:           tok,
+		APIBase:         sk.Settings["api_base"],
+		MergeConfigPath: githubp.MergeConfigPath(e.c.cfgDir),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("github plugin: %w", err)
@@ -133,9 +146,10 @@ func launchGitHub(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		return nil, nil, fmt.Errorf("github plugin: %w", rerr)
 	}
 	svc, err := githubp.Open(githubp.Config{
-		Repos:   repos,
-		Token:   githubToken(e.c.cfgDir),
-		APIBase: f.apiBase,
+		Repos:           repos,
+		Token:           githubToken(e.c.cfgDir),
+		APIBase:         f.apiBase,
+		MergeConfigPath: githubp.MergeConfigPath(e.c.cfgDir),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("github plugin: %w", err)

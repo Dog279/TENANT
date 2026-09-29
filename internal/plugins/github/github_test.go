@@ -41,12 +41,12 @@ func TestTools_GatingShape(t *testing.T) {
 	wantGated := map[string]bool{
 		"github_create_branch": true, "github_create_issue": true, "github_comment": true,
 		"github_create_pr": true, "github_update_pr": true, "github_delete_branch": true,
-		"github_merge_pr": true,
+		"github_merge": true,
 	}
 	wantUngated := map[string]bool{
 		"github_changes": true, "github_search": true, "github_get_issue": true, "github_get_pr": true,
 		"github_list_files": true, "github_read_file": true, "github_pr_checks": true,
-		"github_check_logs": true,
+		"github_check_logs": true, "github_merge_readiness": true,
 	}
 
 	seen := map[string]bool{}
@@ -124,35 +124,13 @@ func TestDispatch_FailsClosedWithoutHTTP(t *testing.T) {
 	}
 }
 
-// The hard-refusal regression: merging must fail even when the operator has
-// granted everything. This is the property that stops the agent merging its own
-// work, so it is asserted with the most permissive policy possible.
-func TestDispatch_MergeRefusedEvenWhenFullyApproved(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("merge reached the network: %s %s", r.Method, r.URL.Path)
-	}))
-	defer srv.Close()
-
-	d := NewDispatcher(openTest(t, srv), Policy{
-		AllowWrite: true,
-		Confirm:    func(context.Context, string, string) bool { return true },
-	})
-	out, isErr, err := d.Dispatch(context.Background(), call("github_merge_pr", map[string]any{"number": 1}))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !isErr || !strings.Contains(out, "refused") {
-		t.Fatalf("merge must be refused in code, got isErr=%v out=%q", isErr, out)
-	}
-}
-
-// A refused tool must be refused even before we know whether GitHub is
-// configured - otherwise the ordering of checks becomes a bypass.
-func TestDispatch_MergeRefusedWithNilService(t *testing.T) {
-	d := NewDispatcher(nil, Policy{AllowWrite: true})
-	out, isErr, _ := d.Dispatch(context.Background(), call("github_merge_pr", map[string]any{"number": 1}))
-	if !isErr || !strings.Contains(out, "refused") {
-		t.Fatalf("merge must refuse before the nil-service check, got %q", out)
+// With GitHub unconfigured, a merge reports the setup step and goes nowhere,
+// however permissive the policy.
+func TestDispatch_MergeWithNilService(t *testing.T) {
+	d := NewDispatcher(nil, Policy{AllowWrite: true, Confirm: func(context.Context, string, string) bool { return true }})
+	out, isErr, _ := d.Dispatch(context.Background(), call("github_merge", map[string]any{"number": 1, "expected_sha": "abc"}))
+	if !isErr || !strings.Contains(out, "not configured") {
+		t.Fatalf("got isErr=%v out=%q", isErr, out)
 	}
 }
 

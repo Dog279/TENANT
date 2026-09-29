@@ -5,10 +5,12 @@ package github
 //
 //	reads   - always allowed (search / get / list / read / CI status / changes)
 //	writes  - deny-by-default; need AllowWrite or a per-action Confirm
-//	refused - rejected in Go REGARDLESS of policy, Confirm, or model intent
+//	merge   - the merge gate (merge.go): every rule must pass for the exact
+//	          commit, then an explicit approval; AllowWrite never approves it
 //
-// The refused tier is the important one. A gate that lives only in a prompt is
-// a suggestion; a compromised or merely over-eager model talks its way past it.
+// Some targets are refused in Go REGARDLESS of policy, Confirm, or model intent
+// (deleting the default branch). A gate that lives only in a prompt is a
+// suggestion; a compromised or merely over-eager model talks its way past it.
 // These are if statements, so prompt injection cannot reach them.
 //
 // Every tool takes an optional repo argument resolved through the configured
@@ -127,28 +129,15 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		{Name: "github_delete_branch", Description: "Delete a branch. GATED, and REFUSED for a repo default branch regardless of approval.",
 			Parameters: obj(`"name":{"type":"string"},`+repoArgDesc, "name"), Gated: true},
 
-		// --- refused in Go (still exposed so the model gets a clear boundary
-		// and a next step, instead of inventing a workaround like a raw push) ---
-		{Name: "github_merge_pr", Description: "Merge a pull request. NOT AVAILABLE TO THE AGENT: merging is a human decision and is refused in code even when approved. Report that the PR is ready and let the operator merge.",
-			Parameters: obj(`"number":{"type":"integer"},`+repoArgDesc, "number"), Gated: true},
+		// --- the merge gate (merge.go) ---
+		{Name: "github_merge_readiness", Description: "Check whether a pull request may be merged: one line per merge rule (config, ready, ci, security_review, docs) with what failed and how to fix it. Read-only. Run it before github_merge and pass its head commit as expected_sha.",
+			Parameters: obj(`"number":{"type":"integer"},`+repoArgDesc, "number")},
+		{Name: "github_merge", Description: "Merge a pull request. GATED and strict: every merge rule must pass for the exact head commit (see github_merge_readiness), then the merge must be approved. Refused with the failing rule and its fix otherwise. The security review and docs rules are not available yet, so a person merges for now.",
+			Parameters: obj(`"number":{"type":"integer"},"expected_sha":{"type":"string","description":"the head commit github_merge_readiness reported"},"method":{"type":"string","description":"merge, squash or rebase (default: the first the repo allows)"},`+repoArgDesc, "number", "expected_sha"), Gated: true},
 	}
-}
-
-// hardRefuse names actions rejected in Go no matter what the policy, the
-// operator, or the model says. A named map (not scattered ifs) so the
-// regression test can assert the list directly.
-var hardRefuse = map[string]string{
-	"github_merge_pr": "merging is a human decision - the agent cannot merge its own work, even with approval. " +
-		"Report the PR number and its green checks; the operator merges.",
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
-	// Refusals come FIRST: before the nil-service check, before argument
-	// parsing, and before any network call. There is no ordering in which a
-	// refused action reaches GitHub.
-	if why, refused := hardRefuse[call.Name]; refused {
-		return "refused: " + why, true, nil
-	}
 	if d.svc == nil {
 		return "github is not configured - run `/configure github` (or set $GITHUB_TOKEN) and `/enable github`", true, nil
 	}
@@ -181,6 +170,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 		return d.updatePR(ctx, call.Arguments)
 	case "github_delete_branch":
 		return d.deleteBranch(ctx, call.Arguments)
+	case "github_merge_readiness":
+		return d.mergeReadiness(ctx, call.Arguments)
+	case "github_merge":
+		return d.merge(ctx, call.Arguments)
 	}
 	return "", false, fmt.Errorf("github: unknown tool %q", call.Name)
 }
@@ -523,21 +516,34 @@ func (d *Dispatcher) prChecks(ctx context.Context, args json.RawMessage) (string
 	if err != nil {
 		return fail("github pr checks failed", err)
 	}
-	runs, _, err := d.svc.client.Checks.ListCheckRunsForRef(ctx, r.Owner, r.Name, sha, &gh.ListCheckRunsOptions{})
+	checks, statusesRead, err := d.checksAt(ctx, r, sha)
 	if err != nil {
 		return fail("github pr checks failed", err)
 	}
-	if runs == nil || runs.GetTotal() == 0 {
+	runs := 0
+	for _, c := range checks {
+		if !c.Status {
+			runs++
+		}
+	}
+	if len(checks) == 0 {
 		return fmt.Sprintf("no check runs reported yet for %s #%d (%s)", r.Slug(), a.Number, shortSHA(sha)), false, nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s #%d (%s) - %d check(s):\n", r.Slug(), a.Number, shortSHA(sha), runs.GetTotal())
-	for _, cr := range runs.CheckRuns {
-		concl := cr.GetConclusion()
+	fmt.Fprintf(&b, "%s #%d (%s) - %d check(s):\n", r.Slug(), a.Number, shortSHA(sha), runs)
+	for _, c := range checks {
+		if c.Status {
+			fmt.Fprintf(&b, "- %s (status): %s\n", c.Name, c.State)
+			continue
+		}
+		concl := c.run.GetConclusion()
 		if concl == "" {
 			concl = "pending"
 		}
-		fmt.Fprintf(&b, "- %s: %s / %s\n", cr.GetName(), cr.GetStatus(), concl)
+		fmt.Fprintf(&b, "- %s: %s / %s\n", c.Name, c.run.GetStatus(), concl)
+	}
+	if !statusesRead {
+		b.WriteString("(commit statuses not shown: the token lacks Commit statuses: read)\n")
 	}
 	return strings.TrimRight(b.String(), "\n"), false, nil
 }
@@ -559,7 +565,7 @@ func (d *Dispatcher) checkLogs(ctx context.Context, args json.RawMessage) (strin
 	if err != nil {
 		return fail("github check logs failed", err)
 	}
-	runs, _, err := d.svc.client.Checks.ListCheckRunsForRef(ctx, r.Owner, r.Name, sha, &gh.ListCheckRunsOptions{})
+	checks, _, err := d.checksAt(ctx, r, sha)
 	if err != nil {
 		return fail("github check logs failed", err)
 	}
@@ -569,7 +575,11 @@ func (d *Dispatcher) checkLogs(ctx context.Context, args json.RawMessage) (strin
 	limit := clampMax(a.Max, 20, 50)
 	var b strings.Builder
 	shown := 0
-	for _, cr := range runs.CheckRuns {
+	for _, c := range checks {
+		if c.Status {
+			continue // a commit status carries no output or annotations
+		}
+		cr := c.run
 		switch cr.GetConclusion() {
 		case "success", "neutral", "skipped":
 			continue

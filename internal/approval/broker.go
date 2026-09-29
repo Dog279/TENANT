@@ -314,8 +314,12 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	// A per-tool rule is the operator's explicit word for THIS tool and wins
 	// over the category: allow/deny decide silently; ask always prompts, even
 	// past a category allow or a session grant.
+	// For an explicit-only action a rule answers only if it names the action
+	// exactly: "github_*: allow" was written for other tools, so it asks
+	// instead. A matching deny of any shape still refuses.
+	explicit := requiresExplicit(action)
 	if b.rules != nil {
-		if rmode, pat, ok := b.rules.Lookup(action); ok {
+		if rmode, pat, ok := b.rules.Lookup(action); ok && (!explicit || pat == action || rmode == "deny") {
 			switch rmode {
 			case "allow":
 				b.logInfo(ctx, "approval allowed by tool rule", "origin", b.origin, "category", cat, "action", action, "rule", pat)
@@ -328,6 +332,10 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 			switch b.askDecision(ctx, "agent", cat, action, detail, false) {
 			case control.ApproveAlways:
 				// "Always" on a rule-forced prompt means THIS tool, not its category.
+				// An explicit-only action's allow rule is made on purpose, not here.
+				if explicit {
+					return true
+				}
 				// A failed save is told to the operator by the settings persist hook.
 				if err := b.rules.Set(pat, "allow"); err != nil && b.log != nil {
 					b.log.Warn("approval: always-allow rule not set", "origin", b.origin, "rule", pat, "err", err)
@@ -345,6 +353,24 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	mode := b.modes[cat]
 	sess := b.session[cat]
 	b.mu.Unlock()
+
+	// An explicit-only action (RequireExplicit) is answered by an exact tool
+	// rule (above) or a live decision, never by its category's allow or a
+	// session grant: those were given for other actions. A category deny still
+	// holds. "Always" on its prompt covers this time only; an allow rule is
+	// made on purpose, in /permissions or on the dashboard.
+	if explicit {
+		if mode == ModeDeny {
+			b.logInfo(ctx, "approval auto-denied by category mode", "origin", b.origin, "category", cat, "action", action)
+			return verdict(ctx, cat, action, detail, b.origin, "mode", "denied_policy", control.DenyOnce)
+		}
+		switch b.askDecision(ctx, "agent", cat, action, detail, false) {
+		case control.ApproveAlways, control.ApproveSession, control.ApproveOnce:
+			return true
+		default:
+			return false
+		}
+	}
 
 	switch mode {
 	case ModeAllow:
