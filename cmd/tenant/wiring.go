@@ -25,6 +25,7 @@ import (
 	"tenant/internal/model/backend/claudecode"
 	"tenant/internal/model/backend/echo"
 	"tenant/internal/model/backend/vllm"
+	"tenant/internal/model/toolfmt"
 	"tenant/internal/runtrace"
 )
 
@@ -1075,6 +1076,12 @@ type genProfileOpts struct {
 func vllmGenProfiles(o genProfileOpts) []model.Profile {
 	if o.toolFmt == "" {
 		o.toolFmt = "gemma"
+	}
+	// tool_format "auto" (a server added with its model found automatically)
+	// reads tool calls the way the model served now writes them. A family
+	// toolfmt has no adapter for returns native tool_calls: the pass-through.
+	if o.toolFmt == toolfmt.Auto {
+		o.toolFmt = firstNonEmpty(toolfmt.ForModel(o.model), "openai")
 	}
 	if o.providerKind == "" {
 		o.providerKind = "vllm"

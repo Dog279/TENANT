@@ -36,18 +36,27 @@ func providerGenProfiles(cfgDir string, lc *launchConfig, name string, planCeili
 		return nil, nil, fmt.Errorf("no provider %q", name)
 	}
 	pk := providerKinds[pc.Kind]
+	endpoint := firstNonEmpty(pc.Endpoint, pk.DefaultEndpoint)
+	apiKey := resolveSecret(cfgDir, name, pc.Auth)
 	mdl := strings.TrimSpace(pc.Model)
 	if mdl == "" {
 		mdl = pk.DefaultModel
+	}
+	contextLen := 0
+	if mdl == "" { // a self-hosted server whose model is found automatically
+		if m, ok := servedModelFor(pk, endpoint, apiKey); ok {
+			mdl, contextLen = m.ID, m.MaxLen
+		}
 	}
 	c := &commonFlags{
 		cfgDir:       cfgDir,
 		backend:      pk.Backend,
 		genKind:      pc.Kind,
-		vllmEndpoint: firstNonEmpty(pc.Endpoint, pk.DefaultEndpoint),
+		vllmEndpoint: endpoint,
 		vllmModel:    mdl,
 		vllmToolFmt:  firstNonEmpty(pc.ToolFmt, pk.DefaultToolFmt),
-		genAPIKey:    resolveSecret(cfgDir, name, pc.Auth),
+		genAPIKey:    apiKey,
+		contextLen:   contextLen,
 		planCeiling:  planCeiling,
 	}
 	// Carry the provider's persisted reasoning effort exactly like the active

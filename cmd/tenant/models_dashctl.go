@@ -4,9 +4,14 @@ package main
 // the web Model page reuses the SAME backend registry + live-swap logic the
 // TUI /model does, mapping tui.ModelInfo to the dashboard's structured view.
 // No business logic forks. Every call is synchronous (no browser), unlike the
-// MCP connect flow.
+// MCP connect flow; adding a server waits for its check.
 
-import "tenant/internal/dashboard"
+import (
+	"context"
+	"errors"
+
+	"tenant/internal/dashboard"
+)
 
 type dashModel struct{ mc *modelControl }
 
@@ -14,13 +19,23 @@ func (d dashModel) Models() []dashboard.ModelView {
 	in := d.mc.ModelList()
 	out := make([]dashboard.ModelView, 0, len(in))
 	for _, m := range in {
-		out = append(out, dashboard.ModelView{
+		v := dashboard.ModelView{
 			Name:     m.Name,
 			Kind:     m.Kind,
 			Model:    m.Model,
 			Active:   m.Active,
 			Degraded: m.Degraded,
-		})
+		}
+		// A self-hosted server shows where it is, and whether its model is
+		// the one it serves (found at each start).
+		if pk := providerKinds[m.Kind]; pk.Local && pk.Backend == "vllm" {
+			v.Address = m.Endpoint
+			if v.Address == safeDisplayEndpoint("") { // saved without one: the kind's own
+				v.Address = pk.DefaultEndpoint
+			}
+			v.AutoModel = m.Model == ""
+		}
+		out = append(out, v)
 	}
 	return out
 }
@@ -34,6 +49,40 @@ func (d dashModel) Use(name string) (string, error) {
 func (d dashModel) AddCloud(kind, apiKey string) (string, error) {
 	return d.mc.addCloudModel(kind, apiKey, surfaceDashboard)
 }
+
+// AddServer checks a server and adds it; a failure the operator can fix
+// comes back in the page's words.
+func (d dashModel) AddServer(ctx context.Context, req dashboard.ServerRequest) (dashboard.ServerAdded, error) {
+	added, err := d.mc.addServer(ctx, serverRequest{Address: req.Address, Model: req.Model, Name: req.Name, APIKey: req.APIKey}, surfaceDashboard)
+	if err != nil {
+		var pe *plainError
+		if errors.As(err, &pe) {
+			return dashboard.ServerAdded{}, dashboard.PlainError(pe.plain)
+		}
+		return dashboard.ServerAdded{}, err
+	}
+	return dashboard.ServerAdded{
+		Name:   added.Name,
+		Server: serverKindWords[added.Kind],
+		Model:  displayText(added.Model, 80),
+		Auto:   added.Auto,
+		Tools:  string(added.Tools),
+		Format: toolFormatWords[added.ToolFmt],
+	}, nil
+}
+
+// serverKindWords and toolFormatWords say a server's kind and a tool-call
+// format the way the Model page does.
+var (
+	serverKindWords = map[string]string{
+		"vllm": "a vLLM server", "llamacpp": "a llama.cpp server", "ollama": "Ollama",
+		"openai-compat": "an OpenAI-compatible server",
+	}
+	toolFormatWords = map[string]string{
+		"qwen": "Qwen (Hermes)", "gemma": "Gemma", "llama": "Llama", "mistral": "Mistral", "openai": "standard OpenAI",
+	}
+)
+
 func (d dashModel) Remove(name string) (string, error) {
 	return d.mc.removeModel(name, surfaceDashboard)
 }
