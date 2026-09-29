@@ -201,11 +201,13 @@ func (g *Governor) Ensure(parent context.Context) context.Context {
 
 // EnsureAgent is Ensure and AcquireAgent in one step, under the lock
 // EndIfIdle decides under: the run a spawn opens or joins can't be ended
-// between the two, as another turn's team_await did (TEN-326).
+// between the two, as another turn's team_await did (TEN-326). A run that
+// was terminated and has no agent left is over: the spawn opens a fresh one
+// rather than being refused until somebody awaits.
 func (g *Governor) EnsureAgent(parent context.Context) (context.Context, func(), error) {
 	g.beginMu.Lock()
 	g.mu.Lock()
-	retire, opened := func() {}, !g.open
+	retire, opened := func() {}, !g.open || g.overLocked()
 	var began BudgetStatus
 	if opened {
 		retire = g.beginLocked(parent)
@@ -387,7 +389,7 @@ func (g *Governor) acquireLocked() (context.Context, func(), error) {
 // the underlying tool is invoked.
 func (g *Governor) AcquireToolCall(agentID string) error {
 	g.mu.Lock()
-	if !g.open {
+	if !g.open || g.overLocked() {
 		g.mu.Unlock()
 		return nil
 	}
@@ -467,7 +469,7 @@ func (g *Governor) RecordUsage(prompt, completion int) error {
 // AcquireBrowser reserves a browser process slot before Chrome is launched.
 func (g *Governor) AcquireBrowser() (func(), error) {
 	g.mu.Lock()
-	if g.terminated {
+	if g.terminated && !g.overLocked() {
 		err := fmt.Errorf("orchestra: team run terminated: %s", g.reason)
 		g.mu.Unlock()
 		return nil, err
@@ -511,6 +513,12 @@ func (g *Governor) terminateRun(runID uint64, reason string) {
 }
 
 func (g *Governor) markTerminatedLocked(reason string) { g.terminated, g.reason = true, reason }
+
+// overLocked reports a run that was terminated and has no agent left in it:
+// it refuses nothing more (tool calls, browsers), and the next spawn opens a
+// fresh run in its place. A terminated run still winding its agents down
+// refuses (TEN-326).
+func (g *Governor) overLocked() bool { return g.terminated && g.activeAgents == 0 }
 
 func (g *Governor) snapshotLocked() BudgetStatus {
 	byAgent := make(map[string]int, len(g.toolCallsByAgent))

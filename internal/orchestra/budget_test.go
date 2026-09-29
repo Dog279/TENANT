@@ -64,6 +64,11 @@ func TestGovernorEndIfIdleAndEnsureAgent(t *testing.T) {
 	if err != nil || !g.Active() || g.Status().ActiveSubagents != 1 {
 		t.Fatalf("EnsureAgent with no run open: err %v, status %+v", err, g.Status())
 	}
+	_, release2, err := g.EnsureAgent(context.Background())
+	if st := g.Status(); err != nil || st.RunID != 1 || st.ActiveSubagents != 2 || st.AgentsStarted != 2 {
+		t.Fatalf("a second spawn should join the open run: err %v, status %+v", err, st)
+	}
+	release2()
 	if g.EndIfIdle() || !g.Active() {
 		t.Fatal("EndIfIdle ended a run whose agent still holds its slot")
 	}
@@ -74,6 +79,38 @@ func TestGovernorEndIfIdleAndEnsureAgent(t *testing.T) {
 	if g.EndIfIdle() {
 		t.Fatal("EndIfIdle ended a run that was already over")
 	}
+}
+
+// A terminated run refuses while its agents wind down, then blocks nothing:
+// the orchestrator's tool calls and browser go ahead, and the next spawn
+// opens a fresh run (TEN-326).
+func TestGovernorTerminatedRunBlocksOnlyWhileAgentsRemain(t *testing.T) {
+	g := NewGovernor(Budgets{}, nil)
+	_, release, err := g.EnsureAgent(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.terminateRun(g.Status().RunID, "wall time limit exceeded (test)")
+	if _, _, err := g.EnsureAgent(context.Background()); err == nil {
+		t.Error("a spawn joined a terminated run whose agent is still winding down")
+	}
+	if err := g.AcquireToolCall("main"); err == nil {
+		t.Error("a tool call went ahead in a terminated run with an agent still in it")
+	}
+	release()
+	if err := g.AcquireToolCall("main"); err != nil {
+		t.Errorf("a tool call after the terminated run's last agent: %v", err)
+	}
+	if rel, err := g.AcquireBrowser(); err != nil {
+		t.Errorf("a browser after the terminated run's last agent: %v", err)
+	} else {
+		rel()
+	}
+	_, release, err = g.EnsureAgent(context.Background())
+	if st := g.Status(); err != nil || st.RunID != 2 || !st.Active || st.TerminationReason != "" {
+		t.Fatalf("the next spawn should open a fresh run: err %v, status %+v", err, st)
+	}
+	release()
 }
 
 func TestOldRunReleaseCannotDecrementNewRun(t *testing.T) {

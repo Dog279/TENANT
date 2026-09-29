@@ -2950,9 +2950,12 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		sysUnavailable.Log(ctx, "component", "research store", "effect", "/research history is off", "err", rerr)
 		rstore = nil
 	}
+	// /research runs on a runtime of its own, as the dashboard's does: its
+	// Begin, EndRun and CancelStuck would otherwise stop the helpers the
+	// relays and the dashboard chat have running on rt (TEN-326).
 	researchCtl := &researchControl{
-		ag: ag, rt: rt, say: researchSay, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx,
-		opts: defaultResearchOpts(), store: rstore,
+		ag: ag, rt: ownResearchRuntime(life, teamCfg), profiles: rt.AgentProfiles, say: researchSay,
+		wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx, opts: defaultResearchOpts(), store: rstore,
 		emitTimeline: func(u tui.ResearchTimelineUpdate) {
 			// Non-blocking send: a paused/slow TUI must not stall the
 			// orchestrator. The TUI also re-renders from a single
