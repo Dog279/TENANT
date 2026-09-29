@@ -515,6 +515,22 @@ type TurnResult struct {
 	Error      error
 }
 
+type conversationKey struct{}
+
+// WithConversation stamps ctx with the conversation its tool calls belong to.
+// Turn stamps its agent's session, one per working set, so a tool can tell
+// which conversation called it: the team runtime keys sub-agents by it
+// (TEN-326). A caller outside any agent's turn may stamp its own.
+func WithConversation(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, conversationKey{}, id)
+}
+
+// Conversation is the conversation ctx is stamped with, "" when none.
+func Conversation(ctx context.Context) string {
+	id, _ := ctx.Value(conversationKey{}).(string)
+	return id
+}
+
 // Turn runs one full conversational turn: receives the user query,
 // loops planner ↔ tools up to PlanLoopCeiling, and returns the
 // assistant's final response. Side effects:
@@ -545,7 +561,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	defer a.turnTrace.Store(nil)
 	span := runtrace.NewSpan(traceID)
 	span.SetModel(string(a.plannerRole), "unresolved")
-	ctx = runtrace.WithSpan(ctx, span)
+	ctx = WithConversation(runtrace.WithSpan(ctx, span), a.cfg.SessionID)
 	result = &TurnResult{TraceID: traceID}
 	started := time.Now().UTC()
 	source := string(req.RouteSurface)

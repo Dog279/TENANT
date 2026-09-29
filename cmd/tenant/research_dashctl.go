@@ -27,10 +27,10 @@ import (
 
 // newDashResearch adapts the terminal app's rc; next streams progress lines
 // to its feed. It gives rc the one-run flag the two sides share, and the page
-// its own runtime from cfg, as serve's: /research blocks the terminal, so it
-// could share the orchestrator's runtime, but a page run is in the
-// background, and its window would cancel a chat's helpers (C-1). nil (an
-// untyped nil interface) leaves the page showing "isn't available".
+// its own runtime from cfg, as serve's and the terminal's: a research
+// window on the orchestrator's runtime would cancel a chat's or a relay's
+// helpers (C-1). nil (an untyped nil interface) leaves the page showing
+// "isn't available".
 func newDashResearch(base context.Context, life *lifecycle.Group, cfg TeamConfig, shared *TeamRuntime,
 	rc *researchControl, web bool, next func(string, ...any)) dashboard.ResearchControl {
 	if rc == nil {

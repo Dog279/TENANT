@@ -45,7 +45,7 @@ func TestLogsPageInChrome(t *testing.T) {
 	defer cancel()
 
 	const rows = `document.querySelectorAll('#lg-rows .lg-row').length`
-	var first, paged int
+	first, paged := -1, -1 // -1: not counted, the step before failed
 	var count, msg, loc string
 	var shot []byte
 	err = run(ctx,
@@ -54,7 +54,12 @@ func TestLogsPageInChrome(t *testing.T) {
 		chromedp.Evaluate(rows, &first),
 		chromedp.Poll(`document.getElementById('lg-count').textContent.includes('match')`, nil, chromedp.WithPollingTimeout(10*time.Second)),
 		chromedp.Text("#lg-count", &count, chromedp.ByID),
-		chromedp.Evaluate(`document.getElementById('lg-grid').scrollTop = 1e9`, nil),
+		// Scroll the sentinel under the grid into view, as the operator
+		// does: the grid, and the page too when the grid's bottom is below
+		// the window. Scrolling the grid alone fetched nothing when the page
+		// laid out narrower than 1100px (the panes stack; windows-latest):
+		// the sentinel stayed off the screen.
+		chromedp.Evaluate(`document.getElementById('lg-more').scrollIntoView()`, nil),
 		chromedp.Poll(rows+` > 100`, nil, chromedp.WithPollingTimeout(10*time.Second)),
 		chromedp.Evaluate(rows, &paged),
 		chromedp.Click(`#lg-rows .lg-row:nth-child(3)`, chromedp.ByQuery),

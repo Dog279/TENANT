@@ -123,8 +123,8 @@ func TestTeamSpawnAndAwaitCarryTheSensitiveFlow(t *testing.T) {
 		if len(approvals) != 1 || !strings.Contains(approvals[0], "spawn_agent") {
 			t.Fatalf("approvals = %q; the spawn quoting the secret must ask exactly once", approvals)
 		}
-		if rt.resultFlow().Empty() {
-			t.Fatal("the child's answer quotes its seeded task, but its result carries no flow")
+		if len(rt.order) != 0 {
+			t.Fatalf("team_await returned the child's result but still holds %v", rt.order)
 		}
 		var awaited *agent.ToolCallResult
 		for i := range res.ToolTrace {

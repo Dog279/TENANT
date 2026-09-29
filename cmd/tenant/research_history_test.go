@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"tenant/internal/logs"
 	"tenant/internal/model"
 	"tenant/internal/model/testllm"
+	"tenant/internal/orchestra"
 	"tenant/internal/research"
 	"tenant/internal/tui"
 )
@@ -306,6 +308,35 @@ func TestRunWithPersistence_IsAnActivity(t *testing.T) {
 	}
 	if len(ops) != 2 || ops[0] != "start" || ops[1] != "fail" || !strings.Contains(es[len(es)-1].Field("error"), "planner down") {
 		t.Fatalf("research activity = %v in %+v", ops, es)
+	}
+}
+
+// A research pass forgets its sub-agents once it has read their results
+// (TEN-326): nothing is left in its runtime waiting for a team_await that
+// won't come, and the timeline counts this pass's findings.
+func TestDeepResearch_ForgetsItsSubAgents(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{}, 0)
+	planner := testllm.New()
+	planner.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		if strings.Contains(req.Messages[0].Content, "planning a deep-research investigation") {
+			return &model.GenerateResponse{Text: "1. Why is the sky blue?\n2. Why are sunsets red?"}, nil
+		}
+		return &model.GenerateResponse{Text: "# Sky\nRayleigh scattering."}, nil
+	}
+	finds := -1
+	emit := func(u tui.ResearchTimelineUpdate) {
+		if u.Kind == "done" {
+			finds = u.Done.NumFinds
+		}
+	}
+	_, _, err := runWithPersistence(context.Background(), planner, rt, nil, "why is the sky blue?",
+		researchOpts{noClarify: true, depth: 1, maxAgents: 2, parallel: 2, awaitTimeout: 30 * time.Second},
+		"m", "b", "", func(string, ...any) {}, emit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := held(rt); len(h) != 0 || finds != 2 {
+		t.Fatalf("after the pass the runtime holds %v and the timeline counts %d findings, want none and 2", h, finds)
 	}
 }
 

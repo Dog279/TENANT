@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -52,6 +53,96 @@ func TestGovernorEnsureIsAtomicAcrossParallelSpawns(t *testing.T) {
 	wg.Wait()
 	if got := g.Status().RunID; got != 1 {
 		t.Fatalf("parallel Ensure started %d runs, want exactly 1", got)
+	}
+}
+
+// team_await ends a run with EndIfIdle, never under a held slot; a spawn's
+// EnsureAgent opens a run when none is, and takes its slot in the same step
+// (TEN-326).
+func TestGovernorEndIfIdleAndEnsureAgent(t *testing.T) {
+	g := NewGovernor(Budgets{}, nil)
+	_, release, err := g.EnsureAgent(context.Background())
+	if err != nil || !g.Active() || g.Status().ActiveSubagents != 1 {
+		t.Fatalf("EnsureAgent with no run open: err %v, status %+v", err, g.Status())
+	}
+	_, release2, err := g.EnsureAgent(context.Background())
+	if st := g.Status(); err != nil || st.RunID != 1 || st.ActiveSubagents != 2 || st.AgentsStarted != 2 {
+		t.Fatalf("a second spawn should join the open run: err %v, status %+v", err, st)
+	}
+	release2()
+	if g.EndIfIdle() || !g.Active() {
+		t.Fatal("EndIfIdle ended a run whose agent still holds its slot")
+	}
+	release()
+	if !g.EndIfIdle() || g.Active() {
+		t.Fatal("EndIfIdle left an idle run open")
+	}
+	if g.EndIfIdle() {
+		t.Fatal("EndIfIdle ended a run that was already over")
+	}
+}
+
+// A terminated run refuses while its agents wind down, then blocks nothing:
+// the orchestrator's tool calls and browser go ahead, and the next spawn
+// opens a fresh run (TEN-326).
+func TestGovernorTerminatedRunBlocksOnlyWhileAgentsRemain(t *testing.T) {
+	g := NewGovernor(Budgets{}, nil)
+	_, release, err := g.EnsureAgent(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.terminateRun(g.Status().RunID, "wall time limit exceeded (test)")
+	if _, _, err := g.EnsureAgent(context.Background()); err == nil {
+		t.Error("a spawn joined a terminated run whose agent is still winding down")
+	}
+	if err := g.AcquireToolCall(context.Background(), "main"); err == nil {
+		t.Error("a tool call went ahead in a terminated run with an agent still in it")
+	}
+	release()
+	if err := g.AcquireToolCall(context.Background(), "main"); err != nil {
+		t.Errorf("a tool call after the terminated run's last agent: %v", err)
+	}
+	if rel, err := g.AcquireBrowser(); err != nil {
+		t.Errorf("a browser after the terminated run's last agent: %v", err)
+	} else {
+		rel()
+	}
+	_, release, err = g.EnsureAgent(context.Background())
+	if st := g.Status(); err != nil || st.RunID != 2 || !st.Active || st.TerminationReason != "" {
+		t.Fatalf("the next spawn should open a fresh run: err %v, status %+v", err, st)
+	}
+	release()
+}
+
+// The per-turn cap is a turn's: a turn past it is refused alone, the run and
+// every other turn go on, and a turn's count goes when the turn ends, so the
+// counts are the live turns' (TEN-326).
+func TestGovernorPerTurnToolCapIsTheTurns(t *testing.T) {
+	var ended atomic.Bool
+	released := make(chan struct{})
+	var once sync.Once
+	g := NewGovernor(Budgets{MaxToolCallsPerTurn: 1}, func(st BudgetStatus) {
+		if _, held := st.ToolCallsByTurn["a"]; ended.Load() && !held {
+			once.Do(func() { close(released) })
+		}
+	})
+	g.Begin(context.Background())
+	a, endA := context.WithCancel(context.Background())
+	if err := g.AcquireToolCall(a, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AcquireToolCall(a, "a"); err == nil || !strings.Contains(err.Error(), "tool calls per turn") {
+		t.Fatalf("a's second call went past its cap: %v", err)
+	}
+	if err := g.AcquireToolCall(context.Background(), "b"); err != nil || !g.Status().Active {
+		t.Fatalf("a's cap stopped b or the run: %v, %+v", err, g.Status())
+	}
+	ended.Store(true)
+	endA()
+	select {
+	case <-released:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("a's count outlived a: %v", g.Status().ToolCallsByTurn)
 	}
 }
 
@@ -129,10 +220,10 @@ func TestGovernorToolCostAndBrowserCaps(t *testing.T) {
 		MaxBrowserInstances: 1,
 	}, nil)
 	g.Begin(context.Background())
-	if err := g.AcquireToolCall("a"); err != nil {
+	if err := g.AcquireToolCall(context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.AcquireToolCall("a"); err == nil || !strings.Contains(err.Error(), "tool calls per turn") {
+	if err := g.AcquireToolCall(context.Background(), "a"); err == nil || !strings.Contains(err.Error(), "tool calls per turn") {
 		t.Fatalf("per-turn tool cap not enforced: %v", err)
 	}
 

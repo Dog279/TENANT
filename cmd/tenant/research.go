@@ -263,10 +263,11 @@ func emitSafe(emit timelineEmitter, u tui.ResearchTimelineUpdate) {
 // run, if non-nil, persists the audit trail (manifest + findings + report) to
 // disk for /research history|show|replay. nil = transient run (legacy path).
 // emit, if non-nil, sends structured timeline updates for the TUI's C4 pane.
-func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, question string, opts researchOpts, say func(string, ...any), run *research.Run, emit timelineEmitter) (string, error) {
+// finds is how many sub-agents reported back.
+func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, question string, opts researchOpts, say func(string, ...any), run *research.Run, emit timelineEmitter) (report string, finds int, err error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
-		return "", fmt.Errorf("research: empty question")
+		return "", 0, fmt.Errorf("research: empty question")
 	}
 	rt.BeginRun(ctx)
 	defer rt.EndRun()
@@ -278,7 +279,7 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	// and on replays (where the question is exactly as it was last time).
 	if !opts.noClarify {
 		if qs := clarifyQuestion(ctx, planner, question); len(qs) > 0 {
-			return "", &ClarifyNeededError{Question: question, Questions: qs}
+			return "", 0, &ClarifyNeededError{Question: question, Questions: qs}
 		}
 	}
 
@@ -292,7 +293,7 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	// 1. Plan → independent sub-questions.
 	subqs, err := researchPlan(ctx, planner, question, opts.maxAgents)
 	if err != nil {
-		return "", fmt.Errorf("research: plan: %w", err)
+		return "", 0, fmt.Errorf("research: plan: %w", err)
 	}
 	if len(subqs) == 0 {
 		subqs = []string{question} // degrade: research the question directly
@@ -379,7 +380,11 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	}
 
 	// 3. Collapse OUR researchers' local [n] citations into one global biblio.
+	// Read once, they are forgotten: nothing else will ever collect them, and
+	// a long-lived runtime would otherwise hold every research pass (TEN-326).
 	myResults := rt.ResultsFor(mine)
+	rt.Forget(mine)
+	finds = len(myResults)
 	// Per-agent visibility — silent skips in collapseCitations made it look like
 	// "nothing came back" when really individual agents were timing out, hitting
 	// loop ceiling with empty synthesis, or producing tool-call dumps. Surface
@@ -432,7 +437,7 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	myResults = rerankAndDedupFindings(ctx, rt.cfg.Embedder, question, myResults, say)
 	combined, references := collapseCitations(myResults)
 	if strings.TrimSpace(combined) == "" {
-		return "", fmt.Errorf("research: no usable findings from sub-agents (see per-agent status above)")
+		return "", finds, fmt.Errorf("research: no usable findings from sub-agents (see per-agent status above)")
 	}
 
 	// 4. Synthesize the final report (tools OFF — text only).
@@ -442,19 +447,19 @@ func deepResearch(ctx context.Context, planner model.LLM, rt *TeamRuntime, quest
 	})
 	body, err := synthesizeReport(ctx, planner, question, combined)
 	if err != nil {
-		return "", fmt.Errorf("research: synthesize: %w", err)
+		return "", finds, fmt.Errorf("research: synthesize: %w", err)
 	}
 	// Short-circuit on the synthesis model's explicit "findings too thin"
 	// sentinel — surface a clean failure instead of saving waffle.
 	if strings.HasPrefix(strings.TrimSpace(body), noUsableFindingsSentinel) {
 		why := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(body), noUsableFindingsSentinel))
-		return "", fmt.Errorf("research: no usable findings — %s", why)
+		return "", finds, fmt.Errorf("research: no usable findings — %s", why)
 	}
-	report := strings.TrimRight(body, "\n")
+	report = strings.TrimRight(body, "\n")
 	if references != "" {
 		report += "\n\n" + references
 	}
-	return report, nil
+	return report, finds, nil
 }
 
 // runWithPersistence wraps deepResearch with the C3 run lifecycle: open a Run
@@ -496,7 +501,7 @@ func runWithPersistence(ctx context.Context, planner model.LLM, rt *TeamRuntime,
 		}
 		act.End(&endErr)
 	}()
-	report, err = deepResearch(ctx, planner, rt, question, opts, say, run, emit)
+	report, finds, err := deepResearch(ctx, planner, rt, question, opts, say, run, emit)
 
 	if run != nil {
 		status := research.StatusDone
@@ -536,7 +541,7 @@ func runWithPersistence(ctx context.Context, planner model.LLM, rt *TeamRuntime,
 				Status:   doneStatus,
 				Error:    errMsg,
 				NumRefs:  len(parseReferencesURIs(report)),
-				NumFinds: len(rt.Results()),
+				NumFinds: finds,
 				Duration: time.Since(startedAt),
 			},
 		})
@@ -1076,8 +1081,8 @@ const sayRunID = "📋 run id: %s"
 var errResearchBusy = errors.New("another research run is already in progress")
 
 // researchControl implements tui.ResearchControl: runs the Phase-A pipeline
-// against the TUI's live agent + shared TeamRuntime, streaming progress to the
-// system feed. The final report comes back to the chat pane. C3: the optional
+// against the TUI's live agent on a TeamRuntime of research's own, streaming
+// progress to the system feed. The final report comes back to the chat pane. C3: the optional
 // store persists each pass as an auditable, replayable run.
 type researchControl struct {
 	ag      *agent.Agent
@@ -1100,6 +1105,9 @@ type researchControl struct {
 	// busy, if set, allows one run at a time across everything sharing it
 	// (the terminal app and the dashboard). nil = no limit (the CLI).
 	busy *atomic.Bool
+	// profiles, if set, are the helper profiles rt takes before each run:
+	// the orchestrator's, when research has a runtime of its own.
+	profiles func() map[string]*agentProfile
 }
 
 func (rc *researchControl) Research(ctx context.Context, question string) (string, error) {
@@ -1130,6 +1138,9 @@ func (rc *researchControl) runOne(ctx context.Context, question, replayOf string
 			return "", "", errResearchBusy
 		}
 		defer rc.busy.Store(false)
+	}
+	if rc.profiles != nil {
+		rc.rt.SetAgentProfiles(rc.profiles())
 	}
 	planner, profile, err := rc.ag.Router().LLMForRole(ctx, model.RolePlanner)
 	if err != nil {

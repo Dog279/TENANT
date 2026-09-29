@@ -37,9 +37,15 @@ func has(t *testing.T, st *store.Store, def *event.Def) bool {
 func TestWriteFailuresRunOnTheMirrorThenRecover(t *testing.T) {
 	for _, fault := range []error{errors.New("database or disk is full (13)"), errors.New("database is locked (5)")} {
 		t.Run(fault.Error(), func(t *testing.T) {
-			first, commit, recoverFn := retryFirst, commitBatch, recoverMirror
-			retryFirst = time.Millisecond
-			t.Cleanup(func() { retryFirst, commitBatch, recoverMirror = first, commit, recoverFn })
+			first, most, commit, recoverFn := retryFirst, retryMax, commitBatch, recoverMirror
+			// On the text files alone a commit is tried only for a batch that
+			// comes after the backoff, which doubles with each try. A few more
+			// batches while down (a slow runner's) grew it past the next flush:
+			// "back" was only mirrored, nothing came after it, and the store
+			// was never tried again (windows-latest). Here it doesn't grow, so
+			// the batch after a failed try is always tried.
+			retryFirst, retryMax = time.Millisecond, 0
+			t.Cleanup(func() { retryFirst, retryMax, commitBatch, recoverMirror = first, most, commit, recoverFn })
 			var failing atomic.Bool
 			var attempts atomic.Int32
 			failing.Store(true)
@@ -64,13 +70,24 @@ func TestWriteFailuresRunOnTheMirrorThenRecover(t *testing.T) {
 			st := attach(t, h)
 			var mu sync.Mutex
 			var alerts []string
-			h.OnAlert(func(s string) { mu.Lock(); alerts = append(alerts, s); mu.Unlock() })
+			var downAfter int32 // the attempts made when the banner went up
+			h.OnAlert(func(s string) {
+				mu.Lock()
+				if len(alerts) == 0 {
+					downAfter = attempts.Load()
+				}
+				alerts = append(alerts, s)
+				mu.Unlock()
+			})
 
 			lost := time.Now()
 			h.Logf("x", slog.LevelInfo, "during the outage")
-			waitFor(t, 5*time.Second, func() bool { return h.Degraded() != "" })
-			if n := attempts.Load(); n != failLimit {
-				t.Errorf("%d attempts before running on the mirror, want %d", n, failLimit)
+			waitFor(t, 5*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(alerts) > 0 })
+			mu.Lock()
+			n := downAfter
+			mu.Unlock()
+			if n != failLimit || h.Degraded() == "" {
+				t.Errorf("%d attempts before running on the mirror (degraded %q), want %d", n, h.Degraded(), failLimit)
 			}
 			h.Logf("x", slog.LevelInfo, "still out")
 			waitFor(t, 5*time.Second, func() bool {
@@ -95,8 +112,10 @@ func TestWriteFailuresRunOnTheMirrorThenRecover(t *testing.T) {
 			if w.keyword != "recovered" || w.from.After(lost.Add(time.Millisecond)) || w.to.Before(w.from) {
 				t.Errorf("imported %v to %v as %q; the first lost event was at %v", w.from, w.to, w.keyword, lost)
 			}
-			waitFor(t, 5*time.Second, func() bool { return has(t, st, catalog.RecoveryImport) })
-			if h.Degraded() != "" || !has(t, st, catalog.MirrorOnlyEnded) || !slices.Contains(msgs(t, st, "x"), "back") {
+			waitFor(t, 5*time.Second, func() bool {
+				return has(t, st, catalog.RecoveryImport) && slices.Contains(msgs(t, st, "x"), "back")
+			})
+			if h.Degraded() != "" || !has(t, st, catalog.MirrorOnlyEnded) {
 				t.Errorf("after recovery: degraded %q, store has x %v", h.Degraded(), msgs(t, st, "x"))
 			}
 			mu.Lock()
@@ -344,17 +363,38 @@ func TestNoChainKeyIsNotAWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each commit's security records, in order: a retried commit carries its
+	// record again. (Timing it instead failed on a slow runner: four real
+	// commits took longer than the first retry's wait.)
+	commit := commitBatch
+	t.Cleanup(func() { commitBatch = commit })
+	var mu sync.Mutex
+	var tried []string
+	commitBatch = func(st *store.Store, ctx context.Context, b []event.Event) error {
+		mu.Lock()
+		for _, e := range b {
+			if e.Log == store.SecurityLog {
+				tried = append(tried, e.Msg)
+			}
+		}
+		mu.Unlock()
+		return commit(st, ctx, b)
+	}
 	h.AttachStore(st)
 	ctx := context.Background()
-	start := time.Now()
-	for range failLimit + 1 {
-		audit := event.Event{Log: store.SecurityLog, Provider: "security", Level: event.Info, Msg: "audit"}
+	var want []string
+	for i := range failLimit + 1 {
+		audit := event.Event{Log: store.SecurityLog, Provider: "security", Level: event.Info, Msg: "audit " + strconv.Itoa(i)}
 		if err := h.pipe.Load().audit(ctx, &audit); !errors.Is(err, store.ErrNoChainKey) {
 			t.Fatalf("audit = %v, want ErrNoChainKey", err)
 		}
+		want = append(want, audit.Msg)
 	}
-	if d := time.Since(start); d > retryFirst {
-		t.Errorf("the refused records took %v: they were retried", d)
+	mu.Lock()
+	got := slices.Clone(tried)
+	mu.Unlock()
+	if !slices.Equal(got, want) {
+		t.Errorf("the refused records were committed as %q, want each once: %q", got, want)
 	}
 	time.Sleep(3 * batchEvery)
 	if h.Degraded() != "" || strings.Contains(readLogs(t, filepath.Join(root, "logbook")), "could not commit") {

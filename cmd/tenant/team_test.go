@@ -2,16 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs"
 	"tenant/internal/memory/soul"
+	"tenant/internal/model"
+	"tenant/internal/model/testllm"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
 	"tenant/internal/runtrace"
@@ -527,4 +533,479 @@ func TestTeamRuntime_BaseCtxOutlivesTheCallingRequest(t *testing.T) {
 	if strings.Contains(summary, "(no result)") {
 		t.Errorf("agent produced no result — it was cancelled with its caller:\n%s", summary)
 	}
+}
+
+// echoTeam is a team runtime whose sub-agents run on the echo backend, under
+// budgets b and concurrency cap max (0 = the default); the bus holds "main".
+func echoTeam(t *testing.T, b orchestra.Budgets, max int) (*TeamRuntime, *orchestra.Bus) {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	router, err := buildRouter(c, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, closeStores, err := openStores(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeStores)
+	bus := orchestra.NewBus()
+	bus.Register("main")
+	return newTeamRuntime(TeamConfig{Bus: bus, Router: router, Stores: st, Shared: newToolMux(),
+		OrchID: "main", Log: log, Budgets: b, MaxConcurrent: max}), bus
+}
+
+// teamAwait is the orchestrator calling team_await in the turn of ctx.
+func teamAwait(t *testing.T, rt *TeamRuntime, ctx context.Context) string {
+	t.Helper()
+	out, isErr, err := spawnTool{rt: rt, timeout: 30 * time.Second}.Dispatch(ctx, model.ToolCall{Name: "team_await", Arguments: json.RawMessage(`{}`)})
+	if err != nil || isErr {
+		t.Errorf("team_await: %q isErr=%v err=%v", out, isErr, err)
+	}
+	return out
+}
+
+// held is what the runtime keeps: its members, in spawn order.
+func held(rt *TeamRuntime) []string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.agents) != len(rt.order) {
+		return append(slices.Clone(rt.order), "(agents and order disagree)")
+	}
+	return slices.Clone(rt.order)
+}
+
+// TEN-326: a server runs for months, so the runtime must not keep every
+// sub-agent it ever spawned. team_await returns each result once, then drops
+// it, and a finished agent has left the bus.
+func TestTeamAwait_ReturnsEachResultOnceThenDropsIt(t *testing.T) {
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 100}, 0)
+	turn := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn"))
+	for i := range 20 {
+		id, err := rt.Spawn(turn, "worker", "task "+strconv.Itoa(i))
+		if err != nil {
+			t.Fatalf("spawn %d: %v", i, err)
+		}
+		if out := teamAwait(t, rt, turn); strings.Count(out, "## "+id+" ") != 1 {
+			t.Fatalf("await %d should return %s once:\n%s", i, id, out)
+		}
+		if h := held(rt); len(h) != 0 {
+			t.Fatalf("after await %d the runtime still holds %v", i, h)
+		}
+	}
+	if out := teamAwait(t, rt, turn); !strings.Contains(out, "already returned") {
+		t.Errorf("a result came back twice, or the empty answer claims nothing was spawned:\n%s", out)
+	}
+	if m := bus.Members(); len(m) != 1 {
+		t.Errorf("finished sub-agents are still on the bus: %v", m)
+	}
+}
+
+// inConversation is a turn of conversation conv, stamped as an agent's Turn
+// stamps its tool calls: its session and the turn's trace.
+func inConversation(conv, turn string) context.Context {
+	return agent.WithConversation(runtrace.WithSpan(context.Background(), runtrace.NewSpan(turn)), conv)
+}
+
+// spawnFinished spawns a worker in ctx's turn and waits for it to finish.
+func spawnFinished(t *testing.T, rt *TeamRuntime, ctx context.Context, task string) string {
+	t.Helper()
+	id, err := rt.Spawn(ctx, "worker", task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	done := rt.agents[id].done
+	rt.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s never finished", id)
+	}
+	return id
+}
+
+// Serve shares one runtime between the dashboard, the relays and cron: a
+// team_await reports its own conversation's sub-agents, never another's
+// (TEN-326, and so no other conversation's provenance, TEN-336), and an
+// await whose caller is gone takes nothing.
+func TestTeamAwait_ReportsOnlyItsConversation(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 100}, 0)
+	dash, relay := inConversation("dashboard", "turn-1"), inConversation("discord", "turn-2")
+	idD := spawnFinished(t, rt, dash, "the dashboard's task")
+	idR := spawnFinished(t, rt, relay, "the relay's task")
+	gone, cancel := context.WithCancel(relay)
+	cancel()
+	teamAwait(t, rt, gone)
+	if out := teamAwait(t, rt, relay); strings.Count(out, "## "+idR+" ") != 1 || strings.Contains(out, idD) {
+		t.Fatalf("the relay's await should show its own worker once, and not the dashboard's:\n%s", out)
+	}
+	if out := teamAwait(t, rt, dash); strings.Count(out, "## "+idD+" ") != 1 || strings.Contains(out, idR) {
+		t.Fatalf("the dashboard's await should show its own worker once:\n%s", out)
+	}
+	if h := held(rt); len(h) != 0 {
+		t.Fatalf("held %v after each conversation took its own", h)
+	}
+}
+
+// A result nobody awaited stays with its conversation: the next turn's
+// team_await there takes it, once, after that turn's own results, which come
+// first so a long leftover can't push them past the tool-result cap.
+func TestTeamAwait_NextTurnTakesItsConversationsLeftovers(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 100}, 0)
+	idX := spawnFinished(t, rt, inConversation("chat", "turn-1"), "turn 1's task") // turn 1 ends unawaited
+	turn2 := inConversation("chat", "turn-2")
+	idY := spawnFinished(t, rt, turn2, "turn 2's task")
+	out := teamAwait(t, rt, turn2)
+	x, y := strings.Index(out, "## "+idX+" "), strings.Index(out, "## "+idY+" ")
+	if x < 0 || y < 0 || y > x || strings.Count(out, "## "+idX+" ") != 1 {
+		t.Fatalf("turn 2's await should show its own worker, then turn 1's, once each:\n%s", out)
+	}
+	if out := teamAwait(t, rt, inConversation("chat", "turn-3")); strings.Contains(out, idX) || strings.Contains(out, idY) {
+		t.Fatalf("a result came back twice:\n%s", out)
+	}
+}
+
+// A conversation's unreported result is bounded by its own cap, not by what
+// other conversations spawn across runs a third one's awaits end (TEN-326).
+// The review's repro, at two agents per run.
+func TestTeamRuntime_OtherConversationsDontEvictLeftovers(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 2}, 0)
+	idA := spawnFinished(t, rt, inConversation("t1", "a"), "a's task")
+	t2, t3 := inConversation("t2", "b"), inConversation("t3", "c")
+	teamAwait(t, rt, t2) // ends run 1
+	spawnFinished(t, rt, t3, "b's task")
+	spawnFinished(t, rt, t3, "c's task")
+	teamAwait(t, rt, t2) // ends run 2
+	spawnFinished(t, rt, t3, "d's task")
+	if out := teamAwait(t, rt, inConversation("t1", "a2")); strings.Count(out, "## "+idA+" ") != 1 {
+		t.Fatalf("t1's result was evicted by t3's spawns:\n%s", out)
+	}
+	teamAwait(t, rt, t3) // join t3's before the stores close
+}
+
+// A member nobody takes with team_await (/research reads its own with
+// ResultsFor) is kept while it is among the newest run's worth of finished
+// ones. The oldest finished go first, a running one never.
+func TestTeamRuntime_SpawnDropsTheOldestFinishedPastARunsWorth(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 3}, 0)
+	closed := make(chan struct{})
+	close(closed)
+	rt.mu.Lock()
+	for _, id := range []string{"stuck", "done-1", "done-2", "done-3", "done-4", "done-5"} {
+		m := &member{id: id, status: "done", done: closed}
+		if id == "stuck" {
+			m.status, m.done = "running", make(chan struct{})
+		}
+		rt.agents[id] = m
+		rt.order = append(rt.order, id)
+	}
+	rt.mu.Unlock()
+	id, err := rt.Spawn(context.Background(), "worker", "one more")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := held(rt)
+	rt.mu.Lock()
+	done := rt.agents[id].done
+	rt.mu.Unlock()
+	<-done // before the stores close
+	if want := []string{"stuck", "done-3", "done-4", "done-5", id}; !slices.Equal(h, want) {
+		t.Fatalf("held %v, want %v", h, want)
+	}
+}
+
+// /research's shape, run after run on one runtime: each run's results are all
+// there for ResultsFor, and the runtime holds at most a run's worth besides.
+func TestTeamRuntime_ResearchRunsStayBounded(t *testing.T) {
+	const perRun = 3
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: perRun}, 0)
+	ctx := context.Background()
+	for run := range 10 {
+		rt.BeginRun(ctx)
+		var mine []string
+		for i := range perRun {
+			id, err := rt.Spawn(ctx, "researcher", fmt.Sprintf("run %d, question %d", run, i))
+			if err != nil {
+				t.Fatalf("run %d spawn %d: %v", run, i, err)
+			}
+			mine = append(mine, id)
+		}
+		rt.Await(ctx, 30*time.Second)
+		if got := rt.ResultsFor(mine); len(got) != perRun {
+			t.Fatalf("run %d lost results before it read them: %+v", run, got)
+		}
+		rt.EndRun()
+	}
+	if h := held(rt); len(h) > 2*perRun {
+		t.Fatalf("held %d members after 10 runs, want at most a run's worth plus the last run: %v", len(h), h)
+	}
+	if m := bus.Members(); len(m) != 1 {
+		t.Errorf("finished sub-agents are still on the bus: %v", m)
+	}
+}
+
+// A sub-agent's budget slot comes back before it finishes (its done closes):
+// team_await, having seen every child finish, must find none holding a slot,
+// or it skips ending the run and the accounting window stays open (TEN-326).
+// The hook runs inside the release, so it sees the order, not a race: the one
+// agent must still be running then.
+func TestTeamRuntime_SlotComesBackBeforeDone(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{}, 0)
+	var mu sync.Mutex
+	active := 0
+	late := make(chan bool, 1) // at the release: had the agent finished?
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{}, func(st orchestra.BudgetStatus) {
+		mu.Lock()
+		released := st.ActiveSubagents < active
+		active = st.ActiveSubagents
+		mu.Unlock()
+		if !released {
+			return
+		}
+		rt.mu.Lock()
+		running := 0
+		for _, m := range rt.agents {
+			if m.status == "running" {
+				running++
+			}
+		}
+		rt.mu.Unlock()
+		late <- running == 0 // finished, or even reported and dropped
+	})
+	turn := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn"))
+	if _, err := rt.Spawn(turn, "worker", "task"); err != nil {
+		t.Fatal(err)
+	}
+	teamAwait(t, rt, turn)
+	if <-late {
+		t.Error("the agent's slot came back after it finished")
+	}
+	if st := rt.BudgetStatus(); st.Active || st.ActiveSubagents != 0 {
+		t.Errorf("every child joined, but the run is still open: %+v", st)
+	}
+}
+
+// Ending the run and admitting a spawn are decided under one lock (TEN-326).
+// Here turn x's team_await runs at the moment turn y's spawn opens the run,
+// before y would take its slot: x must not close that run, and y's agent must
+// get its slot in it and run to the end, not be refused or cancelled.
+func TestTeamAwait_CantEndTheRunASpawnJoins(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{}, 0)
+	x, y := inConversation("dashboard", "turn-x"), inConversation("discord", "turn-y")
+	var once sync.Once
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{}, func(st orchestra.BudgetStatus) {
+		if st.Active { // y's spawn has opened the run
+			once.Do(func() { teamAwait(t, rt, x) })
+		}
+	})
+	id, err := rt.Spawn(y, "worker", "y's task")
+	if err != nil {
+		t.Fatalf("y's spawn was refused: %v", err)
+	}
+	if out := teamAwait(t, rt, y); !strings.Contains(out, "## "+id+" (worker) [done]") {
+		t.Fatalf("y's agent didn't run to the end:\n%s", out)
+	}
+}
+
+// Conversations on one runtime spawn and await at the same time: each gets
+// each of its own results exactly once, and the runtime ends up holding
+// nothing.
+func TestTeamRuntime_ConcurrentSpawnAndAwait(t *testing.T) {
+	const turns, rounds = 4, 5
+	// Exactly a slot per turn, and no retries: a slot comes back before its
+	// agent's done, and no turn's await can end the run under another's spawn.
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: turns * rounds, MaxConcurrentSubagents: turns}, turns)
+	var wg sync.WaitGroup
+	for n := range turns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := inConversation(fmt.Sprintf("conversation-%d", n), fmt.Sprintf("turn-%d", n))
+			var mine []string
+			var outs strings.Builder
+			for i := range rounds {
+				id, err := rt.Spawn(ctx, "worker", fmt.Sprintf("turn %d, task %d", n, i))
+				if err != nil {
+					t.Errorf("turn %d spawn %d: %v", n, i, err)
+					return
+				}
+				mine = append(mine, id)
+				outs.WriteString(teamAwait(t, rt, ctx))
+			}
+			for _, id := range mine {
+				if c := strings.Count(outs.String(), "## "+id+" "); c != 1 {
+					t.Errorf("%s came back to its turn %d times, want once", id, c)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	rt.Await(context.Background(), 30*time.Second) // nothing may outlive the stores
+	if h := held(rt); len(h) != 0 {
+		t.Errorf("the runtime still holds %v", h)
+	}
+	if m := bus.Members(); len(m) != 1 {
+		t.Errorf("finished sub-agents are still on the bus: %v", m)
+	}
+}
+
+// blockingTeam is a team runtime whose sub-agents wait in their first model
+// call until their context ends: they run until something stops them.
+func blockingTeam(t *testing.T) *TeamRuntime {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, closeStores, err := openStores(&commonFlags{agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeStores)
+	reg := model.NewEmptyRegistry()
+	for _, p := range []model.Profile{
+		{ID: "worker", Role: model.RolePlanner, Backend: "worker", ProviderKind: "vllm", Endpoint: "http://worker", ContextLength: 32000},
+		{ID: "embed", Role: model.RoleEmbedder, Backend: "embed", ProviderKind: "vllm", Endpoint: "http://embed", ContextLength: 8000},
+	} {
+		if err := reg.Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	router := model.NewRouter(reg, nil)
+	worker := testllm.New()
+	worker.GenerateFn = func(ctx context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	router.RegisterBackend("worker", func(context.Context, model.Profile, *slog.Logger) (any, error) { return worker, nil })
+	router.RegisterBackend("embed", func(context.Context, model.Profile, *slog.Logger) (any, error) { return testllm.New(), nil })
+	bus := orchestra.NewBus()
+	bus.Register("main")
+	return newTeamRuntime(TeamConfig{Bus: bus, Router: router, Stores: st, Shared: newToolMux(), OrchID: "main", Log: log})
+}
+
+// The team run is no turn's (TEN-326): a turn that ends stops its own
+// sub-agents only. Another conversation's worker runs on, in a run that
+// isn't terminated with that turn.
+func TestTeamRuntime_TurnEndStopsOnlyItsOwnSubAgents(t *testing.T) {
+	rt := blockingTeam(t)
+	a, endA := context.WithCancel(inConversation("dashboard", "turn-a"))
+	b, endB := context.WithCancel(inConversation("discord", "turn-b"))
+	defer endB()
+	doneOf := func(ctx context.Context, task string) (string, chan struct{}) {
+		t.Helper()
+		id, err := rt.Spawn(ctx, "worker", task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		return id, rt.agents[id].done
+	}
+	_, doneA := doneOf(a, "a's task")
+	idB, doneB := doneOf(b, "b's task")
+	endA()
+	select {
+	case <-doneA:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a's worker outlived a's turn")
+	}
+	if st := rt.BudgetStatus(); st.TerminationReason != "" {
+		t.Errorf("a's turn ending terminated the team run: %q", st.TerminationReason)
+	}
+	rt.mu.Lock()
+	running := rt.agents[idB].status == "running"
+	rt.mu.Unlock()
+	if !running {
+		t.Error("a's turn ending stopped b's worker")
+	}
+	endB()
+	<-doneB
+}
+
+// A run past its wall time, with no agent left in it, blocks nothing (TEN-326):
+// the next spawn_agent opens a fresh run, and the orchestrator's tool calls
+// and browser go ahead, without anybody having to team_await first.
+func TestTeamRuntime_TerminatedIdleRunBlocksNothing(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{}, 0)
+	terminated := make(chan struct{})
+	var once sync.Once
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{MaxWallTime: time.Millisecond}, func(st orchestra.BudgetStatus) {
+		if st.TerminationReason != "" {
+			once.Do(func() { close(terminated) })
+		}
+	})
+	turn := inConversation("chat", "turn")
+	spawnFinished(t, rt, turn, "first") // its run's wall time ends it
+	select {
+	case <-terminated:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the run's wall time never ended it")
+	}
+	local := newToolMux()
+	local.Add("orchestrator", spawnTool{rt: rt, timeout: 30 * time.Second})
+	orch := composite{local: local, budget: rt.budget, agentID: "main"}
+	out, isErr, err := orch.Dispatch(turn, model.ToolCall{Name: "spawn_agent", Arguments: json.RawMessage(`{"role":"worker","task":"second"}`)})
+	if err != nil || isErr {
+		t.Errorf("spawn_agent after the run's wall time: %q %v", out, err)
+	}
+	if release, err := rt.budget.AcquireBrowser(); err != nil {
+		t.Errorf("the orchestrator's browser after the run's wall time: %v", err)
+	} else {
+		release()
+	}
+	teamAwait(t, rt, turn) // join the second before the stores close
+}
+
+// The per-turn tool-call cap is a turn's (TEN-326). Serve's surfaces share
+// one orchestrator, and so one agent ID: a dashboard turn running past the
+// cap used to terminate the team run, cancelling the relay's worker and
+// refusing the relay's tool calls. Now only that turn is refused.
+func TestTeamRuntime_PerTurnToolCapStopsOnlyThatTurn(t *testing.T) {
+	rt := blockingTeam(t)
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{MaxToolCallsPerTurn: 2}, nil)
+	var hit string
+	local := newToolMux()
+	local.Add("orchestrator", spawnTool{rt: rt, timeout: 30 * time.Second})
+	local.Add("look", fakePlugin{name: "look", lastHit: &hit})
+	orch := composite{local: local, budget: rt.budget, agentID: "main"} // every serve surface's
+	call := func(ctx context.Context, name, args string) (string, bool) {
+		t.Helper()
+		out, isErr, err := orch.Dispatch(ctx, model.ToolCall{Name: name, Arguments: json.RawMessage(args)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, isErr
+	}
+	relay, endRelay := context.WithCancel(inConversation("discord", "turn-r"))
+	defer endRelay()
+	if out, isErr := call(relay, "spawn_agent", `{"role":"worker","task":"the relay's task"}`); isErr {
+		t.Fatalf("the relay's spawn: %s", out)
+	}
+	dash := inConversation("dashboard", "turn-d")
+	for i := range 2 {
+		if out, isErr := call(dash, "look_do", `{}`); isErr {
+			t.Errorf("the dashboard's call %d, within its cap: %s", i+1, out)
+		}
+	}
+	if out, isErr := call(dash, "look_do", `{}`); !isErr || !strings.Contains(out, "tool calls per turn") {
+		t.Errorf("the dashboard's third call went past its cap: %s", out)
+	}
+	if st := rt.BudgetStatus(); st.TerminationReason != "" {
+		t.Errorf("the dashboard's cap terminated the team run: %q", st.TerminationReason)
+	}
+	rt.mu.Lock()
+	var done chan struct{}
+	running := false
+	for _, m := range rt.agents {
+		done, running = m.done, m.status == "running"
+	}
+	rt.mu.Unlock()
+	if !running {
+		t.Error("the dashboard's cap stopped the relay's worker")
+	}
+	if out, isErr := call(relay, "look_do", `{}`); isErr {
+		t.Errorf("the relay's call after the dashboard hit its cap: %s", out)
+	}
+	endRelay()
+	<-done
 }

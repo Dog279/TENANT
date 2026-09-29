@@ -105,7 +105,7 @@ type BudgetStatus struct {
 	ActiveSubagents   int            `json:"active_subagents"`
 	AgentsStarted     int            `json:"agents_started"`
 	ToolCalls         int            `json:"tool_calls"`
-	ToolCallsByAgent  map[string]int `json:"tool_calls_by_agent,omitempty"`
+	ToolCallsByTurn   map[string]int `json:"tool_calls_by_turn,omitempty"`
 	PromptTokens      int            `json:"prompt_tokens"`
 	CompletionTokens  int            `json:"completion_tokens"`
 	Tokens            int            `json:"tokens"`
@@ -163,7 +163,7 @@ type Governor struct {
 	activeAgents     int
 	agentsStarted    int
 	toolCalls        int
-	toolCallsByAgent map[string]int
+	toolCallsByTurn  map[string]int
 	promptTokens     int
 	completionTokens int
 	estimatedCost    float64
@@ -172,7 +172,7 @@ type Governor struct {
 }
 
 func NewGovernor(b Budgets, observe func(BudgetStatus)) *Governor {
-	return &Governor{limits: b.WithDefaults(), observe: observe, toolCallsByAgent: map[string]int{}}
+	return &Governor{limits: b.WithDefaults(), observe: observe, toolCallsByTurn: map[string]int{}}
 }
 
 func (g *Governor) Limits() Budgets { g.mu.Lock(); defer g.mu.Unlock(); return g.limits }
@@ -199,17 +199,56 @@ func (g *Governor) Ensure(parent context.Context) context.Context {
 	return g.begin(parent)
 }
 
+// EnsureAgent is Ensure and AcquireAgent in one step, under the lock
+// EndIfIdle decides under: the run a spawn opens or joins can't be ended
+// between the two, as another turn's team_await did (TEN-326). A run that
+// was terminated and has no agent left is over: the spawn opens a fresh one
+// rather than being refused until somebody awaits.
+func (g *Governor) EnsureAgent(parent context.Context) (context.Context, func(), error) {
+	g.beginMu.Lock()
+	g.mu.Lock()
+	retire, opened := func() {}, !g.open || g.overLocked()
+	var began BudgetStatus
+	if opened {
+		retire = g.beginLocked(parent)
+		began = g.snapshotLocked()
+	}
+	ctx, release, err := g.acquireLocked()
+	st := g.snapshotLocked()
+	g.mu.Unlock()
+	g.beginMu.Unlock()
+	retire()
+	if opened {
+		g.notify(began)
+	}
+	if err == nil {
+		g.notify(st)
+	}
+	return ctx, release, err
+}
+
 func (g *Governor) begin(parent context.Context) context.Context {
+	g.mu.Lock()
+	retire := g.beginLocked(parent)
+	ctx, st := g.runCtx, g.snapshotLocked()
+	g.mu.Unlock()
+	retire()
+	g.notify(st)
+	return ctx
+}
+
+// beginLocked starts a fresh run under g.mu. retire stops the old run's
+// timers and cancels its context; the caller runs it once g.mu is let go.
+func (g *Governor) beginLocked(parent context.Context) (retire func()) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	g.mu.Lock()
 	oldCancel, oldTimer, oldStop := g.cancel, g.timer, g.stopParent
 	g.runID++
 	g.open, g.terminated = true, false
 	g.started = time.Now()
 	g.activeAgents, g.agentsStarted, g.toolCalls = 0, 0, 0
-	g.toolCallsByAgent = map[string]int{}
+	g.toolCallsByTurn = map[string]int{}
 	g.promptTokens, g.completionTokens, g.estimatedCost = 0, 0, 0
 	g.reason = ""
 	g.runCtx, g.cancel = context.WithCancelCause(parent)
@@ -222,19 +261,17 @@ func (g *Governor) begin(parent context.Context) context.Context {
 			g.terminateRun(runID, "parent context canceled: "+err.Error())
 		}
 	})
-	ctx, st := g.runCtx, g.snapshotLocked()
-	g.mu.Unlock()
-	if oldTimer != nil {
-		oldTimer.Stop()
+	return func() {
+		if oldTimer != nil {
+			oldTimer.Stop()
+		}
+		if oldStop != nil {
+			oldStop()
+		}
+		if oldCancel != nil {
+			oldCancel(errRunEnded)
+		}
 	}
-	if oldStop != nil {
-		oldStop()
-	}
-	if oldCancel != nil {
-		oldCancel(errRunEnded)
-	}
-	g.notify(st)
-	return ctx
 }
 
 func (g *Governor) Active() bool {
@@ -246,20 +283,29 @@ func (g *Governor) Active() bool {
 // End closes the accounting window. It is safe after termination and does not
 // overwrite the authoritative termination reason.
 func (g *Governor) End() {
-	g.end("")
+	g.end("", false)
 }
 
 // EndWithReason closes the window and preserves an operator-facing reason for
 // an early join/timeout cancellation.
 func (g *Governor) EndWithReason(reason string) {
-	g.end(reason)
+	g.end(reason, false)
 }
 
-func (g *Governor) end(reason string) {
+// EndIfIdle closes the window only when no agent holds a slot, deciding under
+// the lock that admits them, so an agent admitted meanwhile keeps the run
+// open. team_await ends a run this way once its children have joined: a
+// Status check, then End, let another turn's spawn join the run in between,
+// and ended it under that spawn (TEN-326). It reports whether it closed it.
+func (g *Governor) EndIfIdle() bool {
+	return g.end("", true)
+}
+
+func (g *Governor) end(reason string, ifIdle bool) bool {
 	g.mu.Lock()
-	if !g.open {
+	if !g.open || ifIdle && g.activeAgents > 0 {
 		g.mu.Unlock()
-		return
+		return false
 	}
 	g.open = false
 	if reason != "" && g.reason == "" {
@@ -283,6 +329,7 @@ func (g *Governor) end(reason string) {
 		cancel(cause)
 	}
 	g.notify(st)
+	return true
 }
 
 func (g *Governor) Status() BudgetStatus {
@@ -295,32 +342,33 @@ func (g *Governor) Status() BudgetStatus {
 // returns a child of the run cancellation context.
 func (g *Governor) AcquireAgent() (context.Context, func(), error) {
 	g.mu.Lock()
+	ctx, release, err := g.acquireLocked()
+	st := g.snapshotLocked()
+	g.mu.Unlock()
+	if err == nil {
+		g.notify(st)
+	}
+	return ctx, release, err
+}
+
+// acquireLocked is AcquireAgent under g.mu.
+func (g *Governor) acquireLocked() (context.Context, func(), error) {
 	if !g.open {
-		g.mu.Unlock()
 		return nil, nil, fmt.Errorf("orchestra: no active team run")
 	}
 	if g.terminated {
-		err := fmt.Errorf("orchestra: team run terminated: %s", g.reason)
-		g.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("orchestra: team run terminated: %s", g.reason)
 	}
 	if g.activeAgents >= g.limits.MaxConcurrentSubagents {
-		err := &LimitError{Resource: "concurrent subagents", Used: fmt.Sprint(g.activeAgents), Limit: fmt.Sprint(g.limits.MaxConcurrentSubagents)}
-		g.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, &LimitError{Resource: "concurrent subagents", Used: fmt.Sprint(g.activeAgents), Limit: fmt.Sprint(g.limits.MaxConcurrentSubagents)}
 	}
 	if g.agentsStarted >= g.limits.MaxAgentsPerRun {
-		err := &LimitError{Resource: "agents per run", Used: fmt.Sprint(g.agentsStarted), Limit: fmt.Sprint(g.limits.MaxAgentsPerRun)}
-		g.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, &LimitError{Resource: "agents per run", Used: fmt.Sprint(g.agentsStarted), Limit: fmt.Sprint(g.limits.MaxAgentsPerRun)}
 	}
 	g.activeAgents++
 	g.agentsStarted++
 	runID := g.runID
 	ctx, cancel := context.WithCancel(g.runCtx)
-	st := g.snapshotLocked()
-	g.mu.Unlock()
-	g.notify(st)
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
@@ -337,29 +385,21 @@ func (g *Governor) AcquireAgent() (context.Context, func(), error) {
 	return ctx, release, nil
 }
 
-// AcquireToolCall reserves one call before dispatch. A refusal happens before
-// the underlying tool is invoked.
-func (g *Governor) AcquireToolCall(agentID string) error {
+// AcquireToolCall reserves one call of turn, the turn making it, before
+// dispatch. A refusal happens before the underlying tool is invoked. The
+// run's cap ends the run; a turn past its per-turn cap is refused alone, and
+// the run, every other turn and every sub-agent in it go on (TEN-326). ctx
+// is the call's: when it ends, so does the turn's count, so the counts are
+// the live turns'.
+func (g *Governor) AcquireToolCall(ctx context.Context, turn string) error {
 	g.mu.Lock()
-	if !g.open {
+	if !g.open || g.overLocked() {
 		g.mu.Unlock()
 		return nil
 	}
 	if g.terminated {
 		err := fmt.Errorf("orchestra: team run terminated: %s", g.reason)
 		g.mu.Unlock()
-		return err
-	}
-	perTurn := g.toolCallsByAgent[agentID]
-	if perTurn >= g.limits.MaxToolCallsPerTurn {
-		err := &LimitError{Resource: "tool calls per turn", Used: fmt.Sprint(perTurn), Limit: fmt.Sprint(g.limits.MaxToolCallsPerTurn)}
-		g.markTerminatedLocked(err.Error())
-		cancel, st := g.cancel, g.snapshotLocked()
-		g.mu.Unlock()
-		if cancel != nil {
-			cancel(err)
-		}
-		g.notify(st)
 		return err
 	}
 	if g.toolCalls >= g.limits.MaxToolCallsPerRun {
@@ -373,12 +413,34 @@ func (g *Governor) AcquireToolCall(agentID string) error {
 		g.notify(st)
 		return err
 	}
+	perTurn, counted := g.toolCallsByTurn[turn]
+	if perTurn >= g.limits.MaxToolCallsPerTurn {
+		g.mu.Unlock()
+		return &LimitError{Resource: "tool calls per turn", Used: fmt.Sprint(perTurn), Limit: fmt.Sprint(g.limits.MaxToolCallsPerTurn)}
+	}
 	g.toolCalls++
-	g.toolCallsByAgent[agentID] = perTurn + 1
+	g.toolCallsByTurn[turn] = perTurn + 1
+	runID, st := g.runID, g.snapshotLocked()
+	g.mu.Unlock()
+	if !counted {
+		context.AfterFunc(ctx, func() { g.releaseTurn(runID, turn) })
+	}
+	g.notify(st)
+	return nil
+}
+
+// releaseTurn drops a finished turn's count, unless a later run has replaced
+// the counts it was in (begin resets them).
+func (g *Governor) releaseTurn(runID uint64, turn string) {
+	g.mu.Lock()
+	if g.runID != runID {
+		g.mu.Unlock()
+		return
+	}
+	delete(g.toolCallsByTurn, turn)
 	st := g.snapshotLocked()
 	g.mu.Unlock()
 	g.notify(st)
-	return nil
 }
 
 // RecordUsage accounts one completed model call. Token and cost exhaustion
@@ -421,7 +483,7 @@ func (g *Governor) RecordUsage(prompt, completion int) error {
 // AcquireBrowser reserves a browser process slot before Chrome is launched.
 func (g *Governor) AcquireBrowser() (func(), error) {
 	g.mu.Lock()
-	if g.terminated {
+	if g.terminated && !g.overLocked() {
 		err := fmt.Errorf("orchestra: team run terminated: %s", g.reason)
 		g.mu.Unlock()
 		return nil, err
@@ -466,10 +528,16 @@ func (g *Governor) terminateRun(runID uint64, reason string) {
 
 func (g *Governor) markTerminatedLocked(reason string) { g.terminated, g.reason = true, reason }
 
+// overLocked reports a run that was terminated and has no agent left in it:
+// it refuses nothing more (tool calls, browsers), and the next spawn opens a
+// fresh run in its place. A terminated run still winding its agents down
+// refuses (TEN-326).
+func (g *Governor) overLocked() bool { return g.terminated && g.activeAgents == 0 }
+
 func (g *Governor) snapshotLocked() BudgetStatus {
-	byAgent := make(map[string]int, len(g.toolCallsByAgent))
-	for k, v := range g.toolCallsByAgent {
-		byAgent[k] = v
+	byTurn := make(map[string]int, len(g.toolCallsByTurn))
+	for k, v := range g.toolCallsByTurn {
+		byTurn[k] = v
 	}
 	elapsed := time.Duration(0)
 	if !g.started.IsZero() {
@@ -478,7 +546,7 @@ func (g *Governor) snapshotLocked() BudgetStatus {
 	return BudgetStatus{
 		Limits: g.limits, RunID: g.runID, Active: g.open && !g.terminated,
 		StartedAt: g.started, Elapsed: elapsed, ActiveSubagents: g.activeAgents,
-		AgentsStarted: g.agentsStarted, ToolCalls: g.toolCalls, ToolCallsByAgent: byAgent,
+		AgentsStarted: g.agentsStarted, ToolCalls: g.toolCalls, ToolCallsByTurn: byTurn,
 		PromptTokens: g.promptTokens, CompletionTokens: g.completionTokens,
 		Tokens: g.promptTokens + g.completionTokens, EstimatedCostUSD: g.estimatedCost,
 		BrowserInstances: g.browsers, TerminationReason: g.reason,
