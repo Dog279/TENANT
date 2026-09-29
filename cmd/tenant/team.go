@@ -408,7 +408,11 @@ func (c composite) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 	if c.budget != nil {
 		// No run is opened here: a spawn opens one itself (EnsureAgent), on no
 		// turn's context, so a turn's end can't end the run under others.
-		if err := c.budget.AcquireToolCall(c.agentID); err != nil {
+		// The per-turn cap counts this turn: serve's surfaces share one agent
+		// ID, so keyed by it alone, one conversation's calls ended the run
+		// under the others' (TEN-326).
+		turn := c.agentID + "/" + agent.Conversation(ctx) + "/" + runtrace.IDFromContext(ctx)
+		if err := c.budget.AcquireToolCall(ctx, turn); err != nil {
 			return err.Error(), true, nil
 		}
 	}

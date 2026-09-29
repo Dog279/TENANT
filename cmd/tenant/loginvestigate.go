@@ -349,7 +349,7 @@ func (s *investigationSurface) Dispatch(ctx context.Context, call model.ToolCall
 		return fmt.Sprintf("%q is not available to an alert investigation: it is read-only (logs_query and memory reads). "+
 			"Report what you found instead.", call.Name), true, nil
 	}
-	if err := s.gov.AcquireToolCall(investigatorID); err != nil {
+	if err := s.gov.AcquireToolCall(ctx, investigatorID); err != nil {
 		return err.Error(), true, nil
 	}
 	if call.Name != logsQueryTool.Name {

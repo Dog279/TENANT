@@ -105,7 +105,7 @@ type BudgetStatus struct {
 	ActiveSubagents   int            `json:"active_subagents"`
 	AgentsStarted     int            `json:"agents_started"`
 	ToolCalls         int            `json:"tool_calls"`
-	ToolCallsByAgent  map[string]int `json:"tool_calls_by_agent,omitempty"`
+	ToolCallsByTurn   map[string]int `json:"tool_calls_by_turn,omitempty"`
 	PromptTokens      int            `json:"prompt_tokens"`
 	CompletionTokens  int            `json:"completion_tokens"`
 	Tokens            int            `json:"tokens"`
@@ -163,7 +163,7 @@ type Governor struct {
 	activeAgents     int
 	agentsStarted    int
 	toolCalls        int
-	toolCallsByAgent map[string]int
+	toolCallsByTurn  map[string]int
 	promptTokens     int
 	completionTokens int
 	estimatedCost    float64
@@ -172,7 +172,7 @@ type Governor struct {
 }
 
 func NewGovernor(b Budgets, observe func(BudgetStatus)) *Governor {
-	return &Governor{limits: b.WithDefaults(), observe: observe, toolCallsByAgent: map[string]int{}}
+	return &Governor{limits: b.WithDefaults(), observe: observe, toolCallsByTurn: map[string]int{}}
 }
 
 func (g *Governor) Limits() Budgets { g.mu.Lock(); defer g.mu.Unlock(); return g.limits }
@@ -248,7 +248,7 @@ func (g *Governor) beginLocked(parent context.Context) (retire func()) {
 	g.open, g.terminated = true, false
 	g.started = time.Now()
 	g.activeAgents, g.agentsStarted, g.toolCalls = 0, 0, 0
-	g.toolCallsByAgent = map[string]int{}
+	g.toolCallsByTurn = map[string]int{}
 	g.promptTokens, g.completionTokens, g.estimatedCost = 0, 0, 0
 	g.reason = ""
 	g.runCtx, g.cancel = context.WithCancelCause(parent)
@@ -385,9 +385,13 @@ func (g *Governor) acquireLocked() (context.Context, func(), error) {
 	return ctx, release, nil
 }
 
-// AcquireToolCall reserves one call before dispatch. A refusal happens before
-// the underlying tool is invoked.
-func (g *Governor) AcquireToolCall(agentID string) error {
+// AcquireToolCall reserves one call of turn, the turn making it, before
+// dispatch. A refusal happens before the underlying tool is invoked. The
+// run's cap ends the run; a turn past its per-turn cap is refused alone, and
+// the run, every other turn and every sub-agent in it go on (TEN-326). ctx
+// is the call's: when it ends, so does the turn's count, so the counts are
+// the live turns'.
+func (g *Governor) AcquireToolCall(ctx context.Context, turn string) error {
 	g.mu.Lock()
 	if !g.open || g.overLocked() {
 		g.mu.Unlock()
@@ -396,18 +400,6 @@ func (g *Governor) AcquireToolCall(agentID string) error {
 	if g.terminated {
 		err := fmt.Errorf("orchestra: team run terminated: %s", g.reason)
 		g.mu.Unlock()
-		return err
-	}
-	perTurn := g.toolCallsByAgent[agentID]
-	if perTurn >= g.limits.MaxToolCallsPerTurn {
-		err := &LimitError{Resource: "tool calls per turn", Used: fmt.Sprint(perTurn), Limit: fmt.Sprint(g.limits.MaxToolCallsPerTurn)}
-		g.markTerminatedLocked(err.Error())
-		cancel, st := g.cancel, g.snapshotLocked()
-		g.mu.Unlock()
-		if cancel != nil {
-			cancel(err)
-		}
-		g.notify(st)
 		return err
 	}
 	if g.toolCalls >= g.limits.MaxToolCallsPerRun {
@@ -421,12 +413,34 @@ func (g *Governor) AcquireToolCall(agentID string) error {
 		g.notify(st)
 		return err
 	}
+	perTurn, counted := g.toolCallsByTurn[turn]
+	if perTurn >= g.limits.MaxToolCallsPerTurn {
+		g.mu.Unlock()
+		return &LimitError{Resource: "tool calls per turn", Used: fmt.Sprint(perTurn), Limit: fmt.Sprint(g.limits.MaxToolCallsPerTurn)}
+	}
 	g.toolCalls++
-	g.toolCallsByAgent[agentID] = perTurn + 1
+	g.toolCallsByTurn[turn] = perTurn + 1
+	runID, st := g.runID, g.snapshotLocked()
+	g.mu.Unlock()
+	if !counted {
+		context.AfterFunc(ctx, func() { g.releaseTurn(runID, turn) })
+	}
+	g.notify(st)
+	return nil
+}
+
+// releaseTurn drops a finished turn's count, unless a later run has replaced
+// the counts it was in (begin resets them).
+func (g *Governor) releaseTurn(runID uint64, turn string) {
+	g.mu.Lock()
+	if g.runID != runID {
+		g.mu.Unlock()
+		return
+	}
+	delete(g.toolCallsByTurn, turn)
 	st := g.snapshotLocked()
 	g.mu.Unlock()
 	g.notify(st)
-	return nil
 }
 
 // RecordUsage accounts one completed model call. Token and cost exhaustion
@@ -521,9 +535,9 @@ func (g *Governor) markTerminatedLocked(reason string) { g.terminated, g.reason 
 func (g *Governor) overLocked() bool { return g.terminated && g.activeAgents == 0 }
 
 func (g *Governor) snapshotLocked() BudgetStatus {
-	byAgent := make(map[string]int, len(g.toolCallsByAgent))
-	for k, v := range g.toolCallsByAgent {
-		byAgent[k] = v
+	byTurn := make(map[string]int, len(g.toolCallsByTurn))
+	for k, v := range g.toolCallsByTurn {
+		byTurn[k] = v
 	}
 	elapsed := time.Duration(0)
 	if !g.started.IsZero() {
@@ -532,7 +546,7 @@ func (g *Governor) snapshotLocked() BudgetStatus {
 	return BudgetStatus{
 		Limits: g.limits, RunID: g.runID, Active: g.open && !g.terminated,
 		StartedAt: g.started, Elapsed: elapsed, ActiveSubagents: g.activeAgents,
-		AgentsStarted: g.agentsStarted, ToolCalls: g.toolCalls, ToolCallsByAgent: byAgent,
+		AgentsStarted: g.agentsStarted, ToolCalls: g.toolCalls, ToolCallsByTurn: byTurn,
 		PromptTokens: g.promptTokens, CompletionTokens: g.completionTokens,
 		Tokens: g.promptTokens + g.completionTokens, EstimatedCostUSD: g.estimatedCost,
 		BrowserInstances: g.browsers, TerminationReason: g.reason,

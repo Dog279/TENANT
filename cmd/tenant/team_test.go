@@ -955,3 +955,57 @@ func TestTeamRuntime_TerminatedIdleRunBlocksNothing(t *testing.T) {
 	}
 	teamAwait(t, rt, turn) // join the second before the stores close
 }
+
+// The per-turn tool-call cap is a turn's (TEN-326). Serve's surfaces share
+// one orchestrator, and so one agent ID: a dashboard turn running past the
+// cap used to terminate the team run, cancelling the relay's worker and
+// refusing the relay's tool calls. Now only that turn is refused.
+func TestTeamRuntime_PerTurnToolCapStopsOnlyThatTurn(t *testing.T) {
+	rt := blockingTeam(t)
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{MaxToolCallsPerTurn: 2}, nil)
+	var hit string
+	local := newToolMux()
+	local.Add("orchestrator", spawnTool{rt: rt, timeout: 30 * time.Second})
+	local.Add("look", fakePlugin{name: "look", lastHit: &hit})
+	orch := composite{local: local, budget: rt.budget, agentID: "main"} // every serve surface's
+	call := func(ctx context.Context, name, args string) (string, bool) {
+		t.Helper()
+		out, isErr, err := orch.Dispatch(ctx, model.ToolCall{Name: name, Arguments: json.RawMessage(args)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, isErr
+	}
+	relay, endRelay := context.WithCancel(inConversation("discord", "turn-r"))
+	defer endRelay()
+	if out, isErr := call(relay, "spawn_agent", `{"role":"worker","task":"the relay's task"}`); isErr {
+		t.Fatalf("the relay's spawn: %s", out)
+	}
+	dash := inConversation("dashboard", "turn-d")
+	for i := range 2 {
+		if out, isErr := call(dash, "look_do", `{}`); isErr {
+			t.Errorf("the dashboard's call %d, within its cap: %s", i+1, out)
+		}
+	}
+	if out, isErr := call(dash, "look_do", `{}`); !isErr || !strings.Contains(out, "tool calls per turn") {
+		t.Errorf("the dashboard's third call went past its cap: %s", out)
+	}
+	if st := rt.BudgetStatus(); st.TerminationReason != "" {
+		t.Errorf("the dashboard's cap terminated the team run: %q", st.TerminationReason)
+	}
+	rt.mu.Lock()
+	var done chan struct{}
+	running := false
+	for _, m := range rt.agents {
+		done, running = m.done, m.status == "running"
+	}
+	rt.mu.Unlock()
+	if !running {
+		t.Error("the dashboard's cap stopped the relay's worker")
+	}
+	if out, isErr := call(relay, "look_do", `{}`); isErr {
+		t.Errorf("the relay's call after the dashboard hit its cap: %s", out)
+	}
+	endRelay()
+	<-done
+}
