@@ -99,6 +99,10 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
+	where := " (PowerShell on Windows, sh on Linux/macOS)."
+	if d.svc != nil && d.svc.shell != "" {
+		where = ": " + d.svc.shell
+	}
 	return []model.ToolSpec{
 		{Name: "os_sysinfo", Description: "Report this machine's OS, arch, hostname, CPU count, user, home and working directory.",
 			Parameters: obj(``)},
@@ -118,7 +122,7 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(`"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}`, "path", "old_string", "new_string"), Gated: true},
 		{Name: "os_make_dir", Description: "Create a directory (and any missing parents). GATED: needs write permission or approval.",
 			Parameters: obj(`"path":{"type":"string"}`, "path"), Gated: true},
-		{Name: "os_exec", Description: "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS). GATED: off unless enabled; destructive commands need explicit approval. Returns combined stdout+stderr.",
+		{Name: "os_exec", Description: "Run a shell command on this machine" + where + " GATED: off unless enabled; destructive commands need explicit approval. Returns combined stdout+stderr.",
 			Parameters: obj(`"command":{"type":"string"}`, "command"), Gated: true, Outbound: true},
 	}
 }

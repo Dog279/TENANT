@@ -4435,7 +4435,7 @@ Writes the `sandbox` log.
 | [1](#sandbox-1) | info | Run | `Command on {backend} for {surface}` |
 | [1001](#sandbox-1001) | info | Run | `Command exited: {status}` |
 | [2001](#sandbox-2001) | warning | Refusal | `The sandbox refused a command: {violations}` |
-| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran on the host: {violations}` |
+| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran outside it: {violations}` |
 | [2003](#sandbox-2003) | warning | Refusal | `A command the sandbox refused was approved to run outside it: {violations}` |
 | [2004](#sandbox-2004) | warning | Exception | `Sandbox exception saved: {surface} commands may write under {path}` |
 | [2005](#sandbox-2005) | warning | Backend | `The {surface} exec profile's backend {backend} is unavailable; it is in dry run, so the command ran on the host: {err}` |
@@ -4477,21 +4477,21 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2001`
 
-**What it means.** The boundary refused a file or network access, and the command was not run again: its failure went back to the model or the cron job.
+**What it means.** The boundary refused a file or network access, or a Windows program (in WSL), and the command was not run again: its failure went back to the model or the cron job.
 
-**Why it happens.** The command reached outside the profile's roots or network. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
+**Why it happens.** The command reached outside the profile's roots or network, or started a Windows program. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
 
 **What to do.** None if the refusal was right. If the command needs that access, widen the surface's exec_profiles entry (read_roots, write_roots, network), or approve the escalation next time.
 
 ### sandbox 2002
 
-`Dry run: the sandbox would have refused a command, which ran on the host: {violations}`
+`Dry run: the sandbox would have refused a command, which ran outside it: {violations}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2002`
 
-**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again on the host, unconfined, so the refusal is only reported.
+**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again outside the sandbox, unconfined (on the host, or on Windows as sh in the same WSL distro), so the refusal is only reported.
 
 **Why it happens.** The command reached outside the profile's roots or network while the surface's exec_profiles entry has enforce off.
 
@@ -4505,7 +4505,7 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2003`
 
-**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again on the host, unconfined. The approval itself is in the Security log.
+**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again outside the sandbox, unconfined (on the host, or on Windows as sh in the same WSL distro). The approval itself is in the Security log.
 
 **Why it happens.** The command needed an access outside the profile, and the operator allowed it once.
 

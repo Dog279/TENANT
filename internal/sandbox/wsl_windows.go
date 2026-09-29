@@ -214,17 +214,6 @@ func runWSLCode(wslExe, distro string, args ...string) int {
 	return -1
 }
 
-// wslArgv builds the wsl.exe argument vector: an optional "-d <distro>" then
-// "-e" and the program+args to exec directly (no login shell).
-func wslArgv(distro string, args ...string) []string {
-	argv := make([]string, 0, len(args)+3)
-	if distro != "" {
-		argv = append(argv, "-d", distro)
-	}
-	argv = append(argv, "-e")
-	return append(argv, args...)
-}
-
 // decodeWSLText normalises wsl.exe management output, which is UTF-16LE with a
 // BOM. ASCII distro names decode by dropping the high (NUL) byte of each unit;
 // plain UTF-8 (no interleaved NULs) is returned unchanged. Tolerant by design:
@@ -267,26 +256,39 @@ func (b *wslBackend) Probe(context.Context) Capabilities {
 		Shell:      "sh",           // commands run as POSIX sh inside WSL, even though the host is Windows
 		Detail: "Windows via WSL2 bubblewrap (" + distro + "): filesystem read/write/deny roots and " +
 			"network-none are enforced by bubblewrap; Windows paths are translated to their WSL mount " +
-			"(" + b.info.mountPrefix + "), which is hidden except at the work dir and granted roots (WSL resolves " +
-			"Windows names case-insensitively, so a deny root inside a granted Windows root is best-effort); " +
-			"commands run as Linux sh, not PowerShell; wall-clock timeout only " +
+			"(" + b.info.mountPrefix + "), which is hidden except at the work dir and granted roots when enforcing " +
+			"(a dry run leaves it read-only; WSL resolves Windows names case-insensitively, so a deny root inside " +
+			"a granted Windows root is best-effort); commands run as Linux sh, not PowerShell, and Windows " +
+			"programs (.exe, via WSL interop) only outside the sandbox; wall-clock timeout only " +
 			"(no memory/CPU/PID caps through the WSL boundary); env is WSL's default, not a strict allowlist yet",
 	}
 }
 
 func (b *wslBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
+	tpol, opts := b.translatePolicy(pol)
+	bwrapArgv := bwrapArgsOpts(tpol, opts, "sh", []string{"-c", commandLine(cmd)})
+	res, err := b.exec(ctx, append([]string{b.info.bwrap}, bwrapArgv...), cmd, pol)
+	if err != nil || res.ExitCode == 0 || res.TimedOut {
+		return res, err
+	}
+	if v, ok := attributeWindowsProgram(res.Output); ok {
+		res.Violations = append(res.Violations, v)
+	} else if v, ok := attributeBwrapDenial(res.Output, tpol); ok {
+		res.Violations = append(res.Violations, v)
+	}
+	return res, nil // a non-zero exit is signal, not an infra error
+}
+
+// exec runs `wsl.exe [-d distro] -e args...` for cmd under pol's wall clock
+// and output cap, in WSL's default environment plus the IDs (pol.Env.Add). A
+// non-zero exit is signal; the error means wsl.exe itself could not run.
+func (b *wslBackend) exec(ctx context.Context, args []string, cmd Command, pol Policy) (Result, error) {
 	if pol.Limits.Wall > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, pol.Limits.Wall)
 		defer cancel()
 	}
-
-	tpol, opts := b.translatePolicy(pol)
-	line := commandLine(cmd)
-	bwrapArgv := bwrapArgsOpts(tpol, opts, "sh", []string{"-c", line})
-	argv := wslArgv(b.info.distro, append([]string{b.info.bwrap}, bwrapArgv...)...)
-
-	c := exec.CommandContext(ctx, b.info.wslExe, argv...)
+	c := exec.CommandContext(ctx, b.info.wslExe, wslArgv(b.info.distro, args...)...)
 	if strings.TrimSpace(cmd.Stdin) != "" {
 		c.Stdin = strings.NewReader(cmd.Stdin)
 	}
@@ -311,12 +313,29 @@ func (b *wslBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, 
 		// wsl.exe itself could not run (vanished after discovery): infra error.
 		return res, fmt.Errorf("sandbox: wsl.exe could not run the command: %w", err)
 	}
-	if err != nil {
-		if v, ok := attributeBwrapDenial(res.Output, tpol); ok {
-			res.Violations = append(res.Violations, v)
-		}
-	}
-	return res, nil // a non-zero exit is signal, not an infra error
+	return res, nil
+}
+
+// Unconfined is where Execute re-runs a command this backend refused (a dry
+// run, or an approved escalation): sh in the same distro and directory,
+// without bubblewrap, so a re-run never turns the command into PowerShell.
+// Only out there does WSL interop start Windows programs.
+func (b *wslBackend) Unconfined() Backend { return wslUnsandboxed{b} }
+
+// wslUnsandboxed is the WSL backend's twin with no sandbox.
+type wslUnsandboxed struct{ b *wslBackend }
+
+func (wslUnsandboxed) Name() string         { return "wsl" }
+func (wslUnsandboxed) Isolation() Isolation { return IsolationNone }
+
+func (wslUnsandboxed) Probe(context.Context) Capabilities {
+	return Capabilities{Backend: "wsl", Isolation: IsolationNone, Filesystem: EnforceNone, Network: EnforceNone,
+		Limits: EnforcePartial, Env: EnforcePartial, Shell: "sh",
+		Detail: "Linux sh in the WSL distro with no sandbox: where a command the restricted backend refused re-runs"}
+}
+
+func (u wslUnsandboxed) Run(ctx context.Context, cmd Command, pol Policy) (Result, error) {
+	return u.b.exec(ctx, wslUnsandboxedArgv(u.b.toLinuxPath(pol.WorkDir), commandLine(cmd)), cmd, pol)
 }
 
 // Start runs argv inside the distro under bubblewrap with the same
@@ -393,6 +412,7 @@ func wslEnv(parent []string, e EnvPolicy) []string {
 //     Windows names case-insensitively, so /mnt/c/users/… reaches what a mask
 //     on /mnt/c/Users/… hides: a mask cannot guard a Windows path. A deny root
 //     inside a root the operator grants is best-effort for the same reason.
+//     Only when enforcing: a dry run leaves them visible, read-only (TEN-347).
 func (b *wslBackend) translatePolicy(pol Policy) (Policy, bwrapOpts) {
 	tp := pol
 	tp.WorkDir = b.toLinuxPath(pol.WorkDir)
@@ -409,7 +429,14 @@ func (b *wslBackend) translatePolicy(pol Policy) (Policy, bwrapOpts) {
 		}
 		return os.Stat(p)
 	}
-	return tp, bwrapOpts{stat: stat, hide: windowsDriveMounts(b.info.mountPrefix, existingDrives())}
+	var hide []string
+	if pol.Enforce {
+		// A dry run leaves the Windows drives visible, read-only like the rest of
+		// the host: hidden, a read of any Windows file failed with nothing
+		// refused, so the dry run never re-ran it outside.
+		hide = windowsDriveMounts(b.info.mountPrefix, existingDrives())
+	}
+	return tp, bwrapOpts{stat: stat, hide: hide}
 }
 
 // windowsDriveMounts is where the Windows drives appear in the distro: the
