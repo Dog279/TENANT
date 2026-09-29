@@ -247,6 +247,7 @@ func TestConfigDirFile(t *testing.T) {
 		"peer-key.pem":                true,
 		"dashboard-auth-token":        true,
 		"github-token.json":           true,
+		"github-merge.json":           true,
 		"oauth_client.json":           true,
 		"claudecode-usage.json":       true,
 		"episodes.db":                 false,

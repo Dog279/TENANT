@@ -185,6 +185,8 @@ func TestControlFilesProtectedWhateverTheRoots(t *testing.T) {
 		{"the spend ledger", oneShot, claudecode.LedgerPath()},
 		{"the Tenant binary", oneShot, exePath()},
 		{"config.json", oneShot, launchConfigPath(cfgDir)},
+		{"the merge rules", resolveOSRoots(&pluginFlags{}, cfgDir, dataDir, nil), githubp.MergeConfigPath(cfgDir)},
+		{"the merge rules temp file", oneShot, githubp.MergeConfigPath(cfgDir) + ".456.tmp"},
 	} {
 		if err := tc.roots.Check(tc.path, true); err == nil || !strings.Contains(err.Error(), "hard boundary") {
 			t.Errorf("%s: %s must be refused as a hard boundary, got %v", tc.name, filepath.Base(tc.path), err)

@@ -3195,7 +3195,9 @@ Writes the `plugin.github` log.
 | [1](#plugingithub-1) | info | Lifecycle | `GitHub started` |
 | [2](#plugingithub-2) | info | Lifecycle | `{target} enabled` |
 | [3](#plugingithub-3) | info | Lifecycle | `{target} disabled` |
+| [1101](#plugingithub-1101) | info | Merge | `Merged {repo} #{number} at {sha}` |
 | [2001](#plugingithub-2001) | warning | API | `GitHub rate limit reached on {op}: HTTP {status}` |
+| [2101](#plugingithub-2101) | warning | Merge | `Refused to merge {repo} #{number}: {rule}` |
 | [3001](#plugingithub-3001) | error | Lifecycle | `GitHub could not start: {err}` |
 | [3002](#plugingithub-3002) | error | API | `GitHub refused the credentials on {op}: HTTP {status}` |
 | [3003](#plugingithub-3003) | error | API | `GitHub API call {op} failed: {err}` |
@@ -3241,6 +3243,20 @@ Writes the `plugin.github` log.
 
 **What to do.** None.
 
+### plugin.github 1101
+
+`Merged {repo} #{number} at {sha}`
+
+- **Level:** info · **Channel:** operational · **Task:** Merge · **Log:** plugin.github
+- **Fields:** `repo`, `number`, `sha`, `method`
+- **Find it:** `provider:plugin.github id:1101`
+
+**What it means.** The agent merged a pull request after every merge rule passed and the merge was approved.
+
+**Why it happens.** The agent called github_merge on a PR that was ready, and a person or an explicit github_merge tool rule approved it.
+
+**What to do.** None. The approval that let it run is on this record.
+
 ### plugin.github 2001
 
 `GitHub rate limit reached on {op}: HTTP {status}`
@@ -3254,6 +3270,20 @@ Writes the `plugin.github` log.
 **Why it happens.** The agent made many calls in a short time, or something else shares the account's quota.
 
 **What to do.** Wait until the quota resets (retry holds the service's Retry-After, when it sent one). If it keeps happening, use the tool less or raise the account's quota.
+
+### plugin.github 2101
+
+`Refused to merge {repo} #{number}: {rule}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Merge · **Log:** plugin.github
+- **Fields:** `repo`, `number`, `sha`, `rule`, `reason`
+- **Find it:** `provider:plugin.github id:2101`
+
+**What it means.** The agent asked to merge a pull request and the merge gate refused it.
+
+**Why it happens.** A merge rule failed (config, ready, ci, security_review, docs), the PR changed while approval was pending, or the merge wasn't approved.
+
+**What to do.** Read reason. The agent was told the same thing and the fix; a person can merge the PR by hand.
 
 ### plugin.github 3001
 

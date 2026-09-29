@@ -114,6 +114,11 @@ type pluginDescriptor struct {
 	// files them under their directory.
 	ConfigSecrets func(cfgDir string) []string
 	DataSecrets   func(dataDir string) []string
+	// ConfigFiles lists the plugin's own settings files in the config dir that
+	// are not secret but decide what the agent may do (the GitHub merge rules):
+	// the file tools may read them but never write them, and backup files them
+	// under the config dir.
+	ConfigFiles func(cfgDir string) []string
 	// PointedSecrets lists secret files the operator pointed the plugin at (a
 	// service-account key, an OAuth client), by flag or saved setting: the
 	// file tools refuse them.
@@ -335,6 +340,16 @@ func pluginConfigSecrets(cfgDir string) []string {
 	for _, d := range plugins().All() {
 		if d.ConfigSecrets != nil {
 			out = append(out, d.ConfigSecrets(cfgDir)...)
+		}
+	}
+	return out
+}
+
+func pluginConfigFiles(cfgDir string) []string {
+	var out []string
+	for _, d := range plugins().All() {
+		if d.ConfigFiles != nil {
+			out = append(out, d.ConfigFiles(cfgDir)...)
 		}
 	}
 	return out
