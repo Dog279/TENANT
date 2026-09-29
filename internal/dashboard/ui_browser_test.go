@@ -69,10 +69,13 @@ func visit(to string) chromedp.Action {
 	return chromedp.Tasks{chromedp.Navigate(to), datastarUp}
 }
 
-// toastSays waits for the toast of kind ok or err to say text.
+// toastSays waits for the toast of kind ok or err to say text, and for the
+// answer that brought it to end (the tap guard is no longer up for it): the
+// toast is its first patch, and the rest (a create's fresh region, sent
+// after a flush) can land a moment later.
 func toastSays(kind, text string) chromedp.Action {
 	q := strconv.Quote // a Go-quoted ASCII string is a JS string literal
-	return chromedp.Poll(`(t => t.classList.contains(`+q(kind)+`) && t.textContent.includes(`+q(text)+`))(document.getElementById('toast'))`, nil, chromedp.WithPollingTimeout(6*time.Second))
+	return chromedp.Poll(`(t => t.classList.contains(`+q(kind)+`) && t.textContent.includes(`+q(text)+`))(document.getElementById('toast')) && document.querySelector('.app').tapUntil !== Infinity`, nil, chromedp.WithPollingTimeout(6*time.Second))
 }
 
 // tapTwice taps twice, 120ms apart, at the spot the JS expression at gives.
@@ -106,6 +109,7 @@ var transientCDP = []string{
 	"Execution context was destroyed",
 	"Inspected target navigated or closed",
 	"Node with given id does not belong to the document",
+	"No node with given id found",
 }
 
 // run is chromedp.Run giving each step (each one in a Tasks) up to five
