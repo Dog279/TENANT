@@ -66,6 +66,11 @@ func call(id, name string, args any) model.ToolCall {
 
 func runSensitiveEgressScenario(t *testing.T, source, sink model.ToolSpec, sinkArgs map[string]any, confirm func(context.Context, string, string) bool) (*agent.TurnResult, []string) {
 	t.Helper()
+	return runSensitiveEgressScenarioCtx(t, context.Background(), source, sink, sinkArgs, confirm)
+}
+
+func runSensitiveEgressScenarioCtx(t *testing.T, ctx context.Context, source, sink model.ToolSpec, sinkArgs map[string]any, confirm func(context.Context, string, string) bool) (*agent.TurnResult, []string) {
+	t.Helper()
 	dispatcher := &recordingDispatcher{}
 	a, fake, _, _ := buildAgentWithEgress(t, model.Profile{}, []model.ToolSpec{source, sink}, dispatcher, confirm)
 	step := 0
@@ -84,7 +89,7 @@ func runSensitiveEgressScenario(t *testing.T, source, sink model.ToolSpec, sinkA
 			return &model.GenerateResponse{Text: "done", FinishReason: "stop"}, nil
 		}
 	}
-	result, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "test sensitive flow"})
+	result, err := a.Turn(ctx, agent.TurnRequest{UserQuery: "test sensitive flow"})
 	if err != nil {
 		t.Fatalf("Turn: %v", err)
 	}

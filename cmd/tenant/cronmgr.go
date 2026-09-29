@@ -214,6 +214,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		// is no per-agent "force big" in route config, so the prompt prefix is
 		// the operator's lever.
 		runCtx = withExecSurface(runCtx, surfaceCronExec) // picks the cron-exec exec profile
+		runCtx = agent.WithEgressAllow(runCtx, job.EgressAllow)
 		prompt, override := agent.ParseRoutePrefix(job.Prompt)
 		res, err := ag.Turn(runCtx, agent.TurnRequest{
 			UserQuery: prompt, RouteSurface: agent.RouteSurfaceCron, RouteOverride: override,
@@ -271,6 +272,31 @@ func sandboxViolationsSince(hub *logs.Hub) func(time.Time) int {
 		}
 		return int(n)
 	}
+}
+
+// cronDefsFromConfig and cronJobsFromDefs carry jobs between config.json and
+// the engine, every field both ways: a field one of them drops is lost at the
+// next save, which rewrites the whole list.
+func cronDefsFromConfig(jobs []cronJobConfig) []croneng.JobDef {
+	defs := make([]croneng.JobDef, len(jobs))
+	for i, j := range jobs {
+		defs[i] = croneng.JobDef{
+			ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
+			Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ, EgressAllow: j.EgressAllow,
+		}
+	}
+	return defs
+}
+
+func cronJobsFromDefs(defs []croneng.JobDef) []cronJobConfig {
+	jobs := make([]cronJobConfig, len(defs))
+	for i, d := range defs {
+		jobs[i] = cronJobConfig{
+			ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
+			Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ, EgressAllow: d.EgressAllow,
+		}
+	}
+	return jobs
 }
 
 // withAuthBanner prefixes a cron summary with the connectors whose sign-in is

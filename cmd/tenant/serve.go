@@ -575,24 +575,13 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	} else {
 		var cronDefs []cron.JobDef
 		if c.lc != nil {
-			for _, j := range c.lc.Cron.Jobs {
-				cronDefs = append(cronDefs, cron.JobDef{
-					ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt,
-					Enabled: j.Enabled, Kind: j.Kind, Exec: j.Exec, TZ: j.TZ,
-				})
-			}
+			cronDefs = cronDefsFromConfig(c.lc.Cron.Jobs)
 		}
 		cronEngine = cron.NewEngine(cronDefs, cronRunner, func(defs []cron.JobDef) error {
 			if c.lc == nil {
 				return nil
 			}
-			jobs := make([]cronJobConfig, len(defs))
-			for i, d := range defs {
-				jobs[i] = cronJobConfig{
-					ID: d.ID, Name: d.Name, Spec: d.Spec, Prompt: d.Prompt,
-					Enabled: d.Enabled, Kind: d.Kind, Exec: d.Exec, TZ: d.TZ,
-				}
-			}
+			jobs := cronJobsFromDefs(defs)
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.Cron.Jobs = jobs })
 		})
 		cronEngine.SetPaused(degraded.Degraded)

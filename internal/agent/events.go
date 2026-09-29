@@ -274,6 +274,14 @@ var ToolPanicked = Turns.Event(3103, event.Critical, "Tool call", "Tool {tool} p
 		"A bug in the tool or its plugin.",
 		"Report it with the stack, and disable the tool (/disable) if it keeps happening.")
 
+// Security and audit (4000s).
+
+var EgressPreapproved = Turns.Event(4001, event.Warning, "Egress", "{tool} sent {sensitivity} data from {provenance} without asking, under its job's egress_allow ({pattern})",
+	"agent", "tool", "pattern", "sensitivity", "provenance").
+	Doc("An outbound tool call carried sensitive data out of Tenant without an approval prompt, because the scheduled job running the turn lists the tool in its egress_allow.",
+		"The operator set egress_allow on the cron job in config.json: the job exists to move this data, like a ticket note written from an email or a command copied from a runbook.",
+		"None when the job is meant to do this. If not, remove the tool from the job's egress_allow in config.json and restart Tenant.")
+
 // Diagnostics (9000s): the tool payloads.
 
 var ToolCallArgs = Turns.Event(9001, event.Info, "Tool call", "tool call {tool}", "agent", "iter", "tool", "args").Sensitive("args").Diagnostic().

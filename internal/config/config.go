@@ -666,6 +666,11 @@ type CronJob struct {
 	Kind    string `json:"kind,omitempty"`
 	Exec    bool   `json:"exec,omitempty"`
 	TZ      string `json:"tz,omitempty"`
+	// EgressAllow names the tools (path.Match globs: "os_exec", "sdp_*")
+	// this prompt job may call with sensitive data in their arguments. A
+	// scheduled turn has nobody to approve that egress, so without it such a
+	// call is refused. Set only here: a job added at runtime never has it.
+	EgressAllow []string `json:"egress_allow,omitempty"`
 }
 
 // Skill is one integration's non-secret settings + on/off state.

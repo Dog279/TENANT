@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	refpkg "reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,36 @@ import (
 	"tenant/internal/plugins/discord"
 	"tenant/internal/runtrace"
 )
+
+// Every job field survives config.json -> engine -> config.json. The save
+// after any /cron change rewrites the whole list, so a field the conversion
+// misses is silently dropped from config.json.
+func TestCronJobConversionKeepsEveryField(t *testing.T) {
+	var job cronJobConfig
+	v := refpkg.ValueOf(&job).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f, name := v.Field(i), v.Type().Field(i).Name
+		switch f.Kind() {
+		case refpkg.String:
+			f.SetString(name)
+		case refpkg.Bool:
+			f.SetBool(true)
+		case refpkg.Slice:
+			f.Set(refpkg.ValueOf([]string{name}))
+		default:
+			t.Fatalf("field %s: kind %s is not filled by this test; add it", name, f.Kind())
+		}
+	}
+	if back := cronJobsFromDefs(cronDefsFromConfig([]cronJobConfig{job})); !refpkg.DeepEqual(back, []cronJobConfig{job}) {
+		t.Fatalf("round trip lost a field:\n got %+v\nwant %+v", back[0], job)
+	}
+	def := refpkg.TypeOf(croneng.JobDef{})
+	for i := 0; i < v.NumField(); i++ {
+		if _, ok := def.FieldByName(v.Type().Field(i).Name); !ok {
+			t.Errorf("cron.JobDef has no field %s, so the engine can't carry it", v.Type().Field(i).Name)
+		}
+	}
+}
 
 // The exec auto-approver must hard-deny irreversible actions and writes into the
 // config/data dirs (anti self-replication), while allowing benign ones.
