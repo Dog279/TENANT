@@ -3,7 +3,10 @@
 **Branch:** `feat/sandbox-seam` · **Status:** implemented and tested; the macOS backend is
 live-tested and red-teamed, the Linux backend is live-tested and red-teamed under WSL2, and the
 Windows backend runs commands through WSL2 bubblewrap and is live-tested; not yet deployed.
-**Nothing changes until an operator sets `exec_profiles`.**
+**The defaults changed since (TEN-347):** the sandbox now runs by default in dry run where it can,
+commands get an environment allowlist on every backend, and "always" on an escalation saves a
+scoped exception. See [exec-defaults-dry-run.md](exec-defaults-dry-run.md); where the two
+disagree, that record is current.
 **Tickets:** SEC-009 / TEN-345 (seam, host backend, profiles), SEC-010 / TEN-346 (restricted
 backends), SEC-011 / TEN-347 (escalation, dry-run, unattended deny).
 
@@ -17,7 +20,7 @@ stays in front as a fast fail-early check. It is not the boundary.
 - **Backends.** A `sandbox.Backend` runs a command under a `Policy` and reports, through `Probe`,
   what it enforces on this host, per dimension (filesystem, network, limits, env), as
   `enforced` / `partial` / `none`, with a detail line that names the gaps.
-  - `host`: the default on every surface. No filesystem or network confinement, and named as
+  - `host`: the default on every surface at the time (now on Windows and Linux only). No filesystem or network confinement, and named as
     such. It honours the work dir, an env allowlist, the wall-clock timeout and the output cap.
     On the default profile the `os_exec` path matches the old runner exactly (output, exit text
     and timeout text, compared side by side in tests), and cron shell jobs keep `cmd /C` on
@@ -56,9 +59,9 @@ stays in front as a fast fail-early check. It is not the boundary.
     Chromium, Brave, Edge, Firefox), on macOS `~/Library/Keychains`, `~/Library/Cookies` and
     `~/Library/Safari`, and on Windows the `Microsoft\Credentials` stores, `gcloud` and the
     Chrome / Edge / Brave / Firefox profiles;
-  - runs with cron's scrubbed environment (variables whose names contain KEY, TOKEN, SECRET,
-    PASSWORD or PASSWD are dropped) instead of all of Tenant's, unless the profile sets
-    `env_pass` / `env_set`.
+  - ran with cron's scrubbed environment (variables whose names contain KEY, TOKEN, SECRET,
+    PASSWORD or PASSWD dropped) unless the profile set `env_pass` / `env_set`. Since TEN-347
+    every profile, host included, gets an allowlist instead: a safe base set plus `env_pass`.
 - **Refusals.** When a confining backend refuses a filesystem or network access:
   - with `enforce: true`, the turn's approver is asked for **`os_exec_unsandboxed`**, with the
     refusal named ("SANDBOX REFUSED: … approve to re-run it OUTSIDE the sandbox"). The action has its
@@ -111,7 +114,8 @@ stays in front as a fast fail-early check. It is not the boundary.
     output, exit code, timeout and violations, and exits 1 unless the command ran cleanly.
     It calls the backend directly, so it never escalates or re-runs.
 
-Making `restricted` the default on any surface is deliberately left for later (TEN-347).
+TEN-347 later made `restricted` the default, in dry run, where it can dry-run without breaking
+commands (macOS); see [exec-defaults-dry-run.md](exec-defaults-dry-run.md).
 
 ## Why
 Before this, all that stood between a model-issued command and the host was the approval gate
@@ -220,8 +224,9 @@ Windows.
   - Each guard piece was confirmed to fail a test when removed.
 
 ## Operator notes
-- **Nothing changes until you set `exec_profiles`.** With no entry, every surface runs on
-  `host`, the pre-seam behaviour, and `tenant sandbox probe` shows exactly that.
+- **With no entry**, every surface now runs the built-in profile: `restricted` in dry run where
+  it can dry-run (macOS), else `host` with the reason (TEN-347,
+  [exec-defaults-dry-run.md](exec-defaults-dry-run.md)). `tenant sandbox probe` shows which.
 
 **Example** (in `<config-dir>/settings.<agent>.json`):
 
@@ -236,9 +241,10 @@ Windows.
 
 Here `imessage` and `cron-exec` take `default` (restricted, dry-run), `local` stays unconfined,
 and `discord` and `cron-shell` are enforced with no network. A surface's own entry **replaces**
-`default`; it is not merged with it. Fields it leaves out fall back to the built-in values
-(`host`, enforce on, network `inherit`), not to `default`. Repeat `"backend": "restricted"` in
-every entry that should be confined.
+`default`; it is not merged with it. An entry that names a backend falls back to enforce on and
+network `inherit` for the fields it leaves out, not to `default`. Repeat `"backend":
+"restricted"` in every entry that should be confined. (An entry that names no backend rides the
+built-in profile, and takes `default`'s `enforce`: exec-defaults-dry-run.md.)
 
 - **Rollout:**
   1. `tenant sandbox probe`: check what each surface resolves to and what this host's
@@ -251,17 +257,18 @@ every entry that should be confined.
   4. Dry-run: set `"enforce": false` on the surface and let it run for a representative
      stretch. Read the `sandbox` log (`tenant attach --follow --source sandbox`) for "would have
      refused" lines, and widen `write_roots` / `env_pass` / `network` where a refusal is
-     legitimate. Dry-run needs refusal detection: macOS detects every refusal, Linux detects
-     writes and network but not reads of a masked root, Windows none yet (see
-     [Enforcement by OS](#enforcement-by-os)).
-  5. Enforce: remove `"enforce": false`.
+     legitimate. Dry-run needs refusal detection: macOS detects nearly every refusal (network
+     ones too since TEN-347), Linux and Windows (WSL) detect writes and network but not reads
+     of a masked root (see [Enforcement by OS](#enforcement-by-os)).
+  5. Enforce: remove `"enforce": false`, or for the built-in profile set
+     `exec_profiles.default.enforce` to `true`.
 - **The escalation prompt has its own category.** `os_exec_unsandboxed` is in the `sandbox`
   category: `ask` by default on the host and the Discord relay, `deny` on iMessage, and always
   denied by the cron exec approver. `session` or `always` on one of these prompts grants only
   further escalations, never another category. Keep `sandbox` on `ask` on every surface you
-  confine: `/relay permissions set sandbox allow`, the `full` preset, or `always` on a prompt
-  turns every refusal into a silent re-run outside the sandbox, and `tenant security audit`
-  flags it as critical.
+  confine: `/relay permissions set sandbox allow` turns every refusal into a silent re-run
+  outside the sandbox, and `tenant security audit` flags it as critical. (Since TEN-347 the
+  `full` preset keeps `sandbox` on ask, and `always` on a prompt saves only the refused folder.)
 - **The file tools cannot touch Tenant's controls or secrets.** On every surface and in
   `tenant os`, whatever the `write` mode, two built-in lists apply.
   - **Protected:** readable, but never written by `os_write`, `os_edit`, `os_append` or
@@ -355,9 +362,8 @@ every entry that should be confined.
 - **No secret proxying.** A confined command that needs a credential either gets it raw
   (`env_pass` / `env_set`, or a readable path) or runs outside the sandbox after approval. A
   credential-injection proxy, which would add secrets to outbound requests outside the sandbox
-  so the command never sees them, is a follow-up. The default env scrub is name-based: a secret
-  in a variable whose name lacks KEY / TOKEN / SECRET / PASSWORD / PASSWD survives it. Set
-  `env_pass` for a strict allowlist, and include `PATH`.
+  so the command never sees them, is a follow-up. (The name-based env scrub this listed is gone:
+  since TEN-347 every profile's environment is an allowlist.)
 - **Re-running can repeat side effects.** Dry-run and an approved escalation both run the
   command a second time, on the host. Whatever it did before the boundary stopped it happens
   twice, for example a network call on a profile that allows network, or an append in a

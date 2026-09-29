@@ -149,13 +149,20 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
     backend chosen per surface (`local`, `discord`, `imessage`, `cron-exec`,
     `cron-shell`) in the operator's `exec_profiles` in `settings.<agent>.json`.
     No agent tool can change them, and the file tools refuse that file.
-  - The default backend, `host`, confines nothing. Until a surface is moved to
-    `restricted`, approval is the only gate, as before.
+  - By default every surface runs the `restricted` backend in **dry run**: a
+    command it refuses is logged and re-run on the host, so it confines nothing
+    yet. On Windows and Linux the default is the `host` backend, which confines
+    nothing, and `tenant doctor`, the audit and the startup feed say why.
+    `exec_profiles.default.enforce: true` turns enforcement on
+    (`docs/changes/exec-defaults-dry-run.md`).
+  - Commands get an environment allowlist on every backend: a safe base set plus
+    the profile's `env_pass`, never Tenant's API keys or tokens.
   - When the `restricted` backend refuses a file or network access, the
     command can re-run outside the sandbox only if `os_exec_unsandboxed` is
     approved. That action has its own `sandbox` category (ask by default, deny
     on iMessage), so a grant for it covers only further escalations.
-    Unattended jobs never escalate.
+    "Always" on it saves only the refused folder, for that surface
+    (`exec_exceptions`). Unattended jobs never escalate.
   - `tenant sandbox probe` shows what each surface gets on this machine, and
     `tenant sandbox selftest` tests it.
   - Per-OS status is in the table below; details are in
@@ -215,7 +222,7 @@ as a workaround for Chrome installation or permission problems. Run
 | **Single-user model** | Tenant assumes one operator. It does not authenticate users or separate sessions. Anyone with access to the running process can issue commands as the operator. |
 | **Local secrets** | Credentials are on disk, protected by verified owner-only POSIX modes or a protected current-user-only Windows DACL. On a compromised account, this is insufficient. Use a dedicated user account and full-disk encryption. |
 | **LLM output** | The agent processes and acts on LLM-generated text. Prompt injection is a recognized risk. The read-by-default permission model limits blast radius, but a sufficiently crafted input could trick the agent into requesting an action. Gated actions ask unless the operator already granted an allow mode/flag; network reads do not prompt per request. |
-| **Execution sandbox** | Off by default: every surface runs commands on the unconfined `host` backend until `exec_profiles` moves it to `restricted`. **macOS** (Seatbelt): live-tested and red-teamed; filesystem roots, `network: none`, Mach/XPC services and signals to other processes are contained; there are no CPU, memory or process-count caps. **Linux** (bubblewrap): implemented and unit-tested but not yet validated on a live host, so run `tenant sandbox selftest` first. **Windows**: `restricted` runs the command inside a WSL2 distro under bubblewrap, giving the same filesystem and `network: none` confinement as Linux (the command runs as Linux `sh`, and Windows paths are translated to their WSL mount). At startup it selects a distro whose bubblewrap actually works and **fails closed** if none can, so a `restricted` surface is never run unconfined; validate with the Linux build inside WSL. A separate Job Object primitive provides resource limits. Native Windows confinement (token/ACE/WFP) is still TODO. |
+| **Execution sandbox** | On by default in dry run on macOS, where it logs what it would refuse and re-runs it on the host, so it confines nothing until `exec_profiles.default.enforce` is `true`. On Windows and Linux the default is the unconfined `host` backend (reason below), until `exec_profiles` names `restricted`. **macOS** (Seatbelt): live-tested and red-teamed; filesystem roots, `network: none`, Mach/XPC services and signals to other processes are contained; there are no CPU, memory or process-count caps. **Linux** (bubblewrap): implemented and unit-tested but not yet validated on a live host, so run `tenant sandbox selftest` first. It is not the default because a dry run under it would fail reads of the deny roots (`~/.ssh` for `git`) instead of re-running them, and `/tmp` is private to each command. **Windows**: `restricted` runs the command inside a WSL2 distro under bubblewrap, giving the same filesystem and `network: none` confinement as Linux (the command runs as Linux `sh`, which is why it is not the default, and Windows paths are translated to their WSL mount). At startup it selects a distro whose bubblewrap actually works and **fails closed** if none can, so a `restricted` surface is never run unconfined; validate with the Linux build inside WSL. A separate Job Object primitive provides resource limits. Native Windows confinement (token/ACE/WFP) is still TODO. |
 | **Sandbox gaps** | There is no host-filtered network allowlist: `exec_profiles` rejects it and the backends fail closed, so the choice is `none` or `full`. A profile that allows network can reach Tenant's loopback listeners: the dashboard still needs its token, which confined commands cannot read, but the MCP gateway, when enabled, has no auth. A command that needs a credential must be given it raw or run outside the sandbox after approval; there is no credential-injection proxy yet. The file tools (`os_read_file` and the rest) run in Tenant's own process and are not sandboxed. Apart from Tenant's secrets and the credential stores, they can read the rest of the operator's files. See `docs/changes/sandbox-seam.md`. |
 | **Supply chain** | Go dependencies are pinned in `go.sum`. Run `go vet ./...` and review `go.mod` before building from source. |
 | **Eval harness** | Tenant ships an evaluation harness with adversarial test fixtures. These are designed to probe the agent's safety boundaries. They do not contain real exploits. |
