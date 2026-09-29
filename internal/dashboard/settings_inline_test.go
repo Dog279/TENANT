@@ -13,7 +13,7 @@ import (
 // settingsPages is where the Models, Provider keys and Integrations forms
 // post: every one a literal URL (F1), with the row's values in fields.
 var settingsPages = map[string][]string{
-	"/models":        {"/models/use", "/models/remove", "/models/add", "/models/ceiling", "/models/reload"},
+	"/models":        {"/models/use", "/models/remove", "/models/add", "/models/add-server", "/models/ceiling", "/models/reload"},
 	"/settings/keys": {"/settings/keys/set", "/settings/keys/remove"},
 	"/integrations": {"/integrations/save", "/integrations/test", "/integrations/disconnect",
 		"/integrations/github/repos/add", "/integrations/github/repos/mode", "/integrations/github/repos/remove"},
@@ -33,6 +33,7 @@ func TestSettingsGroup_InlineAnswersEveryForm(t *testing.T) {
 	}{
 		{"/models/use", "/models", "models-body", url.Values{"name": {"m"}}, nil},
 		{"/models/add", "/models", "models-body", url.Values{"kind": {"anthropic"}, "key": {secret}}, nil},
+		{"/models/add-server", "/models", "models-body", url.Values{"address": {"http://my-server:8080"}, "key": {secret}}, nil},
 		{"/models/remove", "/models", "models-body", url.Values{"name": {"m"}}, nil},
 		{"/models/ceiling", "/models", "models-body", url.Values{"ceiling": {"42"}}, nil},
 		{"/models/reload", "/models", "models-body", url.Values{}, nil},
@@ -93,6 +94,8 @@ func TestSettingsGroup_InlineErrorsLeaveThePage(t *testing.T) {
 	for _, c := range []struct{ route, region, want string }{
 		{"/models/add?kind=anthropic&key=" + secret, "models-body", "Nothing was saved: submit it in the form, not the URL."},
 		{"/models/add?kind=anthropic", "models-body", "Couldn&#39;t add that model. The Logs page has the reason."},
+		{"/models/add-server?address=http://my-server:8080&key=" + secret, "models-body", "Nothing was saved: submit it in the form, not the URL."},
+		{"/models/add-server?address=http://my-server:8080", "models-body", "Couldn&#39;t add that server. The Logs page has the reason."},
 		{"/models/ceiling", "models-body", "Enter a whole number greater than zero."},
 		{"/settings/keys/set?service=openai", "keys-body", "Couldn&#39;t store that key."},
 		{"/settings/keys/set?service=openai&value=" + secret, "keys-body", "Nothing was saved: submit it in the form, not the URL."},
@@ -155,7 +158,7 @@ func TestSettingsGroup_EveryFormPostsInPlace(t *testing.T) {
 			if !strings.Contains(tag, `data-on:submit__prevent__throttle.1s="@post('`+action+`', {contentType:'form', retryMaxCount:0})"`) {
 				t.Errorf("%s: %s doesn't post in place, throttled and once", page, tag)
 			}
-			if secretForm := action == "/models/add" || action == "/settings/keys/set" || action == "/integrations/save"; secretForm != strings.Contains(tag, empties) {
+			if secretForm := action == "/models/add" || action == "/models/add-server" || action == "/settings/keys/set" || action == "/integrations/save"; secretForm != strings.Contains(tag, empties) {
 				t.Errorf("%s: %s: empties its key boxes %v, want %v", page, tag, !secretForm, secretForm)
 			}
 		}

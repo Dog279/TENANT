@@ -2440,9 +2440,12 @@ Writes the `model` log.
 | [2007](#model-2007) | warning | Swap | `Switched to {provider}, but it is not ready: {problem}` |
 | [2008](#model-2008) | warning | Budget | `Ignoring {env}={value}: not a positive token count` |
 | [2009](#model-2009) | warning | Budget | `The claudecode spend ledger was not saved: {err}` |
+| [2010](#model-2010) | warning | Server | `A model server at {endpoint} was not added: {problem}` |
+| [2011](#model-2011) | warning | Server | `{provider}'s tool calls weren't confirmed ({tools}): {detail}` |
 | [3001](#model-3001) | error | Call | `Model {profile} unavailable ({reason}): {err}` |
 | [3002](#model-3002) | error | Usage | `Token usage for {model} was not recorded: {err}` |
 | [5001](#model-5001) | info | Swap | `Primary model switched to {provider} ({model})` |
+| [5002](#model-5002) | info | Server | `Added {provider}: {kind} server at {endpoint} with {model}` |
 | [9001](#model-9001) | info | Call | `Model call to {profile}` |
 | [9002](#model-9002) | info | Call | `{profile} used {prompt_tokens} prompt and {completion_tokens} completion tokens` |
 
@@ -2571,6 +2574,34 @@ Writes the `model` log.
 
 **What to do.** Check that the file named by path is writable.
 
+### model 2010
+
+`A model server at {endpoint} was not added: {problem}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** model
+- **Fields:** `endpoint`, `problem`, `err`
+- **Find it:** `provider:model id:2010`
+
+**What it means.** The dashboard's Model page checked a server on the network before adding it as a model, and the check stopped it. The page showed problem; err is the technical reason.
+
+**Why it happens.** The address is wrong or unreachable from the computer running Tenant, the server wants an API key or refused it, it isn't OpenAI-compatible, it offers several models and none was named, or it refused a test message that offered a tool.
+
+**What to do.** Fix what problem names (an address, a key, the model's name, or the server's tool-calling setting), then add it again.
+
+### model 2011
+
+`{provider}'s tool calls weren't confirmed ({tools}): {detail}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Server · **Log:** model
+- **Fields:** `provider`, `model`, `tools`, `format`, `detail`
+- **Find it:** `provider:model id:2011`
+
+**What it means.** A model server was added, but its test message didn't show a tool call Tenant can read: the model answered without using the tool it was offered (tools none), or the test didn't finish in time (tools unchecked). Tool calls are read in format.
+
+**Why it happens.** The server's tool calling is off (vLLM without --enable-auto-tool-choice and a --tool-call-parser, llama.cpp without --jinja), the model doesn't do tool calls, or it was still loading.
+
+**What to do.** Turn tool calling on in the server and add the model again, or run tenant doctor --deep with it as the main model to repeat the check.
+
 ### model 3001
 
 `Model {profile} unavailable ({reason}): {err}`
@@ -2613,6 +2644,21 @@ Writes the `model` log.
 **Why it happens.** /model use, or a key reload that re-applies the active provider.
 
 **What to do.** None.
+
+### model 5002
+
+`Added {provider}: {kind} server at {endpoint} with {model}`
+
+- **Level:** info · **Channel:** operational · **Task:** Server · **Log:** model
+- **Fields:** `provider`, `kind`, `endpoint`, `model`, `auto`, `tools`, `format`
+- **Keywords:** `config`
+- **Find it:** `provider:model id:5002`
+
+**What it means.** A model server on the network was checked and added as a model from the dashboard's Model page. kind is how Tenant talks to it; auto means its model is found at each start; tools and format say how the test message's tool call came back and how Tenant reads tool calls.
+
+**Why it happens.** The operator added a server on the Model page.
+
+**What to do.** None. It answers once the operator chooses Use this model, or gives it to a helper.
 
 ### model 9001
 

@@ -7,6 +7,7 @@ package dashboard
 // raw error reaches a page.
 
 import (
+	"context"
 	"errors"
 	"html"
 	"net/http"
@@ -170,6 +171,7 @@ func TestAdopt_SecretsRefusedFromQuery(t *testing.T) {
 	for _, p := range []struct{ route, body string }{
 		{"/settings/keys/set?value=sk-leak", "service=openai&value=sk-leak"},
 		{"/models/add?key=sk-leak", "kind=anthropic&key=sk-leak"},
+		{"/models/add-server?key=sk-leak", "address=http://my-server:8080&key=sk-leak"},
 		{"/integrations/save?api_key=sk-leak", "integration=brave&api_key=sk-leak"},
 	} {
 		rec := submitForm(t, s, p.route, p.body)
@@ -178,8 +180,8 @@ func TestAdopt_SecretsRefusedFromQuery(t *testing.T) {
 			t.Errorf("%s = %d %q, want 303 with %q and no secret", p.route, rec.Code, loc, secretInURL)
 		}
 	}
-	if len(secrets.setCalls)+len(models.addCalls)+len(integ.configCalls) != 0 {
-		t.Errorf("a control saw a secret from the URL: %v %v %v", secrets.setCalls, models.addCalls, integ.configCalls)
+	if len(secrets.setCalls)+len(models.addCalls)+len(models.serverCalls)+len(integ.configCalls) != 0 {
+		t.Errorf("a control saw a secret from the URL: %v %v %v %v", secrets.setCalls, models.addCalls, models.serverCalls, integ.configCalls)
 	}
 
 	// Sign-in: even the right key in the URL signs nobody in.
@@ -188,8 +190,8 @@ func TestAdopt_SecretsRefusedFromQuery(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 || strings.Contains(rec.Body.String(), "s3cret") {
 		t.Errorf("sign-in with the key in the URL = %d, cookies %v", rec.Code, rec.Result().Cookies())
 	}
-	if n := strings.Count(strings.Join(c.lines(), "\n"), "2203 "); n != 4 {
-		t.Errorf("KeyInURL records = %d, want 4: %q", n, c.lines())
+	if n := strings.Count(strings.Join(c.lines(), "\n"), "2203 "); n != 5 {
+		t.Errorf("KeyInURL records = %d, want 5: %q", n, c.lines())
 	}
 }
 
@@ -203,6 +205,7 @@ func TestAdopt_SecretErrorsStayOutOfURLs(t *testing.T) {
 	s.SetIntegrations(integ)
 	for _, p := range []struct{ route, body string }{
 		{"/models/add", "kind=anthropic&key=sk-leak"},
+		{"/models/add-server", "address=http://my-server:8080&key=sk-leak"},
 		{"/integrations/save", "integration=brave&api_key=sk-leak"},
 	} {
 		loc, _ := url.QueryUnescape(submitForm(t, s, p.route, p.body).Header().Get("Location"))
@@ -216,6 +219,10 @@ type failingModelCtl struct{ fakeModelCtl }
 
 func (failingModelCtl) AddCloud(_, key string) (string, error) {
 	return "", errors.New("bad key " + key)
+}
+
+func (failingModelCtl) AddServer(_ context.Context, req ServerRequest) (ServerAdded, error) {
+	return ServerAdded{}, errors.New("bad key " + req.APIKey)
 }
 
 type failingIntegrations struct{ fakeIntegrationsCtl }

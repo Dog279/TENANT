@@ -274,12 +274,14 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /research/stop":    always,
 	"POST /research/replay":  noStep,
 	"POST /research/delete":  always,
-	// Model: a switch changes every answer; removing loses the setup.
-	"POST /models/use":     always,
-	"POST /models/add":     noStep,
-	"POST /models/remove":  always,
-	"POST /models/ceiling": noStep,
-	"POST /models/reload":  noStep,
+	// Model: a switch changes every answer; removing loses the setup. An
+	// added model, cloud or on a server, answers nothing until it's used.
+	"POST /models/use":        always,
+	"POST /models/add":        noStep,
+	"POST /models/add-server": noStep,
+	"POST /models/remove":     always,
+	"POST /models/ceiling":    noStep,
+	"POST /models/reload":     noStep,
 	// Approvals & safety (TEN-207, D4): Allow is the step; Ask, Deny, Allow
 	// once and "Keep them at Ask" are one tap; pairing's Allow once asks.
 	"POST /safety/mode":           unless("mode", "ask", "deny"),
@@ -747,6 +749,7 @@ func TestSecretsNeverFromQuery(t *testing.T) {
 	}{
 		{"/settings/keys/set", "/settings/keys", "value", url.Values{"service": {"openai"}}, func() []string { return keys.setCalls }},
 		{"/models/add", "/models", "key", url.Values{"kind": {"anthropic"}}, func() []string { return models.addCalls }},
+		{"/models/add-server", "/models", "key", url.Values{"address": {"http://my-server:8080"}}, func() []string { return models.serverCalls }},
 		{"/integrations/save", "/integrations", "api_key", url.Values{"integration": {"brave"}}, func() []string { return integ.configCalls }},
 	}
 	for _, in := range intakes {

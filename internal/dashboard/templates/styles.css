@@ -401,3 +401,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
    a region, so their margins still add up rather than collapse */
 #safety-modes{display:flex;flex-direction:column}
 /* == end WP-inline-v2pages == */
+/* == WP-model-servers == */
+/* the server form stacks each label over its box: an address is long, and a
+   label beside a full-width box would be squeezed to a letter a line */
+.server-add label{flex-direction:column;align-items:stretch;gap:4px}
+/* == end WP-model-servers == */

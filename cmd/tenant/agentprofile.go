@@ -69,6 +69,14 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	if mdl == "" {
 		mdl = pk.DefaultModel
 	}
+	// A self-hosted server whose model is found automatically: ask it now,
+	// as the active provider's launch does.
+	served, found := servedModel{}, false
+	if mdl == "" {
+		if served, found = servedModelFor(pk, pc.Endpoint, apiKey); found {
+			mdl = served.ID
+		}
+	}
 	if mdl == "" {
 		return nil, fmt.Errorf("agent %q: provider %q has no Model configured and the profile didn't override one", profileName, ap.Provider)
 	}
@@ -78,8 +86,9 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	// vs the served "...-NVFP4") 404s every generate call of every spawn. A
 	// case-insensitive match adopts the server's casing; a total miss logs the
 	// served list; an unreachable endpoint changes nothing (offline spawns must
-	// not be blocked by a health check).
-	if pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
+	// not be blocked by a health check). A model the server just named needs
+	// no second look.
+	if !found && pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
 		mdl = reconcileServedModel(pc.Endpoint, apiKey, mdl, profileName)
 	}
 
@@ -93,6 +102,7 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 		vllmModel:    mdl,
 		vllmToolFmt:  firstNonEmpty(pc.ToolFmt, pk.DefaultToolFmt),
 		genAPIKey:    apiKey,
+		contextLen:   served.MaxLen,
 		planCeiling:  lc.PlanLoopCeiling,
 	}
 	gen, factories, err := genProfiles(c)

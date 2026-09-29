@@ -54,6 +54,16 @@ var BudgetUnsaved = Events.Event(2009, event.Warning, "Budget", "The claudecode 
 		"The ledger file in the config folder could not be written: permissions or a full disk.",
 		"Check that the file named by path is writable.")
 
+var ServerNotAdded = Events.Event(2010, event.Warning, "Server", "A model server at {endpoint} was not added: {problem}", "endpoint", "problem", "err").
+	Doc("The dashboard's Model page checked a server on the network before adding it as a model, and the check stopped it. The page showed problem; err is the technical reason.",
+		"The address is wrong or unreachable from the computer running Tenant, the server wants an API key or refused it, it isn't OpenAI-compatible, it offers several models and none was named, or it refused a test message that offered a tool.",
+		"Fix what problem names (an address, a key, the model's name, or the server's tool-calling setting), then add it again.")
+
+var ServerToolsUnconfirmed = Events.Event(2011, event.Warning, "Server", "{provider}'s tool calls weren't confirmed ({tools}): {detail}", "provider", "model", "tools", "format", "detail").
+	Doc("A model server was added, but its test message didn't show a tool call Tenant can read: the model answered without using the tool it was offered (tools none), or the test didn't finish in time (tools unchecked). Tool calls are read in format.",
+		"The server's tool calling is off (vLLM without --enable-auto-tool-choice and a --tool-call-parser, llama.cpp without --jinja), the model doesn't do tool calls, or it was still loading.",
+		"Turn tool calling on in the server and add the model again, or run tenant doctor --deep with it as the main model to repeat the check.")
+
 // Errors (3000s).
 
 var Unavailable = Events.Event(3001, event.Error, "Call", "Model {profile} unavailable ({reason}): {err}", "profile", "backend", "model", "reason", "err").
@@ -73,6 +83,12 @@ var Switched = Events.Event(5001, event.Info, "Swap", "Primary model switched to
 	Doc("The operator switched the primary model live; every agent and job uses it from the next call.",
 		"/model use, or a key reload that re-applies the active provider.",
 		"None.")
+
+var ServerAdded = Events.Event(5002, event.Info, "Server", "Added {provider}: {kind} server at {endpoint} with {model}", "provider", "kind", "endpoint", "model", "auto", "tools", "format").
+	Keywords("config").
+	Doc("A model server on the network was checked and added as a model from the dashboard's Model page. kind is how Tenant talks to it; auto means its model is found at each start; tools and format say how the test message's tool call came back and how Tenant reads tool calls.",
+		"The operator added a server on the Model page.",
+		"None. It answers once the operator chooses Use this model, or gives it to a helper.")
 
 // Diagnostics (9000s): one activity per call, with its tokens.
 

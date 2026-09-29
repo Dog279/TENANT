@@ -114,7 +114,7 @@ func TestRouteRuntimeClassifierDeadlineSelectsFastAndFallsBackSlow(t *testing.T)
 		want  string
 	}{
 		{name: "fast", delay: 10 * time.Millisecond, want: "big"},
-		{name: "slow", delay: 800 * time.Millisecond, want: "small"},
+		{name: "slow", delay: 2 * time.Second, want: "small"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := model.NewEmptyRegistry()
@@ -170,7 +170,11 @@ func TestRouteRuntimeClassifierDeadlineSelectsFastAndFallsBackSlow(t *testing.T)
 			if res.Response != tc.want {
 				t.Fatalf("response = %q, want %q", res.Response, tc.want)
 			}
-			if tc.want == "small" && time.Since(start) > 500*time.Millisecond {
+			// The turn must not wait for the slow classifier: it falls back at
+			// the 250ms join deadline. Half the classifier's delay leaves a slow
+			// Windows runner room (a fixed 500ms failed there at 502ms) while a
+			// turn that waited would still take the whole delay.
+			if tc.want == "small" && time.Since(start) >= tc.delay/2 {
 				t.Fatalf("slow classifier delayed turn for %s", time.Since(start))
 			}
 		})

@@ -45,6 +45,15 @@ var ProviderKinds = map[string]ProviderKind{
 		DefaultEndpoint: "http://localhost:8080", DefaultToolFmt: "openai",
 		EstimateTokens: true, Local: true, Wired: true,
 	},
+	// Any other self-hosted server that speaks /v1/chat/completions (LM Studio,
+	// LocalAI, SGLang, a LiteLLM proxy…). The dashboard files a server here
+	// when it isn't vLLM, llama.cpp or Ollama. EstimateTokens keeps Tenant off
+	// the vLLM-only extras (/tokenize, guided_json), which such a server would
+	// refuse with a 400. The key is optional: stored per provider when given.
+	"openai-compat": {
+		ID: "openai-compat", Label: "OpenAI-compatible server (self-hosted)", Backend: "vllm",
+		DefaultToolFmt: "openai", EstimateTokens: true, Local: true, Wired: true,
+	},
 	"openai": {
 		ID: "openai", Label: "OpenAI", Backend: "vllm",
 		DefaultEndpoint: "https://api.openai.com", DefaultToolFmt: "openai",
@@ -139,4 +148,4 @@ var ProviderKinds = map[string]ProviderKind{
 }
 
 // ProviderOrder is the stable display order for the wizard menu.
-var ProviderOrder = []string{"vllm", "ollama", "llamacpp", "openai", "grok", "zai", "zai-coding", "zai-coding-cn", "zai-metered", "sakana", "anthropic", "claudecode", "echo"}
+var ProviderOrder = []string{"vllm", "ollama", "llamacpp", "openai-compat", "openai", "grok", "zai", "zai-coding", "zai-coding-cn", "zai-metered", "sakana", "anthropic", "claudecode", "echo"}

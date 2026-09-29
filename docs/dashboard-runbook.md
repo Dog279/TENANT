@@ -173,11 +173,19 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 | **Scheduled jobs** | Jobs your agent runs on a timetable. | **Delete** a job, and turning on **Scheduled jobs may make changes**. |
 | **Approvals & safety** | What's waiting for your OK (section 4), and what your agent may do on its own (section 5). | **Allow** for an area, **Allow for the rest of this session**, and a pairing request's **Allow once**. |
 | **Access** | Who may message your agent on iMessage and Discord, and what those conversations may make it do. | **Add someone**, **Remove everyone**, removing the last person, turning on answering (**Turn on**, **Start**), changing the Discord account that approves requests, letting Discord run commands, and **Allow** for an area. |
-| **Model** | Which model answers, and cloud models to add. | **Use this model** and **Remove**. |
+| **Model** | Which model answers, and models to add: one on a server on your network (see below), or a cloud model. | **Use this model** and **Remove**. |
 | **Integrations** | Connect your agent to outside tools (Google, Atlassian, GitHub and others). | **Disconnect**, and **Allow changes** on a GitHub repository. |
 | **Provider keys** | The API keys Tenant uses. A key you paste is never shown again, only replaced or removed. A new key for the model in use applies when you press **Reload API keys** on **Model**; other changes apply after Tenant restarts. | **Remove**. |
 
 **Busy.** While your agent is answering a Chat message, the line under the page title says "Your agent is answering a message", with **Stop**. Scheduled jobs, Discord and iMessage conversations and alert checks run alongside and never hold up Chat; **Logs** shows what they are doing. A second message you send while it is answering tells you it wasn't sent and stays in the box. Nothing is lost.
+
+**A model on your network.** On **Model**, "Add a model from a server on your network" takes the address you would give any OpenAI-compatible app: `http://` or `https://`, the server's name or IP address, and its port, with or without `/v1` at the end. vLLM, llama.cpp's server, Ollama, LM Studio and the like all work.
+
+- **Model**: leave it blank and your agent uses the one model the server offers, and follows the server when it switches to another. A server that offers several models (Ollama, usually) says which, and you type the one you want.
+- **More options**: a name (blank names it after the model) and an API key, only if the server asks for one.
+- **Add server** checks the server first, which takes a few seconds, longer while it loads a model. It finds what kind of server it is and sends one test message that offers the model a tool, to see how the model writes tool calls. The answer says what it found.
+- If the model answered without using the tool, or the test didn't finish in time, the model is still added, with a warning: your agent may not be able to use its tools with it. Turn on tool calling in the server (vLLM: `--enable-auto-tool-choice` with a `--tool-call-parser`; llama.cpp: `--jinja`), remove the model and add it again. If the server refuses the test message outright (an embedding model that can't chat, or a model the server won't give tools), the model isn't added, and the answer quotes the server's reason: your agent offers tools with every message.
+- Nothing changes until you press **Use this model** or give it to a helper. **Logs** (`log:model`) keeps what each check found and why one failed.
 
 ## 7. Signing in to a remote service or an integration
 

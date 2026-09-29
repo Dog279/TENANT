@@ -194,7 +194,14 @@ func installExistingFakes(s *Server, mode fakeMode) {
 		keys = append(keys, ServiceKeyView{CredID: n, Name: n, Category: "model", Set: i%2 == 0, EnvVar: strings.ToUpper(n)})
 		points = append(points, EvalTrendPoint{When: fmt.Sprintf("2026-09-%02d", i+1), Score: float64(70 + i), HasBase: true})
 		skills = append(skills, SkillView{Name: n, Description: longURL(i), Status: []string{"live", "proposed"}[i%2], Enabled: true, Untrusted: i%3 == 0, Origin: "agent", Recipe: longURL(i)})
-		models = append(models, ModelView{Name: n, Kind: "openai", Model: longName(i + 20), Active: i == 0, Degraded: i == 1})
+		m := ModelView{Name: n, Kind: "openai", Model: longName(i + 20), Active: i == 0, Degraded: i == 1}
+		if i%2 == 1 { // a server on the network, with its address; some find their model
+			m.Kind, m.Address = "llamacpp", longURL(i)
+			if i%4 == 1 {
+				m.Model, m.AutoModel = "", true
+			}
+		}
+		models = append(models, m)
 		servers = append(servers, MCPServerView{Label: n, URL: longURL(i), Enabled: true, ToolCount: i, Trust: []string{"ask", "allow", "deny"}[i%3], NeedsReauth: i == 2, AuthSince: "2026-09-18 14:02 UTC", AuthErr: "invalid_grant: " + longName(i)})
 		integ = append(integ, IntegrationView{ID: n, Label: n, Configured: i%2 == 0, Enabled: i%3 == 0, SetupHint: longURL(i)})
 		repos = append(repos, GitHubRepoRow{Slug: n + "/" + n, Write: i%2 == 0, Primary: i == 0})

@@ -22,7 +22,8 @@
         {{if .Active}}<span class="on-tag">active</span>{{end}}
         {{if .Degraded}}<span class="risk">offline — using fallback</span>{{end}}
       </div>
-      <div class="dim">{{.Kind}}{{if .Model}} · {{.Model}}{{end}}</div>
+      <div class="dim">{{.Kind}}{{if .Model}} · {{.Model}}{{else if .AutoModel}} · model found automatically{{end}}</div>
+      {{with .Address}}<div class="dim">{{.}}</div>{{end}}
     </div>
     <div class="cronactions">
       {{if not .Active}}
@@ -32,8 +33,34 @@
     </div>
   </div>
   {{else}}
-  {{template "ui-empty" "No models yet. Add a cloud model below."}}
+  {{template "ui-empty" "No models yet. Add a server on your network or a cloud model below."}}
   {{end}}
+</div>
+
+<div class="card">
+  <div class="card-head">Add a model from a server on your network</div>
+  <div class="dim mb">The address you'd give any OpenAI-compatible app: the server's name or IP address and its port. Tenant checks the server, finds its model and how the model writes tool calls, and adds it. Nothing changes until you choose Use this model.</div>
+  <form method="POST" action="/models/add-server" class="evalsched server-add" data-indicator:_checking data-on:submit__prevent__throttle.1s="@post('/models/add-server', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })">
+    <label>Address
+      <input type="url" name="address" class="cinput wide" required autocomplete="off" spellcheck="false" placeholder="http://my-server:8080">
+    </label>
+    <label>Model
+      <input type="text" name="model" class="cinput wide" autocomplete="off" spellcheck="false" placeholder="blank: the one the server offers">
+    </label>
+    <details class="advanced"><summary>More options</summary>
+      <div class="evalsched">
+        <label>Name
+          <input type="text" name="name" class="cinput wide" autocomplete="off" spellcheck="false" maxlength="40" placeholder="blank: named after the model">
+        </label>
+        <label>API key
+          <input type="password" name="key" class="cinput wide" autocomplete="off" placeholder="only if the server asks for one">
+        </label>
+      </div>
+    </details>
+    <button type="submit" class="btn" data-attr:disabled="$_checking">Add server</button>
+    <span class="loading" style="display:none" data-show="$_checking">Checking the server</span>
+  </form>
+  <div class="dim mt">Leave Model blank and your agent uses whatever model the server offers, even after the server switches to another. A key is stored securely and never shown again.</div>
 </div>
 
 <div class="card">
