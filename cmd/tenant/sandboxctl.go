@@ -163,6 +163,8 @@ type surfaceProbe struct {
 	DenyRoots  []string `json:"deny_roots"`
 	Caps       *sbxCaps `json:"capabilities,omitempty"` // nil when the backend is unavailable
 	Error      string   `json:"error,omitempty"`        // why the backend is unavailable
+	Fallback   string   `json:"fallback,omitempty"`     // why the built-in default runs this surface on the host
+	Exceptions []string `json:"exceptions"`             // exec_exceptions: folders its commands may write to
 }
 
 type restrictedProbe struct {
@@ -215,7 +217,7 @@ func sandboxProbe(ctx context.Context, args []string, out io.Writer) error {
 	}
 	var bad []string
 	for _, s := range rep.Surfaces {
-		if s.Error != "" {
+		if s.failsClosed() {
 			bad = append(bad, s.Surface)
 		}
 	}
@@ -233,26 +235,8 @@ func buildProbeReport(ctx context.Context, c *commonFlags) probeReport {
 		Restricted: restrictedProbe{UsedBy: []string{}},
 	}
 	for _, name := range sandboxSurfaces {
-		p := resolveExecProfile(name, c.cfgDir, c.dataDir, "")
-		s := surfaceProbe{
-			Surface:    name,
-			Backend:    p.Backend,
-			Network:    p.Policy.Network.String(),
-			Mode:       refusalMode(p.Policy.Enforce),
-			Allow:      nonNilStrings(p.Policy.Allow),
-			WorkDir:    p.Policy.WorkDir,
-			ReadRoots:  nonNilStrings(p.Policy.ReadRoots),
-			WriteRoots: nonNilStrings(p.Policy.WriteRoots),
-			DenyRoots:  nonNilStrings(p.Policy.DenyRoots),
-		}
-		if b, err := sandbox.For(p.Backend); err != nil {
-			s.Error = err.Error()
-		} else {
-			caps := viewCaps(b.Probe(ctx))
-			s.Isolation = b.Isolation().String()
-			s.Caps = &caps
-		}
-		if p.Backend == "restricted" {
+		s := probeSurface(ctx, name, c.cfgDir, c.dataDir)
+		if s.Backend == "restricted" {
 			r.Restricted.UsedBy = append(r.Restricted.UsedBy, name)
 		}
 		r.Surfaces = append(r.Surfaces, s)
@@ -265,6 +249,96 @@ func buildProbeReport(ctx context.Context, c *commonFlags) probeReport {
 		r.Restricted.Caps = &caps
 	}
 	return r
+}
+
+// probeSurface resolves a surface's exec profile as its spawn site does and
+// asks its backend what it enforces on this host. `tenant sandbox probe`,
+// `tenant security audit`, `tenant permissions effective` and doctor all read
+// it, so none of them can say a surface is confined when it is not.
+func probeSurface(ctx context.Context, name, cfgDir, dataDir string) surfaceProbe {
+	p := resolveExecProfile(name, cfgDir, dataDir, "")
+	s := surfaceProbe{
+		Surface:    name,
+		Backend:    p.Backend,
+		Network:    p.Policy.Network.String(),
+		Mode:       refusalMode(p.Policy.Enforce),
+		Allow:      nonNilStrings(p.Policy.Allow),
+		WorkDir:    p.Policy.WorkDir,
+		ReadRoots:  nonNilStrings(p.Policy.ReadRoots),
+		WriteRoots: nonNilStrings(p.Policy.WriteRoots),
+		DenyRoots:  nonNilStrings(p.Policy.DenyRoots),
+		Fallback:   p.Fallback,
+		Exceptions: nonNilStrings(defaultExecProfiles.exceptions(name)),
+	}
+	if b, err := sandbox.For(p.Backend); err != nil {
+		s.Error = err.Error()
+	} else {
+		caps := viewCaps(b.Probe(ctx))
+		s.Isolation = b.Isolation().String()
+		s.Caps = &caps
+	}
+	return s
+}
+
+// failsClosed reports whether the surface's commands would not run at all:
+// its backend is unavailable and it enforces. A dry run runs them on the host.
+func (s surfaceProbe) failsClosed() bool { return s.Error != "" && s.Mode == refusalMode(true) }
+
+// unconfined reports whether the surface's commands run on the host with no
+// boundary: its backend confines nothing, or it is unavailable in a dry run.
+func (s surfaceProbe) unconfined() bool {
+	return (s.Caps != nil && s.Caps.Isolation == sandbox.IsolationNone.String()) || (s.Error != "" && !s.failsClosed())
+}
+
+// probeExecSurfaces probes every exec surface, in display order.
+func probeExecSurfaces(ctx context.Context, cfgDir, dataDir string) []surfaceProbe {
+	out := make([]surfaceProbe, 0, len(execSurfaces))
+	for _, s := range execSurfaces {
+		out = append(out, probeSurface(ctx, s, cfgDir, dataDir))
+	}
+	return out
+}
+
+// execProfileLines says what the surfaces' commands run under, a line per
+// group of surfaces that probe alike ("local, discord: restricted, …").
+func execProfileLines(ps []surfaceProbe) []string {
+	var order []string
+	groups := map[string][]string{}
+	for _, p := range ps {
+		st := execProfileState(p)
+		if _, ok := groups[st]; !ok {
+			order = append(order, st)
+		}
+		groups[st] = append(groups[st], p.Surface)
+	}
+	out := make([]string, 0, len(order))
+	for _, st := range order {
+		out = append(out, strings.Join(groups[st], ", ")+": "+st)
+	}
+	return out
+}
+
+// execProfileState is a surface's probe in a line: its backend and mode, what
+// the backend enforces here, and why it confines nothing when it doesn't.
+func execProfileState(s surfaceProbe) string {
+	ln := s.Backend
+	switch {
+	case s.failsClosed():
+		return ln + " UNAVAILABLE, so its commands do not run: " + s.Error
+	case s.Error != "":
+		return ln + " unavailable; in dry run its commands run on the host, unconfined: " + s.Error
+	case s.unconfined():
+		if s.Fallback != "" {
+			return ln + ", unconfined (restricted can't run here: " + s.Fallback + ")"
+		}
+		return ln + ", unconfined"
+	}
+	mode := "enforcing"
+	if s.Mode != refusalMode(true) {
+		mode = "dry run (what it refuses re-runs on the host, logged)"
+	}
+	return fmt.Sprintf("%s, %s, network %s; enforces filesystem=%s network=%s limits=%s env=%s",
+		ln, mode, s.Network, s.Caps.Filesystem, s.Caps.Network, s.Caps.Limits, s.Caps.Env)
 }
 
 func renderProbe(w io.Writer, r probeReport) {
@@ -291,10 +365,23 @@ func renderProbe(w io.Writer, r probeReport) {
 	}
 	tw.Flush()
 	fmt.Fprintln(w, "  FS/NET/LIMITS/ENV = what the surface's backend enforces on this host (enforced | partial | none).")
+	var fellBack []string
+	fallback := ""
 	for _, s := range r.Surfaces {
-		if s.Error != "" {
+		switch {
+		case s.failsClosed():
 			fmt.Fprintf(w, "  ! %s: %s (its spawns would fail closed)\n", s.Surface, s.Error)
+		case s.Error != "":
+			fmt.Fprintf(w, "  ! %s: %s (dry run: its spawns run on the host, unconfined)\n", s.Surface, s.Error)
+		case s.Fallback != "":
+			fellBack, fallback = append(fellBack, s.Surface), s.Fallback // one reason: builtinExec's
 		}
+		if len(s.Exceptions) > 0 {
+			fmt.Fprintf(w, "  %s exceptions (exec_exceptions): %s\n", s.Surface, strings.Join(s.Exceptions, ", "))
+		}
+	}
+	if len(fellBack) > 0 {
+		fmt.Fprintf(w, "  ! %s: on the host, unconfined, because %s\n", strings.Join(fellBack, ", "), fallback)
 	}
 
 	fmt.Fprintln(w, "\nROOTS")
@@ -961,23 +1048,19 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 
 // sandboxRunPolicy layers onto a resolved profile's Policy what the surface's
 // production spawn site layers on, so a trial run behaves like the real one:
-// every site enforces and caps wall time (sandboxRunner sets Wall from os_exec's
-// timeout; here --timeout), and cron-shell additionally scrubs secret-named env
-// vars unless the profile scopes the environment itself, and caps output
-// (runSandboxShell). It returns the policy plus one line per adjustment.
+// every site caps wall time (sandboxRunner sets Wall from os_exec's timeout;
+// here --timeout), and cron-shell additionally caps output (runSandboxShell). A
+// trial always enforces, so it shows what the boundary refuses even for a
+// dry-run profile, whose real runs would re-run those on the host. The
+// environment is the profile's allowlist, as at every site. It returns the
+// policy plus one line per adjustment.
 func sandboxRunPolicy(surface string, pol sandbox.Policy, timeout time.Duration) (sandbox.Policy, []string) {
 	pol.Enforce = true
 	pol.Limits.Wall = timeout
 	var applied []string
-	if surface == "cron-shell" {
-		if !envScoped(pol.Env) {
-			pol.Env = scrubbedEnvPolicy()
-			applied = append(applied, "cron-shell secret-name env scrub (runSandboxShell default)")
-		}
-		if pol.Limits.MaxOutputBytes == 0 {
-			pol.Limits.MaxOutputBytes = cronShellOutputCap
-			applied = append(applied, fmt.Sprintf("cron-shell output cap of %d bytes", cronShellOutputCap))
-		}
+	if surface == "cron-shell" && pol.Limits.MaxOutputBytes == 0 {
+		pol.Limits.MaxOutputBytes = cronShellOutputCap
+		applied = append(applied, fmt.Sprintf("cron-shell output cap of %d bytes", cronShellOutputCap))
 	}
 	return pol, applied
 }

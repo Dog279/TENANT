@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"tenant/internal/logs/capture"
 	"tenant/internal/runtrace"
 	"tenant/internal/sandbox"
+	"tenant/internal/tui"
 )
 
 // (a) A shell command runs and returns its output through sandboxRunner on the
@@ -105,8 +108,9 @@ func TestSandboxRefusalsAndUnavailableBackend(t *testing.T) {
 	} {
 		logSandboxRun(context.Background(), surfaceDiscord, "restricted", c.enforce, sandbox.Command{Shell: "cat ~/.ssh/id"}, c.res)
 	}
-	if _, err := profileRunner(execProfile{Backend: "container"}, surfaceDiscord, nil)(context.Background(), "true", time.Second); err == nil {
-		t.Fatal("an unavailable backend ran the command")
+	enforcing := execProfile{Backend: "container", Policy: sandbox.Policy{Enforce: true}}
+	if _, err := profileRunner(enforcing, surfaceDiscord, nil)(context.Background(), "true", time.Second); err == nil {
+		t.Fatal("an enforcing profile's unavailable backend ran the command")
 	}
 	all, _ := hub.Snapshot()
 	var got []string
@@ -118,6 +122,36 @@ func TestSandboxRefusalsAndUnavailableBackend(t *testing.T) {
 	}
 	if want := []string{"sandbox/2001", "sandbox/2002", "sandbox/2003", "sandbox/3001"}; !slices.Equal(got, want) {
 		t.Errorf("events = %q, want %q", got, want)
+	}
+}
+
+// A dry run never blocks a command: with its backend unavailable, os_exec and a
+// cron shell job run on the host, and the sandbox log says so (2005), where
+// an enforcing profile fails closed (above).
+func TestDryRunUnavailableBackendRunsOnHost(t *testing.T) {
+	hub := logs.NewMemory(100)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+	dry := execProfile{Backend: "container", Policy: sandbox.Policy{WorkDir: t.TempDir()}}
+	if out, err := profileRunner(dry, surfaceDiscord, nil)(context.Background(), "echo ran-on-host", 30*time.Second); err != nil || !strings.Contains(out, "ran-on-host") {
+		t.Fatalf("os_exec in dry run: out=%q err=%v", out, err)
+	}
+	if out, err := runSandboxShell(context.Background(), "echo job-ran", dry); err != nil || !strings.Contains(out, "job-ran") {
+		t.Fatalf("cron shell in dry run: out=%q err=%v", out, err)
+	}
+	all, _ := hub.Snapshot()
+	n := 0
+	for _, e := range all {
+		if e.Field("event") == "sandbox/2005" && e.Field("backend") == "container" {
+			n++
+		}
+		if e.Field("event") == "sandbox/1" && e.Field("backend") != "host" {
+			t.Errorf("ran on %s, want the host: %s", e.Field("backend"), e.Line())
+		}
+	}
+	if n != 2 {
+		t.Errorf("want one sandbox/2005 per command, got %d", n)
 	}
 }
 
@@ -194,41 +228,163 @@ func TestSandboxRunnerEnvAllowlist(t *testing.T) {
 	}
 }
 
-// (d) resolveExecProfile defaults Backend to "host" for every surface, so
-// routing a spawn site through the seam is a behavioural no-op.
-func TestResolveExecProfileDefaultsHost(t *testing.T) {
-	for _, surface := range []string{"os-exec", "cron-shell", "anything-else", ""} {
-		p := resolveExecProfile(surface, "", "", "")
-		if p.Backend != "host" {
-			t.Errorf("surface %q: Backend=%q, want host", surface, p.Backend)
+// withBuiltinExec makes the built-in exec backend backend (why: its fallback
+// reason) for one test; TestMain pins the host.
+func withBuiltinExec(t *testing.T, backend, why string) {
+	t.Helper()
+	prev := builtinExec
+	builtinExec = func() (string, string) { return backend, why }
+	t.Cleanup(func() { builtinExec = prev })
+}
+
+// TEN-347: with no exec_profiles, every surface runs the built-in backend in
+// dry run, cron-shell with no network; where restricted can't dry-run, the
+// host, with the reason carried to probe, audit and doctor.
+func TestResolveExecProfile_BuiltinProfile(t *testing.T) {
+	resetExecProfiles(t)
+	for _, tc := range []struct{ backend, why string }{{"restricted", ""}, {"host", "no bubblewrap"}} {
+		withBuiltinExec(t, tc.backend, tc.why)
+		for _, surface := range execSurfaces {
+			p := resolveExecProfile(surface, "", "", "")
+			wantNet := sandbox.NetInherit
+			if surface == surfaceCronShell {
+				wantNet = sandbox.NetNone
+			}
+			if p.Backend != tc.backend || p.Fallback != tc.why || p.Policy.Enforce || p.Policy.Network != wantNet || !p.Policy.Env.Isolate {
+				t.Errorf("%s with the %s built-in: %+v", surface, tc.backend, p)
+			}
 		}
 	}
 }
 
-// The cron path (runSandboxShell) reproduces the legacy scrubbedEnv default via
-// the seam: a plain var survives, a secret-named var is dropped, and output is
-// trimmed. Covers deliverable (c) for the cron surface too.
-func TestRunSandboxShellScrubsSecrets(t *testing.T) {
+// exec_profiles.default.enforce is the one switch; an entry keeps what it sets,
+// and one that names its backend keeps the defaults it was written under
+// (enforce on, network inherit), so no existing profile is quietly downgraded
+// to a dry run.
+func TestResolveExecProfile_EnforceSwitch(t *testing.T) {
+	resetExecProfiles(t)
+	withBuiltinExec(t, "restricted", "")
+	on, off := true, false
+	for _, tc := range []struct {
+		name     string
+		profiles map[string]execProfileSetting
+		surface  string
+		enforce  bool
+		network  sandbox.NetworkMode
+	}{
+		{"built-in", nil, surfaceDiscord, false, sandbox.NetInherit},
+		{"switch on", map[string]execProfileSetting{"default": {Enforce: &on}}, surfaceDiscord, true, sandbox.NetInherit},
+		{"switch on, cron-shell keeps no network", map[string]execProfileSetting{"default": {Enforce: &on}}, surfaceCronShell, true, sandbox.NetNone},
+		{"switch reaches an entry without enforce or backend", map[string]execProfileSetting{
+			"default": {Enforce: &on}, surfaceCronShell: {WriteRoots: []string{"/tmp/out"}}}, surfaceCronShell, true, sandbox.NetNone},
+		{"an entry's own enforce wins", map[string]execProfileSetting{
+			"default": {Enforce: &on}, surfaceDiscord: {Enforce: &off}}, surfaceDiscord, false, sandbox.NetInherit},
+		{"a named backend enforces, network inherit", map[string]execProfileSetting{
+			surfaceCronShell: {Backend: "restricted"}}, surfaceCronShell, true, sandbox.NetInherit},
+		{"default naming a backend flips the switch", map[string]execProfileSetting{
+			"default": {Backend: "restricted"}, surfaceLocal: {Network: "none"}}, surfaceLocal, true, sandbox.NetNone},
+	} {
+		defaultExecProfiles.Load(tc.profiles)
+		p := resolveExecProfile(tc.surface, "", "", "")
+		if p.Policy.Enforce != tc.enforce || p.Policy.Network != tc.network || p.Backend != "restricted" {
+			t.Errorf("%s: enforce=%v network=%s backend=%s, want enforce=%v network=%s", tc.name,
+				p.Policy.Enforce, p.Policy.Network, p.Backend, tc.enforce, tc.network)
+		}
+	}
+}
+
+// chooseBuiltinExec: restricted only where it can dry-run without breaking
+// commands; the host, with an honest reason, everywhere else.
+func TestChooseBuiltinExec(t *testing.T) {
+	ok := func(res sandbox.Result, err error) func() (sandbox.Backend, error) {
+		return func() (sandbox.Backend, error) { return fakeBackend{res: res, err: err}, nil }
+	}
+	missing := func() (sandbox.Backend, error) { return nil, errors.New("bubblewrap (bwrap) not on PATH") }
+	asked := false
+	never := func() (sandbox.Backend, error) { asked = true; return nil, nil }
+	for _, tc := range []struct {
+		name, goos string
+		restricted func() (sandbox.Backend, error)
+		want, why  string
+	}{
+		{"windows never asks WSL", "windows", never, "host", "Linux sh inside WSL2"},
+		{"linux without bubblewrap", "linux", missing, "host", "bwrap"},
+		{"linux with bubblewrap", "linux", ok(sandbox.Result{}, nil), "host", "deny root"},
+		{"macOS", "darwin", ok(sandbox.Result{}, nil), "restricted", ""},
+		{"macOS, the test command fails", "darwin", ok(sandbox.Result{ExitCode: 71, Output: "sandbox_apply: Operation not permitted"}, nil), "host", "sandbox_apply"},
+		{"macOS, the backend can't start", "darwin", ok(sandbox.Result{}, errors.New("no sandbox-exec")), "host", "no sandbox-exec"},
+	} {
+		got, why := chooseBuiltinExec(tc.goos, tc.restricted)
+		if got != tc.want || !strings.Contains(why, tc.why) || (tc.why == "") != (why == "") {
+			t.Errorf("%s: %s (%q), want %s (%q)", tc.name, got, why, tc.want, tc.why)
+		}
+	}
+	if asked {
+		t.Error("Windows must not discover WSL to pick the default")
+	}
+}
+
+type fakeBackend struct {
+	res sandbox.Result
+	err error
+}
+
+func (fakeBackend) Name() string                               { return "restricted" }
+func (fakeBackend) Isolation() sandbox.Isolation               { return sandbox.IsolationProcess }
+func (fakeBackend) Probe(context.Context) sandbox.Capabilities { return sandbox.Capabilities{} }
+func (f fakeBackend) Run(context.Context, sandbox.Command, sandbox.Policy) (sandbox.Result, error) {
+	return f.res, f.err
+}
+
+// The child environment is an allowlist on every backend (owner decision,
+// TEN-345): the safe set and env_pass pass, by the name Tenant's environment
+// has (any case on Windows); anything else, whatever its name, does not.
+func TestEnvAllowlist(t *testing.T) {
+	parent := []string{"PATH=/bin", "HOME=/h", "LC_ALL=C", "GITHUB_TOKEN=t", "DATABASE_URL=postgres://u:p@h/db",
+		"HTTPS_PROXY=http://u:p@proxy", "SSH_AUTH_SOCK=/s", "MY_TOOL_HOME=/opt/tool", "=C:=C:\\x"}
+	for _, tc := range []struct {
+		goos   string
+		parent []string
+		pass   []string
+		want   []string
+	}{
+		{"linux", parent, nil, []string{"PATH", "HOME", "LC_ALL"}},
+		{"darwin", parent, []string{"MY_TOOL_HOME", "NOT_SET"}, []string{"PATH", "HOME", "LC_ALL", "MY_TOOL_HOME"}},
+		{"windows", []string{"Path=C:\\w", "SystemRoot=C:\\Windows", "psmodulepath=x", "ComSpec=cmd", "OPENAI_API_KEY=k", "My_Var=v"},
+			[]string{"MY_VAR"}, []string{"Path", "SystemRoot", "psmodulepath", "ComSpec", "My_Var"}},
+		{"linux", []string{"Path=/bin"}, nil, nil}, // case-sensitive off Windows
+	} {
+		e := envAllowlistFrom(tc.goos, tc.parent, tc.pass, map[string]string{"X": "1"})
+		if !e.Isolate || !slices.Equal(e.Pass, tc.want) || e.Set["X"] != "1" {
+			t.Errorf("%s %v: %+v, want pass %v", tc.goos, tc.pass, e, tc.want)
+		}
+	}
+}
+
+// The cron path: a variable env_pass names reaches the job, anything else is
+// dropped whatever its name, and output is trimmed.
+func TestRunSandboxShell_EnvAllowlist(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell $VAR expansion assumes sh; skipping on windows")
 	}
+	resetExecProfiles(t)
 	t.Setenv("CRON_PLAIN_VAR", "visible")
+	t.Setenv("CRON_OTHER_VAR", "dropped")
 	t.Setenv("CRON_API_KEY", "topsecret")
+	defaultExecProfiles.Load(map[string]execProfileSetting{surfaceCronShell: {EnvPass: []string{"CRON_PLAIN_VAR"}}})
 
 	data := t.TempDir()
-	p := resolveExecProfile("cron-shell", "", data, data)
 	out, err := runSandboxShell(context.Background(),
-		"echo P=$CRON_PLAIN_VAR K=$CRON_API_KEY", p)
+		"echo P=$CRON_PLAIN_VAR O=$CRON_OTHER_VAR K=$CRON_API_KEY PATH=${PATH:+set}", resolveExecProfile(surfaceCronShell, "", data, data))
 	if err != nil {
 		t.Fatalf("runSandboxShell returned error: %v", err)
 	}
-	if !strings.Contains(out, "P=visible") {
-		t.Errorf("plain var not forwarded to cron shell; output=%q", out)
+	if !strings.Contains(out, "P=visible") || !strings.Contains(out, "PATH=set") {
+		t.Errorf("env_pass and the safe set must reach the job; output=%q", out)
 	}
-	if strings.Contains(out, "topsecret") {
-		t.Errorf("secret-named var leaked into cron shell env; output=%q", out)
+	if strings.Contains(out, "dropped") || strings.Contains(out, "topsecret") {
+		t.Errorf("a variable no allowlist names reached the job; output=%q", out)
 	}
-	// runSandboxShell trims combined output (host backend does not).
 	if out != strings.TrimSpace(out) {
 		t.Errorf("output not trimmed: %q", out)
 	}
@@ -242,4 +398,269 @@ func countOccurrences(ss []string, want string) int {
 		}
 	}
 	return n
+}
+
+// Live, where a restricted backend runs (macOS): the built-in dry run blocks
+// nothing. os_exec's write outside the roots is refused, re-run on the host and
+// logged; a cron job's lookup with the network cut is too; and a cron job's ~
+// is the real home, not the work dir. With the switch on, the same write
+// asks, and denied, stays refused.
+func TestBuiltinDryRunBlocksNothing(t *testing.T) {
+	restrictedOrSkip(t)
+	resetExecProfiles(t)
+	withBuiltinExec(t, "restricted", "")
+	hub := logs.NewMemory(200)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+
+	out := filepath.Join(t.TempDir(), "made-on-host.txt")
+	never := func(context.Context, string, string) bool { t.Fatal("a dry run must not ask"); return false }
+	res, err := sandboxRunner("", "", never)(context.Background(), "echo hi > "+out, 30*time.Second)
+	if err != nil || !strings.Contains(res, "sandbox dry-run") {
+		t.Fatalf("os_exec: out=%q err=%v", res, err)
+	}
+	if b, err := os.ReadFile(out); err != nil || strings.TrimSpace(string(b)) != "hi" {
+		t.Fatalf("the host re-run must have written the file: %q %v", b, err)
+	}
+
+	data := t.TempDir()
+	p := resolveExecProfile(surfaceCronShell, "", data, cronSandboxDir(data)) // as runCronShell resolves it
+	if p.Policy.Network != sandbox.NetNone {
+		t.Fatalf("cron-shell network = %s, want none", p.Policy.Network)
+	}
+	if res, _ := runSandboxShell(context.Background(), "curl -sS -m 5 http://tenant-sandbox-probe.invalid/", p); !strings.Contains(res, "sandbox dry-run") {
+		t.Fatalf("a cut lookup must re-run on the host in a dry run: %q", res)
+	}
+	home, _ := os.UserHomeDir()
+	if res, err := runSandboxShell(context.Background(), "cd ~ && pwd -P", p); err != nil || res != mustEval(t, home) {
+		t.Fatalf("a cron job's ~ must be the real home in a dry run: %q %v", res, err)
+	}
+	all, _ := hub.Snapshot()
+	would := 0
+	for _, e := range all {
+		if e.Field("event") == "sandbox/2002" {
+			would++
+		}
+	}
+	if would != 2 {
+		t.Errorf("want 2 would-refuse events (os_exec write, cron lookup), got %d", would)
+	}
+
+	on := true
+	defaultExecProfiles.Load(map[string]execProfileSetting{"default": {Enforce: &on}})
+	asked := false
+	deny := func(context.Context, string, string) bool { asked = true; return false }
+	blocked := filepath.Join(t.TempDir(), "never.txt")
+	if _, err := sandboxRunner("", "", deny)(context.Background(), "echo hi > "+blocked, 30*time.Second); err == nil || !asked {
+		t.Fatalf("enforcing, the write must ask and, denied, fail: err=%v asked=%v", err, asked)
+	}
+	if _, err := os.Stat(blocked); !os.IsNotExist(err) {
+		t.Fatalf("a denied escalation wrote the file: %v", err)
+	}
+}
+
+func mustEval(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// --- exceptions: approve-always on an escalation (TEN-347) ---
+
+// refusedPath finds the absolute path a refusal names, in the forms the tools
+// print it on macOS (EPERM) and Linux (EROFS); nothing when none is absolute.
+func TestRefusedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX paths")
+	}
+	for _, tc := range []struct{ out, want string }{
+		{"touch: /Users/me/Desktop/x.txt: Operation not permitted", "/Users/me/Desktop/x.txt"},
+		{"sh: /Users/me/My Docs/out.log: Operation not permitted", "/Users/me/My Docs/out.log"},
+		{"PermissionError: [Errno 1] Operation not permitted: '/srv/app/cache.db'", "/srv/app/cache.db"},
+		{"Error: EPERM: operation not permitted, open '/srv/app/x.json'", "/srv/app/x.json"},
+		{"fatal: Unable to create '/w/repo/.git/index.lock': Operation not permitted", "/w/repo/.git/index.lock"},
+		{"touch: cannot touch '/home/u/notes.md': Read-only file system", "/home/u/notes.md"},
+		{"sh: 1: cannot create /home/u/out.txt: Read-only file system", "/home/u/out.txt"},
+		{"some noise\nmkdir: /opt/build: Operation not permitted\n", "/opt/build"},
+		{"fatal: could not create work tree dir 'repo': Operation not permitted", ""}, // relative: never guessed
+		{"cat: /etc/x: No such file or directory", ""},                                // not a refusal
+	} {
+		if got := refusedPath(tc.out); got != tc.want {
+			t.Errorf("refusedPath(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+	}
+}
+
+// exceptionScope opens only a folder: the refused one, or a file's. Never a
+// deny root, the home folder or above it, a network refusal, or a guess.
+func TestExceptionScope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX paths")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	work := t.TempDir()
+	deny := t.TempDir()
+	fs := func(out string) sandbox.Result {
+		return sandbox.Result{Output: out, Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "x"}}}
+	}
+	for _, tc := range []struct {
+		name      string
+		res       sandbox.Result
+		scope, no string
+	}{
+		{"a file's folder", fs("touch: " + filepath.Join(work, "new.txt") + ": Operation not permitted"), work, ""},
+		{"a folder itself", fs("mkdir: " + work + ": Operation not permitted"), work, ""},
+		{"a folder not there yet", fs("mkdir: " + filepath.Join(work, "a", "b") + ": Operation not permitted"), "", "does not exist yet"},
+		{"inside a deny root", fs("cat: " + filepath.Join(deny, "k") + ": Operation not permitted"), "", "no exception opens"},
+		{"a dotfile in home", fs("sh: " + filepath.Join(home, ".zshrc") + ": Operation not permitted"), "", "whole home folder"},
+		{"the root", fs("touch: /x: Operation not permitted"), "", "whole home folder"},
+		{"network", sandbox.Result{Violations: []sandbox.Violation{{Kind: "network"}}}, "", "network"},
+		{"no path", fs("Operation not permitted"), "", "no absolute path"},
+	} {
+		scope, why := exceptionScope(tc.res, []string{deny})
+		if scope != tc.scope || !strings.Contains(why, tc.no) {
+			t.Errorf("%s: scope %q (%q), want %q (%q)", tc.name, scope, why, tc.scope, tc.no)
+		}
+	}
+}
+
+// Exceptions load per surface, validated, and join only that surface's write
+// roots, whichever profile it resolves to.
+func TestExecExceptions_LoadAndResolve(t *testing.T) {
+	resetExecProfiles(t)
+	t.Cleanup(func() { defaultExecProfiles.LoadExceptions(nil) })
+	dir := t.TempDir()
+	n, skipped := defaultExecProfiles.LoadExceptions(map[string][]string{
+		surfaceDiscord: {dir, "relative/x"},
+		"bogus":        {dir},
+	})
+	if n != 1 || len(skipped) != 2 {
+		t.Fatalf("applied %d, skipped %v; want 1 applied, 2 skipped", n, skipped)
+	}
+	other := filepath.Join(t.TempDir(), "w")
+	defaultExecProfiles.Load(map[string]execProfileSetting{"default": {WriteRoots: []string{other}}})
+	if p := resolveExecProfile(surfaceDiscord, "", "", ""); !slices.Equal(p.Policy.WriteRoots, []string{other, dir}) {
+		t.Errorf("discord write roots = %v, want the profile's then the exception", p.Policy.WriteRoots)
+	}
+	if p := resolveExecProfile(surfaceLocal, "", "", ""); slices.Contains(p.Policy.WriteRoots, dir) {
+		t.Errorf("an exception for discord leaked to local: %v", p.Policy.WriteRoots)
+	}
+}
+
+// Approve "always" on an escalation saves the refused folder for that surface,
+// and never turns the sandbox category to allow; with nothing scoped to save,
+// it approves the one time and saves nothing.
+func TestApproveAlwaysOnEscalationSavesScopedException(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX paths")
+	}
+	resetExecProfiles(t)
+	t.Cleanup(func() { defaultExecProfiles.LoadExceptions(nil); persistExecException = nil })
+	cfg := t.TempDir()
+	stg := &settings{Tools: map[string]bool{}}
+	var mu sync.Mutex
+	loadExecSettings(stg, &mu, cfg, "main", func(string) {})
+
+	b := newApprovalBroker(nil)
+	b.SetRules(nil)
+	b.SetAsk(func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.ApproveAlways })
+	work := t.TempDir()
+	refused := sandbox.Result{ExitCode: 1, Output: "touch: " + filepath.Join(work, "a.txt") + ": Operation not permitted",
+		Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "x"}}}
+	var detail string
+	confirm := func(ctx context.Context, action, d string) bool { detail = d; return b.Confirm(ctx, action, d) }
+	esc := execEscalator(confirm, sandbox.Policy{})
+	if !esc(context.Background(), sandbox.Command{Shell: "touch a.txt", Surface: surfaceDiscord}, refused) {
+		t.Fatal("always approves this run")
+	}
+	if !strings.Contains(detail, "lets discord commands write under "+work) {
+		t.Errorf("the prompt must say what always saves: %q", detail)
+	}
+	if got := b.Modes()[catSandbox]; got != modeAsk.String() {
+		t.Fatalf("always on an escalation opened the sandbox category: %s", got)
+	}
+	saved, err := loadSettings(cfg, "main")
+	if err != nil || !slices.Equal(saved.ExecExceptions[surfaceDiscord], []string{work}) {
+		t.Fatalf("exec_exceptions on disk = %v (err %v), want discord: [%s]", saved.ExecExceptions, err, work)
+	}
+	if p := resolveExecProfile(surfaceDiscord, "", "", ""); !slices.Contains(p.Policy.WriteRoots, work) {
+		t.Errorf("the exception is not live: %v", p.Policy.WriteRoots)
+	}
+
+	// A network refusal has no folder: always approves once, saves nothing.
+	net := sandbox.Result{ExitCode: 6, Output: "curl: (6) Could not resolve host: x", Violations: []sandbox.Violation{{Kind: "network"}}}
+	if !esc(context.Background(), sandbox.Command{Shell: "curl x", Surface: surfaceLocal}, net) {
+		t.Fatal("always approves this run")
+	}
+	if !strings.Contains(detail, "approves this time only") {
+		t.Errorf("the prompt must say always saves nothing here: %q", detail)
+	}
+	if saved, _ := loadSettings(cfg, "main"); len(saved.ExecExceptions) != 1 || b.Modes()[catSandbox] != modeAsk.String() {
+		t.Errorf("a network refusal saved something: %v, sandbox %s", saved.ExecExceptions, b.Modes()[catSandbox])
+	}
+}
+
+// Only the escalation's own prompt saves an exception: "always" on another
+// action carrying the same context value is that action's own grant, and the
+// hook without an escalation's context saves nothing.
+func TestExecException_OnlyFromTheEscalation(t *testing.T) {
+	t.Cleanup(func() { persistExecException = nil })
+	var calls int
+	persistExecException = func(string, string) error { calls++; return nil }
+	ctx := context.WithValue(context.Background(), execExceptionKey{}, execException{surface: surfaceLocal, path: "/tmp"})
+	b := newApprovalBroker(nil)
+	b.SetRules(nil)
+	b.SetAsk(func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.ApproveAlways })
+	if !b.Confirm(ctx, "os_exec", "ls") || calls != 0 {
+		t.Fatalf("always on os_exec saved an exception (calls=%d)", calls)
+	}
+	saveExecException(context.Background())
+	if calls != 0 {
+		t.Fatal("the hook saved an exception with no escalation in its context")
+	}
+}
+
+// --- the brief banner (TEN-347) ---
+
+func TestWithSandboxBanner(t *testing.T) {
+	if got := withSandboxBanner("all good", 0); got != "all good" {
+		t.Errorf("no violations must leave the summary alone: %q", got)
+	}
+	if got := withSandboxBanner("brief", 3); !strings.HasPrefix(got, "🛡 SANDBOX: 3 sandbox violation(s) since the last run") || !strings.HasSuffix(got, "\n\nbrief") {
+		t.Errorf("banner = %q", got)
+	}
+}
+
+// The banner's count is the sandbox log's refusals since the job last ran,
+// read from the log book.
+func TestSandboxViolationsSince(t *testing.T) {
+	keepLogDefaults(t)
+	hub := openBootTestHub(t, t.TempDir())
+	logs.Install(hub)
+	ctx := context.Background()
+	kv := []any{"surface", surfaceCronShell, "backend", "restricted", "command", "x", "exit", 1, "violations", "filesystem: x"}
+	sandbox.Refused.Log(ctx, kv...)
+	sandbox.WouldRefuse.Log(ctx, kv...)
+	sandbox.Escalated.Log(ctx, kv...)
+	sandbox.ExceptionSaved.Log(ctx, "surface", surfaceLocal, "path", "/tmp") // not a violation
+	if err := hub.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	count := sandboxViolationsSince(hub)
+	if n := count(time.Now().Add(-time.Hour)); n != 3 {
+		t.Errorf("violations in the last hour = %d, want 3", n)
+	}
+	if n := count(time.Now().Add(time.Hour)); n != 0 {
+		t.Errorf("violations since a later run = %d, want 0", n)
+	}
+	if n := sandboxViolationsSince(logs.NewMemory(10))(time.Time{}); n != 0 {
+		t.Errorf("no store counts nothing, got %d", n)
+	}
 }

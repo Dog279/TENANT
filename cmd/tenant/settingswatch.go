@@ -144,11 +144,19 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	// later save never clobbers the operator's hand edit, and reload the live set
 	// only when its valid content changed.
 	mu.Lock()
-	stg.ExecProfiles = fresh.ExecProfiles
+	stg.ExecProfiles, stg.ExecExceptions = fresh.ExecProfiles, fresh.ExecExceptions
 	mu.Unlock()
 	if wanted, _ := validExecProfiles(fresh.ExecProfiles); !execProfilesEqual(wanted, defaultExecProfiles.Snapshot()) {
 		n, skipped := defaultExecProfiles.Load(fresh.ExecProfiles)
 		s := fmt.Sprintf("%d exec profile(s)", n)
+		if len(skipped) > 0 {
+			s += fmt.Sprintf(" (%d invalid skipped: %s)", len(skipped), strings.Join(skipped, "; "))
+		}
+		parts = append(parts, s)
+	}
+	if wanted, _ := validExecExceptions(fresh.ExecExceptions); !execExceptionsEqual(wanted, defaultExecProfiles.ExceptionsSnapshot()) {
+		n, skipped := defaultExecProfiles.LoadExceptions(fresh.ExecExceptions)
+		s := fmt.Sprintf("%d sandbox exception(s)", n)
 		if len(skipped) > 0 {
 			s += fmt.Sprintf(" (%d invalid skipped: %s)", len(skipped), strings.Join(skipped, "; "))
 		}

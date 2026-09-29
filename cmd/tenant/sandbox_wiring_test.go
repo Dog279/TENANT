@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	stdreflect "reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -133,16 +134,19 @@ func TestResolveExecProfile_AppliesOverrides(t *testing.T) {
 	}
 }
 
-func TestResolveExecProfile_ConfinedEnvDefaultsToScrubbed(t *testing.T) {
+// Every profile, host included, gives commands the safe-env allowlist: PATH
+// kept, anything unlisted dropped whether or not its name looks secret.
+func TestResolveExecProfile_EnvAllowlistOnEveryBackend(t *testing.T) {
 	resetExecProfiles(t)
 	t.Setenv("TENANT_TEST_API_KEY", "leak-me")
-	defaultExecProfiles.Load(map[string]execProfileSetting{"discord": {Backend: "restricted"}})
-	p := resolveExecProfile(surfaceDiscord, "", "", "")
-	if !p.Policy.Env.Isolate || hasString(p.Policy.Env.Pass, "TENANT_TEST_API_KEY") || !hasString(p.Policy.Env.Pass, "PATH") {
-		t.Fatalf("a confined profile must default to the scrubbed env (PATH kept, secret-named vars dropped): %+v", p.Policy.Env)
-	}
-	if hp := resolveExecProfile(surfaceLocal, "", "", ""); envScoped(hp.Policy.Env) {
-		t.Fatalf("the host profile must keep inheriting the full env (pre-seam parity): %+v", hp.Policy.Env)
+	t.Setenv("TENANT_TEST_DB_URL", "postgres://u:pw@h/db") // a secret with an innocent name
+	defaultExecProfiles.Load(map[string]execProfileSetting{"discord": {Backend: "restricted"}, "local": {Backend: "host"}})
+	for _, surface := range []string{surfaceDiscord, surfaceLocal, surfaceCronShell} {
+		p := resolveExecProfile(surface, "", "", "")
+		if !p.Policy.Env.Isolate || hasString(p.Policy.Env.Pass, "TENANT_TEST_API_KEY") ||
+			hasString(p.Policy.Env.Pass, "TENANT_TEST_DB_URL") || !slices.ContainsFunc(p.Policy.Env.Pass, func(n string) bool { return strings.EqualFold(n, "PATH") }) {
+			t.Fatalf("%s (%s): the env must be the allowlist: %+v", surface, p.Backend, p.Policy.Env)
+		}
 	}
 }
 
@@ -171,8 +175,8 @@ func TestResolveExecProfile_SurfaceEntryBeatsDefault(t *testing.T) {
 		t.Errorf("surfaces without an entry take default, got %q", b)
 	}
 	defaultExecProfiles.Load(nil)
-	if p := resolveExecProfile(surfaceDiscord, "", "", ""); p.Backend != "host" || !p.Policy.Enforce {
-		t.Errorf("no overrides ⇒ built-in host with enforce on, got %+v", p)
+	if p := resolveExecProfile(surfaceDiscord, "", "", ""); p.Backend != "host" || p.Policy.Enforce {
+		t.Errorf("no overrides ⇒ the built-in backend (pinned host in tests) in dry run, got %+v", p)
 	}
 }
 
@@ -280,19 +284,24 @@ func TestApplySettingsFile_ReloadsExecProfiles(t *testing.T) {
 	var mu sync.Mutex
 	stg := &settings{Tools: map[string]bool{}}
 
-	body := `{"tools":{},"exec_profiles":{"cron-shell":{"backend":"restricted","network":"none"},"bogus":{"backend":"host"}}}`
+	t.Cleanup(func() { defaultExecProfiles.LoadExceptions(nil) })
+	body := `{"tools":{},"exec_profiles":{"cron-shell":{"backend":"restricted","network":"none"},"bogus":{"backend":"host"}},` +
+		`"exec_exceptions":{"discord":["~/tenant-out"]}}`
 	if err := os.WriteFile(filepath.Join(cfg, "settings.main.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got := applySettingsFile(cfg, "main", broker, rules, &mu, stg)
-	if !strings.Contains(got, "1 exec profile(s) (1 invalid skipped") {
+	if !strings.Contains(got, "1 exec profile(s) (1 invalid skipped") || !strings.Contains(got, "1 sandbox exception(s)") {
 		t.Fatalf("summary = %q", got)
 	}
 	if p, ok := defaultExecProfiles.lookup(surfaceCronShell); !ok || p.Backend != "restricted" {
 		t.Fatalf("the edited profile must be live: %+v ok=%v", p, ok)
 	}
-	if len(stg.ExecProfiles) != 2 {
-		t.Errorf("stg must track the FILE (invalid entry kept, so a save never deletes it): %v", stg.ExecProfiles)
+	if home, _ := os.UserHomeDir(); !hasString(defaultExecProfiles.exceptions(surfaceDiscord), filepath.Join(home, "tenant-out")) {
+		t.Fatalf("the edited exception must be live, ~ expanded: %v", defaultExecProfiles.exceptions(surfaceDiscord))
+	}
+	if len(stg.ExecProfiles) != 2 || len(stg.ExecExceptions) != 1 {
+		t.Errorf("stg must track the FILE (invalid entry kept, so a save never deletes it): %v %v", stg.ExecProfiles, stg.ExecExceptions)
 	}
 	if again := applySettingsFile(cfg, "main", broker, rules, &mu, stg); again != "" {
 		t.Errorf("unchanged file must be a no-op, got %q", again)

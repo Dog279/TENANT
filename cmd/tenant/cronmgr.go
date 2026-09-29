@@ -33,8 +33,10 @@ import (
 	"tenant/internal/dashboard"
 	"tenant/internal/datalock"
 	"tenant/internal/fsperm"
+	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
+	"tenant/internal/logs/query"
 	"tenant/internal/memory/soul"
 	"tenant/internal/memory/userprofile"
 	"tenant/internal/memory/working"
@@ -89,6 +91,11 @@ type cronAgentDeps struct {
 	// the operator actually reads, and "Jira: (nothing)" was how a dead Atlassian
 	// bridge hid for three days.
 	authProblems func() []string
+
+	// violations, when set, counts the sandbox's refusals since a time
+	// (the log book's sandbox log). Every summary says how many there were
+	// since its job last ran (TEN-347): unattended, nobody saw them happen.
+	violations func(since time.Time) int
 
 	cfgDir    string    // protected from exec-job writes
 	dataDir   string    // protected from exec-job writes; holds the shell sandbox
@@ -216,8 +223,48 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		if d.authProblems != nil {
 			summary = withAuthBanner(summary, d.authProblems())
 		}
+		if d.violations != nil {
+			since := job.LastRun // this job's previous run: the engine sets LastRun after the runner returns
+			if since.IsZero() {
+				since = time.Now().Add(-24 * time.Hour)
+			}
+			summary = withSandboxBanner(summary, d.violations(since))
+		}
 		return summary, trace, res.Error
 	}, nil
+}
+
+// withSandboxBanner prefixes a cron summary with how many commands the sandbox
+// refused, or would have refused in its dry run, since the job last ran. None
+// ⇒ the summary is untouched.
+func withSandboxBanner(summary string, n int) string {
+	if n <= 0 {
+		return summary
+	}
+	return fmt.Sprintf("🛡 SANDBOX: %d sandbox violation(s) since the last run (commands it refused, or would have in its dry run). "+
+		"See the dashboard's sandbox log, or `tenant logs query \"log:sandbox id:2001-2003\"`.\n\n", n) + summary
+}
+
+// sandboxViolationsSince counts the sandbox log's refusals since a time in
+// hub's log book: refused, would-refuse (dry run) and escalated (sandbox
+// 2001-2003). 0 without a store or on an error: a banner is not worth failing
+// a job over.
+func sandboxViolationsSince(hub *logs.Hub) func(time.Time) int {
+	return func(since time.Time) int {
+		st := hub.Store()
+		if st == nil {
+			return 0
+		}
+		f, err := query.Parse("provider:sandbox id:2001-2003 since:" + since.UTC().Format(time.RFC3339))
+		if err != nil {
+			return 0
+		}
+		n, err := st.Count(context.Background(), f)
+		if err != nil {
+			return 0
+		}
+		return int(n)
+	}
 }
 
 // withAuthBanner prefixes a cron summary with the connectors whose sign-in is
