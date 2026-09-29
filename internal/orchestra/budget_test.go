@@ -55,6 +55,27 @@ func TestGovernorEnsureIsAtomicAcrossParallelSpawns(t *testing.T) {
 	}
 }
 
+// team_await ends a run with EndIfIdle, never under a held slot; a spawn's
+// EnsureAgent opens a run when none is, and takes its slot in the same step
+// (TEN-326).
+func TestGovernorEndIfIdleAndEnsureAgent(t *testing.T) {
+	g := NewGovernor(Budgets{}, nil)
+	_, release, err := g.EnsureAgent(context.Background())
+	if err != nil || !g.Active() || g.Status().ActiveSubagents != 1 {
+		t.Fatalf("EnsureAgent with no run open: err %v, status %+v", err, g.Status())
+	}
+	if g.EndIfIdle() || !g.Active() {
+		t.Fatal("EndIfIdle ended a run whose agent still holds its slot")
+	}
+	release()
+	if !g.EndIfIdle() || g.Active() {
+		t.Fatal("EndIfIdle left an idle run open")
+	}
+	if g.EndIfIdle() {
+		t.Fatal("EndIfIdle ended a run that was already over")
+	}
+}
+
 func TestOldRunReleaseCannotDecrementNewRun(t *testing.T) {
 	g := NewGovernor(Budgets{}, nil)
 	g.Begin(context.Background())

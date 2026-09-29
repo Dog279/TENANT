@@ -199,11 +199,48 @@ func (g *Governor) Ensure(parent context.Context) context.Context {
 	return g.begin(parent)
 }
 
+// EnsureAgent is Ensure and AcquireAgent in one step, under the lock
+// EndIfIdle decides under: the run a spawn opens or joins can't be ended
+// between the two, as another turn's team_await did (TEN-326).
+func (g *Governor) EnsureAgent(parent context.Context) (context.Context, func(), error) {
+	g.beginMu.Lock()
+	g.mu.Lock()
+	retire, opened := func() {}, !g.open
+	var began BudgetStatus
+	if opened {
+		retire = g.beginLocked(parent)
+		began = g.snapshotLocked()
+	}
+	ctx, release, err := g.acquireLocked()
+	st := g.snapshotLocked()
+	g.mu.Unlock()
+	g.beginMu.Unlock()
+	retire()
+	if opened {
+		g.notify(began)
+	}
+	if err == nil {
+		g.notify(st)
+	}
+	return ctx, release, err
+}
+
 func (g *Governor) begin(parent context.Context) context.Context {
+	g.mu.Lock()
+	retire := g.beginLocked(parent)
+	ctx, st := g.runCtx, g.snapshotLocked()
+	g.mu.Unlock()
+	retire()
+	g.notify(st)
+	return ctx
+}
+
+// beginLocked starts a fresh run under g.mu. retire stops the old run's
+// timers and cancels its context; the caller runs it once g.mu is let go.
+func (g *Governor) beginLocked(parent context.Context) (retire func()) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	g.mu.Lock()
 	oldCancel, oldTimer, oldStop := g.cancel, g.timer, g.stopParent
 	g.runID++
 	g.open, g.terminated = true, false
@@ -222,19 +259,17 @@ func (g *Governor) begin(parent context.Context) context.Context {
 			g.terminateRun(runID, "parent context canceled: "+err.Error())
 		}
 	})
-	ctx, st := g.runCtx, g.snapshotLocked()
-	g.mu.Unlock()
-	if oldTimer != nil {
-		oldTimer.Stop()
+	return func() {
+		if oldTimer != nil {
+			oldTimer.Stop()
+		}
+		if oldStop != nil {
+			oldStop()
+		}
+		if oldCancel != nil {
+			oldCancel(errRunEnded)
+		}
 	}
-	if oldStop != nil {
-		oldStop()
-	}
-	if oldCancel != nil {
-		oldCancel(errRunEnded)
-	}
-	g.notify(st)
-	return ctx
 }
 
 func (g *Governor) Active() bool {
@@ -246,20 +281,29 @@ func (g *Governor) Active() bool {
 // End closes the accounting window. It is safe after termination and does not
 // overwrite the authoritative termination reason.
 func (g *Governor) End() {
-	g.end("")
+	g.end("", false)
 }
 
 // EndWithReason closes the window and preserves an operator-facing reason for
 // an early join/timeout cancellation.
 func (g *Governor) EndWithReason(reason string) {
-	g.end(reason)
+	g.end(reason, false)
 }
 
-func (g *Governor) end(reason string) {
+// EndIfIdle closes the window only when no agent holds a slot, deciding under
+// the lock that admits them, so an agent admitted meanwhile keeps the run
+// open. team_await ends a run this way once its children have joined: a
+// Status check, then End, let another turn's spawn join the run in between,
+// and ended it under that spawn (TEN-326). It reports whether it closed it.
+func (g *Governor) EndIfIdle() bool {
+	return g.end("", true)
+}
+
+func (g *Governor) end(reason string, ifIdle bool) bool {
 	g.mu.Lock()
-	if !g.open {
+	if !g.open || ifIdle && g.activeAgents > 0 {
 		g.mu.Unlock()
-		return
+		return false
 	}
 	g.open = false
 	if reason != "" && g.reason == "" {
@@ -283,6 +327,7 @@ func (g *Governor) end(reason string) {
 		cancel(cause)
 	}
 	g.notify(st)
+	return true
 }
 
 func (g *Governor) Status() BudgetStatus {
@@ -295,32 +340,33 @@ func (g *Governor) Status() BudgetStatus {
 // returns a child of the run cancellation context.
 func (g *Governor) AcquireAgent() (context.Context, func(), error) {
 	g.mu.Lock()
+	ctx, release, err := g.acquireLocked()
+	st := g.snapshotLocked()
+	g.mu.Unlock()
+	if err == nil {
+		g.notify(st)
+	}
+	return ctx, release, err
+}
+
+// acquireLocked is AcquireAgent under g.mu.
+func (g *Governor) acquireLocked() (context.Context, func(), error) {
 	if !g.open {
-		g.mu.Unlock()
 		return nil, nil, fmt.Errorf("orchestra: no active team run")
 	}
 	if g.terminated {
-		err := fmt.Errorf("orchestra: team run terminated: %s", g.reason)
-		g.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("orchestra: team run terminated: %s", g.reason)
 	}
 	if g.activeAgents >= g.limits.MaxConcurrentSubagents {
-		err := &LimitError{Resource: "concurrent subagents", Used: fmt.Sprint(g.activeAgents), Limit: fmt.Sprint(g.limits.MaxConcurrentSubagents)}
-		g.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, &LimitError{Resource: "concurrent subagents", Used: fmt.Sprint(g.activeAgents), Limit: fmt.Sprint(g.limits.MaxConcurrentSubagents)}
 	}
 	if g.agentsStarted >= g.limits.MaxAgentsPerRun {
-		err := &LimitError{Resource: "agents per run", Used: fmt.Sprint(g.agentsStarted), Limit: fmt.Sprint(g.limits.MaxAgentsPerRun)}
-		g.mu.Unlock()
-		return nil, nil, err
+		return nil, nil, &LimitError{Resource: "agents per run", Used: fmt.Sprint(g.agentsStarted), Limit: fmt.Sprint(g.limits.MaxAgentsPerRun)}
 	}
 	g.activeAgents++
 	g.agentsStarted++
 	runID := g.runID
 	ctx, cancel := context.WithCancel(g.runCtx)
-	st := g.snapshotLocked()
-	g.mu.Unlock()
-	g.notify(st)
 	var once sync.Once
 	release := func() {
 		once.Do(func() {

@@ -527,8 +527,9 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	if r.cfg.BaseCtx != nil {
 		base = r.cfg.BaseCtx
 	}
-	r.budget.Ensure(base)
-	runCtx, releaseAgent, err := r.budget.AcquireAgent()
+	// One step, so another turn's team_await can't end the run between this
+	// spawn opening or joining it and taking its slot (TEN-326).
+	runCtx, releaseAgent, err := r.budget.EnsureAgent(base)
 	if err != nil {
 		orchestra.SpawnRefused.Log(ctx, "role", role, "err", err)
 		return "", err
@@ -689,6 +690,10 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 			Content: "DONE — " + clip(result, 600)})
 		flow := ag.FlowFor(result)
 		act.End(&endErr)
+		// The slot goes back before done closes, so an await that has seen
+		// every child finish finds none active and can end the run (EndIfIdle).
+		// The deferred call then does nothing.
+		releaseAgent()
 		r.finish(m, status, result, flow)
 	}()
 
@@ -1087,10 +1092,10 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 		// ("terminated: team await ended with N subagent(s) still active").
 		// The accounting window closes only when all children have joined;
 		// stragglers stay bounded by the run's wall-time/token budgets and the
-		// TeamRuntime Shutdown teardown.
-		if t.rt.BudgetStatus().ActiveSubagents == 0 {
-			t.rt.EndRun()
-		}
+		// TeamRuntime Shutdown teardown. Decided under the lock that admits
+		// spawns: a check, then EndRun, let another turn's spawn join the run
+		// in between and ended it under that spawn (TEN-326).
+		t.rt.budget.EndIfIdle()
 		return out, false, nil
 	default:
 		return "unknown orchestrator tool: " + call.Name, true, nil

@@ -708,13 +708,77 @@ func TestTeamRuntime_ResearchRunsStayBounded(t *testing.T) {
 	}
 }
 
+// A sub-agent's budget slot comes back before it finishes (its done closes):
+// team_await, having seen every child finish, must find none holding a slot,
+// or it skips ending the run and the accounting window stays open (TEN-326).
+// The hook runs inside the release, so it sees the order, not a race: the one
+// agent must still be running then.
+func TestTeamRuntime_SlotComesBackBeforeDone(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{}, 0)
+	var mu sync.Mutex
+	active := 0
+	late := make(chan bool, 1) // at the release: had the agent finished?
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{}, func(st orchestra.BudgetStatus) {
+		mu.Lock()
+		released := st.ActiveSubagents < active
+		active = st.ActiveSubagents
+		mu.Unlock()
+		if !released {
+			return
+		}
+		rt.mu.Lock()
+		running := 0
+		for _, m := range rt.agents {
+			if m.status == "running" {
+				running++
+			}
+		}
+		rt.mu.Unlock()
+		late <- running == 0 // finished, or even reported and dropped
+	})
+	turn := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn"))
+	if _, err := rt.Spawn(turn, "worker", "task"); err != nil {
+		t.Fatal(err)
+	}
+	teamAwait(t, rt, turn)
+	if <-late {
+		t.Error("the agent's slot came back after it finished")
+	}
+	if st := rt.BudgetStatus(); st.Active || st.ActiveSubagents != 0 {
+		t.Errorf("every child joined, but the run is still open: %+v", st)
+	}
+}
+
+// Ending the run and admitting a spawn are decided under one lock (TEN-326).
+// Here turn x's team_await runs at the moment turn y's spawn opens the run,
+// before y would take its slot: x must not close that run, and y's agent must
+// get its slot in it and run to the end, not be refused or cancelled.
+func TestTeamAwait_CantEndTheRunASpawnJoins(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{}, 0)
+	x := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn-x"))
+	y := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn-y"))
+	var once sync.Once
+	rt.budget = orchestra.NewGovernor(orchestra.Budgets{}, func(st orchestra.BudgetStatus) {
+		if st.Active { // y's spawn has opened the run
+			once.Do(func() { teamAwait(t, rt, x) })
+		}
+	})
+	id, err := rt.Spawn(y, "worker", "y's task")
+	if err != nil {
+		t.Fatalf("y's spawn was refused: %v", err)
+	}
+	if out := teamAwait(t, rt, y); !strings.Contains(out, "## "+id+" (worker) [done]") {
+		t.Fatalf("y's agent didn't run to the end:\n%s", out)
+	}
+}
+
 // Turns on one runtime spawn and await at the same time: each gets each of
 // its own results exactly once, and the runtime ends up holding nothing.
 func TestTeamRuntime_ConcurrentSpawnAndAwait(t *testing.T) {
 	const turns, rounds = 4, 5
-	// The governor's count lags a finished agent by an instant, hence room
-	// for two per turn.
-	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: turns * rounds, MaxConcurrentSubagents: 2 * turns}, turns)
+	// Exactly a slot per turn, and no retries: a slot comes back before its
+	// agent's done, and no turn's await can end the run under another's spawn.
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: turns * rounds, MaxConcurrentSubagents: turns}, turns)
 	var wg sync.WaitGroup
 	for n := range turns {
 		wg.Add(1)
@@ -724,15 +788,7 @@ func TestTeamRuntime_ConcurrentSpawnAndAwait(t *testing.T) {
 			var mine []string
 			var outs strings.Builder
 			for i := range rounds {
-				var id string
-				var err error
-				// Another turn's await can close the run between this spawn's
-				// Ensure and its acquire; the next try opens a new one.
-				for range 5 {
-					if id, err = rt.Spawn(ctx, "worker", fmt.Sprintf("turn %d, task %d", n, i)); err == nil {
-						break
-					}
-				}
+				id, err := rt.Spawn(ctx, "worker", fmt.Sprintf("turn %d, task %d", n, i))
 				if err != nil {
 					t.Errorf("turn %d spawn %d: %v", n, i, err)
 					return
