@@ -195,8 +195,13 @@ func TestLinuxRestricted_UnavailableIsExplained(t *testing.T) {
 	if !strings.Contains(msg, "restricted unavailable") {
 		t.Errorf("the error must say restricted is unavailable: %q", msg)
 	}
-	if _, lerr := exec.LookPath("bwrap"); lerr != nil && !strings.Contains(msg, "bubblewrap not installed") {
-		t.Errorf("without bwrap the error must say bubblewrap is not installed: %q", msg)
+	// Without bwrap that is the reason, whatever else the host restricts: the
+	// user-namespace settings only explain a bwrap that is there but can't run.
+	if _, lerr := exec.LookPath("bwrap"); lerr != nil {
+		if !strings.Contains(msg, "bubblewrap not installed") {
+			t.Errorf("without bwrap the error must say bubblewrap is not installed: %q", msg)
+		}
+		return
 	}
 	if v, _ := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); strings.TrimSpace(string(v)) == "1" &&
 		!strings.Contains(msg, "apparmor_restrict_unprivileged_userns=1") {
