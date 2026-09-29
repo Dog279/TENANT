@@ -565,7 +565,7 @@ integration, red-team QA, operator CLI, docs), integrated and QA'd on macOS.
 | TEN-344 Phase 0 reconcile | not started (human-gated) | merge origin/main audit work into the R340 line, deploy, posture flip |
 | TEN-345 [SEC-009] seam | `internal/sandbox` (Backend/Policy/Execute), host backend byte-identical to the old runner, os_exec + cron shell on the seam, operator `exec_profiles` (per surface, hot-reloaded, validated, no agent tool), env allowlist, escape suite, `tenant sandbox probe/selftest/run` | ~~wire `tenant permissions effective` + `tenant security audit` + presets~~ done 2026-09-29, see the status update below |
 | TEN-346 [SEC-010] restricted backends | macOS Seatbelt: live-tested + red-teamed (all escapes contained). Linux bwrap: done 2026-09-29 (`audit/linux-sandbox`, docs/changes/linux-sandbox.md): memory/CPU/process rlimits inside the sandbox (processes counted per sandbox), output capped as it arrives, every tmpfs layer and deny mask read-only, `/run` hidden, capabilities dropped (bwrap as root kept them all), an availability self-check that names a missing bwrap or restricted user namespaces; cases 1–8 contained live, and CI runs the live suite. Windows: WSL2 bubblewrap (PR #16); the native account/ACE/WFP path is retired, the Job Object kept as `jobobject` | run the WSL live tests and `tenant sandbox selftest` inside WSL on the R340 (the shared bwrap argv changed); macOS Run still has no memory/PID cap |
-| TEN-347 [SEC-011] defaults + escalation | refusal escalation (`os_exec_unsandboxed`, destructive), dry-run (`enforce: false`), unattended deny, `sandbox` log source, resolved-path self-modification guard, cmd /C parity, credential + browser deny baseline, scrubbed env for confined profiles, sub-agent surface inheritance | brief banner, feed event, approve-always → scoped exception and the dry-run default: done 2026-09-29 (below); the default is restricted on macOS only |
+| TEN-347 [SEC-011] defaults + escalation | refusal escalation (`os_exec_unsandboxed`, destructive), dry-run (`enforce: false`), unattended deny, `sandbox` log source, resolved-path self-modification guard, cmd /C parity, credential + browser deny baseline, scrubbed env for confined profiles, sub-agent surface inheritance | brief banner, feed event, approve-always → scoped exception and the dry-run default: done 2026-09-29 (below); the default is restricted on macOS and Windows (WSL sh), host on Linux |
 
 Decisions 2026-09-29 (owner): on Windows, WSL2 + bubblewrap replaces the native dedicated-account /
 NTFS-ACE / WFP path; its scaffolding is removed. On Linux, no new dependency (no go-landlock):
@@ -581,16 +581,24 @@ Decisions taken during implementation (recorded for review):
   otherwise break every tool beside it).
 - Container backend (TEN-318) rejected at profile load until implemented.
 
-## Status update — 2026-09-29 (branch `audit/exec-defaults`, off main 151de11)
+## Status update — 2026-09-29 (branch `audit/exec-defaults`, on `audit/linux-sandbox`)
 
 Change record: `docs/changes/exec-defaults-dry-run.md`.
 
 | Ticket | Done on the branch | Remaining |
 |---|---|---|
 | TEN-345 [SEC-009] seam | `tenant security audit` (per-surface `execution` block, findings keyed on the resolved backend), `tenant permissions effective` (`execution.profile`) and `tenant doctor` (`exec sandbox`) filled from the live profiles and each backend's `Probe`; env **allowlist** by default on every backend (safe base set + `env_pass`), replacing the KEY/TOKEN/SECRET denylist | local MCP servers still build their env on the old denylist + `env_pass` (TEN-318's call) |
-| TEN-347 [SEC-011] defaults | built-in profile = `restricted` in **dry run** on every surface (cron-shell `network: none`), one switch `exec_profiles.default.enforce`; host fallback with the reason in probe/audit/doctor/startup; a dry run never fails closed; `full` preset keeps `sandbox` on ask; approve-always on an escalation saves a scoped folder exception (`exec_exceptions`), never a backend switch; unattended violations: hard deny (enforcing) + the `sandbox-unattended` alert (feed) + a "N sandbox violations since the last run" line on every cron summary; macOS network refusals attributed when the network is cut | **the default is restricted only on macOS**: Windows stays host (its restricted backend runs Linux `sh` in WSL, not PowerShell/cmd), Linux stays host (a masked deny-root read is not attributed, so a dry run fails it; `/tmp` is private per command). Flip each once TEN-346 fixes that; then a dry-run week on the box and `default.enforce: true` |
+| TEN-347 [SEC-011] defaults | built-in profile = `restricted` in **dry run** on every surface (cron-shell `network: none`), one switch `exec_profiles.default.enforce`; host fallback with the reason in probe/audit/doctor/startup; a dry run never fails closed; `full` preset keeps `sandbox` on ask; approve-always on an escalation saves a scoped folder exception (`exec_exceptions`), never a backend switch; unattended violations: hard deny (enforcing) + the `sandbox-unattended` alert (feed) + a "N sandbox violations since the last run" line on every cron summary; macOS network refusals attributed when the network is cut | **Linux stays host** (a masked deny-root read is not attributed, so a dry run fails it; `/tmp` is private per command): flip it once that is fixed. **Windows is restricted, Linux `sh` in WSL** (owner decision below): verify on the box (`tenant sandbox probe`, the WSL selftest, an `.exe` refusal re-running outside), rewrite or pin the cron shell jobs doctor lists, then a dry-run week and `default.enforce: true` |
 
 Decisions taken (recorded for review):
+- Owner decision 2026-09-29: **Windows switches to `sh` in WSL.** Every surface's default there
+  is the WSL bubblewrap sandbox in dry run. The os_exec description names that shell, and a
+  result names where it ran when that differs. The sandboxed run, the dry-run re-run and an
+  approved escalation all run the same `sh` line: outside the sandbox that is the same distro
+  without bubblewrap (`sandbox.Outside`), never PowerShell. Windows programs run only outside,
+  after approval. Cron shell jobs run as `sh` (`cmd /C` only when pinned to the host), and doctor
+  and startup list the ones to rewrite. Without WSL, the fallback is PowerShell on the host, and
+  the model is told so.
 - An entry that names a backend keeps its pre-TEN-347 defaults (enforce on, network inherit), so
   no configured profile silently drops to dry run; entries that don't name one ride the built-in
   profile and the `default.enforce` switch.

@@ -20,7 +20,7 @@ stays in front as a fast fail-early check. It is not the boundary.
 - **Backends.** A `sandbox.Backend` runs a command under a `Policy` and reports, through `Probe`,
   what it enforces on this host, per dimension (filesystem, network, limits, env), as
   `enforced` / `partial` / `none`, with a detail line that names the gaps.
-  - `host`: the default on every surface at the time (now on Windows and Linux only). No filesystem or network confinement, and named as
+  - `host`: the default on every surface at the time (now on Linux, and on Windows without WSL). No filesystem or network confinement, and named as
     such. It honours the work dir, an env allowlist, the wall-clock timeout and the output cap.
     On the default profile the `os_exec` path matches the old runner exactly (output, exit text
     and timeout text, compared side by side in tests), and cron shell jobs keep `cmd /C` on
@@ -114,8 +114,8 @@ stays in front as a fast fail-early check. It is not the boundary.
     output, exit code, timeout and violations, and exits 1 unless the command ran cleanly.
     It calls the backend directly, so it never escalates or re-runs.
 
-TEN-347 later made `restricted` the default, in dry run, where it can dry-run without breaking
-commands (macOS); see [exec-defaults-dry-run.md](exec-defaults-dry-run.md).
+TEN-347 later made `restricted` the default, in dry run, on macOS and Windows (where commands
+then run as Linux `sh` in WSL2); see [exec-defaults-dry-run.md](exec-defaults-dry-run.md).
 
 ## Why
 Before this, all that stood between a model-issued command and the host was the approval gate
@@ -224,8 +224,8 @@ Windows.
   - Each guard piece was confirmed to fail a test when removed.
 
 ## Operator notes
-- **With no entry**, every surface now runs the built-in profile: `restricted` in dry run where
-  it can dry-run (macOS), else `host` with the reason (TEN-347,
+- **With no entry**, every surface now runs the built-in profile: `restricted` in dry run on
+  macOS and Windows (Linux `sh` in WSL2), else `host` with the reason (TEN-347,
   [exec-defaults-dry-run.md](exec-defaults-dry-run.md)). `tenant sandbox probe` shows which.
 
 **Example** (in `<config-dir>/settings.<agent>.json`):

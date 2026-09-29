@@ -1108,10 +1108,12 @@ a fast fail-early layer. The boundary is the execution sandbox
 (§5.12h): `os_exec` runs through the runner injected as
 `Config.Runner`, on a `sandbox.Backend` picked per surface from the
 operator's `exec_profiles`. The built-in profile is `restricted` in
-dry run where that backend can dry-run without breaking commands (macOS),
-else `host`, which confines **nothing** (Windows, Linux; `builtinExec`
-says why). A dry run confines nothing either: a refused command re-runs on
-the host. A surface is contained only once enforcement is on
+dry run on macOS (Seatbelt) and Windows (bubblewrap in WSL2: commands
+run as Linux `sh`, and the os_exec description says so), else `host`,
+which confines **nothing** (Linux, or no WSL; `builtinExec` says why).
+A dry run confines nothing either: a refused command re-runs outside the
+sandbox (`sandbox.Outside`: the host, or on Windows `sh` in the same
+distro). A surface is contained only once enforcement is on
 (`exec_profiles.default.enforce`), and only as far as that OS's backend
 enforces (`tenant sandbox probe` / `selftest`). Until then: keep exec off
 unless needed, run Tenant as a least-privilege user, prefer a
@@ -1259,6 +1261,14 @@ boundary. Operator guide and change record:
     If none can confine, `restricted` **fails closed** — never unconfined.
   - Limits are wall-clock only through the WSL boundary; env is WSL's
     default, not a strict allowlist yet (`probe` reports both `partial`).
+  - Its unsandboxed twin (`Unconfined`, `wslUnsandboxed`) runs the same
+    `sh` line in the same distro without bubblewrap: `sandbox.Execute`
+    re-runs a refused command there, so a dry run or an approved
+    escalation never turns it into PowerShell. Only there does WSL interop
+    start Windows programs; inside, an `.exe` is a `program` refusal
+    ("Windows programs run only outside the sandbox").
+  - A dry run leaves the Windows drives visible read-only; enforcing hides
+    them except the work dir and write roots.
 - The Job Object (`restricted_windows.go`, `newJobObjectBackend`) is kept
   as a resource-limit primitive — memory, active-process and per-process
   CPU caps from `Limits`, plus kill-on-close. The native token/ACE/WFP
@@ -1299,9 +1309,10 @@ with `TENANT_SANDBOX_LIVE=1`.
 - `cmd/tenant/sandboxctl.go` holds `tenant sandbox probe|selftest|run`.
 
 **Invariants:**
-- The built-in default never blocks a command: a dry run re-runs what
-  it refuses on the host, and where `restricted` can't dry-run, the
-  default is `host`, with the reason in probe, audit and doctor.
+- The built-in default never blocks a command it recognises as
+  refused: a dry run re-runs it outside the sandbox, in the same
+  language, and where `restricted` can't dry-run, the default is `host`,
+  with the reason in probe, audit and doctor.
 - An enforcing profile's unavailable backend fails closed: the command
   is not run. A dry-run profile's runs on the host (`sandbox/2005`).
 - No agent tool reads or writes a profile.
