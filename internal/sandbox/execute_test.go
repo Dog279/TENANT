@@ -158,4 +158,12 @@ func TestBwrapArgs_WorkDirCarveOut(t *testing.T) {
 	if !(bindWork < remask) {
 		t.Fatalf("a deny root inside the work dir must be re-masked AFTER the work bind: %v", a)
 	}
+	// Read-only only once the carve-out has made its mount point inside the mask
+	// (bwrap cannot create it in a read-only tmpfs), and after the re-mask too.
+	if ro := find(true, "--remount-ro", data); ro < bindWork {
+		t.Fatalf("the data dir mask must go read-only AFTER the work bind: %v", a)
+	}
+	if ro := find(true, "--remount-ro", secrets); ro < remask {
+		t.Fatalf("the re-masked deny root must go read-only AFTER its re-mask: %v", a)
+	}
 }

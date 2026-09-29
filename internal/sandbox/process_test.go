@@ -236,10 +236,50 @@ func TestPosixLimitArgv(t *testing.T) {
 	if got := posixLimitArgv(argv, Limits{}); !reflect.DeepEqual(got, argv) {
 		t.Errorf("no caps: %q", got)
 	}
-	got := posixLimitArgv(argv, Limits{MemoryBytes: 256 << 20, CPU: 1500 * time.Millisecond})
+	// MaxPIDs is ignored: outside a user namespace ulimit counts the whole user.
+	got := posixLimitArgv(argv, Limits{MemoryBytes: 256 << 20, CPU: 1500 * time.Millisecond, MaxPIDs: 8})
 	want := []string{"/bin/sh", "-c", `ulimit -v 262144 || exit 125; ulimit -t 2 || exit 125; exec "$@"`, "sh", "server", "--x"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("caps:\n got %q\nwant %q", got, want)
+	}
+	if got := posixLimitArgv(argv, Limits{MaxPIDs: 8}); !reflect.DeepEqual(got, argv) {
+		t.Errorf("a process cap alone must leave argv unchanged: %q", got)
+	}
+}
+
+func TestBwrapLimitArgv(t *testing.T) {
+	argv := []string{"sh", "-c", "make"}
+	if got := bwrapLimitArgv(argv, Limits{Wall: time.Minute, MaxOutputBytes: 10}); !reflect.DeepEqual(got, argv) {
+		t.Errorf("no rlimit caps: %q", got)
+	}
+	got := bwrapLimitArgv(argv, Limits{MemoryBytes: 1 << 30, CPU: 30 * time.Second, MaxPIDs: 64})
+	want := []string{"/bin/sh", "-c",
+		`ulimit -v 1048576 || exit 125; ulimit -t 30 || exit 125; ulimit -u 64 2>/dev/null || ulimit -p 64 || exit 125; exec "$@"`,
+		"sh", "sh", "-c", "make"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("caps:\n got %q\nwant %q", got, want)
+	}
+}
+
+// Capping output as it arrives must give exactly what clipping it whole gave.
+func TestHeadBufferMatchesClip(t *testing.T) {
+	full := strings.Repeat("0123456789", 7) // 70 bytes
+	for _, limit := range []int{0, 1, 9, 10, 69, 70, 71, 500} {
+		for _, chunk := range []int{1, 3, 10, 70} {
+			h := &headBuffer{max: limit}
+			for i := 0; i < len(full); i += chunk {
+				n, _ := h.Write([]byte(full[i:min(i+chunk, len(full))]))
+				if n != min(chunk, len(full)-i) {
+					t.Fatalf("Write must report the whole chunk consumed (the pipe keeps draining), got %d", n)
+				}
+			}
+			if got, want := h.String(), clip(full, limit); got != want {
+				t.Errorf("max=%d chunk=%d: %q, want %q", limit, chunk, got, want)
+			}
+			if limit > 0 && len(h.b) > limit+1 {
+				t.Errorf("max=%d: kept %d bytes", limit, len(h.b))
+			}
+		}
 	}
 }
 
@@ -267,4 +307,20 @@ func TestStartLimitsNamesWhatIsCapped(t *testing.T) {
 	} else if _, err := For("jobobject"); err == nil {
 		t.Error("jobobject resolved off Windows")
 	}
+	// A restricted backend by name, whether or not this host has one.
+	want := []string{"memory", "cpu"}
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		want = append(want, "processes") // bubblewrap: counted per sandbox
+	}
+	if got := StartLimits(&named{name: "restricted"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("restricted caps %v, want %v", got, want)
+	}
 }
+
+// named is the fake backend under another name, for StartLimits.
+type named struct {
+	fakeBackend
+	name string
+}
+
+func (n *named) Name() string { return n.name }

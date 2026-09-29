@@ -30,19 +30,21 @@ type statFunc func(string) (os.FileInfo, error)
 // Order matters: bubblewrap applies filesystem operations left-to-right and a
 // later op wins over an earlier one for overlapping paths. The layout is:
 //
-//  1. Isolation flags — --die-with-parent, --new-session and namespace
-//     unshares; --unshare-net is added iff the policy forbids the network.
+//  1. Isolation flags — --die-with-parent, --new-session, --cap-drop ALL and
+//     namespace unshares; --unshare-net is added iff the policy forbids the network.
 //  2. Read layer — with empty ReadRoots, --ro-bind / / makes the whole host
-//     readable; with ReadRoots set, only linuxSystemReadRoots plus the read
-//     roots are bound (an allowlist). Then a minimal --dev/--proc and an
-//     ephemeral --tmpfs /tmp.
-//  3. Write layer — a read-write --bind for WorkDir and each WriteRoot.
-//  4. Deny layer — a --tmpfs mask per DenyRoot, applied LAST so a deny always
-//     wins over a read/write bind (Policy: DenyRoots is checked first and wins).
-//  5. --chdir WorkDir, then the "--" separator and the command.
+//     readable but /run; with ReadRoots set, only linuxSystemReadRoots plus the
+//     read roots are bound (an allowlist). A shared network gets the resolver
+//     files back. Then a minimal --dev/--proc and an ephemeral --tmpfs /tmp.
+//  3. Write layer — a read-write --bind for each WriteRoot.
+//  4. Deny layer — a mask per DenyRoot, after the grants so a deny always wins
+//     over a read/write bind (Policy: DenyRoots is checked first and wins).
+//  5. WorkDir carve-out, then every tmpfs layer but /tmp is remounted read-only.
+//  6. --chdir WorkDir, then the "--" separator and the command.
 //
 // A host-filtered network allowlist is not implemented: NetAllowlist fails
-// closed (the network is unshared). TODO(TEN-346): Landlock, rlimits.
+// closed (the network is unshared). Resource caps are not bubblewrap's job:
+// bwrapLimitArgv wraps the command before it gets here.
 func bwrapArgs(pol Policy, shell string, args []string) []string {
 	return bwrapArgsOpts(pol, bwrapOpts{stat: os.Stat}, shell, args)
 }
@@ -70,11 +72,15 @@ func bwrapArgsOpts(pol Policy, opts bwrapOpts, shell string, args []string) []st
 	a = append(a,
 		"--die-with-parent", // tear the sandbox down if Tenant exits
 		"--new-session",     // detach the controlling TTY (blocks TIOCSTI injection)
-		"--unshare-pid",     // fresh PID namespace
-		"--unshare-ipc",     // fresh SysV IPC namespace
-		"--unshare-uts",     // fresh UTS (hostname) namespace
+		// Unprivileged bwrap drops every capability anyway; run as root it keeps
+		// them all, and the command could unmount a deny mask to read under it.
+		"--cap-drop", "ALL",
+		"--unshare-pid", // fresh PID namespace: what the command leaves running dies with it
+		"--unshare-ipc", // fresh SysV IPC namespace
+		"--unshare-uts", // fresh UTS (hostname) namespace
 	)
-	if pol.Network == NetNone || pol.Network == NetAllowlist {
+	netCut := pol.Network == NetNone || pol.Network == NetAllowlist
+	if netCut {
 		// NetAllowlist has no bubblewrap-native mechanism and nothing else enforces
 		// it yet, so it fails CLOSED: no network rather than all of it. NetInherit
 		// and NetFull share the host network.
@@ -82,16 +88,24 @@ func bwrapArgsOpts(pol Policy, opts bwrapOpts, shell string, args []string) []st
 	}
 
 	// 2. Read layer. Empty ReadRoots (Policy: whole host readable): the host root
-	// read-only. Non-empty ReadRoots are an ALLOWLIST: only the system directories
-	// a shell and its tools need plus the read roots are bound, so everything else
-	// (a home dir, another project) does not exist inside the sandbox.
+	// read-only, but for /run. The host's daemons listen there (the D-Bus and
+	// systemd buses, through which systemd-run starts a process outside any
+	// sandbox; container runtimes; WSL interop), and a unix socket stays
+	// connectable through a read-only mount and across network namespaces.
+	// Non-empty ReadRoots are an ALLOWLIST: only the system directories a shell
+	// and its tools need plus the read roots are bound, so everything else (a
+	// home dir, another project) does not exist inside the sandbox.
 	// --ro-bind-try skips a source this distribution does not have.
+	var ro []string // tmpfs layers, remounted read-only at the end of step 5
 	if len(pol.ReadRoots) == 0 {
-		a = append(a, "--ro-bind", "/", "/")
+		a = append(a, "--ro-bind", "/", "/", "--tmpfs", "/run")
+		ro = append(ro, "/run")
 		for _, h := range opts.hide {
 			a = append(a, "--tmpfs", h)
+			ro = append(ro, h)
 		}
 	} else {
+		ro = append(ro, "/") // bwrap's own root, a tmpfs holding the binds' mount points
 		for _, p := range linuxSystemReadRoots {
 			a = append(a, "--ro-bind-try", p, p)
 		}
@@ -99,6 +113,13 @@ func bwrapArgsOpts(pol Policy, opts bwrapOpts, shell string, args []string) []st
 			if r != "" {
 				a = append(a, "--ro-bind-try", r, r)
 			}
+		}
+	}
+	if !netCut {
+		// DNS: /etc/resolv.conf often links into /run. The files only, never the
+		// resolver's sockets beside them.
+		for _, f := range linuxResolvConfs {
+			a = append(a, "--ro-bind-try", f, f)
 		}
 	}
 	a = append(a,
@@ -116,10 +137,14 @@ func bwrapArgsOpts(pol Policy, opts bwrapOpts, shell string, args []string) []st
 	}
 
 	// 4. Deny layer after the grants so it overrides any read/write bind above. A
-	// tmpfs mask makes the host path an empty, ephemeral dir: its real contents
-	// are neither readable nor (persistently) writable.
+	// tmpfs mask makes the host path an empty dir: its real contents are neither
+	// readable nor writable.
 	for _, dr := range pol.DenyRoots {
-		a = append(a, bwrapMask(dr, stat)...)
+		m := bwrapMask(dr, stat)
+		if len(m) > 0 && m[0] == "--tmpfs" {
+			ro = append(ro, dr)
+		}
+		a = append(a, m...)
 	}
 
 	// 5. WorkDir carve-out (Policy precedence rule 3): bound AFTER the deny masks,
@@ -134,6 +159,14 @@ func bwrapArgsOpts(pol Policy, opts bwrapOpts, shell string, args []string) []st
 				a = append(a, bwrapMask(dr, stat)...)
 			}
 		}
+	}
+	// Every tmpfs layer but /tmp goes read-only only now, once each bind has made
+	// its mount point in one (bwrap cannot in a read-only one). A write outside
+	// the grants, a deny root included, then fails (EROFS, attributed as a
+	// refusal) instead of landing in a throwaway layer. Each bind is a mount of
+	// its own and stays as it was.
+	for _, p := range ro {
+		a = append(a, "--remount-ro", p)
 	}
 
 	// 6. cwd inside the sandbox, then the command.
@@ -192,8 +225,9 @@ func jobLimitsFrom(l Limits) jobLimits {
 	return jl
 }
 
-// bwrapMask hides one deny root from the sandbox. A directory gets an empty tmpfs;
-// a file gets /dev/null bound over it (tmpfs cannot mount on a file). A path that
+// bwrapMask hides one deny root from the sandbox. A directory gets an empty tmpfs
+// (remounted read-only once the carve-out is in); a file gets /dev/null bound
+// over it (tmpfs cannot mount on a file), so a write to it is discarded. A path that
 // does not exist is skipped: there is nothing to hide, writes are allow-only
 // anyway, and bwrap cannot create the mount point under the read-only root, so
 // masking it would fail the whole run (the credential-store deny list is mostly
@@ -216,7 +250,40 @@ func bwrapMask(path string, stat statFunc) []string {
 // linuxSystemReadRoots are what /bin/sh and common tools need to run when
 // ReadRoots is an allowlist. /etc is included for the loader cache, passwd and
 // TLS roots (its secrets, /etc/shadow, are root-only anyway).
-var linuxSystemReadRoots = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/run/systemd/resolve"}
+var linuxSystemReadRoots = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc"}
+
+// linuxResolvConfs are where /etc/resolv.conf links when the resolver lives in
+// /run (systemd-resolved, resolvconf, NetworkManager). They are bound back,
+// as files, only when the sandbox shares the host network: with it cut they
+// are useless, and systemd-resolved's socket beside them would still resolve
+// names for the sandbox, a DNS channel out.
+var linuxResolvConfs = []string{
+	"/run/systemd/resolve/stub-resolv.conf",
+	"/run/systemd/resolve/resolv.conf",
+	"/run/resolvconf/resolv.conf",
+	"/run/NetworkManager/resolv.conf",
+	"/run/NetworkManager/no-stub-resolv.conf",
+}
+
+// usernsHint names the host setting that stops an unprivileged bubblewrap
+// creating its user namespace, read through read (os.ReadFile), for the error
+// a failed self-check reports. "" when none of them is set.
+func usernsHint(read func(string) ([]byte, error)) string {
+	for _, s := range []struct{ file, val, say string }{
+		{"/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "1",
+			"AppArmor restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1, " +
+				"the Ubuntu 23.10+ default): give bwrap an AppArmor profile that allows userns, or set it to 0"},
+		{"/proc/sys/kernel/unprivileged_userns_clone", "0",
+			"unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone=0)"},
+		{"/proc/sys/user/max_user_namespaces", "0",
+			"user namespaces are disabled (user.max_user_namespaces=0)"},
+	} {
+		if b, err := read(s.file); err == nil && strings.TrimSpace(string(b)) == s.val {
+			return s.say
+		}
+	}
+	return ""
+}
 
 // attributeBwrapDenial makes a best-effort Violation from a failed bwrap run, so
 // refusals escalate (and dry-run works) on Linux as they do on macOS. A write
