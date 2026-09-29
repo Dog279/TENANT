@@ -363,17 +363,38 @@ func TestNoChainKeyIsNotAWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each commit's security records, in order: a retried commit carries its
+	// record again. (Timing it instead failed on a slow runner: four real
+	// commits took longer than the first retry's wait.)
+	commit := commitBatch
+	t.Cleanup(func() { commitBatch = commit })
+	var mu sync.Mutex
+	var tried []string
+	commitBatch = func(st *store.Store, ctx context.Context, b []event.Event) error {
+		mu.Lock()
+		for _, e := range b {
+			if e.Log == store.SecurityLog {
+				tried = append(tried, e.Msg)
+			}
+		}
+		mu.Unlock()
+		return commit(st, ctx, b)
+	}
 	h.AttachStore(st)
 	ctx := context.Background()
-	start := time.Now()
-	for range failLimit + 1 {
-		audit := event.Event{Log: store.SecurityLog, Provider: "security", Level: event.Info, Msg: "audit"}
+	var want []string
+	for i := range failLimit + 1 {
+		audit := event.Event{Log: store.SecurityLog, Provider: "security", Level: event.Info, Msg: "audit " + strconv.Itoa(i)}
 		if err := h.pipe.Load().audit(ctx, &audit); !errors.Is(err, store.ErrNoChainKey) {
 			t.Fatalf("audit = %v, want ErrNoChainKey", err)
 		}
+		want = append(want, audit.Msg)
 	}
-	if d := time.Since(start); d > retryFirst {
-		t.Errorf("the refused records took %v: they were retried", d)
+	mu.Lock()
+	got := slices.Clone(tried)
+	mu.Unlock()
+	if !slices.Equal(got, want) {
+		t.Errorf("the refused records were committed as %q, want each once: %q", got, want)
 	}
 	time.Sleep(3 * batchEvery)
 	if h.Degraded() != "" || strings.Contains(readLogs(t, filepath.Join(root, "logbook")), "could not commit") {
