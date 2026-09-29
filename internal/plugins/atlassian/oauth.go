@@ -240,6 +240,12 @@ func awaitCallbackCode(ctx context.Context, addr, state, authURL string, open fu
 	if err != nil {
 		return "", fmt.Errorf("atlassian: bind callback %s: %w", addr, err)
 	}
+	return awaitCallbackOn(ctx, ln, state, authURL, open)
+}
+
+// awaitCallbackOn serves the callback on ln, already listening, until the
+// sign-in's answer arrives or ctx ends. It owns ln and closes it.
+func awaitCallbackOn(ctx context.Context, ln net.Listener, state, authURL string, open func(string) error) (string, error) {
 	type result struct {
 		code string
 		err  error
@@ -280,12 +286,18 @@ func awaitCallbackCode(ctx context.Context, addr, state, authURL string, open fu
 	srv := &http.Server{Handler: mux}
 	httplimits.Configure(srv)
 	go srv.Serve(ln)
-	defer srv.Close()
+	// Shut down, don't Close: the handler that took the answer may still be
+	// sending the operator's browser its page, and Close would cut it off.
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
 
 	// The opener shows the operator the URL where they will see it (the TUI
 	// feed, the terminal) and opens the browser. Without one, or when it
 	// fails, the URL goes to the log instead.
-	slog.Default().Info("atlassian: waiting for the sign-in callback", "source", "plugin.atlassian", "callback", "http://"+addr+"/callback")
+	slog.Default().Info("atlassian: waiting for the sign-in callback", "source", "plugin.atlassian", "callback", "http://"+ln.Addr().String()+"/callback")
 	if open == nil || open(authURL) != nil {
 		SignInURL.Log(ctx, "url", authURL)
 	}
