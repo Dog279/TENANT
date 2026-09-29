@@ -1228,18 +1228,25 @@ boundary. Operator guide and change record:
     processes outside the sandbox.
 - `restricted`, Linux (`restricted_linux.go`; the argv is built by the
   pure `bwrapArgs` in `spec.go`): bubblewrap. Needs `bwrap` on `PATH`.
-  - Whole-host `--ro-bind` when `ReadRoots` is empty; otherwise an
-    allowlist of system dirs plus the read roots (`--ro-bind-try`). A
-    private `/tmp`.
+  - Whole-host `--ro-bind` with `/run` hidden when `ReadRoots` is empty;
+    otherwise an allowlist of system dirs plus the read roots
+    (`--ro-bind-try`). A private `/tmp`.
   - rw binds for `WriteRoots`, then stat-aware deny masks (directory →
     tmpfs, file → `/dev/null`, absent → skipped), then the `WorkDir`
-    bind, with deny roots inside it masked again.
-  - Fresh pid/ipc/uts namespaces, `--unshare-net` for `none`,
-    `--die-with-parent`, `--new-session`.
+    bind, with deny roots inside it masked again; then every tmpfs layer
+    but `/tmp` is remounted read-only.
+  - `--cap-drop ALL`, fresh pid/ipc/uts namespaces, `--unshare-net` for
+    `none`, `--die-with-parent`, `--new-session`.
+  - Caps: `bwrapLimitArgv` sets memory, CPU and process rlimits in the
+    sandbox's own shell (processes counted per sandbox user namespace);
+    Run caps output as it arrives.
+  - Availability: a self-check run on first use; a missing `bwrap` or
+    restricted user namespaces make `restricted` unavailable, with the
+    reason.
   - Refusals are attributed from the output (`attributeBwrapDenial`):
     read-only-filesystem writes and, with the network disabled,
     unreachable/unresolvable connects. Reads of a masked root look like
-    ENOENT and are not attributed. No rlimits; Landlock is TODO(TEN-346).
+    ENOENT and are not attributed. No Landlock (decision 2026-09-29).
 - `restricted`, Windows (`wsl_windows.go`): the command runs inside a
   WSL2 distro under bubblewrap, so it gets the same filesystem/network
   confinement as Linux. Windows paths in a policy are translated to their
@@ -1252,9 +1259,9 @@ boundary. Operator guide and change record:
     default, not a strict allowlist yet (`probe` reports both `partial`).
 - The Job Object (`restricted_windows.go`, `newJobObjectBackend`) is kept
   as a resource-limit primitive — memory, active-process and per-process
-  CPU caps from `Limits`, plus kill-on-close — and is the base the native
-  token/ACE/WFP path (TODO(TEN-346)) will build on. It is not the
-  registered `restricted` backend.
+  CPU caps from `Limits`, plus kill-on-close. The native token/ACE/WFP
+  path once planned on it is retired: WSL2 bubblewrap replaces it
+  (decision 2026-09-29). It is not the registered `restricted` backend.
 
 **Escape suite:** `escapecore` is a testing-free case table: read a
 secret outside the roots, write outside the roots, a `..` escape, and
@@ -1263,6 +1270,8 @@ backs both `escapetest.Harness` (`go test`) and `tenant sandbox
 selftest`. `redteam_darwin_test.go` adds the macOS adversarial cases:
 hard/symlinks, rename, Mach/XPC, signals, nested `sandbox-exec`,
 persistence, deny-root metadata and background processes.
+`redteam_linux_test.go` adds the Linux ones (plan cases 1–8), live in CI
+with `TENANT_SANDBOX_LIVE=1`.
 
 **Wiring (`cmd/tenant/execprofiles.go`):**
 - The exec surfaces (`local`, `discord`, `imessage`, `cron-exec`,
@@ -1293,12 +1302,13 @@ persistence, deny-root metadata and background processes.
 **Verified:** green on macOS, Linux and Windows. Seatbelt is live-tested:
 the escape suite contains 4/4 (host 0/4), and the red-team suite is
 contained, with one recorded skip (macOS has no PID or memory cap). Linux
-bubblewrap is live-tested under WSL2 (`selftest` 4/4). Windows
+bubblewrap is live-tested (`selftest` 4/4) and its red-team suite runs
+in CI. Windows
 `restricted` runs through WSL2 bubblewrap and is live-tested (secret read,
 write-outside and network containment); the Job Object limits primitive
 has its own live tests. **Status:** the seam, `host`, Seatbelt, Linux
 bubblewrap and the Windows WSL backend are complete; native Windows
-confinement (token/ACE/WFP) remains TODO(TEN-346).
+confinement (token/ACE/WFP) is retired in favour of WSL2 bubblewrap.
 
 ### 5.13a `internal/backup` + `internal/datalock` — Backup, verify, restore
 

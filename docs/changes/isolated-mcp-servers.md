@@ -45,7 +45,8 @@ here. Not yet deployed.
 
   Caps:
   - Bubblewrap, Seatbelt and WSL set memory and CPU with `ulimit` in the sandbox before the
-    server runs. A cap that cannot be set fails the start.
+    server runs; bubblewrap on Linux also caps processes (docs/changes/linux-sandbox.md). A cap
+    that cannot be set fails the start.
   - The Job Object caps memory, CPU and processes.
   - `StartLimits` names which caps a backend applies.
 
@@ -107,9 +108,9 @@ policy.
 ## Still open
 - **Backends:** no container backend, and no backend enforces a network allowlist (a
   server's network is `none` or `full`).
-- **Caps (TEN-346):** process caps on bubblewrap, Seatbelt and WSL.
-- **Native Windows confinement (TEN-346):** `jobobject` caps resources but confines no
-  filesystem or network.
+- **Caps (TEN-346):** process caps on Seatbelt and WSL (bubblewrap on Linux has them).
+- **`jobobject`** caps resources but confines no filesystem or network. The native Windows
+  confinement once planned for it is retired: `restricted` is WSL2 bubblewrap.
 - **The environment under WSL** also carries the distro's login environment (`PATH`,
   `HOME`, …).
 - **Lifetime:** a server lives as long as the command that started it. Each command that

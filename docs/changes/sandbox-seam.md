@@ -23,7 +23,7 @@ stays in front as a fast fail-early check. It is not the boundary.
     and timeout text, compared side by side in tests), and cron shell jobs keep `cmd /C` on
     Windows, the scrubbed environment, the 4000-byte output cap and their error text.
   - `restricted`: OS primitives, no external runtime. Seatbelt (`sandbox-exec`) on macOS,
-    bubblewrap on Linux, a Job Object on Windows. How much each one enforces differs a lot; see
+    bubblewrap on Linux, bubblewrap inside WSL2 on Windows. How much each one enforces differs a lot; see
     [Enforcement by OS](#enforcement-by-os).
   - `container`: reserved for TEN-318. A profile that names it is rejected at load.
 - **Policy.** Work dir, read / write / deny roots, network (`inherit` | `none` | `allowlist` |
@@ -328,19 +328,19 @@ every entry that should be confined.
 
 | | macOS: Seatbelt | Linux: bubblewrap | Windows: WSL2 bubblewrap |
 |---|---|---|---|
-| **State** | Implemented, live-tested, red-teamed | Implemented, live-tested (bubblewrap) and red-teamed under WSL2 | Implemented: `restricted` runs the command inside a WSL2 distro under bubblewrap. Live-tested. The native token/ACE/WFP path is still **TODO(TEN-346)**; the Job Object remains as a limits primitive |
-| **Filesystem** | Read, write and deny roots enforced (deny also hides metadata) | Read, write and deny roots enforced. With `read_roots` set, only the system dirs and those roots are visible; without it, the whole host read-only minus the deny roots. `/tmp` is a private tmpfs | Same bubblewrap enforcement as Linux, inside WSL. Windows paths in a policy are translated to their WSL mount (e.g. `C:\x` → `/mnt/c/x`), so roots may be written as Windows or Linux paths |
+| **State** | Implemented, live-tested, red-teamed | Implemented, live-tested and red-teamed; CI runs the live suite (docs/changes/linux-sandbox.md) | Implemented: `restricted` runs the command inside a WSL2 distro under bubblewrap. Live-tested. The native token/ACE/WFP path is retired (decision 2026-09-29); the Job Object remains as a limits primitive |
+| **Filesystem** | Read, write and deny roots enforced (deny also hides metadata) | Read, write and deny roots enforced. With `read_roots` set, only the system dirs and those roots are visible; without it, the whole host read-only minus the deny roots and `/run`. Only the work dir, write roots and a private `/tmp` are writable; deny roots are hidden and read-only | Same bubblewrap enforcement as Linux, inside WSL. Windows paths in a policy are translated to their WSL mount (e.g. `C:\x` → `/mnt/c/x`), so roots may be written as Windows or Linux paths |
 | **`network: none`** | Enforced: TCP, UDP/DNS, unix sockets, loopback | `--unshare-net` (fresh network namespace) | `--unshare-net`, same as Linux |
-| **Limits** | Wall clock only. The command's process group is reaped after the run. No CPU, memory or PID caps | Wall clock only. Fresh PID namespace, `--die-with-parent`. No CPU, memory or PID caps | Wall clock only through the WSL boundary. The Job Object primitive enforces `memory_mb` / `max_pids` / `cpu_seconds` + kill-on-close, but is not composed with the WSL path yet |
+| **Limits** | Wall clock only. The command's process group is reaped after the run. No CPU, memory or PID caps | Wall clock, output cap, and `memory_mb` / `cpu_seconds` / `max_pids` as rlimits inside the sandbox (processes counted per sandbox). Fresh PID namespace: nothing outlives the command | Wall clock only through the WSL boundary. The Job Object primitive enforces `memory_mb` / `max_pids` / `cpu_seconds` + kill-on-close, but is not composed with the WSL path yet |
 | **Env** | Allowlist. `HOME` and `TMPDIR` point into the work dir when there is one | Allowlist | WSL's default environment, **not** a strict allowlist yet (the wsl.exe boundary does not forward the host env); `probe` reports env `partial` |
 | **`network: allowlist`** | Rejected in `exec_profiles`; the backend fails closed (no network) | Rejected; fails closed (`--unshare-net`) | Rejected; fails closed (`--unshare-net`), same as Linux |
 | **Refusal detection** (escalation, dry-run) | Yes, heuristic: it keys on "Operation not permitted" | **Partial:** writes outside the roots (read-only file system) and network with the network disabled are attributed. A read of a masked deny root looks like a missing file and is not: that command just fails | Same as Linux (shares the bubblewrap attribution): writes and network attributed; a masked-root read is not |
 
 - **macOS:** usable today, within the gaps below.
 - **Linux:** needs `bwrap` on `PATH`. Without it, a `restricted` profile fails closed and the
-  command is not run. If bubblewrap cannot create its namespaces on the host, every command
-  fails, and `selftest` shows it as failed legitimate twins. Until `selftest` passes on your
-  host, treat it as unverified.
+  command is not run. If bubblewrap cannot create its namespaces on the host (user namespaces
+  off, or restricted by AppArmor as on Ubuntu 23.10+), `restricted` is unavailable and `probe`
+  says why. See docs/changes/linux-sandbox.md.
 - **Windows:** `restricted` runs the command inside a WSL2 distro under bubblewrap, so it gets
   the same filesystem/network confinement as Linux. **The confined command runs as Linux `sh`,
   not PowerShell**, and Windows paths are translated to their WSL mount. At startup the backend
@@ -400,10 +400,10 @@ every entry that should be confined.
   - Refusal detection keys on the "Operation not permitted" text. A command that discards its
     stderr fails with no refusal recorded (no prompt, no dry-run re-run), and one that prints
     that text for another reason is treated as refused.
-- **Linux:** no Landlock layer under bubblewrap, and no rlimits or cgroups (TODO(TEN-346)).
-  Refusals of reads inside a masked deny root are not attributed (see the table).
-- **Windows:** see [Enforcement by OS](#enforcement-by-os). The restricted backend enforces
-  resource limits only.
+- **Linux:** no Landlock layer under bubblewrap (decision 2026-09-29), and no cgroups: the caps
+  are rlimits. A unix socket the sandbox can see stays connectable. Refusals of reads inside a
+  masked deny root are not attributed (see the table). More in docs/changes/linux-sandbox.md.
+- **Windows:** see [Enforcement by OS](#enforcement-by-os).
 - **Container backend:** not implemented. `"backend": "container"` is rejected at load.
   TEN-318 runs third-party stdio MCP servers out of process under the backends above
   (docs/changes/isolated-mcp-servers.md).
