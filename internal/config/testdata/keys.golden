@@ -203,6 +203,7 @@ config.json: vllm_model
 config.json: vllm_tool_format
 credentials.json: secrets
 settings.json: announced_categories
+settings.json: exec_exceptions
 settings.json: exec_profiles
 settings.json: exec_profiles.*.allow
 settings.json: exec_profiles.*.backend

@@ -230,7 +230,9 @@ type Policy struct {
 	// Enforce selects what Execute does when the boundary refuses something:
 	// true asks the Escalator (attended surface: a person; unattended: deny);
 	// false is dry-run, which re-runs on the host and reports the refusal.
-	// Backends always enforce; this flag is consumed by Execute, not Backend.Run.
+	// Backends always enforce; this flag is consumed by Execute, not Backend.Run,
+	// except that the macOS backend points HOME and TMPDIR into the work dir only
+	// when enforcing, so a dry run sees the command's real paths.
 	Enforce bool
 }
 

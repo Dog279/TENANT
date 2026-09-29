@@ -36,11 +36,21 @@ var WouldRefuse = Events.Event(2002, event.Warning, "Refusal", "Dry run: the san
 var Escalated = Events.Event(2003, event.Warning, "Refusal", "A command the sandbox refused was approved to run outside it: {violations}", "surface", "backend", "command", "exit", "violations").
 	Doc("The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again on the host, unconfined. The approval itself is in the Security log.",
 		"The command needed an access outside the profile, and the operator allowed it once.",
-		"If the same escalation keeps being approved, widen the surface's exec_profiles entry instead, so the access stays confined to what it needs.")
+		"If the same escalation keeps being approved, approve it \"always\": that saves the refused folder as an exception for the surface (exec_exceptions), so the access stays confined to what it needs.")
+
+var ExceptionSaved = Events.Event(2004, event.Warning, "Exception", "Sandbox exception saved: {surface} commands may write under {path}", "surface", "path").
+	Doc("The operator approved a sandbox escalation \"always\", and the folder the sandbox refused was saved in exec_exceptions in the agent's settings file: the surface's sandboxed commands may write there from now on, without asking. The approval itself is in the Security log.",
+		"Always, on an os_exec_unsandboxed prompt whose refusal named a folder outside Tenant's own dirs, the credential stores and the home folder itself.",
+		"None if it was meant. To take it back, delete the path from exec_exceptions in settings.<agent>.json; `tenant permissions effective` lists them.")
+
+var DryRunOnHost = Events.Event(2005, event.Warning, "Backend", "The {surface} exec profile's backend {backend} is unavailable; it is in dry run, so the command ran on the host: {err}", "surface", "backend", "err").
+	Doc("A dry-run profile (\"enforce\": false) names a sandbox backend that does not work here. A dry run never blocks a command, so it ran on the host, unconfined, and nothing about it was observed.",
+		"The profile names a backend this OS or build lacks (restricted without bubblewrap or WSL), or its launcher is missing.",
+		"Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles. With enforce on, the same profile runs nothing.")
 
 // Errors.
 
 var BackendUnavailable = Events.Event(3001, event.Error, "Backend", "The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}", "surface", "backend", "err").
-	Doc("A command was not run because the sandbox backend its profile names does not work here. The sandbox fails closed: it never falls back to the host.",
+	Doc("A command was not run because the sandbox backend its profile names does not work here. An enforcing profile fails closed: it never falls back to the host.",
 		"The profile names a backend this OS or build lacks (jobobject off Windows, restricted without bubblewrap or WSL), or its launcher is missing.",
 		"Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles.")

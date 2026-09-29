@@ -42,21 +42,30 @@ type Settings struct {
 	// There is deliberately no agent tool that writes it, and the file tools
 	// refuse this file.
 	ExecProfiles map[string]ExecProfile `json:"exec_profiles,omitempty"`
+	// ExecExceptions are folders a surface's sandboxed commands may write to,
+	// keyed by surface: added to its write roots whichever profile it runs
+	// under. Approving a sandbox escalation "always" adds the refused folder;
+	// the operator removes one by deleting it. Like exec_profiles, no agent
+	// tool writes it and the running hub re-reads it.
+	ExecExceptions map[string][]string `json:"exec_exceptions,omitempty"`
 }
 
 // ExecProfile is one operator override under "exec_profiles", keyed by a
 // surface or "default" (every surface without its own entry). Unset fields keep
-// the built-in default. deny_roots ADD to the built-in deny set; nothing can
-// remove Tenant's own dirs from it.
+// the built-in profile: the restricted backend in dry run (network none for
+// cron-shell), or the host where restricted can't dry-run. An entry that names
+// a backend keeps the older defaults instead: enforce on, network inherit.
+// deny_roots ADD to the built-in deny set; nothing can remove Tenant's own dirs
+// from it.
 type ExecProfile struct {
 	Backend    string            `json:"backend,omitempty"`     // host | restricted
-	Enforce    *bool             `json:"enforce,omitempty"`     // default true; false = dry-run
+	Enforce    *bool             `json:"enforce,omitempty"`     // false = dry-run; unset: see above
 	Network    string            `json:"network,omitempty"`     // inherit | none | full (allowlist: rejected until enforced)
 	Allow      []string          `json:"allow,omitempty"`       // reserved for a future enforced allowlist; rejected today
 	ReadRoots  []string          `json:"read_roots,omitempty"`  // empty = whole host readable (deny roots still mask)
 	WriteRoots []string          `json:"write_roots,omitempty"` // writable, in addition to the work dir
 	DenyRoots  []string          `json:"deny_roots,omitempty"`  // added to the built-in deny set
-	EnvPass    []string          `json:"env_pass,omitempty"`    // env allowlist: variable names to forward
+	EnvPass    []string          `json:"env_pass,omitempty"`    // env: names to forward beyond the safe base set
 	EnvSet     map[string]string `json:"env_set,omitempty"`     // env: fixed values
 	CPUSeconds int               `json:"cpu_seconds,omitempty"`
 	MemoryMB   int               `json:"memory_mb,omitempty"`
