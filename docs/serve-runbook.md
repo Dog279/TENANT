@@ -20,7 +20,7 @@ tenant serve --self-improve=false # disable background distill/consolidate/profi
 | Web dashboard | **on** | the only control surface — chat, tools, approvals, models, memory |
 | Headless approval drain | on | gated "ask" actions wait on the dashboard's Approvals & safety page and at `/api/approvals` (no TUI to prompt) |
 | Self-improvement scheduler | on | distill / skill-induction / consolidate / profile; `--self-improve=false` to disable |
-| Cron jobs | on | recurring agent prompts; honors `cron.allow_exec` + timezone |
+| Cron jobs | on | recurring agent prompts; honors `cron.allow_exec`, timezone, and a job's `egress_allow` (the tools it may send sensitive data to: [change record](changes/cron-egress-allow.md)) |
 | Federation peer listener | if `peer.listen` set | paired peers reach this instance |
 | Discord relay | if a token is configured **and** `relay.enabled` | drive the hub from your phone |
 | Nightly eval / soul-nudge | config-gated, off by default | `improve.eval_every` / `improve.soul_nudge_every` |

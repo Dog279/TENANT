@@ -1050,8 +1050,16 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 					// at dispatch, whether it may run.
 					detail := fmt.Sprintf("%s arguments contain %s data from %s. This check is separate from %s's own permission: it asks whether that data may leave, not whether the tool may run.",
 						call.Name, label.Sensitivity, label.Provenance, call.Name)
-					approved := a.cfg.ConfirmSensitiveEgress != nil &&
-						a.cfg.ConfirmSensitiveEgress(ctx, "sensitive_egress", detail)
+					var approved bool
+					if pattern, ok := egressPreapproved(ctx, call.Name); ok {
+						// Approved ahead of time by the job running this turn.
+						approved = true
+						EgressPreapproved.Log(ctx, "agent", a.cfg.AgentID, "tool", call.Name, "pattern", pattern,
+							"sensitivity", label.Sensitivity, "provenance", label.Provenance)
+					} else {
+						approved = a.cfg.ConfirmSensitiveEgress != nil &&
+							a.cfg.ConfirmSensitiveEgress(ctx, "sensitive_egress", detail)
+					}
 					if !approved {
 						a.feedToolResult(ctx, ToolCallResult{
 							Call: call, IsError: true,

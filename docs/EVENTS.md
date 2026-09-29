@@ -5897,6 +5897,7 @@ Writes the `turns` log.
 | [3101](#turns-3101) | error | Tool call | `Tool {tool} failed after {duration}` |
 | [3102](#turns-3102) | error | Routing | `Route {hook} panicked; {fallback}` |
 | [3103](#turns-3103) | critical | Tool call | `Tool {tool} panicked: {panic}` |
+| [4001](#turns-4001) | warning | Egress | `{tool} sent {sensitivity} data from {provenance} without asking, under its job's egress_allow ({pattern})` |
 | [9001](#turns-9001) | info | Tool call | `tool call {tool}` |
 | [9002](#turns-9002) | info | Tool call | `tool result {tool}` |
 | [9003](#turns-9003) | error | Tool call | `tool result {tool} failed` |
@@ -6250,6 +6251,20 @@ Writes the `turns` log.
 **Why it happens.** A bug in the tool or its plugin.
 
 **What to do.** Report it with the stack, and disable the tool (/disable) if it keeps happening.
+
+### turns 4001
+
+`{tool} sent {sensitivity} data from {provenance} without asking, under its job's egress_allow ({pattern})`
+
+- **Level:** warning · **Channel:** operational · **Task:** Egress · **Log:** turns
+- **Fields:** `agent`, `tool`, `pattern`, `sensitivity`, `provenance`
+- **Find it:** `provider:turns id:4001`
+
+**What it means.** An outbound tool call carried sensitive data out of Tenant without an approval prompt, because the scheduled job running the turn lists the tool in its egress_allow.
+
+**Why it happens.** The operator set egress_allow on the cron job in config.json: the job exists to move this data, like a ticket note written from an email or a command copied from a runbook.
+
+**What to do.** None when the job is meant to do this. If not, remove the tool from the job's egress_allow in config.json and restart Tenant.
 
 ### turns 9001
 

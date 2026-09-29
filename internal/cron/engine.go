@@ -43,6 +43,9 @@ type JobDef struct {
 	Kind    string `json:"kind,omitempty"` // "" / "prompt" | "shell"
 	Exec    bool   `json:"exec,omitempty"` // prompt jobs: run with the exec (dangerous) tool surface
 	TZ      string `json:"tz,omitempty"`   // IANA zone (e.g. "America/Los_Angeles"); "" = engine default
+	// EgressAllow: prompt jobs, tool-name globs whose sensitive egress the
+	// operator approved ahead of time (config.json only; Add never sets it).
+	EgressAllow []string `json:"egress_allow,omitempty"`
 }
 
 // KindOf returns the effective kind ("" => prompt).

@@ -21,6 +21,7 @@ config.json: cron
 config.json: cron.allow_exec
 config.json: cron.catchup
 config.json: cron.jobs
+config.json: cron.jobs[].egress_allow
 config.json: cron.jobs[].enabled
 config.json: cron.jobs[].exec
 config.json: cron.jobs[].id
