@@ -10,10 +10,10 @@
 //     honestly; still honours work dir, env allowlist, wall-timeout,
 //     output cap).
 //   - restricted OS primitives, no external runtime: macOS Seatbelt, Linux
-//     bubblewrap/Landlock, Windows dedicated account + ACE/WFP/Job
-//     Object. Registered per-OS via registerRestricted in a
-//     build-tagged file, so this package compiles and runs with only
-//     the host backend on any platform.
+//     bubblewrap, Windows bubblewrap inside a WSL2 distro. Registered
+//     per-OS via registerRestricted in a build-tagged file, so this
+//     package compiles and runs with only the host backend on any
+//     platform.
 //   - container  an ephemeral container per run (not implemented; third-party
 //     MCP servers run out of process under the backends above, TEN-318).
 //

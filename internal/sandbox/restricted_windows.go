@@ -18,17 +18,12 @@ import (
 
 // The registered Windows restricted backend is the WSL-bubblewrap backend in
 // wsl_windows.go (all restricted → WSL). The Job Object backend below is kept as
-// a resource-limit primitive: it enforces job memory / CPU-time / active-process
-// caps and kill-on-close, which bubblewrap-through-WSL does not, and it is the
-// foundation the native-Windows confinement path (TEN-346) will build on. It is
-// exercised directly by tests, not resolved by `restricted`.
-
-// errNotImplemented marks a Windows confinement primitive that is scaffolded but
-// not yet built out. Run tolerates it (the Job Object limits still apply) and
-// Probe reports the matching dimension as un-/partly-enforced, so the security
-// audit never overstates the boundary. A Windows engineer completes these under
-// TEN-346.
-var errNotImplemented = errors.New("sandbox: windows restricted primitive not implemented (TODO TEN-346)")
+// a resource-limit primitive, resolved as "jobobject": it enforces job memory /
+// CPU-time / active-process caps and kill-on-close, which bubblewrap-through-WSL
+// does not, and confines no filesystem root or network. The native confinement
+// path once planned on top of it (a dedicated sandbox account, NTFS ACEs, a WFP
+// egress filter) is retired: WSL2 + bubblewrap replaces it (owner decision
+// 2026-09-29, docs/plans/sandboxing-plan.md).
 
 // Compile-time proof that the pure JOB_OBJECT_LIMIT_* values in spec.go still
 // equal golang.org/x/sys/windows' own. If x/sys ever renumbered one, the XOR is
@@ -42,17 +37,12 @@ const (
 	_ = uint32(0) - (jobLimitKillOnClose ^ uint32(windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE))
 )
 
-// windowsRestricted confines a command with a Windows Job Object (resource
-// limits + kill-on-close, live today) and — once the TODO(TEN-346) scaffolding
-// below is completed — a low-privilege dedicated-account token, NTFS ACEs on the
-// work/read/write roots, and a WFP egress filter. Probe reports exactly which of
-// those are live so nothing is over-claimed.
+// windowsRestricted runs a command in a Windows Job Object: resource limits and
+// kill-on-close, nothing more. Probe says so, so nothing is over-claimed.
 type windowsRestricted struct{}
 
 // newJobObjectBackend returns the Windows Job Object limits primitive. It is NOT
-// the registered restricted backend (that is WSL bubblewrap, wsl_windows.go);
-// tests construct it directly to validate the resource-limit enforcement, and
-// the native-Windows confinement path (TEN-346) will build on it.
+// the registered restricted backend (that is WSL bubblewrap, wsl_windows.go).
 func newJobObjectBackend() Backend { return &windowsRestricted{} }
 
 func (*windowsRestricted) Name() string         { return "jobobject" }
@@ -62,14 +52,14 @@ func (*windowsRestricted) Probe(context.Context) Capabilities {
 	return Capabilities{
 		Backend:    "jobobject",
 		Isolation:  IsolationProcess,
-		Filesystem: EnforceNone, // no root is enforced until the NTFS ACEs land (TODO TEN-346)
-		Network:    EnforceNone, // WFP ALE_AUTH_CONNECT egress filter is TODO
+		Filesystem: EnforceNone, // a Job Object confines no filesystem root
+		Network:    EnforceNone, // nor the network
 		Limits:     EnforceFull, // Job Object: job memory, active-process, CPU-time, kill-on-close
 		Env:        EnforceFull, // the env allowlist is honoured via materialize
 		Shell:      "powershell",
 		Detail: "windows Job Object limits primitive (not the restricted backend; restricted uses WSL): " +
 			"job memory, active-process, CPU-time and kill-on-close are enforced; no filesystem-root or " +
-			"network enforcement (native token/ACE/WFP work is TODO TEN-346)",
+			"network enforcement (for that, use restricted)",
 	}
 }
 
@@ -80,28 +70,6 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 		defer cancel()
 	}
 
-	// --- Pending confinement primitives (scaffolded). Each is invoked on the
-	// path a completed implementation uses; errNotImplemented is tolerated so the
-	// live Job Object still applies. A real error from a finished primitive fails
-	// the run closed. ---
-	token, err := b.dedicatedAccountToken()
-	if err != nil && !errors.Is(err, errNotImplemented) {
-		return Result{}, fmt.Errorf("sandbox: dedicated account token: %w", err)
-	}
-	if err := applyRootACEs(pol, token); err != nil && !errors.Is(err, errNotImplemented) {
-		return Result{}, fmt.Errorf("sandbox: root ACEs: %w", err)
-	}
-	if pol.Network == NetNone || pol.Network == NetAllowlist {
-		cleanup, err := installEgressFilter(pol)
-		if err != nil && !errors.Is(err, errNotImplemented) {
-			return Result{}, fmt.Errorf("sandbox: egress filter: %w", err)
-		}
-		if cleanup != nil {
-			defer cleanup()
-		}
-	}
-
-	// --- Job Object: the live confinement. ---
 	job, err := newLimitedJob(pol.Limits)
 	if err != nil {
 		return Result{}, err
@@ -123,13 +91,7 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 	c.Stdout = &buf
 	c.Stderr = &buf
 
-	spa := &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
-	if token != 0 {
-		// When the dedicated-account work lands, run the child in that token's
-		// security context instead of Tenant's own.
-		spa.Token = syscall.Token(uintptr(token))
-	}
-	c.SysProcAttr = spa
+	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
 
 	if err := c.Start(); err != nil {
 		return Result{}, fmt.Errorf("sandbox: start child: %w", err)
@@ -191,8 +153,8 @@ func newLimitedJob(l Limits) (windows.Handle, error) {
 // Start runs argv as a Windows program inside a Job Object: its memory, CPU
 // time and process count are capped, with kill-on-close, and its environment
 // is the policy's allowlist. Like Run, it confines no filesystem root or
-// network (TEN-346). The child starts suspended and is assigned to the job
-// before it runs.
+// network. The child starts suspended and is assigned to the job before it
+// runs.
 func (b *windowsRestricted) Start(ctx context.Context, argv []string, pol Policy) (*Process, error) {
 	job, err := newLimitedJob(pol.Limits)
 	if err != nil {
@@ -253,44 +215,4 @@ func resumeMainThread(pid uint32) error {
 		return nil // a suspended child has exactly one thread — the main thread
 	}
 	return fmt.Errorf("sandbox: main thread for pid %d not found in snapshot", pid)
-}
-
-// --- Scaffolded confinement primitives (TODO TEN-346). Each compiles, is
-// invoked by Run on the correct path, and returns errNotImplemented so a Windows
-// engineer can complete and test it without re-plumbing the call sites. This is
-// the operator-approved design (decision 2026-09-22): a dedicated low-privilege
-// sandbox account, NTFS ACEs on the roots, and a WFP egress filter. ---
-
-// dedicatedAccountToken logs on / derives the low-privilege dedicated sandbox
-// account and returns a restricted primary token to launch the child with. A
-// zero token means "not available" and Run then launches in Tenant's own context.
-//
-// TODO(TEN-346): LogonUser(dedicated sandbox account) then CreateRestrictedToken
-// to strip privileges and add restricting SIDs.
-func (*windowsRestricted) dedicatedAccountToken() (windows.Token, error) {
-	return 0, errNotImplemented
-}
-
-// applyRootACEs stamps NTFS DACLs for the token's SID so the filesystem policy
-// is enforced by the OS: grant on WorkDir/WriteRoots (modify) and ReadRoots
-// (read), deny on DenyRoots.
-//
-// TODO(TEN-346): build an EXPLICIT_ACCESS list from pol and apply it with
-// SetNamedSecurityInfo on each root.
-func applyRootACEs(pol Policy, token windows.Token) error {
-	_ = pol
-	_ = token
-	return errNotImplemented
-}
-
-// installEgressFilter adds a Windows Filtering Platform ALE_AUTH_CONNECT filter
-// scoped to the child so outbound connections are blocked (NetNone) or limited
-// to pol.Allow (NetAllowlist). The returned cleanup removes the filter.
-//
-// TODO(TEN-346): add a WFP sublayer plus FWPM_LAYER_ALE_AUTH_CONNECT_V4/V6
-// filters keyed on the dedicated account's SID; return a cleanup that tears them
-// down.
-func installEgressFilter(pol Policy) (cleanup func(), err error) {
-	_ = pol
-	return nil, errNotImplemented
 }
