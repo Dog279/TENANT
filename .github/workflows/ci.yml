@@ -47,5 +47,22 @@ jobs:
         if: runner.os != 'Linux'
         run: go test -timeout 10m ./...
 
+      # The Linux restricted backend, live: bubblewrap installed, then the escape
+      # and red-team suites with TENANT_SANDBOX_LIVE=1, so an unavailable backend
+      # fails the job instead of skipping it.
+      - name: Live sandbox suite (bubblewrap)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor. While
+          # that holds, the backend must refuse and name the restriction (the test
+          # skips if bubblewrap works anyway). Then lift it for the live run.
+          go test -race -count=1 -v -run 'TestLinuxRestricted_UnavailableIsExplained' ./internal/sandbox/
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          TENANT_SANDBOX_LIVE=1 go test -race -count=1 -v -timeout 10m ./internal/sandbox/...
+
       - name: Offline smoke eval
         run: go run ./cmd/tenant eval --subset smoke --backend echo --baseline-check baselines/smoke.json --quiet
