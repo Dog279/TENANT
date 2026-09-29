@@ -149,6 +149,34 @@ func TestBus_HistoryAndMailboxesAreBounded(t *testing.T) {
 	}
 }
 
+// A finished agent leaves the team: its mailbox goes, so later broadcasts
+// stop piling up in it, and what it said stays in the history.
+func TestBus_UnregisterDropsTheMailboxNotTheHistory(t *testing.T) {
+	b := NewBus()
+	b.Register("main")
+	b.Register("worker")
+	if err := b.Send(Message{From: "worker", Content: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	b.Unregister("worker")
+	b.Unregister("worker") // idempotent
+	if got := b.Members(); len(got) != 1 || got[0] != "main" {
+		t.Fatalf("members = %v, want only main", got)
+	}
+	if err := b.Send(Message{From: "main", Content: "next wave"}); err != nil {
+		t.Fatal(err)
+	}
+	if b.Pending("worker") != 0 {
+		t.Fatal("a broadcast reached the departed agent's mailbox")
+	}
+	if err := b.Send(Message{From: "main", To: "worker", Content: "x"}); err == nil {
+		t.Fatal("a direct message to a departed agent should error, not vanish")
+	}
+	if h := b.History("main"); len(h) != 2 || h[0].Content != "DONE" {
+		t.Fatalf("history lost what the departed agent said: %+v", h)
+	}
+}
+
 func TestBus_ConcurrentSendsAreSafe(t *testing.T) {
 	b := NewBus()
 	b.Register("hub")

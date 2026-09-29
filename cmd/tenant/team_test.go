@@ -2,16 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"tenant/internal/agent"
 	"tenant/internal/logs"
 	"tenant/internal/memory/soul"
+	"tenant/internal/model"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
 	"tenant/internal/runtrace"
@@ -526,5 +531,228 @@ func TestTeamRuntime_BaseCtxOutlivesTheCallingRequest(t *testing.T) {
 	}
 	if strings.Contains(summary, "(no result)") {
 		t.Errorf("agent produced no result — it was cancelled with its caller:\n%s", summary)
+	}
+}
+
+// echoTeam is a team runtime whose sub-agents run on the echo backend, under
+// budgets b and concurrency cap max (0 = the default); the bus holds "main".
+func echoTeam(t *testing.T, b orchestra.Budgets, max int) (*TeamRuntime, *orchestra.Bus) {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	router, err := buildRouter(c, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, closeStores, err := openStores(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closeStores)
+	bus := orchestra.NewBus()
+	bus.Register("main")
+	return newTeamRuntime(TeamConfig{Bus: bus, Router: router, Stores: st, Shared: newToolMux(),
+		OrchID: "main", Log: log, Budgets: b, MaxConcurrent: max}), bus
+}
+
+// teamAwait is the orchestrator calling team_await in the turn of ctx.
+func teamAwait(t *testing.T, rt *TeamRuntime, ctx context.Context) string {
+	t.Helper()
+	out, isErr, err := spawnTool{rt: rt, timeout: 30 * time.Second}.Dispatch(ctx, model.ToolCall{Name: "team_await", Arguments: json.RawMessage(`{}`)})
+	if err != nil || isErr {
+		t.Errorf("team_await: %q isErr=%v err=%v", out, isErr, err)
+	}
+	return out
+}
+
+// held is what the runtime keeps: its members, in spawn order.
+func held(rt *TeamRuntime) []string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.agents) != len(rt.order) {
+		return append(slices.Clone(rt.order), "(agents and order disagree)")
+	}
+	return slices.Clone(rt.order)
+}
+
+// TEN-326: a server runs for months, so the runtime must not keep every
+// sub-agent it ever spawned. team_await returns each result once, then drops
+// it; a finished agent has left the bus, and nothing was left to clean up.
+func TestTeamAwait_ReturnsEachResultOnceThenDropsIt(t *testing.T) {
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 100}, 0)
+	turn := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn"))
+	for i := range 20 {
+		id, err := rt.Spawn(turn, "worker", "task "+strconv.Itoa(i))
+		if err != nil {
+			t.Fatalf("spawn %d: %v", i, err)
+		}
+		if out := teamAwait(t, rt, turn); strings.Count(out, "## "+id+" ") != 1 {
+			t.Fatalf("await %d should return %s once:\n%s", i, id, out)
+		}
+		if h := held(rt); len(h) != 0 {
+			t.Fatalf("after await %d the runtime still holds %v", i, h)
+		}
+	}
+	if out := teamAwait(t, rt, turn); !strings.Contains(out, "already returned") {
+		t.Errorf("a result came back twice, or the empty answer claims nothing was spawned:\n%s", out)
+	}
+	rt.cleanMu.Lock()
+	cleanups := len(rt.cleanups)
+	rt.cleanMu.Unlock()
+	if m := bus.Members(); len(m) != 1 || cleanups != 0 {
+		t.Errorf("finished sub-agents linger: bus members %v, cleanups %d", m, cleanups)
+	}
+}
+
+// A result waits for the turn that spawned it, however long ago it finished:
+// another turn's team_await shows it but can't take it (serve shares one
+// runtime between the dashboard, the relays and cron), and an await whose
+// caller is gone takes nothing.
+func TestTeamAwait_ResultWaitsForItsOwnTurn(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 100}, 0)
+	a := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn-a"))
+	b := runtrace.WithSpan(context.Background(), runtrace.NewSpan("turn-b"))
+	finished := func(ctx context.Context, task string) string {
+		t.Helper()
+		id, err := rt.Spawn(ctx, "worker", task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt.mu.Lock()
+		done := rt.agents[id].done
+		rt.mu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s never finished", id)
+		}
+		return id
+	}
+	idA := finished(a, "a's task")
+	idB := finished(b, "b's task")
+	if out := teamAwait(t, rt, b); !strings.Contains(out, "## "+idA+" ") || !strings.Contains(out, "## "+idB+" ") {
+		t.Fatalf("b's await should show every member held:\n%s", out)
+	}
+	gone, cancel := context.WithCancel(a)
+	cancel()
+	teamAwait(t, rt, gone)
+	if h := held(rt); !slices.Equal(h, []string{idA}) {
+		t.Fatalf("held %v, want only a's %s: b's await took b's own; a gone caller takes nothing", h, idA)
+	}
+	if out := teamAwait(t, rt, a); strings.Count(out, "## "+idA+" ") != 1 || strings.Contains(out, idB) {
+		t.Fatalf("a's await should return %s once, and not b's again:\n%s", idA, out)
+	}
+	if out := teamAwait(t, rt, a); strings.Contains(out, idA) {
+		t.Fatalf("%s came back twice:\n%s", idA, out)
+	}
+}
+
+// A member nobody takes with team_await (/research reads its own with
+// ResultsFor) is kept while it is among the newest run's worth of finished
+// ones. The oldest finished go first, a running one never.
+func TestTeamRuntime_SpawnDropsTheOldestFinishedPastARunsWorth(t *testing.T) {
+	rt, _ := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: 3}, 0)
+	closed := make(chan struct{})
+	close(closed)
+	rt.mu.Lock()
+	for _, id := range []string{"stuck", "done-1", "done-2", "done-3", "done-4", "done-5"} {
+		m := &member{id: id, status: "done", done: closed}
+		if id == "stuck" {
+			m.status, m.done = "running", make(chan struct{})
+		}
+		rt.agents[id] = m
+		rt.order = append(rt.order, id)
+	}
+	rt.mu.Unlock()
+	id, err := rt.Spawn(context.Background(), "worker", "one more")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := held(rt)
+	rt.mu.Lock()
+	done := rt.agents[id].done
+	rt.mu.Unlock()
+	<-done // before the stores close
+	if want := []string{"stuck", "done-3", "done-4", "done-5", id}; !slices.Equal(h, want) {
+		t.Fatalf("held %v, want %v", h, want)
+	}
+}
+
+// /research's shape, run after run on one runtime: each run's results are all
+// there for ResultsFor, and the runtime holds at most a run's worth besides.
+func TestTeamRuntime_ResearchRunsStayBounded(t *testing.T) {
+	const perRun = 3
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: perRun}, 0)
+	ctx := context.Background()
+	for run := range 10 {
+		rt.BeginRun(ctx)
+		var mine []string
+		for i := range perRun {
+			id, err := rt.Spawn(ctx, "researcher", fmt.Sprintf("run %d, question %d", run, i))
+			if err != nil {
+				t.Fatalf("run %d spawn %d: %v", run, i, err)
+			}
+			mine = append(mine, id)
+		}
+		rt.Await(ctx, 30*time.Second)
+		if got := rt.ResultsFor(mine); len(got) != perRun {
+			t.Fatalf("run %d lost results before it read them: %+v", run, got)
+		}
+		rt.EndRun()
+	}
+	if h := held(rt); len(h) > 2*perRun {
+		t.Fatalf("held %d members after 10 runs, want at most a run's worth plus the last run: %v", len(h), h)
+	}
+	if m := bus.Members(); len(m) != 1 {
+		t.Errorf("finished sub-agents are still on the bus: %v", m)
+	}
+}
+
+// Turns on one runtime spawn and await at the same time: each gets each of
+// its own results exactly once, and the runtime ends up holding nothing.
+func TestTeamRuntime_ConcurrentSpawnAndAwait(t *testing.T) {
+	const turns, rounds = 4, 5
+	// The governor's count lags a finished agent by an instant, hence room
+	// for two per turn.
+	rt, bus := echoTeam(t, orchestra.Budgets{MaxAgentsPerRun: turns * rounds, MaxConcurrentSubagents: 2 * turns}, turns)
+	var wg sync.WaitGroup
+	for n := range turns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := runtrace.WithSpan(context.Background(), runtrace.NewSpan(fmt.Sprintf("turn-%d", n)))
+			var mine []string
+			var outs strings.Builder
+			for i := range rounds {
+				var id string
+				var err error
+				// Another turn's await can close the run between this spawn's
+				// Ensure and its acquire; the next try opens a new one.
+				for range 5 {
+					if id, err = rt.Spawn(ctx, "worker", fmt.Sprintf("turn %d, task %d", n, i)); err == nil {
+						break
+					}
+				}
+				if err != nil {
+					t.Errorf("turn %d spawn %d: %v", n, i, err)
+					return
+				}
+				mine = append(mine, id)
+				outs.WriteString(teamAwait(t, rt, ctx))
+			}
+			for _, id := range mine {
+				if c := strings.Count(outs.String(), "## "+id+" "); c != 1 {
+					t.Errorf("%s came back to its turn %d times, want once", id, c)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	rt.Await(context.Background(), 30*time.Second) // nothing may outlive the stores
+	if h := held(rt); len(h) != 0 {
+		t.Errorf("the runtime still holds %v", h)
+	}
+	if m := bus.Members(); len(m) != 1 {
+		t.Errorf("finished sub-agents are still on the bus: %v", m)
 	}
 }

@@ -26,11 +26,15 @@ import (
 	"tenant/internal/tui"
 )
 
-// member is one spawned sub-agent's bookkeeping.
+// member is one spawned sub-agent's bookkeeping. A finished member is kept
+// until the turn that spawned it has its result from team_await, then
+// dropped, so a server that runs for months holds only what it still owes
+// (TEN-326; report, Spawn).
 type member struct {
 	id, role, task string
 	status         string // running | done | error
 	result         string
+	owner          string // the trace of the turn that spawned it: its team_await drops it
 	// flow is the sensitive provenance result quotes: what this agent read
 	// that its answer repeats (TEN-336). Reported back by team_await.
 	flow agent.Flow
@@ -128,7 +132,7 @@ type TeamRuntime struct {
 	seq    int
 
 	cleanMu  sync.Mutex
-	cleanups []func() // per-agent browser sessions etc., closed at shutdown
+	cleanups []func() // the orchestrator's own browser (addWebTool), closed at shutdown; a sub-agent's closes as it finishes
 
 	// routerMu guards profileRouters: profile-specific routers are built on
 	// first spawn of that profile and cached so subsequent spawns reuse the
@@ -529,6 +533,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		orchestra.SpawnRefused.Log(ctx, "role", role, "err", err)
 		return "", err
 	}
+	keep := r.budget.Limits().MaxAgentsPerRun
 
 	r.mu.Lock()
 	// Bound concurrent sub-agents. Spawning was previously unlimited, and an
@@ -551,6 +556,19 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		orchestra.SpawnRefused.Log(ctx, "role", role, "err", err)
 		return "", err
 	}
+	// A finished member nobody collects (/research reads its own with
+	// ResultsFor, a turn may end without awaiting) is kept while it is among
+	// the newest run's worth of finished ones, then dropped oldest first. A
+	// run can't spawn more than that, so the current run's results stay until
+	// read. Running members are never dropped.
+	extra := len(r.agents) - live - keep
+	r.dropLocked(func(m *member) bool {
+		if extra <= 0 || m.status == "running" {
+			return false
+		}
+		extra--
+		return true
+	})
 	r.seq++
 	id := fmt.Sprintf("%s-%s-%d", r.cfg.OrchID, slug(role), r.seq)
 	// Per-agent cancellable ctx so the orchestrator can preempt a specific
@@ -560,7 +578,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	// under its parent's sandbox profile even though its lifetime is the
 	// team run's (runCtx), not the spawning request's.
 	agCtx, cancel := context.WithCancel(inheritExecSurface(runCtx, ctx))
-	m := &member{id: id, role: role, task: task, status: "running",
+	m := &member{id: id, role: role, task: task, status: "running", owner: runtrace.IDFromContext(ctx),
 		done: make(chan struct{}), cancel: cancel}
 	r.agents[id] = m
 	r.order = append(r.order, id)
@@ -638,7 +656,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		closeTools()
 		releaseAgent()
 		act.End(&err)
-		r.finish(m, "error", "failed to start: "+err.Error())
+		r.finish(m, "error", "failed to start: "+err.Error(), agent.Flow{})
 		return "", err
 	}
 
@@ -670,11 +688,8 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		_ = r.cfg.Bus.Send(orchestra.Message{From: id,
 			Content: "DONE — " + clip(result, 600)})
 		flow := ag.FlowFor(result)
-		r.mu.Lock()
-		m.flow = flow
-		r.mu.Unlock()
 		act.End(&endErr)
-		r.finish(m, status, result)
+		r.finish(m, status, result, flow)
 	}()
 
 	return id, nil
@@ -732,24 +747,28 @@ func (r *TeamRuntime) skillRetriever(id string) agent.SkillRetriever {
 	return skillRetriever{st: r.cfg.Skills, agentID: id}
 }
 
-// resultFlow joins the sensitive provenance of every member's result, for
-// team_await to report to the orchestrator (TEN-336).
-func (r *TeamRuntime) resultFlow() agent.Flow {
+// finish records a member's outcome. It has left the team, so its mailbox
+// goes; its result waits here for team_await.
+func (r *TeamRuntime) finish(m *member, status, result string, flow agent.Flow) {
+	r.cfg.Bus.Unregister(m.id)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	flows := make([]agent.Flow, 0, len(r.order))
-	for _, id := range r.order {
-		flows = append(flows, r.agents[id].flow)
-	}
-	return agent.JoinFlows(flows...)
-}
-
-func (r *TeamRuntime) finish(m *member, status, result string) {
-	r.mu.Lock()
-	m.status = status
-	m.result = result
+	m.status, m.result, m.flow = status, result, flow
 	r.mu.Unlock()
 	close(m.done)
+}
+
+// dropLocked forgets, oldest first, each member gone reports true for.
+func (r *TeamRuntime) dropLocked(gone func(*member) bool) {
+	kept := r.order[:0]
+	for _, id := range r.order {
+		if gone(r.agents[id]) {
+			delete(r.agents, id)
+		} else {
+			kept = append(kept, id)
+		}
+	}
+	clear(r.order[len(kept):])
+	r.order = kept
 }
 
 func (r *TeamRuntime) emit(id string, e agent.Event) {
@@ -791,8 +810,36 @@ func (r *TeamRuntime) ObserveMain(e agent.Event, next func(agent.Event)) {
 
 // Await blocks until every currently-running sub-agent finishes (or the
 // timeout/ctx fires), then returns a synthesized summary of each agent's
-// result for the orchestrator to fold into its final answer.
+// result. It keeps every member: /research reads its own afterwards
+// (ResultsFor). The orchestrator's team_await is report.
 func (r *TeamRuntime) Await(ctx context.Context, timeout time.Duration) string {
+	stopped := r.wait(ctx, timeout)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out, _ := r.summaryLocked(stopped)
+	return out
+}
+
+// report is team_await: Await's summary and the provenance of the results in
+// it (TEN-336). Then the finished members the awaiting turn spawned are
+// dropped, so each result is returned once. Another turn's members are shown
+// but kept for that turn's own await; a cancelled caller never reads the
+// summary, so then nothing is dropped.
+func (r *TeamRuntime) report(ctx context.Context, timeout time.Duration) (string, agent.Flow) {
+	stopped := r.wait(ctx, timeout)
+	owner := runtrace.IDFromContext(ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out, flow := r.summaryLocked(stopped)
+	if ctx.Err() == nil {
+		r.dropLocked(func(m *member) bool { return m.status != "running" && m.owner == owner })
+	}
+	return out, flow
+}
+
+// wait blocks until every member running now has finished, or reports true
+// when the timeout or ctx fires first.
+func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration) bool {
 	r.mu.Lock()
 	waits := make([]*member, 0, len(r.order))
 	for _, id := range r.order {
@@ -817,7 +864,7 @@ func (r *TeamRuntime) Await(ctx context.Context, timeout time.Duration) string {
 			stopped = true
 		}
 	}
-	return r.summary(stopped)
+	return stopped
 }
 
 // CancelStuck cancels every still-running agent's ctx and waits up to
@@ -868,7 +915,8 @@ type TeamResult struct {
 	ID, Role, Task, Status, Result string
 }
 
-// Results returns every spawned sub-agent's current outcome, in spawn order.
+// Results returns the current outcome of every sub-agent still held, in spawn
+// order.
 func (r *TeamRuntime) Results() []TeamResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -895,21 +943,26 @@ func (r *TeamRuntime) ResultsFor(ids []string) []TeamResult {
 	return out
 }
 
-func (r *TeamRuntime) summary(timedOut bool) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// summaryLocked reports each member held, and joins the provenance of their
+// results.
+func (r *TeamRuntime) summaryLocked(timedOut bool) (string, agent.Flow) {
 	if len(r.order) == 0 {
-		return "no sub-agents have been spawned yet"
+		if r.seq > 0 {
+			return "no sub-agents to report: none is running, and earlier results were already returned", agent.Flow{}
+		}
+		return "no sub-agents have been spawned yet", agent.Flow{}
 	}
 	var b strings.Builder
 	if timedOut {
 		b.WriteString("(timed out waiting; reporting current state)\n\n")
 	}
+	flows := make([]agent.Flow, 0, len(r.order))
 	for _, id := range r.order {
 		m := r.agents[id]
 		fmt.Fprintf(&b, "## %s (%s) [%s]\n%s\n\n", m.id, m.role, m.status, strings.TrimSpace(m.result))
+		flows = append(flows, m.flow)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n"), agent.JoinFlows(flows...)
 }
 
 // roleSoul derives a sub-agent identity from the base soul: same team
@@ -1023,10 +1076,10 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 		if to <= 0 {
 			to = 3 * time.Minute
 		}
-		out := t.rt.Await(ctx, to)
+		out, flow := t.rt.report(ctx, to)
 		// Sub-agents' answers can quote what they read; hand that provenance
 		// back so the orchestrator tracks it before egress (TEN-336).
-		agent.ReportFlow(ctx, t.rt.resultFlow())
+		agent.ReportFlow(ctx, flow)
 		// An await TIMEOUT with workers still active is a normal beat of long
 		// autonomous work: report current state and let them keep working (the
 		// orchestrator can await again). Ending the run here cancelled the run

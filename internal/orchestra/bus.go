@@ -14,6 +14,7 @@ package orchestra
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
@@ -68,6 +69,21 @@ func (b *Bus) Register(agentID string) {
 	}
 	b.mailboxes[agentID] = nil
 	b.order = append(b.order, agentID)
+}
+
+// Unregister drops an agent's mailbox, and anything still undrained in it,
+// once the agent has left the team: a finished sub-agent never reads its
+// inbox again. A long-running bus then holds only live members, instead of a
+// mailbox per agent ever spawned that fills with every later broadcast. What
+// it said stays in the retained log. Idempotent.
+func (b *Bus) Unregister(agentID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.mailboxes[agentID]; !ok {
+		return
+	}
+	delete(b.mailboxes, agentID)
+	b.order = slices.DeleteFunc(b.order, func(id string) bool { return id == agentID })
 }
 
 // Members returns the registered agent IDs in registration order.
