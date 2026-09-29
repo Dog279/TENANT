@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-09-28; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-09-29; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 1,146 |
-| Test files | 548 |
-| Production Go LOC | 147,612 |
-| Test Go LOC | 109,400 |
+| Go files | 1,156 |
+| Test files | 557 |
+| Production Go LOC | 147,811 |
+| Test Go LOC | 112,425 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -569,8 +569,8 @@ guide: `docs/LOGGING.md`.
   source's day file (created on first use) and appends it to a bounded ring
   keyed by a monotonic `Seq` (eviction never invalidates a cursor).
 - `Hub.Since(cursor) ([]Entry, head)`, `Snapshot()`, `Subscribe()` — the lossless
-  replay + a coalescing wake-up per subscriber that the dashboard's Activity SSE
-  tails (one per open tab). `Hub.Epoch()` names the Seq numbering, which starts
+  replay (`GET /api/activity` pages through it when there is no log store) + a
+  coalescing wake-up per subscriber. `Hub.Epoch()` names the Seq numbering, which starts
   at 1 on every open; a client holding another epoch's cursor re-syncs.
 - `Hub.Sources() []SourceInfo` (display order: built-ins, custom, `system` last;
   counts; native vs discovered), `Hub.Files(source)`, `Hub.OpenFile(source, name)`

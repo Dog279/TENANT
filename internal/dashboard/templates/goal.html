@@ -1,8 +1,16 @@
 {{define "content"}}
+{{template "goal-body" .}}
+{{end}}
+
+{{/* goal-body is the region Stop re-renders in place (formDone). The busy
+     line is ui-busy written out, so its Stop can post through Datastar to
+     its static URL; ui-busy's own Stop takes its URL from the view. Go back
+     to ui-busy once its Stop posts in place. */}}
+{{define "goal-body"}}<div id="goal-body">
 {{template "ui-flash" .}}
 {{if not .Configured}}{{template "ui-off" "Autopilot isn't available here. It runs inside the terminal app, and this Tenant is running as a background service, so there's nothing to show or stop."}}
 {{else if .Goal.Met}}<div class="card"><div class="card-head">Goal reached</div><p class="goal-text">{{visibleText .Goal.Condition}}</p></div>
-{{else if .Busy}}{{template "ui-busy" .Busy}}
+{{else if .Busy}}{{with .Busy}}<div class="busy" role="status"><span class="busy-dot" aria-hidden="true"></span><span class="busy-text"><b>{{.Title}}</b>{{if .Since}} · {{.Since}}{{end}} <span class="dim">{{.Detail}}</span></span><form method="POST" action="/goal/stop" class="inline" data-on:submit__prevent__throttle.1s="@post('/goal/stop', {contentType:'form', retryMaxCount:0})"><button type="submit" class="btn sm">Stop after this step</button></form></div>{{end}}
 <div class="card goal-card">
 <div class="card-head">The goal</div>
 <p class="goal-text">{{visibleText .Goal.Condition}}</p>
@@ -11,4 +19,4 @@
 </div>
 {{else}}{{template "ui-empty" "Autopilot is off. When you give your agent a goal in the terminal app, it keeps working on it by itself, step by step, until it's done, and you can follow it and stop it here."}}
 {{end}}
-{{end}}
+</div>{{end}}

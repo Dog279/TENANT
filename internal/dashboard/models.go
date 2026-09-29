@@ -6,8 +6,9 @@ package dashboard
 // non-technical operator ("Which AI brain is my agent using?").
 //
 // Same shape as cron.go/eval.go: a ModelControl interface (satisfied in
-// cmd/tenant by dashModel), unconditional nil-guarded mounting, form/303
-// mutations. Every method is synchronous (no browser) — unlike MCP connect.
+// cmd/tenant by dashModel), unconditional nil-guarded mounting, and form
+// mutations answered by formDone: in place for a Datastar post, else a 303.
+// Every method is synchronous (no browser) — unlike MCP connect.
 // The add-cloud key travels INBOUND only (body-only POST), reusing the
 // write-only secret discipline of keys.go: it's never read back or rendered.
 
@@ -62,38 +63,53 @@ type modelsPageData struct {
 	Msg        string
 }
 
-func (s *Server) handleModelsPage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) modelsData() modelsPageData {
 	d := modelsPageData{layoutData: layoutData{Title: "Model", Page: "models"}}
+	if s.models != nil {
+		d.Configured = true
+		d.Models = s.models.Models()
+		d.Ceiling = s.models.LoopCeiling()
+	}
+	return d
+}
+
+func (s *Server) handleModelsPage(w http.ResponseWriter, r *http.Request) {
+	d := s.modelsData()
 	d.Err = r.URL.Query().Get("err")
 	d.Msg = r.URL.Query().Get("msg")
-	if s.models == nil {
-		s.render(w, s.tmpl.models, d)
-		return
-	}
-	d.Configured = true
-	d.Models = s.models.Models()
-	d.Ceiling = s.models.LoopCeiling()
 	s.render(w, s.tmpl.models, d)
+}
+
+// modelsBody renders #models-body, the part a Models form changes.
+func (s *Server) modelsBody() (string, error) {
+	return part(s.tmpl.models, "models-body", s.modelsData())
+}
+
+// modelsDone is every Models form's answer (DESIGN.md "Forms that don't
+// reload"): in place for a Datastar post, a 303 with the flash otherwise.
+func (s *Server) modelsDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
+	s.formDone(w, r, "/models", msg, errMsg, s.modelsBody)
 }
 
 func (s *Server) handleModelUseForm(w http.ResponseWriter, r *http.Request) {
 	if s.models == nil {
-		http.Redirect(w, r, "/models", http.StatusSeeOther)
+		s.modelsDone(w, r, "", "")
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	status, err := s.models.Use(name)
 	if err != nil {
-		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model use", err, "Couldn't switch to that model."))
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model use", err, "Couldn't switch to that model."))
 		return
 	}
 	// A "⚠" status means the switch happened but the model can't answer yet
-	// (its warning is logged as SwapUnready).
+	// (its warning is logged as SwapUnready): an alert, and the rows, which
+	// changed.
 	if strings.HasPrefix(status, "⚠") {
-		redirectFlash(w, r, "/models", "", "Switched to "+name+", but it isn't ready to answer. The Logs page has the reason.")
+		s.formWarn(w, r, "/models", "Switched to "+name+", but it isn't ready to answer. The Logs page has the reason.", s.modelsBody)
 		return
 	}
-	redirectFlash(w, r, "/models", "Every answer now comes from "+name+".", "")
+	s.modelsDone(w, r, "Every answer now comes from "+name+".", "")
 }
 
 // handleModelAddForm adds a cloud model. Its key travels in the body only
@@ -101,67 +117,67 @@ func (s *Server) handleModelUseForm(w http.ResponseWriter, r *http.Request) {
 // masked, never into the redirect URL (F3).
 func (s *Server) handleModelAddForm(w http.ResponseWriter, r *http.Request) {
 	if s.models == nil {
-		http.Redirect(w, r, "/models", http.StatusSeeOther)
+		s.modelsDone(w, r, "", "")
 		return
 	}
 	kind := strings.TrimSpace(r.FormValue("kind"))
 	key, ok := bodyOnly(r, "key")
 	if !ok {
 		KeyInURL.Log(r.Context(), "cred", kind)
-		redirectFlash(w, r, "/models", "", secretInURL)
+		s.modelsDone(w, r, "", secretInURL)
 		return
 	}
 	key = strings.TrimSpace(key)
 	if kind == "" || key == "" {
-		redirectFlash(w, r, "/models", "", "Pick a provider and paste its API key.")
+		s.modelsDone(w, r, "", "Pick a provider and paste its API key.")
 		return
 	}
 	if _, err := s.models.AddCloud(kind, key); err != nil {
 		KeyNotSaved.Log(r.Context(), "cred", kind, "op", "added", "err", err)
-		redirectFlash(w, r, "/models", "", "Couldn't add that model. The Logs page has the reason.")
+		s.modelsDone(w, r, "", "Couldn't add that model. The Logs page has the reason.")
 		return
 	}
-	redirectFlash(w, r, "/models", "Model added. Choose Use this model to switch your agent to it.", "")
+	s.modelsDone(w, r, "Model added. Choose Use this model to switch your agent to it.", "")
 }
 
 func (s *Server) handleModelRemoveForm(w http.ResponseWriter, r *http.Request) {
 	if s.models == nil {
-		http.Redirect(w, r, "/models", http.StatusSeeOther)
+		s.modelsDone(w, r, "", "")
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	if _, err := s.models.Remove(name); err != nil {
-		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model remove", err, "Couldn't remove that model."))
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model remove", err, "Couldn't remove that model."))
 		return
 	}
-	redirectFlash(w, r, "/models", "Removed "+name+".", "")
+	s.modelsDone(w, r, "Removed "+name+".", "")
 }
 
 func (s *Server) handleModelCeilingForm(w http.ResponseWriter, r *http.Request) {
 	if s.models == nil {
-		http.Redirect(w, r, "/models", http.StatusSeeOther)
+		s.modelsDone(w, r, "", "")
 		return
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("ceiling")))
 	if err != nil || n <= 0 {
-		redirectFlash(w, r, "/models", "", "Enter a whole number greater than zero.")
+		s.modelsDone(w, r, "", "Enter a whole number greater than zero.")
 		return
 	}
 	if _, serr := s.models.SetLoopCeiling(n); serr != nil {
-		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model step limit", serr, "Couldn't update the limit. Use a number from 1 to 200."))
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model step limit", serr, "Couldn't update the limit. Use a number from 1 to 200."))
 		return
 	}
-	redirectFlash(w, r, "/models", "Saved: your agent takes at most "+strconv.Itoa(n)+" steps per answer.", "")
+	s.modelsDone(w, r, "Saved: your agent takes at most "+strconv.Itoa(n)+" steps per answer.", "")
 }
 
 func (s *Server) handleModelReloadForm(w http.ResponseWriter, r *http.Request) {
 	if s.models == nil {
-		http.Redirect(w, r, "/models", http.StatusSeeOther)
+		s.modelsDone(w, r, "", "")
 		return
 	}
 	if _, err := s.models.ReloadKeys(); err != nil {
-		redirectFlash(w, r, "/models", "", s.flashFor(r.Context(), "model reload keys", err, "Couldn't reload the keys."))
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model reload keys", err, "Couldn't reload the keys."))
 		return
 	}
-	redirectFlash(w, r, "/models", "Keys reloaded.", "")
+	s.modelsDone(w, r, "Keys reloaded.", "")
 }

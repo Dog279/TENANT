@@ -41,7 +41,7 @@ func TestCSPInChrome(t *testing.T) {
 			}
 		}
 	})
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, err := page.AddScriptToEvaluateOnNewDocument(cspWatch).Do(ctx)
 		return err
 	})); err != nil {
@@ -52,7 +52,7 @@ func TestCSPInChrome(t *testing.T) {
 		mu.Lock()
 		errs = nil
 		mu.Unlock()
-		err := chromedp.Run(ctx,
+		err := run(ctx,
 			chromedp.Navigate(srv.URL+p),
 			chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
 			chromedp.Poll(`window.__ds > 0`, nil, chromedp.WithPollingTimeout(5*time.Second)),
@@ -72,7 +72,7 @@ func TestCSPInChrome(t *testing.T) {
 
 	var ran string
 	var csp []string
-	err := chromedp.Run(ctx,
+	err := run(ctx,
 		chromedp.Navigate(srv.URL+"/tools"),
 		chromedp.WaitReady(`#ui-status`, chromedp.ByQuery),
 		chromedp.Evaluate(`(() => {

@@ -62,11 +62,6 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .bubble{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:10px 14px;white-space:pre-wrap;overflow-wrap:anywhere}
 .msg.user .bubble{background:#0e2336;border-color:#15324a}
 .tool{font-family:ui-monospace,monospace;font-size:12.5px;color:#cfe9f4;background:var(--card2);border:1px solid var(--line2);border-radius:11px;padding:8px 12px;overflow-wrap:anywhere}
-.act-head{flex:none;padding:0 0 12px}
-.act{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:3px}
-.ev{display:flex;gap:9px;align-items:baseline;padding:5px 2px;font-size:12px;border-bottom:1px solid #121d33}
-.ev .tg{font-size:10px;font-weight:700;color:var(--amber);background:rgba(251,191,36,.10);border-radius:10px;padding:2px 8px;white-space:nowrap}
-.ev .detail{color:var(--dim);overflow-wrap:anywhere}
 /* Memory curator (TEN-111) */
 .memtabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:10px}
 .memtabs a{padding:6px 12px;border-radius:9px;color:var(--dim);font-weight:600}
@@ -148,18 +143,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 
 /* mobile: the TEN-211 design system block at the end of this file */
 
-/* Activity feed cards (TEN-238) — themed to match the Memory .ep episode list */
-.act-row{margin-bottom:0}
-.act-rowerr{border-color:rgba(251,113,133,.45);background:rgba(251,113,133,.07)}
+/* a red pill: blocked, failed, needs signing in again */
 .act-errtag{font-size:10px;font-weight:700;color:var(--red);background:rgba(251,113,133,.12);border:1px solid rgba(251,113,133,.35);border-radius:11px;padding:2px 8px}
-/* Unified log book (Activity tab = one tab per source folder) */
-.src{font-family:ui-monospace,monospace;font-size:10.5px;color:#9fb3c8;background:#0c1729;border:1px solid var(--line2);border-radius:9px;padding:1px 6px}
-.kv{font-family:ui-monospace,monospace;font-size:11.5px;color:var(--dim)}
-.cnt{font-size:10px;font-weight:600;color:var(--dim);margin-left:3px}
-.memtabs a.tab-err{color:var(--red)}
-.memtabs a.errtoggle{margin-left:auto;color:var(--dim)}
-.memtabs a.errtoggle.on{color:var(--red);background:rgba(251,113,133,.10)}
-.act-files{margin-bottom:12px;font-size:12.5px;line-height:2}
 /* Logs page (TEN-379): tree | grid over detail | actions */
 .lgv{flex:1;min-height:0;display:grid;grid-template-columns:210px minmax(0,1fr) 230px;grid-template-rows:minmax(0,1fr);gap:14px}
 .lg-tree,.lg-act{overflow:auto;min-height:0;font-size:12.5px}
@@ -247,6 +232,20 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .busy-text{flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
 @keyframes ui-pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.busy-dot,.loading::after{animation:none}.loading::after{width:auto}}
+/* the toast: what an in-place form did (formDone). #toast and #toast-fail
+   sit in the never-patched .toast-wrap; top right here, across the top on a
+   phone left of Menu, clear of the rows the thumb works on. Success fades
+   after about 3s; an error stays. */
+.toast-wrap{position:fixed;top:12px;right:16px;z-index:10;display:flex;flex-direction:column;gap:8px;max-width:min(640px,calc(100vw - 32px));pointer-events:none}
+#toast:empty{display:none}
+.toast{display:flex;align-items:center;gap:6px;padding:0 0 0 14px;border-radius:11px;border:1px solid rgba(52,211,153,.5);background:linear-gradient(rgba(52,211,153,.10),rgba(52,211,153,.10)),var(--card);box-shadow:0 8px 30px rgba(0,0,0,.6);overflow-wrap:anywhere;pointer-events:auto}
+.toast.ok{animation:ui-toast-out 3.4s forwards}
+.toast.err{border-color:rgba(251,113,133,.5);background:linear-gradient(rgba(251,113,133,.10),rgba(251,113,133,.10)),var(--card);color:#fecdd3}
+.toast-text{flex:1;min-width:0;padding:8px 0}
+.toast-x{flex:none;min-width:44px;min-height:44px;border:0;border-radius:11px;background:none;color:var(--dim);font:inherit;font-size:18px;cursor:pointer}
+.toast-x:hover{color:var(--fg)}
+@keyframes ui-toast-out{0%,85%{opacity:1}to{opacity:0;visibility:hidden}}
+@media (prefers-reduced-motion:reduce){.toast.ok{animation-timing-function:steps(1,end)}}
 /* the confirm step: the summary is the first button and flips to Cancel */
 .confirm-step{display:inline-block;max-width:100%}
 .confirm-step>summary{display:inline-flex;align-items:center;list-style:none}
@@ -320,6 +319,8 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
   .cinput{width:100%}
   .cards{grid-template-columns:1fr 1fr}
   .msg{max-width:100%}
+  .toast-wrap{top:10px;left:16px;right:88px;max-width:none} /* clear of Menu */
+  .page:has(.confirm-step[open]){padding-bottom:50vh} /* room to scroll a step's Cancel above its sheet */
   .confirm-step[open] .confirm-box{position:fixed;left:16px;right:16px;bottom:16px;z-index:20;margin:0;background:linear-gradient(rgba(251,113,133,.08),rgba(251,113,133,.08)),var(--card);box-shadow:0 8px 30px rgba(0,0,0,.6)}
 }
 /* touch: 44px targets */
@@ -381,3 +382,22 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .recipe{white-space:pre-wrap;overflow-wrap:anywhere;margin:.5rem 0 0}
 .evalbar{display:block;width:100%;height:14px;margin:6px 0;accent-color:var(--green)}
 /* == end WP-ux-adopt == */
+
+/* == WP-activity == */
+/* a Logs part that answers a form in place keeps its section's column */
+.lg-part{display:flex;flex-direction:column;gap:7px}
+/* == end WP-activity == */
+/* == WP-inline-memory == */
+/* Personality: an open Edit, Add or Remove step takes its own line */
+#mem-soul-body .ghead2,#mem-soul-body .soul-row{flex-wrap:wrap}
+#mem-soul-body .confirm-step[open]{order:1}
+#mem-soul-body .confirm-box .soul-edit{padding:0;border:0}
+/* Facts: the Undo after a Remove comes last and stays in view at the
+   bottom of the screen while the list scrolls */
+#mem-facts-body>.banner.undo{position:sticky;bottom:0;z-index:5;margin:14px 0 0;background:linear-gradient(rgba(52,211,153,.07),rgba(52,211,153,.07)),var(--card2);box-shadow:0 -8px 24px rgba(0,0,0,.45)}
+/* == end WP-inline-memory == */
+/* == WP-inline-v2pages == */
+/* #safety-modes lays out its h2, notes and cards as .page did before it was
+   a region, so their margins still add up rather than collapse */
+#safety-modes{display:flex;flex-direction:column}
+/* == end WP-inline-v2pages == */

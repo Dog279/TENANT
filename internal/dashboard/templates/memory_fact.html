@@ -1,12 +1,25 @@
 {{define "content"}}
 {{template "memnav" .}}
+{{template "mem-fact-body" .}}
+{{end}}
+
+{{/* mem-fact-body is the region No longer true, It's true again, Remove and
+     Restore re-render in place (formDone): each posts through Datastar to
+     its literal URL with the fact's id and this view (.Self, as back) as
+     fields. Edit and "Make this current again" make a new version with a
+     new id, so they go to its page. #fact-actions has an id so the morph
+     keeps it when "No longer true since" appears above it. Each pair (No
+     longer true / It's true again, Remove / Restore) is one form on one
+     route, and Remove / Restore comes first in both states, so the button
+     that takes the other's place is the same element in the same spot,
+     whose throttle drops a double tap's second tap. */}}
+{{define "mem-fact-body"}}<div id="mem-fact-body">
 {{if not .Configured}}
 {{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else if not .Supported}}
 <div class="card"><div class="dim pad">This server's memory can't explain individual facts.</div></div>
 {{else}}
-{{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
-{{if .Notice}}<div class="banner ok" role="status">{{.Notice}}</div>{{end}}
+{{template "ui-flash" .}}
 {{if .ID}}
 <div class="card">
   <div class="pad">
@@ -22,18 +35,14 @@
       <a class="btn sm" href="{{.CancelHref}}">Cancel</a>
     </form>
     {{else}}
-    <div class="postbar">
+    <div class="postbar" id="fact-actions">
+      {{if eq .Status "live" "tombstoned"}}
+      <form class="inline" method="POST" action="/memory/facts/removal" data-on:submit__prevent__throttle.1s="@post('/memory/facts/removal', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="fact" value="{{.ID}}"><input type="hidden" name="removed" value="{{eq .Status "live"}}"><input type="hidden" name="back" value="{{.Self}}"><button type="submit" class="btn sm">{{if eq .Status "live"}}Remove{{else}}Restore{{end}}</button></form>
+      {{end}}
       {{if eq .Status "live"}}
       <a class="btn sm" href="{{.EditHref}}">Edit</a>
-      {{if .ValidTo}}
-      <form class="inline" method="POST" action="{{.RevalidateAction}}"><button type="submit" class="btn sm">It's true again</button></form>
-      {{else}}
-      <form class="inline" method="POST" action="{{.InvalidateAction}}"><button type="submit" class="btn sm">No longer true</button></form>
-      {{end}}
+      <form class="inline" method="POST" action="/memory/facts/valid" data-on:submit__prevent__throttle.1s="@post('/memory/facts/valid', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="fact" value="{{.ID}}"><input type="hidden" name="valid" value="{{if .ValidTo}}true{{else}}false{{end}}"><input type="hidden" name="back" value="{{.Self}}"><button type="submit" class="btn sm">{{if .ValidTo}}It's true again{{else}}No longer true{{end}}</button></form>
       <a class="btn sm" href="{{.ConflictHref}}">It contradicts another fact</a>
-      <form class="inline" method="POST" action="{{.DeleteAction}}"><button type="submit" class="btn sm">Remove</button></form>
-      {{else if eq .Status "tombstoned"}}
-      <form class="inline" method="POST" action="{{.RestoreAction}}"><input type="hidden" name="back" value="/memory/facts/{{.ID}}"><button type="submit" class="btn sm">Restore</button></form>
       {{end}}
     </div>
     {{end}}
@@ -114,4 +123,4 @@
 </div>
 {{end}}
 {{end}}
-{{end}}
+</div>{{end}}

@@ -1,11 +1,10 @@
 package dashboard
 
-// ssr_chat.go is TEN-109: real-time chat + activity over Server-Sent Events,
-// replacing the old WebSocket-driven inline JS. `GET /events` is a
-// long-lived SSE stream that subscribes to the agent event broker and APPENDS
-// HTML fragments into the live containers (#chat-log on Chat, #activity-feed on
-// Activity) via Datastar patches — the browser updates in real time with zero
-// hand-written JS. Chat input (send / interject / stop) is stateless POSTs
+// ssr_chat.go is TEN-109: real-time chat over Server-Sent Events, replacing
+// the old WebSocket-driven inline JS. `GET /events` is a long-lived SSE
+// stream that subscribes to the agent event broker and APPENDS HTML
+// fragments to #chat-log via Datastar patches — the browser updates in real
+// time with zero hand-written JS. Chat input (send / interject / stop) is stateless POSTs
 // driving the Server-wide turn coordinator (session.go).
 
 import (
@@ -27,16 +26,14 @@ func (s *Server) handleChatPage(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleEventsSSE streams agent events to the browser until the request context
-// is canceled (tab closed / navigation away). Every event appends to the
-// activity feed; conversation-relevant kinds also append to the chat transcript.
-// One stream serves both pages — a patch whose selector isn't on the current
-// page is simply a no-op there.
+// is canceled (tab closed / navigation away). Conversation-relevant kinds
+// append to the chat transcript.
 //
 // It also keeps #approval-queue current (TEN-207): a snapshot as soon as it
 // has subscribed (so nothing falls between the two, a reconnect resyncs, and
 // the paused banner clears), then a re-render from Pending() on every approval
 // event and every queueResync. ?only=approvals sends nothing else: the Safety
-// page on a phone doesn't take the activity stream.
+// page doesn't take the chat.
 func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	setSSEHeaders(w)
 	flush(w) // open the stream immediately
@@ -71,14 +68,6 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			if onlyApprovals {
 				continue
-			}
-			// Activity feed = meaningful activity only (tool calls, lifecycle,
-			// cross-agent + bus). Token deltas and other per-token noise are
-			// filtered out so the feed isn't a token-by-token flood (TEN-234).
-			if activityRelevant(ev) {
-				if _, err := w.Write(patchElements("#activity-feed", "append", activityRow(ev))); err != nil {
-					return
-				}
 			}
 			if bubble := chatBubble(ev); bubble != "" {
 				if _, err := w.Write(patchElements("#chat-log", "append", bubble)); err != nil {
@@ -171,42 +160,12 @@ func (s *Server) handleChatStop(w http.ResponseWriter, _ *http.Request) {
 
 // --- fragment renderers (every dynamic value is html-escaped) ---
 
-// activityRelevant decides what reaches the dashboard's activity feed. It's a
-// DENYLIST of per-token / accounting noise — token deltas (the flood), usage
-// counts, per-iteration assistant prose, and the memory-budget report — so any
-// meaningful or future event kind shows by default (tool calls, lifecycle,
-// cross-agent activity, bus messages). (TEN-234)
-func activityRelevant(ev agent.Event) bool { return agent.Retained(ev) }
-
-func activityRow(ev agent.Event) string {
-	detail := ev.Text
-	if ev.Tool != "" {
-		detail = strings.TrimSpace(ev.Tool + " " + ev.Result)
-	}
-	// Distinct tags for the offsite/cross-agent kinds; the channel/peer detail
-	// already rides in ev.Text (TEN-232/234).
-	tag := string(ev.Kind)
-	switch ev.Kind {
-	case agent.EventIngest:
-		tag = "📥 inbox"
-	case agent.EventBus:
-		tag = "🔀 bus"
-	}
-	// Attribute a cross-agent event to its source sub-agent / bus sender.
-	prefix := ""
-	if ev.Agent != "" {
-		prefix = "[" + ev.Agent + "] "
-	}
-	return fmt.Sprintf(`<div class="ev"><span class="tg">%s</span> <span class="detail">%s</span></div>`,
-		html.EscapeString(tag), html.EscapeString(prefix+snippetStr(detail, 200)))
-}
-
 // chatBubble renders conversation-relevant events; "" for kinds that don't
 // belong in the transcript. To avoid duplicates we render the authoritative
 // final response, tool calls, and tool results (not per-token deltas).
 func chatBubble(ev agent.Event) string {
-	// Cross-agent activity + bus traffic belong in the activity feed, not the
-	// operator's conversation transcript (TEN-234).
+	// Cross-agent activity + bus traffic stay out of the operator's
+	// conversation transcript (TEN-234).
 	if ev.Agent != "" || ev.Kind == agent.EventBus {
 		return ""
 	}
@@ -237,8 +196,8 @@ func chatBubble(ev agent.Event) string {
 
 // snippetStr is s on one line, cut to at most n bytes on a character
 // boundary, with its hidden characters shown (visibleText, F10): every row
-// of the Activity feed and the chat transcript goes through it, so a command
-// can't display reversed there beside its approval card (REVSEC-8).
+// of the chat transcript goes through it, so a command can't display
+// reversed there beside its approval card (REVSEC-8).
 func snippetStr(s string, n int) string {
 	s = strings.Join(strings.Fields(visibleText(s)), " ")
 	if len(s) <= n {

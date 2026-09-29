@@ -184,3 +184,49 @@ func TestMCP_AddressStaysOffThePageAndOutOfURLs(t *testing.T) {
 		t.Errorf("a refused address still connected: %d calls, last %q", f.connectCalls, f.connectURL)
 	}
 }
+
+// Trust and Disconnect answer a Datastar post in place, with a control or
+// without one; a refused change is an alert that leaves the page alone; a
+// plain post still gets its 303; Don't ask is still a 428 without its step.
+// Connect and Reconnect stay plain posts that reload (mcp.go says why).
+func TestMCP_InlineTrustAndDisconnect(t *testing.T) {
+	fc := &fakeMCPCtl{servers: []MCPServerView{{Label: "mcp:tools", URL: "https://tools.example/mcp", Enabled: true, Trust: "ask", NeedsReauth: true}}}
+	for _, c := range []MCPControl{fc, nil} {
+		for _, p := range []struct {
+			path string
+			form url.Values
+		}{
+			{"/mcp/trust", url.Values{"target": {"mcp:tools"}, "mode": {"allow"}, "confirm": {"yes"}}},
+			{"/mcp/remove", url.Values{"target": {"mcp:tools"}, "confirm": {"yes"}}},
+		} {
+			body := inlineAnswer(t, mcpServer(c), p.path, p.form, "mcp-body")
+			if c == nil && !strings.Contains(body, "Remote services aren&#39;t available on this Tenant.") {
+				t.Errorf("%s with no control: the region doesn't say so:\n%s", p.path, body)
+			}
+		}
+	}
+	s := mcpServer(fc)
+	body := inlineAnswer(t, s, "/mcp/trust", url.Values{"target": {"mcp:tools"}, "mode": {"deny"}}, "mcp-body")
+	if !strings.Contains(body, `<span class="toast-text">mcp:tools: your agent now can&#39;t use its tools.</span>`) {
+		t.Errorf("Block's toast:\n%s", body)
+	}
+	inlineError(t, s, "/mcp/trust", url.Values{"target": {""}, "mode": {"deny"}}, "mcp-body", "Pick Ask first, Don't ask or Block for a connected service.")
+
+	if rec := sendForm(s.Handler(), http.MethodPost, "/mcp/trust", url.Values{"target": {"mcp:tools"}, "mode": {"ask"}}, nil); rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/mcp?msg=") {
+		t.Errorf("a plain post: %d to %q, want 303 to /mcp with its flash", rec.Code, rec.Header().Get("Location"))
+	}
+	fc.mu.Lock()
+	calls := len(fc.trustCalls)
+	fc.mu.Unlock()
+	rec := sendForm(s.Handler(), http.MethodPost, "/mcp/trust", url.Values{"target": {"mcp:tools"}, "mode": {"allow"}}, datastar)
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if rec.Code != http.StatusPreconditionRequired || len(fc.trustCalls) != calls {
+		t.Errorf("Don't ask without its confirm step over Datastar: %d, trust calls %v; want 428 and nothing changed", rec.Code, fc.trustCalls)
+	}
+
+	page := get(t, s, "/mcp").Body.String()
+	if n := strings.Count(page, `<form method="POST" action="/mcp/connect" class="inline">`); n != 2 {
+		t.Errorf("Connect and Reconnect: %d plain forms, want 2:\n%s", n, page)
+	}
+}

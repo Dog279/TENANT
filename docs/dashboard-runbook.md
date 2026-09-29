@@ -19,7 +19,7 @@ The key is a long line of letters and digits in a file named `dashboard-auth-tok
 - **macOS:** `cat ~/Library/Application\ Support/tenant/dashboard-auth-token`
 - **Linux:** `cat ~/.config/tenant/dashboard-auth-token`
 
-If Tenant was started with `--config <folder>`, the file is in that folder instead. Tenant says where on every start: `tenant serve` in a terminal prints the key itself, and otherwise it writes "the auth token is in <path>" to the terminal app's feed, the Activity feed and its system log (`logs/system/` in its data folder).
+If Tenant was started with `--config <folder>`, the file is in that folder instead. Tenant says where on every start: `tenant serve` in a terminal prints the key itself, and otherwise it writes "the auth token is in <path>" to the terminal app's feed and its system log (**Logs** on the dashboard, and `logs/system/` in its data folder).
 
 ### On a Windows service
 
@@ -161,9 +161,8 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 |---|---|---|
 | **Overview** | How your agent is (an alert, or a model it can't reach), what's waiting for you, what it may do, and the services it's connected to. Its model and quality score show once they have data. | Nothing. |
 | **Chat** | Talk to your agent. Its requests for your OK appear above the message box. | Nothing. **Stop** is immediate. |
-| **Activity feed** | Everything your agent and Tenant do, newest first, as it happens. | Nothing. |
 | **Autopilot** | A goal your agent is working toward on its own, started from the terminal app. A background service has no Autopilot, and says so. | Nothing: **Stop after this step** is immediate; the step in progress finishes. |
-| **Logs** | Look into any event, with filters and saved views. | **Clear** a log. **Reveal** shows a hidden value and is recorded. The Security log can never be cleared. |
+| **Logs** | Everything your agent and Tenant do, newest first: look into any event, with filters and saved views, and press **○ live** to see new events as they are written. Saving a view, a log's properties and clearing a log answer on the page, with a short note at the top. An old link to the Activity feed opens here. | **Clear** a log. **Reveal** shows a hidden value and is recorded. The Security log can never be cleared. |
 | **Memory** | What your agent knows about you and remembers. | Nothing: a removed fact goes to **Recently removed**, where you can restore it. |
 | **Skills** | Things your agent figured out, waiting for you to accept or dismiss, and skills to trust. | **Dismiss** or **Remove** a skill, **Trust** one, and **Choose On** or **Choose Trusted** (accepting new skills without you). |
 | **Quality** | How well your agent answers a set of test questions over time. | Nothing. A check takes a few minutes. |
@@ -178,7 +177,7 @@ The menu groups the pages. On a phone, **Menu** at the top opens it; **Log out**
 | **Integrations** | Connect your agent to outside tools (Google, Atlassian, GitHub and others). | **Disconnect**, and **Allow changes** on a GitHub repository. |
 | **Provider keys** | The API keys Tenant uses. A key you paste is never shown again, only replaced or removed. A new key for the model in use applies when you press **Reload API keys** on **Model**; other changes apply after Tenant restarts. | **Remove**. |
 
-**Busy.** While your agent is answering a Chat message, the line under the page title says "Your agent is answering a message", with **Stop**. Scheduled jobs, Discord and iMessage conversations and alert checks run alongside and never hold up Chat; the **Activity feed** shows what they are doing. A second message you send while it is answering tells you it wasn't sent and stays in the box. Nothing is lost.
+**Busy.** While your agent is answering a Chat message, the line under the page title says "Your agent is answering a message", with **Stop**. Scheduled jobs, Discord and iMessage conversations and alert checks run alongside and never hold up Chat; **Logs** shows what they are doing. A second message you send while it is answering tells you it wasn't sent and stays in the box. Nothing is lost.
 
 ## 7. Signing in to a remote service or an integration
 
@@ -188,7 +187,7 @@ When Tenant runs as a Windows service, that browser never appears: a service has
 
 1. Press **Connect** (Remote services) or **Test connection** (Integrations) as usual.
 2. Sign in to the computer running Tenant itself (at its screen, or with Remote Desktop), and open the dashboard there: http://127.0.0.1:8770.
-3. Open **Activity feed**. Find the line "sign-in: open this URL to authorize Tenant, if no browser opened:" followed by a link. A remote service also writes "Open this URL in a browser to sign in to <service>" in its own log (**Logs**, filter `log:mcp*`).
+3. Open **Logs** and type `open this URL` in **Find**. Open the line "sign-in: open this URL to authorize Tenant, if no browser opened:": the link follows it. A remote service also writes "Open this URL in a browser to sign in to <service>" in its own log (**Logs**, filter `log:mcp*`).
 4. Copy the link into a browser **on that same computer**, and approve the sign-in. A phone or another computer won't work: the sign-in returns to that computer.
 5. Back on **Remote services** or **Integrations**, reload the page.
 
@@ -199,7 +198,7 @@ The link is only good for that one sign-in. If it expired, press **Connect** or 
 - **The sign-in page says the key didn't match.** Copy the key again (section 2). If the key file changed, Tenant was restarted with a new key.
 - **A tab went to the sign-in form by itself.** Tenant restarted, the key changed, the 7-day sign-in ended, or another Tenant on this computer signed this browser in (they share the browser's sign-in). Sign in again.
 - **"config.json is unreadable by this account" (Tenant won't start).** The settings folder's permissions are wrong. On Windows, from an administrator window, check the folder with `icacls` and run `tenant doctor` (section 2).
-- **Nothing appears under "Waiting for your OK", but your agent is stuck.** Look at the Discord card: requests from Discord conversations are answered there. The **Activity feed** shows what your agent and its jobs are doing.
+- **Nothing appears under "Waiting for your OK", but your agent is stuck.** Look at the Discord card: requests from Discord conversations are answered there. **Logs** shows what your agent and its jobs are doing.
 - **A remote service's sign-in never finishes.** See section 7.
 - **"Live updates paused".** Reload the page.
 

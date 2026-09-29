@@ -1,0 +1,224 @@
+package dashboard
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/chromedp/chromedp"
+)
+
+// liveSkills is fakeSkillCtl whose Accept makes a proposed skill live, as the
+// real control does. A browser test's server and the test share it.
+type liveSkills struct {
+	fakeSkillCtl
+	mu sync.Mutex
+}
+
+func (f *liveSkills) Skills() []SkillView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.skills)
+}
+
+func (f *liveSkills) Accept(name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.acceptCalls = append(f.acceptCalls, name)
+	i := slices.IndexFunc(f.skills, func(v SkillView) bool { return v.Name == name && v.Status == "proposed" })
+	if i < 0 {
+		return false, nil
+	}
+	f.skills[i].Status, f.skills[i].Enabled = "live", true
+	return true, nil
+}
+
+// liveMCP is fakeMCPCtl whose trust changes stick.
+type liveMCP struct{ fakeMCPCtl }
+
+func (f *liveMCP) Servers() []MCPServerView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.servers)
+}
+
+func (f *liveMCP) SetTrust(target, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.trustCalls = append(f.trustCalls, target+"="+mode)
+	for i := range f.servers {
+		if f.servers[i].Label == target {
+			f.servers[i].Trust = mode
+		}
+	}
+	return nil
+}
+
+// liveRules is fakeRules whose Remove takes the rule off the list.
+type liveRules struct {
+	fakeRules
+	mu sync.Mutex
+}
+
+func (f *liveRules) Rules() []ToolRuleRow {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.rows)
+}
+
+func (f *liveRules) RemoveRule(p string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removes = append(f.removes, p)
+	i := slices.IndexFunc(f.rows, func(r ToolRuleRow) bool { return r.Pattern == p })
+	if i < 0 {
+		return false, nil
+	}
+	f.rows = slices.Delete(f.rows, i, i+1)
+	return true, nil
+}
+
+// Skills, Remote services and Tools answer in place on a phone (DESIGN.md
+// "Forms that don't reload"), signed in through the form: a change well
+// down each page shows its toast, keeps the scroll and the page (a marker
+// set before it survives), the row shows its new state, and the page fits.
+// A double tap sends one post and opens nothing, though the second tap
+// lands on another control: Accept on the form now holding the next skill,
+// or, with the only one, that skill's Remove; Block on Don't ask; a rule's
+// Remove on the next rule's confirm step.
+// TENANT_UI_SCREENSHOT=<dir> keeps screenshots.
+func TestSkillsMCPToolsInlineInChrome(t *testing.T) {
+	sk := &liveSkills{fakeSkillCtl: fakeSkillCtl{autoMode: "off"}}
+	for i := 1; i <= 8; i++ {
+		sk.skills = append(sk.skills, SkillView{Name: fmt.Sprintf("proposed-%02d", i), Description: "A way of working your agent figured out.", Status: "proposed"})
+	}
+	for i := 1; i <= 6; i++ {
+		sk.skills = append(sk.skills, SkillView{Name: fmt.Sprintf("learned-%02d", i), Description: "A way of working you accepted.", Status: "live", Enabled: true})
+	}
+	mc := &liveMCP{}
+	for i := 1; i <= 10; i++ {
+		mc.servers = append(mc.servers, MCPServerView{Label: fmt.Sprintf("mcp:svc%02d", i), URL: fmt.Sprintf("https://svc%02d.example/mcp", i), Enabled: true, ToolCount: i, Trust: "ask"})
+	}
+	ru := &liveRules{}
+	for i := 1; i <= 14; i++ {
+		mode := "allow"
+		if i == 9 { // its Remove is a confirm step, under the finger once tool_08 goes
+			mode = "deny"
+		}
+		ru.rows = append(ru.rows, ToolRuleRow{Pattern: fmt.Sprintf("tool_%02d", i), Mode: mode, Kind: "name"})
+	}
+	s := New(Config{Addr: "127.0.0.1:0", Auth: GenerateToken()}, nil, nil, nil, nil, nil)
+	s.SetSkills(sk)
+	s.SetMCP(mc)
+	s.SetRules(ru)
+	ctx, srv := chromeSignedIn(t, s, 390, 844, "/skills")
+
+	q := strconv.Quote // a Go-quoted ASCII string is a JS string literal
+	const opened = `document.querySelectorAll('details.confirm-step[open]').length`
+	// inPlace double-taps sel's button in the middle of the screen and checks
+	// the toast says toast, the page stayed with ref where it was (sel's, or
+	// a neighbour's when the answer takes sel away), and no confirm step
+	// opened.
+	inPlace := func(page, sel, ref, toast string) {
+		t.Helper()
+		var at []float64
+		var open int
+		err := run(ctx,
+			chromedp.Navigate(srv.URL+page),
+			markPlace(sel, ref, &at),
+			doubleTap(sel),
+			toastSays("ok", toast),
+			tapsOpen,
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				dir := os.Getenv("TENANT_UI_SCREENSHOT")
+				if dir == "" {
+					return nil
+				}
+				var png []byte
+				if err := chromedp.CaptureScreenshot(&png).Do(ctx); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, "inline-390"+strings.ReplaceAll(page, "/", "-")+".png"), png, 0o644)
+			}),
+			stayed(t, page, ref, &at),
+			chromedp.Evaluate(opened, &open),
+		)
+		if err != nil {
+			t.Fatalf("%s: %v", page, err)
+		}
+		if open != 0 {
+			t.Errorf("%s: the tap opened %d confirm step(s)", page, open)
+		}
+	}
+	count := func(sel string) (n int) {
+		t.Helper()
+		if err := run(ctx, chromedp.Evaluate(`document.querySelectorAll(`+q(sel)+`).length`, &n)); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	inPlace("/skills", `form[action="/skills/accept"]:has(input[value="proposed-05"]) button`, `form[action="/skills/accept"]:has(input[value="proposed-04"]) button`, "Skill accepted: it's live now.")
+	sk.mu.Lock()
+	accepted := slices.Clone(sk.acceptCalls)
+	sk.mu.Unlock()
+	var learned string
+	if err := run(ctx, chromedp.Evaluate(`document.querySelector('.card:has(form[action="/skills/enable"]) .card-head').textContent`, &learned)); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(accepted) != "[proposed-05]" || count(`form[action="/skills/accept"]`) != 7 || learned != "What my agent has learned (7)" {
+		t.Errorf("a double tap on Accept sent %v and left %d to accept and %q, want one post, 7 and 7 learned", accepted, count(`form[action="/skills/accept"]`), learned)
+	}
+
+	// The only skill waiting: its card goes, and its own Remove moves up
+	// under the finger (on a phone). Too near the top for inPlace's scroll.
+	sk.mu.Lock()
+	sk.skills = []SkillView{{Name: "only-one", Description: "proposed", Status: "proposed"}}
+	for i := 1; i <= 6; i++ {
+		sk.skills = append(sk.skills, SkillView{Name: fmt.Sprintf("l%d", i), Description: "live", Status: "live", Enabled: true})
+	}
+	sk.acceptCalls = nil
+	sk.mu.Unlock()
+	var open int
+	if err := run(ctx,
+		chromedp.Navigate(srv.URL+"/skills"),
+		doubleTap(`form[action="/skills/accept"] button`),
+		toastSays("ok", ""),
+		tapsOpen,
+		chromedp.Evaluate(opened, &open),
+	); err != nil {
+		t.Fatal(err)
+	}
+	sk.mu.Lock()
+	accepted = slices.Clone(sk.acceptCalls)
+	sk.mu.Unlock()
+	if fmt.Sprint(accepted) != "[only-one]" || open != 0 {
+		t.Errorf("a double tap on the only Accept sent %v and opened %d confirm step(s), want one post and none", accepted, open)
+	}
+
+	inPlace("/mcp", `form[action="/mcp/trust"]:has(input[value="mcp:svc10"]):has(input[value="deny"]) button`, `.soul-row:has(input[value="mcp:svc10"])`, "mcp:svc10: your agent now can't use its tools.")
+	var row string
+	if err := run(ctx, chromedp.Text(`.soul-row:has(input[value="mcp:svc10"])`, &row, chromedp.ByQuery)); err != nil {
+		t.Fatal(err)
+	}
+	mc.mu.Lock()
+	trusted := slices.Clone(mc.trustCalls)
+	mc.mu.Unlock()
+	if fmt.Sprint(trusted) != "[mcp:svc10=deny]" || !strings.Contains(row, "blocked") || !strings.Contains(row, "Ask first") || strings.Contains(row, "Block") {
+		t.Errorf("a double tap on Block sent %v and the row says %q, want one post and blocked with Ask first", trusted, row)
+	}
+
+	inPlace("/tools", `form[action="/tools/rules/remove"]:has(input[value="tool_08"]) button`, `form[action="/tools/rules/remove"]:has(input[value="tool_07"]) button`, "Rule removed: tool_08.")
+	ru.mu.Lock()
+	removed := slices.Clone(ru.removes)
+	ru.mu.Unlock()
+	if left := count(`form[action="/tools/rules/remove"]`); fmt.Sprint(removed) != "[tool_08]" || left != 13 || count(`input[value="tool_08"]`) != 0 {
+		t.Errorf("a double tap on a rule's Remove sent %v and left %d rules, want one post and 13", removed, left)
+	}
+}

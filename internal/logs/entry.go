@@ -3,10 +3,10 @@
 // the model router, plain slog records — writes through ONE Hub that files each
 // line under a per-source folder of plain-text daily files
 // (<data>/logs/<source>/YYYY-MM-DD.log) and keeps a retained, cursor-indexed
-// ring the dashboard Activity feed replays from. A source is a folder is a tab:
-// naming a new source anywhere (a Go logger, an HTTP POST, the `tenant log`
-// CLI, or a script that just appends to a new folder) creates the folder and
-// the dashboard tab without a rebuild.
+// ring that /api/activity (`tenant attach`) replays from. A source is a
+// folder: naming a new source anywhere (a Go logger, an HTTP POST, the
+// `tenant log` CLI, or a script that just appends to a new folder) creates
+// the folder without a rebuild.
 //
 // The on-disk line format is designed for humans first (readable in `tail -f`,
 // grep-able, one entry per line) and is round-trippable so lines written by

@@ -1,17 +1,18 @@
 package dashboard
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
-
-	"tenant/internal/logs"
 )
 
 // fakeTools is a minimal ToolControl for the SSR page tests.
@@ -127,12 +128,6 @@ func TestSSR_ToolsPage(t *testing.T) {
 	}
 }
 
-func TestSSR_ActivityPage(t *testing.T) {
-	if rec := get(t, mustServer(), "/activity"); rec.Code != http.StatusOK {
-		t.Fatalf("activity want 200, got %d", rec.Code)
-	}
-}
-
 func TestSSR_CSS(t *testing.T) {
 	rec := get(t, mustServer(), "/styles.css")
 	if rec.Code != http.StatusOK {
@@ -140,6 +135,91 @@ func TestSSR_CSS(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
 		t.Errorf("css content-type = %q, want text/css", ct)
+	}
+}
+
+// The stylesheet and Datastar: the hashed URL is kept a year (immutable),
+// any other URL is revalidated by its ETag (304), and gzip goes only to a
+// client that takes it, the same bytes inside.
+func TestSSR_AssetCaching(t *testing.T) {
+	h := mustServer().Handler()
+	with := func(kv ...string) func(*http.Request) {
+		return func(r *http.Request) {
+			for i := 0; i < len(kv); i += 2 {
+				r.Header.Set(kv[i], kv[i+1])
+			}
+		}
+	}
+	for _, a := range []*asset{ssrCSS, datastarJS} {
+		plain := sendForm(h, http.MethodGet, a.url, nil, nil)
+		refused := sendForm(h, http.MethodGet, a.url, nil, with("Accept-Encoding", "br, gzip;Q=0"))
+		gz := sendForm(h, http.MethodGet, a.url, nil, with("Accept-Encoding", "gzip, deflate, br, zstd"))
+		for name, rec := range map[string]*httptest.ResponseRecorder{"identity": plain, "gzip;Q=0": refused, "gzip": gz} {
+			hd := rec.Header()
+			if rec.Code != http.StatusOK || hd.Get("Cache-Control") != "private, max-age=31536000, immutable" || hd.Get("Vary") != "Accept-Encoding" || hd.Get("ETag") == "" {
+				t.Errorf("%s %s: %d %v, want 200, immutable, Vary and an ETag", a.url, name, rec.Code, hd)
+			}
+		}
+		if plain.Header().Get("Content-Encoding") != "" || refused.Header().Get("Content-Encoding") != "" ||
+			!bytes.Equal(plain.Body.Bytes(), a.body) || !bytes.Equal(refused.Body.Bytes(), a.body) {
+			t.Errorf("%s without gzip: want the asset's own bytes, unencoded", a.url)
+		}
+		zipped := gz.Body.Bytes()
+		zr, err := gzip.NewReader(bytes.NewReader(zipped))
+		if err != nil {
+			t.Fatalf("%s gzip: %v", a.url, err)
+		}
+		if got, err := io.ReadAll(zr); gz.Header().Get("Content-Encoding") != "gzip" || err != nil || !bytes.Equal(got, a.body) || len(zipped) >= len(a.body) {
+			t.Errorf("%s gzip: Content-Encoding %q, %d bytes, want the asset's bytes gzipped smaller (err %v)", a.url, gz.Header().Get("Content-Encoding"), len(zipped), err)
+		}
+		if plain.Header().Get("ETag") == gz.Header().Get("ETag") {
+			t.Errorf("%s: identity and gzip share the ETag %s", a.url, gz.Header().Get("ETag"))
+		}
+		path, _, _ := strings.Cut(a.url, "?")
+		for _, u := range []string{path, path + "?v=0000000000000000"} { // no hash, and an old one
+			rec := sendForm(h, http.MethodGet, u, nil, with("Accept-Encoding", "gzip"))
+			etag := rec.Header().Get("ETag")
+			if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, no-cache" || etag == "" {
+				t.Errorf("%s: %d %v, want 200, no-cache and an ETag", u, rec.Code, rec.Header())
+			}
+			if nm := sendForm(h, http.MethodGet, u, nil, with("Accept-Encoding", "gzip", "If-None-Match", etag)); nm.Code != http.StatusNotModified || nm.Body.Len() != 0 {
+				t.Errorf("%s If-None-Match %s: %d with %d bytes, want an empty 304", u, etag, nm.Code, nm.Body.Len())
+			}
+			if other := sendForm(h, http.MethodGet, u, nil, with("If-None-Match", etag)); other.Code != http.StatusOK {
+				t.Errorf("%s: the gzip ETag matched the unencoded bytes (%d)", u, other.Code)
+			}
+		}
+	}
+}
+
+// Every page links the assets by their hash; the sign-in page, open signed
+// out, links neither (they need the sign-in) and carries its own style.
+func TestSSR_PagesLinkHashedAssets(t *testing.T) {
+	for p, body := range renderAllPages(t, populated) {
+		for _, want := range []string{`<link rel="stylesheet" href="` + ssrCSS.url + `">`, `<script type="module" src="` + datastarJS.url + `">`} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s doesn't link %s", p, want)
+			}
+		}
+	}
+	h := inventoryServer(Config{Addr: "example.com", Auth: "s3cret"}).served()
+	signIn := sendForm(h, http.MethodGet, "/settings", nil, nil)
+	if body := signIn.Body.String(); signIn.Code != http.StatusOK || !strings.Contains(body, "<style>") || strings.Contains(body, "styles.css") || strings.Contains(body, "datastar.js") {
+		t.Errorf("signed-out sign-in page: %d, want 200 with its own <style> and no asset link:\n%s", signIn.Code, body)
+	}
+	for _, a := range []*asset{ssrCSS, datastarJS} {
+		if rec := sendForm(h, http.MethodGet, a.url, nil, nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s signed out = %d, want 401: the assets are private", a.url, rec.Code)
+		}
+	}
+}
+
+// New bytes get a new hash, so a browser never keeps an old asset for a new
+// build; the same bytes keep it.
+func TestSSR_AssetHash(t *testing.T) {
+	a, b, a2 := newAsset("/x.css", "text/css", []byte("a{}")), newAsset("/x.css", "text/css", []byte("b{}")), newAsset("/x.css", "text/css", []byte("a{}"))
+	if a.url == b.url || a.url != a2.url || !strings.HasPrefix(a.url, "/x.css?v=") || len(a.hash) != 16 {
+		t.Errorf("urls %s, %s, %s: want a 16-character hash that follows the bytes", a.url, b.url, a2.url)
 	}
 }
 
@@ -175,7 +255,7 @@ func TestSSR_ToolToggleURLEscapesName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`data-on:click="@post\('([^']*)'\)"`).FindStringSubmatch(row)
+	m := regexp.MustCompile(`data-on:click="@post\('([^']*)', \{retryMaxCount:0\}\)"`).FindStringSubmatch(row)
 	if m == nil {
 		t.Fatalf("no @post toggle on the row:\n%s", row)
 	}
@@ -272,15 +352,12 @@ func TestSSR_PluginToggleForm(t *testing.T) {
 // tests can check, uses the colon syntax and none of the dead hyphen forms.
 func TestSSR_DatastarColonSyntax(t *testing.T) {
 	s := mustServer()
-	s.SetLogs(logs.NewMemory(10)) // the activity feed renders only when a log hub is wired
 	cases := []struct {
 		path, want, reject string
 	}{
-		{"/activity", `@get('/activity/events`, "data-on-load"},
-		{"/activity", `{retryMaxCount:1000000, retryMaxWait:5000, openWhenHidden:true})`, "data-on-load"},
 		{"/chat", `data-on:submit__prevent="@post('/chat/send', {requestCancellation:'disabled'})"`, "data-on-submit"}, // a double tap keeps the first answer
 		{"/chat", `data-bind:text`, "data-bind-text"},
-		{"/chat", `data-on:click="@post('/chat/stop')"`, "data-on-click"},
+		{"/chat", `data-on:click="@post('/chat/stop', {retryMaxCount:0})"`, "data-on-click"},
 		{"/tools", `data-on:click="@post('\/tools\/`, "data-on-click"}, // JS-escaped ToggleURL
 	}
 	for _, c := range cases {

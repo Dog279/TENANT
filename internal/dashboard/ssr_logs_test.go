@@ -233,7 +233,7 @@ func TestLogsTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := get(t, s, "/logs").Body.String()
-	tree := page[strings.Index(page, `<nav class="lg-tree"`):strings.Index(page, `href="/logs/components"`)]
+	tree := page[strings.Index(page, `<nav id="lg-tree" class="lg-tree"`):strings.Index(page, `href="/logs/components"`)]
 	order := []string{"Custom Views", "Administrative Events", "Security failures", "This run", "Since last start", "Mine",
 		"<summary>Tenant", ">System<", ">Security<", ">Turns<", ">Sub-agents<",
 		"<summary>Subsystems", "<summary>Channels", ">Discord ", ">iMessage<", "<summary>Scheduler", ">Cron ",
@@ -355,7 +355,7 @@ func TestLogsDetailTabsAndReveal(t *testing.T) {
 	}
 	d := detail("details")
 	if strings.Contains(d, "the secret payload") || !strings.Contains(d, event.Masked) || !strings.Contains(d, "tls: bad record") ||
-		!strings.Contains(d, "Raw JSON") || !strings.Contains(d, `@post('\/logs\/detail\/`+seq+`\/reveal')`) {
+		!strings.Contains(d, "Raw JSON") || !strings.Contains(d, `data-on:click__throttle.1s="@post('\/logs\/detail\/`+seq+`\/reveal', {retryMaxCount:0})"`) {
 		t.Errorf("Details should mask the sensitive value and offer a reveal:\n%s", d)
 	}
 	if n := len(security(t, st, 4904)); n != 0 {
@@ -448,7 +448,9 @@ func TestLogsActions(t *testing.T) {
 	}
 
 	page = get(t, s, "/logs?q=log:cron").Body.String()
-	for _, want := range []string{"Properties · cron", `action="/logs/log/cron/properties"`, `action="/logs/log/cron/clear"`, "Clear 2 events",
+	for _, want := range []string{"Properties · cron",
+		`<form method="post" action="/logs/properties" class="lg-props" data-on:submit__prevent__throttle.1s="@post('/logs/properties', {contentType:'form', retryMaxCount:0})">` + "\n      " + `<input type="hidden" name="log" value="cron">`,
+		inlineForm("/logs/clear") + `<input type="hidden" name="log" value="cron"><input type="hidden" name="q" value="log:cron">`, "Clear 2 events",
 		`href="/api/events/export?format=ndjson&amp;q=log%3Acron"`, `href="/api/events/export?format=csv&amp;q=log%3Acron"`, "Debug for 30 min"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the cron grid lacks %q", want)
@@ -458,7 +460,7 @@ func TestLogsActions(t *testing.T) {
 		t.Errorf("the export link = %d %s", rec.Code, rec.Body.String())
 	}
 
-	u = form("/logs/log/cron/properties", url.Values{"max_mb": {"5"}, "max_days": {"7"}, "on_full": {"archive"}, "min_level": {"warning"}, "enabled": {"on"}})
+	u = form("/logs/properties", url.Values{"log": {"cron"}, "max_mb": {"5"}, "max_days": {"7"}, "on_full": {"archive"}, "min_level": {"warning"}, "enabled": {"on"}})
 	if u.Query().Get("err") != "" {
 		t.Fatalf("properties → %s", u)
 	}
@@ -466,10 +468,10 @@ func TestLogsActions(t *testing.T) {
 	if err != nil || p.MaxBytes != 5<<20 || p.MaxAge != 7*24*time.Hour || p.OnFull != store.Archive || p.MinLevel != event.Warning || p.Disabled {
 		t.Errorf("cron's policy = %+v %v", p, err)
 	}
-	if u := form("/logs/log/cron/properties", url.Values{"max_mb": {"lots"}, "max_days": {"7"}}); u.Query().Get("err") == "" {
+	if u := form("/logs/properties", url.Values{"log": {"cron"}, "max_mb": {"lots"}, "max_days": {"7"}}); u.Query().Get("err") == "" {
 		t.Error("a size that isn't a number was taken")
 	}
-	form("/logs/log/cron/properties", url.Values{"action": {"debug"}})
+	form("/logs/properties", url.Values{"log": {"cron"}, "action": {"debug"}})
 	if dbg, _ := st.Debugging(ctx); time.Until(dbg["cron"]) < 29*time.Minute {
 		t.Errorf("debug for 30 min: %v", dbg)
 	}
@@ -477,7 +479,7 @@ func TestLogsActions(t *testing.T) {
 		t.Errorf("reconfiguring should file a Security record each time: %+v", security(t, st, 4902))
 	}
 
-	u = form("/logs/log/cron/clear", url.Values{"confirm": {"yes"}})
+	u = form("/logs/clear", url.Values{"log": {"cron"}, "confirm": {"yes"}})
 	if !strings.Contains(u.Query().Get("msg"), "Cleared 2 events") {
 		t.Errorf("clear → %s", u)
 	}
@@ -487,11 +489,118 @@ func TestLogsActions(t *testing.T) {
 	if len(security(t, st, 4901)) != 1 {
 		t.Error("clearing should file a Security record")
 	}
-	if u := form("/logs/log/security/clear", url.Values{"confirm": {"yes"}}); !strings.Contains(u.Query().Get("err"), "never cleared") {
+	if u := form("/logs/clear", url.Values{"log": {"security"}, "confirm": {"yes"}}); !strings.Contains(u.Query().Get("err"), "never cleared") {
 		t.Errorf("clearing the Security log → %s", u)
 	}
-	if page := get(t, s, "/logs?q=log:security").Body.String(); !strings.Contains(page, "never cleared, only archived") || strings.Contains(page, `action="/logs/log/security/clear"`) {
+	if page := get(t, s, "/logs?q=log:security").Body.String(); !strings.Contains(page, "never cleared, only archived") || strings.Contains(page, `action="/logs/clear"`) {
 		t.Error("the Security log offers a clear")
+	}
+}
+
+// The Logs forms answer a Datastar post in place (DESIGN.md "Forms that
+// don't reload"): the toast, the status strip and the parts the change
+// touched. Saving a view redraws the tree; a log's properties redraw its
+// Properties and Clear sections; a clear also redraws the grid of the page's
+// filter, its count and the detail pane. An error is an alert and redraws
+// nothing, so an open step keeps what was typed.
+func TestLogs_InlineForms(t *testing.T) {
+	s, _, st := logsBook(t)
+	commit(t, st, event.Event{Log: "cron", Level: event.Error, Msg: "job failed"}, event.Event{Log: "cron", Msg: "job ran"})
+	post := func(path string, f url.Values) string {
+		t.Helper()
+		rec := sendForm(s.Handler(), http.MethodPost, path, f, datastar)
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || rec.Header().Get("Location") != "" {
+			t.Fatalf("POST %s %v: %d %q to %q, want 200 text/event-stream", path, f, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Location"))
+		}
+		return rec.Body.String()
+	}
+	has := func(body string, want ...string) {
+		t.Helper()
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				t.Errorf("the answer lacks %q:\n%s", w, body)
+			}
+		}
+	}
+	lacks := func(body string, ids ...string) {
+		t.Helper()
+		for _, id := range ids {
+			if strings.Contains(body, `id="`+id+`"`) {
+				t.Errorf("an error redrew #%s:\n%s", id, body)
+			}
+		}
+	}
+	const ok, strip = "data: mode replace\ndata: elements <div id=\"toast\" class=\"toast ok\">", `data: elements <div id="ui-status"`
+	const alert = `<div id="toast" class="toast err" role="alert"><span class="toast-text">`
+
+	body := post("/logs/views", url.Values{"name": {"Cron errors"}, "filter": {"log:cron level>=error"}, "view": {""}})
+	has(body, ok+`<span class="toast-text">Saved the view Cron errors. It&#39;s under Custom Views.</span>`, strip,
+		`data: elements <nav id="lg-tree" class="lg-tree"`, `title="log:cron level&gt;=error">Cron errors</a>`)
+	body = post("/logs/views", url.Values{"name": {"This run"}, "filter": {"log:cron"}})
+	has(body, alert, "built-in")
+	lacks(body, "lg-tree")
+
+	body = post("/logs/properties", url.Values{"log": {"cron"}, "q": {"log:cron level>=error"}, "view": {"Cron errors"}, "action": {"debug"}})
+	has(body, ok+`<span class="toast-text">Log cron changed.</span>`, strip,
+		`data: elements <div id="lg-props" class="lg-part">`, `<span class="tag">debug until`, `data: elements <div id="lg-clear" class="lg-part">`, "Clear 2 events",
+		`<input type="hidden" name="q" value="log:cron level&gt;=error"><input type="hidden" name="view" value="Cron errors"><input type="hidden" name="confirm" value="yes">`) // the redrawn Clear still redraws the tree and grid
+	lacks(body, "lg-grid")
+	body = post("/logs/properties", url.Values{"log": {"cron"}, "max_mb": {"lots"}, "max_days": {"7"}})
+	has(body, alert+"Max size and max age are numbers; 0 means no limit.</span>")
+	lacks(body, "lg-props", "lg-clear")
+
+	if !strings.Contains(get(t, s, "/logs").Body.String(), `>Cron <span class="lg-n bad">1</span>`) {
+		t.Fatal("the tree should count cron's error before the clear")
+	}
+	body = post("/logs/clear", url.Values{"log": {"cron"}, "q": {"log:cron level>=error"}, "view": {"Cron errors"}, "confirm": {"yes"}})
+	has(body, ok+`<span class="toast-text">Cleared 2 events from cron.</span>`, strip, "Clear 0 events",
+		`data: elements <nav id="lg-tree" class="lg-tree"`, `class="lg-leaf on" title="log:cron level&gt;=error">Cron errors</a>`, `>Cron</a>`,
+		`data: elements <div class="lg-grid" id="lg-grid">`, `<div id="lg-rows"></div>`, "No events match.",
+		`data: elements <span id="lg-count" class="lg-count dim">`, "; 0 match</span>",
+		`data: elements <section id="lg-detail" class="lg-detail"><div class="dim pad">Select an event to see its detail.</div>`)
+	if strings.Contains(body, "job failed") {
+		t.Errorf("the redrawn grid still shows a cleared event:\n%s", body)
+	}
+	body = post("/logs/clear", url.Values{"log": {"security"}, "q": {"log:security"}, "confirm": {"yes"}})
+	has(body, alert+"the Security log is never cleared")
+	lacks(body, "lg-props", "lg-clear", "lg-tree", "lg-grid", "lg-count", "lg-detail")
+
+	// Only a hand-made post names no log; it changes nothing and says so.
+	for _, path := range []string{"/logs/properties", "/logs/clear"} {
+		body = post(path, url.Values{"log": {""}, "max_mb": {"1"}, "max_days": {"1"}, "confirm": {"yes"}})
+		has(body, alert+"Pick a log first.</span>")
+		lacks(body, "lg-props", "lg-clear", "lg-tree")
+	}
+	if n := len(security(t, st, 4901)); n != 1 {
+		t.Errorf("a clear that names no log filed a record: %d clears, want the one", n)
+	}
+
+	// The confirm step still gates a clear, in place or not.
+	if rec := sendForm(s.Handler(), http.MethodPost, "/logs/clear", url.Values{"log": {"cron"}}, datastar); rec.Code != http.StatusPreconditionRequired {
+		t.Errorf("a clear without its confirm step over Datastar = %d, want 428", rec.Code)
+	}
+	// With no log book, the answer says so.
+	bare := New(Config{}, nil, nil, nil, nil, nil)
+	for _, path := range []string{"/logs/views", "/logs/properties", "/logs/clear"} {
+		rec := sendForm(bare.Handler(), http.MethodPost, path, url.Values{"log": {"cron"}, "confirm": {"yes"}}, datastar)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), alert+"The log book isn&#39;t open here.</span>") {
+			t.Errorf("POST %s with no log book: %d\n%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// REVSEC-8 on the Logs page, which replaced the Activity feed: hidden
+// characters in a message or a field show as markers in the grid, the
+// detail pane and its raw JSON, never raw.
+func TestLogs_ShowHiddenCharacters(t *testing.T) {
+	s, _, st := logsBook(t)
+	const cmd = "run echo safe \u202e evil \u2066 done"
+	evs := commit(t, st, event.Event{Log: "turns", Msg: cmd, Data: []event.Field{{Key: "args", Value: cmd}}})
+	seq := itoa(int(evs[0].Seq))
+	for _, path := range []string{"/logs?q=log:turns", "/logs/event/" + seq, "/logs/detail/" + seq + "?tab=details"} {
+		if body := get(t, s, path).Body.String(); strings.ContainsAny(body, "\u202e\u2066") || !strings.Contains(body, "⟨U&#43;202E⟩") {
+			t.Errorf("%s shows the raw characters:\n%s", path, body)
+		}
 	}
 }
 

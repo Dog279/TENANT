@@ -2,14 +2,17 @@ package dashboard
 
 // ssr_fact.go is the provenance inspector's page and form actions (PRD-001 /
 // TEN-297): GET /memory/facts/{id} explains one fact, and the POST actions
-// edit it, mark it no longer true (or true again) and restore an earlier
-// version, each redirecting back to the fact. Inline state follows the rest of
-// the memory pages: ?turns=1 rebuilds the source conversations from the
-// archive, ?compare=a,b shows a word diff of two versions, ?edit=1 opens the
-// editor. Operator language: "no longer true", "earlier versions", "replaced".
+// edit it and restore an earlier version, each going to the new version's
+// page, and mark it no longer true (or true again), answered in place. Inline
+// state follows the rest of the memory pages: ?turns=1 rebuilds the source
+// conversations from the archive, ?compare=a,b shows a word diff of two
+// versions, ?edit=1 opens the editor. Operator language: "no longer true",
+// "earlier versions", "replaced".
 
 import (
+	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +23,10 @@ type factPageData struct {
 	layoutData
 	Configured bool
 	Supported  bool
-	Err        string
-	Notice     string
+	Msg, Err   string
+	// Self is this view (the fact, and its open conversations or
+	// comparison) that an in-place form sends as back.
+	Self string
 
 	ID         int64
 	Text       string
@@ -51,11 +56,6 @@ type factPageData struct {
 	ShowTurns    bool
 	Turns        []factTurnVM
 	Compare      *factCompareVM
-
-	InvalidateAction string
-	RevalidateAction string
-	DeleteAction     string
-	RestoreAction    string
 }
 
 type factKV struct{ K, V string }
@@ -95,31 +95,30 @@ type factCompareVM struct {
 
 // handleMemoryFactPage renders one fact through the inspector.
 func (s *Server) handleMemoryFactPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, s.tmpl.memFact, s.memFactView(r.Context(), r.PathValue("id"), r.URL.Query()))
+}
+
+func (s *Server) memFactView(ctx context.Context, rawID string, q url.Values) factPageData {
 	d := factPageData{layoutData: layoutData{Title: "Memory · Fact", Page: "memory", Sub: "facts"}}
 	if s.mem == nil {
-		s.render(w, s.tmpl.memFact, d)
-		return
+		return d
 	}
 	d.Configured = true
 	ins, ok := s.mem.(FactInspector)
 	if !ok {
-		s.render(w, s.tmpl.memFact, d)
-		return
+		return d
 	}
 	d.Supported = true
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	id, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil {
 		d.Err = "That isn't a fact id."
-		s.render(w, s.tmpl.memFact, d)
-		return
+		return d
 	}
-	d.Err = r.URL.Query().Get("err")
-	d.Notice = r.URL.Query().Get("notice")
+	d.Msg, d.Err = q.Get("msg"), q.Get("err")
 	det, err := ins.FactDetail(id)
 	if err != nil {
-		d.Err = s.flashFor(r.Context(), "fact read", err, "Couldn't load that fact. It may have been removed; the Logs page has the reason.")
-		s.render(w, s.tmpl.memFact, d)
-		return
+		d.Err = s.flashFor(ctx, "fact read", err, "Couldn't load that fact. It may have been removed; the Logs page has the reason.")
+		return d
 	}
 	base := memFactsURL + "/" + i64(id)
 	f := det.Fact
@@ -181,22 +180,18 @@ func (s *Server) handleMemoryFactPage(w http.ResponseWriter, r *http.Request) {
 		d.Uses += ", last " + fmtWhen(*sig.LastAccessed)
 	}
 
-	q := r.URL.Query()
 	d.Editing = q.Get("edit") == "1" && f.Status == FactStatusLive
 	d.EditHref = urlWith(base, "edit", "1")
 	d.CancelHref = base
 	d.EditAction = base + "/edit"
 	d.TurnsHref = urlWith(base, "turns", "1")
 	d.ConflictHref = urlWith(memFactsURL, "resolve", i64(id))
-	d.InvalidateAction = base + "/invalidate"
-	d.RevalidateAction = base + "/revalidate"
-	d.DeleteAction = base + "/delete"
-	d.RestoreAction = base + "/restore"
+	d.Self = urlWith(base, "turns", q.Get("turns"), "compare", q.Get("compare"))
 	if q.Get("turns") == "1" {
 		d.ShowTurns = true
 		turns, err := ins.FactTurns(id)
 		if err != nil {
-			d.Err = s.flashFor(r.Context(), "fact conversations read", err, "Couldn't read those conversations back from the archive.")
+			d.Err = s.flashFor(ctx, "fact conversations read", err, "Couldn't read those conversations back from the archive.")
 		}
 		for _, t := range turns {
 			vm := factTurnVM{Episode: t.EpisodeID, Missing: t.Missing, Why: t.Why}
@@ -212,7 +207,7 @@ func (s *Server) handleMemoryFactPage(w http.ResponseWriter, r *http.Request) {
 			d.Compare = &factCompareVM{A: a, B: b, Parts: wordDiff(ta, tb)}
 		}
 	}
-	s.render(w, s.tmpl.memFact, d)
+	return d
 }
 
 func versionVM(v VersionView, current int64) factVersionVM {
@@ -313,14 +308,17 @@ func yesNo(b bool) string {
 
 // --- form actions -----------------------------------------------------------
 
+// inspector is the fact a form acts on and the control to act with. With
+// none, a plain post goes to the facts list and an in-place one re-renders
+// the fact's page, which says why.
 func (s *Server) inspector(w http.ResponseWriter, r *http.Request) (FactInspector, int64, bool) {
 	id, ok := memFormID(w, r)
 	if !ok {
 		return nil, 0, false
 	}
 	ins, ok := s.mem.(FactInspector)
-	if s.mem == nil || !ok {
-		http.Redirect(w, r, memFactsURL, http.StatusSeeOther)
+	if !ok {
+		s.formDone(w, r, memFactsURL, "", "", s.memRegion(r.Context(), memReturn(r, memFactsURL+"/"+i64(id))))
 		return nil, 0, false
 	}
 	return ins, id, true
@@ -344,33 +342,37 @@ func (s *Server) handleMemoryFactEditForm(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.log.Info("dashboard: fact edited", "id", id, "new", newID)
-	http.Redirect(w, r, urlWith(memFactsURL+"/"+i64(newID), "notice", "Saved as a new version; the earlier one is kept below."), http.StatusSeeOther)
+	redirectFlash(w, r, memFactsURL+"/"+i64(newID), "Saved as a new version; the earlier one is kept below.", "")
 }
 
-// handleMemoryFactInvalidateForm: POST /memory/facts/{id}/invalidate.
-func (s *Server) handleMemoryFactInvalidateForm(w http.ResponseWriter, r *http.Request) {
-	s.factFlag(w, r, "invalidated", "Couldn't mark that fact no longer true", "Marked no longer true.",
-		func(ins FactInspector, id int64) error { return ins.InvalidateFact(id) })
-}
-
-// handleMemoryFactRevalidateForm: POST /memory/facts/{id}/revalidate.
-func (s *Server) handleMemoryFactRevalidateForm(w http.ResponseWriter, r *http.Request) {
-	s.factFlag(w, r, "revalidated", "Couldn't mark that fact true again", "Marked true again.",
-		func(ins FactInspector, id int64) error { return ins.RevalidateFact(id) })
-}
-
-func (s *Server) factFlag(w http.ResponseWriter, r *http.Request, done, failed, notice string, fn func(FactInspector, int64) error) {
+// handleMemoryFactValidForm marks a fact no longer true (valid=false) or true
+// again (valid=true): POST /memory/facts/valid {fact, valid, back}, answered in
+// place on the fact's page (back, the view it was on). One route for both,
+// so after the morph the button that takes the other's place is the same
+// form, and its throttle drops a double tap's second post, which would undo
+// the first.
+func (s *Server) handleMemoryFactValidForm(w http.ResponseWriter, r *http.Request) {
+	valid := r.FormValue("valid")
+	if valid != "true" && valid != "false" {
+		writeError(w, http.StatusBadRequest, "valid must be true or false")
+		return
+	}
 	ins, id, ok := s.inspector(w, r)
 	if !ok {
 		return
 	}
-	base := memFactsURL + "/" + i64(id)
-	if err := fn(ins, id); err != nil {
-		http.Redirect(w, r, urlWith(base, "err", s.flashFor(r.Context(), "fact "+done, err, failed+".")), http.StatusSeeOther)
+	done, failed, msg, fn := "invalidated", "Couldn't mark that fact no longer true.", "Marked no longer true.", ins.InvalidateFact
+	if valid == "true" {
+		done, failed, msg, fn = "revalidated", "Couldn't mark that fact true again.", "Marked true again.", ins.RevalidateFact
+	}
+	back := memReturn(r, memFactsURL+"/"+i64(id))
+	region := s.memRegion(r.Context(), back)
+	if err := fn(id); err != nil {
+		s.formDone(w, r, back, "", s.flashFor(r.Context(), "fact "+done, err, failed), region)
 		return
 	}
 	s.log.Info("dashboard: fact "+done, "id", id)
-	http.Redirect(w, r, urlWith(base, "notice", notice), http.StatusSeeOther)
+	s.formDone(w, r, back, msg, "", region)
 }
 
 // handleMemoryFactRestoreVersionForm makes an earlier version current again:
@@ -392,7 +394,7 @@ func (s *Server) handleMemoryFactRestoreVersionForm(w http.ResponseWriter, r *ht
 		return
 	}
 	s.log.Info("dashboard: fact version restored", "version", version, "new", newID)
-	http.Redirect(w, r, urlWith(memFactsURL+"/"+i64(newID), "notice", "Restored as a new version."), http.StatusSeeOther)
+	redirectFlash(w, r, memFactsURL+"/"+i64(newID), "Restored as a new version.", "")
 }
 
 // --- JSON ---------------------------------------------------------------------

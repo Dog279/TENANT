@@ -1,4 +1,12 @@
 {{define "content"}}
+{{template "eval-body" .}}
+{{end}}
+
+{{/* eval-body is the region a Quality form re-renders in place (evalDone).
+     Every form posts through Datastar to its own fixed URL. The flash is
+     inside it, so a banner from a plain post goes once a toast replies. The
+     grader's section keeps open across the morph (data-preserve-attr). */}}
+{{define "eval-body"}}<div id="eval-body">
 {{template "ui-flash" .}}
 
 {{if not .Configured}}
@@ -45,10 +53,10 @@
 <div class="card">
   <div class="card-head">Run a check</div>
   {{if .Sched.Live}}
-  <form method="POST" action="/eval/run" class="inline">
+  <form method="POST" action="/eval/run" class="inline" data-on:submit__prevent__throttle.1s="@post('/eval/run', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn on">Run a quality check now</button>
   </form>
-  <div class="dim mt">Takes a few minutes: your agent answers a set of test questions and is graded against the baseline. The result appears here and in the Activity feed.</div>
+  <div class="dim mt">Takes a few minutes: your agent answers a set of test questions and is graded against the baseline. The result appears here and on the Logs page.</div>
   {{else}}
   <button type="button" class="btn" disabled>Run a quality check now</button>
   <div class="dim mt">Quality checks are off on this Tenant, so one can't start from here.</div>
@@ -58,7 +66,7 @@
 <div class="card">
   <div class="card-head">Automatic checks</div>
   <div class="dim mb">Now: <strong>{{.Sched.Desc}}</strong>{{if not .Sched.Live}} <span class="dim">(applies when Tenant next starts)</span>{{end}}</div>
-  <form method="POST" action="/eval/schedule" class="evalsched">
+  <form method="POST" action="/eval/schedule" class="evalsched" data-on:submit__prevent__throttle.1s="@post('/eval/schedule', {contentType:'form', retryMaxCount:0})">
     <label><input type="radio" name="mode" value="every"{{if eq .Sched.Mode "every"}} checked{{end}}> Every
       <input type="text" name="spec_every" value="{{if eq .Sched.Mode "every"}}{{.Sched.Spec}}{{else}}24h{{end}}" class="cinput short" placeholder="24h"> (for example 24h, 12h)</label>
     <label><input type="radio" name="mode" value="at"{{if eq .Sched.Mode "at"}} checked{{end}}> Daily at
@@ -77,15 +85,15 @@
 {{end}}
 
 <div class="card">
-  <details class="advanced"><summary>Advanced: who grades the checks</summary>
+  <details class="advanced" data-preserve-attr="open"><summary>Advanced: who grades the checks</summary>
   <div class="dim">{{.Judge}}</div>
-  <form method="POST" action="/eval/judge" class="evalsched mt">
+  <form method="POST" action="/eval/judge" class="evalsched mt" data-on:submit__prevent__throttle.1s="@post('/eval/judge', {contentType:'form', retryMaxCount:0})">
     <input type="text" name="kind" placeholder="provider: anthropic, zai, openai…" class="cinput" required>
     <input type="text" name="model" placeholder="model name" class="cinput" required>
     <input type="text" name="endpoint" placeholder="address (optional)" class="cinput">
     <button type="submit" class="btn">Set the grader</button>
   </form>
-  <form method="POST" action="/eval/judge/clear" class="mt">
+  <form method="POST" action="/eval/judge/clear" class="mt" data-on:submit__prevent__throttle.1s="@post('/eval/judge/clear', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn">Let the main model grade</button>
   </form>
   <div class="dim mt">The grader scores the quality of each answer. By default your main model grades its own answers, with nothing to set up. A separate grader's API key comes from the environment of the computer running Tenant; it's never entered or stored here.</div>
@@ -93,4 +101,4 @@
 </div>
 
 {{end}}
-{{end}}
+</div>{{end}}

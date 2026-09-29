@@ -3,7 +3,7 @@ package dashboard
 // rest_logs.go is the LIVE LOGGING API over the unified log book: the JSON
 // surface external add-ons, sidecar scripts and the `tenant log` CLI use to
 // read the folders and to write lines into them. A source is created on first
-// write — folder on disk, tab on the Activity page — so a new subsystem or a
+// write — folder on disk, log on the Logs page — so a new subsystem or a
 // custom automation joins the audited record with a single POST and no rebuild.
 // Auth is the same Bearer token as every other /api route.
 //
@@ -108,9 +108,29 @@ func (s *Server) handleLogFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleLogFile is the API twin of the Activity page's raw-file view.
+// handleLogFile serves one on-disk log file as plain text (inline for a
+// browser tab; ?download=1 for an attachment). Names are validated by the hub.
 func (s *Server) handleLogFile(w http.ResponseWriter, r *http.Request) {
-	s.handleActivityFile(w, r)
+	if s.logs == nil {
+		http.Error(w, "log files unavailable", http.StatusNotFound)
+		return
+	}
+	src, name := r.PathValue("source"), r.PathValue("name")
+	rc, fi, err := s.logs.OpenFile(src, name)
+	if err != nil {
+		http.Error(w, "no such log file", http.StatusNotFound)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	disp := "inline"
+	if r.URL.Query().Get("download") != "" {
+		disp = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s-%s"`, disp, src, name))
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size, 10))
+	_, _ = io.Copy(w, rc)
 }
 
 // builtinSourceErr is the refusal for a write into one of Tenant's own sources.

@@ -460,7 +460,7 @@ func TestNav_GroupsAndLabels(t *testing.T) {
 		}
 	}
 	want := []string{"/ Overview",
-		"[Activity]", "/chat Chat", "/activity Activity feed", "/goal Autopilot", "/logs Logs",
+		"[Activity]", "/chat Chat", "/goal Autopilot", "/logs Logs",
 		"[Knowledge]", "/memory Memory", "/skills Skills", "/eval Quality", "/research Research",
 		"[Capabilities]", "/tools Tools", "/agents Helpers", "/mcp Remote services", "/cron Scheduled jobs",
 		"[Safety]", "/safety Approvals & safety", "/access Access",
@@ -498,7 +498,7 @@ func TestTemplates_NoInlineJS(t *testing.T) {
 	js := regexp.MustCompile(`(?i)<script|\son[a-z]+=`)
 	used := map[string]bool{}
 	walkTemplates(t, func(name, body string) {
-		body = strings.Replace(body, `<script type="module" src="/datastar.js"></script>`, "", 1) // the one script: Datastar
+		body = strings.Replace(body, `<script type="module" src="{{datastarURL}}"></script>`, "", 1) // the one script: Datastar
 		if !js.MatchString(body) {
 			return
 		}
@@ -639,4 +639,15 @@ func TestRendered_PlainLanguage(t *testing.T) {
 		checkPlain(t, route, visibleWords(page, false), used)
 	}
 	checkStale(t, func(k string) bool { return strings.HasPrefix(k, "/") }, used)
+}
+
+// No form field is named id (DESIGN.md "Forms that don't reload"): an input
+// named id hides the form's own id from Datastar's morph, which then
+// replaces the form and so resets its double-tap throttle.
+func TestRendered_NoFieldNamedID(t *testing.T) {
+	for route, page := range renderAllPages(t, populated) {
+		if strings.Contains(page, ` name="id"`) {
+			t.Errorf("%s has a form field named id", route)
+		}
+	}
 }

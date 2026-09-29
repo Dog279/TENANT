@@ -91,7 +91,7 @@ type Server struct {
 	integrations IntegrationsControl // TEN-206: integration-config page; nil = "not configured"
 	access       AccessControl       // TEN-208: iMessage + Discord access admin; nil = "not configured"
 	approvals    ApprovalControl     // TEN-194: headless approval surface (serve mode); nil = TUI drains its own prompts
-	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Activity unavailable
+	logs         *logs.Hub           // unified log book: retained feed (backfill + replay) + on-disk folders; nil = Logs unavailable
 	logbook      *logapi.API         // the log book's API v2 over logs (logbook.go)
 	rules        RuleControl         // per-tool permission rules (Tools page card); nil = card hidden
 	safety       SafetyControl       // TEN-207: the main broker's category modes; nil = "isn't available"
@@ -163,7 +163,7 @@ func isDashboardStream(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/events", "/activity/events", "/logs/tail", "/ws", "/research/live":
+	case "/events", "/logs/tail", "/ws", "/research/live":
 		return true
 	default:
 		return logapi.Streaming(r)

@@ -1,13 +1,21 @@
 package dashboard
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
+// fakeEvalCtl changes as the real control does (a saved schedule is the one
+// shown, a check run now is in progress at once, a grader set is the one
+// named), under mu, so a browser test's server and the test can share it.
 type fakeEvalCtl struct {
+	mu        sync.Mutex
 	sched     EvalScheduleView
 	points    []EvalTrendPoint
 	diff      string
@@ -21,25 +29,154 @@ type fakeEvalCtl struct {
 	judgeClr  int
 }
 
-func (f *fakeEvalCtl) Schedule() EvalScheduleView { return f.sched }
-func (f *fakeEvalCtl) Trend() []EvalTrendPoint    { return f.points }
-func (f *fakeEvalCtl) Diff() (string, error)      { return f.diff, nil }
+func (f *fakeEvalCtl) Schedule() EvalScheduleView {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sched
+}
+func (f *fakeEvalCtl) Trend() []EvalTrendPoint { return f.points }
+func (f *fakeEvalCtl) Diff() (string, error)   { return f.diff, nil }
 func (f *fakeEvalCtl) SetEvery(s string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.everyCall = s
-	return "every " + s, f.setErr
+	d, _ := time.ParseDuration(s)
+	return f.saved("every "+d.String(), f.setErr)
 }
 func (f *fakeEvalCtl) SetAt(s string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.atCall = s
-	return "daily at " + s, f.setErr
+	return f.saved("daily at "+s, f.setErr)
 }
-func (f *fakeEvalCtl) Off() (string, error)    { f.offCalls++; return "off", nil }
-func (f *fakeEvalCtl) RunNow() (string, error) { f.runCalls++; return "queued", nil }
-func (f *fakeEvalCtl) JudgeStatus() string     { return f.judge }
+func (f *fakeEvalCtl) Off() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offCalls++
+	return f.saved("off", nil)
+}
+
+// saved makes desc the schedule shown unless err; f.mu is held.
+func (f *fakeEvalCtl) saved(desc string, err error) (string, error) {
+	if err == nil {
+		f.sched.Desc = desc
+	}
+	return desc, err
+}
+func (f *fakeEvalCtl) RunNow() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runCalls++
+	f.sched.Running, f.sched.RunTotal = true, 10
+	return "Quality check queued.", nil
+}
+func (f *fakeEvalCtl) JudgeStatus() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.judge
+}
 func (f *fakeEvalCtl) SetJudge(kind, model, endpoint string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.judgeSet = append(f.judgeSet, kind+"|"+model+"|"+endpoint)
+	if f.setErr == nil {
+		f.judge = model + " from " + kind + " grades the checks."
+	}
 	return "judge set", f.setErr
 }
-func (f *fakeEvalCtl) ClearJudge() error { f.judgeClr++; return nil }
+func (f *fakeEvalCtl) ClearJudge() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.judgeClr++
+	return nil
+}
+
+// Every Quality form answers a Datastar post in place: the toast, the status
+// strip and #eval-body, never a 303 the fetch would follow. With no control
+// the page says so.
+func TestEval_InlineAnswersEveryForm(t *testing.T) {
+	forms := map[string]url.Values{
+		"/eval/schedule":    {"mode": {"every"}, "spec_every": {"12h"}},
+		"/eval/run":         {},
+		"/eval/judge":       {"kind": {"zai"}, "model": {"glm"}},
+		"/eval/judge/clear": {},
+	}
+	for path, f := range forms {
+		for _, on := range []bool{true, false} {
+			var fc EvalControl
+			if on {
+				fc = &fakeEvalCtl{sched: EvalScheduleView{Desc: "off", Live: true}}
+			}
+			rec := sendForm(evalServer(fc).Handler(), http.MethodPost, path, f, datastar)
+			body := rec.Body.String()
+			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "text/event-stream" || rec.Header().Get("Location") != "" {
+				t.Errorf("%s (control %v): %d %q to %q, want 200 text/event-stream", path, on, rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Location"))
+			}
+			for _, want := range []string{"data: mode replace\ndata: elements <div id=\"toast\"", `data: elements <div id="ui-status"`, `data: elements <div id="eval-body">`} {
+				if !strings.Contains(body, want) {
+					t.Errorf("%s (control %v) is missing %q:\n%s", path, on, want, body)
+				}
+			}
+			if !on && !strings.Contains(body, "Quality checks aren&#39;t available on this Tenant.") {
+				t.Errorf("%s with no control: the page doesn't say so:\n%s", path, body)
+			}
+		}
+	}
+}
+
+// A setting saved in place: the toast says so and the page shows it; a
+// check run now shows its progress, which refreshes itself; the grader's
+// section stays open. An error is an alert with the plain message and
+// nothing re-rendered, so what was typed stays. A plain post still gets the
+// 303 and its flash.
+func TestEval_Inline(t *testing.T) {
+	c := installCapture(t)
+	fc := &fakeEvalCtl{sched: EvalScheduleView{Desc: "off", Live: true}}
+	s := evalServer(fc)
+	post := func(path string, f url.Values) string {
+		return sendForm(s.Handler(), http.MethodPost, path, f, datastar).Body.String()
+	}
+
+	body := post("/eval/schedule", url.Values{"mode": {"at"}, "spec_every": {"24h"}, "spec_at": {"04:30"}})
+	for _, want := range []string{`<div id="toast" class="toast ok"><span class="toast-text">Schedule saved.</span>`, "Now: <strong>daily at 04:30</strong>", `value="at" checked`, `name="spec_at" value="04:30"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a schedule saved in place is missing %q:\n%s", want, body)
+		}
+	}
+
+	body = post("/eval/run", nil)
+	for _, want := range []string{`<span class="toast-text">Quality check queued.</span>`, `<span class="loading">Check in progress</span>`, `data-on-interval__duration.20s="window.location.reload()"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Run now in place is missing %q:\n%s", want, body)
+		}
+	}
+
+	body = post("/eval/judge", url.Values{"kind": {"zai"}, "model": {"glm-4.6"}})
+	for _, want := range []string{`<span class="toast-text">Saved: glm-4.6 from zai grades the checks now.</span>`, "glm-4.6 from zai grades the checks.", `<details class="advanced" data-preserve-attr="open">`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a grader set in place is missing %q:\n%s", want, body)
+		}
+	}
+
+	fc.mu.Lock()
+	fc.setErr = errors.New("config file is locked")
+	fc.mu.Unlock()
+	body = post("/eval/schedule", url.Values{"mode": {"every"}, "spec_every": {"soon"}})
+	if !strings.Contains(body, `<div id="toast" class="toast err" role="alert"><span class="toast-text">Couldn&#39;t update the schedule. Use a length like 24h or 12h, or a time like 03:15.</span>`) || strings.Contains(body, "locked") {
+		t.Errorf("a failed save: want the plain alert and not the control's own words:\n%s", body)
+	}
+	if strings.Contains(body, `id="eval-body"`) {
+		t.Errorf("a failed save re-rendered the page, which would undo what was typed:\n%s", body)
+	}
+	if !c.has("2201 ", "action=eval schedule") {
+		t.Errorf("the failure isn't logged as ActionFailed: %q", c.lines())
+	}
+
+	rec := sendForm(s.Handler(), http.MethodPost, "/eval/judge/clear", nil, nil)
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/eval?msg=") {
+		t.Errorf("a plain post: %d to %q, want 303 to /eval with its flash", rec.Code, loc)
+	}
+}
 
 // TEN-91: the Quality page renders the judge status + routes the set/clear forms.
 func TestEval_JudgeControl(t *testing.T) {

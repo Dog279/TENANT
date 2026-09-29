@@ -29,20 +29,20 @@ var adoptedConfirms = []struct {
 	key   string
 	safe  []string
 }{
-	{route: "/skills/x/forget"},
+	{route: "/skills/forget", form: url.Values{"name": {"x"}}},
 	{route: "/mcp/remove", form: url.Values{"target": {"svc"}}},
-	{route: "/integrations/gsuite/disconnect"},
-	{route: "/settings/keys/openai/remove"},
-	{route: "/cron/j1/delete"},
+	{route: "/integrations/disconnect", form: url.Values{"integration": {"gsuite"}}},
+	{route: "/settings/keys/remove", form: url.Values{"service": {"openai"}}},
+	{route: "/cron/delete", form: url.Values{"job": {"j1"}}},
 	{route: "/access/imessage/clear"},
-	{route: "/logs/log/cron/clear"},
+	{route: "/logs/clear", form: url.Values{"log": {"cron"}}},
 	{route: "/access/discord/operator", form: url.Values{"operator": {"4242"}}},
 	{route: "/access/imessage/allow", form: url.Values{"handle": {"a@b.c"}}},
 	{route: "/models/use", form: url.Values{"name": {"m"}}},
 	{route: "/models/remove", form: url.Values{"name": {"m"}}},
 	{route: "/tools/rules/remove", form: url.Values{"pattern": {"x"}, "mode": {"allow"}}}, // decided by the rule itself (REVSEC-1)
 
-	{route: "/skills/x/trust", key: "trusted", safe: []string{"", "false"}},
+	{route: "/skills/trust", form: url.Values{"name": {"x"}}, key: "trusted", safe: []string{"", "false"}},
 	{route: "/skills/auto", key: "mode", safe: []string{"off"}},
 	{route: "/mcp/trust", form: url.Values{"target": {"svc"}}, key: "mode", safe: []string{"ask", "deny"}},
 	{route: "/integrations/github/repos/mode", form: url.Values{"repo": {"a/b"}}, key: "mode", safe: []string{"read"}},
@@ -141,8 +141,8 @@ func TestAdoptedRoutes_ControlUntouchedWithoutConfirm(t *testing.T) {
 	s.SetSkills(fs)
 	s.SetRules(fr)
 	for _, p := range []struct{ route, body string }{
-		{"/cron/j1/delete", ""}, {"/cron/exec", "enabled=true"},
-		{"/skills/x/forget", ""}, {"/skills/x/trust", "trusted=true"}, {"/skills/auto", "mode=on"},
+		{"/cron/delete", "id=j1"}, {"/cron/exec", "enabled=true"},
+		{"/skills/forget", "name=x"}, {"/skills/trust", "name=x&trusted=true"}, {"/skills/auto", "mode=on"},
 		{"/tools/rules/add", "pattern=x&mode=allow"}, {"/tools/rules/remove", "pattern=x&mode=deny"},
 	} {
 		if rec := submitForm(t, s, p.route, p.body); rec.Code != http.StatusPreconditionRequired {
@@ -168,9 +168,9 @@ func TestAdopt_SecretsRefusedFromQuery(t *testing.T) {
 	s.SetModels(models)
 	s.SetIntegrations(integ)
 	for _, p := range []struct{ route, body string }{
-		{"/settings/keys/openai/set?value=sk-leak", "value=sk-leak"},
+		{"/settings/keys/set?value=sk-leak", "service=openai&value=sk-leak"},
 		{"/models/add?key=sk-leak", "kind=anthropic&key=sk-leak"},
-		{"/integrations/brave/save?api_key=sk-leak", "api_key=sk-leak"},
+		{"/integrations/save?api_key=sk-leak", "integration=brave&api_key=sk-leak"},
 	} {
 		rec := submitForm(t, s, p.route, p.body)
 		loc, _ := url.QueryUnescape(rec.Header().Get("Location"))
@@ -203,7 +203,7 @@ func TestAdopt_SecretErrorsStayOutOfURLs(t *testing.T) {
 	s.SetIntegrations(integ)
 	for _, p := range []struct{ route, body string }{
 		{"/models/add", "kind=anthropic&key=sk-leak"},
-		{"/integrations/brave/save", "api_key=sk-leak"},
+		{"/integrations/save", "integration=brave&api_key=sk-leak"},
 	} {
 		loc, _ := url.QueryUnescape(submitForm(t, s, p.route, p.body).Header().Get("Location"))
 		if !strings.Contains(loc, "err=Couldn't") || strings.Contains(loc, "sk-leak") || strings.Contains(loc, "bad key") {
@@ -279,7 +279,6 @@ func TestExistingPages_States(t *testing.T) {
 		errOK bool            // ?err= only (the page has no success flash)
 	}{
 		{route: "/", empty: func(*Server) {}},
-		{route: "/activity", off: true, empty: func(s *Server) { _, hub, _ := logsBook(t); s.SetLogs(hub) }},
 		{route: "/logs", off: true, flash: true},
 		{route: "/memory", off: true},
 		{route: "/memory/soul", off: true, empty: func(*Server) {}, errOK: true},
@@ -377,8 +376,17 @@ func TestHome_WaitingForYourOK(t *testing.T) {
 // Names from outside (a skill the agent saved, a remote service's tools)
 // are shown in words and can't aim a form elsewhere.
 func TestAdopt_PlainNamesAndSafeActions(t *testing.T) {
-	if got := (SkillView{Name: "../../settings/keys/openai/remove?x="}).Action("forget"); got != "/skills/..%2F..%2Fsettings%2Fkeys%2Fopenai%2Fremove%3Fx=/forget" {
-		t.Errorf("skill action = %q: the name must stay one path segment", got)
+	const evil = "../../settings/keys/openai/remove?x="
+	sk := New(Config{}, nil, nil, nil, nil, nil)
+	sk.SetSkills(&fakeSkillCtl{skills: []SkillView{{Name: evil, Status: "proposed"}, {Name: evil, Status: "live", Untrusted: true}, {Name: evil, Status: "live", Enabled: true}}})
+	page := get(t, sk, "/skills").Body.String()
+	for _, m := range regexp.MustCompile(`action="([^"]*)"`).FindAllStringSubmatch(page, -1) {
+		if strings.Contains(html.UnescapeString(m[1]), "settings") {
+			t.Errorf("a skill's name aims a form: action=%q", m[1])
+		}
+	}
+	if n := strings.Count(page, `<input type="hidden" name="name" value="../../settings/keys/openai/remove?x=">`); n != 7 {
+		t.Errorf("the skill's name is a form field in %d forms, want 7 (accept, dismiss, trust, remove, turn off, stop trusting, remove)", n)
 	}
 	for in, want := range map[string]string{
 		"mcp:127.0.0.1:9000:*":          "every tool on 127.0.0.1:9000",
@@ -463,7 +471,7 @@ func TestAdopt_LogsChangeErrorsArePlain(t *testing.T) {
 	s := New(Config{}, nil, nil, nil, nil, nil)
 	back := func(err error) string {
 		rec := httptest.NewRecorder()
-		s.logsBack(rec, httptest.NewRequest(http.MethodPost, "/logs/log/cron/clear", nil), url.Values{}, "", err)
+		s.logsDone(rec, httptest.NewRequest(http.MethodPost, "/logs/clear", nil), url.Values{}, "", err, nil)
 		u, _ := url.Parse(rec.Header().Get("Location"))
 		return u.Query().Get("err")
 	}

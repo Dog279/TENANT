@@ -6,8 +6,9 @@ package dashboard
 // responder + per-category permissions, and the Discord relay (operator /
 // on-off / exec / per-category permissions). Same idiom as cron.go: an
 // AccessControl interface (satisfied in cmd/tenant via dashAccess), unconditional
-// route mounting with nil-guarded handlers, and form/303 mutations so every view
-// is a plain GET httptest can assert on and a refresh can't double-submit. All
+// route mounting with nil-guarded handlers, and form mutations answered by
+// formDone: in place when Datastar posts them (the page keeps its scroll and a
+// toast says what happened), else a 303 so a refresh can't double-submit. All
 // values render through html/template auto-escaping (no template.HTML) — a
 // hostile handle/operator-id can't inject markup. Every route rides the
 // dashboard's existing auth (Run wraps the mux in secure()); mutations are POST.
@@ -112,147 +113,160 @@ type accessPageData struct {
 	Msg        string
 }
 
-func (s *Server) handleAccessPage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) accessData() accessPageData {
 	d := accessPageData{layoutData: layoutData{Title: "Access", Page: "access"}}
-	d.Err = r.URL.Query().Get("err")
-	d.Msg = r.URL.Query().Get("msg")
 	if s.access != nil {
 		d.Configured = true
 		d.View = s.access.View()
 	}
+	return d
+}
+
+func (s *Server) handleAccessPage(w http.ResponseWriter, r *http.Request) {
+	d := s.accessData()
+	d.Err = r.URL.Query().Get("err")
+	d.Msg = r.URL.Query().Get("msg")
 	s.render(w, s.tmpl.access, d)
 }
 
-// --- iMessage POST handlers (form/303) ---
+// accessDone is every Access form's answer: in place for a Datastar post,
+// with #access-body re-rendered; a 303 with the flash otherwise.
+func (s *Server) accessDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
+	s.formDone(w, r, "/access", msg, errMsg, func() (string, error) {
+		return part(s.tmpl.access, "access-body", s.accessData())
+	})
+}
+
+// --- iMessage POST handlers ---
 
 func (s *Server) handleIMessageAllowForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	handle := strings.TrimSpace(r.FormValue("handle"))
 	if handle == "" {
-		redirectFlash(w, r, "/access", "", "Enter a phone number or email to allow.")
+		s.accessDone(w, r, "", "Enter a phone number or email to allow.")
 		return
 	}
 	norm, added, err := s.access.IMessageAllow(handle)
 	if err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "imessage allow", err, "Couldn't save that. The Logs page has the reason."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "imessage allow", err, "Couldn't save that. The Logs page has the reason."))
 		return
 	}
 	if !added {
-		redirectFlash(w, r, "/access", norm+" can already message your agent.", "")
+		s.accessDone(w, r, norm+" can already message your agent.", "")
 		return
 	}
-	redirectFlash(w, r, "/access", norm+" can now message your agent on iMessage.", "")
+	s.accessDone(w, r, norm+" can now message your agent on iMessage.", "")
 }
 
 func (s *Server) handleIMessageDenyForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	handle := strings.TrimSpace(r.FormValue("handle"))
 	if handle == "" {
-		redirectFlash(w, r, "/access", "", "Enter a phone number or email to remove.")
+		s.accessDone(w, r, "", "Enter a phone number or email to remove.")
 		return
 	}
 	norm, removed, err := s.access.IMessageDeny(handle)
 	if err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "imessage deny", err, "Couldn't remove "+handle+"."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "imessage deny", err, "Couldn't remove "+handle+"."))
 		return
 	}
 	if !removed {
-		redirectFlash(w, r, "/access", norm+" wasn't on the list.", "")
+		s.accessDone(w, r, norm+" wasn't on the list.", "")
 		return
 	}
-	redirectFlash(w, r, "/access", norm+" can no longer message your agent.", "")
+	s.accessDone(w, r, norm+" can no longer message your agent.", "")
 }
 
 func (s *Server) handleIMessageClearForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	n, err := s.access.IMessageClear()
 	if err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "imessage clear", err, "Couldn't clear the list."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "imessage clear", err, "Couldn't clear the list."))
 		return
 	}
-	redirectFlash(w, r, "/access", fmt.Sprintf("Removed everyone (%d). Nobody can message your agent on iMessage until you add someone.", n), "")
+	s.accessDone(w, r, fmt.Sprintf("Removed everyone (%d). Nobody can message your agent on iMessage until you add someone.", n), "")
 }
 
 func (s *Server) handleIMessageResponderForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	on := formOn(r)
 	if _, err := s.access.SetIMessageResponder(on); err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "imessage responder", err, "Couldn't change whether your agent answers iMessages."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "imessage responder", err, "Couldn't change whether your agent answers iMessages."))
 		return
 	}
 	if on {
-		redirectFlash(w, r, "/access", "Your agent answers iMessages from the people listed below.", "")
+		s.accessDone(w, r, "Your agent answers iMessages from the people listed below.", "")
 		return
 	}
-	redirectFlash(w, r, "/access", "Your agent no longer answers iMessages.", "")
+	s.accessDone(w, r, "Your agent no longer answers iMessages.", "")
 }
 
 func (s *Server) handleIMessagePermissionForm(w http.ResponseWriter, r *http.Request) {
 	s.permissionForm(w, r, "iMessage", "imessage permission", func(v AccessView) []PermissionRow { return v.IMessagePerms }, AccessControl.SetIMessagePermission)
 }
 
-// --- Discord relay POST handlers (form/303) ---
+// --- Discord relay POST handlers ---
 
 func (s *Server) handleRelayEnableForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	on := formOn(r)
 	if err := s.access.SetRelayEnabled(on); err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "relay enable", err, "Couldn't change the Discord relay. It needs your Discord user ID, set below."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "relay enable", err, "Couldn't change the Discord relay. It needs your Discord user ID, set below."))
 		return
 	}
 	if on {
-		redirectFlash(w, r, "/access", "The Discord relay is starting.", "")
+		s.accessDone(w, r, "The Discord relay is starting.", "")
 	} else {
-		redirectFlash(w, r, "/access", "The Discord relay stopped.", "")
+		s.accessDone(w, r, "The Discord relay stopped.", "")
 	}
 }
 
 func (s *Server) handleRelayOperatorForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	id := strings.TrimSpace(r.FormValue("operator"))
 	if id == "" {
-		redirectFlash(w, r, "/access", "", "Enter your Discord user ID.")
+		s.accessDone(w, r, "", "Enter your Discord user ID.")
 		return
 	}
 	if err := s.access.SetRelayOperator(id); err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "relay operator", err, "Couldn't save that Discord user ID."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "relay operator", err, "Couldn't save that Discord user ID."))
 		return
 	}
-	redirectFlash(w, r, "/access", "Saved. Only that Discord account can approve your agent's risky actions from Discord.", "")
+	s.accessDone(w, r, "Saved. Only that Discord account can approve your agent's risky actions from Discord.", "")
 }
 
 func (s *Server) handleRelayExecForm(w http.ResponseWriter, r *http.Request) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	on := formOn(r)
 	if err := s.access.SetRelayExec(on); err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), "relay exec", err, "Couldn't change whether Discord messages may make changes."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "relay exec", err, "Couldn't change whether Discord messages may make changes."))
 		return
 	}
 	if on {
-		redirectFlash(w, r, "/access", "Discord messages may make changes now, each as its safety setting below says.", "")
+		s.accessDone(w, r, "Discord messages may make changes now, each as its safety setting below says.", "")
 	} else {
-		redirectFlash(w, r, "/access", "Discord messages can't make changes now: running commands, changing files, irreversible actions, leaving the sandbox and sending messages are refused.", "")
+		s.accessDone(w, r, "Discord messages can't make changes now: running commands, changing files, irreversible actions, leaving the sandbox and sending messages are refused.", "")
 	}
 }
 
@@ -269,17 +283,17 @@ var modeWords = map[string]string{"ask": "asks you first", "allow": "is allowed 
 func (s *Server) permissionForm(w http.ResponseWriter, r *http.Request, channel, action string,
 	rows func(AccessView) []PermissionRow, set func(c AccessControl, category, mode string) (bool, error)) {
 	if s.access == nil {
-		http.Redirect(w, r, "/access", http.StatusSeeOther)
+		s.accessDone(w, r, "", "")
 		return
 	}
 	cat := strings.TrimSpace(r.FormValue("category"))
 	mode := strings.ToLower(strings.TrimSpace(r.FormValue("mode")))
 	if modeWords[mode] == "" {
-		redirectFlash(w, r, "/access", "", "Pick Ask first, Allow or Block.")
+		s.accessDone(w, r, "", "Pick Ask first, Allow or Block.")
 		return
 	}
 	if _, err := set(s.access, cat, mode); err != nil {
-		redirectFlash(w, r, "/access", "", s.flashFor(r.Context(), action, err, "Couldn't change that safety setting."))
+		s.accessDone(w, r, "", s.flashFor(r.Context(), action, err, "Couldn't change that safety setting."))
 		return
 	}
 	title := cat
@@ -288,7 +302,7 @@ func (s *Server) permissionForm(w http.ResponseWriter, r *http.Request, channel,
 			title = p.Title
 		}
 	}
-	redirectFlash(w, r, "/access", channel+" conversations: "+title+" "+modeWords[mode]+".", "")
+	s.accessDone(w, r, channel+" conversations: "+title+" "+modeWords[mode]+".", "")
 }
 
 // formOn parses a boolean toggle field (mirrors the cron exec checkbox parse).

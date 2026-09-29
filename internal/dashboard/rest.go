@@ -176,8 +176,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 
 // restActivityEvent is one retained entry as the JSON activity projection
 // renders it (TEN-194): structured fields a programmatic attach client and the
-// doctor liveness probe can read directly — NOT the Datastar HTML the SSR
-// /activity feed streams. Mirrors the hub's lossless cursor. The original
+// doctor liveness probe can read directly, not HTML. Mirrors the hub's
+// lossless cursor. The original
 // event-shaped fields (kind/agent/iter/tool/is_err/text) are kept for existing
 // clients; source/level/msg/fields carry the unified log-book shape.
 type restActivityEvent struct {

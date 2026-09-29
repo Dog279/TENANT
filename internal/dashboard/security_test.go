@@ -242,14 +242,14 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /agents/remove": always,
 	"POST /agents/reset":  always,
 	// Scheduled jobs.
-	"POST /cron/add":         noStep,
-	"POST /cron/{id}/enable": noStep,
-	"POST /cron/{id}/delete": always,
-	"POST /cron/{id}/run":    noStep,
-	"POST /cron/exec":        unless("enabled", "", "false"),
+	"POST /cron/add":    noStep,
+	"POST /cron/enable": noStep,
+	"POST /cron/delete": always,
+	"POST /cron/run":    noStep,
+	"POST /cron/exec":   unless("enabled", "", "false"),
 	// Provider keys: storing one is typed; removing it loses it.
-	"POST /settings/keys/{id}/set":    noStep,
-	"POST /settings/keys/{id}/remove": always,
+	"POST /settings/keys/set":    noStep,
+	"POST /settings/keys/remove": always,
 	// Quality.
 	"POST /eval/schedule":    noStep,
 	"POST /eval/run":         noStep,
@@ -262,18 +262,18 @@ var reviewedMutations = map[string]confirmGate{
 	// Autopilot (TEN-212): Stop is the safe direction.
 	"POST /goal/stop": noStep,
 	// Integrations: a repository starts watch-only; write asks first.
-	"POST /integrations/{id}/save":           noStep,
-	"POST /integrations/{id}/test":           noStep,
-	"POST /integrations/{id}/disconnect":     always,
+	"POST /integrations/save":                noStep,
+	"POST /integrations/test":                noStep,
+	"POST /integrations/disconnect":          always,
 	"POST /integrations/github/repos/add":    unless("mode", "", "read"),
 	"POST /integrations/github/repos/mode":   unless("mode", "read"),
 	"POST /integrations/github/repos/remove": noStep,
 	// Research (TEN-210, D20): Stop and Delete lose the run.
-	"POST /research/start":       noStep,
-	"POST /research/clarify":     noStep,
-	"POST /research/stop":        always,
-	"POST /research/{id}/replay": noStep,
-	"POST /research/{id}/delete": always,
+	"POST /research/start":   noStep,
+	"POST /research/clarify": noStep,
+	"POST /research/stop":    always,
+	"POST /research/replay":  noStep,
+	"POST /research/delete":  always,
 	// Model: a switch changes every answer; removing loses the setup.
 	"POST /models/use":     always,
 	"POST /models/add":     noStep,
@@ -289,11 +289,11 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /auth/login":  noStep,
 	"POST /auth/logout": noStep,
 	// Skills: accepting without you, trusting and forgetting ask first.
-	"POST /skills/auto":          unless("mode", "off"),
-	"POST /skills/{name}/accept": noStep,
-	"POST /skills/{name}/enable": noStep,
-	"POST /skills/{name}/forget": always,
-	"POST /skills/{name}/trust":  unless("trusted", "", "false"),
+	"POST /skills/auto":   unless("mode", "off"),
+	"POST /skills/accept": noStep,
+	"POST /skills/enable": noStep,
+	"POST /skills/forget": always,
+	"POST /skills/trust":  unless("trusted", "", "false"),
 	// Tools. A switched-on tool still asks through its category's check.
 	"POST /tools/{name}/toggle":    noStep,
 	"POST /plugins/{label}/toggle": noStep,
@@ -307,19 +307,19 @@ var reviewedMutations = map[string]confirmGate{
 	// Memory: a removed fact comes back from Recently removed.
 	"POST /memory/soul/edit":                  noStep,
 	"POST /memory/facts/resolve":              noStep,
-	"POST /memory/facts/{id}/delete":          noStep,
-	"POST /memory/facts/{id}/restore":         noStep,
+	"POST /memory/facts/delete":               noStep,
+	"POST /memory/facts/restore":              noStep,
+	"POST /memory/facts/removal":              noStep,
 	"POST /memory/facts/{id}/edit":            noStep,
-	"POST /memory/facts/{id}/invalidate":      noStep,
-	"POST /memory/facts/{id}/revalidate":      noStep,
+	"POST /memory/facts/valid":                noStep,
 	"POST /memory/facts/{id}/restore-version": noStep,
 	// Logs: a reveal is recorded; the Security log refuses to be cleared or
 	// weakened (logs/store/policy.go).
-	"POST /logs/detail/{seq}/reveal":  noStep,
-	"POST /logs/views":                noStep,
-	"POST /logs/views/delete":         noStep,
-	"POST /logs/log/{log}/properties": noStep,
-	"POST /logs/log/{log}/clear":      always,
+	"POST /logs/detail/{seq}/reveal": noStep,
+	"POST /logs/views":               noStep,
+	"POST /logs/views/delete":        noStep,
+	"POST /logs/properties":          noStep,
+	"POST /logs/clear":               always,
 	// The JSON API.
 	"POST /api/memory/soul":                       noStep,
 	"POST /api/memory/facts/resolve":              noStep,
@@ -745,9 +745,9 @@ func TestSecretsNeverFromQuery(t *testing.T) {
 		form               url.Values
 		calls              func() []string
 	}{
-		{"/settings/keys/openai/set", "/settings/keys", "value", url.Values{}, func() []string { return keys.setCalls }},
+		{"/settings/keys/set", "/settings/keys", "value", url.Values{"service": {"openai"}}, func() []string { return keys.setCalls }},
 		{"/models/add", "/models", "key", url.Values{"kind": {"anthropic"}}, func() []string { return models.addCalls }},
-		{"/integrations/brave/save", "/integrations", "api_key", url.Values{}, func() []string { return integ.configCalls }},
+		{"/integrations/save", "/integrations", "api_key", url.Values{"integration": {"brave"}}, func() []string { return integ.configCalls }},
 	}
 	for _, in := range intakes {
 		rec := sendForm(h, http.MethodPost, in.route+"?"+in.field+"="+secret, withField(in.form, in.field, secret), page)

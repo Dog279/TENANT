@@ -8,8 +8,9 @@ package dashboard
 //
 // Same shape as cron.go: an EvalControl interface (satisfied in cmd/tenant by
 // dashEval), unconditional route mounting with nil-guarded handlers, and
-// form/303 mutations so every view is a plain GET. The trend chart is a
-// server-rendered inline SVG (the ssr_memory_svg.go precedent) — no JS.
+// form mutations answered by evalDone: in place for a Datastar post, else a
+// 303. The trend chart is a server-rendered inline SVG (the
+// ssr_memory_svg.go precedent) — no JS.
 
 import (
 	"fmt"
@@ -123,13 +124,10 @@ type evalPageData struct {
 	Msg        string
 }
 
-func (s *Server) handleEvalPage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) evalData() evalPageData {
 	d := evalPageData{layoutData: layoutData{Title: "Quality", Page: "eval"}}
-	d.Err = r.URL.Query().Get("err")
-	d.Msg = r.URL.Query().Get("msg")
 	if s.eval == nil {
-		s.render(w, s.tmpl.eval, d)
-		return
+		return d
 	}
 	d.Configured = true
 	d.Judge = s.eval.JudgeStatus()
@@ -139,12 +137,27 @@ func (s *Server) handleEvalPage(w http.ResponseWriter, r *http.Request) {
 	if diff, err := s.eval.Diff(); err == nil {
 		d.Diff = diff
 	}
+	return d
+}
+
+func (s *Server) handleEvalPage(w http.ResponseWriter, r *http.Request) {
+	d := s.evalData()
+	d.Err = r.URL.Query().Get("err")
+	d.Msg = r.URL.Query().Get("msg")
 	s.render(w, s.tmpl.eval, d)
+}
+
+// evalDone is every Quality form's answer: in place for a Datastar post,
+// with #eval-body re-rendered; a 303 with the flash otherwise.
+func (s *Server) evalDone(w http.ResponseWriter, r *http.Request, msg, errMsg string) {
+	s.formDone(w, r, "/eval", msg, errMsg, func() (string, error) {
+		return part(s.tmpl.eval, "eval-body", s.evalData())
+	})
 }
 
 func (s *Server) handleEvalScheduleForm(w http.ResponseWriter, r *http.Request) {
 	if s.eval == nil {
-		http.Redirect(w, r, "/eval", http.StatusSeeOther)
+		s.evalDone(w, r, "", "")
 		return
 	}
 	mode := strings.TrimSpace(r.FormValue("mode"))
@@ -163,62 +176,62 @@ func (s *Server) handleEvalScheduleForm(w http.ResponseWriter, r *http.Request) 
 	case "off":
 		_, err = s.eval.Off()
 	default:
-		redirectFlash(w, r, "/eval", "", "Pick a schedule option.")
+		s.evalDone(w, r, "", "Pick a schedule option.")
 		return
 	}
 	if err != nil {
-		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "eval schedule", err,
+		s.evalDone(w, r, "", s.flashFor(r.Context(), "eval schedule", err,
 			"Couldn't update the schedule. Use a length like 24h or 12h, or a time like 03:15."))
 		return
 	}
-	redirectFlash(w, r, "/eval", "Schedule saved.", "")
+	s.evalDone(w, r, "Schedule saved.", "")
 }
 
 func (s *Server) handleEvalRunForm(w http.ResponseWriter, r *http.Request) {
 	if s.eval == nil {
-		http.Redirect(w, r, "/eval", http.StatusSeeOther)
+		s.evalDone(w, r, "", "")
 		return
 	}
 	status, err := s.eval.RunNow()
 	if err != nil {
-		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "eval run", err, "Couldn't start a quality check."))
+		s.evalDone(w, r, "", s.flashFor(r.Context(), "eval run", err, "Couldn't start a quality check."))
 		return
 	}
-	redirectFlash(w, r, "/eval", status, "")
+	s.evalDone(w, r, status, "")
 }
 
 // handleEvalJudgeForm pins the eval LLM-judge model (TEN-91). The API key is
 // never entered here — it's read from the kind's env var at eval time.
 func (s *Server) handleEvalJudgeForm(w http.ResponseWriter, r *http.Request) {
 	if s.eval == nil {
-		http.Redirect(w, r, "/eval", http.StatusSeeOther)
+		s.evalDone(w, r, "", "")
 		return
 	}
 	kind := strings.TrimSpace(r.FormValue("kind"))
 	mdl := strings.TrimSpace(r.FormValue("model"))
 	endpoint := strings.TrimSpace(r.FormValue("endpoint"))
 	if kind == "" || mdl == "" {
-		redirectFlash(w, r, "/eval", "", "Enter a provider and a model name for the grader.")
+		s.evalDone(w, r, "", "Enter a provider and a model name for the grader.")
 		return
 	}
 	if _, err := s.eval.SetJudge(kind, mdl, endpoint); err != nil {
-		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "set judge", err, "Couldn't set the grader. Check the provider's name (anthropic, zai, openai…)."))
+		s.evalDone(w, r, "", s.flashFor(r.Context(), "set judge", err, "Couldn't set the grader. Check the provider's name (anthropic, zai, openai…)."))
 		return
 	}
-	redirectFlash(w, r, "/eval", "Saved: "+mdl+" from "+kind+" grades the checks now.", "")
+	s.evalDone(w, r, "Saved: "+mdl+" from "+kind+" grades the checks now.", "")
 }
 
 // handleEvalJudgeClearForm reverts to the planner-default judge (TEN-91).
 func (s *Server) handleEvalJudgeClearForm(w http.ResponseWriter, r *http.Request) {
 	if s.eval == nil {
-		http.Redirect(w, r, "/eval", http.StatusSeeOther)
+		s.evalDone(w, r, "", "")
 		return
 	}
 	if err := s.eval.ClearJudge(); err != nil {
-		redirectFlash(w, r, "/eval", "", s.flashFor(r.Context(), "clear judge", err, "Couldn't change the grader."))
+		s.evalDone(w, r, "", s.flashFor(r.Context(), "clear judge", err, "Couldn't change the grader."))
 		return
 	}
-	redirectFlash(w, r, "/eval", "Your main model grades the checks again.", "")
+	s.evalDone(w, r, "Your main model grades the checks again.", "")
 }
 
 // renderTrendSVG draws the score-over-time line as an inline SVG (0-100 on a

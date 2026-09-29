@@ -59,8 +59,8 @@ type auditReq struct {
 
 // AttachStore makes st the log book's system of record. From then on, Log
 // and the event emitter queue events for the pipeline instead of writing the
-// text files themselves; the files, the ring and the Activity feed carry on,
-// fed by the pipeline. The hub owns st: Close flushes the queue and closes it.
+// text files themselves; the files and the ring carry on, fed by the
+// pipeline. The hub owns st: Close flushes the queue and closes it.
 func (h *Hub) AttachStore(st *store.Store) {
 	p := newPipeline(h, st)
 	go p.run()

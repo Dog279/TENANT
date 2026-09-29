@@ -1,4 +1,12 @@
 {{define "content"}}
+{{template "agents-body" .}}
+{{end}}
+
+{{/* agents-body is the region a helper form re-renders in place (agentsDone),
+     as the page its plain post lands on would show it: the list, or one
+     helper's edit panel. Every form posts through Datastar to its own static
+     URL; a helper's name is a form field. */}}
+{{define "agents-body"}}<div id="agents-body">
 {{template "ui-flash" .}}
 {{if not .Configured}}{{template "ui-off" "Helpers aren't available on this Tenant."}}{{else}}
 {{if .LoadErr}}<div class="banner err" role="alert">{{.LoadErr}}</div>{{end}}
@@ -9,7 +17,7 @@
   <h2>Model</h2>
   <div class="dim">Now: {{if .Provider}}{{.Provider}}{{with .Model}} · {{.}}{{end}}{{else}}your main model{{end}}.{{with .SendsTo}} Sends its work to {{.}}.{{end}}</div>
   {{if $.Providers}}
-  <form method="POST" action="/agents/model" class="agent-form">
+  <form method="POST" action="/agents/model" class="agent-form" data-on:submit__prevent__throttle.1s="@post('/agents/model', {contentType:'form', retryMaxCount:0})">
     <input type="hidden" name="name" value="{{.Name}}">
     <label>Model provider
       <select name="provider" required>{{range $.Providers}}<option value="{{.Name}}"{{if eq .Name $.Edit.Provider}} selected{{end}}>{{.Name}}{{with .Model}} · {{.}}{{end}}{{with index $.SendsTo .Name}} · sends its work to {{.}}{{end}}</option>{{end}}</select>
@@ -23,7 +31,7 @@
 
   {{if not (or .Builtin .Customized)}}
   <h2>Name</h2>
-  <form method="POST" action="/agents/rename" class="agent-form">
+  <form method="POST" action="/agents/rename" class="agent-form" data-on:submit__prevent__throttle.1s="@post('/agents/rename', {contentType:'form', retryMaxCount:0})">
     <input type="hidden" name="name" value="{{.Name}}">
     <label>New name
       <input type="text" name="new_name" class="cinput" required maxlength="64" pattern="[A-Za-z0-9_\-]+" placeholder="letters, numbers, dashes and underscores">
@@ -32,15 +40,15 @@
   </form>
   {{end}}
 
-  <details class="advanced"><summary>Advanced</summary>
+  <details class="advanced" data-preserve-attr="open"><summary>Advanced</summary>
     <h2>Instructions</h2>
     <div class="dim">What {{visibleText .Name}} is told before every task it takes on. Changes apply from its next task.</div>
-    <form method="POST" action="/agents/soul" class="agent-form">
+    <form method="POST" action="/agents/soul" class="agent-form" data-on:submit__prevent__throttle.1s="@post('/agents/soul', {contentType:'form', retryMaxCount:0})">
       <input type="hidden" name="name" value="{{.Name}}">
       <textarea name="soul" class="cinput wide" rows="12" required aria-label="Instructions">{{$.EditSoul}}</textarea>
       <button type="submit" class="btn">Save instructions</button>
     </form>
-    {{if .HasSoul}}{{template "ui-confirm" (confirm "/agents/soul" "Clear instructions" "Clear this helper's instructions? Its current instructions are deleted and can't be brought back here." "name" .Name)}}{{end}}
+    {{if .HasSoul}}{{template "ui-confirm" (inline (confirm "/agents/soul" "Clear instructions" "Clear this helper's instructions? Its current instructions are deleted and can't be brought back here." "name" .Name))}}{{end}}
   </details>
   <a class="btn sm" href="/agents">Close</a>
 </div>
@@ -60,8 +68,8 @@
     </div>
     <div class="actions">
       <a class="btn sm" href="/agents?edit={{.Name}}#edit">Edit</a>
-      {{if .Customized}}{{template "ui-confirm" (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." (visibleText .Name)) "name" .Name)}}
-      {{else if not .Builtin}}{{template "ui-confirm" (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." (visibleText .Name)) "name" .Name)}}{{end}}
+      {{if .Customized}}{{template "ui-confirm" (inline (confirm "/agents/reset" "Reset" (printf "Undo your changes to %s? It goes back to its built-in model and instructions." (visibleText .Name)) "name" .Name))}}
+      {{else if not .Builtin}}{{template "ui-confirm" (inline (confirm "/agents/remove" "Remove" (printf "Remove %s? Your agent can't hand work to it anymore and its instructions are deleted. This can't be undone." (visibleText .Name)) "name" .Name))}}{{end}}
     </div>
   </div>
   {{else}}{{if not $.LoadErr}}{{template "ui-empty" "No helpers yet. Add one below and your agent can hand it work."}}{{end}}{{end}}
@@ -70,7 +78,7 @@
 <div class="card">
   <div class="card-head">Add a helper</div>
   {{if .Providers}}
-  <form method="POST" action="/agents/add" class="agent-form">
+  <form method="POST" action="/agents/add" class="agent-form" data-on:submit__prevent__throttle.1s="@post('/agents/add', {contentType:'form', retryMaxCount:0})">
     <label>Name
       <input type="text" name="name" class="cinput" required maxlength="64" pattern="[A-Za-z0-9_\-]+" placeholder="letters, numbers, dashes and underscores">
     </label>
@@ -88,6 +96,6 @@
   {{else}}{{template "agents-no-models"}}{{end}}
 </div>
 {{end}}
-{{end}}
+</div>{{end}}
 
 {{define "agents-no-models"}}<div class="empty">A helper needs a model. Add one on the <a href="/models">Model page</a> first.</div>{{end}}

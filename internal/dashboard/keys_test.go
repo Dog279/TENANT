@@ -76,7 +76,7 @@ func TestKeys_PageEscapesFields(t *testing.T) {
 func TestKeys_SetForm(t *testing.T) {
 	fs := &fakeSecrets{}
 	s := keysServer(fs)
-	rec := cronPostForm(t, s, "/settings/keys/openai/set", "value=sk-abc123")
+	rec := cronPostForm(t, s, "/settings/keys/set", "service=openai&value=sk-abc123")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -90,7 +90,7 @@ func TestKeys_SetForm(t *testing.T) {
 func TestKeys_SetRejectsQueryValue(t *testing.T) {
 	fs := &fakeSecrets{}
 	s := keysServer(fs)
-	rec := cronPostForm(t, s, "/settings/keys/openai/set?value=sk-LEAKED", "")
+	rec := cronPostForm(t, s, "/settings/keys/set?value=sk-LEAKED", "service=openai")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -105,7 +105,7 @@ func TestKeys_SetRejectsQueryValue(t *testing.T) {
 func TestKeys_SetEmpty(t *testing.T) {
 	fs := &fakeSecrets{}
 	s := keysServer(fs)
-	rec := cronPostForm(t, s, "/settings/keys/openai/set", "value=")
+	rec := cronPostForm(t, s, "/settings/keys/set", "service=openai&value=")
 	if rec.Code != http.StatusSeeOther || len(fs.setCalls) != 0 {
 		t.Fatalf("empty value: code=%d calls=%v", rec.Code, fs.setCalls)
 	}
@@ -120,7 +120,7 @@ func TestKeys_SetEmpty(t *testing.T) {
 func TestKeys_SetErrorNoLeak(t *testing.T) {
 	fs := &fakeSecrets{setErr: errors.New("upstream rejected key sk-SECRETFRAG")}
 	s := keysServer(fs)
-	rec := cronPostForm(t, s, "/settings/keys/openai/set", "value=sk-SECRETFRAGxyz")
+	rec := cronPostForm(t, s, "/settings/keys/set", "service=openai&value=sk-SECRETFRAGxyz")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -136,7 +136,7 @@ func TestKeys_SetErrorNoLeak(t *testing.T) {
 func TestKeys_RemoveForm(t *testing.T) {
 	fs := &fakeSecrets{}
 	s := keysServer(fs)
-	rec := cronPostForm(t, s, "/settings/keys/skill:discord:token/remove", "confirm=yes")
+	rec := cronPostForm(t, s, "/settings/keys/remove", "service=skill:discord:token&confirm=yes")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -147,10 +147,10 @@ func TestKeys_RemoveForm(t *testing.T) {
 
 func TestKeys_FormsNilSafe(t *testing.T) {
 	s := keysServer(nil)
-	if rec := cronPostForm(t, s, "/settings/keys/openai/set", "value=x"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/settings/keys/set", "service=openai&value=x"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil set: want 303, got %d", rec.Code)
 	}
-	if rec := cronPostForm(t, s, "/settings/keys/openai/remove", "confirm=yes"); rec.Code != http.StatusSeeOther {
+	if rec := cronPostForm(t, s, "/settings/keys/remove", "service=openai&confirm=yes"); rec.Code != http.StatusSeeOther {
 		t.Errorf("nil remove: want 303, got %d", rec.Code)
 	}
 }

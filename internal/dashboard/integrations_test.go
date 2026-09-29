@@ -97,7 +97,7 @@ func TestIntegrations_SaveCollectsFieldValues(t *testing.T) {
 	fc := &fakeIntegrationsCtl{fields: map[string][]IntegrationField{
 		"brave": {{Key: "api_key", Secret: true, Required: true}},
 	}}
-	rec := submitForm(t, intgServer(fc), "/integrations/brave/save", "api_key=sk-xyz")
+	rec := submitForm(t, intgServer(fc), "/integrations/save", "integration=brave&api_key=sk-xyz")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("want 303, got %d", rec.Code)
 	}
@@ -108,7 +108,7 @@ func TestIntegrations_SaveCollectsFieldValues(t *testing.T) {
 
 func TestIntegrations_SaveRejectsEmpty(t *testing.T) {
 	fc := &fakeIntegrationsCtl{fields: map[string][]IntegrationField{"brave": {{Key: "api_key"}}}}
-	submitForm(t, intgServer(fc), "/integrations/brave/save", "api_key=")
+	submitForm(t, intgServer(fc), "/integrations/save", "integration=brave&api_key=")
 	if len(fc.configCalls) != 0 {
 		t.Errorf("empty save should be rejected; got %v", fc.configCalls)
 	}
@@ -118,7 +118,7 @@ func TestIntegrations_TestIsAsync(t *testing.T) {
 	fc := &fakeIntegrationsCtl{probeGate: make(chan struct{})} // Probe blocks forever
 	s := intgServer(fc)
 	done := make(chan int, 1)
-	go func() { done <- submitForm(t, s, "/integrations/gsuite/test", "").Code }()
+	go func() { done <- submitForm(t, s, "/integrations/test", "integration=gsuite").Code }()
 	select {
 	case code := <-done:
 		if code != http.StatusSeeOther {
@@ -140,7 +140,7 @@ func TestIntegrations_TestIsAsync(t *testing.T) {
 
 func TestIntegrations_Disconnect(t *testing.T) {
 	fc := &fakeIntegrationsCtl{}
-	submitForm(t, intgServer(fc), "/integrations/gsuite/disconnect", "confirm=yes")
+	submitForm(t, intgServer(fc), "/integrations/disconnect", "integration=gsuite&confirm=yes")
 	if len(fc.discCalls) != 1 || fc.discCalls[0] != "gsuite" {
 		t.Errorf("disconnect calls = %v", fc.discCalls)
 	}
@@ -148,7 +148,7 @@ func TestIntegrations_Disconnect(t *testing.T) {
 
 func TestIntegrations_MutationsNilSafe(t *testing.T) {
 	s := intgServer(nil)
-	for _, p := range []string{"/integrations/x/save", "/integrations/x/test", "/integrations/x/disconnect"} {
+	for _, p := range []string{"/integrations/save", "/integrations/test", "/integrations/disconnect"} {
 		if rec := submitForm(t, s, p, "k=v&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}

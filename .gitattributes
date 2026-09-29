@@ -1,0 +1,4 @@
+# The dashboard embeds its templates and assets (go:embed), and its tests
+# compare rendered HTML byte for byte. A Windows checkout with core.autocrlf
+# would turn them CRLF, so keep them LF everywhere.
+internal/dashboard/templates/** text eol=lf

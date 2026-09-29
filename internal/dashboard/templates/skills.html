@@ -1,4 +1,15 @@
 {{define "content"}}
+{{template "skills-body" .}}
+{{end}}
+
+{{/* skills-body is the region a Skills form re-renders in place (formDone).
+     Every form posts through Datastar to a fixed URL; the skill's name is a
+     form field (F1). The rows have no id, so the morph reuses a row's form
+     for the skill that moves into its place and the form's throttle stops a
+     double tap from accepting or removing that one too. When a different
+     control moves under the finger (the card empties and the next one moves
+     up), layout.html's tap guard drops the second tap. */}}
+{{define "skills-body"}}<div id="skills-body">
 {{template "ui-flash" .}}
 
 {{if not .Configured}}
@@ -10,16 +21,17 @@
   <div class="card-head">Waiting for your OK ({{len .Proposed}})</div>
   <div class="dim mb">Your agent figured these out on its own. Accept the ones you trust: they'll start helping with future answers.</div>
   {{range .Proposed}}
-  <div class="soul-row" id="skill-{{.Name}}">
+  <div class="soul-row">
     <div>
       <div class="nm">{{visibleText .Name}}</div>
       <div class="dim">{{visibleText .Description}}</div>
     </div>
     <div class="cronactions">
-      <form method="POST" action="{{.Action "accept"}}" class="inline">
+      <form method="POST" action="/skills/accept" class="inline" data-on:submit__prevent__throttle.1s="@post('/skills/accept', {contentType:'form', retryMaxCount:0})">
+        <input type="hidden" name="name" value="{{.Name}}">
         <button type="submit" class="btn on sm">Accept</button>
       </form>
-      {{template "ui-confirm" (confirm (.Action "forget") "Dismiss" "Your agent forgets this skill. It can't be brought back here.")}}
+      {{template "ui-confirm" (inline (confirm "/skills/forget" "Dismiss" "Your agent forgets this skill. It can't be brought back here." "name" .Name))}}
     </div>
   </div>
   {{end}}
@@ -31,7 +43,7 @@
   <div class="card-head">Waiting for your review ({{len .Untrusted}})</div>
   <div class="dim mb">Your agent won't use these until you trust them. Something it read could have told it to save one, and a skill becomes part of the rules it follows, so read the instructions first.</div>
   {{range .Untrusted}}
-  <div class="soul-row" id="skill-{{.Name}}">
+  <div class="soul-row">
     <div>
       <div class="nm">{{visibleText .Name}} <span class="dim">({{if eq .Origin "agent"}}saved by your agent{{else if eq .Origin "import"}}imported{{if .Source}} from {{visibleText .Source}}{{end}}{{else if .Origin}}{{visibleText .Origin}}{{else}}changed{{end}})</span></div>
       <div class="dim">{{visibleText .Description}}</div>
@@ -39,8 +51,8 @@
       <details><summary class="dim">Instructions</summary><pre class="recipe">{{visibleText .Recipe}}</pre></details>
     </div>
     <div class="cronactions">
-      {{template "ui-confirm" (confirmGo (.Action "trust") "Trust" "Your agent will follow these instructions from now on, in every conversation where they fit." "trusted" "true")}}
-      {{template "ui-confirm" (confirm (.Action "forget") "Remove" "Your agent forgets this skill. It can't be brought back here.")}}
+      {{template "ui-confirm" (inline (confirmGo "/skills/trust" "Trust" "Your agent will follow these instructions from now on, in every conversation where they fit." "name" .Name "trusted" "true"))}}
+      {{template "ui-confirm" (inline (confirm "/skills/forget" "Remove" "Your agent forgets this skill. It can't be brought back here." "name" .Name))}}
     </div>
   </div>
   {{end}}
@@ -50,21 +62,23 @@
 <div class="card">
   <div class="card-head">What my agent has learned ({{len .Live}})</div>
   {{range .Live}}
-  <div class="soul-row" id="skill-{{.Name}}">
+  <div class="soul-row">
     <div>
       <div class="nm">{{visibleText .Name}} {{if not .Enabled}}<span class="dim">(off)</span>{{end}}</div>
       <div class="dim">{{visibleText .Description}}</div>
     </div>
     <div class="cronactions">
-      <form method="POST" action="{{.Action "enable"}}" class="inline">
+      <form method="POST" action="/skills/enable" class="inline" data-on:submit__prevent__throttle.1s="@post('/skills/enable', {contentType:'form', retryMaxCount:0})">
+        <input type="hidden" name="name" value="{{.Name}}">
         <input type="hidden" name="enabled" value="{{if .Enabled}}false{{else}}true{{end}}">
         <button type="submit" class="btn sm">{{if .Enabled}}Turn off{{else}}Turn on{{end}}</button>
       </form>
-      <form method="POST" action="{{.Action "trust"}}" class="inline">
+      <form method="POST" action="/skills/trust" class="inline" data-on:submit__prevent__throttle.1s="@post('/skills/trust', {contentType:'form', retryMaxCount:0})">
+        <input type="hidden" name="name" value="{{.Name}}">
         <input type="hidden" name="trusted" value="false">
         <button type="submit" class="btn sm">Stop trusting</button>
       </form>
-      {{template "ui-confirm" (confirm (.Action "forget") "Remove" "Your agent forgets this skill. It can't be brought back here.")}}
+      {{template "ui-confirm" (inline (confirm "/skills/forget" "Remove" "Your agent forgets this skill. It can't be brought back here." "name" .Name))}}
     </div>
   </div>
   {{else}}
@@ -77,13 +91,13 @@
   <div class="dim mb">Now: <strong>{{if eq .AutoMode "trusted"}}Trusted{{else if eq .AutoMode "on"}}On{{else}}Off{{end}}</strong>. Skills are instructions your agent follows, so accepting one shapes how it behaves.</div>
   <div class="evalsched">
     <div class="row"><span><b>Off</b>: I'll accept each new skill myself (safest).</span>
-      {{if ne .AutoMode "off"}}<form method="POST" action="/skills/auto" class="inline"><input type="hidden" name="mode" value="off"><button type="submit" class="btn sm">Choose Off</button></form>{{end}}</div>
+      {{if ne .AutoMode "off"}}<form method="POST" action="/skills/auto" class="inline" data-on:submit__prevent__throttle.1s="@post('/skills/auto', {contentType:'form', retryMaxCount:0})"><input type="hidden" name="mode" value="off"><button type="submit" class="btn sm">Choose Off</button></form>{{end}}</div>
     <div class="row"><span><b>Trusted</b>: accept automatically, but only while your recent feedback says your agent is doing well.</span>
-      {{if ne .AutoMode "trusted"}}{{template "ui-confirm" (confirmGo "/skills/auto" "Choose Trusted" "New skills your agent proposes start shaping how it behaves without your OK, while your recent feedback is good." "mode" "trusted")}}{{end}}</div>
+      {{if ne .AutoMode "trusted"}}{{template "ui-confirm" (inline (confirmGo "/skills/auto" "Choose Trusted" "New skills your agent proposes start shaping how it behaves without your OK, while your recent feedback is good." "mode" "trusted"))}}{{end}}</div>
     <div class="row"><span><b>On</b>: always accept new skills automatically.</span>
-      {{if ne .AutoMode "on"}}{{template "ui-confirm" (confirmGo "/skills/auto" "Choose On" "Every new skill your agent proposes starts shaping how it behaves without your OK." "mode" "on")}}{{end}}</div>
+      {{if ne .AutoMode "on"}}{{template "ui-confirm" (inline (confirmGo "/skills/auto" "Choose On" "Every new skill your agent proposes starts shaping how it behaves without your OK." "mode" "on"))}}{{end}}</div>
   </div>
 </div>
 
 {{end}}
-{{end}}
+</div>{{end}}

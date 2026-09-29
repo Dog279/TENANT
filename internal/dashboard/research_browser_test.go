@@ -49,7 +49,7 @@ func TestResearchPageInChrome(t *testing.T) {
 			var boldTag bool
 			var bad []string
 			lines := []string{"A helper finished: " + longURL(4)}
-			err := chromedp.Run(ctx,
+			err := run(ctx,
 				chromedp.Evaluate(`window.__mark = 1`, nil),
 				set(ResearchLiveView{Phase: "researching", Running: true, Question: longName(2), Round: 1, Rounds: 2,
 					Questions: []string{"What is A?", longURL(3)}, Progress: "Questions 1-2 are in progress.", Elapsed: "less than a minute", Lines: lines}),
@@ -57,6 +57,7 @@ func TestResearchPageInChrome(t *testing.T) {
 				chromedp.Evaluate(fitsJS, &bad),
 				shoot("running"),
 				chromedp.Click(`#research-live details.confirm-step > summary`, chromedp.ByQuery),
+				tapsOpen, // a step just opened
 				chromedp.Click(`#research-live details.research-lines > summary`, chromedp.ByQuery),
 				set(ResearchLiveView{Phase: "writing", Running: true, Question: longName(2), Elapsed: "4 min", Lines: lines}),
 				has("#research-live", "Writing the report"),
@@ -91,7 +92,7 @@ func TestResearchPageInChrome(t *testing.T) {
 			// snapshot takes it away again.
 			const shown = `getComputedStyle(document.querySelector('.live-off')).display !== 'none'`
 			var early bool
-			err = chromedp.Run(ctx,
+			err = run(ctx,
 				chromedp.Evaluate(shown, &early),
 				chromedp.ActionFunc(func(context.Context) error { srv.CloseClientConnections(); return nil }),
 				chromedp.Poll(shown, nil, chromedp.WithPollingTimeout(3*time.Second)),
@@ -105,14 +106,15 @@ func TestResearchPageInChrome(t *testing.T) {
 			}
 			// Delete: the first click only opens the step; Yes deletes.
 			var flash string
-			err = chromedp.Run(ctx,
+			err = run(ctx,
 				chromedp.Click(`#research-history details.confirm-step > summary`, chromedp.ByQuery),
+				tapsOpen, // a step just opened
 				chromedp.WaitVisible(`#research-history details[open] .confirm-box`, chromedp.ByQuery),
 				chromedp.Evaluate(fitsJS, &bad),
 				shoot("delete"),
 				chromedp.Click(`#research-history details[open] .confirm-box button`, chromedp.ByQuery),
-				chromedp.WaitVisible(`.page .banner.ok`, chromedp.ByQuery),
-				chromedp.Text(`.page .banner.ok`, &flash, chromedp.ByQuery),
+				chromedp.WaitVisible(`#toast.ok`, chromedp.ByQuery),
+				chromedp.Text(`#toast .toast-text`, &flash, chromedp.ByQuery),
 			)
 			if err != nil {
 				t.Fatalf("Delete: %v", err)
