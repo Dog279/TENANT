@@ -22,13 +22,13 @@ func newSafetyFacts() func() dashboard.SafetyFacts {
 
 // execSandboxed reports whether commands the main broker asks about run in
 // the sandbox: the dashboard's, the terminal's and serve's chat all run
-// under the "local" exec profile (or "default"; lookup falls back as the
-// resolver does). Scheduled jobs without exec have no command tool. Sandboxed means the
+// under the "local" exec profile, resolved as the spawn site resolves it.
+// Scheduled jobs without exec have no command tool. Sandboxed means the
 // restricted backend with enforce on, so a refused command asks before it
-// leaves the box instead of re-running outside it.
+// leaves the box instead of re-running outside it; a dry run is not.
 func execSandboxed() bool {
-	p, ok := defaultExecProfiles.lookup(surfaceLocal)
-	return ok && p.Backend == "restricted" && (p.Enforce == nil || *p.Enforce)
+	p := resolveExecProfile(surfaceLocal, "", "", "")
+	return p.Backend == "restricted" && p.Policy.Enforce
 }
 
 // runsAsSystem reports whether this is Windows' SYSTEM account: by SID,

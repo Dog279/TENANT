@@ -338,23 +338,31 @@ func TestSandboxRunHost(t *testing.T) {
 	}
 }
 
-// A cron-shell trial mirrors the cron spawn site: secret-named variables are
-// scrubbed exactly as runSandboxShell does.
+// A cron-shell trial mirrors the cron spawn site: the environment allowlist
+// (a variable the profile's env_pass names passes, anything else is dropped
+// whatever its name), and the output cap.
 func TestSandboxRunCronShellMirrorsSpawnSite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell $VAR expansion assumes sh")
 	}
 	t.Setenv("SANDBOX_RUN_PLAIN", "keep-me")
+	t.Setenv("SANDBOX_RUN_OTHER", "drop-me")
 	t.Setenv("SANDBOX_RUN_API_KEY", "leak-me")
+	cfg := t.TempDir()
+	stg := &settings{ExecProfiles: map[string]execProfileSetting{surfaceCronShell: {EnvPass: []string{"SANDBOX_RUN_PLAIN"}}}}
+	if err := stg.Save(cfg, "main"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { defaultExecProfiles.Load(nil) })
 	var out bytes.Buffer
-	err := sandboxMain(context.Background(), []string{"run", "--config", t.TempDir(), "--data", t.TempDir(),
-		"--surface", "cron-shell", "--backend", "host", "--", "echo P=$SANDBOX_RUN_PLAIN K=$SANDBOX_RUN_API_KEY"}, &out)
+	err := sandboxMain(context.Background(), []string{"run", "--config", cfg, "--data", t.TempDir(),
+		"--surface", "cron-shell", "--backend", "host", "--", "echo P=$SANDBOX_RUN_PLAIN O=$SANDBOX_RUN_OTHER K=$SANDBOX_RUN_API_KEY"}, &out)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, out.String())
 	}
 	s := out.String()
-	if !strings.Contains(s, "P=keep-me") || strings.Contains(s, "leak-me") || !strings.Contains(s, "secret-name env scrub") {
-		t.Fatalf("cron-shell trial must forward plain vars, scrub secret-named ones, and say so:\n%s", s)
+	if !strings.Contains(s, "P=keep-me") || strings.Contains(s, "drop-me") || strings.Contains(s, "leak-me") || !strings.Contains(s, "output cap") {
+		t.Fatalf("cron-shell trial must pass env_pass, drop the rest, and cap output:\n%s", s)
 	}
 }
 

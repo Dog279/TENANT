@@ -332,8 +332,9 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 			switch b.askDecision(ctx, "agent", cat, action, detail, false) {
 			case control.ApproveAlways:
 				// "Always" on a rule-forced prompt means THIS tool, not its category.
-				// An explicit-only action's allow rule is made on purpose, not here.
-				if explicit {
+				// An explicit-only action's allow rule is made on purpose, not here,
+				// and a scoped one saves what it asked for instead (OnAlways).
+				if explicit || saveScoped(ctx, action) {
 					return true
 				}
 				// A failed save is told to the operator by the settings persist hook.
@@ -387,7 +388,9 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 
 	switch b.askDecision(ctx, "agent", cat, action, detail, true) {
 	case control.ApproveAlways:
-		b.setMode(cat, ModeAllow)
+		if !saveScoped(ctx, action) { // a scoped action never opens its whole category
+			b.setMode(cat, ModeAllow)
+		}
 		return true
 	case control.ApproveSession:
 		b.mu.Lock()

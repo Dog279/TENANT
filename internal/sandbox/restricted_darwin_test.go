@@ -110,6 +110,56 @@ func TestSeatbelt_ReadWriteBoundary(t *testing.T) {
 	}
 }
 
+// TEN-347: with the network cut, a refused lookup or connect is attributed
+// (tools report it as their own failure, never EPERM), so a dry run re-runs it
+// on the host and an enforced one can escalate, instead of the command just
+// failing. The same failure with the network allowed is not a refusal.
+func TestSeatbelt_NetworkCutIsAttributed(t *testing.T) {
+	b, err := sandbox.Restricted()
+	if err != nil {
+		t.Fatalf("sandbox.Restricted(): %v", err)
+	}
+	pol := sandbox.Policy{WorkDir: t.TempDir(), Network: sandbox.NetNone, Limits: sandbox.Limits{Wall: 20 * time.Second}, Enforce: true}
+	res, err := b.Run(context.Background(), sandbox.Command{Shell: "curl -sS -m 5 http://tenant-sandbox-probe.invalid/"}, pol)
+	if err != nil {
+		t.Fatalf("infra error: %v", err)
+	}
+	if !res.Refused() || res.Violations[0].Kind != "network" {
+		t.Fatalf("a refused lookup must be a network refusal: exit=%d output=%q violations=%+v", res.ExitCode, res.Output, res.Violations)
+	}
+	pol.Network = sandbox.NetFull
+	res, _ = b.Run(context.Background(), sandbox.Command{Shell: "echo 'curl: (6) Could not resolve host: x' >&2; exit 6"}, pol)
+	if res.Refused() {
+		t.Fatalf("with the network allowed, a failed lookup is the command's own: %+v", res.Violations)
+	}
+}
+
+// A dry run keeps the real HOME and TMPDIR: pointed into the work dir, a job's
+// "cd ~/x" failed inside the sandbox with nothing refused, so it never re-ran
+// on the host. Enforcing, they still point into the work dir.
+func TestSeatbelt_DryRunKeepsRealHome(t *testing.T) {
+	b, err := sandbox.Restricted()
+	if err != nil {
+		t.Fatalf("sandbox.Restricted(): %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	work := t.TempDir()
+	pol := sandbox.Policy{WorkDir: work, Env: sandbox.EnvPolicy{Isolate: true, Pass: []string{"PATH", "HOME"}}, Limits: sandbox.Limits{Wall: 10 * time.Second}}
+	for _, tc := range []struct {
+		enforce bool
+		want    string
+	}{{false, home}, {true, work}} {
+		pol.Enforce = tc.enforce
+		res, err := b.Run(context.Background(), sandbox.Command{Shell: `printf %s "$HOME"`}, pol)
+		if err != nil || res.Output != tc.want {
+			t.Errorf("enforce=%v: HOME=%q (err %v), want %q", tc.enforce, res.Output, err, tc.want)
+		}
+	}
+}
+
 // q single-quotes a path for POSIX sh.
 func q(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

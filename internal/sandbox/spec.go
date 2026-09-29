@@ -285,6 +285,52 @@ func usernsHint(read func(string) ([]byte, error)) string {
 	return ""
 }
 
+// ---------------------------------------------------------------------------
+// Windows: the WSL backend's pure parts (wsl_windows.go runs them).
+// ---------------------------------------------------------------------------
+
+// wslArgv builds the wsl.exe argument vector: an optional "-d <distro>" then
+// "-e" and the program+args to exec directly (no login shell).
+func wslArgv(distro string, args ...string) []string {
+	argv := make([]string, 0, len(args)+3)
+	if distro != "" {
+		argv = append(argv, "-d", distro)
+	}
+	argv = append(argv, "-e")
+	return append(argv, args...)
+}
+
+// wslUnsandboxedArgv is sh running line in dir (a Linux path; "" leaves the
+// directory WSL starts in), for the WSL backend's unsandboxed twin. The
+// directory and the line are sh's arguments, never spliced into its script.
+func wslUnsandboxedArgv(dir, line string) []string {
+	if dir == "" {
+		return []string{"sh", "-c", line}
+	}
+	return []string{"sh", "-c", `cd -- "$1" && exec sh -c "$2"`, "sh", dir, line}
+}
+
+// attributeWindowsProgram recognises a Windows program that failed to start
+// inside the WSL sandbox: an .exe not found (the Windows drives are hidden) or
+// not executable, or WSL interop unreachable (the sandbox hides /run, where
+// its socket lives; WSL's init then logs "<3>WSL (pid) ERROR: UtilConnect…").
+// Those programs only run outside the sandbox, so this is a refusal: a dry run
+// re-runs the command there, and an enforcing profile asks.
+func attributeWindowsProgram(output string) (Violation, bool) {
+	for _, line := range strings.Split(strings.ToLower(output), "\n") {
+		exe := strings.Contains(line, ".exe") && (strings.Contains(line, "not found") ||
+			strings.Contains(line, "no such file") || strings.Contains(line, "exec format error") ||
+			strings.Contains(line, "cannot execute") || strings.Contains(line, "permission denied"))
+		interop := strings.HasPrefix(strings.TrimSpace(line), "<3>wsl (") || strings.Contains(line, "utilconnect") ||
+			strings.Contains(line, "wsl_interop") || (strings.Contains(line, "interop") &&
+			(strings.Contains(line, "error") || strings.Contains(line, "fail") || strings.Contains(line, "could not")))
+		if exe || interop {
+			return Violation{Kind: "program", Detail: WindowsProgramRefusal}, true
+		}
+	}
+	return Violation{}, false
+}
+
 // attributeBwrapDenial makes a best-effort Violation from a failed bwrap run, so
 // refusals escalate (and dry-run works) on Linux as they do on macOS. A write
 // outside the write roots hits the read-only host mount (EROFS); an outbound

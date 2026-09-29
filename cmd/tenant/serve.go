@@ -203,14 +203,9 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		stgMu.Unlock()
 		saveSettings()
 	})
-	// Execution-sandbox profiles (execprofiles.go): same file, re-read on edit.
-	if n, skipped := defaultExecProfiles.Load(stg.ExecProfiles); n > 0 || len(skipped) > 0 {
-		msg := fmt.Sprintf("sandbox: %d exec profile(s) active", n)
-		if len(skipped) > 0 {
-			msg += fmt.Sprintf(", %d invalid skipped: %s", len(skipped), strings.Join(skipped, "; "))
-		}
-		pushSys(msg)
-	}
+	// Execution-sandbox profiles and exceptions (execprofiles.go): same file,
+	// re-read on edit; an approved exception is saved through stg.
+	loadExecSettings(c, stg, &stgMu, pushSys)
 	go watchSettings(ctx, c.cfgDir, c.agent, broker, defaultToolRules, &stgMu, stg, pushSys)
 
 	// Web is per-agent (own browser each), kept out of the shared mux.
@@ -537,6 +532,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		dataDir:      c.dataDir,
 		allowExec:    cronExecGate,
 		authProblems: mcpAuthProblemsFn(c.cfgDir, mainTools), // banner on every summary while a connector's sign-in is dead
+		violations:   sandboxViolationsSince(hub),            // and how many sandbox refusals since the job last ran
 		ask:          broker.Ask,                             // an alert's investigation asks first (TEN-400)
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")

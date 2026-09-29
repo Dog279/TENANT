@@ -68,6 +68,13 @@ func TestPermissionPresetsAvailableAndPersist(t *testing.T) {
 			t.Errorf("preset %s has %d categories, want %d", name, len(modes), len(catOrder))
 		}
 	}
+	// TEN-347: safe denies exec, balanced asks, full allows it, all inside the
+	// sandbox: full still asks before a refused command leaves it.
+	for name, want := range map[string][2]string{"safe": {"deny", "deny"}, "balanced": {"ask", "ask"}, "full": {"allow", "ask"}} {
+		if p := permissionPresets[name]; p[catExec] != want[0] || p[catSandbox] != want[1] {
+			t.Errorf("preset %s: exec %s sandbox %s, want %v", name, p[catExec], p[catSandbox], want)
+		}
+	}
 
 	cfgDir, dataDir := t.TempDir(), t.TempDir()
 	if err := cmdPermissions(context.Background(), []string{

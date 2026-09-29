@@ -19,12 +19,45 @@ import (
 	"tenant/internal/memory/skills"
 	"tenant/internal/plugins/gsuite"
 	xp "tenant/internal/plugins/x"
+	"tenant/internal/sandbox"
 	"tenant/internal/secrets"
 )
 
 // Each new check is exercised against a synthetic environment — no live
 // network, no model host. The integrity check uses a real SQLite file we
 // deliberately corrupt to exercise the FAIL + --fix paths.
+
+// checkExecSandbox: a line per group of surfaces; WARN, with the reason, when
+// the built-in default fell back to the host; OK when the operator chose the
+// host; FAIL when an enforcing profile's backend is missing.
+func TestDoctor_CheckExecSandbox(t *testing.T) {
+	resetExecProfiles(t)
+	e := &doctorEnv{c: &commonFlags{cfgDir: t.TempDir(), dataDir: t.TempDir(), agent: "main"}}
+	withBuiltinExec(t, "host", "bubblewrap (bwrap) not on PATH")
+	r := checkExecSandbox(context.Background(), e)
+	if r.Status != statusWarn || !strings.Contains(r.Detail, "local, discord, imessage, cron-exec, cron-shell: host, unconfined (restricted can't run here: bubblewrap") {
+		t.Fatalf("fallback: %s %q", r.Status.tag(), r.Detail)
+	}
+
+	stg := &settings{ExecProfiles: map[string]execProfileSetting{"default": {Backend: "host"}}}
+	if err := stg.Save(e.c.cfgDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if r := checkExecSandbox(context.Background(), e); r.Status != statusOK || strings.Contains(r.Detail, "can't run here") {
+		t.Fatalf("an explicit host is the operator's choice: %s %q", r.Status.tag(), r.Detail)
+	}
+
+	if _, err := sandbox.Restricted(); err == nil {
+		t.Skip("this OS has a restricted backend; the missing-backend case needs one without")
+	}
+	stg.ExecProfiles = map[string]execProfileSetting{"cron-shell": {Backend: "restricted"}}
+	if err := stg.Save(e.c.cfgDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if r := checkExecSandbox(context.Background(), e); r.Status != statusFail || !strings.Contains(r.Detail, "UNAVAILABLE") {
+		t.Fatalf("enforcing and missing: %s %q", r.Status.tag(), r.Detail)
+	}
+}
 
 // checkLaunchConfig: missing config = OK (defaults), parseable = OK,
 // corrupt = FAIL, active provider missing from map = FAIL.

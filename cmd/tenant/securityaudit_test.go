@@ -5,9 +5,77 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
+
+var (
+	hostProbe   = surfaceProbe{Surface: surfaceLocal, Backend: "host", Mode: "dry-run", Isolation: "none", Caps: &sbxCaps{Isolation: "none"}}
+	dryRunProbe = surfaceProbe{Surface: surfaceLocal, Backend: "restricted", Mode: "dry-run", Isolation: "process", Caps: &sbxCaps{Isolation: "process"}}
+)
+
+// The audit's execution block is the live resolved profiles (TEN-345): the
+// built-in backend per surface, with the reason when it fell back to the host,
+// and host exec allow critical only where commands really run on the host.
+func TestSecurityAuditExecutionFromLiveProfiles(t *testing.T) {
+	resetExecProfiles(t)
+	cfgDir, dataDir := t.TempDir(), t.TempDir()
+	withBuiltinExec(t, "host", "bubblewrap (bwrap) not on PATH")
+	report, err := runSecurityAuditJSON(t, "--config", cfgDir, "--data", dataDir, "--os", "--os-allow-exec")
+	if err == nil || !hasSecurityFinding(report.Findings, "permissions.host-exec-allow") {
+		t.Fatalf("host fallback + exec allow must be critical: err=%v findings=%+v", err, report.Findings)
+	}
+	if len(report.Execution.Surfaces) != len(execSurfaces) || report.Execution.Isolation != "none" ||
+		report.Execution.Surfaces[0].Fallback != "bubblewrap (bwrap) not on PATH" {
+		t.Fatalf("execution = %+v", report.Execution)
+	}
+	var host securityFinding
+	for _, f := range report.Findings {
+		if f.ID == "execution.host" {
+			host = f
+		}
+	}
+	if !strings.Contains(host.Summary, "bwrap") || !strings.Contains(host.Summary, "cron-shell") {
+		t.Errorf("execution.host must name the surfaces and why: %+v", host)
+	}
+
+	// The operator names restricted for local: not host exec any more, whatever
+	// this OS has (enforcing and missing, it runs nothing: a warning).
+	stg := &settings{ExecProfiles: map[string]execProfileSetting{"local": {Backend: "restricted"}}}
+	if err := stg.Save(cfgDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	report, _ = runSecurityAuditJSON(t, "--config", cfgDir, "--data", dataDir, "--os", "--os-allow-exec")
+	if hasSecurityFinding(report.Findings, "permissions.host-exec-allow") || report.Execution.Backend != "restricted" {
+		t.Fatalf("a restricted local profile must not trip host-exec-allow: %+v / %+v", report.Execution, report.Findings)
+	}
+}
+
+// `tenant permissions effective` reports the surface's resolved exec profile
+// and its exceptions, not a hard-coded host.
+func TestPermissionsEffectiveExecutionProfile(t *testing.T) {
+	resetExecProfiles(t)
+	t.Cleanup(func() { defaultExecProfiles.LoadExceptions(nil) })
+	cfgDir, dataDir := t.TempDir(), t.TempDir()
+	withBuiltinExec(t, "host", "reason")
+	work := t.TempDir()
+	stg := &settings{
+		ExecProfiles:   map[string]execProfileSetting{"discord": {Backend: "host"}},
+		ExecExceptions: map[string][]string{"discord": {work}},
+	}
+	if err := stg.Save(cfgDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	report := runPermissionsEffectiveJSON(t, "--config", cfgDir, "--data", dataDir, "--surface", "discord")
+	p := report.Execution.Profile
+	if report.Execution.Backend != "host" || p.Surface != "discord" || p.Fallback != "" || !slices.Equal(p.Exceptions, []string{work}) {
+		t.Fatalf("discord execution = %+v", report.Execution)
+	}
+	if local := runPermissionsEffectiveJSON(t, "--config", cfgDir, "--data", dataDir).Execution.Profile; local.Fallback != "reason" || local.Mode != "dry-run" {
+		t.Fatalf("local execution = %+v", local)
+	}
+}
 
 func TestEvaluateSecurityAudit(t *testing.T) {
 	tests := []struct {
@@ -67,10 +135,11 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 		{
 			name: "host execution is review only",
 			report: securityAuditReport{
-				Execution: executionAudit{Enabled: true, Isolation: "none"},
+				Execution: executionAudit{Enabled: true, Isolation: "none", Surfaces: []surfaceProbe{hostProbe}},
 			},
-			wantCritical: 0,
-			wantWarnings: 1,
+			wantCritical:  0,
+			wantWarnings:  1,
+			wantFindingID: "execution.host",
 		},
 		{
 			name: "unprompted destructive and host exec are critical",
@@ -79,11 +148,41 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 					catDestructive: {Mode: "allow"},
 					catExec:        {Mode: "allow"},
 				}},
-				Execution: executionAudit{Enabled: true, Isolation: "none"},
+				Execution: executionAudit{Enabled: true, Isolation: "none", Surfaces: []surfaceProbe{hostProbe}},
 			},
 			wantCritical:  2,
 			wantWarnings:  1,
 			wantFindingID: "permissions.destructive-allow",
+		},
+		{
+			// TEN-345: exec allowed on the restricted sandbox, even in dry run,
+			// is not host exec; the dry run is a warning of its own.
+			name: "exec allow on a restricted profile is not host exec",
+			report: securityAuditReport{
+				Permissions: effectivePermissions{Categories: map[string]effectiveCategory{catExec: {Mode: "allow"}}},
+				Execution:   executionAudit{Enabled: true, Isolation: "process", Surfaces: []surfaceProbe{dryRunProbe}},
+			},
+			wantCritical:  0,
+			wantWarnings:  1,
+			wantFindingID: "execution.dry-run",
+		},
+		{
+			name: "enforcing restricted raises nothing",
+			report: securityAuditReport{
+				Permissions: effectivePermissions{Categories: map[string]effectiveCategory{catExec: {Mode: "allow"}}},
+				Execution: executionAudit{Enabled: true, Isolation: "process", Surfaces: []surfaceProbe{
+					{Surface: surfaceLocal, Backend: "restricted", Mode: "enforce", Isolation: "process", Caps: &sbxCaps{Isolation: "process"}}}},
+			},
+			wantCritical: 0,
+		},
+		{
+			name: "an enforcing profile whose backend is missing runs nothing",
+			report: securityAuditReport{
+				Execution: executionAudit{Enabled: true, Isolation: "unavailable", Surfaces: []surfaceProbe{
+					{Surface: surfaceCronShell, Backend: "restricted", Mode: "enforce", Error: "no bwrap"}}},
+			},
+			wantWarnings:  1,
+			wantFindingID: "execution.unavailable",
 		},
 		{
 			name: "unprompted sandbox escalation is critical",

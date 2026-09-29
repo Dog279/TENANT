@@ -4435,8 +4435,11 @@ Writes the `sandbox` log.
 | [1](#sandbox-1) | info | Run | `Command on {backend} for {surface}` |
 | [1001](#sandbox-1001) | info | Run | `Command exited: {status}` |
 | [2001](#sandbox-2001) | warning | Refusal | `The sandbox refused a command: {violations}` |
-| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran on the host: {violations}` |
+| [2002](#sandbox-2002) | warning | Refusal | `Dry run: the sandbox would have refused a command, which ran outside it: {violations}` |
 | [2003](#sandbox-2003) | warning | Refusal | `A command the sandbox refused was approved to run outside it: {violations}` |
+| [2004](#sandbox-2004) | warning | Exception | `Sandbox exception saved: {surface} commands may write under {path}` |
+| [2005](#sandbox-2005) | warning | Backend | `The {surface} exec profile's backend {backend} is unavailable; it is in dry run, so the command ran on the host: {err}` |
+| [2006](#sandbox-2006) | warning | Exception | `Sandbox exception {path} for {surface} is not used: {why}` |
 | [3001](#sandbox-3001) | error | Backend | `The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}` |
 
 ### sandbox 1
@@ -4475,21 +4478,21 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2001`
 
-**What it means.** The boundary refused a file or network access, and the command was not run again: its failure went back to the model or the cron job.
+**What it means.** The boundary refused a file or network access, or a Windows program (in WSL), and the command was not run again: its failure went back to the model or the cron job.
 
-**Why it happens.** The command reached outside the profile's roots or network. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
+**Why it happens.** The command reached outside the profile's roots or network, or started a Windows program. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
 
 **What to do.** None if the refusal was right. If the command needs that access, widen the surface's exec_profiles entry (read_roots, write_roots, network), or approve the escalation next time.
 
 ### sandbox 2002
 
-`Dry run: the sandbox would have refused a command, which ran on the host: {violations}`
+`Dry run: the sandbox would have refused a command, which ran outside it: {violations}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Refusal · **Log:** sandbox
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2002`
 
-**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again on the host, unconfined, so the refusal is only reported.
+**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again outside the sandbox, unconfined (on the host, or on Windows as sh in the same WSL distro), so the refusal is only reported.
 
 **Why it happens.** The command reached outside the profile's roots or network while the surface's exec_profiles entry has enforce off.
 
@@ -4503,11 +4506,53 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2003`
 
-**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again on the host, unconfined. The approval itself is in the Security log.
+**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again outside the sandbox, unconfined (on the host, or on Windows as sh in the same WSL distro). The approval itself is in the Security log.
 
 **Why it happens.** The command needed an access outside the profile, and the operator allowed it once.
 
-**What to do.** If the same escalation keeps being approved, widen the surface's exec_profiles entry instead, so the access stays confined to what it needs.
+**What to do.** If the same escalation keeps being approved, approve it "always": that saves the refused folder as an exception for the surface (exec_exceptions), so the access stays confined to what it needs.
+
+### sandbox 2004
+
+`Sandbox exception saved: {surface} commands may write under {path}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Exception · **Log:** sandbox
+- **Fields:** `surface`, `path`
+- **Find it:** `provider:sandbox id:2004`
+
+**What it means.** The operator approved a sandbox escalation "always", and the folder the sandbox refused was saved in exec_exceptions in the agent's settings file: the surface's sandboxed commands may write there from now on, without asking. The approval itself is in the Security log.
+
+**Why it happens.** Always, on an os_exec_unsandboxed prompt whose refusal named a folder outside Tenant's own dirs, the credential stores, the system folders and roots, and the home folder itself.
+
+**What to do.** None if it was meant. To take it back, delete the path from exec_exceptions in settings.<agent>.json; `tenant permissions effective` lists them.
+
+### sandbox 2005
+
+`The {surface} exec profile's backend {backend} is unavailable; it is in dry run, so the command ran on the host: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Backend · **Log:** sandbox
+- **Fields:** `surface`, `backend`, `err`
+- **Find it:** `provider:sandbox id:2005`
+
+**What it means.** A dry-run profile ("enforce": false) names a sandbox backend that does not work here. A dry run never blocks a command, so it ran on the host, unconfined, and nothing about it was observed.
+
+**Why it happens.** The profile names a backend this OS or build lacks (restricted without bubblewrap or WSL), or its launcher is missing.
+
+**What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles. With enforce on, the same profile runs nothing.
+
+### sandbox 2006
+
+`Sandbox exception {path} for {surface} is not used: {why}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Exception · **Log:** sandbox
+- **Fields:** `surface`, `path`, `why`
+- **Find it:** `provider:sandbox id:2006`
+
+**What it means.** An exec_exceptions folder is not what it was saved as, so it is not made writable: it is gone, is no longer a folder, or now resolves somewhere else (a symlink swapped in, perhaps to the home folder). Said once per process for each such entry.
+
+**Why it happens.** The folder was deleted or replaced after it was saved, or the entry names a path through a symlink (write its real path).
+
+**What to do.** If the folder moved on purpose, save its real path in exec_exceptions; otherwise delete the entry, and look at what replaced the folder.
 
 ### sandbox 3001
 
@@ -4517,7 +4562,7 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `err`
 - **Find it:** `provider:sandbox id:3001`
 
-**What it means.** A command was not run because the sandbox backend its profile names does not work here. The sandbox fails closed: it never falls back to the host.
+**What it means.** A command was not run because the sandbox backend its profile names does not work here. An enforcing profile fails closed: it never falls back to the host.
 
 **Why it happens.** The profile names a backend this OS or build lacks (jobobject off Windows, restricted without bubblewrap or WSL), or its launcher is missing.
 

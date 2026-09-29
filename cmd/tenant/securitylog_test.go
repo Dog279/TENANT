@@ -103,7 +103,7 @@ func TestExecSecurityRecords(t *testing.T) {
 	const refused = "command=cat ~/.ssh/id backend=restricted"
 	wantLines(t, got,
 		"4201 agent@local [ap-test-1] command=echo ok # «token» backend=host exit=0 timed_out=false",
-		"4201 cron@cron-shell command="+strings.Join(cronShellArgv("exit 3"), " ")+" backend=host exit=3 timed_out=false",
+		"4201 cron@cron-shell command="+strings.Join(cronShellArgv("host", "exit 3"), " ")+" backend=host exit=3 timed_out=false",
 		"4201 agent@discord [ap-test-1] "+refused+" exit=1 timed_out=false",
 		"4202 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh",
 		"4201 agent@discord [ap-test-1] "+refused+" exit=0 timed_out=false",

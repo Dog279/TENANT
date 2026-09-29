@@ -40,6 +40,10 @@ type Config struct {
 	// cmd/tenant inject a sandbox-backed runner (the execution-backend seam)
 	// without any osys call site changing. nil ⇒ today's realRunner behaviour.
 	Runner runner
+	// Shell, when set, is what the os_exec description says about where
+	// commands run, in place of "PowerShell on Windows, sh on Linux/macOS":
+	// the Runner may run them elsewhere (Linux sh in a WSL sandbox).
+	Shell string
 }
 
 // Service is the opened OS connector. Its file methods take paths as
@@ -49,6 +53,7 @@ type Config struct {
 type Service struct {
 	run     runner
 	timeout time.Duration
+	shell   string // Config.Shell
 }
 
 // Open builds a Service backed by the real OS shell.
@@ -61,7 +66,7 @@ func Open(cfg Config) (*Service, error) {
 	if run == nil {
 		run = realRunner
 	}
-	return &Service{run: run, timeout: to}, nil
+	return &Service{run: run, timeout: to, shell: cfg.Shell}, nil
 }
 
 // shellArgs picks the platform shell. PowerShell on Windows, sh on
