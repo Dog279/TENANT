@@ -4439,6 +4439,7 @@ Writes the `sandbox` log.
 | [2003](#sandbox-2003) | warning | Refusal | `A command the sandbox refused was approved to run outside it: {violations}` |
 | [2004](#sandbox-2004) | warning | Exception | `Sandbox exception saved: {surface} commands may write under {path}` |
 | [2005](#sandbox-2005) | warning | Backend | `The {surface} exec profile's backend {backend} is unavailable; it is in dry run, so the command ran on the host: {err}` |
+| [2006](#sandbox-2006) | warning | Exception | `Sandbox exception {path} for {surface} is not used: {why}` |
 | [3001](#sandbox-3001) | error | Backend | `The {surface} exec profile's backend {backend} is unavailable, so nothing ran: {err}` |
 
 ### sandbox 1
@@ -4521,7 +4522,7 @@ Writes the `sandbox` log.
 
 **What it means.** The operator approved a sandbox escalation "always", and the folder the sandbox refused was saved in exec_exceptions in the agent's settings file: the surface's sandboxed commands may write there from now on, without asking. The approval itself is in the Security log.
 
-**Why it happens.** Always, on an os_exec_unsandboxed prompt whose refusal named a folder outside Tenant's own dirs, the credential stores and the home folder itself.
+**Why it happens.** Always, on an os_exec_unsandboxed prompt whose refusal named a folder outside Tenant's own dirs, the credential stores, the system folders and roots, and the home folder itself.
 
 **What to do.** None if it was meant. To take it back, delete the path from exec_exceptions in settings.<agent>.json; `tenant permissions effective` lists them.
 
@@ -4538,6 +4539,20 @@ Writes the `sandbox` log.
 **Why it happens.** The profile names a backend this OS or build lacks (restricted without bubblewrap or WSL), or its launcher is missing.
 
 **What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles. With enforce on, the same profile runs nothing.
+
+### sandbox 2006
+
+`Sandbox exception {path} for {surface} is not used: {why}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Exception · **Log:** sandbox
+- **Fields:** `surface`, `path`, `why`
+- **Find it:** `provider:sandbox id:2006`
+
+**What it means.** An exec_exceptions folder is not what it was saved as, so it is not made writable: it is gone, is no longer a folder, or now resolves somewhere else (a symlink swapped in, perhaps to the home folder). Said once per process for each such entry.
+
+**Why it happens.** The folder was deleted or replaced after it was saved, or the entry names a path through a symlink (write its real path).
+
+**What to do.** If the folder moved on purpose, save its real path in exec_exceptions; otherwise delete the entry, and look at what replaced the folder.
 
 ### sandbox 3001
 

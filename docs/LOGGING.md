@@ -187,6 +187,7 @@ activity (`TENANT_ACTIVITY_ID`). In between:
 | `sandbox 2003` | WARN | an approved `os_exec_unsandboxed` re-ran the refused command outside the sandbox |
 | `sandbox 2004` | WARN | "always" on an escalation saved the refused folder as an exception for the surface (`exec_exceptions`) |
 | `sandbox 2005` | WARN | a dry-run profile's backend is unavailable, so the command ran on the host (a dry run never blocks) |
+| `sandbox 2006` | WARN | an `exec_exceptions` folder is not used: it is gone, no longer a folder, or now resolves elsewhere (a symlink swapped in); once per entry |
 | `sandbox 3001` | ERROR | an enforcing profile's backend is unavailable, so nothing ran (the sandbox fails closed) |
 
 Every event carries `surface` and `backend`; a refusal also `command`,

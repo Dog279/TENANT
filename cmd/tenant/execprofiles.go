@@ -340,7 +340,7 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	}
 	p.Policy.Allow = o.Allow
 	p.Policy.ReadRoots = expandRoots(o.ReadRoots)
-	p.Policy.WriteRoots = append(expandRoots(o.WriteRoots), defaultExecProfiles.exceptions(surface)...)
+	p.Policy.WriteRoots = append(expandRoots(o.WriteRoots), liveExceptions(surface)...)
 	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)...)
 	p.Policy.Env = envAllowlist(o.EnvPass, o.EnvSet)
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
@@ -730,9 +730,12 @@ func saveExecException(ctx context.Context) {
 
 // exceptionScope is the folder an exception for a refusal would open, or ""
 // and why none can be saved. Only a filesystem refusal whose output names an
-// absolute path has one: that path if it is a folder, else its folder. Never
-// inside a deny root (no exception reopens one), and never the home folder or
-// above it, which would open every dotfile to later commands.
+// absolute path has one: that path if it is a folder, else its folder,
+// symlinks resolved (what is saved is the real folder, so a link swapped in
+// later can't redirect it: liveExceptions). The command wrote that output, so
+// the folder is never inside a deny root (no exception reopens one), never a
+// system folder or a root (systemScope), and never the home folder or above
+// it, which would open every dotfile to later commands.
 func exceptionScope(res sandbox.Result, deny []string) (scope, why string) {
 	kind := func(k string) func(sandbox.Violation) bool {
 		return func(v sandbox.Violation) bool { return v.Kind == k }
@@ -762,13 +765,123 @@ func exceptionScope(res sandbox.Result, deny []string) (scope, why string) {
 		// bubblewrap can't bind a folder that isn't there: every command would fail.
 		return "", scope + " does not exist yet; create it, or add it to exec_exceptions by hand"
 	}
+	if r, err := filepath.EvalSymlinks(scope); err == nil {
+		scope = r
+	}
 	if slices.ContainsFunc(deny, func(d string) bool { return inside(scope, d) }) {
 		return "", scope + " is Tenant's own or a credential store, which no exception opens"
+	}
+	if systemScope(runtime.GOOS, scope, resolvedPath) {
+		return "", scope + " is a system folder, a drive or volume root, or above one, which no exception opens"
 	}
 	if home, err := os.UserHomeDir(); err == nil && inside(home, scope) {
 		return "", scope + " would open your whole home folder; add a narrower write root by hand if you mean it"
 	}
 	return scope, ""
+}
+
+// systemDirs are the top-level system folders an exception may never be, nor
+// be above; a folder under one (/opt/app/data, /var/lib/app) is fine.
+var systemDirs = map[string][]string{
+	"posix": {"/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/opt", "/var", "/tmp",
+		"/private", "/private/etc", "/private/var", "/private/tmp", "/System", "/Library", "/Applications",
+		"/Users", "/home", "/root", "/dev", "/proc", "/sys", "/run", "/boot", "/srv", "/mnt", "/Volumes"},
+	"windows": {`C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`, `C:\Users`},
+}
+
+// systemScope reports whether dir is a filesystem or drive root, a volume's
+// mount (/mnt/<x>, /Volumes/<x>), or a system folder (systemDirs, and on
+// Windows where its environment puts them) or above one. Names compare after
+// resolve (symlinks: /etc is /private/etc on macOS) and case-folded where the
+// filesystem ignores case (Windows, macOS). goos and resolve are parameters so
+// every OS's rules are tested on any.
+func systemScope(goos, dir string, resolve func(string) string) bool {
+	sep, dirs := "/", systemDirs["posix"]
+	if goos == "windows" {
+		sep, dirs = `\`, slices.Clone(systemDirs["windows"])
+		for _, env := range []string{"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"} {
+			if v := os.Getenv(env); v != "" {
+				dirs = append(dirs, v)
+			}
+		}
+		if pub := os.Getenv("PUBLIC"); strings.LastIndex(pub, `\`) > 0 {
+			dirs = append(dirs, pub[:strings.LastIndex(pub, `\`)]) // C:\Users\Public → C:\Users
+		}
+	}
+	norm := func(p string) string {
+		p = strings.TrimRight(resolve(p), sep)
+		if goos == "windows" || goos == "darwin" {
+			p = strings.ToLower(p)
+		}
+		return p
+	}
+	d := norm(dir) // "" for "/"; "c:" for C:\
+	if d == "" || (goos == "windows" && len(d) == 2 && d[1] == ':') {
+		return true // a filesystem or drive root
+	}
+	if i := strings.LastIndex(d, "/"); goos != "windows" && i > 0 && (strings.EqualFold(d[:i], "/mnt") || strings.EqualFold(d[:i], "/volumes")) {
+		return true // a volume's mount: /mnt/c, /Volumes/Data
+	}
+	if goos == "darwin" && (d == "/system/volumes/data" || strings.HasPrefix(d, "/system/volumes/data/")) {
+		return true // the data volume's own path to every firmlinked folder: /Users, /Applications, /private, …
+	}
+	for _, s := range dirs {
+		s = norm(s)
+		if s != "" && (d == s || strings.HasPrefix(s, d+sep)) { // the folder, or above it
+			return true
+		}
+	}
+	return false
+}
+
+// liveExceptions is surface's exceptions that are still the folders they were
+// saved as (their real paths, exceptionScope). One that is gone, is no longer
+// a folder, or now resolves elsewhere (a symlink swapped in, perhaps to the
+// home folder) is left out, and said once in the sandbox log: a write root
+// must never follow a link planted after the approval.
+func liveExceptions(surface string) []string {
+	var out []string
+	for _, p := range defaultExecProfiles.exceptions(surface) {
+		if why := exceptionDrift(runtime.GOOS, p, filepath.EvalSymlinks, os.Stat); why != "" {
+			if _, said := skippedExceptions.LoadOrStore(surface+"\x00"+p+"\x00"+why, true); !said {
+				sandbox.ExceptionSkipped.Log(context.Background(), "surface", surface, "path", p, "why", why)
+			}
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// skippedExceptions holds the drifted exceptions already reported.
+var skippedExceptions sync.Map
+
+// exceptionDrift says why exception p is not the folder it was saved as, or ""
+// when it still is. Case-folded where the filesystem ignores case.
+func exceptionDrift(goos, p string, eval func(string) (string, error), stat func(string) (os.FileInfo, error)) string {
+	r, err := eval(p)
+	if err != nil {
+		return "it no longer exists"
+	}
+	same := r == p
+	if goos == "windows" || goos == "darwin" {
+		same = strings.EqualFold(r, p)
+	}
+	if !same {
+		return "it now resolves to " + r + "; save that real path instead if it is meant"
+	}
+	if fi, err := stat(r); err != nil || !fi.IsDir() {
+		return "it is no longer a folder"
+	}
+	return ""
+}
+
+// resolvedPath is p with symlinks resolved, or cleaned when it can't be.
+func resolvedPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // inside reports whether p is root or inside it, both symlink-resolved, as the

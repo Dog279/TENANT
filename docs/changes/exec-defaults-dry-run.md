@@ -62,11 +62,19 @@ what "always" will save, or why it will save nothing:
   those.
 - A refusal of your home folder itself, or anything above it, saves nothing: that would be too
   broad.
+- A system folder, a filesystem, drive or volume root, or anything above one saves nothing either.
+  That covers `/`, `C:\`, `/mnt/c`, `/Volumes/X`, `/etc`, `/usr`, `/tmp`, `/var`, `/Users`,
+  `/home`, `C:\Windows`, `C:\Program Files` and the like. The folder offered comes from the
+  command's own output, which a hostile command controls. A folder under one of them
+  (`/opt/app/data`, `/var/lib/app`, `D:\projects\x`) can be saved.
 - A refusal whose output names no absolute path saves nothing, and neither does a folder that
   does not exist yet.
 
-On Windows, a folder the WSL sandbox names (`/mnt/c/...`) is saved as its Windows path
-(`C:\...`).
+An exception is saved as the folder's real path, with symlinks resolved. On Windows a folder
+named inside WSL (`/mnt/c/...`) is saved as its Windows path (`C:\...`). An exception that
+later stops being that folder is not made writable, and `sandbox/2006` says why, once. That
+covers a folder that is gone, replaced by a file, or swapped for a symlink (to your home folder,
+say). An entry you write by hand through a symlink is not used either: write its real path.
 
 No agent tool can write exceptions. The file tools refuse the settings file, and only your
 decision on a prompt saves one.
@@ -167,7 +175,7 @@ The dashboard's **sandbox** tab, or `tenant logs query "log:sandbox"`:
 - `sandbox/2002` *Dry run: … would have refused*: the entry to read during the dry-run weeks. It
   names the surface and the refusal (`filesystem: …`, `network: …` or `program: …`). The
   command's own output names the file.
-- `sandbox/2001` refused (enforcing), `2003` approved to run outside, `2004` an exception saved,
+- `sandbox/2001` refused (enforcing), `2003` approved to run outside, `2004` an exception saved, `2006` an exception not used (gone, or a symlink now),
   `2005` backend unavailable so a dry run ran it on the host.
 - `sandbox/3001` backend unavailable, and the profile enforces, so nothing ran.
 

@@ -627,28 +627,172 @@ func TestExceptionScope(t *testing.T) {
 		t.Skip(err)
 	}
 	work := t.TempDir()
+	real := mustEval(t, work) // what is saved: the folder's real path (/var → /private/var on macOS)
 	deny := t.TempDir()
 	fs := func(out string) sandbox.Result {
 		return sandbox.Result{Output: out, Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "x"}}}
 	}
+	link := filepath.Join(t.TempDir(), "via-link")
+	if err := os.Symlink(work, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	const system = "system folder, a drive or volume root"
 	for _, tc := range []struct {
 		name      string
 		res       sandbox.Result
 		scope, no string
 	}{
-		{"a file's folder", fs("touch: " + filepath.Join(work, "new.txt") + ": Operation not permitted"), work, ""},
-		{"a folder itself", fs("mkdir: " + work + ": Operation not permitted"), work, ""},
+		{"a file's folder", fs("touch: " + filepath.Join(work, "new.txt") + ": Operation not permitted"), real, ""},
+		{"a folder itself", fs("mkdir: " + work + ": Operation not permitted"), real, ""},
+		{"through a symlink: its real path", fs("touch: " + filepath.Join(link, "x") + ": Operation not permitted"), real, ""},
 		{"a folder not there yet", fs("mkdir: " + filepath.Join(work, "a", "b") + ": Operation not permitted"), "", "does not exist yet"},
 		{"inside a deny root", fs("cat: " + filepath.Join(deny, "k") + ": Operation not permitted"), "", "no exception opens"},
 		{"a dotfile in home", fs("sh: " + filepath.Join(home, ".zshrc") + ": Operation not permitted"), "", "whole home folder"},
-		{"the root", fs("touch: /x: Operation not permitted"), "", "whole home folder"},
 		{"network", sandbox.Result{Violations: []sandbox.Violation{{Kind: "network"}}}, "", "network"},
 		{"a Windows program", sandbox.Result{Violations: []sandbox.Violation{{Kind: "program", Detail: sandbox.WindowsProgramRefusal}}}, "", "only ever runs outside"},
 		{"no path", fs("Operation not permitted"), "", "no absolute path"},
+		// Crafted by the command, which writes its own output (review P3-1):
+		// system folders and roots are refused, never offered.
+		{"the root", fs("touch: /x: Operation not permitted"), "", system},
+		{"a file in /etc", fs("sh: /etc/hosts: Operation not permitted"), "", system},
+		{"a file in /tmp", fs("touch: '/tmp/x': Read-only file system"), "", system},
+		{"/usr itself", fs("mkdir: /usr: Operation not permitted"), "", system},
+		{"/Users, above every home", fs(`PermissionError: [Errno 1] Operation not permitted: '/Users/x.txt'`), "", ""},
+		{"/dev", fs("sh: 1: cannot create /dev/evil: Read-only file system"), "", system},
 	} {
 		scope, why := exceptionScope(tc.res, []string{deny})
 		if scope != tc.scope || !strings.Contains(why, tc.no) {
 			t.Errorf("%s: scope %q (%q), want %q (%q)", tc.name, scope, why, tc.scope, tc.no)
+		}
+	}
+}
+
+// systemScope: roots, volume mounts and system folders, and anything above
+// them, are never an exception; folders under them are. Every OS's rules,
+// tested on any (review P3-1).
+func TestSystemScope(t *testing.T) {
+	macLinks := map[string]string{"/etc": "/private/etc", "/tmp": "/private/tmp", "/var": "/private/var", "/sneaky": "/usr"}
+	resolve := func(links map[string]string) func(string) string {
+		return func(p string) string {
+			if r, ok := links[p]; ok {
+				return r
+			}
+			return p
+		}
+	}
+	for _, tc := range []struct {
+		goos, dir string
+		want      bool
+	}{
+		{"linux", "/", true},
+		{"linux", "/etc", true},
+		{"linux", "/home", true},
+		{"linux", "/srv", true},
+		{"linux", "/run", true},
+		{"linux", "/mnt/c", true}, // a bare drive mount
+		{"linux", "/home/me/proj", false},
+		{"linux", "/opt/app/data", false},
+		{"linux", "/var/lib/app", false},
+		{"linux", "/mnt/c/Users/me/work", false},
+		{"linux", "/Etc", false},         // Linux names are case-sensitive: not /etc
+		{"darwin", "/private", true},     // above /private/etc
+		{"darwin", "/private/etc", true}, // /etc, resolved
+		{"darwin", "/sneaky", true},      // a link to /usr
+		{"darwin", "/USR", true},         // case-folded
+		{"darwin", "/Applications", true},
+		{"darwin", "/Volumes/Backup", true}, // a volume's mount
+		{"darwin", "/System/Volumes/Data/Users", true},
+		{"darwin", "/Users/me/Projects", false},
+		{"darwin", "/private/var/folders/xy/T/job", false},
+		{"darwin", "/Volumes/Backup/jobs", false},
+		{"windows", `C:\`, true},
+		{"windows", `D:\`, true},
+		{"windows", `c:\windows`, true},
+		{"windows", `C:\Program Files`, true},
+		{"windows", `C:\Program Files (x86)`, true},
+		{"windows", `C:\ProgramData`, true},
+		{"windows", `C:\Users`, true},
+		{"windows", `C:\Program Files\App`, false},
+		{"windows", `C:\Users\me\Desktop`, false},
+		{"windows", `D:\projects\x`, false},
+	} {
+		if got := systemScope(tc.goos, tc.dir, resolve(macLinks)); got != tc.want {
+			t.Errorf("%s %q: %v, want %v", tc.goos, tc.dir, got, tc.want)
+		}
+	}
+}
+
+// An exception is a write root only while it is still the folder it was saved
+// as: swapped for a symlink (here to the home folder) or gone, it is left out
+// and said once in the sandbox log (review P3-2).
+func TestLiveExceptions_SymlinkSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	resetExecProfiles(t)
+	t.Cleanup(func() { defaultExecProfiles.LoadExceptions(nil) })
+	hub := logs.NewMemory(50)
+	prev := logs.Default()
+	logs.Install(hub)
+	t.Cleanup(func() { logs.Install(prev) })
+
+	folder := filepath.Join(mustEval(t, t.TempDir()), "reports")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defaultExecProfiles.LoadExceptions(map[string][]string{surfaceCronShell: {folder}})
+	if got := liveExceptions(surfaceCronShell); !slices.Equal(got, []string{folder}) {
+		t.Fatalf("the saved folder must be live: %v", got)
+	}
+
+	home := mustEval(t, t.TempDir()) // stands in for $HOME
+	if err := os.Remove(folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(home, folder); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if p := resolveExecProfile(surfaceCronShell, "", "", ""); slices.Contains(p.Policy.WriteRoots, folder) || slices.Contains(p.Policy.WriteRoots, home) {
+			t.Fatalf("a swapped-in symlink must not become a write root: %v", p.Policy.WriteRoots)
+		}
+	}
+	os.Remove(folder)
+	if got := liveExceptions(surfaceCronShell); len(got) != 0 {
+		t.Fatalf("a folder that is gone is not live: %v", got)
+	}
+	all, _ := hub.Snapshot()
+	var whys []string
+	for _, e := range all {
+		if e.Field("event") == "sandbox/2006" {
+			whys = append(whys, e.Field("why"))
+		}
+	}
+	if len(whys) != 2 || !strings.Contains(whys[0], "now resolves to "+home) || !strings.Contains(whys[1], "no longer exists") {
+		t.Fatalf("want one warning per drift, once each: %q", whys)
+	}
+}
+
+func TestExceptionDrift(t *testing.T) {
+	dirInfo, _ := os.Stat(t.TempDir())
+	fileInfo, _ := os.Stat(os.Args[0])
+	for _, tc := range []struct {
+		goos, p, resolved string
+		err               error
+		info              os.FileInfo
+		want              string
+	}{
+		{"linux", "/srv/x", "/srv/x", nil, dirInfo, ""},
+		{"linux", "/srv/x", "/home/me", nil, dirInfo, "now resolves to /home/me"},
+		{"linux", "/srv/x", "", os.ErrNotExist, nil, "no longer exists"},
+		{"linux", "/srv/x", "/srv/x", nil, fileInfo, "no longer a folder"},
+		{"windows", `c:\tenant\out`, `C:\Tenant\out`, nil, dirInfo, ""}, // case only: the same folder
+		{"linux", "/srv/X", "/srv/x", nil, dirInfo, "now resolves to"},
+	} {
+		eval := func(string) (string, error) { return tc.resolved, tc.err }
+		stat := func(string) (os.FileInfo, error) { return tc.info, nil }
+		if got := exceptionDrift(tc.goos, tc.p, eval, stat); !strings.Contains(got, tc.want) || (tc.want == "") != (got == "") {
+			t.Errorf("%s %q → %q: %q, want %q", tc.goos, tc.p, tc.resolved, got, tc.want)
 		}
 	}
 }
@@ -658,7 +802,7 @@ func TestExceptionScope(t *testing.T) {
 func TestExecExceptions_LoadAndResolve(t *testing.T) {
 	resetExecProfiles(t)
 	t.Cleanup(func() { defaultExecProfiles.LoadExceptions(nil) })
-	dir := t.TempDir()
+	dir := mustEval(t, t.TempDir()) // saved as its real path; a path through a symlink is not used
 	n, skipped := defaultExecProfiles.LoadExceptions(map[string][]string{
 		surfaceDiscord: {dir, "relative/x"},
 		"bogus":        {dir},
@@ -693,7 +837,7 @@ func TestApproveAlwaysOnEscalationSavesScopedException(t *testing.T) {
 	b := newApprovalBroker(nil)
 	b.SetRules(nil)
 	b.SetAsk(func(context.Context, tui.ApprovalRequest) tui.ApprovalDecision { return tui.ApproveAlways })
-	work := t.TempDir()
+	work := mustEval(t, t.TempDir()) // "always" saves the real path
 	refused := sandbox.Result{ExitCode: 1, Output: "touch: " + filepath.Join(work, "a.txt") + ": Operation not permitted",
 		Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "x"}}}
 	var detail string

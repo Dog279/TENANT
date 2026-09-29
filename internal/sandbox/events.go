@@ -40,8 +40,13 @@ var Escalated = Events.Event(2003, event.Warning, "Refusal", "A command the sand
 
 var ExceptionSaved = Events.Event(2004, event.Warning, "Exception", "Sandbox exception saved: {surface} commands may write under {path}", "surface", "path").
 	Doc("The operator approved a sandbox escalation \"always\", and the folder the sandbox refused was saved in exec_exceptions in the agent's settings file: the surface's sandboxed commands may write there from now on, without asking. The approval itself is in the Security log.",
-		"Always, on an os_exec_unsandboxed prompt whose refusal named a folder outside Tenant's own dirs, the credential stores and the home folder itself.",
+		"Always, on an os_exec_unsandboxed prompt whose refusal named a folder outside Tenant's own dirs, the credential stores, the system folders and roots, and the home folder itself.",
 		"None if it was meant. To take it back, delete the path from exec_exceptions in settings.<agent>.json; `tenant permissions effective` lists them.")
+
+var ExceptionSkipped = Events.Event(2006, event.Warning, "Exception", "Sandbox exception {path} for {surface} is not used: {why}", "surface", "path", "why").
+	Doc("An exec_exceptions folder is not what it was saved as, so it is not made writable: it is gone, is no longer a folder, or now resolves somewhere else (a symlink swapped in, perhaps to the home folder). Said once per process for each such entry.",
+		"The folder was deleted or replaced after it was saved, or the entry names a path through a symlink (write its real path).",
+		"If the folder moved on purpose, save its real path in exec_exceptions; otherwise delete the entry, and look at what replaced the folder.")
 
 var DryRunOnHost = Events.Event(2005, event.Warning, "Backend", "The {surface} exec profile's backend {backend} is unavailable; it is in dry run, so the command ran on the host: {err}", "surface", "backend", "err").
 	Doc("A dry-run profile (\"enforce\": false) names a sandbox backend that does not work here. A dry run never blocks a command, so it ran on the host, unconfined, and nothing about it was observed.",
