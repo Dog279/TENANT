@@ -58,7 +58,6 @@ func TestAccessInlineFormsInChrome(t *testing.T) {
 			var at, place []float64
 			var sandbox, strip string
 			err := run(ctx,
-				datastarUp,
 				markPlace(row("sandbox"), row("sandbox"), &at),
 				chromedp.Click(row("sandbox")+` form:has(input[value="deny"]) button`, chromedp.ByQuery),
 				toastSays("ok", "Discord conversations: Leave the sandbox is blocked."),
@@ -239,7 +238,6 @@ func TestTapGuardInChrome(t *testing.T) {
 	var at []float64
 	var opened int
 	err := run(ctx,
-		datastarUp,
 		chromedp.Evaluate(`document.querySelector(`+strconv.Quote(row("exec"))+`).scrollIntoView({block: 'start'})`, nil),
 		chromedp.Click(row("exec")+` details.confirm-step > summary`, chromedp.ByQuery),
 		chromedp.WaitVisible(row("exec")+` details[open] .confirm-box button`, chromedp.ByQuery),

@@ -41,13 +41,15 @@ func TestSafetyQueueInChrome(t *testing.T) {
 		})
 	}
 	// awaitStream waits for the n-th /events stream to have opened: it
-	// subscribes right after this record, then sends its snapshot.
+	// subscribes right after its start record, then sends its snapshot. The
+	// stop records don't count: one before the new page's stream opens let a
+	// close meet no stream, and Chrome resent the request without an error.
 	awaitStream := func(n int) {
 		t.Helper()
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 			got := 0
 			for _, l := range c.lines() {
-				if strings.HasPrefix(l, "1001 ") && strings.Contains(l, "stream=events") {
+				if strings.HasPrefix(l, "1001 start ") && strings.Contains(l, "stream=events") {
 					got++
 				}
 			}

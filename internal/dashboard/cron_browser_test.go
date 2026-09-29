@@ -22,9 +22,7 @@ type inlineChrome struct {
 
 func newInlineChrome(t *testing.T, s *Server, page, name string) inlineChrome {
 	ctx, _ := chromeSignedIn(t, s, 390, 844, page)
-	c := inlineChrome{t, ctx, name}
-	c.run("waiting for Datastar", datastarUp)
-	return c
+	return inlineChrome{t, ctx, name}
 }
 
 func (c inlineChrome) run(step string, actions ...chromedp.Action) {

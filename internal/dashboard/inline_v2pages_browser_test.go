@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -138,11 +139,17 @@ func TestV2PagesInlineInChrome(t *testing.T) {
 	// Research: Delete in the middle of the list, its confirm step's Yes
 	// double-tapped, deletes once and runs nothing; Run again, double-tapped,
 	// runs once; the live panel still streams; a started question leaves the
-	// box empty.
+	// box empty. The steps wait for the live stream's first frame: it redraws
+	// the list, closing a Delete step opened before it lands.
 	var question string
 	var afterDelete []string
 	err = run(ctx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, err := page.AddScriptToEvaluateOnNewDocument(`document.addEventListener('datastar-fetch', e => e.detail.type === 'datastar-patch-elements' && e.detail.el.matches('.research-wrap') && (window.__fed = true))`).Do(ctx)
+			return err
+		}),
 		visit(srv.URL+"/research"),
+		chromedp.Poll(`window.__fed === true`, nil, wait),
 		chromedp.WaitVisible(`#research-live .research-run`, chromedp.ByQuery),
 		markPlace(`.research-row:has(input[value="r-6"])`, `.research-row:has(input[value="r-5"])`, &before),
 		chromedp.Click(`.research-row:has(input[value="r-6"]) details.confirm-step > summary`, chromedp.ByQuery),

@@ -81,7 +81,7 @@ func TestMemoryInlineFormsInChrome(t *testing.T) {
 	}
 	row := fact(15)
 	var gone, undoInView, stepOpen bool
-	err := run(ctx, datastarUp,
+	err := run(ctx,
 		markPlace(row, fact(14), &at),
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
 		tapsOpen, // a step just opened

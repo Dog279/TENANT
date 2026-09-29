@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/rand/v2"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -202,7 +204,18 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	if err != nil {
 		t.Skip("no Chrome, Chromium or Edge here: ", err)
 	}
-	srv := httptest.NewServer(s.served())
+	stress := os.Getenv("TENANT_CHROME_STRESS") == "1"
+	handler := s.served()
+	if stress {
+		// A busy runner's server answers late and out of order: each
+		// request waits up to a quarter second first.
+		served := handler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(rand.N(250 * time.Millisecond))
+			served.ServeHTTP(w, r)
+		})
+	}
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(w, h))
 	var phone []chromedp.EmulateViewportOption
@@ -274,9 +287,14 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	if width != w {
 		t.Fatalf("innerWidth = %d, want %d", width, w)
 	}
-	// TENANT_CHROME_STRESS=1 slows the page's CPU fourfold, as a busy CI
-	// runner does, to find the waits that only hold on a fast machine.
-	if os.Getenv("TENANT_CHROME_STRESS") == "1" {
+	// #ui-status is there before Datastar: a tap sooner can miss its
+	// handlers (a Logs row, a link, then opened its own page).
+	if err := run(ctx, datastarUp); err != nil {
+		t.Fatalf("waiting for Datastar: %v", err)
+	}
+	// TENANT_CHROME_STRESS=1 also slows the page's CPU fourfold, as a busy
+	// CI runner does, to find the waits that only hold on a fast machine.
+	if stress {
 		if err := chromedp.Run(ctx, emulation.SetCPUThrottlingRate(4)); err != nil {
 			t.Fatalf("slowing the CPU: %v", err)
 		}

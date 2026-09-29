@@ -21,7 +21,6 @@ func TestAgentsRemoveInChrome(t *testing.T) {
 	var before, flash string
 	err := run(ctx,
 		chromedp.WaitVisible(row, chromedp.ByQuery),
-		datastarUp,
 		chromedp.Click(row+` details.confirm-step > summary`, chromedp.ByQuery),
 		tapsOpen, // a step just opened
 		chromedp.WaitVisible(row+` details[open] .confirm-box`, chromedp.ByQuery),

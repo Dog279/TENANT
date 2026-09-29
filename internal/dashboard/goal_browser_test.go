@@ -18,7 +18,6 @@ func TestGoalStopInChrome(t *testing.T) {
 	var flash string
 	err := run(ctx,
 		chromedp.WaitVisible(`.page .busy`, chromedp.ByQuery),
-		datastarUp,
 		chromedp.Evaluate(fitsJS, &before),
 		chromedp.Click(`form[action="/goal/stop"] button`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#toast.ok`, chromedp.ByQuery),
