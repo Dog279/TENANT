@@ -21,10 +21,19 @@ type effectiveCategory struct {
 	Source string `json:"source"`
 }
 
+// effectiveExecution is where the surface's commands run: its exec profile,
+// resolved as the spawn site resolves it, and what that backend enforces here.
 type effectiveExecution struct {
-	Backend  string `json:"backend"`
-	Isolated bool   `json:"isolated"`
-	Enabled  bool   `json:"enabled"`
+	Backend  string       `json:"backend"`  // host | restricted
+	Isolated bool         `json:"isolated"` // a confining backend that runs on this host
+	Enabled  bool         `json:"enabled"`
+	Profile  surfaceProbe `json:"profile"` // mode, network, roots, probed capabilities, exceptions
+}
+
+// surfaceExecution resolves and probes surface's exec profile.
+func surfaceExecution(c *commonFlags, surface string, enabled bool) effectiveExecution {
+	p := probeSurface(context.Background(), surface, c.cfgDir, c.dataDir)
+	return effectiveExecution{Backend: p.Backend, Isolated: p.Caps != nil && !p.unconfined(), Enabled: enabled, Profile: p}
 }
 
 type effectiveRemoteMCP struct {
@@ -49,10 +58,24 @@ type effectivePermissions struct {
 	AvailablePresets []string               `json:"available_presets"`
 }
 
+// The presets set category modes; where commands run is exec_profiles'. With
+// the built-in profile that is the restricted sandbox wherever it can run, so
+// full's exec allow is not a naked host shell there, and the audit's
+// permissions.host-exec-allow flags it where it is.
 var permissionPresets = map[string]map[string]string{
 	"safe":     uniformPreset(modeDeny),
 	"balanced": uniformPreset(modeAsk),
-	"full":     uniformPreset(modeAllow),
+	"full":     fullPreset(),
+}
+
+// fullPreset allows every category but sandbox, which asks: full runs
+// commands without approval inside the sandbox, never a refused one outside
+// it (TEN-347). With sandbox allowed too, every refusal re-ran on the host
+// unasked, and the sandbox was advisory.
+func fullPreset() map[string]string {
+	p := uniformPreset(modeAllow)
+	p[catSandbox] = modeAsk.String()
+	return p
 }
 
 // uniformPreset puts every category on one mode, so a new category joins each
@@ -93,6 +116,7 @@ func cmdPermissionsEffective(args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf)
+	_, _, _ = loadExecProfilesFromSettings(c.cfgDir, c.agent) // an unreadable file fails the compose below
 	report, err := composeEffectivePermissions(c, pf, *surface)
 	if err != nil {
 		return err
@@ -189,10 +213,8 @@ func composeEffectivePermissions(c *commonFlags, pf *pluginFlags, surface string
 		ToolRules:       rules.Snapshot(),
 		ConfiguredTools: tools,
 		ToolOverrides:   toolOverrides,
-		Execution: effectiveExecution{
-			Backend: "host", Isolated: false,
-			Enabled: containsString(tools, "os") && categories[catExec].Mode != modeDeny.String(),
-		},
+		Execution: surfaceExecution(c, normalized,
+			containsString(tools, "os") && categories[catExec].Mode != modeDeny.String()),
 		RemoteMCP: effectiveRemoteMCP{
 			Servers: len(lc.MCPRemotes) + len(pf.mcpRemotes), TrustAnnotations: pf.mcpTrustAnnotations,
 			AllowWrite: pf.mcpAllowWrite,
@@ -466,6 +488,13 @@ func printEffectivePermissions(report effectivePermissions) {
 	}
 	fmt.Printf("  tools: %s\n", strings.Join(report.ConfiguredTools, ", "))
 	fmt.Printf("  execution: %s (isolated=%t, enabled=%t)\n", report.Execution.Backend, report.Execution.Isolated, report.Execution.Enabled)
+	fmt.Println("    " + execProfileState(report.Execution.Profile))
+	if len(report.Execution.Profile.Exceptions) > 0 {
+		fmt.Println("    exceptions (exec_exceptions; delete one there to remove it):")
+		for _, e := range report.Execution.Profile.Exceptions {
+			fmt.Println("      " + e)
+		}
+	}
 	fmt.Printf("  remote MCP: %d server(s), trust_annotations=%t, allow_write=%t\n",
 		report.RemoteMCP.Servers, report.RemoteMCP.TrustAnnotations, report.RemoteMCP.AllowWrite)
 	if len(report.Integrations) > 0 {

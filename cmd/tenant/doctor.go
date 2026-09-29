@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -204,6 +205,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// blocking history).
 		{"research store", checkResearchStore},
 		{"soul", checkSoul},
+		// TEN-345/347: what each surface's commands run under, probed here.
+		{"exec sandbox", checkExecSandbox},
 		// TEN-375: the log book (doctorlogbook.go).
 		{"log book location", checkLogbookLocation},
 		{"log book integrity", checkLogbookIntegrity},
@@ -290,6 +293,37 @@ func cmdDoctor(ctx context.Context, args []string) error {
 }
 
 // --- checks ---
+
+// checkExecSandbox says, a line per surface, what its commands run under and
+// what that backend enforces on this host. It warns when commands run on the
+// host because the restricted backend can't run here (and says why), and fails
+// when an enforcing profile's backend is missing, so its commands do not run.
+func checkExecSandbox(ctx context.Context, e *doctorEnv) checkResult {
+	notes := loadSandboxProfiles(e.c) // exec_profiles as the hub loads them
+	probes := probeExecSurfaces(ctx, e.c.cfgDir, e.c.dataDir)
+	r := checkResult{Status: statusOK}
+	for _, p := range probes {
+		switch {
+		case p.failsClosed():
+			r.Status = statusFail
+			r.Fix = "install what the error names (`tenant sandbox probe`), or set another backend for the surface in exec_profiles"
+		case (p.Fallback != "" || p.Error != "") && r.Status == statusOK:
+			r.Status = statusWarn
+			r.Fix = "commands run unconfined until a restricted backend can run here; `tenant sandbox probe` has the detail"
+		}
+	}
+	lines := append(notes, execProfileLines(probes)...)
+	if e.c.lc != nil { // execSurfaces ends with cron-shell
+		if sh := cronShNotice(cronJobsInSh(runtime.GOOS, probes[len(probes)-1].runsOn(), e.c.lc.Cron.Jobs)); len(sh) > 0 {
+			lines = append(lines, sh...)
+			if r.Status == statusOK {
+				r.Status, r.Fix = statusWarn, "rewrite those cron jobs for sh, or pin cron-shell to the host"
+			}
+		}
+	}
+	r.Detail = strings.Join(lines, "\n       ")
+	return r
+}
 
 func checkDirs(_ context.Context, e *doctorEnv) checkResult {
 	r := checkResult{Status: statusOK, Detail: "data + config dirs present and writable"}

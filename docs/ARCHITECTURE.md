@@ -30,8 +30,8 @@ block for drift.
 | Go packages | 87 |
 | Go files | 1,170 |
 | Test files | 566 |
-| Production Go LOC | 149,570 |
-| Test Go LOC | 114,919 |
+| Production Go LOC | 150,619 |
+| Test Go LOC | 115,982 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -1107,11 +1107,15 @@ can slip past it when `AllowExec` is on without `Confirm`. It stays as
 a fast fail-early layer. The boundary is the execution sandbox
 (§5.12h): `os_exec` runs through the runner injected as
 `Config.Runner`, on a `sandbox.Backend` picked per surface from the
-operator's `exec_profiles`. The default
-backend is `host`, which confines **nothing** (the pre-seam
-behaviour). A surface is contained only once the operator moves it to
-`restricted`, and only as far as that OS's backend enforces
-(`tenant sandbox probe` / `selftest`). Until then: keep exec off
+operator's `exec_profiles`. The built-in profile is `restricted` in
+dry run on macOS (Seatbelt) and Windows (bubblewrap in WSL2: commands
+run as Linux `sh`, and the os_exec description says so), else `host`,
+which confines **nothing** (Linux, or no WSL; `builtinExec` says why).
+A dry run confines nothing either: a refused command re-runs outside the
+sandbox (`sandbox.Outside`: the host, or on Windows `sh` in the same
+distro). A surface is contained only once enforcement is on
+(`exec_profiles.default.enforce`), and only as far as that OS's backend
+enforces (`tenant sandbox probe` / `selftest`). Until then: keep exec off
 unless needed, run Tenant as a least-privilege user, prefer a
 container/VM. Also: the file tools (`os_read_file`, `os_write`, …) run
 in Tenant's own process, **outside** the sandbox. They are bounded only
@@ -1257,6 +1261,14 @@ boundary. Operator guide and change record:
     If none can confine, `restricted` **fails closed** — never unconfined.
   - Limits are wall-clock only through the WSL boundary; env is WSL's
     default, not a strict allowlist yet (`probe` reports both `partial`).
+  - Its unsandboxed twin (`Unconfined`, `wslUnsandboxed`) runs the same
+    `sh` line in the same distro without bubblewrap: `sandbox.Execute`
+    re-runs a refused command there, so a dry run or an approved
+    escalation never turns it into PowerShell. Only there does WSL interop
+    start Windows programs; inside, an `.exe` is a `program` refusal
+    ("Windows programs run only outside the sandbox").
+  - A dry run leaves the Windows drives visible read-only; enforcing hides
+    them except the work dir and write roots.
 - The Job Object (`restricted_windows.go`, `newJobObjectBackend`) is kept
   as a resource-limit primitive — memory, active-process and per-process
   CPU caps from `Limits`, plus kill-on-close. The native token/ACE/WFP
@@ -1277,11 +1289,16 @@ with `TENANT_SANDBOX_LIVE=1`.
 - The exec surfaces (`local`, `discord`, `imessage`, `cron-exec`,
   `cron-shell`) are stamped on the turn context and inherited by
   sub-agents.
-- The operator's `exec_profiles` live in the settings file:
-  hot-reloaded, validated, and never reachable from an agent tool.
-- `resolveExecProfile`: the built-in deny set is the config dir, the
-  data dir and the Tenant binary. Confining profiles add the
-  credential- and browser-store baseline and the scrubbed env.
+- The operator's `exec_profiles` and `exec_exceptions` live in the
+  settings file: hot-reloaded, validated, and never reachable from an
+  agent tool. "Always" on an escalation saves only the refused folder
+  as an exception (`approval.OnAlways`, `saveExecException`).
+- `resolveExecProfile`: the built-in profile is `builtinExec`'s backend
+  in dry run (`cron-shell`: no network); `exec_profiles.default.enforce`
+  is the switch. The built-in deny set is the config dir, the data dir
+  and the Tenant binary; confining profiles add the credential- and
+  browser-store baseline. Every profile gets the env allowlist
+  (`envAllowlist`).
 - `sandboxRunner` / `profileRunner` run `os_exec`, injected as
   `osys.Config.Runner`. `runSandboxShell` runs cron shell jobs (`cmd /C`
   on Windows).
@@ -1292,9 +1309,12 @@ with `TENANT_SANDBOX_LIVE=1`.
 - `cmd/tenant/sandboxctl.go` holds `tenant sandbox probe|selftest|run`.
 
 **Invariants:**
-- `host` is the default everywhere, so the seam is a behavioural no-op
-  until an operator opts a surface in.
-- An unavailable backend fails closed: the command is not run.
+- The built-in default never blocks a command it recognises as
+  refused: a dry run re-runs it outside the sandbox, in the same
+  language, and where `restricted` can't dry-run, the default is `host`,
+  with the reason in probe, audit and doctor.
+- An enforcing profile's unavailable backend fails closed: the command
+  is not run. A dry-run profile's runs on the host (`sandbox/2005`).
 - No agent tool reads or writes a profile.
 - Deny roots always include Tenant's config, data and binary.
 - Unattended surfaces never escalate.

@@ -130,6 +130,52 @@ func TestExplicitOnly_GlobRules(t *testing.T) {
 	}
 }
 
+const scopedAction = "test_scoped_escalation" // files under destructive (unknown action)
+
+type scopedKey struct{}
+
+var scopedSaved []string
+
+func init() {
+	OnAlways(scopedAction, func(ctx context.Context) {
+		s, _ := ctx.Value(scopedKey{}).(string)
+		scopedSaved = append(scopedSaved, s)
+	})
+}
+
+// "Always" on an OnAlways action approves it and saves what its context
+// carries, on a category prompt and on a rule-forced one, and never opens the
+// category or turns the rule to allow: the next one asks again.
+func TestOnAlways_SavesScopeNeverTheCategory(t *testing.T) {
+	scopedSaved = nil
+	b, asked := explicitBroker(t, control.ApproveAlways)
+	ctx := context.WithValue(context.Background(), scopedKey{}, "/work")
+	if !b.Confirm(ctx, scopedAction, "re-run") || !b.Confirm(ctx, scopedAction, "re-run") {
+		t.Fatal("always must approve")
+	}
+	if *asked != 2 || b.Modes()[CatDestructive] != ModeAsk.String() {
+		t.Fatalf("asked %d, category %s: always opened the category", *asked, b.Modes()[CatDestructive])
+	}
+	if err := b.rules.Set(scopedAction, "ask"); err != nil {
+		t.Fatal(err)
+	}
+	if !b.Confirm(ctx, scopedAction, "re-run") {
+		t.Fatal("always must approve")
+	}
+	if mode, _, _ := b.rules.Lookup(scopedAction); mode != "ask" {
+		t.Fatalf("always turned the rule to %q", mode)
+	}
+	if len(scopedSaved) != 3 || scopedSaved[0] != "/work" {
+		t.Fatalf("saved %q, want /work three times", scopedSaved)
+	}
+	// Once and session save nothing.
+	b2, _ := explicitBroker(t, control.ApproveOnce)
+	b2.Confirm(ctx, scopedAction, "re-run")
+	if len(scopedSaved) != 3 {
+		t.Fatalf("a one-time approval saved: %q", scopedSaved)
+	}
+}
+
 // "Always" on a prompt an exact ask rule forced doesn't flip it to allow.
 func TestExplicitOnly_AskRuleAlwaysDoesNotSave(t *testing.T) {
 	b, asked := explicitBroker(t, control.ApproveAlways)

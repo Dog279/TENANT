@@ -520,6 +520,17 @@ func TestTools(t *testing.T) {
 	if !exec.Outbound {
 		t.Fatal("os_exec must be marked outbound-capable")
 	}
+	const def = "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS). GATED: off unless enabled; destructive commands need explicit approval. Returns combined stdout+stderr."
+	if exec.Description != def {
+		t.Fatalf("default os_exec description changed: %q", exec.Description)
+	}
+	// Config.Shell says where the Runner really runs commands.
+	svc, _ := Open(Config{Shell: "in Linux sh inside a WSL sandbox."})
+	for _, sp := range NewDispatcher(svc, Policy{}).Tools() {
+		if sp.Name == "os_exec" && !strings.HasPrefix(sp.Description, "Run a shell command on this machine: in Linux sh inside a WSL sandbox. GATED:") {
+			t.Fatalf("os_exec description with a shell: %q", sp.Description)
+		}
+	}
 }
 
 // needSymlinks skips the test where this host/user cannot create symlinks.

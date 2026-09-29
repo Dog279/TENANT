@@ -183,9 +183,12 @@ activity (`TENANT_ACTIVITY_ID`). In between:
 |---|---|---|
 | `sandbox 1001` | INFO | the command exited: `pid`, `exit`, `status`, `timed_out`, `violations` when there are any, and `tail`, the last 512 bytes of the output (stdout and stderr together, as the model sees them) |
 | `sandbox 2001` | WARN | the boundary refused a file or network access and the command was not re-run: enforce on, and the escalation was denied or the surface is unattended |
-| `sandbox 2002` | WARN | `"enforce": false` (dry run): what enforcing would have refused; the command ran on the host |
-| `sandbox 2003` | WARN | an approved `os_exec_unsandboxed` re-ran the refused command on the host |
-| `sandbox 3001` | ERROR | the surface's backend is unavailable, so nothing ran (the sandbox fails closed) |
+| `sandbox 2002` | WARN | `"enforce": false` (dry run): what enforcing would have refused; the command ran outside the sandbox (on Windows: sh in the same WSL distro) |
+| `sandbox 2003` | WARN | an approved `os_exec_unsandboxed` re-ran the refused command outside the sandbox |
+| `sandbox 2004` | WARN | "always" on an escalation saved the refused folder as an exception for the surface (`exec_exceptions`) |
+| `sandbox 2005` | WARN | a dry-run profile's backend is unavailable, so the command ran on the host (a dry run never blocks) |
+| `sandbox 2006` | WARN | an `exec_exceptions` folder is not used: it is gone, no longer a folder, or now resolves elsewhere (a symlink swapped in); once per entry |
+| `sandbox 3001` | ERROR | an enforcing profile's backend is unavailable, so nothing ran (the sandbox fails closed) |
 
 Every event carries `surface` and `backend`; a refusal also `command`,
 `exit` and `violations`, what the boundary refused as the backend attributes

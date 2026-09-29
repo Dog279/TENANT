@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"tenant/internal/sandbox"
 	"tenant/internal/secrets"
 )
 
@@ -73,12 +74,35 @@ type secretStorageAudit struct {
 	DashboardAuth   string `json:"dashboard_auth"`
 }
 
+// executionAudit is where commands run. Backend, Isolation and FilesystemRoot
+// are the local surface's (the TUI, dashboard and serve chat); Surfaces has
+// every exec surface, resolved from exec_profiles and probed on this host.
 type executionAudit struct {
-	Backend        string `json:"backend"`
-	Isolation      string `json:"isolation"`
-	Enabled        bool   `json:"enabled"`
-	ModelBackend   string `json:"model_backend"`
-	FilesystemRoot string `json:"filesystem_root"`
+	Backend        string         `json:"backend"`
+	Isolation      string         `json:"isolation"` // none when its commands run unconfined; unavailable when they don't run
+	Enabled        bool           `json:"enabled"`
+	ModelBackend   string         `json:"model_backend"`
+	FilesystemRoot string         `json:"filesystem_root"`
+	Surfaces       []surfaceProbe `json:"surfaces"`
+}
+
+// auditExecution fills executionAudit from the live exec profiles.
+func auditExecution(c *commonFlags, enabled bool, modelBackend string) executionAudit {
+	e := executionAudit{Enabled: enabled, ModelBackend: modelBackend}
+	for _, s := range execSurfaces {
+		e.Surfaces = append(e.Surfaces, probeSurface(context.Background(), s, c.cfgDir, c.dataDir))
+	}
+	local := e.Surfaces[0] // execSurfaces starts with local
+	e.Backend = local.Backend
+	switch {
+	case local.unconfined():
+		e.Isolation, e.FilesystemRoot = sandbox.IsolationNone.String(), "unrestricted host filesystem"
+	case local.failsClosed():
+		e.Isolation, e.FilesystemRoot = "unavailable", "none: its commands do not run"
+	default:
+		e.Isolation, e.FilesystemRoot = local.Isolation, "confined by the "+local.Backend+" backend (filesystem "+local.Caps.Filesystem+")"
+	}
+	return e
 }
 
 // surfaceAudit is one authority surface: whether it is live, and what its
@@ -133,6 +157,7 @@ func cmdSecurityAudit(ctx context.Context, args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf)
+	_, _, _ = loadExecProfilesFromSettings(c.cfgDir, c.agent) // an unreadable file fails the compose below
 	permissions, err := composeEffectivePermissions(c, pf, permissionSurfaceLocal)
 	if err != nil {
 		return fmt.Errorf("compose permissions: %w", err)
@@ -216,10 +241,7 @@ func buildSecurityAuditReport(c *commonFlags, pf *pluginFlags, permissions effec
 			MCPTokenCache:   filepath.Join(c.cfgDir, "mcp", "mcp-*.json"),
 			DashboardAuth:   dashboardAuthStorage(c.lc),
 		},
-		Execution: executionAudit{
-			Backend: "host shell", Isolation: "none", Enabled: permissions.Execution.Enabled,
-			ModelBackend: modelBackend, FilesystemRoot: "unrestricted host filesystem",
-		},
+		Execution: auditExecution(c, permissions.Execution.Enabled, modelBackend),
 	}
 	return report
 }
@@ -348,15 +370,15 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 			"commands the execution sandbox refuses re-run outside it without approval, so the sandbox is advisory",
 			"use the safe or balanced preset, or set sandbox to ask/deny")
 	}
+	// Isolation is the local surface's RESOLVED backend (auditExecution): exec
+	// allowed on a restricted profile, dry run included, is not host exec.
 	if category, ok := report.Permissions.Categories[catExec]; ok && category.Mode == modeAllow.String() && report.Execution.Isolation == "none" {
 		add("permissions.host-exec-allow", "permissions", auditCritical,
 			"host shell execution is allowed without approval and has no isolation boundary",
 			"set exec to ask/deny or use an isolated execution backend")
 	}
-	if report.Execution.Enabled && report.Execution.Isolation == "none" {
-		add("execution.host", "execution", auditWarning,
-			"shell execution is enabled directly on the host without a container or filesystem root",
-			"use deny/ask permissions and a restricted execution backend when one is available")
+	if report.Execution.Enabled {
+		executionFindings(report.Execution.Surfaces, add)
 	}
 	for _, surface := range report.Surfaces {
 		if !surface.Active || surface.Surface == permissionSurfaceLocal {
@@ -384,6 +406,42 @@ func evaluateSecurityAudit(report *securityAuditReport) {
 		}
 	}
 	report.Safe = report.Critical == 0
+}
+
+// executionFindings warns, once each, about the exec surfaces whose commands
+// run on the host unconfined (with why, when the built-in default fell back),
+// run the sandbox in dry run, or do not run because their backend is missing.
+func executionFindings(surfaces []surfaceProbe, add func(id, area string, severity auditSeverity, summary, remedy string)) {
+	var host, dry, closed []string
+	why := ""
+	for _, s := range surfaces {
+		switch {
+		case s.failsClosed():
+			closed = append(closed, s.Surface+" ("+s.Error+")")
+		case s.unconfined():
+			host = append(host, s.Surface)
+			if s.Fallback != "" {
+				why = ": the restricted backend can't run here: " + s.Fallback
+			}
+		case s.Mode != refusalMode(true):
+			dry = append(dry, s.Surface)
+		}
+	}
+	if len(host) > 0 {
+		add("execution.host", "execution", auditWarning,
+			"commands run directly on the host with no filesystem or network confinement ("+strings.Join(host, ", ")+")"+why,
+			"use deny/ask permissions, and a restricted execution backend when one is available")
+	}
+	if len(dry) > 0 {
+		add("execution.dry-run", "execution", auditWarning,
+			"the execution sandbox is in dry run ("+strings.Join(dry, ", ")+"): what it refuses is logged, then re-run on the host, so it confines nothing yet",
+			"read the sandbox log (the dashboard's sandbox tab), add the folders commands need to exec_exceptions or write_roots, then set exec_profiles.default.enforce to true")
+	}
+	if len(closed) > 0 {
+		add("execution.unavailable", "execution", auditWarning,
+			"commands do not run on "+strings.Join(closed, "; ")+": the backend is unavailable and the profile enforces",
+			"install what the error names (`tenant sandbox probe`), or set another backend for the surface in exec_profiles")
+	}
 }
 
 // offsiteRisks are the categories whose "allow" on an offsite surface lets a
@@ -519,6 +577,14 @@ func printSecurityAudit(report securityAuditReport) {
 		report.RemoteMCP.TrustAnnotations, report.RemoteMCP.AllowWrite)
 	fmt.Printf("execution: %s isolation=%s enabled=%t (model=%s)\n", report.Execution.Backend,
 		report.Execution.Isolation, report.Execution.Enabled, report.Execution.ModelBackend)
+	for _, ln := range execProfileLines(report.Execution.Surfaces) {
+		fmt.Println("  " + ln)
+	}
+	for _, s := range report.Execution.Surfaces {
+		if len(s.Exceptions) > 0 {
+			fmt.Printf("  %s exceptions (exec_exceptions): %s\n", s.Surface, strings.Join(s.Exceptions, ", "))
+		}
+	}
 	for _, surface := range report.Surfaces {
 		state := "inactive"
 		if surface.Active {

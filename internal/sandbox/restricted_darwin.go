@@ -132,7 +132,9 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 	// When the policy scopes the environment, redirect HOME and TMPDIR into the
 	// work dir so tools that write there land inside the boundary rather than being
 	// denied. A zero EnvPolicy inherits the real env unchanged (host-compatible).
-	if envScoped(pol.Env) && pol.WorkDir != "" {
+	// A dry run keeps the real ones: redirected, a job's "cd ~/x" fails inside
+	// the sandbox with nothing refused, so it is never re-run on the host.
+	if envScoped(pol.Env) && pol.WorkDir != "" && pol.Enforce {
 		env = setEnv(env, "HOME", pol.WorkDir)
 		env = setEnv(env, "TMPDIR", pol.WorkDir)
 	}
@@ -174,7 +176,7 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 			// Could not start sandbox-exec at all: an infrastructure failure.
 			return res, err
 		}
-		if v, ok := attributeDenial(res.Output); ok {
+		if v, ok := attributeDenial(res.Output, pol); ok {
 			res.Violations = append(res.Violations, v)
 		}
 	}
@@ -350,20 +352,42 @@ func setEnv(env []string, key, val string) []string {
 // attributeDenial makes a best-effort Violation from a Seatbelt denial. Seatbelt
 // reports a blocked operation to the child as EPERM ("operation not permitted"),
 // so a non-zero exit whose output carries that signature is very likely a
-// containment event. Classification is heuristic; Contained() never depends on it.
-func attributeDenial(output string) (Violation, bool) {
+// containment event. With the network cut, most tools report a blocked lookup
+// or connect as a failure of their own ("Could not resolve host", "nodename
+// nor servname provided"), never EPERM; on such a profile nothing can reach the
+// network, so those count as network refusals too. Without that, dry run and
+// escalation missed them: the command just failed. Classification is
+// heuristic; Contained() never depends on it.
+func attributeDenial(output string, pol Policy) (Violation, bool) {
 	low := strings.ToLower(output)
+	network := Violation{Kind: "network", Detail: "sandbox blocked a network operation"}
 	// EPERM is the Seatbelt signature. Also matching the bare word "sandbox"
 	// flagged any failing command that merely printed it (a path, a log line),
 	// which would now trigger spurious escalations.
-	if !strings.Contains(low, "operation not permitted") {
-		return Violation{}, false
+	if strings.Contains(low, "operation not permitted") {
+		if strings.Contains(low, "/dev/tcp") || strings.Contains(low, "connect") ||
+			strings.Contains(low, "network") || strings.Contains(low, "socket") {
+			return network, true
+		}
+		return Violation{Kind: "filesystem", Detail: "sandbox blocked access outside the policy's read/write roots"}, true
 	}
-	if strings.Contains(low, "/dev/tcp") || strings.Contains(low, "connect") ||
-		strings.Contains(low, "network") || strings.Contains(low, "socket") {
-		return Violation{Kind: "network", Detail: "sandbox blocked a network operation"}, true
+	if pol.Network == NetNone || pol.Network == NetAllowlist {
+		for _, sig := range netCutSignatures {
+			if strings.Contains(low, sig) {
+				network.Detail = "sandbox blocked a network operation (network disabled for this profile)"
+				return network, true
+			}
+		}
 	}
-	return Violation{Kind: "filesystem", Detail: "sandbox blocked access outside the policy's read/write roots"}, true
+	return Violation{}, false
+}
+
+// netCutSignatures are how common macOS tools (curl, git, ssh, ping, Python,
+// Go) report a lookup or connect that Seatbelt refused.
+var netCutSignatures = []string{
+	"could not resolve host", "could not resolve hostname", "nodename nor servname provided",
+	"couldn't connect to server", "failed to connect to", "unable to resolve host",
+	"cannot resolve", "no such host", "network is unreachable", "no route to host",
 }
 
 // ancestorsBetween lists the directories from root down to p's parent, root

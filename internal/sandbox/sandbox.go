@@ -230,7 +230,9 @@ type Policy struct {
 	// Enforce selects what Execute does when the boundary refuses something:
 	// true asks the Escalator (attended surface: a person; unattended: deny);
 	// false is dry-run, which re-runs on the host and reports the refusal.
-	// Backends always enforce; this flag is consumed by Execute, not Backend.Run.
+	// Backends always enforce; this flag is consumed by Execute, not Backend.Run,
+	// except that the macOS backend points HOME and TMPDIR into the work dir only
+	// when enforcing, so a dry run sees the command's real paths.
 	Enforce bool
 }
 
@@ -248,9 +250,14 @@ type Command struct {
 // command, in which case Violations may be empty and containment is observed
 // behaviourally by the escape suite.
 type Violation struct {
-	Kind   string `json:"kind"`   // "filesystem" | "network" | "limit" | "policy"
+	Kind   string `json:"kind"`   // "filesystem" | "network" | "program" | "limit" | "policy"
 	Detail string `json:"detail"` // model/operator-readable, e.g. "wrote outside write roots: /x"
 }
+
+// WindowsProgramRefusal is the Detail of a "program" refusal: a Windows program
+// (an .exe, through WSL interop) the WSL sandbox cannot start. The model reads
+// it, so it says what to do.
+const WindowsProgramRefusal = "Windows programs run only outside the sandbox — ask to run it outside"
 
 // Result is the outcome of a run. A non-zero ExitCode is NOT an error (it is
 // signal); err is reserved for infrastructure failures (the backend could not
@@ -287,7 +294,7 @@ func (r Result) Contained() bool {
 // so Execute never escalates on them.
 func (r Result) Refused() bool {
 	for _, v := range r.Violations {
-		if v.Kind == "filesystem" || v.Kind == "network" {
+		if v.Kind == "filesystem" || v.Kind == "network" || v.Kind == "program" {
 			return true
 		}
 	}
@@ -373,10 +380,10 @@ type Escalator func(ctx context.Context, cmd Command, refused Result) bool
 //
 //   - Nothing refused: the backend's result, unchanged. The host backend never
 //     refuses, so on host Execute is exactly Run.
-//   - Refused, pol.Enforce false (dry-run): re-run on the host so behaviour is
-//     unchanged. The result carries the first attempt's Violations and
-//     Escalated=true so the refusal is still reported.
-//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run on the host
+//   - Refused, pol.Enforce false (dry-run): re-run outside the sandbox
+//     (Outside) so behaviour is unchanged. The result carries the first
+//     attempt's Violations and Escalated=true so the refusal is still reported.
+//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run outside
 //     (Escalated=true, Violations kept). Denied or nil ⇒ the confined result,
 //     Violations intact.
 //
@@ -394,10 +401,21 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	if pol.Enforce && (esc == nil || !esc(ctx, cmd, res)) {
 		return res, nil
 	}
-	hres, herr := Host().Run(ctx, cmd, pol)
+	hres, herr := Outside(b).Run(ctx, cmd, pol)
 	hres.Violations = append(append([]Violation(nil), res.Violations...), hres.Violations...)
 	hres.Escalated = true
 	return hres, herr
+}
+
+// Outside is where a command b refused re-runs, unconfined: the host, or, for
+// a backend whose commands run elsewhere (the WSL backend runs Linux sh), the
+// same shell there without the sandbox, so a re-run never changes the
+// command's language.
+func Outside(b Backend) Backend {
+	if u, ok := b.(interface{ Unconfined() Backend }); ok {
+		return u.Unconfined()
+	}
+	return Host()
 }
 
 // --- shared helpers used by every backend ---

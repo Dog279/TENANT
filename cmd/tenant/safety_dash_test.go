@@ -403,4 +403,24 @@ func TestExecSandboxed(t *testing.T) {
 	if f := newSafetyFacts()(); f.Account != runAs() || f.System != runsAsSystem() {
 		t.Errorf("facts %+v on this computer", f)
 	}
+	// The built-in profile follows exec_profiles.default.enforce: a dry run is
+	// not sandboxed, the switch on is, and a host fallback never is.
+	on := true
+	withBuiltinExec(t, "restricted", "")
+	for _, tc := range []struct {
+		profiles map[string]execProfileSetting
+		want     bool
+	}{
+		{nil, false},
+		{map[string]execProfileSetting{"default": {Enforce: &on}}, true},
+	} {
+		defaultExecProfiles.Load(tc.profiles)
+		if got := execSandboxed(); got != tc.want {
+			t.Errorf("built-in restricted, %v: execSandboxed = %v, want %v", tc.profiles, got, tc.want)
+		}
+	}
+	withBuiltinExec(t, "host", "no backend")
+	if execSandboxed() {
+		t.Error("a host fallback is never sandboxed")
+	}
 }

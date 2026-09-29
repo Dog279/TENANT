@@ -11,30 +11,42 @@ package main
 // tool call in the turn inherits it. Unstamped means "local": the TUI, the
 // dashboard, `tenant serve` chat — an operator is at the host.
 //
-// Profiles are OPERATOR-controlled. Built-in default: the "host" backend on every
-// surface, byte-for-byte the pre-seam behaviour. Overrides live in
-// settings.<agent>.json under "exec_profiles" (keyed by surface, or "default"),
-// load at startup and are re-read when the file is edited, so a surface moves
-// onto the restricted backend with no restart. There is deliberately NO agent
-// tool that reads or writes a profile: the model must never widen its own
-// boundary. The file tools refuse the settings file outright
-// (fileToolGuards), so write access does not open a way round that.
+// Profiles are OPERATOR-controlled. Built-in profile (TEN-347): the restricted
+// backend in dry run on every surface, with no network for cron-shell, and the
+// safe-env allowlist (envAllowlist). Where this host's restricted backend can't
+// dry-run without blocking or changing commands, the built-in backend is the
+// host instead, and probe, audit, doctor and the startup feed say why
+// (builtinExec). Overrides live in settings.<agent>.json under "exec_profiles"
+// (keyed by surface, or "default"), load at startup and are re-read when the
+// file is edited, with no restart. There is deliberately NO agent tool that
+// reads or writes a profile: the model must never widen its own boundary. The
+// file tools refuse the settings file outright (fileToolGuards), so write
+// access does not open a way round that.
 //
 //	"exec_profiles": {
-//	  "default":    {"backend": "restricted"},
+//	  "default":    {"enforce": true},
 //	  "cron-shell": {"backend": "restricted", "network": "none"},
-//	  "discord":    {"backend": "restricted", "enforce": false}
+//	  "discord":    {"backend": "host"}
 //	}
 //
+// "default"'s enforce is the one switch from dry run to enforcing: it applies to
+// every surface whose own entry neither sets enforce nor names a backend. An
+// entry that names a backend keeps the defaults it was written under (enforce
+// on, network inherit). "exec_exceptions" (keyed by surface) are folders a
+// surface's confined commands may write to: approving an escalation "always"
+// adds the refused folder (saveExecException), never a backend switch.
+//
 // Refusals. When a confining backend refuses a filesystem or network access,
-// sandbox.Execute applies the profile's Enforce flag. Enforce (the default) asks
-// the turn's approver for "os_exec_unsandboxed" — a person on an attended
-// surface, while the cron exec approver denies it — and re-runs on the host only
-// if approved. Enforce false is dry-run: re-run on the host and log the refusal.
-// Every run, on every backend, and every refusal is written to the "sandbox" log
-// source.
+// sandbox.Execute applies the profile's Enforce flag. Enforce asks the turn's
+// approver for "os_exec_unsandboxed" — a person on an attended surface, while
+// the cron exec approver denies it — and re-runs on the host only if approved.
+// Enforce false is dry-run: re-run on the host and log the refusal. A dry run
+// never blocks a command, so a dry-run profile whose backend is unavailable
+// runs on the host too; an enforcing one fails closed. Every run, on every
+// backend, and every refusal is written to the "sandbox" log source.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -42,15 +54,20 @@ import (
 	"path/filepath"
 	stdreflect "reflect" // aliased: package main already declares reflect (research.go)
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
+	"tenant/internal/approval"
+	croneng "tenant/internal/cron"
 	"tenant/internal/logs"
 	"tenant/internal/logs/capture"
 	"tenant/internal/logs/event"
+	"tenant/internal/plugins/osys"
 	"tenant/internal/sandbox"
 )
 
@@ -112,13 +129,18 @@ func inheritExecSurface(to, from context.Context) context.Context {
 type execProfile struct {
 	Backend string
 	Policy  sandbox.Policy
+	// Fallback says why the surface runs on the host when nothing chose a
+	// backend: this host's restricted backend can't dry-run here.
+	Fallback string
 }
 
-// execProfileStore is the process-wide, live set of operator overrides: loaded
-// at startup, re-loaded by the settings watcher. No agent tool writes it.
+// execProfileStore is the process-wide, live set of operator overrides and
+// exceptions: loaded at startup, re-loaded by the settings watcher. No agent
+// tool writes it.
 type execProfileStore struct {
 	mu sync.RWMutex
 	m  map[string]execProfileSetting
+	ex map[string][]string // exec_exceptions: surface → folders, ~ expanded
 }
 
 var defaultExecProfiles = &execProfileStore{m: map[string]execProfileSetting{}}
@@ -153,6 +175,73 @@ func (s *execProfileStore) lookup(surface string) (execProfileSetting, bool) {
 	}
 	p, ok := s.m["default"]
 	return p, ok
+}
+
+// defaultEnforce is the switch: "default"'s enforce, or on when "default" names
+// a backend without one; nil when it says nothing.
+func (s *execProfileStore) defaultEnforce() *bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	d := s.m["default"]
+	if d.Enforce == nil && d.Backend != "" {
+		on := true
+		return &on
+	}
+	return d.Enforce
+}
+
+// LoadExceptions replaces the exceptions with the valid entries of in: a known
+// surface, and an absolute path (or one under ~). It returns how many paths
+// were applied and one message per skipped entry.
+func (s *execProfileStore) LoadExceptions(in map[string][]string) (int, []string) {
+	valid, skipped := validExecExceptions(in)
+	n := 0
+	for surface, paths := range valid {
+		valid[surface] = expandRoots(paths)
+		n += len(paths)
+	}
+	s.mu.Lock()
+	s.ex = valid
+	s.mu.Unlock()
+	return n, skipped
+}
+
+// exceptions returns a surface's exception folders.
+func (s *execProfileStore) exceptions(surface string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return slices.Clone(s.ex[surface])
+}
+
+// ExceptionsSnapshot returns a copy of the live exceptions, as loaded.
+func (s *execProfileStore) ExceptionsSnapshot() map[string][]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]string, len(s.ex))
+	for k, v := range s.ex {
+		out[k] = slices.Clone(v)
+	}
+	return out
+}
+
+func validExecExceptions(in map[string][]string) (map[string][]string, []string) {
+	valid := make(map[string][]string, len(in))
+	var skipped []string
+	for surface, paths := range in {
+		if !slices.Contains(execSurfaces, surface) {
+			skipped = append(skipped, fmt.Sprintf("exec_exceptions.%s: unknown surface (want %s)", surface, strings.Join(execSurfaces, ", ")))
+			continue
+		}
+		for _, p := range paths {
+			if !filepath.IsAbs(expandHome(p)) {
+				skipped = append(skipped, fmt.Sprintf("exec_exceptions.%s: %q must be absolute (or start with ~)", surface, p))
+				continue
+			}
+			valid[surface] = append(valid[surface], p)
+		}
+	}
+	sort.Strings(skipped)
+	return valid, skipped
 }
 
 // validExecProfiles keeps the entries that validate and describes the rest.
@@ -207,45 +296,53 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 
 // resolveExecProfile returns the execution profile for a surface. It reads only
 // trusted inputs: the surface, Tenant's own dirs, a work dir, and the operator's
-// exec_profiles overrides.
+// exec_profiles overrides and exec_exceptions.
 //
-// The built-in default is the "host" backend with Enforce on, so a routed spawn
-// behaves exactly as before. DenyRoots ALWAYS include tenantDenyRoots: the
-// config dir, the data dir, the Security log's key and anchor, and the running
-// executable FILE (its directory may be shared, e.g. /usr/local/bin, and
-// denying it would break every tool installed beside Tenant).
-// A confining backend additionally denies the well-known credential stores
-// (credentialStoreRoots) and, unless the operator set an env allowlist, runs with
-// cron's scrubbed environment rather than inheriting all of Tenant's.
+// The built-in profile is builtinExec's backend in dry run (Enforce off), with
+// no network on cron-shell; an entry changes what it sets (see the file
+// comment for enforce). Every profile runs commands with the safe-env
+// allowlist plus its env_pass and env_set (envAllowlist). DenyRoots ALWAYS
+// include tenantDenyRoots: the config dir, the data dir, the Security log's
+// key and anchor, and the running executable FILE (its directory may be
+// shared, e.g. /usr/local/bin, and denying it would break every tool installed
+// beside Tenant). A confining backend additionally denies the well-known
+// credential stores (credentialStoreRoots).
 func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
+	backend, why := builtinExec()
 	p := execProfile{
-		Backend: "host",
+		Backend:  backend,
+		Fallback: why,
 		Policy: sandbox.Policy{
 			WorkDir:   workDir,
 			DenyRoots: tenantDenyRoots(cfgDir, dataDir),
-			Enforce:   true,
 		},
 	}
-	o, ok := defaultExecProfiles.lookup(surface)
-	if !ok {
-		return p
+	if surface == surfaceCronShell {
+		p.Policy.Network = sandbox.NetNone // a scheduled shell job has nobody to ask about the network
 	}
+	o, _ := defaultExecProfiles.lookup(surface)
 	if o.Backend != "" {
-		p.Backend = o.Backend
+		// An entry that names its backend is a profile of the operator's own,
+		// with the defaults it was written under: enforce on, network inherited.
+		p.Backend, p.Fallback = o.Backend, ""
+		p.Policy.Enforce, p.Policy.Network = true, sandbox.NetInherit
 	}
-	if o.Enforce != nil {
+	switch {
+	case o.Enforce != nil:
 		p.Policy.Enforce = *o.Enforce
+	case o.Backend == "":
+		if on := defaultExecProfiles.defaultEnforce(); on != nil {
+			p.Policy.Enforce = *on // the one switch: exec_profiles.default.enforce
+		}
 	}
-	if n, ok := sandbox.ParseNetworkMode(o.Network); ok {
-		p.Policy.Network = n
+	if o.Network != "" {
+		p.Policy.Network, _ = sandbox.ParseNetworkMode(o.Network) // validated at load
 	}
 	p.Policy.Allow = o.Allow
 	p.Policy.ReadRoots = expandRoots(o.ReadRoots)
-	p.Policy.WriteRoots = expandRoots(o.WriteRoots)
+	p.Policy.WriteRoots = append(expandRoots(o.WriteRoots), liveExceptions(surface)...)
 	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)...)
-	if len(o.EnvPass) > 0 || len(o.EnvSet) > 0 {
-		p.Policy.Env = sandbox.EnvPolicy{Isolate: true, Pass: o.EnvPass, Set: o.EnvSet}
-	}
+	p.Policy.Env = envAllowlist(o.EnvPass, o.EnvSet)
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
 	p.Policy.Limits.MemoryBytes = int64(o.MemoryMB) << 20
 	p.Policy.Limits.MaxPIDs = o.MaxPIDs
@@ -253,6 +350,110 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 		applyConfinedDefaults(&p)
 	}
 	return p
+}
+
+// builtinExec is the backend a surface runs on when no exec_profiles entry
+// names one, and why when that is the host. Chosen once per process; the
+// cmd/tenant tests pin it.
+var builtinExec = sync.OnceValues(func() (backend, why string) {
+	return chooseBuiltinExec(runtime.GOOS, sandbox.Restricted)
+})
+
+// chooseBuiltinExec picks the restricted backend where it can run the built-in
+// dry run, else the host with why. A dry run re-runs outside only what the
+// backend attributes as refused, so a refusal it can't attribute fails the
+// command:
+//   - Linux: bubblewrap hides a deny root as an empty dir, so a read of one
+//     fails with nothing attributed, and /tmp is private to each command.
+//   - Windows (owner decision 2026-09-29): restricted is WSL2 bubblewrap, so
+//     commands, cron jobs included, run as Linux sh there, not PowerShell or
+//     cmd; Windows programs run only outside it. Without WSL, a distro or its
+//     bubblewrap, the host's PowerShell, and the reason.
+//   - macOS and Windows: a test command must run under it.
+func chooseBuiltinExec(goos string, restricted func() (sandbox.Backend, error)) (backend, why string) {
+	be, err := restricted()
+	if err != nil {
+		return "host", err.Error()
+	}
+	if goos == "linux" {
+		return "host", "bubblewrap can't dry-run without breaking commands yet: a read of a deny root (~/.ssh for git) fails with nothing refused, so it is never re-run on the host, and /tmp is private to each command (TEN-346); name it in exec_profiles to use it anyway"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res, err := be.Run(ctx, sandbox.Command{Shell: "exit 0"}, sandbox.Policy{Enforce: true})
+	if err == nil && res.ExitCode != 0 {
+		err = fmt.Errorf("%s: %s", exitText(res), strings.TrimSpace(res.Output))
+	}
+	if err != nil {
+		return "host", "the restricted backend could not run a test command: " + err.Error()
+	}
+	return "restricted", ""
+}
+
+// execShell is the language a backend runs commands in, as the os_exec
+// description and a result's note name it: "wsl" (Linux sh in WSL: the
+// Windows restricted backend and its unsandboxed twin), "powershell" (the
+// Windows host) or "sh".
+func execShell(goos, backend string) string {
+	switch {
+	case goos != "windows":
+		return "sh"
+	case backend == "host" || backend == "jobobject":
+		return "powershell"
+	}
+	return "wsl"
+}
+
+// runsOn is the backend p's commands run on here: its own, or the host in a
+// dry run whose backend is unavailable (profileBackend).
+func runsOn(p execProfile, available func(string) error) string {
+	if p.Backend != "host" && !p.Policy.Enforce && available(p.Backend) != nil {
+		return "host"
+	}
+	return p.Backend
+}
+
+func backendAvailable(name string) error {
+	_, err := sandbox.For(name)
+	return err
+}
+
+// describedShell holds the language the os_exec description names: the local
+// surface's, as osExecConfig found it. A command that runs in another (a
+// surface pinned elsewhere) says so in its result (shellNote). Atomic: an
+// eval run builds its own tools while the main agent's run.
+var describedShell atomic.Value // string
+
+// osExecConfig is the os service's config: the sandbox runner, and the local
+// surface's shell for the os_exec description, so the model writes commands
+// in the language they will run in.
+func osExecConfig(cfgDir, dataDir string, confirm confirmFunc) osys.Config {
+	shell := execShell(runtime.GOOS, runsOn(resolveExecProfile(surfaceLocal, cfgDir, dataDir, ""), backendAvailable))
+	describedShell.Store(shell)
+	return osys.Config{Runner: sandboxRunner(cfgDir, dataDir, confirm), Shell: osExecShellNote(shell)}
+}
+
+// osExecShellNote is what the os_exec description says about where commands
+// run when that is not the platform's own shell: Linux sh in the WSL sandbox.
+func osExecShellNote(shell string) string {
+	if shell != "wsl" {
+		return ""
+	}
+	return `in Linux sh (bash-compatible) inside a sandbox in WSL, not PowerShell or cmd. Windows paths are under /mnt/<letter> (C:\ is /mnt/c). ` +
+		`A Windows program (anything .exe, powershell.exe, cmd.exe) can't run inside the sandbox: running one re-runs the command outside it, ` +
+		`with the operator's approval when the sandbox enforces.`
+}
+
+// shellNote is the line a result starts with when its command ran in another
+// language than the os_exec description names; "" when the same, or when no
+// description named one.
+func shellNote(goos, described, backend string) string {
+	ran := execShell(goos, backend)
+	if described == "" || ran == described {
+		return ""
+	}
+	where := map[string]string{"wsl": "Linux sh, in the WSL sandbox", "powershell": "PowerShell, on this Windows host", "sh": "sh"}
+	return "[ran in " + where[ran] + "]\n"
 }
 
 // tenantDenyRoots is what no sandboxed command, MCP server or plugin child may
@@ -279,15 +480,64 @@ func withBackend(p execProfile, backend string) execProfile {
 }
 
 // applyConfinedDefaults adds what every confining profile gets on top of the
-// operator's settings: the credential/browser-store deny baseline, and cron's
-// scrubbed environment unless the profile already scopes the environment (a
-// confined command should not inherit every token in Tenant's own environment,
-// red-team #13; an operator who needs a strict allowlist sets env_pass).
+// operator's settings: the credential/browser-store deny baseline, and the
+// safe-env allowlist if the profile somehow has none (a confined command must
+// not inherit every token in Tenant's own environment, red-team #13).
 func applyConfinedDefaults(p *execProfile) {
 	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, credentialStoreRoots()...)...)
 	if !envScoped(p.Policy.Env) {
-		p.Policy.Env = scrubbedEnvPolicy()
+		p.Policy.Env = envAllowlist(nil, nil)
 	}
+}
+
+// safeEnv is what every exec profile passes a command whatever it adds: where
+// things are, who and where the user is, how to print. Nothing in it is a
+// credential. Everything else in Tenant's environment — an API key, a token, a
+// proxy URL with a password in it, SSH_AUTH_SOCK — reaches a command only when
+// its profile names it in env_pass. LC_* is passed too.
+var safeEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "USERNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TERM", "TMPDIR", "TEMP", "TMP"}
+
+// safeEnvWindows is Windows' own safe set: the system and profile folders and
+// names that programs, cmd and PowerShell look up (without SystemRoot even
+// networking fails).
+var safeEnvWindows = []string{"SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT", "PSModulePath",
+	"USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "ProgramData", "ALLUSERSPROFILE", "PUBLIC",
+	"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
+	"USERDOMAIN", "COMPUTERNAME", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS"}
+
+// envAllowlist is a command's environment: the safe set plus pass, forwarded
+// from Tenant's own, plus set (TEN-345; replaces the KEY/TOKEN/SECRET
+// name-denylist, which leaked any secret with an innocent name).
+func envAllowlist(pass []string, set map[string]string) sandbox.EnvPolicy {
+	return envAllowlistFrom(runtime.GOOS, os.Environ(), pass, set)
+}
+
+// envAllowlistFrom forwards the wanted names by the names parent actually has:
+// on Windows they match in any case ("Path" is PATH).
+func envAllowlistFrom(goos string, parent, pass []string, set map[string]string) sandbox.EnvPolicy {
+	key := func(n string) string {
+		if goos == "windows" {
+			return strings.ToUpper(n)
+		}
+		return n
+	}
+	want := map[string]bool{}
+	for _, n := range slices.Concat(safeEnv, pass) {
+		want[key(n)] = true
+	}
+	if goos == "windows" {
+		for _, n := range safeEnvWindows {
+			want[key(n)] = true
+		}
+	}
+	var names []string
+	for _, kv := range parent {
+		if n, _, ok := strings.Cut(kv, "="); ok && n != "" && (want[key(n)] || strings.HasPrefix(n, "LC_")) {
+			names = append(names, n)
+		}
+	}
+	// Isolate: an empty list is still an allowlist, never inherit-all.
+	return sandbox.EnvPolicy{Isolate: true, Pass: names, Set: set}
 }
 
 // credentialStoreRoots are well-known local credential stores. A confining
@@ -370,30 +620,32 @@ func sandboxRunner(cfgDir, dataDir string, confirm confirmFunc) runnerFunc {
 }
 
 // profileRunner runs os_exec commands under one fixed profile. On the host
-// backend it is indistinguishable from osys's realRunner: same shell, inherited
-// environment and cwd, whole output, and the same errors ("command timed out
-// after <t>", or exec's own exit status). On a confining backend a refusal is
-// appended to the error so the model can correct its command, and an escalated
-// run says in its output that it ran outside the sandbox.
+// backend it matches osys's realRunner: same shell and cwd, whole output, and
+// the same errors ("command timed out after <t>", or exec's own exit status);
+// the environment is the profile's allowlist. On a confining backend a refusal
+// is appended to the error so the model can correct its command, and an
+// escalated run says in its output that it ran outside the sandbox. A command
+// that ran in another shell than the os_exec description names starts with a
+// line saying which (shellNote).
 func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFunc {
 	return func(ctx context.Context, command string, timeout time.Duration) (string, error) {
-		be, err := sandbox.For(p.Backend)
+		be, err := profileBackend(ctx, p, surface)
 		if err != nil {
-			sandbox.BackendUnavailable.Log(ctx, "surface", surface, "backend", p.Backend, "err", err)
 			return "", fmt.Errorf("sandbox: the %s exec profile's backend %q is unavailable, so the command was not run (fail closed): %w",
 				surface, p.Backend, err)
 		}
 		pol := p.Policy
 		pol.Limits.Wall = timeout
 		cmd := sandbox.Command{Shell: command, Surface: surface}
-		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm))
+		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm, pol))
 		if err != nil {
 			if be.Isolation() == sandbox.IsolationNone {
 				return res.Output, err // host: realRunner returned the start error unwrapped
 			}
 			return res.Output, fmt.Errorf("sandbox: the %s backend could not start the command: %w", be.Name(), err)
 		}
-		out := res.Output
+		described, _ := describedShell.Load().(string)
+		out := shellNote(runtime.GOOS, described, be.Name()) + res.Output // a re-run outside keeps be's language (sandbox.Outside)
 		if res.Escalated {
 			out += "\n[" + escalationNote(res, pol.Enforce) + "]"
 		}
@@ -414,37 +666,292 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 	}
 }
 
+// profileBackend is p's backend. One that is unavailable here fails an
+// enforcing profile closed (the error), but a dry run never blocks a command:
+// it runs on the host, and the sandbox log says so.
+func profileBackend(ctx context.Context, p execProfile, surface string) (sandbox.Backend, error) {
+	be, err := sandbox.For(p.Backend)
+	switch {
+	case err == nil:
+		return be, nil
+	case p.Policy.Enforce:
+		sandbox.BackendUnavailable.Log(ctx, "surface", surface, "backend", p.Backend, "err", err)
+		return nil, err
+	}
+	sandbox.DryRunOnHost.Log(ctx, "surface", surface, "backend", p.Backend, "err", err)
+	return sandbox.Host(), nil
+}
+
 // execEscalator turns the approval callback into a sandbox.Escalator whose
-// prompt names exactly what the boundary refused.
-func execEscalator(confirm confirmFunc) sandbox.Escalator {
+// prompt names exactly what the boundary refused, and what "always" would
+// save: the refused folder as an exception for the surface (pol is the
+// profile's, for its deny roots), or nothing, and why.
+func execEscalator(confirm confirmFunc, pol sandbox.Policy) sandbox.Escalator {
 	if confirm == nil {
 		return nil
 	}
 	return func(ctx context.Context, cmd sandbox.Command, refused sandbox.Result) bool {
+		always := "\"always\" approves this time only: "
+		scope, why := exceptionScope(refused, pol.DenyRoots)
+		if scope != "" {
+			ctx = context.WithValue(ctx, execExceptionKey{}, execException{surface: cmd.Surface, path: scope})
+			why = "\"always\" also lets " + cmd.Surface + " commands write under " + scope + " from now on"
+			always = ""
+		}
 		return confirm(ctx, actionExecUnsandboxed, commandText(cmd)+
-			"  [SANDBOX REFUSED: "+describeViolations(refused)+" — approve to re-run it OUTSIDE the sandbox]")
+			"  [SANDBOX REFUSED: "+describeViolations(refused)+" — approve to re-run it OUTSIDE the sandbox; "+always+why+"]")
 	}
 }
 
-// runSandboxShell runs a cron shell job through the seam. On the default host
-// profile it is the pre-seam runCronShell exactly: cmd /C on Windows and sh -c
-// elsewhere, the scrubbed environment, the given work dir, output trimmed then
-// capped, and "command failed: <exit status>" on a non-zero exit. Cron is
-// unattended, so a refusal never reaches a person: with enforce on it fails the
-// job (named in the error and the sandbox log); in dry-run it re-runs on the host
-// and logs what would have been refused.
-func runSandboxShell(ctx context.Context, command string, p execProfile) (string, error) {
-	be, err := sandbox.For(p.Backend)
+// --- exceptions (approve-always on an escalation) ---
+
+func init() { approval.OnAlways(actionExecUnsandboxed, saveExecException) }
+
+type execExceptionKey struct{}
+
+// execException is what "always" on one escalation saves: a folder the
+// surface's confined commands may write to.
+type execException struct{ surface, path string }
+
+// persistExecException saves an exception to the settings file and the live
+// store, and reports a failed save itself. serve and the TUI install it over
+// their live settings (loadExecSettings); unset, "always" approves the one time.
+var persistExecException func(surface, path string) error
+
+// saveExecException is "always" on os_exec_unsandboxed: it saves the refused
+// folder the prompt named, never a backend switch or the sandbox category's
+// allow. No agent tool reaches it: only an operator's decision does.
+func saveExecException(ctx context.Context) {
+	ex, ok := ctx.Value(execExceptionKey{}).(execException)
+	if ok && persistExecException != nil && persistExecException(ex.surface, ex.path) == nil {
+		sandbox.ExceptionSaved.Log(ctx, "surface", ex.surface, "path", ex.path)
+	}
+}
+
+// exceptionScope is the folder an exception for a refusal would open, or ""
+// and why none can be saved. Only a filesystem refusal whose output names an
+// absolute path has one: that path if it is a folder, else its folder,
+// symlinks resolved (what is saved is the real folder, so a link swapped in
+// later can't redirect it: liveExceptions). The command wrote that output, so
+// the folder is never inside a deny root (no exception reopens one), never a
+// system folder or a root (systemScope), and never the home folder or above
+// it, which would open every dotfile to later commands.
+func exceptionScope(res sandbox.Result, deny []string) (scope, why string) {
+	kind := func(k string) func(sandbox.Violation) bool {
+		return func(v sandbox.Violation) bool { return v.Kind == k }
+	}
+	switch {
+	case slices.ContainsFunc(res.Violations, kind("program")):
+		return "", "a Windows program only ever runs outside the sandbox"
+	case !slices.ContainsFunc(res.Violations, kind("filesystem")):
+		return "", "only a refused folder can be saved, and no backend limits the network to one host yet"
+	}
+	path := refusedPath(res.Output)
+	if path == "" {
+		return "", "the refusal names no absolute path to save"
+	}
+	if runtime.GOOS == "windows" { // the WSL sandbox names Linux paths; profiles hold Windows ones
+		w, ok := windowsPathFromWSL(path)
+		if !ok {
+			return "", path + " is not on a Windows drive"
+		}
+		path = w
+	}
+	scope = path
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		scope = filepath.Dir(path)
+	}
+	if fi, err := os.Stat(scope); err != nil || !fi.IsDir() {
+		// bubblewrap can't bind a folder that isn't there: every command would fail.
+		return "", scope + " does not exist yet; create it, or add it to exec_exceptions by hand"
+	}
+	if r, err := filepath.EvalSymlinks(scope); err == nil {
+		scope = r
+	}
+	if slices.ContainsFunc(deny, func(d string) bool { return inside(scope, d) }) {
+		return "", scope + " is Tenant's own or a credential store, which no exception opens"
+	}
+	if systemScope(runtime.GOOS, scope, resolvedPath) {
+		return "", scope + " is a system folder, a drive or volume root, or above one, which no exception opens"
+	}
+	if home, err := os.UserHomeDir(); err == nil && inside(home, scope) {
+		return "", scope + " would open your whole home folder; add a narrower write root by hand if you mean it"
+	}
+	return scope, ""
+}
+
+// systemDirs are the top-level system folders an exception may never be, nor
+// be above; a folder under one (/opt/app/data, /var/lib/app) is fine.
+var systemDirs = map[string][]string{
+	"posix": {"/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/opt", "/var", "/tmp",
+		"/private", "/private/etc", "/private/var", "/private/tmp", "/System", "/Library", "/Applications",
+		"/Users", "/home", "/root", "/dev", "/proc", "/sys", "/run", "/boot", "/srv", "/mnt", "/Volumes"},
+	"windows": {`C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`, `C:\Users`},
+}
+
+// systemScope reports whether dir is a filesystem or drive root, a volume's
+// mount (/mnt/<x>, /Volumes/<x>), or a system folder (systemDirs, and on
+// Windows where its environment puts them) or above one. Names compare after
+// resolve (symlinks: /etc is /private/etc on macOS) and case-folded where the
+// filesystem ignores case (Windows, macOS). goos and resolve are parameters so
+// every OS's rules are tested on any.
+func systemScope(goos, dir string, resolve func(string) string) bool {
+	sep, dirs := "/", systemDirs["posix"]
+	if goos == "windows" {
+		sep, dirs = `\`, slices.Clone(systemDirs["windows"])
+		for _, env := range []string{"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"} {
+			if v := os.Getenv(env); v != "" {
+				dirs = append(dirs, v)
+			}
+		}
+		if pub := os.Getenv("PUBLIC"); strings.LastIndex(pub, `\`) > 0 {
+			dirs = append(dirs, pub[:strings.LastIndex(pub, `\`)]) // C:\Users\Public → C:\Users
+		}
+	}
+	norm := func(p string) string {
+		p = strings.TrimRight(resolve(p), sep)
+		if goos == "windows" || goos == "darwin" {
+			p = strings.ToLower(p)
+		}
+		return p
+	}
+	d := norm(dir) // "" for "/"; "c:" for C:\
+	if d == "" || (goos == "windows" && len(d) == 2 && d[1] == ':') {
+		return true // a filesystem or drive root
+	}
+	if i := strings.LastIndex(d, "/"); goos != "windows" && i > 0 && (strings.EqualFold(d[:i], "/mnt") || strings.EqualFold(d[:i], "/volumes")) {
+		return true // a volume's mount: /mnt/c, /Volumes/Data
+	}
+	if goos == "darwin" && (d == "/system/volumes/data" || strings.HasPrefix(d, "/system/volumes/data/")) {
+		return true // the data volume's own path to every firmlinked folder: /Users, /Applications, /private, …
+	}
+	for _, s := range dirs {
+		s = norm(s)
+		if s != "" && (d == s || strings.HasPrefix(s, d+sep)) { // the folder, or above it
+			return true
+		}
+	}
+	return false
+}
+
+// liveExceptions is surface's exceptions that are still the folders they were
+// saved as (their real paths, exceptionScope). One that is gone, is no longer
+// a folder, or now resolves elsewhere (a symlink swapped in, perhaps to the
+// home folder) is left out, and said once in the sandbox log: a write root
+// must never follow a link planted after the approval.
+func liveExceptions(surface string) []string {
+	var out []string
+	for _, p := range defaultExecProfiles.exceptions(surface) {
+		if why := exceptionDrift(runtime.GOOS, p, filepath.EvalSymlinks, os.Stat); why != "" {
+			if _, said := skippedExceptions.LoadOrStore(surface+"\x00"+p+"\x00"+why, true); !said {
+				sandbox.ExceptionSkipped.Log(context.Background(), "surface", surface, "path", p, "why", why)
+			}
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// skippedExceptions holds the drifted exceptions already reported.
+var skippedExceptions sync.Map
+
+// exceptionDrift says why exception p is not the folder it was saved as, or ""
+// when it still is. Case-folded where the filesystem ignores case.
+func exceptionDrift(goos, p string, eval func(string) (string, error), stat func(string) (os.FileInfo, error)) string {
+	r, err := eval(p)
 	if err != nil {
-		sandbox.BackendUnavailable.Log(ctx, "surface", surfaceCronShell, "backend", p.Backend, "err", err)
+		return "it no longer exists"
+	}
+	same := r == p
+	if goos == "windows" || goos == "darwin" {
+		same = strings.EqualFold(r, p)
+	}
+	if !same {
+		return "it now resolves to " + r + "; save that real path instead if it is meant"
+	}
+	if fi, err := stat(r); err != nil || !fi.IsDir() {
+		return "it is no longer a folder"
+	}
+	return ""
+}
+
+// resolvedPath is p with symlinks resolved, or cleaned when it can't be.
+func resolvedPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// inside reports whether p is root or inside it, both symlink-resolved, as the
+// file tools compare paths.
+func inside(p, root string) bool { return osys.Roots{Deny: []string{root}}.Check(p, false) != nil }
+
+// refusedPath is the absolute path a refusal names in a command's output: on
+// a line that says "operation not permitted" (Seatbelt) or "read-only file
+// system" (bubblewrap), the path in quotes ("cannot touch '/a/b'", Python's
+// "…: '/a/b'", Node's ", open '/a/b'"), else a ": "-separated field
+// ("touch: /a/b: Operation not permitted"), else a word. "" when none is
+// absolute. The command wrote the output, so the prompt shows the folder the
+// operator is asked to open.
+func refusedPath(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		low := strings.ToLower(line)
+		if !strings.Contains(low, "operation not permitted") && !strings.Contains(low, "read-only file system") {
+			continue
+		}
+		var cands []string
+		for _, q := range []string{"'", `"`} {
+			parts := strings.Split(line, q)
+			for i := 1; i < len(parts)-1; i += 2 {
+				cands = append(cands, parts[i])
+			}
+		}
+		cands = append(cands, strings.Split(line, ": ")...)
+		cands = append(cands, strings.Fields(line)...)
+		for _, c := range cands {
+			// "/…" is absolute on Windows too: the WSL sandbox prints Linux paths.
+			if c = strings.Trim(strings.TrimSpace(c), "'\"`,:;()"); strings.HasPrefix(c, "/") || filepath.IsAbs(c) {
+				return filepath.Clean(c)
+			}
+		}
+	}
+	return ""
+}
+
+// windowsPathFromWSL maps a path under WSL's default automount root back to
+// Windows (/mnt/c/Users/x → C:\Users\x), so an exception the WSL sandbox
+// refused is saved as the Windows folder profiles name. A custom mount root
+// or a path inside the distro has no Windows form.
+func windowsPathFromWSL(p string) (string, bool) {
+	p = strings.ReplaceAll(p, `\`, "/") // filepath.Clean on Windows turned the slashes around
+	rest, ok := strings.CutPrefix(p, "/mnt/")
+	if !ok || rest == "" || !(rest[0] >= 'a' && rest[0] <= 'z' || rest[0] >= 'A' && rest[0] <= 'Z') || (len(rest) > 1 && rest[1] != '/') {
+		return "", false
+	}
+	return strings.ToUpper(rest[:1]) + `:\` + strings.ReplaceAll(strings.TrimPrefix(rest[1:], "/"), "/", `\`), true
+}
+
+// runSandboxShell runs a cron shell job through the seam: cmd /C on the
+// Windows host and sh -c everywhere else (cronShellArgv), the profile's
+// environment allowlist, the given work dir, output trimmed then capped, and
+// "command failed: <exit status>" on a non-zero exit (the pre-seam
+// runCronShell's text). Cron is unattended, so a refusal never reaches a
+// person: with enforce on it fails the job (named in the error and the sandbox
+// log); in dry-run it re-runs outside the sandbox and logs what would have
+// been refused.
+func runSandboxShell(ctx context.Context, command string, p execProfile) (string, error) {
+	be, err := profileBackend(ctx, p, surfaceCronShell)
+	if err != nil {
 		return "", fmt.Errorf("sandbox: the cron-shell exec profile's backend %q is unavailable, so the job was not run (fail closed): %w",
 			p.Backend, err)
 	}
 	pol := p.Policy
 	if !envScoped(pol.Env) {
-		pol.Env = scrubbedEnvPolicy() // the legacy scrubbedEnv default
+		pol.Env = envAllowlist(nil, nil) // never the whole environment
 	}
-	cmd := sandbox.Command{Args: cronShellArgv(command), Surface: surfaceCronShell}
+	cmd := sandbox.Command{Args: cronShellArgv(be.Name(), command), Surface: surfaceCronShell}
 	res, err := execute(ctx, be, cmd, pol, nil) // unattended: never escalate to a person
 	s := strings.TrimSpace(res.Output)
 	if len(s) > cronShellOutputCap {
@@ -466,20 +973,56 @@ func runSandboxShell(ctx context.Context, command string, p execProfile) (string
 	return s, nil
 }
 
-// cronShellArgv is the pre-seam cron shell: cmd /C on Windows (existing jobs are
-// cmd syntax, NOT PowerShell) and sh -c elsewhere.
-func cronShellArgv(command string) []string { return cronShellArgvFor(runtime.GOOS, command) }
+// cronShellArgv is the shell a cron job runs in on backend: cmd /C on the
+// Windows host (jobs written before the WSL default are cmd syntax, NOT
+// PowerShell), sh -c everywhere else, the WSL sandbox on Windows included,
+// where the job runs as Linux sh (and so does a re-run outside it).
+func cronShellArgv(backend, command string) []string {
+	return cronShellArgvFor(runtime.GOOS, backend, command)
+}
 
-func cronShellArgvFor(goos, command string) []string {
-	if goos == "windows" {
+func cronShellArgvFor(goos, backend, command string) []string {
+	if execShell(goos, backend) == "powershell" {
 		return []string{"cmd", "/C", command}
 	}
 	return []string{"sh", "-c", command}
 }
 
+// cronJobsInSh lists the cron shell jobs that run as Linux sh because
+// cron-shell runs on the WSL sandbox on Windows (backend: as runsOn says):
+// written for cmd, each needs rewriting for sh, or cron-shell pinned to the
+// host. Nothing is translated for the operator.
+func cronJobsInSh(goos, backend string, jobs []cronJobConfig) []string {
+	if goos != "windows" || execShell(goos, backend) != "wsl" {
+		return nil
+	}
+	var out []string
+	for _, j := range jobs {
+		if j.Kind == croneng.KindShell {
+			out = append(out, cmp.Or(j.Name, j.ID)+": "+j.Prompt)
+		}
+	}
+	return out
+}
+
+// cronShNotice is the operator's notice of cronJobsInSh: a line, then one per
+// job; nil when there are none.
+func cronShNotice(jobs []string) []string {
+	if len(jobs) == 0 {
+		return nil
+	}
+	out := []string{"cron shell jobs now run as Linux sh in the WSL sandbox, not cmd: rewrite each for sh, or pin " +
+		"cron-shell to the host (exec_profiles.cron-shell.backend \"host\") to keep cmd:"}
+	for _, j := range jobs {
+		out = append(out, "  "+j)
+	}
+	return out
+}
+
 // scrubbedEnvPolicy expresses cron's legacy scrubbedEnv() secret-name denylist as
 // an EnvPolicy allowlist: it forwards exactly the parent variable NAMES that
-// survive the scrub, reproducing the pre-seam cron environment.
+// survive the scrub. Exec profiles use envAllowlist; this is the base of a
+// local MCP server's environment (mcpstdio.go).
 func scrubbedEnvPolicy() sandbox.EnvPolicy {
 	kept := scrubbedEnv()
 	pass := make([]string, 0, len(kept))
@@ -589,7 +1132,7 @@ func refusalNote(res sandbox.Result) string {
 
 func escalationNote(res sandbox.Result, enforce bool) string {
 	if !enforce {
-		return "sandbox dry-run: this would have been refused (" + describeViolations(res) + "); it ran on the host"
+		return "sandbox dry-run: this would have been refused (" + describeViolations(res) + "); it ran outside the sandbox"
 	}
 	return "ran OUTSIDE the sandbox after approval; the sandbox had refused: " + describeViolations(res)
 }
@@ -612,15 +1155,79 @@ func clipLog(s string) string {
 // execProfilesEqual compares two override sets.
 func execProfilesEqual(a, b map[string]execProfileSetting) bool { return stdreflect.DeepEqual(a, b) }
 
-// loadExecProfilesFromSettings loads the operator overrides for commands that do
-// not run the settings watcher (one-shot CLIs such as `tenant os`).
+// execExceptionsEqual compares a file's valid exceptions with the live set,
+// which holds them ~-expanded.
+func execExceptionsEqual(file, live map[string][]string) bool {
+	if len(file) != len(live) {
+		return false
+	}
+	for s, ps := range file {
+		if !slices.Equal(expandRoots(ps), live[s]) {
+			return false
+		}
+	}
+	return true
+}
+
+// loadExecSettings is serve's and the TUI's start: it loads stg's exec
+// profiles and exceptions, installs the save for an approved exception
+// (through stg under mu, like every other save of the file), and tells the
+// operator what commands run under, a line per group of surfaces, and on
+// Windows which cron shell jobs now run as Linux sh.
+func loadExecSettings(c *commonFlags, stg *settings, mu *sync.Mutex, notify func(string)) {
+	cfgDir, agentID := c.cfgDir, c.agent
+	n, skipped := defaultExecProfiles.Load(stg.ExecProfiles)
+	ne, skippedEx := defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
+	if skipped = append(skipped, skippedEx...); n > 0 || ne > 0 || len(skipped) > 0 {
+		msg := fmt.Sprintf("sandbox: %d exec profile(s), %d exception(s) active", n, ne)
+		if len(skipped) > 0 {
+			msg += fmt.Sprintf(", %d invalid skipped: %s", len(skipped), strings.Join(skipped, "; "))
+		}
+		notify(msg)
+	}
+	probes := probeExecSurfaces(context.Background(), cfgDir, "")
+	for _, ln := range execProfileLines(probes) {
+		notify("sandbox: " + ln)
+	}
+	if c.lc != nil { // execSurfaces ends with cron-shell
+		for _, ln := range cronShNotice(cronJobsInSh(runtime.GOOS, probes[len(probes)-1].runsOn(), c.lc.Cron.Jobs)) {
+			notify("sandbox: " + ln)
+		}
+	}
+	persistExecException = func(surface, path string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		prev := stg.ExecExceptions[surface]
+		if slices.Contains(prev, path) {
+			return nil
+		}
+		if stg.ExecExceptions == nil {
+			stg.ExecExceptions = map[string][]string{}
+		}
+		stg.ExecExceptions[surface] = append(slices.Clone(prev), path)
+		if err := stg.Save(cfgDir, agentID); err != nil {
+			stg.ExecExceptions[surface] = prev
+			sysNotSaved.Log(context.Background(), "what", "the sandbox exception for "+path, "path", settingsPath(cfgDir, agentID), "err", err)
+			notify(errNotSaved("sandbox: the exception for "+path, err).Error())
+			return err
+		}
+		defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
+		notify("sandbox: exception saved: " + surface + " commands may now write under " + path + " (exec_exceptions)")
+		return nil
+	}
+}
+
+// loadExecProfilesFromSettings loads the operator overrides and exceptions for
+// commands that do not run the settings watcher (one-shot CLIs such as
+// `tenant os`). It returns how many overrides applied and every skipped entry.
 func loadExecProfilesFromSettings(cfgDir, agentID string) (int, []string, error) {
 	stg, err := loadSettings(cfgDir, agentID)
 	if err != nil {
 		return 0, nil, err
 	}
 	n, skipped := defaultExecProfiles.Load(stg.ExecProfiles)
-	return n, skipped, nil
+	_, skippedEx := defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
+	return n, append(skipped, skippedEx...), nil
 }
 
 // exePath is the running executable, or "" when it can't be resolved. Always in
