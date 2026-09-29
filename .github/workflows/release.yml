@@ -28,7 +28,13 @@ jobs:
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
 
+      # Keyless signing and attestations are recorded in Sigstore's PUBLIC
+      # transparency log, with the repository and workflow in the certificate.
+      # While the repository is private that would publish its identity, so a
+      # private release carries checksums and SBOMs only; both come back on
+      # their own once the repository is public (TEN-322).
       - name: Install Cosign
+        if: ${{ !github.event.repository.private }}
         uses: sigstore/cosign-installer@v3
 
       - name: Publish release
@@ -36,11 +42,12 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean ${{ github.event.repository.private && '--skip=sign' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Attest release artifacts
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest@v4
         with:
           subject-checksums: ./dist/checksums.txt
