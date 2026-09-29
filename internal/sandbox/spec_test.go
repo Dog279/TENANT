@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +39,16 @@ func tripleAt(argv []string, flag, a, b string) bool {
 		}
 	}
 	return false
+}
+
+// index is where seq first appears in argv, or -1.
+func index(argv []string, seq ...string) int {
+	for i := 0; i+len(seq) <= len(argv); i++ {
+		if slices.Equal(argv[i:i+len(seq)], seq) {
+			return i
+		}
+	}
+	return -1
 }
 
 func endsWith(argv, tail []string) bool {
@@ -85,10 +98,14 @@ func TestBwrapArgs(t *testing.T) {
 				if !pairAt(argv, "--chdir", "/w") {
 					t.Errorf("missing --chdir /w: %v", argv)
 				}
-				for _, f := range []string{"--die-with-parent", "--new-session"} {
+				for _, f := range []string{"--die-with-parent", "--new-session", "--unshare-pid"} {
 					if !contains(argv, f) {
 						t.Errorf("missing %s: %v", f, argv)
 					}
+				}
+				// bwrap run as root keeps every capability unless told otherwise.
+				if !pairAt(argv, "--cap-drop", "ALL") {
+					t.Errorf("missing --cap-drop ALL: %v", argv)
 				}
 				if contains(argv, "--unshare-net") {
 					t.Errorf("NetInherit must not unshare net: %v", argv)
@@ -106,6 +123,31 @@ func TestBwrapArgs(t *testing.T) {
 			check: func(t *testing.T, argv []string) {
 				if !contains(argv, "--unshare-net") {
 					t.Errorf("NetNone must add --unshare-net: %v", argv)
+				}
+				for _, f := range linuxResolvConfs {
+					if contains(argv, f) {
+						t.Errorf("with the network cut the resolver files stay hidden (%s): %v", f, argv)
+					}
+				}
+			},
+		},
+		{
+			name:  "the host readable: /run hidden after the root bind, resolver files back with the network shared",
+			pol:   Policy{WorkDir: "/w", Network: NetFull},
+			shell: "sh",
+			args:  []string{"-c", "true"},
+			check: func(t *testing.T, argv []string) {
+				root, run := index(argv, "--ro-bind", "/", "/"), index(argv, "--tmpfs", "/run")
+				if root < 0 || run < root {
+					t.Errorf("/run must be masked after --ro-bind / / (root at %d, mask at %d): %v", root, run, argv)
+				}
+				stub := "/run/systemd/resolve/stub-resolv.conf"
+				back := index(argv, "--ro-bind-try", stub, stub)
+				if back < run {
+					t.Errorf("the resolver file must be bound back after the /run mask: %v", argv)
+				}
+				if index(argv, "--remount-ro", "/run") < back || pairAt(argv, "--remount-ro", "/") {
+					t.Errorf("/run (not the ro-bound root) goes read-only after the bind-back: %v", argv)
 				}
 			},
 		},
@@ -133,6 +175,14 @@ func TestBwrapArgs(t *testing.T) {
 					if !tripleAt(argv, "--ro-bind-try", want, want) {
 						t.Errorf("allowlist must bind %s: %v", want, argv)
 					}
+				}
+				// systemd-resolved's directory holds its socket: never bound whole.
+				if contains(argv, "/run/systemd/resolve") {
+					t.Errorf("allowlist must not bind the resolver's directory: %v", argv)
+				}
+				// bwrap's own root is a tmpfs: read-only once the last bind is in.
+				if index(argv, "--remount-ro", "/") < index(argv, "--bind", "/w", "/w") {
+					t.Errorf("the root tmpfs must be remounted read-only after the binds: %v", argv)
 				}
 			},
 		},
@@ -168,6 +218,10 @@ func TestBwrapArgs(t *testing.T) {
 					if !pairAt(argv, "--tmpfs", dr) {
 						t.Errorf("DenyRoot %s must be tmpfs-masked: %v", dr, argv)
 					}
+					// Read-only, so a write into it fails instead of landing in a throwaway tmpfs.
+					if index(argv, "--remount-ro", dr) < index(argv, "--tmpfs", dr) {
+						t.Errorf("DenyRoot %s must be remounted read-only after its mask: %v", dr, argv)
+					}
 				}
 			},
 		},
@@ -179,6 +233,9 @@ func TestBwrapArgs(t *testing.T) {
 			check: func(t *testing.T, argv []string) {
 				if !tripleAt(argv, "--ro-bind", "/dev/null", keyFile) || pairAt(argv, "--tmpfs", keyFile) {
 					t.Errorf("file deny root must be /dev/null-bound, never tmpfs: %v", argv)
+				}
+				if pairAt(argv, "--remount-ro", keyFile) {
+					t.Errorf("a file mask is a read-only bind already; --remount-ro is for tmpfs masks: %v", argv)
 				}
 			},
 		},
@@ -249,6 +306,35 @@ func TestJobLimitsFrom(t *testing.T) {
 	wantTicks := int64(2*time.Second) / 100 // 100ns ticks
 	if jl.Flags&jobLimitProcessTime == 0 || jl.PerProcessUserTime100ns != wantTicks {
 		t.Errorf("cpu mapping wrong: got %d want %d", jl.PerProcessUserTime100ns, wantTicks)
+	}
+}
+
+// A failed bubblewrap self-check names the host setting that blocks it.
+func TestUsernsHint(t *testing.T) {
+	read := func(files map[string]string) func(string) ([]byte, error) {
+		return func(p string) ([]byte, error) {
+			if v, ok := files[p]; ok {
+				return []byte(v + "\n"), nil
+			}
+			return nil, errors.New("absent")
+		}
+	}
+	const aa = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+	cases := []struct {
+		files map[string]string
+		want  string // substring; "" = no hint
+	}{
+		{map[string]string{aa: "1"}, "apparmor_restrict_unprivileged_userns=1"},
+		{map[string]string{aa: "0", "/proc/sys/user/max_user_namespaces": "0"}, "max_user_namespaces=0"},
+		{map[string]string{"/proc/sys/kernel/unprivileged_userns_clone": "0"}, "unprivileged_userns_clone=0"},
+		{map[string]string{aa: "0", "/proc/sys/user/max_user_namespaces": "63000"}, ""},
+		{nil, ""}, // not Linux, or no such settings
+	}
+	for _, c := range cases {
+		got := usernsHint(read(c.files))
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("usernsHint(%v) = %q, want %q", c.files, got, c.want)
+		}
 	}
 }
 

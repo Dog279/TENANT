@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,6 +171,23 @@ func (t *tailBuffer) String() string {
 // WSL). A cap the shell cannot set fails the start: the process never runs
 // without a limit the operator asked for. No caps: argv unchanged.
 func posixLimitArgv(argv []string, l Limits) []string {
+	l.MaxPIDs = 0 // here ulimit's process count is every process the user runs
+	return limitArgv(argv, l)
+}
+
+// bwrapLimitArgv is posixLimitArgv plus the process cap (MaxPIDs), for a
+// command bubblewrap starts in its own user namespace. Since Linux 5.14 the
+// kernel counts RLIMIT_NPROC per user namespace, so the cap is the sandbox's
+// own processes and threads, its init and this shell included.
+//
+// The sandbox's /bin/sh sets the caps, which needs no helper binary. A
+// re-exec'd Tenant helper cannot run inside (Tenant's binary is a deny root),
+// and outside, before bwrap, the process cap counts every process the user
+// runs and fails bwrap's own clone. prlimit(1) is an extra binary that not
+// every distribution ships.
+func bwrapLimitArgv(argv []string, l Limits) []string { return limitArgv(argv, l) }
+
+func limitArgv(argv []string, l Limits) []string {
 	var steps []string
 	if l.MemoryBytes > 0 {
 		kb := (l.MemoryBytes + 1023) / 1024
@@ -178,6 +197,12 @@ func posixLimitArgv(argv []string, l Limits) []string {
 		secs := int64((l.CPU + time.Second - 1) / time.Second)
 		steps = append(steps, "ulimit -t "+strconv.FormatInt(secs, 10)+" || exit 125")
 	}
+	if l.MaxPIDs > 0 {
+		// bash, busybox and zsh spell the process cap -u; dash (Debian's and
+		// Ubuntu's /bin/sh) spells it -p and rejects -u.
+		n := strconv.Itoa(l.MaxPIDs)
+		steps = append(steps, "ulimit -u "+n+" 2>/dev/null || ulimit -p "+n+" || exit 125")
+	}
 	if len(steps) == 0 {
 		return argv
 	}
@@ -186,8 +211,9 @@ func posixLimitArgv(argv []string, l Limits) []string {
 }
 
 // StartLimits names the resource caps a backend's Start applies when a
-// Policy sets them. Process caps are not among them on a POSIX backend:
-// ulimit counts every process the user runs, so it cannot cap one server.
+// Policy sets them. Process caps are among them only for the Job Object and
+// bubblewrap on Linux (bwrapLimitArgv): elsewhere ulimit counts every process
+// the user runs, so it cannot cap one server. The kernel exempts root from it.
 func StartLimits(b Backend) []string {
 	switch b.Name() {
 	case "host":
@@ -195,5 +221,28 @@ func StartLimits(b Backend) []string {
 	case "jobobject":
 		return []string{"memory", "cpu", "processes"}
 	}
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		return []string{"memory", "cpu", "processes"}
+	}
 	return []string{"memory", "cpu"}
 }
+
+// headBuffer keeps the first max bytes written to it, plus one to know it
+// overflowed, and String clips them exactly as clip does. Capping the output
+// as it arrives means a command that floods it (yes, cat /dev/urandom) cannot
+// grow Tenant's memory until the deadline stops it. max <= 0 keeps everything.
+type headBuffer struct {
+	max int
+	b   []byte
+}
+
+func (h *headBuffer) Write(p []byte) (int, error) {
+	keep := p
+	if h.max > 0 {
+		keep = p[:min(len(p), max(0, h.max+1-len(h.b)))]
+	}
+	h.b = append(h.b, keep...)
+	return len(p), nil
+}
+
+func (h *headBuffer) String() string { return clip(string(h.b), h.max) }
