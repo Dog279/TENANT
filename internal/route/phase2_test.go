@@ -98,8 +98,11 @@ func TestEngineClassifierPanicAndLateSuccessTripBreaker(t *testing.T) {
 		fn   classifierFunc
 	}{
 		{name: "panic", fn: func(context.Context, string) (route.Signal, error) { panic("boom") }},
-		{name: "late success", fn: func(context.Context, string) (route.Signal, error) {
-			time.Sleep(10 * time.Millisecond)
+		// A success that comes back after the deadline. It waits for the
+		// deadline itself: a fixed sleep raced the 1ms timer, and on a loaded
+		// Windows runner the sleep won and the success was on time.
+		{name: "late success", fn: func(ctx context.Context, _ string) (route.Signal, error) {
+			<-ctx.Done()
 			return route.Signal{Label: "big", Complexity: 5}, nil
 		}},
 	} {
