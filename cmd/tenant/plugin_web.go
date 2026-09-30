@@ -109,11 +109,23 @@ func launchWeb(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	}
 	sess, err := web.NewSession(cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("web plugin: %w (is Chrome installed?)", err)
+		return nil, nil, webStartError{err}
 	}
 	return []plugin{web.NewDispatcher(sess, web.Policy{AllowInteract: e.gateAllow(f.allowInteract), Confirm: e.confirm},
 		filepath.Join(e.c.dataDir, "screenshots"))}, func() { _ = sess.Close() }, nil
 }
+
+// webStartError is the web plugin failing to start Chrome: not installed, or
+// stopped by the machine (security software can block a Chrome launched with
+// remote debugging). The eval tells it apart from other launch failures so it
+// can run without web (buildEvalTools).
+type webStartError struct{ err error }
+
+func (e webStartError) Error() string {
+	return fmt.Sprintf("web plugin: %v (is Chrome installed?)", e.err)
+}
+
+func (e webStartError) Unwrap() error { return e.err }
 
 // evalWeb: web is available wherever Chrome is installed; it needs no config.
 func evalWeb(pf *pluginFlags, _ *commonFlags, explicit map[string]bool) bool {
