@@ -97,3 +97,21 @@ func TestRenderBaselineDiff_Errors(t *testing.T) {
 		t.Error("missing baseline must error with guidance")
 	}
 }
+
+// With no --baseline-check, the diff reads the baseline from beside its
+// artifacts, whatever the working directory: a service starts with none.
+func TestRenderBaselineDiff_FindsTheBaselineBesideItsArtifacts(t *testing.T) {
+	baselinePath, artifactDir := writeDiffFixtures(t)
+	data, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "baseline.full.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir()) // no baselines/ here
+	out, err := renderBaselineDiff("", artifactDir)
+	if err != nil || !strings.Contains(out, "paired: 3") {
+		t.Fatalf("renderBaselineDiff = %v\n%s", err, out)
+	}
+}

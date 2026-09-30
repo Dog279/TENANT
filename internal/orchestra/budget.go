@@ -1,7 +1,9 @@
 package orchestra
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -29,6 +31,53 @@ type Budgets struct {
 
 	InputCostPerMillionUSD  float64 `json:"input_cost_per_million_usd,omitempty"`
 	OutputCostPerMillionUSD float64 `json:"output_cost_per_million_usd,omitempty"`
+}
+
+// UnmarshalJSON reads max_wall_time as a duration ("30m", "2h") as well as
+// the integer nanoseconds a time.Duration encodes to, which older files hold.
+func (b *Budgets) UnmarshalJSON(data []byte) error {
+	type plain Budgets
+	aux := struct {
+		*plain
+		MaxWallTime json.RawMessage `json:"max_wall_time,omitempty"`
+	}{plain: (*plain)(b)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	raw := bytes.TrimSpace(aux.MaxWallTime)
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
+	case raw[0] == '"':
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("budgets.max_wall_time: want a duration like \"30m\": %w", err)
+		}
+		b.MaxWallTime = d
+	default:
+		var ns int64
+		if err := json.Unmarshal(raw, &ns); err != nil {
+			return fmt.Errorf("budgets.max_wall_time: want a duration like \"30m\": %w", err)
+		}
+		b.MaxWallTime = time.Duration(ns)
+	}
+	return nil
+}
+
+// MarshalJSON writes max_wall_time as a duration a person can read and edit.
+func (b Budgets) MarshalJSON() ([]byte, error) {
+	type plain Budgets
+	aux := struct {
+		plain
+		MaxWallTime string `json:"max_wall_time,omitempty"`
+	}{plain: plain(b)}
+	if b.MaxWallTime != 0 {
+		aux.MaxWallTime = b.MaxWallTime.String()
+	}
+	return json.Marshal(aux)
 }
 
 // DefaultBudgets returns a conservative envelope large enough for deep

@@ -6,12 +6,12 @@
 // new operator does first, `tenant help all` for every command, `tenant help
 // <command>` for one, and `tenant completion <shell>` for tab completion.
 //
-// Global flags (per subcommand): --backend echo|vllm (default echo),
-// --agent ID (default main), --data DIR, --config DIR.
+// Global flags (per subcommand, after its name: `tenant tui --backend echo`):
+// --backend echo|vllm|anthropic|claudecode (default: config.json's provider,
+// else echo), --agent ID (default main), --data DIR, --config DIR.
 //
 // The "echo" backend is deterministic and dependency-free, so every
-// subcommand runs offline. Switch --backend vllm (and point the
-// shipped profiles at real endpoints) for production.
+// subcommand runs offline. `tenant setup` connects a real model.
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 )
 
 func main() {
@@ -49,7 +50,20 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
+		if helpInstead(err, os.Args[2:]) {
+			writeCommandHelp(os.Stdout, c)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// helpInstead is `tenant <command> --help` answered with a usage error: a
+// command that reads a subcommand or a task first took the flag for one. Its
+// help page answers instead. A command whose flag set came first has already
+// printed its flags (flag.ErrHelp).
+func helpInstead(err error, args []string) bool {
+	return err != nil && !errors.Is(err, flag.ErrHelp) && len(args) > 0 &&
+		slices.Contains([]string{"-h", "-help", "--help"}, args[0])
 }

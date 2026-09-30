@@ -93,7 +93,7 @@ func (c *commonFlags) credentialsLoader() func(string) (*credentials, error) {
 // whose fields are populated after fs.Parse.
 func bindCommon(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.StringVar(&c.backend, "backend", "echo", "inference backend: echo|vllm")
+	fs.StringVar(&c.backend, "backend", "echo", "inference backend: echo|vllm|anthropic|claudecode")
 	fs.StringVar(&c.agent, "agent", "main", "agent id")
 	fs.StringVar(&c.dataDir, "data", "", "data dir (default OS data dir)")
 	fs.StringVar(&c.cfgDir, "config", "", "config dir (default OS config dir)")
@@ -194,10 +194,10 @@ func (c *commonFlags) applyLaunchConfig() error {
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("config.json is unreadable by this account, refusing to start on defaults: %w", err)
 		}
-		// Corrupt file: warn on stderr, keep flag defaults rather than
-		// silently honoring a broken config.
-		fmt.Fprintf(os.Stderr, "warning: %v (ignoring config.json)\n", err)
-		lc = &launchConfig{}
+		// A corrupt one too: running on the defaults, the first setting saved
+		// (a dashboard toggle, a permission preset, a peer's instance id) would
+		// write them over the operator's file.
+		return fmt.Errorf("%w: fix it, or move it aside and run `tenant setup` for a new one", err)
 	}
 	c.lc = lc
 	set := c.flagSet()
@@ -625,7 +625,7 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 		return finishModelRouter(reg, c, log, map[string]model.BackendFactory{"claudecode": claudecode.New})
 
 	default:
-		return nil, fmt.Errorf("unknown backend %q (use echo or vllm)", c.backend)
+		return nil, fmt.Errorf("unknown backend %q (use echo, vllm, anthropic or claudecode)", c.backend)
 	}
 }
 

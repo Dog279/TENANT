@@ -70,7 +70,7 @@ It walks you through (arrow keys ↑/↓ + Enter):
 
 Non-interactive equivalent:
 ```bash
-tenant setup --backend vllm --vllm-endpoint http://localhost:11434 \
+tenant setup --non-interactive --provider ollama --vllm-model qwen2.5:7b \
   --embed-endpoint http://localhost:11434 --embed-model nomic-embed-text
 ```
 

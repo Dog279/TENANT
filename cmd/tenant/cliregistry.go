@@ -65,7 +65,7 @@ func cliCommands() []*cliCommand {
 		{Names: []string{"setup"}, Section: "start", Run: cmdSetup,
 			Summary: "one-time wizard: endpoints, model, gateway → config.json",
 			Task:    "connect a model, local or cloud; run this first",
-			Rows:    []cmdreg.Row{{Syntax: "setup [--backend vllm --vllm-endpoint URL]", Desc: "one-time wizard: endpoints, model, gateway → config.json"}}},
+			Rows:    []cmdreg.Row{{Syntax: "setup [--provider KIND --vllm-endpoint URL]", Desc: "one-time wizard: endpoints, model, gateway → config.json"}}},
 		{Names: []string{"tui"}, Section: "start", Run: cmdTUI,
 			Summary: "full-screen terminal UI: streaming chat + live activity feed",
 			Task:    "open the terminal app and start chatting (/help inside for commands)"},
@@ -337,7 +337,7 @@ func writeFullHelp(w io.Writer) {
 	}
 	fmt.Fprint(w, "\nCOMMON FLAGS\n")
 	fmt.Fprint(w, cmdreg.Table([]cmdreg.Row{
-		{Syntax: "--backend echo|vllm", Desc: "inference backend (default echo: deterministic, offline)"},
+		{Syntax: "--backend echo|vllm|anthropic|claudecode", Desc: "inference backend (default: config.json's provider, else echo: deterministic, offline)"},
 		{Syntax: "--agent ID", Desc: `agent id (default "main")`},
 		{Syntax: "--data DIR", Desc: "data dir (default OS data dir)"},
 		{Syntax: "--config DIR", Desc: "config dir (default OS config dir)"},

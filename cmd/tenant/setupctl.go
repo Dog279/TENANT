@@ -167,7 +167,7 @@ func (s setupControl) SetGateway(mode, addr string) (string, error) {
 		return "", err
 	}
 	gw := gatewayConfig{Mode: mode}
-	if mode == "sse" || mode == "both" {
+	if mode == "sse" {
 		gw.SSEAddr = firstNonEmpty(strings.TrimSpace(addr), lc.Gateway.SSEAddr, "127.0.0.1:8765")
 	}
 	lc.Gateway = gw

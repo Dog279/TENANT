@@ -404,7 +404,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		sched.Register(&improve.SoulNudgeJob{
 			Episodic: d.stores.episodic, AgentID: c.agent, BaseDir: c.cfgDir,
 			Proposer: improve.NewLLMSoulProposer(proposerRouter),
-			Scorer:   evalSoulScorer{c: c, pf: d.pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: d.log},
+			Scorer:   evalSoulScorer{c: c, pf: d.pf, baselinePath: resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), "fitness"), log: d.log},
 		}, soulCadence)
 	}
 

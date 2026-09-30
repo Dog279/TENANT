@@ -79,8 +79,8 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.StringVar(&baselineCheck, "baseline-check", "", "after the run, compare to the baseline at this path (paired-bootstrap 95% CI; non-zero exit on regression)")
 	fs.BoolVar(&trend, "trend", false, "print the nightly-eval trend log (offline; no run) and exit")
 	fs.IntVar(&trendN, "trend-n", 20, "with --trend: how many recent entries to show")
-	fs.BoolVar(&appendTrend, "append-trend", false, "after the run, write a report artifact under <data>/eval-artifacts and append a trend line (same shape as the nightly job; baseline = --baseline-check path, else baselines/<subset>.json). Also advances the nightly schedule's clock — a manual morning run stands the auto-fire down (TEN-196)")
-	fs.BoolVar(&baselineDiff, "baseline-diff", false, "print the per-task movers diff between the newest artifact and its baseline (offline; no run) and exit — improved/declined tables with failure autopsy (TEN-198). Baseline = --baseline-check path, else baselines/<artifact-subset>.json")
+	fs.BoolVar(&appendTrend, "append-trend", false, "after the run, write a report artifact under <data>/eval-artifacts and append a trend line (same shape as the nightly job; baseline = --baseline-check path, else <data>/eval-artifacts/baseline.<subset>.json). Also advances the nightly schedule's clock — a manual morning run stands the auto-fire down (TEN-196)")
+	fs.BoolVar(&baselineDiff, "baseline-diff", false, "print the per-task movers diff between the newest artifact and its baseline (offline; no run) and exit — improved/declined tables with failure autopsy (TEN-198). Baseline = --baseline-check path, else <data>/eval-artifacts/baseline.<subset>.json")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "tenant eval — run the eval harness against the current build")
 		fmt.Fprintln(fs.Output())

@@ -84,7 +84,7 @@ tenant tui                              # full-screen chat + activity feed
 Kick the tires with **no model and no keys** (deterministic offline backend):
 
 ```sh
-tenant --backend echo tui
+tenant tui --backend echo
 ```
 
 A couple of one-shot examples:
