@@ -250,7 +250,6 @@ func scanRun(row scanner) (Run, error) {
 }
 
 // ExportJSONL emits one stable JSON object per run, oldest first.
-// TODO(OPS-001): add an OTLP exporter when Tenant grows collector configuration.
 func (s *Store) ExportJSONL(ctx context.Context, w io.Writer) error {
 	runs, err := s.List(ctx)
 	if err != nil {

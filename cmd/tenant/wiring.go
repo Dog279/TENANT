@@ -866,50 +866,13 @@ func anthropicGenProfiles(endpoint, modelID, apiKey, providerKind string, planCe
 	}
 }
 
-// anthropicJudgeProfile builds a single RoleJudge profile for the Anthropic
-// Messages API — the eval harness's LLM-as-judge. Kept a DIFFERENT model
-// family than the local planner on purpose (self-bias is linearly correlated
-// with self-recognition; eval-harness-plan-v1 §3a). The judge makes short,
-// temperature-0 grading calls, so only the backend/endpoint/model/key matter;
-// the budget fields mirror the gen profiles to keep a valid Profile shape.
-func anthropicJudgeProfile(endpoint, modelID, apiKey string) model.Profile {
-	if endpoint == "" {
-		endpoint = "https://api.anthropic.com"
-	}
-	return model.Profile{
-		ID:                       "anthropic-judge",
-		Role:                     model.RoleJudge,
-		Backend:                  "anthropic",
-		ProviderKind:             "anthropic",
-		Endpoint:                 endpoint,
-		Model:                    modelID,
-		APIKey:                   apiKey,
-		EstimateTokensOnly:       true,
-		ContextLength:            200000,
-		OperationalContextBudget: 160000,
-		ReserveResponse:          1024,
-		ToolFormat:               "openai", // unused by this backend
-		MaxToolsPerCall:          12,
-		MaxParallelTools:         3,
-		PlanLoopCeiling:          defaultPlanCeiling,
-	}
-}
-
-// attachAnthropicJudge registers the Anthropic backend (idempotent) and binds
-// RoleJudge to a cloud judge profile on an EXISTING router. This is what lets
-// the eval CLI add a cloud judge to a local-planner router (planner = vLLM /
-// Qwen, judge = Claude) without rebuilding the router from scratch.
-func attachAnthropicJudge(r *model.Router, endpoint, modelID, apiKey string) error {
-	r.RegisterBackend("anthropic", anthropic.New)
-	return r.SetProfiles([]model.Profile{anthropicJudgeProfile(endpoint, modelID, apiKey)})
-}
-
-// attachJudge generalizes attachAnthropicJudge to ANY configured provider kind
-// (TEN-91): anthropic (Claude) or a vLLM/OpenAI-compatible one (z.ai/GLM, OpenAI,
-// Grok, …). It reuses genProfiles so the judge inherits every per-provider quirk
-// (ChatPath, ForceHTTP1, tokenizer mode) instead of re-deriving them, then
-// re-roles the planner-shaped profile to RoleJudge and binds it on the EXISTING
-// router. endpoint "" ⇒ the catalog default for that kind.
+// attachJudge binds RoleJudge on an EXISTING router to any configured provider
+// kind (TEN-91): anthropic (Claude) or a vLLM/OpenAI-compatible one (z.ai/GLM,
+// OpenAI, Grok, …), so the eval CLI can add a cloud judge to a local-planner
+// router without rebuilding it. It reuses genProfiles so the judge inherits
+// every per-provider quirk (ChatPath, ForceHTTP1, tokenizer mode) instead of
+// re-deriving them, then re-roles the planner-shaped profile to RoleJudge.
+// endpoint "" ⇒ the catalog default for that kind.
 func attachJudge(r *model.Router, kind, endpoint, modelID, apiKey string) error {
 	kind = strings.TrimSpace(kind)
 	pk, ok := providerKinds[kind]

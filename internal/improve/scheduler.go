@@ -9,12 +9,10 @@ import (
 	"tenant/internal/logs/event"
 )
 
-// Cadence-policy defaults for the background self-improvement loop
-// (`tenant serve`). Distillation is cheap + cursor-based, so a modest
-// interval keeps T3 facts fresh without burning summarizer calls; the
-// tick is how often the loop checks whether any job is due.
+// Cadence defaults for the background self-improvement loop: how often
+// consolidation runs, and how often the loop checks whether any job is due.
+// The distill cadence is the --distill-every flag.
 const (
-	DefaultDistillInterval     = 30 * time.Minute
 	DefaultConsolidateInterval = 6 * time.Hour
 	DefaultSchedulerTick       = 1 * time.Minute
 )
@@ -46,10 +44,8 @@ type JobResult struct {
 	SourceRuns []string
 }
 
-// JobRunRecord is one entry in the scheduler's run history. Hermes
-// surfaces "what self-improvement did lately" to the user; we keep a
-// bounded ring of these so the agent / a CLI can show it. The durable
-// history is the improve log: every run is a JobRun activity there.
+// JobRunRecord is one job run, as RunDue, RunAll and OnRun report it. The
+// durable history is the improve log: every run is a JobRun activity there.
 type JobRunRecord struct {
 	JobName   string
 	StartedAt time.Time
@@ -77,18 +73,16 @@ type DueFunc func(lastRun, now time.Time) bool
 // synchronously (e.g. from the agent loop on a turn boundary, or a
 // CLI command) without a background loop.
 type Scheduler struct {
-	mu      sync.Mutex
-	jobs    []*scheduledJob
-	history []JobRunRecord
-	histCap int
+	mu   sync.Mutex
+	jobs []*scheduledJob
 
 	stop    chan struct{}
 	doneWG  sync.WaitGroup
 	running bool
 
-	// OnRun, if set, is called after each job run (after history is
-	// recorded). Used by the TUI to surface self-improvement in the
-	// live feed. Called outside the scheduler lock; must be cheap.
+	// OnRun, if set, is called after each job run. Used by the TUI to
+	// surface self-improvement in the live feed. Called outside the
+	// scheduler lock; must be cheap.
 	OnRun func(JobRunRecord)
 
 	// OnStart, if set, is called just before a job begins running. Exists so
@@ -110,14 +104,8 @@ type Scheduler struct {
 // paused reports whether execution is currently suspended.
 func (s *Scheduler) paused() bool { return s.Paused != nil && s.Paused() }
 
-// NewScheduler returns an empty scheduler. historyCap bounds the
-// in-memory run-history ring (<=0 → default 64).
-func NewScheduler(historyCap int) *Scheduler {
-	if historyCap <= 0 {
-		historyCap = 64
-	}
-	return &Scheduler{histCap: historyCap}
-}
+// NewScheduler returns an empty scheduler.
+func NewScheduler() *Scheduler { return &Scheduler{} }
 
 // Register adds a job to run at most once per interval. interval <= 0
 // means "only runs on explicit RunAll" (never auto-fires via RunDue
@@ -257,15 +245,6 @@ func (s *Scheduler) Stop() {
 	s.doneWG.Wait()
 }
 
-// History returns a copy of the run-history ring, newest last.
-func (s *Scheduler) History() []JobRunRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]JobRunRecord, len(s.history))
-	copy(out, s.history)
-	return out
-}
-
 func (s *Scheduler) runOne(ctx context.Context, job Job) JobRunRecord {
 	if s.OnStart != nil {
 		s.OnStart(job.Name())
@@ -288,19 +267,8 @@ func (s *Scheduler) runOne(ctx context.Context, job Job) JobRunRecord {
 		JobOutcome.Log(ctx, kv...)
 	}
 	act.End(&err)
-	s.appendHistory(rec)
 	if s.OnRun != nil {
 		s.OnRun(rec)
 	}
 	return rec
-}
-
-func (s *Scheduler) appendHistory(rec JobRunRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.history = append(s.history, rec)
-	if len(s.history) > s.histCap {
-		// Drop oldest. Copy to avoid unbounded backing-array growth.
-		s.history = append([]JobRunRecord(nil), s.history[len(s.history)-s.histCap:]...)
-	}
 }

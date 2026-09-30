@@ -20,9 +20,8 @@ import (
 // outperform free-form scoring for LLM-as-judge (Galileo, Monte Carlo,
 // "Silent Judge" arXiv 2509.26072 length-bias work).
 type Rubric struct {
-	Criterion        string         `yaml:"criterion"`         // what the judge is asking
-	Anchors          map[int]string `yaml:"anchors,omitempty"` // {1: "bad example", 3: "ok", 5: "ideal"}
-	LengthNormalized bool           `yaml:"length_normalized,omitempty"`
+	Criterion string         `yaml:"criterion"`         // what the judge is asking
+	Anchors   map[int]string `yaml:"anchors,omitempty"` // {1: "bad example", 3: "ok", 5: "ideal"}
 }
 
 // JudgeResult is one judge invocation's outcome. Score is 1-5 on the
@@ -173,19 +172,6 @@ func isTransientJudgeErr(err error) bool {
 // ~0.5s, 1s, 1.5s — total under a few seconds, enough for a blip, not a stall.
 func judgeRetryBackoff(attempt int) time.Duration {
 	return time.Duration(attempt) * 500 * time.Millisecond
-}
-
-// FixtureJudge returns a pre-set score regardless of input. Used by
-// internal eval-harness tests so we can exercise the judge wiring path
-// deterministically without a real LLM endpoint. Also useful for
-// operators who want to validate task YAML / rubric structure offline.
-type FixtureJudge struct {
-	Score     int
-	Reasoning string
-}
-
-func (f *FixtureJudge) Grade(_ context.Context, _ *Task, _ string, _ []FixtureToolCall) (JudgeResult, error) {
-	return JudgeResult{Score: f.Score, Reasoning: f.Reasoning}, nil
 }
 
 // renderJudgePrompt does the placeholder substitution. Anchors are

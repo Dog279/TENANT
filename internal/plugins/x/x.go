@@ -64,9 +64,6 @@ func Open(cfg Config) (*Service, error) {
 	return svc, nil
 }
 
-// canPost reports whether a user-context token is available.
-func (s *Service) canPost() bool { return s.user != nil }
-
 // api is the authenticated JSON transport every X call shares.
 type api struct {
 	http httpDoer

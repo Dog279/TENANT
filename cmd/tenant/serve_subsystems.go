@@ -341,7 +341,7 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		default:
 		}
 	}
-	sched := improve.NewScheduler(0)
+	sched := improve.NewScheduler()
 	sched.Paused = d.degraded.Degraded
 	sched.OnRun = func(rec improve.JobRunRecord) {
 		if line, ok := formatSelfImproveFeedLine(rec); ok {

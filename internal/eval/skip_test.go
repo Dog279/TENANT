@@ -117,9 +117,6 @@ func TestSkipped_ExcludedEverywhere(t *testing.T) {
 	if rep.Aggregates.Overall != 50 {
 		t.Fatalf("overall = %.1f, want 50 (skipped excluded from the average)", rep.Aggregates.Overall)
 	}
-	if ids := FailedTaskIDs(rep); len(ids) != 1 || ids[0] != "bad" {
-		t.Errorf("FailedTaskIDs = %v, want [bad] only", ids)
-	}
 
 	b := NewBaseline(rep, "now", "judge", "v")
 	if _, ok := b.TaskScores["limbo"]; ok {

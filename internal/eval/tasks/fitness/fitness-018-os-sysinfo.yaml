@@ -28,5 +28,4 @@ expected:
       1: "Dumped raw os_sysinfo output, OR only mentioned one of the four fields, OR said vaguely 'I got the info' without specifics"
       3: "Named 2-3 of the four fields but in raw/key:value format"
       5: "Names all four (OS, arch, CPU count, cwd) in conversational prose; a non-technical user would understand without parsing"
-    length_normalized: true
   rubric_min_score: 3

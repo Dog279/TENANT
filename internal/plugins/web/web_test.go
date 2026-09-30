@@ -441,3 +441,8 @@ func TestChromedpErrorsGoToTheBrowserLog(t *testing.T) {
 		t.Errorf("the unhandled-event flood leaked:\n%s", out)
 	}
 }
+
+// newDispatcherWithBrowser injects a fake browser.
+func newDispatcherWithBrowser(b browser, policy Policy, shotDir string) *Dispatcher {
+	return &Dispatcher{br: b, policy: policy, shotDir: shotDir}
+}

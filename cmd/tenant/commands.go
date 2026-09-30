@@ -1979,10 +1979,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 
 	// Install the embedder for tool-catalog ranking. Lazy: the mux will
 	// precompute tool-description embeddings only the first time the
-	// catalog crosses rankActivateThreshold AND a Search needs ranking.
-	// On `/model use ...` swap, this should be re-called with the new
-	// fingerprint to invalidate the cache (TODO: wire from modelControl
-	// when a swap-observer hook lands; until then, restart picks it up).
+	// catalog crosses toolmux.RankActivateThreshold AND a Search needs ranking.
+	// A `/model use` swap re-installs it (reinstallEmbedder, TEN-226).
 	mux.SetEmbedder(embedderID, skEmb)
 
 	// Auto-fallback (TEN-246): wire the configured fallback chain onto the
@@ -2785,7 +2783,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// changes for the next launch instead of re-arming a running scheduler.
 	var evalSched *evalSchedule
 	if *selfImprove {
-		sched = improve.NewScheduler(0)
+		sched = improve.NewScheduler()
 		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop)
 		// While the model is degraded to echo, suspend ALL self-improvement:
 		// consolidation/profile jobs would persist echo-derived garbage and the

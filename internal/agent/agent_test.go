@@ -270,10 +270,6 @@ func buildAgentWithEgress(t *testing.T, profile model.Profile, tools []model.Too
 	return buildAgentFull(t, profile, tools, dispatcher, confirm, nil)
 }
 
-func buildAgentWithRuns(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, runs *runtrace.Store) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
-	return buildAgentFull(t, profile, tools, dispatcher, nil, runs)
-}
-
 func buildAgentFull(t *testing.T, profile model.Profile, tools []model.ToolSpec, dispatcher agent.ToolDispatcher, confirm func(context.Context, string, string) bool, runs *runtrace.Store, mutate ...func(*agent.Config)) (*agent.Agent, *testllm.Fake, *working.Set, *episodic.Store) {
 	t.Helper()
 	fake := testllm.New()

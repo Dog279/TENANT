@@ -298,7 +298,3 @@ func prefixSource(msg string) string {
 	}
 	return prefixTable[tag]
 }
-
-// SourceForMessage is prefixSource for callers outside the package (the CLI's
-// bare `tenant log "<msg>"` form).
-func SourceForMessage(msg string) string { return prefixSource(msg) }

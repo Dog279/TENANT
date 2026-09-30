@@ -382,7 +382,7 @@ func TestOrchestratorPrompt_KeepWorkingAndDefaults(t *testing.T) {
 // per-turn diagnostic + /tools status silently fall through.
 func TestComposite_RankingStatus_DelegatesToShared(t *testing.T) {
 	shared := newToolMux()
-	for i := 0; i < 25; i++ { // above rankActivateThreshold, no embedder → fallback
+	for i := 0; i < 25; i++ { // above toolmux.RankActivateThreshold, no embedder → fallback
 		shared.Add("p", fakePlugin{name: "tool" + strconv.Itoa(i)})
 	}
 	c := composite{shared: shared, local: newToolMux()}

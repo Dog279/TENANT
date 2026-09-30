@@ -71,3 +71,14 @@ func TestAuditOnlyResolveCreatesNoLockFile(t *testing.T) {
 		t.Fatalf("read-only resolve created the lock file: %v", err)
 	}
 }
+
+// releaseDataLocks drops every held lock. The binary never needs to: exit
+// releases them.
+func releaseDataLocks() {
+	heldMu.Lock()
+	defer heldMu.Unlock()
+	for k, l := range heldLocks {
+		_ = l.Release()
+		delete(heldLocks, k)
+	}
+}

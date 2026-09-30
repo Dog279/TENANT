@@ -96,11 +96,6 @@ func NewDispatcher(s *Session, policy Policy, shotDir string) *Dispatcher {
 	return &Dispatcher{br: br, guard: cfg.guard, policy: policy, shotDir: shotDir, cfg: cfg}
 }
 
-// newDispatcherWithBrowser is the test seam (inject a fake browser).
-func newDispatcherWithBrowser(b browser, policy Policy, shotDir string) *Dispatcher {
-	return &Dispatcher{br: b, policy: policy, shotDir: shotDir}
-}
-
 // Tools returns the tool specs to register with agent.ToolRegistry.
 // Only the read/explore layer ships this turn; interact/transact specs
 // land alongside their implementations behind the same gate.

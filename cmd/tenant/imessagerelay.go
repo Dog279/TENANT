@@ -62,7 +62,7 @@ type imessageResponder struct {
 	poller   imsgPoller
 	sender   imsgSender
 	runner   imsgRunner
-	confirm  offsiteConfirm // stamped on each turn ctx; Phase 1 = denyAllConfirm
+	confirm  offsiteConfirm // stamped on each turn ctx
 	interval time.Duration  // poll cadence (0 ⇒ 3s)
 	pollN    int            // max messages per poll (0 ⇒ 20)
 	log      *slog.Logger
@@ -81,10 +81,6 @@ type imessageResponder struct {
 	wg     sync.WaitGroup // in-flight turns (waitIdle, for tests)
 	sendMu sync.Mutex     // serializes SendText: replies, "busy" notices and approver prompts
 }
-
-// denyAllConfirm is the Phase-1 gate: every gated tool is refused offsite until
-// the Phase-2 text-confirm handshake lands.
-func denyAllConfirm(context.Context, string, string) bool { return false }
 
 // Run polls on a ticker until ctx is cancelled: one Responder activity.
 func (r *imessageResponder) Run(ctx context.Context) {
@@ -216,10 +212,6 @@ func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
 	}
 	r.send(ctx, chatGUID, reply)
 }
-
-// waitIdle blocks until no turn is in flight (tests). Stop needs no such wait:
-// cancelling the run ctx unwinds the turn.
-func (r *imessageResponder) waitIdle() { r.wg.Wait() }
 
 // SendText is the one iMessage send path — the responder's replies and the
 // approver's prompts (it is the approver's sender) — serialized, since the

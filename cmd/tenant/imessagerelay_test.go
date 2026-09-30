@@ -312,3 +312,10 @@ func TestIMessageResponder_TurnErrorReplies(t *testing.T) {
 		t.Errorf("the apology send should be recorded for anti-loop, got %v", p.recsT)
 	}
 }
+
+// denyAllConfirm refuses every gated tool.
+func denyAllConfirm(context.Context, string, string) bool { return false }
+
+// waitIdle blocks until no turn is in flight. Stop needs no such wait:
+// cancelling the run ctx unwinds the turn.
+func (r *imessageResponder) waitIdle() { r.wg.Wait() }

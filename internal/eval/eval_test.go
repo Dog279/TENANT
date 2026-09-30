@@ -1119,3 +1119,26 @@ func TestJudge_TransientExhaustedErrors(t *testing.T) {
 		t.Errorf("attempts=%d, want a small bounded number (no runaway, but did retry)", calls)
 	}
 }
+
+// FixtureJudge returns a pre-set score regardless of input, so the judge
+// wiring runs deterministically without an LLM endpoint.
+type FixtureJudge struct {
+	Score     int
+	Reasoning string
+}
+
+func (f *FixtureJudge) Grade(_ context.Context, _ *Task, _ string, _ []FixtureToolCall) (JudgeResult, error) {
+	return JudgeResult{Score: f.Score, Reasoning: f.Reasoning}, nil
+}
+
+// FailedTaskIDs returns the IDs of failed tasks. Ungraded (TEN-197) and
+// skipped (TEN-198) tasks are not failures.
+func FailedTaskIDs(rep *Report) []string {
+	var out []string
+	for _, r := range rep.Results {
+		if !r.Passed && !r.Ungraded && !r.Skipped {
+			out = append(out, r.TaskID)
+		}
+	}
+	return out
+}

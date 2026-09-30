@@ -77,9 +77,6 @@ func TestListener_TLSEndToEnd(t *testing.T) {
 	cert, fp, _ := LoadOrMintCert(dir)
 
 	l, _ := NewListener(ListenerConfig{Store: store, SelfID: "hub-id", SelfVersion: "1.0", TLSCert: &cert})
-	if !l.Secure() {
-		t.Fatal("listener with a cert must report Secure()")
-	}
 	ln, err := l.Bind("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

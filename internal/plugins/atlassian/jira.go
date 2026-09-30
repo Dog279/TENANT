@@ -59,8 +59,6 @@ func toIssue(is *model.IssueSchemeV2) Issue {
 	return out
 }
 
-const issueFields = "summary,status,issuetype,assignee,description"
-
 // Search runs a JQL query and returns up to max issues (default 25, cap 50)
 // and the token for the next page ("" on the last). It uses the enhanced
 // search endpoint: Atlassian removed GET /rest/api/2/search in 2025 (TEN-60).

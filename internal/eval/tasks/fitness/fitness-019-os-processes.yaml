@@ -31,5 +31,4 @@ expected:
       1: "Dumped the full process list verbatim, OR refused, OR reported only a count without naming any specific process"
       3: "Named 1-2 processes by name but with no categorization or interpretation, OR named many without filtering"
       5: "Named 2-5 specific dev-related processes with brief context (e.g. 'go (compiler), code (editor), bash (shell)') and ignored the noise"
-    length_normalized: true
   rubric_min_score: 3

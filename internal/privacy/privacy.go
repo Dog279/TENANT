@@ -40,29 +40,6 @@ const (
 // Classes lists the retention classes in display order.
 var Classes = []Class{Episodes, Facts, Archive, Usage, Research, Screenshots, RelayInbox, EvalArtifacts}
 
-// Describe says what a class holds, for status views.
-func Describe(c Class) string {
-	switch c {
-	case Episodes:
-		return "conversation turns"
-	case Facts:
-		return "distilled facts not reconfirmed within the period (pinned and protected facts are kept)"
-	case Archive:
-		return "raw session events"
-	case Usage:
-		return "token usage ledger"
-	case Research:
-		return "research runs and reports"
-	case Screenshots:
-		return "browser screenshots"
-	case RelayInbox:
-		return "files received over the Discord relay"
-	case EvalArtifacts:
-		return "eval reports (baselines and the trend are kept)"
-	}
-	return ""
-}
-
 // Retention is how many days each class is kept. A class that is absent or
 // set to 0 or less is kept forever.
 type Retention map[Class]int

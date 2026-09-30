@@ -134,8 +134,6 @@ func (p Profile) ToolResultCap() int {
 // different concerns: Soul is identity / persona / persistent user
 // facts (relatively static, grows with the agent's tenure); System
 // is structural rules and format specs (varies per task and model).
-// The TODO for empirical tuning of these per-profile values is in
-// TODOS.md — current numbers are calibrated guesses.
 //
 // This uses the FIXED per-class reserves. They're calibrated guesses, and a
 // full tool mux's real schema cost can be ~10x ReserveToolDefs (TEN-214), so

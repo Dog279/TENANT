@@ -248,9 +248,8 @@ func (s *Session) readPump(ctx context.Context) {
 		}
 		var msg Message
 		if err := json.Unmarshal(raw, &msg); err != nil {
-			// Malformed frame — log + continue. Killing the session for
-			// one bad frame would be a denial-of-service for a flaky peer.
-			// TODO(observability): emit metric mcp_malformed_frames_total
+			// Malformed frame: skip it. Killing the session for one bad
+			// frame would be a denial-of-service for a flaky peer.
 			continue
 		}
 		s.dispatch(ctx, &msg)

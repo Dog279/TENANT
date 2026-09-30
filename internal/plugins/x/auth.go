@@ -48,9 +48,6 @@ type httpDoer interface {
 // tokenSource yields a bearer/access token for the Authorization header.
 type tokenSource interface {
 	token(ctx context.Context) (string, error)
-	// userContext reports whether this token can act AS the user
-	// (post/delete). App-only bearer cannot.
-	userContext() bool
 }
 
 // --- App-only bearer ---
@@ -63,7 +60,6 @@ func (b bearerSource) token(context.Context) (string, error) {
 	}
 	return b.tok, nil
 }
-func (bearerSource) userContext() bool { return false }
 
 // --- OAuth2 PKCE user context ---
 
@@ -129,8 +125,6 @@ func newPKCESource(path string, h httpDoer, clock func() time.Time) (*pkceSource
 	}
 	return &pkceSource{path: path, http: h, clock: clock, tok: tokenURL, st: st}, nil
 }
-
-func (p *pkceSource) userContext() bool { return true }
 
 func (p *pkceSource) token(ctx context.Context) (string, error) {
 	p.mu.Lock()

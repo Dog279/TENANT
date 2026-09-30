@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -290,10 +289,4 @@ func (t *Task) validate() error {
 		t.Weight = 1.0
 	}
 	return nil
-}
-
-// FilenameID returns the task ID derived from its filename, useful when
-// the YAML omits id (we error on that, so this is currently informational).
-func FilenameID(filePath string) string {
-	return strings.TrimSuffix(filepath.Base(filePath), ".yaml")
 }

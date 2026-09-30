@@ -285,9 +285,6 @@ func ParseSignal(raw string) (Signal, error) {
 	return sig, nil
 }
 
-// Parse is a short alias for callers that already live in package route.
-func Parse(raw string) (Signal, error) { return ParseSignal(raw) }
-
 func field(part, prefix string) (string, error) {
 	if !strings.HasPrefix(part, prefix) {
 		return "", fmt.Errorf("route: parse: expected field %q", strings.TrimSuffix(prefix, ": "))

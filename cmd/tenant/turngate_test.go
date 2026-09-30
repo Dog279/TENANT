@@ -383,3 +383,8 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met within timeout")
 }
+
+// newTurnGate is a gate with the default scheduler config.
+func newTurnGate(inner turnRunner) *turnGate {
+	return newTurnGateConfigured(inner, turnSchedulerConfig{})
+}

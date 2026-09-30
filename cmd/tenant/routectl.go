@@ -139,15 +139,10 @@ func routeCLIUsageError(sub string) error {
 	return fmt.Errorf("usage: tenant route <status|on|off|shadow|assisted|everywhere|stats|force|export-dataset> [--config DIR] [--data DIR]")
 }
 
-// validateConfiguredRouteProfileID performs the headless force check without
-// constructing a model backend or touching the network. The accepted set is
-// exactly the generation-profile IDs wiring can register from the configured
-// active, planner-big, and fallback providers.
-func validateConfiguredRouteProfileID(lc *launchConfig, profileID string) error {
-	_, err := canonicalConfiguredRouteProfileID(lc, profileID)
-	return err
-}
-
+// canonicalConfiguredRouteProfileID is the headless force check: it resolves
+// profileID without constructing a model backend or touching the network. The
+// accepted set is exactly the generation-profile IDs wiring can register from
+// the configured active, planner-big, and fallback providers.
 func canonicalConfiguredRouteProfileID(lc *launchConfig, profileID string) (string, error) {
 	profileID = strings.TrimSpace(profileID)
 	aliases := configuredRouteProfileAliases(lc)

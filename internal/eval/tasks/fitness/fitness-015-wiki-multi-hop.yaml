@@ -48,5 +48,4 @@ expected:
       1: "Single-hop answer. Agent called wiki_search and wiki_read once, never followed wiki_links output, and the 'relationship' claim is vague or fabricated"
       3: "Both notes referenced but only one concrete fact, or facts present but the relationship is asserted without grounding"
       5: "Two notes named, one concrete fact quoted from each, and the relationship is grounded in those facts"
-    length_normalized: true
   rubric_min_score: 3

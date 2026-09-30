@@ -352,20 +352,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// Run serves until ctx is canceled, then shuts down gracefully. Mirrors the
-// gateway's HTTP start pattern in cmd/tenant (goroutine ListenAndServe +
-// ctx-driven Shutdown). Returns nil on a clean ctx-cancel shutdown.
-func (s *Server) Run(ctx context.Context) error {
-	if err := s.checkBindPolicy(); err != nil {
-		return err
-	}
-	ln, err := net.Listen("tcp", s.cfg.Addr)
-	if err != nil {
-		return err
-	}
-	return s.Serve(ctx, ln)
-}
-
 // Serve serves on an already-bound listener until ctx is canceled. Accepting
 // the listener separately lets lifecycle owners reserve an ephemeral port
 // synchronously and makes shutdown completion observable without bind races.

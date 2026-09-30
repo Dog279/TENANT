@@ -272,7 +272,7 @@ NewStdioSelf / NewStdioStreams / NewStdioProcess).
 - `mcp.NewClient(t, opts...) *Client`; `Client.Initialize(ctx)`, `.Ping(ctx)`, `.Close()`
 
 **Storage:** none. **Depends on:** nothing internal.
-**Invariants:** no panics in protocol layer (malformed frames logged+skipped);
+**Invariants:** no panics in protocol layer (malformed frames skipped);
 idempotent Close; strict protocol-version match; ctx propagation.
 **Status:** complete, incl. the agent-on-MCP path: **`notifications/
 cancelled`** (bidirectional — outbound on `Call` ctx-cancel; inbound
@@ -304,7 +304,6 @@ forwarded to the app handler. **6 tests.**
 - `model.NewRouter(reg, log) *Router`; `Router.RegisterBackend(kind, factory)`,
   `.ForRole`, `.PinRole`, `.LLMForRole(ctx, role) (LLM, Profile, error)`,
   `.EmbedderForRole(...)`
-- `model.NewEmbedCache(cap) *EmbedCache` — LRU keyed by `(embedder_id, sha256(text))`
 - `vllm.New(ctx, profile, log) (any, error)` — satisfies LLM + Embedder; uses
   `/v1/chat/completions`, `/v1/embeddings`, `/tokenize`; typed error mapping
 - `toolfmt.AdapterFor(format) Adapter` — qwen / gemma / llama / mistral /
@@ -355,7 +354,8 @@ the system prompt. Hand-curated; agent edits go through a review queue.
 - `Soul.Save(baseDir)` — atomic (tmp+fsync+rename), bumps `Meta.Version`
 - `Soul.Render() string` — markdown system-prompt fragment (transient, never stored)
 - `soul.ProposeEdit(baseDir, agentID, reason, *Soul) (id, error)` → review queue
-- `soul.ListProposals`, `soul.Accept(baseDir, id)`, `soul.Reject(...)`
+- `soul.ListProposals`, `soul.Accept(baseDir, id)`, `soul.Reject(...)`: no
+  command calls these yet, so proposals wait unreviewed (TEN-452)
 - `soul.DefaultDir()` (config dir), `soul.Path`, `soul.SoulDir`
 
 **Storage:** TOML at `{configDir}/soul/{agent}.toml`; proposals at
@@ -628,14 +628,15 @@ Multiple jobs under one scheduler on cadences.
 **Public API:**
 - `improve.OpenMeta(path) (*Meta, error)` — SQLite KV (`tenant_meta`);
   `Get/Set`, `GetInt64/SetInt64`
-- `improve.NewScheduler(log, historyCap) *Scheduler`
+- `improve.NewScheduler() *Scheduler`
 - `Scheduler.Register(Job, interval)` (interval≤0 = manual-only),
-  `.RunDue(ctx)`, `.RunAll(ctx)`, `.Start(ctx, tick)`/`.Stop()`, `.History()`
+  `.RunDue(ctx)`, `.RunAll(ctx)`, `.Start(ctx, tick)`/`.Stop()`
 - `improve.Job` iface: `Name()`, `Run(ctx) (JobResult, error)`
 - `improve.NewDistillJob(*distill.Distiller, *Meta, agentID) *DistillJob`
-- **Cadence-policy defaults:** `DefaultDistillInterval` (30m),
-  `DefaultSchedulerTick` (1m) — used by `tenant serve` so the learning
-  loop runs without anyone invoking `tenant distill` by hand.
+- **Cadence:** `tenant serve` and the TUI distill every `--distill-every`
+  (10m by default) and consolidate every `DefaultConsolidateInterval` (6h),
+  so the learning loop runs without anyone invoking `tenant distill` by
+  hand. The loop checks for due jobs every `DefaultSchedulerTick` (1m).
 
 **Storage:** SQLite `tenant_meta.db`, key `distill_cursor:{agentID}`.
 **Invariants:** one failing job never stops others; cursor agent-scoped;
@@ -1419,7 +1420,7 @@ registry type (§5.14).
   merged via a tool multiplexer so the agent can use them all in one
   conversation; tool calls/results stream into the feed. Background
   self-improvement (distillation) runs in-process by default
-  (`--distill-every 5m`, `--self-improve=false` to disable) and its job
+  (`--distill-every 10m`, `--self-improve=false` to disable) and its job
   runs stream into the feed. Logs go to the log book
   (`<data>/logs/<source>/`, §5.10a) — nothing is written to stderr, which
   would corrupt the alt-screen.

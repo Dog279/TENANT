@@ -156,13 +156,6 @@ func (s *Store) save() error {
 	return nil
 }
 
-// Save flushes the store to disk atomically with owner-only protection.
-func (s *Store) Save() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.save()
-}
-
 // Get returns a COPY of the peer by name (callers must not mutate the store
 // through the returned pointer; use Put to persist changes).
 func (s *Store) Get(name string) (*Peer, bool) {
