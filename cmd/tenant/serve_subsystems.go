@@ -336,6 +336,7 @@ type serveImproveDeps struct {
 	profileEvery   time.Duration
 	evalEvery      time.Duration
 	evalEverySet   bool
+	meta           *improve.Meta // keeps consolidation's clock across restarts
 	log            *slog.Logger
 }
 
@@ -393,10 +394,10 @@ func buildServeImprove(ctx context.Context, d serveImproveDeps) (*improve.Schedu
 		TrustMinAcks: improveCfg.TrustMinAcks,
 		TrustWindow:  improveCfg.TrustWindow,
 	}, d.distillEvery)
-	sched.Register(&improve.ConsolidationJob{
+	sched.RegisterRecorded(ctx, &improve.ConsolidationJob{
 		Semantic: d.stores.semantic, Router: d.router, SummarizerRouter: proposerRouter,
 		AgentID: c.agent, Holistic: true, Logger: d.log,
-	}, improve.DefaultConsolidateInterval)
+	}, improve.DefaultConsolidateInterval, d.meta, "consolidate_last_run:"+c.agent)
 	// Feedback-driven protection (TEN-255 Phase 4): ACKed turns → protected
 	// facts. Promote-only, no LLM; mirrors the TUI path.
 	sched.Register(&improve.FeedbackProtectionJob{

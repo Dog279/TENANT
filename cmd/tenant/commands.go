@@ -2826,11 +2826,12 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		}, *distillEvery)
 		// Fact consolidation merges overlapping/duplicate facts the distiller's
 		// write-path dedup misses (paraphrases, subsumed granular facts). Heavier
-		// (an LLM call per cluster) and not time-critical, so a long cadence.
-		sched.Register(&improve.ConsolidationJob{
+		// (an LLM call per cluster) and not time-critical, so a long cadence,
+		// whose clock is kept in tenant_meta.db so a relaunch doesn't fire it.
+		sched.RegisterRecorded(ctx, &improve.ConsolidationJob{
 			Semantic: st.semantic, Router: router, SummarizerRouter: proposerRouter,
 			AgentID: c.agent, Holistic: true, Logger: log,
-		}, improve.DefaultConsolidateInterval)
+		}, improve.DefaultConsolidateInterval, meta, "consolidate_last_run:"+c.agent)
 		// Feedback-driven protection (TEN-255 Phase 4): promote facts distilled
 		// from ACKed turns to merge-protected — learned load-bearing-ness from
 		// real use. Promote-only (never auto-unprotects), no LLM, cheap; runs on

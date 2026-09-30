@@ -717,7 +717,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		skills: skillStore, embedder: skEmb, stores: st, sme: smeStore, smeLive: smeLive, refreshProfile: refreshProfile,
 		degraded: degraded, feed: sysCh, distillEvery: *distillEvery, profileEvery: *profileEvery,
 		evalEvery: *evalEvery, evalEverySet: fsVisited(fs, "eval-every"), log: log.With("source", "improve"),
-		events: emit, evalProg: evalProg,
+		events: emit, evalProg: evalProg, meta: meta,
 	})
 	if sched != nil {
 		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop) // drains any in-flight improve job

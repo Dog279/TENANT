@@ -116,7 +116,9 @@ func TestConsolidationJob_MergesDuplicateCluster(t *testing.T) {
 	seed("Go-based project Tenant implements MCP", []float32{0.98, 0.05, 0.02, 0})
 	seed("User develops on Windows", []float32{0, 1, 0, 0}, "run-c")
 
-	fakeLLM.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+	var maxTokens []int
+	fakeLLM.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		maxTokens = append(maxTokens, req.MaxTokens)
 		return &model.GenerateResponse{Text: `{"merge":true,"fact":"Tenant is a Go MCP framework"}`, FinishReason: "stop"}, nil
 	}
 	fakeEmb.EmbedFn = func(_ context.Context, texts []string) ([][]float32, error) {
@@ -133,6 +135,9 @@ func TestConsolidationJob_MergesDuplicateCluster(t *testing.T) {
 
 	job := &ConsolidationJob{Semantic: ss, Router: router, AgentID: "main", ClusterThreshold: 0.9}
 	res, err := job.Run(ctx)
+	if len(maxTokens) == 0 || maxTokens[0] != mergeMaxTokens {
+		t.Errorf("merge reply cap = %v, want %d: an uncapped reply can run for many minutes", maxTokens, mergeMaxTokens)
+	}
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -247,7 +252,9 @@ func TestConsolidationJob_HolisticGroupsByMeaning(t *testing.T) {
 	seed("Tenant: an MCP framework written in Go", []float32{0, 1, 0}) // 2 (same claim, far vector)
 	seed("User develops on Windows", []float32{0, 0, 1})               // 3 (distinct)
 
-	fakeLLM.GenerateFn = func(_ context.Context, _ model.GenerateRequest) (*model.GenerateResponse, error) {
+	holisticCap := -1
+	fakeLLM.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		holisticCap = req.MaxTokens
 		return &model.GenerateResponse{Text: `{"groups":[{"members":[1,2],"fact":"Tenant is a Go MCP framework"}]}`, FinishReason: "stop"}, nil
 	}
 	fakeEmb.EmbedFn = func(_ context.Context, texts []string) ([][]float32, error) {
@@ -262,6 +269,9 @@ func TestConsolidationJob_HolisticGroupsByMeaning(t *testing.T) {
 	res, err := job.Run(ctx)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if holisticCap != holisticMaxTokens {
+		t.Errorf("holistic reply cap = %d, want %d: an uncapped reply can run for many minutes", holisticCap, holisticMaxTokens)
 	}
 	// 1+2 merged (cosine never would), 3 untouched → live = 3 - 2 + 1 = 2.
 	if after, _ := ss.Count(ctx, false, false); after != 2 {

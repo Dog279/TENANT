@@ -60,6 +60,14 @@ const (
 	DefaultMaxClusterSize   = 8
 	// holisticMaxFacts caps how many facts go into one holistic prompt.
 	holisticMaxFacts = 80
+	// holisticMaxTokens caps the grouping reply. The groups of 80 facts fit
+	// in a few thousand tokens; a model that keeps writing (a fast local model
+	// was seen producing ~60k tokens over 20 minutes, holding the scheduler
+	// and everything queued behind it) is cut off instead. A cut-off reply
+	// doesn't parse, so nothing is merged.
+	holisticMaxTokens = 8192
+	// mergeMaxTokens caps a cluster merge's reply: one merged fact.
+	mergeMaxTokens = 1024
 )
 
 // mergeGroup is a set of facts to collapse into one canonical fact.
@@ -324,6 +332,7 @@ func (j *ConsolidationJob) holisticGroups(ctx context.Context, llm model.LLM, fa
 		},
 		JSONSchema:  []byte(holisticJSONSchema),
 		Temperature: 0.1,
+		MaxTokens:   holisticMaxTokens,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("summarizer: %w", err)
@@ -424,6 +433,7 @@ func (j *ConsolidationJob) mergeCluster(ctx context.Context, llm model.LLM, clus
 		},
 		JSONSchema:  []byte(consolidateJSONSchema),
 		Temperature: 0.1,
+		MaxTokens:   mergeMaxTokens,
 	})
 	if err != nil {
 		return "", false, fmt.Errorf("summarizer: %w", err)
