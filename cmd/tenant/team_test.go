@@ -941,17 +941,20 @@ func TestTeamRuntime_TerminatedIdleRunBlocksNothing(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the run's wall time never ended it")
 	}
+	// While the terminated run is idle, the browser is free. Checked before the
+	// next spawn: that spawn opens a fresh run, whose own 1ms wall time can end
+	// it while its worker still runs, and then refusing the browser is right.
+	if release, err := rt.budget.AcquireBrowser(); err != nil {
+		t.Errorf("the orchestrator's browser after the run's wall time: %v", err)
+	} else {
+		release()
+	}
 	local := newToolMux()
 	local.Add("orchestrator", spawnTool{rt: rt, timeout: 30 * time.Second})
 	orch := composite{local: local, budget: rt.budget, agentID: "main"}
 	out, isErr, err := orch.Dispatch(turn, model.ToolCall{Name: "spawn_agent", Arguments: json.RawMessage(`{"role":"worker","task":"second"}`)})
 	if err != nil || isErr {
 		t.Errorf("spawn_agent after the run's wall time: %q %v", out, err)
-	}
-	if release, err := rt.budget.AcquireBrowser(); err != nil {
-		t.Errorf("the orchestrator's browser after the run's wall time: %v", err)
-	} else {
-		release()
 	}
 	teamAwait(t, rt, turn) // join the second before the stores close
 }
