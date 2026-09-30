@@ -185,7 +185,7 @@ func (m *model) setupPickGateway() tea.Cmd {
 	m.picker = &listPicker{
 		title: "MCP gateway transport",
 		hint:  "↑/↓ select · enter set · esc back",
-		items: []string{"local", "sse", "both"},
+		items: []string{"local", "sse"},
 		onSelect: func(choice string) tea.Cmd {
 			if choice == "local" {
 				st, err := m.cfg.Setup.SetGateway("local", "")

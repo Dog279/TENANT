@@ -40,7 +40,7 @@ func newestArtifact(dir string) (string, error) {
 }
 
 // renderBaselineDiff loads the newest artifact in artifactDir plus the
-// baseline (explicit path, or baselines/<artifact-subset>.json) and renders
+// baseline (explicit path, else resolveBaselinePath's) and renders
 // the movers tables. Pure read — no model, no run.
 func renderBaselineDiff(baselinePath, artifactDir string) (string, error) {
 	artPath, err := newestArtifact(artifactDir)
@@ -57,7 +57,7 @@ func renderBaselineDiff(baselinePath, artifactDir string) (string, error) {
 	}
 
 	if baselinePath == "" {
-		baselinePath = filepath.Join("baselines", string(rep.Subset)+".json")
+		baselinePath = resolveBaselinePath(artifactDir, string(rep.Subset))
 	}
 	baseData, err := os.ReadFile(baselinePath)
 	if err != nil {

@@ -414,7 +414,7 @@ type Auth struct {
 
 // Gateway selects the mcp-memory transport.
 type Gateway struct {
-	Mode    string `json:"mode,omitempty"`     // local | sse | both
+	Mode    string `json:"mode,omitempty"`     // local | sse (a saved "both" loads as sse)
 	SSEAddr string `json:"sse_addr,omitempty"` // when mode includes sse
 }
 

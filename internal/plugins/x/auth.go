@@ -15,9 +15,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -283,38 +285,60 @@ func loginPKCE(ctx context.Context, h httpDoer, clientID, redirectURI, scopes st
 	}
 	verifier := newVerifier()
 	state := randState()
+	// Listen before sending the operator to X: a busy port is an error here,
+	// not a sign-in that never comes back.
+	ln, err := net.Listen("tcp", u.Host)
+	if err != nil {
+		return nil, fmt.Errorf("x: listen for the sign-in callback on %s: %w", u.Host, err)
+	}
 	emit(authCodeURL(clientID, redirectURI, scopes, state, challenge(verifier)))
 
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-	srv := &http.Server{Addr: u.Host}
+	type result struct {
+		code string
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	var once sync.Once
+	send := func(r result) { once.Do(func() { resultCh <- r }) } // a second callback never blocks
 	mux := http.NewServeMux()
 	mux.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("state") != state {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
-			errCh <- fmt.Errorf("x: OAuth state mismatch (possible CSRF) — aborted")
+		q := r.URL.Query()
+		// The state is checked first, and a callback without ours is ignored:
+		// any web page can make the browser open this address, and must not
+		// end the operator's sign-in (REVSEC-6).
+		if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+			http.Error(w, "this isn't the sign-in Tenant is waiting for", http.StatusBadRequest)
 			return
 		}
-		if e := r.URL.Query().Get("error"); e != "" {
+		if e := q.Get("error"); e != "" {
 			http.Error(w, e, http.StatusBadRequest)
-			errCh <- fmt.Errorf("x: authorization denied: %s", e)
+			send(result{err: fmt.Errorf("x: authorization denied: %s", e)})
 			return
 		}
 		_, _ = w.Write([]byte("Tenant: X authorization complete — you can close this tab."))
-		codeCh <- r.URL.Query().Get("code")
+		send(result{code: q.Get("code")})
 	})
-	srv.Handler = mux
+	srv := &http.Server{Handler: mux}
 	httplimits.Configure(srv)
-	go func() { _ = srv.ListenAndServe() }()
-	defer srv.Close()
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		// Shutdown, not Close, so the page the browser waits for is sent first.
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
 
 	var code string
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case err := <-errCh:
-		return nil, err
-	case code = <-codeCh:
+	case r := <-resultCh:
+		if r.err != nil {
+			return nil, r.err
+		}
+		if code = r.code; code == "" {
+			return nil, fmt.Errorf("x: the sign-in callback carried no code")
+		}
 	}
 
 	tr, err := exchange(ctx, h, tokenURL, url.Values{

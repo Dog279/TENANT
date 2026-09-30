@@ -33,6 +33,10 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Check go.mod is tidy
+        if: runner.os == 'Linux'
+        run: go mod tidy -diff
+
       - name: Build
         run: go build ./...
 

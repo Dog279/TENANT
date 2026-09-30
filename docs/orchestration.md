@@ -88,3 +88,32 @@ no effect.
 > Note: this steering is *advisory* — the orchestrator still decides. A sharp
 > threshold makes substantial delegation far more reliable, but it is not a hard
 > runtime guarantee.
+
+## Team budgets
+
+Every team run (a turn that spawns sub-agents, `tenant orchestrate`, `/research`)
+works inside a hard resource envelope. When it runs out, the run stops and the
+feed and the log say which limit it hit. Set any of these under `budgets` in
+`config.json`. A key you leave out keeps its default.
+
+```json
+"budgets": {
+  "max_concurrent_subagents": 4,
+  "max_agents_per_run": 16,
+  "max_tool_calls_per_turn": 64,
+  "max_tool_calls_per_run": 256,
+  "max_tokens_per_run": 500000,
+  "max_cost_usd": 25,
+  "max_wall_time": "30m",
+  "max_browser_instances": 4,
+  "bus_history_cap": 1000,
+  "input_cost_per_million_usd": 15,
+  "output_cost_per_million_usd": 75
+}
+```
+
+- `max_wall_time` is a duration: `"30m"`, `"2h"`. Older files that hold a number
+  of nanoseconds still load.
+- **Cost is an estimate.** `max_cost_usd` is checked against a figure built from
+  the tokens the backend reports and the two per-million rates. Set the rates to
+  your provider's prices; a negative rate means free (local models).

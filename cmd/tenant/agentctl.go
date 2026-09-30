@@ -384,36 +384,63 @@ func safeAgentName(s string) bool {
 // write straight to launchConfig (no live runtime to publish to from the
 // CLI — config-only).
 func cmdAgents(_ context.Context, args []string) error {
+	c, args, err := agentDirs(args)
+	if err != nil {
+		return err
+	}
 	if len(args) == 0 {
-		return cmdAgentsList(nil)
+		return cmdAgentsList(c, nil)
 	}
 	sub := args[0]
 	rest := args[1:]
 	switch strings.ToLower(sub) {
 	case "list", "ls":
-		return cmdAgentsList(rest)
+		return cmdAgentsList(c, rest)
 	case "add", "set":
-		return cmdAgentsAdd(rest)
+		return cmdAgentsAdd(c, rest)
 	case "remove", "rm", "delete":
-		return cmdAgentsRemove(rest)
+		return cmdAgentsRemove(c, rest)
 	case "show":
-		return cmdAgentsShow(rest)
+		return cmdAgentsShow(c, rest)
 	case "soul":
-		return cmdAgentsSoul(rest)
+		return cmdAgentsSoul(c, rest)
 	case "rename", "mv":
-		return cmdAgentsRename(rest)
+		return cmdAgentsRename(c, rest)
 	case "model":
-		return cmdAgentsModel(rest)
+		return cmdAgentsModel(c, rest)
 	default:
 		return fmt.Errorf("usage: tenant agents [list|add|model|rename|soul|show|remove]")
 	}
 }
 
-func cmdAgentsList(_ []string) error {
+// agentDirs takes the dir flags every command accepts (--config, --data, and
+// their = forms) out of args, so they choose the config the subcommand edits
+// instead of being read as a name, a provider or a model.
+func agentDirs(args []string) (*commonFlags, []string, error) {
 	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		name, val, hasVal := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		if !strings.HasPrefix(args[i], "-") || (name != "config" && name != "data") {
+			rest = append(rest, args[i])
+			continue
+		}
+		if !hasVal {
+			if i++; i == len(args) {
+				return nil, nil, fmt.Errorf("--%s needs a directory", name)
+			}
+			val = args[i]
+		}
+		if name == "config" {
+			c.cfgDir = val
+		} else {
+			c.dataDir = val
+		}
 	}
+	return c, rest, c.resolveDirs()
+}
+
+func cmdAgentsList(c *commonFlags, _ []string) error {
 	ac := &agentControl{cfgDir: c.cfgDir}
 	rows, err := ac.List()
 	if err != nil {
@@ -441,7 +468,7 @@ func cmdAgentsList(_ []string) error {
 	return nil
 }
 
-func cmdAgentsAdd(args []string) error {
+func cmdAgentsAdd(c *commonFlags, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: tenant agents add <name> <provider> [model] [--description \"...\"] [--soul \"...\"]\n   or: tenant agents add <name> --provider <id> [--model X] [--description ...] [--soul ...]")
 	}
@@ -485,10 +512,6 @@ func cmdAgentsAdd(args []string) error {
 	if model == "" && len(positionals) >= 1 {
 		model = positionals[0]
 	}
-	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
-	}
 	ac := &agentControl{cfgDir: c.cfgDir}
 	status, err := ac.Add(name, provider, model, desc, soul)
 	if err != nil {
@@ -498,13 +521,9 @@ func cmdAgentsAdd(args []string) error {
 	return nil
 }
 
-func cmdAgentsRemove(args []string) error {
+func cmdAgentsRemove(c *commonFlags, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: tenant agents remove <name>")
-	}
-	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
 	}
 	ac := &agentControl{cfgDir: c.cfgDir}
 	status, err := ac.Remove(args[0])
@@ -515,13 +534,9 @@ func cmdAgentsRemove(args []string) error {
 	return nil
 }
 
-func cmdAgentsShow(args []string) error {
+func cmdAgentsShow(c *commonFlags, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: tenant agents show <name>")
-	}
-	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
 	}
 	ac := &agentControl{cfgDir: c.cfgDir}
 	d, err := ac.Show(args[0])
@@ -536,13 +551,9 @@ func cmdAgentsShow(args []string) error {
 	return nil
 }
 
-func cmdAgentsSoul(args []string) error {
+func cmdAgentsSoul(c *commonFlags, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: tenant agents soul <name> <markdown...>  (use \"\" to clear)")
-	}
-	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
 	}
 	ac := &agentControl{cfgDir: c.cfgDir}
 	status, err := ac.SetSoul(args[0], strings.Join(args[1:], " "))
@@ -553,13 +564,9 @@ func cmdAgentsSoul(args []string) error {
 	return nil
 }
 
-func cmdAgentsRename(args []string) error {
+func cmdAgentsRename(c *commonFlags, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: tenant agents rename <old> <new>")
-	}
-	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
 	}
 	ac := &agentControl{cfgDir: c.cfgDir}
 	status, err := ac.Rename(args[0], args[1])
@@ -570,13 +577,9 @@ func cmdAgentsRename(args []string) error {
 	return nil
 }
 
-func cmdAgentsModel(args []string) error {
+func cmdAgentsModel(c *commonFlags, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: tenant agents model <name> <provider> [model]")
-	}
-	c := &commonFlags{}
-	if err := c.resolveDirs(); err != nil {
-		return err
 	}
 	ac := &agentControl{cfgDir: c.cfgDir}
 	mdl := ""

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,14 +27,37 @@ func Load(cfgDir string) (*Launch, error) {
 		return lc, err
 	}
 	if err := json.Unmarshal(b, lc); err != nil {
-		return &Launch{}, fmt.Errorf("config.json corrupt: %w", err)
+		return &Launch{}, fmt.Errorf("config.json corrupt%s: %w", at(b, err), err)
 	}
 	lc.Migrate()
+	if lc.Gateway.Mode == "both" { // it never served stdio as well: one process serves one transport
+		lc.Gateway.Mode = "sse"
+	}
 	lc.SanitizeEndpoints()
 	if _, err := ResolveRoute(lc); err != nil {
 		return &Launch{}, err
 	}
 	return lc, nil
+}
+
+// at is where in b a JSON error happened, " at line L, column C", so a hand
+// edit gone wrong can be found; "" when err carries no offset.
+func at(b []byte, err error) string {
+	var off int64
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syn):
+		off = syn.Offset
+	case errors.As(err, &typ):
+		off = typ.Offset
+	default:
+		return ""
+	}
+	before := b[:min(int(off), len(b))] // the offset counts the byte at fault
+	line := bytes.Count(before, []byte("\n")) + 1
+	col := max(len(before)-bytes.LastIndexByte(before, '\n')-1, 1)
+	return fmt.Sprintf(" at line %d, column %d", line, col)
 }
 
 // SanitizeEndpoints is the load-time guard against a pre-validation

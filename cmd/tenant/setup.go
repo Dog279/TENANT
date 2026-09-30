@@ -35,7 +35,6 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	provider := fs.String("provider", "", "preselect a model provider ("+strings.Join(providerOrder, "|")+")")
 	gateway := fs.String("gateway", "", "serve mcp-memory over HTTP+SSE on this addr (e.g. 127.0.0.1:8765)")
 	local := fs.Bool("local", false, "mcp-memory uses local stdio (clears any saved gateway addr)")
-	both := fs.Bool("both", false, "mcp-memory serves BOTH stdio and SSE")
 	show := fs.Bool("show", false, "print the current configuration and exit")
 	reset := fs.Bool("reset", false, "ignore any existing config and start fresh")
 	nonInteractive := fs.Bool("non-interactive", false, "don't prompt; persist flags + config + defaults as-is")
@@ -189,8 +188,8 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 		}
 	}
 
-	// --- 3. gateway (local | sse | both) ---
-	lc.Gateway = configureGateway(in, interactive, lc.Gateway, set, *gateway, *local, *both)
+	// --- 3. gateway (local | sse) ---
+	lc.Gateway = configureGateway(in, interactive, lc.Gateway, set, *gateway, *local)
 
 	// --- 4. skills ---
 	if interactive {
@@ -269,11 +268,9 @@ func configureAuth(in *bufio.Reader, interactive bool, providerID string, pk pro
 	}
 }
 
-// configureGateway resolves local vs SSE vs both.
-func configureGateway(in *bufio.Reader, interactive bool, cur gatewayConfig, set map[string]bool, gwFlag string, localFlag, bothFlag bool) gatewayConfig {
+// configureGateway resolves local (stdio) vs SSE.
+func configureGateway(in *bufio.Reader, interactive bool, cur gatewayConfig, set map[string]bool, gwFlag string, localFlag bool) gatewayConfig {
 	switch {
-	case bothFlag:
-		return gatewayConfig{Mode: "both", SSEAddr: firstNonEmpty(gwFlag, cur.SSEAddr, "127.0.0.1:8765")}
 	case localFlag:
 		return gatewayConfig{Mode: "local"}
 	case set["gateway"] || gwFlag != "":
@@ -291,10 +288,9 @@ func configureGateway(in *bufio.Reader, interactive bool, cur gatewayConfig, set
 	mode := selectOne("mcp-memory transport", []pickOption{
 		{Label: "local", Value: "local", Desc: "stdio only"},
 		{Label: "sse", Value: "sse", Desc: "HTTP + SSE"},
-		{Label: "both", Value: "both", Desc: "stdio + HTTP/SSE"},
 	}, def)
 	switch mode {
-	case "sse", "both":
+	case "sse":
 		addr := ask(in, "SSE bind address", firstNonEmpty(cur.SSEAddr, "127.0.0.1:8765"))
 		return gatewayConfig{Mode: mode, SSEAddr: strings.TrimSpace(addr)}
 	default:
@@ -396,8 +392,6 @@ func printSetupSummary(cfgDir string, lc *launchConfig) {
 	switch lc.Gateway.Mode {
 	case "sse":
 		fmt.Fprintf(&b, "  mcp transport HTTP+SSE @ %s\n", lc.Gateway.SSEAddr)
-	case "both":
-		fmt.Fprintf(&b, "  mcp transport stdio + HTTP+SSE @ %s\n", lc.Gateway.SSEAddr)
 	default:
 		fmt.Fprintf(&b, "  mcp transport local (stdio)\n")
 	}

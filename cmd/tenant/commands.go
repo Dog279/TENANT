@@ -393,12 +393,9 @@ func cmdMCPMemory(ctx context.Context, args []string) error {
 	if err := c.resolve(); err != nil {
 		return err
 	}
-	// --sse-addr defaults from the saved gateway config when not passed
-	// (gateway mode sse or both → serve over HTTP+SSE).
-	if *sseAddr == "" && c.lc != nil {
-		if m := c.lc.Gateway.Mode; m == "sse" || m == "both" {
-			*sseAddr = c.lc.Gateway.SSEAddr
-		}
+	// --sse-addr defaults from the saved gateway config when not passed.
+	if *sseAddr == "" && c.lc != nil && c.lc.Gateway.Mode == "sse" {
+		*sseAddr = c.lc.Gateway.SSEAddr
 	}
 	// TEN-185 (scope ext 2A+5A): the legacy SSE gateway has NO auth, so a
 	// non-loopback bind is refused unless the operator explicitly opts in.
@@ -2902,7 +2899,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 				// the hard invariant: never grade a candidate on a different
 				// model than the one it will actually run under.
 				Proposer: improve.NewLLMSoulProposer(proposerRouter),
-				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: filepath.Join("baselines", "fitness.json"), log: log},
+				Scorer:   evalSoulScorer{c: c, pf: pf, baselinePath: resolveBaselinePath(filepath.Join(c.dataDir, "eval-artifacts"), "fitness"), log: log},
 			}, soulCadence)
 		}
 		// Reflection / SME synthesis (TEN-255 Phase 3): config-gated, OFF by

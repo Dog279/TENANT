@@ -31,7 +31,7 @@ var strayAllowed = map[string]int{
 	"cmd/tenant/setup_oauth.go":     21,
 	"cmd/tenant/skillctl_gsuite.go": 1,
 	"cmd/tenant/skills_setup.go":    9,
-	"cmd/tenant/wiring.go":          2,
+	"cmd/tenant/wiring.go":          1,
 	"internal/plugins/x/auth.go":    1,
 }
 
