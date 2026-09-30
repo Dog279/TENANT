@@ -144,6 +144,39 @@ func TestEngineDecisionEventsAndLogFailure(t *testing.T) {
 	}
 }
 
+// A decision says which classifier it asked, where it took how long: on the
+// record, in its summary (the feed's route line) and on its event (TEN-340).
+func TestDecisionSaysWhichClassifier(t *testing.T) {
+	c := installCapture(t)
+	down := false
+	engine := route.NewEngine(classifierFunc(func(context.Context, string) (route.Signal, error) {
+		sig := route.Signal{Domain: "General", Complexity: 2, Label: "small", Latency: 85 * time.Millisecond,
+			Endpoint: "10.0.0.5:11434", Model: "hf.co/SupraLabs/Supra-Router-51M-gguf:Q4_K_M"}
+		if down {
+			return route.Signal{Latency: 85 * time.Millisecond, Endpoint: sig.Endpoint, Model: sig.Model}, errors.New("endpoint down")
+		}
+		return sig, nil
+	}), t.TempDir(), 10)
+	d := engine.Decide(context.Background(), "main", "sess", "hello", route.ModeShadow)
+	const via = " · 85ms via 10.0.0.5:11434 (Supra-Router-51M-gguf:Q4_K_M)"
+	if d.Endpoint != "10.0.0.5:11434" || d.Model != "hf.co/SupraLabs/Supra-Router-51M-gguf:Q4_K_M" || !strings.HasSuffix(d.Summary(), via) {
+		t.Fatalf("decision at %q by %q, summary %q", d.Endpoint, d.Model, d.Summary())
+	}
+	if ev := of(c, route.Decided); len(ev) != 1 || ev[0]["endpoint"] != d.Endpoint || ev[0]["model"] != d.Model || ev[0]["latency_ms"] != int64(85) {
+		t.Fatalf("decision event = %v", ev)
+	}
+	down = true
+	d = engine.Decide(context.Background(), "main", "sess", "hello", route.ModeShadow)
+	if ev := of(c, route.DecideFailed); len(ev) != 1 || ev[0]["endpoint"] != "10.0.0.5:11434" || !strings.HasSuffix(d.Summary(), via) {
+		t.Fatalf("failed decision event = %v, summary %q", ev, d.Summary())
+	}
+	// A decision that asked no classifier names none.
+	skipped := route.Decision{Mode: route.ModeShadow, Status: route.StatusSkipped, EstTokens: 5000}
+	if strings.Contains(skipped.Summary(), "via") {
+		t.Fatalf("skipped summary = %q", skipped.Summary())
+	}
+}
+
 // A classifier failure is a warning that the turn fell back to the planner.
 func TestEngineClassifierFailureIsAWarning(t *testing.T) {
 	c := installCapture(t)

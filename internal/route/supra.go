@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,9 @@ type Signal struct {
 	Justification string
 	Raw           string
 	Latency       time.Duration
+	// Endpoint and Model say where it was classified (TEN-340): the
+	// classifier's host, never its credentials, path or query, and its model.
+	Endpoint, Model string
 }
 
 // Classifier is the backend-neutral prompt classifier seam. A future
@@ -134,10 +138,14 @@ type generateResponse struct {
 // parses it. Every error still returns Raw and Latency when they are available.
 func (s *Supra) Classify(ctx context.Context, query string) (Signal, error) {
 	start := time.Now()
-	fail := func(sig Signal, err error) (Signal, error) {
+	done := func(sig Signal) Signal {
 		sig.Latency = time.Since(start)
-		return sig, err
+		if s != nil {
+			sig.Endpoint, sig.Model = hostOf(s.endpoint), s.model
+		}
+		return sig
 	}
+	fail := func(sig Signal, err error) (Signal, error) { return done(sig), err }
 	if s == nil {
 		return fail(Signal{}, errors.New("route: supra: nil classifier"))
 	}
@@ -191,8 +199,17 @@ func (s *Supra) Classify(ctx context.Context, query string) (Signal, error) {
 	if err != nil {
 		return fail(sig, err)
 	}
-	sig.Latency = time.Since(start)
-	return sig, nil
+	return done(sig), nil
+}
+
+// hostOf is an endpoint as the feed and the log show it: its host and port
+// ("" when it isn't a URL).
+func hostOf(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 // ParseSignal accepts exactly the sequence used to train Supra. Outer

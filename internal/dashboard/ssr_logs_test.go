@@ -661,3 +661,17 @@ func TestLogsSummary(t *testing.T) {
 		}
 	}
 }
+
+// A scheduled job's tool rows read cron:<tool> in the grid and the detail, so
+// automated work reads apart from a turn's; a turn's row is shown as written.
+func TestLogsRow_NamesACronJobsTool(t *testing.T) {
+	cron := event.WithLog(context.Background(), agent.Turns, "cron")
+	job := *agent.ToolDone.Build(cron, "agent", "tenant-cron", "tool", "web_search", "duration", time.Second)
+	if r := logsRowOf(job, "", false); r.Msg != "Tool cron:web_search finished in 1s" || r.Log != "cron" {
+		t.Fatalf("cron row = %+v", r)
+	}
+	turn := *agent.ToolDone.Build(context.Background(), "agent", "main", "tool", "web_search", "duration", time.Second)
+	if r := logsRowOf(turn, "", false); r.Msg != "Tool web_search finished in 1s" {
+		t.Fatalf("turn row = %+v", r)
+	}
+}

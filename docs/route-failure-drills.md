@@ -98,7 +98,10 @@ After each injected failure, run these commands in the TUI:
 ```
 
 Wait for the `route:` activity-feed line before running `/route why`; shadow
-and failure observations are deliberately asynchronous.
+and failure observations are deliberately asynchronous. The line ends with the
+classifier it asked, `via <host> (<model>)`, so a drill against the wrong
+endpoint shows at once; a decision made when a sub-agent is spawned shows as
+`route: spawn · …`.
 
 `/route why` must show a safe selected tier and a policy reason; parser failures
 also show the exact rejected raw completion. `/route stats` must count the
@@ -118,7 +121,7 @@ only its SHA-256 hash):
 ```powershell
 Get-Content -LiteralPath $DecisionLog -Tail 1 |
   ConvertFrom-Json |
-  Format-List ts,mode,status,error,raw,classifier_attempted,latency_ms,selected_tier,policy_reason,breaker_state,breaker_tripped
+  Format-List ts,mode,status,error,raw,classifier_attempted,endpoint,model,latency_ms,selected_tier,policy_reason,breaker_state,breaker_tripped
 ```
 
 ## Drill 1: kill the auxiliary runtime mid-session

@@ -140,6 +140,9 @@ func TestSupraClassifyUsesNativeOllamaRequest(t *testing.T) {
 	if sig.Label != "big" || !sig.Code || sig.Complexity != 4 {
 		t.Fatalf("signal = %+v", sig)
 	}
+	if host := strings.TrimPrefix(ts.URL, "http://"); sig.Endpoint != host || sig.Model != "checkpoint" {
+		t.Errorf("classified at %q by %q, want %q by checkpoint", sig.Endpoint, sig.Model, host)
+	}
 	body := <-reqCh
 	if body.Model != "checkpoint" {
 		t.Errorf("model = %q", body.Model)
@@ -194,6 +197,14 @@ func TestSupraEndpointDown(t *testing.T) {
 	// refused loopback connect can read as 0, so only a negative value is wrong.
 	if sig.Latency < 0 || sig.Raw != "" {
 		t.Fatalf("signal on failure = %+v", sig)
+	}
+	// A failure still says where it asked, never with the URL's credentials.
+	if sig.Endpoint != ln.Addr().String() || sig.Model != "test" {
+		t.Fatalf("failed classify at %q by %q", sig.Endpoint, sig.Model)
+	}
+	sig, _ = route.NewSupra("http://user:secret@"+ln.Addr().String()+"/v1?key=k", "test", 100*time.Millisecond).Classify(context.Background(), "hi")
+	if sig.Endpoint != ln.Addr().String() {
+		t.Fatalf("endpoint shown as %q", sig.Endpoint)
 	}
 }
 

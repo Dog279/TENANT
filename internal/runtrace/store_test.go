@@ -32,6 +32,7 @@ func TestRecordLifecycle(t *testing.T) {
 	}
 	completed := started.Add(1250 * time.Millisecond)
 	r.CompletedAt, r.LatencyMS, r.Outcome = &completed, 1250, "success"
+	r.ThinkMS, r.ToolsMS = 900, 300
 	r.Model, r.Provider = "gpt-test", "openai"
 	cost := 0.0123
 	r.CostEstimateUSD = &cost
@@ -51,6 +52,31 @@ func TestRecordLifecycle(t *testing.T) {
 	}
 	if len(got.ToolCalls) != 1 || len(got.Approvals) != 1 || len(got.Fallbacks) != 1 {
 		t.Fatalf("detail arrays = %+v", got)
+	}
+	if got.ThinkMS != 900 || got.ToolsMS != 300 {
+		t.Fatalf("think/tools = %d/%d ms, want 900/300", got.ThinkMS, got.ToolsMS)
+	}
+}
+
+// A turn's span sums its model calls and its tool batches (TEN-342), and Apply
+// hands the totals to the run record.
+func TestSpanPhases(t *testing.T) {
+	s := NewSpan("t")
+	s.AddThink(2 * time.Second)
+	s.AddThink(500 * time.Millisecond)
+	s.AddToolTime(time.Second)
+	if think, tools := s.Phases(); think != 2500*time.Millisecond || tools != time.Second {
+		t.Fatalf("phases = %v, %v", think, tools)
+	}
+	var r Run
+	s.Apply(&r)
+	if r.ThinkMS != 2500 || r.ToolsMS != 1000 {
+		t.Fatalf("applied = %d/%d ms", r.ThinkMS, r.ToolsMS)
+	}
+	var nilSpan *Span
+	nilSpan.AddThink(time.Second) // a turn without a span records nothing
+	if think, tools := nilSpan.Phases(); think != 0 || tools != 0 {
+		t.Fatal("nil span has phases")
 	}
 }
 
@@ -83,7 +109,7 @@ func TestExportJSONLShape(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &shape); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"trace_id", "source", "started_at", "latency_ms", "prompt_tokens", "completion_tokens", "retries", "fallbacks", "tool_calls", "approvals", "outcome", "error_class"} {
+	for _, key := range []string{"trace_id", "source", "started_at", "latency_ms", "think_ms", "tools_ms", "prompt_tokens", "completion_tokens", "retries", "fallbacks", "tool_calls", "approvals", "outcome", "error_class"} {
 		if _, ok := shape[key]; !ok {
 			t.Errorf("missing export key %q", key)
 		}
@@ -171,7 +197,7 @@ func TestParentTraceSurvivesAndMigrates(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if r, err := s.Get(ctx, "before"); err != nil || r.ParentTraceID != "" {
+	if r, err := s.Get(ctx, "before"); err != nil || r.ParentTraceID != "" || r.ThinkMS != 0 || r.ToolsMS != 0 {
 		t.Fatalf("legacy row = %+v, err = %v", r, err)
 	}
 	if err := s.Start(ctx, Run{TraceID: "child", ParentTraceID: "before", Source: "headless"}); err != nil {

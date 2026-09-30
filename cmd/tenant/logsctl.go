@@ -952,8 +952,12 @@ func (o logsOut) timeline(tl logapi.Timeline) error {
 // timelineHead is a timeline's run record in brief, or why there is none.
 func timelineHead(tl logapi.Timeline) string {
 	if r := tl.Run; r != nil {
-		return fmt.Sprintf("Run %s: %s · %s · %s %s · %d ms · %d+%d tokens · %d tool calls · %d approvals", r.TraceID, r.Outcome, r.Source,
-			r.Provider, r.Model, r.LatencyMS, r.PromptTokens, r.CompletionTokens, len(r.ToolCalls), len(r.Approvals))
+		split := ""
+		if r.ThinkMS > 0 || r.ToolsMS > 0 { // where the time went (TEN-342)
+			split = fmt.Sprintf(" (thinking %d ms, tools %d ms)", r.ThinkMS, r.ToolsMS)
+		}
+		return fmt.Sprintf("Run %s: %s · %s · %s %s · %d ms%s · %d+%d tokens · %d tool calls · %d approvals", r.TraceID, r.Outcome, r.Source,
+			r.Provider, r.Model, r.LatencyMS, split, r.PromptTokens, r.CompletionTokens, len(r.ToolCalls), len(r.Approvals))
 	}
 	return tl.ID + ": " + tl.RunNote
 }

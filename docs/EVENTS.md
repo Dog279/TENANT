@@ -4247,10 +4247,10 @@ Writes the `route` log.
 `Route decision {decision_id}: {summary}`
 
 - **Level:** info · **Channel:** operational · **Task:** Decision · **Log:** route
-- **Fields:** `decision_id`, `summary`, `mode`, `status`, `tier`, `role`, `profile`, `reason`, `agent`, `session`
+- **Fields:** `decision_id`, `summary`, `mode`, `status`, `tier`, `role`, `profile`, `reason`, `agent`, `session`, `endpoint`, `model`, `latency_ms`
 - **Find it:** `provider:route id:1001`
 
-**What it means.** The router classified a prompt and chose where it runs (or, in shadow mode, where it would have).
+**What it means.** The router classified a prompt and chose where it runs (or, in shadow mode, where it would have). When it asked the classifier, endpoint, model and latency_ms say which one and how long it took.
 
 **Why it happens.** A turn started with routing on.
 
@@ -4261,10 +4261,10 @@ Writes the `route` log.
 `Route decision {decision_id} fell back to the planner: {err}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Decision · **Log:** route
-- **Fields:** `decision_id`, `summary`, `mode`, `agent`, `session`, `err`
+- **Fields:** `decision_id`, `summary`, `mode`, `agent`, `session`, `err`, `endpoint`, `model`, `latency_ms`
 - **Find it:** `provider:route id:2001`
 
-**What it means.** The router could not classify a prompt or apply its policy, so the turn ran on the planner.
+**What it means.** The router could not classify a prompt or apply its policy, so the turn ran on the planner. When it asked the classifier, endpoint, model and latency_ms say which one and how long it took.
 
 **Why it happens.** The classifier is down, slow or returned something unreadable, or a bound profile changed mid-decision.
 
@@ -5951,10 +5951,10 @@ Writes the `turns` log.
 `Turn`
 
 - **Level:** info · **Channel:** operational · **Task:** Turn · **Log:** turns
-- **Fields:** `agent`, `text`, `duration`, `error` (sensitive, masked: `text`)
+- **Fields:** `agent`, `text`, `duration`, `think`, `tools`, `error` (sensitive, masked: `text`)
 - **Find it:** `provider:turns id:1`
 
-**What it means.** A turn started (text is the message), or ended: a stop or a fail, with its duration. A sub-agent's turn names the turn that spawned it as related.
+**What it means.** A turn started (text is the message), or ended: a stop or a fail, with its duration and how much of it went to model calls (think) and tool calls (tools). A sub-agent's turn names the turn that spawned it as related.
 
 **Why it happens.** A message reached the agent: typed in the TUI or the dashboard, relayed from a channel, or sent by a job or a peer. A turn fails when its model can't be reached, its context can't be assembled, or its tool calls keep failing validation.
 

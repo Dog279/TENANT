@@ -48,6 +48,12 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	resync := time.NewTicker(queueResync)
 	defer resync.Stop()
 	lagged := false
+	// The model call in flight shows as a "thinking…" row that counts up each
+	// tick, so a slow model reads apart from a hung one (TEN-342). think is
+	// its start; zero when none is.
+	var think time.Time
+	tick := time.NewTicker(thinkingEvery)
+	defer tick.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
@@ -56,6 +62,14 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 			if !s.patchApprovals(ctx, w) {
 				return
 			}
+		case <-tick.C:
+			if think.IsZero() {
+				continue
+			}
+			if _, err := w.Write(patchElements("", "", thinkingRow(time.Since(think)))); err != nil {
+				return
+			}
+			flush(w)
 		case ev, ok := <-ch:
 			if !ok {
 				return
@@ -68,6 +82,21 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			if onlyApprovals {
 				continue
+			}
+			switch {
+			case ev.Agent != "": // another agent's call, not the chat's
+			case ev.Kind == agent.EventThinking:
+				if think.IsZero() {
+					if _, err := w.Write(patchElements("#chat-log", "append", thinkingRow(0))); err != nil {
+						return
+					}
+				}
+				think = time.Now()
+			case (ev.Kind == agent.EventThought || ev.Kind == agent.EventTurnEnd) && !think.IsZero():
+				think = time.Time{}
+				if _, err := w.Write(patchElements("#chat-thinking", "remove", "")); err != nil {
+					return
+				}
 			}
 			if bubble := chatBubble(ev); bubble != "" {
 				if _, err := w.Write(patchElements("#chat-log", "append", bubble)); err != nil {
@@ -186,12 +215,40 @@ func chatBubble(ev agent.Event) string {
 		}
 		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="tool">%s <span class="dim">[%s]</span> %s</div></div>`,
 			html.EscapeString(ev.Tool), st, html.EscapeString(snippetStr(ev.Result, 200)))
+	case "thought":
+		t := "thought for " + ev.Duration.Round(tenth).String()
+		if ev.IsErr {
+			t += " (the call failed)"
+		}
+		return `<div class="msg sys"><div class="dim">` + html.EscapeString(t) + `</div></div>`
+	case "turn_end":
+		if ev.Think == 0 && ev.Tools == 0 {
+			return ""
+		}
+		return `<div class="msg sys"><div class="dim">` + html.EscapeString("turn "+ev.Duration.Round(tenth).String()+
+			" — thinking "+ev.Think.Round(tenth).String()+" · tools "+ev.Tools.Round(tenth).String()) + `</div></div>`
 	case "error":
 		return fmt.Sprintf(`<div class="msg sys"><div class="dim">⚠ %s</div></div>`, html.EscapeString(snippetStr(ev.Text, 200)))
 	case "notice":
 		return fmt.Sprintf(`<div class="msg sys"><div class="dim">%s</div></div>`, html.EscapeString(snippetStr(ev.Text, 200)))
 	}
 	return ""
+}
+
+// thinkingEvery is how often the chat's thinking row counts up.
+var thinkingEvery = time.Second
+
+// tenth is how finely the chat's timing lines round ("8.2s", "4m12s").
+const tenth = 100 * time.Millisecond
+
+// thinkingRow is the chat's live row for the model call in flight, d into it.
+// Its id keys each tick's patch to it, and the call's end removes it.
+func thinkingRow(d time.Duration) string {
+	t := "thinking…"
+	if d >= time.Second {
+		t += " " + shortDur(d)
+	}
+	return `<div class="msg sys" id="chat-thinking"><div class="dim">` + t + `</div></div>`
 }
 
 // snippetStr is s on one line, cut to at most n bytes on a character

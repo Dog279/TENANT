@@ -228,3 +228,56 @@ func TestEvents_OutlivesWriteTimeoutPastSnapshot(t *testing.T) {
 		t.Fatal("no event after the write deadline")
 	}
 }
+
+// A model call in flight shows as a thinking row the stream keeps counting
+// up; its end removes the row and says how long it took, and the turn's end
+// splits its time (TEN-342). Another agent's calls don't show.
+func TestEvents_ThinkingRowThenHowLong(t *testing.T) {
+	old := thinkingEvery
+	thinkingEvery = 20 * time.Millisecond
+	t.Cleanup(func() { thinkingEvery = old })
+	broker := agent.NewBroker(0)
+	s := New(Config{}, nil, nil, nil, broker, nil)
+	rec := openEvents(t, s, "/events")
+	row := `id="chat-thinking"`
+	streamed(t, rec, "the thinking row", func(out string) bool { return strings.Contains(out, row) }, func() {
+		if !strings.Contains(rec.String(), row) {
+			broker.Publish(agent.Event{Kind: agent.EventThinking, Iter: 1})
+		}
+	})
+	streamed(t, rec, "a tick", func(out string) bool { return strings.Count(out, row) >= 3 }, nil)
+
+	at := len(rec.String())
+	broker.Publish(agent.Event{Kind: agent.EventThought, Iter: 1, Duration: 1500 * time.Millisecond})
+	out := streamed(t, rec, "the call's end", func(out string) bool { return strings.Contains(out[at:], "thought for 1.5s") }, nil)
+	if end := out[at:]; !strings.Contains(end, "mode remove\ndata: selector #chat-thinking\n") {
+		t.Fatalf("the thinking row was not removed:\n%s", end)
+	}
+	// A tick may land before the call's end is read; none may after.
+	after := len(out)
+	time.Sleep(3 * thinkingEvery)
+	if n := strings.Count(rec.String()[after:], row); n != 0 {
+		t.Fatalf("the row kept ticking after the call ended (%d patches)", n)
+	}
+
+	at = len(rec.String())
+	broker.Publish(agent.Event{Kind: agent.EventTurnEnd, Duration: 3 * time.Second, Think: 2 * time.Second, Tools: time.Second})
+	streamed(t, rec, "the turn's split", func(out string) bool { return strings.Contains(out[at:], "turn 3s — thinking 2s · tools 1s") }, nil)
+
+	at = len(rec.String())
+	broker.Publish(agent.Event{Kind: agent.EventThinking, Agent: "writer"})
+	broker.Publish(agent.Event{Kind: agent.EventToolCall, Tool: "marker", Args: "{}"})
+	out = streamed(t, rec, "the marker", func(out string) bool { return strings.Contains(out[at:], "marker") }, nil)
+	if strings.Contains(out[at:], row) {
+		t.Fatalf("a sub-agent's call showed as the chat's:\n%s", out[at:])
+	}
+}
+
+func TestThinkingRow(t *testing.T) {
+	if got := thinkingRow(0); !strings.Contains(got, ">thinking…<") {
+		t.Errorf("row at 0 = %s", got)
+	}
+	if got := thinkingRow(75 * time.Second); !strings.Contains(got, ">thinking… 1m 15s<") {
+		t.Errorf("row at 75s = %s", got)
+	}
+}

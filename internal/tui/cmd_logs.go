@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"tenant/internal/agent"
 	"tenant/internal/cmdreg"
 	"tenant/internal/logs/event"
 )
@@ -287,7 +288,7 @@ func logsRow(e event.Event) string {
 	if e.ID != 0 {
 		name += "/" + strconv.FormatUint(uint64(e.ID), 10)
 	}
-	return logsText(fmt.Sprintf("%s %-8s %-14s %s", e.Time.Local().Format("01-02 15:04:05"), e.Level, name, e.Msg))
+	return logsText(fmt.Sprintf("%s %-8s %-14s %s", e.Time.Local().Format("01-02 15:04:05"), e.Level, name, agent.RowMsg(e)))
 }
 
 // escSeq is a terminal escape sequence: a CSI, a string (OSC, DCS, SOS, PM,

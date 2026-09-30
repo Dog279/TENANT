@@ -437,6 +437,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	routeRT.feed.Store(&emit) // spawn-time decisions on the live feed (TEN-340)
 	if err := routeRT.BindConfiguredForce(); err != nil {
 		return err
 	}

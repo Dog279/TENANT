@@ -603,7 +603,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// turn (Esc, shutdown) or one that was cut short but still answered
 	// stops; one that errored fails.
 	defer func() {
-		end := Event{Kind: EventTurnEnd, TraceID: traceID, Duration: time.Since(started).Round(time.Millisecond)}
+		think, tools := span.Phases()
+		end := Event{Kind: EventTurnEnd, TraceID: traceID, Duration: time.Since(started).Round(time.Millisecond),
+			Think: think.Round(time.Millisecond), Tools: tools.Round(time.Millisecond)}
 		failure := err
 		if failure == nil && result != nil && !result.Truncated && !errors.Is(result.Error, context.Canceled) {
 			failure = result.Error
@@ -914,10 +916,12 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		// bail this call and re-plan immediately with the new message.
 		iterCtx, iterCancel := context.WithCancel(ctx)
 		a.setIterCancel(iterCancel)
+		thinkStart := a.thinking(iter)
 		resp, err := a.plan(iterCtx, planner, profile.ToolFormat, iter, model.GenerateRequest{
 			Messages: assembled.Messages,
 			Tools:    iterTools,
 		})
+		a.thought(ctx, iter, thinkStart, err)
 		a.setIterCancel(nil)
 		iterCancel()
 
@@ -1100,7 +1104,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		for _, call := range validCalls {
 			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: call.Name, ToolCallID: call.ID, Args: string(call.Arguments)})
 		}
+		toolStart := time.Now()
 		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
+		span.AddToolTime(time.Since(toolStart))
 		for _, br := range batchResults {
 			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
 				br.Labels = append([]model.InfoFlowLabel(nil), spec.ResultLabels...)
@@ -1383,6 +1389,7 @@ func (a *Agent) synthesizeFinal(ctx context.Context, planner model.LLM, profile 
 	if err != nil {
 		return "", err
 	}
+	thinkStart := a.thinking(0)
 	resp, err := planner.Generate(ctx, model.GenerateRequest{
 		Messages: final.Messages,
 		// No tools — force a text-only finish. Stop sequences kill any model
@@ -1393,6 +1400,7 @@ func (a *Agent) synthesizeFinal(ctx context.Context, planner model.LLM, profile 
 		// short empty answer instead of a 200-char tool-call dump.
 		StopSequences: []string{"<tool_call", "<function=", "<parameter=", "```tool_code"},
 	})
+	a.thought(ctx, 0, thinkStart, err)
 	if err != nil {
 		return "", err
 	}
@@ -1484,6 +1492,21 @@ func renderSkills(cards []SkillCard) string {
 		fmt.Fprintf(&b, "- %s: %s\n  %s\n", c.Name, c.Description, c.Recipe)
 	}
 	return b.String()
+}
+
+// thinking tells the live feed a model call is starting (TEN-342), so a slow
+// model reads as thinking, not hung. It returns the call's start.
+func (a *Agent) thinking(iter int) time.Time {
+	a.emit(Event{Kind: EventThinking, Iter: iter})
+	return time.Now()
+}
+
+// thought ends the call thinking started: the feed shows how long it took,
+// and the turn's span adds it to the turn's thinking.
+func (a *Agent) thought(ctx context.Context, iter int, start time.Time, err error) {
+	d := time.Since(start)
+	runtrace.SpanFromContext(ctx).AddThink(d)
+	a.emit(Event{Kind: EventThought, Iter: iter, Duration: d.Round(time.Millisecond), IsErr: err != nil})
 }
 
 // plan runs one planner generation. Stream off → the buffered Generate

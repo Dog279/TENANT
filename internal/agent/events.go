@@ -30,6 +30,8 @@ const (
 	EventError       EventKind = "error"        // turn-level error (Text)
 	EventCompact     EventKind = "compact"      // working set compacted (Text = "N → M messages")
 	EventUsage       EventKind = "usage"        // one LLM call's token usage (PromptTokens/CompletionTokens)
+	EventThinking    EventKind = "thinking"     // a model call began (Iter; 0 = a forced synthesis). Live only: the model log times each call
+	EventThought     EventKind = "thought"      // that model call returned (Iter, Duration; IsErr when it failed). Live only
 	EventInterject   EventKind = "interject"    // a mid-turn user message was folded in (Text = message)
 	EventRetry       EventKind = "retry"        // transient tool failure was retried by RetryDecorator (Tool, Text="attempt N/M: <err>", IsErr=true)
 	EventToolCatalog EventKind = "tool_catalog" // ranked tool surface trimmed for this turn (Text="ranked: N of M tools surfaced")
@@ -70,9 +72,12 @@ type Event struct {
 	// ParentTraceID is the trace of the turn that spawned this one
 	// (EventTurnStart of a sub-agent's turn).
 	ParentTraceID string
-	// Duration is how long the turn (EventTurnEnd) or the tool call
-	// (EventToolResult) took.
+	// Duration is how long the turn (EventTurnEnd), the tool call
+	// (EventToolResult) or the model call (EventThought) took.
 	Duration time.Duration
+	// Think and Tools split an EventTurnEnd's Duration (TEN-342): its time in
+	// model calls, and in tool calls (a parallel batch counts once).
+	Think, Tools time.Duration
 	// Agent attributes a CROSS-AGENT event to its source sub-agent / bus sender
 	// ("" = the primary agent). Set when a sub-agent's activity or an inter-agent
 	// bus message is mirrored into the shared feed so the dashboard can label it;
@@ -126,8 +131,8 @@ var Turns = event.NewProvider("turns", "turns")
 
 // The turn itself (lifecycle), as an activity whose correlation is its trace.
 
-var TurnRun = Turns.Event(1, event.Info, "Turn", "Turn", "agent", "text", "duration", "error").Sensitive("text").
-	Doc("A turn started (text is the message), or ended: a stop or a fail, with its duration. A sub-agent's turn names the turn that spawned it as related.",
+var TurnRun = Turns.Event(1, event.Info, "Turn", "Turn", "agent", "text", "duration", "think", "tools", "error").Sensitive("text").
+	Doc("A turn started (text is the message), or ended: a stop or a fail, with its duration and how much of it went to model calls (think) and tool calls (tools). A sub-agent's turn names the turn that spawned it as related.",
 		"A message reached the agent: typed in the TUI or the dashboard, relayed from a channel, or sent by a job or a peer. A turn fails when its model can't be reached, its context can't be assembled, or its tool calls keep failing validation.",
 		"None when it stops. When it fails, read its error, then the turn's other events (filter trace:<id>).")
 
