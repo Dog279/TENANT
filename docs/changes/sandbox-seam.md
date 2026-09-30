@@ -1,5 +1,9 @@
 # Change: the execution sandbox — per-surface exec backends, `exec_profiles`, refusal escalation (SEC-009/010/011)
 
+> **Update (2026-09-30).** The Linux and Windows (WSL2) bubblewrap backends described here were
+> removed: `restricted` is macOS-only, Linux and Windows run on `host`, and a Docker `container`
+> backend is planned for every OS ([docker-sandbox-plan.md](../plans/docker-sandbox-plan.md)).
+
 **Branch:** `feat/sandbox-seam` · **Status:** implemented and tested; the macOS backend is
 live-tested and red-teamed, the Linux backend is live-tested and red-teamed under WSL2, and the
 Windows backend runs commands through WSL2 bubblewrap and is live-tested; not yet deployed.

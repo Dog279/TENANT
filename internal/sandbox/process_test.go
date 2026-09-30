@@ -247,42 +247,6 @@ func TestPosixLimitArgv(t *testing.T) {
 	}
 }
 
-func TestBwrapLimitArgv(t *testing.T) {
-	argv := []string{"sh", "-c", "make"}
-	if got := bwrapLimitArgv(argv, Limits{Wall: time.Minute, MaxOutputBytes: 10}); !reflect.DeepEqual(got, argv) {
-		t.Errorf("no rlimit caps: %q", got)
-	}
-	got := bwrapLimitArgv(argv, Limits{MemoryBytes: 1 << 30, CPU: 30 * time.Second, MaxPIDs: 64})
-	want := []string{"/bin/sh", "-c",
-		`ulimit -v 1048576 || exit 125; ulimit -t 30 || exit 125; ulimit -u 64 2>/dev/null || ulimit -p 64 || exit 125; exec "$@"`,
-		"sh", "sh", "-c", "make"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("caps:\n got %q\nwant %q", got, want)
-	}
-}
-
-// Capping output as it arrives must give exactly what clipping it whole gave.
-func TestHeadBufferMatchesClip(t *testing.T) {
-	full := strings.Repeat("0123456789", 7) // 70 bytes
-	for _, limit := range []int{0, 1, 9, 10, 69, 70, 71, 500} {
-		for _, chunk := range []int{1, 3, 10, 70} {
-			h := &headBuffer{max: limit}
-			for i := 0; i < len(full); i += chunk {
-				n, _ := h.Write([]byte(full[i:min(i+chunk, len(full))]))
-				if n != min(chunk, len(full)-i) {
-					t.Fatalf("Write must report the whole chunk consumed (the pipe keeps draining), got %d", n)
-				}
-			}
-			if got, want := h.String(), clip(full, limit); got != want {
-				t.Errorf("max=%d chunk=%d: %q, want %q", limit, chunk, got, want)
-			}
-			if limit > 0 && len(h.b) > limit+1 {
-				t.Errorf("max=%d: kept %d bytes", limit, len(h.b))
-			}
-		}
-	}
-}
-
 func TestTailBufferKeepsTheEnd(t *testing.T) {
 	tb := &tailBuffer{max: 8}
 	fmt.Fprint(tb, "0123456789")
@@ -309,9 +273,6 @@ func TestStartLimitsNamesWhatIsCapped(t *testing.T) {
 	}
 	// A restricted backend by name, whether or not this host has one.
 	want := []string{"memory", "cpu"}
-	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		want = append(want, "processes") // bubblewrap: counted per sandbox
-	}
 	if got := StartLimits(&named{name: "restricted"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("restricted caps %v, want %v", got, want)
 	}

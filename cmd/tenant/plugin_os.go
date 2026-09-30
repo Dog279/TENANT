@@ -99,10 +99,9 @@ func osGrants(pf *pluginFlags) map[string]string {
 // launchOS always registers the OS plugin — it needs no config, so it is
 // visible in /tools and `/enable os` activates it instantly; it starts
 // enabled only with --os. os_exec runs through the execution-backend seam
-// (execprofiles.go): the turn's surface picks its exec profile per call, its
-// description names the shell the local surface runs in (Linux sh in WSL on
-// Windows, by default), and a sandbox refusal escalates through the same
-// origin-routed confirm as every other gated action.
+// (execprofiles.go): the turn's surface picks its exec profile per call, and a
+// sandbox refusal escalates through the same origin-routed confirm as every
+// other gated action.
 func launchOS(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	svc, err := osys.Open(osExecConfig(e.c.cfgDir, e.c.dataDir, e.confirm))
 	if err != nil {

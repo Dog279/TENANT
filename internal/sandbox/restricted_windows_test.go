@@ -2,12 +2,10 @@
 
 package sandbox
 
-// Live tests for the Windows Job Object limits primitive (newJobObjectBackend).
-// This is NOT the registered restricted backend on Windows — that is WSL
-// bubblewrap (see wsl_windows_test.go) — but the Job Object enforces the
-// resource limits WSL cannot (job memory, per-process CPU time, active-process
-// count, kill-on-close), so it is validated directly here. The sh-based host
-// tests in sandbox_test.go skip on Windows and point at this file.
+// Live tests for the Windows Job Object limits primitive (newJobObjectBackend),
+// which enforces resource limits (job memory, per-process CPU time,
+// active-process count, kill-on-close), so it is validated directly here. The
+// sh-based host tests in sandbox_test.go skip on Windows and point at this file.
 //
 // Every test asserts a POSITIVE property the primitive's Probe claims. The
 // filesystem and network dimensions are deliberately NOT asserted for

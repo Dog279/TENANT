@@ -217,7 +217,7 @@ func TestEscapeCore_HostBaseline(t *testing.T) {
 	}
 }
 
-// The POSIX network probe must work under dash (Debian/Ubuntu/WSL /bin/sh), not
+// The POSIX network probe must work under dash (Debian/Ubuntu /bin/sh), not
 // just bash: the old /dev/tcp one-liner fails unconfined under dash, which would
 // leave the network case unprovable on Linux. macOS ships /bin/dash, so run it.
 func TestPosixNetProbe_WorksUnderDash(t *testing.T) {

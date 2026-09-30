@@ -1,5 +1,10 @@
 # Change: third-party MCP servers run out of process, in the sandbox (EXT-003)
 
+> **Update (2026-09-30).** The bubblewrap and WSL paths described here were removed. The default
+> `restricted` sandbox exists only on macOS; on Linux and Windows a server doesn't start until its
+> entry names a backend (`"sandbox": "host"` runs it unconfined, `"jobobject"` caps it on
+> Windows). A Docker `container` backend is planned ([docker-sandbox-plan.md](../plans/docker-sandbox-plan.md)).
+
 **Branch:** `feat/ten-318-isolated-mcp` · **Status:** implemented and tested on Windows
 (host, Job Object, and WSL bubblewrap); Linux and macOS paths are built and vetted, not run
 here. Not yet deployed.

@@ -6,10 +6,11 @@ package config
 // sandbox's defaults for a confined process.
 type MCPServer struct {
 	Name    string   `json:"name"`    // connector mcp:<name>: letters, digits, '-' and '_'
-	Command []string `json:"command"` // the program and its arguments (under restricted on Windows: a Linux program in WSL)
+	Command []string `json:"command"` // the program and its arguments
 	// Sandbox is the backend: restricted (the default: filesystem and network
-	// confinement), jobobject (Windows: resource caps and the environment
-	// allowlist only) or host (no boundary: the operator's explicit choice).
+	// confinement, macOS only; elsewhere the server doesn't start until one is
+	// named), jobobject (Windows: resource caps and the environment allowlist
+	// only) or host (no boundary: the operator's explicit choice).
 	Sandbox    string            `json:"sandbox,omitempty"`
 	WorkDir    string            `json:"work_dir,omitempty"` // default <data>/mcp/<name>
 	Network    string            `json:"network,omitempty"`  // none (default) | full | inherit

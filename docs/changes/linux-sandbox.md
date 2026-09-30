@@ -1,5 +1,9 @@
 # Change: the Linux sandbox, finished (SEC-010 / TEN-346)
 
+> **Superseded (2026-09-30).** The bubblewrap backends this note describes (Linux, and Windows
+> through WSL2) were removed; `restricted` is macOS-only, and a Docker `container` backend is
+> planned for every OS: [docker-sandbox-plan.md](../plans/docker-sandbox-plan.md). Kept as a record.
+
 **Branch:** `audit/linux-sandbox` · **Status:** implemented and tested; live-tested in Docker
 (Ubuntu 24.04 with bubblewrap 0.9.0 and Ubuntu 22.04 with 0.6.1, as a normal user and as root),
 and CI runs the live suite on every push. Not yet deployed.

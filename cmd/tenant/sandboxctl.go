@@ -19,7 +19,7 @@ package main
 // to contain a case in a dimension its Probe claims to fully enforce, when any
 // legitimate twin fails on either backend, or when this OS has no restricted
 // backend. This is how an operator validates a backend on the live box: macOS
-// today, the Linux/WSL and Windows backends as they land.
+// today, the container backend when it lands.
 //
 // run executes one command under a surface's resolved profile (optionally with a
 // forced backend) the way that surface's spawn site would, and reports output,
@@ -283,15 +283,6 @@ func probeSurface(ctx context.Context, name, cfgDir, dataDir string) surfaceProb
 // failsClosed reports whether the surface's commands would not run at all:
 // its backend is unavailable and it enforces. A dry run runs them on the host.
 func (s surfaceProbe) failsClosed() bool { return s.Error != "" && s.Mode == refusalMode(true) }
-
-// runsOn is the backend the surface's commands run on: its own, or the host in
-// a dry run whose backend is unavailable (profileBackend).
-func (s surfaceProbe) runsOn() string {
-	if s.Error != "" && !s.failsClosed() {
-		return "host"
-	}
-	return s.Backend
-}
 
 // unconfined reports whether the surface's commands run on the host with no
 // boundary: its backend confines nothing, or it is unavailable in a dry run.
@@ -693,17 +684,7 @@ func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 
 	host := evaluateBackend(ctx, sandbox.Host())
 
-	// A restricted backend that runs a different shell/environment than the host
-	// (the Windows backend runs sh inside WSL) cannot be driven by the host-fixture
-	// escape suite: the fixtures are host files with host paths, which that
-	// environment does not see natively. Report it and point at where it IS
-	// validated, instead of running a mismatched suite that would fail spuriously.
 	b, rerr := sandbox.Restricted()
-	if rerr == nil {
-		if caps := b.Probe(ctx); caps.Shell != "" && caps.Shell != nativeShellName() {
-			return renderForeignSelftest(out, caps, *asJSON)
-		}
-	}
 
 	var restricted *selftestRun
 	unavailable := ""
@@ -729,41 +710,6 @@ func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 	if !d.Pass {
 		return fmt.Errorf("sandbox selftest failed: %d problem(s)", len(d.Problems))
 	}
-	return nil
-}
-
-// nativeShellName is this host's own shell, used to spot a restricted backend
-// that runs commands in a different environment (WSL sh on a Windows host).
-func nativeShellName() string {
-	if runtime.GOOS == "windows" {
-		return "powershell"
-	}
-	return "sh"
-}
-
-// renderForeignSelftest reports a restricted backend that runs in a different
-// environment than the host (the Windows WSL backend). The host-fixture escape
-// suite cannot drive it, so this states where its containment IS validated
-// rather than running a mismatched suite. It is not a failure: exit 0.
-func renderForeignSelftest(out io.Writer, caps sandbox.Capabilities, asJSON bool) error {
-	if asJSON {
-		return sbxWriteJSON(out, map[string]any{
-			"os":                 runtime.GOOS,
-			"arch":               runtime.GOARCH,
-			"pass":               true,
-			"restricted_foreign": caps.Detail,
-			"restricted_shell":   caps.Shell,
-			"note": "restricted runs in a foreign environment (WSL); validate it with the Linux build inside WSL, " +
-				"e.g. `wsl -e /path/to/tenant sandbox selftest`. The sandbox package's live WSL tests also cover containment.",
-		})
-	}
-	fmt.Fprintf(out, "Sandbox selftest: escape suite on %s/%s\n\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(out, "restricted backend runs in a foreign environment (shell=%s), so the host-fixture escape\n", caps.Shell)
-	fmt.Fprintln(out, "suite cannot drive it from here:")
-	sbxParagraph(out, "  ", caps.Detail)
-	fmt.Fprintln(out, "\nValidate its containment where it actually runs — the Linux build inside WSL:")
-	fmt.Fprintln(out, "  wsl -e /path/to/tenant sandbox selftest")
-	fmt.Fprintln(out, "\n(the sandbox package's own live WSL tests also assert containment on every build)")
 	return nil
 }
 
@@ -1027,7 +973,7 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 
 	cmd := sandbox.Command{Shell: o.command, Surface: o.surface, Origin: "sandbox-run"}
 	if o.surface == surfaceCronShell {
-		cmd = sandbox.Command{Args: cronShellArgv(be.Name(), o.command), Surface: o.surface, Origin: "sandbox-run"} // as cron runs it: cmd /C on the Windows host
+		cmd = sandbox.Command{Args: cronShellArgv(o.command), Surface: o.surface, Origin: "sandbox-run"} // as cron runs it: cmd /C on Windows
 	}
 	res, err := be.Run(ctx, cmd, pol)
 	if cerr := ctx.Err(); cerr != nil {

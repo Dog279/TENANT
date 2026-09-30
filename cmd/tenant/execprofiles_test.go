@@ -301,155 +301,29 @@ func TestResolveExecProfile_EnforceSwitch(t *testing.T) {
 	}
 }
 
-// chooseBuiltinExec: restricted only where it can dry-run without breaking
-// commands; the host, with an honest reason, everywhere else.
+// chooseBuiltinExec: the restricted backend where this OS has one that runs a
+// test command (macOS); the host, with an honest reason, everywhere else.
 func TestChooseBuiltinExec(t *testing.T) {
 	ok := func(res sandbox.Result, err error) func() (sandbox.Backend, error) {
 		return func() (sandbox.Backend, error) { return fakeBackend{res: res, err: err}, nil }
 	}
-	missing := func() (sandbox.Backend, error) { return nil, errors.New("bubblewrap (bwrap) not on PATH") }
-	noWSL := func() (sandbox.Backend, error) {
-		return nil, errors.New("sandbox: restricted backend unavailable: WSL is not installed (wsl.exe not found)")
+	none := func() (sandbox.Backend, error) {
+		return nil, errors.New("sandbox: no restricted backend on linux: restricted is macOS-only")
 	}
 	for _, tc := range []struct {
-		name, goos string
+		name       string
 		restricted func() (sandbox.Backend, error)
 		want, why  string
 	}{
-		{"windows with a WSL sandbox", "windows", ok(sandbox.Result{}, nil), "restricted", ""},
-		{"windows without WSL", "windows", noWSL, "host", "WSL is not installed"},
-		{"windows, the sandbox can't run a command", "windows", ok(sandbox.Result{ExitCode: 1, Output: "bwrap: Unknown option --remount-ro"}, nil), "host", "--remount-ro"},
-		{"linux without bubblewrap", "linux", missing, "host", "bwrap"},
-		{"linux with bubblewrap", "linux", ok(sandbox.Result{}, nil), "host", "deny root"},
-		{"macOS", "darwin", ok(sandbox.Result{}, nil), "restricted", ""},
-		{"macOS, the test command fails", "darwin", ok(sandbox.Result{ExitCode: 71, Output: "sandbox_apply: Operation not permitted"}, nil), "host", "sandbox_apply"},
-		{"macOS, the backend can't start", "darwin", ok(sandbox.Result{}, errors.New("no sandbox-exec")), "host", "no sandbox-exec"},
+		{"no restricted backend (Linux, Windows)", none, "host", "macOS-only"},
+		{"macOS", ok(sandbox.Result{}, nil), "restricted", ""},
+		{"macOS, the test command fails", ok(sandbox.Result{ExitCode: 71, Output: "sandbox_apply: Operation not permitted"}, nil), "host", "sandbox_apply"},
+		{"macOS, the backend can't start", ok(sandbox.Result{}, errors.New("no sandbox-exec")), "host", "no sandbox-exec"},
 	} {
-		got, why := chooseBuiltinExec(tc.goos, tc.restricted)
+		got, why := chooseBuiltinExec(tc.restricted)
 		if got != tc.want || !strings.Contains(why, tc.why) || (tc.why == "") != (why == "") {
 			t.Errorf("%s: %s (%q), want %s (%q)", tc.name, got, why, tc.want, tc.why)
 		}
-	}
-}
-
-// Windows (owner decision 2026-09-29): the model is told the shell its
-// commands really run in, and a command that ran elsewhere says so. Every
-// path of the WSL sandbox (the run, a re-run outside it) is Linux sh; only the
-// Windows host is PowerShell, and there cron keeps cmd.
-func TestWindowsShellDecisions(t *testing.T) {
-	missing := func(string) error { return errors.New("no WSL") }
-	here := func(string) error { return nil }
-	for _, tc := range []struct {
-		name      string
-		p         execProfile
-		available func(string) error
-		want      string
-	}{
-		{"the WSL sandbox", execProfile{Backend: "restricted"}, here, "wsl"},
-		{"pinned to the host", execProfile{Backend: "host"}, here, "powershell"},
-		{"dry run without WSL runs on the host", execProfile{Backend: "restricted"}, missing, "powershell"},
-		{"enforcing without WSL still names WSL (its commands fail closed)", execProfile{Backend: "restricted", Policy: sandbox.Policy{Enforce: true}}, missing, "wsl"},
-	} {
-		if got := execShell("windows", runsOn(tc.p, tc.available)); got != tc.want {
-			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
-		}
-	}
-	if execShell("darwin", "restricted") != "sh" || execShell("linux", "host") != "sh" || execShell("windows", "wsl") != "wsl" {
-		t.Error("sh off Windows; the WSL twin is WSL")
-	}
-
-	if osExecShellNote("powershell") != "" || osExecShellNote("sh") != "" {
-		t.Error("the platform's own shell keeps the default description")
-	}
-	for _, must := range []string{"Linux sh", "not PowerShell", "/mnt/c", "Windows program", "outside"} {
-		if !strings.Contains(osExecShellNote("wsl"), must) {
-			t.Errorf("the WSL description must say %q: %s", must, osExecShellNote("wsl"))
-		}
-	}
-
-	for _, tc := range []struct{ described, backend, want string }{
-		{"wsl", "restricted", ""},
-		{"wsl", "wsl", ""}, // the unsandboxed twin: same language
-		{"wsl", "host", "[ran in PowerShell, on this Windows host]\n"},
-		{"powershell", "restricted", "[ran in Linux sh, in the WSL sandbox]\n"},
-		{"", "host", ""},
-	} {
-		if got := shellNote("windows", tc.described, tc.backend); got != tc.want {
-			t.Errorf("described %q, ran on %s: %q, want %q", tc.described, tc.backend, got, tc.want)
-		}
-	}
-	if shellNote("darwin", "sh", "host") != "" {
-		t.Error("sh is sh off Windows")
-	}
-}
-
-// A folder the WSL sandbox refused is saved as its Windows path, which is how
-// profiles name folders; anything not on a drive is not saved.
-func TestWindowsPathFromWSL(t *testing.T) {
-	for _, tc := range []struct{ in, want string }{
-		{"/mnt/c/Users/dylan/Desktop", `C:\Users\dylan\Desktop`},
-		{"/mnt/d", `D:\`},
-		{`\mnt\c\Tenant\data`, `C:\Tenant\data`}, // filepath.Clean's work on Windows
-		{"/home/me/x", ""},
-		{"/mnt/wsl/x", ""},
-		{"/c/Users", ""}, // a custom automount root: not guessed
-	} {
-		got, ok := windowsPathFromWSL(tc.in)
-		if got != tc.want || ok != (tc.want != "") {
-			t.Errorf("%q: %q %v, want %q", tc.in, got, ok, tc.want)
-		}
-	}
-}
-
-// A result names where it ran when that is not the shell the os_exec
-// description named (here: a surface pinned to the host while the tool
-// describes the WSL sandbox).
-func TestProfileRunner_NamesAnotherShell(t *testing.T) {
-	prev, _ := describedShell.Load().(string)
-	t.Cleanup(func() { describedShell.Store(prev) })
-	describedShell.Store("wsl")
-	out, err := profileRunner(execProfile{Backend: "host"}, surfaceLocal, nil)(context.Background(), "echo hi", 30*time.Second)
-	if want := shellNote(runtime.GOOS, "wsl", "host"); err != nil || want == "" || !strings.HasPrefix(out, want) || !strings.Contains(out, "hi") {
-		t.Fatalf("out=%q err=%v, want it to start with %q", out, err, want)
-	}
-	describedShell.Store(execShell(runtime.GOOS, "host"))
-	if out, _ := profileRunner(execProfile{Backend: "host"}, surfaceLocal, nil)(context.Background(), "echo hi", 30*time.Second); strings.HasPrefix(out, "[ran in") {
-		t.Fatalf("the described shell needs no note: %q", out)
-	}
-}
-
-// Pinning cron-shell to the host restores cmd for its jobs, job by job the
-// operator migrates; on the WSL sandbox every shell job is listed to rewrite.
-func TestCronJobsInSh_AndPinning(t *testing.T) {
-	resetExecProfiles(t)
-	withBuiltinExec(t, "restricted", "")
-	jobs := []cronJobConfig{
-		{ID: "a1", Name: "backup", Kind: "shell", Prompt: `robocopy C:\data D:\bak /MIR`},
-		{ID: "b2", Kind: "prompt", Prompt: "daily brief"},
-		{ID: "c3", Kind: "shell", Prompt: "dir C:\\logs"},
-	}
-	p := resolveExecProfile(surfaceCronShell, "", "", "")
-	got := cronJobsInSh("windows", runsOn(p, func(string) error { return nil }), jobs)
-	if len(got) != 2 || got[0] != `backup: robocopy C:\data D:\bak /MIR` || got[1] != `c3: dir C:\logs` {
-		t.Fatalf("jobs to rewrite = %q", got)
-	}
-	if n := cronShNotice(got); len(n) != 3 || !strings.Contains(n[0], `exec_profiles.cron-shell.backend "host"`) || n[1] != "  "+got[0] {
-		t.Fatalf("notice = %q", n)
-	}
-	if !slices.Equal(cronShellArgvFor("windows", p.Backend, "dir"), []string{"sh", "-c", "dir"}) {
-		t.Fatal("cron on the WSL sandbox runs sh")
-	}
-
-	defaultExecProfiles.Load(map[string]execProfileSetting{surfaceCronShell: {Backend: "host"}})
-	p = resolveExecProfile(surfaceCronShell, "", "", "")
-	if got := cronJobsInSh("windows", runsOn(p, nil), jobs); got != nil {
-		t.Fatalf("pinned to the host, nothing to rewrite: %q", got)
-	}
-	if !slices.Equal(cronShellArgvFor("windows", p.Backend, "dir"), []string{"cmd", "/C", "dir"}) {
-		t.Fatal("pinned to the host, cron keeps cmd /C")
-	}
-	if cronJobsInSh("darwin", "restricted", jobs) != nil || cronJobsInSh("linux", "host", jobs) != nil {
-		t.Fatal("only Windows jobs change shell")
 	}
 }
 
@@ -657,7 +531,6 @@ func TestExceptionScope(t *testing.T) {
 		{"inside a deny root", fs("cat: " + filepath.Join(deny, "k") + ": Operation not permitted"), "", "no exception opens"},
 		{"a dotfile in home", fs("sh: " + filepath.Join(home, ".zshrc") + ": Operation not permitted"), "", "whole home folder"},
 		{"network", sandbox.Result{Violations: []sandbox.Violation{{Kind: "network"}}}, "", "network"},
-		{"a Windows program", sandbox.Result{Violations: []sandbox.Violation{{Kind: "program", Detail: sandbox.WindowsProgramRefusal}}}, "", "only ever runs outside"},
 		{"no path", fs("Operation not permitted"), "", "no absolute path"},
 		// Crafted by the command, which writes its own output (review P3-1):
 		// system folders and roots are refused, never offered.

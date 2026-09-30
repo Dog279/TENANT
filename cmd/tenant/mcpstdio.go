@@ -128,7 +128,9 @@ func mcpStdioOpener(plan mcpServerPlan) toolmux.StdioOpener {
 		}()
 		b, err := sandbox.For(plan.Backend)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: its %s sandbox is not available here (%v); install it, or set \"sandbox\" for this server in mcp_servers", plan.Label, plan.Backend, err)
+			// Fail closed: a server that asked to be confined never runs unconfined
+			// unless the operator says so for it.
+			return nil, nil, fmt.Errorf("%s: its %s sandbox is not available here (%v); to run it unconfined, set \"sandbox\": \"host\" for this server in mcp_servers", plan.Label, plan.Backend, err)
 		}
 		if err := os.MkdirAll(plan.Policy.WorkDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("%s: work dir: %w", plan.Label, err)

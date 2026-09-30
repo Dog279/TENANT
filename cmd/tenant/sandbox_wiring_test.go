@@ -23,30 +23,12 @@ func resetExecProfiles(t *testing.T) {
 	t.Cleanup(func() { defaultExecProfiles.Load(nil) })
 }
 
-// restrictedOrSkip skips unless this OS's restricted backend enforces
-// filesystem roots: the tests that use it need a real refusal, and Windows
-// enforces none until TEN-346 lands its ACEs.
+// restrictedOrSkip skips unless this OS has a restricted backend (macOS): the
+// tests that use it need a real refusal.
 func restrictedOrSkip(t *testing.T) {
 	t.Helper()
-	b, err := sandbox.Restricted()
-	if err != nil {
+	if _, err := sandbox.Restricted(); err != nil {
 		t.Skipf("no restricted backend on this OS: %v", err)
-	}
-	c := b.Probe(context.Background())
-	if c.Filesystem == sandbox.EnforceNone {
-		t.Skipf("the restricted backend enforces no filesystem roots here: %s", c.Detail)
-	}
-	// These tests author POSIX-sh commands with the host's native paths, so they
-	// only apply when the backend runs the host's native shell. On Windows the
-	// restricted backend runs sh inside WSL with Linux paths (Capabilities.Shell
-	// == "sh"), so its refusals are covered by the sandbox package's own live WSL
-	// tests instead.
-	native := "sh"
-	if runtime.GOOS == "windows" {
-		native = "powershell"
-	}
-	if c.Shell != "" && c.Shell != native {
-		t.Skipf("restricted backend runs %q, not this host's %q shell; its containment is tested in internal/sandbox", c.Shell, native)
 	}
 }
 
@@ -213,20 +195,15 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// A cron job keeps cmd /C only on the Windows host (a surface pinned there);
-// in the WSL sandbox it runs as sh, as everywhere else.
-func TestCronShellArgv_CmdOnlyOnTheWindowsHost(t *testing.T) {
-	for _, tc := range []struct {
-		goos, backend string
-		want          []string
-	}{
-		{"windows", "host", []string{"cmd", "/C", "dir"}},
-		{"windows", "restricted", []string{"sh", "-c", "dir"}},
-		{"linux", "host", []string{"sh", "-c", "dir"}},
-		{"darwin", "restricted", []string{"sh", "-c", "dir"}},
+// A cron shell job is cmd syntax on Windows, sh everywhere else.
+func TestCronShellArgv_CmdOnWindows(t *testing.T) {
+	for goos, want := range map[string][]string{
+		"windows": {"cmd", "/C", "dir"},
+		"linux":   {"sh", "-c", "dir"},
+		"darwin":  {"sh", "-c", "dir"},
 	} {
-		if got := cronShellArgvFor(tc.goos, tc.backend, "dir"); !stdreflect.DeepEqual(got, tc.want) {
-			t.Errorf("%s/%s: %v, want %v", tc.goos, tc.backend, got, tc.want)
+		if got := cronShellArgvFor(goos, "dir"); !stdreflect.DeepEqual(got, want) {
+			t.Errorf("%s: %v, want %v", goos, got, want)
 		}
 	}
 }

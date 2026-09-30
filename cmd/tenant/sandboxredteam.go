@@ -112,7 +112,7 @@ func redteamBackend(name string) (sandbox.Backend, error) {
 		b, err := sandbox.Restricted()
 		if err != nil {
 			return nil, fmt.Errorf("sandbox redteam: restricted backend unavailable on this host: %w\n"+
-				"run on a host with a restricted backend (macOS, or Linux/WSL with bubblewrap), or pass --backend host to test the unconfined baseline", err)
+				"run on a host with a restricted backend (macOS), or pass --backend host to test the unconfined baseline", err)
 		}
 		return b, nil
 	case "host":

@@ -4,18 +4,20 @@
 // it does. The classifier (internal/plugins/osys) remains a fast fail-early UX
 // layer, never the boundary.
 //
-// A Backend runs a Command under a Policy. Three backends are planned:
+// A Backend runs a Command under a Policy. The backends:
 //
 //   - host       today's behaviour, no filesystem/network confinement (named
 //     honestly; still honours work dir, env allowlist, wall-timeout,
 //     output cap).
-//   - restricted OS primitives, no external runtime: macOS Seatbelt, Linux
-//     bubblewrap, Windows bubblewrap inside a WSL2 distro. Registered
-//     per-OS via registerRestricted in a build-tagged file, so this
+//   - restricted OS primitives, no external runtime: macOS Seatbelt only.
+//     Registered via registerRestricted in a build-tagged file, so this
 //     package compiles and runs with only the host backend on any
-//     platform.
-//   - container  an ephemeral container per run (not implemented; third-party
-//     MCP servers run out of process under the backends above, TEN-318).
+//     platform. (The Linux and Windows bubblewrap backends were removed;
+//     docs/plans/docker-sandbox-plan.md.)
+//   - jobobject  Windows only: a Job Object that caps resources and scopes the
+//     environment, confining no filesystem or network.
+//   - container  an ephemeral hardened Docker container per run, on every OS
+//     (planned: docs/plans/docker-sandbox-plan.md).
 //
 // The vocabulary (allow/deny read+write roots, allowed domains, resolved-address
 // blocking) mirrors Anthropic's sandbox-runtime so profiles are portable and
@@ -250,14 +252,9 @@ type Command struct {
 // command, in which case Violations may be empty and containment is observed
 // behaviourally by the escape suite.
 type Violation struct {
-	Kind   string `json:"kind"`   // "filesystem" | "network" | "program" | "limit" | "policy"
+	Kind   string `json:"kind"`   // "filesystem" | "network" | "limit" | "policy"
 	Detail string `json:"detail"` // model/operator-readable, e.g. "wrote outside write roots: /x"
 }
-
-// WindowsProgramRefusal is the Detail of a "program" refusal: a Windows program
-// (an .exe, through WSL interop) the WSL sandbox cannot start. The model reads
-// it, so it says what to do.
-const WindowsProgramRefusal = "Windows programs run only outside the sandbox — ask to run it outside"
 
 // Result is the outcome of a run. A non-zero ExitCode is NOT an error (it is
 // signal); err is reserved for infrastructure failures (the backend could not
@@ -278,7 +275,7 @@ type Result struct {
 }
 
 // Contained reports whether the boundary stopped the command from succeeding:
-// it recorded a violation, or (the common Seatbelt/bwrap case) the denied access
+// it recorded a violation, or (the common Seatbelt case) the denied access
 // made the command exit non-zero. An escalated result was not contained. Used by
 // the escape suite, which calls Backend.Run directly.
 func (r Result) Contained() bool {
@@ -294,7 +291,7 @@ func (r Result) Contained() bool {
 // so Execute never escalates on them.
 func (r Result) Refused() bool {
 	for _, v := range r.Violations {
-		if v.Kind == "filesystem" || v.Kind == "network" || v.Kind == "program" {
+		if v.Kind == "filesystem" || v.Kind == "network" {
 			return true
 		}
 	}
@@ -312,9 +309,9 @@ type Capabilities struct {
 	// Shell is the command interpreter the backend runs commands under —
 	// "sh" or "powershell". It is usually the host's native shell, but a
 	// backend that runs commands in a different environment reports that
-	// environment's shell instead: the Windows WSL backend runs sh even though
-	// the host is Windows. The escape suite reads this to pick the right
-	// adversary/twin command forms for the backend it is probing.
+	// environment's shell instead (a Linux container on a Windows host runs
+	// sh). The escape suite reads this to pick the right adversary/twin
+	// command forms for the backend it is probing.
 	Shell  string
 	Detail string
 }
@@ -344,7 +341,7 @@ func registerRestricted(f func() (Backend, error)) { restrictedFactory = f }
 // build/host has none (callers on unattended surfaces fail closed).
 func Restricted() (Backend, error) {
 	if restrictedFactory == nil {
-		return nil, fmt.Errorf("sandbox: no restricted backend on %s", runtime.GOOS)
+		return nil, fmt.Errorf("sandbox: no restricted backend on %s: restricted is macOS-only; use host, or the container backend once it ships", runtime.GOOS)
 	}
 	return restrictedFactory()
 }
@@ -380,10 +377,10 @@ type Escalator func(ctx context.Context, cmd Command, refused Result) bool
 //
 //   - Nothing refused: the backend's result, unchanged. The host backend never
 //     refuses, so on host Execute is exactly Run.
-//   - Refused, pol.Enforce false (dry-run): re-run outside the sandbox
-//     (Outside) so behaviour is unchanged. The result carries the first
-//     attempt's Violations and Escalated=true so the refusal is still reported.
-//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run outside
+//   - Refused, pol.Enforce false (dry-run): re-run on the host so behaviour is
+//     unchanged. The result carries the first attempt's Violations and
+//     Escalated=true so the refusal is still reported.
+//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run on the host
 //     (Escalated=true, Violations kept). Denied or nil ⇒ the confined result,
 //     Violations intact.
 //
@@ -401,28 +398,17 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	if pol.Enforce && (esc == nil || !esc(ctx, cmd, res)) {
 		return res, nil
 	}
-	hres, herr := Outside(b).Run(ctx, cmd, pol)
+	hres, herr := Host().Run(ctx, cmd, pol)
 	hres.Violations = append(append([]Violation(nil), res.Violations...), hres.Violations...)
 	hres.Escalated = true
 	return hres, herr
-}
-
-// Outside is where a command b refused re-runs, unconfined: the host, or, for
-// a backend whose commands run elsewhere (the WSL backend runs Linux sh), the
-// same shell there without the sandbox, so a re-run never changes the
-// command's language.
-func Outside(b Backend) Backend {
-	if u, ok := b.(interface{ Unconfined() Backend }); ok {
-		return u.Unconfined()
-	}
-	return Host()
 }
 
 // --- shared helpers used by every backend ---
 
 // shellName is the native shell for a GOOS: "powershell" on Windows, "sh"
 // elsewhere. Backends report it in Capabilities.Shell unless they run commands
-// in a different environment (the WSL backend runs sh on a Windows host).
+// in a different environment (a Linux container runs sh on a Windows host).
 func shellName(goos string) string {
 	if goos == "windows" {
 		return "powershell"

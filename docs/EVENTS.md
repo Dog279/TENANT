@@ -4454,7 +4454,7 @@ Writes the `sandbox` log.
 
 **Why it happens.** The agent called os_exec, or a cron shell job came due.
 
-**What to do.** On a fail, read the error: the backend's launcher (sandbox-exec, bubblewrap, the WSL distro) is missing or broken. `tenant sandbox probe` checks it.
+**What to do.** On a fail, read the error: the backend's launcher (sandbox-exec on macOS) is missing or broken. `tenant sandbox probe` checks it.
 
 ### sandbox 1001
 
@@ -4478,7 +4478,7 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2001`
 
-**What it means.** The boundary refused a file or network access, or a Windows program (in WSL), and the command was not run again: its failure went back to the model or the cron job.
+**What it means.** The boundary refused a file or network access, and the command was not run again: its failure went back to the model or the cron job.
 
 **Why it happens.** The command reached outside the profile's roots or network, or started a Windows program. Enforce is on, and the escalation was denied or nobody could be asked (an unattended surface such as cron).
 
@@ -4492,7 +4492,7 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2002`
 
-**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again outside the sandbox, unconfined (on the host, or on Windows as sh in the same WSL distro), so the refusal is only reported.
+**What it means.** The profile is in dry run ("enforce": false): the boundary refused an access, and the command ran again outside the sandbox, unconfined, on the host, so the refusal is only reported.
 
 **Why it happens.** The command reached outside the profile's roots or network while the surface's exec_profiles entry has enforce off.
 
@@ -4506,7 +4506,7 @@ Writes the `sandbox` log.
 - **Fields:** `surface`, `backend`, `command`, `exit`, `violations`
 - **Find it:** `provider:sandbox id:2003`
 
-**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again outside the sandbox, unconfined (on the host, or on Windows as sh in the same WSL distro). The approval itself is in the Security log.
+**What it means.** The boundary refused an access, a person approved os_exec_unsandboxed, and the command ran again outside the sandbox, unconfined, on the host. The approval itself is in the Security log.
 
 **Why it happens.** The command needed an access outside the profile, and the operator allowed it once.
 
@@ -4536,7 +4536,7 @@ Writes the `sandbox` log.
 
 **What it means.** A dry-run profile ("enforce": false) names a sandbox backend that does not work here. A dry run never blocks a command, so it ran on the host, unconfined, and nothing about it was observed.
 
-**Why it happens.** The profile names a backend this OS or build lacks (restricted without bubblewrap or WSL), or its launcher is missing.
+**Why it happens.** The profile names a backend this OS or build lacks (restricted anywhere but macOS), or its launcher is missing.
 
 **What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles. With enforce on, the same profile runs nothing.
 
@@ -4564,7 +4564,7 @@ Writes the `sandbox` log.
 
 **What it means.** A command was not run because the sandbox backend its profile names does not work here. An enforcing profile fails closed: it never falls back to the host.
 
-**Why it happens.** The profile names a backend this OS or build lacks (jobobject off Windows, restricted without bubblewrap or WSL), or its launcher is missing.
+**Why it happens.** The profile names a backend this OS or build lacks (jobobject off Windows, restricted anywhere but macOS), or its launcher is missing.
 
 **What to do.** Install what the error names (`tenant sandbox probe` says what is unavailable), or set another backend for the surface in exec_profiles.
 
