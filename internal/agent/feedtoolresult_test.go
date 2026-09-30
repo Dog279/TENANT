@@ -109,3 +109,9 @@ func lastMsg(t *testing.T, ws *working.Set) working.Message {
 	}
 	return msgs[len(msgs)-1]
 }
+
+// capToolResultForContext is the non-sensitive context view, body and note.
+func capToolResultForContext(content string, maxTokens int) string {
+	body, note := contextView(content, maxTokens, false)
+	return body + note
+}

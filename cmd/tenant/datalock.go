@@ -41,14 +41,3 @@ func lockDataDirForProcess(dir string) error {
 	heldLocks[key] = l
 	return nil
 }
-
-// releaseDataLocks drops every held lock. Tests use it; the binary never
-// needs to, because exit releases them.
-func releaseDataLocks() {
-	heldMu.Lock()
-	defer heldMu.Unlock()
-	for k, l := range heldLocks {
-		_ = l.Release()
-		delete(heldLocks, k)
-	}
-}

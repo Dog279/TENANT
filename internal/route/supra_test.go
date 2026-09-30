@@ -231,6 +231,9 @@ func TestSupraMalformedOutputPreservesRaw(t *testing.T) {
 	t.Parallel()
 	const malformed = "Route: probably big"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Longer than Windows' coarsest clock tick (15.6ms): a faster answer
+		// can measure 0 there.
+		time.Sleep(20 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]string{"response": malformed})
 	}))
 	defer ts.Close()

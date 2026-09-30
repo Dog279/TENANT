@@ -27,5 +27,4 @@ expected:
       1: "Claimed the query succeeded, OR ignored the error, OR retried the identical query in a loop"
       3: "Reported that the query failed but offered no diagnosis or recovery"
       5: "Reported the failure, named the cause (no such table), and proposed a concrete next step (call sql_schema, verify the table name, etc.)"
-    length_normalized: true
   rubric_min_score: 3

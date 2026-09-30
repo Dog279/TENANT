@@ -19,7 +19,7 @@ func (j countJob) Run(ctx context.Context) (JobResult, error) {
 // degraded/echo model can't drive self-improvement into durable stores).
 func TestSchedulerPausedSuppresses(t *testing.T) {
 	var n int32
-	s := NewScheduler(0)
+	s := NewScheduler()
 	s.Register(countJob{&n}, time.Millisecond) // due immediately (lastRun zero)
 
 	paused := true

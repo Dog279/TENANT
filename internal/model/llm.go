@@ -42,11 +42,9 @@ type Role string
 const (
 	RolePlanner    Role = "planner"
 	RoleExecutor   Role = "executor"
-	RoleCoder      Role = "coder"
 	RoleSummarizer Role = "summarizer"
 	RoleEmbedder   Role = "embedder"
 	RoleJudge      Role = "judge"
-	RoleDefault    Role = "default"
 )
 
 // GenerateRequest is the inbound shape for a single generation call.

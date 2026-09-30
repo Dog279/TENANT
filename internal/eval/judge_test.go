@@ -231,9 +231,6 @@ func TestWriteTerminal_ShowsUngraded(t *testing.T) {
 	if !strings.Contains(sb.String(), "Ungraded: 1") {
 		t.Errorf("terminal output should show ungraded count, got:\n%s", sb.String())
 	}
-	if got := FailedTaskIDs(rep); len(got) != 0 {
-		t.Errorf("FailedTaskIDs should skip ungraded, got %v", got)
-	}
 	if !AllPassed(rep) {
 		t.Error("AllPassed should hold: one pass, one ungraded, zero fails")
 	}

@@ -29,5 +29,4 @@ expected:
       1: "Dumped raw paths/filenames with no synthesis, OR used wiki_search with a vague/empty query instead of wiki_list, OR refused to characterize"
       3: "Listed notes with light commentary but no real grouping — feels like a bulleted file dump with sentence headers"
       5: "Produced 2-7 topical buckets named in the user's vocabulary (drawn from note titles), with rough counts or examples per bucket, so the user learns the SHAPE of their wiki"
-    length_normalized: true
   rubric_min_score: 3

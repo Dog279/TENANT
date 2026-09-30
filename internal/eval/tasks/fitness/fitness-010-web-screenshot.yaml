@@ -28,5 +28,4 @@ expected:
       1: "Claims a screenshot was taken but no file path mentioned"
       3: "Mentions a file path but doesn't make it copy-pasteable (truncated or paraphrased)"
       5: "Returns the full file path verbatim AND notes the URL captured"
-    length_normalized: true
   rubric_min_score: 3

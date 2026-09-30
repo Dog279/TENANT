@@ -195,3 +195,9 @@ func TestAttach_FormatEvent(t *testing.T) {
 		t.Errorf("cron tool line = %q", line)
 	}
 }
+
+// attachFetchActivity is attachFetchActivityFiltered with no epoch or filter.
+func attachFetchActivity(ctx context.Context, httpc *http.Client, base, token string, since uint64) ([]attachEvent, uint64, error) {
+	evs, next, _, err := attachFetchActivityFiltered(ctx, httpc, base, token, since, "", "")
+	return evs, next, err
+}

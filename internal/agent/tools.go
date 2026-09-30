@@ -81,8 +81,8 @@ func (r *StaticRegistry) Get(name string) (model.ToolSpec, bool) {
 	return t, ok
 }
 
-// Search returns the first K registered tools. This is a placeholder
-// for real semantic retrieval — flagged as v1.1 work in TODOS.md.
+// Search returns the first K registered tools; it does no ranking (the tool
+// mux ranks its catalog).
 func (r *StaticRegistry) Search(_ context.Context, _ []float32, k int) ([]model.ToolSpec, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

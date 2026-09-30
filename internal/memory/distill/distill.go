@@ -19,11 +19,11 @@
 //     Insert — the old fact's last_confirmed gets bumped, decay
 //     resets. This is how facts stay fresh over a long-running agent.
 //
-//   - Supersede is NOT implemented in v1. Detecting that a new fact
-//     contradicts (vs. merely covers similar territory) needs LLM
-//     reasoning between facts, which is a separate call cycle.
-//     Captured as a TODO. Until then, contradictions accumulate; the
-//     decay function handles staleness organically.
+//   - Supersede on a borderline match. When a new fact is close to an
+//     existing one but not clearly the same, the summarizer decides:
+//     "same" reaffirms, "supersedes" inserts the new fact and closes the
+//     old one's validity (the old fact stays for audit and as-of
+//     recall), "distinct" inserts.
 package distill
 
 import (

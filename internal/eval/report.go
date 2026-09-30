@@ -86,16 +86,3 @@ func truncate(s string, n int) string {
 func AllPassed(rep *Report) bool {
 	return rep.Aggregates.FailCount == 0
 }
-
-// FailedTaskIDs returns the IDs of failed tasks, useful for CI summary
-// lines. Ungraded (TEN-197) and skipped (TEN-198) tasks are not
-// failures — they're excluded.
-func FailedTaskIDs(rep *Report) []string {
-	var out []string
-	for _, r := range rep.Results {
-		if !r.Passed && !r.Ungraded && !r.Skipped {
-			out = append(out, r.TaskID)
-		}
-	}
-	return out
-}

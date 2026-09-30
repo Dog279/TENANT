@@ -220,11 +220,6 @@ func attachFetchStatus(ctx context.Context, httpc *http.Client, base, token stri
 	return st, err
 }
 
-func attachFetchActivity(ctx context.Context, httpc *http.Client, base, token string, since uint64) ([]attachEvent, uint64, error) {
-	evs, next, _, err := attachFetchActivityFiltered(ctx, httpc, base, token, since, "", "")
-	return evs, next, err
-}
-
 // attachFetchActivityFiltered reads one page of the projection after the
 // cursor since, which belongs to the hub epoch epoch ("" before the first
 // page); filter is an optional "&source=…&level=…&trace=…" narrowing (the

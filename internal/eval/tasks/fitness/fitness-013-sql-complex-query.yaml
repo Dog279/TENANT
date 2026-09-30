@@ -27,5 +27,4 @@ expected:
       1: "Listed tables but ran no COUNT queries, OR named a table with no count"
       3: "Counted one table and declared it the winner without comparing others"
       5: "Counted multiple tables, named the largest with its exact row count, and showed the comparison"
-    length_normalized: true
   rubric_min_score: 3

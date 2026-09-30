@@ -20,5 +20,4 @@ expected:
       1: "Hallucinated content unrelated to example.com"
       3: "Mentions example.com but no actual content from the page"
       5: "Quotes or summarizes actual page text (e.g. 'Example Domain', 'illustrative examples in documents')"
-    length_normalized: true
   rubric_min_score: 3

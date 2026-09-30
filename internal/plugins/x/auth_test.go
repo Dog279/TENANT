@@ -139,8 +139,8 @@ func TestBearerSource(t *testing.T) {
 		t.Error("empty bearer must error")
 	}
 	b := bearerSource{"abc"}
-	if v, _ := b.token(context.Background()); v != "abc" || b.userContext() {
-		t.Errorf("bearer token=%q userContext=%v", v, b.userContext())
+	if v, _ := b.token(context.Background()); v != "abc" {
+		t.Errorf("bearer token=%q", v)
 	}
 }
 

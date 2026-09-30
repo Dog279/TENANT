@@ -1,65 +1,13 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"tenant/internal/model"
 )
-
-// fakeLLM is a minimal model.LLM for testing /review without a real
-// backend. canned[role-keyword] is matched against the system prompt
-// to decide which response to return; err short-circuits to an error.
-type fakeLLM struct {
-	canned map[string]string // substring-of-system → response text
-	err    error
-	calls  int
-}
-
-func (f *fakeLLM) Generate(_ context.Context, req model.GenerateRequest) (model.GenerateResponse, error) {
-	f.calls++
-	if f.err != nil {
-		return model.GenerateResponse{}, f.err
-	}
-	// Find the system message — it carries the reviewer soul.
-	var sys string
-	for _, m := range req.Messages {
-		if m.Role == "system" {
-			sys = m.Content
-			break
-		}
-	}
-	for needle, body := range f.canned {
-		if strings.Contains(sys, needle) {
-			return model.GenerateResponse{Text: body}, nil
-		}
-	}
-	return model.GenerateResponse{Text: "(no canned match)"}, nil
-}
-
-func (f *fakeLLM) GenerateStream(ctx context.Context, req model.GenerateRequest) (<-chan model.StreamChunk, error) {
-	resp, err := f.Generate(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	ch := make(chan model.StreamChunk, 1)
-	ch <- model.StreamChunk{Delta: resp.Text}
-	close(ch)
-	return ch, nil
-}
-
-func (f *fakeLLM) TokenCount(_ context.Context, msgs []model.Message) (int, error) {
-	total := 0
-	for _, m := range msgs {
-		total += len(m.Content) / 4
-	}
-	return total, nil
-}
 
 // stubReviewControl bypasses LLM resolution entirely by overriding
 // runOne for tests. The real reviewControl.runOne resolves an agent +
@@ -239,8 +187,7 @@ func TestAppendToFile_PreservesExistingContent(t *testing.T) {
 
 // TestStubReview_FullCascade_AppendsAllSections — happy path: 3
 // reviewers, all return bodies, file gets the report appended in
-// canonical order. Validates the end-to-end shape via the stub (LLM
-// boundary is unit-tested separately via TestFakeLLM_SystemRouting).
+// canonical order. Validates the end-to-end shape via the stub.
 func TestStubReview_FullCascade_AppendsAllSections(t *testing.T) {
 	plan := "# Plan\n\nBuild X.\n"
 	path := writePlan(t, plan)
@@ -345,35 +292,6 @@ func TestStubReview_Truncation(t *testing.T) {
 	}
 	if !strings.Contains(report, "Plan truncated") {
 		t.Errorf("truncation banner missing: %q", report[:200])
-	}
-}
-
-// TestFakeLLM_SystemRouting — sanity check that the test fake routes by
-// system-prompt substring as designed. Underpins the assumption that we
-// could (later) test the real Generate call path by injecting fakeLLM.
-func TestFakeLLM_SystemRouting(t *testing.T) {
-	llm := &fakeLLM{canned: map[string]string{
-		"CEO":          "ceo verdict",
-		"Engineering":  "eng verdict",
-		"product desi": "design verdict", // matches "senior product designer"
-	}}
-	cases := []struct {
-		sys, want string
-	}{
-		{"You are a startup CEO reviewer.", "ceo verdict"},
-		{"Engineering manager reviewing the plan.", "eng verdict"},
-		{"You are a senior product designer.", "design verdict"},
-	}
-	for _, c := range cases {
-		resp, err := llm.Generate(context.Background(), model.GenerateRequest{
-			Messages: []model.Message{{Role: "system", Content: c.sys}, {Role: "user", Content: "x"}},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp.Text != c.want {
-			t.Errorf("fake routing for %q: got %q want %q", c.sys, resp.Text, c.want)
-		}
 	}
 }
 

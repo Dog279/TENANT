@@ -78,11 +78,6 @@ func AdapterFor(format string) Adapter {
 	}
 }
 
-// ListFormats returns all registered format keys, for diagnostics.
-func ListFormats() []string {
-	return []string{"qwen", "gemma", "llama", "mistral", "openai"}
-}
-
 // helper: pretty-print tool descriptions as a JSON-schema-friendly array.
 // Used by adapters that inject tools into the system prompt.
 func toolsAsJSONArray(tools []model.ToolSpec) (string, error) {

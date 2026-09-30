@@ -11,10 +11,7 @@ type (
 	mcpRuntimeDeps  = toolmux.MCPDeps
 	mcpServerStatus = toolmux.ServerStatus
 	toolStats       = toolmux.Stats
-	PeerFedStat     = toolmux.PeerFedStat
 )
-
-const rankActivateThreshold = toolmux.RankActivateThreshold
 
 var (
 	errNotConfigured    = toolmux.ErrNotConfigured

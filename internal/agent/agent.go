@@ -1688,26 +1688,19 @@ func infoFlowMeta(labels []model.InfoFlowLabel) map[string]any {
 	return map[string]any{"infoflow_labels": append([]model.InfoFlowLabel(nil), labels...)}
 }
 
-// capToolResultForContext truncates a tool result to roughly maxTokens before it
-// re-enters the model's context (working set). maxTokens <= 0 disables the cap
-// (frontier path: content returned unchanged). The cut is scrubbed to a valid
-// UTF-8 boundary and carries an explicit marker, so the model knows the result
-// was truncated and can refine the query or request a specific section. The full
-// result is preserved in the archive by the caller.
-func capToolResultForContext(content string, maxTokens int) string {
-	body, note := contextView(content, maxTokens, false)
-	return body + note
-}
-
 // toolResultCharsPerToken is a coarse heuristic — a safety cap, not a
 // tokenizer.
 const toolResultCharsPerToken = 4
 
 // contextView splits a tool result into the body that re-enters the model's
 // context and the truncation note that follows it when anything was cut.
-// maxTokens > 0 caps every result at roughly that many tokens. A sensitive
-// result is also held to infoFlowMaxResultBytes, the size the flow tracker
-// records, so every byte of it the model sees is tracked (TEN-336).
+// maxTokens > 0 caps every result at roughly that many tokens; <= 0 disables
+// the cap (frontier path). The cut is scrubbed to a valid UTF-8 boundary, and
+// the note tells the model the result was truncated so it can refine the query
+// or request a specific section. The caller keeps the full result in the
+// archive. A sensitive result is also held to infoFlowMaxResultBytes, the size
+// the flow tracker records, so every byte of it the model sees is tracked
+// (TEN-336).
 func contextView(content string, maxTokens int, sensitive bool) (body, note string) {
 	limit, byTokens := 0, maxTokens > 0
 	if byTokens {

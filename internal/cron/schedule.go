@@ -3,10 +3,10 @@
 // when jobs come due. It has NO external dependencies and NO build tags — it
 // runs and is tested on every OS.
 //
-// It is deliberately separate from internal/improve (whose CronStore/Scheduler
-// are interval-only and SQLite-backed): cron jobs here are operator config
-// (persisted in config.json alongside the Relay/IMessage blocks), and they
-// support real crontab expressions, not just fixed durations.
+// It is deliberately separate from internal/improve's interval-only Scheduler:
+// cron jobs here are operator config (persisted in config.json alongside the
+// Relay/IMessage blocks), and they support real crontab expressions, not just
+// fixed durations.
 package cron
 
 import (

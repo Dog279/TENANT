@@ -119,10 +119,6 @@ type turnGate struct {
 	avgTurn     time.Duration
 }
 
-func newTurnGate(inner turnRunner) *turnGate {
-	return newTurnGateConfigured(inner, turnSchedulerConfig{})
-}
-
 func newTurnGateConfigured(inner turnRunner, cfg turnSchedulerConfig) *turnGate {
 	return &turnGate{
 		inner:       inner,

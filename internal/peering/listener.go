@@ -399,16 +399,6 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// ListenAndServe binds addr (enforcing the bind policy) and serves until ctx is
-// cancelled. Callers that want a bound address synchronously should Bind + Serve.
-func (l *Listener) ListenAndServe(ctx context.Context, addr string) error {
-	ln, err := l.Bind(addr)
-	if err != nil {
-		return err
-	}
-	return l.Serve(ctx, ln)
-}
-
 // Bind enforces the bind policy and returns a bound net.Listener (or an error)
 // — letting the caller report the real address before serving in a goroutine.
 // When a TLS cert is configured the listener is wrapped for HTTPS, so peers
@@ -426,10 +416,6 @@ func (l *Listener) Bind(addr string) (net.Listener, error) {
 	}
 	return ln, nil
 }
-
-// Secure reports whether the listener serves over TLS (true) or plain HTTP
-// (overlay / loopback). Used to choose the http vs https scheme in invites.
-func (l *Listener) Secure() bool { return l.tlsCert != nil }
 
 // Serve serves on an existing listener until ctx is cancelled, then shuts down
 // gracefully.

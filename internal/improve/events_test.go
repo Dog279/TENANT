@@ -25,7 +25,7 @@ func field(e *event.Event, key string) any {
 // event at error.
 func TestJobRunsAreActivities(t *testing.T) {
 	r := eventtest.Capture(t)
-	s := improve.NewScheduler(0)
+	s := improve.NewScheduler()
 	s.Register(&fakeJob{name: "learn", fn: func(ctx context.Context) (improve.JobResult, error) {
 		improve.StepFailed.Log(ctx, "job", "learn", "step", "write", "err", "busy")
 		return improve.JobResult{Summary: "learned 2 facts", Changed: true, SourceRuns: []string{"run-a", "run-b"}}, nil

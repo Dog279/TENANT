@@ -97,7 +97,6 @@ expected:
       1: "Concrete bad example"
       3: "Concrete acceptable example"
       5: "Concrete ideal example"
-    length_normalized: true
   rubric_min_score: 3
 weight: 1.0     # default; set 2.0 for adversarial-category tasks
 ```

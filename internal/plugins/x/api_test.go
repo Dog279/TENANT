@@ -217,14 +217,14 @@ func TestOpen_CredentialSelection(t *testing.T) {
 		t.Error("no credentials must error")
 	}
 	svc, err := Open(Config{Bearer: "b"})
-	if err != nil || svc.canPost() {
-		t.Errorf("bearer-only: err=%v canPost=%v (want false)", err, svc.canPost())
+	if err != nil || svc.user != nil {
+		t.Errorf("bearer-only: err=%v, user context set (want none)", err)
 	}
 	p := writeStore(t, tokenStore{ClientID: "C", Access: "a", Refresh: "r",
 		Expiry: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)})
 	svc, err = Open(Config{TokenPath: p})
-	if err != nil || !svc.canPost() {
-		t.Errorf("token store present: err=%v canPost=%v (want true)", err, svc.canPost())
+	if err != nil || svc.user == nil {
+		t.Errorf("token store present: err=%v, no user context (want one)", err)
 	}
 }
 

@@ -20,19 +20,6 @@ type Policy struct {
 	Confirm     func(ctx context.Context, action, detail string) bool
 }
 
-// mutatingSubcommands classifies which subcommands route through the gate.
-// Rationale: search/lookup/history/show are plainly read-only lookups; ask,
-// align, and commitments-list are the heavier set that can write/derive state
-// (ask runs an LLM/agent path; align mutates alignment; commitments-list is
-// grouped with them as the cautious default). Treating this set as gated is
-// the deny-by-default posture — a read misclassified as gated only ever costs
-// an approval prompt, never a silent mutation.
-var mutatingSubcommands = map[string]bool{
-	"ask":              true,
-	"align":            true,
-	"commitments-list": true,
-}
-
 // gate enforces the Policy for a (potentially) mutating subcommand. Read
 // subcommands never reach here. With neither AllowMutate nor an approving
 // Confirm, the op is BLOCKED — a blast-radius boundary, not a bug.
@@ -95,6 +82,13 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 // toolToSubcommand maps each tool name to the crm-tool subcommand it runs and
 // whether that subcommand is gated. Single source of truth so the routing and
 // the gate stay consistent. Unknown tool ⇒ ok=false.
+//
+// Gated: search/lookup/history/show are plainly read-only lookups; ask,
+// align, and commitments-list are the heavier set that can write/derive state
+// (ask runs an LLM/agent path; align mutates alignment; commitments-list is
+// grouped with them as the cautious default). Treating this set as gated is
+// the deny-by-default posture — a read misclassified as gated only ever costs
+// an approval prompt, never a silent mutation.
 func toolToSubcommand(tool string) (sub string, gated bool, ok bool) {
 	switch tool {
 	case "crm_search":

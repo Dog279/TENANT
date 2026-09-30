@@ -14,16 +14,11 @@ import (
 type (
 	launchConfig        = config.Launch
 	logsConfig          = config.Logs
-	privacyConfig       = config.Privacy
-	runTraceConfig      = config.RunTrace
 	healthGatingConfig  = config.HealthGating
-	goalConfig          = config.Goal
 	turnSchedulerConfig = config.TurnScheduler
 	providerConfig      = config.Provider
 	routeConfig         = config.Route
 	routeProviderConfig = config.RouteProvider
-	routeRuleConfig     = config.RouteRule
-	routeRuleWhen       = config.RouteRuleWhen
 	routeAgentConfig    = config.RouteAgent
 	resolvedRouteConfig = config.ResolvedRoute
 	routeConfigError    = config.RouteError
@@ -31,12 +26,10 @@ type (
 	authCfg             = config.Auth
 	gatewayConfig       = config.Gateway
 	dashboardConfig     = config.Dashboard
-	tailscaleConfig     = config.Tailscale
 	peerConfig          = config.Peer
 	relayConfig         = config.Relay
 	imessageConfig      = config.IMessage
 	improveConfig       = config.Improve
-	cronConfig          = config.Cron
 	cronJobConfig       = config.CronJob
 	skillConfig         = config.Skill
 	providerKind        = config.ProviderKind
@@ -46,16 +39,12 @@ type (
 )
 
 const (
-	defaultEmbedEndpoint            = config.DefaultEmbedEndpoint
-	defaultEmbedModel               = config.DefaultEmbedModel
-	defaultEmbedDim                 = config.DefaultEmbedDim
-	defaultRouteMode                = config.DefaultRouteMode
-	defaultRouteTimeoutMS           = config.DefaultRouteTimeoutMS
-	defaultRouteModel               = config.DefaultRouteModel
-	defaultRouteMinComplexityForBig = config.DefaultRouteMinComplexityForBig
-	defaultVLLMToolFmt              = config.DefaultVLLMToolFmt
-	currentSchemaVersion            = config.CurrentSchemaVersion
-	defaultPlanCeiling              = config.DefaultPlanCeiling
+	defaultEmbedEndpoint = config.DefaultEmbedEndpoint
+	defaultEmbedModel    = config.DefaultEmbedModel
+	defaultEmbedDim      = config.DefaultEmbedDim
+	defaultVLLMToolFmt   = config.DefaultVLLMToolFmt
+	currentSchemaVersion = config.CurrentSchemaVersion
+	defaultPlanCeiling   = config.DefaultPlanCeiling
 )
 
 // providerKinds is the provider catalog; it is never modified, so sharing

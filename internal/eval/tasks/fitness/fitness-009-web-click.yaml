@@ -27,5 +27,4 @@ expected:
       1: "Reports the click happened but doesn't describe the resulting page"
       3: "Mentions IANA or the destination URL but no content from the page"
       5: "Names IANA AND summarizes the reserved-domains content from the resulting page"
-    length_normalized: true
   rubric_min_score: 3

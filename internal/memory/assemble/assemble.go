@@ -23,7 +23,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"tenant/internal/memory"
 	"tenant/internal/memory/cosine"
@@ -1029,8 +1028,3 @@ func normalizeShares(s BudgetShares) BudgetShares {
 	}
 	return s
 }
-
-// Now is exported as a test seam — production code uses time.Now,
-// tests inject deterministic values. Currently unused but kept so the
-// shape is here when the compaction job needs it.
-var Now = func() time.Time { return time.Now().UTC() }

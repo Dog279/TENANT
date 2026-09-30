@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,23 +60,26 @@ func TestRootServesDashboard(t *testing.T) {
 	}
 }
 
-// TestRunGracefulShutdown: Run returns nil when ctx is canceled (clean
-// shutdown), binding an ephemeral port so the test never collides.
-func TestRunGracefulShutdown(t *testing.T) {
+// TestServeGracefulShutdown: Serve returns nil when ctx is canceled (clean
+// shutdown), on an ephemeral port so the test never collides.
+func TestServeGracefulShutdown(t *testing.T) {
 	s := New(Config{Addr: "127.0.0.1:0", Auth: "test-token"}, nil, nil, nil, nil, nil)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
-	go func() { errc <- s.Run(ctx) }()
+	go func() { errc <- s.Serve(ctx, ln) }()
 
-	// Give ListenAndServe a moment to bind, then cancel.
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 	select {
 	case err := <-errc:
 		if err != nil {
-			t.Fatalf("Run returned %v, want nil on ctx cancel", err)
+			t.Fatalf("Serve returned %v, want nil on ctx cancel", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("Run did not return after ctx cancel")
+		t.Fatal("Serve did not return after ctx cancel")
 	}
 }
