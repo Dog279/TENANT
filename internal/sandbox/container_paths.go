@@ -7,7 +7,6 @@ package sandbox
 // and container_paths_other.go.
 
 import (
-	"path/filepath"
 	"strings"
 )
 
@@ -21,10 +20,12 @@ func containerDest(hostAbs, goos string) string {
 	if goos != "windows" {
 		return hostAbs
 	}
-	vol := filepath.VolumeName(hostAbs) // "C:" for C:\x, `\\srv\share` for UNC
-	if len(vol) == 2 && vol[1] == ':' {
-		drive := strings.ToLower(vol[:1])
-		rest := filepath.ToSlash(hostAbs[len(vol):])
+	// Parse the drive letter directly rather than with filepath.VolumeName, which
+	// only recognises Windows drives when the host itself is Windows — this pure
+	// mapping runs cross-OS (tests and the Linux/macOS CI runners).
+	if len(hostAbs) >= 2 && hostAbs[1] == ':' && isDriveLetter(hostAbs[0]) {
+		drive := strings.ToLower(hostAbs[:1])
+		rest := strings.ReplaceAll(hostAbs[2:], `\`, "/")
 		if !strings.HasPrefix(rest, "/") {
 			rest = "/" + rest
 		}
@@ -32,7 +33,11 @@ func containerDest(hostAbs, goos string) string {
 	}
 	// A UNC or driveless path: the caller rejects these before mapping, but map
 	// defensively under a distinct prefix so a leak is obvious, never silent.
-	return "/mnt/host/" + strings.Trim(filepath.ToSlash(hostAbs), "/")
+	return "/mnt/host/" + strings.Trim(strings.ReplaceAll(hostAbs, `\`, "/"), "/")
+}
+
+func isDriveLetter(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // withinHost reports whether p is root or inside it, both absolute, matched the
