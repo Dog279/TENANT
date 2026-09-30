@@ -61,8 +61,12 @@ const fitsJS = `(() => {
 // the guard is up, so once it is open any second post has been answered.
 var tapsOpen = chromedp.Poll(`!(performance.now() < document.querySelector('.app').tapUntil)`, nil, chromedp.WithPollingTimeout(6*time.Second))
 
-// datastarUp waits for Datastar: the status strip's first GET is back.
-var datastarUp = chromedp.Poll(`performance.getEntriesByType('resource').some(e => e.name.includes('/ui/status'))`, nil, chromedp.WithPollingTimeout(6*time.Second))
+// datastarUpJS is true once Datastar is up: the status strip's first GET is
+// back.
+const datastarUpJS = `performance.getEntriesByType('resource').some(e => e.name.includes('/ui/status'))`
+
+// datastarUp waits for Datastar on a page of a warm browser.
+var datastarUp = chromedp.Poll(datastarUpJS, nil, chromedp.WithPollingTimeout(6*time.Second))
 
 // visit opens to and waits for Datastar.
 func visit(to string) chromedp.Action {
@@ -292,8 +296,10 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 		t.Fatalf("innerWidth = %d, want %d", width, w)
 	}
 	// #ui-status is there before Datastar: a tap sooner can miss its
-	// handlers (a Logs row, a link, then opened its own page).
-	if err := run(ctx, datastarUp); err != nil {
+	// handlers (a Logs row, a link, then opened its own page). The browser is
+	// still cold, so this wait gets the sign-in's minute: a busy Windows
+	// runner has taken most of a minute to sign in, then over 6s for this.
+	if err := run(ctx, chromedp.Poll(datastarUpJS, nil, chromedp.WithPollingTimeout(time.Minute))); err != nil {
 		t.Fatalf("waiting for Datastar: %v", err)
 	}
 	// TENANT_CHROME_STRESS=1 also slows the page's CPU fourfold, as a busy
