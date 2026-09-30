@@ -274,7 +274,7 @@ func TestSandboxRunArgs(t *testing.T) {
 		{name: "missing --", args: []string{"--surface", "local", "echo", "hi"}, wantErr: "after --"},
 		{name: "missing --surface", args: []string{"--", "echo"}, wantErr: "--surface is required"},
 		{name: "unknown surface", args: []string{"--surface", "cron_shell", "--", "echo"}, wantErr: `unknown surface "cron_shell"`},
-		{name: "unsupported backend", args: []string{"--surface", "local", "--backend", "container", "--", "echo"}, wantErr: "--backend must be host or restricted"},
+		{name: "unsupported backend", args: []string{"--surface", "local", "--backend", "jobobject", "--", "echo"}, wantErr: "--backend must be host, restricted or container"},
 		{name: "empty command", args: []string{"--surface", "local", "--"}, wantErr: "no command after --"},
 		{name: "blank command", args: []string{"--surface", "local", "--", "  "}, wantErr: "no command after --"},
 		{name: "stray argument before --", args: []string{"--surface", "local", "extra", "--", "echo"}, wantErr: `unexpected argument "extra"`},

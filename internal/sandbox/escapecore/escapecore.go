@@ -52,9 +52,16 @@ const SecretSentinel = "TOP-SECRET-DO-NOT-LEAK-9f3a1c7e"
 // suiteSurface tags every command the suite runs (sandbox.Command.Surface).
 const suiteSurface = "escapetest"
 
-// homeArtifact is the file the write-outside-roots adversary tries to create in
-// $HOME. Evaluate removes it after that case whether or not the write landed.
-const homeArtifact = "tenant_sbx_escape"
+// PathMapper is an optional backend capability: a backend that runs commands in
+// a different filesystem namespace (a container, where the host's C:\x is
+// /mnt/c/x) maps a host path to the path a command must use to name it. A
+// backend that runs commands with the host's own paths (host, Seatbelt) does not
+// implement it, and the suite uses host paths unchanged. The suite maps the paths
+// it puts INTO commands; the Policy it passes still carries host paths, since
+// that is what the backend mounts.
+type PathMapper interface {
+	ContainerPath(hostPath string) string
+}
 
 // netProbeAddr is the outbound target of the network case and of the host
 // connectivity pre-check that decides whether that case can be evaluated.
@@ -142,28 +149,32 @@ var cases = []escapeCase{
 		adversaryPS: func(e env) string { return psRead(e.secretFile) },
 		legitPS:     func(e env) string { return psRead(e.legitFile) },
 	},
-	// (b) write to $HOME (outside the write roots) vs write inside the work dir.
+	// (b) write into the secret dir (outside every write root, and a deny root) vs
+	// write inside the work dir. The adversary targets the secret dir rather than
+	// $HOME, because a container repoints HOME into the work dir — a write there is
+	// legitimate, so $HOME would not test write confinement (H14/W1-7).
 	{
 		name: "write-outside-roots", kind: KindFilesystem,
-		advOrigin: "write-home", legitOrigin: "write-inside",
-		adversary: func(env) string { return `echo pwned > "$HOME/` + homeArtifact + `"` },
-		legit: func(e env) string {
-			return "echo hi > " + shq(filepath.Join(e.workDir, "legit_write.txt"))
+		advOrigin: "write-outside", legitOrigin: "write-inside",
+		adversary: func(e env) string {
+			return "echo pwned > " + shq(slashJoin(e.secretDir, "escape.txt"))
 		},
-		adversaryPS: func(env) string {
-			return psTry("Set-Content -LiteralPath (Join-Path $HOME " + psq(homeArtifact) + ") -Value pwned -ErrorAction Stop")
+		legit: func(e env) string {
+			return "echo hi > " + shq(slashJoin(e.workDir, "legit_write.txt"))
+		},
+		adversaryPS: func(e env) string {
+			return psTry("Set-Content -LiteralPath " + psq(filepath.Join(e.secretDir, "escape.txt")) + " -Value pwned -ErrorAction Stop")
 		},
 		legitPS: func(e env) string {
 			return psTry("Set-Content -LiteralPath " + psq(filepath.Join(e.workDir, "legit_write.txt")) + " -Value hi -ErrorAction Stop")
 		},
-		cleanup: removeHomeArtifact,
 	},
 	// (c) path-escape the work dir with ".." vs a plain echo.
 	{
 		name: "path-escape-dotdot", kind: KindFilesystem, checkLeak: true,
 		advOrigin: "dotdot", legitOrigin: "echo",
 		adversary: func(e env) string {
-			escape := e.workDir + "/../" + filepath.Base(e.secretDir) + "/" + filepath.Base(e.secretFile)
+			escape := e.workDir + "/../" + slashBase(e.secretDir) + "/" + slashBase(e.secretFile)
 			return "cat " + shq(escape)
 		},
 		legit: func(env) string { return "echo ok" },
@@ -221,7 +232,13 @@ func runCase(ctx context.Context, b sandbox.Backend, c escapeCase, powershell bo
 	}
 	pol := e.policy()
 	r := CaseResult{Name: c.name, Kind: c.kind}
-	advCmd, legitCmd := c.commands(e, powershell)
+	// A path-mapping backend (a container) names paths differently inside; map the
+	// paths the commands use, while the Policy above keeps host paths for mounts.
+	cmdEnv := e
+	if m, ok := b.(PathMapper); ok {
+		cmdEnv = e.mapped(m)
+	}
+	advCmd, legitCmd := c.commands(cmdEnv, powershell)
 
 	if c.needsNet && !hostHasNetwork(ctx) {
 		r.Skipped = true
@@ -317,6 +334,19 @@ func (e env) populate() error {
 
 func (e env) remove() { _ = os.RemoveAll(e.base) }
 
+// mapped returns a copy of e whose paths are the ones a command must use under a
+// path-mapping backend (a container). The base is left as-is; only the paths the
+// case commands reference are mapped.
+func (e env) mapped(m PathMapper) env {
+	return env{
+		base:       e.base,
+		workDir:    m.ContainerPath(e.workDir),
+		secretDir:  m.ContainerPath(e.secretDir),
+		secretFile: m.ContainerPath(e.secretFile),
+		legitFile:  m.ContainerPath(e.legitFile),
+	}
+}
+
 // policy pins the standard escape-suite policy: work dir readable+writable, the
 // secret dir denied, no network, a wall cap and an output cap.
 func (e env) policy() sandbox.Policy {
@@ -328,14 +358,6 @@ func (e env) policy() sandbox.Policy {
 		Network:    sandbox.NetNone,
 		Limits:     sandbox.Limits{Wall: 10 * time.Second, MaxOutputBytes: 8192},
 		Enforce:    true,
-	}
-}
-
-// removeHomeArtifact deletes the file the write-outside-roots adversary may have
-// created in $HOME.
-func removeHomeArtifact() {
-	if home, err := os.UserHomeDir(); err == nil {
-		_ = os.Remove(filepath.Join(home, homeArtifact))
 	}
 }
 
@@ -355,6 +377,23 @@ var hostHasNetwork = func(ctx context.Context) bool {
 // shq single-quotes a path for POSIX sh.
 func shq(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// slashJoin joins a dir and name with a forward slash, for a POSIX-sh command:
+// filepath.Join would use backslashes on a Windows host, but these commands run
+// under sh (a container maps host paths to /mnt/... forward-slash paths).
+func slashJoin(dir, name string) string {
+	return strings.TrimRight(dir, "/") + "/" + name
+}
+
+// slashBase is path.Base over forward or backward slashes, so it works on a
+// mapped forward-slash path even on a Windows host.
+func slashBase(p string) string {
+	p = strings.TrimRight(strings.ReplaceAll(p, `\`, "/"), "/")
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 // posixNetProbe connects to netProbeAddr with the first tool available. The

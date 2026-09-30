@@ -5,7 +5,7 @@ package main
 //
 //	tenant sandbox probe [--json]
 //	tenant sandbox selftest [--json]
-//	tenant sandbox run --surface S [--backend host|restricted] [--timeout 60s] [--workdir DIR] -- COMMAND...
+//	tenant sandbox run --surface S [--backend host|restricted|container] [--timeout 60s] [--workdir DIR] -- COMMAND...
 //
 // probe resolves every surface's exec profile exactly as the spawn sites do and
 // prints its backend, isolation, network mode and roots, plus what that backend
@@ -54,17 +54,19 @@ import (
 var sandboxSurfaces = execSurfaces
 
 const sandboxRunUsage = "usage: tenant sandbox run --surface <local|discord|imessage|cron-exec|cron-shell> " +
-	"[--backend host|restricted] [--timeout 60s] [--workdir DIR] -- <command...>"
+	"[--backend host|restricted|container] [--timeout 60s] [--workdir DIR] -- <command...>"
 
 const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
 
   probe [--json]      each surface's exec profile: backend, isolation, network mode, roots,
                       and what that backend enforces on this host; plus whether this OS has
                       a restricted backend. Exits 1 if a surface's backend is unavailable.
-  selftest [--json]   run the escape suite against the host (baseline) and restricted
-                      backends. Exits 1 if the restricted backend fails a claim it makes,
-                      a legitimate twin fails, or this OS has no restricted backend.
-  run --surface S [--backend host|restricted] [--timeout 60s] [--workdir DIR] -- COMMAND...
+  selftest [--json] [--backend restricted|container]
+                      run the escape suite against the host (baseline) and the confining
+                      backend (default restricted; container is the Docker backend, the
+                      Windows test bed). Exits 1 if it fails a claim it makes, a legitimate
+                      twin fails, or the backend is unavailable.
+  run --surface S [--backend host|restricted|container] [--timeout 60s] [--workdir DIR] -- COMMAND...
                       run one command under surface S's profile the way its spawn site
                       would; prints output, exit code, timeout and violations. Exits 1
                       unless the command ran cleanly.
@@ -73,6 +75,10 @@ const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
                       real sandbox boundary inside a disposable fake environment with
                       canary secrets. Reports what the boundary contained; exits 1 if the
                       model escapes a boundary the backend claims to enforce.
+  image build|verify [--cli docker] [--tag tenant-sandbox:latest]
+                      build the container backend's image from the embedded, digest-pinned
+                      Dockerfile (no registry beyond the base), or verify it is present and
+                      print its id and base.
 
   probe and run take --config DIR / --data DIR / --agent ID to select the instance.`
 
@@ -95,6 +101,8 @@ func sandboxMain(ctx context.Context, args []string, out io.Writer) error {
 		return sandboxRun(ctx, args[1:], out)
 	case "redteam":
 		return sandboxRedteam(ctx, args[1:], out)
+	case "image":
+		return sandboxImage(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprintln(out, sandboxUsage)
 		return nil
@@ -486,6 +494,41 @@ func sbxRows(w io.Writer, indent string, width int, label string, vals []string,
 	}
 }
 
+// -------------------------------------------------------------- image ---
+
+// sandboxImage builds or verifies the container backend's image.
+func sandboxImage(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: tenant sandbox image <build|verify> [--cli docker] [--tag tenant-sandbox:latest]")
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("sandbox image", flag.ContinueOnError)
+	cli := fs.String("cli", "docker", "the docker-compatible CLI to use")
+	tag := fs.String("tag", sandbox.DefaultImageTag(), "the image tag to build or verify")
+	if err := fs.Parse(args[1:]); err != nil {
+		return sbxHelpOK(err)
+	}
+	switch sub {
+	case "build":
+		fmt.Fprintf(out, "building %s from %s (this contacts a registry for the base only)\n", *tag, sandbox.BaseImageRef())
+		id, err := sandbox.BuildImage(ctx, *cli, *tag, func(line string) { fmt.Fprintln(out, "  "+line) })
+		if err != nil {
+			return fmt.Errorf("sandbox image build: %w", err)
+		}
+		fmt.Fprintf(out, "built %s\n  id:   %s\n  base: %s\n", *tag, id, sandbox.BaseImageRef())
+		return nil
+	case "verify":
+		id, err := sandbox.VerifyImage(ctx, *cli, *tag)
+		if err != nil {
+			return fmt.Errorf("sandbox image verify: %w", err)
+		}
+		fmt.Fprintf(out, "%s is present\n  id:   %s\n  base: %s\n", *tag, id, sandbox.BaseImageRef())
+		return nil
+	default:
+		return fmt.Errorf("sandbox image: unknown subcommand %q (want build or verify)", sub)
+	}
+}
+
 // ------------------------------------------------------------- selftest ---
 
 // selftestRun is one backend's pass through the escape suite.
@@ -675,6 +718,7 @@ type selftestCaseView struct {
 func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("sandbox selftest", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "print the report as JSON")
+	backend := fs.String("backend", "restricted", "the confining backend to test: restricted|container")
 	if err := fs.Parse(args); err != nil {
 		return sbxHelpOK(err)
 	}
@@ -684,7 +728,7 @@ func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 
 	host := evaluateBackend(ctx, sandbox.Host())
 
-	b, rerr := sandbox.Restricted()
+	b, rerr := confinedBackendFor(ctx, *backend)
 
 	var restricted *selftestRun
 	unavailable := ""
@@ -711,6 +755,29 @@ func sandboxSelftest(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("sandbox selftest failed: %d problem(s)", len(d.Problems))
 	}
 	return nil
+}
+
+// confinedBackendFor resolves the confining backend selftest evaluates. The
+// default "restricted" is the OS-native backend (macOS Seatbelt); "container"
+// is the Docker backend, reported unavailable (never a hard error) when its
+// engine or image is not ready, so the selftest says why rather than failing
+// every case. Any other name resolves through sandbox.For.
+func confinedBackendFor(ctx context.Context, name string) (sandbox.Backend, error) {
+	switch name {
+	case "", "restricted":
+		return sandbox.Restricted()
+	case "container":
+		b, err := sandbox.For("container")
+		if err != nil {
+			return nil, err
+		}
+		if caps := b.Probe(ctx); caps.Filesystem != sandbox.EnforceFull {
+			return nil, fmt.Errorf("the container backend is not ready: %s", caps.Detail)
+		}
+		return b, nil
+	default:
+		return sandbox.For(name)
+	}
 }
 
 func evaluateBackend(ctx context.Context, b sandbox.Backend) selftestRun {
@@ -874,7 +941,7 @@ func parseSandboxRunArgs(args []string) (sandboxRunOpts, error) {
 	fs := flag.NewFlagSet("sandbox run", flag.ContinueOnError)
 	o := sandboxRunOpts{dirs: bindSandboxDirs(fs)}
 	fs.StringVar(&o.surface, "surface", "", "surface whose exec profile to run under: "+strings.Join(sandboxSurfaces, "|"))
-	fs.StringVar(&o.backend, "backend", "", "force a backend instead of the profile's: host|restricted")
+	fs.StringVar(&o.backend, "backend", "", "force a backend instead of the profile's: host|restricted|container")
 	fs.DurationVar(&o.timeout, "timeout", 60*time.Second, "wall-clock limit for the command")
 	fs.StringVar(&o.workDir, "workdir", "", "run in this dir (default: the profile's work dir, else a fresh temp dir)")
 	if err := fs.Parse(flagArgs); err != nil {
@@ -893,9 +960,9 @@ func parseSandboxRunArgs(args []string) (sandboxRunOpts, error) {
 		return sandboxRunOpts{}, fmt.Errorf("sandbox run: unknown surface %q (want one of %s)", o.surface, strings.Join(sandboxSurfaces, ", "))
 	}
 	switch o.backend {
-	case "", "host", "restricted":
+	case "", "host", "restricted", "container":
 	default:
-		return sandboxRunOpts{}, fmt.Errorf("sandbox run: --backend must be host or restricted, got %q", o.backend)
+		return sandboxRunOpts{}, fmt.Errorf("sandbox run: --backend must be host, restricted or container, got %q", o.backend)
 	}
 	if o.timeout <= 0 {
 		return sandboxRunOpts{}, fmt.Errorf("sandbox run: --timeout must be positive, got %s", o.timeout)

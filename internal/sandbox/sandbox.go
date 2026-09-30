@@ -16,8 +16,9 @@
 //     docs/plans/docker-sandbox-plan.md.)
 //   - jobobject  Windows only: a Job Object that caps resources and scopes the
 //     environment, confining no filesystem or network.
-//   - container  an ephemeral hardened Docker container per run, on every OS
-//     (planned: docs/plans/docker-sandbox-plan.md).
+//   - container  an ephemeral hardened Docker container per run, on every OS,
+//     driven through the docker CLI (container.go; the hardening is
+//     docs/plans/docker-sandbox-hardening.md).
 //
 // The vocabulary (allow/deny read+write roots, allowed domains, resolved-address
 // blocking) mirrors Anthropic's sandbox-runtime so profiles are portable and
@@ -324,6 +325,16 @@ type Backend interface {
 	Run(ctx context.Context, cmd Command, pol Policy) (Result, error)
 }
 
+// Available is an optional backend check for whether it can actually run here,
+// now — beyond merely being a known backend. The container backend implements it
+// (the engine must be reachable and its image built); a backend that is always
+// ready does not. A caller treats a non-nil result exactly as it treats For
+// returning an error: an enforcing profile fails closed, a dry run falls back to
+// the host.
+type Available interface {
+	Available(ctx context.Context) error
+}
+
 // jobObjectFactory is installed on Windows: the Job Object backend, which caps
 // resources and scopes the environment but confines no filesystem or network.
 var jobObjectFactory func() Backend
@@ -361,7 +372,7 @@ func For(name string) (Backend, error) {
 		}
 		return jobObjectFactory(), nil
 	case "container":
-		return nil, fmt.Errorf("sandbox: the container backend is not implemented")
+		return Container(ContainerOptions{}), nil
 	default:
 		return nil, fmt.Errorf("sandbox: unknown backend %q", name)
 	}

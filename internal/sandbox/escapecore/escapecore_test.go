@@ -3,9 +3,7 @@ package escapecore
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -34,7 +32,7 @@ func (f *fakeBackend) Run(_ context.Context, cmd sandbox.Command, pol sandbox.Po
 // legitimate twin cleanly — an ideal confining backend.
 func denyAdversaries(cmd sandbox.Command, _ sandbox.Policy) (sandbox.Result, error) {
 	switch cmd.Origin {
-	case "read-secret", "write-home", "dotdot", "net":
+	case "read-secret", "write-outside", "dotdot", "net":
 		return sandbox.Result{ExitCode: 1, Output: "Operation not permitted"}, nil
 	}
 	return sandbox.Result{Output: "ok"}, nil
@@ -157,7 +155,7 @@ func TestEscapeCore_InfraErrorStops(t *testing.T) {
 	pinNetwork(t, false)
 	boom := errors.New("sandbox-exec missing")
 	f := &fakeBackend{run: func(cmd sandbox.Command, pol sandbox.Policy) (sandbox.Result, error) {
-		if cmd.Origin == "write-home" {
+		if cmd.Origin == "write-outside" {
 			return sandbox.Result{}, boom
 		}
 		return denyAdversaries(cmd, pol)
@@ -209,11 +207,6 @@ func TestEscapeCore_HostBaseline(t *testing.T) {
 	}
 	if !strings.Contains(results[0].AdversarialOutput, SecretSentinel) {
 		t.Errorf("host read of the secret should return the sentinel, got %q", results[0].AdversarialOutput)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if _, err := os.Stat(filepath.Join(home, homeArtifact)); !os.IsNotExist(err) {
-			t.Errorf("$HOME/%s was not cleaned up (stat err=%v)", homeArtifact, err)
-		}
 	}
 }
 
