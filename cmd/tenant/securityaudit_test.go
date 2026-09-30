@@ -21,13 +21,13 @@ var (
 func TestSecurityAuditExecutionFromLiveProfiles(t *testing.T) {
 	resetExecProfiles(t)
 	cfgDir, dataDir := t.TempDir(), t.TempDir()
-	withBuiltinExec(t, "host", "bubblewrap (bwrap) not on PATH")
+	withBuiltinExec(t, "host", "no restricted backend on linux: restricted is macOS-only")
 	report, err := runSecurityAuditJSON(t, "--config", cfgDir, "--data", dataDir, "--os", "--os-allow-exec")
 	if err == nil || !hasSecurityFinding(report.Findings, "permissions.host-exec-allow") {
 		t.Fatalf("host fallback + exec allow must be critical: err=%v findings=%+v", err, report.Findings)
 	}
 	if len(report.Execution.Surfaces) != len(execSurfaces) || report.Execution.Isolation != "none" ||
-		report.Execution.Surfaces[0].Fallback != "bubblewrap (bwrap) not on PATH" {
+		report.Execution.Surfaces[0].Fallback != "no restricted backend on linux: restricted is macOS-only" {
 		t.Fatalf("execution = %+v", report.Execution)
 	}
 	var host securityFinding
@@ -36,7 +36,7 @@ func TestSecurityAuditExecutionFromLiveProfiles(t *testing.T) {
 			host = f
 		}
 	}
-	if !strings.Contains(host.Summary, "bwrap") || !strings.Contains(host.Summary, "cron-shell") {
+	if !strings.Contains(host.Summary, "macOS-only") || !strings.Contains(host.Summary, "cron-shell") {
 		t.Errorf("execution.host must name the surfaces and why: %+v", host)
 	}
 
@@ -179,7 +179,7 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 			name: "an enforcing profile whose backend is missing runs nothing",
 			report: securityAuditReport{
 				Execution: executionAudit{Enabled: true, Isolation: "unavailable", Surfaces: []surfaceProbe{
-					{Surface: surfaceCronShell, Backend: "restricted", Mode: "enforce", Error: "no bwrap"}}},
+					{Surface: surfaceCronShell, Backend: "restricted", Mode: "enforce", Error: "no restricted backend"}}},
 			},
 			wantWarnings:  1,
 			wantFindingID: "execution.unavailable",

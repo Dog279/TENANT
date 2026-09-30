@@ -32,7 +32,8 @@ build on.
 1. **Extension boundaries.** There are two stable ones:
    - **MCP servers.** A tool you want Tenant to have runs as an MCP server. Tenant talks
      to it over the protocol, gates it with connector trust and tool rules, and, for a
-     local server, runs it out of process under the execution sandbox (EXT-003 / TEN-318).
+     local server, runs it out of process under the execution sandbox where the OS has one
+     (EXT-003 / TEN-318).
    - **Agent Skills.** Know-how you want Tenant to have is a skill: a `SKILL.md` package in
      the open Agent Skills format that Tenant imports, exports, versions and trusts
      explicitly (EXT-001 / TEN-298).

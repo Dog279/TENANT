@@ -273,19 +273,14 @@ func TestLocalServerUnderJobObject(t *testing.T) {
 	}
 }
 
-// Under the restricted backend, with its defaults, a server installed in its
-// work dir works, and can neither reach the network nor read Tenant's
-// credentials or a denied root, in any letter case (TEN-318 AC1). On Windows
-// it runs as a Linux program in WSL.
+// Under the restricted backend (macOS), with its defaults, a server installed
+// in its work dir works, and can neither reach the network nor read Tenant's
+// credentials or a denied root, in any letter case (TEN-318 AC1).
 func TestLocalServerIsConfinedUnderRestricted(t *testing.T) {
 	if _, err := sandbox.Restricted(); err != nil {
 		t.Skipf("no restricted backend here: %v", err)
 	}
-	goos := runtime.GOOS
-	if goos == "windows" {
-		goos = "linux" // restricted is WSL: a Linux program
-	}
-	built := buildMCPEcho(t, goos)
+	built := buildMCPEcho(t, runtime.GOOS)
 	cfg, data := t.TempDir(), t.TempDir()
 	creds := filepath.Join(cfg, "credentials.json")
 	if err := os.WriteFile(creds, []byte(`{"secrets":{"x":"CANARY-318-creds"}}`), 0o600); err != nil {
@@ -296,7 +291,7 @@ func TestLocalServerIsConfinedUnderRestricted(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("CANARY-318"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Installed in its own work dir, the one Windows path it can see.
+	// Installed in its own work dir.
 	work := filepath.Join(data, "mcp", "boxed")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)
@@ -315,7 +310,7 @@ func TestLocalServerIsConfinedUnderRestricted(t *testing.T) {
 		t.Fatalf("call = %q", out)
 	}
 	for _, path := range []string{secret, creds} {
-		for _, variant := range []string{wslPath(path), strings.ToLower(wslPath(path))} {
+		for _, variant := range []string{path, strings.ToLower(path)} {
 			if out := callTool(t, mux, "readfile", map[string]string{"path": variant}); strings.Contains(out, "CANARY-318") {
 				t.Errorf("the server read %s: %q", variant, out)
 			}
@@ -324,14 +319,6 @@ func TestLocalServerIsConfinedUnderRestricted(t *testing.T) {
 	if out := callTool(t, mux, "dial", map[string]string{"addr": "1.1.1.1:443"}); out == "connected" {
 		t.Error("the server reached the network with network none")
 	}
-}
-
-// wslPath is where a Windows path appears inside WSL's default mount.
-func wslPath(p string) string {
-	if runtime.GOOS != "windows" || len(p) < 3 || p[1] != ':' {
-		return p
-	}
-	return "/mnt/" + strings.ToLower(p[:1]) + filepath.ToSlash(p[2:])
 }
 
 // Only first-party code runs in Tenant's process: every in-process plugin on

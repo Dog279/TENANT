@@ -16,16 +16,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// The registered Windows restricted backend is the WSL-bubblewrap backend in
-// wsl_windows.go (all restricted → WSL). The Job Object backend below is kept as
-// a resource-limit primitive, resolved as "jobobject": it enforces job memory /
-// CPU-time / active-process caps and kill-on-close, which bubblewrap-through-WSL
-// does not, and confines no filesystem root or network. The native confinement
-// path once planned on top of it (a dedicated sandbox account, NTFS ACEs, a WFP
-// egress filter) is retired: WSL2 + bubblewrap replaces it (owner decision
-// 2026-09-29, docs/plans/sandboxing-plan.md).
+// Windows has no restricted backend: the confining sandbox on every OS is the
+// planned container backend (docs/plans/docker-sandbox-plan.md). The Job Object
+// backend below is a resource-limit primitive, resolved as "jobobject": it
+// enforces job memory / CPU-time / active-process caps and kill-on-close, and
+// confines no filesystem root or network.
 
-// Compile-time proof that the pure JOB_OBJECT_LIMIT_* values in spec.go still
+// Compile-time proof that the pure JOB_OBJECT_LIMIT_* values in joblimits.go still
 // equal golang.org/x/sys/windows' own. If x/sys ever renumbered one, the XOR is
 // non-zero and uint32(0) minus a positive constant is a negative constant, which
 // overflows uint32 and stops this file compiling — a loud, early failure instead
@@ -41,8 +38,7 @@ const (
 // kill-on-close, nothing more. Probe says so, so nothing is over-claimed.
 type windowsRestricted struct{}
 
-// newJobObjectBackend returns the Windows Job Object limits primitive. It is NOT
-// the registered restricted backend (that is WSL bubblewrap, wsl_windows.go).
+// newJobObjectBackend returns the Windows Job Object limits primitive.
 func newJobObjectBackend() Backend { return &windowsRestricted{} }
 
 func (*windowsRestricted) Name() string         { return "jobobject" }
@@ -57,9 +53,9 @@ func (*windowsRestricted) Probe(context.Context) Capabilities {
 		Limits:     EnforceFull, // Job Object: job memory, active-process, CPU-time, kill-on-close
 		Env:        EnforceFull, // the env allowlist is honoured via materialize
 		Shell:      "powershell",
-		Detail: "windows Job Object limits primitive (not the restricted backend; restricted uses WSL): " +
+		Detail: "windows Job Object limits primitive: " +
 			"job memory, active-process, CPU-time and kill-on-close are enforced; no filesystem-root or " +
-			"network enforcement (for that, use restricted)",
+			"network enforcement",
 	}
 }
 

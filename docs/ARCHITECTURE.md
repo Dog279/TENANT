@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 1,178 |
-| Test files | 574 |
-| Production Go LOC | 151,234 |
-| Test Go LOC | 117,348 |
+| Go files | 1,173 |
+| Test files | 571 |
+| Production Go LOC | 149,990 |
+| Test Go LOC | 115,774 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -1108,12 +1108,9 @@ a fast fail-early layer. The boundary is the execution sandbox
 (§5.12h): `os_exec` runs through the runner injected as
 `Config.Runner`, on a `sandbox.Backend` picked per surface from the
 operator's `exec_profiles`. The built-in profile is `restricted` in
-dry run on macOS (Seatbelt) and Windows (bubblewrap in WSL2: commands
-run as Linux `sh`, and the os_exec description says so), else `host`,
-which confines **nothing** (Linux, or no WSL; `builtinExec` says why).
-A dry run confines nothing either: a refused command re-runs outside the
-sandbox (`sandbox.Outside`: the host, or on Windows `sh` in the same
-distro). A surface is contained only once enforcement is on
+dry run on macOS (Seatbelt), else `host`, which confines **nothing**
+(Linux and Windows; `builtinExec` says why). A dry run confines nothing
+either: a refused command re-runs on the host. A surface is contained only once enforcement is on
 (`exec_profiles.default.enforce`), and only as far as that OS's backend
 enforces (`tenant sandbox probe` / `selftest`). Until then: keep exec off
 unless needed, run Tenant as a least-privilege user, prefer a
@@ -1177,15 +1174,12 @@ boundary. Operator guide and change record:
     then fail closed;
   - `jobobject` → the Windows Job Object: resource caps and the environment
     allowlist, no filesystem or network confinement (Windows only);
-  - `container` → an error (not implemented).
+  - `container` → an error (planned: `docs/plans/docker-sandbox-plan.md`).
 - `Start(ctx, b, argv, pol)` runs a long-lived process with open pipes under
   the same boundary as `Run`: a local MCP server over stdio (TEN-318). Every
-  backend is a `Starter`. Bubblewrap, Seatbelt and WSL cap its memory and CPU
-  with `ulimit` before it runs, failing the start if they cannot; the Job
-  Object caps memory, CPU and processes; `StartLimits` names which. Under WSL
-  the Windows drives are hidden unless granted (a deny mask cannot guard a
-  case-insensitive Windows path), and the environment allowlist crosses by
-  `WSLENV`, never on a command line.
+  backend is a `Starter`. Seatbelt caps its memory and CPU with `ulimit`
+  before it runs, failing the start if it cannot; the Job Object caps
+  memory, CPU and processes; `StartLimits` names which.
 - `Policy{WorkDir, ReadRoots, WriteRoots, DenyRoots, Network, Allow,
   Env, Limits, Enforce}`:
   - `Network` is `inherit` | `none` | `allowlist` | `full`. Nothing enforces a
@@ -1230,50 +1224,14 @@ boundary. Operator guide and change record:
   - Refusals are attributed from the EPERM text (a heuristic).
   - The default-deny also blocks Mach/XPC lookups and signals to
     processes outside the sandbox.
-- `restricted`, Linux (`restricted_linux.go`; the argv is built by the
-  pure `bwrapArgs` in `spec.go`): bubblewrap. Needs `bwrap` on `PATH`.
-  - Whole-host `--ro-bind` with `/run` hidden when `ReadRoots` is empty;
-    otherwise an allowlist of system dirs plus the read roots
-    (`--ro-bind-try`). A private `/tmp`.
-  - rw binds for `WriteRoots`, then stat-aware deny masks (directory →
-    tmpfs, file → `/dev/null`, absent → skipped), then the `WorkDir`
-    bind, with deny roots inside it masked again; then every tmpfs layer
-    but `/tmp` is remounted read-only.
-  - `--cap-drop ALL`, fresh pid/ipc/uts namespaces, `--unshare-net` for
-    `none`, `--die-with-parent`, `--new-session`.
-  - Caps: `bwrapLimitArgv` sets memory, CPU and process rlimits in the
-    sandbox's own shell (processes counted per sandbox user namespace);
-    Run caps output as it arrives.
-  - Availability: a self-check run on first use; a missing `bwrap` or
-    restricted user namespaces make `restricted` unavailable, with the
-    reason.
-  - Refusals are attributed from the output (`attributeBwrapDenial`):
-    read-only-filesystem writes and, with the network disabled,
-    unreachable/unresolvable connects. Reads of a masked root look like
-    ENOENT and are not attributed. No Landlock (decision 2026-09-29).
-- `restricted`, Windows (`wsl_windows.go`): the command runs inside a
-  WSL2 distro under bubblewrap, so it gets the same filesystem/network
-  confinement as Linux. Windows paths in a policy are translated to their
-  WSL mount (`C:\x` → `/mnt/c/x`); the command runs as Linux `sh`.
-  - Discovery (once per process) finds a distro whose bubblewrap actually
-    works: an operator override (`TENANT_SANDBOX_WSL_DISTRO`), then the
-    default distro, then any installed distro, each namespace-self-checked.
-    If none can confine, `restricted` **fails closed** — never unconfined.
-  - Limits are wall-clock only through the WSL boundary; env is WSL's
-    default, not a strict allowlist yet (`probe` reports both `partial`).
-  - Its unsandboxed twin (`Unconfined`, `wslUnsandboxed`) runs the same
-    `sh` line in the same distro without bubblewrap: `sandbox.Execute`
-    re-runs a refused command there, so a dry run or an approved
-    escalation never turns it into PowerShell. Only there does WSL interop
-    start Windows programs; inside, an `.exe` is a `program` refusal
-    ("Windows programs run only outside the sandbox").
-  - A dry run leaves the Windows drives visible read-only; enforcing hides
-    them except the work dir and write roots.
-- The Job Object (`restricted_windows.go`, `newJobObjectBackend`) is kept
-  as a resource-limit primitive — memory, active-process and per-process
-  CPU caps from `Limits`, plus kill-on-close. The native token/ACE/WFP
-  path once planned on it is retired: WSL2 bubblewrap replaces it
-  (decision 2026-09-29). It is not the registered `restricted` backend.
+- There is no `restricted` backend on Linux or Windows: the bubblewrap
+  backends (Linux, and Windows through WSL2) were removed on 2026-09-30.
+  The confining tier for every OS is the planned container backend.
+- The Job Object (`restricted_windows.go`, `newJobObjectBackend`) is a
+  Windows resource-limit primitive, resolved as `jobobject`: memory,
+  active-process and per-process CPU caps from `Limits` (mapped by the
+  pure `joblimits.go`), plus kill-on-close. It confines no filesystem or
+  network.
 
 **Escape suite:** `escapecore` is a testing-free case table: read a
 secret outside the roots, write outside the roots, a `..` escape, and
@@ -1282,8 +1240,6 @@ backs both `escapetest.Harness` (`go test`) and `tenant sandbox
 selftest`. `redteam_darwin_test.go` adds the macOS adversarial cases:
 hard/symlinks, rename, Mach/XPC, signals, nested `sandbox-exec`,
 persistence, deny-root metadata and background processes.
-`redteam_linux_test.go` adds the Linux ones (plan cases 1–8), live in CI
-with `TENANT_SANDBOX_LIVE=1`.
 
 **Wiring (`cmd/tenant/execprofiles.go`):**
 - The exec surfaces (`local`, `discord`, `imessage`, `cron-exec`,
@@ -1310,9 +1266,9 @@ with `TENANT_SANDBOX_LIVE=1`.
 
 **Invariants:**
 - The built-in default never blocks a command it recognises as
-  refused: a dry run re-runs it outside the sandbox, in the same
-  language, and where `restricted` can't dry-run, the default is `host`,
-  with the reason in probe, audit and doctor.
+  refused: a dry run re-runs it on the host, and where there is no
+  `restricted` backend, the default is `host`, with the reason in probe,
+  audit and doctor.
 - An enforcing profile's unavailable backend fails closed: the command
   is not run. A dry-run profile's runs on the host (`sandbox/2005`).
 - No agent tool reads or writes a profile.
@@ -1321,14 +1277,11 @@ with `TENANT_SANDBOX_LIVE=1`.
 
 **Verified:** green on macOS, Linux and Windows. Seatbelt is live-tested:
 the escape suite contains 4/4 (host 0/4), and the red-team suite is
-contained, with one recorded skip (macOS has no PID or memory cap). Linux
-bubblewrap is live-tested (`selftest` 4/4) and its red-team suite runs
-in CI. Windows
-`restricted` runs through WSL2 bubblewrap and is live-tested (secret read,
-write-outside and network containment); the Job Object limits primitive
-has its own live tests. **Status:** the seam, `host`, Seatbelt, Linux
-bubblewrap and the Windows WSL backend are complete; native Windows
-confinement (token/ACE/WFP) is retired in favour of WSL2 bubblewrap.
+contained, with one recorded skip (macOS has no PID or memory cap). The
+Job Object limits primitive has its own live tests. **Status:** the seam,
+`host` and Seatbelt are complete; the bubblewrap backends were removed
+(2026-09-30), and a Docker `container` backend for every OS is planned
+(`docs/plans/docker-sandbox-plan.md`).
 
 ### 5.13a `internal/backup` + `internal/datalock` — Backup, verify, restore
 

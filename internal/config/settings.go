@@ -53,8 +53,9 @@ type Settings struct {
 // ExecProfile is one operator override under "exec_profiles", keyed by a
 // surface or "default" (every surface without its own entry). Unset fields keep
 // the built-in profile: the restricted backend in dry run (network none for
-// cron-shell), or the host where restricted can't dry-run. An entry that names
-// a backend keeps the older defaults instead: enforce on, network inherit.
+// cron-shell) on macOS, or the host where there is no restricted backend. An
+// entry that names a backend keeps the older defaults instead: enforce on,
+// network inherit.
 // deny_roots ADD to the built-in deny set; nothing can remove Tenant's own dirs
 // from it.
 type ExecProfile struct {

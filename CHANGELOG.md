@@ -28,6 +28,15 @@ Releases page.
   - a second callback can't block the flow.
 
 ### Removed
+- **The Linux and Windows `restricted` sandbox backends**: bubblewrap, and bubblewrap inside
+  WSL2. `restricted` is now macOS-only (Seatbelt).
+  - Linux and Windows run commands on the host until the container backend ships
+    (docs/plans/docker-sandbox-plan.md). On Windows that means PowerShell, and `cmd /C` for
+    cron.
+  - An `exec_profiles` entry that names `restricted` there fails closed when it enforces.
+  - A local MCP server with the default sandbox doesn't start there until its entry sets
+    `"sandbox": "host"`.
+  - `TENANT_SANDBOX_WSL_DISTRO` is gone.
 - **`gateway.mode: "both"` and `tenant setup --both`.** One `mcp-memory` process serves one
   transport, so "both" never served stdio as well. A saved `"both"` loads as `"sse"`, which
   is what it already did.

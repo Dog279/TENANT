@@ -1,5 +1,8 @@
 # Tenant sandboxing — limit blast radius when the model acts up, without breaking what works
 
+> **Superseded in part (2026-09-30):** the Linux and Windows bubblewrap backends were removed and
+> the container tier is planned on its own: [docker-sandbox-plan.md](docker-sandbox-plan.md).
+
 Prepared 2026-09-22 against `feat/logs-hub` (the R340 production line). Anchors below were
 verified on that tree today; origin/main anchors are marked as such.
 

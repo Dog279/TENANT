@@ -109,7 +109,7 @@ type escapeCase struct {
 // the backend under test actually runs: the PowerShell forms when powershell is
 // true (a Windows-native backend), the POSIX-sh forms otherwise. The caller
 // derives powershell from the backend's Capabilities.Shell, so a backend that
-// runs sh on a Windows host (the WSL backend) still gets the sh forms.
+// runs sh on a Windows host (a Linux container) still gets the sh forms.
 func (c escapeCase) commands(e env, powershell bool) (adversary, legit string) {
 	if powershell {
 		return c.adversaryPS(e), c.legitPS(e)
@@ -358,7 +358,7 @@ func shq(s string) string {
 }
 
 // posixNetProbe connects to netProbeAddr with the first tool available. The
-// bash-only /dev/tcp is not usable under dash (Debian/Ubuntu/WSL /bin/sh), so it
+// bash-only /dev/tcp is not usable under dash (Debian/Ubuntu /bin/sh), so it
 // runs bash explicitly, then falls back to python3 and nc. Exit 0 means it
 // connected; 127 means no probe tool exists, which the host baseline exposes as
 // an unproven case rather than a false "contained".

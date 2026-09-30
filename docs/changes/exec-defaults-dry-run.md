@@ -1,9 +1,8 @@
 # Change: the execution sandbox runs by default, in dry run (TEN-345 / TEN-347)
 
-**Branch:** `audit/exec-defaults` (on top of `audit/linux-sandbox`) · **Status:** implemented,
-tested live on macOS, cross-built and vetted for Linux and Windows. The Windows WSL path is
-unit-tested only: it still has to be verified on a Windows box (see
-[Windows (the R340)](#windows-the-r340)). Not yet deployed.
+**Status:** merged. Since the bubblewrap backends were removed (2026-09-30), `restricted` is
+macOS-only, and Linux and Windows run commands on the host until the container backend ships
+([docker-sandbox-plan.md](../plans/docker-sandbox-plan.md)).
 
 ## What changed
 
@@ -11,7 +10,7 @@ unit-tested only: it still has to be verified on a Windows box (see
 every surface (`local`, `discord`, `imessage`, `cron-exec`, `cron-shell`, and sub-agents, which
 take their parent's) now uses the `restricted` backend in **dry run**. In a dry run the sandbox
 runs the command first. If it refuses something (a write outside the allowed folders, a read of
-a credential store, a network call where the network is off, a Windows program), the command runs
+a credential store, a network call where the network is off), the command runs
 again **outside** the sandbox, and the refusal is logged. No approval is asked for, and nothing it
 recognises is blocked; [Known limits](#known-limits) lists the refusals it can't recognise, which
 still fail. `cron-shell` also defaults to **no network**. In a dry run that is only logged too.
@@ -21,12 +20,12 @@ still fail. `cron-shell` also defaults to **no network**. In a dry run that is o
 | OS | Built-in default | Why |
 |---|---|---|
 | macOS | `restricted` (Seatbelt), dry run | Its refusals are recognised. Tenant checks once at start that `sandbox-exec` works, and falls back to the host if it doesn't. |
-| Windows | `restricted` (bubblewrap in a WSL2 distro), dry run | Owner decision 2026-09-29. Commands run as **Linux `sh`**, not PowerShell. See [Windows (the R340)](#windows-the-r340). Without WSL, a distro or bubblewrap in it, Tenant falls back to PowerShell on the host and says why. |
-| Linux | `host` | Under bubblewrap a read of a hidden folder (`~/.ssh` for `git`) fails with nothing to recognise, so it is never re-run, and `/tmp` is private to each command. Both need fixing first. Without `bwrap` installed, the reason says that instead. |
+| Windows | `host` (PowerShell; `cmd /C` for cron) | No restricted backend. The container backend is planned. |
+| Linux | `host` | No restricted backend. The container backend is planned. |
 
 On the host nothing is confined, as before. The reason shows at startup (a `sandbox:` line in the
 feed), in `tenant doctor` (a WARN), in `tenant security audit` (the `execution.host` finding) and
-in `tenant sandbox probe`. You can still name `restricted` yourself on Linux (below).
+in `tenant sandbox probe`.
 
 **3. Commands get a clean environment.** A command no longer inherits all of Tenant's
 environment. The old default, which dropped only variables named like `KEY`, `TOKEN` or `SECRET`,
@@ -41,8 +40,7 @@ is gone. A command now gets a safe base set:
 
 It also gets whatever its profile lists in `env_pass`, plus `env_set`. This applies to the host
 backend too, so `os_exec` on the host no longer passes API keys, tokens, database URLs or proxy
-passwords to commands. Inside WSL a command gets WSL's own environment, which does not carry
-Tenant's variables. Local MCP servers (`mcp_servers`) keep their own environment rules.
+passwords to commands. Local MCP servers (`mcp_servers`) keep their own environment rules.
 
 **4. One switch turns enforcement on.** Set `exec_profiles.default.enforce` to `true`. It applies
 to every surface unless that surface's own entry sets `enforce` itself or names a `backend`. An
@@ -57,7 +55,6 @@ refused folder as an exception for that one surface, under `exec_exceptions`. It
 the backend, never opens the category, and never saves a tool rule. The prompt says in advance
 what "always" will save, or why it will save nothing:
 - A network refusal saves nothing: no backend can allow a single host yet.
-- A Windows program saves nothing: it only ever runs outside the sandbox.
 - A refusal inside Tenant's own folders or a credential store saves nothing: no exception opens
   those.
 - A refusal of your home folder itself, or anything above it, saves nothing: that would be too
@@ -70,8 +67,7 @@ what "always" will save, or why it will save nothing:
 - A refusal whose output names no absolute path saves nothing, and neither does a folder that
   does not exist yet.
 
-An exception is saved as the folder's real path, with symlinks resolved. On Windows a folder
-named inside WSL (`/mnt/c/...`) is saved as its Windows path (`C:\...`). An exception that
+An exception is saved as the folder's real path, with symlinks resolved. An exception that
 later stops being that folder is not made writable, and `sandbox/2006` says why, once. That
 covers a folder that is gone, replaced by a file, or swapped for a symlink (to your home folder,
 say). An entry you write by hand through a symlink is not used either: write its real path.
@@ -113,67 +109,19 @@ enforcing profile still fails closed, as before (`sandbox/3001`).
 - In a dry run, `HOME` and `TMPDIR` are no longer pointed into the work dir, so a cron job's
   `cd ~/x` works and is not silently broken.
 
-## Windows (the R340)
+## Windows
 
-**What changes on deploy.** On a Windows box with WSL2, a distro and bubblewrap in it:
-- **The agent's shell becomes Linux `sh`, in WSL.** The `os_exec` tool description now tells the
-  model this. Commands run in `sh` (bash-compatible), not PowerShell or `cmd`. Windows paths are
-  under `/mnt/<letter>` (`C:\Tenant` is `/mnt/c/Tenant`).
-- **Every path runs the same `sh` command line.** That covers the sandboxed run, the dry-run re-run
-  after a refusal, and an approved `os_exec_unsandboxed`. Outside the sandbox the command runs as
-  `sh` in the same distro, without bubblewrap. It never switches to PowerShell.
-- **Windows programs run only outside the sandbox.** An `.exe` (`powershell.exe`, `cmd.exe`,
-  anything else through WSL interop) cannot start inside it: the sandbox hides `/run`, where WSL
-  interop listens. The refusal reads "Windows programs run only outside the sandbox — ask to run
-  it outside".
-  - In the dry run such a command re-runs outside automatically.
-  - Once you enforce, it asks for approval (`os_exec_unsandboxed`), so Windows-specific tasks work
-    after an approval.
-- **A surface that runs elsewhere says so.** If an operator pins a surface to the host, its commands
-  run in PowerShell there. Each such result starts with one line, `[ran in PowerShell, on this
-  Windows host]`, and the reverse case says `[ran in Linux sh, in the WSL sandbox]`.
-- **Cron shell jobs run as `sh` too.** Existing jobs are `cmd` syntax, and nothing translates them.
-  Startup (a `sandbox:` feed line) and `tenant doctor` (a WARN) list every cron shell job that will
-  now run under `sh`. For each one, either rewrite it for `sh`, or pin `cron-shell` to the host,
-  which keeps `cmd /C` exactly as before:
-  ```json
-  "exec_profiles": { "cron-shell": { "backend": "host" } }
-  ```
-  Pinning works per surface: `local`, `discord` and the others can be pinned the same way. Once
-  every job is rewritten, remove the pin.
-- **Scheduled prompt jobs that need Windows programs** (`cron-exec`) work in the dry run, because
-  the re-run goes outside. Once you enforce, nobody is there to approve, so an unattended
-  escalation is always denied. Pin `cron-exec` to the host if such jobs must keep working.
-- **In the dry run the Windows drives stay visible**, read-only, so reading a Windows file works.
-  A write outside the allowed folders is refused and re-run outside. Once you enforce, the drives
-  are hidden except the work dir and the write roots and exceptions.
-
-**Prerequisites.**
-- WSL2, a Linux distro, and the `bubblewrap` package installed in that distro
-  (`sudo apt install bubblewrap`). Unprivileged user namespaces must work, which is the WSL2
-  default.
-- **Tenant must run as the Windows user who owns the distro.** WSL distros are per user: a Tenant
-  service running as SYSTEM sees none, and falls back to PowerShell on the host.
-- `TENANT_SANDBOX_WSL_DISTRO` picks a distro when the default one has no bubblewrap.
-- Check with `tenant sandbox probe`: the surfaces should read `restricted` with no
-  "UNAVAILABLE". Also run `tenant sandbox selftest` from the Linux build inside WSL
-  (`wsl -e /path/to/tenant-linux sandbox selftest`).
-- Tenant picks the default once, at start. After installing WSL or bubblewrap, restart it.
-
-**If WSL is missing,** the default falls back to PowerShell on the host, and the model is told
-PowerShell. Startup, `tenant doctor`, `tenant security audit` and `tenant sandbox probe` all say
-why, for example "WSL is not installed" or "no WSL distro has a working bubblewrap sandbox".
-
-**The dry run runs a refused command twice.** The first run, inside the sandbox, can already have
-done part of its work before the refusal. Examples: an append in the work dir, or a network call
-where the network is allowed. That part happens again when the command re-runs outside. Vet
-non-idempotent cron jobs with `tenant sandbox run --surface cron-shell -- '<command>'` first.
+Windows has no restricted backend: commands run on the host, in PowerShell, and cron shell jobs
+with `cmd /C`, with the environment allowlist above. A backend that ran commands as Linux `sh`
+under bubblewrap inside WSL2 was the Windows default for a day; it was removed with the Linux
+one, and the planned container backend confines Windows too
+([docker-sandbox-plan.md](../plans/docker-sandbox-plan.md)).
 
 ## How to read the sandbox log
 The dashboard's **sandbox** tab, or `tenant logs query "log:sandbox"`:
 - `sandbox/1` and `sandbox/1001`: every command, with its backend, surface and exit.
 - `sandbox/2002` *Dry run: … would have refused*: the entry to read during the dry-run weeks. It
-  names the surface and the refusal (`filesystem: …`, `network: …` or `program: …`). The
+  names the surface and the refusal (`filesystem: …` or `network: …`). The
   command's own output names the file.
 - `sandbox/2001` refused (enforcing), `2003` approved to run outside, `2004` an exception saved, `2006` an exception not used (gone, or a symlink now),
   `2005` backend unavailable so a dry run ran it on the host.
@@ -208,11 +156,6 @@ everywhere with `"default"`:
 "exec_profiles": { "cron-shell": { "backend": "host" } }
 ```
 
-**Use `restricted` on Linux anyway**:
-```json
-"exec_profiles": { "default": { "backend": "restricted", "enforce": false } }
-```
-
 ## Known limits
 - **A dry run can still repeat side effects.** A refused command runs twice. Whatever it did
   before the refusal (a network call, an append) happens again outside the sandbox.
@@ -220,11 +163,6 @@ everywhere with `"default"`:
   - on macOS, a command that hides its errors (`2>/dev/null`);
   - on macOS, services the sandbox blocks, such as the clipboard (`pbcopy`/`pbpaste`), `open`,
     `defaults` and `osascript`, whose tools report the block as their own failure;
-  - on Windows (bubblewrap in WSL), a read of one of Tenant's own folders or a credential store,
-    which the sandbox hides as an empty folder. Also, `/tmp` inside WSL is private to each
-    command.
 
   Put a surface that needs them on the host, or accept the failure.
-- **Enforcing on Windows hides the Windows drives** except the work dir, the write roots and the
-  exceptions. A command that reads a hidden file sees it missing, and does not ask.
-- **Linux stays on the host** until its backend can dry-run without breaking commands.
+- **Linux and Windows run on the host** until the container backend ships.
