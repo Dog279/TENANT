@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,15 @@ func TestEvalSurfaceIsReadCommsSafe(t *testing.T) {
 // Eval turns keep no run records: the operator's runs.db is for real turns,
 // and a nightly eval of 48 tasks would otherwise crowd them out (TEN-368).
 func TestEvalTurnsStayOutOfRunsDB(t *testing.T) {
-	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir()}
+	// Web explicitly off, as an operator's -web=false: the harness turns the web
+	// plugin on for evals, which starts Chrome while building the tools, and on
+	// a loaded runner that start timed out and failed the test. It never browses.
+	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
+	fs.Bool("web", false, "")
+	if err := fs.Parse([]string{"-web=false"}); err != nil {
+		t.Fatal(err)
+	}
+	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir(), fs: fs}
 	h := &eval.Harness{}
 	cleanup, err := wireLiveHarness(context.Background(), h, c, &pluginFlags{}, eval.SubsetSmoke, evalJudgeOpts{}, nil, nil)
 	if err != nil {
