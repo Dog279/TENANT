@@ -190,4 +190,8 @@ func TestAttach_FormatEvent(t *testing.T) {
 			t.Errorf("format missing %q: %q", want, line)
 		}
 	}
+	// A scheduled job's tool is named cron:<tool>, as the TUI names it.
+	if line := formatAttachEvent(attachEvent{Kind: "tool_call", Source: "cron", Agent: "tenant-cron", Tool: "web_search"}); !strings.Contains(line, "[cron:web_search]") {
+		t.Errorf("cron tool line = %q", line)
+	}
 }

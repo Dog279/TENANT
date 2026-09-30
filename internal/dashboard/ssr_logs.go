@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/agent"
 	"tenant/internal/logs"
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
@@ -394,7 +395,7 @@ func logsRowOf(e event.Event, q string, pane bool) logsRow {
 	}
 	r := logsRow{Seq: e.Seq, Level: e.Level.String(), Lv: levelShort[e.Level], Time: clock,
 		Stamp: t.Format("2006-01-02 15:04:05.000 MST") + " · " + e.Time.UTC().Format("15:04:05.000") + " UTC",
-		Log:   e.Log, Provider: e.Provider, Task: e.Task, Msg: e.Msg}
+		Log:   e.Log, Provider: e.Provider, Task: e.Task, Msg: agent.RowMsg(e)} // a cron job's tool as cron:<tool>
 	if e.ID != 0 {
 		r.ID = strconv.FormatUint(uint64(e.ID), 10)
 	}

@@ -16,6 +16,7 @@ import (
 	"tenant/internal/memory/episodic"
 	"tenant/internal/model"
 	"tenant/internal/route"
+	"tenant/internal/runtrace"
 )
 
 // routeRuntime is the cmd-layer adapter shared by the agent hook and TUI
@@ -41,6 +42,9 @@ type routeRuntime struct {
 	configuredSmall    route.Target
 	configuredBig      route.Target
 	classifier         *swappableClassifier
+	// feed is the live event stream spawn-time decisions go to (TEN-340); a
+	// turn's own decision reaches it as the agent's route observation.
+	feed atomic.Pointer[func(agent.Event)]
 }
 
 // swappableClassifier is the Engine's classifier indirection. Engine and
@@ -500,6 +504,9 @@ func (r *routeRuntime) SpawnRole(ctx context.Context, task string) (model.Role, 
 			MinComplexityForBig: cfg.MinComplexityForBig,
 		},
 	})
+	if feed := r.feed.Load(); feed != nil {
+		(*feed)(agent.Event{Kind: agent.EventRoute, TraceID: runtrace.IDFromContext(ctx), Text: "spawn · " + d.Summary()})
+	}
 	// Rules need a real parsed signal: deterministic no-classifier paths
 	// (overlong task text, breaker open) must not match rules against a
 	// zero-value Signal, where a math=false/code=false predicate would hit.

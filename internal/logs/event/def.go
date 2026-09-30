@@ -227,6 +227,11 @@ func must(err error) {
 	}
 }
 
+// Render is d's message for e: its template filled from e's data. A view
+// that shows an event differently from how it was written renders it again
+// (agent.RowMsg).
+func (d *Def) Render(e *Event) string { return d.render(e) }
+
 // render fills the template's placeholders from e's data, or its actor and
 // surface (attribution.go). One with no value stays as written, so a missing
 // field shows.

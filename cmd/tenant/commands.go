@@ -2080,7 +2080,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	var dashFeed func(agent.Event)
 	subObserve := func(id string, e agent.Event) {
 		switch e.Kind {
-		case agent.EventToolCall, agent.EventToolResult, agent.EventFinal, agent.EventError, agent.EventUsage, agent.EventTeamBudget:
+		case agent.EventToolCall, agent.EventToolResult, agent.EventThought, agent.EventFinal, agent.EventError, agent.EventUsage, agent.EventTeamBudget:
 			select {
 			case teamCh <- tui.TeamEvent{AgentID: id, Event: e}:
 			default: // feed behind; drop display (counter may undercount under flood — acceptable)
@@ -2260,6 +2260,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// that single observer loop (not a second Notify consumer, which would steal
 	// its coalescing wake-ups).
 	dashFeed = emit
+	routeRT.feed.Store(&emit) // spawn-time decisions on the live feed (TEN-340)
 
 	// Phase 3 SME (TEN-255): per-project subject-matter-expert doc, stored as a
 	// sibling table over the shared facts DB and injected into the system reserve

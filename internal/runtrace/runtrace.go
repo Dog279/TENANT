@@ -21,6 +21,8 @@ type Run struct {
 	Model            string     `json:"model,omitempty"`
 	Provider         string     `json:"provider,omitempty"`
 	LatencyMS        int64      `json:"latency_ms"`
+	ThinkMS          int64      `json:"think_ms"` // of LatencyMS, the time in model calls
+	ToolsMS          int64      `json:"tools_ms"` // and in tool calls (a parallel batch counts once)
 	PromptTokens     int        `json:"prompt_tokens"`
 	CompletionTokens int        `json:"completion_tokens"`
 	CostEstimateUSD  *float64   `json:"cost_estimate_usd,omitempty"`
@@ -72,14 +74,15 @@ type spanKey struct{}
 
 // Span is the concurrency-safe, in-flight detail collector stored on a turn context.
 type Span struct {
-	mu                 sync.Mutex
-	traceID            string
-	model, provider    string
-	prompt, completion int
-	retries            int
-	fallbacks          []Fallback
-	tools              []ToolCall
-	approvals          []Approval
+	mu                  sync.Mutex
+	traceID             string
+	model, provider     string
+	prompt, completion  int
+	retries             int
+	thinkTime, toolTime time.Duration
+	fallbacks           []Fallback
+	tools               []ToolCall
+	approvals           []Approval
 }
 
 func NewSpan(traceID string) *Span { return &Span{traceID: traceID} }
@@ -134,6 +137,37 @@ func (s *Span) AddRetry() {
 	s.mu.Unlock()
 }
 
+// AddThink adds one model call's time to the turn's thinking.
+func (s *Span) AddThink(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.thinkTime += d
+	s.mu.Unlock()
+}
+
+// AddToolTime adds one batch of tool calls' wall time. A batch's calls run in
+// parallel, so it is the batch's time, not the sum of its calls'.
+func (s *Span) AddToolTime(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.toolTime += d
+	s.mu.Unlock()
+}
+
+// Phases is the turn's time so far in model calls and in tool calls.
+func (s *Span) Phases() (think, tools time.Duration) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.thinkTime, s.toolTime
+}
+
 func (s *Span) AddFallback(from, to, reason string) {
 	if s == nil {
 		return
@@ -179,6 +213,7 @@ func (s *Span) Apply(r *Run) {
 	r.Model, r.Provider = s.model, s.provider
 	r.PromptTokens, r.CompletionTokens = s.prompt, s.completion
 	r.Retries = s.retries
+	r.ThinkMS, r.ToolsMS = s.thinkTime.Milliseconds(), s.toolTime.Milliseconds()
 	r.Fallbacks = append([]Fallback(nil), s.fallbacks...)
 	r.ToolCalls = append([]ToolCall(nil), s.tools...)
 	r.Approvals = append([]Approval(nil), s.approvals...)

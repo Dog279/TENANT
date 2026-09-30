@@ -114,6 +114,8 @@
     "model": "m",
     "provider": "p",
     "latency_ms": 900,
+    "think_ms": 0,
+    "tools_ms": 0,
     "prompt_tokens": 10,
     "completion_tokens": 5,
     "retries": 0,

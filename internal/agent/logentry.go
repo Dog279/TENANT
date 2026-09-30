@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -13,14 +14,39 @@ import (
 
 // Retained reports whether a live event belongs in the retained activity
 // record. It is a DENYLIST of per-token / accounting noise — token deltas (the
-// flood), usage counts, per-iteration assistant prose and the memory-budget
-// report — so every meaningful or future kind is kept by default.
+// flood), usage counts, per-iteration assistant prose, the memory-budget
+// report and the thinking marks (the model log times every call; the turn's
+// end carries the totals) — so every meaningful or future kind is kept by
+// default.
 func Retained(ev Event) bool {
 	switch ev.Kind {
-	case EventToken, EventUsage, EventAssistant, EventMemory:
+	case EventToken, EventUsage, EventAssistant, EventMemory, EventThinking, EventThought:
 		return false
 	}
 	return true
+}
+
+// CronTool is how a scheduled job's tool call is named wherever it shows:
+// cron:<tool>, so automated work reads apart from a turn's.
+func CronTool(tool string) string { return "cron:" + tool }
+
+// RowMsg is e's message as a log view shows it. A scheduled job's tool rows,
+// the turns tool events filed in the cron log, name their tool with CronTool.
+// The stored event keeps the plain name, so a tool: filter still finds them.
+// Every other event shows its own message.
+func RowMsg(e event.Event) string {
+	if e.Log != "cron" || e.Provider != Turns.Name {
+		return e.Msg
+	}
+	i := slices.IndexFunc(e.Data, func(f event.Field) bool { return f.Key == "tool" })
+	d, ok := event.Lookup(e.Provider, e.ID)
+	if i < 0 || !ok {
+		return e.Msg
+	}
+	c := e
+	c.Data = slices.Clone(e.Data)
+	c.Data[i].Value = CronTool(e.Data[i].Text())
+	return d.Render(&c)
 }
 
 // EntryFor renders a live turn event as one log-book line: a readable message
@@ -84,6 +110,10 @@ func EntryFor(ev Event) (logs.Entry, bool) {
 			field("error", ev.Text)
 		}
 		duration()
+		if ev.Think > 0 || ev.Tools > 0 {
+			field("think", ev.Think.String())
+			field("tools", ev.Tools.String())
+		}
 	case EventRoute:
 		def = RouteSeen
 		e.Msg = "route observation"

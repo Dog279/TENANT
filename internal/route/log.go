@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -58,6 +59,8 @@ type Decision struct {
 	Justification string    `json:"justification"`
 	Raw           string    `json:"raw"`
 	LatencyMS     int64     `json:"latency_ms"`
+	Endpoint      string    `json:"endpoint,omitempty"` // the classifier asked: its host (TEN-340)
+	Model         string    `json:"model,omitempty"`    // and its model
 	Mode          string    `json:"mode"`
 	Status        string    `json:"status"`
 	Error         string    `json:"error"`
@@ -92,7 +95,8 @@ func (d Decision) Signal() Signal {
 	return Signal{
 		Domain: d.Domain, Complexity: d.Complexity, Math: d.Math, Code: d.Code,
 		Label: d.Label, Justification: d.Justification, Raw: d.Raw,
-		Latency: time.Duration(d.LatencyMS) * time.Millisecond,
+		Latency:  time.Duration(d.LatencyMS) * time.Millisecond,
+		Endpoint: d.Endpoint, Model: d.Model,
 	}
 }
 
@@ -124,11 +128,11 @@ func (d Decision) Tags() []string {
 func (d Decision) Summary() string {
 	if d.Status == StatusOK {
 		if d.SelectedTier != "" {
-			return fmt.Sprintf("%s · %s → %s · complexity %d · %s · %dms",
-				d.Mode, routeDash(d.Label), d.SelectedTier, d.Complexity, routeDash(d.Domain), d.LatencyMS)
+			return fmt.Sprintf("%s · %s → %s · complexity %d · %s · %dms%s",
+				d.Mode, routeDash(d.Label), d.SelectedTier, d.Complexity, routeDash(d.Domain), d.LatencyMS, d.via())
 		}
-		return fmt.Sprintf("%s · %s · complexity %d · %s · %dms",
-			d.Mode, d.Label, d.Complexity, d.Domain, d.LatencyMS)
+		return fmt.Sprintf("%s · %s · complexity %d · %s · %dms%s",
+			d.Mode, d.Label, d.Complexity, d.Domain, d.LatencyMS, d.via())
 	}
 	if d.Status == StatusSkipped {
 		if d.PolicyReason == string(ReasonBreakerOpen) {
@@ -136,7 +140,16 @@ func (d Decision) Summary() string {
 		}
 		return fmt.Sprintf("%s · skipped · prompt too long (%d est. tokens)", d.Mode, d.EstTokens)
 	}
-	return fmt.Sprintf("%s · classifier unavailable · %dms", d.Mode, d.LatencyMS)
+	return fmt.Sprintf("%s · classifier unavailable · %dms%s", d.Mode, d.LatencyMS, d.via())
+}
+
+// via names the classifier the decision asked, for its summary: " via
+// <host> (<model>)", the model without its registry path; "" when none was.
+func (d Decision) via() string {
+	if d.Endpoint == "" {
+		return ""
+	}
+	return " via " + d.Endpoint + " (" + path.Base(d.Model) + ")"
 }
 
 // Engine turns classifier outcomes into best-effort durable decisions and a
@@ -223,6 +236,7 @@ func (e *Engine) Decide(ctx context.Context, agentID, sessionID, prompt, mode st
 	d.Justification = sig.Justification
 	d.Raw = sig.Raw
 	d.LatencyMS = latency.Milliseconds()
+	d.Endpoint, d.Model = sig.Endpoint, sig.Model
 	if err != nil {
 		d.Status = StatusError
 		d.Error = err.Error()
@@ -371,6 +385,7 @@ func (e *Engine) DecideWithPolicy(ctx context.Context, req PolicyDecisionRequest
 	d.Justification = sig.Justification
 	d.Raw = sig.Raw
 	d.LatencyMS = latency.Milliseconds()
+	d.Endpoint, d.Model = sig.Endpoint, sig.Model
 	in.Signal = sig
 	if classifyErr != nil {
 		d.Status = StatusError
@@ -826,11 +841,13 @@ func (e *Engine) record(ctx context.Context, d Decision) Decision {
 func logDecision(ctx context.Context, d Decision) {
 	if d.Status == StatusError {
 		DecideFailed.Log(ctx, "decision_id", d.ID, "summary", d.Summary(), "mode", d.Mode,
-			"agent", d.AgentID, "session", d.SessionID, "err", d.Error)
+			"agent", d.AgentID, "session", d.SessionID, "err", d.Error,
+			"endpoint", d.Endpoint, "model", d.Model, "latency_ms", d.LatencyMS)
 	} else {
 		Decided.Log(ctx, "decision_id", d.ID, "summary", d.Summary(), "mode", d.Mode, "status", d.Status,
 			"tier", string(d.SelectedTier), "role", d.SelectedRole, "profile", d.SelectedProfileID,
-			"reason", d.PolicyReason, "agent", d.AgentID, "session", d.SessionID)
+			"reason", d.PolicyReason, "agent", d.AgentID, "session", d.SessionID,
+			"endpoint", d.Endpoint, "model", d.Model, "latency_ms", d.LatencyMS)
 	}
 	if d.BreakerTripped {
 		BreakerOpened.Log(ctx, "decision_id", d.ID)

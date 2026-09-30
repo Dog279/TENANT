@@ -109,6 +109,18 @@ Nothing in serve or the TUI writes around the log book (TEN-363):
   are filed under `discord`, `imessage` and `cron` under the TUI as under
   serve. Sub-agents' own lines go to `subagents`, not `turns`. A peer that stops
   answering health probes, or comes back, is logged under `peering`.
+- A scheduled job's tool calls show in the TUI's activity feed as
+  `cron:<tool>` (`→ cron:web_search …`), and the log views (the TUI's `/logs`,
+  the dashboard's Logs page, `tenant attach`) name a cron job's tool rows the
+  same way (`Tool cron:web_search finished in 1.2s`), so automated work reads
+  apart from a turn's. Only the display changes: the stored `tool` field keeps
+  the plain name, so `tool:web_search` still finds both.
+- A turn's end (`turns/1`, opcode stop or fail) carries `think` and `tools`:
+  how much of its `duration` went to model calls and to tool calls (a parallel
+  batch counts once). runs.db keeps them as `think_ms` and `tools_ms`. The
+  per-call marks the TUI and the dashboard's Chat show live ("thinking… 45s",
+  "thought for 8.2s") are not filed: the `model` log already times every call
+  (TEN-342).
 - A sign-in URL (remote MCP, Atlassian, Google) is shown in the status feed and
   filed under `system`; a one-shot command prints it on stderr.
 - When the log book cannot be opened, a memory-only hub stands in (the lines

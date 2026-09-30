@@ -61,9 +61,11 @@ func Open(path string, cfg Config) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("runtrace: schema: %w", err)
 	}
-	if err := addColumn(db, "parent_trace_id", "TEXT"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("runtrace: migrate parent_trace_id: %w", err)
+	for _, c := range [][2]string{{"parent_trace_id", "TEXT"}, {"think_ms", "INTEGER NOT NULL DEFAULT 0"}, {"tools_ms", "INTEGER NOT NULL DEFAULT 0"}} {
+		if err := addColumn(db, c[0], c[1]); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("runtrace: migrate %s: %w", c[0], err)
+		}
 	}
 	s := &Store{db: db, cfg: cfg, stop: make(chan struct{})}
 	if _, err := s.Prune(context.Background(), time.Now().UTC()); err != nil {
@@ -165,9 +167,9 @@ func (s *Store) Finish(ctx context.Context, r Run) error {
 	if r.CostEstimateUSD != nil {
 		cost = *r.CostEstimateUSD
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE runs SET completed_at=?,model=?,provider=?,latency_ms=?,
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET completed_at=?,model=?,provider=?,latency_ms=?,think_ms=?,tools_ms=?,
  prompt_tokens=?,completion_tokens=?,cost_estimate_usd=?,retries=?,fallbacks=?,tool_calls=?,approvals=?,outcome=?,error_class=?
- WHERE trace_id=?`, completed, r.Model, r.Provider, r.LatencyMS, r.PromptTokens, r.CompletionTokens,
+ WHERE trace_id=?`, completed, r.Model, r.Provider, r.LatencyMS, r.ThinkMS, r.ToolsMS, r.PromptTokens, r.CompletionTokens,
 		cost, r.Retries, string(fallbacks), string(tools), string(approvals), r.Outcome, r.ErrorClass, r.TraceID)
 	if err != nil {
 		return fmt.Errorf("runtrace: finish: %w", err)
@@ -188,7 +190,7 @@ func (s *Store) Get(ctx context.Context, traceID string) (Run, error) {
 }
 
 const selectRuns = `SELECT trace_id,parent_trace_id,agent_id,session_id,source,started_at,completed_at,model,provider,
- latency_ms,prompt_tokens,completion_tokens,cost_estimate_usd,retries,fallbacks,tool_calls,approvals,outcome,error_class FROM runs`
+ latency_ms,think_ms,tools_ms,prompt_tokens,completion_tokens,cost_estimate_usd,retries,fallbacks,tool_calls,approvals,outcome,error_class FROM runs`
 
 func (s *Store) List(ctx context.Context) ([]Run, error) {
 	rows, err := s.db.QueryContext(ctx, selectRuns+` ORDER BY started_at, trace_id`)
@@ -216,7 +218,7 @@ func scanRun(row scanner) (Run, error) {
 	var cost sql.NullFloat64
 	var fallbacks, tools, approvals string
 	err := row.Scan(&r.TraceID, &parent, &r.AgentID, &r.SessionID, &r.Source, &started, &completed, &model, &provider,
-		&r.LatencyMS, &r.PromptTokens, &r.CompletionTokens, &cost, &r.Retries, &fallbacks, &tools, &approvals, &r.Outcome, &errClass)
+		&r.LatencyMS, &r.ThinkMS, &r.ToolsMS, &r.PromptTokens, &r.CompletionTokens, &cost, &r.Retries, &fallbacks, &tools, &approvals, &r.Outcome, &errClass)
 	if err != nil {
 		return Run{}, err
 	}

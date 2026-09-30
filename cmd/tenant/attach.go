@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"tenant/internal/agent"
 	"tenant/internal/logs"
 )
 
@@ -264,7 +265,11 @@ func formatAttachEvent(e attachEvent) string {
 		fmt.Fprintf(&b, " (%s)", e.Agent)
 	}
 	if e.Tool != "" {
-		fmt.Fprintf(&b, " [%s]", e.Tool)
+		tool := e.Tool
+		if e.Source == "cron" { // a scheduled job's, as the TUI and the Logs page name it
+			tool = agent.CronTool(tool)
+		}
+		fmt.Fprintf(&b, " [%s]", tool)
 	}
 	if e.IsErr {
 		b.WriteString(" ✗")

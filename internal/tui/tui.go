@@ -1222,6 +1222,8 @@ type model struct {
 	sessionTokOut   int       // cumulative OUTPUT tokens for the MAIN agent this session
 	teamTok         int       // cumulative tokens (in+out) for spawned sub-agents
 	reqStart        time.Time // wall-clock start of the in-flight turn (display-only live timer)
+	thinkSince      time.Time // start of the model call in flight; zero between calls (TEN-342)
+	toolsSince      time.Time // start of the tool calls in flight; zero while thinking
 	lastTool        string
 	width           int
 	height          int
@@ -1662,6 +1664,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnDoneMsg:
 		m.busy = false
 		m.streaming = false
+		m.thinkSince, m.toolsSince = time.Time{}, time.Time{}
 		// Seal the turn: finalizeAssistant (below) is now the authoritative
 		// source for this answer, so any trailing EventAssistant/EventToken
 		// still queued from the just-finished turn must be ignored rather than
@@ -2137,6 +2140,12 @@ func (m *model) sendDecision(d ApprovalDecision) {
 }
 
 func (m *model) applyEvent(e agent.Event) {
+	// A scheduled job's activity carries its cron agent's id, so it is taken
+	// before the cross-agent skip below.
+	if e.Source == "cron" {
+		m.applyCronEvent(e)
+		return
+	}
 	// Cross-agent events (sub-agent activity, bus traffic) are mirrored onto the
 	// shared broker for the DASHBOARD (TEN-234); the TUI renders sub-agents via
 	// the separate TeamEvents channel, so skip them here to avoid double-render.
@@ -2178,7 +2187,22 @@ func (m *model) applyEvent(e agent.Event) {
 	case agent.EventTurnStart:
 		m.appendFeed(cDim.Render(time.Now().Format("15:04:05") + " turn start"))
 	case agent.EventRoute:
-		m.appendFeed(cDim.Render("route: " + clip(oneLine(e.Text), 80)))
+		// Room for the classifier's host and model after the decision (TEN-340).
+		m.appendFeed(cDim.Render("route: " + clip(oneLine(e.Text), 140)))
+	case agent.EventThinking:
+		m.thinkSince, m.toolsSince = time.Now(), time.Time{}
+	case agent.EventThought:
+		m.thinkSince = time.Time{}
+		line := "thought for " + formatElapsed(e.Duration)
+		if e.IsErr {
+			line += " (the call failed)"
+		}
+		m.appendFeed(cDim.Render(line))
+	case agent.EventTurnEnd:
+		m.thinkSince, m.toolsSince = time.Time{}, time.Time{}
+		if e.Think > 0 || e.Tools > 0 {
+			m.appendFeed(cDim.Render("turn " + formatElapsed(e.Duration) + " — thinking " + formatElapsed(e.Think) + " · tools " + formatElapsed(e.Tools)))
+		}
 	case agent.EventUsage:
 		// Actual tokens (input + output) reported by the backend for this
 		// LLM call — summed for the session total, and split in/out so the
@@ -2254,6 +2278,9 @@ func (m *model) applyEvent(e agent.Event) {
 		m.appendFeed(cSys.Render("skills: " + clip(e.Text, 60)))
 	case agent.EventToolCall:
 		m.lastTool = e.Tool
+		if m.toolsSince.IsZero() {
+			m.toolsSince = time.Now()
+		}
 		m.appendFeed(cTool.Render("→ "+e.Tool) + " " + cDim.Render(clip(e.Args, 60)))
 	case agent.EventToolResult:
 		mark := cOK.Render("✓")
@@ -2280,6 +2307,26 @@ func (m *model) applyEvent(e agent.Event) {
 	case agent.EventError:
 		m.err = e.Text
 		m.appendFeed(cErr.Render("error: " + clip(e.Text, 80)))
+	}
+}
+
+// applyCronEvent renders a scheduled job's mirrored activity into the feed,
+// its tools named cron:<tool> (agent.CronTool) so automated work reads apart
+// from a turn's.
+func (m *model) applyCronEvent(e agent.Event) {
+	switch e.Kind {
+	case agent.EventToolCall:
+		m.appendFeed(cTool.Render("→ "+agent.CronTool(e.Tool)) + " " + cDim.Render(clip(e.Args, 60)))
+	case agent.EventToolResult:
+		mark := cOK.Render("✓")
+		if e.IsErr {
+			mark = cErr.Render("✗")
+		}
+		m.appendFeed(fmt.Sprintf("%s %s %s", mark, cTool.Render(agent.CronTool(e.Tool)), cDim.Render(clip(oneLine(e.Result), 70))))
+	case agent.EventError:
+		m.appendFeed(cErr.Render("cron error: " + clip(e.Text, 80)))
+	case agent.EventFinal:
+		m.appendFeed(cDim.Render("cron: job done"))
 	}
 }
 
@@ -2328,6 +2375,8 @@ func (m *model) applyTeamEvent(te TeamEvent) {
 			line += " " + cDim.Render(fmt.Sprintf("(%d) %s", len(e.Result), preview))
 		}
 		m.appendFeed(line)
+	case agent.EventThought:
+		m.appendFeed(cDim.Render(tag + " thought for " + formatElapsed(e.Duration)))
 	case agent.EventFinal:
 		m.appendFeed(cDim.Render(tag + " done"))
 	case agent.EventError:
@@ -2803,14 +2852,23 @@ func (m *model) tokenCounter() string {
 }
 
 // reqTimer renders the live elapsed time of the in-flight turn, e.g.
-// "⏱ 3.4s" (<60s), "⏱ 1:09" (m:ss, <1h), or "⏱ 1:40:05" (h:mm:ss, >=1h).
+// "⏱ 3.4s" (<60s), "⏱ 1:09" (m:ss, <1h), or "⏱ 1:40:05" (h:mm:ss, >=1h),
+// then what it is doing: "thinking… 45.0s" while the model answers, so a slow
+// model reads apart from a hung one, or "tools… 2.1s" (TEN-342).
 // Display-only, never persisted. Empty when no turn is in flight; the existing
 // spinner tick drives the sub-second repaint, so no extra ticker is needed.
 func (m *model) reqTimer() string {
 	if !m.busy || m.reqStart.IsZero() {
 		return ""
 	}
-	return cDim.Render("⏱ " + formatElapsed(time.Since(m.reqStart)))
+	s := "⏱ " + formatElapsed(time.Since(m.reqStart))
+	switch {
+	case !m.thinkSince.IsZero():
+		s += " · thinking… " + formatElapsed(time.Since(m.thinkSince))
+	case !m.toolsSince.IsZero():
+		s += " · tools… " + formatElapsed(time.Since(m.toolsSince))
+	}
+	return cDim.Render(s)
 }
 
 // formatElapsed renders a duration as a counter that rolls minutes into an HOUR

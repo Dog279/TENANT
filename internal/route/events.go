@@ -6,13 +6,13 @@ import "tenant/internal/logs/event"
 // its decision_id, the id of its row in route-decisions.jsonl.
 var Events = event.NewProvider("route", "route")
 
-var Decided = Events.Event(1001, event.Info, "Decision", "Route decision {decision_id}: {summary}", "decision_id", "summary", "mode", "status", "tier", "role", "profile", "reason", "agent", "session").
-	Doc("The router classified a prompt and chose where it runs (or, in shadow mode, where it would have).",
+var Decided = Events.Event(1001, event.Info, "Decision", "Route decision {decision_id}: {summary}", "decision_id", "summary", "mode", "status", "tier", "role", "profile", "reason", "agent", "session", "endpoint", "model", "latency_ms").
+	Doc("The router classified a prompt and chose where it runs (or, in shadow mode, where it would have). When it asked the classifier, endpoint, model and latency_ms say which one and how long it took.",
 		"A turn started with routing on.",
 		"None. /route why shows the latest decisions in full; route-decisions.jsonl has every one by decision_id.")
 
-var DecideFailed = Events.Event(2001, event.Warning, "Decision", "Route decision {decision_id} fell back to the planner: {err}", "decision_id", "summary", "mode", "agent", "session", "err").
-	Doc("The router could not classify a prompt or apply its policy, so the turn ran on the planner.",
+var DecideFailed = Events.Event(2001, event.Warning, "Decision", "Route decision {decision_id} fell back to the planner: {err}", "decision_id", "summary", "mode", "agent", "session", "err", "endpoint", "model", "latency_ms").
+	Doc("The router could not classify a prompt or apply its policy, so the turn ran on the planner. When it asked the classifier, endpoint, model and latency_ms say which one and how long it took.",
 		"The classifier is down, slow or returned something unreadable, or a bound profile changed mid-decision.",
 		"Check /route status. /route why shows the decision and the classifier's raw output.")
 
