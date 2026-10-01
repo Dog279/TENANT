@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -324,6 +325,11 @@ func (b *containerBackend) specFor(cmd Command, pol Policy) (containerSpec, erro
 		if d == "" {
 			continue
 		}
+		// Resolve the deny root the same way mount sources are resolved
+		// (canonForCompare == what containerMount does), or a symlinked deny root
+		// (macOS /var -> /private/var, a symlinked home) would not match a resolved
+		// mount and the guard would silently miss.
+		d = canonForCompare(d)
 		if withinHost(d, work.host) { // deny root at or inside the work dir
 			return containerSpec{}, fmt.Errorf("work dir %s is or contains the deny root %s", work.host, d)
 		}
@@ -591,6 +597,22 @@ func oneLine(s string) string {
 		s = s[:300] + "…"
 	}
 	return s
+}
+
+// canonForCompare resolves p to the absolute, symlink-resolved form that mount
+// sources are compared in, so a deny root and a mount that name the same place
+// through different symlinks still match. Falls back to the cleaned abs path when
+// the target does not exist.
+func canonForCompare(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	abs = filepath.Clean(abs)
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
+		return r
+	}
+	return abs
 }
 
 func dedupPathList(in []string) []string {
