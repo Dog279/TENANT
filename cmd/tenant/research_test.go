@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"tenant/internal/model"
 )
 
 func TestResearchFilename(t *testing.T) {
@@ -525,5 +528,62 @@ func TestCollapseCitations_UnmappedMarker(t *testing.T) {
 	}
 	if refs != "" {
 		t.Fatalf("no sources → no references, got %q", refs)
+	}
+}
+
+// scriptedLLM returns its responses in order, one per Generate call.
+type scriptedLLM struct{ out []*model.GenerateResponse }
+
+func (s *scriptedLLM) Generate(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
+	r := s.out[0]
+	s.out = s.out[1:]
+	return r, nil
+}
+func (s *scriptedLLM) GenerateStream(context.Context, model.GenerateRequest) (<-chan model.StreamChunk, error) {
+	return nil, nil
+}
+func (s *scriptedLLM) TokenCount(context.Context, string) (int, error) { return 0, nil }
+
+// The TEN-480 shape: a model plans out loud, buries a heading in the plan,
+// and runs out of tokens mid-sentence. It must never be saved as the report.
+const planningDump = `We need answer user's request: write final research report ONLY markdown, no preamble.
+Need craft comprehensive well-structured markdown. Need citations [1] exactly as appear.
+Need consider if findings usable: yes.
+
+# GPU Quant Strategy
+
+## Executive recommendation
+- For vLLM production: two TP=2 replicas [3].
+Need address "best quant": maybe final answer is not universal.
+Need compute: 500K at 384 B/token is ~183 GB [3]. Need maybe mention conflict.
+We should cap context to 32-64K for max agents, then`
+
+func TestSynthesizeReport_RejectsPlanningDump(t *testing.T) {
+	if p := reportProblem(sanitizeReport(planningDump), "stop"); p == "" {
+		t.Fatal("a planning dump passed the report check")
+	}
+	if !looksLikeReasoningPreamble(planningDump) {
+		t.Error("first-person planning should count as a reasoning preamble")
+	}
+
+	good := "# GPU Quant Strategy\n\nUse NVFP4 weights with fp8 KV [1]. Two TP=2 replicas beat one TP=4 for many agents [3]."
+	llm := &scriptedLLM{out: []*model.GenerateResponse{
+		{Text: planningDump, FinishReason: "length"},
+		{Text: good, FinishReason: "stop"},
+	}}
+	got, err := synthesizeReport(context.Background(), llm, "q", "findings")
+	if err != nil || got != good {
+		t.Fatalf("retry should return the good report: %q, %v", got, err)
+	}
+
+	llm = &scriptedLLM{out: []*model.GenerateResponse{
+		{Text: planningDump, FinishReason: "length"},
+		{Text: planningDump, FinishReason: "stop"},
+	}}
+	if _, err := synthesizeReport(context.Background(), llm, "q", "findings"); err == nil {
+		t.Fatal("two planning dumps must fail the run, not save one")
+	}
+	if p := reportProblem(good, "stop"); p != "" {
+		t.Errorf("a real report was rejected: %s", p)
 	}
 }

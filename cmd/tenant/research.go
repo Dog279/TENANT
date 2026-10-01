@@ -860,14 +860,82 @@ Question: %s
 
 === Sub-agent findings ===
 %s`, noUsableFindingsSentinel, question, findings)
-	resp, err := planner.Generate(ctx, model.GenerateRequest{
-		Messages:  []model.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 8000, // long report; no tools
-	})
-	if err != nil {
-		return "", err
+	// Some backends spend the budget planning in the open and never write the
+	// report (TEN-480). Check the output; on a bad one retry once with a
+	// larger budget and the reason, then give up rather than save notes.
+	var problem string
+	for attempt, budget := range []int{8000, 16000} {
+		p := prompt
+		if attempt > 0 {
+			p += "\n\nYour previous output was rejected: " + problem +
+				". Do not plan or think out loud. Write the finished report now, starting with \"# \"."
+		}
+		resp, err := planner.Generate(ctx, model.GenerateRequest{
+			Messages:  []model.Message{{Role: "user", Content: p}},
+			MaxTokens: budget, // long report; no tools
+		})
+		if err != nil {
+			return "", err
+		}
+		body := sanitizeReport(resp.Text)
+		if problem = reportProblem(body, resp.FinishReason); problem == "" {
+			return body, nil
+		}
 	}
-	return sanitizeReport(resp.Text), nil
+	return "", fmt.Errorf("the model didn't write a usable report (%s); try a different planner model", problem)
+}
+
+// reportProblem says why a synthesized report can't be saved, or "" when it
+// reads as a report: cut off by the token limit, no heading, or mostly the
+// model's planning notes (TEN-480).
+func reportProblem(body, finishReason string) string {
+	t := strings.TrimSpace(body)
+	switch {
+	case strings.HasPrefix(t, noUsableFindingsSentinel):
+		return ""
+	case finishReason == "length":
+		return "it ran out of tokens before finishing"
+	case firstMarkdownHeading(t) < 0:
+		return "it has no markdown heading"
+	case planningShare(t) > 0.25:
+		return "it is mostly planning notes, not a report"
+	}
+	return ""
+}
+
+// planningOpeners start the lines of a model thinking out loud about the task
+// ("We need answer user's request", "Need craft markdown") rather than writing.
+var planningOpeners = []string{"we need", "need ", "i need", "we should", "i should", "let's ", "let me ",
+	"i'll ", "we'll ", "we can ", "maybe ", "ok,", "okay,", "hmm"}
+
+func isPlanningLine(l string) bool {
+	l = strings.ToLower(strings.TrimSpace(l))
+	for _, o := range planningOpeners {
+		if strings.HasPrefix(l, o) {
+			return true
+		}
+	}
+	return false
+}
+
+// planningShare is the fraction of prose lines (not headings, blank, or
+// table rows) that are planning.
+func planningShare(s string) float64 {
+	var prose, planning int
+	for _, l := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "|") {
+			continue
+		}
+		prose++
+		if isPlanningLine(t) {
+			planning++
+		}
+	}
+	if prose == 0 {
+		return 0
+	}
+	return float64(planning) / float64(prose)
 }
 
 // sanitizeReport is the safety net for sloppy model output: collapses runaway
@@ -928,6 +996,13 @@ func looksLikeReasoningPreamble(s string) bool {
 		"*Final Polish", "*Refining based", "Self-Correction:", "Constraint Check:"} {
 		if strings.Contains(first, marker) {
 			return true
+		}
+	}
+	// First-person planning about the task itself (TEN-480): "We need answer
+	// user's request: write final research report…".
+	for _, l := range strings.Split(first, "\n") {
+		if strings.TrimSpace(l) != "" {
+			return isPlanningLine(l)
 		}
 	}
 	return false

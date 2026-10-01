@@ -145,6 +145,15 @@ output: combined text per sub-report (renumbered) + one global ## References
 Pure string/map work in Go — no new deps. Robust to a sub-agent emitting no
 sources (its `[n]` left as-is or dropped).
 
+### Synthesis output check (TEN-480)
+Report quality depends on the planner model. Some models plan out loud and use
+up the budget before writing anything. `synthesizeReport` refuses output that hit
+the token limit, has no heading, or is more than a quarter planning lines ("We
+need…", "Need craft…"). It retries once with a 16,000-token budget and the
+reason. If the retry fails too, the run fails with that reason, and no planning
+notes are saved to the wiki. When this happens often, use a different planner
+model for research.
+
 ### Termination & budgets
 - Per-agent: `PlanLoopCeiling` (live-tunable).
 - Orchestrator waves: `--depth` (Phase A = 1 wave; Phase B = up to N).
