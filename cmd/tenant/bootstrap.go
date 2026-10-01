@@ -10,6 +10,7 @@ import (
 
 	"tenant/internal/fsperm"
 	"tenant/internal/memory/soul"
+	"tenant/internal/model/backend/claudecode"
 )
 
 // expandPath expands a leading ~ (or ~/, ~\) to the user's home dir.
@@ -132,7 +133,13 @@ func healthCheck(ctx context.Context, c *commonFlags) []string {
 		return []string{"backend: echo (offline dev — responses are deterministic stubs)"}
 	}
 	var lines []string
-	if c.vllmEndpoint != "" {
+	if c.backend == "claudecode" { // a local CLI, not an HTTP server (TEN-482)
+		if bin, err := claudecode.DiscoverBinary(c.vllmEndpoint); err == nil {
+			lines = append(lines, "generation OK: claude CLI @ "+bin)
+		} else {
+			lines = append(lines, "GENERATION UNAVAILABLE: "+err.Error()+" — chat will fail")
+		}
+	} else if c.vllmEndpoint != "" {
 		if reachable(ctx, c.vllmEndpoint+"/v1/models") {
 			lines = append(lines, "generation OK: "+c.vllmModel+" @ "+c.vllmEndpoint)
 		} else {

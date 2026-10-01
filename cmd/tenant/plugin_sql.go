@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"tenant/internal/cmdreg"
 	"tenant/internal/model"
 	sqlp "tenant/internal/plugins/sql"
@@ -24,6 +26,7 @@ func sqlPlugin() *pluginDescriptor {
 		ApplyConfig: applySQLConfig,
 		ExpandPaths: expandSQLPaths,
 		Launch:      launchSQL,
+		Relaunch:    true, // config edits apply on /disable → /enable (TEN-483)
 		Prepare:     prepareSQL,
 		Eval:        evalSQL,
 		Title:       "SQL (SQLite database)",
@@ -31,7 +34,7 @@ func sqlPlugin() *pluginDescriptor {
 		Tools:       func() []model.ToolSpec { return sqlp.NewDispatcher(nil, sqlp.Policy{}).Tools() },
 		Configure: func() skillKind {
 			return skillKind{ID: "sql", Label: "SQL (SQLite database)", Wired: true, Fields: []skillKindField{
-				{Key: "db", Prompt: "SQLite database file path"},
+				{Key: "db", Prompt: "SQLite database file path", Validate: validateSQLiteFile},
 			}}
 		},
 		SetupOnly:  true,
@@ -105,4 +108,13 @@ func evalSQL(pf *pluginFlags, c *commonFlags, explicit map[string]bool) bool {
 	f.db = candidate
 	f.allowWrite = true
 	return true
+}
+
+// validateSQLiteFile rejects a folder for the SQL database path: SQLite needs
+// a file, and a folder there failed every launch.
+func validateSQLiteFile(v string) error {
+	if st, err := os.Stat(expandPath(strings.TrimSpace(v))); err == nil && st.IsDir() {
+		return fmt.Errorf("%s is a folder; give a database file path inside it, e.g. %s", v, filepath.Join(v, "tenant.db"))
+	}
+	return nil
 }

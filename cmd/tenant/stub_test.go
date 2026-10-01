@@ -53,11 +53,14 @@ func TestBuildToolMux_StubsUnconfiguredPlugins(t *testing.T) {
 		t.Error("web should NOT appear in shared mux — it's per-agent now")
 	}
 
-	// Enable a stub, then call it → needs-setup status (not a crash).
-	mux.SetEnabled("sql", true)
+	// Enabling an unconfigured plugin refuses with its setup hint (its
+	// activator finds no config, TEN-483), and its tools stay off.
+	if _, _, err := mux.SetEnabled("sql", true); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("enable unconfigured sql: err = %v", err)
+	}
 	out, isErr, _ := mux.Dispatch(context.Background(),
 		model.ToolCall{Name: "sql_query", Arguments: []byte(`{"sql":"SELECT 1"}`)})
-	if !isErr || !strings.Contains(out, "not configured") {
-		t.Fatalf("stub should return a needs-setup status, got: isErr=%v %q", isErr, out)
+	if !isErr || out == "" {
+		t.Fatalf("a refused enable should leave the tool off, got: isErr=%v %q", isErr, out)
 	}
 }

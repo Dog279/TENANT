@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,58 @@ func TestGSuiteRuntimeOAuthKeepsTheToken(t *testing.T) {
 	}
 	if creds.Get("skill:x:bearer") != "stored-later" {
 		t.Error("saving the refreshed token lost a secret stored after the plugin started")
+	}
+}
+
+// TEN-483: a launch-built sql plugin picks up a changed db path on
+// disable → enable, with no restart; a folder is rejected as the path.
+func TestSQLRebuildsFromConfigOnReenable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	saveTestSkill(t, dir, "sql", map[string]string{"db": a})
+	pf := &pluginFlags{}
+	sqlFlagsOf(pf).db = a
+	e := &pluginEnv{c: &commonFlags{cfgDir: dir}, pf: pf}
+	built, cleanup, err := launchSQL(ctx, e)
+	if err != nil || len(built) != 1 {
+		t.Fatalf("launch: %v (%d built)", err, len(built))
+	}
+	mux := newToolMux()
+	mux.Add("sql", built[0])
+	mux.AdoptLaunched("sql", activatorFor(ctx, sqlPlugin(), e), cleanup)
+
+	saveTestSkill(t, dir, "sql", map[string]string{"db": b})
+	mux.SetEnabled("sql", false)
+	if _, _, err := mux.SetEnabled("sql", true); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if _, err := os.Stat(b); err != nil {
+		t.Fatalf("rebuild should open the new db path: %v", err)
+	}
+	mux.Close()
+
+	if validateSQLiteFile(dir) == nil {
+		t.Error("a folder should be rejected as the SQL database path")
+	}
+	if err := validateSQLiteFile(b); err != nil {
+		t.Errorf("a file path should pass: %v", err)
+	}
+}
+
+// TEN-482: the startup check looks for the claude binary instead of probing
+// claudecode://auto over HTTP.
+func TestHealthCheckClaudeCode(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := &commonFlags{backend: "claudecode", vllmEndpoint: bin}
+	if got := healthCheck(context.Background(), c)[0]; got != "generation OK: claude CLI @ "+bin {
+		t.Errorf("found binary: %q", got)
+	}
+	c.vllmEndpoint = bin + "-missing"
+	if got := healthCheck(context.Background(), c)[0]; !strings.HasPrefix(got, "GENERATION UNAVAILABLE:") {
+		t.Errorf("missing binary: %q", got)
 	}
 }
