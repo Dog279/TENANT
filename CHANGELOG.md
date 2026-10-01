@@ -32,6 +32,10 @@ Releases page.
 - **Claude Code's built-in tool calls show in the dashboard, TUI and turns log** (TEN-481),
   named `claude:Read`, `claude:Bash` and so on. Under the `claudecode` provider they used to
   run unseen inside `claude -p`.
+- **The startup check no longer reports the `claudecode` provider UNREACHABLE** (TEN-482). It
+  looks for the `claude` program instead of probing `claudecode://auto` over HTTP.
+- **SQL, iMessage and Discord pick up config changes on `/disable` then `/enable`** (TEN-483),
+  with no restart. Setup also rejects a folder as the SQL database path.
 
 ### Security
 - **X sign-in:**
