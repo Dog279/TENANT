@@ -321,20 +321,22 @@ func (b *containerBackend) specFor(cmd Command, pol Policy) (containerSpec, erro
 	// deny root (cron's work dir lives under the data dir), since only the work-dir
 	// subtree is mounted; but a work dir that IS or CONTAINS a deny root fails
 	// closed.
+	// Compare deny roots and mounts in ONE canonical form (canonForCompare on both
+	// sides), or they disagree when the same place is named differently: a macOS
+	// symlink (/var -> /private/var) or a Windows 8.3 short name (RUNNER~1 vs the
+	// long name) on one side only would let the guard silently miss.
+	dwork := canonForCompare(work.host)
 	for _, d := range pol.DenyRoots {
 		if d == "" {
 			continue
 		}
-		// Resolve the deny root the same way mount sources are resolved
-		// (canonForCompare == what containerMount does), or a symlinked deny root
-		// (macOS /var -> /private/var, a symlinked home) would not match a resolved
-		// mount and the guard would silently miss.
-		d = canonForCompare(d)
-		if withinHost(d, work.host) { // deny root at or inside the work dir
+		dc := canonForCompare(d)
+		if withinHost(dc, dwork) { // deny root at or inside the work dir
 			return containerSpec{}, fmt.Errorf("work dir %s is or contains the deny root %s", work.host, d)
 		}
 		for _, m := range mounts {
-			if withinHost(m.host, d) || withinHost(d, m.host) {
+			mc := canonForCompare(m.host)
+			if withinHost(mc, dc) || withinHost(dc, mc) {
 				return containerSpec{}, fmt.Errorf("mount %s overlaps the deny root %s", m.host, d)
 			}
 		}

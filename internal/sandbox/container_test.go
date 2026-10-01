@@ -139,6 +139,9 @@ func TestSpecForDenyRoots(t *testing.T) {
 	if _, err := b.specFor(Command{Shell: "echo hi"}, Policy{WorkDir: outside, ReadRoots: []string{workUnderDeny}, DenyRoots: []string{deny}}); err == nil {
 		t.Error("a read root inside a deny root should be refused")
 	}
+	// The same place named differently on the two sides (a symlink, a Windows 8.3
+	// short name) must still match: container_test_windows.go exercises 8.3, and
+	// the macOS /var symlink is the same class.
 }
 
 func TestContainerDest(t *testing.T) {
