@@ -20,6 +20,18 @@ Releases page.
   documented in docs/orchestration.md.
 - **The eval baseline diff and the soul-nudge gate find their baseline under the data dir**,
   wherever Tenant starts, not only when it runs from a checkout.
+- **`/setup` text prompts in the TUI accept typing.** The Model, Endpoint, Embeddings,
+  gateway-address and API-key prompts never focused the input box, so keys were dropped
+  and Enter saved a blank value.
+- **Switching to the `claudecode` provider no longer reports it UNREACHABLE** and no longer
+  starts an endless auto-reconnect loop. Its `claudecode://` endpoint is a local CLI, not
+  an HTTP server.
+- **`/disable` then `/enable` rebuilds a plugin from its current config.** A settings change
+  to GitHub, Atlassian, Google, X or SimpleFIN, or to an MCP connector, now applies without a
+  restart. Before, re-enabling reused the copy built from the old settings.
+- **Claude Code's built-in tool calls show in the dashboard, TUI and turns log** (TEN-481),
+  named `claude:Read`, `claude:Bash` and so on. Under the `claudecode` provider they used to
+  run unseen inside `claude -p`.
 
 ### Security
 - **X sign-in:**
