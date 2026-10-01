@@ -12,17 +12,24 @@ import (
 
 // crmPlugin declares the CRM plugin, a wrapper over the operator's external
 // crm-tool binary (TEN-269). Configured by path (--crm-tool-path or
-// $CRM_TOOL_PATH).
+// $CRM_TOOL_PATH, or skills.crm.settings.path in config.json).
 func crmPlugin() *pluginDescriptor {
 	return &pluginDescriptor{
-		ID:      "crm",
-		Events:  crm.Events,
-		Flags:   bindCRMFlags,
-		On:      func(pf *pluginFlags) bool { return crmToolPath(pf) != "" },
-		Launch:  launchCRM,
-		Title:   "CRM (external crm-tool)",
-		Version: 1,
-		Tools:   func() []model.ToolSpec { return crm.NewDispatcher(nil, crm.Policy{}).Tools() },
+		ID:     "crm",
+		Events: crm.Events,
+		Flags:  bindCRMFlags,
+		On:     func(pf *pluginFlags) bool { return crmToolPath(pf) != "" },
+		Launch: launchCRM,
+		// A path set in config.json applies on /disable → /enable (TEN-483).
+		ApplyConfig: func(pf *pluginFlags, s savedConfig) {
+			if f := crmFlagsOf(pf); !s.set["crm-tool-path"] {
+				f.path = firstNonEmpty(f.path, s.get("path"))
+			}
+		},
+		Relaunch: true,
+		Title:    "CRM (external crm-tool)",
+		Version:  1,
+		Tools:    func() []model.ToolSpec { return crm.NewDispatcher(nil, crm.Policy{}).Tools() },
 		// The gated subcommands raise their tool name as the action id.
 		Actions: map[string]string{
 			"crm_ask": catDestructive, "crm_align": catDestructive, "crm_commitments_list": catDestructive,

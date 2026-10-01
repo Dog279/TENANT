@@ -24,6 +24,7 @@ func imessagePlugin() *pluginDescriptor {
 		ApplyConfig: applyIMessageConfig,
 		Grants:      imessageGrants,
 		Launch:      launchIMessage,
+		Relaunch:    true, // config edits apply on /disable → /enable (TEN-483)
 		Title:       "iMessage (via BlueBubbles)",
 		Version:     1,
 		Tools:       func() []model.ToolSpec { return imessage.NewDispatcher(nil, imessage.Policy{}).Tools() },

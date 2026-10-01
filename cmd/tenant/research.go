@@ -27,7 +27,6 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
-	"tenant/internal/plugins/wiki"
 	"tenant/internal/research"
 	"tenant/internal/tui"
 )
@@ -861,14 +860,85 @@ Question: %s
 
 === Sub-agent findings ===
 %s`, noUsableFindingsSentinel, question, findings)
-	resp, err := planner.Generate(ctx, model.GenerateRequest{
-		Messages:  []model.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 8000, // long report; no tools
-	})
-	if err != nil {
-		return "", err
+	// Some backends spend the budget planning in the open and never write the
+	// report (TEN-480). Check the output; on a bad one retry once with a
+	// larger budget and the reason, then give up rather than save notes.
+	var problem string
+	for attempt, budget := range []int{8000, 16000} {
+		p := prompt
+		if attempt > 0 {
+			p += "\n\nYour previous output was rejected: " + problem +
+				". Do not plan or think out loud. Write the finished report now, starting with \"# \"."
+		}
+		resp, err := planner.Generate(ctx, model.GenerateRequest{
+			Messages:  []model.Message{{Role: "user", Content: p}},
+			MaxTokens: budget, // long report; no tools
+		})
+		if err != nil && attempt > 0 {
+			// The larger budget can exceed a small context window; say why the
+			// first report was refused rather than only the transport error.
+			return "", fmt.Errorf("the model didn't write a usable report (%s); the retry failed: %w", problem, err)
+		}
+		if err != nil {
+			return "", err
+		}
+		body := sanitizeReport(resp.Text)
+		if problem = reportProblem(body, resp.FinishReason); problem == "" {
+			return body, nil
+		}
 	}
-	return sanitizeReport(resp.Text), nil
+	return "", fmt.Errorf("the model didn't write a usable report (%s); try a different planner model", problem)
+}
+
+// reportProblem says why a synthesized report can't be saved, or "" when it
+// reads as a report: cut off by the token limit, or mostly the model's
+// planning notes (TEN-480).
+func reportProblem(body, finishReason string) string {
+	t := strings.TrimSpace(body)
+	switch {
+	case strings.HasPrefix(t, noUsableFindingsSentinel):
+		return ""
+	case finishReason == "length":
+		return "it ran out of tokens before finishing"
+	case planningShare(t) > 0.25:
+		return "it is mostly planning notes, not a report"
+	}
+	return ""
+}
+
+// planningOpeners start the lines of a model thinking out loud about the task
+// ("We need answer user's request", "Need craft markdown") rather than writing.
+var planningOpeners = []string{"we need", "need ", "i need", "we should", "i should", "let's ", "let me ",
+	"i'll ", "we'll ", "we can ", "maybe ", "ok,", "okay,", "hmm"}
+
+func isPlanningLine(l string) bool {
+	l = strings.ToLower(strings.TrimSpace(l))
+	for _, o := range planningOpeners {
+		if strings.HasPrefix(l, o) {
+			return true
+		}
+	}
+	return false
+}
+
+// planningShare is the fraction of prose lines (not headings, blank, or
+// table rows) that are planning.
+func planningShare(s string) float64 {
+	var prose, planning int
+	for _, l := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "|") {
+			continue
+		}
+		prose++
+		if isPlanningLine(t) {
+			planning++
+		}
+	}
+	if prose == 0 {
+		return 0
+	}
+	return float64(planning) / float64(prose)
 }
 
 // sanitizeReport is the safety net for sloppy model output: collapses runaway
@@ -929,6 +999,13 @@ func looksLikeReasoningPreamble(s string) bool {
 		"*Final Polish", "*Refining based", "Self-Correction:", "Constraint Check:"} {
 		if strings.Contains(first, marker) {
 			return true
+		}
+	}
+	// First-person planning about the task itself (TEN-480): "We need answer
+	// user's request: write final research report…".
+	for _, l := range strings.Split(first, "\n") {
+		if strings.TrimSpace(l) != "" {
+			return isPlanningLine(l)
 		}
 	}
 	return false
@@ -1085,23 +1162,22 @@ var errResearchBusy = errors.New("another research run is already in progress")
 // progress to the system feed. The final report comes back to the chat pane. C3: the optional
 // store persists each pass as an auditable, replayable run.
 type researchControl struct {
-	ag      *agent.Agent
-	rt      *TeamRuntime
-	say     func(string, ...any) // → the TUI system feed channel
-	wikiDir string               // auto-deposit destination (empty = chat-only)
-	opts    researchOpts
-	store   *research.Store // nil = no persistence (legacy)
+	ag    *agent.Agent
+	rt    *TeamRuntime
+	say   func(string, ...any) // → the TUI system feed channel
+	opts  researchOpts
+	store *research.Store // nil = no persistence (legacy)
 	// emitTimeline, if set, publishes C4 structured updates to the TUI's
 	// research-timeline pane. nil = no live pane (CLI runs).
 	emitTimeline timelineEmitter
-	// wikiIndex, if set, is the wiki plugin's live *Index. After a
-	// successful writeWikiReport, runOne calls wikiIndex.Reindex(ctx) so
+	// wiki is the wiki plugin's live dir and *Index, read at save time so a
+	// wiki rebuilt on a new dir (TEN-483) gets the report. Empty dir =
+	// chat-only. After a successful writeWikiReport, runOne reindexes so
 	// the just-deposited file is immediately searchable — without this,
 	// the wiki index lags the disk by N turns and the agent can't
 	// surface its own research until the next wiki_search happens to
-	// fire (the 2026-05-26 lost-context bug, TEN-44). nil = no auto-
-	// reindex (legacy / CLI without wired index).
-	wikiIndex *wiki.Index
+	// fire (the 2026-05-26 lost-context bug, TEN-44).
+	wiki *wikiLive
 	// busy, if set, allows one run at a time across everything sharing it
 	// (the terminal app and the dashboard). nil = no limit (the CLI).
 	busy *atomic.Bool
@@ -1160,14 +1236,14 @@ func (rc *researchControl) runOne(ctx context.Context, question, replayOf string
 	// next turn — the prior "lazy reindex on next wiki_search" path
 	// allowed deposit-to-retrieval gaps measured in turns (the proximate
 	// cause of the 2026-05-26 lost-context bug).
-	if rc.wikiDir != "" {
-		if path, werr := writeWikiReport(rc.wikiDir, question, report); werr != nil {
+	if wikiDir, wikiIndex := rc.wiki.get(); wikiDir != "" {
+		if path, werr := writeWikiReport(wikiDir, question, report); werr != nil {
 			rc.say("⚠ couldn't save to wiki: %v", werr)
 			research.WikiFailed.Log(ctx, "op", "write the report", "err", werr)
 		} else {
 			rc.say("📄 saved to wiki: %s", path)
-			if rc.wikiIndex != nil {
-				if _, _, rerr := rc.wikiIndex.Reindex(ctx); rerr != nil {
+			if wikiIndex != nil {
+				if _, _, rerr := wikiIndex.Reindex(ctx); rerr != nil {
 					// Non-fatal: file is on disk; next wiki_search still triggers
 					// the lazy reindex path (wiki.go:340-344) as a fallback.
 					rc.say("⚠ wiki indexed file but reindex failed: %v", rerr)

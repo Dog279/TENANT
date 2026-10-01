@@ -15,8 +15,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 
 	"tenant/internal/plugins/gsuite"
@@ -75,7 +73,7 @@ func interactiveGSuiteOAuth(ctx context.Context, cfgDir string) error {
 	reader := bufio.NewReader(os.Stdin)
 	_, _ = reader.ReadString('\n')
 
-	_ = openOAuthBrowser("https://console.cloud.google.com/apis/credentials")
+	_ = startBrowser("https://console.cloud.google.com/apis/credentials")
 
 	fmt.Fprintln(os.Stderr, "Follow these steps in your browser:")
 	fmt.Fprintln(os.Stderr)
@@ -102,20 +100,6 @@ func interactiveGSuiteOAuth(ctx context.Context, cfgDir string) error {
 		return errors.New("no path provided — re-run when ready")
 	}
 	return installGSuiteOAuth(cfgDir, pathLine)
-}
-
-// openOAuthBrowser opens a URL in the OS-default browser. Best-effort.
-func openOAuthBrowser(rawURL string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
-	case "darwin":
-		cmd = exec.Command("open", rawURL)
-	default:
-		cmd = exec.Command("xdg-open", rawURL)
-	}
-	return cmd.Start()
 }
 
 // installGSuiteOAuth validates the source JSON looks like a Desktop

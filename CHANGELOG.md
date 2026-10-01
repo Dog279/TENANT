@@ -32,6 +32,25 @@ Releases page.
 - **Claude Code's built-in tool calls show in the dashboard, TUI and turns log** (TEN-481),
   named `claude:Read`, `claude:Bash` and so on. Under the `claudecode` provider they used to
   run unseen inside `claude -p`.
+- **The startup check no longer reports the `claudecode` provider UNREACHABLE** (TEN-482). It
+  looks for the `claude` program instead of probing `claudecode://auto` over HTTP.
+- **SQL, wiki, CRM, iMessage and Discord pick up config changes on `/disable` then `/enable`**
+  (TEN-483), with no restart. Research and peer sharing follow a wiki moved to a new folder.
+  Flags passed at launch still win, and a skill turned off in config.json stays off. Setup
+  rejects a folder as the SQL database path.
+- **`tenant setup` → Modify opens a list of sections** (TEN-477). Pick one, change it, and come
+  back; Skills asks which skill to edit instead of walking every one.
+- **The wiki tools name the wiki folder** (TEN-478), so the model doesn't have to search the
+  disk for it.
+- **Deep research no longer saves the model's planning notes as the report** (TEN-480). A
+  report cut off by the token limit, or made mostly of planning, is retried once and otherwise
+  fails the run.
+- **A mode change on the Approvals page is no longer undone** when the settings watcher ticks
+  before the change is saved (TEN-428).
+- **The main agent sees helpers added, renamed or removed while it runs** (TEN-405).
+- **Windows: hard-killing tenant.exe no longer leaves its headless Chrome running** (TEN-401).
+  Tenant runs its children in a job that Windows closes with it, and removes profile folders
+  left by earlier runs. Sign-in browsers still stay open after Tenant exits.
 
 ### Security
 - **X sign-in:**

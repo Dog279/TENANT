@@ -116,7 +116,7 @@ func dashResearchOf(base context.Context, rc *researchControl, web bool, next fu
 	d := &dashResearch{rc: *rc, base: base, next: next, since: time.Now(), changed: make(chan struct{})}
 	d.rc.say, d.rc.emitTimeline = d.say, d.timeline
 	d.run = d.rc.runOne
-	d.live = dashboard.ResearchLiveView{SavesToNotes: rc.wikiDir != "", WebOff: !web, HistoryOn: rc.store != nil}
+	d.live = dashboard.ResearchLiveView{WebOff: !web, HistoryOn: rc.store != nil}
 	return d
 }
 
@@ -130,6 +130,8 @@ func (d *dashResearch) Watch() (dashboard.ResearchLiveView, <-chan struct{}) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	v := d.live
+	dir, _ := d.rc.wiki.get() // live: the wiki can be turned on or moved while Tenant runs
+	v.SavesToNotes = dir != ""
 	v.Lines = slices.Clone(v.Lines)
 	v.Elsewhere = !v.Running && d.rc.busy.Load()
 	if v.Running {

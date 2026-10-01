@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 
 	"tenant/internal/model"
-	"tenant/internal/plugins/wiki"
 )
 
 // pluginFlags holds every plugin's launch flags, each plugin's in its own
@@ -69,13 +68,13 @@ func bindPluginFlags(fs *flag.FlagSet) *pluginFlags {
 // dispatcher + a cleanup func (closes browser/db handles). An enabled
 // plugin that fails to construct returns an error — better to tell the
 // operator their flag is wrong than to silently drop the tool.
-func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf *pluginFlags, confirm func(context.Context, string, string) bool, log *slog.Logger) (*toolMux, *wiki.Index, func(), error) {
+func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf *pluginFlags, confirm func(context.Context, string, string) bool, log *slog.Logger) (*toolMux, *wikiLive, func(), error) {
 	mux := newToolMux()
-	fail := func(err error) (*toolMux, *wiki.Index, func(), error) {
+	fail := func(err error) (*toolMux, *wikiLive, func(), error) {
 		mux.Close()
 		return nil, nil, nil, err
 	}
-	e := &pluginEnv{c: c, pf: pf, confirm: confirm, log: log, router: router}
+	e := &pluginEnv{c: c, pf: pf, confirm: confirm, log: log, router: router, wiki: &wikiLive{}}
 
 	// Local memory recall tool (TEN-243 Phase B). Enabled by default as of
 	// TEN-249: it gives the agent ACTIVE recall of its own long-term memory and,
@@ -158,5 +157,5 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	// same silent/non-blocking pattern.
 	mux.ReconnectPeersSilently(c.cfgDir)
 
-	return mux, e.wikiIndex, mux.Close, nil
+	return mux, e.wiki, mux.Close, nil
 }

@@ -1450,11 +1450,21 @@ func (m *Mux) maybeActivate(target string) error {
 		}
 		return nil
 	}
+	live := map[string]model.ToolSpec{}
+	for _, spec := range p.Tools() {
+		live[spec.Name] = spec
+	}
 	for _, n := range m.order {
 		if e := m.byName[n]; e.Plugin == label {
 			e.owner = p
+			if spec, ok := live[n]; ok {
+				e.spec = spec // a rebuild on new config may describe its tools differently
+				delete(m.baseDesc, n)
+				m.toolEmbeddings = nil
+			}
 		}
 	}
+	m.refreshFederationDescLocked() // re-append the peer note to refreshed specs
 	// Zero-spec stubs (e.g. a remote MCP connector) only learn their tool
 	// list AFTER connecting, so the stub registered no specs to swap above.
 	// Merge whatever the live plugin now advertises. First-registrant-wins:

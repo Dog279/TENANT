@@ -26,6 +26,7 @@ func discordPlugin() *pluginDescriptor {
 		ApplyConfig: applyDiscordConfig,
 		Grants:      discordGrants,
 		Launch:      launchDiscord,
+		Relaunch:    true, // config edits apply on /disable → /enable (TEN-483)
 		Title:       "Discord (bot integration)",
 		Version:     1,
 		Tools:       func() []model.ToolSpec { return discord.NewDispatcher(nil, discord.Policy{}).Tools() },

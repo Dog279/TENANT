@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +181,146 @@ func TestGSuiteRuntimeOAuthKeepsTheToken(t *testing.T) {
 	}
 	if creds.Get("skill:x:bearer") != "stored-later" {
 		t.Error("saving the refreshed token lost a secret stored after the plugin started")
+	}
+}
+
+// TEN-483: a launch-built sql plugin picks up a changed db path on
+// disable → enable, with no restart; a folder is rejected as the path.
+func TestSQLRebuildsFromConfigOnReenable(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	saveTestSkill(t, dir, "sql", map[string]string{"db": a})
+	pf := &pluginFlags{}
+	sqlFlagsOf(pf).db = a
+	e := &pluginEnv{c: &commonFlags{cfgDir: dir}, pf: pf}
+	built, cleanup, err := launchSQL(ctx, e)
+	if err != nil || len(built) != 1 {
+		t.Fatalf("launch: %v (%d built)", err, len(built))
+	}
+	mux := newToolMux()
+	mux.Add("sql", built[0])
+	mux.AdoptLaunched("sql", activatorFor(ctx, sqlPlugin(), e), cleanup)
+
+	saveTestSkill(t, dir, "sql", map[string]string{"db": b})
+	mux.SetEnabled("sql", false)
+	if _, _, err := mux.SetEnabled("sql", true); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if _, err := os.Stat(b); err != nil {
+		t.Fatalf("rebuild should open the new db path: %v", err)
+	}
+	mux.Close()
+
+	if validateSQLiteFile(dir) == nil {
+		t.Error("a folder should be rejected as the SQL database path")
+	}
+	if err := validateSQLiteFile(b); err != nil {
+		t.Errorf("a file path should pass: %v", err)
+	}
+}
+
+// TEN-482: the startup check looks for the claude binary instead of probing
+// claudecode://auto over HTTP.
+func TestHealthCheckClaudeCode(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := &commonFlags{backend: "claudecode", vllmEndpoint: bin}
+	if got := healthCheck(context.Background(), c)[0]; got != "generation OK: claude CLI @ "+bin {
+		t.Errorf("found binary: %q", got)
+	}
+	c.vllmEndpoint = bin + "-missing"
+	if got := healthCheck(context.Background(), c)[0]; !strings.HasPrefix(got, "GENERATION UNAVAILABLE:") {
+		t.Errorf("missing binary: %q", got)
+	}
+}
+
+// TEN-483 + TEN-478: the wiki rebuilds on a new dir on disable → enable; the
+// tools name the new root, and research/peers read the new dir and index.
+func TestWikiRebuildsOnNewDir(t *testing.T) {
+	ctx := context.Background()
+	cfg := t.TempDir()
+	a, b := filepath.Join(cfg, "wa"), filepath.Join(cfg, "wb")
+	for _, d := range []string{a, b} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	router, err := buildRouter(&commonFlags{backend: "echo"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveTestSkill(t, cfg, "wiki", map[string]string{"dir": a})
+	pf := &pluginFlags{}
+	wikiFlagsOf(pf).dir = a
+	e := &pluginEnv{c: &commonFlags{cfgDir: cfg, dataDir: cfg}, pf: pf, router: router, wiki: &wikiLive{}}
+	built, cleanup, err := launchWiki(ctx, e)
+	if err != nil || len(built) != 1 {
+		t.Fatalf("launch: %v (%d built)", err, len(built))
+	}
+	mux := newToolMux()
+	mux.Add("wiki", built[0])
+	mux.AdoptLaunched("wiki", activatorFor(ctx, wikiPlugin(), e), cleanup)
+	desc := func() string {
+		for _, ts := range mux.All() {
+			if ts.Name == "wiki_list" {
+				return ts.Description
+			}
+		}
+		return ""
+	}
+	if !strings.Contains(desc(), a) {
+		t.Fatalf("wiki_list should name the root %s: %q", a, desc())
+	}
+
+	saveTestSkill(t, cfg, "wiki", map[string]string{"dir": b})
+	mux.SetEnabled("wiki", false)
+	if _, _, err := mux.SetEnabled("wiki", true); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if !strings.Contains(desc(), b) {
+		t.Errorf("after a rebuild wiki_list should name %s: %q", b, desc())
+	}
+	if dir, ix := e.wiki.get(); dir != b || ix == nil || ix.Root() != b {
+		t.Errorf("live wiki = %q (index root %v), want %s", dir, ix, b)
+	}
+	mux.Close()
+}
+
+// A rebuild keeps a plugin configured by an explicit launch flag on that
+// flag, and a skill turned off in config.json stays off (TEN-483 review).
+func TestRelaunchHonorsFlagsAndEnabled(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	saveTestSkill(t, dir, "sql", map[string]string{"db": b})
+
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	fs.String("sql-db", "", "")
+	if err := fs.Parse([]string{"--sql-db", a}); err != nil {
+		t.Fatal(err)
+	}
+	pf := &pluginFlags{}
+	sqlFlagsOf(pf).db = a
+	e := &pluginEnv{c: &commonFlags{cfgDir: dir, fs: fs}, pf: pf}
+	p, cleanup, err := relaunchFromConfig(ctx, sqlPlugin(), e)
+	if err != nil || p == nil {
+		t.Fatalf("relaunch: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(b); err == nil {
+		t.Error("an explicit --sql-db must win over config.json on a rebuild")
+	}
+
+	lc, _ := loadLaunchConfig(dir)
+	lc.Skills["sql"].Enabled = false
+	if err := lc.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	e.c = &commonFlags{cfgDir: dir}
+	if _, _, err := relaunchFromConfig(ctx, sqlPlugin(), e); err == nil || !strings.Contains(err.Error(), "turned off") {
+		t.Errorf("a turned-off skill should stay off: %v", err)
 	}
 }

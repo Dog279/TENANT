@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -19,7 +20,6 @@ import (
 
 	"tenant/internal/model"
 	"tenant/internal/pluginreg"
-	"tenant/internal/plugins/wiki"
 )
 
 // pluginDescriptor declares one first-party plugin.
@@ -87,6 +87,10 @@ type pluginDescriptor struct {
 	// Activate builds the plugin from saved config on its first /enable. Nil:
 	// enabling it needs a relaunch with the plugin's flags.
 	Activate func(ctx context.Context, e *pluginEnv) (plugin, func(), error)
+	// Relaunch, for a plugin with no Activate, rebuilds it on /enable by
+	// re-reading its saved config and re-running Launch (TEN-483). Only for a
+	// Launch that builds one plugin and touches nothing else in pluginEnv.
+	Relaunch bool
 
 	// AdaptConfigure adjusts the plugin's config schema to this install
 	// (embedded OAuth credentials, a cache dir, a connector), for /configure
@@ -174,9 +178,9 @@ type pluginEnv struct {
 	log     *slog.Logger
 	router  *model.Router
 
-	// wikiIndex is set by the wiki plugin's launch for the callers that
-	// reindex after writing a note (TEN-44).
-	wikiIndex *wiki.Index
+	// wiki is the live wiki dir and index, set by the wiki plugin's launch
+	// (and a rebuild), for the callers that write a note and reindex (TEN-44).
+	wiki *wikiLive
 }
 
 // savedConfig is one plugin's saved config (config.json skills.<id> and its
@@ -249,11 +253,65 @@ func setupOnlyKinds() map[string]skillKind {
 // activatorFor builds d from its saved config on /enable (and again after a
 // /disable, so config edits apply without a restart).
 func activatorFor(ctx context.Context, d *pluginDescriptor, e *pluginEnv) func() (plugin, func(), error) {
+	activate := d.Activate
+	if activate == nil {
+		activate = func(ctx context.Context, e *pluginEnv) (plugin, func(), error) { return relaunchFromConfig(ctx, d, e) }
+	}
 	return func() (plugin, func(), error) {
-		p, cleanup, err := d.Activate(ctx, e)
+		p, cleanup, err := activate(ctx, e)
 		d.logStart(ctx, err)
 		return p, cleanup, err
 	}
+}
+
+// relaunchFromConfig builds d the way the launch did, from what config.json and
+// the credentials say now, so a changed setting (the SQL file, the BlueBubbles
+// URL) applies on the next /enable. Launch-only flags such as --sql-allow-write
+// fall back to their defaults, the stricter setting. A plugin configured by
+// flags passed at launch, or with no saved config, keeps its launch flags. A
+// skill turned off in config.json stays off, as it does at launch.
+func relaunchFromConfig(ctx context.Context, d *pluginDescriptor, e *pluginEnv) (plugin, func(), error) {
+	lc, err := loadLaunchConfig(e.c.cfgDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s plugin: load config: %w", d.ID, err)
+	}
+	re := *e
+	if sc := lc.Skills[d.ID]; sc != nil && d.ApplyConfig != nil && !launchFlagsSet(d, e.c.flagSet()) {
+		if !sc.Enabled {
+			return nil, nil, fmt.Errorf("%s plugin: %w yet - it's turned off in config.json; turn it on in `tenant setup`", d.ID, errNotConfigured)
+		}
+		re.pf = &pluginFlags{}
+		id := d.ID
+		d.ApplyConfig(re.pf, savedConfig{settings: sc.Settings, secret: func(field string) string {
+			return resolveSecretWith(e.c.credentialsLoader(), e.c.cfgDir, skillSecretID(id, field), authCfg{Stored: true})
+		}})
+		if d.ExpandPaths != nil {
+			d.ExpandPaths(re.pf)
+		}
+	}
+	built, cleanup, err := d.Launch(ctx, &re)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(built) != 1 {
+		if cleanup != nil {
+			cleanup()
+		}
+		return nil, nil, fmt.Errorf("%s plugin: %w yet - %s", d.ID, errNotConfigured, d.StubHint)
+	}
+	return built[0], cleanup, nil
+}
+
+// launchFlagsSet reports whether any of d's launch flags was passed explicitly.
+func launchFlagsSet(d *pluginDescriptor, set map[string]bool) bool {
+	if d.Flags == nil || len(set) == 0 {
+		return false
+	}
+	fs := flag.NewFlagSet(d.ID, flag.ContinueOnError)
+	d.Flags(fs)
+	found := false
+	fs.VisitAll(func(f *flag.Flag) { found = found || set[f.Name] })
+	return found
 }
 
 // registerPluginStubs registers a disabled stub for every shared plugin the
@@ -267,7 +325,7 @@ func registerPluginStubs(ctx context.Context, mux *toolMux, e *pluginEnv) {
 		}
 		mux.Add(d.ID, stubPlugin{Specs: d.Tools(), Hint: d.StubHint})
 		mux.SetEnabled(d.ID, false)
-		if d.Activate != nil {
+		if d.Activate != nil || d.Relaunch {
 			mux.RegisterActivator(d.ID, activatorFor(ctx, d, e))
 		}
 	}
@@ -321,7 +379,7 @@ func launchPlugins(ctx context.Context, mux *toolMux, e *pluginEnv) error {
 		for _, p := range built {
 			mux.Add(d.ID, p)
 		}
-		if d.Activate != nil && len(built) == 1 {
+		if (d.Activate != nil || d.Relaunch) && len(built) == 1 {
 			mux.AdoptLaunched(d.ID, activatorFor(ctx, d, e), cleanup) // disable→enable rebuilds from config
 		} else {
 			mux.AddCleanup(cleanup)
