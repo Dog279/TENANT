@@ -41,7 +41,7 @@ func newWikiSaveDispatcher(wikiDir string, ix *wiki.Index, confirm func(context.
 func (d *wikiSaveDispatcher) Tools() []model.ToolSpec {
 	return []model.ToolSpec{{
 		Name:        "wiki_save",
-		Description: "Save/ingest a note into your LOCAL wiki: writes <file> with <content> and reindexes so it's searchable offline. Use to PERMANENTLY keep a peer's note you fetched (peers are otherwise read-on-demand), or to save research. Non-clobbering unless overwrite=true. Gated — writes only when you approve.",
+		Description: "Save/ingest a note into your LOCAL wiki: writes <file> with <content> and reindexes so it's searchable offline. Use to PERMANENTLY keep a peer's note you fetched (peers are otherwise read-on-demand), or to save research. Non-clobbering unless overwrite=true. Gated — writes only when you approve. The wiki root is " + d.root + ".",
 		Parameters:  json.RawMessage(`{"type":"object","properties":{"file":{"type":"string","description":"note path relative to the wiki root, e.g. milk.md"},"content":{"type":"string","description":"full markdown body to write"},"overwrite":{"type":"boolean","description":"replace an existing note (default false)"}},"required":["file","content"]}`),
 		Gated:       true,
 	}}

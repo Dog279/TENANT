@@ -110,6 +110,9 @@ const (
 
 // New opens (or prepares) an index. embedID is a stable string like
 // "<model>/<dim>" so a different embedder forces a clean rebuild.
+// Root is the vault directory the index covers; note paths are relative to it.
+func (ix *Index) Root() string { return ix.root }
+
 func New(root, sidecar, embedID string, e model.Embedder) (*Index, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {

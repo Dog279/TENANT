@@ -18,7 +18,6 @@ import (
 	"tenant/internal/memory/semantic"
 	"tenant/internal/model"
 	"tenant/internal/peering"
-	"tenant/internal/plugins/wiki"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -47,7 +46,7 @@ func buildPeerToolDeps(ctx context.Context, c *commonFlags, wikiDir string) (pee
 		}
 		if wikiDir != "" {
 			if ix, werr := buildWikiIndex(ctx, c, router, wikiDir); werr == nil {
-				deps.wiki = ix
+				deps.wiki = &wikiLive{dir: wikiDir, ix: ix}
 			}
 		}
 	}
@@ -62,7 +61,7 @@ type peerToolDeps struct {
 	semantic *semantic.Store
 	episodic *episodic.Store
 	embedder model.Embedder
-	wiki     *wiki.Index
+	wiki     *wikiLive // read per call, so a rebuilt wiki is what peers see
 	// onAuth records inbound liveness (TEN-250): fired with a peer's name each
 	// time it authenticates a request against our listener. nil ⇒ no-op.
 	onAuth func(peerName string)
@@ -121,7 +120,8 @@ func registerPeerWikiRead(s *mcp.Server, pc peering.PeerContext, deps peerToolDe
 			if !pc.CurrentShare().Wiki {
 				return peerDenied("wiki"), nil, nil
 			}
-			if deps.wiki == nil {
+			_, wix := deps.wiki.get()
+			if wix == nil {
 				return peerText("(this peer has no wiki configured)"), nil, nil
 			}
 			f := strings.TrimSpace(a.File)
@@ -132,7 +132,7 @@ func registerPeerWikiRead(s *mcp.Server, pc peering.PeerContext, deps peerToolDe
 			// symlink containment. On ANY failure we return ONE opaque message so
 			// a peer can't distinguish not-found / not-indexed / traversal-refused
 			// and can't probe the serving filesystem or learn its absolute paths.
-			content, err := deps.wiki.ReadSharedNote(f)
+			content, err := wix.ReadSharedNote(f)
 			if err != nil {
 				return peerText("(note not available in the shared wiki)"), nil, nil
 			}
@@ -152,14 +152,15 @@ func registerPeerWikiSearch(s *mcp.Server, pc peering.PeerContext, deps peerTool
 			if !pc.CurrentShare().Wiki {
 				return peerDenied("wiki"), nil, nil
 			}
-			if deps.wiki == nil {
+			_, wix := deps.wiki.get()
+			if wix == nil {
 				return peerText("(this peer has no wiki configured)"), nil, nil
 			}
 			q := strings.TrimSpace(a.Query)
 			if q == "" {
 				return peerText("query is required"), nil, nil
 			}
-			hits, err := deps.wiki.Search(ctx, q, clampK(a.K))
+			hits, err := wix.Search(ctx, q, clampK(a.K))
 			if err != nil {
 				peering.SearchFailed.Log(ctx, "peer", pc.Name, "tool", "peer_wiki_search", "store", "the wiki", "err", err)
 				return peerText("wiki search failed: " + err.Error()), nil, nil

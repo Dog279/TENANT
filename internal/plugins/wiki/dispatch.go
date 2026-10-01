@@ -29,14 +29,20 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 		}
 		return json.RawMessage(`{"type":"object","properties":{` + props + `},"required":[` + r + `]}`)
 	}
+	// Name the vault so the model needn't search the disk for it before
+	// writing a note or resolving links (TEN-478).
+	where := ""
+	if d.ix != nil {
+		where = " The wiki root is " + d.ix.Root() + "; note paths are relative to it."
+	}
 	tools := []model.ToolSpec{
-		{Name: "wiki_search", Description: "Semantic + link-graph search over the user's notes. Returns snippets with file › heading; results tagged '(via X)' were pulled in because note X links to them. Use this first.",
+		{Name: "wiki_search", Description: "Semantic + link-graph search over the user's notes. Returns snippets with file › heading; results tagged '(via X)' were pulled in because note X links to them. Use this first." + where,
 			Parameters: obj(`"query":{"type":"string"},"k":{"type":"integer","description":"max results (default 6)"}`, "query")},
 		{Name: "wiki_read", Description: "Read a full note by its file path (as returned by wiki_search). Use after search to get complete context.",
 			Parameters: obj(`"file":{"type":"string","description":"note path relative to the wiki root"}`, "file")},
 		{Name: "wiki_links", Description: "Show a note's Obsidian graph: outgoing [[links]], backlinks (notes linking TO it), and #tags. Use to follow connections for multi-hop questions.",
 			Parameters: obj(`"file":{"type":"string","description":"note path (as returned by wiki_search/wiki_list)"}`, "file")},
-		{Name: "wiki_list", Description: "List all indexed note file paths.",
+		{Name: "wiki_list", Description: "List all indexed note file paths." + where,
 			Parameters: obj(``)},
 		{Name: "wiki_reindex", Description: "Rebuild the index after the user edited their notes. Usually unnecessary (search auto-indexes when empty).",
 			Parameters: obj(``)},

@@ -2951,7 +2951,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// relays and the dashboard chat have running on rt (TEN-326).
 	researchCtl := &researchControl{
 		ag: ag, rt: ownResearchRuntime(life, teamCfg), profiles: rt.AgentProfiles, say: researchSay,
-		wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx, opts: defaultResearchOpts(), store: rstore,
+		wiki: wikiIx, opts: defaultResearchOpts(), store: rstore,
 		emitTimeline: func(u tui.ResearchTimelineUpdate) {
 			// Non-blocking send: a paused/slow TUI must not stall the
 			// orchestrator. The TUI also re-renders from a single

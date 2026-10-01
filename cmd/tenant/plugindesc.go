@@ -20,7 +20,6 @@ import (
 
 	"tenant/internal/model"
 	"tenant/internal/pluginreg"
-	"tenant/internal/plugins/wiki"
 )
 
 // pluginDescriptor declares one first-party plugin.
@@ -179,9 +178,9 @@ type pluginEnv struct {
 	log     *slog.Logger
 	router  *model.Router
 
-	// wikiIndex is set by the wiki plugin's launch for the callers that
-	// reindex after writing a note (TEN-44).
-	wikiIndex *wiki.Index
+	// wiki is the live wiki dir and index, set by the wiki plugin's launch
+	// (and a rebuild), for the callers that write a note and reindex (TEN-44).
+	wiki *wikiLive
 }
 
 // savedConfig is one plugin's saved config (config.json skills.<id> and its

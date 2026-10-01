@@ -701,7 +701,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// goals, so serve's Autopilot page stays nil.
 	dashMgr.agents = newDashAgents(&agentControl{cfgDir: c.cfgDir, rt: rt})
 	dashMgr.research = newServeDashResearch(ctx, life, teamCfg, rt,
-		researchControl{ag: ag, wikiDir: wikiFlagsOf(pf).dir, wikiIndex: wikiIx, opts: defaultResearchOpts()}, c.dataDir, teamWeb)
+		researchControl{ag: ag, wiki: wikiIx, opts: defaultResearchOpts()}, c.dataDir, teamWeb)
 
 	dashAddr := ""
 	if *dashboardOn {

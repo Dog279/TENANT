@@ -27,7 +27,6 @@ import (
 	"tenant/internal/model"
 	"tenant/internal/orchestra"
 	"tenant/internal/plugins/web"
-	"tenant/internal/plugins/wiki"
 	"tenant/internal/research"
 	"tenant/internal/tui"
 )
@@ -1085,23 +1084,22 @@ var errResearchBusy = errors.New("another research run is already in progress")
 // progress to the system feed. The final report comes back to the chat pane. C3: the optional
 // store persists each pass as an auditable, replayable run.
 type researchControl struct {
-	ag      *agent.Agent
-	rt      *TeamRuntime
-	say     func(string, ...any) // → the TUI system feed channel
-	wikiDir string               // auto-deposit destination (empty = chat-only)
-	opts    researchOpts
-	store   *research.Store // nil = no persistence (legacy)
+	ag    *agent.Agent
+	rt    *TeamRuntime
+	say   func(string, ...any) // → the TUI system feed channel
+	opts  researchOpts
+	store *research.Store // nil = no persistence (legacy)
 	// emitTimeline, if set, publishes C4 structured updates to the TUI's
 	// research-timeline pane. nil = no live pane (CLI runs).
 	emitTimeline timelineEmitter
-	// wikiIndex, if set, is the wiki plugin's live *Index. After a
-	// successful writeWikiReport, runOne calls wikiIndex.Reindex(ctx) so
+	// wiki is the wiki plugin's live dir and *Index, read at save time so a
+	// wiki rebuilt on a new dir (TEN-483) gets the report. Empty dir =
+	// chat-only. After a successful writeWikiReport, runOne reindexes so
 	// the just-deposited file is immediately searchable — without this,
 	// the wiki index lags the disk by N turns and the agent can't
 	// surface its own research until the next wiki_search happens to
-	// fire (the 2026-05-26 lost-context bug, TEN-44). nil = no auto-
-	// reindex (legacy / CLI without wired index).
-	wikiIndex *wiki.Index
+	// fire (the 2026-05-26 lost-context bug, TEN-44).
+	wiki *wikiLive
 	// busy, if set, allows one run at a time across everything sharing it
 	// (the terminal app and the dashboard). nil = no limit (the CLI).
 	busy *atomic.Bool
@@ -1160,14 +1158,14 @@ func (rc *researchControl) runOne(ctx context.Context, question, replayOf string
 	// next turn — the prior "lazy reindex on next wiki_search" path
 	// allowed deposit-to-retrieval gaps measured in turns (the proximate
 	// cause of the 2026-05-26 lost-context bug).
-	if rc.wikiDir != "" {
-		if path, werr := writeWikiReport(rc.wikiDir, question, report); werr != nil {
+	if wikiDir, wikiIndex := rc.wiki.get(); wikiDir != "" {
+		if path, werr := writeWikiReport(wikiDir, question, report); werr != nil {
 			rc.say("⚠ couldn't save to wiki: %v", werr)
 			research.WikiFailed.Log(ctx, "op", "write the report", "err", werr)
 		} else {
 			rc.say("📄 saved to wiki: %s", path)
-			if rc.wikiIndex != nil {
-				if _, _, rerr := rc.wikiIndex.Reindex(ctx); rerr != nil {
+			if wikiIndex != nil {
+				if _, _, rerr := wikiIndex.Reindex(ctx); rerr != nil {
 					// Non-fatal: file is on disk; next wiki_search still triggers
 					// the lazy reindex path (wiki.go:340-344) as a fallback.
 					rc.say("⚠ wiki indexed file but reindex failed: %v", rerr)

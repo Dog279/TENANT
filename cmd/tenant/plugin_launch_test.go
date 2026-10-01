@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,4 +235,56 @@ func TestHealthCheckClaudeCode(t *testing.T) {
 	if got := healthCheck(context.Background(), c)[0]; !strings.HasPrefix(got, "GENERATION UNAVAILABLE:") {
 		t.Errorf("missing binary: %q", got)
 	}
+}
+
+// TEN-483 + TEN-478: the wiki rebuilds on a new dir on disable → enable; the
+// tools name the new root, and research/peers read the new dir and index.
+func TestWikiRebuildsOnNewDir(t *testing.T) {
+	ctx := context.Background()
+	cfg := t.TempDir()
+	a, b := filepath.Join(cfg, "wa"), filepath.Join(cfg, "wb")
+	for _, d := range []string{a, b} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	router, err := buildRouter(&commonFlags{backend: "echo"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveTestSkill(t, cfg, "wiki", map[string]string{"dir": a})
+	pf := &pluginFlags{}
+	wikiFlagsOf(pf).dir = a
+	e := &pluginEnv{c: &commonFlags{cfgDir: cfg, dataDir: cfg}, pf: pf, router: router, wiki: &wikiLive{}}
+	built, cleanup, err := launchWiki(ctx, e)
+	if err != nil || len(built) != 1 {
+		t.Fatalf("launch: %v (%d built)", err, len(built))
+	}
+	mux := newToolMux()
+	mux.Add("wiki", built[0])
+	mux.AdoptLaunched("wiki", activatorFor(ctx, wikiPlugin(), e), cleanup)
+	desc := func() string {
+		for _, ts := range mux.All() {
+			if ts.Name == "wiki_list" {
+				return ts.Description
+			}
+		}
+		return ""
+	}
+	if !strings.Contains(desc(), a) {
+		t.Fatalf("wiki_list should name the root %s: %q", a, desc())
+	}
+
+	saveTestSkill(t, cfg, "wiki", map[string]string{"dir": b})
+	mux.SetEnabled("wiki", false)
+	if _, _, err := mux.SetEnabled("wiki", true); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if !strings.Contains(desc(), b) {
+		t.Errorf("after a rebuild wiki_list should name %s: %q", b, desc())
+	}
+	if dir, ix := e.wiki.get(); dir != b || ix == nil || ix.Root() != b {
+		t.Errorf("live wiki = %q (index root %v), want %s", dir, ix, b)
+	}
+	mux.Close()
 }

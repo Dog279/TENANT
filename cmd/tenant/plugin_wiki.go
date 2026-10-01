@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"tenant/internal/cmdreg"
 	"tenant/internal/model"
 	"tenant/internal/plugins/wiki"
@@ -29,6 +30,7 @@ func wikiPlugin() *pluginDescriptor {
 		ApplyConfig: applyWikiConfig,
 		ExpandPaths: expandWikiPaths,
 		Launch:      launchWiki,
+		Relaunch:    true, // a new wiki dir applies on /disable → /enable (TEN-483)
 		Prepare:     prepareWiki,
 		Eval:        evalWiki,
 		Title:       "Wiki (markdown knowledge base)",
@@ -95,13 +97,53 @@ func launchWiki(ctx context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	e.wikiIndex = ix
-	return []plugin{
-		wiki.NewDispatcher(ix),
-		// Gated local-write counterpart so a fetched peer note (or research)
-		// can be ingested into the wiki on the user's direction. (TEN-244)
-		newWikiSaveDispatcher(f.dir, ix, e.confirm),
-	}, nil, nil
+	e.wiki.set(f.dir, ix)
+	// One plugin, so a rebuild can swap it whole. wiki_save is the gated
+	// local-write counterpart: a fetched peer note (or research) can be
+	// ingested into the wiki on the user's direction. (TEN-244)
+	return []plugin{wikiTools{wiki.NewDispatcher(ix), newWikiSaveDispatcher(f.dir, ix, e.confirm)}}, nil, nil
+}
+
+// wikiTools serves the read tools and wiki_save as one plugin.
+type wikiTools struct {
+	read *wiki.Dispatcher
+	save *wikiSaveDispatcher
+}
+
+func (w wikiTools) Tools() []model.ToolSpec { return append(w.read.Tools(), w.save.Tools()...) }
+
+func (w wikiTools) Dispatch(ctx context.Context, call model.ToolCall) (string, bool, error) {
+	if call.Name == "wiki_save" {
+		return w.save.Dispatch(ctx, call)
+	}
+	return w.read.Dispatch(ctx, call)
+}
+
+// wikiLive is the wiki the plugin runs on now. The launch sets it, and so does
+// a rebuild on a new dir; research reads it when it saves a report.
+type wikiLive struct {
+	mu  sync.Mutex
+	dir string
+	ix  *wiki.Index
+}
+
+func (w *wikiLive) set(dir string, ix *wiki.Index) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.dir, w.ix = dir, ix
+	w.mu.Unlock()
+}
+
+// get is ("", nil) when no wiki is configured.
+func (w *wikiLive) get() (string, *wiki.Index) {
+	if w == nil {
+		return "", nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.dir, w.ix
 }
 
 func prepareWiki(pf *pluginFlags, ensureDir func(label, dir string), lines *[]string) {

@@ -116,7 +116,7 @@ func dashResearchOf(base context.Context, rc *researchControl, web bool, next fu
 	d := &dashResearch{rc: *rc, base: base, next: next, since: time.Now(), changed: make(chan struct{})}
 	d.rc.say, d.rc.emitTimeline = d.say, d.timeline
 	d.run = d.rc.runOne
-	d.live = dashboard.ResearchLiveView{SavesToNotes: rc.wikiDir != "", WebOff: !web, HistoryOn: rc.store != nil}
+	d.live = dashboard.ResearchLiveView{SavesToNotes: func() bool { d, _ := rc.wiki.get(); return d != "" }(), WebOff: !web, HistoryOn: rc.store != nil}
 	return d
 }
 
