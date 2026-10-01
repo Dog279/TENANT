@@ -515,7 +515,13 @@ func openBrowser(rawURL string) error {
 	default:
 		cmd = exec.Command("xdg-open", rawURL)
 	}
-	return cmd.Start() // detached; don't wait
+	breakAway(cmd) // the user's browser outlives Tenant (TEN-401)
+	if err := cmd.Start(); err == nil || cmd.SysProcAttr == nil {
+		return err // detached; don't wait
+	}
+	// An outer job that forbids breakaway refuses the flag; open it anyway.
+	cmd = exec.Command(cmd.Path, cmd.Args[1:]...)
+	return cmd.Start()
 }
 
 // adaptGSuiteForCfgDir mutates the gsuite catalog entry so it picks up

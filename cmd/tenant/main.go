@@ -32,6 +32,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	holdDataDir = lockDataDirForProcess
+	killChildrenOnExit() // Windows: a hard kill takes the browser down too (TEN-401)
 
 	c := cliRegistry().Lookup(os.Args[1])
 	if c == nil {

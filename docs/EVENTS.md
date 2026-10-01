@@ -5360,6 +5360,7 @@ Writes the `system` log.
 | [103](#system-103) | info | Component | `{component} stopped` |
 | [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
 | [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
+| [1401](#system-1401) | info | Component | `Removed {n} leftover browser profile folder(s)` |
 | [2001](#system-2001) | warning | Clock | `The wall clock moved {delta} against the monotonic clock` |
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
 | [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
@@ -5546,6 +5547,20 @@ Writes the `system` log.
 **Why it happens.** The operator ran /tailscale unserve.
 
 **What to do.** None when it stops. On a failure, check tailscale serve status and reset it by hand.
+
+### system 1401
+
+`Removed {n} leftover browser profile folder(s)`
+
+- **Level:** info · **Channel:** operational · **Task:** Component · **Log:** system
+- **Fields:** `n`, `dir`
+- **Find it:** `provider:system id:1401`
+
+**What it means.** Tenant removed web-bridge Chrome profile folders that a previous run left behind when it was killed before it could close its browser.
+
+**Why it happens.** An earlier Tenant ended without a clean shutdown (a service stop, Task Manager, taskkill /F).
+
+**What to do.** None. A folder a running Chrome still holds is left alone.
 
 ### system 2001
 

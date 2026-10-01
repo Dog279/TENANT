@@ -134,3 +134,10 @@ func (r *sysRun) stopped(ctx context.Context, err error) {
 	}
 	catalog.StoppedOK.Log(ctx, "uptime", time.Since(r.began).Round(time.Second))
 }
+
+// Child processes (1400s).
+
+var sysChromeProfilesSwept = catalog.System.Event(1401, event.Info, "Component", "Removed {n} leftover browser profile folder(s)", "n", "dir").
+	Doc("Tenant removed web-bridge Chrome profile folders that a previous run left behind when it was killed before it could close its browser.",
+		"An earlier Tenant ended without a clean shutdown (a service stop, Task Manager, taskkill /F).",
+		"None. A folder a running Chrome still holds is left alone.")
