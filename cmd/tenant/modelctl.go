@@ -245,6 +245,9 @@ func probeSwap(name, active string, c2 *commonFlags) string {
 	case "anthropic":
 		// Anthropic's API isn't probed via /v1/models; trust the config.
 		return fmt.Sprintf("✓ now using %q — %s (Anthropic) — live, no restart", name, active)
+	case "claudecode":
+		// A local CLI, not an HTTP server — nothing to probe; the next turn shows auth/model errors.
+		return fmt.Sprintf("✓ now using %q — %s (Claude Code CLI) — live, no restart", name, active)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()

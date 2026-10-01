@@ -73,3 +73,22 @@ func TestReconnectMonitor_NoActiveProvider(t *testing.T) {
 		}
 	}
 }
+
+// claudecode:// is a local CLI, not an HTTP server: never start a poll loop
+// that can only fail forever.
+func TestReconnectMonitor_SkipsNonHTTPEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	lc := &launchConfig{
+		Provider:  "claudecode",
+		Providers: map[string]*providerConfig{"claudecode": {Kind: "claudecode", Endpoint: "claudecode://auto"}},
+	}
+	if err := lc.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	feed := make(chan string, 16)
+	rm := &reconnectMonitor{cfgDir: dir, feed: feed, ctx: context.Background(), fastEvery: 5 * time.Millisecond}
+	rm.OnGenerationDown()
+	if rm.running.Load() || len(feed) != 0 {
+		t.Fatal("monitor should not poll a claudecode:// endpoint")
+	}
+}
