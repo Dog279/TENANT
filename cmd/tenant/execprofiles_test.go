@@ -116,7 +116,7 @@ func TestSandboxRefusalsAndUnavailableBackend(t *testing.T) {
 	} {
 		logSandboxRun(context.Background(), surfaceDiscord, "restricted", c.enforce, sandbox.Command{Shell: "cat ~/.ssh/id"}, c.res)
 	}
-	enforcing := execProfile{Backend: "container", Policy: sandbox.Policy{Enforce: true}}
+	enforcing := execProfile{Backend: "no-such-backend", Policy: sandbox.Policy{Enforce: true}}
 	if _, err := profileRunner(enforcing, surfaceDiscord, nil)(context.Background(), "true", time.Second); err == nil {
 		t.Fatal("an enforcing profile's unavailable backend ran the command")
 	}
@@ -141,7 +141,7 @@ func TestDryRunUnavailableBackendRunsOnHost(t *testing.T) {
 	prev := logs.Default()
 	logs.Install(hub)
 	t.Cleanup(func() { logs.Install(prev) })
-	dry := execProfile{Backend: "container", Policy: sandbox.Policy{WorkDir: t.TempDir()}}
+	dry := execProfile{Backend: "no-such-backend", Policy: sandbox.Policy{WorkDir: t.TempDir()}}
 	if out, err := profileRunner(dry, surfaceDiscord, nil)(context.Background(), "echo ran-on-host", 30*time.Second); err != nil || !strings.Contains(out, "ran-on-host") {
 		t.Fatalf("os_exec in dry run: out=%q err=%v", out, err)
 	}
@@ -151,7 +151,7 @@ func TestDryRunUnavailableBackendRunsOnHost(t *testing.T) {
 	all, _ := hub.Snapshot()
 	n := 0
 	for _, e := range all {
-		if e.Field("event") == "sandbox/2005" && e.Field("backend") == "container" {
+		if e.Field("event") == "sandbox/2005" && e.Field("backend") == "no-such-backend" {
 			n++
 		}
 		if e.Field("event") == "sandbox/1" && e.Field("backend") != "host" {

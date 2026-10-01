@@ -6,6 +6,8 @@ than a niche tool, and a hardened container is the industry-standard sandbox.
 **Builds on:** [sandboxing-plan.md](sandboxing-plan.md). The seam, the policy vocabulary,
 escalation and the escape suite all stay. This plan builds the `container` tier that plan
 sketched in §4.3 (its Phase 4), and removes its Linux and Windows `restricted` backends.
+**Hardening:** [docker-sandbox-hardening.md](docker-sandbox-hardening.md) has what a live probe of
+§3.3 on Windows found, and the epic that Phase 1 depends on.
 
 ## 0. TL;DR
 

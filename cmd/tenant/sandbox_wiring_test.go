@@ -62,7 +62,7 @@ func TestExecProfileStore_LoadValidates(t *testing.T) {
 		"cron-shell": {Backend: "restricted", Network: "none"},
 		"default":    {Backend: "host"},
 		"bogus":      {Backend: "restricted"},
-		"discord":    {Backend: "container"},
+		"discord":    {Backend: "bogus-backend"},
 		"imessage":   {Network: "sideways"},
 		"local":      {WriteRoots: []string{"relative/dir"}},
 		"cron-exec":  {MaxPIDs: -1},
@@ -70,7 +70,7 @@ func TestExecProfileStore_LoadValidates(t *testing.T) {
 	if n != 2 || len(skipped) != 5 {
 		t.Fatalf("applied %d, skipped %v; want 2 applied, 5 skipped", n, skipped)
 	}
-	for _, want := range []string{"unknown surface", "container backend is not implemented", "unknown network", "must be absolute", "must not be negative"} {
+	for _, want := range []string{"unknown surface", "unknown backend", "unknown network", "must be absolute", "must not be negative"} {
 		if !strings.Contains(strings.Join(skipped, "\n"), want) {
 			t.Errorf("skip messages should mention %q: %v", want, skipped)
 		}
@@ -256,7 +256,7 @@ func TestExecProfileStore_RejectsUnenforcedAllowlist(t *testing.T) {
 		"discord":  {Backend: "restricted", Network: "allowlist"},
 		"imessage": {Backend: "restricted", Allow: []string{"example.com"}},
 	})
-	if n != 0 || len(skipped) != 2 || !strings.Contains(strings.Join(skipped, " "), "not enforced by any backend") {
+	if n != 0 || len(skipped) != 2 || !strings.Contains(strings.Join(skipped, " "), "not enforced yet") {
 		t.Fatalf("an allowlist must be rejected until something enforces it: n=%d skipped=%v", n, skipped)
 	}
 }

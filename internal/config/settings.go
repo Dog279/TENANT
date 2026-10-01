@@ -59,7 +59,7 @@ type Settings struct {
 // deny_roots ADD to the built-in deny set; nothing can remove Tenant's own dirs
 // from it.
 type ExecProfile struct {
-	Backend    string            `json:"backend,omitempty"`     // host | restricted
+	Backend    string            `json:"backend,omitempty"`     // host | restricted | container
 	Enforce    *bool             `json:"enforce,omitempty"`     // false = dry-run; unset: see above
 	Network    string            `json:"network,omitempty"`     // inherit | none | full (allowlist: rejected until enforced)
 	Allow      []string          `json:"allow,omitempty"`       // reserved for a future enforced allowlist; rejected today

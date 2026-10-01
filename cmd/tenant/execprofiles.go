@@ -264,18 +264,16 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 		return fmt.Errorf("exec_profiles.%s: unknown surface (want default, %s)", surface, strings.Join(execSurfaces, ", "))
 	}
 	switch p.Backend {
-	case "", "host", "restricted":
-	case "container":
-		return fmt.Errorf("exec_profiles.%s: the container backend is not implemented", surface)
+	case "", "host", "restricted", "container":
 	default:
-		return fmt.Errorf("exec_profiles.%s: unknown backend %q (want host or restricted)", surface, p.Backend)
+		return fmt.Errorf("exec_profiles.%s: unknown backend %q (want host, restricted or container)", surface, p.Backend)
 	}
 	n, ok := sandbox.ParseNetworkMode(p.Network)
 	if !ok {
 		return fmt.Errorf("exec_profiles.%s: unknown network %q (want inherit, none, full)", surface, p.Network)
 	}
 	if n == sandbox.NetAllowlist || len(p.Allow) > 0 {
-		return fmt.Errorf("exec_profiles.%s: a network allowlist is not enforced by any backend yet (an egress proxy is a follow-up); use \"none\" or \"full\"", surface)
+		return fmt.Errorf("exec_profiles.%s: a network allowlist is not enforced yet (the egress proxy is W3-5/Phase 4); use \"none\" or \"full\"", surface)
 	}
 	if p.CPUSeconds < 0 || p.MemoryMB < 0 || p.MaxPIDs < 0 {
 		return fmt.Errorf("exec_profiles.%s: limits must not be negative", surface)
@@ -594,6 +592,14 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 // it runs on the host, and the sandbox log says so.
 func profileBackend(ctx context.Context, p execProfile, surface string) (sandbox.Backend, error) {
 	be, err := sandbox.For(p.Backend)
+	if err == nil {
+		// A backend that is known but not ready here (the container backend when
+		// Docker is down or the image is unbuilt) is unavailable too, so it fails
+		// closed / falls back the same way an unknown backend does (W1-1).
+		if a, ok := be.(sandbox.Available); ok {
+			err = a.Available(ctx)
+		}
+	}
 	switch {
 	case err == nil:
 		return be, nil

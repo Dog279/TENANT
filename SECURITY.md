@@ -155,8 +155,13 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
     turns enforcement on (`docs/changes/exec-defaults-dry-run.md`). Linux and
     Windows have no restricted backend: the default is the `host` backend, which
     confines nothing, and `tenant doctor`, the audit and the startup feed say
-    so. A container backend for every OS is planned
-    (`docs/plans/docker-sandbox-plan.md`).
+    so. A hardened `container` backend for every OS, driven through the `docker`
+    CLI, is now available and opt-in per surface (`"backend": "container"`); its
+    wave-1 hardening is live-tested on Windows and its follow-ups are tracked in
+    `docs/plans/docker-sandbox-hardening.md`. It never mounts the Docker socket,
+    runs each command in a fresh read-only, non-root, all-capabilities-dropped
+    container with `no-new-privileges` and no network by default, and fails
+    closed when the engine or image is not ready.
   - Commands get an environment allowlist on every backend: a safe base set plus
     the profile's `env_pass`, never Tenant's API keys or tokens.
   - When the `restricted` backend refuses a file or network access, the

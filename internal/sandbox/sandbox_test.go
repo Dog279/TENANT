@@ -147,8 +147,8 @@ func TestFor_Resolution(t *testing.T) {
 	if b, err := For(""); err != nil || b.Name() != "host" {
 		t.Fatalf(`For("") = %v, %v`, b, err)
 	}
-	if _, err := For("container"); err == nil {
-		t.Fatalf("container should be unimplemented")
+	if b, err := For("container"); err != nil || b.Name() != "container" {
+		t.Fatalf(`For("container") = %v, %v; want the container backend`, b, err)
 	}
 	if _, err := For("bogus"); err == nil {
 		t.Fatalf("bogus backend should error")
