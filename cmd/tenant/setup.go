@@ -207,6 +207,18 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	}
 
 	if modify {
+		// Flags given on the command line still apply: run their sections first.
+		if set["provider"] || set["vllm-endpoint"] || set["api-key"] || set["vllm-model"] || set["vllm-tool-format"] {
+			if err := providerStep(); err != nil {
+				return err
+			}
+		}
+		if set["embed-endpoint"] || set["embed-model"] {
+			embedStep()
+		}
+		if set["gateway"] || set["local"] {
+			gatewayStep()
+		}
 		// TEN-477: Modify edits one section at a time, then comes back here;
 		// the sections not opened keep their values.
 		if err := modifySections(in, lc, creds, c.cfgDir, providerStep, embedStep, gatewayStep); err != nil {
@@ -475,6 +487,9 @@ func modifySections(in *bufio.Reader, lc *launchConfig, creds *credentials, cfgD
 		case "provider":
 			if err := providerStep(); err != nil {
 				return err
+			}
+			if lc.Embed == nil && lc.Provider != "echo" {
+				embedStep() // leaving echo: it never set up embeddings
 			}
 		case "embed":
 			embedStep()

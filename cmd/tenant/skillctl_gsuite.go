@@ -506,6 +506,12 @@ var signInNotice = func(s string) { fmt.Fprintln(os.Stderr, s) }
 // SSH session).
 func openBrowser(rawURL string) error {
 	signInNotice("sign-in: open this URL to authorize Tenant, if no browser opened: " + rawURL)
+	return startBrowser(rawURL)
+}
+
+// startBrowser opens rawURL in the OS-default browser, detached, and lets the
+// browser outlive Tenant.
+func startBrowser(rawURL string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":

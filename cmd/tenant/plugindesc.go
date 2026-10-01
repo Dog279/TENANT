@@ -267,15 +267,19 @@ func activatorFor(ctx context.Context, d *pluginDescriptor, e *pluginEnv) func()
 // relaunchFromConfig builds d the way the launch did, from what config.json and
 // the credentials say now, so a changed setting (the SQL file, the BlueBubbles
 // URL) applies on the next /enable. Launch-only flags such as --sql-allow-write
-// fall back to their defaults, the stricter setting. A plugin with no saved
-// config keeps its launch flags.
+// fall back to their defaults, the stricter setting. A plugin configured by
+// flags passed at launch, or with no saved config, keeps its launch flags. A
+// skill turned off in config.json stays off, as it does at launch.
 func relaunchFromConfig(ctx context.Context, d *pluginDescriptor, e *pluginEnv) (plugin, func(), error) {
 	lc, err := loadLaunchConfig(e.c.cfgDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s plugin: load config: %w", d.ID, err)
 	}
 	re := *e
-	if sc := lc.Skills[d.ID]; sc != nil && d.ApplyConfig != nil {
+	if sc := lc.Skills[d.ID]; sc != nil && d.ApplyConfig != nil && !launchFlagsSet(d, e.c.flagSet()) {
+		if !sc.Enabled {
+			return nil, nil, fmt.Errorf("%s plugin: %w yet - it's turned off in config.json; turn it on in `tenant setup`", d.ID, errNotConfigured)
+		}
 		re.pf = &pluginFlags{}
 		id := d.ID
 		d.ApplyConfig(re.pf, savedConfig{settings: sc.Settings, secret: func(field string) string {
@@ -296,6 +300,18 @@ func relaunchFromConfig(ctx context.Context, d *pluginDescriptor, e *pluginEnv) 
 		return nil, nil, fmt.Errorf("%s plugin: %w yet - %s", d.ID, errNotConfigured, d.StubHint)
 	}
 	return built[0], cleanup, nil
+}
+
+// launchFlagsSet reports whether any of d's launch flags was passed explicitly.
+func launchFlagsSet(d *pluginDescriptor, set map[string]bool) bool {
+	if d.Flags == nil || len(set) == 0 {
+		return false
+	}
+	fs := flag.NewFlagSet(d.ID, flag.ContinueOnError)
+	d.Flags(fs)
+	found := false
+	fs.VisitAll(func(f *flag.Flag) { found = found || set[f.Name] })
+	return found
 }
 
 // registerPluginStubs registers a disabled stub for every shared plugin the

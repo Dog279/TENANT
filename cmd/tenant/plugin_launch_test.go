@@ -288,3 +288,39 @@ func TestWikiRebuildsOnNewDir(t *testing.T) {
 	}
 	mux.Close()
 }
+
+// A rebuild keeps a plugin configured by an explicit launch flag on that
+// flag, and a skill turned off in config.json stays off (TEN-483 review).
+func TestRelaunchHonorsFlagsAndEnabled(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.db"), filepath.Join(dir, "b.db")
+	saveTestSkill(t, dir, "sql", map[string]string{"db": b})
+
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	fs.String("sql-db", "", "")
+	if err := fs.Parse([]string{"--sql-db", a}); err != nil {
+		t.Fatal(err)
+	}
+	pf := &pluginFlags{}
+	sqlFlagsOf(pf).db = a
+	e := &pluginEnv{c: &commonFlags{cfgDir: dir, fs: fs}, pf: pf}
+	p, cleanup, err := relaunchFromConfig(ctx, sqlPlugin(), e)
+	if err != nil || p == nil {
+		t.Fatalf("relaunch: %v", err)
+	}
+	cleanup()
+	if _, err := os.Stat(b); err == nil {
+		t.Error("an explicit --sql-db must win over config.json on a rebuild")
+	}
+
+	lc, _ := loadLaunchConfig(dir)
+	lc.Skills["sql"].Enabled = false
+	if err := lc.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	e.c = &commonFlags{cfgDir: dir}
+	if _, _, err := relaunchFromConfig(ctx, sqlPlugin(), e); err == nil || !strings.Contains(err.Error(), "turned off") {
+		t.Errorf("a turned-off skill should stay off: %v", err)
+	}
+}

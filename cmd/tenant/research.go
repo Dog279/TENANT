@@ -874,6 +874,11 @@ Question: %s
 			Messages:  []model.Message{{Role: "user", Content: p}},
 			MaxTokens: budget, // long report; no tools
 		})
+		if err != nil && attempt > 0 {
+			// The larger budget can exceed a small context window; say why the
+			// first report was refused rather than only the transport error.
+			return "", fmt.Errorf("the model didn't write a usable report (%s); the retry failed: %w", problem, err)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -886,8 +891,8 @@ Question: %s
 }
 
 // reportProblem says why a synthesized report can't be saved, or "" when it
-// reads as a report: cut off by the token limit, no heading, or mostly the
-// model's planning notes (TEN-480).
+// reads as a report: cut off by the token limit, or mostly the model's
+// planning notes (TEN-480).
 func reportProblem(body, finishReason string) string {
 	t := strings.TrimSpace(body)
 	switch {
@@ -895,8 +900,6 @@ func reportProblem(body, finishReason string) string {
 		return ""
 	case finishReason == "length":
 		return "it ran out of tokens before finishing"
-	case firstMarkdownHeading(t) < 0:
-		return "it has no markdown heading"
 	case planningShare(t) > 0.25:
 		return "it is mostly planning notes, not a report"
 	}

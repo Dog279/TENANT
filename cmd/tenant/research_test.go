@@ -586,4 +586,8 @@ func TestSynthesizeReport_RejectsPlanningDump(t *testing.T) {
 	if p := reportProblem(good, "stop"); p != "" {
 		t.Errorf("a real report was rejected: %s", p)
 	}
+	// The offline echo backend replies with one plain line; research still works on it.
+	if p := reportProblem("echo[dev backend]: a stub report", "stop"); p != "" {
+		t.Errorf("the echo backend's reply was rejected: %s", p)
+	}
 }

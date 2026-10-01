@@ -72,7 +72,7 @@ func activateGSuite(_ context.Context, e *pluginEnv) (plugin, func(), error) {
 		return nil, nil, fmt.Errorf("gsuite plugin: %w yet — run `/configure gsuite`", errNotConfigured)
 	}
 	auth := sk.Settings["auth"]
-	gcfg := gsuite.Config{Auth: auth, AllowSend: gsuiteFlagsOf(e.pf).allowSend}
+	gcfg := gsuite.Config{Auth: auth, AllowSend: gsuiteFlagsOf(e.pf).allowSend, OAuthOpenBrowser: openBrowser}
 	switch auth {
 	case "sa":
 		saPath := sk.Settings["sa_json"]
@@ -161,7 +161,7 @@ func launchGSuite(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if !f.on {
 		return nil, nil, nil
 	}
-	gcfg := gsuite.Config{Auth: f.auth, Subject: f.subject, AllowSend: f.allowSend}
+	gcfg := gsuite.Config{Auth: f.auth, Subject: f.subject, AllowSend: f.allowSend, OAuthOpenBrowser: openBrowser}
 	if f.auth == "sa" {
 		if f.saJSON == "" {
 			return nil, nil, fmt.Errorf("gsuite plugin: --gsuite-auth sa needs --gsuite-sa-json")
