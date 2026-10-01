@@ -187,3 +187,41 @@ func TestSettingsWatcher_KeepsTheMarkerAcrossSaves(t *testing.T) {
 		}
 	}
 }
+
+// TEN-428: the broker changes a mode just before its persist hook saves it.
+// A watcher tick in that gap reads the older file; that's not an edit, and
+// must not undo the change. A real edit after it still applies.
+func TestApplySettingsFile_InFlightModeChangeSurvives(t *testing.T) {
+	cfg := t.TempDir()
+	path := filepath.Join(cfg, "settings.main.json")
+	if err := os.WriteFile(path, []byte(`{"permissions":{"exec":"ask","write":"ask"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stg, err := loadSettings(cfg, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := newApprovalBroker(nil)
+	broker.LoadModes(stg.Permissions, stg.KnownCategories)
+	var mu sync.Mutex
+
+	// Live change, not yet persisted: file and stg still say ask.
+	broker.LoadModes(map[string]string{"exec": "allow", "write": "ask"}, stg.KnownCategories)
+	if got := applySettingsFile(cfg, "main", broker, nil, &mu, stg); got != "" {
+		t.Fatalf("the process's own unsaved change read as an edit: %q", got)
+	}
+	if broker.Modes()["exec"] != "allow" {
+		t.Fatal("the in-flight mode change was reverted")
+	}
+
+	// A real hand edit still applies.
+	if err := os.WriteFile(path, []byte(`{"permissions":{"exec":"ask","write":"allow"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := applySettingsFile(cfg, "main", broker, nil, &mu, stg); got != "1 category mode(s)" {
+		t.Fatalf("hand edit summary = %q", got)
+	}
+	if broker.Modes()["write"] != "allow" {
+		t.Error("hand edit not applied")
+	}
+}

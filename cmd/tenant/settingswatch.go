@@ -97,6 +97,7 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 	mu.Lock()
 	fresh, err := loadSettings(cfgDir, agentID)
 	savedKnown := slices.Clone(stg.KnownCategories)
+	savedModes := maps.Clone(stg.Permissions)
 	mu.Unlock()
 	if err != nil {
 		sysConfigNotLoaded.Log(context.Background(), "path", path, "fallback", "the live settings stay as they were", "err", err)
@@ -120,9 +121,18 @@ func applySettingsFile(cfgDir, agentID string, broker *approvalBroker, rules *to
 		live := broker.Modes()
 		diff := 0
 		for cat, mode := range fresh.Permissions {
-			if pm, ok := parseMode(mode); ok && live[cat] != "" && live[cat] != pm.String() {
-				diff++
+			pm, ok := parseMode(mode)
+			if !ok || live[cat] == "" || live[cat] == pm.String() {
+				continue
 			}
+			// An edit is a file that differs from what this process last saved,
+			// not from the live broker: the broker changes a mode just before its
+			// persist hook writes it, and a tick in between would read the older
+			// file as an edit and undo the change (TEN-428).
+			if saved, sok := parseMode(savedModes[cat]); sok && saved == pm {
+				continue
+			}
+			diff++
 		}
 		// The known_categories marker (TEN-343) reloads with the modes; stg
 		// tracks the file's, so the process's own saves compare equal.
