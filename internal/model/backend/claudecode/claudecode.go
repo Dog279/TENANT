@@ -127,7 +127,9 @@ func (b *Backend) Generate(ctx context.Context, req model.GenerateRequest) (*mod
 		return nil, fmt.Errorf("%w: build prompt: %v", model.ErrInternal, err)
 	}
 
-	args := []string{"-p", "--output-format", "json"}
+	// stream-json (needs --verbose in -p mode) reports the CLI's own tool calls
+	// as they happen; its last line is the same result envelope json mode prints.
+	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if b.profile.Model != "" {
 		args = append(args, "--model", b.profile.Model)
 	}
@@ -157,6 +159,9 @@ func (b *Backend) Generate(ctx context.Context, req model.GenerateRequest) (*mod
 	cmd.Env = scrubbedEnv(os.Environ())
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
+	if f := model.InnerTools(ctx); f != nil {
+		cmd.Stdout = io.MultiWriter(&stdout, &lineWriter{fn: func(l []byte) { reportInnerTools(l, f) }})
+	}
 	// Its stderr classifies a failure, and is filed in the model log with its
 	// start and exit, failed or not (logging v2 §8.4).
 	child := capture.New(ctx, "model", "child", "claude")
@@ -300,9 +305,17 @@ type cliResult struct {
 	} `json:"usage"`
 }
 
-// parseResult decodes the CLI's JSON envelope, tolerating non-JSON noise
-// (deprecation warnings, update notices) before the object.
+// parseResult decodes the CLI's JSON envelope: the stream-json "result" line,
+// else (json mode) the whole output, tolerating non-JSON noise (deprecation
+// warnings, update notices) before the object.
 func parseResult(stdout string) (*cliResult, error) {
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var res cliResult
+		if json.Unmarshal([]byte(lines[i]), &res) == nil && res.Type == "result" {
+			return &res, nil
+		}
+	}
 	s := strings.TrimSpace(stdout)
 	if i := strings.Index(s, "{"); i > 0 {
 		s = s[i:]
@@ -345,6 +358,60 @@ func buildResponse(res *cliResult, adapter toolfmt.Adapter) (*model.GenerateResp
 	}
 	out.Text = strings.TrimSpace(adapter.CleanText(raw))
 	return out, nil
+}
+
+// ----- inner tool reporting -----
+
+// lineWriter hands each complete line written to it to fn.
+type lineWriter struct {
+	buf []byte
+	fn  func([]byte)
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := strings.IndexByte(string(w.buf), '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		w.fn(w.buf[:i])
+		w.buf = w.buf[i+1:]
+	}
+}
+
+// reportInnerTools passes one stream-json line's tool_use / tool_result
+// blocks (the CLI's built-in tools, run inside claude -p) to f.
+func reportInnerTools(line []byte, f model.InnerToolFunc) {
+	var ev struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content []struct {
+				Type      string          `json:"type"`
+				ID        string          `json:"id"`
+				Name      string          `json:"name"`
+				Input     json.RawMessage `json:"input"`
+				ToolUseID string          `json:"tool_use_id"`
+				Content   json.RawMessage `json:"content"`
+				IsError   bool            `json:"is_error"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &ev) != nil || (ev.Type != "assistant" && ev.Type != "user") {
+		return
+	}
+	for _, c := range ev.Message.Content {
+		switch c.Type {
+		case "tool_use":
+			f(c.ID, c.Name, string(c.Input), false, "", false)
+		case "tool_result":
+			var text string
+			if json.Unmarshal(c.Content, &text) != nil { // a block array, not a string
+				text = string(c.Content)
+			}
+			f(c.ToolUseID, "", "", true, text, c.IsError)
+		}
+	}
 }
 
 // ----- failure classification -----
