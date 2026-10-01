@@ -3,6 +3,7 @@ package claudecode
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,5 +252,32 @@ func TestLedgerZeroBudgetNeverGuards(t *testing.T) {
 	l.add(1 << 30)
 	if l.overBudget() {
 		t.Fatal("budget 0 means unlimited")
+	}
+}
+
+// Claude Code's built-in tool calls (stream-json tool_use / tool_result)
+// reach the InnerTools reporter, split across writes, and the final result
+// line still parses as the envelope.
+func TestStreamJSON_ReportsInnerTools(t *testing.T) {
+	stream := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"x"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"3 matches","is_error":false}]}}
+{"type":"result","subtype":"success","result":"done","num_turns":2}
+`
+	var got []string
+	w := &lineWriter{fn: func(l []byte) {
+		reportInnerTools(l, func(id, name, args string, done bool, result string, isErr bool) {
+			got = append(got, fmt.Sprintf("%s|%s|%s|%v|%s|%v", id, name, args, done, result, isErr))
+		})
+	}}
+	w.Write([]byte(stream[:50])) // a line split across writes
+	w.Write([]byte(stream[50:]))
+	want := []string{`t1|Grep|{"pattern":"x"}|false||false`, `t1|||true|3 matches|false`}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("inner tools = %q, want %q", got, want)
+	}
+	res, err := parseResult(stream)
+	if err != nil || res.Result != "done" || res.NumTurns != 2 {
+		t.Fatalf("parseResult = %+v, %v", res, err)
 	}
 }

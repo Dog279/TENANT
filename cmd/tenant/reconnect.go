@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -34,6 +35,9 @@ const (
 func (rm *reconnectMonitor) OnGenerationDown() {
 	if rm == nil || rm.feed == nil {
 		return
+	}
+	if ep, ok := rm.activeEndpoint(); ok && !strings.HasPrefix(ep, "http") {
+		return // claudecode://auto etc.: a local CLI, no endpoint to poll
 	}
 	if !rm.running.CompareAndSwap(false, true) {
 		return // already retrying

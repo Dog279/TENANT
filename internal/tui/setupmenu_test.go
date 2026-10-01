@@ -139,7 +139,7 @@ func TestSetup_TextEntryModel(t *testing.T) {
 	if m.setupEntry == nil || m.setupEntry.masked {
 		t.Fatal("model entry should be an unmasked setupEntry")
 	}
-	m.input.SetValue("glm-5.1")
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("glm-5.1")}) // typed, not SetValue: catches an unfocused input
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(f.calls) != 1 || f.calls[0] != "SetModel:glm-5.1" {
 		t.Fatalf("SetModel not called: %v", f.calls)

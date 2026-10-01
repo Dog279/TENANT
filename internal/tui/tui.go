@@ -1815,6 +1815,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var icmd tea.Cmd
 	if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
+		if !m.input.Focused() { // an unfocused textinput drops keys; /setup prompts never focused it
+			m.ta.Blur()
+			m.input.Focus()
+		}
 		m.input, icmd = m.input.Update(msg)
 	} else {
 		m.ta, icmd = m.ta.Update(msg)

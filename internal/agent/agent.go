@@ -1552,11 +1552,37 @@ func (a *Agent) plan(ctx context.Context, planner model.LLM, format string, iter
 	}
 }
 
+// innerToolEvents surfaces tools a backend ran in its own process (Claude
+// Code's built-ins) as ordinary tool_call / tool_result events, named
+// "claude:<Tool>" so they read apart from Tenant's own tools.
+func (a *Agent) innerToolEvents(iter int) model.InnerToolFunc {
+	var mu sync.Mutex
+	names, started := map[string]string{}, map[string]time.Time{}
+	return func(id, name, args string, done bool, result string, isErr bool) {
+		mu.Lock()
+		if !done {
+			names[id], started[id] = "claude:"+name, time.Now()
+			mu.Unlock()
+			a.emit(Event{Kind: EventToolCall, Iter: iter, Tool: "claude:" + name, ToolCallID: id, Args: args})
+			return
+		}
+		name, dur := names[id], time.Since(started[id])
+		delete(names, id)
+		delete(started, id)
+		mu.Unlock()
+		if name == "" {
+			name = "claude:tool"
+		}
+		a.emit(Event{Kind: EventToolResult, Iter: iter, Tool: name, ToolCallID: id, Result: result, IsErr: isErr, Duration: dur})
+	}
+}
+
 // planOnce performs exactly ONE planner call (streaming or buffered) and
 // returns the fully-consumed response. A partial stream is never returned as
 // success — a mid-stream error propagates so plan() can decide whether to
 // re-issue.
 func (a *Agent) planOnce(ctx context.Context, planner model.LLM, format string, iter int, req model.GenerateRequest) (*model.GenerateResponse, error) {
+	ctx = model.WithInnerTools(ctx, a.innerToolEvents(iter))
 	if !a.cfg.Stream {
 		return planner.Generate(ctx, req)
 	}

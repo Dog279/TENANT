@@ -53,10 +53,13 @@ type Mux struct {
 	byName map[string]*toolEntry
 	// activators turn a stubbed, config-free plugin into the real thing on
 	// first /enable — e.g. web spawns Chrome at runtime instead of needing
-	// --web at launch. Keyed by plugin label; runs once (see activated).
-	activators map[string]func() (Plugin, func(), error)
-	activated  map[string]bool
-	cleanups   []func() // teardown for everything built (launch + lazy)
+	// --web at launch. Keyed by plugin label; runs once per enable (see
+	// activated) — a plugin-wide disable tears it down so the next enable
+	// rebuilds from current config, no restart.
+	activators  map[string]func() (Plugin, func(), error)
+	activated   map[string]bool
+	lazyCleanup map[string]func() // teardown of each activated plugin, run on disable
+	cleanups    []func()          // teardown for everything built (launch + lazy)
 	// Remote MCP connectors (TEN-162/164): deps for building gated connectors
 	// (set once in buildToolMux), and label→URL for every registered server so
 	// /mcp add|list|remove can manage them at runtime.
@@ -520,7 +523,7 @@ func (m *Mux) SetMCPTrust(label, mode string) error {
 	if activated {
 		// Hide a denied connector's tools; show them again when trust returns.
 		// SetEnabled(true) is a no-op activation-wise for an already-live plugin.
-		_, _, _ = m.SetEnabled(label, t != mcpremote.TrustDeny)
+		_, _, _ = m.setEnabled(label, t != mcpremote.TrustDeny, false)
 	}
 	return nil
 }
@@ -621,9 +624,7 @@ func (m *Mux) adoptLiveMCP(label string, p Plugin, cleanup func()) {
 		m.toolEmbeddings = nil
 	}
 	m.activated[label] = true
-	if cleanup != nil {
-		m.cleanups = append(m.cleanups, cleanup)
-	}
+	m.setLazyCleanupLocked(label, cleanup)
 }
 
 // ReconnectPeersSilently dials every paired peer we hold a token for (TEN-186)
@@ -790,10 +791,50 @@ func (m *Mux) Close() {
 	m.mu.Lock()
 	cs := m.cleanups
 	m.cleanups = nil
+	for label, c := range m.lazyCleanup {
+		if c != nil {
+			cs = append(cs, c)
+		}
+		delete(m.lazyCleanup, label)
+	}
 	m.mu.Unlock()
 	for i := len(cs) - 1; i >= 0; i-- {
 		cs[i]()
 	}
+}
+
+// AdoptLaunched registers an activator for a plugin the launch already built,
+// so disabling and re-enabling it rebuilds it from current config like a lazily
+// activated one.
+func (m *Mux) AdoptLaunched(label string, fn func() (Plugin, func(), error), cleanup func()) {
+	m.mu.Lock()
+	m.activators[label] = fn
+	m.activated[label] = true
+	m.setLazyCleanupLocked(label, cleanup)
+	m.mu.Unlock()
+}
+
+func (m *Mux) setLazyCleanupLocked(label string, c func()) {
+	if m.lazyCleanup == nil {
+		m.lazyCleanup = map[string]func(){}
+	}
+	m.lazyCleanup[label] = c
+}
+
+// deactivateLocked forgets that label was built (so the next enable re-runs its
+// activator against current config) and returns its teardown for the caller to
+// run after unlocking. Nil when label has no activator or isn't built.
+func (m *Mux) deactivateLocked(label string) func() {
+	if _, ok := m.activators[label]; !ok || !m.activated[label] {
+		return nil
+	}
+	delete(m.activated, label)
+	c := m.lazyCleanup[label]
+	delete(m.lazyCleanup, label)
+	if c == nil {
+		c = func() {}
+	}
+	return c
 }
 
 // RegisterActivator records how to build a config-free plugin on demand.
@@ -1271,12 +1312,19 @@ func (m *Mux) SetPluginEnabled(label string, on bool) (int, string, error) {
 			n++
 		}
 	}
+	var drop func()
+	if !on {
+		drop = m.deactivateLocked(label)
+	}
 	var snap map[string]bool
 	if n > 0 && m.onChange != nil {
 		snap = m.enabledSnapshot()
 	}
 	toggle := m.onToggle
 	m.mu.Unlock()
+	if drop != nil {
+		drop()
+	}
 	if snap != nil {
 		m.onChange(snap)
 		if toggle != nil {
@@ -1315,6 +1363,12 @@ func (m *Mux) Plugins() []string {
 // only a stub lazily activates it (e.g. launches Chrome for web) — a
 // build failure is returned as the error and nothing is toggled.
 func (m *Mux) SetEnabled(target string, on bool) (int, string, error) {
+	return m.setEnabled(target, on, true)
+}
+
+// setEnabled is SetEnabled; teardown=false hides a plugin without stopping it
+// (a trust-denied connector stays connected so "ask" can show it again).
+func (m *Mux) setEnabled(target string, on, teardown bool) (int, string, error) {
 	if on {
 		if err := m.maybeActivate(target); err != nil {
 			return 0, "", err
@@ -1341,6 +1395,10 @@ func (m *Mux) SetEnabled(target string, on bool) (int, string, error) {
 			scope = "plugin"
 		}
 	}
+	var drop func()
+	if scope == "plugin" && !on && teardown {
+		drop = m.deactivateLocked(target)
+	}
 	// Snapshot under the lock; notify after releasing it (the hook does
 	// file I/O — must not run while holding the mux lock).
 	var snap map[string]bool
@@ -1349,6 +1407,9 @@ func (m *Mux) SetEnabled(target string, on bool) (int, string, error) {
 	}
 	toggle := m.onToggle
 	m.mu.Unlock()
+	if drop != nil {
+		drop()
+	}
 	if snap != nil {
 		m.onChange(snap)
 		if toggle != nil {
@@ -1420,9 +1481,7 @@ func (m *Mux) maybeActivate(target string) error {
 		m.toolEmbeddings = nil
 	}
 	m.applyTrustLocked(label) // a remote connector picks up its persisted trust mode
-	if cleanup != nil {
-		m.cleanups = append(m.cleanups, cleanup)
-	}
+	m.setLazyCleanupLocked(label, cleanup)
 	m.activated[label] = true
 	return nil
 }

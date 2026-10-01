@@ -220,19 +220,30 @@ func TestToolMux_LazyActivation(t *testing.T) {
 		t.Fatalf("after activation, real plugin should answer: out=%q isErr=%v hit=%q", out, isErr, hit)
 	}
 
-	// Toggling again must not rebuild.
+	// A single-tool toggle keeps the live plugin.
+	mux.SetEnabled("web_do", false)
+	mux.SetEnabled("web_do", true)
+	if builds != 1 || cleanups != 0 {
+		t.Fatalf("tool toggle should not rebuild: builds=%d cleanups=%d", builds, cleanups)
+	}
+
+	// Disabling the plugin tears it down; re-enabling rebuilds from current
+	// config (no restart needed to pick up a /configure edit).
 	mux.SetEnabled("web", false)
+	if cleanups != 1 {
+		t.Fatalf("plugin disable should run its cleanup, ran %d", cleanups)
+	}
 	if _, _, err := mux.SetEnabled("web", true); err != nil {
 		t.Fatalf("re-enable: %v", err)
 	}
-	if builds != 1 {
-		t.Fatalf("activator should run once, ran %d times", builds)
+	if builds != 2 {
+		t.Fatalf("re-enable should rebuild, activator ran %d times", builds)
 	}
 
-	// Close runs the activation cleanup.
+	// Close runs the live build's cleanup.
 	mux.Close()
-	if cleanups != 1 {
-		t.Fatalf("activation cleanup should run once on Close, ran %d", cleanups)
+	if cleanups != 2 {
+		t.Fatalf("Close should clean up the live build, cleanups=%d", cleanups)
 	}
 }
 
@@ -440,5 +451,23 @@ func TestSetOnToggleHearsTheOperatorsChanges(t *testing.T) {
 	want := []string{"gh gh true 2", "gh gh_pr false 1", "gh gh false 2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("toggles = %q, want %q", got, want)
+	}
+}
+
+// A plugin the launch built (e.g. github enabled at boot) rebuilds on
+// disable→enable too, so a /configure edit applies without a restart.
+func TestToolMux_LaunchBuiltRebuildsOnReenable(t *testing.T) {
+	mux := New()
+	var hit string
+	mux.Add("github", fakePlugin{name: "github", lastHit: &hit})
+	builds, cleanups := 0, 0
+	mux.AdoptLaunched("github", func() (Plugin, func(), error) {
+		builds++
+		return fakePlugin{name: "github", lastHit: &hit}, func() { cleanups++ }, nil
+	}, func() { cleanups++ })
+	mux.SetEnabled("github", false)
+	mux.SetEnabled("github", true)
+	if builds != 1 || cleanups != 1 {
+		t.Fatalf("disable→enable should tear down the launch build and rebuild: builds=%d cleanups=%d", builds, cleanups)
 	}
 }

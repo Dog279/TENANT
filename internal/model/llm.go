@@ -168,3 +168,22 @@ type Usage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
+
+// InnerToolFunc reports a tool a backend ran inside its own process (Claude
+// Code's built-in Read/Grep/Bash under `claude -p`), so the agent can show it
+// like one of its own. done=false: the call started (args set); done=true: it
+// returned (result, isErr set).
+type InnerToolFunc func(id, name, args string, done bool, result string, isErr bool)
+
+type innerToolKey struct{}
+
+// WithInnerTools attaches f for backends that run tools themselves.
+func WithInnerTools(ctx context.Context, f InnerToolFunc) context.Context {
+	return context.WithValue(ctx, innerToolKey{}, f)
+}
+
+// InnerTools returns the reporter attached by WithInnerTools, or nil.
+func InnerTools(ctx context.Context) InnerToolFunc {
+	f, _ := ctx.Value(innerToolKey{}).(InnerToolFunc)
+	return f
+}

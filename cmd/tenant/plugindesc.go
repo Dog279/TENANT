@@ -246,6 +246,16 @@ func setupOnlyKinds() map[string]skillKind {
 	return out
 }
 
+// activatorFor builds d from its saved config on /enable (and again after a
+// /disable, so config edits apply without a restart).
+func activatorFor(ctx context.Context, d *pluginDescriptor, e *pluginEnv) func() (plugin, func(), error) {
+	return func() (plugin, func(), error) {
+		p, cleanup, err := d.Activate(ctx, e)
+		d.logStart(ctx, err)
+		return p, cleanup, err
+	}
+}
+
 // registerPluginStubs registers a disabled stub for every shared plugin the
 // launch path did not build, with its activator when it has one, so the
 // whole catalog shows in /tools. A stub advertises the real tool specs but
@@ -258,12 +268,7 @@ func registerPluginStubs(ctx context.Context, mux *toolMux, e *pluginEnv) {
 		mux.Add(d.ID, stubPlugin{Specs: d.Tools(), Hint: d.StubHint})
 		mux.SetEnabled(d.ID, false)
 		if d.Activate != nil {
-			activate := d.Activate
-			mux.RegisterActivator(d.ID, func() (plugin, func(), error) {
-				p, cleanup, err := activate(ctx, e)
-				d.logStart(ctx, err)
-				return p, cleanup, err
-			})
+			mux.RegisterActivator(d.ID, activatorFor(ctx, d, e))
 		}
 	}
 }
@@ -313,9 +318,13 @@ func launchPlugins(ctx context.Context, mux *toolMux, e *pluginEnv) error {
 		if err != nil {
 			return err
 		}
-		mux.AddCleanup(cleanup)
 		for _, p := range built {
 			mux.Add(d.ID, p)
+		}
+		if d.Activate != nil && len(built) == 1 {
+			mux.AdoptLaunched(d.ID, activatorFor(ctx, d, e), cleanup) // disable→enable rebuilds from config
+		} else {
+			mux.AddCleanup(cleanup)
 		}
 		if len(built) > 0 && d.On != nil && !d.On(e.pf) {
 			mux.SetEnabled(d.ID, false)
