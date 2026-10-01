@@ -31,11 +31,13 @@ var (
 	setupDimStyle   = lipgloss.NewStyle().Faint(true)
 )
 
-// selectOne shows an arrow-key single-select menu (rendered on stderr, to match
+// selectOneTerm shows an arrow-key single-select menu (rendered on stderr, to match
 // the wizard's other prompts) and returns the chosen Value. `cur` is the
 // current/default value: the menu opens with it highlighted, and Esc (or any
 // terminal/program error, or a non-TTY) returns `cur` unchanged.
-func selectOne(title string, opts []pickOption, cur string) string {
+var selectOne = selectOneTerm // a var so tests can script the picks
+
+func selectOneTerm(title string, opts []pickOption, cur string) string {
 	if len(opts) == 0 {
 		return cur
 	}

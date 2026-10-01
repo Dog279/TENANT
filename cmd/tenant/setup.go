@@ -71,6 +71,7 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	fmt.Fprintf(os.Stderr, "config:      %s\ncredentials: %s\n\n", launchConfigPath(c.cfgDir), credentialsPath(c.cfgDir))
 
 	// Existing-config: Keep / Modify / Reset (OpenClaw pattern, arrow-key).
+	modify := false
 	if lc.Active() != nil && interactive {
 		switch selectOne("Existing config found — what now?", []pickOption{
 			{Label: "Modify", Value: "modify", Desc: "update the current configuration"},
@@ -83,6 +84,8 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 		case "reset":
 			lc = &launchConfig{}
 			creds = &credentials{Secrets: map[string]string{}}
+		default:
+			modify = true
 		}
 	}
 
@@ -91,109 +94,131 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 	}
 
 	// --- 1. provider + auth ---
-	kindID := firstNonEmpty(valIf(set["provider"], *provider), lc.Provider, "vllm")
-	if interactive {
-		kindID = selectOne("Model provider", providerOpts(), kindID)
-	}
-	pk, ok := providerKinds[kindID]
-	if !ok {
-		return fmt.Errorf("unknown provider %q (choose one of %s)", kindID, strings.Join(providerOrder, ", "))
-	}
-	pc := lc.Providers[kindID]
-	if pc == nil {
-		pc = &providerConfig{Kind: kindID}
-	}
-	if !pk.Wired {
-		fmt.Fprintf(os.Stderr, "  note: %s — config will be saved, but its backend is not implemented yet.\n", pk.Label)
-	}
-
-	if pk.Backend != "echo" { // an endpoint-based provider (vllm-compat or anthropic)
-		ep := firstNonEmpty(valIf(set["vllm-endpoint"], c.vllmEndpoint), pc.Endpoint, pk.DefaultEndpoint)
+	providerStep := func() error {
+		kindID := firstNonEmpty(valIf(set["provider"], *provider), lc.Provider, "vllm")
 		if interactive {
-			ep = ask(in, "Endpoint (base URL)", ep)
+			kindID = selectOne("Model provider", providerOpts(), kindID)
 		}
-		ep = strings.TrimRight(strings.TrimSpace(ep), "/")
-		if ep == "" {
-			return fmt.Errorf("%s needs an endpoint", pk.Label)
+		pk, ok := providerKinds[kindID]
+		if !ok {
+			return fmt.Errorf("unknown provider %q (choose one of %s)", kindID, strings.Join(providerOrder, ", "))
 		}
-		pc.Endpoint = ep
+		pc := lc.Providers[kindID]
+		if pc == nil {
+			pc = &providerConfig{Kind: kindID}
+		}
+		if !pk.Wired {
+			fmt.Fprintf(os.Stderr, "  note: %s — config will be saved, but its backend is not implemented yet.\n", pk.Label)
+		}
 
-		// auth
-		apiKey := valIf(set["api-key"], c.genAPIKey)
-		if pk.NeedsKey {
-			pc.Auth = configureAuth(in, interactive, kindID, pk, pc.Auth, creds, apiKey)
-		}
-
-		// model — auto-detect for local single-model servers, else default.
-		key := resolveSecret(c.cfgDir, kindID, pc.Auth)
-		if apiKey != "" {
-			key = apiKey
-		}
-		model := firstNonEmpty(valIf(set["vllm-model"], c.vllmModel), pc.Model, pk.DefaultModel)
-		if pk.Local {
-			if detected := probeModels(ctx, ep, key); len(detected) > 0 {
-				fmt.Fprintf(os.Stderr, "  detected model(s): %s\n", strings.Join(detected, ", "))
-				if model == "" {
-					model = detected[0]
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "  (could not reach %s/v1/models — model will auto-detect at launch)\n", ep)
-			}
-		}
-		if interactive {
-			model = ask(in, "Model (blank = auto-detect at launch)", model)
-		}
-		pc.Model = strings.TrimSpace(model)
-
-		// Tool format is an OpenAI-compatible concern; Anthropic returns
-		// structured tool_use blocks, so skip it for that backend.
-		if pk.Backend == "vllm" {
-			tf := firstNonEmpty(valIf(set["vllm-tool-format"], c.vllmToolFmt), pc.ToolFmt, pk.DefaultToolFmt, defaultVLLMToolFmt)
+		if pk.Backend != "echo" { // an endpoint-based provider (vllm-compat or anthropic)
+			ep := firstNonEmpty(valIf(set["vllm-endpoint"], c.vllmEndpoint), pc.Endpoint, pk.DefaultEndpoint)
 			if interactive {
-				tf = selectOne("Tool format", toolFormatOpts(), tf)
+				ep = ask(in, "Endpoint (base URL)", ep)
 			}
-			pc.ToolFmt = strings.TrimSpace(tf)
-		}
-	}
+			ep = strings.TrimRight(strings.TrimSpace(ep), "/")
+			if ep == "" {
+				return fmt.Errorf("%s needs an endpoint", pk.Label)
+			}
+			pc.Endpoint = ep
 
-	lc.Providers[kindID] = pc
-	lc.Provider = kindID
+			// auth
+			apiKey := valIf(set["api-key"], c.genAPIKey)
+			if pk.NeedsKey {
+				pc.Auth = configureAuth(in, interactive, kindID, pk, pc.Auth, creds, apiKey)
+			}
+
+			// model — auto-detect for local single-model servers, else default.
+			key := resolveSecret(c.cfgDir, kindID, pc.Auth)
+			if apiKey != "" {
+				key = apiKey
+			}
+			model := firstNonEmpty(valIf(set["vllm-model"], c.vllmModel), pc.Model, pk.DefaultModel)
+			if pk.Local {
+				if detected := probeModels(ctx, ep, key); len(detected) > 0 {
+					fmt.Fprintf(os.Stderr, "  detected model(s): %s\n", strings.Join(detected, ", "))
+					if model == "" {
+						model = detected[0]
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "  (could not reach %s/v1/models — model will auto-detect at launch)\n", ep)
+				}
+			}
+			if interactive {
+				model = ask(in, "Model (blank = auto-detect at launch)", model)
+			}
+			pc.Model = strings.TrimSpace(model)
+
+			// Tool format is an OpenAI-compatible concern; Anthropic returns
+			// structured tool_use blocks, so skip it for that backend.
+			if pk.Backend == "vllm" {
+				tf := firstNonEmpty(valIf(set["vllm-tool-format"], c.vllmToolFmt), pc.ToolFmt, pk.DefaultToolFmt, defaultVLLMToolFmt)
+				if interactive {
+					tf = selectOne("Tool format", toolFormatOpts(), tf)
+				}
+				pc.ToolFmt = strings.TrimSpace(tf)
+			}
+		}
+
+		lc.Providers[kindID] = pc
+		lc.Provider = kindID
+		return nil
+	}
 
 	// --- 2. embeddings (skip for echo) ---
-	if kindID != "echo" {
-		emb := lc.Embed
-		if emb == nil {
-			emb = &providerConfig{Kind: "ollama"}
-		}
-		embEP := firstNonEmpty(valIf(set["embed-endpoint"], c.embedEndpoint), emb.Endpoint, defaultEmbedEndpoint)
-		embModel := firstNonEmpty(valIf(set["embed-model"], c.embedModel), emb.Model, defaultEmbedModel)
-		if interactive {
-			embEP = ask(in, "Embedding endpoint", embEP)
-			embModel = ask(in, "Embedding model", embModel)
-		}
-		emb.Endpoint = strings.TrimRight(strings.TrimSpace(embEP), "/")
-		emb.Model = strings.TrimSpace(embModel)
-		if emb.EmbedDim == 0 {
-			emb.EmbedDim = defaultEmbedDim
-		}
-		lc.Embed = emb
+	embedStep := func() {
+		if lc.Provider != "echo" {
+			emb := lc.Embed
+			if emb == nil {
+				emb = &providerConfig{Kind: "ollama"}
+			}
+			embEP := firstNonEmpty(valIf(set["embed-endpoint"], c.embedEndpoint), emb.Endpoint, defaultEmbedEndpoint)
+			embModel := firstNonEmpty(valIf(set["embed-model"], c.embedModel), emb.Model, defaultEmbedModel)
+			if interactive {
+				embEP = ask(in, "Embedding endpoint", embEP)
+				embModel = ask(in, "Embedding model", embModel)
+			}
+			emb.Endpoint = strings.TrimRight(strings.TrimSpace(embEP), "/")
+			emb.Model = strings.TrimSpace(embModel)
+			if emb.EmbedDim == 0 {
+				emb.EmbedDim = defaultEmbedDim
+			}
+			lc.Embed = emb
 
-		pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		okEmb := reachable(pctx, emb.Endpoint+"/v1/models")
-		cancel()
-		if okEmb {
-			fmt.Fprintf(os.Stderr, "  embeddings OK: %s @ %s\n", emb.Model, emb.Endpoint)
-		} else {
-			fmt.Fprintf(os.Stderr, "\n"+embedSetupHint+"\n\n", emb.Endpoint, emb.Model)
+			pctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			okEmb := reachable(pctx, emb.Endpoint+"/v1/models")
+			cancel()
+			if okEmb {
+				fmt.Fprintf(os.Stderr, "  embeddings OK: %s @ %s\n", emb.Model, emb.Endpoint)
+			} else {
+				fmt.Fprintf(os.Stderr, "\n"+embedSetupHint+"\n\n", emb.Endpoint, emb.Model)
+			}
 		}
 	}
 
 	// --- 3. gateway (local | sse) ---
-	lc.Gateway = configureGateway(in, interactive, lc.Gateway, set, *gateway, *local)
+	gatewayStep := func() { lc.Gateway = configureGateway(in, interactive, lc.Gateway, set, *gateway, *local) }
 
 	// --- 4. skills ---
-	if interactive {
-		lc.Skills = configureSkills(in, lc.Skills, creds, c.cfgDir)
+	skillsStep := func() {
+		if interactive {
+			lc.Skills = configureSkills(in, lc.Skills, creds, c.cfgDir)
+		}
+	}
+
+	if modify {
+		// TEN-477: Modify edits one section at a time, then comes back here;
+		// the sections not opened keep their values.
+		if err := modifySections(in, lc, creds, c.cfgDir, providerStep, embedStep, gatewayStep); err != nil {
+			return err
+		}
+	} else {
+		if err := providerStep(); err != nil {
+			return err
+		}
+		embedStep()
+		gatewayStep()
+		skillsStep()
 	}
 
 	// --- save ---
@@ -432,4 +457,48 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// modifySections is `tenant setup` → Modify: a picker of the setup sections.
+// Each pick runs only that section, then returns to the picker until Save.
+// Skills asks which one skill to edit instead of walking the whole list.
+func modifySections(in *bufio.Reader, lc *launchConfig, creds *credentials, cfgDir string,
+	providerStep func() error, embedStep, gatewayStep func()) error {
+	for {
+		switch selectOne("What do you want to change?", []pickOption{
+			{Label: "Model provider", Value: "provider", Desc: "provider, endpoint, key, model, tool format"},
+			{Label: "Embeddings", Value: "embed", Desc: "embedding endpoint and model"},
+			{Label: "Gateway", Value: "gateway", Desc: "local stdio or SSE"},
+			{Label: "Skills", Value: "skills", Desc: "edit one skill / integration"},
+			{Label: "Save and exit", Value: "save"},
+		}, "save") {
+		case "provider":
+			if err := providerStep(); err != nil {
+				return err
+			}
+		case "embed":
+			embedStep()
+		case "gateway":
+			gatewayStep()
+		case "skills":
+			catalog := wizardCatalog(cfgDir)
+			opts := make([]pickOption, 0, len(catalog)+1)
+			for _, k := range catalog {
+				state := "off"
+				if sc := lc.Skills[k.ID]; sc != nil && sc.Enabled {
+					state = "on"
+				}
+				opts = append(opts, pickOption{Label: k.Label, Value: k.ID, Desc: state})
+			}
+			opts = append(opts, pickOption{Label: "Back", Value: ""})
+			id := selectOne("Which skill?", opts, "")
+			for _, k := range catalog {
+				if k.ID == id {
+					lc.Skills = configureSkillCatalog(in, lc.Skills, creds, []skillKind{k})
+				}
+			}
+		default:
+			return nil
+		}
+	}
 }
