@@ -69,7 +69,7 @@ func buildRunArgv(s containerSpec) ([]string, error) {
 		return nil, fmt.Errorf("no work mount")
 	}
 
-	a := []string{"run", "--rm", "-i", "--name", s.name,
+	a := []string{"run", "--rm", "-i", "--pull", "never", "--name", s.name,
 		"--label", labelSandbox + "=1"}
 	if s.trace != "" {
 		a = append(a, "--label", labelTrace+"="+labelValue(s.trace))

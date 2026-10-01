@@ -28,7 +28,7 @@ func TestBuildRunArgv_Golden(t *testing.T) {
 		t.Fatalf("buildRunArgv: %v", err)
 	}
 	want := []string{
-		"run", "--rm", "-i", "--name", "tenant-sbx-test-1",
+		"run", "--rm", "-i", "--pull", "never", "--name", "tenant-sbx-test-1",
 		"--label", "tenant.sandbox=1",
 		"--label", "tenant.trace=trace-xyz",
 		"--label", "tenant.instance=inst-1",

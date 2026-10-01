@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -201,14 +202,15 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 	if err != nil {
 		return Result{}, fmt.Errorf("container: %s CLI not found: %w", b.bin(), err)
 	}
-	// A Windows program cannot run in a Linux container; name the refusal so the
-	// seam can escalate to the host verbatim rather than mangling it (W1-6).
-	if line, ok := windowsProgram(cmd); ok {
-		return Result{
-			ExitCode:   127,
-			ExitStatus: "exit status 127",
-			Violations: []Violation{{Kind: "program", Detail: "a Windows program (" + line + ") cannot run in a Linux container"}},
-		}, nil
+	// os_exec resolves with no work dir; give it a fresh scratch dir the backend
+	// owns and removes, so the backend never falls back to its own cwd (W1-3).
+	if pol.WorkDir == "" {
+		dir, err := os.MkdirTemp("", "tenant-sbx-work-")
+		if err != nil {
+			return Result{}, fmt.Errorf("container: scratch work dir: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		pol.WorkDir = dir
 	}
 
 	spec, err := b.specFor(cmd, pol)
@@ -311,12 +313,23 @@ func (b *containerBackend) specFor(cmd Command, pol Policy) (containerSpec, erro
 		}
 		mounts = append(mounts, m)
 	}
-	// A grant that names a deny root is refused at spec time: the container never
-	// mounts Tenant's own dirs or a credential store (plan §3.4).
-	for _, m := range append([]mount{work}, mounts...) {
-		for _, d := range pol.DenyRoots {
-			if d != "" && withinHost(m.host, d) {
-				return containerSpec{}, fmt.Errorf("mount %s is inside the deny root %s", m.host, d)
+	// Deny roots (plan §3.4). The container enforces them by never mounting them,
+	// so a read/write root that overlaps a deny root in EITHER direction is
+	// refused: inside one would expose denied content, containing one would expose
+	// it through the parent. The work dir is the carve-out — it may sit INSIDE a
+	// deny root (cron's work dir lives under the data dir), since only the work-dir
+	// subtree is mounted; but a work dir that IS or CONTAINS a deny root fails
+	// closed.
+	for _, d := range pol.DenyRoots {
+		if d == "" {
+			continue
+		}
+		if withinHost(d, work.host) { // deny root at or inside the work dir
+			return containerSpec{}, fmt.Errorf("work dir %s is or contains the deny root %s", work.host, d)
+		}
+		for _, m := range mounts {
+			if withinHost(m.host, d) || withinHost(d, m.host) {
+				return containerSpec{}, fmt.Errorf("mount %s overlaps the deny root %s", m.host, d)
 			}
 		}
 	}
@@ -373,18 +386,23 @@ func (b *containerBackend) SweepLeftovers(ctx context.Context) (int, error) {
 
 // --- helpers ---------------------------------------------------------------
 
-// windowsProgram reports whether cmd names a Windows-native program that a Linux
-// container cannot run, so the seam refuses it as a "program" violation rather
-// than letting it fail as a confusing 127 (W1-6/H19).
-func windowsProgram(cmd Command) (string, bool) {
-	line := cmd.Shell
-	if line == "" {
-		line = strings.Join(cmd.Args, " ")
+// windowsProgramInvoked reports whether the command INVOKES a Windows-native
+// program (its first token), which a Linux container cannot run. It checks the
+// invoked program, not any substring, so `python build.py --out app.exe` is not
+// flagged — only `cmd.exe /c ver` or `app.exe` is (W1-6/H19).
+func windowsProgramInvoked(command string) (string, bool) {
+	tok := strings.TrimSpace(command)
+	if i := strings.IndexAny(tok, " \t"); i >= 0 {
+		tok = tok[:i]
 	}
-	low := strings.ToLower(line)
-	for _, p := range []string{"cmd.exe", "powershell.exe", "powershell ", "pwsh.exe", ".bat", ".cmd", ".ps1", ".exe"} {
-		if strings.Contains(low, p) {
-			return strings.TrimSpace(line), true
+	low := strings.ToLower(tok)
+	switch low {
+	case "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+		return tok, true
+	}
+	for _, suf := range []string{".exe", ".cmd", ".bat", ".ps1"} {
+		if strings.HasSuffix(low, suf) {
+			return tok, true
 		}
 	}
 	return "", false
@@ -518,6 +536,13 @@ func imagePresent(ctx context.Context, bin, image string) error {
 // re-run on the host.
 func attributeContainer(res Result, spec containerSpec) (Violation, bool) {
 	low := strings.ToLower(res.Output)
+	// A Windows program invoked in a Linux container exits 127 "not found"; name it
+	// a program refusal so the seam can escalate it to the host (W1-6/H19).
+	if res.ExitCode == 127 && strings.Contains(low, "not found") {
+		if prog, ok := windowsProgramInvoked(spec.command); ok {
+			return Violation{Kind: "program", Detail: "a Windows program (" + prog + ") cannot run in a Linux container"}, true
+		}
+	}
 	if res.ExitCode == 137 || strings.Contains(low, "out of memory") || strings.Contains(low, "cannot fork") ||
 		strings.Contains(low, "resource temporarily unavailable") {
 		return Violation{Kind: "limit", Detail: "the container hit a resource cap (memory, pids or CPU)"}, true

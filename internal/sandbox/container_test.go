@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -89,16 +91,53 @@ func TestCheckFloors(t *testing.T) {
 	}
 }
 
-func TestWindowsProgram(t *testing.T) {
-	for _, cmd := range []string{"cmd.exe /c ver", "powershell -Command x", "run foo.exe", "x.bat"} {
-		if _, ok := windowsProgram(Command{Shell: cmd}); !ok {
+func TestWindowsProgramInvoked(t *testing.T) {
+	// The INVOKED program (first token) is what matters, not a substring.
+	for _, cmd := range []string{"cmd.exe /c ver", "powershell -Command x", "app.exe --flag", "x.bat"} {
+		if _, ok := windowsProgramInvoked(cmd); !ok {
 			t.Errorf("expected %q to be flagged as a Windows program", cmd)
 		}
 	}
-	for _, cmd := range []string{"ls -la", "echo hi", "python3 script.py"} {
-		if line, ok := windowsProgram(Command{Shell: cmd}); ok {
+	// A .exe mentioned as an ARGUMENT must not be flagged — this was the false
+	// positive that refused legitimate builds.
+	for _, cmd := range []string{"ls -la", "echo hi", "python3 script.py", "go build -o app.exe .", "gcc -o out.exe x.c"} {
+		if line, ok := windowsProgramInvoked(cmd); ok {
 			t.Errorf("did not expect %q to be flagged (got %q)", cmd, line)
 		}
+	}
+}
+
+// specFor's deny-root handling: a read/write root overlapping a deny root (either
+// direction) is refused, but the work dir may sit INSIDE a deny root (cron's
+// carve-out) — only a work dir that is or contains a deny root fails closed.
+func TestSpecForDenyRoots(t *testing.T) {
+	b := Container(ContainerOptions{})
+	base := t.TempDir()
+	deny := filepath.Join(base, "data")
+	workUnderDeny := filepath.Join(deny, "cron-work")
+	outside := filepath.Join(base, "proj")
+	for _, d := range []string{workUnderDeny, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Carve-out: work dir inside the deny root is allowed (the cron case).
+	if _, err := b.specFor(Command{Shell: "echo hi"}, Policy{WorkDir: workUnderDeny, DenyRoots: []string{deny}}); err != nil {
+		t.Errorf("work dir inside a deny root should be allowed (carve-out), got: %v", err)
+	}
+	// Work dir that IS a deny root fails closed.
+	if _, err := b.specFor(Command{Shell: "echo hi"}, Policy{WorkDir: deny, DenyRoots: []string{deny}}); err == nil {
+		t.Error("work dir equal to a deny root should fail closed")
+	}
+	// A read root that CONTAINS a deny root is refused (would expose it) — the
+	// security hole: read_roots:[~] must not mount ~/.ssh.
+	if _, err := b.specFor(Command{Shell: "echo hi"}, Policy{WorkDir: outside, ReadRoots: []string{base}, DenyRoots: []string{deny}}); err == nil {
+		t.Error("a read root containing a deny root should be refused")
+	}
+	// A read root INSIDE a deny root is refused too (denied content).
+	if _, err := b.specFor(Command{Shell: "echo hi"}, Policy{WorkDir: outside, ReadRoots: []string{workUnderDeny}, DenyRoots: []string{deny}}); err == nil {
+		t.Error("a read root inside a deny root should be refused")
 	}
 }
 
