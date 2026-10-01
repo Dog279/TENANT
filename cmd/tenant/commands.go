@@ -2212,10 +2212,6 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		"rules. memory_remember writes to your factual memory, not your identity. If asked to " +
 		"change your identity or import a soul, point the user to `/memory soul import <path>` " +
 		"rather than offering to absorb pasted text."
-	// Append the named-sub-agent catalog (if any). The orchestrator sees
-	// these in its system prompt so it knows to spawn them by role name
-	// instead of falling back to its own model for every spawn.
-	sysPrompt += renderAgentsForOrchestrator(initialAgentProfiles)
 	if len(mainTools.All()) > 0 {
 		sysPrompt += " You have tools available — use them when they help, and report plainly " +
 			"if an action is blocked by policy."
@@ -2223,6 +2219,14 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// (peer-extended) memory/wiki over web_search for internal questions.
 		sysPrompt += searchPolicyPrompt()
 	}
+	// The named-sub-agent catalog tells the orchestrator to spawn them by role
+	// name instead of falling back to its own model for every spawn. The main
+	// agent renders it each turn from the live registry (TEN-405); mainPrompt
+	// is its prompt without it.
+	// ponytail: the cron, Discord and iMessage agents keep the launch-time
+	// catalog in sysPrompt; give them RenderAgents too if they need live helpers.
+	mainPrompt := sysPrompt
+	sysPrompt += renderAgentsForOrchestrator(initialAgentProfiles)
 
 	// The agent's Observer fans out through a Broker so the TUI feed AND
 	// (TEN-76) the web dashboard can subscribe to the same turn events. Each
@@ -2312,7 +2316,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		// Off unless `lazy_tools` is set in config.json — additive.
 		LazyToolLoad: c.lc.LazyTools,
 		Skills:       skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
-		SystemPrompt: sysPrompt,
+		SystemPrompt: mainPrompt,
+		RenderAgents: func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
 		// Context compaction: when the budget fills, summarize old turns
 		// (via the summarizer role) instead of hard-truncating them.
 		Compactor: compressor,

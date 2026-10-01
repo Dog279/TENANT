@@ -158,6 +158,11 @@ type Config struct {
 	// it's cheap (no per-turn DB read). nil ⇒ no SME injected (additive).
 	RenderProjectSME func() string
 
+	// RenderAgents, if set, is called each turn and appended to SystemPrompt:
+	// the catalog of helpers the agent can spawn, so ones added, renamed or
+	// removed while it runs show up without a restart (TEN-405). nil ⇒ none.
+	RenderAgents func() string
+
 	// EpisodeVisibility overrides the default `private` visibility used
 	// when this agent's turns are persisted to the episodic store.
 	// Sub-agents spawned by an orchestrator (see cmd/tenant/team.go) set
@@ -358,6 +363,14 @@ func (a *Agent) soul() *soul.Soul {
 		return a.cfg.SoulLive.Load()
 	}
 	return a.cfg.Soul
+}
+
+// systemPrompt is the configured prompt plus this turn's helper catalog.
+func (a *Agent) systemPrompt() string {
+	if a.cfg.RenderAgents == nil {
+		return a.cfg.SystemPrompt
+	}
+	return a.cfg.SystemPrompt + a.cfg.RenderAgents()
 }
 
 // projectSME renders the current per-project SME doc for system-reserve
@@ -758,7 +771,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// 5b. Retrieve relevant T4 skills (reusable recipes) and fold them
 	// into the system prompt for this turn — rides the existing
 	// system-prompt budget; no assembler surgery.
-	sysPrompt := a.cfg.SystemPrompt
+	sysPrompt := a.systemPrompt()
 	if a.cfg.Skills != nil {
 		if cards, serr := a.cfg.Skills.RetrieveSkills(ctx, queryEmbedding, 3); serr == nil && len(cards) > 0 {
 			sysPrompt += renderSkills(cards)
@@ -1365,7 +1378,7 @@ func (a *Agent) synthesizeFinal(ctx context.Context, planner model.LLM, profile 
 		Profile:    profile,
 		Soul:       a.soul(),
 		GoalHeader: goalHeader,
-		SystemPrompt: a.cfg.SystemPrompt + "\n\n" +
+		SystemPrompt: a.systemPrompt() + "\n\n" +
 			"== FINAL ANSWER MODE — NO TOOLS ==\n" +
 			"Tool usage is COMPLETE. No tools are available this turn. Write your final\n" +
 			"answer DIRECTLY as plain markdown prose, using ONLY information already in\n" +
