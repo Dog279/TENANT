@@ -36,7 +36,7 @@ type nativeService struct {
 // the -wal sidecar and read a stale snapshot, so a watcher would never
 // see new messages until a checkpoint. A plain read-only WAL reader does
 // not block the live Messages writer.
-func OpenNative(cfg NativeConfig) (Native, error) {
+func OpenNative(cfg NativeConfig) (Backend, error) {
 	path := strings.TrimSpace(cfg.DBPath)
 	if path == "" {
 		home, err := os.UserHomeDir()

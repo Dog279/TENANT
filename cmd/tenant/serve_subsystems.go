@@ -163,6 +163,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 // inbound texts exactly like the TUI does.
 type serveIMessageDeps struct {
 	c           *commonFlags
+	pf          *pluginFlags // iMessage transport flags (BlueBubbles URL)
 	router      *model.Router
 	soulLive    *soul.Live
 	stores      *stores
@@ -214,7 +215,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	allowMgr.setPerms(imsgBroker)
-	allowMgr.loadPassive(c.cfgDir, c.lc)
+	allowMgr.loadConfig(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
 	// approves a gated action over iMessage. Read fresh here; empty ⇒ Phase-1
@@ -242,7 +243,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
 		buildFn: func() (responderRunnable, func(), error) {
-			nat, err := imessage.OpenNative(imessage.NativeConfig{})
+			nat, _, err := openIMessage(imessageFlagsOf(d.pf)) // native or BlueBubbles (TEN-486)
 			if err != nil {
 				return nil, nil, err
 			}

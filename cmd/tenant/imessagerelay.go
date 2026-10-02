@@ -367,7 +367,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 			return "", errNotSaved("imessage responder ON", perr)
 		}
 	}
-	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools follow /imessage permissions (\"ask\" texts the operator a Y <nonce> prompt when imessage.operator is set)", len(allow)), nil
+	return fmt.Sprintf("imessage responder ON — %d allowed handle(s); gated tools follow /imessage permissions (\"ask\" texts the operator a Y <nonce> prompt when imessage.operator is set)", len(allow)), nil
 }
 
 // Stop cancels the loop + releases the transport (idempotent). Persists enabled=false.

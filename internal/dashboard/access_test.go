@@ -198,7 +198,7 @@ func TestAccess_PerChannelDegradation(t *testing.T) {
 	// iMessage available but responder off-platform; Discord present but no token.
 	fa := &fakeAccess{view: AccessView{IMessageAvailable: true, ResponderAvailable: false, DiscordAvailable: true, RelayConfigured: false}}
 	body := accessGet(t, accessServer(fa), "/access").Body.String()
-	if !strings.Contains(body, "Answering iMessages needs a Mac.") {
+	if !strings.Contains(body, "Answering iMessages needs a Mac or a BlueBubbles server.") {
 		t.Errorf("responder-unavailable should show the macOS-only note; got:\n%s", body)
 	}
 	if !strings.Contains(body, "add a bot token") {

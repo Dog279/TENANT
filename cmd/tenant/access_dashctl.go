@@ -44,9 +44,9 @@ func (a dashAccess) View() dashboard.AccessView {
 	v := dashboard.AccessView{}
 	if a.im != nil {
 		v.IMessageAvailable = a.im.Perms() != nil
-		// The native responder is macOS-only; the allowlist + permissions are
-		// cross-platform policy. Gate the responder toggle on the platform.
-		v.ResponderAvailable = runtime.GOOS == "darwin"
+		// The responder runs on a Mac (native) or against a BlueBubbles
+		// server; the allowlist + permissions are cross-platform policy.
+		v.ResponderAvailable = runtime.GOOS == "darwin" || a.im.bridge
 		v.ResponderOn = a.im.ResponderOn()
 		v.Passive = a.im.Passive()
 		v.Handles = a.im.AllowList()

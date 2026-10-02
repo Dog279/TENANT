@@ -36,6 +36,9 @@ type imessageAllowManager struct {
 	// persistPassive writes it through to imessage.passive (nil = no persist).
 	passive        bool
 	persistPassive func(bool) error
+	// bridge: a BlueBubbles server is configured, so the responder can run
+	// off a Mac (TEN-486).
+	bridge bool
 }
 
 // newIMessageAllowManager builds a manager seeded from the persisted handles.
@@ -84,7 +87,7 @@ func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
 	r := m.resp
 	m.mu.Unlock()
 	if r == nil {
-		return "", fmt.Errorf("imessage responder unavailable here (native transport is macOS-only)")
+		return "", fmt.Errorf("imessage responder unavailable here")
 	}
 	if !on {
 		return r.Stop()
@@ -96,8 +99,10 @@ func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
 	return status + " — " + m.modeNote(), nil
 }
 
-// loadPassive seeds the mode from config and persists changes back to it.
-func (m *imessageAllowManager) loadPassive(cfgDir string, lc *launchConfig) {
+// loadConfig seeds the mode and transport from config; mode changes persist
+// back to it.
+func (m *imessageAllowManager) loadConfig(cfgDir string, lc *launchConfig) {
+	m.bridge = imessageBBURL(lc) != ""
 	if lc == nil {
 		return
 	}

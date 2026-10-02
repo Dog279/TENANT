@@ -23,7 +23,7 @@ import (
 // adapts its imessageAllowManager + discordRelayManager to it (see dashAccess).
 // A nil control renders an "isn't configured" state rather than 404ing the nav
 // link; each channel degrades independently via the *Available flags on
-// AccessView (iMessage responder is macOS-only; Discord needs a bot token).
+// AccessView (iMessage responder needs a Mac or a BlueBubbles server; Discord needs a bot token).
 type AccessControl interface {
 	// View is the whole render-ready page state in one read (called per GET).
 	View() AccessView
@@ -62,7 +62,7 @@ type PermissionRow struct {
 type AccessView struct {
 	// iMessage
 	IMessageAvailable  bool // the allowlist + permissions surface is wired
-	ResponderAvailable bool // the native responder is reachable here (macOS only)
+	ResponderAvailable bool // the responder can run here (a Mac, or a BlueBubbles server)
 	ResponderOn        bool
 	Passive            bool     // the responder reads every text and answers none (TEN-485)
 	Handles            []string // sorted, normalized drive-allowlist
