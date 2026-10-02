@@ -3,9 +3,11 @@ package osys
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -617,6 +619,59 @@ func TestClassifyTenantService(t *testing.T) {
 		if d, reason := Classify(tc.cmd); d != tc.dangerous {
 			t.Errorf("Classify(%q) = %v (%s), want %v", tc.cmd, d, reason, tc.dangerous)
 		}
+	}
+}
+
+// TEN-499: os_write_file and os_edit_file replace a file by rename, so a kill
+// at any instant leaves the old file or the new one. A failure between the
+// temp write and the rename leaves the original intact and no temp behind;
+// success replaces the content and keeps the mode; a vet that refuses leaves
+// the file untouched.
+func TestWriteFileAtomic(t *testing.T) {
+	dir := realDir(t)
+	svc, _ := Open(Config{})
+	p := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(p, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	renameFile = func(string, string) error { return errors.New("boom") }
+	t.Cleanup(func() { renameFile = os.Rename })
+	if _, err := svc.WriteFile(p, "new", false, nil); err == nil {
+		t.Fatal("WriteFile must report the failed rename")
+	}
+	if _, err := svc.EditFile(p, "old", "edited", false, nil); err == nil {
+		t.Fatal("EditFile must report the failed rename")
+	}
+	if b, _ := os.ReadFile(p); string(b) != "old" {
+		t.Fatalf("the original must be intact after a failed replace: %q", b)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("a failed replace left %d entries, want the original only", len(entries))
+	}
+
+	renameFile = os.Rename
+	if _, err := svc.WriteFile(p, "new", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.EditFile(p, "new", "newer", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "newer" {
+		t.Fatalf("content = %q, want the write then the edit", b)
+	}
+	if fi, _ := os.Stat(p); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %o, want the original's 0640", fi.Mode().Perm())
+	}
+
+	refuse := func(fs.FileInfo) error { return errors.New("refused") }
+	if _, err := svc.WriteFile(p, "x", false, refuse); err == nil {
+		t.Fatal("a refused write must fail")
+	}
+	if _, err := svc.EditFile(p, "newer", "x", false, refuse); err == nil {
+		t.Fatal("a refused edit must fail")
+	}
+	if b, _ := os.ReadFile(p); string(b) != "newer" {
+		t.Fatalf("a refused write changed the file: %q", b)
 	}
 }
 

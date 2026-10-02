@@ -64,6 +64,9 @@ type discordAgentDeps struct {
 	// exactly like every other gated tool, instead of always prompting a button.
 	// nil ⇒ fall back to the raw button approver (tests / unwired).
 	gateConfirm offsiteConfirm
+	// stopping is agent.Config.Stopping (TEN-499): no salvage synthesis for
+	// a turn a stop cuts. nil ⇒ never stopping (the TUI).
+	stopping func() bool
 }
 
 const discordSysSuffix = " You are reachable over Discord while the operator is away from the machine. " +
@@ -120,6 +123,7 @@ func buildDiscordAgent(token string, d discordAgentDeps) (relayRunner, *discord.
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,
 		RouteSticky:            d.routeSticky,
+		Stopping:               d.stopping,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -147,6 +151,7 @@ type discordRelayManager struct {
 	notify    func(string)
 	ingest    func(text string) // surface inbound DMs in the shared activity feed (TUI + dashboard), TEN-232
 	degraded  func() bool       // when true, the model is on the echo fallback; relay refuses turns
+	stopping  func() bool       // true while Tenant is stopping (TEN-499): a cut turn is recorded and the operator told; nil ⇒ never
 	persist   func(enabled bool, operatorID string, allowExec bool) error
 
 	// buildFn rebuilds the Discord agent + gateway internals with a fresh token.
@@ -200,6 +205,19 @@ func (m *discordRelayManager) NotifyOperator(text string) error {
 	return err
 }
 
+// sendTo posts text to a channel through the relay's sender: the boot-time
+// notice for a turn a stop cut (TEN-499). An error while the relay is off or
+// unconfigured, so the caller keeps the notice for the next start.
+func (m *discordRelayManager) sendTo(ctx context.Context, channelID, text string) error {
+	m.mu.Lock()
+	snd, running := m.sender, m.running
+	m.mu.Unlock()
+	if snd == nil || !running {
+		return fmt.Errorf("discord relay not running")
+	}
+	return snd.Send(ctx, channelID, text)
+}
+
 // realStart wires a fresh relay (bound to operatorID) + gateway and runs the
 // gateway under ctx. Returns once started (the gateway connects asynchronously).
 func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) error {
@@ -222,6 +240,10 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 	}
 	rl.ingest = m.ingest // surface inbound DMs in the shared activity feed (TEN-232)
 	rl.degraded = m.degraded
+	rl.stopping = m.stopping
+	if m.svc != nil {
+		rl.reader = m.svc // the catch-up after a READY (TEN-499)
+	}
 	if m.dataDir != "" {
 		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
 		// and the turn text carries the saved-path manifest.
@@ -237,7 +259,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		GetURL:        m.svc.GatewayURL,
 		OnMessage:     rl.handleInbound,
 		OnInteraction: rl.handleInteraction,
-		OnReady:       rl.setBotID,
+		OnReady:       rl.ready, // the bot id, then the DMs missed while down (TEN-499)
 		OnFatal: func(e error) {
 			m.track(lifecycle.Failed, e)
 			if m.notify != nil {

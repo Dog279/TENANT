@@ -66,6 +66,11 @@ var Delivery = Discord.Event(1003, event.Info, "Delivery", "Message to channel {
 		"A fail is a message Discord did not accept: the bot lacks access to the channel (50001), the message is empty or too long, Discord rate-limited it, or the network failed.",
 		"On a fail, check the error: grant the bot access to the channel, or check the host's network. The message was not sent and is not retried.")
 
+var CaughtUp = Discord.Event(1004, event.Info, "Message", "Caught up {n} message(s) missed in channel {channel}", "channel", "n").
+	Doc("After the gateway session was identified anew (a restart, or a drop that could not resume), the relay read the channel back and routed the DMs it had missed, oldest first, as if they had just arrived (TEN-499).",
+		"The operator wrote while Tenant was down or disconnected.",
+		"None. Each message gets its answer; a message that carried a file is routed without the file.")
+
 var Throttled = Discord.Event(2101, event.Warning, "Message", "Messages from {author} are coming too fast; told them to slow down", "author", "channel").
 	Doc("The relay dropped a message because its sender is over the relay's rate limit (about 6 messages in 30 seconds).",
 		"Someone is sending messages faster than the limit: a burst, a paste split into many messages, or a flood in a server.",
@@ -80,6 +85,11 @@ var AttachmentFailed = Discord.Event(2103, event.Warning, "Message", "An attachm
 	Doc("A file the operator sent could not be saved to the relay inbox; the turn goes ahead without it and the operator is told.",
 		"Discord's CDN link expired or failed, the file is bigger than it claimed, or the inbox folder could not be written.",
 		"Send the file again. If it repeats, check free disk space and the permissions of <data>/relay-inbox.")
+
+var CatchUpFailed = Discord.Event(2105, event.Warning, "Message", "Messages missed in channel {channel} could not be fetched: {err}", "channel", "err").
+	Doc("After a new gateway session the relay could not read a DM channel back, so a message sent while Tenant was down may stay unanswered (TEN-499).",
+		"Discord refused or did not answer the read within 10 seconds: the network, a rate limit, or the bot lost access to the channel.",
+		"Check the host's network, or send the message again. The next new session tries again from the same cursor.")
 
 var InboxSweepIncomplete = Discord.Event(2104, event.Warning, "Relay inbox", "The relay inbox retention sweep is incomplete: {err}", "dir", "failures", "err").
 	Doc("Files in the relay inbox past their retention (privacy.retention_days.relay_inbox) could not all be deleted, so they are kept longer than configured.",

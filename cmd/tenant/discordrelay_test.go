@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -525,5 +529,62 @@ func TestRelay_StampsTheLockForSubAgentsToo(t *testing.T) {
 	}
 	if offsiteLocked(context.Background(), "mcp:x:delete") {
 		t.Error("a local turn has no lock")
+	}
+}
+
+// fakeReader is the catch-up's ReadChannel: the same messages on every READY,
+// newest first, as Discord returns them.
+type fakeReader struct{ msgs []discord.Message }
+
+func (f *fakeReader) ReadChannel(context.Context, string, int) ([]discord.Message, error) {
+	return f.msgs, nil
+}
+
+// The DM cursor (TEN-499) is saved after each accepted message; a READY
+// routes the messages after it, oldest first, a second READY routes none, a
+// live message at or before the cursor is dropped, and a relay started fresh
+// from the saved cursor catches up the same way.
+func TestDiscordCatchUp(t *testing.T) {
+	dir := t.TempDir()
+	var got []string
+	r := newRelay(&fakeRunner{}, &fakeSender{}, op)
+	r.dataDir = dir
+	r.ingest = func(text string) { got = append(got, text) }
+	r.Start(context.Background())
+	cursor := func() map[string]string {
+		b, _ := os.ReadFile(filepath.Join(dir, "discord-cursor.json"))
+		var m map[string]string
+		_ = json.Unmarshal(b, &m)
+		return m
+	}
+	r.handleInbound(discord.Inbound{MessageID: "100", AuthorID: op, ChannelID: "dm1", Content: "first"})
+	if c := cursor(); c["dm1"] != "100" {
+		t.Fatalf("cursor after the first message = %v", c)
+	}
+	reader := &fakeReader{msgs: []discord.Message{
+		{ID: "103", ChannelID: "dm1", Content: "the bot's own reply", Author: discord.Author{ID: "bot", Bot: true}},
+		{ID: "102", ChannelID: "dm1", Content: "third", Author: discord.Author{ID: op}},
+		{ID: "101", ChannelID: "dm1", Content: "second", Author: discord.Author{ID: op}},
+		{ID: "99", ChannelID: "dm1", Content: "before the cursor", Author: discord.Author{ID: op}},
+	}}
+	r.reader = reader
+	r.ready("bot")
+	want := []string{"first", "second", "third"}
+	if !slices.Equal(got, want) || cursor()["dm1"] != "102" {
+		t.Fatalf("routed %v (cursor %v), want %v with the cursor at 102", got, cursor(), want)
+	}
+	r.ready("bot")
+	r.handleInbound(discord.Inbound{MessageID: "101", AuthorID: op, ChannelID: "dm1", Content: "second, replayed"})
+	if !slices.Equal(got, want) {
+		t.Fatalf("a second READY or a replayed message routed: %v", got)
+	}
+
+	r2 := newRelay(&fakeRunner{}, &fakeSender{}, op)
+	r2.dataDir, r2.reader = dir, reader
+	r2.ingest = func(text string) { got = append(got, text) }
+	r2.Start(context.Background())
+	r2.ready("bot")
+	if !slices.Equal(got, want) {
+		t.Fatalf("a fresh relay did not load the cursor: routed %v", got)
 	}
 }

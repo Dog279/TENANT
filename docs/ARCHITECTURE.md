@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 1,203 |
-| Test files | 584 |
-| Production Go LOC | 152,678 |
-| Test Go LOC | 117,218 |
+| Go files | 1,206 |
+| Test files | 586 |
+| Production Go LOC | 153,183 |
+| Test Go LOC | 117,592 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -1410,6 +1410,12 @@ registry type (§5.14).
   approvals are denied, the peer listener, the relay and the dashboard stop
   taking work, cron and self-improvement drain, then the runtime and stores
   close, last opened first. The TUI tears down the same way when it exits.
+  serve runs the stages under `--stop-budget` (TEN-499, `Group.ShutdownWithin`):
+  every turn is cancelled at once with no salvage synthesis, a step that
+  outlives the budget is abandoned and the rest skipped (the boot record then
+  stays unclean), a relay turn the stop cut is recorded in
+  `<data>/interrupted.json` and reported to its channel at the next start, and
+  the Discord relay catches up the DMs it missed from `<data>/discord-cursor.json`.
 - `tenant os "<task>" [--allow-exec]` — agent inspects the machine
   (sysinfo/read/list/processes) + runs shell commands (gated; off
   unless `--allow-exec`, destructive commands hard-denied). §5.12g.

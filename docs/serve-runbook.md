@@ -100,11 +100,59 @@ checking the folder with `icacls`, are in [dashboard-runbook.md](dashboard-runbo
 §2. A service has no screen, so a remote service's or an integration's browser sign-in
 is finished in a browser on the server itself (dashboard-runbook.md §7).
 
-## Graceful shutdown
+## What happens on an OS restart or shutdown
 
-`SIGTERM` / `SIGINT` shut down in order: stop accepting new work (peer listener →
-Discord relay → dashboard), drain the in-flight turn and any running cron/improve job,
-then close the stores last. Pending approvals are denied so blocked turns unblock.
+A stop (`SIGTERM` / `SIGINT`, the Windows service's Stop or pre-shutdown control, a logoff
+for the Windows task) has two speeds (TEN-499):
+
+1. **The first seconds make the data safe, on every OS.** The turn gate closes, cron and
+   self-improvement start nothing new, pending approvals are denied, and every turn in
+   flight is **cancelled at once**: the model call ends, a running tool's child process dies
+   with the process group (Unix) or the job object (Windows), and there is no 30-second
+   "salvage" answer. Nothing already produced is lost: every message is in the archive as it
+   is written, the stores are WAL SQLite, and `os_write_file` / `os_edit_file` replace a file
+   by rename, so a kill at any instant leaves the old file or the new one, never a torn one.
+2. **The stop budget bounds the teardown.** `--stop-budget` (the unit passes the OS's grace:
+   90 s on macOS and Linux, 4 s for the Windows task, 120 s for the Windows service, 5 s hand-run)
+   is a deadline on the staged shutdown: stop intake (peer listener → Discord relay →
+   dashboard), drain the cut turn and any cron/improve job, close the stores last. A step
+   that outlives the budget is abandoned and the rest are skipped, both in the `system` log;
+   serve then exits non-zero and the boot record stays unclean, which the next start reports
+   as it does for a crash. The data is safe either way: the budget only decides how tidy the end is.
+
+What the operator sees:
+
+- **The interrupted notice.** A Discord or iMessage turn the stop cut gets, within 2 seconds,
+  "I was stopped mid-task by a system shutdown or restart. Say `continue` when I'm back.";
+  the cut is recorded in `<data>/interrupted.json` and as a `turn_interrupted` event in the
+  archive. After boot, once the relays are up, each recorded channel gets one more line:
+  "I was stopped at <time> while <excerpt> (<n> tool calls had run). Tell me to continue."
+  Then the record is cleared. The turn is **never re-run by itself**: the tools that ran before
+  the cut may have had side effects (an email sent, a file edited). Say `continue`: the archive
+  holds the partial trace, so the agent picks up with the context. A cron run the stop cut is
+  marked `interrupted: Tenant stopped` in its history; its next run is the next scheduled one.
+- **Messages sent while Tenant was down.** iMessage catches up through its chat.db cursor.
+  Discord keeps the last DM seen per channel in `<data>/discord-cursor.json` and, on every new
+  gateway session (`READY`), reads each channel back and routes the DMs after the cursor,
+  oldest first, as if they had just arrived (the `discord` log says how many). A DM's text is
+  caught up; a file attached to it is not fetched.
+
+### Reboot drill
+
+Run it once per configuration before a release: macOS, Linux, Windows task, Windows `--system`.
+
+1. `tenant service install`, then `tenant service status` says running.
+2. From Discord (or iMessage), start a long turn: "run `sleep 120` and tell me when it's done"
+   (`relay.allow_exec` on, or any turn that runs long enough).
+3. While it runs, reboot the machine.
+4. While it is down, send the bot one more DM.
+5. After boot, check:
+   - the channel shows the interrupted notice, then the boot-time "I was stopped at …" line;
+   - the DM sent during the reboot was answered;
+   - `tenant logs` (the `system` log) shows the shutdown's steps within the budget and a clean
+     stop before it, and the start-up has no "ended without a clean shutdown" line;
+   - `tenant doctor` is clean (the databases, the service, serve liveness).
+6. Say `continue` and check the agent picks the task up with its context.
 
 ## Run as a service
 

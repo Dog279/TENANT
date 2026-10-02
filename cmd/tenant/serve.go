@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -38,6 +39,11 @@ import (
 // the unit `tenant service install` writes passes per OS (TEN-498; the
 // plan's PR E table). The teardown deadline reads it (PR E).
 var serveStopBudget = 5 * time.Second
+
+// serveStopping is true from the moment serve is asked to stop (TEN-499),
+// before anything sees its context cancelled: the agents (Config.Stopping),
+// the relays and cron read it to tell a stop from an operator's "stop".
+var serveStopping atomic.Bool
 
 // cmdServe runs Tenant as a headless 24/7 hub (TEN-194): the SAME long-term
 // brain the TUI drives — full tool surface, memory, self-improvement, cron,
@@ -102,8 +108,15 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	}
 	scrubLogSecrets(hub, c) // TEN-361: credentials never reach a log line
 	defer hub.Close()
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	// A stop (Ctrl-C, SIGTERM, the service manager) flips serveStopping
+	// BEFORE anything downstream sees its context cancelled (TEN-499), so a
+	// turn, relay or cron run that wakes on the cancel knows it is a stop and
+	// skips what a stop makes pointless (the salvage synthesis, a reply).
+	sigCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.WithoutCancel(sigCtx))
+	stop := func() { stopSignals(); cancel() } // released with the process, as the signal context was
 	defer stop()
+	go func() { <-sigCtx.Done(); serveStopping.Store(true); cancel() }()
 	hub.Start(ctx)
 	startRetention(ctx, c)
 
@@ -491,6 +504,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
 		Compactor:              compressor,
 		UserProfile:            prof,
+		Stopping:               serveStopping.Load,
 		// Per-project SME doc from the live cache (Phase 3). nil-safe.
 		RenderProjectSME: smeLive.String,
 	})
@@ -550,6 +564,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		authProblems: mcpAuthProblemsFn(c.cfgDir, mainTools), // banner on every summary while a connector's sign-in is dead
 		violations:   sandboxViolationsSince(hub),            // and how many sandbox refusals since the job last ran
 		ask:          broker.Ask,                             // an alert's investigation asks first (TEN-400)
+		stopping:     serveStopping.Load,
 	}); cerr != nil {
 		pushSys("cron: disabled (" + cerr.Error() + ")")
 	} else {
@@ -679,7 +694,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
 		emit: emit, notify: pushSys, degraded: degraded, log: log.With("source", "discord"), routeHook: routeRT.Hook(),
-		routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
+		routeActive: routeRT.Active, routeSticky: routeRT.Sticky, stopping: serveStopping.Load,
 	})
 	if relayMgr != nil {
 		life.AddFunc(lifecycle.Intake, "discord relay", relayMgr.Shutdown) // stop Discord ingest
@@ -692,9 +707,12 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
 		meta: meta, broker: broker, degraded: degraded, emit: emit, notify: pushSys, log: log.With("source", "imessage"),
-		routeHook: routeRT.Hook(), routeActive: routeRT.Active, routeSticky: routeRT.Sticky,
+		routeHook: routeRT.Hook(), routeActive: routeRT.Active, routeSticky: routeRT.Sticky, stopping: serveStopping.Load,
 	})
 	dashMgr.access = dashAccess{im: imsgAllowMgr, relay: relayMgr}
+	// The turns the last stop cut (TEN-499): tell each channel once, now that
+	// both relays are up; a notice that cannot go out waits for the next start.
+	go resumeInterrupted(c.dataDir, map[string]sendFunc{"discord": relayMgr.sendTo, "imessage": imsgAllowMgr.sendTo}, pushSys)
 
 	// Self-improvement scheduler (preserves the old serve's distill+consolidate
 	// and adds the full job set). Suspended while degraded.
@@ -787,9 +805,15 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	run.ready()
 	<-ctx.Done()
 	fmt.Println("\nshutting down…")
-	life.Shutdown() // each failed step is logged
-	run.stopped(ctx, nil)
-	return nil
+	// Under the stop budget (TEN-499). A failed step is logged, as before; a
+	// teardown the budget cut short is serve's error: the supervisor sees a
+	// non-zero exit, and the boot record (the last step) stays unclean.
+	err = life.ShutdownWithin(serveStopBudget)
+	if !errors.Is(err, lifecycle.ErrStopBudget) {
+		err = nil
+	}
+	run.stopped(ctx, err)
+	return err
 }
 
 // serveSystemPrompt builds the hub agent's system prompt — identical in intent
