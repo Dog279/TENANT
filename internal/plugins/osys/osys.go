@@ -2,6 +2,7 @@ package osys
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"  // register decoders for DecodeConfig
@@ -22,8 +23,9 @@ import (
 )
 
 const (
-	defaultExecTimeout = 60 * time.Second
-	maxOutputBytes     = 16000 // cap tool output fed back to the model
+	defaultExecTimeout = 120 * time.Second // os_exec without a timeout (TEN-489)
+	maxExecTimeout     = 600 * time.Second // the most a model may ask for
+	maxOutputBytes     = 30000             // cap tool output fed back to the model
 	maxFileBytes       = 64000
 	maxDirEntries      = 500
 	maxWriteBytes      = 4 << 20 // 4MB cap on a single write
@@ -35,7 +37,7 @@ type runner func(ctx context.Context, command string, timeout time.Duration) (st
 
 // Config opens a Service.
 type Config struct {
-	ExecTimeout time.Duration // 0 ⇒ 60s
+	ExecTimeout time.Duration // 0 ⇒ 120s
 	// Runner, when non-nil, replaces realRunner as the shell executor. It lets
 	// cmd/tenant inject a sandbox-backed runner (the execution-backend seam)
 	// without any osys call site changing. nil ⇒ today's realRunner behaviour.
@@ -77,7 +79,15 @@ func realRunner(ctx context.Context, command string, timeout time.Duration) (str
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	name, args := shellArgs(command)
-	out, err := exec.CommandContext(cctx, name, args...).CombinedOutput()
+	c := exec.CommandContext(cctx, name, args...)
+	if c.Dir = WorkDir(ctx); c.Dir == "" {
+		c.Dir, _ = os.UserHomeDir()
+	}
+	c.WaitDelay = time.Second // a backgrounded child holding the pipe can't hang the call
+	out, err := c.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil // done; a background child still holds the pipe
+	}
 	if cctx.Err() == context.DeadlineExceeded {
 		return string(out), fmt.Errorf("command timed out after %s", timeout)
 	}
@@ -85,11 +95,18 @@ func realRunner(ctx context.Context, command string, timeout time.Duration) (str
 }
 
 // Exec runs a shell command (the dispatcher must have gated it) and
-// returns combined output (capped). A non-zero exit is returned as
-// output + error, not swallowed.
-func (s *Service) Exec(ctx context.Context, command string) (string, error) {
-	out, err := s.run(ctx, command, s.timeout)
-	out = clip(out, maxOutputBytes)
+// returns combined output (capped, keeping its head and tail). A non-zero
+// exit is returned as output + error, not swallowed. timeout <= 0 is the
+// service default; more than maxExecTimeout is clamped.
+func (s *Service) Exec(ctx context.Context, command string, timeout time.Duration) (string, error) {
+	switch {
+	case timeout <= 0:
+		timeout = s.timeout
+	case timeout > maxExecTimeout:
+		timeout = maxExecTimeout
+	}
+	out, err := s.run(ctx, command, timeout)
+	out = clipMiddle(out, maxOutputBytes)
 	if err != nil {
 		return out, err
 	}
@@ -356,6 +373,29 @@ func (s *Service) Processes(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("osys: list processes: %w", err)
 	}
 	return clip(out.String(), maxOutputBytes), nil
+}
+
+// clipMiddle keeps a third of n from the head and the rest from the tail,
+// where a command's errors and summary usually are.
+func clipMiddle(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	head := n / 3
+	return s[:head] + fmt.Sprintf("\n…[%d bytes omitted]…\n", len(s)-n) + s[len(s)-(n-head):]
+}
+
+type workDirKey struct{}
+
+// WithWorkDir carries os_exec's working directory to the runner.
+func WithWorkDir(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, workDirKey{}, dir)
+}
+
+// WorkDir is the working directory os_exec asked for, or "".
+func WorkDir(ctx context.Context) string {
+	d, _ := ctx.Value(workDirKey{}).(string)
+	return d
 }
 
 func clip(s string, n int) string {

@@ -171,14 +171,18 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 		res.Violations = append(res.Violations, Violation{Kind: "limit", Detail: "wall-clock deadline exceeded"})
 		return res, nil
 	}
-	if err != nil {
-		if ee == nil {
-			// Could not start sandbox-exec at all: an infrastructure failure.
-			return res, err
-		}
-		if v, ok := attributeDenial(res.Output, pol); ok {
-			res.Violations = append(res.Violations, v)
-		}
+	if err != nil && ee == nil {
+		// Could not start sandbox-exec at all: an infrastructure failure.
+		return res, err
+	}
+	// Exit status alone hides refusals: `mkdir x || echo DENIED`, `cmd | head`
+	// and `…; echo DONE` exit 0, so dry run never re-ran them and the agent
+	// was quietly locked out (TEN-489). Judge the output either way.
+	// ponytail: a successful command that merely prints "operation not
+	// permitted" (grepping a log) now counts as refused, so a dry run re-runs
+	// it on the host; use Seatbelt's own violation log if that ever bites.
+	if v, ok := attributeDenial(res.Output, pol); ok {
+		res.Violations = append(res.Violations, v)
 	}
 	return res, nil // a non-zero exit is signal, not an infra error
 }

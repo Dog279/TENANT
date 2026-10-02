@@ -245,9 +245,10 @@ func withBuiltinExec(t *testing.T, backend, why string) {
 	t.Cleanup(func() { builtinExec = prev })
 }
 
-// TEN-347: with no exec_profiles, every surface runs the built-in backend in
-// dry run, cron-shell with no network; where restricted can't dry-run, the
-// host, with the reason carried to probe, audit and doctor.
+// TEN-347: with no exec_profiles, cron runs the built-in backend in dry run,
+// cron-shell with no network; where restricted can't dry-run, the host, with
+// the reason carried to probe, audit and doctor. Interactive surfaces run on
+// the host by choice, so with no reason (TEN-489).
 func TestResolveExecProfile_BuiltinProfile(t *testing.T) {
 	resetExecProfiles(t)
 	for _, tc := range []struct{ backend, why string }{{"restricted", ""}, {"host", "no bubblewrap"}} {
@@ -258,7 +259,11 @@ func TestResolveExecProfile_BuiltinProfile(t *testing.T) {
 			if surface == surfaceCronShell {
 				wantNet = sandbox.NetNone
 			}
-			if p.Backend != tc.backend || p.Fallback != tc.why || p.Policy.Enforce || p.Policy.Network != wantNet || !p.Policy.Env.Isolate {
+			backend, why := tc.backend, tc.why
+			if surface != surfaceCronExec && surface != surfaceCronShell {
+				backend, why = "host", ""
+			}
+			if p.Backend != backend || p.Fallback != why || p.Policy.Enforce || p.Policy.Network != wantNet || !p.Policy.Env.Isolate {
 				t.Errorf("%s with the %s built-in: %+v", surface, tc.backend, p)
 			}
 		}
@@ -280,7 +285,7 @@ func TestResolveExecProfile_EnforceSwitch(t *testing.T) {
 		enforce  bool
 		network  sandbox.NetworkMode
 	}{
-		{"built-in", nil, surfaceDiscord, false, sandbox.NetInherit},
+		{"built-in", nil, surfaceCronExec, false, sandbox.NetInherit},
 		{"switch on", map[string]execProfileSetting{"default": {Enforce: &on}}, surfaceDiscord, true, sandbox.NetInherit},
 		{"switch on, cron-shell keeps no network", map[string]execProfileSetting{"default": {Enforce: &on}}, surfaceCronShell, true, sandbox.NetNone},
 		{"switch reaches an entry without enforce or backend", map[string]execProfileSetting{
@@ -419,7 +424,8 @@ func TestBuiltinDryRunBlocksNothing(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "made-on-host.txt")
 	never := func(context.Context, string, string) bool { t.Fatal("a dry run must not ask"); return false }
-	res, err := sandboxRunner("", "", never)(context.Background(), "echo hi > "+out, 30*time.Second)
+	// A cron-exec turn's os_exec: interactive surfaces run on the host (TEN-489).
+	res, err := sandboxRunner("", "", never)(withExecSurface(context.Background(), surfaceCronExec), "echo hi > "+out, 30*time.Second)
 	if err != nil || !strings.Contains(res, "sandbox dry-run") {
 		t.Fatalf("os_exec: out=%q err=%v", res, err)
 	}
