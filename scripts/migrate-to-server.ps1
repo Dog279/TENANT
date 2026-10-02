@@ -204,12 +204,14 @@ try {
         schtasks /Create /F /TN "OllamaServe" /SC ONSTART /RU SYSTEM /TR "`"$ol`" serve" | Out-Null
     } -ArgumentList $RemoteRoot
 
-    # --- tenant startup task ---------------------------------------------
-    Write-Host "creating TenantServe startup task ..." -ForegroundColor Cyan
+    # --- tenant service (TEN-498) ------------------------------------------
+    # A real Windows service as SYSTEM: `tenant service install --system`
+    # writes it, starts it, and sets the failure actions; the remoting session
+    # is elevated, which --system needs.
+    Write-Host "installing the Tenant service ..." -ForegroundColor Cyan
     Invoke-Command -Session $sess -ScriptBlock {
         param($root)
-        $cmd = "`"$root\tenant.exe`" serve --config `"$root\config`" --data `"$root\data`""
-        schtasks /Create /F /TN "TenantServe" /SC ONSTART /RU SYSTEM /TR $cmd | Out-Null
+        & "$root\tenant.exe" service install --system --config "$root\config" --data "$root\data"
     } -ArgumentList $RemoteRoot
 
     # --- doctor + launch --------------------------------------------------
@@ -221,14 +223,13 @@ try {
         cmd /c "`"$root\tenant.exe`" doctor --config `"$root\config`" --data `"$root\data`" 2>&1" | Select-Object -Last 25
     } -ArgumentList $RemoteRoot
 
-    Write-Host "starting tasks now (no reboot needed) ..." -ForegroundColor Cyan
+    Write-Host "starting ollama now (no reboot needed) ..." -ForegroundColor Cyan
     Invoke-Command -Session $sess -ScriptBlock {
+        param($root)
         schtasks /Run /TN "OllamaServe" | Out-Null
-        Start-Sleep -Seconds 2
-        schtasks /Run /TN "TenantServe" | Out-Null
         Start-Sleep -Seconds 5
-        schtasks /Query /TN "TenantServe" /V /FO LIST | Select-String "Status", "Last Result"
-    }
+        & "$root\tenant.exe" service status --config "$root\config" --data "$root\data"
+    } -ArgumentList $RemoteRoot
 
     Write-Host ""
     Write-Host "== done. NEXT STEPS ==" -ForegroundColor Green

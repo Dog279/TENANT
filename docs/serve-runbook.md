@@ -106,74 +106,39 @@ is finished in a browser on the server itself (dashboard-runbook.md §7).
 Discord relay → dashboard), drain the in-flight turn and any running cron/improve job,
 then close the stores last. Pending approvals are denied so blocked turns unblock.
 
-## Supervision
+## Run as a service
 
-### macOS — launchd
-
-`~/Library/LaunchAgents/com.tenant.serve.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.tenant.serve</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/tenant</string>
-    <string>serve</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <!-- Restart on crash, but stay stopped after a clean operator stop. -->
-  <key>KeepAlive</key>
-  <dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/tenant/serve.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/tenant/serve.err.log</string>
-  <!-- Prefer credentials.json over env vars so secrets aren't in the plist. -->
-</dict>
-</plist>
-```
-
-Load it:
+`tenant service install` writes the unit for this OS, enables it and starts it (TEN-498);
+`tenant setup` offers it at the end. The unit pins `--config` and `--data` to the dirs the
+command ran with and passes `--stop-budget`, the grace the OS grants a stop.
 
 ```
-mkdir -p ~/Library/Logs/tenant
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tenant.serve.plist
-launchctl kickstart -k gui/$(id -u)/com.tenant.serve   # restart after an edit
-launchctl bootout gui/$(id -u)/com.tenant.serve         # stop
+tenant service install [--print]   # --print shows the unit and changes nothing
+tenant service status              # installed? running (version, turn_active)? where the logs are
+tenant service restart [--now]     # waits for the running turn to finish (15 min ceiling) unless --now
+tenant service start | stop
+tenant service uninstall
 ```
 
-### Linux — systemd (user unit)
+`tenant doctor` warns when no service is installed or when the unit no longer matches the
+dirs or binary this command uses; `--fix` rewrites it.
 
-`~/.config/systemd/user/tenant.service`:
+| | macOS | Linux | Windows | Windows `--system` |
+|---|---|---|---|---|
+| Unit | LaunchAgent `~/Library/LaunchAgents/com.tenant.serve.plist` | systemd user unit `~/.config/systemd/user/tenant.service` | Scheduled task `\Tenant\Serve` at logon, as you | Windows service `Tenant` as SYSTEM (elevated terminal; headless boxes) |
+| Logs | `~/Library/Logs/tenant/serve.log`, `serve.err.log` | `journalctl --user -u tenant -f` | none for stdout | none for stdout |
+| Stop budget | 90s | 90s | 4s | 120s |
 
-```ini
-[Unit]
-Description=Tenant headless hub
-After=network-online.target
+Everything the hub does is in the log book either way (`tenant logs`, the dashboard's Logs page).
 
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/tenant serve
-Restart=on-failure
-RestartSec=5
-# stderr (TENANT_LOG-filtered) goes to the journal: journalctl --user -u tenant -f
-# The full per-subsystem record is the log book: <data>/logs/<source>/YYYY-MM-DD.log
-# (see docs/LOGGING.md); `tenant logs query log:approvals --follow` tails one.
-
-[Install]
-WantedBy=default.target
-```
-
-Enable it:
-
-```
-systemctl --user daemon-reload
-systemctl --user enable --now tenant.service
-journalctl --user -u tenant -f
-```
-
-`ExecStop` is unnecessary — systemd sends `SIGTERM`, which Tenant handles gracefully.
+- **macOS (TCC):** `install` refuses a binary, config dir or data dir under `~/Desktop`, `~/Documents` or
+  `~/Downloads`: macOS silently denies those to a background process. Good homes: `~/.local/bin`,
+  `~/.config/tenant`, `~/Library/Application Support/tenant`.
+- **Linux (linger):** the user manager stops at logout unless the account lingers; `install` prints
+  `loginctl enable-linger <user>` when it is off. Run it once.
+- **Windows:** the task keeps a hidden console, which is how logoff and shutdown reach the process;
+  `restart` and `stop` end the task hard (hence the 4-second budget). `--system` is a real service with
+  a Stop control and `sc failure` restarts; `sc`/the Services app work on it too.
 
 ## Restart-storm guard (24/7)
 
