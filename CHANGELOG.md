@@ -5,6 +5,37 @@ Releases page.
 
 ## Unreleased
 
+### Changed
+- **`os_exec` works like a Claude Code shell (TEN-489).**
+  - It takes `workdir` (default: your home folder, never Tenant's own directory) and `timeout`
+    (default 120s, up to 600s; it was a fixed 60s).
+  - Long output keeps its start **and** its end, where errors are, up to 30 KB.
+  - With no `exec_profiles` entry, the TUI, dashboard, Discord and iMessage run commands on the
+    host behind their approvals. The old dry run ran a command the sandbox refused a second time
+    on the host, so installers ran twice. Cron keeps its sandboxed default, and any
+    `exec_profiles` entry opts a surface back in.
+  - On the host a command starts in its own session: `sudo` and other prompts fail at once
+    instead of hanging or grabbing the TUI's terminal. A timeout kills everything the command
+    started, and a backgrounded child no longer hangs the call. `SSH_AUTH_SOCK` passes through,
+    so git over ssh works.
+  - Under launchd, Tenant fills in the login-shell PATH (`path_helper`, plus Homebrew), so `brew`,
+    `node` and friends are found.
+- **Fewer dead ends for the agent (TEN-489).**
+  - An object or array argument sent as JSON text (Qwen via vLLM does this) is decoded instead
+    of rejected, so `editJiraIssue`'s `fields` works.
+  - A sandbox refusal is noticed even when the command exits 0 (`… || echo DENIED`, `| head`), so
+    a dry run re-runs it on the host as it should.
+  - A file-tool write outside the writable roots asks (`os_write_outside`, destructive) instead of
+    being refused (so `/tmp` works with an approval). Protected and secret files stay hard
+    refusals.
+- **The destructive check is narrower (TEN-489).**
+  - `rm -r` counts as destructive only for `/`, a top-level folder, a home folder or its direct
+    child, `.`, `..` or `*`. `rm -rf node_modules` is an ordinary command again.
+  - `shutdown`, `reboot` and `init` count only as commands, so `git log --grep=reboot` is fine,
+    and `git log --format=…` is no longer a "disk format".
+  - Newly caught: `diskutil erase…` and `bash -c "$(curl …)"`.
+  - `wiki_save` and the gated CRM tools are writes, not destructive.
+
 ### Fixed
 - **A corrupt `config.json` is no longer overwritten.** Tenant refuses to start on it and
   names the line and column where it broke. Before, the first setting saved from the

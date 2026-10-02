@@ -30,9 +30,11 @@ func crmPlugin() *pluginDescriptor {
 		Title:    "CRM (external crm-tool)",
 		Version:  1,
 		Tools:    func() []model.ToolSpec { return crm.NewDispatcher(nil, crm.Policy{}).Tools() },
-		// The gated subcommands raise their tool name as the action id.
+		// The gated subcommands raise their tool name as the action id. Each may
+		// change or derive CRM state (ask runs crm-tool's agent path), so they are
+		// writes; none is irreversible, so none is destructive (TEN-489).
 		Actions: map[string]string{
-			"crm_ask": catDestructive, "crm_align": catDestructive, "crm_commitments_list": catDestructive,
+			"crm_ask": catWrite, "crm_align": catWrite, "crm_commitments_list": catWrite,
 		},
 		StubHint: "relaunch with --crm-tool-path <path> (or set $CRM_TOOL_PATH) to wrap the external crm-tool binary",
 	}

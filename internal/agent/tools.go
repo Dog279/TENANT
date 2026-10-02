@@ -245,6 +245,41 @@ func validateToolCall(call model.ToolCall, reg ToolRegistry) error {
 	return nil
 }
 
+// unstringifyArgs decodes an object or array argument the model sent as JSON
+// text ("fields": "{\"labels\": [...]}"). Qwen behind vLLM does this for
+// nested arguments; strict validation then rejected every retry (TEN-489).
+func unstringifyArgs(call model.ToolCall, reg ToolRegistry) model.ToolCall {
+	spec, ok := reg.Get(call.Name)
+	if !ok || len(spec.Parameters) == 0 {
+		return call
+	}
+	var args map[string]any
+	var schema struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(call.Arguments, &args) != nil || json.Unmarshal(spec.Parameters, &schema) != nil {
+		return call
+	}
+	changed := false
+	for name, val := range args {
+		s, isStr := val.(string)
+		want := schema.Properties[name].Type
+		if !isStr || (want != "object" && want != "array") {
+			continue
+		}
+		var v any
+		if json.Unmarshal([]byte(s), &v) == nil && jsonKind(v) == want {
+			args[name], changed = v, true
+		}
+	}
+	if changed {
+		call.Arguments, _ = json.Marshal(args)
+	}
+	return call
+}
+
 // jsonTypeMismatch reports whether val matches the JSON-schema type. Returns
 // (wantType, gotType, ok). ok=true means it matches (or the type is one we
 // don't strictly check). json.Unmarshal yields: string, float64, bool,
