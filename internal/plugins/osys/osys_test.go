@@ -1,17 +1,21 @@
 package osys
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -292,7 +296,7 @@ func TestService_ReadRefusesADirSwappedIntoASecret(t *testing.T) {
 	}
 	needSymlinks(t)
 	swapDirForLink(t, work, filepath.Dir(key))
-	out, err := (&Service{}).ReadFile(target, r.checkOpenedRead)
+	out, err := (&Service{}).ReadFile(target, 0, 0, r.checkOpenedRead)
 	if err == nil || strings.Contains(out, "s3cret") {
 		t.Fatalf("a read through a dir swapped into a secret dir must be refused: %q, %v", out, err)
 	}
@@ -744,5 +748,225 @@ func TestWriteOutsideRootsAsks(t *testing.T) {
 	}
 	if _, isErr := w(pol(true), protected); !isErr || asked != 2 {
 		t.Fatalf("a protected file must stay refused without asking: isErr=%v asked=%d", isErr, asked)
+	}
+}
+
+// TEN-492: os_read_file pages. A whole file comes back as it is; offset/limit
+// take a window and say where the next one starts; the byte budget cuts a long
+// read the same way; an offset past the end says how long the file is.
+func TestReadFileRanged(t *testing.T) {
+	dir := realDir(t)
+	var lines []string
+	for i := 1; i <= 300; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{}
+	whole, err := svc.ReadFile(p, 0, 0, nil)
+	if err != nil || strings.Count(whole, "\n") != 300 || strings.Contains(whole, "next_offset") {
+		t.Fatalf("whole file: %v, %d lines, marker=%v", err, strings.Count(whole, "\n"), strings.Contains(whole, "next_offset"))
+	}
+	window, err := svc.ReadFile(p, 100, 5, nil)
+	if err != nil || !strings.HasPrefix(window, "line 100\nline 101\nline 102\nline 103\nline 104\n") || !strings.HasSuffix(window, "next_offset: 105]") {
+		t.Fatalf("window 100+5: %v, %q", err, window)
+	}
+	if past, _ := svc.ReadFile(p, 400, 0, nil); past != "(no lines at offset 400; the file has 300 lines)" {
+		t.Fatalf("past the end: %q", past)
+	}
+	big := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(big, []byte(strings.Repeat(strings.Repeat("x", 99)+"\n", 2000)), 0o600); err != nil { // 200K
+		t.Fatal(err)
+	}
+	page, err := svc.ReadFile(big, 0, 0, nil)
+	if err != nil || len(page) > maxFileBytes+80 || !strings.Contains(page, "next_offset: 1001]") {
+		t.Fatalf("budget page: %v, len=%d, tail=%q", err, len(page), page[max(0, len(page)-60):])
+	}
+	one := filepath.Join(dir, "one.txt")
+	if err := os.WriteFile(one, []byte(strings.Repeat("y", maxFileBytes+10)+"\nnext\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if long, _ := svc.ReadFile(one, 0, 0, nil); !strings.Contains(long, "longer than one page; next_offset: 2]") {
+		t.Fatalf("an over-long line must be clipped, not skipped: %q", long[max(0, len(long)-80):])
+	}
+}
+
+// TEN-491: a command that only looks runs without a prompt; anything that
+// writes, acts, redirects or escalates does not, in any segment.
+func TestReadOnly(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"ls -la":                               true,
+		"git status && git log -3":             true,
+		"cat x | grep y | wc -l":               true,
+		"echo $(whoami)":                       true,
+		"FOO=1 env":                            true,
+		"git branch -a":                        true,
+		"brew list":                            true,
+		"find . -name '*.go'":                  true,
+		"Get-ChildItem C:\\ | Select-String x": true,
+		"/usr/bin/grep -r x .":                 true,
+		"ls > out.txt":                         false,
+		"rm -rf x":                             false,
+		"ls; rm x":                             false,
+		"git push":                             false,
+		"git branch -D x":                      false,
+		"brew install jq":                      false,
+		`find . -exec rm {} \;`:                false,
+		"find . -delete":                       false,
+		"sudo ls":                              false,
+		"cat x | xargs rm":                     false,
+		"":                                     false,
+	} {
+		if got := ReadOnly(cmd); got != want {
+			t.Errorf("ReadOnly(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
+
+// fakeProc stands in for a started command: the test feeds its stdout and
+// decides when it exits; stdin and kills are recorded.
+type fakeProc struct {
+	pid    int
+	outR   *io.PipeReader
+	outW   *io.PipeWriter
+	stdin  *bytes.Buffer
+	done   chan struct{}
+	mu     sync.Mutex
+	err    error
+	killed bool
+	closed bool
+}
+
+type nopCloser struct{ *bytes.Buffer }
+
+func (nopCloser) Close() error { return nil }
+
+func newFakeProc(pid int) *fakeProc {
+	r, w := io.Pipe()
+	return &fakeProc{pid: pid, outR: r, outW: w, stdin: &bytes.Buffer{}, done: make(chan struct{})}
+}
+func (f *fakeProc) Pid() int              { return f.pid }
+func (f *fakeProc) Stdin() io.WriteCloser { return nopCloser{f.stdin} }
+func (f *fakeProc) Stdout() io.ReadCloser { return f.outR }
+func (f *fakeProc) Done() <-chan struct{} { return f.done }
+func (f *fakeProc) Wait() error           { <-f.done; f.mu.Lock(); defer f.mu.Unlock(); return f.err }
+func (f *fakeProc) say(s string)          { _, _ = io.WriteString(f.outW, s) }
+func (f *fakeProc) exit(err error) {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return
+	}
+	f.closed, f.err = true, err
+	f.mu.Unlock()
+	_ = f.outW.Close()
+	close(f.done)
+}
+func (f *fakeProc) Close(time.Duration) error {
+	f.mu.Lock()
+	f.killed = true
+	f.mu.Unlock()
+	f.exit(errors.New("signal: killed"))
+	return nil
+}
+
+// TEN-490: with a starter, os_exec waits for a command and returns its output
+// and exit; one still running at the timeout moves to the background and
+// os_process lists, reads, feeds, waits for and kills it; background: true
+// starts it there; a surface whose starter refuses keeps the old runner, and
+// Close kills what is left.
+func TestExecBackgroundAndProcess(t *testing.T) {
+	var procs []*fakeProc
+	var mu sync.Mutex
+	start := func(_ context.Context, command string, log io.Writer) (Proc, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		f := newFakeProc(1000 + len(procs))
+		procs = append(procs, f)
+		fmt.Fprintf(log, "stderr of %s\n", command) // the starter's stderr goes to the log too
+		return f, nil
+	}
+	last := func() *fakeProc { mu.Lock(); defer mu.Unlock(); return procs[len(procs)-1] }
+	svc := &Service{start: start, procDir: filepath.Join(realDir(t), "proc"), timeout: time.Second, procs: map[string]*proc{}}
+	asked := 0
+	d := NewDispatcher(svc, Policy{Confirm: func(context.Context, string, string) bool { asked++; return true }})
+	ctx := context.Background()
+
+	// A command that finishes: its output and exit, nothing left behind.
+	go func() { time.Sleep(50 * time.Millisecond); f := last(); f.say("built\n"); f.exit(nil) }()
+	out, isErr, _ := d.Dispatch(ctx, call("os_exec", map[string]any{"command": "make"}))
+	if isErr || !strings.Contains(out, "built") || !strings.Contains(out, "stderr of make") {
+		t.Fatalf("foreground: isErr=%v %q", isErr, out)
+	}
+	if len(svc.procs) != 0 {
+		t.Fatalf("a finished foreground command must be forgotten: %v", svc.procs)
+	}
+	go func() { time.Sleep(50 * time.Millisecond); last().exit(errors.New("exit status 2")) }()
+	if out, isErr, _ := d.Dispatch(ctx, call("os_exec", map[string]any{"command": "false"})); !isErr || !strings.Contains(out, "exit status 2") {
+		t.Fatalf("a non-zero exit must come back as the error: isErr=%v %q", isErr, out)
+	}
+
+	// Still running at the timeout: moved to the background, then followed.
+	out, isErr, _ = d.Dispatch(ctx, call("os_exec", map[string]any{"command": "npm run dev", "timeout": 1}))
+	if isErr || !strings.Contains(out, "moved to the background as ") {
+		t.Fatalf("timeout must move the command to the background: isErr=%v %q", isErr, out)
+	}
+	id := strings.TrimSuffix(strings.Fields(out[strings.Index(out, "as ")+3:])[0], ",")
+	dev := last()
+	dev.say("listening on :3000\n")
+	if list, _, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "list"})); !strings.Contains(list, id) || !strings.Contains(list, "running") {
+		t.Fatalf("list: %q", list)
+	}
+	time.Sleep(20 * time.Millisecond) // the pump
+	if log, _, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "log", "id": id})); !strings.Contains(log, "listening on :3000") || !strings.Contains(log, "[still running]") {
+		t.Fatalf("log: %q", log)
+	}
+	if w, _, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "wait", "id": id, "timeout": 1})); !strings.Contains(w, "still running after 1s") {
+		t.Fatalf("wait on a running process: %q", w)
+	}
+	if _, isErr, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "write", "id": id, "input": "y"})); isErr || dev.stdin.String() != "y\n" || asked != 4 { // the three os_exec calls prompted too
+		t.Fatalf("write: isErr=%v stdin=%q asked=%d", isErr, dev.stdin.String(), asked)
+	}
+	if k, isErr, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "kill", "id": id})); isErr || !strings.Contains(k, "killed") || !dev.killed || asked != 5 {
+		t.Fatalf("kill: isErr=%v %q killed=%v asked=%d", isErr, k, dev.killed, asked)
+	}
+	if list, _, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "list"})); !strings.Contains(list, "signal: killed") {
+		t.Fatalf("a killed process is listed as such for an hour: %q", list)
+	}
+
+	// background: true returns at once; wait sees the exit.
+	out, isErr, _ = d.Dispatch(ctx, call("os_exec", map[string]any{"command": "sleep 100", "background": true}))
+	if isErr || !strings.Contains(out, "in the background (pid ") {
+		t.Fatalf("background: isErr=%v %q", isErr, out)
+	}
+	bid := strings.Fields(out)[1]
+	go func() { time.Sleep(50 * time.Millisecond); last().say("done\n"); last().exit(nil) }()
+	if w, _, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "wait", "id": bid, "timeout": 5})); !strings.Contains(w, "done") || !strings.Contains(w, "[exited 0]") {
+		t.Fatalf("wait: %q", w)
+	}
+	if _, isErr, _ := d.Dispatch(ctx, call("os_process", map[string]any{"action": "log", "id": "nope"})); !isErr {
+		t.Fatal("an unknown id is an error")
+	}
+
+	// Close kills what still runs.
+	_, _, _ = d.Dispatch(ctx, call("os_exec", map[string]any{"command": "tail -f x", "background": true}))
+	tailer := last()
+	svc.Close()
+	if !tailer.killed {
+		t.Fatal("Close must kill a running background process")
+	}
+
+	// No starter (a confined surface): the runner, which kills at the timeout.
+	var ranTO time.Duration
+	old := &Service{run: func(_ context.Context, _ string, to time.Duration) (string, error) { ranTO = to; return "ran", nil },
+		start: func(context.Context, string, io.Writer) (Proc, error) { return nil, ErrNoBackground }, procDir: svc.procDir, timeout: time.Second, procs: map[string]*proc{}}
+	od := NewDispatcher(old, Policy{AllowExec: true})
+	if out, _, _ := od.Dispatch(ctx, call("os_exec", map[string]any{"command": "make", "timeout": 7})); out != "ran" || ranTO != 7*time.Second {
+		t.Fatalf("without a starter the runner runs it: %q %s", out, ranTO)
+	}
+	if out, isErr, _ := od.Dispatch(ctx, call("os_exec", map[string]any{"command": "make", "background": true})); !isErr || !strings.Contains(out, "host only") {
+		t.Fatalf("background on a confined surface is refused: isErr=%v %q", isErr, out)
 	}
 }

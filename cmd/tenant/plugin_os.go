@@ -97,6 +97,9 @@ func osGrants(pf *pluginFlags) map[string]string {
 	return g
 }
 
+// The read-only command judgement the brokers skip the prompt for (TEN-491).
+func init() { readOnlyExec = osys.ReadOnly }
+
 // launchOS always registers the OS plugin — it needs no config, so it is
 // visible in /tools and `/enable os` activates it instantly; it starts
 // enabled only with --os. os_exec runs through the execution-backend seam
@@ -114,7 +117,7 @@ func launchOS(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		AllowWrite: e.gateAllow(f.allowWrite),
 		Confirm:    e.confirm,
 		Roots:      resolveOSRoots(e.pf, e.c.cfgDir, e.c.dataDir, e.c.lc),
-	})}, nil, nil
+	})}, svc.Close, nil // the background processes die with Tenant (TEN-490)
 }
 
 // evalOS: the OS plugin is pure Go and always available; eval needs real

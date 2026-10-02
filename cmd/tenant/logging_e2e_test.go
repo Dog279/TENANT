@@ -55,7 +55,7 @@ func TestLoggingEndToEnd(t *testing.T) {
 	calls := 0
 	planner.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
 		if calls++; calls == 1 {
-			return &model.GenerateResponse{ToolCalls: []model.ToolCall{teamCall("call-1", "os_exec", map[string]any{"command": "echo ok"})}}, nil
+			return &model.GenerateResponse{ToolCalls: []model.ToolCall{teamCall("call-1", "os_exec", map[string]any{"command": "printf ok"})}}, nil
 		}
 		return &model.GenerateResponse{Text: "it printed ok", FinishReason: "stop"}, nil
 	}
@@ -184,7 +184,7 @@ func TestLoggingEndToEnd(t *testing.T) {
 	exec, grant := at["security/4201"], at["security/4102"]
 	if got, want := fmt.Sprintf("%s@%s ran %q on %s under %s, granted %s by %s@%s", exec.Actor, exec.Surface, eventField(&exec, "command").Text(),
 		eventField(&exec, "backend").Text(), exec.Corr.ApprovalID, eventField(&grant, "grant").Text(), grant.Actor, grant.Surface),
-		fmt.Sprintf(`agent@local ran "echo ok" on host under %s, granted once by operator@dashboard`, approvalID); got != want {
+		fmt.Sprintf(`agent@local ran "printf ok" on host under %s, granted once by operator@dashboard`, approvalID); got != want {
 		t.Errorf("question 6:\n got %s\nwant %s", got, want)
 	}
 

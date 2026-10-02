@@ -440,6 +440,13 @@ func shellArgs(cmd Command) (string, []string) {
 	return "sh", []string{"-c", cmd.Shell}
 }
 
+// ShellArgv is the argv Run would use for a shell command, for Start: the
+// platform shell, non-interactive, running command (TEN-490).
+func ShellArgv(command string) []string {
+	name, args := shellArgs(Command{Shell: command})
+	return append([]string{name}, args...)
+}
+
 // pidOf is c's process id, or 0 when it never started.
 func pidOf(c *exec.Cmd) int {
 	if c.Process == nil {

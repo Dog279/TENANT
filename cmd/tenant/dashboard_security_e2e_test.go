@@ -118,7 +118,7 @@ func (d *safetyDash) decisions(detail string) []*event.Event {
 // then a real Deny gives Confirm false and one record, the dashboard's.
 func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 	d := newSafetyDash(t)
-	id, res := d.ask("os_exec", "echo hi")
+	id, res := d.ask("os_exec", "touch hi")
 	for _, tc := range []struct {
 		name string
 		set  func(*http.Request)
@@ -163,8 +163,8 @@ func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 		}
 		d.stillWaiting(id, res, "id "+other)
 	}
-	if len(d.decisions("echo hi")) != 0 {
-		t.Fatalf("a forgery was recorded as a decision: %v", d.decisions("echo hi"))
+	if len(d.decisions("touch hi")) != 0 {
+		t.Fatalf("a forgery was recorded as a decision: %v", d.decisions("touch hi"))
 	}
 	if msg, _ := d.decide(id, "deny", false); msg != "Denied. Your agent was told no." {
 		t.Fatalf("the operator's Deny: %q", msg)
@@ -172,7 +172,7 @@ func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 	if answered(t, res) {
 		t.Error("the operator denied; Confirm said yes")
 	}
-	if recs := d.decisions("echo hi"); len(recs) != 1 || recs[0].ID != catalog.ApprovalNo.Spec().ID || recs[0].Surface != "dashboard" {
+	if recs := d.decisions("touch hi"); len(recs) != 1 || recs[0].ID != catalog.ApprovalNo.Spec().ID || recs[0].Surface != "dashboard" {
 		t.Errorf("decision records = %d, want one deny from the dashboard: %v", len(recs), recs)
 	}
 }
@@ -182,7 +182,7 @@ func TestE2E_ForgedResolveCannotApprove(t *testing.T) {
 // told it was already answered. Run under -race -count=20 in the gate.
 func TestE2E_NoDoubleApprove(t *testing.T) {
 	d := newSafetyDash(t)
-	id, res := d.ask("os_exec", "echo race")
+	id, res := d.ask("os_exec", "touch race")
 	ours := d.sentFrom(d.base)
 	start := make(chan struct{})
 	answers := make(chan e2eAnswer, 16)
@@ -224,7 +224,7 @@ func TestE2E_NoDoubleApprove(t *testing.T) {
 	if n := len(d.broker.Pending()); n != 0 {
 		t.Errorf("%d still waiting", n)
 	}
-	if n := len(d.decisions("echo race")); n != 1 {
+	if n := len(d.decisions("touch race")); n != 1 {
 		t.Errorf("%d decision records, want 1", n)
 	}
 }
@@ -304,7 +304,7 @@ func TestE2E_DenyOnTimeout(t *testing.T) {
 // dashboard's.
 func TestE2E_CSRFModeChangeRefused(t *testing.T) {
 	d := newSafetyDash(t)
-	id, res := d.ask("os_exec", "ls")
+	id, res := d.ask("os_exec", "mkdir x")
 	d.broker.Resolve(id, control.ApproveSession) // the terminal granted the session
 	if !answered(t, res) {
 		t.Fatal("the session grant: Confirm said no")

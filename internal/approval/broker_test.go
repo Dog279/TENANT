@@ -775,3 +775,73 @@ func TestCategoryPlain_Complete(t *testing.T) {
 		t.Errorf("CategoryPlain has %d entries for %d categories", len(CategoryPlain), len(Categories))
 	}
 }
+
+// TEN-491: a command is judged by its text before its category. Command rules
+// decide per segment with a tool-level deny still binding, a destructive
+// command keeps its prompt whatever an allow says, a read-only command skips
+// the prompt (never past a category deny), and "always" on a command's prompt
+// saves its family as a rule instead of opening all of exec.
+func TestBroker_CommandRulesAndReadOnly(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBroker(testLog())
+	b.rules = NewRules()
+	b.SetReadOnly(func(c string) bool { return strings.HasPrefix(c, "ls") })
+	silent := func(action, detail string) (ok bool) { // a prompt would block: a short wait proves it returned
+		t.Helper()
+		done := make(chan bool, 1)
+		go func() { done <- b.Confirm(ctx, action, detail) }()
+		select {
+		case ok = <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("Confirm(%q, %q) prompted; it must decide by itself", action, detail)
+		}
+		return ok
+	}
+	if !silent("os_exec", "ls -la") {
+		t.Fatal("a read-only command must run without a prompt")
+	}
+	if err := b.rules.Set("os_exec(rm *)", "deny"); err != nil {
+		t.Fatal(err)
+	}
+	if silent("os_exec", "ls && rm -rf x") {
+		t.Fatal("a command rule's deny must bind in any segment")
+	}
+	if err := b.rules.Set("os_exec(brew install *)", "allow"); err != nil {
+		t.Fatal(err)
+	}
+	if !silent("os_exec", "brew install jq") {
+		t.Fatal("a command rule's allow must run without a prompt")
+	}
+	drainOnce(b, control.DenyOnce)
+	if b.Confirm(ctx, "os_exec_dangerous", "brew install jq  [DANGER: test]") {
+		t.Fatal("a destructive command keeps its prompt whatever a command allow says")
+	}
+	if err := b.rules.Set("os_exec", "deny"); err != nil {
+		t.Fatal(err)
+	}
+	if silent("os_exec", "brew install jq") {
+		t.Fatal("a tool-level os_exec deny must still bind")
+	}
+	if !b.rules.Remove("os_exec") {
+		t.Fatal("remove")
+	}
+	b.SetPermission(CatExec, "deny")
+	if silent("os_exec", "ls -la") {
+		t.Fatal("read-only must not get past a category deny")
+	}
+	b.SetPermission(CatExec, "ask")
+
+	drainOnce(b, control.ApproveAlways)
+	if !b.Confirm(ctx, "os_exec", "make test -v") {
+		t.Fatal("always must approve this call")
+	}
+	if b.modes[CatExec] != ModeAsk {
+		t.Fatal("always on a command must not open all of exec")
+	}
+	if m, _, ok := b.rules.LookupCommand("make test -race"); !ok || m != "allow" {
+		t.Fatalf("always must save the command's family as a rule: %v %q", ok, m)
+	}
+	if !silent("os_exec", "make test -race") {
+		t.Fatal("the saved rule must answer the next command of that family")
+	}
+}

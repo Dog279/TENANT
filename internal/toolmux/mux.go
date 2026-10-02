@@ -173,6 +173,7 @@ var coreToolNames = map[string]bool{
 	"os_edit_file":  true,
 	"os_list_dir":   true,
 	"os_exec":       true,
+	"os_process":    true, // follows a command os_exec left in the background (TEN-490)
 	"memory_search": true,
 	"memory_recall": true,
 	// The agent's own knowledge tier (TEN-249): wiki_search joins memory_search

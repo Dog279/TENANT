@@ -106,8 +106,8 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 	return []model.ToolSpec{
 		{Name: "os_sysinfo", Description: "Report this machine's OS, arch, hostname, CPU count, user, home and working directory.",
 			Parameters: obj(``)},
-		{Name: "os_read_file", Description: "Read a text file from this machine by absolute or relative path (capped).",
-			Parameters: obj(`"path":{"type":"string"}`, "path"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalFile}}},
+		{Name: "os_read_file", Description: "Read a text file from this machine by absolute or relative path: lines from offset (1-based) for limit lines, default the whole file up to one page (~100K chars). A cut read ends with next_offset; read again from there for the rest.",
+			Parameters: obj(`"path":{"type":"string"},"offset":{"type":"integer","description":"first line to read, 1-based (default 1)"},"limit":{"type":"integer","description":"how many lines (default: to the end of the page)"}`, "path"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalFile}}},
 		{Name: "os_read_image", Description: "Inspect an image file (png/jpeg/gif): reports format and pixel dimensions.",
 			Parameters: obj(`"path":{"type":"string"}`, "path")},
 		{Name: "os_list_dir", Description: "List a directory's entries (type, size, name). Defaults to the current directory.",
@@ -124,8 +124,11 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(`"path":{"type":"string"}`, "path"), Gated: true},
 		{Name: "os_exec", Description: "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS) and return its combined stdout+stderr; long output keeps its start and end. GATED: off unless enabled; destructive commands need explicit approval. " +
 			"Use for builds, installs, git, package managers, processes and scripts. To read or change files prefer os_read_file / os_edit_file / os_write_file over cat, sed or heredocs. " +
-			"There is no terminal: nothing can answer a prompt, so pass non-interactive flags (-y, --yes, --non-interactive, CI=1). sudo can't ask for a password; if a command needs it, ask the operator to run it.",
-			Parameters: obj(`"command":{"type":"string"},"workdir":{"type":"string","description":"absolute directory to run in (default: the home folder)"},"timeout":{"type":"integer","description":"seconds, default 120, max 600"}`, "command"), Gated: true, Outbound: true},
+			"There is no terminal: nothing can answer a prompt, so pass non-interactive flags (-y, --yes, --non-interactive, CI=1). sudo can't ask for a password; if a command needs it, ask the operator to run it. " +
+			"A command still running at its timeout is moved to the background (see os_process) instead of being killed; background: true starts it there at once (servers, watchers).",
+			Parameters: obj(`"command":{"type":"string"},"workdir":{"type":"string","description":"absolute directory to run in (default: the home folder)"},"timeout":{"type":"integer","description":"seconds, default 120, max 600"},"background":{"type":"boolean","description":"return at once with a process id instead of waiting"}`, "command"), Gated: true, Outbound: true},
+		{Name: "os_process", Description: "The commands os_exec left running in the background: list; log (lines from offset for limit lines, default the last 200); wait (until it exits, up to timeout seconds, default 30); kill; write (one line to its stdin, for a y/n prompt). Logs page like os_read_file. GATED: kill and write need exec permission or approval.",
+			Parameters: obj(`"action":{"type":"string","enum":["list","log","wait","kill","write"]},"id":{"type":"string","description":"the process id os_exec returned"},"offset":{"type":"integer"},"limit":{"type":"integer"},"timeout":{"type":"integer","description":"wait: seconds, default 30"},"input":{"type":"string","description":"write: the line to send"}`, "action"), Gated: true},
 	}
 }
 
@@ -155,6 +158,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 		return d.makeDir(ctx, call.Arguments)
 	case "os_exec":
 		return d.exec(ctx, call.Arguments)
+	case "os_process":
+		return d.process(ctx, call.Arguments)
 	default:
 		return "unknown os tool: " + call.Name, true, nil
 	}
@@ -162,7 +167,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 
 func (d *Dispatcher) readFile(args json.RawMessage) (string, bool, error) {
 	var a struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
@@ -174,7 +181,7 @@ func (d *Dispatcher) readFile(args json.RawMessage) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.ReadFile(target, d.policy.Roots.checkOpenedRead)
+	out, err := d.svc.ReadFile(target, a.Offset, a.Limit, d.policy.Roots.checkOpenedRead)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -347,9 +354,10 @@ func (d *Dispatcher) resolveWrite(ctx context.Context, path string) (string, err
 
 func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
-		Command string `json:"command"`
-		Workdir string `json:"workdir"`
-		Timeout int    `json:"timeout"` // seconds
+		Command    string `json:"command"`
+		Workdir    string `json:"workdir"`
+		Timeout    int    `json:"timeout"`    // seconds
+		Background bool   `json:"background"` // start it and return at once (TEN-490)
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
@@ -374,6 +382,13 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 	if err := d.policy.gateExec(ctx, a.Command); err != nil {
 		return err.Error(), true, nil
 	}
+	if a.Background {
+		out, err := d.svc.Background(ctx, a.Command)
+		if err != nil {
+			return err.Error(), true, nil
+		}
+		return out, false, nil
+	}
 	out, err := d.svc.Exec(ctx, a.Command, time.Duration(a.Timeout)*time.Second)
 	if err != nil {
 		// Surface the output AND the error — a non-zero exit is signal,
@@ -382,6 +397,55 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 	}
 	if strings.TrimSpace(out) == "" {
 		out = "(no output)"
+	}
+	return out, false, nil
+}
+
+// process is os_process (TEN-490). list, log and wait only look; kill and
+// write act on a process the operator's exec grant or approval let start,
+// so they are gated like a command.
+func (d *Dispatcher) process(ctx context.Context, args json.RawMessage) (string, bool, error) {
+	var a struct {
+		Action  string `json:"action"`
+		ID      string `json:"id"`
+		Offset  int    `json:"offset"`
+		Limit   int    `json:"limit"`
+		Timeout int    `json:"timeout"` // seconds
+		Input   string `json:"input"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "invalid arguments: " + err.Error(), true, nil
+	}
+	if a.Action != "list" && strings.TrimSpace(a.ID) == "" {
+		return "id is required", true, nil
+	}
+	var out string
+	var err error
+	switch a.Action {
+	case "list":
+		return d.svc.ProcessList(), false, nil
+	case "log":
+		out, err = d.svc.ProcessLog(a.ID, a.Offset, a.Limit)
+	case "wait":
+		out, err = d.svc.ProcessWait(ctx, a.ID, time.Duration(a.Timeout)*time.Second)
+	case "kill", "write":
+		if !d.policy.AllowExec {
+			// Gated as an os_exec: the same category, rules and surface locks as the
+			// command that started the process.
+			if d.policy.Confirm == nil || !d.policy.Confirm(ctx, "os_exec", "os_process "+a.Action+" "+a.ID) {
+				return errNotApproved("command").Error(), true, nil
+			}
+		}
+		if a.Action == "kill" {
+			out, err = d.svc.ProcessKill(a.ID)
+		} else {
+			out, err = d.svc.ProcessWrite(a.ID, a.Input)
+		}
+	default:
+		return "action must be list, log, wait, kill or write", true, nil
+	}
+	if err != nil {
+		return err.Error(), true, nil
 	}
 	return out, false, nil
 }

@@ -52,7 +52,9 @@ func slashPermissions(m *model, line string) tea.Cmd {
 			m.sysChat("tool rules are not available in this session")
 			return nil
 		}
-		pattern, mode := f[1], strings.ToLower(f[2])
+		// A command rule has spaces: /permissions add os_exec(brew install *) allow
+		// (TEN-491); the mode is the last word, the pattern everything before it.
+		pattern, mode := strings.Join(f[1:len(f)-1], " "), strings.ToLower(f[len(f)-1])
 		if err := rc.SetRule(pattern, mode); err != nil {
 			m.sysChat("error: " + err.Error())
 			return nil
@@ -64,17 +66,18 @@ func slashPermissions(m *model, line string) tea.Cmd {
 			m.sysChat("tool rules are not available in this session")
 			return nil
 		}
-		removed, err := rc.RemoveRule(f[1])
+		pattern := strings.Join(f[1:], " ") // a command rule has spaces
+		removed, err := rc.RemoveRule(pattern)
 		switch {
 		case err != nil:
 			m.sysChat("error: " + err.Error())
 		case !removed:
-			m.sysChat("no rule " + f[1] + " (see /permissions)")
+			m.sysChat("no rule " + pattern + " (see /permissions)")
 		default:
-			m.sysChat("removed rule " + f[1])
+			m.sysChat("removed rule " + pattern)
 		}
 	default:
-		m.sysChat("usage: /permissions   |   /permissions set <category> <ask|allow|deny>   |   /permissions add <tool|pattern> <ask|allow|deny>   |   /permissions rm <pattern>")
+		m.sysChat("usage: /permissions   |   /permissions set <category> <ask|allow|deny>   |   /permissions add <tool|pattern|os_exec(<prefix> *)> <ask|allow|deny>   |   /permissions rm <pattern>")
 	}
 	return nil
 }
