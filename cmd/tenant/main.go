@@ -25,6 +25,9 @@ import (
 )
 
 func main() {
+	if runWindowsService() { // started by the service control manager (svc_windows.go, TEN-498)
+		return
+	}
 	if len(os.Args) < 2 {
 		writeBeginnerHelp(os.Stderr)
 		os.Exit(2)

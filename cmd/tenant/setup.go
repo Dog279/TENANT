@@ -23,13 +23,15 @@ import (
 //	tenant setup --reset               start fresh, ignoring existing config
 //	tenant setup --provider openai --api-key sk-... --gateway 127.0.0.1:8765
 func cmdSetup(ctx context.Context, args []string) error {
-	return runSetup(ctx, args, bufio.NewReader(os.Stdin))
+	return runSetup(ctx, args, bufio.NewReader(os.Stdin), true)
 }
 
 // runSetup is cmdSetup with an injectable stdin reader, so the first-launch
 // auto-offer can hand off the SAME reader (two bufio.Readers on os.Stdin would
-// race over buffered input).
-func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
+// race over buffered input). offerService ends an interactive run with the
+// background-service question (TEN-498); the auto-offer passes false, since
+// the TUI it then launches shares the data dir with the service it would start.
+func runSetup(ctx context.Context, args []string, in *bufio.Reader, offerService bool) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	c := bindCommon(fs)
 	provider := fs.String("provider", "", "preselect a model provider ("+strings.Join(providerOrder, "|")+")")
@@ -241,6 +243,18 @@ func runSetup(ctx context.Context, args []string, in *bufio.Reader) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 	printSetupSummary(c.cfgDir, lc)
+	// The background service (TEN-498): the newcomer's path ends with a
+	// supervised Tenant; a failure here is said, not fatal, since setup's
+	// own work is saved.
+	if offerService && interactive && yes(ask(in, "\nRun Tenant in the background when you log in? [Y/n]", "y")) {
+		spec, err := newServiceSpec(c, false)
+		if err == nil {
+			err = installService(ctx, spec)
+		}
+		if err != nil {
+			fmt.Printf("  not installed: %v\n  later: tenant service install\n", err)
+		}
+	}
 	return nil
 }
 
@@ -263,7 +277,7 @@ func maybeOfferSetup(ctx context.Context, c *commonFlags) (bool, error) {
 	if !yes(ask(in, "\nNo configuration found. Run setup now? [Y/n]", "y")) {
 		return false, nil
 	}
-	if err := runSetup(ctx, []string{"--config", c.cfgDir, "--data", c.dataDir}, in); err != nil {
+	if err := runSetup(ctx, []string{"--config", c.cfgDir, "--data", c.dataDir}, in, false); err != nil {
 		return false, err
 	}
 	return true, nil
