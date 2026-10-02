@@ -163,6 +163,12 @@ type Config struct {
 	// removed while it runs show up without a restart (TEN-405). nil ⇒ none.
 	RenderAgents func() string
 
+	// Stopping, if set, reports whether the process is stopping (TEN-499). A
+	// turn cancelled while it is true skips the salvage synthesis (an answer
+	// nobody is waiting for, which could hold the teardown for 30 s) and
+	// records the interrupted turn in the archive instead. nil ⇒ never.
+	Stopping func() bool
+
 	// EpisodeVisibility overrides the default `private` visibility used
 	// when this agent's turns are persisted to the episodic store.
 	// Sub-agents spawned by an orchestrator (see cmd/tenant/team.go) set
@@ -848,6 +854,19 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 
 	for iter := 1; unlimitedLoop || iter <= ceiling; iter++ {
 		if err := ctx.Err(); err != nil {
+			if a.cfg.Stopping != nil && a.cfg.Stopping() {
+				// Tenant is stopping (TEN-499): the cut is recorded where
+				// `continue` will find it, and no salvage below — the stop
+				// budget is for making the data safe, not for an answer
+				// that would never be delivered.
+				a.archiveEvent(ctx, archive.Event{
+					Timestamp: time.Now().UTC(), AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
+					Role: "system", Content: "turn interrupted: Tenant stopped",
+					Metadata: map[string]any{"kind": "turn_interrupted", "reason": "stop", "tools_run": len(result.ToolTrace)},
+				})
+				result.Error = err
+				return result, nil
+			}
 			// Don't return empty — the agent has been gathering tool data
 			// (web_read, wiki_search, etc.) and that working memory IS the
 			// answer; we just never asked the model to synthesize it. Run

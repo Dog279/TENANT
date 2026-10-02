@@ -10,8 +10,16 @@ package main
 // dedicated agent + approver + lifecycle are wired by the manager (TEN-119).
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +49,12 @@ type messageSender interface {
 	Send(ctx context.Context, channelID, content string) error
 }
 
+// channelReader reads a channel's latest messages (the catch-up after a
+// READY, TEN-499). *discord.Service satisfies it; faked in tests.
+type channelReader interface {
+	ReadChannel(ctx context.Context, channelID string, limit int) ([]discord.Message, error)
+}
+
 // relay routes operator DMs to the dedicated agent and posts the agent's final
 // answer back. Single-active-turn: at most one Discord turn runs at a time. The
 // final answer is delivered from the turn goroutine via TurnResult.Response
@@ -58,12 +72,20 @@ type relay struct {
 	degraded   func() bool         // optional; when true the model is on the echo fallback
 	ingest     func(text string)   // optional; surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
 	files      *attachmentIngestor // optional; downloads operator attachments into the relay inbox — nil ⇒ attachments ignored
-	dataDir    string              // optional; enables ext-approve button verdicts under <dataDir>/approvals (extapprove.go)
+	dataDir    string              // optional; enables ext-approve button verdicts under <dataDir>/approvals (extapprove.go), the interrupted-turn record and the DM cursor (TEN-499)
+	stopping   func() bool         // optional; true while Tenant is stopping (TEN-499): a cut turn is recorded and the operator told
+	reader     channelReader       // optional; the catch-up after a READY reads the DMs missed while down (TEN-499)
 
 	mu     sync.Mutex
 	base   context.Context // lifetime of the relay; background turns derive from it
 	active bool
 	cancel context.CancelFunc
+	// cursor is the last message id accepted per DM channel (TEN-499), kept
+	// in <dataDir>/discord-cursor.json: a message at or before it is one the
+	// relay has seen, and the catch-up after a READY starts after it. Only
+	// DMs: a guild message's channel is not read back (ReadChannel's messages
+	// carry no guild id, and a guild turn needs a mention anyway).
+	cursor map[string]string
 }
 
 func newRelay(runner relayRunner, sender messageSender, operatorID string) *relay {
@@ -75,13 +97,24 @@ func newRelay(runner relayRunner, sender messageSender, operatorID string) *rela
 	}
 }
 
-// Start records the relay's base context (so Disable cancels in-flight turns).
-// The gateway's OnMessage should be pointed at handleInbound after Start.
+// Start records the relay's base context (so Disable cancels in-flight turns)
+// and loads the DM cursor. The gateway's OnMessage should be pointed at
+// handleInbound after Start.
 func (r *relay) Start(ctx context.Context) {
 	r.mu.Lock()
 	r.base = ctx
+	r.cursor = map[string]string{}
+	if r.dataDir != "" {
+		if b, err := os.ReadFile(r.cursorPath()); err == nil {
+			_ = json.Unmarshal(b, &r.cursor) // unreadable ⇒ no cursor: nothing is caught up, nothing is skipped
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			sysConfigNotLoaded.Log(ctx, "path", r.cursorPath(), "fallback", "no Discord catch-up this start", "err", err)
+		}
+	}
 	r.mu.Unlock()
 }
+
+func (r *relay) cursorPath() string { return filepath.Join(r.dataDir, "discord-cursor.json") }
 
 // setBotID records the bot's own Discord user ID (from the READY event via
 // the gateway's OnReady callback). Required for guild mention detection + stripping.
@@ -89,6 +122,94 @@ func (r *relay) setBotID(id string) {
 	r.mu.Lock()
 	r.botID = id
 	r.mu.Unlock()
+}
+
+// ready is the gateway's OnReady: the bot id, then the catch-up. It runs on
+// the gateway's dispatch goroutine on purpose: READY and the MESSAGE_CREATEs
+// after it are dispatched in order by the same loop, so a live message
+// cannot be routed ahead of the missed ones (which would move the cursor
+// past them); the loop is held for the catch-up's bounded fetch only.
+func (r *relay) ready(botID string) {
+	r.setBotID(botID)
+	r.catchUp()
+}
+
+// snowflake is a Discord id as a number: ids are time-ordered, so a bigger
+// one is a later message. 0 when it is not one (an empty id, a test's).
+func snowflake(id string) uint64 {
+	n, _ := strconv.ParseUint(id, 10, 64)
+	return n
+}
+
+// accept reports whether a DM message is new to the relay and, if so, moves
+// the channel's cursor past it and saves the cursor. An id that is not a
+// snowflake is always new, and moves nothing.
+func (r *relay) accept(channelID, messageID string) bool {
+	id := snowflake(messageID)
+	if id == 0 {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id <= snowflake(r.cursor[channelID]) {
+		return false
+	}
+	r.cursor[channelID] = messageID
+	if r.dataDir != "" {
+		if b, err := json.Marshal(r.cursor); err == nil {
+			if err := atomicWrite(r.cursorPath(), b); err != nil {
+				sysNotSaved.Log(context.Background(), "what", "the Discord cursor", "path", r.cursorPath(), "err", err)
+			}
+		}
+	}
+	return true
+}
+
+// catchUp reads each cursor channel's latest messages and routes the ones
+// after the cursor, oldest first, through handleInbound as if they had just
+// arrived: a session that identifies anew (after a reboot, or a drop that
+// could not resume) has missed every DM sent meanwhile. Bounded, so a slow
+// Discord cannot hold the gateway loop long.
+func (r *relay) catchUp() {
+	r.mu.Lock()
+	reader, base := r.reader, r.base
+	cursors := make(map[string]string, len(r.cursor))
+	for ch, id := range r.cursor {
+		cursors[ch] = id
+	}
+	r.mu.Unlock()
+	if reader == nil || len(cursors) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(base, 10*time.Second)
+	defer cancel()
+	for ch, cur := range cursors {
+		msgs, err := reader.ReadChannel(ctx, ch, 20)
+		if err != nil {
+			discord.CatchUpFailed.Log(ctx, "channel", ch, "err", err)
+			continue
+		}
+		var missed []discord.Message
+		for _, m := range msgs {
+			if snowflake(m.ID) > snowflake(cur) {
+				missed = append(missed, m)
+			}
+		}
+		if len(missed) == 0 {
+			continue
+		}
+		slices.SortFunc(missed, func(a, b discord.Message) int { return cmp.Compare(snowflake(a.ID), snowflake(b.ID)) })
+		discord.CaughtUp.Log(ctx, "channel", ch, "n", len(missed))
+		for _, m := range missed {
+			// ponytail: ReadChannel drops attachments, so a missed message's
+			// files are not fetched; the text is. Only DM channels have a
+			// cursor, so GuildID stays empty (the DM path).
+			r.handleInbound(discord.Inbound{
+				MessageID: m.ID, ChannelID: cmp.Or(m.ChannelID, ch),
+				AuthorID: m.Author.ID, AuthorBot: m.Author.Bot, Content: m.Content,
+			})
+		}
+	}
 }
 
 // handleInbound is the gateway callback. It enforces the H1 inbound boundary
@@ -119,6 +240,9 @@ func (r *relay) handleInbound(in discord.Inbound) {
 		// DM: operator-only allowlist, deny-by-default.
 		if r.operatorID == "" || in.AuthorID != r.operatorID {
 			return
+		}
+		if !r.accept(in.ChannelID, in.MessageID) {
+			return // seen before the restart or the reconnect (TEN-499)
 		}
 	}
 
@@ -170,17 +294,17 @@ func (r *relay) handleInbound(in discord.Inbound) {
 	if len(atts) > 0 {
 		// Download OFF the gateway goroutine — a 100 MB fetch here would
 		// stall the socket's read loop (missed heartbeats → reconnect).
-		go r.ingestAndRoute(in.ChannelID, text, atts)
+		go r.ingestAndRoute(in.ChannelID, in.MessageID, text, atts)
 		return
 	}
-	r.routeTurn(in.ChannelID, text)
+	r.routeTurn(in.ChannelID, in.MessageID, text)
 }
 
 // ingestAndRoute downloads the message's attachments, appends the saved-file
 // manifest to the operator's text, and routes the combined turn. Runs on its
 // own goroutine (see handleInbound); per-batch deadline so a dead CDN can't
 // wedge the pipeline.
-func (r *relay) ingestAndRoute(channelID, text string, atts []discord.Attachment) {
+func (r *relay) ingestAndRoute(channelID, messageID, text string, atts []discord.Attachment) {
 	r.mu.Lock()
 	base := r.base
 	r.mu.Unlock()
@@ -208,16 +332,16 @@ func (r *relay) ingestAndRoute(channelID, text string, atts []discord.Attachment
 		}
 		full += manifest
 	}
-	r.routeTurn(channelID, full)
+	r.routeTurn(channelID, messageID, full)
 }
 
 // routeTurn surfaces text in the shared activity feed, then starts a turn or
 // folds into the running one — the shared tail of every inbound path.
-func (r *relay) routeTurn(channelID, text string) {
+func (r *relay) routeTurn(channelID, messageID, text string) {
 	if r.ingest != nil {
 		r.ingest(text)
 	}
-	if r.start(channelID, text) {
+	if r.start(channelID, messageID, text) {
 		return // new turn launched; its goroutine posts the answer
 	}
 	// A turn is already running. Single operator ⇒ it's theirs ⇒ fold this in.
@@ -252,7 +376,7 @@ func (r *relay) handleInteraction(in discord.Interaction) {
 }
 
 // start launches a background turn unless one is active. Returns false if busy.
-func (r *relay) start(channelID, text string) bool {
+func (r *relay) start(channelID, messageID, text string) bool {
 	r.mu.Lock()
 	if r.active {
 		r.mu.Unlock()
@@ -304,6 +428,16 @@ func (r *relay) start(channelID, text string) bool {
 			failed = nil
 		}
 		act.End(&failed)
+		if ctx.Err() != nil && r.stopping != nil && r.stopping() {
+			// Tenant stopping cut the turn (TEN-499): record it for the next
+			// start and tell the operator now, on a fresh, short context —
+			// the turn's is gone and the teardown is waiting.
+			if err := recordInterrupted(r.dataDir, newInterrupted("discord", channelID, messageID, text, res)); err != nil {
+				sysNotSaved.Log(context.Background(), "what", "the interrupted-turn record", "path", interruptedPath(r.dataDir), "err", err)
+			}
+			r.replyWithin(channelID, stopNotice, 2*time.Second)
+			return
+		}
 		r.deliver(ctx, channelID, res, err)
 	}()
 	return true
@@ -354,11 +488,14 @@ func (r *relay) deliver(ctx context.Context, channelID string, res *agent.TurnRe
 
 // reply sends a bot message best-effort: a transport failure is not surfaced,
 // and discord.Service.SendMessage's Delivery activity records it.
-func (r *relay) reply(channelID, content string) {
+func (r *relay) reply(channelID, content string) { r.replyWithin(channelID, content, 15*time.Second) }
+
+// replyWithin is reply with its own deadline (the stop notice gets 2 s).
+func (r *relay) replyWithin(channelID, content string, timeout time.Duration) {
 	if r.sender == nil || channelID == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	_ = r.sender.Send(ctx, channelID, content)
 }
