@@ -566,3 +566,24 @@ func realDir(t *testing.T) string {
 	}
 	return d
 }
+
+// TEN-498: an agent-run `tenant service …` or `tenant update …` needs
+// approval; an ordinary mention of the word does not.
+func TestClassifyTenantService(t *testing.T) {
+	for _, tc := range []struct {
+		cmd       string
+		dangerous bool
+	}{
+		{"tenant service uninstall", true},
+		{"tenant update --yes", true},
+		{"./tenant service stop", true},
+		{`C:\Tenant\tenant.exe update`, true},
+		{"tenant version", false},
+		{"grep tenant service.log", false},
+		{"echo tenant service", false},
+	} {
+		if d, reason := Classify(tc.cmd); d != tc.dangerous {
+			t.Errorf("Classify(%q) = %v (%s), want %v", tc.cmd, d, reason, tc.dangerous)
+		}
+	}
+}

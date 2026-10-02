@@ -44,6 +44,10 @@ var dangerPatterns = []dangerPattern{
 	{regexp.MustCompile(`(?i)\biex\b.*\b(downloadstring|invoke-webrequest|iwr)\b`), "execute downloaded content (IEX)"},
 	{regexp.MustCompile(`(?i)\bchmod\s+-R\s+0*[0-7]{0,3}\s+/`), "recursive chmod on a root path"},
 	{regexp.MustCompile(`(?i)\bfind\s+/\b.*-delete`), "find / -delete"},
+	// TEN-498: an agent must not stop, remove or replace the Tenant it runs
+	// in without the operator's say. Anchored: `grep tenant service.log` is
+	// not this; a path or .exe before the name is.
+	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update)\b`), "tenant service/update (changes how Tenant itself runs)"},
 }
 
 // Classify reports whether a command looks destructive, with a reason.
