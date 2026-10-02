@@ -612,6 +612,7 @@ func TestExecTimeoutWorkdirAndClip(t *testing.T) {
 	d := NewDispatcher(svc, Policy{AllowExec: true})
 	ctx := context.Background()
 	home, _ := os.UserHomeDir()
+	tmp := os.TempDir() // absolute on every OS (/tmp isn't, on Windows)
 	for _, tc := range []struct {
 		args  map[string]any
 		to    time.Duration
@@ -620,7 +621,7 @@ func TestExecTimeoutWorkdirAndClip(t *testing.T) {
 	}{
 		{map[string]any{"command": "make"}, 120 * time.Second, "", false},
 		{map[string]any{"command": "make", "timeout": 300, "workdir": "~/code"}, 300 * time.Second, filepath.Join(home, "code"), false},
-		{map[string]any{"command": "make", "timeout": 99999, "workdir": "/tmp/x/../y"}, 600 * time.Second, "/tmp/y", false},
+		{map[string]any{"command": "make", "timeout": 99999, "workdir": filepath.Join(tmp, "x") + "/../y"}, 600 * time.Second, filepath.Join(tmp, "y"), false},
 		{map[string]any{"command": "make", "workdir": "code"}, 0, "", true},
 		{map[string]any{"command": "make", "workdir": "~bob/x"}, 0, "", true}, // ~user isn't expanded
 	} {
