@@ -13,6 +13,13 @@ Releases page.
   `imessage` Observed event (log alerts can act on it) and shown in the activity feed.
   The dashboard's Access page has the same switch. The allowlist now applies per message,
   not when the responder starts.
+- **iMessage shows Contacts names.** On a Mac, chats, messages, the activity feed and
+  Observed events name the sender from Contacts ("Pat Lee (+15550001111)"), read-only
+  from the Contacts database under the same Full Disk Access. Allowlists still match
+  the handle.
+- **Turning iMessage on gives the agent its tools at once.** `/imessage passive` or
+  `respond` (and `/enable imessage`) turn on the `imessage_*` tools live: no
+  `--imessage` flag, setup or restart.
 - **The iMessage responder runs over BlueBubbles.** Set a BlueBubbles URL and it answers
   texts from any OS, not only a Mac. Messages on a Mac stays the default.
 

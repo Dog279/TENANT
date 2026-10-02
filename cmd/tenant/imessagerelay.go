@@ -150,9 +150,13 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	// act on it) and shown in the feed — and never answered. Approval replies go
 	// through the same gate, so a spoofable SMS or group text can't approve.
 	if why := r.undrivable(m); why != "" {
-		imessage.Observed.Log(ctx, "row", m.RowID, "reason", why, "from", m.From, "chat", m.ChatGUID, "text", text)
+		imessage.Observed.Log(ctx, "row", m.RowID, "reason", why, "from", m.From, "name", m.Name, "chat", m.ChatGUID, "text", text)
 		if r.ingest != nil {
-			r.ingest(m.From + " (" + why + "): " + text)
+			who := m.From
+			if m.Name != "" {
+				who = m.Name + " <" + m.From + ">"
+			}
+			r.ingest(who + " (" + why + "): " + text)
 		}
 		return
 	}

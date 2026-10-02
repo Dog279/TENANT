@@ -21,9 +21,9 @@ var Received = IMessage.Event(1001, event.Info, "Message", "Message {row} receiv
 		"None. Every other text is recorded as observed, and this Mac's own are skipped without an event.")
 
 // Observed is a text the responder read but will not answer (TEN-485).
-var Observed = IMessage.Event(1004, event.Info, "Observed", "Message {row} observed ({reason})", "row", "reason", "from", "chat", "text").
-	Sensitive("from", "chat", "text").
-	Doc("The responder read a text it will not answer. reason is passive (the responder only reads), not_allowed (the sender is not on the allowlist), group (group chats never drive) or not_imessage (SMS or RCS).",
+var Observed = IMessage.Event(1004, event.Info, "Observed", "Message {row} observed ({reason})", "row", "reason", "from", "name", "chat", "text").
+	Sensitive("from", "name", "chat", "text").
+	Doc("The responder read a text it will not answer. name is the sender's name in Contacts, when there is one. reason is passive (the responder only reads), not_allowed (the sender is not on the allowlist), group (group chats never drive) or not_imessage (SMS or RCS).",
 		"Anyone texted this Mac. Log alerts on the imessage log can act on it.",
 		"None. To let a sender drive the agent, /imessage allow them and /imessage respond.")
 

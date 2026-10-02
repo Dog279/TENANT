@@ -69,7 +69,30 @@ func OpenNative(cfg NativeConfig) (Backend, error) {
 		return nil, mapOpenError(path, err)
 	}
 
-	return &nativeService{db: db, r: &chatReader{db: db}}, nil
+	return &nativeService{db: db, r: &chatReader{db: db, contacts: &contacts{load: loadAddressBooks}}}, nil
+}
+
+// loadAddressBooks reads every Contacts store: the local one and one per
+// account under Sources/. A store that won't open is skipped.
+func loadAddressBooks() map[string]string {
+	out := map[string]string{}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return out
+	}
+	root := filepath.Join(home, "Library", "Application Support", "AddressBook")
+	paths, _ := filepath.Glob(filepath.Join(root, "Sources", "*", "AddressBook-v22.abcddb"))
+	for _, p := range append(paths, filepath.Join(root, "AddressBook-v22.abcddb")) {
+		db, err := sql.Open("sqlite", "file:"+p+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(2000)")
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = readContacts(ctx, db, out)
+		cancel()
+		_ = db.Close()
+	}
+	return out
 }
 
 // mapOpenError turns a permission/TCC failure into a friendly,

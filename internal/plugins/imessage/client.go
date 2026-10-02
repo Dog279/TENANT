@@ -20,6 +20,7 @@ type Message struct {
 	GUID     string
 	Text     string
 	From     string
+	Name     string // the sender's name in Contacts, "" when unknown (native only)
 	IsFromMe bool
 	Date     string
 }

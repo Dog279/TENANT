@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 3,386 |
-| Test files | 1,660 |
-| Production Go LOC | 465,876 |
-| Test Go LOC | 330,287 |
+| Go files | 3,388 |
+| Test files | 1,661 |
+| Production Go LOC | 466,048 |
+| Test Go LOC | 330,346 |
 | Go modules | 4 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -1044,6 +1044,11 @@ every inbound text. `/imessage passive` answers none; `/imessage respond`
 answers only the allowlist and the operator, and only in a 1:1 iMessage
 chat: group chats and SMS/RCS never drive. A text that doesn't drive is
 recorded as an `imessage` Observed event and shown in the activity feed.
+Turning the responder on also turns on the `imessage_*` tools.
+
+**Contact names:** natively, handles get the sender's name from the
+Contacts AddressBook stores (read-only, cached 10 minutes; phones match on
+their last 10 digits). Gates and allowlists still compare the handle.
 
 
 **Purpose:** the agent reads + sends iMessages. There is no official

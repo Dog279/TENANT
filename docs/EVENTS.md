@@ -1231,10 +1231,10 @@ Writes the `imessage` log.
 `Message {row} observed ({reason})`
 
 - **Level:** info · **Channel:** operational · **Task:** Observed · **Log:** imessage
-- **Fields:** `row`, `reason`, `from`, `chat`, `text` (sensitive, masked: `from`, `chat`, `text`)
+- **Fields:** `row`, `reason`, `from`, `name`, `chat`, `text` (sensitive, masked: `from`, `name`, `chat`, `text`)
 - **Find it:** `provider:imessage id:1004`
 
-**What it means.** The responder read a text it will not answer. reason is passive (the responder only reads), not_allowed (the sender is not on the allowlist), group (group chats never drive) or not_imessage (SMS or RCS).
+**What it means.** The responder read a text it will not answer. name is the sender's name in Contacts, when there is one. reason is passive (the responder only reads), not_allowed (the sender is not on the allowlist), group (group chats never drive) or not_imessage (SMS or RCS).
 
 **Why it happens.** Anyone texted this Mac. Log alerts on the imessage log can act on it.
 

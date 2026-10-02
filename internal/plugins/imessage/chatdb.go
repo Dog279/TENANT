@@ -29,7 +29,8 @@ import (
 // chatReader implements the read half of transport over an Apple
 // chat.db handle. It carries no platform assumptions.
 type chatReader struct {
-	db *sql.DB
+	db       *sql.DB
+	contacts *contacts // names for handles; nil ⇒ handles only
 }
 
 // InboundMessage is a Message tagged with the data the anti-loop Watcher
@@ -164,7 +165,11 @@ SELECT c.ROWID, c.guid, c.chat_identifier, COALESCE(c.display_name, ''),
 		c := Chat{GUID: cr.guid, Name: strings.TrimSpace(cr.display), Participants: parts[cr.rowID]}
 		if c.Name == "" {
 			if len(c.Participants) > 0 {
-				c.Name = strings.Join(c.Participants, ", ")
+				labels := make([]string, len(c.Participants))
+				for i, p := range c.Participants {
+					labels[i] = r.contacts.label(p)
+				}
+				c.Name = strings.Join(labels, ", ")
 			} else {
 				c.Name = cr.ident
 			}
@@ -254,7 +259,7 @@ SELECT m.guid, m.text, m.attributedBody, m.is_from_me, m.date, h.id
 		return nil, fmt.Errorf("imessage: chat messages: %w", err)
 	}
 	defer rows.Close()
-	return scanMessages(rows)
+	return r.scanMessages(rows)
 }
 
 // SearchMessages finds messages whose decoded text contains the term
@@ -286,7 +291,7 @@ SELECT m.guid, m.text, m.attributedBody, m.is_from_me, m.date, h.id
 		return nil, fmt.Errorf("imessage: search: %w", err)
 	}
 	defer rows.Close()
-	all, err := scanMessages(rows)
+	all, err := r.scanMessages(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -341,8 +346,10 @@ SELECT m.ROWID, c.guid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, 
 		if err := rows.Scan(&rowID, &chatGUID, &guid, &text, &attr, &isFromMe, &date, &handleID, &service); err != nil {
 			return nil, fmt.Errorf("imessage: scan since: %w", err)
 		}
+		msg := rowToMessage(guid, text, attr, isFromMe, date, handleID)
+		msg.Name = r.contacts.name(msg.From)
 		out = append(out, InboundMessage{
-			Message:  rowToMessage(guid, text, attr, isFromMe, date, handleID),
+			Message:  msg,
 			RowID:    rowID,
 			ChatGUID: chatGUID,
 			Service:  service.String,
@@ -365,7 +372,7 @@ func (r *chatReader) LatestRowID(ctx context.Context) (int64, error) {
 
 // scanMessages reads rows shaped (guid, text, attributedBody, is_from_me,
 // date, handle.id) into normalized Messages.
-func scanMessages(rows *sql.Rows) ([]Message, error) {
+func (r *chatReader) scanMessages(rows *sql.Rows) ([]Message, error) {
 	var out []Message
 	for rows.Next() {
 		var (
@@ -379,7 +386,9 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		if err := rows.Scan(&guid, &text, &attr, &isFromMe, &date, &handleID); err != nil {
 			return nil, fmt.Errorf("imessage: scan message: %w", err)
 		}
-		out = append(out, rowToMessage(guid, text, attr, isFromMe, date, handleID))
+		msg := rowToMessage(guid, text, attr, isFromMe, date, handleID)
+		msg.Name = r.contacts.name(msg.From)
+		out = append(out, msg)
 	}
 	return out, rows.Err()
 }

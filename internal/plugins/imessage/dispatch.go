@@ -112,7 +112,11 @@ func unmarshal(args json.RawMessage, v any) (string, bool) {
 }
 
 func fmtMsg(m Message) string {
-	return fmt.Sprintf("- [%s] %s: %s", m.Date, m.From, strings.ReplaceAll(m.Text, "\n", " "))
+	from := m.From
+	if m.Name != "" {
+		from = m.Name + " (" + m.From + ")"
+	}
+	return fmt.Sprintf("- [%s] %s: %s", m.Date, from, strings.ReplaceAll(m.Text, "\n", " "))
 }
 
 func (d *Dispatcher) listChats(ctx context.Context, args json.RawMessage) (string, bool, error) {
