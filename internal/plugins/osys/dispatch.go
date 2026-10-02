@@ -106,8 +106,8 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 	return []model.ToolSpec{
 		{Name: "os_sysinfo", Description: "Report this machine's OS, arch, hostname, CPU count, user, home and working directory.",
 			Parameters: obj(``)},
-		{Name: "os_read_file", Description: "Read a text file from this machine by absolute or relative path (capped).",
-			Parameters: obj(`"path":{"type":"string"}`, "path"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalFile}}},
+		{Name: "os_read_file", Description: "Read a text file from this machine by absolute or relative path: lines from offset (1-based) for limit lines, default the whole file up to one page (~100K chars). A cut read ends with next_offset; read again from there for the rest.",
+			Parameters: obj(`"path":{"type":"string"},"offset":{"type":"integer","description":"first line to read, 1-based (default 1)"},"limit":{"type":"integer","description":"how many lines (default: to the end of the page)"}`, "path"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalFile}}},
 		{Name: "os_read_image", Description: "Inspect an image file (png/jpeg/gif): reports format and pixel dimensions.",
 			Parameters: obj(`"path":{"type":"string"}`, "path")},
 		{Name: "os_list_dir", Description: "List a directory's entries (type, size, name). Defaults to the current directory.",
@@ -162,7 +162,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 
 func (d *Dispatcher) readFile(args json.RawMessage) (string, bool, error) {
 	var a struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
@@ -174,7 +176,7 @@ func (d *Dispatcher) readFile(args json.RawMessage) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.ReadFile(target, d.policy.Roots.checkOpenedRead)
+	out, err := d.svc.ReadFile(target, a.Offset, a.Limit, d.policy.Roots.checkOpenedRead)
 	if err != nil {
 		return err.Error(), true, nil
 	}

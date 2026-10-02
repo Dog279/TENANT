@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -292,7 +293,7 @@ func TestService_ReadRefusesADirSwappedIntoASecret(t *testing.T) {
 	}
 	needSymlinks(t)
 	swapDirForLink(t, work, filepath.Dir(key))
-	out, err := (&Service{}).ReadFile(target, r.checkOpenedRead)
+	out, err := (&Service{}).ReadFile(target, 0, 0, r.checkOpenedRead)
 	if err == nil || strings.Contains(out, "s3cret") {
 		t.Fatalf("a read through a dir swapped into a secret dir must be refused: %q, %v", out, err)
 	}
@@ -744,5 +745,47 @@ func TestWriteOutsideRootsAsks(t *testing.T) {
 	}
 	if _, isErr := w(pol(true), protected); !isErr || asked != 2 {
 		t.Fatalf("a protected file must stay refused without asking: isErr=%v asked=%d", isErr, asked)
+	}
+}
+
+// TEN-492: os_read_file pages. A whole file comes back as it is; offset/limit
+// take a window and say where the next one starts; the byte budget cuts a long
+// read the same way; an offset past the end says how long the file is.
+func TestReadFileRanged(t *testing.T) {
+	dir := realDir(t)
+	var lines []string
+	for i := 1; i <= 300; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{}
+	whole, err := svc.ReadFile(p, 0, 0, nil)
+	if err != nil || strings.Count(whole, "\n") != 300 || strings.Contains(whole, "next_offset") {
+		t.Fatalf("whole file: %v, %d lines, marker=%v", err, strings.Count(whole, "\n"), strings.Contains(whole, "next_offset"))
+	}
+	window, err := svc.ReadFile(p, 100, 5, nil)
+	if err != nil || !strings.HasPrefix(window, "line 100\nline 101\nline 102\nline 103\nline 104\n") || !strings.HasSuffix(window, "next_offset: 105]") {
+		t.Fatalf("window 100+5: %v, %q", err, window)
+	}
+	if past, _ := svc.ReadFile(p, 400, 0, nil); past != "(no lines at offset 400; the file has 300 lines)" {
+		t.Fatalf("past the end: %q", past)
+	}
+	big := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(big, []byte(strings.Repeat(strings.Repeat("x", 99)+"\n", 2000)), 0o600); err != nil { // 200K
+		t.Fatal(err)
+	}
+	page, err := svc.ReadFile(big, 0, 0, nil)
+	if err != nil || len(page) > maxFileBytes+80 || !strings.Contains(page, "next_offset: 1001]") {
+		t.Fatalf("budget page: %v, len=%d, tail=%q", err, len(page), page[max(0, len(page)-60):])
+	}
+	one := filepath.Join(dir, "one.txt")
+	if err := os.WriteFile(one, []byte(strings.Repeat("y", maxFileBytes+10)+"\nnext\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if long, _ := svc.ReadFile(one, 0, 0, nil); !strings.Contains(long, "longer than one page; next_offset: 2]") {
+		t.Fatalf("an over-long line must be clipped, not skipped: %q", long[max(0, len(long)-80):])
 	}
 }

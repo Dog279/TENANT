@@ -1,6 +1,7 @@
 package osys
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ const (
 	defaultExecTimeout = 120 * time.Second // os_exec without a timeout (TEN-489)
 	maxExecTimeout     = 600 * time.Second // the most a model may ask for
 	maxOutputBytes     = 30000             // cap tool output fed back to the model
-	maxFileBytes       = 64000
+	maxFileBytes       = 100000            // one os_read_file page (TEN-492); offset pages the rest
 	maxDirEntries      = 500
 	maxWriteBytes      = 4 << 20 // 4MB cap on a single write
 )
@@ -129,11 +130,14 @@ func (s *Service) SysInfo() string {
 	return b.String()
 }
 
-// ReadFile returns a file's contents (capped). Path is whatever the
+// ReadFile returns a text file's lines from offset (1-based; 0 or 1 = the
+// start), limit lines (0 = to the end), within maxFileBytes (TEN-492). A read
+// the limit or the budget cut ends with a next_offset line, so the model pages
+// through a file of any size instead of hitting a cap. Path is whatever the
 // operator's machine exposes — enabling this plugin is the consent. vet, when
 // non-nil, inspects the file once it is open and before anything is read; an
 // error from it aborts the read.
-func (s *Service) ReadFile(path string, vet func(fs.FileInfo) error) (string, error) {
+func (s *Service) ReadFile(path string, offset, limit int, vet func(fs.FileInfo) error) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("osys: file path required")
 	}
@@ -142,11 +146,55 @@ func (s *Service) ReadFile(path string, vet func(fs.FileInfo) error) (string, er
 		return "", fmt.Errorf("osys: read %s: %w", path, err)
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxFileBytes+1))
+	out, err := readLines(f, offset, limit, maxFileBytes)
 	if err != nil {
 		return "", fmt.Errorf("osys: read %s: %w", path, err)
 	}
-	return clip(string(b), maxFileBytes), nil
+	return out, nil
+}
+
+// readLines is the paged read ReadFile and os_process's log share: lines
+// [offset, offset+limit) of r, 1-based, limit 0 = to the end, at most budget
+// bytes. A cut read ends with a next_offset line; an offset past the end says
+// how many lines there are. One line longer than the budget is clipped rather
+// than skipped, so a read always moves forward.
+func readLines(r io.Reader, offset, limit, budget int) (string, error) {
+	if offset < 1 {
+		offset = 1
+	}
+	br := bufio.NewReaderSize(r, 64<<10)
+	var b strings.Builder
+	line, taken := 0, 0
+	for {
+		raw, err := br.ReadBytes('\n') // keeps the newline, so the bytes come back as they are
+		if len(raw) == 0 {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return "", err
+			}
+			break
+		}
+		line++
+		if line >= offset {
+			switch {
+			case taken == 0 && len(raw) > budget:
+				b.WriteString(clip(string(raw), budget))
+				fmt.Fprintf(&b, "\n…[line %d is longer than one page; next_offset: %d]", line, line+1)
+				return b.String(), nil
+			case (limit > 0 && taken == limit) || b.Len()+len(raw) > budget:
+				fmt.Fprintf(&b, "…[read stopped before line %d; next_offset: %d]", line, line)
+				return b.String(), nil
+			}
+			b.Write(raw)
+			taken++
+		}
+		if err != nil { // io.EOF after the last, unterminated line
+			break
+		}
+	}
+	if taken == 0 && offset > 1 {
+		return fmt.Sprintf("(no lines at offset %d; the file has %d lines)", offset, line), nil
+	}
+	return b.String(), nil
 }
 
 // Exists reports whether a path already exists (used to flag overwrites).
