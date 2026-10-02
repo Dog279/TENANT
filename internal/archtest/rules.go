@@ -33,6 +33,7 @@ var rules = []rule{
 	{Pkg: "internal/datalock", Notes: "leaf"},
 	{Pkg: "internal/httplimits", Notes: "leaf"},
 	{Pkg: "internal/version", Notes: "leaf"},
+	{Pkg: "internal/selfupdate", Notes: "leaf: finding, verifying and swapping in a release binary; tenant update sequences it"},
 	{Pkg: "internal/runtrace", Notes: "leaf"},
 	{Pkg: "internal/cmdreg", Notes: "leaf"},
 	{Pkg: "internal/cron", Notes: "leaf"},

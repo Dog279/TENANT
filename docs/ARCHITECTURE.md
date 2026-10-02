@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-10-02; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 87 |
-| Go files | 1,198 |
-| Test files | 582 |
-| Production Go LOC | 152,362 |
-| Test Go LOC | 117,009 |
+| Go packages | 88 |
+| Go files | 1,208 |
+| Test files | 587 |
+| Production Go LOC | 152,914 |
+| Test Go LOC | 117,628 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |
 | `internal/cron` | nothing in the module | leaf |
