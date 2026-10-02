@@ -180,6 +180,9 @@ tidier end to the turn in flight.
    child process group on Unix (`internal/sandbox/host_unix.go:16`) and the job object on Windows
    (`cmd/tenant/childprocs_windows.go`). A `stopping` value on the context makes the agent **skip the 30-second
    salvage synthesis** (`agent.go:850`): that path exists for research wave timeouts, not for shutdowns.
+   *As built (TEN-499): the tool-call grace is dropped and the whole turn is cancelled the moment the stop lands;
+   a tool's own atomicity is the guarantee (the crash-safe `os_write_file` below, children dying with the process
+   group or job object), and `stopping` is a process flag the agent and relays read, not a context value.*
 3. **Record what was cut, durably.** The turn's messages are already in the T5 archive (working memory appends to the
    archive on every message, `internal/memory/working`). Add one archive event `turn_interrupted` with the reason
    (`os stop`), and write `<data>/interrupted.json` atomically (temp + rename, the `config.Persist` pattern):

@@ -10,6 +10,7 @@ import (
 	_ "image/png"  // register decoders for DecodeConfig
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"os/user"
@@ -176,18 +177,46 @@ func openVetted(path string, flag int, vet func(fs.FileInfo) error) (*os.File, e
 	return f, nil
 }
 
-// overwrite replaces an open file's contents and closes it. Truncating here,
-// after vetting, instead of with O_TRUNC at open, is what keeps a refused file
-// intact.
-func overwrite(f *os.File, content string) error {
-	err := f.Truncate(0)
-	if err == nil {
-		_, err = f.WriteAt([]byte(content), 0)
-	}
+// renameFile is os.Rename; a test swaps it to fail between the temp write
+// and the rename.
+var renameFile = os.Rename
+
+// replace swaps in content for the vetted file f at path, crash-safe
+// (TEN-499): the content goes to a temp file next to it, opened the way the
+// file tools open everything (no symlink on the path), fsynced, given the
+// file's mode, and renamed over path, so a kill at any instant leaves the old
+// file or the new one, never an empty or torn one. f is closed here (before
+// the rename: Windows refuses to replace an open file); the vet already ran
+// on it, and only its mode is still needed. A directory on the path swapped
+// for a symlink after the open makes the rename fail (its source is then not
+// there) instead of landing the write elsewhere.
+func replace(f *os.File, path, content string) error {
+	fi, err := f.Stat()
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".%s.%x.tmp", filepath.Base(path), rand.Uint64()))
+	t, err := openFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp) // nothing to remove once renamed
+	if _, err = t.WriteString(content); err == nil {
+		err = t.Sync()
+	}
+	if cerr := t.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, fi.Mode().Perm())
+	}
+	if err != nil {
+		return err
+	}
+	return renameFile(tmp, path)
 }
 
 // WriteFile creates or overwrites a text file. When createDirs is true, any
@@ -211,7 +240,7 @@ func (s *Service) WriteFile(path, content string, createDirs bool, vet func(fs.F
 	}
 	f, err := openVetted(path, os.O_WRONLY|os.O_CREATE, vet)
 	if err == nil {
-		err = overwrite(f, content)
+		err = replace(f, path, content)
 	}
 	if err != nil {
 		return "", fmt.Errorf("osys: write %s: %w", path, err)
@@ -259,8 +288,8 @@ func (s *Service) EditFile(path, oldStr, newStr string, replaceAll bool, vet fun
 	if oldStr == "" {
 		return "", fmt.Errorf("osys: old_string required (use os_write_file to create a file)")
 	}
-	// One handle for the read and the write, so the file vetted is the file
-	// read and the file changed.
+	// One handle for the read and the vet, so the file vetted is the file
+	// read; replace closes it (the deferred Close is for the early returns).
 	f, err := openVetted(path, os.O_RDWR, vet)
 	if err != nil {
 		return "", fmt.Errorf("osys: read %s: %w", path, err)
@@ -283,7 +312,7 @@ func (s *Service) EditFile(path, oldStr, newStr string, replaceAll bool, vet fun
 	} else {
 		content = strings.Replace(content, oldStr, newStr, 1)
 	}
-	if err := overwrite(f, content); err != nil {
+	if err := replace(f, path, content); err != nil {
 		return "", fmt.Errorf("osys: write %s: %w", path, err)
 	}
 	return fmt.Sprintf("edited %s (%d replacement(s))", path, n), nil

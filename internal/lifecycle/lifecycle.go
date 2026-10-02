@@ -83,7 +83,7 @@ func (g *Group) Add(stage Stage, name string, stop func() error) {
 	g.mu.Lock()
 	if g.stopped {
 		g.mu.Unlock()
-		g.run(context.Background(), stage, step{name, stop})
+		g.stop(context.Background(), stage, step{name, stop})
 		return
 	}
 	g.stages[stage] = append(g.stages[stage], step{name, stop})
@@ -98,12 +98,27 @@ func (g *Group) AddFunc(stage Stage, name string, stop func()) {
 	g.Add(stage, name, func() error { stop(); return nil })
 }
 
-// Shutdown runs every registered stop, stage by stage, and returns their
-// errors joined. A stop that panics is reported as an error and the rest
-// still run. Only the first call does anything, so a command can both defer
-// it (for an early return) and call it at the end; a later call waits until
-// the first has finished, so nobody proceeds while stores are still closing.
-func (g *Group) Shutdown() (err error) {
+// ErrStopBudget is in ShutdownWithin's error when its budget ran out: a stop
+// was abandoned or skipped, so a component may not have released what it
+// held. serve exits non-zero on it, and the boot record stays unclean.
+var ErrStopBudget = errors.New("the stop budget ran out")
+
+// Shutdown runs every registered stop, stage by stage, with no time limit,
+// and returns their errors joined. A stop that panics is reported as an
+// error and the rest still run. Only the first call (of Shutdown or
+// ShutdownWithin) does anything, so a command can both defer it (for an
+// early return) and call it at the end; a later call waits until the first
+// has finished, so nobody proceeds while stores are still closing.
+func (g *Group) Shutdown() error { return g.ShutdownWithin(0) }
+
+// ShutdownWithin is Shutdown under a budget (TEN-499): the grace the OS or
+// the service manager grants a stop before it kills the process. Each stop
+// runs in its own goroutine and gets what is left of the budget; one that
+// outlives it is logged as timed out and abandoned, and once the budget has
+// run out the stops still to run are logged as skipped, so a hung component
+// cannot eat the grace the others need. The error then wraps ErrStopBudget
+// and says how long the budget was. A budget of 0 is no limit.
+func (g *Group) ShutdownWithin(budget time.Duration) (err error) {
 	g.mu.Lock()
 	if g.stopped {
 		g.mu.Unlock()
@@ -120,26 +135,57 @@ func (g *Group) Shutdown() (err error) {
 	for _, steps := range stages {
 		n += len(steps)
 	}
+	var deadline time.Time
+	if budget > 0 {
+		deadline = time.Now().Add(budget)
+	}
 	ctx, act := event.Start(context.Background(), shutdownRun, "steps", n)
 	defer act.End(&err)
 	var errs []error
 	for stage := Stage(0); stage < numStages; stage++ {
 		if steps := stages[stage]; len(steps) > 0 {
-			errs = append(errs, g.runStage(ctx, stage, steps))
+			errs = append(errs, g.runStage(ctx, stage, steps, deadline))
 		}
 	}
-	return errors.Join(errs...)
+	err = errors.Join(errs...)
+	if errors.Is(err, ErrStopBudget) {
+		err = fmt.Errorf("shutdown timed out after %s: %w", budget, err)
+	}
+	return err
 }
 
 // runStage runs one stage's stops, last added first, as an activity.
-func (g *Group) runStage(ctx context.Context, stage Stage, steps []step) (err error) {
+func (g *Group) runStage(ctx context.Context, stage Stage, steps []step, deadline time.Time) (err error) {
 	ctx, act := event.Start(ctx, stageRun, "stage", stage.String(), "steps", len(steps))
 	defer act.End(&err)
 	var errs []error
 	for i := len(steps) - 1; i >= 0; i-- {
-		errs = append(errs, g.run(ctx, stage, steps[i]))
+		errs = append(errs, g.run(ctx, stage, steps[i], deadline))
 	}
 	return errors.Join(errs...)
+}
+
+// run runs one stop: in place with no deadline (zero), else in a goroutine
+// it waits on until the deadline, after which the stop is abandoned; a stop
+// whose turn comes after the deadline is skipped.
+func (g *Group) run(ctx context.Context, stage Stage, s step, deadline time.Time) error {
+	if deadline.IsZero() {
+		return g.stop(ctx, stage, s)
+	}
+	left := time.Until(deadline)
+	if left <= 0 {
+		stepSkipped.Log(ctx, "stage", stage.String(), "step", s.name)
+		return fmt.Errorf("%s/%s: skipped: %w", stage, s.name, ErrStopBudget)
+	}
+	done := make(chan error, 1) // buffered: an abandoned stop still returns
+	go func() { done <- g.stop(ctx, stage, s) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(left):
+		stepTimedOut.Log(ctx, "stage", stage.String(), "step", s.name, "after", left.Round(time.Millisecond))
+		return fmt.Errorf("%s/%s: timed out: %w", stage, s.name, ErrStopBudget)
+	}
 }
 
 // Steps lists the registered stops in the order Shutdown would run them, as
@@ -157,7 +203,8 @@ func (g *Group) Steps() []string {
 	return out
 }
 
-func (g *Group) run(ctx context.Context, stage Stage, s step) (err error) {
+// stop runs one stop and files its outcome.
+func (g *Group) stop(ctx context.Context, stage Stage, s step) (err error) {
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {

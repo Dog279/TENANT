@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -86,6 +87,18 @@ func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
 		return r.Start()
 	}
 	return r.Stop()
+}
+
+// sendTo texts a chat through the running responder (TEN-499: the boot-time
+// notice for a turn a stop cut); an error when none runs here.
+func (m *imessageAllowManager) sendTo(ctx context.Context, chatGUID, text string) error {
+	m.mu.Lock()
+	r := m.resp
+	m.mu.Unlock()
+	if r == nil {
+		return fmt.Errorf("imessage responder unavailable here")
+	}
+	return r.sendTo(ctx, chatGUID, text)
 }
 
 // AllowList returns the current handles in sorted, normalized form.

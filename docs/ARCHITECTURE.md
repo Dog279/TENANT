@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-10-02; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 87 |
-| Go files | 1,192 |
-| Test files | 579 |
-| Production Go LOC | 151,743 |
-| Test Go LOC | 116,423 |
+| Go packages | 88 |
+| Go files | 1,219 |
+| Test files | 592 |
+| Production Go LOC | 154,278 |
+| Test Go LOC | 118,649 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |
 | `internal/cron` | nothing in the module | leaf |
@@ -175,7 +176,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
 | `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
 | `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
-| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra` | never the terminal UI |
+| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra`, `internal/version` | never the terminal UI |
 <!-- /archtest:rules -->
 
 In short:
@@ -1108,11 +1109,9 @@ can slip past it when `AllowExec` is on without `Confirm`. It stays as
 a fast fail-early layer. The boundary is the execution sandbox
 (§5.12h): `os_exec` runs through the runner injected as
 `Config.Runner`, on a `sandbox.Backend` picked per surface from the
-operator's `exec_profiles`. With no entry, the interactive surfaces
-(TUI/dashboard, Discord, iMessage) run on `host` behind their approvals
-(TEN-489); cron's built-in profile is `restricted` in dry run on macOS
-(Seatbelt), else `host`, which confines **nothing** (Linux and Windows;
-`builtinExec` says why). A dry run confines nothing
+operator's `exec_profiles`. The built-in profile is `restricted` in
+dry run on macOS (Seatbelt), else `host`, which confines **nothing**
+(Linux and Windows; `builtinExec` says why). A dry run confines nothing
 either: a refused command re-runs on the host. A surface is contained only once enforcement is on
 (`exec_profiles.default.enforce`), and only as far as that OS's backend
 enforces (`tenant sandbox probe` / `selftest`). Until then: keep exec off
@@ -1252,10 +1251,8 @@ persistence, deny-root metadata and background processes.
   settings file: hot-reloaded, validated, and never reachable from an
   agent tool. "Always" on an escalation saves only the refused folder
   as an exception (`approval.OnAlways`, `saveExecException`).
-- `resolveExecProfile`: with no exec_profiles entry the interactive
-  surfaces run on `host` (TEN-489; `SSH_AUTH_SOCK` passes there too);
-  cron's built-in profile is `builtinExec`'s backend in dry run
-  (`cron-shell`: no network); `exec_profiles.default.enforce`
+- `resolveExecProfile`: the built-in profile is `builtinExec`'s backend
+  in dry run (`cron-shell`: no network); `exec_profiles.default.enforce`
   is the switch. The built-in deny set is the config dir, the data dir
   and the Tenant binary; confining profiles add the credential- and
   browser-store baseline. Every profile gets the env allowlist

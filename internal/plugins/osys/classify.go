@@ -47,7 +47,12 @@ var dangerPatterns = []dangerPattern{
 	{regexp.MustCompile(`(?i)\b(curl|wget|iwr|invoke-webrequest)\b.*\|\s*(sudo\s+)?(sh|bash|zsh|pwsh|powershell|iex)\b`), "pipe remote content to a shell"},
 	{regexp.MustCompile(`(?i)\b(sh|bash|zsh)\s+-c\s+["']?\$\(\s*(curl|wget)\b`), "run remote content in a shell"},
 	{regexp.MustCompile(`(?i)\biex\b.*\b(downloadstring|invoke-webrequest|iwr)\b`), "execute downloaded content (IEX)"},
+	{regexp.MustCompile(`(?i)\bchmod\s+-R\s+0*[0-7]{0,3}\s+/`), "recursive chmod on a root path"},
 	{regexp.MustCompile(`(?i)\bfind\s+/(\s|$)[^;&|\n]*-delete`), "find / -delete"},
+	// TEN-498: an agent must not stop, remove or replace the Tenant it runs
+	// in without the operator's say. Anchored: `grep tenant service.log` is
+	// not this; a path or .exe before the name is.
+	{regexp.MustCompile(`(?i)^(\S*[\\/])?tenant(\.exe)?\s+(service|update)\b`), "tenant service/update (changes how Tenant itself runs)"},
 }
 
 // cmdStart anchors a command word at the start of a command: the string's

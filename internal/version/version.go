@@ -10,4 +10,8 @@ var (
 	BuildTime = "unknown"
 	Target    = runtime.GOOS + "/" + runtime.GOARCH
 	Dirty     = "false"
+	// Repo is the owner/name of the GitHub repository releases come from; set
+	// by -X at release time (GITHUB_REPOSITORY); empty in dev builds, which is
+	// how `tenant update` tells a dev build from a release.
+	Repo = ""
 )

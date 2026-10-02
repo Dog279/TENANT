@@ -12,6 +12,7 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/logs"
+	"tenant/internal/version"
 )
 
 func logsServer(t *testing.T, root string) (*Server, *logs.Hub) {
@@ -278,5 +279,21 @@ func TestRESTLogs_FilesAndRawView(t *testing.T) {
 	}
 	if rec = do(t, s, http.MethodGet, "/api/logs/BAD..NAME", "", ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad source name = %d", rec.Code)
+	}
+}
+
+// /api/status carries the running build's version (TEN-498): what
+// `tenant service status` prints and what an update's health check compares.
+func TestStatusVersion(t *testing.T) {
+	prev := version.Version
+	version.Version = "9.9.9-test"
+	t.Cleanup(func() { version.Version = prev })
+	s := New(Config{}, nil, &restFakeTools{}, nil, nil, nil)
+	var st restStatus
+	if err := json.Unmarshal(do(t, s, http.MethodGet, "/api/status", "", "").Body.Bytes(), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Version != "9.9.9-test" {
+		t.Errorf("version = %q", st.Version)
 	}
 }

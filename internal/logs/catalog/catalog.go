@@ -65,3 +65,16 @@ var CompFailed = System.Event(3101, event.Error, "Component", "{component} faile
 	Doc("A subsystem stopped with an error.",
 		"Something it depends on failed: a connection, a file or its configuration.",
 		"Open the component's log; the event before this one usually names the cause.")
+
+// system: updates (the 1500s and 2500s), tenant update and serve's daily
+// check (TEN-500). The check only reports; nothing is applied unasked.
+
+var UpdateAvailable = System.Event(1501, event.Info, "Update", "A newer release is available: {latest} (running {current})", "latest", "current").
+	Doc("A release newer than the running one exists. Nothing was changed.",
+		"serve's daily check, or tenant doctor, asked the release source for the latest release.",
+		"Run tenant update when convenient; \"update_check\": false in config.json turns the daily check off.")
+
+var UpdateInterrupted = System.Event(2501, event.Warning, "Update", "The update from {from} to {to} was interrupted at {step}; running {running}", "from", "to", "step", "running").
+	Doc("tenant update swapped the binary but never confirmed the new version running: its marker is still there.",
+		"An OS stop or a kill landed during the update.",
+		"Run tenant update: it clears the marker when the new version is what runs, and offers --rollback otherwise.")
