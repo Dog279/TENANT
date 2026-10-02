@@ -227,6 +227,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// TEN-498: the background service — installed, pointing at these
 		// dirs, answering; --fix rewrites a drifted unit.
 		{"background service", checkService},
+		// TEN-500: a newer release, or an update that never finished.
+		{"update", checkUpdate},
 		{"distill cursor", checkDistillCursor},
 		// TEN-255 Phase 4: per-project SME doc health — present/stale when
 		// reflection is on, and a guard on the merge-protected fraction (a

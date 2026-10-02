@@ -255,18 +255,9 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	res, err := backup.Create(ctx, dest, backup.Options{
-		ConfigDir:   c.cfgDir,
-		DataDir:     c.dataDir,
-		Secrets:     secretPaths(managed),
-		ConfigFile:  configDirFile,
-		NotIncluded: outsideTenantDirs(c),
-		Keys:        keys,
-		// The log book: logbook.db by VACUUM INTO, its archives, and its
-		// text mirror only when asked for.
-		LogsDir:       c.logsRoot(),
-		IncludeMirror: *mirror,
-	})
+	opts := backupOptions(c, managed, *mirror)
+	opts.Keys = keys
+	res, err := backup.Create(ctx, dest, opts)
 	if err != nil {
 		return err
 	}
@@ -304,6 +295,22 @@ func cmdBackupCreate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "  check it any time: tenant backup verify %s\n", quoteArg(res.Path))
 	return nil
+}
+
+// backupOptions is what every backup of this install captures: both dirs,
+// the secrets (an encrypted backup carries them), and the log book
+// (logbook.db by VACUUM INTO, its archives, and its text mirror only when
+// asked for). `backup create` and `update`'s rollback point share it.
+func backupOptions(c *commonFlags, managed []managedSecret, mirror bool) backup.Options {
+	return backup.Options{
+		ConfigDir:     c.cfgDir,
+		DataDir:       c.dataDir,
+		Secrets:       secretPaths(managed),
+		ConfigFile:    configDirFile,
+		NotIncluded:   outsideTenantDirs(c),
+		LogsDir:       c.logsRoot(),
+		IncludeMirror: mirror,
+	}
 }
 
 func printSkipped(out io.Writer, skipped []backup.Skipped) {

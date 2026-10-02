@@ -140,6 +140,38 @@ Everything the hub does is in the log book either way (`tenant logs`, the dashbo
   `restart` and `stop` end the task hard (hence the 4-second budget). `--system` is a real service with
   a Stop control and `sc failure` restarts; `sc`/the Services app work on it too.
 
+## Upgrade and roll back
+
+`tenant update` moves an install to the latest release with a way back (TEN-500). It downloads the
+release archive for this OS and architecture, verifies its SHA-256 (and its signature when `cosign`
+is on PATH), runs the new binary's `version` before touching anything, asks, then:
+
+1. writes an unencrypted backup of the config and data dirs to `<data dir>-backups/pre-update-<old version>.tenant-backup`
+   (credentials are left out; the previous pre-update backup is replaced);
+2. swaps the binary in with no gap, keeping the old one as `tenant.prev`;
+3. restarts the service (`tenant service restart`, which waits for the running turn unless `--now`);
+4. polls `/api/status` for up to 90 s until it reports the new version; if it never does, the old binary
+   goes back and the service is restarted again.
+
+```
+tenant update --check                 # one line, running vs latest; exit 10 when an update exists
+tenant update [--version vX.Y.Z] [--yes] [--now] [--force]
+tenant update --rollback              # put tenant.prev back; prints the data-restore command
+```
+
+**Schemas move forward only.** The log book refuses a database written by a newer version, so once
+the new version has migrated a store, the old binary alone is not enough. Rollback is the old binary
+plus the pre-update backup, restored by hand, never automatically:
+
+```
+tenant service stop && tenant backup restore <data dir>-backups/pre-update-<old version>.tenant-backup --yes && tenant service start
+```
+
+An OS stop in the middle leaves `<data>/update-state.json`: serve logs it at boot, `tenant doctor` warns,
+and the next `tenant update` clears it when the new version is what runs, or offers `--rollback`.
+serve also checks for a newer release once a day and files one log-book event per new tag
+(`"update_check": false` in `config.json` turns that off); nothing is ever applied unasked.
+
 ## Restart-storm guard (24/7)
 
 If you rely on cron, leave **`cron.catchup` OFF** (the default). With catchup on, a

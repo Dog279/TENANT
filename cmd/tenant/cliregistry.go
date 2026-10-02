@@ -84,6 +84,13 @@ func cliCommands() []*cliCommand {
 			}},
 		{Names: []string{"version", "-v", "--version"}, Section: "start", Run: cmdVersion,
 			Summary: "print the version and build provenance"},
+		{Names: []string{"update"}, Section: "start", Run: cmdUpdate, Flags: []string{"--check", "--version", "--yes", "--now", "--force", "--rollback"},
+			Summary: "install the latest release: verify, back up, swap the binary, restart, confirm; --check only looks",
+			Rows: []cmdreg.Row{
+				{Syntax: "update [--version vX.Y.Z] [--yes] [--now] [--force]", Desc: "download and verify the release, back up the data, swap the binary, restart the service and confirm it; the old binary comes back if the hub does not"},
+				{Syntax: "update --check", Desc: "one line, running vs latest; exit 10 when an update is available"},
+				{Syntax: "update --rollback", Desc: "put the previous binary back and print the data-restore command"},
+			}},
 		{Names: []string{"completion"}, Section: "start", Run: cmdCompletion, Sub: []string{"bash", "zsh", "fish", "powershell"},
 			Summary: "print a shell completion script",
 			Rows: []cmdreg.Row{

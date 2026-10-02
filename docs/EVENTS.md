@@ -5361,12 +5361,14 @@ Writes the `system` log.
 | [1301](#system-1301) | info | Tailscale | `Publish the dashboard to the tailnet` |
 | [1302](#system-1302) | info | Tailscale | `Withdraw the dashboard from the tailnet` |
 | [1401](#system-1401) | info | Component | `Removed {n} leftover browser profile folder(s)` |
+| [1501](#system-1501) | info | Update | `A newer release is available: {latest} (running {current})` |
 | [2001](#system-2001) | warning | Clock | `The wall clock moved {delta} against the monotonic clock` |
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
 | [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
 | [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
 | [2201](#system-2201) | warning | Storage | `{what} was not saved: {err}` |
+| [2501](#system-2501) | warning | Update | `The update from {from} to {to} was interrupted at {step}; running {running}` |
 | [3010](#system-3010) | error | Lifecycle | `{role} stopped with an error: {err}` |
 | [3020](#system-3020) | error | Shutdown | `Shutdown step {stage}/{step} panicked: {panic}` |
 | [3101](#system-3101) | error | Component | `{component} failed: {err}` |
@@ -5562,6 +5564,20 @@ Writes the `system` log.
 
 **What to do.** None. A folder a running Chrome still holds is left alone.
 
+### system 1501
+
+`A newer release is available: {latest} (running {current})`
+
+- **Level:** info · **Channel:** operational · **Task:** Update · **Log:** system
+- **Fields:** `latest`, `current`
+- **Find it:** `provider:system id:1501`
+
+**What it means.** A release newer than the running one exists. Nothing was changed.
+
+**Why it happens.** serve's daily check, or tenant doctor, asked the release source for the latest release.
+
+**What to do.** Run tenant update when convenient; "update_check": false in config.json turns the daily check off.
+
 ### system 2001
 
 `The wall clock moved {delta} against the monotonic clock`
@@ -5645,6 +5661,20 @@ Writes the `system` log.
 **Why it happens.** The file could not be written: permissions, a full disk, or a read-only config or data directory.
 
 **What to do.** Fix the path's permissions or free space, then make the change again so it is saved.
+
+### system 2501
+
+`The update from {from} to {to} was interrupted at {step}; running {running}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Update · **Log:** system
+- **Fields:** `from`, `to`, `step`, `running`
+- **Find it:** `provider:system id:2501`
+
+**What it means.** tenant update swapped the binary but never confirmed the new version running: its marker is still there.
+
+**Why it happens.** An OS stop or a kill landed during the update.
+
+**What to do.** Run tenant update: it clears the marker when the new version is what runs, and offers --rollback otherwise.
 
 ### system 3010
 

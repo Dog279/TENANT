@@ -26,6 +26,7 @@ builds:
         -X tenant/internal/version.BuildTime={{ .CommitDate }}
         -X tenant/internal/version.Target={{ .Target }}
         -X tenant/internal/version.Dirty={{ .IsGitDirty }}
+        -X tenant/internal/version.Repo={{ envOrDefault "GITHUB_REPOSITORY" "" }}
 
 archives:
   - id: tenant
