@@ -19,7 +19,7 @@ Releases page.
   temp file and a rename, so a kill mid-write leaves the original intact.
 - **`tenant update`** (TEN-500) checks the release, verifies the checksum (and the cosign
   signature when cosign is installed), smoke-runs the new binary, backs the data up to
-  `<data>/backups/pre-update-<version>.tenant-backup`, swaps the binary keeping
+  `<data dir>-backups/pre-update-<version>.tenant-backup`, swaps the binary keeping
   `tenant.prev`, restarts the service and confirms the new version answers; on failure it
   puts the old binary back. `--check`, `--version vX.Y.Z`, `--yes`, `--now`, `--force` and
   `--rollback`. Serve checks for a newer release once a day and writes one log-book line;

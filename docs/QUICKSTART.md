@@ -231,7 +231,7 @@ tenant update              # download, verify, back up, swap, restart the servic
 
 `update` verifies the checksum (and the cosign signature when `cosign` is
 installed), smoke-runs the new binary, writes an unencrypted backup to
-`<data>/backups/pre-update-<version>.tenant-backup`, swaps the binary keeping the
+`<data dir>-backups/pre-update-<version>.tenant-backup`, swaps the binary keeping the
 old one as `tenant.prev`, restarts the service and confirms the new version
 answers; if it does not, the old binary goes back by itself. `--version vX.Y.Z`
 picks a release, `--yes` skips the prompt, `--now` restarts without waiting for
