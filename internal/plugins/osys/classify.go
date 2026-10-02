@@ -77,6 +77,81 @@ func Classify(command string) (dangerous bool, reason string) {
 // segmentSplit separates the commands of a compound line.
 var segmentSplit = regexp.MustCompile("&&|\\|\\||[;&|\n`(]|\\$\\(")
 
+// readOnlyWords are the commands that only look (TEN-491): run without a
+// prompt when every segment of a command is one of them and nothing
+// redirects. Case-insensitive, so PowerShell's verbs are listed once.
+// ponytail: a flat set; `git` and `brew` get their read subcommands below,
+// `find` loses its acting flags. Add a word when a model keeps asking for it.
+var readOnlyWords = map[string]bool{
+	"ls": true, "cat": true, "head": true, "tail": true, "wc": true, "file": true, "stat": true, "find": true,
+	"rg": true, "grep": true, "egrep": true, "fgrep": true, "which": true, "pwd": true, "echo": true, "date": true,
+	"env": true, "printenv": true, "uname": true, "whoami": true, "id": true, "hostname": true, "df": true, "du": true,
+	"ps": true, "tree": true, "realpath": true, "basename": true, "dirname": true, "type": true, "sort": true,
+	"uniq": true, "cut": true, "tr": true, "true": true, "git": true, "brew": true,
+	"dir": true, "gci": true, "get-childitem": true, "get-content": true, "get-location": true, "get-process": true,
+	"get-item": true, "get-date": true, "select-string": true, "write-output": true,
+}
+
+var gitReadVerbs = map[string]bool{"status": true, "log": true, "diff": true, "show": true, "rev-parse": true,
+	"ls-files": true, "blame": true, "describe": true, "branch": true, "remote": true}
+
+// ReadOnly reports whether a command only looks at the machine: every segment
+// of it (split at && || ; | and subshells) starts with a read-only word, no
+// segment redirects its output, and nothing escalates (sudo). `git` and `brew`
+// count only with a read subcommand; `find` not when it acts (-delete, -exec).
+// The brokers skip the prompt for such a command (TEN-491, D4); iMessage does
+// not use it. It is a convenience judgement, not the safety boundary.
+func ReadOnly(command string) bool {
+	c := strings.TrimSpace(command)
+	if c == "" || strings.ContainsAny(c, ">") {
+		return false
+	}
+	segments := segmentSplit.Split(c, -1)
+	judged := 0
+	for _, seg := range segments {
+		f := strings.Fields(strings.TrimRight(seg, ")"))
+		for len(f) > 0 && strings.Contains(f[0], "=") && !strings.HasPrefix(f[0], "=") { // VAR=x prefixes
+			f = f[1:]
+		}
+		if len(f) == 0 {
+			continue
+		}
+		name := strings.ToLower(f[0][strings.LastIndex(f[0], "/")+1:])
+		if !readOnlyWords[name] {
+			return false
+		}
+		args := f[1:]
+		switch name {
+		case "git":
+			if len(args) == 0 || !gitReadVerbs[args[0]] || (args[0] == "branch" && hasActingFlag(args[1:], "-d", "-D", "-m", "-M", "--delete", "--move", "-c", "-C", "--copy", "-u", "--set-upstream-to", "--unset-upstream")) ||
+				(args[0] == "remote" && len(args) > 1 && args[1] != "-v" && args[1] != "show" && args[1] != "get-url") {
+				return false
+			}
+		case "brew":
+			if len(args) == 0 || (args[0] != "list" && args[0] != "info" && args[0] != "--version" && args[0] != "deps" && args[0] != "outdated") {
+				return false
+			}
+		case "find":
+			if hasActingFlag(args, "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls") {
+				return false
+			}
+		}
+		judged++
+	}
+	return judged > 0
+}
+
+func hasActingFlag(args []string, flags ...string) bool {
+	for _, a := range args {
+		for _, f := range flags {
+			if a == f || strings.HasPrefix(a, f+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // destructiveTarget flags a recursive rm, chmod or chown whose target is the
 // machine itself: /, a top-level folder, a home folder or one of its direct
 // children, or ., .., *. A recursive delete of anything deeper (node_modules,

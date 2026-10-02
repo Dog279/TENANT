@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"tenant/internal/approval"
+	"tenant/internal/plugins/osys"
 )
 
 // approval.go wires the approval broker (internal/approval, TEN-314) to this
@@ -39,8 +40,12 @@ var (
 )
 
 // newApprovalBroker builds the host's broker, filing actions by categorize.
+// A read-only command (ls, git status, rg …) runs without a prompt here and
+// on Discord (TEN-491, D4); the iMessage broker stays deny-by-default.
 func newApprovalBroker(log *slog.Logger) *approvalBroker {
-	return approval.NewBroker(log, categorize)
+	b := approval.NewBroker(log, categorize)
+	b.SetReadOnly(osys.ReadOnly)
+	return b
 }
 
 func newOffsiteApprovalBroker(log *slog.Logger, host *approvalBroker) *approvalBroker {
@@ -48,7 +53,9 @@ func newOffsiteApprovalBroker(log *slog.Logger, host *approvalBroker) *approvalB
 }
 
 func newDiscordApprovalBroker(log *slog.Logger) *approvalBroker {
-	return approval.NewDiscordBroker(log, categorize)
+	b := approval.NewDiscordBroker(log, categorize)
+	b.SetReadOnly(osys.ReadOnly)
+	return b
 }
 
 func newToolRules() *toolRules { return approval.NewRules() }

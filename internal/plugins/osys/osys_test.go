@@ -789,3 +789,35 @@ func TestReadFileRanged(t *testing.T) {
 		t.Fatalf("an over-long line must be clipped, not skipped: %q", long[max(0, len(long)-80):])
 	}
 }
+
+// TEN-491: a command that only looks runs without a prompt; anything that
+// writes, acts, redirects or escalates does not, in any segment.
+func TestReadOnly(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"ls -la":                               true,
+		"git status && git log -3":             true,
+		"cat x | grep y | wc -l":               true,
+		"echo $(whoami)":                       true,
+		"FOO=1 env":                            true,
+		"git branch -a":                        true,
+		"brew list":                            true,
+		"find . -name '*.go'":                  true,
+		"Get-ChildItem C:\\ | Select-String x": true,
+		"/usr/bin/grep -r x .":                 true,
+		"ls > out.txt":                         false,
+		"rm -rf x":                             false,
+		"ls; rm x":                             false,
+		"git push":                             false,
+		"git branch -D x":                      false,
+		"brew install jq":                      false,
+		`find . -exec rm {} \;`:                false,
+		"find . -delete":                       false,
+		"sudo ls":                              false,
+		"cat x | xargs rm":                     false,
+		"":                                     false,
+	} {
+		if got := ReadOnly(cmd); got != want {
+			t.Errorf("ReadOnly(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+}
