@@ -34,6 +34,11 @@ import (
 	"tenant/internal/plugins/web"
 )
 
+// serveStopBudget is --stop-budget: the grace the OS grants a stop, which
+// the unit `tenant service install` writes passes per OS (TEN-498; the
+// plan's PR E table). The teardown deadline reads it (PR E).
+var serveStopBudget = 5 * time.Second
+
 // cmdServe runs Tenant as a headless 24/7 hub (TEN-194): the SAME long-term
 // brain the TUI drives — full tool surface, memory, self-improvement, cron,
 // federation peer listener, comms relays — but with NO terminal UI. The
@@ -60,8 +65,14 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	dashboardOn := fs.Bool("dashboard", true, "serve the web control panel (the hub's control + chat + approval surface)")
 	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:8770)")
 	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
+	stopBudget := fs.Duration("stop-budget", 5*time.Second, "how long a stop may take before the teardown is cut short (the unit `tenant service install` writes passes the OS's grace)")
+	hidden := fs.Bool("hidden", false, "Windows: hide the console window (the logon task passes it; the console itself stays so logoff and shutdown reach the process)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	serveStopBudget = *stopBudget
+	if *hidden {
+		hideConsoleWindow()
 	}
 	if err := c.resolve(); err != nil {
 		return err
