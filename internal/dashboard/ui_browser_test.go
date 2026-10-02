@@ -225,7 +225,10 @@ func chromeSignedIn(t *testing.T, s *Server, w, h int, page string) (context.Con
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(w, h))
+	// chromedp waits 20s for Chrome's DevTools URL by default; a cold Chrome on
+	// the Windows runner has taken longer than that on both tries (PR #40's CI),
+	// so the start-up gets the minute the sign-in gets.
+	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(w, h), chromedp.WSURLReadTimeout(time.Minute))
 	var phone []chromedp.EmulateViewportOption
 	if w < 640 {
 		phone = append(phone, chromedp.EmulateMobile, chromedp.EmulateTouch)
