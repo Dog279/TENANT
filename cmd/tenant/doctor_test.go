@@ -35,7 +35,8 @@ func TestDoctor_CheckExecSandbox(t *testing.T) {
 	e := &doctorEnv{c: &commonFlags{cfgDir: t.TempDir(), dataDir: t.TempDir(), agent: "main"}}
 	withBuiltinExec(t, "host", "no restricted backend on linux: restricted is macOS-only")
 	r := checkExecSandbox(context.Background(), e)
-	if r.Status != statusWarn || !strings.Contains(r.Detail, "local, discord, imessage, cron-exec, cron-shell: host, unconfined (restricted can't run here: no restricted backend") {
+	if r.Status != statusWarn || !strings.Contains(r.Detail, "cron-exec, cron-shell: host, unconfined (restricted can't run here: no restricted backend") ||
+		!strings.Contains(r.Detail, "local, discord, imessage: host, unconfined\n") { // TEN-489: host by choice, no reason
 		t.Fatalf("fallback: %s %q", r.Status.tag(), r.Detail)
 	}
 

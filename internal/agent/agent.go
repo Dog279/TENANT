@@ -1056,6 +1056,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		// agent it starts (DispatchFlow, TEN-336).
 		callFlows := make([]Flow, 0, len(resp.ToolCalls))
 		for _, call := range resp.ToolCalls {
+			call = unstringifyArgs(call, a.cfg.Tools)
 			if err := validateToolCall(call, a.cfg.Tools); err != nil {
 				span.AddTool(runtrace.ToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments), Result: err.Error(), Outcome: "validation_error"})
 				a.feedValidationError(ctx, call, err)

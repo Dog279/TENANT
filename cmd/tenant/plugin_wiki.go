@@ -45,7 +45,7 @@ func wikiPlugin() *pluginDescriptor {
 		},
 		SetupOnly:  true,
 		SetupOrder: 1,
-		Actions:    map[string]string{"wiki_save": catDestructive},
+		Actions:    map[string]string{"wiki_save": catWrite}, // a note in the wiki dir: a file write (TEN-489)
 		StubHint:   "relaunch with --wiki-dir <dir>",
 		Doctor: []doctorCheck{
 			// The configured wiki dir is reachable.
