@@ -634,3 +634,37 @@ func TestExecTimeoutWorkdirAndClip(t *testing.T) {
 		}
 	}
 }
+
+// A write outside the writable roots asks instead of refusing (TEN-489); a
+// no or no approver keeps the refusal, and Protect stays a hard refusal.
+func TestWriteOutsideRootsAsks(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	protected := filepath.Join(root, "settings.json")
+	asked := 0
+	pol := func(yes bool) Policy {
+		return Policy{AllowWrite: true, Roots: Roots{Write: []string{root}, Protect: []string{protected}},
+			Confirm: func(_ context.Context, action, _ string) bool {
+				if action == "os_write_outside" {
+					asked++
+				}
+				return yes
+			}}
+	}
+	target := filepath.Join(outside, "a.txt")
+	w := func(p Policy, path string) (string, bool) {
+		out, isErr, _ := NewDispatcher(&Service{}, p).Dispatch(context.Background(), call("os_write_file", map[string]any{"path": path, "content": "x"}))
+		return out, isErr
+	}
+	if out, isErr := w(pol(false), target); !isErr || !strings.Contains(out, "outside the writable roots") || asked != 1 {
+		t.Fatalf("declined: isErr=%v asked=%d out=%q", isErr, asked, out)
+	}
+	if out, isErr := w(pol(true), target); isErr || asked != 2 {
+		t.Fatalf("approved: isErr=%v asked=%d out=%q", isErr, asked, out)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "x" {
+		t.Fatalf("approved write didn't land: %q", b)
+	}
+	if _, isErr := w(pol(true), protected); !isErr || asked != 2 {
+		t.Fatalf("a protected file must stay refused without asking: isErr=%v asked=%d", isErr, asked)
+	}
+}

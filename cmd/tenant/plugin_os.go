@@ -42,6 +42,7 @@ func osPlugin() *pluginDescriptor {
 			"os_exec":  catExec,
 			"os_write": catWrite, "os_append": catWrite, "os_edit": catWrite, "os_mkdir": catWrite,
 			"os_exec_dangerous": catDestructive,
+			"os_write_outside":  catDestructive, // a write outside the roots asks (TEN-489)
 		},
 		Doctor: []doctorCheck{
 			// TEN-25: os_processes shells out to `ps` / `tasklist`. Missing on
@@ -206,6 +207,9 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) o
 		}
 		if tmp := os.TempDir(); tmp != "" {
 			add(tmp)
+		}
+		if runtime.GOOS != "windows" {
+			add("/tmp") // shared scratch; the agent reached for it and was refused (TEN-489)
 		}
 	}
 	protect, secret := fileToolGuards(cfgDir, dataDir, pf, lc)

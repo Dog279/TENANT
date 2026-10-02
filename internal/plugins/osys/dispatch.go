@@ -3,6 +3,7 @@ package osys
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -213,7 +214,7 @@ func (d *Dispatcher) writeFile(ctx context.Context, args json.RawMessage) (strin
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	target, err := d.policy.Roots.Resolve(a.Path, true)
+	target, err := d.resolveWrite(ctx, a.Path)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -246,7 +247,7 @@ func (d *Dispatcher) appendFile(ctx context.Context, args json.RawMessage) (stri
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	target, err := d.policy.Roots.Resolve(a.Path, true)
+	target, err := d.resolveWrite(ctx, a.Path)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -273,7 +274,7 @@ func (d *Dispatcher) editFile(ctx context.Context, args json.RawMessage) (string
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	target, err := d.policy.Roots.Resolve(a.Path, true)
+	target, err := d.resolveWrite(ctx, a.Path)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -297,7 +298,7 @@ func (d *Dispatcher) makeDir(ctx context.Context, args json.RawMessage) (string,
 	if strings.TrimSpace(a.Path) == "" {
 		return "path is required", true, nil
 	}
-	target, err := d.policy.Roots.Resolve(a.Path, true)
+	target, err := d.resolveWrite(ctx, a.Path)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -327,6 +328,21 @@ func (d *Dispatcher) listDir(args json.RawMessage) (string, bool, error) {
 		return err.Error(), true, nil
 	}
 	return out, false, nil
+}
+
+// resolveWrite resolves a path for writing. Outside the writable roots it asks
+// (os_write_outside, destructive) rather than refusing; Deny, Protect and
+// Secret stay hard refusals.
+func (d *Dispatcher) resolveWrite(ctx context.Context, path string) (string, error) {
+	target, err := d.policy.Roots.Resolve(path, true)
+	var out *OutsideRootsError
+	if !errors.As(err, &out) {
+		return target, err
+	}
+	if d.policy.Confirm == nil || !d.policy.Confirm(ctx, "os_write_outside", "write "+out.Target+" (outside the writable roots: "+strings.Join(out.Roots, ", ")+")") {
+		return "", err
+	}
+	return out.Target, nil
 }
 
 func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bool, error) {

@@ -20,6 +20,13 @@ Releases page.
     so git over ssh works.
   - Under launchd, Tenant fills in the login-shell PATH (`path_helper`, plus Homebrew), so `brew`,
     `node` and friends are found.
+- **Fewer dead ends for the agent (TEN-489).**
+  - An object or array argument sent as JSON text (Qwen via vLLM does this) is decoded instead
+    of rejected, so `editJiraIssue`'s `fields` works.
+  - A sandbox refusal is noticed even when the command exits 0 (`… || echo DENIED`, `| head`), so
+    a dry run re-runs it on the host as it should.
+  - A file-tool write outside the writable roots asks (`os_write_outside`, destructive) instead of
+    being refused. Protected and secret files stay hard refusals, and `/tmp` is a default root.
 - **The destructive check is narrower (TEN-489).**
   - `rm -r` counts as destructive only for `/`, a top-level folder, a home folder or its direct
     child, `.`, `..` or `*`. `rm -rf node_modules` is an ordinary command again.

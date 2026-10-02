@@ -191,8 +191,20 @@ func (r Roots) Resolve(p string, write bool) (string, error) {
 			return target, nil
 		}
 	}
-	return "", fmt.Errorf("refused: %s is outside the writable roots. Tenant may write to: %s",
-		target, strings.Join(r.Write, ", "))
+	return "", &OutsideRootsError{Target: target, Roots: r.Write}
+}
+
+// OutsideRootsError is a write outside the writable roots. Unlike Deny,
+// Protect and Secret it is approvable: the dispatcher asks (os_write_outside,
+// TEN-489), as Claude Code would, instead of refusing outright.
+type OutsideRootsError struct {
+	Target string
+	Roots  []string
+}
+
+func (e *OutsideRootsError) Error() string {
+	return fmt.Sprintf("refused: %s is outside the writable roots. Tenant may write to: %s",
+		e.Target, strings.Join(e.Roots, ", "))
 }
 
 // covering returns the entry that covers a resolved target, if any.
