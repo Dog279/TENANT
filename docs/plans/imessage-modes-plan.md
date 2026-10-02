@@ -1,6 +1,6 @@
 # iMessage on a Mac: passive reading + operator response modes
 
-Status: **PLAN** (2026-10-01) · Owner: Dylan · Builds on TEN-68 / TEN-230 / TEN-267
+Status: **IMPLEMENTED locally** (2026-10-01, branch `feat/imessage-modes`, not pushed) · Jira TEN-484 (TEN-485/486/487) · Builds on TEN-68 / TEN-230 / TEN-267
 
 ## What already exists (don't rebuild)
 
@@ -36,8 +36,10 @@ Most of the openclaw/hermes-style native path shipped in TEN-68/230/267:
 **One mode knob plus the existing lists.** No new per-handle policy table.
 
 ```
-imessage.mode = off | passive | respond      (replaces the meaning of `enabled`)
+imessage.enabled = on/off  (unchanged)      imessage.passive = true ⇒ read only
 ```
+(Built as a `passive` bool next to the existing `enabled`, not a new `mode`
+string: no migration, and old configs mean "respond".)
 
 | Sender / chat | `passive` | `respond` |
 |---|---|---|
@@ -114,6 +116,13 @@ Ticket: *iMessage: Mac-first setup + doctor + docs*
 
 ---
 
+## As built: what was skipped
+
+- `imessage.transport` override: a BlueBubbles URL still means BlueBubbles.
+  Add it when a Mac with both wants native.
+- Doctor Automation probe: running `osascript` from doctor can launch Messages
+  and prompt. The Delivery event's fix text covers a failed send.
+
 ## First-party test runbook (your Mac)
 
 1. **Full Disk Access gotcha:** an unsigned `go build` binary gets a new cdhash on
@@ -129,7 +138,9 @@ Ticket: *iMessage: Mac-first setup + doctor + docs*
    drives a turn. The same text sent as SMS or in a group gets observed only.
 5. Set `imessage.operator`, put a category on `ask`, trigger it, and reply
    `Y <nonce>`.
-6. PR 2: set `imessage.transport=bluebubbles` and repeat steps 3–4.
+6. BlueBubbles: set its URL + password (`/configure imessage`), `/imessage off`
+   then `on`, and repeat steps 3–4. Check the `originalROWID` cursor against
+   your server (verified only against a stub).
 
 ## Decisions (Dylan, 2026-10-01)
 

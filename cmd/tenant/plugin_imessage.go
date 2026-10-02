@@ -25,13 +25,13 @@ func imessagePlugin() *pluginDescriptor {
 		Grants:      imessageGrants,
 		Launch:      launchIMessage,
 		Relaunch:    true, // config edits apply on /disable → /enable (TEN-483)
-		Title:       "iMessage (via BlueBubbles)",
+		Title:       "iMessage",
 		Version:     1,
 		Tools:       func() []model.ToolSpec { return imessage.NewDispatcher(nil, imessage.Policy{}).Tools() },
 		Configure: func() skillKind {
-			return skillKind{ID: "imessage", Label: "iMessage (via BlueBubbles)", Wired: true, Fields: []skillKindField{
-				{Key: "url", Prompt: "BlueBubbles server URL"},
-				{Key: "password", Prompt: "BlueBubbles password", Secret: true},
+			return skillKind{ID: "imessage", Label: "iMessage", Wired: true, Fields: []skillKindField{
+				{Key: "url", Prompt: "BlueBubbles server URL (leave blank on a Mac to read Messages directly)"},
+				{Key: "password", Prompt: "BlueBubbles password (blank on a Mac without BlueBubbles)", Secret: true},
 			}}
 		},
 		SetupOnly:  true,
@@ -48,8 +48,8 @@ func imessagePlugin() *pluginDescriptor {
 		},
 		CLI: []*cliCommand{
 			{Names: []string{"imessage"}, Section: "plugins", Run: cmdIMessage,
-				Summary: "the agent uses iMessage via BlueBubbles",
-				Rows:    []cmdreg.Row{{Syntax: `imessage "<task>"`, Desc: "the agent uses iMessage via BlueBubbles (read; --allow-send to act)"}}},
+				Summary: "the agent uses iMessage (Messages on this Mac, or a BlueBubbles server)",
+				Rows:    []cmdreg.Row{{Syntax: `imessage "<task>"`, Desc: "the agent uses iMessage: Messages on this Mac, or BlueBubbles with --bb-url (read; --allow-send to act)"}}},
 		},
 	}
 }

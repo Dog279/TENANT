@@ -5,6 +5,17 @@ Releases page.
 
 ## Unreleased
 
+### Added
+- **iMessage passive and respond modes.** `/imessage passive` reads every text and answers
+  none; `/imessage respond` answers the allowlist and `imessage.operator`, and only in a
+  1:1 iMessage chat. Group chats, SMS and RCS never drive the agent, and can no longer
+  approve an action either. A text the responder doesn't answer is logged as an
+  `imessage` Observed event (log alerts can act on it) and shown in the activity feed.
+  The dashboard's Access page has the same switch. The allowlist now applies per message,
+  not when the responder starts.
+- **The iMessage responder runs over BlueBubbles.** Set a BlueBubbles URL and it answers
+  texts from any OS, not only a Mac. Messages on a Mac stays the default.
+
 ### Fixed
 - **A corrupt `config.json` is no longer overwritten.** Tenant refuses to start on it and
   names the line and column where it broke. Before, the first setting saved from the

@@ -24,15 +24,15 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-10-01; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-10-02; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 1,187 |
-| Test files | 577 |
-| Production Go LOC | 151,428 |
-| Test Go LOC | 116,214 |
-| Go modules | 1 |
+| Go files | 3,386 |
+| Test files | 1,660 |
+| Production Go LOC | 465,876 |
+| Test Go LOC | 330,287 |
+| Go modules | 4 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
 <!-- docfacts:generated:end -->
@@ -1030,7 +1030,21 @@ below the gate; Open credential selection; bad args. 14 tests.
 **Status:** complete; deterministic + wire-contract verified; live X
 leg operator-run (`tenant x --login` then `tenant x "…"`).
 
-### 5.12f `internal/plugins/imessage` — iMessage via BlueBubbles (plugin #6)
+### 5.12f `internal/plugins/imessage` — iMessage (plugin #6)
+
+**Transports (TEN-68, TEN-486):** `imessage.OpenBackend` picks one. On a
+Mac with no BlueBubbles URL, Tenant reads `~/Library/Messages/chat.db`
+read-only (Full Disk Access) and sends with `osascript` (Automation). With
+a BlueBubbles URL (flag, saved config or `$BLUEBUBBLES_URL`) it uses the
+REST client below, on any OS. Both are a full `Backend`, so the tools and
+the responder run on either.
+
+**Responder modes (TEN-485):** the responder (`/imessage on|off`) reads
+every inbound text. `/imessage passive` answers none; `/imessage respond`
+answers only the allowlist and the operator, and only in a 1:1 iMessage
+chat: group chats and SMS/RCS never drive. A text that doesn't drive is
+recorded as an `imessage` Observed event and shown in the activity feed.
+
 
 **Purpose:** the agent reads + sends iMessages. There is no official
 Apple API, so this is a **native-Go REST client for a BlueBubbles
