@@ -36,6 +36,7 @@ func main() {
 	defer stop()
 	holdDataDir = lockDataDirForProcess
 	killChildrenOnExit() // Windows: a hard kill takes the browser down too (TEN-401)
+	fillLoginPath()      // macOS: brew & co. on PATH under launchd (TEN-489)
 
 	c := cliRegistry().Lookup(os.Args[1])
 	if c == nil {

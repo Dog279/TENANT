@@ -180,8 +180,8 @@ func TestProfileRunner_HostMatchesRealRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cmd := range []string{"echo hello", "echo out; exit 3", "echo boom >&2; exit 1", "sleep 5"} {
-		lo, le := legacy.Exec(context.Background(), cmd)
-		so, se := seam.Exec(context.Background(), cmd)
+		lo, le := legacy.Exec(context.Background(), cmd, 0)
+		so, se := seam.Exec(context.Background(), cmd, 0)
 		if lo != so || errText(le) != errText(se) {
 			t.Errorf("%q: legacy=(%q, %q) seam=(%q, %q)", cmd, lo, errText(le), so, errText(se))
 		}

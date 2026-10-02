@@ -124,12 +124,12 @@ func TestCronExecApproverRecords(t *testing.T) {
 		_, _, _ = d.Dispatch(ctx, model.ToolCall{Name: "os_exec", Arguments: args})
 	}
 	call("echo hi")
-	call("rm -rf ./no-such-dir") // dangerous to the classifier, harmless if it ever ran
-	_, danger := osys.Classify("rm -rf ./no-such-dir")
+	call("rm -rf ~/no-such-dir") // dangerous to the classifier, harmless if it ever ran
+	_, danger := osys.Classify("rm -rf ~/no-such-dir")
 	wantLines(t, s.lines(),
 		"4102 tenant@cron [policy:exec:os_exec:N] category=exec action=os_exec detail=echo hi origin=cron grant=once via=cron",
 		"4201 agent@cron-exec [policy:exec:os_exec:N] command=echo hi backend=host exit=0 timed_out=false",
-		"4103 tenant@cron [policy:destructive:os_exec_dangerous:N] category=destructive action=os_exec_dangerous detail=rm -rf ./no-such-dir  [DANGER: "+danger+"] origin=cron via=cron")
+		"4103 tenant@cron [policy:destructive:os_exec_dangerous:N] category=destructive action=os_exec_dangerous detail=rm -rf ~/no-such-dir  [DANGER: "+danger+"] origin=cron via=cron")
 }
 
 // A Discord card's verdict names the user who clicked and the card's nonce;

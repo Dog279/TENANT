@@ -28,10 +28,10 @@ block for drift.
 | Measure | Result |
 |---|---:|
 | Go packages | 88 |
-| Go files | 1,211 |
-| Test files | 588 |
-| Production Go LOC | 153,457 |
-| Test Go LOC | 118,066 |
+| Go files | 1,216 |
+| Test files | 590 |
+| Production Go LOC | 153,773 |
+| Test Go LOC | 118,275 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
