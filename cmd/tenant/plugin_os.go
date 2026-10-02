@@ -208,9 +208,6 @@ func resolveOSRoots(pf *pluginFlags, cfgDir, dataDir string, lc *launchConfig) o
 		if tmp := os.TempDir(); tmp != "" {
 			add(tmp)
 		}
-		if runtime.GOOS != "windows" {
-			add("/tmp") // shared scratch; the agent reached for it and was refused (TEN-489)
-		}
 	}
 	protect, secret := fileToolGuards(cfgDir, dataDir, pf, lc)
 	return osys.Roots{Deny: deny, Write: write, Protect: protect, Secret: secret}
