@@ -6,12 +6,13 @@ at a time; Hermes stays installed + bootable for the one-week rollback window.
 
 > **Hard rules** (carried over from the Hermes environment):
 > - All test/verification sends go to **the operator (`<operator-number>`)** — *never* the end user (`<user-number>`).
-> - No path the launchd unit touches may live under `~/Desktop`, `~/Documents`, `~/Downloads` (TCC).
+> - No path the launchd unit touches may live under `~/Desktop`, `~/Documents`, `~/Downloads` (TCC). `tenant service install` refuses them.
 > - Draft-first on all email; never auto-send.
 > - **Never boot a unit out mid-turn.** Drain first (see below).
 
 Placeholders: `$U = $(id -u)`. Units: `com.example.hermes` (incumbent),
-`com.example.tenant` (new — see `deploy/launchd/com.tenant.serve.plist`).
+`com.tenant.serve` (new — written by `tenant service install`; see
+`docs/serve-runbook.md`).
 
 ---
 
@@ -24,25 +25,23 @@ are validated on real inference before it touches the front door (TEN-262).
 # Build + place the binary outside the TCC dirs
 go build -o tenant ./cmd/tenant && cp tenant {{TENANT_BIN}}
 
-# Install the LaunchAgent (edit the {{PLACEHOLDERS}} first)
-cp deploy/launchd/com.tenant.serve.plist ~/Library/LaunchAgents/com.example.tenant.plist
-launchctl bootstrap gui/$U ~/Library/LaunchAgents/com.example.tenant.plist
-launchctl kickstart -k gui/$U/com.example.tenant
+# Install the LaunchAgent (writes ~/Library/LaunchAgents/com.tenant.serve.plist and starts it)
+{{TENANT_BIN}} service install
 ```
 
 Verify it's alive and survives a reboot, **without** touching Hermes:
 
 ```sh
-launchctl print gui/$U/com.example.tenant | grep -E 'state|pid|last exit'
-tail -f {{LOG_DIR}}/tenant.serve.log          # setup/health/fallback lines
+tenant service status
+tail -f ~/Library/Logs/tenant/serve.log       # setup/health/fallback lines
 # dashboard up?
 curl -fsS http://127.0.0.1:8770/healthz && echo OK
 # OR from another box on the tailnet, or:  tenant attach --follow
 ```
 
-Reboot the Mac → confirm `com.example.tenant` comes back `RunAtLoad` AND
-`com.example.hermes` still boots independently. **Acceptance (TEN-263):** survives
-reboot, restarts on crash, logs to a known path; Hermes unaffected.
+Reboot the Mac → confirm `com.tenant.serve` comes back AND `com.example.hermes`
+still boots independently. **Acceptance (TEN-263):** survives reboot, restarts on
+crash, logs to a known path; Hermes unaffected.
 
 ---
 
@@ -69,8 +68,8 @@ launchctl bootout gui/$U/com.example.hermes          # or disable just its imsg 
 
 # 2b. Enable Tenant's iMessage channel (it was parallel/no-channel until now).
 #     Restart the Tenant unit with the iMessage responder enabled (per your
-#     serve flags / config), then:
-launchctl kickstart -k gui/$U/com.example.tenant
+#     serve flags / config), then (it waits for a running turn to finish):
+tenant service restart
 
 # 2c. Verify on the operator's number ONLY:
 #     send a test message → Tenant answers (tapback ack within ~1s, no echo loop).
@@ -85,8 +84,8 @@ Target: **< 2 min, no message loss** on the operator's number.
 ```sh
 # 3a. Drain Tenant (section 1): tenant attach → turn_active=false.
 # 3b. Take Tenant off the front door (leave the unit installed for re-cutover,
-#     OR bootout to fully stop it):
-launchctl bootout gui/$U/com.example.tenant
+#     OR stop it fully; `tenant service uninstall` removes it):
+tenant service stop
 # 3c. Bring Hermes back as the responder:
 launchctl bootstrap gui/$U ~/Library/LaunchAgents/com.example.hermes.plist
 launchctl kickstart -k gui/$U/com.example.hermes
@@ -117,6 +116,6 @@ the pre-cutover sessions.
 ---
 
 ### Status notes
-- **TEN-263 / TEN-264 are operator-execution tickets.** This repo provides the
-  launchd template + this runbook; the acceptance (survives reboot / dry-run revert
+- **TEN-263 / TEN-264 are operator-execution tickets.** This repo provides
+  `tenant service` + this runbook; the acceptance (survives reboot / dry-run revert
   < 2 min, no message loss) must be **verified live on the Mac** before cutover.

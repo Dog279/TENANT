@@ -150,10 +150,10 @@ func TestDashAgents_PlainErrors(t *testing.T) {
 	if err := d.Rename("mine", "Mine"); err != nil {
 		t.Errorf("rename mine → Mine: %v", err)
 	}
-	if note := (dashAgents{service: true}).RestartNote(); note != "Restart the Tenant service (open Services, find Tenant, click Restart)." {
+	if note := (dashAgents{service: true}).RestartNote(); note != "Run `tenant service restart` from an elevated terminal, or open Services, find Tenant and click Restart." {
 		t.Errorf("service restart note = %q", note)
 	}
-	if note := (dashAgents{}).RestartNote(); note != "" {
+	if note := (dashAgents{}).RestartNote(); note != "Run `tenant service restart`." {
 		t.Errorf("restart note off a service = %q", note)
 	}
 }

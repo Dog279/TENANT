@@ -84,6 +84,13 @@ func cliCommands() []*cliCommand {
 			}},
 		{Names: []string{"version", "-v", "--version"}, Section: "start", Run: cmdVersion,
 			Summary: "print the version and build provenance"},
+		{Names: []string{"update"}, Section: "start", Run: cmdUpdate, Flags: []string{"--check", "--version", "--yes", "--now", "--force", "--rollback"},
+			Summary: "install the latest release: verify, back up, swap the binary, restart, confirm; --check only looks",
+			Rows: []cmdreg.Row{
+				{Syntax: "update [--version vX.Y.Z] [--yes] [--now] [--force]", Desc: "download and verify the release, back up the data, swap the binary, restart the service and confirm it; the old binary comes back if the hub does not"},
+				{Syntax: "update --check", Desc: "one line, running vs latest; exit 10 when an update is available"},
+				{Syntax: "update --rollback", Desc: "put the previous binary back and print the data-restore command"},
+			}},
 		{Names: []string{"completion"}, Section: "start", Run: cmdCompletion, Sub: []string{"bash", "zsh", "fish", "powershell"},
 			Summary: "print a shell completion script",
 			Rows: []cmdreg.Row{
@@ -106,6 +113,14 @@ func cliCommands() []*cliCommand {
 		{Names: []string{"attach"}, Section: "run", Run: cmdAttach, Flags: []string{"--follow", "--token", "--since", "--interval", "--source", "--level", "--trace"},
 			Summary: "watch a running hub's activity feed",
 			Rows:    []cmdreg.Row{{Syntax: "attach [URL] [--follow] [--source discord]", Desc: "watch a hub's activity feed; with no URL and logbook.db readable here, as logs query --follow"}}},
+		{Names: []string{"service"}, Section: "run", Run: cmdService, Sub: []string{"install", "uninstall", "status", "start", "stop", "restart"}, Flags: []string{"--print", "--system", "--now"},
+			Summary: "run serve in the background under the OS: install, status, start, stop, restart, uninstall",
+			Rows: []cmdreg.Row{
+				{Syntax: "service install [--print] [--system]", Desc: "write the unit (a LaunchAgent, a systemd user unit, a logon task; --system: a Windows service), enable it, start it; --print only shows it"},
+				{Syntax: "service status", Desc: "installed? running (version, turn_active)? where the logs are"},
+				{Syntax: "service start | stop | restart [--now]", Desc: "through the service manager; restart waits for the running turn to finish unless --now"},
+				{Syntax: "service uninstall", Desc: "stop it, disable it, remove the unit"},
+			}},
 		{Names: []string{"orchestrate", "team"}, Section: "run", Run: cmdOrchestrate,
 			Summary: "multi-agent team: an orchestrator spawns concurrent sub-agents that talk over a live bus",
 			Rows:    []cmdreg.Row{{Syntax: `orchestrate "<task>"`, Desc: "multi-agent team: an orchestrator spawns concurrent sub-agents that talk over a live bus and self-resolve"}}},

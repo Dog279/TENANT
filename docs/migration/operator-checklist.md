@@ -7,12 +7,12 @@ to bottom. Tickets: epic **TEN-288**.
 > ## 🛑 Hard rules — read first, every time
 > - **All test/verification sends go to the operator (`<operator-number>`). NEVER the end user (`<user-number>`).**
 > - **Draft-first on all email — never auto-send.**
-> - **Nothing a launchd unit touches may live under `~/Desktop`, `~/Documents`, `~/Downloads`** (macOS TCC will silently deny file access).
-> - **Never `launchctl bootout` an agent mid-turn** — drain first (status `turn_active=false`).
+> - **Nothing a launchd unit touches may live under `~/Desktop`, `~/Documents`, `~/Downloads`** (macOS TCC will silently deny file access; `tenant service install` refuses them).
+> - **Never stop an agent mid-turn** — drain first (status `turn_active=false`; `tenant service restart` waits by itself, `launchctl bootout` does not).
 > - Keep **Hermes installed + bootable** for the full 1-week rollback window.
 
-Reference docs in this repo: `docs/migration/deploy-and-rollback.md` (launchd +
-rollback detail), `deploy/launchd/com.tenant.serve.plist` (the unit template).
+Reference docs in this repo: `docs/migration/deploy-and-rollback.md` (service +
+rollback detail), `docs/serve-runbook.md` (running as a service).
 
 Live topology (from the audit): local vLLM-MLX `http://127.0.0.1:8000/v1`
 (planner) · remote vLLM `http://<model-host>:8000/v1` (aux/vision) · Z.ai GLM-5.1
@@ -45,9 +45,9 @@ SA key `automation.json` impersonating `<user-email>`. PA repo
 - [ ] **Acceptance:** force a local-vLLM outage → `<model-host>`/Z.ai failover fires; multi-turn tool session completes end-to-end. No echo backend in the path.
 
 ### TEN-263 · production launchd unit (P0)
-- [ ] Copy `deploy/launchd/com.tenant.serve.plist` → `~/Library/LaunchAgents/com.example.tenant.plist`; fill the `{{PLACEHOLDERS}}` (binary, `--config`, `--data`, logs — all OUTSIDE the TCC dirs).
-- [ ] `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.tenant.plist && launchctl kickstart -k gui/$(id -u)/com.example.tenant`.
-- [ ] **Acceptance:** reboot → `com.example.tenant` returns AND `com.example.hermes` still boots independently; logs at your chosen path; crash → restarts.
+- [ ] `tenant service install` (pass `--config`/`--data` if they are not the defaults; the binary and both dirs OUTSIDE the TCC dirs). It writes `~/Library/LaunchAgents/com.tenant.serve.plist` and starts it; `--print` shows the unit first.
+- [ ] `tenant service status` → running.
+- [ ] **Acceptance:** reboot → `com.tenant.serve` returns AND `com.example.hermes` still boots independently; logs in `~/Library/Logs/tenant/`; crash → restarts.
 
 ---
 
@@ -149,7 +149,7 @@ Code for all of these is shipped (#6/#8/#12); these are the live checks. **Opera
 | Ticket | Phase | P |
 |---|---|---|
 | TEN-262 serve live | 1 | P0 |
-| TEN-263 launchd | 1 | P0 |
+| TEN-263 service | 1 | P0 |
 | TEN-279 memory import | 2 | P0 |
 | TEN-270 gsuite SA | 2 | P0 |
 | TEN-269 crm config | 2 | P0 |

@@ -4,7 +4,7 @@ First-time setup for Tenant: a single-binary, Go-native AI agent with persistent
 memory, tools, and a terminal UI. This guide takes you from nothing to a working
 agent on a **local Ollama model**. Hand it to Claude or follow it yourself.
 
-> TL;DR: install Ollama + pull two models → download Tenant → `tenant setup` → `tenant tui`.
+> TL;DR: install Ollama + pull two models → install Tenant → `tenant setup` → `tenant tui`.
 
 ---
 
@@ -46,10 +46,29 @@ curl -s http://localhost:11434/v1/models | head -c 200
 
 ## 2. Install Tenant
 
-Download the archive for your OS and CPU from the
-[latest release](https://github.com/Dog279/TENANT/releases/latest), extract it,
-and move `tenant` (`tenant.exe` on Windows) to a directory on your `PATH`. No Go
-toolchain is required. Confirm the install with `tenant --version`.
+macOS or Linux:
+
+```sh
+curl -fsSL https://github.com/Dog279/TENANT/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/Dog279/TENANT/releases/latest/download/install.ps1 | iex
+```
+
+The script downloads the release for your OS and CPU, checks its SHA-256 against
+the release's `checksums.txt`, and installs `tenant` to `~/.local/bin`
+(`%LOCALAPPDATA%\Programs\tenant` on Windows). No sudo or administrator rights,
+no Go toolchain, and no Gatekeeper or SmartScreen prompt: a `curl` or PowerShell
+download carries no quarantine mark (a browser download does). If the directory
+is not on your `PATH`, the script says what to add. `TENANT_VERSION` pins a
+version and `TENANT_INSTALL_DIR` picks the directory.
+
+Or download the archive from the
+[latest release](https://github.com/Dog279/TENANT/releases/latest) and put
+`tenant` (`tenant.exe` on Windows) on your `PATH`. Confirm with `tenant version`.
 
 ---
 
@@ -73,6 +92,9 @@ Non-interactive equivalent:
 tenant setup --non-interactive --provider ollama --vllm-model qwen2.5:7b \
   --embed-endpoint http://localhost:11434 --embed-model nomic-embed-text
 ```
+
+At the end the wizard offers to run Tenant in the background; [§8](#8-run-it-in-the-background)
+says what that installs.
 
 > Offline/dev with no model? `--backend echo` runs a deterministic stub (no real
 > inference, no real memory) — fine for poking at Tenant, not for real use.
@@ -169,6 +191,57 @@ When you *do* want to customize it:
 Write the markdown as first/second-person operating instructions (who the agent
 is, how it should work, what it must/must not do). The built-in specialists are
 merged underneath, so a custom soul won't drop them.
+
+---
+
+## 8. Run it in the background
+
+`tenant setup` offers this at the end; otherwise:
+
+```sh
+tenant service install     # --print shows the unit without installing it
+tenant service status
+```
+
+Tenant then starts when you log in and restarts after a crash:
+
+- **macOS:** a LaunchAgent; logs in `~/Library/Logs/tenant/`. The install refuses
+  paths under `~/Desktop`, `~/Documents` and `~/Downloads` (TCC would block them).
+- **Linux:** a systemd user unit; `journalctl --user -u tenant`. Run
+  `loginctl enable-linger $USER` so it survives logout.
+- **Windows:** a scheduled task at logon, running as you. On a headless box,
+  `tenant service install --system` from an elevated terminal installs a real
+  Windows service as SYSTEM instead (it shows in the Services app).
+
+`start`, `stop`, `restart` and `uninstall` do what they say; `restart` waits for
+the running turn to finish unless you pass `--now`. `tenant doctor` reports the
+service. An OS restart or shutdown mid-task is safe: the turn is cut and
+recorded, your channel gets "I was stopped mid-task… say `continue`", and after
+boot Tenant reminds you and catches up the Discord DMs sent while it was down.
+Nothing is re-run on its own.
+
+---
+
+## 9. Update
+
+```sh
+tenant update --check      # current vs latest, nothing changed
+tenant update              # download, verify, back up, swap, restart the service
+```
+
+`update` verifies the checksum (and the cosign signature when `cosign` is
+installed), smoke-runs the new binary, writes an unencrypted backup to
+`<data dir>-backups/pre-update-<version>.tenant-backup`, swaps the binary keeping the
+old one as `tenant.prev`, restarts the service and confirms the new version
+answers; if it does not, the old binary goes back by itself. `--version vX.Y.Z`
+picks a release, `--yes` skips the prompt, `--now` restarts without waiting for
+the running turn. Tenant checks for a newer release once a day and writes one
+log line; `"update_check": false` in `config.json` turns that off. Nothing is
+applied automatically, and a dev build refuses to update.
+
+Rollback: `tenant update --rollback` puts the old binary back. If the new
+version migrated data, restore the backup too:
+`tenant service stop && tenant backup restore <file> --yes && tenant service start`.
 
 ---
 

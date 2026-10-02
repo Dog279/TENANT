@@ -198,6 +198,7 @@ config.json: tailscale.serve
 config.json: turn_scheduler
 config.json: turn_scheduler.queue_depth
 config.json: turn_scheduler.source_quotas
+config.json: update_check
 config.json: vllm_endpoint
 config.json: vllm_model
 config.json: vllm_tool_format

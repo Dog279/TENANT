@@ -15,6 +15,7 @@ import (
 	"tenant/internal/agent"
 	"tenant/internal/logs"
 	"tenant/internal/orchestra"
+	"tenant/internal/version"
 )
 
 // restToolView is one tool as the REST API renders it: ToolInfo plus the
@@ -41,6 +42,7 @@ type restStatus struct {
 	ToolsEnabled int      `json:"tools_enabled"`
 	ToolsTotal   int      `json:"tools_total"`
 	Status       string   `json:"status"`
+	Version      string   `json:"version"` // the running build (TEN-498): `tenant service status`, the update health check
 
 	TurnActive       bool                    `json:"turn_active"`
 	TurnAgeSecs      int                     `json:"turn_age_secs,omitempty"`
@@ -134,6 +136,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		ToolsEnabled: enabled,
 		ToolsTotal:   len(tools),
 		Status:       "ok",
+		Version:      version.Version,
 	}
 	if s.tools != nil {
 		st.Plugins = s.tools.Plugins()

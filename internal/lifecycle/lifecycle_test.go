@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"tenant/internal/logs/catalog"
 	"tenant/internal/logs/event"
@@ -175,4 +176,48 @@ func field(e *event.Event, key string) any {
 		}
 	}
 	return nil
+}
+
+// Under a budget (TEN-499) a stop that hangs is abandoned once the budget
+// runs out, the stops after it are skipped, both are filed, and the error
+// names the budget; a group whose stops return in time behaves as under
+// Shutdown.
+func TestShutdownDeadline(t *testing.T) {
+	rec := eventtest.Capture(t)
+	g := New(nil)
+	ran := map[string]bool{}
+	g.AddFunc(Unblock, "quick", func() { ran["quick"] = true })
+	g.AddFunc(Drain, "hangs", func() { select {} })
+	g.AddFunc(Release, "after", func() { ran["after"] = true })
+	start := time.Now()
+	err := g.ShutdownWithin(200 * time.Millisecond)
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Errorf("ShutdownWithin took %s, want ~200ms", took)
+	}
+	if !errors.Is(err, ErrStopBudget) || !strings.Contains(err.Error(), "timed out after 200ms") {
+		t.Errorf("err = %v, want it to wrap ErrStopBudget and name the budget", err)
+	}
+	if !ran["quick"] || ran["after"] {
+		t.Errorf("ran = %v, want quick only: a stop after the deadline is skipped", ran)
+	}
+	outcomes := map[string]uint32{}
+	for _, e := range rec.Events() {
+		if step, _ := field(e, "step").(string); step != "" {
+			outcomes[step] = e.ID
+		}
+	}
+	if outcomes["hangs"] != 2021 || outcomes["after"] != 2022 {
+		t.Errorf("filed %v, want hangs timed out (2021) and after skipped (2022)", outcomes)
+	}
+
+	g2 := New(nil)
+	var got []string
+	g2.AddFunc(Release, "store", func() { got = append(got, "store") })
+	g2.AddFunc(Intake, "relay", func() { got = append(got, "relay") })
+	if err := g2.ShutdownWithin(time.Second); err != nil || !slices.Equal(got, []string{"relay", "store"}) {
+		t.Errorf("in time: err = %v, order = %v", err, got)
+	}
+	if err := g2.Shutdown(); err != nil {
+		t.Errorf("a later Shutdown must do nothing: %v", err)
+	}
 }

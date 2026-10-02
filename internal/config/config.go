@@ -135,6 +135,9 @@ type Launch struct {
 	Runs RunTrace `json:"runs,omitempty"`
 	// Privacy holds per-class retention (TEN-309); see `tenant privacy`.
 	Privacy Privacy `json:"privacy,omitempty"`
+	// UpdateCheck is serve's daily look for a newer release (TEN-500, D2):
+	// a log-book event, never an update applied. Nil is on; false opts out.
+	UpdateCheck *bool `json:"update_check,omitempty"`
 
 	// --- deprecated v1 flat fields: read for migration, never written ---
 	Backend       string `json:"backend,omitempty"`

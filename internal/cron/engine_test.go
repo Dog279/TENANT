@@ -447,3 +447,41 @@ func TestEnginePerRunZeroKeepsDefault(t *testing.T) {
 		t.Fatalf("perRun = %v, want default %v", e.perRun, defaultPerRun)
 	}
 }
+
+// A run that Tenant stopping cuts is recorded as interrupted, not as the
+// job's failure (TEN-499); a per-run timeout keeps its own error.
+func TestCronInterruptedLabel(t *testing.T) {
+	started := make(chan struct{})
+	e, clk := newTestEngine(
+		func(ctx context.Context, j Job) (string, string, error) {
+			close(started)
+			<-ctx.Done()
+			return "", "", ctx.Err()
+		},
+		nil,
+	)
+	e.tick = 5 * time.Millisecond
+	j, _ := addJob(e, "a", "@every 5m", "p")
+	clk.set(j.NextRun.Add(time.Second))
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	e.Stop()
+	hist := e.History()
+	if len(hist) != 1 || hist[0].OK || hist[0].Err != "interrupted: Tenant stopped" {
+		t.Fatalf("history = %+v, want one run marked interrupted", hist)
+	}
+	if got := e.List(); len(got) != 1 || got[0].LastError != "interrupted: Tenant stopped" {
+		t.Errorf("jobs = %+v, want the job's LastError marked interrupted", got)
+	}
+
+	e2, _ := newTestEngine(func(ctx context.Context, j Job) (string, string, error) {
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	}, nil)
+	e2.perRun = 5 * time.Millisecond
+	if rec := e2.RunOnce(context.Background(), JobDef{ID: "b", Spec: "@every 5m", Prompt: "p", Enabled: true}); rec.Err != "context deadline exceeded" {
+		t.Errorf("a timed-out run reads %q, want its deadline error", rec.Err)
+	}
+}

@@ -224,6 +224,11 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		// probe /api/status for a stuck turn or a wedged approval queue. SKIP
 		// when nothing is reachable (a daemon simply not running is not a fault).
 		{"serve liveness (if running)", checkServe},
+		// TEN-498: the background service — installed, pointing at these
+		// dirs, answering; --fix rewrites a drifted unit.
+		{"background service", checkService},
+		// TEN-500: a newer release, or an update that never finished.
+		{"update", checkUpdate},
 		{"distill cursor", checkDistillCursor},
 		// TEN-255 Phase 4: per-project SME doc health — present/stale when
 		// reflection is on, and a guard on the merge-protected fraction (a
@@ -1495,4 +1500,44 @@ func isLoopbackAddr(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// checkService (TEN-498): the background service is installed, its unit
+// runs this binary with this command's --config and --data, and a hub
+// answers. Not installed is a WARN with the one command that fixes it; a
+// drifted unit is rewritten under --fix.
+func checkService(ctx context.Context, e *doctorEnv) checkResult {
+	spec, err := newServiceSpec(e.c, systemInstalled(ctx))
+	if err != nil {
+		return checkResult{Status: statusSkip, Detail: err.Error()}
+	}
+	ok, where := spec.installed(ctx)
+	if !ok {
+		return checkResult{Status: statusWarn, Detail: "no background service: Tenant does not start at login",
+			Fix: "tenant service install"}
+	}
+	current, err := spec.unitCurrent(ctx)
+	if err != nil {
+		return checkResult{Status: statusWarn, Detail: where + ": cannot read its unit: " + err.Error(), Fix: "tenant service install"}
+	}
+	if !current {
+		if e.fix {
+			if err := spec.install(ctx); err != nil {
+				return checkResult{Status: statusFail, Detail: "rewriting the unit failed: " + err.Error()}
+			}
+			return checkResult{Status: statusOK, Fixed: true,
+				Detail: fmt.Sprintf("unit rewritten for %s --config %s --data %s", spec.Exe, spec.CfgDir, spec.DataDir)}
+		}
+		return checkResult{Status: statusWarn,
+			Detail: fmt.Sprintf("%s does not run %s with --config %s --data %s", where, spec.Exe, spec.CfgDir, spec.DataDir),
+			Fix:    "tenant service install (rewrites the unit; --fix does it)"}
+	}
+	base := attachBaseURL("", e.lc)
+	tok, _ := dashboardClientToken(e.c.cfgDir, e.lc, e.c.auditOnly)
+	st, err := attachFetchStatus(ctx, e.httpc, base, tok)
+	if err != nil {
+		return checkResult{Status: statusWarn, Detail: where + " is installed but no hub answers at " + base,
+			Fix: "tenant service start, then tenant service status"}
+	}
+	return checkResult{Status: statusOK, Detail: fmt.Sprintf("%s, running version %s", where, firstNonEmpty(st.Version, "unknown"))}
 }

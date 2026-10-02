@@ -61,6 +61,7 @@ type attachStatus struct {
 	TurnActive       bool   `json:"turn_active"`
 	TurnAgeSecs      int    `json:"turn_age_secs"`
 	PendingApprovals int    `json:"pending_approvals"`
+	Version          string `json:"version"` // "" from a hub older than TEN-498
 }
 
 func cmdAttach(ctx context.Context, args []string) error {

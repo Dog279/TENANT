@@ -100,80 +100,125 @@ checking the folder with `icacls`, are in [dashboard-runbook.md](dashboard-runbo
 §2. A service has no screen, so a remote service's or an integration's browser sign-in
 is finished in a browser on the server itself (dashboard-runbook.md §7).
 
-## Graceful shutdown
+## What happens on an OS restart or shutdown
 
-`SIGTERM` / `SIGINT` shut down in order: stop accepting new work (peer listener →
-Discord relay → dashboard), drain the in-flight turn and any running cron/improve job,
-then close the stores last. Pending approvals are denied so blocked turns unblock.
+A stop (`SIGTERM` / `SIGINT`, the Windows service's Stop or pre-shutdown control, a logoff
+for the Windows task) has two speeds (TEN-499):
 
-## Supervision
+1. **The first seconds make the data safe, on every OS.** The turn gate closes, cron and
+   self-improvement start nothing new, pending approvals are denied, and every turn in
+   flight is **cancelled at once**: the model call ends, a running tool's child process dies
+   with the process group (Unix) or the job object (Windows), and there is no 30-second
+   "salvage" answer. Nothing already produced is lost: every message is in the archive as it
+   is written, the stores are WAL SQLite, and `os_write_file` / `os_edit_file` replace a file
+   by rename, so a kill at any instant leaves the old file or the new one, never a torn one.
+2. **The stop budget bounds the teardown.** `--stop-budget` (the unit passes the OS's grace:
+   90 s on macOS and Linux, 4 s for the Windows task, 120 s for the Windows service, 5 s hand-run)
+   is a deadline on the staged shutdown: stop intake (peer listener → Discord relay →
+   dashboard), drain the cut turn and any cron/improve job, close the stores last. A step
+   that outlives the budget is abandoned and the rest are skipped, both in the `system` log;
+   serve then exits non-zero and the boot record stays unclean, which the next start reports
+   as it does for a crash. The data is safe either way: the budget only decides how tidy the end is.
 
-### macOS — launchd
+What the operator sees:
 
-`~/Library/LaunchAgents/com.tenant.serve.plist`:
+- **The interrupted notice.** A Discord or iMessage turn the stop cut gets, within 2 seconds,
+  "I was stopped mid-task by a system shutdown or restart. Say `continue` when I'm back.";
+  the cut is recorded in `<data>/interrupted.json` and as a `turn_interrupted` event in the
+  archive. After boot, once the relays are up, each recorded channel gets one more line:
+  "I was stopped at <time> while <excerpt> (<n> tool calls had run). Tell me to continue."
+  Then the record is cleared. The turn is **never re-run by itself**: the tools that ran before
+  the cut may have had side effects (an email sent, a file edited). Say `continue`: the archive
+  holds the partial trace, so the agent picks up with the context. A cron run the stop cut is
+  marked `interrupted: Tenant stopped` in its history; its next run is the next scheduled one.
+- **Messages sent while Tenant was down.** iMessage catches up through its chat.db cursor.
+  Discord keeps the last DM seen per channel in `<data>/discord-cursor.json` and, on every new
+  gateway session (`READY`), reads each channel back and routes the DMs after the cursor,
+  oldest first, as if they had just arrived (the `discord` log says how many). A DM's text is
+  caught up; a file attached to it is not fetched.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.tenant.serve</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/local/bin/tenant</string>
-    <string>serve</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <!-- Restart on crash, but stay stopped after a clean operator stop. -->
-  <key>KeepAlive</key>
-  <dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/tenant/serve.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/tenant/serve.err.log</string>
-  <!-- Prefer credentials.json over env vars so secrets aren't in the plist. -->
-</dict>
-</plist>
-```
+### Reboot drill
 
-Load it:
+Run it once per configuration before a release: macOS, Linux, Windows task, Windows `--system`.
 
-```
-mkdir -p ~/Library/Logs/tenant
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tenant.serve.plist
-launchctl kickstart -k gui/$(id -u)/com.tenant.serve   # restart after an edit
-launchctl bootout gui/$(id -u)/com.tenant.serve         # stop
-```
+1. `tenant service install`, then `tenant service status` says running.
+2. From Discord (or iMessage), start a long turn: "run `sleep 120` and tell me when it's done"
+   (`relay.allow_exec` on, or any turn that runs long enough).
+3. While it runs, reboot the machine.
+4. While it is down, send the bot one more DM.
+5. After boot, check:
+   - the channel shows the interrupted notice, then the boot-time "I was stopped at …" line;
+   - the DM sent during the reboot was answered;
+   - `tenant logs` (the `system` log) shows the shutdown's steps within the budget and a clean
+     stop before it, and the start-up has no "ended without a clean shutdown" line;
+   - `tenant doctor` is clean (the databases, the service, serve liveness).
+6. Say `continue` and check the agent picks the task up with its context.
 
-### Linux — systemd (user unit)
+## Run as a service
 
-`~/.config/systemd/user/tenant.service`:
-
-```ini
-[Unit]
-Description=Tenant headless hub
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/tenant serve
-Restart=on-failure
-RestartSec=5
-# stderr (TENANT_LOG-filtered) goes to the journal: journalctl --user -u tenant -f
-# The full per-subsystem record is the log book: <data>/logs/<source>/YYYY-MM-DD.log
-# (see docs/LOGGING.md); `tenant logs query log:approvals --follow` tails one.
-
-[Install]
-WantedBy=default.target
-```
-
-Enable it:
+`tenant service install` writes the unit for this OS, enables it and starts it (TEN-498);
+`tenant setup` offers it at the end. The unit pins `--config` and `--data` to the dirs the
+command ran with and passes `--stop-budget`, the grace the OS grants a stop.
 
 ```
-systemctl --user daemon-reload
-systemctl --user enable --now tenant.service
-journalctl --user -u tenant -f
+tenant service install [--print]   # --print shows the unit and changes nothing
+tenant service status              # installed? running (version, turn_active)? where the logs are
+tenant service restart [--now]     # waits for the running turn to finish (15 min ceiling) unless --now
+tenant service start | stop
+tenant service uninstall
 ```
 
-`ExecStop` is unnecessary — systemd sends `SIGTERM`, which Tenant handles gracefully.
+`tenant doctor` warns when no service is installed or when the unit no longer matches the
+dirs or binary this command uses; `--fix` rewrites it.
+
+| | macOS | Linux | Windows | Windows `--system` |
+|---|---|---|---|---|
+| Unit | LaunchAgent `~/Library/LaunchAgents/com.tenant.serve.plist` | systemd user unit `~/.config/systemd/user/tenant.service` | Scheduled task `\Tenant\Serve` at logon, as you | Windows service `Tenant` as SYSTEM (elevated terminal; headless boxes) |
+| Logs | `~/Library/Logs/tenant/serve.log`, `serve.err.log` | `journalctl --user -u tenant -f` | none for stdout | none for stdout |
+| Stop budget | 90s | 90s | 4s | 120s |
+
+Everything the hub does is in the log book either way (`tenant logs`, the dashboard's Logs page).
+
+- **macOS (TCC):** `install` refuses a binary, config dir or data dir under `~/Desktop`, `~/Documents` or
+  `~/Downloads`: macOS silently denies those to a background process. Good homes: `~/.local/bin`,
+  `~/.config/tenant`, `~/Library/Application Support/tenant`.
+- **Linux (linger):** the user manager stops at logout unless the account lingers; `install` prints
+  `loginctl enable-linger <user>` when it is off. Run it once.
+- **Windows:** the task keeps a hidden console, which is how logoff and shutdown reach the process;
+  `restart` and `stop` end the task hard (hence the 4-second budget). `--system` is a real service with
+  a Stop control and `sc failure` restarts; `sc`/the Services app work on it too.
+
+## Upgrade and roll back
+
+`tenant update` moves an install to the latest release with a way back (TEN-500). It downloads the
+release archive for this OS and architecture, verifies its SHA-256 (and its signature when `cosign`
+is on PATH), runs the new binary's `version` before touching anything, asks, then:
+
+1. writes an unencrypted backup of the config and data dirs to `<data dir>-backups/pre-update-<old version>.tenant-backup`
+   (credentials are left out; the previous pre-update backup is replaced);
+2. swaps the binary in with no gap, keeping the old one as `tenant.prev`;
+3. restarts the service (`tenant service restart`, which waits for the running turn unless `--now`);
+4. polls `/api/status` for up to 90 s until it reports the new version; if it never does, the old binary
+   goes back and the service is restarted again.
+
+```
+tenant update --check                 # one line, running vs latest; exit 10 when an update exists
+tenant update [--version vX.Y.Z] [--yes] [--now] [--force]
+tenant update --rollback              # put tenant.prev back; prints the data-restore command
+```
+
+**Schemas move forward only.** The log book refuses a database written by a newer version, so once
+the new version has migrated a store, the old binary alone is not enough. Rollback is the old binary
+plus the pre-update backup, restored by hand, never automatically:
+
+```
+tenant service stop && tenant backup restore <data dir>-backups/pre-update-<old version>.tenant-backup --yes && tenant service start
+```
+
+An OS stop in the middle leaves `<data>/update-state.json`: serve logs it at boot, `tenant doctor` warns,
+and the next `tenant update` clears it when the new version is what runs, or offers `--rollback`.
+serve also checks for a newer release once a day and files one log-book event per new tag
+(`"update_check": false` in `config.json` turns that off); nothing is ever applied unasked.
 
 ## Restart-storm guard (24/7)
 
