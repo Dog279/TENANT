@@ -36,7 +36,7 @@ func TestLogsPageInChrome(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(1440, 900))
+	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.WindowSize(1440, 900), chromedp.WSURLReadTimeout(time.Minute)) // a cold runner's Chrome: see chromeSignedIn
 	actx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancel()
 	ctx, cancel := chromedp.NewContext(actx)
