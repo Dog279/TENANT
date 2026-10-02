@@ -27,11 +27,11 @@ block for drift.
 <!-- docfacts:generated:start; date=2026-10-02; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 87 |
-| Go files | 1,206 |
-| Test files | 586 |
-| Production Go LOC | 153,183 |
-| Test Go LOC | 117,592 |
+| Go packages | 88 |
+| Go files | 1,219 |
+| Test files | 592 |
+| Production Go LOC | 154,278 |
+| Test Go LOC | 118,649 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |
 | `internal/cron` | nothing in the module | leaf |
@@ -1410,12 +1411,6 @@ registry type (§5.14).
   approvals are denied, the peer listener, the relay and the dashboard stop
   taking work, cron and self-improvement drain, then the runtime and stores
   close, last opened first. The TUI tears down the same way when it exits.
-  serve runs the stages under `--stop-budget` (TEN-499, `Group.ShutdownWithin`):
-  every turn is cancelled at once with no salvage synthesis, a step that
-  outlives the budget is abandoned and the rest skipped (the boot record then
-  stays unclean), a relay turn the stop cut is recorded in
-  `<data>/interrupted.json` and reported to its channel at the next start, and
-  the Discord relay catches up the DMs it missed from `<data>/discord-cursor.json`.
 - `tenant os "<task>" [--allow-exec]` — agent inspects the machine
   (sysinfo/read/list/processes) + runs shell commands (gated; off
   unless `--allow-exec`, destructive commands hard-denied). §5.12g.

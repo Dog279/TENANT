@@ -59,8 +59,15 @@ func main() {
 			writeCommandHelp(os.Stdout, c)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		code := 1
+		var ex exitError
+		if errors.As(err, &ex) { // a status with a meaning of its own (update.go), with or without text
+			code = ex.code
+		}
+		if err.Error() != "" {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
+		os.Exit(code)
 	}
 }
 

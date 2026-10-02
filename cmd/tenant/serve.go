@@ -134,6 +134,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// (TEN-373): the first Release steps registered, so they run last.
 	onPanic := startBootRecord(hub, life, "serve")
 	defer onPanic()
+	startUpdateCheck(ctx, life, c) // TEN-500: a leftover update marker now, a newer release daily
 
 	// Status feed. Whatever else writes to sysCh (the improve feed, the
 	// reconnect monitor) logs its line itself.
