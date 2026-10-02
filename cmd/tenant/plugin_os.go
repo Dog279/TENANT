@@ -97,6 +97,9 @@ func osGrants(pf *pluginFlags) map[string]string {
 	return g
 }
 
+// The read-only command judgement the brokers skip the prompt for (TEN-491).
+func init() { readOnlyExec = osys.ReadOnly }
+
 // launchOS always registers the OS plugin — it needs no config, so it is
 // visible in /tools and `/enable os` activates it instantly; it starts
 // enabled only with --os. os_exec runs through the execution-backend seam

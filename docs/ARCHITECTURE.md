@@ -30,7 +30,7 @@ block for drift.
 | Go packages | 88 |
 | Go files | 3,419 |
 | Test files | 1,675 |
-| Production Go LOC | 469,336 |
+| Production Go LOC | 469,343 |
 | Test Go LOC | 332,952 |
 | Go modules | 4 |
 | Plugin capability packages | 14 |
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |
 | `internal/cron` | nothing in the module | leaf |
@@ -175,7 +176,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
 | `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
 | `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
-| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra` | never the terminal UI |
+| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra`, `internal/version` | never the terminal UI |
 <!-- /archtest:rules -->
 
 In short:

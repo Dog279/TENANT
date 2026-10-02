@@ -579,7 +579,7 @@ func TestServeDashResearch_KeepsGates(t *testing.T) {
 	var calls atomic.Int32
 	helper.GenerateFn = func(context.Context, model.GenerateRequest) (*model.GenerateResponse, error) {
 		if calls.Add(1) == 1 {
-			return &model.GenerateResponse{ToolCalls: []model.ToolCall{teamCall("x", "os_exec", map[string]any{"command": "ls"})}}, nil
+			return &model.GenerateResponse{ToolCalls: []model.ToolCall{teamCall("x", "os_exec", map[string]any{"command": "test -d ."})}}, nil
 		}
 		return &model.GenerateResponse{Text: "done", FinishReason: "stop"}, nil
 	}

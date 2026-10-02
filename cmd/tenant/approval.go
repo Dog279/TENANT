@@ -5,7 +5,6 @@ import (
 	"sort"
 
 	"tenant/internal/approval"
-	"tenant/internal/plugins/osys"
 )
 
 // approval.go wires the approval broker (internal/approval, TEN-314) to this
@@ -39,12 +38,17 @@ var (
 	defaultToolRules = approval.DefaultRules
 )
 
+// readOnlyExec judges a shell command that only looks (ls, git status, rg …):
+// the OS plugin installs its classifier at init (plugin_os.go), since the
+// switchboards read the plugin registry rather than a plugin. Such a command
+// runs without a prompt here and on Discord (TEN-491, D4); the iMessage
+// broker stays deny-by-default.
+var readOnlyExec func(command string) bool
+
 // newApprovalBroker builds the host's broker, filing actions by categorize.
-// A read-only command (ls, git status, rg …) runs without a prompt here and
-// on Discord (TEN-491, D4); the iMessage broker stays deny-by-default.
 func newApprovalBroker(log *slog.Logger) *approvalBroker {
 	b := approval.NewBroker(log, categorize)
-	b.SetReadOnly(osys.ReadOnly)
+	b.SetReadOnly(readOnlyExec)
 	return b
 }
 
@@ -54,7 +58,7 @@ func newOffsiteApprovalBroker(log *slog.Logger, host *approvalBroker) *approvalB
 
 func newDiscordApprovalBroker(log *slog.Logger) *approvalBroker {
 	b := approval.NewDiscordBroker(log, categorize)
-	b.SetReadOnly(osys.ReadOnly)
+	b.SetReadOnly(readOnlyExec)
 	return b
 }
 
