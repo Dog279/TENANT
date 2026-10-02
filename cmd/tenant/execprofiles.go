@@ -345,12 +345,13 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	p.Policy.ReadRoots = expandRoots(o.ReadRoots)
 	p.Policy.WriteRoots = append(expandRoots(o.WriteRoots), liveExceptions(surface)...)
 	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)...)
-	p.Policy.Env = envAllowlist(o.EnvPass, o.EnvSet)
+	pass := o.EnvPass
 	if p.Backend == "host" {
 		// On the host ~/.ssh is readable anyway; the agent socket lets git and
 		// ssh use the operator's keys without them leaving the agent.
-		p.Policy.Env = envAllowlist(append([]string{"SSH_AUTH_SOCK"}, o.EnvPass...), o.EnvSet)
+		pass = append([]string{"SSH_AUTH_SOCK"}, pass...)
 	}
+	p.Policy.Env = envAllowlist(pass, o.EnvSet)
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
 	p.Policy.Limits.MemoryBytes = int64(o.MemoryMB) << 20
 	p.Policy.Limits.MaxPIDs = o.MaxPIDs

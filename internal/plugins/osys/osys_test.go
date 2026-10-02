@@ -622,6 +622,7 @@ func TestExecTimeoutWorkdirAndClip(t *testing.T) {
 		{map[string]any{"command": "make", "timeout": 300, "workdir": "~/code"}, 300 * time.Second, filepath.Join(home, "code"), false},
 		{map[string]any{"command": "make", "timeout": 99999, "workdir": "/tmp/x/../y"}, 600 * time.Second, "/tmp/y", false},
 		{map[string]any{"command": "make", "workdir": "code"}, 0, "", true},
+		{map[string]any{"command": "make", "workdir": "~bob/x"}, 0, "", true}, // ~user isn't expanded
 	} {
 		gotTO, gotDir = 0, ""
 		out, isErr, _ := d.Dispatch(ctx, call("os_exec", tc.args))

@@ -359,9 +359,9 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 	}
 	if a.Workdir != "" {
 		dir := a.Workdir
-		if rest, ok := strings.CutPrefix(dir, "~"); ok {
+		if dir == "~" || strings.HasPrefix(dir, "~/") { // not ~user
 			home, _ := os.UserHomeDir()
-			dir = home + rest
+			dir = home + dir[1:]
 		}
 		if !filepath.IsAbs(dir) {
 			return "workdir must be an absolute path (or start with ~)", true, nil

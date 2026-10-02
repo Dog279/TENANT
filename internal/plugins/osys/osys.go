@@ -382,8 +382,7 @@ func clipMiddle(s string, n int) string {
 		return s
 	}
 	head := n / 3
-	tail := n - head
-	return s[:head] + fmt.Sprintf("\n…[%d bytes omitted]…\n", len(s)-n) + s[len(s)-tail:]
+	return s[:head] + fmt.Sprintf("\n…[%d bytes omitted]…\n", len(s)-n) + s[len(s)-(n-head):]
 }
 
 type workDirKey struct{}
