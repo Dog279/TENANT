@@ -114,7 +114,7 @@ func launchOS(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 		AllowWrite: e.gateAllow(f.allowWrite),
 		Confirm:    e.confirm,
 		Roots:      resolveOSRoots(e.pf, e.c.cfgDir, e.c.dataDir, e.c.lc),
-	})}, nil, nil
+	})}, svc.Close, nil // the background processes die with Tenant (TEN-490)
 }
 
 // evalOS: the OS plugin is pure Go and always available; eval needs real

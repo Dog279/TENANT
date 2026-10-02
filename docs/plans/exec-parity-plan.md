@@ -1,6 +1,6 @@
 # Exec parity: Claude Code–level shell and file tools
 
-Status: **PR 1 implemented locally** (2026-10-02, branch `feat/exec-parity`, not pushed) · Jira TEN-488 (TEN-489..492) · Owner: Dylan
+Status: **PR 1 merged (#39); PRs 2–4 implemented as one PR** (2026-10-02, branch `feat/exec-parity-2`) · Jira TEN-488 (TEN-489..492) · Owner: Dylan
 
 ## Goal
 

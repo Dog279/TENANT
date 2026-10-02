@@ -6,6 +6,23 @@ Releases page.
 ## Unreleased
 
 ### Added
+- **Background processes** (TEN-490): `os_exec background: true` starts a command and returns
+  its id at once, and a command still running at its timeout is moved to the background instead
+  of being killed. `os_process` lists, reads (`log`, paged like a file), waits for, feeds (`write`
+  one line to stdin) and kills them; logs live under `<data>/proc/`, processes die with Tenant,
+  and a finished one is forgotten after an hour. Host surfaces only: a sandboxed surface keeps
+  the kill-at-timeout runner.
+- **Read-only commands run without a prompt** (TEN-491): `ls`, `cat`, `rg`, `git status`, `brew
+  list`, `find` without `-delete`/`-exec` and the like skip the exec prompt on the host and
+  Discord when every segment of the command only looks and nothing redirects; iMessage stays
+  deny-by-default. A category deny and the operator's rules still bind.
+- **Command rules** (TEN-491): `/permissions add os_exec(brew install *) allow` (or `deny`,
+  `ask`) decides a command by its text, per segment of a compound command: any deny denies,
+  else any ask asks, else allow when every segment matched. `os_exec(git push)` is that command
+  alone. "Always" on an exec prompt now saves the command's family as such a rule instead of
+  opening all of exec.
+- **Paged file reads** (TEN-492): `os_read_file` takes `offset` and `limit` (lines) and a cut
+  read ends with `next_offset`; a page is ~100K characters (was a 64 KB cap with nothing past it).
 - **`tenant service`** (TEN-498): `install`, `uninstall`, `status`, `start`, `stop` and
   `restart` run Tenant in the background through the OS: a LaunchAgent on macOS (logs in
   `~/Library/Logs/tenant/`), a systemd user unit on Linux, a scheduled task at logon on

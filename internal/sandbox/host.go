@@ -46,6 +46,7 @@ func (hostBackend) Start(ctx context.Context, argv []string, pol Policy) (*Proce
 		c.Dir = pol.WorkDir
 	}
 	c.Env = pol.Env.materialize(os.Environ())
+	detach(c) // its own session, as Run's commands get: no /dev/tty for sudo to grab (TEN-489)
 	return startProcess(c, pol.Stderr, nil, nil)
 }
 

@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"tenant/internal/logs/capture"
@@ -44,6 +45,13 @@ type Config struct {
 	// cmd/tenant inject a sandbox-backed runner (the execution-backend seam)
 	// without any osys call site changing. nil ⇒ today's realRunner behaviour.
 	Runner runner
+	// Starter, when non-nil, starts a command the service watches itself
+	// (process.go, TEN-490): os_exec runs through it and moves a command still
+	// running at its timeout to the background. nil ⇒ Runner only, which kills
+	// at the timeout, and background: true is refused.
+	Starter starter
+	// ProcDir holds the background processes' logs (<data>/proc).
+	ProcDir string
 }
 
 // Service is the opened OS connector. Its file methods take paths as
@@ -52,7 +60,12 @@ type Config struct {
 // (openFile), so a link that appears after the check fails the open.
 type Service struct {
 	run     runner
+	start   starter
+	procDir string
 	timeout time.Duration
+
+	mu    sync.Mutex
+	procs map[string]*proc // background processes by id (process.go)
 }
 
 // Open builds a Service backed by the real OS shell.
@@ -65,7 +78,11 @@ func Open(cfg Config) (*Service, error) {
 	if run == nil {
 		run = realRunner
 	}
-	return &Service{run: run, timeout: to}, nil
+	dir := cfg.ProcDir
+	if dir == "" {
+		dir = filepath.Join(os.TempDir(), "tenant-proc")
+	}
+	return &Service{run: run, start: cfg.Starter, procDir: dir, timeout: to, procs: map[string]*proc{}}, nil
 }
 
 // shellArgs picks the platform shell. PowerShell on Windows, sh on
@@ -99,7 +116,10 @@ func realRunner(ctx context.Context, command string, timeout time.Duration) (str
 // Exec runs a shell command (the dispatcher must have gated it) and
 // returns combined output (capped, keeping its head and tail). A non-zero
 // exit is returned as output + error, not swallowed. timeout <= 0 is the
-// service default; more than maxExecTimeout is clamped.
+// service default; more than maxExecTimeout is clamped. With a starter the
+// command is watched (process.go): one still running at the timeout moves to
+// the background instead of being killed (TEN-490); without one, or on a
+// surface the starter refuses, the runner kills it at the timeout as before.
 func (s *Service) Exec(ctx context.Context, command string, timeout time.Duration) (string, error) {
 	switch {
 	case timeout <= 0:
@@ -107,12 +127,15 @@ func (s *Service) Exec(ctx context.Context, command string, timeout time.Duratio
 	case timeout > maxExecTimeout:
 		timeout = maxExecTimeout
 	}
-	out, err := s.run(ctx, command, timeout)
-	out = clipMiddle(out, maxOutputBytes)
-	if err != nil {
-		return out, err
+	pr, err := s.launch(ctx, command)
+	switch {
+	case errors.Is(err, ErrNoBackground):
+		out, err := s.run(ctx, command, timeout)
+		return clipMiddle(out, maxOutputBytes), err
+	case err != nil:
+		return "", err
 	}
-	return out, nil
+	return s.execStarted(ctx, pr, timeout)
 }
 
 // SysInfo returns a readable summary of the host.
