@@ -100,3 +100,20 @@ changelog:
 release:
   prerelease: auto
   name_template: "Tenant v{{ .Version }}"
+  # Stamped by release.yml from scripts/install.* (__REPO__ -> the repository).
+  # Only read at publish time, so local snapshots do not need them.
+  extra_files:
+    - glob: dist-scripts/install.sh
+    - glob: dist-scripts/install.ps1
+  header: |
+    Install or upgrade with one line. macOS and Linux:
+
+    ```sh
+    curl -fsSL https://github.com/{{ envOrDefault "GITHUB_REPOSITORY" "OWNER/REPO" }}/releases/latest/download/install.sh | sh
+    ```
+
+    Windows (PowerShell):
+
+    ```powershell
+    irm https://github.com/{{ envOrDefault "GITHUB_REPOSITORY" "OWNER/REPO" }}/releases/latest/download/install.ps1 | iex
+    ```

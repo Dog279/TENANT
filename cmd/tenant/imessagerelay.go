@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,8 @@ type imessageResponder struct {
 	log      *slog.Logger
 	degraded func() bool       // optional: true ⇒ model on echo fallback, refuse turns
 	ingest   func(text string) // optional: surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
+	stopping func() bool       // optional: true while Tenant is stopping (TEN-499): a cut turn is recorded under dataDir and the texter told
+	dataDir  string            // optional: where the interrupted-turn record goes (TEN-499)
 	// approver is the Phase-2 text-confirm handshake (TEN-267). nil ⇒ Phase-1
 	// (gated tools stay deny-all via confirm). When set, an inbound approval reply
 	// ("Y <nonce>" from the operator) is consumed here and NEVER drives a turn, and
@@ -185,14 +188,15 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 			r.active = false
 			r.mu.Unlock()
 		}()
-		r.turn(ctx, m.ChatGUID, text)
+		r.turn(ctx, m.ChatGUID, strconv.FormatInt(m.RowID, 10), text)
 	}()
 }
 
 // turn drives one agent turn, a Turn activity, and replies. The turn ctx
 // carries the offsite-confirm: Phase-1 deny-all, or (Phase-2) the per-category
-// broker whose "ask" texts the operator the nonce handshake.
-func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
+// broker whose "ask" texts the operator the nonce handshake. inboundID is the
+// chat.db row that started it.
+func (r *imessageResponder) turn(ctx context.Context, chatGUID, inboundID, text string) {
 	turnCtx, act := event.Start(withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage), imessage.Turn, "chat", chatGUID)
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
 		UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
@@ -202,6 +206,17 @@ func (r *imessageResponder) turn(ctx context.Context, chatGUID, text string) {
 		failed = nil // the responder stopped: not a failure
 	}
 	act.End(&failed)
+	if ctx.Err() != nil && r.stopping != nil && r.stopping() {
+		// Tenant stopping cut the turn (TEN-499): record it for the next
+		// start and tell the texter now, on a fresh, short context.
+		if err := recordInterrupted(r.dataDir, newInterrupted("imessage", chatGUID, inboundID, text, res)); err != nil {
+			sysNotSaved.Log(context.Background(), "what", "the interrupted-turn record", "path", interruptedPath(r.dataDir), "err", err)
+		}
+		nctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		r.send(nctx, chatGUID, stopNotice)
+		return
+	}
 	if err != nil {
 		r.send(ctx, chatGUID, "sorry — I hit an error handling that. Try again.")
 		return
@@ -260,6 +275,9 @@ type imessageAgentDeps struct {
 	// "tenant-imessage", as the Discord relay's do: the log book and the
 	// dashboard feed see what a texted turn did.
 	events func(agent.Event)
+	// stopping is agent.Config.Stopping (TEN-499): no salvage synthesis for
+	// a turn a stop cuts. nil ⇒ never stopping (the TUI).
+	stopping func() bool
 }
 
 // imessageSysSuffix tells the dedicated agent it is answering over iMessage:
@@ -292,6 +310,21 @@ type imessageResponderManager struct {
 	running bool
 	cancel  context.CancelFunc
 	cleanup func()
+	sender  imsgSender // the running responder's send path (TEN-499: the boot-time notice); nil while off
+}
+
+// sendTo texts a chat through the running responder: the boot-time notice
+// for a turn a stop cut (TEN-499). An error while the responder is off, so
+// the caller keeps the notice for the next start.
+func (m *imessageResponderManager) sendTo(ctx context.Context, chatGUID, text string) error {
+	m.mu.Lock()
+	s := m.sender
+	m.mu.Unlock()
+	if s == nil {
+		return fmt.Errorf("imessage responder not running")
+	}
+	_, err := s.SendText(ctx, chatGUID, text)
+	return err
 }
 
 // trackIMessage files the responder's state in the Components view
@@ -329,6 +362,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 	}
 	ctx, cancel := context.WithCancel(base)
 	m.cancel, m.cleanup, m.running = cancel, cleanup, true
+	m.sender, _ = r.(imsgSender) // *imessageResponder is one; a test's fake need not be
 	trackIMessage(base, lifecycle.Running, nil)
 	go r.Run(ctx)
 	if m.persist != nil {
@@ -352,7 +386,7 @@ func (m *imessageResponderManager) Stop() (string, error) {
 	if m.cleanup != nil {
 		m.cleanup()
 	}
-	m.cancel, m.cleanup, m.running = nil, nil, false
+	m.cancel, m.cleanup, m.running, m.sender = nil, nil, false, nil
 	trackIMessage(m.base, lifecycle.Stopped, nil)
 	if m.persist != nil {
 		if perr := m.persist(false); perr != nil {
@@ -390,5 +424,6 @@ func buildIMessageAgent(d imessageAgentDeps) (*agent.Agent, error) {
 		RouteHook:              d.routeHook,
 		RouteActive:            d.routeActive,
 		RouteSticky:            d.routeSticky,
+		Stopping:               d.stopping,
 	})
 }

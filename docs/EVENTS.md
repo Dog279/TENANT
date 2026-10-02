@@ -706,6 +706,7 @@ Writes the `discord` log.
 | [1001](#discord-1001) | info | Message | `Message {message} from {author} in channel {channel}` |
 | [1002](#discord-1002) | info | Relay turn | `Relay turn in channel {channel} (approvals: {approvals})` |
 | [1003](#discord-1003) | info | Delivery | `Message to channel {channel}` |
+| [1004](#discord-1004) | info | Message | `Caught up {n} message(s) missed in channel {channel}` |
 | [1201](#discord-1201) | info | Approval card | `Approval card {message} posted in channel {channel} ({layout})` |
 | [2001](#discord-2001) | warning | Connection | `Gateway session ended; {next}: {err}` |
 | [2002](#discord-2002) | warning | Connection | `Gateway could not connect ({step}); retrying: {err}` |
@@ -716,6 +717,7 @@ Writes the `discord` log.
 | [2102](#discord-2102) | warning | Delivery | `Discord rate-limited a {method} on {resource}; retry after {retry_after}` |
 | [2103](#discord-2103) | warning | Message | `An attachment could not be downloaded: {err}` |
 | [2104](#discord-2104) | warning | Relay inbox | `The relay inbox retention sweep is incomplete: {err}` |
+| [2105](#discord-2105) | warning | Message | `Messages missed in channel {channel} could not be fetched: {err}` |
 | [2201](#discord-2201) | warning | Approval card | `Approval card fell back to {fallback} in channel {channel}: {err}` |
 | [2202](#discord-2202) | warning | Approval card | `Approval for {action} denied: no operator channel to post the card in` |
 | [2203](#discord-2203) | warning | Approval card | `Approval card {message} could not be updated to {verdict}: {err}` |
@@ -803,6 +805,20 @@ Writes the `discord` log.
 **Why it happens.** A fail is a message Discord did not accept: the bot lacks access to the channel (50001), the message is empty or too long, Discord rate-limited it, or the network failed.
 
 **What to do.** On a fail, check the error: grant the bot access to the channel, or check the host's network. The message was not sent and is not retried.
+
+### discord 1004
+
+`Caught up {n} message(s) missed in channel {channel}`
+
+- **Level:** info · **Channel:** operational · **Task:** Message · **Log:** discord
+- **Fields:** `channel`, `n`
+- **Find it:** `provider:discord id:1004`
+
+**What it means.** After the gateway session was identified anew (a restart, or a drop that could not resume), the relay read the channel back and routed the DMs it had missed, oldest first, as if they had just arrived (TEN-499).
+
+**Why it happens.** The operator wrote while Tenant was down or disconnected.
+
+**What to do.** None. Each message gets its answer; a message that carried a file is routed without the file.
 
 ### discord 1201
 
@@ -942,6 +958,20 @@ Writes the `discord` log.
 **Why it happens.** The inbox folder or a file in it could not be read or deleted: permissions, a file held open, or a disk error.
 
 **What to do.** Check the permissions of <data>/relay-inbox and delete the old files by hand if needed. The sweep runs again with the first attachment after the relay restarts.
+
+### discord 2105
+
+`Messages missed in channel {channel} could not be fetched: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Message · **Log:** discord
+- **Fields:** `channel`, `err`
+- **Find it:** `provider:discord id:2105`
+
+**What it means.** After a new gateway session the relay could not read a DM channel back, so a message sent while Tenant was down may stay unanswered (TEN-499).
+
+**Why it happens.** Discord refused or did not answer the read within 10 seconds: the network, a rate limit, or the bot lost access to the channel.
+
+**What to do.** Check the host's network, or send the message again. The next new session tries again from the same cursor.
 
 ### discord 2201
 
@@ -5364,6 +5394,8 @@ Writes the `system` log.
 | [1501](#system-1501) | info | Update | `A newer release is available: {latest} (running {current})` |
 | [2001](#system-2001) | warning | Clock | `The wall clock moved {delta} against the monotonic clock` |
 | [2020](#system-2020) | warning | Shutdown | `Shutdown step {stage}/{step} failed: {err}` |
+| [2021](#system-2021) | warning | Shutdown | `Shutdown step {stage}/{step} did not finish within the stop budget; abandoned after {after}` |
+| [2022](#system-2022) | warning | Shutdown | `Shutdown step {stage}/{step} skipped: the stop budget ran out` |
 | [2101](#system-2101) | warning | Component | `{component} is degraded: {err}` |
 | [2102](#system-2102) | warning | Component | `Child process {component} failed: {err}` |
 | [2110](#system-2110) | warning | Component | `{component} unavailable ({effect}): {err}` |
@@ -5605,6 +5637,34 @@ Writes the `system` log.
 **Why it happens.** Closing it returned an error: a store that could not flush, a listener already gone, a timeout.
 
 **What to do.** Read the error. A store that failed to close may have lost its last writes; tenant doctor checks the databases.
+
+### system 2021
+
+`Shutdown step {stage}/{step} did not finish within the stop budget; abandoned after {after}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `step`, `after`
+- **Find it:** `provider:system id:2021`
+
+**What it means.** A component's stop was still running when the stop budget ran out, so the shutdown went on without it and the process ends with the component unreleased (TEN-499).
+
+**Why it happens.** The component hung or was slow: a turn or job still draining, a store waiting on a lock, a connection that would not close.
+
+**What to do.** The boot record stays unclean, which the next start reports; the data on disk is safe (every durable write is crash-safe). If it repeats, give the service a longer stop budget (--stop-budget in the unit) or read the component's log for what hung.
+
+### system 2022
+
+`Shutdown step {stage}/{step} skipped: the stop budget ran out`
+
+- **Level:** warning · **Channel:** operational · **Task:** Shutdown · **Log:** system
+- **Fields:** `stage`, `step`
+- **Find it:** `provider:system id:2022`
+
+**What it means.** A component's stop never ran because the stops before it used up the stop budget (TEN-499).
+
+**Why it happens.** An earlier stop timed out; the event before this one names it.
+
+**What to do.** As for the timed-out stop: the data on disk is safe, and the next start reports the unclean stop.
 
 ### system 2101
 
