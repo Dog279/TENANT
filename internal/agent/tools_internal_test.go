@@ -67,3 +67,24 @@ func TestValidateToolCall_LenientOnSparseSchema(t *testing.T) {
 		t.Fatalf("sparse schema should accept anything: %v", err)
 	}
 }
+
+// An object or array sent as JSON text is decoded before validation; text
+// that isn't the declared kind is left for validation to reject.
+func TestUnstringifyArgs(t *testing.T) {
+	reg := NewStaticRegistry()
+	reg.Register(model.ToolSpec{Name: "edit", Parameters: json.RawMessage(`{"type":"object","properties":{"fields":{"type":"object"},"labels":{"type":"array"},"note":{"type":"string"}}}`)})
+	in := model.ToolCall{Name: "edit", Arguments: json.RawMessage(`{"fields":"{\"labels\":[\"a\"]}","labels":"[\"x\"]","note":"{\"keep\":1}"}`)}
+	out := unstringifyArgs(in, reg)
+	if err := validateToolCall(out, reg); err != nil {
+		t.Fatalf("decoded call should validate: %v (%s)", err, out.Arguments)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out.Arguments, &got)
+	if _, ok := got["fields"].(map[string]any); !ok || got["note"] != `{"keep":1}` {
+		t.Fatalf("fields must be an object, note left a string: %s", out.Arguments)
+	}
+	bad := model.ToolCall{Name: "edit", Arguments: json.RawMessage(`{"fields":"[1]"}`)}
+	if err := validateToolCall(unstringifyArgs(bad, reg), reg); err == nil {
+		t.Fatal("an array where an object is declared must still fail")
+	}
+}

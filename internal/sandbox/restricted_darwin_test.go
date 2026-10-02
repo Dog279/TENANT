@@ -164,3 +164,20 @@ func TestSeatbelt_DryRunKeepsRealHome(t *testing.T) {
 func q(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// A refused write is a refusal even when the command exits 0 (TEN-489): the
+// agent's probes end in `|| echo DENIED`, and dry run never re-ran them.
+func TestSeatbelt_RefusalSeenOnExitZero(t *testing.T) {
+	b, err := sandbox.Restricted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "x")
+	res, err := sandbox.Execute(context.Background(), b, sandbox.Command{Shell: "echo hi > " + target + " || echo DENIED"}, sandbox.Policy{}, nil)
+	if err != nil || res.ExitCode != 0 || !res.Escalated {
+		t.Fatalf("a dry run must re-run the exit-0 refusal on the host: exit=%d escalated=%v err=%v out=%q", res.ExitCode, res.Escalated, err, res.Output)
+	}
+	if b, _ := os.ReadFile(target); strings.TrimSpace(string(b)) != "hi" {
+		t.Fatalf("the host re-run should have written the file, got %q", b)
+	}
+}

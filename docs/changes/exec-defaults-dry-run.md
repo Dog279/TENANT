@@ -4,6 +4,14 @@
 macOS-only, and Linux and Windows run commands on the host until the container backend ships
 ([docker-sandbox-plan.md](../plans/docker-sandbox-plan.md)).
 
+> **Changed by TEN-489 (2026-10-02).** With no `exec_profiles` entry for them (or a `default`
+> one), the interactive surfaces (`local`, `discord`, `imessage`) now run `os_exec` on the
+> **host, behind their approvals**, like Claude Code without `/sandbox`. The dry run below ran a
+> refused command twice (sandboxed, then on the host), which repeated installers and other side
+> effects. Any `exec_profiles` entry for a surface opts it back into the sandbox; `cron-exec` and
+> `cron-shell` keep the built-in default described here. See
+> [exec-parity-plan.md](../plans/exec-parity-plan.md).
+
 ## What changed
 
 **1. Commands run under the sandbox by default, in dry run.** With no `exec_profiles` entry,

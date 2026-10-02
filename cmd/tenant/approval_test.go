@@ -25,8 +25,8 @@ func TestCategorize(t *testing.T) {
 		"web_click":    catDestructive,
 		"jira_write":   catDestructive,
 		"github_write": catDestructive,
-		"wiki_save":    catDestructive,
-		"crm_ask":      catDestructive,
+		"wiki_save":    catWrite, // TEN-489: not irreversible
+		"crm_ask":      catWrite,
 		"mcp_add":      catMCP,
 	}
 	for action, want := range cases {

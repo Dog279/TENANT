@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // hostBackend runs a command directly on the host with NO filesystem or network
@@ -64,9 +65,18 @@ func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, er
 		c.Dir = pol.WorkDir
 	}
 	c.Env = pol.Env.materialize(os.Environ())
+	detach(c)
+	c.WaitDelay = time.Second // a backgrounded child holding the pipe can't hang the call
 
 	out, err := c.CombinedOutput()
 	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The command finished; something it started in the background still
+		// holds the pipe. It keeps running on the host (unlike the sandbox,
+		// which reaps it), but nothing reads its output any more.
+		err = nil
+		res.Output += "\n[a background process is still running; its later output is not captured]"
+	}
 
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
