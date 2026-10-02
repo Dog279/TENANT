@@ -55,7 +55,7 @@ Paste the key into the browser's sign-in form. Never paste it into the address b
 
 ### Your own key instead
 
-If you'd rather use a key you already know, set `dashboard.auth` in config.json (in the same folder) to 32 or more random characters from a password manager, then restart Tenant. Tenant doesn't check how strong it is, so make it long. On Windows, edit config.json from an administrator window.
+If you'd rather use a key you already know, set `dashboard.auth` in config.json (in the same folder) to 32 or more random characters from a password manager, then restart Tenant. `tenant doctor` warns when it is shorter than that. After five wrong keys from one address, Tenant makes that address wait before it may try again (the wait doubles each time, up to a minute). On Windows, edit config.json from an administrator window.
 
 ### Signing out, and changing the key
 
@@ -74,7 +74,7 @@ Browsers don't keep a sign-in apart by port: every other web service on this com
 
 ## 3. Where it can be reached
 
-- **This computer only**, by default.
+- **This computer only**, by default: http://127.0.0.1:8770, or http://localhost:8770 if you prefer the name.
 - **From your phone:** use Tailscale. In the terminal app run `/tailscale serve`, or set `"tailscale": {"serve": true}` in config.json so a background service publishes it on every start. Tenant trusts the Tailscale name on its own.
 - **Behind a web proxy on the same computer:** add the name the proxy uses to `dashboard.allowed_hosts` in config.json.
 - **On a network address** (for example `--dashboard-addr 0.0.0.0:8770`): Tenant refuses to start unless the dashboard has a key and a certificate (`dashboard.tls_cert` and `dashboard.tls_key`).
@@ -84,7 +84,7 @@ If a page shows one of these instead of the dashboard:
 
 | It says | It means | What to do |
 |---|---|---|
-| unrecognized dashboard host | The address you typed isn't one Tenant trusts. | Use http://127.0.0.1:8770, your Tailscale address, or add the name to `dashboard.allowed_hosts`. |
+| unrecognized dashboard host | The address you typed isn't one Tenant trusts. | Use http://127.0.0.1:8770 (or http://localhost:8770), your Tailscale address, or add the name to `dashboard.allowed_hosts`. |
 | cross-origin request rejected | The request came from another site, another tab's page, or another port on this computer. | Use the dashboard's own buttons. If it keeps happening, something else on this computer is sending requests to it. |
 | CSRF validation failed | A browser extension or privacy setting removed the header that shows the request came from the dashboard. | Turn that extension off for the dashboard's address. |
 | Nothing changed: that needs a second click to confirm. | A change that asks first was sent without its second step. | Open the step again and press its **Yes** button. |

@@ -1412,6 +1412,13 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 		return checkResult{Status: statusWarn,
 			Detail: fmt.Sprintf("dashboard /healthz returned HTTP %d", resp.StatusCode)}
 	}
+	// A short key is guessable (TEN-403): the generated one is 32+ characters;
+	// a dashboard.auth someone typed may not be.
+	if key, _ := dashboardClientToken(e.c.cfgDir, e.lc, true); key != "" && len(key) < 32 {
+		return checkResult{Status: statusWarn,
+			Detail: fmt.Sprintf("dashboard healthy at %s, but its sign-in key is %d characters", addr, len(key)),
+			Fix:    "use 32 or more random characters in dashboard.auth, or delete dashboard-auth-token and restart to generate one"}
+	}
 	return checkResult{Status: statusOK, Detail: "dashboard healthy at " + addr}
 }
 

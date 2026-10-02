@@ -548,9 +548,9 @@ Writes the `dashboard` log.
 - **Fields:** `method`, `route`, `remote`, `credential`
 - **Find it:** `provider:dashboard id:2103`
 
-**What it means.** A request carried no dashboard token, or a wrong one (credential says which), and got 401.
+**What it means.** A request carried no dashboard token, a wrong one, or the sign-in cookie on a request another site started (credential says which: missing, invalid, cross-site cookie), and got 401.
 
-**Why it happens.** A browser that hasn't signed in, a token that changed since sign-in, a script with an old token, or someone guessing.
+**Why it happens.** A browser that hasn't signed in, a token that changed since sign-in, a script with an old token, or someone guessing. A cross-site cookie means a page on another site, or another port on this computer, embedded a dashboard address (an image, a script, a fetch): the browser sent the cookie along and the dashboard refused it (TEN-415).
 
 **What to do.** Sign in at /settings with the token in <config>/dashboard-auth-token. Many wrong tokens from an address you don't know mean someone is guessing: keep the dashboard off public networks.
 
@@ -1941,7 +1941,7 @@ Writes the `mcp` log.
 `Connection to {server}`
 
 - **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
-- **Fields:** `server`, `url`, `interactive`
+- **Fields:** `server`, `url`, `interactive` (sensitive, masked: `url`)
 - **Find it:** `provider:mcp id:1`
 
 **What it means.** A session with an MCP server: start when Tenant connects, stop when it closes the session (a shutdown, a dropped duplicate), with its duration; fail when it could not connect. A remote connector reconnecting at launch from its saved sign-in has interactive=false.
@@ -1997,7 +1997,7 @@ Writes the `mcp` log.
 `{server} has no saved sign-in; it stays off until /enable signs in`
 
 - **Level:** info · **Channel:** operational · **Task:** Connection · **Log:** mcp
-- **Fields:** `server`, `url`
+- **Fields:** `server`, `url` (sensitive, masked: `url`)
 - **Find it:** `provider:mcp id:1003`
 
 **What it means.** A connector could not reconnect at launch because it needs a browser sign-in, which launch never opens.
@@ -2193,7 +2193,7 @@ Writes the `mcp` log.
 `{server} needs re-authorization: its token could not be refreshed: {err}`
 
 - **Level:** error · **Channel:** operational · **Task:** Sign-in · **Log:** mcp
-- **Fields:** `server`, `url`, `err`, `fix`
+- **Fields:** `server`, `url`, `err`, `fix` (sensitive, masked: `url`)
 - **Find it:** `provider:mcp id:3101`
 
 **What it means.** A remote connector's sign-in died: its token expired and the server refused the refresh (invalid_grant, invalid_client, or another 4xx answer), so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.

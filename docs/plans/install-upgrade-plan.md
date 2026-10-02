@@ -162,7 +162,7 @@ What an OS stop looks like to Tenant, and how long it gets:
 
 | Supervisor | Signal | OS grace before a kill | `--stop-budget` the unit passes |
 |---|---|---|---|
-| launchd (macOS) | SIGTERM | `ExitTimeOut`, default 20 s; the unit sets 100 s, and the OS may still cut a shutdown short | 90s |
+| launchd (macOS) | SIGTERM | `ExitTimeOut`, default system-defined (man launchd.plist); the unit sets 100 s, and the OS may still cut a shutdown short | 90s |
 | systemd user unit (Linux) | SIGTERM | `TimeoutStopSec` 100 s inside the user manager, which the system itself stops with its own ~90–120 s limit | 90s |
 | Scheduled task (Windows, user) | console CTRL_LOGOFF/SHUTDOWN → SIGTERM via the Go runtime | a few seconds (Windows' hung-app timeouts); the Task Scheduler service may end the task sooner | 4s |
 | SCM service (Windows, `--system`) | `SERVICE_CONTROL_PRESHUTDOWN` (accepted) then `STOP` | pre-shutdown default 180 s per service; a plain `sc stop` has no limit | 120s |

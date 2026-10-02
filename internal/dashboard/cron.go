@@ -62,6 +62,7 @@ type CronJobView struct {
 	NextRun    string
 	LastRun    string
 	LastStatus string
+	LastError  string // the last run's error, plain, when it failed (TEN-427)
 }
 
 // SetCron installs the cron control after construction (mirrors the optional
@@ -143,6 +144,9 @@ func (s *Server) handleCronAddForm(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	spec := strings.TrimSpace(r.FormValue("spec"))
+	if spec == "" { // a preset from the list, when nothing was typed (TEN-420)
+		spec = strings.TrimSpace(r.FormValue("preset"))
+	}
 	prompt := strings.TrimSpace(r.FormValue("prompt"))
 	kind := strings.TrimSpace(r.FormValue("kind"))
 	tz := strings.TrimSpace(r.FormValue("tz"))
