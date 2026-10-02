@@ -64,13 +64,14 @@ jobs:
         if: runner.os == 'Linux'
         run: shellcheck -s sh scripts/install.sh
 
+      # curl reads file:// URLs, so the snapshot in dist/ stands in for the
+      # release's download directory with no local HTTP server (the macOS
+      # runner could not reach one on loopback).
       - name: Install the snapshot with install.sh
         if: runner.os != 'Windows'
         run: |
           bash -n scripts/install.sh
-          python3 -m http.server 8000 --directory dist &
-          sleep 2
-          export TENANT_BASE_URL=http://127.0.0.1:8000
+          export TENANT_BASE_URL="file://$PWD/dist"
           export TENANT_VERSION="$(jq -r .version dist/metadata.json)"
           export TENANT_INSTALL_DIR="$RUNNER_TEMP/bin"
           sh scripts/install.sh
