@@ -60,11 +60,26 @@ path. No Python runtime, no service mesh — just the binary and a model endpoin
 
 ## Install
 
-Download the archive for your operating system and CPU from the
-[latest release](https://github.com/Dog279/TENANT/releases/latest), extract it,
-and place `tenant` (`tenant.exe` on Windows) somewhere on your `PATH`. Release
-archives include SHA-256 checksums and SBOMs; installing Tenant does not require
-Go.
+macOS or Linux:
+
+```sh
+curl -fsSL https://github.com/Dog279/TENANT/releases/latest/download/install.sh | sh
+tenant setup
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/Dog279/TENANT/releases/latest/download/install.ps1 | iex
+tenant setup
+```
+
+The script verifies the release's SHA-256 and installs for the current user, no
+sudo or Go toolchain needed; the archives are also on the
+[Releases page](https://github.com/Dog279/TENANT/releases/latest) with checksums
+and SBOMs. `tenant service install` keeps Tenant running in the background
+(launchd, systemd, or a Windows task or service). `tenant update` upgrades it
+with a verified download, a backup and a way back.
 
 ## Quickstart
 
@@ -166,6 +181,8 @@ soul (`/memory soul import cmd/tenant/builtinsouls/agents/Main`).
 | `tui` | full-screen terminal UI (streaming chat + activity feed) |
 | `chat` | headless agent loop (one stdin line = one turn) |
 | `serve` | background self-improvement (distillation) on a cadence |
+| `service <install\|uninstall\|status\|start\|stop\|restart>` | run `serve` under launchd, systemd, or a Windows task (`--system`: a Windows service); `restart` waits for the running turn |
+| `update [--check\|--rollback]` | upgrade to the latest release with a verified download, a pre-update backup and `tenant.prev` to go back to |
 | `doctor [--fix]` | diagnose (and repair) the setup |
 | `privacy [status\|retention\|prune\|forget\|sessions\|export]` | see what Tenant keeps and for how long; set retention per data class; forget a session, fact, skill, text or connector with a preview first; export what Tenant knows |
 | `backup [create\|verify\|restore]` | one-file backup of every store, the archive and your config (`--encrypt` or `--recipient age1…` also carries credentials); `verify` checks it end to end; `restore` swaps it in and keeps the old directories |
