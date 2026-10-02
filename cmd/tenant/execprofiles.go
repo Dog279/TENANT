@@ -303,6 +303,15 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 // credential stores (credentialStoreRoots).
 func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	backend, why := builtinExec()
+	if _, configured := defaultExecProfiles.lookup(surface); !configured && surface != surfaceCronExec && surface != surfaceCronShell {
+		// Interactive surfaces run on the host behind their approvals, like
+		// Claude Code without /sandbox: a dry run re-ran a refused command on
+		// the host, so installers ran twice (TEN-489). Any exec_profiles entry
+		// for the surface (or "default") opts back into the sandbox; cron keeps
+		// the confined default. The host here is a choice, not a fallback, so
+		// there is no reason to report.
+		backend, why = "host", ""
+	}
 	p := execProfile{
 		Backend:  backend,
 		Fallback: why,
@@ -337,6 +346,11 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	p.Policy.WriteRoots = append(expandRoots(o.WriteRoots), liveExceptions(surface)...)
 	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)...)
 	p.Policy.Env = envAllowlist(o.EnvPass, o.EnvSet)
+	if p.Backend == "host" {
+		// On the host ~/.ssh is readable anyway; the agent socket lets git and
+		// ssh use the operator's keys without them leaving the agent.
+		p.Policy.Env = envAllowlist(append([]string{"SSH_AUTH_SOCK"}, o.EnvPass...), o.EnvSet)
+	}
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
 	p.Policy.Limits.MemoryBytes = int64(o.MemoryMB) << 20
 	p.Policy.Limits.MaxPIDs = o.MaxPIDs
@@ -558,6 +572,16 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 		}
 		pol := p.Policy
 		pol.Limits.Wall = timeout
+		// os_exec's workdir (default: home) is the cwd on the host. A confining
+		// backend's WorkDir is also a writable root, so there a model-chosen
+		// folder is refused rather than quietly opened for writing.
+		if be.Isolation() == sandbox.IsolationNone {
+			if pol.WorkDir = osys.WorkDir(ctx); pol.WorkDir == "" {
+				pol.WorkDir, _ = os.UserHomeDir()
+			}
+		} else if osys.WorkDir(ctx) != "" {
+			return "", fmt.Errorf("workdir is only used when commands run on the host; the %s surface runs them in the %s sandbox, so cd inside the command instead", surface, be.Name())
+		}
 		cmd := sandbox.Command{Shell: command, Surface: surface}
 		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm, pol))
 		if err != nil {

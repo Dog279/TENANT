@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"tenant/internal/logs/event"
 	"tenant/internal/model"
@@ -118,8 +121,10 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(`"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}`, "path", "old_string", "new_string"), Gated: true},
 		{Name: "os_make_dir", Description: "Create a directory (and any missing parents). GATED: needs write permission or approval.",
 			Parameters: obj(`"path":{"type":"string"}`, "path"), Gated: true},
-		{Name: "os_exec", Description: "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS). GATED: off unless enabled; destructive commands need explicit approval. Returns combined stdout+stderr.",
-			Parameters: obj(`"command":{"type":"string"}`, "command"), Gated: true, Outbound: true},
+		{Name: "os_exec", Description: "Run a shell command on this machine (PowerShell on Windows, sh on Linux/macOS) and return its combined stdout+stderr; long output keeps its start and end. GATED: off unless enabled; destructive commands need explicit approval. " +
+			"Use for builds, installs, git, package managers, processes and scripts. To read or change files prefer os_read_file / os_edit_file / os_write_file over cat, sed or heredocs. " +
+			"There is no terminal: nothing can answer a prompt, so pass non-interactive flags (-y, --yes, --non-interactive, CI=1). sudo can't ask for a password; if a command needs it, ask the operator to run it.",
+			Parameters: obj(`"command":{"type":"string"},"workdir":{"type":"string","description":"absolute directory to run in (default: the home folder)"},"timeout":{"type":"integer","description":"seconds, default 120, max 600"}`, "command"), Gated: true, Outbound: true},
 	}
 }
 
@@ -327,6 +332,8 @@ func (d *Dispatcher) listDir(args json.RawMessage) (string, bool, error) {
 func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
 		Command string `json:"command"`
+		Workdir string `json:"workdir"`
+		Timeout int    `json:"timeout"` // seconds
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "invalid arguments: " + err.Error(), true, nil
@@ -334,13 +341,24 @@ func (d *Dispatcher) exec(ctx context.Context, args json.RawMessage) (string, bo
 	if strings.TrimSpace(a.Command) == "" {
 		return "command is required", true, nil
 	}
+	if a.Workdir != "" {
+		dir := a.Workdir
+		if rest, ok := strings.CutPrefix(dir, "~"); ok {
+			home, _ := os.UserHomeDir()
+			dir = home + rest
+		}
+		if !filepath.IsAbs(dir) {
+			return "workdir must be an absolute path (or start with ~)", true, nil
+		}
+		ctx = WithWorkDir(ctx, filepath.Clean(dir))
+	}
 	// The approval gateExec gets fills this slot, so the command's Security
 	// record names the approval that let it run.
 	ctx = event.WithApproval(ctx, "")
 	if err := d.policy.gateExec(ctx, a.Command); err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.Exec(ctx, a.Command)
+	out, err := d.svc.Exec(ctx, a.Command, time.Duration(a.Timeout)*time.Second)
 	if err != nil {
 		// Surface the output AND the error — a non-zero exit is signal,
 		// not a tool failure.

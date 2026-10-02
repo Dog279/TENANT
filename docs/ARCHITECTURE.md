@@ -24,15 +24,15 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-10-01; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-10-02; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
 | Go packages | 87 |
-| Go files | 1,187 |
-| Test files | 577 |
-| Production Go LOC | 151,428 |
-| Test Go LOC | 116,214 |
-| Go modules | 1 |
+| Go files | 3,391 |
+| Test files | 1,662 |
+| Production Go LOC | 465,868 |
+| Test Go LOC | 330,294 |
+| Go modules | 4 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
 <!-- docfacts:generated:end -->
@@ -1108,9 +1108,11 @@ can slip past it when `AllowExec` is on without `Confirm`. It stays as
 a fast fail-early layer. The boundary is the execution sandbox
 (§5.12h): `os_exec` runs through the runner injected as
 `Config.Runner`, on a `sandbox.Backend` picked per surface from the
-operator's `exec_profiles`. The built-in profile is `restricted` in
-dry run on macOS (Seatbelt), else `host`, which confines **nothing**
-(Linux and Windows; `builtinExec` says why). A dry run confines nothing
+operator's `exec_profiles`. With no entry, the interactive surfaces
+(TUI/dashboard, Discord, iMessage) run on `host` behind their approvals
+(TEN-489); cron's built-in profile is `restricted` in dry run on macOS
+(Seatbelt), else `host`, which confines **nothing** (Linux and Windows;
+`builtinExec` says why). A dry run confines nothing
 either: a refused command re-runs on the host. A surface is contained only once enforcement is on
 (`exec_profiles.default.enforce`), and only as far as that OS's backend
 enforces (`tenant sandbox probe` / `selftest`). Until then: keep exec off
@@ -1250,8 +1252,10 @@ persistence, deny-root metadata and background processes.
   settings file: hot-reloaded, validated, and never reachable from an
   agent tool. "Always" on an escalation saves only the refused folder
   as an exception (`approval.OnAlways`, `saveExecException`).
-- `resolveExecProfile`: the built-in profile is `builtinExec`'s backend
-  in dry run (`cron-shell`: no network); `exec_profiles.default.enforce`
+- `resolveExecProfile`: with no exec_profiles entry the interactive
+  surfaces run on `host` (TEN-489; `SSH_AUTH_SOCK` passes there too);
+  cron's built-in profile is `builtinExec`'s backend in dry run
+  (`cron-shell`: no network); `exec_profiles.default.enforce`
   is the switch. The built-in deny set is the config dir, the data dir
   and the Tenant binary; confining profiles add the credential- and
   browser-store baseline. Every profile gets the env allowlist
