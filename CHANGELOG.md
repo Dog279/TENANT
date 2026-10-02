@@ -5,6 +5,35 @@ Releases page.
 
 ## Unreleased
 
+### Added
+- **`tenant service`** (TEN-498): `install`, `uninstall`, `status`, `start`, `stop` and
+  `restart` run Tenant in the background through the OS: a LaunchAgent on macOS (logs in
+  `~/Library/Logs/tenant/`), a systemd user unit on Linux, a scheduled task at logon on
+  Windows, or with `--system` a Windows service running as SYSTEM. `install --print` shows
+  the unit without installing it; `restart` waits for the running turn unless `--now`.
+  `tenant setup` offers the install at the end and `tenant doctor` reports the service.
+- **An OS restart or shutdown mid-task loses nothing** (TEN-499). The first seconds of a
+  stop cut the turn, record it in the archive and tell the operator's channel; after boot
+  Tenant posts a reminder for the cut turn and catches up the Discord DMs sent while it was
+  down. Nothing is re-run on its own. `os_write_file` and `os_edit_file` write through a
+  temp file and a rename, so a kill mid-write leaves the original intact.
+- **`tenant update`** (TEN-500) checks the release, verifies the checksum (and the cosign
+  signature when cosign is installed), smoke-runs the new binary, backs the data up to
+  `<data>/backups/pre-update-<version>.tenant-backup`, swaps the binary keeping
+  `tenant.prev`, restarts the service and confirms the new version answers; on failure it
+  puts the old binary back. `--check`, `--version vX.Y.Z`, `--yes`, `--now`, `--force` and
+  `--rollback`. Serve checks for a newer release once a day and writes one log-book line;
+  `"update_check": false` turns that off. Nothing is applied automatically, and a dev build
+  refuses to update.
+- **One-line install** (TEN-501): `install.sh` and `install.ps1` ship with every release,
+  verify the SHA-256 against `checksums.txt` and install to `~/.local/bin` or
+  `%LOCALAPPDATA%\Programs\tenant` without sudo or admin rights. A packaging CI job installs
+  a snapshot through both scripts on all three OSes.
+- **Install, service and update guides, and a release smoke job** (TEN-502): QUICKSTART and
+  the README carry the one-liners; after each public release a job installs it through the
+  scripts on all three OSes, checks the version and the absent quarantine mark, renders the
+  service unit and reinstalls through `tenant update`.
+
 ### Fixed
 - **A corrupt `config.json` is no longer overwritten.** Tenant refuses to start on it and
   names the line and column where it broke. Before, the first setting saved from the
@@ -71,6 +100,8 @@ Releases page.
 - **`gateway.mode: "both"` and `tenant setup --both`.** One `mcp-memory` process serves one
   transport, so "both" never served stdio as well. A saved `"both"` loads as `"sse"`, which
   is what it already did.
+- **The `deploy/launchd/com.tenant.serve.plist` template.** `tenant service install` writes
+  the unit.
 
 ## 0.1.0 (2026-09-29)
 
