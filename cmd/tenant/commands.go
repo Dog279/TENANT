@@ -2690,7 +2690,12 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// prompts the operator at this TUI). enabled is persisted so it auto-starts
 	// next launch. Best-effort: a setup failure is a feed note, never fatal.
 	imsgResp := &imessageResponderManager{
-		base:      ctx,
+		base: ctx,
+		onStart: func() {
+			if _, _, err := mainTools.SetPluginEnabled("imessage", true); err != nil {
+				pushSys("imessage tools: " + err.Error())
+			}
+		},
 		allowFrom: imsgAllowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {

@@ -318,6 +318,10 @@ type imessageResponderManager struct {
 	buildFn   func() (responderRunnable, func(), error)
 	allowFrom func() []string
 	persist   func(enabled bool) error
+	// onStart runs after each successful Start: it turns on the agent's
+	// imessage_* tools, so reading what the responder sees needs no /enable,
+	// flag or relaunch.
+	onStart func()
 
 	mu      sync.Mutex
 	running bool
@@ -362,6 +366,9 @@ func (m *imessageResponderManager) Start() (string, error) {
 	m.cancel, m.cleanup, m.running = cancel, cleanup, true
 	trackIMessage(base, lifecycle.Running, nil)
 	go r.Run(ctx)
+	if m.onStart != nil {
+		m.onStart()
+	}
 	if m.persist != nil {
 		if perr := m.persist(true); perr != nil {
 			return "", errNotSaved("imessage responder ON", perr)

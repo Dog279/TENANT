@@ -234,7 +234,12 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	}
 
 	resp := &imessageResponderManager{
-		base:      ctx,
+		base: ctx,
+		onStart: func() {
+			if _, _, err := d.tools.SetPluginEnabled("imessage", true); err != nil {
+				d.notify("imessage tools: " + err.Error())
+			}
+		},
 		allowFrom: allowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {

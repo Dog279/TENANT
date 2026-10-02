@@ -24,7 +24,8 @@ func imessagePlugin() *pluginDescriptor {
 		ApplyConfig: applyIMessageConfig,
 		Grants:      imessageGrants,
 		Launch:      launchIMessage,
-		Relaunch:    true, // config edits apply on /disable → /enable (TEN-483)
+		Activate:    activateIMessage, // /enable needs no flag or saved setup: native by default
+		Relaunch:    true,             // config edits apply on /disable → /enable (TEN-483)
 		Title:       "iMessage",
 		Version:     1,
 		Tools:       func() []model.ToolSpec { return imessage.NewDispatcher(nil, imessage.Policy{}).Tools() },
@@ -106,12 +107,36 @@ func launchIMessage(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if !f.on {
 		return nil, nil, nil
 	}
+	p, cleanup, err := buildIMessage(e, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []plugin{p}, cleanup, nil
+}
+
+// activateIMessage builds the tools live on /enable imessage, and when the
+// responder turns on: no --imessage flag, relaunch or `tenant setup` needed.
+// A saved BlueBubbles URL (or $BLUEBUBBLES_URL) picks BlueBubbles; else
+// native chat.db.
+func activateIMessage(_ context.Context, e *pluginEnv) (plugin, func(), error) {
+	f := *imessageFlagsOf(e.pf) // launch flags still win (--bb-url, --imessage-allow-send)
+	if lc, err := loadLaunchConfig(e.c.cfgDir); err == nil && f.url == "" {
+		if sc := lc.Skills["imessage"]; sc != nil && sc.Settings["url"] != "" {
+			f.url = sc.Settings["url"]
+			f.pass = resolveSecretWith(e.c.credentialsLoader(), e.c.cfgDir, skillSecretID("imessage", "password"), authCfg{Stored: true})
+		}
+	}
+	return buildIMessage(e, &f)
+}
+
+// buildIMessage opens the transport and wraps it in the gated dispatcher.
+func buildIMessage(e *pluginEnv, f *imessageFlags) (plugin, func(), error) {
 	b, _, err := openIMessage(f)
 	if err != nil {
 		return nil, nil, fmt.Errorf("imessage plugin: %w", err)
 	}
 	pol := imessage.Policy{AllowSend: e.gateAllow(f.allowSend), Confirm: e.confirm}
-	return []plugin{imessage.NewDispatcher(b, pol)}, func() { _ = b.Close() }, nil
+	return imessage.NewDispatcher(b, pol), func() { _ = b.Close() }, nil
 }
 
 // openIMessage opens the iMessage transport for the tools, `tenant imessage`

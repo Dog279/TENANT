@@ -229,10 +229,11 @@ func (f *fakeRunnable) Run(ctx context.Context) {
 // fresh at each Start, persists the enabled intent, and cleans up on Stop.
 func TestIMessageResponderManager_StartStopLifecycle(t *testing.T) {
 	var persisted []bool
-	builds, cleanups := 0, 0
+	builds, cleanups, toolsOn := 0, 0, 0
 	started := make(chan struct{})
 	mgr := &imessageResponderManager{
 		base:      context.Background(),
+		onStart:   func() { toolsOn++ },
 		allowFrom: func() []string { return []string{"+15551234567", "a@b.com"} },
 		persist:   func(on bool) error { persisted = append(persisted, on); return nil },
 		buildFn: func() (responderRunnable, func(), error) {
@@ -256,6 +257,9 @@ func TestIMessageResponderManager_StartStopLifecycle(t *testing.T) {
 		t.Fatalf("buildFn should run once and the status count the fresh allowlist: builds=%d status=%q", builds, status)
 	}
 
+	if toolsOn != 1 {
+		t.Fatalf("Start should turn the agent's imessage tools on once, got %d", toolsOn)
+	}
 	// Idempotent: a second Start doesn't rebuild.
 	if s, _ := mgr.Start(); !strings.Contains(s, "already on") || builds != 1 {
 		t.Fatalf("second Start should be a no-op: status=%q builds=%d", s, builds)
