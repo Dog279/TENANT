@@ -38,6 +38,7 @@ type InboundMessage struct {
 	Message
 	RowID    int64
 	ChatGUID string
+	Service  string // message.service: "iMessage", "SMS", "RCS" (gates who may drive)
 }
 
 // macEpochOffset is the seconds between the Unix epoch (1970-01-01) and
@@ -311,7 +312,7 @@ func (r *chatReader) MessagesSince(ctx context.Context, afterRowID int64, limit 
 		limit = 100
 	}
 	const q = `
-SELECT m.ROWID, c.guid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, h.id
+SELECT m.ROWID, c.guid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, h.id, m.service
   FROM message m
   JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
   JOIN chat c ON c.ROWID = cmj.chat_id
@@ -335,14 +336,16 @@ SELECT m.ROWID, c.guid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, 
 			isFromMe bool
 			date     int64
 			handleID sql.NullString
+			service  sql.NullString
 		)
-		if err := rows.Scan(&rowID, &chatGUID, &guid, &text, &attr, &isFromMe, &date, &handleID); err != nil {
+		if err := rows.Scan(&rowID, &chatGUID, &guid, &text, &attr, &isFromMe, &date, &handleID, &service); err != nil {
 			return nil, fmt.Errorf("imessage: scan since: %w", err)
 		}
 		out = append(out, InboundMessage{
 			Message:  rowToMessage(guid, text, attr, isFromMe, date, handleID),
 			RowID:    rowID,
 			ChatGUID: chatGUID,
+			Service:  service.String,
 		})
 	}
 	return out, rows.Err()

@@ -3088,7 +3088,14 @@ type fakeIMessage struct {
 	allowErr    error
 	responderOn bool
 	setCalls    []bool // SetResponder(on) calls recorded
+	passive     bool
 	perms       *fakePerms
+}
+
+func (f *fakeIMessage) Passive() bool { return f.passive }
+func (f *fakeIMessage) SetPassive(on bool) (string, error) {
+	f.passive, f.responderOn = on, true
+	return "imessage responder ON", nil
 }
 
 func (f *fakeIMessage) ResponderOn() bool { return f.responderOn }
@@ -3418,6 +3425,16 @@ func TestSlash_IMessageResponderToggle(t *testing.T) {
 	last := m.msgs[len(m.msgs)-1].content
 	if !strings.Contains(strings.ToLower(last), "responder: on") {
 		t.Errorf("list should show responder ON state; got:\n%s", last)
+	}
+	// TEN-485: passive | respond switch mode and show it.
+	m.handleSlash("/imessage passive")
+	m.handleSlash("/imessage list")
+	if !fi.passive || !strings.Contains(m.msgs[len(m.msgs)-1].content, "passive") {
+		t.Errorf("/imessage passive should set and show passive; got:\n%s", m.msgs[len(m.msgs)-1].content)
+	}
+	m.handleSlash("/imessage respond")
+	if fi.passive {
+		t.Error("/imessage respond should clear passive")
 	}
 }
 

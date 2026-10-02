@@ -1166,6 +1166,7 @@ Writes the `imessage` log.
 | [1001](#imessage-1001) | info | Message | `Message {row} received ({bytes} bytes)` |
 | [1002](#imessage-1002) | info | Turn | `iMessage turn` |
 | [1003](#imessage-1003) | info | Delivery | `iMessage of {bytes} bytes` |
+| [1004](#imessage-1004) | info | Observed | `Message {row} observed ({reason})` |
 | [2001](#imessage-2001) | warning | Poll | `The responder cannot read new messages: {err}` |
 | [9001](#imessage-9001) | verbose | Poll | `Poll for new iMessages` |
 
@@ -1191,11 +1192,11 @@ Writes the `imessage` log.
 - **Fields:** `row`, `bytes`, `from`, `chat`, `text` (sensitive, masked: `from`, `chat`, `text`)
 - **Find it:** `provider:imessage id:1001`
 
-**What it means.** The responder picked up a text from an allowed handle: an approval reply, or a message it will answer.
+**What it means.** The responder picked up a text that may drive the agent: an approval reply, or a message it will answer.
 
-**Why it happens.** Someone on the allowlist (/imessage allow) texted this Mac.
+**Why it happens.** Someone on the allowlist (/imessage allow), or the operator, texted this Mac 1:1 over iMessage while the responder answers.
 
-**What to do.** None. Texts from handles not on the allowlist, and this Mac's own, are skipped without an event.
+**What to do.** None. Every other text is recorded as observed, and this Mac's own are skipped without an event.
 
 ### imessage 1002
 
@@ -1224,6 +1225,20 @@ Writes the `imessage` log.
 **Why it happens.** A fail is a text Messages did not send: osascript failed, Messages is not signed in, or Tenant lacks the Automation permission for Messages.
 
 **What to do.** On a fail, open Messages and check it is signed in, and allow Tenant (or its terminal) under System Settings > Privacy & Security > Automation. The text is not retried.
+
+### imessage 1004
+
+`Message {row} observed ({reason})`
+
+- **Level:** info · **Channel:** operational · **Task:** Observed · **Log:** imessage
+- **Fields:** `row`, `reason`, `from`, `chat`, `text` (sensitive, masked: `from`, `chat`, `text`)
+- **Find it:** `provider:imessage id:1004`
+
+**What it means.** The responder read a text it will not answer. reason is passive (the responder only reads), not_allowed (the sender is not on the allowlist), group (group chats never drive) or not_imessage (SMS or RCS).
+
+**Why it happens.** Anyone texted this Mac. Log alerts on the imessage log can act on it.
+
+**What to do.** None. To let a sender drive the agent, /imessage allow them and /imessage respond.
 
 ### imessage 2001
 

@@ -32,6 +32,10 @@ type imessageAllowManager struct {
 	// perms is the responder's per-category permission broker (TEN-230), exposed
 	// to /imessage permissions. nil ⇒ unavailable.
 	perms tui.PermissionControl
+	// passive makes the running responder observe-only (TEN-485);
+	// persistPassive writes it through to imessage.passive (nil = no persist).
+	passive        bool
+	persistPassive func(bool) error
 }
 
 // newIMessageAllowManager builds a manager seeded from the persisted handles.
@@ -82,10 +86,72 @@ func (m *imessageAllowManager) SetResponder(on bool) (string, error) {
 	if r == nil {
 		return "", fmt.Errorf("imessage responder unavailable here (native transport is macOS-only)")
 	}
-	if on {
-		return r.Start()
+	if !on {
+		return r.Stop()
 	}
-	return r.Stop()
+	status, err := r.Start()
+	if err != nil {
+		return "", err
+	}
+	return status + " — " + m.modeNote(), nil
+}
+
+// loadPassive seeds the mode from config and persists changes back to it.
+func (m *imessageAllowManager) loadPassive(cfgDir string, lc *launchConfig) {
+	if lc == nil {
+		return
+	}
+	m.passive = lc.IMessage.Passive
+	m.persistPassive = func(on bool) error {
+		return persistLaunchConfig(cfgDir, lc, func(lc *launchConfig) { lc.IMessage.Passive = on })
+	}
+}
+
+// Passive reports whether the responder only reads (TEN-485).
+func (m *imessageAllowManager) Passive() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.passive
+}
+
+// SetPassive switches between reading only (true) and answering allowed
+// handles (false), live, and starts the responder if it is off: choosing a
+// mode means "run in this mode". It applies even when saving fails, like
+// the responder's own on/off.
+func (m *imessageAllowManager) SetPassive(on bool) (string, error) {
+	m.mu.Lock()
+	m.passive = on
+	persist := m.persistPassive
+	m.mu.Unlock()
+	if persist != nil {
+		if err := persist(on); err != nil {
+			return "", errNotSaved("imessage mode", err)
+		}
+	}
+	if m.ResponderOn() {
+		return "imessage responder " + m.modeNote(), nil
+	}
+	return m.SetResponder(true)
+}
+
+func (m *imessageAllowManager) modeNote() string {
+	if m.Passive() {
+		return "passive: reading every text, answering none (/imessage respond to answer)"
+	}
+	return "respond: answering allowed handles and the operator in 1:1 iMessage chats; everything else is only read"
+}
+
+// Drives reports whether handle may drive a turn (TEN-485): on the live
+// allowlist, or the operator. Read per message, so edits apply at once.
+func (m *imessageAllowManager) Drives(handle, operator string) bool {
+	m.mu.Lock()
+	l := m.list
+	m.mu.Unlock()
+	if l.Allows(handle) {
+		return true
+	}
+	op := imessage.NormalizeHandle(operator)
+	return op != "" && op == imessage.NormalizeHandle(handle)
 }
 
 // AllowList returns the current handles in sorted, normalized form.

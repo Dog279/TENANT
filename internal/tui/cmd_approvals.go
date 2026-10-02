@@ -260,6 +260,16 @@ func slashIMessage(m *model, line string) tea.Cmd {
 		} else {
 			m.sysChat("📴 " + status)
 		}
+	case "passive", "read", "listen", "respond", "answer":
+		// TEN-485: passive reads every text and answers none; respond answers
+		// allowed handles and the operator in 1:1 iMessage chats.
+		passive := sub == "passive" || sub == "read" || sub == "listen"
+		status, err := m.cfg.IMessage.SetPassive(passive)
+		if err != nil {
+			m.sysChat("imessage: " + err.Error())
+		} else {
+			m.sysChat("📲 " + status)
+		}
 	case "permissions", "perms", "permission":
 		// Same model + syntax as the global /permissions, scoped to the
 		// iMessage responder's gated tools (TEN-230): per-category ask|allow|
@@ -289,7 +299,7 @@ func slashIMessage(m *model, line string) tea.Cmd {
 			m.sysChat("usage: /imessage permissions   |   /imessage permissions set <category> <ask|allow|deny>")
 		}
 	default:
-		m.sysChat("usage: /imessage [list | on | off | permissions [set <cat> <mode>] | allow <handle> | deny <handle> | clear]")
+		m.sysChat("usage: /imessage [list | on | off | passive | respond | permissions [set <cat> <mode>] | allow <handle> | deny <handle> | clear]")
 	}
 	return nil
 }
@@ -301,9 +311,12 @@ func (m *model) renderIMessageAllow() (string, string) {
 	handles := m.cfg.IMessage.AllowList()
 	var p, s strings.Builder
 	const title = "iMessage drive-allowlist"
-	state := "responder: OFF  (turn on with /imessage on)"
-	if m.cfg.IMessage.ResponderOn() {
-		state = "responder: ON  (replying to allowed handles; /imessage off to stop)"
+	state := "responder: OFF  (turn on with /imessage passive or /imessage respond)"
+	switch {
+	case m.cfg.IMessage.ResponderOn() && m.cfg.IMessage.Passive():
+		state = "responder: ON, passive  (reading every text, answering none; /imessage respond to answer)"
+	case m.cfg.IMessage.ResponderOn():
+		state = "responder: ON, respond  (answering these handles and the operator in 1:1 iMessage chats; other texts are only read)"
 	}
 	p.WriteString(title + "\n  " + state + "\n")
 	s.WriteString(cHeading.Render(title) + "\n  " + cDim.Render(state) + "\n")
@@ -318,7 +331,7 @@ func (m *model) renderIMessageAllow() (string, string) {
 		p.WriteString("  • " + h + "\n")
 		s.WriteString("  " + cOnMark.Render("●") + " " + cName.Render(h) + "\n")
 	}
-	hint := fmt.Sprintf("%d handle(s) allowed — only these may drive the agent once inbound iMessage is live.", len(handles))
+	hint := fmt.Sprintf("%d handle(s) allowed — only these (and the operator) may drive the agent, 1:1 over iMessage.", len(handles))
 	p.WriteString("  " + hint)
 	s.WriteString("  " + cDim.Render(hint))
 	return p.String(), s.String()
@@ -435,6 +448,7 @@ func approvalCommands() []*slashCommand {
 			Rows: []cmdreg.Row{
 				{Syntax: "/imessage [list]", Desc: "view the iMessage allowlist + responder state"},
 				{Syntax: "/imessage on | off", Desc: "start/stop the autonomous responder (reply to texts) live"},
+				{Syntax: "/imessage passive | respond", Desc: "read every text and answer none, or answer allowed handles (1:1 iMessage only)"},
 				{Syntax: "/imessage permissions", Desc: "per-category ask|allow|deny for the responder's tools (like /permissions)"},
 				{Syntax: "/imessage allow <handle>", Desc: "permit a phone/email to drive the agent over iMessage"},
 				{Syntax: "/imessage deny <handle> | clear", Desc: "remove one handle, or empty the allowlist"},

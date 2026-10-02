@@ -68,6 +68,7 @@ config.json: imessage.allow_from
 config.json: imessage.enabled
 config.json: imessage.known_categories
 config.json: imessage.operator
+config.json: imessage.passive
 config.json: imessage.permissions
 config.json: improve
 config.json: improve.auto_accept

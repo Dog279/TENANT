@@ -36,6 +36,10 @@ func (f *fakeAccess) SetIMessageResponder(on bool) (string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("responder=%t", on))
 	return "", nil
 }
+func (f *fakeAccess) SetIMessagePassive(on bool) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("passive=%t", on))
+	return "", nil
+}
 func (f *fakeAccess) SetIMessagePermission(c, m string) (bool, error) {
 	f.calls = append(f.calls, "imperm="+c+":"+m)
 	return true, nil

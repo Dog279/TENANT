@@ -473,7 +473,7 @@ func TestIMessageResponder_ConsumesApprovalReply(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{fromInbound("chatOP", opHandle, "Y "+nonce)}}
 	out := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{reply: "should not run"}
-	resp := &imessageResponder{poller: p, sender: out, runner: r, confirm: denyAllConfirm, approver: ap}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: out, runner: r, confirm: denyAllConfirm, approver: ap}
 
 	resp.drain(context.Background())
 	resp.waitIdle() // turns run off the poll loop
@@ -503,7 +503,7 @@ func TestIMessageResponder_NonOperatorReplyRunsAsTurn(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{fromInbound("chatX", "+15557654321", "Y "+nonce)}}
 	out := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{reply: "answered"}
-	resp := &imessageResponder{poller: p, sender: out, runner: r, confirm: denyAllConfirm, approver: ap}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: out, runner: r, confirm: denyAllConfirm, approver: ap}
 
 	resp.drain(context.Background())
 	resp.waitIdle() // turns run off the poll loop
@@ -614,7 +614,7 @@ func TestIMessageResponder_ApprovalReplyReleasesBlockedTurn(t *testing.T) {
 	out := &fakeApproveSender{}
 	p := &fakeIMsgPoller{}
 	gr := &gatedRunner{verdict: make(chan bool, 4)} // room for stray turns: a regression fails, not hangs
-	r := &imessageResponder{poller: p, sender: out, runner: gr}
+	r := &imessageResponder{allowed: allowAll, poller: p, sender: out, runner: gr}
 	ap := newIMessageApprover(r, opHandle, nil)
 	ap.timeout = 3 * time.Second
 	r.approver, r.confirm = ap, ap.Confirm

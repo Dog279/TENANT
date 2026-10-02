@@ -29,6 +29,19 @@
     {{template "ui-confirm" (inline (confirmGo "/access/imessage/responder" "Turn on" "Your agent reads and answers iMessages from the people listed below, and acts on what they ask as the safety settings below allow." "on" "true"))}}
     {{end}}
   </div>
+  {{if .View.ResponderOn}}
+  <div class="row">
+    <div><strong>Mode</strong> {{if .View.Passive}}<span class="on-tag">reads only</span>{{else}}<span class="on-tag">answers</span>{{end}}</div>
+    {{if .View.Passive}}
+    {{template "ui-confirm" (inline (confirmGo "/access/imessage/passive" "Answer" "Your agent answers iMessages from the people listed below and acts on what they ask as the safety settings below allow. Group chats and SMS are never answered." "on" "false"))}}
+    {{else}}
+    <form method="POST" action="/access/imessage/passive" class="inline" data-on:submit__prevent__throttle.1s="@post('/access/imessage/passive', {contentType:'form', retryMaxCount:0})">
+      <input type="hidden" name="on" value="true">
+      <button type="submit" class="btn">Read only</button>
+    </form>
+    {{end}}
+  </div>
+  {{end}}
   {{else}}
   <div class="dim">Answering iMessages needs a Mac. The list and the safety settings below still apply when Tenant runs on one.</div>
   {{end}}

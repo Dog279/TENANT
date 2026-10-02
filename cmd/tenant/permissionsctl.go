@@ -364,6 +364,8 @@ func authoritySurfaces(lc *launchConfig, goos string) []authoritySurface {
 		imsg.Reason = "imessage.enabled=false"
 	case goos != "darwin":
 		imsg.Reason = "imessage.enabled=true, but the responder runs on macOS only"
+	case lc.IMessage.Passive:
+		imsg.Reason = "imessage.passive=true: the responder reads texts and answers none"
 	case len(lc.IMessage.AllowFrom) == 0:
 		imsg.Reason = "imessage.enabled=true, but imessage.allow_from is empty, so nobody can drive it"
 	default:

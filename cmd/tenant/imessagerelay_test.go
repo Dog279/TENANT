@@ -62,15 +62,18 @@ func (f *fakeIMsgRunner) Turn(ctx context.Context, req agent.TurnRequest) (*agen
 	return &agent.TurnResult{Response: f.reply}, nil
 }
 
+// inbound is a drivable 1:1 iMessage text; tests pair it with allowAll.
 func inbound(chat, text string) imessage.InboundMessage {
-	return imessage.InboundMessage{Message: imessage.Message{Text: text}, ChatGUID: chat}
+	return imessage.InboundMessage{Message: imessage.Message{Text: text}, ChatGUID: chat, Service: "iMessage"}
 }
+
+func allowAll(string) bool { return true }
 
 func TestIMessageResponder_DrivesTurnAndReplies(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "what's the weather?")}}
 	s := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{reply: "It's sunny."}
-	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: r, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
 	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
@@ -96,7 +99,7 @@ func TestIMessageResponder_DrivesTurnAndReplies(t *testing.T) {
 func TestIMessageResponder_RecordsTurnAndDelivery(t *testing.T) {
 	c := captureChannelEvents(t)
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "call mom")}}
-	resp := &imessageResponder{poller: p, sender: &fakeIMsgSender{}, runner: &fakeIMsgRunner{err: errors.New("model down")}, confirm: denyAllConfirm}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: &fakeIMsgSender{}, runner: &fakeIMsgRunner{err: errors.New("model down")}, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
 	resp.waitIdle()
@@ -126,7 +129,7 @@ func (p *errPoller) RecordSent(string, string)                                  
 func TestIMessageResponder_PollFailureRecordedOncePerError(t *testing.T) {
 	c := captureChannelEvents(t)
 	p := &errPoller{err: errors.New("unable to open chat.db")}
-	resp := &imessageResponder{poller: p}
+	resp := &imessageResponder{allowed: allowAll, poller: p}
 	resp.drain(context.Background())
 	resp.drain(context.Background())
 	p.err = errors.New("database is locked")
@@ -146,7 +149,7 @@ func TestIMessageResponder_IngestSurfacesInbound(t *testing.T) {
 	s := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{reply: "It's sunny."}
 	var ingested []string
-	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm,
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: r, confirm: denyAllConfirm,
 		ingest: func(t string) { ingested = append(ingested, t) }}
 
 	resp.drain(context.Background())
@@ -163,7 +166,7 @@ func TestIMessageResponder_NoIngestWhenDegraded(t *testing.T) {
 	s := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{}
 	var ingested []string
-	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm,
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: r, confirm: denyAllConfirm,
 		degraded: func() bool { return true },
 		ingest:   func(t string) { ingested = append(ingested, t) }}
 
@@ -182,7 +185,7 @@ func TestIMessageResponder_SkipsEmptyOrChatless(t *testing.T) {
 	}}
 	s := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{reply: "hi"}
-	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: r, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
 	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
@@ -199,7 +202,7 @@ func TestIMessageResponder_DegradedRefuses(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "do a thing")}}
 	s := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{reply: "done"}
-	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm,
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: r, confirm: denyAllConfirm,
 		degraded: func() bool { return true }}
 
 	resp.drain(context.Background())
@@ -222,20 +225,18 @@ func (f *fakeRunnable) Run(ctx context.Context) {
 	<-ctx.Done() // run until the manager cancels
 }
 
-// TEN-230 Phase 1c: the responder manager starts/stops live, reads the allowlist
+// TEN-230 Phase 1c: the responder manager starts/stops live, counts the allowlist
 // fresh at each Start, persists the enabled intent, and cleans up on Stop.
 func TestIMessageResponderManager_StartStopLifecycle(t *testing.T) {
 	var persisted []bool
-	var lastAllow []string
 	builds, cleanups := 0, 0
 	started := make(chan struct{})
 	mgr := &imessageResponderManager{
 		base:      context.Background(),
 		allowFrom: func() []string { return []string{"+15551234567", "a@b.com"} },
 		persist:   func(on bool) error { persisted = append(persisted, on); return nil },
-		buildFn: func(allow []string) (responderRunnable, func(), error) {
+		buildFn: func() (responderRunnable, func(), error) {
 			builds++
-			lastAllow = allow
 			return &fakeRunnable{started: started}, func() { cleanups++ }, nil
 		},
 	}
@@ -251,8 +252,8 @@ func TestIMessageResponderManager_StartStopLifecycle(t *testing.T) {
 		t.Fatalf("should be ON after Start (status=%q)", status)
 	}
 	<-started // the runnable goroutine actually launched
-	if builds != 1 || len(lastAllow) != 2 {
-		t.Fatalf("buildFn should run once with the fresh allowlist: builds=%d allow=%v", builds, lastAllow)
+	if builds != 1 || !strings.Contains(status, "2 allowed") {
+		t.Fatalf("buildFn should run once and the status count the fresh allowlist: builds=%d status=%q", builds, status)
 	}
 
 	// Idempotent: a second Start doesn't rebuild.
@@ -283,7 +284,7 @@ func TestIMessageResponderManager_StartBuildErrorStaysOff(t *testing.T) {
 		base:      context.Background(),
 		allowFrom: func() []string { return nil },
 		persist:   func(bool) error { t.Fatal("persist must not be called on a failed Start"); return nil },
-		buildFn: func([]string) (responderRunnable, func(), error) {
+		buildFn: func() (responderRunnable, func(), error) {
 			return nil, nil, fmt.Errorf("no Full Disk Access")
 		},
 	}
@@ -299,7 +300,7 @@ func TestIMessageResponder_TurnErrorReplies(t *testing.T) {
 	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{inbound("guid1", "boom")}}
 	s := &fakeIMsgSender{}
 	r := &fakeIMsgRunner{err: fmt.Errorf("model down")}
-	resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: r, confirm: denyAllConfirm}
 
 	resp.drain(context.Background())
 	resp.waitIdle() // turns now run off the poll loop (TEN-230 Phase 2)
@@ -319,3 +320,58 @@ func denyAllConfirm(context.Context, string, string) bool { return false }
 // waitIdle blocks until no turn is in flight. Stop needs no such wait:
 // cancelling the run ctx unwinds the turn.
 func (r *imessageResponder) waitIdle() { r.wg.Wait() }
+
+// TEN-485: only an allowed sender, 1:1 over iMessage, in respond mode drives a
+// turn. Everything else is observed: logged, shown in the feed, never answered.
+func TestIMessageResponder_DriveGate(t *testing.T) {
+	msg := func(chat, from, service string) imessage.InboundMessage {
+		return imessage.InboundMessage{Message: imessage.Message{Text: "hi", From: from}, ChatGUID: chat, Service: service}
+	}
+	allow := imessage.NewAllowList([]string{"+15550001111"})
+	allowed := func(h string) bool { return allow.Allows(h) }
+	for _, tc := range []struct {
+		name    string
+		m       imessage.InboundMessage
+		passive bool
+		allowed func(string) bool
+		want    string // "" ⇒ drives
+	}{
+		{"allowed 1:1 iMessage drives", msg("iMessage;-;+15550001111", "+1 (555) 000-1111", "iMessage"), false, allowed, ""},
+		{"any;-; GUID form drives", msg("any;-;+15550001111", "+15550001111", "iMessage"), false, allowed, ""},
+		{"stranger observed", msg("iMessage;-;+15559999999", "+15559999999", "iMessage"), false, allowed, "not_allowed"},
+		{"allowed in a group observed", msg("iMessage;+;chat42", "+15550001111", "iMessage"), false, allowed, "group"},
+		{"allowed over SMS observed", msg("SMS;-;+15550001111", "+15550001111", "SMS"), false, allowed, "not_imessage"},
+		{"allowed over RCS observed", msg("any;-;+15550001111", "+15550001111", "RCS"), false, allowed, "not_imessage"},
+		{"passive observes the allowed", msg("iMessage;-;+15550001111", "+15550001111", "iMessage"), true, allowed, "passive"},
+		{"no gate wired fails closed", msg("iMessage;-;+15550001111", "+15550001111", "iMessage"), false, nil, "not_allowed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := captureChannelEvents(t)
+			p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{tc.m}}
+			s := &fakeIMsgSender{}
+			r := &fakeIMsgRunner{reply: "ok"}
+			var fed []string
+			resp := &imessageResponder{poller: p, sender: s, runner: r, confirm: denyAllConfirm,
+				allowed: tc.allowed, passive: func() bool { return tc.passive },
+				ingest: func(t string) { fed = append(fed, t) }}
+			resp.drain(context.Background())
+			resp.waitIdle()
+			if tc.want == "" {
+				if r.turns != 1 || len(s.sent) != 1 {
+					t.Fatalf("should drive and reply: turns=%d sent=%v", r.turns, s.sent)
+				}
+				return
+			}
+			if r.turns != 0 || len(s.sent) != 0 {
+				t.Fatalf("observed text must not drive or reply: turns=%d sent=%v", r.turns, s.sent)
+			}
+			if len(fed) != 1 || !strings.Contains(fed[0], "("+tc.want+")") {
+				t.Errorf("feed should show the observed text with its reason %q: %v", tc.want, fed)
+			}
+			obs := c.matching(imessage.Observed, "")
+			if len(obs) != 1 || eventField(obs[0], "reason").Text() != tc.want || !eventField(obs[0], "text").Sensitive {
+				t.Errorf("want one Observed event, reason %q, text sensitive: %v", tc.want, obs)
+			}
+		})
+	}
+}

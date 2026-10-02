@@ -214,6 +214,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	allowMgr.setPerms(imsgBroker)
+	allowMgr.loadPassive(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
 	// approves a gated action over iMessage. Read fresh here; empty ⇒ Phase-1
@@ -240,13 +241,13 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
-		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
+		buildFn: func() (responderRunnable, func(), error) {
 			nat, err := imessage.OpenNative(imessage.NativeConfig{})
 			if err != nil {
 				return nil, nil, err
 			}
 			watcher, err := imessage.NewWatcher(imessage.WatchConfig{
-				Source: nat, Store: d.meta, Account: c.agent, AllowFrom: allowFrom,
+				Source: nat, Store: d.meta, Account: c.agent, // no AllowFrom: observe everyone; the responder gates who drives (TEN-485)
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -272,7 +273,9 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: d.log, degraded: d.degraded.Degraded,
-				ingest: ingest,
+				ingest:  ingest,
+				allowed: func(h string) bool { return allowMgr.Drives(h, imsgOperator) },
+				passive: allowMgr.Passive,
 			}
 			// Phase-2 (TEN-267): when an operator handle is configured, build the
 			// text-confirm approver over the responder's send path and make it the

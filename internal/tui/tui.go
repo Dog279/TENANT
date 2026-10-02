@@ -518,6 +518,10 @@ type IMessageControl interface {
 	// SetResponder turns it on/off live without a relaunch (TEN-230 Phase 1c).
 	ResponderOn() bool
 	SetResponder(on bool) (status string, err error)
+	// Passive reports whether the responder only reads (TEN-485); SetPassive
+	// switches mode live and starts the responder if it is off.
+	Passive() bool
+	SetPassive(on bool) (status string, err error)
 	// Perms exposes the responder's per-category permission control (TEN-230) so
 	// /imessage permissions uses the SAME ask|allow|deny model as /permissions.
 	// nil when the responder is unavailable.

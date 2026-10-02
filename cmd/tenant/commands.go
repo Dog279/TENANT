@@ -2693,6 +2693,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
+	imsgAllowMgr.loadPassive(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
 	// approves a gated action over iMessage. Empty ⇒ Phase-1 (the offsite broker's
@@ -2719,13 +2720,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
-		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
+		buildFn: func() (responderRunnable, func(), error) {
 			nat, err := imessage.OpenNative(imessage.NativeConfig{})
 			if err != nil {
 				return nil, nil, err
 			}
 			watcher, err := imessage.NewWatcher(imessage.WatchConfig{
-				Source: nat, Store: meta, Account: c.agent, AllowFrom: allowFrom,
+				Source: nat, Store: meta, Account: c.agent, // no AllowFrom: observe everyone; the responder gates who drives (TEN-485)
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -2753,7 +2754,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: log.With("source", "imessage"), degraded: degraded.Degraded,
-				ingest: func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				ingest:  func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				allowed: func(h string) bool { return imsgAllowMgr.Drives(h, imsgOperator) },
+				passive: imsgAllowMgr.Passive,
 			}
 			// Phase-2 (TEN-267): with an operator handle configured, the text-confirm
 			// approver over the responder's send path becomes the broker's "ask"

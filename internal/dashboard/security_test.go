@@ -229,6 +229,7 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /access/imessage/deny":       {passes: []url.Values{{}, {"handle": {"a@b.c"}}}, arm: lastIMessageContact},
 	"POST /access/imessage/clear":      always,
 	"POST /access/imessage/responder":  unless("on", "", "false", "off"),
+	"POST /access/imessage/passive":    unless("on", "true", "on"),
 	"POST /access/imessage/permission": unless("mode", "ask", "deny"),
 	"POST /access/discord/enable":      unless("on", "", "false", "off"),
 	"POST /access/discord/operator":    always,
