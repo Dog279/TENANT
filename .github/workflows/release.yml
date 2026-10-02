@@ -37,6 +37,15 @@ jobs:
         if: ${{ !github.event.repository.private }}
         uses: sigstore/cosign-installer@v3
 
+      # The tracked scripts carry a __REPO__ placeholder; the stamped copies
+      # ship as release assets (release.extra_files in .goreleaser.yaml).
+      - name: Stamp the install scripts with the repository name
+        run: |
+          mkdir -p dist-scripts
+          for f in install.sh install.ps1; do
+            sed "s|__REPO__|$GITHUB_REPOSITORY|g" "scripts/$f" > "dist-scripts/$f"
+          done
+
       - name: Publish release
         uses: goreleaser/goreleaser-action@v7
         with:
