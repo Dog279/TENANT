@@ -1471,36 +1471,14 @@ func cmdIMessage(ctx context.Context, args []string) error {
 	if err := c.resolve(); err != nil {
 		return err
 	}
-	urlv, pw := *bbURL, *bbPass
-	if urlv == "" {
-		urlv = os.Getenv("BLUEBUBBLES_URL")
+	// Confirm is nil → without --allow-send, send/new_chat are hard-denied
+	// (safe by default).
+	b, backendDesc, err := openIMessage(&imessageFlags{url: *bbURL, pass: *bbPass, private: *privateAPI})
+	if err != nil {
+		return err
 	}
-	if pw == "" {
-		pw = os.Getenv("BLUEBUBBLES_PASSWORD")
-	}
-	// Transport selection (TEN-68): a BlueBubbles URL (flag/env) opts into
-	// the server bridge; otherwise the default is the native macOS
-	// transport (chat.db read + AppleScript send, no server). OpenNative
-	// returns a "macOS only" error off darwin. Confirm is nil → without
-	// --allow-send, send/new_chat are hard-denied (safe by default).
-	pol := imessage.Policy{AllowSend: *allowSend, Confirm: nil}
-	var wd *imessage.Dispatcher
-	backendDesc := "native (chat.db + AppleScript)"
-	if urlv != "" {
-		svc, err := imessage.Open(imessage.Config{URL: urlv, Password: pw, PrivateAPI: *privateAPI})
-		if err != nil {
-			return err
-		}
-		wd = imessage.NewDispatcher(svc, pol)
-		backendDesc = "BlueBubbles " + urlv
-	} else {
-		nat, err := imessage.OpenNative(imessage.NativeConfig{})
-		if err != nil {
-			return err
-		}
-		defer nat.Close()
-		wd = imessage.NewDispatcher(nat, pol)
-	}
+	defer b.Close()
+	wd := imessage.NewDispatcher(b, imessage.Policy{AllowSend: *allowSend, Confirm: nil})
 
 	log := newLogger()
 	router, err := buildRouter(c, log)
@@ -2693,6 +2671,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	imsgAllowMgr.setPerms(imsgBroker)
+	imsgAllowMgr.loadConfig(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
 	// approves a gated action over iMessage. Empty ⇒ Phase-1 (the offsite broker's
@@ -2703,7 +2682,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	}
 
 	// iMessage autonomous responder (TEN-230): a live-toggle manager driven by
-	// `/imessage on|off`, over the native transport (macOS only). buildFn opens
+	// `/imessage on|off`, over native chat.db or BlueBubbles (TEN-486). buildFn opens
 	// chat.db + the openclaw anti-loop Watcher + a dedicated agent LAZILY on
 	// Start (so chat.db is untouched until turned on); AllowFrom is read fresh
 	// each Start (live /imessage edits apply on the next `on`); gated tools are
@@ -2711,7 +2690,12 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// prompts the operator at this TUI). enabled is persisted so it auto-starts
 	// next launch. Best-effort: a setup failure is a feed note, never fatal.
 	imsgResp := &imessageResponderManager{
-		base:      ctx,
+		base: ctx,
+		onStart: func() {
+			if _, _, err := mainTools.SetPluginEnabled("imessage", true); err != nil {
+				pushSys("imessage tools: " + err.Error())
+			}
+		},
 		allowFrom: imsgAllowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -2719,13 +2703,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
-		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
-			nat, err := imessage.OpenNative(imessage.NativeConfig{})
+		buildFn: func() (responderRunnable, func(), error) {
+			nat, _, err := openIMessage(imessageFlagsOf(pf)) // native or BlueBubbles (TEN-486)
 			if err != nil {
 				return nil, nil, err
 			}
 			watcher, err := imessage.NewWatcher(imessage.WatchConfig{
-				Source: nat, Store: meta, Account: c.agent, AllowFrom: allowFrom,
+				Source: nat, Store: meta, Account: c.agent, // no AllowFrom: observe everyone; the responder gates who drives (TEN-485)
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -2753,7 +2737,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: log.With("source", "imessage"), degraded: degraded.Degraded,
-				ingest: func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				ingest:  func(t string) { ingestEvent("iMessage", t) }, // TEN-232: show inbound texts in the activity feed
+				allowed: func(h string) bool { return imsgAllowMgr.Drives(h, imsgOperator) },
+				passive: imsgAllowMgr.Passive,
 			}
 			// Phase-2 (TEN-267): with an operator handle configured, the text-confirm
 			// approver over the responder's send path becomes the broker's "ask"

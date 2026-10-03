@@ -7,6 +7,6 @@ package imessage
 // on Windows/Linux. Returning errMacOnly (rather than omitting the
 // symbol) keeps cmd/tenant's transport-selection code compiling on every
 // platform — the Windows build is byte-for-byte unaffected.
-func OpenNative(_ NativeConfig) (Native, error) {
+func OpenNative(_ NativeConfig) (Backend, error) {
 	return nil, errMacOnly
 }

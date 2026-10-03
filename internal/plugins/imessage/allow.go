@@ -1,6 +1,9 @@
 package imessage
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // allow.go is the iMessage DRIVE allowlist: the set of handles (phone numbers
 // / emails) permitted to drive the agent over iMessage — i.e. let an inbound
@@ -136,4 +139,20 @@ func (a *AllowList) clone() map[string]struct{} {
 		}
 	}
 	return set
+}
+
+// Undrivable reports why m can never drive the agent, whoever sent it: "group"
+// for a group chat (a reply would go to the whole room; TEN-485: group
+// chats never drive) or "not_imessage" for SMS/RCS (green-bubble sender IDs
+// are spoofable). "" means the shape is drivable; the sender gate
+// (AllowList.Allows) still applies. The ";+;" separator marks a group in
+// every chat GUID form (iMessage;+;chatN, any;+;chatN).
+func Undrivable(m InboundMessage) string {
+	if strings.Contains(m.ChatGUID, ";+;") {
+		return "group"
+	}
+	if m.Service != "iMessage" {
+		return "not_imessage"
+	}
+	return ""
 }

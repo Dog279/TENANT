@@ -11,6 +11,22 @@ Releases page.
   for models called glm/chatglm, offered in setup, the dashboard and `/model`, and tried by the
   server check. The parser keeps typed values, reads a call cut off by max_tokens, and hands the
   JSON and Hermes shapes some GLM servers write to the Qwen parser.
+- **iMessage passive and respond modes.** `/imessage passive` reads every text and answers
+  none; `/imessage respond` answers the allowlist and `imessage.operator`, and only in a
+  1:1 iMessage chat. Group chats, SMS and RCS never drive the agent, and can no longer
+  approve an action either. A text the responder doesn't answer is logged as an
+  `imessage` Observed event (log alerts can act on it) and shown in the activity feed.
+  The dashboard's Access page has the same switch. The allowlist now applies per message,
+  not when the responder starts.
+- **iMessage shows Contacts names.** On a Mac, chats, messages, the activity feed and
+  Observed events name the sender from Contacts ("Pat Lee (+15550001111)"), read-only
+  from the Contacts database under the same Full Disk Access. Allowlists still match
+  the handle.
+- **Turning iMessage on gives the agent its tools at once.** `/imessage passive` or
+  `respond` (and `/enable imessage`) turn on the `imessage_*` tools live: no
+  `--imessage` flag, setup or restart.
+- **The iMessage responder runs over BlueBubbles.** Set a BlueBubbles URL and it answers
+  texts from any OS, not only a Mac. Messages on a Mac stays the default.
 - **Background processes** (TEN-490): `os_exec background: true` starts a command and returns
   its id at once, and a command still running at its timeout is moved to the background instead
   of being killed. `os_process` lists, reads (`log`, paged like a file), waits for, feeds (`write`

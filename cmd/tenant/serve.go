@@ -705,7 +705,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// hub answers texts on. Auto-starts when left enabled; needs Full Disk Access
 	// for chat.db under a daemon (a failure is a logged note, never fatal).
 	imsgAllowMgr := buildServeIMessage(ctx, serveIMessageDeps{
-		c: c, router: router, soulLive: soulLive, stores: st, skills: skillStore,
+		c: c, pf: pf, router: router, soulLive: soulLive, stores: st, skills: skillStore,
 		compressor: compressor, profile: prof, tools: mainTools, sysPrompt: sysPrompt,
 		meta: meta, broker: broker, degraded: degraded, emit: emit, notify: pushSys, log: log.With("source", "imessage"),
 		routeHook: routeRT.Hook(), routeActive: routeRT.Active, routeSticky: routeRT.Sticky, stopping: serveStopping.Load,

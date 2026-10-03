@@ -48,9 +48,9 @@ func TestInterruptedNotice(t *testing.T) {
 		t.Fatalf("the operator was not told within 2 s: %v", ds.all())
 	}
 
-	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{{Message: imessage.Message{Text: "text me back"}, RowID: 7, ChatGUID: "chat1"}}}
+	p := &fakeIMsgPoller{msgs: []imessage.InboundMessage{{Message: imessage.Message{Text: "text me back"}, RowID: 7, ChatGUID: "chat1", Service: "iMessage"}}}
 	s := &fakeIMsgSender{}
-	resp := &imessageResponder{poller: p, sender: s, runner: blockIMsgRunner{}, confirm: denyAllConfirm, dataDir: dir, stopping: stopping.Load}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: s, runner: blockIMsgRunner{}, confirm: denyAllConfirm, dataDir: dir, stopping: stopping.Load}
 	ictx, icancel := context.WithCancel(context.Background())
 	resp.drain(ictx)
 	icancel()

@@ -178,8 +178,14 @@ func TestAuthoritySurfaces(t *testing.T) {
 		t.Errorf("an enabled relay is active: %+v", s)
 	}
 	on := &launchConfig{IMessage: imessageConfig{Enabled: true}}
-	if s := get(on, "windows", permissionSurfaceIMessage); s.Active || !strings.Contains(s.Reason, "macOS only") {
+	t.Setenv("BLUEBUBBLES_URL", "")
+	if s := get(on, "windows", permissionSurfaceIMessage); s.Active || !strings.Contains(s.Reason, "needs macOS or a BlueBubbles server") {
 		t.Errorf("imessage off macOS = %+v", s)
+	}
+	// TEN-486: a BlueBubbles server lets the responder run off a Mac.
+	bb := &launchConfig{IMessage: imessageConfig{Enabled: true}, Skills: map[string]*skillConfig{"imessage": {Settings: map[string]string{"url": "http://mac:1234"}}}}
+	if s := get(bb, "linux", permissionSurfaceIMessage); strings.Contains(s.Reason, "needs macOS") {
+		t.Errorf("imessage via BlueBubbles off macOS = %+v", s)
 	}
 	if s := get(on, "darwin", permissionSurfaceIMessage); s.Active || !strings.Contains(s.Reason, "allow_from is empty") {
 		t.Errorf("imessage with nobody allowed = %+v", s)

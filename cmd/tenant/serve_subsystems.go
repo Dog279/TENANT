@@ -166,6 +166,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 // inbound texts exactly like the TUI does.
 type serveIMessageDeps struct {
 	c           *commonFlags
+	pf          *pluginFlags // iMessage transport flags (BlueBubbles URL)
 	router      *model.Router
 	soulLive    *soul.Live
 	stores      *stores
@@ -218,6 +219,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 		imsgBroker.LoadModes(c.lc.IMessage.Permissions, c.lc.IMessage.KnownCategories)
 	}
 	allowMgr.setPerms(imsgBroker)
+	allowMgr.loadConfig(c.cfgDir, c.lc)
 
 	// Phase-2 text-confirm operator (TEN-267): the handle whose "Y <nonce>" reply
 	// approves a gated action over iMessage. Read fresh here; empty ⇒ Phase-1
@@ -236,7 +238,12 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 	}
 
 	resp := &imessageResponderManager{
-		base:      ctx,
+		base: ctx,
+		onStart: func() {
+			if _, _, err := d.tools.SetPluginEnabled("imessage", true); err != nil {
+				d.notify("imessage tools: " + err.Error())
+			}
+		},
 		allowFrom: allowMgr.AllowList,
 		persist: func(enabled bool) error {
 			if c.lc == nil {
@@ -244,13 +251,13 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 			}
 			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) { lc.IMessage.Enabled = enabled })
 		},
-		buildFn: func(allowFrom []string) (responderRunnable, func(), error) {
-			nat, err := imessage.OpenNative(imessage.NativeConfig{})
+		buildFn: func() (responderRunnable, func(), error) {
+			nat, _, err := openIMessage(imessageFlagsOf(d.pf)) // native or BlueBubbles (TEN-486)
 			if err != nil {
 				return nil, nil, err
 			}
 			watcher, err := imessage.NewWatcher(imessage.WatchConfig{
-				Source: nat, Store: d.meta, Account: c.agent, AllowFrom: allowFrom,
+				Source: nat, Store: d.meta, Account: c.agent, // no AllowFrom: observe everyone; the responder gates who drives (TEN-485)
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -278,6 +285,8 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 				},
 				log: d.log, degraded: d.degraded.Degraded,
 				ingest: ingest, stopping: d.stopping, dataDir: c.dataDir,
+				allowed: func(h string) bool { return allowMgr.Drives(h, imsgOperator) },
+				passive: allowMgr.Passive,
 			}
 			// Phase-2 (TEN-267): when an operator handle is configured, build the
 			// text-confirm approver over the responder's send path and make it the

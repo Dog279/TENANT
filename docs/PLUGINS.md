@@ -377,7 +377,7 @@ result and keep using it.
 | `sql`     | `internal/plugins/sql/`               | Yes (DB handle) | At launch with `--sql-db`; stub otherwise |
 | `wiki`    | `internal/plugins/wiki/`              | No     | At launch with `--wiki-dir`; stub otherwise |
 | `gsuite`  | `internal/plugins/gsuite/`            | Yes (OAuth) | At launch with `--gsuite`, or by its activator from `/configure` |
-| `imessage`| `internal/plugins/imessage/`          | Yes (BlueBubbles WS) | At launch with `--imessage`; stub otherwise |
+| `imessage`| `internal/plugins/imessage/`          | Yes (chat.db on a Mac, or a BlueBubbles server) | At launch with `--imessage`; stub otherwise. The responder (`/imessage passive\|respond`) opens its own transport the same way |
 | `discord` | `internal/plugins/discord/`           | No (REST-only Surface A) | At launch with `--discord`; stub otherwise |
 | `x`       | `internal/plugins/x/`                 | Yes (login) | At launch with `--x`, or by its activator |
 | `atlassian`| `internal/plugins/atlassian/`        | Yes (API token or OAuth 3LO) | At launch with `--atlassian`, or by its activator |

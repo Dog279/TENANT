@@ -308,7 +308,9 @@ func TestActivatorsBuildTheirPluginOnEnable(t *testing.T) {
 	defer cleanup()
 	n := 0
 	for _, d := range plugins().All() {
-		if d.Activate == nil {
+		// imessage needs no config (native chat.db by default), so enabling it
+		// would open the host's real Messages database.
+		if d.Activate == nil || d.ID == "imessage" {
 			continue
 		}
 		n++

@@ -20,6 +20,7 @@ type Message struct {
 	GUID     string
 	Text     string
 	From     string
+	Name     string // the sender's name in Contacts, "" when unknown (native only)
 	IsFromMe bool
 	Date     string
 }
@@ -76,20 +77,80 @@ func (s *Service) SearchMessages(ctx context.Context, text string, limit int) ([
 	if limit <= 0 {
 		limit = 25
 	}
-	body := map[string]any{
-		"limit": limit, "offset": 0,
-		"with": []string{"handle", "chat"},
-		"sort": "DESC",
-		"where": []map[string]any{{
-			"statement": "message.text LIKE :term",
-			"args":      map[string]string{"term": "%" + text + "%"},
-		}},
+	raw, err := s.queryMessages(ctx, limit, "DESC", []map[string]any{{
+		"statement": "message.text LIKE :term",
+		"args":      map[string]string{"term": "%" + text + "%"},
+	}})
+	if err != nil {
+		return nil, err
+	}
+	return normalizeMsgs(raw), nil
+}
+
+// --- inbound poll (the responder's Watcher, TEN-486) ---
+
+// MessagesSince returns messages with a chat.db ROWID above afterRowID,
+// oldest first, via the same message query SearchMessages uses.
+func (s *Service) MessagesSince(ctx context.Context, afterRowID int64, limit int) ([]InboundMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	raw, err := s.queryMessages(ctx, limit, "ASC", []map[string]any{{
+		"statement": "message.ROWID > :rowid",
+		"args":      map[string]int64{"rowid": afterRowID},
+	}})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]InboundMessage, 0, len(raw))
+	for _, m := range raw {
+		in := InboundMessage{Message: m.normalize(), RowID: m.ROWID}
+		if len(m.Chats) > 0 {
+			in.ChatGUID = m.Chats[0].GUID
+		}
+		if m.Handle != nil {
+			in.Service = m.Handle.Service
+		}
+		out = append(out, in)
+	}
+	return out, nil
+}
+
+// LatestRowID is the newest message's ROWID, where the Watcher starts.
+func (s *Service) LatestRowID(ctx context.Context) (int64, error) {
+	raw, err := s.queryMessages(ctx, 1, "DESC", nil)
+	if err != nil || len(raw) == 0 {
+		return 0, err
+	}
+	return raw[0].ROWID, nil
+}
+
+func (s *Service) queryMessages(ctx context.Context, limit int, sort string, where []map[string]any) ([]bbMessage, error) {
+	body := map[string]any{"limit": limit, "offset": 0, "with": []string{"handle", "chat"}, "sort": sort}
+	if where != nil {
+		body["where"] = where
 	}
 	var raw []bbMessage
 	if err := s.a.do(ctx, "POST", "/message/query", nil, body, &raw); err != nil {
 		return nil, err
 	}
-	return normalizeMsgs(raw), nil
+	return raw, nil
+}
+
+// Close is a no-op: the BlueBubbles client holds no handle.
+func (s *Service) Close() error { return nil }
+
+// OpenBackend opens BlueBubbles when cfg.URL is set, else the native
+// macOS transport (TEN-486): the one place the transport is chosen.
+func OpenBackend(cfg Config) (Backend, error) {
+	if strings.TrimSpace(cfg.URL) == "" {
+		return OpenNative(NativeConfig{})
+	}
+	s, err := Open(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // --- writes (gated by the dispatcher) ---
@@ -149,6 +210,7 @@ func (s *Service) NewChat(ctx context.Context, address, text string) (string, er
 
 type bbHandle struct {
 	Address string `json:"address"`
+	Service string `json:"service"` // "iMessage" | "SMS" | ...
 }
 
 type bbChat struct {
@@ -175,6 +237,8 @@ func (c bbChat) normalize() Chat {
 }
 
 type bbMessage struct {
+	ROWID       int64     `json:"originalROWID"`
+	Chats       []bbChat  `json:"chats"` // with: ["chat"]
 	GUID        string    `json:"guid"`
 	Text        string    `json:"text"`
 	DateCreated int64     `json:"dateCreated"`

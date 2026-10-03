@@ -24,14 +24,15 @@ func imessagePlugin() *pluginDescriptor {
 		ApplyConfig: applyIMessageConfig,
 		Grants:      imessageGrants,
 		Launch:      launchIMessage,
-		Relaunch:    true, // config edits apply on /disable → /enable (TEN-483)
-		Title:       "iMessage (via BlueBubbles)",
+		Activate:    activateIMessage, // /enable needs no flag or saved setup: native by default
+		Relaunch:    true,             // config edits apply on /disable → /enable (TEN-483)
+		Title:       "iMessage",
 		Version:     1,
 		Tools:       func() []model.ToolSpec { return imessage.NewDispatcher(nil, imessage.Policy{}).Tools() },
 		Configure: func() skillKind {
-			return skillKind{ID: "imessage", Label: "iMessage (via BlueBubbles)", Wired: true, Fields: []skillKindField{
-				{Key: "url", Prompt: "BlueBubbles server URL"},
-				{Key: "password", Prompt: "BlueBubbles password", Secret: true},
+			return skillKind{ID: "imessage", Label: "iMessage", Wired: true, Fields: []skillKindField{
+				{Key: "url", Prompt: "BlueBubbles server URL (leave blank on a Mac to read Messages directly)"},
+				{Key: "password", Prompt: "BlueBubbles password (blank on a Mac without BlueBubbles)", Secret: true},
 			}}
 		},
 		SetupOnly:  true,
@@ -48,8 +49,8 @@ func imessagePlugin() *pluginDescriptor {
 		},
 		CLI: []*cliCommand{
 			{Names: []string{"imessage"}, Section: "plugins", Run: cmdIMessage,
-				Summary: "the agent uses iMessage via BlueBubbles",
-				Rows:    []cmdreg.Row{{Syntax: `imessage "<task>"`, Desc: "the agent uses iMessage via BlueBubbles (read; --allow-send to act)"}}},
+				Summary: "the agent uses iMessage (Messages on this Mac, or a BlueBubbles server)",
+				Rows:    []cmdreg.Row{{Syntax: `imessage "<task>"`, Desc: "the agent uses iMessage: Messages on this Mac, or BlueBubbles with --bb-url (read; --allow-send to act)"}}},
 		},
 	}
 }
@@ -106,6 +107,42 @@ func launchIMessage(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if !f.on {
 		return nil, nil, nil
 	}
+	p, cleanup, err := buildIMessage(e, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return []plugin{p}, cleanup, nil
+}
+
+// activateIMessage builds the tools live on /enable imessage, and when the
+// responder turns on: no --imessage flag, relaunch or `tenant setup` needed.
+// A saved BlueBubbles URL (or $BLUEBUBBLES_URL) picks BlueBubbles; else
+// native chat.db.
+func activateIMessage(_ context.Context, e *pluginEnv) (plugin, func(), error) {
+	f := *imessageFlagsOf(e.pf) // launch flags still win (--bb-url, --imessage-allow-send)
+	if lc, err := loadLaunchConfig(e.c.cfgDir); err == nil && f.url == "" {
+		if sc := lc.Skills["imessage"]; sc != nil && sc.Settings["url"] != "" {
+			f.url = sc.Settings["url"]
+			f.pass = resolveSecretWith(e.c.credentialsLoader(), e.c.cfgDir, skillSecretID("imessage", "password"), authCfg{Stored: true})
+		}
+	}
+	return buildIMessage(e, &f)
+}
+
+// buildIMessage opens the transport and wraps it in the gated dispatcher.
+func buildIMessage(e *pluginEnv, f *imessageFlags) (plugin, func(), error) {
+	b, _, err := openIMessage(f)
+	if err != nil {
+		return nil, nil, fmt.Errorf("imessage plugin: %w", err)
+	}
+	pol := imessage.Policy{AllowSend: e.gateAllow(f.allowSend), Confirm: e.confirm}
+	return imessage.NewDispatcher(b, pol), func() { _ = b.Close() }, nil
+}
+
+// openIMessage opens the iMessage transport for the tools, `tenant imessage`
+// and the responder alike (TEN-486): BlueBubbles when a URL is set (flag,
+// saved config, or $BLUEBUBBLES_URL), else native chat.db. desc names it.
+func openIMessage(f *imessageFlags) (b imessage.Backend, desc string, err error) {
 	url, pass := f.url, f.pass
 	if url == "" {
 		url = os.Getenv("BLUEBUBBLES_URL")
@@ -113,19 +150,26 @@ func launchIMessage(_ context.Context, e *pluginEnv) ([]plugin, func(), error) {
 	if pass == "" {
 		pass = os.Getenv("BLUEBUBBLES_PASSWORD")
 	}
-	pol := imessage.Policy{AllowSend: e.gateAllow(f.allowSend), Confirm: e.confirm}
+	desc = "native (chat.db + AppleScript)"
 	if url != "" {
-		svc, err := imessage.Open(imessage.Config{URL: url, Password: pass, PrivateAPI: f.private})
-		if err != nil {
-			return nil, nil, fmt.Errorf("imessage plugin: %w", err)
+		desc = "BlueBubbles " + url
+	}
+	b, err = imessage.OpenBackend(imessage.Config{URL: url, Password: pass, PrivateAPI: f.private})
+	return b, desc, err
+}
+
+// imessageBBURL is the configured BlueBubbles URL, "" meaning native: saved
+// config, else $BLUEBUBBLES_URL — openIMessage's rule, for callers that have
+// only the config (doctor, the authority surface, the dashboard).
+func imessageBBURL(lc *launchConfig) string {
+	if lc != nil {
+		if ic := lc.Skills["imessage"]; ic != nil {
+			if u := strings.TrimSpace(ic.Settings["url"]); u != "" {
+				return u
+			}
 		}
-		return []plugin{imessage.NewDispatcher(svc, pol)}, nil, nil
 	}
-	nat, err := imessage.OpenNative(imessage.NativeConfig{})
-	if err != nil {
-		return nil, nil, fmt.Errorf("imessage plugin: %w", err)
-	}
-	return []plugin{imessage.NewDispatcher(nat, pol)}, func() { _ = nat.Close() }, nil
+	return os.Getenv("BLUEBUBBLES_URL")
 }
 
 // checkIMessage verifies the iMessage transport is usable (TEN-68). The
@@ -152,12 +196,7 @@ func checkIMessage(_ context.Context, e *doctorEnv) checkResult {
 	if icfg == nil {
 		return checkResult{Status: statusSkip, Detail: "imessage not configured"}
 	}
-	// Backend selection mirrors toolmux/cmdIMessage: a BlueBubbles URL
-	// (env wins over settings) opts into the server bridge; else native.
-	url := os.Getenv("BLUEBUBBLES_URL")
-	if url == "" && icfg.Settings != nil {
-		url = strings.TrimSpace(icfg.Settings["url"])
-	}
+	url := imessageBBURL(e.lc)
 	if url != "" {
 		return checkResult{Status: statusOK, Detail: "BlueBubbles transport configured (url=" + url + ")"}
 	}
