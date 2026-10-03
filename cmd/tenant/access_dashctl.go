@@ -44,10 +44,11 @@ func (a dashAccess) View() dashboard.AccessView {
 	v := dashboard.AccessView{}
 	if a.im != nil {
 		v.IMessageAvailable = a.im.Perms() != nil
-		// The native responder is macOS-only; the allowlist + permissions are
-		// cross-platform policy. Gate the responder toggle on the platform.
-		v.ResponderAvailable = runtime.GOOS == "darwin"
+		// The responder runs on a Mac (native) or against a BlueBubbles
+		// server; the allowlist + permissions are cross-platform policy.
+		v.ResponderAvailable = runtime.GOOS == "darwin" || a.im.bridge
 		v.ResponderOn = a.im.ResponderOn()
+		v.Passive = a.im.Passive()
 		v.Handles = a.im.AllowList()
 		v.SingleHandle = len(v.Handles) == 1 // last-entry removal confirms in the UI
 		v.IMessagePerms = toPermRows(a.im.Perms())
@@ -96,6 +97,12 @@ func (a dashAccess) SetIMessageResponder(on bool) (string, error) {
 		return "", errIMessageUnavailable
 	}
 	return a.im.SetResponder(on)
+}
+func (a dashAccess) SetIMessagePassive(on bool) (string, error) {
+	if a.im == nil {
+		return "", errIMessageUnavailable
+	}
+	return a.im.SetPassive(on)
 }
 
 func (a dashAccess) SetIMessagePermission(cat, mode string) (bool, error) {

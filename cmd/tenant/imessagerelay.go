@@ -76,6 +76,11 @@ type imessageResponder struct {
 	// ("Y <nonce>" from the operator) is consumed here and NEVER drives a turn, and
 	// each turn's prompt-chat is pinned so a gated tool texts the right chat.
 	approver *imessageApprover
+	// allowed reports whether a sender may drive a turn: the live allowlist or
+	// the operator (TEN-485). nil ⇒ nobody drives (fail closed).
+	allowed func(handle string) bool
+	// passive, when it reports true, makes every text observe-only (TEN-485).
+	passive func() bool
 
 	pollErr string // the last poll error, so a failing poll is recorded once, not every few seconds; Run's goroutine only
 
@@ -144,6 +149,20 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 	if text == "" || strings.TrimSpace(m.ChatGUID) == "" {
 		return // nothing actionable (attachment-only, empty, or unknown chat)
 	}
+	// TEN-485: anything that may not drive is observed — logged (log alerts can
+	// act on it) and shown in the feed — and never answered. Approval replies go
+	// through the same gate, so a spoofable SMS or group text can't approve.
+	if why := r.undrivable(m); why != "" {
+		imessage.Observed.Log(ctx, "row", m.RowID, "reason", why, "from", m.From, "name", m.Name, "chat", m.ChatGUID, "text", text)
+		if r.ingest != nil {
+			who := m.From
+			if m.Name != "" {
+				who = m.Name + " <" + m.From + ">"
+			}
+			r.ingest(who + " (" + why + "): " + text)
+		}
+		return
+	}
 	imessage.Received.Log(ctx, "row", m.RowID, "bytes", len(text), "from", m.From, "chat", m.ChatGUID, "text", text)
 	// Phase-2 (TEN-267): an approval reply ("Y <nonce>" from the OPERATOR handle)
 	// resolves a pending gated action and is CONSUMED here — it must never drive a
@@ -190,6 +209,21 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 		}()
 		r.turn(ctx, m.ChatGUID, strconv.FormatInt(m.RowID, 10), text)
 	}()
+}
+
+// undrivable reports why m only gets observed, or "" when it drives a turn:
+// passive mode, a group or non-iMessage chat, or a sender off the allowlist.
+func (r *imessageResponder) undrivable(m imessage.InboundMessage) string {
+	if r.passive != nil && r.passive() {
+		return "passive"
+	}
+	if why := imessage.Undrivable(m); why != "" {
+		return why
+	}
+	if r.allowed == nil || !r.allowed(m.From) {
+		return "not_allowed"
+	}
+	return ""
 }
 
 // turn drives one agent turn, a Turn activity, and replies. The turn ctx
@@ -297,14 +331,19 @@ type responderRunnable interface {
 // imessageResponderManager starts/stops the responder live (TEN-230 Phase 1c)
 // so `/imessage on|off` works without a relaunch. buildFn opens the native
 // transport + Watcher + agent LAZILY on Start — chat.db isn't touched until the
-// operator turns it on — and returns a cleanup run on Stop. allowFrom is read at
-// each Start so live `/imessage allow` edits take effect on the next on. persist
-// records the intent (imessage.enabled) so it survives restart.
+// operator turns it on — and returns a cleanup run on Stop. allowFrom only
+// feeds the status line: the responder reads the allowlist per message
+// (TEN-485). persist records the intent (imessage.enabled) so it survives
+// restart.
 type imessageResponderManager struct {
 	base      context.Context
-	buildFn   func(allowFrom []string) (responderRunnable, func(), error)
+	buildFn   func() (responderRunnable, func(), error)
 	allowFrom func() []string
 	persist   func(enabled bool) error
+	// onStart runs after each successful Start: it turns on the agent's
+	// imessage_* tools, so reading what the responder sees needs no /enable,
+	// flag or relaunch.
+	onStart func()
 
 	mu      sync.Mutex
 	running bool
@@ -351,7 +390,7 @@ func (m *imessageResponderManager) Start() (string, error) {
 	if m.allowFrom != nil {
 		allow = m.allowFrom()
 	}
-	r, cleanup, err := m.buildFn(allow)
+	r, cleanup, err := m.buildFn()
 	if err != nil {
 		trackIMessage(m.base, lifecycle.Failed, err)
 		return "", err
@@ -365,12 +404,15 @@ func (m *imessageResponderManager) Start() (string, error) {
 	m.sender, _ = r.(imsgSender) // *imessageResponder is one; a test's fake need not be
 	trackIMessage(base, lifecycle.Running, nil)
 	go r.Run(ctx)
+	if m.onStart != nil {
+		m.onStart()
+	}
 	if m.persist != nil {
 		if perr := m.persist(true); perr != nil {
 			return "", errNotSaved("imessage responder ON", perr)
 		}
 	}
-	return fmt.Sprintf("imessage responder ON — native; %d allowed handle(s); gated tools follow /imessage permissions (\"ask\" texts the operator a Y <nonce> prompt when imessage.operator is set)", len(allow)), nil
+	return fmt.Sprintf("imessage responder ON — %d allowed handle(s); gated tools follow /imessage permissions (\"ask\" texts the operator a Y <nonce> prompt when imessage.operator is set)", len(allow)), nil
 }
 
 // Stop cancels the loop + releases the transport (idempotent). Persists enabled=false.

@@ -27,3 +27,7 @@ type transport interface {
 // Compile-time proof the BlueBubbles Service still satisfies the
 // dispatcher's contract unchanged.
 var _ transport = (*Service)(nil)
+
+// The BlueBubbles Service is a full Backend too: the responder runs on it
+// (TEN-486).
+var _ Backend = (*Service)(nil)

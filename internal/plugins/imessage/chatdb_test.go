@@ -68,7 +68,7 @@ func buildSyntheticDB(t *testing.T) (*sql.DB, int64) {
 	schema := []string{
 		`CREATE TABLE handle (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT);`,
 		`CREATE TABLE chat (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, chat_identifier TEXT, display_name TEXT);`,
-		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, text TEXT, attributedBody BLOB, handle_id INTEGER, is_from_me INTEGER, date INTEGER);`,
+		`CREATE TABLE message (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT, text TEXT, attributedBody BLOB, handle_id INTEGER, is_from_me INTEGER, date INTEGER, service TEXT);`,
 		`CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);`,
 		`CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);`,
 	}

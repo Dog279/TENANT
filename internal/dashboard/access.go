@@ -23,7 +23,7 @@ import (
 // adapts its imessageAllowManager + discordRelayManager to it (see dashAccess).
 // A nil control renders an "isn't configured" state rather than 404ing the nav
 // link; each channel degrades independently via the *Available flags on
-// AccessView (iMessage responder is macOS-only; Discord needs a bot token).
+// AccessView (iMessage responder needs a Mac or a BlueBubbles server; Discord needs a bot token).
 type AccessControl interface {
 	// View is the whole render-ready page state in one read (called per GET).
 	View() AccessView
@@ -34,6 +34,7 @@ type AccessControl interface {
 	IMessageClear() (removed int, err error)
 	// iMessage autonomous responder + per-category permissions.
 	SetIMessageResponder(on bool) (msg string, err error)
+	SetIMessagePassive(on bool) (msg string, err error) // TEN-485: read only vs answer
 	SetIMessagePermission(category, mode string) (changed bool, err error)
 
 	// Discord relay.
@@ -61,8 +62,9 @@ type PermissionRow struct {
 type AccessView struct {
 	// iMessage
 	IMessageAvailable  bool // the allowlist + permissions surface is wired
-	ResponderAvailable bool // the native responder is reachable here (macOS only)
+	ResponderAvailable bool // the responder can run here (a Mac, or a BlueBubbles server)
 	ResponderOn        bool
+	Passive            bool     // the responder reads every text and answers none (TEN-485)
 	Handles            []string // sorted, normalized drive-allowlist
 	SingleHandle       bool     // exactly one handle ⇒ deny confirms ("removing the last entry")
 	IMessagePerms      []PermissionRow
@@ -97,6 +99,7 @@ func (s *Server) mountAccessSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /access/imessage/deny", needConfirm(lastHandle, s.handleIMessageDenyForm))
 	mux.HandleFunc("POST /access/imessage/clear", needConfirm(nil, s.handleIMessageClearForm))
 	mux.HandleFunc("POST /access/imessage/responder", needConfirm(on, s.handleIMessageResponderForm))
+	mux.HandleFunc("POST /access/imessage/passive", needConfirm(confirmUnless("on", "true", "on"), s.handleIMessagePassiveForm))
 	mux.HandleFunc("POST /access/imessage/permission", needConfirm(loosens, s.handleIMessagePermissionForm))
 	// Discord
 	mux.HandleFunc("POST /access/discord/enable", needConfirm(on, s.handleRelayEnableForm))
@@ -211,6 +214,26 @@ func (s *Server) handleIMessageResponderForm(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.accessDone(w, r, "Your agent no longer answers iMessages.", "")
+}
+
+// handleIMessagePassiveForm switches between reading only (on=true) and
+// answering (on=false; that loosens, so it confirms). Either starts the
+// responder if it is off.
+func (s *Server) handleIMessagePassiveForm(w http.ResponseWriter, r *http.Request) {
+	if s.access == nil {
+		s.accessDone(w, r, "", "")
+		return
+	}
+	on := formOn(r)
+	if _, err := s.access.SetIMessagePassive(on); err != nil {
+		s.accessDone(w, r, "", s.flashFor(r.Context(), "imessage mode", err, "Couldn't change how your agent handles iMessages."))
+		return
+	}
+	if on {
+		s.accessDone(w, r, "Your agent reads your iMessages and answers none.", "")
+		return
+	}
+	s.accessDone(w, r, "Your agent answers iMessages from the people listed below. Everyone else's are only read.", "")
 }
 
 func (s *Server) handleIMessagePermissionForm(w http.ResponseWriter, r *http.Request) {

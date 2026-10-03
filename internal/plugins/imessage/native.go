@@ -25,10 +25,11 @@ type NativeConfig struct {
 	DBPath string
 }
 
-// Native is an opened native transport: the five iMessage operations,
+// Backend is an opened transport — native chat.db, or a BlueBubbles server
+// (TEN-486): the five iMessage operations,
 // the inbound poll the Watcher consumes (MessagesSince), plus Close to
-// release the chat.db handle.
-type Native interface {
+// release the handle.
+type Backend interface {
 	transport
 	// MessagesSince yields inbound rows with ROWID > afterRowID (newest-bounded
 	// by limit) — the read primitive the autonomous responder's Watcher polls

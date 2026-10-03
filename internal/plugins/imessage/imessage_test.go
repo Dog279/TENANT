@@ -9,6 +9,7 @@ package imessage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -267,5 +268,48 @@ func TestTools(t *testing.T) {
 		if !names[w] {
 			t.Errorf("missing tool %s", w)
 		}
+	}
+}
+
+// TEN-486: the BlueBubbles Service feeds the responder's Watcher. MessagesSince
+// asks for rows past the cursor, oldest first, and maps ROWID, chat and
+// service; LatestRowID reads the newest row.
+func TestService_MessagesSinceAndLatest(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/message/query" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": 200, "message": "Success", "data": []map[string]any{{
+			"originalROWID": 42, "guid": "m42", "text": "hi", "isFromMe": false,
+			"handle": map[string]string{"address": "+15550001111", "service": "iMessage"},
+			"chats":  []map[string]string{{"guid": "iMessage;-;+15550001111"}},
+		}}})
+	}))
+	defer srv.Close()
+	s, err := Open(Config{URL: srv.URL, Password: "pw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MessagesSince(context.Background(), 41, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].RowID != 42 || got[0].ChatGUID != "iMessage;-;+15550001111" ||
+		got[0].Service != "iMessage" || got[0].From != "+15550001111" || got[0].Text != "hi" {
+		t.Fatalf("bad mapping: %+v", got)
+	}
+	if Undrivable(got[0]) != "" {
+		t.Error("a 1:1 iMessage row from BlueBubbles should be drivable")
+	}
+	where := fmt.Sprint(bodies[0]["where"])
+	if bodies[0]["sort"] != "ASC" || !strings.Contains(where, "message.ROWID > :rowid") || !strings.Contains(where, "rowid:41") {
+		t.Errorf("MessagesSince query: sort=%v where=%s", bodies[0]["sort"], where)
+	}
+	if n, err := s.LatestRowID(context.Background()); err != nil || n != 42 || bodies[1]["sort"] != "DESC" {
+		t.Errorf("LatestRowID = %d, %v (sort %v)", n, err, bodies[1]["sort"])
 	}
 }

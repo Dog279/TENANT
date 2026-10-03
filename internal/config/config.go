@@ -504,6 +504,11 @@ type IMessage struct {
 	// transport only (macOS); off by default (deny-by-default). AllowFrom gates
 	// who may drive it.
 	Enabled bool `json:"enabled,omitempty"`
+	// Passive keeps the running responder read-only (TEN-485): every text is
+	// observed (imessage log + activity feed) and none drives a turn or gets a
+	// reply, even from AllowFrom or the Operator. Toggled live via
+	// /imessage passive | respond.
+	Passive bool `json:"passive,omitempty"`
 	// Operator is the handle (phone/email) whose YES approves gated tools in the
 	// Phase-2 text-confirm flow — distinct from AllowFrom so an allowlisted
 	// contact can chat but not approve dangerous actions. Unset ⇒ an "ask"

@@ -345,7 +345,8 @@ type authoritySurface struct {
 }
 
 // authoritySurfaces lists every surface with the setting that makes it live
-// or not. goos is runtime.GOOS: the iMessage responder is macOS-only.
+// or not. goos is runtime.GOOS: the iMessage responder needs a Mac or a
+// BlueBubbles server.
 func authoritySurfaces(lc *launchConfig, goos string) []authoritySurface {
 	if lc == nil {
 		lc = &launchConfig{}
@@ -362,8 +363,10 @@ func authoritySurfaces(lc *launchConfig, goos string) []authoritySurface {
 	switch {
 	case !lc.IMessage.Enabled:
 		imsg.Reason = "imessage.enabled=false"
-	case goos != "darwin":
-		imsg.Reason = "imessage.enabled=true, but the responder runs on macOS only"
+	case goos != "darwin" && imessageBBURL(lc) == "":
+		imsg.Reason = "imessage.enabled=true, but the responder needs macOS or a BlueBubbles server"
+	case lc.IMessage.Passive:
+		imsg.Reason = "imessage.passive=true: the responder reads texts and answers none"
 	case len(lc.IMessage.AllowFrom) == 0:
 		imsg.Reason = "imessage.enabled=true, but imessage.allow_from is empty, so nobody can drive it"
 	default:
