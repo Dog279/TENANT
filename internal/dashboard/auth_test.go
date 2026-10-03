@@ -455,3 +455,21 @@ func TestAuth_FlashOnlyFromThisDashboard(t *testing.T) {
 		}
 	}
 }
+
+// TEN-414: a loopback listener answers to every loopback name on its port,
+// so http://localhost:8770 works unconfigured; another port or name does not.
+func TestAuthHostAllowlistAcceptsLoopbackNames(t *testing.T) {
+	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	h := s.secure(authOKHandler())
+	for host, want := range map[string]int{
+		"localhost:8770": http.StatusOK, "[::1]:8770": http.StatusOK, "127.0.0.1:8770": http.StatusOK,
+		"localhost:9999": http.StatusForbidden, "localhost.evil.example:8770": http.StatusForbidden,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+		req.Host = host
+		req.Header.Set("Authorization", "Bearer secret")
+		if code := authDo(h, req).Code; code != want {
+			t.Errorf("host %s: status = %d, want %d", host, code, want)
+		}
+	}
+}

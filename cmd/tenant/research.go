@@ -1155,7 +1155,7 @@ const sayRunID = "📋 run id: %s"
 
 // errResearchBusy refuses a second run while one is going: two runs on one
 // runtime would cancel each other's helpers (Governor.Begin, Await).
-var errResearchBusy = errors.New("another research run is already in progress")
+var errResearchBusy = errors.New("a research run is already going; wait for it to finish, or stop it first (/research stop)")
 
 // researchControl implements tui.ResearchControl: runs the Phase-A pipeline
 // against the TUI's live agent on a TeamRuntime of research's own, streaming

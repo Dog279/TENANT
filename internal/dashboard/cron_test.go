@@ -129,12 +129,15 @@ func TestCron_PageNotConfigured(t *testing.T) {
 func TestCron_PageListsJobs(t *testing.T) {
 	fc := &fakeCronCtl{jobs: []CronJobView{
 		{ID: "abc", Name: "nightly", Spec: "0 9 * * *", Prompt: "run the tests", Enabled: true, NextRun: "2026-06-08 09:00", LastStatus: "ok"},
+		{ID: "def", Name: "broken", Spec: "0 9 * * *", Prompt: "x", Enabled: true, LastStatus: "failed", LastError: "model unreachable"},
 	}}
 	s := cronServer(fc)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/cron", nil))
 	body := rec.Body.String()
-	for _, want := range []string{"nightly", "0 9 * * *", "run the tests", "abc", "Turn off", "Run now"} {
+	// TEN-427: the job row says what went wrong; TEN-420: the when box offers presets.
+	for _, want := range []string{"nightly", "0 9 * * *", "run the tests", "abc", "Turn off", "Run now",
+		"last run failed: model unreachable", `name="preset"`, "0 9 * * 1-5"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("cron page missing %q in body", want)
 		}
@@ -171,6 +174,17 @@ func TestCron_AddForm(t *testing.T) {
 	}
 	if fc.addCalls != 1 || fc.addSpec != "0 9 * * *" || fc.addPrompt != "run tests" || fc.addName != "nightly" {
 		t.Errorf("add not wired: calls=%d name=%q spec=%q prompt=%q", fc.addCalls, fc.addName, fc.addSpec, fc.addPrompt)
+	}
+}
+
+// TEN-420: a preset schedules when nothing was typed; a typed line wins.
+func TestCron_AddFormPreset(t *testing.T) {
+	fc := &fakeCronCtl{}
+	s := cronServer(fc)
+	cronPostForm(t, s, "/cron/add", "preset=@every+1h&spec=&prompt=check+mail")
+	cronPostForm(t, s, "/cron/add", "preset=@every+1h&spec=@daily&prompt=check+mail")
+	if fc.addCalls != 2 || fc.addSpec != "@daily" {
+		t.Errorf("preset not wired: calls=%d last spec=%q", fc.addCalls, fc.addSpec)
 	}
 }
 

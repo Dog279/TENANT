@@ -16,7 +16,15 @@
   <form method="POST" action="/cron/add" class="cronadd" id="jobs-add-form{{.AddKey}}" data-on:submit__prevent__throttle.1s="@post('/cron/add', {contentType:'form', retryMaxCount:0})">
     <div class="crow">
       <input type="text" name="name" placeholder="name (optional)" class="cinput">
-      <input type="text" name="spec" placeholder="when: for example 0 9 * * 1-5, or @every 30m" class="cinput" required>
+      <select name="preset" aria-label="when">
+        <option value="">when: pick one…</option>
+        <option value="@every 30m">every 30 minutes</option>
+        <option value="@every 1h">every hour</option>
+        <option value="0 9 * * *">daily at 9:00</option>
+        <option value="0 9 * * 1-5">weekdays at 9:00</option>
+        <option value="0 18 * * 5">Fridays at 18:00</option>
+      </select>
+      <input type="text" name="spec" placeholder="…or type when: 0 9 * * 1-5, or @every 30m" class="cinput">
       <input type="text" name="tz" placeholder="time zone (optional, for example America/New_York)" class="cinput">
     </div>
     <div class="crow">
@@ -70,6 +78,7 @@
     {{if .TZ}}<span class="dim">{{.TZ}}</span>{{end}}
   </div>
   <div class="dim">id {{.ID}} · next {{if .NextRun}}{{.NextRun}}{{else}}—{{end}}{{if .LastStatus}} · last {{.LastStatus}}{{if .LastRun}} at {{.LastRun}}{{end}}{{end}}</div>
+  {{if .LastError}}<div class="risk">last run failed: {{visibleText .LastError}}</div>{{end}}
   <div class="prompt">{{visibleText .Prompt}}</div>
   <div class="cronactions">
     <form method="POST" action="/cron/run" class="inline" data-on:submit__prevent__throttle.1s="@post('/cron/run', {contentType:'form', retryMaxCount:0})">

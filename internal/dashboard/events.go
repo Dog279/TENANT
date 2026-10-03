@@ -49,8 +49,8 @@ var OriginRejected = Events.Event(2102, event.Warning, "Access", "Cross-origin r
 		"Open the dashboard at one address. If you don't recognize the origin, a site you visited tried to reach it; it was refused.")
 
 var AuthRejected = Events.Event(2103, event.Warning, "Access", "Request without a valid token rejected: {method} {route}", "method", "route", "remote", "credential").
-	Doc("A request carried no dashboard token, or a wrong one (credential says which), and got 401.",
-		"A browser that hasn't signed in, a token that changed since sign-in, a script with an old token, or someone guessing.",
+	Doc("A request carried no dashboard token, a wrong one, or the sign-in cookie on a request another site started (credential says which: missing, invalid, cross-site cookie), and got 401.",
+		"A browser that hasn't signed in, a token that changed since sign-in, a script with an old token, or someone guessing. A cross-site cookie means a page on another site, or another port on this computer, embedded a dashboard address (an image, a script, a fetch): the browser sent the cookie along and the dashboard refused it (TEN-415).",
 		"Sign in at /settings with the token in <config>/dashboard-auth-token. Many wrong tokens from an address you don't know mean someone is guessing: keep the dashboard off public networks.")
 
 var CSRFRejected = Events.Event(2104, event.Warning, "Access", "Browser change without a matching Origin rejected: {method} {route}", "method", "route", "remote").

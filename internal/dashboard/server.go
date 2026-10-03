@@ -119,6 +119,18 @@ type Server struct {
 	// these random ids, never the key (auth_pages.go).
 	sessMu   sync.Mutex
 	sessions map[string]time.Time // id → expiry
+
+	// fails counts wrong sign-in keys per remote address, so a guess costs a
+	// wait that doubles each time (auth_pages.go, TEN-403).
+	failMu sync.Mutex
+	fails  map[string]loginFails
+}
+
+// loginFails is one address's wrong keys: how many in a row, and until when
+// its next attempt is refused.
+type loginFails struct {
+	n     int
+	until time.Time
 }
 
 // New constructs the dashboard server and builds its routes. A nil logger

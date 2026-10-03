@@ -754,7 +754,7 @@ func (a dashCron) Jobs() []dashboard.CronJobView {
 		out = append(out, dashboard.CronJobView{
 			ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt, Enabled: j.Enabled,
 			Kind: j.KindOf(), Exec: j.Exec, TZ: j.TZ,
-			NextRun: cronFmtTime(j.NextRun), LastRun: cronFmtTime(j.LastRun), LastStatus: j.LastStatus,
+			NextRun: cronFmtTime(j.NextRun), LastRun: cronFmtTime(j.LastRun), LastStatus: j.LastStatus, LastError: j.LastError,
 		})
 	}
 	return out
