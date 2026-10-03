@@ -57,6 +57,11 @@ Releases page.
   service unit and reinstalls through `tenant update`.
 
 ### Changed
+- **Dashboard cleanup** (TEN-402): http://localhost:8770 (and [::1]) reaches a loopback dashboard
+  without being added to `allowed_hosts` (TEN-414); the cron form offers preset schedules, with the
+  cron line still typable (TEN-420) and a failed job's row shows its error (TEN-427); the research busy refusal is in
+  plain words (TEN-413); a connector URL's key stays out of the system log and of connect
+  errors (TEN-409).
 - **`os_exec` works like a Claude Code shell (TEN-489).**
   - It takes `workdir` (default: your home folder, never Tenant's own directory) and `timeout`
     (default 120s, up to 600s; it was a fixed 60s).
@@ -135,6 +140,12 @@ Releases page.
   left by earlier runs. Sign-in browsers still stay open after Tenant exits.
 
 ### Security
+- **Dashboard sign-in** (TEN-403, TEN-415): after five wrong keys from one address, each
+  further wrong key doubles a wait (up to a minute) during which that address gets 429;
+  `tenant doctor` warns when the sign-in key is under 32 characters. The sign-in cookie no
+  longer signs a request another site or another port on this computer started (an embedded
+  image, a script, a fetch): the browser's Sec-Fetch-Site says so, and such a request gets 401
+  with credential "cross-site cookie" in event 2103; page navigations are unaffected.
 - **X sign-in:**
   - a callback without the sign-in's state is ignored rather than aborting the sign-in;
   - a busy callback port fails at once;

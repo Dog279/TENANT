@@ -44,7 +44,7 @@ func WithServerLog(ctx context.Context, label string) context.Context {
 // Lifecycle.
 
 // Connection is the activity of one MCP session, remote or local.
-var Connection = Events.Event(1, event.Info, "Connection", "Connection to {server}", "server", "url", "interactive").
+var Connection = Events.Event(1, event.Info, "Connection", "Connection to {server}", "server", "url", "interactive").Sensitive("url").
 	Doc("A session with an MCP server: start when Tenant connects, stop when it closes the session (a shutdown, a dropped duplicate), with its duration; fail when it could not connect. A remote connector reconnecting at launch from its saved sign-in has interactive=false.",
 		"A connector was enabled or added, reconnected at launch, or a local server started.",
 		"On a fail, read the error: the server is down or unreachable, refused the sign-in, or did not answer the MCP handshake. Its tools stay a stub until `/enable <label>` connects again.")
@@ -69,7 +69,7 @@ var ToolsChanged = Events.Event(1002, event.Info, "Connection", "{server} change
 		"The server was updated, or it enables tools at run time.",
 		"Restart Tenant, or remove and add the connector again, to pick up the new tools.")
 
-var NoSavedSignIn = Events.Event(1003, event.Info, "Connection", "{server} has no saved sign-in; it stays off until /enable signs in", "server", "url").
+var NoSavedSignIn = Events.Event(1003, event.Info, "Connection", "{server} has no saved sign-in; it stays off until /enable signs in", "server", "url").Sensitive("url").
 	Doc("A connector could not reconnect at launch because it needs a browser sign-in, which launch never opens.",
 		"It was never signed in from this config directory, or its saved sign-in was removed.",
 		"`/enable <label>`, or the dashboard's Remote services page, signs in.")
@@ -121,7 +121,7 @@ var CacheNotLocked = Events.Event(2105, event.Warning, "Sign-in", "Could not loc
 		"Another account created the lock file beside the sign-in and this one can't open it (serve running as SYSTEM beside an administrator's session).",
 		"Run every Tenant that uses the connector as the same account and with the same --config. Two renewals at the same moment without the lock can lose the sign-in (mcp 3101).")
 
-var NeedsReauth = Events.Event(3101, event.Error, "Sign-in", "{server} needs re-authorization: its token could not be refreshed: {err}", "server", "url", "err", "fix").
+var NeedsReauth = Events.Event(3101, event.Error, "Sign-in", "{server} needs re-authorization: its token could not be refreshed: {err}", "server", "url", "err", "fix").Sensitive("url").
 	Doc("A remote connector's sign-in died: its token expired and the server refused the refresh (invalid_grant, invalid_client, or another 4xx answer), so every call to its tools fails until it is reconnected. Written once, when it happens; the status pages, tenant doctor, the daily brief and a DM to the operator show it too.",
 		"The server revoked the refresh token, it expired unused, or a rotated one was lost.",
 		"Run the command in fix (`tenant mcp connect <url> --config <config dir>`) at the host, or use the dashboard's Remote services page.")

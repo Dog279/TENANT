@@ -9,6 +9,7 @@ package mcpremote
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -108,7 +109,7 @@ func connect(ctx context.Context, cfg Config) (*mcp.ClientSession, *persistentHa
 	handler.interactive = false
 	handler.mu.Unlock()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("mcpremote: connect %s: %w", cfg.ServerURL, err)
+		return nil, nil, nil, fmt.Errorf("mcpremote: connect %s: %w", bareURL(cfg.ServerURL), err)
 	}
 	cleanup := func() { _ = session.Close() }
 	return session, handler, cleanup, nil
@@ -169,4 +170,15 @@ func (d *Dispatcher) live(ctx context.Context, act *event.Activity, closeSession
 		closeSession()
 		act.End(nil)
 	})
+}
+
+// bareURL is a server URL for an error or a log line: scheme, host and path,
+// without the query or user part a key can hide in (TEN-409).
+func bareURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<url>"
+	}
+	u.User, u.RawQuery, u.Fragment = nil, "", ""
+	return u.String()
 }

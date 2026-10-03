@@ -4,9 +4,9 @@ package main
 
 // service_darwin.go (TEN-498): a per-user LaunchAgent, the keys the
 // hand-edited template carried (deploy/launchd, now gone) plus ExitTimeOut:
-// launchd's default grace is 20 s and serve's teardown gets 90. launchd
-// keeps the plist it loaded, so a reinstall unloads first; a stop unloads
-// and keeps the file, so start can load it again.
+// launchd's default grace is system-defined (man launchd.plist) and serve's
+// teardown gets 90. launchd keeps the plist it loaded, so a reinstall unloads
+// first; a stop unloads and keeps the file, so start can load it again.
 
 import (
 	"context"

@@ -140,10 +140,25 @@ func auditCtx(r *http.Request) context.Context { return context.WithoutCancel(r.
 // credential says whether a rejected request carried a credential at all
 // ("invalid") or none ("missing"), never what it was.
 func credential(r *http.Request) string {
-	if _, err := r.Cookie(dashCookieName); err == nil || r.Header.Get("Authorization") != "" || r.URL.Query().Has("token") {
+	if _, err := r.Cookie(dashCookieName); err == nil {
+		if crossSiteFetch(r) {
+			return "cross-site cookie"
+		}
+		return "invalid"
+	}
+	if r.Header.Get("Authorization") != "" || r.URL.Query().Has("token") {
 		return "invalid"
 	}
 	return "missing"
+}
+
+// crossSiteFetch reports a request the browser says another site (or another
+// port on this computer: same-site) started and that is not a page
+// navigation — the kind the sign-in cookie must not sign (TEN-415). A request
+// without the header (curl, an older browser) is not one.
+func crossSiteFetch(r *http.Request) bool {
+	site := r.Header.Get("Sec-Fetch-Site")
+	return (site == "cross-site" || site == "same-site") && r.Header.Get("Sec-Fetch-Mode") != "navigate"
 }
 
 // checkAuth reports whether r is authorized. The exempt liveness probe and
@@ -171,8 +186,10 @@ func (s *Server) checkAuth(r *http.Request) bool {
 		return false
 	}
 	// 1. Session cookie — SSR page loads, form submissions and the browser's
-	// WebSocket handshake (browser sends it on same-origin).
-	if s.validCookie(r) {
+	// WebSocket handshake (browser sends it on same-origin). Not a fetch some
+	// other site made the browser send it with (an <img> on another port of
+	// this computer is enough to file a sensitive-read record, TEN-415).
+	if s.validCookie(r) && !crossSiteFetch(r) {
 		return true
 	}
 	// 2. Bearer header — API clients, curl (unchanged).
@@ -224,6 +241,15 @@ func (s *Server) checkOrigin(r *http.Request) bool {
 func (s *Server) checkHost(requestHost string) bool {
 	for _, allowed := range append([]string{s.cfg.Addr}, s.cfg.AllowedHosts...) {
 		if authorityAllowed(requestHost, allowed) {
+			return true
+		}
+	}
+	// A loopback listener answers to every loopback name on its port
+	// (localhost, 127.0.0.1, [::1]): http://localhost:8770 is what people type
+	// (TEN-414). Rebinding-safe: an attacker's name never resolves to one of
+	// these in the Host header.
+	if lh, lp, ok := splitAuthority(s.cfg.Addr); ok && isLoopbackHost(lh) {
+		if rh, rp, rok := splitAuthority(requestHost); rok && isLoopbackHost(rh) && (lp == "" || lp == "0" || rp == lp) {
 			return true
 		}
 	}

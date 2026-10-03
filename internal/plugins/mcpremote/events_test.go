@@ -184,3 +184,10 @@ func TestSignInEvents(t *testing.T) {
 		t.Errorf("needs re-auth = %+v", e)
 	}
 }
+
+// TEN-409: a server URL in an error keeps no key.
+func TestBareURL(t *testing.T) {
+	if got := bareURL("https://me:k3y@mcp.example/v1/mcp?key=abc#x"); got != "https://mcp.example/v1/mcp" {
+		t.Fatalf("bareURL = %q", got)
+	}
+}
