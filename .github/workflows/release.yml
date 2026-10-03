@@ -37,6 +37,15 @@ jobs:
         if: ${{ !github.event.repository.private }}
         uses: sigstore/cosign-installer@v3
 
+      # The tracked scripts carry a __REPO__ placeholder; the stamped copies
+      # ship as release assets (release.extra_files in .goreleaser.yaml).
+      - name: Stamp the install scripts with the repository name
+        run: |
+          mkdir -p dist-scripts
+          for f in install.sh install.ps1; do
+            sed "s|__REPO__|$GITHUB_REPOSITORY|g" "scripts/$f" > "dist-scripts/$f"
+          done
+
       - name: Publish release
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -51,3 +60,95 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-checksums: ./dist/checksums.txt
+
+  # Installs the release just published through its own install scripts on all
+  # three OSes, then exercises `tenant service` and `tenant update` against it.
+  # The scripts download from releases/download, which answers 404 on a private
+  # repository even with a token, so the job runs for public releases only; a
+  # private release succeeds without it.
+  smoke:
+    name: smoke (${{ matrix.os }})
+    needs: release
+    if: ${{ !github.event.repository.private }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      # The assets belong to this tag, which `latest` skips for a prerelease.
+      - name: Install with install.sh from the release
+        if: runner.os != 'Windows'
+        run: |
+          curl -fsSL "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.sh" \
+            | TENANT_VERSION="${GITHUB_REF_NAME#v}" TENANT_INSTALL_DIR="$RUNNER_TEMP/bin" sh
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Install with install.ps1 from the release
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:TENANT_VERSION = $env:GITHUB_REF_NAME -replace '^v', ''
+          $env:TENANT_INSTALL_DIR = "$env:RUNNER_TEMP\bin"
+          irm "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.ps1" | iex
+          Add-Content $env:GITHUB_PATH "$env:RUNNER_TEMP\bin"
+
+      - name: Installed binary reports the tag's version
+        shell: bash
+        run: tenant version | grep -F -- "${GITHUB_REF_NAME#v}"
+
+      - name: No quarantine mark (macOS)
+        if: runner.os == 'macOS'
+        run: if xattr -p com.apple.quarantine "$RUNNER_TEMP/bin/tenant" 2>/dev/null; then exit 1; fi
+
+      - name: No Zone.Identifier mark (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: if (Get-Item "$env:RUNNER_TEMP\bin\tenant.exe" -Stream Zone.Identifier -ErrorAction SilentlyContinue) { exit 1 }
+
+      - name: Render the service unit
+        run: tenant service install --print
+
+      # first verified on the TEN-449 rc tag; drop to --print if the runner cannot
+      - name: Install, query and remove the LaunchAgent
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          tenant service install
+          tenant service status
+          tenant service uninstall
+
+      # first verified on the TEN-449 rc tag; drop to --print if the runner cannot
+      - name: Verify the systemd unit
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          tenant service install --print > "$RUNNER_TEMP/tenant.service"
+          systemd-analyze --user verify "$RUNNER_TEMP/tenant.service"
+
+      # first verified on the TEN-449 rc tag; drop to --print if the runner cannot
+      - name: Install, query and remove the scheduled task
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: powershell
+        run: |
+          tenant service install
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          tenant service status
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          tenant service uninstall
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      # A reinstall of the same version through the full download, checksum,
+      # signature, smoke-test, backup and swap path. No service is installed
+      # here, so it ends with the restart hint. The token keeps the API calls
+      # off the unauthenticated rate limit.
+      - name: Reinstall through tenant update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tenant update --version ${{ github.ref_name }} --force --yes

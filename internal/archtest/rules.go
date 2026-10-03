@@ -33,6 +33,7 @@ var rules = []rule{
 	{Pkg: "internal/datalock", Notes: "leaf"},
 	{Pkg: "internal/httplimits", Notes: "leaf"},
 	{Pkg: "internal/version", Notes: "leaf"},
+	{Pkg: "internal/selfupdate", Notes: "leaf: finding, verifying and swapping in a release binary; tenant update sequences it"},
 	{Pkg: "internal/runtrace", Notes: "leaf"},
 	{Pkg: "internal/cmdreg", Notes: "leaf"},
 	{Pkg: "internal/cron", Notes: "leaf"},
@@ -73,7 +74,7 @@ var rules = []rule{
 	{Pkg: "internal/approval", May: []string{"internal/agent", "internal/control", "internal/logs", "internal/runtrace"}, Notes: "the approval decision point; knows no plugin and no surface"},
 	{Pkg: "internal/toolmux", May: []string{"internal/agent", "internal/model", "internal/memory/cosine", "internal/plugins/mcpremote", "internal/peering", "internal/control"}, Notes: "the tool registry and dispatcher; builds no plugin itself"},
 	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/model"}, Notes: "never the dashboard"},
-	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/orchestra"}, Notes: "never the terminal UI"},
+	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/orchestra", "internal/version"}, Notes: "never the terminal UI"},
 }
 
 // everyone is one allowance on top of the rule that governs each internal

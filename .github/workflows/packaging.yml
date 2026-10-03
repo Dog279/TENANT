@@ -1,0 +1,91 @@
+name: Packaging
+
+# Runs only when the release packaging changes: builds a GoReleaser snapshot on
+# all three OSes and installs it through scripts/install.sh and install.ps1,
+# the way the release one-liners do, against a local HTTP server.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - .goreleaser.yaml
+      - scripts/install.sh
+      - scripts/install.ps1
+      - .github/workflows/release.yml
+      - .github/workflows/packaging.yml
+  pull_request:
+    branches: [main, master]
+    paths:
+      - .goreleaser.yaml
+      - scripts/install.sh
+      - scripts/install.ps1
+      - .github/workflows/release.yml
+      - .github/workflows/packaging.yml
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot-install:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6.4.0
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Check GoReleaser config
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: Build snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish,sign,sbom
+
+      - name: Lint install.sh
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh scripts/install.sh
+
+      # curl reads file:// URLs, so the snapshot in dist/ stands in for the
+      # release's download directory with no local HTTP server (the macOS
+      # runner could not reach one on loopback).
+      - name: Install the snapshot with install.sh
+        if: runner.os != 'Windows'
+        run: |
+          bash -n scripts/install.sh
+          export TENANT_BASE_URL="file://$PWD/dist"
+          export TENANT_VERSION="$(jq -r .version dist/metadata.json)"
+          export TENANT_INSTALL_DIR="$RUNNER_TEMP/bin"
+          sh scripts/install.sh
+          "$RUNNER_TEMP/bin/tenant" version
+
+      - name: Install the snapshot with install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          [scriptblock]::Create((Get-Content -Raw scripts/install.ps1)) | Out-Null
+          Start-Process python -ArgumentList '-m', 'http.server', '8000', '--directory', 'dist'
+          Start-Sleep 2
+          $env:TENANT_BASE_URL = 'http://127.0.0.1:8000'
+          $env:TENANT_VERSION = (Get-Content dist/metadata.json | ConvertFrom-Json).version
+          $env:TENANT_INSTALL_DIR = "$env:RUNNER_TEMP\bin"
+          Invoke-Expression (Get-Content -Raw scripts/install.ps1)
+          & "$env:RUNNER_TEMP\bin\tenant.exe" version

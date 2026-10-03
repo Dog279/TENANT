@@ -124,12 +124,13 @@ func (d dashAgents) Remove(name string) error {
 }
 
 // RestartNote is how to restart Tenant, where the page's "when Tenant
-// restarts" needs it: a Windows service has no window to close.
+// restarts" needs it (TEN-498): the service command, which drains the
+// running turn first; a Windows service also has the Services app.
 func (d dashAgents) RestartNote() string {
 	if d.service {
-		return "Restart the Tenant service (open Services, find Tenant, click Restart)."
+		return "Run `tenant service restart` from an elevated terminal, or open Services, find Tenant and click Restart."
 	}
-	return ""
+	return "Run `tenant service restart`."
 }
 
 // nameFree refuses a name another helper has, built-ins included, in any

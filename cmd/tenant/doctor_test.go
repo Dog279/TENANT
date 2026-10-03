@@ -35,7 +35,8 @@ func TestDoctor_CheckExecSandbox(t *testing.T) {
 	e := &doctorEnv{c: &commonFlags{cfgDir: t.TempDir(), dataDir: t.TempDir(), agent: "main"}}
 	withBuiltinExec(t, "host", "no restricted backend on linux: restricted is macOS-only")
 	r := checkExecSandbox(context.Background(), e)
-	if r.Status != statusWarn || !strings.Contains(r.Detail, "local, discord, imessage, cron-exec, cron-shell: host, unconfined (restricted can't run here: no restricted backend") {
+	if r.Status != statusWarn || !strings.Contains(r.Detail, "cron-exec, cron-shell: host, unconfined (restricted can't run here: no restricted backend") ||
+		!strings.Contains(r.Detail, "local, discord, imessage: host, unconfined\n") { // TEN-489: host by choice, no reason
 		t.Fatalf("fallback: %s %q", r.Status.tag(), r.Detail)
 	}
 
@@ -955,4 +956,16 @@ func sidecarPathFor(wikiDir, dataDir string) string {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(absVault))
 	return filepath.Join(dataDir, "wiki", fmt.Sprintf("%x.json", h.Sum64()))
+}
+
+// TEN-403: a healthy dashboard whose sign-in key is short is a WARN.
+func TestDoctor_CheckDashboardShortKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+	e := &doctorEnv{c: &commonFlags{cfgDir: t.TempDir()}, httpc: srv.Client(),
+		lc: &launchConfig{Dashboard: dashboardConfig{Enabled: boolPtr(true), Addr: hostPort(t, srv.URL), Auth: "hunter2"}}}
+	r := checkDashboard(context.Background(), e)
+	if r.Status != statusWarn || !strings.Contains(r.Detail, "7 characters") {
+		t.Fatalf("short key → WARN naming the length, got %v: %q", r.Status, r.Detail)
+	}
 }

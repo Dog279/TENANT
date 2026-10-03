@@ -440,6 +440,13 @@ func shellArgs(cmd Command) (string, []string) {
 	return "sh", []string{"-c", cmd.Shell}
 }
 
+// ShellArgv is the argv Run would use for a shell command, for Start: the
+// platform shell, non-interactive, running command (TEN-490).
+func ShellArgv(command string) []string {
+	name, args := shellArgs(Command{Shell: command})
+	return append([]string{name}, args...)
+}
+
 // pidOf is c's process id, or 0 when it never started.
 func pidOf(c *exec.Cmd) int {
 	if c.Process == nil {
@@ -449,11 +456,14 @@ func pidOf(c *exec.Cmd) int {
 }
 
 // clip truncates output to n bytes with a marker. n <= 0 ⇒ no cap.
+// clip keeps a third of n from the head and the rest from the tail, where a
+// command's errors and summary usually are.
 func clip(s string, n int) string {
-	if n > 0 && len(s) > n {
-		return s[:n] + "\n…[truncated]"
+	if n <= 0 || len(s) <= n {
+		return s
 	}
-	return s
+	head := n / 3
+	return s[:head] + "\n…[truncated]…\n" + s[len(s)-(n-head):]
 }
 
 // cut is strings.Cut for a byte separator (kept local to avoid an import churn).

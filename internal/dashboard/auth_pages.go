@@ -7,7 +7,9 @@ package dashboard
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -118,12 +120,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		signInFailed(w, r, http.StatusBadRequest, "Paste the key into the form, not the address bar. The key in that address may now be in your browser's history: to change it, delete the file dashboard-auth-token and restart Tenant.")
 		return
 	}
+	if wait := s.loginWait(r.RemoteAddr); wait > 0 {
+		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr, "throttled", wait.String())
+		refused(r, "sign_in", "/auth/login")
+		signInFailed(w, r, http.StatusTooManyRequests, fmt.Sprintf("Too many wrong keys from this address. Try again in %d seconds.", int(wait/time.Second)+1))
+		return
+	}
 	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Auth)) != 1 {
+		s.loginFailed(r.RemoteAddr)
 		SignInFailed.Log(r.Context(), "remote", r.RemoteAddr)
 		refused(r, "sign_in", "/auth/login")
 		signInFailed(w, r, http.StatusForbidden, "That key didn't match. Check the file dashboard-auth-token on the computer running Tenant.")
 		return
 	}
+	s.loginOK(r.RemoteAddr)
 	http.SetCookie(w, &http.Cookie{
 		Name:     dashCookieName,
 		Value:    s.newSession(),
@@ -162,4 +172,62 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		_ = catalog.SignedOut.Audit(auditCtx(r), "remote", r.RemoteAddr, "actor", "operator", "surface", "dashboard")
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// Sign-in throttling (TEN-403): after loginFreeTries wrong keys from one
+// address, each further wrong key doubles a wait, up to loginMaxWait, during
+// which that address's attempts are refused before the key is compared. A
+// right key clears the count. ponytail: keyed by the remote IP, so a shared
+// NAT is one address; per-key hashing if that ever matters.
+const (
+	loginFreeTries = 5
+	loginMaxWait   = time.Minute
+)
+
+// loginNow is swapped by tests.
+var loginNow = time.Now
+
+func remoteIP(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
+}
+
+// loginWait is how long addr must still wait, or 0.
+func (s *Server) loginWait(addr string) time.Duration {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	if f, ok := s.fails[remoteIP(addr)]; ok {
+		if d := f.until.Sub(loginNow()); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// loginFailed records a wrong key from addr and sets its wait.
+func (s *Server) loginFailed(addr string) {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	if s.fails == nil || len(s.fails) > 10000 {
+		s.fails = map[string]loginFails{}
+	}
+	f := s.fails[remoteIP(addr)]
+	f.n++
+	if f.n > loginFreeTries {
+		wait := time.Second << uint(min(f.n-loginFreeTries-1, 10))
+		if wait > loginMaxWait {
+			wait = loginMaxWait
+		}
+		f.until = loginNow().Add(wait)
+	}
+	s.fails[remoteIP(addr)] = f
+}
+
+// loginOK forgets addr's wrong keys.
+func (s *Server) loginOK(addr string) {
+	s.failMu.Lock()
+	delete(s.fails, remoteIP(addr))
+	s.failMu.Unlock()
 }

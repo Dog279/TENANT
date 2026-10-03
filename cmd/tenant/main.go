@@ -25,6 +25,9 @@ import (
 )
 
 func main() {
+	if runWindowsService() { // started by the service control manager (svc_windows.go, TEN-498)
+		return
+	}
 	if len(os.Args) < 2 {
 		writeBeginnerHelp(os.Stderr)
 		os.Exit(2)
@@ -33,6 +36,7 @@ func main() {
 	defer stop()
 	holdDataDir = lockDataDirForProcess
 	killChildrenOnExit() // Windows: a hard kill takes the browser down too (TEN-401)
+	fillLoginPath()      // macOS: brew & co. on PATH under launchd (TEN-489)
 
 	c := cliRegistry().Lookup(os.Args[1])
 	if c == nil {
@@ -55,8 +59,15 @@ func main() {
 			writeCommandHelp(os.Stdout, c)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		code := 1
+		var ex exitError
+		if errors.As(err, &ex) { // a status with a meaning of its own (update.go), with or without text
+			code = ex.code
+		}
+		if err.Error() != "" {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
+		os.Exit(code)
 	}
 }
 

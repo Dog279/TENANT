@@ -118,3 +118,64 @@ func TestToolRules_ValidationPersistLoadAndOrder(t *testing.T) {
 		t.Error("rulesEqual")
 	}
 }
+
+// TEN-491: command rules decide a shell command by its text, per segment:
+// deny > ask > allow, every segment must match for an allow, an exact rule
+// is that command alone, and they never match an action id. "Always" on a
+// command's prompt names its family.
+func TestToolRules_CommandRules(t *testing.T) {
+	r := NewRules()
+	for p, m := range map[string]string{"os_exec(brew install *)": "allow", "os_exec(rm *)": "deny", "os_exec(git push)": "ask", "os_exec(brew *)": "ask"} {
+		if err := r.Set(p, m); err != nil {
+			t.Fatalf("Set(%q): %v", p, err)
+		}
+	}
+	for cmd, want := range map[string]string{
+		"brew install jq":             "allow", // the longer prefix beats os_exec(brew *)
+		"brew  install   jq":          "allow", // spaces folded
+		"brew upgrade":                "ask",
+		"brew install jq && rm -rf x": "deny", // any deny denies
+		"git push":                    "ask",
+		"git push origin main":        "", // an exact rule is that command alone
+		"brew install jq | tee log":   "", // an unmatched segment: no allow
+		"ls -la":                      "",
+		"echo $(rm x)":                "deny", // a subshell is a segment too
+	} {
+		got, _, ok := r.LookupCommand(cmd)
+		if !ok {
+			got = ""
+		}
+		if got != want {
+			t.Errorf("LookupCommand(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+	if _, _, ok := r.Lookup("os_exec"); ok {
+		t.Error("a command rule must not answer for the os_exec action id")
+	}
+	for _, bad := range []string{"os_exec(*)", "os_exec()", "os_exec(a * b)", "os_exec(brew?)", "os exec"} {
+		if err := r.Set(bad, "allow"); err == nil {
+			t.Errorf("Set(%q) must be refused", bad)
+		}
+	}
+	kinds := map[string]string{}
+	for _, info := range r.Rules() {
+		kinds[info.Pattern] = info.Kind
+	}
+	if kinds["os_exec(rm *)"] != "command" {
+		t.Errorf("Rules() kinds = %v, want command rules listed as such", kinds)
+	}
+	if loaded, skipped := NewRules().Load(map[string]string{"os_exec(npm run *)": "allow", "os_exec(*)": "allow"}); loaded != 1 || skipped != 1 {
+		t.Errorf("Load: loaded %d skipped %d, want 1 and 1", loaded, skipped)
+	}
+	for cmd, want := range map[string]string{
+		"brew install jq":         "os_exec(brew install *)",
+		"ls -la /tmp":             "os_exec(ls *)",
+		"FOO=1 make test":         "os_exec(make test *)",
+		"git log --oneline && ls": "os_exec(git log *)",
+		"":                        "",
+	} {
+		if got := CommandPrefix(cmd); got != want {
+			t.Errorf("CommandPrefix(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}

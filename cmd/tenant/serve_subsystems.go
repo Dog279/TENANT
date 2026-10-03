@@ -54,6 +54,7 @@ type serveRelayDeps struct {
 	routeHook   agent.RouteHook
 	routeActive agent.RouteActive
 	routeSticky agent.RouteSticky
+	stopping    func() bool // true while serve is stopping (TEN-499)
 }
 
 // buildServeRelay constructs the Discord relay manager (always non-nil so the
@@ -97,6 +98,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		sysPrompt: d.sysPrompt, log: d.log, gateConfirm: discordBroker.Confirm,
 		events:    d.emit,
 		routeHook: d.routeHook, routeActive: d.routeActive, routeSticky: d.routeSticky,
+		stopping: d.stopping,
 	}
 
 	var (
@@ -118,6 +120,7 @@ func buildServeRelay(ctx context.Context, d serveRelayDeps) *discordRelayManager
 		sender: relaySender, broker: discordBroker, token: discordToken,
 		dataDir: c.dataDir,
 		log:     d.log, notify: d.notify, ingest: ingest, degraded: d.degraded.Degraded,
+		stopping:        d.stopping,
 		approvalTimeout: relayApprovalTimeout(c.lc), cardStyle: relayCardStyle(c.lc),
 		persistTimeout: func(dur time.Duration) error {
 			if c.lc == nil {
@@ -181,6 +184,7 @@ type serveIMessageDeps struct {
 	routeHook   agent.RouteHook
 	routeActive agent.RouteActive
 	routeSticky agent.RouteSticky
+	stopping    func() bool // true while serve is stopping (TEN-499)
 }
 
 // buildServeIMessage wires the iMessage drive-allowlist + per-category broker +
@@ -268,6 +272,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 				fullTools: d.tools, fullDisp: d.tools,
 				sysPrompt: d.sysPrompt, log: d.log, routeHook: d.routeHook,
 				routeActive: d.routeActive, routeSticky: d.routeSticky, events: d.emit,
+				stopping: d.stopping,
 			})
 			if err != nil {
 				_ = nat.Close()
@@ -279,7 +284,7 @@ func buildServeIMessage(ctx context.Context, d serveIMessageDeps) *imessageAllow
 					return imsgBroker.Confirm(cctx, action, "[iMessage] "+detail)
 				},
 				log: d.log, degraded: d.degraded.Degraded,
-				ingest:  ingest,
+				ingest: ingest, stopping: d.stopping, dataDir: c.dataDir,
 				allowed: func(h string) bool { return allowMgr.Drives(h, imsgOperator) },
 				passive: allowMgr.Passive,
 			}

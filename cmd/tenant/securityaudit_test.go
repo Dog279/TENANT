@@ -27,7 +27,7 @@ func TestSecurityAuditExecutionFromLiveProfiles(t *testing.T) {
 		t.Fatalf("host fallback + exec allow must be critical: err=%v findings=%+v", err, report.Findings)
 	}
 	if len(report.Execution.Surfaces) != len(execSurfaces) || report.Execution.Isolation != "none" ||
-		report.Execution.Surfaces[0].Fallback != "no restricted backend on linux: restricted is macOS-only" {
+		report.Execution.Surfaces[len(report.Execution.Surfaces)-1].Fallback != "no restricted backend on linux: restricted is macOS-only" { // cron; interactive surfaces are host by choice (TEN-489)
 		t.Fatalf("execution = %+v", report.Execution)
 	}
 	var host securityFinding
@@ -72,7 +72,7 @@ func TestPermissionsEffectiveExecutionProfile(t *testing.T) {
 	if report.Execution.Backend != "host" || p.Surface != "discord" || p.Fallback != "" || !slices.Equal(p.Exceptions, []string{work}) {
 		t.Fatalf("discord execution = %+v", report.Execution)
 	}
-	if local := runPermissionsEffectiveJSON(t, "--config", cfgDir, "--data", dataDir).Execution.Profile; local.Fallback != "reason" || local.Mode != "dry-run" {
+	if local := runPermissionsEffectiveJSON(t, "--config", cfgDir, "--data", dataDir).Execution.Profile; local.Backend != "host" || local.Fallback != "" { // host by choice (TEN-489)
 		t.Fatalf("local execution = %+v", local)
 	}
 }

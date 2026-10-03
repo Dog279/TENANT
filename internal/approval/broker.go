@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +55,31 @@ type Broker struct {
 	// grant says. The Discord relay's exec mode drives it (TEN-338), so
 	// relay.allow_exec=false keeps dangerous actions out of reach offsite.
 	locked func(action, cat string) bool
+
+	// readOnly, when set, reports a shell command that only looks (ls, git
+	// status, rg …): such an os_exec runs without a prompt after the rules
+	// had their say (TEN-491, D4). Unset on the iMessage broker, which stays
+	// deny-by-default. The osys classifier supplies it (SetReadOnly).
+	readOnly func(command string) bool
+}
+
+// SetReadOnly installs the read-only command judgement (nil = never).
+func (b *Broker) SetReadOnly(f func(command string) bool) {
+	b.mu.Lock()
+	b.readOnly = f
+	b.mu.Unlock()
+}
+
+// execCommand is the shell command behind an os_exec approval: the detail,
+// without the danger note the dispatcher appends to a destructive one.
+func execCommand(action, detail string) (string, bool) {
+	if action != "os_exec" && action != "os_exec_dangerous" {
+		return "", false
+	}
+	if i := strings.Index(detail, "  [DANGER: "); i >= 0 {
+		detail = detail[:i]
+	}
+	return detail, true
 }
 
 // NewBroker builds the host's broker: every category asks, and "ask" prompts
@@ -311,6 +337,40 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 		return verdict(ctx, cat, action, detail, b.origin, "lock", "denied_policy", control.DenyOnce)
 	}
 
+	// A shell command is judged by its text first (TEN-491): the operator's
+	// command rules, per segment (deny > ask > allow, every segment must match
+	// for allow). A tool-level `os_exec: deny` still binds, and a command the
+	// classifier called destructive keeps its prompt whatever an allow says.
+	cmd, isExec := execCommand(action, detail)
+	if isExec && b.rules != nil {
+		if cmode, cpat, ok := b.rules.LookupCommand(cmd); ok {
+			if tmode, _, tok := b.rules.Lookup(action); tok && tmode == "deny" {
+				cmode = "deny"
+			}
+			switch {
+			case cmode == "deny":
+				b.logInfo(ctx, "approval denied by command rule", "origin", b.origin, "category", cat, "action", action, "rule", cpat)
+				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.DenyOnce)
+			case cmode == "allow" && action == "os_exec":
+				b.logInfo(ctx, "approval allowed by command rule", "origin", b.origin, "category", cat, "action", action, "rule", cpat)
+				return verdict(ctx, cat, action, detail, b.origin, "rule", "", control.ApproveAlways)
+			case cmode == "ask":
+				b.logInfo(ctx, "approval prompt forced by command rule", "origin", b.origin, "category", cat, "action", action, "rule", cpat)
+				switch b.askDecision(ctx, "agent", cat, action, detail, false) {
+				case control.ApproveAlways:
+					if err := b.rules.Set(cpat, "allow"); err != nil && b.log != nil {
+						b.log.Warn("approval: always-allow rule not set", "origin", b.origin, "rule", cpat, "err", err)
+					}
+					return true
+				case control.ApproveSession, control.ApproveOnce:
+					return true
+				default:
+					return false
+				}
+			}
+		}
+	}
+
 	// A per-tool rule is the operator's explicit word for THIS tool and wins
 	// over the category: allow/deny decide silently; ask always prompts, even
 	// past a category allow or a session grant.
@@ -353,7 +413,15 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 	b.mu.Lock()
 	mode := b.modes[cat]
 	sess := b.session[cat]
+	readOnly := b.readOnly
 	b.mu.Unlock()
+
+	// A command that only looks skips the prompt (TEN-491, D4): the rules above
+	// had their say, and a category deny still holds below.
+	if action == "os_exec" && readOnly != nil && mode != ModeDeny && readOnly(cmd) {
+		b.logInfo(ctx, "approval allowed: read-only command", "origin", b.origin, "category", cat, "action", action)
+		return verdict(ctx, cat, action, detail, b.origin, "readonly", "", control.ApproveAlways)
+	}
 
 	// An explicit-only action (RequireExplicit) is answered by an exact tool
 	// rule (above) or a live decision, never by its category's allow or a
@@ -386,8 +454,19 @@ func (b *Broker) Confirm(ctx context.Context, action, detail string) bool {
 		return verdict(ctx, cat, action, detail, b.origin, "session", "approved_session", control.ApproveSession)
 	}
 
+	prefix := "" // what "always" saves for a command (TEN-491); the rule shows in /permissions
+	if action == "os_exec" && b.rules != nil {
+		prefix = CommandPrefix(cmd)
+	}
 	switch b.askDecision(ctx, "agent", cat, action, detail, true) {
 	case control.ApproveAlways:
+		if prefix != "" {
+			// "Always" on a command saves its family (TEN-491), never all of exec.
+			if err := b.rules.Set(prefix, "allow"); err != nil && b.log != nil {
+				b.log.Warn("approval: always-allow rule not set", "origin", b.origin, "rule", prefix, "err", err)
+			}
+			return true
+		}
 		if !saveScoped(ctx, action) { // a scoped action never opens its whole category
 			b.setMode(cat, ModeAllow)
 		}

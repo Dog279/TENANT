@@ -175,3 +175,84 @@ func TestSession_CookieIsNotTheKey(t *testing.T) {
 		t.Error("an expired session must not sign in")
 	}
 }
+
+// TEN-403: after five wrong keys an address waits, doubling each time; a
+// right key clears it.
+func TestLogin_ThrottlesFailures(t *testing.T) {
+	s := authedServer()
+	now := time.Now()
+	loginNow = func() time.Time { return now }
+	defer func() { loginNow = time.Now }()
+	try := func(token string) int {
+		rec := httptest.NewRecorder()
+		s.handleLogin(rec, postForm("/auth/login", url.Values{"token": {token}}))
+		return rec.Code
+	}
+	for i := 0; i < loginFreeTries; i++ {
+		if code := try("nope"); code != http.StatusForbidden {
+			t.Fatalf("try %d: want 403, got %d", i+1, code)
+		}
+	}
+	if code := try("nope"); code != http.StatusForbidden {
+		t.Fatalf("the sixth wrong key is still compared (403), got %d", code)
+	}
+	if code := try("s3cret"); code != http.StatusTooManyRequests {
+		t.Fatalf("during the wait even the right key is refused with 429, got %d", code)
+	}
+	now = now.Add(2 * time.Second)
+	if code := try("nope"); code != http.StatusForbidden {
+		t.Fatalf("after the wait a wrong key is compared again, got %d", code)
+	}
+	now = now.Add(time.Second) // the second wait is 2s: still waiting
+	if code := try("nope"); code != http.StatusTooManyRequests {
+		t.Fatalf("the wait doubled, want 429, got %d", code)
+	}
+	now = now.Add(2 * time.Second)
+	if code := try("s3cret"); code != http.StatusSeeOther {
+		t.Fatalf("the right key signs in after the wait, got %d", code)
+	}
+	if s.loginWait(postForm("/auth/login", nil).RemoteAddr) != 0 {
+		t.Error("a right key clears the count")
+	}
+}
+
+// TEN-415: the cookie signs page navigations and the page's own requests,
+// not a fetch another site (or another port here) made the browser send.
+func TestCheckAuth_CrossSiteCookieRefused(t *testing.T) {
+	s := authedServer()
+	check := func(site, mode string, bearer bool) bool {
+		r := httptest.NewRequest("GET", "/api/status", nil)
+		r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		if mode != "" {
+			r.Header.Set("Sec-Fetch-Mode", mode)
+		}
+		if bearer {
+			r.Header.Set("Authorization", "Bearer s3cret")
+		}
+		return s.checkAuth(r)
+	}
+	for _, c := range []struct {
+		site, mode string
+		want       bool
+	}{
+		{"", "", true}, {"same-origin", "cors", true}, {"none", "navigate", true},
+		{"same-site", "navigate", true}, {"cross-site", "navigate", true},
+		{"same-site", "no-cors", false}, {"cross-site", "cors", false}, {"cross-site", "", false},
+	} {
+		if got := check(c.site, c.mode, false); got != c.want {
+			t.Errorf("site %q mode %q: cookie accepted = %v, want %v", c.site, c.mode, got, c.want)
+		}
+	}
+	if !check("cross-site", "cors", true) {
+		t.Error("a bearer token is not a cookie: unaffected")
+	}
+	r := httptest.NewRequest("GET", "/api/status", nil)
+	r.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
+	r.Header.Set("Sec-Fetch-Site", "same-site")
+	if got := credential(r); got != "cross-site cookie" {
+		t.Errorf("credential = %q, want the reason named", got)
+	}
+}

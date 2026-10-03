@@ -24,15 +24,15 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-10-02; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-10-03; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 87 |
-| Go files | 3,388 |
-| Test files | 1,661 |
-| Production Go LOC | 466,048 |
-| Test Go LOC | 330,346 |
-| Go modules | 4 |
+| Go packages | 88 |
+| Go files | 1,222 |
+| Test files | 593 |
+| Production Go LOC | 155,704 |
+| Test Go LOC | 119,326 |
+| Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
 <!-- docfacts:generated:end -->
@@ -136,6 +136,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/datalock` | nothing in the module | leaf |
 | `internal/httplimits` | nothing in the module | leaf |
 | `internal/version` | nothing in the module | leaf |
+| `internal/selfupdate` | nothing in the module | leaf: finding, verifying and swapping in a release binary; tenant update sequences it |
 | `internal/runtrace` | nothing in the module | leaf |
 | `internal/cmdreg` | nothing in the module | leaf |
 | `internal/cron` | nothing in the module | leaf |
@@ -175,7 +176,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
 | `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
 | `internal/tui` | `internal/agent`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
-| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra` | never the terminal UI |
+| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra`, `internal/version` | never the terminal UI |
 <!-- /archtest:rules -->
 
 In short:
@@ -1030,26 +1031,7 @@ below the gate; Open credential selection; bad args. 14 tests.
 **Status:** complete; deterministic + wire-contract verified; live X
 leg operator-run (`tenant x --login` then `tenant x "…"`).
 
-### 5.12f `internal/plugins/imessage` — iMessage (plugin #6)
-
-**Transports (TEN-68, TEN-486):** `imessage.OpenBackend` picks one. On a
-Mac with no BlueBubbles URL, Tenant reads `~/Library/Messages/chat.db`
-read-only (Full Disk Access) and sends with `osascript` (Automation). With
-a BlueBubbles URL (flag, saved config or `$BLUEBUBBLES_URL`) it uses the
-REST client below, on any OS. Both are a full `Backend`, so the tools and
-the responder run on either.
-
-**Responder modes (TEN-485):** the responder (`/imessage on|off`) reads
-every inbound text. `/imessage passive` answers none; `/imessage respond`
-answers only the allowlist and the operator, and only in a 1:1 iMessage
-chat: group chats and SMS/RCS never drive. A text that doesn't drive is
-recorded as an `imessage` Observed event and shown in the activity feed.
-Turning the responder on also turns on the `imessage_*` tools.
-
-**Contact names:** natively, handles get the sender's name from the
-Contacts AddressBook stores (read-only, cached 10 minutes; phones match on
-their last 10 digits). Gates and allowlists still compare the handle.
-
+### 5.12f `internal/plugins/imessage` — iMessage via BlueBubbles (plugin #6)
 
 **Purpose:** the agent reads + sends iMessages. There is no official
 Apple API, so this is a **native-Go REST client for a BlueBubbles
@@ -1127,9 +1109,11 @@ can slip past it when `AllowExec` is on without `Confirm`. It stays as
 a fast fail-early layer. The boundary is the execution sandbox
 (§5.12h): `os_exec` runs through the runner injected as
 `Config.Runner`, on a `sandbox.Backend` picked per surface from the
-operator's `exec_profiles`. The built-in profile is `restricted` in
-dry run on macOS (Seatbelt), else `host`, which confines **nothing**
-(Linux and Windows; `builtinExec` says why). A dry run confines nothing
+operator's `exec_profiles`. With no entry, the interactive surfaces
+(TUI/dashboard, Discord, iMessage) run on `host` behind their approvals
+(TEN-489); cron's built-in profile is `restricted` in dry run on macOS
+(Seatbelt), else `host`, which confines **nothing** (Linux and Windows;
+`builtinExec` says why). A dry run confines nothing
 either: a refused command re-runs on the host. A surface is contained only once enforcement is on
 (`exec_profiles.default.enforce`), and only as far as that OS's backend
 enforces (`tenant sandbox probe` / `selftest`). Until then: keep exec off
@@ -1269,8 +1253,10 @@ persistence, deny-root metadata and background processes.
   settings file: hot-reloaded, validated, and never reachable from an
   agent tool. "Always" on an escalation saves only the refused folder
   as an exception (`approval.OnAlways`, `saveExecException`).
-- `resolveExecProfile`: the built-in profile is `builtinExec`'s backend
-  in dry run (`cron-shell`: no network); `exec_profiles.default.enforce`
+- `resolveExecProfile`: with no exec_profiles entry the interactive
+  surfaces run on `host` (TEN-489; `SSH_AUTH_SOCK` passes there too);
+  cron's built-in profile is `builtinExec`'s backend in dry run
+  (`cron-shell`: no network); `exec_profiles.default.enforce`
   is the switch. The built-in deny set is the config dir, the data dir
   and the Tenant binary; confining profiles add the credential- and
   browser-store baseline. Every profile gets the env allowlist

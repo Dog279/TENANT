@@ -104,6 +104,10 @@ type cronAgentDeps struct {
 	// ask is the approval broker's Ask: an alert's investigation, which runs
 	// on this stack, starts only once the operator approves it (TEN-400).
 	ask func(ctx context.Context, category, action, detail string) bool
+
+	// stopping is agent.Config.Stopping (TEN-499): a run a stop cuts does no
+	// salvage synthesis, so the drain stage ends with the model call.
+	stopping func() bool
 }
 
 // notCron cuts the cron_* tools from a cron runner (no self-scheduling) and the
@@ -140,6 +144,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		Observer:  mirrorObserver(d.events, "tenant-cron", "cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
+		Stopping: d.stopping,
 	})
 	if err != nil {
 		return nil, err
@@ -152,6 +157,7 @@ func buildCronRunner(d cronAgentDeps) (croneng.Runner, error) {
 		Observer:  mirrorObserver(d.events, "tenant-cron-exec", "cron"),
 		Compactor: d.compactor, UserProfile: d.userProfile, SystemPrompt: d.sysPrompt + cronExecSysSuffix,
 		RouteHook: d.routeHook, RouteActive: d.routeActive, RouteSticky: d.routeSticky,
+		Stopping: d.stopping,
 	})
 	if err != nil {
 		return nil, err
@@ -748,7 +754,7 @@ func (a dashCron) Jobs() []dashboard.CronJobView {
 		out = append(out, dashboard.CronJobView{
 			ID: j.ID, Name: j.Name, Spec: j.Spec, Prompt: j.Prompt, Enabled: j.Enabled,
 			Kind: j.KindOf(), Exec: j.Exec, TZ: j.TZ,
-			NextRun: cronFmtTime(j.NextRun), LastRun: cronFmtTime(j.LastRun), LastStatus: j.LastStatus,
+			NextRun: cronFmtTime(j.NextRun), LastRun: cronFmtTime(j.LastRun), LastStatus: j.LastStatus, LastError: j.LastError,
 		})
 	}
 	return out

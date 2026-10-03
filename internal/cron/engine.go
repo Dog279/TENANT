@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -534,6 +535,12 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 	rec.OK = err == nil
 	if err != nil {
 		rec.Err = err.Error()
+		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			// The run's own context (the loop's, or RunNow's caller's) is
+			// gone: Tenant stopping cut the run (TEN-499). Say so, rather
+			// than "context canceled", which reads as the job's fault.
+			rec.Err = "interrupted: Tenant stopped"
+		}
 	}
 
 	e.mu.Lock()
@@ -544,7 +551,7 @@ func (e *Engine) execute(ctx context.Context, job Job) RunRecord {
 		j.LastSummary = summary
 		if err != nil {
 			j.LastStatus = "error"
-			j.LastError = err.Error()
+			j.LastError = rec.Err
 		} else {
 			j.LastStatus = "ok"
 			j.LastError = ""

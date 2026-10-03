@@ -48,7 +48,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	stdreflect "reflect" // aliased: package main already declares reflect (research.go)
 	"runtime"
@@ -303,6 +305,15 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 // credential stores (credentialStoreRoots).
 func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	backend, why := builtinExec()
+	if _, configured := defaultExecProfiles.lookup(surface); !configured && surface != surfaceCronExec && surface != surfaceCronShell {
+		// Interactive surfaces run on the host behind their approvals, like
+		// Claude Code without /sandbox: a dry run re-ran a refused command on
+		// the host, so installers ran twice (TEN-489). Any exec_profiles entry
+		// for the surface (or "default") opts back into the sandbox; cron keeps
+		// the confined default. The host here is a choice, not a fallback, so
+		// there is no reason to report.
+		backend, why = "host", ""
+	}
 	p := execProfile{
 		Backend:  backend,
 		Fallback: why,
@@ -336,7 +347,13 @@ func resolveExecProfile(surface, cfgDir, dataDir, workDir string) execProfile {
 	p.Policy.ReadRoots = expandRoots(o.ReadRoots)
 	p.Policy.WriteRoots = append(expandRoots(o.WriteRoots), liveExceptions(surface)...)
 	p.Policy.DenyRoots = dedupeNonEmpty(append(p.Policy.DenyRoots, expandRoots(o.DenyRoots)...)...)
-	p.Policy.Env = envAllowlist(o.EnvPass, o.EnvSet)
+	pass := o.EnvPass
+	if p.Backend == "host" {
+		// On the host ~/.ssh is readable anyway; the agent socket lets git and
+		// ssh use the operator's keys without them leaving the agent.
+		pass = append([]string{"SSH_AUTH_SOCK"}, pass...)
+	}
+	p.Policy.Env = envAllowlist(pass, o.EnvSet)
 	p.Policy.Limits.CPU = time.Duration(o.CPUSeconds) * time.Second
 	p.Policy.Limits.MemoryBytes = int64(o.MemoryMB) << 20
 	p.Policy.Limits.MaxPIDs = o.MaxPIDs
@@ -375,9 +392,79 @@ func chooseBuiltinExec(restricted func() (sandbox.Backend, error)) (backend, why
 }
 
 // osExecConfig is the os service's config: os_exec's commands run through the
-// sandbox runner.
+// sandbox runner, or on the host through the starter, which lets one outlive
+// its tool call (TEN-490); their logs live under <data>/proc.
 func osExecConfig(cfgDir, dataDir string, confirm confirmFunc) osys.Config {
-	return osys.Config{Runner: sandboxRunner(cfgDir, dataDir, confirm)}
+	return osys.Config{Runner: sandboxRunner(cfgDir, dataDir, confirm), Starter: sandboxStarter(cfgDir, dataDir),
+		ProcDir: filepath.Join(dataDir, "proc")}
+}
+
+// sandboxStarter is os_exec's background seam (TEN-490): a command the
+// surface's profile runs on the host is started under that profile's policy
+// and work dir and watched by osys (process.go), so it can go on past its
+// timeout or the turn. A confining backend reaps what it started, so there
+// the answer is ErrNoBackground and the runner's kill-at-timeout stands.
+func sandboxStarter(cfgDir, dataDir string) func(ctx context.Context, command string, log io.Writer) (osys.Proc, error) {
+	return func(ctx context.Context, command string, log io.Writer) (osys.Proc, error) {
+		surface := execSurfaceFrom(ctx)
+		p := resolveExecProfile(surface, cfgDir, dataDir, "")
+		be, err := profileBackend(ctx, p, surface)
+		if err != nil || be.Isolation() != sandbox.IsolationNone {
+			return nil, osys.ErrNoBackground
+		}
+		pol := p.Policy
+		pol.Stderr = log
+		if pol.WorkDir = osys.WorkDir(ctx); pol.WorkDir == "" {
+			pol.WorkDir, _ = os.UserHomeDir()
+		}
+		return startExec(ctx, be, sandbox.Command{Shell: command, Surface: surface}, pol)
+	}
+}
+
+// startExec is execute for a command that runs on: the same Run activity,
+// exit event, sandbox line and Security record, with the exit filed by a
+// goroutine when the process ends rather than before this returns.
+func startExec(ctx context.Context, be sandbox.Backend, cmd sandbox.Command, pol sandbox.Policy) (osys.Proc, error) {
+	ctx, act := event.Start(ctx, sandbox.Run, "surface", cmd.Surface, "backend", be.Name(),
+		"command", clipLog(commandText(cmd)), "background", true)
+	pol.Env.Add = capture.New(ctx, "sandbox").Env()
+	p, err := sandbox.Start(ctx, be, sandbox.ShellArgv(cmd.Shell), pol)
+	if err != nil {
+		act.End(&err)
+		auditExec(ctx, be.Name(), cmd, pol.Enforce, sandbox.Result{}, err)
+		return nil, err
+	}
+	// The exit is filed inside Wait, which osys's pump calls once the output
+	// is drained: so for a foreground command every event is in the log before
+	// the tool result returns, in the runner's order, and a background one is
+	// filed when it ends.
+	return &loggedProc{Process: p, log: func(werr error) {
+		res := sandbox.Result{PID: p.Pid()}
+		var ee *exec.ExitError
+		if errors.As(werr, &ee) {
+			res.ExitCode, res.ExitStatus = ee.ExitCode(), ee.Error()
+		} else if werr != nil {
+			res.ExitCode, res.ExitStatus = -1, werr.Error()
+		}
+		sandbox.Exited.Log(ctx, "surface", cmd.Surface, "backend", be.Name(), "pid", res.PID, "exit", res.ExitCode, "status", exitText(res), "timed_out", false)
+		logSandboxRun(ctx, cmd.Surface, be.Name(), pol.Enforce, cmd, res)
+		auditExec(ctx, be.Name(), cmd, pol.Enforce, res, nil)
+		var none error
+		act.End(&none)
+	}}, nil
+}
+
+// loggedProc files a started command's exit once, from Wait.
+type loggedProc struct {
+	*sandbox.Process
+	once sync.Once
+	log  func(err error)
+}
+
+func (p *loggedProc) Wait() error {
+	err := p.Process.Wait()
+	p.once.Do(func() { p.log(err) })
+	return err
 }
 
 // tenantDenyRoots is what no sandboxed command, MCP server or plugin child may
@@ -558,6 +645,16 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 		}
 		pol := p.Policy
 		pol.Limits.Wall = timeout
+		// os_exec's workdir (default: home) is the cwd on the host. A confining
+		// backend's WorkDir is also a writable root, so there a model-chosen
+		// folder is refused rather than quietly opened for writing.
+		if be.Isolation() == sandbox.IsolationNone {
+			if pol.WorkDir = osys.WorkDir(ctx); pol.WorkDir == "" {
+				pol.WorkDir, _ = os.UserHomeDir()
+			}
+		} else if osys.WorkDir(ctx) != "" {
+			return "", fmt.Errorf("workdir is only used when commands run on the host; the %s surface runs them in the %s sandbox, so cd inside the command instead", surface, be.Name())
+		}
 		cmd := sandbox.Command{Shell: command, Surface: surface}
 		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm, pol))
 		if err != nil {

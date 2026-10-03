@@ -209,7 +209,7 @@ func (d *safetyDash) confirmNow(action, detail string) (ok, prompted bool) {
 // what Confirm returns.
 func TestSafetyDash_AllowAndDeny(t *testing.T) {
 	d := newSafetyDash(t)
-	id, res := d.ask("os_exec", "uname -a")
+	id, res := d.ask("os_exec", "test -d .")
 	if p := d.page(); !strings.Contains(p, `id="q-`+id+`"`) || !strings.Contains(p, "Your agent wants to run commands and programs on this computer") {
 		t.Fatalf("the request isn't on the page:\n%s", p)
 	}
@@ -220,7 +220,7 @@ func TestSafetyDash_AllowAndDeny(t *testing.T) {
 		t.Error("Allow once on the page: Confirm said no")
 	}
 
-	id, res = d.ask("os_exec", "whoami")
+	id, res = d.ask("os_exec", "test -f x")
 	if msg, _ := d.decide(id, "deny", false); msg != "Denied. Your agent was told no." {
 		t.Errorf("deny: %q", msg)
 	}
@@ -233,7 +233,7 @@ func TestSafetyDash_AllowAndDeny(t *testing.T) {
 	// The outcome is a Security record from the dashboard.
 	var denied bool
 	for _, r := range d.ev.audited() {
-		denied = denied || strings.Contains(r, "whoami") && strings.Contains(r, "surface=dashboard") && strings.Contains(r, "actor=operator")
+		denied = denied || strings.Contains(r, "test -f x") && strings.Contains(r, "surface=dashboard") && strings.Contains(r, "actor=operator")
 	}
 	if !denied {
 		t.Errorf("no dashboard record of the deny: %q", d.ev.audited())
@@ -245,7 +245,7 @@ func TestSafetyDash_AllowAndDeny(t *testing.T) {
 func TestSafetyDash_FirstAnswerWins(t *testing.T) {
 	d := newSafetyDash(t)
 	// The terminal first: the page's Allow is too late.
-	id, res := d.ask("os_exec", "date")
+	id, res := d.ask("os_exec", "test -e y")
 	if !d.broker.Resolve(id, control.DenyOnce) {
 		t.Fatal("the terminal's answer was refused")
 	}
@@ -256,7 +256,7 @@ func TestSafetyDash_FirstAnswerWins(t *testing.T) {
 		t.Error("a late Allow on the page overrode the terminal's Deny")
 	}
 	// The page first: the terminal's answer is a no-op.
-	id, res = d.ask("os_exec", "date -u")
+	id, res = d.ask("os_exec", "test -e z")
 	if msg, _ := d.decide(id, "deny", false); msg == "" {
 		t.Fatal("the page's Deny failed")
 	}
@@ -312,7 +312,7 @@ func TestSafetyDash_ModePersistsAndApplies(t *testing.T) {
 	if msg, e := d.post("/safety/mode", url.Values{"category": {"exec"}, "mode": {"allow"}, "confirm": {"yes"}}); msg != "Run commands: your agent goes ahead without asking." || e != "" {
 		t.Fatalf("allow: msg %q err %q", msg, e)
 	}
-	if ok, prompted := d.confirmNow("os_exec", "uname -a"); !ok || prompted {
+	if ok, prompted := d.confirmNow("os_exec", "test -d ."); !ok || prompted {
 		t.Errorf("after Allow: ok %v, prompted %v (no restart should be needed)", ok, prompted)
 	}
 	b, err := os.ReadFile(settingsPath(d.cfgDir, "main"))

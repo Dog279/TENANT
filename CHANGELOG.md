@@ -22,6 +22,86 @@ Releases page.
   `--imessage` flag, setup or restart.
 - **The iMessage responder runs over BlueBubbles.** Set a BlueBubbles URL and it answers
   texts from any OS, not only a Mac. Messages on a Mac stays the default.
+- **Background processes** (TEN-490): `os_exec background: true` starts a command and returns
+  its id at once, and a command still running at its timeout is moved to the background instead
+  of being killed. `os_process` lists, reads (`log`, paged like a file), waits for, feeds (`write`
+  one line to stdin) and kills them; logs live under `<data>/proc/`, processes die with Tenant,
+  and a finished one is forgotten after an hour. Host surfaces only: a sandboxed surface keeps
+  the kill-at-timeout runner.
+- **Read-only commands run without a prompt** (TEN-491): `ls`, `cat`, `rg`, `git status`, `brew
+  list`, `find` without `-delete`/`-exec` and the like skip the exec prompt on the host and
+  Discord when every segment of the command only looks and nothing redirects; iMessage stays
+  deny-by-default. A category deny and the operator's rules still bind.
+- **Command rules** (TEN-491): `/permissions add os_exec(brew install *) allow` (or `deny`,
+  `ask`) decides a command by its text, per segment of a compound command: any deny denies,
+  else any ask asks, else allow when every segment matched. `os_exec(git push)` is that command
+  alone. "Always" on an exec prompt now saves the command's family as such a rule instead of
+  opening all of exec.
+- **Paged file reads** (TEN-492): `os_read_file` takes `offset` and `limit` (lines) and a cut
+  read ends with `next_offset`; a page is ~100K characters (was a 64 KB cap with nothing past it).
+- **`tenant service`** (TEN-498): `install`, `uninstall`, `status`, `start`, `stop` and
+  `restart` run Tenant in the background through the OS: a LaunchAgent on macOS (logs in
+  `~/Library/Logs/tenant/`), a systemd user unit on Linux, a scheduled task at logon on
+  Windows, or with `--system` a Windows service running as SYSTEM. `install --print` shows
+  the unit without installing it; `restart` waits for the running turn unless `--now`.
+  `tenant setup` offers the install at the end and `tenant doctor` reports the service.
+- **An OS restart or shutdown mid-task loses nothing** (TEN-499). The first seconds of a
+  stop cut the turn, record it in the archive and tell the operator's channel; after boot
+  Tenant posts a reminder for the cut turn and catches up the Discord DMs sent while it was
+  down. Nothing is re-run on its own. `os_write_file` and `os_edit_file` write through a
+  temp file and a rename, so a kill mid-write leaves the original intact.
+- **`tenant update`** (TEN-500) checks the release, verifies the checksum (and the cosign
+  signature when cosign is installed), smoke-runs the new binary, backs the data up to
+  `<data dir>-backups/pre-update-<version>.tenant-backup`, swaps the binary keeping
+  `tenant.prev`, restarts the service and confirms the new version answers; on failure it
+  puts the old binary back. `--check`, `--version vX.Y.Z`, `--yes`, `--now`, `--force` and
+  `--rollback`. Serve checks for a newer release once a day and writes one log-book line;
+  `"update_check": false` turns that off. Nothing is applied automatically, and a dev build
+  refuses to update.
+- **One-line install** (TEN-501): `install.sh` and `install.ps1` ship with every release,
+  verify the SHA-256 against `checksums.txt` and install to `~/.local/bin` or
+  `%LOCALAPPDATA%\Programs\tenant` without sudo or admin rights. A packaging CI job installs
+  a snapshot through both scripts on all three OSes.
+- **Install, service and update guides, and a release smoke job** (TEN-502): QUICKSTART and
+  the README carry the one-liners; after each public release a job installs it through the
+  scripts on all three OSes, checks the version and the absent quarantine mark, renders the
+  service unit and reinstalls through `tenant update`.
+
+### Changed
+- **Dashboard cleanup** (TEN-402): http://localhost:8770 (and [::1]) reaches a loopback dashboard
+  without being added to `allowed_hosts` (TEN-414); the cron form offers preset schedules, with the
+  cron line still typable (TEN-420) and a failed job's row shows its error (TEN-427); the research busy refusal is in
+  plain words (TEN-413); a connector URL's key stays out of the system log and of connect
+  errors (TEN-409).
+- **`os_exec` works like a Claude Code shell (TEN-489).**
+  - It takes `workdir` (default: your home folder, never Tenant's own directory) and `timeout`
+    (default 120s, up to 600s; it was a fixed 60s).
+  - Long output keeps its start **and** its end, where errors are, up to 30 KB.
+  - With no `exec_profiles` entry, the TUI, dashboard, Discord and iMessage run commands on the
+    host behind their approvals. The old dry run ran a command the sandbox refused a second time
+    on the host, so installers ran twice. Cron keeps its sandboxed default, and any
+    `exec_profiles` entry opts a surface back in.
+  - On the host a command starts in its own session: `sudo` and other prompts fail at once
+    instead of hanging or grabbing the TUI's terminal. A timeout kills everything the command
+    started, and a backgrounded child no longer hangs the call. `SSH_AUTH_SOCK` passes through,
+    so git over ssh works.
+  - Under launchd, Tenant fills in the login-shell PATH (`path_helper`, plus Homebrew), so `brew`,
+    `node` and friends are found.
+- **Fewer dead ends for the agent (TEN-489).**
+  - An object or array argument sent as JSON text (Qwen via vLLM does this) is decoded instead
+    of rejected, so `editJiraIssue`'s `fields` works.
+  - A sandbox refusal is noticed even when the command exits 0 (`… || echo DENIED`, `| head`), so
+    a dry run re-runs it on the host as it should.
+  - A file-tool write outside the writable roots asks (`os_write_outside`, destructive) instead of
+    being refused (so `/tmp` works with an approval). Protected and secret files stay hard
+    refusals.
+- **The destructive check is narrower (TEN-489).**
+  - `rm -r` counts as destructive only for `/`, a top-level folder, a home folder or its direct
+    child, `.`, `..` or `*`. `rm -rf node_modules` is an ordinary command again.
+  - `shutdown`, `reboot` and `init` count only as commands, so `git log --grep=reboot` is fine,
+    and `git log --format=…` is no longer a "disk format".
+  - Newly caught: `diskutil erase…` and `bash -c "$(curl …)"`.
+  - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
 - **A corrupt `config.json` is no longer overwritten.** Tenant refuses to start on it and
@@ -71,6 +151,12 @@ Releases page.
   left by earlier runs. Sign-in browsers still stay open after Tenant exits.
 
 ### Security
+- **Dashboard sign-in** (TEN-403, TEN-415): after five wrong keys from one address, each
+  further wrong key doubles a wait (up to a minute) during which that address gets 429;
+  `tenant doctor` warns when the sign-in key is under 32 characters. The sign-in cookie no
+  longer signs a request another site or another port on this computer started (an embedded
+  image, a script, a fetch): the browser's Sec-Fetch-Site says so, and such a request gets 401
+  with credential "cross-site cookie" in event 2103; page navigations are unaffected.
 - **X sign-in:**
   - a callback without the sign-in's state is ignored rather than aborting the sign-in;
   - a busy callback port fails at once;
@@ -89,6 +175,8 @@ Releases page.
 - **`gateway.mode: "both"` and `tenant setup --both`.** One `mcp-memory` process serves one
   transport, so "both" never served stdio as well. A saved `"both"` loads as `"sse"`, which
   is what it already did.
+- **The `deploy/launchd/com.tenant.serve.plist` template.** `tenant service install` writes
+  the unit.
 
 ## 0.1.0 (2026-09-29)
 
