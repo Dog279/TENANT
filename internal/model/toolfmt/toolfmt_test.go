@@ -16,6 +16,7 @@ func TestAdapterFor(t *testing.T) {
 		"gemma":    "gemma",
 		"llama":    "llama",
 		"mistral":  "mistral",
+		"glm":      "glm",
 		"openai":   "openai",
 		"":         "openai", // empty falls back to openai
 		"nonsense": "openai", // unknown falls back to openai
@@ -604,7 +605,7 @@ func TestQwen_StripToolCalls(t *testing.T) {
 // Adapter interface contract: every concrete adapter implements StripToolCalls
 // (no nil-pointer compile-time gap).
 func TestStripToolCalls_AllAdaptersImplement(t *testing.T) {
-	for _, fmt := range []string{"openai", "qwen", "hermes", "llama", "mistral", "gemma"} {
+	for _, fmt := range []string{"openai", "qwen", "hermes", "llama", "mistral", "gemma", "glm"} {
 		a := toolfmt.AdapterFor(fmt)
 		// Identity behavior on plain prose is fine for all.
 		if got := a.StripToolCalls("plain prose"); got != "plain prose" {
@@ -740,7 +741,7 @@ func TestMistral_NoMarkerReturnsNil(t *testing.T) {
 // ---- Empty tools ----
 
 func TestAllAdapters_EmptyToolsReturnsEmptyPrompt(t *testing.T) {
-	for _, a := range []toolfmt.Adapter{toolfmt.Qwen{}, toolfmt.Gemma{}, toolfmt.Llama{}, toolfmt.Mistral{}, toolfmt.OpenAI{}} {
+	for _, a := range []toolfmt.Adapter{toolfmt.Qwen{}, toolfmt.Gemma{}, toolfmt.Llama{}, toolfmt.Mistral{}, toolfmt.GLM{}, toolfmt.OpenAI{}} {
 		t.Run(a.Name(), func(t *testing.T) {
 			p, err := a.FormatToolPrompt(nil)
 			if err != nil || p != "" {

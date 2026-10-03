@@ -36,7 +36,7 @@ type Profile struct {
 	ReserveSystemPrompt      int    `yaml:"reserve_system_prompt"` // structural rules, format specs, tool-use protocol
 	ReserveToolDefs          int    `yaml:"reserve_tool_defs"`
 	ReserveResponse          int    `yaml:"reserve_response"`
-	ToolFormat               string `yaml:"tool_format"` // qwen | gemma | llama | mistral | openai
+	ToolFormat               string `yaml:"tool_format"` // qwen | gemma | llama | mistral | glm | openai
 	EmbedDim                 int    `yaml:"embed_dim,omitempty"`
 	SupportsGrammar          bool   `yaml:"supports_grammar"`
 

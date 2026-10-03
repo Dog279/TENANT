@@ -6,6 +6,11 @@ Releases page.
 ## Unreleased
 
 ### Added
+- **GLM tool calling** (TEN-503): a `glm` tool-call format for Z.ai's GLM-4.5 family and later (the
+  `<tool_call>name` + `<arg_key>`/`<arg_value>` shape its chat template writes), picked by name
+  for models called glm/chatglm, offered in setup, the dashboard and `/model`, and tried by the
+  server check. The parser keeps typed values, reads a call cut off by max_tokens, and hands the
+  JSON and Hermes shapes some GLM servers write to the Qwen parser.
 - **Background processes** (TEN-490): `os_exec background: true` starts a command and returns
   its id at once, and a command still running at its timeout is moved to the background instead
   of being killed. `os_process` lists, reads (`log`, paged like a file), waits for, feeds (`write`

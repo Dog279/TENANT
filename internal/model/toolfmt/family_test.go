@@ -16,7 +16,8 @@ func TestForModel(t *testing.T) {
 		"mixtral-8x7b":                         "mistral",
 		"Ministral-8B":                         "mistral",
 		"gpt-oss-120b":                         "",
-		"glm-4.6":                              "",
+		"glm-4.6":                              "glm",
+		"zai-org/GLM-4.5-Air":                  "glm",
 		"deepseek-v3":                          "",
 		"":                                     "",
 	} {

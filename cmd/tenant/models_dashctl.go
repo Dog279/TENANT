@@ -79,7 +79,7 @@ var (
 		"openai-compat": "an OpenAI-compatible server",
 	}
 	toolFormatWords = map[string]string{
-		"qwen": "Qwen (Hermes)", "gemma": "Gemma", "llama": "Llama", "mistral": "Mistral", "openai": "standard OpenAI",
+		"qwen": "Qwen (Hermes)", "gemma": "Gemma", "llama": "Llama", "mistral": "Mistral", "glm": "GLM", "openai": "standard OpenAI",
 	}
 )
 

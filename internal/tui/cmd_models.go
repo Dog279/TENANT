@@ -679,7 +679,7 @@ func (m *model) startModelPicker() tea.Cmd {
 // modelToolFormats are the supported OpenAI-compatible tool-call formats,
 // mirrored from cmd/tenant setup.go's toolFormatOpts. Surfaced by the /model add
 // picker (TEN-138) so a self-hosted backend never silently defaults to gemma.
-var modelToolFormats = []string{"qwen", "gemma", "llama", "mistral", "openai"}
+var modelToolFormats = []string{"qwen", "gemma", "llama", "mistral", "glm", "openai"}
 
 // defaultToolFormat is the picker's initial highlight — the historical fallback,
 // shown first so the operator sees what they'd have gotten and can change it.

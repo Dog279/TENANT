@@ -37,4 +37,5 @@ var modelFamilies = []struct {
 	{"gemma", []string{"gemma"}},
 	{"mistral", []string{"mistral", "mixtral", "devstral", "magistral", "codestral", "ministral", "pixtral"}},
 	{"llama", []string{"llama"}},
+	{"glm", []string{"glm", "chatglm"}},
 }
