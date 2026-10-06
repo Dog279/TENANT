@@ -26,7 +26,7 @@ func TestRegisterRecordedKeepsTheClockAcrossLaunches(t *testing.T) {
 	const key = "consolidate_last_run:main"
 	launch := func(m *Meta) *recordedCountJob {
 		t.Helper()
-		s, job := NewScheduler(0), &recordedCountJob{}
+		s, job := NewScheduler(), &recordedCountJob{}
 		s.RegisterRecorded(ctx, job, 6*time.Hour, m, key)
 		s.RunDue(ctx)
 		return job
@@ -49,7 +49,7 @@ func TestRegisterRecordedKeepsTheClockAcrossLaunches(t *testing.T) {
 	if err := meta.SetInt64(ctx, key, old); err != nil {
 		t.Fatal(err)
 	}
-	s, job := NewScheduler(0), &recordedCountJob{}
+	s, job := NewScheduler(), &recordedCountJob{}
 	s.RegisterRecorded(ctx, job, 6*time.Hour, meta, key)
 	s.RunDue(ctx)
 	s.RunDue(ctx)

@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"testing"
-
-	"tenant/internal/plugins/wiki"
 )
 
 // A web plugin the eval turned on itself that can't start Chrome is dropped:
@@ -13,7 +11,7 @@ func TestBuildEvalToolsRunsWithoutWebWhenChromeWontStart(t *testing.T) {
 	pf := &pluginFlags{}
 	webFlagsOf(pf).on = true
 	calls := 0
-	build := func() (*toolMux, *wiki.Index, func(), error) {
+	build := func() (*toolMux, *wikiLive, func(), error) {
 		calls++
 		if webFlagsOf(pf).on {
 			return nil, nil, nil, webStartError{errors.New("start chrome: websocket url timeout reached")}
@@ -34,7 +32,7 @@ func TestBuildEvalToolsRunsWithoutWebWhenChromeWontStart(t *testing.T) {
 
 	// Other launch failures are not retried.
 	calls = 0
-	other := func() (*toolMux, *wiki.Index, func(), error) {
+	other := func() (*toolMux, *wikiLive, func(), error) {
 		calls++
 		return nil, nil, nil, errors.New("sql plugin: database is locked")
 	}

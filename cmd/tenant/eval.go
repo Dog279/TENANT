@@ -398,7 +398,7 @@ func autoEnableEvalPlugins(pf *pluginFlags, c *commonFlags, explicitFlags map[st
 // again without web: web tasks are then skipped like any task whose tools are
 // missing (TEN-198), instead of the whole run failing. Web the operator turned
 // on explicitly still fails the run.
-func buildEvalTools(autoEnabled []string, pf *pluginFlags, build func() (*toolMux, *wiki.Index, func(), error)) (*toolMux, func(), error) {
+func buildEvalTools(autoEnabled []string, pf *pluginFlags, build func() (*toolMux, *wikiLive, func(), error)) (*toolMux, func(), error) {
 	mux, _, closeTools, err := build()
 	var chrome webStartError
 	if err != nil && errors.As(err, &chrome) && slices.Contains(autoEnabled, "web") {
@@ -617,7 +617,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	// confirm=nil: eval is non-interactive, so gated destructive tools stay
 	// off unless the operator passed their explicit allow flags (--os-allow-*,
 	// etc.). buildToolMux only constructs the plugins whose flags are set.
-	mux, closeTools, err := buildEvalTools(autoEnabled, pf, func() (*toolMux, *wiki.Index, func(), error) {
+	mux, closeTools, err := buildEvalTools(autoEnabled, pf, func() (*toolMux, *wikiLive, func(), error) {
 		return buildToolMux(ctx, c, router, pf, nil, log)
 	})
 	if err != nil {
