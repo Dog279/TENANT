@@ -85,7 +85,7 @@ type TeamConfig struct {
 	// ConfirmSensitiveEgress is the existing origin-aware approval callback.
 	// nil makes sensitive outbound flows fail closed.
 	ConfirmSensitiveEgress func(context.Context, string, string) bool
-	Budgets                orchestra.Budgets // zero fields use safe defaults
+	Budgets                orchestra.Budgets // run limits off when zero; machine guards default (TEN-508)
 
 	// Web, when true, gives each agent its OWN lazy browser session
 	// (isolated, so concurrent navigation can't clobber a shared tab).
@@ -505,10 +505,15 @@ func (c composite) RankingStatus() (ranked bool, surfaced, catalog int, reason s
 	return c.shared.RankingStatus()
 }
 
+// keepFinishedDefault is how many finished, uncollected members a conversation
+// keeps when the run has no max_agents_per_run (TEN-508): the old default.
+const keepFinishedDefault = 16
+
 // Spawn creates a sub-agent for (role, task), starts it running in its own
 // goroutine, and returns its id immediately (non-blocking — the team works
 // concurrently). The sub-agent reports its result back to the orchestrator
 // over the bus when it finishes.
+
 // defaultMaxConcurrentAgents bounds simultaneous sub-agents when the operator
 // has not chosen a limit. Sized to keep genuine fan-out useful (a handful of
 // parallel workers) while making a runaway loop fail fast and visibly.
@@ -544,6 +549,9 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 		return "", err
 	}
 	keep := r.budget.Limits().MaxAgentsPerRun
+	if keep <= 0 { // no per-run limit (the default): keep what the old default allowed
+		keep = keepFinishedDefault
+	}
 
 	r.mu.Lock()
 	// Bound concurrent sub-agents. Spawning was previously unlimited, and an

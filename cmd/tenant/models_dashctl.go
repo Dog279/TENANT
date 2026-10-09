@@ -88,4 +88,6 @@ func (d dashModel) Remove(name string) (string, error) {
 }
 func (d dashModel) LoopCeiling() int                     { return d.mc.LoopCeiling() }
 func (d dashModel) SetLoopCeiling(n int) (string, error) { return d.mc.SetLoopCeiling(n) }
+func (d dashModel) RepeatGuard() int                     { return d.mc.RepeatGuard() }
+func (d dashModel) SetRepeatGuard(n int) (string, error) { return d.mc.SetRepeatGuard(n) }
 func (d dashModel) ReloadKeys() (string, error)          { return d.mc.ReloadKeys() }

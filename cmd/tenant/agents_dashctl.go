@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"tenant/internal/dashboard"
+	"tenant/internal/orchestra"
 )
 
 // dashAgents adapts agentControl to dashboard.AgentControl. service marks a
@@ -30,6 +31,8 @@ func newDashAgents(ac *agentControl) dashboard.AgentControl {
 	}
 	return dashAgents{ac: ac, service: runtime.GOOS == "windows" && runAsService()}
 }
+
+func (d dashAgents) Limits() ([]orchestra.LimitRow, error) { return d.ac.limitRows() }
 
 func (d dashAgents) Agents() ([]dashboard.AgentProfileView, error) {
 	rows, err := d.ac.List()

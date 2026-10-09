@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,7 @@ type fakeModelCtl struct {
 	serverErr   error
 	removeCalls []string
 	ceilingSet  int
+	repeatSet   []int
 	reloadCalls int
 }
 
@@ -52,6 +54,11 @@ func (f *fakeModelCtl) LoopCeiling() int { return f.ceiling }
 func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) {
 	f.ceilingSet = n
 	return "ceiling set", nil
+}
+func (f *fakeModelCtl) RepeatGuard() int { return 8 }
+func (f *fakeModelCtl) SetRepeatGuard(n int) (string, error) {
+	f.repeatSet = append(f.repeatSet, n)
+	return "repeat set", nil
 }
 func (f *fakeModelCtl) ReloadKeys() (string, error) { f.reloadCalls++; return "keys reloaded", nil }
 
@@ -142,9 +149,22 @@ func TestModels_CeilingRejectsNonPositive(t *testing.T) {
 	}
 }
 
+// TEN-506: the repeat guard is settable live; 0 in the form means off (-1),
+// and 1 or junk is refused.
+func TestModels_RepeatGuard(t *testing.T) {
+	fc := &fakeModelCtl{}
+	s := modelServer(fc)
+	for _, v := range []string{"12", "0", "1", "abc", "-3"} {
+		submitForm(t, s, "/models/repeat", "repeat="+v)
+	}
+	if !slices.Equal(fc.repeatSet, []int{12, -1}) {
+		t.Errorf("repeat set = %v, want [12 -1]", fc.repeatSet)
+	}
+}
+
 func TestModels_MutationsNilSafe(t *testing.T) {
 	s := modelServer(nil)
-	for _, p := range []string{"/models/use", "/models/add", "/models/add-server", "/models/remove", "/models/ceiling", "/models/reload"} {
+	for _, p := range []string{"/models/use", "/models/add", "/models/add-server", "/models/remove", "/models/ceiling", "/models/repeat", "/models/reload"} {
 		if rec := submitForm(t, s, p, "name=x&kind=zai&key=k&address=http://h:1&ceiling=5&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}

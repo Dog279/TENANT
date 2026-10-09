@@ -43,10 +43,13 @@ func providerGenProfiles(cfgDir string, lc *launchConfig, name string, planCeili
 		mdl = pk.DefaultModel
 	}
 	contextLen := 0
-	if mdl == "" { // a self-hosted server whose model is found automatically
-		if m, ok := servedModelFor(pk, endpoint, apiKey); ok {
-			mdl, contextLen = m.ID, m.MaxLen
+	// A self-hosted server: its model (when found automatically) and the
+	// context window it reports for it.
+	if m, ok := servedModelFor(pk, endpoint, apiKey, mdl); ok {
+		if mdl == "" {
+			mdl = m.ID
 		}
+		contextLen = m.MaxLen
 	}
 	c := &commonFlags{
 		cfgDir:       cfgDir,

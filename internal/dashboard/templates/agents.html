@@ -75,6 +75,21 @@
   {{else}}{{if not $.LoadErr}}{{template "ui-empty" "No helpers yet. Add one below and your agent can hand it work."}}{{end}}{{end}}
 </div>
 
+{{if .Limits}}
+<div class="card" id="limits">
+  <div class="card-head">Run limits</div>
+  <div class="dim mb">Limits for one run of helpers. The run limits are off unless you set them: add the key under <code>"budgets"</code> in config.json with a value, and the next run follows it.</div>
+  {{range .Limits}}
+  <div class="row">
+    <div class="agent-info">
+      <div class="nm">{{.Name}} <span class="tag">{{.Value}}</span></div>
+      <div class="dim"><code>{{.Key}}</code> · {{.Note}}</div>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
 <div class="card">
   <div class="card-head">Add a helper</div>
   {{if .Providers}}

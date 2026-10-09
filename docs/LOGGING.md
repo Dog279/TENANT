@@ -1285,8 +1285,10 @@ limit is enforced by code, not asked of the model (`cmd/tenant/loginvestigate.go
   exec, no file access, no network, no messaging, no config, cron or
   memory writes, and no sub-agents.
 - **A budget.** The top-level `budgets` apply, held under an investigation's
-  ceiling: 200,000 tokens, 24 tool calls, $5 at the budgets' rates, 10
-  minutes, and 8 steps. The first one reached stops the turn.
+  ceiling: 200,000 tokens, 24 tool calls, $5 at the budgets' rates (only
+  when rates are set, which they aren't by default), 10 minutes, and 8 steps.
+  A run limit that is off (the default) takes the ceiling. The first one
+  reached stops the turn.
 - **Untrusted input.** The attachment is the alert's event and the up to 40
   nearest events of its turn or activity (`trace:`/`activity:` timeline),
   each line only the time, level, number, provider/ID, log, correlation IDs,

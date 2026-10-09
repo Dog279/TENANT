@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1608,8 +1609,13 @@ func (f *fakeModelCtl) ReloadKeys() (string, error) {
 	f.calls = append(f.calls, "ReloadKeys")
 	return "✓ reloaded", nil
 }
-func (f *fakeModelCtl) LoopCeiling() int                          { return 16 }
-func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error)      { return "", nil }
+func (f *fakeModelCtl) LoopCeiling() int                     { return 16 }
+func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) { return "", nil }
+func (f *fakeModelCtl) RepeatGuard() int                     { return 0 }
+func (f *fakeModelCtl) SetRepeatGuard(n int) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("SetRepeatGuard:%d", n))
+	return "repeat guard set", nil
+}
 func (f *fakeModelCtl) ReasoningSupported() bool                  { return false }
 func (f *fakeModelCtl) ReasoningLevels() []string                 { return nil }
 func (f *fakeModelCtl) ReasoningEffort() string                   { return "" }
@@ -1650,6 +1656,21 @@ func TestModel_Reload_Dispatches(t *testing.T) {
 	}
 	if last := m.msgs[len(m.msgs)-1].content; !strings.Contains(last, "reloaded") {
 		t.Errorf("status missing: %q", last)
+	}
+}
+
+// /ceiling repeat: 0 and off both turn the guard off (as on the dashboard),
+// default restores it, a number sets it, junk is refused (TEN-506).
+func TestCeilingRepeat_Dispatches(t *testing.T) {
+	mc := &fakeModelCtl{}
+	m := newModel(context.Background(), Config{Models: mc})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	for _, in := range []string{"12", "0", "off", "default", "-2", "abc"} {
+		m.handleSlash("/ceiling repeat " + in)
+	}
+	want := []string{"SetRepeatGuard:12", "SetRepeatGuard:-1", "SetRepeatGuard:-1", "SetRepeatGuard:0"}
+	if !slices.Equal(mc.calls, want) {
+		t.Errorf("calls = %v, want %v", mc.calls, want)
 	}
 }
 
@@ -2032,6 +2053,12 @@ func (f *fakeAgentCtl) Remove(name string) (string, error) {
 	}
 	return "removed", nil
 }
+func (f *fakeAgentCtl) Limits() ([]LimitRow, error) {
+	return []LimitRow{
+		{"Tokens per run", "max_tokens_per_run", "off", "Set a positive number to stop a run that goes past it."},
+		{"Helpers at once", "max_concurrent_subagents", "4", "Guards this machine; on by default."},
+	}, nil
+}
 func (f *fakeAgentCtl) Show(name string) (AgentDetail, error) {
 	f.calls = append(f.calls, "Show:"+name)
 	if f.showFn != nil {
@@ -2182,6 +2209,20 @@ func TestAgents_Show(t *testing.T) {
 	for _, want := range []string{"researcher", "zai/glm-4.6", "web research", "--- soul ---", "Be thorough"} {
 		if !strings.Contains(last.content, want) {
 			t.Errorf("show missing %q:\n%s", want, last.content)
+		}
+	}
+}
+
+// /agents limits lists every team-run limit with its key; unset run limits
+// read "off" (TEN-508).
+func TestAgents_Limits(t *testing.T) {
+	m := newModel(context.Background(), Config{Agents: &fakeAgentCtl{}})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.handleSlash("/agents limits")
+	last := m.msgs[len(m.msgs)-1].content
+	for _, want := range []string{"team-run limits", "Tokens per run", "max_tokens_per_run", "off", "max_concurrent_subagents"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("/agents limits missing %q:\n%s", want, last)
 		}
 	}
 }

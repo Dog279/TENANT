@@ -268,15 +268,25 @@ func (inv *investigator) turn(ctx context.Context, st *store.Store, prompt, atta
 	return res, ag, gov.Status(), err
 }
 
-// investigationBudget is the operator's budgets, held under the ceilings.
+// investigationBudget is the operator's budgets, held under the ceilings. An
+// investigation always has limits: an operator limit that is off (0) takes
+// the ceiling, a tighter one stays.
 func investigationBudget(b orchestra.Budgets) orchestra.Budgets {
 	b = b.WithDefaults()
-	b.MaxTokensPerRun = min(b.MaxTokensPerRun, investigationTokens)
-	b.MaxToolCallsPerRun = min(b.MaxToolCallsPerRun, investigationToolCalls)
-	b.MaxToolCallsPerTurn = min(b.MaxToolCallsPerTurn, investigationToolCalls)
-	b.MaxCostUSD = min(b.MaxCostUSD, investigationCostUSD)
-	b.MaxWallTime = min(b.MaxWallTime, investigationTime)
+	b.MaxTokensPerRun = capAt(b.MaxTokensPerRun, investigationTokens)
+	b.MaxToolCallsPerRun = capAt(b.MaxToolCallsPerRun, investigationToolCalls)
+	b.MaxToolCallsPerTurn = capAt(b.MaxToolCallsPerTurn, investigationToolCalls)
+	b.MaxCostUSD = capAt(b.MaxCostUSD, investigationCostUSD)
+	b.MaxWallTime = capAt(b.MaxWallTime, investigationTime)
 	return b
+}
+
+// capAt is limit, or ceiling when limit is off (<= 0) or looser.
+func capAt[T int | float64 | time.Duration](limit, ceiling T) T {
+	if limit <= 0 {
+		return ceiling
+	}
+	return min(limit, ceiling)
 }
 
 // investigationRequest is what the operator is asked to approve.
@@ -285,9 +295,15 @@ func investigationRequest(a alerts.Alert, link string, b orchestra.Budgets) stri
 	if a.Target != "" {
 		to += " and " + a.Target
 	}
+	// The cost ceiling only counts with rates to price tokens at (TEN-508:
+	// none by default), so it's promised only then.
+	cost := ""
+	if b.InputCostPerMillionUSD > 0 || b.OutputCostPerMillionUSD > 0 {
+		cost = fmt.Sprintf(" $%.2f,", b.MaxCostUSD)
+	}
 	return a.Facts(link) + fmt.Sprintf("\nStart an agent investigation of it? It can only read (the log book, memory), "+
-		"and stops at %d steps, %d tool calls, %d tokens, $%.2f or %s. Its result goes to %s.",
-		investigationSteps, b.MaxToolCallsPerRun, b.MaxTokensPerRun, b.MaxCostUSD, b.MaxWallTime, to)
+		"and stops at %d steps, %d tool calls, %d tokens,%s or %s. Its result goes to %s.",
+		investigationSteps, b.MaxToolCallsPerRun, b.MaxTokensPerRun, cost, b.MaxWallTime, to)
 }
 
 // investigationPrompt is the turn's task: the alert's facts, then the

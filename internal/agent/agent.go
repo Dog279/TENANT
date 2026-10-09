@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -74,16 +76,34 @@ var ErrLoopCeilingReached = errors.New("agent: plan loop ceiling reached")
 // trying to coax a small model into emitting valid JSON forever.
 var ErrTooManyValidationFailures = errors.New("agent: too many consecutive tool-call validation failures")
 
-// ErrOscillationDetected is set when the model emits a byte-identical tool-call
-// set for oscillationLimit+1 consecutive iterations — a weak model locked in a
-// loop. The runtime stops iterating and forces a synthesis from results already
-// gathered, rather than burning the whole loop ceiling. (TEN-261)
+// ErrOscillationDetected is set when the model makes the same tool calls and
+// gets the same results back for RepeatGuard() rounds in a row — a model locked
+// in a loop. The runtime stops iterating and forces a synthesis from results
+// already gathered, rather than burning the whole loop ceiling. (TEN-261)
 var ErrOscillationDetected = errors.New("agent: oscillation detected — identical tool call repeated")
 
-// oscillationLimit is the number of consecutive identical tool-call iterations
-// (after the first) that trips the oscillation guard. 2 → three identical
-// iterations in a row before we stop and synthesize.
-const oscillationLimit = 2
+// DefaultRepeatGuard is how many identical rounds in a row (same calls, same
+// results) trip the oscillation guard. TEN-261 used 3, which cut deliberate
+// wait/poll loops short (TEN-506).
+const DefaultRepeatGuard = 8
+
+// repeatGuard is the live threshold, process-wide so a retune reaches the main
+// agent, sub-agents and jobs on their next round. <= 0 = guard off.
+var repeatGuard atomic.Int64
+
+func init() { repeatGuard.Store(DefaultRepeatGuard) }
+
+// SetRepeatGuard retunes the oscillation guard live: n identical rounds trip
+// it, 0 restores DefaultRepeatGuard, < 0 turns it off.
+func SetRepeatGuard(n int) {
+	if n == 0 {
+		n = DefaultRepeatGuard
+	}
+	repeatGuard.Store(int64(n))
+}
+
+// RepeatGuard reports the live threshold (<= 0 = off).
+func RepeatGuard() int { return int(repeatGuard.Load()) }
 
 // Config wires the agent. All fields except SystemPrompt are required
 // for a useful turn — passing nil where required returns an error
@@ -185,6 +205,13 @@ type Config struct {
 	// tokens flat as the catalog grows AND preserves access to unranked tools
 	// (closes ranking's "needed a hidden tool" risk). Off by default — additive.
 	LazyToolLoad bool
+
+	// PerTurnToolRanking re-ranks the surfaced tools against every turn's query
+	// (the pre-TEN-505 behaviour). Off (the default) keeps a sticky set per
+	// session: ranking only ever appends, in a stable order, so the tools array
+	// at the top of the prompt stays byte-identical and the model server's
+	// prefix cache survives from turn to turn.
+	PerTurnToolRanking bool
 }
 
 // RouteRequest is the agent-owned metadata passed to the optional route hook.
@@ -332,6 +359,12 @@ type Agent struct {
 	// gate per agent lifetime). Mutated only from Turn (turns are serialized
 	// per agent), like the compaction state below.
 	warnedGates map[string]bool
+
+	// stickyTools is the session's surfaced tool set, by name in the order it
+	// was first surfaced (TEN-505). Mutated only from Turn and ClearContext
+	// (turns are serialized per agent); emptied by compaction, which
+	// invalidates the prefix cache anyway, so the next turn ranks afresh.
+	stickyTools []string
 
 	// compaction is the post-turn compaction trigger's hysteresis state
 	// (TEN-102). Mutated only from Turn's post-turn defer (turns are serialized
@@ -734,10 +767,30 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	if err != nil {
 		return nil, fmt.Errorf("agent: tool search: %w", err)
 	}
+	// The whole catalog back means ranking didn't trim this turn (small
+	// catalog, or a ranker fallback such as a failed query embedding): it is
+	// already stable, and must not stick, or one embedder blip would pin the
+	// full catalog for the rest of the session (TEN-505).
+	wholeCatalog := len(availableTools) >= len(a.cfg.Tools.All())
 	// Capability gate (TEN-103): only offer tools the active model may use, so a
 	// small local planner never sees an augmentation tool like memory_recall.
 	availableTools, droppedGated := filterGatedTools(availableTools, profile)
 	a.warnUnknownGateDrops(ctx, droppedGated, profile)
+	// Sticky tool set (TEN-505): keep what earlier turns surfaced, in the same
+	// order, and append this turn's new picks, so the tools array only changes
+	// when it grows.
+	stickNote := ""
+	if !a.cfg.PerTurnToolRanking && !wholeCatalog {
+		reused := len(a.stickyTools) > 0
+		var added, dropped int
+		availableTools, added, dropped = a.stickToolSet(availableTools, profile)
+		switch {
+		case reused && added == 0 && dropped == 0:
+			stickNote = fmt.Sprintf("; sticky set reused (%d tools)", len(availableTools))
+		case reused:
+			stickNote = fmt.Sprintf("; sticky set +%d −%d (%d tools)", added, dropped, len(availableTools))
+		}
+	}
 	// Minify the SURVIVORS' JSON schemas before they hit the wire (TEN-227):
 	// drop pure-doc keywords + compact whitespace + trim paragraph-length
 	// property prose, preserving types/enums/required. Applied here (post rank +
@@ -755,7 +808,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		if ranked, surfaced, catalog, reason, have := rr.RankingStatus(); have {
 			if ranked {
 				a.emit(Event{Kind: EventToolCatalog,
-					Text: fmt.Sprintf("tool ranking ON — %d of %d enabled tools surfaced this turn", surfaced, catalog)})
+					Text: fmt.Sprintf("tool ranking ON — %d of %d enabled tools surfaced this turn%s", surfaced, catalog, stickNote)})
 			} else {
 				a.emit(Event{Kind: EventToolCatalog,
 					Text: fmt.Sprintf("tool ranking OFF — full catalog of %d tools surfaced (%s)", catalog, reason)})
@@ -764,7 +817,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	} else if all := a.cfg.Tools.All(); len(availableTools) < len(all) {
 		a.emit(Event{
 			Kind: EventToolCatalog,
-			Text: fmt.Sprintf("ranked: %d of %d tools surfaced this turn", len(availableTools), len(all)),
+			Text: fmt.Sprintf("ranked: %d of %d tools surfaced this turn%s", len(availableTools), len(all), stickNote),
 		})
 	}
 
@@ -832,9 +885,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		}
 	}()
 	consecutiveValidationFailures := 0
-	// Oscillation guard (TEN-261): track the dispatched tool-call signature across
-	// iterations so a weak model that locks onto the same call breaks out instead
-	// of burning the whole ceiling. The operator's PlanLoopCeiling stays in force.
+	// Oscillation guard (TEN-261): track each round's calls + results across
+	// iterations so a model that locks onto the same call breaks out instead of
+	// burning the whole ceiling. The operator's PlanLoopCeiling stays in force.
 	var lastToolSig string
 	repeatRuns := 0
 	var stuckErr error
@@ -1139,6 +1192,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		}
 		toolStart := time.Now()
 		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
+		seen := make([]string, 0, len(batchResults)) // what the model saw this round, for the repeat guard
 		span.AddToolTime(time.Since(toolStart))
 		for _, br := range batchResults {
 			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
@@ -1177,21 +1231,21 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			} else {
 				ToolDone.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration)
 			}
-			a.feedToolResult(ctx, br, profile.ToolResultCap())
+			seen = append(seen, fmt.Sprintf("%q %q %q", br.Call.Name, br.Call.Arguments, a.feedToolResult(ctx, br, profile.ToolResultCap())))
 		}
 
-		// Oscillation guard (TEN-261): if the dispatched call-set is byte-identical
-		// to the previous iteration's for oscillationLimit consecutive rounds, the
-		// model is stuck — stop and synthesize from what we have instead of looping
-		// to the ceiling. Frontier-safe: a healthy model never repeats an identical
-		// call-set this many times in a row. Operator PlanLoopCeiling is untouched.
-		if sig := toolCallSignature(validCalls); sig != "" && sig == lastToolSig {
-			if repeatRuns++; repeatRuns >= oscillationLimit {
-				Oscillating.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "identical_runs", repeatRuns+1)
+		// Oscillation guard (TEN-261): the same calls getting the same results for
+		// RepeatGuard() rounds in a row means no new information is arriving, so
+		// stop and synthesize instead of looping to the ceiling. A poll whose
+		// output changes (a job's CPU time, a growing log) never trips it (TEN-506).
+		if sig := roundSignature(seen); sig != "" && sig == lastToolSig {
+			if limit := RepeatGuard(); limit > 0 && repeatRuns+2 >= limit {
+				Oscillating.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "identical_runs", repeatRuns+2)
 				a.emit(Event{Kind: EventError, Iter: iter, Text: "stuck repeating the same tool call — synthesizing from gathered results"})
 				stuckErr = ErrOscillationDetected
 				break
 			}
+			repeatRuns++
 		} else {
 			repeatRuns = 0
 			lastToolSig = sig
@@ -1214,7 +1268,11 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	result.Response = final
 	result.Truncated = true
 	result.Error = loopErr
-	a.emit(Event{Kind: EventTruncated, Text: final})
+	if stuckErr != nil {
+		a.emit(Event{Kind: EventStuck, Text: final})
+	} else {
+		a.emit(Event{Kind: EventTruncated, Text: final})
+	}
 	a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, nil, routeState)
 	return result, nil
 }
@@ -1283,7 +1341,52 @@ func (a *Agent) compactWorking(ctx context.Context) {
 		return
 	}
 	a.cfg.Working.Replace(msgs)
+	a.stickyTools = nil // the prefix cache is gone anyway: next turn ranks afresh (TEN-505)
 	a.emit(Event{Kind: EventCompact, Text: fmt.Sprintf("%d → %d messages", origLen, len(msgs))})
+}
+
+// stickToolSet merges this turn's ranked tools into the session's sticky set
+// (TEN-505): earlier picks first, in the order they were surfaced, then new
+// ones in rank order. Nothing is re-sorted, so the tools array stays identical
+// until a tool is added. A sticky tool since disabled, or gated off by a model
+// swap, drops out. Returns the merged specs and how many were added and
+// dropped this turn.
+func (a *Agent) stickToolSet(ranked []model.ToolSpec, profile model.Profile) (merged []model.ToolSpec, added, dropped int) {
+	merged = make([]model.ToolSpec, 0, len(a.stickyTools)+len(ranked))
+	seen := make(map[string]bool, cap(merged))
+	for _, name := range a.stickyTools {
+		if spec, ok := a.cfg.Tools.Get(name); ok && !seen[name] {
+			seen[name] = true
+			merged = append(merged, spec)
+		}
+	}
+	prev := maps.Clone(seen)
+	for _, s := range ranked {
+		if !seen[s.Name] {
+			seen[s.Name] = true
+			merged = append(merged, s)
+		}
+	}
+	merged, _ = filterGatedTools(merged, profile)
+	names := make([]string, len(merged))
+	for i, s := range merged {
+		names[i] = s.Name
+		if !prev[s.Name] {
+			added++
+		}
+	}
+	dropped = len(a.stickyTools) - (len(merged) - added)
+	a.stickyTools = names
+	return merged, added, dropped
+}
+
+// stickTool appends a tool the model loaded on demand (TEN-228) to the sticky
+// set, so later turns keep it without another load_tool round.
+func (a *Agent) stickTool(name string) {
+	if a.cfg.PerTurnToolRanking || slices.Contains(a.stickyTools, name) {
+		return
+	}
+	a.stickyTools = append(a.stickyTools, name)
 }
 
 // filterGatedTools drops specs whose capability gate the active profile
@@ -1358,6 +1461,7 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 	}
 	if changed || microChanged {
 		a.cfg.Working.Replace(msgs)
+		a.stickyTools = nil // as compactWorking: the next turn ranks afresh (TEN-505)
 		a.emit(Event{Kind: EventCompact, Text: fmt.Sprintf("%d → %d messages", before, len(msgs))})
 	}
 	return before, len(msgs), nil
@@ -1371,6 +1475,7 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 func (a *Agent) ClearContext() int {
 	n := a.cfg.Working.Len()
 	a.cfg.Working.Reset()
+	a.stickyTools = nil
 	if a.compaction != nil {
 		a.compaction.armed = false // disarm; the next turn re-evaluates from ~empty
 	}
@@ -1709,7 +1814,10 @@ func (a *Agent) feedValidationError(ctx context.Context, call model.ToolCall, va
 	})
 }
 
-func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultTokens int) {
+// It returns the result body the model is shown, without the truncation note
+// (whose full-length count would make a growing hidden tail look like new
+// information to the repeat guard).
+func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultTokens int) (shown string) {
 	content := r.Result
 	if r.Err != nil {
 		content = fmt.Sprintf("tool dispatch error: %s", r.Err.Error())
@@ -1738,6 +1846,7 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 			Labels:  append([]model.InfoFlowLabel(nil), r.Labels...),
 		},
 	})
+	return body
 }
 
 func infoFlowMeta(labels []model.InfoFlowLabel) map[string]any {
@@ -1791,20 +1900,19 @@ func hasSensitiveLabel(labels []model.InfoFlowLabel) bool {
 	return false
 }
 
-// toolCallSignature builds a stable, order-independent signature of a dispatched
-// tool-call set — each call's name + raw arguments, sorted and joined. The
-// oscillation guard compares it across iterations to detect a model repeating
-// the identical call-set. Empty string for no calls.
-func toolCallSignature(calls []model.ToolCall) string {
-	if len(calls) == 0 {
+// roundSignature joins one round's calls and the results the model was shown
+// (name, raw arguments, capped result body; each quoted, so no result bytes can
+// mimic a separator), order-independent. The repeat
+// guard compares it across iterations: a poll whose visible output changes is
+// progress, not a loop, while output that differs only past the context cap
+// looks identical to the model and counts as a repeat. "" for no calls.
+func roundSignature(seen []string) string {
+	if len(seen) == 0 {
 		return ""
 	}
-	parts := make([]string, len(calls))
-	for i, c := range calls {
-		parts[i] = c.Name + ":" + string(c.Arguments)
-	}
+	parts := slices.Clone(seen)
 	sort.Strings(parts)
-	return strings.Join(parts, "|")
+	return strings.Join(parts, "\x01")
 }
 
 func (a *Agent) archiveAssistant(ctx context.Context, resp *model.GenerateResponse) {

@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"tenant/internal/orchestra"
 )
 
 // AgentControl is the named-helper surface. cmd/tenant adapts the terminal
@@ -27,9 +29,10 @@ type AgentControl interface {
 	SetModel(name, provider, model string) error // instructions and description kept
 	SetSoul(name, soul string) error             // "" clears
 	Rename(oldName, newName string) error
-	Remove(name string) error   // a customized built-in goes back to its shipped settings
-	RestartNote() string        // how to restart Tenant here (a Windows service); "" = nothing to add
-	SendsTo(kind string) string // who a provider of this kind sends a helper's work to; "" = self-hosted
+	Remove(name string) error              // a customized built-in goes back to its shipped settings
+	RestartNote() string                   // how to restart Tenant here (a Windows service); "" = nothing to add
+	SendsTo(kind string) string            // who a provider of this kind sends a helper's work to; "" = self-hosted
+	Limits() ([]orchestra.LimitRow, error) // team-run limits, "off" when unset (TEN-508)
 }
 
 // AgentProfileView is one helper, render-ready.
@@ -63,9 +66,10 @@ type agentsPageData struct {
 	layoutData
 	Configured bool
 	Agents     []AgentProfileView
-	Providers  []ModelView       // the Model page's providers, which a helper can use
-	SendsTo    map[string]string // provider name → who its work goes to, hosted ones only (D18)
-	Edit       *AgentProfileView // ?edit=: the helper whose panel is open
+	Providers  []ModelView          // the Model page's providers, which a helper can use
+	SendsTo    map[string]string    // provider name → who its work goes to, hosted ones only (D18)
+	Limits     []orchestra.LimitRow // team-run limits (TEN-508)
+	Edit       *AgentProfileView    // ?edit=: the helper whose panel is open
 	EditSoul   string
 	LoadErr    string
 	Msg, Err   string
@@ -96,6 +100,11 @@ func (s *Server) agentsData(ctx context.Context, edit string) agentsPageData {
 			}
 		}
 	}
+	rows, err := s.agents.Limits()
+	if err != nil {
+		d.LoadErr = s.flashFor(ctx, "run limits", err, "Couldn't read the run limits from config.json. Reload the page to try again.")
+	}
+	d.Limits = rows
 	agents, err := s.agents.Agents()
 	if err != nil {
 		d.LoadErr = s.flashFor(ctx, "helpers list", err, "Couldn't read your helpers. Reload the page to try again.")

@@ -806,6 +806,11 @@ type ModelControl interface {
 	// retunes it live (and persists) — /ceiling.
 	LoopCeiling() int
 	SetLoopCeiling(n int) (string, error)
+	// RepeatGuard reports how many identical rounds (same calls, same results)
+	// end a turn early, <= 0 = off; SetRepeatGuard retunes it live (and
+	// persists) — /ceiling repeat (TEN-506).
+	RepeatGuard() int
+	SetRepeatGuard(n int) (string, error)
 	// ReasoningSupported reports whether the ACTIVE provider accepts a reasoning
 	// -effort hint (Sakana Fugu, claudecode); ReasoningEffort reports the current
 	// value (""=off); ReasoningLevels lists the values the active kind accepts
@@ -1054,7 +1059,15 @@ type AgentControl interface {
 	SetSoul(name, soul string) (status string, err error)
 	Remove(name string) (status string, err error)
 	Show(name string) (AgentDetail, error)
+	// Limits lists the team-run limits in effect, "off" for unset ones
+	// (TEN-508) — /agents limits.
+	Limits() ([]LimitRow, error)
 }
+
+// LimitRow is one team-run limit for /agents limits: what it limits, its key
+// under "budgets" in config.json, its value ("off" when unset), and how to
+// turn it on.
+type LimitRow struct{ Name, Key, Value, Note string }
 
 // AgentInfo is the lightweight summary row for /agents listings.
 type AgentInfo struct {
@@ -2312,6 +2325,9 @@ func (m *model) applyEvent(e agent.Event) {
 	case agent.EventTruncated:
 		m.streaming = false
 		m.appendFeed(cErr.Render("loop ceiling hit — synthesized"))
+	case agent.EventStuck:
+		m.streaming = false
+		m.appendFeed(cErr.Render("stuck repeating the same tool calls — synthesized (/ceiling repeat to tune)"))
 	case agent.EventError:
 		m.err = e.Text
 		m.appendFeed(cErr.Render("error: " + clip(e.Text, 80)))

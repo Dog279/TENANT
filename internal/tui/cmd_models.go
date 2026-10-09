@@ -86,8 +86,11 @@ func slashCeiling(m *model, line string) tea.Cmd {
 		return nil
 	}
 	if strings.TrimSpace(arg) == "" {
-		m.sysChat(fmt.Sprintf("loop ceiling = %d (max planner↔tool iterations per turn, per agent) — set with /ceiling <n>", m.cfg.Models.LoopCeiling()))
+		m.sysChat(fmt.Sprintf("loop ceiling = %d (max planner↔tool iterations per turn, per agent) — set with /ceiling <n>\n%s", m.cfg.Models.LoopCeiling(), repeatGuardLine(m.cfg.Models.RepeatGuard())))
 		return nil
+	}
+	if f := strings.Fields(arg); f[0] == "repeat" {
+		return slashRepeatGuard(m, f[1:])
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(arg))
 	if err != nil {
@@ -102,6 +105,43 @@ func slashCeiling(m *model, line string) tea.Cmd {
 	m.appendFeed(cOK.Render("⟳ " + status))
 	m.sysChat(status)
 	return nil
+}
+
+// slashRepeatGuard runs /ceiling repeat [n|off|default] (TEN-506).
+func slashRepeatGuard(m *model, args []string) tea.Cmd {
+	if len(args) == 0 {
+		m.sysChat(repeatGuardLine(m.cfg.Models.RepeatGuard()))
+		return nil
+	}
+	var n int
+	switch a := strings.ToLower(args[0]); a {
+	case "off", "0": // 0 = off, as on the dashboard
+		n = -1
+	case "default":
+		n = 0
+	default:
+		v, err := strconv.Atoi(a)
+		if err != nil || v < 0 {
+			m.sysChat("usage: /ceiling repeat <n|off|default>   (e.g. /ceiling repeat 12; 0 = off)")
+			return nil
+		}
+		n = v
+	}
+	status, err := m.cfg.Models.SetRepeatGuard(n)
+	if err != nil {
+		m.sysChat("error: " + err.Error())
+		return nil
+	}
+	m.appendFeed(cOK.Render("⟳ " + status))
+	m.sysChat(status)
+	return nil
+}
+
+func repeatGuardLine(n int) string {
+	if n <= 0 {
+		return "repeat guard = off — set with /ceiling repeat <n>"
+	}
+	return fmt.Sprintf("repeat guard = %d (the same tool calls getting the same results this many rounds in a row end the turn) — set with /ceiling repeat <n|off>", n)
 }
 
 // slashReasoning runs /reasoning, /effort.
@@ -706,7 +746,8 @@ func modelCommands() []*slashCommand {
 			}},
 		{Names: []string{"/ceiling", "/loops", "/loop-ceiling"}, Section: "model", Run: slashCeiling,
 			Summary: "view or live-tune the loop ceiling (max tool calls per turn)",
-			Rows:    []cmdreg.Row{{Syntax: "/ceiling [n]", Desc: "view / live-tune the loop ceiling (max tool calls per turn)"}}},
+			Rows: []cmdreg.Row{{Syntax: "/ceiling [n]", Desc: "view / live-tune the loop ceiling (max tool calls per turn)"},
+				{Syntax: "/ceiling repeat [n|off]", Desc: "view / live-tune the repeat guard (identical rounds before a forced answer)"}}},
 		{Names: []string{"/reasoning", "/effort"}, Section: "model", Run: slashReasoning,
 			Summary: "pick or live-tune reasoning effort",
 			Rows:    []cmdreg.Row{{Syntax: "/reasoning [level]", Desc: "arrow-key picker / live-tune reasoning effort (Fugu: high/xhigh · claudecode: low→max)"}}},
