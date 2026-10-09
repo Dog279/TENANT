@@ -2,6 +2,7 @@ package assemble_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -140,5 +141,36 @@ func TestAssemble_ImageTokensCount(t *testing.T) {
 	r3, _ := a.Assemble(context.Background(), assemble.Request{Profile: blind, Working: withImg})
 	if d := r3.BudgetReport.WorkingTokens - r1.BudgetReport.WorkingTokens; d >= model.ImageTokens(img(1)) {
 		t.Fatalf("a blind model's note was counted as %d tokens, the full image's cost", d)
+	}
+}
+
+// Acceptance 7: once an image has aged out, the next exchange's request
+// starts with the previous request byte for byte (one prefix-cache miss per
+// image aging out, no more).
+func TestAssemble_AgedNotesKeepThePrefixStable(t *testing.T) {
+	w := working.New()
+	w.Append(working.Message{Role: "user", Content: "q1", Images: []model.Image{img(1)}})
+	w.Append(working.Message{Role: "assistant", Content: "a1"})
+	for i := 2; i <= 4; i++ {
+		w.Append(working.Message{Role: "user", Content: fmt.Sprintf("q%d", i)})
+		w.Append(working.Message{Role: "assistant", Content: fmt.Sprintf("a%d", i)})
+	}
+	a := assemble.New(fakeCounter())
+	r4, err := a.Assemble(context.Background(), assemble.Request{Profile: seeing(), Working: w})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r4.Messages[0].Images) != 0 {
+		t.Fatal("exchange 1's image should have aged out by exchange 4")
+	}
+	w.Append(working.Message{Role: "user", Content: "q5"})
+	r5, err := a.Assemble(context.Background(), assemble.Request{Profile: seeing(), Working: w})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(r4.Messages)
+	got, _ := json.Marshal(r5.Messages[:len(r4.Messages)])
+	if string(got) != string(want) {
+		t.Fatalf("the prefix changed:\n%s\nvs\n%s", got, want)
 	}
 }

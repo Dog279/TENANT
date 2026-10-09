@@ -76,7 +76,7 @@ type Image struct {
 	Height int    `json:"h,omitempty"`
 	Name   string `json:"name,omitempty"` // what the operator or tool called it
 	// Labels are the info-flow labels of where the image came from (a tool's
-	// ResultLabels, a relay's inbound flow), so egress checks see them like text.
+	// ResultLabels), so egress checks see them like text.
 	Labels []InfoFlowLabel `json:"labels,omitempty"`
 }
 
@@ -322,8 +322,8 @@ Placeholders and the image list live on the TUI model: `attachments []model.Imag
 - **Discord:**
   - `discordingest.go:38` allows `gif` and `webp` too.
   - In `ingestAndRoute` (`discordrelay.go:307`), each saved file that sniffs as an image also goes through
-    `attach.Store.Add` (the bytes just downloaded) into `TurnRequest.Images` (operator messages only, as today),
-    labelled with the relay's inbound flow. The text manifest stays.
+    `attach.Store.Add` (the bytes just downloaded) into `TurnRequest.Images` (operator messages only, as today).
+    The text manifest stays. (No info-flow label: the relays label no inbound text either; see the review log.)
   - When a turn is already running, `routeTurn` (`discordrelay.go:348`) interjects; it passes the images through
     `InterjectWithImages` when the runner (or the `turnGate` around it) has it.
   - When `Add` fails (too large, HEIC on Linux), the turn still runs with the text manifest plus a note naming the
@@ -331,7 +331,7 @@ Placeholders and the image list live on the TUI model: `attachments []model.Imag
 - **iMessage (chat.db, macOS):**
   - `MessagesSince` (`chatdb.go:315`) joins `message_attachment_join` and `attachment` for `filename`, `mime_type`
     and `transfer_name`.
-  - `~` expands to the home dir. `InboundMessage` gains `Attachments []string` (paths).
+  - `~` expands to the home dir. `InboundMessage` gains `Attachments []Attachment` (GUID, path, MIME, name).
   - Reading them uses the Full Disk Access the iMessage mode already requires. The files are read through the
     same symlink-refusing open the osys plugin uses.
   - `mime_type` is often NULL, so the bytes are sniffed. An attachment whose file isn't on disk yet (still in
@@ -343,12 +343,12 @@ Placeholders and the image list live on the TUI model: `attachments []model.Imag
   - The query adds `"attachment"` to `with` (`client.go:127`), and `bbMessage` gains `attachments`
     (`guid`, `mimeType`, `transferName`).
   - Images are downloaded from `/api/v1/attachment/<url.PathEscape(guid)>/download` with the existing password,
-    into `<data>/relay-inbox/`.
-  - Downloads use the same 100 MB, 10-per-message and 90 s caps as Discord.
+    straight into `attach.Store` (no `relay-inbox/` copy).
+  - Reads take Discord's 10-per-message and 90 s caps; the size cap is the store's 20 MB source limit, since a
+    larger file could never be added anyway.
 - `imessagerelay.go:147` stops dropping attachment-only messages when at least one attachment is an image. Image
   attachments go to `TurnRequest.Images`. The allowlist and per-message gate are unchanged.
-- HEIC follows D6 through `attach.Store`. Relay images carry the relay's inbound flow labels, like the message
-  text.
+- HEIC follows D6 through `attach.Store`. Relay images carry no info-flow label, like the relay's message text.
 
 ### Docs and eval (commit H)
 
@@ -485,7 +485,7 @@ Revert the PR. No stored data changes shape:
 - **Prefix cache.** Each image aging out of the window changes one older message once (one cache miss); the vision
   gate can't flap because inconclusive probes never flip a cached answer.
 - **Privacy:** images leave the host like any text when a hosted provider is active. They carry the info-flow
-  labels of their source (`model.Image.Labels`: a tool's `ResultLabels`, a relay's inbound flow), so the egress
+  labels of their source (`model.Image.Labels`: a tool's `ResultLabels`; relay images, like relay text, carry none), so the egress
   gate sees them as it sees text, and `attachments/` follows the archive's retention.
 
 ## Review log

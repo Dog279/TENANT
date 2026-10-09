@@ -20,7 +20,7 @@ type Image struct {
 	Height int    `json:"h,omitempty"`
 	Name   string `json:"name,omitempty"` // what the operator or tool called it
 	// Labels are the info-flow labels of where the image came from (a tool's
-	// ResultLabels, a relay's inbound flow), carried like a text result's.
+	// ResultLabels), carried like a text result's.
 	Labels []InfoFlowLabel `json:"labels,omitempty"`
 }
 
