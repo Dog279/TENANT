@@ -436,6 +436,10 @@ func (a *Agent) projectSME() string {
 // just queued and folded at the next iteration boundary).
 func (a *Agent) Interject(msg string) { a.InterjectWithImages(msg, nil) }
 
+// Attachments is where this agent saves images (TEN-493): the TUI saves
+// pasted images through it too. nil when the agent has no archive.
+func (a *Agent) Attachments() *attach.Store { return a.cfg.Attachments }
+
 // injection is one mid-turn message and the images sent with it.
 type injection struct {
 	text   string

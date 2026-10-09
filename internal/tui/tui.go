@@ -22,6 +22,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"tenant/internal/agent"
+	"tenant/internal/attach"
 	"tenant/internal/control"
 	"tenant/internal/fsperm"
 	modelpkg "tenant/internal/model"
@@ -30,11 +31,13 @@ import (
 // Config wires the TUI to an already-constructed agent whose Observer
 // pushes into Events. Backend/Model/AgentID are display-only.
 type Config struct {
-	Agent   *agent.Agent
-	Events  <-chan agent.Event
-	AgentID string
-	Backend string
-	Model   string
+	Agent *agent.Agent
+	// Attachments saves pasted images (TEN-493); nil means the agent's store.
+	Attachments *attach.Store
+	Events      <-chan agent.Event
+	AgentID     string
+	Backend     string
+	Model       string
 	// System, if set, carries pre-formatted background feed lines
 	// (e.g. self-improvement job runs) to show alongside agent activity.
 	System <-chan string
@@ -1234,17 +1237,18 @@ type model struct {
 	// second time when a trailing event is drained AFTER turnDoneMsg already
 	// reconciled the bubble (the /goal inline double-post race, TEN-217).
 	assistantSealed bool
-	busy            bool      // a turn is in flight
-	budgetPct       int       // last context-budget utilization (% of writable budget)
-	budgetUsed      int       // absolute tokens in the assembled context
-	budgetCap       int       // writable-budget cap (tokens)
-	sessionTok      int       // cumulative tokens (in+out) for the MAIN agent this session
-	sessionTokIn    int       // cumulative INPUT tokens for the MAIN agent this session
-	sessionTokOut   int       // cumulative OUTPUT tokens for the MAIN agent this session
-	teamTok         int       // cumulative tokens (in+out) for spawned sub-agents
-	reqStart        time.Time // wall-clock start of the in-flight turn (display-only live timer)
-	thinkSince      time.Time // start of the model call in flight; zero between calls (TEN-342)
-	toolsSince      time.Time // start of the tool calls in flight; zero while thinking
+	busy            bool             // a turn is in flight
+	budgetPct       int              // last context-budget utilization (% of writable budget)
+	attachments     []modelpkg.Image // images pasted into the input, by placeholder number (TEN-493)
+	budgetUsed      int              // absolute tokens in the assembled context
+	budgetCap       int              // writable-budget cap (tokens)
+	sessionTok      int              // cumulative tokens (in+out) for the MAIN agent this session
+	sessionTokIn    int              // cumulative INPUT tokens for the MAIN agent this session
+	sessionTokOut   int              // cumulative OUTPUT tokens for the MAIN agent this session
+	teamTok         int              // cumulative tokens (in+out) for spawned sub-agents
+	reqStart        time.Time        // wall-clock start of the in-flight turn (display-only live timer)
+	thinkSince      time.Time        // start of the model call in flight; zero between calls (TEN-342)
+	toolsSince      time.Time        // start of the tool calls in flight; zero while thinking
 	lastTool        string
 	width           int
 	height          int
@@ -1511,6 +1515,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.logs != nil {
 			return m, m.logsKey(msg)
 		}
+		// Images (TEN-493): Ctrl+V tries the clipboard image before the text
+		// paste; a paste that is nothing but image file paths (a dragged
+		// file) attaches them instead of typing the path.
+		if m.inChatInput() {
+			if isImagePasteKey(msg.String()) {
+				return m, m.pasteImageCmd()
+			}
+			if msg.Paste {
+				if paths := pastedImagePaths(string(msg.Runes)); len(paths) > 0 {
+					return m, m.attachFilesCmd(paths)
+				}
+			}
+		}
 		switch msg.String() {
 		case "ctrl+s":
 			// Toggle SELECT MODE: drop mouse capture so a plain click-drag
@@ -1642,6 +1659,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.feedFollow = m.feed.AtBottom()
 			}
 		}
+	case imagesAttachedMsg:
+		m.addAttachments(msg.imgs)
+		for _, n := range msg.notes {
+			m.sysChat(n)
+		}
+		m.refresh()
+		return m, msg.then
 	case logsMsg:
 		cmds = append(cmds, msg.apply(m))
 	case eventMsg:
@@ -2000,6 +2024,7 @@ func (m *model) submit() tea.Cmd {
 	m.turnCancel = cancel
 	req := agent.TurnRequest{
 		UserQuery: q, RouteSurface: agent.RouteSurfaceTUI, RouteOverride: routeOverride,
+		Images: m.takeAttachments(q),
 	}
 	// While a /goal loop is active, decouple this turn's iteration budget from
 	// the global loop ceiling so a long autonomous run can iterate freely
@@ -2040,8 +2065,9 @@ func (m *model) interject(q string) {
 	m.chatFollow = true
 	m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
 	m.appendFeed(cSys.Render("⏎ interjected — agent will address it, then resume"))
+	images := m.takeAttachments(q)
 	if m.cfg.Agent != nil {
-		m.cfg.Agent.Interject(q)
+		m.cfg.Agent.InterjectWithImages(q, images)
 	}
 }
 
@@ -2862,6 +2888,9 @@ func (m *model) statusBar() string {
 func (m *model) contextIndicator() string {
 	bar := ctxBar(m.budgetPct, 12)
 	s := fmt.Sprintf("ctx %s %d%% %s/%s · session %s", bar, m.budgetPct, humanTokens(m.budgetUsed), humanTokens(m.budgetCap), humanTokens(m.sessionTok))
+	if n := len(m.attachments); n > 0 {
+		s = fmt.Sprintf("📎 %d · ", n) + s
+	}
 	if m.teamTok > 0 {
 		s += cDim.Render(" · team " + humanTokens(m.teamTok))
 	}
