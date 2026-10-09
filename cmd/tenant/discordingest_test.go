@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/agent"
+	"tenant/internal/attach"
+	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
 )
 
@@ -304,5 +310,45 @@ func TestRelay_NonOperatorAttachmentsDropped(t *testing.T) {
 	}
 	if strings.Contains(q, "sneaky") || strings.Contains(q, "[files received") {
 		t.Fatalf("non-operator attachments must not be ingested:\n%s", q)
+	}
+}
+
+// imageRunner records the images each turn carried.
+type imageRunner struct{ got chan []model.Image }
+
+func (r *imageRunner) Turn(_ context.Context, req agent.TurnRequest) (*agent.TurnResult, error) {
+	r.got <- req.Images
+	return &agent.TurnResult{Response: "ok"}, nil
+}
+func (r *imageRunner) Interject(string) {}
+
+// TEN-493: an operator's photo on Discord reaches the model as an image (the
+// text manifest still lists it); a webp is accepted.
+func TestRelay_ImageAttachmentReachesTheModel(t *testing.T) {
+	var pic bytes.Buffer
+	_ = png.Encode(&pic, image.NewRGBA(image.Rect(0, 0, 12, 9)))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(pic.Bytes()) }))
+	defer srv.Close()
+
+	ir := &imageRunner{got: make(chan []model.Image, 1)}
+	r := newRelay(ir, &fakeSender{}, "op1")
+	dir := t.TempDir()
+	ai := newAttachmentIngestor(dir)
+	ai.anyHost = true
+	r.files = ai
+	r.images = attach.NewStore(dir)
+	r.Start(context.Background())
+	r.handleInbound(discord.Inbound{ChannelID: "dm1", AuthorID: "op1", Content: "what's this?",
+		Attachments: []discord.Attachment{{Filename: "photo.png", Size: int64(pic.Len()), ContentType: "image/png", URL: srv.URL + "/photo.png"}}})
+	select {
+	case imgs := <-ir.got:
+		if len(imgs) != 1 || imgs[0].Width != 12 || imgs[0].Name != "photo.png" {
+			t.Fatalf("turn images = %+v", imgs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no turn")
+	}
+	if !allowedAttachmentExts[".webp"] || !allowedAttachmentExts[".gif"] {
+		t.Fatal("gif and webp should be accepted")
 	}
 }

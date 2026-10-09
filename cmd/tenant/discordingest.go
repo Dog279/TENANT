@@ -36,7 +36,7 @@ import (
 // (pdf/csv/txt), and mp4. Everything else is rejected by name in the reply
 // so the operator knows to convert or rename.
 var allowedAttachmentExts = map[string]bool{
-	".png": true, ".jpg": true, ".jpeg": true, ".heic": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".heic": true,
 	".pdf": true, ".csv": true, ".txt": true, ".mp4": true,
 }
 

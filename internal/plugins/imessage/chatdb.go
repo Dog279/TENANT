@@ -40,6 +40,8 @@ type InboundMessage struct {
 	RowID    int64
 	ChatGUID string
 	Service  string // message.service: "iMessage", "SMS", "RCS" (gates who may drive)
+	// Attachments are the files sent with the message (TEN-493).
+	Attachments []Attachment
 }
 
 // macEpochOffset is the seconds between the Unix epoch (1970-01-01) and
@@ -355,7 +357,19 @@ SELECT m.ROWID, c.guid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date, 
 			Service:  service.String,
 		})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ids := make([]int64, len(out))
+	for i, m := range out {
+		ids[i] = m.RowID
+	}
+	if atts := r.attachmentsFor(ctx, ids); atts != nil {
+		for i := range out {
+			out[i].Attachments = atts[out[i].RowID]
+		}
+	}
+	return out, nil
 }
 
 // LatestRowID returns the current maximum message ROWID (0 when the table is

@@ -218,7 +218,7 @@ func sessionCommands() []*slashCommand {
 	return []*slashCommand{
 		{Names: []string{"/image", "/img"}, Section: "session", Run: slashImage,
 			Summary: "attach an image file to your next message",
-			Rows: []cmdreg.Row{{Syntax: "/image <path>", Desc: "attach an image file to your next message (or press Ctrl+V to paste one; Alt+V on Windows)"}}},
+			Rows:    []cmdreg.Row{{Syntax: "/image <path>", Desc: "attach an image file to your next message (or press Ctrl+V to paste one; Alt+V on Windows)"}}},
 		{Names: []string{"/whoami", "/who"}, Section: "session", Run: slashWhoami,
 			Summary: "show the agent ID, active backend and model (runtime truth — trust over the model's self-answer)"},
 		{Names: []string{"/dashboard"}, Section: "session", Run: slashDashboard,

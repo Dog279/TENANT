@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/attach"
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs/event"
 	"tenant/internal/memory/archive"
@@ -145,9 +147,15 @@ func (r *imessageResponder) drain(ctx context.Context) {
 // the approver; run inline, the loop would be stuck behind the very turn that
 // is waiting for it (the Phase-2 deadlock). One turn at a time.
 func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessage) {
-	text := strings.TrimSpace(m.Text)
-	if text == "" || strings.TrimSpace(m.ChatGUID) == "" {
-		return // nothing actionable (attachment-only, empty, or unknown chat)
+	// Apple stands a U+FFFC in the text for each attachment: drop it.
+	body := strings.TrimSpace(strings.ReplaceAll(m.Text, "\uFFFC", ""))
+	text := body
+	pics := imageAttachments(m.Attachments)
+	if (text == "" && len(pics) == 0) || strings.TrimSpace(m.ChatGUID) == "" {
+		return // nothing actionable (empty, a non-image attachment, or unknown chat)
+	}
+	if len(pics) > 0 {
+		text = strings.TrimSpace(text + fmt.Sprintf(" [%d image(s)]", len(pics))) // what the logs and feed show
 	}
 	// TEN-485: anything that may not drive is observed — logged (log alerts can
 	// act on it) and shown in the feed — and never answered. Approval replies go
@@ -207,8 +215,52 @@ func (r *imessageResponder) handle(ctx context.Context, m imessage.InboundMessag
 			r.active = false
 			r.mu.Unlock()
 		}()
-		r.turn(ctx, m.ChatGUID, strconv.FormatInt(m.RowID, 10), text)
+		r.turn(ctx, m.ChatGUID, strconv.FormatInt(m.RowID, 10), body, pics)
 	}()
+}
+
+// imageAttachments keeps the attachments that look like pictures (TEN-493).
+func imageAttachments(atts []imessage.Attachment) []imessage.Attachment {
+	var out []imessage.Attachment
+	for _, a := range atts {
+		if a.IsImage() {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// imagesOf saves a message's pictures through the agent's attachment store.
+// One that can't be read (still in iCloud, too large, not an image) becomes a
+// note in the text instead, so the model knows it was sent.
+func (r *imessageResponder) imagesOf(ctx context.Context, pics []imessage.Attachment) ([]model.Image, []string) {
+	if len(pics) == 0 {
+		return nil, nil
+	}
+	src, _ := r.poller.(interface {
+		AttachmentBytes(context.Context, imessage.Attachment) ([]byte, error)
+	})
+	var store *attach.Store
+	if a, ok := r.runner.(interface{ Attachments() *attach.Store }); ok {
+		store = a.Attachments()
+	}
+	var imgs []model.Image
+	var notes []string
+	for _, a := range pics {
+		err := errors.New("images can't be read here")
+		if src != nil && store != nil {
+			var data []byte
+			if data, err = src.AttachmentBytes(ctx, a); err == nil {
+				var img model.Image
+				if img, err = store.Add(ctx, data, a.Name); err == nil {
+					imgs = append(imgs, img)
+					continue
+				}
+			}
+		}
+		notes = append(notes, fmt.Sprintf("[image %s not shown: %v]", a.Name, err))
+	}
+	return imgs, notes
 }
 
 // undrivable reports why m only gets observed, or "" when it drives a turn:
@@ -230,10 +282,12 @@ func (r *imessageResponder) undrivable(m imessage.InboundMessage) string {
 // carries the offsite-confirm: Phase-1 deny-all, or (Phase-2) the per-category
 // broker whose "ask" texts the operator the nonce handshake. inboundID is the
 // chat.db row that started it.
-func (r *imessageResponder) turn(ctx context.Context, chatGUID, inboundID, text string) {
+func (r *imessageResponder) turn(ctx context.Context, chatGUID, inboundID, text string, pics []imessage.Attachment) {
 	turnCtx, act := event.Start(withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage), imessage.Turn, "chat", chatGUID)
+	imgs, notes := r.imagesOf(turnCtx, pics)
+	query := strings.TrimSpace(strings.Join(append([]string{text}, notes...), "\n"))
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
-		UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
+		UserQuery: query, Images: imgs, RouteSurface: agent.RouteSurfaceRelay,
 	})
 	failed := err
 	if ctx.Err() != nil {

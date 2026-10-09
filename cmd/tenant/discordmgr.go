@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/attach"
 	"tenant/internal/lifecycle"
 	"tenant/internal/memory/archive"
 	"tenant/internal/memory/episodic"
@@ -248,6 +249,7 @@ func (m *discordRelayManager) realStart(ctx context.Context, operatorID string) 
 		// Operator file ingest: DMed attachments land in <dataDir>/relay-inbox
 		// and the turn text carries the saved-path manifest.
 		rl.files = newAttachmentIngestor(m.dataDir)
+		rl.images = attach.NewStore(m.dataDir)
 		rl.files.keep = m.inboxKeep
 		// External-automation approvals: ext-approve button verdicts land under
 		// <dataDir>/approvals/<ns> (extapprove.go).
