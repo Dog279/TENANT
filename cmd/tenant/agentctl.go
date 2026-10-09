@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"tenant/internal/orchestra"
 	"tenant/internal/tui"
 )
 
@@ -26,6 +27,26 @@ type agentControl struct {
 // List returns the named agent profiles, sorted, mapped to the TUI-facing
 // summary type. Empty list when none are configured (returns nil, not an
 // error — the TUI shows "no agents configured" hint).
+// limitRows lists the team-run limits config.json sets, "off" for unset run
+// limits (TEN-508): the dashboard's Run limits card.
+func (ac *agentControl) limitRows() ([]orchestra.LimitRow, error) {
+	lc, err := loadLaunchConfig(ac.cfgDir)
+	if err != nil {
+		return nil, err
+	}
+	return configuredBudgets(lc).LimitRows(), nil
+}
+
+// Limits is limitRows for the TUI's /agents limits.
+func (ac *agentControl) Limits() ([]tui.LimitRow, error) {
+	rows, err := ac.limitRows()
+	out := make([]tui.LimitRow, len(rows))
+	for i, r := range rows {
+		out[i] = tui.LimitRow{Name: r.Name, Key: r.Key, Value: r.Value, Note: r.Note}
+	}
+	return out, err
+}
+
 func (ac *agentControl) List() ([]tui.AgentInfo, error) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()

@@ -97,8 +97,10 @@ type Launch struct {
 	// soul. Lets you mix models per role: researcher → glm-4.6 on Z.ai,
 	// synthesizer → aeon-ultimate on a self-hosted vLLM, etc.
 	Agents map[string]*AgentProfile `json:"agents,omitempty"`
-	// Budgets is the structural resource envelope for each agent-team run.
-	// Omitted/zero fields receive orchestra.DefaultBudgets at runtime.
+	// Budgets is the resource envelope for each agent-team run. Run limits
+	// (agents, tool calls, tokens, cost, wall time) are off when omitted or 0;
+	// the machine guards (concurrent sub-agents, browsers, bus history) get
+	// orchestra.DefaultBudgets (TEN-508).
 	Budgets orchestra.Budgets `json:"budgets,omitempty"`
 	// PlanLoopCeiling caps planner↔tool iterations per turn (per agent). 0 =
 	// built-in default (DefaultPlanCeiling). Raise it for multi-step agentic

@@ -92,28 +92,44 @@ no effect.
 ## Team budgets
 
 Every team run (a turn that spawns sub-agents, `tenant orchestrate`, `/research`)
-works inside a hard resource envelope. When it runs out, the run stops and the
-feed and the log say which limit it hit. Set any of these under `budgets` in
-`config.json`. A key you leave out keeps its default.
+can be held to limits you set under `budgets` in `config.json`. **The run limits
+are off by default** (TEN-508): a run is bounded only by the loop ceiling and the
+machine guards below. On local hardware tokens are free, and a limit nobody chose
+ended real work partway through. Set a positive value to turn one on. When a run
+reaches it, the run stops and the feed and the log say which limit it hit.
+
+`/agents limits` in the TUI and the **Run limits** card on the dashboard's
+Helpers page list every key with its value ("off" when unset).
+
+Run limits (off unless set):
 
 ```json
 "budgets": {
-  "max_concurrent_subagents": 4,
   "max_agents_per_run": 16,
   "max_tool_calls_per_turn": 64,
   "max_tool_calls_per_run": 256,
   "max_tokens_per_run": 500000,
   "max_cost_usd": 25,
   "max_wall_time": "30m",
-  "max_browser_instances": 4,
-  "bus_history_cap": 1000,
-  "input_cost_per_million_usd": 15,
-  "output_cost_per_million_usd": 75
+  "input_cost_per_million_usd": 3,
+  "output_cost_per_million_usd": 15
 }
 ```
 
+The values above are examples. Machine guards keep their defaults when unset:
+
+| Key | Default | Guards |
+|---|---|---|
+| `max_concurrent_subagents` | 4 | helpers running at once |
+| `max_browser_instances` | 4 | browser processes at once |
+| `bus_history_cap` | 1000 | messages kept between helpers |
+
 - `max_wall_time` is a duration: `"30m"`, `"2h"`. Older files that hold a number
   of nanoseconds still load.
-- **Cost is an estimate.** `max_cost_usd` is checked against a figure built from
-  the tokens the backend reports and the two per-million rates. Set the rates to
-  your provider's prices; a negative rate means free (local models).
+- **Cost is an estimate, and needs your rates.** `max_cost_usd` is checked against
+  a figure built from the tokens the backend reports and the two per-million
+  rates. With no rates set (the default) there is no estimate, and a cost limit
+  can't stop anything. Set the rates to your provider's prices. A value of 0 or
+  negative means none (local models).
+- An alert investigation always has limits: its own ceilings (see
+  [LOGGING.md](LOGGING.md)) apply when your run limits are off.

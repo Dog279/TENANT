@@ -10,14 +10,17 @@ import (
 	"time"
 )
 
-// Budgets is the operator-configurable hard resource envelope for one agent
-// team run. Zero values are replaced by DefaultBudgets; this keeps old config
-// files safe while allowing every limit to be overridden in config.json.
+// Budgets is the operator-configurable resource envelope for one agent team
+// run. The run limits (agents, tool calls, tokens, cost, wall time) are OFF
+// unless set: 0 or missing means unlimited, a positive value turns that one
+// limit on (TEN-508). Tokens are free on local hardware, and a limit nobody
+// chose ended real work partway through. The machine guards (concurrent
+// sub-agents, browsers, bus history) keep their defaults when unset.
 //
 // Cost is estimated from backend-reported token usage and the configured
-// per-million-token rates. Rates deliberately live beside the cap because
-// many Tenant deployments use private endpoints whose prices are not public.
-// A negative rate explicitly means free/local; zero means use the default.
+// per-million-token rates, which are 0 (no estimate) unless set: many
+// deployments use private or local endpoints whose prices aren't public, so
+// a guessed hosted rate would be wrong. A cost limit needs the rates set.
 type Budgets struct {
 	MaxConcurrentSubagents int           `json:"max_concurrent_subagents,omitempty"`
 	MaxAgentsPerRun        int           `json:"max_agents_per_run,omitempty"`
@@ -80,49 +83,23 @@ func (b Budgets) MarshalJSON() ([]byte, error) {
 	return json.Marshal(aux)
 }
 
-// DefaultBudgets returns a conservative envelope large enough for deep
-// research while preventing accidental unbounded fan-out.
+// DefaultBudgets returns the envelope an unset config gets: the machine guards
+// only. Every run limit is off (0) until the operator sets it (TEN-508).
 func DefaultBudgets() Budgets {
 	return Budgets{
 		MaxConcurrentSubagents: 4,
-		MaxAgentsPerRun:        16,
-		MaxToolCallsPerTurn:    64,
-		MaxToolCallsPerRun:     256,
-		MaxTokensPerRun:        500_000,
-		MaxCostUSD:             25,
-		MaxWallTime:            30 * time.Minute,
 		MaxBrowserInstances:    4,
 		BusHistoryCap:          1_000,
-		// Conservative hosted-model estimates. Operators using local/free or
-		// differently-priced endpoints should override these with their rates.
-		InputCostPerMillionUSD:  15,
-		OutputCostPerMillionUSD: 75,
 	}
 }
 
-// WithDefaults fills unset limits and rates from DefaultBudgets.
+// WithDefaults fills the unset machine guards from DefaultBudgets. Run limits
+// and cost rates stay as set: 0 is off (no limit, no cost estimate), and a
+// negative value, which older files used for "free", reads as 0.
 func (b Budgets) WithDefaults() Budgets {
 	d := DefaultBudgets()
 	if b.MaxConcurrentSubagents <= 0 {
 		b.MaxConcurrentSubagents = d.MaxConcurrentSubagents
-	}
-	if b.MaxAgentsPerRun <= 0 {
-		b.MaxAgentsPerRun = d.MaxAgentsPerRun
-	}
-	if b.MaxToolCallsPerTurn <= 0 {
-		b.MaxToolCallsPerTurn = d.MaxToolCallsPerTurn
-	}
-	if b.MaxToolCallsPerRun <= 0 {
-		b.MaxToolCallsPerRun = d.MaxToolCallsPerRun
-	}
-	if b.MaxTokensPerRun <= 0 {
-		b.MaxTokensPerRun = d.MaxTokensPerRun
-	}
-	if b.MaxCostUSD <= 0 {
-		b.MaxCostUSD = d.MaxCostUSD
-	}
-	if b.MaxWallTime <= 0 {
-		b.MaxWallTime = d.MaxWallTime
 	}
 	if b.MaxBrowserInstances <= 0 {
 		b.MaxBrowserInstances = d.MaxBrowserInstances
@@ -130,17 +107,64 @@ func (b Budgets) WithDefaults() Budgets {
 	if b.BusHistoryCap <= 0 {
 		b.BusHistoryCap = d.BusHistoryCap
 	}
-	if b.InputCostPerMillionUSD == 0 {
-		b.InputCostPerMillionUSD = d.InputCostPerMillionUSD
-	} else if b.InputCostPerMillionUSD < 0 {
-		b.InputCostPerMillionUSD = 0
-	}
-	if b.OutputCostPerMillionUSD == 0 {
-		b.OutputCostPerMillionUSD = d.OutputCostPerMillionUSD
-	} else if b.OutputCostPerMillionUSD < 0 {
-		b.OutputCostPerMillionUSD = 0
-	}
+	b.MaxAgentsPerRun = max(b.MaxAgentsPerRun, 0)
+	b.MaxToolCallsPerTurn = max(b.MaxToolCallsPerTurn, 0)
+	b.MaxToolCallsPerRun = max(b.MaxToolCallsPerRun, 0)
+	b.MaxTokensPerRun = max(b.MaxTokensPerRun, 0)
+	b.MaxCostUSD = max(b.MaxCostUSD, 0)
+	b.MaxWallTime = max(b.MaxWallTime, 0)
+	b.InputCostPerMillionUSD = max(b.InputCostPerMillionUSD, 0)
+	b.OutputCostPerMillionUSD = max(b.OutputCostPerMillionUSD, 0)
 	return b
+}
+
+// LimitRow is one budget, render-ready for the settings surfaces (the
+// dashboard's Helpers page, the TUI's /agents limits).
+type LimitRow struct {
+	Name  string // what it limits
+	Key   string // its key under "budgets" in config.json
+	Value string // the effective value, "off" when unset
+	Note  string // how to turn it on, or what it guards
+}
+
+// LimitRows lists b's limits for display, run limits first.
+func (b Budgets) LimitRows() []LimitRow {
+	b = b.WithDefaults()
+	num := func(n int) string {
+		if n <= 0 {
+			return "off"
+		}
+		return fmt.Sprint(n)
+	}
+	cost := "off"
+	if b.MaxCostUSD > 0 {
+		cost = fmt.Sprintf("$%.2f", b.MaxCostUSD)
+	}
+	wall := "off"
+	if b.MaxWallTime > 0 {
+		wall = b.MaxWallTime.String()
+	}
+	rates := "not set (no cost estimate)"
+	if b.InputCostPerMillionUSD > 0 || b.OutputCostPerMillionUSD > 0 {
+		rates = fmt.Sprintf("$%.2f in / $%.2f out per million tokens", b.InputCostPerMillionUSD, b.OutputCostPerMillionUSD)
+	}
+	costNote := "Set a dollar amount to stop a run that costs more."
+	if b.MaxCostUSD > 0 && rates == "not set (no cost estimate)" {
+		costNote = "On, but it can't stop anything until the cost rates below are set."
+	}
+	runNote := "Set a positive number to stop a run that goes past it."
+	return []LimitRow{
+		{"Tokens per run", "max_tokens_per_run", num(b.MaxTokensPerRun), runNote},
+		{"Estimated cost per run", "max_cost_usd", cost, costNote},
+		{"Time per run", "max_wall_time", wall, `Set a duration like "30m" to stop a run that takes longer.`},
+		{"Tool calls per run", "max_tool_calls_per_run", num(b.MaxToolCallsPerRun), runNote},
+		{"Tool calls per answer", "max_tool_calls_per_turn", num(b.MaxToolCallsPerTurn), "Set a positive number to refuse one answer's tool calls past it (the run goes on)."},
+		{"Helpers per run", "max_agents_per_run", num(b.MaxAgentsPerRun), "Set a positive number to refuse more helpers in one run."},
+		{"Cost rates", "input_cost_per_million_usd, output_cost_per_million_usd", rates, "Your model's price per million tokens; needed for the cost estimate and limit."},
+		{"Helpers at once", "max_concurrent_subagents", num(b.MaxConcurrentSubagents), "Guards this machine; on by default."},
+		{"Browsers at once", "max_browser_instances", num(b.MaxBrowserInstances), "Guards this machine; on by default."},
+		{"Message history kept", "bus_history_cap", num(b.BusHistoryCap), "Guards memory; on by default."},
+	}
 }
 
 // BudgetStatus is a point-in-time, race-free projection for the TUI,
@@ -171,12 +195,29 @@ func (s BudgetStatus) String() string {
 	if s.TerminationReason != "" {
 		state = "terminated: " + s.TerminationReason
 	}
-	return fmt.Sprintf("team budget run=%d %s; agents=%d/%d active=%d/%d tools=%d/%d tokens=%d/%d cost=$%.4f/$%.2f browsers=%d/%d wall=%s/%s",
-		s.RunID, state, s.AgentsStarted, s.Limits.MaxAgentsPerRun,
+	limit := func(n int) string {
+		if n <= 0 {
+			return "off"
+		}
+		return fmt.Sprint(n)
+	}
+	cost, costLimit := fmt.Sprintf("$%.4f", s.EstimatedCostUSD), "off"
+	if s.Limits.InputCostPerMillionUSD <= 0 && s.Limits.OutputCostPerMillionUSD <= 0 {
+		cost = "n/a"
+	}
+	if s.Limits.MaxCostUSD > 0 {
+		costLimit = fmt.Sprintf("$%.2f", s.Limits.MaxCostUSD)
+	}
+	wall := "off"
+	if s.Limits.MaxWallTime > 0 {
+		wall = s.Limits.MaxWallTime.String()
+	}
+	return fmt.Sprintf("team budget run=%d %s; agents=%d/%s active=%d/%d tools=%d/%s tokens=%d/%s cost=%s/%s browsers=%d/%d wall=%s/%s",
+		s.RunID, state, s.AgentsStarted, limit(s.Limits.MaxAgentsPerRun),
 		s.ActiveSubagents, s.Limits.MaxConcurrentSubagents,
-		s.ToolCalls, s.Limits.MaxToolCallsPerRun, s.Tokens, s.Limits.MaxTokensPerRun,
-		s.EstimatedCostUSD, s.Limits.MaxCostUSD, s.BrowserInstances,
-		s.Limits.MaxBrowserInstances, s.Elapsed.Round(time.Second), s.Limits.MaxWallTime)
+		s.ToolCalls, limit(s.Limits.MaxToolCallsPerRun), s.Tokens, limit(s.Limits.MaxTokensPerRun),
+		cost, costLimit, s.BrowserInstances,
+		s.Limits.MaxBrowserInstances, s.Elapsed.Round(time.Second), wall)
 }
 
 // LimitError is returned when the runtime structurally refuses work.
@@ -302,9 +343,12 @@ func (g *Governor) beginLocked(parent context.Context) (retire func()) {
 	g.reason = ""
 	g.runCtx, g.cancel = context.WithCancelCause(parent)
 	runID := g.runID
-	g.timer = time.AfterFunc(g.limits.MaxWallTime, func() {
-		g.terminateRun(runID, fmt.Sprintf("wall time limit exceeded (%s)", g.limits.MaxWallTime))
-	})
+	g.timer = nil
+	if g.limits.MaxWallTime > 0 {
+		g.timer = time.AfterFunc(g.limits.MaxWallTime, func() {
+			g.terminateRun(runID, fmt.Sprintf("wall time limit exceeded (%s)", g.limits.MaxWallTime))
+		})
+	}
 	g.stopParent = context.AfterFunc(parent, func() {
 		if err := context.Cause(parent); err != nil {
 			g.terminateRun(runID, "parent context canceled: "+err.Error())
@@ -411,7 +455,7 @@ func (g *Governor) acquireLocked() (context.Context, func(), error) {
 	if g.activeAgents >= g.limits.MaxConcurrentSubagents {
 		return nil, nil, &LimitError{Resource: "concurrent subagents", Used: fmt.Sprint(g.activeAgents), Limit: fmt.Sprint(g.limits.MaxConcurrentSubagents)}
 	}
-	if g.agentsStarted >= g.limits.MaxAgentsPerRun {
+	if g.limits.MaxAgentsPerRun > 0 && g.agentsStarted >= g.limits.MaxAgentsPerRun {
 		return nil, nil, &LimitError{Resource: "agents per run", Used: fmt.Sprint(g.agentsStarted), Limit: fmt.Sprint(g.limits.MaxAgentsPerRun)}
 	}
 	g.activeAgents++
@@ -451,7 +495,7 @@ func (g *Governor) AcquireToolCall(ctx context.Context, turn string) error {
 		g.mu.Unlock()
 		return err
 	}
-	if g.toolCalls >= g.limits.MaxToolCallsPerRun {
+	if g.limits.MaxToolCallsPerRun > 0 && g.toolCalls >= g.limits.MaxToolCallsPerRun {
 		err := &LimitError{Resource: "tool calls per run", Used: fmt.Sprint(g.toolCalls), Limit: fmt.Sprint(g.limits.MaxToolCallsPerRun)}
 		g.markTerminatedLocked(err.Error())
 		cancel, st := g.cancel, g.snapshotLocked()
@@ -463,7 +507,7 @@ func (g *Governor) AcquireToolCall(ctx context.Context, turn string) error {
 		return err
 	}
 	perTurn, counted := g.toolCallsByTurn[turn]
-	if perTurn >= g.limits.MaxToolCallsPerTurn {
+	if g.limits.MaxToolCallsPerTurn > 0 && perTurn >= g.limits.MaxToolCallsPerTurn {
 		g.mu.Unlock()
 		return &LimitError{Resource: "tool calls per turn", Used: fmt.Sprint(perTurn), Limit: fmt.Sprint(g.limits.MaxToolCallsPerTurn)}
 	}
@@ -492,8 +536,9 @@ func (g *Governor) releaseTurn(runID uint64, turn string) {
 	g.notify(st)
 }
 
-// RecordUsage accounts one completed model call. Token and cost exhaustion
-// cancel the run before another model/tool step can begin.
+// RecordUsage accounts one completed model call. Token and cost exhaustion,
+// when those limits are set, cancel the run before another model/tool step
+// can begin.
 func (g *Governor) RecordUsage(prompt, completion int) error {
 	if prompt < 0 {
 		prompt = 0
@@ -512,9 +557,9 @@ func (g *Governor) RecordUsage(prompt, completion int) error {
 		float64(completion)*g.limits.OutputCostPerMillionUSD/1_000_000
 	total := g.promptTokens + g.completionTokens
 	var err error
-	if total > g.limits.MaxTokensPerRun {
+	if g.limits.MaxTokensPerRun > 0 && total > g.limits.MaxTokensPerRun {
 		err = &LimitError{Resource: "tokens per run", Used: fmt.Sprint(total), Limit: fmt.Sprint(g.limits.MaxTokensPerRun)}
-	} else if g.estimatedCost > g.limits.MaxCostUSD {
+	} else if g.limits.MaxCostUSD > 0 && g.estimatedCost > g.limits.MaxCostUSD {
 		err = &LimitError{Resource: "estimated cost per run", Used: fmt.Sprintf("$%.4f", g.estimatedCost), Limit: fmt.Sprintf("$%.2f", g.limits.MaxCostUSD)}
 	}
 	if err != nil {

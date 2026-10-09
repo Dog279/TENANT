@@ -1059,7 +1059,15 @@ type AgentControl interface {
 	SetSoul(name, soul string) (status string, err error)
 	Remove(name string) (status string, err error)
 	Show(name string) (AgentDetail, error)
+	// Limits lists the team-run limits in effect, "off" for unset ones
+	// (TEN-508) — /agents limits.
+	Limits() ([]LimitRow, error)
 }
+
+// LimitRow is one team-run limit for /agents limits: what it limits, its key
+// under "budgets" in config.json, its value ("off" when unset), and how to
+// turn it on.
+type LimitRow struct{ Name, Key, Value, Note string }
 
 // AgentInfo is the lightweight summary row for /agents listings.
 type AgentInfo struct {
