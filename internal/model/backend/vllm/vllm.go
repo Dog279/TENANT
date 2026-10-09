@@ -119,6 +119,9 @@ type wireMsg struct {
 	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	// Parts, when set, replaces Content with an OpenAI content array: the
+	// message's text and its images (TEN-493). See MarshalJSON.
+	Parts []contentPart `json:"-"`
 }
 
 type wireToolCall struct {
@@ -156,17 +159,44 @@ func scrubMediaMarkers(s string) string {
 	return mediaMarkerRe.ReplaceAllString(s, "(media marker omitted)")
 }
 
-// toWireMessages maps internal messages to the OpenAI wire shape.
+// toWireMessages maps internal messages to the OpenAI wire shape. Images on a
+// user message become content parts; images on tool results ride one user
+// message after the run of results (see toolImageMessage); images anywhere
+// else (system, assistant) become notes.
 func toWireMessages(msgs []model.Message) []wireMsg {
-	out := make([]wireMsg, len(msgs))
-	for i, m := range msgs {
+	out := make([]wireMsg, 0, len(msgs))
+	toolNames := map[string]string{}
+	var pendingTools []string
+	var pendingImgs []model.Image
+	flush := func() {
+		if len(pendingImgs) > 0 {
+			out = append(out, toolImageMessage(pendingTools, pendingImgs))
+		}
+		pendingTools, pendingImgs = nil, nil
+	}
+	for _, m := range msgs {
+		if m.Role != "tool" {
+			flush()
+		}
 		wm := wireMsg{
 			Role:       m.Role,
 			Content:    scrubMediaMarkers(m.Content),
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
+		if len(m.Images) > 0 {
+			switch m.Role {
+			case "user":
+				wm.Parts = userParts(wm.Content, m.Images)
+			case "tool":
+				pendingTools = append(pendingTools, toolNames[m.ToolCallID])
+				pendingImgs = append(pendingImgs, m.Images...)
+			default:
+				wm.Content = model.WithNotes(wm.Content, m.Images, model.ReasonNoPreview)
+			}
+		}
 		for _, tc := range m.ToolCalls {
+			toolNames[tc.ID] = tc.Name
 			args := strings.TrimSpace(string(tc.Arguments))
 			// Never put malformed JSON on the wire — vLLM 400s ("Expecting
 			// property name") parsing a replayed assistant tool call whose
@@ -180,8 +210,9 @@ func toWireMessages(msgs []model.Message) []wireMsg {
 				Function: wireToolFunc{Name: tc.Name, Arguments: args},
 			})
 		}
-		out[i] = wm
+		out = append(out, wm)
 	}
+	flush()
 	return out
 }
 
@@ -232,7 +263,7 @@ type chatResponse struct {
 func (b *Backend) Generate(ctx context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
 	body := chatRequest{
 		Model:       b.profile.Model,
-		Messages:    toWireMessages(req.Messages),
+		Messages:    b.wireMessages(req.Messages),
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stop:        req.StopSequences,

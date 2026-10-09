@@ -59,6 +59,7 @@ func (b *Backend) Generate(_ context.Context, req model.GenerateRequest) (*model
 		}, nil
 	}
 
+	req.Messages = model.StripImages(req.Messages, model.ReasonNoVision) // echo is text only (TEN-493)
 	lastUser := ""
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {

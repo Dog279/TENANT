@@ -57,7 +57,7 @@ type streamFrame struct {
 func (b *Backend) generateStream(ctx context.Context, req model.GenerateRequest) (<-chan model.StreamChunk, error) {
 	body := chatRequest{
 		Model:       b.profile.Model,
-		Messages:    toWireMessages(req.Messages),
+		Messages:    b.wireMessages(req.Messages),
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Stop:        req.StopSequences,
