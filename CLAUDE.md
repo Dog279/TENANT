@@ -8,7 +8,7 @@ fixes before pushing.
 ## The public documentation lives on the website
 
 The reference users read is https://findtime.net/tenant/docs/, built from Markdown in the
-findtime-net repository (https://github.com/Dog279/findtime-net, `tenant/docs/_src/`). The
+findtime-net repository (https://github.com/Dog279/findtime-net, `tenant-docs/src/`). The
 docs there describe Tenant's `main` branch (**Latest**); each release gets a frozen copy the
 site's version menu can switch to. `docs/` in this repository is for contributors:
 architecture, design, runbooks, change notes.
@@ -20,8 +20,8 @@ changes in the same piece of work:
 
 1. Check out the site next to this repository if it is not there:
    `git clone https://github.com/Dog279/findtime-net ../findtime-net`.
-2. Edit the page(s) under `../findtime-net/tenant/docs/_src/` (the table below says which),
-   then `sh tenant/docs/_src/build.sh` there (pandoc: `brew install pandoc`) and commit the
+2. Edit the page(s) under `../findtime-net/tenant-docs/src/` (the table below says which),
+   then `sh tenant-docs/build.sh && npm run check` there (pandoc: `brew install pandoc`) and commit the
    Markdown and the generated HTML together.
 3. Open a findtime-net pull request that references the TENANT pull request. Merge it when
    the TENANT one merges, never before: Latest documents `main`.
@@ -36,7 +36,7 @@ of truth. A syntax example in the docs must match the registry row it documents.
 
 ### Which code maps to which page
 
-Paths are under `tenant/docs/_src/` in findtime-net.
+Paths are under `tenant-docs/src/` in findtime-net.
 
 | Changed in TENANT | Update |
 |---|---|
@@ -70,17 +70,17 @@ Paths are under `tenant/docs/_src/` in findtime-net.
 | the terminal UI's keys, timer or session commands | `first-launch/terminal-ui.md` |
 
 A quick completeness check before opening the PR: `git diff --name-only origin/main`, map each
-file through this table, and `grep -rn "<the command, flag or key>" ../findtime-net/tenant/docs/_src`.
+file through this table, and `grep -rn "<the command, flag or key>" ../findtime-net/tenant-docs/src`.
 
 ### Versions
 
 When a release is tagged, freeze the docs for it in findtime-net:
 
 ```sh
-sh tenant/docs/_src/build.sh && sh tenant/docs/_src/snapshot.sh vX.Y.Z
+sh tenant-docs/build.sh && sh tenant-docs/snapshot.sh vX.Y.Z
 ```
 
-That writes `tenant/docs/vX.Y.Z/` and lists the version in `tenant/docs/versions.js`, which
+That writes `public/tenant/docs/vX.Y.Z/` and lists the version in `public/tenant/docs/versions.js`, which
 the site's version menu reads. Commit both. A frozen version is never edited, except to correct
 a statement about what that version actually did.
 
