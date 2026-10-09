@@ -108,8 +108,8 @@ func (d *Dispatcher) Tools() []model.ToolSpec {
 			Parameters: obj(``)},
 		{Name: "os_read_file", Description: "Read a text file from this machine by absolute or relative path: lines from offset (1-based) for limit lines, default the whole file up to one page (~100K chars). A cut read ends with next_offset; read again from there for the rest.",
 			Parameters: obj(`"path":{"type":"string"},"offset":{"type":"integer","description":"first line to read, 1-based (default 1)"},"limit":{"type":"integer","description":"how many lines (default: to the end of the page)"}`, "path"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalFile}}},
-		{Name: "os_read_image", Description: "Inspect an image file (png/jpeg/gif): reports format and pixel dimensions.",
-			Parameters: obj(`"path":{"type":"string"}`, "path")},
+		{Name: "os_read_image", Description: "Inspect an image file (png/jpeg/gif/webp): reports format and pixel dimensions. The image itself is shown to models that can see images.",
+			Parameters: obj(`"path":{"type":"string"}`, "path"), ResultLabels: []model.InfoFlowLabel{{Sensitivity: model.SensitivitySensitive, Provenance: model.ProvenanceLocalFile}}},
 		{Name: "os_list_dir", Description: "List a directory's entries (type, size, name). Defaults to the current directory.",
 			Parameters: obj(`"path":{"type":"string","description":"directory path (default '.')"}`)},
 		{Name: "os_processes", Description: "List running processes on this machine.",
@@ -139,7 +139,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call model.ToolCall) (string,
 	case "os_read_file":
 		return d.readFile(call.Arguments)
 	case "os_read_image":
-		return d.readImage(call.Arguments)
+		return d.readImage(ctx, call.Arguments)
 	case "os_list_dir":
 		return d.listDir(call.Arguments)
 	case "os_processes":
@@ -188,7 +188,7 @@ func (d *Dispatcher) readFile(args json.RawMessage) (string, bool, error) {
 	return out, false, nil
 }
 
-func (d *Dispatcher) readImage(args json.RawMessage) (string, bool, error) {
+func (d *Dispatcher) readImage(ctx context.Context, args json.RawMessage) (string, bool, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
@@ -202,7 +202,10 @@ func (d *Dispatcher) readImage(args json.RawMessage) (string, bool, error) {
 	if err != nil {
 		return err.Error(), true, nil
 	}
-	out, err := d.svc.ReadImage(target, d.policy.Roots.checkOpenedRead)
+	out, data, err := d.svc.ReadImageBytes(target, d.policy.Roots.checkOpenedRead)
+	if err == nil {
+		model.AttachImage(ctx, data, filepath.Base(target)) // shown to a model that can see (TEN-493)
+	}
 	if err != nil {
 		return err.Error(), true, nil
 	}

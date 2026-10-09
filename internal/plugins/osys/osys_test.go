@@ -970,3 +970,34 @@ func TestExecBackgroundAndProcess(t *testing.T) {
 		t.Fatalf("background on a confined surface is refused: isErr=%v %q", isErr, out)
 	}
 }
+
+// TEN-493: os_read_image hands the model the exact bytes it read through the
+// vetted handle, labelled sensitive like os_read_file; webp is reported.
+func TestReadImage_AttachesBytes(t *testing.T) {
+	dir := realDir(t)
+	svc, _ := Open(Config{})
+	p := filepath.Join(dir, "pic.png")
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 5, 4)))
+	_ = os.WriteFile(p, buf.Bytes(), 0o600)
+	var got []byte
+	var gotName string
+	ctx := model.WithImageSink(context.Background(), func(data []byte, name string) { got, gotName = data, name })
+	out, isErr, err := NewDispatcher(svc, Policy{}).Dispatch(ctx, model.ToolCall{Name: "os_read_image", Arguments: json.RawMessage(`{"path":"` + filepath.ToSlash(p) + `"}`)})
+	if err != nil || isErr || !strings.Contains(out, "width=5") {
+		t.Fatalf("dispatch = %q, %v, %v", out, isErr, err)
+	}
+	if !bytes.Equal(got, buf.Bytes()) || gotName != "pic.png" {
+		t.Fatalf("attached %d bytes named %q, want the file's", len(got), gotName)
+	}
+	for _, spec := range NewDispatcher(svc, Policy{}).Tools() {
+		if spec.Name == "os_read_image" && (len(spec.ResultLabels) != 1 || spec.ResultLabels[0].Sensitivity != model.SensitivitySensitive) {
+			t.Fatalf("os_read_image labels = %+v, want sensitive", spec.ResultLabels)
+		}
+	}
+	webp := filepath.Join(dir, "x.webp")
+	_ = os.WriteFile(webp, append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 "), make([]byte, 20)...), 0o600)
+	if out, err := svc.ReadImage(webp, nil); err != nil || !strings.Contains(out, "format=webp") {
+		t.Fatalf("webp = %q, %v", out, err)
+	}
+}

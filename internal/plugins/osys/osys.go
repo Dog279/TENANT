@@ -2,6 +2,7 @@ package osys
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -405,24 +407,56 @@ func (s *Service) MakeDir(path string) (string, error) {
 // about images it's working with (and confirm a file is a valid image). vet
 // is as for ReadFile.
 func (s *Service) ReadImage(path string, vet func(fs.FileInfo) error) (string, error) {
+	out, _, err := s.ReadImageBytes(path, vet)
+	return out, err
+}
+
+// maxImageRead caps the bytes os_read_image reads: the attachment store
+// refuses larger sources anyway.
+const maxImageRead = 20 << 20
+
+// ReadImageBytes is ReadImage plus the file's bytes, read once through the
+// same vetted handle (TEN-493): the model is shown exactly the file that was
+// checked, never a path re-opened later that a symlink could have swapped.
+// webp, which the stdlib can't decode, is reported by sniffing. The bytes are
+// nil when the file is over 20 MB (the text still reports it).
+func (s *Service) ReadImageBytes(path string, vet func(fs.FileInfo) error) (string, []byte, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("osys: image path required")
+		return "", nil, fmt.Errorf("osys: image path required")
 	}
 	f, err := openVetted(path, os.O_RDONLY, vet)
 	if err != nil {
-		return "", fmt.Errorf("osys: open %s: %w", path, err)
+		return "", nil, fmt.Errorf("osys: open %s: %w", path, err)
 	}
 	defer f.Close()
-	cfg, format, err := image.DecodeConfig(f)
-	if err != nil {
-		return "", fmt.Errorf("osys: %s is not a decodable image (png/jpeg/gif): %w", path, err)
-	}
 	size := int64(0)
 	if fi, serr := f.Stat(); serr == nil {
 		size = fi.Size()
 	}
+	data, err := io.ReadAll(io.LimitReader(f, maxImageRead+1))
+	if err != nil {
+		return "", nil, fmt.Errorf("osys: read %s: %w", path, err)
+	}
+	if len(data) > maxImageRead {
+		data = nil
+	}
+	head := data
+	if head == nil {
+		if _, err := f.Seek(0, io.SeekStart); err == nil {
+			head = make([]byte, 64<<10)
+			n, _ := io.ReadFull(f, head)
+			head = head[:n]
+		}
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(head))
+	if err != nil {
+		if http.DetectContentType(head) == "image/webp" {
+			return fmt.Sprintf("image %s: format=webp size=%d bytes", path, size), data, nil
+		}
+		return "", nil, fmt.Errorf("osys: %s is not a decodable image (png/jpeg/gif/webp): %w", path, err)
+	}
 	return fmt.Sprintf("image %s: format=%s width=%d height=%d size=%d bytes",
-		path, format, cfg.Width, cfg.Height, size), nil
+		path, format, cfg.Width, cfg.Height, size), data, nil
 }
 
 // ListDir lists a directory's entries (capped, sorted).
