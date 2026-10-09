@@ -1971,6 +1971,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log.With("source", "model"))
+	router.ProbeVision(context.Background()) // know which models see before the first pasted image (TEN-493)
 	if err := routeRT.BindConfiguredForce(); err != nil {
 		return err
 	}

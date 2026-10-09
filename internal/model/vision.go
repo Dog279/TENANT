@@ -59,6 +59,15 @@ func VisionOf(k VisionKey) Vision {
 	return visionMap[k]
 }
 
+// VisionAuto reports whether p leaves vision to the probe: not set on or off.
+func VisionAuto(p Profile) bool {
+	switch strings.ToLower(strings.TrimSpace(p.Vision)) {
+	case "on", "true", "yes", "off", "false", "no":
+		return false
+	}
+	return true
+}
+
 // CanSee reports whether images may be sent to p. The operator's "on"/"off"
 // wins. Otherwise: every current Claude model sees, so Anthropic defaults to
 // yes; a vllm (OpenAI-compatible) model sees when its probe said so; the

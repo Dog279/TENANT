@@ -811,6 +811,10 @@ type ModelControl interface {
 	// persists) — /ceiling repeat (TEN-506).
 	RepeatGuard() int
 	SetRepeatGuard(n int) (string, error)
+	// Vision reports whether the active model can see images; SetVision sets
+	// the active provider's vision to on, off or auto, live (TEN-493).
+	Vision() string
+	SetVision(v string) (string, error)
 	// ReasoningSupported reports whether the ACTIVE provider accepts a reasoning
 	// -effort hint (Sakana Fugu, claudecode); ReasoningEffort reports the current
 	// value (""=off); ReasoningLevels lists the values the active kind accepts

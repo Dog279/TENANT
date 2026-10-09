@@ -61,6 +61,7 @@ func providerGenProfiles(cfgDir string, lc *launchConfig, name string, planCeili
 		genAPIKey:    apiKey,
 		contextLen:   contextLen,
 		planCeiling:  planCeiling,
+		vision:       pc.Vision,
 	}
 	// Carry the provider's persisted reasoning effort exactly like the active
 	// provider path (wiring.go) does — without this, planner-big / forced /

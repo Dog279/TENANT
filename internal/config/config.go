@@ -335,6 +335,9 @@ type Provider struct {
 	// kinds (Sakana Fugu): "" (off, default) | "high" | "xhigh". Tuned live via
 	// /reasoning and only honored when the kind's SupportsReasoning is set.
 	Reasoning string `json:"reasoning,omitempty"`
+	// Vision says whether the model can see images (TEN-493): "on", "off",
+	// or "" / "auto" to let Tenant probe it. Set live with /model vision.
+	Vision string `json:"vision,omitempty"`
 }
 
 // Route is the persisted prompt-router configuration. Provider is

@@ -276,6 +276,21 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 		return
 	}
 	switch strings.ToLower(f[0]) {
+	case "vision":
+		// /model vision [on|off|auto]: whether the active model is sent images
+		// (TEN-493). Live; saved per provider.
+		if len(f) == 1 {
+			m.sysChat(m.cfg.Models.Vision() + "\n(set with /model vision on|off|auto; auto lets Tenant probe the model)")
+			return
+		}
+		status, err := m.cfg.Models.SetVision(f[1])
+		if err != nil {
+			m.sysChat("model: " + err.Error())
+			return
+		}
+		m.appendFeed(cOK.Render("⟳ " + status))
+		m.sysChat(status)
+		return
 	case "reload", "refresh":
 		// Re-resolve the active provider's key (env/credentials.json) + hot-swap
 		// it live — for picking up a rotated key without a restart.
@@ -743,6 +758,7 @@ func modelCommands() []*slashCommand {
 				{Syntax: "/model add <name> <endpoint> [fmt]", Desc: "register a self-hosted vLLM backend mid-session"},
 				{Syntax: "/model remove <name>", Desc: "delete a configured backend (not the active one)"},
 				{Syntax: "/model reload", Desc: "re-resolve the active provider's key live (after a rotation)"},
+				{Syntax: "/model vision [on|off|auto]", Desc: "whether the active model is sent images (auto = probe it)"},
 			}},
 		{Names: []string{"/ceiling", "/loops", "/loop-ceiling"}, Section: "model", Run: slashCeiling,
 			Summary: "view or live-tune the loop ceiling (max tool calls per turn)",

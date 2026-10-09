@@ -58,6 +58,7 @@ type commonFlags struct {
 	// Resolved at config-merge time (not raw flags):
 	genKind     string // active provider kind (vllm|openai|ollama|…); "" = raw --backend
 	reasoning   string // active provider's reasoning-effort hint ("" = off); reasoning kinds only
+	vision      string // active provider's vision setting: on | off | "" (probe); TEN-493
 	genAPIKey   string // resolved generation API key (env ref or stored secret or --api-key)
 	embedAPIKey string // resolved embeddings API key (usually empty — local)
 	contextLen  int    // served model's max_model_len (auto-detected); 0 = use default
@@ -225,6 +226,7 @@ func (c *commonFlags) applyLaunchConfig() error {
 		if pk.SupportsReasoning {
 			c.reasoning = p.Reasoning
 		}
+		c.vision = p.Vision
 		if !set["api-key"] {
 			c.genAPIKey = resolveSecretWith(c.credentialsLoader(), c.cfgDir, lc.Provider, p.Auth)
 		}
@@ -935,6 +937,14 @@ func attachJudge(r *model.Router, kind, endpoint, modelID, apiKey string) error 
 // left untouched (they stay on the local server across a gen swap). Mirrors
 // buildRouter's per-backend gen-profile construction.
 func genProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFactory, error) {
+	gen, factories, err := buildGenProfiles(c)
+	for i := range gen {
+		gen[i].Vision = c.vision // the provider's vision setting reaches every role (TEN-493)
+	}
+	return gen, factories, err
+}
+
+func buildGenProfiles(c *commonFlags) ([]model.Profile, map[string]model.BackendFactory, error) {
 	switch c.backend {
 	case "echo":
 		var gen []model.Profile

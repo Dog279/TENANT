@@ -41,6 +41,7 @@ type ModelControl interface {
 	// results) before a forced answer; <= 0 = off (TEN-506).
 	RepeatGuard() int
 	SetRepeatGuard(n int) (string, error)
+	Vision() string // whether the active model can see images (TEN-493)
 	ReloadKeys() (string, error)
 }
 
@@ -122,7 +123,8 @@ type modelsPageData struct {
 	Configured bool
 	Models     []ModelView
 	Ceiling    int
-	Repeat     int // repeat guard; 0 = off
+	Repeat     int    // repeat guard; 0 = off
+	Vision     string // whether the active model can see images (TEN-493)
 	Err        string
 	Msg        string
 }
@@ -134,6 +136,7 @@ func (s *Server) modelsData() modelsPageData {
 		d.Models = s.models.Models()
 		d.Ceiling = s.models.LoopCeiling()
 		d.Repeat = max(s.models.RepeatGuard(), 0)
+		d.Vision = s.models.Vision()
 	}
 	return d
 }

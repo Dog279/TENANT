@@ -49,6 +49,7 @@ config.json: embed.kind
 config.json: embed.model
 config.json: embed.reasoning
 config.json: embed.tool_format
+config.json: embed.vision
 config.json: embed_dim
 config.json: embed_endpoint
 config.json: embed_model
@@ -154,6 +155,7 @@ config.json: providers.*.kind
 config.json: providers.*.model
 config.json: providers.*.reasoning
 config.json: providers.*.tool_format
+config.json: providers.*.vision
 config.json: relay
 config.json: relay.allow_exec
 config.json: relay.approval_timeout

@@ -37,7 +37,9 @@ func (w wireMsg) MarshalJSON() ([]byte, error) {
 // image_url parts when the model can see, and as notes when it can't.
 func (b *Backend) wireMessages(msgs []model.Message) []wireMsg {
 	if model.HasImages(msgs) && !model.CanSee(b.profile) {
-		b.probeInBackground()
+		if model.VisionAuto(b.profile) {
+			b.probeInBackground()
+		}
 		msgs = model.StripImages(msgs, model.ReasonNoVision)
 	}
 	return toWireMessages(msgs)
@@ -92,6 +94,3 @@ func dedupe(names []string) []string {
 	}
 	return out
 }
-
-// probeInBackground is filled in by the vision probe (commit D).
-func (b *Backend) probeInBackground() {}
