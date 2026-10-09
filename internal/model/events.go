@@ -104,12 +104,12 @@ var CallUsage = Events.Event(9002, event.Info, "Call", "{profile} used {prompt_t
 		"A call finished and its backend reported usage.",
 		"None. Sum them by model or trace to see what a turn or a job cost.")
 
-var VisionProbed = Events.Event(2012, event.Info, "Vision", "Model {model} at {endpoint} can see images: {answer}", "model", "endpoint", "answer").
+var VisionProbed = Events.Event(1001, event.Info, "Vision", "Model {model} at {endpoint} can see images: {answer}", "model", "endpoint", "answer").
 	Doc("Tenant asked a model whether it can see images, with a two-colour test picture, and recorded the answer (TEN-493).",
 		"Launch, a model switch, or the first image sent to a model whose answer wasn't known yet.",
 		"None. A model that can't see gets a note with the image's saved path instead. To override the answer, use /model vision on|off.")
 
-var VisionInconclusive = Events.Event(2013, event.Warning, "Vision", "Couldn't tell whether {model} at {endpoint} can see images: {err}", "model", "endpoint", "err").
+var VisionInconclusive = Events.Event(2012, event.Warning, "Vision", "Couldn't tell whether {model} at {endpoint} can see images: {err}", "model", "endpoint", "err").
 	Doc("The vision probe got no clear answer, so images to this model go as notes for now; it tries again in five minutes (TEN-493).",
 		"The server was unreachable, refused the key, rate-limited the request, failed, or the reply named no colours (a thinking model cut off).",
 		"None if it settles. To decide it yourself, use /model vision on or off.")

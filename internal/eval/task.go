@@ -35,6 +35,9 @@ const (
 	SubsetSmoke   Subset = "smoke"
 	SubsetFitness Subset = "fitness"
 	SubsetFull    Subset = "full"
+	// SubsetVision needs a model that can see images (TEN-493), so it is
+	// opt-in: full leaves it out.
+	SubsetVision Subset = "vision"
 )
 
 // IsValid reports whether s is one of the recognized subset constants.
@@ -42,7 +45,7 @@ const (
 // silently returning an empty task list.
 func (s Subset) IsValid() bool {
 	switch s {
-	case SubsetSmoke, SubsetFitness, SubsetFull:
+	case SubsetSmoke, SubsetFitness, SubsetFull, SubsetVision:
 		return true
 	}
 	return false
@@ -74,6 +77,9 @@ type Task struct {
 	// are self-contained instead of depending on the operator's real wiki. The
 	// live factory writes these to an isolated temp dir + indexes it (TEN-220).
 	InjectedWiki []InjectedWikiDoc `yaml:"injected_wiki,omitempty"`
+	// ImageDigits, when set, sends a picture of these digits (seven-segment,
+	// black on white) with the prompt (TEN-493). Live mode only.
+	ImageDigits string `yaml:"image_digits,omitempty"`
 
 	// FilePath is populated by the loader for diagnostics.
 	FilePath string `yaml:"-"`
@@ -212,10 +218,10 @@ func (t *Task) validate() error {
 		return errors.New("task: category required")
 	}
 	if t.Subset == "" {
-		return errors.New("task: subset required (smoke|fitness|full)")
+		return errors.New("task: subset required (smoke|fitness|full|vision)")
 	}
 	switch t.Subset {
-	case SubsetSmoke, SubsetFitness, SubsetFull:
+	case SubsetSmoke, SubsetFitness, SubsetFull, SubsetVision:
 	default:
 		return fmt.Errorf("task: invalid subset %q", t.Subset)
 	}

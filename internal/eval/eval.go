@@ -139,17 +139,16 @@ func LoadHarness(fsys fs.FS, log *slog.Logger) (*Harness, error) {
 }
 
 // FilterSubset returns the tasks belonging to sub, in load order. full (and
-// the empty subset) means the ENTIRE catalog — it's the comprehensive nightly
-// suite, so it includes the smoke + fitness tasks rather than a separate
-// "full"-tagged slice (which would otherwise be empty). smoke and fitness are
-// curated exact-match slices.
+// the empty subset) means the whole catalog but the vision tasks — it's the
+// comprehensive nightly suite, so it includes the smoke + fitness tasks rather
+// than a separate "full"-tagged slice (which would otherwise be empty). The
+// vision tasks need a model that can see, so they only run when asked for.
+// smoke, fitness and vision are curated exact-match slices.
 func (h *Harness) FilterSubset(sub Subset) []*Task {
-	if sub == "" || sub == SubsetFull {
-		return h.Tasks
-	}
+	full := sub == "" || sub == SubsetFull
 	out := make([]*Task, 0, len(h.Tasks))
 	for _, t := range h.Tasks {
-		if t.Subset == sub {
+		if t.Subset == sub || (full && t.Subset != SubsetVision) {
 			out = append(out, t)
 		}
 	}

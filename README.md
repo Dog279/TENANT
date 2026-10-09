@@ -108,6 +108,9 @@ printf 'remember I prefer Go\nwhat do I prefer?\n' | tenant chat
   provider's live model list with `/model pick`, chain `fallbacks` for rate
   limits and outages, and route each prompt between a small local model and a
   big one with a local classifier (`/route`).
+- **Images.** Paste a screenshot into the TUI (Ctrl+V), drag a file in, or
+  send a photo over Discord or iMessage, and a model that can see gets the
+  picture. Tenant tests which local models can see at launch.
 - **Layered memory.** Working set → episodic memory → distilled semantic facts →
   a skill library → an append-only archive, plus an editable, operator-only
   soul (identity and rules). Context compaction is **archive-sourced**

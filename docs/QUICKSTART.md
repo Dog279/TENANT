@@ -169,6 +169,32 @@ whose output changes never trips it. The feed says "stuck repeating", not
 ```
 Saved as `repeat_guard` in config.json (0 or missing = default, negative = off).
 
+### Pasting images
+Show the model a picture without pointing it at a file:
+- **Ctrl+V** pastes the clipboard's image (a screenshot, a copied picture). On
+  Windows it's **Alt+V**, since Windows Terminal keeps Ctrl+V for text. With no
+  image on the clipboard, Ctrl+V pastes text as before.
+- **Drag** image files into the terminal (macOS and Linux terminals).
+- **`/image <path>`** attaches a file by path (`/img` for short).
+
+Each image shows in the input as `[image 1: name W×H]`; delete that text to drop
+it. Images are saved under `<data>/attachments` (PNG, JPEG, GIF, webp; HEIC on
+macOS), scaled to at most 1568 px, and follow the archive's retention. Linux
+needs `wl-paste` (Wayland) or `xclip` (X11) for Ctrl+V. Photos sent over Discord
+and iMessage reach the model the same way, and `os_read_image` and
+`web_screenshot` show it the picture too.
+
+The model sees the last three exchanges' images, at most 8 per request. Tenant
+checks whether a local model can see images when it starts, with a small test
+picture: `/model vision` shows the answer. If a model gets it wrong, set it:
+```
+/model vision on      # this model sees images
+/model vision off     # it doesn't: send a note instead of the picture
+/model vision auto    # test it (the default)
+```
+Saved as `vision` on the provider in config.json. Hosted Anthropic models always
+see images; a model that can't gets a short note naming the saved file instead.
+
 ---
 
 ## 6. Cloud providers (optional)

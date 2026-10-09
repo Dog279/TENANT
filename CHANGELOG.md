@@ -6,6 +6,13 @@ Releases page.
 ## Unreleased
 
 ### Added
+- **Images** (TEN-493): paste a picture into the TUI with Ctrl+V (Alt+V on Windows), drag image
+  files in, or `/image <path>`. Discord and iMessage photos reach the model too, and
+  `os_read_image` and `web_screenshot` now show it the picture instead of describing the file.
+  Images are saved under `<data>/attachments`, scaled to 1568 px, and kept for the last three
+  exchanges (at most 8 per request). Tenant tests at launch whether a local model can see;
+  `/model vision on|off|auto` (`vision` on the provider) overrides it, and a model that can't
+  gets a note instead. `tenant eval --subset vision` checks it end to end.
 - **GLM tool calling** (TEN-503): a `glm` tool-call format for Z.ai's GLM-4.5 family and later (the
   `<tool_call>name` + `<arg_key>`/`<arg_value>` shape its chat template writes), picked by name
   for models called glm/chatglm, offered in setup, the dashboard and `/model`, and tried by the

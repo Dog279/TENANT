@@ -2,7 +2,7 @@
 
 Status: v1 (TEN-1 closed 2026-05-26)
 Package: `internal/eval/`
-CLI: `tenant eval [--subset smoke|fitness|full] [--json|--quiet|--list]`
+CLI: `tenant eval [--subset smoke|fitness|full|vision] [--json|--quiet|--list]`
 
 The eval harness is the **fitness primitive** every self-improvement Job consumes (`SoulNudgeJob`, `SkillInductionJob`, `distill.Supersede`, future GEPA). It also gates CI regressions via the smoke subset on every PR and the full subset on a nightly cadence.
 
@@ -26,8 +26,10 @@ The eval harness is the **fitness primitive** every self-improvement Job consume
 | `smoke` | 5 (fixture-mode, no LLM) | ~10s | Structural CI gate | Every PR |
 | `fitness` | ~10 (live-mode, LLM-judged) | ~5 min | In-Job fitness signal | On-demand, in-Job calls |
 | `full` | 50 tasks (grows per TEN-21) | ~30-125 min | Quality baseline | Nightly cron |
+| `vision` | 1 (live-mode, needs a model that can see) | ~1 min | Images reach the model (TEN-493) | On demand; not part of `full` |
 
-Subset selection in YAML: `subset: smoke | fitness | full`. The fitness mix (10 tasks) per TEN-14:
+Subset selection in YAML: `subset: smoke | fitness | full | vision`. A task with
+`image_digits: "4817"` sends a picture of those digits with its prompt. The fitness mix (10 tasks) per TEN-14:
 
 - 4 single-tool (web, sql, wiki, os — one each)
 - 2 multi-tool chains
