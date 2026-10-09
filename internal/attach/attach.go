@@ -1,8 +1,9 @@
 // Package attach turns image bytes into a model.Image (TEN-493): it sniffs
 // the type, refuses decompression bombs, converts HEIC (and webp) with macOS
 // sips, scales anything larger than vision encoders use, re-encodes, and
-// saves one normalized copy under <data>/attachments. It is the only place
-// image bytes are decoded; everything downstream carries the saved path.
+// saves one normalized copy under <data>/attachments. It decodes every image
+// a message carries (the web plugin decodes only its own screenshot, to crop
+// it); everything downstream carries the saved path.
 package attach
 
 import (
@@ -169,8 +170,11 @@ func fit(w, h int) (int, int) {
 // and no dependency beyond the stdlib).
 func scale(img image.Image, tw, th int) *image.RGBA {
 	b := img.Bounds()
-	src := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	draw.Draw(src, src.Bounds(), img, b.Min, draw.Src)
+	src, ok := img.(*image.RGBA)
+	if !ok || b.Min != (image.Point{}) { // a PNG decodes to RGBA already: no second full copy
+		src = image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+		draw.Draw(src, src.Bounds(), img, b.Min, draw.Src)
+	}
 	sw, sh := src.Bounds().Dx(), src.Bounds().Dy()
 	if tw == sw && th == sh {
 		return src

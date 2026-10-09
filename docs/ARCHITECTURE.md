@@ -163,7 +163,7 @@ generated from `internal/archtest/rules.go`, and
 | `internal/model` | `internal/model/profiles`, `internal/runtrace` | no memory, agent or plugins |
 | `internal/model/**` | `internal/model/**`, `internal/runtrace` |  |
 | `internal/orchestra` | `internal/model` |  |
-| `internal/attach` | `internal/model`, `internal/fsperm` | image attachments: sniff, scale, save; the only place image bytes are decoded |
+| `internal/attach` | `internal/model`, `internal/fsperm` | image attachments: sniff, scale, save; decodes every image a message carries |
 | `internal/route` | `internal/model`, `internal/fsperm`, `internal/datalock`, `internal/runtrace` |  |
 | `internal/config` | `internal/fsperm`, `internal/secrets`, `internal/model`, `internal/route`, `internal/orchestra`, `internal/logs/catalog` | the persisted configuration; knows no runtime; files each change in the Security log |
 | `internal/memory/**` | `internal/memory/**`, `internal/model`, `internal/fsperm` | tiers compose only through assemble, distill and compress |

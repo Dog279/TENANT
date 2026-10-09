@@ -1349,7 +1349,7 @@ func newModel(ctx context.Context, cfg Config) *model {
 	ta.Prompt = "┃ "
 	ta.ShowLineNumbers = false
 	ta.SetHeight(3)
-	ta.CharLimit = 8000
+	ta.CharLimit = inputCharLimit
 	ta.Focus()
 	ta.FocusedStyle.Base = lipgloss.NewStyle()       // no background — blends with alt screen
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle() // no background on cursor line either

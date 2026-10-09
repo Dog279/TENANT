@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,6 +35,9 @@ var (
 		return exec.CommandContext(ctx, name, args...).Output()
 	}
 )
+
+// inputCharLimit is the message input's character limit, before placeholders.
+const inputCharLimit = 8000
 
 // errNoClipboardTool means the OS has no tool Tenant can read an image with.
 var errNoClipboardTool = errors.New("install wl-clipboard (Wayland) or xclip (X11) to paste images")
@@ -129,12 +133,13 @@ func readImageFile(p string) ([]byte, error) {
 }
 
 // addAttachments inserts a placeholder per image at the cursor. Placeholder
-// text doesn't count against the input's character limit.
+// text doesn't count against the input's character limit (takeAttachments
+// puts the limit back).
 func (m *model) addAttachments(imgs []modelpkg.Image) {
 	for _, img := range imgs {
 		m.attachments = append(m.attachments, img)
 		ph := placeholder(len(m.attachments), img)
-		m.ta.CharLimit += len(ph) + 1
+		m.ta.CharLimit += utf8.RuneCountInString(ph) + 1
 		m.ta.InsertString(ph + " ")
 	}
 }
@@ -154,6 +159,7 @@ func (m *model) takeAttachments(q string) []modelpkg.Image {
 		}
 	}
 	m.attachments = nil
+	m.ta.CharLimit = inputCharLimit
 	return out
 }
 
@@ -236,20 +242,17 @@ func splitPastedPaths(s string, windows bool) []string {
 	return toks
 }
 
-// isImageFile reports an existing regular file whose content sniffs as an
-// image Tenant takes.
+// isImageFile reports an existing regular file with an image's extension.
+// It runs in Update, so it only stats (a file in iCloud isn't fetched); the
+// content is sniffed when attachFilesCmd saves it, off the UI goroutine.
 func isImageFile(p string) bool {
-	f, err := os.Open(p)
-	if err != nil {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif":
+	default:
 		return false
 	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return false
-	}
-	head := make([]byte, 512)
-	n, _ := f.Read(head)
-	return attach.Sniff(head[:n]) != ""
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // clipboardImage returns the clipboard's image as PNG (or JPEG/TIFF-converted
@@ -329,15 +332,17 @@ func clipboardImageWindows(ctx context.Context, dir string) ([]byte, error) {
 }
 
 func clipboardImageLinux(ctx context.Context) ([]byte, error) {
-	type tool struct{ list, get []string }
+	type tool struct {
+		list []string
+		get  func(mime string) []string
+	}
 	var tools []tool
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		tools = append(tools, tool{[]string{"wl-paste", "--list-types"}, []string{"wl-paste", "--type", "image/png"}})
+		tools = append(tools, tool{[]string{"wl-paste", "--list-types"},
+			func(t string) []string { return []string{"wl-paste", "--type", t} }})
 	}
-	tools = append(tools, tool{
-		[]string{"xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"},
-		[]string{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"},
-	})
+	tools = append(tools, tool{[]string{"xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"},
+		func(t string) []string { return []string{"xclip", "-selection", "clipboard", "-t", t, "-o"} }})
 	missing := 0
 	for _, t := range tools {
 		types, err := runClipboardCmd(ctx, t.list[0], t.list[1:]...)
@@ -345,10 +350,16 @@ func clipboardImageLinux(ctx context.Context) ([]byte, error) {
 			missing++
 			continue
 		}
-		if err != nil || !bytes.Contains(types, []byte("image/png")) {
-			return nil, nil
+		if err != nil {
+			continue // e.g. wl-paste with no compositor clipboard: try xclip (XWayland)
 		}
-		return runClipboardCmd(ctx, t.get[0], t.get[1:]...)
+		for _, mime := range []string{"image/png", "image/jpeg"} {
+			if bytes.Contains(types, []byte(mime)) {
+				get := t.get(mime)
+				return runClipboardCmd(ctx, get[0], get[1:]...)
+			}
+		}
+		return nil, nil // the clipboard holds no image
 	}
 	if missing == len(tools) {
 		return nil, errNoClipboardTool

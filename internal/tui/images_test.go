@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -196,5 +197,63 @@ func TestClipboardImageLinux(t *testing.T) {
 	}
 	if got, err := clipboardImage(context.Background()); err != nil || !bytes.Equal(got, pic) {
 		t.Fatalf("xclip image = %d bytes, %v", len(got), err)
+	}
+}
+
+// A pasted path is judged by extension and stat only (no read on the UI
+// goroutine); a .png that isn't one becomes a note when it is saved.
+func TestPastedFakePNGBecomesANote(t *testing.T) {
+	m := imageModel(t)
+	fake := filepath.Join(t.TempDir(), "fake.png")
+	_ = os.WriteFile(fake, []byte("not a picture"), 0o600)
+	if got := pastedImagePaths(fake); len(got) != 1 {
+		t.Fatalf("pastedImagePaths(%q) = %v", fake, got)
+	}
+	msg, ok := m.attachFilesCmd([]string{fake})().(imagesAttachedMsg)
+	if !ok || len(msg.imgs) != 0 || len(msg.notes) != 1 {
+		t.Fatalf("attach = %+v, want one note and no image", msg)
+	}
+}
+
+// Placeholders raise the input limit only until the message is sent.
+func TestCharLimitComesBack(t *testing.T) {
+	m := imageModel(t)
+	p := filepath.Join(t.TempDir(), "x.png")
+	_ = os.WriteFile(p, pngBytes(t, 8, 8), 0o600)
+	m.Update(m.attachFilesCmd([]string{p})())
+	if m.ta.CharLimit <= inputCharLimit {
+		t.Fatalf("limit %d not raised for the placeholder", m.ta.CharLimit)
+	}
+	m.takeAttachments("")
+	if m.ta.CharLimit != inputCharLimit {
+		t.Fatalf("limit %d after send, want %d", m.ta.CharLimit, inputCharLimit)
+	}
+}
+
+// Linux: a JPEG-only clipboard is read as JPEG, and a wl-paste that fails
+// (no compositor clipboard) falls back to xclip.
+func TestClipboardImageLinux_JPEGAndFallback(t *testing.T) {
+	oldOS, oldRun := clipGOOS, runClipboardCmd
+	t.Cleanup(func() { clipGOOS, runClipboardCmd = oldOS, oldRun })
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	clipGOOS = "linux"
+	var got []string
+	runClipboardCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		call := name + " " + strings.Join(args, " ")
+		got = append(got, call)
+		switch {
+		case name == "wl-paste":
+			return nil, errors.New("no clipboard")
+		case strings.Contains(call, "TARGETS"):
+			return []byte("TARGETS\nimage/jpeg\n"), nil
+		}
+		return []byte("jpeg bytes"), nil
+	}
+	b, err := clipboardImage(context.Background())
+	if err != nil || string(b) != "jpeg bytes" {
+		t.Fatalf("= %q, %v (calls %q)", b, err, got)
+	}
+	if last := got[len(got)-1]; !strings.Contains(last, "xclip") || !strings.Contains(last, "image/jpeg") {
+		t.Fatalf("last call %q, want xclip reading image/jpeg", last)
 	}
 }

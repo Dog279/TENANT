@@ -61,7 +61,7 @@ var rules = []rule{
 	{Pkg: "internal/model", May: []string{"internal/model/profiles", "internal/runtrace"}, Notes: "no memory, agent or plugins"},
 	{Pkg: "internal/model/**", May: []string{"internal/model/**", "internal/runtrace"}},
 	{Pkg: "internal/orchestra", May: []string{"internal/model"}},
-	{Pkg: "internal/attach", May: []string{"internal/model", "internal/fsperm"}, Notes: "image attachments: sniff, scale, save; the only place image bytes are decoded"},
+	{Pkg: "internal/attach", May: []string{"internal/model", "internal/fsperm"}, Notes: "image attachments: sniff, scale, save; decodes every image a message carries"},
 	{Pkg: "internal/route", May: []string{"internal/model", "internal/fsperm", "internal/datalock", "internal/runtrace"}},
 	{Pkg: "internal/config", May: []string{"internal/fsperm", "internal/secrets", "internal/model", "internal/route", "internal/orchestra", "internal/logs/catalog"}, Notes: "the persisted configuration; knows no runtime; files each change in the Security log"},
 	{Pkg: "internal/memory/**", May: []string{"internal/memory/**", "internal/model", "internal/fsperm"}, Notes: "tiers compose only through assemble, distill and compress"},
