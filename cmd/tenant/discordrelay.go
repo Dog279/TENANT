@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -25,7 +27,9 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/attach"
 	"tenant/internal/logs/event"
+	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
 )
 
@@ -72,6 +76,7 @@ type relay struct {
 	degraded   func() bool         // optional; when true the model is on the echo fallback
 	ingest     func(text string)   // optional; surface an inbound that drives a turn in the shared activity feed (TUI + dashboard), TEN-232
 	files      *attachmentIngestor // optional; downloads operator attachments into the relay inbox — nil ⇒ attachments ignored
+	images     *attach.Store       // optional; image attachments also go to the model as images (TEN-493)
 	dataDir    string              // optional; enables ext-approve button verdicts under <dataDir>/approvals (extapprove.go), the interrupted-turn record and the DM cursor (TEN-499)
 	stopping   func() bool         // optional; true while Tenant is stopping (TEN-499): a cut turn is recorded and the operator told
 	reader     channelReader       // optional; the catch-up after a READY reads the DMs missed while down (TEN-499)
@@ -318,7 +323,7 @@ func (r *relay) ingestAndRoute(channelID, messageID, text string, atts []discord
 	if len(saved) == 0 && text == "" {
 		// Attachment-only message, nothing usable — answer directly instead
 		// of driving a turn about files that don't exist.
-		msg := "no attachments accepted (allowed: png, jpg, heic, pdf, csv, txt, mp4; max 100 MB)."
+		msg := "no attachments accepted (allowed: png, jpg, gif, webp, heic, pdf, csv, txt, mp4; max 100 MB)."
 		if len(rejected) > 0 {
 			msg = "no attachments accepted: " + strings.Join(rejected, "; ")
 		}
@@ -332,20 +337,69 @@ func (r *relay) ingestAndRoute(channelID, messageID, text string, atts []discord
 		}
 		full += manifest
 	}
-	r.routeTurn(channelID, messageID, full)
+	images, notes := r.imagesOf(ctx, saved)
+	for _, n := range notes {
+		full += "\n" + n
+	}
+	r.routeTurnWith(channelID, messageID, full, images)
+}
+
+// imagesOf turns the saved files that are images into model images
+// (TEN-493); the text manifest still lists every file. One that can't be
+// shown (too large, HEIC off macOS) comes back as a note instead.
+func (r *relay) imagesOf(ctx context.Context, saved []savedAttachment) ([]model.Image, []string) {
+	if r.images == nil {
+		return nil, nil
+	}
+	var imgs []model.Image
+	var notes []string
+	for _, s := range saved {
+		if !sniffsAsImage(s.Path) {
+			continue // a PDF or video stays in the text manifest only
+		}
+		data, err := os.ReadFile(s.Path) // the file this relay just downloaded
+		if err != nil {
+			continue
+		}
+		img, err := r.images.Add(ctx, data, filepath.Base(s.Path))
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("[image %s not shown: %v]", filepath.Base(s.Path), err))
+			continue
+		}
+		imgs = append(imgs, img)
+	}
+	return imgs, notes
+}
+
+// sniffsAsImage reads a file's first 512 bytes and reports whether they are
+// an image's, so a large non-image download is never read whole.
+func sniffsAsImage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	return attach.Sniff(head[:n]) != ""
 }
 
 // routeTurn surfaces text in the shared activity feed, then starts a turn or
 // folds into the running one — the shared tail of every inbound path.
 func (r *relay) routeTurn(channelID, messageID, text string) {
+	r.routeTurnWith(channelID, messageID, text, nil)
+}
+
+// routeTurnWith is routeTurn with the message's images (TEN-493).
+func (r *relay) routeTurnWith(channelID, messageID, text string, images []model.Image) {
 	if r.ingest != nil {
 		r.ingest(text)
 	}
-	if r.start(channelID, messageID, text) {
+	if r.start(channelID, messageID, text, images) {
 		return // new turn launched; its goroutine posts the answer
 	}
 	// A turn is already running. Single operator ⇒ it's theirs ⇒ fold this in.
-	r.runner.Interject(text)
+	interjectWithImages(r.runner, text, images)
 	r.reply(channelID, "added to the running turn.")
 }
 
@@ -376,7 +430,7 @@ func (r *relay) handleInteraction(in discord.Interaction) {
 }
 
 // start launches a background turn unless one is active. Returns false if busy.
-func (r *relay) start(channelID, messageID, text string) bool {
+func (r *relay) start(channelID, messageID, text string, images []model.Image) bool {
 	r.mu.Lock()
 	if r.active {
 		r.mu.Unlock()
@@ -421,7 +475,7 @@ func (r *relay) start(channelID, messageID, text string) bool {
 		// surface. A turn the operator stopped is not a failure.
 		actCtx, act := event.Start(turnCtx, discord.RelayTurn, "channel", channelID, "approvals", approvals)
 		res, err := r.runner.Turn(actCtx, agent.TurnRequest{
-			UserQuery: text, RouteSurface: agent.RouteSurfaceRelay,
+			UserQuery: text, RouteSurface: agent.RouteSurfaceRelay, Images: images,
 		})
 		failed := err
 		if ctx.Err() != nil {

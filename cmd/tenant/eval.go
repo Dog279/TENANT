@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -62,7 +63,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		baselineDiff   bool
 		jOpts          evalJudgeOpts
 	)
-	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full")
+	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full | vision")
 	fs.IntVar(&jOpts.concurrency, "concurrency", 1, "live mode: run up to N tasks at once (>1 parallelizes; web/Chrome tasks auto-serialize). 1 = sequential (TEN-221)")
 	fs.DurationVar(&jOpts.taskTimeout, "task-timeout", 10*time.Minute, "live mode: max wall-time per task before it's failed (0 = unlimited). Bounds a runaway on a flaky endpoint (TEN-222)")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON report to stdout instead of the terminal table")
@@ -126,7 +127,7 @@ func cmdEval(ctx context.Context, args []string) error {
 
 	sub := eval.Subset(subset)
 	if !sub.IsValid() {
-		return fmt.Errorf("invalid subset %q: want smoke | fitness | full", sub)
+		return fmt.Errorf("invalid subset %q: want smoke | fitness | full | vision", sub)
 	}
 
 	if listOnly {
@@ -289,7 +290,7 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 	}
 	h.Concurrency = jOpts.concurrency // <=1 = sequential (TEN-221)
 	h.TaskTimeout = jOpts.taskTimeout // 0 = unlimited (TEN-222)
-	if sub == eval.SubsetFitness || sub == eval.SubsetFull {
+	if sub == eval.SubsetFitness || sub == eval.SubsetFull || sub == eval.SubsetVision {
 		// Fall back to the persisted judge override (TEN-91) when no --judge-model
 		// flag was given, so a /judge choice applies to `tenant eval`, the nightly
 		// job, AND the SoulNudge scorer identically. The flag always wins.
@@ -580,6 +581,13 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	if c.lc != nil {
 		installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
 	}
+	if sub == eval.SubsetVision {
+		// The vision tasks need to know whether the model can see before the
+		// first image goes out; an unknown answer would send a note instead.
+		pctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		router.ProbeVision(pctx, true)
+		cancel()
+	}
 	// Auto-enable plugins the operator has available but didn't flag. Without
 	// this, every plugin defaults to off and the agent has no tools — scoring
 	// 0 on every task that expects a tool call. Only touches flags the operator
@@ -802,7 +810,11 @@ func evalNote(format string, a ...any) {
 type evalAgentRunner struct{ ag *agent.Agent }
 
 func (r *evalAgentRunner) Run(ctx context.Context, prompt string) (string, []eval.FixtureToolCall, error) {
-	res, err := r.ag.Turn(ctx, agent.TurnRequest{UserQuery: prompt})
+	return r.run(ctx, agent.TurnRequest{UserQuery: prompt})
+}
+
+func (r *evalAgentRunner) run(ctx context.Context, req agent.TurnRequest) (string, []eval.FixtureToolCall, error) {
+	res, err := r.ag.Turn(ctx, req)
 	if err != nil {
 		return "", nil, err
 	}
@@ -814,6 +826,24 @@ func (r *evalAgentRunner) Run(ctx context.Context, prompt string) (string, []eva
 	// hard error: the forced-synthesis response + tool trace are still the
 	// agent's real output, and the gate/judge should score them on merit.
 	return res.Response, calls, nil
+}
+
+// RunWithImages is Run with images saved through the task agent's attachment
+// store and sent with the prompt (the vision tasks, TEN-493).
+func (r *evalAgentRunner) RunWithImages(ctx context.Context, prompt string, images [][]byte) (string, []eval.FixtureToolCall, error) {
+	store := r.ag.Attachments()
+	if store == nil {
+		return "", nil, errors.New("eval: the task agent has no attachment store")
+	}
+	req := agent.TurnRequest{UserQuery: prompt}
+	for i, b := range images {
+		img, err := store.Add(ctx, b, fmt.Sprintf("task-image-%d.png", i+1))
+		if err != nil {
+			return "", nil, err
+		}
+		req.Images = append(req.Images, img)
+	}
+	return r.run(ctx, req)
 }
 
 // seedTaskMemory pre-loads a task's injected facts/episodes into its fresh

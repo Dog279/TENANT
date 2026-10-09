@@ -142,6 +142,11 @@ func (n *nativeService) MessagesSince(ctx context.Context, afterRowID int64, lim
 }
 
 // LatestRowID exposes the current max ROWID for the watcher's seed-to-now.
+// AttachmentBytes reads a chat.db attachment's file (TEN-493).
+func (n *nativeService) AttachmentBytes(ctx context.Context, a Attachment) ([]byte, error) {
+	return n.r.AttachmentBytes(ctx, a)
+}
+
 func (n *nativeService) LatestRowID(ctx context.Context) (int64, error) {
 	return n.r.LatestRowID(ctx)
 }

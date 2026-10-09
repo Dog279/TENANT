@@ -88,6 +88,10 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+	// Images are pictures attached to this message (TEN-493). A backend
+	// inlines them only when it sends, and only to a model that can see;
+	// otherwise they become a note (see StripImages).
+	Images []Image `json:"images,omitempty"`
 }
 
 // ToolSpec is the abstract tool description before model-specific

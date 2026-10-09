@@ -430,7 +430,7 @@ func privatePermissionTargets(dataDir, cfgDir, logsRoot string) ([]permissionTar
 		return nil, errors.New("config and data roots must be resolved")
 	}
 	targets := []permissionTarget{{path: dataDir}, {path: cfgDir}}
-	for _, name := range []string{"archive", "research", "wiki", "screenshots", "eval-artifacts", "logs"} {
+	for _, name := range []string{"archive", "attachments", "research", "wiki", "screenshots", "eval-artifacts", "logs"} {
 		targets = append(targets, permissionTarget{path: filepath.Join(dataDir, name), recursive: true})
 	}
 	// A log book moved by logs.dir (TEN-375), unless its root holds more than

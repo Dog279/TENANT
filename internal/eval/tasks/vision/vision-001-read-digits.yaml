@@ -1,0 +1,22 @@
+id: vision-001-read-digits
+category: vision/read
+subset: vision
+description: |
+  The model reads a number off an attached picture (TEN-493): 4817 drawn in
+  seven-segment digits, black on white. Needs a model that can see; a model
+  that can't gets a note instead of the picture and fails without an error.
+prompt: "What number is shown in the image? Answer with just the number."
+mode: live
+image_digits: "4817"
+expected:
+  must_not_call:
+    - os_read_image
+    - web_screenshot
+  response_substring_any: ["4817"]
+  rubric:
+    criterion: "Response states the number shown in the attached image, 4817."
+    anchors:
+      1: "Says it can't see an image, or names a different number"
+      3: "Gives 4817 with unrelated or wrong extra claims about the image"
+      5: "Answers 4817"
+  rubric_min_score: 3

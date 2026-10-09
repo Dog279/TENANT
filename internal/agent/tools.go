@@ -140,8 +140,19 @@ type ToolCallResult struct {
 	// Labels carry sensitivity/provenance on the tool-result envelope. They are
 	// populated from the registered ToolSpec only for successful results.
 	Labels []model.InfoFlowLabel
+	// Images are the pictures the tool handed the model (TEN-493), saved and
+	// labelled by the agent from rawImages.
+	Images []model.Image
 	// reported is the provenance the tool handed back through ReportFlow.
 	reported Flow
+	// rawImages are the bytes the tool passed to model.AttachImage.
+	rawImages []rawImage
+}
+
+// rawImage is one image a tool attached, before the agent saves it.
+type rawImage struct {
+	data []byte
+	name string
 }
 
 // dispatchBatch runs up to maxParallel tool calls concurrently. Order
@@ -173,12 +184,21 @@ func dispatchBatch(ctx context.Context, calls []model.ToolCall, flows []Flow, ma
 				results[i].Duration = time.Since(start).Round(time.Millisecond)
 			}()
 			report := &flowReport{}
+			var imgMu sync.Mutex
+			var imgs []rawImage
 			callCtx := context.WithValue(event.WithToolCall(ctx, call.ID), flowReportKey{}, report)
+			callCtx = model.WithImageSink(callCtx, func(data []byte, name string) {
+				imgMu.Lock()
+				imgs = append(imgs, rawImage{data: data, name: name})
+				imgMu.Unlock()
+			})
 			if i < len(flows) && !flows[i].Empty() {
 				callCtx = context.WithValue(callCtx, dispatchFlowKey{}, flows[i])
 			}
 			out, isErr, err := d.Dispatch(callCtx, call)
-			results[i] = ToolCallResult{Call: call, Result: out, IsError: isErr, Err: err, reported: report.get()}
+			imgMu.Lock()
+			results[i] = ToolCallResult{Call: call, Result: out, IsError: isErr, Err: err, reported: report.get(), rawImages: imgs}
+			imgMu.Unlock()
 		}(i, call)
 	}
 	wg.Wait()

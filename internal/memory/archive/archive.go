@@ -143,6 +143,9 @@ func NewWriter(baseDir string) *Writer {
 	return NewWriterWithOptions(baseDir, WriterOptions{})
 }
 
+// BaseDir is the data directory the archive lives under.
+func (w *Writer) BaseDir() string { return w.baseDir }
+
 // NewWriterWithOptions returns an archive Writer with an explicit durability
 // policy. NewWriter should be preferred unless measured fsync cost justifies a
 // batched SyncInterval and the caller can Flush during graceful shutdown.

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/attach"
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
 	"tenant/internal/memory/archive"
@@ -212,6 +213,12 @@ type Config struct {
 	// at the top of the prompt stays byte-identical and the model server's
 	// prefix cache survives from turn to turn.
 	PerTurnToolRanking bool
+
+	// Attachments saves the images tools hand the model (web_screenshot,
+	// os_read_image; TEN-493). nil means the store beside Archive (the same
+	// data directory); with neither, tool images are dropped and the tool's
+	// text result still arrives.
+	Attachments *attach.Store
 }
 
 // RouteRequest is the agent-owned metadata passed to the optional route hook.
@@ -344,7 +351,7 @@ type Agent struct {
 	// message, fold it into the working set, and let the planner decide to
 	// address-and-resume or pivot. injectMu guards both fields.
 	injectMu   sync.Mutex
-	injections []string
+	injections []injection
 	iterCancel context.CancelFunc // cancels the in-flight planner call; nil between calls
 
 	// router is swappable at runtime (the /model live-switch). Turn reads it
@@ -427,13 +434,31 @@ func (a *Agent) projectSME() string {
 // the new instruction overrides it — resumes; the model decides, given the
 // full in-progress context. No-op when no turn is running (the message is
 // just queued and folded at the next iteration boundary).
-func (a *Agent) Interject(msg string) {
+func (a *Agent) Interject(msg string) { a.InterjectWithImages(msg, nil) }
+
+// Attachments is where this agent saves images (TEN-493): the TUI saves
+// pasted images through it too. nil when the agent has no archive.
+func (a *Agent) Attachments() *attach.Store { return a.cfg.Attachments }
+
+// injection is one mid-turn message and the images sent with it.
+type injection struct {
+	text   string
+	images []model.Image
+}
+
+// InterjectWithImages is Interject with pictures attached (TEN-493): a pasted
+// screenshot sent while a turn runs. Interject's own signature stays as it is
+// because surfaces' runner interfaces declare it.
+func (a *Agent) InterjectWithImages(msg string, images []model.Image) {
 	msg = strings.TrimSpace(msg)
-	if msg == "" {
+	if msg == "" && len(images) == 0 {
 		return
 	}
+	if msg == "" {
+		msg = "(image)"
+	}
 	a.injectMu.Lock()
-	a.injections = append(a.injections, msg)
+	a.injections = append(a.injections, injection{text: msg, images: images})
 	cancel := a.iterCancel
 	a.injectMu.Unlock()
 	if cancel != nil {
@@ -447,7 +472,7 @@ func (a *Agent) setIterCancel(c context.CancelFunc) {
 	a.injectMu.Unlock()
 }
 
-func (a *Agent) takeInjections() []string {
+func (a *Agent) takeInjections() []injection {
 	a.injectMu.Lock()
 	defer a.injectMu.Unlock()
 	out := a.injections
@@ -466,6 +491,11 @@ func (a *Agent) hasInjections() bool {
 func New(cfg Config) (*Agent, error) {
 	if cfg.AgentID == "" {
 		return nil, errors.New("agent: AgentID required")
+	}
+	// Tool images are saved beside the archive that names them, in the same
+	// data directory, so every agent with an archive can take them (TEN-493).
+	if cfg.Attachments == nil && cfg.Archive != nil {
+		cfg.Attachments = attach.NewStore(cfg.Archive.BaseDir())
 	}
 	if cfg.Router == nil {
 		return nil, errors.New("agent: Router required")
@@ -513,6 +543,10 @@ func (a *Agent) FlowFor(text string) Flow {
 // TurnRequest is one user-facing call into the agent.
 type TurnRequest struct {
 	UserQuery string
+	// Images are pictures sent with the message (TEN-493): pasted into the
+	// TUI, attached on Discord or iMessage. A turn may carry images and no
+	// text; "(image)" then stands in for the text.
+	Images []model.Image
 	// RouteSurface is empty for background/headless callers, which is always
 	// shadow-only. TUI and dashboard set their explicit interactive surface.
 	RouteSurface  RouteSurface
@@ -601,6 +635,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		if req.RouteOverride == "" {
 			req.RouteOverride = prefixOverride
 		}
+	}
+	if req.UserQuery == "" && len(req.Images) > 0 {
+		req.UserQuery = "(image)"
 	}
 	if req.UserQuery == "" {
 		return nil, errors.New("agent: TurnRequest.UserQuery required")
@@ -716,11 +753,14 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 
 	// 2. Append user message to working + archive.
 	now := time.Now().UTC()
-	userMsg := working.Message{Role: "user", Content: req.UserQuery, Timestamp: now}
+	// The images ride this working-set message to the model: the assembler
+	// copies the working set and is never handed UserQuery (below), so there
+	// is one copy of the message, images and all (TEN-493).
+	userMsg := working.Message{Role: "user", Content: req.UserQuery, Images: req.Images, Timestamp: now}
 	a.cfg.Working.Append(userMsg)
 	a.archiveEvent(ctx, archive.Event{
 		Timestamp: now, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
-		Role: "user", Content: req.UserQuery,
+		Role: "user", Content: req.UserQuery, Metadata: imagesMeta(req.Images),
 	})
 
 	// 3. Embed the user query for retrieval.
@@ -944,19 +984,20 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		// Fold any mid-turn user interjections into the working set before
 		// assembling, so the planner sees them THIS iteration and decides
 		// whether to address-and-resume or pivot.
-		for _, msg := range a.takeInjections() {
+		for _, inj := range a.takeInjections() {
 			ts := time.Now().UTC()
 			a.cfg.Working.Append(working.Message{
 				Role: "user",
 				Content: "[The user interjected mid-task. Address this now, then resume your " +
-					"original task — unless it overrides the task.]\n" + msg,
+					"original task — unless it overrides the task.]\n" + inj.text,
+				Images:    inj.images,
 				Timestamp: ts,
 			})
 			a.archiveEvent(ctx, archive.Event{
 				Timestamp: ts, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
-				Role: "user", Content: msg,
+				Role: "user", Content: inj.text, Metadata: imagesMeta(inj.images),
 			})
-			a.emit(Event{Kind: EventInterject, Iter: iter, Text: msg})
+			a.emit(Event{Kind: EventInterject, Iter: iter, Text: inj.text})
 		}
 
 		result.Iterations = iter
@@ -1084,7 +1125,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				if ferr == nil && strings.TrimSpace(final) != "" {
 					result.Response = final
 					a.emit(Event{Kind: EventFinal, Iter: iter, Text: final})
-					a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, embedder, routeState)
+					a.persistEpisode(ctx, episodePrompt(req), final, result.ToolTrace, queryEmbedding, embedder, routeState)
 					return result, nil
 				}
 				// Synthesis also empty — fall through to the original
@@ -1093,7 +1134,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			// Final response. Persist episode and return.
 			result.Response = resp.Text
 			a.emit(Event{Kind: EventFinal, Iter: iter, Text: resp.Text})
-			a.persistEpisode(ctx, req.UserQuery, resp.Text, result.ToolTrace, queryEmbedding, embedder, routeState)
+			a.persistEpisode(ctx, episodePrompt(req), resp.Text, result.ToolTrace, queryEmbedding, embedder, routeState)
 			return result, nil
 		}
 
@@ -1208,6 +1249,11 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				for _, label := range br.reported.Labels() {
 					br.Labels = appendLabel(br.Labels, label)
 				}
+				br.Images = a.saveToolImages(ctx, br)
+			} else if len(br.rawImages) > 0 {
+				// A failed or unregistered call has no result labels to give
+				// its images, so they aren't attached; say so (TEN-493).
+				ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "the tool call failed")
 			}
 			result.ToolTrace = append(result.ToolTrace, br)
 			toolOutcome := "success"
@@ -1231,7 +1277,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			} else {
 				ToolDone.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration)
 			}
-			seen = append(seen, fmt.Sprintf("%q %q %q", br.Call.Name, br.Call.Arguments, a.feedToolResult(ctx, br, profile.ToolResultCap())))
+			seen = append(seen, fmt.Sprintf("%q %q %q %q", br.Call.Name, br.Call.Arguments, a.feedToolResult(ctx, br, profile.ToolResultCap()), imagePaths(br.Images)))
 		}
 
 		// Oscillation guard (TEN-261): the same calls getting the same results for
@@ -1273,7 +1319,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	} else {
 		a.emit(Event{Kind: EventTruncated, Text: final})
 	}
-	a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, nil, routeState)
+	a.persistEpisode(ctx, episodePrompt(req), final, result.ToolTrace, queryEmbedding, nil, routeState)
 	return result, nil
 }
 
@@ -1833,12 +1879,13 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 		Role:       "tool",
 		ToolCallID: r.Call.ID,
 		Content:    body + note,
+		Images:     r.Images,
 		Timestamp:  now,
 		Meta:       infoFlowMeta(r.Labels),
 	})
 	a.archiveEvent(ctx, archive.Event{
 		Timestamp: now, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
-		Role: "tool",
+		Role: "tool", Metadata: imagesMeta(r.Images),
 		ToolResult: &archive.ToolResult{
 			CallID:  r.Call.ID,
 			Content: content, // full, untruncated — durable history
@@ -2127,6 +2174,7 @@ func estimateRouteContextBytes(msgs []working.Message) int {
 	n := 0
 	for _, msg := range msgs {
 		n += len(msg.Role) + len(msg.Content)
+		n += 4 * model.ImagesTokens(msg.Images) // as bytes: the caller divides by 4 (TEN-493)
 		for _, call := range msg.ToolCalls {
 			n += len(call.Name) + len(call.Arguments)
 		}
@@ -2145,6 +2193,7 @@ func estimateAssembledContextUpper(messages []model.Message, tools []model.ToolS
 	n := framingBytes
 	for _, msg := range messages {
 		n += framingBytes + len(msg.Role) + len(msg.Content) + len(msg.ToolCallID) + len(msg.Name)
+		n += model.ImagesTokens(msg.Images) // an image's tokens don't come from its bytes (TEN-493)
 		for _, call := range msg.ToolCalls {
 			n += framingBytes + len(call.ID) + len(call.Name) + len(call.Arguments)
 		}
@@ -2349,4 +2398,81 @@ func newSessionID() string {
 		now >>= 4
 	}
 	return "sess_" + string(buf)
+}
+
+// episodePrompt is what a turn's episode records as its prompt: the text,
+// plus how many images came with it (episodes stay text; TEN-493).
+func episodePrompt(req TurnRequest) string {
+	switch n := len(req.Images); n {
+	case 0:
+	case 1:
+		return req.UserQuery + " [1 image]"
+	default:
+		return fmt.Sprintf("%s [%d images]", req.UserQuery, n)
+	}
+	return req.UserQuery
+}
+
+// imagesMeta is how an archive line records the images a message carried:
+// references only, never bytes (TEN-493).
+func imagesMeta(imgs []model.Image) map[string]any {
+	if len(imgs) == 0 {
+		return nil
+	}
+	refs := make([]map[string]any, len(imgs))
+	for i, img := range imgs {
+		ref := map[string]any{"path": img.Path, "mime": img.MIME}
+		if img.Width > 0 {
+			ref["w"], ref["h"] = img.Width, img.Height
+		}
+		if img.Name != "" {
+			ref["name"] = img.Name
+		}
+		if len(img.Labels) > 0 {
+			ref["labels"] = img.Labels
+		}
+		refs[i] = ref
+	}
+	return map[string]any{"images": refs}
+}
+
+// saveToolImages saves the images a tool attached and labels them like its
+// text result (TEN-493). The egress gate matches recorded text against
+// outbound arguments, and pixels give it none, so a labelled image's saved
+// path and name are recorded as its fragments: an outbound call naming the
+// file is then caught like one quoting a sensitive file. What the model
+// transcribes from the pixels is not trackable, the same limit as a model
+// paraphrasing text.
+func (a *Agent) saveToolImages(ctx context.Context, br ToolCallResult) []model.Image {
+	if len(br.rawImages) == 0 {
+		return nil
+	}
+	if a.cfg.Attachments == nil {
+		ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "no attachment store on this agent")
+		return nil
+	}
+	var out []model.Image
+	for _, raw := range br.rawImages {
+		img, err := a.cfg.Attachments.Add(ctx, raw.data, raw.name)
+		if err != nil {
+			ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", err)
+			continue
+		}
+		img.Labels = append([]model.InfoFlowLabel(nil), br.Labels...)
+		if len(img.Labels) > 0 {
+			a.infoFlow.record(img.Labels, img.Path+"\n"+img.Name)
+		}
+		out = append(out, img)
+	}
+	return out
+}
+
+// imagePaths lists images' saved paths: content-addressed, so the same
+// picture twice is the same path (the repeat guard compares them).
+func imagePaths(imgs []model.Image) []string {
+	out := make([]string, len(imgs))
+	for i, img := range imgs {
+		out[i] = img.Path
+	}
+	return out
 }

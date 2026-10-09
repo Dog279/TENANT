@@ -22,6 +22,12 @@ type AgentRunner interface {
 	Run(ctx context.Context, prompt string) (response string, calls []FixtureToolCall, err error)
 }
 
+// ImageRunner is an AgentRunner that can send images with the prompt, for
+// tasks with image_digits (TEN-493).
+type ImageRunner interface {
+	RunWithImages(ctx context.Context, prompt string, images [][]byte) (response string, calls []FixtureToolCall, err error)
+}
+
 // AgentFactory constructs a fresh AgentRunner for one task. The
 // returned cleanup func is called after the task completes (or fails)
 // so resource cleanup is the operator's responsibility, not the
@@ -85,7 +91,21 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 		defer cleanup()
 	}
 
-	response, calls, err := runner.Run(ctx, t.Prompt)
+	var (
+		response string
+		calls    []FixtureToolCall
+	)
+	if t.ImageDigits != "" {
+		ir, ok := runner.(ImageRunner)
+		if !ok {
+			res.Ungraded, res.ErrorClass, res.Passed, res.Score = true, "harness", false, 0
+			res.Failures = []string{"UNGRADED (harness) - this agent runner can't send images"}
+			return res
+		}
+		response, calls, err = ir.RunWithImages(ctx, t.Prompt, [][]byte{DigitsPNG(t.ImageDigits)})
+	} else {
+		response, calls, err = runner.Run(ctx, t.Prompt)
+	}
 	if err != nil {
 		if class := classifyRunError(err); class != "" {
 			// Provider outage, not agent failure: quota exhaustion, endpoint

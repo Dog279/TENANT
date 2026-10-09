@@ -329,7 +329,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 	if req.Working != nil {
 		workingMsgs = req.Working.Messages()
 	}
-	workingTokens, err := a.countWorking(ctx, workingMsgs)
+	workingTokens, err := a.countWorking(ctx, workingMsgs, req.Profile)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +363,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 	// only when slots can borrow from each other; we keep them
 	// strict for predictable behavior.
 	if workingTokens > workingSlot {
-		dropped, newTokens, err := a.truncateWorking(ctx, workingMsgs, workingSlot)
+		dropped, newTokens, err := a.truncateWorking(ctx, workingMsgs, workingSlot, req.Profile)
 		if err != nil {
 			return nil, err
 		}
@@ -460,6 +460,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 		Facts:        facts,
 		Episodes:     episodes,
 		UserQuery:    req.UserQuery,
+		Profile:      req.Profile,
 	})
 
 	return r, nil
@@ -605,14 +606,15 @@ func visibilityOrDefault(v []string) []string {
 
 // --- counting helpers ---
 
-func (a *Assembler) countWorking(ctx context.Context, msgs []working.Message) (int, error) {
+func (a *Assembler) countWorking(ctx context.Context, msgs []working.Message, p model.Profile) (int, error) {
 	total := 0
-	for _, m := range msgs {
+	imgs := workingImageTokens(msgs, p)
+	for i, m := range msgs {
 		n, err := a.counter.Count(ctx, m.Content)
 		if err != nil {
 			return 0, fmt.Errorf("assemble: count working msg: %w", err)
 		}
-		total += n
+		total += n + imgs[i]
 	}
 	return total, nil
 }
@@ -639,7 +641,7 @@ func (a *Assembler) countEpisodes(ctx context.Context, episodes []*episodic.Epis
 // (drop count, remaining token count). At least one message survives if
 // any fit individually; if even the newest doesn't fit, returns the
 // newest alone (truncating its content is a v1.1 concern).
-func (a *Assembler) truncateWorking(ctx context.Context, msgs []working.Message, slot int) (int, int, error) {
+func (a *Assembler) truncateWorking(ctx context.Context, msgs []working.Message, slot int, p model.Profile) (int, int, error) {
 	if len(msgs) == 0 {
 		return 0, 0, nil
 	}
@@ -647,11 +649,13 @@ func (a *Assembler) truncateWorking(ctx context.Context, msgs []working.Message,
 	// exceed the slot. Drop the prefix.
 	total := 0
 	keep := 0
+	imgs := workingImageTokens(msgs, p)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		n, err := a.counter.Count(ctx, msgs[i].Content)
 		if err != nil {
 			return 0, 0, err
 		}
+		n += imgs[i]
 		if total+n > slot && keep > 0 {
 			break
 		}
@@ -861,6 +865,7 @@ type buildArgs struct {
 	Facts        []*semantic.Fact
 	Episodes     []*episodic.Episode
 	UserQuery    string
+	Profile      model.Profile // whose vision the image rules follow (TEN-493)
 }
 
 func buildMessages(args buildArgs) []model.Message {
@@ -879,8 +884,10 @@ func buildMessages(args buildArgs) []model.Message {
 			Content:    m.Content,
 			ToolCalls:  m.ToolCalls,
 			ToolCallID: m.ToolCallID,
+			Images:     m.Images,
 		})
 	}
+	msgs = applyImageRules(msgs, args.Profile) // before the retrieved-context block, which isn't an exchange
 
 	// 3. Retrieved context + active user query at the end (sandwich bottom).
 	if args.UserQuery != "" || len(args.Facts) > 0 || len(args.Episodes) > 0 {

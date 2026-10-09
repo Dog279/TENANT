@@ -236,6 +236,9 @@ func (b *Backend) TokenCount(_ context.Context, text string) (int, error) {
 // the toolfmt fragment go to system; the conversation flattens into a
 // role-tagged transcript because `claude -p` accepts exactly one user prompt.
 func buildPrompt(req model.GenerateRequest, adapter toolfmt.Adapter) (system, prompt string, err error) {
+	// The CLI takes a text transcript, so images become notes naming the
+	// saved file; Claude Code's own Read tool can open it (TEN-493).
+	req.Messages = model.StripImages(req.Messages, model.ReasonNoPreview)
 	var sys strings.Builder
 	for _, m := range req.Messages {
 		if m.Role == "system" && m.Content != "" {

@@ -69,7 +69,10 @@ func (c *Compressor) Microcompact(msgs []working.Message) ([]working.Message, bo
 	copy(out, msgs)
 	changed := false
 	for _, i := range toolIdx {
-		if protected[i] || msgs[i].Kind == KindToolElided {
+		// A result carrying images keeps its short text: the assembler's
+		// window turns old images into notes, and eliding the text would
+		// leave the model a bare stub beside a picture (TEN-493).
+		if protected[i] || msgs[i].Kind == KindToolElided || len(msgs[i].Images) > 0 {
 			continue
 		}
 		body := msgs[i].Content

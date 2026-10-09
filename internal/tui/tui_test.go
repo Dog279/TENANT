@@ -1611,6 +1611,8 @@ func (f *fakeModelCtl) ReloadKeys() (string, error) {
 }
 func (f *fakeModelCtl) LoopCeiling() int                     { return 16 }
 func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) { return "", nil }
+func (f *fakeModelCtl) Vision() string                       { return "vision: auto" }
+func (f *fakeModelCtl) SetVision(string) (string, error)     { return "vision set", nil }
 func (f *fakeModelCtl) RepeatGuard() int                     { return 0 }
 func (f *fakeModelCtl) SetRepeatGuard(n int) (string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("SetRepeatGuard:%d", n))

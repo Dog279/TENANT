@@ -105,3 +105,20 @@ func TestMicrocompact_AllProtected(t *testing.T) {
 		t.Fatal("all tool results protected -> no change")
 	}
 }
+
+// TEN-493: a tool result carrying images is never elided (the assembler turns
+// old images into notes), and a compaction summary keeps their paths verbatim.
+func TestMicrocompact_KeepsImageResults(t *testing.T) {
+	big := strings.Repeat("x", 3000)
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	shot := toolResult("c1", big, base)
+	shot.Images = []model.Image{{Path: "/d/attachments/2026-10/aa.jpg", MIME: "image/jpeg", Width: 800, Height: 600}}
+	msgs := []working.Message{asstCall("c1", "web_screenshot"), shot, asstCall("c2", "web_read"), toolResult("c2", big, base.Add(time.Minute))}
+	out, _, _ := (&Compressor{MicrocompactProtectRecent: 1, MicrocompactMinBytes: 2000}).Microcompact(msgs)
+	if out[1].Kind == KindToolElided || len(out[1].Images) != 1 {
+		t.Fatalf("image result elided: %+v", out[1])
+	}
+	if b := imageNotesBlock(msgs); !strings.Contains(b, "[image: aa.jpg 800×600, saved at /d/attachments/2026-10/aa.jpg]") {
+		t.Fatalf("summary block = %q", b)
+	}
+}

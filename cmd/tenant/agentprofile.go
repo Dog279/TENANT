@@ -105,6 +105,7 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 		genAPIKey:    apiKey,
 		contextLen:   served.MaxLen,
 		planCeiling:  lc.PlanLoopCeiling,
+		vision:       pc.Vision,
 	}
 	gen, factories, err := genProfiles(c)
 	if err != nil {

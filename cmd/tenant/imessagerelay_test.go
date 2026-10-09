@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 
 	"tenant/internal/agent"
+	"tenant/internal/attach"
 	"tenant/internal/logs/event"
 	"tenant/internal/plugins/imessage"
 )
@@ -377,5 +381,57 @@ func TestIMessageResponder_DriveGate(t *testing.T) {
 				t.Errorf("want one Observed event, reason %q, text sensitive: %v", tc.want, obs)
 			}
 		})
+	}
+}
+
+// imagePoller serves attachment bytes by GUID; imageIMsgRunner exposes an
+// attachment store and keeps the request (TEN-493).
+type imagePoller struct {
+	fakeIMsgPoller
+	files map[string][]byte
+}
+
+func (p *imagePoller) AttachmentBytes(_ context.Context, a imessage.Attachment) ([]byte, error) {
+	if b, ok := p.files[a.GUID]; ok {
+		return b, nil
+	}
+	return nil, imessage.ErrAttachmentMissing
+}
+
+type imageIMsgRunner struct {
+	fakeIMsgRunner
+	store *attach.Store
+	req   agent.TurnRequest
+}
+
+func (r *imageIMsgRunner) Attachments() *attach.Store { return r.store }
+func (r *imageIMsgRunner) Turn(ctx context.Context, req agent.TurnRequest) (*agent.TurnResult, error) {
+	r.req = req
+	return r.fakeIMsgRunner.Turn(ctx, req)
+}
+
+// A photo-only text (Apple's U+FFFC placeholder for text) drives a turn with
+// the photo; one not downloaded yet becomes a note; a PDF is left out.
+func TestIMessageResponder_PhotoDrivesTurnWithImage(t *testing.T) {
+	var pic bytes.Buffer
+	_ = png.Encode(&pic, image.NewRGBA(image.Rect(0, 0, 12, 9)))
+	m := inbound("guid1", "\uFFFC\uFFFC\uFFFC")
+	m.Attachments = []imessage.Attachment{
+		{GUID: "a1", Name: "IMG_1.png"},
+		{GUID: "a2", MIME: "image/heic", Name: "IMG_2.HEIC"},
+		{GUID: "a3", MIME: "application/pdf", Name: "doc.pdf"},
+	}
+	p := &imagePoller{fakeIMsgPoller: fakeIMsgPoller{msgs: []imessage.InboundMessage{m}}, files: map[string][]byte{"a1": pic.Bytes()}}
+	r := &imageIMsgRunner{fakeIMsgRunner: fakeIMsgRunner{reply: "a red square"}, store: attach.NewStore(t.TempDir())}
+	resp := &imessageResponder{allowed: allowAll, poller: p, sender: &fakeIMsgSender{}, runner: r, confirm: denyAllConfirm}
+
+	resp.drain(context.Background())
+	resp.waitIdle()
+
+	if r.turns != 1 || len(r.req.Images) != 1 || r.req.Images[0].Name != "IMG_1.png" {
+		t.Fatalf("turn = %d, images %+v; want one turn with IMG_1.png", r.turns, r.req.Images)
+	}
+	if !strings.Contains(r.req.UserQuery, "IMG_2.HEIC not shown") || strings.Contains(r.req.UserQuery, "\uFFFC") || strings.Contains(r.req.UserQuery, "doc.pdf") {
+		t.Errorf("query = %q, want the HEIC note only", r.req.UserQuery)
 	}
 }

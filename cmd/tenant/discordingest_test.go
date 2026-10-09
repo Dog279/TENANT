@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"tenant/internal/agent"
+	"tenant/internal/attach"
+	"tenant/internal/model"
 	"tenant/internal/plugins/discord"
 )
 
@@ -304,5 +310,57 @@ func TestRelay_NonOperatorAttachmentsDropped(t *testing.T) {
 	}
 	if strings.Contains(q, "sneaky") || strings.Contains(q, "[files received") {
 		t.Fatalf("non-operator attachments must not be ingested:\n%s", q)
+	}
+}
+
+// imageRunner records the images each turn carried.
+type imageRunner struct{ got chan []model.Image }
+
+func (r *imageRunner) Turn(_ context.Context, req agent.TurnRequest) (*agent.TurnResult, error) {
+	r.got <- req.Images
+	return &agent.TurnResult{Response: "ok"}, nil
+}
+func (r *imageRunner) Interject(string) {}
+
+// TEN-493: an operator's photo on Discord reaches the model as an image (the
+// text manifest still lists it); a webp is accepted and passed through; a PDF
+// stays text.
+func TestRelay_ImageAttachmentReachesTheModel(t *testing.T) {
+	var pic bytes.Buffer
+	_ = png.Encode(&pic, image.NewRGBA(image.Rect(0, 0, 12, 9)))
+	webp := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 "), make([]byte, 40)...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/photo.png":
+			_, _ = w.Write(pic.Bytes())
+		case "/sticker.webp":
+			_, _ = w.Write(webp)
+		default:
+			_, _ = w.Write([]byte("%PDF-1.7 not a picture"))
+		}
+	}))
+	defer srv.Close()
+
+	ir := &imageRunner{got: make(chan []model.Image, 1)}
+	r := newRelay(ir, &fakeSender{}, "op1")
+	dir := t.TempDir()
+	ai := newAttachmentIngestor(dir)
+	ai.anyHost = true
+	r.files = ai
+	r.images = attach.NewStore(dir)
+	r.Start(context.Background())
+	r.handleInbound(discord.Inbound{ChannelID: "dm1", AuthorID: "op1", Content: "what's this?",
+		Attachments: []discord.Attachment{
+			{Filename: "photo.png", Size: int64(pic.Len()), ContentType: "image/png", URL: srv.URL + "/photo.png"},
+			{Filename: "sticker.webp", Size: int64(len(webp)), ContentType: "image/webp", URL: srv.URL + "/sticker.webp"},
+			{Filename: "notes.pdf", Size: 22, ContentType: "application/pdf", URL: srv.URL + "/notes.pdf"},
+		}})
+	select {
+	case imgs := <-ir.got:
+		if len(imgs) != 2 || imgs[0].Width != 12 || imgs[0].Name != "photo.png" || imgs[1].MIME != "image/webp" {
+			t.Fatalf("turn images = %+v, want the png and the webp", imgs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no turn")
 	}
 }

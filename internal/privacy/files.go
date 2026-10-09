@@ -16,7 +16,38 @@ const (
 	screenshotsDir = "screenshots"
 	relayInboxDir  = "relay-inbox"
 	evalDir        = "eval-artifacts"
+	// attachmentsDir holds the images messages carry (TEN-493), in YYYY-MM
+	// month folders. They follow the Archive class: archive lines name them.
+	attachmentsDir = "attachments"
 )
+
+// selectAttachments adds the attachment files older than before, and the
+// month folders named in months, so images go when the archive lines that
+// name them do.
+func (s *selection) selectAttachments(d Data, before time.Time, months map[string]bool) error {
+	entries, err := os.ReadDir(d.path(attachmentsDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, m := range entries {
+		if !m.IsDir() {
+			continue
+		}
+		if months[m.Name()] {
+			s.paths[d.path(attachmentsDir, m.Name())] = true
+			continue
+		}
+		if !before.IsZero() {
+			if err := s.addOld(d.path(attachmentsDir, m.Name()), before, false, regularFile); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // selectFilesBefore adds the files and directories of each class that are
 // older than its cutoff: research runs by the time in their name, the rest by
@@ -123,6 +154,8 @@ func pathsByClass(d Data, paths map[string]bool) map[Class][]string {
 			out[Screenshots] = append(out[Screenshots], p)
 		case relayInboxDir:
 			out[RelayInbox] = append(out[RelayInbox], p)
+		case attachmentsDir:
+			out[Archive] = append(out[Archive], p)
 		case evalDir:
 			out[EvalArtifacts] = append(out[EvalArtifacts], p)
 		}
@@ -143,11 +176,13 @@ func removePaths(d Data, paths map[string]bool) (int, error) {
 		}
 		n++
 	}
-	days, err := os.ReadDir(d.path(relayInboxDir))
-	if err == nil {
-		for _, day := range days {
-			if day.IsDir() {
-				_ = os.Remove(d.path(relayInboxDir, day.Name())) // only succeeds when empty
+	for _, dir := range []string{relayInboxDir, attachmentsDir} {
+		days, err := os.ReadDir(d.path(dir))
+		if err == nil {
+			for _, day := range days {
+				if day.IsDir() {
+					_ = os.Remove(d.path(dir, day.Name())) // only succeeds when empty
+				}
 			}
 		}
 	}

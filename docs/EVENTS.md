@@ -2476,6 +2476,7 @@ Writes the `model` log.
 
 | ID | Level | Task | Message |
 |---|---|---|---|
+| [1001](#model-1001) | info | Vision | `Model {model} at {endpoint} can see images: {answer}` |
 | [2001](#model-2001) | warning | Failover | `Model fallback: {from} {reason}, using {to}` |
 | [2002](#model-2002) | warning | Health | `{profile} is slow ({average} average); skipped for {cooldown}` |
 | [2003](#model-2003) | warning | Fallback chain | `Fallback {profile} skipped for role {role}: {err}` |
@@ -2487,12 +2488,27 @@ Writes the `model` log.
 | [2009](#model-2009) | warning | Budget | `The claudecode spend ledger was not saved: {err}` |
 | [2010](#model-2010) | warning | Server | `A model server at {endpoint} was not added: {problem}` |
 | [2011](#model-2011) | warning | Server | `{provider}'s tool calls weren't confirmed ({tools}): {detail}` |
+| [2012](#model-2012) | warning | Vision | `Couldn't tell whether {model} at {endpoint} can see images: {err}` |
 | [3001](#model-3001) | error | Call | `Model {profile} unavailable ({reason}): {err}` |
 | [3002](#model-3002) | error | Usage | `Token usage for {model} was not recorded: {err}` |
 | [5001](#model-5001) | info | Swap | `Primary model switched to {provider} ({model})` |
 | [5002](#model-5002) | info | Server | `Added {provider}: {kind} server at {endpoint} with {model}` |
 | [9001](#model-9001) | info | Call | `Model call to {profile}` |
 | [9002](#model-9002) | info | Call | `{profile} used {prompt_tokens} prompt and {completion_tokens} completion tokens` |
+
+### model 1001
+
+`Model {model} at {endpoint} can see images: {answer}`
+
+- **Level:** info · **Channel:** operational · **Task:** Vision · **Log:** model
+- **Fields:** `model`, `endpoint`, `answer`
+- **Find it:** `provider:model id:1001`
+
+**What it means.** Tenant asked a model whether it can see images, with a two-colour test picture, and recorded the answer (TEN-493).
+
+**Why it happens.** Launch, a model switch, or the first image sent to a model whose answer wasn't known yet.
+
+**What to do.** None. A model that can't see gets a note with the image's saved path instead. To override the answer, use /model vision on|off.
 
 ### model 2001
 
@@ -2646,6 +2662,20 @@ Writes the `model` log.
 **Why it happens.** The server's tool calling is off (vLLM without --enable-auto-tool-choice and a --tool-call-parser, llama.cpp without --jinja), the model doesn't do tool calls, or it was still loading.
 
 **What to do.** Turn tool calling on in the server and add the model again, or run tenant doctor --deep with it as the main model to repeat the check.
+
+### model 2012
+
+`Couldn't tell whether {model} at {endpoint} can see images: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Vision · **Log:** model
+- **Fields:** `model`, `endpoint`, `err`
+- **Find it:** `provider:model id:2012`
+
+**What it means.** The vision probe got no clear answer, so images to this model go as notes for now; it tries again in five minutes (TEN-493).
+
+**Why it happens.** The server was unreachable, refused the key, rate-limited the request, failed, or the reply named no colours (a thinking model cut off).
+
+**What to do.** None if it settles. To decide it yourself, use /model vision on or off.
 
 ### model 3001
 
@@ -6058,6 +6088,7 @@ Writes the `turns` log.
 | [2107](#turns-2107) | warning | Tools | `Tool {tool} hidden: the active profile has no capability entry for gate {gate}` |
 | [2108](#turns-2108) | warning | Retry | `Planner stream dropped; retrying on a fresh connection (attempt {attempt}): {err}` |
 | [2109](#turns-2109) | warning | Memory | `The turn's {record} was not saved: {err}` |
+| [2110](#turns-2110) | warning | Images | `An image from {tool} was not attached: {err}` |
 | [2201](#turns-2201) | warning | Turn gate | `Turn from {source} refused: {err}` |
 | [3001](#turns-3001) | error | Turn | `turn error` |
 | [3101](#turns-3101) | error | Tool call | `Tool {tool} failed after {duration}` |
@@ -6360,6 +6391,20 @@ Writes the `turns` log.
 **Why it happens.** The memory store's database could not be written: the disk is full, or the file is locked or damaged.
 
 **What to do.** Check free space and the data directory; tenant doctor checks the stores.
+
+### turns 2110
+
+`An image from {tool} was not attached: {err}`
+
+- **Level:** warning · **Channel:** operational · **Task:** Images · **Log:** turns
+- **Fields:** `agent`, `tool`, `err`
+- **Find it:** `provider:turns id:2110`
+
+**What it means.** A tool handed the model an image, but it couldn't be saved, so the model got the tool's text result without it (TEN-493).
+
+**Why it happens.** The image was too large, not a supported format (HEIC off macOS), or the data directory couldn't be written.
+
+**What to do.** None for a one-off. If it repeats, check free space and permissions on the data directory's attachments folder.
 
 ### turns 2201
 

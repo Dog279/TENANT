@@ -422,5 +422,11 @@ func (d *Dispatcher) screenshot(ctx context.Context) (string, bool, error) {
 	if err := d.br.Screenshot(ctx, path); err != nil {
 		return "screenshot failed: " + err.Error(), true, nil
 	}
+	path = nameByContent(path)
+	// Show the model the page (TEN-493): the top of it, so the text stays
+	// readable once scaled; the full capture stays at path.
+	if view, ok := screenshotView(path); ok {
+		model.AttachImage(ctx, view, "screenshot of "+hostOf(cur)+" (top of page)")
+	}
 	return fmt.Sprintf("screenshot of %s saved to %s", cur, path), false, nil
 }

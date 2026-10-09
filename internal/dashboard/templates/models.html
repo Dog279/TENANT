@@ -98,6 +98,7 @@
     <button type="submit" class="btn sm">Save</button>
   </form>
   <div class="dim mb">If the agent repeats the same step and gets the same result this many times in a row, it stops and answers. 0 = off. A step whose result changes (a job still running) never counts.</div>
+  {{with .Vision}}<div class="dim mb">Images: {{.}}.</div>{{end}}
   <form method="POST" action="/models/reload" class="inline" data-on:submit__prevent__throttle.1s="@post('/models/reload', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn sm">Reload API keys</button>
   </form>

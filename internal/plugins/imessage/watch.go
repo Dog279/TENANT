@@ -132,7 +132,9 @@ func (w *Watcher) Poll(ctx context.Context, limit int) ([]InboundMessage, error)
 		if m.IsFromMe { // (1) is_from_me
 			continue
 		}
-		if w.dedup.seen(m.ChatGUID, m.Text) { // (3) echo/dedup
+		// (3) echo/dedup. Tenant sends text only, so a message with
+		// attachments is never its echo (TEN-493).
+		if len(m.Attachments) == 0 && w.dedup.seen(m.ChatGUID, m.Text) {
 			continue
 		}
 		if len(w.allowFrom) > 0 && !w.allowFrom[normalizeHandle(m.From)] { // (4) allowlist

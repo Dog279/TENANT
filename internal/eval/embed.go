@@ -6,5 +6,5 @@ import "embed"
 // internal/eval/tasks/ to satisfy //go:embed's same-tree constraint
 // while keeping the data tree visible inside the eval package.
 //
-//go:embed tasks/smoke/*.yaml tasks/fitness/*.yaml tasks/adversarial/*.yaml tasks/route/*.yaml
+//go:embed tasks/smoke/*.yaml tasks/fitness/*.yaml tasks/adversarial/*.yaml tasks/route/*.yaml tasks/vision/*.yaml
 var EmbeddedTasks embed.FS

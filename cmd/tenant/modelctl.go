@@ -128,6 +128,7 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 		return "", "", err
 	}
 	installFallbackChain(r, mc.cfgDir, lc, c2.planCeiling, mc.log)
+	r.ProbeVision(context.Background(), false) // TEN-493: probe a newly routed model
 	// Re-point tool-ranking at the new provider's embedder (TEN-226 step 4).
 	// Async: re-resolving + the lazy precompute mustn't block the swap, and it
 	// touches the mux's own lock (never mc.mu), so no nesting. Until it lands, the
@@ -208,6 +209,7 @@ func (mc *modelControl) SetFallback(names []string) (string, error) {
 			return "", err
 		}
 		installFallbackChain(r, mc.cfgDir, lc, lc.PlanLoopCeiling, mc.log)
+		r.ProbeVision(context.Background(), false) // TEN-493: probe a newly routed model
 	}
 	if len(valid) == 0 {
 		return "model fallback cleared", nil
@@ -499,35 +501,106 @@ func (mc *modelControl) SetReasoningEffort(effort string) (string, error) {
 	if err := lc.Save(mc.cfgDir); err != nil {
 		return "", err
 	}
-	// Rebuild the generation profiles for the (unchanged) active provider and
-	// swap them onto the shared router — the same in-place mutation UseModel uses,
-	// so every agent re-routes with the new effort on its next turn.
+	if err := mc.rebuildActiveLocked(lc); err != nil {
+		return "", err
+	}
+	if effort == "" {
+		return fmt.Sprintf("reasoning effort cleared for %s (applies next turn)", lc.Provider), nil
+	}
+	return fmt.Sprintf("reasoning effort → %s for %s (applies next turn, incl. sub-agents)", effort, lc.Provider), nil
+}
+
+// rebuildActiveLocked rebuilds the generation profiles for the (unchanged)
+// active provider from the saved config and swaps them onto the shared router:
+// the same in-place mutation UseModel uses, so every agent re-routes with the
+// new setting on its next turn. Callers hold mc.mu.
+func (mc *modelControl) rebuildActiveLocked(lc *launchConfig) error {
 	c2 := &commonFlags{cfgDir: mc.cfgDir, dataDir: mc.dataDir, agent: mc.agentID, embedDim: defaultEmbedDim}
 	if err := c2.resolve(); err != nil {
-		return "", err
+		return err
 	}
 	gen, factories, err := genProfiles(c2)
 	if err != nil {
-		return "", err
+		return err
 	}
 	r := mc.ag.Router()
 	if r == nil {
-		return "", fmt.Errorf("no active router")
+		return fmt.Errorf("no active router")
 	}
 	for kind, f := range factories {
 		r.RegisterBackend(kind, f)
 	}
 	if err := r.SetProfiles(gen); err != nil {
-		return "", err
+		return err
 	}
 	if err := installRouteBigRole(r, mc.cfgDir, lc, c2.planCeiling, mc.log); err != nil {
-		return "", err
+		return err
 	}
 	installFallbackChain(r, mc.cfgDir, lc, c2.planCeiling, mc.log)
-	if effort == "" {
-		return fmt.Sprintf("reasoning effort cleared for %s (applies next turn)", lc.Provider), nil
+	r.ProbeVision(context.Background(), false) // TEN-493: probe a newly routed model
+	return nil
+}
+
+// Vision reports whether the active model can see images (TEN-493): the
+// provider's setting (on, off, auto) and, for auto, what the probe found.
+func (mc *modelControl) Vision() string {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	setting := "auto"
+	if lc, err := loadLaunchConfig(mc.cfgDir); err == nil && lc.Providers[lc.Provider] != nil && lc.Providers[lc.Provider].Vision != "" {
+		setting = lc.Providers[lc.Provider].Vision
 	}
-	return fmt.Sprintf("reasoning effort → %s for %s (applies next turn, incl. sub-agents)", effort, lc.Provider), nil
+	r := mc.ag.Router()
+	if r == nil {
+		return "vision: " + setting
+	}
+	p, err := r.ForRole(model.RolePlanner)
+	if err != nil {
+		return "vision: " + setting
+	}
+	sees := "can't see images"
+	if model.CanSee(p) {
+		sees = "can see images"
+	}
+	if setting == "auto" && p.Backend == "vllm" {
+		return fmt.Sprintf("vision: auto (probe: %s), %s %s", model.VisionOf(model.VisionKeyOf(p)), p.Model, sees)
+	}
+	return fmt.Sprintf("vision: %s, %s %s", setting, p.Model, sees)
+}
+
+// SetVision sets the active provider's vision to on, off or auto (probe),
+// live on the shared router, and saves it (TEN-493).
+func (mc *modelControl) SetVision(v string) (string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "auto", "":
+		v = ""
+	case "on", "off":
+	default:
+		return "", fmt.Errorf("vision must be on, off or auto")
+	}
+	mc.mu.Lock()
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err != nil {
+		mc.mu.Unlock()
+		return "", err
+	}
+	pc := lc.Providers[lc.Provider]
+	if pc == nil {
+		mc.mu.Unlock()
+		return "", fmt.Errorf("no active provider (see /model)")
+	}
+	pc.Vision = v
+	if err := lc.Save(mc.cfgDir); err != nil {
+		mc.mu.Unlock()
+		return "", errNotSaved("vision "+firstNonEmpty(v, "auto"), err)
+	}
+	err = mc.rebuildActiveLocked(lc)
+	mc.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	return mc.Vision() + " (applies next turn)", nil
 }
 
 // looksLikeURL and safeDisplayEndpoint live in internal/config (TEN-314),

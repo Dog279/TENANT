@@ -94,9 +94,49 @@ type block struct {
 
 	// tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"`
-	// Content for tool_result is a string here (Anthropic also accepts an
-	// array of blocks; a string is sufficient for our tool outputs).
-	ResultContent string `json:"content,omitempty"`
+	// Content for tool_result is a string, or, when the result carries
+	// images, ResultBlocks: a block array of the text and the pictures
+	// (TEN-493). See MarshalJSON.
+	ResultContent string  `json:"content,omitempty"`
+	ResultBlocks  []block `json:"-"`
+
+	// image
+	Source *imageSource `json:"source,omitempty"`
+}
+
+// imageSource is an image block's inline data.
+type imageSource struct {
+	Type      string `json:"type"` // base64
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// MarshalJSON writes a tool_result's content as a block array when it carries
+// images, and otherwise exactly what the plain struct writes, so requests
+// without images are unchanged.
+func (b block) MarshalJSON() ([]byte, error) {
+	type plain block
+	if len(b.ResultBlocks) == 0 {
+		return json.Marshal(plain(b))
+	}
+	return json.Marshal(struct {
+		plain
+		Content []block `json:"content"`
+	}{plain(b), b.ResultBlocks})
+}
+
+// imageBlocks turns images into image blocks; an image whose file is gone
+// comes back in gone, to be noted in the text instead.
+func imageBlocks(imgs []model.Image) (blocks []block, gone []model.Image) {
+	for _, img := range imgs {
+		data, err := model.ImageData(img)
+		if err != nil {
+			gone = append(gone, img)
+			continue
+		}
+		blocks = append(blocks, block{Type: "image", Source: &imageSource{Type: "base64", MediaType: img.MIME, Data: data}})
+	}
+	return blocks, gone
 }
 
 type wireTool struct {
@@ -177,7 +217,7 @@ func (b *Backend) buildRequest(req model.GenerateRequest, stream bool) messagesR
 		Model:         b.profile.Model,
 		MaxTokens:     maxTok,
 		System:        collectSystem(req.Messages),
-		Messages:      toWireMessages(req.Messages),
+		Messages:      toWireMessages(b.visibleMessages(req.Messages)),
 		Temperature:   req.Temperature,
 		StopSequences: req.StopSequences,
 		Stream:        stream,
@@ -233,15 +273,21 @@ func toWireMessages(msgs []model.Message) []wireMsg {
 		case "system":
 			continue // handled by collectSystem
 		case "tool":
-			appendBlocks("user", []block{{
-				Type:          "tool_result",
-				ToolUseID:     m.ToolCallID,
-				ResultContent: m.Content,
-			}})
+			tr := block{Type: "tool_result", ToolUseID: m.ToolCallID, ResultContent: m.Content}
+			if len(m.Images) > 0 {
+				imgs, gone := imageBlocks(m.Images)
+				text := model.WithNotes(m.Content, gone, model.ReasonFileGone)
+				if text != "" {
+					tr.ResultBlocks = append(tr.ResultBlocks, block{Type: "text", Text: text})
+				}
+				tr.ResultBlocks = append(tr.ResultBlocks, imgs...)
+				tr.ResultContent = ""
+			}
+			appendBlocks("user", []block{tr})
 		case "assistant":
 			var blocks []block
-			if m.Content != "" {
-				blocks = append(blocks, block{Type: "text", Text: m.Content})
+			if content := model.WithNotes(m.Content, m.Images, model.ReasonNoPreview); content != "" {
+				blocks = append(blocks, block{Type: "text", Text: content})
 			}
 			for _, tc := range m.ToolCalls {
 				blocks = append(blocks, block{
@@ -253,9 +299,14 @@ func toWireMessages(msgs []model.Message) []wireMsg {
 			}
 			appendBlocks("assistant", blocks)
 		default: // user (and anything unexpected)
-			if m.Content != "" {
-				appendBlocks("user", []block{{Type: "text", Text: m.Content}})
+			// Images first, then the text that refers to them: the order
+			// Anthropic recommends.
+			imgs, gone := imageBlocks(m.Images)
+			blocks := imgs
+			if text := model.WithNotes(m.Content, gone, model.ReasonFileGone); text != "" {
+				blocks = append(blocks, block{Type: "text", Text: text})
 			}
+			appendBlocks("user", blocks)
 		}
 	}
 	return out
@@ -395,4 +446,14 @@ func isBillingError(lowerBody string) bool {
 		}
 	}
 	return false
+}
+
+// visibleMessages strips images to notes when this model can't see (an
+// operator's vision "off", or a gateway to a model without vision), so a
+// fallback chain never sends pictures to a link that would refuse them.
+func (b *Backend) visibleMessages(msgs []model.Message) []model.Message {
+	if model.HasImages(msgs) && !model.CanSee(b.profile) {
+		return model.StripImages(msgs, model.ReasonNoVision)
+	}
+	return msgs
 }

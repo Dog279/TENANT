@@ -31,6 +31,8 @@ type Message struct {
 	Timestamp  time.Time
 	Kind       string         // optional compaction tag (e.g. "tool-elided"); "" = ordinary turn
 	Meta       map[string]any // optional structured provenance; nil = none
+	// Images are pictures this message carries (TEN-493), by reference.
+	Images []model.Image
 }
 
 // Set is the working memory. Bounded growth is the caller's job

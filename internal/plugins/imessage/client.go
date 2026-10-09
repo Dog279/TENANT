@@ -105,6 +105,9 @@ func (s *Service) MessagesSince(ctx context.Context, afterRowID int64, limit int
 	out := make([]InboundMessage, 0, len(raw))
 	for _, m := range raw {
 		in := InboundMessage{Message: m.normalize(), RowID: m.ROWID}
+		for _, a := range m.Attachments {
+			in.Attachments = append(in.Attachments, Attachment{GUID: a.GUID, MIME: a.MimeType, Name: a.TransferName})
+		}
 		if len(m.Chats) > 0 {
 			in.ChatGUID = m.Chats[0].GUID
 		}
@@ -126,7 +129,7 @@ func (s *Service) LatestRowID(ctx context.Context) (int64, error) {
 }
 
 func (s *Service) queryMessages(ctx context.Context, limit int, sort string, where []map[string]any) ([]bbMessage, error) {
-	body := map[string]any{"limit": limit, "offset": 0, "with": []string{"handle", "chat"}, "sort": sort}
+	body := map[string]any{"limit": limit, "offset": 0, "with": []string{"handle", "chat", "attachment"}, "sort": sort}
 	if where != nil {
 		body["where"] = where
 	}
@@ -244,6 +247,14 @@ type bbMessage struct {
 	DateCreated int64     `json:"dateCreated"`
 	IsFromMe    bool      `json:"isFromMe"`
 	Handle      *bbHandle `json:"handle"`
+	// Attachments come with with: ["attachment"] (TEN-493).
+	Attachments []bbAttachment `json:"attachments"`
+}
+
+type bbAttachment struct {
+	GUID         string `json:"guid"`
+	MimeType     string `json:"mimeType"`
+	TransferName string `json:"transferName"`
 }
 
 func (m bbMessage) normalize() Message {

@@ -56,6 +56,7 @@ func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) {
 	return "ceiling set", nil
 }
 func (f *fakeModelCtl) RepeatGuard() int { return 8 }
+func (f *fakeModelCtl) Vision() string   { return "vision: auto (probe: yes), glm can see images" }
 func (f *fakeModelCtl) SetRepeatGuard(n int) (string, error) {
 	f.repeatSet = append(f.repeatSet, n)
 	return "repeat set", nil

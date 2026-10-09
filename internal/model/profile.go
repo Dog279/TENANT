@@ -63,6 +63,10 @@ type Profile struct {
 	// Endpoint. Default "/v1/chat/completions". Z.ai's base already carries
 	// the version (…/paas/v4) so it needs "/chat/completions".
 	ChatPath string `yaml:"chat_path,omitempty"`
+	// Vision is the operator's word on whether this model can see images
+	// (TEN-493): "on", "off", or "" / "auto" to let the probe decide (see
+	// CanSee). From the provider's `vision` config key.
+	Vision string `yaml:"vision,omitempty"`
 
 	// ReasoningEffort, when non-empty, is sent to reasoning-capable
 	// OpenAI-compatible providers as {"reasoning":{"effort":<value>}} on each
