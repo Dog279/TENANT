@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tenant/internal/agent"
 	"tenant/internal/fsperm"
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
@@ -245,6 +246,7 @@ func (c *commonFlags) applyLaunchConfig() error {
 	if !set["plan-loop-ceiling"] && lc.PlanLoopCeiling != 0 {
 		c.planCeiling = lc.PlanLoopCeiling
 	}
+	agent.SetRepeatGuard(lc.RepeatGuard)
 	return nil
 }
 

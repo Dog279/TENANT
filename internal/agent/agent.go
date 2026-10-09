@@ -74,16 +74,34 @@ var ErrLoopCeilingReached = errors.New("agent: plan loop ceiling reached")
 // trying to coax a small model into emitting valid JSON forever.
 var ErrTooManyValidationFailures = errors.New("agent: too many consecutive tool-call validation failures")
 
-// ErrOscillationDetected is set when the model emits a byte-identical tool-call
-// set for oscillationLimit+1 consecutive iterations — a weak model locked in a
-// loop. The runtime stops iterating and forces a synthesis from results already
-// gathered, rather than burning the whole loop ceiling. (TEN-261)
+// ErrOscillationDetected is set when the model makes the same tool calls and
+// gets the same results back for RepeatGuard() rounds in a row — a model locked
+// in a loop. The runtime stops iterating and forces a synthesis from results
+// already gathered, rather than burning the whole loop ceiling. (TEN-261)
 var ErrOscillationDetected = errors.New("agent: oscillation detected — identical tool call repeated")
 
-// oscillationLimit is the number of consecutive identical tool-call iterations
-// (after the first) that trips the oscillation guard. 2 → three identical
-// iterations in a row before we stop and synthesize.
-const oscillationLimit = 2
+// DefaultRepeatGuard is how many identical rounds in a row (same calls, same
+// results) trip the oscillation guard. TEN-261 used 3, which cut deliberate
+// wait/poll loops short (TEN-506).
+const DefaultRepeatGuard = 8
+
+// repeatGuard is the live threshold, process-wide so a retune reaches the main
+// agent, sub-agents and jobs on their next round. <= 0 = guard off.
+var repeatGuard atomic.Int64
+
+func init() { repeatGuard.Store(DefaultRepeatGuard) }
+
+// SetRepeatGuard retunes the oscillation guard live: n identical rounds trip
+// it, 0 restores DefaultRepeatGuard, < 0 turns it off.
+func SetRepeatGuard(n int) {
+	if n == 0 {
+		n = DefaultRepeatGuard
+	}
+	repeatGuard.Store(int64(n))
+}
+
+// RepeatGuard reports the live threshold (<= 0 = off).
+func RepeatGuard() int { return int(repeatGuard.Load()) }
 
 // Config wires the agent. All fields except SystemPrompt are required
 // for a useful turn — passing nil where required returns an error
@@ -832,9 +850,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		}
 	}()
 	consecutiveValidationFailures := 0
-	// Oscillation guard (TEN-261): track the dispatched tool-call signature across
-	// iterations so a weak model that locks onto the same call breaks out instead
-	// of burning the whole ceiling. The operator's PlanLoopCeiling stays in force.
+	// Oscillation guard (TEN-261): track each round's calls + results across
+	// iterations so a model that locks onto the same call breaks out instead of
+	// burning the whole ceiling. The operator's PlanLoopCeiling stays in force.
 	var lastToolSig string
 	repeatRuns := 0
 	var stuckErr error
@@ -1180,18 +1198,18 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			a.feedToolResult(ctx, br, profile.ToolResultCap())
 		}
 
-		// Oscillation guard (TEN-261): if the dispatched call-set is byte-identical
-		// to the previous iteration's for oscillationLimit consecutive rounds, the
-		// model is stuck — stop and synthesize from what we have instead of looping
-		// to the ceiling. Frontier-safe: a healthy model never repeats an identical
-		// call-set this many times in a row. Operator PlanLoopCeiling is untouched.
-		if sig := toolCallSignature(validCalls); sig != "" && sig == lastToolSig {
-			if repeatRuns++; repeatRuns >= oscillationLimit {
-				Oscillating.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "identical_runs", repeatRuns+1)
+		// Oscillation guard (TEN-261): the same calls getting the same results for
+		// RepeatGuard() rounds in a row means no new information is arriving, so
+		// stop and synthesize instead of looping to the ceiling. A poll whose
+		// output changes (a job's CPU time, a growing log) never trips it (TEN-506).
+		if sig := roundSignature(batchResults); sig != "" && sig == lastToolSig {
+			if limit := RepeatGuard(); limit > 0 && repeatRuns+2 >= limit {
+				Oscillating.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "identical_runs", repeatRuns+2)
 				a.emit(Event{Kind: EventError, Iter: iter, Text: "stuck repeating the same tool call — synthesizing from gathered results"})
 				stuckErr = ErrOscillationDetected
 				break
 			}
+			repeatRuns++
 		} else {
 			repeatRuns = 0
 			lastToolSig = sig
@@ -1214,7 +1232,11 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	result.Response = final
 	result.Truncated = true
 	result.Error = loopErr
-	a.emit(Event{Kind: EventTruncated, Text: final})
+	if stuckErr != nil {
+		a.emit(Event{Kind: EventStuck, Text: final})
+	} else {
+		a.emit(Event{Kind: EventTruncated, Text: final})
+	}
 	a.persistEpisode(ctx, req.UserQuery, final, result.ToolTrace, queryEmbedding, nil, routeState)
 	return result, nil
 }
@@ -1791,20 +1813,25 @@ func hasSensitiveLabel(labels []model.InfoFlowLabel) bool {
 	return false
 }
 
-// toolCallSignature builds a stable, order-independent signature of a dispatched
-// tool-call set — each call's name + raw arguments, sorted and joined. The
-// oscillation guard compares it across iterations to detect a model repeating
-// the identical call-set. Empty string for no calls.
-func toolCallSignature(calls []model.ToolCall) string {
-	if len(calls) == 0 {
+// roundSignature builds a stable, order-independent signature of one round:
+// each call's name + raw arguments + what it returned, sorted and joined. The
+// oscillation guard compares it across iterations; including the result means
+// a poll that keeps seeing new output is progress, not a loop. Empty string
+// for no calls.
+func roundSignature(results []ToolCallResult) string {
+	if len(results) == 0 {
 		return ""
 	}
-	parts := make([]string, len(calls))
-	for i, c := range calls {
-		parts[i] = c.Name + ":" + string(c.Arguments)
+	parts := make([]string, len(results))
+	for i, r := range results {
+		errText := ""
+		if r.Err != nil {
+			errText = r.Err.Error()
+		}
+		parts[i] = r.Call.Name + "\x00" + string(r.Call.Arguments) + "\x00" + r.Result + "\x00" + errText
 	}
 	sort.Strings(parts)
-	return strings.Join(parts, "|")
+	return strings.Join(parts, "\x01")
 }
 
 func (a *Agent) archiveAssistant(ctx context.Context, resp *model.GenerateResponse) {

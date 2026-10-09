@@ -104,6 +104,11 @@ type Launch struct {
 	// built-in default (DefaultPlanCeiling). Raise it for multi-step agentic
 	// tasks that legitimately need many tool calls.
 	PlanLoopCeiling int `json:"plan_loop_ceiling,omitempty"`
+	// RepeatGuard is how many rounds in a row of the same tool calls getting
+	// the same results end a turn early with a forced synthesis (the
+	// oscillation guard, TEN-261/TEN-506). 0 = built-in default (8), < 0 = off.
+	// Live-tunable with /ceiling repeat.
+	RepeatGuard int `json:"repeat_guard,omitempty"`
 	// Fallbacks is the ordered list of provider names (keys into Providers) to
 	// try when the active provider rate-limits / runs out of credits / is
 	// unreachable (TEN-246). Empty (default) = no auto-fallback. e.g. with

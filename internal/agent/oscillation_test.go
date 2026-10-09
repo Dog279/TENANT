@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -41,8 +42,58 @@ func TestTurn_OscillationBreaksEarly(t *testing.T) {
 	if res.Response == "" {
 		t.Fatal("expected a synthesized response, got empty")
 	}
-	if got := atomic.LoadInt32(&planCalls); got > 5 {
-		t.Fatalf("expected early break (~3 plan calls), got %d — ceiling (20) not short-circuited", got)
+	if got := atomic.LoadInt32(&planCalls); got != agent.DefaultRepeatGuard {
+		t.Fatalf("expected a break after %d identical rounds, got %d plan calls (ceiling 20)", agent.DefaultRepeatGuard, got)
+	}
+}
+
+// TEN-506: polling the same command is progress while its output changes (a
+// job's CPU time ticking up), so the guard must leave it to the loop ceiling;
+// and an operator can turn the guard off for identical polls too.
+func TestTurn_RepeatGuardOnlyTripsOnIdenticalResults(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		guard    int
+		changing bool
+		stuck    bool
+	}{
+		{"changing results", 0, true, false},
+		{"identical results", 0, false, true},
+		{"identical results, guard off", -1, false, false},
+		{"identical results, guard 3", 3, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent.SetRepeatGuard(tc.guard)
+			t.Cleanup(func() { agent.SetRepeatGuard(0) })
+			var polls int32
+			poll := model.ToolSpec{Name: "poll", Parameters: json.RawMessage(`{"type":"object"}`)}
+			disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) {
+				n := atomic.AddInt32(&polls, 1)
+				if tc.changing {
+					return fmt.Sprintf("still running, CPU 0:%02d", n), false, nil
+				}
+				return "still running", false, nil
+			})
+			a, fake, _, _ := buildAgent(t, model.Profile{PlanLoopCeiling: 12}, []model.ToolSpec{poll}, disp)
+			fake.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+				if len(req.Tools) == 0 {
+					return &model.GenerateResponse{Text: "synthesized"}, nil
+				}
+				return &model.GenerateResponse{ToolCalls: []model.ToolCall{
+					{ID: "c1", Name: "poll", Arguments: json.RawMessage(`{"pid":75721}`)},
+				}}, nil
+			}
+			res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "wait for the job"})
+			if err != nil {
+				t.Fatalf("Turn: %v", err)
+			}
+			if got := errors.Is(res.Error, agent.ErrOscillationDetected); got != tc.stuck {
+				t.Fatalf("stuck = %v, want %v (err=%v, polls=%d)", got, tc.stuck, res.Error, polls)
+			}
+			if !tc.stuck && !errors.Is(res.Error, agent.ErrLoopCeilingReached) {
+				t.Fatalf("expected the loop ceiling to end the turn, got %v", res.Error)
+			}
+		})
 	}
 }
 

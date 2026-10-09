@@ -1454,6 +1454,8 @@ func cmdResearch(ctx context.Context, args []string) error {
 			say("  [%s] ✗ %s", id, clip(e.Text, 100))
 		case agent.EventTruncated:
 			say("  [%s] ! loop ceiling — synthesized", id)
+		case agent.EventStuck:
+			say("  [%s] ! stuck repeating — synthesized", id)
 		}
 	}
 

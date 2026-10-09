@@ -984,7 +984,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 			clip(tt.Result, 110), errMark(tt.IsError))
 	}
 	if res.Truncated {
-		fmt.Printf("  [loop ceiling hit: %v]\n", res.Error)
+		fmt.Printf("  [forced synthesis: %v]\n", res.Error)
 	}
 	fmt.Printf("\nanswer:\n  %s\n", clip(res.Response, 900))
 	return nil
@@ -1638,6 +1638,8 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 			say("  [%s] ✗ error: %s", id, clip(e.Text, 120))
 		case agent.EventTruncated:
 			say("  [%s] ! loop ceiling — synthesized", id)
+		case agent.EventStuck:
+			say("  [%s] ! stuck repeating — synthesized", id)
 		}
 	}
 
