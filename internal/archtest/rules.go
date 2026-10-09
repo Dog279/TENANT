@@ -61,6 +61,7 @@ var rules = []rule{
 	{Pkg: "internal/model", May: []string{"internal/model/profiles", "internal/runtrace"}, Notes: "no memory, agent or plugins"},
 	{Pkg: "internal/model/**", May: []string{"internal/model/**", "internal/runtrace"}},
 	{Pkg: "internal/orchestra", May: []string{"internal/model"}},
+	{Pkg: "internal/attach", May: []string{"internal/model", "internal/fsperm"}, Notes: "image attachments: sniff, scale, save; the only place image bytes are decoded"},
 	{Pkg: "internal/route", May: []string{"internal/model", "internal/fsperm", "internal/datalock", "internal/runtrace"}},
 	{Pkg: "internal/config", May: []string{"internal/fsperm", "internal/secrets", "internal/model", "internal/route", "internal/orchestra", "internal/logs/catalog"}, Notes: "the persisted configuration; knows no runtime; files each change in the Security log"},
 	{Pkg: "internal/memory/**", May: []string{"internal/memory/**", "internal/model", "internal/fsperm"}, Notes: "tiers compose only through assemble, distill and compress"},
@@ -70,10 +71,10 @@ var rules = []rule{
 	{Pkg: "internal/privacy", May: []string{"internal/memory/**", "internal/fsperm", "internal/logs", "internal/logs/store"}},
 	{Pkg: "internal/logs/alerts", May: []string{"internal/logs", "internal/logs/event", "internal/logs/query", "internal/logs/store"}, Notes: "alert rules, evaluated in the housekeeper-lease holder; the composition root sends the actions"},
 	{Pkg: "internal/mcpserver", May: []string{"internal/mcp/**", "internal/memory/**", "internal/model"}},
-	{Pkg: "internal/agent", May: []string{"internal/logs", "internal/memory/**", "internal/model/**", "internal/orchestra", "internal/runtrace"}, Notes: "the turn loop; knows no plugin and no surface"},
+	{Pkg: "internal/agent", May: []string{"internal/attach", "internal/logs", "internal/memory/**", "internal/model/**", "internal/orchestra", "internal/runtrace"}, Notes: "the turn loop; knows no plugin and no surface"},
 	{Pkg: "internal/approval", May: []string{"internal/agent", "internal/control", "internal/logs", "internal/runtrace"}, Notes: "the approval decision point; knows no plugin and no surface"},
 	{Pkg: "internal/toolmux", May: []string{"internal/agent", "internal/model", "internal/memory/cosine", "internal/plugins/mcpremote", "internal/peering", "internal/control"}, Notes: "the tool registry and dispatcher; builds no plugin itself"},
-	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/model"}, Notes: "never the dashboard"},
+	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/attach", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/model"}, Notes: "never the dashboard"},
 	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/orchestra", "internal/version"}, Notes: "never the terminal UI"},
 }
 

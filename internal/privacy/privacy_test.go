@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"tenant/internal/memory/semantic"
+	"time"
 )
 
 func (fx *fixture) db(t *testing.T, name string) *sql.DB {
@@ -472,5 +473,52 @@ func TestForgetPurgesTheSearchIndex(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte("zanzibarquux")) {
 		t.Fatal("the search index still holds the forgotten word")
+	}
+}
+
+// Attachments (TEN-493) follow the archive: retention prunes the old ones,
+// and forgetting an archive month removes that month's folder.
+func TestAttachmentsFollowTheArchive(t *testing.T) {
+	fx := newFixture(t)
+	ctx := context.Background()
+	may10 := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	old := fx.d.path("attachments", "2026-05", "aa.png")
+	fresh := fx.d.path("attachments", "2026-09", "bb.png")
+	for _, p := range []string{old, fresh} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("png"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(old, may10, may10); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Prune(ctx, fx.d, Retention{Archive: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("an attachment older than the archive's retention survived")
+	}
+	if _, err := os.Stat(filepath.Dir(old)); !os.IsNotExist(err) {
+		t.Fatal("the emptied month folder was left behind")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a recent attachment was pruned: %v", err)
+	}
+	f, err := Forget(ctx, fx.d, Selector{ArchiveMonths: []string{"2026-09"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(fresh)); !os.IsNotExist(err) {
+		t.Fatal("forgetting 2026-09 left its attachments")
 	}
 }

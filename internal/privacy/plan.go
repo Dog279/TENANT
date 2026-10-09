@@ -152,6 +152,11 @@ func Forget(ctx context.Context, d Data, sel Selector) (*Plan, error) {
 				return s, err
 			}
 		}
+		if sel.Agent == "" {
+			if err := s.selectAttachments(d, sel.Before, s.archiveMonths); err != nil {
+				return s, err
+			}
+		}
 		if s.match != "" {
 			s.profiles = profilesMentioning(d, s.agent, s.match)
 		}
@@ -199,6 +204,9 @@ func Prune(ctx context.Context, d Data, r Retention) (*Plan, error) {
 			}
 		}
 		if err := s.selectFilesBefore(d, files); err != nil {
+			return s, err
+		}
+		if err := s.selectAttachments(d, s.archiveBefore, nil); err != nil {
 			return s, err
 		}
 		if !s.factsBefore.IsZero() {
