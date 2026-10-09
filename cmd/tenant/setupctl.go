@@ -60,7 +60,7 @@ func (s setupControl) ProviderOptions() []tui.SetupOption {
 }
 
 func (s setupControl) ToolFormatOptions() []string {
-	return []string{"qwen", "gemma", "llama", "mistral", "openai"}
+	return []string{"qwen", "gemma", "llama", "mistral", "glm", "openai"}
 }
 
 // SetProvider switches the active provider (persist + probe + live swap).

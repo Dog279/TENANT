@@ -71,6 +71,8 @@ func AdapterFor(format string) Adapter {
 		return Llama{}
 	case "mistral":
 		return Mistral{}
+	case "glm":
+		return GLM{}
 	case "", "openai":
 		return OpenAI{}
 	default:

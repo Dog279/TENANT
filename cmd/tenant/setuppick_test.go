@@ -70,7 +70,7 @@ func TestProviderAndToolFormatOpts(t *testing.T) {
 			t.Errorf("provider %q missing label/desc", o.Value)
 		}
 	}
-	if len(toolFormatOpts()) != 5 {
-		t.Errorf("toolFormatOpts len=%d want 5", len(toolFormatOpts()))
+	if len(toolFormatOpts()) != 6 {
+		t.Errorf("toolFormatOpts len=%d want 6", len(toolFormatOpts()))
 	}
 }

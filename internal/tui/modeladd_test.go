@@ -14,7 +14,7 @@ func TestModelAdd_NoFormatOpensPicker(t *testing.T) {
 	m := newModelPickerModel(f)
 
 	p := applyPicker(t, m, runMsg(m.handleModel("add gpu http://localhost:8000")))
-	if strings.Join(p.items, ",") != "qwen,gemma,llama,mistral,openai" {
+	if strings.Join(p.items, ",") != "qwen,gemma,llama,mistral,glm,openai" {
 		t.Fatalf("tool-format picker items = %v", p.items)
 	}
 	if p.items[p.selected] != "gemma" {

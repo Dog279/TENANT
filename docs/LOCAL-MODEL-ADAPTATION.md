@@ -170,7 +170,7 @@ type Profile struct {
     ReserveSystemPrompt      int        // structural rules, format specs, tool-use protocol — varies per model class
     ReserveToolDefs          int        // tokens reserved for tool definitions
     ReserveResponse          int        // tokens reserved for assistant response
-    ToolFormat               ToolFormat // qwen, llama, gemma, mistral, openai
+    ToolFormat               ToolFormat // qwen, llama, gemma, mistral, glm, openai
     EmbedDim                 int        // 768 (nomic) / 1024 (bge-m3, qwen3-embed)
     SupportsGrammar          bool       // vLLM yes, Ollama partial, llama.cpp yes
     MaxToolsPerCall          int        // top-K tools retrieved per turn (3 / 5 / 10)
@@ -210,7 +210,7 @@ Small models hallucinate tool args. Mitigations stack:
 2. **Grammar-constrained generation by default** — vLLM guided decoding (JSON schema or context-free grammar). Ollama path uses `format: json` plus best-effort schema in the prompt. If the backend has no constrained-decoding support, the runtime warns at startup and disables tool calling for that backend.
 3. **Strict schema validation post-generation** — JSON schema validate every tool call before dispatch. On failure, retry once with the error message injected into the prompt. After 2 failures, surface to user instead of looping.
 4. **Serialize tool calls below 70B.** `MaxParallelTools=1` for 30B class. Small models routinely emit valid JSON for one tool but fail at parallel arrays.
-5. **Tool definition style adapter** — each model family has its preferred prompt format (Qwen Hermes-style, Llama `<|python_tag|>`, Mistral their own JSON). The adapter lives in `internal/model/toolfmt/`.
+5. **Tool definition style adapter** — each model family has its preferred prompt format (Qwen Hermes-style, Llama `<|python_tag|>`, Mistral their own JSON, GLM-4.5+ `<arg_key>`/`<arg_value>` XML). The adapter lives in `internal/model/toolfmt/`.
 
 ### Planning loop adaptation
 

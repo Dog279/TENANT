@@ -6,6 +6,11 @@ Releases page.
 ## Unreleased
 
 ### Added
+- **GLM tool calling** (TEN-503): a `glm` tool-call format for Z.ai's GLM-4.5 family and later (the
+  `<tool_call>name` + `<arg_key>`/`<arg_value>` shape its chat template writes), picked by name
+  for models called glm/chatglm, offered in setup, the dashboard and `/model`, and tried by the
+  server check. The parser keeps typed values, reads a call cut off by max_tokens, and hands the
+  JSON and Hermes shapes some GLM servers write to the Qwen parser.
 - **iMessage passive and respond modes.** `/imessage passive` reads every text and answers
   none; `/imessage respond` answers the allowlist and `imessage.operator`, and only in a
   1:1 iMessage chat. Group chats, SMS and RCS never drive the agent, and can no longer

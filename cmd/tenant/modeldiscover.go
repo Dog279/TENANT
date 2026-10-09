@@ -381,7 +381,7 @@ func textFormatsToTry(family string) []string {
 	if family != "" {
 		out = append(out, family)
 	}
-	for _, f := range []string{"qwen", "llama", "mistral", "gemma"} {
+	for _, f := range []string{"qwen", "llama", "mistral", "gemma", "glm"} {
 		if f != family {
 			out = append(out, f)
 		}

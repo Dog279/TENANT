@@ -376,6 +376,7 @@ func toolFormatOpts() []pickOption {
 		{Label: "gemma", Value: "gemma"},
 		{Label: "llama", Value: "llama"},
 		{Label: "mistral", Value: "mistral"},
+		{Label: "glm", Value: "glm"},
 		{Label: "openai", Value: "openai"},
 	}
 }
