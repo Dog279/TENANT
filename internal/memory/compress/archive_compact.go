@@ -133,6 +133,9 @@ func (c *Compressor) CompactWithArchive(ctx context.Context, msgs []working.Mess
 	if vb := verbatimBlock(extractAllowlist(allowText)); vb != "" {
 		content += "\n\n" + vb
 	}
+	if ib := imageNotesBlock(head); ib != "" {
+		content += "\n\n" + ib
+	}
 	summaryMsg := working.Message{
 		Role:      "user",
 		Content:   content,

@@ -116,7 +116,7 @@ func renderTranscript(msgs []working.Message) string {
 		if role == "" {
 			role = "user"
 		}
-		fmt.Fprintf(&b, "%s: %s\n", role, truncate(content, 1200))
+		fmt.Fprintf(&b, "%s: %s\n", role, model.WithNotes(truncate(content, 1200), m.Images, ""))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -127,4 +127,20 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// imageNotesBlock lists the images a summarized span carried, one note per
+// line, verbatim: a summary paraphrases, and the saved path is what lets the
+// model open an image again after compaction (TEN-493).
+func imageNotesBlock(msgs []working.Message) string {
+	var lines []string
+	for _, m := range msgs {
+		for _, img := range m.Images {
+			lines = append(lines, model.ImageNote(img, ""))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Images from earlier in the conversation (open one with os_read_image to see it again):\n" + strings.Join(lines, "\n")
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tenant/internal/agent"
+	"tenant/internal/model"
 )
 
 // turnRunner is the slice of *agent.Agent that drives a conversation turn.
@@ -278,6 +279,28 @@ func (g *turnGate) removeQueuedLocked(target *scheduledTurn) {
 // inject mutex makes this safe and interjection must not wait behind ingress.
 func (g *turnGate) Interject(msg string) { g.inner.Interject(msg) }
 
+// imageInterjecter is a runner that takes pictures with a mid-turn message
+// (TEN-493). *agent.Agent has it; test fakes and older runners don't.
+type imageInterjecter interface {
+	InterjectWithImages(msg string, images []model.Image)
+}
+
+// InterjectWithImages forwards a mid-turn message and its images, or just the
+// text when the runner can't take images.
+func (g *turnGate) InterjectWithImages(msg string, images []model.Image) {
+	interjectWithImages(g.inner, msg, images)
+}
+
+// interjectWithImages sends msg and images to r, falling back to text-only
+// Interject for a runner without image support.
+func interjectWithImages(r interface{ Interject(string) }, msg string, images []model.Image) {
+	if ii, ok := r.(imageInterjecter); ok && len(images) > 0 {
+		ii.InterjectWithImages(msg, images)
+		return
+	}
+	r.Interject(msg)
+}
+
 // ActiveTurn is the serve-liveness reporter consumed by dashboard status.
 func (g *turnGate) ActiveTurn() (bool, time.Duration) { return g.status() }
 
@@ -358,6 +381,11 @@ func turnDedupeKey(source agent.RouteSurface, req agent.TurnRequest) string {
 	parts := []string{
 		string(source), req.UserQuery, string(req.RouteSurface),
 		string(req.RouteOverride), strconv.Itoa(req.LoopCeiling),
+	}
+	// Two image messages with the same text are different requests (TEN-493);
+	// attachment paths are content hashes, so the same picture is the same key.
+	for _, img := range req.Images {
+		parts = append(parts, img.Path)
 	}
 	var b strings.Builder
 	for _, part := range parts {

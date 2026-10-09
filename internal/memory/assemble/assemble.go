@@ -461,6 +461,7 @@ func (a *Assembler) Assemble(ctx context.Context, req Request) (*Result, error) 
 		Episodes:     episodes,
 		UserQuery:    req.UserQuery,
 	})
+	r.Messages = applyImageRules(r.Messages, req.Profile)
 
 	return r, nil
 }
@@ -607,12 +608,13 @@ func visibilityOrDefault(v []string) []string {
 
 func (a *Assembler) countWorking(ctx context.Context, msgs []working.Message) (int, error) {
 	total := 0
-	for _, m := range msgs {
+	imgs := workingImageTokens(msgs)
+	for i, m := range msgs {
 		n, err := a.counter.Count(ctx, m.Content)
 		if err != nil {
 			return 0, fmt.Errorf("assemble: count working msg: %w", err)
 		}
-		total += n
+		total += n + imgs[i]
 	}
 	return total, nil
 }
@@ -647,11 +649,13 @@ func (a *Assembler) truncateWorking(ctx context.Context, msgs []working.Message,
 	// exceed the slot. Drop the prefix.
 	total := 0
 	keep := 0
+	imgs := workingImageTokens(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		n, err := a.counter.Count(ctx, msgs[i].Content)
 		if err != nil {
 			return 0, 0, err
 		}
+		n += imgs[i]
 		if total+n > slot && keep > 0 {
 			break
 		}
@@ -879,6 +883,7 @@ func buildMessages(args buildArgs) []model.Message {
 			Content:    m.Content,
 			ToolCalls:  m.ToolCalls,
 			ToolCallID: m.ToolCallID,
+			Images:     m.Images,
 		})
 	}
 

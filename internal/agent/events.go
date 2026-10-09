@@ -263,6 +263,11 @@ var RoutePanicked = Turns.Event(3102, event.Error, "Routing", "Route {hook} pani
 		"A bug in the route classifier or its policy.",
 		"Report it with the stack; turn routing off (route in config.json) until it is fixed.")
 
+var ImageDropped = Turns.Event(2110, event.Warning, "Images", "An image from {tool} was not attached: {err}", "agent", "tool", "err").
+	Doc("A tool handed the model an image, but it couldn't be saved, so the model got the tool's text result without it (TEN-493).",
+		"The image was too large, not a supported format (HEIC off macOS), or the data directory couldn't be written.",
+		"None for a one-off. If it repeats, check free space and permissions on the data directory's attachments folder.")
+
 var ToolPanicked = Turns.Event(3103, event.Critical, "Tool call", "Tool {tool} panicked: {panic}", "tool", "panic", "stack").
 	Doc("A tool's code panicked. Only that call failed: the model got an error result and the turn went on.",
 		"A bug in the tool or its plugin.",
