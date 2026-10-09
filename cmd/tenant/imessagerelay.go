@@ -237,6 +237,9 @@ func (r *imessageResponder) imagesOf(ctx context.Context, pics []imessage.Attach
 	if len(pics) == 0 {
 		return nil, nil
 	}
+	if len(pics) > maxAttachmentsPerMsg {
+		pics = pics[:maxAttachmentsPerMsg] // Discord's per-message ceiling
+	}
 	src, _ := r.poller.(interface {
 		AttachmentBytes(context.Context, imessage.Attachment) ([]byte, error)
 	})
@@ -284,7 +287,12 @@ func (r *imessageResponder) undrivable(m imessage.InboundMessage) string {
 // chat.db row that started it.
 func (r *imessageResponder) turn(ctx context.Context, chatGUID, inboundID, text string, pics []imessage.Attachment) {
 	turnCtx, act := event.Start(withExecSurface(withOffsiteConfirm(ctx, r.confirm), surfaceIMessage), imessage.Turn, "chat", chatGUID)
-	imgs, notes := r.imagesOf(turnCtx, pics)
+	actx, cancel := context.WithTimeout(turnCtx, attachmentIngestTimeout) // a stalled download can't hold the turn
+	imgs, notes := r.imagesOf(actx, pics)
+	cancel()
+	if text == "" && len(pics) > 0 {
+		text = "(image)" // what the interrupted-turn record quotes
+	}
 	query := strings.TrimSpace(strings.Join(append([]string{text}, notes...), "\n"))
 	res, err := r.runner.Turn(turnCtx, agent.TurnRequest{
 		UserQuery: query, Images: imgs, RouteSurface: agent.RouteSurfaceRelay,

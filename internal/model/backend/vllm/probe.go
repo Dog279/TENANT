@@ -34,11 +34,14 @@ var probeColours = []struct {
 }
 
 const (
-	probePrompt   = "Name the two colours from left to right, one word each."
-	probeMaxToks  = 4096 // room for a thinking model to finish
-	probeTimeout  = 60 * time.Second
-	probeRetryGap = 5 * time.Minute
+	probePrompt  = "Name the two colours from left to right, one word each."
+	probeMaxToks = 4096 // room for a thinking model to finish
+	probeTimeout = 60 * time.Second
 )
+
+// probeRetryGap is how long after an inconclusive probe the next one runs (a
+// var for tests).
+var probeRetryGap = 5 * time.Minute
 
 var colourWordRe = regexp.MustCompile(`\b(red|green|blue|yellow)\b`)
 
@@ -161,6 +164,9 @@ func (b *Backend) probeInBackground() <-chan struct{} {
 		close(done)
 		if v == model.VisionUnknown {
 			model.VisionInconclusive.Log(ctx, "model", b.profile.Model, "endpoint", key.Endpoint, "err", err)
+			// ponytail: retries every probeRetryGap for as long as the process
+			// runs (one small request each); cap the attempts if that ever matters.
+			time.AfterFunc(probeRetryGap, func() { b.probeInBackground() })
 			return
 		}
 		model.VisionProbed.Log(ctx, "model", b.profile.Model, "endpoint", key.Endpoint, "answer", v.String())

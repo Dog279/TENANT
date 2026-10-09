@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"tenant/internal/memory/assemble"
+	"tenant/internal/memory/semantic"
 	"tenant/internal/memory/working"
 	"tenant/internal/model"
 )
@@ -65,17 +66,60 @@ func TestAssemble_ImageCap(t *testing.T) {
 	}
 }
 
-// A model that can't see gets notes; a request without images is untouched.
+// A model that can't see gets notes. One the probe hasn't answered keeps the
+// images: its backend notes them and starts the probe, so a billed provider
+// is asked by its first image.
 func TestAssemble_NoVisionNotes(t *testing.T) {
 	w := working.New()
 	w.Append(working.Message{Role: "user", Content: "look", Images: []model.Image{img(1)}})
-	blind := mkProfile() // vllm with no probe answer: can't see yet
+	blind := mkProfile()
+	blind.Vision = "off"
 	r, err := assemble.New(fakeCounter()).Assemble(context.Background(), assemble.Request{Profile: blind, Working: w})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if m := r.Messages[0]; len(m.Images) != 0 || !strings.HasSuffix(m.Content, model.ReasonNoVision+"]") {
 		t.Fatalf("blind model got %+v", m)
+	}
+	undecided := mkProfile() // vllm, vision auto, no probe answer yet
+	r, err = assemble.New(fakeCounter()).Assemble(context.Background(), assemble.Request{Profile: undecided, Working: w})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := r.Messages[0]; len(m.Images) != 1 {
+		t.Fatalf("an undecided model's request lost its image: %+v", m)
+	}
+}
+
+// The retrieved-context block is a user message of its own, but not an
+// exchange: with facts retrieved, the last three exchanges still keep their
+// images.
+func TestAssemble_RetrievedFactsDontShrinkTheWindow(t *testing.T) {
+	ctx := context.Background()
+	sstore := mkSemanticStore(t)
+	if _, err := sstore.Insert(ctx, &semantic.Fact{AgentID: "main", Fact: "user prefers Go", Confidence: 1.0, EmbedderID: "test", Embedding: vecA()}); err != nil {
+		t.Fatal(err)
+	}
+	w := working.New()
+	for i := 1; i <= 3; i++ {
+		w.Append(working.Message{Role: "user", Content: fmt.Sprintf("q%d", i), Images: []model.Image{img(i)}})
+		w.Append(working.Message{Role: "assistant", Content: fmt.Sprintf("a%d", i)})
+	}
+	r, err := assemble.New(fakeCounter()).Assemble(ctx, assemble.Request{Profile: seeing(), Working: w,
+		SemanticStore: sstore, Query: assemble.RetrievalQuery{Embedding: vecA()}, AgentID: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := r.Messages[len(r.Messages)-1]
+	if !strings.Contains(last.Content, "user prefers Go") {
+		t.Fatalf("no retrieved-context block: %+v", last)
+	}
+	shown := 0
+	for _, m := range r.Messages {
+		shown += len(m.Images)
+	}
+	if shown != 3 {
+		t.Fatalf("%d images shown, want all 3 exchanges' images", shown)
 	}
 }
 
@@ -90,5 +134,11 @@ func TestAssemble_ImageTokensCount(t *testing.T) {
 	r2, _ := a.Assemble(context.Background(), assemble.Request{Profile: seeing(), Working: withImg})
 	if d := r2.BudgetReport.WorkingTokens - r1.BudgetReport.WorkingTokens; d != model.ImageTokens(img(1)) {
 		t.Fatalf("an in-window 750×100 image added %d tokens, want %d", d, model.ImageTokens(img(1)))
+	}
+	blind := mkProfile()
+	blind.Vision = "off"
+	r3, _ := a.Assemble(context.Background(), assemble.Request{Profile: blind, Working: withImg})
+	if d := r3.BudgetReport.WorkingTokens - r1.BudgetReport.WorkingTokens; d >= model.ImageTokens(img(1)) {
+		t.Fatalf("a blind model's note was counted as %d tokens, the full image's cost", d)
 	}
 }

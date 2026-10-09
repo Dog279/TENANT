@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -353,8 +354,11 @@ func (r *relay) imagesOf(ctx context.Context, saved []savedAttachment) ([]model.
 	var imgs []model.Image
 	var notes []string
 	for _, s := range saved {
+		if !sniffsAsImage(s.Path) {
+			continue // a PDF or video stays in the text manifest only
+		}
 		data, err := os.ReadFile(s.Path) // the file this relay just downloaded
-		if err != nil || attach.Sniff(data) == "" {
+		if err != nil {
 			continue
 		}
 		img, err := r.images.Add(ctx, data, filepath.Base(s.Path))
@@ -365,6 +369,19 @@ func (r *relay) imagesOf(ctx context.Context, saved []savedAttachment) ([]model.
 		imgs = append(imgs, img)
 	}
 	return imgs, notes
+}
+
+// sniffsAsImage reads a file's first 512 bytes and reports whether they are
+// an image's, so a large non-image download is never read whole.
+func sniffsAsImage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	return attach.Sniff(head[:n]) != ""
 }
 
 // routeTurn surfaces text in the shared activity feed, then starts a turn or

@@ -90,6 +90,14 @@ func CanSee(p Profile) bool {
 	return false
 }
 
+// Undecided reports a vllm model left to the probe whose answer isn't known
+// yet. Its images still go to the backend, which notes them for that request
+// and starts the probe: that is how the first image asks a billed provider,
+// which isn't probed at launch (TEN-493).
+func Undecided(p Profile) bool {
+	return p.Backend == "vllm" && VisionAuto(p) && VisionOf(VisionKeyOf(p)) == VisionUnknown
+}
+
 // StripImages returns msgs with every image turned into a note in its
 // message's text; messages without images are shared, not copied.
 func StripImages(msgs []Message, reason string) []Message {

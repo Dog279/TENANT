@@ -23,9 +23,9 @@ func tinyPNG(t *testing.T) []byte {
 	return b.Bytes()
 }
 
-// TEN-493: a turn may carry images and no text; the message the model gets
-// names them (the test profile has no vision answer, so they are notes), and
-// the working set keeps the images themselves.
+// TEN-493: a turn may carry images and no text; the request carries them
+// (the test profile has no vision answer yet, so the backend decides: it
+// notes them and starts the probe), and the working set keeps them too.
 func TestTurn_ImageOnly(t *testing.T) {
 	a, fake, w, _ := buildAgent(t, model.Profile{}, nil, agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) { return "", false, nil }))
 	var sent []model.Message
@@ -43,8 +43,8 @@ func TestTurn_ImageOnly(t *testing.T) {
 			user = &sent[i]
 		}
 	}
-	if user == nil || !strings.Contains(user.Content, pic.Path) {
-		t.Fatalf("the request lacks the image or its note: %+v", sent)
+	if user == nil || len(user.Images) != 1 || user.Images[0].Path != pic.Path {
+		t.Fatalf("the request lacks the image: %+v", sent)
 	}
 	if got := w.Messages()[0]; got.Content != "(image)" || len(got.Images) != 1 {
 		t.Fatalf("working set user message = %+v", got)

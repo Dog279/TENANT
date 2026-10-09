@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -174,4 +176,45 @@ func TestProbeAtStart_KeyedProviders(t *testing.T) {
 			<-done
 		}
 	}
+}
+
+// An inconclusive probe (a 429) tries again by itself after the retry gap.
+func TestProbeInBackground_RetriesAfterInconclusive(t *testing.T) {
+	old := probeRetryGap
+	probeRetryGap = 50 * time.Millisecond
+	t.Cleanup(func() { probeRetryGap = old })
+	var hits, seen int32
+	see := seeingServer(t, "/v1/chat/completions", false, &seen)
+	proxy := httputil.NewSingleHostReverseProxy(mustURL(t, see.URL))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) == 1 {
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	b := backendFor(t, srv.URL, "")
+	key := model.VisionKeyOf(b.profile)
+	t.Cleanup(func() { model.SetVision(key, model.VisionUnknown) })
+	<-b.ProbeAtStart(false)
+	if model.VisionOf(key) != model.VisionUnknown {
+		t.Fatalf("a 429 recorded %v", model.VisionOf(key))
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for model.VisionOf(key) != model.VisionYes && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if model.VisionOf(key) != model.VisionYes {
+		t.Fatalf("no retry: registry %v after %d requests", model.VisionOf(key), atomic.LoadInt32(&hits))
+	}
+}
+
+func mustURL(t *testing.T, s string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }

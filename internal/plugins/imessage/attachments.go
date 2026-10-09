@@ -86,8 +86,8 @@ SELECT maj.message_id, a.guid, a.filename, a.mime_type, a.transfer_name
 }
 
 // AttachmentBytes reads a chat.db attachment's file: a regular file only (a
-// symlink is refused, so a swapped link can't point it elsewhere), at most
-// 20 MB.
+// symlink is refused, and the file opened must be the one checked, so a link
+// swapped in between can't point it elsewhere), at most 20 MB.
 func (r *chatReader) AttachmentBytes(_ context.Context, a Attachment) ([]byte, error) {
 	if a.Path == "" {
 		return nil, ErrAttachmentMissing
@@ -102,15 +102,27 @@ func (r *chatReader) AttachmentBytes(_ context.Context, a Attachment) ([]byte, e
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file")
 	}
-	if fi.Size() > maxAttachmentRead {
-		return nil, fmt.Errorf("over %d MB", maxAttachmentRead>>20)
-	}
 	f, err := os.Open(a.Path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, maxAttachmentRead+1))
+	if ofi, err := f.Stat(); err != nil || !os.SameFile(fi, ofi) {
+		return nil, fmt.Errorf("the file changed while it was opened")
+	}
+	return readCapped(f)
+}
+
+// readCapped reads at most maxAttachmentRead bytes, refusing anything larger.
+func readCapped(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxAttachmentRead+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAttachmentRead {
+		return nil, fmt.Errorf("over %d MB", maxAttachmentRead>>20)
+	}
+	return data, nil
 }
 
 // AttachmentBytes downloads a BlueBubbles attachment by GUID, at most 20 MB.
@@ -132,14 +144,7 @@ func (s *Service) AttachmentBytes(ctx context.Context, a Attachment) ([]byte, er
 	if resp.StatusCode/100 != 2 {
 		return nil, &apiError{Status: resp.StatusCode, Msg: "attachment download failed"}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentRead+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxAttachmentRead {
-		return nil, fmt.Errorf("over %d MB", maxAttachmentRead>>20)
-	}
-	return data, nil
+	return readCapped(resp.Body)
 }
 
 // AttachmentBytes reads an attachment through the watcher's source.
