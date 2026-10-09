@@ -328,7 +328,7 @@ type Provider struct {
 	Kind     string `json:"kind"`                  // see ProviderKinds
 	Endpoint string `json:"endpoint,omitempty"`    // base URL (no /v1 suffix)
 	Model    string `json:"model,omitempty"`       // empty = auto-detect at launch
-	ToolFmt  string `json:"tool_format,omitempty"` // qwen|gemma|llama|mistral|openai
+	ToolFmt  string `json:"tool_format,omitempty"` // qwen|gemma|llama|mistral|glm|openai
 	EmbedDim int    `json:"embed_dim,omitempty"`   // embeddings only
 	Auth     Auth   `json:"auth,omitempty"`
 	// Reasoning is the per-provider reasoning-effort hint for reasoning-capable

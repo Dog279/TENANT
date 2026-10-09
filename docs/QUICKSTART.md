@@ -177,8 +177,8 @@ Show the model a picture without pointing it at a file:
 - **Drag** image files into the terminal (macOS and Linux terminals).
 - **`/image <path>`** attaches a file by path (`/img` for short).
 
-Each image shows in the input as `[image 1: name W×H]`; delete that text to drop
-it. Images are saved under `<data>/attachments` (PNG, JPEG, GIF, webp; HEIC on
+Each image shows in the input as `[image 1: name W×H]`, and the footer counts what's
+attached. Backspace right after a tag removes it, and the image with it. Images are saved under `<data>/attachments` (PNG, JPEG, GIF, webp; HEIC on
 macOS), scaled to at most 1568 px, and follow the archive's retention. Linux
 needs `wl-paste` (Wayland) or `xclip` (X11) for Ctrl+V. Photos sent over Discord
 and iMessage reach the model the same way, and `os_read_image` and

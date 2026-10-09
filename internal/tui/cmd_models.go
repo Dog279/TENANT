@@ -422,7 +422,7 @@ func (m *model) handleModel(arg string) (cmd tea.Cmd) {
 			},
 			onCancel: func() tea.Cmd {
 				return func() tea.Msg {
-					return sysChatMsg{text: "model add cancelled — pick a tool format, or pass it explicitly: /model add " + name + " " + endpoint + " <qwen|gemma|llama|mistral|openai>"}
+					return sysChatMsg{text: "model add cancelled — pick a tool format, or pass it explicitly: /model add " + name + " " + endpoint + " <qwen|gemma|llama|mistral|glm|openai>"}
 				}
 			},
 		})

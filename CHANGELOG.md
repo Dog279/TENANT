@@ -132,6 +132,12 @@ Releases page.
   - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
+- **A pasted image shows at once, and Backspace removes it.** In a terminal narrower than
+  the footer (about 140 columns once tokens are counted), the footer wrapped and the
+  input stopped redrawing, so a pasted `[image N: …]` tag appeared only after Enter. The
+  footer now fits any width, says how many images are attached, and Backspace right after
+  a tag deletes the whole tag and its image. `--vllm-tool-format`, `tenant model add
+  --tool-format` and `/model add` now list `glm` in their help.
 - **A named self-hosted model gets its real context window** (TEN-507). Tenant read a
   vLLM server's `max_model_len` only when the provider's model was left blank, so naming
   the model (e.g. a 500K `glm-5.3-flash`) held it to the 128K default. Launch,
