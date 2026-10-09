@@ -120,7 +120,7 @@ Releases page.
 - **Waiting on a job no longer cuts the turn short** (TEN-506). The repeat guard now
   counts a round as a repeat only when the same tool calls return the same results, so a
   poll whose output changes keeps going until the loop ceiling. It trips after 8
-  identical rounds instead of 3, is set live with `/ceiling repeat <n|off>` (saved as
+  identical rounds instead of 3, is set live with `/ceiling repeat <n|off>` or the dashboard's Model page (saved as
   `repeat_guard`), and is reported as "stuck repeating the same tool calls" with its own
   event (turns 2004), not as "loop ceiling hit".
 - **A corrupt `config.json` is no longer overwritten.** Tenant refuses to start on it and

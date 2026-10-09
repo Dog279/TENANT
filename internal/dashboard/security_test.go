@@ -282,6 +282,7 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /models/add-server": noStep,
 	"POST /models/remove":     always,
 	"POST /models/ceiling":    noStep,
+	"POST /models/repeat":     noStep,
 	"POST /models/reload":     noStep,
 	// Approvals & safety (TEN-207, D4): Allow is the step; Ask, Deny, Allow
 	// once and "Keep them at Ask" are one tap; pairing's Allow once asks.

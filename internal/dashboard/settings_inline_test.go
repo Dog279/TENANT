@@ -13,7 +13,7 @@ import (
 // settingsPages is where the Models, Provider keys and Integrations forms
 // post: every one a literal URL (F1), with the row's values in fields.
 var settingsPages = map[string][]string{
-	"/models":        {"/models/use", "/models/remove", "/models/add", "/models/add-server", "/models/ceiling", "/models/reload"},
+	"/models":        {"/models/use", "/models/remove", "/models/add", "/models/add-server", "/models/ceiling", "/models/repeat", "/models/reload"},
 	"/settings/keys": {"/settings/keys/set", "/settings/keys/remove"},
 	"/integrations": {"/integrations/save", "/integrations/test", "/integrations/disconnect",
 		"/integrations/github/repos/add", "/integrations/github/repos/mode", "/integrations/github/repos/remove"},
@@ -36,6 +36,7 @@ func TestSettingsGroup_InlineAnswersEveryForm(t *testing.T) {
 		{"/models/add-server", "/models", "models-body", url.Values{"address": {"http://my-server:8080"}, "key": {secret}}, nil},
 		{"/models/remove", "/models", "models-body", url.Values{"name": {"m"}}, nil},
 		{"/models/ceiling", "/models", "models-body", url.Values{"ceiling": {"42"}}, nil},
+		{"/models/repeat", "/models", "models-body", url.Values{"repeat": {"12"}}, nil},
 		{"/models/reload", "/models", "models-body", url.Values{}, nil},
 		{"/settings/keys/set", "/settings/keys", "keys-body", url.Values{"service": {"openai"}, "value": {secret}}, nil},
 		{"/settings/keys/remove", "/settings/keys", "keys-body", url.Values{"service": {"openai"}}, nil},
@@ -97,6 +98,7 @@ func TestSettingsGroup_InlineErrorsLeaveThePage(t *testing.T) {
 		{"/models/add-server?address=http://my-server:8080&key=" + secret, "models-body", "Nothing was saved: submit it in the form, not the URL."},
 		{"/models/add-server?address=http://my-server:8080", "models-body", "Couldn&#39;t add that server. The Logs page has the reason."},
 		{"/models/ceiling", "models-body", "Enter a whole number greater than zero."},
+		{"/models/repeat", "models-body", "Enter 0 (off) or a whole number from 2 to 200."},
 		{"/settings/keys/set?service=openai", "keys-body", "Couldn&#39;t store that key."},
 		{"/settings/keys/set?service=openai&value=" + secret, "keys-body", "Nothing was saved: submit it in the form, not the URL."},
 		{"/integrations/save?integration=brave", "integrations-body", "Couldn&#39;t save that. The Logs page has the reason."},

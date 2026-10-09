@@ -37,6 +37,10 @@ type ModelControl interface {
 	Remove(name string) (string, error)
 	LoopCeiling() int
 	SetLoopCeiling(n int) (string, error)
+	// RepeatGuard / SetRepeatGuard: identical rounds (same calls, same
+	// results) before a forced answer; <= 0 = off (TEN-506).
+	RepeatGuard() int
+	SetRepeatGuard(n int) (string, error)
 	ReloadKeys() (string, error)
 }
 
@@ -109,6 +113,7 @@ func (s *Server) mountModelsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /models/add-server", s.handleModelServerForm)
 	mux.HandleFunc("POST /models/remove", needConfirm(nil, s.handleModelRemoveForm))
 	mux.HandleFunc("POST /models/ceiling", s.handleModelCeilingForm)
+	mux.HandleFunc("POST /models/repeat", s.handleModelRepeatForm)
 	mux.HandleFunc("POST /models/reload", s.handleModelReloadForm)
 }
 
@@ -117,6 +122,7 @@ type modelsPageData struct {
 	Configured bool
 	Models     []ModelView
 	Ceiling    int
+	Repeat     int // repeat guard; 0 = off
 	Err        string
 	Msg        string
 }
@@ -127,6 +133,7 @@ func (s *Server) modelsData() modelsPageData {
 		d.Configured = true
 		d.Models = s.models.Models()
 		d.Ceiling = s.models.LoopCeiling()
+		d.Repeat = max(s.models.RepeatGuard(), 0)
 	}
 	return d
 }
@@ -276,6 +283,28 @@ func (s *Server) handleModelCeilingForm(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.modelsDone(w, r, "Saved: your agent takes at most "+strconv.Itoa(n)+" steps per answer.", "")
+}
+
+// handleModelRepeatForm sets the repeat guard live (TEN-506); 0 turns it off.
+func (s *Server) handleModelRepeatForm(w http.ResponseWriter, r *http.Request) {
+	if s.models == nil {
+		s.modelsDone(w, r, "", "")
+		return
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("repeat")))
+	if err != nil || n < 0 || n == 1 || n > 200 {
+		s.modelsDone(w, r, "", "Enter 0 (off) or a whole number from 2 to 200.")
+		return
+	}
+	msg := "Saved: the agent stops after " + strconv.Itoa(n) + " identical steps in a row."
+	if n == 0 {
+		n, msg = -1, "Saved: repeated steps never stop the agent; only the step limit does."
+	}
+	if _, serr := s.models.SetRepeatGuard(n); serr != nil {
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model repeat guard", serr, "Couldn't update the repeat guard."))
+		return
+	}
+	s.modelsDone(w, r, msg, "")
 }
 
 func (s *Server) handleModelReloadForm(w http.ResponseWriter, r *http.Request) {
