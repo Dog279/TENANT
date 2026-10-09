@@ -155,13 +155,14 @@ func (c *commonFlags) resolve() error {
 	}
 
 	// Merge persisted config (explicit flags win), then apply smart
-	// defaults, then auto-detect the vLLM model if still unset. This is
-	// what lets everyday launch be `tenant tui` with no flags.
+	// defaults, then ask the vLLM server for its model (if unset) and its
+	// context length. This is what lets everyday launch be `tenant tui` with
+	// no flags.
 	if err := c.applyLaunchConfig(); err != nil {
 		return err
 	}
 	c.applyDefaults()
-	if c.backend == "vllm" && c.vllmEndpoint != "" && c.vllmModel == "" {
+	if c.backend == "vllm" && c.vllmEndpoint != "" {
 		c.autodetectModel()
 	}
 	return nil
@@ -290,13 +291,20 @@ func (c *commonFlags) autodetectModel() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	if ms, err := fetchModels(ctx, c.vllmEndpoint, c.genAPIKey); err == nil && len(ms) > 0 {
-		c.vllmModel = ms[0].ID
-		// Adapt the context budget to whatever the server actually serves, so
-		// we never over-pack a smaller-context model (e.g. a 32K Qwen) and get
-		// 400s on long prompts.
-		if ms[0].MaxLen > 0 {
-			c.contextLen = ms[0].MaxLen
+	ms, err := fetchModels(ctx, c.vllmEndpoint, c.genAPIKey)
+	if err != nil {
+		return
+	}
+	// A named model keeps its name; either way the context budget follows
+	// what the server actually serves, so we never over-pack a smaller-context
+	// model (400s on long prompts) or under-use a bigger one (TEN-507: a 500K
+	// model held to the 128K default because its name was set).
+	if m, ok := pickServed(ms, c.vllmModel); ok {
+		if c.vllmModel == "" {
+			c.vllmModel = m.ID
+		}
+		if m.MaxLen > 0 {
+			c.contextLen = m.MaxLen
 		}
 	}
 }

@@ -104,6 +104,12 @@ Releases page.
   - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
+- **A named self-hosted model gets its real context window** (TEN-507). Tenant read a
+  vLLM server's `max_model_len` only when the provider's model was left blank, so naming
+  the model (e.g. a 500K `glm-5.3-flash`) held it to the 128K default. Launch,
+  `/model use`, fallbacks, planner-big and agent profiles now look the named model up in
+  `/v1/models` and use its length; an unlisted model or an unreachable server keeps the
+  default.
 - **Waiting on a job no longer cuts the turn short** (TEN-506). The repeat guard now
   counts a round as a repeat only when the same tool calls return the same results, so a
   poll whose output changes keeps going until the loop ceiling. It trips after 8

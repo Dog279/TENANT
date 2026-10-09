@@ -69,13 +69,11 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	if mdl == "" {
 		mdl = pk.DefaultModel
 	}
-	// A self-hosted server whose model is found automatically: ask it now,
-	// as the active provider's launch does.
-	served, found := servedModel{}, false
-	if mdl == "" {
-		if served, found = servedModelFor(pk, pc.Endpoint, apiKey); found {
-			mdl = served.ID
-		}
+	// A self-hosted server: ask it now, as the active provider's launch does,
+	// for the model (when found automatically) and its context window.
+	served, found := servedModelFor(pk, pc.Endpoint, apiKey, mdl)
+	if found && mdl == "" {
+		mdl = served.ID
 	}
 	if mdl == "" {
 		return nil, fmt.Errorf("agent %q: provider %q has no Model configured and the profile didn't override one", profileName, ap.Provider)
@@ -87,8 +85,8 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	// case-insensitive match adopts the server's casing; a total miss logs the
 	// served list; an unreachable endpoint changes nothing (offline spawns must
 	// not be blocked by a health check). A model the server just named needs
-	// no second look.
-	if !found && pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
+	// no second look, nor does an exact match.
+	if (!found || served.ID != mdl) && pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
 		mdl = reconcileServedModel(pc.Endpoint, apiKey, mdl, profileName)
 	}
 

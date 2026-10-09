@@ -283,3 +283,46 @@ func TestAutoModel_WorksBeyondTheMainModel(t *testing.T) {
 		t.Error("an unreachable server with no model: want an error")
 	}
 }
+
+// TEN-507: a named model still gets its server-reported context window, not
+// the 128K default, at launch / /model use, as a fallback and as a helper's.
+func TestNamedModel_UsesServedContextLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{
+			map[string]any{"id": "Qwen3-32B", "max_model_len": 32768},
+			map[string]any{"id": "glm-5.3-flash", "max_model_len": 500000},
+		}})
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &commonFlags{backend: "vllm", genKind: "llamacpp", vllmEndpoint: srv.URL, vllmModel: "glm-5.3-flash"}
+	c.autodetectModel()
+	if c.vllmModel != "glm-5.3-flash" || c.contextLen != 500000 {
+		t.Errorf("launch: model %q, context %d; want glm-5.3-flash, 500000", c.vllmModel, c.contextLen)
+	}
+
+	lc := &launchConfig{Providers: map[string]*providerConfig{"gpu": {Kind: "llamacpp", Endpoint: srv.URL, Model: "glm-5.3-flash", ToolFmt: "glm"}}}
+	gen, _, err := providerGenProfiles(t.TempDir(), lc, "gpu", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range gen {
+		if p.Model != "glm-5.3-flash" || p.ContextLength != 500000 {
+			t.Errorf("fallback profile %s: model %q, context %d", p.ID, p.Model, p.ContextLength)
+		}
+	}
+	r, err := buildProfileRouter("coder", &agentProfile{Provider: "gpu"}, lc, t.TempDir(), model.Profile{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := r.ForRole(model.RolePlanner); err != nil || p.ContextLength != 500000 {
+		t.Errorf("helper planner = %+v, %v", p, err)
+	}
+
+	// A model the server doesn't list keeps the default.
+	c = &commonFlags{backend: "vllm", genKind: "llamacpp", vllmEndpoint: srv.URL, vllmModel: "gone"}
+	c.autodetectModel()
+	if c.vllmModel != "gone" || c.contextLen != 0 {
+		t.Errorf("unlisted model: model %q, context %d; want gone, 0", c.vllmModel, c.contextLen)
+	}
+}
