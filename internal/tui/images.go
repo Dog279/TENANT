@@ -149,6 +149,47 @@ func placeholder(n int, img modelpkg.Image) string {
 	return fmt.Sprintf("[image %d: %s]", n, img.Label())
 }
 
+// pendingImages counts the attachments whose placeholder is still in the
+// input: what the next message would carry.
+func (m *model) pendingImages() int {
+	q, n := m.ta.Value(), 0
+	for i, img := range m.attachments {
+		if strings.Contains(q, placeholder(i+1, img)) {
+			n++
+		}
+	}
+	return n
+}
+
+// deletePlaceholder handles a Backspace right after an attachment's
+// placeholder (or the space after it): it deletes the whole tag, which drops
+// the image, and reports true. Otherwise it leaves Backspace to the input.
+func (m *model) deletePlaceholder() bool {
+	if len(m.attachments) == 0 {
+		return false
+	}
+	lines := strings.Split(m.ta.Value(), "\n")
+	row := m.ta.Line()
+	if row >= len(lines) {
+		return false
+	}
+	li := m.ta.LineInfo()
+	line := []rune(lines[row])
+	before := string(line[:min(li.StartColumn+li.ColumnOffset, len(line))])
+	for i, img := range m.attachments {
+		ph := placeholder(i+1, img)
+		for _, tag := range []string{ph + " ", ph} {
+			if strings.HasSuffix(before, tag) {
+				for range utf8.RuneCountInString(tag) {
+					m.ta, _ = m.ta.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // takeAttachments returns the attachments whose placeholder is still in q,
 // in order, and clears the list (a deleted placeholder drops its image).
 func (m *model) takeAttachments(q string) []modelpkg.Image {

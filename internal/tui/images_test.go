@@ -16,6 +16,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"tenant/internal/attach"
 )
@@ -265,5 +266,54 @@ func TestClipboardImageLinux_JPEGAndFallback(t *testing.T) {
 	}
 	if last := got[len(got)-1]; !strings.Contains(last, "xclip") || !strings.Contains(last, "image/jpeg") {
 		t.Fatalf("last call %q, want xclip reading image/jpeg", last)
+	}
+}
+
+// No line the TUI draws is wider than the terminal: a wider line wraps, the
+// terminal scrolls, and every later redraw lands a row off (the input looked
+// unchanged after a paste until a full redraw). The footer is the long one:
+// help, token counter, context gauge and the attachment count.
+func TestView_NoLineWiderThanTheTerminal(t *testing.T) {
+	for _, w := range []int{80, 100, 120, 140, 160} {
+		m := imageModel(t)
+		m.Update(tea.WindowSizeMsg{Width: w, Height: 30})
+		m.sessionTokIn, m.sessionTokOut, m.sessionTok = 1_234_567, 98_765, 1_333_332
+		m.budgetPct, m.budgetUsed, m.budgetCap = 42, 210_000, 500_000
+		p := filepath.Join(t.TempDir(), "shot.png")
+		_ = os.WriteFile(p, pngBytes(t, 30, 20), 0o600)
+		m.Update(m.attachFilesCmd([]string{p, p})())
+		for i, line := range strings.Split(m.View(), "\n") {
+			if lw := lipgloss.Width(line); lw > w {
+				t.Errorf("width %d: line %d is %d wide: %q", w, i, lw, line)
+			}
+		}
+	}
+}
+
+// One Backspace right after an [image N: …] tag deletes the whole tag, and
+// the image with it; the footer says what is attached until then. A Backspace
+// anywhere else is an ordinary one.
+func TestBackspaceRemovesAnImageTag(t *testing.T) {
+	m := imageModel(t)
+	m.ta.InsertString("look at ")
+	p := filepath.Join(t.TempDir(), "x.png")
+	_ = os.WriteFile(p, pngBytes(t, 8, 8), 0o600)
+	m.Update(m.attachFilesCmd([]string{p})())
+	if m.pendingImages() != 1 || !strings.Contains(m.View(), "📎 1 attached") {
+		t.Fatalf("pending %d, footer hint missing:\n%s", m.pendingImages(), m.View())
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.ta.Value(); got != "look at " {
+		t.Fatalf("after one Backspace the input is %q, want %q", got, "look at ")
+	}
+	if m.pendingImages() != 0 || strings.Contains(m.View(), "attached") {
+		t.Fatal("the image is still counted after its tag was deleted")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.ta.Value(); got != "look at" {
+		t.Fatalf("a plain Backspace gave %q", got)
+	}
+	if imgs := m.takeAttachments(m.ta.Value()); len(imgs) != 0 {
+		t.Fatalf("a deleted image would still be sent: %v", imgs)
 	}
 }

@@ -1522,6 +1522,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if isImagePasteKey(msg.String()) {
 				return m, m.pasteImageCmd()
 			}
+			if msg.Type == tea.KeyBackspace && m.deletePlaceholder() {
+				return m, nil
+			}
 			if msg.Paste {
 				if paths := pastedImagePaths(string(msg.Runes)); len(paths) > 0 {
 					return m, m.attachFilesCmd(paths)
@@ -2888,9 +2891,6 @@ func (m *model) statusBar() string {
 func (m *model) contextIndicator() string {
 	bar := ctxBar(m.budgetPct, 12)
 	s := fmt.Sprintf("ctx %s %d%% %s/%s · session %s", bar, m.budgetPct, humanTokens(m.budgetUsed), humanTokens(m.budgetCap), humanTokens(m.sessionTok))
-	if n := len(m.attachments); n > 0 {
-		s = fmt.Sprintf("📎 %d · ", n) + s
-	}
 	if m.teamTok > 0 {
 		s += cDim.Render(" · team " + humanTokens(m.teamTok))
 	}
@@ -2990,7 +2990,11 @@ func (m *model) View() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, chatPad.Render(left), paneBorder.Render(""), m.feed.View())
 	// Footer: help (left) + context gauge (bottom-right), width-aligned,
 	// sharing the chat's left gutter.
-	help := strings.Repeat(" ", chatGutter) + "Enter send · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit"
+	gutter := strings.Repeat(" ", chatGutter)
+	helps := []string{gutter + "Enter send · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit", gutter + "/help · /exit quit", ""}
+	if n := m.pendingImages(); n > 0 { // TEN-493: say what rides the next message, and how to drop it
+		helps = []string{gutter + fmt.Sprintf("📎 %d attached · Backspace removes an [image] tag", n), gutter + fmt.Sprintf("📎 %d attached", n), ""}
+	}
 	ctx := m.contextIndicator()
 	// Right cluster, read left→right: live request timer (only while busy),
 	// directional in/out token counter, then the ctx gauge. Each piece is
@@ -3002,11 +3006,19 @@ func (m *model) View() string {
 	if m.selectMode {
 		right = cOK.Render("✂ SELECT — drag to copy · Ctrl+S/Esc to exit") + " " + right
 	}
-	gap := m.width - lipgloss.Width(help) - lipgloss.Width(right) - 1
-	if gap < 1 {
-		gap = 1
+	// The footer must never be wider than the terminal: a wider last line
+	// wraps, the screen scrolls, and every later redraw lands a row off (a
+	// pasted image's placeholder didn't show until a full redraw). Take the
+	// longest help that fits beside the gauges, then cut whatever remains.
+	help := helps[len(helps)-1]
+	for _, h := range helps {
+		if lipgloss.Width(h)+lipgloss.Width(right)+2 <= m.width {
+			help = h
+			break
+		}
 	}
-	footer := cDim.Render(help) + strings.Repeat(" ", gap) + right + " "
+	gap := max(1, m.width-lipgloss.Width(help)-lipgloss.Width(right)-1)
+	footer := lipgloss.NewStyle().MaxWidth(m.width).Render(cDim.Render(help) + strings.Repeat(" ", gap) + right + " ")
 	// Picker mode replaces the input area with the picker view. Keeps
 	// the chat + feed visible above so the operator has full context
 	// while choosing.
