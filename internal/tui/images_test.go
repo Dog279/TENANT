@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -109,7 +110,7 @@ func TestAltV_WindowsOnly(t *testing.T) {
 func TestPastedImagePaths(t *testing.T) {
 	old := clipGOOS
 	t.Cleanup(func() { clipGOOS = old })
-	clipGOOS = "darwin"
+	clipGOOS = runtime.GOOS // real paths, so parse them the way this host's terminal pastes them
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a b.png")
 	c := filepath.Join(dir, "c.png")
@@ -120,19 +121,28 @@ func TestPastedImagePaths(t *testing.T) {
 		}
 	}
 	_ = os.WriteFile(txt, []byte("hello"), 0o600)
-	escaped := strings.ReplaceAll(a, " ", `\ `)
-	for name, c := range map[string]struct {
+	fileURL := filepath.ToSlash(c)
+	if !strings.HasPrefix(fileURL, "/") {
+		fileURL = "/" + fileURL // file:///C:/… on Windows
+	}
+	cases := map[string]struct {
 		paste string
 		want  int
 	}{
-		"escaped space":   {escaped, 1},
 		"quoted":          {`'` + a + `'`, 1},
 		"two paths":       {`"` + a + `" ` + c, 2},
-		"file url":        {"file://" + strings.ReplaceAll(c, " ", "%20"), 1},
+		"file url":        {"file://" + strings.ReplaceAll(fileURL, " ", "%20"), 1},
 		"not an image":    {txt, 0},
 		"mixed with text": {"look at " + c, 0},
 		"plain text":      {"hello world", 0},
-	} {
+	}
+	if runtime.GOOS != "windows" { // a backslash escapes only off Windows
+		cases["escaped space"] = struct {
+			paste string
+			want  int
+		}{strings.ReplaceAll(a, " ", `\ `), 1}
+	}
+	for name, c := range cases {
 		if got := pastedImagePaths(c.paste); len(got) != c.want {
 			t.Errorf("%s: %q → %v, want %d paths", name, c.paste, got, c.want)
 		}
