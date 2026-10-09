@@ -128,7 +128,7 @@ func (mc *modelControl) UseModel(name, modelOverride string) (string, string, er
 		return "", "", err
 	}
 	installFallbackChain(r, mc.cfgDir, lc, c2.planCeiling, mc.log)
-	r.ProbeVision(context.Background()) // TEN-493: probe a newly routed model
+	r.ProbeVision(context.Background(), false) // TEN-493: probe a newly routed model
 	// Re-point tool-ranking at the new provider's embedder (TEN-226 step 4).
 	// Async: re-resolving + the lazy precompute mustn't block the swap, and it
 	// touches the mux's own lock (never mc.mu), so no nesting. Until it lands, the
@@ -209,7 +209,7 @@ func (mc *modelControl) SetFallback(names []string) (string, error) {
 			return "", err
 		}
 		installFallbackChain(r, mc.cfgDir, lc, lc.PlanLoopCeiling, mc.log)
-		r.ProbeVision(context.Background()) // TEN-493: probe a newly routed model
+		r.ProbeVision(context.Background(), false) // TEN-493: probe a newly routed model
 	}
 	if len(valid) == 0 {
 		return "model fallback cleared", nil
@@ -537,7 +537,7 @@ func (mc *modelControl) rebuildActiveLocked(lc *launchConfig) error {
 		return err
 	}
 	installFallbackChain(r, mc.cfgDir, lc, c2.planCeiling, mc.log)
-	r.ProbeVision(context.Background()) // TEN-493: probe a newly routed model
+	r.ProbeVision(context.Background(), false) // TEN-493: probe a newly routed model
 	return nil
 }
 

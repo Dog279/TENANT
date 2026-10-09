@@ -114,17 +114,19 @@ var (
 )
 
 type probeEntry struct {
-	running bool
+	running chan struct{} // closed when the running probe ends; nil when none runs
 	retryAt time.Time
 }
 
 // probeInBackground starts a probe for this backend's model unless its answer
 // is known, one is already running, or the last one was inconclusive less
-// than probeRetryGap ago. It never blocks.
-func (b *Backend) probeInBackground() {
+// than probeRetryGap ago. It never blocks: it returns a channel closed when
+// the probe it started (or the one already running) ends, or nil when there
+// is none.
+func (b *Backend) probeInBackground() <-chan struct{} {
 	key := model.VisionKeyOf(b.profile)
 	if model.VisionOf(key) != model.VisionUnknown {
-		return
+		return nil
 	}
 	probeMu.Lock()
 	e := probeState[key]
@@ -132,37 +134,52 @@ func (b *Backend) probeInBackground() {
 		e = &probeEntry{}
 		probeState[key] = e
 	}
-	if e.running || time.Now().Before(e.retryAt) {
+	if running := e.running; running != nil {
 		probeMu.Unlock()
-		return
+		return running
 	}
-	e.running = true
+	if time.Now().Before(e.retryAt) {
+		probeMu.Unlock()
+		return nil
+	}
+	done := make(chan struct{})
+	e.running = done
 	probeMu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 		defer cancel()
 		v, err := b.ProbeVision(ctx)
+		if v != model.VisionUnknown {
+			model.SetVision(key, v) // before done closes, so a waiter sees it
+		}
 		probeMu.Lock()
-		e.running = false
+		e.running = nil
 		if v == model.VisionUnknown {
 			e.retryAt = time.Now().Add(probeRetryGap)
 		}
 		probeMu.Unlock()
+		close(done)
 		if v == model.VisionUnknown {
 			model.VisionInconclusive.Log(ctx, "model", b.profile.Model, "endpoint", key.Endpoint, "err", err)
 			return
 		}
-		model.SetVision(key, v)
 		model.VisionProbed.Log(ctx, "model", b.profile.Model, "endpoint", key.Endpoint, "answer", v.String())
 	}()
+	return done
 }
 
-// ProbeAtStart starts the background probe for a self-hosted model whose
-// vision is left to the probe: keyless (a hosted, billed provider is probed
-// only when an image is first sent to it) and not set on or off.
-func (b *Backend) ProbeAtStart() {
-	if b.profile.APIKey != "" || !model.VisionAuto(b.profile) {
-		return
+// ProbeAtStart starts the background probe for a model whose vision is left
+// to the probe (not set on or off). A hosted, keyed provider is billed per
+// request, so it is probed here only when its vision is set to "auto"
+// explicitly or all is true (tenant eval --subset vision); otherwise when an
+// image is first sent to it. It returns what probeInBackground does.
+func (b *Backend) ProbeAtStart(all bool) <-chan struct{} {
+	if !model.VisionAuto(b.profile) {
+		return nil
 	}
-	b.probeInBackground()
+	explicit := strings.EqualFold(strings.TrimSpace(b.profile.Vision), "auto")
+	if b.profile.APIKey != "" && !explicit && !all {
+		return nil
+	}
+	return b.probeInBackground()
 }

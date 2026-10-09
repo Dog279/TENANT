@@ -283,7 +283,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log.With("source", "model"))
-	router.ProbeVision(context.Background()) // know which models see before the first image arrives (TEN-493)
+	router.ProbeVision(context.Background(), false) // know which models see before the first image arrives (TEN-493)
 	router.SetFailoverObserver(func(ev model.FailoverEvent) {
 		from := fallbackLabelToProvider(ev.From, c.lc.Provider)
 		to := fallbackLabelToProvider(ev.To, c.lc.Provider)

@@ -290,7 +290,7 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 	}
 	h.Concurrency = jOpts.concurrency // <=1 = sequential (TEN-221)
 	h.TaskTimeout = jOpts.taskTimeout // 0 = unlimited (TEN-222)
-	if sub == eval.SubsetFitness || sub == eval.SubsetFull {
+	if sub == eval.SubsetFitness || sub == eval.SubsetFull || sub == eval.SubsetVision {
 		// Fall back to the persisted judge override (TEN-91) when no --judge-model
 		// flag was given, so a /judge choice applies to `tenant eval`, the nightly
 		// job, AND the SoulNudge scorer identically. The flag always wins.
@@ -580,6 +580,13 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	// purely infrastructural reason.
 	if c.lc != nil {
 		installFallbackChain(router, c.cfgDir, c.lc, c.planCeiling, log)
+	}
+	if sub == eval.SubsetVision {
+		// The vision tasks need to know whether the model can see before the
+		// first image goes out; an unknown answer would send a note instead.
+		pctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		router.ProbeVision(pctx, true)
+		cancel()
 	}
 	// Auto-enable plugins the operator has available but didn't flag. Without
 	// this, every plugin defaults to off and the agent has no tools — scoring

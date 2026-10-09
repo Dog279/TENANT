@@ -111,16 +111,21 @@ func TestProbeInBackground_OncePerModel(t *testing.T) {
 	b := backendFor(t, srv.URL, "")
 	key := model.VisionKeyOf(b.profile)
 	t.Cleanup(func() { model.SetVision(key, model.VisionUnknown) })
-	b.ProbeAtStart()
-	b.ProbeAtStart()
-	deadline := time.Now().Add(5 * time.Second)
-	for model.VisionOf(key) == model.VisionUnknown && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	first, second := b.ProbeAtStart(false), b.ProbeAtStart(false)
+	if first == nil || first != second {
+		t.Fatal("the second call should wait on the first probe, not start another")
+	}
+	select {
+	case <-first:
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe never ended")
 	}
 	if model.VisionOf(key) != model.VisionYes {
 		t.Fatalf("registry = %v, want yes", model.VisionOf(key))
 	}
-	b.ProbeAtStart() // known now: no new request
+	if b.ProbeAtStart(false) != nil { // known now: no new request
+		t.Fatal("a known answer started another probe")
+	}
 	if n := atomic.LoadInt32(&hits); n != 1 {
 		t.Fatalf("%d probe requests, want 1", n)
 	}
@@ -138,6 +143,35 @@ func TestJudgeProbe(t *testing.T) {
 	} {
 		if got, _ := judgeProbe(text, "red", "blue"); got != want {
 			t.Errorf("%q = %v, want %v", text, got, want)
+		}
+	}
+}
+
+// A keyed (billed) provider isn't probed at launch unless its vision is set
+// to auto explicitly, or the caller asks for every model (the eval).
+func TestProbeAtStart_KeyedProviders(t *testing.T) {
+	for _, c := range []struct {
+		vision string
+		all    bool
+		want   bool
+	}{
+		{"", false, false},
+		{"auto", false, true},
+		{"", true, true},
+		{"off", true, false},
+	} {
+		var hits int32
+		srv := seeingServer(t, "/v1/chat/completions", false, &hits)
+		inst, err := New(context.Background(), model.Profile{ID: "k", Backend: "vllm", Endpoint: srv.URL, Model: "m", APIKey: "sk-test", Vision: c.vision}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := inst.(*Backend)
+		t.Cleanup(func() { model.SetVision(model.VisionKeyOf(b.profile), model.VisionUnknown) })
+		if done := b.ProbeAtStart(c.all); (done != nil) != c.want {
+			t.Errorf("vision %q all %v: probed = %v, want %v", c.vision, c.all, done != nil, c.want)
+		} else if done != nil {
+			<-done
 		}
 	}
 }

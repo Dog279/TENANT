@@ -513,7 +513,9 @@ func (m metered) end(ctx context.Context, act *event.Activity, err error) {
 
 // visionProber is a backend that can check, in the background, whether its
 // model sees images (the vllm backend; TEN-493).
-type visionProber interface{ ProbeAtStart() }
+type visionProber interface {
+	ProbeAtStart(all bool) <-chan struct{}
+}
 
 // ProbeVision starts the background vision probe for every generation model
 // the router can route to (each role's primary and its fallbacks), so the
@@ -521,7 +523,11 @@ type visionProber interface{ ProbeAtStart() }
 // are skipped, as are profiles that aren't LLMs (embedders); the probe itself
 // skips billed providers and models with vision set on or off. Call it at
 // launch and after the profiles change (/model use, reload, fallbacks).
-func (r *Router) ProbeVision(ctx context.Context) {
+//
+// With wait (tenant eval --subset vision, which needs the answer first),
+// billed providers are probed too, and it returns once every probe has ended
+// or ctx is done.
+func (r *Router) ProbeVision(ctx context.Context, wait bool) {
 	r.mu.Lock()
 	ids := map[string]bool{}
 	for _, id := range r.rolePref {
@@ -551,6 +557,12 @@ func (r *Router) ProbeVision(ctx context.Context) {
 	}
 	r.mu.Unlock()
 	for _, pr := range probers {
-		pr.ProbeAtStart()
+		if done := pr.ProbeAtStart(wait); wait && done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }
