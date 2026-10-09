@@ -2053,6 +2053,12 @@ func (f *fakeAgentCtl) Remove(name string) (string, error) {
 	}
 	return "removed", nil
 }
+func (f *fakeAgentCtl) Limits() ([]LimitRow, error) {
+	return []LimitRow{
+		{"Tokens per run", "max_tokens_per_run", "off", "Set a positive number to stop a run that goes past it."},
+		{"Helpers at once", "max_concurrent_subagents", "4", "Guards this machine; on by default."},
+	}, nil
+}
 func (f *fakeAgentCtl) Show(name string) (AgentDetail, error) {
 	f.calls = append(f.calls, "Show:"+name)
 	if f.showFn != nil {
@@ -2203,6 +2209,20 @@ func TestAgents_Show(t *testing.T) {
 	for _, want := range []string{"researcher", "zai/glm-4.6", "web research", "--- soul ---", "Be thorough"} {
 		if !strings.Contains(last.content, want) {
 			t.Errorf("show missing %q:\n%s", want, last.content)
+		}
+	}
+}
+
+// /agents limits lists every team-run limit with its key; unset run limits
+// read "off" (TEN-508).
+func TestAgents_Limits(t *testing.T) {
+	m := newModel(context.Background(), Config{Agents: &fakeAgentCtl{}})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.handleSlash("/agents limits")
+	last := m.msgs[len(m.msgs)-1].content
+	for _, want := range []string{"team-run limits", "Tokens per run", "max_tokens_per_run", "off", "max_concurrent_subagents"} {
+		if !strings.Contains(last, want) {
+			t.Errorf("/agents limits missing %q:\n%s", want, last)
 		}
 	}
 }

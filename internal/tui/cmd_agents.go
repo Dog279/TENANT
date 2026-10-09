@@ -67,6 +67,14 @@ func (m *model) handleAgents(arg string) {
 	}
 	sub := strings.ToLower(f[0])
 	switch sub {
+	case "limits", "budgets":
+		rows, err := m.cfg.Agents.Limits()
+		if err != nil {
+			m.sysChat("agents limits: " + err.Error())
+			return
+		}
+		m.sysChat(renderLimitRows(rows))
+		return
 	case "add", "set":
 		// /agents add <name> <provider> [<model>] [-- <description>]
 		// The optional `-- <description>` lets the operator write a free-form
@@ -355,6 +363,17 @@ func (m *model) startAgentModelPicker(agentName string) tea.Cmd {
 	})
 }
 
+// renderLimitRows is /agents limits: each team-run limit, its config key and
+// how to turn it on (TEN-508).
+func renderLimitRows(rows []LimitRow) string {
+	var b strings.Builder
+	b.WriteString("team-run limits (config.json → \"budgets\"; run limits are off unless set):\n")
+	for _, r := range rows {
+		fmt.Fprintf(&b, "  %-24s %s\n      %s — %s\n", r.Name, r.Value, r.Key, r.Note)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // agentCommands are the named sub-agent commands.
 func agentCommands() []*slashCommand {
 	return []*slashCommand{
@@ -368,6 +387,7 @@ func agentCommands() []*slashCommand {
 				{Syntax: "/agents soul <name> <markdown>", Desc: "set the agent's identity (empty clears)"},
 				{Syntax: "/agents show <name>", Desc: "show an agent's full identity + model"},
 				{Syntax: "/agents remove <name>", Desc: "delete an agent profile"},
+				{Syntax: "/agents limits", Desc: "show the team-run limits (off unless set) and their config keys"},
 			}},
 	}
 }

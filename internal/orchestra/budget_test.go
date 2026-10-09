@@ -9,13 +9,61 @@ import (
 	"time"
 )
 
-func TestDefaultBudgetsAreBounded(t *testing.T) {
+// TEN-508: an unset config has no run limits and no cost rates, only the
+// machine guards; 0 stays off through WithDefaults and a negative reads as 0.
+func TestDefaultBudgetsRunLimitsOff(t *testing.T) {
 	b := DefaultBudgets()
-	if b.MaxConcurrentSubagents <= 0 || b.MaxAgentsPerRun <= 0 ||
-		b.MaxToolCallsPerTurn <= 0 || b.MaxToolCallsPerRun <= 0 ||
-		b.MaxTokensPerRun <= 0 || b.MaxCostUSD <= 0 || b.MaxWallTime <= 0 ||
-		b.MaxBrowserInstances <= 0 || b.BusHistoryCap <= 0 {
-		t.Fatalf("every default must be a positive hard cap: %+v", b)
+	if b.MaxConcurrentSubagents <= 0 || b.MaxBrowserInstances <= 0 || b.BusHistoryCap <= 0 {
+		t.Fatalf("the machine guards must have positive defaults: %+v", b)
+	}
+	off := Budgets{MaxConcurrentSubagents: b.MaxConcurrentSubagents, MaxBrowserInstances: b.MaxBrowserInstances, BusHistoryCap: b.BusHistoryCap}
+	if b != off {
+		t.Fatalf("run limits and rates must default off: %+v", b)
+	}
+	if got := (Budgets{MaxTokensPerRun: -1, MaxCostUSD: -2, InputCostPerMillionUSD: -1}).WithDefaults(); got != off {
+		t.Fatalf("negative values must read as off: %+v", got)
+	}
+	if got := (Budgets{MaxTokensPerRun: 7}).WithDefaults(); got.MaxTokensPerRun != 7 || got.MaxCostUSD != 0 {
+		t.Fatalf("a set limit is kept, the rest stay off: %+v", got)
+	}
+}
+
+// TEN-508: with every run limit off a run is bounded by nothing but the
+// machine guards: many agents, tool calls and tokens, no wall timer; one
+// limit set enforces just that limit.
+func TestGovernorRunLimitsOffByDefault(t *testing.T) {
+	g := NewGovernor(Budgets{}, nil)
+	ctx := g.Begin(context.Background())
+	for i := 0; i < 40; i++ {
+		_, release, err := g.AcquireAgent()
+		if err != nil {
+			t.Fatalf("agent %d refused with no per-run limit: %v", i, err)
+		}
+		release()
+	}
+	for i := 0; i < 1000; i++ {
+		if err := g.AcquireToolCall(ctx, "turn"); err != nil {
+			t.Fatalf("tool call %d refused with no limit: %v", i, err)
+		}
+	}
+	if err := g.RecordUsage(10_000_000, 10_000_000); err != nil {
+		t.Fatalf("20M tokens refused with no limit: %v", err)
+	}
+	if st := g.Status(); !st.Active || st.EstimatedCostUSD != 0 || !strings.Contains(st.String(), "tokens=20000000/off") || !strings.Contains(st.String(), "cost=n/a/off") {
+		t.Fatalf("status = %s (active %v, cost %v)", st, st.Active, st.EstimatedCostUSD)
+	}
+	g.mu.Lock()
+	timer := g.timer
+	g.mu.Unlock()
+	if timer != nil {
+		t.Fatal("no wall-time limit must start no timer")
+	}
+	g.End()
+
+	g = NewGovernor(Budgets{MaxTokensPerRun: 100}, nil)
+	g.Begin(context.Background())
+	if err := g.RecordUsage(60, 60); err == nil {
+		t.Fatal("max_tokens_per_run set: 120 tokens must end the run")
 	}
 }
 

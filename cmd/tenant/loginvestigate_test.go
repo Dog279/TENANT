@@ -320,3 +320,23 @@ func TestInvestigationNeedsApproval(t *testing.T) {
 		t.Errorf("a second investigation: err = %v", err)
 	}
 }
+
+// TEN-508: an investigation keeps its ceilings when the operator's run limits
+// are off (the default), and a tighter operator limit still wins.
+func TestInvestigationBudget_CeilingsWhenLimitsOff(t *testing.T) {
+	b := investigationBudget(orchestra.Budgets{})
+	if b.MaxTokensPerRun != investigationTokens || b.MaxToolCallsPerRun != investigationToolCalls ||
+		b.MaxCostUSD != investigationCostUSD || b.MaxWallTime != investigationTime {
+		t.Fatalf("limits off: got %+v, want the investigation ceilings", b)
+	}
+	if b = investigationBudget(orchestra.Budgets{MaxTokensPerRun: 1000}); b.MaxTokensPerRun != 1000 {
+		t.Fatalf("a tighter operator limit must stay: %d", b.MaxTokensPerRun)
+	}
+	// The approval text promises the cost ceiling only when rates can price it.
+	if req := investigationRequest(alerts.Alert{}, "", investigationBudget(orchestra.Budgets{})); strings.Contains(req, "$") {
+		t.Errorf("no rates, yet the request promises a cost ceiling: %s", req)
+	}
+	if req := investigationRequest(alerts.Alert{}, "", investigationBudget(orchestra.Budgets{InputCostPerMillionUSD: 3})); !strings.Contains(req, "$5.00") {
+		t.Errorf("rates set, but the request lacks the $5 ceiling: %s", req)
+	}
+}

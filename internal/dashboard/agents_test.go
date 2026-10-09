@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"tenant/internal/orchestra"
 )
 
 // fakeAgents records every change as "Method|arg|arg…" and fails reads or
@@ -36,6 +38,9 @@ func (f *fakeAgents) SetSoul(n, s string) error     { return f.record("SetSoul",
 func (f *fakeAgents) Rename(from, to string) error  { return f.record("Rename", from, to) }
 func (f *fakeAgents) Remove(n string) error         { return f.record("Remove", n) }
 func (f *fakeAgents) RestartNote() string           { return f.restart }
+func (f *fakeAgents) Limits() ([]orchestra.LimitRow, error) {
+	return orchestra.Budgets{MaxTokensPerRun: 300_000}.LimitRows(), nil
+}
 func (f *fakeAgents) SendsTo(kind string) string {
 	if kind == "openai" {
 		return "OpenAI"
@@ -168,6 +173,24 @@ func TestAgents_List(t *testing.T) {
 	}
 	if strings.Contains(body, `id="edit"`) {
 		t.Error("the edit panel shows without ?edit=")
+	}
+}
+
+// TEN-508: the Helpers page lists the run limits, "off" when unset, with the
+// config key that turns each on.
+func TestAgents_LimitsCard(t *testing.T) {
+	body := get(t, agentsServer(sampleAgents(), cloudModels...), "/agents").Body.String()
+	for _, want := range []string{
+		`id="limits"`, "Run limits",
+		`Tokens per run <span class="tag">300000</span>`, "<code>max_tokens_per_run</code>",
+		`Estimated cost per run <span class="tag">off</span>`, "<code>max_cost_usd</code>",
+		`Time per run <span class="tag">off</span>`,
+		`Helpers at once <span class="tag">4</span>`,
+		"not set (no cost estimate)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the limits card lacks %q", want)
+		}
 	}
 }
 

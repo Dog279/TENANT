@@ -68,6 +68,14 @@ Releases page.
   service unit and reinstalls through `tenant update`.
 
 ### Changed
+- **Team-run limits are off by default** (TEN-508). Tokens per run (was 500,000), estimated
+  cost ($25), time (30m), tool calls per run (256) and per answer (64), and helpers per run
+  (16) no longer stop a run unless you set them under `budgets` in config.json. A value you
+  already set keeps working. The cost rates no longer default to guessed hosted prices
+  ($15/$75 per million), so there's no cost estimate until you set them. The machine guards
+  stay on: 4 helpers and 4 browsers at once, 1000 bus messages. `/agents limits` and the
+  dashboard's Helpers page show every limit, its value and its key. Alert investigations
+  keep their own ceilings; their $5 cost ceiling, like any cost limit, needs the rates.
 - **The surfaced tools stay put for a whole session** (TEN-505). Tool ranking used to pick
   a new top-K for every turn, and since the tools array sits at the top of the prompt,
   any change threw away the model server's prefix cache for the whole conversation.
