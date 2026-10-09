@@ -218,7 +218,7 @@ var EmptyFinal = Turns.Event(2104, event.Warning, "Turn", "The model gave an emp
 
 var Oscillating = Turns.Event(2105, event.Warning, "Turn", "The same tool calls repeated {identical_runs} times; forcing a synthesis", "agent", "iter", "identical_runs").
 	Doc("The model kept making the same tool calls, so the turn stopped looping and answered from what it had.",
-		"A weak model locked onto one call, or a tool keeps returning something the model doesn't accept.",
+		"A model locked onto one call that keeps returning the same result. A call whose result (or error text) changes each time counts as progress and runs to plan_loop_ceiling instead.",
 		"Look at the repeated call's result in the turn's tool events. For a deliberate wait loop raise /ceiling repeat <n>; otherwise a stronger planner usually avoids it.")
 
 var CompactFailed = Turns.Event(2106, event.Warning, "Compaction", "Working-set compaction failed at {stage}: {err}", "agent", "stage", "err").

@@ -300,9 +300,7 @@ func (c *commonFlags) autodetectModel() {
 	// model (400s on long prompts) or under-use a bigger one (TEN-507: a 500K
 	// model held to the 128K default because its name was set).
 	if m, ok := pickServed(ms, c.vllmModel); ok {
-		if c.vllmModel == "" {
-			c.vllmModel = m.ID
-		}
+		c.vllmModel = m.ID // the served casing: vLLM's model lookup is case-sensitive
 		if m.MaxLen > 0 {
 			c.contextLen = m.MaxLen
 		}
@@ -902,6 +900,9 @@ func attachJudge(r *model.Router, kind, endpoint, modelID, apiKey string) error 
 		vllmModel:    modelID,
 		vllmToolFmt:  pk.DefaultToolFmt,
 		genAPIKey:    apiKey,
+	}
+	if m, ok := servedModelFor(pk, endpoint, apiKey, modelID); ok { // TEN-507
+		c.vllmModel, c.contextLen = m.ID, m.MaxLen
 	}
 	gen, factories, err := genProfiles(c)
 	if err != nil {

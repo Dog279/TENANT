@@ -83,3 +83,52 @@ func TestTurn_StickyToolSet(t *testing.T) {
 		})
 	}
 }
+
+// scriptedReg returns a scripted pick list per Search call.
+type scriptedReg struct {
+	rotatingReg
+	script [][]string
+}
+
+func (r *scriptedReg) Search(context.Context, []float32, int) ([]model.ToolSpec, error) {
+	var out []model.ToolSpec
+	for _, n := range r.script[r.n] {
+		s, _ := r.Get(n)
+		out = append(out, s)
+	}
+	r.n++
+	return out, nil
+}
+
+// A ranker fallback (the whole catalog back, e.g. the query embedding failed)
+// is sent that turn but never sticks, so one blip can't pin the full catalog
+// for the rest of the session.
+func TestTurn_StickyToolSetIgnoresRankerFallback(t *testing.T) {
+	reg := &scriptedReg{script: [][]string{{"a", "b"}, {"a", "b", "c", "d", "e"}, {"c", "d"}}}
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		reg.specs = append(reg.specs, model.ToolSpec{Name: n, Parameters: json.RawMessage(`{"type":"object"}`)})
+	}
+	a, fake, _, _ := buildAgentFull(t, model.Profile{PlanLoopCeiling: 5}, nil, agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) {
+		return "", false, nil
+	}), nil, nil, func(c *agent.Config) { c.Tools = reg })
+	var sent [][]string
+	fake.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		names := make([]string, len(req.Tools))
+		for i, s := range req.Tools {
+			names[i] = s.Name
+		}
+		sent = append(sent, names)
+		return &model.GenerateResponse{Text: "ok"}, nil
+	}
+	for range 3 {
+		if _, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "next"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := [][]string{{"a", "b"}, {"a", "b", "c", "d", "e"}, {"a", "b", "c", "d"}}
+	for i := range want {
+		if !slices.Equal(sent[i], want[i]) {
+			t.Errorf("turn %d tools = %v, want %v", i+1, sent[i], want[i])
+		}
+	}
+}

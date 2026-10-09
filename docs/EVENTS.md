@@ -6301,7 +6301,7 @@ Writes the `turns` log.
 
 **What it means.** The model kept making the same tool calls, so the turn stopped looping and answered from what it had.
 
-**Why it happens.** A weak model locked onto one call, or a tool keeps returning something the model doesn't accept.
+**Why it happens.** A model locked onto one call that keeps returning the same result. A call whose result (or error text) changes each time counts as progress and runs to plan_loop_ceiling instead.
 
 **What to do.** Look at the repeated call's result in the turn's tool events. For a deliberate wait loop raise /ceiling repeat <n>; otherwise a stronger planner usually avoids it.
 

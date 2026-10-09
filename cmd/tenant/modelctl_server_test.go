@@ -319,6 +319,22 @@ func TestNamedModel_UsesServedContextLength(t *testing.T) {
 		t.Errorf("helper planner = %+v, %v", p, err)
 	}
 
+	// A casing slip takes the served id (vLLM ids are case-sensitive).
+	c = &commonFlags{backend: "vllm", genKind: "llamacpp", vllmEndpoint: srv.URL, vllmModel: "GLM-5.3-Flash"}
+	c.autodetectModel()
+	if c.vllmModel != "glm-5.3-flash" || c.contextLen != 500000 {
+		t.Errorf("casing: model %q, context %d; want glm-5.3-flash, 500000", c.vllmModel, c.contextLen)
+	}
+
+	// A self-hosted judge gets the served length too.
+	jr := model.NewRouter(model.NewEmptyRegistry(), nil)
+	if err := attachJudge(jr, "llamacpp", srv.URL, "glm-5.3-flash", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, p, err := jr.LLMForRole(context.Background(), model.RoleJudge); err != nil || p.ContextLength != 500000 {
+		t.Errorf("judge = %+v, %v; want context 500000", p, err)
+	}
+
 	// A model the server doesn't list keeps the default.
 	c = &commonFlags{backend: "vllm", genKind: "llamacpp", vllmEndpoint: srv.URL, vllmModel: "gone"}
 	c.autodetectModel()

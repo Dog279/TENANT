@@ -115,14 +115,14 @@ func slashRepeatGuard(m *model, args []string) tea.Cmd {
 	}
 	var n int
 	switch a := strings.ToLower(args[0]); a {
-	case "off":
+	case "off", "0": // 0 = off, as on the dashboard
 		n = -1
 	case "default":
 		n = 0
 	default:
 		v, err := strconv.Atoi(a)
 		if err != nil || v < 0 {
-			m.sysChat("usage: /ceiling repeat <n|off|default>   (e.g. /ceiling repeat 12)")
+			m.sysChat("usage: /ceiling repeat <n|off|default>   (e.g. /ceiling repeat 12; 0 = off)")
 			return nil
 		}
 		n = v

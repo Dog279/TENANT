@@ -164,9 +164,10 @@ whose output changes never trips it. The feed says "stuck repeating", not
 ```
 /ceiling repeat        # show it
 /ceiling repeat 12     # allow longer identical wait loops
-/ceiling repeat off    # only the loop ceiling ends a turn
+/ceiling repeat off    # only the loop ceiling ends a turn (0 works too)
+/ceiling repeat default
 ```
-Saved as `repeat_guard` in config.json (0 = default, negative = off).
+Saved as `repeat_guard` in config.json (0 or missing = default, negative = off).
 
 ---
 

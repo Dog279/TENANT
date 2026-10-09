@@ -73,8 +73,9 @@ Releases page.
   any change threw away the model server's prefix cache for the whole conversation.
   Now ranking only adds tools: earlier picks keep their place, new ones are appended,
   and tools loaded with `load_tool` stay too, so the array changes only when it grows.
-  `/clear` and compaction start a fresh set. `per_turn_tool_ranking: true` in
-  config.json brings back per-turn ranking.
+  A turn where ranking fell back to the whole catalog (a failed query embedding) is
+  sent but doesn't stick. `/clear`, `/compress` and automatic compaction start a fresh
+  set. `per_turn_tool_ranking: true` in config.json brings back per-turn ranking.
 - **Dashboard cleanup** (TEN-402): http://localhost:8770 (and [::1]) reaches a loopback dashboard
   without being added to `allowed_hosts` (TEN-414); the cron form offers preset schedules, with the
   cron line still typable (TEN-420) and a failed job's row shows its error (TEN-427); the research busy refusal is in
@@ -114,13 +115,14 @@ Releases page.
 - **A named self-hosted model gets its real context window** (TEN-507). Tenant read a
   vLLM server's `max_model_len` only when the provider's model was left blank, so naming
   the model (e.g. a 500K `glm-5.3-flash`) held it to the 128K default. Launch,
-  `/model use`, fallbacks, planner-big and agent profiles now look the named model up in
-  `/v1/models` and use its length; an unlisted model or an unreachable server keeps the
-  default.
+  `/model use`, fallbacks, planner-big, agent profiles and the judge now look the named
+  model up in `/v1/models` and use its length (and the served casing of its name); an
+  unlisted model or an unreachable server keeps the default.
 - **Waiting on a job no longer cuts the turn short** (TEN-506). The repeat guard now
-  counts a round as a repeat only when the same tool calls return the same results, so a
-  poll whose output changes keeps going until the loop ceiling. It trips after 8
-  identical rounds instead of 3, is set live with `/ceiling repeat <n|off>` or the dashboard's Model page (saved as
+  counts a round as a repeat only when the same tool calls return the same results (as
+  the model sees them, after the context cap), so a poll whose output changes keeps
+  going until the loop ceiling. It trips after 8
+  identical rounds instead of 3, is set live with `/ceiling repeat <n|off|default>` (0 = off) or the dashboard's Model page (saved as
   `repeat_guard`), and is reported as "stuck repeating the same tool calls" with its own
   event (turns 2004), not as "loop ceiling hit".
 - **A corrupt `config.json` is no longer overwritten.** Tenant refuses to start on it and

@@ -72,7 +72,10 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	// A self-hosted server: ask it now, as the active provider's launch does,
 	// for the model (when found automatically) and its context window.
 	served, found := servedModelFor(pk, pc.Endpoint, apiKey, mdl)
-	if found && mdl == "" {
+	if found && mdl != "" && served.ID != mdl {
+		sysProfileModelCased.Log(context.Background(), "profile", profileName, "configured", mdl, "served", served.ID)
+	}
+	if found {
 		mdl = served.ID
 	}
 	if mdl == "" {
@@ -84,9 +87,9 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	// vs the served "...-NVFP4") 404s every generate call of every spawn. A
 	// case-insensitive match adopts the server's casing; a total miss logs the
 	// served list; an unreachable endpoint changes nothing (offline spawns must
-	// not be blocked by a health check). A model the server just named needs
-	// no second look, nor does an exact match.
-	if (!found || served.ID != mdl) && pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
+	// not be blocked by a health check). A model the server just matched
+	// (named, exact or by casing) needs no second look.
+	if !found && pk.Backend == "vllm" && strings.TrimSpace(pc.Endpoint) != "" {
 		mdl = reconcileServedModel(pc.Endpoint, apiKey, mdl, profileName)
 	}
 

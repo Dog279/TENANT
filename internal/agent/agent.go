@@ -767,6 +767,11 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	if err != nil {
 		return nil, fmt.Errorf("agent: tool search: %w", err)
 	}
+	// The whole catalog back means ranking didn't trim this turn (small
+	// catalog, or a ranker fallback such as a failed query embedding): it is
+	// already stable, and must not stick, or one embedder blip would pin the
+	// full catalog for the rest of the session (TEN-505).
+	wholeCatalog := len(availableTools) >= len(a.cfg.Tools.All())
 	// Capability gate (TEN-103): only offer tools the active model may use, so a
 	// small local planner never sees an augmentation tool like memory_recall.
 	availableTools, droppedGated := filterGatedTools(availableTools, profile)
@@ -775,15 +780,15 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// order, and append this turn's new picks, so the tools array only changes
 	// when it grows.
 	stickNote := ""
-	if !a.cfg.PerTurnToolRanking {
-		var added int
+	if !a.cfg.PerTurnToolRanking && !wholeCatalog {
 		reused := len(a.stickyTools) > 0
-		availableTools, added = a.stickToolSet(availableTools, profile)
+		var added, dropped int
+		availableTools, added, dropped = a.stickToolSet(availableTools, profile)
 		switch {
-		case reused && added == 0:
+		case reused && added == 0 && dropped == 0:
 			stickNote = fmt.Sprintf("; sticky set reused (%d tools)", len(availableTools))
 		case reused:
-			stickNote = fmt.Sprintf("; sticky set +%d (%d tools)", added, len(availableTools))
+			stickNote = fmt.Sprintf("; sticky set +%d −%d (%d tools)", added, dropped, len(availableTools))
 		}
 	}
 	// Minify the SURVIVORS' JSON schemas before they hit the wire (TEN-227):
@@ -1187,6 +1192,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		}
 		toolStart := time.Now()
 		batchResults := dispatchBatch(a.ev(ctx), validCalls, callFlows, parallel, a.cfg.Dispatcher)
+		seen := make([]string, 0, len(batchResults)) // what the model saw this round, for the repeat guard
 		span.AddToolTime(time.Since(toolStart))
 		for _, br := range batchResults {
 			if spec, ok := a.cfg.Tools.Get(br.Call.Name); ok && br.Err == nil && !br.IsError {
@@ -1225,14 +1231,14 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 			} else {
 				ToolDone.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tool", br.Call.Name, "duration", br.Duration)
 			}
-			a.feedToolResult(ctx, br, profile.ToolResultCap())
+			seen = append(seen, fmt.Sprintf("%q %q %q", br.Call.Name, br.Call.Arguments, a.feedToolResult(ctx, br, profile.ToolResultCap())))
 		}
 
 		// Oscillation guard (TEN-261): the same calls getting the same results for
 		// RepeatGuard() rounds in a row means no new information is arriving, so
 		// stop and synthesize instead of looping to the ceiling. A poll whose
 		// output changes (a job's CPU time, a growing log) never trips it (TEN-506).
-		if sig := roundSignature(batchResults); sig != "" && sig == lastToolSig {
+		if sig := roundSignature(seen); sig != "" && sig == lastToolSig {
 			if limit := RepeatGuard(); limit > 0 && repeatRuns+2 >= limit {
 				Oscillating.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "identical_runs", repeatRuns+2)
 				a.emit(Event{Kind: EventError, Iter: iter, Text: "stuck repeating the same tool call — synthesizing from gathered results"})
@@ -1343,9 +1349,10 @@ func (a *Agent) compactWorking(ctx context.Context) {
 // (TEN-505): earlier picks first, in the order they were surfaced, then new
 // ones in rank order. Nothing is re-sorted, so the tools array stays identical
 // until a tool is added. A sticky tool since disabled, or gated off by a model
-// swap, drops out. Returns the merged specs and how many are new this turn.
-func (a *Agent) stickToolSet(ranked []model.ToolSpec, profile model.Profile) ([]model.ToolSpec, int) {
-	merged := make([]model.ToolSpec, 0, len(a.stickyTools)+len(ranked))
+// swap, drops out. Returns the merged specs and how many were added and
+// dropped this turn.
+func (a *Agent) stickToolSet(ranked []model.ToolSpec, profile model.Profile) (merged []model.ToolSpec, added, dropped int) {
+	merged = make([]model.ToolSpec, 0, len(a.stickyTools)+len(ranked))
 	seen := make(map[string]bool, cap(merged))
 	for _, name := range a.stickyTools {
 		if spec, ok := a.cfg.Tools.Get(name); ok && !seen[name] {
@@ -1362,15 +1369,15 @@ func (a *Agent) stickToolSet(ranked []model.ToolSpec, profile model.Profile) ([]
 	}
 	merged, _ = filterGatedTools(merged, profile)
 	names := make([]string, len(merged))
-	added := 0
 	for i, s := range merged {
 		names[i] = s.Name
 		if !prev[s.Name] {
 			added++
 		}
 	}
+	dropped = len(a.stickyTools) - (len(merged) - added)
 	a.stickyTools = names
-	return merged, added
+	return merged, added, dropped
 }
 
 // stickTool appends a tool the model loaded on demand (TEN-228) to the sticky
@@ -1454,6 +1461,7 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 	}
 	if changed || microChanged {
 		a.cfg.Working.Replace(msgs)
+		a.stickyTools = nil // as compactWorking: the next turn ranks afresh (TEN-505)
 		a.emit(Event{Kind: EventCompact, Text: fmt.Sprintf("%d → %d messages", before, len(msgs))})
 	}
 	return before, len(msgs), nil
@@ -1806,7 +1814,10 @@ func (a *Agent) feedValidationError(ctx context.Context, call model.ToolCall, va
 	})
 }
 
-func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultTokens int) {
+// It returns the result body the model is shown, without the truncation note
+// (whose full-length count would make a growing hidden tail look like new
+// information to the repeat guard).
+func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultTokens int) (shown string) {
 	content := r.Result
 	if r.Err != nil {
 		content = fmt.Sprintf("tool dispatch error: %s", r.Err.Error())
@@ -1835,6 +1846,7 @@ func (a *Agent) feedToolResult(ctx context.Context, r ToolCallResult, maxResultT
 			Labels:  append([]model.InfoFlowLabel(nil), r.Labels...),
 		},
 	})
+	return body
 }
 
 func infoFlowMeta(labels []model.InfoFlowLabel) map[string]any {
@@ -1888,23 +1900,17 @@ func hasSensitiveLabel(labels []model.InfoFlowLabel) bool {
 	return false
 }
 
-// roundSignature builds a stable, order-independent signature of one round:
-// each call's name + raw arguments + what it returned, sorted and joined. The
-// oscillation guard compares it across iterations; including the result means
-// a poll that keeps seeing new output is progress, not a loop. Empty string
-// for no calls.
-func roundSignature(results []ToolCallResult) string {
-	if len(results) == 0 {
+// roundSignature joins one round's calls and the results the model was shown
+// (name, raw arguments, capped result body; each quoted, so no result bytes can
+// mimic a separator), order-independent. The repeat
+// guard compares it across iterations: a poll whose visible output changes is
+// progress, not a loop, while output that differs only past the context cap
+// looks identical to the model and counts as a repeat. "" for no calls.
+func roundSignature(seen []string) string {
+	if len(seen) == 0 {
 		return ""
 	}
-	parts := make([]string, len(results))
-	for i, r := range results {
-		errText := ""
-		if r.Err != nil {
-			errText = r.Err.Error()
-		}
-		parts[i] = r.Call.Name + "\x00" + string(r.Call.Arguments) + "\x00" + r.Result + "\x00" + errText
-	}
+	parts := slices.Clone(seen)
 	sort.Strings(parts)
 	return strings.Join(parts, "\x01")
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -55,12 +56,14 @@ func TestTurn_RepeatGuardOnlyTripsOnIdenticalResults(t *testing.T) {
 		name     string
 		guard    int
 		changing bool
+		capped   bool // the change is past the context cap: the model can't see it
 		stuck    bool
 	}{
-		{"changing results", 0, true, false},
-		{"identical results", 0, false, true},
-		{"identical results, guard off", -1, false, false},
-		{"identical results, guard 3", 3, false, true},
+		{"changing results", 0, true, false, false},
+		{"identical results", 0, false, false, true},
+		{"identical results, guard off", -1, false, false, false},
+		{"identical results, guard 3", 3, false, false, true},
+		{"change hidden past the cap", 0, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			agent.SetRepeatGuard(tc.guard)
@@ -69,6 +72,11 @@ func TestTurn_RepeatGuardOnlyTripsOnIdenticalResults(t *testing.T) {
 			poll := model.ToolSpec{Name: "poll", Parameters: json.RawMessage(`{"type":"object"}`)}
 			disp := agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) {
 				n := atomic.AddInt32(&polls, 1)
+				if tc.capped {
+					// The hidden tail grows every poll, so the full length (which
+					// the truncation note reports) changes too: still a repeat.
+					return "still running" + strings.Repeat(".", 200_000) + strings.Repeat("#", int(n)), false, nil
+				}
 				if tc.changing {
 					return fmt.Sprintf("still running, CPU 0:%02d", n), false, nil
 				}
