@@ -559,3 +559,55 @@ Rejected after checking the code: "`textarea.Paste` isn't exported / re-injectin
 - `os_read_image` reports webp.
 - `turnDedupeKey` includes image paths.
 - The stale `max_tokens` in Risks is fixed.
+
+**Code review (2026-10-09), GLM-5.3-Flash on the implementation (commits A–H), three passes then a debate round
+each.** First scores: core 5/10, edges 7/10, relays 6/10. After the fixes and debate, GLM held no findings in any
+pass (relays rescored 8/10).
+
+Found by running it, before the review:
+- `tenant eval --subset vision` had no live agent (only fitness and full were wired), and nothing probed before the
+  first image. The vision subset now probes every model, billed ones included, and waits.
+- A keyed provider with `vision: auto` set explicitly is probed at launch, as this plan says.
+
+Fixed from the review:
+- **Core:**
+  - The assembler noted images while a model's answer was unknown, so the backend never saw one and never
+    probed; hosted providers stayed blind. `model.Undecided` keeps them for the backend, which notes them and
+    starts the probe.
+  - The image rules run before the retrieved-context block (a user message), which had taken one of the three
+    exchange slots and made the window flap with retrieval.
+  - An inconclusive probe retries itself after five minutes.
+  - Image tokens are counted as sent: notes for a blind model, and the 8-image cap.
+  - A 400 counts as "can't see" only when it names images; a bare "not supported" had cached seeing models as
+    blind.
+  - A failed tool call's images are dropped with an `ImageDropped` event, not silently.
+  - The text-only wire golden is main's bytes, not the code compared with itself.
+- **Edges:**
+  - `scale` reuses a decoded RGBA image.
+  - A pasted path is judged by extension and stat; the content is read off the UI goroutine.
+  - The input limit comes back after a send.
+  - Linux reads `image/jpeg` and falls back from a failing `wl-paste` to `xclip`.
+  - The "only decoder" claim was corrected.
+- **Relays:**
+  - iMessage reads take the 90 s and 10-per-message caps.
+  - chat.db reads check that the opened file is the one `Lstat` saw.
+  - Both read paths refuse anything over 20 MB after reading.
+  - Discord sniffs a 512-byte header before reading a download whole.
+  - A photo-only interrupted turn records "(image)".
+  - The Discord test sends a real webp.
+
+Rejected after checking the code (GLM conceded each in the debate):
+- **Relay info-flow labels:** relay *text* carries none (the only `InboundFlow` seeds are log investigations and
+  team dispatch). The plan's "like the message text" was a false premise and is corrected above.
+- **Echo-cache bypass:** the cache holds only Tenant's own sends, never inbound messages.
+- **iMessage busy path:** it predates this PR.
+- **Text-only interjection fallback:** both production runners implement `InterjectWithImages`.
+- **The interrupted record:** it is a notice, not a replay.
+- **A different `chat_path` spelling:** one extra probe, never a wrong answer.
+- **The compaction summary:** it is always the working set's first message, so it can't shrink the window. A
+  test of the proposed fix passed on the old code.
+- **The router's context estimate:** it sizes for an unknown target model, so overcounting is the safe direction.
+- **`os_read_image` over 20 MB:** `AttachImage` ignores empty data.
+- **Forgetting a month also deletes its images:** by design.
+- **The 40 MP budget:** kept for 12–24 MP phone photos. A 39 MP JPEG still peaks around 215 MB (YCbCr plus an RGBA
+  copy); scaling straight from the YCbCr planes is the lever if that ever matters.
