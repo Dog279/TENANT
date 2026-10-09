@@ -138,6 +138,7 @@ config.json: mcp_trust
 config.json: peer
 config.json: peer.listen
 config.json: peer.transport
+config.json: per_turn_tool_ranking
 config.json: plan_loop_ceiling
 config.json: privacy
 config.json: privacy.retention_days

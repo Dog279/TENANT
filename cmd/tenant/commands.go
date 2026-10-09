@@ -2294,10 +2294,11 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		RouteSticky:            routeRT.Sticky,
 		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
 		// Off unless `lazy_tools` is set in config.json — additive.
-		LazyToolLoad: c.lc.LazyTools,
-		Skills:       skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
-		SystemPrompt: mainPrompt,
-		RenderAgents: func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
+		LazyToolLoad:       c.lc.LazyTools,
+		PerTurnToolRanking: c.lc.PerTurnToolRanking,
+		Skills:             skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
+		SystemPrompt:       mainPrompt,
+		RenderAgents:       func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },
 		// Context compaction: when the budget fills, summarize old turns
 		// (via the summarizer role) instead of hard-truncating them.
 		Compactor: compressor,

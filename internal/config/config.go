@@ -126,6 +126,12 @@ type Launch struct {
 	// name+description catalog of the rest in the system prompt. Off by default
 	// (additive). Set `"lazy_tools": true` in config.json to try it.
 	LazyTools bool `json:"lazy_tools,omitempty"`
+	// PerTurnToolRanking re-ranks the surfaced tools every turn instead of
+	// keeping a sticky, append-only set per session (TEN-505). The sticky set
+	// (default) keeps the tools array stable so a self-hosted model server's
+	// prefix cache survives between turns; set this only to get the old
+	// behaviour back.
+	PerTurnToolRanking bool `json:"per_turn_tool_ranking,omitempty"`
 	// BrowserNoSandbox is an insecure, container-only escape hatch for Chrome
 	// environments that cannot use its process sandbox. The web plugin rejects
 	// this setting unless it detects a Linux container or user namespace.

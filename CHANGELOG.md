@@ -68,6 +68,13 @@ Releases page.
   service unit and reinstalls through `tenant update`.
 
 ### Changed
+- **The surfaced tools stay put for a whole session** (TEN-505). Tool ranking used to pick
+  a new top-K for every turn, and since the tools array sits at the top of the prompt,
+  any change threw away the model server's prefix cache for the whole conversation.
+  Now ranking only adds tools: earlier picks keep their place, new ones are appended,
+  and tools loaded with `load_tool` stay too, so the array changes only when it grows.
+  `/clear` and compaction start a fresh set. `per_turn_tool_ranking: true` in
+  config.json brings back per-turn ranking.
 - **Dashboard cleanup** (TEN-402): http://localhost:8770 (and [::1]) reaches a loopback dashboard
   without being added to `allowed_hosts` (TEN-414); the cron form offers preset schedules, with the
   cron line still typable (TEN-420) and a failed job's row shows its error (TEN-427); the research busy refusal is in

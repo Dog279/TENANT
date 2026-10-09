@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -203,6 +205,13 @@ type Config struct {
 	// tokens flat as the catalog grows AND preserves access to unranked tools
 	// (closes ranking's "needed a hidden tool" risk). Off by default — additive.
 	LazyToolLoad bool
+
+	// PerTurnToolRanking re-ranks the surfaced tools against every turn's query
+	// (the pre-TEN-505 behaviour). Off (the default) keeps a sticky set per
+	// session: ranking only ever appends, in a stable order, so the tools array
+	// at the top of the prompt stays byte-identical and the model server's
+	// prefix cache survives from turn to turn.
+	PerTurnToolRanking bool
 }
 
 // RouteRequest is the agent-owned metadata passed to the optional route hook.
@@ -350,6 +359,12 @@ type Agent struct {
 	// gate per agent lifetime). Mutated only from Turn (turns are serialized
 	// per agent), like the compaction state below.
 	warnedGates map[string]bool
+
+	// stickyTools is the session's surfaced tool set, by name in the order it
+	// was first surfaced (TEN-505). Mutated only from Turn and ClearContext
+	// (turns are serialized per agent); emptied by compaction, which
+	// invalidates the prefix cache anyway, so the next turn ranks afresh.
+	stickyTools []string
 
 	// compaction is the post-turn compaction trigger's hysteresis state
 	// (TEN-102). Mutated only from Turn's post-turn defer (turns are serialized
@@ -756,6 +771,21 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// small local planner never sees an augmentation tool like memory_recall.
 	availableTools, droppedGated := filterGatedTools(availableTools, profile)
 	a.warnUnknownGateDrops(ctx, droppedGated, profile)
+	// Sticky tool set (TEN-505): keep what earlier turns surfaced, in the same
+	// order, and append this turn's new picks, so the tools array only changes
+	// when it grows.
+	stickNote := ""
+	if !a.cfg.PerTurnToolRanking {
+		var added int
+		reused := len(a.stickyTools) > 0
+		availableTools, added = a.stickToolSet(availableTools, profile)
+		switch {
+		case reused && added == 0:
+			stickNote = fmt.Sprintf("; sticky set reused (%d tools)", len(availableTools))
+		case reused:
+			stickNote = fmt.Sprintf("; sticky set +%d (%d tools)", added, len(availableTools))
+		}
+	}
 	// Minify the SURVIVORS' JSON schemas before they hit the wire (TEN-227):
 	// drop pure-doc keywords + compact whitespace + trim paragraph-length
 	// property prose, preserving types/enums/required. Applied here (post rank +
@@ -773,7 +803,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		if ranked, surfaced, catalog, reason, have := rr.RankingStatus(); have {
 			if ranked {
 				a.emit(Event{Kind: EventToolCatalog,
-					Text: fmt.Sprintf("tool ranking ON — %d of %d enabled tools surfaced this turn", surfaced, catalog)})
+					Text: fmt.Sprintf("tool ranking ON — %d of %d enabled tools surfaced this turn%s", surfaced, catalog, stickNote)})
 			} else {
 				a.emit(Event{Kind: EventToolCatalog,
 					Text: fmt.Sprintf("tool ranking OFF — full catalog of %d tools surfaced (%s)", catalog, reason)})
@@ -782,7 +812,7 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	} else if all := a.cfg.Tools.All(); len(availableTools) < len(all) {
 		a.emit(Event{
 			Kind: EventToolCatalog,
-			Text: fmt.Sprintf("ranked: %d of %d tools surfaced this turn", len(availableTools), len(all)),
+			Text: fmt.Sprintf("ranked: %d of %d tools surfaced this turn%s", len(availableTools), len(all), stickNote),
 		})
 	}
 
@@ -1305,7 +1335,51 @@ func (a *Agent) compactWorking(ctx context.Context) {
 		return
 	}
 	a.cfg.Working.Replace(msgs)
+	a.stickyTools = nil // the prefix cache is gone anyway: next turn ranks afresh (TEN-505)
 	a.emit(Event{Kind: EventCompact, Text: fmt.Sprintf("%d → %d messages", origLen, len(msgs))})
+}
+
+// stickToolSet merges this turn's ranked tools into the session's sticky set
+// (TEN-505): earlier picks first, in the order they were surfaced, then new
+// ones in rank order. Nothing is re-sorted, so the tools array stays identical
+// until a tool is added. A sticky tool since disabled, or gated off by a model
+// swap, drops out. Returns the merged specs and how many are new this turn.
+func (a *Agent) stickToolSet(ranked []model.ToolSpec, profile model.Profile) ([]model.ToolSpec, int) {
+	merged := make([]model.ToolSpec, 0, len(a.stickyTools)+len(ranked))
+	seen := make(map[string]bool, cap(merged))
+	for _, name := range a.stickyTools {
+		if spec, ok := a.cfg.Tools.Get(name); ok && !seen[name] {
+			seen[name] = true
+			merged = append(merged, spec)
+		}
+	}
+	prev := maps.Clone(seen)
+	for _, s := range ranked {
+		if !seen[s.Name] {
+			seen[s.Name] = true
+			merged = append(merged, s)
+		}
+	}
+	merged, _ = filterGatedTools(merged, profile)
+	names := make([]string, len(merged))
+	added := 0
+	for i, s := range merged {
+		names[i] = s.Name
+		if !prev[s.Name] {
+			added++
+		}
+	}
+	a.stickyTools = names
+	return merged, added
+}
+
+// stickTool appends a tool the model loaded on demand (TEN-228) to the sticky
+// set, so later turns keep it without another load_tool round.
+func (a *Agent) stickTool(name string) {
+	if a.cfg.PerTurnToolRanking || slices.Contains(a.stickyTools, name) {
+		return
+	}
+	a.stickyTools = append(a.stickyTools, name)
 }
 
 // filterGatedTools drops specs whose capability gate the active profile
@@ -1393,6 +1467,7 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 func (a *Agent) ClearContext() int {
 	n := a.cfg.Working.Len()
 	a.cfg.Working.Reset()
+	a.stickyTools = nil
 	if a.compaction != nil {
 		a.compaction.armed = false // disarm; the next turn re-evaluates from ~empty
 	}

@@ -160,6 +160,7 @@ func (a *Agent) handleLoadTool(ctx context.Context, call model.ToolCall, loaded 
 	default:
 		if spec, ok := a.cfg.Tools.Get(name); ok {
 			loaded[name] = true
+			a.stickTool(name)
 			res.Result = fmt.Sprintf("✓ loaded %q (%s) — it's now in your tools; call it on your next step.", name, catalogDesc(spec.Description))
 		} else {
 			res.Result, res.IsError = fmt.Sprintf("no enabled tool named %q in the catalog — use a name exactly as listed in the Tool catalog.", name), true
