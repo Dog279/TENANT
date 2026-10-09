@@ -20,16 +20,13 @@ func savedImage(t *testing.T, name string) model.Image {
 }
 
 // TEN-493 acceptance 10: a request without images encodes exactly as it did
-// before images existed, including an assistant tool-call replay with empty
+// before images existed. The golden is main's toWireMessages output (3794a03)
+// for these messages, including an assistant tool-call replay with empty
 // content (omitted, not "content":"").
 func TestWire_TextOnlyIsByteIdentical(t *testing.T) {
-	type oldWireMsg struct {
-		Role       string         `json:"role"`
-		Content    string         `json:"content,omitempty"`
-		ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
-		ToolCallID string         `json:"tool_call_id,omitempty"`
-		Name       string         `json:"name,omitempty"`
-	}
+	const golden = `[{"role":"system","content":"be brief"},{"role":"user","content":"hi"},` +
+		`{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"look","arguments":"{\"a\":1}"}}]},` +
+		`{"role":"tool","content":"result","tool_call_id":"c1"},{"role":"assistant","content":"done"}]`
 	msgs := []model.Message{
 		{Role: "system", Content: "be brief"},
 		{Role: "user", Content: "hi"},
@@ -38,16 +35,8 @@ func TestWire_TextOnlyIsByteIdentical(t *testing.T) {
 		{Role: "assistant", Content: "done"},
 	}
 	got, _ := json.Marshal(toWireMessages(msgs))
-	var old []oldWireMsg
-	for _, w := range toWireMessages(msgs) {
-		old = append(old, oldWireMsg{w.Role, w.Content, w.ToolCalls, w.ToolCallID, w.Name})
-	}
-	want, _ := json.Marshal(old)
-	if string(got) != string(want) {
-		t.Fatalf("text-only wire changed:\n got %s\nwant %s", got, want)
-	}
-	if strings.Contains(string(got), `"content":""`) {
-		t.Fatalf("empty content serialized: %s", got)
+	if string(got) != golden {
+		t.Fatalf("text-only wire changed:\n got %s\nwant %s", got, golden)
 	}
 }
 

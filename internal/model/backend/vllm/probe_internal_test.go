@@ -89,11 +89,13 @@ func TestProbeVision(t *testing.T) {
 		body   string
 		want   model.Vision
 	}{
-		"refuses images": {400, `{"error":"This model does not support image input"}`, model.VisionNo},
-		"rate limited":   {429, `{"error":"slow down"}`, model.VisionUnknown},
-		"wrong path":     {404, `{"error":"not found"}`, model.VisionUnknown},
-		"other 400":      {400, `{"error":"max_tokens is too large"}`, model.VisionUnknown},
-		"empty reply":    {200, `{"choices":[{"message":{"content":""}}]}`, model.VisionUnknown},
+		"refuses images":           {400, `{"error":"This model does not support image input"}`, model.VisionNo},
+		"rate limited":             {429, `{"error":"slow down"}`, model.VisionUnknown},
+		"wrong path":               {404, `{"error":"not found"}`, model.VisionUnknown},
+		"other 400":                {400, `{"error":"max_tokens is too large"}`, model.VisionUnknown},
+		"max_tokens not supported": {400, `{"error":"max_tokens 4096 is not supported"}`, model.VisionUnknown},
+		"reasoning not supported":  {400, `{"error":"reasoning is not supported by this model"}`, model.VisionUnknown},
+		"empty reply":              {200, `{"choices":[{"message":{"content":""}}]}`, model.VisionUnknown},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(c.status)

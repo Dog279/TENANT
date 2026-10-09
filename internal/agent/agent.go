@@ -1250,6 +1250,10 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 					br.Labels = appendLabel(br.Labels, label)
 				}
 				br.Images = a.saveToolImages(ctx, br)
+			} else if len(br.rawImages) > 0 {
+				// A failed or unregistered call has no result labels to give
+				// its images, so they aren't attached; say so (TEN-493).
+				ImageDropped.Log(a.ev(ctx), "agent", a.cfg.AgentID, "tool", br.Call.Name, "err", "the tool call failed")
 			}
 			result.ToolTrace = append(result.ToolTrace, br)
 			toolOutcome := "success"

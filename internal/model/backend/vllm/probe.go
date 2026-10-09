@@ -45,8 +45,9 @@ var probeRetryGap = 5 * time.Minute
 
 var colourWordRe = regexp.MustCompile(`\b(red|green|blue|yellow)\b`)
 
-// imageRefusalRe is how servers word "this model takes no images".
-var imageRefusalRe = regexp.MustCompile(`image|multimodal|multi-modal|vision|mm_|media|not support`)
+// imageRefusalRe is how servers word "this model takes no images". It must
+// name images: a bare "not supported" (max_tokens, reasoning) is another 400.
+var imageRefusalRe = regexp.MustCompile(`image|multimodal|multi-modal|vision|mm_|media`)
 
 // ProbeVision asks this backend's model whether it can see, through the same
 // chat path, auth and HTTP client as real requests (so a Z.ai-style ChatPath
