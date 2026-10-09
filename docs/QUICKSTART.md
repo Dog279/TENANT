@@ -157,6 +157,18 @@ calls it makes before it's forced to synthesize an answer:
 Start around `20–30` for agentic work; lower if turns feel runaway, raise if the
 agent stops before finishing long tasks.
 
+A separate **repeat guard** ends a turn early when the agent makes the same tool
+calls and gets the same results back several rounds in a row (default 8). A poll
+whose output changes never trips it. The feed says "stuck repeating", not
+"loop ceiling hit", when it fires:
+```
+/ceiling repeat        # show it
+/ceiling repeat 12     # allow longer identical wait loops
+/ceiling repeat off    # only the loop ceiling ends a turn (0 works too)
+/ceiling repeat default
+```
+Saved as `repeat_guard` in config.json (0 or missing = default, negative = off).
+
 ---
 
 ## 6. Cloud providers (optional)

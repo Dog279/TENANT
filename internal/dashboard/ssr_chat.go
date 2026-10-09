@@ -199,7 +199,7 @@ func chatBubble(ev agent.Event) string {
 		return ""
 	}
 	switch string(ev.Kind) {
-	case "final", "truncated":
+	case "final", "truncated", "stuck":
 		if strings.TrimSpace(ev.Text) == "" {
 			return ""
 		}

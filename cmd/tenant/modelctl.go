@@ -370,6 +370,33 @@ func (mc *modelControl) SetLoopCeiling(n int) (string, error) {
 	return fmt.Sprintf("loop ceiling → %d (updated %d role(s); applies next turn, incl. newly spawned sub-agents)", n, updated), nil
 }
 
+// RepeatGuard reports the oscillation guard's live threshold (<= 0 = off).
+func (mc *modelControl) RepeatGuard() int { return agent.RepeatGuard() }
+
+// SetRepeatGuard retunes the oscillation guard live for every agent in the
+// process and persists it (TEN-506). n < 0 turns it off; 0 restores the default.
+func (mc *modelControl) SetRepeatGuard(n int) (string, error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	if n == 1 || n > 200 {
+		return "", fmt.Errorf("repeat guard must be between 2 and 200 (0 = default %d, off = disabled)", agent.DefaultRepeatGuard)
+	}
+	agent.SetRepeatGuard(n)
+	lc, err := loadLaunchConfig(mc.cfgDir)
+	if err == nil {
+		lc.RepeatGuard = n
+		err = lc.Save(mc.cfgDir)
+	}
+	status := fmt.Sprintf("repeat guard → %d identical rounds (applies next round, all agents)", agent.RepeatGuard())
+	if agent.RepeatGuard() <= 0 {
+		status = "repeat guard → off (only the loop ceiling ends a turn)"
+	}
+	if err != nil {
+		return "", errNotSaved(status, err)
+	}
+	return status, nil
+}
+
 // Reasoning-effort level sets are PER KIND: Sakana Fugu's API takes high +
 // xhigh (with max accepted as an alias for xhigh), while claudecode passes
 // --effort straight through to the Claude CLI, whose ladder is the full

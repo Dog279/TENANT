@@ -159,6 +159,11 @@ func EntryFor(ev Event) (logs.Entry, bool) {
 		e.Msg = "loop ceiling hit — forced synthesis"
 		e.Level = slog.LevelWarn
 		text()
+	case EventStuck:
+		def = StuckSynth
+		e.Msg = "stuck repeating the same tool calls — forced synthesis"
+		e.Level = slog.LevelWarn
+		text()
 	case EventError:
 		def = TurnError
 		e.Msg = "turn error"

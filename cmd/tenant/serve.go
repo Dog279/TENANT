@@ -500,6 +500,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		RouteActive:            routeRT.Active,
 		RouteSticky:            routeRT.Sticky,
 		LazyToolLoad:           c.lc.LazyTools,
+		PerTurnToolRanking:     c.lc.PerTurnToolRanking,
 		Skills:                 skillRetriever{st: skillStore, agentID: c.agent, tools: mainTools},
 		SystemPrompt:           mainPrompt,
 		RenderAgents:           func() string { return renderAgentsForOrchestrator(rt.AgentProfiles()) },

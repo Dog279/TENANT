@@ -133,24 +133,47 @@ func fetchModelsAt(ctx context.Context, url, apiKey string) ([]servedModel, erro
 	return models, nil
 }
 
-// servedModelFor is the model a self-hosted server serves when its provider
-// leaves the model blank (found automatically): the first one it lists, with
-// the context window it reports. The active provider gets it at launch
-// (autodetectModel); helpers, fallbacks and planner-big build their profiles
-// through here, so such a server works in those places too. ok is false for
-// a hosted kind, or when the server can't be asked: the caller's own "no
-// model" error stands.
-func servedModelFor(pk providerKind, endpoint, apiKey string) (servedModel, bool) {
+// servedModelFor asks a self-hosted server for the model it serves and the
+// context window it reports. want "" (found automatically) takes the first
+// model listed; a named model is matched by id, so its real max_model_len
+// replaces the 128K default (TEN-507). The active provider does this at launch
+// and on /model use (autodetectModel); helpers, fallbacks and planner-big build
+// their profiles through here. ok is false for a hosted kind, when the server
+// can't be asked, or when it doesn't serve want: the caller's defaults stand.
+func servedModelFor(pk providerKind, endpoint, apiKey, want string) (servedModel, bool) {
 	if !pk.Local || pk.Backend != "vllm" || strings.TrimSpace(endpoint) == "" {
 		return servedModel{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	ms, err := fetchModels(ctx, endpoint, apiKey)
-	if err != nil || len(ms) == 0 {
+	if err != nil {
 		return servedModel{}, false
 	}
-	return ms[0], true
+	return pickServed(ms, want)
+}
+
+// pickServed finds want in a server's model list: the first entry when want is
+// "", else an exact id match, else a case-insensitive one (vLLM ids are
+// case-sensitive, but a casing slip still names the same model).
+func pickServed(ms []servedModel, want string) (servedModel, bool) {
+	if len(ms) == 0 {
+		return servedModel{}, false
+	}
+	if want == "" {
+		return ms[0], true
+	}
+	for _, m := range ms {
+		if m.ID == want {
+			return m, true
+		}
+	}
+	for _, m := range ms {
+		if strings.EqualFold(m.ID, want) {
+			return m, true
+		}
+	}
+	return servedModel{}, false
 }
 
 // fetchModelIDs returns just the served model ids (used by the setup wizard).

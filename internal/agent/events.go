@@ -27,6 +27,7 @@ const (
 	EventValidation  EventKind = "validation"   // a tool call failed validation (Tool, Text)
 	EventFinal       EventKind = "final"        // final response ready (Text)
 	EventTruncated   EventKind = "truncated"    // loop ceiling forced synthesis (Text)
+	EventStuck       EventKind = "stuck"        // repeat guard forced synthesis: same calls, same results (Text) (TEN-506)
 	EventError       EventKind = "error"        // turn-level error (Text)
 	EventCompact     EventKind = "compact"      // working set compacted (Text = "N → M messages")
 	EventUsage       EventKind = "usage"        // one LLM call's token usage (PromptTokens/CompletionTokens)
@@ -186,9 +187,14 @@ var ToolRetried = Turns.Event(2002, event.Warning, "Retry", "tool retry {tool}",
 		"None when a retry succeeds. Frequent retries point at the tool's service or the network.")
 
 var Truncated = Turns.Event(2003, event.Warning, "Turn", "loop ceiling hit — forced synthesis", "agent", "text").Sensitive("text").
-	Doc("The turn used all its planner iterations, or kept repeating one tool call, so the agent wrote an answer from what it had gathered (text).",
-		"The task needed more steps than plan_loop_ceiling allows, or the model was stuck.",
-		"Raise plan_loop_ceiling in config.json for long tasks, or use /goal; a model stuck in a loop may need a stronger planner.")
+	Doc("The turn used all its planner iterations, so the agent wrote an answer from what it had gathered (text).",
+		"The task needed more steps than plan_loop_ceiling allows.",
+		"Raise the ceiling with /ceiling <n> (saved to plan_loop_ceiling in config.json) for long tasks, or use /goal.")
+
+var StuckSynth = Turns.Event(2004, event.Warning, "Turn", "stuck repeating the same tool calls — forced synthesis", "agent", "text").Sensitive("text").
+	Doc("The model kept making the same tool calls and getting the same results back, so the agent stopped looping and wrote an answer from what it had gathered (text). This is the repeat guard, not the loop ceiling.",
+		"The model was stuck on one call, or it polled something whose output did not change for repeat_guard rounds in a row.",
+		"Raising plan_loop_ceiling does not help here. For deliberate wait loops raise the guard with /ceiling repeat <n> (saved to repeat_guard in config.json), or turn it off with /ceiling repeat off.")
 
 var RunRecordFailed = Turns.Event(2101, event.Warning, "Run record", "Could not {op} the run record of turn {trace_id}: {err}", "op", "trace_id", "err").
 	Doc("The turn ran, but its record in runs.db was not written, so /runs and the dashboard won't show it (or show it unfinished).",
@@ -212,8 +218,8 @@ var EmptyFinal = Turns.Event(2104, event.Warning, "Turn", "The model gave an emp
 
 var Oscillating = Turns.Event(2105, event.Warning, "Turn", "The same tool calls repeated {identical_runs} times; forcing a synthesis", "agent", "iter", "identical_runs").
 	Doc("The model kept making the same tool calls, so the turn stopped looping and answered from what it had.",
-		"A weak model locked onto one call, or a tool keeps returning something the model doesn't accept.",
-		"Look at the repeated call's result in the turn's tool events; a stronger planner usually avoids it.")
+		"A model locked onto one call that keeps returning the same result. A call whose result (or error text) changes each time counts as progress and runs to plan_loop_ceiling instead.",
+		"Look at the repeated call's result in the turn's tool events. For a deliberate wait loop raise /ceiling repeat <n>; otherwise a stronger planner usually avoids it.")
 
 var CompactFailed = Turns.Event(2106, event.Warning, "Compaction", "Working-set compaction failed at {stage}: {err}", "agent", "stage", "err").
 	Doc("The working set could not be compacted, so the conversation stays long and the next turns may overflow the context.",

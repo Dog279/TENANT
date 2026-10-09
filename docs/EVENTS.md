@@ -6048,6 +6048,7 @@ Writes the `turns` log.
 | [2001](#turns-2001) | warning | Validation | `tool call rejected {tool}` |
 | [2002](#turns-2002) | warning | Retry | `tool retry {tool}` |
 | [2003](#turns-2003) | warning | Turn | `loop ceiling hit — forced synthesis` |
+| [2004](#turns-2004) | warning | Turn | `stuck repeating the same tool calls — forced synthesis` |
 | [2101](#turns-2101) | warning | Run record | `Could not {op} the run record of turn {trace_id}: {err}` |
 | [2102](#turns-2102) | warning | Retrieval | `Query embedding failed; the turn goes on without retrieval: {err}` |
 | [2103](#turns-2103) | warning | Routing | `Routed role {role} unavailable; using the planner: {err}` |
@@ -6214,11 +6215,25 @@ Writes the `turns` log.
 - **Fields:** `agent`, `text` (sensitive, masked: `text`)
 - **Find it:** `provider:turns id:2003`
 
-**What it means.** The turn used all its planner iterations, or kept repeating one tool call, so the agent wrote an answer from what it had gathered (text).
+**What it means.** The turn used all its planner iterations, so the agent wrote an answer from what it had gathered (text).
 
-**Why it happens.** The task needed more steps than plan_loop_ceiling allows, or the model was stuck.
+**Why it happens.** The task needed more steps than plan_loop_ceiling allows.
 
-**What to do.** Raise plan_loop_ceiling in config.json for long tasks, or use /goal; a model stuck in a loop may need a stronger planner.
+**What to do.** Raise the ceiling with /ceiling <n> (saved to plan_loop_ceiling in config.json) for long tasks, or use /goal.
+
+### turns 2004
+
+`stuck repeating the same tool calls — forced synthesis`
+
+- **Level:** warning · **Channel:** operational · **Task:** Turn · **Log:** turns
+- **Fields:** `agent`, `text` (sensitive, masked: `text`)
+- **Find it:** `provider:turns id:2004`
+
+**What it means.** The model kept making the same tool calls and getting the same results back, so the agent stopped looping and wrote an answer from what it had gathered (text). This is the repeat guard, not the loop ceiling.
+
+**Why it happens.** The model was stuck on one call, or it polled something whose output did not change for repeat_guard rounds in a row.
+
+**What to do.** Raising plan_loop_ceiling does not help here. For deliberate wait loops raise the guard with /ceiling repeat <n> (saved to repeat_guard in config.json), or turn it off with /ceiling repeat off.
 
 ### turns 2101
 
@@ -6286,9 +6301,9 @@ Writes the `turns` log.
 
 **What it means.** The model kept making the same tool calls, so the turn stopped looping and answered from what it had.
 
-**Why it happens.** A weak model locked onto one call, or a tool keeps returning something the model doesn't accept.
+**Why it happens.** A model locked onto one call that keeps returning the same result. A call whose result (or error text) changes each time counts as progress and runs to plan_loop_ceiling instead.
 
-**What to do.** Look at the repeated call's result in the turn's tool events; a stronger planner usually avoids it.
+**What to do.** Look at the repeated call's result in the turn's tool events. For a deliberate wait loop raise /ceiling repeat <n>; otherwise a stronger planner usually avoids it.
 
 ### turns 2106
 
