@@ -240,6 +240,11 @@ func (m *model) takeAttachments(q string) []modelpkg.Image {
 // paste is nothing but existing image file paths (a dragged file); otherwise
 // nil, and the paste stays text.
 func pastedImagePaths(s string) []string {
+	// One unquoted path with spaces (a Finder copy pasted as a full path,
+	// "Screenshot … at 5.12.03 PM.png") isn't a list of paths.
+	if p := expandHome(strings.TrimSpace(s)); strings.ContainsAny(p, " \u202f") && isImageFile(p) {
+		return []string{p}
+	}
 	toks := splitPastedPaths(s, clipGOOS == "windows")
 	if len(toks) == 0 {
 		return nil
@@ -256,17 +261,23 @@ func pastedImagePaths(s string) []string {
 				t = strings.TrimPrefix(filepath.FromSlash(t), `\`)
 			}
 		}
-		if strings.HasPrefix(t, "~/") {
-			if home, err := os.UserHomeDir(); err == nil {
-				t = filepath.Join(home, t[2:])
-			}
-		}
+		t = expandHome(t)
 		if !isImageFile(t) {
 			return nil
 		}
 		out = append(out, t)
 	}
 	return out
+}
+
+// expandHome turns a leading ~/ into the home directory.
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
 }
 
 // splitPastedPaths splits a paste into path tokens: whitespace separates

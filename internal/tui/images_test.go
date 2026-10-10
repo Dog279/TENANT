@@ -362,3 +362,17 @@ func TestFinderNamePasteAttachesTheFile(t *testing.T) {
 		}
 	}
 }
+
+// A single pasted path with spaces (macOS pastes a Finder copy's full path
+// unquoted on some terminals; screenshot names have spaces and U+202F) is
+// one path, not a list.
+func TestPastedPathWithSpaces(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "Screenshot 2026-10-09 at 5.12.03 PM.png")
+	_ = os.WriteFile(p, pngBytes(t, 8, 8), 0o600)
+	if got := pastedImagePaths(p); len(got) != 1 || got[0] != p {
+		t.Fatalf("pastedImagePaths(%q) = %v", p, got)
+	}
+	if got := pastedImagePaths("look at " + p); got != nil {
+		t.Fatalf("text around a path should stay text: %v", got)
+	}
+}
