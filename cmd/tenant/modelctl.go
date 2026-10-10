@@ -41,6 +41,8 @@ type modelControl struct {
 	// Set by cmdTUI; nil elsewhere. Run async by the caller so a slow embedder
 	// resolve never blocks the swap.
 	reinstallEmbedder func(context.Context)
+	// judge is the judge in the loop (TEN-510), for the dashboard's switch.
+	judge *judgeLoop
 }
 
 func (mc *modelControl) ModelList() []tui.ModelInfo {

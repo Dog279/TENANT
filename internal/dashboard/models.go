@@ -42,6 +42,10 @@ type ModelControl interface {
 	RepeatGuard() int
 	SetRepeatGuard(n int) (string, error)
 	Vision() string // whether the active model can see images (TEN-493)
+	// JudgeLoop / SetJudgeLoop: the judge that checks task answers and sends
+	// unfinished work back (TEN-510). SetJudgeLoop "" keeps the saved value.
+	JudgeLoop() (on bool, endpoint, model string)
+	SetJudgeLoop(on bool, endpoint, model string) (string, error)
 	ReloadKeys() (string, error)
 }
 
@@ -115,6 +119,7 @@ func (s *Server) mountModelsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /models/remove", needConfirm(nil, s.handleModelRemoveForm))
 	mux.HandleFunc("POST /models/ceiling", s.handleModelCeilingForm)
 	mux.HandleFunc("POST /models/repeat", s.handleModelRepeatForm)
+	mux.HandleFunc("POST /models/judge", s.handleModelJudgeForm)
 	mux.HandleFunc("POST /models/reload", s.handleModelReloadForm)
 }
 
@@ -125,8 +130,12 @@ type modelsPageData struct {
 	Ceiling    int
 	Repeat     int    // repeat guard; 0 = off
 	Vision     string // whether the active model can see images (TEN-493)
-	Err        string
-	Msg        string
+	// The judge in the loop (TEN-510).
+	JudgeOn       bool
+	JudgeEndpoint string
+	JudgeModel    string
+	Err           string
+	Msg           string
 }
 
 func (s *Server) modelsData() modelsPageData {
@@ -137,6 +146,7 @@ func (s *Server) modelsData() modelsPageData {
 		d.Ceiling = s.models.LoopCeiling()
 		d.Repeat = max(s.models.RepeatGuard(), 0)
 		d.Vision = s.models.Vision()
+		d.JudgeOn, d.JudgeEndpoint, d.JudgeModel = s.models.JudgeLoop()
 	}
 	return d
 }
@@ -308,6 +318,21 @@ func (s *Server) handleModelRepeatForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.modelsDone(w, r, msg, "")
+}
+
+// handleModelJudgeForm switches the judge in the loop live (TEN-510).
+func (s *Server) handleModelJudgeForm(w http.ResponseWriter, r *http.Request) {
+	if s.models == nil {
+		s.modelsDone(w, r, "", "")
+		return
+	}
+	on := r.FormValue("judge") == "on"
+	msg, err := s.models.SetJudgeLoop(on, strings.TrimSpace(r.FormValue("endpoint")), strings.TrimSpace(r.FormValue("model")))
+	if err != nil {
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model judge loop", err, "Couldn't switch the judge: "+err.Error()))
+		return
+	}
+	s.modelsDone(w, r, "Saved: "+msg, "")
 }
 
 func (s *Server) handleModelReloadForm(w http.ResponseWriter, r *http.Request) {

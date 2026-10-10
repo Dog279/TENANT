@@ -11,6 +11,7 @@ import (
 )
 
 type fakeModelCtl struct {
+	judgeOn     bool
 	models      []ModelView
 	ceiling     int
 	useCalls    []string
@@ -57,6 +58,13 @@ func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) {
 }
 func (f *fakeModelCtl) RepeatGuard() int { return 8 }
 func (f *fakeModelCtl) Vision() string   { return "vision: auto (probe: yes), glm can see images" }
+func (f *fakeModelCtl) JudgeLoop() (bool, string, string) {
+	return f.judgeOn, "http://judge:30000", "clef-flash"
+}
+func (f *fakeModelCtl) SetJudgeLoop(on bool, _, _ string) (string, error) {
+	f.judgeOn = on
+	return "judge loop: " + map[bool]string{true: "on", false: "off"}[on], nil
+}
 func (f *fakeModelCtl) SetRepeatGuard(n int) (string, error) {
 	f.repeatSet = append(f.repeatSet, n)
 	return "repeat set", nil
@@ -163,9 +171,30 @@ func TestModels_RepeatGuard(t *testing.T) {
 	}
 }
 
+// TEN-510: the Judge row shows the saved server and model and switches the
+// judge in the loop on and off.
+func TestModels_JudgeLoop(t *testing.T) {
+	fc := &fakeModelCtl{}
+	s := modelServer(fc)
+	body := get(t, s, "/models").Body.String()
+	for _, want := range []string{`action="/models/judge"`, `value="http://judge:30000"`, `value="clef-flash"`, "checks the agent's answers to tasks"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("models page lacks %q", want)
+		}
+	}
+	submitForm(t, s, "/models/judge", "judge=on&endpoint=http://judge:30000&model=clef-flash")
+	if !fc.judgeOn {
+		t.Fatal("judge=on didn't switch it on")
+	}
+	submitForm(t, s, "/models/judge", "judge=off")
+	if fc.judgeOn {
+		t.Fatal("judge=off didn't switch it off")
+	}
+}
+
 func TestModels_MutationsNilSafe(t *testing.T) {
 	s := modelServer(nil)
-	for _, p := range []string{"/models/use", "/models/add", "/models/add-server", "/models/remove", "/models/ceiling", "/models/repeat", "/models/reload"} {
+	for _, p := range []string{"/models/use", "/models/add", "/models/add-server", "/models/remove", "/models/ceiling", "/models/repeat", "/models/judge", "/models/reload"} {
 		if rec := submitForm(t, s, p, "name=x&kind=zai&key=k&address=http://h:1&ceiling=5&confirm=yes"); rec.Code != http.StatusSeeOther {
 			t.Errorf("%s with nil control: want 303, got %d", p, rec.Code)
 		}

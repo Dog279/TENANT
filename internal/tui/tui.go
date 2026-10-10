@@ -78,6 +78,9 @@ type Config struct {
 	// Judge, if set, powers /judge: choose the eval LLM-judge model, persisted
 	// and applied to `tenant eval` + the nightly gate (TEN-91).
 	Judge JudgeControl
+	// JudgeLoop, if set, powers /judge loop: the judge in the loop of a
+	// turn, live (TEN-510).
+	JudgeLoop JudgeLoopControl
 	// Relay, if set, powers /relay: start/stop the offsite Discord relay live.
 	Relay RelayControl
 	// IMessage, if set, powers /imessage: manage the deny-by-default allowlist
@@ -459,6 +462,17 @@ type TailscaleControl interface {
 // operator can pin a separate model (any wired provider kind), persisted so it
 // applies to both `tenant eval` and the nightly eval/improvement gate. The API
 // key is read from an env var at eval time — never entered or stored here.
+// JudgeLoopControl switches the judge in the loop of a turn (TEN-510).
+type JudgeLoopControl interface {
+	// Status is the one-line state.
+	Status() string
+	// On reports whether the loop is on, and its model.
+	On() (bool, string)
+	// Set turns it on (asking the server first) or off, live, and saves it.
+	// endpoint and model "" keep the saved ones.
+	Set(on bool, endpoint, model string) (string, error)
+}
+
 type JudgeControl interface {
 	// Current is a render-ready description of the active judge.
 	Current() string
@@ -2043,6 +2057,7 @@ func (m *model) submit() tea.Cmd {
 	// without raising the ceiling every normal turn shares (TEN-216).
 	if m.cfg.Goals != nil && m.cfg.Goals.Active() {
 		req.LoopCeiling = m.cfg.Goals.LoopCeiling()
+		req.NoJudge = true // the goal judges its own turns (TEN-510)
 	}
 	return func() tea.Msg {
 		res, err := ag.Turn(turnCtx, req)
@@ -2357,6 +2372,12 @@ func (m *model) applyEvent(e agent.Event) {
 		m.appendFeed(cSys.Render("⊟ context compacted: " + e.Text))
 	case agent.EventInterject:
 		m.appendFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
+	case agent.EventJudge:
+		style := cSys
+		if e.IsErr {
+			style = cErr
+		}
+		m.appendFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
 	case agent.EventIngest:
 		// An offsite channel (Discord/iMessage) received a message and drove a
 		// turn. e.Text is already prefixed "Discord: " / "iMessage: " (TEN-232).

@@ -99,6 +99,18 @@
   </form>
   <div class="dim mb">If the agent repeats the same step and gets the same result this many times in a row, it stops and answers. 0 = off. A step whose result changes (a job still running) never counts.</div>
   {{with .Vision}}<div class="dim mb">Images: {{.}}.</div>{{end}}
+  <form method="POST" action="/models/judge" class="inline mb" data-on:submit__prevent__throttle.1s="@post('/models/judge', {contentType:'form', retryMaxCount:0})">
+    <label class="dim">Judge
+      <select name="judge" class="cinput">
+        <option value="off"{{if not .JudgeOn}} selected{{end}}>Off</option>
+        <option value="on"{{if .JudgeOn}} selected{{end}}>On</option>
+      </select>
+    </label>
+    <label class="dim">Server <input type="text" name="endpoint" value="{{.JudgeEndpoint}}" placeholder="http://host:30000" class="cinput"></label>
+    <label class="dim">Model <input type="text" name="model" value="{{.JudgeModel}}" placeholder="clef-flash" class="cinput"></label>
+    <button type="submit" class="btn sm">Save</button>
+  </form>
+  <div class="dim mb">A decision model (such as Clef-flash) checks the agent's answers to tasks and sends unfinished work back, up to 3 times. An answer it still can't confirm is marked "judge: not confirmed".</div>
   <form method="POST" action="/models/reload" class="inline" data-on:submit__prevent__throttle.1s="@post('/models/reload', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn sm">Reload API keys</button>
   </form>

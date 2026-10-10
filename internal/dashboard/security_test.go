@@ -283,6 +283,7 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /models/remove":     always,
 	"POST /models/ceiling":    noStep,
 	"POST /models/repeat":     noStep,
+	"POST /models/judge":      noStep, // the judge in the loop: reversible, like the limits (TEN-510)
 	"POST /models/reload":     noStep,
 	// Approvals & safety (TEN-207, D4): Allow is the step; Ask, Deny, Allow
 	// once and "Keep them at Ask" are one tap; pairing's Allow once asks.

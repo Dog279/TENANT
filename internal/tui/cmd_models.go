@@ -16,14 +16,17 @@ func slashJudge(m *model, line string) tea.Cmd {
 	_, _, arg := slashParts(line)
 	// Choose the eval LLM-judge model (TEN-91): default = planner (self-judge),
 	// or pin a separate model for `tenant eval` + the nightly gate.
-	if m.cfg.Judge == nil {
-		m.sysChat("judge control not available in this session")
-		return nil
-	}
 	jf := strings.Fields(arg)
 	sub := ""
 	if len(jf) > 0 {
 		sub = strings.ToLower(jf[0])
+	}
+	if sub == "loop" {
+		return judgeLoopCmd(m, jf[1:])
+	}
+	if m.cfg.Judge == nil {
+		m.sysChat("judge control not available in this session")
+		return nil
 	}
 	switch {
 	case sub == "" || sub == "status":
@@ -53,6 +56,43 @@ func slashJudge(m *model, line string) tea.Cmd {
 	default:
 		m.sysChat("usage: /judge [status | set <kind> <model> [endpoint] | clear]")
 	}
+	return nil
+}
+
+// judgeLoopCmd runs /judge loop [on [<endpoint> [<model>]] | off] (TEN-510).
+func judgeLoopCmd(m *model, args []string) tea.Cmd {
+	jl := m.cfg.JudgeLoop
+	if jl == nil {
+		m.sysChat("the judge loop isn't available in this session")
+		return nil
+	}
+	if len(args) == 0 || strings.EqualFold(args[0], "status") {
+		m.sysChat(jl.Status())
+		return nil
+	}
+	var on bool
+	switch strings.ToLower(args[0]) {
+	case "on":
+		on = true
+	case "off":
+	default:
+		m.sysChat("usage: /judge loop [on [<endpoint> [<model>]] | off]")
+		return nil
+	}
+	endpoint, modelID := "", ""
+	if len(args) > 1 {
+		endpoint = args[1]
+	}
+	if len(args) > 2 {
+		modelID = args[2]
+	}
+	status, err := jl.Set(on, endpoint, modelID)
+	if err != nil {
+		m.sysChat("judge loop: " + err.Error())
+		return nil
+	}
+	m.appendFeed(cOK.Render("⚖ " + status))
+	m.sysChat(status)
 	return nil
 }
 
@@ -560,6 +600,12 @@ func (m *model) renderModelList() (string, string) {
 			model, cDim.Render(mi.Endpoint), cErr.Render(degr))
 		s.WriteString(styled + "\n")
 	}
+	if jl := m.cfg.JudgeLoop; jl != nil {
+		if on, jm := jl.On(); on {
+			p.WriteString("  ⚖ judge " + jm + " checks the active model's task answers  ·  /judge loop off\n")
+			s.WriteString("  " + cOK.Render("⚖") + " judge " + cUser.Render(jm) + cDim.Render(" checks the active model's task answers  ·  /judge loop off") + "\n")
+		}
+	}
 	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")
 }
 
@@ -788,6 +834,9 @@ func modelCommands() []*slashCommand {
 			}},
 		{Names: []string{"/judge"}, Section: "session", Run: slashJudge,
 			Summary: "choose the eval LLM-judge model",
-			Rows:    []cmdreg.Row{{Syntax: "/judge [set <kind> <model>|clear|status]", Desc: "choose the eval LLM-judge model (default: planner/self-judge); persists to tenant eval + the nightly gate"}}},
+			Rows: []cmdreg.Row{
+				{Syntax: "/judge [set <kind> <model>|clear|status]", Desc: "choose the eval LLM-judge model (default: planner/self-judge); persists to tenant eval + the nightly gate"},
+				{Syntax: "/judge loop [on [<endpoint> [<model>]]|off]", Desc: "the judge in the loop: a decision model checks task answers and sends them back (default model clef-flash)"},
+			}},
 	}
 }

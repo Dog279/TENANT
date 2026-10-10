@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"tenant/internal/dashboard"
 )
@@ -91,4 +92,20 @@ func (d dashModel) SetLoopCeiling(n int) (string, error) { return d.mc.SetLoopCe
 func (d dashModel) RepeatGuard() int                     { return d.mc.RepeatGuard() }
 func (d dashModel) Vision() string                       { return d.mc.Vision() }
 func (d dashModel) SetRepeatGuard(n int) (string, error) { return d.mc.SetRepeatGuard(n) }
-func (d dashModel) ReloadKeys() (string, error)          { return d.mc.ReloadKeys() }
+
+// JudgeLoop reports the judge in the loop's settings (TEN-510).
+func (d dashModel) JudgeLoop() (bool, string, string) {
+	if d.mc.judge == nil {
+		return false, "", ""
+	}
+	return d.mc.judge.Settings()
+}
+
+// SetJudgeLoop switches the judge in the loop live (TEN-510).
+func (d dashModel) SetJudgeLoop(on bool, endpoint, model string) (string, error) {
+	if d.mc.judge == nil {
+		return "", fmt.Errorf("the judge loop isn't available here")
+	}
+	return d.mc.judge.Set(on, endpoint, model)
+}
+func (d dashModel) ReloadKeys() (string, error) { return d.mc.ReloadKeys() }
