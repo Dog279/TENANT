@@ -85,6 +85,11 @@ config.json: improve.soul_nudge_every
 config.json: improve.trust_min_acks
 config.json: improve.trust_window
 config.json: instance_id
+config.json: judge_loop
+config.json: judge_loop.enabled
+config.json: judge_loop.endpoint
+config.json: judge_loop.max_rounds
+config.json: judge_loop.model
 config.json: lazy_tools
 config.json: logs
 config.json: logs.alerts

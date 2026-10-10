@@ -111,6 +111,11 @@ type Launch struct {
 	// oscillation guard, TEN-261/TEN-506). 0 = built-in default (8), < 0 = off.
 	// Live-tunable with /ceiling repeat.
 	RepeatGuard int `json:"repeat_guard,omitempty"`
+	// JudgeLoop is the judge in the loop of a turn (TEN-510): a System One
+	// decision model (Clef-flash) triages each prompt and checks a task
+	// turn's answer before it goes out, sending it back up to MaxRounds
+	// times. Off when nil or not Enabled. Live-switchable with /judge loop.
+	JudgeLoop *JudgeLoop `json:"judge_loop,omitempty"`
 	// Fallbacks is the ordered list of provider names (keys into Providers) to
 	// try when the active provider rate-limits / runs out of credits / is
 	// unreachable (TEN-246). Empty (default) = no auto-fallback. e.g. with
@@ -668,3 +673,11 @@ const (
 	// its own budget. Still bounded so a looping model can't run forever.
 	DefaultPlanCeiling = 16
 )
+
+// JudgeLoop configures the judge in the loop of a turn (TEN-510).
+type JudgeLoop struct {
+	Enabled   bool   `json:"enabled"`
+	Endpoint  string `json:"endpoint,omitempty"`   // a System One server, e.g. http://host:30000
+	Model     string `json:"model,omitempty"`      // "" = clef-flash
+	MaxRounds int    `json:"max_rounds,omitempty"` // send-backs per turn; 0 = 3
+}
