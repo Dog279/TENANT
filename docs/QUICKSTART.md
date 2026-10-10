@@ -169,6 +169,20 @@ whose output changes never trips it. The feed says "stuck repeating", not
 ```
 Saved as `repeat_guard` in config.json (0 or missing = default, negative = off).
 
+### Judge loop
+A judge can check the agent's work before an answer reaches you: a decision
+model (Cloudflare's Clef-flash, served with the System One API) decides whether
+each prompt is a task and, for tasks, whether the answer really did it. If not,
+the work goes back to the model, up to three times; an answer it still can't
+confirm is marked `— judge: not confirmed`. If you deny an action, it never asks
+again. Off by default:
+```
+/judge loop on http://host:30000     # your System One server (model defaults to clef-flash)
+/judge loop                          # on or off, and where
+/judge loop off
+```
+Saved as `judge_loop` in config.json; the dashboard's Model page has the same switch.
+
 ### Pasting images
 Show the model a picture without pointing it at a file:
 - **Ctrl+V** pastes the clipboard's image (a screenshot, a copied picture). On

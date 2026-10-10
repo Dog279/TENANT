@@ -1,6 +1,6 @@
 # Judge in the loop (TEN-510, workstream TEN-509)
 
-**Status:** plan, rev 1 (2026-10-09). **Branch:** `feat/turn-judge`, stacked on `fix/tui-image-paste`: one PR.
+**Status:** implemented, rev 2 (2026-10-09). **Branch:** `feat/turn-judge`, stacked on `fix/tui-image-paste`: one PR.
 
 ## Goal
 
@@ -153,3 +153,38 @@ type Verdict struct { Done bool; Failed []string; Scores map[string]float64; Usa
 ## Commits
 
 A: the systemone client and config. B: the agent hook, accounting and events. C: controls (TUI, dashboard, `/model`) and wiring. D: docs, site and docfacts.
+
+## Review log
+
+**Rev 2 (2026-10-09), GLM-5.3-Flash adversarial review of rev 1: 5/10.** Verified each finding against the code.
+
+Fixed in the implementation:
+- **H1:** a send-back took an iteration, so a long task's last check fell into the ceiling's forced synthesis. A
+  send-back now gets a free iteration (the interjection pattern); the rounds cap bounds it.
+- **H2:** answers the loop forced (ceiling, repeat guard, an empty final) were unchecked; they're the unfinished
+  ones. They are now checked and get the note (no round left to send them back in).
+- **M1:** the 5 s triage wait skipped the check after a cold start; the final waits on the triage, which its
+  client timeout bounds.
+- **M2:** an unreachable judge stalled every task turn; a failure pauses judging for a minute (the same atomic
+  dedupes the log).
+- **M4:** a last-20 window could hide an early action the answer mentions; every call is listed by name and input,
+  outputs only for the last 20, at most 100.
+- **L1:** settings swap as one immutable struct behind one atomic pointer.
+- **L2:** the "on" probe has a 5 s timeout.
+- **L3:** peer and research turns aren't judged.
+- **L6:** the note is for the reader; episodic memory keeps the model's words.
+
+Rejected after checking the code:
+- **M3** (triage usage from a goroutine): usage returns on the channel and is counted on the turn's thread.
+- **M5** (two files): `loadLaunchConfig` is `config.Load`, i.e. config.json; one file, one writer
+  (`persistLaunchConfig`).
+- **L4** (image-only prompts triage as chat): accepted; the judge doesn't see images, so it couldn't judge them.
+- **L5** (EventUsage has no model): accepted; usage is filed under the launch model, as for every call today.
+
+Found live (GLM main, Clef judge, the real TUI):
+- **Denials:** a turn whose rm the operator denied was sent back three times, asking the operator four
+  times. Tools report a safety boundary or a denial as "blocked: …" (all 30 sites); a turn with one is never
+  sent back.
+- **Fresh setup:** no `judge_loop` in config.json left the judge without a client; `/judge loop` would panic.
+  Caught by the switch test.
+- **Pre-existing TUI bug (out of scope, task filed):** an unbracketed burst of input drops every "delete".
