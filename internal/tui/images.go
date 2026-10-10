@@ -49,6 +49,7 @@ type imagesAttachedMsg struct {
 	imgs  []modelpkg.Image
 	notes []string
 	then  tea.Cmd
+	text  string // pasted text to insert when it turned out not to be an image
 }
 
 // isImagePasteKey reports the keys that try the clipboard image first.
@@ -114,6 +115,37 @@ func (m *model) attachFilesCmd(paths []string) tea.Cmd {
 			out.notes = append(out.notes, fmt.Sprintf("%s: %v", filepath.Base(p), err))
 		}
 		return out
+	}
+}
+
+// isFinderImageName reports a paste that is a bare image file name: what
+// macOS terminals paste for a file copied in Finder (Cmd+C, then Cmd+V puts
+// the name, not the path, on the clipboard's text).
+func isFinderImageName(s string) bool {
+	if clipGOOS != "darwin" || strings.ContainsAny(s, "/\n") || len(s) > 255 {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(s)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif":
+		return true
+	}
+	return false
+}
+
+// finderPasteCmd attaches the file a pasted Finder name refers to: the
+// clipboard's file URL, when its name matches. Otherwise the name goes in
+// as the text it was.
+func (m *model) finderPasteCmd(name string) tea.Cmd {
+	files := m.attachFilesCmd
+	ctx := m.ctx
+	return func() tea.Msg {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		out, err := runClipboardCmd(cctx, "osascript", "-e", "POSIX path of (the clipboard as «class furl»)")
+		if p := strings.TrimSpace(string(out)); err == nil && filepath.Base(p) == name && isImageFile(p) {
+			return files([]string{p})()
+		}
+		return imagesAttachedMsg{text: name}
 	}
 }
 

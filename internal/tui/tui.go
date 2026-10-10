@@ -1526,8 +1526,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if msg.Paste {
+				if len(msg.Runes) == 0 { // a terminal's Cmd+V with only an image on the clipboard
+					return m, m.pasteImageCmd()
+				}
 				if paths := pastedImagePaths(string(msg.Runes)); len(paths) > 0 {
 					return m, m.attachFilesCmd(paths)
+				}
+				if name := string(msg.Runes); isFinderImageName(name) {
+					return m, m.finderPasteCmd(name)
 				}
 			}
 		}
@@ -1663,6 +1669,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case imagesAttachedMsg:
+		if msg.text != "" {
+			m.ta.InsertString(msg.text) // the paste wasn't an image after all
+		}
 		m.addAttachments(msg.imgs)
 		for _, n := range msg.notes {
 			m.sysChat(n)
@@ -2991,7 +3000,7 @@ func (m *model) View() string {
 	// Footer: help (left) + context gauge (bottom-right), width-aligned,
 	// sharing the chat's left gutter.
 	gutter := strings.Repeat(" ", chatGutter)
-	helps := []string{gutter + "Enter send · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit", gutter + "/help · /exit quit", ""}
+	helps := []string{gutter + "Enter send · Ctrl+V image · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit", gutter + "/help · /exit quit", ""}
 	if n := m.pendingImages(); n > 0 { // TEN-493: say what rides the next message, and how to drop it
 		helps = []string{gutter + fmt.Sprintf("📎 %d attached · Backspace removes an [image] tag", n), gutter + fmt.Sprintf("📎 %d attached", n), ""}
 	}

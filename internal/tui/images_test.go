@@ -317,3 +317,48 @@ func TestBackspaceRemovesAnImageTag(t *testing.T) {
 		t.Fatalf("a deleted image would still be sent: %v", imgs)
 	}
 }
+
+// macOS Cmd+V: a terminal that sends an empty paste for an image-only
+// clipboard gets the clipboard image, as Ctrl+V does.
+func TestEmptyPasteReadsTheClipboardImage(t *testing.T) {
+	fakeMacClipboard(t, pngBytes(t, 30, 20))
+	m := imageModel(t)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Paste: true})
+	if cmd == nil {
+		t.Fatal("an empty paste did nothing")
+	}
+	m.Update(cmd())
+	if len(m.attachments) != 1 || !strings.Contains(m.ta.Value(), "[image 1:") {
+		t.Fatalf("attachments %d, input %q", len(m.attachments), m.ta.Value())
+	}
+}
+
+// macOS Cmd+V on a file copied in Finder pastes only its name: the file the
+// clipboard points at is attached when the names match; otherwise the name
+// is typed as the text it was.
+func TestFinderNamePasteAttachesTheFile(t *testing.T) {
+	old, oldRun := clipGOOS, runClipboardCmd
+	t.Cleanup(func() { clipGOOS, runClipboardCmd = old, oldRun })
+	clipGOOS = "darwin"
+	shot := filepath.Join(t.TempDir(), "Screenshot 1.png")
+	_ = os.WriteFile(shot, pngBytes(t, 8, 8), 0o600)
+	runClipboardCmd = func(context.Context, string, ...string) ([]byte, error) { return []byte(shot + "\n"), nil }
+	for _, c := range []struct {
+		paste      string
+		wantImages int
+		wantText   string
+	}{
+		{"Screenshot 1.png", 1, ""},
+		{"Other.png", 0, "Other.png"},
+	} {
+		m := imageModel(t)
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(c.paste), Paste: true})
+		if cmd == nil {
+			t.Fatalf("%q: no command", c.paste)
+		}
+		m.Update(cmd())
+		if len(m.attachments) != c.wantImages || (c.wantText != "" && m.ta.Value() != c.wantText) {
+			t.Errorf("%q: %d images, input %q", c.paste, len(m.attachments), m.ta.Value())
+		}
+	}
+}
