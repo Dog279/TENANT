@@ -188,3 +188,28 @@ Found live (GLM main, Clef judge, the real TUI):
 - **Fresh setup:** no `judge_loop` in config.json left the judge without a client; `/judge loop` would panic.
   Caught by the switch test.
 - **Pre-existing TUI bug (out of scope, task filed):** an unbracketed burst of input drops every "delete".
+
+**Code review (2026-10-09), GLM-5.3-Flash on the implementation: 6/10.** Verified each finding against the code.
+
+Fixed:
+- **#2:** `max_rounds` is clamped to 10, since each round is a free iteration.
+- **#3:** a wrong-typed answer (a `choice` where a `noul` belongs, or a missing type) is a judge error that fails open,
+  not P(true)=0 on every check.
+- **#5:** the boundary rule counts only a *failed* call whose error or result starts with "blocked:", so output that
+  happens to begin with the word doesn't silence the judge.
+- **#6:** the "on" probe waits 20 s (a cold server took ~15 s), and the TUI runs it off the UI goroutine.
+- **#7:** a 2xx answer that isn't System One JSON reports the decode error and a prefix of the body.
+- **#8:** the outage test now runs with no cooldown, so the second turn is judged, fails, and isn't reported again.
+- **#9:** judge verdicts were logged twice (directly and through `EntryFor`). They are now events only, and the three
+  definitions take `EntryFor`'s fields (`iter`, `text`).
+- **#10:** triage usage is counted even when the turn is cancelled while waiting.
+- **#11:** documented at `judgeState`: the state is what the planner model already saw, sent to the judge the
+  operator configured, so it's a model call, not egress.
+- **#12:** "not confirmed" says why: the rounds were used up, an action was blocked, or the loop forced the answer.
+- **#1** (test): the switch test seeds an existing config and checks it survives.
+
+Rejected after checking the code:
+- **#1** (data loss): `config.Persist` with no in-memory config loads config.json fresh, applies the change and saves;
+  other keys survive, and the test now proves it.
+- **#4** (no dashboard UI): the Judge row is in `templates/models.html` (commit C), which wasn't in the diff sent for
+  review; `TestModels_JudgeLoop` checks it renders.

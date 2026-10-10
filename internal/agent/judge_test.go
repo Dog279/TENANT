@@ -167,8 +167,10 @@ func TestJudge_ForcedAnswerGetsTheNote(t *testing.T) {
 }
 
 // A judge that fails lets the answer out unchecked, and says so once per
-// outage, not every turn.
+// outage, not every turn: with no cooldown, the second turn is judged again,
+// fails again, and isn't reported again.
 func TestJudge_FailsOpenAndLogsOnce(t *testing.T) {
+	t.Cleanup(agent.SetJudgeCooldownForTest(0))
 	j := &fakeJudge{task: true, checkErr: errors.New("connection refused"), max: 3}
 	a, events, _ := judgedAgent(t, j, "the answer")
 	for i := 0; i < 2; i++ {
@@ -183,8 +185,8 @@ func TestJudge_FailsOpenAndLogsOnce(t *testing.T) {
 			n++
 		}
 	}
-	if n != 1 {
-		t.Fatalf("unavailable reported %d times, want once", n)
+	if n != 1 || j.triaged != 2 {
+		t.Fatalf("unavailable reported %d times over %d judged turns, want once over 2", n, j.triaged)
 	}
 }
 

@@ -6073,14 +6073,14 @@ Writes the `turns` log.
 | [1003](#turns-1003) | info | Tools | `tool surface ranked` |
 | [1004](#turns-1004) | info | Turn | `operator interjected` |
 | [1005](#turns-1005) | info | Turn | `final response` |
-| [1006](#turns-1006) | info | Judge | `judge: {verdict} (round {round}): {scores}` |
+| [1006](#turns-1006) | info | Judge | `judge checked an answer` |
 | [1101](#turns-1101) | info | Tool call | `Tool {tool} finished in {duration}` |
 | [1201](#turns-1201) | info | Compaction | `working set compacted` |
 | [2001](#turns-2001) | warning | Validation | `tool call rejected {tool}` |
 | [2002](#turns-2002) | warning | Retry | `tool retry {tool}` |
 | [2003](#turns-2003) | warning | Turn | `loop ceiling hit — forced synthesis` |
 | [2004](#turns-2004) | warning | Turn | `stuck repeating the same tool calls — forced synthesis` |
-| [2005](#turns-2005) | warning | Judge | `The judge could not confirm the answer after {rounds} rounds: {scores}` |
+| [2005](#turns-2005) | warning | Judge | `judge could not confirm an answer` |
 | [2101](#turns-2101) | warning | Run record | `Could not {op} the run record of turn {trace_id}: {err}` |
 | [2102](#turns-2102) | warning | Retrieval | `Query embedding failed; the turn goes on without retrieval: {err}` |
 | [2103](#turns-2103) | warning | Routing | `Routed role {role} unavailable; using the planner: {err}` |
@@ -6091,7 +6091,7 @@ Writes the `turns` log.
 | [2108](#turns-2108) | warning | Retry | `Planner stream dropped; retrying on a fresh connection (attempt {attempt}): {err}` |
 | [2109](#turns-2109) | warning | Memory | `The turn's {record} was not saved: {err}` |
 | [2110](#turns-2110) | warning | Images | `An image from {tool} was not attached: {err}` |
-| [2111](#turns-2111) | warning | Judge | `The judge is unavailable; answers go out unchecked: {err}` |
+| [2111](#turns-2111) | warning | Judge | `judge unavailable; answers go out unchecked` |
 | [2201](#turns-2201) | warning | Turn gate | `Turn from {source} refused: {err}` |
 | [3001](#turns-3001) | error | Turn | `turn error` |
 | [3101](#turns-3101) | error | Tool call | `Tool {tool} failed after {duration}` |
@@ -6187,13 +6187,13 @@ Writes the `turns` log.
 
 ### turns 1006
 
-`judge: {verdict} (round {round}): {scores}`
+`judge checked an answer`
 
 - **Level:** info · **Channel:** operational · **Task:** Judge · **Log:** turns
-- **Fields:** `agent`, `verdict`, `round`, `scores`
+- **Fields:** `agent`, `iter`, `text`
 - **Find it:** `provider:turns id:1006`
 
-**What it means.** The judge in the loop checked a task's answer (TEN-510): done, or sent back to the planner with a nudge.
+**What it means.** The judge in the loop checked a task's answer (TEN-510): done, or sent back to the planner with a nudge (text: the verdict and the failing checks' scores).
 
 **Why it happens.** The judge loop is on and triage called the prompt a task.
 
@@ -6285,15 +6285,15 @@ Writes the `turns` log.
 
 ### turns 2005
 
-`The judge could not confirm the answer after {rounds} rounds: {scores}`
+`judge could not confirm an answer`
 
 - **Level:** warning · **Channel:** operational · **Task:** Judge · **Log:** turns
-- **Fields:** `agent`, `rounds`, `scores`
+- **Fields:** `agent`, `iter`, `text`
 - **Find it:** `provider:turns id:2005`
 
-**What it means.** The judge still found the task unfinished after its last round, so the answer went out with a 'judge: not confirmed' note (TEN-510).
+**What it means.** The answer went out with a 'judge: not confirmed' note (TEN-510); text says why: the rounds were used up, an action was blocked (so it wasn't sent back to ask again), or the loop forced the answer.
 
-**Why it happens.** The planner couldn't finish part of the ask, or the judge misread a finished answer.
+**Why it happens.** The planner couldn't finish part of the ask, the operator or a safety setting refused an action, or the judge misread a finished answer.
 
 **What to do.** Read the answer and its tool events. If the judge is wrong for a kind of prompt, say so in the prompt, or turn the loop off with /judge loop off.
 
@@ -6439,15 +6439,15 @@ Writes the `turns` log.
 
 ### turns 2111
 
-`The judge is unavailable; answers go out unchecked: {err}`
+`judge unavailable; answers go out unchecked`
 
 - **Level:** warning · **Channel:** operational · **Task:** Judge · **Log:** turns
-- **Fields:** `agent`, `err`
+- **Fields:** `agent`, `text`
 - **Find it:** `provider:turns id:2111`
 
-**What it means.** A judge call failed, so the turn's answer went out without a check (TEN-510). Logged once per outage, not every turn.
+**What it means.** A judge call failed, so the turn's answer went out without a check (TEN-510); judging pauses for a minute. Logged once per outage, not every turn.
 
-**Why it happens.** The judge server is down, unreachable or erroring.
+**Why it happens.** The judge server is down, unreachable, erroring, or answered in a shape it shouldn't.
 
 **What to do.** Check the judge endpoint (/judge loop shows it). Answers keep flowing unchecked until it is back.
 

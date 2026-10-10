@@ -49,7 +49,8 @@ type JudgeUsage struct {
 
 // judgeCooldown is how long a judge outage skips judging before trying
 // again, so an unreachable judge doesn't stall every turn on its timeout.
-const judgeCooldown = time.Minute
+// A var for tests.
+var judgeCooldown = time.Minute
 
 // judgeTurn is one turn's judging: the triage in flight, the rounds used,
 // and the ask as it grew.
@@ -111,6 +112,11 @@ func (a *Agent) judgeIsTask(ctx context.Context, jt *judgeTurn, iter int, span s
 		}
 		return t.task
 	case <-ctx.Done():
+		select { // the triage may have answered: count what it cost
+		case t := <-jt.triage:
+			a.judgeUsage(iter, span, t.use)
+		default:
+		}
 	}
 	return false
 }
@@ -132,31 +138,37 @@ func (a *Agent) judgeFinal(ctx context.Context, jt *judgeTurn, iter int, room bo
 	max := a.cfg.Judge.MaxRounds()
 	// A safety boundary or the operator said no this turn: sending the work
 	// back would only ask them again, so an unconfirmed answer goes out as is.
-	if hitBoundary(tools) {
-		room = false
-	}
+	blocked := hitBoundary(tools)
 	switch {
 	case v.Done:
-		Judged.Log(a.ev(ctx), "agent", a.cfg.AgentID, "verdict", "done", "round", jt.rounds, "scores", v.Summary)
 		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "done ✓ " + v.Summary})
 		return "", ""
-	case jt.rounds < max && room:
+	case jt.rounds < max && room && !blocked:
 		jt.rounds++
-		Judged.Log(a.ev(ctx), "agent", a.cfg.AgentID, "verdict", "sent back", "round", jt.rounds, "scores", v.Summary)
 		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "sent back (" + strconv.Itoa(jt.rounds) + "/" + strconv.Itoa(max) + "): " + v.Summary})
 		return v.Nudge, ""
 	default:
-		JudgeNotConfirmed.Log(a.ev(ctx), "agent", a.cfg.AgentID, "rounds", jt.rounds, "scores", v.Summary)
-		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "not confirmed: " + v.Summary})
+		why := "after " + strconv.Itoa(jt.rounds) + " rounds"
+		switch {
+		case blocked:
+			why = "not sent back: an action was blocked"
+		case !room:
+			why = "the loop forced this answer"
+		}
+		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "not confirmed (" + why + "): " + v.Summary})
 		return "", "\n\n— judge: not confirmed (" + v.Summary + ")"
 	}
 }
 
 // hitBoundary reports a tool call this turn that a safety boundary refused
-// or the operator denied: the tools report those as "blocked: …".
+// or the operator denied: every plugin fails those as "blocked: …". Only a
+// failed call counts, so output that happens to start with the word doesn't.
 func hitBoundary(tools []ToolCallResult) bool {
 	for _, t := range tools {
-		if strings.HasPrefix(t.Result, "blocked:") {
+		if t.Err != nil && strings.HasPrefix(t.Err.Error(), "blocked:") {
+			return true
+		}
+		if t.IsError && strings.HasPrefix(t.Result, "blocked:") {
 			return true
 		}
 	}
@@ -182,7 +194,6 @@ func (a *Agent) judgeFailed(ctx context.Context, err error) {
 		return
 	}
 	if a.judgeRetryAt.Swap(time.Now().Add(judgeCooldown).UnixNano()) == 0 {
-		JudgeUnavailable.Log(a.ev(ctx), "agent", a.cfg.AgentID, "err", err)
 		a.emit(Event{Kind: EventJudge, Text: "unavailable, answers go out unchecked: " + err.Error(), IsErr: true})
 	}
 }

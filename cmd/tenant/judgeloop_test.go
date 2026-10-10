@@ -8,13 +8,35 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"tenant/internal/agent"
+	"tenant/internal/config"
 	"tenant/internal/model"
 	"tenant/internal/model/systemone"
 )
+
+// A server that answers in the wrong shape is a judge error (fail open), not
+// a "no" on every check; rounds are clamped.
+func TestJudgeLoop_WrongShapeAndClamp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"answers":{"done":{"type":"choice","choice":"yes"},"every_part":{"type":"choice"},"claims_without_tool":{"type":"choice"},"gave_up":{"type":"choice"},"kind":{"type":"noul","noul":0.9}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	j := newJudgeLoop(t.TempDir(), &config.JudgeLoop{Enabled: true, Endpoint: srv.URL, MaxRounds: 500})
+	if _, err := j.Check(context.Background(), agent.Exchange{Request: "r", Answer: "a"}); err == nil || !strings.Contains(err.Error(), "not yes/no") {
+		t.Errorf("check err = %v", err)
+	}
+	if _, _, err := j.Triage(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "not a choice") {
+		t.Errorf("triage err = %v", err)
+	}
+	if j.MaxRounds() != judgeMaxRounds {
+		t.Errorf("max rounds %d, want clamped to %d", j.MaxRounds(), judgeMaxRounds)
+	}
+}
 
 // Every check must pass; the summary names the failures, and a nudge is
 // sent once even when two checks ask for it.
@@ -75,7 +97,7 @@ func fakeSystemOne(t *testing.T, kind string, done float64) *httptest.Server {
 			fmt.Fprintf(w, `{"answers":{"kind":{"type":"choice","choice":%q,"confidence":0.9}},"usage":{"input_tokens":40}}`, kind)
 			return
 		}
-		fmt.Fprintf(w, `{"answers":{"done":{"noul":%v},"every_part":{"noul":%v},"claims_without_tool":{"noul":0.1},"gave_up":{"noul":0.02}},"usage":{"input_tokens":300}}`, done, done)
+		fmt.Fprintf(w, `{"answers":{"done":{"type":"noul","noul":%v},"every_part":{"type":"noul","noul":%v},"claims_without_tool":{"type":"noul","noul":0.1},"gave_up":{"type":"noul","noul":0.02}},"usage":{"input_tokens":300}}`, done, done)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -85,6 +107,10 @@ func fakeSystemOne(t *testing.T, kind string, done float64) *httptest.Server {
 // server is refused and the loop stays off; off is off.
 func TestJudgeLoop_SetLive(t *testing.T) {
 	dir := t.TempDir()
+	// An existing setup: switching the judge must keep it.
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"provider":"dgxt","providers":{"dgxt":{"kind":"vllm","endpoint":"http://gpu:8000","model":"glm-5.3-flash"}},"repeat_guard":12}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	srv := fakeSystemOne(t, "task", 0.9)
 	j := newJudgeLoop(dir, nil)
 	if _, _, err := j.Triage(context.Background(), "x"); !errors.Is(err, agent.ErrJudgeOff) {
@@ -103,6 +129,9 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 	lc, err := loadLaunchConfig(dir)
 	if err != nil || lc.JudgeLoop == nil || !lc.JudgeLoop.Enabled || lc.JudgeLoop.Endpoint != srv.URL {
 		t.Fatalf("saved %+v (err %v)", lc, err)
+	}
+	if lc.Provider != "dgxt" || lc.Providers["dgxt"].Model != "glm-5.3-flash" || lc.RepeatGuard != 12 {
+		t.Fatalf("switching the judge lost the rest of config.json: %+v", lc)
 	}
 	task, use, err := j.Triage(context.Background(), "clean up Downloads")
 	if err != nil || !task || use.InputTokens != 40 || use.Model != "clef-flash" {

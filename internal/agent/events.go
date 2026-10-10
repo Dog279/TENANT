@@ -291,17 +291,17 @@ var ToolFailedBody = Turns.Event(9003, event.Error, "Tool call", "tool result {t
 		"A tool call returned an error.",
 		"See turns 3101.")
 
-var Judged = Turns.Event(1006, event.Info, "Judge", "judge: {verdict} (round {round}): {scores}", "agent", "verdict", "round", "scores").
-	Doc("The judge in the loop checked a task's answer (TEN-510): done, or sent back to the planner with a nudge.",
+var Judged = Turns.Event(1006, event.Info, "Judge", "judge checked an answer", "agent", "iter", "text").
+	Doc("The judge in the loop checked a task's answer (TEN-510): done, or sent back to the planner with a nudge (text: the verdict and the failing checks' scores).",
 		"The judge loop is on and triage called the prompt a task.",
 		"None. A turn sent back repeatedly for the same check suggests the planner can't do that part; read the turn's tool events.")
 
-var JudgeNotConfirmed = Turns.Event(2005, event.Warning, "Judge", "The judge could not confirm the answer after {rounds} rounds: {scores}", "agent", "rounds", "scores").
-	Doc("The judge still found the task unfinished after its last round, so the answer went out with a 'judge: not confirmed' note (TEN-510).",
-		"The planner couldn't finish part of the ask, or the judge misread a finished answer.",
+var JudgeNotConfirmed = Turns.Event(2005, event.Warning, "Judge", "judge could not confirm an answer", "agent", "iter", "text").
+	Doc("The answer went out with a 'judge: not confirmed' note (TEN-510); text says why: the rounds were used up, an action was blocked (so it wasn't sent back to ask again), or the loop forced the answer.",
+		"The planner couldn't finish part of the ask, the operator or a safety setting refused an action, or the judge misread a finished answer.",
 		"Read the answer and its tool events. If the judge is wrong for a kind of prompt, say so in the prompt, or turn the loop off with /judge loop off.")
 
-var JudgeUnavailable = Turns.Event(2111, event.Warning, "Judge", "The judge is unavailable; answers go out unchecked: {err}", "agent", "err").
-	Doc("A judge call failed, so the turn's answer went out without a check (TEN-510). Logged once per outage, not every turn.",
-		"The judge server is down, unreachable or erroring.",
+var JudgeUnavailable = Turns.Event(2111, event.Warning, "Judge", "judge unavailable; answers go out unchecked", "agent", "text").
+	Doc("A judge call failed, so the turn's answer went out without a check (TEN-510); judging pauses for a minute. Logged once per outage, not every turn.",
+		"The judge server is down, unreachable, erroring, or answered in a shape it shouldn't.",
 		"Check the judge endpoint (/judge loop shows it). Answers keep flowing unchecked until it is back.")

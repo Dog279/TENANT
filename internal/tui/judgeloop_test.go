@@ -44,9 +44,17 @@ func TestSlash_JudgeLoop(t *testing.T) {
 	if plain, _ := m.renderModelList(); strings.Contains(plain, "⚖") {
 		t.Fatal("/model names a judge that's off")
 	}
-	m.handleSlash("/judge loop on http://judge:30000 clef-flash")
-	m.handleSlash("/judge loop off")
-	m.handleSlash("/judge loop on")
+	run := func(line string) {
+		if cmd := m.handleSlash(line); cmd != nil {
+			m.Update(cmd()) // the switch runs off the UI goroutine
+		}
+	}
+	run("/judge loop on http://judge:30000 clef-flash")
+	if !strings.Contains(last(), "⚖ judge loop: on") {
+		t.Fatalf("on: %q", last())
+	}
+	run("/judge loop off")
+	run("/judge loop on")
 	if strings.Join(fj.sets, ",") != "on|http://judge:30000|clef-flash,off||,on||" {
 		t.Fatalf("Set calls %v", fj.sets)
 	}

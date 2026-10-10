@@ -86,14 +86,18 @@ func judgeLoopCmd(m *model, args []string) tea.Cmd {
 	if len(args) > 2 {
 		modelID = args[2]
 	}
-	status, err := jl.Set(on, endpoint, modelID)
-	if err != nil {
-		m.sysChat("judge loop: " + err.Error())
-		return nil
+	if on {
+		m.sysChat("judge loop: asking the judge server first…")
 	}
-	m.appendFeed(cOK.Render("⚖ " + status))
-	m.sysChat(status)
-	return nil
+	// Off the UI goroutine: switching on asks the server, which can take a
+	// while on a cold start.
+	return func() tea.Msg {
+		status, err := jl.Set(on, endpoint, modelID)
+		if err != nil {
+			return sysChatMsg{text: "judge loop: " + err.Error()}
+		}
+		return sysChatMsg{text: "⚖ " + status}
+	}
 }
 
 // slashModel runs /model, /models.

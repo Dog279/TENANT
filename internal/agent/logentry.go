@@ -178,11 +178,12 @@ func EntryFor(ev Event) (logs.Entry, bool) {
 		e.Msg = "operator interjected"
 		text()
 	case EventJudge:
-		def = Judged
-		e.Msg = "judge"
-		if ev.IsErr {
-			def = JudgeUnavailable
-			e.Level = slog.LevelWarn
+		def, e.Msg = Judged, "judge checked an answer"
+		switch {
+		case ev.IsErr:
+			def, e.Msg, e.Level = JudgeUnavailable, "judge unavailable; answers go out unchecked", slog.LevelWarn
+		case strings.HasPrefix(ev.Text, "not confirmed"):
+			def, e.Msg, e.Level = JudgeNotConfirmed, "judge could not confirm an answer", slog.LevelWarn
 		}
 		text()
 	case EventToolCatalog:

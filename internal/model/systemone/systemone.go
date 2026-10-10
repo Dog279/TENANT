@@ -92,7 +92,10 @@ func (c *Client) Decide(ctx context.Context, state any, qs map[string]Question) 
 		Usage   Usage             `json:"usage"`
 		Error   string            `json:"error"`
 	}
-	_ = json.Unmarshal(raw, &out)
+	decodeErr := json.Unmarshal(raw, &out)
+	if resp.StatusCode/100 == 2 && decodeErr != nil {
+		return nil, Usage{}, fmt.Errorf("systemone: the answer isn't System One JSON (%v): %.120s", decodeErr, raw)
+	}
 	if resp.StatusCode/100 != 2 {
 		msg := out.Error
 		if msg == "" {

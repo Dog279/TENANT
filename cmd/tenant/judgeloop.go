@@ -22,12 +22,13 @@ import (
 const (
 	judgeDefaultModel  = "clef-flash"
 	judgeDefaultRounds = 3
-	judgeProbeTimeout  = 5 * time.Second
-	judgeKeepOutputs   = 20   // tool calls whose output the judge sees (the rest: name and input)
-	judgeMaxCalls      = 100  // tool calls listed at all
-	judgeInputChars    = 300  // per tool input
-	judgeOutputChars   = 600  // per tool output
-	judgeTextChars     = 4000 // the request and the answer
+	judgeMaxRounds     = 10               // each round is a free planner iteration: keep a hand-edited config bounded
+	judgeProbeTimeout  = 20 * time.Second // a cold server took ~15 s for its first answer
+	judgeKeepOutputs   = 20               // tool calls whose output the judge sees (the rest: name and input)
+	judgeMaxCalls      = 100              // tool calls listed at all
+	judgeInputChars    = 300              // per tool input
+	judgeOutputChars   = 600              // per tool output
+	judgeTextChars     = 4000             // the request and the answer
 )
 
 // The questions, worded and tested against Clef-flash (docs/plans/turn-judge-plan.md).
@@ -104,6 +105,7 @@ func judgeStateFrom(c *config.JudgeLoop) *judgeLoopState {
 	if r <= 0 {
 		r = judgeDefaultRounds
 	}
+	r = min(r, judgeMaxRounds)
 	return &judgeLoopState{on: c.Enabled && c.Endpoint != "", client: &systemone.Client{Endpoint: c.Endpoint, Model: m}, rounds: r}
 }
 
@@ -125,6 +127,9 @@ func (j *judgeLoop) Triage(ctx context.Context, prompt string) (bool, agent.Judg
 	if err != nil {
 		return false, agent.JudgeUsage{}, err
 	}
+	if t := a["kind"].Type; t != systemone.Choice {
+		return false, agent.JudgeUsage{}, fmt.Errorf("the judge answered kind as %q, not a choice: is it a System One decision model?", t)
+	}
 	return a["kind"].Choice == "task", agent.JudgeUsage{Model: s.client.Model, InputTokens: use.InputTokens}, nil
 }
 
@@ -137,6 +142,11 @@ func (j *judgeLoop) Check(ctx context.Context, ex agent.Exchange) (agent.Verdict
 	a, use, err := s.client.Decide(ctx, judgeState(ex), judgeCheckQs)
 	if err != nil {
 		return agent.Verdict{}, err
+	}
+	for _, c := range judgeChecks { // a wrong-typed answer would read as P(true)=0: fail open instead
+		if t := a[c.id].Type; t != systemone.Noul {
+			return agent.Verdict{}, fmt.Errorf("the judge answered %s as %q, not yes/no: is it a System One decision model?", c.id, t)
+		}
 	}
 	v := judgeVerdict(a)
 	v.Use = agent.JudgeUsage{Model: s.client.Model, InputTokens: use.InputTokens}
@@ -169,6 +179,10 @@ func judgeVerdict(a map[string]systemone.Answer) agent.Verdict {
 // cleanly only when the tool calls are a list beside the answer. Every call
 // is listed by name and input (an early action the answer mentions stays
 // visible); outputs only for the last judgeKeepOutputs.
+//
+// It holds what the planner model already saw (tool output included), sent to
+// the judge server the operator configured, so it is a model call like the
+// planner's, not egress the sensitive-data gate reviews.
 func judgeState(ex agent.Exchange) map[string]any {
 	type call struct {
 		Tool   string `json:"tool"`
