@@ -136,9 +136,9 @@ Releases page.
   the footer (about 140 columns once tokens are counted), the footer wrapped and the
   input stopped redrawing, so a pasted `[image N: …]` tag appeared only after Enter. The
   footer now fits any width, says how many images are attached, and Backspace right after
-  a tag deletes the whole tag and its image. On a Mac, Cmd+V on an image file copied in
-  Finder now attaches the file (the terminal pastes only its name), and an empty paste
-  reads the clipboard image. `--vllm-tool-format`, `tenant model add
+  a tag deletes the whole tag and its image. A pasted image path with spaces attaches as
+  one file. On a Mac, use Ctrl+V for images: terminals keep Cmd+V for their own text
+  paste (the footer says "Ctrl+V image"). `--vllm-tool-format`, `tenant model add
   --tool-format` and `/model add` now list `glm` in their help.
 - **A named self-hosted model gets its real context window** (TEN-507). Tenant read a
   vLLM server's `max_model_len` only when the provider's model was left blank, so naming

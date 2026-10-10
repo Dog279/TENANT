@@ -173,9 +173,8 @@ Saved as `repeat_guard` in config.json (0 or missing = default, negative = off).
 Show the model a picture without pointing it at a file:
 - **Ctrl+V** pastes the clipboard's image (a screenshot, a copied picture). On
   Windows it's **Alt+V**, since Windows Terminal keeps Ctrl+V for text. With no
-  image on the clipboard, Ctrl+V pastes text as before. On a Mac, **Cmd+V** also
-  attaches an image file copied in Finder, but most terminals send nothing for a
-  screenshot on the clipboard, so use Ctrl+V for those.
+  image on the clipboard, Ctrl+V pastes text as before. On a Mac use Ctrl+V too:
+  terminals keep Cmd+V for their own text paste and send nothing for an image.
 - **Drag** image files into the terminal (macOS and Linux terminals).
 - **`/image <path>`** attaches a file by path (`/img` for short).
 
