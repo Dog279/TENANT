@@ -209,3 +209,27 @@ func TestJudge_NoJudgeAndUsage(t *testing.T) {
 		t.Fatalf("judge usage counted %d tokens, want 250 (triage 50 + check 200)", judgeTokens)
 	}
 }
+
+// When the operator denied an action (the tool says "blocked: …"), the judge
+// doesn't send the work back to ask them again: the answer goes out with the
+// note. (Live, before this rule: four approval prompts for one refused rm.)
+func TestJudge_NoSendBackAfterADenial(t *testing.T) {
+	j := &fakeJudge{task: true, verdicts: []agent.Verdict{notDone}, max: 3}
+	rm := model.ToolSpec{Name: "rm", Description: "rm", Parameters: []byte(`{"type":"object","properties":{}}`)}
+	a, fake, _, _ := buildAgentFull(t, model.Profile{}, []model.ToolSpec{rm},
+		agent.DispatcherFunc(func(context.Context, model.ToolCall) (string, bool, error) {
+			return "blocked: this command wasn't approved (denied, timed out, or refused by a safety setting).", true, nil
+		}), nil, nil, func(c *agent.Config) { c.Judge = j })
+	calls := 0
+	fake.GenerateFn = func(_ context.Context, req model.GenerateRequest) (*model.GenerateResponse, error) {
+		calls++
+		if calls == 1 {
+			return &model.GenerateResponse{ToolCalls: []model.ToolCall{{ID: "c1", Name: "rm", Arguments: []byte(`{}`)}}}, nil
+		}
+		return &model.GenerateResponse{Text: "I couldn't delete it: the deletion wasn't approved."}, nil
+	}
+	res, err := a.Turn(context.Background(), agent.TurnRequest{UserQuery: "delete report-1.txt"})
+	if err != nil || calls != 2 || len(j.checked) != 1 || !strings.Contains(res.Response, "judge: not confirmed") {
+		t.Fatalf("response %q, planner calls %d, checks %d, err %v", res.Response, calls, len(j.checked), err)
+	}
+}

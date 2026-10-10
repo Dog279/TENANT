@@ -130,6 +130,11 @@ func (a *Agent) judgeFinal(ctx context.Context, jt *judgeTurn, iter int, room bo
 	a.judgeRetryAt.Store(0) // a check answered: any outage is over
 	a.judgeUsage(iter, span, v.Use)
 	max := a.cfg.Judge.MaxRounds()
+	// A safety boundary or the operator said no this turn: sending the work
+	// back would only ask them again, so an unconfirmed answer goes out as is.
+	if hitBoundary(tools) {
+		room = false
+	}
 	switch {
 	case v.Done:
 		Judged.Log(a.ev(ctx), "agent", a.cfg.AgentID, "verdict", "done", "round", jt.rounds, "scores", v.Summary)
@@ -145,6 +150,17 @@ func (a *Agent) judgeFinal(ctx context.Context, jt *judgeTurn, iter int, room bo
 		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "not confirmed: " + v.Summary})
 		return "", "\n\n— judge: not confirmed (" + v.Summary + ")"
 	}
+}
+
+// hitBoundary reports a tool call this turn that a safety boundary refused
+// or the operator denied: the tools report those as "blocked: …".
+func hitBoundary(tools []ToolCallResult) bool {
+	for _, t := range tools {
+		if strings.HasPrefix(t.Result, "blocked:") {
+			return true
+		}
+	}
+	return false
 }
 
 // judgeUsage counts a judge call like a model call: the run record and the
