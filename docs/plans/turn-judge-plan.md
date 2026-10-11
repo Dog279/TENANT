@@ -1,5 +1,7 @@
 # Judge in the loop (TEN-510, workstream TEN-509)
 
+> Superseded in part by [judge-rework-plan.md](judge-rework-plan.md) (TEN-516): `/judge loop` became `/judge` with a setup prompt, `judge_loop` became `judge`, and the eval grader is the Quality model (`/eval model`). The design below is otherwise current.
+
 **Status:** implemented, rev 2 (2026-10-09). **Branch:** `feat/turn-judge`, stacked on `fix/tui-image-paste`: one PR.
 
 ## Goal

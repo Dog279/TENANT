@@ -1096,11 +1096,11 @@ Writes the `eval` log.
 - **Fields:** `task`, `class`, `reason`
 - **Find it:** `provider:eval id:2001`
 
-**What it means.** A task was left out of the score because the harness, the model provider or the judge failed, not the agent.
+**What it means.** A task was left out of the score because the harness, the model provider or the Quality model failed, not the agent.
 
-**Why it happens.** class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the grader was unusable after its retry).
+**Why it happens.** class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the Quality model, the grader, was unusable after its retry).
 
-**What to do.** Fix the named piece (a provider's quota or endpoint, the judge model) and run again. Many ungraded tasks make a run's score unreliable.
+**What to do.** Fix the named piece (a provider's quota or endpoint, the Quality model) and run again. Many ungraded tasks make a run's score unreliable.
 
 ### eval 2002
 

@@ -6,15 +6,22 @@ Releases page.
 ## Unreleased
 
 ### Added
-- **Judge loop** (TEN-510): a decision model checks the agent's work. Cloudflare's Clef-flash
-  (or any System One server) triages each prompt while the model works; for a task, it
-  checks the answer is fully done, covers every part, claims nothing no tool did, and didn't
-  hand the work back. A failing check sends the work back with a note (up to 3 rounds, not
-  counted against the step limit); an answer it still can't confirm goes out marked
-  "judge: not confirmed". A denied or blocked action is never retried for it. Off by
-  default: `/judge loop on <endpoint>`, the Model page, or `judge_loop` in config.json. Not
-  applied to `/goal`, helper, peer or research turns; fails open with a one-minute pause
-  when the judge is down.
+- **The Judge** (TEN-510, TEN-516): a decision model checks the agent's work. Cloudflare's
+  Clef-flash (or any System One server) triages each prompt while the model works; for a
+  task, it checks the answer is fully done, covers every part, claims nothing no tool did,
+  and didn't hand the work back. A failing check sends the work back with a note (up to 3
+  rounds by default, `/judge rounds` 1 to 5, not counted against the step limit); an answer
+  it still can't confirm goes out marked "judge: not confirmed". A denied or blocked action
+  is never retried for it. Off by default: `/judge use clef` prompts for the server's
+  address, then its key (hidden; blank for none), asks the server once and switches on;
+  `/judge on|off`; the Model page's Judge card. Saved as `judge` in config.json (kind,
+  server, model, rounds), the key in credentials.json. Not applied to `/goal`, helper, peer
+  or research turns; fails open with a one-minute pause when the judge is down.
+- **The Quality model** (TEN-516): the model that grades Quality evals has its own name
+  everywhere. `/eval model [set <kind> <model> [endpoint]|clear]` (was `/judge set`),
+  `tenant eval --quality-model` (was `--judge-model`), the Quality page's "Quality model"
+  card, and `improve.quality_model*` in config.json; the old `judge_loop` and
+  `improve.judge*` keys migrate on load and are never written again.
 - **Images** (TEN-493): paste a picture into the TUI with Ctrl+V (Alt+V on Windows), drag image
   files in, or `/image <path>`. Discord and iMessage photos reach the model too, and
   `os_read_image` and `web_screenshot` now show it the picture instead of describing the file.

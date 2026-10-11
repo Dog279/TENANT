@@ -29,9 +29,9 @@ var TrendUpdated = Events.Event(1003, event.Info, "Trend", "Eval trend: {subset}
 // Warnings.
 
 var TaskUngraded = Events.Event(2001, event.Warning, "Task", "Eval task {task} was not graded ({class}): {reason}", "task", "class", "reason").
-	Doc("A task was left out of the score because the harness, the model provider or the judge failed, not the agent.",
-		"class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the grader was unusable after its retry).",
-		"Fix the named piece (a provider's quota or endpoint, the judge model) and run again. Many ungraded tasks make a run's score unreliable.")
+	Doc("A task was left out of the score because the harness, the model provider or the Quality model failed, not the agent.",
+		"class says which: harness (the task's agent couldn't be built), quota, endpoint, ratelimit or provider (the model), or judge (the Quality model, the grader, was unusable after its retry).",
+		"Fix the named piece (a provider's quota or endpoint, the Quality model) and run again. Many ungraded tasks make a run's score unreliable.")
 
 var BaselineMissing = Events.Event(2002, event.Warning, "Regression", "No eval baseline at {path}: regressions are not checked", "path").
 	Doc("A run finished with no baseline to compare against, so the regression gate is off.",
