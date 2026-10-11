@@ -4,7 +4,6 @@ import (
 	"sync"
 )
 
-//go:generate go run ../_tools emb-structs -i ../_tools/html5entities.json -o ./html5entities.gen.go
 
 var _html5entitiesOnce sync.Once
 var _html5entitiesMap map[string]*HTML5Entity

@@ -25,7 +25,8 @@ tests and test data. The CommonMark spec cases (`testdata/spec.json`) and goldma
 - The footnote, definition-list, typographer, linkify and strikethrough extensions and the
   GFM bundle: not needed.
 - `doc_test.go` (compiles the upstream README's examples), `cjk_test.go` (needs linkify), the
-  fuzz corpus, benchmarks and tooling.
+  fuzz corpus, benchmarks and tooling, and the `//go:generate` lines that pointed at that tooling
+  (the generated tables are committed as they are).
 
 Because HTML is text here, the two spec sections that specify it ("HTML blocks", "Raw HTML")
 are not run, and the fifteen examples in other sections whose Markdown carries a tag or comment
