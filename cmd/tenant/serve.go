@@ -655,9 +655,10 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	dashMgr := &dashboardManager{
-		base:   ctx,
-		cfg:    dcfg,
-		runner: gated,
+		base:       ctx,
+		cfg:        dcfg,
+		runner:     gated,
+		transcript: ag.Conversation,
 		tools:  dashTools{mainTools},
 		mem:    dashMemory{memCtl},
 		cron:   dashCronCtl,

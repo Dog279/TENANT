@@ -145,7 +145,7 @@ Secret routes never put a control's error in a URL.
 
 - Every page works at 390px wide: no sideways scroll of the page, the sidebar or the menu, and every visible control ends inside the screen (`TestUIShellInChrome`, with long names, long URLs and many rows).
 - Under 640px the nav is a drawer (the Popover API: Menu opens it, Esc or a tap outside closes it, Log out is at its bottom). The grid is `100dvh`, and the gutter is 16px.
-- Long names and URLs break anywhere (`.page{overflow-wrap:anywhere}`). Only these inner scrollers may be wider than their box, and they scroll inside it: `.table-wrap`, `.lg-grid`, `pre`, `.diff`, `.q-detail`.
+- Long names and URLs break anywhere (`.page{overflow-wrap:anywhere}`). Only these inner scrollers may be wider than their box, and they scroll inside it: `.table-wrap`, `.lg-grid`, `pre`, `.diff`, `.q-detail`, `.bubble.md table`, `.tool-io`.
 - Wide tables go in `<div class="table-wrap">`; the approval queue and the mode rows are cards.
 - On touch screens buttons, nav links, the menu button and confirm summaries are at least 44px tall.
 - Under 640px an open `.confirm-box` becomes a bottom sheet, 16px from the sides and the bottom. While a step is open the page gets half a screen of room at its end, so the last step's Cancel can be scrolled above its sheet.
@@ -166,8 +166,16 @@ Secret routes never put a control's error in a URL.
   A dropped connection, a refusal or the stream ending shows it at once, and the stream's next patch hides it. So such a stream sends a patch as soon as it opens (a snapshot); otherwise a reconnect leaves the banner up. `TestLiveBannerInChrome` checks it.
 - A Datastar request answered 401 means the sign-in has gone stale (the key changed, or another Tenant on this host signed the browser in): the status wrapper in `layout.html` sends the page to the sign-in form, which brings it back. One refused request, not one every 20s in the Security log.
 - Buttons that send a decision carry `data-indicator:_sending` and `data-attr:disabled="$_sending"`, so a double tap sends once.
-- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`, and the form regions listed under "Forms that don't reload". There are no new event kinds.
+- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, Chat's `#chat-cur` (the answer being written) and `#tool-<id>` (a tool call's card), the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`, and the form regions listed under "Forms that don't reload". There are no new event kinds.
 - **F1:** no text from a request or an agent goes into a Datastar attribute other than `data-on:*`, and there only numbers or URLs built with `url.Values.Encode` or `url.PathEscape`. The browser decodes the attribute before Datastar evaluates it, so a quote in it would be script. Untrusted text goes in element content, where html/template escapes it. `template.HTML` is used only through `reportHTML`, which escapes first.
+
+### Chat
+
+The Chat page (TEN-515) opens with the conversation so far: the last 20 exchanges of the agent's working set (`SetTranscript`), each message you sent, the answers, the tool calls as settled cards, and a dim row where compaction left a summary. Then `/events` streams:
+
+- The answer being written is one bubble, `#chat-cur`, appended on the first token and morphed by id at most every 100 ms (`streamEvery`) with the plain text so far; a fast model can't flood the page or fill the broker's buffer behind a slow browser. The final answer replaces it (`mode replace`) rendered from Markdown through `internal/md`: headings, lists, code, tables and task boxes. HTML inside the answer is text (the copy has no raw-HTML parser) and script links are dropped; the text goes through `visibleText` first. A streaming answer renders as plain text until it is complete, so a half-written list or fence never flickers. Text written before a tool call settles as its own bubble, so the card sits where the call happened.
+- A tool call is a native `<details class="tool">` card, `#tool-<id>` (the model's call id, or one the stream makes up and matches by name): the summary is the name, a short argument and a pill (`running…`, `ok 1.2s`, `error`); the body is what was asked and what came back, capped, through `visibleText`, with "open in Logs" filtered by the message's trace. The result morphs the card by id. A failed call is open. No script: the expander is the browser's.
+- `.bubble.md table` scrolls inside its box like `.table-wrap`.
 
 ### Forms that don't reload
 

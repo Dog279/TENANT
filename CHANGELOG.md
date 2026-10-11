@@ -22,6 +22,10 @@ Releases page.
   `tenant eval --quality-model` (was `--judge-model`), the Quality page's "Quality model"
   card, and `improve.quality_model*` in config.json; the old `judge_loop` and
   `improve.judge*` keys migrate on load and are never written again.
+- **The dashboard's Chat streams and reads like a document** (TEN-515). The answer appears as it is
+  written and settles rendered from Markdown (headings, lists, code, tables, task boxes). A tool call
+  is a card you can open to what was asked and what came back, with a link into Logs; a failed call
+  is open already. Opening or reloading the page shows the last 20 exchanges of the conversation.
 - **A readable terminal app** (TEN-513, TEN-514). The conversation is turn blocks: a header with
   who, the time and the model, the text rendered from Markdown (headings, lists, code panels,
   tables, task boxes) and wrapped at the pane width, never mid-word. A tool call is one row inside

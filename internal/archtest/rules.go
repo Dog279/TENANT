@@ -77,7 +77,7 @@ var rules = []rule{
 	{Pkg: "internal/md/goldmark/**", May: []string{"internal/md/goldmark/**"}, Notes: "Tenant's copy of goldmark (MIT); imports itself and the standard library only"},
 	{Pkg: "internal/md", May: []string{"internal/md/goldmark/**"}, Notes: "Markdown: parse, and HTML for the dashboard; the terminal app renders the tree itself"},
 	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/attach", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/md/**", "internal/model"}, Notes: "never the dashboard"},
-	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/orchestra", "internal/version"}, Notes: "never the terminal UI"},
+	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/md", "internal/memory/working", "internal/orchestra", "internal/version"}, Notes: "never the terminal UI"},
 }
 
 // everyone is one allowance on top of the rule that governs each internal

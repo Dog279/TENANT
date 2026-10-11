@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"html/template"
 	"net/http"
 	"strings"
 	"time"
@@ -19,10 +20,64 @@ import (
 
 	"tenant/internal/agent"
 	"tenant/internal/logs/event"
+	"tenant/internal/md"
+	"tenant/internal/memory/working"
 )
 
+// chatPageData is the Chat page: the shell data and the conversation so far.
+type chatPageData struct {
+	layoutData
+	Transcript []template.HTML
+}
+
 func (s *Server) handleChatPage(w http.ResponseWriter, _ *http.Request) {
-	s.render(w, s.tmpl.chat, layoutData{Title: "Chat", Page: "chat"})
+	s.render(w, s.tmpl.chat, chatPageData{layoutData: layoutData{Title: "Chat", Page: "chat"}, Transcript: s.transcriptHTML(20)})
+}
+
+// SetTranscript wires the conversation so far, shown when Chat opens (TEN-515).
+func (s *Server) SetTranscript(fn func() []working.Message) { s.transcript = fn }
+
+// transcriptHTML renders the last n exchanges of the conversation (TEN-515):
+// each message you sent, the agent's answers as Markdown, and its tool calls
+// as settled cards, so an opened or reloaded page starts where things are.
+// A summary left by compaction is a dim row. nil when no source is wired.
+func (s *Server) transcriptHTML(n int) []template.HTML {
+	if s.transcript == nil {
+		return nil
+	}
+	msgs := s.transcript()
+	start := len(msgs)
+	for users := 0; start > 0 && users < n; {
+		start--
+		if msgs[start].Role == "user" && msgs[start].Kind == "" {
+			users++
+		}
+	}
+	results := map[string]working.Message{}
+	for _, m := range msgs[start:] {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			results[m.ToolCallID] = m
+		}
+	}
+	var out []template.HTML
+	add := func(h string) { out = append(out, template.HTML(h)) } //nolint:gosec // built by the escaping renderers below
+	for _, m := range msgs[start:] {
+		switch {
+		case m.Kind != "":
+			add(sysRow("Earlier messages were summarized to save room."))
+		case m.Role == "user":
+			add(userBubble(m.Content))
+		case m.Role == "assistant":
+			if strings.TrimSpace(m.Content) != "" {
+				add(answerBubble(m.Content, ""))
+			}
+			for _, tc := range m.ToolCalls {
+				r, ok := results[tc.ID]
+				add(toolCard(toolCardData{id: tc.ID, name: tc.Name, args: string(tc.Arguments), done: ok, result: r.Content}))
+			}
+		}
+	}
+	return out
 }
 
 // handleEventsSSE streams agent events to the browser until the request context
@@ -54,6 +109,12 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	var think time.Time
 	tick := time.NewTicker(thinkingEvery)
 	defer tick.Stop()
+	// The answer streams into one bubble (TEN-515): tokens gather here and
+	// go out at most every streamEvery, so a fast model can't flood the page
+	// or fill the broker's buffer behind a slow browser.
+	cs := &chatStream{}
+	stream := time.NewTicker(streamEvery)
+	defer stream.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
@@ -70,6 +131,13 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flush(w)
+		case <-stream.C:
+			if p := cs.flush(); p != nil {
+				if _, err := w.Write(p); err != nil {
+					return
+				}
+				flush(w)
+			}
 		case ev, ok := <-ch:
 			if !ok {
 				return
@@ -98,14 +166,108 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			if bubble := chatBubble(ev); bubble != "" {
-				if _, err := w.Write(patchElements("#chat-log", "append", bubble)); err != nil {
+			for _, p := range cs.patches(ev) {
+				if _, err := w.Write(p); err != nil {
 					return
 				}
 			}
 			flush(w)
 		}
 	}
+}
+
+// streamEvery is how often the answer being written is sent to the page.
+var streamEvery = 100 * time.Millisecond
+
+// chatStream is one connection's view of the answer being written and the
+// tool calls in flight (TEN-515).
+type chatStream struct {
+	cur     strings.Builder     // the answer so far
+	open    bool                // #chat-cur is on the page
+	dirty   bool                // tokens arrived since the last send
+	n       int                 // ids for calls the model gave none
+	pending map[string][]string // tool name → ids of its open cards, oldest first
+}
+
+// patches turns one event into the SSE patches it means for the chat.
+func (cs *chatStream) patches(ev agent.Event) [][]byte {
+	if ev.Agent != "" || ev.Kind == agent.EventBus {
+		return nil
+	}
+	switch ev.Kind {
+	case agent.EventToken:
+		cs.cur.WriteString(ev.Text)
+		if !cs.open {
+			cs.open = true
+			return [][]byte{patchElements("#chat-log", "append", streamingBubble(cs.cur.String()))}
+		}
+		cs.dirty = true
+		return nil
+	case agent.EventFinal, agent.EventTruncated, agent.EventStuck:
+		text := ev.Text
+		if strings.TrimSpace(text) == "" {
+			text = cs.cur.String()
+		}
+		cs.cur.Reset()
+		cs.dirty = false
+		if strings.TrimSpace(text) == "" {
+			if cs.open {
+				cs.open = false
+				return [][]byte{patchElements("#chat-cur", "remove", "")}
+			}
+			return nil
+		}
+		if cs.open {
+			cs.open = false
+			return [][]byte{patchElements("#chat-cur", "replace", answerBubble(text, ""))}
+		}
+		return [][]byte{patchElements("#chat-log", "append", answerBubble(text, ""))}
+	case agent.EventToolCall:
+		id := ev.ToolCallID
+		if id == "" {
+			cs.n++
+			id = fmt.Sprintf("n%d", cs.n)
+			if cs.pending == nil {
+				cs.pending = map[string][]string{}
+			}
+			cs.pending[ev.Tool] = append(cs.pending[ev.Tool], id)
+		}
+		// Text written before the call stays as its own settled bubble, so the
+		// card sits where the call happened.
+		var out [][]byte
+		if cs.open {
+			cs.open, cs.dirty = false, false
+			out = append(out, patchElements("#chat-cur", "replace", answerBubble(cs.cur.String(), "")))
+			cs.cur.Reset()
+		}
+		return append(out, patchElements("#chat-log", "append", toolCard(toolCardData{id: id, name: ev.Tool, args: ev.Args, trace: ev.TraceID})))
+	case agent.EventToolResult:
+		id := ev.ToolCallID
+		if id == "" {
+			if ids := cs.pending[ev.Tool]; len(ids) > 0 {
+				id, cs.pending[ev.Tool] = ids[0], ids[1:]
+			}
+		}
+		card := toolCard(toolCardData{id: id, name: ev.Tool, args: ev.Args, result: ev.Result, dur: ev.Duration, done: true, isErr: ev.IsErr, trace: ev.TraceID})
+		if id == "" { // no card to settle: the result stands alone
+			return [][]byte{patchElements("#chat-log", "append", card)}
+		}
+		return [][]byte{patchElements("", "", card)}
+	}
+	if b := chatBubble(ev); b != "" {
+		return [][]byte{patchElements("#chat-log", "append", b)}
+	}
+	return nil
+}
+
+// flush is the streaming bubble with the tokens that arrived since the last
+// send; nil when nothing did.
+func (cs *chatStream) flush() []byte {
+	if !cs.open || !cs.dirty {
+		return nil
+	}
+	cs.dirty = false
+	return patchElements("", "", streamingBubble(cs.cur.String()))
 }
 
 // behind reports, once per stream, a broker subscriber that fell behind: its
@@ -155,8 +317,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(patchElements("#chat-log", "append",
 			`<div class="msg sys"><div class="dim">Chat isn't available on this Tenant.</div></div>`))
 	case s.coord.startBackground(text):
-		_, _ = w.Write(patchElements("#chat-log", "append",
-			fmt.Sprintf(`<div class="msg user"><div class="bubble">%s</div></div>`, html.EscapeString(visibleText(text)))))
+		_, _ = w.Write(patchElements("#chat-log", "append", userBubble(text)))
 		_, _ = w.Write([]byte(clearChatBox))
 		s.writeStatusPatch(w)
 	default:
@@ -189,9 +350,11 @@ func (s *Server) handleChatStop(w http.ResponseWriter, _ *http.Request) {
 
 // --- fragment renderers (every dynamic value is html-escaped) ---
 
-// chatBubble renders conversation-relevant events; "" for kinds that don't
-// belong in the transcript. To avoid duplicates we render the authoritative
-// final response, tool calls, and tool results (not per-token deltas).
+// chatBubble renders one event as a chat row on its own, without stream
+// state: the answer as Markdown, a tool call as a card, the thinking and
+// timing rows; "" for kinds that don't belong in the transcript. The live
+// stream goes through chatStream, which adds the streaming bubble and settles
+// cards in place; this is what a transcript or a one-off patch uses.
 func chatBubble(ev agent.Event) string {
 	// Cross-agent activity + bus traffic stay out of the operator's
 	// conversation transcript (TEN-234).
@@ -203,36 +366,122 @@ func chatBubble(ev agent.Event) string {
 		if strings.TrimSpace(ev.Text) == "" {
 			return ""
 		}
-		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="bubble">%s</div></div>`,
-			html.EscapeString(visibleText(ev.Text)))
+		return answerBubble(ev.Text, "")
 	case "tool_call":
-		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="tool">⚡ %s <span class="dim">%s</span></div></div>`,
-			html.EscapeString(ev.Tool), html.EscapeString(snippetStr(ev.Args, 120)))
+		return toolCard(toolCardData{id: ev.ToolCallID, name: ev.Tool, args: ev.Args, trace: ev.TraceID})
 	case "tool_result":
-		st := "ok"
-		if ev.IsErr {
-			st = "error"
-		}
-		return fmt.Sprintf(`<div class="msg a"><div class="av">t</div><div class="tool">%s <span class="dim">[%s]</span> %s</div></div>`,
-			html.EscapeString(ev.Tool), st, html.EscapeString(snippetStr(ev.Result, 200)))
+		return toolCard(toolCardData{id: ev.ToolCallID, name: ev.Tool, args: ev.Args, result: ev.Result, dur: ev.Duration, done: true, isErr: ev.IsErr, trace: ev.TraceID})
 	case "thought":
 		t := "thought for " + ev.Duration.Round(tenth).String()
 		if ev.IsErr {
 			t += " (the call failed)"
 		}
-		return `<div class="msg sys"><div class="dim">` + html.EscapeString(t) + `</div></div>`
+		return sysRow(t)
 	case "turn_end":
 		if ev.Think == 0 && ev.Tools == 0 {
 			return ""
 		}
-		return `<div class="msg sys"><div class="dim">` + html.EscapeString("turn "+ev.Duration.Round(tenth).String()+
-			" — thinking "+ev.Think.Round(tenth).String()+" · tools "+ev.Tools.Round(tenth).String()) + `</div></div>`
+		return sysRow("turn " + ev.Duration.Round(tenth).String() + " — thinking " + ev.Think.Round(tenth).String() + " · tools " + ev.Tools.Round(tenth).String())
 	case "error":
-		return fmt.Sprintf(`<div class="msg sys"><div class="dim">⚠ %s</div></div>`, html.EscapeString(snippetStr(ev.Text, 200)))
+		return sysRow("⚠ " + snippetStr(ev.Text, 200))
 	case "notice":
-		return fmt.Sprintf(`<div class="msg sys"><div class="dim">%s</div></div>`, html.EscapeString(snippetStr(ev.Text, 200)))
+		return sysRow(snippetStr(ev.Text, 200))
 	}
 	return ""
+}
+
+// sysRow is a dim centred line between messages.
+func sysRow(text string) string {
+	return `<div class="msg sys"><div class="dim">` + html.EscapeString(text) + `</div></div>`
+}
+
+// userBubble is a message the operator sent.
+func userBubble(text string) string {
+	return `<div class="msg user"><div class="bubble">` + html.EscapeString(visibleText(text)) + `</div></div>`
+}
+
+// answerBubble is the agent's answer rendered from Markdown (TEN-515):
+// headings, lists, code, tables and task boxes; HTML inside the text is text
+// (internal/md has no raw-HTML parser) and script links are dropped. id is
+// the element's id while it is the answer being written, "" once settled.
+func answerBubble(text, id string) string {
+	idAttr := ""
+	if id != "" {
+		idAttr = ` id="` + id + `"`
+	}
+	return `<div class="msg a"` + idAttr + `><div class="av">t</div><div class="bubble md">` + string(md.HTML(visibleText(text))) + `</div></div>`
+}
+
+// streamingBubble is the answer so far, as plain text: Markdown renders once
+// the answer is complete, so a half-written list or fence never flickers.
+func streamingBubble(text string) string {
+	return `<div class="msg a" id="chat-cur"><div class="av">t</div><div class="bubble">` + html.EscapeString(visibleText(text)) + `</div></div>`
+}
+
+// toolCardData is one tool call as the chat shows it.
+type toolCardData struct {
+	id, name, args, result, trace string
+	dur                           time.Duration
+	done, isErr                   bool
+}
+
+// toolCard is a tool call as a native <details> card (TEN-515): the summary
+// line is the name, a short argument and a status pill; the body is what was
+// asked and what came back, capped, with a link to the Logs page filtered by
+// the message's trace. A failed call is open; the rest open on a tap.
+func toolCard(d toolCardData) string {
+	var b strings.Builder
+	b.WriteString(`<details class="tool"`)
+	if d.id != "" {
+		b.WriteString(` id="tool-` + html.EscapeString(d.id) + `"`)
+	}
+	if d.isErr {
+		b.WriteString(" open")
+	}
+	b.WriteString(`><summary>⚡ ` + html.EscapeString(d.name))
+	if a := snippetStr(d.args, 80); a != "" {
+		b.WriteString(` <span class="dim">` + html.EscapeString(a) + `</span>`)
+	}
+	took := ""
+	if d.dur > 0 {
+		took = " " + d.dur.Round(tenth).String()
+	}
+	switch {
+	case !d.done:
+		b.WriteString(` <span class="pill run">running…</span>`)
+	case d.isErr:
+		b.WriteString(` <span class="pill err">error` + took + `</span>`)
+	default:
+		b.WriteString(` <span class="pill ok">ok` + took + `</span>`)
+	}
+	b.WriteString(`</summary><div class="tool-body">`)
+	if a := strings.TrimSpace(d.args); a != "" {
+		b.WriteString(`<div class="lbl">asked</div><pre class="tool-io">` + html.EscapeString(visibleText(capText(a, 2000))) + `</pre>`)
+	}
+	if d.done {
+		label := "got"
+		if d.isErr {
+			label = "error"
+		}
+		b.WriteString(`<div class="lbl">` + label + `</div><pre class="tool-io">` + html.EscapeString(visibleText(capText(d.result, 4000))) + `</pre>`)
+	}
+	if d.trace != "" {
+		b.WriteString(`<a class="dim" href="` + html.EscapeString(logsHref(filterTerm("trace", d.trace))) + `">open in Logs</a>`)
+	}
+	b.WriteString(`</div></details>`)
+	return b.String()
+}
+
+// capText is s cut to at most n bytes on a character boundary, lines kept.
+func capText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // thinkingEvery is how often the chat's thinking row counts up.

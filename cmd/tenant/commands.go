@@ -2472,9 +2472,10 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// settings-page writes trigger their own reload.)
 	go watchCredentials(ctx, c.cfgDir, modelCtl, degraded, pushSys)
 	dashMgr := &dashboardManager{
-		base:   ctx,
-		cfg:    dcfg,
-		runner: ag,
+		base:       ctx,
+		cfg:        dcfg,
+		runner:     ag,
+		transcript: ag.Conversation,
 		tools:  dashTools{mainTools},
 		mem:    dashMemory{memCtl},
 		cron:   dashCronCtl,

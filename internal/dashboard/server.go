@@ -26,6 +26,7 @@ import (
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
 	"tenant/internal/logs/logapi"
+	"tenant/internal/memory/working"
 )
 
 const maxDashboardRequestBodyBytes = 1 << 20
@@ -77,8 +78,11 @@ type Config struct {
 // event stream, agent for Turn/Interject, tools for REST, mux for route
 // mounting, cfg for TLS/auth.
 type Server struct {
-	cfg          Config
-	agent        AgentRunner
+	cfg   Config
+	agent AgentRunner
+	// transcript returns the conversation so far (the agent's working set),
+	// shown when the Chat page opens (TEN-515); nil = the page opens empty.
+	transcript   func() []working.Message
 	tools        ToolControl
 	mem          MemoryControl       // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
 	cron         CronControl         // recurring-job admin; nil = section renders "not configured"

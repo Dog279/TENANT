@@ -1552,6 +1552,10 @@ func (a *Agent) CompactNow(ctx context.Context) (before, after int, err error) {
 // (episodic memory, distilled facts, the archive, the soul) are untouched, so
 // recall and learned facts survive. Returns the number of messages cleared.
 // Call only between turns (the TUI guards on !busy). (TEN-181)
+// Conversation is a copy of the working set: the messages the model sees,
+// oldest first, for a surface that shows the conversation so far (TEN-515).
+func (a *Agent) Conversation() []working.Message { return a.cfg.Working.Messages() }
+
 func (a *Agent) ClearContext() int {
 	n := a.cfg.Working.Len()
 	a.cfg.Working.Reset()
