@@ -85,18 +85,18 @@
 {{end}}
 
 <div class="card">
-  <details class="advanced" data-preserve-attr="open"><summary>Advanced: who grades the checks</summary>
-  <div class="dim">{{.Judge}}</div>
-  <form method="POST" action="/eval/judge" class="evalsched mt" data-on:submit__prevent__throttle.1s="@post('/eval/judge', {contentType:'form', retryMaxCount:0})">
+  <details class="advanced" data-preserve-attr="open"><summary>Quality model: who grades the checks</summary>
+  <div class="dim">{{.QualityModel}}</div>
+  <form method="POST" action="/eval/quality-model" class="evalsched mt" data-on:submit__prevent__throttle.1s="@post('/eval/quality-model', {contentType:'form', retryMaxCount:0})">
     <input type="text" name="kind" placeholder="provider: anthropic, zai, openai…" class="cinput" required>
     <input type="text" name="model" placeholder="model name" class="cinput" required>
     <input type="text" name="endpoint" placeholder="address (optional)" class="cinput">
-    <button type="submit" class="btn">Set the grader</button>
+    <button type="submit" class="btn">Set the Quality model</button>
   </form>
-  <form method="POST" action="/eval/judge/clear" class="mt" data-on:submit__prevent__throttle.1s="@post('/eval/judge/clear', {contentType:'form', retryMaxCount:0})">
+  <form method="POST" action="/eval/quality-model/clear" class="mt" data-on:submit__prevent__throttle.1s="@post('/eval/quality-model/clear', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn">Let the main model grade</button>
   </form>
-  <div class="dim mt">The grader scores the quality of each answer. By default your main model grades its own answers, with nothing to set up. A separate grader's API key comes from the environment of the computer running Tenant; it's never entered or stored here.</div>
+  <div class="dim mt">The Quality model scores the quality of each answer. By default your main model grades its own answers, with nothing to set up. A separate Quality model's API key comes from the environment of the computer running Tenant; it's never entered or stored here.</div>
   </details>
 </div>
 

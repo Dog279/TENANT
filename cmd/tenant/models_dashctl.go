@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"tenant/internal/dashboard"
 )
@@ -93,19 +94,40 @@ func (d dashModel) RepeatGuard() int                     { return d.mc.RepeatGua
 func (d dashModel) Vision() string                       { return d.mc.Vision() }
 func (d dashModel) SetRepeatGuard(n int) (string, error) { return d.mc.SetRepeatGuard(n) }
 
-// JudgeLoop reports the judge in the loop's settings (TEN-510).
-func (d dashModel) JudgeLoop() (bool, string, string) {
+// Judge reports the Judge's settings for the Model page's card (TEN-510,
+// TEN-516): never the key, only whether one is saved.
+func (d dashModel) Judge() dashboard.JudgeView {
+	v := dashboard.JudgeView{Kind: judgeDefaultKind, Kinds: judgeKindOrder, Rounds: judgeDefaultRounds}
 	if d.mc.judge == nil {
-		return false, "", ""
+		return v
 	}
-	return d.mc.judge.Settings()
+	st := d.mc.judge.Settings()
+	v.On, v.Kind, v.Endpoint, v.Model, v.Rounds, v.HasKey = st.on, st.kind, st.endpoint, st.model, st.rounds, st.hasKey
+	return v
 }
 
-// SetJudgeLoop switches the judge in the loop live (TEN-510).
-func (d dashModel) SetJudgeLoop(on bool, endpoint, model string) (string, error) {
-	if d.mc.judge == nil {
-		return "", fmt.Errorf("the judge loop isn't available here")
+// SetJudge sets up or switches the Judge from the card (TEN-510, TEN-516): a
+// key given is saved first (blank keeps the saved one), rounds given are
+// saved, then the loop is pointed at the server and switched on (asking it
+// one question first) or switched off.
+func (d dashModel) SetJudge(on bool, kind, endpoint, key, model string, rounds int) (string, error) {
+	j := d.mc.judge
+	if j == nil {
+		return "", fmt.Errorf("the judge isn't available here")
 	}
-	return d.mc.judge.setLegacy(on, endpoint, model)
+	if strings.TrimSpace(key) != "" {
+		if err := j.setKey(key, surfaceDashboard); err != nil {
+			return "", err
+		}
+	}
+	if rounds > 0 {
+		if _, err := j.Rounds(rounds); err != nil {
+			return "", err
+		}
+	}
+	if on {
+		return j.Use(kind, endpoint, model)
+	}
+	return j.store(false, endpoint, model)
 }
 func (d dashModel) ReloadKeys() (string, error) { return d.mc.ReloadKeys() }

@@ -99,18 +99,25 @@
   </form>
   <div class="dim mb">If the agent repeats the same step and gets the same result this many times in a row, it stops and answers. 0 = off. A step whose result changes (a job still running) never counts.</div>
   {{with .Vision}}<div class="dim mb">Images: {{.}}.</div>{{end}}
-  <form method="POST" action="/models/judge" class="inline mb" data-on:submit__prevent__throttle.1s="@post('/models/judge', {contentType:'form', retryMaxCount:0})">
+  {{with .Judge}}
+  <form method="POST" action="/models/judge" class="inline mb" autocomplete="off" data-on:submit__prevent__throttle.1s="@post('/models/judge', {contentType:'form', retryMaxCount:0})" data-on:datastar-fetch="evt.detail.el === el && evt.detail.type === 'finished' && el.querySelectorAll('input[type=password]').forEach(i => { i.value = '' })">
     <label class="dim">Judge
       <select name="judge" class="cinput">
-        <option value="off"{{if not .JudgeOn}} selected{{end}}>Off</option>
-        <option value="on"{{if .JudgeOn}} selected{{end}}>On</option>
+        <option value="off"{{if not .On}} selected{{end}}>Off</option>
+        <option value="on"{{if .On}} selected{{end}}>On</option>
       </select>
     </label>
-    <label class="dim">Server <input type="text" name="endpoint" value="{{.JudgeEndpoint}}" placeholder="http://host:30000" class="cinput"></label>
-    <label class="dim">Model <input type="text" name="model" value="{{.JudgeModel}}" placeholder="clef-flash" class="cinput"></label>
+    <label class="dim">Kind
+      <select name="kind" class="cinput">{{$k := .Kind}}{{range .Kinds}}<option value="{{.}}"{{if eq . $k}} selected{{end}}>{{.}}</option>{{end}}</select>
+    </label>
+    <label class="dim">Server <input type="text" name="endpoint" value="{{.Endpoint}}" placeholder="http://host:30000" class="cinput"></label>
+    <label class="dim">Key <input type="password" name="key" autocomplete="off" placeholder="{{if .HasKey}}a key is saved; blank keeps it{{else}}only if the server asks for one{{end}}" class="cinput"></label>
+    <label class="dim">Model <input type="text" name="model" value="{{.Model}}" placeholder="clef-flash" class="cinput"></label>
+    <label class="dim">Rounds <input type="number" name="rounds" value="{{.Rounds}}" min="1" max="5" class="cinput"></label>
     <button type="submit" class="btn sm">Save</button>
   </form>
-  <div class="dim mb">A decision model (such as Clef-flash) checks the agent's answers to tasks and sends unfinished work back, up to 3 times. An answer it still can't confirm is marked "judge: not confirmed".</div>
+  <div class="dim mb">The judge is a decision model (such as Clef-flash on your own server) that checks the agent's answers to tasks and sends unfinished work back, up to the rounds above. An answer it still can't confirm is marked "judge: not confirmed". Switching it on asks the server one question first. The key is kept with your other provider keys and never shown here; to remove a saved key, set the judge up again from the terminal app and leave the key blank.</div>
+  {{end}}
   <form method="POST" action="/models/reload" class="inline" data-on:submit__prevent__throttle.1s="@post('/models/reload', {contentType:'form', retryMaxCount:0})">
     <button type="submit" class="btn sm">Reload API keys</button>
   </form>

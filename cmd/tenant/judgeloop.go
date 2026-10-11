@@ -395,10 +395,19 @@ func judgeProbe(c *systemone.Client) (string, error) {
 	return fmt.Sprintf(" (answered in %.1fs)", time.Since(start).Seconds()), nil
 }
 
-// Settings reports on/off, the endpoint and the model.
-func (j *judgeLoop) Settings() (bool, string, string) {
+// judgeSettings is the Judge's state as a card shows it: never the key.
+type judgeSettings struct {
+	on             bool
+	kind, endpoint string
+	model          string
+	rounds         int
+	hasKey         bool
+}
+
+// Settings reports the Judge's state for the dashboard's card.
+func (j *judgeLoop) Settings() judgeSettings {
 	s := j.state.Load()
-	return s.on, s.client.Endpoint, s.client.Model
+	return judgeSettings{on: s.on, kind: s.kind, endpoint: s.client.Endpoint, model: s.client.Model, rounds: s.rounds, hasKey: s.client.Key != ""}
 }
 
 // On reports whether the loop is on, and how /model names the judge.
@@ -416,16 +425,16 @@ func (j *judgeLoop) Set(on bool) (string, error) {
 			return "", fmt.Errorf("the judge has no server yet: /judge use clef sets one up")
 		}
 	}
-	return j.setLegacy(on, "", "")
+	return j.store(on, "", "")
 }
 
 // SetKey implements tui.JudgeControl: the terminal app saved the key.
 func (j *judgeLoop) SetKey(key string) error { return j.setKey(key, surfaceTUI) }
 
-// setLegacy turns the loop on or off live and saves it, with an endpoint and
-// model that default to the saved ones. The dashboard's card still calls it;
-// the terminal app uses Set and Use.
-func (j *judgeLoop) setLegacy(on bool, endpoint, modelID string) (string, error) {
+// store turns the loop on or off live and saves it, with an endpoint and
+// model that default to the saved ones; switching on asks the server first.
+// Set and the dashboard's "off" go through it; Use is the setup path.
+func (j *judgeLoop) store(on bool, endpoint, modelID string) (string, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	cur := j.state.Load()

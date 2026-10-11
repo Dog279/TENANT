@@ -212,11 +212,11 @@ func TestEvalInlineFormsInChrome(t *testing.T) {
 	var judge string
 	c.run("typing a grader", tapsOpen,
 		chromedp.Click(`details.advanced > summary`, chromedp.ByQuery),
-		chromedp.SendKeys(`form[action="/eval/judge"] input[name=kind]`, "zai", chromedp.ByQuery),
-		chromedp.SendKeys(`form[action="/eval/judge"] input[name=model]`, "glm-4.6", chromedp.ByQuery),
+		chromedp.SendKeys(`form[action="/eval/quality-model"] input[name=kind]`, "zai", chromedp.ByQuery),
+		chromedp.SendKeys(`form[action="/eval/quality-model"] input[name=model]`, "glm-4.6", chromedp.ByQuery),
 	)
-	c.inPlace("Set the grader", `form[action="/eval/judge"] button`,
-		chromedp.Click(`form[action="/eval/judge"] button`, chromedp.ByQuery),
+	c.inPlace("Set the Quality model", `form[action="/eval/quality-model"] button`,
+		chromedp.Click(`form[action="/eval/quality-model"] button`, chromedp.ByQuery),
 		toastSays("ok", "Saved: glm-4.6 from zai grades the checks now."),
 		chromedp.Evaluate(`document.querySelector('details.advanced').open`, &open),
 		chromedp.Text(`details.advanced > .dim`, &judge, chromedp.ByQuery),

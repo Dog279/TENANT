@@ -144,8 +144,8 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 	if _, err := j.Set(false); err != nil || !strings.HasPrefix(j.Status(), "judge: off") {
 		t.Fatalf("off: %q %v", j.Status(), err)
 	}
-	if on, ep, _ := j.Settings(); on || ep != srv.URL {
-		t.Fatalf("off kept the endpoint for next time? on=%v ep=%q", on, ep)
+	if st := j.Settings(); st.on || st.endpoint != srv.URL {
+		t.Fatalf("off kept the endpoint for next time? on=%v ep=%q", st.on, st.endpoint)
 	}
 }
 

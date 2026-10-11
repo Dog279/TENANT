@@ -252,10 +252,10 @@ var reviewedMutations = map[string]confirmGate{
 	"POST /settings/keys/set":    noStep,
 	"POST /settings/keys/remove": always,
 	// Quality.
-	"POST /eval/schedule":    noStep,
-	"POST /eval/run":         noStep,
-	"POST /eval/judge":       noStep,
-	"POST /eval/judge/clear": noStep,
+	"POST /eval/schedule":            noStep,
+	"POST /eval/run":                 noStep,
+	"POST /eval/quality-model":       noStep,
+	"POST /eval/quality-model/clear": noStep,
 	// Remote services: a new one starts at Ask; removing loses its sign-in.
 	"POST /mcp/connect": noStep,
 	"POST /mcp/remove":  always,

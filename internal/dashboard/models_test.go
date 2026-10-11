@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -12,6 +13,8 @@ import (
 
 type fakeModelCtl struct {
 	judgeOn     bool
+	judgeKey    string
+	judgeSets   []string
 	models      []ModelView
 	ceiling     int
 	useCalls    []string
@@ -58,12 +61,16 @@ func (f *fakeModelCtl) SetLoopCeiling(n int) (string, error) {
 }
 func (f *fakeModelCtl) RepeatGuard() int { return 8 }
 func (f *fakeModelCtl) Vision() string   { return "vision: auto (probe: yes), glm can see images" }
-func (f *fakeModelCtl) JudgeLoop() (bool, string, string) {
-	return f.judgeOn, "http://judge:30000", "clef-flash"
+func (f *fakeModelCtl) Judge() JudgeView {
+	return JudgeView{On: f.judgeOn, Kind: "clef", Kinds: []string{"clef"}, Endpoint: "http://judge:30000", Model: "clef-flash", Rounds: 3, HasKey: f.judgeKey != ""}
 }
-func (f *fakeModelCtl) SetJudgeLoop(on bool, _, _ string) (string, error) {
+func (f *fakeModelCtl) SetJudge(on bool, kind, endpoint, key, model string, rounds int) (string, error) {
 	f.judgeOn = on
-	return "judge loop: " + map[bool]string{true: "on", false: "off"}[on], nil
+	if key != "" {
+		f.judgeKey = key
+	}
+	f.judgeSets = append(f.judgeSets, fmt.Sprintf("%v|%s|%s|%d|%s|%d", on, kind, endpoint, len(key), model, rounds))
+	return "judge: " + map[bool]string{true: "on", false: "off"}[on], nil
 }
 func (f *fakeModelCtl) SetRepeatGuard(n int) (string, error) {
 	f.repeatSet = append(f.repeatSet, n)
@@ -171,24 +178,31 @@ func TestModels_RepeatGuard(t *testing.T) {
 	}
 }
 
-// TEN-510: the Judge row shows the saved server and model and switches the
-// judge in the loop on and off.
-func TestModels_JudgeLoop(t *testing.T) {
+// TEN-510, TEN-516: the Judge card shows the saved kind, server, model and
+// rounds, says whether a key is saved without showing it, and the form
+// switches the judge on and off, passing the kind, key and rounds through.
+// The key never comes back in the page or a message.
+func TestModels_Judge(t *testing.T) {
 	fc := &fakeModelCtl{}
 	s := modelServer(fc)
 	body := get(t, s, "/models").Body.String()
-	for _, want := range []string{`action="/models/judge"`, `value="http://judge:30000"`, `value="clef-flash"`, "checks the agent's answers to tasks"} {
+	for _, want := range []string{`action="/models/judge"`, `name="kind"`, `<option value="clef" selected>`, `value="http://judge:30000"`, `value="clef-flash"`,
+		`type="password" name="key"`, `only if the server asks for one`, `name="rounds" value="3"`, "checks the agent's answers to tasks", `input[type=password]`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("models page lacks %q", want)
 		}
 	}
-	submitForm(t, s, "/models/judge", "judge=on&endpoint=http://judge:30000&model=clef-flash")
-	if !fc.judgeOn {
-		t.Fatal("judge=on didn't switch it on")
+	submitForm(t, s, "/models/judge", "judge=on&kind=clef&endpoint=http://judge:30000&key=sek-77&model=clef-flash&rounds=2")
+	if !fc.judgeOn || len(fc.judgeSets) != 1 || fc.judgeSets[0] != "true|clef|http://judge:30000|6|clef-flash|2" {
+		t.Fatalf("judge=on: on=%v sets=%v", fc.judgeOn, fc.judgeSets)
 	}
-	submitForm(t, s, "/models/judge", "judge=off")
-	if fc.judgeOn {
-		t.Fatal("judge=off didn't switch it off")
+	body = get(t, s, "/models").Body.String()
+	if strings.Contains(body, "sek-77") || !strings.Contains(body, "a key is saved; blank keeps it") {
+		t.Errorf("the key must not come back, only the fact that one is saved:\n%s", body)
+	}
+	rec := submitForm(t, s, "/models/judge", "judge=off")
+	if fc.judgeOn || strings.Contains(rec.Body.String(), "sek-77") {
+		t.Fatal("judge=off didn't switch it off, or the key leaked")
 	}
 }
 
