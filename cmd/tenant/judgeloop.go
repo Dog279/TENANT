@@ -98,6 +98,9 @@ type judgeLoopState struct {
 	kind   string
 	client *systemone.Client // its Key is the saved credential, never shown
 	rounds int
+	// bad is why the saved judge can't run (an unknown kind in config.json);
+	// the loop stays off and Status says so.
+	bad string
 }
 
 // judgeLoopFor builds the process's judge from config.json's judge section
@@ -129,15 +132,21 @@ func judgeStateFrom(c *config.Judge, key string) *judgeLoopState {
 	if c == nil { // a fresh setup: off, the default kind and model, no server yet
 		return &judgeLoopState{kind: judgeDefaultKind, client: &systemone.Client{Model: judgeDefaultModel, Key: key}, rounds: judgeDefaultRounds}
 	}
-	kind := c.Kind
+	kind := strings.ToLower(strings.TrimSpace(c.Kind))
 	if kind == "" {
 		kind = judgeDefaultKind
 	}
-	m := c.Model
-	if m == "" {
-		m = judgeKinds[kind].model
+	st := &judgeLoopState{kind: kind, client: &systemone.Client{Endpoint: c.Endpoint, Model: c.Model, Key: key}, rounds: c.RoundsOrDefault()}
+	k, ok := judgeKinds[kind]
+	if !ok { // a hand-edited kind this build doesn't know: off, and Status names the valid ones
+		st.bad = fmt.Sprintf("unknown kind %q in config.json (known: %s)", c.Kind, strings.Join(judgeKindOrder, ", "))
+		return st
 	}
-	return &judgeLoopState{on: c.Enabled && c.Endpoint != "", kind: kind, client: &systemone.Client{Endpoint: c.Endpoint, Model: m, Key: key}, rounds: c.RoundsOrDefault()}
+	if st.client.Model == "" {
+		st.client.Model = k.model
+	}
+	st.on = c.Enabled && c.Endpoint != ""
+	return st
 }
 
 // judgeKindOf validates a kind the operator typed or picked.
@@ -265,6 +274,9 @@ func (j *judgeLoop) Status() string {
 	key := "no key"
 	if s.client.Key != "" {
 		key = "a key is saved"
+	}
+	if s.bad != "" {
+		return "judge: off — " + s.bad + "; /judge use clef sets it up again"
 	}
 	if s.client.Endpoint == "" {
 		return "judge: not set up — /judge use clef to point it at a System One server"

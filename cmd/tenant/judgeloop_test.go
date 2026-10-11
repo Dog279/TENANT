@@ -222,3 +222,19 @@ func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
 		t.Fatalf("bad endpoint: %v", err)
 	}
 }
+
+// A kind this build doesn't know (a hand-edited config.json, or a newer
+// file) leaves the judge off, and Status names the valid kinds instead of
+// running with an empty model.
+func TestJudgeLoop_UnknownKindStaysOff(t *testing.T) {
+	j := newJudgeLoop(t.TempDir(), &config.Judge{Enabled: true, Kind: "jev", Endpoint: "http://h:30000"})
+	if on, _ := j.On(); on {
+		t.Fatal("an unknown kind must not switch the judge on")
+	}
+	if st := j.Status(); !strings.Contains(st, `unknown kind "jev"`) || !strings.Contains(st, "known: clef") {
+		t.Fatalf("status: %q", st)
+	}
+	if _, _, err := j.Triage(context.Background(), "x"); err == nil {
+		t.Fatal("triage should report the loop off")
+	}
+}
