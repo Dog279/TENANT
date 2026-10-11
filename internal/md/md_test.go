@@ -61,3 +61,13 @@ func TestHTML_FenceLanguageIsEscaped(t *testing.T) {
 		t.Fatalf("fence language reached the attribute unescaped:\n%s", out)
 	}
 }
+
+// Without raw-HTML parsers, the tags of a former HTML block are text and its
+// body is ordinary Markdown: a heading inside a comment renders as a heading.
+// Pinned so a future port of an upstream change cannot bring the block back.
+func TestHTML_FormerHTMLBlockBodyIsMarkdown(t *testing.T) {
+	out := string(md.HTML("<!--\n# Inside\n-->\n"))
+	if !strings.Contains(out, "&lt;!--") || !strings.Contains(out, "<h1>Inside</h1>") || strings.Contains(out, "<!--") {
+		t.Fatalf("former HTML block rendered unexpectedly:\n%s", out)
+	}
+}
