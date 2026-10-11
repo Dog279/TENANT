@@ -32,11 +32,12 @@ type EvalControl interface {
 	SetAt(spec string) (string, error)
 	Off() (string, error)
 	RunNow() (string, error)
-	// Judge surface (TEN-91): the eval LLM-judge model, persisted + shared with
-	// `tenant eval`, the TUI /judge command, and the nightly gate.
-	JudgeStatus() string                                   // render-ready current judge
-	SetJudge(kind, model, endpoint string) (string, error) // pin a judge override
-	ClearJudge() error                                     // revert to the planner default
+	// The Quality model (TEN-91, renamed in TEN-516): the model that grades
+	// eval answers, saved and shared with `tenant eval`, the TUI /eval model
+	// command, and the nightly check.
+	QualityModel() string                                         // render-ready current Quality model
+	SetQualityModel(kind, model, endpoint string) (string, error) // save a separate Quality model
+	ClearQualityModel() error                                     // revert to the main model grading its own
 }
 
 // EvalScheduleView is the render-ready schedule state. Trend is "up" /
@@ -108,20 +109,20 @@ func (s *Server) mountEvalSSR(mux *http.ServeMux) {
 	mux.HandleFunc("GET /eval", s.handleEvalPage)
 	mux.HandleFunc("POST /eval/schedule", s.handleEvalScheduleForm)
 	mux.HandleFunc("POST /eval/run", s.handleEvalRunForm)
-	mux.HandleFunc("POST /eval/judge", s.handleEvalJudgeForm)            // TEN-91
-	mux.HandleFunc("POST /eval/judge/clear", s.handleEvalJudgeClearForm) // TEN-91
+	mux.HandleFunc("POST /eval/quality-model", s.handleEvalQualityModelForm)            // TEN-91, TEN-516
+	mux.HandleFunc("POST /eval/quality-model/clear", s.handleEvalQualityModelClearForm) // TEN-91, TEN-516
 }
 
 type evalPageData struct {
 	layoutData
-	Configured bool
-	Sched      EvalScheduleView
-	Points     []EvalTrendPoint
-	Chart      template.HTML // server-built inline SVG; numbers only, safe to not escape
-	Diff       string
-	Judge      string // TEN-91: render-ready current eval judge
-	Err        string
-	Msg        string
+	Configured   bool
+	Sched        EvalScheduleView
+	Points       []EvalTrendPoint
+	Chart        template.HTML // server-built inline SVG; numbers only, safe to not escape
+	Diff         string
+	QualityModel string // TEN-91: render-ready current Quality model
+	Err          string
+	Msg          string
 }
 
 func (s *Server) evalData() evalPageData {
@@ -130,7 +131,7 @@ func (s *Server) evalData() evalPageData {
 		return d
 	}
 	d.Configured = true
-	d.Judge = s.eval.JudgeStatus()
+	d.QualityModel = s.eval.QualityModel()
 	d.Sched = s.eval.Schedule()
 	d.Points = s.eval.Trend()
 	d.Chart = template.HTML(renderTrendSVG(d.Points)) //nolint:gosec // server-built SVG, numbers only
@@ -200,9 +201,9 @@ func (s *Server) handleEvalRunForm(w http.ResponseWriter, r *http.Request) {
 	s.evalDone(w, r, status, "")
 }
 
-// handleEvalJudgeForm pins the eval LLM-judge model (TEN-91). The API key is
-// never entered here — it's read from the kind's env var at eval time.
-func (s *Server) handleEvalJudgeForm(w http.ResponseWriter, r *http.Request) {
+// handleEvalQualityModelForm saves a separate Quality model (TEN-91). The API
+// key is never entered here — it's read from the kind's env var at eval time.
+func (s *Server) handleEvalQualityModelForm(w http.ResponseWriter, r *http.Request) {
 	if s.eval == nil {
 		s.evalDone(w, r, "", "")
 		return
@@ -214,21 +215,22 @@ func (s *Server) handleEvalJudgeForm(w http.ResponseWriter, r *http.Request) {
 		s.evalDone(w, r, "", "Enter a provider and a model name for the grader.")
 		return
 	}
-	if _, err := s.eval.SetJudge(kind, mdl, endpoint); err != nil {
-		s.evalDone(w, r, "", s.flashFor(r.Context(), "set judge", err, "Couldn't set the grader. Check the provider's name (anthropic, zai, openai…)."))
+	if _, err := s.eval.SetQualityModel(kind, mdl, endpoint); err != nil {
+		s.evalDone(w, r, "", s.flashFor(r.Context(), "set quality model", err, "Couldn't set the Quality model. Check the provider's name (anthropic, zai, openai…)."))
 		return
 	}
 	s.evalDone(w, r, "Saved: "+mdl+" from "+kind+" grades the checks now.", "")
 }
 
-// handleEvalJudgeClearForm reverts to the planner-default judge (TEN-91).
-func (s *Server) handleEvalJudgeClearForm(w http.ResponseWriter, r *http.Request) {
+// handleEvalQualityModelClearForm reverts to the main model grading its own
+// answers (TEN-91).
+func (s *Server) handleEvalQualityModelClearForm(w http.ResponseWriter, r *http.Request) {
 	if s.eval == nil {
 		s.evalDone(w, r, "", "")
 		return
 	}
-	if err := s.eval.ClearJudge(); err != nil {
-		s.evalDone(w, r, "", s.flashFor(r.Context(), "clear judge", err, "Couldn't change the grader."))
+	if err := s.eval.ClearQualityModel(); err != nil {
+		s.evalDone(w, r, "", s.flashFor(r.Context(), "clear quality model", err, "Couldn't change the Quality model."))
 		return
 	}
 	s.evalDone(w, r, "Your main model grades the checks again.", "")

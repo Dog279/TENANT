@@ -9,6 +9,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"tenant/internal/dashboard"
 )
@@ -91,4 +93,38 @@ func (d dashModel) SetLoopCeiling(n int) (string, error) { return d.mc.SetLoopCe
 func (d dashModel) RepeatGuard() int                     { return d.mc.RepeatGuard() }
 func (d dashModel) Vision() string                       { return d.mc.Vision() }
 func (d dashModel) SetRepeatGuard(n int) (string, error) { return d.mc.SetRepeatGuard(n) }
-func (d dashModel) ReloadKeys() (string, error)          { return d.mc.ReloadKeys() }
+
+// Judge reports the Judge's settings for the Model page's card (TEN-510,
+// TEN-516): never the key, only whether one is saved.
+func (d dashModel) Judge() dashboard.JudgeView {
+	v := dashboard.JudgeView{Kind: judgeDefaultKind, Kinds: judgeKindOrder, Rounds: judgeDefaultRounds}
+	if d.mc.judge == nil {
+		return v
+	}
+	st := d.mc.judge.Settings()
+	v.On, v.Kind, v.Endpoint, v.Model, v.Rounds, v.HasKey = st.on, st.kind, st.endpoint, st.model, st.rounds, st.hasKey
+	return v
+}
+
+// SetJudge sets up or switches the Judge from the card (TEN-510, TEN-516).
+// Switching on, or typing a key, asks the server one question first, with
+// the typed key when there is one, and saves key, server, switch and rounds
+// together only once it answered (a refusal saves nothing; a blank key keeps
+// the saved one). Off with nothing typed saves the switch without asking.
+func (d dashModel) SetJudge(on bool, kind, endpoint, key, model string, rounds int) (string, error) {
+	j := d.mc.judge
+	if j == nil {
+		return "", fmt.Errorf("the judge isn't available here")
+	}
+	key = strings.TrimSpace(key)
+	if on || key != "" {
+		return j.apply(judgeSetup{kind: kind, endpoint: endpoint, model: model, key: key, setKey: key != "", on: on, rounds: rounds, surface: surfaceDashboard})
+	}
+	if rounds > 0 {
+		if _, err := j.Rounds(rounds); err != nil {
+			return "", err
+		}
+	}
+	return j.store(false, endpoint, model)
+}
+func (d dashModel) ReloadKeys() (string, error) { return d.mc.ReloadKeys() }

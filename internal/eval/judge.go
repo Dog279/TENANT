@@ -18,7 +18,7 @@ import (
 // points (1 / 3 / 5) so the judge has concrete grounding rather than a
 // raw Likert scale. Literature is clear that anchored rubrics materially
 // outperform free-form scoring for LLM-as-judge (Galileo, Monte Carlo,
-// "Silent Judge" arXiv 2509.26072 length-bias work).
+// "Silent Grader" arXiv 2509.26072 length-bias work).
 type Rubric struct {
 	Criterion string         `yaml:"criterion"`         // what the judge is asking
 	Anchors   map[int]string `yaml:"anchors,omitempty"` // {1: "bad example", 3: "ok", 5: "ideal"}
@@ -32,15 +32,15 @@ type JudgeResult struct {
 	Reasoning string `json:"reasoning"`
 }
 
-// Judge is the interface every grading backend implements. v1 ships
+// Grader is the interface every grading backend implements. v1 ships
 // LLMJudge (real model call) and FixtureJudge (deterministic, for the
 // harness's own tests).
-type Judge interface {
+type Grader interface {
 	Grade(ctx context.Context, t *Task, response string, calls []FixtureToolCall) (JudgeResult, error)
 }
 
 // JudgePrompt is the anchored-rubric prompt template. Embeds the
-// length-bias countermeasure ("Silent Judge" mitigation) so judges
+// length-bias countermeasure ("Silent Grader" mitigation) so judges
 // don't over-weight surface fluency once the deterministic gate passes.
 //
 // The {{TASK_PROMPT}} / {{RESPONSE}} / etc placeholders are substituted

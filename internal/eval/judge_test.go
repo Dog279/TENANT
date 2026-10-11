@@ -155,7 +155,7 @@ func (ten197Runner) Run(context.Context, string) (string, []FixtureToolCall, err
 // not failed, never aggregated — and visibly marked.
 func TestRunLive_JudgeUnusableMeansUngraded(t *testing.T) {
 	h := &Harness{
-		Judge: errJudge{},
+		Grader: errJudge{},
 		AgentFactory: func(context.Context, string) (AgentRunner, func() error, error) {
 			return ten197Runner{}, nil, nil
 		},

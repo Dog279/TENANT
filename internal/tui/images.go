@@ -49,6 +49,7 @@ type imagesAttachedMsg struct {
 	imgs  []modelpkg.Image
 	notes []string
 	then  tea.Cmd
+	text  string // pasted text to insert when it turned out not to be an image
 }
 
 // isImagePasteKey reports the keys that try the clipboard image first.
@@ -117,6 +118,37 @@ func (m *model) attachFilesCmd(paths []string) tea.Cmd {
 	}
 }
 
+// isFinderImageName reports a paste that is a bare image file name: what
+// macOS terminals paste for a file copied in Finder (Cmd+C, then Cmd+V puts
+// the name, not the path, on the clipboard's text).
+func isFinderImageName(s string) bool {
+	if clipGOOS != "darwin" || strings.ContainsAny(s, "/\n") || len(s) > 255 {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(s)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif":
+		return true
+	}
+	return false
+}
+
+// finderPasteCmd attaches the file a pasted Finder name refers to: the
+// clipboard's file URL, when its name matches. Otherwise the name goes in
+// as the text it was.
+func (m *model) finderPasteCmd(name string) tea.Cmd {
+	files := m.attachFilesCmd
+	ctx := m.ctx
+	return func() tea.Msg {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		out, err := runClipboardCmd(cctx, "osascript", "-e", "POSIX path of (the clipboard as «class furl»)")
+		if p := strings.TrimSpace(string(out)); err == nil && filepath.Base(p) == name && isImageFile(p) {
+			return files([]string{p})()
+		}
+		return imagesAttachedMsg{text: name}
+	}
+}
+
 // readImageFile reads a regular file of at most the store's source limit.
 func readImageFile(p string) ([]byte, error) {
 	fi, err := os.Stat(p)
@@ -149,6 +181,47 @@ func placeholder(n int, img modelpkg.Image) string {
 	return fmt.Sprintf("[image %d: %s]", n, img.Label())
 }
 
+// pendingImages counts the attachments whose placeholder is still in the
+// input: what the next message would carry.
+func (m *model) pendingImages() int {
+	q, n := m.ta.Value(), 0
+	for i, img := range m.attachments {
+		if strings.Contains(q, placeholder(i+1, img)) {
+			n++
+		}
+	}
+	return n
+}
+
+// deletePlaceholder handles a Backspace right after an attachment's
+// placeholder (or the space after it): it deletes the whole tag, which drops
+// the image, and reports true. Otherwise it leaves Backspace to the input.
+func (m *model) deletePlaceholder() bool {
+	if len(m.attachments) == 0 {
+		return false
+	}
+	lines := strings.Split(m.ta.Value(), "\n")
+	row := m.ta.Line()
+	if row >= len(lines) {
+		return false
+	}
+	li := m.ta.LineInfo()
+	line := []rune(lines[row])
+	before := string(line[:min(li.StartColumn+li.ColumnOffset, len(line))])
+	for i, img := range m.attachments {
+		ph := placeholder(i+1, img)
+		for _, tag := range []string{ph + " ", ph} {
+			if strings.HasSuffix(before, tag) {
+				for range utf8.RuneCountInString(tag) {
+					m.ta, _ = m.ta.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // takeAttachments returns the attachments whose placeholder is still in q,
 // in order, and clears the list (a deleted placeholder drops its image).
 func (m *model) takeAttachments(q string) []modelpkg.Image {
@@ -167,6 +240,11 @@ func (m *model) takeAttachments(q string) []modelpkg.Image {
 // paste is nothing but existing image file paths (a dragged file); otherwise
 // nil, and the paste stays text.
 func pastedImagePaths(s string) []string {
+	// One unquoted path with spaces (a Finder copy pasted as a full path,
+	// "Screenshot … at 5.12.03 PM.png") isn't a list of paths.
+	if p := expandHome(strings.TrimSpace(s)); strings.ContainsAny(p, " \u202f") && isImageFile(p) {
+		return []string{p}
+	}
 	toks := splitPastedPaths(s, clipGOOS == "windows")
 	if len(toks) == 0 {
 		return nil
@@ -183,17 +261,23 @@ func pastedImagePaths(s string) []string {
 				t = strings.TrimPrefix(filepath.FromSlash(t), `\`)
 			}
 		}
-		if strings.HasPrefix(t, "~/") {
-			if home, err := os.UserHomeDir(); err == nil {
-				t = filepath.Join(home, t[2:])
-			}
-		}
+		t = expandHome(t)
 		if !isImageFile(t) {
 			return nil
 		}
 		out = append(out, t)
 	}
 	return out
+}
+
+// expandHome turns a leading ~/ into the home directory.
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+	}
+	return p
 }
 
 // splitPastedPaths splits a paste into path tokens: whitespace separates

@@ -41,6 +41,8 @@ type modelControl struct {
 	// Set by cmdTUI; nil elsewhere. Run async by the caller so a slow embedder
 	// resolve never blocks the swap.
 	reinstallEmbedder func(context.Context)
+	// judge is the judge in the loop (TEN-510), for the dashboard's switch.
+	judge *judgeLoop
 }
 
 func (mc *modelControl) ModelList() []tui.ModelInfo {
@@ -892,7 +894,7 @@ func cmdModel(_ context.Context, args []string) error {
 		fs.StringVar(&endpoint, "endpoint", "", "backend base URL (no /v1 suffix)")
 		fs.StringVar(&kind, "kind", "vllm", "backend kind: "+strings.Join(providerOrder, "|"))
 		fs.StringVar(&mdl, "model", "", "model id (blank = auto-detect at launch)")
-		fs.StringVar(&toolFmt, "tool-format", "", "qwen|gemma|llama|mistral|openai")
+		fs.StringVar(&toolFmt, "tool-format", "", "qwen|gemma|llama|mistral|glm|openai")
 	}
 	if err := fs.Parse(rest); err != nil {
 		return err

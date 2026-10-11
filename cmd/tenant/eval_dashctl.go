@@ -14,20 +14,20 @@ import (
 )
 
 type dashEval struct {
-	ev    evalTUIControl
-	prog  *evalProgress // live done/total while a check runs (nil in TUI mode)
-	judge judgeCtl      // TEN-91: eval LLM-judge surface (same machinery as the TUI /judge command)
+	ev      evalTUIControl
+	prog    *evalProgress   // live done/total while a check runs (nil in TUI mode)
+	quality qualityModelCtl // TEN-91: the Quality model (same machinery as the TUI /eval model command)
 }
 
 func (d dashEval) artifactDir() string { return filepath.Join(d.ev.dataDir, "eval-artifacts") }
 
-// Judge surface (TEN-91) — delegates to the shared judgeCtl so the web Quality
-// page, the TUI /judge command, `tenant eval`, and the nightly gate all read/
-// write one persisted setting.
-// JudgeStatus says who grades the checks in the Quality page's words; the
-// TUI's Current() names its commands instead.
-func (d dashEval) JudgeStatus() string {
-	js, ok := d.judge.resolved()
+// The Quality model (TEN-91) — delegates to the shared qualityModelCtl so the
+// web Quality page, the TUI /eval model command, `tenant eval`, and the
+// nightly check all read/write one saved setting. QualityModel says who grades
+// the checks in the Quality page's words; the TUI's Current() names its
+// commands instead.
+func (d dashEval) QualityModel() string {
+	js, ok := d.quality.resolved()
 	if !ok {
 		return "Your main model grades the checks."
 	}
@@ -37,10 +37,10 @@ func (d dashEval) JudgeStatus() string {
 	}
 	return s
 }
-func (d dashEval) SetJudge(kind, model, endpoint string) (string, error) {
-	return d.judge.Set(kind, model, endpoint)
+func (d dashEval) SetQualityModel(kind, model, endpoint string) (string, error) {
+	return d.quality.Set(kind, model, endpoint)
 }
-func (d dashEval) ClearJudge() error { return d.judge.Clear() }
+func (d dashEval) ClearQualityModel() error { return d.quality.Clear() }
 
 // Schedule builds the structured schedule + last-run summary the home board
 // and the Quality page render. Mirrors evalTUIControl.Status()'s logic but as

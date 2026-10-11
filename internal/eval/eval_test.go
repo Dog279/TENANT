@@ -430,7 +430,7 @@ func TestRunLive_GateAndJudgePass(t *testing.T) {
 	h := &Harness{
 		Tasks:        []*Task{task},
 		AgentFactory: func(_ context.Context, _ string) (AgentRunner, func() error, error) { return runner, nil, nil },
-		Judge:        &FixtureJudge{Score: 5, Reasoning: "matches"},
+		Grader:       &FixtureJudge{Score: 5, Reasoning: "matches"},
 	}
 	rep, err := h.Run(context.Background(), SubsetFitness)
 	if err != nil {
@@ -468,7 +468,7 @@ func TestRunLive_GatePassRubricFail(t *testing.T) {
 	h := &Harness{
 		Tasks:        []*Task{task},
 		AgentFactory: func(_ context.Context, _ string) (AgentRunner, func() error, error) { return runner, nil, nil },
-		Judge:        &FixtureJudge{Score: 2, Reasoning: "weak"},
+		Grader:       &FixtureJudge{Score: 2, Reasoning: "weak"},
 	}
 	rep, _ := h.Run(context.Background(), SubsetFitness)
 	if rep.Aggregates.PassCount != 0 {
@@ -499,7 +499,7 @@ func TestRunLive_GateFailSkipsJudge(t *testing.T) {
 	h := &Harness{
 		Tasks:        []*Task{task},
 		AgentFactory: func(_ context.Context, _ string) (AgentRunner, func() error, error) { return runner, nil, nil },
-		Judge:        &countingJudge{n: &called},
+		Grader:       &countingJudge{n: &called},
 	}
 	rep, _ := h.Run(context.Background(), SubsetFitness)
 	if rep.Aggregates.FailCount != 1 {
@@ -633,13 +633,13 @@ func TestRunWith_JobCallableAPI(t *testing.T) {
 			currentRep.Aggregates.PassCount, candidateRep.Aggregates.PassCount)
 	}
 	// Harness defaults must be unchanged after RunWith calls.
-	if h.AgentFactory != nil || h.Judge != nil {
+	if h.AgentFactory != nil || h.Grader != nil {
 		t.Error("RunWith mutated Harness defaults — concurrent callers would race")
 	}
 }
 
 // TestRunWith_RestoresHarnessDefaults: RunWith must restore the
-// Harness's AgentFactory/Judge to their pre-call values even when
+// Harness's AgentFactory/Grader to their pre-call values even when
 // the inner Run errors out.
 func TestRunWith_RestoresHarnessDefaults(t *testing.T) {
 	origFactory := func(_ context.Context, _ string) (AgentRunner, func() error, error) {
@@ -649,13 +649,13 @@ func TestRunWith_RestoresHarnessDefaults(t *testing.T) {
 	h := &Harness{
 		Tasks:        nil, // empty subset → no work, but defaults must survive
 		AgentFactory: origFactory,
-		Judge:        origJudge,
+		Grader:       origJudge,
 	}
 	override := &FixtureJudge{Score: 5}
 	_, _ = h.RunWith(context.Background(), SubsetFitness, nil, override)
 	// Function pointers can't be compared with ==; check the judge by identity.
-	if h.Judge != origJudge {
-		t.Errorf("Judge not restored: want %p, got %p", origJudge, h.Judge)
+	if h.Grader != origJudge {
+		t.Errorf("Grader not restored: want %p, got %p", origJudge, h.Grader)
 	}
 	// AgentFactory is a func — verify by calling and checking pointer behavior is unchanged
 	if h.AgentFactory == nil {
@@ -1049,7 +1049,7 @@ func TestRun_TaskTimeout(t *testing.T) {
 		AgentFactory: func(_ context.Context, _ string) (AgentRunner, func() error, error) {
 			return blockingRunner{}, nil, nil
 		},
-		Judge:       &FixtureJudge{Score: 5},
+		Grader:      &FixtureJudge{Score: 5},
 		TaskTimeout: 50 * time.Millisecond,
 	}
 	start := time.Now()

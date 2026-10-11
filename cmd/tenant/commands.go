@@ -2260,6 +2260,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		}
 	}
 
+	judge := judgeLoopFor(c) // the judge in the loop of a turn (TEN-510)
 	ag, err := agent.New(agent.Config{
 		AgentID: c.agent,
 		Router:  router,
@@ -2291,6 +2292,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Stream:                 true,
 		Observer:               func(e agent.Event) { rt.ObserveMain(e, emit) },
 		RouteHook:              routeRT.Hook(),
+		Judge:                  judge, // the judge in the loop, off unless switched on (TEN-510)
 		RouteActive:            routeRT.Active,
 		RouteSticky:            routeRT.Sticky,
 		// On-demand tool loading (TEN-228): cheap catalog + load_tool meta-tool.
@@ -2451,7 +2453,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	}
 	// modelControl powers /model AND backs the dashboard's write-only key page
 	// (TEN-145) for LLM-provider keys via AddCloudModel. Built once and shared.
-	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded}
+	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded, judge: judge}
 	// After a /model swap, re-point tool-ranking at the new provider's embedder
 	// and warm the cache (TEN-226 step 4). Called async from UseModel; SetEmbedder
 	// invalidates the cache only on a fingerprint change, so a same-embedder swap
@@ -2974,7 +2976,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// --self-improve=false, which evalTUIControl handles as persist-only), then
 	// start the dashboard. Deferred to here so the Quality page can drive live
 	// run-now and schedule changes.
-	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}}
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, quality: qualityModelCtl{cfgDir: c.cfgDir, planner: c.vllmModel}}
 	// Remote-services page (TEN-205): a lightweight MCP control over the shared
 	// tool mux. Connect pops a host-side browser (hybrid model — connect local,
 	// manage remote); the dashboard handler runs it async.
@@ -3112,7 +3114,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Perms:           broker,
 		Dash:            dashMgr,
 		Tailscale:       tsMgr,
-		Judge:           judgeCtl{cfgDir: c.cfgDir, planner: modelName},
+		Quality:         qualityModelCtl{cfgDir: c.cfgDir, planner: modelName},
+		Judge:           judge,
 		Relay:           relayMgr,
 		IMessage:        imsgAllowMgr,
 		Cron:            tuiCronCtl,

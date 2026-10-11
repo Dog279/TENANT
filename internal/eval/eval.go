@@ -22,7 +22,7 @@ const SchemaVersion = 1
 
 // Harness holds the loaded task catalog plus the wiring the runner
 // needs. Fixture-mode tasks need only Tasks + Log; live-mode tasks
-// additionally require AgentFactory + Judge (set on the Harness as
+// additionally require AgentFactory + Grader (set on the Harness as
 // defaults, or passed per-call via RunWith).
 //
 // Concurrency: Harness is safe for concurrent Run / RunWith calls —
@@ -37,13 +37,13 @@ type Harness struct {
 	// smoke tasks are unaffected. RunWith overrides this per-call.
 	AgentFactory AgentFactory
 
-	// Judge is the default that grades responses against anchored
+	// Grader is the default that grades responses against anchored
 	// rubrics for live-mode tasks. nil → live tasks pass the
 	// deterministic gate only; judge score is recorded as 0 but the
 	// task still passes if the gate is satisfied (gate-only mode is
 	// useful for operators who want a quick live check without burning
 	// judge tokens). RunWith overrides this per-call.
-	Judge Judge
+	Grader Grader
 
 	// RouteClassifier is the live auxiliary classifier used only by
 	// route_classifier tasks. Keeping it separate from AgentFactory ensures the
@@ -156,10 +156,10 @@ func (h *Harness) FilterSubset(sub Subset) []*Task {
 }
 
 // Run executes the named subset against the Harness's configured
-// AgentFactory + Judge defaults. Equivalent to RunWith with those
+// AgentFactory + Grader defaults. Equivalent to RunWith with those
 // defaults plugged in.
 func (h *Harness) Run(ctx context.Context, sub Subset) (*Report, error) {
-	return h.RunWith(ctx, sub, h.AgentFactory, h.Judge)
+	return h.RunWith(ctx, sub, h.AgentFactory, h.Grader)
 }
 
 // RunWith is the Job-callable fitness API. Downstream consumers
@@ -174,18 +174,18 @@ func (h *Harness) Run(ctx context.Context, sub Subset) (*Report, error) {
 //
 // Phase 5 deliverable: this signature is the stable Job-callable
 // surface. Future GEPA-style optimizers use exactly this entrypoint.
-func (h *Harness) RunWith(ctx context.Context, sub Subset, factory AgentFactory, judge Judge) (*Report, error) {
+func (h *Harness) RunWith(ctx context.Context, sub Subset, factory AgentFactory, judge Grader) (*Report, error) {
 	h.runMu.Lock()
 	defer h.runMu.Unlock()
 
 	// Temporarily swap in the per-call factory/judge. Restored at end
 	// so the Harness's own defaults stay intact for the next caller.
-	prevFactory, prevJudge := h.AgentFactory, h.Judge
+	prevFactory, prevGrader := h.AgentFactory, h.Grader
 	h.AgentFactory = factory
-	h.Judge = judge
+	h.Grader = judge
 	defer func() {
 		h.AgentFactory = prevFactory
-		h.Judge = prevJudge
+		h.Grader = prevGrader
 	}()
 
 	return h.runLocked(ctx, sub)
@@ -397,7 +397,7 @@ func aggregateRollouts(t *Task, rollouts []TaskResult) TaskResult {
 	for _, r := range graded {
 		scoreSum += r.Score
 	}
-	rep := graded[0]             // representative metadata (TaskID, Category, Judge*)
+	rep := graded[0]             // representative metadata (TaskID, Category, Grader*)
 	rep.Passed = passed == total // a flaky task is not a clean pass
 	rep.Score = scoreSum / float64(total)
 	rep.Rollouts = total

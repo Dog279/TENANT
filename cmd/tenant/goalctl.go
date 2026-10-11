@@ -550,7 +550,7 @@ func cmdGoal(ctx context.Context, args []string) error {
 	prompt := firstPrompt
 
 	for {
-		res, terr := ag.Turn(ctx, agent.TurnRequest{UserQuery: prompt, LoopCeiling: gc.LoopCeiling()})
+		res, terr := ag.Turn(ctx, agent.TurnRequest{UserQuery: prompt, LoopCeiling: gc.LoopCeiling(), NoJudge: true})
 		if terr != nil {
 			return fmt.Errorf("turn %d: %w", gc.Show().Turns+1, terr)
 		}

@@ -24,7 +24,7 @@ type fakeEvalCtl struct {
 	offCalls  int
 	runCalls  int
 	setErr    error
-	judge     string   // JudgeStatus()
+	judge     string   // QualityModel()
 	judgeSet  []string // "kind|model|endpoint"
 	judgeClr  int
 }
@@ -70,12 +70,12 @@ func (f *fakeEvalCtl) RunNow() (string, error) {
 	f.sched.Running, f.sched.RunTotal = true, 10
 	return "Quality check queued.", nil
 }
-func (f *fakeEvalCtl) JudgeStatus() string {
+func (f *fakeEvalCtl) QualityModel() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.judge
 }
-func (f *fakeEvalCtl) SetJudge(kind, model, endpoint string) (string, error) {
+func (f *fakeEvalCtl) SetQualityModel(kind, model, endpoint string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.judgeSet = append(f.judgeSet, kind+"|"+model+"|"+endpoint)
@@ -84,7 +84,7 @@ func (f *fakeEvalCtl) SetJudge(kind, model, endpoint string) (string, error) {
 	}
 	return "judge set", f.setErr
 }
-func (f *fakeEvalCtl) ClearJudge() error {
+func (f *fakeEvalCtl) ClearQualityModel() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.judgeClr++
@@ -96,10 +96,10 @@ func (f *fakeEvalCtl) ClearJudge() error {
 // the page says so.
 func TestEval_InlineAnswersEveryForm(t *testing.T) {
 	forms := map[string]url.Values{
-		"/eval/schedule":    {"mode": {"every"}, "spec_every": {"12h"}},
-		"/eval/run":         {},
-		"/eval/judge":       {"kind": {"zai"}, "model": {"glm"}},
-		"/eval/judge/clear": {},
+		"/eval/schedule":            {"mode": {"every"}, "spec_every": {"12h"}},
+		"/eval/run":                 {},
+		"/eval/quality-model":       {"kind": {"zai"}, "model": {"glm"}},
+		"/eval/quality-model/clear": {},
 	}
 	for path, f := range forms {
 		for _, on := range []bool{true, false} {
@@ -151,7 +151,7 @@ func TestEval_Inline(t *testing.T) {
 		}
 	}
 
-	body = post("/eval/judge", url.Values{"kind": {"zai"}, "model": {"glm-4.6"}})
+	body = post("/eval/quality-model", url.Values{"kind": {"zai"}, "model": {"glm-4.6"}})
 	for _, want := range []string{`<span class="toast-text">Saved: glm-4.6 from zai grades the checks now.</span>`, "glm-4.6 from zai grades the checks.", `<details class="advanced" data-preserve-attr="open">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("a grader set in place is missing %q:\n%s", want, body)
@@ -172,22 +172,22 @@ func TestEval_Inline(t *testing.T) {
 		t.Errorf("the failure isn't logged as ActionFailed: %q", c.lines())
 	}
 
-	rec := sendForm(s.Handler(), http.MethodPost, "/eval/judge/clear", nil, nil)
+	rec := sendForm(s.Handler(), http.MethodPost, "/eval/quality-model/clear", nil, nil)
 	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || !strings.HasPrefix(loc, "/eval?msg=") {
 		t.Errorf("a plain post: %d to %q, want 303 to /eval with its flash", rec.Code, loc)
 	}
 }
 
-// TEN-91: the Quality page renders the judge status + routes the set/clear forms.
-func TestEval_JudgeControl(t *testing.T) {
+// TEN-91: the Quality page renders the Quality model status + routes the set/clear forms.
+func TestEval_QualityModelControl(t *testing.T) {
 	fc := &fakeEvalCtl{judge: "Your main model grades the checks."}
 	s := evalServer(fc)
 
-	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "Your main model grades the checks.") || !strings.Contains(body, "Set the grader") {
-		t.Errorf("Quality page should render the judge status + form; got:\n%s", body)
+	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "Your main model grades the checks.") || !strings.Contains(body, "Set the Quality model") || strings.Contains(strings.ToLower(body), "judge") {
+		t.Errorf("Quality page should render the Quality model status + form and never say judge (TEN-516); got:\n%s", body)
 	}
 
-	rec := submitForm(t, s, "/eval/judge", "kind=zai&model=glm-4.6&endpoint=https://api.z.ai/x")
+	rec := submitForm(t, s, "/eval/quality-model", "kind=zai&model=glm-4.6&endpoint=https://api.z.ai/x")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("set judge should 303, got %d", rec.Code)
 	}
@@ -196,12 +196,12 @@ func TestEval_JudgeControl(t *testing.T) {
 	}
 
 	// Missing model → validation, no SetJudge call.
-	submitForm(t, s, "/eval/judge", "kind=anthropic")
+	submitForm(t, s, "/eval/quality-model", "kind=anthropic")
 	if len(fc.judgeSet) != 1 {
 		t.Errorf("incomplete judge form must not call SetJudge: %v", fc.judgeSet)
 	}
 
-	submitForm(t, s, "/eval/judge/clear", "")
+	submitForm(t, s, "/eval/quality-model/clear", "")
 	if fc.judgeClr != 1 {
 		t.Fatalf("clear judge should call ClearJudge once: %d", fc.judgeClr)
 	}

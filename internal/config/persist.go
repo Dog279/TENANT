@@ -128,6 +128,28 @@ func (lc *Launch) Migrate() {
 	// Drop legacy fields so they aren't re-serialized.
 	lc.Backend, lc.VLLMEndpoint, lc.VLLMModel, lc.VLLMToolFmt = "", "", "", ""
 	lc.EmbedEndpoint, lc.EmbedModel, lc.EmbedDim, lc.SSEAddr = "", "", 0, ""
+	lc.migrateJudge()
+}
+
+// migrateJudge moves the pre-TEN-516 spellings into their places: judge_loop
+// becomes judge (kind clef), improve.judge* become improve.quality_model*.
+// When a file carries both the old and the new key, the new one wins. The
+// legacy fields are cleared, so the next save writes only the new keys. Load
+// migrates on every read and Persist re-loads before every save, so a
+// migrated key cannot come back.
+func (lc *Launch) migrateJudge() {
+	if l := lc.LegacyJudgeLoop; l != nil {
+		if lc.Judge == nil {
+			lc.Judge = &Judge{Enabled: l.Enabled, Kind: "clef", Endpoint: l.Endpoint, Model: l.Model, Rounds: l.MaxRounds}
+		}
+		lc.LegacyJudgeLoop = nil
+	}
+	ic := &lc.Improve
+	if ic.LegacyJudge != "" && ic.QualityModel == "" {
+		ic.QualityModel, ic.QualityModelKind, ic.QualityModelEndpoint, ic.QualityModelKeyEnv =
+			ic.LegacyJudge, ic.LegacyJudgeKind, ic.LegacyJudgeEndpoint, ic.LegacyJudgeKeyEnv
+	}
+	ic.LegacyJudge, ic.LegacyJudgeKind, ic.LegacyJudgeEndpoint, ic.LegacyJudgeKeyEnv = "", "", "", ""
 }
 
 // Save writes config.json atomically (temp + rename), and files the change

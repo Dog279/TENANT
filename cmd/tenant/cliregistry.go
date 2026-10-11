@@ -201,7 +201,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "route stats", Desc: "big/disagreement/failure rates, latency, breaker trips"},
 				{Syntax: "route export-dataset [--out FILE]", Desc: "export routing decisions as a training set"},
 			}},
-		{Names: []string{"eval"}, Section: "models", Run: cmdEval, Flags: []string{"--subset", "--json", "--quiet", "--list", "--compaction", "--gate-only", "--judge-model", "--baseline-check"},
+		{Names: []string{"eval"}, Section: "models", Run: cmdEval, Flags: []string{"--subset", "--json", "--quiet", "--list", "--compaction", "--gate-only", "--quality-model", "--baseline-check"},
 			Summary: "run the eval harness",
 			Rows:    []cmdreg.Row{{Syntax: "eval --subset smoke [--json]", Desc: "run the eval harness (also --compaction, --gate-only, --baseline-check FILE)"}}},
 

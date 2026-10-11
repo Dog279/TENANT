@@ -23,7 +23,7 @@ var _ improve.SoulScorer = evalSoulScorer{}
 type evalSoulScorer struct {
 	c            *commonFlags
 	pf           *pluginFlags
-	jOpts        evalJudgeOpts
+	jOpts        qualityOpts
 	baselinePath string // baselines/fitness.json
 	log          *slog.Logger
 }

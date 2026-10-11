@@ -16,6 +16,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"tenant/internal/attach"
 )
@@ -265,5 +266,113 @@ func TestClipboardImageLinux_JPEGAndFallback(t *testing.T) {
 	}
 	if last := got[len(got)-1]; !strings.Contains(last, "xclip") || !strings.Contains(last, "image/jpeg") {
 		t.Fatalf("last call %q, want xclip reading image/jpeg", last)
+	}
+}
+
+// No line the TUI draws is wider than the terminal: a wider line wraps, the
+// terminal scrolls, and every later redraw lands a row off (the input looked
+// unchanged after a paste until a full redraw). The footer is the long one:
+// help, token counter, context gauge and the attachment count.
+func TestView_NoLineWiderThanTheTerminal(t *testing.T) {
+	for _, w := range []int{80, 100, 120, 140, 160} {
+		m := imageModel(t)
+		m.Update(tea.WindowSizeMsg{Width: w, Height: 30})
+		m.sessionTokIn, m.sessionTokOut, m.sessionTok = 1_234_567, 98_765, 1_333_332
+		m.budgetPct, m.budgetUsed, m.budgetCap = 42, 210_000, 500_000
+		p := filepath.Join(t.TempDir(), "shot.png")
+		_ = os.WriteFile(p, pngBytes(t, 30, 20), 0o600)
+		m.Update(m.attachFilesCmd([]string{p, p})())
+		for i, line := range strings.Split(m.View(), "\n") {
+			if lw := lipgloss.Width(line); lw > w {
+				t.Errorf("width %d: line %d is %d wide: %q", w, i, lw, line)
+			}
+		}
+	}
+}
+
+// One Backspace right after an [image N: …] tag deletes the whole tag, and
+// the image with it; the footer says what is attached until then. A Backspace
+// anywhere else is an ordinary one.
+func TestBackspaceRemovesAnImageTag(t *testing.T) {
+	m := imageModel(t)
+	m.ta.InsertString("look at ")
+	p := filepath.Join(t.TempDir(), "x.png")
+	_ = os.WriteFile(p, pngBytes(t, 8, 8), 0o600)
+	m.Update(m.attachFilesCmd([]string{p})())
+	if m.pendingImages() != 1 || !strings.Contains(m.View(), "📎 1 attached") {
+		t.Fatalf("pending %d, footer hint missing:\n%s", m.pendingImages(), m.View())
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.ta.Value(); got != "look at " {
+		t.Fatalf("after one Backspace the input is %q, want %q", got, "look at ")
+	}
+	if m.pendingImages() != 0 || strings.Contains(m.View(), "attached") {
+		t.Fatal("the image is still counted after its tag was deleted")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if got := m.ta.Value(); got != "look at" {
+		t.Fatalf("a plain Backspace gave %q", got)
+	}
+	if imgs := m.takeAttachments(m.ta.Value()); len(imgs) != 0 {
+		t.Fatalf("a deleted image would still be sent: %v", imgs)
+	}
+}
+
+// macOS Cmd+V: a terminal that sends an empty paste for an image-only
+// clipboard gets the clipboard image, as Ctrl+V does.
+func TestEmptyPasteReadsTheClipboardImage(t *testing.T) {
+	fakeMacClipboard(t, pngBytes(t, 30, 20))
+	m := imageModel(t)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Paste: true})
+	if cmd == nil {
+		t.Fatal("an empty paste did nothing")
+	}
+	m.Update(cmd())
+	if len(m.attachments) != 1 || !strings.Contains(m.ta.Value(), "[image 1:") {
+		t.Fatalf("attachments %d, input %q", len(m.attachments), m.ta.Value())
+	}
+}
+
+// macOS Cmd+V on a file copied in Finder pastes only its name: the file the
+// clipboard points at is attached when the names match; otherwise the name
+// is typed as the text it was.
+func TestFinderNamePasteAttachesTheFile(t *testing.T) {
+	old, oldRun := clipGOOS, runClipboardCmd
+	t.Cleanup(func() { clipGOOS, runClipboardCmd = old, oldRun })
+	clipGOOS = "darwin"
+	shot := filepath.Join(t.TempDir(), "Screenshot 1.png")
+	_ = os.WriteFile(shot, pngBytes(t, 8, 8), 0o600)
+	runClipboardCmd = func(context.Context, string, ...string) ([]byte, error) { return []byte(shot + "\n"), nil }
+	for _, c := range []struct {
+		paste      string
+		wantImages int
+		wantText   string
+	}{
+		{"Screenshot 1.png", 1, ""},
+		{"Other.png", 0, "Other.png"},
+	} {
+		m := imageModel(t)
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(c.paste), Paste: true})
+		if cmd == nil {
+			t.Fatalf("%q: no command", c.paste)
+		}
+		m.Update(cmd())
+		if len(m.attachments) != c.wantImages || (c.wantText != "" && m.ta.Value() != c.wantText) {
+			t.Errorf("%q: %d images, input %q", c.paste, len(m.attachments), m.ta.Value())
+		}
+	}
+}
+
+// A single pasted path with spaces (macOS pastes a Finder copy's full path
+// unquoted on some terminals; screenshot names have spaces and U+202F) is
+// one path, not a list.
+func TestPastedPathWithSpaces(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "Screenshot 2026-10-09 at 5.12.03 PM.png")
+	_ = os.WriteFile(p, pngBytes(t, 8, 8), 0o600)
+	if got := pastedImagePaths(p); len(got) != 1 || got[0] != p {
+		t.Fatalf("pastedImagePaths(%q) = %v", p, got)
+	}
+	if got := pastedImagePaths("look at " + p); got != nil {
+		t.Fatalf("text around a path should stay text: %v", got)
 	}
 }

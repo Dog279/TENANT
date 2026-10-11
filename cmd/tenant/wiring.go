@@ -102,7 +102,7 @@ func bindCommon(fs *flag.FlagSet) *commonFlags {
 	fs.StringVar(&c.logDir, "log-dir", "", "log book root: one folder per subsystem (default <data>/logs; config logs.dir)")
 	fs.StringVar(&c.vllmEndpoint, "vllm-endpoint", "", "vLLM base URL, e.g. http://localhost:8000 (backend=vllm)")
 	fs.StringVar(&c.vllmModel, "vllm-model", "", "vLLM model id, e.g. gemma-4-26b (backend=vllm)")
-	fs.StringVar(&c.vllmToolFmt, "vllm-tool-format", "gemma", "tool format for the vLLM model: qwen|gemma|llama|mistral|openai")
+	fs.StringVar(&c.vllmToolFmt, "vllm-tool-format", "gemma", "tool format for the vLLM model: qwen|gemma|llama|mistral|glm|openai")
 	fs.StringVar(&c.embedEndpoint, "embed-endpoint", "", "OpenAI-compat embeddings base URL, e.g. http://localhost:11434 (Ollama) — backend=vllm")
 	fs.StringVar(&c.embedModel, "embed-model", "", "embedding model id, e.g. nomic-embed-text")
 	fs.IntVar(&c.embedDim, "embed-dim", defaultEmbedDim, "embedding dimensionality (advisory; nomic-embed-text=768, bge-m3=1024)")

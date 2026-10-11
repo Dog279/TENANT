@@ -51,7 +51,7 @@ type evalNightlyJob struct {
 	c            *commonFlags
 	pf           *pluginFlags
 	subset       eval.Subset
-	jOpts        evalJudgeOpts
+	jOpts        qualityOpts
 	artifactDir  string
 	baselinePath string // "" or missing → no regression check
 	// events, when set, mirrors each eval task agent's tool activity to the

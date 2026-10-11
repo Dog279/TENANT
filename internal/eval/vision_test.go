@@ -63,7 +63,7 @@ func TestRunLive_VisionTask(t *testing.T) {
 	}
 	r := &imageFakeRunner{}
 	h.AgentFactory = func(context.Context, string) (AgentRunner, func() error, error) { return r, nil, nil }
-	h.Judge = &FixtureJudge{Score: 5}
+	h.Grader = &FixtureJudge{Score: 5}
 	rep, err := h.Run(context.Background(), SubsetVision)
 	if err != nil || rep.Aggregates.PassCount != 1 {
 		t.Fatalf("report %+v, %v", rep.Results, err)

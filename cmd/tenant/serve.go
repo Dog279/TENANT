@@ -476,6 +476,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		}
 		rt.ObserveMain(e, emit)
 	}
+	judge := judgeLoopFor(c) // the judge in the loop of a turn (TEN-510)
 	ag, err := agent.New(agent.Config{
 		AgentID:  c.agent,
 		Router:   router,
@@ -498,6 +499,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		Stream:                 true,
 		Observer:               observeMain,
 		RouteHook:              routeRT.Hook(),
+		Judge:                  judge, // the judge in the loop, off unless switched on (TEN-510)
 		RouteActive:            routeRT.Active,
 		RouteSticky:            routeRT.Sticky,
 		LazyToolLoad:           c.lc.LazyTools,
@@ -627,7 +629,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 
 	// modelControl powers the dashboard model + key pages and re-points
 	// tool-ranking at a new embedder after a /model swap.
-	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded}
+	modelCtl := &modelControl{cfgDir: c.cfgDir, dataDir: c.dataDir, agentID: c.agent, ag: ag, log: log.With("source", "model"), degraded: degraded, judge: judge}
 	modelCtl.reinstallEmbedder = func(ctx context.Context) {
 		emb, prof, err := router.EmbedderForRole(ctx, model.RoleEmbedder)
 		if err != nil {
@@ -730,7 +732,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	if sched != nil {
 		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop) // drains any in-flight improve job
 	}
-	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, quality: qualityModelCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: mcpCtl}
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
 	// Helpers (TEN-209) and research (TEN-210). Only the terminal app runs

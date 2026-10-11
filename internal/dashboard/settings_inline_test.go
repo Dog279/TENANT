@@ -13,7 +13,7 @@ import (
 // settingsPages is where the Models, Provider keys and Integrations forms
 // post: every one a literal URL (F1), with the row's values in fields.
 var settingsPages = map[string][]string{
-	"/models":        {"/models/use", "/models/remove", "/models/add", "/models/add-server", "/models/ceiling", "/models/repeat", "/models/reload"},
+	"/models":        {"/models/use", "/models/remove", "/models/add", "/models/add-server", "/models/ceiling", "/models/repeat", "/models/judge", "/models/reload"},
 	"/settings/keys": {"/settings/keys/set", "/settings/keys/remove"},
 	"/integrations": {"/integrations/save", "/integrations/test", "/integrations/disconnect",
 		"/integrations/github/repos/add", "/integrations/github/repos/mode", "/integrations/github/repos/remove"},
@@ -37,6 +37,7 @@ func TestSettingsGroup_InlineAnswersEveryForm(t *testing.T) {
 		{"/models/remove", "/models", "models-body", url.Values{"name": {"m"}}, nil},
 		{"/models/ceiling", "/models", "models-body", url.Values{"ceiling": {"42"}}, nil},
 		{"/models/repeat", "/models", "models-body", url.Values{"repeat": {"12"}}, nil},
+		{"/models/judge", "/models", "models-body", url.Values{"judge": {"off"}, "key": {secret}}, nil},
 		{"/models/reload", "/models", "models-body", url.Values{}, nil},
 		{"/settings/keys/set", "/settings/keys", "keys-body", url.Values{"service": {"openai"}, "value": {secret}}, nil},
 		{"/settings/keys/remove", "/settings/keys", "keys-body", url.Values{"service": {"openai"}}, nil},
@@ -160,7 +161,7 @@ func TestSettingsGroup_EveryFormPostsInPlace(t *testing.T) {
 			if !strings.Contains(tag, `data-on:submit__prevent__throttle.1s="@post('`+action+`', {contentType:'form', retryMaxCount:0})"`) {
 				t.Errorf("%s: %s doesn't post in place, throttled and once", page, tag)
 			}
-			if secretForm := action == "/models/add" || action == "/models/add-server" || action == "/settings/keys/set" || action == "/integrations/save"; secretForm != strings.Contains(tag, empties) {
+			if secretForm := action == "/models/add" || action == "/models/add-server" || action == "/models/judge" || action == "/settings/keys/set" || action == "/integrations/save"; secretForm != strings.Contains(tag, empties) {
 				t.Errorf("%s: %s: empties its key boxes %v, want %v", page, tag, !secretForm, secretForm)
 			}
 		}

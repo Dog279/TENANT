@@ -142,7 +142,11 @@ type Config struct {
 	// it asynchronously immediately after EventTurnStart. In active mode the
 	// hook may return a role for this turn; RouteActive gates the bounded join
 	// so shadow callers retain phase one's fully asynchronous path.
-	RouteHook    RouteHook
+	RouteHook RouteHook
+	// Judge, when set, is the judge in the loop (TEN-510): it triages each
+	// turn's prompt and checks a task's final answer, sending it back up to
+	// its MaxRounds. Main agents only; nil = no judge.
+	Judge        Judge
 	RouteActive  RouteActive
 	RouteSticky  RouteSticky
 	EmbedderRole model.Role // default "embedder"
@@ -343,6 +347,7 @@ type SkillRetriever interface {
 // Agent runs the bounded ReAct loop.
 type Agent struct {
 	cfg                       Config
+	judgeRetryAt              atomic.Int64 // unix ns: a judge outage skips judging until then (TEN-510)
 	log                       *slog.Logger
 	evlog                     string // the log its turns events go to: its logger's (logs.SourceOf), else turns
 	plannerRole, embedderRole model.Role
@@ -557,6 +562,9 @@ type TurnRequest struct {
 	// cap). Used by /goal runs so a long autonomous loop can iterate freely
 	// without raising the global ceiling every normal turn shares (TEN-216).
 	LoopCeiling int
+	// NoJudge keeps the judge in the loop out of this turn: a /goal run
+	// judges its own turns (TEN-510).
+	NoJudge bool
 	// ParentTraceID links this turn's run record to the turn that caused it:
 	// a sub-agent's, to the turn that spawned it (TEN-368).
 	ParentTraceID string
@@ -762,6 +770,8 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		Timestamp: now, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
 		Role: "user", Content: req.UserQuery, Metadata: imagesMeta(req.Images),
 	})
+	// The judge triages the prompt while the planner works (TEN-510).
+	jt := a.startJudge(ctx, req)
 
 	// 3. Embed the user query for retrieval.
 	queryEmbedding, err := a.embedQuery(ctx, embedder, req.UserQuery)
@@ -998,6 +1008,9 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				Role: "user", Content: inj.text, Metadata: imagesMeta(inj.images),
 			})
 			a.emit(Event{Kind: EventInterject, Iter: iter, Text: inj.text})
+			if jt != nil {
+				jt.request.WriteString("\n" + inj.text) // the judge checks the ask as it grew
+			}
 		}
 
 		result.Iterations = iter
@@ -1123,17 +1136,38 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 				EmptyFinal.Log(a.ev(ctx), "agent", a.cfg.AgentID, "iter", iter, "tools_called", len(result.ToolTrace))
 				final, ferr := a.synthesizeFinal(ctx, planner, profile, asm, queryEmbedding, goalHeader)
 				if ferr == nil && strings.TrimSpace(final) != "" {
-					result.Response = final
-					a.emit(Event{Kind: EventFinal, Iter: iter, Text: final})
+					result.Response = final + a.judgeForced(ctx, jt, iter, result.ToolTrace, final, span)
+					a.emit(Event{Kind: EventFinal, Iter: iter, Text: result.Response})
 					a.persistEpisode(ctx, episodePrompt(req), final, result.ToolTrace, queryEmbedding, embedder, routeState)
 					return result, nil
 				}
 				// Synthesis also empty — fall through to the original
 				// behavior so we don't loop forever on a stuck model.
 			}
-			// Final response. Persist episode and return.
-			result.Response = resp.Text
-			a.emit(Event{Kind: EventFinal, Iter: iter, Text: resp.Text})
+			// The judge in the loop (TEN-510): a task's answer is checked, and
+			// sent back with a nudge while rounds (and the loop) allow.
+			// A send-back gets a free iteration, as an interjection does: the
+			// rounds cap bounds it, and a long task's last check can't fall
+			// through into the ceiling's forced synthesis.
+			note := ""
+			if jt != nil {
+				var nudge string
+				nudge, note = a.judgeFinal(ctx, jt, iter, true, result.ToolTrace, resp.Text, span)
+				if nudge != "" {
+					ts := time.Now().UTC()
+					a.cfg.Working.Append(working.Message{Role: "user", Content: "[A check of your answer] " + nudge, Timestamp: ts})
+					a.archiveEvent(ctx, archive.Event{
+						Timestamp: ts, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
+						Role: "user", Content: nudge, Metadata: map[string]any{"kind": "judge_nudge"},
+					})
+					iter--
+					continue
+				}
+			}
+			// Final response. Persist episode and return. The judge's note is
+			// for the reader, not the record: memory keeps the model's words.
+			result.Response = resp.Text + note
+			a.emit(Event{Kind: EventFinal, Iter: iter, Text: result.Response})
 			a.persistEpisode(ctx, episodePrompt(req), resp.Text, result.ToolTrace, queryEmbedding, embedder, routeState)
 			return result, nil
 		}
@@ -1311,13 +1345,13 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 		a.emit(Event{Kind: EventError, Text: result.Error.Error()})
 		return result, nil
 	}
-	result.Response = final
+	result.Response = final + a.judgeForced(ctx, jt, 0, result.ToolTrace, final, span)
 	result.Truncated = true
 	result.Error = loopErr
 	if stuckErr != nil {
-		a.emit(Event{Kind: EventStuck, Text: final})
+		a.emit(Event{Kind: EventStuck, Text: result.Response})
 	} else {
-		a.emit(Event{Kind: EventTruncated, Text: final})
+		a.emit(Event{Kind: EventTruncated, Text: result.Response})
 	}
 	a.persistEpisode(ctx, episodePrompt(req), final, result.ToolTrace, queryEmbedding, nil, routeState)
 	return result, nil

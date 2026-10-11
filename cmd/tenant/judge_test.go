@@ -77,40 +77,40 @@ func TestResolveJudgeKey(t *testing.T) {
 	}
 }
 
-// applyJudgeConfig: flag wins; empty config is a no-op; config fills when no flag.
+// applyQualityConfig: flag wins; empty config is a no-op; config fills when no flag.
 func TestApplyJudgeConfig(t *testing.T) {
 	lc := &launchConfig{}
-	lc.Improve.Judge = "claude-opus-4-8"
-	lc.Improve.JudgeKind = "anthropic"
-	lc.Improve.JudgeEndpoint = "https://example/api"
-	lc.Improve.JudgeKeyEnv = "MY_KEY"
+	lc.Improve.QualityModel = "claude-opus-4-8"
+	lc.Improve.QualityModelKind = "anthropic"
+	lc.Improve.QualityModelEndpoint = "https://example/api"
+	lc.Improve.QualityModelKeyEnv = "MY_KEY"
 
 	// No flag → filled from config.
-	got := applyJudgeConfig(evalJudgeOpts{}, lc)
+	got := applyQualityConfig(qualityOpts{}, lc)
 	if got.model != "claude-opus-4-8" || got.kind != "anthropic" || got.endpoint != "https://example/api" || got.keyEnv != "MY_KEY" {
 		t.Fatalf("config not applied: %+v", got)
 	}
 
 	// Flag set → untouched (flag wins).
-	got = applyJudgeConfig(evalJudgeOpts{model: "flag-model", keyEnv: "FLAG_KEY"}, lc)
+	got = applyQualityConfig(qualityOpts{model: "flag-model", keyEnv: "FLAG_KEY"}, lc)
 	if got.model != "flag-model" || got.keyEnv != "FLAG_KEY" {
 		t.Fatalf("flag must win over config: %+v", got)
 	}
 
 	// Empty config → unchanged (planner default).
-	if got := applyJudgeConfig(evalJudgeOpts{}, &launchConfig{}); got.model != "" {
+	if got := applyQualityConfig(qualityOpts{}, &launchConfig{}); got.model != "" {
 		t.Fatalf("empty config must leave planner default: %+v", got)
 	}
 	// nil lc → unchanged.
-	if got := applyJudgeConfig(evalJudgeOpts{}, nil); got.model != "" {
+	if got := applyQualityConfig(qualityOpts{}, nil); got.model != "" {
 		t.Fatalf("nil lc must be a no-op: %+v", got)
 	}
 }
 
-// judgeCtl persists set/clear round-trip + Current reflects state.
+// qualityModelCtl persists set/clear round-trip + Current reflects state.
 func TestJudgeCtl_Persist(t *testing.T) {
 	dir := t.TempDir()
-	j := judgeCtl{cfgDir: dir, planner: "qwen-local"}
+	j := qualityModelCtl{cfgDir: dir, planner: "qwen-local"}
 
 	if c := j.Current(); !strings.Contains(c, "qwen-local") || !strings.Contains(strings.ToLower(c), "default") {
 		t.Errorf("default Current should mention the planner + default: %q", c)
@@ -123,7 +123,7 @@ func TestJudgeCtl_Persist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lc.Improve.Judge != "claude-opus-4-8" || lc.Improve.JudgeKind != "anthropic" || lc.Improve.JudgeKeyEnv != "ANTHROPIC_API_KEY" {
+	if lc.Improve.QualityModel != "claude-opus-4-8" || lc.Improve.QualityModelKind != "anthropic" || lc.Improve.QualityModelKeyEnv != "ANTHROPIC_API_KEY" {
 		t.Fatalf("Set didn't persist correctly: %+v", lc.Improve)
 	}
 	if c := j.Current(); !strings.Contains(c, "claude-opus-4-8") {
@@ -139,7 +139,7 @@ func TestJudgeCtl_Persist(t *testing.T) {
 		t.Fatalf("Clear: %v", err)
 	}
 	lc, _ = loadLaunchConfig(dir)
-	if lc.Improve.Judge != "" || lc.Improve.JudgeKind != "" {
+	if lc.Improve.QualityModel != "" || lc.Improve.QualityModelKind != "" {
 		t.Fatalf("Clear didn't reset: %+v", lc.Improve)
 	}
 }

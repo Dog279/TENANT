@@ -75,8 +75,12 @@ type Config struct {
 	// Tailscale, if set, powers /tailscale: publish the loopback dashboard onto
 	// the operator's tailnet via `tailscale serve` (TEN-233).
 	Tailscale TailscaleControl
-	// Judge, if set, powers /judge: choose the eval LLM-judge model, persisted
-	// and applied to `tenant eval` + the nightly gate (TEN-91).
+	// Quality, if set, powers /eval model: the Quality model, the model that
+	// grades eval answers, saved and applied to `tenant eval` + the nightly
+	// check (TEN-91, renamed in TEN-516).
+	Quality QualityModelControl
+	// Judge, if set, powers /judge: the Judge, a decision model in the loop
+	// of a turn, live (TEN-510, TEN-516).
 	Judge JudgeControl
 	// Relay, if set, powers /relay: start/stop the offsite Discord relay live.
 	Relay RelayControl
@@ -459,13 +463,39 @@ type TailscaleControl interface {
 // operator can pin a separate model (any wired provider kind), persisted so it
 // applies to both `tenant eval` and the nightly eval/improvement gate. The API
 // key is read from an env var at eval time — never entered or stored here.
+// JudgeControl sets up and switches the Judge, the decision model in the
+// loop of a turn (TEN-510, TEN-516).
 type JudgeControl interface {
-	// Current is a render-ready description of the active judge.
+	// Status is the one-line state.
+	Status() string
+	// On reports whether the loop is on, and how /model should name the judge
+	// ("clef-flash (clef)").
+	On() (bool, string)
+	// Set turns the loop on (asking the server first) or off, live, and saves it.
+	Set(on bool) (string, error)
+	// Use points the Judge at a server with the saved key: the kind's dialect,
+	// the endpoint ("" keeps the saved one) and the model ("" = the kind's
+	// default). It asks the server one question, saves and switches on.
+	Use(kind, endpoint, model string) (string, error)
+	// Setup is Use with a key the operator typed ("" = none): the server is
+	// asked with that key before anything is saved, then the key, the server
+	// and the switch are saved together.
+	Setup(kind, endpoint, key, model string) (string, error)
+	// Rounds sets how many times a turn may be sent back (1..5), live and saved.
+	Rounds(n int) (string, error)
+	// Saved is what the setup prompt offers as defaults.
+	Saved() (endpoint string, hasKey bool)
+}
+
+// QualityModelControl chooses the Quality model: the model that grades eval
+// answers (TEN-91).
+type QualityModelControl interface {
+	// Current is a render-ready description of the active Quality model.
 	Current() string
-	// Set persists a judge override: provider kind + model id (+ optional
+	// Set saves a separate Quality model: provider kind + model id (+ optional
 	// endpoint). Returns a confirmation message (may include a key-env warning).
 	Set(kind, model, endpoint string) (msg string, err error)
-	// Clear reverts to the planner-default judge.
+	// Clear reverts to the default: the planner grades its own answers.
 	Clear() error
 }
 
@@ -1522,9 +1552,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if isImagePasteKey(msg.String()) {
 				return m, m.pasteImageCmd()
 			}
+			if msg.Type == tea.KeyBackspace && m.deletePlaceholder() {
+				return m, nil
+			}
 			if msg.Paste {
+				if len(msg.Runes) == 0 { // a terminal's Cmd+V with only an image on the clipboard
+					return m, m.pasteImageCmd()
+				}
 				if paths := pastedImagePaths(string(msg.Runes)); len(paths) > 0 {
 					return m, m.attachFilesCmd(paths)
+				}
+				if name := string(msg.Runes); isFinderImageName(name) {
+					return m, m.finderPasteCmd(name)
 				}
 			}
 		}
@@ -1660,6 +1699,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case imagesAttachedMsg:
+		if msg.text != "" {
+			m.ta.InsertString(msg.text) // the paste wasn't an image after all
+		}
 		m.addAttachments(msg.imgs)
 		for _, n := range msg.notes {
 			m.sysChat(n)
@@ -2031,6 +2073,7 @@ func (m *model) submit() tea.Cmd {
 	// without raising the ceiling every normal turn shares (TEN-216).
 	if m.cfg.Goals != nil && m.cfg.Goals.Active() {
 		req.LoopCeiling = m.cfg.Goals.LoopCeiling()
+		req.NoJudge = true // the goal judges its own turns (TEN-510)
 	}
 	return func() tea.Msg {
 		res, err := ag.Turn(turnCtx, req)
@@ -2345,6 +2388,12 @@ func (m *model) applyEvent(e agent.Event) {
 		m.appendFeed(cSys.Render("⊟ context compacted: " + e.Text))
 	case agent.EventInterject:
 		m.appendFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
+	case agent.EventJudge:
+		style := cSys
+		if e.IsErr {
+			style = cErr
+		}
+		m.appendFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
 	case agent.EventIngest:
 		// An offsite channel (Discord/iMessage) received a message and drove a
 		// turn. e.Text is already prefixed "Discord: " / "iMessage: " (TEN-232).
@@ -2888,9 +2937,6 @@ func (m *model) statusBar() string {
 func (m *model) contextIndicator() string {
 	bar := ctxBar(m.budgetPct, 12)
 	s := fmt.Sprintf("ctx %s %d%% %s/%s · session %s", bar, m.budgetPct, humanTokens(m.budgetUsed), humanTokens(m.budgetCap), humanTokens(m.sessionTok))
-	if n := len(m.attachments); n > 0 {
-		s = fmt.Sprintf("📎 %d · ", n) + s
-	}
 	if m.teamTok > 0 {
 		s += cDim.Render(" · team " + humanTokens(m.teamTok))
 	}
@@ -2990,7 +3036,11 @@ func (m *model) View() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, chatPad.Render(left), paneBorder.Render(""), m.feed.View())
 	// Footer: help (left) + context gauge (bottom-right), width-aligned,
 	// sharing the chat's left gutter.
-	help := strings.Repeat(" ", chatGutter) + "Enter send · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit"
+	gutter := strings.Repeat(" ", chatGutter)
+	helps := []string{gutter + "Enter send · Ctrl+V image · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit", gutter + "/help · /exit quit", ""}
+	if n := m.pendingImages(); n > 0 { // TEN-493: say what rides the next message, and how to drop it
+		helps = []string{gutter + fmt.Sprintf("📎 %d attached · Backspace removes an [image] tag", n), gutter + fmt.Sprintf("📎 %d attached", n), ""}
+	}
 	ctx := m.contextIndicator()
 	// Right cluster, read left→right: live request timer (only while busy),
 	// directional in/out token counter, then the ctx gauge. Each piece is
@@ -3002,11 +3052,19 @@ func (m *model) View() string {
 	if m.selectMode {
 		right = cOK.Render("✂ SELECT — drag to copy · Ctrl+S/Esc to exit") + " " + right
 	}
-	gap := m.width - lipgloss.Width(help) - lipgloss.Width(right) - 1
-	if gap < 1 {
-		gap = 1
+	// The footer must never be wider than the terminal: a wider last line
+	// wraps, the screen scrolls, and every later redraw lands a row off (a
+	// pasted image's placeholder didn't show until a full redraw). Take the
+	// longest help that fits beside the gauges, then cut whatever remains.
+	help := helps[len(helps)-1]
+	for _, h := range helps {
+		if lipgloss.Width(h)+lipgloss.Width(right)+2 <= m.width {
+			help = h
+			break
+		}
 	}
-	footer := cDim.Render(help) + strings.Repeat(" ", gap) + right + " "
+	gap := max(1, m.width-lipgloss.Width(help)-lipgloss.Width(right)-1)
+	footer := lipgloss.NewStyle().MaxWidth(m.width).Render(cDim.Render(help) + strings.Repeat(" ", gap) + right + " ")
 	// Picker mode replaces the input area with the picker view. Keeps
 	// the chat + feed visible above so the operator has full context
 	// while choosing.

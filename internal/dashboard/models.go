@@ -42,6 +42,12 @@ type ModelControl interface {
 	RepeatGuard() int
 	SetRepeatGuard(n int) (string, error)
 	Vision() string // whether the active model can see images (TEN-493)
+	// Judge / SetJudge: the Judge, a decision model that checks task answers
+	// and sends unfinished work back (TEN-510, TEN-516). SetJudge: "" for the
+	// kind, endpoint or model keeps the saved value; a blank key keeps the
+	// saved key (the box is never pre-filled); rounds 0 keeps the saved value.
+	Judge() JudgeView
+	SetJudge(on bool, kind, endpoint, key, model string, rounds int) (string, error)
 	ReloadKeys() (string, error)
 }
 
@@ -115,6 +121,7 @@ func (s *Server) mountModelsSSR(mux *http.ServeMux) {
 	mux.HandleFunc("POST /models/remove", needConfirm(nil, s.handleModelRemoveForm))
 	mux.HandleFunc("POST /models/ceiling", s.handleModelCeilingForm)
 	mux.HandleFunc("POST /models/repeat", s.handleModelRepeatForm)
+	mux.HandleFunc("POST /models/judge", s.handleModelJudgeForm)
 	mux.HandleFunc("POST /models/reload", s.handleModelReloadForm)
 }
 
@@ -125,8 +132,10 @@ type modelsPageData struct {
 	Ceiling    int
 	Repeat     int    // repeat guard; 0 = off
 	Vision     string // whether the active model can see images (TEN-493)
-	Err        string
-	Msg        string
+	// The Judge (TEN-510, TEN-516).
+	Judge JudgeView
+	Err   string
+	Msg   string
 }
 
 func (s *Server) modelsData() modelsPageData {
@@ -137,6 +146,7 @@ func (s *Server) modelsData() modelsPageData {
 		d.Ceiling = s.models.LoopCeiling()
 		d.Repeat = max(s.models.RepeatGuard(), 0)
 		d.Vision = s.models.Vision()
+		d.Judge = s.models.Judge()
 	}
 	return d
 }
@@ -308,6 +318,37 @@ func (s *Server) handleModelRepeatForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.modelsDone(w, r, msg, "")
+}
+
+// JudgeView is the Judge's render-ready state: never its key, only whether
+// one is saved.
+type JudgeView struct {
+	On       bool
+	Kind     string
+	Kinds    []string // the kinds the card offers
+	Endpoint string
+	Model    string
+	Rounds   int
+	HasKey   bool
+}
+
+// handleModelJudgeForm sets up or switches the Judge live (TEN-510, TEN-516).
+// The key arrives in a password box and goes straight to the control; it is
+// never echoed in a flash or a URL (a secret route, DESIGN.md §6).
+func (s *Server) handleModelJudgeForm(w http.ResponseWriter, r *http.Request) {
+	if s.models == nil {
+		s.modelsDone(w, r, "", "")
+		return
+	}
+	on := r.FormValue("judge") == "on"
+	rounds, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("rounds")))
+	msg, err := s.models.SetJudge(on, strings.TrimSpace(r.FormValue("kind")), strings.TrimSpace(r.FormValue("endpoint")),
+		r.FormValue("key"), strings.TrimSpace(r.FormValue("model")), rounds)
+	if err != nil {
+		s.modelsDone(w, r, "", s.flashFor(r.Context(), "model judge", err, "Couldn't change the judge: "+err.Error()))
+		return
+	}
+	s.modelsDone(w, r, "Saved: "+msg, "")
 }
 
 func (s *Server) handleModelReloadForm(w http.ResponseWriter, r *http.Request) {
