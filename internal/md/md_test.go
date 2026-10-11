@@ -52,3 +52,12 @@ func TestHTML_Concurrent(t *testing.T) {
 		<-done
 	}
 }
+
+// A fence's language goes through the escaping writer: a quote in it cannot
+// break out of the class attribute.
+func TestHTML_FenceLanguageIsEscaped(t *testing.T) {
+	out := string(md.HTML("```x\"><script>alert(1)</script>\nhi\n```\n"))
+	if strings.Contains(out, "<script") || !strings.Contains(out, `class="language-x&quot;&gt;`) {
+		t.Fatalf("fence language reached the attribute unescaped:\n%s", out)
+	}
+}

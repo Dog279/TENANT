@@ -21,7 +21,10 @@ tests and test data. The CommonMark spec cases (`testdata/spec.json`) and goldma
   `RawHTML` AST nodes and their HTML renderers. Tenant shows a model's answer; HTML inside it is
   text, by construction, on every surface. With the parsers gone there is nothing for an
   "unsafe" mode to pass through, so `html.WithUnsafe()` is gone too, and link destinations
-  always go through `IsDangerousURL`.
+  always go through `IsDangerousURL`. Note the second half of that change: the lines an HTML
+  block used to swallow (the body of a `<!-- comment -->`, a `<pre>` or `<script>` block) are
+  ordinary Markdown now, so a heading inside a comment renders as a heading. The tags
+  themselves are text.
 - The footnote, definition-list, typographer, linkify and strikethrough extensions and the
   GFM bundle: not needed.
 - `doc_test.go` (compiles the upstream README's examples), `cjk_test.go` (needs linkify), the

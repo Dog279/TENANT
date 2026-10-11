@@ -58,7 +58,7 @@ type Launch struct {
 	// makes Tenant restore it even if the tailnet config was cleared elsewhere.
 	Tailscale Tailscale `json:"tailscale,omitempty"`
 	// TUI keeps the terminal app's own choices (TEN-514).
-	TUI TUI `json:"tui,omitempty"`
+	TUI TUI `json:"tui,omitzero"`
 	// Relay configures the offsite Discord relay (TEN-114).
 	Relay Relay `json:"relay,omitempty"`
 	// IMessage holds the iMessage drive-allowlist (TEN-68 follow-up): the

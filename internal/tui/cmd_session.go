@@ -85,7 +85,7 @@ func slashCls(m *model, line string) tea.Cmd {
 // (TEN-514). No argument toggles.
 func slashFeed(m *model, line string) tea.Cmd {
 	on := m.feedOff // toggle by default
-	switch strings.TrimSpace(strings.TrimPrefix(line, "/feed")) {
+	switch args := strings.Fields(line)[1:]; strings.Join(args, " ") {
 	case "on":
 		on = true
 	case "off":

@@ -2311,6 +2311,17 @@ func (m *model) sendDecision(d ApprovalDecision) {
 	m.sysChat(verb + " — " + r.Category)
 }
 
+// turnFeed adds one of the main agent's own lines to the feed: indented under
+// the turn's header while its turn runs (TEN-514). Cron and sub-agent lines
+// (applyCronEvent, applyTeamEvent) use appendFeed and stay flush left, so a
+// job that ticks mid-turn reads apart from the turn.
+func (m *model) turnFeed(line string) {
+	if m.inTurn {
+		line = "  " + line
+	}
+	m.appendFeed(line)
+}
+
 func (m *model) applyEvent(e agent.Event) {
 	// A scheduled job's activity carries its cron agent's id, so it is taken
 	// before the cross-agent skip below.
@@ -2328,7 +2339,7 @@ func (m *model) applyEvent(e agent.Event) {
 	case agent.EventApprovalResolved:
 		if e.Approval != nil && strings.HasPrefix(e.Approval.ID, "beside-") {
 			// The mirror of an approval another surface owned (TEN-203) closed out.
-			m.appendFeed(cDim.Render("approval in " + strings.TrimPrefix(e.Approval.ID, "beside-") + ": " + e.Approval.Outcome))
+			m.turnFeed(cDim.Render("approval in " + strings.TrimPrefix(e.Approval.ID, "beside-") + ": " + e.Approval.Outcome))
 			break
 		}
 		// Another observer (the dashboard) resolved a pending action, OR this TUI's
@@ -2344,7 +2355,7 @@ func (m *model) applyEvent(e agent.Event) {
 			// rendering a dead Approve/Deny prompt. (That dead prompt is what read
 			// as "the approval showed up on the TUI instead of Discord.")
 			where := strings.TrimPrefix(e.Approval.ID, "beside-")
-			m.appendFeed(cErr.Render("⏳ approval waiting in " + where + " (" + e.Approval.Category + "): " + e.Approval.Action + " — resolve it there"))
+			m.turnFeed(cErr.Render("⏳ approval waiting in " + where + " (" + e.Approval.Category + "): " + e.Approval.Action + " — resolve it there"))
 			break
 		}
 		// Backstop for a dropped non-blocking channel notify: if the fast-path
@@ -2354,7 +2365,7 @@ func (m *model) applyEvent(e agent.Event) {
 			r := ApprovalRequest{ID: e.Approval.ID, Category: e.Approval.Category, Action: e.Approval.Action, Detail: e.Approval.Detail}
 			m.pending = append(m.pending, r)
 			m.showApproval(r)
-			m.appendFeed(cErr.Render("⚠ approval needed: " + r.Category))
+			m.turnFeed(cErr.Render("⚠ approval needed: " + r.Category))
 		}
 	case agent.EventTurnStart:
 		// The turn's header in the feed: the time and the question's first
@@ -2366,11 +2377,11 @@ func (m *model) applyEvent(e agent.Event) {
 			head += " turn start"
 		}
 		m.inTurn = false
-		m.appendFeed(cDim.Render("▸ " + head))
+		m.turnFeed(cDim.Render("▸ " + head))
 		m.inTurn = true
 	case agent.EventRoute:
 		// Room for the classifier's host and model after the decision (TEN-340).
-		m.appendFeed(cDim.Render("route: " + clip(oneLine(e.Text), 140)))
+		m.turnFeed(cDim.Render("route: " + clip(oneLine(e.Text), 140)))
 	case agent.EventThinking:
 		m.thinkSince, m.toolsSince = time.Now(), time.Time{}
 	case agent.EventThought:
@@ -2379,11 +2390,11 @@ func (m *model) applyEvent(e agent.Event) {
 		if e.IsErr {
 			line += " (the call failed)"
 		}
-		m.appendFeed(cDim.Render(line))
+		m.turnFeed(cDim.Render(line))
 	case agent.EventTurnEnd:
 		m.thinkSince, m.toolsSince = time.Time{}, time.Time{}
 		if e.Think > 0 || e.Tools > 0 {
-			m.appendFeed(cDim.Render("turn " + formatElapsed(e.Duration) + " — thinking " + formatElapsed(e.Think) + " · tools " + formatElapsed(e.Tools)))
+			m.turnFeed(cDim.Render("turn " + formatElapsed(e.Duration) + " — thinking " + formatElapsed(e.Think) + " · tools " + formatElapsed(e.Tools)))
 		}
 		m.inTurn = false
 	case agent.EventUsage:
@@ -2402,9 +2413,9 @@ func (m *model) applyEvent(e agent.Event) {
 		}
 	case agent.EventTeamBudget:
 		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {
-			m.appendFeed(cErr.Render("team " + e.Text))
+			m.turnFeed(cErr.Render("team " + e.Text))
 		} else {
-			m.appendFeed(cDim.Render(e.Text))
+			m.turnFeed(cDim.Render(e.Text))
 		}
 	case agent.EventMemory:
 		if e.Budget != nil {
@@ -2431,7 +2442,7 @@ func (m *model) applyEvent(e agent.Event) {
 				// and is the thing that silently eats the window, so soul/system/
 				// tools and the working set show each turn and "where did my
 				// context go?" is answerable from the feed.
-				m.appendFeed(cDim.Render(fmt.Sprintf("ctx %s tok (%d%%) · soul %s · sys %s · tools %s · working %s",
+				m.turnFeed(cDim.Render(fmt.Sprintf("ctx %s tok (%d%%) · soul %s · sys %s · tools %s · working %s",
 					humanTokens(e.Budget.Total), m.budgetPct, humanTokens(e.Budget.SoulTokens), humanTokens(e.Budget.SystemTokens),
 					humanTokens(e.Budget.ToolTokens), humanTokens(e.Budget.WorkingTokens))) + note)
 			}
@@ -2449,13 +2460,13 @@ func (m *model) applyEvent(e agent.Event) {
 			}
 		}
 	case agent.EventSkills:
-		m.appendFeed(cSys.Render("skills: " + clip(e.Text, 60)))
+		m.turnFeed(cSys.Render("skills: " + clip(e.Text, 60)))
 	case agent.EventToolCall:
 		m.lastTool = e.Tool
 		if m.toolsSince.IsZero() {
 			m.toolsSince = time.Now()
 		}
-		m.appendFeed(cTool.Render("→ "+e.Tool) + " " + cDim.Render(clip(e.Args, 60)))
+		m.turnFeed(cTool.Render("→ "+e.Tool) + " " + cDim.Render(clip(e.Args, 60)))
 		if msg := m.curAssistant(); msg != nil { // the row in the turn block (TEN-514)
 			msg.tools = append(msg.tools, toolRow{id: e.ToolCallID, name: e.Tool, args: e.Args, at: time.Now(), pos: len(msg.content)})
 		}
@@ -2464,36 +2475,36 @@ func (m *model) applyEvent(e agent.Event) {
 		if e.IsErr {
 			mark = cErr.Render("✗")
 		}
-		m.appendFeed(fmt.Sprintf("%s %s %s", mark, cTool.Render(e.Tool), cDim.Render(clip(oneLine(e.Result), 70))))
+		m.turnFeed(fmt.Sprintf("%s %s %s", mark, cTool.Render(e.Tool), cDim.Render(clip(oneLine(e.Result), 70))))
 		m.settleToolRow(e)
 	case agent.EventValidation:
-		m.appendFeed(cErr.Render("! invalid tool call " + e.Tool + ": " + clip(e.Text, 60)))
+		m.turnFeed(cErr.Render("! invalid tool call " + e.Tool + ": " + clip(e.Text, 60)))
 	case agent.EventCompact:
-		m.appendFeed(cSys.Render("⊟ context compacted: " + e.Text))
+		m.turnFeed(cSys.Render("⊟ context compacted: " + e.Text))
 	case agent.EventInterject:
-		m.appendFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
+		m.turnFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
 	case agent.EventJudge:
 		style := cSys
 		if e.IsErr {
 			style = cErr
 		}
-		m.appendFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
+		m.turnFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
 	case agent.EventIngest:
 		// An offsite channel (Discord/iMessage) received a message and drove a
 		// turn. e.Text is already prefixed "Discord: " / "iMessage: " (TEN-232).
-		m.appendFeed(cSys.Render("📥 " + clip(e.Text, 80)))
+		m.turnFeed(cSys.Render("📥 " + clip(e.Text, 80)))
 	case agent.EventFinal:
 		m.sealStreaming()
-		m.appendFeed(cDim.Render("answer ready"))
+		m.turnFeed(cDim.Render("answer ready"))
 	case agent.EventTruncated:
 		m.sealStreaming()
-		m.appendFeed(cErr.Render("loop ceiling hit — synthesized"))
+		m.turnFeed(cErr.Render("loop ceiling hit — synthesized"))
 	case agent.EventStuck:
 		m.sealStreaming()
-		m.appendFeed(cErr.Render("stuck repeating the same tool calls — synthesized (/ceiling repeat to tune)"))
+		m.turnFeed(cErr.Render("stuck repeating the same tool calls — synthesized (/ceiling repeat to tune)"))
 	case agent.EventError:
 		m.err = e.Text
-		m.appendFeed(cErr.Render("error: " + clip(e.Text, 80)))
+		m.turnFeed(cErr.Render("error: " + clip(e.Text, 80)))
 	}
 }
 
@@ -2743,14 +2754,8 @@ func (m *model) copyTranscript() {
 	}
 }
 
-// appendFeed adds a line to the activity feed. While the main agent's turn
-// runs, its lines indent under the turn's header (TEN-514); cron and
-// sub-agent lines come through applyCronEvent and applyTeamEvent, which
-// append with inTurn unchanged, so they read apart as before.
+// appendFeed adds a line to the activity feed as it is.
 func (m *model) appendFeed(line string) {
-	if m.inTurn {
-		line = "  " + line
-	}
 	m.feedLines = append(m.feedLines, line)
 	if len(m.feedLines) > 500 {
 		m.feedLines = m.feedLines[len(m.feedLines)-500:]
@@ -3454,14 +3459,15 @@ func wrapLine(line string, width int) string {
 				i = j
 				continue
 			}
-			_, size := utf8.DecodeRuneInString(t[i:])
-			if col >= width {
+			r, size := utf8.DecodeRuneInString(t[i:])
+			cw := lipgloss.Width(string(r)) // cells: a wide character takes two
+			if col > 0 && col+cw > width {
 				out.WriteByte('\n')
 				col = 0
 			}
 			out.WriteString(t[i : i+size])
 			i += size
-			col++
+			col += cw
 		}
 	}
 	return out.String()
@@ -3482,20 +3488,9 @@ func escapeEnd(s string, i int) int {
 	return j
 }
 
-// visibleRunes counts the display cells of s, escape sequences excluded.
-func visibleRunes(s string) int {
-	n := 0
-	for i := 0; i < len(s); {
-		if s[i] == 0x1b {
-			i = escapeEnd(s, i)
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		i += size
-		n++
-	}
-	return n
-}
+// visibleRunes counts the display cells of s, escape sequences excluded; a
+// wide character (CJK, fullwidth) counts two.
+func visibleRunes(s string) int { return lipgloss.Width(s) }
 
 // --- listPicker: minimal arrow-key list selector ---
 //

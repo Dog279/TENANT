@@ -206,3 +206,30 @@ func TestFeedToggle_CommandKeyAndSavedChoice(t *testing.T) {
 		t.Fatal("FeedOff did not start the app with the feed hidden")
 	}
 }
+
+// Only the main agent's own lines indent under its turn header; a scheduled
+// job or a helper that reports mid-turn stays flush left, as before.
+func TestApplyEvent_OnlyTheTurnsOwnLinesIndent(t *testing.T) {
+	m := readyChatModel(Config{})
+	m.applyEvent(agent.Event{Kind: agent.EventTurnStart, Text: "hello"})
+	m.applyEvent(agent.Event{Kind: agent.EventToolCall, Tool: "web_search"})
+	m.applyEvent(agent.Event{Kind: agent.EventToolCall, Agent: "tenant-cron", Source: "cron", Tool: "web_search"})
+	m.applyTeamEvent(TeamEvent{AgentID: "writer", Event: agent.Event{Kind: agent.EventToolCall, Tool: "os_write"}})
+	n := len(m.feedLines)
+	own, cron, team := stripANSI(m.feedLines[n-3]), stripANSI(m.feedLines[n-2]), stripANSI(m.feedLines[n-1])
+	if !strings.HasPrefix(own, "  → web_search") {
+		t.Errorf("the turn's own line is not indented: %q", own)
+	}
+	if strings.HasPrefix(cron, " ") || !strings.Contains(cron, "cron:web_search") {
+		t.Errorf("a cron line was indented under the turn: %q", cron)
+	}
+	if strings.HasPrefix(team, " ") || !strings.Contains(team, "[writer]") {
+		t.Errorf("a helper's line was indented under the turn: %q", team)
+	}
+	// Text wider than the pane in wide characters still fits the column.
+	for _, line := range strings.Split(wrap("日本語の長い文章が折り返されるべきです", 10), "\n") {
+		if w := visibleRunes(line); w > 10 {
+			t.Errorf("wrap counted runes, not cells: %q is %d cells", line, w)
+		}
+	}
+}

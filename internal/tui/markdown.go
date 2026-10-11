@@ -111,7 +111,7 @@ func (r *mdRenderer) block(n ast.Node, width int) []string {
 		label, _ := n.Language(r.src)
 		return r.codePanel(n.Value.Str(r.src), label, width)
 	case *ast.Blockquote:
-		inner := r.blocks(n, width-2)
+		inner := r.blocks(n, max(8, width-2)) // nested quotes never wrap at nothing
 		for i, l := range inner {
 			inner[i] = r.th.Quote.Render("│ ") + l
 		}
@@ -263,7 +263,9 @@ func (r *mdRenderer) inline(b *strings.Builder, n ast.Node) {
 			b.WriteByte(' ')
 		}
 	case *ast.CodeSpan:
-		b.WriteString(r.th.Code.Render(strings.Join(strings.Fields(n.Value.Str(r.src)), " ")))
+		// The value is already the spec's: line endings are spaces, one edge
+		// space stripped; inner runs of spaces stay.
+		b.WriteString(r.th.Code.Render(n.Value.Str(r.src)))
 	case *ast.Strong:
 		b.WriteString(r.th.Strong.Render(r.inlines(n)))
 	case *ast.Emphasis:
@@ -309,16 +311,26 @@ func wrapStyled(s string, width int) []string {
 }
 
 // hardWrapCode breaks one code line at width cells, with no regard for words.
+// Cells, not runes: a wide character (CJK, fullwidth) takes two.
 func hardWrapCode(line string, width int) []string {
 	if width < 1 || lipgloss.Width(line) <= width {
 		return []string{line}
 	}
 	var out []string
-	runes := []rune(line)
-	for len(runes) > 0 {
-		n := min(len(runes), width)
-		out = append(out, string(runes[:n]))
-		runes = runes[n:]
+	var cur strings.Builder
+	col := 0
+	for _, r := range line {
+		cw := lipgloss.Width(string(r))
+		if col > 0 && col+cw > width {
+			out = append(out, cur.String())
+			cur.Reset()
+			col = 0
+		}
+		cur.WriteRune(r)
+		col += cw
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
 	}
 	return out
 }

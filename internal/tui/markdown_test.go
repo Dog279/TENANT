@@ -77,3 +77,26 @@ func TestMarkdownANSI_PlainTextUnchanged(t *testing.T) {
 		t.Fatal("empty source should render empty")
 	}
 }
+
+// Width is counted in cells: a code line of wide characters breaks so no line
+// is wider than the pane, and a deeply nested quote never wraps at nothing.
+func TestMarkdownANSI_CellsNotRunes(t *testing.T) {
+	out := plain(markdownANSI("```\n日本語のテキストがとても長いのでパネルの幅を超えてしまいます\n```\n", 20, defaultMDTheme()))
+	for _, line := range strings.Split(out, "\n") {
+		if lipgloss.Width(line) > 20 {
+			t.Errorf("code line wider than the pane: %q (%d cells)", line, lipgloss.Width(line))
+		}
+	}
+	deep := plain(markdownANSI("> > > > > a quoted line long enough to need wrapping somewhere", 8, defaultMDTheme()))
+	if !strings.Contains(deep, "quoted") {
+		t.Fatalf("nested quote lost its text:\n%s", deep)
+	}
+}
+
+// A code span keeps its inner spaces (the spec strips one edge space only).
+func TestMarkdownANSI_CodeSpanKeepsInnerSpaces(t *testing.T) {
+	out := plain(markdownANSI("`a  b` and ` c `", 40, defaultMDTheme()))
+	if out != "a  b and c" {
+		t.Fatalf("code spans = %q", out)
+	}
+}
