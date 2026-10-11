@@ -20,11 +20,8 @@ import (
 func TestChatStream_TokensThenMarkdownFinal(t *testing.T) {
 	cs := newChatStream()
 	first := cs.patches(agent.Event{Kind: agent.EventToken, Text: "Hello **wor"})
-	// The first token clears a bubble an earlier stream may have left (a
-	// reconnect), then appends this one.
-	if len(first) != 2 || !strings.Contains(string(first[0]), "mode remove") || !strings.Contains(string(first[0]), "selector #chat-cur") ||
-		!strings.Contains(string(first[1]), "selector #chat-log") || !strings.Contains(string(first[1]), `id="chat-cur"`) || !strings.Contains(string(first[1]), "Hello **wor") {
-		t.Fatalf("first token should clear then append the streaming bubble: %q", first)
+	if len(first) != 1 || !strings.Contains(string(first[0]), "selector #chat-log") || !strings.Contains(string(first[0]), `id="chat-cur"`) || !strings.Contains(string(first[0]), "Hello **wor") {
+		t.Fatalf("first token should append the streaming bubble: %q", first)
 	}
 	if more := cs.patches(agent.Event{Kind: agent.EventToken, Text: "ld**"}); more != nil {
 		t.Fatalf("a later token should wait for the tick, got %q", more)
@@ -49,7 +46,7 @@ func TestChatStream_TokensThenMarkdownFinal(t *testing.T) {
 		t.Error("the settled answer must not keep the streaming id")
 	}
 	// The next answer starts a fresh bubble.
-	if p := cs.patches(agent.Event{Kind: agent.EventToken, Text: "again"}); len(p) != 2 || !strings.Contains(string(p[1]), "mode append") {
+	if p := cs.patches(agent.Event{Kind: agent.EventToken, Text: "again"}); len(p) != 1 || !strings.Contains(string(p[0]), "mode append") {
 		t.Fatalf("a new answer should append a new bubble: %q", p)
 	}
 }
@@ -76,16 +73,19 @@ func TestChatStream_ToolCardsSettleInPlace(t *testing.T) {
 	cs.patches(agent.Event{Kind: agent.EventTurnStart})
 	c1 := cs.cardID("c1")
 	call := string(cs.patches(agent.Event{Kind: agent.EventToolCall, Tool: "web_search", ToolCallID: "c1", Args: `{"q":"tenant docs"}`, TraceID: "tr1"})[0])
-	for _, want := range []string{"mode append", `<details class="tool" id="tool-` + c1 + `">`, "⚡ web_search", `pill run`, "running", `{&#34;q&#34;:&#34;tenant docs&#34;}`} {
+	for _, want := range []string{"mode append", `<details class="tool running" id="tool-` + c1 + `">`, "⚡ web_search", `pill run`, "running", `{&#34;q&#34;:&#34;tenant docs&#34;}`} {
 		if !strings.Contains(call, want) {
 			t.Errorf("running card missing %q in:\n%s", want, call)
 		}
 	}
 	res := string(cs.patches(agent.Event{Kind: agent.EventToolResult, Tool: "web_search", ToolCallID: "c1", Result: "three results", Duration: 1200 * time.Millisecond, TraceID: "tr1"})[0])
-	for _, want := range []string{`id="tool-` + c1 + `"`, `pill ok`, "ok 1.2s", "three results", `href="/logs?`, "trace", "open in Logs"} {
+	for _, want := range []string{`<details class="tool" id="tool-` + c1 + `"`, `pill ok`, "ok 1.2s", "three results", `href="/logs?`, "trace", "open in Logs"} {
 		if !strings.Contains(res, want) {
 			t.Errorf("settled card missing %q in:\n%s", want, res)
 		}
+	}
+	if strings.Contains(res, "running") {
+		t.Errorf("a settled card must drop the running mark:\n%s", res)
 	}
 	if strings.Contains(res, "selector") || strings.Contains(res, "mode ") {
 		t.Errorf("a settled card morphs by id, no selector or mode: %s", res)
@@ -104,9 +104,9 @@ func TestChatStream_ToolCardsSettleInPlace(t *testing.T) {
 		t.Errorf("the result should settle the card it matches by name: %s", got)
 	}
 	// A result whose call this stream never saw (dropped, or the page opened
-	// mid-turn) is appended on its own, after clearing a stale card.
+	// mid-turn) is appended on its own.
 	lost := cs.patches(agent.Event{Kind: agent.EventToolResult, Tool: "web_read", ToolCallID: "c7", Result: "page text"})
-	if len(lost) != 2 || !strings.Contains(string(lost[0]), "mode remove") || !strings.Contains(string(lost[1]), "mode append") || !strings.Contains(string(lost[1]), "page text") {
+	if len(lost) != 1 || !strings.Contains(string(lost[0]), "mode append") || !strings.Contains(string(lost[0]), "page text") {
 		t.Errorf("a result without its call should still show: %q", lost)
 	}
 	// The same call id in the next turn is a different card.
@@ -115,8 +115,32 @@ func TestChatStream_ToolCardsSettleInPlace(t *testing.T) {
 	if strings.Contains(again, `id="tool-`+c1+`"`) || !strings.Contains(again, `id="tool-`+cs.cardID("c1")+`"`) {
 		t.Errorf("a reused call id must not reuse the card id: %s", again)
 	}
-	if newChatStream().tag == "" {
-		t.Error("a stream needs a tag")
+	if a, b := newChatStream().tag, newChatStream().tag; a == "" || a == b {
+		t.Errorf("streams need distinct tags: %q %q", a, b)
+	}
+}
+
+// A stream opens by clearing what an earlier connection may have left on the
+// page: the answer it was writing, its thinking row, its running cards. The
+// /events handler sends that sweep before anything else.
+func TestChatStream_StartSweepsStaleLiveElements(t *testing.T) {
+	sweep := newChatStream().start()
+	if len(sweep) != 3 {
+		t.Fatalf("sweep = %d patches", len(sweep))
+	}
+	for i, sel := range []string{"#chat-cur", "#chat-thinking", "details.tool.running"} {
+		if p := string(sweep[i]); !strings.Contains(p, "mode remove") || !strings.Contains(p, "selector "+sel) {
+			t.Errorf("sweep %d = %q, want remove %s", i, p, sel)
+		}
+	}
+	rec := openEvents(t, New(Config{}, nil, &fakeTools{}, nil, agent.NewBroker(0), nil), "/events")
+	out := streamed(t, rec, "the opening sweep", func(s string) bool { return strings.Contains(s, "selector details.tool.running") }, nil)
+	if strings.Index(out, "selector #chat-cur") > strings.Index(out, "selector details.tool.running") {
+		t.Errorf("the sweep should open the stream:\n%s", out)
+	}
+	only := openEvents(t, New(Config{}, nil, &fakeTools{}, nil, agent.NewBroker(0), nil), "/events?only=approvals")
+	if s := streamed(t, only, "the approvals snapshot", func(s string) bool { return strings.Contains(s, "approval-queue") }, nil); strings.Contains(s, "details.tool.running") {
+		t.Error("the approvals-only stream must not touch the chat")
 	}
 }
 

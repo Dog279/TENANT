@@ -9,6 +9,7 @@ package dashboard
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -131,6 +132,16 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	cs := newChatStream()
 	stream := time.NewTicker(streamEvery)
 	defer stream.Stop()
+	if !onlyApprovals {
+		// A reconnect opens a fresh stream over a page that may still hold the
+		// previous connection's live elements; clear them before anything new.
+		for _, p := range cs.start() {
+			if _, err := w.Write(p); err != nil {
+				return
+			}
+		}
+		flush(w)
+	}
 	for {
 		select {
 		case <-r.Context().Done():
@@ -216,7 +227,21 @@ type chatStream struct {
 
 // newChatStream starts a stream's state with its own tag.
 func newChatStream() *chatStream {
-	return &chatStream{tag: strconv.FormatInt(time.Now().UnixNano()%1_000_000_007, 36), sent: map[string]bool{}}
+	return &chatStream{tag: strings.ToLower(rand.Text()[:8]), sent: map[string]bool{}}
+}
+
+// start is the sweep a stream sends as it opens: the answer an earlier
+// connection was writing, its thinking row and its cards still marked running
+// (each a no-op when absent), so a reconnect never leaves a frozen bubble, a
+// second thinking row or a spinner that nothing will settle. The results that
+// follow still show: a result whose card this stream never sent is appended
+// on its own.
+func (cs *chatStream) start() [][]byte {
+	return [][]byte{
+		patchElements("#chat-cur", "remove", ""),
+		patchElements("#chat-thinking", "remove", ""),
+		patchElements("details.tool.running", "remove", ""),
+	}
 }
 
 // cardID is the page id of the call id's card in this stream.
@@ -232,15 +257,13 @@ func (cs *chatStream) patches(ev agent.Event) [][]byte {
 	switch ev.Kind {
 	case agent.EventTurnStart:
 		cs.turn++
+		cs.sent = map[string]bool{} // a result answers a call of its own turn
 		return nil
 	case agent.EventToken:
 		cs.cur.WriteString(ev.Text)
 		if !cs.open {
 			cs.open = true
-			// A reconnect opens a fresh stream over a page that may still
-			// hold the old stream's bubble: clear it first (a no-op when
-			// there is none), or two elements would share the id.
-			return [][]byte{patchElements("#chat-cur", "remove", ""), patchElements("#chat-log", "append", streamingBubble(cs.cur.String()))}
+			return [][]byte{patchElements("#chat-log", "append", streamingBubble(cs.cur.String()))}
 		}
 		cs.dirty = true
 		return nil
@@ -301,8 +324,9 @@ func (cs *chatStream) patches(ev agent.Event) [][]byte {
 		}
 		// This stream never put the call's card on the page (the broker
 		// dropped the call, or the page opened mid-turn): the settled card
-		// stands alone, after clearing one an earlier stream may have left.
-		return [][]byte{patchElements("#tool-"+cid, "remove", ""), patchElements("#chat-log", "append", card)}
+		// stands alone. start() cleared any running card a previous
+		// connection left.
+		return [][]byte{patchElements("#chat-log", "append", card)}
 	}
 	if b := chatBubble(ev); b != "" {
 		return [][]byte{patchElements("#chat-log", "append", b)}
@@ -481,7 +505,11 @@ type toolCardData struct {
 // the message's trace. A failed call is open; the rest open on a tap.
 func toolCard(d toolCardData) string {
 	var b strings.Builder
-	b.WriteString(`<details class="tool"`)
+	b.WriteString(`<details class="tool`)
+	if !d.done {
+		b.WriteString(` running`) // what a fresh stream's sweep removes
+	}
+	b.WriteString(`"`)
 	if d.id != "" {
 		b.WriteString(` id="tool-` + html.EscapeString(d.id) + `"`)
 	}
