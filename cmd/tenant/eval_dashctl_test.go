@@ -28,7 +28,7 @@ func TestDashEval_RunNowIsPlain(t *testing.T) {
 
 func TestDashEval_JudgeStatusIsPlain(t *testing.T) {
 	dir := t.TempDir()
-	d := dashEval{judge: judgeCtl{cfgDir: dir, planner: "local"}}
+	d := dashEval{quality: qualityModelCtl{cfgDir: dir, planner: "local"}}
 	if got := d.JudgeStatus(); got != "Your main model grades the checks." {
 		t.Errorf("default grader: %q", got)
 	}
@@ -42,18 +42,18 @@ func TestDashEval_JudgeStatusIsPlain(t *testing.T) {
 	}
 }
 
-// C-7: the Quality page and the terminal's /judge read one resolved setting
-// (judgeCtl.resolved), so they agree on the kind and on the missing key.
+// C-7: the Quality page and the terminal's /eval model read one resolved setting
+// (qualityModelCtl.resolved), so they agree on the kind and on the missing key.
 func TestDashEval_JudgeStatusFollowsTheTerminal(t *testing.T) {
-	d := dashEval{judge: judgeCtl{cfgDir: t.TempDir(), planner: "local"}}
+	d := dashEval{quality: qualityModelCtl{cfgDir: t.TempDir(), planner: "local"}}
 	if _, err := d.SetJudge("anthropic", "claude-grader", ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"", "sk-test"} {
 		t.Setenv("ANTHROPIC_API_KEY", key)
-		page, term := d.JudgeStatus(), d.judge.Current()
+		page, term := d.JudgeStatus(), d.quality.Current()
 		if missing := key == ""; strings.Contains(page, "isn't set") != missing || strings.Contains(term, "not set") != missing ||
-			!strings.Contains(page, "from anthropic") || !strings.Contains(term, "judge: anthropic") {
+			!strings.Contains(page, "from anthropic") || !strings.Contains(term, "Quality model: anthropic") {
 			t.Errorf("key %q: page %q, terminal %q", key, page, term)
 		}
 	}

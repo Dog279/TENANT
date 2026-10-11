@@ -2976,7 +2976,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// --self-improve=false, which evalTUIControl handles as persist-only), then
 	// start the dashboard. Deferred to here so the Quality page can drive live
 	// run-now and schedule changes.
-	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}}
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, quality: qualityModelCtl{cfgDir: c.cfgDir, planner: c.vllmModel}}
 	// Remote-services page (TEN-205): a lightweight MCP control over the shared
 	// tool mux. Connect pops a host-side browser (hybrid model — connect local,
 	// manage remote); the dashboard handler runs it async.
@@ -3114,8 +3114,8 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		Perms:           broker,
 		Dash:            dashMgr,
 		Tailscale:       tsMgr,
-		Judge:           judgeCtl{cfgDir: c.cfgDir, planner: modelName},
-		JudgeLoop:       judge,
+		Quality:         qualityModelCtl{cfgDir: c.cfgDir, planner: modelName},
+		Judge:           judge,
 		Relay:           relayMgr,
 		IMessage:        imsgAllowMgr,
 		Cron:            tuiCronCtl,

@@ -75,12 +75,13 @@ type Config struct {
 	// Tailscale, if set, powers /tailscale: publish the loopback dashboard onto
 	// the operator's tailnet via `tailscale serve` (TEN-233).
 	Tailscale TailscaleControl
-	// Judge, if set, powers /judge: choose the eval LLM-judge model, persisted
-	// and applied to `tenant eval` + the nightly gate (TEN-91).
+	// Quality, if set, powers /eval model: the Quality model, the model that
+	// grades eval answers, saved and applied to `tenant eval` + the nightly
+	// check (TEN-91, renamed in TEN-516).
+	Quality QualityModelControl
+	// Judge, if set, powers /judge: the Judge, a decision model in the loop
+	// of a turn, live (TEN-510, TEN-516).
 	Judge JudgeControl
-	// JudgeLoop, if set, powers /judge loop: the judge in the loop of a
-	// turn, live (TEN-510).
-	JudgeLoop JudgeLoopControl
 	// Relay, if set, powers /relay: start/stop the offsite Discord relay live.
 	Relay RelayControl
 	// IMessage, if set, powers /imessage: manage the deny-by-default allowlist
@@ -462,24 +463,37 @@ type TailscaleControl interface {
 // operator can pin a separate model (any wired provider kind), persisted so it
 // applies to both `tenant eval` and the nightly eval/improvement gate. The API
 // key is read from an env var at eval time — never entered or stored here.
-// JudgeLoopControl switches the judge in the loop of a turn (TEN-510).
-type JudgeLoopControl interface {
+// JudgeControl sets up and switches the Judge, the decision model in the
+// loop of a turn (TEN-510, TEN-516).
+type JudgeControl interface {
 	// Status is the one-line state.
 	Status() string
-	// On reports whether the loop is on, and its model.
+	// On reports whether the loop is on, and how /model should name the judge
+	// ("clef-flash (clef)").
 	On() (bool, string)
-	// Set turns it on (asking the server first) or off, live, and saves it.
-	// endpoint and model "" keep the saved ones.
-	Set(on bool, endpoint, model string) (string, error)
+	// Set turns the loop on (asking the server first) or off, live, and saves it.
+	Set(on bool) (string, error)
+	// Use points the Judge at a server: the kind's dialect, the endpoint (""
+	// keeps the saved one) and the model ("" = the kind's default). It asks the
+	// server one question with the saved key, saves and switches on.
+	Use(kind, endpoint, model string) (string, error)
+	// SetKey saves the server's key ("" removes it) and applies it live.
+	SetKey(key string) error
+	// Rounds sets how many times a turn may be sent back (1..5), live and saved.
+	Rounds(n int) (string, error)
+	// Saved is what the setup prompt offers as defaults.
+	Saved() (endpoint string, hasKey bool)
 }
 
-type JudgeControl interface {
-	// Current is a render-ready description of the active judge.
+// QualityModelControl chooses the Quality model: the model that grades eval
+// answers (TEN-91).
+type QualityModelControl interface {
+	// Current is a render-ready description of the active Quality model.
 	Current() string
-	// Set persists a judge override: provider kind + model id (+ optional
+	// Set saves a separate Quality model: provider kind + model id (+ optional
 	// endpoint). Returns a confirmation message (may include a key-env warning).
 	Set(kind, model, endpoint string) (msg string, err error)
-	// Clear reverts to the planner-default judge.
+	// Clear reverts to the default: the planner grades its own answers.
 	Clear() error
 }
 

@@ -138,9 +138,9 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 		return res // skip judge — save tokens
 	}
 
-	// Judge — only if rubric + judge are configured.
-	if t.Expected.Rubric != nil && h.Judge != nil {
-		jr, err := h.Judge.Grade(ctx, t, response, calls)
+	// Grader — only if rubric + judge are configured.
+	if t.Expected.Rubric != nil && h.Grader != nil {
+		jr, err := h.Grader.Grade(ctx, t, response, calls)
 		if err != nil {
 			// UNGRADED (TEN-197): the gate passed but the judge was unusable
 			// even after its retry. Scoring the agent here (the old 50) moved

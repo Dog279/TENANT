@@ -77,7 +77,7 @@ func TestResolveJudgeKey(t *testing.T) {
 	}
 }
 
-// applyJudgeConfig: flag wins; empty config is a no-op; config fills when no flag.
+// applyQualityConfig: flag wins; empty config is a no-op; config fills when no flag.
 func TestApplyJudgeConfig(t *testing.T) {
 	lc := &launchConfig{}
 	lc.Improve.QualityModel = "claude-opus-4-8"
@@ -86,31 +86,31 @@ func TestApplyJudgeConfig(t *testing.T) {
 	lc.Improve.QualityModelKeyEnv = "MY_KEY"
 
 	// No flag → filled from config.
-	got := applyJudgeConfig(evalJudgeOpts{}, lc)
+	got := applyQualityConfig(qualityOpts{}, lc)
 	if got.model != "claude-opus-4-8" || got.kind != "anthropic" || got.endpoint != "https://example/api" || got.keyEnv != "MY_KEY" {
 		t.Fatalf("config not applied: %+v", got)
 	}
 
 	// Flag set → untouched (flag wins).
-	got = applyJudgeConfig(evalJudgeOpts{model: "flag-model", keyEnv: "FLAG_KEY"}, lc)
+	got = applyQualityConfig(qualityOpts{model: "flag-model", keyEnv: "FLAG_KEY"}, lc)
 	if got.model != "flag-model" || got.keyEnv != "FLAG_KEY" {
 		t.Fatalf("flag must win over config: %+v", got)
 	}
 
 	// Empty config → unchanged (planner default).
-	if got := applyJudgeConfig(evalJudgeOpts{}, &launchConfig{}); got.model != "" {
+	if got := applyQualityConfig(qualityOpts{}, &launchConfig{}); got.model != "" {
 		t.Fatalf("empty config must leave planner default: %+v", got)
 	}
 	// nil lc → unchanged.
-	if got := applyJudgeConfig(evalJudgeOpts{}, nil); got.model != "" {
+	if got := applyQualityConfig(qualityOpts{}, nil); got.model != "" {
 		t.Fatalf("nil lc must be a no-op: %+v", got)
 	}
 }
 
-// judgeCtl persists set/clear round-trip + Current reflects state.
+// qualityModelCtl persists set/clear round-trip + Current reflects state.
 func TestJudgeCtl_Persist(t *testing.T) {
 	dir := t.TempDir()
-	j := judgeCtl{cfgDir: dir, planner: "qwen-local"}
+	j := qualityModelCtl{cfgDir: dir, planner: "qwen-local"}
 
 	if c := j.Current(); !strings.Contains(c, "qwen-local") || !strings.Contains(strings.ToLower(c), "default") {
 		t.Errorf("default Current should mention the planner + default: %q", c)

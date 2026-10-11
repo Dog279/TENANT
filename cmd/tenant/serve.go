@@ -732,7 +732,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	if sched != nil {
 		life.StartFunc(lifecycle.Drain, "improve scheduler", lifecycle.Subsystem, "improve", sched.Stop) // drains any in-flight improve job
 	}
-	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, judge: judgeCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
+	dashMgr.eval = dashEval{ev: evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir}, quality: qualityModelCtl{cfgDir: c.cfgDir, planner: c.vllmModel}, prog: evalProg}
 	dashMgr.mcp = dashMCP{m: mcpCtl}
 	dashMgr.integrations = dashIntegrations{c: newSkillCfgControl(c.cfgDir, skillKinds, mainTools.SetPluginEnabled)}
 	// Helpers (TEN-209) and research (TEN-210). Only the terminal app runs

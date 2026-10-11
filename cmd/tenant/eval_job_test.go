@@ -178,7 +178,7 @@ func TestEvalTurnsStayOutOfRunsDB(t *testing.T) {
 	}
 	c := &commonFlags{backend: "echo", agent: "main", dataDir: t.TempDir(), cfgDir: t.TempDir(), fs: fs}
 	h := &eval.Harness{}
-	cleanup, err := wireLiveHarness(context.Background(), h, c, &pluginFlags{}, eval.SubsetSmoke, evalJudgeOpts{}, nil, nil)
+	cleanup, err := wireLiveHarness(context.Background(), h, c, &pluginFlags{}, eval.SubsetSmoke, qualityOpts{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

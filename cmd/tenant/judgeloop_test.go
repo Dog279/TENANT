@@ -116,13 +116,13 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 	if _, _, err := j.Triage(context.Background(), "x"); !errors.Is(err, agent.ErrJudgeOff) {
 		t.Fatalf("off: triage err = %v", err)
 	}
-	if _, err := j.Set(true, "http://127.0.0.1:1", ""); err == nil || j.MaxRounds() != judgeDefaultRounds {
+	if _, err := j.Use("clef", "http://127.0.0.1:1", ""); err == nil || j.MaxRounds() != judgeDefaultRounds {
 		t.Fatalf("a dead server was accepted (err %v)", err)
 	}
 	if on, _ := j.On(); on {
 		t.Fatal("a refused switch turned it on")
 	}
-	msg, err := j.Set(true, srv.URL, "")
+	msg, err := j.Use("clef", srv.URL, "")
 	if err != nil || !strings.Contains(msg, "judge: on — clef-flash (clef) at "+srv.URL) || !strings.Contains(msg, "answered in") {
 		t.Fatalf("on: %q, %v", msg, err)
 	}
@@ -141,7 +141,7 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 	if err != nil || !v.Done || v.Use.InputTokens != 300 {
 		t.Fatalf("check %+v %v", v, err)
 	}
-	if _, err := j.Set(false, "", ""); err != nil || !strings.HasPrefix(j.Status(), "judge: off") {
+	if _, err := j.Set(false); err != nil || !strings.HasPrefix(j.Status(), "judge: off") {
 		t.Fatalf("off: %q %v", j.Status(), err)
 	}
 	if on, ep, _ := j.Settings(); on || ep != srv.URL {
@@ -170,7 +170,7 @@ func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
 	if _, err := j.Use("jev", srv.URL, ""); err == nil || !strings.Contains(err.Error(), "unknown judge kind") || !strings.Contains(err.Error(), "clef") {
 		t.Fatalf("unknown kind: %v", err)
 	}
-	if err := j.SetKey("sek-9", "test"); err != nil {
+	if err := j.setKey("sek-9", "test"); err != nil {
 		t.Fatal(err)
 	}
 	creds, _ := loadCredentials(dir)
@@ -192,7 +192,7 @@ func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
 		t.Fatalf("Saved() = %q %v", ep, has)
 	}
 	// A blank key clears it: the next probe carries no Authorization.
-	if err := j.SetKey("", "test"); err != nil {
+	if err := j.setKey("", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := j.Use("", "", ""); err != nil { // defaults: saved endpoint, the kind's model

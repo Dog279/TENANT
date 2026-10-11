@@ -116,7 +116,7 @@ func CompareToBaseline(base *Baseline, current *Report, opts CompareOptions) *Re
 	currentByID := make(map[string]float64, len(current.Results))
 	for _, r := range current.Results {
 		if r.Ungraded || r.Skipped {
-			// Judge-unusable (TEN-197) and tool-unavailable (TEN-198) tasks
+			// Grader-unusable (TEN-197) and tool-unavailable (TEN-198) tasks
 			// must not pair: their scores are environment artifacts, and
 			// pairing one against a real baseline score would manufacture a
 			// fake regression.

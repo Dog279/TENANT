@@ -327,9 +327,9 @@ func (j *judgeLoop) Use(kind, endpoint, modelID string) (string, error) {
 	return j.Status() + answered, nil
 }
 
-// SetKey stores the Judge's key in credentials.json ("" removes it) and
+// setKey stores the Judge's key in credentials.json ("" removes it) and
 // applies it live. surface names who changed it, for the Security log.
-func (j *judgeLoop) SetKey(key, surface string) error {
+func (j *judgeLoop) setKey(key, surface string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	key = strings.TrimSpace(key)
@@ -401,17 +401,31 @@ func (j *judgeLoop) Settings() (bool, string, string) {
 	return s.on, s.client.Endpoint, s.client.Model
 }
 
-// On reports whether the loop is on, and its model.
+// On reports whether the loop is on, and how /model names the judge.
 func (j *judgeLoop) On() (bool, string) {
 	s := j.state.Load()
-	return s.on, s.client.Model
+	return s.on, s.client.Model + " (" + s.kind + ")"
 }
 
 // Set turns the loop on or off live and saves it. Turning it on asks the
-// server one triage question first and reports how it answered; a server
-// that doesn't answer is refused. endpoint and modelID default to the saved
-// ones.
-func (j *judgeLoop) Set(on bool, endpoint, modelID string) (string, error) {
+// saved server one triage question first with the saved key; a server that
+// doesn't answer, or no server yet, is refused.
+func (j *judgeLoop) Set(on bool) (string, error) {
+	if on {
+		if ep, _ := j.Saved(); ep == "" {
+			return "", fmt.Errorf("the judge has no server yet: /judge use clef sets one up")
+		}
+	}
+	return j.setLegacy(on, "", "")
+}
+
+// SetKey implements tui.JudgeControl: the terminal app saved the key.
+func (j *judgeLoop) SetKey(key string) error { return j.setKey(key, surfaceTUI) }
+
+// setLegacy turns the loop on or off live and saves it, with an endpoint and
+// model that default to the saved ones. The dashboard's card still calls it;
+// the terminal app uses Set and Use.
+func (j *judgeLoop) setLegacy(on bool, endpoint, modelID string) (string, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	cur := j.state.Load()

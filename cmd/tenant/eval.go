@@ -41,9 +41,9 @@ import (
 // them; each task gets a freshly-isolated agent (ephemeral in-memory stores,
 // so tasks can't cross-contaminate and the operator's real memory is never
 // touched). Open-ended answers are graded by an LLM judge — the planner
-// (main-agent) model BY DEFAULT, or a separate model via --judge-model. The
+// (main-agent) model BY DEFAULT, or a separate model via --quality-model (the Quality model). The
 // v1 plan preferred a different-family judge (self-bias), but the operator
-// chose planner-by-default for zero-setup runs. `--gate-only` skips the judge.
+// chose planner-by-default for zero-setup runs. `--gate-only` skips the Quality model.
 func cmdEval(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
 	c := bindCommon(fs)
@@ -61,7 +61,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		trendN         int
 		appendTrend    bool
 		baselineDiff   bool
-		jOpts          evalJudgeOpts
+		jOpts          qualityOpts
 	)
 	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full | vision")
 	fs.IntVar(&jOpts.concurrency, "concurrency", 1, "live mode: run up to N tasks at once (>1 parallelizes; web/Chrome tasks auto-serialize). 1 = sequential (TEN-221)")
@@ -70,11 +70,11 @@ func cmdEval(ctx context.Context, args []string) error {
 	fs.BoolVar(&quiet, "quiet", false, "print only the one-line summary")
 	fs.BoolVar(&listOnly, "list", false, "list tasks in the subset and exit (no run)")
 	fs.BoolVar(&compactionMode, "compaction", false, "score the context-compaction compressor's fidelity (needle/continuation/drift) vs the configured model — TEN-99 baseline; ignores --subset")
-	fs.BoolVar(&jOpts.gateOnly, "gate-only", false, "live mode: skip the LLM judge, score on the deterministic gate only (answer QUALITY is not judged)")
-	fs.StringVar(&jOpts.model, "judge-model", "", "override judge model (default: the planner / main-agent model). A cloud model here needs the key env var below.")
-	fs.StringVar(&jOpts.kind, "judge-kind", "", "override judge provider kind: anthropic|openai|zai|grok|… (default anthropic). Selects the backend + default endpoint/key-env. (TEN-91)")
-	fs.StringVar(&jOpts.endpoint, "judge-endpoint", "", "override judge API endpoint (default: the provider's, e.g. https://api.anthropic.com)")
-	fs.StringVar(&jOpts.keyEnv, "judge-key-env", "ANTHROPIC_API_KEY", "env var holding the override judge's API key (never stored or printed)")
+	fs.BoolVar(&jOpts.gateOnly, "gate-only", false, "live mode: skip the Quality model, score on the deterministic gate only (answer QUALITY is not graded)")
+	fs.StringVar(&jOpts.model, "quality-model", "", "the Quality model for this run: which model grades eval answers (default: the planner / main-agent model, or the saved /eval model choice). A cloud model here needs the key env var below.")
+	fs.StringVar(&jOpts.kind, "quality-kind", "", "the Quality model's provider kind: anthropic|openai|zai|grok|… (default anthropic). Selects the backend + default endpoint/key-env. (TEN-91)")
+	fs.StringVar(&jOpts.endpoint, "quality-endpoint", "", "the Quality model's API endpoint (default: the provider's, e.g. https://api.anthropic.com)")
+	fs.StringVar(&jOpts.keyEnv, "quality-key-env", "ANTHROPIC_API_KEY", "env var holding the Quality model's API key (never stored or printed)")
 	fs.StringVar(&baselineWrite, "baseline-write", "", "after the run, write a baseline snapshot (per-task scores) to this path")
 	fs.StringVar(&baselineFrom, "baseline-from", "", "build the regression baseline from an EXISTING run artifact (eval-*.json) - no run needed; writes <data>/eval-artifacts/baseline.<subset>.json and arms the nightly gate without a fresh 3h eval")
 	fs.StringVar(&baselineCheck, "baseline-check", "", "after the run, compare to the baseline at this path (paired-bootstrap 95% CI; non-zero exit on regression)")
@@ -91,7 +91,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		fs.PrintDefaults()
 		fmt.Fprintln(fs.Output())
 		fmt.Fprintln(fs.Output(), "smoke   — fixture tasks; no model/tools/judge needed (~10s).")
-		fmt.Fprintln(fs.Output(), "fitness — live tasks vs a fresh agent + cloud judge (pass plugin flags + --judge-profile).")
+		fmt.Fprintln(fs.Output(), "fitness — live tasks vs a fresh agent + cloud judge (pass plugin flags + --quality-model).")
 		fmt.Fprintln(fs.Output(), "See tasks/eval-harness-plan-v1.md and docs/EVAL.md.")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -275,7 +275,7 @@ func runCompactionEval(ctx context.Context, c *commonFlags, jsonOut bool) error 
 // factory + judge for fitness/full (smoke is fixture-only). Shared by the CLI
 // (cmdEval) and the nightly Job so both run the eval identically; the live
 // runtime (router + tool mux) is built and torn down within this call.
-func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, events func(agent.Event), progress *evalProgress) (*eval.Report, error) {
+func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts qualityOpts, events func(agent.Event), progress *evalProgress) (*eval.Report, error) {
 	return runEvalToReportWithSoul(ctx, c, pf, sub, jOpts, nil, events, progress)
 }
 
@@ -283,7 +283,7 @@ func runEvalToReport(ctx context.Context, c *commonFlags, pf *pluginFlags, sub e
 // when soulOverride is non-nil the live agents use it instead of the on-disk
 // soul. SoulNudgeJob (TEN-16) uses this to A/B-score a candidate soul against
 // the committed fitness baseline. nil ⇒ identical to runEvalToReport.
-func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul, events func(agent.Event), progress *evalProgress) (*eval.Report, error) {
+func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts qualityOpts, soulOverride *soul.Soul, events func(agent.Event), progress *evalProgress) (*eval.Report, error) {
 	h, err := eval.LoadHarness(eval.EmbeddedTasks, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load harness: %w", err)
@@ -291,11 +291,11 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 	h.Concurrency = jOpts.concurrency // <=1 = sequential (TEN-221)
 	h.TaskTimeout = jOpts.taskTimeout // 0 = unlimited (TEN-222)
 	if sub == eval.SubsetFitness || sub == eval.SubsetFull || sub == eval.SubsetVision {
-		// Fall back to the persisted judge override (TEN-91) when no --judge-model
-		// flag was given, so a /judge choice applies to `tenant eval`, the nightly
-		// job, AND the SoulNudge scorer identically. The flag always wins.
+		// Fall back to the saved Quality model (TEN-91) when no --quality-model
+		// flag was given, so an /eval model choice applies to `tenant eval`, the
+		// nightly job, AND the SoulNudge scorer identically. The flag always wins.
 		if lc, lerr := loadLaunchConfig(c.cfgDir); lerr == nil {
-			jOpts = applyJudgeConfig(jOpts, lc)
+			jOpts = applyQualityConfig(jOpts, lc)
 		}
 		if progress != nil {
 			progress.begin()
@@ -311,24 +311,25 @@ func runEvalToReportWithSoul(ctx context.Context, c *commonFlags, pf *pluginFlag
 	return h.Run(ctx, sub)
 }
 
-// evalJudgeOpts configures the live-mode LLM judge. The API key is read from
-// keyEnv at run time — never a flag, never persisted, never printed.
-type evalJudgeOpts struct {
-	gateOnly    bool          // skip the judge entirely (deterministic gate only)
-	model       string        // override judge model id ("" → use the planner / main-agent model)
-	kind        string        // override judge provider kind (anthropic|openai|zai|… ; "" → anthropic) (TEN-91)
-	endpoint    string        // override judge API endpoint ("" → provider default)
-	keyEnv      string        // env var holding the override judge's API key
+// qualityOpts configures the live-mode Quality model, the LLM that grades
+// answers. The API key is read from keyEnv at run time — never a flag, never
+// persisted, never printed.
+type qualityOpts struct {
+	gateOnly    bool          // skip the Quality model entirely (deterministic gate only)
+	model       string        // the Quality model's id ("" → use the planner / main-agent model)
+	kind        string        // its provider kind (anthropic|openai|zai|… ; "" → anthropic) (TEN-91)
+	endpoint    string        // its API endpoint ("" → provider default)
+	keyEnv      string        // env var holding its API key
 	concurrency int           // tasks to run at once (<=1 = sequential; TEN-221)
 	taskTimeout time.Duration // per-task wall-clock cap (0 = unlimited; TEN-222)
 }
 
-// applyJudgeConfig fills the judge fields from the persisted override
-// (improve.judge*, TEN-91) when no --judge-model flag was given. The flag ALWAYS
-// wins (jOpts.model already set ⇒ untouched). Empty persisted Judge ⇒ unchanged
-// (planner-default judge). gateOnly/concurrency/taskTimeout are flag-only and
-// never sourced from config.
-func applyJudgeConfig(jOpts evalJudgeOpts, lc *launchConfig) evalJudgeOpts {
+// applyQualityConfig fills the Quality model fields from the saved choice
+// (improve.quality_model*, TEN-91) when no --quality-model flag was given. The
+// flag ALWAYS wins (jOpts.model already set ⇒ untouched). Empty saved model ⇒
+// unchanged (the planner grades). gateOnly/concurrency/taskTimeout are
+// flag-only and never sourced from config.
+func applyQualityConfig(jOpts qualityOpts, lc *launchConfig) qualityOpts {
 	if jOpts.model != "" || lc == nil || lc.Improve.QualityModel == "" {
 		return jOpts
 	}
@@ -550,7 +551,7 @@ func (g *browserGate) release() {
 	}
 }
 
-func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts evalJudgeOpts, soulOverride *soul.Soul, events func(agent.Event)) (func(), error) {
+func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *pluginFlags, sub eval.Subset, jOpts qualityOpts, soulOverride *soul.Soul, events func(agent.Event)) (func(), error) {
 	if err := c.resolve(); err != nil {
 		return nil, err
 	}
@@ -759,7 +760,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			return nil, fmt.Errorf("eval: resolve planner as default judge: %w", perr)
 		}
 		evalNote("judge = planner model %q (self-judging; pass --judge-model <id> for a separate judge).", plannerProf.Model)
-		h.Judge = &eval.LLMJudge{LLM: plannerLLM, Profile: plannerProf}
+		h.Grader = &eval.LLMJudge{LLM: plannerLLM, Profile: plannerProf}
 		return cleanup, nil
 	}
 
@@ -789,7 +790,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	if _, plannerProf, perr := router.LLMForRole(ctx, model.RolePlanner); perr == nil && plannerProf.Model == judgeProf.Model {
 		evalNote("note — override judge %q matches the planner; that's the same as the default (self-judging).", judgeProf.Model)
 	}
-	h.Judge = &eval.LLMJudge{LLM: judgeLLM, Profile: judgeProf}
+	h.Grader = &eval.LLMJudge{LLM: judgeLLM, Profile: judgeProf}
 	return cleanup, nil
 }
 

@@ -106,6 +106,6 @@ func (d dashModel) SetJudgeLoop(on bool, endpoint, model string) (string, error)
 	if d.mc.judge == nil {
 		return "", fmt.Errorf("the judge loop isn't available here")
 	}
-	return d.mc.judge.Set(on, endpoint, model)
+	return d.mc.judge.setLegacy(on, endpoint, model)
 }
 func (d dashModel) ReloadKeys() (string, error) { return d.mc.ReloadKeys() }

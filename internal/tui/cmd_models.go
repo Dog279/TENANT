@@ -8,96 +8,114 @@ import (
 	"strings"
 	"tenant/internal/cmdreg"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// slashJudge runs /judge.
+// slashJudge runs /judge: the Judge, a decision model in the loop of a turn
+// (TEN-510, TEN-516). Setting it up is a short prompt: the server's address,
+// then its key (hidden; blank for none).
 func slashJudge(m *model, line string) tea.Cmd {
 	_, _, arg := slashParts(line)
-	// Choose the eval LLM-judge model (TEN-91): default = planner (self-judge),
-	// or pin a separate model for `tenant eval` + the nightly gate.
-	jf := strings.Fields(arg)
-	sub := ""
-	if len(jf) > 0 {
-		sub = strings.ToLower(jf[0])
-	}
-	if sub == "loop" {
-		return judgeLoopCmd(m, jf[1:])
-	}
-	if m.cfg.Judge == nil {
-		m.sysChat("judge control not available in this session")
+	j := m.cfg.Judge
+	if j == nil {
+		m.sysChat("the judge isn't available in this session")
 		return nil
+	}
+	f := strings.Fields(arg)
+	sub := ""
+	if len(f) > 0 {
+		sub = strings.ToLower(f[0])
 	}
 	switch {
 	case sub == "" || sub == "status":
-		m.sysChat(m.cfg.Judge.Current())
-	case sub == "clear" || sub == "default" || sub == "reset":
-		if err := m.cfg.Judge.Clear(); err != nil {
-			m.sysChat("judge: " + err.Error())
-		} else {
-			m.sysChat("judge: reverted to the planner model (self-judging).")
+		m.sysChat(j.Status())
+	case sub == "on" || sub == "off":
+		on := sub == "on"
+		if on {
+			m.sysChat("judge: asking the server first…")
 		}
-	case sub == "set":
-		// /judge set <kind> <model> [endpoint]
-		if len(jf) < 3 {
-			m.sysChat("usage: /judge set <kind> <model> [endpoint]   (e.g. /judge set anthropic claude-opus-4-8)")
+		// Off the UI goroutine: switching on asks the server, which can take
+		// a while on a cold start.
+		return func() tea.Msg {
+			status, err := j.Set(on)
+			if err != nil {
+				return sysChatMsg{text: "judge: " + err.Error()}
+			}
+			return sysChatMsg{text: "⚖ " + status}
+		}
+	case sub == "use":
+		kind, modelID := "clef", ""
+		if len(f) > 1 {
+			kind = f[1]
+		}
+		if len(f) > 2 {
+			modelID = f[2]
+		}
+		return m.judgeUseFlow(kind, modelID)
+	case sub == "rounds" && len(f) == 2:
+		n, err := strconv.Atoi(f[1])
+		if err != nil {
+			m.sysChat("usage: /judge rounds <1-5>")
 			return nil
 		}
-		endpoint := ""
-		if len(jf) >= 4 {
-			endpoint = jf[3]
-		}
-		msg, err := m.cfg.Judge.Set(jf[1], jf[2], endpoint)
+		msg, err := j.Rounds(n)
 		if err != nil {
 			m.sysChat("judge: " + err.Error())
 		} else {
-			m.sysChat("🔬 " + msg)
+			m.sysChat("⚖ " + msg)
 		}
 	default:
-		m.sysChat("usage: /judge [status | set <kind> <model> [endpoint] | clear]")
+		m.sysChat("usage: /judge | /judge on|off | /judge use clef [model] | /judge rounds <1-5>")
 	}
 	return nil
 }
 
-// judgeLoopCmd runs /judge loop [on [<endpoint> [<model>]] | off] (TEN-510).
-func judgeLoopCmd(m *model, args []string) tea.Cmd {
-	jl := m.cfg.JudgeLoop
-	if jl == nil {
-		m.sysChat("the judge loop isn't available in this session")
-		return nil
-	}
-	if len(args) == 0 || strings.EqualFold(args[0], "status") {
-		m.sysChat(jl.Status())
-		return nil
-	}
-	var on bool
-	switch strings.ToLower(args[0]) {
-	case "on":
-		on = true
-	case "off":
-	default:
-		m.sysChat("usage: /judge loop [on [<endpoint> [<model>]] | off]")
-		return nil
-	}
-	endpoint, modelID := "", ""
-	if len(args) > 1 {
-		endpoint = args[1]
-	}
-	if len(args) > 2 {
-		modelID = args[2]
-	}
-	if on {
-		m.sysChat("judge loop: asking the judge server first…")
-	}
-	// Off the UI goroutine: switching on asks the server, which can take a
-	// while on a cold start.
-	return func() tea.Msg {
-		status, err := jl.Set(on, endpoint, modelID)
-		if err != nil {
-			return sysChatMsg{text: "judge loop: " + err.Error()}
+// judgeUseFlow asks for the server's address, then its key (hidden; blank =
+// none, as a local Clef is called), saves the key, points the Judge at the
+// server (which asks it one question first) and switches it on. Each step is
+// a /setup-style entry: the next line is the value, /cancel or Esc leaves
+// everything as it was.
+func (m *model) judgeUseFlow(kind, modelID string) tea.Cmd {
+	j := m.cfg.Judge
+	saved, hasKey := j.Saved()
+	m.setupEntry = &setupEntryState{label: "judge server", apply: func(addr string) tea.Cmd {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			addr = saved
 		}
-		return sysChatMsg{text: "⚖ " + status}
+		if addr == "" {
+			m.sysChat("judge: no server address given — nothing changed")
+			return nil
+		}
+		m.setupEntry = &setupEntryState{label: "judge key", masked: true, apply: func(key string) tea.Cmd {
+			key = strings.TrimSpace(key)
+			m.sysChat("judge: asking the server first…")
+			return func() tea.Msg {
+				if err := j.SetKey(key); err != nil {
+					return sysChatMsg{text: "judge: couldn't save the key — " + err.Error()}
+				}
+				status, err := j.Use(kind, addr, modelID)
+				if err != nil {
+					return sysChatMsg{text: "judge: " + err.Error()}
+				}
+				return sysChatMsg{text: "⚖ " + status}
+			}
+		}}
+		m.input.EchoMode = textinput.EchoPassword
+		hint := "now the server's key, then Enter (hidden; leave blank for none"
+		if hasKey {
+			hint += " — a key is saved, blank removes it"
+		}
+		m.sysChat(hint + " · /cancel to abort)")
+		return nil
+	}}
+	hint := "enter the judge server's address (http://host:30000), then Enter"
+	if saved != "" {
+		hint += " · blank keeps " + saved
 	}
+	m.sysChat(hint + " · /cancel to abort")
+	return nil
 }
 
 // slashModel runs /model, /models.
@@ -206,6 +224,10 @@ func slashReasoning(m *model, line string) tea.Cmd {
 // place; "now" rides the improve scheduler's own goroutine, so the run lands
 // in the feed and trend log exactly like a scheduled one.
 func (m *model) handleEval(arg string) {
+	if f := strings.Fields(arg); len(f) > 0 && f[0] == "model" {
+		m.handleQualityModel(f[1:])
+		return
+	}
 	if m.cfg.Eval == nil {
 		m.sysChat("eval schedule not available in this session")
 		return
@@ -240,7 +262,49 @@ func (m *model) handleEval(arg string) {
 	case f[0] == "diff" && len(f) == 1:
 		say(m.cfg.Eval.Diff())
 	default:
-		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n] | /eval diff")
+		m.sysChat("usage: /eval | /eval every <dur> | /eval at <HH:MM> | /eval off | /eval now | /eval trend [n] | /eval diff | /eval model [set <kind> <model> [endpoint]|clear]")
+	}
+}
+
+// handleQualityModel powers /eval model: the Quality model, the model that
+// grades eval answers (TEN-91, renamed in TEN-516). Default: the main model
+// grades its own; set a separate one for `tenant eval` + the nightly check.
+func (m *model) handleQualityModel(f []string) {
+	q := m.cfg.Quality
+	if q == nil {
+		m.sysChat("the Quality model isn't available in this session")
+		return
+	}
+	sub := ""
+	if len(f) > 0 {
+		sub = strings.ToLower(f[0])
+	}
+	switch {
+	case sub == "" || sub == "status":
+		m.sysChat(q.Current())
+	case sub == "clear" || sub == "default" || sub == "reset":
+		if err := q.Clear(); err != nil {
+			m.sysChat("Quality model: " + err.Error())
+		} else {
+			m.sysChat("Quality model: the main model grades its own answers again.")
+		}
+	case sub == "set":
+		if len(f) < 3 {
+			m.sysChat("usage: /eval model set <kind> <model> [endpoint]   (e.g. /eval model set anthropic claude-opus-4-8)")
+			return
+		}
+		endpoint := ""
+		if len(f) >= 4 {
+			endpoint = f[3]
+		}
+		msg, err := q.Set(f[1], f[2], endpoint)
+		if err != nil {
+			m.sysChat("Quality model: " + err.Error())
+		} else {
+			m.sysChat("🔬 " + msg)
+		}
+	default:
+		m.sysChat("usage: /eval model [status | set <kind> <model> [endpoint] | clear]")
 	}
 }
 
@@ -604,9 +668,9 @@ func (m *model) renderModelList() (string, string) {
 			model, cDim.Render(mi.Endpoint), cErr.Render(degr))
 		s.WriteString(styled + "\n")
 	}
-	if jl := m.cfg.JudgeLoop; jl != nil {
+	if jl := m.cfg.Judge; jl != nil {
 		if on, jm := jl.On(); on {
-			p.WriteString("  ⚖ judge " + jm + " checks the active model's task answers  ·  /judge loop off\n")
+			p.WriteString("  ⚖ judge " + jm + " checks the active model's task answers  ·  /judge off\n")
 			s.WriteString("  " + cOK.Render("⚖") + " judge " + cUser.Render(jm) + cDim.Render(" checks the active model's task answers  ·  /judge loop off") + "\n")
 		}
 	}
@@ -835,12 +899,15 @@ func modelCommands() []*slashCommand {
 				{Syntax: "/eval now", Desc: "queue one eval run on the improve scheduler (fires within a minute)"},
 				{Syntax: "/eval trend [n]", Desc: "recent eval scores + regression verdicts (trend.jsonl)"},
 				{Syntax: "/eval diff", Desc: "per-task movers vs the baseline — what improved, what declined and why"},
+				{Syntax: "/eval model [set <kind> <model> [endpoint]|clear]", Desc: "the Quality model: which model grades eval answers (default: the main model grades its own); applies to tenant eval + the nightly check"},
 			}},
-		{Names: []string{"/judge"}, Section: "session", Run: slashJudge,
-			Summary: "choose the eval LLM-judge model",
+		{Names: []string{"/judge"}, Section: "model", Run: slashJudge,
+			Summary: "the Judge: a decision model that checks task answers and sends unfinished work back",
 			Rows: []cmdreg.Row{
-				{Syntax: "/judge [set <kind> <model>|clear|status]", Desc: "choose the eval LLM-judge model (default: planner/self-judge); persists to tenant eval + the nightly gate"},
-				{Syntax: "/judge loop [on [<endpoint> [<model>]]|off]", Desc: "the judge in the loop: a decision model checks task answers and sends them back (default model clef-flash)"},
+				{Syntax: "/judge", Desc: "the Judge's status: kind, model, server, key, on or off, rounds"},
+				{Syntax: "/judge on|off", Desc: "switch the Judge (on asks the server one question first)"},
+				{Syntax: "/judge use clef [model]", Desc: "set it up: prompts for the server's address, then its key (hidden; blank for none), asks the server once, saves, switches on"},
+				{Syntax: "/judge rounds <1-5>", Desc: "how many times an answer may be sent back (default 3)"},
 			}},
 	}
 }
