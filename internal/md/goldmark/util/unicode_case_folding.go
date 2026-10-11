@@ -1,6 +1,5 @@
 package util
 
-
 var unicodeCaseFoldings map[rune][]rune
 
 func init() {

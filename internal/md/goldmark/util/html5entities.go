@@ -4,7 +4,6 @@ import (
 	"sync"
 )
 
-
 var _html5entitiesOnce sync.Once
 var _html5entitiesMap map[string]*HTML5Entity
 
