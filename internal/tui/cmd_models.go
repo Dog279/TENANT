@@ -92,12 +92,10 @@ func (m *model) judgeUseFlow(kind, modelID string) tea.Cmd {
 			key = strings.TrimSpace(key)
 			m.sysChat("judge: asking the server first…")
 			return func() tea.Msg {
-				if err := j.SetKey(key); err != nil {
-					return sysChatMsg{text: "judge: couldn't save the key — " + err.Error()}
-				}
-				status, err := j.Use(kind, addr, modelID)
+				// The server is asked with this key first; a refusal saves nothing.
+				status, err := j.Setup(kind, addr, key, modelID)
 				if err != nil {
-					return sysChatMsg{text: "judge: " + err.Error()}
+					return sysChatMsg{text: "judge: " + err.Error() + " — nothing saved"}
 				}
 				return sysChatMsg{text: "⚖ " + status}
 			}
@@ -671,7 +669,7 @@ func (m *model) renderModelList() (string, string) {
 	if jl := m.cfg.Judge; jl != nil {
 		if on, jm := jl.On(); on {
 			p.WriteString("  ⚖ judge " + jm + " checks the active model's task answers  ·  /judge off\n")
-			s.WriteString("  " + cOK.Render("⚖") + " judge " + cUser.Render(jm) + cDim.Render(" checks the active model's task answers  ·  /judge loop off") + "\n")
+			s.WriteString("  " + cOK.Render("⚖") + " judge " + cUser.Render(jm) + cDim.Render(" checks the active model's task answers  ·  /judge off") + "\n")
 		}
 	}
 	return strings.TrimRight(p.String(), "\n"), strings.TrimRight(s.String(), "\n")

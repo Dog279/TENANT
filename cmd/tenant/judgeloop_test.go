@@ -149,13 +149,20 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 	}
 }
 
-// TEN-516: /judge use points the Judge at a server with the saved key, the
-// key lives in credentials.json and goes out as a bearer token, a blank key
-// clears it, rounds are bounded, and an unknown kind is refused by name.
-func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
+// TEN-516: Setup asks the server with the typed key BEFORE anything is saved
+// (a dead server or a refused key leaves credentials.json and config.json as
+// they were); on success the key goes to credentials.json, never to
+// config.json, and out as a bearer token; a blank key clears it; Use keeps the
+// saved key; rounds are bounded; an unknown kind is refused by name.
+func TestJudgeLoop_SetupProbesBeforeSaving(t *testing.T) {
 	var auth []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = append(auth, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") == "Bearer bad" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":"bad key"}`)
+			return
+		}
 		fmt.Fprint(w, `{"answers":{"kind":{"type":"choice","choice":"chat"}}}`)
 	}))
 	t.Cleanup(srv.Close)
@@ -170,19 +177,38 @@ func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
 	if _, err := j.Use("jev", srv.URL, ""); err == nil || !strings.Contains(err.Error(), "unknown judge kind") || !strings.Contains(err.Error(), "clef") {
 		t.Fatalf("unknown kind: %v", err)
 	}
-	if err := j.setKey("sek-9", "test"); err != nil {
-		t.Fatal(err)
+	// A dead server: nothing saved, not the key, not the address.
+	if _, err := j.Setup("clef", "http://127.0.0.1:1", "sek-dead", ""); err == nil {
+		t.Fatal("a dead server was accepted")
+	}
+	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "" {
+		t.Fatal("a failed setup saved the key")
+	}
+	if lc, _ := loadLaunchConfig(dir); lc.Judge != nil {
+		t.Fatalf("a failed setup saved config: %+v", lc.Judge)
+	}
+	// A refused key: the same.
+	if _, err := j.Setup("clef", srv.URL, "bad", ""); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("refused key: %v", err)
+	}
+	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "" {
+		t.Fatal("a refused key was saved")
+	}
+	// Accepted: probed with the key, then saved; the key is in credentials.json only.
+	msg, err := j.Setup("clef", srv.URL, "sek-9", "")
+	if err != nil || !strings.Contains(msg, "judge: on — clef-flash (clef) at "+srv.URL) || !strings.Contains(msg, "a key is saved") || !strings.Contains(msg, "answered in") {
+		t.Fatalf("setup: %q, %v", msg, err)
+	}
+	if auth[len(auth)-1] != "Bearer sek-9" {
+		t.Fatalf("probe auth = %q", auth)
 	}
 	creds, _ := loadCredentials(dir)
 	if creds.Get(judgeCredID) != "sek-9" {
 		t.Fatalf("key not in credentials.json: %+v", creds.Secrets)
 	}
-	msg, err := j.Use("clef", srv.URL, "")
-	if err != nil || !strings.Contains(msg, "judge: on — clef-flash (clef) at "+srv.URL) || !strings.Contains(msg, "a key is saved") || !strings.Contains(msg, "answered in") {
-		t.Fatalf("use: %q, %v", msg, err)
-	}
-	if len(auth) != 1 || auth[0] != "Bearer sek-9" {
-		t.Fatalf("probe auth = %q", auth)
+	raw, _ := os.ReadFile(launchConfigPath(dir))
+	if strings.Contains(string(raw), "sek-9") {
+		t.Fatal("the key reached config.json")
 	}
 	lc, err := loadLaunchConfig(dir)
 	if err != nil || lc.Judge == nil || !lc.Judge.Enabled || lc.Judge.Kind != "clef" || lc.Judge.Endpoint != srv.URL || lc.Judge.Model != "clef-flash" {
@@ -191,11 +217,11 @@ func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
 	if ep, has := j.Saved(); ep != srv.URL || !has {
 		t.Fatalf("Saved() = %q %v", ep, has)
 	}
-	// A blank key clears it: the next probe carries no Authorization.
-	if err := j.setKey("", "test"); err != nil {
-		t.Fatal(err)
+	// Use keeps the saved key; Setup with a blank key clears it after the probe.
+	if _, err := j.Use("", "", ""); err != nil || auth[len(auth)-1] != "Bearer sek-9" {
+		t.Fatalf("use with the saved key: %v %q", err, auth[len(auth)-1])
 	}
-	if _, err := j.Use("", "", ""); err != nil { // defaults: saved endpoint, the kind's model
+	if _, err := j.Setup("clef", "", "", "clef-mini"); err != nil {
 		t.Fatal(err)
 	}
 	if auth[len(auth)-1] != "" {
@@ -204,8 +230,8 @@ func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
 	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "" {
 		t.Fatal("key still in credentials.json after clearing")
 	}
-	if strings.Contains(j.Status(), "a key is saved") {
-		t.Fatalf("status after clearing: %q", j.Status())
+	if st := j.Status(); strings.Contains(st, "a key is saved") || !strings.Contains(st, "clef-mini") {
+		t.Fatalf("status after clearing: %q", st)
 	}
 	for _, bad := range []int{0, 6} {
 		if _, err := j.Rounds(bad); err == nil || !strings.Contains(err.Error(), "between 1 and 5") {

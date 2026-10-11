@@ -299,9 +299,9 @@ var Judged = Turns.Event(1006, event.Info, "Judge", "judge checked an answer", "
 var JudgeNotConfirmed = Turns.Event(2005, event.Warning, "Judge", "judge could not confirm an answer", "agent", "iter", "text").
 	Doc("The answer went out with a 'judge: not confirmed' note (TEN-510); text says why: the rounds were used up, an action was blocked (so it wasn't sent back to ask again), or the loop forced the answer.",
 		"The planner couldn't finish part of the ask, the operator or a safety setting refused an action, or the judge misread a finished answer.",
-		"Read the answer and its tool events. If the judge is wrong for a kind of prompt, say so in the prompt, or turn the loop off with /judge loop off.")
+		"Read the answer and its tool events. If the judge is wrong for a kind of prompt, say so in the prompt, or turn the loop off with /judge off.")
 
 var JudgeUnavailable = Turns.Event(2111, event.Warning, "Judge", "judge unavailable; answers go out unchecked", "agent", "text").
 	Doc("A judge call failed, so the turn's answer went out without a check (TEN-510); judging pauses for a minute. Logged once per outage, not every turn.",
 		"The judge server is down, unreachable, erroring, or answered in a shape it shouldn't.",
-		"Check the judge endpoint (/judge loop shows it). Answers keep flowing unchecked until it is back.")
+		"Check the judge server (/judge shows it). Answers keep flowing unchecked until it is back.")

@@ -183,8 +183,8 @@ func TestEval_QualityModelControl(t *testing.T) {
 	fc := &fakeEvalCtl{judge: "Your main model grades the checks."}
 	s := evalServer(fc)
 
-	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "Your main model grades the checks.") || !strings.Contains(body, "Set the Quality model") {
-		t.Errorf("Quality page should render the judge status + form; got:\n%s", body)
+	if body := get(t, s, "/eval").Body.String(); !strings.Contains(body, "Your main model grades the checks.") || !strings.Contains(body, "Set the Quality model") || strings.Contains(strings.ToLower(body), "judge") {
+		t.Errorf("Quality page should render the Quality model status + form and never say judge (TEN-516); got:\n%s", body)
 	}
 
 	rec := submitForm(t, s, "/eval/quality-model", "kind=zai&model=glm-4.6&endpoint=https://api.z.ai/x")

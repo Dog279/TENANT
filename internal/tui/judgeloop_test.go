@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"tenant/internal/agent"
@@ -38,10 +39,10 @@ func (f *fakeJudge) Use(kind, endpoint, model string) (string, error) {
 	f.ep, f.on = endpoint, true
 	return f.Status(), nil
 }
-func (f *fakeJudge) SetKey(key string) error {
-	f.calls = append(f.calls, "key:"+key)
-	f.key, f.hasKey = key, key != ""
-	return nil
+func (f *fakeJudge) Setup(kind, endpoint, key, model string) (string, error) {
+	f.calls = append(f.calls, "setup:"+kind+"|"+endpoint+"|"+key+"|"+model)
+	f.ep, f.on, f.key, f.hasKey = endpoint, true, key, key != ""
+	return f.Status(), nil
 }
 func (f *fakeJudge) Rounds(n int) (string, error) {
 	f.calls = append(f.calls, "rounds:"+strconv.Itoa(n))
@@ -130,11 +131,11 @@ func TestSlash_JudgeUsePrompts(t *testing.T) {
 		t.Fatal("the key step should run the setup")
 	}
 	m.Update(cmd())
-	if got := strings.Join(fj.calls, ","); got != "key:sek-1,use:clef|http://new:30000|" {
+	if got := strings.Join(fj.calls, ","); got != "setup:clef|http://new:30000|sek-1|" {
 		t.Fatalf("calls %v", fj.calls)
 	}
-	if !strings.Contains(last(), "⚖ judge: on") || m.setupEntry != nil {
-		t.Fatalf("after setup: %q entry=%v", last(), m.setupEntry != nil)
+	if !strings.Contains(last(), "⚖ judge: on") || m.setupEntry != nil || m.input.EchoMode != textinput.EchoNormal {
+		t.Fatalf("after setup: %q entry=%v echo=%v", last(), m.setupEntry != nil, m.input.EchoMode)
 	}
 
 	// Blank address keeps the saved one; blank key clears; a model argument passes through.
@@ -146,15 +147,20 @@ func TestSlash_JudgeUsePrompts(t *testing.T) {
 	if cmd := m.submit(); cmd != nil {
 		m.Update(cmd())
 	}
-	if got := strings.Join(fj.calls, ","); got != "key:,use:clef|http://new:30000|clef-mini" {
+	if got := strings.Join(fj.calls, ","); got != "setup:clef|http://new:30000||clef-mini" {
 		t.Fatalf("defaults: %v", fj.calls)
 	}
 
 	// /cancel during the prompt changes nothing.
 	fj.calls = nil
 	m.handleSlash("/judge use clef")
+	m.input.SetValue("http://x:1")
+	m.submit() // on the masked key step now
+	if m.input.EchoMode != textinput.EchoPassword {
+		t.Fatal("the key step should hide what is typed")
+	}
 	m.handleSlash("/cancel")
-	if m.setupEntry != nil || len(fj.calls) != 0 {
-		t.Fatalf("cancel: entry=%v calls=%v", m.setupEntry != nil, fj.calls)
+	if m.setupEntry != nil || len(fj.calls) != 0 || m.input.EchoMode != textinput.EchoNormal {
+		t.Fatalf("cancel: entry=%v calls=%v echo=%v", m.setupEntry != nil, fj.calls, m.input.EchoMode)
 	}
 }

@@ -366,7 +366,7 @@ func resolveJudgeKey(kind, flagKeyEnv string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("judge %q (%s) needs an API key in $%s.\n"+
 			"  set it (bash): export %s=\"<your key>\"   (PowerShell: $env:%s=\"<your key>\")\n"+
-			"  or drop --judge-model to use the planner / main-agent model as the judge",
+			"  or drop --quality-model to let the planner / main-agent model grade",
 			kind, pk.Label, keyEnv, keyEnv, keyEnv)
 	}
 	return key, nil
@@ -407,7 +407,7 @@ func findFirstExisting(candidates ...string) string {
 // w.r.t. a per-task agent and execute against the real world), installs an
 // AgentFactory that hands each task a freshly-isolated agent, and — unless
 // gateOnly — installs the LLM judge (the planner / main-agent model by
-// default; --judge-model overrides with a separate, e.g. cloud, model).
+// default; --quality-model overrides with a separate, e.g. cloud, model).
 // Returns a cleanup func (closes the tool mux's browser/db handles + archive).
 // evalWikiOverlay gives ONE eval task its own wiki corpus without mutating the
 // shared tool mux: wiki_* calls route to a per-task wiki.Dispatcher over an
@@ -751,7 +751,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 	// Default judge = the planner (main-agent) model. Zero extra setup: the
 	// model you already run grades the answers. It IS self-judging (self-bias
 	// is linearly correlated with self-recognition; eval plan §3a), so we say
-	// so plainly — but the operator chose this default; --judge-model is the
+	// so plainly — but the operator chose this default; --quality-model is the
 	// escape hatch to a separate model.
 	if jOpts.model == "" {
 		plannerLLM, plannerProf, perr := router.LLMForRole(ctx, model.RolePlanner)
@@ -759,7 +759,7 @@ func wireLiveHarness(ctx context.Context, h *eval.Harness, c *commonFlags, pf *p
 			cleanup()
 			return nil, fmt.Errorf("eval: resolve planner as default judge: %w", perr)
 		}
-		evalNote("judge = planner model %q (self-judging; pass --judge-model <id> for a separate judge).", plannerProf.Model)
+		evalNote("Quality model = the planner model %q (grades its own answers; pass --quality-model <id> for a separate grader).", plannerProf.Model)
 		h.Grader = &eval.LLMJudge{LLM: plannerLLM, Profile: plannerProf}
 		return cleanup, nil
 	}

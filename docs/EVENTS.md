@@ -6295,7 +6295,7 @@ Writes the `turns` log.
 
 **Why it happens.** The planner couldn't finish part of the ask, the operator or a safety setting refused an action, or the judge misread a finished answer.
 
-**What to do.** Read the answer and its tool events. If the judge is wrong for a kind of prompt, say so in the prompt, or turn the loop off with /judge loop off.
+**What to do.** Read the answer and its tool events. If the judge is wrong for a kind of prompt, say so in the prompt, or turn the loop off with /judge off.
 
 ### turns 2101
 
@@ -6449,7 +6449,7 @@ Writes the `turns` log.
 
 **Why it happens.** The judge server is down, unreachable, erroring, or answered in a shape it shouldn't.
 
-**What to do.** Check the judge endpoint (/judge loop shows it). Answers keep flowing unchecked until it is back.
+**What to do.** Check the judge server (/judge shows it). Answers keep flowing unchecked until it is back.
 
 ### turns 2201
 

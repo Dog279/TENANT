@@ -473,12 +473,14 @@ type JudgeControl interface {
 	On() (bool, string)
 	// Set turns the loop on (asking the server first) or off, live, and saves it.
 	Set(on bool) (string, error)
-	// Use points the Judge at a server: the kind's dialect, the endpoint (""
-	// keeps the saved one) and the model ("" = the kind's default). It asks the
-	// server one question with the saved key, saves and switches on.
+	// Use points the Judge at a server with the saved key: the kind's dialect,
+	// the endpoint ("" keeps the saved one) and the model ("" = the kind's
+	// default). It asks the server one question, saves and switches on.
 	Use(kind, endpoint, model string) (string, error)
-	// SetKey saves the server's key ("" removes it) and applies it live.
-	SetKey(key string) error
+	// Setup is Use with a key the operator typed ("" = none): the server is
+	// asked with that key before anything is saved, then the key, the server
+	// and the switch are saved together.
+	Setup(kind, endpoint, key, model string) (string, error)
 	// Rounds sets how many times a turn may be sent back (1..5), live and saved.
 	Rounds(n int) (string, error)
 	// Saved is what the setup prompt offers as defaults.

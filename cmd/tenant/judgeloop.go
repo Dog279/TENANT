@@ -294,11 +294,26 @@ func (j *judgeLoop) Saved() (endpoint string, hasKey bool) {
 	return s.client.Endpoint, s.client.Key != ""
 }
 
-// Use points the Judge at a server: the kind's dialect, the endpoint (given,
-// else the saved one, else the kind's default) and the model (given, else the
-// kind's default). It asks the server one triage question with the saved key
-// first, saves, switches the loop on, and returns the status.
+// Use points the Judge at a server with the saved key: the kind's dialect,
+// the endpoint (given, else the saved one, else the kind's default) and the
+// model (given, else the kind's default). It asks the server one triage
+// question first, saves, switches the loop on, and returns the status.
 func (j *judgeLoop) Use(kind, endpoint, modelID string) (string, error) {
+	return j.use(kind, endpoint, modelID, "", false, "")
+}
+
+// Setup implements tui.JudgeControl: Use with a key the operator just typed
+// (blank = none). The server is asked with that key BEFORE anything is saved,
+// so a wrong address or a refused key leaves credentials.json and config.json
+// as they were.
+func (j *judgeLoop) Setup(kind, endpoint, key, modelID string) (string, error) {
+	return j.use(kind, endpoint, modelID, key, true, surfaceTUI)
+}
+
+// use is Use and Setup: saveKey says the candidate key replaces the saved one
+// once the server has answered with it; surface names who did, for the
+// Security log.
+func (j *judgeLoop) use(kind, endpoint, modelID, key string, saveKey bool, surface string) (string, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	k, err := judgeKindOf(kind)
@@ -324,15 +339,24 @@ func (j *judgeLoop) Use(kind, endpoint, modelID string) (string, error) {
 	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", fmt.Errorf("the judge needs a System One server's address, like http://host:30000")
 	}
-	answered, err := judgeProbe(&systemone.Client{Endpoint: endpoint, Model: modelID, Key: cur.client.Key})
+	if !saveKey {
+		key = cur.client.Key
+	}
+	key = strings.TrimSpace(key)
+	answered, err := judgeProbe(&systemone.Client{Endpoint: endpoint, Model: modelID, Key: key})
 	if err != nil {
-		return "", err
+		return "", err // nothing saved: not the key, not the address
+	}
+	if saveKey && key != cur.client.Key {
+		if err := j.storeKey(key, surface); err != nil {
+			return "", err
+		}
 	}
 	next := &config.Judge{Enabled: true, Kind: kind, Endpoint: endpoint, Model: modelID, Rounds: cur.rounds}
 	if next.Rounds == judgeDefaultRounds {
 		next.Rounds = 0
 	}
-	j.state.Store(judgeStateFrom(next, cur.client.Key))
+	j.state.Store(judgeStateFrom(next, key))
 	if err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) { lc.Judge = next }); err != nil {
 		return "", errNotSaved(j.Status(), err)
 	}
@@ -340,10 +364,16 @@ func (j *judgeLoop) Use(kind, endpoint, modelID string) (string, error) {
 }
 
 // setKey stores the Judge's key in credentials.json ("" removes it) and
-// applies it live. surface names who changed it, for the Security log.
+// applies it live, without asking the server. Setup is the path that asks
+// first; this one serves tests and a key change on its own.
 func (j *judgeLoop) setKey(key, surface string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.storeKey(key, surface)
+}
+
+// storeKey is setKey under j.mu.
+func (j *judgeLoop) storeKey(key, surface string) error {
 	key = strings.TrimSpace(key)
 	creds, err := loadCredentials(j.cfgDir)
 	if err != nil {
@@ -439,9 +469,6 @@ func (j *judgeLoop) Set(on bool) (string, error) {
 	}
 	return j.store(on, "", "")
 }
-
-// SetKey implements tui.JudgeControl: the terminal app saved the key.
-func (j *judgeLoop) SetKey(key string) error { return j.setKey(key, surfaceTUI) }
 
 // store turns the loop on or off live and saves it, with an endpoint and
 // model that default to the saved ones; switching on asks the server first.
