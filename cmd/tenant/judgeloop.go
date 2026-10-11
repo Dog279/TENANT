@@ -294,73 +294,108 @@ func (j *judgeLoop) Saved() (endpoint string, hasKey bool) {
 	return s.client.Endpoint, s.client.Key != ""
 }
 
+// judgeSetup is one operator choice about the Judge's server, applied by
+// apply: the kind's dialect, the address, the model, the key (when setKey;
+// blank = none), the switch and the rounds (0 keeps the saved count).
+// surface names who made it, for the Security log.
+type judgeSetup struct {
+	kind, endpoint, model string
+	key                   string
+	setKey                bool
+	on                    bool
+	rounds                int
+	surface               string
+}
+
 // Use points the Judge at a server with the saved key: the kind's dialect,
 // the endpoint (given, else the saved one, else the kind's default) and the
 // model (given, else the kind's default). It asks the server one triage
 // question first, saves, switches the loop on, and returns the status.
 func (j *judgeLoop) Use(kind, endpoint, modelID string) (string, error) {
-	return j.use(kind, endpoint, modelID, "", false, "")
+	return j.apply(judgeSetup{kind: kind, endpoint: endpoint, model: modelID, on: true})
 }
 
 // Setup implements tui.JudgeControl: Use with a key the operator just typed
-// (blank = none). The server is asked with that key BEFORE anything is saved,
-// so a wrong address or a refused key leaves credentials.json and config.json
-// as they were.
+// (blank = none). The server is asked with that key before anything is
+// saved, so a wrong address or a refused key leaves credentials.json and
+// config.json as they were.
 func (j *judgeLoop) Setup(kind, endpoint, key, modelID string) (string, error) {
-	return j.use(kind, endpoint, modelID, key, true, surfaceTUI)
+	return j.apply(judgeSetup{kind: kind, endpoint: endpoint, model: modelID, key: key, setKey: true, on: true, surface: surfaceTUI})
 }
 
-// use is Use and Setup: saveKey says the candidate key replaces the saved one
-// once the server has answered with it; surface names who did, for the
-// Security log.
-func (j *judgeLoop) use(kind, endpoint, modelID, key string, saveKey bool, surface string) (string, error) {
+// apply is Use, Setup and the dashboard card: the server is asked one triage
+// question with the key that will be saved (the typed one when setKey, else
+// the saved one), and only then are the key, the server, the switch and the
+// rounds saved, together. A failed config save puts the key back, so a
+// failure of any kind changes nothing.
+func (j *judgeLoop) apply(s judgeSetup) (string, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	k, err := judgeKindOf(kind)
+	k, err := judgeKindOf(s.kind)
 	if err != nil {
 		return "", err
 	}
-	kind = strings.ToLower(strings.TrimSpace(kind))
+	kind := strings.ToLower(strings.TrimSpace(s.kind))
 	if kind == "" {
 		kind = judgeDefaultKind
 	}
 	cur := j.state.Load()
-	endpoint = strings.TrimSpace(endpoint)
+	endpoint := strings.TrimSpace(s.endpoint)
 	if endpoint == "" {
 		endpoint = cur.client.Endpoint
 	}
 	if endpoint == "" {
 		endpoint = k.endpoint
 	}
-	modelID = strings.TrimSpace(modelID)
+	modelID := strings.TrimSpace(s.model)
 	if modelID == "" {
 		modelID = k.model
 	}
 	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", fmt.Errorf("the judge needs a System One server's address, like http://host:30000")
 	}
-	if !saveKey {
-		key = cur.client.Key
+	rounds := cur.rounds
+	if s.rounds != 0 {
+		if err := judgeRoundsOK(s.rounds); err != nil {
+			return "", err
+		}
+		rounds = s.rounds
 	}
-	key = strings.TrimSpace(key)
+	key := cur.client.Key
+	if s.setKey {
+		key = strings.TrimSpace(s.key)
+	}
 	answered, err := judgeProbe(&systemone.Client{Endpoint: endpoint, Model: modelID, Key: key})
 	if err != nil {
-		return "", err // nothing saved: not the key, not the address
+		return "", err // nothing saved: not the key, not the address, not the rounds
 	}
-	if saveKey && key != cur.client.Key {
-		if err := j.storeKey(key, surface); err != nil {
+	if key != cur.client.Key {
+		if err := j.storeKey(key, s.surface); err != nil {
 			return "", err
 		}
 	}
-	next := &config.Judge{Enabled: true, Kind: kind, Endpoint: endpoint, Model: modelID, Rounds: cur.rounds}
+	next := &config.Judge{Enabled: s.on, Kind: kind, Endpoint: endpoint, Model: modelID, Rounds: rounds}
 	if next.Rounds == judgeDefaultRounds {
 		next.Rounds = 0
 	}
 	j.state.Store(judgeStateFrom(next, key))
 	if err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) { lc.Judge = next }); err != nil {
-		return "", errNotSaved(j.Status(), err)
+		// Nothing saved means nothing: put the key and the live state back.
+		if key != cur.client.Key {
+			_ = j.storeKey(cur.client.Key, s.surface)
+		}
+		j.state.Store(cur)
+		return "", fmt.Errorf("judge: nothing changed, config.json couldn't be saved: %w", err)
 	}
 	return j.Status() + answered, nil
+}
+
+// judgeRoundsOK bounds the send-backs per answer (TEN-516: 1 to 5).
+func judgeRoundsOK(n int) error {
+	if n < 1 || n > config.JudgeMaxRounds {
+		return fmt.Errorf("rounds must be between 1 and %d", config.JudgeMaxRounds)
+	}
+	return nil
 }
 
 // setKey stores the Judge's key in credentials.json ("" removes it) and
@@ -399,8 +434,8 @@ func (j *judgeLoop) storeKey(key, surface string) error {
 // Rounds sets how many times a turn may be sent back, 1..config.JudgeMaxRounds,
 // live and saved.
 func (j *judgeLoop) Rounds(n int) (string, error) {
-	if n < 1 || n > config.JudgeMaxRounds {
-		return "", fmt.Errorf("rounds must be between 1 and %d", config.JudgeMaxRounds)
+	if err := judgeRoundsOK(n); err != nil {
+		return "", err
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()

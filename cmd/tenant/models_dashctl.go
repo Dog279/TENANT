@@ -107,28 +107,21 @@ func (d dashModel) Judge() dashboard.JudgeView {
 }
 
 // SetJudge sets up or switches the Judge from the card (TEN-510, TEN-516).
-// Rounds given are saved; then, switching on, the loop is pointed at the
-// server and the server asked one question first, with the typed key when
-// one was given (it is saved only once the server has answered with it;
-// blank keeps the saved key). Off saves the address and model without asking.
+// Switching on, or typing a key, asks the server one question first, with
+// the typed key when there is one, and saves key, server, switch and rounds
+// together only once it answered (a refusal saves nothing; a blank key keeps
+// the saved one). Off with nothing typed saves the switch without asking.
 func (d dashModel) SetJudge(on bool, kind, endpoint, key, model string, rounds int) (string, error) {
 	j := d.mc.judge
 	if j == nil {
 		return "", fmt.Errorf("the judge isn't available here")
 	}
+	key = strings.TrimSpace(key)
+	if on || key != "" {
+		return j.apply(judgeSetup{kind: kind, endpoint: endpoint, model: model, key: key, setKey: key != "", on: on, rounds: rounds, surface: surfaceDashboard})
+	}
 	if rounds > 0 {
 		if _, err := j.Rounds(rounds); err != nil {
-			return "", err
-		}
-	}
-	switch {
-	case on && strings.TrimSpace(key) != "":
-		return j.use(kind, endpoint, model, key, true, surfaceDashboard)
-	case on:
-		return j.Use(kind, endpoint, model)
-	case strings.TrimSpace(key) != "":
-		// Off, with a key typed: keep it for when the judge is switched on.
-		if err := j.setKey(key, surfaceDashboard); err != nil {
 			return "", err
 		}
 	}

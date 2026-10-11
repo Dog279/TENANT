@@ -98,7 +98,7 @@ The Quality model moves under the eval family, which already owns the Quality pa
 | `models/teams.md`, `models/helpers.md`, `first-launch/terminal-ui.md` | "the judge's last verdict" and similar `/goal` wording → "the goal's check" |
 | this repository | `CHANGELOG.md` (TEN-510's entry rewritten in the new words), `docs/QUICKSTART.md` (the "Judge loop" section TEN-510 added), `docs/EVENTS.md`, `internal/dashboard/DESIGN.md` if it names the cards; `docs/plans/turn-judge-plan.md` gets a pointer to this plan |
 
-The docs branch is `docs/tenant-paste-judge` in findtime-net, already carrying TEN-510's pages; these edits go on it. **Gate before the PR:** `git grep -n "judge loop\|/judge set\|/judge status\|/judge clear\|--judge-model\|judge_loop\|judge_kind"` over this repository's Markdown (except `CHANGELOG.md` and `docs/plans/`, which name the old keys on purpose) and the site's `tenant-docs/src` returns nothing (today it finds `models/eval.md`, `models/tuning.md`, `reference/cli.md`, `reference/config.md`, `reference/slash-commands.md`, `dashboard/pages.md`, `CHANGELOG.md`, `docs/QUICKSTART.md`, `docs/EVENTS.md`). The plain-language test stays what it is: this repository's templates and rendered pages; the site's words are checked by that grep.
+The docs branch is `docs/tenant-paste-judge` in findtime-net, already carrying TEN-510's pages; these edits go on it. **Gate before the PR:** `git grep -n "judge loop\|/judge set\|/judge status\|/judge clear\|--judge-model\|judge_loop\|judge_kind"` over this repository's Markdown (except `CHANGELOG.md` and `docs/plans/`, which name the old keys on purpose) and the site's `tenant-docs/src` (except the config reference's one sentence saying a saved `judge_loop` migrates) returns nothing (today it finds `models/eval.md`, `models/tuning.md`, `reference/cli.md`, `reference/config.md`, `reference/slash-commands.md`, `dashboard/pages.md`, `CHANGELOG.md`, `docs/QUICKSTART.md`, `docs/EVENTS.md`). The plain-language test stays what it is: this repository's templates and rendered pages; the site's words are checked by that grep.
 
 ### 5. Tests
 
@@ -170,3 +170,14 @@ Commits on `feat/turn-judge`, in order: config + migration; the Judge kinds and 
 | 6 | No golden assertion; legacy fields with no removal date | Held: resolved in the plan text (ADR 0001 never drops a key; the saved file is asserted free of legacy keys) |
 | 7 | The grep gate cannot pass with CHANGELOG and the plans naming the old keys | Accepted: the gate exempts `CHANGELOG.md` and `docs/plans/` |
 | 8 | Test gaps: the key in config.json's raw bytes, a failed setup leaving config untouched | Accepted: both asserted in `TestJudgeLoop_SetupProbesBeforeSaving`; the plain-language test already runs over every template and page |
+
+**Debate round (GLM, same day):** all eight conceded. Five new points on the fix itself:
+
+| # | Point | Disposition |
+|---|---|---|
+| N1 | The card, switched off with a key typed, saved the key without asking the server | Accepted and fixed: a typed key is always checked with the server first; off keeps the loop off but saves the accepted key and server |
+| N2 | A blank key only clears the saved one once the server answers without a key | Held: a blank key means "this server takes no key", checked like any other setup; a key left for a dead server is removed by hand from `credentials.json` |
+| N3 | The card saved rounds before the probe | Accepted and fixed: rounds ride in the same save as the server, after the probe, and are bounded before it |
+| N4 | A failed `config.json` save left the key and the live state changed | Accepted and fixed: the key is put back and the live state restored, the error says nothing changed; tested with an unwritable `config.json` |
+| N5 | Is bare `/judge` a real command? | Held with evidence: `/judge` is the status line (`TestSlash_Judge`) |
+| — | The Quality page test bans "judge" page-wide | Held: that is the point; the page is Tenant's own template, and a stray "judge" there is the ambiguity this rework removes |

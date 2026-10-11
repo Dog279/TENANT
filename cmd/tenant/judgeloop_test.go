@@ -247,6 +247,79 @@ func TestJudgeLoop_SetupProbesBeforeSaving(t *testing.T) {
 	if _, err := j.Use("clef", "not a url", ""); err == nil || !strings.Contains(err.Error(), "address") {
 		t.Fatalf("bad endpoint: %v", err)
 	}
+	// A config.json that can't be saved: the key goes back and nothing changed.
+	cfgPath := launchConfigPath(dir)
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfgPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Setup("clef", srv.URL, "sek-late", ""); err == nil || !strings.Contains(err.Error(), "nothing changed") {
+		t.Fatalf("unsavable config: %v", err)
+	}
+	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "" {
+		t.Fatalf("key kept after a failed save: %q", creds.Get(judgeCredID))
+	}
+	if st := j.Status(); strings.Contains(st, "a key is saved") || !strings.Contains(st, "clef-mini") {
+		t.Fatalf("live state not restored: %q", st)
+	}
+}
+
+// TEN-516: the dashboard card saves only what the server accepted: a key
+// typed with the loop off is checked too, rounds ride in the same save as the
+// server, and a refusal leaves key, config and rounds as they were.
+func TestJudgeLoop_DashboardCardSavesOnlyAccepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer bad" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":"bad key"}`)
+			return
+		}
+		fmt.Fprint(w, `{"answers":{"kind":{"type":"choice","choice":"chat"}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	j := newJudgeLoop(dir, nil)
+	d := dashModel{mc: &modelControl{cfgDir: dir, judge: j}}
+	if _, err := d.SetJudge(false, "clef", "http://127.0.0.1:1", "sek-x", "", 0); err == nil {
+		t.Fatal("off + key against a dead server was accepted")
+	}
+	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "" {
+		t.Fatal("off + key saved a key no server accepted")
+	}
+	if _, err := d.SetJudge(true, "clef", srv.URL, "bad", "", 2); err == nil {
+		t.Fatal("a refused key was accepted")
+	}
+	if lc, _ := loadLaunchConfig(dir); lc.Judge != nil {
+		t.Fatalf("a refused setup saved %+v", lc.Judge)
+	}
+	if j.MaxRounds() != judgeDefaultRounds {
+		t.Fatalf("rounds changed to %d on a refused setup", j.MaxRounds())
+	}
+	if _, err := d.SetJudge(true, "clef", srv.URL, "", "", 9); err == nil || !strings.Contains(err.Error(), "between 1 and 5") {
+		t.Fatalf("rounds 9: %v", err)
+	}
+	msg, err := d.SetJudge(false, "clef", srv.URL, "sek-1", "", 2)
+	if err != nil || !strings.Contains(msg, "judge: off") {
+		t.Fatalf("off + good key: %q %v", msg, err)
+	}
+	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "sek-1" {
+		t.Fatal("the accepted key was not saved")
+	}
+	lc, _ := loadLaunchConfig(dir)
+	if lc.Judge == nil || lc.Judge.Enabled || lc.Judge.Endpoint != srv.URL || lc.Judge.Rounds != 2 {
+		t.Fatalf("saved %+v", lc.Judge)
+	}
+	if msg, err := d.SetJudge(true, "", "", "", "", 0); err != nil || !strings.Contains(msg, "judge: on") || !strings.Contains(msg, "a key is saved") {
+		t.Fatalf("on with the saved key: %q %v", msg, err)
+	}
+	if msg, err := d.SetJudge(false, "", "", "", "", 0); err != nil || !strings.Contains(msg, "judge: off") {
+		t.Fatalf("off: %q %v", msg, err)
+	}
+	if lc, _ := loadLaunchConfig(dir); lc.Judge == nil || lc.Judge.Enabled || lc.Judge.Rounds != 2 {
+		t.Fatalf("after off: %+v", lc.Judge)
+	}
 }
 
 // A kind this build doesn't know (a hand-edited config.json, or a newer
