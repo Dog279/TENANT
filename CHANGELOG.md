@@ -22,6 +22,15 @@ Releases page.
   `tenant eval --quality-model` (was `--judge-model`), the Quality page's "Quality model"
   card, and `improve.quality_model*` in config.json; the old `judge_loop` and
   `improve.judge*` keys migrate on load and are never written again.
+- **A readable terminal app** (TEN-513, TEN-514). The conversation is turn blocks: a header with
+  who, the time and the model, the text rendered from Markdown (headings, lists, code panels,
+  tables, task boxes) and wrapped at the pane width, never mid-word. A tool call is one row inside
+  the block where it happened; Ctrl+O opens every row to its arguments and result, and a failed call
+  is open already. The line under a running answer says what the agent is doing and for how long.
+  The activity feed groups a turn's lines under a header with the time and the first words of the
+  message, and the context line is one line. `/feed off` and Alt+F hide the feed for a wider
+  column; the choice is saved (`tui.feed` in `config.json`). The Markdown engine is an in-house
+  copy of goldmark under `internal/md` (MIT; see its README), so `go.mod` gains nothing.
 - **Images** (TEN-493): paste a picture into the TUI with Ctrl+V (Alt+V on Windows), drag image
   files in, or `/image <path>`. Discord and iMessage photos reach the model too, and
   `os_read_image` and `web_screenshot` now show it the picture instead of describing the file.

@@ -3095,6 +3095,19 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	err = tui.Run(ctx, tui.Config{
 		Agent: ag, Events: evCh, AgentID: c.agent, Backend: c.backend, Model: modelName, System: sysCh,
 		SavePath: filepath.Join(c.dataDir, "transcript.txt"), Tools: mainTools,
+		// The activity feed's saved on/off choice (/feed, Alt+F) (TEN-514).
+		FeedOff: c.lc != nil && c.lc.TUI.Feed == "off",
+		SaveFeed: func(on bool) error {
+			if c.lc == nil {
+				return nil
+			}
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) {
+				lc.TUI.Feed = ""
+				if !on {
+					lc.TUI.Feed = "off"
+				}
+			})
+		},
 		Skills:   skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir},
 		Feedback: feedbackControl{es: st.episodic, agentID: c.agent},
 		Eval:     evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir},

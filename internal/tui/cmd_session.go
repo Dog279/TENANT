@@ -81,6 +81,29 @@ func slashCls(m *model, line string) tea.Cmd {
 	return nil
 }
 
+// slashFeed runs /feed: show or hide the activity pane, and keep the choice
+// (TEN-514). No argument toggles.
+func slashFeed(m *model, line string) tea.Cmd {
+	on := m.feedOff // toggle by default
+	switch strings.TrimSpace(strings.TrimPrefix(line, "/feed")) {
+	case "on":
+		on = true
+	case "off":
+		on = false
+	case "":
+	default:
+		m.sysChat("usage: /feed on|off   (Alt+F toggles it too)")
+		return nil
+	}
+	m.setFeed(on, true)
+	if on {
+		m.sysChat("activity feed shown")
+	} else {
+		m.sysChat("activity feed hidden — /feed on or Alt+F brings it back")
+	}
+	return nil
+}
+
 // slashMouse runs /mouse.
 func slashMouse(m *model, line string) tea.Cmd {
 	_, _, arg := slashParts(line)
@@ -247,5 +270,8 @@ func sessionCommands() []*slashCommand {
 		{Names: []string{"/mouse"}, Section: "session", Run: slashMouse,
 			Summary: "wheel capture on or off",
 			Rows:    []cmdreg.Row{{Syntax: "/mouse on|off", Desc: "on (default) = wheel scrolls the TUI; off = plain-drag selection (wheel scrolls terminal)"}}},
+		{Names: []string{"/feed"}, Section: "session", Run: slashFeed,
+			Summary: "show or hide the activity feed (Alt+F); the choice persists",
+			Rows:    []cmdreg.Row{{Syntax: "/feed on|off", Desc: "show or hide the activity feed on the right (Alt+F toggles it too); the choice persists"}}},
 	}
 }

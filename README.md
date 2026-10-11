@@ -262,6 +262,10 @@ go vet ./...
 
 [MIT](LICENSE) © 2026 Dylan.
 
+Tenant carries a trimmed copy of [goldmark](https://github.com/yuin/goldmark) (MIT, Yusuke
+Inuzuka) under `internal/md/goldmark`, which renders the agent's Markdown in the terminal app and
+the dashboard; its README says what was kept.
+
 ## Security
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md) for reporting instructions.
