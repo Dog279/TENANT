@@ -21,8 +21,7 @@ import (
 
 const (
 	judgeDefaultModel  = "clef-flash"
-	judgeDefaultRounds = 3
-	judgeMaxRounds     = 10               // each round is a free planner iteration: keep a hand-edited config bounded
+	judgeDefaultRounds = config.JudgeDefaultRounds
 	judgeProbeTimeout  = 20 * time.Second // a cold server took ~15 s for its first answer
 	judgeKeepOutputs   = 20               // tool calls whose output the judge sees (the rest: name and input)
 	judgeMaxCalls      = 100              // tool calls listed at all
@@ -78,22 +77,22 @@ type judgeLoopState struct {
 	rounds int
 }
 
-// judgeLoopFor builds the process's judge from config.json's judge_loop.
+// judgeLoopFor builds the process's judge from config.json's judge section.
 func judgeLoopFor(c *commonFlags) *judgeLoop {
-	var jc *config.JudgeLoop
+	var jc *config.Judge
 	if c.lc != nil {
-		jc = c.lc.JudgeLoop
+		jc = c.lc.Judge
 	}
 	return newJudgeLoop(c.cfgDir, jc)
 }
 
-func newJudgeLoop(cfgDir string, c *config.JudgeLoop) *judgeLoop {
+func newJudgeLoop(cfgDir string, c *config.Judge) *judgeLoop {
 	j := &judgeLoop{cfgDir: cfgDir}
 	j.state.Store(judgeStateFrom(c))
 	return j
 }
 
-func judgeStateFrom(c *config.JudgeLoop) *judgeLoopState {
+func judgeStateFrom(c *config.Judge) *judgeLoopState {
 	if c == nil { // a fresh setup: off, the default model, no server yet
 		return &judgeLoopState{client: &systemone.Client{Model: judgeDefaultModel}, rounds: judgeDefaultRounds}
 	}
@@ -101,12 +100,7 @@ func judgeStateFrom(c *config.JudgeLoop) *judgeLoopState {
 	if m == "" {
 		m = judgeDefaultModel
 	}
-	r := c.MaxRounds
-	if r <= 0 {
-		r = judgeDefaultRounds
-	}
-	r = min(r, judgeMaxRounds)
-	return &judgeLoopState{on: c.Enabled && c.Endpoint != "", client: &systemone.Client{Endpoint: c.Endpoint, Model: m}, rounds: r}
+	return &judgeLoopState{on: c.Enabled && c.Endpoint != "", client: &systemone.Client{Endpoint: c.Endpoint, Model: m}, rounds: c.RoundsOrDefault()}
 }
 
 func (j *judgeLoop) live() (*judgeLoopState, error) {
@@ -267,12 +261,12 @@ func (j *judgeLoop) Set(on bool, endpoint, modelID string) (string, error) {
 		}
 		answered = fmt.Sprintf(" (answered in %.1fs)", time.Since(start).Seconds())
 	}
-	next := &config.JudgeLoop{Enabled: on, Endpoint: endpoint, Model: modelID, MaxRounds: cur.rounds}
-	if next.MaxRounds == judgeDefaultRounds {
-		next.MaxRounds = 0
+	next := &config.Judge{Enabled: on, Kind: "clef", Endpoint: endpoint, Model: modelID, Rounds: cur.rounds}
+	if next.Rounds == judgeDefaultRounds {
+		next.Rounds = 0
 	}
 	j.state.Store(judgeStateFrom(next))
-	err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) { lc.JudgeLoop = next })
+	err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) { lc.Judge = next })
 	if err != nil {
 		return "", errNotSaved(j.Status(), err)
 	}

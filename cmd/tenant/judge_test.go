@@ -80,10 +80,10 @@ func TestResolveJudgeKey(t *testing.T) {
 // applyJudgeConfig: flag wins; empty config is a no-op; config fills when no flag.
 func TestApplyJudgeConfig(t *testing.T) {
 	lc := &launchConfig{}
-	lc.Improve.Judge = "claude-opus-4-8"
-	lc.Improve.JudgeKind = "anthropic"
-	lc.Improve.JudgeEndpoint = "https://example/api"
-	lc.Improve.JudgeKeyEnv = "MY_KEY"
+	lc.Improve.QualityModel = "claude-opus-4-8"
+	lc.Improve.QualityModelKind = "anthropic"
+	lc.Improve.QualityModelEndpoint = "https://example/api"
+	lc.Improve.QualityModelKeyEnv = "MY_KEY"
 
 	// No flag → filled from config.
 	got := applyJudgeConfig(evalJudgeOpts{}, lc)
@@ -123,7 +123,7 @@ func TestJudgeCtl_Persist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lc.Improve.Judge != "claude-opus-4-8" || lc.Improve.JudgeKind != "anthropic" || lc.Improve.JudgeKeyEnv != "ANTHROPIC_API_KEY" {
+	if lc.Improve.QualityModel != "claude-opus-4-8" || lc.Improve.QualityModelKind != "anthropic" || lc.Improve.QualityModelKeyEnv != "ANTHROPIC_API_KEY" {
 		t.Fatalf("Set didn't persist correctly: %+v", lc.Improve)
 	}
 	if c := j.Current(); !strings.Contains(c, "claude-opus-4-8") {
@@ -139,7 +139,7 @@ func TestJudgeCtl_Persist(t *testing.T) {
 		t.Fatalf("Clear: %v", err)
 	}
 	lc, _ = loadLaunchConfig(dir)
-	if lc.Improve.Judge != "" || lc.Improve.JudgeKind != "" {
+	if lc.Improve.QualityModel != "" || lc.Improve.QualityModelKind != "" {
 		t.Fatalf("Clear didn't reset: %+v", lc.Improve)
 	}
 }

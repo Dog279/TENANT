@@ -329,15 +329,15 @@ type evalJudgeOpts struct {
 // (planner-default judge). gateOnly/concurrency/taskTimeout are flag-only and
 // never sourced from config.
 func applyJudgeConfig(jOpts evalJudgeOpts, lc *launchConfig) evalJudgeOpts {
-	if jOpts.model != "" || lc == nil || lc.Improve.Judge == "" {
+	if jOpts.model != "" || lc == nil || lc.Improve.QualityModel == "" {
 		return jOpts
 	}
 	ic := lc.Improve
-	jOpts.model = ic.Judge
-	jOpts.kind = ic.JudgeKind
-	jOpts.endpoint = ic.JudgeEndpoint
-	if ic.JudgeKeyEnv != "" {
-		jOpts.keyEnv = ic.JudgeKeyEnv
+	jOpts.model = ic.QualityModel
+	jOpts.kind = ic.QualityModelKind
+	jOpts.endpoint = ic.QualityModelEndpoint
+	if ic.QualityModelKeyEnv != "" {
+		jOpts.keyEnv = ic.QualityModelKeyEnv
 	}
 	return jOpts
 }

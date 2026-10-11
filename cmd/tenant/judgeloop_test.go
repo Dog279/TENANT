@@ -26,15 +26,15 @@ func TestJudgeLoop_WrongShapeAndClamp(t *testing.T) {
 		fmt.Fprint(w, `{"answers":{"done":{"type":"choice","choice":"yes"},"every_part":{"type":"choice"},"claims_without_tool":{"type":"choice"},"gave_up":{"type":"choice"},"kind":{"type":"noul","noul":0.9}}}`)
 	}))
 	t.Cleanup(srv.Close)
-	j := newJudgeLoop(t.TempDir(), &config.JudgeLoop{Enabled: true, Endpoint: srv.URL, MaxRounds: 500})
+	j := newJudgeLoop(t.TempDir(), &config.Judge{Enabled: true, Endpoint: srv.URL, Rounds: 500})
 	if _, err := j.Check(context.Background(), agent.Exchange{Request: "r", Answer: "a"}); err == nil || !strings.Contains(err.Error(), "not yes/no") {
 		t.Errorf("check err = %v", err)
 	}
 	if _, _, err := j.Triage(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "not a choice") {
 		t.Errorf("triage err = %v", err)
 	}
-	if j.MaxRounds() != judgeMaxRounds {
-		t.Errorf("max rounds %d, want clamped to %d", j.MaxRounds(), judgeMaxRounds)
+	if j.MaxRounds() != config.JudgeMaxRounds {
+		t.Errorf("max rounds %d, want clamped to %d", j.MaxRounds(), config.JudgeMaxRounds)
 	}
 }
 
@@ -127,7 +127,7 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 		t.Fatalf("on: %q, %v", msg, err)
 	}
 	lc, err := loadLaunchConfig(dir)
-	if err != nil || lc.JudgeLoop == nil || !lc.JudgeLoop.Enabled || lc.JudgeLoop.Endpoint != srv.URL {
+	if err != nil || lc.Judge == nil || !lc.Judge.Enabled || lc.Judge.Endpoint != srv.URL {
 		t.Fatalf("saved %+v (err %v)", lc, err)
 	}
 	if lc.Provider != "dgxt" || lc.Providers["dgxt"].Model != "glm-5.3-flash" || lc.RepeatGuard != 12 {

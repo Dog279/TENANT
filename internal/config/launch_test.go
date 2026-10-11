@@ -456,3 +456,72 @@ func TestLoadLaunchConfig_RejectsUnsafeRoute(t *testing.T) {
 		})
 	}
 }
+
+// TEN-516: the pre-rename spellings migrate on load. judge_loop becomes
+// judge (kind clef, max_rounds → rounds); improve.judge* become
+// improve.quality_model*; when a file carries both, the new key wins; a save
+// writes only the new keys.
+func TestLaunchConfig_MigrateJudgeAndQualityModel(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"judge_loop":{"enabled":true,"endpoint":"http://h:30000","model":"clef-flash","max_rounds":2},
+	         "improve":{"judge":"claude-x","judge_kind":"anthropic","judge_endpoint":"https://a","judge_key_env":"K"}}`
+	if err := os.WriteFile(Path(dir), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lc, err := Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if j := lc.Judge; j == nil || !j.Enabled || j.Kind != "clef" || j.Endpoint != "http://h:30000" || j.Model != "clef-flash" || j.Rounds != 2 || j.RoundsOrDefault() != 2 {
+		t.Fatalf("judge_loop not migrated: %+v", lc.Judge)
+	}
+	if lc.LegacyJudgeLoop != nil {
+		t.Fatal("legacy judge_loop still set after load")
+	}
+	ic := lc.Improve
+	if ic.QualityModel != "claude-x" || ic.QualityModelKind != "anthropic" || ic.QualityModelEndpoint != "https://a" || ic.QualityModelKeyEnv != "K" || ic.LegacyJudge != "" || ic.LegacyJudgeKind != "" {
+		t.Fatalf("improve.judge* not migrated: %+v", ic)
+	}
+	if err := lc.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(Path(dir))
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if _, ok := m["judge_loop"]; ok {
+		t.Fatal("judge_loop re-serialized")
+	}
+	if _, ok := m["judge"]; !ok {
+		t.Fatal("judge missing after save")
+	}
+	imp, _ := m["improve"].(map[string]any)
+	for _, legacy := range []string{"judge", "judge_kind", "judge_endpoint", "judge_key_env"} {
+		if _, ok := imp[legacy]; ok {
+			t.Fatalf("improve.%s re-serialized", legacy)
+		}
+	}
+	if imp["quality_model"] != "claude-x" {
+		t.Fatalf("quality_model missing after save: %v", imp)
+	}
+
+	// Both spellings present: the new one wins.
+	both := `{"judge_loop":{"enabled":true,"endpoint":"http://old:1"},"judge":{"enabled":false,"kind":"clef","endpoint":"http://new:2"},
+	          "improve":{"judge":"old-model","quality_model":"new-model"}}`
+	if err := os.WriteFile(Path(dir), []byte(both), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lc, err = Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Judge.Enabled || lc.Judge.Endpoint != "http://new:2" || lc.LegacyJudgeLoop != nil {
+		t.Fatalf("new judge key should win: %+v", lc.Judge)
+	}
+	if lc.Improve.QualityModel != "new-model" || lc.Improve.LegacyJudge != "" {
+		t.Fatalf("new quality_model key should win: %+v", lc.Improve)
+	}
+	// Rounds is bounded however the file spells it.
+	if (&Judge{Rounds: 500}).RoundsOrDefault() != JudgeMaxRounds || (&Judge{}).RoundsOrDefault() != JudgeDefaultRounds || (*Judge)(nil).RoundsOrDefault() != JudgeDefaultRounds {
+		t.Fatal("RoundsOrDefault bounds")
+	}
+}

@@ -111,11 +111,16 @@ type Launch struct {
 	// oscillation guard, TEN-261/TEN-506). 0 = built-in default (8), < 0 = off.
 	// Live-tunable with /ceiling repeat.
 	RepeatGuard int `json:"repeat_guard,omitempty"`
-	// JudgeLoop is the judge in the loop of a turn (TEN-510): a System One
-	// decision model (Clef-flash) triages each prompt and checks a task
-	// turn's answer before it goes out, sending it back up to MaxRounds
-	// times. Off when nil or not Enabled. Live-switchable with /judge loop.
-	JudgeLoop *JudgeLoop `json:"judge_loop,omitempty"`
+	// Judge is the decision model in the loop of a turn (TEN-510, TEN-516): it
+	// triages each prompt and checks a task turn's answer before it goes out,
+	// sending it back up to Rounds times. Off when nil or not Enabled.
+	// Live-switchable with /judge. Its key, if the server wants one, lives in
+	// credentials.json under "judge", never here.
+	Judge *Judge `json:"judge,omitempty"`
+	// LegacyJudgeLoop is the pre-TEN-516 spelling of Judge. Migrate moves it
+	// into Judge and clears it; it is never written again. Kept so the key
+	// stays readable (ADR 0001: a config key is never dropped).
+	LegacyJudgeLoop *JudgeLoop `json:"judge_loop,omitempty"`
 	// Fallbacks is the ordered list of provider names (keys into Providers) to
 	// try when the active provider rate-limits / runs out of credits / is
 	// unreachable (TEN-246). Empty (default) = no auto-fallback. e.g. with
@@ -592,17 +597,25 @@ type Improve struct {
 	// per-project SME doc on the proposer model. The doc is loud + reversible
 	// (versioned, dashboard-inspectable); turn it on for dogfooding.
 	ReflectEvery string `json:"reflect_every,omitempty"`
-	// Judge persists the eval LLM-judge override (TEN-91). Empty ⇒ the default
-	// (planner / main-agent model, self-judging). Set ⇒ a separate model grades
-	// answers in BOTH `tenant eval` and the nightly eval job. JudgeKind selects
-	// the backend (any wired ProviderKinds id — anthropic | openai | zai | …);
-	// JudgeEndpoint optionally overrides the catalog default; the API key is read
-	// at runtime from $JudgeKeyEnv and is NEVER stored here. A --judge-model flag
-	// still overrides this per-invocation.
-	Judge         string `json:"judge,omitempty"`          // judge model id ("" = planner default)
-	JudgeKind     string `json:"judge_kind,omitempty"`     // provider kind (default "anthropic")
-	JudgeEndpoint string `json:"judge_endpoint,omitempty"` // "" = provider default
-	JudgeKeyEnv   string `json:"judge_key_env,omitempty"`  // env var holding the key (default per kind)
+	// QualityModel persists the Quality model override (TEN-91, renamed in
+	// TEN-516): the model that grades eval answers. Empty ⇒ the default (the
+	// planner / main-agent model grades its own answers). Set ⇒ a separate
+	// model grades in BOTH `tenant eval` and the nightly eval job.
+	// QualityModelKind selects the backend (any wired ProviderKinds id —
+	// anthropic | openai | zai | …); QualityModelEndpoint optionally overrides
+	// the catalog default; the API key is read at runtime from
+	// $QualityModelKeyEnv and is NEVER stored here. A --quality-model flag still
+	// overrides this per-invocation.
+	QualityModel         string `json:"quality_model,omitempty"`          // model id ("" = planner default)
+	QualityModelKind     string `json:"quality_model_kind,omitempty"`     // provider kind (default "anthropic")
+	QualityModelEndpoint string `json:"quality_model_endpoint,omitempty"` // "" = provider default
+	QualityModelKeyEnv   string `json:"quality_model_key_env,omitempty"`  // env var holding the key (default per kind)
+	// LegacyJudge* are the pre-TEN-516 spellings of QualityModel*. Migrate
+	// moves them and clears them; they are never written again (ADR 0001).
+	LegacyJudge         string `json:"judge,omitempty"`
+	LegacyJudgeKind     string `json:"judge_kind,omitempty"`
+	LegacyJudgeEndpoint string `json:"judge_endpoint,omitempty"`
+	LegacyJudgeKeyEnv   string `json:"judge_key_env,omitempty"`
 }
 
 // ValidAutoAccept reports whether m is an accepted auto-accept mode.
@@ -674,10 +687,39 @@ const (
 	DefaultPlanCeiling = 16
 )
 
-// JudgeLoop configures the judge in the loop of a turn (TEN-510).
+// Judge configures the decision model in the loop of a turn (TEN-510,
+// TEN-516). Kind is the server's dialect ("clef" today; every kind speaks the
+// System One API); the endpoint is always just an endpoint, defaulted per
+// kind and overridable.
+type Judge struct {
+	Enabled  bool   `json:"enabled"`
+	Kind     string `json:"kind,omitempty"`     // "" = clef
+	Endpoint string `json:"endpoint,omitempty"` // a System One server, e.g. http://host:30000
+	Model    string `json:"model,omitempty"`    // "" = the kind's default (clef-flash)
+	Rounds   int    `json:"rounds,omitempty"`   // send-backs per turn, 1..JudgeMaxRounds; 0 = JudgeDefaultRounds
+}
+
+// JudgeLoop is the pre-TEN-516 shape of Judge, read for migration only.
 type JudgeLoop struct {
 	Enabled   bool   `json:"enabled"`
-	Endpoint  string `json:"endpoint,omitempty"`   // a System One server, e.g. http://host:30000
-	Model     string `json:"model,omitempty"`      // "" = clef-flash
-	MaxRounds int    `json:"max_rounds,omitempty"` // send-backs per turn; 0 = 3
+	Endpoint  string `json:"endpoint,omitempty"`
+	Model     string `json:"model,omitempty"`
+	MaxRounds int    `json:"max_rounds,omitempty"`
+}
+
+const (
+	// JudgeDefaultRounds is how many times a turn is sent back when the file
+	// says nothing; JudgeMaxRounds bounds a hand-edited value (each round is a
+	// free planner iteration).
+	JudgeDefaultRounds = 3
+	JudgeMaxRounds     = 5
+)
+
+// RoundsOrDefault is Rounds clamped to 1..JudgeMaxRounds, JudgeDefaultRounds
+// when unset.
+func (j *Judge) RoundsOrDefault() int {
+	if j == nil || j.Rounds <= 0 {
+		return JudgeDefaultRounds
+	}
+	return min(j.Rounds, JudgeMaxRounds)
 }

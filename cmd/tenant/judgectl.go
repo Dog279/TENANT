@@ -46,15 +46,15 @@ type judgeSetting struct {
 
 func (j judgeCtl) resolved() (js judgeSetting, ok bool) {
 	lc, err := loadLaunchConfig(j.cfgDir)
-	if err != nil || lc.Improve.Judge == "" {
+	if err != nil || lc.Improve.QualityModel == "" {
 		return js, false
 	}
 	ic := lc.Improve
-	js = judgeSetting{kind: ic.JudgeKind, model: ic.Judge, endpoint: ic.JudgeEndpoint}
+	js = judgeSetting{kind: ic.QualityModelKind, model: ic.QualityModel, endpoint: ic.QualityModelEndpoint}
 	if js.kind == "" {
 		js.kind = "anthropic"
 	}
-	js.keyEnv = resolveJudgeKeyEnv(js.kind, ic.JudgeKeyEnv)
+	js.keyEnv = resolveJudgeKeyEnv(js.kind, ic.QualityModelKeyEnv)
 	js.keyMissing = js.keyEnv != "" && os.Getenv(js.keyEnv) == ""
 	return js, true
 }
@@ -97,10 +97,10 @@ func (j judgeCtl) Set(kind, mdl, endpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	lc.Improve.Judge = mdl
-	lc.Improve.JudgeKind = kind
-	lc.Improve.JudgeEndpoint = endpoint
-	lc.Improve.JudgeKeyEnv = pk.KeyEnv // catalog default; "" for local/no-key kinds
+	lc.Improve.QualityModel = mdl
+	lc.Improve.QualityModelKind = kind
+	lc.Improve.QualityModelEndpoint = endpoint
+	lc.Improve.QualityModelKeyEnv = pk.KeyEnv // catalog default; "" for local/no-key kinds
 	if err := lc.Save(j.cfgDir); err != nil {
 		return "", err
 	}
@@ -116,9 +116,9 @@ func (j judgeCtl) Clear() error {
 	if err != nil {
 		return err
 	}
-	lc.Improve.Judge = ""
-	lc.Improve.JudgeKind = ""
-	lc.Improve.JudgeEndpoint = ""
-	lc.Improve.JudgeKeyEnv = ""
+	lc.Improve.QualityModel = ""
+	lc.Improve.QualityModelKind = ""
+	lc.Improve.QualityModelEndpoint = ""
+	lc.Improve.QualityModelKeyEnv = ""
 	return lc.Save(j.cfgDir)
 }
