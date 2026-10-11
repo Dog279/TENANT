@@ -50,6 +50,7 @@ type Usage struct {
 type Client struct {
 	Endpoint string // base URL, without /v1/systemone
 	Model    string
+	Key      string       // sent as "Authorization: Bearer <Key>" when set; "" for a keyless server
 	HTTP     *http.Client // nil: a client with a 10 s timeout
 }
 
@@ -74,6 +75,9 @@ func (c *Client) Decide(ctx context.Context, state any, qs map[string]Question) 
 		return nil, Usage{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Key)
+	}
 	hc := c.HTTP
 	if hc == nil {
 		hc = defaultHTTP

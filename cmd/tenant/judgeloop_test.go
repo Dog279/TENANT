@@ -123,7 +123,7 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 		t.Fatal("a refused switch turned it on")
 	}
 	msg, err := j.Set(true, srv.URL, "")
-	if err != nil || !strings.Contains(msg, "judge loop: on — clef-flash at "+srv.URL) || !strings.Contains(msg, "answered in") {
+	if err != nil || !strings.Contains(msg, "judge: on — clef-flash (clef) at "+srv.URL) || !strings.Contains(msg, "answered in") {
 		t.Fatalf("on: %q, %v", msg, err)
 	}
 	lc, err := loadLaunchConfig(dir)
@@ -141,10 +141,84 @@ func TestJudgeLoop_SetLive(t *testing.T) {
 	if err != nil || !v.Done || v.Use.InputTokens != 300 {
 		t.Fatalf("check %+v %v", v, err)
 	}
-	if _, err := j.Set(false, "", ""); err != nil || !strings.HasPrefix(j.Status(), "judge loop: off") {
+	if _, err := j.Set(false, "", ""); err != nil || !strings.HasPrefix(j.Status(), "judge: off") {
 		t.Fatalf("off: %q %v", j.Status(), err)
 	}
 	if on, ep, _ := j.Settings(); on || ep != srv.URL {
 		t.Fatalf("off kept the endpoint for next time? on=%v ep=%q", on, ep)
+	}
+}
+
+// TEN-516: /judge use points the Judge at a server with the saved key, the
+// key lives in credentials.json and goes out as a bearer token, a blank key
+// clears it, rounds are bounded, and an unknown kind is refused by name.
+func TestJudgeLoop_UseKeyAndRounds(t *testing.T) {
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"answers":{"kind":{"type":"choice","choice":"chat"}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	j := newJudgeLoop(dir, nil)
+	if ep, has := j.Saved(); ep != "" || has {
+		t.Fatalf("fresh Saved() = %q %v", ep, has)
+	}
+	if !strings.Contains(j.Status(), "not set up") {
+		t.Fatalf("fresh status: %q", j.Status())
+	}
+	if _, err := j.Use("jev", srv.URL, ""); err == nil || !strings.Contains(err.Error(), "unknown judge kind") || !strings.Contains(err.Error(), "clef") {
+		t.Fatalf("unknown kind: %v", err)
+	}
+	if err := j.SetKey("sek-9", "test"); err != nil {
+		t.Fatal(err)
+	}
+	creds, _ := loadCredentials(dir)
+	if creds.Get(judgeCredID) != "sek-9" {
+		t.Fatalf("key not in credentials.json: %+v", creds.Secrets)
+	}
+	msg, err := j.Use("clef", srv.URL, "")
+	if err != nil || !strings.Contains(msg, "judge: on — clef-flash (clef) at "+srv.URL) || !strings.Contains(msg, "a key is saved") || !strings.Contains(msg, "answered in") {
+		t.Fatalf("use: %q, %v", msg, err)
+	}
+	if len(auth) != 1 || auth[0] != "Bearer sek-9" {
+		t.Fatalf("probe auth = %q", auth)
+	}
+	lc, err := loadLaunchConfig(dir)
+	if err != nil || lc.Judge == nil || !lc.Judge.Enabled || lc.Judge.Kind != "clef" || lc.Judge.Endpoint != srv.URL || lc.Judge.Model != "clef-flash" {
+		t.Fatalf("saved %+v (err %v)", lc.Judge, err)
+	}
+	if ep, has := j.Saved(); ep != srv.URL || !has {
+		t.Fatalf("Saved() = %q %v", ep, has)
+	}
+	// A blank key clears it: the next probe carries no Authorization.
+	if err := j.SetKey("", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.Use("", "", ""); err != nil { // defaults: saved endpoint, the kind's model
+		t.Fatal(err)
+	}
+	if auth[len(auth)-1] != "" {
+		t.Fatalf("after clearing, probe auth = %q", auth[len(auth)-1])
+	}
+	if creds, _ := loadCredentials(dir); creds.Get(judgeCredID) != "" {
+		t.Fatal("key still in credentials.json after clearing")
+	}
+	if strings.Contains(j.Status(), "a key is saved") {
+		t.Fatalf("status after clearing: %q", j.Status())
+	}
+	for _, bad := range []int{0, 6} {
+		if _, err := j.Rounds(bad); err == nil || !strings.Contains(err.Error(), "between 1 and 5") {
+			t.Fatalf("rounds %d: %v", bad, err)
+		}
+	}
+	if msg, err := j.Rounds(2); err != nil || !strings.Contains(msg, "up to 2 rounds") || j.MaxRounds() != 2 {
+		t.Fatalf("rounds 2: %q %v %d", msg, err, j.MaxRounds())
+	}
+	if lc, _ := loadLaunchConfig(dir); lc.Judge.Rounds != 2 {
+		t.Fatalf("rounds not saved: %+v", lc.Judge)
+	}
+	if _, err := j.Use("clef", "not a url", ""); err == nil || !strings.Contains(err.Error(), "address") {
+		t.Fatalf("bad endpoint: %v", err)
 	}
 }

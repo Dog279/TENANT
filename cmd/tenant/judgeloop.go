@@ -1,9 +1,10 @@
 package main
 
-// The judge in the loop of a turn (TEN-510): a System One decision model
-// (Cloudflare's Clef-flash) triages each prompt and checks a task's final
-// answer. It implements agent.Judge; /judge loop and the dashboard switch it
-// live, and config.json's judge_loop keeps the choice.
+// The Judge (TEN-510, TEN-516): a System One decision model in the loop of a
+// turn, triaging each prompt and checking a task's final answer. It
+// implements agent.Judge. /judge and the dashboard's Judge card set it up and
+// switch it live; config.json's judge section keeps the choice, and its key,
+// if the server wants one, lives in credentials.json under "judge".
 
 import (
 	"context"
@@ -19,7 +20,28 @@ import (
 	"tenant/internal/model/systemone"
 )
 
+// judgeKind is one dialect of System One server the Judge can be: its
+// defaults. Every kind speaks the same API; a hosted server differs only in
+// its endpoint and key. A new kind is a row here (and the live call that
+// verified it, docs/plans/judge-rework-plan.md).
+type judgeKind struct {
+	label    string
+	endpoint string // "" = the operator must give one
+	model    string
+}
+
+var judgeKinds = map[string]judgeKind{
+	"clef": {label: "Clef", model: "clef-flash"},
+}
+
+// judgeKindOrder lists the kinds as commands and pages offer them.
+var judgeKindOrder = []string{"clef"}
+
+// judgeCredID is the credentials.json entry holding the Judge's key.
+const judgeCredID = "judge"
+
 const (
+	judgeDefaultKind   = "clef"
 	judgeDefaultModel  = "clef-flash"
 	judgeDefaultRounds = config.JudgeDefaultRounds
 	judgeProbeTimeout  = 20 * time.Second // a cold server took ~15 s for its first answer
@@ -73,11 +95,13 @@ type judgeLoop struct {
 
 type judgeLoopState struct {
 	on     bool
-	client *systemone.Client
+	kind   string
+	client *systemone.Client // its Key is the saved credential, never shown
 	rounds int
 }
 
-// judgeLoopFor builds the process's judge from config.json's judge section.
+// judgeLoopFor builds the process's judge from config.json's judge section
+// and the key saved in credentials.json.
 func judgeLoopFor(c *commonFlags) *judgeLoop {
 	var jc *config.Judge
 	if c.lc != nil {
@@ -88,19 +112,45 @@ func judgeLoopFor(c *commonFlags) *judgeLoop {
 
 func newJudgeLoop(cfgDir string, c *config.Judge) *judgeLoop {
 	j := &judgeLoop{cfgDir: cfgDir}
-	j.state.Store(judgeStateFrom(c))
+	j.state.Store(judgeStateFrom(c, judgeSavedKey(cfgDir)))
 	return j
 }
 
-func judgeStateFrom(c *config.Judge) *judgeLoopState {
-	if c == nil { // a fresh setup: off, the default model, no server yet
-		return &judgeLoopState{client: &systemone.Client{Model: judgeDefaultModel}, rounds: judgeDefaultRounds}
+// judgeSavedKey is the key in credentials.json, "" when none or unreadable.
+func judgeSavedKey(cfgDir string) string {
+	creds, err := loadCredentials(cfgDir)
+	if err != nil {
+		return ""
+	}
+	return creds.Get(judgeCredID)
+}
+
+func judgeStateFrom(c *config.Judge, key string) *judgeLoopState {
+	if c == nil { // a fresh setup: off, the default kind and model, no server yet
+		return &judgeLoopState{kind: judgeDefaultKind, client: &systemone.Client{Model: judgeDefaultModel, Key: key}, rounds: judgeDefaultRounds}
+	}
+	kind := c.Kind
+	if kind == "" {
+		kind = judgeDefaultKind
 	}
 	m := c.Model
 	if m == "" {
-		m = judgeDefaultModel
+		m = judgeKinds[kind].model
 	}
-	return &judgeLoopState{on: c.Enabled && c.Endpoint != "", client: &systemone.Client{Endpoint: c.Endpoint, Model: m}, rounds: c.RoundsOrDefault()}
+	return &judgeLoopState{on: c.Enabled && c.Endpoint != "", kind: kind, client: &systemone.Client{Endpoint: c.Endpoint, Model: m, Key: key}, rounds: c.RoundsOrDefault()}
+}
+
+// judgeKindOf validates a kind the operator typed or picked.
+func judgeKindOf(kind string) (judgeKind, error) {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		kind = judgeDefaultKind
+	}
+	k, ok := judgeKinds[kind]
+	if !ok {
+		return judgeKind{}, fmt.Errorf("unknown judge kind %q (known: %s)", kind, strings.Join(judgeKindOrder, ", "))
+	}
+	return k, nil
 }
 
 func (j *judgeLoop) live() (*judgeLoopState, error) {
@@ -209,16 +259,140 @@ func judgeState(ex agent.Exchange) map[string]any {
 	return st
 }
 
-// Status is the one-line state for /judge loop and the dashboard.
+// Status is the one-line state for /judge and the dashboard.
 func (j *judgeLoop) Status() string {
 	s := j.state.Load()
-	if !s.on {
-		if s.client.Endpoint != "" {
-			return fmt.Sprintf("judge loop: off (last: %s at %s)", s.client.Model, s.client.Endpoint)
-		}
-		return "judge loop: off"
+	key := "no key"
+	if s.client.Key != "" {
+		key = "a key is saved"
 	}
-	return fmt.Sprintf("judge loop: on — %s at %s triages each prompt and checks tasks (up to %d rounds)", s.client.Model, s.client.Endpoint, s.rounds)
+	if s.client.Endpoint == "" {
+		return "judge: not set up — /judge use clef to point it at a System One server"
+	}
+	if !s.on {
+		return fmt.Sprintf("judge: off — %s (%s) at %s, %s", s.client.Model, s.kind, s.client.Endpoint, key)
+	}
+	return fmt.Sprintf("judge: on — %s (%s) at %s, %s; triages each prompt and checks tasks, up to %d rounds", s.client.Model, s.kind, s.client.Endpoint, key, s.rounds)
+}
+
+// Saved reports what the setup prompt offers as defaults: the endpoint on
+// file and whether a key is saved.
+func (j *judgeLoop) Saved() (endpoint string, hasKey bool) {
+	s := j.state.Load()
+	return s.client.Endpoint, s.client.Key != ""
+}
+
+// Use points the Judge at a server: the kind's dialect, the endpoint (given,
+// else the saved one, else the kind's default) and the model (given, else the
+// kind's default). It asks the server one triage question with the saved key
+// first, saves, switches the loop on, and returns the status.
+func (j *judgeLoop) Use(kind, endpoint, modelID string) (string, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	k, err := judgeKindOf(kind)
+	if err != nil {
+		return "", err
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		kind = judgeDefaultKind
+	}
+	cur := j.state.Load()
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		endpoint = cur.client.Endpoint
+	}
+	if endpoint == "" {
+		endpoint = k.endpoint
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		modelID = k.model
+	}
+	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("the judge needs a System One server's address, like http://host:30000")
+	}
+	answered, err := judgeProbe(&systemone.Client{Endpoint: endpoint, Model: modelID, Key: cur.client.Key})
+	if err != nil {
+		return "", err
+	}
+	next := &config.Judge{Enabled: true, Kind: kind, Endpoint: endpoint, Model: modelID, Rounds: cur.rounds}
+	if next.Rounds == judgeDefaultRounds {
+		next.Rounds = 0
+	}
+	j.state.Store(judgeStateFrom(next, cur.client.Key))
+	if err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) { lc.Judge = next }); err != nil {
+		return "", errNotSaved(j.Status(), err)
+	}
+	return j.Status() + answered, nil
+}
+
+// SetKey stores the Judge's key in credentials.json ("" removes it) and
+// applies it live. surface names who changed it, for the Security log.
+func (j *judgeLoop) SetKey(key, surface string) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	key = strings.TrimSpace(key)
+	creds, err := loadCredentials(j.cfgDir)
+	if err != nil {
+		return err
+	}
+	if key == "" {
+		delete(creds.Secrets, judgeCredID)
+	} else {
+		creds.Set(judgeCredID, key)
+	}
+	if err := saveCredentials(j.cfgDir, creds, surface); err != nil {
+		return err
+	}
+	cur := j.state.Load()
+	next := *cur
+	client := *cur.client
+	client.Key = key
+	next.client = &client
+	j.state.Store(&next)
+	return nil
+}
+
+// Rounds sets how many times a turn may be sent back, 1..config.JudgeMaxRounds,
+// live and saved.
+func (j *judgeLoop) Rounds(n int) (string, error) {
+	if n < 1 || n > config.JudgeMaxRounds {
+		return "", fmt.Errorf("rounds must be between 1 and %d", config.JudgeMaxRounds)
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	cur := j.state.Load()
+	next := *cur
+	next.rounds = n
+	j.state.Store(&next)
+	saved := n
+	if saved == judgeDefaultRounds {
+		saved = 0
+	}
+	err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) {
+		if lc.Judge == nil {
+			lc.Judge = &config.Judge{Kind: cur.kind}
+		}
+		lc.Judge.Rounds = saved
+	})
+	if err != nil {
+		return "", errNotSaved(j.Status(), err)
+	}
+	return fmt.Sprintf("judge: up to %d rounds per answer", n), nil
+}
+
+// judgeProbe asks the server one triage question, so a wrong address, a
+// refused key or a server that isn't a decision model shows before anything
+// is saved. It returns how long the answer took, for the status line.
+func judgeProbe(c *systemone.Client) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), judgeProbeTimeout)
+	defer cancel()
+	start := time.Now()
+	if _, _, err := c.Decide(ctx, "User: hello", judgeTriageQs); err != nil {
+		return "", fmt.Errorf("%s at %s didn't answer: %v", c.Model, c.Endpoint, err)
+	}
+	return fmt.Sprintf(" (answered in %.1fs)", time.Since(start).Seconds()), nil
 }
 
 // Settings reports on/off, the endpoint and the model.
@@ -250,22 +424,19 @@ func (j *judgeLoop) Set(on bool, endpoint, modelID string) (string, error) {
 	answered := ""
 	if on {
 		if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return "", fmt.Errorf("the judge needs a System One server: /judge loop on http://host:port [model]")
+			return "", fmt.Errorf("the judge needs a System One server's address, like http://host:30000")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), judgeProbeTimeout)
-		defer cancel()
-		start := time.Now()
-		c := &systemone.Client{Endpoint: endpoint, Model: modelID}
-		if _, _, err := c.Decide(ctx, "User: hello", judgeTriageQs); err != nil {
-			return "", fmt.Errorf("%s at %s didn't answer: %v (judge loop left %s)", modelID, endpoint, err, onOff(cur.on))
+		a, err := judgeProbe(&systemone.Client{Endpoint: endpoint, Model: modelID, Key: cur.client.Key})
+		if err != nil {
+			return "", fmt.Errorf("%v (judge left %s)", err, onOff(cur.on))
 		}
-		answered = fmt.Sprintf(" (answered in %.1fs)", time.Since(start).Seconds())
+		answered = a
 	}
-	next := &config.Judge{Enabled: on, Kind: "clef", Endpoint: endpoint, Model: modelID, Rounds: cur.rounds}
+	next := &config.Judge{Enabled: on, Kind: cur.kind, Endpoint: endpoint, Model: modelID, Rounds: cur.rounds}
 	if next.Rounds == judgeDefaultRounds {
 		next.Rounds = 0
 	}
-	j.state.Store(judgeStateFrom(next))
+	j.state.Store(judgeStateFrom(next, cur.client.Key))
 	err := persistLaunchConfig(j.cfgDir, nil, func(lc *launchConfig) { lc.Judge = next })
 	if err != nil {
 		return "", errNotSaved(j.Status(), err)

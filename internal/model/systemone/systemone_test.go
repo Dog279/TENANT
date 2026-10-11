@@ -3,6 +3,7 @@ package systemone
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,5 +64,26 @@ func TestDecide_Errors(t *testing.T) {
 	slow := serve(func(w http.ResponseWriter, _ *http.Request) { time.Sleep(400 * time.Millisecond) })
 	if _, _, err := slow.Decide(context.Background(), "s", qs); err == nil {
 		t.Error("a slow server should time out")
+	}
+}
+
+// A key goes out as a bearer token; without one the request has no
+// Authorization header, which is how a local Clef is called.
+func TestDecide_BearerKey(t *testing.T) {
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"answers":{"q":{"type":"noul","noul":0.5}}}`)
+	}))
+	defer srv.Close()
+	qs := map[string]Question{"q": {Type: Noul, Instructions: "?"}}
+	if _, _, err := (&Client{Endpoint: srv.URL, Model: "m"}).Decide(context.Background(), "s", qs); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := (&Client{Endpoint: srv.URL, Model: "m", Key: "sek-1"}).Decide(context.Background(), "s", qs); err != nil {
+		t.Fatal(err)
+	}
+	if len(auth) != 2 || auth[0] != "" || auth[1] != "Bearer sek-1" {
+		t.Fatalf("Authorization headers = %q", auth)
 	}
 }
