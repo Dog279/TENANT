@@ -25,7 +25,6 @@ import (
 	"tenant/internal/attach"
 	"tenant/internal/control"
 	"tenant/internal/fsperm"
-	"tenant/internal/md"
 	modelpkg "tenant/internal/model"
 )
 
@@ -2961,7 +2960,7 @@ func (m *model) assistantBody(msg *chatMsg, w int) string {
 func (m *model) renderText(text string, w int, complete bool) string {
 	text = strings.TrimSpace(text)
 	if complete {
-		return md.ANSI(text, w, pal.markdown)
+		return markdownANSI(text, w, pal.markdown)
 	}
 	head, tail := "", text
 	if i := strings.LastIndex(text, "\n\n"); i >= 0 {
@@ -2969,7 +2968,7 @@ func (m *model) renderText(text string, w int, complete bool) string {
 	}
 	out := ""
 	if head != "" {
-		out = md.ANSI(head, w, pal.markdown)
+		out = markdownANSI(head, w, pal.markdown)
 	}
 	if tail != "" {
 		if out != "" {

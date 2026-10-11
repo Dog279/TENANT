@@ -1,9 +1,11 @@
-// Package ansi renders a Markdown document tree as styled terminal text: the
-// terminal app's half of internal/md. It lays blocks out at a width (word
-// wrap, hanging indents, code panels kept whole, tables through lipgloss) and
-// colours them with a Theme the caller owns, so the app's palette stays in one
-// place.
-package ansi
+package tui
+
+// The chat pane's Markdown renderer (TEN-514): a goldmark document tree (from
+// internal/md, Tenant's copy) laid out as styled terminal text at a width:
+// word wrap, hanging list indents, code panels kept whole, blockquote bars,
+// task boxes and lipgloss tables, coloured by the palette's mdTheme. It lives
+// in this package because only the terminal UI may draw with Charm libraries
+// (internal/archtest).
 
 import (
 	"fmt"
@@ -13,15 +15,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 
+	"tenant/internal/md"
 	"tenant/internal/md/goldmark/ast"
 	"tenant/internal/md/goldmark/extension"
 	east "tenant/internal/md/goldmark/extension/ast"
 	"tenant/internal/md/goldmark/renderer/html"
 )
 
-// Theme is the set of styles the renderer draws with. The zero value renders
-// plain text; DefaultTheme is the terminal app's look.
-type Theme struct {
+// mdTheme is the set of styles the renderer draws with. The zero value
+// renders plain text; defaultMDTheme is the dark palette's look.
+type mdTheme struct {
 	Heading   lipgloss.Style // headings (all levels; H1 and H2 also get a rule)
 	Strong    lipgloss.Style
 	Emphasis  lipgloss.Style
@@ -37,11 +40,11 @@ type Theme struct {
 	TableLine lipgloss.Style // table borders
 }
 
-// DefaultTheme is a readable dark-terminal palette: cyan for structure and
+// defaultMDTheme is a readable dark-terminal palette: cyan for structure and
 // links, dim grey for rules and URLs, bold for headings and strong text.
-func DefaultTheme() Theme {
+func defaultMDTheme() mdTheme {
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	return Theme{
+	return mdTheme{
 		Heading:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")),
 		Strong:    lipgloss.NewStyle().Bold(true),
 		Emphasis:  lipgloss.NewStyle().Italic(true),
@@ -58,25 +61,27 @@ func DefaultTheme() Theme {
 	}
 }
 
-// Render lays doc out at width columns. Lines never exceed width except for
-// a single word or code token wider than the column, which lipgloss breaks.
-func Render(doc ast.Node, source []byte, width int, th Theme) string {
+// markdownANSI renders src at width columns. Lines never exceed width except
+// for a single word or code token wider than the column, which lipgloss
+// breaks.
+func markdownANSI(src string, width int, th mdTheme) string {
 	if width < 8 {
 		width = 8
 	}
-	r := &renderer{src: source, th: th}
-	lines := r.blocks(doc, width)
+	source := []byte(src)
+	r := &mdRenderer{src: source, th: th}
+	lines := r.blocks(md.Parse(source), width)
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
-type renderer struct {
+type mdRenderer struct {
 	src []byte
-	th  Theme
+	th  mdTheme
 }
 
 // blocks renders n's block children, a blank line between blocks (none inside
 // a tight list, whose items hand in tight=true).
-func (r *renderer) blocks(n ast.Node, width int) []string {
+func (r *mdRenderer) blocks(n ast.Node, width int) []string {
 	var out []string
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		b := r.block(c, width)
@@ -91,17 +96,17 @@ func (r *renderer) blocks(n ast.Node, width int) []string {
 	return out
 }
 
-func (r *renderer) block(n ast.Node, width int) []string {
+func (r *mdRenderer) block(n ast.Node, width int) []string {
 	switch n := n.(type) {
 	case *ast.Heading:
 		text := r.inlines(n)
-		lines := wrap(r.th.Heading.Render(text), width)
+		lines := wrapStyled(r.th.Heading.Render(text), width)
 		if n.Level <= 2 {
-			lines = append(lines, r.th.Rule.Render(strings.Repeat("─", min(width, maxWidth(lines)))))
+			lines = append(lines, r.th.Rule.Render(strings.Repeat("─", min(width, maxLineWidth(lines)))))
 		}
 		return lines
 	case *ast.Paragraph:
-		return wrap(r.inlines(n), width)
+		return wrapStyled(r.inlines(n), width)
 	case *ast.CodeBlock:
 		label, _ := n.Language(r.src)
 		return r.codePanel(n.Value.Str(r.src), label, width)
@@ -124,7 +129,7 @@ func (r *renderer) block(n ast.Node, width int) []string {
 		if n.HasChildren() && !isInlineContainer(n) {
 			return r.blocks(n, width)
 		}
-		return wrap(r.inlines(n), width)
+		return wrapStyled(r.inlines(n), width)
 	}
 }
 
@@ -134,7 +139,7 @@ func isInlineContainer(n ast.Node) bool {
 	return inline
 }
 
-func (r *renderer) codePanel(code, label string, width int) []string {
+func (r *mdRenderer) codePanel(code, label string, width int) []string {
 	code = strings.TrimRight(code, "\n")
 	var out []string
 	bar := r.th.CodeRule.Render("│ ")
@@ -143,14 +148,14 @@ func (r *renderer) codePanel(code, label string, width int) []string {
 	}
 	for _, line := range strings.Split(code, "\n") {
 		line = strings.ReplaceAll(line, "\t", "    ")
-		for _, piece := range hardWrap(line, width-2) {
+		for _, piece := range hardWrapCode(line, width-2) {
 			out = append(out, bar+r.th.CodeBlock.Render(piece))
 		}
 	}
 	return out
 }
 
-func (r *renderer) list(n *ast.List, width int) []string {
+func (r *mdRenderer) list(n *ast.List, width int) []string {
 	var out []string
 	num := n.Start
 	if num == 0 {
@@ -192,7 +197,7 @@ func (r *renderer) list(n *ast.List, width int) []string {
 
 // itemBlocks renders a list item's children; a tight list puts no blank line
 // between an item's own paragraph and a nested list.
-func (r *renderer) itemBlocks(item ast.Node, width int, tight bool) []string {
+func (r *mdRenderer) itemBlocks(item ast.Node, width int, tight bool) []string {
 	if !tight {
 		return r.blocks(item, width)
 	}
@@ -203,7 +208,7 @@ func (r *renderer) itemBlocks(item ast.Node, width int, tight bool) []string {
 	return out
 }
 
-func (r *renderer) table(n *east.Table, width int) []string {
+func (r *mdRenderer) table(n *east.Table, width int) []string {
 	t := table.New().Border(lipgloss.NormalBorder()).BorderStyle(r.th.TableLine).Width(width).Wrap(true)
 	var headers []string
 	var rows [][]string
@@ -239,7 +244,7 @@ func (r *renderer) table(n *east.Table, width int) []string {
 
 // inlines renders n's inline children as one styled string. Soft line breaks
 // become spaces (the wrap decides the lines); hard breaks stay.
-func (r *renderer) inlines(n ast.Node) string {
+func (r *mdRenderer) inlines(n ast.Node) string {
 	var b strings.Builder
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		r.inline(&b, c)
@@ -247,7 +252,7 @@ func (r *renderer) inlines(n ast.Node) string {
 	return b.String()
 }
 
-func (r *renderer) inline(b *strings.Builder, n ast.Node) {
+func (r *mdRenderer) inline(b *strings.Builder, n ast.Node) {
 	switch n := n.(type) {
 	case *ast.Text:
 		b.WriteString(n.Value.Value(r.src))
@@ -290,8 +295,8 @@ func (r *renderer) inline(b *strings.Builder, n ast.Node) {
 	}
 }
 
-// wrap word-wraps a styled string to width, keeping the newlines it has.
-func wrap(s string, width int) []string {
+// wrapStyled word-wraps a styled string to width, keeping the newlines it has.
+func wrapStyled(s string, width int) []string {
 	if s == "" {
 		return nil
 	}
@@ -303,8 +308,8 @@ func wrap(s string, width int) []string {
 	return lines
 }
 
-// hardWrap breaks one code line at width cells, with no regard for words.
-func hardWrap(line string, width int) []string {
+// hardWrapCode breaks one code line at width cells, with no regard for words.
+func hardWrapCode(line string, width int) []string {
 	if width < 1 || lipgloss.Width(line) <= width {
 		return []string{line}
 	}
@@ -318,7 +323,7 @@ func hardWrap(line string, width int) []string {
 	return out
 }
 
-func maxWidth(lines []string) int {
+func maxLineWidth(lines []string) int {
 	w := 0
 	for _, l := range lines {
 		w = max(w, lipgloss.Width(l))

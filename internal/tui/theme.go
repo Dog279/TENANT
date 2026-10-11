@@ -7,18 +7,14 @@ package tui
 // follow the dashboard's: green is on or fine, amber needs you, red is an
 // error or can't be undone, cyan is structure and the primary action.
 
-import (
-	"github.com/charmbracelet/lipgloss"
-
-	"tenant/internal/md/ansi"
-)
+import "github.com/charmbracelet/lipgloss"
 
 type palette struct {
 	User, Agent, Dim, Tool, Err, OK, Sys lipgloss.Style
 	StatusBar, FeedTitle, Border         lipgloss.Style
 	Heading, Key, Name, OnMark, OffMark  lipgloss.Style
 	Glyph, Rule, Time                    lipgloss.Style // turn blocks: the gutter dot, the rule between turns, time stamps
-	markdown                             ansi.Theme     // the chat pane's Markdown
+	markdown                             mdTheme        // the chat pane's Markdown
 }
 
 func darkPalette() palette {
@@ -44,7 +40,7 @@ func darkPalette() palette {
 		Rule:      lipgloss.NewStyle().Foreground(lipgloss.Color("238")),
 		Time:      dim,
 	}
-	p.markdown = ansi.DefaultTheme()
+	p.markdown = defaultMDTheme()
 	return p
 }
 
@@ -73,7 +69,7 @@ func lightPalette() palette {
 		Rule:      lipgloss.NewStyle().Foreground(lipgloss.Color("250")),
 		Time:      dim,
 	}
-	p.markdown = ansi.Theme{
+	p.markdown = mdTheme{
 		Heading:   p.Heading,
 		Strong:    lipgloss.NewStyle().Bold(true),
 		Emphasis:  lipgloss.NewStyle().Italic(true),

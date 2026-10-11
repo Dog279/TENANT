@@ -1,7 +1,8 @@
-// Package md renders the Markdown a model writes for Tenant's two surfaces:
-// HTML for the dashboard and styled text for the terminal app, from one
-// in-house copy of goldmark (see goldmark/README.md). HTML inside the Markdown
-// is text on both: the copy has no raw-HTML parser.
+// Package md parses the Markdown a model writes, from one in-house copy of
+// goldmark (see goldmark/README.md), and renders it as HTML for the dashboard.
+// The terminal app renders the same tree itself (internal/tui, which alone may
+// draw with Charm libraries) through Parse. HTML inside the Markdown is text on
+// both surfaces: the copy has no raw-HTML parser.
 package md
 
 import (
@@ -9,7 +10,7 @@ import (
 	"html/template"
 	"sync"
 
-	"tenant/internal/md/ansi"
+	"tenant/internal/md/goldmark/ast"
 	"tenant/internal/md/goldmark/extension"
 	"tenant/internal/md/goldmark/parser"
 	"tenant/internal/md/goldmark/renderer/html"
@@ -40,8 +41,6 @@ func HTML(src string) template.HTML {
 	return template.HTML(buf.String()) //nolint:gosec // rendered from escaped text nodes
 }
 
-// ANSI renders src for a terminal pane width columns wide, in theme th.
-func ANSI(src string, width int, th ansi.Theme) string {
-	source := []byte(src)
-	return ansi.Render(mdParser.Parse(source), source, width, th)
-}
+// Parse returns the document tree of source, with GFM tables and task boxes.
+// Node values refer into source, so a renderer takes both.
+func Parse(source []byte) ast.Node { return mdParser.Parse(source) }
