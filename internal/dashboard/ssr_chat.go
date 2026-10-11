@@ -14,6 +14,7 @@ import (
 	"html"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -54,17 +55,29 @@ func (s *Server) transcriptHTML(n int) []template.HTML {
 		}
 	}
 	results := map[string]working.Message{}
+	called := map[string]bool{} // results whose call is in the window
 	for _, m := range msgs[start:] {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			results[m.ToolCallID] = m
+		switch m.Role {
+		case "tool":
+			if m.ToolCallID != "" {
+				results[m.ToolCallID] = m
+			}
+		case "assistant":
+			for _, tc := range m.ToolCalls {
+				called[tc.ID] = true
+			}
 		}
 	}
 	var out []template.HTML
 	add := func(h string) { out = append(out, template.HTML(h)) } //nolint:gosec // built by the escaping renderers below
+	summarized := false
 	for _, m := range msgs[start:] {
 		switch {
 		case m.Kind != "":
-			add(sysRow("Earlier messages were summarized to save room."))
+			if !summarized { // one row however many summaries the window holds
+				summarized = true
+				add(sysRow("Earlier messages were summarized to save room."))
+			}
 		case m.Role == "user":
 			add(userBubble(m.Content))
 		case m.Role == "assistant":
@@ -75,6 +88,9 @@ func (s *Server) transcriptHTML(n int) []template.HTML {
 				r, ok := results[tc.ID]
 				add(toolCard(toolCardData{id: tc.ID, name: tc.Name, args: string(tc.Arguments), done: ok, result: r.Content}))
 			}
+		case m.Role == "tool" && !called[m.ToolCallID]:
+			// Its call was compacted away: the result still shows, on its own.
+			add(toolCard(toolCardData{id: m.ToolCallID, name: "tool", result: m.Content, done: true}))
 		}
 	}
 	return out
@@ -112,7 +128,7 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	// The answer streams into one bubble (TEN-515): tokens gather here and
 	// go out at most every streamEvery, so a fast model can't flood the page
 	// or fill the broker's buffer behind a slow browser.
-	cs := &chatStream{}
+	cs := newChatStream()
 	stream := time.NewTicker(streamEvery)
 	defer stream.Stop()
 	for {
@@ -187,6 +203,25 @@ type chatStream struct {
 	dirty   bool                // tokens arrived since the last send
 	n       int                 // ids for calls the model gave none
 	pending map[string][]string // tool name → ids of its open cards, oldest first
+	// Card ids are tag-turn-id: tag is this connection's, turn counts the
+	// turns it has seen, so a model that reuses call ids across turns, or a
+	// reconnect that opens a fresh stream over a page that still holds the
+	// old cards, never has two cards with one id. sent is the cards this
+	// stream put on the page, so a result whose call it never saw (the broker
+	// dropped it, or the page opened mid-turn) is appended, not lost.
+	tag  string
+	turn int
+	sent map[string]bool
+}
+
+// newChatStream starts a stream's state with its own tag.
+func newChatStream() *chatStream {
+	return &chatStream{tag: strconv.FormatInt(time.Now().UnixNano()%1_000_000_007, 36), sent: map[string]bool{}}
+}
+
+// cardID is the page id of the call id's card in this stream.
+func (cs *chatStream) cardID(id string) string {
+	return cs.tag + "-" + strconv.Itoa(cs.turn) + "-" + id
 }
 
 // patches turns one event into the SSE patches it means for the chat.
@@ -195,11 +230,17 @@ func (cs *chatStream) patches(ev agent.Event) [][]byte {
 		return nil
 	}
 	switch ev.Kind {
+	case agent.EventTurnStart:
+		cs.turn++
+		return nil
 	case agent.EventToken:
 		cs.cur.WriteString(ev.Text)
 		if !cs.open {
 			cs.open = true
-			return [][]byte{patchElements("#chat-log", "append", streamingBubble(cs.cur.String()))}
+			// A reconnect opens a fresh stream over a page that may still
+			// hold the old stream's bubble: clear it first (a no-op when
+			// there is none), or two elements would share the id.
+			return [][]byte{patchElements("#chat-cur", "remove", ""), patchElements("#chat-log", "append", streamingBubble(cs.cur.String()))}
 		}
 		cs.dirty = true
 		return nil
@@ -240,7 +281,9 @@ func (cs *chatStream) patches(ev agent.Event) [][]byte {
 			out = append(out, patchElements("#chat-cur", "replace", answerBubble(cs.cur.String(), "")))
 			cs.cur.Reset()
 		}
-		return append(out, patchElements("#chat-log", "append", toolCard(toolCardData{id: id, name: ev.Tool, args: ev.Args, trace: ev.TraceID})))
+		cid := cs.cardID(id)
+		cs.sent[cid] = true
+		return append(out, patchElements("#chat-log", "append", toolCard(toolCardData{id: cid, name: ev.Tool, args: ev.Args, trace: ev.TraceID})))
 	case agent.EventToolResult:
 		id := ev.ToolCallID
 		if id == "" {
@@ -248,11 +291,18 @@ func (cs *chatStream) patches(ev agent.Event) [][]byte {
 				id, cs.pending[ev.Tool] = ids[0], ids[1:]
 			}
 		}
-		card := toolCard(toolCardData{id: id, name: ev.Tool, args: ev.Args, result: ev.Result, dur: ev.Duration, done: true, isErr: ev.IsErr, trace: ev.TraceID})
 		if id == "" { // no card to settle: the result stands alone
-			return [][]byte{patchElements("#chat-log", "append", card)}
+			return [][]byte{patchElements("#chat-log", "append", toolCard(toolCardData{name: ev.Tool, args: ev.Args, result: ev.Result, dur: ev.Duration, done: true, isErr: ev.IsErr, trace: ev.TraceID}))}
 		}
-		return [][]byte{patchElements("", "", card)}
+		cid := cs.cardID(id)
+		card := toolCard(toolCardData{id: cid, name: ev.Tool, args: ev.Args, result: ev.Result, dur: ev.Duration, done: true, isErr: ev.IsErr, trace: ev.TraceID})
+		if cs.sent[cid] {
+			return [][]byte{patchElements("", "", card)}
+		}
+		// This stream never put the call's card on the page (the broker
+		// dropped the call, or the page opened mid-turn): the settled card
+		// stands alone, after clearing one an earlier stream may have left.
+		return [][]byte{patchElements("#tool-"+cid, "remove", ""), patchElements("#chat-log", "append", card)}
 	}
 	if b := chatBubble(ev); b != "" {
 		return [][]byte{patchElements("#chat-log", "append", b)}
@@ -407,7 +457,7 @@ func userBubble(text string) string {
 func answerBubble(text, id string) string {
 	idAttr := ""
 	if id != "" {
-		idAttr = ` id="` + id + `"`
+		idAttr = ` id="` + html.EscapeString(id) + `"`
 	}
 	return `<div class="msg a"` + idAttr + `><div class="av">t</div><div class="bubble md">` + string(md.HTML(visibleText(text))) + `</div></div>`
 }

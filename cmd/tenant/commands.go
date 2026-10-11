@@ -2476,9 +2476,9 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 		cfg:        dcfg,
 		runner:     ag,
 		transcript: ag.Conversation,
-		tools:  dashTools{mainTools},
-		mem:    dashMemory{memCtl},
-		cron:   dashCronCtl,
+		tools:      dashTools{mainTools},
+		mem:        dashMemory{memCtl},
+		cron:       dashCronCtl,
 		// Watched-repo list for the Integrations page; shares storage and
 		// semantics with the TUI /github command via githubTUIControl.
 		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},

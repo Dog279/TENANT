@@ -659,9 +659,9 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		cfg:        dcfg,
 		runner:     gated,
 		transcript: ag.Conversation,
-		tools:  dashTools{mainTools},
-		mem:    dashMemory{memCtl},
-		cron:   dashCronCtl,
+		tools:      dashTools{mainTools},
+		mem:        dashMemory{memCtl},
+		cron:       dashCronCtl,
 		// Watched-repo list for the Integrations page. serve builds its OWN
 		// dashboardManager, so anything wired only in cmdTUI is silently absent
 		// here — which is exactly how this section came up empty the first time.
