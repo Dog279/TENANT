@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +27,7 @@ import (
 	"tenant/internal/control"
 	"tenant/internal/fsperm"
 	modelpkg "tenant/internal/model"
+	"tenant/internal/uicomp"
 )
 
 // Config wires the TUI to an already-constructed agent whose Observer
@@ -1215,6 +1217,9 @@ type chatMsg struct {
 	// model names the model an assistant message came from (TEN-514).
 	at    time.Time
 	model string
+	// via names the component that sent a user message (TEN-518): "choices"
+	// or "form"; "" when the operator typed it.
+	via string
 	// tools are an assistant message's tool calls, in order; each knows where
 	// in content it happened, so the block interleaves text and tool rows.
 	tools []toolRow
@@ -1296,8 +1301,11 @@ type model struct {
 	// pane (/feed off, Alt+F). inTurn indents the feed's lines under the turn
 	// header while the main agent's turn runs (TEN-514).
 	toolsOpen bool
-	feedOff   bool
-	inTurn    bool
+	// comp is the latest turn's choices or form waiting for the operator's
+	// answer (TEN-518); nil when nothing is.
+	comp    *componentPrompt
+	feedOff bool
+	inTurn  bool
 	// pending holds dangerous actions awaiting /approve or /deny, oldest
 	// first (tool calls are sequential, so this is normally 0–1 deep).
 	pending []ApprovalRequest
@@ -1777,6 +1785,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.turnCancel()
 			m.turnCancel = nil
 		}
+		if !m.interrupted && msg.err == nil {
+			m.armComponent() // TEN-518: the turn's choices or form now take input
+		}
 		switch {
 		case m.interrupted:
 			m.sysChatStyled("⏹ interrupted — agent stopped.",
@@ -2038,6 +2049,23 @@ func (m *model) submit() tea.Cmd {
 		m.handleConfigureAnswer(q)
 		return m.advanceConfigureSession()
 	}
+	// A number answers the latest turn's choices (TEN-518); anything else is
+	// a normal message and the choices are left behind.
+	if m.comp != nil && m.comp.c.Kind == "choices" && !m.busy && !strings.HasPrefix(q, "/") {
+		if n, err := strconv.Atoi(q); err == nil {
+			text, ferr := uicomp.Fill(m.comp.c, uicomp.Inputs{Choice: n - 1})
+			if ferr != nil {
+				m.sysChat(ferr.Error())
+				return nil
+			}
+			c := m.comp
+			m.comp = nil
+			m.ta.Reset()
+			m.chatFollow = true
+			var none agent.RouteOverride
+			return m.startTurn(text, none, "choices", uicomp.Meta(c.c, c.id))
+		}
+	}
 	if q == "" {
 		return nil
 	}
@@ -2072,7 +2100,18 @@ func (m *model) submit() tea.Cmd {
 		m.sysChat("!big and !local must be followed by a message")
 		return nil
 	}
-	m.msgs = append(m.msgs, chatMsg{role: "user", content: q, at: time.Now()})
+	return m.startTurn(q, routeOverride, "", nil)
+}
+
+// startTurn sends q as the operator's message and runs the turn off the UI
+// goroutine. via and meta name the component that sent it (TEN-518), "" and
+// nil when the operator typed it; a typed message leaves any waiting
+// component behind.
+func (m *model) startTurn(q string, routeOverride agent.RouteOverride, via string, meta map[string]any) tea.Cmd {
+	if via == "" {
+		m.comp = nil
+	}
+	m.msgs = append(m.msgs, chatMsg{role: "user", content: q, at: time.Now(), via: via})
 	m.busy = true
 	m.reqStart = time.Now()
 	m.interrupted = false
@@ -2085,7 +2124,7 @@ func (m *model) submit() tea.Cmd {
 	m.turnCancel = cancel
 	req := agent.TurnRequest{
 		UserQuery: q, RouteSurface: agent.RouteSurfaceTUI, RouteOverride: routeOverride,
-		Images: m.takeAttachments(q),
+		Images: m.takeAttachments(q), Meta: meta,
 	}
 	// While a /goal loop is active, decouple this turn's iteration budget from
 	// the global loop ceiling so a long autonomous run can iterate freely
@@ -2934,6 +2973,9 @@ func (m *model) blockHeader(msg *chatMsg) string {
 	}
 	if msg.role == "assistant" && msg.model != "" {
 		h += pal.Time.Render(" · " + msg.model)
+	}
+	if msg.via != "" {
+		h += pal.Time.Render(" · via " + msg.via)
 	}
 	return h
 }

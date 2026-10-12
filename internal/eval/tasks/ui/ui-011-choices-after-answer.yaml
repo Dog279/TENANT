@@ -1,0 +1,19 @@
+id: ui-011-choices-after-answer
+category: ui/components
+subset: ui
+description: |
+  After answering, the model offers the likely follow-ups as choices rather than a paragraph of suggestions.
+prompt: "Explain what a context window is in one sentence, then offer me three follow-up questions as choices I can tap."
+mode: live
+expected:
+  must_call:
+    - tool: ui_render
+      args_contain: ['"choices"']
+      result_contains: ["shown: choices"]
+  rubric:
+    criterion: "The choices was drawn by the ui_render tool (its result says shown) and the text around it is a short line of context, not a second copy of the data."
+    anchors:
+      1: "No component, or the data repeated in full as prose"
+      3: "The component was drawn but the prose repeats most of it"
+      5: "The component carries the data; the prose is one or two lines of context"
+  rubric_min_score: 3

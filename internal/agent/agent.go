@@ -562,6 +562,10 @@ type TurnRequest struct {
 	// cap). Used by /goal runs so a long autonomous loop can iterate freely
 	// without raising the global ceiling every normal turn shares (TEN-216).
 	LoopCeiling int
+	// Meta tags the user message and its archive event (TEN-518): a message a
+	// component sent carries {"source": "ui_render", "component", "kind"} so
+	// both surfaces can show it was a tap or a form, not typed. nil = typed.
+	Meta map[string]any
 	// NoJudge keeps the judge in the loop out of this turn: a /goal run
 	// judges its own turns (TEN-510).
 	NoJudge bool
@@ -764,11 +768,18 @@ func (a *Agent) Turn(ctx context.Context, req TurnRequest) (result *TurnResult, 
 	// The images ride this working-set message to the model: the assembler
 	// copies the working set and is never handed UserQuery (below), so there
 	// is one copy of the message, images and all (TEN-493).
-	userMsg := working.Message{Role: "user", Content: req.UserQuery, Images: req.Images, Timestamp: now}
+	userMsg := working.Message{Role: "user", Content: req.UserQuery, Images: req.Images, Timestamp: now, Meta: req.Meta}
 	a.cfg.Working.Append(userMsg)
+	userMeta := imagesMeta(req.Images)
+	for k, v := range req.Meta {
+		if userMeta == nil {
+			userMeta = map[string]any{}
+		}
+		userMeta[k] = v
+	}
 	a.archiveEvent(ctx, archive.Event{
 		Timestamp: now, AgentID: a.cfg.AgentID, SessionID: a.cfg.SessionID,
-		Role: "user", Content: req.UserQuery, Metadata: imagesMeta(req.Images),
+		Role: "user", Content: req.UserQuery, Metadata: userMeta,
 	})
 	// The judge triages the prompt while the planner works (TEN-510).
 	jt := a.startJudge(ctx, req)

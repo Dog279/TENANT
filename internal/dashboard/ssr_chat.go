@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"html/template"
@@ -81,7 +82,7 @@ func (s *Server) transcriptHTML(n int) []template.HTML {
 				add(sysRow("Earlier messages were summarized to save room."))
 			}
 		case m.Role == "user":
-			add(userBubble(m.Content))
+			add(userBubble(m.Content, uicomp.Via(m.Meta)))
 		case m.Role == "assistant":
 			if strings.TrimSpace(m.Content) != "" {
 				add(answerBubble(m.Content, ""))
@@ -371,6 +372,97 @@ func chatText(r *http.Request) string {
 	return strings.TrimSpace(r.FormValue("text"))
 }
 
+// chatInput is what one send carries (TEN-518): the typed text, or a
+// component's answer: the ui_render call it answers, the option tapped and
+// the form's fields, as Datastar signals (or form fields).
+type chatInput struct {
+	text      string
+	component string
+	choice    int
+	fields    map[string]string
+}
+
+// readChatInput reads a send from a Datastar JSON signals body or a plain
+// form POST. When a component is named, the typed text is ignored: the
+// server fills the message from the saved call (componentAnswer).
+func readChatInput(r *http.Request) chatInput {
+	in := chatInput{choice: -1, fields: map[string]string{}}
+	if strings.Contains(r.Header.Get("Content-Type"), "json") {
+		var sig map[string]any
+		if json.NewDecoder(r.Body).Decode(&sig) == nil {
+			in.text, _ = sig["text"].(string)
+			in.component, _ = sig["component"].(string)
+			switch v := sig["choice"].(type) {
+			case float64:
+				in.choice = int(v)
+			case string:
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+					in.choice = n
+				}
+			}
+			for k, v := range sig {
+				if strings.HasPrefix(k, "f_") {
+					in.fields[k] = fmt.Sprint(v)
+				}
+			}
+		}
+	} else {
+		in.text = r.FormValue("text")
+		in.component = r.FormValue("component")
+		if n, err := strconv.Atoi(strings.TrimSpace(r.FormValue("choice"))); err == nil {
+			in.choice = n
+		}
+		for k, v := range r.PostForm {
+			if strings.HasPrefix(k, "f_") && len(v) > 0 {
+				in.fields[k] = v[0]
+			}
+		}
+	}
+	in.text, in.component = strings.TrimSpace(in.text), strings.TrimSpace(in.component)
+	return in
+}
+
+// componentAnswer turns a tap or a filled form into the message to send
+// (TEN-518). The call is looked up by id in the conversation the dashboard
+// holds (the running process's working set: a restart or a compaction loses
+// it, and then the honest answer is "gone"); the page never supplies the
+// template, so it cannot forge one. uicomp.Fill checks every value. Errors
+// are one line for the person at the page.
+func (s *Server) componentAnswer(in chatInput) (string, map[string]any, error) {
+	gone := errors.New("That form is gone: your agent no longer has it (a restart, or an older conversation was tidied away). Ask again.")
+	if s.transcript == nil {
+		return "", nil, gone
+	}
+	for _, m := range s.transcript() {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != in.component || tc.Name != uicomp.ToolName {
+				continue
+			}
+			c, _, err := uicomp.Parse(tc.Arguments)
+			if err != nil {
+				return "", nil, errors.New("That component can't be used: " + err.Error())
+			}
+			fields := map[string]string{}
+			if c.Form != nil {
+				for _, fl := range c.Form.Fields {
+					if v, ok := in.fields[uicomp.FieldSignal(tc.ID, fl.Name)]; ok {
+						fields[fl.Name] = v
+					}
+				}
+			}
+			text, err := uicomp.Fill(c, uicomp.Inputs{Choice: in.choice, Fields: fields})
+			if err != nil {
+				return "", nil, err
+			}
+			return text, uicomp.Meta(c, tc.ID), nil
+		}
+	}
+	return "", nil, gone
+}
+
 // clearChatBox empties the composer (its data-bind:text signal) once a message
 // is sent. A fixed event: no request text rides in a signals patch.
 const clearChatBox = "event: datastar-patch-signals\ndata: signals {\"text\":\"\"}\n\n"
@@ -381,7 +473,21 @@ const clearChatBox = "event: datastar-patch-signals\ndata: signals {\"text\":\"\
 // and no bubble, and its text stays in the box. Both answers refresh the
 // status strip.
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
-	text := chatText(r)
+	in := readChatInput(r)
+	text, via := in.text, ""
+	var meta map[string]any
+	if in.component != "" { // TEN-518: a tap or a filled form, not typed text
+		t, m, err := s.componentAnswer(in)
+		if err != nil {
+			setSSEHeaders(w)
+			_, _ = w.Write(patchElements("#chat-log", "append",
+				`<div class="msg sys"><div class="dim">`+html.EscapeString(err.Error())+`</div></div>`))
+			s.writeStatusPatch(w)
+			flush(w)
+			return
+		}
+		text, meta, via = t, m, uicomp.Via(m)
+	}
 	if text == "" {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -391,8 +497,8 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	case s.agent == nil:
 		_, _ = w.Write(patchElements("#chat-log", "append",
 			`<div class="msg sys"><div class="dim">Chat isn't available on this Tenant.</div></div>`))
-	case s.coord.startBackground(text):
-		_, _ = w.Write(patchElements("#chat-log", "append", userBubble(text)))
+	case s.coord.startBackground(text, meta):
+		_, _ = w.Write(patchElements("#chat-log", "append", userBubble(text, via)))
 		_, _ = w.Write([]byte(clearChatBox))
 		s.writeStatusPatch(w)
 	default:
@@ -471,8 +577,12 @@ func sysRow(text string) string {
 }
 
 // userBubble is a message the operator sent.
-func userBubble(text string) string {
-	return `<div class="msg user"><div class="bubble">` + html.EscapeString(visibleText(text)) + `</div></div>`
+func userBubble(text, via string) string {
+	b := `<div class="msg user"><div class="bubble">` + html.EscapeString(visibleText(text)) + `</div>`
+	if via != "" { // TEN-518: a component sent it, the operator tapped
+		b += `<div class="via dim">via ` + html.EscapeString(via) + `</div>`
+	}
+	return b + `</div>`
 }
 
 // answerBubble is the agent's answer rendered from Markdown (TEN-515):
@@ -573,7 +683,7 @@ func componentCard(d toolCardData) (string, bool) {
 	if d.id != "" {
 		b.WriteString(` id="tool-` + html.EscapeString(d.id) + `"`)
 	}
-	b.WriteString(`>` + uicomp.HTML(c, visibleText) + `</div>`)
+	b.WriteString(`>` + uicomp.HTML(c, d.id, visibleText) + `</div>`)
 	return b.String(), true
 }
 

@@ -73,7 +73,7 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 
 	go func() {
 		defer co.finish(turnID, cancel)
-		co.runTurn(turnCtx, query)
+		co.runTurn(turnCtx, query, nil)
 	}()
 }
 
@@ -85,9 +85,9 @@ func (co *wsCoordinator) startTurn(conn *wsConn, parent context.Context, query s
 // the operator sent that message. The chat says so plainly and the log keeps
 // the error, unless it is a PlainError (D21). A turn the operator stopped did
 // not fail.
-func (co *wsCoordinator) runTurn(ctx context.Context, query string) {
+func (co *wsCoordinator) runTurn(ctx context.Context, query string, meta map[string]any) {
 	_, err := co.runner.Turn(ctx, agent.TurnRequest{
-		UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard,
+		UserQuery: query, RouteSurface: agent.RouteSurfaceDashboard, Meta: meta,
 	})
 	if err == nil || ctx.Err() != nil {
 		return
@@ -154,7 +154,7 @@ func (co *wsCoordinator) disconnected(conn *wsConn) {
 // unavailable or a turn is already running. The turn runs under a background
 // context (not a request), so it survives the POST returning; stopActive (or a
 // natural finish) ends it. Single-active-turn is preserved.
-func (co *wsCoordinator) startBackground(query string) bool {
+func (co *wsCoordinator) startBackground(query string, meta map[string]any) bool {
 	co.mu.Lock()
 	if co.runner == nil || co.active {
 		co.mu.Unlock()
@@ -171,7 +171,7 @@ func (co *wsCoordinator) startBackground(query string) bool {
 
 	go func() {
 		defer co.finish(turnID, cancel)
-		co.runTurn(turnCtx, query)
+		co.runTurn(turnCtx, query, meta)
 	}()
 	return true
 }

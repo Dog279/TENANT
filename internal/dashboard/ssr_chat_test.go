@@ -72,7 +72,7 @@ func TestChatTurnStoppedIsNotReported(t *testing.T) {
 	co := newWSCoordinator(failRunner{}, broker)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	co.runTurn(ctx, "hello")
+	co.runTurn(ctx, "hello", nil)
 	select {
 	case ev := <-ch:
 		t.Fatalf("a stopped turn was reported: %+v", ev)

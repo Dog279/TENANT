@@ -14,6 +14,15 @@ Releases page.
   characters a cell, 50 steps, 32 KB a call. The `ui` tool is on by default, like the memory
   tools (`/disable ui` turns it off), and needs nothing configured. A new eval subset, `ui`, checks the model reaches
   for a component when the answer is one and stays in prose otherwise.
+- **Choices and forms** (TEN-518). Two more component kinds: `choices` draws the likely next
+  messages as buttons (numbered options in the terminal), and `form` asks you for values
+  (text, a number, a pick list, a slider) with a Send button (one prompt per field in the
+  terminal). A tap or a filled form starts your next turn, and that message is marked
+  "via choices" or "via form" on both surfaces, so a model-written line is never mistaken
+  for something you typed. The server fills the form from the saved call, checks every value
+  (the option exists, the number is in range, the pick is one of the options) and refuses a
+  message that would be a slash command; a form whose call is gone (a restart, a compaction)
+  says so and sends nothing.
 - **The dashboard listens on port 9770 by default** (was 8770). On macOS, Apple's `sharingd`
   owns 8770, so a fresh install's `/dashboard on` failed with "address already in use". A
   saved `dashboard.addr` is unchanged; a config without one now serves at

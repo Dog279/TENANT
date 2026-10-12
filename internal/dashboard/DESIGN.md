@@ -72,6 +72,8 @@ Banners: `.banner.ok`, `.banner.err`, `.banner.info`, `.banner.warn` (the ui-fla
 
 Components the agent answers with (TEN-517): a `ui_render` tool call is drawn as `.comp-wrap` in the chat instead of a tool card, by `internal/uicomp` from the call's arguments. `.comp.comp-table` is a `.table-wrap` holding a `<table>` with an optional `<caption>` and a `.comp-source` line; `.comp.comp-steps` is an `<ol>` of `.step.todo|doing|done` with a `.mark`. Every string is escaped text and no attribute is ever built from model data, so a component carries no link, image or script.
 
+Two kinds answer back (TEN-518): `.comp.comp-choices` is a row of `.btn.sm` buttons, and `.comp.comp-form` a `<form>` of `.field` labels with `.cinput` inputs and a `.btn.sm.on` submit. Both post to `/chat/send` through Datastar signals (`component`, `choice`, `f_<id>_<name>`); the server fills the message from the saved call and tags it, and the user bubble shows `.via` ("via form"). The only variable attribute values are the call id (`[A-Za-z0-9_-]`) and field names (`[a-z][a-z0-9_]*`), both checked before they are written; an id that fails the check draws the component static.
+
 Advanced options hide behind an expander. It is used for the Research options ("Research exactly what I typed") and the Helpers instructions editor:
 
 ```html
@@ -117,6 +119,9 @@ mux.HandleFunc("POST /safety/mode", needConfirm(confirmUnless("mode", "ask", "de
 - Confirm is friction, not security. The session cookie (a random session id with a 7-day life that Log out ends, never the key: cookies reach every port on the host), `checkOrigin` and `checkCSRF` are the boundary. `/api/*` isn't gated: a JSON client acts deliberately.
 
 Every route that changes something is in `reviewedMutations` (security_test.go), the TEN-213 ledger, with when it confirms; `TestRouteInventory` posts each one on the real mux, every spelling of "more" included, and fails on a route nobody classified.
+
+
+A tap on a component's button or a form's Send counts as the operator speaking: it starts a turn like a typed message, and never asks first. It is still a message the model proposed, so the bubble says "via choices" or "via form", and a component can never send a slash command.
 
 ## 6. States
 

@@ -95,6 +95,15 @@ func slashSetup(m *model, line string) tea.Cmd {
 func slashCancel(m *model, line string) tea.Cmd {
 	// TEN-65 follow-up: aborts an in-flight /configure session.
 	// Harmless if no session is active.
+	if m.comp != nil { // TEN-518: a form or choices waiting for an answer
+		m.comp = nil
+		m.picker = nil
+		if m.setupEntry != nil {
+			m.clearSetupEntry()
+		}
+		m.sysChat("form: cancelled — nothing sent")
+		return nil
+	}
 	if m.secretEntry != nil {
 		m.clearSecretEntry()
 		m.sysChat("configuration cancelled")
