@@ -5,6 +5,10 @@ Releases page.
 
 ## Unreleased
 
+- **The dashboard listens on port 9770 by default** (was 8770). On macOS, Apple's `sharingd`
+  owns 8770, so a fresh install's `/dashboard on` failed with "address already in use". A
+  saved `dashboard.addr` is unchanged; a config without one now serves at
+  http://127.0.0.1:9770.
 ### Added
 - **The Judge** (TEN-510, TEN-516): a decision model checks the agent's work. Cloudflare's
   Clef-flash (or any System One server) triages each prompt while the model works; for a

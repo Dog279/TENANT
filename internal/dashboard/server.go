@@ -66,7 +66,7 @@ type ToolInfo struct {
 
 // Config is the dashboard's static security and listener configuration.
 type Config struct {
-	Addr         string   // listen address, e.g. 127.0.0.1:8770
+	Addr         string   // listen address, e.g. 127.0.0.1:9770
 	TLSCert      string   // PEM cert path; empty = plaintext (Wave 2)
 	TLSKey       string   // PEM key path (Wave 2)
 	Auth         string   // bearer/cookie authentication secret; required by Run

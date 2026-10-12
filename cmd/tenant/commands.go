@@ -1755,7 +1755,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	profileEvery := fs.Duration("profile-every", 15*time.Minute, "user-profile re-synthesis cadence (LLM call; reads T3 facts)")
 	evalEvery := fs.Duration("eval-every", 0, "nightly eval cadence (0=off; e.g. 24h): runs the full live eval + checks baselines/full.json; needs --self-improve")
 	dashboardOn := fs.Bool("dashboard", false, "serve the web control panel alongside the TUI")
-	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:8770)")
+	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:9770)")
 	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -3190,7 +3190,7 @@ func (d dashTools) ToolList() []dashboard.ToolInfo {
 // defaultDashboardAddr is the loopback bind used when neither the flag nor
 // the saved config set one. Loopback-only by default — Wave 2 (TEN-79)
 // gates non-loopback binds behind TLS+auth.
-const defaultDashboardAddr = "127.0.0.1:8770"
+const defaultDashboardAddr = "127.0.0.1:9770"
 
 // resolveDashboardConfig merges the saved dashboard block with CLI
 // overrides into the dashboard package's Config, returning the config and

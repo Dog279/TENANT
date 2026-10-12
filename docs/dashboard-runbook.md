@@ -8,7 +8,7 @@ This guide is for the person who runs Tenant day to day. You don't need a termin
 
 - When Tenant runs as a background service (`tenant serve`), the dashboard is always on.
 - In the terminal app it is on unless you turned it off; `/dashboard on` turns it back on.
-- The address is **http://127.0.0.1:8770** on the computer running Tenant. Use exactly that address: `http://localhost:8770` is refused with "unrecognized dashboard host" (section 3 explains how to reach it from elsewhere).
+- The address is **http://127.0.0.1:9770** on the computer running Tenant. Use exactly that address: `http://localhost:9770` is refused with "unrecognized dashboard host" (section 3 explains how to reach it from elsewhere).
 
 ## 2. Sign in
 
@@ -70,21 +70,21 @@ Browsers don't keep a sign-in apart by port: every other web service on this com
 
 ### Monitoring
 
-`GET http://127.0.0.1:8770/healthz` answers without the key, so an uptime monitor can use it. Only GET is open: `HEAD /healthz` needs the key like everything else.
+`GET http://127.0.0.1:9770/healthz` answers without the key, so an uptime monitor can use it. Only GET is open: `HEAD /healthz` needs the key like everything else.
 
 ## 3. Where it can be reached
 
-- **This computer only**, by default: http://127.0.0.1:8770, or http://localhost:8770 if you prefer the name.
+- **This computer only**, by default: http://127.0.0.1:9770, or http://localhost:9770 if you prefer the name.
 - **From your phone:** use Tailscale. In the terminal app run `/tailscale serve`, or set `"tailscale": {"serve": true}` in config.json so a background service publishes it on every start. Tenant trusts the Tailscale name on its own.
 - **Behind a web proxy on the same computer:** add the name the proxy uses to `dashboard.allowed_hosts` in config.json.
-- **On a network address** (for example `--dashboard-addr 0.0.0.0:8770`): Tenant refuses to start unless the dashboard has a key and a certificate (`dashboard.tls_cert` and `dashboard.tls_key`).
+- **On a network address** (for example `--dashboard-addr 0.0.0.0:9770`): Tenant refuses to start unless the dashboard has a key and a certificate (`dashboard.tls_cert` and `dashboard.tls_key`).
 - **Never** forward the port to the internet.
 
 If a page shows one of these instead of the dashboard:
 
 | It says | It means | What to do |
 |---|---|---|
-| unrecognized dashboard host | The address you typed isn't one Tenant trusts. | Use http://127.0.0.1:8770 (or http://localhost:8770), your Tailscale address, or add the name to `dashboard.allowed_hosts`. |
+| unrecognized dashboard host | The address you typed isn't one Tenant trusts. | Use http://127.0.0.1:9770 (or http://localhost:9770), your Tailscale address, or add the name to `dashboard.allowed_hosts`. |
 | cross-origin request rejected | The request came from another site, another tab's page, or another port on this computer. | Use the dashboard's own buttons. If it keeps happening, something else on this computer is sending requests to it. |
 | CSRF validation failed | A browser extension or privacy setting removed the header that shows the request came from the dashboard. | Turn that extension off for the dashboard's address. |
 | Nothing changed: that needs a second click to confirm. | A change that asks first was sent without its second step. | Open the step again and press its **Yes** button. |
@@ -194,7 +194,7 @@ Connecting a remote service that needs a sign-in, or testing an integration such
 When Tenant runs as a Windows service, that browser never appears: a service has no screen. To finish the sign-in:
 
 1. Press **Connect** (Remote services) or **Test connection** (Integrations) as usual.
-2. Sign in to the computer running Tenant itself (at its screen, or with Remote Desktop), and open the dashboard there: http://127.0.0.1:8770.
+2. Sign in to the computer running Tenant itself (at its screen, or with Remote Desktop), and open the dashboard there: http://127.0.0.1:9770.
 3. Open **Logs** and type `open this URL` in **Find**. Open the line "sign-in: open this URL to authorize Tenant, if no browser opened:": the link follows it. A remote service also writes "Open this URL in a browser to sign in to <service>" in its own log (**Logs**, filter `log:mcp*`).
 4. Copy the link into a browser **on that same computer**, and approve the sign-in. A phone or another computer won't work: the sign-in returns to that computer.
 5. Back on **Remote services** or **Integrations**, reload the page.

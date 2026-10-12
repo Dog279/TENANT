@@ -465,17 +465,17 @@ so an outside line can never pass for an approval, a tool call or a
 `security` record.
 
 ```bash
-curl -s -X POST http://127.0.0.1:8770/api/logs/watcher \
+curl -s -X POST http://127.0.0.1:9770/api/logs/watcher \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"level":"warn","msg":"disk at 91%","fields":{"host":"build-box","pct":"91"}}'
 
 # or a bare text body:
-curl -s -X POST 'http://127.0.0.1:8770/api/logs/watcher?level=error' \
+curl -s -X POST 'http://127.0.0.1:9770/api/logs/watcher?level=error' \
   -H "Authorization: Bearer $TOKEN" --data-binary 'backup failed'
 ```
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8770/api/logs/watcher" `
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:9770/api/logs/watcher" `
   -Headers @{Authorization="Bearer $env:TENANT_TOKEN"} -ContentType 'application/json' `
   -Body (@{level='info'; msg='snapshot ok'; fields=@{host=$env:COMPUTERNAME}} | ConvertTo-Json)
 ```

@@ -245,7 +245,7 @@ func (s *Server) checkHost(requestHost string) bool {
 		}
 	}
 	// A loopback listener answers to every loopback name on its port
-	// (localhost, 127.0.0.1, [::1]): http://localhost:8770 is what people type
+	// (localhost, 127.0.0.1, [::1]): http://localhost:9770 is what people type
 	// (TEN-414). Rebinding-safe: an attacker's name never resolves to one of
 	// these in the Host header.
 	if lh, lp, ok := splitAuthority(s.cfg.Addr); ok && isLoopbackHost(lh) {

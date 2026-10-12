@@ -107,7 +107,7 @@ func TestLogBookScrubsEveryConfiguredSecret(t *testing.T) {
 			continue
 		}
 		basic := base64.StdEncoding.EncodeToString([]byte("me:" + v))
-		hub.Logf("system", slog.LevelInfo, "dashboard: serving on http://127.0.0.1:8770\ndashboard auth token: "+v)
+		hub.Logf("system", slog.LevelInfo, "dashboard: serving on http://127.0.0.1:9770\ndashboard auth token: "+v)
 		logs.For("mcp").Warn("mcp: token refresh failed", "err", "oauth2: "+v, "body", `{"note":"`+v+`"}`)
 		hub.Logf("turns", slog.LevelInfo, "fetch", "url", "https://api.example.com/x?q="+url.QueryEscape(v))
 		for _, ev := range []agent.Event{

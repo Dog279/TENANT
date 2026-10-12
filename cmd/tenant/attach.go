@@ -180,7 +180,7 @@ func attachFilter(source, level, trace string) string {
 
 // attachBaseURL resolves the hub URL: an explicit arg wins (a bare host:port is
 // assumed http); otherwise the local config's dashboard address (TEN-194's
-// default 127.0.0.1:8770).
+// default 127.0.0.1:9770).
 func attachBaseURL(arg string, lc *launchConfig) string {
 	if arg == "" {
 		dcfg, _ := resolveDashboardConfig(lc, false, false, "")

@@ -61,7 +61,7 @@ func TestScrub_Corpus(t *testing.T) {
 		{"prose bearer", "the bearer of bad news", ""},
 		{"short sk", "task-runner sk-learn", ""},
 		{"sk inside a word", fake("disk-usage-report-generator-v2 desk_", "test_", body), ""},
-		{"url without password", "dashboard: serving on http://127.0.0.1:8770/api/activity", ""},
+		{"url without password", "dashboard: serving on http://127.0.0.1:9770/api/activity", ""},
 		{"scp url", "git clone git@github.com:org/repo.git", ""},
 		{"email", "mail bob@example.com about https://example.com/x", ""},
 		{"dotted", "version 1.2.3 in file.name.go, e.g. this", ""},

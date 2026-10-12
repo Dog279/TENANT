@@ -459,7 +459,7 @@ type Gateway struct {
 // persists as an explicit &false that survives the next launch.
 type Dashboard struct {
 	Enabled      *bool    `json:"enabled,omitempty"` // nil = default on; &false = explicitly off
-	Addr         string   `json:"addr,omitempty"`    // listen address (default 127.0.0.1:8770)
+	Addr         string   `json:"addr,omitempty"`    // listen address (default 127.0.0.1:9770)
 	TLSCert      string   `json:"tls_cert,omitempty"`
 	TLSKey       string   `json:"tls_key,omitempty"`
 	Auth         string   `json:"auth,omitempty"`          // explicit override; empty uses dashboard-auth-token
