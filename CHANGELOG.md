@@ -5,6 +5,15 @@ Releases page.
 
 ## Unreleased
 
+- **The agent answers with components** (TEN-517). A new built-in tool, `ui_render`, lets the
+  model say "show this as a table" or "as steps" and hand over the data; Tenant draws it from
+  a fixed template in the terminal app (a boxed table, ✓ ◐ ○ lines) and on the dashboard's
+  Chat page (a real table, a checklist), in place of the tool card, and again when the page
+  reloads. The model never writes markup: every value is text, and a bad shape gets a one-line
+  error it can act on ("table: 14 columns, the limit is 12"). Caps: 12 columns, 200 rows, 200
+  characters a cell, 50 steps, 32 KB a call. The `ui` tool is on by default, like the memory
+  tools (`/disable ui` turns it off), and needs nothing configured. A new eval subset, `ui`, checks the model reaches
+  for a component when the answer is one and stays in prose otherwise.
 - **The dashboard listens on port 9770 by default** (was 8770). On macOS, Apple's `sharingd`
   owns 8770, so a fresh install's `/dashboard on` failed with "address already in use". A
   saved `dashboard.addr` is unchanged; a config without one now serves at

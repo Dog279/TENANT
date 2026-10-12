@@ -70,6 +70,8 @@ Buttons: `.btn`, `.btn.sm`, `.btn.on` (primary), `.btn.danger`.
 
 Banners: `.banner.ok`, `.banner.err`, `.banner.info`, `.banner.warn` (the ui-flash and status-strip partials make them).
 
+Components the agent answers with (TEN-517): a `ui_render` tool call is drawn as `.comp-wrap` in the chat instead of a tool card, by `internal/uicomp` from the call's arguments. `.comp.comp-table` is a `.table-wrap` holding a `<table>` with an optional `<caption>` and a `.comp-source` line; `.comp.comp-steps` is an `<ol>` of `.step.todo|doing|done` with a `.mark`. Every string is escaped text and no attribute is ever built from model data, so a component carries no link, image or script.
+
 Advanced options hide behind an expander. It is used for the Research options ("Research exactly what I typed") and the Helpers instructions editor:
 
 ```html

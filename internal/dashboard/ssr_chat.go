@@ -24,6 +24,7 @@ import (
 	"tenant/internal/logs/event"
 	"tenant/internal/md"
 	"tenant/internal/memory/working"
+	"tenant/internal/uicomp"
 )
 
 // chatPageData is the Chat page: the shell data and the conversation so far.
@@ -504,6 +505,9 @@ type toolCardData struct {
 // asked and what came back, capped, with a link to the Logs page filtered by
 // the message's trace. A failed call is open; the rest open on a tap.
 func toolCard(d toolCardData) string {
+	if h, ok := componentCard(d); ok {
+		return h
+	}
 	var b strings.Builder
 	b.WriteString(`<details class="tool`)
 	if !d.done {
@@ -548,6 +552,29 @@ func toolCard(d toolCardData) string {
 	}
 	b.WriteString(`</div></details>`)
 	return b.String()
+}
+
+// componentCard draws a ui_render call as the component it names (TEN-517)
+// in place of the tool card: the arguments are the component, so it is drawn
+// once, at the call, and the same way from the transcript. It keeps the
+// card's id, so the settling patch morphs it in place. A call whose
+// arguments do not validate (or that failed) falls back to the ordinary
+// card, which shows the error the model got.
+func componentCard(d toolCardData) (string, bool) {
+	if d.name != uicomp.ToolName || d.isErr {
+		return "", false
+	}
+	c, _, err := uicomp.Parse([]byte(d.args))
+	if err != nil {
+		return "", false
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="msg comp-wrap"`)
+	if d.id != "" {
+		b.WriteString(` id="tool-` + html.EscapeString(d.id) + `"`)
+	}
+	b.WriteString(`>` + uicomp.HTML(c, visibleText) + `</div>`)
+	return b.String(), true
 }
 
 // capText is s cut to at most n bytes on a character boundary, lines kept.

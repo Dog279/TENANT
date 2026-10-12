@@ -63,6 +63,7 @@ Paths are under `tenant-docs/src/` in findtime-net.
 | helpers (`agentctl.go`, `builtinagents.go`, `builtinsouls/`), `internal/orchestra`, research, goal, review | `models/helpers.md`, `models/teams.md` |
 | `cmd/tenant/eval*.go`, `internal/eval` | `models/eval.md` |
 | `cmd/tenant/judgeloop.go`, `internal/agent/judge.go`, `internal/model/systemone` (the Judge); `cmd/tenant/qualitymodel.go` (the Quality model) | `models/judge.md`; `models/eval.md` |
+| `internal/uicomp`, the `ui` host tool in `cmd/tenant/toolmux_build.go`, `internal/tui/components.go`, the component path in `internal/dashboard/ssr_chat.go` (the components the agent answers with) | `mcp/built-in-tools.md`, `dashboard/pages.md`, `first-launch/terminal-ui.md`, `models/eval.md` |
 | `cmd/tenant/cronmgr.go`, `internal/cron` | `dashboard/cron.md` |
 | `internal/logs`, `cmd/tenant/logs*.go`, `logctl.go`, alerts, `attach.go` | `dashboard/logs.md`, `dashboard/api.md` |
 | the Discord relay, the iMessage responder | `dashboard/access.md` |

@@ -77,7 +77,7 @@ func TestTheStubCatalogIsTheRegistry(t *testing.T) {
 	byPlugin := map[string][]string{}
 	for _, ti := range mux.ToolList() {
 		byPlugin[ti.Plugin] = append(byPlugin[ti.Plugin], ti.Name)
-		if ti.Enabled && ti.Plugin != "memory" {
+		if ti.Enabled && ti.Plugin != "memory" && ti.Plugin != "ui" { // host tools, on by default
 			t.Errorf("%s (%s) is enabled with nothing configured", ti.Name, ti.Plugin)
 		}
 	}

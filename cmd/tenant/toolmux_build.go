@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"tenant/internal/model"
+	"tenant/internal/uicomp"
 )
 
 // pluginFlags holds every plugin's launch flags, each plugin's in its own
@@ -103,6 +104,11 @@ func buildToolMux(ctx context.Context, c *commonFlags, router *model.Router, pf 
 	} else if log != nil {
 		log.Debug("memory_search: store open failed; tool unavailable", "err", merr.Error())
 	}
+
+	// ui_render (TEN-517): the agent answers with a table or steps and the
+	// surfaces draw it from the data. A host tool like memory: nothing to
+	// configure, on by default, /disable ui turns it off.
+	mux.Add("ui", uicomp.Dispatcher{})
 
 	// Every plugin its launch flags configure, declared in plugin_<id>.go.
 	if err := launchPlugins(ctx, mux, e); err != nil {

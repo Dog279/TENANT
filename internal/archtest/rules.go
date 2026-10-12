@@ -76,8 +76,9 @@ var rules = []rule{
 	{Pkg: "internal/toolmux", May: []string{"internal/agent", "internal/model", "internal/memory/cosine", "internal/plugins/mcpremote", "internal/peering", "internal/control"}, Notes: "the tool registry and dispatcher; builds no plugin itself"},
 	{Pkg: "internal/md/goldmark/**", May: []string{"internal/md/goldmark/**"}, Notes: "Tenant's copy of goldmark (MIT); imports itself and the standard library only"},
 	{Pkg: "internal/md", May: []string{"internal/md/goldmark/**"}, Notes: "Markdown: parse, and HTML for the dashboard; the terminal app renders the tree itself"},
-	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/attach", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/md/**", "internal/model"}, Notes: "never the dashboard"},
-	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/md", "internal/memory/working", "internal/orchestra", "internal/version"}, Notes: "never the terminal UI"},
+	{Pkg: "internal/uicomp", May: []string{"internal/model"}, Notes: "the components the model answers with: schema, caps, the note, HTML; the terminal app draws them itself"},
+	{Pkg: "internal/tui", May: []string{"internal/agent", "internal/attach", "internal/cmdreg", "internal/control", "internal/fsperm", "internal/md/**", "internal/model", "internal/uicomp"}, Notes: "never the dashboard"},
+	{Pkg: "internal/dashboard", May: []string{"internal/agent", "internal/control", "internal/httplimits", "internal/logs", "internal/logs/logapi", "internal/logs/query", "internal/logs/store", "internal/md", "internal/memory/working", "internal/orchestra", "internal/uicomp", "internal/version"}, Notes: "never the terminal UI"},
 }
 
 // everyone is one allowance on top of the rule that governs each internal

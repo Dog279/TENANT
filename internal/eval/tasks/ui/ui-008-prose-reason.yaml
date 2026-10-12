@@ -1,0 +1,17 @@
+id: ui-008-prose-reason
+category: ui/components
+subset: ui
+description: |
+  A short explanation stays prose.
+prompt: "Why is the sky blue? Two sentences at most."
+mode: live
+expected:
+  must_not_call:
+    - ui_render
+  rubric:
+    criterion: "A direct prose answer; no table or checklist was drawn for an answer that is a sentence."
+    anchors:
+      1: "A component was drawn for a one-line answer"
+      3: "Prose, but padded with a list the question did not ask for"
+      5: "A short, direct prose answer"
+  rubric_min_score: 3

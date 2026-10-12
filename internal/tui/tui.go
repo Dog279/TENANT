@@ -2988,6 +2988,9 @@ func (m *model) renderText(text string, w int, complete bool) string {
 // (`⏺ web_search("…") ✓ 1.2s · 3 results`), or the arguments and result
 // under it when the block is open (Ctrl+O) or the call failed.
 func (m *model) toolRowLines(t toolRow, w int) string {
+	if comp, ok := m.componentLines(t, w); ok {
+		return comp
+	}
 	head := pal.Glyph.Render("⏺") + " " + cTool.Render(t.name) + cDim.Render("("+clip(t.args, 48)+")")
 	switch {
 	case !t.done:

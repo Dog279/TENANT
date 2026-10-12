@@ -29,7 +29,9 @@ func TestBuildToolMux_StubsUnconfiguredPlugins(t *testing.T) {
 		// memory_search (TEN-249) and memory_history (TEN-255 Phase 2) are
 		// enabled by default — local recall of the agent's own long-term memory,
 		// not unconfigured stubs, so they're exempt from the disabled-by-default rule.
-		if ti.Name == "memory_search" || ti.Name == "memory_history" {
+		// ui_render (TEN-517) is a host tool too: the agent draws a table or
+		// steps from data, nothing to configure, so it is on by default.
+		if ti.Name == "memory_search" || ti.Name == "memory_history" || ti.Name == "ui_render" {
 			if !ti.Enabled {
 				t.Errorf("%s should be enabled by default", ti.Name)
 			}

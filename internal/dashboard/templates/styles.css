@@ -434,3 +434,16 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 .pill.err{color:var(--red);border-color:rgba(251,113,133,.4)}
 .pill.run{color:var(--amber);border-color:rgba(251,191,36,.35)}
 /* == end TEN-515 == */
+/* Components the agent answers with (TEN-517): drawn by Tenant from the call's data, text only. */
+.comp-wrap{padding:0;background:none;border:0}
+.comp table{border-collapse:collapse;font-size:12.5px;min-width:60%}
+.comp caption{text-align:left;color:var(--label);font-size:11px;letter-spacing:.4px;text-transform:uppercase;padding:0 0 6px}
+.comp th,.comp td{border:1px solid var(--line);padding:4px 9px;text-align:left;vertical-align:top}
+.comp th{color:var(--label);font-size:11px;letter-spacing:.4px;text-transform:uppercase}
+.comp-source{font-size:11.5px;margin-top:4px}
+.comp-steps{list-style:none;margin:4px 0;padding:0}
+.comp-steps li{padding:3px 0;display:flex;gap:8px;align-items:baseline}
+.comp-steps .mark{width:1.2em;text-align:center;color:var(--dim)}
+.comp-steps .done .mark{color:var(--green)}
+.comp-steps .doing .mark{color:var(--amber)}
+.comp-steps .done .title{text-decoration:line-through;color:var(--dim)}
