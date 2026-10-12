@@ -5,6 +5,11 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: the Memory page's Knowledge time view** showed every fact ever learned, replaced
+  and removed ones too, and on a narrow window its table squeezed the column names into
+  one letter per line. It now shows the live facts, with **Show history** for the rest; the
+  table's names and dates stay on one line and the table scrolls sideways instead; a long
+  timeline scrolls inside its card.
 ### Added
 - **The Judge** (TEN-510, TEN-516): a decision model checks the agent's work. Cloudflare's
   Clef-flash (or any System One server) triages each prompt while the model works; for a

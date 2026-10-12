@@ -281,6 +281,52 @@ func TestSSR_MemoryTemporal(t *testing.T) {
 	}
 }
 
+// Knowledge time shows the live working set; replaced and removed facts are
+// behind Show history, and the counts stay the full counts either way.
+func TestSSR_MemoryTemporal_LiveByDefault(t *testing.T) {
+	s, fm := memServer()
+	if len(fm.order) < 3 {
+		t.Fatalf("the fake needs three facts, has %d", len(fm.order))
+	}
+	// Mark two facts other than the deadline one, which the page must keep.
+	var others []int64
+	for _, id := range fm.order {
+		if fm.byID[id].text != "Project deadline is May 30." {
+			others = append(others, id)
+		}
+	}
+	if len(others) < 2 {
+		t.Fatal("the fake needs two facts besides the deadline")
+	}
+	gone, replaced := others[0], others[1]
+	fm.tombstoned[gone] = true
+	fm.supersededBy[replaced] = fm.order[0]
+	goneText, replacedText := fm.byID[gone].text, fm.byID[replaced].text
+	body := get(t, s, "/memory/facts/temporal").Body.String()
+	for _, absent := range []string{goneText, replacedText} {
+		if strings.Contains(body, absent) {
+			t.Errorf("the live view lists %q", absent)
+		}
+	}
+	for _, want := range []string{"Showing what your agent knows now", `href="/memory/facts/temporal?all=1">Show history</a>`, "Project deadline is May 30.", `<div class="stat-label">Replaced</div><div class="stat-value">1</div>`, `<div class="stat-label">Removed</div><div class="stat-value">1</div>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("live view missing %q", want)
+		}
+	}
+	all := get(t, s, "/memory/facts/temporal?all=1").Body.String()
+	for _, want := range []string{goneText, replacedText, "replaced and removed ones too", `href="/memory/facts/temporal">Live facts only</a>`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("history view missing %q", want)
+		}
+	}
+	for _, id := range fm.order {
+		fm.tombstoned[id] = true
+	}
+	if empty := get(t, s, "/memory/facts/temporal").Body.String(); !strings.Contains(empty, "Nothing live right now") {
+		t.Error("with nothing live, the page says so and points at the history")
+	}
+}
+
 func TestSSR_MemoryRemovedEmpty(t *testing.T) {
 	s, _ := memServer()
 	body := get(t, s, "/memory/facts/removed").Body.String()

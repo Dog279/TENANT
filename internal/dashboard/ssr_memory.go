@@ -428,7 +428,9 @@ type temporalData struct {
 	SVG        template.HTML
 	Empty      bool
 	Err        string
-	BackHref   string
+	BackHref   string // All shows replaced and removed facts too (?all=1); the default is the
+	// live working set.
+	All bool
 }
 
 // handleMemoryTemporalPage renders the read-only knowledge-time overview: a
@@ -454,6 +456,19 @@ func (s *Server) handleMemoryTemporalPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	d.Stats = stats
+	// Live facts only, unless asked for the history (TEN-402 follow-up): the
+	// working set is what the operator reads; replaced and removed facts are a
+	// click away and never crowd the timeline or the table.
+	d.All = r.URL.Query().Get("all") == "1"
+	if !d.All {
+		live := facts[:0:0]
+		for _, f := range facts {
+			if f.Status == FactStatusLive {
+				live = append(live, f)
+			}
+		}
+		facts = live
+	}
 	d.Empty = len(facts) == 0
 	for _, f := range facts {
 		label, cls := temporalStatusLabel(f.Status)
