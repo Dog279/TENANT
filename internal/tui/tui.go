@@ -1229,6 +1229,8 @@ type chatMsg struct {
 	// cache is the block as last rendered, valid for cacheKey (width, length,
 	// state); a repaint while nothing changed is a string copy.
 	cache, cacheKey string
+	// iter is the model call the last streamed text came from (TEN-523).
+	iter int
 }
 
 // toolRow is one tool call shown inside an assistant's turn block: a single
@@ -2488,6 +2490,13 @@ func (m *model) applyEvent(e agent.Event) {
 		}
 	case agent.EventToken:
 		if msg := m.curAssistant(); msg != nil { // nil: a stale trailing token (TEN-217)
+			// A new model call's text starts on its own paragraph; otherwise a
+			// turn that answers again (a judge send-back, a tool round) runs
+			// its sentences together (TEN-523).
+			if e.Iter != msg.iter && msg.content != "" && !strings.HasSuffix(msg.content, "\n") {
+				msg.content += "\n\n"
+			}
+			msg.iter = e.Iter
 			msg.content += e.Text
 		}
 	case agent.EventAssistant:
@@ -3099,7 +3108,10 @@ func (m *model) curAssistant() *chatMsg {
 	if m.assistantSealed {
 		return nil
 	}
-	if !m.streaming {
+	// A fresh message when none is streaming, and also when the last message
+	// is not the assistant's: an interjection appends the operator's message
+	// mid-answer, and the answer must never continue inside it (TEN-523).
+	if n := len(m.msgs); !m.streaming || n == 0 || m.msgs[n-1].role != "assistant" {
 		m.msgs = append(m.msgs, chatMsg{role: "assistant", at: time.Now(), model: m.cfg.Model})
 		m.streaming = true
 	}

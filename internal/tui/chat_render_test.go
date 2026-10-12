@@ -233,3 +233,36 @@ func TestApplyEvent_OnlyTheTurnsOwnLinesIndent(t *testing.T) {
 		}
 	}
 }
+
+// TEN-523: an answer never continues inside the operator's message. A message
+// typed mid-answer (an interjection) is appended as the operator's; the next
+// token opens a new assistant message. And each model call's text starts on
+// its own paragraph, so a turn that answers again does not run its sentences
+// together.
+func TestApplyEvent_InterjectionAndIterationsKeepBlocksApart(t *testing.T) {
+	m := readyChatModel(Config{})
+	m.msgs = append(m.msgs, chatMsg{role: "user", content: "add a cron"})
+	m.applyEvent(agent.Event{Kind: agent.EventToken, Iter: 1, Text: "On it."})
+	m.msgs = append(m.msgs, chatMsg{role: "user", content: "use the dns name"}) // an interjection
+	m.applyEvent(agent.Event{Kind: agent.EventToken, Iter: 2, Text: "Got it."})
+	roles := ""
+	for _, msg := range m.msgs {
+		roles += msg.role[:1]
+	}
+	if !strings.HasSuffix(roles, "uaua") {
+		t.Fatalf("messages = %q, want …user, assistant, user, assistant", roles)
+	}
+	n := len(m.msgs)
+	if m.msgs[n-2].content != "use the dns name" || m.msgs[n-1].content != "Got it." {
+		t.Fatalf("the interjection kept its text and the answer got its own message: %q / %q", m.msgs[n-2].content, m.msgs[n-1].content)
+	}
+	m.applyEvent(agent.Event{Kind: agent.EventToken, Iter: 2, Text: " Checking."})
+	m.applyEvent(agent.Event{Kind: agent.EventToken, Iter: 3, Text: "Here is the state."})
+	if got := m.msgs[n-1].content; got != "Got it. Checking.\n\nHere is the state." {
+		t.Fatalf("a new model call's text starts a paragraph: %q", got)
+	}
+	out := stripANSI(m.renderChat())
+	if strings.Contains(out, "nameGot") || strings.Count(out, "tenant") < 2 {
+		t.Fatalf("each answer is its own block:\n%s", out)
+	}
+}
