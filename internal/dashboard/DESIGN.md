@@ -95,6 +95,8 @@ The partials in `templates/ui.html` are parsed into every page set (`parseSSR` a
 
 Text an agent or a request wrote goes through `visibleText` before it is shown (`{{visibleText .Detail}}`): characters that draw nothing or reorder text (controls, bidi and zero-width marks, tag characters, fillers, variation selectors) show as `⟨U+202E⟩`, and 3 or more blank lines as `⟨N blank lines⟩`. `waited` turns seconds into "waiting 3 min".
 
+The activity rail (TEN-520): `.chat-row` holds the chat and `details.activity`, a native toggle whose `.rail` receives one `.line` per event the terminal app's feed would show (`k-turn`, `k-tool`, `k-ok`, `k-err`, `k-sys`), appended by the events stream and capped at 200 by removing the oldest. No script: the toggle is the browser's; the state is not remembered across a reload.
+
 ## 5. When to confirm
 
 An action gets a confirm step when it:

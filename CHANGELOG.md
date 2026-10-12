@@ -23,6 +23,10 @@ Releases page.
   (the option exists, the number is in range, the pick is one of the options) and refuses a
   message that would be a slash command; a form whose call is gone (a restart, a compaction)
   says so and sends nothing.
+- **Activity beside the chat** (TEN-520). The dashboard's Chat page has a **Show activity**
+  toggle that opens a rail of what the agent is doing as it happens, the same lines as the
+  terminal app's feed: each tool call and its result, the judge's checks, a compaction, an
+  error. The rail keeps the last 200 lines and sits below the chat on a phone.
 - **The dashboard listens on port 9770 by default** (was 8770). On macOS, Apple's `sharingd`
   owns 8770, so a fresh install's `/dashboard on` failed with "address already in use". A
   saved `dashboard.addr` is unchanged; a config without one now serves at

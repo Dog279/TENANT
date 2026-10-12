@@ -195,7 +195,7 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			for _, p := range cs.patches(ev) {
+			for _, p := range append(cs.railPatches(ev), cs.patches(ev)...) {
 				if _, err := w.Write(p); err != nil {
 					return
 				}
@@ -210,6 +210,11 @@ var streamEvery = 100 * time.Millisecond
 
 // chatStream is one connection's view of the answer being written and the
 // tool calls in flight (TEN-515).
+// railCap is how many activity lines the rail keeps in the page (TEN-520):
+// older ones are removed as new ones arrive, so a long session never grows
+// the DOM without bound.
+const railCap = 200
+
 type chatStream struct {
 	cur     strings.Builder     // the answer so far
 	open    bool                // #chat-cur is on the page
@@ -225,6 +230,7 @@ type chatStream struct {
 	tag  string
 	turn int
 	sent map[string]bool
+	rail int // activity lines sent so far (TEN-520)
 }
 
 // newChatStream starts a stream's state with its own tag.
@@ -252,7 +258,71 @@ func (cs *chatStream) cardID(id string) string {
 }
 
 // patches turns one event into the SSE patches it means for the chat.
-func (cs *chatStream) patches(ev agent.Event) [][]byte {
+func (cs *chatStream) patches(ev agent.Event) [][]byte { return cs.chatPatches(ev) }
+
+// railPatches is the activity rail's side of an event (TEN-520): one line per
+// event the terminal app's feed would show, appended to #activity-rail, and a
+// removal of the line that fell off the cap. Nothing for the events the chat
+// itself draws (tokens, the final answer) or that would only be noise.
+func (cs *chatStream) railPatches(ev agent.Event) [][]byte {
+	text, kind := railLine(ev)
+	if text == "" {
+		return nil
+	}
+	cs.rail++
+	line := `<div class="line k-` + kind + `" id="ar-` + strconv.Itoa(cs.rail) + `"><time>` + time.Now().Format("15:04:05") + `</time>` + html.EscapeString(visibleText(text)) + `</div>`
+	out := [][]byte{patchElements("#activity-rail", "append", line)}
+	if cs.rail > railCap {
+		out = append(out, patchElements("#ar-"+strconv.Itoa(cs.rail-railCap), "remove", ""))
+	}
+	return out
+}
+
+// railLine is the activity rail's text for an event, with its class: turn,
+// tool, ok, err or sys; "" for an event the rail does not show.
+func railLine(ev agent.Event) (string, string) {
+	switch ev.Kind {
+	case agent.EventTurnStart:
+		return "▸ " + snippetStr(ev.Text, 60), "turn"
+	case agent.EventToolCall:
+		return "⚡ " + ev.Tool + "(" + snippetStr(ev.Args, 48) + ")", "tool"
+	case agent.EventToolResult:
+		if ev.IsErr {
+			return "✗ " + ev.Tool + " · " + ev.Duration.Round(tenth).String() + " · " + snippetStr(ev.Result, 60), "err"
+		}
+		return "✓ " + ev.Tool + " · " + ev.Duration.Round(tenth).String(), "ok"
+	case agent.EventValidation:
+		return "✗ " + ev.Tool + ": " + snippetStr(ev.Text, 60), "err"
+	case agent.EventRetry:
+		return "↻ " + ev.Tool + " " + snippetStr(ev.Text, 60), "sys"
+	case agent.EventInterject:
+		return "↪ folding in your message: " + snippetStr(ev.Text, 60), "sys"
+	case agent.EventJudge:
+		if ev.IsErr {
+			return "⚖ judge " + snippetStr(ev.Text, 80), "err"
+		}
+		return "⚖ judge " + snippetStr(ev.Text, 80), "sys"
+	case agent.EventCompact:
+		return "⟲ compacted " + snippetStr(ev.Text, 60), "sys"
+	case agent.EventIngest, agent.EventBus:
+		return "⇄ " + snippetStr(ev.Text, 80), "sys"
+	case agent.EventError:
+		return "✗ " + snippetStr(ev.Text, 80), "err"
+	case agent.EventTruncated:
+		return "⏹ step limit reached; answering with what it has", "sys"
+	case agent.EventStuck:
+		return "⏹ repeating itself; answering with what it has", "sys"
+	case agent.EventTurnEnd:
+		if ev.IsErr {
+			return "✗ answer failed: " + snippetStr(ev.Text, 60), "err"
+		}
+		return "■ done · " + ev.Duration.Round(tenth).String(), "turn"
+	}
+	return "", ""
+}
+
+// chatPatches is the chat's side of an event: the bubbles and the cards.
+func (cs *chatStream) chatPatches(ev agent.Event) [][]byte {
 	if ev.Agent != "" || ev.Kind == agent.EventBus {
 		return nil
 	}

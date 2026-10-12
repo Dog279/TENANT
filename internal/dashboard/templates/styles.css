@@ -455,3 +455,17 @@ details.tool[open] summary{border-bottom:1px solid var(--line2)}
 .comp-form output{font-size:12px;color:var(--dim);margin-left:6px}
 .comp-form button{align-self:flex-start}
 .msg.user .via{font-size:10.5px;margin-top:2px;text-align:right}
+/* The activity rail beside the chat (TEN-520). */
+.chat-row{flex:1;min-height:0;display:flex;gap:12px;align-items:stretch}
+.chat-row .chat{flex:1}
+.activity{flex:none;display:flex;flex-direction:column;min-height:0;max-width:40%}
+.activity summary{cursor:pointer;list-style:none;font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);padding:4px 0;white-space:nowrap}
+.activity summary::-webkit-details-marker{display:none}
+.activity[open]{width:320px}
+.rail{flex:1;min-height:0;overflow:auto;font-size:12px;display:flex;flex-direction:column;gap:3px;padding:4px 0}
+.rail .line{color:var(--dim);overflow-wrap:anywhere}
+.rail .line time{color:var(--label);margin-right:6px;font-variant-numeric:tabular-nums}
+.rail .line.k-turn{color:var(--fg);margin-top:6px}
+.rail .line.k-err{color:var(--red)}
+.rail .line.k-ok{color:var(--green)}
+@media (max-width:600px){.chat-row{flex-direction:column}.activity{max-width:none}.activity[open]{width:auto}.rail{max-height:30vh}}
