@@ -59,29 +59,49 @@ func TestJudgeVerdict(t *testing.T) {
 // The state lists every call (name and input) but only the last outputs,
 // and counts calls past the cap instead of listing them.
 func TestJudgeState(t *testing.T) {
+	// 200 big calls: the state stays within its budget, keeps the newest calls,
+	// counts the rest, and puts the request and answer first (a right-truncating
+	// server must never lose them).
 	var tools []agent.ToolCallResult
-	for i := 0; i < judgeMaxCalls+5; i++ {
-		tools = append(tools, agent.ToolCallResult{Call: model.ToolCall{Name: "os_exec", Arguments: json.RawMessage(fmt.Sprintf(`{"command":"step %d"}`, i))}, Result: "out"})
+	for i := 0; i < 200; i++ {
+		tools = append(tools, agent.ToolCallResult{Call: model.ToolCall{Name: "os_exec", Arguments: json.RawMessage(fmt.Sprintf(`{"command":"step %d %s"}`, i, strings.Repeat("x", 1000)))}, Result: strings.Repeat("y", 1000)})
 	}
-	st := judgeState(agent.Exchange{Request: "do it", Tools: tools, Answer: strings.Repeat("é", judgeTextChars)})
+	st := judgeState(agent.Exchange{Request: strings.Repeat("r", 2*judgeTextChars), Tools: tools, Answer: strings.Repeat("é", judgeTextChars)})
 	b, _ := json.Marshal(st)
+	if len(b) > judgeStateChars+judgeStateChars/10 { // JSON escaping adds a little over the text budget
+		t.Fatalf("state is %d bytes, budget %d", len(b), judgeStateChars)
+	}
+	if !strings.HasPrefix(string(b), `{"user_request":`) || strings.Index(string(b), `"final_answer":`) > strings.Index(string(b), `"tool_calls":`) {
+		t.Fatalf("key order: %.60s", b)
+	}
 	var got struct {
 		Calls   []map[string]any `json:"tool_calls"`
 		Skipped int              `json:"earlier_tool_calls_not_listed"`
 		Answer  string           `json:"final_answer"`
 	}
 	_ = json.Unmarshal(b, &got)
+	if len(got.Calls) == 0 || len(got.Calls)+got.Skipped != 200 {
+		t.Fatalf("calls %d, skipped %d", len(got.Calls), got.Skipped)
+	}
+	if first, last := got.Calls[0]["input"].(string), got.Calls[len(got.Calls)-1]["input"].(string); !strings.Contains(last, "step 199 ") || strings.Contains(first, "step 0 ") {
+		t.Fatalf("not the newest calls, in order: first %.30q last %.30q", first, last)
+	}
 	withOutput := 0
 	for _, c := range got.Calls {
 		if c["output"] != nil {
 			withOutput++
 		}
 	}
-	if len(got.Calls) != judgeMaxCalls || got.Skipped != 5 || withOutput != judgeKeepOutputs {
-		t.Fatalf("calls %d, skipped %d, with output %d", len(got.Calls), got.Skipped, withOutput)
+	if withOutput != judgeKeepOutputs || got.Calls[0]["output"] != nil || got.Calls[len(got.Calls)-1]["output"] == nil {
+		t.Fatalf("outputs on %d calls, want the newest %d", withOutput, judgeKeepOutputs)
 	}
 	if !strings.HasSuffix(got.Answer, "…") || strings.ContainsRune(got.Answer, '�') {
 		t.Fatalf("the answer wasn't cut on a rune boundary: …%q", got.Answer[len(got.Answer)-8:])
+	}
+	// A short exchange is sent whole, with an empty list rather than null.
+	small, _ := json.Marshal(judgeState(agent.Exchange{Request: "hi", Answer: "hello"}))
+	if string(small) != `{"user_request":"hi","final_answer":"hello","tool_calls":[]}` {
+		t.Fatalf("small state: %s", small)
 	}
 }
 
