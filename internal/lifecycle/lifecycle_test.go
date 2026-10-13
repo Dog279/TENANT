@@ -191,8 +191,11 @@ func TestShutdownDeadline(t *testing.T) {
 	g.AddFunc(Release, "after", func() { ran["after"] = true })
 	start := time.Now()
 	err := g.ShutdownWithin(200 * time.Millisecond)
-	if took := time.Since(start); took > 300*time.Millisecond {
-		t.Errorf("ShutdownWithin took %s, want ~200ms", took)
+	// The point: it returns at the budget, not when the hanging step ends
+	// (never). The bound is loose because a loaded CI runner (Windows above
+	// all, with its coarse timers) has taken 580ms for this 200ms budget.
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("ShutdownWithin took %s, want about the 200ms budget", took)
 	}
 	if !errors.Is(err, ErrStopBudget) || !strings.Contains(err.Error(), "timed out after 200ms") {
 		t.Errorf("err = %v, want it to wrap ErrStopBudget and name the budget", err)
