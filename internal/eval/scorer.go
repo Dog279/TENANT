@@ -87,7 +87,7 @@ func fixtureCalls(f *Fixture) []callRecord {
 	}
 	out := make([]callRecord, len(f.ToolCalls))
 	for i, c := range f.ToolCalls {
-		out[i] = callRecord{tool: c.Tool, args: c.Args}
+		out[i] = callRecord{tool: c.Tool, args: c.Args, result: c.Result}
 	}
 	return out
 }
@@ -96,8 +96,9 @@ func fixtureCalls(f *Fixture) []callRecord {
 // from FixtureToolCall so Phase 2 can populate it from agent.Event
 // stream without changing the scorer's signature.
 type callRecord struct {
-	tool string
-	args string // JSON; substring-matched against ExpectedToolCall.ArgsContain
+	tool   string
+	args   string // JSON; substring-matched against ExpectedToolCall.ArgsContain
+	result string // substring-matched against ExpectedToolCall.ResultContains
 }
 
 // evalGate runs the must_call / must_not_call / response_substring_any
@@ -109,7 +110,11 @@ func evalGate(exp Expected, calls []callRecord, response string) []string {
 	// must_call: every expected call must match SOME real call.
 	for _, want := range exp.MustCall {
 		if !findMatchingCall(want, calls) {
-			fail = append(fail, fmt.Sprintf("must_call: %s with args containing %v not found", want.Tool, want.ArgsContain))
+			msg := fmt.Sprintf("must_call: %s with args containing %v", want.Tool, want.ArgsContain)
+			if len(want.ResultContains) > 0 {
+				msg += fmt.Sprintf(" and a result containing %v", want.ResultContains)
+			}
+			fail = append(fail, msg+" not found")
 		}
 	}
 
@@ -151,7 +156,7 @@ func findMatchingCall(want ExpectedToolCall, calls []callRecord) bool {
 		if c.tool != want.Tool {
 			continue
 		}
-		if argsContainAll(c.args, want.ArgsContain) {
+		if argsContainAll(c.args, want.ArgsContain) && argsContainAll(c.result, want.ResultContains) {
 			return true
 		}
 	}

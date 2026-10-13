@@ -128,7 +128,7 @@ func (h *Harness) runLive(ctx context.Context, t *Task) TaskResult {
 	// Deterministic gate (same logic as fixture mode).
 	callRecs := make([]callRecord, len(calls))
 	for i, c := range calls {
-		callRecs[i] = callRecord{tool: c.Tool, args: c.Args}
+		callRecs[i] = callRecord{tool: c.Tool, args: c.Args, result: c.Result}
 	}
 	gate := evalGate(t.Expected, callRecs, response)
 	if len(gate) > 0 {

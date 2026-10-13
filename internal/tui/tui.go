@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -26,6 +27,7 @@ import (
 	"tenant/internal/control"
 	"tenant/internal/fsperm"
 	modelpkg "tenant/internal/model"
+	"tenant/internal/uicomp"
 )
 
 // Config wires the TUI to an already-constructed agent whose Observer
@@ -38,6 +40,11 @@ type Config struct {
 	AgentID     string
 	Backend     string
 	Model       string
+	// FeedOff hides the activity feed at start (the saved `/feed off`); SaveFeed,
+	// if set, records a `/feed on|off` (or Alt+F) choice so it holds across
+	// launches (TEN-514).
+	FeedOff  bool
+	SaveFeed func(on bool) error
 	// System, if set, carries pre-formatted background feed lines
 	// (e.g. self-improvement job runs) to show alongside agent activity.
 	System <-chan string
@@ -1148,34 +1155,6 @@ func Run(ctx context.Context, cfg Config) error {
 	return err
 }
 
-// --- styles ---
-
-var (
-	cUser          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	cAgent         = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	cDim           = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	cTool          = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	cErr           = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	cOK            = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	cSys           = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	statusBarStyle = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("15"))
-	feedTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14"))
-	paneBorder     = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), false, true, false, false).BorderForeground(lipgloss.Color("238"))
-
-	// List / command formatting: high-contrast so /tools, /help, /skills
-	// are scannable rather than a wall of dim grey.
-	cHeading = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")) // section titles (cyan)
-	cKey     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")) // commands, plugin names (blue)
-	cName    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))           // active item name (near-white)
-	cOnMark  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")) // ● enabled (green)
-	cOffMark = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))           // ○ disabled (grey)
-
-	// chatGutter is the left breathing room for the chat pane so the first
-	// characters don't sit flush against the terminal edge.
-	chatGutter = 2
-	chatPad    = lipgloss.NewStyle().MarginLeft(chatGutter)
-)
-
 // --- messages ---
 
 type eventMsg agent.Event
@@ -1234,6 +1213,35 @@ type chatMsg struct {
 	// pane. When empty, content is shown as-is. Keeping content plain means
 	// Ctrl-Y copies clean text, never escape codes.
 	rendered string
+	// at is when the message was added, for the turn block's header line;
+	// model names the model an assistant message came from (TEN-514).
+	at    time.Time
+	model string
+	// via names the component that sent a user message (TEN-518): "choices"
+	// or "form"; "" when the operator typed it.
+	via string
+	// tools are an assistant message's tool calls, in order; each knows where
+	// in content it happened, so the block interleaves text and tool rows.
+	tools []toolRow
+	// final marks an assistant message whose text is complete: rendered as
+	// Markdown in full. While streaming, only the closed paragraphs are.
+	final bool
+	// cache is the block as last rendered, valid for cacheKey (width, length,
+	// state); a repaint while nothing changed is a string copy.
+	cache, cacheKey string
+	// iter is the model call the last streamed text came from (TEN-523).
+	iter int
+}
+
+// toolRow is one tool call shown inside an assistant's turn block: a single
+// collapsed line, or the arguments and result when the block is open
+// (Ctrl+O) or the call failed.
+type toolRow struct {
+	id, name, args, result string
+	at                     time.Time
+	dur                    time.Duration
+	done, isErr            bool
+	pos                    int // len(content) when the call began
 }
 
 type model struct {
@@ -1290,6 +1298,16 @@ type model struct {
 	// bottom re-engages follow.
 	chatFollow bool
 	feedFollow bool
+	// toolsOpen shows every turn's tool rows with their arguments and
+	// results (Ctrl+O); off, each call is one line. feedOff hides the activity
+	// pane (/feed off, Alt+F). inTurn indents the feed's lines under the turn
+	// header while the main agent's turn runs (TEN-514).
+	toolsOpen bool
+	// comp is the latest turn's choices or form waiting for the operator's
+	// answer (TEN-518); nil when nothing is.
+	comp    *componentPrompt
+	feedOff bool
+	inTurn  bool
 	// pending holds dangerous actions awaiting /approve or /deny, oldest
 	// first (tool calls are sequential, so this is normally 0–1 deep).
 	pending []ApprovalRequest
@@ -1404,6 +1422,7 @@ func newModel(ctx context.Context, cfg Config) *model {
 		chatFollow: true,
 		feedFollow: true,
 		mouseOn:    true, // matches Run's WithMouseCellMotion default
+		feedOff:    cfg.FeedOff,
 		msgs:       []chatMsg{intro(cfg)},
 	}
 }
@@ -1625,6 +1644,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "ctrl+y":
 			m.copyTranscript()
+		case "ctrl+o":
+			// Open or close every turn's tool rows (arguments and results) (TEN-514).
+			m.toolsOpen = !m.toolsOpen
+			m.refresh()
+		case "alt+f":
+			m.setFeed(m.feedOff, true)
 		case "enter":
 			var q string
 			if m.secretEntry != nil || m.setupEntry != nil || m.configureSession != nil {
@@ -1750,7 +1775,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case turnDoneMsg:
 		m.busy = false
-		m.streaming = false
+		m.sealStreaming()
+		m.inTurn = false
 		m.thinkSince, m.toolsSince = time.Time{}, time.Time{}
 		// Seal the turn: finalizeAssistant (below) is now the authoritative
 		// source for this answer, so any trailing EventAssistant/EventToken
@@ -1760,6 +1786,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.turnCancel != nil {
 			m.turnCancel()
 			m.turnCancel = nil
+		}
+		if !m.interrupted && msg.err == nil {
+			m.armComponent() // TEN-518: the turn's choices or form now take input
 		}
 		switch {
 		case m.interrupted:
@@ -1897,6 +1926,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		cmds = append(cmds, cmd)
+		if m.busy && m.streaming {
+			m.refresh() // the live line under the answer counts up (cached blocks are a copy)
+		}
 	}
 	// (sysChatMsg is caught earlier in Update at the picker/async layer.)
 
@@ -2019,6 +2051,23 @@ func (m *model) submit() tea.Cmd {
 		m.handleConfigureAnswer(q)
 		return m.advanceConfigureSession()
 	}
+	// A number answers the latest turn's choices (TEN-518); anything else is
+	// a normal message and the choices are left behind.
+	if m.comp != nil && m.comp.c.Kind == "choices" && !m.busy && !strings.HasPrefix(q, "/") {
+		if n, err := strconv.Atoi(q); err == nil {
+			text, ferr := uicomp.Fill(m.comp.c, uicomp.Inputs{Choice: n - 1})
+			if ferr != nil {
+				m.sysChat(ferr.Error())
+				return nil
+			}
+			c := m.comp
+			m.comp = nil
+			m.ta.Reset()
+			m.chatFollow = true
+			var none agent.RouteOverride
+			return m.startTurn(text, none, "choices", uicomp.Meta(c.c, c.id))
+		}
+	}
 	if q == "" {
 		return nil
 	}
@@ -2053,7 +2102,18 @@ func (m *model) submit() tea.Cmd {
 		m.sysChat("!big and !local must be followed by a message")
 		return nil
 	}
-	m.msgs = append(m.msgs, chatMsg{role: "user", content: q})
+	return m.startTurn(q, routeOverride, "", nil)
+}
+
+// startTurn sends q as the operator's message and runs the turn off the UI
+// goroutine. via and meta name the component that sent it (TEN-518), "" and
+// nil when the operator typed it; a typed message leaves any waiting
+// component behind.
+func (m *model) startTurn(q string, routeOverride agent.RouteOverride, via string, meta map[string]any) tea.Cmd {
+	if via == "" {
+		m.comp = nil
+	}
+	m.msgs = append(m.msgs, chatMsg{role: "user", content: q, at: time.Now(), via: via})
 	m.busy = true
 	m.reqStart = time.Now()
 	m.interrupted = false
@@ -2066,7 +2126,7 @@ func (m *model) submit() tea.Cmd {
 	m.turnCancel = cancel
 	req := agent.TurnRequest{
 		UserQuery: q, RouteSurface: agent.RouteSurfaceTUI, RouteOverride: routeOverride,
-		Images: m.takeAttachments(q),
+		Images: m.takeAttachments(q), Meta: meta,
 	}
 	// While a /goal loop is active, decouple this turn's iteration budget from
 	// the global loop ceiling so a long autonomous run can iterate freely
@@ -2092,11 +2152,70 @@ func (m *model) finalizeAssistant(response string) {
 		return
 	}
 	if n := len(m.msgs); n > 0 && m.msgs[n-1].role == "assistant" {
-		m.msgs[n-1].content = response
-		m.msgs[n-1].rendered = ""
+		last := &m.msgs[n-1]
+		// A turn with tool calls streamed the text before them too, and the
+		// final answer is its tail: keep the streamed text so the rows stay
+		// where they happened. Otherwise (no rows, or tokens were dropped) the
+		// result is the text and the rows go first.
+		if len(last.tools) == 0 || !strings.HasSuffix(strings.TrimSpace(last.content), strings.TrimSpace(response)) {
+			last.content = response
+			for i := range last.tools {
+				last.tools[i].pos = 0
+			}
+		}
+		last.rendered = ""
+		last.final = true
 		return
 	}
-	m.msgs = append(m.msgs, chatMsg{role: "assistant", content: response})
+	m.msgs = append(m.msgs, chatMsg{role: "assistant", content: response, at: time.Now(), model: m.cfg.Model, final: true})
+}
+
+// sealStreaming ends the streaming message's live rendering: the text is
+// complete, so the whole of it renders as Markdown.
+func (m *model) sealStreaming() {
+	if m.streaming {
+		if n := len(m.msgs); n > 0 && m.msgs[n-1].role == "assistant" {
+			m.msgs[n-1].final = true
+		}
+	}
+	m.streaming = false
+}
+
+// settleToolRow fills in the row of the call e answers: by the model's call
+// id when both sides carry it, else the oldest open row with that name.
+func (m *model) settleToolRow(e agent.Event) {
+	n := len(m.msgs)
+	if n == 0 || m.msgs[n-1].role != "assistant" {
+		return
+	}
+	rows := m.msgs[n-1].tools
+	for i := range rows {
+		t := &rows[i]
+		if t.done || t.name != e.Tool || (e.ToolCallID != "" && t.id != "" && t.id != e.ToolCallID) {
+			continue
+		}
+		t.done, t.isErr, t.result = true, e.IsErr, e.Result
+		t.dur = e.Duration
+		if t.dur == 0 {
+			t.dur = time.Since(t.at)
+		}
+		return
+	}
+}
+
+// setFeed shows or hides the activity pane and, when save is set, records the
+// choice through the SaveFeed hook so the next launch keeps it (TEN-514).
+func (m *model) setFeed(on, save bool) {
+	m.feedOff = !on
+	if m.ready {
+		m.resize(m.width, m.height)
+		m.refresh()
+	}
+	if save && m.cfg.SaveFeed != nil {
+		if err := m.cfg.SaveFeed(on); err != nil {
+			m.appendFeed(cErr.Render("feed choice not saved: " + safeErr(err)))
+		}
+	}
 }
 
 // interject hands a mid-turn message to the running agent (the Hermes-style
@@ -2233,6 +2352,17 @@ func (m *model) sendDecision(d ApprovalDecision) {
 	m.sysChat(verb + " — " + r.Category)
 }
 
+// turnFeed adds one of the main agent's own lines to the feed: indented under
+// the turn's header while its turn runs (TEN-514). Cron and sub-agent lines
+// (applyCronEvent, applyTeamEvent) use appendFeed and stay flush left, so a
+// job that ticks mid-turn reads apart from the turn.
+func (m *model) turnFeed(line string) {
+	if m.inTurn {
+		line = "  " + line
+	}
+	m.appendFeed(line)
+}
+
 func (m *model) applyEvent(e agent.Event) {
 	// A scheduled job's activity carries its cron agent's id, so it is taken
 	// before the cross-agent skip below.
@@ -2250,7 +2380,7 @@ func (m *model) applyEvent(e agent.Event) {
 	case agent.EventApprovalResolved:
 		if e.Approval != nil && strings.HasPrefix(e.Approval.ID, "beside-") {
 			// The mirror of an approval another surface owned (TEN-203) closed out.
-			m.appendFeed(cDim.Render("approval in " + strings.TrimPrefix(e.Approval.ID, "beside-") + ": " + e.Approval.Outcome))
+			m.turnFeed(cDim.Render("approval in " + strings.TrimPrefix(e.Approval.ID, "beside-") + ": " + e.Approval.Outcome))
 			break
 		}
 		// Another observer (the dashboard) resolved a pending action, OR this TUI's
@@ -2266,7 +2396,7 @@ func (m *model) applyEvent(e agent.Event) {
 			// rendering a dead Approve/Deny prompt. (That dead prompt is what read
 			// as "the approval showed up on the TUI instead of Discord.")
 			where := strings.TrimPrefix(e.Approval.ID, "beside-")
-			m.appendFeed(cErr.Render("⏳ approval waiting in " + where + " (" + e.Approval.Category + "): " + e.Approval.Action + " — resolve it there"))
+			m.turnFeed(cErr.Render("⏳ approval waiting in " + where + " (" + e.Approval.Category + "): " + e.Approval.Action + " — resolve it there"))
 			break
 		}
 		// Backstop for a dropped non-blocking channel notify: if the fast-path
@@ -2276,13 +2406,23 @@ func (m *model) applyEvent(e agent.Event) {
 			r := ApprovalRequest{ID: e.Approval.ID, Category: e.Approval.Category, Action: e.Approval.Action, Detail: e.Approval.Detail}
 			m.pending = append(m.pending, r)
 			m.showApproval(r)
-			m.appendFeed(cErr.Render("⚠ approval needed: " + r.Category))
+			m.turnFeed(cErr.Render("⚠ approval needed: " + r.Category))
 		}
 	case agent.EventTurnStart:
-		m.appendFeed(cDim.Render(time.Now().Format("15:04:05") + " turn start"))
+		// The turn's header in the feed: the time and the question's first
+		// words; the turn's own lines indent under it until it ends (TEN-514).
+		head := time.Now().Format("15:04:05")
+		if q := clip(oneLine(e.Text), 60); q != "" {
+			head += " " + q
+		} else {
+			head += " turn start"
+		}
+		m.inTurn = false
+		m.turnFeed(cDim.Render("▸ " + head))
+		m.inTurn = true
 	case agent.EventRoute:
 		// Room for the classifier's host and model after the decision (TEN-340).
-		m.appendFeed(cDim.Render("route: " + clip(oneLine(e.Text), 140)))
+		m.turnFeed(cDim.Render("route: " + clip(oneLine(e.Text), 140)))
 	case agent.EventThinking:
 		m.thinkSince, m.toolsSince = time.Now(), time.Time{}
 	case agent.EventThought:
@@ -2291,12 +2431,13 @@ func (m *model) applyEvent(e agent.Event) {
 		if e.IsErr {
 			line += " (the call failed)"
 		}
-		m.appendFeed(cDim.Render(line))
+		m.turnFeed(cDim.Render(line))
 	case agent.EventTurnEnd:
 		m.thinkSince, m.toolsSince = time.Time{}, time.Time{}
 		if e.Think > 0 || e.Tools > 0 {
-			m.appendFeed(cDim.Render("turn " + formatElapsed(e.Duration) + " — thinking " + formatElapsed(e.Think) + " · tools " + formatElapsed(e.Tools)))
+			m.turnFeed(cDim.Render("turn " + formatElapsed(e.Duration) + " — thinking " + formatElapsed(e.Think) + " · tools " + formatElapsed(e.Tools)))
 		}
+		m.inTurn = false
 	case agent.EventUsage:
 		// Actual tokens (input + output) reported by the backend for this
 		// LLM call — summed for the session total, and split in/out so the
@@ -2313,9 +2454,9 @@ func (m *model) applyEvent(e agent.Event) {
 		}
 	case agent.EventTeamBudget:
 		if e.TeamBudget != nil && e.TeamBudget.TerminationReason != "" {
-			m.appendFeed(cErr.Render("team " + e.Text))
+			m.turnFeed(cErr.Render("team " + e.Text))
 		} else {
-			m.appendFeed(cDim.Render(e.Text))
+			m.turnFeed(cDim.Render(e.Text))
 		}
 	case agent.EventMemory:
 		if e.Budget != nil {
@@ -2337,79 +2478,87 @@ func (m *model) applyEvent(e agent.Event) {
 				if e.Budget.CompactionRecommended {
 					note = " " + cErr.Render("(compaction soon)")
 				}
-				m.appendFeed(cDim.Render(fmt.Sprintf("ctx assembled: %d tok (%d%% of context window)", e.Budget.Total, m.budgetPct)) + note)
-				// Static breakdown (TEN-214): the tool-definition cost dominates a
-				// full mux and is the thing that silently eats the window. Surface
-				// soul/system/tools each turn, plus the writable budget the
-				// variable tiers were actually sized against (measured static, not
-				// the fixed reserves) so "where did my context go?" is answerable.
-				stat := e.Budget.SoulTokens + e.Budget.SystemTokens + e.Budget.ToolTokens
-				m.appendFeed(cDim.Render(fmt.Sprintf(
-					"  static %s (soul %s · sys %s · tools %s) · working %s · writable %s",
-					humanTokens(stat), humanTokens(e.Budget.SoulTokens), humanTokens(e.Budget.SystemTokens),
-					humanTokens(e.Budget.ToolTokens), humanTokens(e.Budget.WorkingTokens),
-					humanTokens(e.Budget.EffectiveWritable))))
+				// One line (TEN-514): the total against the window, then the static
+				// breakdown (TEN-214): the tool-definition cost dominates a full mux
+				// and is the thing that silently eats the window, so soul/system/
+				// tools and the working set show each turn and "where did my
+				// context go?" is answerable from the feed.
+				m.turnFeed(cDim.Render(fmt.Sprintf("ctx %s tok (%d%%) · soul %s · sys %s · tools %s · working %s",
+					humanTokens(e.Budget.Total), m.budgetPct, humanTokens(e.Budget.SoulTokens), humanTokens(e.Budget.SystemTokens),
+					humanTokens(e.Budget.ToolTokens), humanTokens(e.Budget.WorkingTokens))) + note)
 			}
 		}
 	case agent.EventToken:
-		if m.assistantSealed {
-			break // stale trailing token from an already-finalized turn (TEN-217)
+		if msg := m.curAssistant(); msg != nil { // nil: a stale trailing token (TEN-217)
+			// A new model call's text starts on its own paragraph; otherwise a
+			// turn that answers again (a judge send-back, a tool round) runs
+			// its sentences together (TEN-523).
+			if e.Iter != msg.iter && msg.content != "" && !strings.HasSuffix(msg.content, "\n") {
+				msg.content += "\n\n"
+			}
+			msg.iter = e.Iter
+			msg.content += e.Text
 		}
-		if !m.streaming {
-			m.msgs = append(m.msgs, chatMsg{role: "assistant"})
-			m.streaming = true
-		}
-		m.msgs[len(m.msgs)-1].content += e.Text
 	case agent.EventAssistant:
-		// Non-stream fallback: whole assistant text at once.
-		if m.assistantSealed {
-			break // turnDoneMsg already reconciled this turn — don't double-post (TEN-217)
-		}
+		// Non-stream fallback: whole assistant text at once (a turn that
+		// streamed nothing); nil once turnDoneMsg sealed the turn (TEN-217).
 		if !m.streaming {
-			m.msgs = append(m.msgs, chatMsg{role: "assistant", content: e.Text})
+			if msg := m.curAssistant(); msg != nil {
+				msg.content = e.Text
+			}
 		}
 	case agent.EventSkills:
-		m.appendFeed(cSys.Render("skills: " + clip(e.Text, 60)))
+		m.turnFeed(cSys.Render("skills: " + clip(e.Text, 60)))
 	case agent.EventToolCall:
 		m.lastTool = e.Tool
 		if m.toolsSince.IsZero() {
 			m.toolsSince = time.Now()
 		}
-		m.appendFeed(cTool.Render("→ "+e.Tool) + " " + cDim.Render(clip(e.Args, 60)))
+		m.turnFeed(cTool.Render("→ "+e.Tool) + " " + cDim.Render(clip(e.Args, 60)))
+		if msg := m.curAssistant(); msg != nil { // the row in the turn block (TEN-514)
+			msg.tools = append(msg.tools, toolRow{id: e.ToolCallID, name: e.Tool, args: e.Args, at: time.Now(), pos: len(msg.content)})
+		}
 	case agent.EventToolResult:
 		mark := cOK.Render("✓")
 		if e.IsErr {
 			mark = cErr.Render("✗")
 		}
-		m.appendFeed(fmt.Sprintf("%s %s %s", mark, cTool.Render(e.Tool), cDim.Render(clip(oneLine(e.Result), 70))))
+		m.turnFeed(fmt.Sprintf("%s %s %s", mark, cTool.Render(e.Tool), cDim.Render(clip(oneLine(e.Result), 70))))
+		m.settleToolRow(e)
 	case agent.EventValidation:
-		m.appendFeed(cErr.Render("! invalid tool call " + e.Tool + ": " + clip(e.Text, 60)))
+		m.turnFeed(cErr.Render("! invalid tool call " + e.Tool + ": " + clip(e.Text, 60)))
 	case agent.EventCompact:
-		m.appendFeed(cSys.Render("⊟ context compacted: " + e.Text))
+		m.turnFeed(cSys.Render("⊟ context compacted: " + e.Text))
 	case agent.EventInterject:
-		m.appendFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
+		m.turnFeed(cSys.Render("↪ folding in your message: " + clip(e.Text, 60)))
 	case agent.EventJudge:
 		style := cSys
 		if e.IsErr {
 			style = cErr
 		}
-		m.appendFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
+		m.turnFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
+		// A send-back pauses the answer the operator was reading; say so in
+		// the chat pane itself, or it looks like the turn stopped for nothing.
+		if strings.HasPrefix(e.Text, "sent back") {
+			line := "⚖ judge: " + e.Text + " — your agent is trying again"
+			m.sysChatStyled(line, cSys.Render(line))
+		}
 	case agent.EventIngest:
 		// An offsite channel (Discord/iMessage) received a message and drove a
 		// turn. e.Text is already prefixed "Discord: " / "iMessage: " (TEN-232).
-		m.appendFeed(cSys.Render("📥 " + clip(e.Text, 80)))
+		m.turnFeed(cSys.Render("📥 " + clip(e.Text, 80)))
 	case agent.EventFinal:
-		m.streaming = false
-		m.appendFeed(cDim.Render("answer ready"))
+		m.sealStreaming()
+		m.turnFeed(cDim.Render("answer ready"))
 	case agent.EventTruncated:
-		m.streaming = false
-		m.appendFeed(cErr.Render("loop ceiling hit — synthesized"))
+		m.sealStreaming()
+		m.turnFeed(cErr.Render("loop ceiling hit — synthesized"))
 	case agent.EventStuck:
-		m.streaming = false
-		m.appendFeed(cErr.Render("stuck repeating the same tool calls — synthesized (/ceiling repeat to tune)"))
+		m.sealStreaming()
+		m.turnFeed(cErr.Render("stuck repeating the same tool calls — synthesized (/ceiling repeat to tune)"))
 	case agent.EventError:
 		m.err = e.Text
-		m.appendFeed(cErr.Render("error: " + clip(e.Text, 80)))
+		m.turnFeed(cErr.Render("error: " + clip(e.Text, 80)))
 	}
 }
 
@@ -2659,6 +2808,7 @@ func (m *model) copyTranscript() {
 	}
 }
 
+// appendFeed adds a line to the activity feed as it is.
 func (m *model) appendFeed(line string) {
 	m.feedLines = append(m.feedLines, line)
 	if len(m.feedLines) > 500 {
@@ -2677,6 +2827,9 @@ func (m *model) resize(w, h int) {
 	feedW := w / 3
 	if feedW < 24 {
 		feedW = 24
+	}
+	if m.feedOff { // /feed off, Alt+F: the chat takes the width (TEN-514)
+		feedW = 0
 	}
 	chatW := w - feedW - 3 - chatGutter // leave room for the left gutter
 	if chatW < 20 {
@@ -2748,23 +2901,227 @@ func (m *model) pageStep() int {
 	return 1
 }
 
+// renderChat draws the conversation as turn blocks (TEN-514): a header line
+// with a gutter dot, who, the time and (for the agent) the model; the text
+// rendered from Markdown at the pane width; the turn's tool calls as rows
+// where they happened; a rule between turns. System lines keep their own
+// styling. Each block is cached against what it was rendered from, so a
+// repaint while the agent thinks costs one string copy per settled block.
 func (m *model) renderChat() string {
+	w := m.chat.Width
 	var b strings.Builder
-	for _, msg := range m.msgs {
+	seenTurn := false
+	for i := range m.msgs {
+		msg := &m.msgs[i]
 		switch msg.role {
 		case "user":
-			b.WriteString(cUser.Render("you ") + msg.content + "\n\n")
+			if seenTurn {
+				b.WriteString(pal.Rule.Render(strings.Repeat("─", max1(w))) + "\n\n")
+			}
+			seenTurn = true
+			b.WriteString(m.turnBlock(msg, w) + "\n\n")
 		case "assistant":
-			b.WriteString(cAgent.Render("tenant ") + msg.content + "\n\n")
+			seenTurn = true
+			b.WriteString(m.turnBlock(msg, w))
+			if live := m.liveLine(i); live != "" {
+				b.WriteString("\n  " + live)
+			}
+			b.WriteString("\n\n")
 		default: // system: styled form if present, else plain (default fg)
 			disp := msg.rendered
 			if disp == "" {
 				disp = msg.content
 			}
-			b.WriteString(disp + "\n\n")
+			b.WriteString(wrap(disp, w) + "\n\n")
 		}
 	}
-	return wrap(b.String(), m.chat.Width)
+	return b.String()
+}
+
+// blockIndent is the text's offset under a turn's header line.
+const blockIndent = 2
+
+// turnBlock renders one user or assistant message as a block, from cache
+// when nothing it depends on changed.
+func (m *model) turnBlock(msg *chatMsg, w int) string {
+	done := 0
+	for _, t := range msg.tools {
+		if t.done {
+			done++
+		}
+	}
+	key := fmt.Sprintf("%d|%t|%d|%d|%d|%t", w, msg.final, len(msg.content), len(msg.tools), done, m.toolsOpen)
+	if msg.cache != "" && msg.cacheKey == key {
+		return msg.cache
+	}
+	var b strings.Builder
+	b.WriteString(m.blockHeader(msg))
+	inner := w - blockIndent
+	if inner < 10 {
+		inner = 10
+	}
+	pad := strings.Repeat(" ", blockIndent)
+	body := ""
+	if msg.role == "user" {
+		body = wrap(msg.content, inner)
+	} else {
+		body = m.assistantBody(msg, inner)
+	}
+	if body != "" {
+		for _, line := range strings.Split(body, "\n") {
+			b.WriteString("\n" + pad + line)
+		}
+	}
+	msg.cache, msg.cacheKey = b.String(), key
+	return msg.cache
+}
+
+// blockHeader is "● you · 15:04" or "● tenant · 15:04 · <model>".
+func (m *model) blockHeader(msg *chatMsg) string {
+	who := cUser.Render("you")
+	if msg.role == "assistant" {
+		who = cAgent.Render("tenant")
+	}
+	h := pal.Glyph.Render("●") + " " + who
+	if !msg.at.IsZero() {
+		h += pal.Time.Render(" · " + msg.at.Format("15:04"))
+	}
+	if msg.role == "assistant" && msg.model != "" {
+		h += pal.Time.Render(" · " + msg.model)
+	}
+	if msg.via != "" {
+		h += pal.Time.Render(" · via " + msg.via)
+	}
+	return h
+}
+
+// assistantBody interleaves the message's text, rendered from Markdown, with
+// its tool rows at the positions they happened. A streaming message renders
+// its closed paragraphs as Markdown and the open tail as plain text, so the
+// renderer never re-lays the whole answer per token.
+func (m *model) assistantBody(msg *chatMsg, w int) string {
+	var parts []string
+	start := 0
+	for i, t := range msg.tools {
+		pos := min(max(t.pos, start), len(msg.content))
+		if seg := msg.content[start:pos]; strings.TrimSpace(seg) != "" {
+			parts = append(parts, m.renderText(seg, w, true))
+		}
+		parts = append(parts, m.toolRowLines(t, w))
+		start = pos
+		_ = i
+	}
+	if seg := msg.content[start:]; strings.TrimSpace(seg) != "" {
+		parts = append(parts, m.renderText(seg, w, msg.final))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// renderText renders Markdown at width w. Unless the text is complete, only
+// the paragraphs closed by a blank line are rendered; the rest is plain.
+func (m *model) renderText(text string, w int, complete bool) string {
+	text = strings.TrimSpace(text)
+	if complete {
+		return markdownANSI(text, w, pal.markdown)
+	}
+	head, tail := "", text
+	if i := strings.LastIndex(text, "\n\n"); i >= 0 {
+		head, tail = text[:i], strings.TrimSpace(text[i+2:])
+	}
+	out := ""
+	if head != "" {
+		out = markdownANSI(head, w, pal.markdown)
+	}
+	if tail != "" {
+		if out != "" {
+			out += "\n\n"
+		}
+		out += wrap(tail, w)
+	}
+	return out
+}
+
+// toolRowLines is a tool call inside a turn block: one line, closed
+// (`⏺ web_search("…") ✓ 1.2s · 3 results`), or the arguments and result
+// under it when the block is open (Ctrl+O) or the call failed.
+func (m *model) toolRowLines(t toolRow, w int) string {
+	if comp, ok := m.componentLines(t, w); ok {
+		return comp
+	}
+	head := pal.Glyph.Render("⏺") + " " + cTool.Render(t.name) + cDim.Render("("+clip(t.args, 48)+")")
+	switch {
+	case !t.done:
+		head += " " + cDim.Render("…")
+	case t.isErr:
+		head += " " + cErr.Render("✗") + cDim.Render(" "+formatElapsed(t.dur))
+	default:
+		head += " " + cOK.Render("✓") + cDim.Render(" "+formatElapsed(t.dur)+" · "+clip(t.result, max(10, w-40)))
+	}
+	if !t.done || (!m.toolsOpen && !t.isErr) {
+		return head
+	}
+	lines := []string{head}
+	add := func(label, text string, limit int) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		body := strings.Split(wrap(text, max(10, w-4)), "\n")
+		if len(body) > limit {
+			body = append(body[:limit], cDim.Render(fmt.Sprintf("… %d more lines (see /logs)", len(body)-limit)))
+		}
+		for i, l := range body {
+			mark := "  "
+			if i == 0 {
+				mark = pal.Time.Render("⎿ ")
+			}
+			lines = append(lines, "  "+mark+l)
+		}
+		_ = label
+	}
+	add("args", t.args, 6)
+	if t.isErr {
+		add("error", cErr.Render(oneLine(t.result)), 8)
+	} else {
+		add("result", t.result, 20)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// liveLine is the in-flight state under the message the agent is writing:
+// what it is doing and for how long, as the footer timer shows it.
+func (m *model) liveLine(i int) string {
+	if !m.busy || i != len(m.msgs)-1 || m.msgs[i].final {
+		return ""
+	}
+	switch {
+	case !m.thinkSince.IsZero():
+		return cDim.Render(m.spin.View() + "thinking… " + formatElapsed(time.Since(m.thinkSince)))
+	case !m.toolsSince.IsZero():
+		name := m.lastTool
+		if name != "" {
+			name += " "
+		}
+		return cDim.Render(m.spin.View() + name + "… " + formatElapsed(time.Since(m.toolsSince)))
+	}
+	return ""
+}
+
+// curAssistant is the assistant message this turn is writing, made on first
+// use (a turn can open with a tool call, before any text). nil once the turn
+// is sealed, so a stale trailing event never starts a new bubble (TEN-217).
+func (m *model) curAssistant() *chatMsg {
+	if m.assistantSealed {
+		return nil
+	}
+	// A fresh message when none is streaming, and also when the last message
+	// is not the assistant's: an interjection appends the operator's message
+	// mid-answer, and the answer must never continue inside it (TEN-523).
+	if n := len(m.msgs); !m.streaming || n == 0 || m.msgs[n-1].role != "assistant" {
+		m.msgs = append(m.msgs, chatMsg{role: "assistant", at: time.Now(), model: m.cfg.Model})
+		m.streaming = true
+	}
+	return &m.msgs[len(m.msgs)-1]
 }
 
 func (m *model) renderFeed() string {
@@ -3034,10 +3391,18 @@ func (m *model) View() string {
 		left = m.renderLogs()
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, chatPad.Render(left), paneBorder.Render(""), m.feed.View())
+	if m.feedOff {
+		body = chatPad.Render(left)
+	}
 	// Footer: help (left) + context gauge (bottom-right), width-aligned,
 	// sharing the chat's left gutter.
 	gutter := strings.Repeat(" ", chatGutter)
-	helps := []string{gutter + "Enter send · Ctrl+V image · /help · PgUp/PgDn scroll · Ctrl-Y copy · /exit quit", gutter + "/help · /exit quit", ""}
+	helps := []string{
+		gutter + "Enter send · Ctrl+V image · /help · PgUp/PgDn scroll · Ctrl-O tools · Alt-F feed · Ctrl-Y copy · /exit quit",
+		gutter + "/help · Ctrl-O tools · Alt-F feed · /exit quit",
+		gutter + "/help · /exit quit",
+		"",
+	}
 	if n := m.pendingImages(); n > 0 { // TEN-493: say what rides the next message, and how to drop it
 		helps = []string{gutter + fmt.Sprintf("📎 %d attached · Backspace removes an [image] tag", n), gutter + fmt.Sprintf("📎 %d attached", n), ""}
 	}
@@ -3094,10 +3459,11 @@ func clip(s string, n int) string {
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// wrap hard-wraps long lines to a VISIBLE width, never slicing inside an
-// ANSI escape sequence — so styled lists/help don't get corrupted
+// wrap wraps long lines to a VISIBLE width at word boundaries, never slicing
+// inside an ANSI escape sequence — so styled lists/help don't get corrupted
 // mid-color-code. Counts runes (display cells), copies escape sequences
-// through verbatim without advancing the column.
+// through verbatim without advancing the column. A word wider than the width
+// is broken at the column (a URL, a hash).
 func wrap(s string, width int) string {
 	if width <= 0 {
 		return s
@@ -3113,36 +3479,81 @@ func wrap(s string, width int) string {
 }
 
 func wrapLine(line string, width int) string {
-	var out strings.Builder
-	col := 0
+	// Tokens are words with their trailing space, escapes attached to the
+	// word they style, so joining the lines back gives the input exactly.
+	var toks []string
+	var cur strings.Builder
 	for i := 0; i < len(line); {
-		if line[i] == 0x1b { // ESC: copy the whole escape sequence verbatim
-			j := i + 1
-			if j < len(line) && line[j] == '[' { // CSI ... final byte @-~
-				j++
-				for j < len(line) && (line[j] < '@' || line[j] > '~') {
-					j++
-				}
-				if j < len(line) {
-					j++ // include the final byte
-				}
-			}
-			out.WriteString(line[i:j])
+		if line[i] == 0x1b {
+			j := escapeEnd(line, i)
+			cur.WriteString(line[i:j])
 			i = j
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(line[i:])
-		if col >= width {
+		cur.WriteString(line[i : i+size])
+		i += size
+		if r == ' ' {
+			toks = append(toks, cur.String())
+			cur.Reset()
+		}
+	}
+	if cur.Len() > 0 {
+		toks = append(toks, cur.String())
+	}
+	var out strings.Builder
+	col := 0
+	for _, t := range toks {
+		tw := visibleRunes(t)
+		if col > 0 && col+tw > width {
 			out.WriteByte('\n')
 			col = 0
 		}
-		out.WriteString(line[i : i+size])
-		i += size
-		col++
-		_ = r
+		if tw <= width {
+			out.WriteString(t)
+			col += tw
+			continue
+		}
+		// A single token wider than the pane: break it at the column.
+		for i := 0; i < len(t); {
+			if t[i] == 0x1b {
+				j := escapeEnd(t, i)
+				out.WriteString(t[i:j])
+				i = j
+				continue
+			}
+			r, size := utf8.DecodeRuneInString(t[i:])
+			cw := lipgloss.Width(string(r)) // cells: a wide character takes two
+			if col > 0 && col+cw > width {
+				out.WriteByte('\n')
+				col = 0
+			}
+			out.WriteString(t[i : i+size])
+			i += size
+			col += cw
+		}
 	}
 	return out.String()
 }
+
+// escapeEnd returns the index just past the ANSI escape sequence at s[i].
+func escapeEnd(s string, i int) int {
+	j := i + 1
+	if j < len(s) && s[j] == '[' { // CSI ... final byte @-~
+		j++
+		for j < len(s) && (s[j] < '@' || s[j] > '~') {
+			j++
+		}
+		if j < len(s) {
+			j++ // include the final byte
+		}
+	}
+	return j
+}
+
+// visibleRunes counts the display cells of s, escape sequences excluded; a
+// wide character (CJK, fullwidth) counts two.
+func visibleRunes(s string) int { return lipgloss.Width(s) }
 
 // --- listPicker: minimal arrow-key list selector ---
 //

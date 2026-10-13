@@ -1755,7 +1755,7 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	profileEvery := fs.Duration("profile-every", 15*time.Minute, "user-profile re-synthesis cadence (LLM call; reads T3 facts)")
 	evalEvery := fs.Duration("eval-every", 0, "nightly eval cadence (0=off; e.g. 24h): runs the full live eval + checks baselines/full.json; needs --self-improve")
 	dashboardOn := fs.Bool("dashboard", false, "serve the web control panel alongside the TUI")
-	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:8770)")
+	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:9770)")
 	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -2472,12 +2472,13 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	// settings-page writes trigger their own reload.)
 	go watchCredentials(ctx, c.cfgDir, modelCtl, degraded, pushSys)
 	dashMgr := &dashboardManager{
-		base:   ctx,
-		cfg:    dcfg,
-		runner: ag,
-		tools:  dashTools{mainTools},
-		mem:    dashMemory{memCtl},
-		cron:   dashCronCtl,
+		base:       ctx,
+		cfg:        dcfg,
+		runner:     ag,
+		transcript: ag.Conversation,
+		tools:      dashTools{mainTools},
+		mem:        dashMemory{memCtl},
+		cron:       dashCronCtl,
 		// Watched-repo list for the Integrations page; shares storage and
 		// semantics with the TUI /github command via githubTUIControl.
 		githubRepos: dashGitHubRepos{c: githubTUIControl{cfgDir: c.cfgDir, lc: c.lc}},
@@ -3095,6 +3096,19 @@ func cmdTUI(ctx context.Context, args []string) (err error) {
 	err = tui.Run(ctx, tui.Config{
 		Agent: ag, Events: evCh, AgentID: c.agent, Backend: c.backend, Model: modelName, System: sysCh,
 		SavePath: filepath.Join(c.dataDir, "transcript.txt"), Tools: mainTools,
+		// The activity feed's saved on/off choice (/feed, Alt+F) (TEN-514).
+		FeedOff: c.lc != nil && c.lc.TUI.Feed == "off",
+		SaveFeed: func(on bool) error {
+			if c.lc == nil {
+				return nil
+			}
+			return persistLaunchConfig(c.cfgDir, c.lc, func(lc *launchConfig) {
+				lc.TUI.Feed = ""
+				if !on {
+					lc.TUI.Feed = "off"
+				}
+			})
+		},
 		Skills:   skillControl{st: skillStore, emb: skEmb, agentID: c.agent, cfgDir: c.cfgDir},
 		Feedback: feedbackControl{es: st.episodic, agentID: c.agent},
 		Eval:     evalTUIControl{sched: evalSched, cfgDir: c.cfgDir, dataDir: c.dataDir},
@@ -3176,7 +3190,7 @@ func (d dashTools) ToolList() []dashboard.ToolInfo {
 // defaultDashboardAddr is the loopback bind used when neither the flag nor
 // the saved config set one. Loopback-only by default — Wave 2 (TEN-79)
 // gates non-loopback binds behind TLS+auth.
-const defaultDashboardAddr = "127.0.0.1:8770"
+const defaultDashboardAddr = "127.0.0.1:9770"
 
 // resolveDashboardConfig merges the saved dashboard block with CLI
 // overrides into the dashboard package's Config, returning the config and

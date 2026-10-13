@@ -174,11 +174,11 @@ func TestGoal_EscapesAndShowsHidden(t *testing.T) {
 // with no Origin is refused before Clear, and the same-origin one works.
 func TestGoal_StopRefusesCSRF(t *testing.T) {
 	g := &fakeGoal{view: activeGoal()}
-	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil))
+	s := withSession(New(Config{Addr: "127.0.0.1:9770", Auth: "secret"}, nil, nil, nil, nil, nil))
 	s.SetGoal(g)
 	post := func(origin string) int {
 		req := httptest.NewRequest(http.MethodPost, "/goal/stop", strings.NewReader(""))
-		req.Host = "127.0.0.1:8770"
+		req.Host = "127.0.0.1:9770"
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.AddCookie(&http.Cookie{Name: dashCookieName, Value: testSession})
 		if origin != "" {
@@ -191,7 +191,7 @@ func TestGoal_StopRefusesCSRF(t *testing.T) {
 	if code := post(""); code != http.StatusForbidden || g.clearCalls() != 0 {
 		t.Errorf("no Origin: %d with %d Clear calls, want 403 and none", code, g.clearCalls())
 	}
-	if code := post("http://127.0.0.1:8770"); code != http.StatusSeeOther || g.clearCalls() != 1 {
+	if code := post("http://127.0.0.1:9770"); code != http.StatusSeeOther || g.clearCalls() != 1 {
 		t.Errorf("same origin: %d with %d Clear calls, want 303 and one", code, g.clearCalls())
 	}
 }

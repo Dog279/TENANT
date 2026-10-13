@@ -26,6 +26,7 @@ import (
 	"tenant/internal/logs"
 	"tenant/internal/logs/event"
 	"tenant/internal/logs/logapi"
+	"tenant/internal/memory/working"
 )
 
 const maxDashboardRequestBodyBytes = 1 << 20
@@ -65,7 +66,7 @@ type ToolInfo struct {
 
 // Config is the dashboard's static security and listener configuration.
 type Config struct {
-	Addr         string   // listen address, e.g. 127.0.0.1:8770
+	Addr         string   // listen address, e.g. 127.0.0.1:9770
 	TLSCert      string   // PEM cert path; empty = plaintext (Wave 2)
 	TLSKey       string   // PEM key path (Wave 2)
 	Auth         string   // bearer/cookie authentication secret; required by Run
@@ -77,8 +78,11 @@ type Config struct {
 // event stream, agent for Turn/Interject, tools for REST, mux for route
 // mounting, cfg for TLS/auth.
 type Server struct {
-	cfg          Config
-	agent        AgentRunner
+	cfg   Config
+	agent AgentRunner
+	// transcript returns the conversation so far (the agent's working set),
+	// shown when the Chat page opens (TEN-515); nil = the page opens empty.
+	transcript   func() []working.Message
 	tools        ToolControl
 	mem          MemoryControl       // TEN-88: memory curator surface; nil = routes not mounted (TEN-89)
 	cron         CronControl         // recurring-job admin; nil = section renders "not configured"

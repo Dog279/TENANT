@@ -1,0 +1,19 @@
+id: ui-013-form-select-range
+category: ui/components
+subset: ui
+description: |
+  A form with a choice among fixed options and a bounded number uses select and range fields.
+prompt: "Set up a weekly reminder for me: ask me the day of the week (a pick list), the hour (0 to 23 as a slider) and what to remind me of, as a form."
+mode: live
+expected:
+  must_call:
+    - tool: ui_render
+      args_contain: ['"form"']
+      result_contains: ["shown: form"]
+  rubric:
+    criterion: "The form was drawn by the ui_render tool (its result says shown) and the text around it is a short line of context, not a second copy of the data."
+    anchors:
+      1: "No component, or the data repeated in full as prose"
+      3: "The component was drawn but the prose repeats most of it"
+      5: "The component carries the data; the prose is one or two lines of context"
+  rubric_min_score: 3

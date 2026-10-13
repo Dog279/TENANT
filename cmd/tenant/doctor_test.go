@@ -757,7 +757,7 @@ func TestDoctor_CheckDashboard(t *testing.T) {
 	// Default-on: an unset Enabled (nil) means the dashboard auto-launches, so
 	// the check PROBES (doesn't skip) and degrades to WARN when unreachable.
 	// Addr is pinned to a closed loopback port (127.0.0.1:1) so "down" is
-	// deterministic — otherwise the probe hits the real default :8770 and a
+	// deterministic — otherwise the probe hits the real default :9770 and a
 	// dashboard actually running on this box makes the test flaky.
 	t.Run("default-on (nil) probes → WARN when down", func(t *testing.T) {
 		e := &doctorEnv{c: &commonFlags{}, lc: &launchConfig{Dashboard: dashboardConfig{Addr: "127.0.0.1:1"}}}
@@ -813,7 +813,7 @@ func TestDoctor_CheckDashboard(t *testing.T) {
 	t.Run("non-loopback without TLS → FAIL (config lint)", func(t *testing.T) {
 		e := &doctorEnv{
 			c:  &commonFlags{},
-			lc: &launchConfig{Dashboard: dashboardConfig{Enabled: boolPtr(true), Addr: "0.0.0.0:8770"}},
+			lc: &launchConfig{Dashboard: dashboardConfig{Enabled: boolPtr(true), Addr: "0.0.0.0:9770"}},
 		}
 		r := checkDashboard(context.Background(), e)
 		if r.Status != statusFail {
@@ -837,7 +837,7 @@ func TestDoctor_CheckDashboard(t *testing.T) {
 		e := &doctorEnv{
 			c: &commonFlags{},
 			lc: &launchConfig{Dashboard: dashboardConfig{
-				Enabled: boolPtr(true), Addr: "192.168.1.50:8770",
+				Enabled: boolPtr(true), Addr: "192.168.1.50:9770",
 				TLSCert: "c.pem", TLSKey: "k.pem", Auth: "tok",
 			}},
 		}

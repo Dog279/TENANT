@@ -544,7 +544,7 @@ func hubAnswering(ctx context.Context, lc *launchConfig) (string, bool) {
 	}
 	addr := dc.Addr
 	if addr == "" {
-		addr = "127.0.0.1:8770"
+		addr = "127.0.0.1:9770"
 	}
 	scheme := "http"
 	if dc.TLSCert != "" {

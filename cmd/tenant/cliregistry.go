@@ -108,7 +108,7 @@ func cliCommands() []*cliCommand {
 			Rows: []cmdreg.Row{
 				{Syntax: "serve", Desc: "the headless 24/7 hub: the same memory, tools and approvals as the TUI, driven from the web dashboard (chat, approvals, settings)"},
 				{Syntax: "", Desc: "runs self-improvement (distill, consolidate, profile, skills; nightly eval with --eval-every), cron jobs, retention, MCP connectors, the peer listener when federation is on, and the Discord relay when enabled"},
-				{Syntax: "serve --dashboard-addr ADDR", Desc: "listen elsewhere than 127.0.0.1:8770; --dashboard=false runs without the panel"},
+				{Syntax: "serve --dashboard-addr ADDR", Desc: "listen elsewhere than 127.0.0.1:9770; --dashboard=false runs without the panel"},
 			}},
 		{Names: []string{"attach"}, Section: "run", Run: cmdAttach, Flags: []string{"--follow", "--token", "--since", "--interval", "--source", "--level", "--trace"},
 			Summary: "watch a running hub's activity feed",

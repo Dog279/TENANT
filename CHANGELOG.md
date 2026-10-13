@@ -5,6 +5,40 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: the Memory page's Knowledge time view** showed every fact ever learned, replaced
+  and removed ones too, and on a narrow window its table squeezed the column names into
+  one letter per line. It now shows the live facts, with **Show history** for the rest; the
+  table's names and dates stay on one line and the table scrolls sideways instead; a long
+  timeline scrolls inside its card.
+- **Fixed: a judge send-back is said in the chat.** When the judge in the loop sent an answer
+  back, the terminal app's answer just stopped, with the reason only in the activity feed. The
+  chat pane now says "judge: sent back (1/3): … — your agent is trying again".
+- **The agent answers with components** (TEN-517). A new built-in tool, `ui_render`, lets the
+  model say "show this as a table" or "as steps" and hand over the data; Tenant draws it from
+  a fixed template in the terminal app (a boxed table, ✓ ◐ ○ lines) and on the dashboard's
+  Chat page (a real table, a checklist), in place of the tool card, and again when the page
+  reloads. The model never writes markup: every value is text, and a bad shape gets a one-line
+  error it can act on ("table: 14 columns, the limit is 12"). Caps: 12 columns, 200 rows, 200
+  characters a cell, 50 steps, 32 KB a call. The `ui` tool is on by default, like the memory
+  tools (`/disable ui` turns it off), and needs nothing configured. A new eval subset, `ui`, checks the model reaches
+  for a component when the answer is one and stays in prose otherwise.
+- **Choices and forms** (TEN-518). Two more component kinds: `choices` draws the likely next
+  messages as buttons (numbered options in the terminal), and `form` asks you for values
+  (text, a number, a pick list, a slider) with a Send button (one prompt per field in the
+  terminal). A tap or a filled form starts your next turn, and that message is marked
+  "via choices" or "via form" on both surfaces, so a model-written line is never mistaken
+  for something you typed. The server fills the form from the saved call, checks every value
+  (the option exists, the number is in range, the pick is one of the options) and refuses a
+  message that would be a slash command; a form whose call is gone (a restart, a compaction)
+  says so and sends nothing.
+- **Activity beside the chat** (TEN-520). The dashboard's Chat page has a **Show activity**
+  toggle that opens a rail of what the agent is doing as it happens, the same lines as the
+  terminal app's feed: each tool call and its result, the judge's checks, a compaction, an
+  error. The rail keeps the last 200 lines and sits below the chat on a phone.
+- **The dashboard listens on port 9770 by default** (was 8770). On macOS, Apple's `sharingd`
+  owns 8770, so a fresh install's `/dashboard on` failed with "address already in use". A
+  saved `dashboard.addr` is unchanged; a config without one now serves at
+  http://127.0.0.1:9770.
 ### Added
 - **The Judge** (TEN-510, TEN-516): a decision model checks the agent's work. Cloudflare's
   Clef-flash (or any System One server) triages each prompt while the model works; for a
@@ -22,6 +56,19 @@ Releases page.
   `tenant eval --quality-model` (was `--judge-model`), the Quality page's "Quality model"
   card, and `improve.quality_model*` in config.json; the old `judge_loop` and
   `improve.judge*` keys migrate on load and are never written again.
+- **The dashboard's Chat streams and reads like a document** (TEN-515). The answer appears as it is
+  written and settles rendered from Markdown (headings, lists, code, tables, task boxes). A tool call
+  is a card you can open to what was asked and what came back, with a link into Logs; a failed call
+  is open already. Opening or reloading the page shows the last 20 exchanges of the conversation.
+- **A readable terminal app** (TEN-513, TEN-514). The conversation is turn blocks: a header with
+  who, the time and the model, the text rendered from Markdown (headings, lists, code panels,
+  tables, task boxes) and wrapped at the pane width, never mid-word. A tool call is one row inside
+  the block where it happened; Ctrl+O opens every row to its arguments and result, and a failed call
+  is open already. The line under a running answer says what the agent is doing and for how long.
+  The activity feed groups a turn's lines under a header with the time and the first words of the
+  message, and the context line is one line. `/feed off` and Alt+F hide the feed for a wider
+  column; the choice is saved (`tui.feed` in `config.json`). The Markdown engine is an in-house
+  copy of goldmark under `internal/md` (MIT; see its README), so `go.mod` gains nothing.
 - **Images** (TEN-493): paste a picture into the TUI with Ctrl+V (Alt+V on Windows), drag image
   files in, or `/image <path>`. Discord and iMessage photos reach the model too, and
   `os_read_image` and `web_screenshot` now show it the picture instead of describing the file.

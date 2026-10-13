@@ -35,6 +35,9 @@ const (
 	SubsetSmoke   Subset = "smoke"
 	SubsetFitness Subset = "fitness"
 	SubsetFull    Subset = "full"
+	// SubsetUI checks the model answers with a component when the answer is one
+	// (TEN-517); live, part of full.
+	SubsetUI Subset = "ui"
 	// SubsetVision needs a model that can see images (TEN-493), so it is
 	// opt-in: full leaves it out.
 	SubsetVision Subset = "vision"
@@ -45,7 +48,7 @@ const (
 // silently returning an empty task list.
 func (s Subset) IsValid() bool {
 	switch s {
-	case SubsetSmoke, SubsetFitness, SubsetFull, SubsetVision:
+	case SubsetSmoke, SubsetFitness, SubsetFull, SubsetVision, SubsetUI:
 		return true
 	}
 	return false
@@ -95,8 +98,9 @@ type Fixture struct {
 
 // FixtureToolCall mirrors what an agent would emit for one call.
 type FixtureToolCall struct {
-	Tool string `yaml:"tool"`
-	Args string `yaml:"args"` // JSON-encoded
+	Tool   string `yaml:"tool"`
+	Args   string `yaml:"args"`             // JSON-encoded
+	Result string `yaml:"result,omitempty"` // what the tool answered, for result_contains
 }
 
 // RouteCase is one hand-labeled prompt in a route_classifier task. Name is
@@ -133,6 +137,9 @@ type Expected struct {
 type ExpectedToolCall struct {
 	Tool        string   `yaml:"tool"`
 	ArgsContain []string `yaml:"args_contain,omitempty"`
+	// ResultContains asserts the tool's answer carried every listed substring
+	// (TEN-517: "shown: table" means the component validated).
+	ResultContains []string `yaml:"result_contains,omitempty"`
 }
 
 // InjectedFact pre-seeds one semantic fact into a memory-recall task's
@@ -218,10 +225,10 @@ func (t *Task) validate() error {
 		return errors.New("task: category required")
 	}
 	if t.Subset == "" {
-		return errors.New("task: subset required (smoke|fitness|full|vision)")
+		return errors.New("task: subset required (smoke|fitness|ui|full|vision)")
 	}
 	switch t.Subset {
-	case SubsetSmoke, SubsetFitness, SubsetFull, SubsetVision:
+	case SubsetSmoke, SubsetFitness, SubsetFull, SubsetVision, SubsetUI:
 	default:
 		return fmt.Errorf("task: invalid subset %q", t.Subset)
 	}

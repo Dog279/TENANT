@@ -215,6 +215,8 @@ config.json: skills.*.settings
 config.json: sse_addr
 config.json: tailscale
 config.json: tailscale.serve
+config.json: tui
+config.json: tui.feed
 config.json: turn_scheduler
 config.json: turn_scheduler.queue_depth
 config.json: turn_scheduler.source_quotas

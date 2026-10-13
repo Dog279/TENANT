@@ -113,13 +113,14 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .lg.live::before{background:var(--green)}
 .lg.sup::before{background:var(--amber)}
 .lg.tomb::before{background:var(--red)}
-.ov-wrap{overflow-x:auto;margin:2px 0 4px}
+.ov-wrap{overflow:auto;max-height:70vh;margin:2px 0 4px}
 .ov-svg{display:block;width:100%;height:auto}
 .honesty{margin-top:10px;font-size:11.5px;line-height:1.5}
 .ovtable{width:100%;border-collapse:collapse;font-size:12.5px}
 .ovtable th,.ovtable td{text-align:left;padding:7px 9px;border-bottom:1px solid #121d33;vertical-align:top}
-.ovtable th{color:#5e6f90;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;font-weight:700}
+.ovtable th{color:#5e6f90;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;font-weight:700;white-space:nowrap}
 .ovtable td:first-child{overflow-wrap:anywhere}
+.ovtable td:not(:first-child){white-space:nowrap}
 
 /* TEN-200/201/202: grouped nav, status-board link cards, trend chart, eval/skills forms */
 .nav-group{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:#4a5878;font-weight:700;padding:12px 12px 4px}
@@ -406,3 +407,66 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
    label beside a full-width box would be squeezed to a letter a line */
 .server-add label{flex-direction:column;align-items:stretch;gap:4px}
 /* == end WP-model-servers == */
+/* == TEN-515 chat: Markdown answers, tool cards == */
+.bubble.md{white-space:normal}
+.bubble.md p{margin:0 0 .55em}
+.bubble.md p:last-child{margin-bottom:0}
+.bubble.md h1,.bubble.md h2,.bubble.md h3,.bubble.md h4{font-size:1em;margin:.7em 0 .35em;color:var(--fg)}
+.bubble.md>h1:first-child,.bubble.md>h2:first-child,.bubble.md>h3:first-child{margin-top:0}
+.bubble.md ul,.bubble.md ol{margin:.3em 0 .55em;padding-left:1.4em}
+.bubble.md li{margin:.15em 0}
+.bubble.md pre{background:#0c1729;border:1px solid var(--line);border-radius:9px;padding:10px 12px;overflow:auto;font-size:12.5px;line-height:1.5;margin:.4em 0 .6em}
+.bubble.md blockquote{margin:.4em 0;padding:2px 0 2px 10px;border-left:3px solid var(--line2);color:var(--dim)}
+.bubble.md table{border-collapse:collapse;margin:.4em 0 .6em;display:block;overflow-x:auto;max-width:100%}
+.bubble.md th,.bubble.md td{border:1px solid var(--line);padding:4px 9px;text-align:left}
+.bubble.md th{color:var(--label);font-size:11px;letter-spacing:.4px;text-transform:uppercase}
+.bubble.md input[type=checkbox]{margin:0 6px 0 0;vertical-align:middle}
+.bubble.md a{color:var(--cyan)}
+.bubble.md hr{border:0;border-top:1px solid var(--line);margin:.6em 0}
+details.tool{padding:0}
+details.tool summary{cursor:pointer;list-style:none;padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+details.tool summary::-webkit-details-marker{display:none}
+details.tool[open] summary{border-bottom:1px solid var(--line2)}
+.tool-body{padding:8px 12px 10px;display:flex;flex-direction:column;gap:4px}
+.tool-body .lbl{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--label)}
+.tool-io{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:18em;overflow:auto;font-size:12px}
+.pill{font-size:10.5px;font-weight:700;border-radius:11px;padding:1px 7px;border:1px solid var(--line2);color:var(--dim)}
+.pill.ok{color:var(--green);border-color:rgba(52,211,153,.35)}
+.pill.err{color:var(--red);border-color:rgba(251,113,133,.4)}
+.pill.run{color:var(--amber);border-color:rgba(251,191,36,.35)}
+/* == end TEN-515 == */
+/* Components the agent answers with (TEN-517): drawn by Tenant from the call's data, text only. */
+.comp-wrap{padding:0;background:none;border:0}
+.comp table{border-collapse:collapse;font-size:12.5px;min-width:60%}
+.comp caption{text-align:left;color:var(--label);font-size:11px;letter-spacing:.4px;text-transform:uppercase;padding:0 0 6px}
+.comp th,.comp td{border:1px solid var(--line);padding:4px 9px;text-align:left;vertical-align:top}
+.comp th{color:var(--label);font-size:11px;letter-spacing:.4px;text-transform:uppercase}
+.comp-source{font-size:11.5px;margin-top:4px}
+.comp-steps{list-style:none;margin:4px 0;padding:0}
+.comp-steps li{padding:3px 0;display:flex;gap:8px;align-items:baseline}
+.comp-steps .mark{width:1.2em;text-align:center;color:var(--dim)}
+.comp-steps .done .mark{color:var(--green)}
+.comp-steps .doing .mark{color:var(--amber)}
+.comp-steps .done .title{text-decoration:line-through;color:var(--dim)}
+.comp-choices{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}
+.btn.off{opacity:.6;cursor:default}
+.comp-form{display:flex;flex-direction:column;gap:8px;margin:4px 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;max-width:420px}
+.comp-form .field{display:flex;flex-direction:column;gap:4px}
+.comp-form .field .lbl{font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;color:var(--label)}
+.comp-form output{font-size:12px;color:var(--dim);margin-left:6px}
+.comp-form button{align-self:flex-start}
+.msg.user .via{font-size:10.5px;margin-top:2px;text-align:right}
+/* The activity rail beside the chat (TEN-520). */
+.chat-row{flex:1;min-height:0;display:flex;gap:12px;align-items:stretch}
+.chat-row .chat{flex:1}
+.activity{flex:none;display:flex;flex-direction:column;min-height:0;max-width:40%}
+.activity summary{cursor:pointer;list-style:none;font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--label);padding:4px 0;white-space:nowrap}
+.activity summary::-webkit-details-marker{display:none}
+.activity[open]{width:320px}
+.rail{flex:1;min-height:0;overflow:auto;font-size:12px;display:flex;flex-direction:column;gap:3px;padding:4px 0}
+.rail .line{color:var(--dim);overflow-wrap:anywhere}
+.rail .line time{color:var(--label);margin-right:6px;font-variant-numeric:tabular-nums}
+.rail .line.k-turn{color:var(--fg);margin-top:6px}
+.rail .line.k-err{color:var(--red)}
+.rail .line.k-ok{color:var(--green)}
+@media (max-width:600px){.chat-row{flex-direction:column}.activity{max-width:none}.activity[open]{width:auto}.rail{max-height:30vh}}

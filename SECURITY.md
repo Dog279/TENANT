@@ -205,7 +205,7 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
   individually named: DuckDuckGo and Jina are keyless web fallbacks after the
   web feature is enabled.
 - The dashboard is a normal inbound listener: TUI/serve enables it by default on
-  `127.0.0.1:8770`. Optional listeners include the MCP HTTP+SSE gateway, peer
+  `127.0.0.1:9770`. Optional listeners include the MCP HTTP+SSE gateway, peer
   server, and temporary OAuth callbacks. The dashboard requires its auth token
   on every listener, loopback included, and TLS as well off loopback; the
   unauthenticated MCP gateway requires an explicit insecure override for

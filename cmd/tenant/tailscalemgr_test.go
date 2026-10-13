@@ -35,7 +35,7 @@ func newTSMgr(f *fakeTSCLI, bin string) *tailscaleManager {
 	return &tailscaleManager{
 		base:     context.Background(),
 		bin:      bin,
-		dashInfo: func() (bool, string) { return true, "127.0.0.1:8770" },
+		dashInfo: func() (bool, string) { return true, "127.0.0.1:9770" },
 		run:      f.run,
 	}
 }
@@ -63,7 +63,7 @@ func TestTailscale_StatusConnectedNotServing(t *testing.T) {
 func TestTailscale_StatusServing(t *testing.T) {
 	f := &fakeTSCLI{resp: map[string]string{
 		"status --json": tsRunningJSON,
-		"serve status":  "https://host.tailnet-name.ts.net/ proxies to http://127.0.0.1:8770",
+		"serve status":  "https://host.tailnet-name.ts.net/ proxies to http://127.0.0.1:9770",
 	}}
 	st, _ := newTSMgr(f, "tailscale").Status()
 	if !st.Serving {
@@ -82,7 +82,7 @@ func TestTailscale_ServePublishesDashboardPort(t *testing.T) {
 	f := &fakeTSCLI{resp: map[string]string{
 		"status --json":   tsRunningJSON,
 		"serve status":    "No serve config",
-		"serve --bg 8770": "",
+		"serve --bg 9770": "",
 	}}
 	url, err := newTSMgr(f, "tailscale").Serve()
 	if err != nil {
@@ -91,8 +91,8 @@ func TestTailscale_ServePublishesDashboardPort(t *testing.T) {
 	if url != "https://host.tailnet-name.ts.net/" {
 		t.Errorf("serve url wrong: %q", url)
 	}
-	if !f.ran("serve --bg 8770") {
-		t.Errorf("must run `serve --bg 8770` (the dashboard port); calls=%v", f.calls)
+	if !f.ran("serve --bg 9770") {
+		t.Errorf("must run `serve --bg 9770` (the dashboard port); calls=%v", f.calls)
 	}
 }
 
@@ -104,7 +104,7 @@ func TestTailscale_ServeFailsClosedWhenNotConnected(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not connected") {
 		t.Fatalf("serve while Stopped must fail closed with guidance, got %v", err)
 	}
-	if f.ran("serve --bg 8770") {
+	if f.ran("serve --bg 9770") {
 		t.Error("must NOT publish when the backend is disconnected")
 	}
 }
@@ -133,7 +133,7 @@ func TestTailscale_PersistsChoice(t *testing.T) {
 	f := &fakeTSCLI{resp: map[string]string{
 		"status --json":   tsRunningJSON,
 		"serve status":    "No serve config",
-		"serve --bg 8770": "",
+		"serve --bg 9770": "",
 		"serve reset":     "",
 	}}
 	m := newTSMgr(f, "tailscale")
@@ -172,7 +172,7 @@ func TestTailscale_ServeTrustsTailnetHost(t *testing.T) {
 	f := &fakeTSCLI{resp: map[string]string{
 		"status --json":   tsRunningJSON,
 		"serve status":    "No serve config",
-		"serve --bg 8770": "",
+		"serve --bg 9770": "",
 		"serve reset":     "",
 	}}
 	m := newTSMgr(f, "tailscale")
@@ -200,7 +200,7 @@ func TestTailscale_ServeTrustsTailnetHost(t *testing.T) {
 }
 
 func TestPortOf(t *testing.T) {
-	if got := portOf("127.0.0.1:8770"); got != "8770" {
+	if got := portOf("127.0.0.1:9770"); got != "9770" {
 		t.Errorf("portOf loopback: %q", got)
 	}
 	if got := portOf("nonsense"); got != "" {

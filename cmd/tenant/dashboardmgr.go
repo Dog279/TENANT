@@ -11,6 +11,7 @@ import (
 	"tenant/internal/lifecycle"
 	"tenant/internal/logs"
 	"tenant/internal/logs/logapi"
+	"tenant/internal/memory/working"
 	"tenant/internal/runtrace"
 )
 
@@ -27,6 +28,7 @@ type dashboardManager struct {
 	base         context.Context
 	cfg          dashboard.Config
 	runner       dashboard.AgentRunner
+	transcript   func() []working.Message // the conversation so far, for the Chat page (nil-safe)
 	tools        dashboard.ToolControl
 	mem          dashboard.MemoryControl       // TEN-88: memory curator surface (nil-safe)
 	cron         dashboard.CronControl         // recurring-job admin surface (nil-safe)
@@ -80,6 +82,9 @@ func (m *dashboardManager) Enable() (string, error) {
 		return m.cfg.Addr, err
 	}
 	srv := dashboard.New(m.cfg, m.runner, m.tools, m.mem, m.broker, m.log)
+	if m.transcript != nil {
+		srv.SetTranscript(m.transcript)
+	}
 	if m.cron != nil {
 		srv.SetCron(m.cron)
 	}

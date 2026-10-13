@@ -70,6 +70,10 @@ Buttons: `.btn`, `.btn.sm`, `.btn.on` (primary), `.btn.danger`.
 
 Banners: `.banner.ok`, `.banner.err`, `.banner.info`, `.banner.warn` (the ui-flash and status-strip partials make them).
 
+Components the agent answers with (TEN-517): a `ui_render` tool call is drawn as `.comp-wrap` in the chat instead of a tool card, by `internal/uicomp` from the call's arguments. `.comp.comp-table` is a `.table-wrap` holding a `<table>` with an optional `<caption>` and a `.comp-source` line; `.comp.comp-steps` is an `<ol>` of `.step.todo|doing|done` with a `.mark`. Every string is escaped text and no attribute is ever built from model data, so a component carries no link, image or script.
+
+Two kinds answer back (TEN-518): `.comp.comp-choices` is a row of `.btn.sm` buttons, and `.comp.comp-form` a `<form>` of `.field` labels with `.cinput` inputs and a `.btn.sm.on` submit. Both post to `/chat/send` through Datastar signals (`component`, `choice`, `f_<id>_<name>`); the server fills the message from the saved call and tags it, and the user bubble shows `.via` ("via form"). The only variable attribute values are the call id (`[A-Za-z0-9_-]`) and field names (`[a-z][a-z0-9_]*`), both checked before they are written; an id that fails the check draws the component static.
+
 Advanced options hide behind an expander. It is used for the Research options ("Research exactly what I typed") and the Helpers instructions editor:
 
 ```html
@@ -90,6 +94,8 @@ The partials in `templates/ui.html` are parsed into every page set (`parseSSR` a
 `ui-status` is the strip itself: `/ui/status` renders it, and so do every in-place answer (`formReply`) and Chat's send. Loading is a class, not a partial: `<span class="loading">Counting</span>`.
 
 Text an agent or a request wrote goes through `visibleText` before it is shown (`{{visibleText .Detail}}`): characters that draw nothing or reorder text (controls, bidi and zero-width marks, tag characters, fillers, variation selectors) show as `⟨U+202E⟩`, and 3 or more blank lines as `⟨N blank lines⟩`. `waited` turns seconds into "waiting 3 min".
+
+The activity rail (TEN-520): `.chat-row` holds the chat and `details.activity`, a native toggle whose `.rail` receives one `.line` per event the terminal app's feed would show (`k-turn`, `k-tool`, `k-ok`, `k-err`, `k-sys`), appended by the events stream and capped at 200 by removing the oldest. No script: the toggle is the browser's; the state is not remembered across a reload.
 
 ## 5. When to confirm
 
@@ -115,6 +121,9 @@ mux.HandleFunc("POST /safety/mode", needConfirm(confirmUnless("mode", "ask", "de
 - Confirm is friction, not security. The session cookie (a random session id with a 7-day life that Log out ends, never the key: cookies reach every port on the host), `checkOrigin` and `checkCSRF` are the boundary. `/api/*` isn't gated: a JSON client acts deliberately.
 
 Every route that changes something is in `reviewedMutations` (security_test.go), the TEN-213 ledger, with when it confirms; `TestRouteInventory` posts each one on the real mux, every spelling of "more" included, and fails on a route nobody classified.
+
+
+A tap on a component's button or a form's Send counts as the operator speaking: it starts a turn like a typed message, and never asks first. It is still a message the model proposed, so the bubble says "via choices" or "via form", and a component can never send a slash command.
 
 ## 6. States
 
@@ -145,7 +154,7 @@ Secret routes never put a control's error in a URL.
 
 - Every page works at 390px wide: no sideways scroll of the page, the sidebar or the menu, and every visible control ends inside the screen (`TestUIShellInChrome`, with long names, long URLs and many rows).
 - Under 640px the nav is a drawer (the Popover API: Menu opens it, Esc or a tap outside closes it, Log out is at its bottom). The grid is `100dvh`, and the gutter is 16px.
-- Long names and URLs break anywhere (`.page{overflow-wrap:anywhere}`). Only these inner scrollers may be wider than their box, and they scroll inside it: `.table-wrap`, `.lg-grid`, `pre`, `.diff`, `.q-detail`.
+- Long names and URLs break anywhere (`.page{overflow-wrap:anywhere}`). Only these inner scrollers may be wider than their box, and they scroll inside it: `.table-wrap`, `.lg-grid`, `pre`, `.diff`, `.q-detail`, `.bubble.md table`, `.tool-io`.
 - Wide tables go in `<div class="table-wrap">`; the approval queue and the mode rows are cards.
 - On touch screens buttons, nav links, the menu button and confirm summaries are at least 44px tall.
 - Under 640px an open `.confirm-box` becomes a bottom sheet, 16px from the sides and the bottom. While a step is open the page gets half a screen of room at its end, so the last step's Cancel can be scrolled above its sheet.
@@ -166,8 +175,17 @@ Secret routes never put a control's error in a URL.
   A dropped connection, a refusal or the stream ending shows it at once, and the stream's next patch hides it. So such a stream sends a patch as soon as it opens (a snapshot); otherwise a reconnect leaves the banner up. `TestLiveBannerInChrome` checks it.
 - A Datastar request answered 401 means the sign-in has gone stale (the key changed, or another Tenant on this host signed the browser in): the status wrapper in `layout.html` sends the page to the sign-in form, which brings it back. One refused request, not one every 20s in the Security log.
 - Buttons that send a decision carry `data-indicator:_sending` and `data-attr:disabled="$_sending"`, so a double tap sends once.
-- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`, and the form regions listed under "Forms that don't reload". There are no new event kinds.
+- Patches are outer `datastar-patch-elements` (the toast's is `replace`), keyed on element IDs. The IDs are a contract: `#ui-status`, `#toast`, `#approval-queue` (items `#q-<id>`), `#approval-note`, `#research-live`, `#research-history`, Chat's `#chat-cur` (the answer being written) and `#tool-<tag>-<turn>-<id>` (a tool call's card), the Logs page's `#lg-tree`, `#lg-props`, `#lg-clear`, `#lg-grid` (rows `#lg-rows`, paging `#lg-more`), `#lg-count`, `#lg-detail`, and the form regions listed under "Forms that don't reload". There are no new event kinds.
 - **F1:** no text from a request or an agent goes into a Datastar attribute other than `data-on:*`, and there only numbers or URLs built with `url.Values.Encode` or `url.PathEscape`. The browser decodes the attribute before Datastar evaluates it, so a quote in it would be script. Untrusted text goes in element content, where html/template escapes it. `template.HTML` is used only through `reportHTML`, which escapes first.
+
+### Chat
+
+The Chat page (TEN-515) opens with the conversation so far: the last 20 exchanges of the agent's working set (`SetTranscript`), each message you sent, the answers, the tool calls as settled cards, and a dim row where compaction left a summary. Then `/events` streams:
+
+- A stream opens with a sweep: it removes `#chat-cur`, `#chat-thinking` and every `details.tool.running` a previous connection left on the page (Datastar reconnects in place, so a reconnect is a fresh stream over the old elements). Each is a no-op on a fresh page.
+- The answer being written is one bubble, `#chat-cur`, appended on the first token and morphed by id at most every 100 ms (`streamEvery`) with the plain text so far; a fast model can't flood the page or fill the broker's buffer behind a slow browser. The final answer replaces it (`mode replace`) rendered from Markdown through `internal/md`: headings, lists, code, tables and task boxes. HTML inside the answer is text (the copy has no raw-HTML parser) and script links are dropped; the text goes through `visibleText` first. A streaming answer renders as plain text until it is complete, so a half-written list or fence never flickers. Text written before a tool call settles as its own bubble, so the card sits where the call happened.
+- A tool call is a native `<details class="tool">` card, `#tool-<tag>-<turn>-<id>` (the connection's tag, its turn count, and the model's call id or one the stream makes up and matches by name, so a reused id or a reconnect over a page that still holds the old cards never doubles an id; a transcript rendered on load uses `#tool-<id>`): the summary is the name, a short argument and a pill (`running…`, `ok 1.2s`, `error`); the body is what was asked and what came back, capped, through `visibleText`, with "open in Logs" filtered by the message's trace. A card carries `running` until its result arrives; the result morphs the card by id, and a result whose call this connection never saw (the broker dropped it, or the page opened mid-turn) is appended on its own. A failed call is open. No script: the expander is the browser's.
+- `.bubble.md table` scrolls inside its box like `.table-wrap`.
 
 ### Forms that don't reload
 

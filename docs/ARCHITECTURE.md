@@ -24,14 +24,14 @@ includes comments and blank lines. “Plugin capability packages” counts immed
 with `go run ./scripts/docfacts -write docs/ARCHITECTURE.md`; CI checks this
 block for drift.
 
-<!-- docfacts:generated:start; date=2026-10-11; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
+<!-- docfacts:generated:start; date=2026-10-13; command=go run ./scripts/docfacts -write docs/ARCHITECTURE.md -->
 | Measure | Result |
 |---|---:|
-| Go packages | 90 |
-| Go files | 1,255 |
-| Test files | 612 |
-| Production Go LOC | 160,116 |
-| Test Go LOC | 122,583 |
+| Go packages | 102 |
+| Go files | 1,326 |
+| Test files | 635 |
+| Production Go LOC | 175,832 |
+| Test Go LOC | 125,566 |
 | Go modules | 1 |
 | Plugin capability packages | 14 |
 | Version | `0.0.1` |
@@ -176,8 +176,11 @@ generated from `internal/archtest/rules.go`, and
 | `internal/agent` | `internal/attach`, `internal/logs`, `internal/memory/**`, `internal/model/**`, `internal/orchestra`, `internal/runtrace` | the turn loop; knows no plugin and no surface |
 | `internal/approval` | `internal/agent`, `internal/control`, `internal/logs`, `internal/runtrace` | the approval decision point; knows no plugin and no surface |
 | `internal/toolmux` | `internal/agent`, `internal/model`, `internal/memory/cosine`, `internal/plugins/mcpremote`, `internal/peering`, `internal/control` | the tool registry and dispatcher; builds no plugin itself |
-| `internal/tui` | `internal/agent`, `internal/attach`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/model` | never the dashboard |
-| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/orchestra`, `internal/version` | never the terminal UI |
+| `internal/md/goldmark/**` | `internal/md/goldmark/**` | Tenant's copy of goldmark (MIT); imports itself and the standard library only |
+| `internal/md` | `internal/md/goldmark/**` | Markdown: parse, and HTML for the dashboard; the terminal app renders the tree itself |
+| `internal/uicomp` | `internal/model` | the components the model answers with: schema, caps, the note, HTML; the terminal app draws them itself |
+| `internal/tui` | `internal/agent`, `internal/attach`, `internal/cmdreg`, `internal/control`, `internal/fsperm`, `internal/md/**`, `internal/model`, `internal/uicomp` | never the dashboard |
+| `internal/dashboard` | `internal/agent`, `internal/control`, `internal/httplimits`, `internal/logs`, `internal/logs/logapi`, `internal/logs/query`, `internal/logs/store`, `internal/md`, `internal/memory/working`, `internal/orchestra`, `internal/uicomp`, `internal/version` | never the terminal UI |
 <!-- /archtest:rules -->
 
 In short:

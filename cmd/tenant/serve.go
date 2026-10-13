@@ -69,7 +69,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	profileEvery := fs.Duration("profile-every", 15*time.Minute, "user-profile re-synthesis cadence (LLM call)")
 	evalEvery := fs.Duration("eval-every", 0, "nightly eval cadence (0=off; e.g. 24h); needs --self-improve")
 	dashboardOn := fs.Bool("dashboard", true, "serve the web control panel (the hub's control + chat + approval surface)")
-	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:8770)")
+	dashboardAddr := fs.String("dashboard-addr", "", "dashboard listen address (default 127.0.0.1:9770)")
 	allowNoMemory := fs.Bool("allow-no-memory", false, "start even when semantic memory (embeddings) is down — runs amnesiac (no real vector recall)")
 	stopBudget := fs.Duration("stop-budget", 5*time.Second, "how long a stop may take before the teardown is cut short (the unit `tenant service install` writes passes the OS's grace)")
 	hidden := fs.Bool("hidden", false, "Windows: hide the console window (the logon task passes it; the console itself stays so logoff and shutdown reach the process)")
@@ -655,12 +655,13 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 		return err
 	}
 	dashMgr := &dashboardManager{
-		base:   ctx,
-		cfg:    dcfg,
-		runner: gated,
-		tools:  dashTools{mainTools},
-		mem:    dashMemory{memCtl},
-		cron:   dashCronCtl,
+		base:       ctx,
+		cfg:        dcfg,
+		runner:     gated,
+		transcript: ag.Conversation,
+		tools:      dashTools{mainTools},
+		mem:        dashMemory{memCtl},
+		cron:       dashCronCtl,
 		// Watched-repo list for the Integrations page. serve builds its OWN
 		// dashboardManager, so anything wired only in cmdTUI is silently absent
 		// here — which is exactly how this section came up empty the first time.

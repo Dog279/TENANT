@@ -63,7 +63,7 @@ func cmdEval(ctx context.Context, args []string) error {
 		baselineDiff   bool
 		jOpts          qualityOpts
 	)
-	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | full | vision")
+	fs.StringVar(&subset, "subset", "smoke", "task subset to run: smoke | fitness | ui | full | vision")
 	fs.IntVar(&jOpts.concurrency, "concurrency", 1, "live mode: run up to N tasks at once (>1 parallelizes; web/Chrome tasks auto-serialize). 1 = sequential (TEN-221)")
 	fs.DurationVar(&jOpts.taskTimeout, "task-timeout", 10*time.Minute, "live mode: max wall-time per task before it's failed (0 = unlimited). Bounds a runaway on a flaky endpoint (TEN-222)")
 	fs.BoolVar(&jsonOut, "json", false, "emit JSON report to stdout instead of the terminal table")
@@ -127,7 +127,7 @@ func cmdEval(ctx context.Context, args []string) error {
 
 	sub := eval.Subset(subset)
 	if !sub.IsValid() {
-		return fmt.Errorf("invalid subset %q: want smoke | fitness | full | vision", sub)
+		return fmt.Errorf("invalid subset %q: want smoke | fitness | ui | full | vision", sub)
 	}
 
 	if listOnly {
@@ -821,7 +821,7 @@ func (r *evalAgentRunner) run(ctx context.Context, req agent.TurnRequest) (strin
 	}
 	calls := make([]eval.FixtureToolCall, 0, len(res.ToolTrace))
 	for _, tc := range res.ToolTrace {
-		calls = append(calls, eval.FixtureToolCall{Tool: tc.Call.Name, Args: string(tc.Call.Arguments)})
+		calls = append(calls, eval.FixtureToolCall{Tool: tc.Call.Name, Args: string(tc.Call.Arguments), Result: tc.Result})
 	}
 	// res.Error (loop ceiling / validation) is intentionally NOT surfaced as a
 	// hard error: the forced-synthesis response + tool trace are still the

@@ -40,7 +40,7 @@ SA key `automation.json` impersonating `<user-email>`. PA repo
 ### TEN-262 · serve headless against the live endpoints (P0)
 - [ ] Configure `config.json` role routing: planner→vLLM-MLX, executor/aux→`<model-host>`, frontier→Z.ai GLM-5.1, embedder→your embeddings endpoint. Mirror the Hermes fallback order (remote vLLM, zai) — Tenant's `FallbackLLM` (TEN-246) already does 429/outage failover.
 - [ ] (optional, recommended) enable the proactive **health-gating** (TEN-282) once you've eyeballed each backend's latency — it demotes a slow-but-200 endpoint before it thrashes. Set `"health_gating": {"slow_threshold_ms": <ms>}` in `config.json` next to `fallbacks` (optional: `min_samples` 5, `alpha` 0.3, `cooldown_ms` 30000). Each call is timed from request to end of answer, so pick a threshold above a normal long reply. Check it with `tenant doctor` ("fallback health gating") or `/model fallback` (TEN-358).
-- [ ] `tenant serve` (no iMessage channel). Drive a multi-turn tool session via the dashboard (`http://127.0.0.1:8770`) or `tenant attach --follow`.
+- [ ] `tenant serve` (no iMessage channel). Drive a multi-turn tool session via the dashboard (`http://127.0.0.1:9770`) or `tenant attach --follow`.
 - [ ] Confirm the `qwen` toolfmt parses `<tool_call>`/`<think>` cleanly against live Qwen 3.6.
 - [ ] **Acceptance:** force a local-vLLM outage → `<model-host>`/Z.ai failover fires; multi-turn tool session completes end-to-end. No echo backend in the path.
 

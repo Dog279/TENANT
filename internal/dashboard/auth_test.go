@@ -23,7 +23,7 @@ func authServer(token string) http.Handler {
 	s := withSession(New(Config{
 		Addr:         "example.com",
 		Auth:         token,
-		AllowedHosts: []string{"dash.local:8770"},
+		AllowedHosts: []string{"dash.local:9770"},
 	}, nil, nil, nil, nil, nil))
 	return s.secure(authOKHandler())
 }
@@ -43,16 +43,16 @@ func TestAuthBindPolicy(t *testing.T) {
 		cfg     Config
 		wantErr bool
 	}{
-		{"loopback no auth", Config{Addr: "127.0.0.1:8770"}, true},
-		{"loopback plain with auth", Config{Addr: "127.0.0.1:8770", Auth: "tok"}, false},
-		{"loopback ipv6 with auth", Config{Addr: "[::1]:8770", Auth: "tok"}, false},
-		{"localhost with auth", Config{Addr: "localhost:8770", Auth: "tok"}, false},
-		{"wildcard no tls/auth", Config{Addr: "0.0.0.0:8770"}, true},
-		{"wildcard tls only", Config{Addr: "0.0.0.0:8770", TLSCert: "c.pem", TLSKey: "k.pem"}, true},
-		{"wildcard auth only", Config{Addr: "0.0.0.0:8770", Auth: "tok"}, true},
-		{"wildcard tls+auth", Config{Addr: "0.0.0.0:8770", TLSCert: "c.pem", TLSKey: "k.pem", Auth: "tok"}, false},
-		{"lan ip no tls/auth", Config{Addr: "192.168.1.50:8770"}, true},
-		{"lan ip tls+auth", Config{Addr: "192.168.1.50:8770", TLSCert: "c.pem", TLSKey: "k.pem", Auth: "tok"}, false},
+		{"loopback no auth", Config{Addr: "127.0.0.1:9770"}, true},
+		{"loopback plain with auth", Config{Addr: "127.0.0.1:9770", Auth: "tok"}, false},
+		{"loopback ipv6 with auth", Config{Addr: "[::1]:9770", Auth: "tok"}, false},
+		{"localhost with auth", Config{Addr: "localhost:9770", Auth: "tok"}, false},
+		{"wildcard no tls/auth", Config{Addr: "0.0.0.0:9770"}, true},
+		{"wildcard tls only", Config{Addr: "0.0.0.0:9770", TLSCert: "c.pem", TLSKey: "k.pem"}, true},
+		{"wildcard auth only", Config{Addr: "0.0.0.0:9770", Auth: "tok"}, true},
+		{"wildcard tls+auth", Config{Addr: "0.0.0.0:9770", TLSCert: "c.pem", TLSKey: "k.pem", Auth: "tok"}, false},
+		{"lan ip no tls/auth", Config{Addr: "192.168.1.50:9770"}, true},
+		{"lan ip tls+auth", Config{Addr: "192.168.1.50:9770", TLSCert: "c.pem", TLSKey: "k.pem", Auth: "tok"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,8 +180,8 @@ func TestAuthCORS(t *testing.T) {
 
 	t.Run("cross-origin rejected", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-		req.Host = "dash.local:8770"
-		req.Header.Set("Origin", "http://evil.example:8770")
+		req.Host = "dash.local:9770"
+		req.Header.Set("Origin", "http://evil.example:9770")
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusForbidden {
@@ -191,8 +191,8 @@ func TestAuthCORS(t *testing.T) {
 
 	t.Run("same-origin allowed", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-		req.Host = "dash.local:8770"
-		req.Header.Set("Origin", "http://dash.local:8770")
+		req.Host = "dash.local:9770"
+		req.Header.Set("Origin", "http://dash.local:9770")
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusOK {
@@ -202,7 +202,7 @@ func TestAuthCORS(t *testing.T) {
 
 	t.Run("no origin allowed", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-		req.Host = "dash.local:8770"
+		req.Host = "dash.local:9770"
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusOK {
@@ -212,12 +212,12 @@ func TestAuthCORS(t *testing.T) {
 }
 
 func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
-	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	s := New(Config{Addr: "127.0.0.1:9770", Auth: "secret"}, nil, nil, nil, nil, nil)
 	h := s.secure(authOKHandler())
 
 	t.Run("unknown host on loopback listener", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-		req.Host = "evil.example:8770"
+		req.Host = "evil.example:9770"
 		rec := authDo(h, req)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want 403", rec.Code)
@@ -226,8 +226,8 @@ func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
 
 	t.Run("rebinding shaped origin and host", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-		req.Host = "attacker.example:8770"
-		req.Header.Set("Origin", "http://attacker.example:8770")
+		req.Host = "attacker.example:9770"
+		req.Header.Set("Origin", "http://attacker.example:9770")
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := authDo(h, req)
 		if rec.Code != http.StatusForbidden {
@@ -240,7 +240,7 @@ func TestAuthHostAllowlistRejectsRebinding(t *testing.T) {
 // host trusted at runtime must pass the allowlist, /settings included, and
 // stop passing once cleared.
 func TestAuthTrustedHostsForTailscaleServe(t *testing.T) {
-	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil))
+	s := withSession(New(Config{Addr: "127.0.0.1:9770", Auth: "secret"}, nil, nil, nil, nil, nil))
 	h := s.secure(authOKHandler())
 	get := func(path, host string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -457,13 +457,13 @@ func TestAuth_FlashOnlyFromThisDashboard(t *testing.T) {
 }
 
 // TEN-414: a loopback listener answers to every loopback name on its port,
-// so http://localhost:8770 works unconfigured; another port or name does not.
+// so http://localhost:9770 works unconfigured; another port or name does not.
 func TestAuthHostAllowlistAcceptsLoopbackNames(t *testing.T) {
-	s := New(Config{Addr: "127.0.0.1:8770", Auth: "secret"}, nil, nil, nil, nil, nil)
+	s := New(Config{Addr: "127.0.0.1:9770", Auth: "secret"}, nil, nil, nil, nil, nil)
 	h := s.secure(authOKHandler())
 	for host, want := range map[string]int{
-		"localhost:8770": http.StatusOK, "[::1]:8770": http.StatusOK, "127.0.0.1:8770": http.StatusOK,
-		"localhost:9999": http.StatusForbidden, "localhost.evil.example:8770": http.StatusForbidden,
+		"localhost:9770": http.StatusOK, "[::1]:9770": http.StatusOK, "127.0.0.1:9770": http.StatusOK,
+		"localhost:9999": http.StatusForbidden, "localhost.evil.example:9770": http.StatusForbidden,
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = host

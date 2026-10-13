@@ -1360,7 +1360,7 @@ func checkDashboard(ctx context.Context, e *doctorEnv) checkResult {
 	}
 	addr := dc.Addr
 	if addr == "" {
-		addr = "127.0.0.1:8770" // default bind (mirrors dashboardConfig docs)
+		addr = "127.0.0.1:9770" // default bind (mirrors dashboardConfig docs)
 	}
 
 	// Config lint (independent of whether the server is up): a non-loopback
@@ -1442,7 +1442,7 @@ func checkServe(ctx context.Context, e *doctorEnv) checkResult {
 	}
 	addr := dc.Addr
 	if addr == "" {
-		addr = "127.0.0.1:8770"
+		addr = "127.0.0.1:9770"
 	}
 	scheme := "http"
 	if dc.TLSCert != "" {

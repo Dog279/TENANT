@@ -140,7 +140,7 @@ func TestServeRecordsLifecycleRequestsAndErrors(t *testing.T) {
 // catalogued with its reason.
 func TestRejectionsAreCatalogued(t *testing.T) {
 	c := installCapture(t)
-	s := withSession(New(Config{Addr: "127.0.0.1:8770", Auth: "tok"}, nil, nil, nil, nil, nil))
+	s := withSession(New(Config{Addr: "127.0.0.1:9770", Auth: "tok"}, nil, nil, nil, nil, nil))
 	h := s.secure(s.Handler())
 	req := func(method, host, path string, hdr ...string) *http.Request {
 		r := httptest.NewRequest(method, "http://"+host+path, nil)
@@ -151,15 +151,15 @@ func TestRejectionsAreCatalogued(t *testing.T) {
 	}
 	for _, r := range []*http.Request{
 		req("GET", "evil.example", "/tools"),
-		req("GET", "127.0.0.1:8770", "/tools", "Origin", "http://evil.example"),
-		req("GET", "127.0.0.1:8770", "/tools", "Authorization", "Bearer wrong"),
-		req("POST", "127.0.0.1:8770", "/tools/x/toggle", "Cookie", dashCookieName+"="+testSession),
+		req("GET", "127.0.0.1:9770", "/tools", "Origin", "http://evil.example"),
+		req("GET", "127.0.0.1:9770", "/tools", "Authorization", "Bearer wrong"),
+		req("POST", "127.0.0.1:9770", "/tools/x/toggle", "Cookie", dashCookieName+"="+testSession),
 	} {
 		h.ServeHTTP(httptest.NewRecorder(), r)
 	}
-	login := httptest.NewRequest("POST", "http://127.0.0.1:8770/auth/login", strings.NewReader(url.Values{"token": {"nope"}}.Encode()))
+	login := httptest.NewRequest("POST", "http://127.0.0.1:9770/auth/login", strings.NewReader(url.Values{"token": {"nope"}}.Encode()))
 	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	login.Header.Set("Origin", "http://127.0.0.1:8770")
+	login.Header.Set("Origin", "http://127.0.0.1:9770")
 	h.ServeHTTP(httptest.NewRecorder(), login)
 
 	for _, want := range [][]string{

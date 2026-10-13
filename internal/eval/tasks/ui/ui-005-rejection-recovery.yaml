@@ -1,0 +1,19 @@
+id: ui-005-rejection-recovery
+category: ui/components
+subset: ui
+description: |
+  A shape over the cap is refused with one actionable line; the model must correct it (fewer columns, or rows) and still draw the table.
+prompt: "Make a table of these 14 attributes as columns, one row for Earth: name, mass, radius, gravity, day length, year length, moons, rings, mean temperature, atmosphere, distance from sun, orbital speed, axial tilt, discovery year. If the table tool refuses, fit the most important ones."
+mode: live
+expected:
+  must_call:
+    - tool: ui_render
+      args_contain: ['"table"']
+      result_contains: ["shown: table"]
+  rubric:
+    criterion: "The table was drawn by the ui_render tool (its result says shown) and the text around it is a short line of context, not a second copy of the data."
+    anchors:
+      1: "No component, or the data repeated in full as prose or Markdown"
+      3: "The component was drawn but the prose repeats most of it"
+      5: "The component carries the data; the prose is one or two lines of context"
+  rubric_min_score: 3

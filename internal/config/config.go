@@ -57,6 +57,8 @@ type Launch struct {
 	// toggles. Tailscale's own daemon also persists the serve config; this flag
 	// makes Tenant restore it even if the tailnet config was cleared elsewhere.
 	Tailscale Tailscale `json:"tailscale,omitempty"`
+	// TUI keeps the terminal app's own choices (TEN-514).
+	TUI TUI `json:"tui,omitzero"`
 	// Relay configures the offsite Discord relay (TEN-114).
 	Relay Relay `json:"relay,omitempty"`
 	// IMessage holds the iMessage drive-allowlist (TEN-68 follow-up): the
@@ -457,7 +459,7 @@ type Gateway struct {
 // persists as an explicit &false that survives the next launch.
 type Dashboard struct {
 	Enabled      *bool    `json:"enabled,omitempty"` // nil = default on; &false = explicitly off
-	Addr         string   `json:"addr,omitempty"`    // listen address (default 127.0.0.1:8770)
+	Addr         string   `json:"addr,omitempty"`    // listen address (default 127.0.0.1:9770)
 	TLSCert      string   `json:"tls_cert,omitempty"`
 	TLSKey       string   `json:"tls_key,omitempty"`
 	Auth         string   `json:"auth,omitempty"`          // explicit override; empty uses dashboard-auth-token
@@ -474,6 +476,12 @@ func (dc Dashboard) IsEnabled() bool {
 // ⇒ re-assert `tailscale serve` for the dashboard port at launch (best-effort).
 type Tailscale struct {
 	Serve bool `json:"serve,omitempty"`
+}
+
+// TUI is the terminal app's saved choices. Feed is "off" when the operator
+// hid the activity feed (`/feed off`, Alt+F); anything else shows it.
+type TUI struct {
+	Feed string `json:"feed,omitempty"`
 }
 
 // Peer holds Tenant-to-Tenant federation listener settings (TEN-184).

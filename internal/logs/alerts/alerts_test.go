@@ -231,7 +231,7 @@ func TestActionsCarryOnlyAllowedFields(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d actions, want the discord and the cron one", len(got))
 	}
-	link := Link("http://127.0.0.1:8770/", got[0].Seq)
+	link := Link("http://127.0.0.1:9770/", got[0].Seq)
 	text, facts := got[0].Text(link), got[1].Facts(link)
 	for _, s := range []string{text, facts} {
 		for _, bad := range []string{token, "hunter2", "sk-xxxx"} {
@@ -239,7 +239,7 @@ func TestActionsCarryOnlyAllowedFields(t *testing.T) {
 				t.Errorf("%q reached an action:\n%s", bad, s)
 			}
 		}
-		if !strings.Contains(s, "critical event mcp.github/3001") || !strings.HasSuffix(s, "http://127.0.0.1:8770/logs/event/"+fmt.Sprint(got[0].Seq)) {
+		if !strings.Contains(s, "critical event mcp.github/3001") || !strings.HasSuffix(s, "http://127.0.0.1:9770/logs/event/"+fmt.Sprint(got[0].Seq)) {
 			t.Errorf("missing the level, IDs or the link:\n%s", s)
 		}
 	}

@@ -4,7 +4,7 @@
 {{template "ui-off" "Memory isn't available on this Tenant."}}
 {{else}}
 {{if .Err}}<div class="banner err" role="alert">{{.Err}}</div>{{end}}
-<div class="postbar"><span class="dim">Knowledge time — when each fact was first learned and last confirmed.</span><span class="sp"></span><a class="btn sm" href="{{.BackHref}}">Back to facts</a></div>
+<div class="postbar"><span class="dim">Knowledge time — when each fact was first learned and last confirmed.{{if .All}} Showing every fact, replaced and removed ones too.{{else}} Showing what your agent knows now.{{end}}</span><span class="sp"></span>{{if .All}}<a class="btn sm" href="{{.BackHref}}/temporal">Live facts only</a>{{else}}<a class="btn sm" href="{{.BackHref}}/temporal?all=1">Show history</a>{{end}}<a class="btn sm" href="{{.BackHref}}">Back to facts</a></div>
 <div class="cards">
   <div class="card stat"><div class="stat-label">Total</div><div class="stat-value">{{.Stats.Total}}</div></div>
   <div class="card stat"><div class="stat-label">Live</div><div class="stat-value">{{.Stats.Live}}</div></div>
@@ -12,7 +12,7 @@
   <div class="card stat"><div class="stat-label">Removed</div><div class="stat-value">{{.Stats.Tombstoned}}</div></div>
 </div>
 {{if .Empty}}
-{{template "ui-empty" "No facts yet. The timeline appears once your agent has learned something."}}
+{{if .All}}{{template "ui-empty" "No facts yet. The timeline appears once your agent has learned something."}}{{else}}{{template "ui-empty" "Nothing live right now. Show history lists what was replaced or removed."}}{{end}}
 {{else}}
 <div class="card">
   <div class="legend">

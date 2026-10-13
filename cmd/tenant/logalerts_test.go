@@ -24,7 +24,7 @@ func TestSendAlert(t *testing.T) {
 
 	ctx := context.Background()
 	a := alerts.Alert{Rule: "critical", Action: alerts.Discord, Seq: 42, Level: event.Critical, Log: "system", Provider: "system", ID: 4, Msg: "The previous run crashed"}
-	link := "http://127.0.0.1:8770/logs/event/42"
+	link := "http://127.0.0.1:9770/logs/event/42"
 	if err := sendAlert(ctx, cfg, a); err != nil || !strings.Contains(dm, "The previous run crashed") || !strings.HasSuffix(dm, link) {
 		t.Fatalf("discord: %v\n%s", err, dm)
 	}

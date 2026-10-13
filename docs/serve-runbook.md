@@ -7,8 +7,8 @@ dashboard**, which is always on in serve mode and is the live control + chat +
 approval surface.
 
 ```
-tenant serve                      # loopback dashboard on 127.0.0.1:8770
-tenant serve --dashboard-addr 0.0.0.0:8770   # LAN/tailnet — REQUIRES TLS + auth (see below)
+tenant serve                      # loopback dashboard on 127.0.0.1:9770
+tenant serve --dashboard-addr 0.0.0.0:9770   # LAN/tailnet — REQUIRES TLS + auth (see below)
 tenant serve --self-improve=false # disable background distill/consolidate/profile
 ```
 

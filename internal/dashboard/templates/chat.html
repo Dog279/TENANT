@@ -1,5 +1,10 @@
 {{define "content"}}
-<div class="chat" id="chat-log" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})"><div class="dim">Messages show here while this page is open. Leaving the page clears this view, not what your agent remembers.</div></div>
+<div class="chat-row">
+<div class="chat" id="chat-log" data-init="@get('/events', {retryMaxCount:1000000, retryMaxWait:5000})">{{range .Transcript}}{{.}}{{end}}<div class="dim">Your conversation so far is above; new messages appear here live.</div></div>
+{{/* The activity rail (TEN-520): the same live lines the terminal app's
+     feed shows, beside the chat, behind a native toggle. */}}
+<details class="activity"><summary>Show activity</summary><div id="activity-rail" class="rail"><div class="dim">What your agent does appears here as it happens.</div></div></details>
+</div>
 {{/* The approval queue (TEN-207): /events fills it, so a message that
      pauses for your OK shows its buttons here, without leaving the page. */}}
 <div class="chat-q"><div id="approval-queue"></div><div id="approval-note"></div></div>

@@ -1,0 +1,19 @@
+id: ui-004-steps-progress
+category: ui/components
+subset: ui
+description: |
+  Progress on a procedure is steps with done, doing and to-do states.
+prompt: "I am migrating a database: the dump is done, the restore is running, and the verification has not started. Show me where I am as a checklist."
+mode: live
+expected:
+  must_call:
+    - tool: ui_render
+      args_contain: ['"steps"']
+      result_contains: ["shown: steps"]
+  rubric:
+    criterion: "The steps was drawn by the ui_render tool (its result says shown) and the text around it is a short line of context, not a second copy of the data."
+    anchors:
+      1: "No component, or the data repeated in full as prose or Markdown"
+      3: "The component was drawn but the prose repeats most of it"
+      5: "The component carries the data; the prose is one or two lines of context"
+  rubric_min_score: 3

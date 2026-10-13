@@ -206,7 +206,7 @@ func (e *pluginEnv) gateAllow(flag bool) bool {
 
 // hostToolLabels are the mux labels the host registers itself; no plugin may
 // take one.
-var hostToolLabels = []string{"memory", "recall", "skills", "orchestrator", "team", "cron", "connectors", "mcp:*", "peer:*"}
+var hostToolLabels = []string{"memory", "recall", "skills", "orchestrator", "team", "cron", "connectors", "ui", "mcp:*", "peer:*"}
 
 var (
 	pluginsOnce sync.Once

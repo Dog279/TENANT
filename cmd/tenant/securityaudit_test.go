@@ -88,7 +88,7 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 		{
 			name: "loopback listener and disabled risky integrations",
 			report: securityAuditReport{
-				Listeners: []listenerAudit{{Name: "dashboard", Enabled: true, Address: "127.0.0.1:8770", Loopback: true}},
+				Listeners: []listenerAudit{{Name: "dashboard", Enabled: true, Address: "127.0.0.1:9770", Loopback: true}},
 				Browser:   browserAudit{Enabled: false, NoSandbox: true},
 				Web:       webAudit{Enabled: false},
 				Execution: executionAudit{Isolation: "none"},
@@ -98,7 +98,7 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 		{
 			name: "non-loopback listener needs tls and auth",
 			report: securityAuditReport{
-				Listeners: []listenerAudit{{Name: "dashboard", Enabled: true, Address: "0.0.0.0:8770", TLS: true, Auth: false}},
+				Listeners: []listenerAudit{{Name: "dashboard", Enabled: true, Address: "0.0.0.0:9770", TLS: true, Auth: false}},
 			},
 			wantCritical:  1,
 			wantFindingID: "listener.dashboard",
@@ -106,7 +106,7 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 		{
 			name: "non-loopback listener safe with tls and auth",
 			report: securityAuditReport{
-				Listeners: []listenerAudit{{Name: "dashboard", Enabled: true, Address: "192.168.1.5:8770", TLS: true, Auth: true}},
+				Listeners: []listenerAudit{{Name: "dashboard", Enabled: true, Address: "192.168.1.5:9770", TLS: true, Auth: true}},
 			},
 			wantCritical: 0,
 		},
@@ -218,7 +218,7 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 
 func TestConfiguredListeners(t *testing.T) {
 	lc := &launchConfig{
-		Dashboard: dashboardConfig{Addr: "0.0.0.0:8770", TLSCert: "cert.pem", TLSKey: "key.pem", Auth: "token"},
+		Dashboard: dashboardConfig{Addr: "0.0.0.0:9770", TLSCert: "cert.pem", TLSKey: "key.pem", Auth: "token"},
 		Gateway:   gatewayConfig{Mode: "sse", SSEAddr: "127.0.0.1:8765"},
 		Peer:      peerConfig{Listen: "192.168.1.2:9100"},
 	}

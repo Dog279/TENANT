@@ -35,7 +35,7 @@ Verify it's alive and survives a reboot, **without** touching Hermes:
 tenant service status
 tail -f ~/Library/Logs/tenant/serve.log       # setup/health/fallback lines
 # dashboard up?
-curl -fsS http://127.0.0.1:8770/healthz && echo OK
+curl -fsS http://127.0.0.1:9770/healthz && echo OK
 # OR from another box on the tailnet, or:  tenant attach --follow
 ```
 
