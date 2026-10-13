@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"runtime"
@@ -285,3 +286,24 @@ type named struct {
 }
 
 func (n *named) Name() string { return n.name }
+
+// A command that exits before anyone reads its stdout still delivers its
+// output: Wait must not close the pipe under a reader that is late to it
+// (os_exec "printf ok" came back as "(no output)" on a loaded CI runner).
+func TestStartKeepsTheOutputOfAFastExit(t *testing.T) {
+	pol := helperPolicy("env")
+	pol.Env.Set["FOO_318"] = "fast"
+	p, err := Start(context.Background(), Host(), helperArgv(), pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-p.Done() // it has exited; only now does the reader turn up
+	time.Sleep(100 * time.Millisecond)
+	out, err := io.ReadAll(p.Stdout())
+	if err != nil || strings.TrimSpace(string(out)) != "fast|" {
+		t.Fatalf("stdout after a fast exit = %q, %v", out, err)
+	}
+	if err := p.Wait(); err != nil {
+		t.Errorf("exit: %v", err)
+	}
+}
