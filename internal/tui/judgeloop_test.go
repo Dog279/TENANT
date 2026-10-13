@@ -164,3 +164,20 @@ func TestSlash_JudgeUsePrompts(t *testing.T) {
 		t.Fatalf("cancel: entry=%v calls=%v echo=%v", m.setupEntry != nil, fj.calls, m.input.EchoMode)
 	}
 }
+
+// A judge send-back shows in the chat pane, not only the feed: the answer the
+// operator was reading just stopped, and the pane must say why.
+func TestApplyEvent_JudgeSendBackIsSaidInChat(t *testing.T) {
+	m := newModel(context.Background(), Config{})
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m.applyEvent(agent.Event{Kind: agent.EventJudge, Text: "sent back (1/3): done 0.26, every_part 0.11"})
+	last := m.msgs[len(m.msgs)-1]
+	if last.role != "system" || !strings.Contains(last.content, "sent back (1/3)") || !strings.Contains(last.content, "trying again") {
+		t.Fatalf("the chat pane should say the answer was sent back: %+v", last)
+	}
+	n := len(m.msgs)
+	m.applyEvent(agent.Event{Kind: agent.EventJudge, Text: "task: checking the answer"})
+	if len(m.msgs) != n {
+		t.Fatal("a check in progress is feed-only")
+	}
+}

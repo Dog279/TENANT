@@ -5,6 +5,14 @@ Releases page.
 
 ## Unreleased
 
+- **Fixed: the Memory page's Knowledge time view** showed every fact ever learned, replaced
+  and removed ones too, and on a narrow window its table squeezed the column names into
+  one letter per line. It now shows the live facts, with **Show history** for the rest; the
+  table's names and dates stay on one line and the table scrolls sideways instead; a long
+  timeline scrolls inside its card.
+- **Fixed: a judge send-back is said in the chat.** When the judge in the loop sent an answer
+  back, the terminal app's answer just stopped, with the reason only in the activity feed. The
+  chat pane now says "judge: sent back (1/3): … — your agent is trying again".
 - **The agent answers with components** (TEN-517). A new built-in tool, `ui_render`, lets the
   model say "show this as a table" or "as steps" and hand over the data; Tenant draws it from
   a fixed template in the terminal app (a boxed table, ✓ ◐ ○ lines) and on the dashboard's

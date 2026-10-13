@@ -113,13 +113,14 @@ code{font-family:ui-monospace,monospace;color:#cfe9f4}
 .lg.live::before{background:var(--green)}
 .lg.sup::before{background:var(--amber)}
 .lg.tomb::before{background:var(--red)}
-.ov-wrap{overflow-x:auto;margin:2px 0 4px}
+.ov-wrap{overflow:auto;max-height:70vh;margin:2px 0 4px}
 .ov-svg{display:block;width:100%;height:auto}
 .honesty{margin-top:10px;font-size:11.5px;line-height:1.5}
 .ovtable{width:100%;border-collapse:collapse;font-size:12.5px}
 .ovtable th,.ovtable td{text-align:left;padding:7px 9px;border-bottom:1px solid #121d33;vertical-align:top}
-.ovtable th{color:#5e6f90;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;font-weight:700}
+.ovtable th{color:#5e6f90;font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;font-weight:700;white-space:nowrap}
 .ovtable td:first-child{overflow-wrap:anywhere}
+.ovtable td:not(:first-child){white-space:nowrap}
 
 /* TEN-200/201/202: grouped nav, status-board link cards, trend chart, eval/skills forms */
 .nav-group{font-size:9.5px;letter-spacing:.7px;text-transform:uppercase;color:#4a5878;font-weight:700;padding:12px 12px 4px}

@@ -2537,6 +2537,12 @@ func (m *model) applyEvent(e agent.Event) {
 			style = cErr
 		}
 		m.turnFeed(style.Render("⚖ judge " + clip(e.Text, 80)))
+		// A send-back pauses the answer the operator was reading; say so in
+		// the chat pane itself, or it looks like the turn stopped for nothing.
+		if strings.HasPrefix(e.Text, "sent back") {
+			line := "⚖ judge: " + e.Text + " — your agent is trying again"
+			m.sysChatStyled(line, cSys.Render(line))
+		}
 	case agent.EventIngest:
 		// An offsite channel (Discord/iMessage) received a message and drove a
 		// turn. e.Text is already prefixed "Discord: " / "iMessage: " (TEN-232).
