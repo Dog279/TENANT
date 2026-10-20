@@ -264,24 +264,30 @@ func (s *Schedule) Next(after time.Time) time.Time {
 		if t.Year() > capYear {
 			return time.Time{}
 		}
-		if !bitSet(s.month, int(t.Month())) {
+		var next time.Time
+		switch {
+		case !bitSet(s.month, int(t.Month())):
 			// Jump to the first day of the next month at 00:00.
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
-			continue
+			next = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
+		case !s.dayMatches(t):
+			next = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+		case !bitSet(s.hour, t.Hour()):
+			// The next local :00, stepped in absolute time. Rebuilding the hour
+			// with time.Date spun forever on a fall-back day: 01:00 happens
+			// twice, Date picks the first one, plus an hour is the second one,
+			// whose hour is still 1, and Date picks the first one again.
+			next = t.Add(time.Duration(60-t.Minute()) * time.Minute)
+		case !bitSet(s.min, t.Minute()):
+			next = t.Add(time.Minute)
+		default:
+			return t
 		}
-		if !s.dayMatches(t) {
-			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
-			continue
+		if !next.After(t) {
+			// A zone where midnight repeats could hand back the same instant;
+			// every step moves forward, whatever the zone does.
+			next = t.Add(time.Minute)
 		}
-		if !bitSet(s.hour, t.Hour()) {
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, loc).Add(time.Hour)
-			continue
-		}
-		if !bitSet(s.min, t.Minute()) {
-			t = t.Add(time.Minute)
-			continue
-		}
-		return t
+		t = next
 	}
 }
 

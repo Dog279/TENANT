@@ -202,3 +202,40 @@ func TestNextNilSafe(t *testing.T) {
 		t.Errorf("nil Schedule Next = %v, want zero", got)
 	}
 }
+
+// Next crosses a daylight-saving fall-back day (01:00 happens twice) and a
+// spring-forward day (02:00 does not happen). The hour step used to rebuild
+// the hour with time.Date and loop forever on 2026-11-01 for every spec that
+// doesn't fire at hour 0 or 1: cron_add hung Tenant with the engine locked,
+// and every daily job would have hung it from Oct 31 (see cron-dst-spin).
+func TestNextCrossesDaylightSavingChanges(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Skip("no zone database:", err)
+	}
+	cases := []struct{ spec, after, want string }{
+		{"0 9 1 * *", "2026-10-31 10:00", "2026-11-01 09:00 PST"},   // the first of the month, past the repeated hour
+		{"0 9 * * *", "2026-10-31 10:00", "2026-11-01 09:00 PST"},   // a daily job rescheduling after its Oct 31 run
+		{"30 14 * * 0", "2026-10-31 10:00", "2026-11-01 14:30 PST"}, // a Sunday job
+		{"0 1 * * *", "2026-10-31 10:00", "2026-11-01 01:00 PDT"},   // the repeated hour itself: the first 01:00
+		{"0 2 * * *", "2026-03-07 10:00", "2026-03-09 02:00 PDT"},   // spring forward: Mar 8 has no 02:00, so Mar 9
+		{"0 3 * * *", "2026-03-07 10:00", "2026-03-08 03:00 PDT"},   // the hour right after the gap still fires
+	}
+	for _, c := range cases {
+		s, err := Parse(c.spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, _ := time.ParseInLocation("2006-01-02 15:04", c.after, loc)
+		done := make(chan time.Time, 1)
+		go func() { done <- s.Next(after) }()
+		select {
+		case got := <-done:
+			if got.Format("2006-01-02 15:04 MST") != c.want {
+				t.Errorf("%s after %s = %s, want %s", c.spec, c.after, got.Format("2006-01-02 15:04 MST"), c.want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s after %s: Next did not return (the fall-back spin)", c.spec, c.after)
+		}
+	}
+}

@@ -195,6 +195,14 @@ Releases page.
   - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
+- **Cron no longer hangs Tenant on a daylight-saving fall-back day.** The scheduler's next-run
+  search rebuilt each hour with `time.Date`; on a day where 01:00 happens twice (US: 2026-11-01)
+  that picked the first 01:00, added an hour, landed on the second 01:00, and picked the first one
+  again, forever. A `cron_add` whose first run fell on or after that day spun at 100% CPU with the
+  scheduler locked, so the turn never ended and `cron_list`, the ticker and the cron pages all
+  blocked; from Oct 31 every daily job would have done the same at its reschedule. Hours now
+  step in absolute time, every step is guaranteed to move forward, and a regression test crosses
+  both the fall-back and the spring-forward day.
 - **The Judge no longer sits out long turns.** A check's state could reach 56,000 characters
   (100 tool calls), which a 9B judge on a pair of Tesla T4s takes 20 s to read, and the client
   gave up at 10 s: `judge unavailable; answers go out unchecked` on every long turn. The state is
