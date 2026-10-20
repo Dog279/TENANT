@@ -113,7 +113,7 @@ func TestJudge_SendsBackThenPasses(t *testing.T) {
 		t.Fatalf("checks %+v", j.checked)
 	}
 	got := strings.Join(judgeTexts(*events), " | ")
-	if !strings.Contains(got, "sent back (1/3): every_part 0.09") || !strings.Contains(got, "done ✓ done 0.90") {
+	if !strings.Contains(got, "sent back (1/3): every_part 0.09 · ") || !strings.Contains(got, "done ✓ done 0.90 · ") || !strings.Contains(got, " tokens, ") { // each check says what it cost
 		t.Fatalf("judge events: %s", got)
 	}
 }

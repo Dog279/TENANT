@@ -128,11 +128,14 @@ func (a *Agent) judgeFinal(ctx context.Context, jt *judgeTurn, iter int, room bo
 	if !a.judgeIsTask(ctx, jt, iter, span) {
 		return "", ""
 	}
+	t0 := time.Now()
 	v, err := a.cfg.Judge.Check(ctx, Exchange{Request: jt.request.String(), Tools: tools, Answer: answer})
 	if err != nil {
 		a.judgeFailed(ctx, err)
 		return "", ""
 	}
+	// What the check cost, on its event, so a slow judge shows in the logs.
+	cost := " · " + strconv.Itoa(v.Use.InputTokens) + " tokens, " + strconv.FormatFloat(time.Since(t0).Seconds(), 'f', 1, 64) + "s"
 	a.judgeRetryAt.Store(0) // a check answered: any outage is over
 	a.judgeUsage(iter, span, v.Use)
 	max := a.cfg.Judge.MaxRounds()
@@ -141,11 +144,11 @@ func (a *Agent) judgeFinal(ctx context.Context, jt *judgeTurn, iter int, room bo
 	blocked := hitBoundary(tools)
 	switch {
 	case v.Done:
-		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "done ✓ " + v.Summary})
+		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "done ✓ " + v.Summary + cost})
 		return "", ""
 	case jt.rounds < max && room && !blocked:
 		jt.rounds++
-		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "sent back (" + strconv.Itoa(jt.rounds) + "/" + strconv.Itoa(max) + "): " + v.Summary})
+		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "sent back (" + strconv.Itoa(jt.rounds) + "/" + strconv.Itoa(max) + "): " + v.Summary + cost})
 		return v.Nudge, ""
 	default:
 		why := "after " + strconv.Itoa(jt.rounds) + " rounds"
@@ -155,7 +158,7 @@ func (a *Agent) judgeFinal(ctx context.Context, jt *judgeTurn, iter int, room bo
 		case !room:
 			why = "the loop forced this answer"
 		}
-		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "not confirmed (" + why + "): " + v.Summary})
+		a.emit(Event{Kind: EventJudge, Iter: iter, Text: "not confirmed (" + why + "): " + v.Summary + cost})
 		return "", "\n\n— judge: not confirmed (" + v.Summary + ")"
 	}
 }

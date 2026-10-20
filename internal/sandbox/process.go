@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -65,29 +66,41 @@ func startProcess(c *exec.Cmd, stderr io.Writer, afterStart func(pid int) error,
 		cleanup()
 		return nil, err
 	}
-	stdout, err := c.StdoutPipe()
+	// Not c.StdoutPipe(): Wait closes that pipe the moment the process exits,
+	// and the goroutine below calls Wait at once, so a command that finished
+	// before its reader got to the pipe lost its output ("printf ok" came
+	// back empty on a loaded CI runner). Our own pipe keeps the kernel's
+	// buffer and gives EOF when the last writer is gone, and Wait leaves it
+	// alone; Close shuts it after a kill so a reader never waits on a
+	// grandchild that kept the write end.
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		cleanup()
 		return nil, err
 	}
+	c.Stdout = stdoutW
 	tail := &tailBuffer{max: StderrTail}
 	c.Stderr = tail
 	if stderr != nil {
 		c.Stderr = io.MultiWriter(tail, stderr)
 	}
 	if err := c.Start(); err != nil {
+		stdoutR.Close()
+		stdoutW.Close()
 		cleanup()
 		return nil, fmt.Errorf("sandbox: start %s: %w", c.Path, err)
 	}
+	stdoutW.Close() // the child has its own copy; ours would keep the reader from EOF
 	if afterStart != nil {
 		if err := afterStart(c.Process.Pid); err != nil {
 			_ = c.Process.Kill()
 			_ = c.Wait()
+			stdoutR.Close()
 			cleanup()
 			return nil, err
 		}
 	}
-	p := &Process{cmd: c, stdin: stdin, stdout: stdout, stderr: tail, done: make(chan struct{}), release: release}
+	p := &Process{cmd: c, stdin: stdin, stdout: &eofCloser{File: stdoutR}, stderr: tail, done: make(chan struct{}), release: release}
 	go func() {
 		p.err = c.Wait()
 		cleanup()
@@ -134,10 +147,36 @@ func (p *Process) Close(grace time.Duration) error {
 	_ = p.cmd.Process.Kill()
 	select {
 	case <-p.done:
+		_ = p.stdout.Close() // whatever still held the write end, the reader is done
 		return nil
 	case <-time.After(grace):
 		return errors.New("sandbox: process did not exit after kill")
 	}
+}
+
+// eofCloser is the stdout pipe's read end: it closes itself at EOF, so a
+// reader that drains it leaks no descriptor, and keeps answering EOF after.
+type eofCloser struct {
+	*os.File
+	closed atomic.Bool
+}
+
+func (e *eofCloser) Read(b []byte) (int, error) {
+	if e.closed.Load() {
+		return 0, io.EOF
+	}
+	n, err := e.File.Read(b)
+	if errors.Is(err, io.EOF) {
+		_ = e.Close()
+	}
+	return n, err
+}
+
+func (e *eofCloser) Close() error {
+	if e.closed.Swap(true) {
+		return nil
+	}
+	return e.File.Close()
 }
 
 // tailBuffer keeps the last max bytes written to it.

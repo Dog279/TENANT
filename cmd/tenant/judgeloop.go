@@ -45,11 +45,12 @@ const (
 	judgeDefaultModel  = "clef-flash"
 	judgeDefaultRounds = config.JudgeDefaultRounds
 	judgeProbeTimeout  = 20 * time.Second // a cold server took ~15 s for its first answer
-	judgeKeepOutputs   = 20               // tool calls whose output the judge sees (the rest: name and input)
-	judgeMaxCalls      = 100              // tool calls listed at all
-	judgeInputChars    = 300              // per tool input
-	judgeOutputChars   = 600              // per tool output
-	judgeTextChars     = 4000             // the request and the answer
+	judgeKeepOutputs   = 8                // newest tool calls whose output the judge sees (the rest: name and input)
+	judgeInputChars    = 200              // per tool input
+	judgeOutputChars   = 400              // per tool output
+	judgeTextChars     = 3000             // the request and the answer, each
+	judgeStateChars    = 12000            // the whole state: ~4k tokens, ~4 s on a 2×T4 judge (it reached 56k and timed out)
+	judgeCallOverhead  = 50               // the JSON around one tool call
 )
 
 // The questions, worded and tested against Clef-flash (docs/plans/turn-judge-plan.md).
@@ -228,42 +229,52 @@ func judgeVerdict(a map[string]systemone.Answer) agent.Verdict {
 	return agent.Verdict{Summary: strings.Join(failed, ", "), Nudge: strings.Join(nudges, " ")}
 }
 
-// judgeState is what the judge reads, structured: the claim check separates
-// cleanly only when the tool calls are a list beside the answer. Every call
-// is listed by name and input (an early action the answer mentions stays
-// visible); outputs only for the last judgeKeepOutputs.
-//
-// It holds what the planner model already saw (tool output included), sent to
-// the judge server the operator configured, so it is a model call like the
-// planner's, not egress the sensitive-data gate reviews.
-func judgeState(ex agent.Exchange) map[string]any {
-	type call struct {
-		Tool   string `json:"tool"`
-		Input  string `json:"input"`
-		Output string `json:"output,omitempty"`
-		Failed bool   `json:"failed,omitempty"`
-	}
-	tools := ex.Tools
-	skipped := 0
-	if len(tools) > judgeMaxCalls {
-		skipped = len(tools) - judgeMaxCalls
-		tools = tools[skipped:]
-	}
-	calls := make([]call, 0, len(tools))
-	for i, t := range tools {
-		c := call{Tool: t.Call.Name, Input: cut(string(t.Call.Arguments), judgeInputChars), Failed: t.IsError}
-		if i >= len(tools)-judgeKeepOutputs {
+// judgeCall is one tool call as the judge sees it.
+type judgeCall struct {
+	Tool   string `json:"tool"`
+	Input  string `json:"input"`
+	Output string `json:"output,omitempty"`
+	Failed bool   `json:"failed,omitempty"`
+}
+
+// judgeStateJSON is what the judge is sent, in this order on purpose: a server
+// that truncates the state from the right (Clef does, at 16,384 tokens) must
+// lose old tool calls, never the request or the answer. A map marshals its
+// keys alphabetically and put user_request last.
+type judgeStateJSON struct {
+	UserRequest string      `json:"user_request"`
+	FinalAnswer string      `json:"final_answer"`
+	ToolCalls   []judgeCall `json:"tool_calls"`
+	Skipped     int         `json:"earlier_tool_calls_not_listed,omitempty"`
+}
+
+// judgeState is what the judge sees of an exchange: the request, the answer,
+// and as many tool calls, newest first, as fit in judgeStateChars (bytes of
+// text; the JSON adds a little). A 9B judge on a pair of T4s costs about 1 ms
+// a token, so the budget keeps a check near 4 s; unbounded, a long turn's
+// state reached 56k chars, took 20 s and timed out the client. Outputs only
+// for the newest judgeKeepOutputs calls; the rest is name and input.
+func judgeState(ex agent.Exchange) judgeStateJSON {
+	st := judgeStateJSON{UserRequest: cut(ex.Request, judgeTextChars), FinalAnswer: cut(ex.Answer, judgeTextChars)}
+	budget := judgeStateChars - len(st.UserRequest) - len(st.FinalAnswer)
+	var kept []judgeCall // newest first
+	for i := len(ex.Tools) - 1; i >= 0; i-- {
+		t := ex.Tools[i]
+		c := judgeCall{Tool: t.Call.Name, Input: cut(string(t.Call.Arguments), judgeInputChars), Failed: t.IsError}
+		if len(kept) < judgeKeepOutputs {
 			c.Output = cut(t.Result, judgeOutputChars)
 		}
-		calls = append(calls, c)
+		n := len(c.Tool) + len(c.Input) + len(c.Output) + judgeCallOverhead
+		if n > budget {
+			break
+		}
+		budget -= n
+		kept = append(kept, c)
 	}
-	st := map[string]any{
-		"user_request": cut(ex.Request, judgeTextChars),
-		"tool_calls":   calls,
-		"final_answer": cut(ex.Answer, judgeTextChars),
-	}
-	if skipped > 0 {
-		st["earlier_tool_calls_not_listed"] = skipped
+	st.Skipped = len(ex.Tools) - len(kept)
+	st.ToolCalls = make([]judgeCall, len(kept)) // oldest first again, so the judge reads the work in order
+	for i, c := range kept {
+		st.ToolCalls[len(kept)-1-i] = c
 	}
 	return st
 }
