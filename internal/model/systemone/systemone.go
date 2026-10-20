@@ -51,12 +51,16 @@ type Client struct {
 	Endpoint string // base URL, without /v1/systemone
 	Model    string
 	Key      string       // sent as "Authorization: Bearer <Key>" when set; "" for a keyless server
-	HTTP     *http.Client // nil: a client with a 10 s timeout
+	HTTP     *http.Client // nil: a client with a 30 s timeout
 }
 
 const maxResponse = 1 << 20
 
-var defaultHTTP = &http.Client{Timeout: 10 * time.Second}
+// A 9B decision model on modest GPUs (two Tesla T4s) answers a 4k-token
+// check in about 4 s and a cold one in 15; 10 s timed out on long turns and
+// the judge sat out every one of them. 30 s covers a check, one queued behind
+// it, and a cold start.
+var defaultHTTP = &http.Client{Timeout: 30 * time.Second}
 
 // Decide asks qs about state (a string, or anything JSON-encodable) and
 // returns the answers by question id.

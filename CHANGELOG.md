@@ -195,6 +195,18 @@ Releases page.
   - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
+- **The Judge no longer sits out long turns.** A check's state could reach 56,000 characters
+  (100 tool calls), which a 9B judge on a pair of Tesla T4s takes 20 s to read, and the client
+  gave up at 10 s: `judge unavailable; answers go out unchecked` on every long turn. The state is
+  now budgeted at 12,000 characters (the request and the answer at 3,000 each, then the newest
+  tool calls, outputs for the newest 8), it is sent request-first so a truncating server drops old
+  tool calls rather than the ask, the client waits 30 s, and each `⚖ judge` line says what the
+  check cost (`· 3114 tokens, 3.4s`).
+- **A quick command's output is never lost.** `os_exec` on the host could run `printf ok` and
+  get `(no output)`: the sandbox's process starter let Go's `Wait` close the stdout pipe the
+  moment the child exited, before the reader had drained it (it showed as a flaky
+  `TestLoggingEndToEnd` on CI). The process now owns its stdout pipe, `Wait` leaves it alone,
+  EOF comes when the last writer is gone, and a kill closes it.
 - **A pasted image shows at once, and Backspace removes it.** In a terminal narrower than
   the footer (about 140 columns once tokens are counted), the footer wrapped and the
   input stopped redrawing, so a pasted `[image N: …]` tag appeared only after Enter. The

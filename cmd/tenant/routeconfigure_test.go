@@ -89,8 +89,14 @@ func TestRouteRuntimeLiveConfigChangeRebuildsClassifier(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := rt.engine.Probe(context.Background()); err != nil {
-		t.Fatalf("launch-time classifier probe failed (endpoint not inherited?): %v", err)
+	var probeErr error
+	for try := 0; try < 5; try++ { // a cold Windows runner's first loopback request has outlived the 250 ms per-turn timeout
+		if _, probeErr = rt.engine.Probe(context.Background()); probeErr == nil {
+			break
+		}
+	}
+	if probeErr != nil {
+		t.Fatalf("launch-time classifier probe failed (endpoint not inherited?): %v", probeErr)
 	}
 	select {
 	case <-hits1:
