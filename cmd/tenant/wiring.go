@@ -56,13 +56,14 @@ type commonFlags struct {
 	embedDim      int
 
 	// Resolved at config-merge time (not raw flags):
-	genKind     string // active provider kind (vllm|openai|ollama|…); "" = raw --backend
-	reasoning   string // active provider's reasoning-effort hint ("" = off); reasoning kinds only
-	vision      string // active provider's vision setting: on | off | "" (probe); TEN-493
-	genAPIKey   string // resolved generation API key (env ref or stored secret or --api-key)
-	embedAPIKey string // resolved embeddings API key (usually empty — local)
-	contextLen  int    // served model's max_model_len (auto-detected); 0 = use default
-	planCeiling int    // planner↔tool iteration cap per turn; 0 = defaultPlanCeiling
+	genKind        string        // active provider kind (vllm|openai|ollama|…); "" = raw --backend
+	reasoning      string        // active provider's reasoning-effort hint ("" = off); reasoning kinds only
+	requestTimeout time.Duration // providers.<name>.request_timeout; 0 = none
+	vision         string        // active provider's vision setting: on | off | "" (probe); TEN-493
+	genAPIKey      string        // resolved generation API key (env ref or stored secret or --api-key)
+	embedAPIKey    string        // resolved embeddings API key (usually empty — local)
+	contextLen     int           // served model's max_model_len (auto-detected); 0 = use default
+	planCeiling    int           // planner↔tool iteration cap per turn; 0 = defaultPlanCeiling
 
 	// fs is the FlagSet these flags were bound to. resolve() uses
 	// fs.Visit to tell which flags the operator set EXPLICITLY, so the
@@ -227,6 +228,11 @@ func (c *commonFlags) applyLaunchConfig() error {
 			c.reasoning = p.Reasoning
 		}
 		c.vision = p.Vision
+		d, err := requestTimeoutOf(p)
+		if err != nil {
+			return fmt.Errorf("providers.%s.%w", lc.Provider, err)
+		}
+		c.requestTimeout = d
 		if !set["api-key"] {
 			c.genAPIKey = resolveSecretWith(c.credentialsLoader(), c.cfgDir, lc.Provider, p.Auth)
 		}
@@ -584,17 +590,18 @@ func buildRouter(c *commonFlags, log *slog.Logger) (*model.Router, error) {
 		pk := providerKinds[c.genKind]
 		reg := model.NewEmptyRegistry()
 		gen := genProfileOpts{
-			endpoint:     c.vllmEndpoint,
-			model:        c.vllmModel,
-			toolFmt:      c.vllmToolFmt,
-			providerKind: c.genKind,
-			apiKey:       c.genAPIKey,
-			chatPath:     pk.ChatPath,
-			reasoning:    c.reasoning,
-			estimateOnly: pk.EstimateTokens,
-			forceHTTP1:   pk.ForceHTTP1,
-			contextLen:   c.contextLen,
-			planCeiling:  c.planCeiling,
+			endpoint:       c.vllmEndpoint,
+			model:          c.vllmModel,
+			toolFmt:        c.vllmToolFmt,
+			providerKind:   c.genKind,
+			apiKey:         c.genAPIKey,
+			chatPath:       pk.ChatPath,
+			reasoning:      c.reasoning,
+			estimateOnly:   pk.EstimateTokens,
+			forceHTTP1:     pk.ForceHTTP1,
+			contextLen:     c.contextLen,
+			planCeiling:    c.planCeiling,
+			requestTimeout: c.requestTimeout,
 		}
 		for _, p := range vllmGenProfiles(gen) {
 			if err := reg.Add(p); err != nil {
@@ -784,7 +791,15 @@ func attachEmbedder(reg *model.Registry, c *commonFlags) (usesEcho bool, err err
 		if c.lc != nil && c.lc.Embed != nil && c.lc.Embed.Kind != "" {
 			embedKind = c.lc.Embed.Kind
 		}
-		if err := reg.Add(vllmEmbedderProfile(c.embedEndpoint, c.embedModel, c.embedDim, c.embedAPIKey, embedKind)); err != nil {
+		ep := vllmEmbedderProfile(c.embedEndpoint, c.embedModel, c.embedDim, c.embedAPIKey, embedKind)
+		if c.lc != nil && c.lc.Embed != nil { // embed.request_timeout: the same knob, the same struct
+			d, err := requestTimeoutOf(c.lc.Embed)
+			if err != nil {
+				return false, fmt.Errorf("embed.%w", err)
+			}
+			ep.RequestTimeout = d
+		}
+		if err := reg.Add(ep); err != nil {
 			return false, fmt.Errorf("register vllm embedder: %w", err)
 		}
 		return false, nil
@@ -966,6 +981,7 @@ func buildGenProfiles(c *commonFlags) ([]model.Profile, map[string]model.Backend
 			estimateOnly: pk.EstimateTokens,
 			forceHTTP1:   pk.ForceHTTP1,
 			contextLen:   c.contextLen, planCeiling: c.planCeiling,
+			requestTimeout: c.requestTimeout,
 		})
 		return gen, map[string]model.BackendFactory{"vllm": vllm.New}, nil
 	case "anthropic":
@@ -1042,6 +1058,20 @@ func claudecodeGenProfiles(endpoint, modelID, providerKind, reasoning string, pl
 	}
 }
 
+// requestTimeoutOf parses a provider's request_timeout: "" is none, anything
+// else a positive Go duration such as "90s".
+func requestTimeoutOf(pc *providerConfig) (time.Duration, error) {
+	s := strings.TrimSpace(pc.RequestTimeout)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("request_timeout: %q is not a duration like \"90s\"", s)
+	}
+	return d, nil
+}
+
 // genProfileOpts bundles what vllmGenProfiles needs — grew past a sensible
 // positional arg count once hosted providers added api keys + path overrides.
 type genProfileOpts struct {
@@ -1049,9 +1079,10 @@ type genProfileOpts struct {
 	providerKind                               string // providerKinds key; distinguishes hosted APIs from self-hosted vLLM
 	reasoning                                  string // reasoning.effort hint ("" = off; reasoning kinds only)
 	estimateOnly                               bool
-	forceHTTP1                                 bool // disable HTTP/2 (GOAWAY-prone hosted LBs, TEN-218)
-	contextLen                                 int  // 0 = default (131072)
-	planCeiling                                int  // 0 = defaultPlanCeiling
+	forceHTTP1                                 bool          // disable HTTP/2 (GOAWAY-prone hosted LBs, TEN-218)
+	requestTimeout                             time.Duration // bounds one request; 0 = none
+	contextLen                                 int           // 0 = default (131072)
+	planCeiling                                int           // 0 = defaultPlanCeiling
 }
 
 // vllmGenProfiles builds planner/executor/summarizer profiles pointing
@@ -1099,6 +1130,7 @@ func vllmGenProfiles(o genProfileOpts) []model.Profile {
 			ReasoningEffort:          o.reasoning,
 			EstimateTokensOnly:       o.estimateOnly,
 			ForceHTTP11:              o.forceHTTP1,
+			RequestTimeout:           o.requestTimeout,
 			ContextLength:            ctxLen,
 			OperationalContextBudget: opBudget,
 			ReserveSoul:              2048,

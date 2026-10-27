@@ -40,6 +40,11 @@ Releases page.
   saved `dashboard.addr` is unchanged; a config without one now serves at
   http://127.0.0.1:9770.
 ### Added
+- **`request_timeout` on a provider.** `providers.<name>.request_timeout` (a Go duration such as
+  `"90s"`) bounds one request to that endpoint, chat, tokenize or embed. A request that hits it
+  fails as endpoint-down, so fallbacks and health gating move on instead of the turn hanging on a
+  stalled server; the caller's own cancel is still a cancel. Empty means no limit beyond the turn's.
+  OpenAI-compatible kinds only; it reaches named helpers and fallback bindings too.
 - **The Judge** (TEN-510, TEN-516): a decision model checks the agent's work. Cloudflare's
   Clef-flash (or any System One server) triages each prompt while the model works; for a
   task, it checks the answer is fully done, covers every part, claims nothing no tool did,

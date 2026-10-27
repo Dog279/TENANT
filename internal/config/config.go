@@ -350,6 +350,10 @@ type Provider struct {
 	// Vision says whether the model can see images (TEN-493): "on", "off",
 	// or "" / "auto" to let Tenant probe it. Set live with /model vision.
 	Vision string `json:"vision,omitempty"`
+	// RequestTimeout bounds one request to this endpoint (chat, tokenize, embed),
+	// a Go duration like "90s". Empty = no limit beyond the turn's own. Read by
+	// the OpenAI-compatible (vllm-family) backend only.
+	RequestTimeout string `json:"request_timeout,omitempty"`
 }
 
 // Route is the persisted prompt-router configuration. Provider is

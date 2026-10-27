@@ -109,6 +109,11 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 		planCeiling:  lc.PlanLoopCeiling,
 		vision:       pc.Vision,
 	}
+	if d, err := requestTimeoutOf(pc); err != nil {
+		return nil, fmt.Errorf("agent %q: provider %q: %w", profileName, ap.Provider, err)
+	} else {
+		c.requestTimeout = d
+	}
 	gen, factories, err := genProfiles(c)
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: build profiles: %w", profileName, err)
