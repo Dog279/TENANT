@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -571,4 +572,27 @@ func TestAgentControl_List_CustomizedBuiltinStaysValid(t *testing.T) {
 		return
 	}
 	t.Fatal("QA missing from the list")
+}
+
+// A helper on another backend still gets the shared embedder: the embed
+// profile's backend (vllm for a live server, echo for the fallback) is
+// registered on the helper's router too. A claudecode QA helper failed every
+// spawn with "no factory registered for backend \"vllm\"" before this.
+func TestBuildProfileRouter_EmbedsOnAnotherBackend(t *testing.T) {
+	dir := t.TempDir()
+	lc := &launchConfig{Providers: map[string]*providerConfig{
+		"cc": {Kind: "claudecode", Endpoint: "claudecode://auto", Model: "claude-opus-5-5"},
+	}}
+	_ = lc.Save(dir)
+	for _, backend := range []string{"vllm", "echo"} {
+		embed := model.Profile{ID: "embed-" + backend, Role: model.RoleEmbedder, Backend: backend, ProviderKind: backend, Endpoint: "http://127.0.0.1:1", Model: "nomic-embed-text",
+			EstimateTokensOnly: true, ContextLength: 8192, OperationalContextBudget: 8192, ToolFormat: "openai", EmbedDim: 768}
+		r, err := buildProfileRouter("qa", &agentProfile{Provider: "cc"}, lc, dir, embed, nil)
+		if err != nil {
+			t.Fatalf("[%s] build: %v", backend, err)
+		}
+		if _, _, err := r.EmbedderForRole(context.Background(), model.RoleEmbedder); err != nil {
+			t.Errorf("[%s] a claudecode helper's router can't build the shared embedder: %v", backend, err)
+		}
+	}
 }

@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"tenant/internal/model"
+	"tenant/internal/model/backend/echo"
+	"tenant/internal/model/backend/vllm"
 )
 
 // buildProfileRouter builds a fresh router pinned to one agent profile's
@@ -131,6 +133,17 @@ func buildProfileRouter(profileName string, ap *agentProfile, lc *launchConfig, 
 	r := model.NewRouter(reg, log)
 	for kind, f := range factories {
 		r.RegisterBackend(kind, f)
+	}
+	// The shared embedder runs on its own backend (vllm for a live server, echo
+	// for the fallback), which is not this provider's unless the provider is
+	// vllm too. Without its factory the profile registers but can never be
+	// built: every claudecode QA spawn failed with "no factory registered for
+	// backend \"vllm\"" while a vllm helper worked by coincidence.
+	switch sharedEmbedProfile.Backend {
+	case "vllm":
+		r.RegisterBackend("vllm", vllm.New)
+	case "echo":
+		r.RegisterBackend("echo", echo.New)
 	}
 	// Pin the gen roles to this profile's IDs (the registry's first-pick
 	// default already does this, but be explicit so a future multi-profile

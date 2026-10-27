@@ -195,6 +195,12 @@ Releases page.
   - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
+- **A helper on another backend can spawn again.** A named agent whose provider was not the
+  main one (`agents.QA.provider: claudecode` with a vLLM main model) failed every spawn with
+  `resolve embedder role: no factory registered for backend "vllm"`: its router registered the
+  shared embedder's profile but not the embedder's backend, so only a helper on the same
+  backend as the embedder could be built. The embedder's backend is registered on every
+  helper's router now.
 - **Cron no longer hangs Tenant on a daylight-saving fall-back day.** The scheduler's next-run
   search rebuilt each hour with `time.Date`; on a day where 01:00 happens twice (US: 2026-11-01)
   that picked the first 01:00, added an hour, landed on the second 01:00, and picked the first one
