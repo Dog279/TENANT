@@ -40,6 +40,11 @@ Releases page.
   saved `dashboard.addr` is unchanged; a config without one now serves at
   http://127.0.0.1:9770.
 ### Added
+- **`request_timeout` on a provider.** `providers.<name>.request_timeout` (a Go duration such as
+  `"90s"`) bounds one request to that endpoint, chat, tokenize or embed. A request that hits it
+  fails as endpoint-down, so fallbacks and health gating move on instead of the turn hanging on a
+  stalled server; the caller's own cancel is still a cancel. Empty means no limit beyond the turn's.
+  OpenAI-compatible kinds only; it reaches named helpers and fallback bindings too.
 - **The Judge** (TEN-510, TEN-516): a decision model checks the agent's work. Cloudflare's
   Clef-flash (or any System One server) triages each prompt while the model works; for a
   task, it checks the answer is fully done, covers every part, claims nothing no tool did,
@@ -195,6 +200,12 @@ Releases page.
   - `wiki_save` and the gated CRM tools are writes, not destructive.
 
 ### Fixed
+- **A helper on another backend can spawn again.** A named agent whose provider was not the
+  main one (`agents.QA.provider: claudecode` with a vLLM main model) failed every spawn with
+  `resolve embedder role: no factory registered for backend "vllm"`: its router registered the
+  shared embedder's profile but not the embedder's backend, so only a helper on the same
+  backend as the embedder could be built. The embedder's backend is registered on every
+  helper's router now.
 - **Cron no longer hangs Tenant on a daylight-saving fall-back day.** The scheduler's next-run
   search rebuilt each hour with `time.Date`; on a day where 01:00 happens twice (US: 2026-11-01)
   that picked the first 01:00, added an hour, landed on the second 01:00, and picked the first one

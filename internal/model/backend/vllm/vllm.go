@@ -537,6 +537,14 @@ func (b *Backend) Embed(ctx context.Context, texts []string) ([][]float32, error
 // postJSON marshals body, POSTs to {endpoint}{path}, and decodes the
 // response into out. Maps transport / status errors to typed model.Err*.
 func (b *Backend) postJSON(ctx context.Context, path string, body, out any) error {
+	// The profile's request_timeout bounds this one request, headers and body.
+	// parent tells a timeout we imposed apart from the caller giving up.
+	parent := ctx
+	if d := b.profile.RequestTimeout; d > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
+	}
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("%w: marshal: %v", model.ErrInternal, err)
@@ -557,6 +565,9 @@ func (b *Backend) postJSON(ctx context.Context, path string, body, out any) erro
 
 	resp, err := b.client.Do(req)
 	if err != nil {
+		if b.timedOut(ctx, parent) {
+			return b.timeoutErr()
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("%w: %v", model.ErrCancelled, err)
 		}
@@ -568,9 +579,22 @@ func (b *Backend) postJSON(ctx context.Context, path string, body, out any) erro
 		return classifyHTTPError(resp)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		if b.timedOut(ctx, parent) { // the body outlived request_timeout
+			return b.timeoutErr()
+		}
 		return fmt.Errorf("%w: decode: %v", model.ErrInternal, err)
 	}
 	return nil
+}
+
+// timedOut reports that the request's own deadline passed while the caller's
+// context was still live: the profile's request_timeout, not a cancel.
+func (b *Backend) timedOut(ctx, parent context.Context) bool {
+	return b.profile.RequestTimeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil
+}
+
+func (b *Backend) timeoutErr() error {
+	return fmt.Errorf("%w: no answer within request_timeout %s", model.ErrEndpointDown, b.profile.RequestTimeout)
 }
 
 func classifyHTTPError(resp *http.Response) error {

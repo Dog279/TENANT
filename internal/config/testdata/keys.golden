@@ -48,6 +48,7 @@ config.json: embed.endpoint
 config.json: embed.kind
 config.json: embed.model
 config.json: embed.reasoning
+config.json: embed.request_timeout
 config.json: embed.tool_format
 config.json: embed.vision
 config.json: embed_dim
@@ -169,6 +170,7 @@ config.json: providers.*.endpoint
 config.json: providers.*.kind
 config.json: providers.*.model
 config.json: providers.*.reasoning
+config.json: providers.*.request_timeout
 config.json: providers.*.tool_format
 config.json: providers.*.vision
 config.json: relay

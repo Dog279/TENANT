@@ -63,6 +63,11 @@ func providerGenProfiles(cfgDir string, lc *launchConfig, name string, planCeili
 		planCeiling:  planCeiling,
 		vision:       pc.Vision,
 	}
+	if d, err := requestTimeoutOf(pc); err != nil {
+		return nil, nil, err
+	} else {
+		c.requestTimeout = d
+	}
 	// Carry the provider's persisted reasoning effort exactly like the active
 	// provider path (wiring.go) does — without this, planner-big / forced /
 	// fallback bindings silently run at default effort.

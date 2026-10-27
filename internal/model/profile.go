@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -58,6 +59,12 @@ type Profile struct {
 	// between requests instead. Pairs with the planner's transient retry
 	// (TEN-218 / TEN-215). Only the vLLM (OpenAI-compatible) backend reads it.
 	ForceHTTP11 bool `yaml:"force_http1,omitempty"`
+
+	// RequestTimeout bounds one request to this endpoint (chat, tokenize, embed),
+	// e.g. "90s" in YAML. 0 = no per-profile timeout (the caller's context
+	// decides). A request that hits it fails as ErrEndpointDown, so fallbacks and
+	// health gating treat the endpoint as down rather than the turn as cancelled.
+	RequestTimeout time.Duration `yaml:"request_timeout,omitempty"`
 
 	// ChatPath overrides the chat-completions URL suffix appended to
 	// Endpoint. Default "/v1/chat/completions". Z.ai's base already carries
