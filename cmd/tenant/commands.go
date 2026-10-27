@@ -1550,7 +1550,7 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("orchestrate", flag.ContinueOnError)
 	c := bindCommon(fs)
 	pf := bindPluginFlags(fs) // give the TEAM the full plugin toolset
-	awaitTimeout := fs.Duration("await-timeout", 3*time.Minute, "how long the orchestrator waits for sub-agents")
+	awaitTimeout := fs.Duration("await-timeout", awaitCeiling, "the most team_await waits without news from a sub-agent before reporting current state")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

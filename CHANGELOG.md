@@ -148,6 +148,15 @@ Releases page.
   service unit and reinstalls through `tenant update`.
 
 ### Changed
+- **`team_await` returns on news, not on a clock** (TEN-529). It used to block until every
+  helper had finished or three minutes had passed, then report "timed out" with nothing new and
+  get called again: on one machine 101 of 127 awaits returned at exactly 3m0s with helpers still
+  working, a full-context planner call each. Now it returns as soon as a helper finishes (that
+  result comes back) or a helper messages the orchestrator (the message comes back, drained so
+  `team_check` doesn't repeat it), and says who is still running. The orchestrator awaits again
+  for the rest. Only this conversation's helpers wake it, as `team_await` already reported only
+  them. The ceiling with no news at all is 30 minutes; `tenant orchestrate --await-timeout` now
+  means that ceiling. A stuck helper is still the run budgets' job, and its cancel wakes the await.
 - **Team-run limits are off by default** (TEN-508). Tokens per run (was 500,000), estimated
   cost ($25), time (30m), tool calls per run (256) and per answer (64), and helpers per run
   (16) no longer stop a run unless you set them under `budgets` in config.json. A value you

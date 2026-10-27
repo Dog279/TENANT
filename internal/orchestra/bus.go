@@ -147,6 +147,38 @@ func (b *Bus) Inbox(agentID string) []Message {
 	return msgs
 }
 
+// PendingWhere counts an agent's undrained messages that keep accepts (no
+// drain). An orchestrator serving several conversations waits on its own
+// conversation's helpers, not on everyone's.
+func (b *Bus) PendingWhere(agentID string, keep func(Message) bool) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := 0
+	for _, m := range b.mailboxes[agentID] {
+		if keep(m) {
+			n++
+		}
+	}
+	return n
+}
+
+// Take drains and returns the messages of an agent's mailbox that keep
+// accepts, oldest first; the rest stay, in order, for a later Inbox or Take.
+func (b *Bus) Take(agentID string, keep func(Message) bool) []Message {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var taken, rest []Message
+	for _, m := range b.mailboxes[agentID] {
+		if keep(m) {
+			taken = append(taken, m)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	b.mailboxes[agentID] = rest
+	return taken
+}
+
 // Pending reports how many undrained messages an agent has (no drain).
 func (b *Bus) Pending(agentID string) int {
 	b.mu.Lock()
