@@ -265,3 +265,24 @@ func BenchmarkScrubEntry_TypicalLine(b *testing.B) {
 		_ = s.Entry(e, defaultMaxField)
 	}
 }
+
+// A value added while running (a secret a plugin resolved) is scrubbed, and
+// it survives the credential watcher replacing the stored set.
+func TestScrubber_AddSecretsSurvivesSetSecrets(t *testing.T) {
+	var s Scrubber
+	s.SetSecrets(map[string]string{"stored": "alpha-secret-1"})
+	s.AddSecrets(map[string]string{"onepassword:op://v/i/f": "revealed-value-9", "tiny": "short"})
+	if got := s.Scrub("x alpha-secret-1 y revealed-value-9 z short"); got != "x «secret:stored» y «secret:onepassword:op://v/i/f» z short" {
+		t.Errorf("after AddSecrets: %q", got)
+	}
+	s.SetSecrets(map[string]string{"other": "bravo-secret-2"})
+	if got := s.Scrub("alpha-secret-1 bravo-secret-2 revealed-value-9"); got != "alpha-secret-1 «secret:other» «secret:onepassword:op://v/i/f»" {
+		t.Errorf("after SetSecrets: %q", got)
+	}
+	for i := 0; i < maxExtraSecrets; i++ {
+		s.AddSecrets(map[string]string{fmt.Sprintf("extra-%03d", i): fmt.Sprintf("filler-value-%03d-xyz", i)})
+	}
+	if got := s.Scrub("revealed-value-9 filler-value-255-xyz"); got != "revealed-value-9 «secret:extra-255»" {
+		t.Errorf("the oldest extra is forgotten past the cap, the newest kept: %q", got)
+	}
+}

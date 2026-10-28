@@ -3573,6 +3573,177 @@ Writes the `plugin.gsuite` log.
 
 **What to do.** Sign in again with /configure gsuite (for gcloud mode, `gcloud auth login`); `tenant doctor` checks the setup.
 
+## plugin.onepassword
+
+Writes the `plugin.onepassword` log.
+
+| ID | Level | Task | Message |
+|---|---|---|---|
+| [1](#pluginonepassword-1) | info | Lifecycle | `1Password started` |
+| [2](#pluginonepassword-2) | info | Lifecycle | `{target} enabled` |
+| [3](#pluginonepassword-3) | info | Lifecycle | `{target} disabled` |
+| [1101](#pluginonepassword-1101) | info | Secrets | `a secret was read: {reference}` |
+| [1102](#pluginonepassword-1102) | info | Items | `item created: {title} in {vault}` |
+| [1103](#pluginonepassword-1103) | info | Items | `item edited: {item}` |
+| [1104](#pluginonepassword-1104) | info | Items | `item archived: {item}` |
+| [2101](#pluginonepassword-2101) | warning | API | `1Password rate limit reached on {op}` |
+| [3001](#pluginonepassword-3001) | error | Lifecycle | `1Password could not start: {err}` |
+| [3101](#pluginonepassword-3101) | error | CLI | `the 1Password CLI was not found: {err}` |
+| [3102](#pluginonepassword-3102) | error | Auth | `1Password refused the service account token: {err}` |
+
+### plugin.onepassword 1
+
+`1Password started`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** plugin.onepassword
+- **Find it:** `provider:plugin.onepassword id:1`
+
+**What it means.** The plugin was built and its tools can run.
+
+**Why it happens.** Tenant started with the plugin configured, or the operator enabled it for the first time since.
+
+**What to do.** None.
+
+### plugin.onepassword 2
+
+`{target} enabled`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** plugin.onepassword
+- **Fields:** `target`, `tools`
+- **Find it:** `provider:plugin.onepassword id:2`
+
+**What it means.** The operator turned the plugin, or one of its tools, on.
+
+**Why it happens.** An /enable in the terminal, or the Tools page of the dashboard.
+
+**What to do.** None.
+
+### plugin.onepassword 3
+
+`{target} disabled`
+
+- **Level:** info · **Channel:** operational · **Task:** Lifecycle · **Log:** plugin.onepassword
+- **Fields:** `target`, `tools`
+- **Find it:** `provider:plugin.onepassword id:3`
+
+**What it means.** The operator turned the plugin, or one of its tools, off. The agent can't call it until it is enabled again.
+
+**Why it happens.** A /disable in the terminal, or the Tools page of the dashboard.
+
+**What to do.** None.
+
+### plugin.onepassword 1101
+
+`a secret was read: {reference}`
+
+- **Level:** info · **Channel:** operational · **Task:** Secrets · **Log:** plugin.onepassword
+- **Fields:** `reference`
+- **Find it:** `provider:plugin.onepassword id:1101`
+
+**What it means.** The agent resolved one op:// reference with op_read and received the value.
+
+**Why it happens.** The model asked for it and the egress gate allowed it.
+
+**What to do.** Nothing to do; this is the audit trail. Review it if a secret was read that the task did not need.
+
+### plugin.onepassword 1102
+
+`item created: {title} in {vault}`
+
+- **Level:** info · **Channel:** operational · **Task:** Items · **Log:** plugin.onepassword
+- **Fields:** `title`, `vault`
+- **Find it:** `provider:plugin.onepassword id:1102`
+
+**What it means.** The agent stored a new item in a vault.
+
+**Why it happens.** op_create was called and the write gate allowed it.
+
+**What to do.** Nothing to do.
+
+### plugin.onepassword 1103
+
+`item edited: {item}`
+
+- **Level:** info · **Channel:** operational · **Task:** Items · **Log:** plugin.onepassword
+- **Fields:** `item`
+- **Find it:** `provider:plugin.onepassword id:1103`
+
+**What it means.** The agent changed fields on an item.
+
+**Why it happens.** op_edit was called and the write gate allowed it.
+
+**What to do.** Nothing to do.
+
+### plugin.onepassword 1104
+
+`item archived: {item}`
+
+- **Level:** info · **Channel:** operational · **Task:** Items · **Log:** plugin.onepassword
+- **Fields:** `item`
+- **Find it:** `provider:plugin.onepassword id:1104`
+
+**What it means.** The agent moved an item to the vault's Archive.
+
+**Why it happens.** op_delete was called and the destructive gate confirmed it.
+
+**What to do.** Restore it from the Archive in 1Password if it was a mistake.
+
+### plugin.onepassword 2101
+
+`1Password rate limit reached on {op}`
+
+- **Level:** warning · **Channel:** operational · **Task:** API · **Log:** plugin.onepassword
+- **Fields:** `op`
+- **Find it:** `provider:plugin.onepassword id:2101`
+
+**What it means.** A call was refused because the service account's hourly or daily request limit is used up.
+
+**Why it happens.** The agent made more calls than the plan allows (Teams and Individual: 1,000 reads and 100 writes an hour per token, 1,000 requests a day).
+
+**What to do.** Wait for the window to reset; cut the calls per turn; or move to a plan with a higher limit.
+
+### plugin.onepassword 3001
+
+`1Password could not start: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Lifecycle · **Log:** plugin.onepassword
+- **Fields:** `err`
+- **Find it:** `provider:plugin.onepassword id:3001`
+
+**What it means.** The plugin could not be built. At launch, Tenant stops with this error; on an /enable, the plugin stays off.
+
+**Why it happens.** Its credentials are missing, expired or revoked, its service or program can't be reached, or a setting is wrong.
+
+**What to do.** Read the error. Run `tenant doctor`, fix the setting or sign in again with /configure, then /enable the plugin.
+
+### plugin.onepassword 3101
+
+`the 1Password CLI was not found: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** CLI · **Log:** plugin.onepassword
+- **Fields:** `err`
+- **Find it:** `provider:plugin.onepassword id:3101`
+
+**What it means.** The plugin could not start the op command-line tool, so no 1Password tool works.
+
+**Why it happens.** op is not installed, not on the PATH of the account Tenant runs as, or the op_path setting points at the wrong file.
+
+**What to do.** Install the 1Password CLI, or set op_path in `/configure onepassword` to the full path of op.
+
+### plugin.onepassword 3102
+
+`1Password refused the service account token: {err}`
+
+- **Level:** error · **Channel:** operational · **Task:** Auth · **Log:** plugin.onepassword
+- **Fields:** `err`
+- **Find it:** `provider:plugin.onepassword id:3102`
+
+**What it means.** Every call failed because 1Password did not accept the token.
+
+**Why it happens.** The token was revoked, expired, mistyped, or belongs to another account.
+
+**What to do.** Create a service account token for the vault the agent should use and store it with `/configure onepassword`.
+
 ## plugin.os
 
 Writes the `plugin.os` log.

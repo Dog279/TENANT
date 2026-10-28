@@ -670,6 +670,18 @@ Releases page.
   saved `dashboard.addr` is unchanged; a config without one now serves at
   http://127.0.0.1:9770.
 ### Added
+- **1Password.** A plugin over the `op` command-line tool with a service account token
+  (`/configure onepassword`, the Integrations page, or `OP_SERVICE_ACCOUNT_TOKEN`). The agent
+  lists the vaults the account can see (`op_vaults`) and the items in one (`op_items`), reads
+  an item's shape with every concealed value replaced by its `op://` reference (`op_item`),
+  and resolves one reference at a time with `op_read`, which is gated under `egress` and
+  logged by reference, never by value; the value is scrubbed from the log book the moment it
+  is read. `op_create` and `op_edit` (the `write` category; `allow_write` or
+  `--onepassword-allow-write` skips the per-action prompt) keep credentials, with
+  `generate_password` so a new password never passes through the model; `op_delete` archives
+  and always asks. A `vaults` setting fences the agent to named vaults on top of the account's
+  own scope. `tenant onepassword whoami|vaults|items <vault>` is the read-only one-shot;
+  doctor checks the CLI and the token.
 - **`request_timeout` on a provider.** `providers.<name>.request_timeout` (a Go duration such as
   `"90s"`) bounds one request to that endpoint, chat, tokenize or embed. A request that hits it
   fails as endpoint-down, so fallbacks and health gating move on instead of the turn hanging on a

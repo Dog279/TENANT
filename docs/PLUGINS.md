@@ -386,6 +386,7 @@ result and keep using it.
 | `github`  | `internal/plugins/github/`            | No (REST control plane; code I/O stays on the local os_* tools) | At launch with `--github`, or by its activator |
 | `crm`     | `internal/plugins/crm/`               | No (wraps the external `crm-tool` binary) | At launch when `--crm-tool-path`/`$CRM_TOOL_PATH` is set; stub otherwise |
 | `simplefin`| `internal/plugins/simplefin/`        | No (one HTTPS GET; read-only by protocol) | By its activator from `/configure` |
+| `onepassword`| `internal/plugins/onepassword/`    | No (runs the `op` CLI, one process per call, the service account token in its environment) | At launch with `--onepassword`, or by its activator from `/configure`; a concealed value reaches the model only through `op_read` (egress) |
 | `cron`    | `internal/plugins/cron/`              | No     | A host tool, wired live in the TUI and serve, not a descriptor |
 
 Every first-party plugin above except `mcpremote` and `cron` is declared in
