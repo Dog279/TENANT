@@ -77,7 +77,17 @@ func cmdOnePassword(ctx context.Context, args []string) error {
 		if len(rest) < 2 {
 			return fmt.Errorf("usage: tenant onepassword items <vault>")
 		}
-		items, err := cli.Items(ctx, rest[1], nil, nil)
+		// A vault name may hold spaces: the words after `items` are the name,
+		// up to anything that looks like a flag (flags go before the
+		// subcommand; one left after it is a mistake, not part of the name).
+		var words []string
+		for _, w := range rest[1:] {
+			if strings.HasPrefix(w, "-") {
+				break
+			}
+			words = append(words, w)
+		}
+		items, err := cli.Items(ctx, strings.Join(words, " "), nil, nil)
 		if err != nil {
 			return err
 		}
