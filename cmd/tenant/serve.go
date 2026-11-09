@@ -33,6 +33,7 @@ import (
 	"tenant/internal/orchestra"
 	cronplugin "tenant/internal/plugins/cron"
 	"tenant/internal/plugins/web"
+	"tenant/internal/sandbox"
 )
 
 // serveStopBudget is --stop-budget: the grace the OS grants a stop, which
@@ -119,6 +120,17 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	go func() { <-sigCtx.Done(); serveStopping.Store(true); cancel() }()
 	hub.Start(ctx)
 	startRetention(ctx, c)
+	// The container sandbox labels every container with this install's id, so a
+	// previous run of this install (a crash, a hard restart) that left one
+	// behind is swept before any surface starts work (W1-4 / TEN-458). Another
+	// install's containers, under another id, are never touched. No Docker here
+	// is nothing to sweep, not a failure.
+	sandbox.SetContainerDefaults(sandbox.ContainerOptions{Instance: sandbox.InstanceID(c.dataDir)})
+	if n, serr := sandbox.SweepContainers(ctx); serr != nil {
+		log.Warn("sandbox: could not sweep leftover containers", "err", serr)
+	} else if n > 0 {
+		log.Info("sandbox: swept leftover containers from a previous run", "count", n)
+	}
 
 	// Graceful, ordered teardown (TEN-194), in stages (internal/lifecycle):
 	// deny pending approvals so no gated turn stays blocked; STOP ACCEPTING NEW

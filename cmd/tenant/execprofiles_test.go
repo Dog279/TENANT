@@ -729,7 +729,7 @@ func TestApproveAlwaysOnEscalationSavesScopedException(t *testing.T) {
 		Violations: []sandbox.Violation{{Kind: "filesystem", Detail: "x"}}}
 	var detail string
 	confirm := func(ctx context.Context, action, d string) bool { detail = d; return b.Confirm(ctx, action, d) }
-	esc := execEscalator(confirm, sandbox.Policy{})
+	esc := execEscalator(confirm, sandbox.Policy{}, sandbox.Host())
 	if !esc(context.Background(), sandbox.Command{Shell: "touch a.txt", Surface: surfaceDiscord}, refused) {
 		t.Fatal("always approves this run")
 	}
@@ -815,5 +815,25 @@ func TestSandboxViolationsSince(t *testing.T) {
 	}
 	if n := sandboxViolationsSince(logs.NewMemory(10))(time.Time{}); n != 0 {
 		t.Errorf("no store counts nothing, got %d", n)
+	}
+}
+
+// W1-1 (TEN-455): the container backend has no dry run. "enforce": false on a
+// container profile is refused when the settings load; unset or true is fine,
+// and a dry run on the other backends is unchanged.
+func TestValidateExecProfileSetting_ContainerHasNoDryRun(t *testing.T) {
+	off, on := false, true
+	err := validateExecProfileSetting("local", execProfileSetting{Backend: "container", Enforce: &off})
+	if err == nil || !strings.Contains(err.Error(), "no dry run") {
+		t.Fatalf("expected the dry-run refusal, got %v", err)
+	}
+	if err := validateExecProfileSetting("local", execProfileSetting{Backend: "container", Enforce: &on}); err != nil {
+		t.Fatalf("enforce true must be accepted: %v", err)
+	}
+	if err := validateExecProfileSetting("cron-shell", execProfileSetting{Backend: "container"}); err != nil {
+		t.Fatalf("enforce unset must be accepted: %v", err)
+	}
+	if err := validateExecProfileSetting("cron-shell", execProfileSetting{Backend: "restricted", Enforce: &off}); err != nil {
+		t.Fatalf("a dry run on restricted stays allowed: %v", err)
 	}
 }

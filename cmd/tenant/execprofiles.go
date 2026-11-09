@@ -270,6 +270,12 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 	default:
 		return fmt.Errorf("exec_profiles.%s: unknown backend %q (want host, restricted or container)", surface, p.Backend)
 	}
+	if p.Backend == "container" && p.Enforce != nil && !*p.Enforce {
+		// W1-1 (TEN-455): a dry run re-runs a refused command on the host, and a
+		// container cannot attribute every refusal (the TEN-436 lesson), so the
+		// container backend has no dry run. Refused at load, not silently enforced.
+		return fmt.Errorf("exec_profiles.%s: the container backend has no dry run (\"enforce\": false); leave enforce unset or true", surface)
+	}
 	n, ok := sandbox.ParseNetworkMode(p.Network)
 	if !ok {
 		return fmt.Errorf("exec_profiles.%s: unknown network %q (want inherit, none, full)", surface, p.Network)
@@ -656,7 +662,7 @@ func profileRunner(p execProfile, surface string, confirm confirmFunc) runnerFun
 			return "", fmt.Errorf("workdir is only used when commands run on the host; the %s surface runs them in the %s sandbox, so cd inside the command instead", surface, be.Name())
 		}
 		cmd := sandbox.Command{Shell: command, Surface: surface}
-		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm, pol))
+		res, err := execute(ctx, be, cmd, pol, execEscalator(confirm, pol, be))
 		if err != nil {
 			if be.Isolation() == sandbox.IsolationNone {
 				return res.Output, err // host: realRunner returned the start error unwrapped
@@ -709,10 +715,19 @@ func profileBackend(ctx context.Context, p execProfile, surface string) (sandbox
 }
 
 // execEscalator turns the approval callback into a sandbox.Escalator whose
-// prompt names exactly what the boundary refused, and what "always" would
-// save: the refused folder as an exception for the surface (pol is the
-// profile's, for its deny roots), or nothing, and why.
-func execEscalator(confirm confirmFunc, pol sandbox.Policy) sandbox.Escalator {
+// prompt names exactly what the boundary refused, where an approval would
+// re-run the command (W1-6: inside the sandbox with one grant, or on the host
+// for a program refusal only — sandbox.RiskSummary writes that line, never the
+// model), and what "always" would save: the refused folder as an exception for
+// the surface (pol is the profile's, for its deny roots), or nothing, and why.
+// The command is shown whole, with control characters escaped, so nothing
+// hides behind a carriage return or a terminal escape.
+//
+// TODO(TEN-460): bind the approval to sandbox.EscalationHash(interpreter,
+// argv, mounts, network, image digest) with an expiring EscalationTicket. The
+// confirm callback answers yes/no today; the broker (internal/approval) needs
+// to carry the ticket so Execute can refuse a re-run whose hash moved.
+func execEscalator(confirm confirmFunc, pol sandbox.Policy, be sandbox.Backend) sandbox.Escalator {
 	if confirm == nil {
 		return nil
 	}
@@ -724,8 +739,8 @@ func execEscalator(confirm confirmFunc, pol sandbox.Policy) sandbox.Escalator {
 			why = "\"always\" also lets " + cmd.Surface + " commands write under " + scope + " from now on"
 			always = ""
 		}
-		return confirm(ctx, actionExecUnsandboxed, commandText(cmd)+
-			"  [SANDBOX REFUSED: "+describeViolations(refused)+" — approve to re-run it OUTSIDE the sandbox; "+always+why+"]")
+		return confirm(ctx, actionExecUnsandboxed, sandbox.EscapeControl(commandText(cmd))+
+			"  [SANDBOX REFUSED: "+describeViolations(refused)+" — "+sandbox.RiskSummary(be, cmd, refused)+"; "+always+why+"]")
 	}
 }
 

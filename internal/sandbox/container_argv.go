@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // mount is one bind mount: a canonical host source and the container path it is
@@ -37,6 +38,13 @@ type containerSpec struct {
 	envNames []string
 	limits   Limits
 	command  string
+	// hostExists answers whether a host path exists, for ENOENT attribution
+	// (attributeContainer); nil means "unknown", which never attributes.
+	hostExists func(string) bool
+	// witness is the streaming scan of the run's whole output, set by Run just
+	// before attribution; nil (a spec built outside Run, as in tests) falls back
+	// to scanning the capped Result.Output.
+	witness *refusalWitness
 }
 
 // defaultLimits fill in a spec that set none, so a container is always capped
@@ -47,6 +55,13 @@ const (
 	defaultCPUs      = "2"
 	defaultTmpfsSize = "256m"
 )
+
+// deadlineGrace is added to the wall clock for the in-container deadline: the
+// command is killed from inside (`timeout -s KILL`) a little after Tenant would
+// have killed it from outside, so a container orphaned by a Tenant crash still
+// dies on its own (W1-4 / H4). Tenant's own deadline fires first in the normal
+// case, so the model's view of a timeout is unchanged.
+const deadlineGrace = 5 * time.Second
 
 // buildRunArgv renders the hardened `docker run` argv (everything after the
 // binary). It validates every value that could carry an injection — mount
@@ -132,8 +147,15 @@ func buildRunArgv(s containerSpec) ([]string, error) {
 	}
 	a = append(a, "-e", "HOME="+s.work.ctr, "-e", "TMPDIR=/tmp")
 
-	// The image (pinned) and the command as ONE argv element after it.
-	a = append(a, s.image, "sh", "-c", s.command)
+	// The image (pinned), then the command as ONE argv element after `sh -c`.
+	// With a wall clock, coreutils' timeout wraps the shell inside the
+	// container, so the command dies there even if nothing outside kills it.
+	a = append(a, s.image)
+	if s.limits.Wall > 0 {
+		secs := int64((s.limits.Wall + deadlineGrace + time.Second - 1) / time.Second)
+		a = append(a, "timeout", "-s", "KILL", strconv.FormatInt(secs, 10))
+	}
+	a = append(a, "sh", "-c", s.command)
 	return a, nil
 }
 
@@ -205,13 +227,29 @@ func validImageRef(ref string) error {
 // forbiddenRunFlags are the flags buildRunArgv must never emit; the golden test
 // asserts none of them appears in the argv, so a future edit that reintroduces
 // one is caught (H6). They are the escape hatches: privilege, host namespaces,
-// devices, the socket, an unpinned pull.
+// devices, the socket, an unpinned pull, a TTY (TIOCSTI), the NVIDIA runtime.
 var forbiddenRunFlags = []string{
-	"--privileged", "--cap-add", "--device", "--gpus",
-	"--pid=host", "--pid", "--ipc=host", "--net=host", "--network=host",
-	"--userns=host", "--cgroupns=host", "--cgroup-parent",
+	"--privileged", "--privileged=true", "--cap-add",
+	"--device", "--device-cgroup-rule", "--gpus",
+	"--pid", "--pid=host", "--ipc", "--ipc=host", "--uts", "--uts=host",
+	"--net", "--net=host", "--network=host", "--userns", "--userns=host",
+	"--cgroupns", "--cgroupns=host", "--cgroup-parent",
 	"--use-api-socket", "--oom-kill-disable", "--restart",
 	"-p", "-P", "--publish", "--publish-all",
 	"-v", "--volume", // bind mounts go through --mount only
-	"--privileged=true",
+	"-t", "--tty", // never a TTY: -i without -t is the TIOCSTI defence
+	"--runtime=nvidia", "--runtime=runsc", // runsc only through W3-2, by the backend
+}
+
+// forbiddenRunSubstrings must appear in NO argv element: an unconfined
+// security profile, a disabled label, the engine socket, a host or shared
+// namespace, a port publish. The golden test scans every element for them, so
+// a value smuggled inside another flag's argument is caught too.
+var forbiddenRunSubstrings = []string{
+	"unconfined",                                    // seccomp=unconfined, apparmor=unconfined, systempaths=unconfined
+	"label=disable",                                 // SELinux off
+	"docker.sock", "/var/run/docker", "/run/docker", // the engine socket, under any name
+	"container:",                             // a shared namespace (W2-9 names the one exception, by the backend)
+	"host.docker.internal",                   // the host gateway by name (W2-9 pins declared destinations only)
+	"--add-host", "--dns", "--security-opt=", // hyphenated forms of flags the schema sets positionally
 }

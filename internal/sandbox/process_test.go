@@ -17,6 +17,9 @@ import (
 // TestMain lets the test binary stand in for a long-lived server: with
 // TENANT_SANDBOX_HELPER set it runs that helper instead of the tests.
 func TestMain(m *testing.M) {
+	if os.Getenv(fakeDockerEnv) == "1" {
+		os.Exit(fakeDockerMain()) // the fake docker CLI (container_fake_test.go)
+	}
 	switch os.Getenv("TENANT_SANDBOX_HELPER") {
 	case "echo": // a line server: echo each line until stdin closes
 		fmt.Fprintln(os.Stderr, "helper ready")

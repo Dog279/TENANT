@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"encoding/csv"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A representative spec used across the argv tests.
@@ -62,8 +64,17 @@ func TestBuildRunArgv_NoForbiddenFlags(t *testing.T) {
 	joined := strings.Join(got, "\x00")
 	for _, f := range forbiddenRunFlags {
 		for _, tok := range got {
-			if tok == f {
+			if tok == f || strings.HasPrefix(tok, f+"=") {
 				t.Errorf("forbidden flag %q present in argv", f)
+			}
+		}
+	}
+	// No element may carry an unconfined profile, a disabled label, the engine
+	// socket or a shared namespace, even inside another flag's value.
+	for _, sub := range forbiddenRunSubstrings {
+		for _, tok := range got[:len(got)-1] { // the command itself is the model's text, not the schema's
+			if strings.Contains(tok, sub) {
+				t.Errorf("argv element %q contains forbidden %q", tok, sub)
 			}
 		}
 	}
@@ -123,6 +134,90 @@ func TestBuildRunArgv_CommandIsOneElement(t *testing.T) {
 	if got[len(got)-2] != "-c" || got[len(got)-3] != "sh" {
 		t.Fatalf("expected trailing `sh -c <command>`, got %v", got[len(got)-3:])
 	}
+}
+
+// W1-4: with a wall clock, the command runs under coreutils' timeout INSIDE
+// the container (wall + grace, SIGKILL), so an orphan dies on its own. Without
+// one, the argv is unchanged (the golden above).
+func TestBuildRunArgv_WallDeadlineWrapsInTimeout(t *testing.T) {
+	s := sampleSpec()
+	s.limits = Limits{Wall: 10 * time.Second}
+	got, err := buildRunArgv(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail := got[len(got)-8:]
+	want := []string{s.image, "timeout", "-s", "KILL", "15", "sh", "-c", "echo hi"}
+	if !slices.Equal(tail, want) {
+		t.Fatalf("tail = %q, want %q", tail, want)
+	}
+	// A sub-second wall rounds up, never to zero.
+	s.limits = Limits{Wall: 300 * time.Millisecond}
+	got, _ = buildRunArgv(s)
+	if got[len(got)-4] != "6" {
+		t.Fatalf("300ms wall + 5s grace should round up to 6, got %q", got[len(got)-4])
+	}
+}
+
+// W1-2: the golden argv on a POSIX host, with a path carrying a comma, a space
+// and a quote — the three characters docker's CSV --mount parser trips on.
+func TestBuildRunArgv_GoldenPOSIX(t *testing.T) {
+	work := `/home/u/a,b c"d`
+	s := containerSpec{
+		image:   "tenant-sandbox:latest",
+		name:    "tenant-sbx-test-2",
+		work:    mount{host: work, ctr: work},
+		mounts:  []mount{{host: "/srv/ref", ctr: "/srv/ref", ro: true}},
+		network: "none",
+		command: "ls",
+	}
+	got, err := buildRunArgv(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"run", "--rm", "-i", "--pull", "never", "--name", "tenant-sbx-test-2",
+		"--label", "tenant.sandbox=1",
+		"--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+		"--mount", `type=bind,"src=/home/u/a,b c""d","dst=/home/u/a,b c""d"`, "-w", work,
+		"--mount", `type=bind,src=/srv/ref,dst=/srv/ref,readonly`,
+		"--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		"--runtime", "runc",
+		"--pids-limit", "256", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "2",
+		"--ulimit", "core=0", "--ulimit", "nofile=1024:4096",
+		"--network", "none", "--init", "--log-driver", "none",
+		"-e", "HOME=" + work, "-e", "TMPDIR=/tmp",
+		"tenant-sandbox:latest", "sh", "-c", "ls",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("argv mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// W1-2: the --mount quoting round-trips through the same CSV grammar docker
+// parses with (encoding/csv), for any path mountArg accepts.
+func FuzzMountArg(f *testing.F) {
+	for _, seed := range []string{`C:\plain`, `C:\has space`, `C:\a,b`, `C:\a"b`, `/home/u/a,b c"d`, `C:\x` + "\n" + `y`, "", `"`, `,`, ` `} {
+		f.Add(seed, "/mnt/c/dst")
+		f.Add("/src", seed)
+	}
+	f.Fuzz(func(t *testing.T, host, ctr string) {
+		arg, err := mountArg(mount{host: host, ctr: ctr, ro: true})
+		if err != nil {
+			if !strings.ContainsAny(host+ctr, "\x00\n\r") {
+				t.Fatalf("mountArg(%q, %q) refused a path with no control character: %v", host, ctr, err)
+			}
+			return
+		}
+		r := csv.NewReader(strings.NewReader(arg))
+		fields, err := r.Read()
+		if err != nil {
+			t.Fatalf("docker's CSV parser would reject %q: %v", arg, err)
+		}
+		if len(fields) != 4 || fields[0] != "type=bind" || fields[1] != "src="+host || fields[2] != "dst="+ctr || fields[3] != "readonly" {
+			t.Fatalf("round trip of (%q, %q) through %q gave %q", host, ctr, arg, fields)
+		}
+	})
 }
 
 func TestCSVField(t *testing.T) {
