@@ -1009,15 +1009,15 @@ const (
 	busPoll = 500 * time.Millisecond
 )
 
-// wait blocks until there is news among the members of picks. any: the first
+// wait blocks until there is news among the members of picks. onNews: the first
 // picked member to finish (one already finished counts at once), or a message
 // in the orchestrator's mailbox, wakes it; otherwise every picked member
 // running now must finish (research waves). The timeout and ctx end it too.
-func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*member) bool, any bool) waitReason {
+func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*member) bool, onNews bool) waitReason {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	var tick <-chan time.Time
-	if any && r.cfg.Bus != nil {
+	if onNews && r.cfg.Bus != nil {
 		t := time.NewTicker(busPoll)
 		defer t.Stop()
 		tick = t.C
@@ -1051,7 +1051,7 @@ func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*
 				r.mu.Unlock()
 				return wokeIdle
 			}
-			if any && len(waits) < picked { // a finished one waits to be reported
+			if onNews && len(waits) < picked { // a finished one waits to be reported
 				r.mu.Unlock()
 				return wokeFinished
 			}
@@ -1070,7 +1070,7 @@ func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*
 		switch {
 		case running == 0:
 			return wokeFinished
-		case any && running < len(waits):
+		case onNews && running < len(waits):
 			return wokeFinished
 		}
 		select {
