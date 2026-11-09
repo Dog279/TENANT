@@ -68,13 +68,13 @@ func TestContainerMount_RejectsJunction(t *testing.T) {
 // space in ANY component are refused before the filesystem is consulted.
 func TestContainerMount_RejectsNameConfusions(t *testing.T) {
 	for p, want := range map[string]string{
-		`\\server\share\x`:         "UNC",
-		`\\?\C:\x`:                 "UNC",
-		`\\.\pipe\docker_engine`:   "UNC",
-		`C:\x\file.txt:stream`:     "alternate data stream",
-		`C:\Users\x.\y`:            "trailing dot or space",
-		`C:\Users\x \y`:            "trailing dot or space",
-		`C:\Users\y\leaf.`:         "trailing dot or space",
+		`\\server\share\x`:       "UNC",
+		`\\?\C:\x`:               "UNC",
+		`\\.\pipe\docker_engine`: "UNC",
+		`C:\x\file.txt:stream`:   "alternate data stream",
+		`C:\Users\x.\y`:          "trailing dot or space",
+		`C:\Users\x \y`:          "trailing dot or space",
+		`C:\Users\y\leaf.`:       "trailing dot or space",
 	} {
 		_, err := containerMount(p, false)
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -124,4 +124,30 @@ func shortPath(t *testing.T, p string) string {
 		return p // no short name available
 	}
 	return windows.UTF16ToString(buf[:n])
+}
+
+// TestWSLExePath_IsTheSystemBinary: the WSL version probe runs wsl.exe from the
+// Windows system directory by absolute path, never whatever "wsl" resolves to on
+// PATH, and a PATH that offers another one first does not change the answer.
+func TestWSLExePath_IsTheSystemBinary(t *testing.T) {
+	sysDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(sysDir, "wsl.exe")
+
+	planted := t.TempDir()
+	if err := os.WriteFile(filepath.Join(planted, "wsl.exe"), []byte("not wsl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", planted+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SystemRoot", planted)
+
+	got, err := wslExePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) || !strings.EqualFold(got, want) {
+		t.Fatalf("wslExePath() = %q, want %q", got, want)
+	}
 }
