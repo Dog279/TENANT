@@ -253,8 +253,12 @@ type Command struct {
 // command, in which case Violations may be empty and containment is observed
 // behaviourally by the escape suite.
 type Violation struct {
-	Kind   string `json:"kind"`   // "filesystem" | "network" | "limit" | "policy"
+	Kind   string `json:"kind"`   // "filesystem" | "network" | "limit" | "program" | "policy"
 	Detail string `json:"detail"` // model/operator-readable, e.g. "wrote outside write roots: /x"
+	// Path is the HOST path a filesystem refusal names, when the backend could
+	// attribute it (the container backend maps it back through its mounts). It
+	// is what a within-tier escalation grants, and only ever that one path.
+	Path string `json:"path,omitempty"`
 }
 
 // Result is the outcome of a run. A non-zero ExitCode is NOT an error (it is
@@ -286,13 +290,25 @@ func (r Result) Contained() bool {
 	return len(r.Violations) > 0 || r.ExitCode != 0 || r.TimedOut
 }
 
-// Refused reports whether the boundary refused a filesystem or network access.
-// Limit violations (a wall-clock timeout, reaped background processes) are
-// reported but are not refusals: re-running on the host would not change them,
-// so Execute never escalates on them.
+// Refused reports whether the boundary refused a filesystem or network access,
+// or a program the backend cannot run (a Windows program in a Linux
+// container). Limit violations (a wall-clock timeout, reaped background
+// processes, the output cap) are reported but are not refusals: re-running
+// would not change them, so Execute never escalates on them.
 func (r Result) Refused() bool {
 	for _, v := range r.Violations {
-		if v.Kind == "filesystem" || v.Kind == "network" {
+		switch v.Kind {
+		case "filesystem", "network", "program":
+			return true
+		}
+	}
+	return false
+}
+
+// refusedKind reports whether a violation of kind was recorded.
+func (r Result) refusedKind(kind string) bool {
+	for _, v := range r.Violations {
+		if v.Kind == kind {
 			return true
 		}
 	}
@@ -388,12 +404,21 @@ type Escalator func(ctx context.Context, cmd Command, refused Result) bool
 //
 //   - Nothing refused: the backend's result, unchanged. The host backend never
 //     refuses, so on host Execute is exactly Run.
-//   - Refused, pol.Enforce false (dry-run): re-run on the host so behaviour is
-//     unchanged. The result carries the first attempt's Violations and
-//     Escalated=true so the refusal is still reported.
-//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run on the host
-//     (Escalated=true, Violations kept). Denied or nil ⇒ the confined result,
-//     Violations intact.
+//   - Refused, pol.Enforce false (dry-run): re-run so behaviour is unchanged.
+//     The result carries the first attempt's Violations and Escalated=true so
+//     the refusal is still reported.
+//   - Refused, pol.Enforce true: esc decides. Approved ⇒ re-run (Escalated=true,
+//     Violations kept). Denied or nil ⇒ the confined result, Violations intact.
+//
+// Where an approved re-run goes (W1-6, D3), strongest first:
+//
+//   - a program refusal (a Windows program a Linux container cannot run) goes
+//     to the host, verbatim, as the operator saw it;
+//   - a backend that can widen itself by one grant (TierEscalator: the
+//     container) re-runs INSIDE its boundary with that grant, never on the host;
+//   - otherwise the host — unless the line was written for the backend's shell
+//     and the host's differs (an sh line on a Windows host), in which case the
+//     re-run is refused rather than handed to PowerShell.
 //
 // Re-running after a refusal means whatever the command did BEFORE the boundary
 // stopped it can happen twice. The first attempt could only write inside the
@@ -409,7 +434,26 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	if pol.Enforce && (esc == nil || !esc(ctx, cmd, res)) {
 		return res, nil
 	}
-	hres, herr := Host().Run(ctx, cmd, pol)
+	var hres Result
+	var herr error
+	switch tier, isTier := b.(TierEscalator); {
+	case res.refusedKind("program"):
+		hres, herr = Host().Run(ctx, cmd, pol)
+	case isTier:
+		hres, herr = tier.RunGranted(ctx, cmd, pol, res)
+		if herr != nil {
+			// Nothing grantable: the refusal stands, and says why it could not be
+			// escalated. Never fall through to the host.
+			res.Violations = append(res.Violations, Violation{Kind: "policy", Detail: "not escalated: " + herr.Error()})
+			return res, nil
+		}
+	case cmd.Shell != "" && commandShellOf(b) != shellName(runtime.GOOS):
+		res.Violations = append(res.Violations, Violation{Kind: "policy",
+			Detail: "not re-run on the host: the command is written for " + commandShellOf(b) + " and the host runs " + shellName(runtime.GOOS)})
+		return res, nil
+	default:
+		hres, herr = Host().Run(ctx, cmd, pol)
+	}
 	hres.Violations = append(append([]Violation(nil), res.Violations...), hres.Violations...)
 	hres.Escalated = true
 	return hres, herr

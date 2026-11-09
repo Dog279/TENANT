@@ -69,8 +69,12 @@ func (hostBackend) Run(ctx context.Context, cmd Command, pol Policy) (Result, er
 	detach(c)
 	c.WaitDelay = time.Second // a backgrounded child holding the pipe can't hang the call
 
-	out, err := c.CombinedOutput()
-	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
+	// Output is bounded as it arrives (TEN-438): the same head+tail shape clip
+	// gave, without ever holding the whole stream.
+	out := &headTailBuffer{max: pol.Limits.MaxOutputBytes}
+	c.Stdout, c.Stderr = out, out
+	err := c.Run()
+	res := Result{Output: out.String(), PID: pidOf(c)}
 	if errors.Is(err, exec.ErrWaitDelay) {
 		// The command finished; something it started in the background still
 		// holds the pipe. It keeps running on the host (unlike the sandbox,

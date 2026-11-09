@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -68,28 +69,8 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
-func TestCheckFloors(t *testing.T) {
-	below := dockerVersionInfo{}
-	below.Server.Version = "28.0.0"
-	below.Server.Components = []struct {
-		Name    string
-		Version string
-	}{{Name: "runc", Version: "1.1.0"}}
-	warn := checkFloors(below)
-	if !strings.Contains(warn, "engine") || !strings.Contains(warn, "runc") {
-		t.Errorf("expected engine and runc warnings, got %q", warn)
-	}
-
-	ok := dockerVersionInfo{}
-	ok.Server.Version = "29.8.0"
-	ok.Server.Components = []struct {
-		Name    string
-		Version string
-	}{{Name: "runc", Version: "1.5.1"}}
-	if warn := checkFloors(ok); warn != "" {
-		t.Errorf("expected no warning for a current stack, got %q", warn)
-	}
-}
+// checkFloors is table-tested in container_engine_test.go (W1-1 made the
+// floors refuse rather than warn).
 
 func TestWindowsProgramInvoked(t *testing.T) {
 	// The INVOKED program (first token) is what matters, not a substring.
@@ -206,6 +187,51 @@ func TestAttributeContainer(t *testing.T) {
 	}
 }
 
+// W1-6: ENOENT is a filesystem refusal only when the path exists on the host
+// and is not mounted — then the container hid it — and the violation carries
+// the HOST path, mapped back through the mount table, for the one-path grant.
+func TestAttributeContainer_ENOENT(t *testing.T) {
+	work := "/home/u/work"
+	secret := "/home/u/secret.txt"
+	if runtime.GOOS == "windows" {
+		work, secret = `C:\Users\u\work`, `C:\Users\u\secret.txt`
+	}
+	spec := containerSpec{
+		network: "none",
+		work:    mount{host: work, ctr: containerDest(work, runtime.GOOS)},
+		hostExists: func(p string) bool {
+			return p == secret || strings.HasPrefix(p, work)
+		},
+	}
+	out := "cat: can't open '" + containerDest(secret, runtime.GOOS) + "': No such file or directory"
+	v, ok := attributeContainer(Result{ExitCode: 1, Output: out}, spec)
+	if !ok || v.Kind != "filesystem" || v.Path != secret {
+		t.Fatalf("expected a filesystem refusal naming %s, got %+v ok=%v", secret, v, ok)
+	}
+	// A file that is genuinely missing on the host is the command's own error.
+	missing := "cat: can't open '" + containerDest(work, runtime.GOOS) + "/nope': No such file or directory"
+	if _, ok := attributeContainer(Result{ExitCode: 1, Output: missing}, spec); ok {
+		t.Error("a path missing on the host must not be attributed")
+	}
+	// Inside a mount and existing on the host: the container could see it, so
+	// ENOENT is not the boundary's doing.
+	inside := work + string(filepath.Separator) + "present"
+	spec.hostExists = func(p string) bool { return p == inside }
+	insideOut := "cat: can't open '" + containerDest(inside, runtime.GOOS) + "': No such file or directory"
+	if _, ok := attributeContainer(Result{ExitCode: 1, Output: insideOut}, spec); ok {
+		t.Error("a mounted path must not be attributed as hidden")
+	}
+	// Without a hostExists seam (unknown), ENOENT is never attributed.
+	if _, ok := attributeContainer(Result{ExitCode: 1, Output: out}, containerSpec{network: "none"}); ok {
+		t.Error("ENOENT must not be attributed when host existence is unknown")
+	}
+	// EROFS carries the host path too.
+	v, ok = attributeContainer(Result{ExitCode: 1, Output: "sh: 1: cannot create " + containerDest(secret, runtime.GOOS) + ": Read-only file system"}, spec)
+	if !ok || v.Kind != "filesystem" || v.Path != secret {
+		t.Fatalf("EROFS: expected Path %s, got %+v", secret, v)
+	}
+}
+
 func TestValidImageRef(t *testing.T) {
 	for _, ok := range []string{"tenant-sandbox:latest", "tenant-sandbox@sha256:" + strings.Repeat("a", 64), "debian:bookworm-slim"} {
 		if err := validImageRef(ok); err != nil {
@@ -215,6 +241,98 @@ func TestValidImageRef(t *testing.T) {
 	for _, bad := range []string{"--privileged", "has space", "with\"quote", "-flag"} {
 		if err := validImageRef(bad); err == nil {
 			t.Errorf("validImageRef(%q) = nil, want error", bad)
+		}
+	}
+}
+
+// The refusal witness is the deterministic source for attribution (W1-6): it
+// scans the whole stream, line by line, before the output cap, so the verdict
+// does not depend on how the bytes were chunked or where a line fell.
+func TestRefusalWitness_Streams(t *testing.T) {
+	line := "sh: 1: cannot create /mnt/c/w/secret.txt: Read-only file system\n"
+	want := strings.TrimSuffix(line, "\n")
+	// The same logical content, chunked three ways (the signature itself split
+	// across writes in the third), must agree.
+	chunkings := [][]string{
+		{"=== probe ===\n", line, "done\n"},
+		{"=== probe ===\n" + line[:20], line[20:45], line[45:] + "done\n"},
+		{"=== pr", "obe ===\n" + line[:len(line)-16], line[len(line)-16:] + "done\n"},
+	}
+	for i, chunks := range chunkings {
+		w := &refusalWitness{}
+		for _, c := range chunks {
+			w.Write([]byte(c))
+		}
+		w.flush()
+		if !w.erofs || w.erofsLine != want {
+			t.Errorf("chunking %d: erofs=%v line=%q", i, w.erofs, w.erofsLine)
+		}
+		if w.enoent || w.limit || w.netCut || w.notFound {
+			t.Errorf("chunking %d: spurious flags enoent=%v limit=%v net=%v notfound=%v", i, w.enoent, w.limit, w.netCut, w.notFound)
+		}
+	}
+	// A trailing line with no newline is scanned on flush, not before.
+	w := &refusalWitness{}
+	w.Write([]byte("curl: (6) Could not resolve host: example.com"))
+	if w.netCut {
+		t.Error("an unterminated line must not be scanned before flush")
+	}
+	w.flush()
+	if !w.netCut {
+		t.Error("the trailing line must be scanned on flush")
+	}
+	// A newline-free flood stays bounded, and a refusal after it is still seen.
+	w = &refusalWitness{}
+	w.Write([]byte(strings.Repeat("x", 3*witnessLineCap)))
+	if len(w.line) > witnessLineCap {
+		t.Errorf("flood: the current line grew to %d, cap %d", len(w.line), witnessLineCap)
+	}
+	w.Write([]byte("cat: /mnt/c/w/x: No such file or directory"))
+	w.flush()
+	if !w.enoent {
+		t.Error("flood: the refusal after the flood must still be seen")
+	}
+}
+
+// The latent flap: a refusal line that lands past the output cap is dropped
+// from the capped output, which is all attribution used to read, so the label
+// depended on where the line fell. With the witness the capped Output may lack
+// the line and the run is still attributed, with the host path, while the same
+// truncated Output WITHOUT a witness is not: the witness is what fixes it.
+func TestAttributeContainer_WitnessBeatsTruncation(t *testing.T) {
+	secret := "/home/u/secret.txt"
+	if runtime.GOOS == "windows" {
+		secret = `C:\Users\u\secret.txt`
+	}
+	refusal := "sh: 1: cannot create " + containerDest(secret, runtime.GOOS) + ": Read-only file system\n"
+
+	// A tiny display cap and the witness, fed as io.MultiWriter(out, wit) feeds
+	// them in Run: a flood of stdout fills the cap, then the refusal arrives
+	// past it.
+	out := &cappedBuffer{max: 64}
+	wit := &refusalWitness{}
+	write := func(s string) { out.Write([]byte(s)); wit.Write([]byte(s)) }
+	for i := 0; i < 8; i++ {
+		write("=== section: benign enumeration ===\n")
+	}
+	write(refusal)
+	wit.flush()
+
+	res := Result{ExitCode: 2, Output: out.String()}
+	if !out.Truncated() || strings.Contains(strings.ToLower(res.Output), "read-only file system") {
+		t.Fatalf("test setup: the refusal line must have fallen past the cap, got %q", res.Output)
+	}
+
+	// Without a witness the truncated output cannot be attributed: the
+	// clean-on-replay half of the flap.
+	if v, ok := attributeContainer(res, containerSpec{network: "none"}); ok {
+		t.Fatalf("without a witness, the truncated output must not attribute, got %+v", v)
+	}
+	// With the witness it is attributed, with the host path, every time.
+	for i := 0; i < 3; i++ {
+		v, ok := attributeContainer(res, containerSpec{network: "none", witness: wit})
+		if !ok || v.Kind != "filesystem" || v.Path != secret {
+			t.Fatalf("run %d: with the witness, expected a filesystem refusal naming %s, got %+v ok=%v", i, secret, v, ok)
 		}
 	}
 }

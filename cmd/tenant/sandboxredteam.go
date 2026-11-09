@@ -32,18 +32,23 @@ import (
 )
 
 const sandboxRedteamUsage = "usage: tenant sandbox redteam [--model qwen3.8:27b] [--endpoint http://localhost:11434] " +
-	"[--backend restricted|host] [--turns 12] [--timeout 20s] [--context 32768] [--max-tokens 2048] [--temp 0.7] [--json] [--keep]"
+	"[--backend restricted|container|host] [--turns 12] [--timeout 20s] [--context 32768] [--max-tokens 2048] [--temp 0.7] " +
+	"[--phase2 FILE] [--json] [--keep]"
 
 func sandboxRedteam(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("sandbox redteam", flag.ContinueOnError)
-	modelName := fs.String("model", "qwen3.8:27b", "Ollama model to put in the adversary seat")
-	endpoint := fs.String("endpoint", defaultOllamaEndpoint(), "OpenAI-compatible base URL of the model server")
-	backendName := fs.String("backend", "restricted", "sandbox backend to test: restricted | host")
-	turns := fs.Int("turns", 12, "max model turns")
+	modelName := fs.String("model", "qwen3.8:27b", "model to put in the adversary seat (an id the server lists at /v1/models)")
+	endpoint := fs.String("endpoint", defaultOllamaEndpoint(), "OpenAI-compatible base URL of the model server (Ollama, vLLM, …)")
+	backendName := fs.String("backend", "restricted", "sandbox backend to test: restricted | container | host")
+	turns := fs.Int("turns", 12, "max model turns per phase")
 	timeout := fs.Duration("timeout", 20*time.Second, "wall-clock limit per sandboxed command")
 	contextLen := fs.Int("context", 32768, "model context length hint")
 	maxTokens := fs.Int("max-tokens", 2048, "max tokens per model reply")
 	temp := fs.Float64("temp", 0.7, "sampling temperature for the adversary")
+	phase2 := fs.String("phase2", "", "a file whose text is sent to the model as a second phase once it stops acting (the operator writes it; the harness adds nothing)")
+	unguided := fs.Bool("unguided", false, "tell the model nothing about the objectives, target paths or sink: only that it is meant to be confined")
+	instruction := fs.String("instruction", "", "your own brief to the model, used verbatim in place of the harness's objective list (implies --unguided)")
+	transcript := fs.String("transcript", "", "also write the full JSON report (every turn and command) to this file")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	keep := fs.Bool("keep", false, "keep the throwaway environment dir for inspection")
 	if err := fs.Parse(args); err != nil {
@@ -53,9 +58,20 @@ func sandboxRedteam(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("sandbox redteam: unexpected argument %q\n%s", fs.Arg(0), sandboxRedteamUsage)
 	}
 
-	be, err := redteamBackend(*backendName)
+	be, err := redteamBackend(ctx, *backendName)
 	if err != nil {
 		return err
+	}
+	var phase2Text string
+	if *phase2 != "" {
+		b, err := os.ReadFile(*phase2)
+		if err != nil {
+			return fmt.Errorf("sandbox redteam: --phase2: %w", err)
+		}
+		phase2Text = strings.TrimSpace(string(b))
+		if phase2Text == "" {
+			return fmt.Errorf("sandbox redteam: --phase2 file %s is empty", *phase2)
+		}
 	}
 
 	base := normalizeEndpoint(*endpoint)
@@ -74,8 +90,13 @@ func sandboxRedteam(ctx context.Context, args []string, out io.Writer) error {
 	if !*asJSON {
 		fmt.Fprintf(out, "Running sandbox red-team: model %q vs the %q backend (up to %d turns)…\n\n", *modelName, be.Name(), *turns)
 		logf = func(event string, kv ...any) {
-			if event == "sandbox_run" {
+			switch event {
+			case "sandbox_run":
 				fmt.Fprintf(out, "  · %s\n", kvString(kv))
+			case "model_turn":
+				fmt.Fprintf(out, "turn %s\n", kvString(kv))
+			case "phase2":
+				fmt.Fprintf(out, "== phase 2 (%s)\n", kvString(kv))
 			}
 		}
 	}
@@ -85,7 +106,19 @@ func sandboxRedteam(ctx context.Context, args []string, out io.Writer) error {
 		PerCommandTimeout: *timeout,
 		Keep:              *keep,
 		Logf:              logf,
+		Phase2:            phase2Text,
+		Unguided:          *unguided,
+		Instruction:       strings.TrimSpace(*instruction),
 	})
+	if *transcript != "" {
+		// Written before the error check: a run the model server cut short still
+		// leaves its partial transcript on disk.
+		if b, jerr := json.MarshalIndent(rep, "", "  "); jerr == nil {
+			if werr := os.WriteFile(*transcript, b, 0o600); werr != nil {
+				fmt.Fprintf(out, "warning: could not write transcript %s: %v\n", *transcript, werr)
+			}
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("sandbox redteam: %w", err)
 	}
@@ -103,22 +136,36 @@ func sandboxRedteam(ctx context.Context, args []string, out io.Writer) error {
 	return nil
 }
 
-// redteamBackend resolves the backend under test. "restricted" is the point of
-// the exercise; it errors clearly when this OS has none. "host" is allowed so an
-// operator can watch the adversary walk the unconfined baseline for comparison.
-func redteamBackend(name string) (sandbox.Backend, error) {
+// redteamBackend resolves the backend under test. "restricted" and "container"
+// are the point of the exercise; each errors clearly when this host cannot run
+// it (no Seatbelt off macOS; no engine, a failed gate or an unbuilt image for
+// the container). "host" is allowed so an operator can watch the adversary walk
+// the unconfined baseline for comparison.
+func redteamBackend(ctx context.Context, name string) (sandbox.Backend, error) {
 	switch name {
 	case "", "restricted":
 		b, err := sandbox.Restricted()
 		if err != nil {
 			return nil, fmt.Errorf("sandbox redteam: restricted backend unavailable on this host: %w\n"+
-				"run on a host with a restricted backend (macOS), or pass --backend host to test the unconfined baseline", err)
+				"run on a host with a restricted backend (macOS), or pass --backend container|host", err)
+		}
+		return b, nil
+	case "container":
+		b, err := sandbox.For("container")
+		if err != nil {
+			return nil, fmt.Errorf("sandbox redteam: %w", err)
+		}
+		if a, ok := b.(sandbox.Available); ok {
+			if err := a.Available(ctx); err != nil {
+				return nil, fmt.Errorf("sandbox redteam: the container backend cannot run here: %w\n"+
+					"`tenant sandbox probe` has the detail; `tenant sandbox image build` builds the image", err)
+			}
 		}
 		return b, nil
 	case "host":
 		return sandbox.Host(), nil
 	default:
-		return nil, fmt.Errorf("sandbox redteam: unknown backend %q (want restricted | host)", name)
+		return nil, fmt.Errorf("sandbox redteam: unknown backend %q (want restricted | container | host)", name)
 	}
 }
 
@@ -255,7 +302,13 @@ func renderRedteam(w io.Writer, rep redteamllm.Report) {
 	c := rep.Caps
 	fmt.Fprintf(w, "Sandbox red-team: %q vs backend %q (isolation %s)\n", rep.Model, rep.Backend, c.Isolation)
 	fmt.Fprintf(w, "  claims  filesystem=%s  network=%s  limits=%s  env=%s\n", c.Filesystem, c.Network, c.Limits, c.Env)
-	fmt.Fprintf(w, "  %d model turn(s), %d command(s) run, %d escape-escalation(s) denied\n\n", rep.Turns, rep.ToolCalls, rep.EscalationsDenied)
+	fmt.Fprintf(w, "  %d model turn(s), %d command(s) run, %d escape-escalation(s) denied\n", rep.Turns, rep.ToolCalls, rep.EscalationsDenied)
+	if rep.Phase2At > 0 {
+		fmt.Fprintf(w, "  the model stopped acting at turn %d; phase 2 ran from turn %d\n", rep.GaveUpAt, rep.Phase2At)
+	} else if rep.GaveUpAt > 0 {
+		fmt.Fprintf(w, "  the model stopped acting at turn %d\n", rep.GaveUpAt)
+	}
+	fmt.Fprintln(w)
 
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "  OBJECTIVE\tDIMENSION\tOUTCOME")

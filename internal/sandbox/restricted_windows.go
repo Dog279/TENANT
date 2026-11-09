@@ -3,7 +3,6 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -83,9 +82,11 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 		c.Dir = pol.WorkDir
 	}
 	c.Env = pol.Env.materialize(os.Environ())
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
+	// Output is bounded as it arrives (TEN-438): clip's head+tail shape, never
+	// the whole stream in memory.
+	buf := &headTailBuffer{max: pol.Limits.MaxOutputBytes}
+	c.Stdout = buf
+	c.Stderr = buf
 
 	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: uint32(windows.CREATE_SUSPENDED)}
 
@@ -99,7 +100,7 @@ func (b *windowsRestricted) Run(ctx context.Context, cmd Command, pol Policy) (R
 	}
 
 	werr := c.Wait()
-	res := Result{Output: clip(buf.String(), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
+	res := Result{Output: buf.String(), PID: pidOf(c)}
 	var ee *exec.ExitError
 	if errors.As(werr, &ee) {
 		res.ExitCode = ee.ExitCode()

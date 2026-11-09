@@ -3,9 +3,7 @@
 package sandbox
 
 import (
-	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -13,21 +11,12 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// probeDesktop reads the Docker Desktop product version from the uninstall key
-// (HKCU first, then HKLM) and warns when it is below the floor (W1-1/H3). The
+// desktopVersionOS reads the Docker Desktop product version from the uninstall
+// key (HKCU first, then HKLM); checkDesktopFloor gates on it (W1-1/H3). The
 // obvious `docker desktop version` reports the CLI plugin's version instead, so
-// it is not used. A missing key is not an error: a headless dockerd or Podman
-// has no Desktop version, and the engine floor still applies.
-func (b *containerBackend) probeDesktop(ctx context.Context) string {
-	ver := desktopVersion()
-	if ver == "" {
-		return ""
-	}
-	if cmp, ok := compareVersions(ver, minDesktopVersion); ok && cmp < 0 {
-		return fmt.Sprintf("Docker Desktop %s is below the floor %s (CVE-2025-9074: a networked container could take over the host)", ver, minDesktopVersion)
-	}
-	return ""
-}
+// it is not used. A missing key is "": a headless dockerd or Podman has no
+// Desktop version, and the engine floor still applies.
+func desktopVersionOS() string { return desktopVersion() }
 
 func desktopVersion() string {
 	for _, root := range []registry.Key{registry.CURRENT_USER, registry.LOCAL_MACHINE} {
@@ -51,7 +40,14 @@ func desktopVersion() string {
 //   - a UNC or device path (\\server\share, \\?\, \\.\);
 //   - a reparse point (junction or symlink) in ANY component of the path, since
 //     Docker Desktop follows a junction named as a mount source to its target;
-//   - an alternate data stream (a ':' past the drive), a trailing dot or space.
+//   - an alternate data stream (a ':' past the drive);
+//   - a trailing dot or space in ANY component (a classic name confusion).
+//
+// An 8.3 short name (RUNNER~1) is not refused but expanded to the long name
+// (GetLongPathName), so the source the engine sees, the deny-root comparison
+// and the operator's own spelling of a root are one canonical form. (W1-3
+// said "reject"; CI's own temp dir lives under RUNNER~1, so a refusal would
+// have broken every Windows run. Canonicalising defeats the same confusion.)
 //
 // The source is always a native, canonical Windows path; the destination is the
 // /mnt/<drive>/... form (containerDest). It resolves against the nearest
@@ -59,6 +55,18 @@ func desktopVersion() string {
 func containerMount(hostPath string, ro bool) (mount, error) {
 	if hostPath == "" {
 		return mount{}, fmt.Errorf("empty path")
+	}
+	// A trailing dot or space in any component is a classic Windows name
+	// confusion: the Win32 layer strips them (GetFullPathName, which Abs calls,
+	// silently turns `x.` into `x`), the kernel does not. Refuse the spelling the
+	// caller gave, before anything normalises it away.
+	for _, comp := range strings.FieldsFunc(hostPath, func(r rune) bool { return r == '\\' || r == '/' }) {
+		if comp == "." || comp == ".." {
+			continue // navigation, not a name; Abs resolves it
+		}
+		if strings.HasSuffix(comp, ".") || strings.HasSuffix(comp, " ") {
+			return mount{}, fmt.Errorf("a trailing dot or space is not allowed in %q", comp)
+		}
 	}
 	abs, err := filepath.Abs(hostPath)
 	if err != nil {
@@ -85,12 +93,8 @@ func containerMount(hostPath string, ro bool) (mount, error) {
 		return mount{}, err
 	}
 
-	// A trailing dot or space in the leaf is a classic Windows name-confusion; Abs
-	// keeps them, so reject explicitly.
-	leaf := filepath.Base(abs)
-	if strings.HasSuffix(leaf, ".") || strings.HasSuffix(leaf, " ") {
-		return mount{}, fmt.Errorf("a trailing dot or space is not allowed in %q", leaf)
-	}
+	// Expand an 8.3 short name to the long form, on the existing prefix.
+	abs = longPathWindows(abs)
 
 	return mount{host: abs, ctr: containerDest(abs, "windows"), ro: ro}, nil
 }
@@ -123,6 +127,41 @@ func rejectReparseWindows(abs, vol string) error {
 	return nil
 }
 
+// longPathWindows expands 8.3 short names in abs to their long form on the
+// deepest existing prefix and re-joins the not-yet-created tail. A path that
+// cannot be expanded at all is returned unchanged.
+func longPathWindows(abs string) string {
+	var tail []string
+	cur := abs
+	for {
+		if long, err := getLongPathName(cur); err == nil && long != "" {
+			return filepath.Join(append([]string{long}, tail...)...)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs
+		}
+		tail = append([]string{filepath.Base(cur)}, tail...)
+		cur = parent
+	}
+}
+
+func getLongPathName(p string) (string, error) {
+	p16, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return "", err
+	}
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetLongPathName(p16, &buf[0], uint32(len(buf)))
+	if err != nil {
+		return "", err
+	}
+	if n == 0 || int(n) > len(buf) {
+		return "", fmt.Errorf("GetLongPathName: bad length %d", n)
+	}
+	return windows.UTF16ToString(buf[:n]), nil
+}
+
 func fileAttributes(p string) (uint32, error) {
 	p16, err := windows.UTF16PtrFromString(p)
 	if err != nil {
@@ -134,6 +173,3 @@ func fileAttributes(p string) (uint32, error) {
 	}
 	return attrs, nil
 }
-
-// ensure os is referenced on Windows builds (kept for parity with the POSIX file).
-var _ = os.Stat

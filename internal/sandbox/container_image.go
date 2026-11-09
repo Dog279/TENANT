@@ -71,7 +71,9 @@ func VerifyImage(ctx context.Context, cli, tag string) (id string, err error) {
 	if tag == "" {
 		tag = defaultImage
 	}
-	if err := imagePresent(ctx, cli, tag); err != nil {
+	// The operator's own `image verify`: the bare CLI, as `image build` uses it
+	// (the backend's runs go through containerBackend.command with -H).
+	if err := imagePresent(exec.CommandContext(ctx, cli, "image", "inspect", tag)); err != nil {
 		return "", fmt.Errorf("image %s is not built: run `tenant sandbox image build`", tag)
 	}
 	return imageID(ctx, cli, tag)

@@ -148,8 +148,12 @@ func (seatbelt) Run(ctx context.Context, cmd Command, pol Policy) (Result, error
 	c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
 	c.WaitDelay = 500 * time.Millisecond
 
-	out, err := c.CombinedOutput()
-	res := Result{Output: clip(string(out), pol.Limits.MaxOutputBytes), PID: pidOf(c)}
+	// Output is bounded as it arrives (TEN-438): clip's head+tail shape, never
+	// the whole stream in memory.
+	out := &headTailBuffer{max: pol.Limits.MaxOutputBytes}
+	c.Stdout, c.Stderr = out, out
+	err = c.Run()
+	res := Result{Output: out.String(), PID: pidOf(c)}
 	if c.Process != nil && reapGroup(c.Process.Pid) {
 		res.Violations = append(res.Violations, Violation{Kind: "limit",
 			Detail: "terminated background process(es) that outlived the command"})
