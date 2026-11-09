@@ -956,7 +956,11 @@ func TestTeamRuntime_TerminatedIdleRunBlocksNothing(t *testing.T) {
 	if err != nil || isErr {
 		t.Errorf("spawn_agent after the run's wall time: %q %v", out, err)
 	}
-	teamAwait(t, rt, turn) // join the second before the stores close
+	// Join the second before the stores close. team_await returns on news
+	// (TEN-529), and the first worker's unreported result is news, so one await
+	// can come back with the second still running.
+	for strings.Contains(teamAwait(t, rt, turn), "still running") {
+	}
 }
 
 // The per-turn tool-call cap is a turn's (TEN-326). Serve's surfaces share
