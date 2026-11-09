@@ -353,19 +353,19 @@ func TestOrchestratorPrompt_KeepWorkingAndDefaults(t *testing.T) {
 	keepWorking := []string{
 		"don't have to await the instant you spawn",
 		"more independent workers",
-		"team_await once you need the workers' results",
-		"MUST await before writing any final answer",
+		"team_await again while workers are still running",
+		"MUST have every result you depend on before writing a final answer",
 	}
 	for _, w := range keepWorking {
 		if !strings.Contains(orchestratorPrompt, w) {
 			t.Errorf("orchestratorPrompt missing keep-working steering %q", w)
 		}
 	}
-	// Fan-out → await-once → synthesize default + guardrails are PRESERVED.
+	// Fan-out → await (until every result is in, TEN-529) → synthesize default + guardrails are PRESERVED.
 	defaults := []string{
 		"spawn_agent(role, task)",
 		"CONCURRENTLY",
-		"call team_await ONCE",
+		"call team_await — it BLOCKS until there is news",
 		"Do NOT poll team_check",
 		"synthesize ONE final",
 		"INDEPENDENT, parallel work",
@@ -956,7 +956,11 @@ func TestTeamRuntime_TerminatedIdleRunBlocksNothing(t *testing.T) {
 	if err != nil || isErr {
 		t.Errorf("spawn_agent after the run's wall time: %q %v", out, err)
 	}
-	teamAwait(t, rt, turn) // join the second before the stores close
+	// Join the second before the stores close. team_await returns on news
+	// (TEN-529), and the first worker's unreported result is news, so one await
+	// can come back with the second still running.
+	for strings.Contains(teamAwait(t, rt, turn), "still running") {
+	}
 }
 
 // The per-turn tool-call cap is a turn's (TEN-326). Serve's surfaces share

@@ -36,6 +36,7 @@ type member struct {
 	result         string
 	conv, turn     string // the spawning conversation (agent.Conversation) and turn (its trace)
 	forget         bool   // dropped as soon as it finishes (Forget)
+	started        time.Time
 	// flow is the sensitive provenance result quotes: what this agent read
 	// that its answer repeats (TEN-336). Reported back by team_await.
 	flow agent.Flow
@@ -130,10 +131,11 @@ type TeamRuntime struct {
 	cfg    TeamConfig
 	budget *orchestra.Governor
 
-	mu     sync.Mutex
-	order  []string
-	agents map[string]*member
-	seq    int
+	mu      sync.Mutex
+	order   []string
+	agents  map[string]*member
+	seq     int
+	changed chan struct{} // closed and replaced by finish: a waiting team_await wakes on it
 
 	cleanMu  sync.Mutex
 	cleanups []func() // the orchestrator's own browser (addWebTool), closed at shutdown; a sub-agent's closes as it finishes
@@ -603,7 +605,7 @@ func (r *TeamRuntime) Spawn(ctx context.Context, role, task string) (string, err
 	// team run's (runCtx), not the spawning request's.
 	agCtx, cancel := context.WithCancel(inheritExecSurface(runCtx, ctx))
 	m := &member{id: id, role: role, task: task, status: "running", conv: conv, turn: runtrace.IDFromContext(ctx),
-		done: make(chan struct{}), cancel: cancel}
+		done: make(chan struct{}), cancel: cancel, started: time.Now()}
 	r.agents[id] = m
 	r.order = append(r.order, id)
 	r.mu.Unlock()
@@ -789,6 +791,10 @@ func (r *TeamRuntime) finish(m *member, status, result string, flow agent.Flow) 
 	r.cfg.Bus.Unregister(m.id)
 	r.mu.Lock()
 	m.status, m.result, m.flow = status, result, flow
+	if r.changed != nil {
+		close(r.changed)
+		r.changed = nil
+	}
 	if m.forget {
 		r.dropLocked(func(x *member) bool { return x == m })
 	}
@@ -866,75 +872,250 @@ func (r *TeamRuntime) ObserveMain(e agent.Event, next func(agent.Event)) {
 // result. It keeps every member: /research reads its own afterwards
 // (ResultsFor). The orchestrator's team_await is report.
 func (r *TeamRuntime) Await(ctx context.Context, timeout time.Duration) string {
-	stopped := r.wait(ctx, timeout, func(*member) bool { return true })
+	reason := r.wait(ctx, timeout, func(*member) bool { return true }, false)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	all := make([]*member, 0, len(r.order))
 	for _, id := range r.order {
 		all = append(all, r.agents[id])
 	}
-	out, _ := r.summaryLocked(all, stopped)
+	out, _ := r.summaryLocked(all, reason == wokeCeiling || reason == wokeCancel)
 	return out
 }
 
-// report is team_await: it waits for its conversation's sub-agents, reports
-// them, the awaiting turn's first so a long leftover can't push them past the
-// tool-result cap, with the provenance of their results (TEN-336), then drops
-// the finished ones, so each result is returned once. A leftover of an
-// earlier turn in the conversation is its to take; another conversation's
-// member is never shown (TEN-326). A cancelled caller never reads the
-// summary, so then nothing is dropped.
+// report is team_await: it waits until there is news for its conversation (a
+// helper finished, or a helper wrote to the orchestrator), then reports it:
+// the finished helpers, the awaiting turn's first so a long leftover can't
+// push them past the tool-result cap, with the provenance of their results
+// (TEN-336), the messages that arrived, and one line per helper still running
+// so the model knows whether to await again. Finished helpers are dropped and
+// the messages drained, so each comes back once. A leftover of an earlier
+// turn in the conversation is its to take; another conversation's member is
+// never shown (TEN-326). A cancelled caller never reads the summary, so then
+// nothing is dropped or drained.
 func (r *TeamRuntime) report(ctx context.Context, timeout time.Duration) (string, agent.Flow) {
 	conv, turn := agent.Conversation(ctx), runtrace.IDFromContext(ctx)
 	ours := func(m *member) bool { return m.conv == conv }
-	stopped := r.wait(ctx, timeout, ours)
+	reason := r.wait(ctx, timeout, ours, true)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var shown, earlier []*member
+	finished, running := r.sortLocked(ours, turn)
+	if len(finished) == 0 && len(running) == 0 {
+		return r.summaryLocked(nil, false) // nothing spawned, or everything already returned
+	}
+	var msgs []orchestra.Message
+	if ctx.Err() == nil {
+		msgs = r.takeMailLocked(ours, finished)
+	}
+	out := awaitReport(reason, finished, msgs, running)
+	flows := make([]agent.Flow, 0, len(finished))
+	for _, m := range finished {
+		flows = append(flows, m.flow)
+	}
+	if r.cfg.Log != nil {
+		r.cfg.Log.Info("team_await woke", "reason", string(reason), "finished", len(finished), "messages", len(msgs), "running", len(running))
+	}
+	if ctx.Err() == nil {
+		r.dropLocked(func(m *member) bool { return ours(m) && m.status != "running" })
+	}
+	return out, agent.JoinFlows(flows...)
+}
+
+// sortLocked splits a conversation's members into the finished, the awaiting
+// turn's first, and the still running. Called with r.mu held.
+func (r *TeamRuntime) sortLocked(ours func(*member) bool, turn string) (finished, running []*member) {
+	var earlier []*member
 	for _, id := range r.order {
 		switch m := r.agents[id]; {
 		case !ours(m):
+		case m.status == "running":
+			running = append(running, m)
 		case m.turn == turn:
-			shown = append(shown, m)
+			finished = append(finished, m)
 		default:
 			earlier = append(earlier, m)
 		}
 	}
-	out, flow := r.summaryLocked(append(shown, earlier...), stopped)
-	if ctx.Err() == nil {
-		r.dropLocked(func(m *member) bool { return ours(m) && m.status != "running" })
-	}
-	return out, flow
+	return append(finished, earlier...), running
 }
 
-// wait blocks until every member running now that of picks has finished, or
-// reports true when the timeout or ctx fires first.
-func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*member) bool) bool {
+// takeMailLocked drains the conversation's messages from the orchestrator's
+// mailbox, less a finished helper's DONE broadcast: its result section says
+// the same, in full. Called with r.mu held.
+func (r *TeamRuntime) takeMailLocked(ours func(*member) bool, finished []*member) []orchestra.Message {
+	if r.cfg.Bus == nil {
+		return nil
+	}
+	done := make(map[string]bool, len(finished))
+	for _, m := range finished {
+		done[m.id] = true
+	}
+	var msgs []orchestra.Message
+	for _, m := range r.cfg.Bus.Take(r.cfg.OrchID, r.mailFromLocked(ours)) {
+		if !done[m.From] || !strings.HasPrefix(m.Content, "DONE — ") {
+			msgs = append(msgs, m)
+		}
+	}
+	return msgs
+}
+
+// awaitReport is the text team_await returns: why it woke if not on news, each
+// finished helper's result, the messages, and who is still running.
+func awaitReport(reason waitReason, finished []*member, msgs []orchestra.Message, running []*member) string {
+	var b strings.Builder
+	switch reason {
+	case wokeCeiling:
+		b.WriteString("(timed out waiting; reporting current state)\n\n")
+	case wokeCancel:
+		b.WriteString("(cancelled; reporting current state)\n\n")
+	}
+	for _, m := range finished {
+		fmt.Fprintf(&b, "## %s (%s) [%s]\n%s\n\n", m.id, m.role, m.status, strings.TrimSpace(m.result))
+	}
+	if len(msgs) > 0 {
+		b.WriteString("## messages to you\n")
+		for _, m := range msgs {
+			fmt.Fprintf(&b, "- %s: %s\n", m.From, strings.TrimSpace(m.Content))
+		}
+		b.WriteString("\n")
+	}
+	if len(running) > 0 {
+		names := make([]string, len(running))
+		for i, m := range running {
+			names[i] = fmt.Sprintf("%s (%s)", m.id, m.role)
+			if !m.started.IsZero() {
+				names[i] = fmt.Sprintf("%s (%s, %s)", m.id, m.role, time.Since(m.started).Round(time.Second))
+			}
+		}
+		b.WriteString("still running: " + strings.Join(names, ", "))
+		b.WriteString(". Call team_await again when you need their results; do your own independent work first if you have any.\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// mailFromLocked is the mailbox filter for a conversation: messages from its
+// own helpers, and from senders that are no helper at all (a peer, say), never
+// another conversation's helper, whose await they belong to (TEN-326). Called
+// with r.mu held; the filter it returns needs no lock.
+func (r *TeamRuntime) mailFromLocked(of func(*member) bool) func(orchestra.Message) bool {
+	ours := make(map[string]bool, len(r.agents))
+	helper := make(map[string]bool, len(r.agents))
+	for id, m := range r.agents {
+		helper[id] = true
+		if of(m) {
+			ours[id] = true
+		}
+	}
+	return func(m orchestra.Message) bool { return ours[m.From] || !helper[m.From] }
+}
+
+// waitReason is why wait returned.
+type waitReason string
+
+const (
+	wokeIdle     waitReason = "idle"      // no member of the picked set exists
+	wokeFinished waitReason = "finished"  // a picked member finished (any), or every one did
+	wokeMessage  waitReason = "message"   // the orchestrator's mailbox got a message
+	wokeCeiling  waitReason = "ceiling"   // the timeout passed with members still running
+	wokeCancel   waitReason = "cancelled" // the caller's context ended
+
+	// awaitCeiling is how long team_await waits without news before reporting
+	// current state. A stuck helper is the run budgets' job (max_wall_time,
+	// tokens, tool calls cancel it, and its finish wakes the await), so the
+	// ceiling only guards against nothing happening at all. It was 3 minutes,
+	// and 101 of 127 awaits on one machine returned at exactly that with
+	// helpers still working: a planner call each, for nothing new.
+	awaitCeiling = 30 * time.Minute
+	// busPoll is how often a waiting team_await looks at the orchestrator's
+	// mailbox. The bus's Notify is one coalescing channel the feed observer
+	// already consumes; a second consumer would steal or miss wakes.
+	busPoll = 500 * time.Millisecond
+)
+
+// wait blocks until there is news among the members of picks. onNews: the first
+// picked member to finish (one already finished counts at once), or a message
+// in the orchestrator's mailbox, wakes it; otherwise every picked member
+// running now must finish (research waves). The timeout and ctx end it too.
+func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*member) bool, onNews bool) waitReason {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var tick <-chan time.Time
+	if onNews && r.cfg.Bus != nil {
+		t := time.NewTicker(busPoll)
+		defer t.Stop()
+		tick = t.C
+	}
+	mailbox := r.mailPending(of)
+	waits, picked := r.pick(of)
+	if picked == 0 {
+		return wokeIdle
+	}
+	if onNews && len(waits) < picked { // a finished one waits to be reported
+		return wokeFinished
+	}
+	for {
+		running, changed := r.stillRunning(waits)
+		if running == 0 || (onNews && running < len(waits)) {
+			return wokeFinished
+		}
+		select {
+		case <-changed:
+		case <-tick:
+			if r.mailPending(of) > mailbox {
+				return wokeMessage
+			}
+		case <-timer.C:
+			return wokeCeiling
+		case <-ctx.Done():
+			return wokeCancel
+		}
+	}
+}
+
+// mailPending counts a conversation's messages in the orchestrator's mailbox.
+func (r *TeamRuntime) mailPending(of func(*member) bool) int {
+	if r.cfg.Bus == nil {
+		return 0
+	}
 	r.mu.Lock()
-	waits := make([]*member, 0, len(r.order))
+	keep := r.mailFromLocked(of)
+	r.mu.Unlock()
+	return r.cfg.Bus.PendingWhere(r.cfg.OrchID, keep)
+}
+
+// pick counts the members of picks and returns the ones running now.
+func (r *TeamRuntime) pick(of func(*member) bool) (waits []*member, picked int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, id := range r.order {
-		if m := r.agents[id]; m.status == "running" && of(m) {
+		m := r.agents[id]
+		if !of(m) {
+			continue
+		}
+		picked++
+		if m.status == "running" {
 			waits = append(waits, m)
 		}
 	}
-	r.mu.Unlock()
+	return waits, picked
+}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	stopped := false
+// stillRunning counts the members of waits still running, and returns the
+// channel the next finish closes. Both under one lock: a finish between the
+// count and the channel would otherwise be missed.
+func (r *TeamRuntime) stillRunning(waits []*member) (int, <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	running := 0
 	for _, m := range waits {
-		if stopped {
-			break
-		}
-		select {
-		case <-m.done:
-		case <-timer.C:
-			stopped = true
-		case <-ctx.Done():
-			stopped = true
+		if m.status == "running" {
+			running++
 		}
 	}
-	return stopped
+	if r.changed == nil {
+		r.changed = make(chan struct{})
+	}
+	return running, r.changed
 }
 
 // CancelStuck cancels every still-running agent's ctx and waits up to
@@ -1075,15 +1256,15 @@ const orchestratorPrompt = "You are the ORCHESTRATOR of a team of AI agents. Bre
 	"Spawn agents ONLY for INDEPENDENT, parallel work. Do NOT spawn an agent whose job is to wait for or " +
 	"combine other agents' outputs — sub-agents run at the same time and can't reliably receive each " +
 	"other's results; YOU are the synthesis layer, so do any comparison/combination yourself. After " +
-	"spawning the agents the task needs, call team_await ONCE — it BLOCKS until the whole team finishes " +
-	"and returns their results, and you MUST await before writing any final answer that depends on a " +
-	"worker's output. You don't have to await the instant you spawn, though: if you have your own " +
-	"INDEPENDENT part to do (or more independent workers to spawn), do that first, then team_await once " +
-	"you need the workers' results. (Example: spawn a coder to implement X, keep researching Y yourself, " +
-	"then team_await once and combine.) Do NOT poll team_check in a loop to wait; it returns immediately " +
-	"and you will run out of steps before they finish. Only once team_await returns, synthesize ONE final " +
-	"answer from the collected results — and if a sub-agent reports it couldn't find something, reflect " +
-	"that honestly rather than inventing details."
+	"spawning the agents the task needs, call team_await — it BLOCKS until there is news: a worker finished " +
+	"(its result comes back) or a worker messaged you, and it says who is still running. Use what came " +
+	"back, then team_await again while workers are still running; you MUST have every result you depend " +
+	"on before writing a final answer. You don't have to await the instant you spawn: if you have your " +
+	"own INDEPENDENT part to do (or more independent workers to spawn), do that first. (Example: spawn " +
+	"a coder to implement X, keep researching Y yourself, then team_await until the coder is done and " +
+	"combine.) Do NOT poll team_check in a loop to wait; team_await is the wait and costs nothing while " +
+	"it waits. Once every result you need is in, synthesize ONE final answer from them — and if a " +
+	"sub-agent reports it couldn't find something, reflect that honestly rather than inventing details."
 
 // spawnTool gives the orchestrator the spawn_agent + team_await verbs.
 type spawnTool struct {
@@ -1116,7 +1297,7 @@ func (t spawnTool) Tools() []model.ToolSpec {
 		},
 		{
 			Name:        "team_await",
-			Description: "BLOCK until ALL spawned sub-agents finish, then return each one's result. Call this ONCE when you need the team's results — at the latest, before writing any final answer that depends on them. You may do your own independent work or spawn more independent workers first; you do not have to await immediately. This is how you WAIT for the team — do NOT poll team_check in a loop to wait (team_check returns immediately and you'll run out of steps before they finish).",
+			Description: "BLOCK until there is news from your sub-agents: one finished (its result is returned) or one messaged you. The result also lists who is still running; call team_await again for them when you need their results. It never returns empty-handed while workers run, except after a long ceiling. You may do your own independent work or spawn more independent workers first; you do not have to await immediately. This is how you WAIT for the team — do NOT poll team_check in a loop (it returns immediately and you'll run out of steps).",
 			Parameters:  t.obj(``),
 		},
 	}
@@ -1137,13 +1318,13 @@ func (t spawnTool) Dispatch(ctx context.Context, call model.ToolCall) (string, b
 			return "spawn failed: " + err.Error(), true, nil
 		}
 		return "spawned " + id + " (running concurrently). Keep doing your own independent work or " +
-			"spawn more independent workers; call team_await ONCE when you need the results — at the " +
-			"latest before any final answer that depends on them. Don't poll team_check in a loop to " +
-			"wait (it returns immediately and wastes your steps).", false, nil
+			"spawn more independent workers; call team_await when you need results — it returns as soon " +
+			"as a worker finishes or messages you, and again for the rest. Don't poll team_check in a " +
+			"loop to wait (it returns immediately and wastes your steps).", false, nil
 	case "team_await":
 		to := t.timeout
 		if to <= 0 {
-			to = 3 * time.Minute
+			to = awaitCeiling
 		}
 		out, flow := t.rt.report(ctx, to)
 		// Sub-agents' answers can quote what they read; hand that provenance
