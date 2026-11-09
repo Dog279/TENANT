@@ -899,35 +899,69 @@ func (r *TeamRuntime) report(ctx context.Context, timeout time.Duration) (string
 	reason := r.wait(ctx, timeout, ours, true)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var shown, earlier, running []*member
+	finished, running := r.sortLocked(ours, turn)
+	if len(finished) == 0 && len(running) == 0 {
+		return r.summaryLocked(nil, false) // nothing spawned, or everything already returned
+	}
+	var msgs []orchestra.Message
+	if ctx.Err() == nil {
+		msgs = r.takeMailLocked(ours, finished)
+	}
+	out := awaitReport(reason, finished, msgs, running)
+	flows := make([]agent.Flow, 0, len(finished))
+	for _, m := range finished {
+		flows = append(flows, m.flow)
+	}
+	if r.cfg.Log != nil {
+		r.cfg.Log.Info("team_await woke", "reason", string(reason), "finished", len(finished), "messages", len(msgs), "running", len(running))
+	}
+	if ctx.Err() == nil {
+		r.dropLocked(func(m *member) bool { return ours(m) && m.status != "running" })
+	}
+	return out, agent.JoinFlows(flows...)
+}
+
+// sortLocked splits a conversation's members into the finished, the awaiting
+// turn's first, and the still running. Called with r.mu held.
+func (r *TeamRuntime) sortLocked(ours func(*member) bool, turn string) (finished, running []*member) {
+	var earlier []*member
 	for _, id := range r.order {
 		switch m := r.agents[id]; {
 		case !ours(m):
 		case m.status == "running":
 			running = append(running, m)
 		case m.turn == turn:
-			shown = append(shown, m)
+			finished = append(finished, m)
 		default:
 			earlier = append(earlier, m)
 		}
 	}
-	finished := append(shown, earlier...)
-	if len(finished) == 0 && len(running) == 0 {
-		return r.summaryLocked(nil, false) // nothing spawned, or everything already returned
+	return append(finished, earlier...), running
+}
+
+// takeMailLocked drains the conversation's messages from the orchestrator's
+// mailbox, less a finished helper's DONE broadcast: its result section says
+// the same, in full. Called with r.mu held.
+func (r *TeamRuntime) takeMailLocked(ours func(*member) bool, finished []*member) []orchestra.Message {
+	if r.cfg.Bus == nil {
+		return nil
+	}
+	done := make(map[string]bool, len(finished))
+	for _, m := range finished {
+		done[m.id] = true
 	}
 	var msgs []orchestra.Message
-	if ctx.Err() == nil && r.cfg.Bus != nil {
-		done := make(map[string]bool, len(finished))
-		for _, m := range finished {
-			done[m.id] = true
-		}
-		for _, m := range r.cfg.Bus.Take(r.cfg.OrchID, r.mailFromLocked(ours)) {
-			if done[m.From] && strings.HasPrefix(m.Content, "DONE — ") {
-				continue // its result section says the same, in full
-			}
+	for _, m := range r.cfg.Bus.Take(r.cfg.OrchID, r.mailFromLocked(ours)) {
+		if !done[m.From] || !strings.HasPrefix(m.Content, "DONE — ") {
 			msgs = append(msgs, m)
 		}
 	}
+	return msgs
+}
+
+// awaitReport is the text team_await returns: why it woke if not on news, each
+// finished helper's result, the messages, and who is still running.
+func awaitReport(reason waitReason, finished []*member, msgs []orchestra.Message, running []*member) string {
 	var b strings.Builder
 	switch reason {
 	case wokeCeiling:
@@ -935,10 +969,8 @@ func (r *TeamRuntime) report(ctx context.Context, timeout time.Duration) (string
 	case wokeCancel:
 		b.WriteString("(cancelled; reporting current state)\n\n")
 	}
-	flows := make([]agent.Flow, 0, len(finished))
 	for _, m := range finished {
 		fmt.Fprintf(&b, "## %s (%s) [%s]\n%s\n\n", m.id, m.role, m.status, strings.TrimSpace(m.result))
-		flows = append(flows, m.flow)
 	}
 	if len(msgs) > 0 {
 		b.WriteString("## messages to you\n")
@@ -948,26 +980,17 @@ func (r *TeamRuntime) report(ctx context.Context, timeout time.Duration) (string
 		b.WriteString("\n")
 	}
 	if len(running) > 0 {
-		b.WriteString("still running: ")
+		names := make([]string, len(running))
 		for i, m := range running {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			if m.started.IsZero() {
-				fmt.Fprintf(&b, "%s (%s)", m.id, m.role)
-			} else {
-				fmt.Fprintf(&b, "%s (%s, %s)", m.id, m.role, time.Since(m.started).Round(time.Second))
+			names[i] = fmt.Sprintf("%s (%s)", m.id, m.role)
+			if !m.started.IsZero() {
+				names[i] = fmt.Sprintf("%s (%s, %s)", m.id, m.role, time.Since(m.started).Round(time.Second))
 			}
 		}
+		b.WriteString("still running: " + strings.Join(names, ", "))
 		b.WriteString(". Call team_await again when you need their results; do your own independent work first if you have any.\n")
 	}
-	if r.cfg.Log != nil {
-		r.cfg.Log.Info("team_await woke", "reason", string(reason), "finished", len(finished), "messages", len(msgs), "running", len(running))
-	}
-	if ctx.Err() == nil {
-		r.dropLocked(func(m *member) bool { return ours(m) && m.status != "running" })
-	}
-	return strings.TrimRight(b.String(), "\n"), agent.JoinFlows(flows...)
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // mailFromLocked is the mailbox filter for a conversation: messages from its
@@ -1022,61 +1045,23 @@ func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*
 		defer t.Stop()
 		tick = t.C
 	}
-	mail := func() int { // this conversation's messages in the orchestrator's mailbox
-		if r.cfg.Bus == nil {
-			return 0
-		}
-		r.mu.Lock()
-		keep := r.mailFromLocked(of)
-		r.mu.Unlock()
-		return r.cfg.Bus.PendingWhere(r.cfg.OrchID, keep)
+	mailbox := r.mailPending(of)
+	waits, picked := r.pick(of)
+	if picked == 0 {
+		return wokeIdle
 	}
-	mailbox := mail()
-	var waits []*member // the picked members running at the first look
-	first := true
+	if onNews && len(waits) < picked { // a finished one waits to be reported
+		return wokeFinished
+	}
 	for {
-		r.mu.Lock()
-		if first {
-			picked := 0
-			for _, id := range r.order {
-				if m := r.agents[id]; of(m) {
-					picked++
-					if m.status == "running" {
-						waits = append(waits, m)
-					}
-				}
-			}
-			first = false
-			if picked == 0 {
-				r.mu.Unlock()
-				return wokeIdle
-			}
-			if onNews && len(waits) < picked { // a finished one waits to be reported
-				r.mu.Unlock()
-				return wokeFinished
-			}
-		}
-		running := 0
-		for _, m := range waits {
-			if m.status == "running" {
-				running++
-			}
-		}
-		if r.changed == nil {
-			r.changed = make(chan struct{})
-		}
-		changed := r.changed
-		r.mu.Unlock()
-		switch {
-		case running == 0:
-			return wokeFinished
-		case onNews && running < len(waits):
+		running, changed := r.stillRunning(waits)
+		if running == 0 || (onNews && running < len(waits)) {
 			return wokeFinished
 		}
 		select {
 		case <-changed:
 		case <-tick:
-			if mail() > mailbox {
+			if r.mailPending(of) > mailbox {
 				return wokeMessage
 			}
 		case <-timer.C:
@@ -1085,6 +1070,52 @@ func (r *TeamRuntime) wait(ctx context.Context, timeout time.Duration, of func(*
 			return wokeCancel
 		}
 	}
+}
+
+// mailPending counts a conversation's messages in the orchestrator's mailbox.
+func (r *TeamRuntime) mailPending(of func(*member) bool) int {
+	if r.cfg.Bus == nil {
+		return 0
+	}
+	r.mu.Lock()
+	keep := r.mailFromLocked(of)
+	r.mu.Unlock()
+	return r.cfg.Bus.PendingWhere(r.cfg.OrchID, keep)
+}
+
+// pick counts the members of picks and returns the ones running now.
+func (r *TeamRuntime) pick(of func(*member) bool) (waits []*member, picked int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range r.order {
+		m := r.agents[id]
+		if !of(m) {
+			continue
+		}
+		picked++
+		if m.status == "running" {
+			waits = append(waits, m)
+		}
+	}
+	return waits, picked
+}
+
+// stillRunning counts the members of waits still running, and returns the
+// channel the next finish closes. Both under one lock: a finish between the
+// count and the channel would otherwise be missed.
+func (r *TeamRuntime) stillRunning(waits []*member) (int, <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	running := 0
+	for _, m := range waits {
+		if m.status == "running" {
+			running++
+		}
+	}
+	if r.changed == nil {
+		r.changed = make(chan struct{})
+	}
+	return running, r.changed
 }
 
 // CancelStuck cancels every still-running agent's ctx and waits up to
