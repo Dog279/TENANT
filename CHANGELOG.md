@@ -5,6 +5,15 @@ Releases page.
 
 ## Unreleased
 
+- **The terminal app no longer sends a model's or a tool's text to your terminal as it came.**
+  A carriage return or a terminal escape sequence in a command, in its output or in a model's
+  answer could put words over the line before them, recolor or clear the screen, or retitle
+  the window. An approval prompt drew the command the same way, so part of a command could be
+  out of sight of the person approving it. An approval prompt now shows every character that
+  draws nothing or moves other text as a marker (`⟨U+000D⟩`, `⟨U+202E⟩`), as the dashboard's
+  approval card does. Everywhere else in the app, whole escape sequences (a tool's colors) are
+  removed, a carriage return becomes a line break, and any other control character shows as a
+  marker. The dashboard and the log files already did this.
 - **The container sandbox says when the engine cannot run anything, before the first command.**
   `docker version` and `docker info` answering does not mean the engine can start a container:
   a Docker Desktop stuck starting (seen after a WSL update) answers both, and every command

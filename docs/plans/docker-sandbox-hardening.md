@@ -490,7 +490,8 @@ Some of wave 2 was already in the code when its tickets were still To Do. Nothin
 | W2-6 | Jobs in cmd syntax stay on the host by declaration; a circuit breaker after 5 refusals or timeouts | open: how a paused surface is shown and resumed is not decided |
 | W2-7 TEN-468 | `tenant sandbox stop-all` | done with the PR that adds this table (`sandbox.StopAllContainers`) |
 | W2-7 | The run record in the Security log | done in part with the PR after that one: record `4201` holds the image and its id, mounts and modes, network, limits, output bytes, whether the cap hit, and the time (`sandbox.Confinement`, `confinementFields`); `4203` says where a re-run ran. Not in the record yet: env names, the policy version, an OOM kill as its own field, and a digest of changed files |
-| W2-7 | One setting that disables `container` and escalation; quarantine; control characters stripped before output reaches logs or the UI | open: the setting's name and place are not decided |
+| W2-7 TEN-468 | Control characters kept from the logs and the UI | done: the log files quote them (`internal/logs/entry.go`), the dashboard shows hidden characters as markers (`control.VisibleText`), and the terminal app now does too: `termText` on every agent, sub-agent, system and research line, `promptText` on an approval prompt (`internal/tui/safetext.go`) |
+| W2-7 | One setting that disables `container` and escalation; quarantine | open: the setting's name and place are not decided |
 | W2-8 TEN-469 | The seccomp delta; the image on trixie, scanned and signed | open; the base waits on D6 |
 | W2-9 TEN-470 | A network scope per run | open; needs the enforcement spike on Docker Desktop |
 
