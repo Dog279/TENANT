@@ -139,6 +139,24 @@ type execProfileStore struct {
 	mu sync.RWMutex
 	m  map[string]execProfileSetting
 	ex map[string][]string // exec_exceptions: surface → folders, ~ expanded
+	// The install's dirs, for the load-time check of a container profile's
+	// grants against what a container may never mount (containerGrantError).
+	cfgDir, dataDir string
+}
+
+// SetDirs tells the store this install's config and data dirs. Whoever loads
+// exec profiles calls it first, so a container profile whose read_roots or
+// write_roots overlap them is refused when it loads.
+func (s *execProfileStore) SetDirs(cfgDir, dataDir string) {
+	s.mu.Lock()
+	s.cfgDir, s.dataDir = cfgDir, dataDir
+	s.mu.Unlock()
+}
+
+func (s *execProfileStore) dirs() (cfgDir, dataDir string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfgDir, s.dataDir
 }
 
 var defaultExecProfiles = &execProfileStore{m: map[string]execProfileSetting{}}
@@ -251,6 +269,10 @@ func validExecProfiles(in map[string]execProfileSetting) (map[string]execProfile
 			skipped = append(skipped, err.Error())
 			continue
 		}
+		if err := containerGrantError(surface, p); err != nil {
+			skipped = append(skipped, err.Error())
+			continue
+		}
 		valid[surface] = p
 	}
 	sort.Strings(skipped)
@@ -291,6 +313,36 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 			if !filepath.IsAbs(expandHome(r)) {
 				return fmt.Errorf("exec_profiles.%s: root %q must be absolute (or start with ~)", surface, r)
 			}
+		}
+	}
+	return nil
+}
+
+// containerGrantError refuses a container profile whose read_roots or
+// write_roots overlap a folder a container may never mount: Tenant's config
+// and data dirs, its binary, the credential stores, or the entry's own
+// deny_roots (W1-3, TEN-457). A container sees exactly its mounts, so it has
+// no way to mount a folder and hide part of it: a grant that contains a
+// protected folder would expose it, and one inside it is it. The run would be
+// refused for the same reason (specFor); here the operator hears it when the
+// settings load, not from the first command a surface runs. Only an entry
+// that names the container backend is checked: on the other backends a deny
+// root masks what a grant would show.
+func containerGrantError(surface string, p execProfileSetting) error {
+	if p.Backend != "container" {
+		return nil
+	}
+	cfgDir, dataDir := defaultExecProfiles.dirs()
+	deny := append(tenantDenyRoots(cfgDir, dataDir), credentialStoreRoots()...)
+	deny = append(deny, expandRoots(p.DenyRoots)...)
+	for _, group := range []struct {
+		key   string
+		roots []string
+	}{{"read_roots", p.ReadRoots}, {"write_roots", p.WriteRoots}} {
+		if grant, denied, bad := sandbox.GrantOverlapsDeny(expandRoots(group.roots), deny); bad {
+			return fmt.Errorf("exec_profiles.%s: %s entry %s overlaps %s, which a container may never mount "+
+				"(it cannot mount a folder and hide part of it); name folders that neither contain it nor sit inside it",
+				surface, group.key, grant, denied)
 		}
 	}
 	return nil
@@ -1158,6 +1210,7 @@ func execExceptionsEqual(file, live map[string][]string) bool {
 // Windows which cron shell jobs now run as Linux sh.
 func loadExecSettings(c *commonFlags, stg *settings, mu *sync.Mutex, notify func(string)) {
 	cfgDir, agentID := c.cfgDir, c.agent
+	defaultExecProfiles.SetDirs(c.cfgDir, c.dataDir) // before Load: it checks container grants against them
 	n, skipped := defaultExecProfiles.Load(stg.ExecProfiles)
 	ne, skippedEx := defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
 	if skipped = append(skipped, skippedEx...); n > 0 || ne > 0 || len(skipped) > 0 {
@@ -1197,11 +1250,12 @@ func loadExecSettings(c *commonFlags, stg *settings, mu *sync.Mutex, notify func
 // loadExecProfilesFromSettings loads the operator overrides and exceptions for
 // commands that do not run the settings watcher (one-shot CLIs such as
 // `tenant os`). It returns how many overrides applied and every skipped entry.
-func loadExecProfilesFromSettings(cfgDir, agentID string) (int, []string, error) {
+func loadExecProfilesFromSettings(cfgDir, dataDir, agentID string) (int, []string, error) {
 	stg, err := loadSettings(cfgDir, agentID)
 	if err != nil {
 		return 0, nil, err
 	}
+	defaultExecProfiles.SetDirs(cfgDir, dataDir) // before Load: it checks container grants against them
 	n, skipped := defaultExecProfiles.Load(stg.ExecProfiles)
 	_, skippedEx := defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
 	return n, append(skipped, skippedEx...), nil

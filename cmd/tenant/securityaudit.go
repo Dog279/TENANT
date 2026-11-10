@@ -157,7 +157,7 @@ func cmdSecurityAudit(ctx context.Context, args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf)
-	_, _, _ = loadExecProfilesFromSettings(c.cfgDir, c.agent) // an unreadable file fails the compose below
+	_, _, _ = loadExecProfilesFromSettings(c.cfgDir, c.dataDir, c.agent) // an unreadable file fails the compose below
 	permissions, err := composeEffectivePermissions(c, pf, permissionSurfaceLocal)
 	if err != nil {
 		return fmt.Errorf("compose permissions: %w", err)

@@ -774,6 +774,14 @@ func confinedBackendFor(ctx context.Context, name string) (sandbox.Backend, erro
 		if caps := b.Probe(ctx); caps.Filesystem != sandbox.EnforceFull {
 			return nil, fmt.Errorf("the container backend is not ready: %s", caps.Detail)
 		}
+		// Probe runs nothing. Available also starts one container, so an engine
+		// that answers but cannot start one is reported here, once, with its
+		// reason, and not as every case timing out.
+		if a, ok := b.(sandbox.Available); ok {
+			if err := a.Available(ctx); err != nil {
+				return nil, fmt.Errorf("the container backend is not ready: %w", err)
+			}
+		}
 		return b, nil
 	default:
 		return sandbox.For(name)
@@ -997,6 +1005,13 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 		p, chosen = withBackend(p, o.backend), "forced by --backend"
 	}
 	be, err := sandbox.For(p.Backend)
+	if err == nil {
+		// The same readiness gate a spawn site applies (profileBackend): a
+		// backend that is known but cannot run anything here says why now.
+		if a, ok := be.(sandbox.Available); ok {
+			err = a.Available(ctx)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("sandbox run: %s backend %q unavailable: %w", o.surface, p.Backend, err)
 	}
@@ -1236,7 +1251,7 @@ func nonNilStrings(s []string) []string {
 // and run show and use the same profiles the running hub does. It returns one
 // line per problem (unreadable settings, invalid entries skipped).
 func loadSandboxProfiles(c *commonFlags) []string {
-	n, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.agent)
+	n, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.dataDir, c.agent)
 	if err != nil {
 		return []string{"exec_profiles not loaded (" + err.Error() + "); showing built-in defaults"}
 	}

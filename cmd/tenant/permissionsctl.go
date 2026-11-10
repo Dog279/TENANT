@@ -116,7 +116,7 @@ func cmdPermissionsEffective(args []string) error {
 		return err
 	}
 	applyPluginConfig(c, pf)
-	_, _, _ = loadExecProfilesFromSettings(c.cfgDir, c.agent) // an unreadable file fails the compose below
+	_, _, _ = loadExecProfilesFromSettings(c.cfgDir, c.dataDir, c.agent) // an unreadable file fails the compose below
 	report, err := composeEffectivePermissions(c, pf, *surface)
 	if err != nil {
 		return err

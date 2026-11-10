@@ -818,6 +818,57 @@ func TestSandboxViolationsSince(t *testing.T) {
 	}
 }
 
+// W1-3 (TEN-457): a container profile whose grant overlaps a folder a
+// container may never mount is refused when the settings load, in either
+// direction, with the entry and the folder named. Other backends and
+// unrelated folders load as before.
+func TestLoad_ContainerGrantOverlappingAProtectedFolder(t *testing.T) {
+	root := t.TempDir()
+	cfg, data := filepath.Join(root, "home", "cfg"), filepath.Join(root, "home", "data")
+	work, own := filepath.Join(root, "work"), filepath.Join(root, "work", "private")
+	for _, d := range []string{cfg, data, work, own} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := defaultExecProfiles.Snapshot()
+	oldCfg, oldData := defaultExecProfiles.dirs()
+	t.Cleanup(func() {
+		defaultExecProfiles.SetDirs(oldCfg, oldData)
+		defaultExecProfiles.Load(old)
+	})
+	defaultExecProfiles.SetDirs(cfg, data)
+
+	cases := []struct {
+		name    string
+		entry   execProfileSetting
+		refused string // "" = loads
+	}{
+		{"a grant that contains the config and data dirs", execProfileSetting{Backend: "container", ReadRoots: []string{filepath.Join(root, "home")}}, "read_roots"},
+		{"a grant that is the data dir", execProfileSetting{Backend: "container", WriteRoots: []string{data}}, "write_roots"},
+		{"a grant inside the config dir", execProfileSetting{Backend: "container", ReadRoots: []string{filepath.Join(cfg, "soul")}}, "read_roots"},
+		{"a grant that contains the entry's own deny root", execProfileSetting{Backend: "container", WriteRoots: []string{work}, DenyRoots: []string{own}}, "write_roots"},
+		{"an unrelated folder", execProfileSetting{Backend: "container", ReadRoots: []string{work}, WriteRoots: []string{work}}, ""},
+		{"the same grant on the host backend", execProfileSetting{Backend: "host", ReadRoots: []string{filepath.Join(root, "home")}}, ""},
+		{"the same grant with no backend named", execProfileSetting{ReadRoots: []string{filepath.Join(root, "home")}}, ""},
+	}
+	for _, c := range cases {
+		n, skipped := defaultExecProfiles.Load(map[string]execProfileSetting{"cron-shell": c.entry})
+		if c.refused == "" {
+			if n != 1 || len(skipped) != 0 {
+				t.Errorf("%s: loaded %d, skipped %v; want it to load", c.name, n, skipped)
+			}
+			continue
+		}
+		if n != 0 || len(skipped) != 1 || !strings.Contains(skipped[0], "exec_profiles.cron-shell: "+c.refused) || !strings.Contains(skipped[0], "may never mount") {
+			t.Errorf("%s: loaded %d, skipped %v; want one refusal naming %s", c.name, n, skipped, c.refused)
+		}
+		if _, live := defaultExecProfiles.Snapshot()["cron-shell"]; live {
+			t.Errorf("%s: the refused entry is live", c.name)
+		}
+	}
+}
+
 // W1-1 (TEN-455): the container backend has no dry run. "enforce": false on a
 // container profile is refused when the settings load; unset or true is fine,
 // and a dry run on the other backends is unchanged.

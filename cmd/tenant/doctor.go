@@ -29,6 +29,7 @@ import (
 	"tenant/internal/model/backend/vllm"
 	"tenant/internal/plugins/mcpremote"
 	"tenant/internal/research"
+	"tenant/internal/sandbox"
 	"tenant/internal/secrets"
 )
 
@@ -206,6 +207,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		{"soul", checkSoul},
 		// TEN-345/347: what each surface's commands run under, probed here.
 		{"exec sandbox", checkExecSandbox},
+		// TEN-455: when a surface uses the container backend, is it ready?
+		{"container sandbox", checkContainerSandbox},
 		// TEN-375: the log book (doctorlogbook.go).
 		{"log book location", checkLogbookLocation},
 		{"log book integrity", checkLogbookIntegrity},
@@ -314,12 +317,49 @@ func checkExecSandbox(ctx context.Context, e *doctorEnv) checkResult {
 			r.Fix = "install what the error names (`tenant sandbox probe`), or set another backend for the surface in exec_profiles"
 		case (p.Fallback != "" || p.Error != "") && r.Status == statusOK:
 			r.Status = statusWarn
-			r.Fix = "commands run unconfined on the host (the restricted backend is macOS-only; a container backend is planned); `tenant sandbox probe` has the detail"
+			r.Fix = "commands run unconfined on the host (the restricted backend is macOS-only; the container backend runs on every OS: set \"backend\": \"container\" for the surface in exec_profiles); `tenant sandbox probe` has the detail"
 		}
 	}
 	lines := append(notes, execProfileLines(probes)...)
 	r.Detail = strings.Join(lines, "\n       ")
 	return r
+}
+
+// checkContainerSandbox says whether the container backend can run a command
+// right now, for the surfaces whose profile names it: the docker CLI is there,
+// the engine answers and meets the floors, the sandbox image is built, and a
+// container starts. Any of those failing means those surfaces' commands do not
+// run (the backend never falls back to the host), so it is a FAIL, with the
+// reason and the fix for that reason. It starts one short-lived container;
+// nothing else changes. SKIP when no surface uses the backend.
+func checkContainerSandbox(ctx context.Context, e *doctorEnv) checkResult {
+	loadSandboxProfiles(e.c)
+	var surfaces []string
+	for _, p := range probeExecSurfaces(ctx, e.c.cfgDir, e.c.dataDir) {
+		if p.Backend == "container" {
+			surfaces = append(surfaces, p.Surface)
+		}
+	}
+	if len(surfaces) == 0 {
+		return checkResult{Status: statusSkip, Detail: "no surface's exec profile uses the container backend"}
+	}
+	on := strings.Join(surfaces, ", ")
+	be, err := sandbox.For("container")
+	if err == nil {
+		if a, ok := be.(sandbox.Available); ok {
+			err = a.Available(ctx)
+		}
+	}
+	if err != nil {
+		r := checkResult{Status: statusFail, Detail: on + ": commands do not run: " + err.Error(),
+			Fix: "`tenant sandbox probe` has the detail"}
+		var u *sandbox.Unavailable
+		if errors.As(err, &u) {
+			r.Fix = u.Fix
+		}
+		return r
+	}
+	return checkResult{Status: statusOK, Detail: on + ": the engine meets the floors, the sandbox image is built and a container starts"}
 }
 
 func checkDirs(_ context.Context, e *doctorEnv) checkResult {
