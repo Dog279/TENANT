@@ -139,6 +139,24 @@ type execProfileStore struct {
 	mu sync.RWMutex
 	m  map[string]execProfileSetting
 	ex map[string][]string // exec_exceptions: surface → folders, ~ expanded
+	// The install's dirs, for the load-time check of a container profile's
+	// grants against what a container may never mount (containerGrantError).
+	cfgDir, dataDir string
+}
+
+// SetDirs tells the store this install's config and data dirs. Whoever loads
+// exec profiles calls it first, so a container profile whose read_roots or
+// write_roots overlap them is refused when it loads.
+func (s *execProfileStore) SetDirs(cfgDir, dataDir string) {
+	s.mu.Lock()
+	s.cfgDir, s.dataDir = cfgDir, dataDir
+	s.mu.Unlock()
+}
+
+func (s *execProfileStore) dirs() (cfgDir, dataDir string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfgDir, s.dataDir
 }
 
 var defaultExecProfiles = &execProfileStore{m: map[string]execProfileSetting{}}
@@ -251,6 +269,10 @@ func validExecProfiles(in map[string]execProfileSetting) (map[string]execProfile
 			skipped = append(skipped, err.Error())
 			continue
 		}
+		if err := containerGrantError(surface, p); err != nil {
+			skipped = append(skipped, err.Error())
+			continue
+		}
 		valid[surface] = p
 	}
 	sort.Strings(skipped)
@@ -291,6 +313,36 @@ func validateExecProfileSetting(surface string, p execProfileSetting) error {
 			if !filepath.IsAbs(expandHome(r)) {
 				return fmt.Errorf("exec_profiles.%s: root %q must be absolute (or start with ~)", surface, r)
 			}
+		}
+	}
+	return nil
+}
+
+// containerGrantError refuses a container profile whose read_roots or
+// write_roots overlap a folder a container may never mount: Tenant's config
+// and data dirs, its binary, the credential stores, or the entry's own
+// deny_roots (W1-3, TEN-457). A container sees exactly its mounts, so it has
+// no way to mount a folder and hide part of it: a grant that contains a
+// protected folder would expose it, and one inside it is it. The run would be
+// refused for the same reason (specFor); here the operator hears it when the
+// settings load, not from the first command a surface runs. Only an entry
+// that names the container backend is checked: on the other backends a deny
+// root masks what a grant would show.
+func containerGrantError(surface string, p execProfileSetting) error {
+	if p.Backend != "container" {
+		return nil
+	}
+	cfgDir, dataDir := defaultExecProfiles.dirs()
+	deny := append(tenantDenyRoots(cfgDir, dataDir), credentialStoreRoots()...)
+	deny = append(deny, expandRoots(p.DenyRoots)...)
+	for _, group := range []struct {
+		key   string
+		roots []string
+	}{{"read_roots", p.ReadRoots}, {"write_roots", p.WriteRoots}} {
+		if grant, denied, bad := sandbox.GrantOverlapsDeny(expandRoots(group.roots), deny); bad {
+			return fmt.Errorf("exec_profiles.%s: %s entry %s overlaps %s, which a container may never mount "+
+				"(it cannot mount a folder and hide part of it); name folders that neither contain it nor sit inside it",
+				surface, group.key, grant, denied)
 		}
 	}
 	return nil
@@ -522,6 +574,57 @@ var safeEnvWindows = []string{"SystemRoot", "SystemDrive", "windir", "ComSpec", 
 	"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
 	"USERDOMAIN", "COMPUTERNAME", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS"}
 
+// envSecretNote is what a surface's report says when its env_pass forwards a
+// name that looks like a credential.
+const envSecretNote = "a sandboxed command can read every variable it is passed, and with the network on can send it anywhere; pass a credential only to a surface whose commands you would trust with it"
+
+// secretLookingEnv returns the names in pass that look like they hold a
+// credential (W2-5): a hint for the operator, never a filter. The allowlist
+// is the control (envAllowlist); a secret under an innocent name is not
+// caught here, and a name caught here is still passed.
+func secretLookingEnv(pass []string) []string {
+	var out []string
+	for _, n := range pass {
+		up := strings.ToUpper(n)
+		looks := false
+		for _, part := range []string{"TOKEN", "SECRET", "PASSW", "CREDENTIAL", "APIKEY", "PRIVATE"} {
+			looks = looks || strings.Contains(up, part)
+		}
+		for _, word := range strings.FieldsFunc(up, func(r rune) bool { return r == '_' || r == '-' || r == '.' }) {
+			switch word {
+			case "KEY", "KEYS", "AUTH", "PAT", "PASS", "COOKIE", "CREDS", "DSN":
+				looks = true
+			}
+		}
+		if looks && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// envSecretLines is one line per group of surfaces whose env_pass forwards
+// the same credential-looking names.
+func envSecretLines(ps []surfaceProbe) []string {
+	var order []string
+	groups := map[string][]string{}
+	for _, p := range ps {
+		if len(p.EnvSecretLooking) == 0 {
+			continue
+		}
+		names := strings.Join(p.EnvSecretLooking, ", ")
+		if _, ok := groups[names]; !ok {
+			order = append(order, names)
+		}
+		groups[names] = append(groups[names], p.Surface)
+	}
+	out := make([]string, 0, len(order))
+	for _, names := range order {
+		out = append(out, strings.Join(groups[names], ", ")+": env_pass forwards "+names+", named like a credential ("+envSecretNote+")")
+	}
+	return out
+}
+
 // envAllowlist is a command's environment: the safe set plus pass, forwarded
 // from Tenant's own, plus set (TEN-345; replaces the KEY/TOKEN/SECRET
 // name-denylist, which leaked any secret with an innocent name).
@@ -723,10 +826,11 @@ func profileBackend(ctx context.Context, p execProfile, surface string) (sandbox
 // The command is shown whole, with control characters escaped, so nothing
 // hides behind a carriage return or a terminal escape.
 //
-// TODO(TEN-460): bind the approval to sandbox.EscalationHash(interpreter,
-// argv, mounts, network, image digest) with an expiring EscalationTicket. The
-// confirm callback answers yes/no today; the broker (internal/approval) needs
-// to carry the ticket so Execute can refuse a re-run whose hash moved.
+// The yes this returns covers one exact run: sandbox.Execute takes the
+// backend's digest of the granted run (interpreter, command, mounts, network,
+// image) before it calls here and again before the run, and runs nothing if
+// they differ (TEN-460, sandbox.EscalationBinder). The approval broker carries
+// no ticket: the binding is held where the run starts.
 func execEscalator(confirm confirmFunc, pol sandbox.Policy, be sandbox.Backend) sandbox.Escalator {
 	if confirm == nil {
 		return nil
@@ -1158,6 +1262,7 @@ func execExceptionsEqual(file, live map[string][]string) bool {
 // Windows which cron shell jobs now run as Linux sh.
 func loadExecSettings(c *commonFlags, stg *settings, mu *sync.Mutex, notify func(string)) {
 	cfgDir, agentID := c.cfgDir, c.agent
+	defaultExecProfiles.SetDirs(c.cfgDir, c.dataDir) // before Load: it checks container grants against them
 	n, skipped := defaultExecProfiles.Load(stg.ExecProfiles)
 	ne, skippedEx := defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
 	if skipped = append(skipped, skippedEx...); n > 0 || ne > 0 || len(skipped) > 0 {
@@ -1197,11 +1302,12 @@ func loadExecSettings(c *commonFlags, stg *settings, mu *sync.Mutex, notify func
 // loadExecProfilesFromSettings loads the operator overrides and exceptions for
 // commands that do not run the settings watcher (one-shot CLIs such as
 // `tenant os`). It returns how many overrides applied and every skipped entry.
-func loadExecProfilesFromSettings(cfgDir, agentID string) (int, []string, error) {
+func loadExecProfilesFromSettings(cfgDir, dataDir, agentID string) (int, []string, error) {
 	stg, err := loadSettings(cfgDir, agentID)
 	if err != nil {
 		return 0, nil, err
 	}
+	defaultExecProfiles.SetDirs(cfgDir, dataDir) // before Load: it checks container grants against them
 	n, skipped := defaultExecProfiles.Load(stg.ExecProfiles)
 	_, skippedEx := defaultExecProfiles.LoadExceptions(stg.ExecExceptions)
 	return n, append(skipped, skippedEx...), nil

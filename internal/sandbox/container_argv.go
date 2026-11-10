@@ -54,6 +54,13 @@ const (
 	defaultMemoryMB  = 1024
 	defaultCPUs      = "2"
 	defaultTmpfsSize = "256m"
+
+	// sandboxHome is HOME inside every container: a tmpfs of its own (D4), so
+	// the dotfiles and caches a command writes die with the container. HOME
+	// used to be the work dir, where they stayed on the host for the next
+	// "fresh" container to read, and for host tools to find.
+	sandboxHome     = "/home/sandbox"
+	defaultHomeSize = "64m"
 )
 
 // deadlineGrace is added to the wall clock for the in-container deadline: the
@@ -93,8 +100,10 @@ func buildRunArgv(s containerSpec) ([]string, error) {
 		a = append(a, "--label", labelInstance+"="+labelValue(s.instance))
 	}
 
-	// Read-only rootfs, a small noexec/nosuid tmpfs for /tmp.
-	a = append(a, "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size="+defaultTmpfsSize)
+	// Read-only rootfs, a small nosuid tmpfs for /tmp, and one for HOME that
+	// only the sandbox user can enter (the uid and gid are the --user below).
+	a = append(a, "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size="+defaultTmpfsSize,
+		"--tmpfs", sandboxHome+":rw,nosuid,nodev,size="+defaultHomeSize+",mode=0700,uid=65532,gid=65532")
 
 	// The work mount (read-write) and the working directory.
 	warg, err := mountArg(s.work)
@@ -134,6 +143,13 @@ func buildRunArgv(s containerSpec) ([]string, error) {
 		"--memory", mem, "--memory-swap", mem, // no swap: memory-swap == memory
 		"--cpus", defaultCPUs,
 		"--ulimit", "core=0", "--ulimit", "nofile=1024:4096")
+	// D5: a CPU-time cap is per process (RLIMIT_CPU), so it stops one runaway
+	// process, not a command that spreads its work over many; the wall clock
+	// bounds the whole run. That is why the backend reports Limits as partial.
+	if s.limits.CPU > 0 {
+		secs := strconv.FormatInt(int64((s.limits.CPU+time.Second-1)/time.Second), 10)
+		a = append(a, "--ulimit", "cpu="+secs+":"+secs)
+	}
 
 	a = append(a, "--network", s.network, "--init", "--log-driver", "none")
 
@@ -145,7 +161,7 @@ func buildRunArgv(s containerSpec) ([]string, error) {
 		}
 		a = append(a, "-e", n)
 	}
-	a = append(a, "-e", "HOME="+s.work.ctr, "-e", "TMPDIR=/tmp")
+	a = append(a, "-e", "HOME="+sandboxHome, "-e", "TMPDIR=/tmp")
 
 	// The image (pinned), then the command as ONE argv element after `sh -c`.
 	// With a wall clock, coreutils' timeout wraps the shell inside the

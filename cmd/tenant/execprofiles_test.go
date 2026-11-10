@@ -818,6 +818,80 @@ func TestSandboxViolationsSince(t *testing.T) {
 	}
 }
 
+// W1-1 (TEN-455): config.json's `container` section is the container
+// backend's endpoint for every command; only serve adds the install's
+// instance id, because it owns the start-up sweep.
+func TestContainerOptions(t *testing.T) {
+	data := t.TempDir()
+	c := &commonFlags{dataDir: data, lc: &launchConfig{}}
+	if o := containerOptions(c, false); o != (sandbox.ContainerOptions{}) {
+		t.Fatalf("nothing configured should be the zero options, got %+v", o)
+	}
+	c.lc.Container.Endpoint = "  ssh://ops@build-host "
+	c.lc.Container.TLSCertDir = filepath.Join(data, "certs")
+	o := containerOptions(c, false)
+	if o.Endpoint != "ssh://ops@build-host" || o.TLSCertDir != filepath.Join(data, "certs") || o.Instance != "" {
+		t.Fatalf("containerOptions = %+v", o)
+	}
+	if o := containerOptions(c, true); o.Instance != sandbox.InstanceID(data) || o.Endpoint != "ssh://ops@build-host" {
+		t.Fatalf("serve's options = %+v", o)
+	}
+	if o := containerOptions(&commonFlags{dataDir: data}, false); o != (sandbox.ContainerOptions{}) {
+		t.Fatalf("no launch config should be the zero options, got %+v", o)
+	}
+}
+
+// W1-3 (TEN-457): a container profile whose grant overlaps a folder a
+// container may never mount is refused when the settings load, in either
+// direction, with the entry and the folder named. Other backends and
+// unrelated folders load as before.
+func TestLoad_ContainerGrantOverlappingAProtectedFolder(t *testing.T) {
+	root := t.TempDir()
+	cfg, data := filepath.Join(root, "home", "cfg"), filepath.Join(root, "home", "data")
+	work, own := filepath.Join(root, "work"), filepath.Join(root, "work", "private")
+	for _, d := range []string{cfg, data, work, own} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := defaultExecProfiles.Snapshot()
+	oldCfg, oldData := defaultExecProfiles.dirs()
+	t.Cleanup(func() {
+		defaultExecProfiles.SetDirs(oldCfg, oldData)
+		defaultExecProfiles.Load(old)
+	})
+	defaultExecProfiles.SetDirs(cfg, data)
+
+	cases := []struct {
+		name    string
+		entry   execProfileSetting
+		refused string // "" = loads
+	}{
+		{"a grant that contains the config and data dirs", execProfileSetting{Backend: "container", ReadRoots: []string{filepath.Join(root, "home")}}, "read_roots"},
+		{"a grant that is the data dir", execProfileSetting{Backend: "container", WriteRoots: []string{data}}, "write_roots"},
+		{"a grant inside the config dir", execProfileSetting{Backend: "container", ReadRoots: []string{filepath.Join(cfg, "soul")}}, "read_roots"},
+		{"a grant that contains the entry's own deny root", execProfileSetting{Backend: "container", WriteRoots: []string{work}, DenyRoots: []string{own}}, "write_roots"},
+		{"an unrelated folder", execProfileSetting{Backend: "container", ReadRoots: []string{work}, WriteRoots: []string{work}}, ""},
+		{"the same grant on the host backend", execProfileSetting{Backend: "host", ReadRoots: []string{filepath.Join(root, "home")}}, ""},
+		{"the same grant with no backend named", execProfileSetting{ReadRoots: []string{filepath.Join(root, "home")}}, ""},
+	}
+	for _, c := range cases {
+		n, skipped := defaultExecProfiles.Load(map[string]execProfileSetting{"cron-shell": c.entry})
+		if c.refused == "" {
+			if n != 1 || len(skipped) != 0 {
+				t.Errorf("%s: loaded %d, skipped %v; want it to load", c.name, n, skipped)
+			}
+			continue
+		}
+		if n != 0 || len(skipped) != 1 || !strings.Contains(skipped[0], "exec_profiles.cron-shell: "+c.refused) || !strings.Contains(skipped[0], "may never mount") {
+			t.Errorf("%s: loaded %d, skipped %v; want one refusal naming %s", c.name, n, skipped, c.refused)
+		}
+		if _, live := defaultExecProfiles.Snapshot()["cron-shell"]; live {
+			t.Errorf("%s: the refused entry is live", c.name)
+		}
+	}
+}
+
 // W1-1 (TEN-455): the container backend has no dry run. "enforce": false on a
 // container profile is refused when the settings load; unset or true is fine,
 // and a dry run on the other backends is unchanged.
@@ -835,5 +909,39 @@ func TestValidateExecProfileSetting_ContainerHasNoDryRun(t *testing.T) {
 	}
 	if err := validateExecProfileSetting("cron-shell", execProfileSetting{Backend: "restricted", Enforce: &off}); err != nil {
 		t.Fatalf("a dry run on restricted stays allowed: %v", err)
+	}
+}
+
+// W2-5: env_pass names that look like credentials are pointed out, per group
+// of surfaces, in the probe and in doctor. A hint: the names are still passed.
+func TestSecretLookingEnv(t *testing.T) {
+	got := secretLookingEnv([]string{"JAVA_HOME", "MY_SERVICE_TOKEN", "DB_PASSWORD", "BUILD_API_KEY", "ssh_auth_sock",
+		"KEYBOARD_LAYOUT", "MONKEY", "LANG", "HTTPS_PROXY", "MY_SERVICE_TOKEN", "DEPLOY-PAT", "SITE_COOKIE", "APP_PRIVATE_PEM"})
+	want := []string{"MY_SERVICE_TOKEN", "DB_PASSWORD", "BUILD_API_KEY", "ssh_auth_sock", "DEPLOY-PAT", "SITE_COOKIE", "APP_PRIVATE_PEM"}
+	if !slices.Equal(got, want) {
+		t.Errorf("secretLookingEnv = %v, want %v", got, want)
+	}
+	if secretLookingEnv(nil) != nil {
+		t.Error("no names must give no hint")
+	}
+
+	resetExecProfiles(t)
+	defaultExecProfiles.Load(map[string]execProfileSetting{
+		"default":        {EnvPass: []string{"JAVA_HOME", "MY_SERVICE_TOKEN"}},
+		surfaceCronShell: {EnvPass: []string{"JAVA_HOME"}},
+	})
+	cfg, data := t.TempDir(), t.TempDir()
+	probes := probeExecSurfaces(context.Background(), cfg, data)
+	lines := envSecretLines(probes)
+	if len(lines) != 1 || !strings.Contains(lines[0], "env_pass forwards MY_SERVICE_TOKEN") || strings.Contains(lines[0], "JAVA_HOME") {
+		t.Fatalf("lines = %q, want one line naming only the credential-looking name", lines)
+	}
+	if strings.HasPrefix(lines[0], surfaceCronShell+",") || strings.Contains(lines[0], ", "+surfaceCronShell+":") || strings.Contains(lines[0], ", "+surfaceCronShell+",") {
+		t.Errorf("cron-shell has its own entry without the name, but is in the line: %s", lines[0])
+	}
+	// The name is still passed: the hint filters nothing.
+	t.Setenv("MY_SERVICE_TOKEN", "x")
+	if p := resolveExecProfile(surfaceLocal, cfg, data, ""); !slices.Contains(p.Policy.Env.Pass, "MY_SERVICE_TOKEN") {
+		t.Errorf("the hinted name was dropped from the environment: %v", p.Policy.Env.Pass)
 	}
 }

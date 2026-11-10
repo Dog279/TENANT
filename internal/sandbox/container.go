@@ -63,11 +63,16 @@ const defaultImage = "tenant-sandbox:latest"
 
 // containerBackend runs commands in a fresh hardened container each time.
 type containerBackend struct {
-	cli        string // the docker-compatible binary: "docker", "podman", or a path
-	image      string // the pinned image reference
-	instance   string // this install's instance id, for the container labels
-	explicitEP string // an operator-named engine endpoint (-H); "" resolves
-	tlsVerify  bool   // the operator vouches for mutual TLS on a tcp:// endpoint
+	cli      string // the docker-compatible binary: "docker", "podman", or a path
+	image    string // the pinned image reference
+	instance string // this install's instance id, for the container labels
+	// imageSeen is the id the image tag resolved to at the last readiness
+	// check (Available), for the run record. Shared by pointer with nothing:
+	// each backend value keeps its own, and a zero value means "not known".
+	imageSeen  atomic.Value // string
+	explicitEP string       // an operator-named engine endpoint (-H); "" resolves
+	tlsVerify  bool         // the operator vouches for mutual TLS on a tcp:// endpoint
+	tlsCertDir string       // where ca.pem, cert.pem and key.pem are, for a tcp:// endpoint; "" resolves
 
 	epMu  sync.Mutex
 	ep    string      // the resolved endpoint, cached on success only
@@ -88,6 +93,10 @@ type ContainerOptions struct {
 	Instance  string
 	Endpoint  string // an explicit engine endpoint, passed as -H; vetted like any other
 	TLSVerify bool   // allow a tcp:// Endpoint (mutual TLS); otherwise tcp:// is refused
+	// TLSCertDir holds ca.pem, cert.pem and key.pem for a tcp:// endpoint, the
+	// layout the docker CLI uses. Naming it allows a tcp:// endpoint, like
+	// TLSVerify. "" falls back to DOCKER_CERT_PATH, then ~/.docker.
+	TLSCertDir string
 }
 
 // containerDefaults are the options For("container") builds with. A process
@@ -163,7 +172,8 @@ func Container(opts ContainerOptions) *containerBackend {
 		image:      firstNonEmptyStr(opts.Image, defaultImage),
 		instance:   firstNonEmptyStr(opts.Instance, processInstance()),
 		explicitEP: opts.Endpoint,
-		tlsVerify:  opts.TLSVerify,
+		tlsVerify:  opts.TLSVerify || opts.TLSCertDir != "",
+		tlsCertDir: opts.TLSCertDir,
 	}
 	b.cache = sharedProbeCache(b.cli + "\x00" + b.explicitEP)
 	return b
@@ -242,20 +252,29 @@ func (b *containerBackend) resolvedBin() (string, error) {
 // gate (W1-1) — a profile naming container never silently runs on the host.
 func (b *containerBackend) Available(ctx context.Context) error {
 	if _, err := b.resolvedBin(); err != nil {
-		return fmt.Errorf("the %s CLI was not found on PATH", b.bin())
+		return unavailable(fmt.Errorf("the %s CLI was not found on PATH", b.bin()), fixInstallEngine)
 	}
 	if _, err := b.facts(ctx); err != nil {
-		return err
+		return err // probeOnce attached the fix
 	}
-	ic, done, err := b.control(ctx, "an image check", "image", "inspect", b.image)
+	// One call answers "is the image built" and "which image is it": the id
+	// goes into every run's record until the next check.
+	id, err := b.imageID(ctx)
 	if err != nil {
-		return err
-	}
-	if err := done(imagePresent(ic)); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return err // the CLI stalled: that is not "the image is missing"
+		var u *Unavailable
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return unavailable(err, fixStuckEngine) // the CLI stalled: that is not "the image is missing"
+		case errors.As(err, &u):
+			return err // the endpoint or the CLI, with its own fix
 		}
-		return fmt.Errorf("the sandbox image %s is not built (run `tenant sandbox image build`)", b.image)
+		return unavailable(fmt.Errorf("the sandbox image %s is not built (run `tenant sandbox image build`)", b.image), fixBuildImage)
+	}
+	b.imageSeen.Store(id)
+	// The engine answers and the image is there; can it start a container?
+	f, _ := b.facts(ctx) // cached: the call above just succeeded
+	if _, err := b.containerCheck(ctx, f); err != nil {
+		return err
 	}
 	return nil
 }
@@ -300,6 +319,11 @@ func (b *containerBackend) Probe(ctx context.Context) Capabilities {
 	detail := "read-only rootfs, non-root user, all capabilities dropped, no-new-privileges, seccomp, " +
 		"per-run pids/memory caps and an in-container deadline; filesystem is deny-by-default (only mounts exist). " +
 		"Limits is partial: --cpus is a rate, not a CPU-time budget. Probe: " + f.summary() + "."
+	if c := b.cache.lastCheck(); c != nil {
+		detail += " " + c.summary() + "."
+	} else {
+		detail += " Container check: not run yet (it runs before the first command)."
+	}
 	if w := f.gates.warning(); w != "" {
 		detail += " NOTE: " + w
 	}
@@ -327,7 +351,13 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 		// canonicalise, a bad env name) fails closed.
 		return Result{Violations: []Violation{{Kind: "policy", Detail: oneLine(err.Error())}}}, err
 	}
+	return b.runSpec(ctx, cmd, pol, spec)
+}
 
+// runSpec starts one container from spec, which is everything about the run
+// that was decided: Run builds it and starts it, and a pinned re-run
+// (RunGrantedAs) starts the one it hashed.
+func (b *containerBackend) runSpec(ctx context.Context, cmd Command, pol Policy, spec containerSpec) (Result, error) {
 	if pol.Limits.Wall > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, pol.Limits.Wall)
@@ -369,10 +399,12 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 		c.Stderr = io.MultiWriter(out, wit, pol.Stderr)
 	}
 
+	started := time.Now()
 	runErr := c.Run()
 	wit.flush()
 	spec.witness = wit
 	res := Result{Output: out.String(), PID: pidOf(c)}
+	res.Confinement = b.confinement(spec, out, time.Since(started))
 	if out.Truncated() {
 		res.Violations = append(res.Violations, Violation{Kind: "limit", Detail: "output exceeded the cap and was truncated; the container was killed"})
 	}
@@ -402,12 +434,63 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 	return res, nil
 }
 
+// confinement describes the boundary a run had, from the spec it was started
+// with (W2-7).
+func (b *containerBackend) confinement(spec containerSpec, out *cappedBuffer, elapsed time.Duration) *Confinement {
+	describe := func(m mount) string {
+		return m.host + " -> " + m.ctr + " (" + boolWord(m.ro, "ro", "rw") + ")"
+	}
+	mounts := []string{describe(spec.work)}
+	for _, m := range spec.mounts {
+		mounts = append(mounts, describe(m))
+	}
+	pids, memMB := spec.limits.MaxPIDs, spec.limits.MemoryBytes>>20
+	if pids <= 0 {
+		pids = defaultMaxPIDs
+	}
+	if memMB <= 0 {
+		memMB = defaultMemoryMB
+	}
+	limits := fmt.Sprintf("pids=%d memory=%dMB cpus=%s", pids, memMB, defaultCPUs)
+	if spec.limits.CPU > 0 {
+		limits += " cpu=" + spec.limits.CPU.String() + "/process"
+	}
+	if spec.limits.Wall > 0 {
+		limits += " wall=" + spec.limits.Wall.String()
+	}
+	if spec.limits.MaxOutputBytes > 0 {
+		limits += fmt.Sprintf(" output=%dB", spec.limits.MaxOutputBytes)
+	}
+	id, _ := b.imageSeen.Load().(string)
+	if spec.image != b.image {
+		id = spec.image // a pinned re-run is started by the id itself
+	}
+	return &Confinement{
+		Image: b.image, ImageID: id, Mounts: mounts, Network: spec.network, Limits: limits,
+		Env:         append([]string(nil), spec.envNames...),
+		OutputBytes: out.Total(), Capped: out.Truncated(), Elapsed: elapsed,
+	}
+}
+
 // RunGranted is the within-tier escalation (W1-6, D3): the same command, in a
 // fresh container, with exactly ONE grant added — the refused folder as a
 // writable root, or the network for this one command. It never touches the
 // host. A refusal that names no grantable path cannot be escalated this way
 // and is an error, so the caller fails closed rather than widening blindly.
 func (b *containerBackend) RunGranted(ctx context.Context, cmd Command, pol Policy, refused Result) (Result, error) {
+	granted, err := grantedPolicy(pol, refused)
+	if err != nil {
+		return refused, err
+	}
+	// specFor re-checks the grant against the deny roots, so an escalation can
+	// never open Tenant's own dirs or a credential store.
+	return b.Run(ctx, cmd, granted)
+}
+
+// grantedPolicy is pol with the one grant an approval of refused adds: the
+// network for a network refusal, or the refused folder as a writable root for
+// a filesystem refusal that names a path. Nothing grantable is an error.
+func grantedPolicy(pol Policy, refused Result) (Policy, error) {
 	granted := false
 	for _, v := range refused.Violations {
 		switch v.Kind {
@@ -427,11 +510,115 @@ func (b *containerBackend) RunGranted(ctx context.Context, cmd Command, pol Poli
 		}
 	}
 	if !granted {
-		return refused, errors.New("container: the refusal names nothing the sandbox can grant for one command (no path, or a limit)")
+		return pol, errors.New("container: the refusal names nothing the sandbox can grant for one command (no path, or a limit)")
+	}
+	return pol, nil
+}
+
+// GrantedRunHash is the digest of the run an approval of refused would start
+// (EscalationBinder, W1-6; see RunGrantedAs, which starts it): sh, the command line, every mount as the engine
+// would get it (canonical source, destination, mode), the network, and the
+// image's id as the engine resolves the tag right now. A re-pointed mount
+// source or a rebuilt or re-tagged image is a different digest. A scratch work
+// dir is a fresh temp folder on every run, so it is hashed as "a scratch work
+// dir", not by its path.
+func (b *containerBackend) GrantedRunHash(ctx context.Context, cmd Command, pol Policy, refused Result) (string, error) {
+	run, err := b.grantedRun(ctx, cmd, pol, refused)
+	if err != nil {
+		return "", err
+	}
+	run.cleanup()
+	return run.digest, nil
+}
+
+// RunGrantedAs is the approved re-run, started from the description whose
+// digest is approved (PinnedEscalator): the spec is built once, hashed, and
+// that spec is what runs, with the image named by the id that was hashed. A
+// tag moved after the last check, or a mount that now canonicalises
+// elsewhere, is a different digest here and nothing starts.
+func (b *containerBackend) RunGrantedAs(ctx context.Context, cmd Command, pol Policy, refused Result, approved string) (Result, error) {
+	run, err := b.grantedRun(ctx, cmd, pol, refused)
+	if err != nil {
+		return refused, err
+	}
+	defer run.cleanup()
+	if approved == "" || run.digest != approved {
+		return refused, errApprovalStale
+	}
+	run.spec.image = run.imageID
+	return b.runSpec(ctx, cmd, run.pol, run.spec)
+}
+
+// grantedRunPlan is one approved re-run, pinned down: the policy with its
+// grant, the spec the engine would get, the id the image tag resolves to now,
+// and the digest of all of it. cleanup removes a scratch work dir.
+type grantedRunPlan struct {
+	pol     Policy
+	spec    containerSpec
+	imageID string
+	digest  string
+	cleanup func()
+}
+
+// grantedRun pins down the run an approval of refused would start.
+func (b *containerBackend) grantedRun(ctx context.Context, cmd Command, pol Policy, refused Result) (grantedRunPlan, error) {
+	granted, err := grantedPolicy(pol, refused)
+	if err != nil {
+		return grantedRunPlan{}, err
+	}
+	cleanup := func() {}
+	scratch := granted.WorkDir == ""
+	if scratch {
+		dir, derr := os.MkdirTemp("", "tenant-sbx-work-")
+		if derr != nil {
+			return grantedRunPlan{}, fmt.Errorf("container: scratch work dir: %w", derr)
+		}
+		cleanup = func() { os.RemoveAll(dir) }
+		granted.WorkDir = dir
 	}
 	// specFor re-checks the grant against the deny roots, so an escalation can
 	// never open Tenant's own dirs or a credential store.
-	return b.Run(ctx, cmd, pol)
+	spec, err := b.specFor(cmd, granted)
+	if err != nil {
+		cleanup()
+		return grantedRunPlan{}, err
+	}
+	describe := func(m mount) string {
+		return m.host + "\x00" + m.ctr + "\x00" + boolWord(m.ro, "ro", "rw")
+	}
+	mounts := []string{"work\x00" + describe(spec.work)}
+	if scratch {
+		mounts[0] = "work\x00<scratch>" // its path, and so its destination, is new every run
+	}
+	for _, m := range spec.mounts {
+		mounts = append(mounts, describe(m))
+	}
+	id, err := b.imageID(ctx)
+	if err != nil {
+		cleanup()
+		return grantedRunPlan{}, err
+	}
+	return grantedRunPlan{
+		pol: granted, spec: spec, imageID: id, cleanup: cleanup,
+		digest: EscalationHash("sh", []string{spec.command}, mounts, spec.network, id),
+	}, nil
+}
+
+// imageID is the id the engine resolves the sandbox image's tag to right now.
+func (b *containerBackend) imageID(ctx context.Context) (string, error) {
+	c, done, err := b.control(ctx, "an image check", "image", "inspect", "--format", "{{.Id}}", b.image)
+	if err != nil {
+		return "", unavailable(err, fixEndpoint)
+	}
+	out, err := c.Output()
+	if err = done(err); err != nil {
+		return "", fmt.Errorf("container: could not read the id of image %s: %w", b.image, err)
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return "", fmt.Errorf("container: the engine reported no id for image %s", b.image)
+	}
+	return id, nil
 }
 
 // specFor turns a Policy into a validated container spec: the canonical mounts,
@@ -468,6 +655,11 @@ func (b *containerBackend) specFor(cmd Command, pol Policy) (containerSpec, erro
 	}
 	if err := grantsClearDenyRoots(work, mounts, pol.DenyRoots); err != nil {
 		return containerSpec{}, err
+	}
+	for _, m := range append([]mount{work}, mounts...) {
+		if !m.ro && bareRepoLayout(m.host) {
+			return containerSpec{}, fmt.Errorf("container: %s is laid out as a bare git repository, so it cannot be a writable folder of a sandboxed command: its hooks and its config would be the command's to write, and git runs them on the host the next time it is used there. Use a folder that holds a checkout, or grant this one read-only", m.host)
+		}
 	}
 	sh := cmd.Shell
 	if sh == "" {
@@ -527,6 +719,31 @@ func grantsClearDenyRoots(work mount, mounts []mount, deny []string) error {
 	return nil
 }
 
+// GrantOverlapsDeny reports the first of grants (folders a container profile
+// would mount) that overlaps one of deny, and which: the grant is the deny
+// root, sits inside it, or contains it. It is the rule grantsClearDenyRoots
+// applies to a run's mounts, in the same canonical form, for whoever loads a
+// profile to apply before any command runs (W1-3, TEN-457). The work dir's
+// carve-out is not part of it: a profile's grants are not a work dir.
+func GrantOverlapsDeny(grants, deny []string) (grant, denied string, overlaps bool) {
+	for _, d := range deny {
+		if d == "" {
+			continue
+		}
+		dc := canonForCompare(d)
+		for _, g := range grants {
+			if g == "" {
+				continue
+			}
+			gc := canonForCompare(g)
+			if withinHost(gc, dc) || withinHost(dc, gc) {
+				return g, d, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // reap kills and removes the named container. It is safe to call more than once
 // and on a container that has already gone (--rm), so Cancel, the output-cap
 // path and the deferred cleanup can all call it.
@@ -562,7 +779,17 @@ func (b *containerBackend) SweepLeftovers(ctx context.Context) (int, error) {
 // controlTimeout), and an unfiltered list answers where it does not. An exact
 // match on the value, so another install's containers are never returned.
 func (b *containerBackend) instanceContainers(ctx context.Context) ([]string, error) {
-	lc, done, err := b.control(ctx, "a container listing", "ps", "-a", "--no-trunc", "--format", `{{.ID}}`+"\t"+`{{.Label "`+labelInstance+`"}}`)
+	if b.instance == "" {
+		return nil, nil
+	}
+	return b.labelledContainers(ctx, labelInstance, b.instance)
+}
+
+// labelledContainers lists the containers, running or not, whose label has
+// exactly the value want, matched here and not by the engine (see
+// instanceContainers).
+func (b *containerBackend) labelledContainers(ctx context.Context, label, want string) ([]string, error) {
+	lc, done, err := b.control(ctx, "a container listing", "ps", "-a", "--no-trunc", "--format", `{{.ID}}`+"\t"+`{{.Label "`+label+`"}}`)
 	if err != nil {
 		return nil, err
 	}
@@ -572,13 +799,47 @@ func (b *containerBackend) instanceContainers(ctx context.Context) ([]string, er
 	}
 	var ids []string
 	for _, line := range strings.Split(string(list), "\n") {
-		id, instance, _ := strings.Cut(strings.TrimRight(line, "\r"), "\t")
-		if id = strings.TrimSpace(id); id != "" && b.instance != "" && strings.TrimSpace(instance) == b.instance {
+		id, value, _ := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if id = strings.TrimSpace(id); id != "" && strings.TrimSpace(value) == want {
 			ids = append(ids, id)
 		}
 	}
 	return ids, nil
 }
+
+// StopAllContainers removes every sandbox container on the engine, running or
+// not: the operator's stop for "something in a sandbox is doing what it should
+// not" (W2-7, `tenant sandbox stop-all`). Every container the backend starts
+// carries tenant.sandbox=1 whatever install or process started it, and that
+// label is the match, so this stops other installs' sandbox containers on the
+// same engine too, and nothing that is not a Tenant sandbox. A command whose
+// container is removed ends as if it had been killed. It returns how many
+// were found and how many of those could not be removed.
+func StopAllContainers(ctx context.Context) (found, failed int, err error) {
+	b := Container(containerDefaults())
+	if _, err := b.resolvedBin(); err != nil {
+		return 0, 0, unavailable(fmt.Errorf("the %s CLI was not found on PATH", b.bin()), fixInstallEngine)
+	}
+	ctx, cancel := context.WithTimeout(ctx, stopAllTimeout)
+	defer cancel()
+	ids, err := b.labelledContainers(ctx, labelSandbox, "1")
+	if err != nil {
+		return 0, 0, stalled(ctx, "the stop", err)
+	}
+	for _, id := range ids {
+		rc, done, cerr := b.control(ctx, "a container removal", "rm", "-f", id)
+		if cerr == nil {
+			cerr = done(rc.Run())
+		}
+		if cerr != nil {
+			failed++
+		}
+	}
+	return len(ids), failed, nil
+}
+
+// stopAllTimeout bounds StopAllContainers. A variable so tests can shorten it.
+var stopAllTimeout = 60 * time.Second
 
 // --- helpers ---------------------------------------------------------------
 
@@ -813,20 +1074,46 @@ func oneLine(s string) string {
 // read where runtime is not otherwise imported.
 func goosOf() string { return runtime.GOOS }
 
+// bareRepoLayout reports whether dir is itself a git directory (a bare
+// repository, or a checkout's .git handed over directly): git's own test, a
+// HEAD file beside objects and refs folders. In a checkout those sit one
+// level down, under .git; here the hooks folder and the config file are at
+// the top of what the command may write (W2-2, H16).
+func bareRepoLayout(dir string) bool {
+	isDir := func(name string) bool {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		return err == nil && fi.IsDir()
+	}
+	head, err := os.Stat(filepath.Join(dir, "HEAD"))
+	return err == nil && head.Mode().IsRegular() && isDir("objects") && isDir("refs")
+}
+
 // canonForCompare resolves p to the absolute, symlink-resolved form that mount
 // sources are compared in, so a deny root and a mount that name the same place
-// through different symlinks still match. Falls back to the cleaned abs path when
-// the target does not exist.
+// through different symlinks still match. A path that does not exist yet (a
+// grant for a folder still to be made) is resolved through its nearest
+// ancestor that does, with the rest kept as written. Without that, such a
+// path kept every symlink and short name on the way to it (/var on macOS,
+// RUNNER~1 on Windows) while an existing deny root lost them, and the two
+// never compared equal: the overlap check silently missed it.
 func canonForCompare(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		abs = p
 	}
 	abs = filepath.Clean(abs)
-	if r, err := filepath.EvalSymlinks(abs); err == nil {
-		return r
+	probe, tail := abs, ""
+	for {
+		if r, err := filepath.EvalSymlinks(probe); err == nil {
+			return filepath.Join(r, tail)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return abs // nothing on the path exists
+		}
+		tail = filepath.Join(filepath.Base(probe), tail)
+		probe = parent
 	}
-	return abs
 }
 
 func dedupPathList(in []string) []string {

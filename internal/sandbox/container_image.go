@@ -13,14 +13,16 @@ import (
 	"strings"
 )
 
-// baseImageDigest pins the Debian base by its index digest (linux/amd64 verified
-// on the target box). trixie is the current stable line; bookworm left regular
-// security support on 2026-07-12 (H24 recommends the move, tracked there). The
-// pin is what makes the build reproducible; verify checks the built image id.
-const baseImageRef = "debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251"
+// baseImageRef pins the Debian base by its index digest, so every platform
+// builds from the same published image. It is trixie (D6): bookworm, the
+// base until 2026-11-10, left regular security support on 2026-07-12 (H24).
+// The digest is the debian:trixie-slim index of 2026-11-04. The pin is what
+// makes the build reproducible; verify checks the built image id.
+const baseImageRef = "debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2"
 
 // imageDockerfile is the sandbox image: the pinned base, a non-root uid 65532
-// user, the common tools an agent command expects, and a final pass that strips
+// user with a home folder of its own (the mount point of the HOME tmpfs, D4),
+// the common tools an agent command expects, and a final pass that strips
 // every setuid and setgid bit so no in-image binary can raise privileges (the
 // probe showed setuid still reaches root without no-new-privileges; the image
 // carries none regardless, defence in depth).
@@ -32,6 +34,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd -g 65532 sandbox; \
     useradd -u 65532 -g 65532 -M -d /home/sandbox -s /bin/bash sandbox; \
+    install -d -o 65532 -g 65532 -m 0700 /home/sandbox; \
     find / -xdev -perm /6000 -type f -exec chmod a-s {} + || true
 USER 65532:65532
 `

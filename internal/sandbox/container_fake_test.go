@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,8 +47,15 @@ func fakeDockerMain() int {
 			f.Close()
 		}
 	}
-	// Strip the -H <ep> the backend always passes first.
+	// Strip the -H <ep> the backend always passes first, and the TLS flags
+	// that follow it for a tcp:// endpoint.
 	if len(args) >= 2 && args[0] == "-H" {
+		args = args[2:]
+	}
+	if len(args) >= 1 && args[0] == "--tlsverify" {
+		args = args[1:]
+	}
+	for len(args) >= 2 && (args[0] == "--tlscacert" || args[0] == "--tlscert" || args[0] == "--tlskey") {
 		args = args[2:]
 	}
 	if len(args) == 0 {
@@ -66,6 +74,12 @@ func fakeDockerMain() int {
 		}
 		return 0
 	case "image":
+		// `image inspect --format {{.Id}}` answers the id the tag points at.
+		for _, a := range args {
+			if a == "{{.Id}}" {
+				fmt.Println(firstNonEmptyStr(os.Getenv("TENANT_FAKE_DOCKER_IMAGE_ID"), "sha256:1111"))
+			}
+		}
 		return 0
 	case "ps":
 		// TENANT_FAKE_DOCKER_PS is "id=instance,id=instance,id": one line per
@@ -86,6 +100,21 @@ func fakeDockerMain() int {
 	case "context":
 		return 1
 	case "run":
+		// TENANT_FAKE_DOCKER_STALL=run never answers, like an engine that
+		// cannot start a container. The container check's command gets a uid
+		// map (TENANT_FAKE_DOCKER_UIDMAP, default: no user namespace) and a
+		// kernel (TENANT_FAKE_DOCKER_KERNEL).
+		if os.Getenv("TENANT_FAKE_DOCKER_STALL") == "run" {
+			time.Sleep(time.Minute)
+			return 0
+		}
+		for _, a := range args {
+			if strings.Contains(a, "/proc/self/uid_map") {
+				fmt.Println(firstNonEmptyStr(os.Getenv("TENANT_FAKE_DOCKER_UIDMAP"), "         0          0 4294967295"))
+				fmt.Println(firstNonEmptyStr(os.Getenv("TENANT_FAKE_DOCKER_KERNEL"), "6.18.54.1-microsoft-standard-WSL2"))
+				return 0
+			}
+		}
 		fmt.Println("fake-run")
 		return 0
 	}
@@ -165,8 +194,10 @@ func TestFakeDocker_CleanLaunch(t *testing.T) {
 	for _, c := range calls {
 		sub = append(sub, c.argv[2])
 	}
-	if got := strings.Join(sub, ","); got != "version,info,image" {
-		t.Errorf("Available ran %q, want version,info,image", got)
+	// version and info are the probe, image is the image check, run is the
+	// container check and kill is its reap.
+	if got := strings.Join(sub, ","); got != "version,info,image,run,kill" {
+		t.Errorf("Available ran %q, want version,info,image,run,kill", got)
 	}
 }
 
@@ -180,14 +211,205 @@ func TestFakeDocker_ProbeCached(t *testing.T) {
 	if err := b.Available(ctx); err != nil {
 		t.Fatal(err)
 	}
-	versions := 0
+	versions, runs := 0, 0
 	for _, c := range readCalls(t, logPath) {
-		if c.argv[2] == "version" {
+		switch c.argv[2] {
+		case "version":
 			versions++
+		case "run":
+			runs++
 		}
 	}
 	if versions != 1 {
 		t.Fatalf("docker version was run %d times across two Available calls, want 1 (cached)", versions)
+	}
+	if runs != 1 {
+		t.Fatalf("the container check ran %d times across two Available calls, want 1 (cached)", runs)
+	}
+}
+
+// W1-1: before first use, one container runs through the real argv and
+// reports what only a container can: the uid map (a user namespace or not)
+// and the kernel. Probe shows it afterwards and never runs it itself.
+func TestFakeDocker_ContainerCheck(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	ctx := context.Background()
+	if d := b.Probe(ctx).Detail; !strings.Contains(d, "Container check: not run yet") {
+		t.Fatalf("Probe before first use should say the check has not run: %s", d)
+	}
+	for _, c := range readCalls(t, logPath) {
+		if c.argv[2] == "run" {
+			t.Fatal("Probe ran a container")
+		}
+	}
+	if err := b.Available(ctx); err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	if d := b.Probe(ctx).Detail; !strings.Contains(d, "container check: userns off (no ECI), kernel 6.18.54.1-microsoft-standard-WSL2") {
+		t.Fatalf("Probe after the check should report it: %s", d)
+	}
+	// The check container is built like any run's: no network, read-only, and
+	// only the scratch work dir mounted.
+	var run []string
+	for _, c := range readCalls(t, logPath) {
+		if c.argv[2] == "run" {
+			run = c.argv[2:]
+		}
+	}
+	joined := strings.Join(run, " ")
+	for _, want := range []string{"--network none", "--read-only", "--cap-drop ALL", "--pull never"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the check container's argv lacks %q: %s", want, joined)
+		}
+	}
+}
+
+// W2-7: a run's result says what boundary it had, from the spec it ran with:
+// the image and the id its tag resolved to at the readiness check, every
+// mount and its mode, the network, the caps, the bytes written and the time.
+func TestFakeDocker_RunReportsItsConfinement(t *testing.T) {
+	b, _ := fakeDocker(t)
+	ctx := context.Background()
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:abcd")
+	if err := b.Available(ctx); err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	work, src := t.TempDir(), t.TempDir()
+	res, err := b.Run(ctx, Command{Shell: "echo hi"}, Policy{
+		WorkDir: work, ReadRoots: []string{src}, Network: NetNone, Enforce: true,
+		Limits: Limits{Wall: 30 * time.Second, MaxOutputBytes: 4096, MaxPIDs: 32},
+		Env:    EnvPolicy{Pass: []string{"LANG", "PATH", "CI"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	c := res.Confinement
+	if c == nil {
+		t.Fatal("a container run reported no confinement")
+	}
+	if c.Image != b.image || c.ImageID != "sha256:abcd" || c.Network != "none" {
+		t.Errorf("image %q id %q network %q", c.Image, c.ImageID, c.Network)
+	}
+	// The names that were passed, and only those: PATH is the container's own.
+	if strings.Join(c.Env, " ") != "LANG CI" {
+		t.Errorf("env names = %q, want LANG and CI", c.Env)
+	}
+	if len(c.Mounts) != 2 || !strings.HasSuffix(c.Mounts[0], "(rw)") || !strings.HasSuffix(c.Mounts[1], "(ro)") ||
+		!strings.Contains(c.Mounts[0], " -> ") {
+		t.Errorf("mounts = %q, want the work dir read-write then the read root read-only", c.Mounts)
+	}
+	for _, want := range []string{"pids=32", "memory=", "cpus=", "wall=30s", "output=4096B"} {
+		if !strings.Contains(c.Limits, want) {
+			t.Errorf("limits %q lack %q", c.Limits, want)
+		}
+	}
+	if c.OutputBytes != int64(len("fake-run\n")) || c.Capped || c.Elapsed <= 0 {
+		t.Errorf("output %d bytes, capped %v, elapsed %s", c.OutputBytes, c.Capped, c.Elapsed)
+	}
+}
+
+// A user namespace shows in the uid map: anything but the identity map.
+func TestFakeDocker_ContainerCheckSeesUserNamespace(t *testing.T) {
+	b, _ := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_UIDMAP", "         0     100000      65536")
+	if err := b.Available(context.Background()); err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	if d := b.Probe(context.Background()).Detail; !strings.Contains(d, "container check: userns on") {
+		t.Fatalf("a remapped uid 0 should read as a user namespace: %s", d)
+	}
+}
+
+// An engine that answers `version` and `info` but cannot start a container (a
+// Docker Desktop stuck starting) fails Available at the check's deadline, with
+// a reason, and is not asked again until the back-off has passed. Without the
+// check every command waited out its own wall clock and returned nothing.
+func TestFakeDocker_EngineThatCannotStartAContainer(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_STALL", "run")
+	old := containerCheckTimeout
+	containerCheckTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { containerCheckTimeout = old })
+	ctx := context.Background()
+	// The cache's clock stands still, so "inside the back-off" below does not
+	// depend on how long this machine takes to start the fake CLI.
+	frozen := time.Now()
+	b.cache.now = func() time.Time { return frozen }
+	start := time.Now()
+	err := b.Available(ctx)
+	if took := time.Since(start); took > 60*time.Second {
+		t.Fatalf("Available took %s against an engine that cannot start a container", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not start and finish a container") {
+		t.Fatalf("Available = %v, want the reason the engine is unusable", err)
+	}
+	again := b.Available(ctx)
+	if again == nil || again.Error() != err.Error() {
+		t.Fatalf("second Available = %v, want the cached refusal", again)
+	}
+	runs := 0
+	for _, c := range readCalls(t, logPath) {
+		if c.argv[2] == "run" {
+			runs++
+		}
+	}
+	if runs != 1 {
+		t.Fatalf("the check ran %d times inside its back-off, want 1", runs)
+	}
+}
+
+func TestParseContainerCheck(t *testing.T) {
+	cases := []struct {
+		name, out  string
+		userns     bool
+		kernel     string
+		wantErrHas string
+	}{
+		{"no namespace", "         0          0 4294967295\n6.18.54.1-microsoft-standard-WSL2\n", false, "6.18.54.1-microsoft-standard-WSL2", ""},
+		{"remapped", "0 100000 65536\n6.19.2\n", true, "6.19.2", ""},
+		{"two rows", "0 1000 1\n1 100000 65535\n6.19.2\n", true, "6.19.2", ""},
+		{"windows line ends", "0 0 4294967295\r\n6.19.2\r\n", false, "6.19.2", ""},
+		{"kernel only", "6.19.2\n", false, "", "not a uid map and a kernel"},
+		{"empty", "", false, "", "not a uid map and a kernel"},
+		{"not a map", "permission denied\n6.19.2\n", false, "", "not three numbers"},
+	}
+	for _, c := range cases {
+		got, err := parseContainerCheck(c.out)
+		if c.wantErrHas != "" {
+			if err == nil || !strings.Contains(err.Error(), c.wantErrHas) {
+				t.Errorf("%s: err = %v, want one containing %q", c.name, err, c.wantErrHas)
+			}
+			continue
+		}
+		if err != nil || got.userns != c.userns || got.kernel != c.kernel {
+			t.Errorf("%s: got %+v, %v; want userns=%v kernel=%q", c.name, got, err, c.userns, c.kernel)
+		}
+	}
+}
+
+// The floor is about the kernel containers run on. `wsl --version` prints the
+// installed kernel; a VM started before an update keeps the old one.
+func TestCheckRunningKernel(t *testing.T) {
+	cases := []struct {
+		name, installed, running string
+		refuse, warn             string
+	}{
+		{"both current", "6.18.58.1-1", "6.18.58.1-microsoft-standard-WSL2", "", ""},
+		{"running trails installed, above the floor", "6.18.58.1-1", "6.18.54.1-microsoft-standard-WSL2", "", "still running 6.18.54.1-microsoft-standard-WSL2"},
+		{"running below the floor, installed above it", "6.18.58.1-1", "6.18.30.2-microsoft-standard-WSL2", "predates the CVE-2026-53362 fix", ""},
+		{"no kernel reported", "6.18.58.1-1", "", "", "reported no kernel version"},
+		{"unparseable", "6.18.58.1-1", "custom", "", "could not be parsed"},
+		{"no installed line", "", "6.18.54.1-microsoft-standard-WSL2", "", ""},
+	}
+	for _, c := range cases {
+		g := checkRunningKernel(c.installed, c.running)
+		refuse, warn := strings.Join(g.refuse, "; "), strings.Join(g.warn, "; ")
+		if (c.refuse == "") != (refuse == "") || !strings.Contains(refuse, c.refuse) {
+			t.Errorf("%s: refuse = %q, want one containing %q", c.name, refuse, c.refuse)
+		}
+		if (c.warn == "") != (warn == "") || !strings.Contains(warn, c.warn) {
+			t.Errorf("%s: warn = %q, want one containing %q", c.name, warn, c.warn)
+		}
 	}
 }
 
@@ -234,6 +456,99 @@ func TestFakeDocker_RefusesBadEndpoint(t *testing.T) {
 	}
 }
 
+// W1-6: the container's digest of a granted run is stable for the same run,
+// and moves when the image the tag points at, the granted folder, the command
+// or the network grant does. A scratch work dir (a new temp folder each time)
+// does not move it.
+func TestFakeDocker_GrantedRunHash(t *testing.T) {
+	b, _ := fakeDocker(t)
+	ctx := context.Background()
+	dirA, dirB := t.TempDir(), t.TempDir()
+	refusedAt := func(dir string) Result {
+		return Result{ExitCode: 1, Violations: []Violation{{Kind: "filesystem", Detail: "read-only", Path: dir}}}
+	}
+	hash := func(cmd string, pol Policy, refused Result) string {
+		t.Helper()
+		h, err := b.GrantedRunHash(ctx, Command{Shell: cmd}, pol, refused)
+		if err != nil || h == "" {
+			t.Fatalf("GrantedRunHash: %q, %v", h, err)
+		}
+		return h
+	}
+	pol := Policy{Network: NetNone, Enforce: true}
+	base := hash("touch x", pol, refusedAt(dirA))
+	if again := hash("touch x", pol, refusedAt(dirA)); again != base {
+		t.Fatal("the same run hashed differently twice (a scratch work dir must not count)")
+	}
+	if hash("touch y", pol, refusedAt(dirA)) == base {
+		t.Error("another command has the same digest")
+	}
+	if hash("touch x", pol, refusedAt(dirB)) == base {
+		t.Error("another granted folder has the same digest")
+	}
+	if hash("touch x", pol, Result{ExitCode: 1, Violations: []Violation{{Kind: "network", Detail: "no route"}}}) == base {
+		t.Error("a network grant has the same digest as a folder grant")
+	}
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:2222")
+	if hash("touch x", pol, refusedAt(dirA)) == base {
+		t.Error("the image tag now points at another image and the digest did not move")
+	}
+	if _, err := b.GrantedRunHash(ctx, Command{Shell: "touch x"}, pol, Result{ExitCode: 1, Violations: []Violation{{Kind: "limit", Detail: "oom"}}}); err == nil {
+		t.Error("a refusal with nothing to grant must have no digest")
+	}
+}
+
+// A tcp:// endpoint is used only with mutual TLS, and the CLI is told so on
+// its command line: the environment that would switch TLS on is stripped, so
+// `-H tcp://…` alone would be a plain-HTTP connection to an engine that is
+// root on its host. Without all three files the endpoint is refused.
+func TestFakeDocker_TCPEndpointIsAlwaysLaunchedWithTLS(t *testing.T) {
+	_, logPath := fakeDocker(t) // pins the probes and sets the fake's environment
+	exe, _ := os.Executable()
+	certs := t.TempDir()
+	ctx := context.Background()
+
+	bare := Container(ContainerOptions{CLI: exe, Endpoint: "tcp://10.0.0.9:2376", TLSCertDir: certs, Instance: "inst-test"})
+	err := bare.Available(ctx)
+	if err == nil || !strings.Contains(err.Error(), "needs mutual TLS") || !strings.Contains(err.Error(), "ca.pem") {
+		t.Fatalf("a tcp:// endpoint with no certificate files must be refused, got %v", err)
+	}
+	if calls := readCalls(t, logPath); len(calls) != 0 {
+		t.Fatalf("the CLI was called for a tcp:// endpoint that has no TLS material: %v", calls[0].argv)
+	}
+
+	for _, f := range []string{"ca.pem", "cert.pem", "key.pem"} {
+		if err := os.WriteFile(filepath.Join(certs, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := Container(ContainerOptions{CLI: exe, Endpoint: "tcp://10.0.0.10:2376", TLSCertDir: certs, Instance: "inst-test"})
+	if err := b.Available(ctx); err != nil {
+		t.Fatalf("Available with TLS material: %v", err)
+	}
+	calls := readCalls(t, logPath)
+	if len(calls) == 0 {
+		t.Fatal("the fake CLI was never called")
+	}
+	want := []string{"-H", "tcp://10.0.0.10:2376", "--tlsverify",
+		"--tlscacert", filepath.Join(certs, "ca.pem"), "--tlscert", filepath.Join(certs, "cert.pem"), "--tlskey", filepath.Join(certs, "key.pem")}
+	for _, c := range calls {
+		if len(c.argv) <= len(want) || strings.Join(c.argv[:len(want)], "|") != strings.Join(want, "|") {
+			t.Errorf("a call to a tcp:// endpoint did not lead with the endpoint and its TLS flags: %v", c.argv)
+		}
+	}
+}
+
+// A local or ssh endpoint gets no TLS flags.
+func TestTLSArgs_OnlyForTCP(t *testing.T) {
+	b := Container(ContainerOptions{TLSCertDir: t.TempDir()})
+	for _, ep := range []string{"npipe:////./pipe/dockerDesktopLinuxEngine", "unix:///var/run/docker.sock", "ssh://ops@build-host"} {
+		if args, err := b.tlsArgs(ep); err != nil || len(args) != 0 {
+			t.Errorf("tlsArgs(%q) = %v, %v; want nothing", ep, args, err)
+		}
+	}
+}
+
 // W1-4: the startup sweep lists the containers with their instance label and
 // removes exactly this install's: not another install's, not an unlabelled
 // one. The engine's own label filter is not used (it stalled on one Docker
@@ -256,6 +571,38 @@ func TestFakeDocker_SweepLeftovers(t *testing.T) {
 	}
 	if strings.Join(seen, "|") != strings.Join(want, "|") {
 		t.Fatalf("sweep ran %q, want %q", seen, want)
+	}
+}
+
+// W2-7: stop-all removes every container labelled as a Tenant sandbox,
+// whichever install started it, and nothing else on the engine.
+func TestStopAllContainers(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	SetContainerDefaults(ContainerOptions{CLI: b.cli, Endpoint: b.explicitEP, Instance: b.instance})
+	t.Cleanup(func() { SetContainerDefaults(ContainerOptions{}) })
+	// The fake prints "id<TAB>value" for whichever label is asked for; "1" is
+	// the sandbox label's value, anything else is another container.
+	t.Setenv("TENANT_FAKE_DOCKER_PS", "aaa111=1,redis999,bbb222=1,ccc333=0")
+	found, failed, err := StopAllContainers(context.Background())
+	if err != nil || found != 2 || failed != 0 {
+		t.Fatalf("StopAllContainers = (%d, %d, %v), want (2, 0, nil)", found, failed, err)
+	}
+	var seen []string
+	for _, c := range readCalls(t, logPath) {
+		seen = append(seen, strings.Join(c.argv[2:], " "))
+	}
+	want := []string{
+		"ps -a --no-trunc --format {{.ID}}\t{{.Label \"" + labelSandbox + "\"}}",
+		"rm -f aaa111",
+		"rm -f bbb222",
+	}
+	if strings.Join(seen, "|") != strings.Join(want, "|") {
+		t.Fatalf("stop-all ran %q, want %q", seen, want)
+	}
+
+	t.Setenv("TENANT_FAKE_DOCKER_PS", "")
+	if found, failed, err := StopAllContainers(context.Background()); err != nil || found != 0 || failed != 0 {
+		t.Fatalf("nothing to stop = (%d, %d, %v)", found, failed, err)
 	}
 }
 
@@ -297,6 +644,108 @@ func TestSweepContainers_NoCLIIsNotAnError(t *testing.T) {
 	}
 }
 
+// For("container") builds its backend from the process defaults: the
+// install's instance id, so the containers a surface starts carry the label
+// the start-up sweep looks for. (It built with empty options, so every command
+// was labelled with a per-process id and the sweep could never find a previous
+// run's leftovers.)
+func TestFor_ContainerUsesTheProcessDefaults(t *testing.T) {
+	SetContainerDefaults(ContainerOptions{Instance: "inst-from-defaults", Endpoint: "npipe:////./pipe/" + t.Name()})
+	t.Cleanup(func() { SetContainerDefaults(ContainerOptions{}) })
+	be, err := For("container")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok := be.(*containerBackend)
+	if !ok {
+		t.Fatalf("For(container) = %T", be)
+	}
+	if b.instance != "inst-from-defaults" || b.explicitEP != "npipe:////./pipe/"+t.Name() {
+		t.Fatalf("For(container) built instance %q endpoint %q, want the process defaults", b.instance, b.explicitEP)
+	}
+	if sweep := Container(containerDefaults()); sweep.instance != b.instance {
+		t.Fatalf("the sweep looks for %q but commands are labelled %q", sweep.instance, b.instance)
+	}
+}
+
+// Every reason Available refuses for carries the fix doctor shows.
+func TestFakeDocker_RefusalsCarryAFix(t *testing.T) {
+	fix := func(err error) string {
+		var u *Unavailable
+		if errors.As(err, &u) {
+			return u.Fix
+		}
+		return ""
+	}
+	ctx := context.Background()
+
+	missing := Container(ContainerOptions{CLI: "definitely-not-a-docker-binary-" + t.Name()})
+	if err := missing.Available(ctx); fix(err) != fixInstallEngine {
+		t.Errorf("no CLI: %v, fix %q", err, fix(err))
+	}
+
+	b, _ := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_ENGINE", "20.10.0")
+	if err := b.Available(ctx); fix(err) != fixFloors {
+		t.Errorf("below the floor: %v, fix %q", err, fix(err))
+	}
+
+	b2, _ := fakeDocker(t)
+	b2.explicitEP = "npipe:////./pipe/" + t.Name() + "-plain"
+	b2.cache = sharedProbeCache(b2.cli + "\x00" + b2.explicitEP)
+	t.Setenv("TENANT_FAKE_DOCKER_ENGINE", "")
+	plaintextDaemonAnswers = func(context.Context) bool { return true }
+	if err := b2.Available(ctx); fix(err) != fixPlaintext {
+		t.Errorf("plaintext daemon: %v, fix %q", err, fix(err))
+	}
+	plaintextDaemonAnswers = func(context.Context) bool { return false }
+
+	b3, _ := fakeDocker(t)
+	b3.explicitEP = "npipe:////./pipe/" + t.Name() + "-stuck"
+	b3.cache = sharedProbeCache(b3.cli + "\x00" + b3.explicitEP)
+	t.Setenv("TENANT_FAKE_DOCKER_STALL", "run")
+	old := containerCheckTimeout
+	containerCheckTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { containerCheckTimeout = old })
+	if err := b3.Available(ctx); fix(err) != fixStuckEngine {
+		t.Errorf("cannot start a container: %v, fix %q", err, fix(err))
+	}
+}
+
+// The overlap rule must see through a symlink on the way to a folder that
+// does not exist yet: the folder's real place is under its real ancestor.
+// (On macOS the temp dir itself is behind /var; on a Windows runner it is
+// behind a short name. Both resolve only for a path that exists.)
+func TestGrantOverlapsDeny_NotYetExistingGrantBehindALink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(filepath.Join(real, "protected"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Existing and not-yet-existing grants, named directly.
+	for _, grant := range []string{filepath.Join(real, "protected"), filepath.Join(real, "protected", "later", "deeper")} {
+		if _, _, bad := GrantOverlapsDeny([]string{grant}, []string{filepath.Join(real, "protected")}); !bad {
+			t.Errorf("grant %s was not seen to overlap the deny root", grant)
+		}
+	}
+	if _, _, bad := GrantOverlapsDeny([]string{filepath.Join(real, "elsewhere", "later")}, []string{filepath.Join(real, "protected")}); bad {
+		t.Error("an unrelated folder that does not exist yet was called an overlap")
+	}
+	// The same, named through a symlink to the real folder.
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symlink on this machine: %v", err)
+	}
+	for _, grant := range []string{filepath.Join(link, "protected"), filepath.Join(link, "protected", "later")} {
+		if _, _, bad := GrantOverlapsDeny([]string{grant}, []string{filepath.Join(real, "protected")}); !bad {
+			t.Errorf("grant %s (through a link) was not seen to overlap the deny root", grant)
+		}
+	}
+	if got, want := canonForCompare(filepath.Join(link, "protected", "later")), filepath.Join(canonForCompare(real), "protected", "later"); got != want {
+		t.Errorf("canonForCompare through a link = %s, want %s", got, want)
+	}
+}
+
 func TestInstanceID(t *testing.T) {
 	a := InstanceID(filepath.Join("C:\\", "Users", "u", "AppData", "tenant"))
 	b := InstanceID(filepath.Join("C:\\", "Users", "u", "AppData", "tenant"))
@@ -306,5 +755,67 @@ func TestInstanceID(t *testing.T) {
 	}
 	if _, err := json.Marshal(a); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The approved re-run is started from the description that was hashed: the
+// image is named by the id in the digest, never by its tag, and a run whose
+// digest is no longer the approved one starts nothing.
+func TestFakeDocker_RunGrantedAsStartsTheRunItHashed(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	cmd := Command{Shell: "touch x"}
+	pol := Policy{Network: NetNone, Enforce: true}
+	refused := Result{ExitCode: 1, Violations: []Violation{{Kind: "filesystem", Detail: "read-only", Path: dir}}}
+	runs := func() (n int, last []string) {
+		for _, c := range readCalls(t, logPath) {
+			for i, a := range c.argv {
+				if a == "run" && i <= 8 {
+					n, last = n+1, c.argv
+					break
+				}
+			}
+		}
+		return n, last
+	}
+
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:aaaa")
+	approved, err := b.GrantedRunHash(ctx, cmd, pol, refused)
+	if err != nil {
+		t.Fatalf("GrantedRunHash: %v", err)
+	}
+	res, err := b.RunGrantedAs(ctx, cmd, pol, refused, approved)
+	if err != nil {
+		t.Fatalf("RunGrantedAs with the approved digest: %v", err)
+	}
+	n, argv := runs()
+	if n != 1 {
+		t.Fatalf("containers started = %d, want 1", n)
+	}
+	if !slices.Contains(argv, "sha256:aaaa") || slices.Contains(argv, b.image) {
+		t.Errorf("the re-run must name the image by the hashed id, not by its tag: %q", argv)
+	}
+	if c := res.Confinement; c == nil || c.Image != b.image || c.ImageID != "sha256:aaaa" {
+		t.Errorf("the record must keep the tag and the id it ran: %+v", res.Confinement)
+	}
+
+	// The tag points at another image after the approval: nothing starts.
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:bbbb")
+	if _, err := b.RunGrantedAs(ctx, cmd, pol, refused, approved); !errors.Is(err, errApprovalStale) {
+		t.Errorf("a moved tag: err = %v, want the stale-approval refusal", err)
+	}
+	// No digest, or another run's digest: nothing starts.
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:aaaa")
+	for _, bad := range []string{"", "not-the-digest"} {
+		if _, err := b.RunGrantedAs(ctx, cmd, pol, refused, bad); !errors.Is(err, errApprovalStale) {
+			t.Errorf("approved=%q: err = %v, want the stale-approval refusal", bad, err)
+		}
+	}
+	if _, err := b.RunGrantedAs(ctx, Command{Shell: "touch y"}, pol, refused, approved); !errors.Is(err, errApprovalStale) {
+		t.Errorf("another command under the same approval: err = %v", err)
+	}
+	if n, _ := runs(); n != 1 {
+		t.Errorf("containers started = %d after the refused re-runs, want still 1", n)
 	}
 }

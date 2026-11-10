@@ -3304,7 +3304,7 @@ func cmdOS(ctx context.Context, args []string) error {
 	}
 	defer closeStores()
 
-	if _, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.agent); err != nil {
+	if _, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.dataDir, c.agent); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: exec profiles not loaded: %v\n", err)
 	} else if len(skipped) > 0 {
 		fmt.Fprintf(os.Stderr, "warning: invalid exec profiles skipped: %s\n", strings.Join(skipped, "; "))

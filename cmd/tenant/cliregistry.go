@@ -250,7 +250,7 @@ func cliCommands() []*cliCommand {
 				{Syntax: "permissions effective", Desc: "composed authority by agent and surface"},
 				{Syntax: "permissions preset safe|balanced|full", Desc: "apply a category preset"},
 			}},
-		{Names: []string{"sandbox"}, Section: "safety", Run: cmdSandbox, Sub: []string{"probe", "selftest", "run", "redteam"},
+		{Names: []string{"sandbox"}, Section: "safety", Run: cmdSandbox, Sub: []string{"probe", "selftest", "run", "stop-all", "redteam"},
 			Summary: "the execution sandbox: probe, escape self-test, run, red-team",
 			Rows: []cmdreg.Row{
 				{Syntax: "sandbox probe", Desc: "what each exec profile enforces on this host"},

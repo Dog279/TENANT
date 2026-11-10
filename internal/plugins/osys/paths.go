@@ -79,7 +79,9 @@ func resolve(p string) (string, error) {
 			// Re-attach the not-yet-existing tail to the resolved ancestor.
 			rel, relErr := filepath.Rel(probe, abs)
 			if relErr != nil {
-				return abs, nil
+				// A path that cannot be related to its own resolved ancestor is
+				// refused, never passed on unresolved (W2-3: fail closed).
+				return "", fmt.Errorf("cannot resolve %q: %w", p, relErr)
 			}
 			return filepath.Clean(filepath.Join(real, rel)), nil
 		}

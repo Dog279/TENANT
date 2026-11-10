@@ -4657,7 +4657,7 @@ Writes the `security` log.
 | [4106](#security-4106) | info | Approval | `{broker} approvals for {category} set to {mode}` |
 | [4201](#security-4201) | info | Execution | `Command ran on {backend}: exit {exit}` |
 | [4202](#security-4202) | warning | Execution | `The sandbox refused a command on {backend}: {violations}` |
-| [4203](#security-4203) | warning | Execution | `A command the sandbox refused ran outside it ({why}): {violations}` |
+| [4203](#security-4203) | warning | Execution | `A command the sandbox refused was re-run {where} ({why}): {violations}` |
 | [4204](#security-4204) | info | Execution | `The Discord relay's exec mode turned {mode}` |
 | [4301](#security-4301) | info | Access | `Dashboard sign-in from {remote}` |
 | [4302](#security-4302) | info | Access | `Dashboard sign-out from {remote}` |
@@ -4778,11 +4778,11 @@ Writes the `security` log.
 `Command ran on {backend}: exit {exit}`
 
 - **Level:** info · **Channel:** operational · **Task:** Execution · **Log:** security
-- **Fields:** `command`, `backend`, `exit`, `timed_out`, `err`
+- **Fields:** `command`, `backend`, `exit`, `timed_out`, `err`, `image`, `image_id`, `mounts`, `network`, `limits`, `env`, `output_bytes`, `output_capped`, `elapsed_ms`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4201`
 
-**What it means.** A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets.
+**What it means.** A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets. On the container backend the record also holds the boundary the run had: the image and the id its tag resolved to, every mount with its mode, the network, the caps, the names (never the values) of the host's environment variables passed in, how many bytes the command wrote and whether that hit the output cap, and how long it took.
 
 **Why it happens.** The agent called os_exec (approved, or allowed by --allow-exec or its category's mode), or a cron shell job ran.
 
@@ -4805,14 +4805,14 @@ Writes the `security` log.
 
 ### security 4203
 
-`A command the sandbox refused ran outside it ({why}): {violations}`
+`A command the sandbox refused was re-run {where} ({why}): {violations}`
 
 - **Level:** warning · **Channel:** operational · **Task:** Execution · **Log:** security
-- **Fields:** `command`, `backend`, `violations`, `why`
+- **Fields:** `command`, `backend`, `violations`, `why`, `where`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4203`
 
-**What it means.** A command the sandbox refused was re-run on the host: approved by the operator (why approved; the approval is the event's), or in a dry-run profile (why dry_run), which only reports.
+**What it means.** A command the sandbox refused was re-run: approved by the operator (why approved; the approval is the event's), or in a dry-run profile (why dry_run), which only reports. where says where it re-ran: on the host, outside the sandbox, or, on the container backend, in a fresh container with one more grant (the refused folder, or the network for that command). The record of that re-run is the 4201 beside it.
 
 **Why it happens.** The operator approved os_exec_unsandboxed, or the surface's exec profile has enforce off.
 

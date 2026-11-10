@@ -1739,7 +1739,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyEvent(agent.Event(msg))
 		cmds = append(cmds, m.listen()) // keep listening
 	case sysMsg:
-		m.appendFeed(cSys.Render("⚙ " + string(msg)))
+		m.appendFeed(cSys.Render("⚙ " + termText(string(msg))))
 		cmds = append(cmds, m.listenSystem())
 	case teamEvtMsg:
 		m.applyTeamEvent(TeamEvent(msg))
@@ -1748,7 +1748,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyResearchTimeline(ResearchTimelineUpdate(msg))
 		cmds = append(cmds, m.listenResearchTimeline())
 	case approvalMsg:
-		r := ApprovalRequest(msg)
+		r := safeApproval(ApprovalRequest(msg))
 		if !m.hasPending(r.ID) { // de-dupe vs the EventApprovalPending backstop (TEN-203)
 			m.pending = append(m.pending, r)
 			m.showApproval(r)
@@ -2251,14 +2251,16 @@ func (m *model) interrupt() {
 // sysChat appends a plain system message (shown in the terminal's default
 // foreground — readable, not dim — and copyable as-is).
 func (m *model) sysChat(s string) {
-	m.msgs = append(m.msgs, chatMsg{role: "system", content: s})
+	// What a command prints is often stored text (a fact, a skill, a job's
+	// name) a model wrote earlier: drawn like any other outside text.
+	m.msgs = append(m.msgs, chatMsg{role: "system", content: termText(s)})
 }
 
 // sysChatStyled appends a system message with a styled display form and a
 // separate plain form for the transcript. An empty styled falls back to
 // plain at render time.
 func (m *model) sysChatStyled(plain, styled string) {
-	m.msgs = append(m.msgs, chatMsg{role: "system", content: plain, rendered: styled})
+	m.msgs = append(m.msgs, chatMsg{role: "system", content: termText(plain), rendered: styledText(styled)})
 }
 
 // handleSlash runs a /command through the slash registry (cmd_registry.go)
@@ -2279,6 +2281,7 @@ func (m *model) handleSlash(line string) tea.Cmd {
 // count per plugin, so it's actually scannable.
 // showApproval renders a pending dangerous action and the decision menu.
 func (m *model) showApproval(r ApprovalRequest) {
+	r = safeApproval(r) // a prompt never draws a request as it came (TEN-468)
 	plain := fmt.Sprintf("⚠ approval needed — %s\n  %s\n  (action: %s)\n  /approve · /approve session · /approve always · /deny",
 		r.Category, r.Detail, r.Action)
 	styled := cErr.Render("⚠ approval needed — "+r.Category) + "\n" +
@@ -2364,6 +2367,7 @@ func (m *model) turnFeed(line string) {
 }
 
 func (m *model) applyEvent(e agent.Event) {
+	e = safeEvent(e) // the model's and the tools' text, never drawn raw (TEN-468)
 	// A scheduled job's activity carries its cron agent's id, so it is taken
 	// before the cross-agent skip below.
 	if e.Source == "cron" {
@@ -2380,7 +2384,7 @@ func (m *model) applyEvent(e agent.Event) {
 	case agent.EventApprovalResolved:
 		if e.Approval != nil && strings.HasPrefix(e.Approval.ID, "beside-") {
 			// The mirror of an approval another surface owned (TEN-203) closed out.
-			m.turnFeed(cDim.Render("approval in " + strings.TrimPrefix(e.Approval.ID, "beside-") + ": " + e.Approval.Outcome))
+			m.turnFeed(cDim.Render("approval in " + oneLine(promptText(strings.TrimPrefix(e.Approval.ID, "beside-"))) + ": " + oneLine(promptText(e.Approval.Outcome))))
 			break
 		}
 		// Another observer (the dashboard) resolved a pending action, OR this TUI's
@@ -2395,15 +2399,15 @@ func (m *model) applyEvent(e agent.Event) {
 			// not a card this TUI can resolve — say where it lives instead of
 			// rendering a dead Approve/Deny prompt. (That dead prompt is what read
 			// as "the approval showed up on the TUI instead of Discord.")
-			where := strings.TrimPrefix(e.Approval.ID, "beside-")
-			m.turnFeed(cErr.Render("⏳ approval waiting in " + where + " (" + e.Approval.Category + "): " + e.Approval.Action + " — resolve it there"))
+			where := oneLine(promptText(strings.TrimPrefix(e.Approval.ID, "beside-")))
+			m.turnFeed(cErr.Render("⏳ approval waiting in " + where + " (" + oneLine(promptText(e.Approval.Category)) + "): " + oneLine(promptText(e.Approval.Action)) + " — resolve it there"))
 			break
 		}
 		// Backstop for a dropped non-blocking channel notify: if the fast-path
 		// approvalMsg didn't deliver this id, surface it from the event (TEN-203).
 		// De-duped by ID so the channel + event never double-add.
 		if e.Approval != nil && !m.hasPending(e.Approval.ID) {
-			r := ApprovalRequest{ID: e.Approval.ID, Category: e.Approval.Category, Action: e.Approval.Action, Detail: e.Approval.Detail}
+			r := safeApproval(ApprovalRequest{ID: e.Approval.ID, Category: e.Approval.Category, Action: e.Approval.Action, Detail: e.Approval.Detail})
 			m.pending = append(m.pending, r)
 			m.showApproval(r)
 			m.turnFeed(cErr.Render("⚠ approval needed: " + r.Category))
@@ -2585,6 +2589,7 @@ func (m *model) applyCronEvent(e agent.Event) {
 // applyTeamEvent renders a spawned sub-agent's event into the feed and
 // sums its token usage into the separate team counter.
 func (m *model) applyTeamEvent(te TeamEvent) {
+	te.AgentID, te.Event = termText(te.AgentID), safeEvent(te.Event) // TEN-468
 	e := te.Event
 	tag := "[" + te.AgentID + "]"
 	// C4: roll tool activity into the research timeline (if a run is active).
@@ -2666,6 +2671,7 @@ func (m *model) tallyTimelineToolEvent(te TeamEvent) {
 // initializing the snapshot on `started` and clearing it on `done`. Each Kind
 // only consults the matching pointer; unknown Kind = no-op.
 func (m *model) applyResearchTimeline(u ResearchTimelineUpdate) {
+	u = safeTimeline(u) // questions and gaps are a model's words (TEN-468)
 	switch u.Kind {
 	case "started":
 		if u.Started == nil {

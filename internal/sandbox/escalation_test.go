@@ -143,6 +143,87 @@ func TestExecute_ShLineNeverReachesPowerShell(t *testing.T) {
 	}
 }
 
+// boundTier is a tier backend that names its granted run with a digest from
+// hashes, one per call (the last repeats): the first is taken before the
+// approval is asked for, the second before the run.
+type boundTier struct {
+	tierBackend
+	hashes []string
+	errAt  int // 1-based call that fails; 0 = none
+	calls  *int
+}
+
+func (b boundTier) GrantedRunHash(context.Context, Command, Policy, Result) (string, error) {
+	*b.calls++
+	if b.errAt == *b.calls {
+		return "", errNothingGrantable
+	}
+	return b.hashes[min(*b.calls, len(b.hashes))-1], nil
+}
+
+// W1-6: an approval covers the exact run it was asked for. If what would run
+// is different by the time the operator says yes, or cannot be pinned down,
+// or the approval is too old, nothing is re-run and the refusal says so.
+func TestExecute_ApprovalIsBoundToTheRunItWasAskedFor(t *testing.T) {
+	cases := []struct {
+		name    string
+		hashes  []string
+		errAt   int
+		elapsed time.Duration // between the approval and the check
+		granted bool
+		reason  string
+	}{
+		{"the same run", []string{"aa"}, 0, 0, true, ""},
+		{"the run changed while the approval waited", []string{"aa", "bb"}, 0, 0, false, "no longer what was approved"},
+		{"it could not be pinned when asked", []string{"aa"}, 1, 0, false, "could not be pinned down"},
+		{"it could not be checked before the run", []string{"aa"}, 2, 0, false, "could not be checked before it started"},
+		{"the approval is too old", []string{"aa"}, 0, EscalationTTL + time.Second, false, "older than"},
+	}
+	for _, c := range cases {
+		fb := &refusingBackend{refuse: []Violation{{Kind: "filesystem", Detail: "x", Path: "/somewhere"}}}
+		calls := 0
+		b := boundTier{tierBackend: tierBackend{fb}, hashes: c.hashes, errAt: c.errAt, calls: &calls}
+		base := time.Unix(1_800_000_000, 0)
+		ticks := 0
+		escalationNow = func() time.Time {
+			ticks++
+			if ticks == 1 { // the ticket's issue; later reads are the check
+				return base
+			}
+			return base.Add(c.elapsed)
+		}
+		res, err := Execute(context.Background(), b, Command{Shell: "echo hi"}, Policy{Enforce: true}, approve)
+		escalationNow = time.Now
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if c.granted {
+			if !res.Escalated || len(fb.granted) != 1 {
+				t.Errorf("%s: want the granted re-run, got %+v (granted %d)", c.name, res, len(fb.granted))
+			}
+			continue
+		}
+		if res.Escalated || len(fb.granted) != 0 {
+			t.Errorf("%s: something was re-run: %+v (granted %d)", c.name, res, len(fb.granted))
+		}
+		last := res.Violations[len(res.Violations)-1]
+		if last.Kind != "policy" || !strings.Contains(last.Detail, "not escalated") || !strings.Contains(last.Detail, c.reason) {
+			t.Errorf("%s: last violation = %+v, want a policy refusal containing %q", c.name, last, c.reason)
+		}
+	}
+}
+
+// A denied escalation asks the backend for its digest once and re-runs nothing.
+func TestExecute_DeniedApprovalRunsNothingBound(t *testing.T) {
+	fb := &refusingBackend{refuse: []Violation{{Kind: "filesystem", Detail: "x", Path: "/somewhere"}}}
+	calls := 0
+	b := boundTier{tierBackend: tierBackend{fb}, hashes: []string{"aa"}, calls: &calls}
+	res, _ := Execute(context.Background(), b, Command{Shell: "echo hi"}, Policy{Enforce: true}, deny)
+	if res.Escalated || len(fb.granted) != 0 || calls != 1 {
+		t.Fatalf("denied: escalated=%v granted=%d digest calls=%d", res.Escalated, len(fb.granted), calls)
+	}
+}
+
 func TestEscalationHashAndTicket(t *testing.T) {
 	base := EscalationHash("sh", []string{"-c", "echo hi"}, []string{"C:\\w:/mnt/c/w:rw"}, "none", "sha256:abc")
 	for name, h := range map[string]string{
@@ -231,6 +312,48 @@ func TestHostPathFor(t *testing.T) {
 	} {
 		if got := hostPathFor(c.ctr, c.goos); got != c.want {
 			t.Errorf("hostPathFor(%q, %s) = %q, want %q", c.ctr, c.goos, got, c.want)
+		}
+	}
+}
+
+// pinnedTier is a bound tier that starts the run it hashes: Execute must hand
+// it the digest the operator approved, and use it in place of RunGranted.
+type pinnedTier struct {
+	boundTier
+	gotApproved *[]string
+	stale       bool
+}
+
+func (p pinnedTier) RunGrantedAs(_ context.Context, _ Command, pol Policy, refused Result, approved string) (Result, error) {
+	*p.gotApproved = append(*p.gotApproved, approved)
+	if p.stale {
+		return refused, errApprovalStale
+	}
+	return Result{ExitCode: 0, Output: "pinned"}, nil
+}
+
+func TestExecute_APinnedBackendRunsWhatWasApproved(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		fb := &refusingBackend{refuse: []Violation{{Kind: "filesystem", Detail: "x", Path: "/somewhere"}}}
+		calls := 0
+		var got []string
+		b := pinnedTier{boundTier: boundTier{tierBackend: tierBackend{fb}, hashes: []string{"aa"}, calls: &calls}, gotApproved: &got, stale: stale}
+		res, err := Execute(context.Background(), b, Command{Shell: "echo hi"}, Policy{Enforce: true}, approve)
+		if err != nil {
+			t.Fatalf("stale=%v: %v", stale, err)
+		}
+		if len(got) != 1 || got[0] != "aa" || len(fb.granted) != 0 {
+			t.Fatalf("stale=%v: RunGrantedAs got %q and RunGranted ran %d times; want the approved digest once and no unpinned run", stale, got, len(fb.granted))
+		}
+		if stale {
+			last := res.Violations[len(res.Violations)-1]
+			if res.Escalated || last.Kind != "policy" || !strings.Contains(last.Detail, "no longer what was approved") {
+				t.Errorf("a stale pinned run: %+v", res)
+			}
+			continue
+		}
+		if !res.Escalated || res.Output != "pinned" {
+			t.Errorf("want the pinned re-run's result, got %+v", res)
 		}
 	}
 }

@@ -277,6 +277,10 @@ type Result struct {
 	// after an approved escalation or in dry-run. Violations then records what the
 	// boundary refused on the first attempt.
 	Escalated bool
+	// Confinement is what the run was held to, from a backend that builds its
+	// boundary per run (the container); nil from the others. For an escalated
+	// result it describes the re-run: nil means that ran on the host.
+	Confinement *Confinement
 }
 
 // Contained reports whether the boundary stopped the command from succeeding:
@@ -374,8 +378,9 @@ func Restricted() (Backend, error) {
 }
 
 // For resolves a backend by profile name: "" / "host", "restricted",
-// "jobobject" (Windows only), or "container" (not yet implemented). An
-// unknown or unavailable backend is an error the caller surfaces.
+// "jobobject" (Windows only), or "container" (the Docker backend, built
+// from the process defaults). An unknown or unavailable backend is an error
+// the caller surfaces.
 func For(name string) (Backend, error) {
 	switch name {
 	case "", "host":
@@ -388,10 +393,28 @@ func For(name string) (Backend, error) {
 		}
 		return jobObjectFactory(), nil
 	case "container":
-		return Container(ContainerOptions{}), nil
+		// The process defaults, so every surface's backend labels its
+		// containers with the install's id, the one the start-up sweep looks
+		// for, and uses the operator's endpoint.
+		return Container(containerDefaults()), nil
 	default:
 		return nil, fmt.Errorf("sandbox: unknown backend %q", name)
 	}
+}
+
+// Confinement is the boundary one run actually had, for its Security log
+// record (W2-7): written by the backend from the spec it ran, never from the
+// request, so the record is of what happened.
+type Confinement struct {
+	Image       string        // the image reference the container was started from
+	ImageID     string        // what that reference resolved to at the readiness check before the run; "" if not known
+	Mounts      []string      // each as "host -> container (rw|ro)"; the work dir first
+	Network     string        // the engine network: none or bridge
+	Limits      string        // the caps applied, defaults included
+	Env         []string      // the names of the variables passed in from the host; never a value
+	OutputBytes int64         // what the command wrote, before the cap
+	Capped      bool          // the output cap was hit and the run was killed for it
+	Elapsed     time.Duration // start to finish, the engine's start-up included
 }
 
 // Escalator decides whether a command the boundary refused may re-run on the
@@ -431,6 +454,19 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	if err != nil || !res.Refused() {
 		return res, err
 	}
+	// W1-6: an approval is bound to the exact run it was asked for. A backend
+	// that re-runs within its own tier and can describe that run (the container)
+	// is asked for its digest BEFORE the prompt; a failure to describe it is
+	// kept and refuses the re-run after an approval, so nothing unbound runs.
+	binder, _ := b.(EscalationBinder)
+	if _, isTier := b.(TierEscalator); !isTier || !pol.Enforce || res.refusedKind("program") {
+		binder = nil
+	}
+	var asked string
+	var askErr error
+	if binder != nil && esc != nil {
+		asked, askErr = binder.GrantedRunHash(ctx, cmd, pol, res)
+	}
 	if pol.Enforce && (esc == nil || !esc(ctx, cmd, res)) {
 		return res, nil
 	}
@@ -440,7 +476,19 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	case res.refusedKind("program"):
 		hres, herr = Host().Run(ctx, cmd, pol)
 	case isTier:
-		hres, herr = tier.RunGranted(ctx, cmd, pol, res)
+		if binder != nil {
+			if why := approvalStillCovers(ctx, binder, cmd, pol, res, asked, askErr); why != "" {
+				res.Violations = append(res.Violations, Violation{Kind: "policy", Detail: "not escalated: " + why})
+				return res, nil
+			}
+		}
+		if pinned, ok := b.(PinnedEscalator); ok && binder != nil {
+			// The backend starts the run it hashes: the check above is for the
+			// time limit and the plain message, this one leaves no gap.
+			hres, herr = pinned.RunGrantedAs(ctx, cmd, pol, res, asked)
+		} else {
+			hres, herr = tier.RunGranted(ctx, cmd, pol, res)
+		}
 		if herr != nil {
 			// Nothing grantable: the refusal stands, and says why it could not be
 			// escalated. Never fall through to the host.
@@ -457,6 +505,28 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	hres.Violations = append(append([]Violation(nil), res.Violations...), hres.Violations...)
 	hres.Escalated = true
 	return hres, herr
+}
+
+// approvalStillCovers checks, immediately before an approved re-run, that the
+// approval covers it: the run could be described when the operator was asked,
+// it can be described now, and it is the same run, within EscalationTTL of
+// the approval. It returns "" when it does, else why not, for the operator.
+// The ticket is issued here, at the approval: a prompt may wait for a person
+// as long as it needs, and what the TTL bounds is the gap between the yes and
+// the run.
+func approvalStillCovers(ctx context.Context, binder EscalationBinder, cmd Command, pol Policy, refused Result, asked string, askErr error) string {
+	if askErr != nil {
+		return "the run to approve could not be pinned down when it was asked for (" + oneLine(askErr.Error()) + "); nothing was run"
+	}
+	ticket := NewEscalationTicket(asked, escalationNow())
+	now, err := binder.GrantedRunHash(ctx, cmd, pol, refused)
+	if err != nil {
+		return "the approved run could not be checked before it started (" + oneLine(err.Error()) + "); nothing was run"
+	}
+	if !ticket.Valid(now, escalationNow()) {
+		return "what would run is no longer what was approved (the command, a mount, the network or the image changed while the approval waited), or the approval is older than " + EscalationTTL.String() + "; nothing was run. Ask again to approve the run as it is now"
+	}
+	return ""
 }
 
 // --- shared helpers used by every backend ---

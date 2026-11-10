@@ -56,7 +56,7 @@ var sandboxSurfaces = execSurfaces
 const sandboxRunUsage = "usage: tenant sandbox run --surface <local|discord|imessage|cron-exec|cron-shell> " +
 	"[--backend host|restricted|container] [--timeout 60s] [--workdir DIR] -- <command...>"
 
-const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
+const sandboxUsage = `usage: tenant sandbox <probe|selftest|run|stop-all>
 
   probe [--json]      each surface's exec profile: backend, isolation, network mode, roots,
                       and what that backend enforces on this host; plus whether this OS has
@@ -75,6 +75,9 @@ const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
                       real sandbox boundary inside a disposable fake environment with
                       canary secrets. Reports what the boundary contained; exits 1 if the
                       model escapes a boundary the backend claims to enforce.
+  stop-all            remove every Tenant sandbox container on the engine, running or not.
+                      The emergency stop: a command whose container is removed ends as
+                      killed. It needs no running hub. Exits 1 if one could not be removed.
   image build|verify [--cli docker] [--tag tenant-sandbox:latest]
                       build the container backend's image from the embedded, digest-pinned
                       Dockerfile (no registry beyond the base), or verify it is present and
@@ -103,6 +106,8 @@ func sandboxMain(ctx context.Context, args []string, out io.Writer) error {
 		return sandboxRedteam(ctx, args[1:], out)
 	case "image":
 		return sandboxImage(ctx, args[1:], out)
+	case "stop-all":
+		return sandboxStopAll(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprintln(out, sandboxUsage)
 		return nil
@@ -173,6 +178,8 @@ type surfaceProbe struct {
 	Error      string   `json:"error,omitempty"`        // why the backend is unavailable
 	Fallback   string   `json:"fallback,omitempty"`     // why the built-in default runs this surface on the host
 	Exceptions []string `json:"exceptions"`             // exec_exceptions: folders its commands may write to
+	// EnvSecretLooking is the env_pass names that look like credentials.
+	EnvSecretLooking []string `json:"env_pass_secret_looking,omitempty"`
 }
 
 type restrictedProbe struct {
@@ -277,6 +284,9 @@ func probeSurface(ctx context.Context, name, cfgDir, dataDir string) surfaceProb
 		DenyRoots:  nonNilStrings(p.Policy.DenyRoots),
 		Fallback:   p.Fallback,
 		Exceptions: nonNilStrings(defaultExecProfiles.exceptions(name)),
+	}
+	if o, ok := defaultExecProfiles.lookup(name); ok {
+		s.EnvSecretLooking = secretLookingEnv(o.EnvPass)
 	}
 	if b, err := sandbox.For(p.Backend); err != nil {
 		s.Error = err.Error()
@@ -391,6 +401,9 @@ func renderProbe(w io.Writer, r probeReport) {
 	if len(fellBack) > 0 {
 		fmt.Fprintf(w, "  ! %s: on the host, unconfined, because %s\n", strings.Join(fellBack, ", "), fallback)
 	}
+	for _, ln := range envSecretLines(r.Surfaces) {
+		fmt.Fprintf(w, "  ! %s\n", ln)
+	}
 
 	fmt.Fprintln(w, "\nROOTS")
 	for _, g := range groupByRoots(r.Surfaces) {
@@ -497,6 +510,40 @@ func sbxRows(w io.Writer, indent string, width int, label string, vals []string,
 // -------------------------------------------------------------- image ---
 
 // sandboxImage builds or verifies the container backend's image.
+// sandboxStopAll is `tenant sandbox stop-all`: remove every Tenant sandbox
+// container on the engine (W2-7). It needs no running hub and asks nothing:
+// it is what an operator runs when a sandboxed command must stop now. It uses
+// the engine config.json names (`container`), like every other command.
+func sandboxStopAll(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("sandbox stop-all", flag.ContinueOnError)
+	c := bindSandboxDirs(fs)
+	c.auditOnly, c.skipDataLock = true, true // it changes nothing of Tenant's and must work beside a running hub
+	if err := fs.Parse(args); err != nil {
+		return sbxHelpOK(err)
+	}
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
+		c.lc = lc
+	}
+	sandbox.SetContainerDefaults(containerOptions(c, false))
+	found, failed, err := sandbox.StopAllContainers(ctx)
+	if err != nil {
+		return fmt.Errorf("sandbox stop-all: %w", err)
+	}
+	switch {
+	case found == 0:
+		fmt.Fprintln(out, "no sandbox containers on the engine")
+	case failed == 0:
+		fmt.Fprintf(out, "stopped and removed %d sandbox container(s); the commands they ran end as killed\n", found)
+	default:
+		fmt.Fprintf(out, "found %d sandbox container(s); removed %d\n", found, found-failed)
+		return fmt.Errorf("sandbox stop-all: %d container(s) could not be removed; `docker ps -a --filter label=tenant.sandbox=1` lists them", failed)
+	}
+	return nil
+}
+
 func sandboxImage(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: tenant sandbox image <build|verify> [--cli docker] [--tag tenant-sandbox:latest]")
@@ -774,6 +821,14 @@ func confinedBackendFor(ctx context.Context, name string) (sandbox.Backend, erro
 		if caps := b.Probe(ctx); caps.Filesystem != sandbox.EnforceFull {
 			return nil, fmt.Errorf("the container backend is not ready: %s", caps.Detail)
 		}
+		// Probe runs nothing. Available also starts one container, so an engine
+		// that answers but cannot start one is reported here, once, with its
+		// reason, and not as every case timing out.
+		if a, ok := b.(sandbox.Available); ok {
+			if err := a.Available(ctx); err != nil {
+				return nil, fmt.Errorf("the container backend is not ready: %w", err)
+			}
+		}
 		return b, nil
 	default:
 		return sandbox.For(name)
@@ -997,6 +1052,13 @@ func sandboxRun(ctx context.Context, args []string, out io.Writer) error {
 		p, chosen = withBackend(p, o.backend), "forced by --backend"
 	}
 	be, err := sandbox.For(p.Backend)
+	if err == nil {
+		// The same readiness gate a spawn site applies (profileBackend): a
+		// backend that is known but cannot run anything here says why now.
+		if a, ok := be.(sandbox.Available); ok {
+			err = a.Available(ctx)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("sandbox run: %s backend %q unavailable: %w", o.surface, p.Backend, err)
 	}
@@ -1236,7 +1298,7 @@ func nonNilStrings(s []string) []string {
 // and run show and use the same profiles the running hub does. It returns one
 // line per problem (unreadable settings, invalid entries skipped).
 func loadSandboxProfiles(c *commonFlags) []string {
-	n, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.agent)
+	n, skipped, err := loadExecProfilesFromSettings(c.cfgDir, c.dataDir, c.agent)
 	if err != nil {
 		return []string{"exec_profiles not loaded (" + err.Error() + "); showing built-in defaults"}
 	}

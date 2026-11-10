@@ -5,6 +5,117 @@ Releases page.
 
 ## Unreleased
 
+- **Container sandbox: HOME is a folder of the container's own.** `HOME` was the work dir, so
+  the dotfiles, caches and history a command wrote stayed in your folder on the host, where the
+  next "fresh" container and your own tools read them. It is now `/home/sandbox`, a 64 MB
+  in-memory folder only the sandbox user can enter, gone when the command ends. A command that
+  needs a file to last writes it in the work dir.
+- **Container sandbox: `cpu_seconds` is enforced, per process.** A profile's `cpu_seconds` is
+  now a kernel CPU-time limit on each process in the container (`--ulimit cpu`). It stops one
+  runaway process; a command that spreads its work over many is bounded by its time limit and
+  by 2 CPUs, which is why `tenant sandbox probe` reports limits on this backend as partial.
+- **Container sandbox: the image is built from `debian:trixie-slim`,** pinned by digest.
+  bookworm, the base until now, left regular security support in July 2026. **Run
+  `tenant sandbox image build` again after updating**: the backend never pulls or rebuilds on
+  its own, and an image built before this keeps the old base.
+- **SECURITY.md says who is trusted:** the local user account and every process running as it.
+  The execution sandbox protects the host from a command the agent runs, not Tenant or the
+  container engine from the user's other processes.
+- **`tenant sandbox probe` and `tenant doctor` point out credential-looking names in `env_pass`.**
+  A sandboxed command can read every variable it is passed, and with the network on can send
+  it anywhere. When a surface's `env_pass` forwards a name that looks like a credential
+  (`…_TOKEN`, `…_API_KEY`, `…PASSWORD`, `SSH_AUTH_SOCK`), both now say so, per surface
+  (`env_pass_secret_looking` in `probe --json`). A hint only: the name is still passed, and a
+  secret under a plain name is not noticed.
+- **The container sandbox refuses a writable folder that is itself a git directory.** A bare
+  repository (or a checkout's `.git` handed over directly) has its `hooks` folder and its
+  `config` at the top of what the command could write, and git runs both on the host the next
+  time it is used there. Such a folder is refused as the work dir and as a write root, with the
+  reason; granted read-only it is allowed, and a folder that holds a checkout is unaffected.
+- **The terminal app no longer sends a model's or a tool's text to your terminal as it came.**
+  A carriage return or a terminal escape sequence in a command, in its output or in a model's
+  answer could put words over the line before them, recolor or clear the screen, or retitle
+  the window. An approval prompt drew the command the same way, so part of a command could be
+  out of sight of the person approving it. An approval prompt now shows every character that
+  draws nothing or moves other text as a marker (`⟨U+000D⟩`, `⟨U+202E⟩`), as the dashboard's
+  approval card does. Everywhere else in the app, whole escape sequences (a tool's colors) are
+  removed, a carriage return becomes a line break, and any other control character shows as a
+  marker. What a slash command prints from stored text (a memory fact, a skill, a job's name)
+  is treated the same way; where the app has styled such text its colors stay, but nothing in
+  it can conceal text, move the cursor, clear or retitle. The dashboard and the log files
+  already did this.
+- **The container sandbox says when the engine cannot run anything, before the first command.**
+  `docker version` and `docker info` answering does not mean the engine can start a container:
+  a Docker Desktop stuck starting (seen after a WSL update) answers both, and every command
+  then waited out its whole time limit and returned nothing. Before a surface first uses the
+  `container` backend, Tenant now starts one check container through the same hardened
+  arguments, with a 20-second limit. If it does not finish, the surface's commands are refused
+  with that reason, and the check is retried with back-off. The check also reads what only a
+  container can show: whether a user namespace is in effect (from its uid map) and the kernel it
+  runs on. `tenant sandbox run` and `tenant sandbox selftest --backend container` apply the same
+  check, and `tenant sandbox probe` reports its result.
+- **The Security log says what boundary a sandboxed command had.** On the container backend,
+  the record of a command (`4201`) now holds the image and the id its tag resolved to, every
+  folder mounted and whether it was writable, the network, the limits, the names (never the
+  values) of the environment variables passed in, how much the command
+  wrote and whether that hit the output cap, and how long it took. **Corrected:** the record
+  of an approved re-run (`4203`) said the command "ran outside" the sandbox even when the
+  re-run stayed in a container with one more grant; it now says where it ran.
+- **`tenant sandbox stop-all`** removes every Tenant sandbox container on the engine, running
+  or not: the stop for a sandboxed command that must end now. It needs no running hub. A
+  command whose container is removed ends as killed.
+- **An approval to re-run a refused command covers that exact run.** When the container
+  sandbox refuses a command and you approve the re-run, Tenant now takes a digest of what
+  will run (the command, every mount, the network and the image the tag points at) before it
+  asks and again just before the run. If they differ, because an image was rebuilt or a folder
+  re-pointed while the prompt waited, nothing runs and the refusal says to ask again. The
+  re-run is then started from the description that was hashed, with the image named by its
+  id, not its tag, so nothing is looked up again between the last check and the run.
+- **`config.json` can name the container sandbox's engine** (`container.endpoint`,
+  `container.tls_cert_dir`): a local pipe or socket, `ssh://`, or `tcp://` with mutual TLS.
+  **Fixed with it:** a `tcp://` endpoint that passed the TLS check was still launched with no
+  TLS flags, because the environment that turns TLS on is stripped from the docker CLI, so
+  the connection was plain HTTP. A `tcp://` endpoint is now always launched with
+  `--tlsverify` and the CA, certificate and key from the certificate folder, and is refused
+  when any of the three is missing.
+- **The WSL kernel floor is checked against the kernel that is running.** `wsl --version` prints
+  the installed kernel, and a WSL VM started before an update keeps running the old one. The
+  floor (6.18.40) now also applies to the kernel the engine reports: below it refuses, and a
+  running kernel that only trails the installed one is a warning that says to `wsl --shutdown`.
+- **A container profile that would mount a protected folder is refused when the settings load.**
+  A `container` entry in `exec_profiles` whose `read_roots` or `write_roots` contain, equal or
+  sit inside Tenant's config or data dir, its binary, a credential store or the entry's own
+  `deny_roots` was accepted, and every command on that surface was then refused at run time.
+  The entry is now skipped at load with a message naming the grant and the folder.
+- **Fixed: the start-up sweep never found a previous run's containers.** Commands were labelled
+  with a per-process id, and the sweep looked for the install's id, so a container left by a
+  crash was never removed. Every surface's container backend now uses the install's id.
+- **`tenant doctor` has a `container sandbox` row.** When a surface uses the `container`
+  backend it says whether the backend can run a command right now and, when not, the reason
+  and the fix for that reason (install Docker, start it, update it, build the image, restart a
+  stuck Docker Desktop). It starts one short-lived container. It is skipped when no surface
+  uses the backend.
+- **The container sandbox closes its wave-1 hardening** (TEN-455, TEN-456, TEN-457,
+  TEN-458, TEN-460; TEN-438). The `docker` CLI is launched from its absolute path with
+  an environment Tenant builds (no inherited `DOCKER_*` or `NVIDIA_*`) and an explicit
+  `-H` endpoint; `tcp://` without TLS is refused, and so is running while a daemon answers
+  on `127.0.0.1:2375` in the clear. The version floors now refuse rather than warn:
+  Engine 29.4.3, runc and containerd by release line, Docker Desktop 4.44.3, and on
+  Windows WSL 2.7.10 with a kernel at or past 6.18.40; seccomp must be on. The probe
+  records the versions, user-namespace, LSM, seccomp profile and image store, caches only
+  success and retries a failure with back-off. `"enforce": false` is rejected at load for a
+  `container` profile. Every container runs under an in-container `timeout -s KILL`, so one
+  orphaned by a crash still dies; the sweep at `serve` start removes a previous run's
+  containers by a stable per-install label. Output is bounded as it arrives on every
+  backend, and over the cap the container is killed at once. On an approved escalation the
+  command re-runs INSIDE a fresh container with one grant (the refused folder, or the
+  network for that command); only a Windows program a Linux container cannot run goes to the
+  host, and an `sh` line is never handed to PowerShell. The approval prompt shows the exact
+  command with control characters escaped and a risk line Tenant writes. Mount sources:
+  a trailing dot or space anywhere is refused, 8.3 short names are expanded, and a socket,
+  pipe or device is never a source. Refusal attribution reads a streaming scan of the whole
+  output rather than the capped display string, so a refusal line that lands past the cap
+  is still attributed and the same command is labelled the same way every run.
 - **The MCP SSE gateway now requires a token. Existing SSE clients need one more setting.**
   `tenant mcp-memory --sse-addr` had no authentication, and a loopback bind kept other
   machines out but not the other programs on the same one, or a browser on it: the gateway

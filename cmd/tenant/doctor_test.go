@@ -60,6 +60,32 @@ func TestDoctor_CheckExecSandbox(t *testing.T) {
 	}
 }
 
+// checkContainerSandbox: SKIP while no surface uses the container backend;
+// FAIL, with the reason and that reason's fix, when one does and the backend
+// cannot run a command (here: no docker CLI).
+func TestDoctor_CheckContainerSandbox(t *testing.T) {
+	resetExecProfiles(t)
+	e := &doctorEnv{c: &commonFlags{cfgDir: t.TempDir(), dataDir: t.TempDir(), agent: "main"}}
+	ctx := context.Background()
+	if r := checkContainerSandbox(ctx, e); r.Status != statusSkip {
+		t.Fatalf("no container surface: %s %q", r.Status.tag(), r.Detail)
+	}
+
+	sandbox.SetContainerDefaults(sandbox.ContainerOptions{CLI: "definitely-not-a-docker-binary-" + t.Name()})
+	t.Cleanup(func() { sandbox.SetContainerDefaults(sandbox.ContainerOptions{}) })
+	stg := &settings{ExecProfiles: map[string]execProfileSetting{"cron-shell": {Backend: "container"}}}
+	if err := stg.Save(e.c.cfgDir, "main"); err != nil {
+		t.Fatal(err)
+	}
+	r := checkContainerSandbox(ctx, e)
+	if r.Status != statusFail || !strings.Contains(r.Detail, "cron-shell: commands do not run") || !strings.Contains(r.Detail, "CLI was not found") {
+		t.Fatalf("container surface, no CLI: %s %q", r.Status.tag(), r.Detail)
+	}
+	if !strings.Contains(r.Fix, "install Docker Desktop") {
+		t.Fatalf("the fix should be the one for a missing CLI: %q", r.Fix)
+	}
+}
+
 // checkLaunchConfig: missing config = OK (defaults), parseable = OK,
 // corrupt = FAIL, active provider missing from map = FAIL.
 func TestDoctor_CheckLaunchConfig(t *testing.T) {

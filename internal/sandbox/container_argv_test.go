@@ -35,6 +35,7 @@ func TestBuildRunArgv_Golden(t *testing.T) {
 		"--label", "tenant.trace=trace-xyz",
 		"--label", "tenant.instance=inst-1",
 		"--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+		"--tmpfs", "/home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532",
 		"--mount", `type=bind,"src=C:\work dir","dst=/mnt/c/work dir"`, "-w", "/mnt/c/work dir",
 		"--mount", `type=bind,src=C:\ref,dst=/mnt/c/ref,readonly`,
 		"--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -43,7 +44,7 @@ func TestBuildRunArgv_Golden(t *testing.T) {
 		"--ulimit", "core=0", "--ulimit", "nofile=1024:4096",
 		"--network", "none", "--init", "--log-driver", "none",
 		"-e", "TENANT_ACTIVITY_ID",
-		"-e", "HOME=/mnt/c/work dir", "-e", "TMPDIR=/tmp",
+		"-e", "HOME=/home/sandbox", "-e", "TMPDIR=/tmp",
 		"tenant-sandbox@sha256:" + strings.Repeat("a", 64), "sh", "-c", "echo hi",
 	}
 	if !slices.Equal(got, want) {
@@ -179,6 +180,7 @@ func TestBuildRunArgv_GoldenPOSIX(t *testing.T) {
 		"run", "--rm", "-i", "--pull", "never", "--name", "tenant-sbx-test-2",
 		"--label", "tenant.sandbox=1",
 		"--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+		"--tmpfs", "/home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532",
 		"--mount", `type=bind,"src=/home/u/a,b c""d","dst=/home/u/a,b c""d"`, "-w", work,
 		"--mount", `type=bind,src=/srv/ref,dst=/srv/ref,readonly`,
 		"--user", "65532:65532", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -186,7 +188,7 @@ func TestBuildRunArgv_GoldenPOSIX(t *testing.T) {
 		"--pids-limit", "256", "--memory", "1024m", "--memory-swap", "1024m", "--cpus", "2",
 		"--ulimit", "core=0", "--ulimit", "nofile=1024:4096",
 		"--network", "none", "--init", "--log-driver", "none",
-		"-e", "HOME=" + work, "-e", "TMPDIR=/tmp",
+		"-e", "HOME=/home/sandbox", "-e", "TMPDIR=/tmp",
 		"tenant-sandbox:latest", "sh", "-c", "ls",
 	}
 	if !slices.Equal(got, want) {
@@ -232,5 +234,53 @@ func TestCSVField(t *testing.T) {
 		if got := csvField(in); got != want {
 			t.Errorf("csvField(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// D5: a CPU-time cap becomes a per-process RLIMIT_CPU, rounded up to whole
+// seconds, soft and hard alike; with none set the flag is absent.
+func TestBuildRunArgv_CPULimit(t *testing.T) {
+	has := func(argv []string, flag, val string) bool {
+		for i := 0; i+1 < len(argv); i++ {
+			if argv[i] == flag && argv[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+	s := sampleSpec()
+	argv, err := buildRunArgv(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range argv {
+		if strings.HasPrefix(a, "cpu=") {
+			t.Errorf("no CPU cap was set, but the argv has %q", a)
+		}
+	}
+	s.limits.CPU = 2500 * time.Millisecond
+	argv, err = buildRunArgv(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(argv, "--ulimit", "cpu=3:3") {
+		t.Errorf("a 2.5s CPU cap must be --ulimit cpu=3:3:\n%q", argv)
+	}
+}
+
+// D4: HOME is a tmpfs of the container's own, never the work dir, so nothing
+// a command leaves in HOME reaches the host or the next container.
+func TestBuildRunArgv_HomeIsItsOwnTmpfs(t *testing.T) {
+	s := sampleSpec()
+	argv, err := buildRunArgv(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, "\x00")
+	if !strings.Contains(joined, "--tmpfs\x00/home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532") {
+		t.Errorf("no tmpfs for HOME:\n%q", argv)
+	}
+	if !strings.Contains(joined, "-e\x00HOME=/home/sandbox") || strings.Contains(joined, "HOME="+s.work.ctr) {
+		t.Errorf("HOME must be /home/sandbox, not the work dir:\n%q", argv)
 	}
 }

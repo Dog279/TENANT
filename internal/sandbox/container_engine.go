@@ -37,6 +37,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -82,7 +83,8 @@ var (
 // precedence the docker CLI itself applies — explicit, then DOCKER_HOST, then
 // the docker context's host — and vets it. With nothing named, the vetted OS
 // default is used. tlsVerify is DOCKER_TLS_VERIFY (or the operator's setting):
-// tcp:// is allowed only with it.
+// tcp:// is allowed only with it, and is then always launched with the TLS
+// flags (tlsArgs).
 func resolveEndpoint(explicit, envHost, contextHost string, tlsVerify bool, goos string) (string, error) {
 	for _, c := range []struct{ ep, source string }{
 		{explicit, "container.endpoint"},
@@ -113,7 +115,7 @@ func vetEndpoint(ep string, tlsVerify bool, source string) (string, error) {
 		return ep, nil
 	case "tcp":
 		if !tlsVerify {
-			return "", fmt.Errorf("container: %s is %s, a tcp:// endpoint without TLS; the engine API is root on that host, so only ssh:// or mutual TLS (DOCKER_TLS_VERIFY=1) is allowed", source, ep)
+			return "", fmt.Errorf("container: %s is %s, a tcp:// endpoint without TLS; the engine API is root on that host, so only ssh:// or mutual TLS (container.tls_cert_dir, or DOCKER_TLS_VERIFY=1) is allowed", source, ep)
 		}
 		return ep, nil
 	default:
@@ -215,10 +217,45 @@ func (b *containerBackend) command(ctx context.Context, args ...string) (*exec.C
 	if err != nil {
 		return nil, err
 	}
-	full := append([]string{"-H", ep}, args...)
+	full := []string{"-H", ep}
+	tls, err := b.tlsArgs(ep)
+	if err != nil {
+		return nil, err
+	}
+	full = append(append(full, tls...), args...)
 	c := exec.CommandContext(ctx, bin, full...)
 	c.Env = cliEnv(os.Environ())
 	return c, nil
+}
+
+// tlsArgs is the CLI's TLS flags for a tcp:// endpoint, and nothing for any
+// other. A tcp:// endpoint passes vetEndpoint only when TLS was asked for, but
+// asking is not enough: the CLI turns TLS on from DOCKER_TLS_VERIFY and
+// DOCKER_CERT_PATH, which cliEnv strips, so with `-H tcp://…` alone it would
+// speak plain HTTP to the engine. The flags say it outright: verify the
+// engine's certificate against ca.pem and present cert.pem and key.pem
+// (mutual TLS). All three files must be there, or the endpoint is refused.
+func (b *containerBackend) tlsArgs(ep string) ([]string, error) {
+	u, err := url.Parse(ep)
+	if err != nil || !strings.EqualFold(u.Scheme, "tcp") {
+		return nil, nil
+	}
+	dir := b.tlsCertDir
+	if dir == "" {
+		dir = os.Getenv("DOCKER_CERT_PATH")
+	}
+	if dir == "" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			dir = filepath.Join(home, ".docker")
+		}
+	}
+	ca, cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	for _, f := range []string{ca, cert, key} {
+		if fi, serr := os.Stat(f); serr != nil || fi.IsDir() {
+			return nil, fmt.Errorf("container: the tcp:// endpoint %s needs mutual TLS, and %s is missing: put ca.pem, cert.pem and key.pem in %s (container.tls_cert_dir), or use ssh://", ep, f, dir)
+		}
+	}
+	return []string{"--tlsverify", "--tlscacert", ca, "--tlscert", cert, "--tlskey", key}, nil
 }
 
 // controlTimeout bounds one docker CLI call that manages the engine (version,
@@ -543,6 +580,14 @@ type probeCache struct {
 	failAt   time.Time
 	failures int
 	now      func() time.Time // test seam; nil is time.Now
+
+	// The container check (containerCheck): its last pass and when, or its
+	// last error, retried with the back-off a failed probe gets.
+	check         *containerCheckFacts
+	checkAt       time.Time
+	checkErr      error
+	checkFailAt   time.Time
+	checkFailures int
 }
 
 func (c *probeCache) clock() time.Time {
@@ -610,23 +655,23 @@ func (b *containerBackend) facts(ctx context.Context) (*probeFacts, error) {
 
 func (b *containerBackend) probeOnce(ctx context.Context) (*probeFacts, error) {
 	if plaintextDaemonAnswers(ctx) {
-		return nil, errors.New("a Docker daemon answers on " + plaintextDaemonAddr + " without TLS; turn off \"Expose daemon on tcp://localhost:2375 without TLS\" in Docker Desktop's settings (the engine API is root on this machine)")
+		return nil, unavailable(errors.New("a Docker daemon answers on "+plaintextDaemonAddr+" without TLS; turn off \"Expose daemon on tcp://localhost:2375 without TLS\" in Docker Desktop's settings (the engine API is root on this machine)"), fixPlaintext)
 	}
 	vc, done, err := b.control(ctx, "a version check", "version", "--format", "{{json .}}")
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err, fixEndpoint)
 	}
 	info, err := dockerVersion(vc)
 	if err = done(err); err != nil {
-		return nil, fmt.Errorf("the container engine is not reachable (%s); is Docker running?", oneLine(err.Error()))
+		return nil, unavailable(fmt.Errorf("the container engine is not reachable (%s); is Docker running?", oneLine(err.Error())), fixStartEngine)
 	}
 	ic, done, err := b.control(ctx, "an info request", "info", "--format", "{{json .}}")
 	if err != nil {
-		return nil, err
+		return nil, unavailable(err, fixEndpoint)
 	}
 	eng, err := dockerInfo(ic)
 	if err = done(err); err != nil {
-		return nil, fmt.Errorf("docker info failed (%s)", oneLine(err.Error()))
+		return nil, unavailable(fmt.Errorf("docker info failed (%s)", oneLine(err.Error())), fixStartEngine)
 	}
 	ep, _ := b.endpoint(ctx)
 	f := &probeFacts{
@@ -646,14 +691,200 @@ func (b *containerBackend) probeOnce(ctx context.Context) (*probeFacts, error) {
 	f.gates.add(checkFacts(eng))
 	if f.wsl != "" {
 		f.gates.add(checkWSLFloors(f.wsl, f.wslKernel))
+		// The kernel `wsl --version` prints is the installed one; the engine
+		// reports the one it is running, which is what containers run on.
+		f.gates.add(checkRunningKernel(f.wslKernel, eng.KernelVersion))
 	}
-	// TODO(TEN-455): cross-check the WSL kernel line against `uname -r` inside a
-	// container, and read ECI from /proc/self/uid_map there, once the live probe
-	// runs on the Windows box; both need a run, which Probe must not do.
+	// What only a container can show (the kernel as a container sees it, and
+	// whether its uid 0 is the engine's) is read by containerCheck, on the
+	// first Available: Probe must not run anything.
 	if err := f.gates.refused(); err != nil {
-		return nil, fmt.Errorf("the engine does not meet the sandbox's floors: %w", err)
+		return nil, unavailable(fmt.Errorf("the engine does not meet the sandbox's floors: %w", err), fixFloors)
 	}
 	return f, nil
+}
+
+// --- why the backend is unavailable, and what to do ------------------------------
+
+// Unavailable is why the container backend cannot be used here, with what the
+// operator does about it. Error is the reason alone, as before; Fix is for
+// whoever shows the reason to a person (`tenant doctor`).
+type Unavailable struct {
+	Err error
+	Fix string
+}
+
+func (u *Unavailable) Error() string { return u.Err.Error() }
+func (u *Unavailable) Unwrap() error { return u.Err }
+
+// unavailable attaches a fix to a refusal. The first fix attached stays: the
+// place that found the problem knows it best.
+func unavailable(err error, fix string) error {
+	var have *Unavailable
+	if err == nil || errors.As(err, &have) {
+		return err
+	}
+	return &Unavailable{Err: err, Fix: fix}
+}
+
+// One fix per refusal reason (W1-1: "every refusal reason has a doctor row").
+const (
+	fixInstallEngine = "install Docker Desktop (Windows, macOS) or Docker Engine (Linux), or name another backend for the surface in exec_profiles"
+	fixPlaintext     = "in Docker Desktop's settings, turn off \"Expose daemon on tcp://localhost:2375 without TLS\""
+	fixEndpoint      = "use the local engine, or a remote one over ssh:// or mutual TLS; a tcp:// endpoint without TLS is never used"
+	fixStartEngine   = "start Docker Desktop (or the docker service), wait until `docker info` answers, and check again"
+	fixFloors        = "update what the reason names: Docker Desktop or Docker Engine, and on Windows `wsl --update` then `wsl --shutdown`; then start Docker Desktop again"
+	fixBuildImage    = "run `tenant sandbox image build`"
+	fixStuckEngine   = "restart Docker Desktop and wait until `docker desktop status` says running; `tenant sandbox run --surface local --backend container -- id` should then print an id"
+)
+
+// --- the container check ---------------------------------------------------------
+
+// containerCheckTimeout bounds the check container, start to finish. A
+// variable so tests can shorten it.
+var containerCheckTimeout = 20 * time.Second
+
+// containerCheckTTL is how long a passed check is trusted. Longer than the
+// probe's: the check costs a container, and what it guards against (an engine
+// that answers but cannot start one) shows at once in the next command.
+const containerCheckTTL = 10 * time.Minute
+
+// containerCheckCommand prints what only a container can show: how its user
+// ids map to the engine's, and the kernel it runs on.
+const containerCheckCommand = "cat /proc/self/uid_map && uname -r"
+
+// containerCheckFacts is what the check container reported.
+type containerCheckFacts struct {
+	userns bool   // the container's uid 0 is not the engine's uid 0 (ECI or userns-remap)
+	kernel string // `uname -r` inside the container
+}
+
+func (c containerCheckFacts) summary() string {
+	return "container check: userns " + boolWord(c.userns, "on", "off (no ECI)") + ", kernel " + orUnknown(c.kernel)
+}
+
+// containerCheck runs one trivial command in a container built exactly as a
+// real run's is, the first time the backend is about to be used, and keeps
+// the answer. `docker version` and `docker info` answering does not mean the
+// engine can start a container: a Docker Desktop still starting (or stuck
+// there after a WSL update) answers both, and then every command waits out its
+// whole wall clock and returns nothing. This check finds that in
+// containerCheckTimeout and says so, so Available fails closed with a reason.
+//
+// It also reads what Probe cannot without running something (W1-1): whether a
+// user namespace is in effect, from the container's uid_map, and the kernel as
+// a container sees it, which is held to the same floor as the WSL kernel.
+//
+// A pass is trusted for containerCheckTTL; a failure is retried with the
+// probe's back-off, because Docker Desktop starts after Tenant at login.
+func (b *containerBackend) containerCheck(ctx context.Context, f *probeFacts) (*containerCheckFacts, error) {
+	if c, err, ok := b.cache.cachedCheck(); ok {
+		return c, err
+	}
+	c, err := b.containerCheckOnce(ctx, f)
+	err = unavailable(err, fixStuckEngine)
+	b.cache.recordCheck(c, err)
+	return c, err
+}
+
+func (b *containerBackend) containerCheckOnce(ctx context.Context, f *probeFacts) (*containerCheckFacts, error) {
+	res, err := b.Run(ctx, Command{Shell: containerCheckCommand, Surface: "probe"}, Policy{
+		Network: NetNone,
+		Enforce: true,
+		Limits:  Limits{Wall: containerCheckTimeout, MaxOutputBytes: 4096},
+	})
+	switch {
+	case res.TimedOut:
+		return nil, fmt.Errorf("the engine answers, but it did not start and finish a container within %s; "+
+			"is Docker Desktop still starting? (`docker desktop status`; restart Docker Desktop if it stays there)", containerCheckTimeout)
+	case err != nil:
+		return nil, fmt.Errorf("the engine could not run a container: %s", oneLine(err.Error()))
+	case res.ExitCode != 0:
+		return nil, fmt.Errorf("the check container exited %d: %s", res.ExitCode, oneLine(res.Output))
+	}
+	c, err := parseContainerCheck(res.Output)
+	if err != nil {
+		return nil, err
+	}
+	// On Windows the container's kernel is the WSL kernel: the floor applies to
+	// it whatever `docker info` said.
+	if f != nil && f.wsl != "" {
+		if cmp, ok := compareVersions(c.kernel, minWSLKernel); ok && cmp < 0 {
+			return nil, fmt.Errorf("containers run on kernel %s, which predates the CVE-2026-53362 fix (%s); "+
+				"run `wsl --update`, then `wsl --shutdown`, and start Docker Desktop again", c.kernel, minWSLKernel)
+		}
+	}
+	return c, nil
+}
+
+// parseContainerCheck reads containerCheckCommand's output: uid_map's rows
+// (inside id, outside id, count), then the kernel. One row mapping 0 to 0 for
+// the whole 32-bit range is "no user namespace"; anything else is one.
+func parseContainerCheck(out string) (*containerCheckFacts, error) {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) < 2 {
+		return nil, fmt.Errorf("the check container printed %q, not a uid map and a kernel", oneLine(out))
+	}
+	c := &containerCheckFacts{kernel: lines[len(lines)-1]}
+	rows := lines[:len(lines)-1]
+	identity := len(rows) == 1
+	for _, row := range rows {
+		cols := strings.Fields(row)
+		if len(cols) != 3 {
+			return nil, fmt.Errorf("the check container's uid map has a row %q, not three numbers", row)
+		}
+		if cols[0] != "0" || cols[1] != "0" || cols[2] != "4294967295" {
+			identity = false
+		}
+	}
+	c.userns = !identity
+	return c, nil
+}
+
+// cachedCheck returns the container check's answer when the cache still has
+// one: a pass within containerCheckTTL, or a failure still inside its back-off.
+func (c *probeCache) cachedCheck() (*containerCheckFacts, error, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.clock()
+	if c.check != nil && now.Sub(c.checkAt) < containerCheckTTL {
+		return c.check, nil, true
+	}
+	if c.checkErr != nil {
+		d := probeBackoffBase
+		for i := 1; i < c.checkFailures && d < probeBackoffMax; i++ {
+			d *= 2
+		}
+		if now.Before(c.checkFailAt.Add(min(d, probeBackoffMax))) {
+			return nil, c.checkErr, true
+		}
+	}
+	return nil, nil, false
+}
+
+func (c *probeCache) recordCheck(facts *containerCheckFacts, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.check, c.checkErr, c.checkFailAt = nil, err, c.clock()
+		c.checkFailures++
+		return
+	}
+	c.check, c.checkAt = facts, c.clock()
+	c.checkErr, c.checkFailures = nil, 0
+}
+
+// lastCheck is the last passed container check, or nil: for Probe, which
+// reports it and never runs one.
+func (c *probeCache) lastCheck() *containerCheckFacts {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.check
 }
 
 // --- small helpers -----------------------------------------------------------------

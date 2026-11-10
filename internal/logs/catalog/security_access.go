@@ -53,9 +53,10 @@ var ModeChanged = Security.Event(4106, event.Info, "Approval", "{broker} approva
 // Execution: every os_exec and cron shell command, on every backend. The
 // surface is where it came from; the approval, the one that let it run.
 
-var ExecRan = Security.Event(4201, event.Info, "Execution", "Command ran on {backend}: exit {exit}", "command", "backend", "exit", "timed_out", "err").
+var ExecRan = Security.Event(4201, event.Info, "Execution", "Command ran on {backend}: exit {exit}", "command", "backend", "exit", "timed_out", "err",
+	"image", "image_id", "mounts", "network", "limits", "env", "output_bytes", "output_capped", "elapsed_ms").
 	Keywords("audit.success").
-	Doc("A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets.",
+	Doc("A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets. On the container backend the record also holds the boundary the run had: the image and the id its tag resolved to, every mount with its mode, the network, the caps, the names (never the values) of the host's environment variables passed in, how many bytes the command wrote and whether that hit the output cap, and how long it took.",
 		"The agent called os_exec (approved, or allowed by --allow-exec or its category's mode), or a cron shell job ran.",
 		"None when expected. An unexpected command: read the turn (trace) and its approval, and tighten os_exec's approval mode or exec profile.")
 
@@ -65,9 +66,9 @@ var ExecRefused = Security.Event(4202, event.Warning, "Execution", "The sandbox 
 		"The command read or wrote outside its profile's roots, or used the network where the profile forbids it.",
 		"None when the refusal is right. Otherwise widen the surface's exec profile (exec_profiles in settings), or approve the escalation when asked.")
 
-var ExecEscalated = Security.Event(4203, event.Warning, "Execution", "A command the sandbox refused ran outside it ({why}): {violations}", "command", "backend", "violations", "why").
+var ExecEscalated = Security.Event(4203, event.Warning, "Execution", "A command the sandbox refused was re-run {where} ({why}): {violations}", "command", "backend", "violations", "why", "where").
 	Keywords("audit.success").
-	Doc("A command the sandbox refused was re-run on the host: approved by the operator (why approved; the approval is the event's), or in a dry-run profile (why dry_run), which only reports.",
+	Doc("A command the sandbox refused was re-run: approved by the operator (why approved; the approval is the event's), or in a dry-run profile (why dry_run), which only reports. where says where it re-ran: on the host, outside the sandbox, or, on the container backend, in a fresh container with one more grant (the refused folder, or the network for that command). The record of that re-run is the 4201 beside it.",
 		"The operator approved os_exec_unsandboxed, or the surface's exec profile has enforce off.",
 		"None when intended. Turn enforce on to make refusals final.")
 

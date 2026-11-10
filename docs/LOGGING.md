@@ -822,10 +822,15 @@ filled in as for any event. Keywords are `audit.success` or `audit.failure`.
 - **Execution** (`cmd/tenant/securitylog.go`): every command run through the
   exec seam, `os_exec` and cron shell jobs (`4201`: the scrubbed command, the
   backend, the exit code; its approval is the one that let it run: `osys`
-  opens a slot the approval gate fills). A sandbox refusal is `4202`, a
-  command run outside the sandbox after one `4203` (`why`: `approved` or
-  `dry_run`), and the Discord relay's exec mode turned on or off `4204`
-  (cron-exec's is `4704`, below).
+  opens a slot the approval gate fills). On the container backend `4201` also
+  holds the boundary the run had: the image and the id its tag resolved to,
+  every mount and its mode, the network, the caps, the names (never the
+  values) of the environment variables passed in, the bytes written and
+  whether that hit the output cap, and the time taken. A sandbox refusal is
+  `4202`, a refused command re-run after one `4203` (`why`: `approved` or
+  `dry_run`; `where`: on the host, or in a container with one more grant),
+  and the Discord relay's exec mode turned on or off `4204` (cron-exec's is
+  `4704`, below).
 - **Access:** dashboard sign-in and sign-out (`4301`, `4302`); a request
   refused (`4303`, `reason`: `token` for a wrong dashboard or peer token,
   `sign_in`, `csrf`, `host`, `origin`; a request with no token at all is only

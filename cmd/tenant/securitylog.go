@@ -44,6 +44,7 @@ func auditExec(ctx context.Context, backend string, cmd sandbox.Command, enforce
 	if err != nil {
 		kv = append(kv, "err", err)
 	}
+	kv = append(kv, confinementFields(res.Confinement)...)
 	_ = catalog.ExecRan.Audit(ctx, kv...)
 	switch {
 	case res.Escalated:
@@ -51,9 +52,33 @@ func auditExec(ctx context.Context, backend string, cmd sandbox.Command, enforce
 		if !enforce {
 			why = "dry_run"
 		}
-		_ = catalog.ExecEscalated.Audit(ctx, append([]any{"command", command, "backend", backend, "violations", describeViolations(res), "why", why}, who...)...)
+		// An escalated result describes the re-run: with a confinement it stayed
+		// in a container, with one more grant; without, it ran on the host.
+		where := "on the host"
+		if res.Confinement != nil {
+			where = "in a container with one more grant"
+		}
+		_ = catalog.ExecEscalated.Audit(ctx, append([]any{"command", command, "backend", backend, "violations", describeViolations(res), "why", why, "where", where}, who...)...)
 	case res.Refused():
 		_ = catalog.ExecRefused.Audit(ctx, append([]any{"command", command, "backend", backend, "violations", describeViolations(res)}, who...)...)
+	}
+}
+
+// confinementFields is the boundary a run had, as fields of its record
+// (W2-7): the image and what its tag resolved to, every mount and its mode,
+// the network, the caps, how much the command wrote and whether that hit the
+// cap, and how long it took. Nothing from a backend that reports none (the
+// host): the record then says only that the command ran.
+func confinementFields(c *sandbox.Confinement) []any {
+	if c == nil {
+		return nil
+	}
+	return []any{
+		"image", c.Image, "image_id", c.ImageID,
+		"mounts", strings.Join(c.Mounts, "; "),
+		"network", c.Network, "limits", c.Limits, "env", strings.Join(c.Env, " "),
+		"output_bytes", c.OutputBytes, "output_capped", c.Capped,
+		"elapsed_ms", c.Elapsed.Milliseconds(),
 	}
 }
 
