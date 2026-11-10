@@ -229,7 +229,7 @@ func TestConfiguredListeners(t *testing.T) {
 	if got[0].Name != "dashboard" || got[0].Loopback || !got[0].TLS || !got[0].Auth {
 		t.Errorf("dashboard listener = %+v", got[0])
 	}
-	if got[1].Name != "mcp-sse" || !got[1].Loopback || got[1].TLS || got[1].Auth {
+	if got[1].Name != "mcp-sse" || !got[1].Loopback || got[1].TLS || !got[1].Auth { // a bearer token, plain HTTP
 		t.Errorf("mcp listener = %+v", got[1])
 	}
 	if got[2].Name != "peer" || got[2].Loopback || !got[2].TLS || !got[2].Auth {

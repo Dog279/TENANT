@@ -1439,6 +1439,13 @@ registry type (§5.14).
 - `tenant mcp-memory [--allow-writes]` — runs `mcpserver.Server.Serve`
   over the process's stdio (how an MCP client launches it). **stdout is
   the JSON-RPC channel — all logs go to stderr.**
+  With `--sse-addr ADDR` it serves HTTP+SSE instead (`internal/mcp/transport/sse.go`),
+  behind `guardSSEGateway` (`cmd/tenant/ssegateway.go`): every request carries the
+  bearer token in `<config>/gateway-auth-token` (`cmd/tenant/gatewayauth.go`), a
+  loopback bind answers only to loopback Host names, and a request with another
+  site's Origin is refused. The transport takes only `application/json` messages
+  that carry the stream's `sessionId`. Plain HTTP: a non-loopback bind needs
+  `--insecure-lan`.
 - `tenant mcp-selftest` — spawns `tenant mcp-memory` as a real OS
   subprocess via `transport.NewStdioProcess`, connects as an `mcp.Client`,
   runs initialize/tools/resources/call. Proves the stdio server works as
