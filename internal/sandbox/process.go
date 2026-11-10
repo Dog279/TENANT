@@ -166,17 +166,22 @@ func (e *eofCloser) Read(b []byte) (int, error) {
 		return 0, io.EOF
 	}
 	n, err := e.File.Read(b)
-	if errors.Is(err, io.EOF) {
-		_ = e.Close()
+	if errors.Is(err, io.EOF) && !e.closed.Swap(true) {
+		_ = e.File.Close()
 	}
 	return n, err
 }
 
+// Close does not wait for the descriptor to close. On Windows closing a pipe
+// waits for a Read in flight, and that Read returns only once the process has
+// exited; the MCP stdio transport closes stdout before the stdin whose Close
+// ends the process, so waiting here deadlocked a server that ignores EOF on
+// its stdin. The close finishes on its own as soon as that Read returns.
 func (e *eofCloser) Close() error {
-	if e.closed.Swap(true) {
-		return nil
+	if !e.closed.Swap(true) {
+		go e.File.Close()
 	}
-	return e.File.Close()
+	return nil
 }
 
 // tailBuffer keeps the last max bytes written to it.
