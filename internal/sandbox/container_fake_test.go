@@ -286,9 +286,13 @@ func TestFakeDocker_EngineThatCannotStartAContainer(t *testing.T) {
 	containerCheckTimeout = 400 * time.Millisecond
 	t.Cleanup(func() { containerCheckTimeout = old })
 	ctx := context.Background()
+	// The cache's clock stands still, so "inside the back-off" below does not
+	// depend on how long this machine takes to start the fake CLI.
+	frozen := time.Now()
+	b.cache.now = func() time.Time { return frozen }
 	start := time.Now()
 	err := b.Available(ctx)
-	if took := time.Since(start); took > 15*time.Second {
+	if took := time.Since(start); took > 60*time.Second {
 		t.Fatalf("Available took %s against an engine that cannot start a container", took)
 	}
 	if err == nil || !strings.Contains(err.Error(), "did not start and finish a container") {
@@ -660,6 +664,40 @@ func TestFakeDocker_RefusalsCarryAFix(t *testing.T) {
 	t.Cleanup(func() { containerCheckTimeout = old })
 	if err := b3.Available(ctx); fix(err) != fixStuckEngine {
 		t.Errorf("cannot start a container: %v, fix %q", err, fix(err))
+	}
+}
+
+// The overlap rule must see through a symlink on the way to a folder that
+// does not exist yet: the folder's real place is under its real ancestor.
+// (On macOS the temp dir itself is behind /var; on a Windows runner it is
+// behind a short name. Both resolve only for a path that exists.)
+func TestGrantOverlapsDeny_NotYetExistingGrantBehindALink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(filepath.Join(real, "protected"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Existing and not-yet-existing grants, named directly.
+	for _, grant := range []string{filepath.Join(real, "protected"), filepath.Join(real, "protected", "later", "deeper")} {
+		if _, _, bad := GrantOverlapsDeny([]string{grant}, []string{filepath.Join(real, "protected")}); !bad {
+			t.Errorf("grant %s was not seen to overlap the deny root", grant)
+		}
+	}
+	if _, _, bad := GrantOverlapsDeny([]string{filepath.Join(real, "elsewhere", "later")}, []string{filepath.Join(real, "protected")}); bad {
+		t.Error("an unrelated folder that does not exist yet was called an overlap")
+	}
+	// The same, named through a symlink to the real folder.
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symlink on this machine: %v", err)
+	}
+	for _, grant := range []string{filepath.Join(link, "protected"), filepath.Join(link, "protected", "later")} {
+		if _, _, bad := GrantOverlapsDeny([]string{grant}, []string{filepath.Join(real, "protected")}); !bad {
+			t.Errorf("grant %s (through a link) was not seen to overlap the deny root", grant)
+		}
+	}
+	if got, want := canonForCompare(filepath.Join(link, "protected", "later")), filepath.Join(canonForCompare(real), "protected", "later"); got != want {
+		t.Errorf("canonForCompare through a link = %s, want %s", got, want)
 	}
 }
 

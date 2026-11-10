@@ -970,18 +970,30 @@ func goosOf() string { return runtime.GOOS }
 
 // canonForCompare resolves p to the absolute, symlink-resolved form that mount
 // sources are compared in, so a deny root and a mount that name the same place
-// through different symlinks still match. Falls back to the cleaned abs path when
-// the target does not exist.
+// through different symlinks still match. A path that does not exist yet (a
+// grant for a folder still to be made) is resolved through its nearest
+// ancestor that does, with the rest kept as written. Without that, such a
+// path kept every symlink and short name on the way to it (/var on macOS,
+// RUNNER~1 on Windows) while an existing deny root lost them, and the two
+// never compared equal: the overlap check silently missed it.
 func canonForCompare(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		abs = p
 	}
 	abs = filepath.Clean(abs)
-	if r, err := filepath.EvalSymlinks(abs); err == nil {
-		return r
+	probe, tail := abs, ""
+	for {
+		if r, err := filepath.EvalSymlinks(probe); err == nil {
+			return filepath.Join(r, tail)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return abs // nothing on the path exists
+		}
+		tail = filepath.Join(filepath.Base(probe), tail)
+		probe = parent
 	}
-	return abs
 }
 
 func dedupPathList(in []string) []string {
