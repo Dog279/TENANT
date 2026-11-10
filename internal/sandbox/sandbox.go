@@ -482,7 +482,13 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 				return res, nil
 			}
 		}
-		hres, herr = tier.RunGranted(ctx, cmd, pol, res)
+		if pinned, ok := b.(PinnedEscalator); ok && binder != nil {
+			// The backend starts the run it hashes: the check above is for the
+			// time limit and the plain message, this one leaves no gap.
+			hres, herr = pinned.RunGrantedAs(ctx, cmd, pol, res, asked)
+		} else {
+			hres, herr = tier.RunGranted(ctx, cmd, pol, res)
+		}
 		if herr != nil {
 			// Nothing grantable: the refusal stands, and says why it could not be
 			// escalated. Never fall through to the host.

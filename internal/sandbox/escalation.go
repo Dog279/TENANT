@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -50,6 +51,20 @@ type TierEscalator interface {
 type EscalationBinder interface {
 	GrantedRunHash(ctx context.Context, cmd Command, pol Policy, refused Result) (string, error)
 }
+
+// PinnedEscalator is an EscalationBinder that starts the very run it
+// describes. RunGrantedAs builds the re-run once, takes its digest from
+// exactly what it is about to start, refuses when that is not approved, and
+// starts that same description: the mounts as they were hashed, and the image
+// by the id that was hashed, never by its tag. So nothing is resolved again
+// between the last check and the run, which GrantedRunHash followed by
+// RunGranted cannot promise.
+type PinnedEscalator interface {
+	RunGrantedAs(ctx context.Context, cmd Command, pol Policy, refused Result, approved string) (Result, error)
+}
+
+// errApprovalStale is why a pinned re-run did not start.
+var errApprovalStale = errors.New("what would run is no longer what was approved (the command, a mount, the network or the image changed after the approval); nothing was run. Ask again to approve the run as it is now")
 
 // escalationNow is the clock a ticket is issued and checked on; tests move it.
 var escalationNow = time.Now

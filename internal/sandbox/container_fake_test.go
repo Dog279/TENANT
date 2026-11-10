@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -754,5 +755,67 @@ func TestInstanceID(t *testing.T) {
 	}
 	if _, err := json.Marshal(a); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The approved re-run is started from the description that was hashed: the
+// image is named by the id in the digest, never by its tag, and a run whose
+// digest is no longer the approved one starts nothing.
+func TestFakeDocker_RunGrantedAsStartsTheRunItHashed(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	cmd := Command{Shell: "touch x"}
+	pol := Policy{Network: NetNone, Enforce: true}
+	refused := Result{ExitCode: 1, Violations: []Violation{{Kind: "filesystem", Detail: "read-only", Path: dir}}}
+	runs := func() (n int, last []string) {
+		for _, c := range readCalls(t, logPath) {
+			for i, a := range c.argv {
+				if a == "run" && i <= 8 {
+					n, last = n+1, c.argv
+					break
+				}
+			}
+		}
+		return n, last
+	}
+
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:aaaa")
+	approved, err := b.GrantedRunHash(ctx, cmd, pol, refused)
+	if err != nil {
+		t.Fatalf("GrantedRunHash: %v", err)
+	}
+	res, err := b.RunGrantedAs(ctx, cmd, pol, refused, approved)
+	if err != nil {
+		t.Fatalf("RunGrantedAs with the approved digest: %v", err)
+	}
+	n, argv := runs()
+	if n != 1 {
+		t.Fatalf("containers started = %d, want 1", n)
+	}
+	if !slices.Contains(argv, "sha256:aaaa") || slices.Contains(argv, b.image) {
+		t.Errorf("the re-run must name the image by the hashed id, not by its tag: %q", argv)
+	}
+	if c := res.Confinement; c == nil || c.Image != b.image || c.ImageID != "sha256:aaaa" {
+		t.Errorf("the record must keep the tag and the id it ran: %+v", res.Confinement)
+	}
+
+	// The tag points at another image after the approval: nothing starts.
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:bbbb")
+	if _, err := b.RunGrantedAs(ctx, cmd, pol, refused, approved); !errors.Is(err, errApprovalStale) {
+		t.Errorf("a moved tag: err = %v, want the stale-approval refusal", err)
+	}
+	// No digest, or another run's digest: nothing starts.
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:aaaa")
+	for _, bad := range []string{"", "not-the-digest"} {
+		if _, err := b.RunGrantedAs(ctx, cmd, pol, refused, bad); !errors.Is(err, errApprovalStale) {
+			t.Errorf("approved=%q: err = %v, want the stale-approval refusal", bad, err)
+		}
+	}
+	if _, err := b.RunGrantedAs(ctx, Command{Shell: "touch y"}, pol, refused, approved); !errors.Is(err, errApprovalStale) {
+		t.Errorf("another command under the same approval: err = %v", err)
+	}
+	if n, _ := runs(); n != 1 {
+		t.Errorf("containers started = %d after the refused re-runs, want still 1", n)
 	}
 }

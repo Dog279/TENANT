@@ -315,3 +315,45 @@ func TestHostPathFor(t *testing.T) {
 		}
 	}
 }
+
+// pinnedTier is a bound tier that starts the run it hashes: Execute must hand
+// it the digest the operator approved, and use it in place of RunGranted.
+type pinnedTier struct {
+	boundTier
+	gotApproved *[]string
+	stale       bool
+}
+
+func (p pinnedTier) RunGrantedAs(_ context.Context, _ Command, pol Policy, refused Result, approved string) (Result, error) {
+	*p.gotApproved = append(*p.gotApproved, approved)
+	if p.stale {
+		return refused, errApprovalStale
+	}
+	return Result{ExitCode: 0, Output: "pinned"}, nil
+}
+
+func TestExecute_APinnedBackendRunsWhatWasApproved(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		fb := &refusingBackend{refuse: []Violation{{Kind: "filesystem", Detail: "x", Path: "/somewhere"}}}
+		calls := 0
+		var got []string
+		b := pinnedTier{boundTier: boundTier{tierBackend: tierBackend{fb}, hashes: []string{"aa"}, calls: &calls}, gotApproved: &got, stale: stale}
+		res, err := Execute(context.Background(), b, Command{Shell: "echo hi"}, Policy{Enforce: true}, approve)
+		if err != nil {
+			t.Fatalf("stale=%v: %v", stale, err)
+		}
+		if len(got) != 1 || got[0] != "aa" || len(fb.granted) != 0 {
+			t.Fatalf("stale=%v: RunGrantedAs got %q and RunGranted ran %d times; want the approved digest once and no unpinned run", stale, got, len(fb.granted))
+		}
+		if stale {
+			last := res.Violations[len(res.Violations)-1]
+			if res.Escalated || last.Kind != "policy" || !strings.Contains(last.Detail, "no longer what was approved") {
+				t.Errorf("a stale pinned run: %+v", res)
+			}
+			continue
+		}
+		if !res.Escalated || res.Output != "pinned" {
+			t.Errorf("want the pinned re-run's result, got %+v", res)
+		}
+	}
+}

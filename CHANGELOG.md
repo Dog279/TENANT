@@ -52,7 +52,9 @@ Releases page.
   sandbox refuses a command and you approve the re-run, Tenant now takes a digest of what
   will run (the command, every mount, the network and the image the tag points at) before it
   asks and again just before the run. If they differ, because an image was rebuilt or a folder
-  re-pointed while the prompt waited, nothing runs and the refusal says to ask again.
+  re-pointed while the prompt waited, nothing runs and the refusal says to ask again. The
+  re-run is then started from the description that was hashed, with the image named by its
+  id, not its tag, so nothing is looked up again between the last check and the run.
 - **`config.json` can name the container sandbox's engine** (`container.endpoint`,
   `container.tls_cert_dir`): a local pipe or socket, `ssh://`, or `tcp://` with mutual TLS.
   **Fixed with it:** a `tcp://` endpoint that passed the TLS check was still launched with no

@@ -351,7 +351,13 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 		// canonicalise, a bad env name) fails closed.
 		return Result{Violations: []Violation{{Kind: "policy", Detail: oneLine(err.Error())}}}, err
 	}
+	return b.runSpec(ctx, cmd, pol, spec)
+}
 
+// runSpec starts one container from spec, which is everything about the run
+// that was decided: Run builds it and starts it, and a pinned re-run
+// (RunGrantedAs) starts the one it hashed.
+func (b *containerBackend) runSpec(ctx context.Context, cmd Command, pol Policy, spec containerSpec) (Result, error) {
 	if pol.Limits.Wall > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, pol.Limits.Wall)
@@ -453,8 +459,11 @@ func (b *containerBackend) confinement(spec containerSpec, out *cappedBuffer, el
 		limits += fmt.Sprintf(" output=%dB", spec.limits.MaxOutputBytes)
 	}
 	id, _ := b.imageSeen.Load().(string)
+	if spec.image != b.image {
+		id = spec.image // a pinned re-run is started by the id itself
+	}
 	return &Confinement{
-		Image: spec.image, ImageID: id, Mounts: mounts, Network: spec.network, Limits: limits,
+		Image: b.image, ImageID: id, Mounts: mounts, Network: spec.network, Limits: limits,
 		Env:         append([]string(nil), spec.envNames...),
 		OutputBytes: out.Total(), Capped: out.Truncated(), Elapsed: elapsed,
 	}
@@ -504,29 +513,72 @@ func grantedPolicy(pol Policy, refused Result) (Policy, error) {
 }
 
 // GrantedRunHash is the digest of the run an approval of refused would start
-// (EscalationBinder, W1-6): sh, the command line, every mount as the engine
+// (EscalationBinder, W1-6; see RunGrantedAs, which starts it): sh, the command line, every mount as the engine
 // would get it (canonical source, destination, mode), the network, and the
 // image's id as the engine resolves the tag right now. A re-pointed mount
 // source or a rebuilt or re-tagged image is a different digest. A scratch work
 // dir is a fresh temp folder on every run, so it is hashed as "a scratch work
 // dir", not by its path.
 func (b *containerBackend) GrantedRunHash(ctx context.Context, cmd Command, pol Policy, refused Result) (string, error) {
+	run, err := b.grantedRun(ctx, cmd, pol, refused)
+	if err != nil {
+		return "", err
+	}
+	run.cleanup()
+	return run.digest, nil
+}
+
+// RunGrantedAs is the approved re-run, started from the description whose
+// digest is approved (PinnedEscalator): the spec is built once, hashed, and
+// that spec is what runs, with the image named by the id that was hashed. A
+// tag moved after the last check, or a mount that now canonicalises
+// elsewhere, is a different digest here and nothing starts.
+func (b *containerBackend) RunGrantedAs(ctx context.Context, cmd Command, pol Policy, refused Result, approved string) (Result, error) {
+	run, err := b.grantedRun(ctx, cmd, pol, refused)
+	if err != nil {
+		return refused, err
+	}
+	defer run.cleanup()
+	if approved == "" || run.digest != approved {
+		return refused, errApprovalStale
+	}
+	run.spec.image = run.imageID
+	return b.runSpec(ctx, cmd, run.pol, run.spec)
+}
+
+// grantedRunPlan is one approved re-run, pinned down: the policy with its
+// grant, the spec the engine would get, the id the image tag resolves to now,
+// and the digest of all of it. cleanup removes a scratch work dir.
+type grantedRunPlan struct {
+	pol     Policy
+	spec    containerSpec
+	imageID string
+	digest  string
+	cleanup func()
+}
+
+// grantedRun pins down the run an approval of refused would start.
+func (b *containerBackend) grantedRun(ctx context.Context, cmd Command, pol Policy, refused Result) (grantedRunPlan, error) {
 	granted, err := grantedPolicy(pol, refused)
 	if err != nil {
-		return "", err
+		return grantedRunPlan{}, err
 	}
+	cleanup := func() {}
 	scratch := granted.WorkDir == ""
 	if scratch {
-		dir, derr := os.MkdirTemp("", "tenant-sbx-hash-")
+		dir, derr := os.MkdirTemp("", "tenant-sbx-work-")
 		if derr != nil {
-			return "", fmt.Errorf("container: scratch work dir: %w", derr)
+			return grantedRunPlan{}, fmt.Errorf("container: scratch work dir: %w", derr)
 		}
-		defer os.RemoveAll(dir)
+		cleanup = func() { os.RemoveAll(dir) }
 		granted.WorkDir = dir
 	}
+	// specFor re-checks the grant against the deny roots, so an escalation can
+	// never open Tenant's own dirs or a credential store.
 	spec, err := b.specFor(cmd, granted)
 	if err != nil {
-		return "", err
+		cleanup()
+		return grantedRunPlan{}, err
 	}
 	describe := func(m mount) string {
 		return m.host + "\x00" + m.ctr + "\x00" + boolWord(m.ro, "ro", "rw")
@@ -540,9 +592,13 @@ func (b *containerBackend) GrantedRunHash(ctx context.Context, cmd Command, pol 
 	}
 	id, err := b.imageID(ctx)
 	if err != nil {
-		return "", err
+		cleanup()
+		return grantedRunPlan{}, err
 	}
-	return EscalationHash("sh", []string{spec.command}, mounts, spec.network, id), nil
+	return grantedRunPlan{
+		pol: granted, spec: spec, imageID: id, cleanup: cleanup,
+		digest: EscalationHash("sh", []string{spec.command}, mounts, spec.network, id),
+	}, nil
 }
 
 // imageID is the id the engine resolves the sandbox image's tag to right now.

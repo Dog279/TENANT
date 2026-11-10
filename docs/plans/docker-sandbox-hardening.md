@@ -497,6 +497,6 @@ Some of wave 2 was already in the code when its tickets were still To Do. Nothin
 | W2-8 TEN-469 | The seccomp delta; the image on trixie, scanned and signed | open; the base waits on D6 |
 | W2-9 TEN-470 | A network scope per run | open; needs the enforcement spike on Docker Desktop |
 
-Known limit of the approval binding: the second digest is taken immediately before the run, not by it. The run then resolves its mounts and the image tag once more, so a change in the instant between the two is not caught. Closing that means running the granted container by image id and from the already-resolved spec.
+The approval binding, as it stands: the re-run is started by the backend from the description it hashes (`PinnedEscalator`, `containerBackend.RunGrantedAs`). The spec is built once, its digest is compared with the approved one, and that spec is what runs, with the image named by the id in the digest. This closed the earlier limit, where the second digest was taken before the run and the run resolved its mounts and the image tag once more. What is left: the engine itself resolves a mount source when it starts the container, so a folder replaced by a link in that instant is followed by the engine. Not tried on a live engine.
 
 Decisions still open: D4 (HOME tmpfs, W2-2), D5 (CPU budget, W2-1), D6 (base image: `container_image.go` still pins bookworm), D7 (Podman on Windows, W3-1), D8 (trust statement in SECURITY.md).
