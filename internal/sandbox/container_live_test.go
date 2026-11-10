@@ -289,8 +289,49 @@ func TestContainerLive_ExactEnv(t *testing.T) {
 			t.Errorf("unexpected variable %q inside the container (all: %v)", n, names)
 		}
 	}
-	if !strings.Contains(res.Output, "HOME="+containerDest(work, runtime.GOOS)) {
-		t.Errorf("HOME is not the work dir: %q", res.Output)
+	if !strings.Contains(res.Output, "HOME="+sandboxHome) {
+		t.Errorf("HOME is not the container's own tmpfs: %q", res.Output)
+	}
+}
+
+// D4: HOME is writable by the sandbox user, is a tmpfs, and what a command
+// leaves there neither lands in the work dir on the host nor is there for
+// the next container.
+func TestContainerLive_HomeIsATmpfsOfItsOwn(t *testing.T) {
+	b := liveContainer(t)
+	work := liveWorkDir(t)
+	pol := livePolicy(work, 30*time.Second)
+	res, err := b.Run(context.Background(), Command{Shell: "echo kept > ~/.marker && cat ~/.marker && stat -f -c %T ~ && stat -c %a:%u ~", Surface: "test"}, pol)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("writing to HOME: exit %d, %v\n%s", res.ExitCode, err, res.Output)
+	}
+	for _, want := range []string{"kept", "tmpfs", "700:65532"} {
+		if !strings.Contains(res.Output, want) {
+			t.Errorf("HOME: output lacks %q:\n%s", want, res.Output)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(work, ".marker")); err == nil {
+		t.Error("a file written to HOME landed in the work dir on the host")
+	}
+	res, err = b.Run(context.Background(), Command{Shell: "ls -A ~ | wc -l", Surface: "test"}, pol)
+	if err != nil || strings.TrimSpace(res.Output) != "0" {
+		t.Errorf("the next container's HOME is not empty: %q, %v", res.Output, err)
+	}
+}
+
+// D5: a process that burns CPU past its cap is killed by the kernel, well
+// inside the wall clock.
+func TestContainerLive_CPULimitStopsARunawayProcess(t *testing.T) {
+	b := liveContainer(t)
+	pol := livePolicy(liveWorkDir(t), 60*time.Second)
+	pol.Limits.CPU = 2 * time.Second
+	started := time.Now()
+	res, err := b.Run(context.Background(), Command{Shell: "while :; do :; done", Surface: "test"}, pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode == 0 || res.TimedOut || time.Since(started) > 30*time.Second {
+		t.Errorf("a busy loop under a 2s CPU cap: exit %d, timed out %v, after %s", res.ExitCode, res.TimedOut, time.Since(started))
 	}
 }
 

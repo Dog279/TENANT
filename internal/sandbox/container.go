@@ -452,6 +452,9 @@ func (b *containerBackend) confinement(spec containerSpec, out *cappedBuffer, el
 		memMB = defaultMemoryMB
 	}
 	limits := fmt.Sprintf("pids=%d memory=%dMB cpus=%s", pids, memMB, defaultCPUs)
+	if spec.limits.CPU > 0 {
+		limits += " cpu=" + spec.limits.CPU.String() + "/process"
+	}
 	if spec.limits.Wall > 0 {
 		limits += " wall=" + spec.limits.Wall.String()
 	}
