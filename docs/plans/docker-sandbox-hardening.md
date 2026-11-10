@@ -469,6 +469,30 @@ Where wave 1 stands after PR #35 (Phase 1), PR #60 (wave-1 close), PR #63 (sweep
 
 Docker Desktop (engine 29.9.3, WSL 3.0.5, installed kernel 6.18.58, running kernel 6.18.54) was stuck in `starting` after a WSL update: `docker version`, `docker info` and an unfiltered `docker ps` answered, but `docker create`, `docker run` and `docker ps --filter label=…` never returned. The probe called the backend available, and the live tests then failed by timing out with empty output (`Identity`, `ReadOnlyRootAndSecret`, `LoopbackUnderNoneVsFull`, `OutputCapKills`; `SweepLeftovers` hung the suite). The two tests that only need a container to be gone passed. That run is why the container check exists. **No live case has yet been seen to pass on this machine**: they need a restarted Docker Desktop.
 
+### Wave 2, checked against the code on 2026-11-10
+
+Some of wave 2 was already in the code when its tickets were still To Do. Nothing here has been run against a live engine.
+
+| Ticket | Item | State |
+|---|---|---|
+| W2-1 TEN-462 | `--ulimit core=0` and `nofile=1024:4096` | in the code (`buildRunArgv`) |
+| W2-1 | The CPU budget | waits on D5 |
+| W2-1 | A cap on concurrent sandboxes and on launches per turn and per job; watching the work dir's growth | open: the numbers, and whether a launch over the cap waits or is refused, are not decided |
+| W2-2 TEN-463 | HOME on its own tmpfs | waits on D4; HOME is the work dir today |
+| W2-2 | Read-only binds over `.git/hooks` and the editor and agent folders; refusing a bare-repo work dir | open |
+| W2-3 TEN-464 | The host treats the work dir as hostile | open |
+| W2-4 TEN-465 | Token auth on the SSE gateway | done (PR #63) |
+| W2-4 | `full` on a Tenant-owned bridge with inter-container traffic off | open |
+| W2-5 TEN-466 | The `program` refusal kind; ENOENT mapped back through the mounts | in the code (wave 1) |
+| W2-5 | Host-only names dropped from a container's environment; the log-join ids forwarded | in the code (`envNamesFor`) |
+| W2-5 | A warning on secret-looking names; selftest asserting the exact env | open (the second is live) |
+| W2-6 TEN-467 | Container jobs run `sh -c` | in the code |
+| W2-6 | Jobs in cmd syntax stay on the host by declaration; a circuit breaker after 5 refusals or timeouts | open: how a paused surface is shown and resumed is not decided |
+| W2-7 TEN-468 | `tenant sandbox stop-all` | done with the PR that adds this table (`sandbox.StopAllContainers`) |
+| W2-7 | The run record in the Security log; one setting that disables `container` and escalation; quarantine | open: the setting's name and place are not decided |
+| W2-8 TEN-469 | The seccomp delta; the image on trixie, scanned and signed | open; the base waits on D6 |
+| W2-9 TEN-470 | A network scope per run | open; needs the enforcement spike on Docker Desktop |
+
 Known limit of the approval binding: the second digest is taken immediately before the run, not by it. The run then resolves its mounts and the image tag once more, so a change in the instant between the two is not caught. Closing that means running the granted container by image id and from the already-resolved spec.
 
 Decisions still open: D4 (HOME tmpfs, W2-2), D5 (CPU budget, W2-1), D6 (base image: `container_image.go` still pins bookworm), D7 (Podman on Windows, W3-1), D8 (trust statement in SECURITY.md).

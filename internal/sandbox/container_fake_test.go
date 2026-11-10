@@ -525,6 +525,38 @@ func TestFakeDocker_SweepLeftovers(t *testing.T) {
 	}
 }
 
+// W2-7: stop-all removes every container labelled as a Tenant sandbox,
+// whichever install started it, and nothing else on the engine.
+func TestStopAllContainers(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	SetContainerDefaults(ContainerOptions{CLI: b.cli, Endpoint: b.explicitEP, Instance: b.instance})
+	t.Cleanup(func() { SetContainerDefaults(ContainerOptions{}) })
+	// The fake prints "id<TAB>value" for whichever label is asked for; "1" is
+	// the sandbox label's value, anything else is another container.
+	t.Setenv("TENANT_FAKE_DOCKER_PS", "aaa111=1,redis999,bbb222=1,ccc333=0")
+	found, failed, err := StopAllContainers(context.Background())
+	if err != nil || found != 2 || failed != 0 {
+		t.Fatalf("StopAllContainers = (%d, %d, %v), want (2, 0, nil)", found, failed, err)
+	}
+	var seen []string
+	for _, c := range readCalls(t, logPath) {
+		seen = append(seen, strings.Join(c.argv[2:], " "))
+	}
+	want := []string{
+		"ps -a --no-trunc --format {{.ID}}\t{{.Label \"" + labelSandbox + "\"}}",
+		"rm -f aaa111",
+		"rm -f bbb222",
+	}
+	if strings.Join(seen, "|") != strings.Join(want, "|") {
+		t.Fatalf("stop-all ran %q, want %q", seen, want)
+	}
+
+	t.Setenv("TENANT_FAKE_DOCKER_PS", "")
+	if found, failed, err := StopAllContainers(context.Background()); err != nil || found != 0 || failed != 0 {
+		t.Fatalf("nothing to stop = (%d, %d, %v)", found, failed, err)
+	}
+}
+
 // A docker CLI that never answers must not hold start-up: the sweep gives up
 // at its deadline with an error that says the CLI stalled, and removes
 // nothing. (serve waited on this call with no deadline.)

@@ -56,7 +56,7 @@ var sandboxSurfaces = execSurfaces
 const sandboxRunUsage = "usage: tenant sandbox run --surface <local|discord|imessage|cron-exec|cron-shell> " +
 	"[--backend host|restricted|container] [--timeout 60s] [--workdir DIR] -- <command...>"
 
-const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
+const sandboxUsage = `usage: tenant sandbox <probe|selftest|run|stop-all>
 
   probe [--json]      each surface's exec profile: backend, isolation, network mode, roots,
                       and what that backend enforces on this host; plus whether this OS has
@@ -75,6 +75,9 @@ const sandboxUsage = `usage: tenant sandbox <probe|selftest|run>
                       real sandbox boundary inside a disposable fake environment with
                       canary secrets. Reports what the boundary contained; exits 1 if the
                       model escapes a boundary the backend claims to enforce.
+  stop-all            remove every Tenant sandbox container on the engine, running or not.
+                      The emergency stop: a command whose container is removed ends as
+                      killed. It needs no running hub. Exits 1 if one could not be removed.
   image build|verify [--cli docker] [--tag tenant-sandbox:latest]
                       build the container backend's image from the embedded, digest-pinned
                       Dockerfile (no registry beyond the base), or verify it is present and
@@ -103,6 +106,8 @@ func sandboxMain(ctx context.Context, args []string, out io.Writer) error {
 		return sandboxRedteam(ctx, args[1:], out)
 	case "image":
 		return sandboxImage(ctx, args[1:], out)
+	case "stop-all":
+		return sandboxStopAll(ctx, args[1:], out)
 	case "help", "-h", "--help":
 		fmt.Fprintln(out, sandboxUsage)
 		return nil
@@ -497,6 +502,40 @@ func sbxRows(w io.Writer, indent string, width int, label string, vals []string,
 // -------------------------------------------------------------- image ---
 
 // sandboxImage builds or verifies the container backend's image.
+// sandboxStopAll is `tenant sandbox stop-all`: remove every Tenant sandbox
+// container on the engine (W2-7). It needs no running hub and asks nothing:
+// it is what an operator runs when a sandboxed command must stop now. It uses
+// the engine config.json names (`container`), like every other command.
+func sandboxStopAll(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("sandbox stop-all", flag.ContinueOnError)
+	c := bindSandboxDirs(fs)
+	c.auditOnly, c.skipDataLock = true, true // it changes nothing of Tenant's and must work beside a running hub
+	if err := fs.Parse(args); err != nil {
+		return sbxHelpOK(err)
+	}
+	if err := c.resolveDirs(); err != nil {
+		return err
+	}
+	if lc, err := loadLaunchConfig(c.cfgDir); err == nil {
+		c.lc = lc
+	}
+	sandbox.SetContainerDefaults(containerOptions(c, false))
+	found, failed, err := sandbox.StopAllContainers(ctx)
+	if err != nil {
+		return fmt.Errorf("sandbox stop-all: %w", err)
+	}
+	switch {
+	case found == 0:
+		fmt.Fprintln(out, "no sandbox containers on the engine")
+	case failed == 0:
+		fmt.Fprintf(out, "stopped and removed %d sandbox container(s); the commands they ran end as killed\n", found)
+	default:
+		fmt.Fprintf(out, "found %d sandbox container(s); removed %d\n", found, found-failed)
+		return fmt.Errorf("sandbox stop-all: %d container(s) could not be removed; `docker ps -a --filter label=tenant.sandbox=1` lists them", failed)
+	}
+	return nil
+}
+
 func sandboxImage(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: tenant sandbox image <build|verify> [--cli docker] [--tag tenant-sandbox:latest]")

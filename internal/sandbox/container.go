@@ -673,7 +673,17 @@ func (b *containerBackend) SweepLeftovers(ctx context.Context) (int, error) {
 // controlTimeout), and an unfiltered list answers where it does not. An exact
 // match on the value, so another install's containers are never returned.
 func (b *containerBackend) instanceContainers(ctx context.Context) ([]string, error) {
-	lc, done, err := b.control(ctx, "a container listing", "ps", "-a", "--no-trunc", "--format", `{{.ID}}`+"\t"+`{{.Label "`+labelInstance+`"}}`)
+	if b.instance == "" {
+		return nil, nil
+	}
+	return b.labelledContainers(ctx, labelInstance, b.instance)
+}
+
+// labelledContainers lists the containers, running or not, whose label has
+// exactly the value want, matched here and not by the engine (see
+// instanceContainers).
+func (b *containerBackend) labelledContainers(ctx context.Context, label, want string) ([]string, error) {
+	lc, done, err := b.control(ctx, "a container listing", "ps", "-a", "--no-trunc", "--format", `{{.ID}}`+"\t"+`{{.Label "`+label+`"}}`)
 	if err != nil {
 		return nil, err
 	}
@@ -683,13 +693,47 @@ func (b *containerBackend) instanceContainers(ctx context.Context) ([]string, er
 	}
 	var ids []string
 	for _, line := range strings.Split(string(list), "\n") {
-		id, instance, _ := strings.Cut(strings.TrimRight(line, "\r"), "\t")
-		if id = strings.TrimSpace(id); id != "" && b.instance != "" && strings.TrimSpace(instance) == b.instance {
+		id, value, _ := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if id = strings.TrimSpace(id); id != "" && strings.TrimSpace(value) == want {
 			ids = append(ids, id)
 		}
 	}
 	return ids, nil
 }
+
+// StopAllContainers removes every sandbox container on the engine, running or
+// not: the operator's stop for "something in a sandbox is doing what it should
+// not" (W2-7, `tenant sandbox stop-all`). Every container the backend starts
+// carries tenant.sandbox=1 whatever install or process started it, and that
+// label is the match, so this stops other installs' sandbox containers on the
+// same engine too, and nothing that is not a Tenant sandbox. A command whose
+// container is removed ends as if it had been killed. It returns how many
+// were found and how many of those could not be removed.
+func StopAllContainers(ctx context.Context) (found, failed int, err error) {
+	b := Container(containerDefaults())
+	if _, err := b.resolvedBin(); err != nil {
+		return 0, 0, unavailable(fmt.Errorf("the %s CLI was not found on PATH", b.bin()), fixInstallEngine)
+	}
+	ctx, cancel := context.WithTimeout(ctx, stopAllTimeout)
+	defer cancel()
+	ids, err := b.labelledContainers(ctx, labelSandbox, "1")
+	if err != nil {
+		return 0, 0, stalled(ctx, "the stop", err)
+	}
+	for _, id := range ids {
+		rc, done, cerr := b.control(ctx, "a container removal", "rm", "-f", id)
+		if cerr == nil {
+			cerr = done(rc.Run())
+		}
+		if cerr != nil {
+			failed++
+		}
+	}
+	return len(ids), failed, nil
+}
+
+// stopAllTimeout bounds StopAllContainers. A variable so tests can shorten it.
+var stopAllTimeout = 60 * time.Second
 
 // --- helpers ---------------------------------------------------------------
 

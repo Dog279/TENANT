@@ -15,6 +15,9 @@ Releases page.
   container can show: whether a user namespace is in effect (from its uid map) and the kernel it
   runs on. `tenant sandbox run` and `tenant sandbox selftest --backend container` apply the same
   check, and `tenant sandbox probe` reports its result.
+- **`tenant sandbox stop-all`** removes every Tenant sandbox container on the engine, running
+  or not: the stop for a sandboxed command that must end now. It needs no running hub. A
+  command whose container is removed ends as killed.
 - **An approval to re-run a refused command covers that exact run.** When the container
   sandbox refuses a command and you approve the re-run, Tenant now takes a digest of what
   will run (the command, every mount, the network and the image the tag points at) before it
