@@ -15,6 +15,12 @@ Releases page.
   container can show: whether a user namespace is in effect (from its uid map) and the kernel it
   runs on. `tenant sandbox run` and `tenant sandbox selftest --backend container` apply the same
   check, and `tenant sandbox probe` reports its result.
+- **The Security log says what boundary a sandboxed command had.** On the container backend,
+  the record of a command (`4201`) now holds the image and the id its tag resolved to, every
+  folder mounted and whether it was writable, the network, the limits, how much the command
+  wrote and whether that hit the output cap, and how long it took. **Corrected:** the record
+  of an approved re-run (`4203`) said the command "ran outside" the sandbox even when the
+  re-run stayed in a container with one more grant; it now says where it ran.
 - **`tenant sandbox stop-all`** removes every Tenant sandbox container on the engine, running
   or not: the stop for a sandboxed command that must end now. It needs no running hub. A
   command whose container is removed ends as killed.

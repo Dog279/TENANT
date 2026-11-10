@@ -92,6 +92,15 @@ func TestExecSecurityRecords(t *testing.T) {
 	auditExec(ctx, "restricted", cmd, true, sandbox.Result{ExitCode: 1, Violations: fs}, nil)
 	auditExec(ctx, "restricted", cmd, true, sandbox.Result{Violations: fs, Escalated: true}, nil)
 	auditExec(ctx, "restricted", cmd, false, sandbox.Result{Violations: fs, Escalated: true}, nil)
+	// The container backend says what boundary the run had, and an approved
+	// re-run there stays in a container: the record must not say "the host".
+	box := &sandbox.Confinement{
+		Image: "tenant-sandbox:latest", ImageID: "sha256:1111",
+		Mounts:  []string{"/w -> /mnt/w (rw)", "/src -> /mnt/src (ro)"},
+		Network: "none", Limits: "pids=256 memory=1024MB cpus=2 wall=1m0s",
+		OutputBytes: 42, Capped: false, Elapsed: 1500 * time.Millisecond,
+	}
+	auditExec(ctx, "container", cmd, true, sandbox.Result{Violations: fs, Escalated: true, Confinement: box}, nil)
 
 	got := s.lines()
 	if len(got) > 0 && (strings.Contains(got[0], token) || !strings.Contains(got[0], "«secret:")) {
@@ -107,9 +116,13 @@ func TestExecSecurityRecords(t *testing.T) {
 		"4201 agent@discord [ap-test-1] "+refused+" exit=1 timed_out=false",
 		"4202 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh",
 		"4201 agent@discord [ap-test-1] "+refused+" exit=0 timed_out=false",
-		"4203 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh why=approved",
+		"4203 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh why=approved where=on the host",
 		"4201 agent@discord [ap-test-1] "+refused+" exit=0 timed_out=false",
-		"4203 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh why=dry_run")
+		"4203 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh why=dry_run where=on the host",
+		"4201 agent@discord [ap-test-1] command=cat ~/.ssh/id backend=container exit=0 timed_out=false"+
+			" image=tenant-sandbox:latest image_id=sha256:1111 mounts=/w -> /mnt/w (rw); /src -> /mnt/src (ro)"+
+			" network=none limits=pids=256 memory=1024MB cpus=2 wall=1m0s output_bytes=42 output_capped=false elapsed_ms=1500",
+		"4203 agent@discord [ap-test-1] command=cat ~/.ssh/id backend=container violations=filesystem: read denied: ~/.ssh why=approved where=in a container with one more grant")
 }
 
 // The cron-exec auto-approver no longer bypasses the record: each verdict is

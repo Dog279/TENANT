@@ -35,6 +35,13 @@ type cappedBuffer struct {
 	truncated bool
 }
 
+// Total is how many bytes were written, kept or not.
+func (c *cappedBuffer) Total() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
+}
+
 func (c *cappedBuffer) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	c.total += int64(len(p))

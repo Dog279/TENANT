@@ -277,6 +277,10 @@ type Result struct {
 	// after an approved escalation or in dry-run. Violations then records what the
 	// boundary refused on the first attempt.
 	Escalated bool
+	// Confinement is what the run was held to, from a backend that builds its
+	// boundary per run (the container); nil from the others. For an escalated
+	// result it describes the re-run: nil means that ran on the host.
+	Confinement *Confinement
 }
 
 // Contained reports whether the boundary stopped the command from succeeding:
@@ -396,6 +400,20 @@ func For(name string) (Backend, error) {
 	default:
 		return nil, fmt.Errorf("sandbox: unknown backend %q", name)
 	}
+}
+
+// Confinement is the boundary one run actually had, for its Security log
+// record (W2-7): written by the backend from the spec it ran, never from the
+// request, so the record is of what happened.
+type Confinement struct {
+	Image       string        // the image reference the container was started from
+	ImageID     string        // what that reference resolved to at the readiness check before the run; "" if not known
+	Mounts      []string      // each as "host -> container (rw|ro)"; the work dir first
+	Network     string        // the engine network: none or bridge
+	Limits      string        // the caps applied, defaults included
+	OutputBytes int64         // what the command wrote, before the cap
+	Capped      bool          // the output cap was hit and the run was killed for it
+	Elapsed     time.Duration // start to finish, the engine's start-up included
 }
 
 // Escalator decides whether a command the boundary refused may re-run on the

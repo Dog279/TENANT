@@ -63,12 +63,16 @@ const defaultImage = "tenant-sandbox:latest"
 
 // containerBackend runs commands in a fresh hardened container each time.
 type containerBackend struct {
-	cli        string // the docker-compatible binary: "docker", "podman", or a path
-	image      string // the pinned image reference
-	instance   string // this install's instance id, for the container labels
-	explicitEP string // an operator-named engine endpoint (-H); "" resolves
-	tlsVerify  bool   // the operator vouches for mutual TLS on a tcp:// endpoint
-	tlsCertDir string // where ca.pem, cert.pem and key.pem are, for a tcp:// endpoint; "" resolves
+	cli      string // the docker-compatible binary: "docker", "podman", or a path
+	image    string // the pinned image reference
+	instance string // this install's instance id, for the container labels
+	// imageSeen is the id the image tag resolved to at the last readiness
+	// check (Available), for the run record. Shared by pointer with nothing:
+	// each backend value keeps its own, and a zero value means "not known".
+	imageSeen  atomic.Value // string
+	explicitEP string       // an operator-named engine endpoint (-H); "" resolves
+	tlsVerify  bool         // the operator vouches for mutual TLS on a tcp:// endpoint
+	tlsCertDir string       // where ca.pem, cert.pem and key.pem are, for a tcp:// endpoint; "" resolves
 
 	epMu  sync.Mutex
 	ep    string      // the resolved endpoint, cached on success only
@@ -253,16 +257,20 @@ func (b *containerBackend) Available(ctx context.Context) error {
 	if _, err := b.facts(ctx); err != nil {
 		return err // probeOnce attached the fix
 	}
-	ic, done, err := b.control(ctx, "an image check", "image", "inspect", b.image)
+	// One call answers "is the image built" and "which image is it": the id
+	// goes into every run's record until the next check.
+	id, err := b.imageID(ctx)
 	if err != nil {
-		return unavailable(err, fixEndpoint)
-	}
-	if err := done(imagePresent(ic)); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		var u *Unavailable
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			return unavailable(err, fixStuckEngine) // the CLI stalled: that is not "the image is missing"
+		case errors.As(err, &u):
+			return err // the endpoint or the CLI, with its own fix
 		}
 		return unavailable(fmt.Errorf("the sandbox image %s is not built (run `tenant sandbox image build`)", b.image), fixBuildImage)
 	}
+	b.imageSeen.Store(id)
 	// The engine answers and the image is there; can it start a container?
 	f, _ := b.facts(ctx) // cached: the call above just succeeded
 	if _, err := b.containerCheck(ctx, f); err != nil {
@@ -385,10 +393,12 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 		c.Stderr = io.MultiWriter(out, wit, pol.Stderr)
 	}
 
+	started := time.Now()
 	runErr := c.Run()
 	wit.flush()
 	spec.witness = wit
 	res := Result{Output: out.String(), PID: pidOf(c)}
+	res.Confinement = b.confinement(spec, out, time.Since(started))
 	if out.Truncated() {
 		res.Violations = append(res.Violations, Violation{Kind: "limit", Detail: "output exceeded the cap and was truncated; the container was killed"})
 	}
@@ -416,6 +426,37 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 		return res, fmt.Errorf("container: could not run %s: %w", b.bin(), runErr)
 	}
 	return res, nil
+}
+
+// confinement describes the boundary a run had, from the spec it was started
+// with (W2-7).
+func (b *containerBackend) confinement(spec containerSpec, out *cappedBuffer, elapsed time.Duration) *Confinement {
+	describe := func(m mount) string {
+		return m.host + " -> " + m.ctr + " (" + boolWord(m.ro, "ro", "rw") + ")"
+	}
+	mounts := []string{describe(spec.work)}
+	for _, m := range spec.mounts {
+		mounts = append(mounts, describe(m))
+	}
+	pids, memMB := spec.limits.MaxPIDs, spec.limits.MemoryBytes>>20
+	if pids <= 0 {
+		pids = defaultMaxPIDs
+	}
+	if memMB <= 0 {
+		memMB = defaultMemoryMB
+	}
+	limits := fmt.Sprintf("pids=%d memory=%dMB cpus=%s", pids, memMB, defaultCPUs)
+	if spec.limits.Wall > 0 {
+		limits += " wall=" + spec.limits.Wall.String()
+	}
+	if spec.limits.MaxOutputBytes > 0 {
+		limits += fmt.Sprintf(" output=%dB", spec.limits.MaxOutputBytes)
+	}
+	id, _ := b.imageSeen.Load().(string)
+	return &Confinement{
+		Image: spec.image, ImageID: id, Mounts: mounts, Network: spec.network, Limits: limits,
+		OutputBytes: out.Total(), Capped: out.Truncated(), Elapsed: elapsed,
+	}
 }
 
 // RunGranted is the within-tier escalation (W1-6, D3): the same command, in a
@@ -507,7 +548,7 @@ func (b *containerBackend) GrantedRunHash(ctx context.Context, cmd Command, pol 
 func (b *containerBackend) imageID(ctx context.Context) (string, error) {
 	c, done, err := b.control(ctx, "an image check", "image", "inspect", "--format", "{{.Id}}", b.image)
 	if err != nil {
-		return "", err
+		return "", unavailable(err, fixEndpoint)
 	}
 	out, err := c.Output()
 	if err = done(err); err != nil {

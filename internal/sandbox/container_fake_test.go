@@ -263,6 +263,45 @@ func TestFakeDocker_ContainerCheck(t *testing.T) {
 	}
 }
 
+// W2-7: a run's result says what boundary it had, from the spec it ran with:
+// the image and the id its tag resolved to at the readiness check, every
+// mount and its mode, the network, the caps, the bytes written and the time.
+func TestFakeDocker_RunReportsItsConfinement(t *testing.T) {
+	b, _ := fakeDocker(t)
+	ctx := context.Background()
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:abcd")
+	if err := b.Available(ctx); err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	work, src := t.TempDir(), t.TempDir()
+	res, err := b.Run(ctx, Command{Shell: "echo hi"}, Policy{
+		WorkDir: work, ReadRoots: []string{src}, Network: NetNone, Enforce: true,
+		Limits: Limits{Wall: 30 * time.Second, MaxOutputBytes: 4096, MaxPIDs: 32},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	c := res.Confinement
+	if c == nil {
+		t.Fatal("a container run reported no confinement")
+	}
+	if c.Image != b.image || c.ImageID != "sha256:abcd" || c.Network != "none" {
+		t.Errorf("image %q id %q network %q", c.Image, c.ImageID, c.Network)
+	}
+	if len(c.Mounts) != 2 || !strings.HasSuffix(c.Mounts[0], "(rw)") || !strings.HasSuffix(c.Mounts[1], "(ro)") ||
+		!strings.Contains(c.Mounts[0], " -> ") {
+		t.Errorf("mounts = %q, want the work dir read-write then the read root read-only", c.Mounts)
+	}
+	for _, want := range []string{"pids=32", "memory=", "cpus=", "wall=30s", "output=4096B"} {
+		if !strings.Contains(c.Limits, want) {
+			t.Errorf("limits %q lack %q", c.Limits, want)
+		}
+	}
+	if c.OutputBytes != int64(len("fake-run\n")) || c.Capped || c.Elapsed <= 0 {
+		t.Errorf("output %d bytes, capped %v, elapsed %s", c.OutputBytes, c.Capped, c.Elapsed)
+	}
+}
+
 // A user namespace shows in the uid map: anything but the identity map.
 func TestFakeDocker_ContainerCheckSeesUserNamespace(t *testing.T) {
 	b, _ := fakeDocker(t)
