@@ -5,6 +5,12 @@ Releases page.
 
 ## Unreleased
 
+- **`tenant sandbox probe` and `tenant doctor` point out credential-looking names in `env_pass`.**
+  A sandboxed command can read every variable it is passed, and with the network on can send
+  it anywhere. When a surface's `env_pass` forwards a name that looks like a credential
+  (`…_TOKEN`, `…_API_KEY`, `…PASSWORD`, `SSH_AUTH_SOCK`), both now say so, per surface
+  (`env_pass_secret_looking` in `probe --json`). A hint only: the name is still passed, and a
+  secret under a plain name is not noticed.
 - **The container sandbox refuses a writable folder that is itself a git directory.** A bare
   repository (or a checkout's `.git` handed over directly) has its `hooks` folder and its
   `config` at the top of what the command could write, and git runs both on the host the next
@@ -18,7 +24,10 @@ Releases page.
   draws nothing or moves other text as a marker (`⟨U+000D⟩`, `⟨U+202E⟩`), as the dashboard's
   approval card does. Everywhere else in the app, whole escape sequences (a tool's colors) are
   removed, a carriage return becomes a line break, and any other control character shows as a
-  marker. The dashboard and the log files already did this.
+  marker. What a slash command prints from stored text (a memory fact, a skill, a job's name)
+  is treated the same way; where the app has styled such text its colors stay, but nothing in
+  it can conceal text, move the cursor, clear or retitle. The dashboard and the log files
+  already did this.
 - **The container sandbox says when the engine cannot run anything, before the first command.**
   `docker version` and `docker info` answering does not mean the engine can start a container:
   a Docker Desktop stuck starting (seen after a WSL update) answers both, and every command
