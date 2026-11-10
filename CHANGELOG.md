@@ -5,6 +5,15 @@ Releases page.
 
 ## Unreleased
 
+- **Container sandbox: `full` networking no longer shares Docker's default bridge.** A command
+  given `"network": "full"` ran on the default bridge, where every container without a network
+  of its own lives and where containers reach each other: on a real engine a sandboxed command
+  fetched a page from another container there. It now runs on a bridge Tenant makes for itself
+  (`tenant-sbx`, created on first use) with traffic between its containers off. The command
+  still reaches the internet, but not your other containers and not another sandboxed command.
+  If a network of that name already exists and lets its containers reach each other, the
+  command is refused with the fix (`docker network rm tenant-sbx`). Not changed: a `full`
+  command can still reach services listening on the host itself.
 - **Fixed: approving a write into a folder granted read-only never ran on a real engine.** When
   the container sandbox refused a write to a folder the profile grants under `read_roots`, an
   approved re-run added the folder as writable and kept the read-only grant, so the same folder
