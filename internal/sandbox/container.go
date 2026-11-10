@@ -242,20 +242,25 @@ func (b *containerBackend) resolvedBin() (string, error) {
 // gate (W1-1) — a profile naming container never silently runs on the host.
 func (b *containerBackend) Available(ctx context.Context) error {
 	if _, err := b.resolvedBin(); err != nil {
-		return fmt.Errorf("the %s CLI was not found on PATH", b.bin())
+		return unavailable(fmt.Errorf("the %s CLI was not found on PATH", b.bin()), fixInstallEngine)
 	}
 	if _, err := b.facts(ctx); err != nil {
-		return err
+		return err // probeOnce attached the fix
 	}
 	ic, done, err := b.control(ctx, "an image check", "image", "inspect", b.image)
 	if err != nil {
-		return err
+		return unavailable(err, fixEndpoint)
 	}
 	if err := done(imagePresent(ic)); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return err // the CLI stalled: that is not "the image is missing"
+			return unavailable(err, fixStuckEngine) // the CLI stalled: that is not "the image is missing"
 		}
-		return fmt.Errorf("the sandbox image %s is not built (run `tenant sandbox image build`)", b.image)
+		return unavailable(fmt.Errorf("the sandbox image %s is not built (run `tenant sandbox image build`)", b.image), fixBuildImage)
+	}
+	// The engine answers and the image is there; can it start a container?
+	f, _ := b.facts(ctx) // cached: the call above just succeeded
+	if _, err := b.containerCheck(ctx, f); err != nil {
+		return err
 	}
 	return nil
 }
@@ -300,6 +305,11 @@ func (b *containerBackend) Probe(ctx context.Context) Capabilities {
 	detail := "read-only rootfs, non-root user, all capabilities dropped, no-new-privileges, seccomp, " +
 		"per-run pids/memory caps and an in-container deadline; filesystem is deny-by-default (only mounts exist). " +
 		"Limits is partial: --cpus is a rate, not a CPU-time budget. Probe: " + f.summary() + "."
+	if c := b.cache.lastCheck(); c != nil {
+		detail += " " + c.summary() + "."
+	} else {
+		detail += " Container check: not run yet (it runs before the first command)."
+	}
 	if w := f.gates.warning(); w != "" {
 		detail += " NOTE: " + w
 	}
@@ -525,6 +535,31 @@ func grantsClearDenyRoots(work mount, mounts []mount, deny []string) error {
 		}
 	}
 	return nil
+}
+
+// GrantOverlapsDeny reports the first of grants (folders a container profile
+// would mount) that overlaps one of deny, and which: the grant is the deny
+// root, sits inside it, or contains it. It is the rule grantsClearDenyRoots
+// applies to a run's mounts, in the same canonical form, for whoever loads a
+// profile to apply before any command runs (W1-3, TEN-457). The work dir's
+// carve-out is not part of it: a profile's grants are not a work dir.
+func GrantOverlapsDeny(grants, deny []string) (grant, denied string, overlaps bool) {
+	for _, d := range deny {
+		if d == "" {
+			continue
+		}
+		dc := canonForCompare(d)
+		for _, g := range grants {
+			if g == "" {
+				continue
+			}
+			gc := canonForCompare(g)
+			if withinHost(gc, dc) || withinHost(dc, gc) {
+				return g, d, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // reap kills and removes the named container. It is safe to call more than once

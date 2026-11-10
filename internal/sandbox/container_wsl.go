@@ -114,6 +114,37 @@ func checkWSLFloors(wsl, kernel string) gateReport {
 	return g
 }
 
+// checkRunningKernel gates on the kernel the engine is running, which
+// `docker info` reports, beside the one `wsl --version` prints. The two can
+// differ: `wsl --version` names the kernel that is installed, and a WSL VM
+// started before an update keeps running the old one until `wsl --shutdown`.
+// The CVE-2026-53362 floor is about the kernel containers run on, so a running
+// kernel below it refuses even when the installed one is above it; a running
+// kernel that only trails the installed one is a warning. It applies on
+// Windows, where the engine's kernel is the WSL kernel.
+func checkRunningKernel(installed, running string) gateReport {
+	var g gateReport
+	if running == "" {
+		g.warn = append(g.warn, "the engine reported no kernel version; the running kernel was not checked against the floor "+minWSLKernel)
+		return g
+	}
+	cmp, ok := compareVersions(running, minWSLKernel)
+	if !ok {
+		g.warn = append(g.warn, fmt.Sprintf("the engine's kernel %q could not be parsed; the floor %s was not checked against it", running, minWSLKernel))
+		return g
+	}
+	if cmp < 0 {
+		g.refuse = append(g.refuse, fmt.Sprintf("the WSL kernel the engine is running (%s) predates the CVE-2026-53362 fix (%s); run `wsl --update`, then `wsl --shutdown`, and start Docker Desktop again", running, minWSLKernel))
+		return g
+	}
+	if installed != "" {
+		if c, ok := compareVersions(running, installed); ok && c < 0 {
+			g.warn = append(g.warn, fmt.Sprintf("WSL has kernel %s installed but the engine is still running %s; `wsl --shutdown`, then start Docker Desktop again, to run the installed one", installed, running))
+		}
+	}
+	return g
+}
+
 // utf16Bytes renders s as UTF-16LE with a BOM, the way `wsl --version` prints:
 // a test helper kept here so the Windows and OS-neutral tests share it.
 func utf16Bytes(s string) []byte {

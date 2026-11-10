@@ -374,8 +374,9 @@ func Restricted() (Backend, error) {
 }
 
 // For resolves a backend by profile name: "" / "host", "restricted",
-// "jobobject" (Windows only), or "container" (not yet implemented). An
-// unknown or unavailable backend is an error the caller surfaces.
+// "jobobject" (Windows only), or "container" (the Docker backend, built
+// from the process defaults). An unknown or unavailable backend is an error
+// the caller surfaces.
 func For(name string) (Backend, error) {
 	switch name {
 	case "", "host":
@@ -388,7 +389,10 @@ func For(name string) (Backend, error) {
 		}
 		return jobObjectFactory(), nil
 	case "container":
-		return Container(ContainerOptions{}), nil
+		// The process defaults, so every surface's backend labels its
+		// containers with the install's id, the one the start-up sweep looks
+		// for, and uses the operator's endpoint.
+		return Container(containerDefaults()), nil
 	default:
 		return nil, fmt.Errorf("sandbox: unknown backend %q", name)
 	}

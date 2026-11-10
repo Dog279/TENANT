@@ -86,6 +86,21 @@ func fakeDockerMain() int {
 	case "context":
 		return 1
 	case "run":
+		// TENANT_FAKE_DOCKER_STALL=run never answers, like an engine that
+		// cannot start a container. The container check's command gets a uid
+		// map (TENANT_FAKE_DOCKER_UIDMAP, default: no user namespace) and a
+		// kernel (TENANT_FAKE_DOCKER_KERNEL).
+		if os.Getenv("TENANT_FAKE_DOCKER_STALL") == "run" {
+			time.Sleep(time.Minute)
+			return 0
+		}
+		for _, a := range args {
+			if strings.Contains(a, "/proc/self/uid_map") {
+				fmt.Println(firstNonEmptyStr(os.Getenv("TENANT_FAKE_DOCKER_UIDMAP"), "         0          0 4294967295"))
+				fmt.Println(firstNonEmptyStr(os.Getenv("TENANT_FAKE_DOCKER_KERNEL"), "6.18.54.1-microsoft-standard-WSL2"))
+				return 0
+			}
+		}
 		fmt.Println("fake-run")
 		return 0
 	}
@@ -165,8 +180,10 @@ func TestFakeDocker_CleanLaunch(t *testing.T) {
 	for _, c := range calls {
 		sub = append(sub, c.argv[2])
 	}
-	if got := strings.Join(sub, ","); got != "version,info,image" {
-		t.Errorf("Available ran %q, want version,info,image", got)
+	// version and info are the probe, image is the image check, run is the
+	// container check and kill is its reap.
+	if got := strings.Join(sub, ","); got != "version,info,image,run,kill" {
+		t.Errorf("Available ran %q, want version,info,image,run,kill", got)
 	}
 }
 
@@ -180,14 +197,157 @@ func TestFakeDocker_ProbeCached(t *testing.T) {
 	if err := b.Available(ctx); err != nil {
 		t.Fatal(err)
 	}
-	versions := 0
+	versions, runs := 0, 0
 	for _, c := range readCalls(t, logPath) {
-		if c.argv[2] == "version" {
+		switch c.argv[2] {
+		case "version":
 			versions++
+		case "run":
+			runs++
 		}
 	}
 	if versions != 1 {
 		t.Fatalf("docker version was run %d times across two Available calls, want 1 (cached)", versions)
+	}
+	if runs != 1 {
+		t.Fatalf("the container check ran %d times across two Available calls, want 1 (cached)", runs)
+	}
+}
+
+// W1-1: before first use, one container runs through the real argv and
+// reports what only a container can: the uid map (a user namespace or not)
+// and the kernel. Probe shows it afterwards and never runs it itself.
+func TestFakeDocker_ContainerCheck(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	ctx := context.Background()
+	if d := b.Probe(ctx).Detail; !strings.Contains(d, "Container check: not run yet") {
+		t.Fatalf("Probe before first use should say the check has not run: %s", d)
+	}
+	for _, c := range readCalls(t, logPath) {
+		if c.argv[2] == "run" {
+			t.Fatal("Probe ran a container")
+		}
+	}
+	if err := b.Available(ctx); err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	if d := b.Probe(ctx).Detail; !strings.Contains(d, "container check: userns off (no ECI), kernel 6.18.54.1-microsoft-standard-WSL2") {
+		t.Fatalf("Probe after the check should report it: %s", d)
+	}
+	// The check container is built like any run's: no network, read-only, and
+	// only the scratch work dir mounted.
+	var run []string
+	for _, c := range readCalls(t, logPath) {
+		if c.argv[2] == "run" {
+			run = c.argv[2:]
+		}
+	}
+	joined := strings.Join(run, " ")
+	for _, want := range []string{"--network none", "--read-only", "--cap-drop ALL", "--pull never"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the check container's argv lacks %q: %s", want, joined)
+		}
+	}
+}
+
+// A user namespace shows in the uid map: anything but the identity map.
+func TestFakeDocker_ContainerCheckSeesUserNamespace(t *testing.T) {
+	b, _ := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_UIDMAP", "         0     100000      65536")
+	if err := b.Available(context.Background()); err != nil {
+		t.Fatalf("Available: %v", err)
+	}
+	if d := b.Probe(context.Background()).Detail; !strings.Contains(d, "container check: userns on") {
+		t.Fatalf("a remapped uid 0 should read as a user namespace: %s", d)
+	}
+}
+
+// An engine that answers `version` and `info` but cannot start a container (a
+// Docker Desktop stuck starting) fails Available at the check's deadline, with
+// a reason, and is not asked again until the back-off has passed. Without the
+// check every command waited out its own wall clock and returned nothing.
+func TestFakeDocker_EngineThatCannotStartAContainer(t *testing.T) {
+	b, logPath := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_STALL", "run")
+	old := containerCheckTimeout
+	containerCheckTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { containerCheckTimeout = old })
+	ctx := context.Background()
+	start := time.Now()
+	err := b.Available(ctx)
+	if took := time.Since(start); took > 15*time.Second {
+		t.Fatalf("Available took %s against an engine that cannot start a container", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not start and finish a container") {
+		t.Fatalf("Available = %v, want the reason the engine is unusable", err)
+	}
+	again := b.Available(ctx)
+	if again == nil || again.Error() != err.Error() {
+		t.Fatalf("second Available = %v, want the cached refusal", again)
+	}
+	runs := 0
+	for _, c := range readCalls(t, logPath) {
+		if c.argv[2] == "run" {
+			runs++
+		}
+	}
+	if runs != 1 {
+		t.Fatalf("the check ran %d times inside its back-off, want 1", runs)
+	}
+}
+
+func TestParseContainerCheck(t *testing.T) {
+	cases := []struct {
+		name, out  string
+		userns     bool
+		kernel     string
+		wantErrHas string
+	}{
+		{"no namespace", "         0          0 4294967295\n6.18.54.1-microsoft-standard-WSL2\n", false, "6.18.54.1-microsoft-standard-WSL2", ""},
+		{"remapped", "0 100000 65536\n6.19.2\n", true, "6.19.2", ""},
+		{"two rows", "0 1000 1\n1 100000 65535\n6.19.2\n", true, "6.19.2", ""},
+		{"windows line ends", "0 0 4294967295\r\n6.19.2\r\n", false, "6.19.2", ""},
+		{"kernel only", "6.19.2\n", false, "", "not a uid map and a kernel"},
+		{"empty", "", false, "", "not a uid map and a kernel"},
+		{"not a map", "permission denied\n6.19.2\n", false, "", "not three numbers"},
+	}
+	for _, c := range cases {
+		got, err := parseContainerCheck(c.out)
+		if c.wantErrHas != "" {
+			if err == nil || !strings.Contains(err.Error(), c.wantErrHas) {
+				t.Errorf("%s: err = %v, want one containing %q", c.name, err, c.wantErrHas)
+			}
+			continue
+		}
+		if err != nil || got.userns != c.userns || got.kernel != c.kernel {
+			t.Errorf("%s: got %+v, %v; want userns=%v kernel=%q", c.name, got, err, c.userns, c.kernel)
+		}
+	}
+}
+
+// The floor is about the kernel containers run on. `wsl --version` prints the
+// installed kernel; a VM started before an update keeps the old one.
+func TestCheckRunningKernel(t *testing.T) {
+	cases := []struct {
+		name, installed, running string
+		refuse, warn             string
+	}{
+		{"both current", "6.18.58.1-1", "6.18.58.1-microsoft-standard-WSL2", "", ""},
+		{"running trails installed, above the floor", "6.18.58.1-1", "6.18.54.1-microsoft-standard-WSL2", "", "still running 6.18.54.1-microsoft-standard-WSL2"},
+		{"running below the floor, installed above it", "6.18.58.1-1", "6.18.30.2-microsoft-standard-WSL2", "predates the CVE-2026-53362 fix", ""},
+		{"no kernel reported", "6.18.58.1-1", "", "", "reported no kernel version"},
+		{"unparseable", "6.18.58.1-1", "custom", "", "could not be parsed"},
+		{"no installed line", "", "6.18.54.1-microsoft-standard-WSL2", "", ""},
+	}
+	for _, c := range cases {
+		g := checkRunningKernel(c.installed, c.running)
+		refuse, warn := strings.Join(g.refuse, "; "), strings.Join(g.warn, "; ")
+		if (c.refuse == "") != (refuse == "") || !strings.Contains(refuse, c.refuse) {
+			t.Errorf("%s: refuse = %q, want one containing %q", c.name, refuse, c.refuse)
+		}
+		if (c.warn == "") != (warn == "") || !strings.Contains(warn, c.warn) {
+			t.Errorf("%s: warn = %q, want one containing %q", c.name, warn, c.warn)
+		}
 	}
 }
 
@@ -294,6 +454,74 @@ func TestSweepContainers_NoCLIIsNotAnError(t *testing.T) {
 	t.Cleanup(func() { SetContainerDefaults(ContainerOptions{}) })
 	if n, err := SweepContainers(context.Background()); n != 0 || err != nil {
 		t.Fatalf("SweepContainers = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+// For("container") builds its backend from the process defaults: the
+// install's instance id, so the containers a surface starts carry the label
+// the start-up sweep looks for. (It built with empty options, so every command
+// was labelled with a per-process id and the sweep could never find a previous
+// run's leftovers.)
+func TestFor_ContainerUsesTheProcessDefaults(t *testing.T) {
+	SetContainerDefaults(ContainerOptions{Instance: "inst-from-defaults", Endpoint: "npipe:////./pipe/" + t.Name()})
+	t.Cleanup(func() { SetContainerDefaults(ContainerOptions{}) })
+	be, err := For("container")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok := be.(*containerBackend)
+	if !ok {
+		t.Fatalf("For(container) = %T", be)
+	}
+	if b.instance != "inst-from-defaults" || b.explicitEP != "npipe:////./pipe/"+t.Name() {
+		t.Fatalf("For(container) built instance %q endpoint %q, want the process defaults", b.instance, b.explicitEP)
+	}
+	if sweep := Container(containerDefaults()); sweep.instance != b.instance {
+		t.Fatalf("the sweep looks for %q but commands are labelled %q", sweep.instance, b.instance)
+	}
+}
+
+// Every reason Available refuses for carries the fix doctor shows.
+func TestFakeDocker_RefusalsCarryAFix(t *testing.T) {
+	fix := func(err error) string {
+		var u *Unavailable
+		if errors.As(err, &u) {
+			return u.Fix
+		}
+		return ""
+	}
+	ctx := context.Background()
+
+	missing := Container(ContainerOptions{CLI: "definitely-not-a-docker-binary-" + t.Name()})
+	if err := missing.Available(ctx); fix(err) != fixInstallEngine {
+		t.Errorf("no CLI: %v, fix %q", err, fix(err))
+	}
+
+	b, _ := fakeDocker(t)
+	t.Setenv("TENANT_FAKE_DOCKER_ENGINE", "20.10.0")
+	if err := b.Available(ctx); fix(err) != fixFloors {
+		t.Errorf("below the floor: %v, fix %q", err, fix(err))
+	}
+
+	b2, _ := fakeDocker(t)
+	b2.explicitEP = "npipe:////./pipe/" + t.Name() + "-plain"
+	b2.cache = sharedProbeCache(b2.cli + "\x00" + b2.explicitEP)
+	t.Setenv("TENANT_FAKE_DOCKER_ENGINE", "")
+	plaintextDaemonAnswers = func(context.Context) bool { return true }
+	if err := b2.Available(ctx); fix(err) != fixPlaintext {
+		t.Errorf("plaintext daemon: %v, fix %q", err, fix(err))
+	}
+	plaintextDaemonAnswers = func(context.Context) bool { return false }
+
+	b3, _ := fakeDocker(t)
+	b3.explicitEP = "npipe:////./pipe/" + t.Name() + "-stuck"
+	b3.cache = sharedProbeCache(b3.cli + "\x00" + b3.explicitEP)
+	t.Setenv("TENANT_FAKE_DOCKER_STALL", "run")
+	old := containerCheckTimeout
+	containerCheckTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { containerCheckTimeout = old })
+	if err := b3.Available(ctx); fix(err) != fixStuckEngine {
+		t.Errorf("cannot start a container: %v, fix %q", err, fix(err))
 	}
 }
 
