@@ -824,7 +824,8 @@ filled in as for any event. Keywords are `audit.success` or `audit.failure`.
   backend, the exit code; its approval is the one that let it run: `osys`
   opens a slot the approval gate fills). On the container backend `4201` also
   holds the boundary the run had: the image and the id its tag resolved to,
-  every mount and its mode, the network, the caps, the bytes written and
+  every mount and its mode, the network, the caps, the names (never the
+  values) of the environment variables passed in, the bytes written and
   whether that hit the output cap, and the time taken. A sandbox refusal is
   `4202`, a refused command re-run after one `4203` (`why`: `approved` or
   `dry_run`; `where`: on the host, or in a container with one more grant),

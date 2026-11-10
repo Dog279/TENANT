@@ -411,6 +411,7 @@ type Confinement struct {
 	Mounts      []string      // each as "host -> container (rw|ro)"; the work dir first
 	Network     string        // the engine network: none or bridge
 	Limits      string        // the caps applied, defaults included
+	Env         []string      // the names of the variables passed in from the host; never a value
 	OutputBytes int64         // what the command wrote, before the cap
 	Capped      bool          // the output cap was hit and the run was killed for it
 	Elapsed     time.Duration // start to finish, the engine's start-up included

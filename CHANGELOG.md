@@ -5,6 +5,11 @@ Releases page.
 
 ## Unreleased
 
+- **The container sandbox refuses a writable folder that is itself a git directory.** A bare
+  repository (or a checkout's `.git` handed over directly) has its `hooks` folder and its
+  `config` at the top of what the command could write, and git runs both on the host the next
+  time it is used there. Such a folder is refused as the work dir and as a write root, with the
+  reason; granted read-only it is allowed, and a folder that holds a checkout is unaffected.
 - **The terminal app no longer sends a model's or a tool's text to your terminal as it came.**
   A carriage return or a terminal escape sequence in a command, in its output or in a model's
   answer could put words over the line before them, recolor or clear the screen, or retitle
@@ -26,7 +31,8 @@ Releases page.
   check, and `tenant sandbox probe` reports its result.
 - **The Security log says what boundary a sandboxed command had.** On the container backend,
   the record of a command (`4201`) now holds the image and the id its tag resolved to, every
-  folder mounted and whether it was writable, the network, the limits, how much the command
+  folder mounted and whether it was writable, the network, the limits, the names (never the
+  values) of the environment variables passed in, how much the command
   wrote and whether that hit the output cap, and how long it took. **Corrected:** the record
   of an approved re-run (`4203`) said the command "ran outside" the sandbox even when the
   re-run stayed in a container with one more grant; it now says where it ran.

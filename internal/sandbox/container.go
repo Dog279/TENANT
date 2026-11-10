@@ -455,6 +455,7 @@ func (b *containerBackend) confinement(spec containerSpec, out *cappedBuffer, el
 	id, _ := b.imageSeen.Load().(string)
 	return &Confinement{
 		Image: spec.image, ImageID: id, Mounts: mounts, Network: spec.network, Limits: limits,
+		Env:         append([]string(nil), spec.envNames...),
 		OutputBytes: out.Total(), Capped: out.Truncated(), Elapsed: elapsed,
 	}
 }
@@ -595,6 +596,11 @@ func (b *containerBackend) specFor(cmd Command, pol Policy) (containerSpec, erro
 	}
 	if err := grantsClearDenyRoots(work, mounts, pol.DenyRoots); err != nil {
 		return containerSpec{}, err
+	}
+	for _, m := range append([]mount{work}, mounts...) {
+		if !m.ro && bareRepoLayout(m.host) {
+			return containerSpec{}, fmt.Errorf("container: %s is laid out as a bare git repository, so it cannot be a writable folder of a sandboxed command: its hooks and its config would be the command's to write, and git runs them on the host the next time it is used there. Use a folder that holds a checkout, or grant this one read-only", m.host)
+		}
 	}
 	sh := cmd.Shell
 	if sh == "" {
@@ -1008,6 +1014,20 @@ func oneLine(s string) string {
 // goosOf is runtime.GOOS behind a function, so the endpoint default can be
 // read where runtime is not otherwise imported.
 func goosOf() string { return runtime.GOOS }
+
+// bareRepoLayout reports whether dir is itself a git directory (a bare
+// repository, or a checkout's .git handed over directly): git's own test, a
+// HEAD file beside objects and refs folders. In a checkout those sit one
+// level down, under .git; here the hooks folder and the config file are at
+// the top of what the command may write (W2-2, H16).
+func bareRepoLayout(dir string) bool {
+	isDir := func(name string) bool {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		return err == nil && fi.IsDir()
+	}
+	head, err := os.Stat(filepath.Join(dir, "HEAD"))
+	return err == nil && head.Mode().IsRegular() && isDir("objects") && isDir("refs")
+}
 
 // canonForCompare resolves p to the absolute, symlink-resolved form that mount
 // sources are compared in, so a deny root and a mount that name the same place

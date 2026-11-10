@@ -4778,11 +4778,11 @@ Writes the `security` log.
 `Command ran on {backend}: exit {exit}`
 
 - **Level:** info · **Channel:** operational · **Task:** Execution · **Log:** security
-- **Fields:** `command`, `backend`, `exit`, `timed_out`, `err`, `image`, `image_id`, `mounts`, `network`, `limits`, `output_bytes`, `output_capped`, `elapsed_ms`
+- **Fields:** `command`, `backend`, `exit`, `timed_out`, `err`, `image`, `image_id`, `mounts`, `network`, `limits`, `env`, `output_bytes`, `output_capped`, `elapsed_ms`
 - **Keywords:** `audit.success`
 - **Find it:** `provider:security id:4201`
 
-**What it means.** A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets. On the container backend the record also holds the boundary the run had: the image and the id its tag resolved to, every mount with its mode, the network, the caps, how many bytes the command wrote and whether that hit the output cap, and how long it took.
+**What it means.** A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets. On the container backend the record also holds the boundary the run had: the image and the id its tag resolved to, every mount with its mode, the network, the caps, the names (never the values) of the host's environment variables passed in, how many bytes the command wrote and whether that hit the output cap, and how long it took.
 
 **Why it happens.** The agent called os_exec (approved, or allowed by --allow-exec or its category's mode), or a cron shell job ran.
 

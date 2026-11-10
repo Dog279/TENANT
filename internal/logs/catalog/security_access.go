@@ -54,9 +54,9 @@ var ModeChanged = Security.Event(4106, event.Info, "Approval", "{broker} approva
 // surface is where it came from; the approval, the one that let it run.
 
 var ExecRan = Security.Event(4201, event.Info, "Execution", "Command ran on {backend}: exit {exit}", "command", "backend", "exit", "timed_out", "err",
-	"image", "image_id", "mounts", "network", "limits", "output_bytes", "output_capped", "elapsed_ms").
+	"image", "image_id", "mounts", "network", "limits", "env", "output_bytes", "output_capped", "elapsed_ms").
 	Keywords("audit.success").
-	Doc("A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets. On the container backend the record also holds the boundary the run had: the image and the id its tag resolved to, every mount with its mode, the network, the caps, how many bytes the command wrote and whether that hit the output cap, and how long it took.",
+	Doc("A shell command ran: the agent's os_exec, or a scheduled shell job. command is scrubbed of known secrets. On the container backend the record also holds the boundary the run had: the image and the id its tag resolved to, every mount with its mode, the network, the caps, the names (never the values) of the host's environment variables passed in, how many bytes the command wrote and whether that hit the output cap, and how long it took.",
 		"The agent called os_exec (approved, or allowed by --allow-exec or its category's mode), or a cron shell job ran.",
 		"None when expected. An unexpected command: read the turn (trace) and its approval, and tighten os_exec's approval mode or exec profile.")
 

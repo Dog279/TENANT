@@ -76,7 +76,7 @@ func confinementFields(c *sandbox.Confinement) []any {
 	return []any{
 		"image", c.Image, "image_id", c.ImageID,
 		"mounts", strings.Join(c.Mounts, "; "),
-		"network", c.Network, "limits", c.Limits,
+		"network", c.Network, "limits", c.Limits, "env", strings.Join(c.Env, " "),
 		"output_bytes", c.OutputBytes, "output_capped", c.Capped,
 		"elapsed_ms", c.Elapsed.Milliseconds(),
 	}

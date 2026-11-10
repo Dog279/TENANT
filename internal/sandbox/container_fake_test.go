@@ -277,6 +277,7 @@ func TestFakeDocker_RunReportsItsConfinement(t *testing.T) {
 	res, err := b.Run(ctx, Command{Shell: "echo hi"}, Policy{
 		WorkDir: work, ReadRoots: []string{src}, Network: NetNone, Enforce: true,
 		Limits: Limits{Wall: 30 * time.Second, MaxOutputBytes: 4096, MaxPIDs: 32},
+		Env:    EnvPolicy{Pass: []string{"LANG", "PATH", "CI"}},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -287,6 +288,10 @@ func TestFakeDocker_RunReportsItsConfinement(t *testing.T) {
 	}
 	if c.Image != b.image || c.ImageID != "sha256:abcd" || c.Network != "none" {
 		t.Errorf("image %q id %q network %q", c.Image, c.ImageID, c.Network)
+	}
+	// The names that were passed, and only those: PATH is the container's own.
+	if strings.Join(c.Env, " ") != "LANG CI" {
+		t.Errorf("env names = %q, want LANG and CI", c.Env)
 	}
 	if len(c.Mounts) != 2 || !strings.HasSuffix(c.Mounts[0], "(rw)") || !strings.HasSuffix(c.Mounts[1], "(ro)") ||
 		!strings.Contains(c.Mounts[0], " -> ") {

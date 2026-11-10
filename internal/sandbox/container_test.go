@@ -336,3 +336,42 @@ func TestAttributeContainer_WitnessBeatsTruncation(t *testing.T) {
 		}
 	}
 }
+
+// W2-2: a folder that is itself a git directory has its hooks and config at
+// the top of what a command could write, so it is refused as the work dir
+// and as a write root. Read-only it is harmless, and a checkout is fine.
+func TestSpecFor_RefusesABareRepoAsAWritableFolder(t *testing.T) {
+	b := &containerBackend{image: "img"}
+	bare, checkout, plain := t.TempDir(), t.TempDir(), t.TempDir()
+	for _, d := range []string{filepath.Join(bare, "objects"), filepath.Join(bare, "refs"), filepath.Join(bare, "hooks"),
+		filepath.Join(checkout, ".git", "objects"), filepath.Join(checkout, ".git", "refs")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(bare, "HEAD"), filepath.Join(checkout, ".git", "HEAD")} {
+		if err := os.WriteFile(f, []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := Command{Shell: "echo hi"}
+	if _, err := b.specFor(cmd, Policy{WorkDir: bare}); err == nil || !strings.Contains(err.Error(), "bare git repository") {
+		t.Errorf("a bare repo as the work dir: err = %v, want a refusal that says why", err)
+	}
+	if _, err := b.specFor(cmd, Policy{WorkDir: plain, WriteRoots: []string{bare}}); err == nil || !strings.Contains(err.Error(), "bare git repository") {
+		t.Errorf("a bare repo as a write root: err = %v, want a refusal", err)
+	}
+	if _, err := b.specFor(cmd, Policy{WorkDir: plain, ReadRoots: []string{bare}}); err != nil {
+		t.Errorf("a bare repo granted read-only was refused: %v", err)
+	}
+	if _, err := b.specFor(cmd, Policy{WorkDir: checkout}); err != nil {
+		t.Errorf("a checkout as the work dir was refused: %v", err)
+	}
+	// A folder that only has a file named HEAD is not a repository.
+	if err := os.WriteFile(filepath.Join(plain, "HEAD"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.specFor(cmd, Policy{WorkDir: plain}); err != nil {
+		t.Errorf("a folder with only a HEAD file was refused: %v", err)
+	}
+}

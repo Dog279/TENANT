@@ -97,7 +97,7 @@ func TestExecSecurityRecords(t *testing.T) {
 	box := &sandbox.Confinement{
 		Image: "tenant-sandbox:latest", ImageID: "sha256:1111",
 		Mounts:  []string{"/w -> /mnt/w (rw)", "/src -> /mnt/src (ro)"},
-		Network: "none", Limits: "pids=256 memory=1024MB cpus=2 wall=1m0s",
+		Network: "none", Limits: "pids=256 memory=1024MB cpus=2 wall=1m0s", Env: []string{"LANG", "CI"},
 		OutputBytes: 42, Capped: false, Elapsed: 1500 * time.Millisecond,
 	}
 	auditExec(ctx, "container", cmd, true, sandbox.Result{Violations: fs, Escalated: true, Confinement: box}, nil)
@@ -121,7 +121,7 @@ func TestExecSecurityRecords(t *testing.T) {
 		"4203 agent@discord [ap-test-1] "+refused+" violations=filesystem: read denied: ~/.ssh why=dry_run where=on the host",
 		"4201 agent@discord [ap-test-1] command=cat ~/.ssh/id backend=container exit=0 timed_out=false"+
 			" image=tenant-sandbox:latest image_id=sha256:1111 mounts=/w -> /mnt/w (rw); /src -> /mnt/src (ro)"+
-			" network=none limits=pids=256 memory=1024MB cpus=2 wall=1m0s output_bytes=42 output_capped=false elapsed_ms=1500",
+			" network=none limits=pids=256 memory=1024MB cpus=2 wall=1m0s env=LANG CI output_bytes=42 output_capped=false elapsed_ms=1500",
 		"4203 agent@discord [ap-test-1] command=cat ~/.ssh/id backend=container violations=filesystem: read denied: ~/.ssh why=approved where=in a container with one more grant")
 }
 
