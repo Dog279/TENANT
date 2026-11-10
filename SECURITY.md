@@ -156,12 +156,14 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
     Windows have no restricted backend: the default is the `host` backend, which
     confines nothing, and `tenant doctor`, the audit and the startup feed say
     so. A hardened `container` backend for every OS, driven through the `docker`
-    CLI, is now available and opt-in per surface (`"backend": "container"`); its
-    wave-1 hardening is live-tested on Windows and its follow-ups are tracked in
-    `docs/plans/docker-sandbox-hardening.md`. It never mounts the Docker socket,
+    CLI, is now available and opt-in per surface (`"backend": "container"`). Its
+    wave-1 hardening is covered by unit tests against a fake CLI; the live cases
+    on a real engine, and what wave 1 still owes, are listed in
+    `docs/plans/docker-sandbox-hardening.md` §9. It never mounts the Docker socket,
     runs each command in a fresh read-only, non-root, all-capabilities-dropped
     container with `no-new-privileges` and no network by default, and fails
-    closed when the engine or image is not ready.
+    closed when the engine or image is not ready, or when the engine answers but
+    cannot start a container (a check container runs before first use).
   - Commands get an environment allowlist on every backend: a safe base set plus
     the profile's `env_pass`, never Tenant's API keys or tokens.
   - When the `restricted` backend refuses a file or network access, the
@@ -231,7 +233,7 @@ as a workaround for Chrome installation or permission problems. Run
 | **Single-user model** | Tenant assumes one operator. It does not authenticate users or separate sessions. Anyone with access to the running process can issue commands as the operator. |
 | **Local secrets** | Credentials are on disk, protected by verified owner-only POSIX modes or a protected current-user-only Windows DACL. On a compromised account, this is insufficient. Use a dedicated user account and full-disk encryption. |
 | **LLM output** | The agent processes and acts on LLM-generated text. Prompt injection is a recognized risk. The read-by-default permission model limits blast radius, but a sufficiently crafted input could trick the agent into requesting an action. Gated actions ask unless the operator already granted an allow mode/flag; network reads do not prompt per request. |
-| **Execution sandbox** | **macOS** (Seatbelt): on by default in dry run, where it logs what it would refuse and re-runs it outside the sandbox, so it confines nothing until `exec_profiles.default.enforce` is `true`. Live-tested and red-teamed: filesystem roots, `network: none`, Mach/XPC services and signals to other processes are contained; there are no CPU, memory or process-count caps on commands. **Linux and Windows**: no confining backend yet. Commands run on the unconfined `host` backend, with the environment allowlist; on Windows a Job Object primitive (`jobobject`) adds resource limits only. A hardened-container backend for every OS is planned (`docs/plans/docker-sandbox-plan.md`). A surface an operator sets to `restricted` where there is none fails closed instead of running unconfined (an entry that names a backend enforces unless it sets `"enforce": false`). |
+| **Execution sandbox** | **macOS** (Seatbelt): on by default in dry run, where it logs what it would refuse and re-runs it outside the sandbox, so it confines nothing until `exec_profiles.default.enforce` is `true`. Live-tested and red-teamed: filesystem roots, `network: none`, Mach/XPC services and signals to other processes are contained; there are no CPU, memory or process-count caps on commands. **Linux and Windows**: no confining backend yet. Commands run on the unconfined `host` backend, with the environment allowlist; on Windows a Job Object primitive (`jobobject`) adds resource limits only. A hardened `container` backend for every OS is available and opt-in per surface (`docs/plans/docker-sandbox-hardening.md`); it is not the default anywhere yet. A surface an operator sets to `restricted` where there is none fails closed instead of running unconfined (an entry that names a backend enforces unless it sets `"enforce": false`). |
 | **Sandbox gaps** | There is no host-filtered network allowlist: `exec_profiles` rejects it and the backends fail closed, so the choice is `none` or `full`. A profile that allows network can reach Tenant's loopback listeners: the dashboard and the MCP gateway, when enabled, each still need their token, which confined commands cannot read. A command that needs a credential must be given it raw or run outside the sandbox after approval; there is no credential-injection proxy yet. The file tools (`os_read_file` and the rest) run in Tenant's own process and are not sandboxed. Apart from Tenant's secrets and the credential stores, they can read the rest of the operator's files. See `docs/changes/sandbox-seam.md`. |
 | **Supply chain** | Go dependencies are pinned in `go.sum`. Run `go vet ./...` and review `go.mod` before building from source. |
 | **Eval harness** | Tenant ships an evaluation harness with adversarial test fixtures. These are designed to probe the agent's safety boundaries. They do not contain real exploits. |

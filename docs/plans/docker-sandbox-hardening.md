@@ -434,3 +434,38 @@ The Phase 1 backend PR does not merge without all seven.
 - requiring ECI, which is Business-tier only (it is detected and recorded instead);
 - gVisor as the default;
 - building a VM tier (W3-6 only benchmarks one).
+
+## 9. Status, 2026-11-10
+
+Where wave 1 stands after PR #35 (Phase 1), PR #60 (wave-1 close), PR #63 (sweep deadline, gateway token) and the PR that adds this section. Waves 2 and 3 have not started. "Live" means it needs a machine with a working Docker engine and the built image (`TENANT_SANDBOX_LIVE=1 go test ./internal/sandbox/ -run TestContainerLive`, or `tenant sandbox selftest --backend container`).
+
+### What is still owed
+
+| Ticket | Item | State | Where |
+|---|---|---|---|
+| W1-1 TEN-455 | An operator setting for the endpoint (`container.endpoint`, TLS) | open | `ContainerOptions.Endpoint` and `TLSVerify` exist and `For("container")` now uses the process defaults; no `config.json` key sets them |
+| W1-1 | A doctor row per refusal reason | done in part: one `container sandbox` row whose fix is the one for the reason found | `cmd/tenant/doctor.go` `checkContainerSandbox`; `sandbox.Unavailable` |
+| W1-2 TEN-456 | Check the ticket's own description against the code before closing | open | nothing known outstanding |
+| W1-3 TEN-457 | The live junction case | open (live) | `TestContainerLive_JunctionRefusedCommaRuns` |
+| W1-4 TEN-458 | The live cap and sweep cases | open (live) | `TestContainerLive_OutputCapKills`, `TestContainerLive_SweepLeftovers` |
+| W1-4 | The terminal app sets no instance id and runs no sweep | open, needs a decision | serve and a terminal app can share one data dir (the data lock is shared), so a sweep by install id at one's start would remove the other's running containers |
+| W1-6 TEN-460 | The approval bound to a hash (interpreter, argv, mounts, network, image digest), expiring | open | `EscalationHash` and `EscalationTicket` exist; the approval broker does not carry them (TODO in `execEscalator`) |
+| W1-6 | Attribution tests on captured stderr from real runs | open (live) | needs the captures |
+| W1-6 | The live refusal-past-the-cap case | open (live) | `TestContainerLive_RefusalPastOutputCap` |
+| W1-7 TEN-461 | Setuid/NNP control, 32-bit `socketcall(AF_ALG)`, a planted Windows executable | open | needs image or harness work (W2-8 for `socketcall`) |
+
+### Closed by the PR that adds this section
+
+| Ticket | Item | Where |
+|---|---|---|
+| W1-1 | The kernel floor against the kernel that is running, not only the one `wsl --version` prints | `container_wsl.go` `checkRunningKernel` |
+| W1-1 | A container run before first use: liveness, the uid map (ECI or a user namespace), the kernel a container sees | `container_engine.go` `containerCheck`; `Available` |
+| W1-1 | A fix for every refusal reason | `sandbox.Unavailable`, `fix*` constants |
+| W1-3 | A container profile whose grant overlaps a deny root is refused at load | `sandbox.GrantOverlapsDeny`; `execprofiles.go` `containerGrantError` |
+| W1-4 | Commands are labelled with the install's id, so the sweep finds a previous run's containers | `sandbox.go` `For` |
+
+### A live run on Windows, 2026-11-10
+
+Docker Desktop (engine 29.9.3, WSL 3.0.5, installed kernel 6.18.58, running kernel 6.18.54) was stuck in `starting` after a WSL update: `docker version`, `docker info` and an unfiltered `docker ps` answered, but `docker create`, `docker run` and `docker ps --filter label=…` never returned. The probe called the backend available, and the live tests then failed by timing out with empty output (`Identity`, `ReadOnlyRootAndSecret`, `LoopbackUnderNoneVsFull`, `OutputCapKills`; `SweepLeftovers` hung the suite). The two tests that only need a container to be gone passed. That run is why the container check exists. **No live case has yet been seen to pass on this machine**: they need a restarted Docker Desktop.
+
+Decisions still open: D4 (HOME tmpfs, W2-2), D5 (CPU budget, W2-1), D6 (base image: `container_image.go` still pins bookworm), D7 (Podman on Windows, W3-1), D8 (trust statement in SECURITY.md).

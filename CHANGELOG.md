@@ -5,6 +5,54 @@ Releases page.
 
 ## Unreleased
 
+- **The container sandbox says when the engine cannot run anything, before the first command.**
+  `docker version` and `docker info` answering does not mean the engine can start a container:
+  a Docker Desktop stuck starting (seen after a WSL update) answers both, and every command
+  then waited out its whole time limit and returned nothing. Before a surface first uses the
+  `container` backend, Tenant now starts one check container through the same hardened
+  arguments, with a 20-second limit. If it does not finish, the surface's commands are refused
+  with that reason, and the check is retried with back-off. The check also reads what only a
+  container can show: whether a user namespace is in effect (from its uid map) and the kernel it
+  runs on. `tenant sandbox run` and `tenant sandbox selftest --backend container` apply the same
+  check, and `tenant sandbox probe` reports its result.
+- **The WSL kernel floor is checked against the kernel that is running.** `wsl --version` prints
+  the installed kernel, and a WSL VM started before an update keeps running the old one. The
+  floor (6.18.40) now also applies to the kernel the engine reports: below it refuses, and a
+  running kernel that only trails the installed one is a warning that says to `wsl --shutdown`.
+- **A container profile that would mount a protected folder is refused when the settings load.**
+  A `container` entry in `exec_profiles` whose `read_roots` or `write_roots` contain, equal or
+  sit inside Tenant's config or data dir, its binary, a credential store or the entry's own
+  `deny_roots` was accepted, and every command on that surface was then refused at run time.
+  The entry is now skipped at load with a message naming the grant and the folder.
+- **Fixed: the start-up sweep never found a previous run's containers.** Commands were labelled
+  with a per-process id, and the sweep looked for the install's id, so a container left by a
+  crash was never removed. Every surface's container backend now uses the install's id.
+- **`tenant doctor` has a `container sandbox` row.** When a surface uses the `container`
+  backend it says whether the backend can run a command right now and, when not, the reason
+  and the fix for that reason (install Docker, start it, update it, build the image, restart a
+  stuck Docker Desktop). It starts one short-lived container. It is skipped when no surface
+  uses the backend.
+- **The container sandbox closes its wave-1 hardening** (TEN-455, TEN-456, TEN-457,
+  TEN-458, TEN-460; TEN-438). The `docker` CLI is launched from its absolute path with
+  an environment Tenant builds (no inherited `DOCKER_*` or `NVIDIA_*`) and an explicit
+  `-H` endpoint; `tcp://` without TLS is refused, and so is running while a daemon answers
+  on `127.0.0.1:2375` in the clear. The version floors now refuse rather than warn:
+  Engine 29.4.3, runc and containerd by release line, Docker Desktop 4.44.3, and on
+  Windows WSL 2.7.10 with a kernel at or past 6.18.40; seccomp must be on. The probe
+  records the versions, user-namespace, LSM, seccomp profile and image store, caches only
+  success and retries a failure with back-off. `"enforce": false` is rejected at load for a
+  `container` profile. Every container runs under an in-container `timeout -s KILL`, so one
+  orphaned by a crash still dies; the sweep at `serve` start removes a previous run's
+  containers by a stable per-install label. Output is bounded as it arrives on every
+  backend, and over the cap the container is killed at once. On an approved escalation the
+  command re-runs INSIDE a fresh container with one grant (the refused folder, or the
+  network for that command); only a Windows program a Linux container cannot run goes to the
+  host, and an `sh` line is never handed to PowerShell. The approval prompt shows the exact
+  command with control characters escaped and a risk line Tenant writes. Mount sources:
+  a trailing dot or space anywhere is refused, 8.3 short names are expanded, and a socket,
+  pipe or device is never a source. Refusal attribution reads a streaming scan of the whole
+  output rather than the capped display string, so a refusal line that lands past the cap
+  is still attributed and the same command is labelled the same way every run.
 - **The MCP SSE gateway now requires a token. Existing SSE clients need one more setting.**
   `tenant mcp-memory --sse-addr` had no authentication, and a loopback bind kept other
   machines out but not the other programs on the same one, or a browser on it: the gateway
