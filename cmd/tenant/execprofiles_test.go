@@ -911,3 +911,37 @@ func TestValidateExecProfileSetting_ContainerHasNoDryRun(t *testing.T) {
 		t.Fatalf("a dry run on restricted stays allowed: %v", err)
 	}
 }
+
+// W2-5: env_pass names that look like credentials are pointed out, per group
+// of surfaces, in the probe and in doctor. A hint: the names are still passed.
+func TestSecretLookingEnv(t *testing.T) {
+	got := secretLookingEnv([]string{"JAVA_HOME", "MY_SERVICE_TOKEN", "DB_PASSWORD", "BUILD_API_KEY", "ssh_auth_sock",
+		"KEYBOARD_LAYOUT", "MONKEY", "LANG", "HTTPS_PROXY", "MY_SERVICE_TOKEN", "DEPLOY-PAT", "SITE_COOKIE", "APP_PRIVATE_PEM"})
+	want := []string{"MY_SERVICE_TOKEN", "DB_PASSWORD", "BUILD_API_KEY", "ssh_auth_sock", "DEPLOY-PAT", "SITE_COOKIE", "APP_PRIVATE_PEM"}
+	if !slices.Equal(got, want) {
+		t.Errorf("secretLookingEnv = %v, want %v", got, want)
+	}
+	if secretLookingEnv(nil) != nil {
+		t.Error("no names must give no hint")
+	}
+
+	resetExecProfiles(t)
+	defaultExecProfiles.Load(map[string]execProfileSetting{
+		"default":        {EnvPass: []string{"JAVA_HOME", "MY_SERVICE_TOKEN"}},
+		surfaceCronShell: {EnvPass: []string{"JAVA_HOME"}},
+	})
+	cfg, data := t.TempDir(), t.TempDir()
+	probes := probeExecSurfaces(context.Background(), cfg, data)
+	lines := envSecretLines(probes)
+	if len(lines) != 1 || !strings.Contains(lines[0], "env_pass forwards MY_SERVICE_TOKEN") || strings.Contains(lines[0], "JAVA_HOME") {
+		t.Fatalf("lines = %q, want one line naming only the credential-looking name", lines)
+	}
+	if strings.HasPrefix(lines[0], surfaceCronShell+",") || strings.Contains(lines[0], ", "+surfaceCronShell+":") || strings.Contains(lines[0], ", "+surfaceCronShell+",") {
+		t.Errorf("cron-shell has its own entry without the name, but is in the line: %s", lines[0])
+	}
+	// The name is still passed: the hint filters nothing.
+	t.Setenv("MY_SERVICE_TOKEN", "x")
+	if p := resolveExecProfile(surfaceLocal, cfg, data, ""); !slices.Contains(p.Policy.Env.Pass, "MY_SERVICE_TOKEN") {
+		t.Errorf("the hinted name was dropped from the environment: %v", p.Policy.Env.Pass)
+	}
+}

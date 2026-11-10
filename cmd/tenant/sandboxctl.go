@@ -178,6 +178,8 @@ type surfaceProbe struct {
 	Error      string   `json:"error,omitempty"`        // why the backend is unavailable
 	Fallback   string   `json:"fallback,omitempty"`     // why the built-in default runs this surface on the host
 	Exceptions []string `json:"exceptions"`             // exec_exceptions: folders its commands may write to
+	// EnvSecretLooking is the env_pass names that look like credentials.
+	EnvSecretLooking []string `json:"env_pass_secret_looking,omitempty"`
 }
 
 type restrictedProbe struct {
@@ -282,6 +284,9 @@ func probeSurface(ctx context.Context, name, cfgDir, dataDir string) surfaceProb
 		DenyRoots:  nonNilStrings(p.Policy.DenyRoots),
 		Fallback:   p.Fallback,
 		Exceptions: nonNilStrings(defaultExecProfiles.exceptions(name)),
+	}
+	if o, ok := defaultExecProfiles.lookup(name); ok {
+		s.EnvSecretLooking = secretLookingEnv(o.EnvPass)
 	}
 	if b, err := sandbox.For(p.Backend); err != nil {
 		s.Error = err.Error()
@@ -395,6 +400,9 @@ func renderProbe(w io.Writer, r probeReport) {
 	}
 	if len(fellBack) > 0 {
 		fmt.Fprintf(w, "  ! %s: on the host, unconfined, because %s\n", strings.Join(fellBack, ", "), fallback)
+	}
+	for _, ln := range envSecretLines(r.Surfaces) {
+		fmt.Fprintf(w, "  ! %s\n", ln)
 	}
 
 	fmt.Fprintln(w, "\nROOTS")

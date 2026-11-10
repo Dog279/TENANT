@@ -321,6 +321,7 @@ func checkExecSandbox(ctx context.Context, e *doctorEnv) checkResult {
 		}
 	}
 	lines := append(notes, execProfileLines(probes)...)
+	lines = append(lines, envSecretLines(probes)...) // a hint, so the status stays as it is
 	r.Detail = strings.Join(lines, "\n       ")
 	return r
 }

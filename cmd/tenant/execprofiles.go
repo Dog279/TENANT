@@ -574,6 +574,57 @@ var safeEnvWindows = []string{"SystemRoot", "SystemDrive", "windir", "ComSpec", 
 	"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
 	"USERDOMAIN", "COMPUTERNAME", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS"}
 
+// envSecretNote is what a surface's report says when its env_pass forwards a
+// name that looks like a credential.
+const envSecretNote = "a sandboxed command can read every variable it is passed, and with the network on can send it anywhere; pass a credential only to a surface whose commands you would trust with it"
+
+// secretLookingEnv returns the names in pass that look like they hold a
+// credential (W2-5): a hint for the operator, never a filter. The allowlist
+// is the control (envAllowlist); a secret under an innocent name is not
+// caught here, and a name caught here is still passed.
+func secretLookingEnv(pass []string) []string {
+	var out []string
+	for _, n := range pass {
+		up := strings.ToUpper(n)
+		looks := false
+		for _, part := range []string{"TOKEN", "SECRET", "PASSW", "CREDENTIAL", "APIKEY", "PRIVATE"} {
+			looks = looks || strings.Contains(up, part)
+		}
+		for _, word := range strings.FieldsFunc(up, func(r rune) bool { return r == '_' || r == '-' || r == '.' }) {
+			switch word {
+			case "KEY", "KEYS", "AUTH", "PAT", "PASS", "COOKIE", "CREDS", "DSN":
+				looks = true
+			}
+		}
+		if looks && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// envSecretLines is one line per group of surfaces whose env_pass forwards
+// the same credential-looking names.
+func envSecretLines(ps []surfaceProbe) []string {
+	var order []string
+	groups := map[string][]string{}
+	for _, p := range ps {
+		if len(p.EnvSecretLooking) == 0 {
+			continue
+		}
+		names := strings.Join(p.EnvSecretLooking, ", ")
+		if _, ok := groups[names]; !ok {
+			order = append(order, names)
+		}
+		groups[names] = append(groups[names], p.Surface)
+	}
+	out := make([]string, 0, len(order))
+	for _, names := range order {
+		out = append(out, strings.Join(groups[names], ", ")+": env_pass forwards "+names+", named like a credential ("+envSecretNote+")")
+	}
+	return out
+}
+
 // envAllowlist is a command's environment: the safe set plus pass, forwarded
 // from Tenant's own, plus set (TEN-345; replaces the KEY/TOKEN/SECRET
 // name-denylist, which leaked any secret with an innocent name).
