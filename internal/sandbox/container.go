@@ -632,27 +632,35 @@ func (b *containerBackend) specFor(cmd Command, pol Policy) (containerSpec, erro
 	if err != nil {
 		return containerSpec{}, fmt.Errorf("work dir: %w", err)
 	}
-	var mounts []mount
-	for _, r := range dedupPathList(pol.ReadRoots) {
-		if r == pol.WorkDir {
-			continue
-		}
-		m, err := containerMount(r, true)
-		if err != nil {
-			return containerSpec{}, fmt.Errorf("read root %s: %w", r, err)
-		}
-		mounts = append(mounts, m)
-	}
+	// One mount per destination, or the engine refuses the run ("Duplicate
+	// mount point"). A folder named twice is mounted once, by its widest
+	// grant: the work dir over anything, writable over read-only. That is what
+	// an approved re-run asks for when the refused folder was already granted
+	// read-only, and on a real engine that re-run never started before this.
+	taken := map[string]bool{work.ctr: true}
+	var writes []mount
 	for _, r := range dedupPathList(pol.WriteRoots) {
-		if r == pol.WorkDir {
-			continue
-		}
 		m, err := containerMount(r, false)
 		if err != nil {
 			return containerSpec{}, fmt.Errorf("write root %s: %w", r, err)
 		}
-		mounts = append(mounts, m)
+		if !taken[m.ctr] {
+			taken[m.ctr] = true
+			writes = append(writes, m)
+		}
 	}
+	var mounts []mount
+	for _, r := range dedupPathList(pol.ReadRoots) {
+		m, err := containerMount(r, true)
+		if err != nil {
+			return containerSpec{}, fmt.Errorf("read root %s: %w", r, err)
+		}
+		if !taken[m.ctr] {
+			taken[m.ctr] = true
+			mounts = append(mounts, m)
+		}
+	}
+	mounts = append(mounts, writes...)
 	if err := grantsClearDenyRoots(work, mounts, pol.DenyRoots); err != nil {
 		return containerSpec{}, err
 	}
