@@ -588,6 +588,9 @@ type probeCache struct {
 	checkErr      error
 	checkFailAt   time.Time
 	checkFailures int
+
+	// When the sandbox network was last seen to be right (ensureNetwork).
+	networkAt time.Time
 }
 
 func (c *probeCache) clock() time.Time {

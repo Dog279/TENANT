@@ -436,3 +436,70 @@ func TestContainerLive_ApprovedReRunStartsByImageID(t *testing.T) {
 		t.Errorf("containers left behind: %v", left)
 	}
 }
+
+// W2-4 on a real engine: a `full` command reaches the internet-facing side
+// of its own network but not a container on Docker's default bridge, nor
+// another container on the sandbox network. The neighbour is started by hand
+// on the default bridge, then on the sandbox network, serving one page.
+func TestContainerLive_FullIsOffTheDefaultBridge(t *testing.T) {
+	b := liveContainer(t)
+	ctx := context.Background()
+	full := livePolicy(liveWorkDir(t), 40*time.Second)
+	full.Network = NetFull
+	// The first full run makes the network.
+	if res, err := b.Run(ctx, Command{Shell: "echo up", Surface: "test"}, full); err != nil || res.ExitCode != 0 {
+		t.Fatalf("a full run: exit %d, %v\n%s", res.ExitCode, err, res.Output)
+	}
+	out, err := exec.Command("docker", "network", "inspect", "--format", iccTemplate, sandboxNetwork).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "false" {
+		t.Fatalf("the sandbox network must exist with traffic between containers off: %q, %v", out, err)
+	}
+
+	neighbour := func(network string) (ip string) {
+		t.Helper()
+		name := "tenant-sbx-live-neighbour-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		args := []string{"run", "-d", "--rm", "--pull", "never", "--name", name, "--user", "65532:65532", "--cap-drop", "ALL"}
+		if network != "" {
+			args = append(args, "--network", network)
+		}
+		args = append(args, defaultImage, "sh", "-c", "cd /tmp && echo neighbour-page > index.html && exec python3 -m http.server 8080")
+		if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+			t.Fatalf("starting the neighbour: %v: %s", err, out)
+		}
+		t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
+		format := "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"
+		for i := 0; i < 20; i++ {
+			if out, err := exec.Command("docker", "inspect", "--format", format, name).Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+				ip = strings.TrimSpace(string(out))
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		if ip == "" {
+			t.Fatal("the neighbour got no address")
+		}
+		// The check below means something only if the page is really being
+		// served: ask the neighbour itself until it answers.
+		served := false
+		for i := 0; i < 40 && !served; i++ {
+			page, _ := exec.Command("docker", "exec", name, "curl", "-s", "-m", "2", "http://127.0.0.1:8080/").Output()
+			if served = strings.Contains(string(page), "neighbour-page"); !served {
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
+		if !served {
+			t.Fatal("the neighbour never served its page, so nothing can be concluded")
+		}
+		return ip
+	}
+	fetch := func(ip string) string {
+		res, _ := b.Run(ctx, Command{Shell: "curl -s -m 4 http://" + ip + ":8080/ || echo UNREACHABLE", Surface: "test"}, full)
+		return res.Output
+	}
+	if got := fetch(neighbour("")); strings.Contains(got, "neighbour-page") {
+		t.Errorf("a full command reached a container on the default bridge: %q", got)
+	}
+	if got := fetch(neighbour(sandboxNetwork)); strings.Contains(got, "neighbour-page") {
+		t.Errorf("a full command reached another container on the sandbox network: %q", got)
+	}
+}

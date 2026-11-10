@@ -34,7 +34,7 @@ type containerSpec struct {
 	instance string
 	work     mount
 	mounts   []mount
-	network  string // "none" or "bridge" only (dockerNetwork maps the mode)
+	network  string // "none" or sandboxNetwork only (dockerNetwork maps the mode)
 	envNames []string
 	limits   Limits
 	command  string
@@ -84,8 +84,8 @@ func buildRunArgv(s containerSpec) ([]string, error) {
 	if s.name == "" {
 		return nil, fmt.Errorf("no container name")
 	}
-	if s.network != "none" && s.network != "bridge" {
-		return nil, fmt.Errorf("network %q is not none or bridge", s.network)
+	if s.network != "none" && s.network != sandboxNetwork {
+		return nil, fmt.Errorf("network %q is not none or %s", s.network, sandboxNetwork)
 	}
 	if s.work.host == "" || s.work.ctr == "" {
 		return nil, fmt.Errorf("no work mount")
