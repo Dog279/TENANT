@@ -435,6 +435,19 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	if err != nil || !res.Refused() {
 		return res, err
 	}
+	// W1-6: an approval is bound to the exact run it was asked for. A backend
+	// that re-runs within its own tier and can describe that run (the container)
+	// is asked for its digest BEFORE the prompt; a failure to describe it is
+	// kept and refuses the re-run after an approval, so nothing unbound runs.
+	binder, _ := b.(EscalationBinder)
+	if _, isTier := b.(TierEscalator); !isTier || !pol.Enforce || res.refusedKind("program") {
+		binder = nil
+	}
+	var asked string
+	var askErr error
+	if binder != nil && esc != nil {
+		asked, askErr = binder.GrantedRunHash(ctx, cmd, pol, res)
+	}
 	if pol.Enforce && (esc == nil || !esc(ctx, cmd, res)) {
 		return res, nil
 	}
@@ -444,6 +457,12 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	case res.refusedKind("program"):
 		hres, herr = Host().Run(ctx, cmd, pol)
 	case isTier:
+		if binder != nil {
+			if why := approvalStillCovers(ctx, binder, cmd, pol, res, asked, askErr); why != "" {
+				res.Violations = append(res.Violations, Violation{Kind: "policy", Detail: "not escalated: " + why})
+				return res, nil
+			}
+		}
 		hres, herr = tier.RunGranted(ctx, cmd, pol, res)
 		if herr != nil {
 			// Nothing grantable: the refusal stands, and says why it could not be
@@ -461,6 +480,28 @@ func Execute(ctx context.Context, b Backend, cmd Command, pol Policy, esc Escala
 	hres.Violations = append(append([]Violation(nil), res.Violations...), hres.Violations...)
 	hres.Escalated = true
 	return hres, herr
+}
+
+// approvalStillCovers checks, immediately before an approved re-run, that the
+// approval covers it: the run could be described when the operator was asked,
+// it can be described now, and it is the same run, within EscalationTTL of
+// the approval. It returns "" when it does, else why not, for the operator.
+// The ticket is issued here, at the approval: a prompt may wait for a person
+// as long as it needs, and what the TTL bounds is the gap between the yes and
+// the run.
+func approvalStillCovers(ctx context.Context, binder EscalationBinder, cmd Command, pol Policy, refused Result, asked string, askErr error) string {
+	if askErr != nil {
+		return "the run to approve could not be pinned down when it was asked for (" + oneLine(askErr.Error()) + "); nothing was run"
+	}
+	ticket := NewEscalationTicket(asked, escalationNow())
+	now, err := binder.GrantedRunHash(ctx, cmd, pol, refused)
+	if err != nil {
+		return "the approved run could not be checked before it started (" + oneLine(err.Error()) + "); nothing was run"
+	}
+	if !ticket.Valid(now, escalationNow()) {
+		return "what would run is no longer what was approved (the command, a mount, the network or the image changed while the approval waited), or the approval is older than " + EscalationTTL.String() + "; nothing was run. Ask again to approve the run as it is now"
+	}
+	return ""
 }
 
 // --- shared helpers used by every backend ---

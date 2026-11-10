@@ -37,6 +37,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -82,7 +83,8 @@ var (
 // precedence the docker CLI itself applies — explicit, then DOCKER_HOST, then
 // the docker context's host — and vets it. With nothing named, the vetted OS
 // default is used. tlsVerify is DOCKER_TLS_VERIFY (or the operator's setting):
-// tcp:// is allowed only with it.
+// tcp:// is allowed only with it, and is then always launched with the TLS
+// flags (tlsArgs).
 func resolveEndpoint(explicit, envHost, contextHost string, tlsVerify bool, goos string) (string, error) {
 	for _, c := range []struct{ ep, source string }{
 		{explicit, "container.endpoint"},
@@ -113,7 +115,7 @@ func vetEndpoint(ep string, tlsVerify bool, source string) (string, error) {
 		return ep, nil
 	case "tcp":
 		if !tlsVerify {
-			return "", fmt.Errorf("container: %s is %s, a tcp:// endpoint without TLS; the engine API is root on that host, so only ssh:// or mutual TLS (DOCKER_TLS_VERIFY=1) is allowed", source, ep)
+			return "", fmt.Errorf("container: %s is %s, a tcp:// endpoint without TLS; the engine API is root on that host, so only ssh:// or mutual TLS (container.tls_cert_dir, or DOCKER_TLS_VERIFY=1) is allowed", source, ep)
 		}
 		return ep, nil
 	default:
@@ -215,10 +217,45 @@ func (b *containerBackend) command(ctx context.Context, args ...string) (*exec.C
 	if err != nil {
 		return nil, err
 	}
-	full := append([]string{"-H", ep}, args...)
+	full := []string{"-H", ep}
+	tls, err := b.tlsArgs(ep)
+	if err != nil {
+		return nil, err
+	}
+	full = append(append(full, tls...), args...)
 	c := exec.CommandContext(ctx, bin, full...)
 	c.Env = cliEnv(os.Environ())
 	return c, nil
+}
+
+// tlsArgs is the CLI's TLS flags for a tcp:// endpoint, and nothing for any
+// other. A tcp:// endpoint passes vetEndpoint only when TLS was asked for, but
+// asking is not enough: the CLI turns TLS on from DOCKER_TLS_VERIFY and
+// DOCKER_CERT_PATH, which cliEnv strips, so with `-H tcp://…` alone it would
+// speak plain HTTP to the engine. The flags say it outright: verify the
+// engine's certificate against ca.pem and present cert.pem and key.pem
+// (mutual TLS). All three files must be there, or the endpoint is refused.
+func (b *containerBackend) tlsArgs(ep string) ([]string, error) {
+	u, err := url.Parse(ep)
+	if err != nil || !strings.EqualFold(u.Scheme, "tcp") {
+		return nil, nil
+	}
+	dir := b.tlsCertDir
+	if dir == "" {
+		dir = os.Getenv("DOCKER_CERT_PATH")
+	}
+	if dir == "" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			dir = filepath.Join(home, ".docker")
+		}
+	}
+	ca, cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	for _, f := range []string{ca, cert, key} {
+		if fi, serr := os.Stat(f); serr != nil || fi.IsDir() {
+			return nil, fmt.Errorf("container: the tcp:// endpoint %s needs mutual TLS, and %s is missing: put ca.pem, cert.pem and key.pem in %s (container.tls_cert_dir), or use ssh://", ep, f, dir)
+		}
+	}
+	return []string{"--tlsverify", "--tlscacert", ca, "--tlscert", cert, "--tlskey", key}, nil
 }
 
 // controlTimeout bounds one docker CLI call that manages the engine (version,

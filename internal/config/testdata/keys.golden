@@ -17,6 +17,9 @@ config.json: budgets.max_tool_calls_per_run
 config.json: budgets.max_tool_calls_per_turn
 config.json: budgets.max_wall_time
 config.json: budgets.output_cost_per_million_usd
+config.json: container
+config.json: container.endpoint
+config.json: container.tls_cert_dir
 config.json: cron
 config.json: cron.allow_exec
 config.json: cron.catchup

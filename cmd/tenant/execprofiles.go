@@ -775,10 +775,11 @@ func profileBackend(ctx context.Context, p execProfile, surface string) (sandbox
 // The command is shown whole, with control characters escaped, so nothing
 // hides behind a carriage return or a terminal escape.
 //
-// TODO(TEN-460): bind the approval to sandbox.EscalationHash(interpreter,
-// argv, mounts, network, image digest) with an expiring EscalationTicket. The
-// confirm callback answers yes/no today; the broker (internal/approval) needs
-// to carry the ticket so Execute can refuse a re-run whose hash moved.
+// The yes this returns covers one exact run: sandbox.Execute takes the
+// backend's digest of the granted run (interpreter, command, mounts, network,
+// image) before it calls here and again before the run, and runs nothing if
+// they differ (TEN-460, sandbox.EscalationBinder). The approval broker carries
+// no ticket: the binding is held where the run starts.
 func execEscalator(confirm confirmFunc, pol sandbox.Policy, be sandbox.Backend) sandbox.Escalator {
 	if confirm == nil {
 		return nil

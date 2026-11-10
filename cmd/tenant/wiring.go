@@ -28,6 +28,7 @@ import (
 	"tenant/internal/model/backend/vllm"
 	"tenant/internal/model/toolfmt"
 	"tenant/internal/runtrace"
+	"tenant/internal/sandbox"
 )
 
 // commonFlags holds the flags every subcommand shares.
@@ -167,7 +168,27 @@ func (c *commonFlags) resolve() error {
 	if c.backend == "vllm" && c.vllmEndpoint != "" {
 		c.autodetectModel()
 	}
+	// Every command reaches the container sandbox's engine the same way: the
+	// operator's endpoint, when config.json names one. The install's instance
+	// id is serve's to add (it owns the start-up sweep).
+	sandbox.SetContainerDefaults(containerOptions(c, false))
 	return nil
+}
+
+// containerOptions is the container sandbox backend's options for this
+// install: the operator's engine endpoint and TLS material from config.json
+// (`container`), and, withInstance, the install's instance id, which labels
+// its containers for the start-up sweep.
+func containerOptions(c *commonFlags, withInstance bool) sandbox.ContainerOptions {
+	var o sandbox.ContainerOptions
+	if c.lc != nil {
+		o.Endpoint = strings.TrimSpace(c.lc.Container.Endpoint)
+		o.TLSCertDir = expandPath(strings.TrimSpace(c.lc.Container.TLSCertDir))
+	}
+	if withInstance {
+		o.Instance = sandbox.InstanceID(c.dataDir)
+	}
+	return o
 }
 
 // flagSet reports which flags the operator passed EXPLICITLY on the command

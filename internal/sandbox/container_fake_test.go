@@ -46,8 +46,15 @@ func fakeDockerMain() int {
 			f.Close()
 		}
 	}
-	// Strip the -H <ep> the backend always passes first.
+	// Strip the -H <ep> the backend always passes first, and the TLS flags
+	// that follow it for a tcp:// endpoint.
 	if len(args) >= 2 && args[0] == "-H" {
+		args = args[2:]
+	}
+	if len(args) >= 1 && args[0] == "--tlsverify" {
+		args = args[1:]
+	}
+	for len(args) >= 2 && (args[0] == "--tlscacert" || args[0] == "--tlscert" || args[0] == "--tlskey") {
 		args = args[2:]
 	}
 	if len(args) == 0 {
@@ -66,6 +73,12 @@ func fakeDockerMain() int {
 		}
 		return 0
 	case "image":
+		// `image inspect --format {{.Id}}` answers the id the tag points at.
+		for _, a := range args {
+			if a == "{{.Id}}" {
+				fmt.Println(firstNonEmptyStr(os.Getenv("TENANT_FAKE_DOCKER_IMAGE_ID"), "sha256:1111"))
+			}
+		}
 		return 0
 	case "ps":
 		// TENANT_FAKE_DOCKER_PS is "id=instance,id=instance,id": one line per
@@ -391,6 +404,99 @@ func TestFakeDocker_RefusesBadEndpoint(t *testing.T) {
 	err := b.Available(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "without TLS") {
 		t.Fatalf("expected the tcp refusal, got %v", err)
+	}
+}
+
+// W1-6: the container's digest of a granted run is stable for the same run,
+// and moves when the image the tag points at, the granted folder, the command
+// or the network grant does. A scratch work dir (a new temp folder each time)
+// does not move it.
+func TestFakeDocker_GrantedRunHash(t *testing.T) {
+	b, _ := fakeDocker(t)
+	ctx := context.Background()
+	dirA, dirB := t.TempDir(), t.TempDir()
+	refusedAt := func(dir string) Result {
+		return Result{ExitCode: 1, Violations: []Violation{{Kind: "filesystem", Detail: "read-only", Path: dir}}}
+	}
+	hash := func(cmd string, pol Policy, refused Result) string {
+		t.Helper()
+		h, err := b.GrantedRunHash(ctx, Command{Shell: cmd}, pol, refused)
+		if err != nil || h == "" {
+			t.Fatalf("GrantedRunHash: %q, %v", h, err)
+		}
+		return h
+	}
+	pol := Policy{Network: NetNone, Enforce: true}
+	base := hash("touch x", pol, refusedAt(dirA))
+	if again := hash("touch x", pol, refusedAt(dirA)); again != base {
+		t.Fatal("the same run hashed differently twice (a scratch work dir must not count)")
+	}
+	if hash("touch y", pol, refusedAt(dirA)) == base {
+		t.Error("another command has the same digest")
+	}
+	if hash("touch x", pol, refusedAt(dirB)) == base {
+		t.Error("another granted folder has the same digest")
+	}
+	if hash("touch x", pol, Result{ExitCode: 1, Violations: []Violation{{Kind: "network", Detail: "no route"}}}) == base {
+		t.Error("a network grant has the same digest as a folder grant")
+	}
+	t.Setenv("TENANT_FAKE_DOCKER_IMAGE_ID", "sha256:2222")
+	if hash("touch x", pol, refusedAt(dirA)) == base {
+		t.Error("the image tag now points at another image and the digest did not move")
+	}
+	if _, err := b.GrantedRunHash(ctx, Command{Shell: "touch x"}, pol, Result{ExitCode: 1, Violations: []Violation{{Kind: "limit", Detail: "oom"}}}); err == nil {
+		t.Error("a refusal with nothing to grant must have no digest")
+	}
+}
+
+// A tcp:// endpoint is used only with mutual TLS, and the CLI is told so on
+// its command line: the environment that would switch TLS on is stripped, so
+// `-H tcp://…` alone would be a plain-HTTP connection to an engine that is
+// root on its host. Without all three files the endpoint is refused.
+func TestFakeDocker_TCPEndpointIsAlwaysLaunchedWithTLS(t *testing.T) {
+	_, logPath := fakeDocker(t) // pins the probes and sets the fake's environment
+	exe, _ := os.Executable()
+	certs := t.TempDir()
+	ctx := context.Background()
+
+	bare := Container(ContainerOptions{CLI: exe, Endpoint: "tcp://10.0.0.9:2376", TLSCertDir: certs, Instance: "inst-test"})
+	err := bare.Available(ctx)
+	if err == nil || !strings.Contains(err.Error(), "needs mutual TLS") || !strings.Contains(err.Error(), "ca.pem") {
+		t.Fatalf("a tcp:// endpoint with no certificate files must be refused, got %v", err)
+	}
+	if calls := readCalls(t, logPath); len(calls) != 0 {
+		t.Fatalf("the CLI was called for a tcp:// endpoint that has no TLS material: %v", calls[0].argv)
+	}
+
+	for _, f := range []string{"ca.pem", "cert.pem", "key.pem"} {
+		if err := os.WriteFile(filepath.Join(certs, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := Container(ContainerOptions{CLI: exe, Endpoint: "tcp://10.0.0.10:2376", TLSCertDir: certs, Instance: "inst-test"})
+	if err := b.Available(ctx); err != nil {
+		t.Fatalf("Available with TLS material: %v", err)
+	}
+	calls := readCalls(t, logPath)
+	if len(calls) == 0 {
+		t.Fatal("the fake CLI was never called")
+	}
+	want := []string{"-H", "tcp://10.0.0.10:2376", "--tlsverify",
+		"--tlscacert", filepath.Join(certs, "ca.pem"), "--tlscert", filepath.Join(certs, "cert.pem"), "--tlskey", filepath.Join(certs, "key.pem")}
+	for _, c := range calls {
+		if len(c.argv) <= len(want) || strings.Join(c.argv[:len(want)], "|") != strings.Join(want, "|") {
+			t.Errorf("a call to a tcp:// endpoint did not lead with the endpoint and its TLS flags: %v", c.argv)
+		}
+	}
+}
+
+// A local or ssh endpoint gets no TLS flags.
+func TestTLSArgs_OnlyForTCP(t *testing.T) {
+	b := Container(ContainerOptions{TLSCertDir: t.TempDir()})
+	for _, ep := range []string{"npipe:////./pipe/dockerDesktopLinuxEngine", "unix:///var/run/docker.sock", "ssh://ops@build-host"} {
+		if args, err := b.tlsArgs(ep); err != nil || len(args) != 0 {
+			t.Errorf("tlsArgs(%q) = %v, %v; want nothing", ep, args, err)
+		}
 	}
 }
 

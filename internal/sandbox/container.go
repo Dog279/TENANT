@@ -68,6 +68,7 @@ type containerBackend struct {
 	instance   string // this install's instance id, for the container labels
 	explicitEP string // an operator-named engine endpoint (-H); "" resolves
 	tlsVerify  bool   // the operator vouches for mutual TLS on a tcp:// endpoint
+	tlsCertDir string // where ca.pem, cert.pem and key.pem are, for a tcp:// endpoint; "" resolves
 
 	epMu  sync.Mutex
 	ep    string      // the resolved endpoint, cached on success only
@@ -88,6 +89,10 @@ type ContainerOptions struct {
 	Instance  string
 	Endpoint  string // an explicit engine endpoint, passed as -H; vetted like any other
 	TLSVerify bool   // allow a tcp:// Endpoint (mutual TLS); otherwise tcp:// is refused
+	// TLSCertDir holds ca.pem, cert.pem and key.pem for a tcp:// endpoint, the
+	// layout the docker CLI uses. Naming it allows a tcp:// endpoint, like
+	// TLSVerify. "" falls back to DOCKER_CERT_PATH, then ~/.docker.
+	TLSCertDir string
 }
 
 // containerDefaults are the options For("container") builds with. A process
@@ -163,7 +168,8 @@ func Container(opts ContainerOptions) *containerBackend {
 		image:      firstNonEmptyStr(opts.Image, defaultImage),
 		instance:   firstNonEmptyStr(opts.Instance, processInstance()),
 		explicitEP: opts.Endpoint,
-		tlsVerify:  opts.TLSVerify,
+		tlsVerify:  opts.TLSVerify || opts.TLSCertDir != "",
+		tlsCertDir: opts.TLSCertDir,
 	}
 	b.cache = sharedProbeCache(b.cli + "\x00" + b.explicitEP)
 	return b
@@ -418,6 +424,19 @@ func (b *containerBackend) Run(ctx context.Context, cmd Command, pol Policy) (Re
 // host. A refusal that names no grantable path cannot be escalated this way
 // and is an error, so the caller fails closed rather than widening blindly.
 func (b *containerBackend) RunGranted(ctx context.Context, cmd Command, pol Policy, refused Result) (Result, error) {
+	granted, err := grantedPolicy(pol, refused)
+	if err != nil {
+		return refused, err
+	}
+	// specFor re-checks the grant against the deny roots, so an escalation can
+	// never open Tenant's own dirs or a credential store.
+	return b.Run(ctx, cmd, granted)
+}
+
+// grantedPolicy is pol with the one grant an approval of refused adds: the
+// network for a network refusal, or the refused folder as a writable root for
+// a filesystem refusal that names a path. Nothing grantable is an error.
+func grantedPolicy(pol Policy, refused Result) (Policy, error) {
 	granted := false
 	for _, v := range refused.Violations {
 		switch v.Kind {
@@ -437,11 +456,68 @@ func (b *containerBackend) RunGranted(ctx context.Context, cmd Command, pol Poli
 		}
 	}
 	if !granted {
-		return refused, errors.New("container: the refusal names nothing the sandbox can grant for one command (no path, or a limit)")
+		return pol, errors.New("container: the refusal names nothing the sandbox can grant for one command (no path, or a limit)")
 	}
-	// specFor re-checks the grant against the deny roots, so an escalation can
-	// never open Tenant's own dirs or a credential store.
-	return b.Run(ctx, cmd, pol)
+	return pol, nil
+}
+
+// GrantedRunHash is the digest of the run an approval of refused would start
+// (EscalationBinder, W1-6): sh, the command line, every mount as the engine
+// would get it (canonical source, destination, mode), the network, and the
+// image's id as the engine resolves the tag right now. A re-pointed mount
+// source or a rebuilt or re-tagged image is a different digest. A scratch work
+// dir is a fresh temp folder on every run, so it is hashed as "a scratch work
+// dir", not by its path.
+func (b *containerBackend) GrantedRunHash(ctx context.Context, cmd Command, pol Policy, refused Result) (string, error) {
+	granted, err := grantedPolicy(pol, refused)
+	if err != nil {
+		return "", err
+	}
+	scratch := granted.WorkDir == ""
+	if scratch {
+		dir, derr := os.MkdirTemp("", "tenant-sbx-hash-")
+		if derr != nil {
+			return "", fmt.Errorf("container: scratch work dir: %w", derr)
+		}
+		defer os.RemoveAll(dir)
+		granted.WorkDir = dir
+	}
+	spec, err := b.specFor(cmd, granted)
+	if err != nil {
+		return "", err
+	}
+	describe := func(m mount) string {
+		return m.host + "\x00" + m.ctr + "\x00" + boolWord(m.ro, "ro", "rw")
+	}
+	mounts := []string{"work\x00" + describe(spec.work)}
+	if scratch {
+		mounts[0] = "work\x00<scratch>" // its path, and so its destination, is new every run
+	}
+	for _, m := range spec.mounts {
+		mounts = append(mounts, describe(m))
+	}
+	id, err := b.imageID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return EscalationHash("sh", []string{spec.command}, mounts, spec.network, id), nil
+}
+
+// imageID is the id the engine resolves the sandbox image's tag to right now.
+func (b *containerBackend) imageID(ctx context.Context) (string, error) {
+	c, done, err := b.control(ctx, "an image check", "image", "inspect", "--format", "{{.Id}}", b.image)
+	if err != nil {
+		return "", err
+	}
+	out, err := c.Output()
+	if err = done(err); err != nil {
+		return "", fmt.Errorf("container: could not read the id of image %s: %w", b.image, err)
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return "", fmt.Errorf("container: the engine reported no id for image %s", b.image)
+	}
+	return id, nil
 }
 
 // specFor turns a Policy into a validated container spec: the canonical mounts,

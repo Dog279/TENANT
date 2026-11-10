@@ -127,7 +127,7 @@ func cmdServe(ctx context.Context, args []string) (err error) {
 	// is nothing to sweep, not a failure. Start-up waits for the sweep, so it is
 	// held to a deadline (sandbox.SweepContainers): a docker CLI that does not
 	// answer is a warning here, never a hub that stays down.
-	sandbox.SetContainerDefaults(sandbox.ContainerOptions{Instance: sandbox.InstanceID(c.dataDir)})
+	sandbox.SetContainerDefaults(containerOptions(c, true))
 	if n, serr := sandbox.SweepContainers(ctx); serr != nil {
 		log.Warn("sandbox: could not sweep leftover containers", "err", serr)
 	} else if n > 0 {

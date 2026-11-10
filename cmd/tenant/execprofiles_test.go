@@ -818,6 +818,29 @@ func TestSandboxViolationsSince(t *testing.T) {
 	}
 }
 
+// W1-1 (TEN-455): config.json's `container` section is the container
+// backend's endpoint for every command; only serve adds the install's
+// instance id, because it owns the start-up sweep.
+func TestContainerOptions(t *testing.T) {
+	data := t.TempDir()
+	c := &commonFlags{dataDir: data, lc: &launchConfig{}}
+	if o := containerOptions(c, false); o != (sandbox.ContainerOptions{}) {
+		t.Fatalf("nothing configured should be the zero options, got %+v", o)
+	}
+	c.lc.Container.Endpoint = "  ssh://ops@build-host "
+	c.lc.Container.TLSCertDir = filepath.Join(data, "certs")
+	o := containerOptions(c, false)
+	if o.Endpoint != "ssh://ops@build-host" || o.TLSCertDir != filepath.Join(data, "certs") || o.Instance != "" {
+		t.Fatalf("containerOptions = %+v", o)
+	}
+	if o := containerOptions(c, true); o.Instance != sandbox.InstanceID(data) || o.Endpoint != "ssh://ops@build-host" {
+		t.Fatalf("serve's options = %+v", o)
+	}
+	if o := containerOptions(&commonFlags{dataDir: data}, false); o != (sandbox.ContainerOptions{}) {
+		t.Fatalf("no launch config should be the zero options, got %+v", o)
+	}
+}
+
 // W1-3 (TEN-457): a container profile whose grant overlaps a folder a
 // container may never mount is refused when the settings load, in either
 // direction, with the entry and the folder named. Other backends and

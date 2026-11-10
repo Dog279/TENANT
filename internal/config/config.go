@@ -47,6 +47,8 @@ type Launch struct {
 	Route *Route `json:"route,omitempty"`
 	// Gateway selects how `mcp-memory` is exposed.
 	Gateway Gateway `json:"gateway,omitempty"`
+	// Container points the container sandbox backend at its engine.
+	Container Container `json:"container,omitempty"`
 	// Dashboard configures the web control panel (TEN-76).
 	Dashboard Dashboard `json:"dashboard,omitempty"`
 	// TurnScheduler bounds and apportions ingress to the single shared agent
@@ -445,6 +447,20 @@ type Auth struct {
 	Mode   string `json:"mode,omitempty"`    // none|apikey|oauth
 	KeyEnv string `json:"key_env,omitempty"` // env var name (reference mode)
 	Stored bool   `json:"stored,omitempty"`  // secret saved in credentials.json
+}
+
+// Container is where the container sandbox backend finds its engine. Empty
+// means the engine the docker CLI itself would use: DOCKER_HOST, then the
+// docker context, then the OS default.
+type Container struct {
+	// Endpoint is the engine endpoint, passed to the CLI as -H: npipe:// or
+	// unix:// for a local engine, ssh:// or tcp:// for a remote one. tcp:// is
+	// used only with mutual TLS (TLSCertDir).
+	Endpoint string `json:"endpoint,omitempty"`
+	// TLSCertDir holds ca.pem, cert.pem and key.pem for a tcp:// endpoint.
+	// Empty falls back to DOCKER_CERT_PATH, then ~/.docker, and then only when
+	// DOCKER_TLS_VERIFY is set.
+	TLSCertDir string `json:"tls_cert_dir,omitempty"`
 }
 
 // Gateway selects the mcp-memory transport.
