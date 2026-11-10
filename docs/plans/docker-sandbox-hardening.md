@@ -443,13 +443,11 @@ Where wave 1 stands after PR #35 (Phase 1), PR #60 (wave-1 close), PR #63 (sweep
 
 | Ticket | Item | State | Where |
 |---|---|---|---|
-| W1-1 TEN-455 | An operator setting for the endpoint (`container.endpoint`, TLS) | open | `ContainerOptions.Endpoint` and `TLSVerify` exist and `For("container")` now uses the process defaults; no `config.json` key sets them |
 | W1-1 | A doctor row per refusal reason | done in part: one `container sandbox` row whose fix is the one for the reason found | `cmd/tenant/doctor.go` `checkContainerSandbox`; `sandbox.Unavailable` |
 | W1-2 TEN-456 | Check the ticket's own description against the code before closing | open | nothing known outstanding |
 | W1-3 TEN-457 | The live junction case | open (live) | `TestContainerLive_JunctionRefusedCommaRuns` |
 | W1-4 TEN-458 | The live cap and sweep cases | open (live) | `TestContainerLive_OutputCapKills`, `TestContainerLive_SweepLeftovers` |
 | W1-4 | The terminal app sets no instance id and runs no sweep | open, needs a decision | serve and a terminal app can share one data dir (the data lock is shared), so a sweep by install id at one's start would remove the other's running containers |
-| W1-6 TEN-460 | The approval bound to a hash (interpreter, argv, mounts, network, image digest), expiring | open | `EscalationHash` and `EscalationTicket` exist; the approval broker does not carry them (TODO in `execEscalator`) |
 | W1-6 | Attribution tests on captured stderr from real runs | open (live) | needs the captures |
 | W1-6 | The live refusal-past-the-cap case | open (live) | `TestContainerLive_RefusalPastOutputCap` |
 | W1-7 TEN-461 | Setuid/NNP control, 32-bit `socketcall(AF_ALG)`, a planted Windows executable | open | needs image or harness work (W2-8 for `socketcall`) |
@@ -463,9 +461,14 @@ Where wave 1 stands after PR #35 (Phase 1), PR #60 (wave-1 close), PR #63 (sweep
 | W1-1 | A fix for every refusal reason | `sandbox.Unavailable`, `fix*` constants |
 | W1-3 | A container profile whose grant overlaps a deny root is refused at load | `sandbox.GrantOverlapsDeny`; `execprofiles.go` `containerGrantError` |
 | W1-4 | Commands are labelled with the install's id, so the sweep finds a previous run's containers | `sandbox.go` `For` |
+| W1-1 | An operator setting for the endpoint: `container.endpoint` and `container.tls_cert_dir` in `config.json`, applied to every command | `internal/config` `Container`; `cmd/tenant/wiring.go` `containerOptions` |
+| W1-1 | A `tcp://` endpoint is launched with `--tlsverify` and its three files, or refused. It passed vetting on `DOCKER_TLS_VERIFY` alone and was then launched with `-H` only and a stripped environment, which is plain HTTP | `container_engine.go` `tlsArgs` |
+| W1-6 | The approval is bound to the run: a digest before the prompt and again before the run, with a ticket that expires; a mismatch runs nothing. Held in `Execute`, so the approval broker carries no ticket | `sandbox.EscalationBinder`, `approvalStillCovers`; `container.go` `GrantedRunHash` |
 
 ### A live run on Windows, 2026-11-10
 
 Docker Desktop (engine 29.9.3, WSL 3.0.5, installed kernel 6.18.58, running kernel 6.18.54) was stuck in `starting` after a WSL update: `docker version`, `docker info` and an unfiltered `docker ps` answered, but `docker create`, `docker run` and `docker ps --filter label=…` never returned. The probe called the backend available, and the live tests then failed by timing out with empty output (`Identity`, `ReadOnlyRootAndSecret`, `LoopbackUnderNoneVsFull`, `OutputCapKills`; `SweepLeftovers` hung the suite). The two tests that only need a container to be gone passed. That run is why the container check exists. **No live case has yet been seen to pass on this machine**: they need a restarted Docker Desktop.
+
+Known limit of the approval binding: the second digest is taken immediately before the run, not by it. The run then resolves its mounts and the image tag once more, so a change in the instant between the two is not caught. Closing that means running the granted container by image id and from the already-resolved spec.
 
 Decisions still open: D4 (HOME tmpfs, W2-2), D5 (CPU budget, W2-1), D6 (base image: `container_image.go` still pins bookworm), D7 (Podman on Windows, W3-1), D8 (trust statement in SECURITY.md).

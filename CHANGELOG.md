@@ -15,6 +15,18 @@ Releases page.
   container can show: whether a user namespace is in effect (from its uid map) and the kernel it
   runs on. `tenant sandbox run` and `tenant sandbox selftest --backend container` apply the same
   check, and `tenant sandbox probe` reports its result.
+- **An approval to re-run a refused command covers that exact run.** When the container
+  sandbox refuses a command and you approve the re-run, Tenant now takes a digest of what
+  will run (the command, every mount, the network and the image the tag points at) before it
+  asks and again just before the run. If they differ, because an image was rebuilt or a folder
+  re-pointed while the prompt waited, nothing runs and the refusal says to ask again.
+- **`config.json` can name the container sandbox's engine** (`container.endpoint`,
+  `container.tls_cert_dir`): a local pipe or socket, `ssh://`, or `tcp://` with mutual TLS.
+  **Fixed with it:** a `tcp://` endpoint that passed the TLS check was still launched with no
+  TLS flags, because the environment that turns TLS on is stripped from the docker CLI, so
+  the connection was plain HTTP. A `tcp://` endpoint is now always launched with
+  `--tlsverify` and the CA, certificate and key from the certificate folder, and is refused
+  when any of the three is missing.
 - **The WSL kernel floor is checked against the kernel that is running.** `wsl --version` prints
   the installed kernel, and a WSL VM started before an update keeps running the old one. The
   floor (6.18.40) now also applies to the kernel the engine reports: below it refuses, and a
