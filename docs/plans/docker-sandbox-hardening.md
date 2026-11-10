@@ -388,11 +388,11 @@ The Phase 1 backend PR does not merge without all seven.
 | D1 | Docker Desktop floor | **Decided 2026-09-30.** Refuse below 4.44.3 (CVE-2025-9074). Warn below 4.76.0, and below the latest release. The CVE spot-check removed two of the reasons for refusing below 4.76.0 | — |
 | D2 | Network for cron and other unattended work | **Decided 2026-09-30.** `full` is allowed, cron included, given the work cron dispatches. W2-9 scopes each run to the ports and destinations the work declares | — |
 | D3 | Escalation shape | **Decided 2026-09-30.** Within the tier, as the least friction: one path granted, or network for one command, still in a container. The host only for a program refusal, run verbatim | — |
-| D4 | HOME | Its own `--tmpfs /home/sandbox` (64m, 0700) | `/tmp/home` inside the `/tmp` tmpfs |
-| D5 | CPU budget | A per-process `--ulimit cpu` plus the wall clock, with Limits reported as `partial` | Document the wall × `--cpus` bound only |
-| D6 | Base image | `debian:trixie-slim`, pinned and built locally | A Docker Hardened Images Debian base |
-| D7 | Engines on Windows | Docker Desktop in wave 1, Podman machine in wave 3 | Both now |
-| D8 | Trust statement | SECURITY.md says the host user and their processes are trusted | Leave it implicit |
+| D4 | HOME | **Decided 2026-11-10: the recommended option.** Its own `--tmpfs /home/sandbox` (64m, 0700, owned by the sandbox uid) | `/tmp/home` inside the `/tmp` tmpfs |
+| D5 | CPU budget | **Decided 2026-11-10: the recommended option.** A per-process `--ulimit cpu` plus the wall clock, with Limits reported as `partial` | Document the wall × `--cpus` bound only |
+| D6 | Base image | **Decided 2026-11-10: the recommended option.** `debian:trixie-slim`, pinned and built locally | A Docker Hardened Images Debian base |
+| D7 | Engines on Windows | **Decided 2026-11-10: the recommended option.** Docker Desktop in wave 1, Podman machine in wave 3 | Both now |
+| D8 | Trust statement | **Decided 2026-11-10: the recommended option.** SECURITY.md says the host user and their processes are trusted | Leave it implicit |
 
 ## 8. Tickets
 
@@ -476,9 +476,9 @@ Some of wave 2 was already in the code when its tickets were still To Do. Nothin
 | Ticket | Item | State |
 |---|---|---|
 | W2-1 TEN-462 | `--ulimit core=0` and `nofile=1024:4096` | in the code (`buildRunArgv`) |
-| W2-1 | The CPU budget | waits on D5 |
+| W2-1 | The CPU budget | done (D5): a profile's `cpu_seconds` is `--ulimit cpu=N:N`, a cap per process (`buildRunArgv`); the run record's limits say `cpu=Ns/process`. Fake engine only; the live case is `TestContainerLive_CPULimitStopsARunawayProcess` |
 | W2-1 | A cap on concurrent sandboxes and on launches per turn and per job; watching the work dir's growth | open: the numbers, and whether a launch over the cap waits or is refused, are not decided |
-| W2-2 TEN-463 | HOME on its own tmpfs | waits on D4; HOME is the work dir today |
+| W2-2 TEN-463 | HOME on its own tmpfs | done (D4): `--tmpfs /home/sandbox:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532` and `HOME=/home/sandbox` (`buildRunArgv`, `sandboxHome`); the image creates the folder. Fake engine only; the live case is `TestContainerLive_HomeIsATmpfsOfItsOwn` |
 | W2-2 | Refusing a bare-repo work dir | done: `bareRepoLayout` in `specFor` refuses a work dir or write root that is itself a git directory (HEAD beside `objects` and `refs`); read-only it is allowed |
 | W2-2 | Read-only binds over `.git/hooks`, `.git/config` and the editor and agent folders | open: nested read-only binds are untested on 9p and must be tried on a live engine before they are on for every run; whether to create the missing folders in the operator's work dir is also not decided |
 | W2-3 TEN-464 | The host treats the work dir as hostile | audited, part open. Already so: the file tools resolve every link, a dangling one by hand, and check the place it points at against the roots (`internal/plugins/osys/paths.go` `resolve`), so a link a container made does not move a host tool outside its roots; Tenant itself runs no git on the host, so there is no `core.fsmonitor` or `core.hooksPath` for it to neutralise. `resolve` now refuses a path it cannot relate to its resolved ancestor (it returned the path unresolved). Open: the check and the open are two steps, so a link swapped in between is followed; reparse points a container leaves on NTFS are not tried on a live engine |
@@ -487,16 +487,17 @@ Some of wave 2 was already in the code when its tickets were still To Do. Nothin
 | W2-5 TEN-466 | The `program` refusal kind; ENOENT mapped back through the mounts | in the code (wave 1) |
 | W2-5 | Host-only names dropped from a container's environment; the log-join ids forwarded | in the code (`envNamesFor`) |
 | W2-5 TEN-466 | A warning on secret-looking names | done: `secretLookingEnv` on a surface's `env_pass`, shown by `tenant sandbox probe` (and `env_pass_secret_looking` in its JSON) and `tenant doctor`. A hint: the name is still passed |
-| W2-5 | Selftest asserting the exact env | open (live) |
+| W2-5 | Selftest asserting the exact env | in the code as a live test (`TestContainerLive_ExactEnv`), not yet run on an engine that starts containers |
 | W2-6 TEN-467 | Container jobs run `sh -c` | in the code |
 | W2-6 | Jobs in cmd syntax stay on the host by declaration; a circuit breaker after 5 refusals or timeouts | open: how a paused surface is shown and resumed is not decided |
 | W2-7 TEN-468 | `tenant sandbox stop-all` | done with the PR that adds this table (`sandbox.StopAllContainers`) |
 | W2-7 | The run record in the Security log | done in part with the PR after that one: record `4201` holds the image and its id, mounts and modes, network, limits, output bytes, whether the cap hit, and the time (`sandbox.Confinement`, `confinementFields`); `4203` says where a re-run ran. The names of the environment variables passed in were added after (`Confinement.Env`). Not in the record yet: the policy version, an OOM kill as its own field, and a digest of changed files |
 | W2-7 TEN-468 | Control characters kept from the logs and the UI | done: the log files quote them (`internal/logs/entry.go`), the dashboard shows hidden characters as markers (`control.VisibleText`), and the terminal app now does too: `termText` on every agent, sub-agent, system and research line, `promptText` on an approval prompt, and `termText`/`styledText` on what a slash command prints (`internal/tui/safetext.go`) |
 | W2-7 | One setting that disables `container` and escalation; quarantine | open: the setting's name and place are not decided |
-| W2-8 TEN-469 | The seccomp delta; the image on trixie, scanned and signed | open; the base waits on D6 |
+| W2-8 TEN-469 | The image on trixie | done (D6): `baseImageRef` is `debian:trixie-slim` pinned to the index digest of 2026-11-04. Not yet built on an engine: `tenant sandbox image build` must be run and the live tests repeated on the new image |
+| W2-8 | The seccomp delta; the image scanned and signed | open |
 | W2-9 TEN-470 | A network scope per run | open; needs the enforcement spike on Docker Desktop |
 
 The approval binding, as it stands: the re-run is started by the backend from the description it hashes (`PinnedEscalator`, `containerBackend.RunGrantedAs`). The spec is built once, its digest is compared with the approved one, and that spec is what runs, with the image named by the id in the digest. This closed the earlier limit, where the second digest was taken before the run and the run resolved its mounts and the image tag once more. What is left: the engine itself resolves a mount source when it starts the container, so a folder replaced by a link in that instant is followed by the engine. Not tried on a live engine.
 
-Decisions still open: D4 (HOME tmpfs, W2-2), D5 (CPU budget, W2-1), D6 (base image: `container_image.go` still pins bookworm), D7 (Podman on Windows, W3-1), D8 (trust statement in SECURITY.md).
+Decisions D4 to D8 were taken on 2026-11-10, each as the recommended option (§7). D4, D5, D6 and D8 are in the code and in SECURITY.md; D7 changes nothing now (Podman on Windows stays in wave 3). No decision is open. Still undecided, and not numbered in §6: the name and place of the setting that disables `container` and escalation, what a launch over the concurrency cap does, how a paused surface is shown and resumed, and whether the read-only binds create missing folders in the operator's work dir.

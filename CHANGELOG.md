@@ -5,6 +5,22 @@ Releases page.
 
 ## Unreleased
 
+- **Container sandbox: HOME is a folder of the container's own.** `HOME` was the work dir, so
+  the dotfiles, caches and history a command wrote stayed in your folder on the host, where the
+  next "fresh" container and your own tools read them. It is now `/home/sandbox`, a 64 MB
+  in-memory folder only the sandbox user can enter, gone when the command ends. A command that
+  needs a file to last writes it in the work dir.
+- **Container sandbox: `cpu_seconds` is enforced, per process.** A profile's `cpu_seconds` is
+  now a kernel CPU-time limit on each process in the container (`--ulimit cpu`). It stops one
+  runaway process; a command that spreads its work over many is bounded by its time limit and
+  by 2 CPUs, which is why `tenant sandbox probe` reports limits on this backend as partial.
+- **Container sandbox: the image is built from `debian:trixie-slim`,** pinned by digest.
+  bookworm, the base until now, left regular security support in July 2026. **Run
+  `tenant sandbox image build` again after updating**: the backend never pulls or rebuilds on
+  its own, and an image built before this keeps the old base.
+- **SECURITY.md says who is trusted:** the local user account and every process running as it.
+  The execution sandbox protects the host from a command the agent runs, not Tenant or the
+  container engine from the user's other processes.
 - **`tenant sandbox probe` and `tenant doctor` point out credential-looking names in `env_pass`.**
   A sandboxed command can read every variable it is passed, and with the network on can send
   it anywhere. When a surface's `env_pass` forwards a name that looks like a credential

@@ -45,6 +45,14 @@ keyless search can contact DuckDuckGo. The optional Jina Reader fallback is
 configuration-gated and off by default because using it crosses a separate
 privacy boundary. See `docs/DATAFLOW.md` for the code-level inventory.
 
+**Who is trusted.** The local user account Tenant runs as, and every process
+running as that account, is trusted. Tenant's files and tokens are that
+account's to read. Where the container sandbox is used, so is the container
+engine's API, and access to that API is root in the engine's VM and read/write
+on every drive it shares. The execution sandbox protects the host from a
+command the agent runs. It does not protect Tenant, or the engine, from the
+user's other processes.
+
 ### Secrets and credentials
 
 - **API keys and tokens** are stored in
@@ -161,7 +169,9 @@ Plugins are **read-by-default**. Mutating and destructive operations are gated:
     on a real engine, and what wave 1 still owes, are listed in
     `docs/plans/docker-sandbox-hardening.md` §9. It never mounts the Docker socket,
     runs each command in a fresh read-only, non-root, all-capabilities-dropped
-    container with `no-new-privileges` and no network by default, and fails
+    container with `no-new-privileges` and no network by default, with HOME on
+    a tmpfs of the container's own (nothing a command leaves in HOME reaches
+    the host or the next container), and fails
     closed when the engine or image is not ready, or when the engine answers but
     cannot start a container (a check container runs before first use).
   - Commands get an environment allowlist on every backend: a safe base set plus
@@ -267,6 +277,11 @@ as a workaround for Chrome installation or permission problems. Run
 
 ## Security Document Changelog
 
+- 2026-11-10: stated who is trusted (the local user account and its processes;
+  the container sandbox protects the host from a command, not from them). The
+  container sandbox's HOME is a tmpfs of the container's own, its image is
+  built from a pinned `debian:trixie-slim`, and a `cpu_seconds` limit is a
+  per-process cap there.
 - 2026-11-10: the MCP HTTP+SSE gateway is no longer unauthenticated. It requires
   a bearer token (`<config>/gateway-auth-token`, a managed secret), checks Host
   and Origin, and accepts only JSON messages in the stream's own session.
